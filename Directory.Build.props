@@ -63,21 +63,13 @@
   <PropertyGroup>
     <EmbedUntrackedSources>true</EmbedUntrackedSources>
     <!--
-      SourceLink reads the LOCAL Git remote to build its per-file URLs. Built in a clone of the
-      private repo, that bakes an unreadable URL into every published PDB — verified: all 31 PDBs
-      carried it. RepositoryUrl and PrivateRepositoryUrl do NOT override this; both were tried.
+      SourceLink derives its per-file URLs from the LOCAL Git remote, not from RepositoryUrl or
+      PrivateRepositoryUrl (both were tried and verified ineffective). Releases must therefore be
+      built from a clone whose `origin` is the PUBLIC repository — as this one is — or every
+      published PDB points at a URL consumers cannot read.
 
-      Disabling SCM queries stops SourceLink reading the remote at all, so nothing private ships.
-      The cost is no source-stepping from the symbol packages; line numbers still work.
-
-      To restore source-stepping: publish from a clone whose `origin` IS the public repository, then
-      delete this line. Verify by packing and grepping the .snupkg PDBs for the private repo name —
-      do not assume a property fixed it.
+      Verify after packing, do not assume: grep the .snupkg PDBs for any non-public repo name.
     -->
-    <EnableSourceControlManagerQueries>false</EnableSourceControlManagerQueries>
-    <!-- With no SCM info there is nothing to generate; skipping the target also silences its
-         codeless "source link is empty" warning, which NoWarn cannot target. -->
-    <GenerateSourceLinkFile>false</GenerateSourceLinkFile>
     <DebugType>portable</DebugType>
     <!-- Deterministic, repeatable builds when running on a CI server (GitHub Actions sets CI=true). -->
     <ContinuousIntegrationBuild Condition="'$(CI)' == 'true'">true</ContinuousIntegrationBuild>
@@ -86,12 +78,7 @@
   <ItemGroup>
     <!-- Pin build tooling: floating versions make restores and published packages non-reproducible. -->
     <PackageReference Include="MinVer" Version="7.0.0" PrivateAssets="all" />
-    <!--
-      SourceLink is intentionally NOT referenced while the build origin is the private repo: it
-      derives its URLs from the local Git remote and would publish an unreadable link in every PDB.
-      Re-add it (and drop EnableSourceControlManagerQueries/GenerateSourceLinkFile above) once
-      releases are built from a clone whose origin is the public repository.
-    -->
+    <PackageReference Include="Microsoft.SourceLink.GitHub" Version="10.0.301" PrivateAssets="all" />
   </ItemGroup>
 
 </Project>
