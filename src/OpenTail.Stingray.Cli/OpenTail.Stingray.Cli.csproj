@@ -56,11 +56,36 @@
     <ProjectReference Include="..\OpenTail.Stingray.Vulkan\OpenTail.Stingray.Vulkan.csproj" />
     <ProjectReference Include="..\OpenTail.Stingray.Cuda\OpenTail.Stingray.Cuda.csproj" />
 
-    <!-- Terminal UI for the interactive chat REPL. Sibling extension, referenced by project
-         while both sides are iterating; swap to a PackageReference on OpenTail.TUI once a
-         release carries what the REPL needs, since these trees are each prepped to become
-         standalone repositories. Safe to bundle: this project is PackAsTool, so the tool
-         package embeds the assembly rather than emitting a NuGet dependency on it. -->
+  </ItemGroup>
+
+  <!--
+    Full-screen TUI chat: OPT-IN, off by default.
+
+    It needs OpenTail.TUI's Elm-architecture surface (IModel/IMsg/Cmd, TranscriptEntry,
+    TextInputState, ViewportState, CellBuffer, Rect). The published OpenTail.TUI 1.0.0 does NOT
+    export those, and the project lives outside this repository — so a default build must not
+    depend on it, or a standalone clone cannot compile the CLI at all.
+
+    Off: Tui/** is excluded from compilation and RunInteractive uses the plain line-oriented chat
+    loop, which is fully functional and pipe-friendly.
+    On:  build with -p:EnableTuiChat=true from a tree that has ..\..\..\OpenTail.TUI beside it.
+
+    To make this the default again, publish an OpenTail.TUI release exporting the types above and
+    replace the ProjectReference below with a PackageReference.
+  -->
+  <PropertyGroup>
+    <EnableTuiChat Condition="'$(EnableTuiChat)' == ''">false</EnableTuiChat>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(EnableTuiChat)' == 'true'">
+    <DefineConstants>$(DefineConstants);STINGRAY_TUI</DefineConstants>
+  </PropertyGroup>
+
+  <ItemGroup Condition="'$(EnableTuiChat)' != 'true'">
+    <Compile Remove="Tui\**" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(EnableTuiChat)' == 'true'">
     <ProjectReference Include="..\..\..\OpenTail.TUI\OpenTail.TUI.csproj" />
   </ItemGroup>
 

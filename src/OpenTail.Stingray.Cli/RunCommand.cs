@@ -2567,6 +2567,12 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         // Full-screen chat UI when attached to a real terminal. It takes over the alternate
         // screen buffer, so a redirected stdin/stdout (scripted use) keeps the plain
         // line-oriented loop below, which stays pipe-friendly.
+        //
+        // Compiled only when -p:EnableTuiChat=true. The UI depends on OpenTail.TUI, which is not
+        // yet published with the API this uses (IModel/IMsg/Cmd, TranscriptEntry, TextInputState,
+        // ViewportState, CellBuffer), so the default build has no such dependency and the plain
+        // loop below is the interactive path. Nothing else in the CLI touches Tui/.
+#if STINGRAY_TUI
         if (Tui.ChatTui.IsSupported && !s.SingleTurn)
         {
             var engine = new Tui.ChatEngine((message, onText, ct) =>
@@ -2587,6 +2593,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
 
             return Tui.ChatTui.Run(engine, Path.GetFileName(s.ModelPath) ?? "model");
         }
+#endif
 
         AnsiConsole.MarkupLine("[green]Interactive chat.[/] Type a message, or [yellow]/exit[/] to quit.\n");
 
