@@ -1,0 +1,97 @@
+<Project>
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <LangVersion>14</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <IsTrimmable>true</IsTrimmable>
+    <EnableTrimAnalyzer>true</EnableTrimAnalyzer>
+    <EnableAotAnalyzer>true</EnableAotAnalyzer>
+    <SuppressTrimAnalysisWarnings>false</SuppressTrimAnalysisWarnings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <!-- Emit IntelliSense XML for every public package assembly. CS1591 remains advisory until
+         documentation coverage is intentionally made a release gate. -->
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <!-- Existing kernel-internal comments predate XML emission and include incomplete parameter
+         lists or overload references. Keep them visible in source while shipping valid XML for
+         consumers; malformed XML remains an error and is not suppressed. -->
+    <NoWarn>$(NoWarn);CS0419;CS1572;CS1573;CS1574;CS1587;CS1591;CS1734</NoWarn>
+  </PropertyGroup>
+
+  <!-- NativeAOT optimizations for Release builds -->
+  <PropertyGroup Condition="'$(Configuration)' == 'Release'">
+    <IlcOptimizationPreference>Speed</IlcOptimizationPreference>
+    <IlcInstructionSet>native</IlcInstructionSet>
+  </PropertyGroup>
+
+  <!-- NuGet packaging: opt-in. The OpenTail.Stingray meta-package, OpenTail.Stingray.Server,
+       and OpenTail.Stingray.Cli pack; everything else (per-backend libs, tests, benchmarks,
+       samples, the demo host) stays unpacked. -->
+  <PropertyGroup>
+    <IsPackable>false</IsPackable>
+    <Authors>Pekka Heikura, OpenTail Team</Authors>
+    <Company>OpenTail</Company>
+    <Copyright>Copyright (c) 2026 Pekka Heikura. Portions Copyright (c) 2026 OpenTail.</Copyright>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/opentail-net/OpenTail.Stingray</PackageProjectUrl>
+    <!-- Keep public package and SourceLink metadata independent of this clone's private origin. -->
+    <RepositoryUrl>https://github.com/opentail-net/OpenTail.Stingray</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageTags>llm;inference;gguf;transformer;ai;vulkan;cuda;avx;simd;nativeaot</PackageTags>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+  </PropertyGroup>
+
+  <!--
+    MinVer derives the version from git tags. Tag `v0.2.0` -> package version `0.2.0`.
+    Untagged commits get a pre-release version like `0.2.1-alpha.0.<commit-height>`,
+    so every master build produces a unique preview package.
+  -->
+  <PropertyGroup>
+    <!-- Renamed from OpenTail.LLM: a project-specific tag prefix restarts the version series
+         so it cannot collide with the pre-rename v1.0.0/v1.0.1 tags. Until the first
+         `stingray-v1.0.0` tag exists, MinVerMinimumMajorMinor keeps previews on the 1.0 line. -->
+    <MinVerTagPrefix>stingray-v</MinVerTagPrefix>
+    <MinVerMinimumMajorMinor>1.0</MinVerMinimumMajorMinor>
+    <MinVerDefaultPreReleaseIdentifiers>alpha.0</MinVerDefaultPreReleaseIdentifiers>
+  </PropertyGroup>
+
+  <!-- SourceLink: lets nupkg consumers step into source from GitHub during debugging. -->
+  <PropertyGroup>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+    <!--
+      SourceLink reads the LOCAL Git remote to build its per-file URLs. Built in a clone of the
+      private repo, that bakes an unreadable URL into every published PDB — verified: all 31 PDBs
+      carried it. RepositoryUrl and PrivateRepositoryUrl do NOT override this; both were tried.
+
+      Disabling SCM queries stops SourceLink reading the remote at all, so nothing private ships.
+      The cost is no source-stepping from the symbol packages; line numbers still work.
+
+      To restore source-stepping: publish from a clone whose `origin` IS the public repository, then
+      delete this line. Verify by packing and grepping the .snupkg PDBs for the private repo name —
+      do not assume a property fixed it.
+    -->
+    <EnableSourceControlManagerQueries>false</EnableSourceControlManagerQueries>
+    <!-- With no SCM info there is nothing to generate; skipping the target also silences its
+         codeless "source link is empty" warning, which NoWarn cannot target. -->
+    <GenerateSourceLinkFile>false</GenerateSourceLinkFile>
+    <DebugType>portable</DebugType>
+    <!-- Deterministic, repeatable builds when running on a CI server (GitHub Actions sets CI=true). -->
+    <ContinuousIntegrationBuild Condition="'$(CI)' == 'true'">true</ContinuousIntegrationBuild>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Pin build tooling: floating versions make restores and published packages non-reproducible. -->
+    <PackageReference Include="MinVer" Version="7.0.0" PrivateAssets="all" />
+    <!--
+      SourceLink is intentionally NOT referenced while the build origin is the private repo: it
+      derives its URLs from the local Git remote and would publish an unreadable link in every PDB.
+      Re-add it (and drop EnableSourceControlManagerQueries/GenerateSourceLinkFile above) once
+      releases are built from a clone whose origin is the public repository.
+    -->
+  </ItemGroup>
+
+</Project>

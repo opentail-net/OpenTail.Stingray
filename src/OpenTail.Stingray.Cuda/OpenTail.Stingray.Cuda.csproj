@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Description>CUDA compute backend for OpenTail.Stingray: NVIDIA GPU inference using cuBLAS (fp32/bf16/fp16/fp8 GEMM) and NVRTC custom kernels.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\OpenTail.Stingray.Core\OpenTail.Stingray.Core.csproj" />
+    <ProjectReference Include="..\OpenTail.Stingray.Cpu\OpenTail.Stingray.Cpu.csproj" />
+  </ItemGroup>
+</Project>

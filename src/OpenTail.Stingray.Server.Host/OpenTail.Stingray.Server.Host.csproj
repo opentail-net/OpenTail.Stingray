@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <!--
+    Demo host for the OpenTail.Stingray.Server class library. Single Program.cs that
+    binds OpenTailStingrayServerOptions, calls AddOpenTailStingray() / MapOpenTailStingray(),
+    and starts a Kestrel server.
+
+    Trim/AOT explicitly disabled (overriding the repo-wide Directory.Build.props
+    defaults). The CUDA + NVRTC runtime path is not trim-safe — kernel source
+    strings get stripped and cuModuleLoadData fails at runtime (issue #94). The
+    CLI remains the AOT-publish target for OpenTail.Stingray.
+  -->
+
+  <PropertyGroup>
+    <RootNamespace>OpenTail.Stingray.Server.Host</RootNamespace>
+    <IsTrimmable>false</IsTrimmable>
+    <EnableTrimAnalyzer>false</EnableTrimAnalyzer>
+    <EnableAotAnalyzer>false</EnableAotAnalyzer>
+    <SuppressTrimAnalysisWarnings>true</SuppressTrimAnalysisWarnings>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\OpenTail.Stingray.Server\OpenTail.Stingray.Server.csproj" />
+    <!-- Direct reference for KnownEnvironmentVariables (startup misconfiguration guard).
+         Server marks its own engine references PrivateAssets="all", so Core does not flow
+         transitively to hosts. -->
+    <ProjectReference Include="..\OpenTail.Stingray.Core\OpenTail.Stingray.Core.csproj" />
+  </ItemGroup>
+
+</Project>

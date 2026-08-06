@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <Description>Vulkan compute backend for OpenTail.Stingray: cross-vendor GPU inference (AMD / Intel / NVIDIA) using SPIR-V compute shaders via Vortice.Vulkan.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\OpenTail.Stingray.Core\OpenTail.Stingray.Core.csproj" />
+    <ProjectReference Include="..\OpenTail.Stingray.Cpu\OpenTail.Stingray.Cpu.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- SpirvGen (the dev-only SPIR-V table generator) reflects internal Shaders consts and
+         calls internal ShaderCompiler.Compile/StableHash; the test project asserts the table
+         covers every shader and that the precompiled path is taken at runtime. -->
+    <InternalsVisibleTo Include="SpirvGen" />
+    <InternalsVisibleTo Include="OpenTail.Stingray.Tests.ForwardPass" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Vortice.Vulkan" Version="3.2.3" />
+  </ItemGroup>
+
+</Project>

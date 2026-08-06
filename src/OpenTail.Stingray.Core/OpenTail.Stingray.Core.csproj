@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <Description>GGUF parser, BPE tokenizer, tensor types, and model graph. The foundation library for OpenTail.Stingray, the high-performance LLM inference engine for .NET.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.ML.Tokenizers" Version="2.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="OpenTail.Stingray.Tests.Core" />
+  </ItemGroup>
+
+</Project>

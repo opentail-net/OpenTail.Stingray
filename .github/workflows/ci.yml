@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  pull_request:
+    paths:
+      - 'extensions/OpenTail.Stingray/**'
+  push:
+    branches: [master]
+    paths:
+      - 'extensions/OpenTail.Stingray/**'
+
+permissions:
+  contents: read
+
+jobs:
+  cpu:
+    name: Build and CPU-safe tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: extensions/OpenTail.Stingray
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '10.0.x'
+      - name: Restore
+        run: dotnet restore OpenTail.Stingray.slnx
+      - name: Build
+        run: dotnet build OpenTail.Stingray.slnx -c Release --no-restore
+      - name: CPU-safe test suites
+        run: |
+          dotnet test tests/OpenTail.Stingray.Tests.Core/OpenTail.Stingray.Tests.Core.csproj -c Release --no-restore
+          dotnet test tests/OpenTail.Stingray.Tests.Pipeline/OpenTail.Stingray.Tests.Pipeline.csproj -c Release --no-restore
+          dotnet test tests/OpenTail.Stingray.Tests.Server/OpenTail.Stingray.Tests.Server.csproj -c Release --no-restore
+          dotnet test tests/OpenTail.Stingray.Tests.TurboQuant/OpenTail.Stingray.Tests.TurboQuant.csproj -c Release --no-restore
+          dotnet test tests/OpenTail.Stingray.Tests.Cli/OpenTail.Stingray.Tests.Cli.csproj -c Release --no-restore

@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <Description>Forward-pass orchestration for OpenTail.Stingray: paged KV cache, temperature/top-k/top-p/min-p samplers, speculative decoding, and continuous-batching engine.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Logging abstractions only (no provider): lets the engine emit ILogger diagnostics
+         (per-request perf trace) that the host's configured logging pipeline renders. -->
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.10" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\OpenTail.Stingray.Core\OpenTail.Stingray.Core.csproj" />
+    <ProjectReference Include="..\OpenTail.Stingray.Cpu\OpenTail.Stingray.Cpu.csproj" />
+    <!-- Vision: Gemma 4 image projection (gemma4uv) for the engine's image-input path (#253).
+         Vision depends only on Core + Cpu, so no dependency cycle. -->
+    <ProjectReference Include="..\OpenTail.Stingray.Vision\OpenTail.Stingray.Vision.csproj" />
+    <ProjectReference Include="..\OpenTail.Stingray.Vulkan\OpenTail.Stingray.Vulkan.csproj" />
+    <ProjectReference Include="..\OpenTail.Stingray.Cuda\OpenTail.Stingray.Cuda.csproj" />
+    <ProjectReference Include="..\OpenTail.Stingray.TurboQuant\OpenTail.Stingray.TurboQuant.csproj" />
+    <ProjectReference Include="..\OpenTail.Stingray.Pipeline\OpenTail.Stingray.Pipeline.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="OpenTail.Stingray.Tests.ForwardPass" />
+    <InternalsVisibleTo Include="OpenTail.Stingray.Sessions" />
+  </ItemGroup>
+
+</Project>

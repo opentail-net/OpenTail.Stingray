@@ -1,0 +1,22 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="BenchmarkDotNet" Version="0.15.8" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\OpenTail.Stingray.Engine\OpenTail.Stingray.Engine.csproj" />
+    <ProjectReference Include="..\..\src\OpenTail.Stingray.Cpu\OpenTail.Stingray.Cpu.csproj" />
+    <ProjectReference Include="..\..\src\OpenTail.Stingray.TurboQuant\OpenTail.Stingray.TurboQuant.csproj" />
+    <ProjectReference Include="..\..\src\OpenTail.Stingray.Vulkan\OpenTail.Stingray.Vulkan.csproj" />
+    <ProjectReference Include="..\..\src\OpenTail.Stingray.Cuda\OpenTail.Stingray.Cuda.csproj" />
+  </ItemGroup>
+
+</Project>

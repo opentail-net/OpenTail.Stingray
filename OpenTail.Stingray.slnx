@@ -1,0 +1,38 @@
+<Solution>
+  <Folder Name="/samples/">
+    <Project Path="samples/OpenTail.Stingray.Sample.Chat/OpenTail.Stingray.Sample.Chat.csproj" />
+    <Project Path="samples/OpenTail.Stingray.Sample.HotRouting/OpenTail.Stingray.Sample.HotRouting.csproj" />
+    <Project Path="samples/OpenTail.Stingray.Sample.ToolCall/OpenTail.Stingray.Sample.ToolCall.csproj" />
+  </Folder>
+  <Folder Name="/benchmarks/">
+    <Project Path="benchmarks/OpenTail.Stingray.Bench/OpenTail.Stingray.Bench.csproj" />
+    <Project Path="benchmarks/OpenTail.Stingray.ImageBench/OpenTail.Stingray.ImageBench.csproj" />
+    <Project Path="benchmarks/SnapKvEval/SnapKvEval.csproj" />
+  </Folder>
+  <Folder Name="/src/">
+    <Project Path="src/OpenTail.Stingray/OpenTail.Stingray.csproj" />
+    <Project Path="src/OpenTail.Stingray.Cli/OpenTail.Stingray.Cli.csproj" />
+    <Project Path="src/OpenTail.Stingray.Core/OpenTail.Stingray.Core.csproj" />
+    <Project Path="src/OpenTail.Stingray.Cuda/OpenTail.Stingray.Cuda.csproj" />
+    <Project Path="src/OpenTail.Stingray.Diffusion/OpenTail.Stingray.Diffusion.csproj" />
+    <Project Path="src/OpenTail.Stingray.Cpu/OpenTail.Stingray.Cpu.csproj" />
+    <Project Path="src/OpenTail.Stingray.Engine/OpenTail.Stingray.Engine.csproj" />
+    <Project Path="src/OpenTail.Stingray.Pipeline/OpenTail.Stingray.Pipeline.csproj" />
+    <Project Path="src/OpenTail.Stingray.Server/OpenTail.Stingray.Server.csproj" />
+    <Project Path="src/OpenTail.Stingray.Server.Host/OpenTail.Stingray.Server.Host.csproj" />
+    <Project Path="src/OpenTail.Stingray.Sessions/OpenTail.Stingray.Sessions.csproj" />
+    <Project Path="src/OpenTail.Stingray.TurboQuant/OpenTail.Stingray.TurboQuant.csproj" />
+    <Project Path="src/OpenTail.Stingray.Vulkan/OpenTail.Stingray.Vulkan.csproj" />
+    <Project Path="src/OpenTail.Stingray.Vision/OpenTail.Stingray.Vision.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/OpenTail.Stingray.Tests.Cli/OpenTail.Stingray.Tests.Cli.csproj" />
+    <Project Path="tests/OpenTail.Stingray.Tests.Core/OpenTail.Stingray.Tests.Core.csproj" />
+    <Project Path="tests/OpenTail.Stingray.Tests.ForwardPass/OpenTail.Stingray.Tests.ForwardPass.csproj" />
+    <Project Path="tests/OpenTail.Stingray.Tests.Pipeline/OpenTail.Stingray.Tests.Pipeline.csproj" />
+    <Project Path="tests/OpenTail.Stingray.Tests.Server/OpenTail.Stingray.Tests.Server.csproj" />
+    <Project Path="tests/OpenTail.Stingray.Tests.Sessions/OpenTail.Stingray.Tests.Sessions.csproj" />
+    <Project Path="tests/OpenTail.Stingray.Tests.TurboQuant/OpenTail.Stingray.Tests.TurboQuant.csproj" />
+    <Project Path="tests/OpenTail.Stingray.Tests.Vision/OpenTail.Stingray.Tests.Vision.csproj" />
+  </Folder>
+</Solution>

@@ -1,0 +1,7 @@
+<Project>
+  <!-- Standalone from the main OpenTail solution's central package management:
+       this subtree pins its own PackageReference versions inline. -->
+  <PropertyGroup>
+    <ManagePackageVersionsCentrally>false</ManagePackageVersionsCentrally>
+  </PropertyGroup>
+</Project>

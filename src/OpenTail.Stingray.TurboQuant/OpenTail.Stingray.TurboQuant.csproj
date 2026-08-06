@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <Description>KV-cache compression for OpenTail.Stingray using 3-4 bit Lloyd-Max codebooks. Reduces KV-cache VRAM footprint roughly 5×.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\OpenTail.Stingray.Core\OpenTail.Stingray.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- KVarNCompressor.ForceScalar test/bench hook (AVX2-vs-scalar parity + micro-bench). -->
+    <InternalsVisibleTo Include="OpenTail.Stingray.Tests.TurboQuant" />
+    <InternalsVisibleTo Include="OpenTail.Stingray.Bench" />
+  </ItemGroup>
+
+</Project>

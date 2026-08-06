@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <IsPackable>false</IsPackable>
+
+    <!-- xunit.v3 runs on Microsoft.Testing.Platform (required by the repo-root global.json)
+         and self-hosts, so the test project builds as an executable. xunit v2 could not do
+         this: xunit.runner.visualstudio is a VSTest-only adapter and ships no MTP hook. -->
+    <OutputType>Exe</OutputType>
+
+    <!-- xUnit1051 asks every CancellationToken-accepting call to thread
+         TestContext.Current.CancellationToken. It is a responsiveness recommendation, not a
+         correctness rule, and the v2->v3 move surfaced it at ~340 existing call sites; the
+         suite is fast and not cancellation-driven, so it is suppressed rather than churned. -->
+    <NoWarn>$(NoWarn);xUnit1051</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="xunit.v3" Version="3.2.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\OpenTail.Stingray.Pipeline\OpenTail.Stingray.Pipeline.csproj" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,58 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    OpenTail.Stingray.Server is an ASP.NET Core class library: it ships
+    AddOpenTailStingray() / MapOpenTailStingray() and the request/response shapes
+    for the OpenAI, Anthropic, and Responses APIs. A separate host project
+    references it and supplies Program.cs.
+
+    Trim/AOT analyzers are explicitly disabled here (overriding the repo-wide
+    Directory.Build.props defaults). The ASP.NET Core RequestDelegate / minimal-
+    API surface is not trim-safe today, and the analyzer-driven trim path is what
+    tripped up NVRTC kernel-source preservation in the host (issue #94). The CLI
+    is the AOT-publish target for OpenTail.Stingray, not the server.
+  -->
+
+  <PropertyGroup>
+    <PackageId>OpenTail.Stingray.Server</PackageId>
+    <IsPackable>true</IsPackable>
+    <Description>ASP.NET Core endpoints, options, and DI extensions that expose OpenTail.Stingray as OpenAI- and Anthropic-compatible HTTP APIs. Bring your own host (Kestrel, IIS, YARP, etc.).</Description>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageTags>llm;inference;gguf;aspnetcore;openai-api;anthropic-api;chat-completions;ai</PackageTags>
+
+    <IsTrimmable>false</IsTrimmable>
+    <EnableTrimAnalyzer>false</EnableTrimAnalyzer>
+    <EnableAotAnalyzer>false</EnableAotAnalyzer>
+    <SuppressTrimAnalysisWarnings>true</SuppressTrimAnalysisWarnings>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="README.md" Pack="true" PackagePath="\" />
+    <None Include="..\..\THIRD_PARTY_NOTICES.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <!--
+    Engine + Cpu are referenced directly so this project compiles against their
+    public types. PrivateAssets=all keeps their DLLs OUT of OpenTail.Stingray.Server.nupkg
+    and prevents them from being declared as separate NuGet dependencies — at
+    install time they arrive bundled inside the OpenTail.Stingray meta-package.
+
+    The OpenTail.Stingray ProjectReference below is what auto-emits the
+    `<dependency id="OpenTail.Stingray" version="..."/>` entry into the nuspec
+    (since OpenTail.Stingray is IsPackable=true and package versioning stays in lockstep
+    via the release tag). The stub assembly it produces is harmless — the real DLLs ride
+    inside that package.
+  -->
+  <ItemGroup>
+    <ProjectReference Include="..\OpenTail.Stingray.Engine\OpenTail.Stingray.Engine.csproj" PrivateAssets="all" />
+    <ProjectReference Include="..\OpenTail.Stingray.Cpu\OpenTail.Stingray.Cpu.csproj" PrivateAssets="all" />
+    <!-- Vision: image-input loader path (#253). Bundled inside the OpenTail.Stingray meta-package. -->
+    <ProjectReference Include="..\OpenTail.Stingray.Vision\OpenTail.Stingray.Vision.csproj" PrivateAssets="all" />
+    <ProjectReference Include="..\OpenTail.Stingray\OpenTail.Stingray.csproj" />
+  </ItemGroup>
+
+</Project>

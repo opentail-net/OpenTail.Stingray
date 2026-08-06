@@ -1,0 +1,3826 @@
+using System.Collections.Concurrent;
+using System.Runtime.InteropServices;
+using System.Threading;
+using Vortice.Vulkan;
+using OpenTail.Stingray.Core;
+using static Vortice.Vulkan.Vulkan;
+
+namespace OpenTail.Stingray.Vulkan;
+
+/// <summary>
+/// Vulkan compute backend using Vortice.Vulkan.
+/// Selects a discrete GPU, creates a compute-only queue, and manages
+/// VRAM buffers for inference tensor operations.
+/// </summary>
+public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IDisposable
+{
+    private readonly VkInstance _instance;
+    private readonly VkInstanceApi _vki;
+    private readonly VkPhysicalDevice _physicalDevice;
+    private readonly VkDevice _device;
+    private readonly VkDeviceApi _vkd;
+    private readonly VkQueue _computeQueue;
+    private readonly uint _computeQueueFamily;
+    private readonly VkPhysicalDeviceProperties _deviceProperties;
+    private readonly VkPhysicalDeviceMemoryProperties _memoryProperties;
+    private readonly VkCommandPool _commandPool;
+    private readonly VkCommandBuffer _transferCmd; // main-thread staging transfers
+    private readonly VkFence _fence; // main-thread fence
+
+    // Separate command pool/buffer/fence for background (prefetcher) uploads.
+    // Vulkan requires all cmd buffer operations from a single thread per pool;
+    // giving the prefetcher its own pool makes concurrent uploads safe.
+    private readonly VkCommandPool _asyncPool;
+    private readonly VkCommandBuffer _asyncCmd;
+    private readonly VkFence _asyncFence;
+    private GpuBuffer? _asyncStaging;
+    private ulong _asyncStagingSize;
+    private readonly object _asyncCmdLock = new(); // serializes concurrent UploadBackground calls
+
+    // Serializes vkQueueSubmit from both main and background threads.
+    private readonly object _queueLock = new();
+
+    // Opt-in Vulkan validation layers (STINGRAY_VULKAN_VALIDATION=1). Used to turn
+    // flaky native access-violations into deterministic validation diagnostics
+    // (issue #153). Null when validation is off (the default).
+    private VkDebugUtilsMessengerEXT _debugMessenger;
+    private readonly bool _validationEnabled;
+
+    private bool _disposed;
+
+    public string Name { get; }
+    public uint ComputeQueueFamily => _computeQueueFamily;
+    public VkInstanceApi Vki => _vki;
+    public VkDeviceApi Vkd => _vkd;
+    public VkDevice Device => _device;
+    public VkQueue ComputeQueue => _computeQueue;
+    public VkCommandBuffer TransferCmd => _transferCmd;
+
+    // Batched recording mode: record multiple dispatches, submit once
+    private bool _recording;
+
+    // Deferred-free support for image-ops batch recording:
+    // Frees issued while _deferringFrees=true are held until EndBatch() completes the submit.
+    private bool _deferringFrees;
+    private readonly List<Tensor> _deferredFrees = [];
+
+    private long _recordingEpoch;
+
+    /// <summary>
+    /// Monotonically-increasing counter incremented on every <see cref="BeginRecord"/>.
+    /// <see cref="ComputePipeline.RecordWith"/> reads this to recycle its per-recording
+    /// descriptor sets when a new session starts — see the comment on RecordWith for why
+    /// per-dispatch descriptor sets are required for correctness.
+    /// </summary>
+    public long RecordingEpoch => _recordingEpoch;
+
+    /// <summary>Begin recording a batch of compute dispatches.</summary>
+    public void BeginRecord()
+    {
+        VkCommandBufferBeginInfo begin = new() { flags = VkCommandBufferUsageFlags.OneTimeSubmit };
+        _vkd.vkBeginCommandBuffer(_transferCmd, &begin).CheckResult();
+        _recording = true;
+        _recordingEpoch++;
+    }
+
+    /// <summary>Insert a compute→compute memory barrier (all writes visible to reads).</summary>
+    public void RecordBarrier()
+    {
+        VkMemoryBarrier barrier = new()
+        {
+            srcAccessMask = VkAccessFlags.ShaderWrite,
+            dstAccessMask = VkAccessFlags.ShaderRead,
+        };
+        _vkd.vkCmdPipelineBarrier(_transferCmd,
+            VkPipelineStageFlags.ComputeShader, VkPipelineStageFlags.ComputeShader,
+            0, 1, &barrier, 0, null, 0, null);
+    }
+
+    /// <summary>Insert a compute→transfer barrier (shader writes visible to transfer reads).</summary>
+    public void RecordComputeToTransferBarrier()
+    {
+        VkMemoryBarrier barrier = new()
+        {
+            srcAccessMask = VkAccessFlags.ShaderWrite,
+            dstAccessMask = VkAccessFlags.TransferRead,
+        };
+        _vkd.vkCmdPipelineBarrier(_transferCmd,
+            VkPipelineStageFlags.ComputeShader, VkPipelineStageFlags.Transfer,
+            0, 1, &barrier, 0, null, 0, null);
+    }
+
+    /// <summary>
+    /// Insert a compute→host barrier so subsequent host reads of host-visible (pinned/BAR)
+    /// memory observe the latest compute-shader writes after the next submit completes.
+    /// Fence wait alone is insufficient on some drivers; an explicit Host-stage barrier is required.
+    /// </summary>
+    public void RecordComputeToHostBarrier()
+    {
+        VkMemoryBarrier barrier = new()
+        {
+            srcAccessMask = VkAccessFlags.ShaderWrite,
+            dstAccessMask = VkAccessFlags.HostRead,
+        };
+        _vkd.vkCmdPipelineBarrier(_transferCmd,
+            VkPipelineStageFlags.ComputeShader, VkPipelineStageFlags.Host,
+            0, 1, &barrier, 0, null, 0, null);
+    }
+
+    /// <summary>
+    /// Record a GPU→staging copy into the current command buffer.
+    /// Call before <see cref="EndRecordAndSubmit"/>, then <see cref="ReadFromStaging"/>
+    /// after the fence fires — eliminates a second command-buffer submission for logits download.
+    /// </summary>
+    public void RecordDownloadToStaging(Tensor src, int floatCount)
+    {
+        var gpuBuf = GetBuffer(src);
+        ulong byteSize = (ulong)((long)floatCount * sizeof(float));
+
+        if (_downloadStaging == null || _downloadStagingSize < byteSize)
+        {
+            _downloadStaging?.Dispose();
+            _downloadStaging = GpuBuffer.CreateStaging(this, byteSize, VkBufferUsageFlags.TransferDst);
+            _downloadStagingSize = byteSize;
+        }
+
+        VkBufferCopy copyRegion = new() { size = byteSize };
+        _vkd.vkCmdCopyBuffer(_transferCmd, gpuBuf.Buffer, _downloadStaging.Buffer, 1, &copyRegion);
+    }
+
+    /// <summary>CPU map-and-copy from the staging buffer populated by <see cref="RecordDownloadToStaging"/>.</summary>
+    public void ReadFromStaging(Span<float> dst)
+    {
+        float* mapped = (float*)_downloadStaging!.Map();
+        new Span<float>(mapped, dst.Length).CopyTo(dst);
+        _downloadStaging.Unmap();
+    }
+
+    /// <summary>Insert a transfer→compute barrier (copy finished before shader reads).</summary>
+    public void RecordTransferBarrier()
+    {
+        VkMemoryBarrier barrier = new()
+        {
+            srcAccessMask = VkAccessFlags.TransferWrite,
+            dstAccessMask = VkAccessFlags.ShaderRead,
+        };
+        _vkd.vkCmdPipelineBarrier(_transferCmd,
+            VkPipelineStageFlags.Transfer, VkPipelineStageFlags.ComputeShader,
+            0, 1, &barrier, 0, null, 0, null);
+    }
+
+    /// <summary>End recording and submit all dispatches. Synchronous wait via fence.</summary>
+    public void EndRecordAndSubmit()
+    {
+        _recording = false;
+        _vkd.vkEndCommandBuffer(_transferCmd).CheckResult();
+        SubmitAndWait();
+    }
+
+    /// <summary>End recording and submit without waiting. Call <see cref="WaitForGpu"/> before reading results.</summary>
+    public void EndRecordAndSubmitAsync()
+    {
+        _recording = false;
+        _vkd.vkEndCommandBuffer(_transferCmd).CheckResult();
+        VkCommandBuffer cmd = _transferCmd;
+        VkSubmitInfo submit = new() { commandBufferCount = 1, pCommandBuffers = &cmd };
+        var fence = _fence;
+        _vkd.vkResetFences(1, &fence).CheckResult();
+        _vkd.vkQueueSubmit(_computeQueue, 1, &submit, _fence).CheckResult();
+    }
+
+    /// <summary>Wait for a previously submitted async batch to complete.</summary>
+    public void WaitForGpu()
+    {
+        var fence = _fence;
+        _vkd.vkWaitForFences(1, &fence, true, ulong.MaxValue).CheckResult();
+        FlushPendingScratchFrees();
+    }
+
+    // ── Image-ops batch recording (IImageOpsBackend) ──────────────────────
+
+    /// <summary>
+    /// Begin recording an image-ops batch. All dispatches until <see cref="EndBatch"/> are
+    /// recorded into one command buffer and submitted together.
+    /// Free() calls during the batch are deferred until EndBatch() completes the submit.
+    /// </summary>
+    public void BeginBatch()
+    {
+        _deferringFrees = true;
+        BeginRecord();
+    }
+
+    /// <summary>
+    /// Insert a compute→compute memory barrier.
+    /// Required between dependent dispatches within a batch recording.
+    /// No-op outside batch recording.
+    /// </summary>
+    public void BatchBarrier()
+    {
+        if (_recording) RecordBarrier();
+    }
+
+    /// <summary>
+    /// End the image-ops batch: submit all recorded dispatches, wait for GPU completion,
+    /// then process all deferred frees.
+    /// </summary>
+    public void EndBatch()
+    {
+        EndRecordAndSubmit();
+        _deferringFrees = false;
+        foreach (var t in _deferredFrees) Free(t);
+        _deferredFrees.Clear();
+    }
+
+    /// <summary>Submit the transfer command buffer and wait for completion via fence.</summary>
+    private void SubmitAndWait()
+    {
+        VkCommandBuffer cmd = _transferCmd;
+        VkSubmitInfo submit = new() { commandBufferCount = 1, pCommandBuffers = &cmd };
+        var fence = _fence;
+        lock (_queueLock)
+        {
+            _vkd.vkResetFences(1, &fence).CheckResult();
+            _vkd.vkQueueSubmit(_computeQueue, 1, &submit, _fence).CheckResult();
+        }
+        _vkd.vkWaitForFences(1, &fence, true, ulong.MaxValue).CheckResult();
+        FlushPendingScratchFrees();
+    }
+
+    /// <summary>Submit the async command buffer (background thread) and wait via its fence.</summary>
+    private void SubmitAndWaitAsync()
+    {
+        VkCommandBuffer cmd = _asyncCmd;
+        VkSubmitInfo submit = new() { commandBufferCount = 1, pCommandBuffers = &cmd };
+        var fence = _asyncFence;
+        lock (_queueLock)
+        {
+            _vkd.vkResetFences(1, &fence).CheckResult();
+            _vkd.vkQueueSubmit(_computeQueue, 1, &submit, _asyncFence).CheckResult();
+        }
+        _vkd.vkWaitForFences(1, &fence, true, ulong.MaxValue).CheckResult();
+    }
+
+    /// <param name="deviceIndex">
+    /// Physical-device index to select (from <c>--device</c>), or -1 to auto-select
+    /// (prefer a discrete GPU, fall back to any compute-capable device).
+    /// </param>
+    public VulkanBackend(int deviceIndex = -1)
+    {
+        // 1. Initialize Vulkan loader
+        vkInitialize().CheckResult();
+
+        // Opt-in validation layers (issue #153): when STINGRAY_VULKAN_VALIDATION=1 we
+        // enable the Khronos validation layer + VK_EXT_debug_utils so invalid buffer/
+        // descriptor/pipeline usage is reported deterministically (even on runs that
+        // don't crash). Default (env unset/0) keeps the instance exactly as before —
+        // no extra layers, no debug-utils, zero validation overhead.
+        var validationEnv = Environment.GetEnvironmentVariable("STINGRAY_VULKAN_VALIDATION");
+        _validationEnabled =
+            validationEnv is "1" || string.Equals(validationEnv, "true", StringComparison.OrdinalIgnoreCase);
+
+        // 2. Create instance (Vulkan 1.3+)
+        VkApplicationInfo appInfo = new()
+        {
+            apiVersion = VkVersion.Version_1_3, // Vortice may not have 1.4 constant yet
+        };
+
+        // A messenger create-info chained into pNext also catches validation errors
+        // raised *during* vkCreateInstance/vkDestroyInstance themselves.
+        VkDebugUtilsMessengerCreateInfoEXT dbgCI = MakeDebugMessengerCreateInfo();
+
+        // Validation-layer name + debug-utils extension name (null-terminated UTF-8 literals
+        // → no heap allocation; only consumed when validation is enabled).
+        fixed (byte* pValidationLayer = "VK_LAYER_KHRONOS_validation\0"u8)
+        fixed (byte* pDebugUtilsExt   = "VK_EXT_debug_utils\0"u8)
+        {
+            byte** layerPtrs = stackalloc byte*[1];
+            byte** instExtPtrs = stackalloc byte*[1];
+            layerPtrs[0] = pValidationLayer;
+            instExtPtrs[0] = pDebugUtilsExt;
+
+            VkInstanceCreateInfo instanceCI = new()
+            {
+                pApplicationInfo = &appInfo,
+                pNext = _validationEnabled ? &dbgCI : null,
+                enabledLayerCount = _validationEnabled ? 1u : 0u,
+                ppEnabledLayerNames = _validationEnabled ? layerPtrs : null,
+                enabledExtensionCount = _validationEnabled ? 1u : 0u,
+                ppEnabledExtensionNames = _validationEnabled ? instExtPtrs : null,
+            };
+            vkCreateInstance(in instanceCI, out _instance).CheckResult();
+        }
+        _vki = new VkInstanceApi(in _instance);
+
+        // Register the standalone debug messenger now that we have an instance + loaded
+        // instance-extension entry points. Errors/warnings go to Console.Error.
+        if (_validationEnabled)
+        {
+            VkDebugUtilsMessengerEXT messenger;
+            var res = _vki.vkCreateDebugUtilsMessengerEXT(&dbgCI, &messenger);
+            if (res == VkResult.Success)
+            {
+                _debugMessenger = messenger;
+                Console.Error.WriteLine("[VK-VALIDATION] Vulkan validation layers ENABLED (STINGRAY_VULKAN_VALIDATION=1)");
+            }
+            else
+            {
+                Console.Error.WriteLine($"[VK-VALIDATION] WARNING: vkCreateDebugUtilsMessengerEXT failed ({res}); " +
+                    "validation messages from pNext-chained create/destroy still fire, standalone messenger disabled.");
+            }
+        }
+
+        // 3. Select physical device (prefer discrete GPU)
+        _physicalDevice = SelectPhysicalDevice(deviceIndex);
+        _vki.vkGetPhysicalDeviceProperties(_physicalDevice, out _deviceProperties);
+        VkPhysicalDeviceMemoryProperties memProps;
+        _vki.vkGetPhysicalDeviceMemoryProperties(_physicalDevice, &memProps);
+        _memoryProperties = memProps;
+
+        fixed (byte* namePtr = _deviceProperties.deviceName)
+            Name = $"Vulkan GPU ({new string((sbyte*)namePtr)})";
+
+        // 4. Find best compute queue family (prefer dedicated compute over shared graphics+compute)
+        _computeQueueFamily = FindComputeQueueFamily();
+
+        // 5. Detect supported device extensions (must happen before device creation to enable them)
+        uint extCount = 0;
+        _vki.vkEnumerateDeviceExtensionProperties(_physicalDevice, null, &extCount, null);
+        var exts = new VkExtensionProperties[extCount];
+        fixed (VkExtensionProperties* p = exts)
+            _vki.vkEnumerateDeviceExtensionProperties(_physicalDevice, null, &extCount, p);
+        var extNames = new HashSet<string>();
+        for (int i = 0; i < (int)extCount; i++)
+        {
+            fixed (byte* namePtr = exts[i].extensionName)
+                extNames.Add(new string((sbyte*)namePtr));
+        }
+
+        bool hasFloat16Int8   = extNames.Contains("VK_KHR_shader_float16_int8");
+        bool has16BitStorage  = extNames.Contains("VK_KHR_16bit_storage");
+        bool has8BitStorage   = extNames.Contains("VK_KHR_8bit_storage");
+        bool hasIntDot        = extNames.Contains("VK_KHR_shader_integer_dot_product");
+        bool hasBfloat16      = extNames.Contains("VK_KHR_shader_bfloat16");
+        bool hasFloat8        = extNames.Contains("VK_EXT_shader_float8");
+        HasShaderFloat16Int8    = hasFloat16Int8;
+        Has16BitStorage         = has16BitStorage;
+        Has8BitStorage          = has8BitStorage;
+        HasShaderIntegerDotProduct = hasIntDot;
+        HasCooperativeMatrix    = extNames.Contains("VK_KHR_cooperative_matrix");
+        HasSubgroupSizeControl  = extNames.Contains("VK_EXT_subgroup_size_control");
+        HasShaderBfloat16       = hasBfloat16;
+        HasShaderFloat8         = hasFloat8;
+        bool hasSubgroupSizeControl = HasSubgroupSizeControl;
+
+        // 5b. Query the supported subgroup-size range (issue #318). The reduction shaders pack
+        // "8 rows × 32 lanes" per workgroup and assume the subgroup is exactly 32 wide; on AMD
+        // Wave64 a subgroup would span two row groups and corrupt subgroupAdd/subgroupElect.
+        // We pin requiredSubgroupSize=32 at pipeline creation (ComputePipeline) when the device
+        // could pick a non-32 subgroup (see ComputePipeline.ShouldPinSubgroupSize32). If the
+        // extension is absent these stay 0 → pinning disabled.
+        if (hasSubgroupSizeControl)
+        {
+            VkPhysicalDeviceSubgroupSizeControlProperties sgProps = new();
+            VkPhysicalDeviceProperties2 props2 = new()
+            {
+                pNext = &sgProps,
+            };
+            _vki.vkGetPhysicalDeviceProperties2(_physicalDevice, &props2);
+            MinSubgroupSize = sgProps.minSubgroupSize;
+            MaxSubgroupSize = sgProps.maxSubgroupSize;
+        }
+
+        // 6. Create logical device with one compute queue, enabling detected extensions
+        float queuePriority = 1.0f;
+        VkDeviceQueueCreateInfo queueCI = new()
+        {
+            queueFamilyIndex = _computeQueueFamily,
+            queueCount = 1,
+            pQueuePriorities = &queuePriority,
+        };
+
+        // Build null-terminated UTF-8 extension name arrays
+        byte[] f16Int8NameBytes  = System.Text.Encoding.UTF8.GetBytes("VK_KHR_shader_float16_int8\0");
+        byte[] storage16NameBytes = System.Text.Encoding.UTF8.GetBytes("VK_KHR_16bit_storage\0");
+        byte[] storage8NameBytes  = System.Text.Encoding.UTF8.GetBytes("VK_KHR_8bit_storage\0");
+        byte[] intDotNameBytes    = System.Text.Encoding.UTF8.GetBytes("VK_KHR_shader_integer_dot_product\0");
+        byte[] bf16NameBytes      = System.Text.Encoding.UTF8.GetBytes("VK_KHR_shader_bfloat16\0");
+        byte[] fp8NameBytes       = System.Text.Encoding.UTF8.GetBytes("VK_EXT_shader_float8\0");
+        byte[] sgSizeNameBytes    = System.Text.Encoding.UTF8.GetBytes("VK_EXT_subgroup_size_control\0");
+
+        int enabledExtCount = (hasFloat16Int8 ? 1 : 0) + (has16BitStorage ? 1 : 0)
+                            + (has8BitStorage ? 1 : 0) + (hasIntDot ? 1 : 0)
+                            + (hasBfloat16 ? 1 : 0) + (hasFloat8 ? 1 : 0)
+                            + (hasSubgroupSizeControl ? 1 : 0);
+        int extIdx = 0;
+
+        fixed (byte* pF16Int8   = f16Int8NameBytes,
+                     pStorage16 = storage16NameBytes,
+                     pStorage8  = storage8NameBytes,
+                     pIntDot    = intDotNameBytes,
+                     pBf16      = bf16NameBytes,
+                     pFp8       = fp8NameBytes,
+                     pSgSize    = sgSizeNameBytes)
+        {
+            byte** extPtrs = stackalloc byte*[enabledExtCount > 0 ? enabledExtCount : 1];
+            if (hasFloat16Int8)  extPtrs[extIdx++] = pF16Int8;
+            if (has16BitStorage) extPtrs[extIdx++] = pStorage16;
+            if (has8BitStorage)  extPtrs[extIdx++] = pStorage8;
+            if (hasIntDot)       extPtrs[extIdx++] = pIntDot;
+            if (hasBfloat16)     extPtrs[extIdx++] = pBf16;
+            if (hasFloat8)       extPtrs[extIdx++] = pFp8;
+            if (hasSubgroupSizeControl) extPtrs[extIdx++] = pSgSize;
+
+            // Build pNext feature chain (back to front so earlier structs point to later ones)
+            VkPhysicalDevice8BitStorageFeatures storage8Features = new()
+            {
+                storageBuffer8BitAccess = VkBool32.True,
+            };
+            VkPhysicalDevice16BitStorageFeatures storage16Features = new()
+            {
+                storageBuffer16BitAccess = VkBool32.True,
+                pNext = has8BitStorage ? &storage8Features : null,
+            };
+            VkPhysicalDeviceShaderFloat16Int8Features f16Features = new()
+            {
+                shaderFloat16 = VkBool32.True,
+                shaderInt8    = VkBool32.True,
+                pNext = has16BitStorage ? &storage16Features : (has8BitStorage ? &storage8Features : null),
+            };
+
+            void* baseChain =
+                hasFloat16Int8  ? (void*)&f16Features :
+                has16BitStorage ? (void*)&storage16Features :
+                has8BitStorage  ? (void*)&storage8Features :
+                null;
+
+            // Prepend fp8 and bf16 feature structs to the chain
+            VkPhysicalDeviceShaderFloat8FeaturesEXT fp8Features = new()
+            {
+                shaderFloat8 = VkBool32.True,
+                pNext = baseChain,
+            };
+            VkPhysicalDeviceShaderBfloat16FeaturesKHR bf16Features = new()
+            {
+                shaderBFloat16Type = VkBool32.True,
+                pNext = hasFloat8 ? (void*)&fp8Features : baseChain,
+            };
+
+            void* featureChain =
+                hasBfloat16 ? (void*)&bf16Features :
+                hasFloat8   ? (void*)&fp8Features :
+                baseChain;
+
+            // Prepend the subgroup-size-control feature (issue #318). We only enable
+            // subgroupSizeControl; computeFullSubgroups is unnecessary because every pinned
+            // shader has local_size_x a multiple of 32 (so the workgroup already fills whole
+            // subgroups). The actual requiredSubgroupSize=32 is set per pipeline stage.
+            VkPhysicalDeviceSubgroupSizeControlFeatures sgSizeFeatures = new()
+            {
+                subgroupSizeControl = VkBool32.True,
+                pNext = featureChain,
+            };
+
+            void* pNextChain =
+                hasSubgroupSizeControl ? (void*)&sgSizeFeatures :
+                featureChain;
+
+            // Prepend the integer-dot-product feature (issue #308 int8-DP4A batched matvec). The
+            // dotPacked4x8AccSatEXT intrinsic emits OpSDotAccSat, which the Vulkan spec requires
+            // shaderIntegerDotProduct to be ENABLED for (VUID-RuntimeSpirv-shaderIntegerDotProduct-
+            // 06279) — enabling the extension alone is insufficient. NVIDIA tolerates it, but strict
+            // drivers reject the pipeline and validation layers flag every dispatch without this.
+            VkPhysicalDeviceShaderIntegerDotProductFeatures intDotFeatures = new()
+            {
+                shaderIntegerDotProduct = VkBool32.True,
+                pNext = pNextChain,
+            };
+
+            void* finalChain = hasIntDot ? (void*)&intDotFeatures : pNextChain;
+
+            VkDeviceCreateInfo deviceCI = new()
+            {
+                pNext = finalChain,
+                queueCreateInfoCount = 1,
+                pQueueCreateInfos = &queueCI,
+                enabledExtensionCount = (uint)enabledExtCount,
+                ppEnabledExtensionNames = enabledExtCount > 0 ? extPtrs : null,
+            };
+            _vki.vkCreateDevice(_physicalDevice, in deviceCI, out _device).CheckResult();
+        }
+        _vkd = new VkDeviceApi(_vki, in _device);
+
+        // 7. Get the compute queue handle
+        VkQueue queue;
+        _vkd.vkGetDeviceQueue(_computeQueueFamily, 0, &queue);
+        _computeQueue = queue;
+
+        // 8. Create command pool + one reusable command buffer for transfers
+        VkCommandPoolCreateInfo poolCI = new()
+        {
+            flags = VkCommandPoolCreateFlags.ResetCommandBuffer,
+            queueFamilyIndex = _computeQueueFamily,
+        };
+        VkCommandPool pool;
+        _vkd.vkCreateCommandPool(&poolCI, null, &pool).CheckResult();
+        _commandPool = pool;
+
+        VkCommandBufferAllocateInfo cmdAllocInfo = new()
+        {
+            commandPool = _commandPool,
+            level = VkCommandBufferLevel.Primary,
+            commandBufferCount = 1,
+        };
+        VkCommandBuffer cmd;
+        _vkd.vkAllocateCommandBuffers(&cmdAllocInfo, &cmd).CheckResult();
+        _transferCmd = cmd;
+
+        // 9. Create reusable fence for submission synchronization
+        VkFenceCreateInfo fenceCI = new();
+        VkFence fence;
+        _vkd.vkCreateFence(&fenceCI, null, &fence).CheckResult();
+        _fence = fence;
+
+        // 10. Create a separate command pool + buffer + fence for background (prefetcher) uploads.
+        VkCommandPoolCreateInfo asyncPoolCI = new()
+        {
+            flags = VkCommandPoolCreateFlags.ResetCommandBuffer,
+            queueFamilyIndex = _computeQueueFamily,
+        };
+        VkCommandPool asyncPool;
+        _vkd.vkCreateCommandPool(&asyncPoolCI, null, &asyncPool).CheckResult();
+        _asyncPool = asyncPool;
+
+        VkCommandBufferAllocateInfo asyncCmdAllocInfo = new()
+        {
+            commandPool = _asyncPool,
+            level = VkCommandBufferLevel.Primary,
+            commandBufferCount = 1,
+        };
+        VkCommandBuffer asyncCmd;
+        _vkd.vkAllocateCommandBuffers(&asyncCmdAllocInfo, &asyncCmd).CheckResult();
+        _asyncCmd = asyncCmd;
+
+        VkFenceCreateInfo asyncFenceCI = new();
+        VkFence asyncFence;
+        _vkd.vkCreateFence(&asyncFenceCI, null, &asyncFence).CheckResult();
+        _asyncFence = asyncFence;
+
+        // 11. Decide once, here, whether the Q4_K int8 matvec may use the dotPacked4x8AccSatEXT
+        // intrinsic on this device (task #6). Done eagerly rather than on first use because the
+        // probe runs real dispatches, and the first MatMulBatched may well arrive inside a
+        // GpuForwardPass recording session — where issuing extra work would be unsafe.
+        _dp4aIntrinsicUsable = DecideDp4aUsable();
+    }
+
+    // Capability flags detected at init (before device creation)
+    public bool Has8BitStorage { get; private set; }
+    public bool Has16BitStorage { get; private set; }
+    public bool HasShaderFloat16Int8 { get; private set; }
+    public bool HasCooperativeMatrix { get; private set; }
+    public bool HasSubgroupSizeControl { get; private set; }
+    public bool HasShaderIntegerDotProduct { get; private set; }
+    public bool HasShaderBfloat16 { get; private set; }
+    public bool HasShaderFloat8 { get; private set; }
+
+    // Subgroup-size range reported by VK_EXT_subgroup_size_control (issue #318).
+    // 0 when the extension is absent (subgroup-size pinning then stays disabled).
+    public uint MinSubgroupSize { get; private set; }
+    public uint MaxSubgroupSize { get; private set; }
+
+    private bool? _dp4aIntrinsicUsable;
+
+    /// <summary>
+    /// Drop the cached Q4_K int8 matvec pipeline so the next call rebuilds it from whichever
+    /// <c>dot4x8u</c> variant <see cref="Dp4aIntrinsicUsable"/> currently selects. Test-only:
+    /// it exists so one process can measure both variants back to back on the same device, which
+    /// is the only way to tell a driver fault apart from ordinary int8 quantization noise.
+    /// Not safe mid-recording — call it between recording sessions.
+    /// </summary>
+    internal void ResetQ4KInt8PipelineForTesting()
+    {
+        _matVecBatchedQ4KInt8Pipeline?.Dispose();
+        _matVecBatchedQ4KInt8Pipeline = null;
+    }
+
+    /// <summary>
+    /// Whether the <c>dotPacked4x8AccSatEXT</c> intrinsic may be used for the Q4_K int8 matvec on
+    /// THIS device, instead of the hand-written <c>dot4x8u</c> fallback (perf-loop task #6).
+    ///
+    /// <para>The workaround was previously unconditional, on the conclusion that the intrinsic is
+    /// "unusable on this driver". Probing it (<see cref="Shaders.IntegerDotProbe"/>) showed that
+    /// verdict was too broad: on the AMD Vega reference part the fault is deterministic, always
+    /// returns <c>-1</c>, and <b>requires a sign-extended (high-bit-set) weight byte</b>. The Q4_K
+    /// kernel's weight operands are 4-bit nibbles and the <c>0x01010101</c> ones vector, so they can
+    /// never trigger it — 8192/8192 probe samples across both call sites were exact.</para>
+    ///
+    /// <para>So the gate is a real probe over the operand population this kernel actually produces,
+    /// not a vendor/driver allow-list. Devices that fault get the manual dot; devices that don't get
+    /// the intrinsic. Set <c>STINGRAY_VULKAN_DP4A=0</c> to force the manual path, or <c>1</c> to
+    /// force the intrinsic (measurement / bisection escape hatch).</para>
+    /// </summary>
+    internal bool Dp4aIntrinsicUsable
+    {
+        get => _dp4aIntrinsicUsable ?? false;
+        // Test-only override so the two shader variants can be compared on one device without
+        // restarting the process. Clearing the cached pipeline is the caller's job — see
+        // ResetQ4KInt8PipelineForTesting.
+        set => _dp4aIntrinsicUsable = value;
+    }
+
+    /// <summary>
+    /// Decide whether the intrinsic variant of the Q4_K int8 matvec may be used, by RUNNING BOTH
+    /// VARIANTS on a tiny synthetic problem and requiring them to agree exactly.
+    ///
+    /// <para><b>Why it has to be the real kernel.</b> The obvious cheap gate — dispatch the
+    /// intrinsic on representative operands and check the arithmetic — was built first and
+    /// measured, and it does not work. On the AMD Vega reference part the isolated intrinsic is
+    /// exact for 8192/8192 samples drawn from this kernel's own operand population (4-bit nibbles
+    /// and the <c>0x01010101</c> ones vector; its fault needs a sign-extended weight byte, which
+    /// this kernel can never produce) — yet the same intrinsic inside the full kernel yields
+    /// 1.3-4.2% relative error against the FP path. The corruption is a property of the compiled
+    /// kernel, not of the operands, so no amount of operand sampling can detect it.</para>
+    ///
+    /// <para><b>Why it can be tiny.</b> The fault was measured across shapes from 8×256 up to
+    /// 8192×2048 and reproduces at every one of them, including a single workgroup over a single
+    /// 256-element super-block. So a probe costing one dispatch pair on 1,152 bytes of weights is
+    /// as sensitive as one at full trunk size.</para>
+    ///
+    /// <para><b>Why exact equality is the right threshold.</b> Both variants compute the same
+    /// integer dot and then apply an identical float expression, so on hardware where the intrinsic
+    /// is correct they are bit-identical. Demanding equality avoids inventing a tolerance that
+    /// would have to separate int8 quantization noise from driver corruption — the ambiguity that
+    /// let the original bug through an absolute-tolerance test in the first place.</para>
+    ///
+    /// <para>Fail-safe in every direction: no extension, a probe mismatch, or any exception all
+    /// yield the hand-written path. <c>STINGRAY_VULKAN_DP4A=0</c> forces it off,
+    /// <c>=1</c> forces it on (bisection escape hatch — skips the probe entirely).</para>
+    /// </summary>
+    private bool DecideDp4aUsable()
+    {
+        string? forced = Environment.GetEnvironmentVariable("STINGRAY_VULKAN_DP4A");
+        if (forced == "0") return false;
+        if (forced == "1") return HasShaderIntegerDotProduct;
+        if (!HasShaderIntegerDotProduct) return false;
+
+        const int rows = 8, cols = 256, nTok = 4;   // one workgroup, one super-block per row
+        Tensor? w = null, inp = null, outp = null;
+        try
+        {
+            // Synthetic Q4_K: one 144-byte block per row. Fixed d/dmin so the probe is
+            // deterministic, and full-range packed bytes so scales, mins and every nibble
+            // position are exercised.
+            var bytes = new byte[rows * 144];
+            var rng = new Random(0x51A7);
+            for (int off = 0; off < bytes.Length; off += 144)
+            {
+                BitConverter.TryWriteBytes(bytes.AsSpan(off, 2), BitConverter.HalfToUInt16Bits((Half)0.0312f));
+                BitConverter.TryWriteBytes(bytes.AsSpan(off + 2, 2), BitConverter.HalfToUInt16Bits((Half)0.0015f));
+                for (int j = 4; j < 144; j++) bytes[off + j] = (byte)rng.Next(0, 256);
+            }
+            var asFloats = new float[bytes.Length / 4];
+            bytes.CopyTo(MemoryMarshal.AsBytes(asFloats.AsSpan()));
+
+            var input = new float[nTok * cols];
+            for (int i = 0; i < input.Length; i++) input[i] = (float)(rng.NextDouble() * 2 - 1);
+
+            w = Upload(asFloats, new TensorShape([asFloats.Length]));
+            inp = Upload(input, new TensorShape([nTok * cols]));
+            outp = Allocate(new TensorShape([nTok * rows]));
+
+            var manual = new float[nTok * rows];
+            var intrinsic = new float[nTok * rows];
+
+            _dp4aIntrinsicUsable = false;
+            ResetQ4KInt8PipelineForTesting();
+            MatMulBatched(outp, w, inp, nTok, DType.Q4_K);
+            Download(outp, manual);
+
+            _dp4aIntrinsicUsable = true;
+            ResetQ4KInt8PipelineForTesting();
+            MatMulBatched(outp, w, inp, nTok, DType.Q4_K);
+            Download(outp, intrinsic);
+
+            for (int i = 0; i < manual.Length; i++)
+                if (manual[i] != intrinsic[i])
+                    return false;
+
+            // Guard against a degenerate probe silently passing: if the int8 path bailed to the FP
+            // fallback (which would set HasShaderIntegerDotProduct false), or every output came out
+            // zero, the comparison proved nothing.
+            if (!HasShaderIntegerDotProduct) return false;
+            bool allZero = true;
+            for (int i = 0; i < manual.Length && allZero; i++) allZero = manual[i] == 0f;
+            return !allZero;
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+        finally
+        {
+            _dp4aIntrinsicUsable = null;   // the caller assigns the decision
+            ResetQ4KInt8PipelineForTesting();
+            if (outp is not null) Free(outp);
+            if (inp is not null) Free(inp);
+            if (w is not null) Free(w);
+        }
+    }
+
+    /// <summary>
+    /// Dispatch <see cref="Shaders.IntegerDotProbe"/> over <paramref name="operands"/> (packed
+    /// weight/activation uint pairs) and return the raw <c>dotPacked4x8AccSatEXT</c> results
+    /// (perf-loop task #6).
+    ///
+    /// <para>Diagnostic only — it deliberately reports what the device produced rather than a
+    /// pass/fail verdict, because the question it was written to answer is whether an isolated
+    /// probe can see the fault that corrupts the real int8 matvec kernels on this driver. Returns
+    /// <c>null</c> when the device does not advertise integer dot product at all.</para>
+    /// </summary>
+    internal float[]? ProbeIntegerDotRaw(ReadOnlySpan<uint> operands)
+    {
+        if (!HasShaderIntegerDotProduct) return null;
+        if (operands.Length == 0 || operands.Length % 2 != 0)
+            throw new ArgumentException("operands must be a non-empty sequence of (weight, activation) pairs.",
+                nameof(operands));
+
+        int count = operands.Length / 2;
+        var opBytes = MemoryMarshal.AsBytes(operands);
+
+        using var pipe = new ComputePipeline(this, Shaders.IntegerDotProbe, 2, pushConstantSize: sizeof(uint));
+        var opBuf = UploadRaw(opBytes, new TensorShape([operands.Length]), DType.Float32);
+        var outBuf = Allocate(new TensorShape([count]));
+        try
+        {
+            uint n = (uint)count;
+            pipe.DispatchWith(_transferCmd, [GetBuffer(opBuf), GetBuffer(outBuf)], (n + 63u) / 64u,
+                pushConstants: &n);
+            var results = new float[count];
+            Download(outBuf, results);
+            return results;
+        }
+        finally
+        {
+            Free(outBuf);
+            Free(opBuf);
+        }
+    }
+
+    public SgemmPrecision BestSgemmPrecision =>
+        HasShaderFloat16Int8 && Has16BitStorage ? SgemmPrecision.Fp16 :
+        SgemmPrecision.Fp32;
+
+    public bool SupportsGpuDequant => HasShaderFloat16Int8 && Has16BitStorage;
+
+    public void PrintDeviceInfo()
+    {
+        Console.WriteLine($"Device: {Name}");
+        Console.WriteLine($"  API: {_deviceProperties.apiVersion}");
+        Console.WriteLine($"  Compute queue family: {_computeQueueFamily}");
+        for (int i = 0; i < (int)_memoryProperties.memoryHeapCount; i++)
+        {
+            var heap = _memoryProperties.memoryHeaps[i];
+            var flags = (heap.flags & VkMemoryHeapFlags.DeviceLocal) != 0 ? "VRAM" : "RAM";
+            Console.WriteLine($"  Heap {i}: {heap.size / 1024 / 1024}MB ({flags})");
+        }
+        Console.WriteLine(IsIntegratedGpu
+            ? $"  Placement budget: {VramBytes / 1024 / 1024}MB (integrated GPU — {UmaHeapFraction:P0} of the shared heap)"
+            : $"  Placement budget: {VramBytes / 1024 / 1024}MB (device-local)");
+
+        var found = new List<string>();
+        if (Has8BitStorage) found.Add("8bit_storage");
+        if (Has16BitStorage) found.Add("16bit_storage");
+        if (HasShaderFloat16Int8) found.Add("float16_int8");
+        if (HasCooperativeMatrix) found.Add("cooperative_matrix");
+        if (HasSubgroupSizeControl) found.Add("subgroup_size_control");
+        if (HasShaderIntegerDotProduct) found.Add("integer_dot_product");
+        if (HasShaderBfloat16) found.Add("bfloat16");
+        if (HasShaderFloat8) found.Add("float8_e4m3");
+        if (found.Count > 0)
+            Console.WriteLine($"  Compute extensions: {string.Join(", ", found)}");
+        Console.WriteLine($"  Best SGEMM precision: {BestSgemmPrecision}");
+    }
+
+    /// <summary>
+    /// True when the device reports <see cref="VkPhysicalDeviceType.IntegratedGpu"/>, i.e. it has
+    /// no private VRAM and shares the system memory pool with the CPU. Changes how
+    /// <see cref="VramBytes"/> is derived — see there.
+    /// </summary>
+    public bool IsIntegratedGpu => _deviceProperties.deviceType == VkPhysicalDeviceType.IntegratedGpu;
+
+    /// <summary>
+    /// Fraction of an integrated GPU's shared heap offered as a placement budget. The heap is
+    /// physical system RAM the CPU is simultaneously using (weights are memory-mapped host-side,
+    /// and the CPU fallback paths allocate from the same pool), so claiming all of it would
+    /// double-count. Override with <c>STINGRAY_VULKAN_UMA_FRACTION</c> (0.05–1.0) to push
+    /// harder on a box dedicated to inference.
+    /// </summary>
+    private static double UmaHeapFraction
+    {
+        get
+        {
+            var raw = Environment.GetEnvironmentVariable("STINGRAY_VULKAN_UMA_FRACTION");
+            return double.TryParse(raw, System.Globalization.NumberStyles.Float,
+                       System.Globalization.CultureInfo.InvariantCulture, out var f)
+                   && f is >= 0.05 and <= 1.0
+                ? f
+                : 0.5;
+        }
+    }
+
+    /// <summary>
+    /// Memory budget in bytes usable for weight/KV placement.
+    ///
+    /// <para>On a discrete GPU this is the sum of the DEVICE_LOCAL heaps — the card's own VRAM.
+    /// Host-visible system-RAM heaps are deliberately excluded: they sit across PCIe and are not
+    /// VRAM in any useful sense.</para>
+    ///
+    /// <para>On an <b>integrated</b> GPU that rule reports near-zero and silently forces a CPU
+    /// fallback. Such devices expose one or two small DEVICE_LOCAL carve-outs (a firmware-reserved
+    /// aperture, typically 256 MB) alongside the large host-visible heap that is the real
+    /// allocatable pool — e.g. this codebase's AMD Radeon reference iGPU reports heaps of
+    /// 256 MB (DEVICE_LOCAL), 31.4 GiB (host-visible), 256 MB (DEVICE_LOCAL). Summing only the
+    /// device-local heaps yields 512 MB, which <c>TierPlanner.ReservedVramBytes</c> then withholds
+    /// in full (its floor is 512 MB), leaving a budget of exactly zero and dropping every model —
+    /// however small — onto the CPU. So for integrated devices the largest host-visible heap is
+    /// used instead, scaled by <see cref="UmaHeapFraction"/> because the CPU shares that same
+    /// physical memory.</para>
+    /// </summary>
+    public ulong VramBytes
+    {
+        get
+        {
+            ulong deviceLocal = 0, largestHostVisible = 0;
+            for (int i = 0; i < (int)_memoryProperties.memoryHeapCount; i++)
+            {
+                var heap = _memoryProperties.memoryHeaps[i];
+                if ((heap.flags & VkMemoryHeapFlags.DeviceLocal) != 0)
+                    deviceLocal += heap.size;
+                else if (heap.size > largestHostVisible)
+                    largestHostVisible = heap.size;
+            }
+
+            if (!IsIntegratedGpu) return deviceLocal;
+
+            // Unified memory: prefer the shared heap when it is genuinely the larger pool, so a
+            // device that really does expose all its memory as DEVICE_LOCAL keeps that value.
+            ulong shared = (ulong)(largestHostVisible * UmaHeapFraction);
+            return Math.Max(deviceLocal, shared);
+        }
+    }
+
+    /// <summary>Find the memory type index matching the requested flags.</summary>
+    public uint FindMemoryType(uint typeFilter, VkMemoryPropertyFlags properties)
+    {
+        for (int i = 0; i < (int)_memoryProperties.memoryTypeCount; i++)
+        {
+            if ((typeFilter & (1u << i)) != 0 &&
+                (_memoryProperties.memoryTypes[i].propertyFlags & properties) == properties)
+                return (uint)i;
+        }
+        throw new InvalidOperationException($"No memory type found for filter={typeFilter}, properties={properties}");
+    }
+
+    // ================================================================
+    //  Physical device selection
+    // ================================================================
+
+    private VkPhysicalDevice SelectPhysicalDevice(int deviceIndex)
+    {
+        uint count = 0;
+        _vki.vkEnumeratePhysicalDevices(&count, null);
+        if (count == 0) throw new InvalidOperationException("No Vulkan-capable GPU found");
+
+        var devices = new VkPhysicalDevice[count];
+        fixed (VkPhysicalDevice* p = devices)
+            _vki.vkEnumeratePhysicalDevices(&count, p);
+
+        // Explicit device requested via --device: honor it exactly (no discrete-GPU fallback).
+        if (deviceIndex >= 0)
+        {
+            if (deviceIndex >= (int)count)
+                throw new InvalidOperationException(
+                    $"--device {deviceIndex}: only {count} Vulkan device(s) present (valid indices 0..{count - 1}).");
+            var chosen = devices[deviceIndex];
+            if (!HasComputeQueue(chosen))
+                throw new InvalidOperationException(
+                    $"--device {deviceIndex}: the selected Vulkan device has no compute queue.");
+            return chosen;
+        }
+
+        // Prefer discrete GPU, fall back to any compute-capable device
+        VkPhysicalDevice fallback = default;
+        foreach (var gpu in devices)
+        {
+            var props = _vki.vkGetPhysicalDeviceProperties(gpu);
+            if (props.deviceType == VkPhysicalDeviceType.DiscreteGpu)
+                return gpu;
+            if (fallback.IsNull && HasComputeQueue(gpu))
+                fallback = gpu;
+        }
+        return fallback.IsNull
+            ? throw new InvalidOperationException("No compute-capable GPU found")
+            : fallback;
+    }
+
+    private bool HasComputeQueue(VkPhysicalDevice gpu)
+    {
+        uint count = 0;
+        _vki.vkGetPhysicalDeviceQueueFamilyProperties(gpu, &count, null);
+        var families = new VkQueueFamilyProperties[count];
+        fixed (VkQueueFamilyProperties* p = families)
+            _vki.vkGetPhysicalDeviceQueueFamilyProperties(gpu, &count, p);
+        return families.Any(f => (f.queueFlags & VkQueueFlags.Compute) != 0);
+    }
+
+    private uint FindComputeQueueFamily()
+    {
+        uint count = 0;
+        _vki.vkGetPhysicalDeviceQueueFamilyProperties(_physicalDevice, &count, null);
+        var families = new VkQueueFamilyProperties[count];
+        fixed (VkQueueFamilyProperties* p = families)
+            _vki.vkGetPhysicalDeviceQueueFamilyProperties(_physicalDevice, &count, p);
+
+        // Prefer dedicated compute queue (no graphics bit) for async compute
+        uint dedicated = uint.MaxValue;
+        uint shared = uint.MaxValue;
+        for (uint i = 0; i < count; i++)
+        {
+            if ((families[i].queueFlags & VkQueueFlags.Compute) == 0) continue;
+            if ((families[i].queueFlags & VkQueueFlags.Graphics) == 0)
+                dedicated = i;  // Pure compute queue — best for async dispatch
+            else if (shared == uint.MaxValue)
+                shared = i;
+        }
+        return dedicated != uint.MaxValue ? dedicated : shared != uint.MaxValue ? shared
+            : throw new InvalidOperationException("No compute queue family found");
+    }
+
+    // ================================================================
+    //  Buffer tracking: Tensor.Handle → GpuBuffer
+    // ================================================================
+
+    private readonly ConcurrentDictionary<nint, GpuBuffer> _buffers = new();
+    private long _nextHandle = 1;
+
+    public GpuBuffer GetBuffer(Tensor tensor) =>
+        _buffers.TryGetValue(tensor.Handle, out var buf)
+            ? buf
+            : throw new InvalidOperationException($"Tensor handle {tensor.Handle} not found");
+
+    public GpuBuffer GetBuffer(nint handle) =>
+        _buffers.TryGetValue(handle, out var buf)
+            ? buf
+            : throw new InvalidOperationException($"Handle {handle} not found");
+
+    // ================================================================
+    //  IComputeBackend — Memory management
+    // ================================================================
+
+    public Tensor Allocate(TensorShape shape, DType dtype = DType.Float32, bool exact = false)
+    {
+        // Vulkan path doesn't pool/round; the exact hint is a no-op here.
+        _ = exact;
+        ulong byteSize = (ulong)(shape.ElementCount * DTypeInfo.BytesPerElement(dtype));
+        var gpuBuf = GpuBuffer.CreateDeviceLocal(this, byteSize,
+            VkBufferUsageFlags.StorageBuffer | VkBufferUsageFlags.TransferSrc | VkBufferUsageFlags.TransferDst);
+
+        var handle = (nint)Interlocked.Increment(ref _nextHandle);
+        _buffers[handle] = gpuBuf;
+        return new Tensor(shape, dtype, handle);
+    }
+
+    public void Free(Tensor tensor)
+    {
+        if (_deferringFrees) { _deferredFrees.Add(tensor); return; }
+        if (_buffers.TryRemove(tensor.Handle, out var buf))
+            buf.Dispose();
+    }
+
+    /// <summary>
+    /// Allocate a pinned host-visible buffer accessible from both CPU and GPU.
+    /// The buffer can be mapped for CPU read/write and used as a GPU storage buffer.
+    /// Ideal for small, frequently-transferred data like hidden states.
+    /// </summary>
+    public Tensor AllocatePinned(TensorShape shape, DType dtype = DType.Float32)
+    {
+        ulong byteSize = (ulong)(shape.ElementCount * DTypeInfo.BytesPerElement(dtype));
+        var gpuBuf = GpuBuffer.CreatePinned(this, byteSize, VkBufferUsageFlags.StorageBuffer);
+
+        var handle = (nint)Interlocked.Increment(ref _nextHandle);
+        _buffers[handle] = gpuBuf;
+        return new Tensor(shape, dtype, handle);
+    }
+
+    /// <summary>Unmap a previously mapped pinned tensor.</summary>
+    public unsafe float* MapPinned(Tensor tensor)
+    {
+        var buf = GetBuffer(tensor);
+        return (float*)buf.Map();
+    }
+
+    /// <summary>Unmap a previously mapped pinned tensor.</summary>
+    public void UnmapPinned(Tensor tensor)
+    {
+        var buf = GetBuffer(tensor);
+        buf.Unmap();
+    }
+
+    // Cached staging buffer for uploads (avoids per-call alloc/free)
+    private GpuBuffer? _uploadStaging;
+    private ulong _uploadStagingSize;
+
+    public Tensor Upload(ReadOnlySpan<float> data, TensorShape shape, bool exact = false)
+    {
+        _ = exact;
+        ulong byteSize = (ulong)(data.Length * sizeof(float));
+
+        // Create device-local destination buffer
+        var gpuBuf = GpuBuffer.CreateDeviceLocal(this, byteSize,
+            VkBufferUsageFlags.StorageBuffer | VkBufferUsageFlags.TransferDst);
+
+        // Reuse or grow staging buffer
+        if (_uploadStaging == null || _uploadStagingSize < byteSize)
+        {
+            _uploadStaging?.Dispose();
+            _uploadStaging = GpuBuffer.CreateStaging(this, byteSize,
+                VkBufferUsageFlags.TransferSrc);
+            _uploadStagingSize = byteSize;
+        }
+
+        // Map staging, copy data
+        float* mapped = (float*)_uploadStaging.Map();
+        data.CopyTo(new Span<float>(mapped, data.Length));
+        _uploadStaging.Unmap();
+
+        // Record and submit copy command
+        CopyBuffer(_uploadStaging, gpuBuf, byteSize);
+
+        var handle = (nint)Interlocked.Increment(ref _nextHandle);
+        _buffers[handle] = gpuBuf;
+        return new Tensor(shape, DType.Float32, handle);
+    }
+
+    /// <summary>
+    /// Upload data to a new device-local GPU buffer using the background (async) command buffer.
+    /// Safe to call from a background thread concurrently with the main thread's recording session.
+    /// Uses a dedicated command pool isolated from the main-thread <c>_transferCmd</c>.
+    /// </summary>
+    public unsafe Tensor UploadBackground(ReadOnlySpan<float> data, TensorShape shape)
+    {
+        ulong byteSize = (ulong)(data.Length * sizeof(float));
+
+        var gpuBuf = GpuBuffer.CreateDeviceLocal(this, byteSize,
+            VkBufferUsageFlags.StorageBuffer | VkBufferUsageFlags.TransferDst);
+
+        lock (_asyncCmdLock)
+        {
+            if (_asyncStaging == null || _asyncStagingSize < byteSize)
+            {
+                _asyncStaging?.Dispose();
+                _asyncStaging = GpuBuffer.CreateStaging(this, byteSize, VkBufferUsageFlags.TransferSrc);
+                _asyncStagingSize = byteSize;
+            }
+
+            float* mapped = (float*)_asyncStaging.Map();
+            data.CopyTo(new Span<float>(mapped, data.Length));
+            _asyncStaging.Unmap();
+
+            VkCommandBufferBeginInfo beginInfo = new() { flags = VkCommandBufferUsageFlags.OneTimeSubmit };
+            _vkd.vkBeginCommandBuffer(_asyncCmd, &beginInfo).CheckResult();
+            VkBufferCopy region = new() { size = byteSize };
+            _vkd.vkCmdCopyBuffer(_asyncCmd, _asyncStaging.Buffer, gpuBuf.Buffer, 1, &region);
+            _vkd.vkEndCommandBuffer(_asyncCmd).CheckResult();
+            SubmitAndWaitAsync();
+        }
+
+        var handle = (nint)Interlocked.Increment(ref _nextHandle);
+        _buffers[handle] = gpuBuf;
+        return new Tensor(shape, DType.Float32, handle);
+    }
+
+    // Cached staging buffer for downloads (avoids per-call alloc/free)
+    private GpuBuffer? _downloadStaging;
+    private ulong _downloadStagingSize;
+
+    // Q8_1 activation scratch for the DP4A batched Q4_K matvec (issue #308). Holds the
+    // int8-quantized inputs for all nTok tokens: nTok · (cols/32) blocks × 36 bytes. Grown on
+    // demand (current capacity tracked in bytes), reused across MatMulBatched calls, freed in
+    // Dispose. Bound as an Int8 tensor; the shaders alias it as a uint[] SSBO.
+    private Tensor? _q81BatchBuf;
+    private long _q81BatchBufBytes;
+    // When the scratch must grow MID-RECORDING (the BatchVerify trunk records many matmuls of
+    // different cols into one submission), the old buffer is still referenced by already-recorded
+    // dispatches — freeing it immediately is a use-after-free that faults the device. Stash it here
+    // and free it after the next submit (when the GPU is idle), via FlushPendingScratchFrees().
+    private readonly List<Tensor> _pendingScratchFrees = new();
+    // int8 pipelines stranded by a mid-recording fallback (their Dispose must wait until the
+    // recorded dispatches that reference them have been submitted + the GPU is idle).
+    private readonly List<ComputePipeline> _pendingPipelineFrees = new();
+
+    /// <summary>
+    /// Ensure <see cref="_q81BatchBuf"/> is at least nTok·(cols/32)·36 bytes. Grows (re-allocates)
+    /// on demand; the buffer is reused across calls and freed in Dispose. Growing during a recording
+    /// session defers the old buffer's free until after the next submit (it may still be referenced
+    /// by recorded-but-unsubmitted dispatches).
+    /// </summary>
+    private void EnsureQ81BatchBuf(int nTok, int cols)
+    {
+        long needed = (long)nTok * (cols / 32) * 36L;
+        if (_q81BatchBuf is not null && _q81BatchBufBytes >= needed)
+            return;
+        if (_q81BatchBuf is not null)
+        {
+            if (_recording) _pendingScratchFrees.Add(_q81BatchBuf); // free after submit (GPU idle)
+            else Free(_q81BatchBuf);
+        }
+        // Allocate as Int8 (1 byte/element) so ElementCount == byte count; the shaders alias it as
+        // a uint[] SSBO. needed is a multiple of 36, hence a multiple of 4 → safe as uint words.
+        _q81BatchBuf = Allocate(TensorShape.D1(needed), DType.Int8);
+        _q81BatchBufBytes = needed;
+    }
+
+    /// <summary>Free Q8_1 scratch buffers stranded by a mid-recording grow. Called after a submit
+    /// completes (the GPU is idle, so no recorded dispatch still references them).</summary>
+    private void FlushPendingScratchFrees()
+    {
+        if (_pendingScratchFrees.Count > 0)
+        {
+            foreach (var t in _pendingScratchFrees) Free(t);
+            _pendingScratchFrees.Clear();
+        }
+        if (_pendingPipelineFrees.Count > 0)
+        {
+            foreach (var p in _pendingPipelineFrees) p.Dispose();
+            _pendingPipelineFrees.Clear();
+        }
+    }
+
+    /// <summary>Dispose an int8 pipeline stranded by a mid-recording fallback. Defers the actual
+    /// Dispose until after the next submit (GPU idle) if a recorded dispatch could still reference
+    /// it (the quantize/matvec pipelines are shared across a recording session's matmuls).</summary>
+    private void DisposeInt8PipelineDeferred(ComputePipeline? p)
+    {
+        if (p is null) return;
+        if (_recording) _pendingPipelineFrees.Add(p);
+        else p.Dispose();
+    }
+
+    public void Download(Tensor src, Span<float> dst)
+    {
+        var gpuBuf = GetBuffer(src);
+        ulong byteSize = (ulong)(dst.Length * sizeof(float));
+
+        // Reuse or grow staging buffer
+        if (_downloadStaging == null || _downloadStagingSize < byteSize)
+        {
+            _downloadStaging?.Dispose();
+            _downloadStaging = GpuBuffer.CreateStaging(this, byteSize,
+                VkBufferUsageFlags.TransferDst);
+            _downloadStagingSize = byteSize;
+        }
+
+        CopyBuffer(gpuBuf, _downloadStaging, byteSize);
+
+        float* mapped = (float*)_downloadStaging.Map();
+        new Span<float>(mapped, dst.Length).CopyTo(dst);
+        _downloadStaging.Unmap();
+    }
+
+    public unsafe Tensor UploadHalf(ReadOnlySpan<Half> data, TensorShape shape)
+    {
+        ulong byteSize = (ulong)(data.Length * sizeof(ushort));
+
+        var gpuBuf = GpuBuffer.CreateDeviceLocal(this, byteSize,
+            VkBufferUsageFlags.StorageBuffer | VkBufferUsageFlags.TransferDst);
+
+        if (_uploadStaging == null || _uploadStagingSize < byteSize)
+        {
+            _uploadStaging?.Dispose();
+            _uploadStaging = GpuBuffer.CreateStaging(this, byteSize, VkBufferUsageFlags.TransferSrc);
+            _uploadStagingSize = byteSize;
+        }
+
+        Half* mapped = (Half*)_uploadStaging.Map();
+        data.CopyTo(new Span<Half>(mapped, data.Length));
+        _uploadStaging.Unmap();
+
+        CopyBuffer(_uploadStaging, gpuBuf, byteSize);
+
+        var handle = (nint)Interlocked.Increment(ref _nextHandle);
+        _buffers[handle] = gpuBuf;
+        return new Tensor(shape, DType.Float16, handle);
+    }
+
+    public unsafe void DownloadHalf(Tensor src, Span<Half> dst)
+    {
+        var gpuBuf = GetBuffer(src);
+        ulong byteSize = (ulong)(dst.Length * sizeof(ushort));
+
+        if (_downloadStaging == null || _downloadStagingSize < byteSize)
+        {
+            _downloadStaging?.Dispose();
+            _downloadStaging = GpuBuffer.CreateStaging(this, byteSize, VkBufferUsageFlags.TransferDst);
+            _downloadStagingSize = byteSize;
+        }
+
+        CopyBuffer(gpuBuf, _downloadStaging, byteSize);
+
+        Half* mapped = (Half*)_downloadStaging.Map();
+        new ReadOnlySpan<Half>(mapped, dst.Length).CopyTo(dst);
+        _downloadStaging.Unmap();
+    }
+
+    public unsafe Tensor UploadBf16(ReadOnlySpan<ushort> data, TensorShape shape)
+    {
+        ulong byteSize = (ulong)(data.Length * sizeof(ushort));
+
+        var gpuBuf = GpuBuffer.CreateDeviceLocal(this, byteSize,
+            VkBufferUsageFlags.StorageBuffer | VkBufferUsageFlags.TransferDst);
+
+        if (_uploadStaging == null || _uploadStagingSize < byteSize)
+        {
+            _uploadStaging?.Dispose();
+            _uploadStaging = GpuBuffer.CreateStaging(this, byteSize, VkBufferUsageFlags.TransferSrc);
+            _uploadStagingSize = byteSize;
+        }
+
+        ushort* mapped = (ushort*)_uploadStaging.Map();
+        data.CopyTo(new Span<ushort>(mapped, data.Length));
+        _uploadStaging.Unmap();
+
+        CopyBuffer(_uploadStaging, gpuBuf, byteSize);
+
+        var handle = (nint)Interlocked.Increment(ref _nextHandle);
+        _buffers[handle] = gpuBuf;
+        return new Tensor(shape, DType.BFloat16, handle);
+    }
+
+    public unsafe void DownloadBf16(Tensor src, Span<ushort> dst)
+    {
+        var gpuBuf = GetBuffer(src);
+        ulong byteSize = (ulong)(dst.Length * sizeof(ushort));
+
+        if (_downloadStaging == null || _downloadStagingSize < byteSize)
+        {
+            _downloadStaging?.Dispose();
+            _downloadStaging = GpuBuffer.CreateStaging(this, byteSize, VkBufferUsageFlags.TransferDst);
+            _downloadStagingSize = byteSize;
+        }
+
+        CopyBuffer(gpuBuf, _downloadStaging, byteSize);
+
+        ushort* mapped = (ushort*)_downloadStaging.Map();
+        new ReadOnlySpan<ushort>(mapped, dst.Length).CopyTo(dst);
+        _downloadStaging.Unmap();
+    }
+
+    public unsafe Tensor UploadFp8(ReadOnlySpan<byte> data, TensorShape shape)
+    {
+        ulong byteSize = (ulong)data.Length;
+
+        var gpuBuf = GpuBuffer.CreateDeviceLocal(this, byteSize,
+            VkBufferUsageFlags.StorageBuffer | VkBufferUsageFlags.TransferDst);
+
+        if (_uploadStaging == null || _uploadStagingSize < byteSize)
+        {
+            _uploadStaging?.Dispose();
+            _uploadStaging = GpuBuffer.CreateStaging(this, byteSize, VkBufferUsageFlags.TransferSrc);
+            _uploadStagingSize = byteSize;
+        }
+
+        byte* mapped = (byte*)_uploadStaging.Map();
+        data.CopyTo(new Span<byte>(mapped, data.Length));
+        _uploadStaging.Unmap();
+
+        CopyBuffer(_uploadStaging, gpuBuf, byteSize);
+
+        var handle = (nint)Interlocked.Increment(ref _nextHandle);
+        _buffers[handle] = gpuBuf;
+        return new Tensor(shape, DType.Float8E4M3, handle);
+    }
+
+    public unsafe void DownloadFp8(Tensor src, Span<byte> dst)
+    {
+        var gpuBuf = GetBuffer(src);
+        ulong byteSize = (ulong)dst.Length;
+
+        if (_downloadStaging == null || _downloadStagingSize < byteSize)
+        {
+            _downloadStaging?.Dispose();
+            _downloadStaging = GpuBuffer.CreateStaging(this, byteSize, VkBufferUsageFlags.TransferDst);
+            _downloadStagingSize = byteSize;
+        }
+
+        CopyBuffer(gpuBuf, _downloadStaging, byteSize);
+
+        byte* mapped = (byte*)_downloadStaging.Map();
+        new ReadOnlySpan<byte>(mapped, dst.Length).CopyTo(dst);
+        _downloadStaging.Unmap();
+    }
+
+    /// <summary>
+    /// Upload raw quantized bytes to a device-local GPU buffer.
+    /// The returned tensor's shape is D1(byteLen) and its DType reflects the quantized format.
+    /// </summary>
+    public unsafe Tensor UploadRaw(ReadOnlySpan<byte> data, TensorShape shape, DType dtype, bool exact = false)
+    {
+        _ = exact;
+        ulong byteSize = (ulong)data.Length;
+
+        var gpuBuf = GpuBuffer.CreateDeviceLocal(this, byteSize,
+            VkBufferUsageFlags.StorageBuffer | VkBufferUsageFlags.TransferDst);
+
+        if (_uploadStaging == null || _uploadStagingSize < byteSize)
+        {
+            _uploadStaging?.Dispose();
+            _uploadStaging = GpuBuffer.CreateStaging(this, byteSize, VkBufferUsageFlags.TransferSrc);
+            _uploadStagingSize = byteSize;
+        }
+
+        byte* mapped = (byte*)_uploadStaging.Map();
+        data.CopyTo(new Span<byte>(mapped, data.Length));
+        _uploadStaging.Unmap();
+
+        CopyBuffer(_uploadStaging, gpuBuf, byteSize);
+
+        var handle = (nint)Interlocked.Increment(ref _nextHandle);
+        _buffers[handle] = gpuBuf;
+        return new Tensor(shape, dtype, handle);
+    }
+
+    public VkFence Fence => _fence;
+
+    public void Synchronize()
+    {
+        _vkd.vkDeviceWaitIdle();
+    }
+
+    // ================================================================
+    //  Buffer copy via command buffer
+    // ================================================================
+
+    private void CopyBuffer(GpuBuffer src, GpuBuffer dst, ulong size)
+    {
+        VkCommandBufferBeginInfo beginInfo = new()
+        {
+            flags = VkCommandBufferUsageFlags.OneTimeSubmit,
+        };
+        _vkd.vkBeginCommandBuffer(_transferCmd, &beginInfo).CheckResult();
+
+        VkBufferCopy copyRegion = new() { size = size };
+        _vkd.vkCmdCopyBuffer(_transferCmd, src.Buffer, dst.Buffer, 1, &copyRegion);
+
+        _vkd.vkEndCommandBuffer(_transferCmd).CheckResult();
+        SubmitAndWait();
+    }
+
+    // ================================================================
+    //  Compute shader pipelines (created lazily on first use)
+    // ================================================================
+
+    private ComputePipeline? _rmsNormPipeline;
+    private ComputePipeline? _rmsNormBatchedPipeline;
+    private ComputePipeline? _headNormPipeline;
+    private ComputePipeline? _headNormBatchedPipeline;
+    private ComputePipeline? _headNormPurePipeline;
+    private ComputePipeline? _siluMulPipeline;
+    private ComputePipeline? _geluTanhMulPipeline;
+    private ComputePipeline? _softcapPipeline;
+    private ComputePipeline? _siluPipeline;
+    private ComputePipeline? _addInPlacePipeline;
+    private ComputePipeline? _addScaledInPlacePipeline;
+    private ComputePipeline? _scaleInPlacePipeline;
+    private ComputePipeline? _clearPipeline;
+    private ComputePipeline? _elementwiseMulPipeline;
+    private ComputePipeline? _ropePipeline;
+    private ComputePipeline? _ropeBatchedPipeline;
+    private ComputePipeline? _ropeNeoxPipeline;
+    private ComputePipeline? _ropeNeoxBatchedPipeline;
+    private ComputePipeline? _ropeNeoxWithFactorsPipeline;
+    private ComputePipeline? _softmaxPipeline;
+    private ComputePipeline? _sigmoidPipeline;
+    private ComputePipeline? _matVecQ4KPipeline;
+    private ComputePipeline? _matVecBatchedQ4KPipeline;
+    private ComputePipeline? _matVecBatchedQ4KInt8Pipeline;
+    private ComputePipeline? _quantizeQ8_1Pipeline;
+    private ComputePipeline? _matVecBatchedQ6KPipeline;
+    private ComputePipeline? _matVecBatchedQ6KInt8Pipeline;
+    private ComputePipeline? _matVecQ6KPipeline;
+    private ComputePipeline? _matVecQ5KPipeline;
+    private ComputePipeline? _matVecQ8_0Pipeline;
+    private ComputePipeline? _matVecQ4_0Pipeline;
+    private ComputePipeline? _matVecF32Pipeline;
+    private ComputePipeline? _kvAppendPipeline;
+    private ComputePipeline? _attentionPipeline;
+    private ComputePipeline? _kvAppendBatchedPipeline;
+    private ComputePipeline? _attentionBatchedPipeline;
+    private ComputePipeline? _attentionBatchedFlashPipeline;
+    private ComputePipeline? _attentionBatchedFlashBf16Pipeline;
+    private ComputePipeline? _kvAppendBatchedBf16Pipeline;
+    private ComputePipeline? _attentionBatchedBf16Pipeline;
+    private ComputePipeline? _kvAppendBatchedQ8Pipeline;
+    private ComputePipeline? _attentionBatchedQ8Pipeline;
+    private ComputePipeline? _kvAppendBf16Pipeline;
+    private ComputePipeline? _attentionBf16Pipeline;
+    private ComputePipeline? _kvAppendQ8Pipeline;
+    private ComputePipeline? _attentionQ8Pipeline;
+    private ComputePipeline? _splitKvPartialPipeline;
+    private ComputePipeline? _splitKvPartialBf16Pipeline;
+    private ComputePipeline? _splitKvPartialQ8Pipeline;
+    private ComputePipeline? _splitKvCombinePipeline;
+    private ComputePipeline? _snapKvScorePipeline;
+    private ComputePipeline? _kvCompactPipeline;
+    private ComputePipeline? _embedLookupPipeline;
+    private ComputePipeline? _embedLookupQ4KPipeline;
+    private ComputePipeline? _embedLookupQ6KPipeline;
+    private ComputePipeline? _tqRotateQueryPipeline;
+    private ComputePipeline? _tqKvAppendPipeline;
+    private ComputePipeline? _tqAttentionPipeline;
+    private ComputePipeline? _bufCopyPipeline;
+    private ComputePipeline? _sgemmF32Pipeline;
+    private ComputePipeline? _sgemmF16Pipeline;
+    private ComputePipeline? _sgemmBf16Pipeline;
+    private ComputePipeline? _sgemmFp8Pipeline;
+    private ComputePipeline? _matMulTiledQ4KPipeline;   // Path 2 tiled GEMM
+    private ComputePipeline? _matMulTiledQ6KPipeline;   // Path 2 tiled GEMM (ffn_down)
+    private ComputePipeline? _dequantQ5KMPipeline;
+    private ComputePipeline? _dequantQ4KMPipeline;
+
+    // Gated-DeltaNet (GDN) pipelines (issue #356; qwen35moe/qwen36 hybrid)
+    private ComputePipeline? _gdnConv1dDecodePipeline;
+    private ComputePipeline? _gdnL2NormPerHeadPipeline;
+    private ComputePipeline? _gdnTileHeadsPipeline;
+    private ComputePipeline? _gdnRecurrenceDecodePipeline;
+    // #356 PR5a: batched + fused-scan GDN pipelines (for the batched prefill trunk).
+    private ComputePipeline? _gdnConv1dDecodeBatchedPipeline;
+    private ComputePipeline? _gdnConv1dStateUpdateBatchedPipeline;
+    private ComputePipeline? _gdnL2NormPerHeadBatchedPipeline;
+    private ComputePipeline? _gdnTileHeadsBatchedPipeline;
+    private ComputePipeline? _gdnRecurrenceScanPipeline;
+    // #357 PR1: GDN conv-state ring-capture pipeline (MTP batched-verify rollback snapshot).
+    private ComputePipeline? _gdnConv1dStateCaptureRingPipeline;
+    // #356 PR5c: chunk-parallel GDN prefill pipeline.
+    private ComputePipeline? _gdnChunkedPrefillPipeline;
+
+    // qwen35moe/qwen36 Gated-Attention support pipelines (issue #356)
+    private ComputePipeline? _ropeNeoxPartialPipeline;
+    private ComputePipeline? _splitQgPipeline;
+    // #356 PR5b: batched Gated-Attention support (batched prefill trunk).
+    private ComputePipeline? _ropeNeoxPartialBatchedPipeline;
+    private ComputePipeline? _splitQgBatchedPipeline;
+    private ComputePipeline? _sigmoidMulInPlacePipeline;
+
+    // Image ops pipelines (IImageOpsBackend)
+    private ComputePipeline? _conv2dPipeline;
+    private ComputePipeline? _leakyReluPipeline;
+    private ComputePipeline? _clampPipeline;
+    private ComputePipeline? _catChannelsPipeline;
+    private ComputePipeline? _pixelShufflePipeline;
+    private ComputePipeline? _pixelUnshufflePipeline;
+    private ComputePipeline? _upsample2xPipeline;
+
+    private struct RmsNormParams{ public uint n; public float eps; }
+    private struct RmsNormBatchedParams { public uint n; public float eps; public uint numTokens; }
+    private struct HeadNormParams { public uint headDim; public uint numHeads; public float eps; }
+    private struct WeightedHeadNormParams { public uint headDim; public uint numHeads; public float eps; public uint weightStride; }
+    private struct WeightedHeadNormBatchedParams { public uint headDim; public uint numHeads; public float eps; public uint weightStride; public uint numTokens; }
+    private struct CountParams { public uint n; }
+    private struct ScaleParams { public uint n; public float scale; }
+    private struct RoPEParams { public uint numHeads; public uint headDim; public int position; public float theta; }
+    private struct MatVecParams { public uint rows; public uint cols; }
+    private struct MatVecBatchedParams { public uint rows; public uint cols; public uint nTok; }
+    private struct EmbedParams { public uint tokenId; public uint embDim; }
+    private struct KvAppendParams { public uint kvDim; public uint position; public uint maxSeqLen; }
+    private struct AttentionParams { public uint numHeads; public uint numKvHeads; public uint headDim; public uint seqLen; public uint maxSeqLen; public uint window; }
+    /// <summary>
+    /// KV positions per split-KV slice. <b>Duplicated by necessity in the GLSL of the three
+    /// AttentionSplitKvPartial* shaders</b> (<c>const uint CHUNK</c> and the <c>sk_scores[CHUNK]</c>
+    /// shared array cannot read a C# constant), so
+    /// <c>VulkanSplitKvChunkConsistencyTests</c> asserts the shader text still agrees with this
+    /// value. Everything else — the nSplits formulas here, the partial-buffer sizing in
+    /// GpuForwardPass, and the tests — derives from this constant.
+    ///
+    /// <para>256 rather than the original 512: halving the slice doubles the split count, which
+    /// both raises occupancy and shrinks the per-workgroup shared score array. Measured on the
+    /// reference iGPU as a large decode win at long context (perf-loop iteration 36).</para>
+    /// </summary>
+    public const uint SplitKvChunk = 256;
+
+    /// <summary>Largest seqLen the combine shader's 256-split shared array can serve.</summary>
+    public const uint SplitKvMaxSeqLen = SplitKvChunk * 256;
+
+    private struct AttentionBatchedParams { public uint numHeads; public uint numKvHeads; public uint headDim; public uint basePos; public uint maxSeqLen; public uint numQueries; }
+    private struct SplitKvPartialParams { public uint numHeads; public uint numKvHeads; public uint headDim; public uint seqLen; public uint nSplits; public uint window; }
+    private struct SplitKvCombineParams { public uint numHeads; public uint headDim; public uint nSplits; }
+    private struct SnapKvScoreParams { public uint numHeads; public uint numKvHeads; public uint headDim; public uint promptLen; public uint qAbsPos; public uint maxSeqLen; }
+    private struct KvCompactParams { public uint K; public uint kvDim; }
+    private struct TqRotateQueryParams { public uint numHeads; public uint numKvHeads; public uint headDim; }
+    private struct TqKvAppendParams { public uint kvDim; public uint headDim; public uint position; public uint maxSeqLen; public uint numKvHeads; public uint blockBytes; }
+    private struct TqAttentionParams { public uint numHeads; public uint numKvHeads; public uint headDim; public uint tqSeqLen; public uint fp16SeqLen; public uint maxSeqLen; public uint blockBytes; }
+    private struct BufCopyParams { public uint count; public uint srcOffset; public uint dstOffset; }
+    private struct SgemmParams { public uint M; public uint N; public uint K; }
+    private struct DequantParams { public uint numBlocks; }
+    private struct GdnConv1dParams { public uint channels; public uint kernelSize; }
+    private struct GdnL2NormParams { public uint headDim; public uint numHeads; public float eps; public uint offset; }
+    private struct GdnTileHeadsParams { public uint srcHeads; public uint repeat; public uint headDim; public uint srcOffset; public uint dstOffset; }
+    private struct GdnRecurrenceDecodeParams { public uint hv; public uint d; public float normEps; }
+    // #356 PR5a: batched + fused-scan GDN push constants.
+    private struct GdnConv1dBatchedParams { public uint channels; public uint kernelSize; public uint nTok; }
+    private struct GdnL2NormBatchedParams { public uint headDim; public uint numHeads; public float eps; public uint offset; public uint rowStride; public uint nTok; }
+    private struct GdnTileHeadsBatchedParams { public uint srcHeads; public uint repeat; public uint headDim; public uint srcOffset; public uint dstOffset; public uint srcStride; public uint dstStride; public uint nTok; }
+    private struct GdnRecurrenceScanParams
+    {
+        public uint hv; public uint d; public float normEps;
+        public uint qStride; public uint kStride; public uint vStride; public uint vHeadOff;
+        public uint zStride; public uint oStride; public uint nTok;
+        public uint ringSlotStride; public uint nCapture; public uint ringScanOff;
+    }
+    // #357 PR1: GDN conv-state ring-capture push constants.
+    private struct GdnConvCaptureRingParams { public uint channels; public uint kernelSize; public uint ringSlotStride; public uint ringFloatOffset; public uint nCapture; }
+    // #356 PR5c: chunk-parallel GDN prefill push constants (no ring — clean-prefill only).
+    private struct GdnChunkedPrefillParams
+    {
+        public uint hv; public uint d; public float normEps;
+        public uint qStride; public uint kStride; public uint vStride; public uint vHeadOff;
+        public uint zStride; public uint oStride; public uint nTok;
+    }
+    private struct RoPEPartialParams { public uint numHeads; public uint headDim; public uint ropeDim; public int position; public float theta; }
+    private struct SplitQgParams { public uint numHeads; public uint headDim; }
+
+    // Image ops push constant structs
+    private struct Conv2dParams   { public uint inCh; public uint outCh; public uint height; public uint width; public uint ksize; public uint padding; }
+    private struct LeakyReluParams { public uint n; public float negSlope; }
+    private struct ClampParams    { public uint n; public float minVal; public float maxVal; }
+    private struct CatChannelsParams { public uint aCh; public uint bCh; public uint hw; }
+    private struct PixelShuffleParams { public uint inCh; public uint h; public uint w; public uint factor; }
+    private struct SpatialParams  { public uint ch; public uint h; public uint w; }
+
+    private void DispatchOrRecord(ComputePipeline pipe, ReadOnlySpan<GpuBuffer> buffers,
+        uint groupX, void* push, uint groupY = 1, uint groupZ = 1)
+    {
+        if (_recording)
+        {
+            pipe.RecordWith(_transferCmd, buffers, groupX, groupY, groupZ, push);
+            // In image-batch mode (_deferringFrees), automatically insert a compute barrier
+            // after every dispatch so dependent ops see the writes without explicit caller code.
+            if (_deferringFrees) RecordBarrier();
+        }
+        else
+            pipe.DispatchWith(_transferCmd, buffers, groupX, groupY, groupZ, push);
+    }
+
+    public void RmsNorm(Tensor output, Tensor x, Tensor weight, float eps = 1e-5f)
+    {
+        _rmsNormPipeline ??= new ComputePipeline(this, Shaders.RmsNorm, 3, pushConstantSize: sizeof(RmsNormParams));
+        var p = new RmsNormParams { n = (uint)x.ElementCount, eps = eps };
+        DispatchOrRecord(_rmsNormPipeline, [GetBuffer(x), GetBuffer(weight), GetBuffer(output)], 1, &p);
+    }
+
+    /// <summary>
+    /// Batched RMS norm: normalizes each of <paramref name="numTokens"/> independent rows (length
+    /// <paramref name="rowDim"/>) of the <c>[numTokens][rowDim]</c> buffers <paramref name="x"/> →
+    /// <paramref name="output"/> in ONE dispatch. <paramref name="weight"/> is the shared
+    /// <c>[rowDim]</c> vector applied to every row. Bit-identical to <paramref name="numTokens"/>
+    /// separate <see cref="RmsNorm"/> calls — used by the spec-decode batched verify (issue #308)
+    /// to replace the per-token gather/op/scatter K-loop.
+    /// </summary>
+    public void RmsNormBatched(Tensor output, Tensor x, Tensor weight, int rowDim, int numTokens, float eps = 1e-5f)
+    {
+        _rmsNormBatchedPipeline ??= new ComputePipeline(this, Shaders.RmsNormBatched, 3, pushConstantSize: sizeof(RmsNormBatchedParams));
+        var p = new RmsNormBatchedParams { n = (uint)rowDim, eps = eps, numTokens = (uint)numTokens };
+        DispatchOrRecord(_rmsNormBatchedPipeline, [GetBuffer(x), GetBuffer(weight), GetBuffer(output)], (uint)numTokens, &p);
+    }
+
+    /// <summary>Per-head RMS norm with learned weights. <paramref name="perChannelWeight"/>
+    /// false → weight is shared <c>[headDim]</c> vector applied identically per head (Qwen3);
+    /// true → weight is <c>[numHeads * headDim]</c> with one slice per head (OLMoE).</summary>
+    public void HeadNorm(Tensor data, Tensor weight, uint numHeads, uint headDim,
+        float eps = 1e-6f, bool perChannelWeight = false)
+    {
+        _headNormPipeline ??= new ComputePipeline(this, Shaders.HeadNorm, 2, pushConstantSize: sizeof(WeightedHeadNormParams));
+        var p = new WeightedHeadNormParams
+        {
+            headDim = headDim,
+            numHeads = numHeads,
+            eps = eps,
+            weightStride = perChannelWeight ? headDim : 0u,
+        };
+        DispatchOrRecord(_headNormPipeline, [GetBuffer(data), GetBuffer(weight)], numHeads, &p);
+    }
+
+    /// <summary>
+    /// Batched per-head RMS norm: applies <see cref="HeadNorm"/> to each of
+    /// <paramref name="numTokens"/> rows of the <c>[numTokens][numHeads*headDim]</c> buffer
+    /// <paramref name="data"/> in ONE dispatch (numHeads × numTokens head-groups). The weight is
+    /// shared across rows (per <paramref name="perChannelWeight"/>, as in <see cref="HeadNorm"/>).
+    /// Bit-identical to <paramref name="numTokens"/> separate <see cref="HeadNorm"/> calls — used
+    /// by the spec-decode batched verify (issue #308).
+    /// </summary>
+    public void HeadNormBatched(Tensor data, Tensor weight, uint numHeads, uint headDim, int numTokens,
+        float eps = 1e-6f, bool perChannelWeight = false)
+    {
+        _headNormBatchedPipeline ??= new ComputePipeline(this, Shaders.HeadNormBatched, 2, pushConstantSize: sizeof(WeightedHeadNormBatchedParams));
+        var p = new WeightedHeadNormBatchedParams
+        {
+            headDim = headDim,
+            numHeads = numHeads,
+            eps = eps,
+            weightStride = perChannelWeight ? headDim : 0u,
+            numTokens = (uint)numTokens,
+        };
+        DispatchOrRecord(_headNormBatchedPipeline, [GetBuffer(data), GetBuffer(weight)], numHeads, &p, groupY: (uint)numTokens);
+    }
+
+    /// <summary>
+    /// Per-head RMS normalization without learned weights (L2 normalize).
+    /// Used for Llama4TextL2Norm in QK-norm.
+    /// </summary>
+    public void HeadNormPure(Tensor data, uint numHeads, uint headDim, float eps = 1e-6f)
+    {
+        _headNormPurePipeline ??= new ComputePipeline(this, Shaders.HeadNormPure, 1, pushConstantSize: sizeof(HeadNormParams));
+        var p = new HeadNormParams { headDim = headDim, numHeads = numHeads, eps = eps };
+        DispatchOrRecord(_headNormPurePipeline, [GetBuffer(data)], numHeads, &p);
+    }
+
+    /// <summary>
+    /// GDN depthwise causal conv1d for a single decode token. State layout
+    /// <c>[(kernel-1), channels]</c> row-major, oldest first; updated in place. Weight
+    /// layout <c>[kernel, channels]</c>. Mirrors CUDA <c>CudaBackend.GdnConv1dDecode</c>
+    /// / CPU <c>GdnKernels.CausalDepthwiseConv1dDecode</c>.
+    /// </summary>
+    public void GdnConv1dDecode(Tensor x, Tensor state, Tensor weight, Tensor output,
+                                int channels, int kernelSize)
+    {
+        // The shader keeps the prior taps in a fixed-size `float s_old[4]` register array and
+        // computes `retained = kernel_size - 1u` in uint, so kernelSize must be in [1, 5]:
+        // 0 would underflow to a ~4-billion loop bound; >5 would index s_old out of bounds.
+        // (qwen35moe/qwen36 use kernelSize 4. CUDA's reference is unguarded; we fail loud.)
+        if (kernelSize is < 1 or > 5)
+            throw new ArgumentOutOfRangeException(nameof(kernelSize), kernelSize, "kernelSize must be in [1, 5].");
+        _gdnConv1dDecodePipeline ??= new ComputePipeline(this, Shaders.GdnConv1dDecode, 4, pushConstantSize: sizeof(GdnConv1dParams));
+        var p = new GdnConv1dParams { channels = (uint)channels, kernelSize = (uint)kernelSize };
+        DispatchOrRecord(_gdnConv1dDecodePipeline,
+            [GetBuffer(x), GetBuffer(state), GetBuffer(weight), GetBuffer(output)],
+            (uint)(((long)channels + 255) / 256), &p);
+    }
+
+    /// <summary>
+    /// L2 normalize each <paramref name="headDim"/>-sized slice independently (no learned
+    /// weights). Matches <c>GdnKernels.L2NormPerHead</c>: <c>scale = 1 / max(sqrt(Σ x²), eps)</c>.
+    /// Operates on the sub-region of <paramref name="data"/> starting at
+    /// <paramref name="elementOffset"/> for <paramref name="numHeads"/> × <paramref name="headDim"/>
+    /// floats. Mirrors CUDA <c>CudaBackend.GdnL2NormPerHead</c> (which uses pointer arithmetic;
+    /// here the whole buffer is bound and the offset is a push constant).
+    /// </summary>
+    public void GdnL2NormPerHead(Tensor data, long elementOffset, int numHeads, int headDim, float eps = 1e-6f)
+    {
+        _gdnL2NormPerHeadPipeline ??= new ComputePipeline(this, Shaders.GdnL2NormPerHead, 1, pushConstantSize: sizeof(GdnL2NormParams));
+        var p = new GdnL2NormParams
+        {
+            headDim = (uint)headDim,
+            numHeads = (uint)numHeads,
+            eps = eps,
+            offset = (uint)elementOffset,
+        };
+        DispatchOrRecord(_gdnL2NormPerHeadPipeline, [GetBuffer(data)], (uint)numHeads, &p);
+    }
+
+    /// <summary>
+    /// Tile pattern: <c>dst[h_dst, j] = src[h_dst % srcHeads, j]</c> for
+    /// <c>h_dst ∈ [0, srcHeads·repeat)</c>. Matches <c>GdnKernels.TileHeads</c> (GQA-style
+    /// broadcast, NOT torch repeat_interleave). <paramref name="srcOffset"/> and
+    /// <paramref name="dstOffset"/> are FP32 element offsets passed as push constants.
+    /// Mirrors CUDA <c>CudaBackend.GdnTileHeads</c>.
+    /// </summary>
+    public void GdnTileHeads(Tensor src, long srcOffset, Tensor dst, long dstOffset,
+                             int srcHeads, int repeat, int headDim)
+    {
+        _gdnTileHeadsPipeline ??= new ComputePipeline(this, Shaders.GdnTileHeads, 2, pushConstantSize: sizeof(GdnTileHeadsParams));
+        var p = new GdnTileHeadsParams
+        {
+            srcHeads = (uint)srcHeads,
+            repeat = (uint)repeat,
+            headDim = (uint)headDim,
+            srcOffset = (uint)srcOffset,
+            dstOffset = (uint)dstOffset,
+        };
+        long total = (long)srcHeads * repeat * headDim;
+        DispatchOrRecord(_gdnTileHeadsPipeline, [GetBuffer(src), GetBuffer(dst)],
+            (uint)((total + 255) / 256), &p);
+    }
+
+    /// <summary>
+    /// Single-token Gated-DeltaNet recurrence delta-rule scan. Updates per-head <c>D×D</c>
+    /// state matrices in place and writes per-head post-norm, post-gate output. State layout
+    /// <c>[numVHeads, headDim, headDim]</c> row-major (i = key axis, j = value/output axis).
+    /// Mirrors CUDA <c>CudaBackend.GdnRecurrenceDecode</c> / CPU
+    /// <c>GdnKernels.GdnRecurrenceDecode</c> op-for-op.
+    /// </summary>
+    /// <remarks>
+    /// The shader is specialized for <c>headDim == 128</c> (<c>local_size_x = 128</c>), which both
+    /// target models (qwen36-35b-a3b / qwen36-27b-mtp) use. This guarantees one active invocation
+    /// per output column with no per-thread early return before a <c>barrier()</c>, so every
+    /// invocation reaches every barrier.
+    /// </remarks>
+    public void GdnRecurrenceDecode(
+        Tensor state, Tensor q, Tensor k, Tensor v,
+        Tensor alphaIn, Tensor beta, Tensor ssmA, Tensor dtBias,
+        Tensor normWeight, Tensor z, Tensor output,
+        int numVHeads, int headDim, float normEps = 1e-6f)
+    {
+        if (headDim != 128)
+            throw new ArgumentOutOfRangeException(nameof(headDim), headDim,
+                "The Vulkan GDN recurrence shader is specialized for headDim=128.");
+        if (numVHeads < 1)
+            throw new ArgumentOutOfRangeException(nameof(numVHeads), numVHeads,
+                "numVHeads must be >= 1.");
+
+        // Validate tensor sizes on the CPU: a too-small buffer would index out of bounds on the
+        // GPU (silent corruption / device-lost), which the shader cannot guard against.
+        long qkvLen = (long)numVHeads * headDim;
+        long stateLen = qkvLen * headDim;
+        static void Require(Tensor t, long min, string name)
+        {
+            if (t.ElementCount < min)
+                throw new ArgumentException($"{name} must have at least {min} elements (has {t.ElementCount}).", name);
+        }
+        Require(state, stateLen, nameof(state));
+        Require(q, qkvLen, nameof(q));
+        Require(k, qkvLen, nameof(k));
+        Require(v, qkvLen, nameof(v));
+        Require(z, qkvLen, nameof(z));
+        Require(output, qkvLen, nameof(output));
+        Require(alphaIn, numVHeads, nameof(alphaIn));
+        Require(beta, numVHeads, nameof(beta));
+        Require(ssmA, numVHeads, nameof(ssmA));
+        Require(dtBias, numVHeads, nameof(dtBias));
+        Require(normWeight, headDim, nameof(normWeight));
+
+        _gdnRecurrenceDecodePipeline ??= new ComputePipeline(this, Shaders.GdnRecurrenceDecode, 11,
+            pushConstantSize: sizeof(GdnRecurrenceDecodeParams));
+        var p = new GdnRecurrenceDecodeParams
+        {
+            hv = (uint)numVHeads,
+            d = (uint)headDim,
+            normEps = normEps,
+        };
+        DispatchOrRecord(_gdnRecurrenceDecodePipeline,
+            [GetBuffer(state), GetBuffer(q), GetBuffer(k), GetBuffer(v),
+             GetBuffer(alphaIn), GetBuffer(beta), GetBuffer(ssmA), GetBuffer(dtBias),
+             GetBuffer(normWeight), GetBuffer(z), GetBuffer(output)],
+            (uint)numVHeads, &p);
+    }
+
+    // ── Issue #356 PR5a: batched GDN trunk over a chunk of N prompt tokens ──────
+
+    /// <summary>
+    /// Batched GDN depthwise conv1d over <paramref name="nTok"/> tokens (read-only state).
+    /// <paramref name="x"/>/<paramref name="output"/> are <c>[nTok × channels]</c>;
+    /// <paramref name="state"/> is the carried <c>[(K-1) × channels]</c>. Bit-identical to
+    /// <paramref name="nTok"/> sequential <see cref="GdnConv1dDecode"/> calls. State is advanced
+    /// separately by <see cref="GdnConv1dStateUpdateBatched"/> (so concurrent token groups read one
+    /// snapshot). Mirrors CUDA <c>CudaBackend.GdnConv1dDecodeBatched</c>.
+    /// </summary>
+    public void GdnConv1dDecodeBatched(Tensor x, Tensor state, Tensor weight, Tensor output,
+                                       int channels, int kernelSize, int nTok)
+    {
+        // Same fixed-size `float tmp/s_old[4]` constraint as the single-token shader.
+        if (kernelSize is < 1 or > 5)
+            throw new ArgumentOutOfRangeException(nameof(kernelSize), kernelSize, "kernelSize must be in [1, 5].");
+        // Positivity guards: a negative value would cast to a huge uint dispatch / OOB on the GPU.
+        if (channels < 1) throw new ArgumentOutOfRangeException(nameof(channels), channels, "channels must be >= 1.");
+        if (nTok < 1) throw new ArgumentOutOfRangeException(nameof(nTok), nTok, "nTok must be >= 1.");
+        _gdnConv1dDecodeBatchedPipeline ??= new ComputePipeline(this, Shaders.GdnConv1dDecodeBatched, 4,
+            pushConstantSize: sizeof(GdnConv1dBatchedParams));
+        var p = new GdnConv1dBatchedParams { channels = (uint)channels, kernelSize = (uint)kernelSize, nTok = (uint)nTok };
+        DispatchOrRecord(_gdnConv1dDecodeBatchedPipeline,
+            [GetBuffer(x), GetBuffer(state), GetBuffer(weight), GetBuffer(output)],
+            (uint)(((long)channels + 255) / 256), &p, groupY: (uint)nTok);
+    }
+
+    /// <summary>Advance the GDN conv1d state past a chunk of <paramref name="nTok"/> tokens (matches
+    /// the sequential state evolution). See <see cref="GdnConv1dDecodeBatched"/>. Mirrors CUDA
+    /// <c>CudaBackend.GdnConv1dStateUpdateBatched</c>.</summary>
+    public void GdnConv1dStateUpdateBatched(Tensor x, Tensor state, int channels, int kernelSize, int nTok)
+    {
+        if (kernelSize is < 1 or > 5)
+            throw new ArgumentOutOfRangeException(nameof(kernelSize), kernelSize, "kernelSize must be in [1, 5].");
+        if (channels < 1) throw new ArgumentOutOfRangeException(nameof(channels), channels, "channels must be >= 1.");
+        if (nTok < 1) throw new ArgumentOutOfRangeException(nameof(nTok), nTok, "nTok must be >= 1.");
+        _gdnConv1dStateUpdateBatchedPipeline ??= new ComputePipeline(this, Shaders.GdnConv1dStateUpdateBatched, 2,
+            pushConstantSize: sizeof(GdnConv1dBatchedParams));
+        var p = new GdnConv1dBatchedParams { channels = (uint)channels, kernelSize = (uint)kernelSize, nTok = (uint)nTok };
+        DispatchOrRecord(_gdnConv1dStateUpdateBatchedPipeline,
+            [GetBuffer(x), GetBuffer(state)],
+            (uint)(((long)channels + 255) / 256), &p);
+    }
+
+    /// <summary>
+    /// #357 PR1: capture the per-token conv1d states of a batched-verify chunk into the device
+    /// snapshot ring in a SINGLE launch. Slot <c>i</c> (i ∈ [0, <paramref name="nCapture"/>))
+    /// receives the conv state the sequential decode loop would hold after token <c>i</c> —
+    /// byte-identical to <see cref="GdnConv1dStateUpdateBatched"/> with <c>nTok = i+1</c>. Reads the
+    /// PRE-update <paramref name="state"/>, so call it BEFORE advancing the live conv state.
+    /// <paramref name="ring"/> points to this layer's region in slot 0;
+    /// <paramref name="ringFloatOffset"/> offsets to it; <paramref name="ringSlotStride"/> is the
+    /// float stride between consecutive slots. Mirrors CUDA
+    /// <c>CudaBackend.GdnConv1dStateCaptureRing</c>.
+    /// </summary>
+    public void GdnConv1dStateCaptureRing(Tensor x, Tensor state, Tensor ring, long ringFloatOffset,
+                                          int channels, int kernelSize, int ringSlotStride, int nCapture)
+    {
+        if (nCapture <= 0) return;
+        if (kernelSize is < 1 or > 5)
+            throw new ArgumentOutOfRangeException(nameof(kernelSize), kernelSize, "kernelSize must be in [1, 5].");
+        if (channels < 1) throw new ArgumentOutOfRangeException(nameof(channels), channels, "channels must be >= 1.");
+        if (ringSlotStride < 0) throw new ArgumentOutOfRangeException(nameof(ringSlotStride), ringSlotStride, "ringSlotStride must be >= 0.");
+        // ringFloatOffset is narrowed to a uint push constant; guard the (unreachable-in-practice)
+        // overflow so a too-large ring offset fails loud rather than silently wrapping.
+        if (ringFloatOffset is < 0 or > uint.MaxValue)
+            throw new ArgumentOutOfRangeException(nameof(ringFloatOffset), ringFloatOffset, "ringFloatOffset must be in [0, uint.MaxValue].");
+        _gdnConv1dStateCaptureRingPipeline ??= new ComputePipeline(this, Shaders.GdnConv1dStateCaptureRing, 3,
+            pushConstantSize: sizeof(GdnConvCaptureRingParams));
+        var p = new GdnConvCaptureRingParams
+        {
+            channels = (uint)channels,
+            kernelSize = (uint)kernelSize,
+            ringSlotStride = (uint)ringSlotStride,
+            ringFloatOffset = (uint)ringFloatOffset,
+            nCapture = (uint)nCapture,
+        };
+        DispatchOrRecord(_gdnConv1dStateCaptureRingPipeline,
+            [GetBuffer(x), GetBuffer(state), GetBuffer(ring)],
+            (uint)(((long)channels + 255) / 256), &p, groupY: (uint)nCapture);
+    }
+
+    /// <summary>
+    /// Batched per-head GDN L2-norm over <paramref name="nTok"/> tokens. The bound buffer is the
+    /// data region; <paramref name="elementOffset"/> is the float base (host-offset to the Q or K
+    /// region), <paramref name="rowStride"/> the per-token element stride. Dispatch grid is
+    /// (numHeads, nTok). Bit-identical to <paramref name="nTok"/> sequential
+    /// <see cref="GdnL2NormPerHead"/> calls. Mirrors CUDA <c>CudaBackend.GdnL2NormPerHeadBatched</c>.
+    /// </summary>
+    public void GdnL2NormPerHeadBatched(Tensor data, long elementOffset, int numHeads, int headDim,
+                                        int rowStride, int nTok, float eps = 1e-6f)
+    {
+        if (numHeads < 1) throw new ArgumentOutOfRangeException(nameof(numHeads), numHeads, "numHeads must be >= 1.");
+        if (headDim < 1) throw new ArgumentOutOfRangeException(nameof(headDim), headDim, "headDim must be >= 1.");
+        if (nTok < 1) throw new ArgumentOutOfRangeException(nameof(nTok), nTok, "nTok must be >= 1.");
+        _gdnL2NormPerHeadBatchedPipeline ??= new ComputePipeline(this, Shaders.GdnL2NormPerHeadBatched, 1,
+            pushConstantSize: sizeof(GdnL2NormBatchedParams));
+        var p = new GdnL2NormBatchedParams
+        {
+            headDim = (uint)headDim,
+            numHeads = (uint)numHeads,
+            eps = eps,
+            offset = (uint)elementOffset,
+            rowStride = (uint)rowStride,
+            nTok = (uint)nTok,
+        };
+        DispatchOrRecord(_gdnL2NormPerHeadBatchedPipeline, [GetBuffer(data)], (uint)numHeads, &p, groupY: (uint)nTok);
+    }
+
+    /// <summary>
+    /// Batched GDN GQA-broadcast tile over <paramref name="nTok"/> tokens.
+    /// <paramref name="srcOffset"/>/<paramref name="dstOffset"/> are float base offsets;
+    /// <paramref name="srcStride"/>/<paramref name="dstStride"/> are per-token strides. Bit-identical
+    /// to <paramref name="nTok"/> sequential <see cref="GdnTileHeads"/> calls. Mirrors CUDA
+    /// <c>CudaBackend.GdnTileHeadsBatched</c>.
+    /// </summary>
+    public void GdnTileHeadsBatched(Tensor src, long srcOffset, Tensor dst, long dstOffset,
+                                    int srcHeads, int repeat, int headDim,
+                                    int srcStride, int dstStride, int nTok)
+    {
+        if (srcHeads < 1) throw new ArgumentOutOfRangeException(nameof(srcHeads), srcHeads, "srcHeads must be >= 1.");
+        if (repeat < 1) throw new ArgumentOutOfRangeException(nameof(repeat), repeat, "repeat must be >= 1.");
+        if (headDim < 1) throw new ArgumentOutOfRangeException(nameof(headDim), headDim, "headDim must be >= 1.");
+        if (nTok < 1) throw new ArgumentOutOfRangeException(nameof(nTok), nTok, "nTok must be >= 1.");
+        _gdnTileHeadsBatchedPipeline ??= new ComputePipeline(this, Shaders.GdnTileHeadsBatched, 2,
+            pushConstantSize: sizeof(GdnTileHeadsBatchedParams));
+        var p = new GdnTileHeadsBatchedParams
+        {
+            srcHeads = (uint)srcHeads,
+            repeat = (uint)repeat,
+            headDim = (uint)headDim,
+            srcOffset = (uint)srcOffset,
+            dstOffset = (uint)dstOffset,
+            srcStride = (uint)srcStride,
+            dstStride = (uint)dstStride,
+            nTok = (uint)nTok,
+        };
+        long total = (long)srcHeads * repeat * headDim;
+        DispatchOrRecord(_gdnTileHeadsBatchedPipeline, [GetBuffer(src), GetBuffer(dst)],
+            (uint)((total + 255) / 256), &p, groupY: (uint)nTok);
+    }
+
+    /// <summary>
+    /// Fused sequential GDN recurrence scan over <paramref name="nTok"/> tokens: ONE dispatch
+    /// (one workgroup per v-head) loops the positions internally, carrying the per-head state in
+    /// place. Bit-identical to <paramref name="nTok"/> sequential <see cref="GdnRecurrenceDecode"/>
+    /// calls — the fused form of the per-token decode, NOT the parallel chunked-scan. Per-head input
+    /// strides let q/k come from the tiled <c>[nTok × valueDim]</c> buffers, v from the silu'd conv
+    /// output (<paramref name="vHeadOff"/> into a <c>[nTok × convChannels]</c> buffer), z from a
+    /// <c>[nTok × valueDim]</c> gate, alpha/beta from <c>[nTok × numVHeads]</c>. Mirrors CUDA
+    /// <c>CudaBackend.GdnRecurrenceScan</c>.
+    /// </summary>
+    /// <remarks>
+    /// #290/#357 ring capture: when <paramref name="ringScan"/> is non-null and
+    /// <paramref name="nCapture"/> &gt; 0, the post-Pass-B state of each token i &lt; nCapture is
+    /// also mirrored into <paramref name="ringScan"/> (disjoint from <paramref name="state"/>, so
+    /// the scan math is byte-unchanged). The ring binding is ALWAYS present; when
+    /// <paramref name="ringScan"/> is null it binds <paramref name="state"/> as a placeholder and
+    /// forces nCapture=0 so the shader (which guards every ring write behind <c>nCapture &gt; 0</c>)
+    /// never writes it. PR5a's prefill use and the unit test pass ringScan=null.
+    /// </remarks>
+    public void GdnRecurrenceScan(
+        Tensor state, Tensor qAll, Tensor kAll, Tensor vAll,
+        Tensor alphaAll, Tensor betaAll, Tensor ssmA, Tensor dtBias,
+        Tensor normWeight, Tensor zAll, Tensor outputAll,
+        int numVHeads, int headDim, float normEps,
+        int qStride, int kStride, int vStride, int vHeadOff, int zStride, int oStride, int nTok,
+        Tensor? ringScan = null, long ringScanFloatOffset = 0, int ringSlotStride = 0, int nCapture = 0)
+    {
+        if (headDim != 128)
+            throw new ArgumentOutOfRangeException(nameof(headDim), headDim,
+                "The Vulkan GDN recurrence scan shader is specialized for headDim=128.");
+        if (numVHeads < 1)
+            throw new ArgumentOutOfRangeException(nameof(numVHeads), numVHeads, "numVHeads must be >= 1.");
+        if (nTok < 1)
+            throw new ArgumentOutOfRangeException(nameof(nTok), nTok, "nTok must be >= 1.");
+        if (ringScan is not null && (nCapture < 0 || ringSlotStride < 0 || ringScanFloatOffset < 0))
+            throw new ArgumentOutOfRangeException(nameof(nCapture),
+                "ring-capture params (nCapture, ringSlotStride, ringScanFloatOffset) must be non-negative when ringScan is provided.");
+
+        _gdnRecurrenceScanPipeline ??= new ComputePipeline(this, Shaders.GdnRecurrenceScan, 12,
+            pushConstantSize: sizeof(GdnRecurrenceScanParams));
+        // #290 ring capture: null tensor → bind `state` as placeholder + force 0 captures (no-op).
+        bool capture = ringScan is not null;
+        var p = new GdnRecurrenceScanParams
+        {
+            hv = (uint)numVHeads,
+            d = (uint)headDim,
+            normEps = normEps,
+            qStride = (uint)qStride,
+            kStride = (uint)kStride,
+            vStride = (uint)vStride,
+            vHeadOff = (uint)vHeadOff,
+            zStride = (uint)zStride,
+            oStride = (uint)oStride,
+            nTok = (uint)nTok,
+            ringSlotStride = (uint)ringSlotStride,
+            nCapture = capture ? (uint)nCapture : 0u,
+            ringScanOff = capture ? (uint)ringScanFloatOffset : 0u,
+        };
+        DispatchOrRecord(_gdnRecurrenceScanPipeline,
+            [GetBuffer(state), GetBuffer(qAll), GetBuffer(kAll), GetBuffer(vAll),
+             GetBuffer(alphaAll), GetBuffer(betaAll), GetBuffer(ssmA), GetBuffer(dtBias),
+             GetBuffer(normWeight), GetBuffer(zAll), GetBuffer(outputAll),
+             GetBuffer(capture ? ringScan! : state)],
+            (uint)numVHeads, &p);
+    }
+
+    /// <summary>GDN chunk size of the chunk-parallel prefill shader (matches CUDA GDN_CHUNK).</summary>
+    public const int GdnChunkSize = 64;
+
+    /// <summary>
+    /// Max bytes of compute shared memory the selected physical device guarantees
+    /// (<c>VkPhysicalDeviceProperties.limits.maxComputeSharedMemorySize</c>). The Vulkan minimum is
+    /// 16 KB; many GPUs guarantee only 32 KB.
+    /// </summary>
+    public uint MaxComputeSharedMemoryBytes => _deviceProperties.limits.maxComputeSharedMemorySize;
+
+    /// <summary>Shared-memory bytes the chunk-parallel prefill shader needs:
+    /// <c>(2·d + 3·C + 2·C·C) · 4</c> floats with d=128, C=<see cref="GdnChunkSize"/> (≈ 34,560 B).</summary>
+    private const uint GdnChunkedPrefillSharedBytes =
+        (uint)((2 * 128 + 3 * GdnChunkSize + 2 * GdnChunkSize * GdnChunkSize) * sizeof(float));
+
+    /// <summary>
+    /// True when the device's <see cref="MaxComputeSharedMemoryBytes"/> can fit the chunk-parallel GDN
+    /// prefill shader (≈ 34,560 B). On a device that can't (only the 32 KB minimum), the caller must
+    /// fall back to <see cref="GdnRecurrenceScan"/>; <see cref="GdnChunkedPrefill"/> throws
+    /// <see cref="NotSupportedException"/> rather than launch a shader that exceeds the limit.
+    /// </summary>
+    public bool SupportsGdnChunkedPrefill => MaxComputeSharedMemoryBytes >= GdnChunkedPrefillSharedBytes;
+
+    /// <summary>
+    /// Chunk-parallel ("FlashQLA-style chunk_gated_delta_rule") GDN prefill scan over
+    /// <paramref name="nTok"/> tokens: ONE dispatch (one workgroup per v-head) walks the chunk grid
+    /// (<see cref="GdnChunkSize"/> tokens per block), resolving each block's intra-chunk delta-rule
+    /// coupling by forward substitution and carrying the per-head state in place. Same inputs/strides
+    /// and in-place state update as <see cref="GdnRecurrenceScan"/> (minus the ring args — chunked is
+    /// clean-prefill only). Mirrors CUDA <c>CudaBackend.GdnChunkedPrefill</c>.
+    /// </summary>
+    /// <remarks>
+    /// Numerically EQUAL to the sequential scan up to floating-point reduction order: the chunked form
+    /// reorders the FP reductions, so it is argmax-stable but NOT byte-exact against
+    /// <see cref="GdnRecurrenceScan"/>. The shader needs ≈ 34,560 B of shared memory; this throws
+    /// <see cref="NotSupportedException"/> when <see cref="SupportsGdnChunkedPrefill"/> is false so the
+    /// caller can fall back to the scan.
+    /// </remarks>
+    public void GdnChunkedPrefill(
+        Tensor state, Tensor qAll, Tensor kAll, Tensor vAll,
+        Tensor alphaAll, Tensor betaAll, Tensor ssmA, Tensor dtBias,
+        Tensor normWeight, Tensor zAll, Tensor outputAll,
+        int numVHeads, int headDim, float normEps,
+        int qStride, int kStride, int vStride, int vHeadOff, int zStride, int oStride, int nTok)
+    {
+        if (headDim != 128)
+            throw new ArgumentOutOfRangeException(nameof(headDim), headDim,
+                "The Vulkan GDN chunked-prefill shader is specialized for headDim=128.");
+        if (numVHeads < 1)
+            throw new ArgumentOutOfRangeException(nameof(numVHeads), numVHeads, "numVHeads must be >= 1.");
+        if (nTok < 1)
+            throw new ArgumentOutOfRangeException(nameof(nTok), nTok, "nTok must be >= 1.");
+        if (!SupportsGdnChunkedPrefill)
+            throw new NotSupportedException(
+                $"The chunk-parallel GDN prefill shader needs {GdnChunkedPrefillSharedBytes} bytes of " +
+                $"compute shared memory but the device guarantees only {MaxComputeSharedMemoryBytes}. " +
+                "Fall back to GdnRecurrenceScan (check SupportsGdnChunkedPrefill before calling).");
+
+        _gdnChunkedPrefillPipeline ??= new ComputePipeline(this, Shaders.GdnChunkedPrefill, 11,
+            pushConstantSize: sizeof(GdnChunkedPrefillParams));
+        var p = new GdnChunkedPrefillParams
+        {
+            hv = (uint)numVHeads,
+            d = (uint)headDim,
+            normEps = normEps,
+            qStride = (uint)qStride,
+            kStride = (uint)kStride,
+            vStride = (uint)vStride,
+            vHeadOff = (uint)vHeadOff,
+            zStride = (uint)zStride,
+            oStride = (uint)oStride,
+            nTok = (uint)nTok,
+        };
+        DispatchOrRecord(_gdnChunkedPrefillPipeline,
+            [GetBuffer(state), GetBuffer(qAll), GetBuffer(kAll), GetBuffer(vAll),
+             GetBuffer(alphaAll), GetBuffer(betaAll), GetBuffer(ssmA), GetBuffer(dtBias),
+             GetBuffer(normWeight), GetBuffer(zAll), GetBuffer(outputAll)],
+            (uint)numVHeads, &p);
+    }
+
+    /// <summary>
+    /// Partial NEOX RoPE: rotates only the first <paramref name="ropeDim"/> of each
+    /// <paramref name="headDim"/>-wide head, passing dims <c>[ropeDim, headDim)</c> through
+    /// untouched. The Vulkan mirror of CUDA's <c>RoPEPartial</c> for qwen35moe/qwen36
+    /// Gated-Attention (rotates the first 64 of each 256-dim head). The frequency exponent uses
+    /// <paramref name="ropeDim"/> (not headDim). Only NEOX is supported (matches CUDA).
+    /// </summary>
+    public void RoPEPartial(Tensor x, int position, int headDim, int ropeDim, float ropeTheta, bool neox)
+    {
+        if (!neox)
+            throw new ArgumentException("RoPEPartial currently supports only neox=true.", nameof(neox));
+        if (headDim < 1)
+            throw new ArgumentOutOfRangeException(nameof(headDim), headDim, "headDim must be >= 1.");
+        if (ropeDim <= 0 || (ropeDim & 1) != 0)
+            throw new ArgumentException("ropeDim must be a positive even number.", nameof(ropeDim));
+        if (ropeDim > headDim)
+            throw new ArgumentException("ropeDim must be <= headDim.", nameof(ropeDim));
+
+        _ropeNeoxPartialPipeline ??= new ComputePipeline(this, Shaders.RoPENeoxPartial, 1, pushConstantSize: sizeof(RoPEPartialParams));
+        int numHeads = (int)(x.ElementCount / headDim);
+        long totalPairs = (long)numHeads * (ropeDim / 2);
+        var p = new RoPEPartialParams
+        {
+            numHeads = (uint)numHeads,
+            headDim = (uint)headDim,
+            ropeDim = (uint)ropeDim,
+            position = position,
+            theta = ropeTheta,
+        };
+        DispatchOrRecord(_ropeNeoxPartialPipeline, [GetBuffer(x)], (uint)((totalPairs + 255) / 256), &p);
+    }
+
+    /// <summary>
+    /// Batched partial NEOX RoPE over <paramref name="nTok"/> rows of the
+    /// <c>[nTok][numHeads*headDim]</c> buffer <paramref name="x"/>: token t (row
+    /// <c>gl_WorkGroupID.y</c>) rotates only the first <paramref name="ropeDim"/> of each head at
+    /// absolute position <paramref name="basePosition"/> + t (prefill assigns contiguous positions).
+    /// Bit-identical to <paramref name="nTok"/> sequential <see cref="RoPEPartial"/> calls at the
+    /// matching positions. The Vulkan mirror of CUDA's <c>RoPEPartialBatched</c>. Only NEOX
+    /// (matches CUDA + <see cref="RoPEPartial"/>).
+    /// </summary>
+    public void RoPEPartialBatched(Tensor x, int basePosition, int headDim, int ropeDim,
+        float ropeTheta, int numHeads, int nTok, bool neox)
+    {
+        if (!neox)
+            throw new ArgumentException("RoPEPartialBatched currently supports only neox=true.", nameof(neox));
+        if (headDim < 1)
+            throw new ArgumentOutOfRangeException(nameof(headDim), headDim, "headDim must be >= 1.");
+        if (numHeads < 1)
+            throw new ArgumentOutOfRangeException(nameof(numHeads), numHeads, "numHeads must be >= 1.");
+        if (nTok < 1)
+            throw new ArgumentOutOfRangeException(nameof(nTok), nTok, "nTok must be >= 1.");
+        if (ropeDim <= 0 || (ropeDim & 1) != 0)
+            throw new ArgumentException("ropeDim must be a positive even number.", nameof(ropeDim));
+        if (ropeDim > headDim)
+            throw new ArgumentException("ropeDim must be <= headDim.", nameof(ropeDim));
+
+        _ropeNeoxPartialBatchedPipeline ??= new ComputePipeline(this, Shaders.RoPENeoxPartialBatched, 1, pushConstantSize: sizeof(RoPEPartialParams));
+        long totalPairs = (long)numHeads * (ropeDim / 2);
+        var p = new RoPEPartialParams
+        {
+            numHeads = (uint)numHeads,
+            headDim = (uint)headDim,
+            ropeDim = (uint)ropeDim,
+            position = basePosition,   // shader adds the row (gl_WorkGroupID.y) token index
+            theta = ropeTheta,
+        };
+        DispatchOrRecord(_ropeNeoxPartialBatchedPipeline, [GetBuffer(x)],
+            (uint)((totalPairs + 255) / 256), &p, groupY: (uint)nTok);
+    }
+
+    /// <summary>
+    /// Strided de-interleave of qwen35moe's Gated-Attention output. <paramref name="qg"/> is laid
+    /// out per head as <c>[Q[headDim] ‖ G[headDim]]</c> (stride <c>2*headDim</c>); this splits it
+    /// into contiguous <paramref name="q"/> <c>[numHeads*headDim]</c> and <paramref name="g"/>
+    /// <c>[numHeads*headDim]</c>. The Vulkan mirror of CUDA's <c>SplitQG</c> (note arg order is
+    /// q, g, qg).
+    /// </summary>
+    public void SplitQG(Tensor q, Tensor g, Tensor qg, int numHeads, int headDim)
+    {
+        // Guard positivity first: a negative numHeads/headDim could make the products below
+        // positive (e.g. -1 * -256 * 2 = 512) and slip past the element-count checks, then cast
+        // to a huge uint dispatch / OOB access.
+        if (numHeads < 1)
+            throw new ArgumentOutOfRangeException(nameof(numHeads), numHeads, "numHeads must be >= 1.");
+        if (headDim < 1)
+            throw new ArgumentOutOfRangeException(nameof(headDim), headDim, "headDim must be >= 1.");
+        long expected = (long)numHeads * headDim * 2;
+        if (qg.ElementCount != expected)
+            throw new ArgumentException(
+                $"SplitQG: qg.ElementCount {qg.ElementCount} != numHeads*headDim*2 ({expected}).");
+        long perOut = (long)numHeads * headDim;
+        if (q.ElementCount != perOut || g.ElementCount != perOut)
+            throw new ArgumentException(
+                $"SplitQG: q/g element counts must each equal numHeads*headDim ({perOut}); got q={q.ElementCount}, g={g.ElementCount}.");
+
+        _splitQgPipeline ??= new ComputePipeline(this, Shaders.SplitQG, 3, pushConstantSize: sizeof(SplitQgParams));
+        var p = new SplitQgParams { numHeads = (uint)numHeads, headDim = (uint)headDim };
+        long total = (long)numHeads * headDim;
+        DispatchOrRecord(_splitQgPipeline, [GetBuffer(qg), GetBuffer(q), GetBuffer(g)],
+            (uint)((total + 255) / 256), &p);
+    }
+
+    /// <summary>
+    /// Batched strided de-interleave over <paramref name="nTok"/> rows: applies <see cref="SplitQG"/>
+    /// to each row of the <c>[nTok][numHeads*headDim*2]</c> input <paramref name="qg"/> in ONE
+    /// dispatch, writing the contiguous <c>[nTok][numHeads*headDim]</c> outputs <paramref name="q"/>
+    /// and <paramref name="g"/>. Token index t = <c>gl_WorkGroupID.y</c>. Bit-identical to
+    /// <paramref name="nTok"/> sequential <see cref="SplitQG"/> calls. The Vulkan mirror of CUDA's
+    /// <c>SplitQGBatched</c> (note arg order is q, g, qg; bind qg, q, g).
+    /// </summary>
+    public void SplitQGBatched(Tensor q, Tensor g, Tensor qg, int numHeads, int headDim, int nTok)
+    {
+        // Guard positivity first (same rationale as SplitQG): a negative dim could slip past the
+        // element-count checks and cast to a huge uint dispatch / OOB access.
+        if (numHeads < 1)
+            throw new ArgumentOutOfRangeException(nameof(numHeads), numHeads, "numHeads must be >= 1.");
+        if (headDim < 1)
+            throw new ArgumentOutOfRangeException(nameof(headDim), headDim, "headDim must be >= 1.");
+        if (nTok < 1)
+            throw new ArgumentOutOfRangeException(nameof(nTok), nTok, "nTok must be >= 1.");
+        long expected = (long)nTok * numHeads * headDim * 2;
+        if (qg.ElementCount != expected)
+            throw new ArgumentException(
+                $"SplitQGBatched: qg.ElementCount {qg.ElementCount} != nTok*numHeads*headDim*2 ({expected}).");
+        long perOut = (long)nTok * numHeads * headDim;
+        if (q.ElementCount != perOut || g.ElementCount != perOut)
+            throw new ArgumentException(
+                $"SplitQGBatched: q/g element counts must each equal nTok*numHeads*headDim ({perOut}); got q={q.ElementCount}, g={g.ElementCount}.");
+
+        _splitQgBatchedPipeline ??= new ComputePipeline(this, Shaders.SplitQGBatched, 3, pushConstantSize: sizeof(SplitQgParams));
+        var p = new SplitQgParams { numHeads = (uint)numHeads, headDim = (uint)headDim };
+        long total = (long)numHeads * headDim;
+        DispatchOrRecord(_splitQgBatchedPipeline, [GetBuffer(qg), GetBuffer(q), GetBuffer(g)],
+            (uint)((total + 255) / 256), &p, groupY: (uint)nTok);
+    }
+
+    /// <summary>
+    /// Fused in-place sigmoid-gate: <c>x[i] *= sigmoid(gate[i])</c>. The Vulkan mirror of CUDA's
+    /// <c>SigmoidMulInPlace</c>; replaces a Sigmoid + ElementwiseMul pair for the qwen35moe
+    /// Gated-Attention output gate.
+    /// </summary>
+    public void SigmoidMulInPlace(Tensor x, Tensor gate)
+    {
+        if (x.ElementCount != gate.ElementCount)
+            throw new ArgumentException(
+                $"SigmoidMulInPlace element-count mismatch: x={x.ElementCount} gate={gate.ElementCount}.");
+
+        _sigmoidMulInPlacePipeline ??= new ComputePipeline(this, Shaders.SigmoidMulInPlace, 2, pushConstantSize: sizeof(CountParams));
+        var p = new CountParams { n = (uint)x.ElementCount };
+        DispatchOrRecord(_sigmoidMulInPlacePipeline, [GetBuffer(x), GetBuffer(gate)],
+            (uint)((x.ElementCount + 255) / 256), &p);
+    }
+
+    public void SiLU(Tensor x)
+    {
+        _siluPipeline ??= new ComputePipeline(this, Shaders.SiLU, 1, pushConstantSize: sizeof(CountParams));
+        var p = new CountParams { n = (uint)x.ElementCount };
+        // 64-bit arithmetic before the cast (activation buffers are small, but avoids
+        // any theoretical uint wrap that would dispatch 0 workgroups).
+        DispatchOrRecord(_siluPipeline, [GetBuffer(x)], (uint)((x.ElementCount + 255) / 256), &p);
+    }
+
+    public void SiLuMul(Tensor gate, Tensor up)
+    {
+        _siluMulPipeline ??= new ComputePipeline(this, Shaders.SiLuMul, 2, pushConstantSize: sizeof(CountParams));
+        var p = new CountParams { n = (uint)gate.ElementCount };
+        DispatchOrRecord(_siluMulPipeline, [GetBuffer(gate), GetBuffer(up)], ((uint)gate.ElementCount + 255) / 256, &p);
+    }
+
+    public void GeluTanhMul(Tensor gate, Tensor up)
+    {
+        _geluTanhMulPipeline ??= new ComputePipeline(this, Shaders.GeluTanhMul, 2, pushConstantSize: sizeof(CountParams));
+        var p = new CountParams { n = (uint)gate.ElementCount };
+        DispatchOrRecord(_geluTanhMulPipeline, [GetBuffer(gate), GetBuffer(up)], ((uint)gate.ElementCount + 255) / 256, &p);
+    }
+
+    public void SoftcapInPlace(Tensor x, float cap)
+    {
+        // Reuse the { uint n, float scale } push-constant layout (scale carries the cap).
+        _softcapPipeline ??= new ComputePipeline(this, Shaders.Softcap, 1, pushConstantSize: sizeof(ScaleParams));
+        var p = new ScaleParams { n = (uint)x.ElementCount, scale = cap };
+        DispatchOrRecord(_softcapPipeline, [GetBuffer(x)], ((uint)x.ElementCount + 255) / 256, &p);
+    }
+
+    public void AddInPlace(Tensor dst, Tensor src)
+    {
+        _addInPlacePipeline ??= new ComputePipeline(this, Shaders.AddInPlace, 2, pushConstantSize: sizeof(CountParams));
+        var p = new CountParams { n = (uint)dst.ElementCount };
+        DispatchOrRecord(_addInPlacePipeline, [GetBuffer(dst), GetBuffer(src)], ((uint)dst.ElementCount + 255) / 256, &p);
+    }
+
+    public void AddScaledInPlace(Tensor dst, Tensor src, float scale)
+    {
+        _addScaledInPlacePipeline ??= new ComputePipeline(this, Shaders.AddScaledInPlace, 2, pushConstantSize: sizeof(ScaleParams));
+        var p = new ScaleParams { n = (uint)dst.ElementCount, scale = scale };
+        DispatchOrRecord(_addScaledInPlacePipeline, [GetBuffer(dst), GetBuffer(src)], ((uint)dst.ElementCount + 255) / 256, &p);
+    }
+
+    public void ScaleInPlace(Tensor x, float scale)
+    {
+        _scaleInPlacePipeline ??= new ComputePipeline(this, Shaders.ScaleInPlace, 1, pushConstantSize: sizeof(ScaleParams));
+        var p = new ScaleParams { n = (uint)x.ElementCount, scale = scale };
+        DispatchOrRecord(_scaleInPlacePipeline, [GetBuffer(x)], ((uint)x.ElementCount + 255) / 256, &p);
+    }
+
+    /// <summary>Copy an entire device-local tensor using a compute shader (stays in compute pipeline stage).</summary>
+    public void RecordComputeCopy(Tensor dst, Tensor src)
+    {
+        var srcBuf = GetBuffer(src);
+        RecordComputeCopyWords(GetBuffer(dst), 0, srcBuf, 0, (uint)(srcBuf.Size / 4));
+    }
+
+    /// <summary>Copy a sub-region between device-local tensors using a compute shader.</summary>
+    public void RecordComputeCopyRegion(Tensor dst, long dstOffsetBytes, Tensor src, long srcOffsetBytes, long sizeBytes)
+    {
+        RecordComputeCopyWords(GetBuffer(dst), (uint)(dstOffsetBytes / 4),
+                               GetBuffer(src), (uint)(srcOffsetBytes / 4),
+                               (uint)(sizeBytes / 4));
+    }
+
+    private void RecordComputeCopyWords(GpuBuffer dst, uint dstOffset, GpuBuffer src, uint srcOffset, uint wordCount)
+    {
+        _bufCopyPipeline ??= new ComputePipeline(this, Shaders.BufferCopy, 2, pushConstantSize: sizeof(BufCopyParams));
+        var p = new BufCopyParams { count = wordCount, srcOffset = srcOffset, dstOffset = dstOffset };
+        DispatchOrRecord(_bufCopyPipeline, [src, dst], (wordCount + 255) / 256, &p);
+    }
+
+    public void Clear(Tensor dst)
+    {
+        _clearPipeline ??= new ComputePipeline(this, Shaders.Clear, 1, pushConstantSize: sizeof(CountParams));
+        var p = new CountParams { n = (uint)dst.ElementCount };
+        DispatchOrRecord(_clearPipeline, [GetBuffer(dst)], ((uint)dst.ElementCount + 255) / 256, &p);
+    }
+
+    public void ElementwiseMul(Tensor output, Tensor a, Tensor b)
+    {
+        _elementwiseMulPipeline ??= new ComputePipeline(this, Shaders.ElementwiseMul, 3, pushConstantSize: sizeof(CountParams));
+        var p = new CountParams { n = (uint)a.ElementCount };
+        DispatchOrRecord(_elementwiseMulPipeline, [GetBuffer(a), GetBuffer(b), GetBuffer(output)], ((uint)a.ElementCount + 255) / 256, &p);
+    }
+
+    public void RoPE(Tensor x, int position, int headDim, float ropeTheta = 10000f, bool neox = false)
+    {
+        ComputePipeline pipeline;
+        if (neox)
+        {
+            _ropeNeoxPipeline ??= new ComputePipeline(this, Shaders.RoPENeox, 1, pushConstantSize: sizeof(RoPEParams));
+            pipeline = _ropeNeoxPipeline;
+        }
+        else
+        {
+            _ropePipeline ??= new ComputePipeline(this, Shaders.RoPE, 1, pushConstantSize: sizeof(RoPEParams));
+            pipeline = _ropePipeline;
+        }
+        uint numHeads = (uint)(x.ElementCount / headDim);
+        uint totalPairs = numHeads * (uint)(headDim / 2);
+        var p = new RoPEParams { numHeads = numHeads, headDim = (uint)headDim, position = position, theta = ropeTheta };
+        DispatchOrRecord(pipeline, [GetBuffer(x)], (totalPairs + 255) / 256, &p);
+    }
+
+    /// <summary>
+    /// Batched RoPE: rotates each of <paramref name="numTokens"/> rows (each <paramref name="numHeads"/>
+    /// heads of <paramref name="headDim"/>) of the <c>[numTokens][numHeads*headDim]</c> buffer
+    /// <paramref name="x"/> in ONE dispatch, where row r uses position = <paramref name="basePos"/> + r
+    /// (per-token absolute position). Selects the NEOX or interleaved-pair variant via
+    /// <paramref name="neox"/>. Bit-identical to <paramref name="numTokens"/> separate
+    /// <see cref="RoPE"/> calls at positions basePos, basePos+1, … — used by the spec-decode
+    /// batched verify (issue #308). RoPE with freq_factors is Gemma-4-only and excluded from the
+    /// batched path, so no batched freq-factors variant is provided.
+    /// </summary>
+    public void RoPEBatched(Tensor x, int basePos, int headDim, int numHeads, int numTokens,
+        float ropeTheta = 10000f, bool neox = false)
+    {
+        ComputePipeline pipeline;
+        if (neox)
+        {
+            _ropeNeoxBatchedPipeline ??= new ComputePipeline(this, Shaders.RoPENeoxBatched, 1, pushConstantSize: sizeof(RoPEParams));
+            pipeline = _ropeNeoxBatchedPipeline;
+        }
+        else
+        {
+            _ropeBatchedPipeline ??= new ComputePipeline(this, Shaders.RoPEBatched, 1, pushConstantSize: sizeof(RoPEParams));
+            pipeline = _ropeBatchedPipeline;
+        }
+        uint totalPairs = (uint)numHeads * (uint)(headDim / 2);
+        // RoPEParams.position carries base_pos; the shader adds the row (gl_WorkGroupID.y) index.
+        var p = new RoPEParams { numHeads = (uint)numHeads, headDim = (uint)headDim, position = basePos, theta = ropeTheta };
+        DispatchOrRecord(pipeline, [GetBuffer(x)], (totalPairs + 255) / 256, &p, groupY: (uint)numTokens);
+    }
+
+    /// <summary>
+    /// NEOX RoPE with a per-half-dim <paramref name="freqFactors"/> table (size head_dim/2) that
+    /// divides each pair's frequency. The Vulkan mirror of CUDA's <c>RoPEWithFactors</c>: Gemma 4
+    /// global (non-SWA) layers apply <c>rope_freqs.weight</c> here to mask the high-frequency tail,
+    /// while SWA layers use the plain <see cref="RoPE"/>. Computes cos/sin in-shader (no tables).
+    /// </summary>
+    public void RoPEWithFactors(Tensor x, int position, int headDim, float ropeTheta, Tensor freqFactors)
+    {
+        _ropeNeoxWithFactorsPipeline ??= new ComputePipeline(this, Shaders.RoPENeoxWithFactors, 2, pushConstantSize: sizeof(RoPEParams));
+        uint numHeads = (uint)(x.ElementCount / headDim);
+        uint totalPairs = numHeads * (uint)(headDim / 2);
+        var p = new RoPEParams { numHeads = numHeads, headDim = (uint)headDim, position = position, theta = ropeTheta };
+        DispatchOrRecord(_ropeNeoxWithFactorsPipeline, [GetBuffer(x), GetBuffer(freqFactors)], (totalPairs + 255) / 256, &p);
+    }
+
+    public void Softmax(Tensor x)
+    {
+        _softmaxPipeline ??= new ComputePipeline(this, Shaders.Softmax, 1, pushConstantSize: sizeof(CountParams));
+        var p = new CountParams { n = (uint)x.ElementCount };
+        DispatchOrRecord(_softmaxPipeline, [GetBuffer(x)], 1, &p);
+    }
+
+    public void Sigmoid(Tensor x)
+    {
+        _sigmoidPipeline ??= new ComputePipeline(this, Shaders.Sigmoid, 1, pushConstantSize: sizeof(CountParams));
+        var p = new CountParams { n = (uint)x.ElementCount };
+        DispatchOrRecord(_sigmoidPipeline, [GetBuffer(x)], ((uint)x.ElementCount + 255) / 256, &p);
+    }
+
+    public void MatMul(Tensor output, Tensor matrix, Tensor vector)
+    {
+        // Default: assume Q4_K weights
+        MatMul(output, matrix, vector, DType.Q4_K);
+    }
+
+    public void MatMul(Tensor output, Tensor matrix, Tensor vector, DType weightDType)
+    {
+        var p = new MatVecParams { rows = (uint)output.ElementCount, cols = (uint)vector.ElementCount };
+        var bufs = (ReadOnlySpan<GpuBuffer>)[GetBuffer(matrix), GetBuffer(vector), GetBuffer(output)];
+        uint totalRows = (uint)output.ElementCount;
+
+        switch (weightDType)
+        {
+            case DType.Float32:
+                _matVecF32Pipeline ??= new ComputePipeline(this, Shaders.MatVecF32, 3, pushConstantSize: sizeof(MatVecParams));
+                DispatchOrRecord(_matVecF32Pipeline, bufs, (totalRows + 7) / 8, &p);
+                break;
+            case DType.Q6_K:
+                _matVecQ6KPipeline ??= new ComputePipeline(this, Shaders.MatVecQ6K, 3, pushConstantSize: sizeof(MatVecParams));
+                DispatchOrRecord(_matVecQ6KPipeline, bufs, (totalRows + 7) / 8, &p);
+                break;
+            case DType.Q5_K:
+                _matVecQ5KPipeline ??= new ComputePipeline(this, Shaders.MatVecQ5K, 3, pushConstantSize: sizeof(MatVecParams));
+                DispatchOrRecord(_matVecQ5KPipeline, bufs, (totalRows + 7) / 8, &p);
+                break;
+            case DType.Q8_0:
+                _matVecQ8_0Pipeline ??= new ComputePipeline(this, Shaders.MatVecQ8_0, 3, pushConstantSize: sizeof(MatVecParams));
+                DispatchOrRecord(_matVecQ8_0Pipeline, bufs, (totalRows + 7) / 8, &p);
+                break;
+            case DType.Q4_0:
+                _matVecQ4_0Pipeline ??= new ComputePipeline(this, Shaders.MatVecQ4_0, 3, pushConstantSize: sizeof(MatVecParams));
+                DispatchOrRecord(_matVecQ4_0Pipeline, bufs, (totalRows + 7) / 8, &p);
+                break;
+            default: // Q4_K — 256 threads, 8 rows per workgroup, subgroupAdd reduction
+                _matVecQ4KPipeline ??= new ComputePipeline(this, Shaders.MatVecQ4K, 3, pushConstantSize: sizeof(MatVecParams));
+                DispatchOrRecord(_matVecQ4KPipeline, bufs, (totalRows + 7) / 8, &p);
+                break;
+        }
+    }
+
+    /// <summary>
+    /// Batched (weight-stationary) matrix-vector multiply: computes <paramref name="nTok"/>
+    /// independent matvecs against the SAME weight matrix. For Q4_K/Q6_K the weight is read from
+    /// VRAM once and multiplied into <paramref name="nTok"/> accumulators — the weight-amortization
+    /// behind Vulkan speculative decoding (issue #308).
+    ///
+    /// Layouts: <paramref name="inputAll"/> is row-major [nTok][cols], <paramref name="outputAll"/>
+    /// is row-major [nTok][rows]. <c>rows = outputAll.ElementCount / nTok</c>,
+    /// <c>cols = inputAll.ElementCount / nTok</c>.
+    ///
+    /// For Q4_K and Q6_K this dispatches the batched shader (the win). For every other dtype it
+    /// falls back to a correctness-only loop of the single-row <see cref="MatMul"/> over the K
+    /// input/output slices (no amortization), so the method is total across all weight dtypes.
+    /// The Q4_K/Q6_K batched results are bit-identical to nTok separate single-row MatMul calls.
+    /// </summary>
+    /// <param name="allowInt8">
+    /// Whether this call may quantize activations to Q8_1 and use the int8 matvec. The weight
+    /// amortization — reading each weight row once for all <paramref name="nTok"/> tokens — happens
+    /// on BOTH paths; this only chooses the activation precision, and the weight traffic (the
+    /// bandwidth that dominates) is identical either way.
+    ///
+    /// <para>True is right for speculative-decode verify, whose accept rule is argmax-based: a
+    /// perturbed logit at worst rejects a draft token, costing throughput, never correctness.
+    /// False is right for PREFILL, whose returned logits directly select the first generated token —
+    /// there a flipped argmax changes the whole completion. Measured on the reference model, int8
+    /// prefill agreed on argmax for 13/13 prompts of ≥8 tokens but flipped 2 of 6 short prompts,
+    /// where out-of-distribution inputs leave the top logits near-tied and ~0.5% activation noise
+    /// is enough to reorder them.</para>
+    /// </param>
+    public void MatMulBatched(Tensor outputAll, Tensor matrix, Tensor inputAll, int nTok, DType weightDType,
+        bool allowInt8 = true)
+    {
+        // Bound by the ACTIVE path's tile width, not a literal 16. Path 1's 16 is its shaders'
+        // acc[MAX_NTOK] register limit; Path 2's tile lives in LDS and is wider. Hard-coding 16
+        // here rejected a legal Path 2 chunk before the seam below ever saw it.
+        int maxNTok = VulkanMatMulPathConfig.MaxTokensPerDispatch;
+        if (nTok < 1 || nTok > maxNTok)
+            throw new ArgumentOutOfRangeException(nameof(nTok), nTok,
+                $"nTok must be in [1, {maxNTok}] for {VulkanMatMulPathConfig.Current}.");
+        if (outputAll.ElementCount % nTok != 0)
+            throw new ArgumentException($"outputAll.ElementCount ({outputAll.ElementCount}) must be divisible by nTok ({nTok}).", nameof(outputAll));
+        if (inputAll.ElementCount % nTok != 0)
+            throw new ArgumentException($"inputAll.ElementCount ({inputAll.ElementCount}) must be divisible by nTok ({nTok}).", nameof(inputAll));
+
+        int rows = (int)(outputAll.ElementCount / nTok);
+        int cols = (int)(inputAll.ElementCount / nTok);
+
+        if (weightDType == DType.Q4_K && cols % 256 != 0)
+            throw new ArgumentException(
+                $"Q4_K batched matvec requires cols ({cols}) to be a multiple of 256 (the Q4_K block size); " +
+                "the shader derives num_blocks = cols >> 8.", nameof(inputAll));
+
+        // ── Path 2 seam ──────────────────────────────────────────────────────────────────────
+        // Reserved for a shared-memory tiled quantized GEMM (see VulkanMatMulPath). Nothing
+        // implements it yet, so this declines every shape and Path 1 runs exactly as before. A
+        // declining Path 2 can only ever be slower, never wrong — the same contract the CPU's
+        // GemmPath uses, which is what let an incomplete port be enabled in the field safely.
+        // Path 2 is responsible for validating its own shapes; the Q6_K checks below are Path 1's.
+        if (VulkanMatMulPathConfig.UsePath2)
+        {
+            if (TryMatMulBatchedPath2(outputAll, matrix, inputAll, nTok, weightDType, rows, cols, allowInt8))
+            {
+                VulkanMatMulStats.RecordPath2(nTok, rows, cols, weightDType);
+                return;
+            }
+            VulkanMatMulStats.RecordPath2Decline(nTok, rows, cols, weightDType);
+        }
+
+        if (weightDType == DType.Q6_K)
+        {
+            if (cols % 256 != 0)
+                throw new ArgumentException(
+                    $"Q6_K batched matvec requires cols ({cols}) to be a multiple of 256 (the Q6_K block size); " +
+                    "the shader derives num_blocks = cols >> 8.", nameof(inputAll));
+
+            var pq6 = new MatVecBatchedParams { rows = (uint)rows, cols = (uint)cols, nTok = (uint)nTok };
+
+            // DP4A int8-activation path (issue #308 P2): the Q6_K sibling of the Q4_K int8 path.
+            // Q4_K_M models keep ffn_down + token_embd/output as Q6_K, so without this the spec-decode
+            // trunk left ~⅓ of its matmuls on the slow FP MatVecBatchedQ6K (no weight amortization).
+            // Quantize the FP32 inputs to the SAME Q8_1 buffer as Q4_K (Q6_K reuses the identical int8
+            // activations — no new quant), then one dotPacked4x8AccSatEXT per weight word. LOSSY but
+            // argmax-stable; capability-gated with a try/catch fallback to the FP shader (mirrors Q4_K).
+            if (allowInt8 && HasShaderIntegerDotProduct)
+            {
+                try
+                {
+                    _quantizeQ8_1Pipeline ??= new ComputePipeline(this, Shaders.QuantizeQ8_1, 2, pushConstantSize: sizeof(MatVecBatchedParams));
+                    _matVecBatchedQ6KInt8Pipeline ??= new ComputePipeline(this, Shaders.MatVecBatchedQ6KInt8, 3, pushConstantSize: sizeof(MatVecBatchedParams));
+
+                    EnsureQ81BatchBuf(nTok, cols);
+                    var q81q6 = GetBuffer(_q81BatchBuf!);
+
+                    // Same WAR/RAW bracketing as the Q4_K int8 path: the Q8_1 scratch is shared across
+                    // all MatMulBatched calls in a recording session, so the quantize must wait for any
+                    // prior matvec read (recording mode) and the matvec must see this quantize's writes.
+                    if (_recording) RecordBarrier();
+                    uint subBlocksQ6 = (uint)nTok * ((uint)cols >> 5);
+                    uint qGroupsQ6 = (subBlocksQ6 + 7u) / 8u;
+                    DispatchOrRecord(_quantizeQ8_1Pipeline, [GetBuffer(inputAll), q81q6], qGroupsQ6, &pq6);
+
+                    if (_recording) RecordBarrier();
+                    DispatchOrRecord(_matVecBatchedQ6KInt8Pipeline,
+                        [GetBuffer(matrix), q81q6, GetBuffer(outputAll)], ((uint)rows + 7) / 8, &pq6);
+                    VulkanMatMulStats.RecordPath1(nTok, rows, cols, weightDType);
+                    return;
+                }
+                catch (Exception)
+                {
+                    HasShaderIntegerDotProduct = false;
+                    // Defer pipeline disposal (see the Q4_K catch): the shared _quantizeQ8_1Pipeline
+                    // may be referenced by a prior recorded dispatch — disposing now would UAF.
+                    DisposeInt8PipelineDeferred(_quantizeQ8_1Pipeline);
+                    _quantizeQ8_1Pipeline = null;
+                    DisposeInt8PipelineDeferred(_matVecBatchedQ6KInt8Pipeline);
+                    _matVecBatchedQ6KInt8Pipeline = null;
+                    // The int8 path is now permanently disabled — release its scratch (same UAF guard
+                    // as the grow path: defer the free if a recorded dispatch could still reference it).
+                    if (_q81BatchBuf is not null)
+                    {
+                        if (_recording) _pendingScratchFrees.Add(_q81BatchBuf);
+                        else Free(_q81BatchBuf);
+                        _q81BatchBuf = null;
+                        _q81BatchBufBytes = 0;
+                    }
+                    // Fall through to the FP fallback below.
+                }
+            }
+
+            _matVecBatchedQ6KPipeline ??= new ComputePipeline(this, Shaders.MatVecBatchedQ6K, 3, pushConstantSize: sizeof(MatVecBatchedParams));
+            var bufsQ6 = (ReadOnlySpan<GpuBuffer>)[GetBuffer(matrix), GetBuffer(inputAll), GetBuffer(outputAll)];
+            DispatchOrRecord(_matVecBatchedQ6KPipeline, bufsQ6, ((uint)rows + 7) / 8, &pq6);
+            VulkanMatMulStats.RecordPath1(nTok, rows, cols, weightDType);
+            return;
+        }
+
+        if (weightDType != DType.Q4_K)
+        {
+            // Fallback: K independent single-row matvecs over the [nTok][·] slices. Correct for
+            // all dtypes but with NO weight amortization (later PRs add batched shaders). Tensor
+            // has no offset sub-view, so each slice is staged through a per-token temp F32 tensor.
+            // The shared tmpIn/tmpOut are reused across k. On the immediate (fence-serialized)
+            // dispatch path each DispatchWith submits+waits, so the reuse is already hazard-free.
+            // In a RECORDING session (e.g. the #356 PR5b GDN batched-prefill trunk's F32 ssm_alpha /
+            // ssm_beta matvecs) the copy→matvec→copy chain and the cross-k reuse race unless we
+            // insert explicit compute→compute barriers: tmpIn write before the matvec read, tmpOut
+            // write before the output-copy read, and the output copy before the next k overwrites
+            // tmpIn. Guard them behind `_recording` so the immediate path is byte-unchanged.
+            const int f32Bytes = 4;
+            // Counted BEFORE the loop and charged nTok times: this branch really does re-read the
+            // whole weight matrix once per token. It is the cliff — see VulkanMatMulStats.
+            VulkanMatMulStats.RecordFallback(nTok, rows, cols, weightDType);
+            var tmpIn = Allocate(TensorShape.D1(cols));
+            var tmpOut = Allocate(TensorShape.D1(rows));
+            bool recording = _recording;
+            try
+            {
+                for (int k = 0; k < nTok; k++)
+                {
+                    RecordComputeCopyRegion(tmpIn, 0, inputAll, (long)k * cols * f32Bytes, (long)cols * f32Bytes);
+                    if (recording) RecordBarrier();
+                    MatMul(tmpOut, matrix, tmpIn, weightDType);
+                    if (recording) RecordBarrier();
+                    RecordComputeCopyRegion(outputAll, (long)k * rows * f32Bytes, tmpOut, 0, (long)rows * f32Bytes);
+                    if (recording) RecordBarrier();
+                }
+            }
+            finally
+            {
+                // Immediate path: each DispatchWith already submitted+waited, so the temps are
+                // dead now — free directly. Recording path: the recorded copies/matvecs reference
+                // these temps and execute later at EndRecordAndSubmit; defer the free until after
+                // that submit drains _pendingScratchFrees (GPU idle), or it would be a UAF.
+                if (recording)
+                {
+                    _pendingScratchFrees.Add(tmpIn);
+                    _pendingScratchFrees.Add(tmpOut);
+                }
+                else
+                {
+                    Free(tmpIn);
+                    Free(tmpOut);
+                }
+            }
+            return;
+        }
+
+        var p = new MatVecBatchedParams { rows = (uint)rows, cols = (uint)cols, nTok = (uint)nTok };
+
+        // DP4A int8-activation path (issue #308 P1): quantize the FP32 inputs to Q8_1 once, then the
+        // matvec reads packed int8 + two dotPacked4x8AccSatEXT per weight word — the per-token cost
+        // collapses from 8 FP loads+FMAs/word to ~2 int loads + 2 dp4a. LOSSY but argmax-stable vs
+        // the FP path (spec-decode verify accepts on argmax → lossless greedy). Capability-gated;
+        // try/catch falls back to the FP shader (mirrors Sgemm) if pipeline creation fails.
+        if (allowInt8 && HasShaderIntegerDotProduct)
+        {
+            try
+            {
+                _quantizeQ8_1Pipeline ??= new ComputePipeline(this, Shaders.QuantizeQ8_1, 2, pushConstantSize: sizeof(MatVecBatchedParams));
+                // Pick the dot4x8u implementation the probe cleared for this device (task #6).
+                _matVecBatchedQ4KInt8Pipeline ??= new ComputePipeline(this,
+                    Dp4aIntrinsicUsable ? Shaders.MatVecBatchedQ4KInt8Dp4a : Shaders.MatVecBatchedQ4KInt8,
+                    3, pushConstantSize: sizeof(MatVecBatchedParams));
+
+                EnsureQ81BatchBuf(nTok, cols);
+                var q81 = GetBuffer(_q81BatchBuf!);
+
+                // The Q8_1 scratch is SHARED across all MatMulBatched calls in a recording session
+                // (e.g. the BatchVerify trunk's many matmuls). A prior call's matvec READ of the
+                // scratch must complete before THIS quantize OVERWRITES it (WAR hazard) — and the
+                // matvec must see this quantize's writes (RAW). In recording mode bracket both with
+                // compute→compute barriers; in immediate mode each DispatchWith submits+waits, so the
+                // prior read is already retired and the quant pass completes before the matvec begins.
+                if (_recording) RecordBarrier();
+
+                // Quantize: nTok·(cols/32) sub-blocks, 8 per workgroup.
+                uint subBlocks = (uint)nTok * ((uint)cols >> 5);
+                uint qGroups = (subBlocks + 7u) / 8u;
+                DispatchOrRecord(_quantizeQ8_1Pipeline, [GetBuffer(inputAll), q81], qGroups, &p);
+
+                if (_recording) RecordBarrier();
+
+                DispatchOrRecord(_matVecBatchedQ4KInt8Pipeline,
+                    [GetBuffer(matrix), q81, GetBuffer(outputAll)], ((uint)rows + 7) / 8, &p);
+                VulkanMatMulStats.RecordPath1(nTok, rows, cols, weightDType);
+                return;
+            }
+            catch (Exception)
+            {
+                HasShaderIntegerDotProduct = false;
+                // Defer pipeline disposal: a prior int8 matmul in this recording session may have
+                // recorded a dispatch referencing the SHARED _quantizeQ8_1Pipeline (or this dtype's
+                // matvec pipeline) — disposing mid-recording would UAF on submit.
+                DisposeInt8PipelineDeferred(_quantizeQ8_1Pipeline);
+                _quantizeQ8_1Pipeline = null;
+                DisposeInt8PipelineDeferred(_matVecBatchedQ4KInt8Pipeline);
+                _matVecBatchedQ4KInt8Pipeline = null;
+                // The int8 path is now permanently disabled — release its scratch (a prior
+                // successful call may have allocated it). Defer the free if a recorded-but-
+                // unsubmitted dispatch could still reference it (same UAF guard as the grow path).
+                if (_q81BatchBuf is not null)
+                {
+                    if (_recording) _pendingScratchFrees.Add(_q81BatchBuf);
+                    else Free(_q81BatchBuf);
+                    _q81BatchBuf = null;
+                    _q81BatchBufBytes = 0;
+                }
+                // Fall through to the FP fallback below.
+            }
+        }
+
+        _matVecBatchedQ4KPipeline ??= new ComputePipeline(this, Shaders.MatVecBatchedQ4K, 3, pushConstantSize: sizeof(MatVecBatchedParams));
+        var bufs = (ReadOnlySpan<GpuBuffer>)[GetBuffer(matrix), GetBuffer(inputAll), GetBuffer(outputAll)];
+        DispatchOrRecord(_matVecBatchedQ4KPipeline, bufs, ((uint)rows + 7) / 8, &p);
+        VulkanMatMulStats.RecordPath1(nTok, rows, cols, weightDType);
+    }
+
+    /// <summary>
+    /// Path 2: a shared-memory tiled quantized GEMM. <b>Not implemented — always declines.</b>
+    /// </summary>
+    /// <returns>
+    /// <c>true</c> if Path 2 fully served the dispatch (output written, nothing left to do);
+    /// <c>false</c> to fall through to Path 1.
+    /// </returns>
+    /// <remarks>
+    /// <para><b>What would go here.</b> Every quantized matmul shader in <c>Shaders.cs</c> today is a
+    /// <c>MatVec*</c> — the <c>Sgemm*</c> shaders are dense float, for the diffusion path. Path 1
+    /// therefore amortizes weights over at most <c>MaxBatchVerifyK</c> = 16 tokens, bounded by
+    /// per-lane register pressure (<c>acc[MAX_NTOK]</c> is one VGPR per token). The way past that
+    /// bound is not a wider register tile but another level of the hierarchy: a weight tile resident
+    /// in shared memory while many activation columns stream past it. That is exactly the move the
+    /// CPU side made — Path 1 there was register-blocked over 16 YMM registers, and Path 2 won by
+    /// repacking so a tile stayed resident, not by widening the tile.</para>
+    ///
+    /// <para><b>What would have to change with it.</b> A tiled GEMM only pays if the caller stops
+    /// chunking at 16. <c>GpuForwardPass.Prefill</c> clamps its chunk to <c>MaxBatchVerifyK</c>
+    /// because that constant is shared with the speculative-decode verify path, and the batched
+    /// scratch buffers size from it. Those two uses need separating before Path 2 can be given a
+    /// prompt-sized chunk; until then a Path 2 kernel would be measured at the same 16 tokens Path 1
+    /// already handles well, and would look like no win.</para>
+    ///
+    /// <para><b>Deciding whether to write it at all.</b> Run a prefill with
+    /// <c>STINGRAY_VULKAN_MM_STATS=1</c> and read <c>VulkanMatMulStats.WeightBytesPerToken</c>.
+    /// Path 1 should report roughly <c>model_bytes / 16</c>; a GEMM's floor is
+    /// <c>model_bytes / prompt_tokens</c>. The gap between those two is the entire prize, it is
+    /// bandwidth-independent, and it is measurable before a line of GLSL is written.</para>
+    /// </remarks>
+    private unsafe bool TryMatMulBatchedPath2(Tensor outputAll, Tensor matrix, Tensor inputAll, int nTok,
+        DType weightDType, int rows, int cols, bool allowInt8)
+    {
+        // Q4_K and Q6_K. Everything else declines and falls through to Path 1, which is safe
+        // because both caps are 16 (VulkanMatMulPathConfig.Path2MaxTokensPerDispatch).
+        if (weightDType is not (DType.Q4_K or DType.Q6_K)) return false;
+        if (nTok > TiledQ4KBn || cols % 256 != 0) return false;
+
+        // allowInt8 is about ACTIVATION precision, not weights. Path 2 is an FP kernel, so it is
+        // valid either way — but when int8 is permitted the caller is spec-decode verify at k<=16,
+        // where Path 1's dp4a kernel is the faster shape. Declining keeps this measurement about
+        // prefill, which is the only place a tiled GEMM can pay.
+        if (allowInt8) return false;
+
+        bool isQ6 = weightDType == DType.Q6_K;
+        try
+        {
+            if (isQ6)
+                _matMulTiledQ6KPipeline ??= new ComputePipeline(this, Shaders.MatMulTiledQ6K, 3,
+                    pushConstantSize: sizeof(MatVecBatchedParams));
+            else
+                _matMulTiledQ4KPipeline ??= new ComputePipeline(this, Shaders.MatMulTiledQ4K, 3,
+                    pushConstantSize: sizeof(MatVecBatchedParams));
+        }
+        catch (Exception)
+        {
+            // Decline permanently for THIS dtype only — a driver that rejects one tiled shader can
+            // still serve the other, and collapsing both would silently halve the measured win.
+            if (isQ6) { _matMulTiledQ6KPipeline?.Dispose(); _matMulTiledQ6KPipeline = null; }
+            else      { _matMulTiledQ4KPipeline?.Dispose(); _matMulTiledQ4KPipeline = null; }
+            return false;
+        }
+
+        var p = new MatVecBatchedParams { rows = (uint)rows, cols = (uint)cols, nTok = (uint)nTok };
+        var bufs = (ReadOnlySpan<GpuBuffer>)[GetBuffer(matrix), GetBuffer(inputAll), GetBuffer(outputAll)];
+        DispatchOrRecord(isQ6 ? _matMulTiledQ6KPipeline! : _matMulTiledQ4KPipeline!, bufs,
+            ((uint)rows + TiledQ4KBm - 1) / TiledQ4KBm, &p);
+        return true;
+    }
+
+    /// <summary>BM in <c>Shaders.MatMulTiledQ4K</c> — output rows per workgroup.</summary>
+    private const uint TiledQ4KBm = 64;
+
+    /// <summary>BN in <c>Shaders.MatMulTiledQ4K</c> — the tile's token width.</summary>
+    private const int TiledQ4KBn = 16;
+
+    // ================================================================
+    //  KV Cache + Attention (GPU-resident)
+    // ================================================================
+
+    public void EmbedLookup(Tensor embTable, Tensor output, uint tokenId, uint embDim)
+    {
+        _embedLookupPipeline ??= new ComputePipeline(this, Shaders.EmbedLookup, 2, pushConstantSize: sizeof(EmbedParams));
+        var p = new EmbedParams { tokenId = tokenId, embDim = embDim };
+        DispatchOrRecord(_embedLookupPipeline, [GetBuffer(embTable), GetBuffer(output)], (embDim + 255) / 256, &p);
+    }
+
+    public void EmbedLookupQ4K(Tensor embTable, Tensor output, uint tokenId, uint embDim)
+    {
+        _embedLookupQ4KPipeline ??= new ComputePipeline(this, Shaders.EmbedLookupQ4K, 2, pushConstantSize: sizeof(EmbedParams));
+        var p = new EmbedParams { tokenId = tokenId, embDim = embDim };
+        DispatchOrRecord(_embedLookupQ4KPipeline, [GetBuffer(embTable), GetBuffer(output)], 1, &p);
+    }
+
+    /// <summary>
+    /// Dequantize one row from a Q6_K-packed embedding table directly into
+    /// <paramref name="output"/> (issue #124, Gemma 4 12B tied token_embd). Keeps the large
+    /// Q6_K table packed (~787 MiB for [3840, 262144]) off the F32 dequant path that would
+    /// burn ~4 GB of VRAM. <paramref name="embDim"/> must be a multiple of 256 (Q6_K block size).
+    /// </summary>
+    public void EmbedLookupQ6K(Tensor embTable, Tensor output, uint tokenId, uint embDim)
+    {
+        _embedLookupQ6KPipeline ??= new ComputePipeline(this, Shaders.EmbedLookupQ6K, 2, pushConstantSize: sizeof(EmbedParams));
+        var p = new EmbedParams { tokenId = tokenId, embDim = embDim };
+        DispatchOrRecord(_embedLookupQ6KPipeline, [GetBuffer(embTable), GetBuffer(output)], 1, &p);
+    }
+
+    public void KvAppend(Tensor kInput, Tensor vInput, Tensor kCache, Tensor vCache,
+        uint kvDim, uint position, uint maxSeqLen)
+    {
+        _kvAppendPipeline ??= new ComputePipeline(this, Shaders.KvAppend, 4, pushConstantSize: sizeof(KvAppendParams));
+        var p = new KvAppendParams { kvDim = kvDim, position = position, maxSeqLen = maxSeqLen };
+        DispatchOrRecord(_kvAppendPipeline,
+            [GetBuffer(kInput), GetBuffer(vInput), GetBuffer(kCache), GetBuffer(vCache)],
+            (kvDim + 255) / 256, &p);
+    }
+
+    /// <summary>
+    /// Scaled dot-product attention with GQA support. <paramref name="scoresScratch"/> is a
+    /// VRAM buffer the kernel spills per-position softmax scores into when <c>seqLen &gt; 4096</c>;
+    /// the fast path uses shared memory instead. Vulkan descriptors require a bound buffer
+    /// regardless, so callers pass a 1-float placeholder when the whole context is guaranteed
+    /// to fit in shared memory.
+    /// </summary>
+    public void Attention(Tensor q, Tensor kCache, Tensor vCache, Tensor output,
+        Tensor scoresScratch,
+        uint numHeads, uint numKvHeads, uint headDim, uint seqLen, uint maxSeqLen,
+        uint window = 0u)
+    {
+        _attentionPipeline ??= new ComputePipeline(this, Shaders.Attention, 5, pushConstantSize: sizeof(AttentionParams));
+        var p = new AttentionParams
+        {
+            numHeads = numHeads, numKvHeads = numKvHeads,
+            headDim = headDim, seqLen = seqLen, maxSeqLen = maxSeqLen, window = window
+        };
+        DispatchOrRecord(_attentionPipeline,
+            [GetBuffer(q), GetBuffer(kCache), GetBuffer(vCache), GetBuffer(output),
+             GetBuffer(scoresScratch)],
+            numHeads, &p);
+    }
+
+    /// <summary>
+    /// Batched fp32 KV append (issue #308): appends <paramref name="numTokens"/> rows of K/V from the
+    /// packed <c>[numTokens][kvDim]</c> inputs <paramref name="kK"/>/<paramref name="vK"/> into the
+    /// cache in ONE dispatch, row r at cache slot <paramref name="basePos"/> + r. Bit-identical to
+    /// <paramref name="numTokens"/> separate <see cref="KvAppend"/> calls. 2D grid
+    /// <c>(ceil(kvDim/256), numTokens)</c>. Used by the spec-decode batched verify; fp32 KV only.
+    /// </summary>
+    public void KvAppendBatched(Tensor kK, Tensor vK, Tensor kCache, Tensor vCache,
+        uint kvDim, uint basePos, int numTokens, uint maxSeqLen)
+    {
+        _kvAppendBatchedPipeline ??= new ComputePipeline(this, Shaders.KvAppendBatched, 4, pushConstantSize: sizeof(KvAppendParams));
+        var p = new KvAppendParams { kvDim = kvDim, position = basePos, maxSeqLen = maxSeqLen };
+        DispatchOrRecord(_kvAppendBatchedPipeline,
+            [GetBuffer(kK), GetBuffer(vK), GetBuffer(kCache), GetBuffer(vCache)],
+            (kvDim + 255) / 256, &p, groupY: (uint)numTokens);
+    }
+
+    /// <summary>
+    /// Batched fp32 attention (issue #308): runs <paramref name="numQueries"/> queries from the packed
+    /// <c>[numQueries][numHeads*headDim]</c> buffer <paramref name="qK"/> in ONE dispatch over a 2D grid
+    /// of <c>numHeads × numQueries</c> workgroups, writing the packed <c>[numQueries][numHeads*headDim]</c>
+    /// output <paramref name="attnOutK"/>. Query qi (absolute position <paramref name="basePos"/> + qi)
+    /// attends causally over <c>[0, basePos+qi]</c> — bit-identical to <paramref name="numQueries"/>
+    /// separate single-query <see cref="Attention"/> calls at seqLens basePos+1 … basePos+numQueries.
+    /// fp32 KV only; the caller must guarantee <c>basePos + numQueries ≤ 4096</c> (the shared-memory
+    /// score fast path has no scratch-spill fallback). No SWA window (spec verify is full-causal).
+    /// </summary>
+    public void AttentionBatched(Tensor qK, Tensor kCache, Tensor vCache, Tensor attnOutK,
+        uint numHeads, uint numKvHeads, uint headDim, uint basePos, int numQueries, uint maxSeqLen)
+    {
+        _attentionBatchedPipeline ??= new ComputePipeline(this, Shaders.AttentionBatched, 4, pushConstantSize: sizeof(AttentionBatchedParams));
+        var p = new AttentionBatchedParams
+        {
+            numHeads = numHeads, numKvHeads = numKvHeads, headDim = headDim,
+            basePos = basePos, maxSeqLen = maxSeqLen, numQueries = (uint)numQueries
+        };
+        DispatchOrRecord(_attentionBatchedPipeline,
+            [GetBuffer(qK), GetBuffer(kCache), GetBuffer(vCache), GetBuffer(attnOutK)],
+            numHeads, &p, groupY: (uint)numQueries);
+    }
+
+    /// <summary>
+    /// Largest head dimension and query count the flash attention kernel is compiled for
+    /// (<c>MAX_HD</c> / <c>MAX_Q</c> in <see cref="Shaders.AttentionBatchedFlash"/>). Callers must
+    /// check <see cref="SupportsFlashAttention"/> before dispatching.
+    /// </summary>
+    public const uint FlashAttentionMaxHeadDim = 128;
+    public const int FlashAttentionMaxQueries = 16;
+
+    /// <summary>
+    /// Whether <see cref="AttentionBatchedFlash"/> can serve this shape. The kernel's shared
+    /// buffers are sized at compile time, so head dim and query count are hard limits rather than
+    /// a slow path.
+    /// </summary>
+    public static bool SupportsFlashAttention(uint headDim, int numQueries) =>
+        headDim <= FlashAttentionMaxHeadDim && numQueries <= FlashAttentionMaxQueries && numQueries >= 1;
+
+    /// <summary>
+    /// Flash-attention variant of <see cref="AttentionBatched"/>: mathematically the same result
+    /// (query qi attends causally over <c>[0, basePos+qi]</c>) but one workgroup per HEAD instead of
+    /// per (head, query), so each K/V element is read once and reused across all queries rather than
+    /// re-streamed per query. Uses online softmax, so it needs no <c>scores[4096]</c> shared array
+    /// and therefore has neither the 16 KB occupancy tax nor the <c>basePos + numQueries ≤ 4096</c>
+    /// ceiling that <see cref="AttentionBatched"/> carries.
+    ///
+    /// <para>NOT bit-identical to <see cref="AttentionBatched"/>: online softmax accumulates in a
+    /// different order and rescales as it goes, so results agree to floating-point tolerance, not
+    /// exactly. No SWA window. Pass <paramref name="kvBf16"/> to read a 16-bit-narrowed cache.</para>
+    /// </summary>
+    public void AttentionBatchedFlash(Tensor qK, Tensor kCache, Tensor vCache, Tensor attnOutK,
+        uint numHeads, uint numKvHeads, uint headDim, uint basePos, int numQueries, uint maxSeqLen,
+        bool kvBf16 = false)
+    {
+        if (!SupportsFlashAttention(headDim, numQueries))
+            throw new ArgumentOutOfRangeException(nameof(headDim),
+                $"flash attention supports headDim <= {FlashAttentionMaxHeadDim} and numQueries in " +
+                $"[1, {FlashAttentionMaxQueries}]; got headDim={headDim}, numQueries={numQueries}. " +
+                "Check SupportsFlashAttention before calling.");
+
+        // Two pipelines, one shader body — the variants differ only in the readK/readV accessor
+        // (see Shaders.AttentionBatchedFlashBf16 for why the narrowed path needs its own).
+        ComputePipeline pipe;
+        if (kvBf16)
+            pipe = _attentionBatchedFlashBf16Pipeline ??= new ComputePipeline(this, Shaders.AttentionBatchedFlashBf16, 4, pushConstantSize: sizeof(AttentionBatchedParams));
+        else
+            pipe = _attentionBatchedFlashPipeline ??= new ComputePipeline(this, Shaders.AttentionBatchedFlash, 4, pushConstantSize: sizeof(AttentionBatchedParams));
+
+        var p = new AttentionBatchedParams
+        {
+            numHeads = numHeads, numKvHeads = numKvHeads, headDim = headDim,
+            basePos = basePos, maxSeqLen = maxSeqLen, numQueries = (uint)numQueries
+        };
+        DispatchOrRecord(pipe,
+            [GetBuffer(qK), GetBuffer(kCache), GetBuffer(vCache), GetBuffer(attnOutK)],
+            numHeads, &p);
+    }
+
+    /// <summary>
+    /// bf16 (issue #308 follow-up) variant of <see cref="KvAppendBatched"/>: appends
+    /// <paramref name="numTokens"/> rows of K/V (packed <c>[numTokens][kvDim]</c>) into the cache as
+    /// IEEE fp16 packed two-per-uint in ONE dispatch (row r at slot <paramref name="basePos"/> + r).
+    /// Bit-identical to <paramref name="numTokens"/> separate <see cref="KvAppendBf16"/> calls. 2D grid
+    /// <c>(ceil((kvDim/2)/256), numTokens)</c>. The cache buffers are bound as <c>uint[]</c>.
+    /// </summary>
+    public void KvAppendBatchedBf16(Tensor kK, Tensor vK, Tensor kCache, Tensor vCache,
+        uint kvDim, uint basePos, int numTokens, uint maxSeqLen)
+    {
+        _kvAppendBatchedBf16Pipeline ??= new ComputePipeline(this, Shaders.KvAppendBatchedBf16, 4, pushConstantSize: sizeof(KvAppendParams));
+        var p = new KvAppendParams { kvDim = kvDim, position = basePos, maxSeqLen = maxSeqLen };
+        DispatchOrRecord(_kvAppendBatchedBf16Pipeline,
+            [GetBuffer(kK), GetBuffer(vK), GetBuffer(kCache), GetBuffer(vCache)],
+            ((kvDim >> 1) + 255) / 256, &p, groupY: (uint)numTokens);
+    }
+
+    /// <summary>
+    /// bf16 (issue #308 follow-up) variant of <see cref="AttentionBatched"/>: runs
+    /// <paramref name="numQueries"/> queries in ONE dispatch over a 2D grid of
+    /// <c>numHeads × numQueries</c> workgroups, reading the K/V cache as IEEE fp16 packed
+    /// two-per-uint. Query qi (abs pos <paramref name="basePos"/> + qi) attends causally over
+    /// <c>[0, basePos+qi]</c> — bit-identical to <paramref name="numQueries"/> separate single-query
+    /// <see cref="AttentionBf16"/> calls. Caller must guarantee <c>basePos + numQueries ≤ 4096</c>
+    /// (shared-memory score fast path, no scratch fallback). No SWA window.
+    /// </summary>
+    public void AttentionBatchedBf16(Tensor qK, Tensor kCache, Tensor vCache, Tensor attnOutK,
+        uint numHeads, uint numKvHeads, uint headDim, uint basePos, int numQueries, uint maxSeqLen)
+    {
+        _attentionBatchedBf16Pipeline ??= new ComputePipeline(this, Shaders.AttentionBatchedBf16, 4, pushConstantSize: sizeof(AttentionBatchedParams));
+        var p = new AttentionBatchedParams
+        {
+            numHeads = numHeads, numKvHeads = numKvHeads, headDim = headDim,
+            basePos = basePos, maxSeqLen = maxSeqLen, numQueries = (uint)numQueries
+        };
+        DispatchOrRecord(_attentionBatchedBf16Pipeline,
+            [GetBuffer(qK), GetBuffer(kCache), GetBuffer(vCache), GetBuffer(attnOutK)],
+            numHeads, &p, groupY: (uint)numQueries);
+    }
+
+    /// <summary>
+    /// q8_0 (issue #308 follow-up) variant of <see cref="KvAppendBatched"/>: appends
+    /// <paramref name="numTokens"/> rows of K/V (packed <c>[numTokens][kvDim]</c>) into the cache as
+    /// ggml <c>block_q8_0</c> (34 bytes/block) in ONE dispatch (row r at slot
+    /// <paramref name="basePos"/> + r). Bit-identical to <paramref name="numTokens"/> separate
+    /// <see cref="KvAppendQ8_0"/> calls (every thread owns disjoint destination bytes; seam uint words
+    /// use masked atomics). 2D grid <c>(ceil((kvDim/32)/256), numTokens)</c>; kv_dim must be a multiple
+    /// of 32 (enforced in GpuForwardPass). The cache buffers are bound as <c>uint[]</c>.
+    /// </summary>
+    public void KvAppendBatchedQ8_0(Tensor kK, Tensor vK, Tensor kCache, Tensor vCache,
+        uint kvDim, uint basePos, int numTokens, uint maxSeqLen)
+    {
+        _kvAppendBatchedQ8Pipeline ??= new ComputePipeline(this, Shaders.KvAppendBatchedQ8_0, 4, pushConstantSize: sizeof(KvAppendParams));
+        var p = new KvAppendParams { kvDim = kvDim, position = basePos, maxSeqLen = maxSeqLen };
+        DispatchOrRecord(_kvAppendBatchedQ8Pipeline,
+            [GetBuffer(kK), GetBuffer(vK), GetBuffer(kCache), GetBuffer(vCache)],
+            ((kvDim >> 5) + 255) / 256, &p, groupY: (uint)numTokens);
+    }
+
+    /// <summary>
+    /// q8_0 (issue #308 follow-up) variant of <see cref="AttentionBatched"/>: runs
+    /// <paramref name="numQueries"/> queries in ONE dispatch over a 2D grid of
+    /// <c>numHeads × numQueries</c> workgroups, reading the K/V cache as ggml <c>block_q8_0</c>
+    /// (34 bytes/block, dequant <c>fp16(d) * int8</c>). Query qi (abs pos <paramref name="basePos"/> +
+    /// qi) attends causally over <c>[0, basePos+qi]</c> — bit-identical to <paramref name="numQueries"/>
+    /// separate single-query <see cref="AttentionQ8_0"/> calls. Caller must guarantee
+    /// <c>basePos + numQueries ≤ 4096</c> (shared-memory score fast path, no scratch fallback). No SWA.
+    /// </summary>
+    public void AttentionBatchedQ8_0(Tensor qK, Tensor kCache, Tensor vCache, Tensor attnOutK,
+        uint numHeads, uint numKvHeads, uint headDim, uint basePos, int numQueries, uint maxSeqLen)
+    {
+        _attentionBatchedQ8Pipeline ??= new ComputePipeline(this, Shaders.AttentionBatchedQ8_0, 4, pushConstantSize: sizeof(AttentionBatchedParams));
+        var p = new AttentionBatchedParams
+        {
+            numHeads = numHeads, numKvHeads = numKvHeads, headDim = headDim,
+            basePos = basePos, maxSeqLen = maxSeqLen, numQueries = (uint)numQueries
+        };
+        DispatchOrRecord(_attentionBatchedQ8Pipeline,
+            [GetBuffer(qK), GetBuffer(kCache), GetBuffer(vCache), GetBuffer(attnOutK)],
+            numHeads, &p, groupY: (uint)numQueries);
+    }
+
+    /// <summary>
+    /// Flash-decoding split-KV attention (issue #312) — the Vulkan mirror of CUDA's
+    /// <c>STINGRAY_SPLIT_DECODE</c> path. Splits each head's causal KV range into fixed 512-position
+    /// slices dispatched across a 2D grid of <c>numHeads × nSplits</c> workgroups (parallelizing
+    /// the long-context KV read instead of serially scanning it in one workgroup like
+    /// <see cref="Attention"/>), then LSE-merges the per-slice partials in a second combine pass.
+    /// fp32 K/V only. Opt-in (DEFAULT-OFF) via the caller's <c>STINGRAY_VULKAN_SPLIT_DECODE</c> gate;
+    /// when the gate is off this method is never reached, so the spill path is byte-identical.
+    ///
+    /// <paramref name="partialO"/> is <c>[numHeads * maxSplits * headDim]</c> (un-normalized
+    /// weighted-V numerators) and <paramref name="partialMeta"/> is <c>[numHeads * maxSplits * 2]</c>
+    /// ((m_i, l_i) per (head, split)); the caller allocates both sized to maxSplits =
+    /// ceil(maxSeqLen/CHUNK). nSplits = ceil(seqLen/CHUNK) ≤ maxSplits selects the live grid. CHUNK=256 is duplicated in the AttentionSplitKvPartial* shaders and in GpuForwardPass's buffer sizing — all must move together.
+    /// </summary>
+    public void AttentionSplitKv(Tensor q, Tensor kCache, Tensor vCache, Tensor output,
+        Tensor partialO, Tensor partialMeta,
+        uint numHeads, uint numKvHeads, uint headDim, uint seqLen, uint maxSeqLen,
+        uint window = 0u)
+    {
+        // The combine shader bounds its per-head rescale array at 256 splits (MAX_SPLITS) ⇔
+        // seqLen <= 256*512 = 131072. Check seqLen directly so the +511 can't overflow.
+        if (seqLen > SplitKvMaxSeqLen)
+            throw new ArgumentOutOfRangeException(nameof(seqLen),
+                $"split-KV supports up to 256 splits (chunk={SplitKvChunk} ⇒ seqLen <= {SplitKvMaxSeqLen}); got seqLen={seqLen}.");
+        uint nSplits = (seqLen + SplitKvChunk - 1) / SplitKvChunk;
+        _splitKvPartialPipeline ??= new ComputePipeline(this, Shaders.AttentionSplitKvPartial, 5, pushConstantSize: sizeof(SplitKvPartialParams));
+        _splitKvCombinePipeline ??= new ComputePipeline(this, Shaders.AttentionSplitKvCombine, 3, pushConstantSize: sizeof(SplitKvCombineParams));
+
+        // Partial pass: numHeads × nSplits workgroups (2D dispatch; workgroup (x=head, y=split)).
+        var pp = new SplitKvPartialParams
+        {
+            numHeads = numHeads, numKvHeads = numKvHeads,
+            headDim = headDim, seqLen = seqLen, nSplits = nSplits, window = window
+        };
+        DispatchOrRecord(_splitKvPartialPipeline,
+            [GetBuffer(q), GetBuffer(kCache), GetBuffer(vCache), GetBuffer(partialO),
+             GetBuffer(partialMeta)],
+            numHeads, &pp, groupY: nSplits);
+
+        // Combine reads the partials the partial pass just wrote, so the two dispatches must be
+        // ordered. When recording (the engine path) insert a compute→compute barrier; in the
+        // immediate path (DispatchWith) each dispatch is its own submit + fence-wait, so the
+        // partial pass has fully completed before the combine is submitted — no barrier needed,
+        // and RecordBarrier on a non-recording command buffer would be invalid.
+        if (_recording) RecordBarrier();
+
+        var cp = new SplitKvCombineParams { numHeads = numHeads, headDim = headDim, nSplits = nSplits };
+        DispatchOrRecord(_splitKvCombinePipeline,
+            [GetBuffer(partialO), GetBuffer(partialMeta), GetBuffer(output)],
+            numHeads, &cp);
+    }
+
+    /// <summary>
+    /// bf16 (issue #332) variant of <see cref="AttentionSplitKv"/>: identical 2-pass split-KV
+    /// flow, but the partial pass reads the K/V cache as IEEE fp16 packed two-per-uint (via
+    /// <c>AttentionSplitKvPartialBf16</c>). The combine pass is the SAME dtype-agnostic
+    /// <c>AttentionSplitKvCombine</c> as fp32 (it reads only the fp32 partial buffers). Same
+    /// nSplits guard, dispatch, and barrier as <see cref="AttentionSplitKv"/>.
+    /// </summary>
+    public void AttentionSplitKvBf16(Tensor q, Tensor kCache, Tensor vCache, Tensor output,
+        Tensor partialO, Tensor partialMeta,
+        uint numHeads, uint numKvHeads, uint headDim, uint seqLen, uint maxSeqLen,
+        uint window = 0u)
+    {
+        // Mirrors AttentionSplitKv's guard (combine bounds the per-head rescale at 256 splits).
+        if (seqLen > SplitKvMaxSeqLen)
+            throw new ArgumentOutOfRangeException(nameof(seqLen),
+                $"split-KV supports up to 256 splits (chunk={SplitKvChunk} ⇒ seqLen <= {SplitKvMaxSeqLen}); got seqLen={seqLen}.");
+        uint nSplits = (seqLen + SplitKvChunk - 1) / SplitKvChunk;
+        _splitKvPartialBf16Pipeline ??= new ComputePipeline(this, Shaders.AttentionSplitKvPartialBf16, 5, pushConstantSize: sizeof(SplitKvPartialParams));
+        _splitKvCombinePipeline ??= new ComputePipeline(this, Shaders.AttentionSplitKvCombine, 3, pushConstantSize: sizeof(SplitKvCombineParams));
+
+        var pp = new SplitKvPartialParams
+        {
+            numHeads = numHeads, numKvHeads = numKvHeads,
+            headDim = headDim, seqLen = seqLen, nSplits = nSplits, window = window
+        };
+        DispatchOrRecord(_splitKvPartialBf16Pipeline,
+            [GetBuffer(q), GetBuffer(kCache), GetBuffer(vCache), GetBuffer(partialO),
+             GetBuffer(partialMeta)],
+            numHeads, &pp, groupY: nSplits);
+
+        if (_recording) RecordBarrier();
+
+        var cp = new SplitKvCombineParams { numHeads = numHeads, headDim = headDim, nSplits = nSplits };
+        DispatchOrRecord(_splitKvCombinePipeline,
+            [GetBuffer(partialO), GetBuffer(partialMeta), GetBuffer(output)],
+            numHeads, &cp);
+    }
+
+    /// <summary>
+    /// q8_0 (issue #332) variant of <see cref="AttentionSplitKv"/>: identical 2-pass split-KV
+    /// flow, but the partial pass reads the K/V cache as ggml <c>block_q8_0</c> (34 bytes/block,
+    /// dequant <c>fp16(d) * int8</c> per element) via <c>AttentionSplitKvPartialQ8</c>. The
+    /// combine pass is the SAME dtype-agnostic <c>AttentionSplitKvCombine</c> as fp32 (it reads
+    /// only the fp32 partial buffers). Same nSplits guard, dispatch, and barrier as
+    /// <see cref="AttentionSplitKv"/>.
+    /// </summary>
+    public void AttentionSplitKvQ8(Tensor q, Tensor kCache, Tensor vCache, Tensor output,
+        Tensor partialO, Tensor partialMeta,
+        uint numHeads, uint numKvHeads, uint headDim, uint seqLen, uint maxSeqLen,
+        uint window = 0u)
+    {
+        if (seqLen > SplitKvMaxSeqLen)
+            throw new ArgumentOutOfRangeException(nameof(seqLen),
+                $"split-KV supports up to 256 splits (chunk={SplitKvChunk} ⇒ seqLen <= {SplitKvMaxSeqLen}); got seqLen={seqLen}.");
+        uint nSplits = (seqLen + SplitKvChunk - 1) / SplitKvChunk;
+        _splitKvPartialQ8Pipeline ??= new ComputePipeline(this, Shaders.AttentionSplitKvPartialQ8, 5, pushConstantSize: sizeof(SplitKvPartialParams));
+        _splitKvCombinePipeline ??= new ComputePipeline(this, Shaders.AttentionSplitKvCombine, 3, pushConstantSize: sizeof(SplitKvCombineParams));
+
+        var pp = new SplitKvPartialParams
+        {
+            numHeads = numHeads, numKvHeads = numKvHeads,
+            headDim = headDim, seqLen = seqLen, nSplits = nSplits, window = window
+        };
+        DispatchOrRecord(_splitKvPartialQ8Pipeline,
+            [GetBuffer(q), GetBuffer(kCache), GetBuffer(vCache), GetBuffer(partialO),
+             GetBuffer(partialMeta)],
+            numHeads, &pp, groupY: nSplits);
+
+        if (_recording) RecordBarrier();
+
+        var cp = new SplitKvCombineParams { numHeads = numHeads, headDim = headDim, nSplits = nSplits };
+        DispatchOrRecord(_splitKvCombinePipeline,
+            [GetBuffer(partialO), GetBuffer(partialMeta), GetBuffer(output)],
+            numHeads, &cp);
+    }
+
+    /// <summary>
+    /// bf16 (issue #311) variant of <see cref="KvAppend"/>: writes the K/V vectors into the
+    /// cache as IEEE fp16 packed two-per-uint (core-GLSL <c>packHalf2x16</c>, no extension).
+    /// The cache buffers (<paramref name="kCache"/>/<paramref name="vCache"/>) are bound as
+    /// <c>uint[]</c> in the shader regardless of the tensor's declared dtype. Indexes the
+    /// cache identically to the fp32 path (<c>position * kv_dim + i</c>, just word-granular).
+    /// kv_dim is even, so one thread covers 2 elements.
+    /// </summary>
+    public void KvAppendBf16(Tensor kInput, Tensor vInput, Tensor kCache, Tensor vCache,
+        uint kvDim, uint position, uint maxSeqLen)
+    {
+        _kvAppendBf16Pipeline ??= new ComputePipeline(this, Shaders.KvAppendBf16, 4, pushConstantSize: sizeof(KvAppendParams));
+        var p = new KvAppendParams { kvDim = kvDim, position = position, maxSeqLen = maxSeqLen };
+        DispatchOrRecord(_kvAppendBf16Pipeline,
+            [GetBuffer(kInput), GetBuffer(vInput), GetBuffer(kCache), GetBuffer(vCache)],
+            ((kvDim >> 1) + 255) / 256, &p);
+    }
+
+    /// <summary>
+    /// bf16 (issue #311) variant of <see cref="Attention"/>: identical control flow to the
+    /// fp32 path, but the K/V cache buffers (<paramref name="kCache"/>/<paramref name="vCache"/>)
+    /// hold IEEE fp16 packed two-per-uint and are read via <c>unpackHalf2x16</c>. All
+    /// arithmetic (scores / softmax / value accumulation) stays fp32 — only the stored K/V
+    /// mantissa is narrowed. <paramref name="scoresScratch"/> stays fp32 (see
+    /// <see cref="Attention"/> for the spill-buffer convention).
+    /// </summary>
+    public void AttentionBf16(Tensor q, Tensor kCache, Tensor vCache, Tensor output,
+        Tensor scoresScratch,
+        uint numHeads, uint numKvHeads, uint headDim, uint seqLen, uint maxSeqLen,
+        uint window = 0u)
+    {
+        _attentionBf16Pipeline ??= new ComputePipeline(this, Shaders.AttentionBf16, 5, pushConstantSize: sizeof(AttentionParams));
+        var p = new AttentionParams
+        {
+            numHeads = numHeads, numKvHeads = numKvHeads,
+            headDim = headDim, seqLen = seqLen, maxSeqLen = maxSeqLen, window = window
+        };
+        DispatchOrRecord(_attentionBf16Pipeline,
+            [GetBuffer(q), GetBuffer(kCache), GetBuffer(vCache), GetBuffer(output),
+             GetBuffer(scoresScratch)],
+            numHeads, &p);
+    }
+
+    /// <summary>
+    /// q8_0 (issue #325) variant of <see cref="KvAppend"/>: block-quantizes the K/V vectors
+    /// into the cache as ggml <c>block_q8_0</c> (34 bytes/block = fp16 scale + 32 int8, per 32
+    /// elements; ~4× smaller than fp32). The cache buffers are bound as <c>uint[]</c> and
+    /// indexed identically to the fp32 path (<c>position * kv_dim + i</c>, expressed in blocks).
+    /// Dispatched ONE THREAD PER 32-ELEMENT BLOCK; kv_dim must be a multiple of 32 (enforced in
+    /// GpuForwardPass). The shader owns a whole 34-byte block per thread and uses masked atomics
+    /// for the (non-4-aligned) seam words shared between adjacent blocks.
+    /// </summary>
+    public void KvAppendQ8_0(Tensor kInput, Tensor vInput, Tensor kCache, Tensor vCache,
+        uint kvDim, uint position, uint maxSeqLen)
+    {
+        _kvAppendQ8Pipeline ??= new ComputePipeline(this, Shaders.KvAppendQ8_0, 4, pushConstantSize: sizeof(KvAppendParams));
+        var p = new KvAppendParams { kvDim = kvDim, position = position, maxSeqLen = maxSeqLen };
+        DispatchOrRecord(_kvAppendQ8Pipeline,
+            [GetBuffer(kInput), GetBuffer(vInput), GetBuffer(kCache), GetBuffer(vCache)],
+            ((kvDim >> 5) + 255) / 256, &p);
+    }
+
+    /// <summary>
+    /// q8_0 (issue #325) variant of <see cref="Attention"/>: identical control flow to the fp32
+    /// path, but the K/V cache buffers hold ggml <c>block_q8_0</c> (34 bytes/block) and are read
+    /// via a per-element byte-gather + dequant (<c>fp16(d) * int8</c>). All arithmetic (scores /
+    /// softmax / value accumulation) stays fp32 — only the stored K/V is narrowed.
+    /// <paramref name="scoresScratch"/> stays fp32 (see <see cref="Attention"/> for the spill
+    /// convention).
+    /// </summary>
+    public void AttentionQ8_0(Tensor q, Tensor kCache, Tensor vCache, Tensor output,
+        Tensor scoresScratch,
+        uint numHeads, uint numKvHeads, uint headDim, uint seqLen, uint maxSeqLen,
+        uint window = 0u)
+    {
+        _attentionQ8Pipeline ??= new ComputePipeline(this, Shaders.AttentionQ8_0, 5, pushConstantSize: sizeof(AttentionParams));
+        var p = new AttentionParams
+        {
+            numHeads = numHeads, numKvHeads = numKvHeads,
+            headDim = headDim, seqLen = seqLen, maxSeqLen = maxSeqLen, window = window
+        };
+        DispatchOrRecord(_attentionQ8Pipeline,
+            [GetBuffer(q), GetBuffer(kCache), GetBuffer(vCache), GetBuffer(output),
+             GetBuffer(scoresScratch)],
+            numHeads, &p);
+    }
+
+    /// <summary>
+    /// SnapKV (issue #59) — score one (layer, query) pair against the layer's K
+    /// cache and atomicAdd-pool the post-softmax weights into
+    /// <paramref name="scoreAccum"/>. Mirrors <c>CudaBackend.SnapKvScore</c>.
+    ///
+    /// <paramref name="scoresScratch"/> is only read/written when
+    /// <c>promptLen &gt; 4096</c> (the shared-memory fast-path cap). Callers always
+    /// have to bind a buffer regardless — pass a 1-float placeholder for shorter
+    /// prompts, mirroring the <see cref="Attention"/> convention.
+    /// </summary>
+    public void SnapKvScore(Tensor q, Tensor kCache, Tensor scoreAccum, Tensor scoresScratch,
+                            uint numHeads, uint numKvHeads, uint headDim,
+                            uint promptLen, uint qAbsPos, uint maxSeqLen)
+    {
+        _snapKvScorePipeline ??= new ComputePipeline(this, Shaders.SnapKvScore, 4, pushConstantSize: sizeof(SnapKvScoreParams));
+        var p = new SnapKvScoreParams
+        {
+            numHeads = numHeads, numKvHeads = numKvHeads, headDim = headDim,
+            promptLen = promptLen, qAbsPos = qAbsPos, maxSeqLen = maxSeqLen,
+        };
+        DispatchOrRecord(_snapKvScorePipeline,
+            [GetBuffer(q), GetBuffer(kCache), GetBuffer(scoreAccum), GetBuffer(scoresScratch)],
+            numHeads, &p);
+    }
+
+    /// <summary>
+    /// SnapKV (issue #59) — gather the kept positions of one KV ring (K or V)
+    /// into a dense <c>[K × kvDim]</c> prefix of <paramref name="dst"/>.
+    /// <paramref name="src"/> and <paramref name="dst"/> MUST be different
+    /// tensors; the destination is later copied back over the original ring's
+    /// <c>[0, K × kvDim)</c> region by the caller. <paramref name="keepPositions"/>
+    /// must hold int32 indices in <c>[0, originalLength)</c>.
+    ///
+    /// Dispatched as <c>(ceil(kvDim/256), K, 1)</c> workgroups of 256 threads —
+    /// matches the CUDA reference grid.
+    /// </summary>
+    public void KvCompact(Tensor src, Tensor dst, Tensor keepPositions,
+                          uint K, uint kvDim)
+    {
+        _kvCompactPipeline ??= new ComputePipeline(this, Shaders.KvCompact, 3, pushConstantSize: sizeof(KvCompactParams));
+        var p = new KvCompactParams { K = K, kvDim = kvDim };
+        uint groupsX = (kvDim + 255) / 256;
+        DispatchOrRecord(_kvCompactPipeline,
+            [GetBuffer(src), GetBuffer(dst), GetBuffer(keepPositions)],
+            groupsX, &p, groupY: K);
+    }
+
+    /// <summary>
+    /// SnapKV (issue #59) — zero a sub-region of an f32 tensor starting at
+    /// <paramref name="elementOffset"/> for <paramref name="elementCount"/>
+    /// elements. Mirrors <c>CudaBackend.ClearRegion</c>. SnapKV calls this once
+    /// per prefill over <c>promptLen</c> floats (≤ a few KB), so we go via a
+    /// CPU-side zero buffer staged through the upload pipeline rather than
+    /// adding an offset-aware compute shader. Must NOT be called while a
+    /// command-buffer recording session is active.
+    /// </summary>
+    public unsafe void ClearRegion(Tensor dst, long elementOffset, int elementCount)
+    {
+        if (elementCount <= 0) return;
+        ulong byteSize = (ulong)((long)elementCount * sizeof(float));
+        ulong dstByteOffset = (ulong)(elementOffset * sizeof(float));
+
+        if (_uploadStaging == null || _uploadStagingSize < byteSize)
+        {
+            _uploadStaging?.Dispose();
+            _uploadStaging = GpuBuffer.CreateStaging(this, byteSize, VkBufferUsageFlags.TransferSrc);
+            _uploadStagingSize = byteSize;
+        }
+
+        // Zero the staging window then issue a one-region copy.
+        byte* mapped = (byte*)_uploadStaging.Map();
+        new Span<byte>(mapped, (int)byteSize).Clear();
+        _uploadStaging.Unmap();
+
+        var gpuBuf = GetBuffer(dst);
+        VkCommandBufferBeginInfo beginInfo = new() { flags = VkCommandBufferUsageFlags.OneTimeSubmit };
+        _vkd.vkBeginCommandBuffer(_transferCmd, &beginInfo).CheckResult();
+        VkBufferCopy copyRegion = new() { srcOffset = 0, dstOffset = dstByteOffset, size = byteSize };
+        _vkd.vkCmdCopyBuffer(_transferCmd, _uploadStaging!.Buffer, gpuBuf.Buffer, 1, &copyRegion);
+        _vkd.vkEndCommandBuffer(_transferCmd).CheckResult();
+        SubmitAndWait();
+    }
+
+    // ================================================================
+    //  TurboQuant KV Cache Operations
+    // ================================================================
+
+    public void TqRotateQuery(Tensor qInput, Tensor rotatedQ, Tensor signPatterns,
+        uint numHeads, uint numKvHeads, uint headDim)
+    {
+        _tqRotateQueryPipeline ??= new ComputePipeline(this, Shaders.TqRotateQuery, 3, pushConstantSize: sizeof(TqRotateQueryParams));
+        var p = new TqRotateQueryParams { numHeads = numHeads, numKvHeads = numKvHeads, headDim = headDim };
+        DispatchOrRecord(_tqRotateQueryPipeline,
+            [GetBuffer(qInput), GetBuffer(rotatedQ), GetBuffer(signPatterns)],
+            numHeads, &p);
+    }
+
+    public void TqKvAppend(Tensor kInput, Tensor vInput, Tensor kCacheTq, Tensor vCacheTq,
+        Tensor signPatterns, Tensor codebook, Tensor boundaries,
+        uint kvDim, uint headDim, uint position, uint maxSeqLen, uint numKvHeads, uint blockBytes)
+    {
+        _tqKvAppendPipeline ??= new ComputePipeline(this, Shaders.TqKvAppend, 7, pushConstantSize: sizeof(TqKvAppendParams));
+        var p = new TqKvAppendParams
+        {
+            kvDim = kvDim, headDim = headDim, position = position,
+            maxSeqLen = maxSeqLen, numKvHeads = numKvHeads, blockBytes = blockBytes
+        };
+        DispatchOrRecord(_tqKvAppendPipeline,
+            [GetBuffer(kInput), GetBuffer(vInput), GetBuffer(kCacheTq), GetBuffer(vCacheTq),
+             GetBuffer(signPatterns), GetBuffer(codebook), GetBuffer(boundaries)],
+            numKvHeads, &p);
+    }
+
+    /// <summary>
+    /// Hybrid TQ + FP16 attention. <paramref name="scoresScratch"/> is a VRAM
+    /// buffer the kernel spills per-position softmax scores into when
+    /// <c>tqSeqLen + fp16SeqLen &gt; 4096</c>; the fast path uses shared memory
+    /// instead. Vulkan descriptors require a bound buffer regardless of which
+    /// path runs, so callers pass a 1-float placeholder when the whole context
+    /// is guaranteed to fit in shared memory.
+    /// </summary>
+    public void TqAttention(Tensor q, Tensor rotatedQ, Tensor kCacheTq, Tensor vCacheTq,
+        Tensor kCacheFp16, Tensor vCacheFp16, Tensor output, Tensor codebook,
+        Tensor signPatterns, Tensor scoresScratch,
+        uint numHeads, uint numKvHeads, uint headDim,
+        uint tqSeqLen, uint fp16SeqLen, uint maxSeqLen, uint blockBytes)
+    {
+        _tqAttentionPipeline ??= new ComputePipeline(this, Shaders.TqAttention, 10, pushConstantSize: sizeof(TqAttentionParams));
+        var p = new TqAttentionParams
+        {
+            numHeads = numHeads, numKvHeads = numKvHeads, headDim = headDim,
+            tqSeqLen = tqSeqLen, fp16SeqLen = fp16SeqLen, maxSeqLen = maxSeqLen, blockBytes = blockBytes
+        };
+        DispatchOrRecord(_tqAttentionPipeline,
+            [GetBuffer(q), GetBuffer(rotatedQ), GetBuffer(kCacheTq), GetBuffer(vCacheTq),
+             GetBuffer(kCacheFp16), GetBuffer(vCacheFp16), GetBuffer(output), GetBuffer(codebook),
+             GetBuffer(scoresScratch), GetBuffer(signPatterns)],
+            numHeads, &p);
+    }
+
+    // ================================================================
+    //  DiT / Diffusion — batched GEMM and full-sequence attention
+    // ================================================================
+
+    /// <summary>
+    /// Tiled GEMM: C[M,N] = A[M,K] × B[N,K]^T.
+    /// Dispatches the best available precision shader (fp8 > bf16 > fp16 > fp32).
+    /// A, B, C must already be GPU-resident tensors.
+    /// </summary>
+    public unsafe void Sgemm(Tensor C, Tensor A, Tensor B, int M, int K, int N)
+    {
+        var p = new SgemmParams { M = (uint)M, N = (uint)N, K = (uint)K };
+        uint gx = ((uint)M + 15u) / 16u;
+        uint gy = ((uint)N + 15u) / 16u;
+
+        if (A.DType == DType.Float8E4M3 && B.DType == DType.Float8E4M3 && HasShaderFloat8)
+        {
+            try
+            {
+                _sgemmFp8Pipeline ??= new ComputePipeline(this, Shaders.SgemmFp8, 3,
+                    pushConstantSize: sizeof(SgemmParams));
+                DispatchOrRecord(_sgemmFp8Pipeline, [GetBuffer(A), GetBuffer(B), GetBuffer(C)], gx, &p, gy);
+                return;
+            }
+            catch (Exception)
+            {
+                HasShaderFloat8 = false;
+                _sgemmFp8Pipeline?.Dispose();
+                _sgemmFp8Pipeline = null;
+            }
+        }
+
+        if (A.DType == DType.BFloat16 && HasShaderBfloat16)
+        {
+            try
+            {
+                _sgemmBf16Pipeline ??= new ComputePipeline(this, Shaders.SgemmBf16, 3,
+                    pushConstantSize: sizeof(SgemmParams));
+                DispatchOrRecord(_sgemmBf16Pipeline, [GetBuffer(A), GetBuffer(B), GetBuffer(C)], gx, &p, gy);
+                return;
+            }
+            catch (Exception)
+            {
+                HasShaderBfloat16 = false;
+                _sgemmBf16Pipeline?.Dispose();
+                _sgemmBf16Pipeline = null;
+            }
+        }
+
+        if (A.DType == DType.Float32 && B.DType == DType.Float16 && HasShaderFloat16Int8 && Has16BitStorage)
+        {
+            _sgemmF16Pipeline ??= new ComputePipeline(this, Shaders.SgemmF16, 3,
+                pushConstantSize: sizeof(SgemmParams));
+            DispatchOrRecord(_sgemmF16Pipeline, [GetBuffer(A), GetBuffer(B), GetBuffer(C)], gx, &p, gy);
+            return;
+        }
+
+        _sgemmF32Pipeline ??= new ComputePipeline(this, Shaders.SgemmF32, 3,
+            pushConstantSize: sizeof(SgemmParams));
+        DispatchOrRecord(_sgemmF32Pipeline, [GetBuffer(A), GetBuffer(B), GetBuffer(C)], gx, &p, gy);
+    }
+
+    /// <summary>GPU-side dequantize Q5_K raw bytes → fp16 output.</summary>
+    public unsafe void DequantQ5KM(Tensor src, Tensor dst, int numBlocks)
+    {
+        try
+        {
+            _dequantQ5KMPipeline ??= new ComputePipeline(this, Shaders.DequantQ5KM, 2,
+                pushConstantSize: sizeof(DequantParams));
+            var p = new DequantParams { numBlocks = (uint)numBlocks };
+            DispatchOrRecord(_dequantQ5KMPipeline, [GetBuffer(src), GetBuffer(dst)], (uint)numBlocks, &p);
+        }
+        catch (Exception)
+        {
+            _matMulTiledQ4KPipeline?.Dispose();
+            _matMulTiledQ6KPipeline?.Dispose();
+        _dequantQ5KMPipeline?.Dispose();
+            _dequantQ5KMPipeline = null;
+            throw;
+        }
+    }
+
+    /// <summary>GPU-side dequantize Q4_K raw bytes → fp16 output.</summary>
+    public unsafe void DequantQ4KM(Tensor src, Tensor dst, int numBlocks)
+    {
+        try
+        {
+            _dequantQ4KMPipeline ??= new ComputePipeline(this, Shaders.DequantQ4KM, 2,
+                pushConstantSize: sizeof(DequantParams));
+            var p = new DequantParams { numBlocks = (uint)numBlocks };
+            DispatchOrRecord(_dequantQ4KMPipeline, [GetBuffer(src), GetBuffer(dst)], (uint)numBlocks, &p);
+        }
+        catch (Exception)
+        {
+            _dequantQ4KMPipeline?.Dispose();
+            _dequantQ4KMPipeline = null;
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Full-sequence self-attention computed on CPU (attention is ~1% of DiT FLOPs).
+    /// Downloads Q/K/V from GPU, runs the attention, uploads the result.
+    /// Layout: element (tok, head, d) at index tok*nHeads*headDim + head*headDim + d.
+    /// </summary>
+    public unsafe void FullSeqAttention(Tensor output, Tensor q, Tensor k, Tensor v,
+                                        int nTok, int nHeads, int headDim, float scale)
+    {
+        int dim = nHeads * headDim;
+        int count = nTok * dim;
+        float[] qHost = new float[count];
+        float[] kHost = new float[count];
+        float[] vHost = new float[count];
+        float[] oHost = new float[count];
+        Download(q, qHost);
+        Download(k, kHost);
+        Download(v, vHost);
+
+        float[] scoresBuf = new float[nHeads * nTok * nTok];
+        float[] vhBuf     = new float[nTok * headDim];
+
+        fixed (float* qPtr = qHost, kPtr = kHost, vPtr = vHost, oPtr = oHost,
+                      sBuf = scoresBuf, vhPtr = vhBuf)
+        {
+            for (int h = 0; h < nHeads; h++)
+            {
+                int sBase = h * nTok * nTok;
+                for (int i = 0; i < nTok; i++)
+                {
+                    float* qi = qPtr + ((long)i * nHeads + h) * headDim;
+                    int sRow = sBase + i * nTok;
+                    for (int j = 0; j < nTok; j++)
+                    {
+                        float* kj = kPtr + ((long)j * nHeads + h) * headDim;
+                        float dot = 0f;
+                        for (int d = 0; d < headDim; d++)
+                            dot += qi[d] * kj[d];
+                        sBuf[sRow + j] = dot * scale;
+                    }
+                    float max = float.NegativeInfinity;
+                    for (int j = 0; j < nTok; j++)
+                        if (sBuf[sRow + j] > max) max = sBuf[sRow + j];
+                    float sum = 0f;
+                    for (int j = 0; j < nTok; j++)
+                    {
+                        sBuf[sRow + j] = MathF.Exp(sBuf[sRow + j] - max);
+                        sum += sBuf[sRow + j];
+                    }
+                    float invSum = 1f / sum;
+                    for (int j = 0; j < nTok; j++)
+                        sBuf[sRow + j] *= invSum;
+                }
+
+                // Gather V for this head
+                for (int j = 0; j < nTok; j++)
+                {
+                    float* src = vPtr + ((long)j * nHeads + h) * headDim;
+                    float* dst = vhPtr + j * headDim;
+                    for (int d = 0; d < headDim; d++)
+                        dst[d] = src[d];
+                }
+                // Weighted sum into output
+                for (int i = 0; i < nTok; i++)
+                {
+                    int sRow = sBase + i * nTok;
+                    float* outRow = oPtr + ((long)i * nHeads + h) * headDim;
+                    for (int d = 0; d < headDim; d++)
+                        outRow[d] = 0f;
+                    for (int j = 0; j < nTok; j++)
+                    {
+                        float w = sBuf[sRow + j];
+                        float* vj = vhPtr + j * headDim;
+                        for (int d = 0; d < headDim; d++)
+                            outRow[d] += w * vj[d];
+                    }
+                }
+            }
+        }
+
+        // Upload result into the pre-allocated output tensor via staging copy
+        ulong byteSize = (ulong)((long)count * sizeof(float));
+        if (_uploadStaging == null || _uploadStagingSize < byteSize)
+        {
+            _uploadStaging?.Dispose();
+            _uploadStaging = GpuBuffer.CreateStaging(this, byteSize, VkBufferUsageFlags.TransferSrc);
+            _uploadStagingSize = byteSize;
+        }
+        fixed (float* src = oHost)
+        {
+            float* mapped = (float*)_uploadStaging.Map();
+            new System.Span<float>(src, count).CopyTo(new System.Span<float>(mapped, count));
+            _uploadStaging.Unmap();
+        }
+        CopyBuffer(_uploadStaging, GetBuffer(output), byteSize);
+    }
+
+    // ================================================================
+    //  IImageOpsBackend — GPU-native image operations for RRDBNet
+    // ================================================================
+
+    public Tensor Conv2d(Tensor input, Tensor weight, Tensor bias,
+                         int inCh, int outCh, int h, int w, int ksize, int padding = -1)
+    {
+        if (padding < 0) padding = ksize / 2;
+        var output = Allocate(TensorShape.D1(outCh * h * w));
+        _conv2dPipeline ??= new ComputePipeline(this, Shaders.Conv2d, 4, pushConstantSize: sizeof(Conv2dParams));
+        var p = new Conv2dParams { inCh = (uint)inCh, outCh = (uint)outCh, height = (uint)h, width = (uint)w, ksize = (uint)ksize, padding = (uint)padding };
+        // 2D dispatch: X=outCh (one workgroup per channel), Y=ceil(H*W/256) (spatial tiles).
+        // All 256 threads per workgroup share the same output channel → cooperative weight
+        // loading into shared memory eliminates 256× redundant global weight reads.
+        uint groupY = ((uint)(h * w) + 255u) / 256u;
+        DispatchOrRecord(_conv2dPipeline, [GetBuffer(input), GetBuffer(weight), GetBuffer(bias), GetBuffer(output)], (uint)outCh, &p, groupY);
+        return output;
+    }
+
+    public void LeakyReluInPlace(Tensor x, float negSlope)
+    {
+        _leakyReluPipeline ??= new ComputePipeline(this, Shaders.LeakyRelu, 1, pushConstantSize: sizeof(LeakyReluParams));
+        var p = new LeakyReluParams { n = (uint)x.ElementCount, negSlope = negSlope };
+        uint groups = ((uint)x.ElementCount + 255u) / 256u;
+        DispatchOrRecord(_leakyReluPipeline, [GetBuffer(x)], groups, &p);
+    }
+
+    public void ClampInPlace(Tensor x, float min, float max)
+    {
+        _clampPipeline ??= new ComputePipeline(this, Shaders.ClampInPlace, 1, pushConstantSize: sizeof(ClampParams));
+        var p = new ClampParams { n = (uint)x.ElementCount, minVal = min, maxVal = max };
+        uint groups = ((uint)x.ElementCount + 255u) / 256u;
+        DispatchOrRecord(_clampPipeline, [GetBuffer(x)], groups, &p);
+    }
+
+    public Tensor CatChannels(Tensor a, int aCh, Tensor b, int bCh, int hw)
+    {
+        var output = Allocate(TensorShape.D1((aCh + bCh) * hw));
+        _catChannelsPipeline ??= new ComputePipeline(this, Shaders.CatChannels, 3, pushConstantSize: sizeof(CatChannelsParams));
+        var p = new CatChannelsParams { aCh = (uint)aCh, bCh = (uint)bCh, hw = (uint)hw };
+        uint groups = ((uint)((aCh + bCh) * hw) + 255u) / 256u;
+        DispatchOrRecord(_catChannelsPipeline, [GetBuffer(a), GetBuffer(b), GetBuffer(output)], groups, &p);
+        return output;
+    }
+
+    public Tensor PixelShuffleGpu(Tensor input, int inCh, int h, int w, int upscaleFactor)
+    {
+        int outCh = inCh / (upscaleFactor * upscaleFactor);
+        var output = Allocate(TensorShape.D1(outCh * h * upscaleFactor * w * upscaleFactor));
+        _pixelShufflePipeline ??= new ComputePipeline(this, Shaders.PixelShuffle, 2, pushConstantSize: sizeof(PixelShuffleParams));
+        var p = new PixelShuffleParams { inCh = (uint)inCh, h = (uint)h, w = (uint)w, factor = (uint)upscaleFactor };
+        uint total = (uint)(outCh * h * upscaleFactor * w * upscaleFactor);
+        uint groups = (total + 255u) / 256u;
+        DispatchOrRecord(_pixelShufflePipeline, [GetBuffer(input), GetBuffer(output)], groups, &p);
+        return output;
+    }
+
+    public Tensor PixelUnshuffleGpu(Tensor input, int inCh, int h, int w, int downscaleFactor)
+    {
+        int outCh = inCh * downscaleFactor * downscaleFactor;
+        int oh = h / downscaleFactor;
+        int ow = w / downscaleFactor;
+        var output = Allocate(TensorShape.D1(outCh * oh * ow));
+        _pixelUnshufflePipeline ??= new ComputePipeline(this, Shaders.PixelUnshuffle, 2, pushConstantSize: sizeof(PixelShuffleParams));
+        var p = new PixelShuffleParams { inCh = (uint)inCh, h = (uint)oh, w = (uint)ow, factor = (uint)downscaleFactor };
+        uint total = (uint)(outCh * oh * ow);
+        uint groups = (total + 255u) / 256u;
+        DispatchOrRecord(_pixelUnshufflePipeline, [GetBuffer(input), GetBuffer(output)], groups, &p);
+        return output;
+    }
+
+    public Tensor Upsample2xGpu(Tensor input, int ch, int h, int w)
+    {
+        var output = Allocate(TensorShape.D1(ch * h * 2 * w * 2));
+        _upsample2xPipeline ??= new ComputePipeline(this, Shaders.Upsample2xNearest, 2, pushConstantSize: sizeof(SpatialParams));
+        var p = new SpatialParams { ch = (uint)ch, h = (uint)h, w = (uint)w };
+        uint groups = ((uint)(ch * h * 2 * w * 2) + 255u) / 256u;
+        DispatchOrRecord(_upsample2xPipeline, [GetBuffer(input), GetBuffer(output)], groups, &p);
+        return output;
+    }
+
+    // ================================================================
+    //  Disposal
+    // ================================================================
+
+    // ── Vulkan validation layer support (issue #153, opt-in) ──────────────
+
+    /// <summary>
+    /// Build the debug-messenger create-info used both for the pNext chain on
+    /// instance creation and for the standalone messenger. Severity is limited to
+    /// WARNING + ERROR; all message types are reported.
+    /// </summary>
+    private static VkDebugUtilsMessengerCreateInfoEXT MakeDebugMessengerCreateInfo() => new()
+    {
+        messageSeverity = VkDebugUtilsMessageSeverityFlagsEXT.Warning
+                        | VkDebugUtilsMessageSeverityFlagsEXT.Error,
+        messageType = VkDebugUtilsMessageTypeFlagsEXT.General
+                    | VkDebugUtilsMessageTypeFlagsEXT.Validation
+                    | VkDebugUtilsMessageTypeFlagsEXT.Performance,
+        pfnUserCallback = &DebugCallback,
+    };
+
+    /// <summary>
+    /// Validation-layer callback. AOT-safe: a <c>[UnmanagedCallersOnly]</c> static method
+    /// (no managed delegate to keep alive / GC). Writes WARNING/ERROR lines — including any
+    /// named objects involved — to <see cref="Console.Error"/> with a <c>[VK-VALIDATION]</c> prefix.
+    /// </summary>
+    [System.Runtime.InteropServices.UnmanagedCallersOnly]
+    private static uint DebugCallback(
+        VkDebugUtilsMessageSeverityFlagsEXT severity,
+        VkDebugUtilsMessageTypeFlagsEXT messageTypes,
+        VkDebugUtilsMessengerCallbackDataEXT* data,
+        void* userData)
+    {
+        // An exception escaping an [UnmanagedCallersOnly] callback fail-fasts the process,
+        // so swallow everything. PtrToStringUTF8 decodes the native strings as UTF-8
+        // (new string((sbyte*)..) would use the ANSI code page on Windows).
+        try
+        {
+            // Return VK_FALSE (0): the callback does not abort the triggering API call.
+            if (data == null) return 0u;
+
+            string sev = severity.HasFlag(VkDebugUtilsMessageSeverityFlagsEXT.Error) ? "ERROR" : "WARNING";
+            string msg = data->pMessage != null
+                ? System.Runtime.InteropServices.Marshal.PtrToStringUTF8((nint)data->pMessage) ?? "(no message)"
+                : "(no message)";
+            string idName = data->pMessageIdName != null
+                ? System.Runtime.InteropServices.Marshal.PtrToStringUTF8((nint)data->pMessageIdName) ?? ""
+                : "";
+
+            Console.Error.WriteLine($"[VK-VALIDATION] {sev} ({messageTypes}) [{idName}] {msg}");
+
+            // Dump any named objects involved (buffer / descriptor set / pipeline / etc.)
+            for (uint i = 0; i < data->objectCount; i++)
+            {
+                VkDebugUtilsObjectNameInfoEXT obj = data->pObjects[i];
+                string objName = obj.pObjectName != null
+                    ? System.Runtime.InteropServices.Marshal.PtrToStringUTF8((nint)obj.pObjectName) ?? "(unnamed)"
+                    : "(unnamed)";
+                Console.Error.WriteLine(
+                    $"[VK-VALIDATION]   object[{i}] type={obj.objectType} handle=0x{obj.objectHandle:X} name={objName}");
+            }
+            Console.Error.Flush();
+        }
+        catch
+        {
+            // Never let a managed exception cross back into the Vulkan driver.
+        }
+
+        return 0u; // VK_FALSE
+    }
+
+    public void Dispose()
+    {
+        if (_disposed) return;
+        _disposed = true;
+
+        _vkd.vkDeviceWaitIdle();
+
+        // Dispose int8 pipelines deferred by a mid-recording fallback (their fields were nulled,
+        // so the per-field disposals below won't cover them). GPU is now idle.
+        foreach (var p in _pendingPipelineFrees) p.Dispose();
+        _pendingPipelineFrees.Clear();
+
+        // Dispose compute pipelines
+        _rmsNormPipeline?.Dispose();
+        _rmsNormBatchedPipeline?.Dispose();
+        _headNormPipeline?.Dispose();
+        _headNormBatchedPipeline?.Dispose();
+        _headNormPurePipeline?.Dispose();
+        _siluMulPipeline?.Dispose();
+        _geluTanhMulPipeline?.Dispose();
+        _softcapPipeline?.Dispose();
+        _siluPipeline?.Dispose();
+        _addInPlacePipeline?.Dispose();
+        _addScaledInPlacePipeline?.Dispose();
+        _scaleInPlacePipeline?.Dispose();
+        _clearPipeline?.Dispose();
+        _elementwiseMulPipeline?.Dispose();
+        _ropePipeline?.Dispose();
+        _ropeBatchedPipeline?.Dispose();
+        _ropeNeoxPipeline?.Dispose();
+        _ropeNeoxBatchedPipeline?.Dispose();
+        _ropeNeoxWithFactorsPipeline?.Dispose();
+        _softmaxPipeline?.Dispose();
+        _sigmoidPipeline?.Dispose();
+        _matVecQ4KPipeline?.Dispose();
+        _matVecBatchedQ4KPipeline?.Dispose();
+        _matVecBatchedQ4KInt8Pipeline?.Dispose();
+        _quantizeQ8_1Pipeline?.Dispose();
+        _matVecBatchedQ6KPipeline?.Dispose();
+        _matVecBatchedQ6KInt8Pipeline?.Dispose();
+        _matVecQ6KPipeline?.Dispose();
+        _matVecQ5KPipeline?.Dispose();
+        _matVecQ8_0Pipeline?.Dispose();
+        _matVecQ4_0Pipeline?.Dispose();
+        _matVecF32Pipeline?.Dispose();
+        _kvAppendPipeline?.Dispose();
+        _attentionPipeline?.Dispose();
+        _kvAppendBatchedPipeline?.Dispose();
+        _attentionBatchedPipeline?.Dispose();
+        _attentionBatchedFlashPipeline?.Dispose();
+        _attentionBatchedFlashBf16Pipeline?.Dispose();
+        _kvAppendBatchedBf16Pipeline?.Dispose();
+        _attentionBatchedBf16Pipeline?.Dispose();
+        _kvAppendBatchedQ8Pipeline?.Dispose();
+        _attentionBatchedQ8Pipeline?.Dispose();
+        _kvAppendBf16Pipeline?.Dispose();
+        _attentionBf16Pipeline?.Dispose();
+        _kvAppendQ8Pipeline?.Dispose();
+        _attentionQ8Pipeline?.Dispose();
+        _splitKvPartialPipeline?.Dispose();
+        _splitKvPartialBf16Pipeline?.Dispose();
+        _splitKvPartialQ8Pipeline?.Dispose();
+        _splitKvCombinePipeline?.Dispose();
+        _snapKvScorePipeline?.Dispose();
+        _kvCompactPipeline?.Dispose();
+        _tqRotateQueryPipeline?.Dispose();
+        _tqKvAppendPipeline?.Dispose();
+        _tqAttentionPipeline?.Dispose();
+        _embedLookupPipeline?.Dispose();
+        _embedLookupQ4KPipeline?.Dispose();
+        _embedLookupQ6KPipeline?.Dispose();
+        _bufCopyPipeline?.Dispose();
+        _sgemmF32Pipeline?.Dispose();
+        _sgemmF16Pipeline?.Dispose();
+        _sgemmBf16Pipeline?.Dispose();
+        _sgemmFp8Pipeline?.Dispose();
+        _dequantQ5KMPipeline?.Dispose();
+        _dequantQ4KMPipeline?.Dispose();
+        _gdnConv1dDecodePipeline?.Dispose();
+        _gdnL2NormPerHeadPipeline?.Dispose();
+        _gdnTileHeadsPipeline?.Dispose();
+        _gdnRecurrenceDecodePipeline?.Dispose();
+        _gdnConv1dDecodeBatchedPipeline?.Dispose();
+        _gdnConv1dStateUpdateBatchedPipeline?.Dispose();
+        _gdnL2NormPerHeadBatchedPipeline?.Dispose();
+        _gdnTileHeadsBatchedPipeline?.Dispose();
+        _gdnRecurrenceScanPipeline?.Dispose();
+        _gdnConv1dStateCaptureRingPipeline?.Dispose();
+        _gdnChunkedPrefillPipeline?.Dispose();
+        _ropeNeoxPartialPipeline?.Dispose();
+        _splitQgPipeline?.Dispose();
+        _ropeNeoxPartialBatchedPipeline?.Dispose();
+        _splitQgBatchedPipeline?.Dispose();
+        _sigmoidMulInPlacePipeline?.Dispose();
+        _conv2dPipeline?.Dispose();
+        _leakyReluPipeline?.Dispose();
+        _clampPipeline?.Dispose();
+        _catChannelsPipeline?.Dispose();
+        _pixelShufflePipeline?.Dispose();
+        _pixelUnshufflePipeline?.Dispose();
+        _upsample2xPipeline?.Dispose();
+
+        _downloadStaging?.Dispose();
+        _uploadStaging?.Dispose();
+        _asyncStaging?.Dispose();
+
+        // Free all tracked GPU buffers
+        foreach (var buf in _buffers.Values)
+            buf.Dispose();
+        _buffers.Clear();
+
+        _vkd.vkDestroyFence(_fence, null);
+        _vkd.vkDestroyFence(_asyncFence, null);
+        _vkd.vkDestroyCommandPool(_commandPool, null);
+        _vkd.vkDestroyCommandPool(_asyncPool, null);
+        _vkd.vkDestroyDevice(null);
+
+        // Tear down the validation messenger (if registered) before the instance.
+        if (_validationEnabled && _debugMessenger.IsNotNull)
+            _vki.vkDestroyDebugUtilsMessengerEXT(_debugMessenger);
+
+        _vki.vkDestroyInstance(null);
+    }
+}

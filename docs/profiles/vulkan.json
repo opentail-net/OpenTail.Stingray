@@ -1,0 +1,13 @@
+{
+  "backend": "vulkan",
+  "device": "auto",
+  "target": "cli",
+  "gpu_layers": -1,
+  "context_size": 0,
+  "turbo_quant": false,
+  "tq_mode": "auto",
+  "kv_type": "fp32",
+  "spec_type": "auto",
+  "max_batch_size": 1,
+  "tool_grammar": false
+}

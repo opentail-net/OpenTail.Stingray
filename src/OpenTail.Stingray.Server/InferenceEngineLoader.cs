@@ -1,0 +1,769 @@
+using OpenTail.Stingray.Core;
+using OpenTail.Stingray.Cpu;
+using OpenTail.Stingray.Cuda;
+using OpenTail.Stingray.Engine;
+using OpenTail.Stingray.Vision;
+using OpenTail.Stingray.Vulkan;
+
+namespace OpenTail.Stingray.Server;
+
+public static class InferenceEngineLoader
+{
+    /// <summary>
+    /// Constructs an inference engine directly from an immutable <see cref="ExecutionPlan"/> (§5.3 of QoL plan).
+    /// </summary>
+    public static LoadedEngine LoadFromPlan(ExecutionPlan plan, OpenTailStingrayServerOptions? baseOptions = null)
+    {
+        ArgumentNullException.ThrowIfNull(plan);
+        var detectedFormat = DetectModelFormat(plan.ModelPath);
+        if (plan.ModelFormat != detectedFormat)
+            throw new InvalidOperationException(
+                $"Execution plan declares model format '{plan.ModelFormat}', but '{plan.ModelPath}' resolves as '{detectedFormat}'.");
+
+        var opts = baseOptions ?? new OpenTailStingrayServerOptions();
+        opts.ModelPath = plan.ModelPath;
+        opts.NGpuLayers = plan.GpuLayers;
+        opts.ContextSize = plan.ContextSize;
+        opts.KvType = plan.KvDtype;
+        opts.Backend = plan.Backend.ToLowerInvariant() switch
+        {
+            "vulkan" => ServerBackend.Vulkan,
+            "cuda" => ServerBackend.Cuda,
+            _ => ServerBackend.Cpu
+        };
+        return Load(opts);
+    }
+
+    private static ModelFormat DetectModelFormat(string modelPath) =>
+        Directory.Exists(modelPath)
+        || modelPath.EndsWith(".safetensors", StringComparison.OrdinalIgnoreCase)
+        || modelPath.EndsWith(".safetensors.index.json", StringComparison.OrdinalIgnoreCase)
+            ? ModelFormat.SafeTensors
+            : ModelFormat.Gguf;
+
+    /// <summary>
+    /// Opens the GGUF file referenced by <paramref name="opts"/> and constructs the
+    /// inference engine. Throws <see cref="InvalidOperationException"/> when the model
+    /// file cannot be located or the requested configuration is unsupported.
+    /// </summary>
+    public static LoadedEngine Load(OpenTailStingrayServerOptions opts)
+    {
+        // ── 0. Translate the MoE env-var-backed knobs BEFORE building the forward pass.
+        // WarmPinConfig / HybridForwardPass / slot-manager constructors read these once at
+        // load time, so they have to be in the environment by the time GgufModel.Open
+        // chains into ForwardPass construction below.
+        ApplyMoeEnvironment(opts);
+
+        // ── 1. Apply the SIMD/BLAS crossover threshold (overrides STINGRAY_MIN_BATCH_BLAS).
+        if (opts.MinBatchBlas > 0)
+            SimdKernels.MinBatchForBlas = opts.MinBatchBlas;
+        if (opts.CpuThreads > 0)
+            SimdKernels.CpuThreads = opts.CpuThreads;
+
+        // KV-cache dtype (#179): the CUDA dense forward pass reads STINGRAY_KV_DTYPE in its
+
+        // KV-cache dtype (#179): the CUDA dense forward pass reads STINGRAY_KV_DTYPE in its
+        // constructor, so translate the option into the environment before BuildForwardPass.
+        // Only set when explicitly configured — leave an externally-set env var alone so
+        // STINGRAY_KV_DTYPE-only operation keeps working. CudaForwardPass validates the value.
+        if (!string.IsNullOrWhiteSpace(opts.KvType))
+            Environment.SetEnvironmentVariable("STINGRAY_KV_DTYPE", opts.KvType);
+
+        // ── 2. Resolve & open the model.
+        var modelPath = ResolvePath(opts.ModelPath, "model", "STINGRAY_MODEL", "ModelPath");
+
+        bool isPackage = Directory.Exists(modelPath)
+            || modelPath.EndsWith(".safetensors", StringComparison.OrdinalIgnoreCase)
+            || modelPath.EndsWith(".safetensors.index.json", StringComparison.OrdinalIgnoreCase);
+
+        if (isPackage)
+        {
+            var report = ModelPackageInspector.Inspect(modelPath);
+            if (!report.IsSupported)
+            {
+                throw new InvalidOperationException(
+                    $"Model package '{modelPath}' is not supported by profile '{report.ProfileId}': " +
+                    string.Join("; ", report.Rejections.Select(r => r.Detail)));
+            }
+
+            var stSource = SafetensorsTensorSource.Open(modelPath);
+            var tokResult = HuggingFaceTokenizerSource.Load(modelPath);
+            if (!tokResult.IsUsable || tokResult.Source is null)
+            {
+                stSource.Dispose();
+                throw new InvalidOperationException($"Failed to load tokenizer from '{modelPath}'.");
+            }
+
+            var stTokenizer = GgufTokenizer.FromSource(tokResult.Source);
+            var stHp = ModelHyperparams.FromGgufMetadata(stSource.Metadata, stSource);
+            var cpuBackend = new CpuBackend();
+            int stCtxSize = opts.ContextSize > 0 ? opts.ContextSize : stHp.ContextLength;
+            var forwardPass = new ForwardPass(stSource, cpuBackend, stHp, maxContextLength: stCtxSize);
+            string packageModelId = Path.GetFileNameWithoutExtension(modelPath.TrimEnd('/', '\\'));
+            var (stThinkId, stEndThinkId) = stTokenizer.ReasoningTokens;
+
+            var rawEngine = new ContinuousBatchingEngine(forwardPass, stTokenizer, packageModelId, opts.MaxBatchSize,
+                stThinkId, stEndThinkId,
+                prefillChunkTokens: opts.PrefillChunkTokens,
+                kvBudgetBytes: opts.KvBudgetMb > 0 ? opts.KvBudgetMb * 1024 * 1024 : opts.KvBudgetMb,
+                prefixCacheBytes: opts.PrefixCacheMb > 0 ? opts.PrefixCacheMb * 1024 * 1024 : opts.PrefixCacheMb);
+
+            var ownedEngine = new OwnedDisposableEngine(rawEngine, [stSource, cpuBackend, forwardPass]);
+            var stGrammarVocab = new OpenTail.Stingray.Core.Grammar.GrammarVocabulary(stTokenizer);
+            return new LoadedEngine(ownedEngine, report.ArchitectureId ?? "llama", stTokenizer.ChatTemplate, [], stGrammarVocab, stTokenizer);
+        }
+
+        var model = GgufModel.Open(modelPath);
+        // GGUF is only a container: validate the architecture profile and every tensor's
+        // executable storage format before selecting a backend. This prevents a generic
+        // model from getting as far as its first request before failing (or, worse, running
+        // with incompatible transformer assumptions).
+        ModelCompatibility.ValidateForTextGeneration(model);
+        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var tokenizer = GgufTokenizer.FromGgufModel(model);
+        var arch = model.Metadata.TryGetValue("general.architecture", out var a)
+            ? (string)a
+            : opts.Architecture;
+        var modelId = Path.GetFileNameWithoutExtension(modelPath);
+        var (thinkTokenId, endThinkTokenId) = tokenizer.ReasoningTokens;
+
+        // Tool-boundary stop tokens for agentic loops (issue #304): resolve the architecture's
+        // adapter markers (Gemma 4: <|tool_response>) against the vocab. The chat endpoints add
+        // these to the stop set on tool-active requests so the model halts the instant it finishes
+        // its tool calls instead of opening a hallucinated trailing turn.
+        var toolBoundaryMarkers = ToolCallAdapterRegistry.Get(arch).ToolBoundaryStopMarkers;
+        var toolBoundaryStopTokenIds = toolBoundaryMarkers
+            .Select(m => tokenizer.SpecialTokens.TryGetValue(m, out int id) ? id : -1)
+            .Where(id => id > 0)
+            .Distinct()
+            .ToArray();
+        // The adapter declared it needs a tool-boundary stop but none resolved to a vocab id —
+        // agentic generation will run past the tool calls (the #304 symptom) with no other clue.
+        // Warn rather than fail silently (mirrors the image-input diagnostic below).
+        if (toolBoundaryMarkers.Count > 0 && toolBoundaryStopTokenIds.Length == 0)
+            Console.Error.WriteLine(
+                $"[OpenTail.Stingray] {arch} declares tool-boundary stop markers [{string.Join(", ", toolBoundaryMarkers)}] " +
+                "that were not found in this model's vocab; agentic tool-call generation may run past " +
+                "the tool calls (issue #304).");
+
+        // ── 3. Validate TurboQuant up-front so a mis-shaped request fails fast (and not
+        // after the model has already been mmap'd into VRAM).
+        bool turboQuant = opts.TurboQuant;
+        if (turboQuant && hp.IsHybridSsm)
+            throw new InvalidOperationException(
+                "TurboQuant is not supported for hybrid GDN models (no KV cache on GDN layers).");
+        bool tqModeIsAuto = false;
+        TqQuantizer tqQuantizer;
+        switch ((opts.TqMode ?? "auto").Trim().ToLowerInvariant())
+        {
+            case "" or "auto":
+                tqModeIsAuto = true;
+                tqQuantizer = TqQuantizer.LloydMax; // resolved per-path in BuildForwardPass
+                break;
+            case "lloydmax" or "lloyd-max":
+                tqQuantizer = TqQuantizer.LloydMax;
+                break;
+            case "kvarn":
+                tqQuantizer = TqQuantizer.KVarN;
+                break;
+            default:
+                throw new InvalidOperationException(
+                    $"Unknown TqMode '{opts.TqMode}'. Expected one of: auto, lloydmax, kvarn.");
+        }
+
+        // An explicit TqMode=kvarn is meaningless without TurboQuant — reject it up front
+        // like the CLI does (issue #437) rather than silently ignoring it.
+        if (!turboQuant && !tqModeIsAuto && tqQuantizer == TqQuantizer.KVarN)
+            throw new InvalidOperationException("TqMode=kvarn requires TurboQuant=true.");
+
+        // Head-dim gate, codec-aware (issue #437): KVarN accepts any power-of-2 head dim in
+        // [8, 1024] (CPU) / [8, 256] (CUDA) — the resolved path is validated in ResolveTq
+        // below; Lloyd-Max ships codebooks for 128/256 only. An explicit lloydmax therefore
+        // needs 128/256 up front; auto / explicit kvarn need only a valid KVarN head dim
+        // here (a path that can't run KVarN falls back or errors in ResolveTq). This relaxes
+        // the old hard {128,256} reject so KVarN's broader head dims (32/64/512/1024) are
+        // reachable on the server's CPU path, as they already are on the CLI.
+        if (turboQuant)
+        {
+            bool explicitLloydMax = !tqModeIsAuto && tqQuantizer == TqQuantizer.LloydMax;
+            if (explicitLloydMax && !TqSupport.IsLloydMaxHeadDim(hp.HeadDim))
+                throw new InvalidOperationException(
+                    $"TurboQuant Lloyd-Max requires head dimension 128 or 256; this model has head dim {hp.HeadDim}.");
+            if (!explicitLloydMax && !TqSupport.IsKVarNHeadDim(hp.HeadDim))
+                throw new InvalidOperationException(
+                    $"TurboQuant requires a power-of-2 head dimension in [8, 1024]; this model has head dim {hp.HeadDim}.");
+        }
+
+        int ctxSize = opts.ContextSize;
+        int nGpuLayers = opts.NGpuLayers;
+
+        // ── 4. Build the forward pass. The owned[] list collects everything the engine
+        // must dispose on shutdown (backends, the forward pass itself, the GGUF handle).
+        var owned = new List<IDisposable>();
+        IForwardPass fwd;
+        bool batchingSupported;
+
+        try
+        {
+            (fwd, batchingSupported) = BuildForwardPass(model, hp, arch, ctxSize, nGpuLayers, opts.Backend, turboQuant,
+                tqQuantizer, tqModeIsAuto, owned,
+                DequantCacheBytes(opts.PrefillDequantCacheMb), preferBatchingOverAutoSnapKv: opts.MaxBatchSize > 1);
+            owned.Add(model);
+        }
+        catch
+        {
+            foreach (var d in owned) try { d.Dispose(); } catch { /* fall through to rethrow */ }
+            model.Dispose();
+            throw;
+        }
+
+        // ── 5. Wrap in the right engine. ContinuousBatchingEngine takes the concrete
+        // ForwardPass — it isn't built for the GPU / hybrid paths — so we honour
+        // MaxBatchSize > 1 only when batching is structurally possible. Mirror the
+        // BuildForwardPass guard above: if an engine constructor throws, dispose everything
+        // in owned[] (the backend, the multi-GB forward pass, the GGUF handle) rather than
+        // leaking it — ownership only transfers once construction succeeds.
+        IInferenceEngine engine;
+        try
+        {
+            // ── Image input (issue #253): open the mmproj vision projector when configured.
+            // Requires an embedding-capable forward pass (CPU / full-CUDA Gemma 4) and the
+            // single-user InferenceEngine path; reject other configs with a clear error.
+            GemmaUvVisionEmbedder? visionEmbedder = null;
+            VisionModel? visionModel = null;
+            (int Open, int Close, int Placeholder) imgIds = default;
+            if (!string.IsNullOrWhiteSpace(opts.MmprojPath))
+            {
+                // The gemma4uv splice path is specific to Gemma 4 text models. The CPU forward
+                // pass reports SupportsEmbeddingInput=true for every architecture, so without this
+                // arch check a non-Gemma CPU model + a valid gemma4uv mmproj would load and either
+                // splice foreign soft tokens into the wrong trunk (garbage) or throw an opaque
+                // dimension error mid-request. Fail fast at load instead.
+                if (!string.Equals(arch, "gemma4", StringComparison.Ordinal))
+                    throw new InvalidOperationException(
+                        "Image input (MmprojPath / STINGRAY_MMPROJ) is only supported for Gemma 4 (gemma4uv) " +
+                        $"text models; this model's architecture is '{arch}'.");
+                if (!fwd.SupportsEmbeddingInput)
+                    throw new InvalidOperationException(
+                        "MmprojPath / STINGRAY_MMPROJ is set but image input requires a forward pass that accepts " +
+                        "precomputed-embedding input: CPU (NGpuLayers=0) or full CUDA offload (NGpuLayers=-1) of a " +
+                        $"Gemma 4 model that fits VRAM. The configured pass ({fwd.GetType().Name}) does not support it.");
+                if (opts.MaxBatchSize > 1 && batchingSupported && fwd is IBatchedForwardPass)
+                    throw new InvalidOperationException(
+                        "Image input is not supported with continuous batching (MaxBatchSize > 1). Set MaxBatchSize=1.");
+
+                var mmprojPath = ResolvePath(opts.MmprojPath, "mmproj projector", "STINGRAY_MMPROJ", "MmprojPath");
+                visionModel = VisionModel.Open(mmprojPath); // validates clip / gemma4uv projector, else throws
+                owned.Add(visionModel);
+                visionEmbedder = new GemmaUvVisionEmbedder(visionModel);
+                imgIds = (
+                    tokenizer.SpecialTokens.TryGetValue("<|image>", out var o) ? o : 255999,
+                    tokenizer.SpecialTokens.TryGetValue("<image|>", out var c) ? c : 258882,
+                    tokenizer.SpecialTokens.TryGetValue("<|image|>", out var p) ? p : 258880);
+            }
+
+            string? dsparkPath = !string.IsNullOrWhiteSpace(opts.DSparkModelPath)
+                ? opts.DSparkModelPath
+                : Environment.GetEnvironmentVariable("STINGRAY_DSPARK_MODEL");
+
+            if (opts.MaxBatchSize > 1 && batchingSupported && fwd is IBatchedForwardPass batchFwd)
+            {
+                if (!string.IsNullOrWhiteSpace(dsparkPath))
+                    throw new InvalidOperationException(
+                        "DSpark (DSparkModelPath / STINGRAY_DSPARK_MODEL) is not supported with " +
+                        "continuous batching (MaxBatchSize > 1) — the tap buffer is " +
+                        "single-sequence (docs/dspark-plan.md Phase 6). Set MaxBatchSize=1.");
+                engine = new ContinuousBatchingEngine(batchFwd, tokenizer, modelId, opts.MaxBatchSize,
+                    thinkTokenId, endThinkTokenId,
+                    prefillChunkTokens: opts.PrefillChunkTokens,
+                    kvBudgetBytes: opts.KvBudgetMb > 0 ? opts.KvBudgetMb * 1024 * 1024 : opts.KvBudgetMb,
+                    prefixCacheBytes: opts.PrefixCacheMb > 0 ? opts.PrefixCacheMb * 1024 * 1024 : opts.PrefixCacheMb);
+                // ContinuousBatchingEngine doesn't accept owned[] disposables; transfer
+                // disposal responsibility by wrapping it in a composite disposable.
+                engine = new OwnedDisposableEngine(engine, owned);
+            }
+            else
+            {
+                var ie = new InferenceEngine(fwd, tokenizer, modelId, thinkTokenId, endThinkTokenId,
+                    owned.ToArray());
+                if (visionEmbedder is not null)
+                    ie.EnableImageInput(visionEmbedder, visionModel!, imgIds.Open, imgIds.Close, imgIds.Placeholder);
+                if (!string.IsNullOrWhiteSpace(dsparkPath))
+                {
+                    try
+                    {
+                        AttachDSpark(ie, fwd, model, hp, owned, opts, dsparkPath, ctxSize);
+                    }
+                    catch
+                    {
+                        // The engine already owns fwd + owned[] and runs a background
+                        // worker thread; dispose IT (which tears all of that down) and
+                        // clear the list so the outer catch can't double-dispose.
+                        ie.Dispose();
+                        owned.Clear();
+                        throw;
+                    }
+                }
+                engine = ie;
+            }
+        }
+        catch
+        {
+            foreach (var d in owned) try { d.Dispose(); } catch { /* fall through to rethrow */ }
+            throw;
+        }
+
+        // Grammar-constrained tool-call decoding (issue #374): expose a vocabulary view built from
+        // the model's tokenizer. The full-vocab byte table inside it is materialised lazily on first
+        // constrained request, so this costs nothing unless tool-grammar is actually used.
+        var grammarVocab = new OpenTail.Stingray.Core.Grammar.GrammarVocabulary(tokenizer);
+
+        return new LoadedEngine(engine, arch, tokenizer.ChatTemplate, toolBoundaryStopTokenIds, grammarVocab, tokenizer);
+    }
+
+    // ── DSpark draft head (docs/dspark-plan.md Phase 6, PR #413) ─────────────
+
+    /// <summary>
+    /// Load the configured DSpark draft head and attach it to the single-user engine:
+    /// resolve the safetensors + sibling config.json, validate head↔target compatibility
+    /// and tap support, run the placement planner (GPU draft on the target's CudaBackend,
+    /// CPU draft otherwise), enable hidden taps BEFORE any request runs, and hand
+    /// ownership of the draft to the engine. Unlike the CLI (which falls back to normal
+    /// generation), an explicitly configured server head that can't be honored throws —
+    /// silent degradation at startup would misreport the deployment's capabilities.
+    /// </summary>
+    private static void AttachDSpark(InferenceEngine ie, IForwardPass fwd, GgufModel model,
+        ModelHyperparams hp, List<IDisposable> owned, OpenTailStingrayServerOptions opts,
+        string configuredPath, int ctxSize)
+    {
+        string stPath = configuredPath;
+        if (Directory.Exists(stPath)) stPath = Path.Combine(stPath, "model.safetensors");
+        if (!File.Exists(stPath))
+            throw new FileNotFoundException($"DSpark model not found: {stPath}");
+        string cfgPath = Path.Combine(Path.GetDirectoryName(Path.GetFullPath(stPath))!, "config.json");
+        if (!File.Exists(cfgPath))
+            throw new FileNotFoundException($"DSpark config.json not found next to the safetensors: {cfgPath}");
+
+        var cfg = DSparkConfig.FromJsonFile(cfgPath);
+        if (cfg.VocabSize != hp.VocabSize || cfg.NumTargetLayers != hp.NumLayers
+            || cfg.HiddenSize != hp.EmbeddingDim)
+            throw new InvalidOperationException(
+                $"DSpark head/target mismatch — head expects vocab {cfg.VocabSize}, " +
+                $"{cfg.NumTargetLayers} target layers, hidden {cfg.HiddenSize}; target has " +
+                $"vocab {hp.VocabSize}, {hp.NumLayers} layers, hidden {hp.EmbeddingDim}.");
+        if (!fwd.SupportsHiddenTaps)
+            throw new InvalidOperationException(
+                "DSpark requires a tap-capable dense forward pass (CPU, NGpuLayers=0, or full " +
+                "CUDA offload, NGpuLayers=-1; no MoE / Gemma-4 / TurboQuant / SnapKV). " +
+                $"The configured pass ({fwd.GetType().Name}) can't capture hidden taps.");
+
+        // The GPU draft shares the TARGET's CudaBackend (one stream orders the tap
+        // producer and draft consumer); only meaningful for the dense CUDA pass.
+        CudaBackend? cuda = null;
+        if (fwd is CudaForwardPass)
+            foreach (var d in owned)
+                if (d is CudaBackend cb) { cuda = cb; break; }
+
+        var userPlace = !string.IsNullOrWhiteSpace(opts.DSparkPlace)
+            ? DSparkPlacementPlanner.ParsePlacement(opts.DSparkPlace)
+            : DSparkPlacementPlanner.ResolvePlacement(null);
+        var hwProfile = cuda is not null ? HardwareProfile.Detect(cuda) : HardwareProfile.Detect();
+        var targetPlacement = TierPlanner.Plan(model, hp, hwProfile, requestedCtxSize: ctxSize);
+        long headBytesGpu = CudaDSparkDraftModel.EstimateGpuResidentBytes(cfg);
+        long headBytesCpu = DSparkDraftModel.EstimateResidentBytes(cfg);
+        long tapBytes = (long)targetPlacement.RecommendedCtxSize * cfg.TapDim * sizeof(float);
+        var decision = DSparkPlacementPlanner.Plan(
+            hwProfile, targetPlacement, headBytesGpu, headBytesCpu, userPlace,
+            hostTapBytes: tapBytes);
+
+        if (decision.Placement == DSparkPlacement.Gpu && cuda is null)
+        {
+            // Gpu → Cpu → Off graceful fallback: re-plan in Auto over a GPU-less
+            // profile so the RAM budget is actually checked.
+            decision = DSparkPlacementPlanner.Plan(
+                hwProfile with { VramBytes = 0 }, targetPlacement,
+                headBytesGpu, headBytesCpu, DSparkPlacement.Auto,
+                hostTapBytes: tapBytes);
+        }
+        Console.Error.WriteLine($"[InferenceEngine] DSpark placement: {decision.Placement} — {decision.Reason}");
+        if (decision.Placement == DSparkPlacement.Off)
+            throw new InvalidOperationException(
+                $"DSpark was configured (STINGRAY_DSPARK_MODEL / DSparkModelPath) but placement " +
+                $"resolved to Off — {decision.Reason}. Free resources, pass DSparkPlace=cpu/gpu " +
+                "explicitly, or unset the head.");
+
+        fwd.EnableHiddenTaps(cfg.TargetLayerIds);
+        using var st = SafetensorsLoader.Open(stPath);
+        IDSparkDraft draft = decision.Placement == DSparkPlacement.Gpu
+            ? new CudaDSparkDraftModel(cfg, st, cuda!, fwd.MaxSeqLen)
+            : new DSparkDraftModel(cfg, st, fwd.MaxSeqLen);
+        try
+        {
+            ie.AttachDSparkDraft(draft);
+        }
+        catch
+        {
+            draft.Dispose();
+            throw;
+        }
+        Console.Error.WriteLine(
+            $"[InferenceEngine] DSpark draft attached: {cfg.NumLayers}L block-{cfg.BlockSize} " +
+            $"({decision.Placement}) from {stPath}");
+    }
+
+    // ── Backend dispatch ─────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Translate <see cref="OpenTailStingrayServerOptions.PrefillDequantCacheMb"/> (MiB, nullable)
+    /// into the <see cref="ForwardPass"/> constructor's byte budget: <c>null</c> → defer to the
+    /// <c>STINGRAY_PREFILL_DEQUANT_MB</c> env / auto-sizing; <c>0</c> → off; negative → unlimited;
+    /// positive → that many MiB (saturating, never overflowing).
+    /// </summary>
+    private static long DequantCacheBytes(long? mb) =>
+        mb is null ? long.MinValue : ForwardPass.MbToBudgetBytes(mb.Value);
+
+    private static (IForwardPass Fwd, bool BatchingSupported) BuildForwardPass(
+        GgufModel model, ModelHyperparams hp, string arch, int ctxSize, int nGpuLayers,
+        ServerBackend backend, bool turboQuant, TqQuantizer tqQuantizer, bool tqModeIsAuto,
+        List<IDisposable> owned, long prefillDequantCacheBytes,
+        bool preferBatchingOverAutoSnapKv = false)
+    {
+        // TurboQuant quantizer resolution (issue #432): TqMode "auto" prefers KVarN
+        // wherever the resolved path supports it and falls back to Lloyd-Max 3-bit —
+        // which severely degrades quality on QK-norm models such as Qwen3 — with a
+        // stderr warning. An explicit TqMode forces the codec; forcing kvarn on an
+        // unsupported path fails model load with the reason.
+        bool snapKvEnabled = SnapKvConfig.FromEnvironment().Enabled;
+        TqQuantizer ResolveTq(string? kvarnBlocked)
+        {
+            if (!turboQuant) return TqQuantizer.LloydMax; // unused — TQ is off
+            kvarnBlocked ??= snapKvEnabled ? TqSupport.SnapKvReason : null;
+            if (kvarnBlocked is null)
+                return tqModeIsAuto ? TqQuantizer.KVarN : tqQuantizer;
+            // KVarN is unavailable on this resolved path. An explicit kvarn → hard error.
+            if (!tqModeIsAuto && tqQuantizer == TqQuantizer.KVarN)
+                throw new InvalidOperationException($"TqMode=kvarn is not supported on this path: {kvarnBlocked}.");
+            // Auto (and explicit lloydmax) fall back to Lloyd-Max — but it ships codebooks
+            // for 128/256 only. A non-{128,256} head dim reached here under the relaxed KVarN
+            // envelope, so the downgrade would crash in the forward-pass ctor; fail cleanly
+            // and point at the CPU KVarN path instead (issue #437, mirrors the CLI).
+            if (!TqSupport.IsLloydMaxHeadDim(hp.HeadDim))
+                throw new InvalidOperationException(
+                    $"TurboQuant with head dim {hp.HeadDim} requires KVarN ({kvarnBlocked}), but Lloyd-Max — the " +
+                    "only codec available on this path — ships codebooks for head dim 128/256 only. " +
+                    "Use nGpuLayers=0 for the CPU KVarN path.");
+            if (tqModeIsAuto)
+                Console.Error.WriteLine(
+                    $"[InferenceEngineLoader] TurboQuant is falling back to the Lloyd-Max 3-bit quantizer ({kvarnBlocked}). " +
+                    $"{TqSupport.QualityWarningReason}; set TqMode=\"lloydmax\" to silence this warning.");
+            return TqQuantizer.LloydMax;
+        }
+
+        // Resolve "auto" first so the rest of the method can treat backend as concrete.
+        if (nGpuLayers != 0 && backend == ServerBackend.Auto)
+        {
+            // CUDA can run TQ for any KVarN CUDA head dim (pow-2 [8,256]; 128/256 also cover
+            // Lloyd-Max) — issue #437 relaxed this from the old hard {128,256}. Larger/other
+            // head dims fall through to Vulkan (Lloyd-Max) or the CPU KVarN path.
+            bool tqOk = !turboQuant || TqSupport.IsKVarNCudaHeadDim(hp.HeadDim);
+            if (tqOk && CudaBackend.IsAvailable())
+                backend = ServerBackend.Cuda;
+            else
+                backend = ServerBackend.Vulkan;
+        }
+        else if (nGpuLayers == 0 || backend == ServerBackend.Cpu)
+        {
+            backend = ServerBackend.Cpu;
+        }
+
+        var cpuBackend = new CpuBackend();
+        owned.Add(cpuBackend);
+
+        // CPU path: covers hybrid GDN (HybridGdnForwardPass) and dense (ForwardPass).
+        if (backend == ServerBackend.Cpu)
+        {
+            if (hp.IsHybridSsm)
+            {
+                var hybrid = new HybridGdnForwardPass(model, cpuBackend, hp);
+                owned.Add(hybrid);
+                return (hybrid, BatchingSupported: false);
+            }
+
+            var dense = new ForwardPass(model, cpuBackend, hp,
+                prefillDequantCacheBytes: prefillDequantCacheBytes);
+            owned.Add(dense);
+            if (turboQuant)
+                dense.EnableTurboQuant(fp32WindowSize: 256, bits: 3, quantizer: ResolveTq(null));
+            // ContinuousBatchingEngine doesn't yet support MoE, TurboQuant fan-out, or
+            // gemma4 per-layer head_dim (PrefillWithCache / BatchForwardMulti /
+            // PrefillPackedMulti all throw NotSupportedException) — those fall back to
+            // the single-user InferenceEngine instead of failing every request.
+            bool batchOk = !hp.IsMoE && !turboQuant && hp.LayerHeadDim is null;
+            return (dense, batchOk);
+        }
+
+        // GPU paths share a CPU baseline (for the hybrid-CPU half of partial offload).
+        // For full GPU paths the dense CPU fwd is unused but still cheap to construct.
+        // The #189 dequant cache is off here: GPU/hybrid never drive the batched CPU prefill
+        // that consults it, so a full F32 model copy would be pure wasted RAM.
+        ForwardPass? cpuDense = hp.IsHybridSsm ? null
+            : new ForwardPass(model, cpuBackend, hp, prefillDequantCacheBytes: 0);
+        if (cpuDense is not null) owned.Add(cpuDense);
+
+        if (backend == ServerBackend.Cuda)
+        {
+            var cuda = CudaBackend.Create();
+            owned.Add(cuda);
+
+            if (hp.IsHybridSsm)
+            {
+                // Layer placement for hybrid GDN is driven by hp.LayerTypes, not VRAM
+                // budget — so TierPlanner is skipped and we always claim "all layers
+                // on GPU" (the GDN/MoE routing is implicit per-layer).
+                var placement = new LayerPlacement(
+                    GpuLayers: hp.NumLayers,
+                    CpuLayers: 0,
+                    GpuWeightBytes: 0,
+                    GpuKvBytes: 0,
+                    RecommendedCtxSize: ctxSize > 0 ? ctxSize : Math.Min(hp.ContextLength, 4096));
+                var chgdn = new CudaHybridGdnForwardPass(model, cuda, hp, placement);
+                owned.Add(chgdn);
+                return (chgdn, BatchingSupported: false);
+            }
+
+            // Dense + CUDA: ask TierPlanner for a layer count when -1, then route to
+            // full-offload / hybrid / CPU based on what we got back.
+            var hwProfile = HardwareProfile.Detect(cuda);
+            int gpuLayers = nGpuLayers == -1
+                ? TierPlanner.Plan(model, hp, hwProfile, turboQuant, requestedCtxSize: ctxSize,
+                    kvDtype: CudaForwardPass.ResolveConfiguredKvDType()).GpuLayers
+                : nGpuLayers;
+            if (nGpuLayers == -1)
+                gpuLayers = ClampGemma4KvShareBoundary(hp, gpuLayers);
+
+            if (gpuLayers <= 0)
+            {
+                // GPU planner says nothing fits — fall back to CPU dense.
+                if (turboQuant) cpuDense!.EnableTurboQuant(fp32WindowSize: 256, bits: 3, quantizer: ResolveTq(null));
+                return (cpuDense!, BatchingSupported: !hp.IsMoE && !turboQuant);
+            }
+
+            if (gpuLayers >= hp.NumLayers)
+            {
+                // #196 Option 2: when batching is requested, suppress the VRAM-scaled SnapKV
+                // auto-enable (prefer pure batching over routing every sequence through the slower
+                // per-sequence-eviction decode). An explicit STINGRAY_SNAPKV_BUDGET>0 still wins and
+                // composes with batching via #196 Option 1.
+                var cfwd = new CudaForwardPass(model, cuda, hp, ctxSize, enableTurboQuant: turboQuant,
+                    tqQuantizer: ResolveTq(hp.IsMoE ? TqSupport.CudaMoeReason
+                        : !TqSupport.IsKVarNCudaHeadDim(hp.HeadDim) ? TqSupport.CudaHeadDimReason(hp.HeadDim)
+                        : null),
+                    preferBatchingOverAutoSnapKv: preferBatchingOverAutoSnapKv);
+                owned.Add(cfwd);
+                // Issue #190 (dense) / #195 (Gemma 4): CUDA full-offload supports continuous
+                // batching (per-sequence GPU KV caches + true batched decode). SupportsContinuous-
+                // Batching is the single source of truth shared with CudaForwardPass's runtime
+                // guard, so the loader gate can't diverge from what the batched methods accept — it
+                // admits dense AND Gemma-4 models and folds OUT MoE, TurboQuant, a dense final-logit
+                // softcap, and any non-GEMM-N-batchable trunk/output weight dtype (Q4_0). A SnapKV
+                // budget no longer disqualifies batching (#196 — it composes via per-sequence eviction).
+                bool batches = cfwd.SupportsContinuousBatching;
+                // #196 footgun guard: we suppressed the SnapKV auto-enable because batching was
+                // requested, but this model can't actually batch (e.g. dense softcap / Q4_0) — so it
+                // would fall back to single-user with NO auto-SnapKV either. Warn so the operator can
+                // restore the memory savings with an explicit budget or a narrowed --kv-type.
+                if (preferBatchingOverAutoSnapKv && !batches && !cfwd.SnapKvEnabled)
+                    Console.Error.WriteLine(
+                        "[InferenceEngineLoader] MaxBatchSize>1 suppressed SnapKV auto-enable, but this " +
+                        "model does not support continuous batching (it will run single-user). Set an " +
+                        "explicit STINGRAY_SNAPKV_BUDGET>0 or a narrowed --kv-type to keep KV memory bounded.");
+                return (cfwd, batches);
+            }
+
+            // pinGpuLayers (not a `with { GpuLayers = }` override) so the expert-cache budget the
+            // MoE CPU-vs-SLRU auto-decision reads is priced for THIS split, not the auto one (#224).
+            // The hybrid pass has no KVarN machinery — resolve for the throw/warn side effect
+            // (the constructor itself only takes the Lloyd-Max bool).
+            _ = ResolveTq($"KVarN requires full CUDA offload; TierPlanner fit {gpuLayers}/{hp.NumLayers} layers");
+            var planForHybrid = TierPlanner.Plan(model, hp, hwProfile, turboQuant, requestedCtxSize: ctxSize,
+                kvDtype: CudaForwardPass.ResolveConfiguredKvDType(), pinGpuLayers: gpuLayers);
+            var chfwd = new CudaHybridForwardPass(model, cuda, hp, planForHybrid, turboQuant);
+            owned.Add(chfwd);
+            return (chfwd, BatchingSupported: false);
+        }
+
+        if (backend == ServerBackend.Vulkan)
+        {
+            var vulkan = new VulkanBackend();
+            owned.Add(vulkan);
+
+            if (hp.IsHybridSsm)
+            {
+                // Layer placement for hybrid GDN is driven by hp.LayerTypes, not VRAM budget —
+                // so TierPlanner is skipped and we claim "all layers on GPU" (GDN/attn routing
+                // is implicit; FFN is per-layer GPU/CPU). Mirrors the CUDA loader branch.
+                // (PR4 Round 1 — dense FFN; Round 2 — MoE FFN via CPU-MoE / GPU-SLRU.)
+                var placement = new LayerPlacement(
+                    GpuLayers: hp.NumLayers,
+                    CpuLayers: 0,
+                    GpuWeightBytes: 0,
+                    GpuKvBytes: 0,
+                    RecommendedCtxSize: ctxSize > 0 ? ctxSize : Math.Min(hp.ContextLength, 4096));
+                var vhgdn = new VulkanHybridGdnForwardPass(model, vulkan, hp, placement);
+                owned.Add(vhgdn);
+                return (vhgdn, BatchingSupported: false);
+            }
+
+            var hwProfile = HardwareProfile.Detect(vulkan);
+            int gpuLayers = nGpuLayers == -1
+                ? TierPlanner.Plan(model, hp, hwProfile, turboQuant, requestedCtxSize: ctxSize).GpuLayers
+                : nGpuLayers;
+
+            if (gpuLayers <= 0)
+            {
+                if (turboQuant) cpuDense!.EnableTurboQuant(fp32WindowSize: 256, bits: 3, quantizer: ResolveTq(null));
+                return (cpuDense!, BatchingSupported: !hp.IsMoE && !turboQuant);
+            }
+
+            if (gpuLayers >= hp.NumLayers)
+            {
+                // Vulkan TQ is Lloyd-Max only — resolve for the throw/warn side effect.
+                _ = ResolveTq(TqSupport.VulkanReason);
+                var gfwd = new GpuForwardPass(model, vulkan, hp, ctxSize, enableTurboQuant: turboQuant,
+                    kvDtype: CudaForwardPass.ResolveConfiguredKvDType());
+                owned.Add(gfwd);
+                return (gfwd, BatchingSupported: false);
+            }
+
+            _ = ResolveTq(TqSupport.VulkanReason);
+            var planForHybrid = TierPlanner.Plan(model, hp, hwProfile, turboQuant, requestedCtxSize: ctxSize,
+                pinGpuLayers: gpuLayers);
+            var hfwd = new HybridForwardPass(model, vulkan, hp, planForHybrid, turboQuant);
+            owned.Add(hfwd);
+            return (hfwd, BatchingSupported: false);
+        }
+
+        throw new InvalidOperationException($"Unknown backend selection: {backend}");
+    }
+
+    // ── Helpers ──────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Sets the MoE-related environment variables (STINGRAY_MOE_* cache knobs plus the
+    /// STINGRAY_CPU_MOE placement override, issue #93) from the options object so the engine's
+    /// MoE code picks them up at construction time. The engine reads these once per backend
+    /// instance, so we have to do this BEFORE the backend is built.
+    /// </summary>
+    private static void ApplyMoeEnvironment(OpenTailStingrayServerOptions opts)
+    {
+        if (opts.MoeWarmPin is int wp)
+            Environment.SetEnvironmentVariable("STINGRAY_MOE_WARMPIN", wp.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        if (opts.MoeWarmPinAfter > 0)
+            Environment.SetEnvironmentVariable("STINGRAY_MOE_WARMPIN_AFTER", opts.MoeWarmPinAfter.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        if (!opts.MoePredictPrefetch)
+            Environment.SetEnvironmentVariable("STINGRAY_MOE_PREDICT_PREFETCH", "0");
+        if (!string.IsNullOrEmpty(opts.ExpertStatsPath))
+            Environment.SetEnvironmentVariable("STINGRAY_EXPERT_STATS", opts.ExpertStatsPath);
+
+        // CPU-MoE placement (issue #93, mirrors the CLI's --cpu-moe issue #80). The hybrid
+        // forward passes read STINGRAY_CPU_MOE once at construction, so write it before load.
+        // Nullable: only an explicit option writes — null leaves any externally-set value (and
+        // the engine's VRAM-fit auto-select) untouched.
+        if (opts.CpuMoe is bool cpuMoe)
+            Environment.SetEnvironmentVariable("STINGRAY_CPU_MOE", cpuMoe ? "1" : "0");
+
+        // GPU op-offload of the CPU-MoE routed prefill (mirrors the CLI's --gpu-moe-prefill).
+        // Opt-in, default OFF in the engine; nullable here so only an explicit option overrides.
+        if (opts.GpuMoePrefill is bool gpuMoePrefill)
+            Environment.SetEnvironmentVariable("STINGRAY_MOE_GPU_PREFILL", gpuMoePrefill ? "1" : "0");
+    }
+
+    private static int ClampGemma4KvShareBoundary(ModelHyperparams hp, int gpuLayers)
+    {
+        if (hp.KvSourceLayer is not { } ksl) return gpuLayers;
+
+        int minSrc = int.MaxValue;
+        for (int i = 0; i < hp.NumLayers; i++)
+            if (ksl[i] >= 0 && ksl[i] < minSrc) minSrc = ksl[i];
+
+        if (minSrc != int.MaxValue && gpuLayers > minSrc && gpuLayers < hp.NumLayers)
+        {
+            Console.Error.WriteLine(
+                $"[OpenTail.Stingray] TierPlanner returned -g {gpuLayers}, which would cross the " +
+                $"Gemma 4 KV-share boundary (sources <= {minSrc}); promoting to full offload " +
+                $"(-g {hp.NumLayers}). Set NGpuLayers={minSrc} explicitly if VRAM is tight.");
+            return hp.NumLayers;
+        }
+        return gpuLayers;
+    }
+
+    private static bool PathExists(string p) => File.Exists(p) || Directory.Exists(p);
+
+    private static string ResolvePath(string? path, string what, string envVar, string configKey)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+            throw new InvalidOperationException(
+                $"OpenTailStingrayServerOptions.{configKey} ({what} path) is required. " +
+                $"Set it via Configure(o => o.{configKey} = ...) or the {envVar} environment variable.");
+
+        if (Path.IsPathRooted(path) && PathExists(path))
+            return path;
+
+        if (PathExists(path))
+            return Path.GetFullPath(path);
+
+        var candidates = new List<string>
+        {
+            Path.Combine(Directory.GetCurrentDirectory(), path),
+            Path.Combine(AppContext.BaseDirectory, path),
+        };
+        var dir = new DirectoryInfo(Directory.GetCurrentDirectory());
+        for (int i = 0; i < 5 && dir is not null; i++, dir = dir.Parent)
+            candidates.Add(Path.Combine(dir.FullName, path));
+
+        var resolved = candidates.FirstOrDefault(PathExists);
+        if (resolved is not null) return resolved;
+
+        throw new InvalidOperationException(
+            $"{char.ToUpperInvariant(what[0])}{what[1..]} file not found: '{path}'. " +
+            $"Set OpenTailStingrayServerOptions.{configKey}, the {envVar} environment variable, " +
+            $"or the OpenTail.Stingray:{configKey} configuration key.");
+    }
+}
+internal sealed class OwnedDisposableEngine(IInferenceEngine inner, IList<IDisposable> owned)
+    : IInferenceEngine, IContinuousBatchingObservability, IDisposable
+{
+    private IContinuousBatchingObservability? Batching => inner as IContinuousBatchingObservability;
+    public string ModelId             => inner.ModelId;
+    public int QueueDepth             => inner.QueueDepth;
+    public int ActiveRequests         => inner.ActiveRequests;
+    public bool PrefixCacheEnabled    => inner.PrefixCacheEnabled;
+    public long PrefillTokensReused   => inner.PrefillTokensReused;
+    public bool IsContinuousBatching => Batching?.IsContinuousBatching ?? false;
+    public int PrefillChunkTokens => Batching?.PrefillChunkTokens ?? 0;
+    public long KvTokenBudget => Batching?.KvTokenBudget ?? 0;
+    public long CommittedKvTokens => Batching?.CommittedKvTokens ?? 0;
+    public long PrefixCacheBudgetBytes => Batching?.PrefixCacheBudgetBytes ?? 0;
+    public long PrefixCacheUsedBytes => Batching?.PrefixCacheUsedBytes ?? 0;
+    public int PrefixCacheEntries => Batching?.PrefixCacheEntries ?? 0;
+    public long PrefixCacheHits => Batching?.PrefixCacheHits ?? 0;
+    public long PrefixCacheMisses => Batching?.PrefixCacheMisses ?? 0;
+    public long PrefixCacheEvictions => Batching?.PrefixCacheEvictions ?? 0;
+    public long BatchedArgmaxSteps => Batching?.BatchedArgmaxSteps ?? 0;
+    public long BatchedFullLogitsSteps => Batching?.BatchedFullLogitsSteps ?? 0;
+    public long BatchedArgmaxSequences => Batching?.BatchedArgmaxSequences ?? 0;
+    public long BatchedFullLogitsSequences => Batching?.BatchedFullLogitsSequences ?? 0;
+
+    public IAsyncEnumerable<GenerateChunk> GenerateChunksAsync(
+        string prompt, SamplingParams sp, CancellationToken ct = default, string? canonicalHistoryPrefix = null)
+        => inner.GenerateChunksAsync(prompt, sp, ct, canonicalHistoryPrefix);
+
+    public void Dispose()
+    {
+        (inner as IDisposable)?.Dispose();
+        for (int i = owned.Count - 1; i >= 0; i--)
+        {
+            try { owned[i].Dispose(); } catch { /* best-effort teardown */ }
+        }
+    }
+}

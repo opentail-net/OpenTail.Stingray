@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>OpenTail.Stingray.Sample.HotRouting</RootNamespace>
+    <AssemblyName>opentail-llm-sample-hotrouting</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\OpenTail.Stingray.Core\OpenTail.Stingray.Core.csproj" />
+    <ProjectReference Include="..\..\src\OpenTail.Stingray.Cpu\OpenTail.Stingray.Cpu.csproj" />
+    <ProjectReference Include="..\..\src\OpenTail.Stingray.Engine\OpenTail.Stingray.Engine.csproj" />
+    <ProjectReference Include="..\..\src\OpenTail.Stingray.Sessions\OpenTail.Stingray.Sessions.csproj" />
+  </ItemGroup>
+
+</Project>

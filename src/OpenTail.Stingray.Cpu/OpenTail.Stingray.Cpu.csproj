@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <Description>CPU compute backend for OpenTail.Stingray: AVX2/AVX-512 SIMD kernels, Q4_K_M dequantization, and optional OpenBLAS GEMM acceleration.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\OpenTail.Stingray.Core\OpenTail.Stingray.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="OpenTail.Stingray.Tests.ForwardPass" />
+    <InternalsVisibleTo Include="OpenTail.Stingray.KernelBench" />
+  </ItemGroup>
+
+</Project>

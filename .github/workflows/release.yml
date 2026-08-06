@@ -1,0 +1,77 @@
+name: Publish NuGet
+
+# Versioning is driven by MinVer (git tags):
+#   - Push to master           -> preview build, version like `0.2.1-alpha.0.42` (commit height)
+#   - Tag `v1.2.3` -> release  -> version `1.2.3`
+#   - Manual dispatch          -> whatever the current branch/tag produces
+# Both packages (OpenTail.Stingray + OpenTail.Stingray.Cli) ship from the same job.
+on:
+  push:
+    branches: [master]
+    tags: ['v*']
+  workflow_dispatch:
+
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    working-directory: extensions/OpenTail.Stingray
+
+jobs:
+  publish:
+    name: Pack and push
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          # MinVer needs the full history and all tags to compute version + commit height.
+          fetch-depth: 0
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '10.0.x'
+
+      # Release publication is stronger than the fast PR gate: retain a test receipt for the
+      # managed suites, including sessions. Hardware/model-dependent rows remain in the release
+      # matrix and run on their designated runners.
+      - name: Release-quality managed tests
+        run: |
+          dotnet test tests/OpenTail.Stingray.Tests.Core/OpenTail.Stingray.Tests.Core.csproj -c Release --logger "trx;LogFileName=core.trx" --results-directory ./artifacts/test-results
+          dotnet test tests/OpenTail.Stingray.Tests.Pipeline/OpenTail.Stingray.Tests.Pipeline.csproj -c Release --logger "trx;LogFileName=pipeline.trx" --results-directory ./artifacts/test-results
+          dotnet test tests/OpenTail.Stingray.Tests.Server/OpenTail.Stingray.Tests.Server.csproj -c Release --logger "trx;LogFileName=server.trx" --results-directory ./artifacts/test-results
+          dotnet test tests/OpenTail.Stingray.Tests.TurboQuant/OpenTail.Stingray.Tests.TurboQuant.csproj -c Release --logger "trx;LogFileName=turboquant.trx" --results-directory ./artifacts/test-results
+          dotnet test tests/OpenTail.Stingray.Tests.Cli/OpenTail.Stingray.Tests.Cli.csproj -c Release --logger "trx;LogFileName=cli.trx" --results-directory ./artifacts/test-results
+          dotnet test tests/OpenTail.Stingray.Tests.Sessions/OpenTail.Stingray.Tests.Sessions.csproj -c Release --logger "trx;LogFileName=sessions.trx" --results-directory ./artifacts/test-results
+          dotnet test tests/OpenTail.Stingray.Tests.Vision/OpenTail.Stingray.Tests.Vision.csproj -c Release --logger "trx;LogFileName=vision.trx" --results-directory ./artifacts/test-results
+
+      - name: Upload release-quality results
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-quality-results
+          path: extensions/OpenTail.Stingray/artifacts/test-results
+          if-no-files-found: error
+
+      - name: Pack
+        run: dotnet pack -c Release -o ./artifacts/nupkg
+
+      - name: List packages
+        run: ls -la ./artifacts/nupkg
+
+      - name: Push to nuget.org
+        env:
+          NUGET_KEY: ${{ secrets.NUGET_KEY }}
+        # --skip-duplicate makes re-runs safe (idempotent on the same version).
+        # The same command pushes both .nupkg files; matching .snupkg symbol packages
+        # are auto-uploaded alongside.
+        run: >
+          dotnet nuget push './artifacts/nupkg/*.nupkg'
+          --api-key "$NUGET_KEY"
+          --source https://api.nuget.org/v3/index.json
+          --skip-duplicate

@@ -1,0 +1,12 @@
+{
+  "profiles": {
+    "OpenTail.Stingray.Server.Host": {
+      "commandName": "Project",
+      "launchBrowser": true,
+      "environmentVariables": {
+        "ASPNETCORE_ENVIRONMENT": "Development"
+      },
+      "applicationUrl": "https://localhost:63649;http://localhost:63650"
+    }
+  }
+}
