@@ -333,6 +333,14 @@ public sealed unsafe class GpuForwardPass : IForwardPass
     // layer, so no per-layer-type filter on the capture.
     private readonly SnapKvConfig _snapKvCfg;
     private readonly int _snapKvEffectiveBudget;
+    // Hidden-state taps (PR #413 contract). The dense Forward records every dispatch into one
+    // command buffer, so a tapped layer cannot simply download mid-record: capture splits the
+    // submission the same way the Gemma 4 bisect probe does (barrier → download → submit →
+    // resume recording). Taps are therefore a diagnostic/draft-conditioning facility, not a
+    // fast path — enabling them costs one submit per tapped layer per token.
+    private HiddenTapBuffer? _taps;
+    private float[]? _tapScratch;
+
     private Tensor? _snapKvQCapture;     // [numLayers × W × qDim] f32, captured during Prefill
     private int _snapKvQCaptureW;        // cached W the buffer was sized for
     private Tensor? _snapKvScoreAccum;   // [maxSeqLen] f32, per-position importance accumulator
@@ -1556,6 +1564,8 @@ public sealed unsafe class GpuForwardPass : IForwardPass
 
             _gpu.AddInPlace(_hidden, _residual);
             _gpu.RecordBarrier(); // hidden done → next layer's compute copy reads it
+
+            CaptureHiddenTap(layer, position);
         }
 
         // Update TQ ring buffer state (after all layers used the same indices)
@@ -3131,8 +3141,60 @@ public sealed unsafe class GpuForwardPass : IForwardPass
         return maxCtx;
     }
 
+    // ── Hidden-state taps (IForwardPass contract, PR #413) ──────────────────
+
+    /// <summary>
+    /// Dense trunk only. <see cref="ForwardGemma4"/> keeps its own layer sequencing (per-layer
+    /// head_dim, shared-KV aliasing, sandwich norms) and is not wired for capture, so Gemma 4
+    /// reports false rather than silently returning empty rows.
+    /// </summary>
+    public bool SupportsHiddenTaps => !_isGemma4;
+
+    /// <inheritdoc/>
+    public void EnableHiddenTaps(ReadOnlySpan<int> layerIds)
+    {
+        if (_isGemma4)
+            throw new NotSupportedException(
+                "Hidden-state taps are not implemented for the Gemma 4 Vulkan path. " +
+                "Check SupportsHiddenTaps before calling.");
+
+        _taps?.Dispose();
+        _taps = new HiddenTapBuffer(layerIds, _hp.NumLayers, _embDim, _maxSeqLen);
+    }
+
+    /// <inheritdoc/>
+    public int HiddenTapDim => _taps?.TapDim ?? 0;
+
+    /// <inheritdoc/>
+    public ReadOnlySpan<float> HiddenTapsAt(int position) =>
+        _taps is { } tb ? tb.At(position) : default;
+
+    /// <summary>
+    /// Copy this layer's output out of VRAM when the layer is tapped. The dense
+    /// <see cref="Forward"/> records the whole token into one command buffer, so the capture has
+    /// to close the submission to make the download host-visible and then reopen recording — the
+    /// same split the Gemma 4 bisect probe uses. Untapped layers cost one predictable branch.
+    /// </summary>
+    private void CaptureHiddenTap(int layer, int position)
+    {
+        if (_taps is not { } taps) return;
+        int slot = taps.SlotOf(layer);
+        if (slot < 0) return;
+
+        _gpu.RecordComputeToTransferBarrier();
+        _gpu.RecordDownloadToStaging(_hidden, _embDim);
+        _gpu.EndRecordAndSubmit();
+
+        _tapScratch ??= new float[_embDim];
+        _gpu.ReadFromStaging(_tapScratch.AsSpan(0, _embDim));
+        _tapScratch.AsSpan(0, _embDim).CopyTo(taps.RowSlot(position, slot));
+
+        _gpu.BeginRecord();
+    }
+
     public void Dispose()
     {
+        _taps?.Dispose();
         _gpu.Free(_hidden); _gpu.Free(_residual); _gpu.Free(_normBuf);
         _gpu.Free(_q); _gpu.Free(_k); _gpu.Free(_v); _gpu.Free(_attnOut);
         _gpu.Free(_ffnGate); _gpu.Free(_ffnUp); _gpu.Free(_logits);
