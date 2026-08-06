@@ -118,6 +118,38 @@ that profile. Implementation detail and acceptance evidence live in `docs/safete
 Supported architectures: `llama`, `llama4`, `olmoe`, `qwen3`, `qwen3moe`, `qwen35moe`
 (hybrid Gated-DeltaNet + attention + MoE), `gemma4` (per-layer head_dim, SWA + global, PLE).
 
+### Measured on this project's hardware
+
+The only numbers below that were produced by **this** build, on hardware the maintainers actually
+have. Everything in the per-model tables further down is inherited from upstream — see the provenance
+note there.
+
+**Box:** AMD Ryzen 7 5700G (Zen 3, 6c/12t, **no AVX-512**, DDR4 APU), Windows 11, `-g 0` (CPU only),
+`--temp 0`. Prefill measured on a ~2.8–3.0K-token prompt; decode on a short prompt at near-zero
+context. Two runs each, ranges shown, cold start — no warm-cache pass.
+
+| Model (Q4_K_M) | Prefill t/s @ ~3K ctx | Decode t/s |
+|---|---|---|
+| SmolLM2-1.7B-Instruct | **130.7 – 134.7** | 25.3 – 27.2 |
+| OLMoE-1B-7B-Instruct (MoE) | **101.5 – 102.2** | 27.9 – 34.6 |
+| Qwen3-8B | **30.5 – 30.9** | 5.6 – 5.8 |
+
+**How to read this against the upstream CPU rows.** Prefill here runs **2.0–3.3× upstream's published
+CPU figures** despite half the cores and no AVX-512; decode runs **0.4–0.6×**. That split is the
+expected shape, not a contradiction: prefill is compute-bound and benefits from the batched/repacked
+GEMM work, while decode is memory-bandwidth-bound — a DDR4 APU sharing bandwidth with its iGPU against
+a 12-core DDR5 desktop part. Attributing the decode gap to code would need the same silicon.
+
+**Do not read the prefill ratio as a like-for-like win over upstream today.** Upstream's published CPU
+rows are from a June sweep, and its own batched CPU-FFN/MoE prefill work landed after that — so part
+of this gap is measuring current code against stale numbers, and some of the improvement is upstream
+work inherited through the fork. A fair comparison needs both builds on one machine.
+
+Vulkan here is an integrated Radeon, not comparable to the discrete card in the tables below, so it
+is not quoted. There is no NVIDIA GPU on this box, so **no CUDA row can be verified at all**.
+
+---
+
 > **Provenance of the numbers below.** These benchmarks were measured **upstream, in
 > [SharpInference](https://github.com/pekkah/SharpInference)**, on hardware this fork does not have
 > (no NVIDIA GPU here), and are reproduced with attribution rather than re-measured. Treat them as
