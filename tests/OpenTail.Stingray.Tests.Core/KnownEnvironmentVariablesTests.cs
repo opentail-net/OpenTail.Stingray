@@ -12,8 +12,16 @@ namespace OpenTail.Stingray.Tests.Core;
 /// <see cref="KnownEnvironmentVariables"/> makes that detectable — but only while the list stays in
 /// sync with the source, which is what <see cref="ListMatchesSource"/> enforces.</para>
 /// </summary>
-public sealed class KnownEnvironmentVariablesTests
+public sealed partial class KnownEnvironmentVariablesTests
 {
+    /// <summary>
+    /// Matches a C# preprocessor directive that can name a conditional-compilation symbol.
+    /// <c>#else</c>/<c>#endif</c> are absent deliberately: they carry no symbol, so they never
+    /// produce a false positive and skipping them would be noise.
+    /// </summary>
+    [GeneratedRegex(@"^\s*#\s*(if|elif|define|undef)\b")]
+    private static partial Regex DirectiveLine();
+
     /// <summary>
     /// Walks up from the test assembly to the repo directory containing <c>src/</c>. Returns null
     /// when the layout is not as expected (e.g. a packaged run), so the source-scanning test can
@@ -58,8 +66,19 @@ public sealed class KnownEnvironmentVariablesTests
             if (Path.GetFileName(file) == "KnownEnvironmentVariables.cs")
                 continue;
 
-            foreach (Match m in Regex.Matches(File.ReadAllText(file), "STINGRAY_[A-Z0-9_]+"))
-                inSource.Add(m.Value);
+            foreach (string line in File.ReadLines(file))
+            {
+                // Skip preprocessor directives. `STINGRAY_*` is also the naming convention for
+                // conditional-compilation symbols (e.g. `#if STINGRAY_TUI`, defined by
+                // -p:EnableTuiChat=true), and those are build switches the engine never reads
+                // from the environment. Only the directive LINE is skipped, not the block it
+                // opens, so a genuine variable read inside `#if` is still counted.
+                if (DirectiveLine().IsMatch(line))
+                    continue;
+
+                foreach (Match m in Regex.Matches(line, "STINGRAY_[A-Z0-9_]+"))
+                    inSource.Add(m.Value);
+            }
         }
 
         var missing = inSource.Except(KnownEnvironmentVariables.All, StringComparer.Ordinal).ToList();

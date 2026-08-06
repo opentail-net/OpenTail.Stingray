@@ -102,7 +102,13 @@ public static class ShaderCompiler
         }
     }
 
-    private static string? FindGlslc()
+    /// <summary>
+    /// Locates the glslc binary, or null when the Vulkan SDK is not installed. Internal so tests
+    /// covering the compile fallback can skip rather than fail on a machine without the SDK — every
+    /// shipped shader is served from the precompiled table, so this is a dev-tooling dependency,
+    /// not a runtime one.
+    /// </summary>
+    internal static string? FindGlslc()
     {
         // Check PATH
         var pathDirs = Environment.GetEnvironmentVariable("PATH")?.Split(Path.PathSeparator) ?? [];

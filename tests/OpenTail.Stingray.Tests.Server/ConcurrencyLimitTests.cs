@@ -110,7 +110,16 @@ public sealed class ConcurrencyLimitTests
         var admitted = Enumerable.Range(0, 5)
             .Select(_ => client.PostAsJsonAsync("/v1/chat/completions", ChatRequest()))
             .ToArray();
-        Assert.True(fake.Entered.Wait(TimeSpan.FromSeconds(5)), "No request reached the engine.");
+
+        // Wait for ALL five to reach the engine, not just the first. Waiting on `Entered` was a
+        // race: it signals on the first request, while the other four can still be in the HTTP
+        // pipeline holding no gate slot. The sixth request then found free capacity, was admitted,
+        // and blocked on Hold until HttpClient's 100s timeout — surfacing as a TaskCanceledException
+        // that pointed nowhere near the real cause and stretched this suite to ~100s.
+        var deadline = Environment.TickCount64 + 30_000;
+        while (fake.EnteredCount < 5 && Environment.TickCount64 < deadline)
+            await Task.Delay(10);
+        Assert.Equal(5, fake.EnteredCount);
 
         var rejected = await client.PostAsJsonAsync("/v1/chat/completions", ChatRequest());
         Assert.Equal(HttpStatusCode.TooManyRequests, rejected.StatusCode);

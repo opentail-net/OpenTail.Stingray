@@ -1,13 +1,13 @@
 name: CI
 
+# This repository is standalone: the solution lives at the root and the default branch is `main`.
+# (Before the migration it was a subtree at `extensions/OpenTail.Stingray` on `master`; the old
+# path filter and branch name meant neither trigger below could ever fire.)
 on:
   pull_request:
-    paths:
-      - 'extensions/OpenTail.Stingray/**'
+    branches: [main]
   push:
-    branches: [master]
-    paths:
-      - 'extensions/OpenTail.Stingray/**'
+    branches: [main]
 
 permissions:
   contents: read
@@ -16,9 +16,6 @@ jobs:
   cpu:
     name: Build and CPU-safe tests
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: extensions/OpenTail.Stingray
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-dotnet@v5
@@ -28,6 +25,10 @@ jobs:
         run: dotnet restore OpenTail.Stingray.slnx
       - name: Build
         run: dotnet build OpenTail.Stingray.slnx -c Release --no-restore
+      # xunit.v3 runs on Microsoft.Testing.Platform, which the repo-root global.json selects.
+      # Without it `dotnet test` silently falls back to VSTest, finds no adapter, and exits 0
+      # having run nothing — a green gate that tested zero code. Do not pass `--nologo`: MTP
+      # rejects it and fails the run with "Zero tests ran", which reads like a discovery error.
       - name: CPU-safe test suites
         run: |
           dotnet test tests/OpenTail.Stingray.Tests.Core/OpenTail.Stingray.Tests.Core.csproj -c Release --no-restore

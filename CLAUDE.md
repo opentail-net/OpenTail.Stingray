@@ -11,7 +11,8 @@ OpenTail.Stingray is a high-performance LLM inference engine and image generatio
 ```bash
 dotnet build                # Debug build
 dotnet build -c Release     # Release (NativeAOT opts: IlcOptimizationPreference=Speed, IlcInstructionSet=native)
-dotnet test                 # Run all tests (1,000+ tests across 7 test projects)
+dotnet test                 # Run all tests (~2,570 tests across 8 test projects). Never add --nologo:
+                            # Microsoft.Testing.Platform rejects it and reports "Zero tests ran".
 dotnet test --filter "FullyQualifiedName~SomeTest"  # Run a single test
 dotnet test tests/OpenTail.Stingray.Tests.ForwardPass  # Run one test project
 
@@ -128,6 +129,7 @@ Supporting libraries:
 - **OpenTail.Stingray.Vision** — Gemma 4 encoder-free vision projector (`gemma4uv`). `VisionModel` loads the mmproj GGUF; `GemmaUvVisionEmbedder` does im2col patches → projection → soft tokens; `ImagePreprocessor`/`ImageIO` handle image loading.
 - **OpenTail.Stingray.TurboQuant** — KV cache compression. Two codecs: KVarN (Hadamard + dual-axis Sinkhorn variance normalization + asymmetric RTN, 4-bit K / 2-bit V, 128-token tiles — issue #180) and Lloyd-Max codebooks (3-4 bit; severely degrades quality on QK-norm models such as Qwen3, issue #432). `--tq-mode` defaults to `auto`: KVarN where supported, else Lloyd-Max fallback with a quality warning (#436). Lloyd-Max remains the fallback for Vulkan / partial-offload / MoE-on-GPU / SnapKV. KVarN runs on CPU (AVX2 fused read kernels) and the CUDA decode path (CUDA-graph decode + chunked prefill). Codebook data lives in `codebooks/`.
 - **OpenTail.Stingray.Pipeline** — 3-tier memory hierarchy (VRAM → pinned RAM → NVMe), SLRU expert cache, async prefetcher.
+- **OpenTail.Stingray.Sessions** — Transactional, revisioned hot-session orchestration over inference state. Design notes in `docs/adr-0001-session-cache-lifecycle.md` and `docs/session-native-inference-runtime-plan.md`; restart-continuation is still experimental internals rather than a supported product feature (see `CHANGELOG.md`).
 
 ## Key Interfaces & Patterns
 
@@ -153,11 +155,11 @@ Shared settings live in `Directory.Build.props` (net10.0, LangVersion 14, Nullab
 - **Trim and AOT analyzers** are enabled (`IsTrimmable`, `EnableTrimAnalyzer`, `EnableAotAnalyzer`, warnings not suppressed) — code must be NativeAOT-compatible (no reflection-heavy patterns, no dynamic code generation). Server JSON uses a source-generated `OpenTailStingrayJsonContext`.
 - **InvariantGlobalization** is on — no culture-specific string operations.
 - Vulkan shaders are GLSL `const string`s in `src/OpenTail.Stingray.Vulkan/Shaders.cs`, precompiled to SPIR-V committed in `Shaders.Precompiled.g.cs` (keyed by an FNV-1a `ShaderCompiler.StableHash`) so the NativeAOT binary needs no glslc at runtime; `ShaderCompiler.Compile` falls back to glslc only on a table miss. After adding/editing/removing a shader const, regenerate the table with `scripts/gen-spirv.ps1` (runs `tools/SpirvGen`, needs the Vulkan SDK) — `VulkanPrecompiledShaderTests` fails on drift. Shaders needing extensions the bundled glslc lacks (`SgemmBf16`, `SgemmFp8`) are recorded in `SkippedShaders` and fall back at runtime by design.
-- Versioning is MinVer-derived from git tags (`v*`); only the `OpenTail.Stingray` meta-package, `OpenTail.Stingray.Server`, and `OpenTail.Stingray.Cli` are packable.
+- Versioning is a plain `<Version>` in `Directory.Build.props` — no derived and no pre-release versions. To release: bump it, commit, tag `stingray-v<Version>` (that prefix, not a bare `v` — the pre-rename `v1.0.0`/`v1.0.1` tags belong to the old OpenTail.LLM series). Publication is tag-triggered only, and CI fails the run if the tag and `<Version>` disagree. Only the `OpenTail.Stingray` meta-package, `OpenTail.Stingray.Server`, and `OpenTail.Stingray.Cli` are packable.
 
 ## Test Projects
 
-Over 1,000 tests across 7 projects (xUnit, `[Fact]`/`[Theory]`):
+~2,570 tests across 8 projects (xUnit v3, `[Fact]`/`[Theory]`):
 
 | Test Project | Covers |
 |---|---|
@@ -166,15 +168,29 @@ Over 1,000 tests across 7 projects (xUnit, `[Fact]`/`[Theory]`):
 | Tests.Pipeline | Memory hierarchy, image pipeline integration |
 | Tests.TurboQuant | KV cache compression (codebooks, encode/decode parity) |
 | Tests.Server | API endpoints (OpenAI/Anthropic compatibility) |
+| Tests.Sessions | Transactional/revisioned hot-session orchestration (`OpenTail.Stingray.Sessions`) |
 | Tests.Cli | GPU device queries, CLI flags (e.g. `--cpu-moe`) |
 | Tests.Vision | Gemma 4 vision embedder parity, image I/O, mmproj GGUF loading |
 
 Shared test data lives in `tests/fixtures/`.
 
+**Test runner.** xunit v3 runs on Microsoft.Testing.Platform, selected by the repo-root
+`global.json`. Two consequences that cost real time if forgotten:
+
+- Never pass `--nologo` to `dotnet test`. MTP rejects it and reports "Zero tests ran" with exit 5,
+  which reads exactly like a discovery failure.
+- If `global.json` goes missing, `dotnet test` falls back to VSTest, finds no adapter (there is no
+  `xunit.runner.visualstudio`), and **exits 0 having run nothing** — a silent green.
+
+Filtering uses `--filter-class` / `--filter-method`, not `--filter`. TRX receipts come from the
+`Microsoft.Testing.Extensions.TrxReport` extension (pinned at 1.9.1 to match the MTP version
+xunit.v3 3.2.2 binds to): `dotnet test <proj> -- --report-trx --report-trx-filename x.trx`.
+
 ## Samples & Scripts
 
 - `samples/OpenTail.Stingray.Sample.Chat` — minimal streaming chat using the library directly.
 - `samples/OpenTail.Stingray.Sample.ToolCall` — tool/function-calling flow.
+- `samples/OpenTail.Stingray.Sample.HotRouting` — hot-session routing over `OpenTail.Stingray.Sessions`.
 - `benchmarks/` — `OpenTail.Stingray.Bench` (text-inference BenchmarkDotNet suite), `OpenTail.Stingray.ImageBench` (image-generation micro-benchmarks), and `SnapKvEval` (SnapKV eviction quality/accuracy evaluation harness).
 - `scripts/` — PowerShell benchmark drivers (`bench-*.ps1`), `download-model.ps1` (model fetcher), `setup-openblas.ps1` / `setup-llamacpp.ps1`, and Python reference-generation helpers for llama.cpp cross-checking (`gemma4uv_ref.py`, `extract_reference.py`, `compare_tokens.py`).
 

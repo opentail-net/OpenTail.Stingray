@@ -547,7 +547,7 @@ dotnet run --project src/OpenTail.Stingray.Cli -c Release -- image \
 - User-visible release history: [CHANGELOG.md](CHANGELOG.md)
 - All CLI flags: `stingray --help`, `stingray image --help`
 - Model downloads: `scripts/download-model.ps1 -Model <smollm2|qwen3-8b|qwen3-coder-30b-a3b|llama4-scout|z-image-turbo|realesrgan-x4|…>`
-- Tests: `dotnet test`
+- Tests: `dotnet test` (xunit v3 on Microsoft.Testing.Platform — do not pass `--nologo`, it is rejected and reports "Zero tests ran")
 - NativeAOT publish: `dotnet publish src/OpenTail.Stingray.Cli -c Release -r win-x64`
 
 ## Acknowledgements

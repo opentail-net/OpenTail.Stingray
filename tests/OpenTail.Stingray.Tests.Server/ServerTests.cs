@@ -1527,6 +1527,16 @@ internal sealed class FakeInferenceEngine : IInferenceEngine
     /// is about to block) — so a test knows the first request is genuinely in flight.</summary>
     public readonly ManualResetEventSlim Entered = new();
 
+    private int _enteredCount;
+
+    /// <summary>
+    /// How many generation calls have started. <see cref="Entered"/> reports only that the FIRST
+    /// request is in flight, which is not enough for a test that fills a multi-slot admission
+    /// gate: the remaining requests may still be in the HTTP pipeline, leaving the gate with free
+    /// capacity that the request expected to be rejected would happily take.
+    /// </summary>
+    public int EnteredCount => Volatile.Read(ref _enteredCount);
+
     /// <summary>
     /// Captures the <see cref="SamplingParams"/> handed to the most recent
     /// <see cref="GenerateChunksAsync"/> call. Lets wire-level tests confirm that request
@@ -1571,6 +1581,7 @@ internal sealed class FakeInferenceEngine : IInferenceEngine
         LastSamplingParams = sp;
         LastCanonicalHistoryPrefix = canonicalHistoryPrefix;
         LastPrompt = prompt;
+        Interlocked.Increment(ref _enteredCount);
         Entered.Set();
         if (Hold is not null)
             await Hold.Task.WaitAsync(ct);

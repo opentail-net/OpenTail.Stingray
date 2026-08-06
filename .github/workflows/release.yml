@@ -1,23 +1,22 @@
 name: Publish NuGet
 
-# Versioning is driven by MinVer (git tags):
-#   - Push to master           -> preview build, version like `0.2.1-alpha.0.42` (commit height)
-#   - Tag `v1.2.3` -> release  -> version `1.2.3`
-#   - Manual dispatch          -> whatever the current branch/tag produces
-# Both packages (OpenTail.Stingray + OpenTail.Stingray.Cli) ship from the same job.
+# The version is stated outright in Directory.Build.props (<Version>) — there are no derived or
+# pre-release versions. Publication is therefore TAG-TRIGGERED ONLY: pushing to main must not
+# publish, because the version would be identical every time and --skip-duplicate would silently
+# discard every build after the first.
+#
+# To release: bump <Version> in Directory.Build.props, commit, then tag `stingray-v<Version>`.
+# The tag prefix is `stingray-v`, not a bare `v` — the pre-rename v1.0.0/v1.0.1 tags belong to the
+# old OpenTail.LLM series. The guard step below fails the run if tag and <Version> disagree.
+# All three packable projects (OpenTail.Stingray, .Server, .Cli) ship from the same job.
 on:
   push:
-    branches: [master]
-    tags: ['v*']
+    tags: ['stingray-v*']
   workflow_dispatch:
 
 concurrency:
   group: publish-${{ github.ref }}
   cancel-in-progress: false
-
-defaults:
-  run:
-    working-directory: extensions/OpenTail.Stingray
 
 jobs:
   publish:
@@ -29,33 +28,49 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
-        with:
-          # MinVer needs the full history and all tags to compute version + commit height.
-          fetch-depth: 0
 
       - name: Setup .NET
         uses: actions/setup-dotnet@v5
         with:
           dotnet-version: '10.0.x'
 
+      # With a hand-written <Version>, the classic mistake is tagging stingray-v1.0.4 while
+      # Directory.Build.props still says 1.0.3: pack would emit 1.0.3, --skip-duplicate would
+      # discard it as already published, and the run would go green having shipped nothing.
+      # Fail loudly instead. Skipped for workflow_dispatch, which has no tag to compare against.
+      - name: Tag must match <Version>
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          tag_version="${GITHUB_REF#refs/tags/stingray-v}"
+          file_version="$(grep -oPm1 '(?<=<Version>)[^<]+' Directory.Build.props)"
+          echo "tag=$tag_version  Directory.Build.props=$file_version"
+          if [ "$tag_version" != "$file_version" ]; then
+            echo "::error::Tag stingray-v$tag_version does not match <Version>$file_version</Version> in Directory.Build.props."
+            exit 1
+          fi
+
       # Release publication is stronger than the fast PR gate: retain a test receipt for the
       # managed suites, including sessions. Hardware/model-dependent rows remain in the release
       # matrix and run on their designated runners.
+      #
+      # TRX comes from the Microsoft.Testing.Extensions.TrxReport extension referenced by each
+      # test project, so the options go after `--` to the test app: `--logger "trx;..."` is a
+      # VSTest option and Microsoft.Testing.Platform rejects it. Likewise never pass `--nologo`.
       - name: Release-quality managed tests
         run: |
-          dotnet test tests/OpenTail.Stingray.Tests.Core/OpenTail.Stingray.Tests.Core.csproj -c Release --logger "trx;LogFileName=core.trx" --results-directory ./artifacts/test-results
-          dotnet test tests/OpenTail.Stingray.Tests.Pipeline/OpenTail.Stingray.Tests.Pipeline.csproj -c Release --logger "trx;LogFileName=pipeline.trx" --results-directory ./artifacts/test-results
-          dotnet test tests/OpenTail.Stingray.Tests.Server/OpenTail.Stingray.Tests.Server.csproj -c Release --logger "trx;LogFileName=server.trx" --results-directory ./artifacts/test-results
-          dotnet test tests/OpenTail.Stingray.Tests.TurboQuant/OpenTail.Stingray.Tests.TurboQuant.csproj -c Release --logger "trx;LogFileName=turboquant.trx" --results-directory ./artifacts/test-results
-          dotnet test tests/OpenTail.Stingray.Tests.Cli/OpenTail.Stingray.Tests.Cli.csproj -c Release --logger "trx;LogFileName=cli.trx" --results-directory ./artifacts/test-results
-          dotnet test tests/OpenTail.Stingray.Tests.Sessions/OpenTail.Stingray.Tests.Sessions.csproj -c Release --logger "trx;LogFileName=sessions.trx" --results-directory ./artifacts/test-results
-          dotnet test tests/OpenTail.Stingray.Tests.Vision/OpenTail.Stingray.Tests.Vision.csproj -c Release --logger "trx;LogFileName=vision.trx" --results-directory ./artifacts/test-results
+          dotnet test tests/OpenTail.Stingray.Tests.Core/OpenTail.Stingray.Tests.Core.csproj -c Release -- --report-trx --report-trx-filename core.trx --results-directory ./artifacts/test-results
+          dotnet test tests/OpenTail.Stingray.Tests.Pipeline/OpenTail.Stingray.Tests.Pipeline.csproj -c Release -- --report-trx --report-trx-filename pipeline.trx --results-directory ./artifacts/test-results
+          dotnet test tests/OpenTail.Stingray.Tests.Server/OpenTail.Stingray.Tests.Server.csproj -c Release -- --report-trx --report-trx-filename server.trx --results-directory ./artifacts/test-results
+          dotnet test tests/OpenTail.Stingray.Tests.TurboQuant/OpenTail.Stingray.Tests.TurboQuant.csproj -c Release -- --report-trx --report-trx-filename turboquant.trx --results-directory ./artifacts/test-results
+          dotnet test tests/OpenTail.Stingray.Tests.Cli/OpenTail.Stingray.Tests.Cli.csproj -c Release -- --report-trx --report-trx-filename cli.trx --results-directory ./artifacts/test-results
+          dotnet test tests/OpenTail.Stingray.Tests.Sessions/OpenTail.Stingray.Tests.Sessions.csproj -c Release -- --report-trx --report-trx-filename sessions.trx --results-directory ./artifacts/test-results
+          dotnet test tests/OpenTail.Stingray.Tests.Vision/OpenTail.Stingray.Tests.Vision.csproj -c Release -- --report-trx --report-trx-filename vision.trx --results-directory ./artifacts/test-results
 
       - name: Upload release-quality results
         uses: actions/upload-artifact@v4
         with:
           name: release-quality-results
-          path: extensions/OpenTail.Stingray/artifacts/test-results
+          path: ./artifacts/test-results
           if-no-files-found: error
 
       - name: Pack
@@ -68,7 +83,7 @@ jobs:
         env:
           NUGET_KEY: ${{ secrets.NUGET_KEY }}
         # --skip-duplicate makes re-runs safe (idempotent on the same version).
-        # The same command pushes both .nupkg files; matching .snupkg symbol packages
+        # The same command pushes all .nupkg files; matching .snupkg symbol packages
         # are auto-uploaded alongside.
         run: >
           dotnet nuget push './artifacts/nupkg/*.nupkg'

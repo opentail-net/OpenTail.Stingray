@@ -46,17 +46,20 @@
   </PropertyGroup>
 
   <!--
-    MinVer derives the version from git tags. Tag `v0.2.0` -> package version `0.2.0`.
-    Untagged commits get a pre-release version like `0.2.1-alpha.0.<commit-height>`,
-    so every master build produces a unique preview package.
+    Plain versions only. This is the single source of truth: bump the number here, then tag the
+    release commit `stingray-v<Version>` to match.
+
+    Previously MinVer derived the version from git tags, which meant every commit that was not
+    exactly on a tag produced a pre-release version (`1.0.3-alpha.0.<commit-height>`) and the
+    release workflow published those previews on every push. No pre-release versions are wanted,
+    so the derivation is gone and the number is stated outright.
+
+    Because the version no longer changes on its own, publication is tag-triggered ONLY (see
+    .github/workflows/release.yml) — otherwise every push to main would re-push the same version
+    and the push step's skip-duplicate flag would silently discard everything after the first.
   -->
   <PropertyGroup>
-    <!-- Renamed from OpenTail.LLM: a project-specific tag prefix restarts the version series
-         so it cannot collide with the pre-rename v1.0.0/v1.0.1 tags. Until the first
-         `stingray-v1.0.0` tag exists, MinVerMinimumMajorMinor keeps previews on the 1.0 line. -->
-    <MinVerTagPrefix>stingray-v</MinVerTagPrefix>
-    <MinVerMinimumMajorMinor>1.0</MinVerMinimumMajorMinor>
-    <MinVerDefaultPreReleaseIdentifiers>alpha.0</MinVerDefaultPreReleaseIdentifiers>
+    <Version>1.0.3</Version>
   </PropertyGroup>
 
   <!-- SourceLink: lets nupkg consumers step into source from GitHub during debugging. -->
@@ -71,13 +74,25 @@
       Verify after packing, do not assume: grep the .snupkg PDBs for any non-public repo name.
     -->
     <DebugType>portable</DebugType>
-    <!-- Deterministic, repeatable builds when running on a CI server (GitHub Actions sets CI=true). -->
-    <ContinuousIntegrationBuild Condition="'$(CI)' == 'true'">true</ContinuousIntegrationBuild>
+    <!--
+      Deterministic, repeatable builds — path-normalized so package validation reports
+      "Deterministic (dll/exe)" and consumers can verify the binary against the source.
+
+      Keyed on Configuration, NOT on the ambient CI variable. That earlier form ("CI=true", which
+      GitHub Actions sets) was correct in principle and useless in practice: the release workflow
+      could not fire after the repository migration, so releases were hand-packed on a developer
+      machine with CI unset, and every assembly in the shipped 1.0.2 packages was flagged
+      non-deterministic. Tying it to Release makes any pack deterministic wherever it runs, which
+      is the property that actually matters.
+
+      Debug builds deliberately keep verbatim local source paths so step-into works on uncommitted
+      code; determinism is only needed for what ships.
+    -->
+    <ContinuousIntegrationBuild Condition="'$(Configuration)' == 'Release'">true</ContinuousIntegrationBuild>
   </PropertyGroup>
 
   <ItemGroup>
     <!-- Pin build tooling: floating versions make restores and published packages non-reproducible. -->
-    <PackageReference Include="MinVer" Version="7.0.0" PrivateAssets="all" />
     <PackageReference Include="Microsoft.SourceLink.GitHub" Version="10.0.301" PrivateAssets="all" />
   </ItemGroup>
 

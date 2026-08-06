@@ -61,6 +61,12 @@ public sealed class VulkanInitTests
     [Fact]
     public unsafe void ComputeShaderVectorAdd()
     {
+        // This shader is written for the test and so is absent from the committed SPIR-V table,
+        // which makes it the one path that genuinely needs glslc. Assert.Skip, not `return`: a
+        // silent early return is indistinguishable from a pass in the summary.
+        if (Vulkan.ShaderCompiler.FindGlslc() is null)
+            Assert.Skip("glslc not found — install the Vulkan SDK to exercise the compile fallback");
+
         using var backend = new Vulkan.VulkanBackend();
 
         const string shaderSource = """
