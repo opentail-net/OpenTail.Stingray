@@ -222,3 +222,40 @@ Two method points worth keeping:
    would have reversed a correct conclusion.
 2. State the prediction before measuring. "T(2) = 109 ms" was written down first, which is what made
    the actual 98 ms interpretable rather than something to rationalise after the fact.
+
+## Iteration 5 — a 10.36x "speedup" that is a harness fault, and what it still tells us
+
+Iteration 4 pointed at dot throughput, and `DotQ4Kx8_Q8KS_Avx2` — the single-token repacked kernel
+that "amortises the weight decode over 8 rows" — is exactly that lever. Prefill uses it (1.80x
+end-to-end). Decode does not: `ForwardPass.FusedMatVec` calls plain `MatVec` on the raw mmap'd
+weights, never the repacked cache, even though that cache is default-on and already populated by
+prefill.
+
+A ceiling measurement (12 real tensors, 0.62 GiB, best-of-4) returned **plain 226.3 ms / 2.7 GiB/s
+vs repacked N=1 21.8 ms / 28.2 GiB/s — a 10.36x speedup.** It is **not reported as a finding**: the
+plain arm fails the validity gate this document established, at 2.7 GiB/s against production
+decode's 31.8, a 12x discrepancy.
+
+Scoreboard of every measurement of the same plain `MatVec`:
+
+| source | rate | verdict |
+|---|---:|---|
+| production decode, end to end | 31.8 GiB/s | trustworthy |
+| iteration 4 microbenchmark, 40 tensors | 26.1 GiB/s | plausible |
+| iteration 5 microbenchmark, 12 tensors | **2.7 GiB/s** | 10x off — harness fault |
+
+Two of three microbenchmarks of this arm have landed ~10x below production. **The harness, not the
+kernel, is the unreliable element**, and no ratio computed against a broken denominator is worth
+anything — a 10.36x result is precisely the kind that gets believed because it is exciting.
+
+**What survives, and it is the useful part:** the repacked arm's 28.2 GiB/s is plausible and sits
+*below* production decode's 31.8 GiB/s on the same measure (raw weight bytes per second). So even
+granting that arm full credit, there is no evident headroom in routing decode through the repacked
+kernel — the current decode path already moves weight bytes faster than the repacked kernel managed
+here. That is a reason not to spend the numerics budget (the repacked kernel consumes int8
+activations, with the quality gate that implies) on a speculative gain.
+
+**Method conclusion.** Microbenchmarking this path has now failed three times out of five attempts
+across iterations 3-5. The measurements that held up all session were end-to-end ones: CLI decode
+t/s, `llama-bench`, the K-pack/KV-outer 2x2. Any future attempt on the repacked-decode question
+should wire it behind a flag and measure decode t/s, not time kernels in isolation.
