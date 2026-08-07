@@ -265,3 +265,35 @@ is attractive enough to be tried again.
 Regression coverage: `Q8PrefillLowMagnitudeInputTests`, now un-skipped, asserting both the
 whitespace reproduction and a repeated ordinary word — a guard that only special-cased whitespace
 would have left the real defect in place.
+
+
+## Follow-up 2026-08-07 — is the single-distinct-token gate wide enough? Yes.
+
+The shipped fix routes prompts with ONE distinct token to exact F32. Two distinct tokens measured
+0.9959 at n=8, which is where the gate stops — but the collapse mechanism is that information lives
+in the differences between rows, so a prompt alternating two tokens over hundreds of positions is
+plausibly degenerate too. If that degraded with length, the gate would be too narrow.
+
+int8-vs-F32 cosine, alternating tokens versus real prose of the same length:
+
+| n | 2 distinct | 3 distinct | prose |
+|---:|---:|---:|---:|
+| 8 | 0.995940 | 0.997142 | 0.997318 |
+| 32 | 0.996029 | 0.998044 | 0.998348 |
+| 128 | 0.995638 | 0.997888 | 0.998583 |
+| 512 | **0.989721** | 0.997453 | 0.997299 |
+| 1024 | 0.996584 | 0.995760 | 0.997264 |
+| 2048 | 0.996039 | 0.998376 | 0.997498 |
+
+**No length-driven degradation.** Two-distinct sits at 0.9956-0.9966 from 8 to 2048 tokens,
+consistently a little below prose (0.9973-0.9986) but the same order. The 0.9897 at n=512 looked
+like the start of a trend and is not — it does not reproduce at 1024 or 2048, and 3-distinct has a
+comparable dip of its own at 1024 (0.9958). Natural variation on this path is roughly 0.995-0.999.
+
+**The gate is correctly scoped.** The cliff is between one distinct token (0.40-0.48) and two
+(0.996) — a factor of about 250 in error — with nothing gradual in between. Widening the gate to
+catch 2-distinct prompts would push legitimate repetitive-but-real input onto the slow exact route
+for no measurable quality gain.
+
+Caveat: one model and one token pair. The conclusion is that no length effect appears, not that no
+near-degenerate prompt anywhere can degrade.
