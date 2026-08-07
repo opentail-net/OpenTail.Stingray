@@ -76,11 +76,25 @@ top of this document, a pass here is not evidence for a row whose runner this ma
 - `STINGRAY_VABL`, a registered switch whose own comment said it produced wrong output, was
   declared but referenced nowhere; `doctor` reported it to operators as valid.
 - The server's queue-overload warning advised raising a variable nothing read.
+- `STINGRAY_PER_LAYER_HD_PREFILL=1` entered a path that raised `AccessViolationException` rather
+  than the "wrong output" its comment promised — the batched route indexes KV with the model-wide
+  head dim on layers carrying a smaller one. It now fails fast. The switch existed to make the
+  outstanding per-layer-head-dim work measurable, which it could never do.
 
 ### Known open, with evidence rather than suspicion
 
-- Gemma 4 per-layer-head-dim models get **no batched prefill**: 3.5 t/s prefill against 4.0 t/s
-  decode, where a dense model of similar shape runs prefill at ~4x decode. Roughly a 4x prefill
-  penalty, confirmed in code at the `perLayerHdUnsupported` gate.
+- **`committed_revision` is not a usable concurrency token.** The API advertises a value it then
+  rejects: a live session reports `committed_revision: 6` after one turn and answers the next
+  request carrying 6 with `409 "Expected revision 6, but current revision is 1"`. Read-then-send is
+  the only pattern optimistic concurrency admits. **This is a live defect on a shipped HTTP
+  surface** and should gate advertising sessions as supported. Both single-sided fixes were
+  implemented and measured and both break something else; the correct fix is an on-disk
+  persisted-revision decision. Full characterisation and reproduction in
+  `session-revision-contract-defect.md`.
+- Gemma 4 per-layer-head-dim models get **no batched prefill**: 3.8 t/s prefill against 3.7 t/s
+  decode, where every other model measured runs prefill at 1.9-6.6x decode. Against the nearest size
+  class (Qwen3-8B) it decodes 1.7x slower — explainable by parameter count — but prefills 9.7x
+  slower, which is not, leaving roughly a **5.7x penalty beyond what size accounts for**. Confirmed
+  in code at the `perLayerHdUnsupported` gate; see `cpu-performance-baseline.md`.
 - Flash-64 head dims 128/256 remain opt-in: +14% prefill for +0.52% perplexity, which is worse than
   the exact path and outside the envelope of anything else shipped.
