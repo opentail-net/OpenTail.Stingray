@@ -214,3 +214,58 @@ E2B/E4B audio via the `a.*` encoder (USM/conformer). Separate epic; not required
   [gguf-py `constants.py`](https://github.com/ggml-org/llama.cpp/blob/master/gguf-py/gguf/constants.py)
   (`clip.*` keys, projector types, `v.*`/`mm.*`/`a.*` tensor names).
 - GGUFs: `ggml-org/gemma-4-E4B-it-GGUF`, `unsloth/gemma-4-E4B-it-GGUF` (text + mmproj).
+
+## Handover state 2026-08-08 — encoder forward is blocked on a missing reference
+
+The mmproj loader and preprocessor are complete and validated against the real file
+(`Gemma4V_Open_ResolvesCompleteE4BViTInventory` asserts the full tensor inventory and shapes of
+`gemma-4-E4B-it-mmproj.gguf`). The next step — encoder forward — is **blocked**, and the blockers
+are specific.
+
+### Confirmed geometry (from the real mmproj)
+
+`gemma4v`, 16 blocks, embedding 768, 12 heads (64/head), FFN 3072, projection 2560, image 224 /
+patch 16 → **196 patches**, mean [0,0,0], std [1,1,1], layer-norm eps 1e-06. Blocks are
+Gemma-shaped: `ln1`, q/k/v/out with per-head `attn_q_norm`/`attn_k_norm` (64-wide), `attn_post_norm`,
+`ln2`, gated FFN (`ffn_gate`/`ffn_up`/`ffn_down`), `ffn_post_norm` — i.e. sandwich norms, not
+CLIP-standard pre-norm only.
+
+### Blocker 1 — the position embedding layout is undocumented
+
+`v.position_embd.weight` is `[768, 10240, 2]` Float32 — 15.7M values, 60 MB — while the fixed
+224/16 grid needs only **196** positions. No metadata key explains 10240 or the trailing 2.
+
+Measured from the data rather than assumed: range [-0.414, 0.431], mean -0.000336, rms 0.0264, and
+position 0 is **not** (1, 0). **It is a learned table, not a precomputed cos/sin RoPE table.** That
+rules out the natural first guess. What it does not establish is the indexing convention — whether
+the trailing 2 is (row, col) factorised axes, and what 10240 bounds (variable-resolution support,
+multi-crop, or packed training positions). Indexing a learned position table incorrectly produces
+embeddings that are wrong but entirely plausible-looking, which is the failure mode this repository
+has repeatedly documented.
+
+### Blocker 2 — no local reference implementation
+
+`tools/llama.cpp` b8585 cannot serve as the reference: it rejects the text model outright with
+`unknown model architecture: 'gemma4'`, so it implements neither the Gemma 4 decoder nor `gemma4v`.
+There is therefore **no way on this machine to validate an encoder forward against a known-good
+implementation**.
+
+### Why the encoder should not be written yet
+
+Both blockers point the same way. An encoder written now would run, produce plausible embeddings,
+and be unverifiable — and two independent choices are already unpinned: the position-embedding
+indexing above, and the preprocessor's `align_corners=True` bilinear resize (references commonly use
+`align_corners=False`, and CLIP-family pipelines often use bicubic). Wrong resampling and wrong
+position indexing both present as "the projector is broken".
+
+### What unblocks it
+
+1. A reference for `gemma4v`: the HuggingFace `google/gemma-4-E4B-it` implementation, or a llama.cpp
+   build that knows `gemma4`. Either settles the position-embedding convention and the resize mode.
+2. With a reference in hand, work bottom-up with parity at each stage — patch embedding, then
+   position addition, then one block, then all 16, then the projection — rather than writing the
+   whole encoder and comparing only final embeddings. A single end-to-end comparison cannot localise
+   which of five stages is wrong.
+
+Until then the honest status is: **loader and preprocessing done and verified; encoder deliberately
+not started for want of a reference**, not merely unfinished.
