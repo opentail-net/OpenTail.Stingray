@@ -991,6 +991,79 @@ public sealed class TempPleProbe
         }
     }
 
+    /// <summary>
+    /// Stage-level CPU vs Vulkan diff inside Gemma 4's layer 0 (position 0, so RoPE and attention
+    /// are no-ops). The first stage whose cosine drops names the dispatch.
+    /// </summary>
+    [Fact]
+    public void Probe_GemmaStages()
+    {
+        VulkanBackend gpu;
+        try { gpu = new VulkanBackend(); }
+        catch { Console.WriteLine("PROBE19: no Vulkan"); return; }
+
+        using (gpu)
+        {
+            var path = FindModelPath(ModelFile);
+            if (path is null) { Console.WriteLine("PROBE19: absent"); return; }
+
+            using var model = GgufModel.Open(path);
+            var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+            int[] toks = [2];
+
+            StageCapture.Reset();
+            StageCapture.Enabled = true;
+            try
+            {
+                using (var cb = new CpuBackend())
+                using (var cf = new OpenTail.Stingray.Engine.ForwardPass(model, cb, hp))
+                    cf.Prefill(toks);
+
+                using (var vf = new GpuForwardPass(model, gpu, hp, maxContextLength: 512))
+                    vf.Prefill(toks);
+            }
+            finally { StageCapture.Enabled = false; }
+
+            Console.WriteLine($"PROBE19 records={StageCapture.Records.Count}");
+
+            string[] stages =
+            [
+                StageCapture.Stages.AttnNorm,
+                StageCapture.Stages.OProj,
+                StageCapture.Stages.PostAttnResidual,
+                StageCapture.Stages.PostFfnResidual,
+                StageCapture.Stages.PostPle,
+                StageCapture.Stages.LayerOutput,
+            ];
+
+            Report(-1, StageCapture.Stages.Embed);
+            for (int layer = 0; layer <= 1; layer++)
+                foreach (var stage in stages)
+                    Report(layer, stage);
+
+            StageCapture.Reset();
+
+            static void Report(int layer, string stage)
+            {
+                var cpu = StageCapture.Find("cpu", layer, stage);
+                var vk = StageCapture.Find("vulkan", layer, stage);
+                if (cpu is null || vk is null)
+                {
+                    Console.WriteLine($"PROBE19 layer={layer,2} {stage,-16} MISSING (cpu={cpu is not null} vk={vk is not null})");
+                    return;
+                }
+                double dot = 0, na = 0, nb = 0, maxAbs = 0;
+                for (int i = 0; i < cpu.Length; i++)
+                {
+                    dot += (double)cpu[i] * vk[i]; na += (double)cpu[i] * cpu[i]; nb += (double)vk[i] * vk[i];
+                    maxAbs = Math.Max(maxAbs, Math.Abs(cpu[i] - vk[i]));
+                }
+                double cos = dot / (Math.Sqrt(na) * Math.Sqrt(nb));
+                Console.WriteLine($"PROBE19 layer={layer,2} {stage,-16} cos={cos:F6}  max|d|={maxAbs,10:E3}  {(cos < 0.999 ? "<<<" : "")}");
+            }
+        }
+    }
+
     [Fact]
     public void Probe_PrefixLengthSweep()
     {

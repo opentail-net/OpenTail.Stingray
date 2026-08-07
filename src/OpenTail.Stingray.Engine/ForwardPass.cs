@@ -2004,6 +2004,10 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
     private ReadOnlySpan<float> RunTrunk(int position, int traceToken)
     {
         float embNorm = _traceNorms ? L2Norm(_hidden, _embDim) : 0f;
+
+        StageCapture.Record("cpu", -1, StageCapture.Stages.Embed,
+            new ReadOnlySpan<float>(_hidden, _embDim));
+
         bool profDecode = DecodeProfileTimers.Enabled;
         if (profDecode) DecodeProfileTimers.CountToken();
 
@@ -2036,6 +2040,8 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
             var normW = GetNormWeight(_attnNorm[layer]);
             stageStart = profDecode ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
             FastRmsNorm(_normBuf, _hidden, normW, _embDim, _hp.RmsNormEps);
+            StageCapture.Record("cpu", layer, StageCapture.Stages.AttnNorm,
+                new ReadOnlySpan<float>(_normBuf, _embDim));
             if (profDecode)
             {
                 long d = System.Diagnostics.Stopwatch.GetTimestamp() - stageStart;
@@ -2185,6 +2191,8 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
             FusedMatVec(_hidden, _wo[layer], _attnOut, _embDim, qDimL);
             if (_hasAttnOutputBias)
                 SimdKernels.AddInPlace(_hidden, _bo[layer], _embDim);
+            StageCapture.Record("cpu", layer, StageCapture.Stages.OProj,
+                new ReadOnlySpan<float>(_hidden, _embDim));
             if (profDecode)
             {
                 long d = System.Diagnostics.Stopwatch.GetTimestamp() - stageStart;
@@ -2203,6 +2211,9 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
             SimdKernels.AddInPlace(_hidden, _residual, _embDim);
 
             if (_traceNorms) _normTraceAttn![layer] = L2Norm(_hidden, _embDim);
+
+            StageCapture.Record("cpu", layer, StageCapture.Stages.PostAttnResidual,
+                new ReadOnlySpan<float>(_hidden, _embDim));
 
             // Save residual for FFN
             Copy(_residual, _hidden, _embDim);
@@ -2240,8 +2251,14 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
             // Residual (post-attn output that includes its own residual).
             SimdKernels.AddInPlace(_hidden, _residual, _embDim);
 
+            StageCapture.Record("cpu", layer, StageCapture.Stages.PostFfnResidual,
+                new ReadOnlySpan<float>(_hidden, _embDim));
+
             if (_hp.HasPerLayerTokenEmbd)
                 ApplyPerLayerEmbedding(layer);
+
+            StageCapture.Record("cpu", layer, StageCapture.Stages.PostPle,
+                new ReadOnlySpan<float>(_hidden, _embDim));
 
             // Gemma 4: per-layer learned output scale applies AFTER the PLE injection
             // (matches llama.cpp gemma4 build order — applying it before PLE breaks the
@@ -2252,6 +2269,9 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
             // Hidden-state tap: _hidden now holds this layer's output (= next layer's input).
             if (_taps is { } taps && taps.SlotOf(layer) is int tapSlot && tapSlot >= 0)
                 CaptureTap(position, tapSlot, _hidden);
+
+            StageCapture.Record("cpu", layer, StageCapture.Stages.LayerOutput,
+                new ReadOnlySpan<float>(_hidden, _embDim));
 
             if (_traceNorms) _normTraceFfn![layer] = L2Norm(_hidden, _embDim);
 

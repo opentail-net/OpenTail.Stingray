@@ -1655,6 +1655,8 @@ public sealed unsafe class GpuForwardPass : IForwardPass
                 + $"first8=[{string.Join(", ", probe.Take(8).Select(v => v.ToString("E3")))}]");
         }
 
+        RecordStage(-1, StageCapture.Stages.Embed);
+
         // PLE per-layer projection cache (reads the scaled _hidden + _gpuPleRow). Built once per
         // token; ApplyPerLayerEmbedding consumes a slice of it inside each layer.
         if (_hasPle) BuildPerLayerProjectionsGpu();
@@ -1890,6 +1892,7 @@ public sealed unsafe class GpuForwardPass : IForwardPass
             _gpu.RmsNorm(_normBuf, _hidden, _wAttnNorm[layer], _hp.RmsNormEps);
             _gpu.RecordBarrier();
             Stage("01 attn_norm", _normBuf, _embDim);
+            RecordStageOf(_normBuf, _embDim, layer, StageCapture.Stages.AttnNorm);
 
             // b. Q (always) + K/V projections (KV-owning layers only; read normBuf).
             GpuMatMul(qView, _wq[layer], _normBuf);
@@ -2003,6 +2006,7 @@ public sealed unsafe class GpuForwardPass : IForwardPass
             GpuMatMul(_hidden, _wo[layer], attnOutView);
             _gpu.RecordBarrier();
             Stage("12 o_proj", _hidden, _embDim);
+            RecordStage(layer, StageCapture.Stages.OProj);
 
             // j. Sandwich norm: post-attn RMSNorm on the O output BEFORE the residual add.
             if (_wPostAttnNorm is not null)
@@ -2014,6 +2018,7 @@ public sealed unsafe class GpuForwardPass : IForwardPass
             _gpu.AddInPlace(_hidden, _residual);
             _gpu.RecordBarrier();
             Stage("14 attn_residual", _hidden, _embDim);
+            RecordStage(layer, StageCapture.Stages.PostAttnResidual);
 
             // k. FFN: ffn_norm → gate/up → GELU-tanh → down.
             CopyBuffer(_residual, _hidden);
@@ -2043,6 +2048,7 @@ public sealed unsafe class GpuForwardPass : IForwardPass
             _gpu.AddInPlace(_hidden, _residual);
             _gpu.RecordBarrier();
             Stage("21 ffn_residual", _hidden, _embDim);
+            RecordStage(layer, StageCapture.Stages.PostFfnResidual);
 
             // PLE injection (issue #351): after the post-FFN residual add, before the per-layer
             // output gain. Mirrors the CPU/CUDA ordering — applying the scale before PLE breaks
@@ -2050,6 +2056,7 @@ public sealed unsafe class GpuForwardPass : IForwardPass
             if (_hasPle)
                 ApplyPerLayerEmbedding(layer);
             Stage("22 ple", _hidden, _embDim);
+            RecordStage(layer, StageCapture.Stages.PostPle);
 
             // m. Per-layer scalar output gain.
             if (_layerOutputScale is not null)
@@ -2058,6 +2065,7 @@ public sealed unsafe class GpuForwardPass : IForwardPass
                 _gpu.RecordBarrier();
             }
             Stage("23 layer_scale", _hidden, _embDim);
+            RecordStage(layer, StageCapture.Stages.LayerOutput);
 
             CaptureHiddenTap(layer, position);
 
@@ -3185,6 +3193,30 @@ public sealed unsafe class GpuForwardPass : IForwardPass
         _tapScratch ??= new float[_embDim];
         _gpu.ReadFromStaging(_tapScratch.AsSpan(0, _embDim));
         _tapScratch.AsSpan(0, _embDim).CopyTo(taps.RowSlot(position, slot));
+
+        _gpu.BeginRecord();
+    }
+
+    /// <summary>
+    /// Snapshot <c>_hidden</c> into <see cref="StageCapture"/> when capture is on. Splits the
+    /// command buffer exactly like <see cref="CaptureHiddenTap"/> — the trunk is mid-record, so a
+    /// download only becomes host-visible once the submission closes. No-op (one branch) when off.
+    /// </summary>
+    private void RecordStage(int layer, string stage) => RecordStageOf(_hidden, _embDim, layer, stage);
+
+    /// <summary>Snapshot an arbitrary device buffer; see <see cref="RecordStage"/>.</summary>
+    private void RecordStageOf(Tensor t, int n, int layer, string stage)
+    {
+        if (!StageCapture.Enabled) return;
+
+        _gpu.RecordBarrier();
+        _gpu.RecordComputeToTransferBarrier();
+        _gpu.RecordDownloadToStaging(t, n);
+        _gpu.EndRecordAndSubmit();
+
+        if (_tapScratch is null || _tapScratch.Length < n) _tapScratch = new float[n];
+        _gpu.ReadFromStaging(_tapScratch.AsSpan(0, n));
+        StageCapture.Record("vulkan", layer, stage, _tapScratch.AsSpan(0, n));
 
         _gpu.BeginRecord();
     }
