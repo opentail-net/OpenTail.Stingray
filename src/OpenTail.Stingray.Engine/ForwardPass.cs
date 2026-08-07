@@ -2100,6 +2100,9 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
                 stageStart = System.Diagnostics.Stopwatch.GetTimestamp();
             }
 
+            StageCapture.Record("cpu", layer, StageCapture.Stages.VProj,
+                new ReadOnlySpan<float>(_v, kvDimL));
+
             if (_hasAttnBias)
             {
                 SimdKernels.AddInPlace(_q, _bq[layer], qDimL);
@@ -2128,6 +2131,9 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
             {
                 PerHeadPureRmsNorm(_v, layerKv, layerHd, _hp.RmsNormEps);
             }
+
+            StageCapture.Record("cpu", layer, StageCapture.Stages.VNorm,
+                new ReadOnlySpan<float>(_v, kvDimL));
 
             if (useRoPE)
             {
@@ -2188,6 +2194,9 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
             }
 
             // Output projection (input width is per-layer qDim).
+            StageCapture.Record("cpu", layer, StageCapture.Stages.AttnOut,
+                new ReadOnlySpan<float>(_attnOut, qDimL));
+
             FusedMatVec(_hidden, _wo[layer], _attnOut, _embDim, qDimL);
             if (_hasAttnOutputBias)
                 SimdKernels.AddInPlace(_hidden, _bo[layer], _embDim);

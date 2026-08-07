@@ -1029,6 +1029,9 @@ public sealed class TempPleProbe
             string[] stages =
             [
                 StageCapture.Stages.AttnNorm,
+                StageCapture.Stages.VProj,
+                StageCapture.Stages.VNorm,
+                StageCapture.Stages.AttnOut,
                 StageCapture.Stages.OProj,
                 StageCapture.Stages.PostAttnResidual,
                 StageCapture.Stages.PostFfnResidual,
@@ -1040,6 +1043,48 @@ public sealed class TempPleProbe
             for (int layer = 0; layer <= 1; layer++)
                 foreach (var stage in stages)
                     Report(layer, stage);
+
+            // Adjudicate. At position 0 softmax over a single key is 1.0, so attention output must
+            // equal V, broadcast across each GQA group. Each backend captured BOTH its own V and
+            // its own attention output, so this needs no cross-backend reference: the backend
+            // whose attn_out != its own v_norm is the one that is wrong.
+            foreach (var backend in new[] { "cpu", "vulkan" })
+            {
+                var v = StageCapture.Find(backend, 0, StageCapture.Stages.VNorm);
+                var a = StageCapture.Find(backend, 0, StageCapture.Stages.AttnOut);
+                if (v is null || a is null) { Console.WriteLine($"PROBE19 {backend}: missing v/attn"); continue; }
+
+                int headDim = a.Length / hp.NumHeads;
+                int group = hp.NumHeads / hp.NumKvHeads;
+                double maxAbs = 0;
+                for (int h = 0; h < hp.NumHeads; h++)
+                {
+                    int kvHead = h / group;
+                    for (int d = 0; d < headDim; d++)
+                        maxAbs = Math.Max(maxAbs, Math.Abs(a[h * headDim + d] - v[kvHead * headDim + d]));
+                }
+                Console.WriteLine(
+                    $"PROBE19 ADJUDICATE {backend,-7} attn_out vs own V: max|d|={maxAbs:E3} "
+                    + $"(headDim={headDim} heads={hp.NumHeads} kvHeads={hp.NumKvHeads})  "
+                    + (maxAbs < 1e-2 ? "CORRECT (attn == V)" : "<<< WRONG (attn != V at position 0)"));
+
+                // Which KV head did each query head ACTUALLY read? Reveals the mapping in use:
+                // h/group is correct GQA; h%kvHeads would be the classic transposed-grouping bug.
+                var matched = new string[hp.NumHeads];
+                for (int h = 0; h < hp.NumHeads; h++)
+                {
+                    int best = -1; double bestErr = double.MaxValue;
+                    for (int kv = 0; kv < hp.NumKvHeads; kv++)
+                    {
+                        double e = 0;
+                        for (int d = 0; d < headDim; d++)
+                            e = Math.Max(e, Math.Abs(a[h * headDim + d] - v[kv * headDim + d]));
+                        if (e < bestErr) { bestErr = e; best = kv; }
+                    }
+                    matched[h] = bestErr < 1e-2 ? best.ToString() : $"none({bestErr:F2})";
+                }
+                Console.WriteLine($"PROBE19 MAPPING   {backend,-7} qHead→kvHead actual=[{string.Join(",", matched)}]  expected=[{string.Join(",", Enumerable.Range(0, hp.NumHeads).Select(h => h / group))}]");
+            }
 
             StageCapture.Reset();
 

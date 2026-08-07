@@ -1909,6 +1909,7 @@ public sealed unsafe class GpuForwardPass : IForwardPass
             Stage("02 q_proj", qView, qDimL);
             Stage("03 k_proj", kView, kvDimL);
             Stage("04 v_proj", vView, kvDimL);
+            RecordStageOf(vView, kvDimL, layer, StageCapture.Stages.VProj);
 
             // c. Per-head Q/K norm (gemma4: shared [layerHd] weight per head, BEFORE RoPE).
             //    Q-norm always; K-norm only on KV-owning layers.
@@ -1932,6 +1933,7 @@ public sealed unsafe class GpuForwardPass : IForwardPass
                 _gpu.RecordBarrier();
             }
             Stage("07 v_norm", vView, kvDimL);
+            RecordStageOf(vView, kvDimL, layer, StageCapture.Stages.VNorm);
 
             // e. RoPE: global (non-SWA) layers use the rope_freqs table; SWA layers use plain
             //    NEOX RoPE at the SWA theta. Gemma uses NEOX/half rotation. Q always; K only on
@@ -2001,6 +2003,7 @@ public sealed unsafe class GpuForwardPass : IForwardPass
                     (uint)(position + 1), (uint)_maxSeqLen, window: window);
             _gpu.RecordBarrier();
             Stage("11 attn_out", attnOutView, qDimL);
+            RecordStageOf(attnOutView, qDimL, layer, StageCapture.Stages.AttnOut);
 
             // i. Output projection: _wo[layer] is [embDim, qDimL]; attnOutView has qDimL rows.
             GpuMatMul(_hidden, _wo[layer], attnOutView);

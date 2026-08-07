@@ -37,6 +37,15 @@ internal static class StageCapture
         /// <summary>Normalised input to the attention block (pre-attention RMSNorm output).</summary>
         public const string AttnNorm = "attn_norm";
 
+        /// <summary>V after its projection, before Gemma 4's plain per-head V norm.</summary>
+        public const string VProj = "v_proj";
+
+        /// <summary>V after Gemma 4's plain per-head RMSNorm — what actually enters the KV cache.</summary>
+        public const string VNorm = "v_norm";
+
+        /// <summary>Attention output before the output projection. At position 0 this must equal V.</summary>
+        public const string AttnOut = "attn_out";
+
         /// <summary>Hidden straight after the attention output projection, before the post-attn norm.</summary>
         public const string OProj = "o_proj";
 
