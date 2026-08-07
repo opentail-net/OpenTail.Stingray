@@ -95,7 +95,11 @@ public static class KnownEnvironmentVariables
         "STINGRAY_MAX_BATCH",
         "STINGRAY_MAX_CONCURRENT",
         "STINGRAY_MAX_QUEUE",
-        "STINGRAY_MAX_QUEUED_REQUESTS",
+        // STINGRAY_MAX_QUEUED_REQUESTS was here but nothing ever read it — it is the name of the
+        // OPTION (options.MaxQueuedRequests), which STINGRAY_MAX_QUEUE above sets. Registering it
+        // made things worse rather than harmless: `doctor` treats registry names as valid, so an
+        // operator who followed the old overload warning and set it got no "unknown variable"
+        // hint. Removed so the typo is reported and SuggestClosest points at STINGRAY_MAX_QUEUE.
         "STINGRAY_MIN_BATCH_BLAS",
         "STINGRAY_MMPROJ",
         "STINGRAY_MMQ_SOA",

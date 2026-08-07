@@ -1,12 +1,24 @@
-# `STINGRAY_*` environment-variable inventory — historical snapshot, regeneration required
+# `STINGRAY_*` environment-variable inventory — name-complete, classification pending
 
-**Snapshot generated:** 2026-07-26 by scanning `src/**/*.cs`. It records **141 unique
+**Snapshot originally generated:** 2026-07-26 by scanning `src/**/*.cs`, recording **141 unique
 variables**.
 
-**Drift found 2026-08-07:** `KnownEnvironmentVariables.All`, the source-enforced registry,
-now contains **157** names. The 141 rows below are consequently historical classification input,
-not a complete current environment surface. Regenerate this document from the registry/source
-before using it to define supported configuration, profiles, or precedence.
+**Reconciled 2026-08-07:** the table below now lists every name in
+`KnownEnvironmentVariables.All`, the source-enforced registry, which
+now contains **156** names. The row set is therefore no longer a historical subset — it is
+name-complete as of this date. What remains outstanding is the **Class/Notes** classification
+(see below), not the enumeration.
+
+Two names appear in the prose here but deliberately **not** in the table, because they are no
+longer read by anything: `STINGRAY_Q4K_ABL` and `STINGRAY_WABL`, both removed ablation switches.
+
+The reconciliation also found a live defect rather than mere drift. `STINGRAY_MAX_QUEUED_REQUESTS`
+was registered and named in the server's queue-overload warning, but **nothing ever read it** — it
+is the name of the C# option (`options.MaxQueuedRequests`) that `STINGRAY_MAX_QUEUE` actually sets.
+An operator following that advice would have set a variable with no effect, and because registered
+names are treated as valid, `doctor` would not have flagged it either. The warning now names
+`STINGRAY_MAX_QUEUE` and the dead entry is out of the registry, so the mistake is now reported with
+a closest-match suggestion.
 
 The stated current registry count is test-guarded by
 \`KnownEnvironmentVariablesTests.Inventory_DeclaredCurrentRegistryCountMatchesSource\`. It makes

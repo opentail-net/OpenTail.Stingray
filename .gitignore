@@ -472,3 +472,11 @@ tools/kernel-bench/build*/
 _gemeni.txt
 out__.txt
 out_bf16_.txt
+
+# Local reference material: vendor optimisation manuals (Agner Fog, AMD PPRs) as source PDFs
+# plus their markdown conversions — ~20 MB of third-party documentation, not project content.
+docs2/
+
+# Tooling artifacts: shadow worktree and build-failure telemetry, both regenerated on demand.
+.opentail/
+.opentail-shadow.git/

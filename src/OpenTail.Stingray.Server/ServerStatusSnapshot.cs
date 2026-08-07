@@ -207,7 +207,14 @@ public sealed record ServerStatusSnapshot(
         if (traffic.OverloadRejectionsTotal > 0)
             warnings.Add(
                 $"{traffic.OverloadRejectionsTotal} request(s) were rejected because the bounded " +
-                "inference queue was full. Raise STINGRAY_MAX_QUEUED_REQUESTS or reduce client concurrency.");
+                // STINGRAY_MAX_QUEUE is the variable ServerEnvironmentOverrides actually reads; it
+                // sets options.MaxQueuedRequests. This message used to name the OPTION instead —
+                // a variable spelled after MaxQueuedRequests, which nothing reads — so operators
+                // who followed it left the queue exactly as bounded as before. (The old name is
+                // deliberately not written out here: KnownEnvironmentVariablesTests.ListMatchesSource
+                // scans source lines without distinguishing comments from code, so naming it would
+                // re-assert it as a variable the source reads.)
+                "inference queue was full. Raise STINGRAY_MAX_QUEUE or reduce client concurrency.");
 
         if (!engine.PrefixCacheEnabled)
             warnings.Add(
