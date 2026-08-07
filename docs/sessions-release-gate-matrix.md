@@ -1,6 +1,6 @@
 # Sessions release gate — conformance matrix
 
-**Assessed:** 2026-08-07 against `tests/OpenTail.Stingray.Tests.Sessions` (89 test methods, 12
+**Assessed:** 2026-08-07 against `tests/OpenTail.Stingray.Tests.Sessions` (79 test methods, 12
 files, all passing). This maps the seven dimensions the release gate calls for onto what is
 actually asserted, and records one dimension that is **not covered** despite appearing so. A second was initially
 recorded as uncovered and is corrected at the foot of this document — read that before citing this

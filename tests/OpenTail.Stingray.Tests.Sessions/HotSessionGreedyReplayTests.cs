@@ -54,7 +54,11 @@ public sealed class HotSessionGreedyReplayTests
     public async Task HotSession_MultiTurn_MatchesFullGreedyReplay_OnRealModel()
     {
         var path = FindModelPath();
-        if (path is null) return;
+        // Assert.Skip, not a silent return: this file is cited by the release matrix as
+        // restart/replay evidence, and a bare `return` reports PASSED on a machine without
+        // models/ — i.e. on CI — which would let the matrix claim coverage from a test that
+        // never executed.
+        Assert.SkipWhen(path is null, "SmolLM2-1.7B-Instruct-Q4_K_M.gguf is required for this replay test.");
 
         string[] turns = ["The capital of France is", " and the capital of Spain is", " and of Italy is"];
 
@@ -156,7 +160,11 @@ public sealed class HotSessionGreedyReplayTests
     public async Task HotSession_ExactAppendAtPageBoundary_MatchesFullGreedyReplay()
     {
         var path = FindModelPath();
-        if (path is null) return;
+        // Assert.Skip, not a silent return: this file is cited by the release matrix as
+        // restart/replay evidence, and a bare `return` reports PASSED on a machine without
+        // models/ — i.e. on CI — which would let the matrix claim coverage from a test that
+        // never executed.
+        Assert.SkipWhen(path is null, "SmolLM2-1.7B-Instruct-Q4_K_M.gguf is required for this replay test.");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
@@ -328,6 +336,15 @@ public sealed class HotSessionGreedyReplayTests
             SessionRevision.Initial, SessionOperationId.New(), SessionRequestDigest.FromCanonicalValue("turn-1"));
         Assert.Equal(SessionOperationState.Completed, result.Operation.State);
 
+        // A restart receipt must retain more than the initial turn. This forces a genuine
+        // append onto already-populated KV state before the process exits; the restore child
+        // will append a third turn and independently replay all three segments.
+        var second = await session.RunTurnAsync(" The capital of Germany is",
+            new SamplingParams { Temperature = 0f, MaxNewTokens = MaxNewTokens },
+            result.Operation.CommittedRevision!.Value, SessionOperationId.New(),
+            SessionRequestDigest.FromCanonicalValue("turn-2"));
+        Assert.Equal(SessionOperationState.Completed, second.Operation.State);
+
         cold.EvictToDisk(session, address.ModelFingerprint);
         Assert.True(File.Exists(Path.Combine(storage, $"{address.ToSessionId().Value:N}.manifest")),
             "Persist child did not write the session manifest.");
@@ -346,9 +363,16 @@ public sealed class HotSessionGreedyReplayTests
         var address = new SessionAddress("restart-proof", "smollm", "thread", RestartModelFingerprint(modelPath));
         using var session = cold.OpenOrCreate(address);
 
+        // NOTE: `session.CommittedRevision` is a cursor POSITION count, not the store's turn
+        // counter — see docs/session-revision-contract-defect.md. It is correct *here* only
+        // because a restored session's persisted revision is itself a position count, so the two
+        // wrong values agree. The turn above deliberately uses
+        // `result.Operation.CommittedRevision`, which is the right source; the difference is left
+        // visible rather than harmonised because harmonising it would fail against the persisted
+        // value. When the persisted-revision semantics are fixed, this line must change with them.
         var result = await session.RunTurnAsync(" and the capital of Spain is",
             new SamplingParams { Temperature = 0f, MaxNewTokens = MaxNewTokens },
-            session.CommittedRevision, SessionOperationId.New(), SessionRequestDigest.FromCanonicalValue("turn-2"));
+            session.CommittedRevision, SessionOperationId.New(), SessionRequestDigest.FromCanonicalValue("turn-3"));
         Assert.Equal(SessionOperationState.Completed, result.Operation.State);
 
         var log = session.Cursor.ExecutionLog;

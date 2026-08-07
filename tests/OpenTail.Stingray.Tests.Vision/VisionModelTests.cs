@@ -48,4 +48,29 @@ public class VisionModelTests
         // The text GGUF is arch=gemma4, not a clip mmproj -> must be rejected clearly.
         Assert.ThrowsAny<NotSupportedException>(() => VisionModel.Open(textPath));
     }
+
+    [Fact]
+    public void Gemma4V_Open_ResolvesCompleteE4BViTInventory()
+    {
+        var path = VisionTestPaths.FindE4BMmproj();
+        Assert.SkipUnless(path is not null,
+            "gemma-4-E4B-it-mmproj.gguf is required for the E4B ViT inventory acceptance test.");
+
+        using var model = Gemma4VVisionModel.Open(path!);
+
+        Assert.Equal(224, model.ImageSize);
+        Assert.Equal(16, model.PatchSize);
+        Assert.Equal(768, model.EmbeddingLength);
+        Assert.Equal(2560, model.ProjectionDim);
+        Assert.Equal(3072, model.FeedForwardLength);
+        Assert.Equal(16, model.BlockCount);
+        Assert.Equal(12, model.HeadCount);
+        Assert.Equal(16, model.Blocks.Length);
+        Assert.Equal(new long[] { 16, 16, 3, 768 }, model.PatchEmbedding.Dimensions);
+        Assert.Equal(new long[] { 768, 10240, 2 }, model.PositionEmbedding.Dimensions);
+        Assert.Equal(new long[] { 768, 2560 }, model.InputProjection.Dimensions);
+        Assert.Equal(new long[] { 768 }, model.Blocks[0].Ln1.Dimensions);
+        Assert.Equal(new long[] { 768, 768 }, model.Blocks[15].AttnOut.Dimensions);
+        Assert.Equal(new long[] { 3072, 768 }, model.Blocks[15].FfnDown.Dimensions);
+    }
 }

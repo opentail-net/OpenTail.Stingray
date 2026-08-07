@@ -25,8 +25,8 @@ Hardware that cannot be validated on this PC is intentionally separated in
 1. **CPU-dense session core is productized; close its release gate.** The capability-gated named
    lifecycle, durable KV/cursor state, bounded completed-operation replay, and real SmolLM2 GGUF
    cross-process proof (persist child exit → fresh runtime restore → greedy continuation →
-   token-for-token replay) now pass. Remaining work is release packaging/CPU-runner evidence and
-   the broader cache-conformance matrix, not another session API spike.
+   token-for-token replay) now pass. The seven-dimension cache-conformance matrix is covered;
+   remaining work is release packaging/CPU-runner evidence, not another session API spike.
 2. **Hardware release runners.** Attach reproducible CPU AVX2, CUDA dense, Vulkan, hybrid MoE,
    MTP/speculation, and real-session results to the release notes. Local CPU/Vulkan work stays
    here; NVIDIA/CUDA and ARM64-only receipts are tracked in

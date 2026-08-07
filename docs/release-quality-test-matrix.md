@@ -36,8 +36,9 @@ The acceptance test must use a real GGUF, not a fake forward pass. It must:
 6. Compare every continuation token against a fresh full replay of the exact logged token IDs.
 
 `HotSessionGreedyReplayTests.ColdSession_RealModel_CrossProcessRestore_MatchesFullGreedyReplay`
-passed on the local CPU-dense SmolLM2 GGUF on 2026-08-07. It uses two child processes and fresh
-runtime objects, then compares each generated segment to full replay. That clears the reference
+uses two child processes and fresh runtime objects: two turns are persisted before process exit,
+then a third is generated after restore and every generated segment is compared to full replay.
+That clears the reference
 lane's proof and the CPU-dense named-session product surface: it is now lifecycle- and
 capability-gated, with bounded completed-operation replay after restart. It does not prove every
 backend/cache family; those remain separate rows rather than being inferred from the CPU result.
@@ -63,7 +64,7 @@ top of this document, a pass here is not evidence for a row whose runner this ma
 | Vulkan | **Partial.** Functional load + greedy decode, and CPU/Vulkan logit parity measured. **On an integrated APU, not a discrete card** — every number is APU-specific and does not predict discrete-GPU behaviour | `vulkan-backend-evidence.md` |
 | Hybrid MoE | **Partial.** MoE model runs on CPU with prefill numerics in the dense band. The row's actual subject — CPU-expert and GPU-cache offload paths — is **untested**, needing constrained VRAM this machine cannot provide | `moe-backend-evidence.md` |
 | Speculation | **Measured and negative.** Draft-model speculation is a 37% regression on CPU because the verify pass cannot amortise; no MTP GGUF present for the MTP equivalence check | `cpu-speculative-decoding-findings.md` |
-| Session restart continuation | **Partial.** Six of seven conformance dimensions covered, and rollback closed this session after a production seam was added. Full restart-with-real-model replay not run | `sessions-release-gate-matrix.md` |
+| Session restart continuation | **CPU-dense GGUF lane proven.** Two real turns persist across child-process exit; a fresh runtime restores them, adds a third greedy turn, and exactly replays every generated segment (1/1 focused receipt, 2026-08-07). Other backend/cache families remain separate conformance work | `HotSessionGreedyReplayTests` |
 | HTTP server | **Yes** — 246/246 including OpenAI, Anthropic, capabilities, status, queue limits | this session |
 | Packaging | **Not run this session** | — |
 

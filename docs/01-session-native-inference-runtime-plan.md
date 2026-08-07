@@ -26,22 +26,27 @@ replay was added.
    `/capabilities` publishes this as available only for that CPU-dense persisted lane. The ledger
    is intentionally bounded by both record retention and a 1 MiB pack ceiling; old or oversized
    results can be pruned and must not be treated as an archival transcript.
-2. Add a backend/cache conformance matrix for hot reuse, rollback, persistence, and restart.
-   Its persisted ABI must represent per-layer KV/head dimensions and V-region stride; a single
-   model-level `headDim` silently corrupts Gemma-class mixed-dimension caches.
-3. Exercise interrupted writes, corrupt packs, ABI mismatch, quotas, and eviction ownership.
+2. **Done — cache conformance matrix.** Hot reuse, rollback, persistence/restart, corrupt packs,
+   quotas/eviction, and per-model resource partitioning are covered in
+   `sessions-release-gate-matrix.md`. Its persisted ABI represents per-layer KV/head dimensions
+   and V-region stride; a single model-level `headDim` would silently corrupt Gemma-class mixed-
+   dimension caches.
+3. **Done for the CPU-dense lane — interrupted writes, corrupt packs, ABI mismatch, quotas, and
+   eviction ownership.**
    - Corrupt KV-pack and completed-operation-ledger restore are covered at the cold-runtime
      boundary: both `Open` and `OpenOrCreate` refuse a damaged persisted pack rather than
      admitting partial state or silently forgetting a replayable completed turn.
    - Re-persistence now writes a new generation of packs before atomically publishing its
      manifest. A crash before publication leaves the prior manifest and every referenced pack
      intact; stale generations are reclaimed only afterward.
-4. Validate multi-model routing after the single-model exact lane is proven.
+4. **Done — multi-model resource routing.** The per-model budget suite prevents one model's
+   resident/in-flight allocation from being charged to or consuming another model's partition.
+   Cross-backend session support remains intentionally refused rather than inferred from this lane.
 
 The proof is `HotSessionGreedyReplayTests.ColdSession_RealModel_CrossProcessRestore_MatchesFullGreedyReplay`:
-one child process runs and persists a real SmolLM2 GGUF turn, then exits; a second process creates
-a fresh runtime, restores the manifest/KV packs, runs a second greedy turn, and compares every
-generated segment against fresh full replay. It passed in Release on 2026-08-07. No fake forward
+one child process runs and persists two real SmolLM2 GGUF turns, then exits; a second process creates
+a fresh runtime, restores the manifest/KV packs, runs a third greedy turn, and compares every
+generated segment against fresh full replay. No fake forward
 pass, in-process restore, cache-byte comparison, or cursor-only replay would meet that bar. See
 [release-quality-test-matrix.md](release-quality-test-matrix.md).
 

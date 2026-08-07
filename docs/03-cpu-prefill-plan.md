@@ -41,6 +41,14 @@ per-token fallback.
    while throughput was **19.02** versus **6.26 tok/s**. This is a focused quality/performance
    smoke, not the required multi-length, interleaved release measurement.
 
+    **Deferred / still untested (2026-08-07):** the planned full Wikitext-2 release-quality
+    comparison remains open. The evaluator correctly requires `--batched` and a Q8-eligible chunk
+   (the default loop would not exercise CPU batched prefill), but the 2,048-token F32 control arm
+   exceeded the available work window. Its Q8-on companion completed in 97.7 s (7.3859 PPL), which
+   is deliberately **not** recorded as a quality result because the matched F32 arm did not finish.
+   Resume with paired Q8-on/Q8-off runs at the same corpus slice, context, chunk size, model hash,
+   and environment; retain both raw outputs before drawing any conclusion.
+
    **Packed-admission regression (2026-08-07):** an all-control request in a packed admission
    batch now forces the *whole* batch through exact sequential F32 admission. Previously the
    stated whole-batch fallback called `PrefillWithCache` for each neighbour, allowing ordinary

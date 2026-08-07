@@ -1,6 +1,7 @@
 # Gemma 4 E4B Multimodal (Vision) — Research & Implementation Plan
 
-Status: **research / planning, no code written yet.** Tracked by **issue #126**.
+Status: **V0 mmproj loader and V1 fixed-grid preprocessing implemented; encoder, projector,
+embedding splice, and end-to-end image parity remain open.** Tracked by **issue #126**.
 
 > ## ⚠️ Verification update (2026-06-15) — architecture confirmed from the real mmproj
 > The §1 "verification debt" is now **retired**: the E4B mmproj header was dumped
@@ -25,7 +26,22 @@ Status: **research / planning, no code written yet.** Tracked by **issue #126**.
 >
 > **This is NOT the 12B path.** The Gemma 4 **12B** uses encoder-free `gemma4uv` (raw patches →
 > linear projection, no ViT) and is implemented in `src/OpenTail.Stingray.Vision` (issue #250, see the
-> gemma4uv section of `docs/OpenTail.Stingray-Design.md`). E4B (`gemma4v`+`gemma4a`) remains unimplemented.
+> gemma4uv section of `docs/OpenTail.Stingray-Design.md`). E4B (`gemma4v`+`gemma4a`) has only its
+> `gemma4v` load/preprocessing boundary implemented; it is not yet usable for image inference.
+
+> **Implementation update (2026-08-07): V0 is now complete.** `Gemma4VVisionModel` owns and
+> validates the E4B `gemma4v` mmproj separately from the encoder-free 12B `gemma4uv` model. It
+> resolves the patch/position/projector tensors plus the complete 13-tensor inventory for every
+> one of the 16 ViT blocks; the real 992 MB mmproj fixture pins geometry and boundary tensor
+> shapes. This is a load/ownership boundary only: preprocessing, ViT forward, reduction,
+> embedding splice, and image-mask semantics remain open.
+
+> **Reference-tool correction (2026-08-07):** the local `tools/llama.cpp` binary labelled build
+> 8585 (`cad2d3884`) is **not** a usable E4B oracle. `llama-mtmd-debug` rejects the paired text
+> GGUF before mmproj processing with `unknown model architecture: 'gemma4'`. Do not use this build
+> for E4B preprocessing/encoder/parity evidence; acquire a llama.cpp build that actually admits
+> `gemma4`, or capture reference intermediates from another confirmed implementation. V2 must not
+> be guessed from tensor names.
 
 This doc scopes adding **image input** to the already-working Gemma 4 E4B text path. Audio (the
 other E-model modality) is noted but deferred. It is the multimodal counterpart to
@@ -49,8 +65,8 @@ KV-share, GeGLU, final-logit softcap are all present).
   768-wide, 12 heads, QK-norm and GeGLU), not the historical MobileNet-V5/Gemma-3n assumption.
   Its core attention/MLP/RMSNorm operations should be evaluated against existing vision and decoder
   abstractions; it is not a direct reuse of the diffusion convolution pipeline.
-- llama.cpp supports Gemma 4 E4B image input from day one (`llama-mtmd-cli` + an `mmproj` GGUF),
-  so we have a **reference implementation to parity-debug against**.
+- A Gemma-4-capable external reference implementation is required for parity debugging. The local
+  llama.cpp build is not that oracle: it rejects `general.architecture=gemma4` before mmproj input.
 
 ## 1. How Gemma 4 multimodal works (the parts we must replicate)
 
@@ -119,15 +135,20 @@ and vision abstractions rather than be designed as a diffusion-convolution pipel
 Suggested new module: **`src/OpenTail.Stingray.Vision`** (mmproj loader, preprocessing, encoder,
 projector), keeping vision concerns out of `Core`/`Engine` until the seam is stable.
 
-### Phase V0 — mmproj/clip GGUF loader (low risk)
-Parse `clip.*` metadata + `v.*`/`mm.*` tensors into a `VisionModel` handle. Preserve the verified
-Gemma 4 header facts and derive the still-open token reduction/mask semantics from llama.cpp's
-`gemma4v` path. Smoke test: load, resolve all tensors, print config.
+### Phase V0 — mmproj/clip GGUF loader (low risk) — **DONE 2026-08-07**
+`Gemma4VVisionModel` parses the verified `clip.*` geometry and validates the patch/position/
+projector tensors plus the full 16×13 block tensor inventory. The real E4B mmproj smoke test
+pins the loader to 224px / 16px patch / 768 wide / 12 heads / 3072 FFN / 16 blocks. Token
+reduction and mask semantics are intentionally not inferred from this structural phase.
 
-### Phase V1 — image preprocessing (low risk)
-Decode (PNG/JPEG → RGB), resize to encoder input (reuse `DiffusionOps` bilinear), normalize, and
-implement **Pan & Scan** crop generation (cap crops; global thumbnail + crops). Unit-test against
-fixed fixtures (deterministic resize/normalize output).
+### Phase V1 — image preprocessing (low risk) — **fixed-grid core complete 2026-08-07**
+`Gemma4VImagePreprocessor` now performs deterministic align-corners RGB resize to the
+mmproj-declared fixed grid, packs planar CHW, and applies the header's three channel
+mean/std values. Unit coverage pins channel order, interpolation, affine normalisation, and
+invalid input handling. **This is a bounded implementation, not external parity evidence:** retain
+the alignment/interpolation choice behind V2's reference gate until a Gemma-4-capable oracle
+confirms it. PNG/JPEG decoding is already provided by `ImageIO`; **Pan & Scan remains open** until
+its exact E4B crop policy is derived from the reference rather than guessed.
 
 ### Phase V2 — `gemma4v` ViT encoder forward pass (HIGH risk)
 The load-bearing piece. Implement the verified 16-block, 768-wide, 12-head QK-norm/GeGLU
