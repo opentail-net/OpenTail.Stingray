@@ -1700,7 +1700,12 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
         // different values per path — reject rather than desync silently. (Gemma 4
         // per-layer head_dim models already route every batched call to sequential
         // Forward, but the guard keeps the contract explicit.)
-        if (_postFfwNorm is not null || _layerOutputScale is not null || _hp.HasPerLayerTokenEmbd)
+        // The exception is a model whose batched calls ALL route to sequential Forward anyway —
+        // per-layer head_dim, i.e. Gemma 4. There is then no second capture point to disagree
+        // with, which is the only thing this guard exists to prevent, so rejecting it buys
+        // nothing and costs the ability to diff Gemma 4 layer-by-layer against another backend.
+        if ((_postFfwNorm is not null || _layerOutputScale is not null || _hp.HasPerLayerTokenEmbd)
+            && _layerHeadDim is null)
             throw new NotSupportedException(
                 "Hidden-state taps are not supported on models with post-FFW norm / per-layer " +
                 "output scale / PLE (capture points differ between sequential and batched paths).");

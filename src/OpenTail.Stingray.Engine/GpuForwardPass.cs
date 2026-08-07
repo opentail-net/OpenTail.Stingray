@@ -2059,6 +2059,8 @@ public sealed unsafe class GpuForwardPass : IForwardPass
             }
             Stage("23 layer_scale", _hidden, _embDim);
 
+            CaptureHiddenTap(layer, position);
+
             if (stageLog is not null)
                 throw new InvalidOperationException(stageLog.ToString());
 
@@ -3144,20 +3146,15 @@ public sealed unsafe class GpuForwardPass : IForwardPass
     // ── Hidden-state taps (IForwardPass contract, PR #413) ──────────────────
 
     /// <summary>
-    /// Dense trunk only. <see cref="ForwardGemma4"/> keeps its own layer sequencing (per-layer
-    /// head_dim, shared-KV aliasing, sandwich norms) and is not wired for capture, so Gemma 4
-    /// reports false rather than silently returning empty rows.
+    /// Both the dense trunk and <see cref="ForwardGemma4"/> capture. The batched prefill trunk
+    /// does not, so a tapped pass processes prompts through the per-token loop; that is the
+    /// same trade the capture's submit-splitting already implies.
     /// </summary>
-    public bool SupportsHiddenTaps => !_isGemma4;
+    public bool SupportsHiddenTaps => true;
 
     /// <inheritdoc/>
     public void EnableHiddenTaps(ReadOnlySpan<int> layerIds)
     {
-        if (_isGemma4)
-            throw new NotSupportedException(
-                "Hidden-state taps are not implemented for the Gemma 4 Vulkan path. " +
-                "Check SupportsHiddenTaps before calling.");
-
         _taps?.Dispose();
         _taps = new HiddenTapBuffer(layerIds, _hp.NumLayers, _embDim, _maxSeqLen);
     }

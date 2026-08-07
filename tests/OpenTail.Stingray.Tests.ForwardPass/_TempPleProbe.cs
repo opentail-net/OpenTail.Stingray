@@ -670,6 +670,327 @@ public sealed class TempPleProbe
         }
     }
 
+    /// <summary>
+    /// Where does Q8 prefill go wrong? Compare CPU per-layer hidden state with Q8 on vs off on the
+    /// SAME backend. A smooth cosine decay means accumulating quantisation error (numerics); a
+    /// cliff at one layer means a broken kernel.
+    /// </summary>
+    [Theory]
+    [InlineData("SmolLM2-1.7B-Instruct-Q4_K_M.gguf")]
+    [InlineData("Qwen3-8B-Q4_K_M.gguf")]
+    public void Probe_Q8LayerBisect(string file)
+    {
+        var path = FindModelPath(file);
+        if (path is null) { Console.WriteLine($"PROBE13 {file}: absent"); return; }
+
+        using var model = GgufModel.Open(path);
+        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        int[] layerIds = Enumerable.Range(0, hp.NumLayers).ToArray();
+        int[] toks = [1, 2];
+        int embDim = hp.EmbeddingDim;
+
+        float[] Run(bool q8)
+        {
+            bool saved = SimdKernels.Q8PrefillEnabled;
+            try
+            {
+                SimdKernels.Q8PrefillEnabled = q8;
+                using var cb = new CpuBackend();
+                using var cf = new OpenTail.Stingray.Engine.ForwardPass(model, cb, hp);
+                cf.EnableHiddenTaps(layerIds);
+                cf.Prefill(toks);
+                return cf.HiddenTapsAt(1).ToArray();
+            }
+            finally { SimdKernels.Q8PrefillEnabled = saved; }
+        }
+
+        var on = Run(true);
+        var off = Run(false);
+        if (on.Length == 0 || off.Length == 0) { Console.WriteLine($"PROBE13 {file}: no taps captured (len on={on.Length} off={off.Length})"); return; }
+
+        for (int L = 0; L < hp.NumLayers; L++)
+        {
+            double dot = 0, na = 0, nb = 0, maxAbs = 0;
+            for (int i = 0; i < embDim; i++)
+            {
+                float a = off[L * embDim + i], b = on[L * embDim + i];
+                dot += (double)a * b; na += (double)a * a; nb += (double)b * b;
+                maxAbs = Math.Max(maxAbs, Math.Abs(a - b));
+            }
+            double cos = dot / (Math.Sqrt(na) * Math.Sqrt(nb));
+            Console.WriteLine($"PROBE13 {file,-38} layer={L,3}  cos={cos:F6}  max|d|={maxAbs,10:E3}  {(cos < 0.99 ? "<<<" : "")}");
+        }
+    }
+
+    /// <summary>
+    /// Q8_K/Q8_KS carry one scale per 256-element block, so a single large activation outlier
+    /// forces a huge scale and crushes every other value in that block toward zero. Compare the
+    /// int8 path against the F32 path on identical inputs, with and without an outlier.
+    /// </summary>
+    [Theory]
+    [InlineData(1f, "uniform")]
+    [InlineData(50f, "outlier 50x")]
+    [InlineData(500f, "outlier 500x")]
+    [InlineData(5000f, "outlier 5000x")]
+    public unsafe void Probe_Q8Outlier(float outlierScale, string label)
+    {
+        const int batchSize = 8, rows = 64, cols = 512;
+        var rng = new Random(5);
+
+        // Q4_K weights with sane fp16 block scales (random payload).
+        long byteCount = DTypeInfo.ByteSize((long)rows * cols, DType.Q4_K);
+        var weights = new byte[byteCount];
+        rng.NextBytes(weights);
+        for (int off = 0; off + 144 <= weights.Length; off += 144)
+        {
+            WriteHalf(weights, off, 0.015f);
+            WriteHalf(weights, off + 2, 0.004f);
+        }
+
+        var input = new float[batchSize * cols];
+        for (int i = 0; i < input.Length; i++) input[i] = (float)(rng.NextDouble() * 2 - 1);
+        // One outlier channel per token, as real transformer activations exhibit.
+        if (outlierScale > 1f)
+            for (int n = 0; n < batchSize; n++) input[n * cols + 17] = outlierScale;
+
+        var q8 = new float[batchSize * rows];
+        var f32 = new float[batchSize * rows];
+
+        bool saved = SimdKernels.Q8PrefillEnabled;
+        try
+        {
+            fixed (byte* w = weights)
+            fixed (float* x = input)
+            fixed (float* a = q8)
+            fixed (float* b = f32)
+            {
+                SimdKernels.Q8PrefillEnabled = true;
+                SimdKernels.MatMulBatched(a, w, x, batchSize, rows, cols, DType.Q4_K, allowQ8: true);
+                SimdKernels.Q8PrefillEnabled = false;
+                SimdKernels.MatMulBatched(b, w, x, batchSize, rows, cols, DType.Q4_K, allowQ8: true);
+            }
+        }
+        finally { SimdKernels.Q8PrefillEnabled = saved; }
+
+        double dot = 0, na = 0, nb = 0, maxAbs = 0;
+        for (int i = 0; i < q8.Length; i++)
+        {
+            dot += (double)f32[i] * q8[i]; na += (double)f32[i] * f32[i]; nb += (double)q8[i] * q8[i];
+            maxAbs = Math.Max(maxAbs, Math.Abs(f32[i] - q8[i]));
+        }
+        Console.WriteLine($"PROBE14 {label,-14} cos={dot / (Math.Sqrt(na) * Math.Sqrt(nb)):F6}  max|d|={maxAbs:E3}");
+
+        static void WriteHalf(byte[] buffer, int offset, float value)
+        {
+            ushort bits = BitConverter.HalfToUInt16Bits((Half)value);
+            buffer[offset] = (byte)(bits & 0xFF);
+            buffer[offset + 1] = (byte)(bits >> 8);
+        }
+    }
+
+    /// <summary>Dump per-tensor dtype/shape for the layers around the observed cliff.</summary>
+    [Fact]
+    public void Probe_TensorDtypes()
+    {
+        var path = FindModelPath("SmolLM2-1.7B-Instruct-Q4_K_M.gguf");
+        if (path is null) { Console.WriteLine("PROBE15: absent"); return; }
+
+        using var model = GgufModel.Open(path);
+        foreach (int L in new[] { 0, 1, 21, 22, 23 })
+        {
+            foreach (var suffix in new[] { "attn_q", "attn_k", "attn_v", "attn_output", "ffn_gate", "ffn_up", "ffn_down" })
+            {
+                var t = model.FindTensor($"blk.{L}.{suffix}.weight");
+                if (t is null) { Console.WriteLine($"PROBE15 blk.{L}.{suffix}: MISSING"); continue; }
+                Console.WriteLine($"PROBE15 blk.{L,2}.{suffix,-12} dtype={t.Value.DType,-8} dims=[{string.Join(",", t.Value.Dimensions)}]");
+            }
+        }
+        var emb = model.FindTensor("token_embd.weight");
+        var outw = model.FindTensor("output.weight");
+        Console.WriteLine($"PROBE15 token_embd dtype={emb?.DType.ToString() ?? "-"}  output.weight={(outw is null ? "ABSENT (tied)" : outw.Value.DType.ToString())}");
+    }
+
+    /// <summary>
+    /// Sweep `cols` for the Q4_K int8 prefill path. In SmolLM2 every Q4_K tensor is cols=2048
+    /// except ffn_down at cols=8192, and the per-layer error explodes exactly where ffn_down
+    /// becomes Q4_K — so a cols-dependent defect is the live hypothesis.
+    /// </summary>
+    [Theory]
+    [InlineData(DType.Q4_K, 256)]
+    [InlineData(DType.Q4_K, 512)]
+    [InlineData(DType.Q4_K, 2048)]
+    [InlineData(DType.Q4_K, 4096)]
+    [InlineData(DType.Q4_K, 8192)]
+    [InlineData(DType.Q6_K, 8192)]
+    public unsafe void Probe_Q8Cols(DType dtype, int cols)
+    {
+        const int batchSize = 8, rows = 32;
+        var rng = new Random(5);
+
+        long byteCount = DTypeInfo.ByteSize((long)rows * cols, dtype);
+        var weights = new byte[byteCount];
+        rng.NextBytes(weights);
+        if (dtype == DType.Q4_K)
+            for (int off = 0; off + 144 <= weights.Length; off += 144)
+            { WriteHalf(weights, off, 0.015f); WriteHalf(weights, off + 2, 0.004f); }
+        else
+            for (int off = 0; off + 210 <= weights.Length; off += 210)
+                WriteHalf(weights, off + 208, 0.012f);
+
+        var input = new float[batchSize * cols];
+        for (int i = 0; i < input.Length; i++) input[i] = (float)(rng.NextDouble() * 2 - 1);
+
+        var q8 = new float[batchSize * rows];
+        var f32 = new float[batchSize * rows];
+
+        bool saved = SimdKernels.Q8PrefillEnabled;
+        try
+        {
+            fixed (byte* w = weights)
+            fixed (float* x = input)
+            fixed (float* a = q8)
+            fixed (float* b = f32)
+            {
+                SimdKernels.Q8PrefillEnabled = true;
+                SimdKernels.MatMulBatched(a, w, x, batchSize, rows, cols, dtype, allowQ8: true);
+                SimdKernels.Q8PrefillEnabled = false;
+                SimdKernels.MatMulBatched(b, w, x, batchSize, rows, cols, dtype, allowQ8: true);
+            }
+        }
+        finally { SimdKernels.Q8PrefillEnabled = saved; }
+
+        double dot = 0, na = 0, nb = 0, maxAbs = 0;
+        for (int i = 0; i < q8.Length; i++)
+        {
+            dot += (double)f32[i] * q8[i]; na += (double)f32[i] * f32[i]; nb += (double)q8[i] * q8[i];
+            maxAbs = Math.Max(maxAbs, Math.Abs(f32[i] - q8[i]));
+        }
+        double cos = dot / (Math.Sqrt(na) * Math.Sqrt(nb));
+        Console.WriteLine($"PROBE16 {dtype,-6} cols={cols,5}  cos={cos:F6}  max|d|={maxAbs:E3}  {(cos < 0.999 ? "<<< BROKEN" : "")}");
+
+        static void WriteHalf(byte[] buffer, int offset, float value)
+        {
+            ushort bits = BitConverter.HalfToUInt16Bits((Half)value);
+            buffer[offset] = (byte)(bits & 0xFF);
+            buffer[offset + 1] = (byte)(bits >> 8);
+        }
+    }
+
+    /// <summary>
+    /// Is the Q8-prefill defect prompt-length dependent? The shipped measurement reported
+    /// bit-identical greedy generation on real (long) prompts, while my repro used 2 tokens.
+    /// Compare Prefill(N) against Prefill(1)+Forward×(N-1) on the CPU for a range of N.
+    /// </summary>
+    [Theory]
+    [InlineData("SmolLM2-1.7B-Instruct-Q4_K_M.gguf")]
+    [InlineData("Qwen3-8B-Q4_K_M.gguf")]
+    public void Probe_Q8LengthDependence(string file)
+    {
+        var path = FindModelPath(file);
+        if (path is null) { Console.WriteLine($"PROBE17 {file}: absent"); return; }
+
+        using var model = GgufModel.Open(path);
+        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+
+        var rng = new Random(3);
+        int[] full = new int[64];
+        for (int i = 0; i < full.Length; i++) full[i] = 100 + rng.Next(3000);
+
+        foreach (int n in new[] { 2, 4, 8, 16, 32, 64 })
+        {
+            int[] toks = full[..n];
+
+            float[] Prefill(bool q8)
+            {
+                bool saved = SimdKernels.Q8PrefillEnabled;
+                try
+                {
+                    SimdKernels.Q8PrefillEnabled = q8;
+                    using var cb = new CpuBackend();
+                    using var cf = new OpenTail.Stingray.Engine.ForwardPass(model, cb, hp);
+                    return cf.Prefill(toks).ToArray();
+                }
+                finally { SimdKernels.Q8PrefillEnabled = saved; }
+            }
+
+            // Incremental decode reference — never touches the Q8 path.
+            float[] decode;
+            {
+                using var cb = new CpuBackend();
+                using var cf = new OpenTail.Stingray.Engine.ForwardPass(model, cb, hp);
+                cf.Prefill(toks[..1]);
+                decode = null!;
+                for (int i = 1; i < n; i++) decode = cf.Forward(toks[i], i).ToArray();
+            }
+
+            Console.WriteLine($"PROBE17 {file,-38} n={n,3}  q8On={C(decode, Prefill(true)):F6}  q8Off={C(decode, Prefill(false)):F6}");
+        }
+
+        static double C(float[] a, float[] b)
+        {
+            double dot = 0, na = 0, nb = 0;
+            for (int i = 0; i < a.Length; i++) { dot += (double)a[i] * b[i]; na += (double)a[i] * a[i]; nb += (double)b[i] * b[i]; }
+            return dot / (Math.Sqrt(na) * Math.Sqrt(nb));
+        }
+    }
+
+    /// <summary>
+    /// Gemma 4: both backends are self-consistent yet disagree (cos 0.628), and llama.cpp cannot
+    /// load gemma4 so there is no third-party oracle. Compare CPU and Vulkan hidden state after
+    /// every layer — the first layer that diverges names the stage to read.
+    /// </summary>
+    [Fact]
+    public void Probe_GemmaLayerTaps()
+    {
+        VulkanBackend gpu;
+        try { gpu = new VulkanBackend(); }
+        catch { Console.WriteLine("PROBE18: no Vulkan"); return; }
+
+        using (gpu)
+        {
+            var path = FindModelPath(ModelFile);
+            if (path is null) { Console.WriteLine("PROBE18: absent"); return; }
+
+            using var model = GgufModel.Open(path);
+            var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+            int[] layerIds = Enumerable.Range(0, hp.NumLayers).ToArray();
+            // Single token: position 0, where RoPE is the identity. If layer 0 still diverges,
+            // RoPE (and therefore rope_freqs) is excluded and the cause is upstream — embedding
+            // scale, PLE injection, or the norms.
+            int[] toks = [2];
+            int embDim = hp.EmbeddingDim;
+            int pos = toks.Length - 1;
+
+            using var cb = new CpuBackend();
+            using var cf = new OpenTail.Stingray.Engine.ForwardPass(model, cb, hp);
+            cf.EnableHiddenTaps(layerIds);
+            cf.Prefill(toks);
+
+            using var vf = new GpuForwardPass(model, gpu, hp, maxContextLength: 2048);
+            Console.WriteLine($"PROBE18 vk SupportsHiddenTaps={vf.SupportsHiddenTaps}");
+            vf.EnableHiddenTaps(layerIds);
+            vf.Prefill(toks);
+
+            var cpuRow = cf.HiddenTapsAt(pos);
+            var vkRow = vf.HiddenTapsAt(pos);
+            Console.WriteLine($"PROBE18 rows cpu={cpuRow.Length} vk={vkRow.Length} (tapDim cpu={cf.HiddenTapDim} vk={vf.HiddenTapDim})");
+            if (cpuRow.Length == 0 || vkRow.Length == 0) return;
+
+            for (int L = 0; L < hp.NumLayers; L++)
+            {
+                double dot = 0, na = 0, nb = 0, maxAbs = 0;
+                for (int i = 0; i < embDim; i++)
+                {
+                    float a = cpuRow[L * embDim + i], b = vkRow[L * embDim + i];
+                    dot += (double)a * b; na += (double)a * a; nb += (double)b * b;
+                    maxAbs = Math.Max(maxAbs, Math.Abs(a - b));
+                }
+                double cos = dot / (Math.Sqrt(na) * Math.Sqrt(nb));
+                Console.WriteLine($"PROBE18 layer={L,3}  cos={cos:F6}  max|d|={maxAbs,10:E3}  {(cos < 0.99 ? "<<<" : "")}");
+            }
+        }
+    }
+
     [Fact]
     public void Probe_PrefixLengthSweep()
     {
