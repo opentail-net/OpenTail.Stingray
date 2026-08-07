@@ -258,11 +258,11 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         public string? Numa { get; init; }
 
         [CommandOption("--presence-penalty <P>")]
-        [Description("(llama.cpp compat) Not implemented — the OpenTail sampler has no presence penalty. Use --repeat-penalty.")]
+        [Description("Subtract once from logits of tokens already generated (0 = disabled).")]
         public float? PresencePenalty { get; init; }
 
         [CommandOption("--frequency-penalty <P>")]
-        [Description("(llama.cpp compat) Not implemented — the OpenTail sampler has no frequency penalty. Use --repeat-penalty.")]
+        [Description("Subtract once per prior occurrence from a token's logit (0 = disabled).")]
         public float? FrequencyPenalty { get; init; }
 
         [CommandOption("-b|--batch-size <N>")]
@@ -317,10 +317,6 @@ public sealed class RunCommand : Command<RunCommand.Settings>
                 return "--no-mmap is not implemented in OpenTail.Stingray.";
             if (Numa is not null)
                 return "--numa is not implemented in OpenTail.Stingray.";
-            if (PresencePenalty is not null)
-                return "--presence-penalty is not implemented in the OpenTail sampler. Use --repeat-penalty for repetition control.";
-            if (FrequencyPenalty is not null)
-                return "--frequency-penalty is not implemented in the OpenTail sampler. Use --repeat-penalty for repetition control.";
             if (BatchSize is not null)
                 return "-b/--batch-size is not supported: OpenTail.Stingray does not expose a configurable batch size.";
             if (UBatchSize is not null)
@@ -1572,6 +1568,8 @@ public sealed class RunCommand : Command<RunCommand.Settings>
                 ? [.. BuildStopTokenIds(tokenizer), .. toolBoundaryStops]
                 : [.. BuildStopTokenIds(tokenizer)],
             RepetitionPenalty = settings.RepPenalty,
+            PresencePenalty = settings.PresencePenalty ?? 0f,
+            FrequencyPenalty = settings.FrequencyPenalty ?? 0f,
             LogitBias = logitBiasMap,
             SpecType = ParseSpecType(settings.SpecTypeStr),
             SpecDraftNMax = settings.SpecDraftNMax,
@@ -2448,6 +2446,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         bool eligible = mtpFwd is not null
                         && mtpFwd.HasMtpHead
                         && sp.Temperature <= 0f
+                        && !sp.HasHistoryPenalty
                         && noThinking
                         && !envDisabled;
 
@@ -2665,7 +2664,8 @@ public sealed class RunCommand : Command<RunCommand.Settings>
 
             // `recentTokens` is evicted to historyCap below, so it IS the penalty window — no
             // per-token slicing, and therefore no per-token allocation in the decode loop.
-            var spWithHistory = sp.RepetitionPenalty != 1.0f && repeatLastN != 0 && recentTokens.Count > 0
+            var spWithHistory = (sp.RepetitionPenalty != 1.0f || sp.PresencePenalty != 0f || sp.FrequencyPenalty != 0f)
+                && repeatLastN != 0 && recentTokens.Count > 0
                 ? sp with { PreviousTokens = recentTokens }
                 : sp;
             int next;
@@ -2680,7 +2680,9 @@ public sealed class RunCommand : Command<RunCommand.Settings>
                 // While the grammar is restricting the vocabulary, sample from the masked logits so
                 // only a grammar-legal token can be chosen; otherwise sample exactly as before.
                 var sampleLogits = sp.Constraint is { IsConstraining: true } ctr ? ctr.Filter(logits) : logits;
-                next = sp.Temperature <= 0 ? Sampler.Greedy(sampleLogits) : Sampler.Sample(sampleLogits, spWithHistory, rng);
+                next = sp.Temperature <= 0 && !spWithHistory.HasHistoryPenalty
+                    ? Sampler.Greedy(sampleLogits)
+                    : Sampler.Sample(sampleLogits, spWithHistory, rng);
             }
             if (verbosePromptLogging)
             {

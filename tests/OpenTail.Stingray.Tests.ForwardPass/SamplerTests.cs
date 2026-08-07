@@ -294,6 +294,37 @@ public sealed class SamplerTests
     }
 
     [Fact]
+    public void Sample_PresenceAndFrequencyPenalties_ApplyInLogitSpace()
+    {
+        float[] logits = [10f, 9.8f, 0f];
+        var presence = new SamplingParams
+        {
+            Temperature = 1f, TopK = 1, PresencePenalty = 1f,
+            PreviousTokens = [0],
+        };
+        var frequency = new SamplingParams
+        {
+            Temperature = 1f, TopK = 1, FrequencyPenalty = 0.6f,
+            PreviousTokens = [0, 0],
+        };
+
+        // Both penalties demote token 0 below token 1: presence once, frequency per occurrence.
+        Assert.Equal(1, Sampler.Sample(logits, presence, new Random(1)));
+        Assert.Equal(1, Sampler.Sample(logits, frequency, new Random(1)));
+    }
+
+    [Fact]
+    public void Sample_GreedyHonoursPresencePenalty()
+    {
+        float[] logits = [10f, 9.8f];
+        var p = new SamplingParams
+        {
+            Temperature = 0f, PresencePenalty = 1f, PreviousTokens = [0],
+        };
+        Assert.Equal(1, Sampler.Sample(logits, p));
+    }
+
+    [Fact]
     public void SampleTopK_NegInfLogits_NeverReturnsInvalidToken()
     {
         // Masked tokens (-inf) must never be selected, and the sentinel index must never

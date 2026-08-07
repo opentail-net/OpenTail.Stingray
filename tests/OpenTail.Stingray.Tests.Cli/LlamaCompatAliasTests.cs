@@ -329,19 +329,17 @@ public sealed class LlamaCompatAliasTests
     }
 
     [Fact]
-    public void PresencePenalty_Refused()
+    public void PresencePenalty_Accepted()
     {
         string? err = BindAndValidate("--presence-penalty", "0.5");
-        Assert.NotNull(err);
-        Assert.Contains("--repeat-penalty", err, StringComparison.Ordinal);
+        Assert.Null(err);
     }
 
     [Fact]
-    public void FrequencyPenalty_Refused()
+    public void FrequencyPenalty_Accepted()
     {
         string? err = BindAndValidate("--frequency-penalty", "0.5");
-        Assert.NotNull(err);
-        Assert.Contains("--repeat-penalty", err, StringComparison.Ordinal);
+        Assert.Null(err);
     }
 
     [Theory]
@@ -374,8 +372,6 @@ public sealed class LlamaCompatAliasTests
     [InlineData("-mg",             "0")]
     [InlineData("--main-gpu",      "1")]
     [InlineData("--numa",          "distribute")]
-    [InlineData("--presence-penalty",  "0.5")]
-    [InlineData("--frequency-penalty", "0.5")]
     [InlineData("-b",              "512")]
     [InlineData("--batch-size",    "512")]
     [InlineData("-ub",             "128")]

@@ -16,13 +16,16 @@ public static class Sampler
     public static int Sample(ReadOnlySpan<float> logits, SamplingParams p, Random? rng = null)
     {
         if (p.Temperature <= 0f)
-            return Greedy(logits);
+            return p.HasHistoryPenalty && p.PreviousTokens is { Count: > 0 }
+                ? GreedyWithHistoryPenalties(logits, p)
+                : Greedy(logits);
 
         rng ??= Random.Shared;
         int vocabSize = logits.Length;
 
         bool hasBias = p.LogitBias is { Count: > 0 };
-        bool hasPenalty = p.RepetitionPenalty != 1.0f && p.PreviousTokens is { Count: > 0 };
+        bool hasPenalty = p.PreviousTokens is { Count: > 0 }
+            && (p.RepetitionPenalty != 1.0f || p.PresencePenalty != 0f || p.FrequencyPenalty != 0f);
 
         // Fast path: top-k bounds the candidate set to a handful of tokens, so there is
         // no need to softmax/normalize/sort the whole vocabulary (262144 for Gemma 4) —
@@ -51,21 +54,7 @@ public static class Sampler
                         probs[id] += bias;
             }
 
-            // Repetition penalty (applied in logit space before temperature)
-            if (p.RepetitionPenalty != 1.0f && p.PreviousTokens is { Count: > 0 })
-            {
-                foreach (int id in p.PreviousTokens)
-                {
-                    if ((uint)id < (uint)vocabSize)
-                    {
-                        // Positive logits are divided; negative logits are multiplied
-                        if (probs[id] > 0f)
-                            probs[id] /= p.RepetitionPenalty;
-                        else
-                            probs[id] *= p.RepetitionPenalty;
-                    }
-                }
-            }
+            ApplyHistoryPenalties(probs, p);
 
             // Temperature scaling
             if (p.Temperature != 1.0f)
@@ -136,7 +125,9 @@ public static class Sampler
         if (p.Temperature <= 0f)
         {
             probs.Clear();
-            probs[Greedy(logits)] = 1f;
+            probs[p.HasHistoryPenalty && p.PreviousTokens is { Count: > 0 }
+                ? GreedyWithHistoryPenalties(logits, p)
+                : Greedy(logits)] = 1f;
             return;
         }
 
@@ -148,11 +139,7 @@ public static class Sampler
                 if ((uint)id < (uint)vocabSize)
                     probs[id] += bias;
 
-        // Repetition penalty (in logit space, before temperature).
-        if (p.RepetitionPenalty != 1.0f && p.PreviousTokens is { Count: > 0 })
-            foreach (int id in p.PreviousTokens)
-                if ((uint)id < (uint)vocabSize)
-                    probs[id] = probs[id] > 0f ? probs[id] / p.RepetitionPenalty : probs[id] * p.RepetitionPenalty;
+        ApplyHistoryPenalties(probs, p);
 
         if (p.Temperature != 1.0f)
         {
@@ -187,7 +174,9 @@ public static class Sampler
         if (p.Temperature <= 0f)
         {
             // One-hot at the greedy argmax — no filter pipeline, no RNG draw.
-            int argmax = Greedy(logits);
+            int argmax = p.HasHistoryPenalty && p.PreviousTokens is { Count: > 0 }
+                ? GreedyWithHistoryPenalties(logits, p)
+                : Greedy(logits);
             probs.Clear();
             probs[argmax] = 1f;
             return argmax;
@@ -278,8 +267,12 @@ public static class Sampler
                     foreach (int id in p.PreviousTokens!)
                         if (id == idx[t]) occ++;
                     if (occ == 0) continue;
-                    float pen = MathF.Pow(p.RepetitionPenalty, occ);
-                    vals[t] = vals[t] > 0f ? vals[t] / pen : vals[t] * pen;
+                    if (p.RepetitionPenalty != 1.0f)
+                    {
+                        float pen = MathF.Pow(p.RepetitionPenalty, occ);
+                        vals[t] = vals[t] > 0f ? vals[t] / pen : vals[t] * pen;
+                    }
+                    vals[t] -= p.PresencePenalty + p.FrequencyPenalty * occ;
                 }
                 // Insertion re-sort (sel is tiny: k + PreviousTokens.Count).
                 for (int a = 1; a < sel; a++)
@@ -349,6 +342,71 @@ public static class Sampler
             if (rentedIdx is not null) ArrayPool<int>.Shared.Return(rentedIdx);
             if (rentedVals is not null) ArrayPool<float>.Shared.Return(rentedVals);
             if (rentedProbs is not null) ArrayPool<float>.Shared.Return(rentedProbs);
+        }
+    }
+
+    /// <summary>Applies repeat, presence, and frequency penalties in logit space.</summary>
+    private static void ApplyHistoryPenalties(Span<float> logits, SamplingParams p)
+    {
+        if (p.PreviousTokens is not { Count: > 0 } previous) return;
+
+        if (p.RepetitionPenalty != 1.0f)
+            foreach (int id in previous)
+                if ((uint)id < (uint)logits.Length)
+                    logits[id] = logits[id] > 0f ? logits[id] / p.RepetitionPenalty : logits[id] * p.RepetitionPenalty;
+
+        if (p.PresencePenalty == 0f && p.FrequencyPenalty == 0f) return;
+
+        // Count occurrences by sorting a copy of the history rather than the obvious pairwise
+        // "is this the first occurrence, and how many follow" scan. That scan is O(n^2) in history
+        // length, and this method runs once per SAMPLED TOKEN — so it is cubic across a request,
+        // and the server engines keep an unbounded history (the CLI bounds it to --repeat-last-n).
+        // At a 4096-token budget the naive form dominates decode entirely. Sorting is O(n log n)
+        // and rents its scratch, so the default path (both penalties zero) still allocates nothing.
+        int count = previous.Count;
+        int[] rented = ArrayPool<int>.Shared.Rent(count);
+        try
+        {
+            int kept = 0;
+            for (int i = 0; i < count; i++)
+            {
+                int id = previous[i];
+                if ((uint)id < (uint)logits.Length) rented[kept++] = id;
+            }
+
+            Span<int> ids = rented.AsSpan(0, kept);
+            ids.Sort();
+
+            for (int i = 0; i < kept;)
+            {
+                int id = ids[i];
+                int end = i + 1;
+                while (end < kept && ids[end] == id) end++;
+                logits[id] -= p.PresencePenalty + p.FrequencyPenalty * (end - i);
+                i = end;
+            }
+        }
+        finally
+        {
+            ArrayPool<int>.Shared.Return(rented);
+        }
+    }
+
+    private static int GreedyWithHistoryPenalties(ReadOnlySpan<float> logits, SamplingParams p)
+    {
+        float[]? rented = null;
+        Span<float> adjusted = logits.Length <= 256
+            ? stackalloc float[logits.Length]
+            : (rented = ArrayPool<float>.Shared.Rent(logits.Length)).AsSpan(0, logits.Length);
+        try
+        {
+            logits.CopyTo(adjusted);
+            ApplyHistoryPenalties(adjusted, p);
+            return Greedy(adjusted);
+        }
+        finally
+        {
+            if (rented is not null) ArrayPool<float>.Shared.Return(rented);
         }
     }
 
@@ -582,6 +640,12 @@ public sealed record SamplingParams
     public float TopP { get; init; } = 1.0f;
     public float MinP { get; init; } = 0.0f;
     public float RepetitionPenalty { get; init; } = 1.0f;
+    /// <summary>Subtract once from each token that occurs in <see cref="PreviousTokens"/>.</summary>
+    public float PresencePenalty { get; init; }
+    /// <summary>Subtract once per occurrence from each token in <see cref="PreviousTokens"/>.</summary>
+    public float FrequencyPenalty { get; init; }
+    /// <summary>True when sampling needs a generated-token history.</summary>
+    public bool HasHistoryPenalty => RepetitionPenalty != 1.0f || PresencePenalty != 0f || FrequencyPenalty != 0f;
     public int MaxNewTokens { get; init; } = 512;
 
     /// <summary>

@@ -157,6 +157,7 @@ public sealed class ContinuousBatchingEngine : IInferenceEngine, IContinuousBatc
         public Utf8StreamDecoder ThinkDec = new();
         public bool InThinking;
         public int ThinkingCount;  // tokens accumulated in the current <think> block (resets on each <think> open)
+        public List<int>? RecentTokens;
     }
 
     /// <param name="fwd">Forward pass implementation. Owned externally — caller disposes.</param>
@@ -570,15 +571,19 @@ public sealed class ContinuousBatchingEngine : IInferenceEngine, IContinuousBatc
                     var rowLogits = seq.Constraint is { IsConstraining: true } ctr
                         ? ctr.Filter(logitsBatch![i])
                         : (ReadOnlySpan<float>)logitsBatch![i];
-                    next = seq.Sp.Temperature <= 0f
+                    var spWithHistory = seq.RecentTokens is { Count: > 0 }
+                        ? seq.Sp with { PreviousTokens = seq.RecentTokens }
+                        : seq.Sp;
+                    next = seq.Sp.Temperature <= 0f && !spWithHistory.HasHistoryPenalty
                         ? Sampler.Greedy(rowLogits)
-                        : Sampler.Sample(rowLogits, seq.Sp, seq.Rng);
+                        : Sampler.Sample(rowLogits, spWithHistory, seq.Rng);
                 }
 
                 // Advance the grammar constraint with the just-chosen token (every token, including the
                 // argmax-tail and force-close paths, so it can detect a tool-call boundary and
                 // begin/end constraining). No-op when this sequence has no constraint.
                 seq.Constraint?.Accept(next);
+                seq.RecentTokens?.Add(next);
 
                 bool stoppedByStopToken = seq.StopIds.Contains(next);
                 bool cancelled = seq.Ct.IsCancellationRequested;
@@ -1130,7 +1135,11 @@ public sealed class ContinuousBatchingEngine : IInferenceEngine, IContinuousBatc
         var firstLogits = constraint is { IsConstraining: true } ctr
             ? ctr.Filter(logits)
             : (ReadOnlySpan<float>)logits;
-        int firstToken = req.Sp.Temperature <= 0f
+        // Mirror the decode loop's guard. RecentTokens is seeded from this token, so the history is
+        // normally empty here and Greedy is what Sample would do anyway — but a caller that supplied
+        // PreviousTokens itself must not have those penalties honoured at temperature > 0 and
+        // silently dropped at 0.
+        int firstToken = req.Sp.Temperature <= 0f && !req.Sp.HasHistoryPenalty
             ? Sampler.Greedy(firstLogits)
             : Sampler.Sample(firstLogits, req.Sp, rng);
         constraint?.Accept(firstToken);
@@ -1190,6 +1199,7 @@ public sealed class ContinuousBatchingEngine : IInferenceEngine, IContinuousBatc
             TokenCount = 1,
             InThinking = promptInThinking,
             ReservationRenewer = p.ReservationRenewer,
+            RecentTokens = req.Sp.HasHistoryPenalty ? [firstToken] : null,
         };
 
         // Route the first sampled token through the same always-consume state machine as the

@@ -159,6 +159,8 @@ public static class OpenAiEndpoints
             topP:        req.TopP,
             maxTokens:   req.MaxTokens,
             maxThinking: req.MaxThinkingTokens,
+            presencePenalty: req.PresencePenalty,
+            frequencyPenalty: req.FrequencyPenalty,
             logitBias:   logitBias,
             thinkingDisabled: !enableThinking);
 
@@ -781,7 +783,9 @@ public sealed record ChatCompletionRequest(
     // Opt-in per-response timing detail (§8 Phase 2 item 3 of the QoL plan). See
     // ResponseTimingExtension.cs for why this is opt-in rather than always-on. Non-streaming only
     // for now; a streaming request setting this flag gets no extension chunk.
-    [property: JsonPropertyName("opentail_timing")] bool? OpentailTiming = null);
+    [property: JsonPropertyName("opentail_timing")] bool? OpentailTiming = null,
+    [property: JsonPropertyName("presence_penalty")] float? PresencePenalty = null,
+    [property: JsonPropertyName("frequency_penalty")] float? FrequencyPenalty = null);
 
 /// <summary>
 /// Message in an OpenAI <c>/v1/chat/completions</c> request. Both single-string

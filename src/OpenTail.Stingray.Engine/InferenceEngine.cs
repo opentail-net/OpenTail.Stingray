@@ -767,9 +767,9 @@ public sealed class InferenceEngine : IInferenceEngine, IDisposable, IAsyncDispo
                                 throw new InvalidOperationException(
                                     "SamplingParams.SpecType=Mtp requires a model with an MTP head. " +
                                     $"{_fwd.GetType().Name} reports HasMtpHead=false (no nextn tensors in the GGUF).");
-                            if (sp.Temperature > 0f)
+                            if (sp.Temperature > 0f || sp.HasHistoryPenalty)
                                 throw new InvalidOperationException(
-                                    "SamplingParams.SpecType=Mtp requires greedy sampling (Temperature=0). " +
+                                    "SamplingParams.SpecType=Mtp requires unpenalized greedy sampling (Temperature=0). " +
                                     "MTP verification is greedy (argmax match); sampling support is not yet implemented.");
                             if (!requestReasoningOff)
                                 throw new InvalidOperationException(
@@ -782,11 +782,13 @@ public sealed class InferenceEngine : IInferenceEngine, IDisposable, IAsyncDispo
                             // outranks the model's innate MTP head when both are eligible.
                             useDSpark = _dspark is not null
                                 && sp.Temperature <= 0f
+                                && !sp.HasHistoryPenalty
                                 && requestReasoningOff;
                             useMtp = !useDSpark
                                 && _fwd.HasMtpHead
                                 && !mtpEnvDisabled
                                 && sp.Temperature <= 0f
+                                && !sp.HasHistoryPenalty
                                 && requestReasoningOff;
                             break;
                     }
@@ -1126,6 +1128,7 @@ public sealed class InferenceEngine : IInferenceEngine, IDisposable, IAsyncDispo
                         }
                     }
                     int thinkingCount = 0;
+                    var recentTokens = sp.HasHistoryPenalty ? new List<int>(Math.Min(sp.MaxNewTokens, 64)) : null;
 
                     // #219: on the pure-greedy path (temp 0, no logit bias) with a pass that can
                     // argmax on-device, carry just the next token id instead of downloading the full
@@ -1136,6 +1139,7 @@ public sealed class InferenceEngine : IInferenceEngine, IDisposable, IAsyncDispo
                     bool useGpuArgmax = sp.Temperature <= 0f
                         && _fwd.SupportsGpuArgmax
                         && sp.LogitBias is not { Count: > 0 }
+                        && !sp.HasHistoryPenalty
                         && constraint is null;
                     int gpuNext = useGpuArgmax ? Sampler.Greedy(logits) : 0;
 
@@ -1170,9 +1174,12 @@ public sealed class InferenceEngine : IInferenceEngine, IDisposable, IAsyncDispo
                             var sampleLogits = constraint is { IsConstraining: true }
                                 ? constraint.Filter(logits)
                                 : logits;
-                            next = sp.Temperature <= 0f
+                            var spWithHistory = recentTokens is { Count: > 0 }
+                                ? sp with { PreviousTokens = recentTokens }
+                                : sp;
+                            next = sp.Temperature <= 0f && !spWithHistory.HasHistoryPenalty
                                 ? Sampler.Greedy(sampleLogits)
-                                : Sampler.Sample(sampleLogits, sp, rng);
+                                : Sampler.Sample(sampleLogits, spWithHistory, rng);
                         }
 
                         // Advance the grammar constraint with the just-chosen token (every token,
@@ -1184,6 +1191,7 @@ public sealed class InferenceEngine : IInferenceEngine, IDisposable, IAsyncDispo
                         // Issue #21: chat-continuation prompts for turn N+1 typically extend
                         // turn N's full transcript, not just turn N's prompt.
                         fullSeq.Add(next);
+                        recentTokens?.Add(next);
                         if (ttftMs < 0) ttftMs = swReq.ElapsedMilliseconds;
                         decodeTokens++;
 
