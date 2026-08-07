@@ -2622,7 +2622,38 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
         //   * The BF16 KV branch. Both BF16 store flags are env-driven, not size-driven, so neither
         //     model above took it.
         //
-        // The unresolved question, and the next step to return this to active use: decide whether
+        // MEASURED 2026-08-07 — parity question RESOLVED; a perplexity gate is what remains.
+        // On realistic prose (320 tokens, Qwen3-8B), flash-vs-materialised and the ACCEPTED
+        // int8-activation-prefill baseline, captured in one process:
+        //     flash-vs-materialised : cos 0.999345, maxAbs 0.762, greedy 63762
+        //     q8-vs-f32 (ships ON)  : cos 0.999504, maxAbs 0.807, greedy 63762
+        // Flash-128's divergence is the same order as an approximation this project already ships
+        // enabled by default, and its maxAbs is SMALLER. Greedy token identical. The original 0.01
+        // maxAbs bound was the wrong instrument, as suspected below. Note the OOD token sequence in
+        // the old test read 0.310 while realistic prose reads 0.762 — a reminder that absolute
+        // logit deltas are input-dependent and only meaningful against a calibrated baseline.
+        //
+        // PERPLEXITY GATE RUN 2026-08-07 — DECISION: keep off by default, ship as an opt-in trade.
+        // wikitext-2 subset (120 KB), Qwen3-8B Q4_K_M, `perplexity --batched --batch-chunk-size 512`:
+        //     flash-128 OFF : ppl 6.0579 [256,1024)   7.5318 [1024,+)   22.35 tok/s
+        //     flash-128 ON  : ppl 6.0896 (+0.52%)     7.5672 (+0.47%)   25.52 tok/s (+14%)
+        // Perplexity is deterministic for a fixed path, so +0.5% is reproducible, not noise. It also
+        // lands WORSE than the exact sequential path (6.0789), not merely worse than the batched one,
+        // so it is not inside the envelope of the approximations already shipped. This project's
+        // precedent for a default-on numerics change is the Q4Kx8 repack at 16.0488 -> 16.0484,
+        // i.e. ~0%; half a percent is two orders of magnitude larger. The +14% prefill is real but
+        // does not buy that quality on someone's behalf — it is the model owner's call, so the
+        // widths stay behind STINGRAY_PREFILL_ATTN_WIDE_HEADS=1.
+        //
+        // Note the earlier cosine/greedy check (cos 0.999345 vs the Q8 baseline's 0.999504, identical
+        // greedy token) said "same envelope" and was NOT sufficient: a per-prompt cosine on final
+        // logits missed a 0.5% corpus perplexity shift. Corpus gates outrank single-prompt similarity.
+        //
+        // Timing caveat: one sample per arm on a contended machine, so +14% is soft; the perplexity
+        // figures are exact. Full wikitext-2 test split has not been run, only a 120 KB subset.
+        // The superseded reasoning is kept below for context.
+        //
+        // SUPERSEDED: the unresolved question, and the next step to return this to active use: decide whether
         // 0.310 is a defect or an unrealistic tolerance. On the SAME model and input, toggling int8
         // activation prefill — which ships ENABLED BY DEFAULT — moves the same logits by 0.352,
         // i.e. more than the delta this test rejects. So measure the right quantity: cosine
@@ -2634,7 +2665,8 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
         // specific to the 32-head / headsPerKv=4 geometry, since 16/8 at the same width is clean —
         // bisect by feeding realistic tokens instead of BuildTokens' out-of-distribution
         // `1 + i*17 % 997` sequence, which can make attention near-degenerate and amplify.
-        if (enableFlash64 && startPos + N >= 256 && _layerHeadDim is null && headDim == 64 &&
+        if (enableFlash64 && startPos + N >= 256 && _layerHeadDim is null
+            && (headDim == 64 || (Flash64WideHeadDimsEnabled && headDim is 128 or 256)) &&
             Avx2.IsSupported && Fma.IsSupported)
         {
             PrefillFlashAttention64(batchQ, cache, layer, N, startPos, batchAttnOut,
@@ -3475,13 +3507,6 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
     private void Attention(PagedKvCache cache, int layer, int position)
         => Attention(cache, layer, layer, position, _headDim, windowSize: -1, _numKvHeads);
 
-    // DIAGNOSTIC ONLY — perf loop iteration 49. Both non-zero modes produce WRONG output; they
-    // exist purely to time the weighted-V read. Revert before shipping.
-    //   1 = iteration 46's original ablation (fixed row -> vVec is loop-invariant in i)
-    //   2 = L1-resident but address varies with i, so the loads cannot be hoisted
-    private static readonly int VAblMode =
-        int.TryParse(Environment.GetEnvironmentVariable("STINGRAY_VABL"), out int m) ? m : 0;
-
     /// <summary>
     /// Multi-head attention with optional per-layer head dim, KV-source aliasing, and
     /// sliding-window bound. <paramref name="readLayer"/> is the layer whose K/V pages
@@ -3860,6 +3885,16 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
     /// so an env-configured run of the existing schedule-comparison test would put BOTH arms on
     /// this path and compare it with itself — a confident pass proving nothing.</para>
     /// </summary>
+    /// <summary>
+    /// Admits head dimensions 128/256 to the Flash-64 prefill path. <b>Off by default</b> — the
+    /// widths are implemented but held back pending the parity decision documented at the gate.
+    /// Settable rather than env-only so the decision can be measured at all: the comparison needs
+    /// flash-on and flash-off logits from within one process, which an env snapshot read once at
+    /// type-init cannot provide.
+    /// </summary>
+    internal static bool Flash64WideHeadDimsEnabled { get; set; } =
+        Environment.GetEnvironmentVariable("STINGRAY_PREFILL_ATTN_WIDE_HEADS") == "1";
+
     internal static bool Flash64KvOuterEnabled { get; set; } =
         Environment.GetEnvironmentVariable("STINGRAY_PREFILL_ATTN_KV_OUTER") != "0";
 

@@ -59,6 +59,16 @@ human-facing map that a raw commit graph cannot.
   long-lived server pays it once rather than per request. The note records the methodology
   asymmetry (warmed in-process AOT vs a fresh JIT-ing process per sample) because it favours
   llama.cpp at short prompts.
+- Flash-64 prefill attention gains an opt-in `STINGRAY_PREFILL_ATTN_WIDE_HEADS=1` for head
+  dimensions 128/256 (Llama/Qwen-class models). **Off by default, deliberately.** The
+  wikitext-2 gate measures +0.52% perplexity for +14% prefill throughput on Qwen3-8B Q4_K_M —
+  a real trade rather than a free win, and worse than the exact sequential path, so it is the
+  model owner's call rather than a silent default. A per-prompt cosine check had suggested the
+  divergence sat inside the envelope of approximations already shipped; the corpus gate showed
+  it does not, which is why the corpus gate is the one that decides.
+- Removed `STINGRAY_VABL`, a diagnostic ablation switch whose own comment read "Both non-zero
+  modes produce WRONG output ... Revert before shipping". Its field was declared but referenced
+  nowhere, and being registered meant `doctor` reported it to operators as a valid setting.
 - CPU prefill attention is faster on the Flash-64 path: **+4.0%** end-to-end prefill throughput
   (SmolLM2-1.7B Q4_K_M, 1550 tokens, headDim 64, 12 logical CPUs, 6 interleaved rounds per cell,
   best-of-6; +4.3% on medians). Two changes, measured as a 2×2 because they overlap:
@@ -79,12 +89,6 @@ human-facing map that a raw commit graph cannot.
   and `STINGRAY_CPU_VNNI=0` forces the fallback so a VNNI-capable host can verify that. The
   throughput benefit is predicted from the instruction tables, **not measured**: the development
   machine is AVX2-only and cannot execute the new branch.
-- The Flash-64 prefill attention path now accepts head dimension 64 only. The 128/256 widths are
-  implemented but held back at the activation gate: their end-to-end parity check reports a
-  final-logit maxAbs of 0.310 against a 0.01 tolerance on Qwen3-8B, and Flash-64 is on by default,
-  so enabling them would change prefill numerics for the most common head dim on unresolved
-  evidence. No user-visible behaviour changes versus 1.0.2, which never took that path. See the
-  comment at the gate in `ForwardPass` for the investigation and the route back.
 
 ### Fixed
 

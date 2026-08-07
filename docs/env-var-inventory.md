@@ -9,8 +9,11 @@ now contains **159** names. The row set is therefore no longer a historical subs
 name-complete as of this date. What remains outstanding is the **Class/Notes** classification
 (see below), not the enumeration.
 
-Two names appear in the prose here but deliberately **not** in the table, because they are no
-longer read by anything: `STINGRAY_Q4K_ABL` and `STINGRAY_WABL`, both removed ablation switches.
+Three names appear in the prose here but deliberately **not** in the table, because they are no
+longer read by anything: `STINGRAY_Q4K_ABL`, `STINGRAY_WABL` and `STINGRAY_VABL`, all removed
+ablation switches. `STINGRAY_VABL` was retired on 2026-08-07: its field was still declared but
+referenced nowhere, and its own comment read "Both non-zero modes produce WRONG output ...
+Revert before shipping." Registering it meant `doctor` reported it as a valid setting.
 
 The reconciliation also found a live defect rather than mere drift. `STINGRAY_MAX_QUEUED_REQUESTS`
 was registered and named in the server's queue-overload warning, but **nothing ever read it** — it
@@ -115,6 +118,7 @@ historical rows only until the full generated refresh replaces this snapshot.
 | Variable | Class | Notes |
 |---|---|---|
 | `STINGRAY_CPU_PREFILL_Q8` | | |
+| `STINGRAY_PREFILL_ATTN_WIDE_HEADS` | experimental | `1` admits head dims 128/256 to the Flash-64 prefill path. **Off by default by decision, not by omission**: the wikitext-2 gate measured +0.52% perplexity for +14% prefill throughput (6.0579 -> 6.0896), which is worse than the exact sequential path and two orders of magnitude above the ~0% precedent set by the Q4Kx8 repack. A real speed/quality trade for the model owner to opt into, not a default. |
 | `STINGRAY_PREFILL_ATTN_KV_OUTER` | expert | `0` restores the per-query-tile prefill-attention schedule. The KV-outer reorder packs each KV tile once per group of query tiles and is ON by default: measured +1.6% alone and +4.0% with `STINGRAY_CPU_KPACK_SIMD`, bit-exactness pinned by `Flash64KvOuterTests`. |
 | `STINGRAY_PREFILL_ATTN_KV_OUTER_TILES` | experimental | Query tiles held live per KV pack in the reorder above (default 8 = 512 queries, ~256 KB scratch at headDim 64). Trades footprint for K-pack reuse; proven not to change results. |
 | `STINGRAY_CPU_KPACK_SIMD` | test seam | `0` restores the scalar K-pack transpose in Flash-64 prefill. Both forms emit identical bytes (a transpose only moves floats), so this is a bisect seam and an A/B measurement handle, not a tuning knob. |
@@ -288,7 +292,6 @@ historical rows only until the full generated refresh replaces this snapshot.
 | `STINGRAY_TRACE_ROUTERS` | | |
 | `STINGRAY_TRACE_SNAPSHOT` | | |
 | `STINGRAY_TRACE_VRAM` | | |
-| `STINGRAY_VABL` | | |
 | `STINGRAY_VULKAN_BATCHED_PREFILL` | | |
 | `STINGRAY_VULKAN_GDN_CHUNKED_PREFILL` | | |
 | `STINGRAY_VULKAN_NO_BATCHED_PREFILL` | | |
