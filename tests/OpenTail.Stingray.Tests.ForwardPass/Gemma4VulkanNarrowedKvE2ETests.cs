@@ -123,8 +123,9 @@ public sealed class Gemma4VulkanNarrowedKvE2ETests
         Assert.True(hp.HasPerLayerTokenEmbd);
         Assert.NotNull(hp.KvSourceLayer);
 
-        int bosId = ReadIntMetadata(model, "tokenizer.ggml.bos_token_id", fallback: 2);
-        var tokens = new int[] { bosId, 818, 5279, 529, 7001, 563 }; // "The capital of France is"
+        // Keep the KV-dtype comparison on an in-distribution E4B-it prompt. A raw continuation
+        // can legitimately terminate immediately and is not a coherence signal for this checkpoint.
+        var tokens = Gemma4TestPrompt.RenderInstruction(model, "What is the capital of France?");
         const int NSteps = 14;
 
         // fp32 Vulkan reference (the only variable across the three runs is the KV store dtype).

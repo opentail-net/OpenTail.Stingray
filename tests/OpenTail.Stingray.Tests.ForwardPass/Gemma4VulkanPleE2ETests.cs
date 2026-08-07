@@ -180,8 +180,9 @@ public sealed class Gemma4VulkanPleE2ETests
         Assert.NotNull(hp.LayerHeadDim);
         Assert.True(hp.HasPerLayerTokenEmbd);
 
-        int bosId = ReadIntMetadata(model, "tokenizer.ggml.bos_token_id", fallback: 2);
-        var tokens = new int[] { bosId, 818, 5279, 529, 7001, 563 }; // "The capital of France is"
+        // E4B-it is instruction-tuned. Use its own GGUF chat template, exactly as RunCommand does;
+        // a bare continuation prompt can legitimately produce an end-of-turn token immediately.
+        var tokens = Gemma4TestPrompt.RenderInstruction(model, "What is the capital of France?");
 
         // CPU reference for the first 4 decode tokens — pre-drift the argmax should match.
         var cpuFirst4 = new int[4];

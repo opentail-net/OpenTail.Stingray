@@ -1,7 +1,13 @@
-# Handoff: Gemma 4 degenerate decode (both backends agree, output is still wrong)
+# Resolved: Gemma 4 E4B-it raw-prompt decode was an invalid coherence test
 
-Investigation brief for whoever picks this up next. Everything in **Established** was measured,
-not inferred — please don't re-derive it. Everything in **Open** is genuinely unknown.
+Resolved 2026-08-07. The KV-stride fix remains valid, but the remaining apparent degeneration was
+not an inference defect: both tests supplied a bare continuation to an instruction-tuned checkpoint,
+bypassing its own GGUF chat template. The production CLI renders the template and produces the
+coherent answer: **“The capital of France is Paris.”**
+
+The two Vulkan regressions now render the model's Jinja template through `Gemma4TestPrompt`, with
+`enable_thinking=false` exactly as `RunCommand` does for stock Gemma 4 instruction checkpoints.
+They retain the strict parity and coherence assertions, but on an in-distribution prompt.
 
 ---
 
@@ -16,8 +22,8 @@ Vulkan backends now agree with each other to cosine **0.999987**, and both produ
 
 Token 106 is `<end_of_turn>`, token 1 is `<eos>`. The decode collapses to 4 distinct tokens.
 
-**Is this correct behaviour for this model on this prompt, or is there a defect shared by both
-backends?**
+**Answer:** it is expected behaviour for that unsupported raw-completion prompt; it is not evidence
+of a shared CPU/Vulkan defect.
 
 Two tests currently fail on exactly this, both on their *coherence* assertion (not their
 parity assertion, which now passes):
@@ -76,7 +82,7 @@ embedding lookup (bit-identical), the V projection, the Gemma V-norm, and `k_eq_
 
 ## 3. Open — the actual investigation
 
-### 3.1 Leading hypothesis: prompt is out of distribution
+### 3.1 Leading hypothesis: prompt is out of distribution — CONFIRMED
 
 This is the **instruction-tuned** (`-it`) checkpoint. The tests feed a bare prompt with only BOS
 and **no chat template** — no `<start_of_turn>user … <end_of_turn><start_of_turn>model`. An IT
@@ -84,14 +90,24 @@ model given a raw continuation prompt may legitimately emit `<end_of_turn>` imme
 
 If true, the model is fine and the ≥8-distinct-tokens assertion is unreasonable as written.
 
-**First experiment.** Render the model's own chat template (`JinjaChatTemplate` from the GGUF
-metadata) around "What is the capital of France?", tokenize that, and decode greedily. If the
-output becomes coherent, the hypothesis holds and the fix is to the tests, not the engine.
-Do this before anything else — it is cheap and decisive either way.
+Rendered production prompt:
 
-### 3.2 If the template does not fix it
+```text
+<bos><|turn>system
+<|think|>
+<turn|>
+<|turn>user
+What is the capital of France?<turn|>
+<|turn>model
+```
 
-Then something upstream of both backends is wrong. Shared surface, in rough priority order:
+The CPU CLI decoded: `The capital of France is **Paris**.` The fix is therefore to test the
+production prompt contract, not to change Gemma math or weaken the coherence assertions.
+
+### 3.2 If the template does not fix it — retired
+
+The template did fix it, so this escalation path is retained only as historical diagnostic context.
+If a future production-template regression occurs, investigate the shared surface in this order:
 
 1. **Hyperparameter parsing** — `ModelHyperparams.FromGgufMetadata` for `gemma4`. Both backends
    consume the same `hp`, so a wrong `full_attention_interval`, SWA window, `layerHeadDim`
@@ -152,8 +168,7 @@ from "pointing elsewhere", which is why StageCapture exists.
 
 ## 5. Traps that cost real time here
 
-- **The xunit runner takes `-class` / `-method` with a SINGLE dash**, plus `-class-` / `-method-`
-  to exclude. `--filter-class` is rejected. (CLAUDE.md documents the wrong form.)
+- The xunit runner takes `--filter-class` / `--filter-method`; the single-dash spelling is rejected.
 - **Never pass `--nologo`** to `dotnet test` — MTP rejects it and reports "Zero tests ran", which
   reads exactly like a discovery failure.
 - **`models/` is populated (17 GB), so `Tests.ForwardPass` takes ~10 minutes**, not 35 seconds.
@@ -190,11 +205,11 @@ Gemma paths, so run the full suite (~10 min with `models/` populated) before tru
 Pay particular attention to SnapKV tests: eviction/compaction calls `GatherValue`/`ScatterValue`,
 which this change also touched.
 
-## 7. Definition of done
+## 7. Resolution evidence
 
-Either:
-- **(a)** the chat template explains it — then fix the tests to use the template, and say so
-  explicitly in the test comment so the next person doesn't re-litigate it; or
-- **(b)** a genuine defect is found — then the fix must keep Gemma CPU↔Vulkan at ~0.999987, keep
-  SmolLM2/Qwen3 self-consistency bit-unchanged, and make both Gemma E2E tests pass on their
-  original assertions.
+- Production CLI, the real QAT model, CPU backend, greedy decode: `The capital of France is Paris.`
+- `Gemma4_E4B_Q4_0_VulkanForward_LongDecodeIsCoherent`: passed (1/1, 2026-08-07).
+- `Gemma4_E4B_Q4_0_VulkanNarrowedKv_MatchesFp32Argmax`: passed (1/1, 2026-08-07).
+
+The tests retain their original CPU/Vulkan parity and non-degeneracy requirements. Only their input
+now follows the model's production chat-template contract.
