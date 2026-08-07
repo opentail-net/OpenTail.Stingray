@@ -9,8 +9,10 @@ product-complete. Historical investigations, experiments, and superseded plans l
    exit, a new process/runtime, restore, one greedy continuation, and token-for-token fresh replay.
 2. **Hardware release runners.** Attach reproducible CPU AVX2, CUDA dense, Vulkan, hybrid MoE,
    MTP/speculation, and real-session results to the release notes.
-3. **Capability fixtures.** Extend inspect/plan only where the loader actually executes the route;
-   add golden model/backend/dtype/batching/speculation decision fixtures.
+3. **Capability fixtures.** Static inspect/plan golden fixtures now cover CPU backend selection,
+   TurboQuant selection/fallback, KV-dtype applicability, batching/tool-grammar exclusion, MTP,
+   and the unsupported restart-session verdict. Extend the set only where the loader actually
+   executes the route; GPU and loader-route claims still require their hardware rows below.
 4. **Configuration ownership.** Classify environment variables and host keys; retire stale bench
    switches; extend source-tracked effective configuration beyond static planning knobs.
 

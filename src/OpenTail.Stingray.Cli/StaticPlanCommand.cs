@@ -315,6 +315,13 @@ public sealed record StaticPlanReport(
     ExecutionPlan ExecutionPlan)
 {
     internal static StaticPlanReport Create(string path, GgufModel model, EffectiveConfigurationSnapshot config, bool noGpuProbe, bool includePlacement)
+        => Create(path, model, config, StaticPlanRuntimeFacts.Detect(noGpuProbe), includePlacement);
+
+    /// <summary>Builds a plan from explicit process-boundary facts. Kept internal so the CLI
+    /// remains the sole production probe owner while deterministic contract tests can exercise
+    /// CUDA/Vulkan decisions without depending on the machine that runs them.</summary>
+    internal static StaticPlanReport Create(string path, GgufModel model, EffectiveConfigurationSnapshot config,
+        StaticPlanRuntimeFacts runtimeFacts, bool includePlacement)
     {
         string arch = model.Metadata.TryGetValue("general.architecture", out var a) ? Convert.ToString(a) ?? "unknown" : "llama";
         ModelHyperparams hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
@@ -322,7 +329,6 @@ public sealed record StaticPlanReport(
         try { ModelCompatibility.ValidateForTextGeneration(model); compatibility = new("gguf_compatibility", true, "Architecture and tensor storage types are supported."); }
         catch (NotSupportedException ex) { compatibility = new("gguf_compatibility", false, ex.Message); }
 
-        var runtimeFacts = StaticPlanRuntimeFacts.Detect(noGpuProbe);
         var backends = runtimeFacts.Backends;
         bool cuda = backends.Any(x => x.Name == "cuda" && x.Status == "available");
         bool vulkan = backends.Any(x => x.Name == "vulkan" && x.Status == "available");

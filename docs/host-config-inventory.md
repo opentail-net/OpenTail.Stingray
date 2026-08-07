@@ -13,7 +13,18 @@ These bind from the **`OpenTail.Stingray`** configuration section — `appsettin
 the ad-hoc precedence §7.3 needs to replace: the override order currently lives in the order of
 statements in one file rather than in a stated rule.
 
-**Class is unfilled deliberately** — same reasoning as the other two inventories.
+**Classification register (completed for this typed host surface).** The generated table below
+remains useful as the source-level inventory; this register supplies its currently blank Class
+column without rewriting generated descriptions. `stable` keys are supported deployment
+configuration, `expert` keys materially affect performance/placement/resources, `diagnostic`
+keys produce evidence, and `experimental` keys are not a release promise.
+
+| Class | Keys |
+|---|---|
+| stable | `DisableThinking`, `PreserveThinking`, `ModelPath`, `Backend`, `ContextSize`, `MaxBatchSize`, `MaxQueuedRequests`, `MaxConcurrentRequests`, `KvBudgetMb`, `Sampling`, `Temperature`, `TopK`, `TopP`, `MinP`, `RepetitionPenalty`, `MaxNewTokens`, `MaxThinkingTokens` |
+| expert | `ToolGrammar`, `MmprojPath`, `Architecture`, `NGpuLayers`, `TurboQuant`, `TqMode`, `KvType`, `MinBatchBlas`, `CpuThreads`, `PrefillChunkTokens`, `PrefillDequantCacheMb`, `PrefixCacheMb`, `MoeWarmPin`, `MoeWarmPinAfter`, `MoePredictPrefetch`, `CpuMoe`, `SpecType`, `SpecDraftNMax`, `SpecDraftNMin`, `SpecDraftPMin` |
+| diagnostic | `ExpertStatsPath` |
+| experimental | `DSparkModelPath`, `DSparkPlace`, `GpuMoePrefill` |
 
 **This surface is small and typed, unlike the other two.** It is already close to what §7.3 wants a
 saved profile to look like, so it is the natural seed for the profile schema rather than a fourth

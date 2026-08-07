@@ -1,12 +1,15 @@
 # Quality-of-life improvements — current work
 
-**Status:** planning/diagnostics baseline shipped; configuration ownership and execution parity remain.
+**Status:** planning/diagnostics baseline shipped; deterministic static-plan decision fixtures
+and typed host-key classification are now in place. Environment ownership and execution parity remain.
 
 ## Remaining work
 
-1. Classify every environment variable and host key; remove obsolete bench switches.
+1. Classify every remaining environment variable; remove obsolete bench switches. The 41 typed
+   server keys have a conservative ownership register in `host-config-inventory.md`.
 2. Extend effective configuration from static plan inputs to real server/loader startup values.
-3. Add golden capability fixtures for model/backend/dtype/batching/speculation decisions.
+3. Extend the golden capability fixtures only where a loader actually executes the route. Static
+   CPU/backend/dtype/batching/speculation decisions are covered; hardware rows remain release gates.
 4. Finish server observability: VRAM/RAM breakdown, streaming timing, and per-request cache signal.
 5. Add model/API compatibility corpus and protocol smoke coverage.
 6. Keep sessions out of the product configuration surface until restart continuation is proven.
