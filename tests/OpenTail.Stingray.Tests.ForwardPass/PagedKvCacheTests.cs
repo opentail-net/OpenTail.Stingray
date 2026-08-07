@@ -169,6 +169,54 @@ public sealed unsafe class PagedKvCacheTests : IDisposable
         Assert.Equal(403f, fork.ValueAtHead(1, 0, 1)[3]);
     }
 
+    /// <summary>
+    /// Regression for the geometry that exposed the per-layer V-stride defect: Gemma-style SWA
+    /// layers use 256-wide heads while global layers use 512-wide heads, with eight KV heads.
+    /// Earlier 2-head / 4-wide fixtures exercised the layout abstraction but made an accidental
+    /// model-wide stride much harder to recognize. Read the first and final KV heads across a page
+    /// boundary: head zero stays correct under either stride, whereas head seven immediately
+    /// exposes a 256-vs-512 V-plane error.
+    /// </summary>
+    [Fact]
+    public void PerLayerHeadDim_ProductionGemmaGeometry_RoundTripsEveryValuePlane()
+    {
+        const int kvHeads = 8, narrowHeadDim = 256, wideHeadDim = 512;
+        const int positions = PagedKvCache.PageSize + 1;
+        using var cache = new PagedKvCache(numLayers: 2, numKvHeads: kvHeads, headDim: wideHeadDim,
+            layerHeadDim: [narrowHeadDim, wideHeadDim]);
+
+        static float Expected(int layer, int position, int head, int dimension) =>
+            layer * 1_000_000f + position * 10_000f + head * 1_000f + dimension;
+
+        for (int position = 0; position < positions; position++)
+        {
+            float[] key = new float[kvHeads * wideHeadDim];
+            float[] narrow = new float[kvHeads * narrowHeadDim];
+            float[] wide = new float[kvHeads * wideHeadDim];
+            for (int head = 0; head < kvHeads; head++)
+            {
+                for (int dimension = 0; dimension < narrowHeadDim; dimension++)
+                    narrow[head * narrowHeadDim + dimension] = Expected(0, position, head, dimension);
+                for (int dimension = 0; dimension < wideHeadDim; dimension++)
+                    wide[head * wideHeadDim + dimension] = Expected(1, position, head, dimension);
+            }
+            cache.Append(0, key, narrow);
+            cache.Append(1, key, wide);
+            cache.IncrementPosition();
+        }
+
+        foreach (int position in new[] { 0, PagedKvCache.PageSize - 1, PagedKvCache.PageSize })
+        foreach (int head in new[] { 0, kvHeads - 1 })
+        {
+            Assert.Equal(Expected(0, position, head, 0), cache.ValueAtHead(0, position, head)[0]);
+            Assert.Equal(Expected(0, position, head, narrowHeadDim - 1),
+                cache.ValueAtHead(0, position, head)[narrowHeadDim - 1]);
+            Assert.Equal(Expected(1, position, head, 0), cache.ValueAtHead(1, position, head)[0]);
+            Assert.Equal(Expected(1, position, head, wideHeadDim - 1),
+                cache.ValueAtHead(1, position, head)[wideHeadDim - 1]);
+        }
+    }
+
     [Fact]
     public void PerLayerHeadDim_Bf16StoreUsesLayerValueStride()
     {

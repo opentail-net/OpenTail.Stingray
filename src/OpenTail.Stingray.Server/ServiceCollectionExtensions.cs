@@ -43,6 +43,7 @@ public static class ServiceCollectionExtensions
                 ? "The engine has not been loaded yet, or it does not expose the CPU-dense session runtime."
                 : "Sessions are disabled by server configuration."));
         services.TryAddSingleton<IServerSessionRuntime>(sp => sp.GetRequiredService<SessionRuntimeRelay>());
+        services.TryAddSingleton<CpuPrefillRuntimeReceiptRelay>();
 
         // Request admission gate. Resolved lazily so the options object is fully bound
         // (config + the host's inline Configure) by first construction. A positive
@@ -86,6 +87,7 @@ public static class ServiceCollectionExtensions
                 opts.EnableSessions
                     ? "The loaded engine did not expose the CPU-dense session runtime."
                     : "Sessions are disabled by server configuration.");
+            sp.GetRequiredService<CpuPrefillRuntimeReceiptRelay>().Set(loaded.CpuBatchedPrefill);
 
             return loaded.Engine;
         });

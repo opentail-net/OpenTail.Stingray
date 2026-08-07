@@ -53,12 +53,14 @@ References: [release-quality-test-matrix.md](release-quality-test-matrix.md),
    `PagedKvCache`'s V striding. Adding more shader shapes or more Q4_K/q4_0 kernel coverage would
    not have caught it.
 
-   What was missing: **no test drove a model with per-layer head_dim through the CPU cache path
-   end to end.** The coverage to add is that — plus the oracle-free invariant that caught it (at
-   position 0, attention output must equal V, broadcast across each GQA group), which needs no
-   reference backend and so names the faulty side on its own. Do this before revisiting
-   integrated-GPU memory detection or Vulkan performance. Treat Q8_0 only as a cross-format check
-   when a supported deployment path needs it.
+   The directly actionable cache-geometry gap is now closed: `PagedKvCacheTests` drives the real
+   Gemma 12B geometry (8 KV heads, 256-wide SWA and 512-wide global heads) across a page boundary,
+   and `PrefillAttentionSeamTests` pins the oracle-free position-zero invariant — attention output
+   equals V, broadcast across every GQA/MQA group. The available real E4B q4_0 fixture also passes
+   the CPU prefill/decode smoke on this corrected path. The remaining work is **dense 12B** model
+   acquisition and its CPU/CUDA/hybrid acceptance sequence, not another synthetic Vulkan shader
+   shape. Do this before revisiting integrated-GPU memory detection or Vulkan performance. Treat
+   Q8_0 only as a cross-format check when a supported deployment path needs it.
 2. **Gemma 4 validation.** Re-run dense 12B no-PLE validation after the per-layer V-cache stride
    fix, then exercise E4B vision plans on real fixtures.
    E4B text now has a real Q4_0 CPU CLI smoke (including the absent-shared-KV-norm variant),

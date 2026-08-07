@@ -7,6 +7,46 @@ namespace OpenTail.Stingray.Tests.ForwardPassTests;
 
 public class PrefillAttentionSeamTests
 {
+    /// <summary>
+    /// With exactly one causal position, softmax contains one element and attention must return
+    /// that position's V verbatim. This is an oracle-free invariant that simultaneously checks
+    /// GQA/MQA head broadcast at the real Gemma 12B shapes: SWA uses 8 Q / 4 KV heads at 256 and
+    /// global attention uses 8 Q / 1 KV head at 512. Together with PagedKvCache's production
+    /// geometry test it names a bad V-plane stride without relying on another backend.
+    /// </summary>
+    [Theory]
+    [InlineData(8, 4, 256)]
+    [InlineData(8, 1, 512)]
+    public unsafe void BatchedCausalAttention_PositionZeroReturnsVForEveryGqaGroup(
+        int numHeads, int numKvHeads, int headDim)
+    {
+        int qDim = numHeads * headDim;
+        int kvDim = numKvHeads * headDim;
+        var q = new float[qDim];
+        var k = new float[kvDim];
+        var v = new float[kvDim];
+        var output = new float[qDim];
+        for (int kvHead = 0; kvHead < numKvHeads; kvHead++)
+            for (int dimension = 0; dimension < headDim; dimension++)
+                v[kvHead * headDim + dimension] = kvHead * 10_000f + dimension;
+
+        fixed (float* qPtr = q)
+        fixed (float* kPtr = k)
+        fixed (float* vPtr = v)
+        fixed (float* outputPtr = output)
+            OpenTail.Stingray.Engine.ForwardPass.ComputeBatchedCausalAttention(
+                qPtr, kPtr, vPtr, outputPtr, N: 1, startPos: 0, numHeads, numKvHeads, headDim,
+                scale: 1f);
+
+        int headsPerKvGroup = numHeads / numKvHeads;
+        for (int head = 0; head < numHeads; head++)
+        {
+            int kvHead = head / headsPerKvGroup;
+            for (int dimension = 0; dimension < headDim; dimension++)
+                Assert.Equal(v[kvHead * headDim + dimension], output[head * headDim + dimension]);
+        }
+    }
+
     [Fact]
     public unsafe void BatchedCausalAttention_HandComputedReference_MatchesFirstPrinciples()
     {

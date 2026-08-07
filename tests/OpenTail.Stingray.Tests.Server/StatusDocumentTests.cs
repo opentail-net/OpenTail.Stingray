@@ -36,6 +36,15 @@ public sealed class StatusDocumentTests
         return JsonDocument.Parse(await response.Content.ReadAsStringAsync());
     }
 
+    private static HttpClient CreateLoadedClient(CpuBatchedPrefillCapability capability) =>
+        new WebApplicationFactory<Program>()
+            .WithWebHostBuilder(builder => builder.ConfigureServices(services =>
+                services.Configure<OpenTailStingrayServerOptions>(options =>
+                    options.EngineFactory = _ => new LoadedEngine(
+                        new StatusFakeEngine("smol.gguf"), "llama", null,
+                        CpuBatchedPrefill: capability))))
+            .CreateClient();
+
     /// <summary>
     /// The server's shared JSON context omits null properties, so "unknown" is an absent field
     /// rather than an explicit <c>null</c>. Both spellings mean the same thing to a client, and
@@ -98,6 +107,21 @@ public sealed class StatusDocumentTests
 
         Assert.Equal(SimdKernels.Q8PrefillEnabled,
             configuration.GetProperty("cpu_q8_prefill_enabled").GetBoolean());
+    }
+
+    [Fact]
+    public async Task Status_PublishesTheLoadedModelsCpuBatchedPrefillReceipt()
+    {
+        var client = CreateLoadedClient(new CpuBatchedPrefillCapability(false,
+            "This per-layer-head-dimension model uses sequential prefill."));
+
+        using var document = await GetStatusAsync(client);
+        var receipt = document.RootElement.GetProperty("configuration")
+            .GetProperty("cpu_batched_prefill");
+
+        Assert.False(receipt.GetProperty("available").GetBoolean());
+        Assert.Equal("This per-layer-head-dimension model uses sequential prefill.",
+            receipt.GetProperty("detail").GetString());
     }
 
     [Fact]

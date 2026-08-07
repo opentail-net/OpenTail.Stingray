@@ -116,7 +116,8 @@ public static class InferenceEngineLoader
 
             var ownedEngine = new OwnedDisposableEngine(rawEngine, [stSource, cpuBackend, forwardPass]);
             var stGrammarVocab = new OpenTail.Stingray.Core.Grammar.GrammarVocabulary(stTokenizer);
-            return new LoadedEngine(ownedEngine, report.ArchitectureId ?? "llama", stTokenizer.ChatTemplate, [], stGrammarVocab, stTokenizer);
+            return new LoadedEngine(ownedEngine, report.ArchitectureId ?? "llama", stTokenizer.ChatTemplate, [], stGrammarVocab,
+                stTokenizer, CpuBatchedPrefill: forwardPass.GetBatchedPrefillCapability());
         }
 
         var model = GgufModel.Open(modelPath);
@@ -341,7 +342,8 @@ public static class InferenceEngineLoader
         var grammarVocab = new OpenTail.Stingray.Core.Grammar.GrammarVocabulary(tokenizer);
 
         return new LoadedEngine(engine, arch, tokenizer.ChatTemplate, toolBoundaryStopTokenIds, grammarVocab, tokenizer,
-            sessionRuntime, coldSessionRuntime);
+            sessionRuntime, coldSessionRuntime,
+            fwd is ForwardPass cpuForwardPass ? cpuForwardPass.GetBatchedPrefillCapability() : null);
     }
 
     // ── DSpark draft head (docs/dspark-plan.md Phase 6, PR #413) ─────────────

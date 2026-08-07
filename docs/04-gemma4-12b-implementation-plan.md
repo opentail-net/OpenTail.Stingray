@@ -9,6 +9,13 @@ Vulkan last.
 > correct under the wrong stride, while its SWA GQA layers would be corrupted. Re-run the complete
 > CPU/CUDA/hybrid acceptance sequence against the fixed cache layout.
 
+> **Fixed-path guard (2026-08-07):** this failure mode is now locked below real 12B acquisition:
+> `PagedKvCacheTests.PerLayerHeadDim_ProductionGemmaGeometry_RoundTripsEveryValuePlane` covers
+> 8 KV heads at 256/512 dimensions across a page boundary, and
+> `PrefillAttentionSeamTests.BatchedCausalAttention_PositionZeroReturnsVForEveryGqaGroup` pins
+> the position-zero GQA/MQA invariant. These are regression guards, not a substitute for the
+> required real-12B CPU/CUDA/hybrid validation above.
+
 > **TL;DR** — Most of the work is already done. The merged `gemma4` path (issue #82 epic,
 > built and validated against **E4B**) is metadata/tensor-driven and already implements the
 > hard parts the 12B needs: per-layer head-dim variance, dual-RoPE, SWA, shared-KV layers,

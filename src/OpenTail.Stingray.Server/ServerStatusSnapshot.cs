@@ -48,7 +48,8 @@ public sealed record ServerStatusSnapshot(
         IInferenceEngine engine,
         ServerMetrics metrics,
         int admissionCapacity,
-        ServerEnvironmentOverrideReceipt? environmentOverrides = null)
+        ServerEnvironmentOverrideReceipt? environmentOverrides = null,
+        CpuBatchedPrefillCapability? cpuBatchedPrefill = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(engine);
@@ -157,7 +158,9 @@ public sealed record ServerStatusSnapshot(
             Memory: memory,
             Batching: batchingStatus,
             Configuration: new ServerStatusConfiguration([.. (environmentOverrides?.Names ?? [])],
-                SimdKernels.Q8PrefillEnabled),
+                SimdKernels.Q8PrefillEnabled,
+                cpuBatchedPrefill is null ? null : new ServerStatusCpuBatchedPrefill(
+                    cpuBatchedPrefill.Available, cpuBatchedPrefill.Detail)),
             Warnings: BuildWarnings(engine, traffic, cache, batchingStatus, saturated));
     }
 
@@ -233,7 +236,11 @@ public sealed record ServerStatusTraffic(
 /// <summary>Non-sensitive configuration provenance. Values and paths are deliberately omitted.</summary>
 public sealed record ServerStatusConfiguration(
     IReadOnlyList<string> EnvironmentOverrides,
-    bool CpuQ8PrefillEnabled);
+    bool CpuQ8PrefillEnabled,
+    ServerStatusCpuBatchedPrefill? CpuBatchedPrefill);
+
+/// <summary>Load-time availability of the regular CPU batched-prefill trunk for the loaded model.</summary>
+public sealed record ServerStatusCpuBatchedPrefill(bool Available, string Detail);
 
 /// <summary>Serving-latency summaries rendered from the same bounded histograms as <c>/metrics</c>.</summary>
 public sealed record ServerStatusLatency(

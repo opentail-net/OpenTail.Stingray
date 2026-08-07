@@ -786,6 +786,21 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
     public TurboQuantKvCache? TqCache => _tqKvCache;
 
     /// <summary>
+    /// Reports whether this model can use the regular CPU batched-prefill trunk for an ordinary
+    /// multi-token prompt. This is a load-time capability, not a claim that every request or
+    /// projection takes the activation-Q8 kernel.
+    /// </summary>
+    public CpuBatchedPrefillCapability GetBatchedPrefillCapability() =>
+        CpuBatchedPrefillCapability.Evaluate(
+            turboQuantEnabled: _tqKvCache is not null,
+            isMoe: _hp.IsMoE,
+            moeBatchedPrefillSupported: MoeBatchedPrefillSupported,
+            // STINGRAY_PER_LAYER_HD_PREFILL can deliberately force an experimental, known-wrong
+            // path for measurement. A production-facing receipt must report supported capability,
+            // not merely whether that escape hatch will execute code.
+            perLayerHeadDimUnsupported: _layerHeadDim is not null);
+
+    /// <summary>
     /// Prefill: process all prompt tokens layer-by-layer.
     /// Weights stay hot in L3 cache across tokens within each layer,
     /// amortizing DRAM reads ~N× vs sequential Forward() calls.
