@@ -48,3 +48,39 @@ Use [CHANGELOG.md](../CHANGELOG.md) as the human release index. Pull requests sh
 imperative subject with a component prefix, for example `engine: preserve BF16 KV pages on restore`.
 Avoid generic messages such as `ok`; add a changelog/release-note bullet rather than rewriting
 shared history.
+
+## Evidence status — 2026-08-07 (single developer machine)
+
+Recorded so the gaps are legible rather than assumed. **This machine is a Ryzen 7 5700G: Zen 3,
+AVX2 only (no AVX-512, no VNNI), integrated Radeon graphics, no NVIDIA GPU.** Per the rule at the
+top of this document, a pass here is not evidence for a row whose runner this machine is not.
+
+| Gate | Evidence today | Where it came from |
+|---|---|---|
+| Build and managed regression | **Yes** — Core 421/421, CLI 367/367, Server 246/246, Sessions 79/79, Release, 0 warnings | this session |
+| CPU inference | **Yes** — dense greedy prefill/decode, numerical parity, corpus perplexity | `cpu-prefill-quality-gate.md`, `cpu-benchmark-llamacpp-baseline.md` |
+| CUDA dense | **No — blocked.** No NVIDIA driver on this machine; nothing was run and nothing is claimed | — |
+| Vulkan | **Partial.** Functional load + greedy decode, and CPU/Vulkan logit parity measured. **On an integrated APU, not a discrete card** — every number is APU-specific and does not predict discrete-GPU behaviour | `vulkan-backend-evidence.md` |
+| Hybrid MoE | **Partial.** MoE model runs on CPU with prefill numerics in the dense band. The row's actual subject — CPU-expert and GPU-cache offload paths — is **untested**, needing constrained VRAM this machine cannot provide | `moe-backend-evidence.md` |
+| Speculation | **Measured and negative.** Draft-model speculation is a 37% regression on CPU because the verify pass cannot amortise; no MTP GGUF present for the MTP equivalence check | `cpu-speculative-decoding-findings.md` |
+| Session restart continuation | **Partial.** Six of seven conformance dimensions covered, and rollback closed this session after a production seam was added. Full restart-with-real-model replay not run | `sessions-release-gate-matrix.md` |
+| HTTP server | **Yes** — 246/246 including OpenAI, Anthropic, capabilities, status, queue limits | this session |
+| Packaging | **Not run this session** | — |
+
+### Defects found and closed while producing this evidence
+
+- Generation was not bounded by the active context: decoding past the ceiling wrote past
+  `_ctxLen`-sized native scratch, reachable from a client's `max_tokens` on the server.
+- int8 prefill collapsed on single-repeated-token prompts (cosine 0.40-0.48, -0.124 for a repeated
+  space), affecting ordinary words too. Fixed by routing such prompts to exact F32.
+- `STINGRAY_VABL`, a registered switch whose own comment said it produced wrong output, was
+  declared but referenced nowhere; `doctor` reported it to operators as valid.
+- The server's queue-overload warning advised raising a variable nothing read.
+
+### Known open, with evidence rather than suspicion
+
+- Gemma 4 per-layer-head-dim models get **no batched prefill**: 3.5 t/s prefill against 4.0 t/s
+  decode, where a dense model of similar shape runs prefill at ~4x decode. Roughly a 4x prefill
+  penalty, confirmed in code at the `perLayerHdUnsupported` gate.
+- Flash-64 head dims 128/256 remain opt-in: +14% prefill for +0.52% perplexity, which is worse than
+  the exact path and outside the envelope of anything else shipped.
