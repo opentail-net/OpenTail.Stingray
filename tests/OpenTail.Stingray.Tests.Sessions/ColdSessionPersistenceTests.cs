@@ -329,6 +329,39 @@ public sealed class ColdSessionPersistenceTests
     }
 
     [Fact]
+    public async Task ColdSession_Open_RejectsACorruptPersistedKvPack()
+    {
+        string tempDir = Path.Combine(Path.GetTempPath(), $"opentail_cold_corrupt_{Guid.NewGuid():N}");
+        try
+        {
+            var fwd = new ProductionPagedKvForwardPass();
+            using var engine = new ContinuousBatchingEngine(fwd, new Tokenizer(), "test", maxBatchSize: 1);
+            var hot = new HotSessionRuntime(engine, new Tokenizer());
+            var cold = new ColdSessionRuntime(hot, engine, tempDir, ModelFormat.SafeTensors);
+            var address = new SessionAddress("tenant", "role", "thread", "test");
+
+            using (var session = cold.Create(address))
+            {
+                await session.RunTurnAsync("hello", new SamplingParams { Temperature = 0f, MaxNewTokens = 2 },
+                    SessionRevision.Initial, SessionOperationId.New(), Digest("hello"));
+                var manifest = cold.EvictToDisk(session, "test");
+                var kvBlock = Assert.Single(manifest.Blocks.Skip(1));
+                string packPath = SegmentPackStore.GetPackPath(tempDir, kvBlock.BlockId);
+                byte[] bytes = File.ReadAllBytes(packPath);
+                bytes[^1] ^= 0x80; // damage the framed payload/checksum after a valid atomic write.
+                File.WriteAllBytes(packPath, bytes);
+            }
+
+            Assert.Throws<SessionJournalFormatException>(() => cold.Open(address.ToSessionId()));
+            Assert.Throws<SessionJournalFormatException>(() => cold.OpenOrCreate(address));
+        }
+        finally
+        {
+            if (Directory.Exists(tempDir)) Directory.Delete(tempDir, recursive: true);
+        }
+    }
+
+    [Fact]
     public void FileSessionManifest_RejectsInvalidMagic()
     {
         string tempDir = Path.Combine(Path.GetTempPath(), $"opentail_manifest_magic_{Guid.NewGuid():N}");
