@@ -2,7 +2,9 @@
 
 **Assessed:** 2026-08-07 against `tests/OpenTail.Stingray.Tests.Sessions` (89 test methods, 12
 files, all passing). This maps the seven dimensions the release gate calls for onto what is
-actually asserted, and records two dimensions that are **not covered** despite appearing so.
+actually asserted, and records one dimension that is **not covered** despite appearing so. A second was initially
+recorded as uncovered and is corrected at the foot of this document — read that before citing this
+table.
 
 ## Matrix
 
@@ -14,7 +16,7 @@ actually asserted, and records two dimensions that are **not covered** despite a
 | Corrupt packs | **Covered** | `ColdSession_Open_RejectsACorruptPersistedKvPack`, `..._RejectsACorruptPersistedOperationLedger` (10) |
 | Quotas / eviction | **Covered** | `ColdSession_WithPagedKvCache_EvictsToDiskAndRestoresExactKv`, `EvictToDisk_ReEviction_ReclaimsPacksTheNewManifestNoLongerReferences` (14) |
 | **Rollback** | **NOT COVERED** | see below |
-| **Multi-model routing** | **NOT COVERED** | see below |
+| Multi-model routing | **Covered** | `SessionModelBudgetTests` (4 tests, all passing) — see the 2026-08-07 correction below |
 
 ## Why two dimensions read as covered but are not
 
@@ -104,3 +106,35 @@ Until that seam exists, this dimension of the release gate cannot be evidenced, 
 should say so rather than carry an aspirational tick. The honest status is **"not covered, and not
 coverable without a production change"** — which is a stronger reason to make the change than any
 amount of missing-test bookkeeping.
+
+
+## CORRECTION 2026-08-07 — multi-model routing IS covered
+
+The "Gap 2" entry above was **wrong** and is retracted. `SessionModelBudgetTests` covers the
+dimension with four passing tests:
+
+- `SessionModelBudget_EnforcesPerModelPartitionLimits` — `model-a` capped at 1,000 bytes against
+  `model-b` at 10,000, asserting `GetModelResidentBytes` attributes usage to the right model.
+- `SessionModelBudget_RejectsOverBudgetTurnForSpecificModel` — a cap on one model does not constrain
+  the other.
+- `SessionModelBudget_ConcurrentInFlightReservations_EnforcesModelCap`
+- `SessionModelBudget_RenewalCannotExceedModelCapByItsOwnReservation`
+
+Routing is expressed through `SessionAddress(tenant, role, thread, model)`, and the model dimension
+carries a real per-model resource partition rather than being a bare lookup tag.
+
+### How the false negative happened, since it is instructive
+
+The first pass scored dimensions by matching **test names**, which produced a false POSITIVE for
+this dimension (a test that routes to the correct *session* matched "route"). Correcting for that,
+the second pass grepped for the production **symbol** `modelKey` — and found zero test references,
+producing a false NEGATIVE. The tests never write that token: they use `SessionAddress(..., "model-a")`
+and `GetModelResidentBytes("model-a")`. Eight occurrences of `model-a`, zero of `modelKey`.
+
+So both passes were wrong, in opposite directions, for the same underlying reason: **a proxy was
+substituted for reading the tests.** Test names are a proxy for behaviour; an implementation
+parameter name is a proxy for a concept. Neither survives contact with code that is spelled
+differently from the searcher's expectation. The only method that worked was opening the file.
+
+The rollback gap recorded above was found by reading call sites and remains correct — it was
+verified by tracing every fault point, not by a keyword search.
