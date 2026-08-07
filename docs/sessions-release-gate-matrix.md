@@ -66,3 +66,41 @@ Coverage here is judged by symbol reference and test reading, not by line covera
 A dimension marked "Covered" means at least one test genuinely exercises it, not that its edge cases
 are complete. The two gaps are the confident findings; the five "Covered" rows are a floor, not a
 ceiling.
+
+## Follow-up 2026-08-07 — rollback is untested *and* not reachable from a test
+
+An attempt to write the rollback test found the gap is deeper than missing coverage.
+
+`CompensateUncommittedTurn` only calls `RollbackLastTurn` when `generationCompleted` is true. Tracing
+what can fault **after** that flag is set and **before** `operationCommitted`:
+
+| Failure point | Injectable from a test? |
+|---|---|
+| `BuildNextCursor` invariant checks (`TurnStartPosition`/`MaterializedPosition` disagree) | Only by driving the engine into a state it is designed never to reach |
+| `_store.Transition(...)` | **No** — `_store` is a concrete `InMemorySessionStore`, not an interface |
+| `reservation.Complete(...)` | **No** — internal budget object |
+| `_store.Complete(...)` | **No** — same concrete store |
+
+Cancellation does not reach it either. The `OperationCanceledException` catch runs the same
+compensation, but a token cancelled during generation throws out of the `await foreach` while
+`generationCompleted` is still **false**, so the rollback branch is skipped; and after generation
+completes there is no further token observation to throw on.
+
+So `RetainedSequenceState.RollbackLastTurn` is reachable only via a genuine internal fault — an OOM,
+or a bug in the store's state machine. It has, as far as this repository can demonstrate, **never
+executed**, and its one call site swallows every exception it might raise.
+
+### Recommendation
+
+Do not write a test that contorts the engine into an invalid state to reach this — such a test
+pins the contortion, not the behaviour. Add a narrow seam instead, then cover the path honestly.
+The smallest change that would work: give `HotSession` its store through an interface (or an
+`internal` delegate hook used only by tests) so a test can fail `Transition`/`Complete` at a chosen
+point and assert that the cursor, `MaterializedPosition`, and resident-byte accounting all return
+to their pre-turn values, and that the next turn produces the same result as if the failed turn had
+never run.
+
+Until that seam exists, this dimension of the release gate cannot be evidenced, and the matrix
+should say so rather than carry an aspirational tick. The honest status is **"not covered, and not
+coverable without a production change"** — which is a stronger reason to make the change than any
+amount of missing-test bookkeeping.
