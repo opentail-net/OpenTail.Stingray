@@ -222,6 +222,37 @@ public sealed class Gemma4Cuda12BForwardPassTests : IDisposable
     }
 
     /// <summary>
+    /// Real-model CPU smoke immediately beyond Gemma 4 12B's 1024-token sliding-attention
+    /// window. This crosses the point at which every SWA layer must stop reading its oldest KV
+    /// entry while the eight global MQA layers retain the complete context. It is intentionally
+    /// fixture-gated: a developer/acceptance runner with the 12B model pays the longer runtime;
+    /// ordinary CI silently skips it because the model is not in source control.
+    /// </summary>
+    [Fact]
+    public void Gemma4_12B_CpuForward_CrossesSlidingWindowBoundary()
+    {
+        var path = FindModelPath();
+        if (path is null) return;
+
+        using var model = GgufModel.Open(path);
+        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        Assert.Equal(1024, hp.SlidingWindowSize);
+        Assert.True(hp.AttentionKEqV, "expected attention_k_eq_v=true for the 12B QAT model");
+
+        int bosId = ReadIntMetadata(model, "tokenizer.ggml.bos_token_id", fallback: 2);
+        int eosId = ReadIntMetadata(model, "tokenizer.ggml.eos_token_id", fallback: 1);
+        int[] seed = SyntheticPrompt(bosId);
+        var tokens = new int[hp.SlidingWindowSize + 1];
+        for (int i = 0; i < tokens.Length; i++) tokens[i] = seed[i % seed.Length];
+        tokens[0] = bosId;
+
+        using var backend = new CpuBackend();
+        using var fwd = new OpenTail.Stingray.Engine.ForwardPass(model, backend, hp,
+            maxContextLength: tokens.Length + 16);
+        AssertCoherentDecode(fwd, tokens, eosId, hp.VocabSize, "12B CPU SWA-boundary");
+    }
+
+    /// <summary>
     /// Cross-backend (CPU↔CUDA) logit-level parity on a single 12B prefill. Per
     /// feedback_cross_backend_parity_test, the CPU path is the independent oracle (it
     /// mirrors HF/llama.cpp math, shares no GPU kernels), so this is what would expose a

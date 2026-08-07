@@ -275,11 +275,13 @@ public sealed class ColdSessionPersistenceTests
 
             // KV travels OUT OF BAND, not inside the cursor envelope: the envelope cannot carry it
             // (SessionCursorCodecLimits.MaxPayloadBytes caps it at 4 MB, one cache block is ~6 MB).
-            // Block 0 is the cursor envelope; blocks 1..N are the KV byte stream in order.
+            // Block 0 is the cursor envelope. A bounded completed-operation ledger may follow;
+            // KV blocks retain their own prefix and are reassembled in manifest order.
             string sid = address.ToSessionId().Value.ToString("N");
             Assert.True(manifest!.Blocks.Length >= 2, "Expected a cursor block plus at least one KV block.");
             Assert.StartsWith("cur_", manifest.Blocks[0].BlockId);
-            Assert.StartsWith("kv_", manifest.Blocks[1].BlockId);
+            var kvBlocks = manifest.Blocks.Where(block => block.BlockId.StartsWith("kv_", StringComparison.Ordinal)).ToArray();
+            Assert.NotEmpty(kvBlocks);
 
             byte[] cursorPack = SegmentPackStore.LoadBlock(
                 SegmentPackStore.GetPackPath(tempDir, manifest.Blocks[0].BlockId));
@@ -288,7 +290,7 @@ public sealed class ColdSessionPersistenceTests
 
             // The first KV pack begins the PKVC stream.
             byte[] firstKvPack = SegmentPackStore.LoadBlock(
-                SegmentPackStore.GetPackPath(tempDir, manifest.Blocks[1].BlockId));
+                SegmentPackStore.GetPackPath(tempDir, kvBlocks[0].BlockId));
             Assert.Equal(0x504B5643u, BitConverter.ToUInt32(firstKvPack.AsSpan(0, 4)));
 
             // Restore cold session from disk manifest & segment packs
@@ -345,10 +347,50 @@ public sealed class ColdSessionPersistenceTests
                 await session.RunTurnAsync("hello", new SamplingParams { Temperature = 0f, MaxNewTokens = 2 },
                     SessionRevision.Initial, SessionOperationId.New(), Digest("hello"));
                 var manifest = cold.EvictToDisk(session, "test");
-                var kvBlock = Assert.Single(manifest.Blocks.Skip(1));
+                var kvBlock = Assert.Single(manifest.Blocks.Where(block =>
+                    block.BlockId.StartsWith("kv_", StringComparison.Ordinal)));
                 string packPath = SegmentPackStore.GetPackPath(tempDir, kvBlock.BlockId);
                 byte[] bytes = File.ReadAllBytes(packPath);
                 bytes[^1] ^= 0x80; // damage the framed payload/checksum after a valid atomic write.
+                File.WriteAllBytes(packPath, bytes);
+            }
+
+            Assert.Throws<SessionJournalFormatException>(() => cold.Open(address.ToSessionId()));
+            Assert.Throws<SessionJournalFormatException>(() => cold.OpenOrCreate(address));
+        }
+        finally
+        {
+            if (Directory.Exists(tempDir)) Directory.Delete(tempDir, recursive: true);
+        }
+    }
+
+    /// <summary>
+    /// Completed operation output is part of the restart idempotency contract. The ledger is a
+    /// separately checksummed segment pack, so corruption must fail closed rather than restoring
+    /// the KV state and then silently forgetting a response that a caller may retry.
+    /// </summary>
+    [Fact]
+    public async Task ColdSession_Open_RejectsACorruptPersistedOperationLedger()
+    {
+        string tempDir = Path.Combine(Path.GetTempPath(), $"opentail_cold_ops_corrupt_{Guid.NewGuid():N}");
+        try
+        {
+            var fwd = new ProductionPagedKvForwardPass();
+            using var engine = new ContinuousBatchingEngine(fwd, new Tokenizer(), "test", maxBatchSize: 1);
+            var hot = new HotSessionRuntime(engine, new Tokenizer());
+            var cold = new ColdSessionRuntime(hot, engine, tempDir, ModelFormat.SafeTensors);
+            var address = new SessionAddress("tenant", "role", "thread", "test");
+
+            using (var session = cold.Create(address))
+            {
+                await session.RunTurnAsync("hello", new SamplingParams { Temperature = 0f, MaxNewTokens = 2 },
+                    SessionRevision.Initial, SessionOperationId.New(), Digest("hello"));
+                var manifest = cold.EvictToDisk(session, "test");
+                var ledgerBlock = Assert.Single(manifest.Blocks.Where(block =>
+                    block.BlockId.StartsWith("ops_", StringComparison.Ordinal)));
+                string packPath = SegmentPackStore.GetPackPath(tempDir, ledgerBlock.BlockId);
+                byte[] bytes = File.ReadAllBytes(packPath);
+                bytes[^1] ^= 0x80;
                 File.WriteAllBytes(packPath, bytes);
             }
 

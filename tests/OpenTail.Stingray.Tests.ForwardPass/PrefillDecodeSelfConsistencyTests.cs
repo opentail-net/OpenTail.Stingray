@@ -245,4 +245,39 @@ public sealed class PrefillDecodeSelfConsistencyTests : IDisposable
             $"all-control prompt must use the F32 fallback through PrefillPackedMulti when Q8 is enabled " +
             $"(cosine {cosine:F6}).");
     }
+
+    /// <summary>
+    /// Packed admission must make the conservative decision for the entire batch.  Letting an
+    /// all-control sequence take an F32 fallback while its neighbour remains in the Q8-packed
+    /// route would make a request's numerical behaviour depend on unrelated arrival timing.
+    /// </summary>
+    [Fact]
+    public void Q8PrefillPacked_MixedControlAndOrdinaryPrompts_FallBackTogether()
+    {
+        string? path = FindModelPath(ModelFile);
+        if (path is null)
+            Assert.Skip($"{ModelFile} not present under models/.");
+
+        using var model = GgufModel.Open(path);
+        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        int[] control = ControlTokens(model, count: 2);
+        int[] ordinary = OrdinaryTokens(count: 3, seed: 31);
+
+        SimdKernels.Q8PrefillEnabled = true;
+        using var backend = new CpuBackend();
+        using var pass = new Engine.ForwardPass(model, backend, hp);
+        using var controlCache = pass.CreateCache();
+        using var ordinaryCache = pass.CreateCache();
+        float[]?[] actual = pass.PrefillPackedMulti(
+            [control, ordinary], [0, 0], [controlCache, ordinaryCache], [true, true]);
+
+        Assert.NotNull(actual[0]);
+        Assert.NotNull(actual[1]);
+        double controlCosine = Cosine(ViaDecode(model, hp, control), actual[0]!);
+        double ordinaryCosine = Cosine(ViaDecode(model, hp, ordinary), actual[1]!);
+        Assert.True(controlCosine > 0.9999,
+            $"control sequence must retain F32 parity in a mixed packed batch (cosine {controlCosine:F6}).");
+        Assert.True(ordinaryCosine > 0.9999,
+            $"ordinary neighbour must share the F32 packed fallback (cosine {ordinaryCosine:F6}).");
+    }
 }

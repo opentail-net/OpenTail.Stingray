@@ -4214,13 +4214,22 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
         // batching calls this method, so leaving the all-control safeguard only on Prefill would
         // make server-admitted structural probes take the numerically unsafe Q8 activation path.
         if (N == 1 || IsAllControlTokenPrompt(tokens) || (_hp.IsMoE && !MoeBatchedPrefillSupported))
-        {
-            ReadOnlySpan<float> logits = default;
-            for (int i = 0; i < N; i++)
-                logits = ForwardCore(tokens[i], startPos + i, cache);
-            return logits;
-        }
+            return PrefillWithCacheSequential(tokens, cache, startPos);
         return PrefillCore(tokens, cache, startPos);
+    }
+
+    /// <summary>
+    /// Exact, token-at-a-time external-cache admission. Used for individually ineligible
+    /// requests and for the whole packed group when one member is an all-control structural
+    /// probe: packing must not make an ordinary neighbour's numerical route timing-dependent.
+    /// </summary>
+    private ReadOnlySpan<float> PrefillWithCacheSequential(
+        IReadOnlyList<int> tokens, PagedKvCache cache, int startPos)
+    {
+        ReadOnlySpan<float> logits = default;
+        for (int i = 0; i < tokens.Count; i++)
+            logits = ForwardCore(tokens[i], startPos + i, cache);
+        return logits;
     }
 
     /// <summary>
@@ -4493,7 +4502,8 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
             var fallback = new float[]?[S];
             for (int i = 0; i < S; i++)
             {
-                ReadOnlySpan<float> logits = PrefillWithCache(chunks[i].ToArray(), caches[i], startPos[i]);
+                ReadOnlySpan<float> logits = PrefillWithCacheSequential(
+                    chunks[i].ToArray(), caches[i], startPos[i]);
                 if (wantLogits[i]) fallback[i] = logits.ToArray();
             }
             return fallback;

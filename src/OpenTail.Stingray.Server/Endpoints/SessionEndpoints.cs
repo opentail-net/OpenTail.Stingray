@@ -15,8 +15,8 @@ namespace OpenTail.Stingray.Server.Endpoints;
 /// Minimal named-session lifecycle endpoints. Hosts that expose these routes should attach their
 /// authentication/tenant policy to the returned route group or individual endpoint builders.
 /// This CPU-dense lane can restore a completed session when durable storage is configured. Its
-/// operation-result/idempotency ledger is deliberately in-memory only: after a restart, clients
-/// must continue from the restored revision rather than expect a completed operation to replay.
+/// bounded completed-operation/idempotency ledger travels with the persisted session, so a client
+/// can retrieve or replay a retained response after restart; it is not an archival transcript.
 ///
 /// <para>Every handler takes an unused <see cref="IInferenceEngine"/> parameter. That is not an
 /// oversight: resolving it makes these routes share the engine's construction and failure
@@ -77,8 +77,8 @@ public static partial class SessionEndpoints
 
     /// <summary>
     /// Returns the result retained for a completed or in-flight operation. This is the reconnect
-    /// path for a client which lost the response to a turn, not a durable operation journal: the
-    /// store intentionally forgets operation results when a process is restarted.
+    /// path for a client which lost the response to a turn. With configured durable CPU-dense
+    /// storage, bounded completed records survive restart; hot-only sessions retain them in RAM.
     /// </summary>
     private static IResult GetOperation(
         Guid sessionId,
@@ -109,8 +109,8 @@ public static partial class SessionEndpoints
         }
         catch (KeyNotFoundException)
         {
-            // Do not pretend an evicted/restored session retained an operation result. The
-            // capability document tells clients that this is a hot-runtime reconnect facility.
+            // A bounded durable ledger may prune old or oversized records. Do not claim an
+            // unknown operation was retained merely because its session could be restored.
             return Results.NotFound();
         }
     }

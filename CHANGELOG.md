@@ -15,18 +15,30 @@ human-facing map that a raw commit graph cannot.
 - A release-quality matrix and retained CI test transcripts for package publication.
 - Small llama-server compatibility endpoints: `POST /tokenize`, `POST /detokenize`, and
   `GET /props`, with wire-contract coverage for valid and malformed requests.
+- Opt-in named sessions for the CPU-dense GGUF server lane. With both `EnableSessions` and
+  `SessionStorageDirectory` configured, cursor/KV state plus bounded completed-operation results
+  survive restart; clients can inspect an operation or safely replay its idempotency key. Other
+  backends and cache families remain explicitly unavailable.
 
 ### Changed
 
-- Capability reports explicitly distinguish experimental retained-session internals from a supported
-  restart-continuation product feature.
+- Capability reports now distinguish hot-only sessions from the supported CPU-dense GGUF persisted
+  lane, including whether bounded operation-result replay survives restart.
 - Hosted CPU CI now includes the Sessions and Vision managed suites, matching the release gate's
   managed coverage.
-- **Breaking (library API):** `ServerRuntimeCapabilities` gained a `SessionRestartContinuation`
-  positional parameter reporting that restart continuation is not a supported product feature. The
-  capabilities JSON simply gains a field — additive and safe for HTTP consumers — but the record's
-  primary constructor changed, so C# code constructing `ServerRuntimeCapabilities` directly must be
-  updated.
+- **Breaking (library API):** several public diagnostic records gained positional parameters, so
+  their primary constructors changed. HTTP consumers are unaffected — the JSON only gains fields,
+  which is additive — but C# code constructing these types directly must be updated:
+  - `ServerRuntimeCapabilities` → `SessionRestartContinuation`, reporting whether restart
+    continuation is available (true only for the persisted CPU-dense GGUF lane) with a reason.
+  - `ServerApiSurface` → `SessionLifecycle`, separating "the `/v1/sessions` routes are served" from
+    "session state survives a restart", which are different guarantees.
+  - `ServerStatusSnapshot` → `Configuration`, carrying the bound server options, the int8
+    activation-prefill gate, and the CPU batched-prefill receipt, so each is observable rather
+    than inferred.
+
+  New supporting records, none of which existed at 1.0.2: `ServerStatusConfiguration`,
+  `ServerStatusCpuBatchedPrefill`, `ServerStatusBoundConfiguration`, `ServerRuntimeResolution`.
 - CPU prefill no longer takes the int8 activation path for prompts made **entirely** of control /
   user-defined tokens, falling back to the exact F32 sequential route. Such prompts are structural
   probes rather than prose, and one two-token all-control input produced a final-logit cosine of
@@ -54,6 +66,9 @@ human-facing map that a raw commit graph cannot.
   every shipped shader is served from the committed SPIR-V table, so it is a dev-tooling dependency.
 - Managed CI, release validation, and the local package verifier now fail if test discovery finds
   zero tests, rather than allowing a green no-op test run.
+- Release validation packs and smoke-tests all three published packages: library execution, Server
+  compilation in a clean ASP.NET Core host, and CLI install/version execution from the exact local
+  feed. It no longer validates only the meta-package.
 
 ## Release notes policy
 

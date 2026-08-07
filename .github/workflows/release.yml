@@ -83,8 +83,15 @@ jobs:
           path: ./artifacts/test-results
           if-no-files-found: error
 
-      - name: Pack
-        run: dotnet pack -c Release -o ./artifacts/nupkg
+      # Do not let CI's release package gate drift from the local one. The verifier packs every
+      # published package, validates contents, restores/runs a clean library consumer, compiles a
+      # clean ASP.NET Core Server consumer, and installs/runs the CLI from that exact local feed.
+      # Managed tests already ran above, so this invocation only performs package validation.
+      - name: Pack and validate published packages
+        shell: pwsh
+        run: |
+          $version = (Select-String -LiteralPath Directory.Build.props -Pattern '<Version>([^<]+)</Version>' | Select-Object -First 1).Matches[0].Groups[1].Value
+          ./scripts/verify-nuget-package.ps1 -PackageVersion $version -Configuration Release -OutputDirectory ./artifacts/nupkg -SkipTests
 
       - name: List packages
         run: ls -la ./artifacts/nupkg

@@ -2,13 +2,15 @@
 
 **Status:** the narrow CPU-dense restart-continuation lane is proven on a real GGUF across two
 processes and is available from the server when `EnableSessions` and `SessionStorageDirectory`
-are configured. It remains CPU-dense GGUF only; the operation-result ledger is hot-only and the
-CLI has no named-session surface yet.
+are configured. It remains CPU-dense GGUF only; bounded completed operation results and
+idempotency records now restore with the session, while the CLI has no named-session surface yet.
 
 The server path itself is now acceptance-tested: a real CPU GGUF server creates a session through
 HTTP, completes and persists a turn, shuts down, then a fresh server process restores that session
 through `GET /v1/sessions/{id}` and completes its next turn. This is covered by
 `SessionLifecycle_RealCpuGguf_RestoresAcrossServerRestart`.
+That real-model cross-process proof was rerun successfully on 2026-08-07 after durable operation
+replay was added.
 
 ## Immediate work
 
@@ -16,19 +18,21 @@ through `GET /v1/sessions/{id}` and completes its next turn. This is covered by
    capability refusal outside it. **Loader/DI seam complete:** `EnableSessions` now constructs
    and publishes `IServerSessionRuntime` only for CPU-dense GGUF batching. `POST`, `GET`, and
    `DELETE /v1/sessions` plus append-only `POST /v1/sessions/{id}/turns` now provide the hot
-   named-session shell, including optimistic revisions and idempotency IDs. Hot clients can
-   reconnect after losing a turn response through `GET /v1/sessions/{id}/operations/{operationId}`
-   and recover its retained result without rerunning it. With `SessionStorageDirectory`, completed
-   turns persist and restore on demand. `/capabilities` explicitly reports that operation-result/
-   idempotency persistence is unavailable: records and the lookup result are memory-only, so
-   restart continuation must not be presented as durable retry replay. A bounded durable
-   operation-result pack/journal is the next slice.
+   named-session shell, including optimistic revisions and idempotency IDs. Clients reconnect
+   after losing a turn response through `GET /v1/sessions/{id}/operations/{operationId}` and
+   recover its retained result without rerunning it. With `SessionStorageDirectory`, completed
+   turns, their bounded completed-operation ledger, and KV state persist and restore on demand.
+   A fresh server is acceptance-tested to look up and idempotently replay a pre-restart operation.
+   `/capabilities` publishes this as available only for that CPU-dense persisted lane. The ledger
+   is intentionally bounded by both record retention and a 1 MiB pack ceiling; old or oversized
+   results can be pruned and must not be treated as an archival transcript.
 2. Add a backend/cache conformance matrix for hot reuse, rollback, persistence, and restart.
    Its persisted ABI must represent per-layer KV/head dimensions and V-region stride; a single
    model-level `headDim` silently corrupts Gemma-class mixed-dimension caches.
 3. Exercise interrupted writes, corrupt packs, ABI mismatch, quotas, and eviction ownership.
-   - Corrupt KV-pack restore is now covered at the cold-runtime boundary: both `Open` and
-     `OpenOrCreate` refuse a damaged persisted pack rather than admitting partial state.
+   - Corrupt KV-pack and completed-operation-ledger restore are covered at the cold-runtime
+     boundary: both `Open` and `OpenOrCreate` refuse a damaged persisted pack rather than
+     admitting partial state or silently forgetting a replayable completed turn.
    - Re-persistence now writes a new generation of packs before atomically publishing its
      manifest. A crash before publication leaves the prior manifest and every referenced pack
      intact; stale generations are reclaimed only afterward.

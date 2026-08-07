@@ -38,9 +38,9 @@ The acceptance test must use a real GGUF, not a fake forward pass. It must:
 `HotSessionGreedyReplayTests.ColdSession_RealModel_CrossProcessRestore_MatchesFullGreedyReplay`
 passed on the local CPU-dense SmolLM2 GGUF on 2026-08-07. It uses two child processes and fresh
 runtime objects, then compares each generated segment to full replay. That clears the reference
-lane's proof, not every backend/cache family or a product-surface commitment; `inspect` continues
-to report restart continuation as unsupported until the named-session lifecycle is exposed and
-capability-gated.
+lane's proof and the CPU-dense named-session product surface: it is now lifecycle- and
+capability-gated, with bounded completed-operation replay after restart. It does not prove every
+backend/cache family; those remain separate rows rather than being inferred from the CPU result.
 
 ## History and release notes
 

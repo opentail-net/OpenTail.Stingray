@@ -7,16 +7,17 @@
 .PARAMETER Variant
     Build variant: cpu, vulkan, cuda-12.4, cuda-13.1 (default: cpu)
 .PARAMETER Version
-    Release tag (default: b8585)
+    Release tag (default: b10306). This baseline recognizes the Gemma 4 GGUF architecture;
+    b8585, the previous default, does not.
 .EXAMPLE
     .\setup-llamacpp.ps1
     .\setup-llamacpp.ps1 -Variant vulkan
-    .\setup-llamacpp.ps1 -Variant cuda-12.4 -Version b8585
+    .\setup-llamacpp.ps1 -Variant cuda-12.4 -Version b10306
 #>
 param(
     [ValidateSet("cpu", "vulkan", "cuda-12.4", "cuda-13.1")]
     [string]$Variant = "cpu",
-    [string]$Version = "b8585"
+    [string]$Version = "b10306"
 )
 
 $ToolsDir = Join-Path $PSScriptRoot "..\tools\llama.cpp"

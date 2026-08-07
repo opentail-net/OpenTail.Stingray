@@ -22,9 +22,11 @@ Hardware that cannot be validated on this PC is intentionally separated in
 
 ## Priority 1 — release-quality and operator hardening
 
-1. **Productize the proven CPU-dense restart lane.** The real SmolLM2 GGUF cross-process proof
-   (persist child exit → fresh runtime restore → greedy continuation → token-for-token replay) now
-   passes. Expose a minimal named-session lifecycle only for that capability-gated lane.
+1. **CPU-dense session core is productized; close its release gate.** The capability-gated named
+   lifecycle, durable KV/cursor state, bounded completed-operation replay, and real SmolLM2 GGUF
+   cross-process proof (persist child exit → fresh runtime restore → greedy continuation →
+   token-for-token replay) now pass. Remaining work is release packaging/CPU-runner evidence and
+   the broader cache-conformance matrix, not another session API spike.
 2. **Hardware release runners.** Attach reproducible CPU AVX2, CUDA dense, Vulkan, hybrid MoE,
    MTP/speculation, and real-session results to the release notes. Local CPU/Vulkan work stays
    here; NVIDIA/CUDA and ARM64-only receipts are tracked in
@@ -57,12 +59,14 @@ References: [release-quality-test-matrix.md](release-quality-test-matrix.md),
    Gemma 12B geometry (8 KV heads, 256-wide SWA and 512-wide global heads) across a page boundary,
    and `PrefillAttentionSeamTests` pins the oracle-free position-zero invariant — attention output
    equals V, broadcast across every GQA/MQA group. The available real E4B q4_0 fixture also passes
-   the CPU prefill/decode smoke on this corrected path. The remaining work is **dense 12B** model
-   acquisition and its CPU/CUDA/hybrid acceptance sequence, not another synthetic Vulkan shader
+   the CPU prefill/decode smoke on this corrected path. The dense 12B QAT q4_0 model is now
+   acquired, and its real CPU coherent-prefill/decode guard passes on the corrected cache layout.
+   The remaining work is its long-position/reference and CUDA/hybrid acceptance sequence, not another synthetic Vulkan shader
    shape. Do this before revisiting integrated-GPU memory detection or Vulkan performance. Treat
    Q8_0 only as a cross-format check when a supported deployment path needs it.
-2. **Gemma 4 validation.** Re-run dense 12B no-PLE validation after the per-layer V-cache stride
-   fix, then exercise E4B vision plans on real fixtures.
+2. **Gemma 4 validation.** Dense 12B CPU coherence now also crosses the real 1,024-token SWA
+   boundary. Finish CPU↔reference parity, then run CUDA/hybrid parity externally and exercise E4B
+   vision plans on real fixtures.
    E4B text now has a real Q4_0 CPU CLI smoke (including the absent-shared-KV-norm variant),
    but that does not validate its unimplemented `gemma4v`/`gemma4a` encoders.
 3. **Qwen3.5 MoE/GDN.** Use the authoritative tensor layout, not the superseded SSM plan.

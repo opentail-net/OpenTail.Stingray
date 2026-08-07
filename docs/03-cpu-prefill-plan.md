@@ -34,6 +34,18 @@ per-token fallback.
 
    Note what this does *not* claim: Q8 prefill is still an approximation on ordinary prompts, and
    its quality gate remains perplexity, not a unit test.
+
+   **Initial corpus receipt (2026-08-07):** on the first 64 Wikitext-2 test tokens with
+   `Qwen3-8B-Q4_K_M`, CPU batched prefill at a 64-token chunk scored **25.9500 PPL** with Q8
+   enabled versus **25.8974 PPL** with `STINGRAY_CPU_PREFILL_Q8=0` (mean-NLL delta 0.002027),
+   while throughput was **19.02** versus **6.26 tok/s**. This is a focused quality/performance
+   smoke, not the required multi-length, interleaved release measurement.
+
+   **Packed-admission regression (2026-08-07):** an all-control request in a packed admission
+   batch now forces the *whole* batch through exact sequential F32 admission. Previously the
+   stated whole-batch fallback called `PrefillWithCache` for each neighbour, allowing ordinary
+   neighbours back onto Q8 and making their numerical path arrival-dependent. The new mixed
+   control/ordinary regression pins both logits against token-by-token decode.
 4. Measure prefill with interleaved arms, warm-up, multiple samples, and recorded hardware settings.
 5. Verify continuous batching, packed prefill, cancellation, speculation, and fallback.
 

@@ -814,8 +814,13 @@ public sealed class RunCommand : Command<RunCommand.Settings>
             // ── 4. Build engine objects.
             hp = ModelHyperparams.FromGgufMetadata(stTensorSource.Metadata, stTensorSource);
             tokenizer = GgufTokenizer.FromSource(tokResult.Source);
+            // Resolve the requested scratch/context ceiling BEFORE constructing the CPU pass.
+            // RunSinglePrompt rejects a prompt that would leave no decode slot, so this cannot
+            // turn an oversized prompt into an unsafe undersized-scratch prefill.
+            ctxSize = settings.CtxSize > 0 ? settings.CtxSize
+                : settings.Auto && resolvedPlan is not null ? resolvedPlan.ContextSize : 0;
             cpuBackend = new CpuBackend();
-            fwd = new ForwardPass(stTensorSource, cpuBackend, hp);
+            fwd = new ForwardPass(stTensorSource, cpuBackend, hp, maxContextLength: ctxSize);
 
             // Populate shared state the decode loop reads (mirrors the GGUF path below).
             s_arch = stTensorSource.Metadata.TryGetValue("general.architecture", out var stArchVal)
@@ -832,9 +837,6 @@ public sealed class RunCommand : Command<RunCommand.Settings>
                 AnsiConsole.MarkupLine("[yellow]Warning:[/] Greedy decoding (--temp 0) on a reasoning model often produces");
                 AnsiConsole.MarkupLine("infinite \"wait, but actually\" loops. Consider [yellow]--temp 0.6 --top-p 0.95 --top-k 20[/].");
             }
-
-            ctxSize = settings.CtxSize > 0 ? settings.CtxSize
-                : settings.Auto && resolvedPlan is not null ? resolvedPlan.ContextSize : 0;
 
             // ── 5. Wire forward/prefill/resetCache — same shape as the GGUF CPU path.
             // GPU offload is refused above, so the shared decode loop must see a CPU-only count.
@@ -956,7 +958,8 @@ public sealed class RunCommand : Command<RunCommand.Settings>
                 : settings.PrefillDequantCacheMb == long.MinValue
                     ? long.MinValue // auto / STINGRAY_PREFILL_DEQUANT_MB
                     : ForwardPass.MbToBudgetBytes(settings.PrefillDequantCacheMb);
-            fwd = new ForwardPass(model, cpuBackend, hp, prefillDequantCacheBytes: dequantBytes);
+            fwd = new ForwardPass(model, cpuBackend, hp, maxContextLength: ctxSize,
+                prefillDequantCacheBytes: dequantBytes);
         }
 
 
@@ -1451,8 +1454,12 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         }
 
     backendConfigured:
+        int activeContextLength = (gpuFwd as IForwardPass)?.MaxSeqLen
+            ?? (fwd as IForwardPass)?.MaxSeqLen
+            ?? (hybridFwd as IForwardPass)?.MaxSeqLen
+            ?? hp.ContextLength;
         AnsiConsole.MarkupLine($"[dim]Model loaded in {sw.Elapsed.TotalSeconds:F1}s — " +
-            $"{hp.NumLayers}L, {hp.EmbeddingDim}d, headDim={hp.HeadDim}, {hp.VocabSize} vocab, ctx={hp.ContextLength}[/]");
+            $"{hp.NumLayers}L, {hp.EmbeddingDim}d, headDim={hp.HeadDim}, {hp.VocabSize} vocab, ctx={activeContextLength}[/]");
 
         // ── Tool calling (optional) ───────────────────────────────────────────────
         // --tools advertises OpenAI-format tool definitions to the model via its chat template;
@@ -1829,10 +1836,13 @@ public sealed class RunCommand : Command<RunCommand.Settings>
 
         try
         {
+            IForwardPass activeForwardPass = (gpuFwd as IForwardPass) ?? (fwd as IForwardPass) ?? (hybridFwd as IForwardPass)
+                ?? throw new InvalidOperationException("No forward pass was configured.");
             if (settings.ImagePaths is { Length: > 0 })
-                return RunImagePrompt(settings, (gpuFwd as IForwardPass) ?? fwd!, tokenizer, hp, sp, rng);
+                return RunImagePrompt(settings, activeForwardPass, tokenizer, hp, sp, rng);
             if (settings.Prompt is not null)
-                return RunSinglePrompt(settings, forward, prefill, tokenizer, sp, rng, mtpFwd);
+                return RunSinglePrompt(settings, forward, prefill, tokenizer, sp, rng, mtpFwd,
+                    activeForwardPass.MaxSeqLen);
             return RunInteractive(settings, forward, prefill, resetCache, tokenizer, sp, rng, mtpFwd);
         }
         catch (Exception ex)
@@ -2204,7 +2214,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         Func<int, int, ReadOnlySpan<float>> forward,
         Func<IReadOnlyList<int>, ReadOnlySpan<float>> prefill,
         GgufTokenizer tok, SamplingParams sp, Random rng,
-        IForwardPass? mtpFwd)
+        IForwardPass? mtpFwd, int maxContextLength)
     {
         var prompt = FormatPrompt(s.Prompt!, s.SystemPrompt, enableThinking: !s_noThinking);
         var tokens = tok.Encode(prompt);
@@ -2219,6 +2229,18 @@ public sealed class RunCommand : Command<RunCommand.Settings>
             var withBos = new List<int>(tokens.Count + 1) { tok.BosTokenId };
             withBos.AddRange(tokens);
             tokens = withBos;
+        }
+
+        // The final prompt token occupies one context slot and ordinary generation needs at
+        // least one more. Check after every tokenizer/BOS transformation and before Prefill:
+        // ForwardPass uses this same bound for its scratch allocation, so admitting an oversized
+        // prompt after wiring --ctx-size would be an unsafe write, not a harmless truncation.
+        if (tokens.Count >= maxContextLength)
+        {
+            AnsiConsole.MarkupLine(
+                $"[red]Error:[/] prompt has {tokens.Count} tokens but the active context is " +
+                $"{maxContextLength}; shorten the prompt or raise [yellow]--ctx-size[/] so at least one token can be generated.");
+            return 1;
         }
 
         if (s.VerbosePrompt)

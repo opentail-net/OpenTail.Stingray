@@ -22,8 +22,8 @@
 | Hardening / fuzzing | **DONE 2026-08-05** (R9). Mutation-verified parser, shard-index, config and tokenizer boundaries. |
 | Phases 4-6 | **NOT STARTED.** |
 
-**The R1-R10 SafeTensors acceptance items below are closed.** R11 remains a separate, pre-existing
-CLI context-sizing correctness investigation; it is not a SafeTensors release blocker.
+**The R1-R11 SafeTensors acceptance items below are closed.** The remaining Phases 4-6 work is
+deliberate feature expansion, not a CPU-dense SafeTensors release blocker.
 
 **SafeTensors CPU execution is proven end-to-end.** Inspection, configuration, tokenization, tied
 embeddings and BF16 widening work against real models; differential GGUF parity tests verify
@@ -110,23 +110,18 @@ R1-R4 are defects in code that is already committed — they are not new feature
 | R7 | `--ctx-size` unconfirmed on the package path | **DONE 2026-08-05.** Package server path passes the effective context to `ForwardPass`; integration assertion covers it. | Phase 3 sign-off |
 | R8 | Model format not persisted in session/plan state | **DONE 2026-08-05.** Typed discriminator persists in plans and session state/manifests. | Phase 3 sign-off |
 | R9 | Hostile-package fixtures and fuzzing | **DONE 2026-08-05.** Bounded mutation corpus and full fixture matrix. | Phase 3 item 4, release |
-| R11 | `--ctx-size` not passed to `ForwardPass` on the **CLI** CPU path, both formats | Minor, pre-existing | nothing here |
+| R11 | `--ctx-size` not passed to `ForwardPass` on the **CLI** CPU path, both formats | **DONE 2026-08-07.** CPU CLI construction now receives the resolved context and rejects prompts that leave no decode slot. | nothing here |
 | R12 | Compatibility-key formula changed; v1 sessions could not match it | **DONE 2026-08-05.** GGUF hashes as before; only non-GGUF appends the format. | session restore |
 | R10 | Q8_0 numerical accuracy never compared to GGUF | **CLOSED 2026-08-05.** No Q8_0 SafeTensors path remains to advertise. | advertising Q8_0 |
 
-**R11. `--ctx-size` reaches the forward pass on the server but not the CLI.** R7 fixed
-`InferenceEngineLoader`. `RunCommand` builds `ForwardPass` without `maxContextLength` on the package
-path (`:671`) *and* the GGUF CPU path (`:812`), so both formats behave identically — not a SafeTensors
-regression.
-
-**This is smaller than it first sounds, and the fix is not free.** `ForwardPass` documents that
-`ctxLen` "only governs scratch buffer sizes; PagedKvCache allocates pages lazily", so `--ctx-size` on
-CPU is not silently mis-sizing the KV cache — it leaves scratch at `min(hp.ContextLength, 32768)`
-instead of the requested bound. Wiring `ctxSize` in would shrink scratch to the requested context, and
-scratch smaller than an oversized prompt is a heap overflow in `unsafe` code, so it requires first
-proving the CLI clamps prompt length to `ctxSize`. **The server already carries that exposure via R7 —
-check it there too.** Deliberately not done as a "quick" item; it is a correctness question wearing a
-one-line-change costume.
+**R11 — DONE 2026-08-07. `--ctx-size` reaches the forward pass on the CLI CPU path.** Both the
+GGUF and SafeTensors branches now resolve the context before constructing `ForwardPass` and pass it as
+`maxContextLength`. `RunSinglePrompt` checks the fully formatted/tokenized prompt (including a raw-path
+BOS insertion) before prefill and rejects any prompt that leaves no decode slot. This is load-bearing:
+the CPU context bound sizes unsafe scratch buffers, so silently admitting an oversized prompt would not
+be safe truncation. The CLI now displays the active forward-pass context rather than the model header's
+maximum. Direct GGUF and SafeTensors runs prove `-c 1` fails cleanly for a 32-token prompt and `-c 128`
+loads, reports `ctx=128`, and generates; the complete CLI Release suite passes 361/361.
 
 **R12 — RESOLVED 2026-08-05. The compatibility-key formula no longer changes GGUF hashes.**
 

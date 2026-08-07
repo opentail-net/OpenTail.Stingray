@@ -61,6 +61,8 @@ builder.Services.AddOpenTailStingray(builder.Configuration);
 | `GET  /v1/models`              | OpenAI Models            |
 | `GET  /health`, `/metrics`     | Liveness + Prometheus    |
 | `GET  /capabilities`           | Read-only protocol/configuration diagnostics |
+| `POST/GET/DELETE /v1/sessions` | Opt-in CPU-dense GGUF named-session lifecycle |
+| `GET /v1/sessions/{id}/operations/{operationId}` | Bounded idempotent-result reconnect lookup |
 
 Streaming (SSE) is enabled for every chat/completion endpoint, and the JSON pipeline is wired through a source-generated `JsonSerializerContext` so the package is AOT-friendly even though the project itself is not AOT-published.
 
@@ -89,6 +91,19 @@ public sealed class OpenTailStingrayServerOptions
 Override `EngineFactory` in tests to inject a fake `IInferenceEngine`; the rest of the DI graph (chat-template renderer, metrics, JSON context) stays intact.
 
 For CPU-only deployments, `OpenTail.Stingray:CpuThreads` (or `STINGRAY_CPU_THREADS`) controls the SIMD-kernel worker count. Leave it at `0` to use all logical processors. If the host is shared with other CPU- or memory-bandwidth-heavy work, benchmark a smaller value — oversubscribing these memory-bound kernels can lower tokens/sec.
+
+### Persisted named sessions (CPU-dense GGUF only)
+
+Set `EnableSessions = true` and a `SessionStorageDirectory` to enable named sessions for the
+built-in CPU-dense GGUF batching lane. A completed turn persists its cursor, KV state, and a
+bounded completed-operation result ledger. After a restart, clients can reopen the session or
+retrieve/replay a retained operation through the routes above. This is not an archival transcript:
+old or oversized operation results may be pruned. CUDA, Vulkan, hybrid, TurboQuant, and other
+cache families deliberately report sessions unavailable rather than accepting a request they
+cannot restore safely.
+
+Sessions do not add authentication or tenancy policy. Apply those controls at the host or reverse
+proxy before exposing `/v1/sessions` outside a trusted local boundary.
 
 ## Sampling
 

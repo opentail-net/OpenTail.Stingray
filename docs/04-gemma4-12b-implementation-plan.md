@@ -1,15 +1,23 @@
 # Gemma 4 12B (dense `gemma4_unified`) — CUDA / CUDA-Hybrid Implementation Plan
 
-Status: planning, no code written yet. Targets the **dense 12B** member of the Gemma 4
-family released 2026-06-03. CUDA-Hybrid + full-CUDA are the first iteration; CPU is second,
-Vulkan last.
+Status: **real 12B QAT q4_0 is locally acquired and the CPU dense coherence guard passes**
+(2026-08-07). `inspect --json` reports architecture `gemma4`, 48 layers, 262,144 context,
+512 model head dimension, 8 KV heads, 11.9B parameter elements, and a supported CPU route.
+The remaining work is long-position/reference validation plus CUDA/hybrid/Vulkan execution;
+this PC has no CUDA device. Targets the **dense 12B** member of the Gemma 4 family released
+2026-06-03.
+
+**Long-position CPU receipt (2026-08-07):**
+`Gemma4_12B_CpuForward_CrossesSlidingWindowBoundary` passed against the real QAT q4_0 GGUF.
+It admits 1,025 tokens (one beyond the 1,024-token SWA window), then greedily decodes while
+checking finite, non-EOS, non-degenerate logits. The persisted acceptance result took 4m 50.7s.
 
 > **Validation reset (2026-08-07):** discard any earlier dense-12B inference receipt made before
 > the per-layer V-cache stride correction. Its global MQA layers use KV head 0 and could appear
 > correct under the wrong stride, while its SWA GQA layers would be corrupted. Re-run the complete
 > CPU/CUDA/hybrid acceptance sequence against the fixed cache layout.
 
-> **Fixed-path guard (2026-08-07):** this failure mode is now locked below real 12B acquisition:
+> **Fixed-path guard (2026-08-07):** this failure mode is now locked below real 12B execution:
 > `PagedKvCacheTests.PerLayerHeadDim_ProductionGemmaGeometry_RoundTripsEveryValuePlane` covers
 > 8 KV heads at 256/512 dimensions across a page boundary, and
 > `PrefillAttentionSeamTests.BatchedCausalAttention_PositionZeroReturnsVForEveryGqaGroup` pins
@@ -153,13 +161,17 @@ template-parse exceptions, so assert non-empty coherent output rather than trust
 Ordering follows the user's priority: **CUDA-Hybrid & CUDA → CPU → Vulkan.** Because the trunk
 already exists, phases are validation-and-fill rather than greenfield.
 
-### Phase 0 — Acquire + dump the real 12B GGUF header  *(prerequisite, off-box)*
+### Phase 0 — Acquire + dump the real 12B GGUF header  *(locally complete for QAT q4_0)*
 On a host with HF access, fetch `gemma-4-12b-it-Q4_K_M.gguf`, dump `general.architecture`, all
 `gemma4*.{block_count,embedding_length,feed_forward_length,attention.*,rope.*}` keys, the
 `sliding_window_pattern` bool[], and the full tensor inventory (confirm **absence** of
 `per_layer_*` and `layer_output_scale`, **presence** of `rope_freqs.weight`). Check this dump
 into `tests/fixtures/gemma4_12b_header.md`. **Everything below is gated on this ground truth.**
-*Risk: low (data-gathering). Blocker: needs HF egress.*
+**Receipt (2026-08-07):** `gemma-4-12b-it-qat-q4_0.gguf` and its `mmproj` are present locally.
+The in-product inspect receipt confirms `general.architecture = gemma4`, 48 layers, 262,144
+context, 262,144 vocabulary, 8 KV heads, and q4_0/Q6_K/F32 tensor storage. The CPU
+`Gemma4_12B_CpuForward_ProducesCoherentDecode` real-model test passes after the V-cache stride
+fix. Preserve a full metadata/tensor dump before treating every Phase-0 question as closed.
 
 ### Phase 1 — Architecture-string + metadata wiring (G1)
 Make `gemma4_unified` (if that's the GGUF arch) a first-class alias of `gemma4` in the NEOX
@@ -198,6 +210,10 @@ render + EOG stop for the 12B. *Risk: low.*
 Exercise the dense no-PLE branch in `ForwardPass.cs` (CPU). Same parity fixture as Phase 3. The
 CPU gemma4 trunk already exists (GeluTanhMul, dual-RoPE tables, SWA, post-norms); this is
 validation + any no-PLE-specific fixes. *Risk: medium.*
+
+**Partial completion:** the real CPU coherence guard and the 1,025-token SWA-boundary guard now
+pass. CPU↔llama.cpp greedy/reference parity remains open; do not treat coherence alone as a
+reference-accuracy claim.
 
 ### Phase 6 — Vulkan backend *(last priority)*
 Bring `GpuForwardPass` (Vulkan) to gemma4 dense parity: confirm SPIR-V shaders exist for
