@@ -25,6 +25,7 @@ public sealed record ServerStatusSnapshot(
     ServerStatusCache Cache,
     ServerStatusMemory Memory,
     ServerStatusBatching? Batching,
+    ServerStatusConfiguration Configuration,
     string[] Warnings)
 {
     /// <summary>Schema version of the emitted document. Bump on any breaking field change.</summary>
@@ -45,7 +46,8 @@ public sealed record ServerStatusSnapshot(
         OpenTailStingrayServerOptions options,
         IInferenceEngine engine,
         ServerMetrics metrics,
-        int admissionCapacity)
+        int admissionCapacity,
+        ServerEnvironmentOverrideReceipt? environmentOverrides = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(engine);
@@ -153,6 +155,7 @@ public sealed record ServerStatusSnapshot(
             Cache: cache,
             Memory: memory,
             Batching: batchingStatus,
+            Configuration: new ServerStatusConfiguration([.. (environmentOverrides?.Names ?? [])]),
             Warnings: BuildWarnings(engine, traffic, cache, batchingStatus, saturated));
     }
 
@@ -224,6 +227,9 @@ public sealed record ServerStatusTraffic(
     int QueuedRequests,
     int AdmissionCapacity,
     long OverloadRejectionsTotal);
+
+/// <summary>Non-sensitive configuration provenance. Values and paths are deliberately omitted.</summary>
+public sealed record ServerStatusConfiguration(IReadOnlyList<string> EnvironmentOverrides);
 
 /// <summary>Serving-latency summaries rendered from the same bounded histograms as <c>/metrics</c>.</summary>
 public sealed record ServerStatusLatency(

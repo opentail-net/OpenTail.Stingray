@@ -104,4 +104,21 @@ public sealed class ResponseTimingExtensionTests
         Assert.True(timing.GetProperty("total_ms").GetDouble() >= 0);
         Assert.True(timing.GetProperty("time_to_first_token_ms").GetDouble() >= 0);
     }
+
+    [Fact]
+    public async Task Responses_OptedInRequest_ReturnsTimingWithPositiveTotalMs()
+    {
+        var client = CreateClient();
+        var response = await client.PostAsJsonAsync("/v1/responses", new
+        {
+            model = "test-model",
+            input = "hi",
+            opentail_timing = true,
+        });
+
+        using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        var timing = doc.RootElement.GetProperty("opentail_timing");
+        Assert.True(timing.GetProperty("total_ms").GetDouble() >= 0);
+        Assert.True(timing.GetProperty("time_to_first_token_ms").GetDouble() >= 0);
+    }
 }

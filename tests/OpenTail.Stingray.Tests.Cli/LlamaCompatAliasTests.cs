@@ -63,6 +63,8 @@ public sealed class LlamaCompatAliasTests
     [Theory]
     [InlineData("-c")]
     [InlineData("--ctx-size")]
+    [InlineData("-ctx")]
+    [InlineData("--n-ctx")]
     public void CtxSizeAliases_AllBind(string alias)
     {
         var (s, err) = Bind(alias, "4096");
@@ -75,6 +77,7 @@ public sealed class LlamaCompatAliasTests
     [Theory]
     [InlineData("-n")]
     [InlineData("--n-predict")]
+    [InlineData("-npredict")]
     public void NPredictAliases_AllBind(string alias)
     {
         var (s, err) = Bind(alias, "256");

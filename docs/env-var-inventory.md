@@ -20,6 +20,21 @@ one of:
 
 Until a variable is classified, treat it as `experimental` — the safe assumption.
 
+## Ownership register — product-facing variables (reviewed)
+
+The generated inventory below remains the complete source list. This register records the
+high-confidence deployment surface that may be documented or represented in effective
+configuration; all names not listed here remain `experimental` pending an owner review. In
+particular, a kernel-selection, bypass, ablation, trace, probe, profile, or `*_BENCH` switch is
+not a supported profile setting.
+
+| Class | Variables |
+|---|---|
+| stable | `STINGRAY_BACKEND`, `STINGRAY_MODEL`, `STINGRAY_N_GPU_LAYERS`, `STINGRAY_MAX_BATCH`, `STINGRAY_MAX_CONCURRENT`, `STINGRAY_MAX_QUEUE`, `STINGRAY_MAX_QUEUED_REQUESTS`, `STINGRAY_KV_BUDGET_MB`, `STINGRAY_NO_THINKING`, `STINGRAY_PRESERVE_THINKING` |
+| expert | `STINGRAY_CPU_THREADS`, `STINGRAY_KV_DTYPE`, `STINGRAY_MMPROJ`, `STINGRAY_MIN_BATCH_BLAS`, `STINGRAY_PREFILL_CHUNK`, `STINGRAY_PREFILL_DEQUANT_MB`, `STINGRAY_PREFIX_CACHE_MB`, `STINGRAY_TQ`, `STINGRAY_TQ_MODE`, `STINGRAY_SNAPKV_BUDGET`, `STINGRAY_TOOL_GRAMMAR`, `STINGRAY_CPU_MOE`, `STINGRAY_MOE_PREDICT_PREFETCH`, `STINGRAY_MOE_WARMPIN`, `STINGRAY_MOE_WARMPIN_AFTER`, `STINGRAY_MTP_DRAFT_N`, `STINGRAY_MTP_BATCH_MAX`, `STINGRAY_RAW_PROMPT`, `STINGRAY_SDCPP` |
+| diagnostic | `STINGRAY_EXPERT_STATS`, `STINGRAY_TRACE_DSPARK`, `STINGRAY_TRACE_GDN_INTERNAL`, `STINGRAY_TRACE_GDN_LAYERS`, `STINGRAY_TRACE_GDN_POS`, `STINGRAY_TRACE_LAYERS`, `STINGRAY_TRACE_MTP`, `STINGRAY_TRACE_NORMS`, `STINGRAY_TRACE_POS`, `STINGRAY_TRACE_ROUTERS`, `STINGRAY_TRACE_SNAPSHOT`, `STINGRAY_TRACE_VRAM`, `STINGRAY_CUDA_PROFILE`, `STINGRAY_DECODE_PROFILE`, `STINGRAY_PREFILL_PROFILE`, `STINGRAY_PROFILE_DECODE`, `STINGRAY_PROFILE_PREFILL`, `STINGRAY_PROBE_IDS`, `STINGRAY_PROBE_LOGITS`, `STINGRAY_PROBE_POS`, `STINGRAY_VULKAN_VALIDATION` |
+| experimental | `STINGRAY_DSPARK_MODEL`, `STINGRAY_DSPARK_PLACE`, `STINGRAY_DSPARK_MIN_CONFIDENCE`, `STINGRAY_DSPARK_VERIFY_LEN`, `STINGRAY_DSPARK_TIMING`, `STINGRAY_MOE_GPU_PREFILL`, `STINGRAY_MOE_GPU_PREFILL_MIN_TOKENS`, `STINGRAY_MOE_PIN_MODE`, `STINGRAY_DISABLE_MTP`, `STINGRAY_SPEC_SAMPLE` |
+
 **Retirement is the point, not documentation.** The QoL plan inventories these but retires none.
 A surface of 141 variables is itself the usability defect. Expect a meaningful fraction to be
 `bench` or `diagnostic` leftovers that should be deleted outright rather than documented forever;

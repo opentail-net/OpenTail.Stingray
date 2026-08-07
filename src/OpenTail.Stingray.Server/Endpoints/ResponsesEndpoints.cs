@@ -130,6 +130,7 @@ public static class ResponsesEndpoints
             await WriteEvent(ctx.Response, "response.completed",
                 JsonSerializer.Serialize(completedEvent, OpenTailStingrayJsonContext.Default.RespCompletedEvent));
 
+            timing.MarkGenerationComplete();
             await ctx.Response.Body.FlushAsync(ctx.RequestAborted);
             metrics.RecordTokens(tokenCount);
         }
@@ -149,8 +150,11 @@ public static class ResponsesEndpoints
             var usage = new RespUsage(0, (int)tokenCount, (int)tokenCount);
             var item = new RespOutputItem(itemId, "message", "assistant",
                 [new RespContentPart("output_text", text)]);
+            timing.MarkGenerationComplete();
             var response = new RespObject(responseId, "response", createdAt, modelId, "completed",
-                [item], usage);
+                [item], usage, req.OpentailTiming == true
+                    ? new OpenTailResponseTiming(timing.TimeToFirstTokenMs, timing.ElapsedMs)
+                    : null);
 
             ctx.Response.ContentType = "application/json";
             await ctx.Response.WriteAsync(
@@ -228,7 +232,8 @@ public sealed record ResponsesRequest(
     int? MaxOutputTokens,
     float? Temperature,
     float? TopP,
-    bool? Stream);
+    bool? Stream,
+    [property: System.Text.Json.Serialization.JsonPropertyName("opentail_timing")] bool? OpentailTiming = null);
 
 public sealed record RespObject(
     string Id,
@@ -237,7 +242,8 @@ public sealed record RespObject(
     string Model,
     string Status,
     RespOutputItem[] Output,
-    RespUsage Usage);
+    RespUsage Usage,
+    [property: System.Text.Json.Serialization.JsonPropertyName("opentail_timing")] OpenTailResponseTiming? OpenTailTiming = null);
 
 public sealed record RespOutputItem(
     string Id,

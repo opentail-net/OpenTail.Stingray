@@ -8,9 +8,15 @@ and typed host-key classification are now in place. Environment ownership and ex
 1. Classify every remaining environment variable; remove obsolete bench switches. The 41 typed
    server keys have a conservative ownership register in `host-config-inventory.md`.
 2. Extend effective configuration from static plan inputs to real server/loader startup values.
+   Server environment precedence is centralized in `ServerEnvironmentOverrides`; `/status`
+   publishes its non-sensitive applied-variable receipt. Remaining work is a source-tracked
+   snapshot of the bound configuration and loader-resolved decisions, without exposing values
+   such as filesystem paths.
 3. Extend the golden capability fixtures only where a loader actually executes the route. Static
    CPU/backend/dtype/batching/speculation decisions are covered; hardware rows remain release gates.
 4. Finish server observability: VRAM/RAM breakdown, streaming timing, and per-request cache signal.
+   The opt-in non-streaming timing extension now covers OpenAI, Anthropic, and Responses;
+   it deliberately remains absent from streaming event contracts.
 5. Add model/API compatibility corpus and protocol smoke coverage.
 6. Keep sessions out of the product configuration surface until restart continuation is proven.
 

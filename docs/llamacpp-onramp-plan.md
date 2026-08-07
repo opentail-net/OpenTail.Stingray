@@ -71,8 +71,8 @@ Zero new capability. Each entry is an extra token in an existing `[CommandOption
 | llama.cpp | Maps to | Note |
 |---|---|---|
 | `-ngl` | `--ngl` (exists as `--ngl\|--n-gpu-layers\|--gpu-layers\|-g`) | Add the single-dash spelling. |
-| `-ctx`, `--n-ctx` | `-c\|--ctx-size` | |
-| `-npredict` | `-n\|--n-predict` | |
+| `-ctx`, `--n-ctx` | `-c\|--ctx-size` | Implemented and binding-tested. |
+| `-npredict` | `-n\|--n-predict` | Implemented and binding-tested. |
 | `--n-predict -1` | `-n` | Confirm `-1` means "until EOS" here too, or refuse it. |
 | `-ctk` / `--cache-type-k` | `--kv-type` | **Only if semantics match.** If `--kv-type` sets both K and V, `-ctk`/`-ctv` disagreeing must be an error, not a silent merge. |
 | `-ctv` / `--cache-type-v` | `--kv-type` | Same caveat. |

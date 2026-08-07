@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using OpenTail.Stingray.Engine;
 
@@ -21,9 +22,11 @@ public static class StatusEndpoints
                 IInferenceEngine engine,
                 ServerMetrics metrics,
                 RequestConcurrencyGate admissionGate,
-                IOptions<OpenTailStingrayServerOptions> options) =>
+                IOptions<OpenTailStingrayServerOptions> options,
+                IServiceProvider services) =>
             Results.Json(
-                ServerStatusSnapshot.Create(options.Value, engine, metrics, admissionGate.Limit),
+                ServerStatusSnapshot.Create(options.Value, engine, metrics, admissionGate.Limit,
+                    services.GetService<ServerEnvironmentOverrideReceipt>()),
                 OpenTailStingrayJsonContext.Default.ServerStatusSnapshot));
         return app;
     }

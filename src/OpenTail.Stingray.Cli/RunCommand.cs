@@ -42,7 +42,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         [Description("Path to the multimodal projector GGUF (mmproj-*.gguf). Required with --image. Mirrors llama.cpp's --mmproj.")]
         public string? MmprojPath { get; init; }
 
-        [CommandOption("-n|--n-predict")]
+        [CommandOption("-n|--n-predict|-npredict")]
         [Description("Number of tokens to predict (default: 512)")]
         [DefaultValue(512)]
         public int NPredict { get; init; }
@@ -100,7 +100,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
             "Default: auto. Single-device only (no multi-GPU split). Mirrors llama.cpp's --device.")]
         public string? Device { get; init; }
 
-        [CommandOption("-c|--ctx-size")]
+        [CommandOption("-c|--ctx-size|-ctx|--n-ctx")]
         [Description("Context size / max sequence length (0 = model default)")]
         [DefaultValue(0)]
         public int CtxSize { get; init; }
