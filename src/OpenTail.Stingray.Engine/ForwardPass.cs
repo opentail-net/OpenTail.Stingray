@@ -2913,6 +2913,29 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
         // per-head schedule as the default; this switch retains the verified experiment without
         // promoting a result that is still within this machine's end-to-end noise floor. Both
         // arms call the same tile worker, so the switch isolates scheduling from arithmetic.
+        // KV-outer/query-inner reorder: packs each KV tile once per group of query tiles instead
+        // of once per query tile. Default since it measured +1.6% alone / +4.0% with the SIMD
+        // K-pack transpose, and it is bit-exact with the old schedule (Flash64KvOuterTests).
+        if (Flash64KvOuterEnabled)
+        {
+            int groupTiles = s_flash64KvOuterGroupTiles;
+            int maxQueries = Math.Min(tokenCount, groupTiles * Tile);
+            var kvOuterScratch = new ThreadLocal<PrefillFlash64KvOuterScratch>(
+                () => new PrefillFlash64KvOuterScratch(headDim, maxQueries), trackAllValues: true);
+            try
+            {
+                Parallel.For(0, numHeads, h =>
+                    ComputePrefillFlashAttention64KvOuterHead(batchQ, cache, layer, tokenCount, startPos,
+                        output, qDim, headDim, scale, h, h / headsPerKv, kvOuterScratch.Value!, groupTiles));
+            }
+            finally
+            {
+                foreach (PrefillFlash64KvOuterScratch s in kvOuterScratch.Values) s.Dispose();
+                kvOuterScratch.Dispose();
+            }
+            return;
+        }
+
         bool useTileJobs = Environment.GetEnvironmentVariable(
             "STINGRAY_PREFILL_ATTN_FLASH64_TILE_JOBS") == "1";
         if (!useTileJobs)
@@ -2946,6 +2969,200 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
         {
             foreach (PrefillFlash64Scratch scratch in threadScratch.Values) scratch.Dispose();
             threadScratch.Dispose();
+        }
+    }
+
+    /// <summary>
+    /// Default prefill-attention schedule since the 2x2 below; <c>STINGRAY_PREFILL_ATTN_KV_OUTER=0</c>
+    /// restores the previous one. Same arithmetic
+    /// as <see cref="ComputePrefillFlashAttention64Tile"/>, different loop order: KV tiles outside,
+    /// query tiles inside, so a KV tile's K and V are packed <b>once</b> and reused by every query
+    /// tile in the group instead of being repacked per query tile.
+    ///
+    /// <para><b>Why.</b> The default schedule is <c>for head → for queryTile → for kvTile: pack K;
+    /// GEMM</c>, so identical key data is transposed into the pack buffer once per query tile — at
+    /// 2048 tokens that is 32 repacks of the same bytes. This is a structural redundancy, not a
+    /// constant factor: it is the one thing in this kernel whose cost falls with a reorder rather
+    /// than with a faster instruction.</para>
+    ///
+    /// <para><b>Why it should be bit-exact.</b> Each query row still consumes KV tiles in ascending
+    /// order, so its online-softmax accumulator sees exactly the sequence it saw before — the
+    /// reorder is a loop interchange, not a reassociation. Two details preserve that. First,
+    /// <c>valid</c> is still derived from the query tile's own causal limit, so a group-packed K
+    /// tile that extends past a given query tile's reach has those columns zeroed by the existing
+    /// clear before P·V, contributing exactly <c>0 × v</c>. Second, a query tile that cannot reach
+    /// the current KV tile at all is skipped, which is precisely the iteration the old loop never
+    /// ran. <c>TileJobs_MatchHeadJobs_BitExactly</c> is therefore a valid gate for this path.</para>
+    ///
+    /// <para><b>MEASURED: this helps.</b> SmolLM2-1.7B Q4_K_M, 1550-token prefill, headDim 64,
+    /// 12 logical CPUs, 6 interleaved rounds per cell, as a 2×2 against the K-pack transpose
+    /// (<c>STINGRAY_CPU_KPACK_SIMD</c>), best-of-6 / median t/s:</para>
+    /// <code>
+    ///   kpack   kv-outer    best   median      vs baseline (best)
+    ///   scalar  off        148.3    143.7      baseline
+    ///   scalar  ON         150.6    147.2      +1.6%
+    ///   SIMD    off        152.8    148.7      +3.0%
+    ///   SIMD    ON         154.2    149.9      +4.0%
+    /// </code>
+    /// <para>The two are roughly additive, so they attack overlapping but not identical cost: the
+    /// SIMD transpose makes each pack cheaper, this reorder performs 7/8 fewer of them. The
+    /// baseline is worst on best, median AND worst-case, which is what makes this more than a
+    /// directional hint.</para>
+    ///
+    /// <para><b>A superseded earlier reading is recorded here deliberately.</b> A first 4-round
+    /// A/B measured only the SIMD-on row (152.8 vs 154.2 — about +0.9%) and reported it as "no
+    /// gain", and an op-count argument was offered to explain the null: the packs are ~8,192
+    /// element copies against ~524,000 GEMM MACs, so ~1.5% of the tile's work. That argument is
+    /// wrong, and the way it is wrong is worth keeping. It compares OPERATIONS, but the scalar
+    /// pack walks a column — one float per KV row, a row-sized stride between touches, the access
+    /// pattern that defeats prefetch — so its share of TIME far exceeds its share of ops. An
+    /// op-count Amdahl bound is not a time bound for memory-latency-bound work.</para>
+    ///
+    /// <para><b>Why grouped rather than whole-sequence.</b> Holding running max/sum and the output
+    /// accumulator live for every query tile at once costs <c>tokenCount × headDim</c> floats per
+    /// thread — about 2 MB per thread at 8192 tokens, times a thread per core. Grouping bounds that
+    /// to <c>groupTiles × 64 × headDim</c> (256 KB at the default 8 tiles and headDim 64, which
+    /// stays L2-resident) while still amortising the K-pack 8-fold, capturing most of an available
+    /// 32-fold saving for a fraction of the footprint.</para>
+    /// </summary>
+    private static void ComputePrefillFlashAttention64KvOuterHead(
+        float* batchQ, PagedKvCache cache, int layer, int tokenCount, int startPos,
+        float* output, int qDim, int headDim, float scale, int h, int kvHead,
+        PrefillFlash64KvOuterScratch scratch, int groupTiles)
+    {
+        const int Tile = 64;
+        bool bf16 = cache.IsBf16Store;
+        int queryTiles = (tokenCount + Tile - 1) / Tile;
+
+        for (int g0 = 0; g0 < queryTiles; g0 += groupTiles)
+        {
+            int gTiles = Math.Min(groupTiles, queryTiles - g0);
+            int qStart = g0 * Tile;
+            int qCount = Math.Min(tokenCount - qStart, gTiles * Tile);
+
+            for (int t = 0; t < qCount; t++)
+            {
+                scratch.RunningMax[t] = float.NegativeInfinity;
+                scratch.RunningSum[t] = 0f;
+                Buffer.MemoryCopy(batchQ + (long)(qStart + t) * qDim + h * headDim,
+                    scratch.QPack + (long)t * headDim, headDim * sizeof(float), headDim * sizeof(float));
+            }
+            new Span<float>(scratch.Accumulator, qCount * headDim).Clear();
+
+            int groupEnd = Math.Min(startPos + qStart + qCount, cache.Length);
+            for (int kvBase = 0; kvBase < groupEnd; kvBase += Tile)
+            {
+                int kLen = Math.Min(Tile, groupEnd - kvBase);
+
+                // ── Pack K and V ONCE for this KV tile (the whole point of the reorder) ──
+                if (bf16)
+                {
+                    for (int j = 0; j < kLen; j++)
+                        scratch.Bf16KeyRows[j] = cache.Bf16KeyAt(layer, kvBase + j) + kvHead * headDim;
+                    for (int d = 0; d < headDim; d++)
+                    {
+                        float* packedRow = scratch.KPack + d * Tile;
+                        int j = 0;
+                        for (; j < kLen; j++) packedRow[j] = SimdKernels.Bf16ToF32(scratch.Bf16KeyRows[j][d]);
+                        for (; j < Tile; j++) packedRow[j] = 0f;
+                    }
+                }
+                else
+                {
+                    for (int j = 0; j < kLen; j++)
+                        scratch.KeyRows[j] = cache.KeyAt(layer, kvBase + j) + kvHead * headDim;
+                    int jFull = 0;
+                    if (SimdKernels.KPackSimdEnabled && Avx.IsSupported && (headDim & 7) == 0)
+                    {
+                        jFull = kLen & ~7;
+                        for (int j0 = 0; j0 < jFull; j0 += 8)
+                            for (int d0 = 0; d0 < headDim; d0 += 8)
+                                SimdKernels.TransposeBlock8x8(
+                                    scratch.KeyRows + j0, d0, scratch.KPack + (long)d0 * Tile + j0, Tile);
+                    }
+                    for (int d = 0; d < headDim; d++)
+                    {
+                        float* packedRow = scratch.KPack + d * Tile;
+                        int j = jFull;
+                        for (; j < kLen; j++) packedRow[j] = scratch.KeyRows[j][d];
+                        for (; j < Tile; j++) packedRow[j] = 0f;
+                    }
+                }
+
+                if (bf16)
+                    for (int j = 0; j < kLen; j++)
+                        SimdKernels.WidenBf16ToF32(cache.Bf16ValueAtHead(layer, kvBase + j, kvHead),
+                            scratch.VPack + j * headDim, headDim);
+                else
+                    for (int j = 0; j < kLen; j++)
+                        Buffer.MemoryCopy(cache.ValueAtHead(layer, kvBase + j, kvHead),
+                            scratch.VPack + j * headDim, headDim * sizeof(float), headDim * sizeof(float));
+                new Span<float>(scratch.VPack + kLen * headDim, (Tile - kLen) * headDim).Clear();
+
+                // ── Every query tile in the group consumes the packed K/V ──
+                for (int qt = 0; qt < gTiles; qt++)
+                {
+                    int nBase = qStart + qt * Tile;
+                    int tn = Math.Min(Tile, tokenCount - nBase);
+                    if (tn <= 0) break;
+                    // Exactly the iterations the per-query-tile loop never ran: this tile's causal
+                    // reach ends at or before this KV tile, so it has no valid key here.
+                    if (kvBase >= Math.Min(startPos + nBase + tn, cache.Length)) continue;
+
+                    int qOff = nBase - qStart;
+                    float* qPack = scratch.QPack + (long)qOff * headDim;
+                    float* acc = scratch.Accumulator + (long)qOff * headDim;
+
+                    if (headDim != Tile || s_flash64StridedGemm)
+                        SimdKernels.GemmF32_6x2(qPack, scratch.KPack, scratch.Scores,
+                            tn, headDim, Tile, headDim, Tile, Tile);
+                    else
+                        SimdKernels.GemmF32_64x64_6x2(qPack, scratch.KPack, scratch.Scores, tn);
+
+                    for (int t = 0; t < tn; t++)
+                    {
+                        float* row = scratch.Scores + t * Tile;
+                        int valid = Math.Clamp(startPos + nBase + t + 1 - kvBase, 0, kLen);
+                        if (valid == 0)
+                        {
+                            new Span<float>(row, Tile).Clear();
+                            continue;
+                        }
+
+                        float tileMax = SimdKernels.ScaleAndMaxF32InPlace(row, valid, scale);
+                        float oldMax = scratch.RunningMax[qOff + t];
+                        float newMax = MathF.Max(oldMax, tileMax);
+                        float rescale = float.IsNegativeInfinity(oldMax) ? 0f : MathF.Exp(oldMax - newMax);
+                        float tileSum = SimdKernels.ExpMinusMaxSumInPlace(row, valid, newMax);
+                        new Span<float>(row + valid, Tile - valid).Clear();
+                        scratch.RunningMax[qOff + t] = newMax;
+                        scratch.RunningSum[qOff + t] = scratch.RunningSum[qOff + t] * rescale + tileSum;
+
+                        if (rescale != 1f)
+                        {
+                            var rescaleV = Vector256.Create(rescale);
+                            float* accRow = acc + (long)t * headDim;
+                            for (int d = 0; d < headDim; d += 8)
+                                Avx.Store(accRow + d, Avx.Multiply(Avx.LoadVector256(accRow + d), rescaleV));
+                        }
+                    }
+
+                    if (headDim != Tile || s_flash64StridedGemm)
+                        SimdKernels.GemmF32_6x2(scratch.Scores, scratch.VPack, acc,
+                            tn, Tile, headDim, Tile, headDim, headDim, accumulate: true);
+                    else
+                        SimdKernels.GemmF32_64x64_6x2(scratch.Scores, scratch.VPack, acc, tn, accumulate: true);
+                }
+            }
+
+            for (int t = 0; t < qCount; t++)
+            {
+                float* outHead = output + (long)(qStart + t) * qDim + h * headDim;
+                float* accRow = scratch.Accumulator + (long)t * headDim;
+                var inv = Vector256.Create(1f / scratch.RunningSum[t]);
+                for (int d = 0; d < headDim; d += 8)
+                    Avx.Store(outHead + d, Avx.Multiply(Avx.LoadVector256(accRow + d), inv));
+            }
         }
     }
 
@@ -2991,10 +3208,26 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
             {
                 for (int j = 0; j < kLen; j++)
                     scratch.KeyRows[j] = cache.KeyAt(layer, kvBase + j) + kvHead * headDim;
+
+                // K-pack is a transpose: [key][dim] in the cache becomes [dim][key] for the GEMM.
+                // Done scalar it is headDim*kLen single-float copies whose reads walk a column —
+                // one float per KV row, a whole row's stride between touches. The 8x8 AVX block
+                // form reads each source row as one 32-byte load instead, and is bit-identical
+                // because a transpose only moves floats. Full 8-key blocks go through the vector
+                // path; the ragged key tail and the zero-fill out to Tile stay scalar.
+                int jFull = 0;
+                if (SimdKernels.KPackSimdEnabled && Avx.IsSupported && (headDim & 7) == 0)
+                {
+                    jFull = kLen & ~7;
+                    for (int j0 = 0; j0 < jFull; j0 += 8)
+                        for (int d0 = 0; d0 < headDim; d0 += 8)
+                            SimdKernels.TransposeBlock8x8(
+                                scratch.KeyRows + j0, d0, scratch.KPack + (long)d0 * Tile + j0, Tile);
+                }
                 for (int d = 0; d < headDim; d++)
                 {
                     float* packedRow = scratch.KPack + d * Tile;
-                    int j = 0;
+                    int j = jFull;
                     for (; j < kLen; j++) packedRow[j] = scratch.KeyRows[j][d];
                     for (; j < Tile; j++) packedRow[j] = 0f;
                 }
@@ -3063,6 +3296,53 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
             var inv = Vector256.Create(1f / scratch.RunningSum[t]);
             for (int d = 0; d < headDim; d += 8)
                 Avx.Store(outHead + d, Avx.Multiply(Avx.LoadVector256(acc + d), inv));
+        }
+    }
+
+    /// <summary>
+    /// Scratch for <see cref="ComputePrefillFlashAttention64KvOuterHead"/>. Differs from
+    /// <see cref="PrefillFlash64Scratch"/> in one way that matters: running max/sum and the output
+    /// accumulator are sized for a whole GROUP of query tiles rather than one, because the reorder
+    /// keeps them all live while a KV tile is resident. K/V packs and the score tile stay
+    /// single-tile — those are what the reorder is amortising, not what it multiplies.
+    /// </summary>
+    private sealed class PrefillFlash64KvOuterScratch : IDisposable
+    {
+        private const int Tile = 64;
+        public readonly float* Scores = (float*)NativeMemory.AlignedAlloc(Tile * Tile * sizeof(float), 64);
+        public readonly float* KPack;
+        public readonly float* VPack;
+        public readonly float* QPack;
+        public readonly float* Accumulator;
+        public readonly float* RunningMax;
+        public readonly float* RunningSum;
+        public readonly float** KeyRows = (float**)NativeMemory.AlignedAlloc((nuint)(Tile * sizeof(nint)), 64);
+        public readonly ushort** Bf16KeyRows = (ushort**)NativeMemory.AlignedAlloc((nuint)(Tile * sizeof(nint)), 64);
+
+        public PrefillFlash64KvOuterScratch(int headDim, int maxQueries)
+        {
+            nuint tileElems = (nuint)(Tile * headDim);
+            KPack = (float*)NativeMemory.AlignedAlloc(tileElems * sizeof(float), 64);
+            VPack = (float*)NativeMemory.AlignedAlloc(tileElems * sizeof(float), 64);
+
+            nuint groupElems = (nuint)((long)maxQueries * headDim);
+            QPack = (float*)NativeMemory.AlignedAlloc(groupElems * sizeof(float), 64);
+            Accumulator = (float*)NativeMemory.AlignedAlloc(groupElems * sizeof(float), 64);
+            RunningMax = (float*)NativeMemory.AlignedAlloc((nuint)maxQueries * sizeof(float), 64);
+            RunningSum = (float*)NativeMemory.AlignedAlloc((nuint)maxQueries * sizeof(float), 64);
+        }
+
+        public void Dispose()
+        {
+            NativeMemory.AlignedFree(Bf16KeyRows);
+            NativeMemory.AlignedFree(KeyRows);
+            NativeMemory.AlignedFree(RunningSum);
+            NativeMemory.AlignedFree(RunningMax);
+            NativeMemory.AlignedFree(Accumulator);
+            NativeMemory.AlignedFree(QPack);
+            NativeMemory.AlignedFree(VPack);
+            NativeMemory.AlignedFree(KPack);
+            NativeMemory.AlignedFree(Scores);
         }
     }
 
@@ -3565,6 +3845,33 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
     /// only so both arms can be interleaved in one binary rather than compared across rebuilds.
     /// <c>STINGRAY_FLASH64_STRIDED_GEMM=0</c> restores the hardcoded kernel.
     /// </summary>
+    /// <summary>
+    /// KV-outer prefill-attention reorder. <b>On by default</b>; <c>STINGRAY_PREFILL_ATTN_KV_OUTER=0</c>
+    /// restores the per-query-tile schedule. Measured at +1.6% alone and +4.0% combined with the
+    /// SIMD K-pack transpose — see the 2×2 table on
+    /// <see cref="ComputePrefillFlashAttention64KvOuterHead"/>. It is bit-exact with the old
+    /// schedule (<c>Flash64KvOuterTests</c>), so the default carries no numerical risk; the cost is
+    /// scratch, ~256 KB per thread instead of ~16 KB, because a group of query tiles stays live
+    /// while a KV tile is resident.
+    ///
+    /// <para>Settable rather than a readonly env snapshot so a test can flip it inside one process
+    /// and diff the two schedules against each other. Reading it only from the environment would
+    /// have made the natural gate useless: the reorder short-circuits before the tile-jobs branch,
+    /// so an env-configured run of the existing schedule-comparison test would put BOTH arms on
+    /// this path and compare it with itself — a confident pass proving nothing.</para>
+    /// </summary>
+    internal static bool Flash64KvOuterEnabled { get; set; } =
+        Environment.GetEnvironmentVariable("STINGRAY_PREFILL_ATTN_KV_OUTER") != "0";
+
+    /// <summary>
+    /// Query tiles held live per KV pack in the reordered path. Trades scratch footprint for
+    /// K-pack amortisation: 8 tiles is 512 queries, ~256 KB of accumulator+Q at headDim 64.
+    /// </summary>
+    private static readonly int s_flash64KvOuterGroupTiles =
+        int.TryParse(Environment.GetEnvironmentVariable("STINGRAY_PREFILL_ATTN_KV_OUTER_TILES"),
+            System.Globalization.NumberStyles.Integer,
+            System.Globalization.CultureInfo.InvariantCulture, out int g) && g > 0 ? g : 8;
+
     private static readonly bool s_flash64StridedGemm =
         Environment.GetEnvironmentVariable("STINGRAY_FLASH64_STRIDED_GEMM") != "0";
 

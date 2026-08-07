@@ -49,6 +49,17 @@ human-facing map that a raw commit graph cannot.
   default remains 512. This is deliberate: silently treating `-1` as "generate nothing" or as the
   default would be worse than saying so.
 
+- CPU prefill attention is faster on the Flash-64 path: **+4.0%** end-to-end prefill throughput
+  (SmolLM2-1.7B Q4_K_M, 1550 tokens, headDim 64, 12 logical CPUs, 6 interleaved rounds per cell,
+  best-of-6; +4.3% on medians). Two changes, measured as a 2×2 because they overlap:
+  the K-pack transpose is now an 8×8 AVX block rather than a scalar column walk
+  (+3.0% alone, `STINGRAY_CPU_KPACK_SIMD=0` reverts), and the attention schedule now iterates KV
+  tiles outside query tiles so each KV tile is packed once per group of query tiles instead of once
+  per query tile (+1.6% alone, `STINGRAY_PREFILL_ATTN_KV_OUTER=0` reverts). Both are **bit-exact**
+  with the previous output — a transpose only moves floats, and the reorder is a loop interchange
+  that preserves each query's ascending KV order — so this is a throughput change with no numerical
+  component. The reorder costs scratch: ~256 KB per thread instead of ~16 KB, tunable via
+  `STINGRAY_PREFILL_ATTN_KV_OUTER_TILES`.
 - CPU Q4_K integer dot products now use plain AVX-VNNI (`vpdpbusd`) where available, not only
   AVX-VNNI-INT8 (`vpdpbssd`). The previous gate covered Zen 5 / Granite Rapids-class parts only, so
   all of Zen 4 and Alder Lake through Raptor Lake fell back to the two-instruction AVX2 chain

@@ -5436,6 +5436,69 @@ public static unsafe class SimdKernels
     /// the AVX2 form needs a second <c>vpmaddwd</c> on top of that.</para>
     /// </summary>
     /// <summary>
+    /// Transposes one 8×8 float block with the standard AVX unpack/shuffle/permute sequence.
+    /// Reads eight contiguous floats starting at <paramref name="srcOffset"/> from each of eight
+    /// source rows, and writes eight destination rows of eight contiguous floats,
+    /// <paramref name="dstRowStride"/> floats apart.
+    ///
+    /// <para>This is <b>pure data movement</b> — every output float is bit-identical to its input,
+    /// so a caller swapping a scalar transpose for this one cannot change numerics. That is the
+    /// property that makes it safe to put in a prefill hot path.</para>
+    ///
+    /// <para>24 shuffle-class uops replace 64 scalar loads and 64 scalar stores. The scalar form
+    /// also reads its source column-wise — one float per row, striding a whole KV row between
+    /// touches — which is exactly the access pattern the optimisation manuals warn generates no
+    /// useful prefetch. Here each source row is read as one 32-byte load instead.</para>
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static void TransposeBlock8x8(float** srcRows, int srcOffset, float* dst, int dstRowStride)
+    {
+        var v0 = Avx.LoadVector256(srcRows[0] + srcOffset);
+        var v1 = Avx.LoadVector256(srcRows[1] + srcOffset);
+        var v2 = Avx.LoadVector256(srcRows[2] + srcOffset);
+        var v3 = Avx.LoadVector256(srcRows[3] + srcOffset);
+        var v4 = Avx.LoadVector256(srcRows[4] + srcOffset);
+        var v5 = Avx.LoadVector256(srcRows[5] + srcOffset);
+        var v6 = Avx.LoadVector256(srcRows[6] + srcOffset);
+        var v7 = Avx.LoadVector256(srcRows[7] + srcOffset);
+
+        var t0 = Avx.UnpackLow(v0, v1);
+        var t1 = Avx.UnpackHigh(v0, v1);
+        var t2 = Avx.UnpackLow(v2, v3);
+        var t3 = Avx.UnpackHigh(v2, v3);
+        var t4 = Avx.UnpackLow(v4, v5);
+        var t5 = Avx.UnpackHigh(v4, v5);
+        var t6 = Avx.UnpackLow(v6, v7);
+        var t7 = Avx.UnpackHigh(v6, v7);
+
+        var s0 = Avx.Shuffle(t0, t2, 0x44);
+        var s1 = Avx.Shuffle(t0, t2, 0xEE);
+        var s2 = Avx.Shuffle(t1, t3, 0x44);
+        var s3 = Avx.Shuffle(t1, t3, 0xEE);
+        var s4 = Avx.Shuffle(t4, t6, 0x44);
+        var s5 = Avx.Shuffle(t4, t6, 0xEE);
+        var s6 = Avx.Shuffle(t5, t7, 0x44);
+        var s7 = Avx.Shuffle(t5, t7, 0xEE);
+
+        Avx.Store(dst + 0 * dstRowStride, Avx.Permute2x128(s0, s4, 0x20));
+        Avx.Store(dst + 1 * dstRowStride, Avx.Permute2x128(s1, s5, 0x20));
+        Avx.Store(dst + 2 * dstRowStride, Avx.Permute2x128(s2, s6, 0x20));
+        Avx.Store(dst + 3 * dstRowStride, Avx.Permute2x128(s3, s7, 0x20));
+        Avx.Store(dst + 4 * dstRowStride, Avx.Permute2x128(s0, s4, 0x31));
+        Avx.Store(dst + 5 * dstRowStride, Avx.Permute2x128(s1, s5, 0x31));
+        Avx.Store(dst + 6 * dstRowStride, Avx.Permute2x128(s2, s6, 0x31));
+        Avx.Store(dst + 7 * dstRowStride, Avx.Permute2x128(s3, s7, 0x31));
+    }
+
+    /// <summary>
+    /// <c>STINGRAY_CPU_KPACK_SIMD=0</c> restores the scalar K-pack transpose in Flash-64 prefill.
+    /// Both produce identical bytes, so this is a bisect seam and an A/B measurement handle, not a
+    /// tuning knob.
+    /// </summary>
+    public static bool KPackSimdEnabled { get; } =
+        Environment.GetEnvironmentVariable("STINGRAY_CPU_KPACK_SIMD") != "0";
+
+    /// <summary>
     /// <c>STINGRAY_CPU_VNNI=0</c> forces the AVX2 chain even where VNNI exists. This is not a
     /// performance knob — it is what makes <see cref="DotU8I8ToI32"/> testable. All three branches
     /// are claimed bit-identical, but a machine only ever executes one of them, so on AVX2-only

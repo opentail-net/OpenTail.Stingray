@@ -5,7 +5,7 @@ variables**.
 
 **Reconciled 2026-08-07:** the table below now lists every name in
 `KnownEnvironmentVariables.All`, the source-enforced registry, which
-now contains **156** names. The row set is therefore no longer a historical subset — it is
+now contains **159** names. The row set is therefore no longer a historical subset — it is
 name-complete as of this date. What remains outstanding is the **Class/Notes** classification
 (see below), not the enumeration.
 
@@ -52,7 +52,7 @@ not a supported profile setting.
 
 | Class | Variables |
 |---|---|
-| stable | `STINGRAY_BACKEND`, `STINGRAY_MODEL`, `STINGRAY_N_GPU_LAYERS`, `STINGRAY_MAX_BATCH`, `STINGRAY_MAX_CONCURRENT`, `STINGRAY_MAX_QUEUE`, `STINGRAY_MAX_QUEUED_REQUESTS`, `STINGRAY_KV_BUDGET_MB`, `STINGRAY_NO_THINKING`, `STINGRAY_PRESERVE_THINKING` |
+| stable | `STINGRAY_BACKEND`, `STINGRAY_MODEL`, `STINGRAY_N_GPU_LAYERS`, `STINGRAY_MAX_BATCH`, `STINGRAY_MAX_CONCURRENT`, `STINGRAY_MAX_QUEUE`, `STINGRAY_KV_BUDGET_MB`, `STINGRAY_NO_THINKING`, `STINGRAY_PRESERVE_THINKING` |
 | expert | `STINGRAY_CPU_THREADS`, `STINGRAY_KV_DTYPE`, `STINGRAY_KV_STORE`, `STINGRAY_KV_BF16_MIN_TOKENS`, `STINGRAY_MMPROJ`, `STINGRAY_MIN_BATCH_BLAS`, `STINGRAY_PREFILL_CHUNK`, `STINGRAY_PREFILL_DEQUANT_MB`, `STINGRAY_PREFIX_CACHE_MB`, `STINGRAY_TQ`, `STINGRAY_TQ_MODE`, `STINGRAY_SNAPKV_BUDGET`, `STINGRAY_TOOL_GRAMMAR`, `STINGRAY_CPU_MOE`, `STINGRAY_MOE_PREDICT_PREFETCH`, `STINGRAY_MOE_WARMPIN`, `STINGRAY_MOE_WARMPIN_AFTER`, `STINGRAY_MTP_DRAFT_N`, `STINGRAY_MTP_BATCH_MAX`, `STINGRAY_RAW_PROMPT`, `STINGRAY_SDCPP` |
 | diagnostic | `STINGRAY_EXPERT_STATS`, `STINGRAY_GEMMA4_PROBE`, `STINGRAY_TRACE_DSPARK`, `STINGRAY_TRACE_GDN_INTERNAL`, `STINGRAY_TRACE_GDN_LAYERS`, `STINGRAY_TRACE_GDN_POS`, `STINGRAY_TRACE_LAYERS`, `STINGRAY_TRACE_MTP`, `STINGRAY_TRACE_NORMS`, `STINGRAY_TRACE_POS`, `STINGRAY_TRACE_ROUTERS`, `STINGRAY_TRACE_SNAPSHOT`, `STINGRAY_TRACE_VRAM`, `STINGRAY_CUDA_PROFILE`, `STINGRAY_DECODE_PROFILE`, `STINGRAY_PREFILL_PROFILE`, `STINGRAY_PROFILE_DECODE`, `STINGRAY_PROFILE_PREFILL`, `STINGRAY_PROBE_IDS`, `STINGRAY_PROBE_LOGITS`, `STINGRAY_PROBE_POS`, `STINGRAY_VULKAN_MM_STATS`, `STINGRAY_VULKAN_VALIDATION` |
 | experimental | `STINGRAY_DSPARK_MODEL`, `STINGRAY_DSPARK_PLACE`, `STINGRAY_DSPARK_MIN_CONFIDENCE`, `STINGRAY_DSPARK_VERIFY_LEN`, `STINGRAY_DSPARK_TIMING`, `STINGRAY_MOE_GPU_PREFILL`, `STINGRAY_MOE_GPU_PREFILL_MIN_TOKENS`, `STINGRAY_MOE_PIN_MODE`, `STINGRAY_DISABLE_MTP`, `STINGRAY_SPEC_SAMPLE`, `STINGRAY_BATCHED_MATVEC_TIER`, `STINGRAY_FLASH64_STRIDED_GEMM`, `STINGRAY_GEMM_PATH`, `STINGRAY_MOE_BATCHED_PREFILL`, `STINGRAY_PER_LAYER_HD_PREFILL`, `STINGRAY_PREFILL_ATTN_FLASH64`, `STINGRAY_PREFILL_ATTN_FLASH64_TILE_JOBS`, `STINGRAY_PREFILL_ATTN_REGISTER_VALUES`, `STINGRAY_VULKAN_MM_PATH`, `STINGRAY_VULKAN_PREFILL_CHUNK` |
@@ -115,6 +115,9 @@ historical rows only until the full generated refresh replaces this snapshot.
 | Variable | Class | Notes |
 |---|---|---|
 | `STINGRAY_CPU_PREFILL_Q8` | | |
+| `STINGRAY_PREFILL_ATTN_KV_OUTER` | expert | `0` restores the per-query-tile prefill-attention schedule. The KV-outer reorder packs each KV tile once per group of query tiles and is ON by default: measured +1.6% alone and +4.0% with `STINGRAY_CPU_KPACK_SIMD`, bit-exactness pinned by `Flash64KvOuterTests`. |
+| `STINGRAY_PREFILL_ATTN_KV_OUTER_TILES` | experimental | Query tiles held live per KV pack in the reorder above (default 8 = 512 queries, ~256 KB scratch at headDim 64). Trades footprint for K-pack reuse; proven not to change results. |
+| `STINGRAY_CPU_KPACK_SIMD` | test seam | `0` restores the scalar K-pack transpose in Flash-64 prefill. Both forms emit identical bytes (a transpose only moves floats), so this is a bisect seam and an A/B measurement handle, not a tuning knob. |
 | `STINGRAY_CPU_VNNI` | test seam | `0` forces the AVX2 chain in `SimdKernels.DotU8I8ToI32` even where VNNI exists. Not a tuning knob: the three branches are claimed bit-identical, but a host only executes one, so this is what lets a VNNI-capable machine run the Q4_K suites both ways and check that claim. |
 
 ## OpenTail.Stingray.Cli, OpenTail.Stingray.Cpu, OpenTail.Stingray.Server
