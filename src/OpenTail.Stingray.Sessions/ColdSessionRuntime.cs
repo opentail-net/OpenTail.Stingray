@@ -17,10 +17,17 @@ using OpenTail.Stingray.Engine;
 /// <see cref="SegmentPackStore"/> blocks. The current CPU <see cref="PagedKvCache"/> opts in through
 /// <see cref="IPersistableSequenceKvCache"/>.</para>
 ///
-/// <para><b>What is not proven yet: restart-safe product continuation.</b> A real GGUF must still
-/// be exercised through process exit, a new runtime, restore, and greedy continuation compared
-/// token-by-token with fresh full replay. Backends with windowed, recurrent, compressed, or
-/// device-resident caches are not covered merely because the cursor can be restored.</para>
+/// <para><b>What is proven, and only for one lane.</b> The bar this doc used to set — a real GGUF
+/// carried through process exit, a new runtime, restore, and greedy continuation compared
+/// token-by-token against fresh full replay — is met by
+/// <c>HotSessionGreedyReplayTests.ColdSession_RealModel_CrossProcessRestore_MatchesFullGreedyReplay</c>,
+/// which spawns an actual child process. It is <c>Assert.SkipUnless</c>-gated on the model
+/// fixture, so it reports as SKIPPED rather than passing where <c>models/</c> is absent — read a
+/// green run accordingly.</para>
+///
+/// <para><b>What that does NOT extend to:</b> backends with windowed, recurrent, compressed, or
+/// device-resident caches. Being able to restore a cursor is not evidence for those; the proof
+/// covers the CPU-dense GGUF lane it was written against and nothing wider.</para>
 ///
 /// <para>What IS sound here: atomic manifest writes with a whole-manifest SHA-256, per-block
 /// SHA-256 verification on load, identity-preserving restore, real committed revisions, ABI

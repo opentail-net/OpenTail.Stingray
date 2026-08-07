@@ -18,7 +18,8 @@ public sealed record ServerCompatibilitySnapshot(
     /// <summary>Creates the snapshot from the fully bound server options and loaded engine.</summary>
     public static ServerCompatibilitySnapshot Create(
         OpenTailStingrayServerOptions options,
-        IInferenceEngine engine)
+        IInferenceEngine engine,
+        IServerSessionRuntime? sessions = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(engine);
@@ -36,22 +37,20 @@ public sealed record ServerCompatibilitySnapshot(
                     "Requires a supported model family and a request containing tools.")
             : new ServerFeatureAvailability(false, "Disabled by server configuration.");
 
-        // Two different things, and the report must not conflate them: the named-session LIFECYCLE
-        // (POST/GET/DELETE /v1/sessions) is served whenever EnableSessions is set, while restart
-        // CONTINUATION — state surviving a host restart — is not implemented at all. So the flag
-        // stays false in both configurations and only the detail moves.
-        //
-        // Saying "not exposed by the server yet" once those routes are live is a false denial: a
-        // client can call them today. Flipping the flag to true would be the opposite error, and
-        // the one this report exists to avoid — promising durability that does not exist. Session
-        // state is in-process only; turn submission and durable restart wiring are still to come.
-        var sessionRestart = options.EnableSessions
-            ? new ServerFeatureAvailability(false,
-                "Named-session lifecycle endpoints are served, but restart continuation is not: "
-                + "session state is held in-process and does not survive a host restart.")
-            : new ServerFeatureAvailability(false,
-                "Disabled by server configuration; no session endpoints are served and no session "
-                + "state is retained across a restart.");
+        // Sessions have three intentionally distinct states: disabled, hot-only, and persisted
+        // CPU-dense GGUF. Do not infer persistence from EnableSessions alone; storage must have
+        // been constructed for the actually loaded engine.
+        var sessionRestart = sessions?.ColdRuntime is not null
+            ? new ServerFeatureAvailability(true,
+                "CPU-dense GGUF session state is persisted after completed turns and restored on demand. "
+                + "The in-memory operation-result ledger is not durable.")
+            : sessions?.Runtime is not null
+                ? new ServerFeatureAvailability(false,
+                    "Named sessions are active only in memory. Configure SessionStorageDirectory "
+                    + "to enable the proven CPU-dense GGUF restart-continuation lane.")
+                : new ServerFeatureAvailability(false,
+                    (sessions?.UnavailabilityReason ?? "Sessions are disabled by server configuration.")
+                    + " Restart continuation is unavailable.");
 
         return new ServerCompatibilitySnapshot(
             SchemaVersion: 1,
@@ -63,7 +62,8 @@ public sealed record ServerCompatibilitySnapshot(
                 AnthropicMessages: true,
                 OpenAiModels: true,
                 Health: true,
-                Metrics: true),
+                Metrics: true,
+                SessionLifecycle: sessions?.Runtime is not null),
             Runtime: new ServerRuntimeCapabilities(
                 ContinuousBatching: continuousBatching,
                 ImageInput: engine.SupportsImageInput,
@@ -89,7 +89,8 @@ public sealed record ServerApiSurface(
     bool AnthropicMessages,
     bool OpenAiModels,
     bool Health,
-    bool Metrics);
+    bool Metrics,
+    bool SessionLifecycle);
 
 /// <summary>Runtime capabilities relevant to client compatibility and request eligibility.</summary>
 public sealed record ServerRuntimeCapabilities(

@@ -56,6 +56,7 @@ public sealed class CompatibilityContractTests
         Assert.True(api.GetProperty("open_ai_responses").GetBoolean());
         Assert.True(api.GetProperty("anthropic_messages").GetBoolean());
         Assert.True(api.GetProperty("open_ai_models").GetBoolean());
+        Assert.False(api.GetProperty("session_lifecycle").GetBoolean());
 
         var runtime = root.GetProperty("runtime");
         Assert.True(runtime.GetProperty("tool_grammar").GetProperty("available").GetBoolean());

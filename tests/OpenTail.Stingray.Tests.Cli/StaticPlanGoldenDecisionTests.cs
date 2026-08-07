@@ -26,7 +26,7 @@ public sealed class StaticPlanGoldenDecisionTests : IDisposable
         // stale the moment the server began serving /v1/sessions; what stays true is that the CLI
         // exposes nothing and that durable restart continuation is unimplemented.
         AssertDecision(report, "session_restart_continuation", false, "Not exposed by the CLI");
-        AssertDecision(report, "session_restart_continuation", false, "no durable restart");
+        AssertDecision(report, "session_restart_continuation", false, "conformance contract");
         Assert.True(report.Compatibility.Selected);
     }
 

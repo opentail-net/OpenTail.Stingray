@@ -1,7 +1,9 @@
 # Session-native inference runtime — current work
 
 **Status:** the narrow CPU-dense restart-continuation lane is proven on a real GGUF across two
-processes; restart-safe sessions are not yet a supported CLI/server feature.
+processes and is available from the server when `EnableSessions` and `SessionStorageDirectory`
+are configured. It remains CPU-dense GGUF only; the operation-result ledger is hot-only and the
+CLI has no named-session surface yet.
 
 ## Immediate work
 
@@ -9,8 +11,9 @@ processes; restart-safe sessions are not yet a supported CLI/server feature.
    capability refusal outside it. **Loader/DI seam complete:** `EnableSessions` now constructs
    and publishes `IServerSessionRuntime` only for CPU-dense GGUF batching. `POST`, `GET`, and
    `DELETE /v1/sessions` plus append-only `POST /v1/sessions/{id}/turns` now provide the hot
-   named-session shell, including optimistic revisions and idempotency IDs. Durable restart
-   lifecycle remains the next slice.
+   named-session shell, including optimistic revisions and idempotency IDs. With
+   `SessionStorageDirectory`, completed turns persist and restore on demand; durable operation
+   ledger semantics remain the next slice.
 2. Add a backend/cache conformance matrix for hot reuse, rollback, persistence, and restart.
    Its persisted ABI must represent per-layer KV/head dimensions and V-region stride; a single
    model-level `headDim` silently corrupts Gemma-class mixed-dimension caches.

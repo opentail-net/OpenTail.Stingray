@@ -445,4 +445,46 @@ public sealed class SessionEndpointTests
         Assert.Empty(Directory.GetFiles(storage.Path, $"*{id:N}*.pack"));
         Assert.Equal(HttpStatusCode.NotFound, (await client.GetAsync($"/v1/sessions/{id}")).StatusCode);
     }
+
+    // ── Capability reporting ──────────────────────────────────────────────
+
+    /// <summary>
+    /// The capability report has three states and they are not interchangeable. Hot-only must not
+    /// claim restart continuation — a client that saw "available" would trust its session across a
+    /// deploy and silently lose it — but it must still advertise the lifecycle it genuinely serves.
+    /// </summary>
+    [Fact]
+    public async Task Capabilities_HotOnlySessions_AdvertiseLifecycleButNotRestartContinuation()
+    {
+        using var sessions = new EnabledSessions();
+        var client = CreateClient(sessions);
+
+        using var json = JsonDocument.Parse(await (await client.GetAsync("/capabilities")).Content.ReadAsStringAsync());
+        var root = json.RootElement;
+
+        Assert.True(root.GetProperty("api").GetProperty("session_lifecycle").GetBoolean());
+        var restart = root.GetProperty("runtime").GetProperty("session_restart_continuation");
+        Assert.False(restart.GetProperty("available").GetBoolean());
+        Assert.Contains("in memory", restart.GetProperty("detail").GetString(), StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// With storage configured the claim flips to available — and says what is still NOT durable,
+    /// because "restart continuation works" without that caveat would over-promise the ledger.
+    /// </summary>
+    [Fact]
+    public async Task Capabilities_DurableSessions_ReportRestartContinuationAvailable()
+    {
+        using var storage = new TempDirectory();
+        using var sessions = new DurableSessions(storage.Path);
+        var client = CreateClient(sessions);
+
+        using var json = JsonDocument.Parse(await (await client.GetAsync("/capabilities")).Content.ReadAsStringAsync());
+        var root = json.RootElement;
+
+        Assert.True(root.GetProperty("api").GetProperty("session_lifecycle").GetBoolean());
+        var restart = root.GetProperty("runtime").GetProperty("session_restart_continuation");
+        Assert.True(restart.GetProperty("available").GetBoolean());
+        Assert.Contains("ledger", restart.GetProperty("detail").GetString(), StringComparison.OrdinalIgnoreCase);
+    }
 }

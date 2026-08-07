@@ -19,9 +19,10 @@ public static class CompatibilityEndpoints
     /// </summary>
     public static IEndpointRouteBuilder MapCompatibilityEndpoints(this IEndpointRouteBuilder app)
     {
-        app.MapGet("/capabilities", (IInferenceEngine engine, IOptions<OpenTailStingrayServerOptions> options) =>
+        app.MapGet("/capabilities", (IInferenceEngine engine, IServerSessionRuntime sessions,
+                IOptions<OpenTailStingrayServerOptions> options) =>
             Results.Json(
-                ServerCompatibilitySnapshot.Create(options.Value, engine),
+                ServerCompatibilitySnapshot.Create(options.Value, engine, sessions),
                 OpenTailStingrayJsonContext.Default.ServerCompatibilitySnapshot));
         return app;
     }

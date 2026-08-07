@@ -421,7 +421,7 @@ public sealed record StaticPlanReport(
         // CONTINUATION: session state is in-process only, with turn submission and durable restart
         // wiring unimplemented. The CLI exposes neither.
         decisions.Add(new("session_restart_continuation", false,
-            "Not exposed by the CLI; the server serves a named-session lifecycle under EnableSessions but holds state in-process only. The CPU-dense reference restart proof passes, yet no durable restart or backend/cache conformance contract exists."));
+            "Not exposed by the CLI. The server serves a named-session lifecycle under EnableSessions, and persists CPU-dense GGUF sessions when SessionStorageDirectory is also set; query the server's /capabilities for its actual state. No backend/cache conformance contract exists beyond that one lane."));
 
         StaticPlanPlacement? placement = null;
         HardwareProfile hardware = runtimeFacts.HardwareProfile;
