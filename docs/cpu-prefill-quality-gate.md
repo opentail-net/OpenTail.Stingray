@@ -147,3 +147,50 @@ quantises badly, several layers in.
 
 Until that exists, `STINGRAY_CPU_PREFILL_Q8=0` is the mitigation, and the defect stays pinned by the
 skipped `Q8PrefillLowMagnitudeInputTests`.
+
+
+## Second attempt 2026-08-07 — measured AT the quantisation point; still does not separate
+
+The previous entry concluded the embedding proxy was measured in the wrong place and that the
+statistic had to be taken where the quantisation happens. That was done: a temporary hook recorded
+`amax/rms` for every activation row at the moment of int8 conversion, across a full prefill
+(192 quantisation calls per prompt).
+
+| class | median | p90 | max |
+|---|---:|---:|---:|
+| prose (healthy, cos 0.997) | 25.44 | 43.15 | **90.43** |
+| whitespace (collapses, cos -0.124) | 41.59 | 86.23 | **89.76** |
+
+**Partial separation, insufficient for a gate.** Whitespace is systematically more
+outlier-dominated — median 41.6 against 25.4 — but the two classes reach the *same maximum*.
+Healthy prose contains rows at ratio 90.4 that quantise fine, so a per-row threshold anywhere below
+that fires on ordinary text, and anywhere above it never fires at all.
+
+This rules out the whole family of per-row activation-dynamic-range gates, which was the requested
+fix. The requested fix cannot be built from this statistic, at either measurement point.
+
+What survives is weaker but real: the **distribution** differs (median, p90), not the extreme. A
+prompt-level gate on median outlier ratio might work, but it would need calibrating against the
+mildly-degraded classes too (code at 0.978, punctuation at 0.960), and only two classes have been
+measured this way. Building a numerics gate on a two-point separation would repeat the error this
+document already records twice.
+
+### Where the investigation actually stands
+
+The per-row outlier hypothesis is **disproved**, not merely unconfirmed. The failure is not
+explained by any single row quantising badly, because prose rows with identical outlier ratios are
+fine. Plausible remaining directions, none yet tested:
+
+- The damage may be **accumulative across layers** rather than located in one bad row, in which case
+  no input-side statistic predicts it and the gate must be based on an output check.
+- It may involve the **interaction between quantised activations and specific weight rows**, which
+  no activation-only statistic can see.
+- It may be specific to prompts whose rows are near-**identical** (whitespace repeats one token),
+  making the batch degenerate in a way per-row statistics do not capture.
+
+Note the third is testable cheaply and was not tested: `repeat1` ("the the the...") is nearly
+identical-token and measured healthy at 0.997, which argues against it, but it is not the same token
+repeated exactly.
+
+The temporary probe was removed from `SimdKernels` — it was diagnostic scaffolding in a hot
+production path and had no business surviving the measurement.
