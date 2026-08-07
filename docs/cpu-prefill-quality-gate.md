@@ -194,3 +194,74 @@ repeated exactly.
 
 The temporary probe was removed from `SimdKernels` — it was diagnostic scaffolding in a hot
 production path and had no business surviving the measurement.
+
+
+## FIXED 2026-08-07 — the cause was exact token repetition
+
+The third untested direction was right, and the first two were wrong. Prefilling **eight copies of a
+single token** collapses int8 regardless of which token:
+
+| 8-token prompt | cosine before fix |
+|---|---:|
+| `space` x8 | -0.124 |
+| `newline` x8 | 0.101 |
+| `tab` x8 | 0.030 |
+| `,` x8 | 0.031 |
+| `9` x8 | -0.013 |
+| **`the` x8** | **0.470** |
+| **`scheduler` x8** | **0.324** |
+| *mixed whitespace, 3 distinct ids* | 0.9945 |
+| *distinct prose tokens* | 0.9973 |
+
+It was never about whitespace, magnitude, or control tokens. Ordinary words collapse just as hard.
+The whitespace reproduction was misleading because whitespace happens to tokenise into long runs of
+one repeated id.
+
+The boundary is binary:
+
+| prompt | cosine |
+|---|---:|
+| 1 distinct token (lengths 2, 4, 8, 16, 32, 64) | 0.40 - 0.48 |
+| 2 distinct | 0.9959 |
+| 3 distinct | 0.9980 |
+| 7x`the` + **1** other | 0.9953 |
+| 15x`the` + **1** other | 0.9946 |
+
+**One differing token restores it completely, at any length.** That sharpness is why the fix is a
+distinct-count test and not a numerical threshold.
+
+### Why identical tokens break int8
+
+With one repeated token, the rows entering each matmul differ only by positional effects: the signal
+lives entirely in small differences riding on a large common component. Per-row int8 scales to the
+common component and quantises those differences away. Ordinary prompts carry their signal in the
+differences *between* tokens, which are large enough to survive.
+
+This also explains the original all-control-token report — a short prompt of repeated structural
+tokens is the same degeneracy seen through a different door.
+
+### The fix
+
+`ForwardPass.IsSingleDistinctTokenPrompt` routes such prompts to the exact F32 path, applied at the
+same three sites as the existing all-control guard (`Prefill`, `PrefillWithCache`, and the packed
+multi-prompt admission path). It is a function of the token ids alone — deliberately, since a
+statistic over activations or over batch-mates would make a token's numerics depend on its
+neighbours, which is what the packed-admission and chunked-prefill tests exist to prevent.
+
+Cost is an O(n) scan with early exit on the first differing token, so ordinary prompts pay one
+comparison.
+
+After the fix every previously collapsing prompt returns **cosine 1.000000** — exactly, because it
+now takes the same F32 route as the reference — and healthy prompts are unchanged (0.995-0.998).
+
+### What the two disproved hypotheses cost, and were worth
+
+Both earlier attempts (embedding outlier ratio; activation outlier ratio at the quantisation point)
+were measured and disproved rather than reasoned about. Had either been implemented on the strength
+of its plausible mechanism, it would have shipped a gate that fires on healthy prose and code while
+still missing `the` x8. The disproofs are retained above precisely because the reasoning behind them
+is attractive enough to be tried again.
+
+Regression coverage: `Q8PrefillLowMagnitudeInputTests`, now un-skipped, asserting both the
+whitespace reproduction and a repeated ordinary word — a guard that only special-cased whitespace
+would have left the real defect in place.

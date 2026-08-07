@@ -90,14 +90,17 @@ human-facing map that a raw commit graph cannot.
   throughput benefit is predicted from the instruction tables, **not measured**: the development
   machine is AVX2-only and cannot execute the new branch.
 
-- **Known defect (int8 CPU prefill):** a whitespace-only prompt of ~8 tokens drives the int8
-  activation-prefill logits to a cosine of **-0.124** against the exact F32 path, with a different
-  argmax. The existing guard skips int8 only for prompts made entirely of control/user-defined
-  tokens; whitespace tokens are ordinary vocabulary, so they take the int8 path. The guard keys on
-  token type while the failure is driven by activation magnitude. Ordinary text is unaffected
-  (0.96-0.999) and corpus perplexity is unchanged, but a blank-ish prompt or a long whitespace run
-  is reachable. `STINGRAY_CPU_PREFILL_Q8=0` avoids it. Pinned by a deliberately skipped test,
-  `Q8PrefillLowMagnitudeInputTests`; see `docs/cpu-prefill-quality-gate.md`.
+- **Fixed (int8 CPU prefill):** prompts consisting of a single repeated token collapsed the int8
+  activation path — final-logit cosine 0.40-0.48 against the exact F32 route at every length from 2
+  to 64 tokens, and -0.124 for a repeated space. It affected ordinary words too (`the` x8 measured
+  0.470), not just whitespace or control tokens, so the pre-existing all-control-token guard did not
+  cover it. One differing token restores full accuracy, so the fix is a distinct-token test:
+  `ForwardPass` now routes single-distinct-token prompts to the exact F32 path at the same three
+  sites as the control-token guard. With one repeated token the rows entering each matmul differ
+  only by positional effects, so the signal rides as small differences on a large common component
+  and per-row int8 scaling quantises it away. Two numerical hypotheses (embedding and
+  activation-point dynamic range) were measured and disproved before landing this; see
+  `docs/cpu-prefill-quality-gate.md`.
 
 ### Fixed
 

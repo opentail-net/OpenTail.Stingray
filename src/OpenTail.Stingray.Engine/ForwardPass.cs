@@ -862,7 +862,7 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
         // decode route. Control-only sequences are structural probes, not user prose; retaining
         // their F32 path costs negligible normal-prompt performance and removes an unsafe default
         // divergence. A mixed prompt (including the usual BOS + text) remains eligible for Q8.
-        if (IsAllControlTokenPrompt(tokens))
+        if (IsAllControlTokenPrompt(tokens) || IsSingleDistinctTokenPrompt(tokens))
         {
             ReadOnlySpan<float> logits = default;
             for (int i = 0; i < N; i++)
@@ -934,6 +934,50 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
             return PrefillCoreTq(tokens, startPos);
 
         return PrefillCore(tokens, _kvCache, startPos, onAllPositionLogits);
+    }
+
+    /// <summary>
+    /// True when every token in the prompt is the SAME token id. Such a prompt is degenerate for
+    /// int8 activation prefill: measured on SmolLM2-1.7B-Q4_K_M, a single repeated token drives the
+    /// final-logit cosine against the exact F32 route to 0.40-0.48 at every length from 2 to 64
+    /// tokens, and to -0.12 for a repeated space. Adding ONE differing token restores it to 0.995+.
+    ///
+    /// <para>The boundary is that sharp, which is why this is a distinct-count test rather than a
+    /// magnitude or dynamic-range test. Two earlier hypotheses were measured and disproved: the
+    /// prompt's embedding outlier ratio does not separate the failing class (healthy code scores
+    /// worse than collapsing whitespace), and neither does the activation outlier ratio taken at
+    /// the point of quantisation (healthy prose contains rows with the same maximum as the
+    /// collapsing case). See docs/cpu-prefill-quality-gate.md.</para>
+    ///
+    /// <para>Why identical tokens break it: with one repeated token the rows entering each matmul
+    /// differ only by positional effects, so the information is carried entirely in small
+    /// differences riding on a large common component. Per-row int8 scales to the common
+    /// component and quantises those differences away. Ordinary prompts carry their signal in the
+    /// differences BETWEEN tokens, which are large enough to survive.</para>
+    ///
+    /// <para>Deliberately a function of the token ids alone, matching
+    /// <see cref="IsAllControlTokenPrompt(IReadOnlyList{int})"/>: a statistic computed over
+    /// activations or over whatever else shares a batch would make a token's numerics depend on
+    /// its neighbours, which is the property PrefillPackedMulti and the chunked-prefill tests
+    /// exist to protect.</para>
+    /// </summary>
+    private static bool IsSingleDistinctTokenPrompt(IReadOnlyList<int> tokens)
+    {
+        if (tokens.Count < 2) return false;
+        int first = tokens[0];
+        for (int i = 1; i < tokens.Count; i++)
+            if (tokens[i] != first) return false;
+        return true;
+    }
+
+    /// <summary>Span overload of <see cref="IsSingleDistinctTokenPrompt(IReadOnlyList{int})"/>.</summary>
+    private static bool IsSingleDistinctTokenPrompt(ReadOnlySpan<int> tokens)
+    {
+        if (tokens.Length < 2) return false;
+        int first = tokens[0];
+        for (int i = 1; i < tokens.Length; i++)
+            if (tokens[i] != first) return false;
+        return true;
     }
 
     private bool IsAllControlTokenPrompt(IReadOnlyList<int> tokens)
@@ -4618,7 +4662,8 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
         // Keep the externally supplied-cache route coherent with PrefillDispatch. Continuous
         // batching calls this method, so leaving the all-control safeguard only on Prefill would
         // make server-admitted structural probes take the numerically unsafe Q8 activation path.
-        if (N == 1 || IsAllControlTokenPrompt(tokens) || (_hp.IsMoE && !MoeBatchedPrefillSupported))
+        if (N == 1 || IsAllControlTokenPrompt(tokens) || IsSingleDistinctTokenPrompt(tokens)
+            || (_hp.IsMoE && !MoeBatchedPrefillSupported))
             return PrefillWithCacheSequential(tokens, cache, startPos);
         return PrefillCore(tokens, cache, startPos);
     }
@@ -4903,7 +4948,7 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
         // changing numerical behaviour based solely on whether another request arrived nearby.
         for (int s = 0; s < S; s++)
         {
-            if (!IsAllControlTokenPrompt(chunks[s].Span)) continue;
+            if (!IsAllControlTokenPrompt(chunks[s].Span) && !IsSingleDistinctTokenPrompt(chunks[s].Span)) continue;
             var fallback = new float[]?[S];
             for (int i = 0; i < S; i++)
             {
