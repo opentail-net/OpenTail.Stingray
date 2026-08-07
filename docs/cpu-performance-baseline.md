@@ -8,11 +8,16 @@ least-contaminated estimator.
 
 | Model | Prefill t/s | Decode t/s | prefill ÷ decode |
 |---|---:|---:|---:|
-| SmolLM2-1.7B Q4_K_M | 134.2 | 20.6 | 6.5x |
-| Qwen3-0.6B Q8_0 | 89.8 | 47.4 | 1.9x |
-| OLMoE-1B-7B Q4_K_M (MoE) | 93.4 | 28.2 | 3.3x |
+| SmolLM2-1.7B Q4_K_M | 141.3 | 21.3 | 6.6x |
+| Qwen3-0.6B Q8_0 | 93.0 | 47.4 | 2.0x |
+| OLMoE-1B-7B Q4_K_M (MoE) | 105.6 | 28.2 | 3.7x |
 | Qwen3-8B Q4_K_M | 36.7 | 6.3 | 5.8x |
 | **gemma-4-12B q4_0** | **3.8** | **3.7** | **1.0x** |
+
+Best-of **three** interleaved rounds. An earlier revision of this table published best-of-two while
+claiming best-of-all-rounds, which understated three rows — OLMoE's prefill by 13% (93.4 vs 105.6).
+That swing is itself the argument for the third round: two samples of a throughput figure are not
+enough to bound it, even interleaved on an otherwise quiet machine.
 
 ## Reading it
 
@@ -20,8 +25,7 @@ least-contaminated estimator.
 6.5x for the others; Gemma is 1.0x, meaning prefill runs at exactly decode speed. That is the
 signature of no batching at all, confirmed in code at the `perLayerHdUnsupported` gate.
 
-**Sizing it against the nearest size class** is more informative than the ratio alone. Gemma 4 12B
-versus Qwen3-8B:
+**Sizing it against the nearest size class** is more informative than the ratio alone. Gemma 4 12B versus Qwen3-8B (both unchanged by round 3):
 
 - decode: 3.7 vs 6.3 t/s — **1.7x slower**, which parameter count alone explains.
 - prefill: 3.8 vs 36.7 t/s — **9.7x slower**, which it does not.
