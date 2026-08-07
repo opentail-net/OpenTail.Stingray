@@ -94,6 +94,16 @@ human-facing map that a raw commit graph cannot.
   throughput benefit is predicted from the instruction tables, **not measured**: the development
   machine is AVX2-only and cannot execute the new branch.
 
+- OpenAI `tool_choice` is now honoured or refused, never silently ignored. A named function
+  (`{"type":"function","function":{"name":"X"}}`) narrows the constrainable tool set to X, so the
+  argument grammar forbids every other tool name — the filter *is* the enforcement. Naming a
+  function absent from `tools` is a 400 instead of falling back to unconstrained tool use.
+  `tool_choice:"required"` is rejected with a 400 explaining the limitation: forcing a call requires
+  compelling the model to emit an open marker, and the argument constraints only arm once it has
+  already done so. Previously `required` was accepted and ignored, handing prose back to a client
+  that had asked for a guaranteed call with no way to detect the difference. `"none"` and `"auto"`
+  were already correct and are unchanged.
+
 ### Fixed
 
 - **Fixed (int8 CPU prefill):** prompts consisting of a single repeated token collapsed the int8

@@ -173,12 +173,51 @@ public static class OpenAiEndpoints
         // Schema/grammar-constrained tool-argument decoding (issue #374): opt-in, and skipped when
         // the client forces no tool use (tool_choice:"none"). Restricts the sampler to tokens that
         // keep the arguments schema-conformant in the model's native call syntax.
+        //
+        // tool_choice support is deliberately partial and fails LOUD where it is absent:
+        //   "none"                          -> honoured (no constraint; tools not forced)
+        //   "auto" / absent                 -> honoured (this is the default path)
+        //   {"type":"function", name: "X"}  -> honoured by narrowing the constrainable tool set to
+        //                                      X, so the grammar forbids every other tool name
+        //   "required"                      -> NOT honoured, and rejected below rather than ignored
+        //
+        // "required" needs generation to be forced to BEGIN a call, and the argument constraints
+        // only arm once the model has already emitted the open marker — they never compel one. The
+        // open marker is not on IToolCallAdapter either, so honouring it is a per-adapter feature
+        // rather than wiring. Silently accepting it would hand back prose to a client that asked for
+        // a guaranteed call, with no way to detect the difference; a 400 is the honest answer until
+        // the feature exists.
+        if (IsToolChoiceRequired(req.ToolChoice))
+        {
+            await WriteBadRequestAsync(ctx,
+                "tool_choice \"required\" is not supported: the server cannot yet force a tool call. " +
+                "Use \"auto\" (the default), or name a specific function with " +
+                "{\"type\":\"function\",\"function\":{\"name\":\"...\"}} to restrict which tool may be called.");
+            return;
+        }
+
+        string? forcedToolName = GetToolChoiceFunctionName(req.ToolChoice);
+        if (forcedToolName is not null &&
+            (req.Tools is null || !req.Tools.Any(t =>
+                string.Equals(t.Function?.Name, forcedToolName, StringComparison.Ordinal))))
+        {
+            await WriteBadRequestAsync(ctx,
+                $"tool_choice names function '{forcedToolName}', which is not present in tools.");
+            return;
+        }
+
         ITokenConstraint? toolConstraint = null;
         if (toolsActive && req.Tools is { Length: > 0 } && ToolGrammarHelper.Enabled(opts)
             && !IsToolChoiceNone(req.ToolChoice))
         {
+            // A named tool_choice narrows the set handed to the grammar. The constraint already
+            // permits only the names it is given, so filtering here IS the enforcement — no
+            // separate mechanism, and no way for the model to call a tool that was excluded.
+            var selected = forcedToolName is null
+                ? req.Tools
+                : req.Tools.Where(t => string.Equals(t.Function?.Name, forcedToolName, StringComparison.Ordinal)).ToArray();
             var schemas = ToolGrammarHelper.ToSchemas(
-                req.Tools.Select(t => (t.Function?.Name, t.Function?.Parameters)));
+                selected.Select(t => (t.Function?.Name, t.Function?.Parameters)));
             toolConstraint = chatTemplate.BuildToolArgumentConstraint(schemas);
         }
 
@@ -653,6 +692,37 @@ public static class OpenAiEndpoints
     private static bool IsToolChoiceNone(JsonElement? toolChoice) =>
         toolChoice is { ValueKind: JsonValueKind.String } tc
         && string.Equals(tc.GetString(), "none", StringComparison.Ordinal);
+
+    /// <summary>True when OpenAI <c>tool_choice</c> is the string <c>"required"</c>, which this
+    /// server cannot honour — see the rejection at the call site for why it 400s instead of being
+    /// ignored.</summary>
+    /// <summary>Writes the standard OpenAI-shaped 400 body used by this handler.</summary>
+    private static async Task WriteBadRequestAsync(HttpContext ctx, string message)
+    {
+        ctx.Response.StatusCode = 400;
+        ctx.Response.ContentType = "application/json";
+        await ctx.Response.WriteAsync(
+            JsonSerializer.Serialize(new ErrorResponse("invalid_request_error", message),
+                OpenTailStingrayJsonContext.Default.ErrorResponse), ctx.RequestAborted);
+    }
+
+    private static bool IsToolChoiceRequired(JsonElement? toolChoice) =>
+        toolChoice is { ValueKind: JsonValueKind.String } tc
+        && string.Equals(tc.GetString(), "required", StringComparison.Ordinal);
+
+    /// <summary>
+    /// The function name from an object-form <c>tool_choice</c>
+    /// (<c>{"type":"function","function":{"name":"X"}}</c>), or null for any other shape. Tolerates
+    /// a missing <c>type</c> so long as a function name is present, since clients vary.
+    /// </summary>
+    private static string? GetToolChoiceFunctionName(JsonElement? toolChoice)
+    {
+        if (toolChoice is not { ValueKind: JsonValueKind.Object } tc) return null;
+        if (!tc.TryGetProperty("function", out var fn) || fn.ValueKind != JsonValueKind.Object) return null;
+        if (!fn.TryGetProperty("name", out var name) || name.ValueKind != JsonValueKind.String) return null;
+        var value = name.GetString();
+        return string.IsNullOrEmpty(value) ? null : value;
+    }
 
     private static bool HasToolMessages(OaiMessage[]? messages)
     {

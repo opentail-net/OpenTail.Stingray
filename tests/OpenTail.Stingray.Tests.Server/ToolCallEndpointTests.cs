@@ -576,4 +576,79 @@ public sealed class ToolCallEndpointTests
         foreach (var block in doc.RootElement.GetProperty("content").EnumerateArray())
             Assert.NotEqual("tool_use", block.GetProperty("type").GetString());
     }
+
+    // ── tool_choice (OpenAI) ──────────────────────────────────────────────────
+
+    /// <summary>
+    /// `tool_choice: "required"` asks for a guaranteed tool call, which this server cannot force —
+    /// the argument grammars arm on the model's open marker and never compel one. Accepting the
+    /// request and returning prose would be undetectable by the client, so it must 400. This test
+    /// exists to stop that silent acceptance being reintroduced as a convenience.
+    /// </summary>
+    [Fact]
+    public async Task OpenAi_ToolChoiceRequired_IsRejectedRatherThanSilentlyIgnored()
+    {
+        var fake = new FakeInferenceEngine("qwen3", [(GenerateChunkKind.Text, "hello")]);
+        var client = CreateClient(fake);
+
+        var response = await client.PostAsJsonAsync("/v1/chat/completions", new
+        {
+            model = "qwen3",
+            messages = new[] { new { role = "user", content = "Weather?" } },
+            max_tokens = 16,
+            tool_choice = "required",
+            tools = new[] { new { type = "function", function = new { name = "get_weather", description = "w", parameters = new { type = "object" } } } }
+        });
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        string body = await response.Content.ReadAsStringAsync();
+        Assert.Contains("required", body, StringComparison.Ordinal);
+        // The message must point at what DOES work, not merely refuse.
+        Assert.Contains("auto", body, StringComparison.Ordinal);
+    }
+
+    /// <summary>A named tool_choice that is not among `tools` is a client error, not a silent
+    /// fallback to unconstrained tool use.</summary>
+    [Fact]
+    public async Task OpenAi_ToolChoiceNamingAnAbsentFunction_IsRejected()
+    {
+        var fake = new FakeInferenceEngine("qwen3", [(GenerateChunkKind.Text, "hello")]);
+        var client = CreateClient(fake);
+
+        var response = await client.PostAsJsonAsync("/v1/chat/completions", new
+        {
+            model = "qwen3",
+            messages = new[] { new { role = "user", content = "Weather?" } },
+            max_tokens = 16,
+            tool_choice = new { type = "function", function = new { name = "not_a_tool" } },
+            tools = new[] { new { type = "function", function = new { name = "get_weather", description = "w", parameters = new { type = "object" } } } }
+        });
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Contains("not_a_tool", await response.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+    }
+
+    /// <summary>A valid named tool_choice is accepted and generation proceeds. The narrowing itself
+    /// is enforced by handing only that tool to the argument grammar; this asserts the request path
+    /// works end to end rather than that the grammar masks correctly, which is covered in Core.</summary>
+    [Fact]
+    public async Task OpenAi_ToolChoiceNamingAPresentFunction_IsAccepted()
+    {
+        var fake = new FakeInferenceEngine("qwen3", [
+            (GenerateChunkKind.Text, "<tool_call>{\"name\":\"get_weather\",\"arguments\":{}}</tool_call>"),
+        ]);
+        var client = CreateClient(fake);
+
+        var response = await client.PostAsJsonAsync("/v1/chat/completions", new
+        {
+            model = "qwen3",
+            messages = new[] { new { role = "user", content = "Weather?" } },
+            max_tokens = 16,
+            tool_choice = new { type = "function", function = new { name = "get_weather" } },
+            tools = new[] { new { type = "function", function = new { name = "get_weather", description = "w", parameters = new { type = "object" } } } }
+        });
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Contains("get_weather", await response.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+    }
 }
