@@ -44,6 +44,10 @@ human-facing map that a raw commit graph cannot.
   probes rather than prose, and one two-token all-control input produced a final-logit cosine of
   −0.45 against the F32 result. Ordinary prompts — including the usual BOS + text — are unaffected
   and still measure 0.988–0.999. `STINGRAY_CPU_PREFILL_Q8=0` still disables int8 prefill entirely.
+  (Superseded understanding: the Fixed entry below shows the cause is exact token
+  **repetition**, not token type — an all-control prompt is typically the same token twice. This
+  guard is retained because it is cheap and independently correct, but it is not why the class of
+  prompt failed.)
 - `--n-predict` now rejects negative values with an explanatory error instead of accepting them.
   llama.cpp's `-1` (until EOS) and `-2` (until context full) sentinels are not implemented; the
   default remains 512. This is deliberate: silently treating `-1` as "generate nothing" or as the
@@ -90,6 +94,8 @@ human-facing map that a raw commit graph cannot.
   throughput benefit is predicted from the instruction tables, **not measured**: the development
   machine is AVX2-only and cannot execute the new branch.
 
+### Fixed
+
 - **Fixed (int8 CPU prefill):** prompts consisting of a single repeated token collapsed the int8
   activation path — final-logit cosine 0.40-0.48 against the exact F32 route at every length from 2
   to 64 tokens, and -0.124 for a repeated space. It affected ordinary words too (`the` x8 measured
@@ -110,7 +116,6 @@ human-facing map that a raw commit graph cannot.
   which it could never do — a path that corrupts memory cannot be timed. The sequential route is
   unchanged and correct.
 
-### Fixed
 
 - Generation is now bounded by the active context, not just the prompt. `ForwardPass` sizes its
   attention-score and RoPE scratch from the context ceiling while its `PagedKvCache` defaults to
