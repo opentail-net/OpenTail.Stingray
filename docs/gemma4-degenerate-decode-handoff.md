@@ -177,11 +177,11 @@ from "pointing elsewhere", which is why StageCapture exists.
 
 ## 5. Traps that cost real time here
 
-- **The test-runner EXE takes SINGLE-dash `-class` / `-method`** (and `-class-` / `-method-` to
-  exclude). It rejects `--filter-class` outright: `error: unknown option: --filter-class`. Note
-  the spellings differ by entry point — CLAUDE.md's `--filter-class` refers to `dotnet test`,
-  which was not verified here. When driving
-  `tests/…/bin/Release/net10.0/OpenTail.Stingray.Tests.ForwardPass.exe` directly, use single dash.
+- **Flag spellings differ by entry point** — both verified 2026-08-07. Through `dotnet test <proj>
+  -- …`: `--filter-class` / `--filter-method` (and `--minimum-expected-tests`). Running the built
+  `…/bin/Release/net10.0/<Proj>.exe` directly: **single-dash** `-class` / `-method`, plus
+  `-class-` / `-method-` to exclude; it rejects the double-dash forms with `error: unknown
+  option`. The exe is much faster for iterating, which is why this bites.
 - **Never pass `--nologo`** to `dotnet test` — MTP rejects it and reports "Zero tests ran", which
   reads exactly like a discovery failure.
 - **`models/` is populated (17 GB), so `Tests.ForwardPass` takes ~10 minutes**, not 35 seconds.

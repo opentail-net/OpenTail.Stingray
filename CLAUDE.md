@@ -186,6 +186,14 @@ Filtering uses `--filter-class` / `--filter-method`, not `--filter`. TRX receipt
 `Microsoft.Testing.Extensions.TrxReport` extension (pinned at 1.9.1 to match the MTP version
 xunit.v3 3.2.2 binds to): `dotnet test <proj> -- --report-trx --report-trx-filename x.trx`.
 
+**The flag spellings differ by entry point, and mixing them up looks like a discovery failure.**
+Through `dotnet test <proj> -- …` the double-dash forms above are correct. Running the built test
+executable directly — `tests/<Proj>/bin/Release/net10.0/<Proj>.exe`, which is much faster when
+iterating because it skips build/restore evaluation — you get xunit's own parser, which wants
+**single-dash** `-class` / `-method` (and `-class-` / `-method-` to exclude), and rejects
+`--filter-class` with `error: unknown option`. Same for `--minimum-expected-tests` (used by CI to
+make thin discovery fail): accepted by `dotnet test`, rejected by the exe.
+
 ## Samples & Scripts
 
 - `samples/OpenTail.Stingray.Sample.Chat` — minimal streaming chat using the library directly.

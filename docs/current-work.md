@@ -9,7 +9,8 @@ product-complete. Historical investigations, experiments, and superseded plans l
    (persist child exit → fresh runtime restore → greedy continuation → token-for-token replay) now
    passes. Expose a minimal named-session lifecycle only for that capability-gated lane.
 2. **Hardware release runners.** Attach reproducible CPU AVX2, CUDA dense, Vulkan, hybrid MoE,
-   MTP/speculation, and real-session results to the release notes.
+   MTP/speculation, and real-session results to the release notes. This machine can supply AVX2
+   and AMD Vulkan receipts; CUDA rows require a designated NVIDIA runner.
 3. **Capability fixtures.** Static inspect/plan golden fixtures now cover CPU backend selection,
    TurboQuant selection/fallback, KV-dtype applicability, batching/tool-grammar exclusion, MTP,
    and the unsupported restart-session verdict. Extend the set only where the loader actually
@@ -26,10 +27,22 @@ References: [release-quality-test-matrix.md](release-quality-test-matrix.md),
 ## Priority 2 — correctness and architecture coverage
 
 1. **Vulkan correctness validation.** The subgroup-width inventory, shared-memory replacement,
-   hardware-backed F32 Wave64 seam, and real-model token-for-token CLI smoke are complete. Add
-   production-shape per-format relative-error coverage before revisiting the separate
-   integrated-GPU memory-detection issue or Vulkan performance.
-2. **Gemma 4 validation.** Exercise dense 12B no-PLE and E4B vision plans on real fixtures.
+   hardware-backed F32 Wave64 seam, and real-model token-for-token CLI smoke are complete. The
+   newly found per-layer V-cache stride bug showed where the coverage gap actually is, and it is
+   worth stating precisely because the obvious reading is wrong. The Vulkan attention shader was
+   measured correct at every shape tried, *including* production geometry (32/32/64, 32/8/128,
+   32/32/128 — all exact), and the defect was format-independent: it was CPU-side, in
+   `PagedKvCache`'s V striding. Adding more shader shapes or more Q4_K/q4_0 kernel coverage would
+   not have caught it.
+
+   What was missing: **no test drove a model with per-layer head_dim through the CPU cache path
+   end to end.** The coverage to add is that — plus the oracle-free invariant that caught it (at
+   position 0, attention output must equal V, broadcast across each GQA group), which needs no
+   reference backend and so names the faulty side on its own. Do this before revisiting
+   integrated-GPU memory detection or Vulkan performance. Treat Q8_0 only as a cross-format check
+   when a supported deployment path needs it.
+2. **Gemma 4 validation.** Re-run dense 12B no-PLE validation after the per-layer V-cache stride
+   fix, then exercise E4B vision plans on real fixtures.
    E4B text now has a real Q4_0 CPU CLI smoke (including the absent-shared-KV-norm variant),
    but that does not validate its unimplemented `gemma4v`/`gemma4a` encoders.
 3. **Qwen3.5 MoE/GDN.** Use the authoritative tensor layout, not the superseded SSM plan.
@@ -38,7 +51,7 @@ References: [release-quality-test-matrix.md](release-quality-test-matrix.md),
 
 Do not reopen the closed Q4_K repacked-GEMM investigation. Focus on Flash attention at head
 dimensions 128/256, Q6_K AVX2, scalar-fallback formats, per-layer-dimension batched prefill,
-CPU MoE, ARM64, and additional scalar-fallback format coverage. Q3_K batched dispatch and the
+CPU MoE, ARM64, additional scalar-fallback format coverage, and Q8-prefill accuracy. Q3_K batched dispatch and the
 Q2_K >512-token production fallback are already covered by the focused Q8-prefill equivalence
 suite; neither is an open correctness gap.
 

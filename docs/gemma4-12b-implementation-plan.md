@@ -4,6 +4,11 @@ Status: planning, no code written yet. Targets the **dense 12B** member of the G
 family released 2026-06-03. CUDA-Hybrid + full-CUDA are the first iteration; CPU is second,
 Vulkan last.
 
+> **Validation reset (2026-08-07):** discard any earlier dense-12B inference receipt made before
+> the per-layer V-cache stride correction. Its global MQA layers use KV head 0 and could appear
+> correct under the wrong stride, while its SWA GQA layers would be corrupted. Re-run the complete
+> CPU/CUDA/hybrid acceptance sequence against the fixed cache layout.
+
 > **TL;DR** — Most of the work is already done. The merged `gemma4` path (issue #82 epic,
 > built and validated against **E4B**) is metadata/tensor-driven and already implements the
 > hard parts the 12B needs: per-layer head-dim variance, dual-RoPE, SWA, shared-KV layers,

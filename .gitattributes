@@ -1,0 +1,36 @@
+# Normalise line endings in the repository.
+#
+# Without this, `core.autocrlf=true` on Windows checks files out as CRLF and stages them back as
+# CRLF, so files that were committed with LF show up as wholly rewritten the first time anyone
+# touches them. That happened here: a single docs pass produced ~17 "modified" files whose content
+# had not changed at all, which inflates diffs, obscures the real edits in review, and makes
+# `git blame` point at the line-ending commit instead of the author of the text.
+#
+# `text=auto` stores everything Git detects as text with LF in the object database while leaving
+# working-tree endings to the platform, so this is invisible day to day.
+* text=auto
+
+# Keep the shells' scripts LF regardless of platform — Git Bash and CI both run them.
+*.sh text eol=lf
+
+# PowerShell is Windows-native tooling; CRLF in the working tree is what its editors expect.
+*.ps1 text eol=crlf
+
+# Binary: never touch these. Model weights and compiled shaders are large and byte-exact —
+# an accidental line-ending rewrite would corrupt them silently.
+*.gguf     binary
+*.safetensors binary
+*.spv      binary
+*.png      binary
+*.jpg      binary
+*.jpeg     binary
+*.ico      binary
+*.snk      binary
+*.nupkg    binary
+*.snupkg   binary
+*.dll      binary
+*.exe      binary
+*.so       binary
+*.dylib    binary
+*.lib      binary
+*.pdb      binary

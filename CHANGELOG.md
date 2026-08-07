@@ -27,6 +27,11 @@ human-facing map that a raw commit graph cannot.
   capabilities JSON simply gains a field — additive and safe for HTTP consumers — but the record's
   primary constructor changed, so C# code constructing `ServerRuntimeCapabilities` directly must be
   updated.
+- CPU prefill no longer takes the int8 activation path for prompts made **entirely** of control /
+  user-defined tokens, falling back to the exact F32 sequential route. Such prompts are structural
+  probes rather than prose, and one two-token all-control input produced a final-logit cosine of
+  −0.45 against the F32 result. Ordinary prompts — including the usual BOS + text — are unaffected
+  and still measure 0.988–0.999. `STINGRAY_CPU_PREFILL_Q8=0` still disables int8 prefill entirely.
 - `--n-predict` now rejects negative values with an explanatory error instead of accepting them.
   llama.cpp's `-1` (until EOS) and `-2` (until context full) sentinels are not implemented; the
   default remains 512. This is deliberate: silently treating `-1` as "generate nothing" or as the

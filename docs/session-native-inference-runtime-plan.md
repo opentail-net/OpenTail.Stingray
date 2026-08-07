@@ -8,6 +8,8 @@ processes; restart-safe sessions are not yet a supported CLI/server feature.
 1. Expose a minimal named-session lifecycle for the proven CPU-dense lane, with explicit
    capability refusal outside it.
 2. Add a backend/cache conformance matrix for hot reuse, rollback, persistence, and restart.
+   Its persisted ABI must represent per-layer KV/head dimensions and V-region stride; a single
+   model-level `headDim` silently corrupts Gemma-class mixed-dimension caches.
 3. Exercise interrupted writes, corrupt packs, ABI mismatch, quotas, and eviction ownership.
 4. Validate multi-model routing after the single-model exact lane is proven.
 
