@@ -269,3 +269,58 @@ position indexing both present as "the projector is broken".
 
 Until then the honest status is: **loader and preprocessing done and verified; encoder deliberately
 not started for want of a reference**, not merely unfinished.
+
+
+## CORRECTION 2026-08-08 — the reference DOES exist, and it answers both blockers
+
+The previous section concluded there was no local reference for `gemma4v`. **That was wrong.** It
+was true of the b8585 binary in `tools/llama.cpp`, and I generalised from that without checking
+`examples/`. There is a full llama.cpp source checkout at
+`examples/llama.cpp/llama.cpp` (HEAD `3653e6d6d`) which knows the `gemma4` architecture and
+implements the projector in `tools/mtmd/models/gemma4v.cpp`. That file is the authority for
+everything below.
+
+### Blocker 1 resolved — the position embedding is two stacked lookup tables
+
+`[768, 10240, 2]` is **not** a square grid and **not** RoPE. It is one table for x and one for y,
+stacked on the trailing axis, each `[n_embd=768, 10240]`:
+
+```c
+tbl_x = view_2d(pos_embd, n_embd, pos_size, nb1, 0);
+tbl_y = view_2d(pos_embd, n_embd, pos_size, nb1, pos_size * nb1);
+inp = inp + get_rows(tbl_x, pos_x) + get_rows(tbl_y, pos_y);
+```
+
+Each patch adds its column embedding **and** its row embedding. 10240 is the per-axis maximum; a
+224/16 image uses only the first 14 of each. Note this is a *different* scheme from the
+`resize_position_embeddings` path used by siglip2-naflex in the same file, which interpolates a
+square grid — applying that one here would be wrong, and `sqrt(10240)` not being an integer is the
+tell.
+
+### Encoder details the loader does not yet capture
+
+- **Input range.** The graph applies `inp_raw * 2 - 1` before the patch convolution. With E4B's
+  declared mean=[0,0,0], std=[1,1,1], `Gemma4VImagePreprocessor` emits **[0,1]**, and the encoder
+  expects **[-1,1]**. The step legitimately lives in the graph rather than the preprocessor, but
+  anyone wiring preprocessor output straight into an encoder will be wrong by a factor of two and an
+  offset — silently, and in a way that looks like a weight problem.
+- **No patch bias**, and the patch embedding is a `conv_2d` with stride = patch_size.
+- **2D RoPE with neox ordering** is applied inside attention *in addition to* the learned position
+  embeddings. Both are needed; neither substitutes for the other.
+- **Token reduction is average pooling**, kernel `n_merge`, then a scale by `sqrt(n_embd)`.
+  `n_merge` comes from `KEY_PROJ_SCALE_FACTOR` and defaults to 4, asserted to be 2 or 4. This mmproj
+  declares no such key, so the default applies: 14x14 patches pool by 4 → **3x3 = 9 soft tokens**
+  (integer division), not 196.
+- **Projection** is RMS norm (`embedding_pre_projection_norm`) followed by a *clippable* linear:
+  `build_mm` consults a per-tensor clamp map and, when present, clamps input and output around the
+  matmul.
+- Optional `std_bias` / `std_scale` tensors are applied before projection when present. Verified
+  absent from this mmproj, so that branch is inert here — but a differently exported projector could
+  carry them, and the loader would silently ignore them.
+
+### Revised status
+
+The encoder is no longer blocked on knowledge — it is blocked only on being written, and it can now
+be built stage-by-stage against a real reference. The staged-parity recommendation stands and is now
+actionable: patch conv → +pos(x,y) → one block with 2D RoPE → all 16 → pool/scale → norm+projection,
+comparing at each stage rather than only at the end.
