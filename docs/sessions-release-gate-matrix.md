@@ -15,7 +15,7 @@ table.
 | Restart | **Covered** | `FileSessionJournal_AppendsAndRecoversRecords`, `FileSessionJournal_TornWriteWithAbsurdLength_RecoversPriorRecordsInsteadOfThrowing` |
 | Corrupt packs | **Covered** | `ColdSession_Open_RejectsACorruptPersistedKvPack`, `..._RejectsACorruptPersistedOperationLedger` (10) |
 | Quotas / eviction | **Covered** | `ColdSession_WithPagedKvCache_EvictsToDiskAndRestoresExactKv`, `EvictToDisk_ReEviction_ReclaimsPacksTheNewManifestNoLongerReferences` (14) |
-| **Rollback** | **NOT COVERED** | see below |
+| Rollback | **Covered** (2026-08-07) | `HotSessionRollbackTests`, via a new test seam — see the resolution at the foot |
 | Multi-model routing | **Covered** | `SessionModelBudgetTests` (4 tests, all passing) — see the 2026-08-07 correction below |
 
 ## Why two dimensions read as covered but are not
@@ -138,3 +138,38 @@ differently from the searcher's expectation. The only method that worked was ope
 
 The rollback gap recorded above was found by reading call sites and remains correct — it was
 verified by tracing every fault point, not by a keyword search.
+
+
+## RESOLVED 2026-08-07 — rollback is now covered
+
+The seam recommended above was added and the dimension is covered. `HotSession` gained one
+test-only hook, `FaultBeforeCommitForTests`, invoked immediately before the commit — the only point
+at which `generationCompleted`, `cursorPublished` and `resourcesFinalized` are all set, and
+therefore the only state in which `CompensateUncommittedTurn` runs its full body. It is null on
+every production path.
+
+`HotSessionRollbackTests` covers it with two cases, and **only one of them actually tests rollback**:
+
+| Test | Covers rollback? |
+|---|---|
+| `FailedTurn_RestoresCursorAndRevision_LeavingNoTraceOfTheFailedTurn` | **No** — cursor restore is a separate compensation branch |
+| `TurnAfterAFailedTurn_MatchesTheTurnThatWouldHaveFollowedSuccess` | **Yes** |
+
+That split was established by **mutation testing**, not by inspection: commenting `RollbackLastTurn`
+out of the production path makes the second test fail while the first still passes. Without that
+check the pair would have looked like belt-and-braces coverage while half of it was inert — the
+same vacuous-green pattern this document already records twice.
+
+Two details are load-bearing and should survive any tidy-up:
+
+- The fake's `Assert.Equal(startPos, retained.LogicalPosition)` in `PrefillWithCache`. A first draft
+  omitted it; without it a rollback that silently did nothing still passes both tests, because
+  nothing else notices a KV cache left advanced.
+- The comparison against a **control run** (same sequence without the injected fault) rather than
+  hard-coded expected counts. It asserts the failed turn left no trace, which is the actual
+  contract, instead of pinning numbers that would drift.
+
+**Result: the rollback path executed for the first time and behaves correctly** — the cache rewinds,
+the cursor restores, and the following turn is indistinguishable from one that never saw a failure.
+The production catch block still swallows exceptions from rollback, which remains worth revisiting,
+but the path is now exercised rather than assumed.

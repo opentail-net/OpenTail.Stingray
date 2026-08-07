@@ -61,6 +61,13 @@ public sealed class HotSession : IDisposable
         _modelKey = modelKey ?? engine.ModelId;
     }
 
+    /// <summary>
+    /// Test-only hook invoked immediately before the turn is committed, so a test can fault the
+    /// turn at the one point where <see cref="CompensateUncommittedTurn"/> executes its full body.
+    /// Always null in production. See the call site for why a seam is required at all.
+    /// </summary>
+    internal Action? FaultBeforeCommitForTests { get; set; }
+
     public SessionId SessionId { get; }
 
     public SessionRevision CommittedRevision => new(Cursor.AcceptedPositionCount);
@@ -159,6 +166,19 @@ public sealed class HotSession : IDisposable
                     resourcesFinalized = true;
                     lock (_cursorGate) _cursor = nextCursor;
                     cursorPublished = true;
+                    // Test-only fault injection. Null in every production path, and deliberately
+                    // sited here — after generationCompleted, cursorPublished and resourcesFinalized
+                    // are all set — because that is the only state in which CompensateUncommittedTurn
+                    // runs its full body, including RollbackLastTurn.
+                    //
+                    // The seam exists because the compensation path was otherwise UNREACHABLE from a
+                    // test: every fault point between generation and commit is a concrete type
+                    // (InMemorySessionStore, the reservation), and a token cancelled during
+                    // generation throws while generationCompleted is still false, which skips the
+                    // rollback branch. So the recovery path that runs only after a turn has already
+                    // failed had never executed. One nulled-out delegate buys real coverage of it;
+                    // see docs/sessions-release-gate-matrix.md.
+                    FaultBeforeCommitForTests?.Invoke();
                     // This is deliberately the final stateful operation. If an earlier step
                     // faults, the catch path can still restore cache, cursor and accounting.
                     var completed = _store.Complete(lease, operationId, resultChunks);
