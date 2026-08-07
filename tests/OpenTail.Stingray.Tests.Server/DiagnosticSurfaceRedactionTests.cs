@@ -29,6 +29,11 @@ public sealed class DiagnosticSurfaceRedactionTests
                     o.MmprojPath = @"C:\Users\dmitri\private-models\mmproj-sk-9137.gguf";
                     o.DSparkModelPath = @"C:\Users\dmitri\private-models\dspark-sk-9137";
                     o.ExpertStatsPath = @"C:\Users\dmitri\private-models\expert-stats-sk-9137.json";
+                    // Newest path-shaped option, and the one the /status bound-configuration block
+                    // touches: it reports SessionPersistenceConfigured as a BOOLEAN derived from
+                    // this. Setting it here is what keeps that a deliberate choice — swap the bool
+                    // for the directory itself and this sweep fails, which is the whole point.
+                    o.SessionStorageDirectory = @"C:\Users\dmitri\private-models\sessions-sk-9137";
                 });
                 services.AddSingleton<IInferenceEngine>(new FakeInferenceEngine("test-model"));
             }))

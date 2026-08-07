@@ -160,7 +160,20 @@ public sealed record ServerStatusSnapshot(
             Configuration: new ServerStatusConfiguration([.. (environmentOverrides?.Names ?? [])],
                 SimdKernels.Q8PrefillEnabled,
                 cpuBatchedPrefill is null ? null : new ServerStatusCpuBatchedPrefill(
-                    cpuBatchedPrefill.Available, cpuBatchedPrefill.Detail)),
+                    cpuBatchedPrefill.Available, cpuBatchedPrefill.Detail),
+                new ServerStatusBoundConfiguration(
+                    MaxQueuedRequests: options.MaxQueuedRequests,
+                    MaxConcurrentRequests: options.MaxConcurrentRequests,
+                    CpuThreads: options.CpuThreads,
+                    PrefillChunkTokens: options.PrefillChunkTokens,
+                    PrefillDequantCacheMb: options.PrefillDequantCacheMb,
+                    KvBudgetMb: options.KvBudgetMb,
+                    PrefixCacheMb: options.PrefixCacheMb,
+                    TurboQuant: options.TurboQuant,
+                    KvType: options.KvType,
+                    ToolGrammarRequested: options.ToolGrammar,
+                    SessionsEnabled: options.EnableSessions,
+                    SessionPersistenceConfigured: !string.IsNullOrWhiteSpace(options.SessionStorageDirectory))),
             Warnings: BuildWarnings(engine, traffic, cache, batchingStatus, saturated));
     }
 
@@ -237,10 +250,31 @@ public sealed record ServerStatusTraffic(
 public sealed record ServerStatusConfiguration(
     IReadOnlyList<string> EnvironmentOverrides,
     bool CpuQ8PrefillEnabled,
-    ServerStatusCpuBatchedPrefill? CpuBatchedPrefill);
+    ServerStatusCpuBatchedPrefill? CpuBatchedPrefill,
+    ServerStatusBoundConfiguration Bound);
 
 /// <summary>Load-time availability of the regular CPU batched-prefill trunk for the loaded model.</summary>
 public sealed record ServerStatusCpuBatchedPrefill(bool Available, string Detail);
+
+/// <summary>
+/// Non-sensitive server options after host binding and legacy environment override resolution.
+/// Paths, sampling defaults, credentials, and delegate hooks are intentionally excluded.
+/// A value such as <c>CpuThreads = 0</c> retains its configured meaning (automatic), rather than
+/// pretending the status boundary can report a later kernel-level choice as a bound option.
+/// </summary>
+public sealed record ServerStatusBoundConfiguration(
+    int MaxQueuedRequests,
+    int? MaxConcurrentRequests,
+    int CpuThreads,
+    int PrefillChunkTokens,
+    long? PrefillDequantCacheMb,
+    long KvBudgetMb,
+    long PrefixCacheMb,
+    bool TurboQuant,
+    string? KvType,
+    bool ToolGrammarRequested,
+    bool SessionsEnabled,
+    bool SessionPersistenceConfigured);
 
 /// <summary>Serving-latency summaries rendered from the same bounded histograms as <c>/metrics</c>.</summary>
 public sealed record ServerStatusLatency(

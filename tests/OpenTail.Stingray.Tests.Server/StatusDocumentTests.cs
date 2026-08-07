@@ -110,6 +110,47 @@ public sealed class StatusDocumentTests
     }
 
     [Fact]
+    public async Task Status_PublishesTheBoundNonSensitiveServerConfiguration()
+    {
+        var client = CreateClient(new StatusFakeEngine("smol.gguf"), options =>
+        {
+            options.MaxQueuedRequests = 7;
+            options.MaxConcurrentRequests = 3;
+            options.CpuThreads = 6;
+            options.PrefillChunkTokens = 96;
+            options.PrefillDequantCacheMb = 512;
+            options.KvBudgetMb = 2048;
+            options.PrefixCacheMb = 384;
+            options.TurboQuant = true;
+            options.KvType = "bf16";
+            options.ToolGrammar = true;
+            options.EnableSessions = true;
+            options.SessionStorageDirectory = @"C:\private-session-state";
+        });
+
+        using var document = await GetStatusAsync(client);
+        var bound = document.RootElement.GetProperty("configuration").GetProperty("bound");
+
+        Assert.Equal(7, bound.GetProperty("max_queued_requests").GetInt32());
+        Assert.Equal(3, bound.GetProperty("max_concurrent_requests").GetInt32());
+        Assert.Equal(6, bound.GetProperty("cpu_threads").GetInt32());
+        Assert.Equal(96, bound.GetProperty("prefill_chunk_tokens").GetInt32());
+        Assert.Equal(512, bound.GetProperty("prefill_dequant_cache_mb").GetInt64());
+        Assert.Equal(2048, bound.GetProperty("kv_budget_mb").GetInt64());
+        Assert.Equal(384, bound.GetProperty("prefix_cache_mb").GetInt64());
+        Assert.True(bound.GetProperty("turbo_quant").GetBoolean());
+        Assert.Equal("bf16", bound.GetProperty("kv_type").GetString());
+        Assert.True(bound.GetProperty("tool_grammar_requested").GetBoolean());
+        Assert.True(bound.GetProperty("sessions_enabled").GetBoolean());
+        Assert.True(bound.GetProperty("session_persistence_configured").GetBoolean());
+
+        // The status document reports persistence as a bool; session paths never cross this
+        // diagnostics boundary even when a host has supplied one.
+        Assert.DoesNotContain("private-session-state", document.RootElement.GetRawText(),
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task Status_PublishesTheLoadedModelsCpuBatchedPrefillReceipt()
     {
         var client = CreateLoadedClient(new CpuBatchedPrefillCapability(false,

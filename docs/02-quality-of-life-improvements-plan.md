@@ -10,10 +10,12 @@ and typed host-key classification are now in place. Environment ownership and ex
    ownership register in `host-config-inventory.md`.
 2. Extend effective configuration from static plan inputs to real server/loader startup values.
    Server environment precedence is centralized in `ServerEnvironmentOverrides`; `/status`
-   publishes its non-sensitive applied-variable receipt. Remaining work is a source-tracked
-   snapshot of the bound configuration and loader-resolved decisions, without exposing values
-   such as filesystem paths. `/capabilities` now also states the unsupported restart-session
-   verdict explicitly rather than leaving session support ambiguous.
+   publishes its non-sensitive applied-variable receipt and a `configuration.bound` snapshot
+   after that precedence has been applied (admission, CPU/prefill/cache budgets, TurboQuant/KV,
+   tool grammar, and session persistence as a boolean — never filesystem paths). Remaining work
+   is loader-resolved decisions such as selected auto backend/device and actual cache allocation,
+   without exposing values such as filesystem paths. `/capabilities` now also states the
+   restart-session verdict explicitly rather than leaving session support ambiguous.
 3. Extend the golden capability fixtures only where a loader actually executes the route. Static
    CPU/backend/dtype/batching/speculation decisions are covered; hardware rows remain release gates.
 4. Finish server observability: VRAM/RAM breakdown, streaming timing, and per-request cache signal.
