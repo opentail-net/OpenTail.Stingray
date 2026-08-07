@@ -160,12 +160,18 @@ public sealed class ColdSessionRuntime
         byte[] exportedState = session.ExportState(modelFingerprint, modelFormat: _modelFormat);
         var envelope = SessionStateCodec.Decode(exportedState);
         string sid = session.SessionId.Value.ToString("N");
+        // Never overwrite packs named by the currently committed manifest. A crash after writing
+        // a replacement pack but before atomically replacing that manifest used to leave the old
+        // manifest pointing at a partially replaced cache. Generation-scoped ids make publication
+        // one-way: until the new manifest is durable, the old manifest and every pack it names are
+        // untouched; after publication, stale generations are only best-effort housekeeping.
+        string generation = Guid.NewGuid().ToString("N");
 
         var blocks = ImmutableArray.CreateBuilder<SegmentBlockRef>();
 
         // Block 0 is always the cursor envelope; RestoreColdSession relies on that ordering.
         blocks.Add(SegmentPackStore.SaveBlock(
-            _storageDirectory, CursorBlockPrefix + sid,
+            _storageDirectory, $"{CursorBlockPrefix}{sid}_{generation}",
             startTokenPos: 0,
             tokenCount: session.Cursor.AcceptedPositionCount,
             payload: exportedState));
@@ -181,7 +187,7 @@ public sealed class ColdSessionRuntime
                 int offset = i * KvChunkBytes;
                 int len = Math.Min(KvChunkBytes, kvBytes.Length - offset);
                 blocks.Add(SegmentPackStore.SaveBlock(
-                    _storageDirectory, $"{KvBlockPrefix}{sid}_{i:D5}",
+                    _storageDirectory, $"{KvBlockPrefix}{sid}_{generation}_{i:D5}",
                     startTokenPos: 0, tokenCount: 0,
                     payload: kvBytes.AsSpan(offset, len)));
             }
@@ -198,13 +204,9 @@ public sealed class ColdSessionRuntime
         string manifestPath = Path.Combine(_storageDirectory, $"{sid}.manifest");
         FileSessionManifest.SaveAtomic(manifestPath, manifest);
 
-        // Reclaim packs this session wrote earlier that the new manifest no longer lists. Block ids
-        // are deterministic (kv_{sid}_{index}), so re-eviction overwrites in place — but an eviction
-        // that produces FEWER blocks than its predecessor leaves the surplus high-index packs on
-        // disk, referenced by nothing. Restore is unaffected because it only loads ids the manifest
-        // names, so this is a disk leak rather than a correctness bug; it is swept here, AFTER the
-        // manifest commits, so a crash mid-sweep can only ever leave extra bytes, never remove a
-        // pack the live manifest still points at.
+        // Reclaim packs from earlier generations only AFTER publishing the new manifest. A crash
+        // in this best-effort sweep can leave extra bytes, but can never remove a pack the live
+        // manifest points at.
         PruneUnreferencedPacks(sid, manifest);
 
         _hotRuntime.Delete(session.SessionId);

@@ -3,6 +3,7 @@ using System.Net.Http.Json;
 using System.Text.Json;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.DependencyInjection;
+using OpenTail.Stingray.Cpu;
 using OpenTail.Stingray.Engine;
 using OpenTail.Stingray.Server;
 
@@ -82,6 +83,21 @@ public sealed class StatusDocumentTests
         // A single-user engine has no batching section at all, rather than a section of zeroes
         // that would read as "continuous batching is on and idle".
         AssertUnknown(root, "batching");
+    }
+
+    [Fact]
+    public async Task Status_PublishesTheProcessQ8PrefillGate()
+    {
+        // This is deliberately the process-wide gate rather than an inference from the fake
+        // engine: Q8 activation prefill is selected inside the CPU kernel dispatcher, and the
+        // status document must report the switch that code is actually consulting.
+        var client = CreateClient(new StatusFakeEngine("smol.gguf"));
+
+        using var document = await GetStatusAsync(client);
+        var configuration = document.RootElement.GetProperty("configuration");
+
+        Assert.Equal(SimdKernels.Q8PrefillEnabled,
+            configuration.GetProperty("cpu_q8_prefill_enabled").GetBoolean());
     }
 
     [Fact]

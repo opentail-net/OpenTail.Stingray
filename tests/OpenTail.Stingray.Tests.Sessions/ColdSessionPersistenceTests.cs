@@ -537,11 +537,9 @@ public sealed class ColdSessionPersistenceTests
     }
 
     /// <summary>
-    /// Block ids are deterministic per session and index, so re-eviction overwrites in place. An
-    /// eviction that yields FEWER blocks than its predecessor therefore used to strand the surplus
-    /// packs on disk, referenced by no manifest and reclaimed by nothing — a slow leak that only
-    /// showed up as unexplained disk growth. Every pack left behind must be one the current
-    /// manifest names.
+    /// Each eviction writes a new pack generation before atomically publishing its manifest. Once
+    /// published, earlier generations and unrelated stale packs must be reclaimed; otherwise
+    /// durable sessions slowly leak disk space.
     /// </summary>
     [Fact]
     public void EvictToDisk_ReEviction_ReclaimsPacksTheNewManifestNoLongerReferences()
@@ -559,19 +557,21 @@ public sealed class ColdSessionPersistenceTests
             string sid = session.SessionId.Value.ToString("N");
             var manifest = coldRuntime.EvictToDisk(session, "test");
 
-            // Model a shrunken re-eviction: a pack under this session's prefix that the manifest
-            // does not list. Using a high index guarantees no real block will ever claim the name.
+            // Model a stale pack under this session's prefix that no manifest lists.
             string stale = SegmentPackStore.GetPackPath(tempDir, $"kv_{sid}_99999");
             File.WriteAllBytes(stale, [0xDE, 0xAD]);
             Assert.True(File.Exists(stale));
 
             var restored = coldRuntime.Open(session.SessionId);
-            coldRuntime.EvictToDisk(restored, "test");
+            var nextManifest = coldRuntime.EvictToDisk(restored, "test");
 
             Assert.False(File.Exists(stale), "an unreferenced pack survived re-eviction.");
+            Assert.NotEqual(manifest.Blocks[0].BlockId, nextManifest.Blocks[0].BlockId);
+            Assert.All(manifest.Blocks, block => Assert.False(File.Exists(
+                SegmentPackStore.GetPackPath(tempDir, block.BlockId))));
 
             // And the packs the manifest DOES name are untouched — pruning must not be overzealous.
-            foreach (var block in manifest.Blocks)
+            foreach (var block in nextManifest.Blocks)
                 Assert.True(File.Exists(SegmentPackStore.GetPackPath(tempDir, block.BlockId)),
                     $"pruning removed referenced block '{block.BlockId}'.");
         }

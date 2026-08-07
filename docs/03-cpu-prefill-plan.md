@@ -13,7 +13,11 @@ per-token fallback.
 
 ## Required evidence
 
-1. Expose the exact eligibility predicate in plan/startup diagnostics.
+1. Expose the exact eligibility predicate in plan/startup diagnostics. **Partially complete:**
+   `GET /status` now publishes the process-wide `configuration.cpu_q8_prefill_enabled` gate,
+   covered by the server wire-contract suite. The remaining model/prompt-specific predicate
+   (supported weight routes, prompt shape, and sequential fallbacks) still needs a separate,
+   truthful diagnostic rather than being inferred from that global switch.
 2. Retain fixture coverage including Q3_K and Q6_K routes, plus the unsupported-format fallback.
 3. Run greedy-token and corpus/perplexity checks with the path on and off.
    Include short/pathological all-special-token prompts: ordinary-prompt cosine is 0.988–0.999

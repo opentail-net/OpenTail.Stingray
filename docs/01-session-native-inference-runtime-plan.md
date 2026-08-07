@@ -5,6 +5,11 @@ processes and is available from the server when `EnableSessions` and `SessionSto
 are configured. It remains CPU-dense GGUF only; the operation-result ledger is hot-only and the
 CLI has no named-session surface yet.
 
+The server path itself is now acceptance-tested: a real CPU GGUF server creates a session through
+HTTP, completes and persists a turn, shuts down, then a fresh server process restores that session
+through `GET /v1/sessions/{id}` and completes its next turn. This is covered by
+`SessionLifecycle_RealCpuGguf_RestoresAcrossServerRestart`.
+
 ## Immediate work
 
 1. Expose a minimal named-session lifecycle for the proven CPU-dense lane, with explicit
@@ -18,6 +23,11 @@ CLI has no named-session surface yet.
    Its persisted ABI must represent per-layer KV/head dimensions and V-region stride; a single
    model-level `headDim` silently corrupts Gemma-class mixed-dimension caches.
 3. Exercise interrupted writes, corrupt packs, ABI mismatch, quotas, and eviction ownership.
+   - Corrupt KV-pack restore is now covered at the cold-runtime boundary: both `Open` and
+     `OpenOrCreate` refuse a damaged persisted pack rather than admitting partial state.
+   - Re-persistence now writes a new generation of packs before atomically publishing its
+     manifest. A crash before publication leaves the prior manifest and every referenced pack
+     intact; stale generations are reclaimed only afterward.
 4. Validate multi-model routing after the single-model exact lane is proven.
 
 The proof is `HotSessionGreedyReplayTests.ColdSession_RealModel_CrossProcessRestore_MatchesFullGreedyReplay`:

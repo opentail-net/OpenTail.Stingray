@@ -1,4 +1,5 @@
 using System.Text.Json.Serialization;
+using OpenTail.Stingray.Cpu;
 using OpenTail.Stingray.Engine;
 
 namespace OpenTail.Stingray.Server;
@@ -155,7 +156,8 @@ public sealed record ServerStatusSnapshot(
             Cache: cache,
             Memory: memory,
             Batching: batchingStatus,
-            Configuration: new ServerStatusConfiguration([.. (environmentOverrides?.Names ?? [])]),
+            Configuration: new ServerStatusConfiguration([.. (environmentOverrides?.Names ?? [])],
+                SimdKernels.Q8PrefillEnabled),
             Warnings: BuildWarnings(engine, traffic, cache, batchingStatus, saturated));
     }
 
@@ -229,7 +231,9 @@ public sealed record ServerStatusTraffic(
     long OverloadRejectionsTotal);
 
 /// <summary>Non-sensitive configuration provenance. Values and paths are deliberately omitted.</summary>
-public sealed record ServerStatusConfiguration(IReadOnlyList<string> EnvironmentOverrides);
+public sealed record ServerStatusConfiguration(
+    IReadOnlyList<string> EnvironmentOverrides,
+    bool CpuQ8PrefillEnabled);
 
 /// <summary>Serving-latency summaries rendered from the same bounded histograms as <c>/metrics</c>.</summary>
 public sealed record ServerStatusLatency(
