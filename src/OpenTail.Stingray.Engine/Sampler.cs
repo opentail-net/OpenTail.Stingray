@@ -263,16 +263,27 @@ public static class Sampler
                 for (int t = 0; t < sel; t++)
                 {
                     if (idx[t] < 0) continue;
-                    int occ = 0;
-                    foreach (int id in p.PreviousTokens!)
-                        if (id == idx[t]) occ++;
-                    if (occ == 0) continue;
-                    if (p.RepetitionPenalty != 1.0f)
+
+                    // Two counts, one pass. Repetition compounds over the trailing RepeatLastN
+                    // window (llama.cpp); presence/frequency count the whole history (OpenAI).
+                    // Collapsing them into a single `occ` is what made the two families share a
+                    // window they do not agree on.
+                    var history = p.PreviousTokens!;
+                    int windowStart = RepeatWindowStart(history.Count, p.RepeatLastN);
+                    int occWindow = 0, occAll = 0;
+                    for (int h = 0; h < history.Count; h++)
                     {
-                        float pen = MathF.Pow(p.RepetitionPenalty, occ);
+                        if (history[h] != idx[t]) continue;
+                        occAll++;
+                        if (h >= windowStart) occWindow++;
+                    }
+                    if (occAll == 0) continue;
+                    if (p.RepetitionPenalty != 1.0f && occWindow > 0)
+                    {
+                        float pen = MathF.Pow(p.RepetitionPenalty, occWindow);
                         vals[t] = vals[t] > 0f ? vals[t] / pen : vals[t] * pen;
                     }
-                    vals[t] -= p.PresencePenalty + p.FrequencyPenalty * occ;
+                    vals[t] -= p.PresencePenalty + p.FrequencyPenalty * occAll;
                 }
                 // Insertion re-sort (sel is tiny: k + PreviousTokens.Count).
                 for (int a = 1; a < sel; a++)
@@ -346,14 +357,29 @@ public static class Sampler
     }
 
     /// <summary>Applies repeat, presence, and frequency penalties in logit space.</summary>
+    /// <summary>
+    /// First index of the repetition-penalty window. <paramref name="repeatLastN"/> of 0 (or a value
+    /// covering the whole history) means every entry counts.
+    /// </summary>
+    private static int RepeatWindowStart(int historyCount, int repeatLastN) =>
+        repeatLastN <= 0 || repeatLastN >= historyCount ? 0 : historyCount - repeatLastN;
+
     private static void ApplyHistoryPenalties(Span<float> logits, SamplingParams p)
     {
         if (p.PreviousTokens is not { Count: > 0 } previous) return;
 
+        // Repetition sees only the trailing RepeatLastN entries; presence/frequency see all of them.
+        // Windowing by index costs nothing — no slice, no copy, no per-token allocation.
         if (p.RepetitionPenalty != 1.0f)
-            foreach (int id in previous)
+        {
+            int repeatStart = RepeatWindowStart(previous.Count, p.RepeatLastN);
+            for (int i = repeatStart; i < previous.Count; i++)
+            {
+                int id = previous[i];
                 if ((uint)id < (uint)logits.Length)
                     logits[id] = logits[id] > 0f ? logits[id] / p.RepetitionPenalty : logits[id] * p.RepetitionPenalty;
+            }
+        }
 
         if (p.PresencePenalty == 0f && p.FrequencyPenalty == 0f) return;
 
@@ -640,9 +666,29 @@ public sealed record SamplingParams
     public float TopP { get; init; } = 1.0f;
     public float MinP { get; init; } = 0.0f;
     public float RepetitionPenalty { get; init; } = 1.0f;
-    /// <summary>Subtract once from each token that occurs in <see cref="PreviousTokens"/>.</summary>
+    /// <summary>
+    /// How many trailing entries of <see cref="PreviousTokens"/> the REPETITION penalty considers
+    /// (llama.cpp's <c>--repeat-last-n</c>). 0 means the whole history.
+    ///
+    /// <para>Deliberately scoped to the repetition penalty alone. The three penalties come from
+    /// different specifications and disagree about this on purpose: llama.cpp defines
+    /// <c>repeat_penalty</c> over a trailing window, while OpenAI defines
+    /// <see cref="PresencePenalty"/> and <see cref="FrequencyPenalty"/> over the entire completion.
+    /// Applying one window to all three would make whichever family it did not suit wrong, which is
+    /// how the CLI (windowed at 64) and the server engines (unwindowed) came to disagree about what
+    /// the same parameter meant. Windowing per family instead lets each keep its own definition and
+    /// makes the two entry points agree.</para>
+    /// </summary>
+    public int RepeatLastN { get; init; } = 64;
+    /// <summary>
+    /// Subtract once from each token that occurs in <see cref="PreviousTokens"/>. OpenAI semantics:
+    /// the whole history counts, regardless of <see cref="RepeatLastN"/>.
+    /// </summary>
     public float PresencePenalty { get; init; }
-    /// <summary>Subtract once per occurrence from each token in <see cref="PreviousTokens"/>.</summary>
+    /// <summary>
+    /// Subtract once per occurrence from each token in <see cref="PreviousTokens"/>. OpenAI
+    /// semantics: the whole history counts, regardless of <see cref="RepeatLastN"/>.
+    /// </summary>
     public float FrequencyPenalty { get; init; }
     /// <summary>True when sampling needs a generated-token history.</summary>
     public bool HasHistoryPenalty => RepetitionPenalty != 1.0f || PresencePenalty != 0f || FrequencyPenalty != 0f;

@@ -24,6 +24,7 @@ public static class EndpointRouteBuilderExtensions
         endpoints.MapStatusEndpoints();
         endpoints.MapCompatibilityEndpoints();
         endpoints.MapLlamaCompatEndpoints();
+        endpoints.MapSessionEndpoints();
         return endpoints;
     }
 }

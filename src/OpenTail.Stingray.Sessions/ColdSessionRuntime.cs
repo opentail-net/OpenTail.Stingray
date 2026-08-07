@@ -57,7 +57,26 @@ public sealed class ColdSessionRuntime
     public HotSessionRuntime HotRuntime => _hotRuntime;
     public string StorageDirectory => _storageDirectory;
 
+    /// <summary>Creates a new session with a caller-selected opaque identifier.</summary>
+    public HotSession Create(SessionId? sessionId = null, string? modelKey = null) =>
+        _hotRuntime.Create(sessionId, modelKey);
+
     public HotSession Create(SessionAddress address) => _hotRuntime.Create(address);
+
+    /// <summary>Opens an active session or restores its verified cold representation.</summary>
+    public HotSession Open(SessionId sessionId)
+    {
+        try
+        {
+            return _hotRuntime.Open(sessionId);
+        }
+        catch (SessionNotFoundException)
+        {
+            string manifestPath = Path.Combine(_storageDirectory, $"{sessionId.Value:N}.manifest");
+            if (!File.Exists(manifestPath)) throw;
+            return RestoreColdSession(FileSessionManifest.Load(manifestPath));
+        }
+    }
 
     public HotSession OpenOrCreate(SessionAddress address)
     {
@@ -81,6 +100,23 @@ public sealed class ColdSessionRuntime
             // Otherwise create new active hot session
             return _hotRuntime.Create(address);
         }
+    }
+
+    /// <summary>Deletes active and cold state for a session. Missing sessions return <c>false</c>.</summary>
+    public bool Delete(SessionId sessionId)
+    {
+        bool removed = _hotRuntime.Delete(sessionId);
+        string manifestPath = Path.Combine(_storageDirectory, $"{sessionId.Value:N}.manifest");
+        if (!File.Exists(manifestPath)) return removed;
+
+        var manifest = FileSessionManifest.Load(manifestPath);
+        foreach (var block in manifest.Blocks)
+        {
+            string packPath = SegmentPackStore.GetPackPath(_storageDirectory, block.BlockId);
+            if (File.Exists(packPath)) File.Delete(packPath);
+        }
+        File.Delete(manifestPath);
+        return true;
     }
 
     /// <summary>
@@ -155,8 +191,48 @@ public sealed class ColdSessionRuntime
         string manifestPath = Path.Combine(_storageDirectory, $"{sid}.manifest");
         FileSessionManifest.SaveAtomic(manifestPath, manifest);
 
+        // Reclaim packs this session wrote earlier that the new manifest no longer lists. Block ids
+        // are deterministic (kv_{sid}_{index}), so re-eviction overwrites in place — but an eviction
+        // that produces FEWER blocks than its predecessor leaves the surplus high-index packs on
+        // disk, referenced by nothing. Restore is unaffected because it only loads ids the manifest
+        // names, so this is a disk leak rather than a correctness bug; it is swept here, AFTER the
+        // manifest commits, so a crash mid-sweep can only ever leave extra bytes, never remove a
+        // pack the live manifest still points at.
+        PruneUnreferencedPacks(sid, manifest);
+
         _hotRuntime.Delete(session.SessionId);
         return manifest;
+    }
+
+    /// <summary>Deletes this session's packs that <paramref name="manifest"/> does not reference.</summary>
+    private void PruneUnreferencedPacks(string sid, SessionManifestEnvelope manifest)
+    {
+        var referenced = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var block in manifest.Blocks)
+            referenced.Add(SegmentPackStore.GetPackPath(_storageDirectory, block.BlockId));
+
+        try
+        {
+            // Scoped to this session's own prefixes: another session's packs are never candidates.
+            // Materialise before deleting — EnumerateFiles is lazy, so removing entries mid-walk can
+            // skip siblings or throw, and the catch below would hide it as a silent no-op.
+            foreach (string prefix in new[] { CursorBlockPrefix + sid, KvBlockPrefix + sid })
+            {
+                string[] candidates = Directory.GetFiles(
+                    _storageDirectory, SegmentPackStore.GetPackSearchPattern(prefix));
+                foreach (string path in candidates)
+                    if (!referenced.Contains(path))
+                        File.Delete(path);
+            }
+        }
+        catch (IOException)
+        {
+            // Best effort: a stale pack costs disk, never correctness. Never fail an evicted turn
+            // because housekeeping lost a race with another reader.
+        }
+        catch (UnauthorizedAccessException)
+        {
+        }
     }
 
     private HotSession RestoreColdSession(SessionManifestEnvelope manifest)

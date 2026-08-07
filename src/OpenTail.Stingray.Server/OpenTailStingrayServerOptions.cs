@@ -194,6 +194,25 @@ public sealed class OpenTailStingrayServerOptions
     public int MaxBatchSize { get; set; } = 1;
 
     /// <summary>
+    /// Enables the in-memory named-session runtime for the built-in CPU-dense GGUF lane.
+    /// Enabling this selects continuous batching even when <see cref="MaxBatchSize"/> is one,
+    /// because retained session state is owned by that engine. CUDA, Vulkan, hybrid, MoE,
+    /// TurboQuant, image-input, and SafeTensors loads are refused rather than silently exposing
+    /// a session contract whose cache lifecycle has not been proven. The initial server seam is
+    /// hot-only: callers must not advertise restart continuation until a durable lifecycle API is
+    /// wired above it.
+    /// </summary>
+    public bool EnableSessions { get; set; }
+
+    /// <summary>
+    /// Optional directory for durable CPU-dense session snapshots. When configured with
+    /// <see cref="EnableSessions"/>, each completed server turn is persisted as an atomic manifest
+    /// plus verified KV packs and can be restored by a new server process using the same model.
+    /// Empty (the default) keeps sessions hot-only.
+    /// </summary>
+    public string? SessionStorageDirectory { get; set; }
+
+    /// <summary>
     /// Maximum number of requests allowed to wait behind the active inference batch.
     /// Together with <see cref="MaxBatchSize"/>, this bounds the server's generation
     /// work-in-flight at <c>MaxBatchSize + MaxQueuedRequests</c>; further requests receive
@@ -460,4 +479,6 @@ public sealed record LoadedEngine(
     OpenTail.Stingray.Core.JinjaChatTemplate? ChatTemplate,
     IReadOnlyList<int>? ToolBoundaryStopTokenIds = null,
     OpenTail.Stingray.Core.Grammar.GrammarVocabulary? Grammar = null,
-    OpenTail.Stingray.Core.ITokenizer? Tokenizer = null);
+    OpenTail.Stingray.Core.ITokenizer? Tokenizer = null,
+    OpenTail.Stingray.Sessions.HotSessionRuntime? SessionRuntime = null,
+    OpenTail.Stingray.Sessions.ColdSessionRuntime? ColdSessionRuntime = null);

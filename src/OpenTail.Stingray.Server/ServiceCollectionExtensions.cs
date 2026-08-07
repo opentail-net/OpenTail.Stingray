@@ -38,6 +38,11 @@ public static class ServiceCollectionExtensions
         // TryAdd: a test or downstream module may already have registered a fake/replacement
         // for any of these services. We never overwrite an existing registration here.
         services.TryAddSingleton<ServerMetrics>();
+        services.TryAddSingleton<SessionRuntimeRelay>(sp => new SessionRuntimeRelay(
+            sp.GetRequiredService<IOptions<OpenTailStingrayServerOptions>>().Value.EnableSessions
+                ? "The engine has not been loaded yet, or it does not expose the CPU-dense session runtime."
+                : "Sessions are disabled by server configuration."));
+        services.TryAddSingleton<IServerSessionRuntime>(sp => sp.GetRequiredService<SessionRuntimeRelay>());
 
         // Request admission gate. Resolved lazily so the options object is fully bound
         // (config + the host's inline Configure) by first construction. A positive
@@ -74,6 +79,13 @@ public static class ServiceCollectionExtensions
             // below can be resolved before IInferenceEngine is fully constructed.
             if (loaded.Tokenizer is not null)
                 sp.GetRequiredService<TokenizerRelay>().Set(loaded.Tokenizer);
+
+            sp.GetRequiredService<SessionRuntimeRelay>().Set(
+                loaded.SessionRuntime,
+                loaded.ColdSessionRuntime,
+                opts.EnableSessions
+                    ? "The loaded engine did not expose the CPU-dense session runtime."
+                    : "Sessions are disabled by server configuration.");
 
             return loaded.Engine;
         });

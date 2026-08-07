@@ -36,6 +36,23 @@ public sealed record ServerCompatibilitySnapshot(
                     "Requires a supported model family and a request containing tools.")
             : new ServerFeatureAvailability(false, "Disabled by server configuration.");
 
+        // Two different things, and the report must not conflate them: the named-session LIFECYCLE
+        // (POST/GET/DELETE /v1/sessions) is served whenever EnableSessions is set, while restart
+        // CONTINUATION — state surviving a host restart — is not implemented at all. So the flag
+        // stays false in both configurations and only the detail moves.
+        //
+        // Saying "not exposed by the server yet" once those routes are live is a false denial: a
+        // client can call them today. Flipping the flag to true would be the opposite error, and
+        // the one this report exists to avoid — promising durability that does not exist. Session
+        // state is in-process only; turn submission and durable restart wiring are still to come.
+        var sessionRestart = options.EnableSessions
+            ? new ServerFeatureAvailability(false,
+                "Named-session lifecycle endpoints are served, but restart continuation is not: "
+                + "session state is held in-process and does not survive a host restart.")
+            : new ServerFeatureAvailability(false,
+                "Disabled by server configuration; no session endpoints are served and no session "
+                + "state is retained across a restart.");
+
         return new ServerCompatibilitySnapshot(
             SchemaVersion: 1,
             Model: engine.ModelId,
@@ -52,8 +69,7 @@ public sealed record ServerCompatibilitySnapshot(
                 ImageInput: engine.SupportsImageInput,
                 ToolGrammar: toolGrammar,
                 OutputConstraintConfigured: options.OutputConstraintFactory is not null,
-                SessionRestartContinuation: new ServerFeatureAvailability(false,
-                    "Not exposed by the server yet; the CPU-dense reference restart proof is not a supported named-session lifecycle or backend/cache conformance contract.")),
+                SessionRestartContinuation: sessionRestart),
             Configuration: new ServerEffectiveCompatibilityConfiguration(
                 Backend: options.Backend.ToString().ToLowerInvariant(),
                 GpuLayers: options.NGpuLayers,

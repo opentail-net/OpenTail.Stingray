@@ -1,0 +1,448 @@
+using System.Linq;
+using System.Net;
+using System.Net.Http.Json;
+using System.Text.Json;
+using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.Extensions.DependencyInjection;
+using OpenTail.Stingray.Core;
+using OpenTail.Stingray.Engine;
+using OpenTail.Stingray.Server;
+using OpenTail.Stingray.Sessions;
+
+namespace OpenTail.Stingray.Tests.Server;
+
+/// <summary>
+/// Wire contracts for the named-session endpoints under <c>/v1/sessions</c>.
+///
+/// <para>These cover the outcomes that cannot be eyeballed: optimistic-concurrency conflicts and
+/// idempotent replay. A turn is append-only and mutates committed revision, so "did the second
+/// call re-run the model or replay the first result?" is the whole contract — and it is invisible
+/// in a green build without a test that asserts it.</para>
+///
+/// <para><see cref="IServerSessionRuntime"/> is registered with <c>TryAddSingleton</c>, so
+/// registering a stub first wins over the production relay. That is the only seam available:
+/// the interface exposes a concrete <see cref="HotSessionRuntime"/> rather than an abstraction,
+/// so an enabled runtime has to be a real one over a fake forward pass.</para>
+/// </summary>
+public sealed class SessionEndpointTests
+{
+    private const int Eos = 31;
+
+    // Mirrors the fakes the Sessions suite already uses; they are private nested types there, so
+    // this is a local copy rather than a shared one.
+    private sealed class Tokenizer : ITokenizer
+    {
+        public int VocabSize => 64;
+        public int BosTokenId => 0;
+        public int EosTokenId => Eos;
+        public int UnknownTokenId => 0;
+        public int PadTokenId => Eos;
+        public bool AddBosToken => false;
+        public IReadOnlyCollection<int> EogTokenIds => [Eos];
+        public IReadOnlyList<int> Encode(string text) => [1, 2];
+        public string Decode(IEnumerable<int> tokens) => "tok";
+        public byte[] DecodeBytes(int token) => [];
+    }
+
+    private sealed class FakeCache : IRewindableSequenceKvCache
+    {
+        public int LogicalPosition { get; set; }
+        public bool CanRewindTo(int logicalPosition) => logicalPosition >= 0 && logicalPosition <= LogicalPosition;
+        public void RewindTo(int logicalPosition) => LogicalPosition = logicalPosition;
+        public void Dispose() { }
+    }
+
+    private sealed class FakeForwardPass : IBatchedForwardPass
+    {
+        public bool SnapKvEnabled => false;
+        public long KvBytesPerToken => 1;
+        public int MaxSeqLen => 512;
+        public bool PrefillDequantCacheActive => false;
+        public ISequenceKvCache CreateCache() => new FakeCache();
+
+        public ReadOnlySpan<float> PrefillWithCache(IReadOnlyList<int> tokens, ISequenceKvCache cache, int startPos = 0)
+        {
+            var retained = Assert.IsType<FakeCache>(cache);
+            retained.LogicalPosition = startPos + tokens.Count;
+            var logits = new float[64];
+            logits[Eos] = 1f;   // stop immediately: these tests are about the HTTP contract
+            return logits;
+        }
+
+        public float[]?[] PrefillPackedMulti(ReadOnlyMemory<int>[] chunks, int[] startPos, ISequenceKvCache[] caches, bool[] wantLogits) =>
+            throw new NotSupportedException();
+
+        // Decode runs through here. Returning EOS ends the turn after one step, which keeps these
+        // tests about the HTTP contract while still letting a turn COMPLETE — throwing instead made
+        // every turn come back "failed" with the revision unmoved, quietly voiding the
+        // revision-conflict and replay assertions below.
+        public float[][] BatchForwardMulti(int[] tokens, int[] positions, ISequenceKvCache[] caches)
+        {
+            var rows = new float[tokens.Length][];
+            for (int i = 0; i < tokens.Length; i++)
+            {
+                if (caches[i] is FakeCache cache) cache.LogicalPosition = positions[i] + 1;
+                var logits = new float[64];
+                logits[Eos] = 1f;
+                rows[i] = logits;
+            }
+            return rows;
+        }
+    }
+
+    /// <summary>Sessions unavailable — the production default when EnableSessions is not set.</summary>
+    private sealed class UnavailableSessions : IServerSessionRuntime
+    {
+        public HotSessionRuntime? Runtime => null;
+        public ColdSessionRuntime? ColdRuntime => null;
+        public string? UnavailabilityReason => "test lane does not support sessions.";
+    }
+
+    private sealed class EnabledSessions : IServerSessionRuntime, IDisposable
+    {
+        private readonly ContinuousBatchingEngine _engine =
+            new(new FakeForwardPass(), new Tokenizer(), "test", maxBatchSize: 1);
+
+        public EnabledSessions() => Runtime = new HotSessionRuntime(_engine, new Tokenizer());
+        public HotSessionRuntime? Runtime { get; }
+        // Hot lane only: the durable wrapper has its own storage contract and is out of scope here.
+        public ColdSessionRuntime? ColdRuntime => null;
+        public string? UnavailabilityReason => null;
+        public void Dispose() => _engine.Dispose();
+    }
+
+    /// <summary>
+    /// Hot runtime plus a durable wrapper over a scratch directory, mirroring how
+    /// <c>InferenceEngineLoader</c> builds one when <c>SessionStorageDirectory</c> is configured.
+    /// </summary>
+    private sealed class DurableSessions : IServerSessionRuntime, IDisposable
+    {
+        private readonly ContinuousBatchingEngine _engine =
+            new(new FakeForwardPass(), new Tokenizer(), "test", maxBatchSize: 1);
+
+        public DurableSessions(string storageDirectory)
+        {
+            StorageDirectory = storageDirectory;
+            Directory.CreateDirectory(storageDirectory);
+            Runtime = new HotSessionRuntime(_engine, new Tokenizer());
+            ColdRuntime = new ColdSessionRuntime(Runtime, _engine, storageDirectory, ModelFormat.Gguf);
+        }
+
+        public string StorageDirectory { get; }
+        public HotSessionRuntime? Runtime { get; }
+        public ColdSessionRuntime? ColdRuntime { get; }
+        public string? UnavailabilityReason => null;
+        public void Dispose() => _engine.Dispose();
+    }
+
+    /// <summary>A scratch directory that removes itself, so a failing test cannot leak packs.</summary>
+    private sealed class TempDirectory : IDisposable
+    {
+        public TempDirectory()
+        {
+            Path = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"opentail_sessions_{Guid.NewGuid():N}");
+            Directory.CreateDirectory(Path);
+        }
+
+        public string Path { get; }
+
+        public void Dispose()
+        {
+            try { if (Directory.Exists(Path)) Directory.Delete(Path, recursive: true); }
+            catch (IOException) { }
+        }
+    }
+
+    private static HttpClient CreateClient(IServerSessionRuntime sessions) =>
+        new WebApplicationFactory<Program>()
+            .WithWebHostBuilder(builder => builder.ConfigureServices(services =>
+            {
+                services.AddSingleton<IInferenceEngine>(new FakeInferenceEngine("test-model"));
+                services.AddSingleton(sessions);
+            }))
+            .CreateClient();
+
+    private static async Task<Guid> CreateSessionAsync(HttpClient client)
+    {
+        var created = await client.PostAsync("/v1/sessions", content: null);
+        Assert.Equal(HttpStatusCode.Created, created.StatusCode);
+        using var json = JsonDocument.Parse(await created.Content.ReadAsStringAsync());
+        return Guid.Parse(json.RootElement.GetProperty("id").GetString()!);
+    }
+
+    private static object TurnBody(string prompt, long revision, int maxTokens = 4, string? operationId = null) =>
+        operationId is null
+            ? new { append_prompt = prompt, expected_revision = revision, max_tokens = maxTokens }
+            : new { append_prompt = prompt, expected_revision = revision, max_tokens = maxTokens, operation_id = operationId };
+
+    // ── Unavailable lane ──────────────────────────────────────────────────
+
+    /// <summary>
+    /// Every route must refuse with the same shape when the load lane cannot support sessions.
+    /// The turns route is included deliberately: it is the newest and the easiest to leave unmapped.
+    /// </summary>
+    [Fact]
+    public async Task AllRoutes_SessionsUnavailable_Return409WithReason()
+    {
+        var client = CreateClient(new UnavailableSessions());
+        var id = Guid.NewGuid();
+
+        var responses = new[]
+        {
+            await client.PostAsync("/v1/sessions", content: null),
+            await client.GetAsync($"/v1/sessions/{id}"),
+            await client.PostAsJsonAsync($"/v1/sessions/{id}/turns", TurnBody("hi", 0)),
+            await client.DeleteAsync($"/v1/sessions/{id}"),
+        };
+
+        foreach (var response in responses)
+        {
+            Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+            using var json = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+            Assert.Equal("session_unavailable", json.RootElement.GetProperty("type").GetString());
+            Assert.Contains("does not support sessions", json.RootElement.GetProperty("message").GetString(), StringComparison.Ordinal);
+        }
+    }
+
+    // ── Lifecycle ─────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task Session_CreateGetDelete_RoundTrips()
+    {
+        using var sessions = new EnabledSessions();
+        var client = CreateClient(sessions);
+
+        Guid id = await CreateSessionAsync(client);
+        Assert.Equal(HttpStatusCode.OK, (await client.GetAsync($"/v1/sessions/{id}")).StatusCode);
+        Assert.Equal(HttpStatusCode.NoContent, (await client.DeleteAsync($"/v1/sessions/{id}")).StatusCode);
+
+        // Gone afterwards, and deleting twice is a 404 rather than a second success.
+        Assert.Equal(HttpStatusCode.NotFound, (await client.GetAsync($"/v1/sessions/{id}")).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await client.DeleteAsync($"/v1/sessions/{id}")).StatusCode);
+    }
+
+    [Fact]
+    public async Task Turn_UnknownSession_Returns404()
+    {
+        using var sessions = new EnabledSessions();
+        var client = CreateClient(sessions);
+
+        var response = await client.PostAsJsonAsync($"/v1/sessions/{Guid.NewGuid()}/turns", TurnBody("hi", 0));
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+    }
+
+    // ── Request validation ────────────────────────────────────────────────
+
+    public static TheoryData<object, string> InvalidTurnBodies => new()
+    {
+        { new { append_prompt = "", expected_revision = 0L, max_tokens = 4 }, "append_prompt" },
+        { new { append_prompt = "hi", max_tokens = 4 }, "expected_revision" },
+        { new { append_prompt = "hi", expected_revision = -1L, max_tokens = 4 }, "expected_revision" },
+        { new { append_prompt = "hi", expected_revision = 0L, max_tokens = 0 }, "max_tokens" },
+    };
+
+    [Theory]
+    [MemberData(nameof(InvalidTurnBodies))]
+    public async Task Turn_InvalidRequest_Returns400NamingTheField(object body, string expectedField)
+    {
+        using var sessions = new EnabledSessions();
+        var client = CreateClient(sessions);
+        Guid id = await CreateSessionAsync(client);
+
+        var response = await client.PostAsJsonAsync($"/v1/sessions/{id}/turns", body);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        using var json = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("invalid_request_error", json.RootElement.GetProperty("type").GetString());
+        // Naming the offending field is the difference between a usable 400 and a guess.
+        Assert.Contains(expectedField, json.RootElement.GetProperty("message").GetString(), StringComparison.Ordinal);
+    }
+
+    // ── Optimistic concurrency ────────────────────────────────────────────
+
+    /// <summary>
+    /// A turn is append-only, so a stale expected_revision must be refused rather than silently
+    /// applied on top of work the caller has not seen.
+    /// </summary>
+    [Fact]
+    public async Task Turn_StaleRevision_Returns409Conflict()
+    {
+        using var sessions = new EnabledSessions();
+        var client = CreateClient(sessions);
+        Guid id = await CreateSessionAsync(client);
+
+        var first = await client.PostAsJsonAsync($"/v1/sessions/{id}/turns", TurnBody("one", 0));
+        Assert.Equal(HttpStatusCode.OK, first.StatusCode);
+
+        // Revision 0 is now stale: the accepted turn advanced it.
+        var stale = await client.PostAsJsonAsync($"/v1/sessions/{id}/turns", TurnBody("two", 0));
+
+        Assert.Equal(HttpStatusCode.Conflict, stale.StatusCode);
+        using var json = JsonDocument.Parse(await stale.Content.ReadAsStringAsync());
+        Assert.Equal("session_revision_conflict", json.RootElement.GetProperty("type").GetString());
+    }
+
+    // ── Idempotency ───────────────────────────────────────────────────────
+
+    /// <summary>
+    /// The regression this pins: the handler used to default operation_id to a fresh
+    /// <c>Guid.NewGuid()</c>, so a retried request looked like a brand-new operation and the turn
+    /// ran twice. A client that times out and retries — the exact caller idempotency exists for —
+    /// got no protection at all. Identical content at the same revision must replay.
+    /// </summary>
+    [Fact]
+    public async Task Turn_RetriedWithoutOperationId_ReplaysInsteadOfReRunning()
+    {
+        using var sessions = new EnabledSessions();
+        var client = CreateClient(sessions);
+        Guid id = await CreateSessionAsync(client);
+
+        var first = await client.PostAsJsonAsync($"/v1/sessions/{id}/turns", TurnBody("same", 0));
+        Assert.Equal(HttpStatusCode.OK, first.StatusCode);
+        using var firstJson = JsonDocument.Parse(await first.Content.ReadAsStringAsync());
+        Assert.False(firstJson.RootElement.GetProperty("idempotent_replay").GetBoolean());
+        string operationId = firstJson.RootElement.GetProperty("operation_id").GetString()!;
+        long revisionAfterFirst = firstJson.RootElement.GetProperty("session").GetProperty("committed_revision").GetInt64();
+
+        // Byte-identical retry, no client-supplied key.
+        var retry = await client.PostAsJsonAsync($"/v1/sessions/{id}/turns", TurnBody("same", 0));
+
+        Assert.Equal(HttpStatusCode.OK, retry.StatusCode);
+        using var retryJson = JsonDocument.Parse(await retry.Content.ReadAsStringAsync());
+        Assert.True(retryJson.RootElement.GetProperty("idempotent_replay").GetBoolean());
+        Assert.Equal(operationId, retryJson.RootElement.GetProperty("operation_id").GetString());
+        // The decisive assertion: a replay must not append a second turn.
+        Assert.Equal(revisionAfterFirst,
+            retryJson.RootElement.GetProperty("session").GetProperty("committed_revision").GetInt64());
+    }
+
+    /// <summary>
+    /// The derived key must be content-addressed, not constant: two genuinely different turns at
+    /// the same revision must not collide into one replayed operation.
+    /// </summary>
+    [Fact]
+    public async Task Turn_DifferentPromptSameRevision_IsNotTreatedAsReplay()
+    {
+        using var sessions = new EnabledSessions();
+        var client = CreateClient(sessions);
+        Guid id = await CreateSessionAsync(client);
+
+        var first = await client.PostAsJsonAsync($"/v1/sessions/{id}/turns", TurnBody("alpha", 0));
+        Assert.Equal(HttpStatusCode.OK, first.StatusCode);
+        using var firstJson = JsonDocument.Parse(await first.Content.ReadAsStringAsync());
+        string firstOperation = firstJson.RootElement.GetProperty("operation_id").GetString()!;
+
+        // Same revision, different text: a conflict is correct (the revision is now stale), but it
+        // must NOT be reported as a replay of the first operation.
+        var other = await client.PostAsJsonAsync($"/v1/sessions/{id}/turns", TurnBody("beta", 0));
+        if (other.StatusCode == HttpStatusCode.OK)
+        {
+            using var otherJson = JsonDocument.Parse(await other.Content.ReadAsStringAsync());
+            Assert.NotEqual(firstOperation, otherJson.RootElement.GetProperty("operation_id").GetString());
+            Assert.False(otherJson.RootElement.GetProperty("idempotent_replay").GetBoolean());
+        }
+        else
+        {
+            Assert.Equal(HttpStatusCode.Conflict, other.StatusCode);
+            using var otherJson = JsonDocument.Parse(await other.Content.ReadAsStringAsync());
+            Assert.Equal("session_revision_conflict", otherJson.RootElement.GetProperty("type").GetString());
+        }
+    }
+
+    /// <summary>A client-supplied key still wins, so two deliberate turns with identical text
+    /// remain expressible.</summary>
+    [Fact]
+    public async Task Turn_ClientSuppliedOperationId_IsHonoured()
+    {
+        using var sessions = new EnabledSessions();
+        var client = CreateClient(sessions);
+        Guid id = await CreateSessionAsync(client);
+
+        string key = Guid.NewGuid().ToString();
+        var response = await client.PostAsJsonAsync($"/v1/sessions/{id}/turns", TurnBody("hi", 0, operationId: key));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        using var json = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal(Guid.Parse(key).ToString("N"), json.RootElement.GetProperty("operation_id").GetString());
+    }
+
+
+
+    /// <summary>Runs one turn and returns the session's committed revision afterwards.</summary>
+    private static async Task<long> RunTurnAsync(HttpClient client, Guid id, string prompt, long expectedRevision)
+    {
+        var response = await client.PostAsJsonAsync($"/v1/sessions/{id}/turns", TurnBody(prompt, expectedRevision));
+        string body = await response.Content.ReadAsStringAsync();
+        // Carry the body into the message: "expected OK, got Conflict" alone cannot distinguish a
+        // revision conflict from an operation conflict from an unavailable runtime.
+        Assert.True(response.StatusCode == HttpStatusCode.OK,
+            $"turn '{prompt}' at revision {expectedRevision} returned {(int)response.StatusCode}: {body}");
+        using var json = JsonDocument.Parse(body);
+        return json.RootElement.GetProperty("session").GetProperty("committed_revision").GetInt64();
+    }
+
+    // ── Durable seam ──────────────────────────────────────────────────────
+
+    /// <summary>
+    /// The point of the durable lane: a completed turn is evicted to disk, and a LATER server —
+    /// a fresh relay and a fresh hot runtime over the same directory, i.e. what a restart looks
+    /// like — serves the session again without the caller knowing it was ever cold.
+    /// </summary>
+    [Fact]
+    public async Task DurableSession_SurvivesRuntimeRestart_AndIsRestoredOnRead()
+    {
+        using var storage = new TempDirectory();
+
+        Guid id;
+        using (var first = new DurableSessions(storage.Path))
+        {
+            var client = CreateClient(first);
+            id = await CreateSessionAsync(client);
+
+            var turn = await client.PostAsJsonAsync($"/v1/sessions/{id}/turns", TurnBody("hi", 0));
+            Assert.Equal(HttpStatusCode.OK, turn.StatusCode);
+
+            // A completed turn must have produced an on-disk manifest; without it there is nothing
+            // to restore and the assertion below would pass for the wrong reason.
+            Assert.True(File.Exists(Path.Combine(storage.Path, $"{id:N}.manifest")),
+                "a completed turn did not write a manifest, so the restore below proves nothing.");
+        }
+
+        // Fresh runtime over the same directory: nothing is in memory, so a successful read can
+        // only have come from disk.
+        using var second = new DurableSessions(storage.Path);
+        var restoredClient = CreateClient(second);
+
+        var response = await restoredClient.GetAsync($"/v1/sessions/{id}");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        using var json = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal(id.ToString("N"), json.RootElement.GetProperty("id").GetString());
+    }
+
+    /// <summary>
+    /// Deleting a session must remove its bytes, not merely forget it. A delete that leaves packs
+    /// behind is a slow disk leak that nothing else in the system will ever clean up.
+    /// </summary>
+    [Fact]
+    public async Task DurableSession_Delete_RemovesManifestAndPacksFromDisk()
+    {
+        using var storage = new TempDirectory();
+        using var sessions = new DurableSessions(storage.Path);
+        var client = CreateClient(sessions);
+
+        Guid id = await CreateSessionAsync(client);
+        Assert.Equal(HttpStatusCode.OK,
+            (await client.PostAsJsonAsync($"/v1/sessions/{id}/turns", TurnBody("hi", 0))).StatusCode);
+
+        string manifest = Path.Combine(storage.Path, $"{id:N}.manifest");
+        Assert.True(File.Exists(manifest));
+        Assert.NotEmpty(Directory.GetFiles(storage.Path, $"*{id:N}*.pack"));
+
+        Assert.Equal(HttpStatusCode.NoContent, (await client.DeleteAsync($"/v1/sessions/{id}")).StatusCode);
+
+        Assert.False(File.Exists(manifest));
+        Assert.Empty(Directory.GetFiles(storage.Path, $"*{id:N}*.pack"));
+        Assert.Equal(HttpStatusCode.NotFound, (await client.GetAsync($"/v1/sessions/{id}")).StatusCode);
+    }
+}

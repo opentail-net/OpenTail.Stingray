@@ -2,6 +2,7 @@ using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Cpu;
 using OpenTail.Stingray.Cuda;
 using OpenTail.Stingray.Engine;
+using OpenTail.Stingray.Sessions;
 using OpenTail.Stingray.Vision;
 using OpenTail.Stingray.Vulkan;
 
@@ -75,6 +76,11 @@ public static class InferenceEngineLoader
         bool isPackage = Directory.Exists(modelPath)
             || modelPath.EndsWith(".safetensors", StringComparison.OrdinalIgnoreCase)
             || modelPath.EndsWith(".safetensors.index.json", StringComparison.OrdinalIgnoreCase);
+
+        if (opts.EnableSessions && isPackage)
+            throw new InvalidOperationException(
+                "EnableSessions currently supports only the proven CPU-dense GGUF lane; " +
+                "SafeTensors session/cache conformance is not available yet.");
 
         if (isPackage)
         {
@@ -224,6 +230,8 @@ public static class InferenceEngineLoader
         // in owned[] (the backend, the multi-GB forward pass, the GGUF handle) rather than
         // leaking it — ownership only transfers once construction succeeds.
         IInferenceEngine engine;
+        HotSessionRuntime? sessionRuntime = null;
+        ColdSessionRuntime? coldSessionRuntime = null;
         try
         {
             // ── Image input (issue #253): open the mmproj vision projector when configured.
@@ -266,21 +274,35 @@ public static class InferenceEngineLoader
                 ? opts.DSparkModelPath
                 : Environment.GetEnvironmentVariable("STINGRAY_DSPARK_MODEL");
 
-            if (opts.MaxBatchSize > 1 && batchingSupported && fwd is IBatchedForwardPass batchFwd)
+            bool continuousBatchingRequested = opts.MaxBatchSize > 1 || opts.EnableSessions;
+            if (opts.EnableSessions && (!batchingSupported || fwd is not ForwardPass))
+                throw new InvalidOperationException(
+                    "EnableSessions currently supports only the proven CPU-dense GGUF lane " +
+                    "without MoE or TurboQuant. Disable EnableSessions or select CPU dense GGUF.");
+
+            if (continuousBatchingRequested && batchingSupported && fwd is IBatchedForwardPass batchFwd)
             {
                 if (!string.IsNullOrWhiteSpace(dsparkPath))
                     throw new InvalidOperationException(
                         "DSpark (DSparkModelPath / STINGRAY_DSPARK_MODEL) is not supported with " +
                         "continuous batching (MaxBatchSize > 1) — the tap buffer is " +
                         "single-sequence (docs/dspark-plan.md Phase 6). Set MaxBatchSize=1.");
-                engine = new ContinuousBatchingEngine(batchFwd, tokenizer, modelId, opts.MaxBatchSize,
+                var batchingEngine = new ContinuousBatchingEngine(batchFwd, tokenizer, modelId,
+                    opts.EnableSessions ? Math.Max(2, opts.MaxBatchSize) : opts.MaxBatchSize,
                     thinkTokenId, endThinkTokenId,
                     prefillChunkTokens: opts.PrefillChunkTokens,
                     kvBudgetBytes: opts.KvBudgetMb > 0 ? opts.KvBudgetMb * 1024 * 1024 : opts.KvBudgetMb,
                     prefixCacheBytes: opts.PrefixCacheMb > 0 ? opts.PrefixCacheMb * 1024 * 1024 : opts.PrefixCacheMb);
+                if (opts.EnableSessions)
+                {
+                    sessionRuntime = new HotSessionRuntime(batchingEngine, tokenizer);
+                    if (!string.IsNullOrWhiteSpace(opts.SessionStorageDirectory))
+                        coldSessionRuntime = new ColdSessionRuntime(sessionRuntime, batchingEngine,
+                            opts.SessionStorageDirectory, ModelFormat.Gguf);
+                }
                 // ContinuousBatchingEngine doesn't accept owned[] disposables; transfer
                 // disposal responsibility by wrapping it in a composite disposable.
-                engine = new OwnedDisposableEngine(engine, owned);
+                engine = new OwnedDisposableEngine(batchingEngine, owned);
             }
             else
             {
@@ -318,7 +340,8 @@ public static class InferenceEngineLoader
         // constrained request, so this costs nothing unless tool-grammar is actually used.
         var grammarVocab = new OpenTail.Stingray.Core.Grammar.GrammarVocabulary(tokenizer);
 
-        return new LoadedEngine(engine, arch, tokenizer.ChatTemplate, toolBoundaryStopTokenIds, grammarVocab, tokenizer);
+        return new LoadedEngine(engine, arch, tokenizer.ChatTemplate, toolBoundaryStopTokenIds, grammarVocab, tokenizer,
+            sessionRuntime, coldSessionRuntime);
     }
 
     // ── DSpark draft head (docs/dspark-plan.md Phase 6, PR #413) ─────────────

@@ -23,6 +23,13 @@ public static class SegmentPackStore
         return Path.Combine(storageDirectory, $"{blockId}.pack");
     }
 
+    /// <summary>
+    /// Enumeration pattern matching every pack whose block id starts with <paramref name="blockIdPrefix"/>.
+    /// Lives here so the <c>.pack</c> extension stays defined next to <see cref="GetPackPath"/>
+    /// rather than being re-spelled by each caller that needs to sweep.
+    /// </summary>
+    public static string GetPackSearchPattern(string blockIdPrefix) => $"{blockIdPrefix}*.pack";
+
     public static SegmentBlockRef SaveBlock(string storageDirectory, string blockId, int startTokenPos, int tokenCount, ReadOnlySpan<byte> payload)
     {
         ArgumentException.ThrowIfNullOrEmpty(storageDirectory);

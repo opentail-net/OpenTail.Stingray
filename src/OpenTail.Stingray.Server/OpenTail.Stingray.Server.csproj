@@ -50,6 +50,7 @@
   <ItemGroup>
     <ProjectReference Include="..\OpenTail.Stingray.Engine\OpenTail.Stingray.Engine.csproj" PrivateAssets="all" />
     <ProjectReference Include="..\OpenTail.Stingray.Cpu\OpenTail.Stingray.Cpu.csproj" PrivateAssets="all" />
+    <ProjectReference Include="..\OpenTail.Stingray.Sessions\OpenTail.Stingray.Sessions.csproj" PrivateAssets="all" />
     <!-- Vision: image-input loader path (#253). Bundled inside the OpenTail.Stingray meta-package. -->
     <ProjectReference Include="..\OpenTail.Stingray.Vision\OpenTail.Stingray.Vision.csproj" PrivateAssets="all" />
     <ProjectReference Include="..\OpenTail.Stingray\OpenTail.Stingray.csproj" />

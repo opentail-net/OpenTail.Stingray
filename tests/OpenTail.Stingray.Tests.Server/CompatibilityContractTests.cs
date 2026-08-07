@@ -62,7 +62,10 @@ public sealed class CompatibilityContractTests
         Assert.False(runtime.GetProperty("image_input").GetBoolean());
         var restart = runtime.GetProperty("session_restart_continuation");
         Assert.False(restart.GetProperty("available").GetBoolean());
-        Assert.Contains("Not exposed by the server", restart.GetProperty("detail").GetString(), StringComparison.Ordinal);
+        // Pin the DISTINCTION, not the prose: the flag reports restart continuation, which is
+        // unimplemented, while the named-session lifecycle may well be served. Asserting the old
+        // "Not exposed by the server" wording outlived its truth once /v1/sessions went live.
+        Assert.Contains("restart", restart.GetProperty("detail").GetString(), StringComparison.OrdinalIgnoreCase);
 
         var configuration = root.GetProperty("configuration");
         Assert.Equal("cuda", configuration.GetProperty("backend").GetString());

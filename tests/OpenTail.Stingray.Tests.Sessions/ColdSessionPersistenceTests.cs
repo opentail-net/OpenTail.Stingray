@@ -292,7 +292,7 @@ public sealed class ColdSessionPersistenceTests
             Assert.Equal(0x504B5643u, BitConverter.ToUInt32(firstKvPack.AsSpan(0, 4)));
 
             // Restore cold session from disk manifest & segment packs
-            using var restoredSession = coldRuntime.OpenOrCreate(address);
+            using var restoredSession = coldRuntime.Open(address.ToSessionId());
             Assert.NotNull(restoredSession);
             Assert.Equal(address.ToSessionId(), restoredSession.SessionId);
 
@@ -315,6 +315,12 @@ public sealed class ColdSessionPersistenceTests
             Assert.NotNull(turn2Result);
             Assert.NotEmpty(turn2Result.Chunks);
             Assert.True(restoredSession.Cursor.AcceptedPositionCount > expectedAcceptedPositions);
+
+            restoredSession.Dispose();
+            Assert.True(coldRuntime.Delete(address.ToSessionId()));
+            Assert.False(File.Exists(Path.Combine(tempDir, $"{sid}.manifest")));
+            Assert.All(manifest.Blocks, block => Assert.False(File.Exists(
+                SegmentPackStore.GetPackPath(tempDir, block.BlockId))));
         }
         finally
         {
@@ -490,6 +496,51 @@ public sealed class ColdSessionPersistenceTests
             using var restored = new PagedKvCache(numLayers: layers, numKvHeads: 64, headDim: 8);
             restored.ImportKvState(reassembled);
             Assert.Equal(192, restored.Length);
+        }
+        finally
+        {
+            if (Directory.Exists(tempDir)) Directory.Delete(tempDir, recursive: true);
+        }
+    }
+
+    /// <summary>
+    /// Block ids are deterministic per session and index, so re-eviction overwrites in place. An
+    /// eviction that yields FEWER blocks than its predecessor therefore used to strand the surplus
+    /// packs on disk, referenced by no manifest and reclaimed by nothing — a slow leak that only
+    /// showed up as unexplained disk growth. Every pack left behind must be one the current
+    /// manifest names.
+    /// </summary>
+    [Fact]
+    public void EvictToDisk_ReEviction_ReclaimsPacksTheNewManifestNoLongerReferences()
+    {
+        string tempDir = Path.Combine(Path.GetTempPath(), $"opentail_prune_{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempDir);
+        try
+        {
+            var fwd = new ProductionPagedKvForwardPass();
+            using var engine = new ContinuousBatchingEngine(fwd, new Tokenizer(), "test", maxBatchSize: 1);
+            var hotRuntime = new HotSessionRuntime(engine, new Tokenizer());
+            var coldRuntime = new ColdSessionRuntime(hotRuntime, engine, tempDir, ModelFormat.SafeTensors);
+
+            var session = coldRuntime.Create();
+            string sid = session.SessionId.Value.ToString("N");
+            var manifest = coldRuntime.EvictToDisk(session, "test");
+
+            // Model a shrunken re-eviction: a pack under this session's prefix that the manifest
+            // does not list. Using a high index guarantees no real block will ever claim the name.
+            string stale = SegmentPackStore.GetPackPath(tempDir, $"kv_{sid}_99999");
+            File.WriteAllBytes(stale, [0xDE, 0xAD]);
+            Assert.True(File.Exists(stale));
+
+            var restored = coldRuntime.Open(session.SessionId);
+            coldRuntime.EvictToDisk(restored, "test");
+
+            Assert.False(File.Exists(stale), "an unreferenced pack survived re-eviction.");
+
+            // And the packs the manifest DOES name are untouched — pruning must not be overzealous.
+            foreach (var block in manifest.Blocks)
+                Assert.True(File.Exists(SegmentPackStore.GetPackPath(tempDir, block.BlockId)),
+                    $"pruning removed referenced block '{block.BlockId}'.");
         }
         finally
         {

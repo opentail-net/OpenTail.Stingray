@@ -22,8 +22,11 @@ public sealed class StaticPlanGoldenDecisionTests : IDisposable
         AssertDecision(report, "backend", true, "Selected cpu");
         AssertDecision(report, "kv_turbo_quant", true, "KVarN is eligible");
         AssertDecision(report, "speculation", false, "No MTP head");
-        AssertDecision(report, "session_restart_continuation", false, "Not exposed by the CLI or server yet");
-        AssertDecision(report, "session_restart_continuation", false, "CPU-dense reference restart proof passes");
+        // Pin what the decision means, not the sentence. "Not exposed by the CLI or server" went
+        // stale the moment the server began serving /v1/sessions; what stays true is that the CLI
+        // exposes nothing and that durable restart continuation is unimplemented.
+        AssertDecision(report, "session_restart_continuation", false, "Not exposed by the CLI");
+        AssertDecision(report, "session_restart_continuation", false, "no durable restart");
         Assert.True(report.Compatibility.Selected);
     }
 

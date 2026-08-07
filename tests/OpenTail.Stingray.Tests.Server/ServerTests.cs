@@ -655,6 +655,30 @@ public sealed class ServerTests : IClassFixture<WebApplicationFactory<Program>>
     }
 
     [Fact]
+    public void SessionRuntime_IsExplicitlyUnavailable_WhenSessionsAreDisabled()
+    {
+        using var factory = new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
+            builder.ConfigureServices(services =>
+                services.AddSingleton<IInferenceEngine>(new FakeInferenceEngine("m"))));
+
+        var sessions = factory.Services.GetRequiredService<IServerSessionRuntime>();
+
+        Assert.Null(sessions.Runtime);
+        Assert.Equal("Sessions are disabled by server configuration.", sessions.UnavailabilityReason);
+    }
+
+    [Fact]
+    public async Task SessionLifecycle_RefusesAnUnsupportedServerConfiguration()
+    {
+        var response = await _client.PostAsync("/v1/sessions", content: null);
+
+        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+        var json = await response.Content.ReadAsStringAsync();
+        Assert.Contains("session_unavailable", json);
+        Assert.Contains("disabled", json);
+    }
+
+    [Fact]
     public async Task ChatCompletion_HistoryPenalties_ReachSamplingParams()
     {
         var fake = new FakeInferenceEngine("test-model");

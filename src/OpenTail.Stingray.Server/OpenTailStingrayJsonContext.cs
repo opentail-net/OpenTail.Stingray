@@ -87,4 +87,7 @@ namespace OpenTail.Stingray.Server;
 [JsonSerializable(typeof(DetokenizeRequest))]
 [JsonSerializable(typeof(DetokenizeResponse))]
 [JsonSerializable(typeof(PropsResponse))]
+[JsonSerializable(typeof(SessionResponse))]
+[JsonSerializable(typeof(SessionTurnRequest))]
+[JsonSerializable(typeof(SessionTurnResponse))]
 public partial class OpenTailStingrayJsonContext : JsonSerializerContext { }
