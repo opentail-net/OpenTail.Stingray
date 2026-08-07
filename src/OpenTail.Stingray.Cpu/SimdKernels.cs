@@ -139,8 +139,20 @@ public static unsafe class SimdKernels
             // with one other token ... or three". That contract was established for MTP draft
             // tokens (issue #209); concurrent users need the identical guarantee.
             //
-            // Default OFF until measured end to end. Bit-identity removes the perplexity question,
-            // not the performance one.
+            // Default ON — see BatchedMatVecTierEnabled below for the measurement that promoted it.
+            // (This comment used to say "Default OFF until measured end to end", which stayed after
+            // the flag was flipped and cost a later investigation an iteration chasing a switch that
+            // was already on.)
+            //
+            // Do not expect this to amortise weight reads N x, and do not reach for it to speed up
+            // batched decode or speculative verify. Measured on Qwen3-8B Q4_K_M, best-of-5 over
+            // 1.35 GiB of real tensors: MatVec2In gains 1.06x and MatVec4In 1.11x over separate
+            // calls. Fitting T(n) = M + n*C gives M = 7 ms, C = 45 ms — the kernel is ~87% dequant/
+            // dot COMPUTE and only ~13% weight streaming, and that 13% is the entire ceiling for any
+            // scheme that reuses a weight read. The model predicted T(2) = 97 ms against an actual
+            // 98 ms, so this is a validated bound rather than a single observation. Making batched
+            // decode faster requires a cheaper dot (e.g. VNNI), not better data movement.
+            // See docs/cpu-speculative-decoding-findings.md.
             if (BatchedMatVecTierEnabled)
             {
                 Interlocked.Increment(ref BatchedMatVecTierCalls);

@@ -480,3 +480,4 @@ docs2/
 # Tooling artifacts: shadow worktree and build-failure telemetry, both regenerated on demand.
 .opentail/
 .opentail-shadow.git/
+examples/
