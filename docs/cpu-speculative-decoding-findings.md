@@ -259,3 +259,46 @@ activations, with the quality gate that implies) on a speculative gain.
 across iterations 3-5. The measurements that held up all session were end-to-end ones: CLI decode
 t/s, `llama-bench`, the K-pack/KV-outer 2x2. Any future attempt on the repacked-decode question
 should wire it behind a flag and measure decode t/s, not time kernels in isolation.
+
+## Iteration 6 — SMT thread count: tested from the AMD guides, negative
+
+The AMD EPYC 7003 (Zen 3) HPC tuning guide §3.1.4 says HPC workloads typically disable SMT, and
+that *"if you are **not** in a compute-bound scenario, then you may see some benefit from enabling
+SMT"*. Read against iteration 4's ~87%-compute finding, that predicts 1 thread per core should beat
+the default. Stingray defaults `SimdKernels.CpuThreads` to `Environment.ProcessorCount` = 12 on this
+6-core/12-thread part, i.e. two threads per core.
+
+Interleaved, SmolLM2-1.7B Q4_K_M, 128-token decode:
+
+| threads | samples | best |
+|---|---|---:|
+| 12 (SMT, default) | 24.7, 24.2, 23.9 | **24.7** |
+| 6 (one per core) | 21.8, 24.0, 23.7 | 24.0 |
+
+**Negative — the default is already right.** SMT is neutral to slightly helpful, so no change.
+
+The interesting part is what it corrects. Had decode been saturating the FP pipes, SMT siblings
+would contend and 6 threads would win. They do not. `T(n) = M + n·C` establishes that time scales
+with *work per input* — which is what kills weight-read amortisation — but that is **not** the same
+as the FP pipes being saturated. The dequant chain evidently leaves enough load/dependency stalls
+for a sibling thread to fill. Both facts hold at once, and "compute-bound" was being used loosely
+here to mean the stronger claim.
+
+### What the newly added AMD documents did and did not yield
+
+- **`56665_3.00` (Zen 3 Software Optimization Guide)** — the substantive one, and it reinforces the
+  existing conclusion rather than opening a new lead: 4 FP execution pipes, 2x256-bit loads per
+  cycle, FMA latency 4. That is the structural reason VNNI matters — `vpdpbusd` is 1 uop across 2
+  pipes where `vpmaddubsw` is 2 uops pinned to 1, so the gain is issue slots, not merely instruction
+  count.
+- **EPYC 7003 HPC tuning guide** — largely server-scale concerns (NUMA/NPS, IOMMU, dual-socket
+  pinning) that do not map to a 6-core desktop APU. The SMT item was the one transferable idea, and
+  it is the negative result above.
+- **`amd1` (AOCL)** — AMD's BLIS-based BLAS. Real, but BLAS is the wrong tool at these batch sizes
+  (dequant-to-F32 costs ~4x the bytes, which is why `MinBatchForBlas` is 16), and prefill already
+  reaches llama.cpp parity with no BLAS installed at all.
+- **`instruction_tables.md`** — the markdown conversion breaks table rows across lines badly enough
+  that Zen 3 pipe assignments could not be extracted reliably. Recorded rather than guessed at.
+
+**Standing conclusion after six iterations: the lever is VNNI-class dot throughput, which needs
+Zen 4+ silicon to measure. That is a hardware answer, and further reading does not change it.**
