@@ -13,9 +13,11 @@ and typed host-key classification are now in place. Environment ownership and ex
    publishes its non-sensitive applied-variable receipt and a `configuration.bound` snapshot
    after that precedence has been applied (admission, CPU/prefill/cache budgets, TurboQuant/KV,
    tool grammar, and session persistence as a boolean — never filesystem paths). Remaining work
-   is loader-resolved decisions such as selected auto backend/device and actual cache allocation,
-   without exposing values such as filesystem paths. `/capabilities` now also states the
-   restart-session verdict explicitly rather than leaving session support ambiguous.
+   `configuration.resolved` now also records the concrete built-in loader route (actual backend,
+   forward-pass family, model format, and resolved context), so a requested `auto`/hybrid setup is
+   no longer mistaken for the route that actually loaded. Remaining work is actual device/cache
+   allocation telemetry, without exposing values such as filesystem paths. `/capabilities` now
+   also states the restart-session verdict explicitly rather than leaving session support ambiguous.
 3. Extend the golden capability fixtures only where a loader actually executes the route. Static
    CPU/backend/dtype/batching/speculation decisions are covered; hardware rows remain release gates.
 4. Finish server observability: VRAM/RAM breakdown, streaming timing, and per-request cache signal.

@@ -36,13 +36,14 @@ public sealed class StatusDocumentTests
         return JsonDocument.Parse(await response.Content.ReadAsStringAsync());
     }
 
-    private static HttpClient CreateLoadedClient(CpuBatchedPrefillCapability capability) =>
+    private static HttpClient CreateLoadedClient(CpuBatchedPrefillCapability capability,
+        ServerRuntimeResolution? runtimeResolution = null) =>
         new WebApplicationFactory<Program>()
             .WithWebHostBuilder(builder => builder.ConfigureServices(services =>
                 services.Configure<OpenTailStingrayServerOptions>(options =>
                     options.EngineFactory = _ => new LoadedEngine(
                         new StatusFakeEngine("smol.gguf"), "llama", null,
-                        CpuBatchedPrefill: capability))))
+                        CpuBatchedPrefill: capability, RuntimeResolution: runtimeResolution))))
             .CreateClient();
 
     /// <summary>
@@ -163,6 +164,21 @@ public sealed class StatusDocumentTests
         Assert.False(receipt.GetProperty("available").GetBoolean());
         Assert.Equal("This per-layer-head-dimension model uses sequential prefill.",
             receipt.GetProperty("detail").GetString());
+    }
+
+    [Fact]
+    public async Task Status_PublishesTheConcreteBuiltInLoaderRoute()
+    {
+        var client = CreateLoadedClient(new CpuBatchedPrefillCapability(true, "available"),
+            new ServerRuntimeResolution("cuda", "cuda-hybrid", "gguf", 8192));
+
+        using var document = await GetStatusAsync(client);
+        var resolved = document.RootElement.GetProperty("configuration").GetProperty("resolved");
+
+        Assert.Equal("cuda", resolved.GetProperty("backend").GetString());
+        Assert.Equal("cuda-hybrid", resolved.GetProperty("forward_pass").GetString());
+        Assert.Equal("gguf", resolved.GetProperty("model_format").GetString());
+        Assert.Equal(8192, resolved.GetProperty("context_size").GetInt32());
     }
 
     [Fact]

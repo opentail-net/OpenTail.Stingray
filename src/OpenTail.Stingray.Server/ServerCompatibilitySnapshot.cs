@@ -43,7 +43,7 @@ public sealed record ServerCompatibilitySnapshot(
         var sessionRestart = sessions?.ColdRuntime is not null
             ? new ServerFeatureAvailability(true,
                 "CPU-dense GGUF session state is persisted after completed turns and restored on demand. "
-                + "The in-memory operation-result ledger is not durable.")
+                + "Bounded completed operation results are restored for idempotent retry replay.")
             : sessions?.Runtime is not null
                 ? new ServerFeatureAvailability(false,
                     "Named sessions are active only in memory. Configure SessionStorageDirectory "
@@ -69,7 +69,14 @@ public sealed record ServerCompatibilitySnapshot(
                 ImageInput: engine.SupportsImageInput,
                 ToolGrammar: toolGrammar,
                 OutputConstraintConfigured: options.OutputConstraintFactory is not null,
-                SessionRestartContinuation: sessionRestart),
+                SessionRestartContinuation: sessionRestart,
+                SessionOperationResultPersistence: sessions?.ColdRuntime is not null
+                    ? new ServerFeatureAvailability(true,
+                        "Bounded completed operation results and idempotency records persist with the CPU-dense GGUF session. "
+                        + "Older or oversized results may be pruned by the configured retention limits.")
+                    : new ServerFeatureAvailability(false,
+                        "Completed session operation results and idempotency records are retained only in memory. "
+                        + "After a process restart, retry with the current revision instead of expecting an operation-result replay.")),
             Configuration: new ServerEffectiveCompatibilityConfiguration(
                 Backend: options.Backend.ToString().ToLowerInvariant(),
                 GpuLayers: options.NGpuLayers,
@@ -98,7 +105,8 @@ public sealed record ServerRuntimeCapabilities(
     bool ImageInput,
     ServerFeatureAvailability ToolGrammar,
     bool OutputConstraintConfigured,
-    ServerFeatureAvailability SessionRestartContinuation);
+    ServerFeatureAvailability SessionRestartContinuation,
+    ServerFeatureAvailability SessionOperationResultPersistence);
 
 /// <summary>Whether a capability is currently usable, with a user-facing reason when it is conditional or unavailable.</summary>
 public sealed record ServerFeatureAvailability(bool Available, string? Detail);

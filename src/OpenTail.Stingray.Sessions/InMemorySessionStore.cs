@@ -59,6 +59,33 @@ public sealed class InMemorySessionStore
         }
     }
 
+    /// <summary>
+    /// Rehydrates bounded, already-completed idempotency records after a verified cold restore.
+    /// Only terminal successful records are admitted: accepting an interrupted operation after a
+    /// restart would make a client believe execution had committed when it has not.
+    /// </summary>
+    internal void RestoreCompletedOperations(
+        SessionId sessionId, IReadOnlyCollection<SessionOperationSnapshot> operations)
+    {
+        ArgumentNullException.ThrowIfNull(operations);
+        var entry = GetEntry(sessionId);
+        lock (entry.Gate)
+        {
+            foreach (var operation in operations)
+            {
+                if (operation.SessionId != sessionId
+                    || operation.State != SessionOperationState.Completed
+                    || operation.CommittedRevision is null
+                    || operation.CompletedAt is null
+                    || operation.CommittedRevision.Value.Value > entry.Revision.Value)
+                    throw new SessionJournalFormatException("Persisted operation does not match the restored session state.");
+                if (!entry.Operations.TryAdd(operation.OperationId, operation))
+                    throw new SessionJournalFormatException("Persisted operation ledger contains a duplicate operation id.");
+            }
+            PruneCompletedOperations(entry, _clock.GetUtcNow());
+        }
+    }
+
     /// <summary>Deletes a session and all in-memory operation records.</summary>
     public bool Delete(SessionId sessionId) => _entries.TryRemove(sessionId, out _);
 

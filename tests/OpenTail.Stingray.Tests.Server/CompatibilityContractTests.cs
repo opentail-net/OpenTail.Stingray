@@ -67,6 +67,9 @@ public sealed class CompatibilityContractTests
         // unimplemented, while the named-session lifecycle may well be served. Asserting the old
         // "Not exposed by the server" wording outlived its truth once /v1/sessions went live.
         Assert.Contains("restart", restart.GetProperty("detail").GetString(), StringComparison.OrdinalIgnoreCase);
+        var operationPersistence = runtime.GetProperty("session_operation_result_persistence");
+        Assert.False(operationPersistence.GetProperty("available").GetBoolean());
+        Assert.Contains("memory", operationPersistence.GetProperty("detail").GetString(), StringComparison.OrdinalIgnoreCase);
 
         var configuration = root.GetProperty("configuration");
         Assert.Equal("cuda", configuration.GetProperty("backend").GetString());

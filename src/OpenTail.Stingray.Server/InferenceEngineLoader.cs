@@ -117,7 +117,8 @@ public static class InferenceEngineLoader
             var ownedEngine = new OwnedDisposableEngine(rawEngine, [stSource, cpuBackend, forwardPass]);
             var stGrammarVocab = new OpenTail.Stingray.Core.Grammar.GrammarVocabulary(stTokenizer);
             return new LoadedEngine(ownedEngine, report.ArchitectureId ?? "llama", stTokenizer.ChatTemplate, [], stGrammarVocab,
-                stTokenizer, CpuBatchedPrefill: forwardPass.GetBatchedPrefillCapability());
+                stTokenizer, CpuBatchedPrefill: forwardPass.GetBatchedPrefillCapability(),
+                RuntimeResolution: DescribeRuntime(forwardPass, ModelFormat.SafeTensors));
         }
 
         var model = GgufModel.Open(modelPath);
@@ -343,7 +344,8 @@ public static class InferenceEngineLoader
 
         return new LoadedEngine(engine, arch, tokenizer.ChatTemplate, toolBoundaryStopTokenIds, grammarVocab, tokenizer,
             sessionRuntime, coldSessionRuntime,
-            fwd is ForwardPass cpuForwardPass ? cpuForwardPass.GetBatchedPrefillCapability() : null);
+            fwd is ForwardPass cpuForwardPass ? cpuForwardPass.GetBatchedPrefillCapability() : null,
+            DescribeRuntime(fwd, ModelFormat.Gguf));
     }
 
     // ── DSpark draft head (docs/dspark-plan.md Phase 6, PR #413) ─────────────
@@ -446,6 +448,23 @@ public static class InferenceEngineLoader
     /// </summary>
     private static long DequantCacheBytes(long? mb) =>
         mb is null ? long.MinValue : ForwardPass.MbToBudgetBytes(mb.Value);
+
+    private static ServerRuntimeResolution DescribeRuntime(IForwardPass forwardPass, ModelFormat format)
+    {
+        (string backend, string route) = forwardPass switch
+        {
+            ForwardPass => ("cpu", "cpu-dense"),
+            HybridGdnForwardPass => ("cpu", "cpu-hybrid-gdn"),
+            CudaForwardPass => ("cuda", "cuda-full"),
+            CudaHybridForwardPass => ("cuda", "cuda-hybrid"),
+            CudaHybridGdnForwardPass => ("cuda", "cuda-hybrid-gdn"),
+            GpuForwardPass => ("vulkan", "vulkan-full"),
+            HybridForwardPass => ("vulkan", "vulkan-hybrid"),
+            VulkanHybridGdnForwardPass => ("vulkan", "vulkan-hybrid-gdn"),
+            _ => ("unknown", forwardPass.GetType().Name),
+        };
+        return new ServerRuntimeResolution(backend, route, format.ToString().ToLowerInvariant(), forwardPass.MaxSeqLen);
+    }
 
     private static (IForwardPass Fwd, bool BatchingSupported) BuildForwardPass(
         GgufModel model, ModelHyperparams hp, string arch, int ctxSize, int nGpuLayers,

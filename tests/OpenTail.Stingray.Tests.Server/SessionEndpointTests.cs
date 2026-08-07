@@ -153,6 +153,40 @@ public sealed class SessionEndpointTests
         }
     }
 
+
+    /// <summary>Fails a turn with a message carrying a filesystem path, as a real IOException would.</summary>
+    private sealed class ThrowingForwardPass : IBatchedForwardPass
+    {
+        public const string SecretPath = @"C:\Users\dmitri\private-models\unreleased-sk-9137.gguf";
+
+        public bool SnapKvEnabled => false;
+        public long KvBytesPerToken => 1;
+        public int MaxSeqLen => 512;
+        public bool PrefillDequantCacheActive => false;
+        public ISequenceKvCache CreateCache() => new FakeCache();
+
+        public ReadOnlySpan<float> PrefillWithCache(IReadOnlyList<int> tokens, ISequenceKvCache cache, int startPos = 0)
+            => throw new IOException($"Could not find file '{SecretPath}'.");
+
+        public float[]?[] PrefillPackedMulti(ReadOnlyMemory<int>[] chunks, int[] startPos, ISequenceKvCache[] caches, bool[] wantLogits) =>
+            throw new NotSupportedException();
+
+        public float[][] BatchForwardMulti(int[] tokens, int[] positions, ISequenceKvCache[] caches) =>
+            throw new NotSupportedException();
+    }
+
+    private sealed class FailingSessions : IServerSessionRuntime, IDisposable
+    {
+        private readonly ContinuousBatchingEngine _engine =
+            new(new ThrowingForwardPass(), new Tokenizer(), "test", maxBatchSize: 1);
+
+        public FailingSessions() => Runtime = new HotSessionRuntime(_engine, new Tokenizer());
+        public HotSessionRuntime? Runtime { get; }
+        public ColdSessionRuntime? ColdRuntime => null;
+        public string? UnavailabilityReason => null;
+        public void Dispose() => _engine.Dispose();
+    }
+
     private static HttpClient CreateClient(IServerSessionRuntime sessions) =>
         new WebApplicationFactory<Program>()
             .WithWebHostBuilder(builder => builder.ConfigureServices(services =>
@@ -191,6 +225,7 @@ public sealed class SessionEndpointTests
         {
             await client.PostAsync("/v1/sessions", content: null),
             await client.GetAsync($"/v1/sessions/{id}"),
+            await client.GetAsync($"/v1/sessions/{id}/operations/{Guid.NewGuid()}"),
             await client.PostAsJsonAsync($"/v1/sessions/{id}/turns", TurnBody("hi", 0)),
             await client.DeleteAsync($"/v1/sessions/{id}"),
         };
@@ -229,6 +264,51 @@ public sealed class SessionEndpointTests
 
         var response = await client.PostAsJsonAsync($"/v1/sessions/{Guid.NewGuid()}/turns", TurnBody("hi", 0));
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+    }
+
+    /// <summary>
+    /// A client that loses the turn response can reconnect using its operation id and recover the
+    /// same bounded result without re-running the model. The endpoint is deliberately a lookup;
+    /// it must not mutate the committed revision or claim a retry replay happened.
+    /// </summary>
+    [Fact]
+    public async Task OperationLookup_CompletedHotTurn_ReturnsRetainedResult()
+    {
+        using var sessions = new EnabledSessions();
+        var client = CreateClient(sessions);
+        Guid id = await CreateSessionAsync(client);
+        string operationId = Guid.NewGuid().ToString();
+
+        var turn = await client.PostAsJsonAsync($"/v1/sessions/{id}/turns", TurnBody("hi", 0, operationId: operationId));
+        Assert.Equal(HttpStatusCode.OK, turn.StatusCode);
+        using var turnJson = JsonDocument.Parse(await turn.Content.ReadAsStringAsync());
+        long revision = turnJson.RootElement.GetProperty("session").GetProperty("committed_revision").GetInt64();
+
+        var lookup = await client.GetAsync($"/v1/sessions/{id}/operations/{operationId}");
+
+        Assert.Equal(HttpStatusCode.OK, lookup.StatusCode);
+        using var json = JsonDocument.Parse(await lookup.Content.ReadAsStringAsync());
+        Assert.Equal(Guid.Parse(operationId).ToString("N"), json.RootElement.GetProperty("operation_id").GetString());
+        Assert.Equal("completed", json.RootElement.GetProperty("state").GetString());
+        Assert.Equal(revision, json.RootElement.GetProperty("session").GetProperty("committed_revision").GetInt64());
+        Assert.Equal(1, json.RootElement.GetProperty("operation_revision").GetInt64());
+        Assert.True(json.RootElement.GetProperty("completed_at").GetDateTimeOffset() >=
+            json.RootElement.GetProperty("created_at").GetDateTimeOffset());
+        Assert.Equal("", json.RootElement.GetProperty("text").GetString());
+        Assert.Equal("", json.RootElement.GetProperty("thinking").GetString());
+    }
+
+    [Fact]
+    public async Task OperationLookup_UnknownOperationOrSession_Returns404()
+    {
+        using var sessions = new EnabledSessions();
+        var client = CreateClient(sessions);
+        Guid id = await CreateSessionAsync(client);
+
+        Assert.Equal(HttpStatusCode.NotFound,
+            (await client.GetAsync($"/v1/sessions/{id}/operations/{Guid.NewGuid()}")).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound,
+            (await client.GetAsync($"/v1/sessions/{Guid.NewGuid()}/operations/{Guid.NewGuid()}")).StatusCode);
     }
 
     // ── Request validation ────────────────────────────────────────────────
@@ -421,6 +501,46 @@ public sealed class SessionEndpointTests
     }
 
     /// <summary>
+    /// Restart continuation is not enough for a caller that lost the HTTP response: the same
+    /// operation id must retrieve and replay the bounded committed result without running a
+    /// second turn after a fresh server has restored the KV state from disk.
+    /// </summary>
+    [Fact]
+    public async Task DurableSession_RestartRestoresOperationLookupAndIdempotentReplay()
+    {
+        using var storage = new TempDirectory();
+        Guid id;
+        string operationId = Guid.NewGuid().ToString();
+
+        using (var first = new DurableSessions(storage.Path))
+        {
+            var client = CreateClient(first);
+            id = await CreateSessionAsync(client);
+            var turn = await client.PostAsJsonAsync($"/v1/sessions/{id}/turns", TurnBody("hi", 0, operationId: operationId));
+            Assert.Equal(HttpStatusCode.OK, turn.StatusCode);
+        }
+
+        using var second = new DurableSessions(storage.Path);
+        var restoredClient = CreateClient(second);
+
+        var lookup = await restoredClient.GetAsync($"/v1/sessions/{id}/operations/{operationId}");
+        Assert.Equal(HttpStatusCode.OK, lookup.StatusCode);
+        using var lookupJson = JsonDocument.Parse(await lookup.Content.ReadAsStringAsync());
+        Assert.Equal("completed", lookupJson.RootElement.GetProperty("state").GetString());
+        long committedRevision = lookupJson.RootElement.GetProperty("session").GetProperty("committed_revision").GetInt64();
+
+        var retry = await restoredClient.PostAsJsonAsync($"/v1/sessions/{id}/turns", TurnBody("hi", 0, operationId: operationId));
+        Assert.Equal(HttpStatusCode.OK, retry.StatusCode);
+        using var retryJson = JsonDocument.Parse(await retry.Content.ReadAsStringAsync());
+        Assert.True(retryJson.RootElement.GetProperty("idempotent_replay").GetBoolean());
+        Assert.Equal(committedRevision, retryJson.RootElement.GetProperty("session").GetProperty("committed_revision").GetInt64());
+
+        using var capabilities = JsonDocument.Parse(await (await restoredClient.GetAsync("/capabilities")).Content.ReadAsStringAsync());
+        var persistence = capabilities.RootElement.GetProperty("runtime").GetProperty("session_operation_result_persistence");
+        Assert.True(persistence.GetProperty("available").GetBoolean());
+    }
+
+    /// <summary>
     /// Deleting a session must remove its bytes, not merely forget it. A delete that leaves packs
     /// behind is a slow disk leak that nothing else in the system will ever clean up.
     /// </summary>
@@ -469,8 +589,8 @@ public sealed class SessionEndpointTests
     }
 
     /// <summary>
-    /// With storage configured the claim flips to available — and says what is still NOT durable,
-    /// because "restart continuation works" without that caveat would over-promise the ledger.
+    /// With storage configured the claim flips to available and states that bounded idempotent
+    /// results come back with the restored CPU-dense session.
     /// </summary>
     [Fact]
     public async Task Capabilities_DurableSessions_ReportRestartContinuationAvailable()
@@ -485,6 +605,39 @@ public sealed class SessionEndpointTests
         Assert.True(root.GetProperty("api").GetProperty("session_lifecycle").GetBoolean());
         var restart = root.GetProperty("runtime").GetProperty("session_restart_continuation");
         Assert.True(restart.GetProperty("available").GetBoolean());
-        Assert.Contains("ledger", restart.GetProperty("detail").GetString(), StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("idempotent", restart.GetProperty("detail").GetString(), StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// A failed operation's reason is an exception message, so it can carry a filesystem path —
+    /// which discloses a username, a project, or an unreleased model name. The operations endpoint
+    /// is client-facing, so the location must not reach the wire even though the explanation
+    /// should. Mirrors what DiagnosticSurfaceRedactionTests enforces on /status.
+    /// </summary>
+    [Fact]
+    public async Task Operation_FailureReason_DoesNotLeakFilesystemPaths()
+    {
+        using var sessions = new FailingSessions();
+        var client = CreateClient(sessions);
+        Guid id = await CreateSessionAsync(client);
+
+        var turn = await client.PostAsJsonAsync($"/v1/sessions/{id}/turns", TurnBody("hi", 0));
+        Assert.Equal(HttpStatusCode.OK, turn.StatusCode);
+        using var turnJson = JsonDocument.Parse(await turn.Content.ReadAsStringAsync());
+        string operationId = turnJson.RootElement.GetProperty("operation_id").GetString()!;
+
+        var response = await client.GetAsync($"/v1/sessions/{id}/operations/{operationId}");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        string body = await response.Content.ReadAsStringAsync();
+
+        Assert.DoesNotContain("private-models", body, StringComparison.Ordinal);
+        Assert.DoesNotContain("dmitri", body, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(@"C:\", body, StringComparison.Ordinal);
+
+        // Redaction, not suppression: the explanation must survive with the location removed.
+        using var json = JsonDocument.Parse(body);
+        string? reason = json.RootElement.GetProperty("failure_reason").GetString();
+        Assert.False(string.IsNullOrWhiteSpace(reason));
+        Assert.Contains("[path]", reason, StringComparison.Ordinal);
     }
 }

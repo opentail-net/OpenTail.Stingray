@@ -49,7 +49,8 @@ public sealed record ServerStatusSnapshot(
         ServerMetrics metrics,
         int admissionCapacity,
         ServerEnvironmentOverrideReceipt? environmentOverrides = null,
-        CpuBatchedPrefillCapability? cpuBatchedPrefill = null)
+        CpuBatchedPrefillCapability? cpuBatchedPrefill = null,
+        ServerRuntimeResolution? runtimeResolution = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(engine);
@@ -173,7 +174,10 @@ public sealed record ServerStatusSnapshot(
                     KvType: options.KvType,
                     ToolGrammarRequested: options.ToolGrammar,
                     SessionsEnabled: options.EnableSessions,
-                    SessionPersistenceConfigured: !string.IsNullOrWhiteSpace(options.SessionStorageDirectory))),
+                    SessionPersistenceConfigured: !string.IsNullOrWhiteSpace(options.SessionStorageDirectory)),
+                runtimeResolution is null ? null : new ServerStatusResolvedRuntime(
+                    runtimeResolution.Backend, runtimeResolution.ForwardPass,
+                    runtimeResolution.ModelFormat, runtimeResolution.ContextSize)),
             Warnings: BuildWarnings(engine, traffic, cache, batchingStatus, saturated));
     }
 
@@ -251,7 +255,8 @@ public sealed record ServerStatusConfiguration(
     IReadOnlyList<string> EnvironmentOverrides,
     bool CpuQ8PrefillEnabled,
     ServerStatusCpuBatchedPrefill? CpuBatchedPrefill,
-    ServerStatusBoundConfiguration Bound);
+    ServerStatusBoundConfiguration Bound,
+    ServerStatusResolvedRuntime? Resolved);
 
 /// <summary>Load-time availability of the regular CPU batched-prefill trunk for the loaded model.</summary>
 public sealed record ServerStatusCpuBatchedPrefill(bool Available, string Detail);
@@ -275,6 +280,13 @@ public sealed record ServerStatusBoundConfiguration(
     bool ToolGrammarRequested,
     bool SessionsEnabled,
     bool SessionPersistenceConfigured);
+
+/// <summary>Concrete built-in loader route. Null for a caller-supplied engine factory.</summary>
+public sealed record ServerStatusResolvedRuntime(
+    string Backend,
+    string ForwardPass,
+    string ModelFormat,
+    int ContextSize);
 
 /// <summary>Serving-latency summaries rendered from the same bounded histograms as <c>/metrics</c>.</summary>
 public sealed record ServerStatusLatency(

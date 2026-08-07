@@ -7,14 +7,16 @@ using OpenTail.Stingray.Sessions;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json.Serialization;
+using System.Text.RegularExpressions;
 
 namespace OpenTail.Stingray.Server.Endpoints;
 
 /// <summary>
 /// Minimal named-session lifecycle endpoints. Hosts that expose these routes should attach their
 /// authentication/tenant policy to the returned route group or individual endpoint builders.
-/// The first server lane is deliberately hot-only and CPU-dense; this API does not claim that a
-/// session survives a process restart.
+/// This CPU-dense lane can restore a completed session when durable storage is configured. Its
+/// operation-result/idempotency ledger is deliberately in-memory only: after a restart, clients
+/// must continue from the restored revision rather than expect a completed operation to replay.
 ///
 /// <para>Every handler takes an unused <see cref="IInferenceEngine"/> parameter. That is not an
 /// oversight: resolving it makes these routes share the engine's construction and failure
@@ -22,13 +24,14 @@ namespace OpenTail.Stingray.Server.Endpoints;
 /// everywhere else instead of serving session routes over a runtime that was never brought up.
 /// Discard the value with <c>_</c> rather than deleting the parameter.</para>
 /// </summary>
-public static class SessionEndpoints
+public static partial class SessionEndpoints
 {
     /// <summary>Maps create, inspect, and delete operations under <c>/v1/sessions</c>.</summary>
     public static IEndpointRouteBuilder MapSessionEndpoints(this IEndpointRouteBuilder app)
     {
         app.MapPost("/v1/sessions", Create);
         app.MapGet("/v1/sessions/{sessionId:guid}", Get);
+        app.MapGet("/v1/sessions/{sessionId:guid}/operations/{operationId:guid}", GetOperation);
         app.MapPost("/v1/sessions/{sessionId:guid}/turns", RunTurn);
         app.MapDelete("/v1/sessions/{sessionId:guid}", Delete);
         return app;
@@ -70,6 +73,46 @@ public static class SessionEndpoints
         var id = new SessionId(sessionId);
         bool deleted = sessions.ColdRuntime?.Delete(id) ?? runtime.Delete(id);
         return deleted ? Results.NoContent() : Results.NotFound();
+    }
+
+    /// <summary>
+    /// Returns the result retained for a completed or in-flight operation. This is the reconnect
+    /// path for a client which lost the response to a turn, not a durable operation journal: the
+    /// store intentionally forgets operation results when a process is restarted.
+    /// </summary>
+    private static IResult GetOperation(
+        Guid sessionId,
+        Guid operationId,
+        IInferenceEngine _,
+        IServerSessionRuntime sessions)
+    {
+        if (sessions.Runtime is not { } runtime)
+            return Unavailable(sessions);
+
+        try
+        {
+            var id = new SessionId(sessionId);
+            var session = sessions.ColdRuntime?.Open(id) ?? runtime.Open(id);
+            var operation = runtime.GetOperation(id, new SessionOperationId(operationId));
+            string text = string.Concat((operation.ResultChunks ?? []).Where(c => c.Kind == GenerateChunkKind.Text).Select(c => c.Text));
+            string thinking = string.Concat((operation.ResultChunks ?? []).Where(c => c.Kind == GenerateChunkKind.Thinking).Select(c => c.Text));
+            return Results.Json(new SessionOperationResponse(
+                    ToResponse(runtime.GetSessionSnapshot(id), session.CommittedRevision),
+                    operation.OperationId.ToString(), operation.State.ToString().ToLowerInvariant(),
+                    operation.CommittedRevision?.Value, operation.CreatedAt, operation.CompletedAt,
+                    RedactFilesystemPaths(operation.FailureReason), text, thinking),
+                OpenTailStingrayJsonContext.Default.SessionOperationResponse);
+        }
+        catch (SessionNotFoundException)
+        {
+            return Results.NotFound();
+        }
+        catch (KeyNotFoundException)
+        {
+            // Do not pretend an evicted/restored session retained an operation result. The
+            // capability document tells clients that this is a hot-runtime reconnect facility.
+            return Results.NotFound();
+        }
     }
 
     private static async Task<IResult> RunTurn(
@@ -152,6 +195,26 @@ public static class SessionEndpoints
         }
     }
 
+
+    // Windows drive paths, UNC shares, and multi-segment POSIX paths. Deliberately narrow: this
+    // redacts locations, not ordinary prose, so "max_tokens must be positive" survives intact.
+    [GeneratedRegex(@"[A-Za-z]:\\[^\s""';)]*|\\\\[^\s""';)]*|/(?:[A-Za-z0-9_.\-]+/)+[A-Za-z0-9_.\-]*",
+        RegexOptions.NonBacktracking)]
+    private static partial Regex FilesystemPathToken();
+
+    /// <summary>
+    /// Strips filesystem locations out of an operation failure reason before it goes on the wire.
+    ///
+    /// <para>The reason is an exception message — <c>HotSession.RunTurnAsync</c> stores
+    /// <c>ex.Message</c> from a general <c>catch</c>, so an IOException touching cold storage, the
+    /// model file, or an mmap carries a full path. That is fine in a server log and not fine in an
+    /// HTTP response: a path discloses a username, a project name, or an unreleased model name,
+    /// which is precisely what <c>DiagnosticSurfaceRedactionTests</c> exists to prevent on the
+    /// other diagnostic surfaces. Keep the sentence, drop the location.</para>
+    /// </summary>
+    private static string? RedactFilesystemPaths(string? reason) =>
+        string.IsNullOrEmpty(reason) ? reason : FilesystemPathToken().Replace(reason, "[path]");
+
     private static IResult Unavailable(IServerSessionRuntime sessions) =>
         Results.Json(new ErrorResponse("session_unavailable",
                 sessions.UnavailabilityReason ?? "Sessions are not available for the loaded engine."),
@@ -207,3 +270,17 @@ public sealed record SessionTurnResponse(
     [property: JsonPropertyName("text")] string Text,
     [property: JsonPropertyName("thinking")] string Thinking,
     [property: JsonPropertyName("idempotent_replay")] bool IdempotentReplay);
+
+/// <summary>Hot-runtime operation state and the retained generated result, when available.</summary>
+public sealed record SessionOperationResponse(
+    [property: JsonPropertyName("session")] SessionResponse Session,
+    [property: JsonPropertyName("operation_id")] string OperationId,
+    [property: JsonPropertyName("state")] string State,
+    // This is the store's operation revision, deliberately distinct from session.committed_revision
+    // (the latter is the optimistic-concurrency token clients must send with their next turn).
+    [property: JsonPropertyName("operation_revision")] long? OperationRevision,
+    [property: JsonPropertyName("created_at")] DateTimeOffset CreatedAt,
+    [property: JsonPropertyName("completed_at")] DateTimeOffset? CompletedAt,
+    [property: JsonPropertyName("failure_reason")] string? FailureReason,
+    [property: JsonPropertyName("text")] string Text,
+    [property: JsonPropertyName("thinking")] string Thinking);

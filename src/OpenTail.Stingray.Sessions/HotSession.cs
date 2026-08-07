@@ -312,6 +312,9 @@ public sealed class HotSession : IDisposable
     {
         _state.RestoreKvBytes(kvBytes);
     }
+
+    internal void RestoreCompletedOperations(IReadOnlyCollection<SessionOperationSnapshot> operations) =>
+        _store.RestoreCompletedOperations(SessionId, operations);
 }
 
 /// <summary>Factory for hot sessions sharing one engine and one in-memory operation ledger.</summary>

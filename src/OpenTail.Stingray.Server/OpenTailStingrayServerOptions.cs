@@ -482,4 +482,5 @@ public sealed record LoadedEngine(
     OpenTail.Stingray.Core.ITokenizer? Tokenizer = null,
     OpenTail.Stingray.Sessions.HotSessionRuntime? SessionRuntime = null,
     OpenTail.Stingray.Sessions.ColdSessionRuntime? ColdSessionRuntime = null,
-    OpenTail.Stingray.Engine.CpuBatchedPrefillCapability? CpuBatchedPrefill = null);
+    OpenTail.Stingray.Engine.CpuBatchedPrefillCapability? CpuBatchedPrefill = null,
+    ServerRuntimeResolution? RuntimeResolution = null);

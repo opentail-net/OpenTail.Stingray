@@ -27,7 +27,8 @@ public static class StatusEndpoints
             Results.Json(
                 ServerStatusSnapshot.Create(options.Value, engine, metrics, admissionGate.Limit,
                     services.GetService<ServerEnvironmentOverrideReceipt>(),
-                    services.GetService<CpuPrefillRuntimeReceiptRelay>()?.Capability),
+                    services.GetService<CpuPrefillRuntimeReceiptRelay>()?.Capability,
+                    services.GetService<ServerRuntimeResolutionRelay>()?.Resolution),
                 OpenTailStingrayJsonContext.Default.ServerStatusSnapshot));
         return app;
     }

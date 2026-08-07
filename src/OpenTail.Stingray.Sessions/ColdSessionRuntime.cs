@@ -138,6 +138,7 @@ public sealed class ColdSessionRuntime
     private const int KvChunkBytes = 32 * 1024 * 1024;
 
     private const string CursorBlockPrefix = "cur_";
+    private const string OperationBlockPrefix = "ops_";
     private const string KvBlockPrefix = "kv_";
 
     /// <summary>
@@ -175,6 +176,18 @@ public sealed class ColdSessionRuntime
             startTokenPos: 0,
             tokenCount: session.Cursor.AcceptedPositionCount,
             payload: exportedState));
+
+        // A completed response is part of the idempotency contract, not merely diagnostic text.
+        // Keep its bounded ledger in an independent pack so cursor/KV restoration remains valid
+        // for old manifests and large output cannot bloat the cursor envelope.
+        var operations = _hotRuntime.GetSessionSnapshot(session.SessionId).Operations;
+        if (operations.Any(operation => operation.State == SessionOperationState.Completed))
+        {
+            byte[] operationLedger = SessionOperationLedgerCodec.Encode(operations);
+            blocks.Add(SegmentPackStore.SaveBlock(
+                _storageDirectory, $"{OperationBlockPrefix}{sid}_{generation}",
+                startTokenPos: 0, tokenCount: 0, payload: operationLedger));
+        }
 
         // Blocks 1..N are the KV byte stream in order. Token positions do not describe a byte chunk,
         // so they are recorded as zero rather than given a misleading value.
@@ -225,7 +238,7 @@ public sealed class ColdSessionRuntime
             // Scoped to this session's own prefixes: another session's packs are never candidates.
             // Materialise before deleting — EnumerateFiles is lazy, so removing entries mid-walk can
             // skip siblings or throw, and the catch below would hide it as a silent no-op.
-            foreach (string prefix in new[] { CursorBlockPrefix + sid, KvBlockPrefix + sid })
+            foreach (string prefix in new[] { CursorBlockPrefix + sid, OperationBlockPrefix + sid, KvBlockPrefix + sid })
             {
                 string[] candidates = Directory.GetFiles(
                     _storageDirectory, SegmentPackStore.GetPackSearchPattern(prefix));
@@ -257,19 +270,44 @@ public sealed class ColdSessionRuntime
         byte[] exportedState = SegmentPackStore.LoadBlock(
             SegmentPackStore.GetPackPath(_storageDirectory, cursorBlock.BlockId));
 
-        // Reassemble the KV stream from the remaining blocks, in manifest order. Each pack verifies
-        // its own SHA-256 on load, so a damaged chunk fails here rather than being imported.
+        SegmentBlockRef? operationBlock = null;
+        var kvBlocks = new List<SegmentBlockRef>();
+        foreach (var block in manifest.Blocks.Skip(1))
+        {
+            if (block.BlockId.StartsWith(OperationBlockPrefix, StringComparison.Ordinal))
+            {
+                if (operationBlock is not null)
+                    throw new SessionJournalFormatException($"Manifest for session '{manifest.SessionId}' contains multiple operation ledgers.");
+                operationBlock = block;
+            }
+            else if (block.BlockId.StartsWith(KvBlockPrefix, StringComparison.Ordinal))
+            {
+                kvBlocks.Add(block);
+            }
+            else
+            {
+                throw new SessionJournalFormatException($"Manifest for session '{manifest.SessionId}' contains an unknown block '{block.BlockId}'.");
+            }
+        }
+
+        var restoredOperations = operationBlock is null
+            ? ImmutableArray<SessionOperationSnapshot>.Empty
+            : SessionOperationLedgerCodec.Decode(manifest.SessionId, SegmentPackStore.LoadBlock(
+                SegmentPackStore.GetPackPath(_storageDirectory, operationBlock.BlockId)));
+
+        // Reassemble the KV stream in manifest order. Each pack verifies its own SHA-256 on load,
+        // so a damaged chunk fails here rather than being imported.
         byte[] kvBytes = [];
-        if (manifest.Blocks.Length > 1)
+        if (kvBlocks.Count > 0)
         {
             long total = 0;
-            for (int i = 1; i < manifest.Blocks.Length; i++) total += manifest.Blocks[i].UncompressedBytes;
+            foreach (var block in kvBlocks) total += block.UncompressedBytes;
             kvBytes = new byte[total];
             int written = 0;
-            for (int i = 1; i < manifest.Blocks.Length; i++)
+            foreach (var block in kvBlocks)
             {
                 byte[] chunk = SegmentPackStore.LoadBlock(
-                    SegmentPackStore.GetPackPath(_storageDirectory, manifest.Blocks[i].BlockId));
+                    SegmentPackStore.GetPackPath(_storageDirectory, block.BlockId));
                 Buffer.BlockCopy(chunk, 0, kvBytes, written, chunk.Length);
                 written += chunk.Length;
             }
@@ -278,8 +316,10 @@ public sealed class ColdSessionRuntime
                     $"Session '{manifest.SessionId}' KV stream is {written} bytes but the manifest declares {kvBytes.Length}.");
         }
 
-        return _hotRuntime.ImportState(exportedState, kvBytes, manifest.Abi.ModelFingerprint,
+        var session = _hotRuntime.ImportState(exportedState, kvBytes, manifest.Abi.ModelFingerprint,
             expectedModelFormat: _modelFormat);
+        session.RestoreCompletedOperations(restoredOperations);
+        return session;
     }
 
     private static void SweepStaleTempFiles(string directory)

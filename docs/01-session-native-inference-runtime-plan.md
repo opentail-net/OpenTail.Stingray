@@ -16,9 +16,13 @@ through `GET /v1/sessions/{id}` and completes its next turn. This is covered by
    capability refusal outside it. **Loader/DI seam complete:** `EnableSessions` now constructs
    and publishes `IServerSessionRuntime` only for CPU-dense GGUF batching. `POST`, `GET`, and
    `DELETE /v1/sessions` plus append-only `POST /v1/sessions/{id}/turns` now provide the hot
-   named-session shell, including optimistic revisions and idempotency IDs. With
-   `SessionStorageDirectory`, completed turns persist and restore on demand; durable operation
-   ledger semantics remain the next slice.
+   named-session shell, including optimistic revisions and idempotency IDs. Hot clients can
+   reconnect after losing a turn response through `GET /v1/sessions/{id}/operations/{operationId}`
+   and recover its retained result without rerunning it. With `SessionStorageDirectory`, completed
+   turns persist and restore on demand. `/capabilities` explicitly reports that operation-result/
+   idempotency persistence is unavailable: records and the lookup result are memory-only, so
+   restart continuation must not be presented as durable retry replay. A bounded durable
+   operation-result pack/journal is the next slice.
 2. Add a backend/cache conformance matrix for hot reuse, rollback, persistence, and restart.
    Its persisted ABI must represent per-layer KV/head dimensions and V-region stride; a single
    model-level `headDim` silently corrupts Gemma-class mixed-dimension caches.
