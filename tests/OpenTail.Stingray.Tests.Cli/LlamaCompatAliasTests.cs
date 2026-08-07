@@ -86,11 +86,11 @@ public sealed class LlamaCompatAliasTests
     }
 
     [Fact]
-    public void NPredict_MinusOne_BindsNegativeValue()
+    public void NPredict_MinusOne_IsExplicitlyRefused()
     {
-        var (s, err) = Bind("-n", "-1");
-        Assert.Null(err);
-        Assert.Equal(-1, s.NPredict);
+        string? err = BindAndValidate("-n", "-1");
+        Assert.NotNull(err);
+        Assert.Contains("until EOS", err, StringComparison.Ordinal);
     }
 
     // ── Tier 0: repeat-penalty ────────────────────────────────────────────────

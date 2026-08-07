@@ -25,6 +25,12 @@ public sealed class Prefetcher : IDisposable
     public ValueTask EnqueueAsync(PrefetchRequest request, CancellationToken ct = default) =>
         _queue.Writer.WriteAsync(request, ct);
 
+    /// <summary>
+    /// Completion of the background prefetch worker. A fault here is also rethrown by
+    /// <see cref="Dispose"/>, while normal disposal completes successfully after cancellation.
+    /// </summary>
+    public Task Completion => _worker;
+
     private async Task RunAsync()
     {
         try

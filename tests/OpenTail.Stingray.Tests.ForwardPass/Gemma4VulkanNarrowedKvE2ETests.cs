@@ -55,12 +55,6 @@ public sealed class Gemma4VulkanNarrowedKvE2ETests
         return null;
     }
 
-    private static int ReadIntMetadata(GgufModel model, string key, int fallback)
-    {
-        if (!model.Metadata.TryGetValue(key, out var v) || v is null) return fallback;
-        try { return Convert.ToInt32(v); } catch { return fallback; }
-    }
-
     private static int Argmax(ReadOnlySpan<float> logits)
     {
         int best = 0;

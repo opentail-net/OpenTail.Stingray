@@ -22,8 +22,11 @@ Use this for a portable or shared machine. It avoids GPU probing and keeps the b
 
 ```powershell
 dotnet run --project src/OpenTail.Stingray.Cli -c Release -- `
-  -m C:\models\model.gguf -p "Hello" --backend cpu -g 0 --temp 0
+  -m C:\models\model.gguf -p "Hello" -g 0 --temp 0
 ```
+
+For `run`, `-g 0` is the explicit CPU selector. `--backend` selects a GPU backend only when GPU
+layers are requested, so omit it for this CPU-only command.
 
 For a server, start with one batch and size CPU threads for the machine's other workload. Increase
 `MaxBatchSize` only after measuring aggregate latency and memory use.

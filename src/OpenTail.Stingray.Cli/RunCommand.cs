@@ -299,6 +299,8 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         /// </remarks>
         public override string? Validate()
         {
+            if (NPredict < 0)
+                return "--n-predict must be zero or greater; OpenTail.Stingray does not support llama.cpp's -1 (until EOS) sentinel.";
             if (KvTypeK is not null && KvTypeV is not null
                 && !string.Equals(KvTypeK, KvTypeV, StringComparison.OrdinalIgnoreCase))
                 return $"-ctk/--cache-type-k ({KvTypeK}) and -ctv/--cache-type-v ({KvTypeV}) must agree: " +

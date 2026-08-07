@@ -51,7 +51,9 @@ public sealed record ServerCompatibilitySnapshot(
                 ContinuousBatching: continuousBatching,
                 ImageInput: engine.SupportsImageInput,
                 ToolGrammar: toolGrammar,
-                OutputConstraintConfigured: options.OutputConstraintFactory is not null),
+                OutputConstraintConfigured: options.OutputConstraintFactory is not null,
+                SessionRestartContinuation: new ServerFeatureAvailability(false,
+                    "Not exposed by the server yet; the CPU-dense reference restart proof is not a supported named-session lifecycle or backend/cache conformance contract.")),
             Configuration: new ServerEffectiveCompatibilityConfiguration(
                 Backend: options.Backend.ToString().ToLowerInvariant(),
                 GpuLayers: options.NGpuLayers,
@@ -78,7 +80,8 @@ public sealed record ServerRuntimeCapabilities(
     bool ContinuousBatching,
     bool ImageInput,
     ServerFeatureAvailability ToolGrammar,
-    bool OutputConstraintConfigured);
+    bool OutputConstraintConfigured,
+    ServerFeatureAvailability SessionRestartContinuation);
 
 /// <summary>Whether a capability is currently usable, with a user-facing reason when it is conditional or unavailable.</summary>
 public sealed record ServerFeatureAvailability(bool Available, string? Detail);

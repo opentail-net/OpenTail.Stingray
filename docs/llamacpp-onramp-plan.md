@@ -9,7 +9,7 @@
 > spelling and a better OpenTail design conflict, OpenTail wins and the llama.cpp spelling stays an
 > alias.
 
-Last updated 2026-08-05.
+Last updated 2026-08-07.
 
 ## Why this is worth doing
 
@@ -70,15 +70,15 @@ Zero new capability. Each entry is an extra token in an existing `[CommandOption
 
 | llama.cpp | Maps to | Note |
 |---|---|---|
-| `-ngl` | `--ngl` (exists as `--ngl\|--n-gpu-layers\|--gpu-layers\|-g`) | Add the single-dash spelling. |
+| `-ngl` | `--ngl` (also `--n-gpu-layers`, `--gpu-layers`, `-g`) | Implemented and binding-tested. |
 | `-ctx`, `--n-ctx` | `-c\|--ctx-size` | Implemented and binding-tested. |
 | `-npredict` | `-n\|--n-predict` | Implemented and binding-tested. |
-| `--n-predict -1` | `-n` | Confirm `-1` means "until EOS" here too, or refuse it. |
-| `-ctk` / `--cache-type-k` | `--kv-type` | **Only if semantics match.** If `--kv-type` sets both K and V, `-ctk`/`-ctv` disagreeing must be an error, not a silent merge. |
-| `-ctv` / `--cache-type-v` | `--kv-type` | Same caveat. |
-| `--repeat_penalty` (underscore) | `--repeat-penalty` | llama.cpp accepts both spellings in places. |
-| `-md` | `--model-draft` (exists) | |
-| `--draft` | `--spec-lookahead\|--draft-tokens` | Verify it means draft *length*, not draft *model*. |
+| `--n-predict -1` | `-n` | **Refused.** OpenTail does not support llama.cpp's “until EOS” sentinel; use an explicit non-negative bound. |
+| `-ctk` / `--cache-type-k` | `--kv-type` | Implemented; conflicting K/V values are explicitly rejected. |
+| `-ctv` / `--cache-type-v` | `--kv-type` | Implemented with the same agreement check. |
+| `--repeat_penalty` (underscore) | `--repeat-penalty` | Implemented and binding-tested. |
+| `-md` | `--model-draft` | Implemented and binding-tested. |
+| `--draft` | `--spec-lookahead` / `--draft-tokens` | Implemented as draft length and binding-tested. |
 
 **Acceptance:** a test enumerates every advertised alias, binds a command line containing it, and
 asserts the bound property. Aliases are cheap to add and cheap to break silently — a typo in a
@@ -92,13 +92,13 @@ recollection and must be checked against `common/arg.cpp` in the actual version,
 
 | llama.cpp | Work | Notes |
 |---|---|---|
-| `-t` / `--threads` | **Small.** | The capability exists: `SimdKernels.CpuThreads` is a settable property backed by `STINGRAY_CPU_THREADS`. The flag just isn't exposed. This is the single most conspicuous gap — nearly everyone sets `-t` — and it is close to free. |
-| `--repeat-last-n` | Small | Sampler already has repetition penalty; needs the window size plumbed. |
+| `-t` / `--threads` | Complete | Sets the SIMD kernel worker count; binding and behavior are tested. |
+| `--repeat-last-n` | Complete | Plumbed to the decode history window; behavior-tested for the default, disabled (`0`), bounded, and full-context (`-1`) cases. |
 | `--presence-penalty`, `--frequency-penalty` | Small–medium | Only if `Sampler` supports them; if not, this is Tier 3. Check before promising. |
-| `--logit-bias` | Small | `SamplingParams.LogitBias` already exists — parse llama.cpp's `TOKEN_ID(+/-BIAS)` syntax onto it. |
-| `--chat-template` | Small–medium | `JinjaChatTemplate` exists; needs an override path that bypasses the GGUF-embedded template. |
-| `-e` / `--escape` | Small | Process `\n`, `\t`, `\\` in `-p`. Trivial, and its absence is quietly confusing. |
-| `--no-warmup` | Small | Only if there is a warmup step to skip; otherwise refuse. |
+| `--logit-bias` | Complete | Parses repeatable llama.cpp `TOKEN_ID(+/-BIAS)` entries into `SamplingParams.LogitBias`; parser behavior is tested. |
+| `--chat-template` | Complete | Raw Jinja override bypasses the embedded template; named shortcuts are refused rather than approximated. |
+| `-e` / `--escape` | Complete | Processes `\n`, `\t`, `\r` and `\\` in `-p`; behavior-tested. |
+| `--no-warmup` | Complete (inert) | There is no separate warmup phase. The flag is accepted with a warning, not silently claimed to do work. |
 
 **Acceptance per item:** the flag changes observable behaviour, and a test proves it — not merely that
 it binds. A bound-but-inert flag is the failure mode this whole document exists to prevent.
@@ -112,9 +112,9 @@ Take only the cheap three first:
 
 | Endpoint | Work | Why it's cheap |
 |---|---|---|
-| `/tokenize` | Small | The tokenizer is already loaded; this is a shape mapping. |
-| `/detokenize` | Small | Same. |
-| `/props` | Small | Hyperparameters and the chat template are already in hand. |
+| `/tokenize` | Complete | Tokenizer relay shape mapping; wire-contract tested. |
+| `/detokenize` | Complete | Tokenizer relay shape mapping; wire-contract tested. |
+| `/props` | Complete | Safe model/template facts; wire-contract tested. |
 
 Deliberately deferred, each needing its own decision: `/completion` (a re-skin of the generate path in
 llama.cpp's field and streaming shapes — a few days), `/embedding` (needs pooled embeddings that may
@@ -147,15 +147,12 @@ Recognise the name, fail with a message naming the OpenTail alternative:
 | `--numa` | Not implemented. |
 | `-fa` / `--flash-attn` | State whether attention is already fused, so the flag is meaningless rather than ignored. |
 
-## Recommended order
+## Next decision
 
-1. **Tier 1 `-t/--threads`** first, alone. Highest value per hour in the document, and it exercises the
-   whole "flag → existing capability" path end to end before anything is done in bulk.
-2. **Tier 0 aliases**, in one pass, with the alias-binding test written first.
-3. **The refusal table**, in the same pass as Tier 0 — a refusal is worth as much as an alias and
-   costs less. Doing them together prevents a window where a flag is neither aliased nor refused.
-4. **Tier 2's three cheap endpoints.**
-5. Stop. Re-evaluate whether anyone actually asked for more before starting Tier 3.
+The bounded on-ramp is complete: Tier 0 aliases, its explicit refusals, Tier 1 features, and the
+three cheap llama-server endpoints all have binding, behavior, or wire-contract tests. Do not add
+more flags for parity's sake. Any Tier 3 item needs an independent product proposal and acceptance
+evidence before it re-enters active work.
 
 ## How this stays bounded
 

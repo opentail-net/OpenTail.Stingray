@@ -1,6 +1,17 @@
 # Gemma 4 E4B Q8 CUDA — Implementation Plan
 
-Status: planning, no code written yet. GGUF downloaded (8.2 GB at `E:\models\gemma-4-E4B-it-Q8_0.gguf`) and header verified. This plan supersedes the high-level surface in issues #82–#90 with the actual tensor layout from the unsloth GGUF.
+Status: historical implementation plan. The E4B Gemma 4 path described below is implemented;
+current evidence includes CPU, CUDA, CUDA-hybrid, Vulkan, batching, narrowed-KV and vision tests.
+The local Q4_0 CPU no-shared-KV-norm proof passed on 2026-08-07. The resolved raw-prompt
+coherence incident and its production-template regression tests are in
+[`gemma4-degenerate-decode-handoff.md`](gemma4-degenerate-decode-handoff.md). Keep this document
+for the verified source layout and design rationale; track only remaining dense-12B and vision
+validation in `current-work.md`.
+
+**CLI receipt, 2026-08-07:** `stingray -m models/gemma-4-E4B_q4_0-it.gguf -g 0 -p "The capital
+of France is" -n 8 --temp 0` completed the CPU E4B text path and generated `**Paris**` after the
+echoed prompt. This is a deterministic coherence smoke for the Q4_0 model's absent-shared-KV-norm
+layout, not a numerical parity, CUDA, or multimodal validation claim.
 
 ## Confirmed architecture (from real GGUF header)
 

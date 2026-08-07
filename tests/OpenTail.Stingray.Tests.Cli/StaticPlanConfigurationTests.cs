@@ -1,4 +1,5 @@
 using OpenTail.Stingray.Cli;
+using System.Text.RegularExpressions;
 
 namespace OpenTail.Stingray.Tests.Cli;
 
@@ -83,6 +84,20 @@ public sealed class StaticPlanConfigurationTests
         }
     }
 
+    [Theory]
+    [InlineData("cpu.json")]
+    [InlineData("cuda-dense.json")]
+    [InlineData("hybrid-moe.json")]
+    [InlineData("local-server.json")]
+    [InlineData("vulkan.json")]
+    public void Profile_CheckedInRecommendedProfile_IsAcceptedByTheStrictLoader(string filename)
+    {
+        string root = FindRepositoryRoot();
+        string path = Path.Combine(root, "docs", "profiles", filename);
+
+        Assert.NotNull(StaticPlanProfile.Load(path));
+    }
+
     [Fact]
     public void Resolve_InvalidEnvironmentValueFallsBackWithDiagnostic()
     {
@@ -123,5 +138,34 @@ public sealed class StaticPlanConfigurationTests
         Assert.Equal(3, profile.MaxBatchSize);
         Assert.True(profile.ToolGrammar);
         Assert.Null(profile.SnapKvBudget); // -1 means unset, not an explicit profile value.
+    }
+
+    /// <summary>
+    /// The option inventory is deliberately a human-classified document, but its declared source
+    /// count must never silently become stale. This lightweight guard keeps the refresh work
+    /// visible without pretending that a raw attribute scan can classify a public option.
+    /// </summary>
+    [Fact]
+    public void CliOptionInventory_DeclaredCountMatchesSource()
+    {
+        string root = FindRepositoryRoot();
+        int sourceCount = Directory.EnumerateFiles(Path.Combine(root, "src", "OpenTail.Stingray.Cli"), "*.cs", SearchOption.AllDirectories)
+            .Sum(path => File.ReadLines(path).Count(line => line.Contains("[CommandOption", StringComparison.Ordinal)));
+
+        string inventory = File.ReadAllText(Path.Combine(root, "docs", "cli-option-inventory.md"));
+        Match count = Regex.Match(inventory, @"source scan now finds \*\*(\d+)\*\* `\[CommandOption\]`");
+        Assert.True(count.Success, "CLI option inventory must declare its current source option count.");
+        Assert.Equal(sourceCount, int.Parse(count.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture));
+    }
+
+    private static string FindRepositoryRoot()
+    {
+        for (var directory = new DirectoryInfo(AppContext.BaseDirectory); directory is not null; directory = directory.Parent)
+        {
+            if (File.Exists(Path.Combine(directory.FullName, "OpenTail.Stingray.slnx")))
+                return directory.FullName;
+        }
+
+        throw new DirectoryNotFoundException("Could not find the OpenTail.Stingray repository root.");
     }
 }

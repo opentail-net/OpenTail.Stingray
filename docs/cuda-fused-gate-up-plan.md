@@ -14,6 +14,11 @@
 
 Written 2026-08-06.
 
+**2026-08-07 source check:** the concrete planned markers (`TryUploadFusedGateUp`, `_wGateUp`,
+and `RegisterView`) remain absent from the CUDA/engine source. Existing references to “fused” in
+those projects are unrelated kernels and hybrid/CPU paths; they are not this dense-CUDA gate/up
+GEMM fusion. The status above remains accurate, and no hardware result is implied by this check.
+
 ## The idea in one paragraph
 
 `ffn_gate` and `ffn_up` are two GEMMs over the *same* input `x`, producing two `intermDim` outputs that

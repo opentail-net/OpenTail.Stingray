@@ -15,8 +15,19 @@
 > whose contract is "lossy but argmax-stable" needs a RELATIVE error bound measured at production
 > shapes, not an absolute tolerance on a toy matrix.
 
-**Status as of 2026-07-25: root-caused, not yet fixed. Diagnosis is solid and reproducible;
-implementation is a real, multi-kernel, correctness-sensitive piece of work — not started.**
+**Status as of 2026-08-07: the subgroup-width correctness fix is implemented.** The vulnerable
+matvec and batched-matvec reductions now use explicit workgroup shared-memory trees rather than
+subgroup operations; `Shaders.cs` has no executable `subgroupAdd`/`subgroupElect` use remaining.
+The hardware-backed `VulkanWave64SeamTests.MatVecF32Wave64Seam_EveryRowWrittenCorrectly` passed
+on 2026-08-07. The real-model CLI smoke is also complete; the remaining work is formal
+production-shape, all-format relative-error coverage, not the original implementation.
+
+**Additional hardware evidence, 2026-08-07:** the existing `VulkanShaderTests` execution on the
+AMD fixed-Wave64 device reported zero mismatches for the Q4_K, Q5_K, Q6_K, Q8_0, and Q4_0 matvec
+checks. Its full-GPU forward-path check also reported the same top token (`Hello`, 19556) and the
+same greedy text prefix as CPU. This is encouraging production-kernel evidence, not the distinct
+CLI acceptance receipt in Task 4: retain that final `-g 24 --backend vulkan` command and its
+token-for-token transcript before declaring the backend release-ready.
 
 ## Why this doc exists
 
@@ -163,18 +174,15 @@ pass/fail-count level (`dotnet test` summary) but are completely different at th
 level, which was sitting right there. That's a real process failure worth naming plainly: a
 red/green test count was trusted without reading the red tests' own output.
 
-## Implementation plan (not started)
+## Residual validation plan
 
-### Task 1 — Full inventory
-Enumerate every shader in `Shaders.cs` using `subgroupAdd`/`subgroupElect`/`subgroupMax` with a
-`THREADS_PER_ROW`-style lane-grouping assumption (the grep above found ~9 candidates by pattern
-match; confirm each one individually, don't assume the list is complete — some later ones near
-line 3708-4260 use `float r = subgroupAdd(acc[k])` inside a loop, a batched variant of the same
-pattern that needs separate review). Also check `Shaders.cs` outside the matvec family — the
-line-3778 `int qsum = subgroupAdd(q)` int8-dot-product kernel and anything using
-`subgroupShuffle`/`subgroupMax` for a similar 32-lane assumption.
+### Task 1 — Retain and re-run the inventory
+The original inventory is now closed: the vulnerable 32-lane reductions have been replaced by
+shared-memory trees, and a source scan on 2026-08-07 found no executable
+`subgroupAdd`/`subgroupElect` calls in `Shaders.cs`. Keep that scan in future shader reviews;
+new subgroup code must either be subgroup-width agnostic or explicitly prove its size contract.
 
-### Task 2 — Pick a fix strategy (needs a decision, not just an implementation choice)
+### Task 2 — Fix strategy (decided and implemented)
 Two real options, different risk/effort tradeoffs:
 
 - **(A) Rework each kernel's lane grouping to match the hardware's actual subgroup size at
@@ -196,28 +204,29 @@ Two real options, different risk/effort tradeoffs:
   the 32-pin *does* work (NVIDIA, RDNA) — needs an A/B on non-broken hardware to quantify, but
   this box can't run that A/B (its subgroup is stuck at 64, can't test the pinned-32 path here).
 
-**Recommendation: (B) for kernels that fail on this hardware, keep (A)/pinning as-is where it
-already works.** A shared-memory reduction is strictly more portable and this specific bug class
-(fixed non-32 subgroup width) is exactly the kind of thing worth being defensive about rather
-than re-deriving per-vendor lane math again. But this is a real engineering judgment call, not
-an obvious slam dunk — (A) may be measurably faster on hardware where it's already correct, and
-a mixed A/B codebase (some kernels subgroup-based, some shared-memory-based) adds complexity.
-Flagging for a decision before implementation starts, not deciding unilaterally here.
+**Implemented choice: (B).** Shared-memory trees are now used for the affected reductions. This
+keeps the kernels portable across Wave16/32/64/128 and avoids a device-specific lane-indexing
+fork. The subgroup-size pin remains compatibility infrastructure for future shaders, but is no
+longer relied upon for these correctness-critical reductions.
 
-### Task 3 — Fix, seam-test, verify
-For each affected kernel: implement the chosen strategy, write a hand-computed-reference seam
-test (same standard as `DotQ4KWide8SeamTests.cs` in the CPU investigation — a small,
-by-hand-computable case, not cross-checked against other kernel code), then re-run the *existing*
-`VulkanShaderTests`/`VulkanInitTests` suite and confirm all 15 currently-failing assertions pass
-with exact/near-exact CPU parity (the suite already has the right structure and tolerances for
-this — it doesn't need to be rebuilt, just made to pass honestly).
+### Task 3 — Extend seam and production-shape validation
+The F32 Wave64 seam is now a hardware-backed proof that all eight logical rows write correctly.
+Q4_K and Q6_K already exercise real SmolLM2 tensors with a relative-error check; Q4_0, Q5_K,
+and Q8_0 currently exercise exact synthetic parity at small shapes. Add production-shape cases
+for those latter formats when suitable fixtures are available, and retain relative-error plus
+top-token/argmax checks where a lossy int8 activation path is involved. Do not treat a synthetic
+absolute-only tolerance as a substitute for that measurement.
 
 ### Task 4 — Re-verify end-to-end
-Re-run the real CLI smoke test that surfaced this (`-g 24 --backend vulkan` against SmolLM2,
-greedy, same prompt used throughout the CPU perf loop) and confirm the output text matches the
-CPU backend's output token-for-token at `--temp 0`, not just that the unit tests pass — the unit
-tests check individual kernels in isolation; only an end-to-end run confirms nothing about how
-they compose was missed.
+**Complete 2026-08-07.** The real CLI smoke that surfaced this was re-run with full offload:
+
+    stingray -m models/SmolLM2-1.7B-Instruct-Q4_K_M.gguf -g 24 --backend vulkan -p "The capital of France is" -n 8 --temp 0
+
+It produced `The capital of France is Paris.` after the echoed prompt, exactly matching the
+separate CPU (`-g 0`) greedy run. Vulkan reported all 24 layers offloaded to AMD Radeon(TM)
+Graphics; the reported decode rates (21.8 Vulkan, 12.8 CPU t/s) are a one-run smoke receipt, not
+a performance claim. This closes composition correctness for that reference model; it does not
+replace Task 3's per-format production-shape relative-error coverage.
 
 ### Task 5 — Only then, revisit performance
 Once correctness is fixed, re-measure GPU vs CPU throughput honestly (the earlier smoke test's

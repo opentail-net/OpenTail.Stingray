@@ -61,8 +61,9 @@ public sealed class PrefetcherTests
         var prefetcher = new OpenTail.Stingray.Pipeline.Prefetcher(memory, queueDepth: 4);
         await prefetcher.EnqueueAsync(new OpenTail.Stingray.Pipeline.PrefetchRequest("w"));
 
-        // Give the background worker a chance to dequeue and fault before disposing.
-        await System.Threading.Tasks.Task.Delay(50);
+        // Enqueue only proves channel admission; it does not mean the worker has dequeued the
+        // item. Wait for the actual worker fault rather than relying on a timing delay.
+        await Assert.ThrowsAsync<System.NotImplementedException>(async () => await prefetcher.Completion);
 
         var ex = Assert.Throws<System.AggregateException>(prefetcher.Dispose);
         Assert.IsType<System.NotImplementedException>(ex.InnerException);

@@ -2,6 +2,12 @@
 
 *Drafted 2026-05-19.*
 
+> **Superseded implementation estimate.** The initial “new SSM” premise is no longer true:
+> `qwen35moe` metadata, Gated DeltaNet kernels/state, and CPU/CUDA/Vulkan hybrid forward paths
+> are now present in the tree. `ModelHyperparamsTests.Qwen35Moe_PopulatesGdnConfigAndLayerTypeMask`
+> passed on 2026-08-07. Do not resume this phased plan; use the current implementation and an
+> authoritative real-GGUF tensor layout when extending Qwen3.5 coverage.
+
 ## Executive Summary
 
 Adding `qwen35moe` is a substantial multi-week project (~9–13 working weeks, 45–65 person-days). It bolts on a second block type (SSM/Mamba-2 style) that didn't previously exist in OpenTail.Stingray, plus changes to RoPE, MoE shapes, and tokenization. The core engine has good architectural runway — the `ForwardPass` family is metadata-driven (no `arch == "qwen3moe"` switches), MoE expert handling is dimension-generic, and `PagedKvCache` has clean lifecycle hooks. The risk is concentrated in SSM kernel correctness (selective scan numerics) and the per-sequence SSM state interacting with batched/multi-sequence code paths.

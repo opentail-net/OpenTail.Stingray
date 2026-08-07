@@ -13,11 +13,24 @@ human-facing map that a raw commit graph cannot.
 - Recommended deployment profiles for CPU-only, CUDA dense, Vulkan, hybrid MoE, and local-server use.
 - Guidance for the live model × backend × dtype × batching × speculation capability report.
 - A release-quality matrix and retained CI test transcripts for package publication.
+- Small llama-server compatibility endpoints: `POST /tokenize`, `POST /detokenize`, and
+  `GET /props`, with wire-contract coverage for valid and malformed requests.
 
 ### Changed
 
 - Capability reports explicitly distinguish experimental retained-session internals from a supported
   restart-continuation product feature.
+- Hosted CPU CI now includes the Sessions and Vision managed suites, matching the release gate's
+  managed coverage.
+- **Breaking (library API):** `ServerRuntimeCapabilities` gained a `SessionRestartContinuation`
+  positional parameter reporting that restart continuation is not a supported product feature. The
+  capabilities JSON simply gains a field — additive and safe for HTTP consumers — but the record's
+  primary constructor changed, so C# code constructing `ServerRuntimeCapabilities` directly must be
+  updated.
+- `--n-predict` now rejects negative values with an explanatory error instead of accepting them.
+  llama.cpp's `-1` (until EOS) and `-2` (until context full) sentinels are not implemented; the
+  default remains 512. This is deliberate: silently treating `-1` as "generate nothing" or as the
+  default would be worse than saying so.
 
 ### Fixed
 
@@ -34,6 +47,8 @@ human-facing map that a raw commit graph cannot.
   symbol as an unregistered environment variable.
 - Vulkan compile-fallback test skips, rather than fails, when the Vulkan SDK's `glslc` is absent;
   every shipped shader is served from the committed SPIR-V table, so it is a dev-tooling dependency.
+- Managed CI, release validation, and the local package verifier now fail if test discovery finds
+  zero tests, rather than allowing a green no-op test run.
 
 ## Release notes policy
 

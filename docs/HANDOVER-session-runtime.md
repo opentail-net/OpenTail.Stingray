@@ -3,6 +3,16 @@
 **Written for whoever picks this up next (human or AI).** Read this before touching anything.
 Everything here is stated as of the handover; verify rather than trust, for the reasons in §6.
 
+> **2026-08-07 follow-up.** This remains a historical handover, not a live git-state report: the
+> uncommitted-file list in §2 no longer matches the working tree. The previously unverified
+> `HotSession_ExactAppendAtPageBoundary_MatchesFullGreedyReplay` now compiles and passed as part
+> of `HotSessionGreedyReplayTests` (**2/2**, Release, 2026-08-07) on the local SmolLM2 GGUF. This
+> also covers its real-model hot multi-turn/full-replay sibling. The formerly outstanding
+> `ColdSession_RealModel_CrossProcessRestore_MatchesFullGreedyReplay` has now passed too: it
+> persists in one real test process, restores in a fresh process/runtime, and compares greedy
+> continuation against full replay. This proves only the CPU-dense SmolLM2 reference lane; product
+> API exposure and other backend/cache families remain open.
+
 ---
 
 ## 1. Where the work is

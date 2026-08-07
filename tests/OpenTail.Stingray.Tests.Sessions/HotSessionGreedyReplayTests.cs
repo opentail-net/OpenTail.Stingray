@@ -1,4 +1,5 @@
 using System.Collections.Immutable;
+using System.Diagnostics;
 using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Cpu;
 using OpenTail.Stingray.Engine;
@@ -25,10 +26,14 @@ namespace OpenTail.Stingray.Tests.Sessions;
 /// segment, so the oracle prefills precisely those and decodes greedily from a fresh
 /// <see cref="Engine.ForwardPass"/> that shares no state with the session.</para>
 ///
-/// <para>Skipped silently when the model is not on disk. A failure inside a turn must FAIL.</para>
+/// <para>The restart acceptance test is explicitly skipped when the reference model is not on disk.
+/// A failure inside a turn must FAIL.</para>
 /// </summary>
 public sealed class HotSessionGreedyReplayTests
 {
+    private const string RestartPhaseEnvironment = "OPENTAIL_TEST_RESTART_PHASE";
+    private const string RestartModelEnvironment = "OPENTAIL_TEST_RESTART_MODEL";
+    private const string RestartStorageEnvironment = "OPENTAIL_TEST_RESTART_STORAGE";
     private static string? FindModelPath()
     {
         var dir = Directory.GetCurrentDirectory();
@@ -221,6 +226,148 @@ public sealed class HotSessionGreedyReplayTests
             }
         }
     }
+
+    /// <summary>
+    /// The release-quality restart-continuation gate: the persisted session must survive an actual
+    /// test-process exit, then a fresh process/runtime must restore it and produce the same greedy
+    /// tokens as a full replay. This deliberately orchestrates two child test processes instead of
+    /// calling two runtimes in one test process; static configuration and native allocations are
+    /// otherwise shared, which is not a restart proof.
+    /// </summary>
+    [Fact]
+    public void ColdSession_RealModel_CrossProcessRestore_MatchesFullGreedyReplay()
+    {
+        var modelPath = FindModelPath();
+        Assert.SkipUnless(
+            modelPath is not null,
+            "SmolLM2-1.7B-Instruct-Q4_K_M.gguf is required for the CPU-dense restart-continuation acceptance test.");
+
+        string storage = Path.Combine(Path.GetTempPath(), $"opentail_restart_proof_{Guid.NewGuid():N}");
+        try
+        {
+            RunRestartChild("persist", modelPath!, storage);
+            RunRestartChild("restore", modelPath!, storage);
+        }
+        finally
+        {
+            if (Directory.Exists(storage)) Directory.Delete(storage, recursive: true);
+        }
+    }
+
+    /// <summary>
+    /// Child entry point selected by <see cref="ColdSession_RealModel_CrossProcessRestore_MatchesFullGreedyReplay"/>.
+    /// It intentionally does nothing in the normal suite, where the parent test owns orchestration.
+    /// </summary>
+    [Fact]
+    public async Task ColdSession_RealModel_CrossProcessChild()
+    {
+        string? phase = Environment.GetEnvironmentVariable(RestartPhaseEnvironment);
+        if (string.IsNullOrEmpty(phase)) return;
+
+        string modelPath = Environment.GetEnvironmentVariable(RestartModelEnvironment)
+            ?? throw new InvalidOperationException("Restart child did not receive a model path.");
+        string storage = Environment.GetEnvironmentVariable(RestartStorageEnvironment)
+            ?? throw new InvalidOperationException("Restart child did not receive a storage directory.");
+
+        if (phase == "persist")
+        {
+            await PersistRestartFixture(modelPath, storage);
+            return;
+        }
+        if (phase == "restore")
+        {
+            await RestoreAndReplayRestartFixture(modelPath, storage);
+            return;
+        }
+
+        throw new InvalidOperationException($"Unknown restart-child phase '{phase}'.");
+    }
+
+    private static void RunRestartChild(string phase, string modelPath, string storage)
+    {
+        string executable = Environment.ProcessPath
+            ?? throw new InvalidOperationException("Could not determine the test executable path.");
+        var start = new ProcessStartInfo(executable)
+        {
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+        };
+        start.ArgumentList.Add("-method");
+        start.ArgumentList.Add($"{typeof(HotSessionGreedyReplayTests).FullName}.{nameof(ColdSession_RealModel_CrossProcessChild)}");
+        start.Environment[RestartPhaseEnvironment] = phase;
+        start.Environment[RestartModelEnvironment] = modelPath;
+        start.Environment[RestartStorageEnvironment] = storage;
+
+        using var child = Process.Start(start)
+            ?? throw new InvalidOperationException($"Could not start restart-proof child '{phase}'.");
+        if (!child.WaitForExit((int)TimeSpan.FromMinutes(3).TotalMilliseconds))
+            throw new TimeoutException($"Restart-proof child '{phase}' did not exit within three minutes.");
+
+        string output = child.StandardOutput.ReadToEnd();
+        string error = child.StandardError.ReadToEnd();
+        Assert.True(child.ExitCode == 0,
+            $"Restart-proof child '{phase}' exited {child.ExitCode}.{Environment.NewLine}{output}{Environment.NewLine}{error}");
+    }
+
+    private static async Task PersistRestartFixture(string modelPath, string storage)
+    {
+        using var model = GgufModel.Open(modelPath);
+        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
+        var tokenizer = GgufTokenizer.FromGgufModel(model);
+        using var backend = new CpuBackend();
+        var fwd = new Engine.ForwardPass(model, backend, hp, maxContextLength: 2048);
+        using var engine = new ContinuousBatchingEngine(fwd, tokenizer, "restart-proof", maxBatchSize: 1);
+        var hot = new HotSessionRuntime(engine, tokenizer);
+        var cold = new ColdSessionRuntime(hot, engine, storage);
+        var address = new SessionAddress("restart-proof", "smollm", "thread", RestartModelFingerprint(modelPath));
+        using var session = cold.Create(address);
+
+        var result = await session.RunTurnAsync("The capital of France is",
+            new SamplingParams { Temperature = 0f, MaxNewTokens = MaxNewTokens },
+            SessionRevision.Initial, SessionOperationId.New(), SessionRequestDigest.FromCanonicalValue("turn-1"));
+        Assert.Equal(SessionOperationState.Completed, result.Operation.State);
+
+        cold.EvictToDisk(session, address.ModelFingerprint);
+        Assert.True(File.Exists(Path.Combine(storage, $"{address.ToSessionId().Value:N}.manifest")),
+            "Persist child did not write the session manifest.");
+    }
+
+    private static async Task RestoreAndReplayRestartFixture(string modelPath, string storage)
+    {
+        using var model = GgufModel.Open(modelPath);
+        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
+        var tokenizer = GgufTokenizer.FromGgufModel(model);
+        using var backend = new CpuBackend();
+        var fwd = new Engine.ForwardPass(model, backend, hp, maxContextLength: 2048);
+        using var engine = new ContinuousBatchingEngine(fwd, tokenizer, "restart-proof", maxBatchSize: 1);
+        var hot = new HotSessionRuntime(engine, tokenizer);
+        var cold = new ColdSessionRuntime(hot, engine, storage);
+        var address = new SessionAddress("restart-proof", "smollm", "thread", RestartModelFingerprint(modelPath));
+        using var session = cold.OpenOrCreate(address);
+
+        var result = await session.RunTurnAsync(" and the capital of Spain is",
+            new SamplingParams { Temperature = 0f, MaxNewTokens = MaxNewTokens },
+            session.CommittedRevision, SessionOperationId.New(), SessionRequestDigest.FromCanonicalValue("turn-2"));
+        Assert.Equal(SessionOperationState.Completed, result.Operation.State);
+
+        var log = session.Cursor.ExecutionLog;
+        Assert.True(log.Length > 0 && log.Length % 2 == 0,
+            "The restart proof expects alternating prompt/generated token segments.");
+        var replay = new List<int>();
+        for (int i = 0; i < log.Length; i += 2)
+        {
+            var prompt = Assert.IsType<TokenSegment>(log[i]);
+            var generated = Assert.IsType<TokenSegment>(log[i + 1]);
+            replay.AddRange(prompt.TokenIds);
+            var actual = GreedyContinuation(model, backend, hp, replay, generated.TokenIds.Length);
+            Assert.Equal(generated.TokenIds, actual);
+            replay.AddRange(generated.TokenIds);
+        }
+    }
+
+    private static string RestartModelFingerprint(string modelPath) =>
+        $"{Path.GetFileName(modelPath)}:{new FileInfo(modelPath).Length}";
 
     /// <summary>
     /// Full replay: a brand-new forward pass, prefill the whole prefix, then greedy-decode

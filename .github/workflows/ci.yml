@@ -29,10 +29,24 @@ jobs:
       # Without it `dotnet test` silently falls back to VSTest, finds no adapter, and exits 0
       # having run nothing — a green gate that tested zero code. Do not pass `--nologo`: MTP
       # rejects it and fails the run with "Zero tests ran", which reads like a discovery error.
+      #
+      # `--minimum-expected-tests` makes thin discovery a failure. The floors are per-suite and
+      # sit ~15-25% below the counts measured on 2026-08-07 (Core 421, Cli 363, Server 219,
+      # TurboQuant 78, Sessions 74, Vision 70, Pipeline 52), so ordinary churn does not trip them
+      # while a collapse does. A flat `1` would only have caught total collapse, not the case
+      # where a suite silently discovers a handful of its tests. Raise a floor when a suite grows
+      # substantially; never lower one to make a red build green without establishing why the
+      # count dropped.
+      #
+      # NOTE: this option is accepted by `dotnet test` (which forwards it to the platform host),
+      # NOT by the test executable directly — running the built .exe with it fails with
+      # "unknown option". Keep these invocations going through `dotnet test`.
       - name: CPU-safe test suites
         run: |
-          dotnet test tests/OpenTail.Stingray.Tests.Core/OpenTail.Stingray.Tests.Core.csproj -c Release --no-restore
-          dotnet test tests/OpenTail.Stingray.Tests.Pipeline/OpenTail.Stingray.Tests.Pipeline.csproj -c Release --no-restore
-          dotnet test tests/OpenTail.Stingray.Tests.Server/OpenTail.Stingray.Tests.Server.csproj -c Release --no-restore
-          dotnet test tests/OpenTail.Stingray.Tests.TurboQuant/OpenTail.Stingray.Tests.TurboQuant.csproj -c Release --no-restore
-          dotnet test tests/OpenTail.Stingray.Tests.Cli/OpenTail.Stingray.Tests.Cli.csproj -c Release --no-restore
+          dotnet test tests/OpenTail.Stingray.Tests.Core/OpenTail.Stingray.Tests.Core.csproj -c Release --no-restore -- --minimum-expected-tests 350
+          dotnet test tests/OpenTail.Stingray.Tests.Pipeline/OpenTail.Stingray.Tests.Pipeline.csproj -c Release --no-restore -- --minimum-expected-tests 40
+          dotnet test tests/OpenTail.Stingray.Tests.Server/OpenTail.Stingray.Tests.Server.csproj -c Release --no-restore -- --minimum-expected-tests 180
+          dotnet test tests/OpenTail.Stingray.Tests.TurboQuant/OpenTail.Stingray.Tests.TurboQuant.csproj -c Release --no-restore -- --minimum-expected-tests 60
+          dotnet test tests/OpenTail.Stingray.Tests.Cli/OpenTail.Stingray.Tests.Cli.csproj -c Release --no-restore -- --minimum-expected-tests 300
+          dotnet test tests/OpenTail.Stingray.Tests.Sessions/OpenTail.Stingray.Tests.Sessions.csproj -c Release --no-restore -- --minimum-expected-tests 60
+          dotnet test tests/OpenTail.Stingray.Tests.Vision/OpenTail.Stingray.Tests.Vision.csproj -c Release --no-restore -- --minimum-expected-tests 55

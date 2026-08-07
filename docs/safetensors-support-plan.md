@@ -38,6 +38,10 @@ $ opentail-llm-cli -m models/SmolLM2-135M-Instruct -p "hi" -g 99
 Error: GPU offload (--ngl / -g) is not yet supported for SafeTensors packages. …
 ```
 
+Re-verified 2026-08-07 from this workspace with `models/SmolLM2-135M-Instruct`:
+model load 0.6 s, 36-token prefill at 270.1 t/s, and 4-token greedy decode at 45.8 t/s.
+The output completed normally; these are a local smoke receipt, not a benchmark comparison.
+
 ### What exists, by file
 
 | File | Purpose |

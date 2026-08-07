@@ -20,7 +20,9 @@ matrix. Passing a test on an unsupported machine is not evidence for a hardware/
 The publish workflow writes TRX files for the managed suites and uploads them as the
 `release-quality-results` artifact. A reviewer links that artifact and records hardware rows
 actually exercised in the release notes. A skipped model/hardware test remains skipped; it must
-never be described as a pass.
+never be described as a pass. The release receipt also retains
+`scripts/check-test-model-coverage.ps1` output: several older model-gated tests return early
+when their local fixture is absent, so a managed-suite pass count alone is not model coverage.
 
 ## Restart-continuation acceptance test
 
@@ -33,10 +35,12 @@ The acceptance test must use a real GGUF, not a fake forward pass. It must:
 5. Generate one more greedy turn.
 6. Compare every continuation token against a fresh full replay of the exact logged token IDs.
 
-The current `PagedKvCache` persistence tests validate page serialization and in-process restore.
-They are an implementation prerequisite, not the release proof above. Until this acceptance test
-runs on a configured real-model runner, `inspect` correctly reports restart continuation as not
-yet supported by the CLI/server product surface.
+`HotSessionGreedyReplayTests.ColdSession_RealModel_CrossProcessRestore_MatchesFullGreedyReplay`
+passed on the local CPU-dense SmolLM2 GGUF on 2026-08-07. It uses two child processes and fresh
+runtime objects, then compares each generated segment to full replay. That clears the reference
+lane's proof, not every backend/cache family or a product-surface commitment; `inspect` continues
+to report restart continuation as unsupported until the named-session lifecycle is exposed and
+capability-gated.
 
 ## History and release notes
 

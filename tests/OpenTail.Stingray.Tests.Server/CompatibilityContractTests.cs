@@ -60,6 +60,9 @@ public sealed class CompatibilityContractTests
         var runtime = root.GetProperty("runtime");
         Assert.True(runtime.GetProperty("tool_grammar").GetProperty("available").GetBoolean());
         Assert.False(runtime.GetProperty("image_input").GetBoolean());
+        var restart = runtime.GetProperty("session_restart_continuation");
+        Assert.False(restart.GetProperty("available").GetBoolean());
+        Assert.Contains("Not exposed by the server", restart.GetProperty("detail").GetString(), StringComparison.Ordinal);
 
         var configuration = root.GetProperty("configuration");
         Assert.Equal("cuda", configuration.GetProperty("backend").GetString());

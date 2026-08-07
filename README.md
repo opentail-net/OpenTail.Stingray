@@ -502,6 +502,26 @@ STINGRAY_MODEL=models/SmolLM2-1.7B-Instruct-Q4_K_M.gguf \
 GPU flags mirror llama.cpp: `-g`/`--ngl`/`--n-gpu-layers` are interchangeable, and `--device <0|CUDA0|none>`
 pins a single GPU (no multi-GPU split).
 
+### llama-server helper endpoints
+
+Alongside the OpenAI and Anthropic chat APIs, the server exposes three small compatibility helpers:
+
+```bash
+# Encode text; add_special prepends the model's BOS token when it has one.
+curl -X POST http://localhost:5000/tokenize -H 'Content-Type: application/json' \
+  -d '{"content":"Hello","add_special":true}'
+
+# Decode token IDs.
+curl -X POST http://localhost:5000/detokenize -H 'Content-Type: application/json' \
+  -d '{"tokens":[1, 42, 99]}'
+
+# Read safe model/template facts.
+curl http://localhost:5000/props
+```
+
+These endpoints intentionally do not make the server a full llama-server clone: `/completion`,
+`/embedding`, `/infill`, and `/slots` remain outside this compatibility slice.
+
 ## Image generation
 
 Two pipelines, auto-detected from model filename. Benchmarked on AMD Zen 4 + RTX 4070 Ti (CUDA, 4 steps,

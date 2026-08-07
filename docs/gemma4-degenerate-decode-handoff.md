@@ -25,8 +25,8 @@ Token 106 is `<end_of_turn>`, token 1 is `<eos>`. The decode collapses to 4 dist
 **Answer:** it is expected behaviour for that unsupported raw-completion prompt; it is not evidence
 of a shared CPU/Vulkan defect.
 
-Two tests currently fail on exactly this, both on their *coherence* assertion (not their
-parity assertion, which now passes):
+Two tests used to fail on exactly this, on their *coherence* assertion (their parity assertion
+started passing once the KV-stride fix in §2.1 landed). Both now pass — see §7:
 
 - `Gemma4VulkanPleE2ETests.Gemma4_E4B_Q4_0_VulkanForward_LongDecodeIsCoherent` (asserts ≥8 distinct tokens in 16 steps)
 - `Gemma4VulkanNarrowedKvE2ETests.Gemma4_E4B_Q4_0_VulkanNarrowedKv_MatchesFp32Argmax`
@@ -64,7 +64,15 @@ causes no change whatsoever for models without per-layer head_dim.
 
 The hardcoded ids `[818, 5279, 529, 7001, 563]` decode to exactly `"The capital of France is"`,
 and re-encoding the string returns the same ids. Verified with `GgufTokenizer.FromGgufModel`.
-Do not "fix" the tests by changing the tokens.
+So the degenerate output was never a tokenization bug — the model really was being asked to
+continue that exact English text.
+
+**This is not a licence to tune the prompt until the assertion goes green.** The resolution in §7
+replaced the raw continuation with the model's own chat template because a bare completion is
+*out of distribution for an instruction-tuned checkpoint*, which is a statement about the model's
+contract — not because the new prompt happened to produce nicer tokens. The assertions themselves
+were left strictly intact. Changing the input to dodge a failing assertion, without an
+independent reason the old input was invalid, would be cementing a bug.
 
 ### 2.3 It is not a backend-parity problem any more
 
@@ -72,7 +80,7 @@ Both backends are internally self-consistent (`prefill(N) == prefill(1)+decode`,
 each) and agree with each other at 0.999987. Two independent implementations agreeing makes a
 shared upstream cause far more likely than the same bug occurring twice.
 
-### 2.4 Eliminated for the ORIGINAL divergence (may still matter here)
+### 2.4 Eliminated for the ORIGINAL CPU/Vulkan divergence
 
 At position 0, softmax over a single key is 1.0, so attention output must equal V. That property
 was used to eliminate: RoPE, `rope_freqs`, Q/K norms, the Q prescale, attention geometry,
@@ -80,15 +88,16 @@ embedding lookup (bit-identical), the V projection, the Gemma V-norm, and `k_eq_
 
 ---
 
-## 3. Open — the actual investigation
+## 3. How it was resolved
 
-### 3.1 Leading hypothesis: prompt is out of distribution — CONFIRMED
+### 3.1 Root cause: prompt was out of distribution — CONFIRMED
 
 This is the **instruction-tuned** (`-it`) checkpoint. The tests feed a bare prompt with only BOS
 and **no chat template** — no `<start_of_turn>user … <end_of_turn><start_of_turn>model`. An IT
 model given a raw continuation prompt may legitimately emit `<end_of_turn>` immediately.
 
-If true, the model is fine and the ≥8-distinct-tokens assertion is unreasonable as written.
+The model is fine. Note what this did NOT lead to: the ≥8-distinct-tokens assertion was kept
+exactly as written, because the assertion was never the problem — the input was.
 
 Rendered production prompt:
 
@@ -168,7 +177,11 @@ from "pointing elsewhere", which is why StageCapture exists.
 
 ## 5. Traps that cost real time here
 
-- The xunit runner takes `--filter-class` / `--filter-method`; the single-dash spelling is rejected.
+- **The test-runner EXE takes SINGLE-dash `-class` / `-method`** (and `-class-` / `-method-` to
+  exclude). It rejects `--filter-class` outright: `error: unknown option: --filter-class`. Note
+  the spellings differ by entry point — CLAUDE.md's `--filter-class` refers to `dotnet test`,
+  which was not verified here. When driving
+  `tests/…/bin/Release/net10.0/OpenTail.Stingray.Tests.ForwardPass.exe` directly, use single dash.
 - **Never pass `--nologo`** to `dotnet test` — MTP rejects it and reports "Zero tests ran", which
   reads exactly like a discovery failure.
 - **`models/` is populated (17 GB), so `Tests.ForwardPass` takes ~10 minutes**, not 35 seconds.
@@ -190,20 +203,25 @@ from "pointing elsewhere", which is why StageCapture exists.
 - Fix: `PagedKvCache.cs` (per-layer V stride), `ForwardPass.cs` (passes `layerHeadDim`, dead
   `slotStride` removed).
 - Keep: `StageCapture.cs`, `PrefillDecodeSelfConsistencyTests.cs`.
-- **Delete before committing:** `tests/OpenTail.Stingray.Tests.ForwardPass/_TempPleProbe.cs` — a
-  throwaway harness that was committed by accident. It contains ~20 probes worth reading for
-  technique, but it is not a test suite and several probes assert nothing.
-- Do **not** adjust the two failing Gemma tests to match current output. Their parity assertion is
-  now correct and passing; only the coherence assertion fails. Changing them to accept a
-  degenerate decode would cement whatever is left.
+- Deleted: `tests/OpenTail.Stingray.Tests.ForwardPass/_TempPleProbe.cs` — a throwaway harness
+  committed by accident, removed 2026-08-07. Recoverable from git history if the ~20 probes are
+  wanted for technique; it was never a test suite (several probes assert nothing).
+- Added: `tests/OpenTail.Stingray.Tests.ForwardPass/Gemma4TestPrompt.cs` — renders the model's own
+  GGUF chat template with `enable_thinking=false`, matching `RunCommand.ResolveThinkingOff`, which
+  returns true (thinking off) for `arch == "gemma4"`.
+- Both Gemma E2E tests now pass (§7) with their original parity and coherence assertions intact;
+  only their input changed, via `Gemma4TestPrompt`. Do **not** weaken those assertions later to
+  accommodate a failure — see the warning in §2.2.
 
-**Verification status of the KV-stride fix.** Targeted evidence is strong (§2.1: every layer-0
-stage at cosine 1.000000, CPU `attn_out` bit-exactly equal to V, SmolLM2/Qwen3 numbers unchanged
-to all printed digits). But a **full `Tests.ForwardPass` run has NOT been completed since the
-fix** — it was started and cancelled. `PagedKvCache` backs every model and both the dense and
-Gemma paths, so run the full suite (~10 min with `models/` populated) before trusting it broadly.
-Pay particular attention to SnapKV tests: eviction/compaction calls `GatherValue`/`ScatterValue`,
-which this change also touched.
+**Verification status of the KV-stride fix.** Complete. Targeted evidence first (§2.1: every
+layer-0 stage at cosine 1.000000, CPU `attn_out` bit-exactly equal to V, SmolLM2/Qwen3 numbers
+unchanged to all printed digits), then the broad one that actually mattered: a full
+`Tests.ForwardPass` run with `models/` populated — **1323 tests, 0 failed, 1 skipped, 661 s**
+(2026-08-07). The single skip is the glslc-gated Vulkan compile-fallback test.
+
+That run is what clears the blast radius. `PagedKvCache` backs every model and both the dense and
+Gemma paths, and the change also touched `GatherValue`/`ScatterValue`, which only SnapKV
+eviction/compaction exercises — those live in this suite and pass.
 
 ## 7. Resolution evidence
 

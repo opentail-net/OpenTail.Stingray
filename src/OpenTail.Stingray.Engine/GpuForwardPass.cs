@@ -2695,7 +2695,7 @@ public sealed unsafe class GpuForwardPass : IForwardPass
             throw new InvalidOperationException(
                 $"Vulkan produced {bad} non-finite logit(s) of {logits.Length} "
                 + $"(first at index {i}, headDim={_headDim}). "
-                + "Generation would silently decode padding. Re-run with --backend cpu; "
+                + "Generation would silently decode padding. Re-run with -g 0 (CPU); "
                 + "see docs/cpu-architecture-kernel-opportunities.md (Gemma4 Vulkan defect).");
         }
     }

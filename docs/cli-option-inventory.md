@@ -1,11 +1,22 @@
-# CLI option inventory
+# CLI option inventory — historical snapshot, regeneration required
 
-**Generated:** 2026-07-26 by scanning `[CommandOption]` attributes in `src/OpenTail.Stingray.Cli`. **94 option declarations.**
+**Snapshot generated:** 2026-07-26 by scanning `[CommandOption]` attributes in
+`src/OpenTail.Stingray.Cli`. It records **94 option declarations**.
 
-Companion to `env-var-inventory.md`; together they are Phase 0 deliverable 1 of
-`quality-of-life-improvements-plan.md`. Both halves are needed before §7.3's precedence chain
-(`CLI pin > profile > host > environment > default`) can be specified — that chain cannot be
-written down until it is known what is in it.
+**Drift found 2026-08-07:** the same source scan now finds **149** `[CommandOption]`
+attributes. The 94 rows below are therefore useful historical classification input, but are
+**not a complete current option inventory**. Do not use this document alone to define a public
+configuration surface or precedence contract. Regenerate it from source (with a checked-in
+generator or test-backed extraction), then classify the new rows before doing either.
+
+The declared source count is test-guarded by
+`StaticPlanConfigurationTests.CliOptionInventory_DeclaredCountMatchesSource`. That guard detects
+the next drift immediately; it does not substitute for the still-required row-level refresh and
+human ownership classification.
+
+Companion to `env-var-inventory.md`; together they are the starting point for the configuration
+work in `quality-of-life-improvements-plan.md`. A current source-backed inventory is required
+before the precedence chain (`CLI pin > profile > host > environment > default`) can be specified.
 
 **Class is unfilled deliberately**, same reasoning as the environment inventory: it is a judgement
 call for whoever owns the behaviour, and inferring it from a flag name is how a diagnostic switch

@@ -23,6 +23,7 @@ public sealed class StaticPlanGoldenDecisionTests : IDisposable
         AssertDecision(report, "kv_turbo_quant", true, "KVarN is eligible");
         AssertDecision(report, "speculation", false, "No MTP head");
         AssertDecision(report, "session_restart_continuation", false, "Not exposed by the CLI or server yet");
+        AssertDecision(report, "session_restart_continuation", false, "CPU-dense reference restart proof passes");
         Assert.True(report.Compatibility.Selected);
     }
 

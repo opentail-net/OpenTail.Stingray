@@ -10,7 +10,7 @@ Status: **research / planning, no code written yet.** Tracked by **issue #126**.
 >   conv MobileNet): `block_count=16`, `embedding_length=768`, `head_count=12` (head_dim 64,
 >   with QK-norm), GeGLU FFN (`feed_forward_length=3072`), conv patch-embed `v.patch_embd.weight
 >   [16,16,3,768]`, learned 2D position table `v.position_embd.weight [768,10240,2]`, `image_size=224`,
->   `patch_size=16`, image_mean=0/std=1.
+>   `patch_size=16`, image_mean=[0,0,0]/std=[1,1,1].
 > - **Audio** `clip.audio.projector_type = gemma4a` — a separate ~12-block conformer-style encoder
 >   (`a.*` tensors, `num_mel_bins=128`); `clip.has_audio_encoder=True`.
 > - Projectors: `mm.input_projection [768→2560]` (vision) and `mm.a.input_projection [1536→2560]`
@@ -33,25 +33,22 @@ other E-model modality) is noted but deferred. It is the multimodal counterpart 
 trunk is implemented in `ForwardPass.cs`: embedding scale, PLE, dual-RoPE, SWA, cross-layer
 KV-share, GeGLU, final-logit softcap are all present).
 
-> **This plan is provisional and expected to change.** The vision hyperparameters and the encoder
-> graph below are reconstructed from the Gemma-3n lineage and llama.cpp's `clip`/`mtmd` convention,
-> **not** from a dumped E4B `mmproj` header (network policy blocked the binary pull while drafting).
-> Phase V0 retires that verification debt; the later phases will be revised once the real model is
-> inspected. Treat the structure as a direction, not a contract.
+> **Reading rule:** the header facts in the verification update above are current. The detailed
+> MobileNet/Gemma-3n draft retained below is historical research, not an implementation contract;
+> do not revive its 768², 256-token, projector-type, or encoder-graph assumptions. Rewrite the
+> implementation phases around the verified `gemma4v` ViT before coding.
 
 ## TL;DR
 
 - Gemma 4 is **natively multimodal** (all sizes: text+image; E2B/E4B add audio). The user's
   instinct was right.
-- OpenTail.Stingray is currently **text-only for LLM inference** — vision/audio were explicitly
-  declared out of scope in issue #82 ("vision/audio encoders — text-only GGUF weights run
-  standalone"). Zero vision code exists in `src/` today.
-- **Key architectural finding:** the Gemma 4 **E-models (E2B/E4B) use a MobileNet-V5-300M
-  convolutional vision encoder** (the Gemma-3n lineage), **not** the SigLIP ViT that Gemma 3's
-  big models (and Gemma 4 26B/31B) use. This is good for us — a conv encoder maps onto the
-  `IImageOpsBackend.Conv2d` infrastructure we already built for the diffusion/RRDBNet pipeline —
-  but MobileNet-V5 is an unusual, conv-heavy architecture (inverted residuals, depthwise-separable
-  convs, mobile MQA blocks) rather than a plain transformer.
+- E4B remains **text-only today** because its `gemma4v`/`gemma4a` encoders are not implemented.
+  This is not a repository-wide absence of vision support: the separate 12B `gemma4uv` projector
+  path is implemented in `OpenTail.Stingray.Vision` and should be reused where its abstractions fit.
+- **Verified architectural finding:** E4B uses the `gemma4v` transformer ViT encoder (16 blocks,
+  768-wide, 12 heads, QK-norm and GeGLU), not the historical MobileNet-V5/Gemma-3n assumption.
+  Its core attention/MLP/RMSNorm operations should be evaluated against existing vision and decoder
+  abstractions; it is not a direct reuse of the diffusion convolution pipeline.
 - llama.cpp supports Gemma 4 E4B image input from day one (`llama-mtmd-cli` + an `mmproj` GGUF),
   so we have a **reference implementation to parity-debug against**.
 
@@ -87,15 +84,15 @@ within their own span**, while text remains causal. This interacts with `PagedKv
 causal mask and needs explicit handling (build a causal mask that is bidirectional inside each
 image's 256-token block). *Confirm Gemma-4-E behavior matches Gemma-3 here.*
 
-> **Verification debt:** image size (768²), exact soft-token count (256), normalization
-> constants, projector type string, and the bidirectional-mask rule are stated from the Gemma-3n
-> lineage. They MUST be confirmed against a real E4B `mmproj` GGUF header dump and the llama.cpp
-> `clip.cpp` / `mtmd` gemma3n path before Phase V2 coding. We could not dump the mmproj binary in
-> this session (network policy blocks direct HF binary pulls).
+> **Historical verification debt (partly closed):** the real header now establishes a 224px,
+> 16px-patch `gemma4v` ViT, mean=[0,0,0]/std=[1,1,1] preprocessing, and its
+> 16×768/12-head/GeGLU geometry. Exact image-token reduction and mask semantics still need to be
+> derived from runtime behaviour and checked against llama.cpp's Gemma 4 `clip`/`mtmd`
+> implementation before the encoder is wired.
 
 ### mmproj GGUF structure (llama.cpp `clip` convention)
 
-- Metadata: `clip.has_vision_encoder`, `clip.projector_type` (expect `gemma3n`),
+- Metadata: `clip.has_vision_encoder`, `clip.projector_type` (verified: `gemma4v`),
   `clip.vision.image_size`, `clip.vision.patch_size`, `clip.vision.embedding_length`,
   `clip.vision.projection_dim`, `clip.vision.block_count`, plus MobileNet-specific keys.
 - Vision tensors: `v.*` (patch/stem conv, per-block conv/attn/norm weights, `v.post_ln`).
@@ -107,15 +104,15 @@ image's 256-token block). *Confirm Gemma-4-E behavior matches Gemma-3 here.*
 | Asset | Location | Reuse |
 |---|---|---|
 | GGUF parser (mmap, multi-shard, metadata) | `Core/GgufModel.cs` | Load the `mmproj` as a 2nd model handle |
-| Conv2d / activations / pixel-shuffle / upsample (GPU) | `Core/IImageOpsBackend.cs`; `Cuda/CudaBackend.cs:3621`, `Vulkan/VulkanBackend.cs:1584` | MobileNet-V5 conv stack |
-| Conv2D / GroupNorm / LayerNorm / Gelu / resize (CPU) | `Diffusion/DiffusionOps.cs` | CPU vision path + image resize |
-| GEMM / RMSNorm / attention / GeLU SIMD kernels | `Cpu/SimdKernels.cs`, backends | Projector MLP, any attn blocks in MobileNet-V5 |
+| Conv2d / activations / pixel-shuffle / upsample (GPU) | `Core/IImageOpsBackend.cs`; `Cuda/CudaBackend.cs:3621`, `Vulkan/VulkanBackend.cs:1584` | Patch embedding and image preprocessing support |
+| Conv2D / GroupNorm / LayerNorm / Gelu / resize (CPU) | `Diffusion/DiffusionOps.cs` | CPU patch embedding + image resize |
+| GEMM / RMSNorm / attention / GeLU SIMD kernels | `Cpu/SimdKernels.cs`, backends | ViT blocks and projector MLP |
 | gemma4 text decoder (PLE, SWA, KV-share, dual-RoPE, softcap) | `Engine/ForwardPass.cs` | Unchanged consumer of spliced embeddings |
 | **Embedding entry point** | `ForwardPass.cs:1212` `EmbedToken` call site / `1824` `EmbedToken` wrapper / `1885` `EmbedTokenInto(token, dest)` definition; scale at `:1215` | **The splice seam** — add an overload that writes a precomputed embedding instead of a `token_embd` lookup |
 
-The two toolkits we need — a GGUF transformer runtime and a convolutional image-ops backend —
-already exist; they're just siloed (the image ops serve text-to-image diffusion / RRDBNet today).
-The vision encoder is essentially "the conv toolkit feeding the transformer toolkit."
+The essential pieces are a GGUF transformer runtime plus a patch-embedding/image-preprocessing
+seam. The encoder itself is a transformer, so its attention/MLP/RMSNorm work should reuse decoder
+and vision abstractions rather than be designed as a diffusion-convolution pipeline.
 
 ## 3. Phased implementation plan
 
@@ -123,27 +120,27 @@ Suggested new module: **`src/OpenTail.Stingray.Vision`** (mmproj loader, preproc
 projector), keeping vision concerns out of `Core`/`Engine` until the seam is stable.
 
 ### Phase V0 — mmproj/clip GGUF loader (low risk)
-Parse `clip.*` metadata + `v.*`/`mm.*` tensors into a `VisionModel` handle. Dump the real E4B
-mmproj header and **reconcile every assumption in §1** (image size, token count, projector type,
-tensor inventory, MobileNet block config). Smoke test: load, resolve all tensors, print config.
+Parse `clip.*` metadata + `v.*`/`mm.*` tensors into a `VisionModel` handle. Preserve the verified
+Gemma 4 header facts and derive the still-open token reduction/mask semantics from llama.cpp's
+`gemma4v` path. Smoke test: load, resolve all tensors, print config.
 
 ### Phase V1 — image preprocessing (low risk)
 Decode (PNG/JPEG → RGB), resize to encoder input (reuse `DiffusionOps` bilinear), normalize, and
 implement **Pan & Scan** crop generation (cap crops; global thumbnail + crops). Unit-test against
 fixed fixtures (deterministic resize/normalize output).
 
-### Phase V2 — MobileNet-V5 vision encoder forward pass (HIGH risk)
-The load-bearing piece. Implement the MobileNet-V5-300M graph (conv stem, inverted-residual /
-depthwise-separable blocks, mobile-MQA attention blocks, multi-scale fusion) on CPU first using
-`DiffusionOps` + new depthwise-conv kernels, then GPU via `IImageOpsBackend`. **Parity-gate each
-stage** against llama.cpp's `clip` gemma3n encoder (capture intermediate tensors from
-`llama-mtmd-cli`). Risk drivers: depthwise-separable convs and the mobile-attention blocks are not
-in our kernel set yet; MobileNet-V5 has architecture quirks (stem bias, GELU-tanh) that bit timm.
+### Phase V2 — `gemma4v` ViT encoder forward pass (HIGH risk)
+The load-bearing piece. Implement the verified 16-block, 768-wide, 12-head QK-norm/GeGLU
+transformer encoder, preceded by its 16px convolutional patch embedding and learned 2D position
+table. Start with a CPU reference that reuses existing RMSNorm, attention and MLP semantics, then
+define GPU capability gates. **Parity-gate each stage** against llama.cpp's Gemma 4 `clip` path
+using captured intermediate tensors. The main unknowns are exact vision attention/mask and token
+reduction semantics, not a MobileNet convolution graph.
 
 ### Phase V3 — token reduction + projector MLP (medium risk)
-Pool/condense the encoder feature map to 256 tokens and run the `mm.*` projector MLP to the text
-embed dim (2560). Reuses MatMul. Parity-gate the 256×2560 output against llama.cpp
-`mtmd_get_output_embd`.
+Apply the verified model's token-reduction rule (do not hard-code the historical 256-token
+assumption), then run the `mm.*` projector to the 2560-wide text embedding space. Parity-gate the
+resulting embedding sequence against llama.cpp `mtmd_get_output_embd`.
 
 ### Phase V4 — embedding splice + bidirectional mask (HIGH risk)
 - Add `ForwardPass`/`Prefill` support to accept **precomputed input embeddings** at given
@@ -168,11 +165,11 @@ E2B/E4B audio via the `a.*` encoder (USM/conformer). Separate epic; not required
 
 ## 4. Risks & de-risking
 
-- **MobileNet-V5 is the long pole** (Phase V2). It is conv-heavy and idiosyncratic; our kernels
-  cover standard Conv2d but not depthwise-separable / mobile-MQA yet. Mitigation: stage-by-stage
-  tensor parity against llama.cpp; CPU-first before GPU.
-- **Verification debt** (§1): confirm all vision hyperparameters against a real E4B mmproj header
-  *before* V2.
+- **`gemma4v` semantics are the long pole** (Phase V2): QK-norm, learned 2D positions, vision
+  attention/mask and token reduction must match llama.cpp. Mitigation: stage-by-stage tensor
+  parity against llama.cpp; CPU-first before GPU.
+- **Remaining verification debt** (§1): derive the token-reduction and mask rules from llama.cpp
+  before V2; metadata already fixes the geometry and normalization.
 - **Bidirectional mask × SWA × KV-share** (V4) is a delicate interaction in `PagedKvCache`.
 - **Fallback / de-risking option:** if MobileNet-V5 parity proves too costly, the **SigLIP ViT**
   path (Gemma 3 4B, or Gemma 4 26B/31B big models) is a *much* simpler encoder (a plain

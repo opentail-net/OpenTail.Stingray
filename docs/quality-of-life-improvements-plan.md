@@ -5,20 +5,26 @@ and typed host-key classification are now in place. Environment ownership and ex
 
 ## Remaining work
 
-1. Classify every remaining environment variable; remove obsolete bench switches. The 41 typed
-   server keys have a conservative ownership register in `host-config-inventory.md`.
+1. Regenerate the drifted CLI/environment inventories from source, then classify every remaining
+   setting and remove obsolete bench switches. The 41 typed server keys have a conservative
+   ownership register in `host-config-inventory.md`.
 2. Extend effective configuration from static plan inputs to real server/loader startup values.
    Server environment precedence is centralized in `ServerEnvironmentOverrides`; `/status`
    publishes its non-sensitive applied-variable receipt. Remaining work is a source-tracked
    snapshot of the bound configuration and loader-resolved decisions, without exposing values
-   such as filesystem paths.
+   such as filesystem paths. `/capabilities` now also states the unsupported restart-session
+   verdict explicitly rather than leaving session support ambiguous.
 3. Extend the golden capability fixtures only where a loader actually executes the route. Static
    CPU/backend/dtype/batching/speculation decisions are covered; hardware rows remain release gates.
 4. Finish server observability: VRAM/RAM breakdown, streaming timing, and per-request cache signal.
    The opt-in non-streaming timing extension now covers OpenAI, Anthropic, and Responses;
    it deliberately remains absent from streaming event contracts.
-5. Add model/API compatibility corpus and protocol smoke coverage.
-6. Keep sessions out of the product configuration surface until restart continuation is proven.
+5. Add model/API compatibility corpus and protocol smoke coverage. The small llama-server
+   compatibility surface (`/tokenize`, `/detokenize`, `/props`) now has fake-engine wire-contract
+   coverage, including malformed-payload errors; expand only with a named consumer contract.
+6. Keep sessions out of the product configuration surface until the proven CPU-dense restart lane
+   has a named lifecycle and capability gate. The proof itself is now covered by the real-GGUF,
+   cross-process replay acceptance test; it is not yet a product contract.
 
 Inputs: [env-var-inventory.md](env-var-inventory.md), [host-config-inventory.md](host-config-inventory.md),
 and [eligibility-check-inventory.md](eligibility-check-inventory.md).

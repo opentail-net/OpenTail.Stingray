@@ -93,6 +93,23 @@ public sealed partial class KnownEnvironmentVariablesTests
             $"in src/ and should be removed: " + string.Join(", ", stale));
     }
 
+    /// <summary>
+    /// The long-form inventory is intentionally awaiting owner classification, but its stated
+    /// current registry count is still a release-facing fact. Keep that fact attached to the
+    /// source-enforced registry rather than letting the historical snapshot disguise later drift.
+    /// </summary>
+    [Fact]
+    public void Inventory_DeclaredCurrentRegistryCountMatchesSource()
+    {
+        string? root = FindRepoRoot();
+        Assert.SkipWhen(root is null, "repo layout not found — documentation scan not applicable here");
+
+        string inventory = File.ReadAllText(Path.Combine(root!, "docs", "env-var-inventory.md"));
+        Match count = Regex.Match(inventory, @"now contains \*\*(\d+)\*\* names");
+        Assert.True(count.Success, "Environment inventory must declare its current registry count.");
+        Assert.Equal(KnownEnvironmentVariables.All.Count, int.Parse(count.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture));
+    }
+
     [Fact]
     public void FindUnknown_IgnoresUnrelatedAndKnownVariables()
     {

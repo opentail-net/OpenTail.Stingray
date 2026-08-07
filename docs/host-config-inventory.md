@@ -1,10 +1,13 @@
 # Host configuration inventory
 
-**Generated:** 2026-07-26 from `OpenTail.StingrayServerOptions`. **41 bindable keys.**
+**Generated:** 2026-07-26 from `OpenTailStingrayServerOptions`. **41 bindable keys.**
+The options type also has two deliberately non-bindable programmatic hooks
+(`EngineFactory` and `OutputConstraintFactory`); they are excluded from this inventory because
+JSON configuration cannot supply delegates.
 
 Third and final part of Phase 0 deliverable 1 of `quality-of-life-improvements-plan.md`,
-alongside `env-var-inventory.md` (141 environment variables) and `cli-option-inventory.md`
-(94 CLI option declarations).
+alongside `env-var-inventory.md` (a 141-row historical snapshot; the source registry now has 156 names) and
+`cli-option-inventory.md` (a 94-row historical snapshot; source now has 149 declarations).
 
 These bind from the **`OpenTail.Stingray`** configuration section — `appsettings.json`,
 `appsettings.{Environment}.json`, and the git-ignored `appsettings.Local.json` — via

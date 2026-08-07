@@ -66,6 +66,20 @@ public sealed unsafe class MatMulBatchedQ8EquivalenceTests
         return bytes;
     }
 
+    private static byte[] MakeQ2KWeights(int rows, int cols, int seed)
+    {
+        int bytesPerRow = (cols / 256) * 84;
+        var rng = new Random(seed);
+        var bytes = new byte[rows * bytesPerRow];
+        rng.NextBytes(bytes);
+        for (int off = 0; off + 84 <= bytes.Length; off += 84)
+        {
+            WriteHalf(bytes, off + 80, 0.010f); // d
+            WriteHalf(bytes, off + 82, 0.004f); // dmin
+        }
+        return bytes;
+    }
+
     private static void WriteHalf(byte[] buffer, int offset, float value)
     {
         ushort bits = BitConverter.HalfToUInt16Bits((Half)value);
@@ -360,6 +374,39 @@ public sealed unsafe class MatMulBatchedQ8EquivalenceTests
                 SimdKernels.MatMulBatched(r, w, inp, batchSize, rows, cols, DType.Q5_K);
             }
             Assert.DoesNotContain(-999f, result);
+        }
+        finally
+        {
+            SimdKernels.Q8PrefillEnabled = priorGate;
+        }
+    }
+
+    [Fact]
+    public void Q2K_BatchGreaterThan512_MatMulBatchedMatchesPerTokenFallback()
+    {
+        // Q2_K has no Q8 multi-input dot.  This exercises the production fallback at the
+        // internal 512-token split, where an earlier wrapper falsely claimed unsupported dtypes
+        // were handled and left output unwritten.
+        bool priorGate = SimdKernels.Q8PrefillEnabled;
+        SimdKernels.Q8PrefillEnabled = true;
+        try
+        {
+            const int rows = 8, cols = 256, batchSize = 600;
+            var weights = MakeQ2KWeights(rows, cols, seed: 47);
+            var input = PseudoRandomFloats(batchSize * cols, seed: 48);
+            var batched = new float[batchSize * rows];
+            var reference = new float[batchSize * rows];
+            fixed (byte* w = weights)
+            fixed (float* inp = input)
+            fixed (float* actual = batched)
+            fixed (float* expected = reference)
+            {
+                SimdKernels.MatMulBatched(actual, w, inp, batchSize, rows, cols, DType.Q2_K);
+                for (int n = 0; n < batchSize; n++)
+                    SimdKernels.MatVec(expected + (long)n * rows, w, inp + (long)n * cols,
+                        rows, cols, DType.Q2_K);
+            }
+            Assert.Equal(reference, batched);
         }
         finally
         {

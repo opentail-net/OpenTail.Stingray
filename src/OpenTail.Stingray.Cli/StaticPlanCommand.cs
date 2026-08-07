@@ -411,10 +411,12 @@ public sealed record StaticPlanReport(
         // This is deliberately a product-surface report, not a claim about internal cache types.
         // The sessions assembly contains experimental retained-state primitives, but neither the
         // CLI nor the HTTP host can yet open, persist, then resume a named inference session after
-        // a process restart. Saying "available" merely because PagedKvCache can export bytes would
-        // turn a useful capability report into an accidental promise.
+        // a process restart. A real CPU-dense reference proof exists, but it is not a public
+        // lifecycle contract or a backend/cache conformance guarantee. Saying "available" merely
+        // because PagedKvCache can export bytes would turn a useful capability report into an
+        // accidental promise.
         decisions.Add(new("session_restart_continuation", false,
-            "Not exposed by the CLI or server yet; retained-session persistence is experimental and requires an end-to-end restart proof before it is a supported deployment feature."));
+            "Not exposed by the CLI or server yet; the CPU-dense reference restart proof passes, but no supported named-session lifecycle or backend/cache conformance contract exists."));
 
         StaticPlanPlacement? placement = null;
         HardwareProfile hardware = runtimeFacts.HardwareProfile;

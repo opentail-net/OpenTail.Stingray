@@ -1,6 +1,16 @@
-# `STINGRAY_*` environment-variable inventory
+# `STINGRAY_*` environment-variable inventory — historical snapshot, regeneration required
 
-**Generated:** 2026-07-26 by scanning `src/**/*.cs`. **141 unique variables.**
+**Snapshot generated:** 2026-07-26 by scanning `src/**/*.cs`. It records **141 unique
+variables**.
+
+**Drift found 2026-08-07:** `KnownEnvironmentVariables.All`, the source-enforced registry,
+now contains **156** names. The 141 rows below are consequently historical classification input,
+not a complete current environment surface. Regenerate this document from the registry/source
+before using it to define supported configuration, profiles, or precedence.
+
+The stated current registry count is test-guarded by
+\`KnownEnvironmentVariablesTests.Inventory_DeclaredCurrentRegistryCountMatchesSource\`. It makes
+new registry drift visible immediately; it does not replace the pending owner/use-row refresh.
 
 This is Phase 0 deliverable 1 of `quality-of-life-improvements-plan.md`, and it is a
 prerequisite for `--print-effective-config`, saved profiles, and the `ExecutionPlan` work:
@@ -31,9 +41,9 @@ not a supported profile setting.
 | Class | Variables |
 |---|---|
 | stable | `STINGRAY_BACKEND`, `STINGRAY_MODEL`, `STINGRAY_N_GPU_LAYERS`, `STINGRAY_MAX_BATCH`, `STINGRAY_MAX_CONCURRENT`, `STINGRAY_MAX_QUEUE`, `STINGRAY_MAX_QUEUED_REQUESTS`, `STINGRAY_KV_BUDGET_MB`, `STINGRAY_NO_THINKING`, `STINGRAY_PRESERVE_THINKING` |
-| expert | `STINGRAY_CPU_THREADS`, `STINGRAY_KV_DTYPE`, `STINGRAY_MMPROJ`, `STINGRAY_MIN_BATCH_BLAS`, `STINGRAY_PREFILL_CHUNK`, `STINGRAY_PREFILL_DEQUANT_MB`, `STINGRAY_PREFIX_CACHE_MB`, `STINGRAY_TQ`, `STINGRAY_TQ_MODE`, `STINGRAY_SNAPKV_BUDGET`, `STINGRAY_TOOL_GRAMMAR`, `STINGRAY_CPU_MOE`, `STINGRAY_MOE_PREDICT_PREFETCH`, `STINGRAY_MOE_WARMPIN`, `STINGRAY_MOE_WARMPIN_AFTER`, `STINGRAY_MTP_DRAFT_N`, `STINGRAY_MTP_BATCH_MAX`, `STINGRAY_RAW_PROMPT`, `STINGRAY_SDCPP` |
-| diagnostic | `STINGRAY_EXPERT_STATS`, `STINGRAY_TRACE_DSPARK`, `STINGRAY_TRACE_GDN_INTERNAL`, `STINGRAY_TRACE_GDN_LAYERS`, `STINGRAY_TRACE_GDN_POS`, `STINGRAY_TRACE_LAYERS`, `STINGRAY_TRACE_MTP`, `STINGRAY_TRACE_NORMS`, `STINGRAY_TRACE_POS`, `STINGRAY_TRACE_ROUTERS`, `STINGRAY_TRACE_SNAPSHOT`, `STINGRAY_TRACE_VRAM`, `STINGRAY_CUDA_PROFILE`, `STINGRAY_DECODE_PROFILE`, `STINGRAY_PREFILL_PROFILE`, `STINGRAY_PROFILE_DECODE`, `STINGRAY_PROFILE_PREFILL`, `STINGRAY_PROBE_IDS`, `STINGRAY_PROBE_LOGITS`, `STINGRAY_PROBE_POS`, `STINGRAY_VULKAN_VALIDATION` |
-| experimental | `STINGRAY_DSPARK_MODEL`, `STINGRAY_DSPARK_PLACE`, `STINGRAY_DSPARK_MIN_CONFIDENCE`, `STINGRAY_DSPARK_VERIFY_LEN`, `STINGRAY_DSPARK_TIMING`, `STINGRAY_MOE_GPU_PREFILL`, `STINGRAY_MOE_GPU_PREFILL_MIN_TOKENS`, `STINGRAY_MOE_PIN_MODE`, `STINGRAY_DISABLE_MTP`, `STINGRAY_SPEC_SAMPLE` |
+| expert | `STINGRAY_CPU_THREADS`, `STINGRAY_KV_DTYPE`, `STINGRAY_KV_STORE`, `STINGRAY_KV_BF16_MIN_TOKENS`, `STINGRAY_MMPROJ`, `STINGRAY_MIN_BATCH_BLAS`, `STINGRAY_PREFILL_CHUNK`, `STINGRAY_PREFILL_DEQUANT_MB`, `STINGRAY_PREFIX_CACHE_MB`, `STINGRAY_TQ`, `STINGRAY_TQ_MODE`, `STINGRAY_SNAPKV_BUDGET`, `STINGRAY_TOOL_GRAMMAR`, `STINGRAY_CPU_MOE`, `STINGRAY_MOE_PREDICT_PREFETCH`, `STINGRAY_MOE_WARMPIN`, `STINGRAY_MOE_WARMPIN_AFTER`, `STINGRAY_MTP_DRAFT_N`, `STINGRAY_MTP_BATCH_MAX`, `STINGRAY_RAW_PROMPT`, `STINGRAY_SDCPP` |
+| diagnostic | `STINGRAY_EXPERT_STATS`, `STINGRAY_GEMMA4_PROBE`, `STINGRAY_TRACE_DSPARK`, `STINGRAY_TRACE_GDN_INTERNAL`, `STINGRAY_TRACE_GDN_LAYERS`, `STINGRAY_TRACE_GDN_POS`, `STINGRAY_TRACE_LAYERS`, `STINGRAY_TRACE_MTP`, `STINGRAY_TRACE_NORMS`, `STINGRAY_TRACE_POS`, `STINGRAY_TRACE_ROUTERS`, `STINGRAY_TRACE_SNAPSHOT`, `STINGRAY_TRACE_VRAM`, `STINGRAY_CUDA_PROFILE`, `STINGRAY_DECODE_PROFILE`, `STINGRAY_PREFILL_PROFILE`, `STINGRAY_PROFILE_DECODE`, `STINGRAY_PROFILE_PREFILL`, `STINGRAY_PROBE_IDS`, `STINGRAY_PROBE_LOGITS`, `STINGRAY_PROBE_POS`, `STINGRAY_VULKAN_MM_STATS`, `STINGRAY_VULKAN_VALIDATION` |
+| experimental | `STINGRAY_DSPARK_MODEL`, `STINGRAY_DSPARK_PLACE`, `STINGRAY_DSPARK_MIN_CONFIDENCE`, `STINGRAY_DSPARK_VERIFY_LEN`, `STINGRAY_DSPARK_TIMING`, `STINGRAY_MOE_GPU_PREFILL`, `STINGRAY_MOE_GPU_PREFILL_MIN_TOKENS`, `STINGRAY_MOE_PIN_MODE`, `STINGRAY_DISABLE_MTP`, `STINGRAY_SPEC_SAMPLE`, `STINGRAY_BATCHED_MATVEC_TIER`, `STINGRAY_FLASH64_STRIDED_GEMM`, `STINGRAY_GEMM_PATH`, `STINGRAY_MOE_BATCHED_PREFILL`, `STINGRAY_PER_LAYER_HD_PREFILL`, `STINGRAY_PREFILL_ATTN_FLASH64`, `STINGRAY_PREFILL_ATTN_FLASH64_TILE_JOBS`, `STINGRAY_PREFILL_ATTN_REGISTER_VALUES`, `STINGRAY_VULKAN_MM_PATH`, `STINGRAY_VULKAN_PREFILL_CHUNK` |
 
 **Retirement is the point, not documentation.** The QoL plan inventories these but retires none.
 A surface of 141 variables is itself the usability defect. Expect a meaningful fraction to be
@@ -43,6 +53,34 @@ this session alone added and removed several (`STINGRAY_VABL`, `STINGRAY_WABL`,
 
 **Counting note:** this counts distinct string literals, so a variable read in two projects
 appears once, grouped under both. It does not detect dynamically composed names.
+
+## 2026-08-07 reconciliation ledger
+
+Compared with `KnownEnvironmentVariables.All`, the historical table is missing the 14 names
+below. Their presence means the registry's source-drift test accepts them; it does **not** imply
+support. Their source-traced class is recorded in the ownership register above; add the generated
+owner/use rows during the refresh.
+
+| Current name absent from the 2026-07 snapshot |
+|---|
+| `STINGRAY_BATCHED_MATVEC_TIER` |
+| `STINGRAY_FLASH64_STRIDED_GEMM` |
+| `STINGRAY_GEMM_PATH` |
+| `STINGRAY_GEMMA4_PROBE` |
+| `STINGRAY_KV_BF16_MIN_TOKENS` |
+| `STINGRAY_KV_STORE` |
+| `STINGRAY_MOE_BATCHED_PREFILL` |
+| `STINGRAY_PER_LAYER_HD_PREFILL` |
+| `STINGRAY_PREFILL_ATTN_FLASH64` |
+| `STINGRAY_PREFILL_ATTN_FLASH64_TILE_JOBS` |
+| `STINGRAY_PREFILL_ATTN_REGISTER_VALUES` |
+| `STINGRAY_VULKAN_MM_PATH` |
+| `STINGRAY_VULKAN_MM_STATS` |
+| `STINGRAY_VULKAN_PREFILL_CHUNK` |
+
+Conversely, `STINGRAY_Q4K_ABL` and `STINGRAY_WABL` remain in the historical table but are no
+longer in the registry, confirming they were retired experimental/ablation switches. Retain their
+historical rows only until the full generated refresh replaces this snapshot.
 
 
 ## OpenTail.Stingray.Cli

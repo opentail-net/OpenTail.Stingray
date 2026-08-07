@@ -35,7 +35,7 @@ try {
             'tests\OpenTail.Stingray.Tests.Vision\OpenTail.Stingray.Tests.Vision.csproj'
         )
         foreach ($testProject in $releaseTestProjects) {
-            & dotnet test (Join-Path $projectRoot $testProject) -c $Configuration --verbosity minimal
+            & dotnet test (Join-Path $projectRoot $testProject) -c $Configuration --verbosity minimal -- --minimum-expected-tests 1
             if ($LASTEXITCODE -ne 0) { throw "Managed release test failed: $testProject" }
         }
     }
