@@ -1109,6 +1109,30 @@ public sealed class TempPleProbe
         }
     }
 
+    /// <summary>
+    /// Are the Gemma E2E tests' hardcoded token ids actually "The capital of France is"? If not,
+    /// the model is being fed gibberish and the coherence assertion is unreasonable as written.
+    /// </summary>
+    [Fact]
+    public void Probe_GemmaTokens()
+    {
+        var path = FindModelPath(ModelFile);
+        if (path is null) { Console.WriteLine("PROBE20: absent"); return; }
+
+        using var model = GgufModel.Open(path);
+        var tok = GgufTokenizer.FromGgufModel(model);
+
+        int[] hardcoded = [818, 5279, 529, 7001, 563];
+        Console.WriteLine($"PROBE20 hardcoded ids  = [{string.Join(",", hardcoded)}]");
+        Console.WriteLine($"PROBE20 they decode to = \"{tok.Decode(hardcoded)}\"");
+
+        foreach (var text in new[] { "The capital of France is", " The capital of France is" })
+        {
+            var ids = tok.Encode(text);
+            Console.WriteLine($"PROBE20 encode(\"{text}\") = [{string.Join(",", ids)}]  -> \"{tok.Decode([.. ids])}\"");
+        }
+    }
+
     [Fact]
     public void Probe_PrefixLengthSweep()
     {

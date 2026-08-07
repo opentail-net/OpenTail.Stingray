@@ -320,9 +320,15 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
 
         // The dense CPU pass is the only forward pass with BF16 KV readers, so it is the only one
         // that may honour STINGRAY_KV_STORE. See PagedKvCache.Bf16StoreRequested.
+        // Pages are sized at _maxHeadDim, but a per-layer-head_dim model (Gemma 4: 256 on SWA
+        // layers, 512 on global ones) writes each layer's V heads at THAT layer's stride — the
+        // projections pack them contiguously at layerHd. Without this the cache scattered V at the
+        // max stride while the K path read at the per-layer one, so every KV head above the first
+        // landed in unwritten memory (Gemma 4 layer 0: q heads 4-7 read zeros).
         _kvCache = new PagedKvCache(hp.NumLayers, hp.NumKvHeads, _maxHeadDim,
             bf16Store: PagedKvCache.Bf16StoreRequested,
-            autoBf16: PagedKvCache.Bf16AutoRequested);
+            autoBf16: PagedKvCache.Bf16AutoRequested,
+            layerHeadDim: _layerHeadDim);
 
         // Allocate scratch
         _hidden = Alloc(_embDim);
@@ -3109,10 +3115,10 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
         // to KV head 0), SWA layers GQA (kvHeads=8). For non-per-layer models kvHeads ==
         // _numKvHeads so hpkg == _headsPerKvGroup.
         int ctxLen = _ctxLen; int hpkg = _numHeads / kvHeads;
-        // Per-layer K/V stride into the cache slot: when LayerHeadDim is active each
-        // cache page row is _maxKvDim wide but only kvHead*layerHd is populated.
-        int slotStride = _layerHeadDim is not null ? _numKvHeads * _maxHeadDim : _numKvHeads * hd;
-        _ = slotStride;
+        // The per-layer K/V stride now lives in PagedKvCache (see its layerHeadDim parameter), so
+        // both the row-major K reads below and the transposed V reads agree on it. This method
+        // used to compute a slotStride here and discard it, which left the V region striding at
+        // the model-level head_dim while K strided at the layer's — the Gemma 4 KV-head bug.
         var q = _q; var attnOut = _attnOut; var scores = _attnScores;
         int rl = readLayer; int hdLocal = hd; int startLocal = startSeq;
 

@@ -145,6 +145,9 @@ public sealed unsafe class PagedKvCache : IRewindableSequenceKvCache, IPersistab
     private readonly int _kvDim;
     private readonly int _numKvHeads;
     private readonly int _headDim;
+
+    // Per-layer V head-plane stride. See the constructor's layerHeadDim parameter; null = uniform.
+    private readonly int[]? _layerHeadDim;
     private readonly int _maxBlocks;
     // Not readonly: auto mode narrows the pages in place once the sequence is long enough to profit,
     // which halves the element width and therefore this.
@@ -230,11 +233,17 @@ public sealed unsafe class PagedKvCache : IRewindableSequenceKvCache, IPersistab
     /// <c>ForwardPass</c>); every other reader's accessors throw. See <see cref="Bf16StoreRequested"/>.</param>
     /// <param name="autoBf16">Start F32 and narrow to BF16 once <see cref="Length"/> reaches
     /// <see cref="Bf16AutoMinTokens"/>. Same reader requirements as <paramref name="bf16Store"/>.</param>
+    /// <param name="layerHeadDim">Per-layer head_dim, for models that vary it by layer (Gemma 4:
+    /// 256 on SWA layers, 512 on global ones). <paramref name="headDim"/> then sizes the pages at
+    /// the MAXIMUM, while each layer reads and writes its V head planes at its OWN stride. Pages
+    /// are pooled per layer, so no two layers ever share one and a per-layer stride is safe.
+    /// Null (the default) means every layer uses <paramref name="headDim"/>.</param>
     public PagedKvCache(int numLayers, int numKvHeads, int headDim, int maxBlocks = 8192,
-                        bool bf16Store = false, bool autoBf16 = false)
+                        bool bf16Store = false, bool autoBf16 = false, int[]? layerHeadDim = null)
     {
         _autoBf16 = autoBf16 && !bf16Store;
         _numLayers = numLayers;
+        _layerHeadDim = layerHeadDim;
         _kvDim = numKvHeads * headDim;
         _numKvHeads = numKvHeads;
         _headDim = headDim;
@@ -419,7 +428,7 @@ public sealed unsafe class PagedKvCache : IRewindableSequenceKvCache, IPersistab
         }
 
         float* page = GetPage(layer, _blockTable[layer][blockIdx]);
-        WriteKv(page, offset, key, value);
+        WriteKv(layer, page, offset, key, value);
     }
 
     /// <summary>
@@ -462,7 +471,7 @@ public sealed unsafe class PagedKvCache : IRewindableSequenceKvCache, IPersistab
 
         EnsureWritableBlock(blockIdx, layer);
         float* page = GetPage(layer, _blockTable[layer][blockIdx]);
-        WriteKv(page, offset, key, value);
+        WriteKv(layer, page, offset, key, value);
     }
 
     /// <summary>
@@ -566,11 +575,19 @@ public sealed unsafe class PagedKvCache : IRewindableSequenceKvCache, IPersistab
 
     /// <summary>BF16-store counterpart of <see cref="ValueAtHead"/>. Same transposed
     /// <c>[numKvHeads][PageSize][headDim]</c> V layout — only the element width differs.</summary>
+    /// <summary>
+    /// The V head-plane stride for one layer. Only the TRANSPOSED V region needs this: the K
+    /// region is row-major and its readers already index with the caller's per-layer head_dim.
+    /// Taking it from <see cref="_headDim"/> instead made every KV head above the first read
+    /// unwritten memory on models with per-layer head_dim (Gemma 4 SWA layers: 256 vs 512).
+    /// </summary>
+    private int HeadDimOf(int layer) => _layerHeadDim is null ? _headDim : _layerHeadDim[layer];
+
     public ushort* Bf16ValueAtHead(int layer, int position, int kvHead)
     {
         ushort* page = (ushort*)ReadPage(layer, position / PageSize);
         return page + (long)PageSize * _kvDim
-             + ((long)kvHead * PageSize + position % PageSize) * _headDim;
+             + ((long)kvHead * PageSize + position % PageSize) * HeadDimOf(layer);
     }
 
     /// <summary>
@@ -587,7 +604,7 @@ public sealed unsafe class PagedKvCache : IRewindableSequenceKvCache, IPersistab
         if (_bf16Store) throw new InvalidOperationException(Bf16AccessorMessage(nameof(ValueAtHead)));
         float* page = ReadPage(layer, position / PageSize);
         return page + (long)PageSize * _kvDim
-             + ((long)kvHead * PageSize + position % PageSize) * _headDim;
+             + ((long)kvHead * PageSize + position % PageSize) * HeadDimOf(layer);
     }
 
     /// <summary>Scatters a contiguous kvDim-wide value row into the transposed V region of a page.</summary>
@@ -597,12 +614,12 @@ public sealed unsafe class PagedKvCache : IRewindableSequenceKvCache, IPersistab
     /// this would be a numerics boundary between the ordinary and the speculative/batched-verify
     /// paths — the defect class this codebase keeps re-learning.
     /// </summary>
-    private void WriteKv(float* page, int offset,
+    private void WriteKv(int layer, float* page, int offset,
                          ReadOnlySpan<float> key, ReadOnlySpan<float> value)
     {
         if (_bf16Store)
         {
-            WriteKvBf16(page, offset, key, value);
+            WriteKvBf16(layer, page, offset, key, value);
             return;
         }
 
@@ -610,7 +627,7 @@ public sealed unsafe class PagedKvCache : IRewindableSequenceKvCache, IPersistab
         if (!s_kvBf16)
         {
             key[.._kvDim].CopyTo(new Span<float>(keyDst, _kvDim));
-            ScatterValue(page, offset, value);
+            ScatterValue(layer, page, offset, value);
             return;
         }
 
@@ -622,7 +639,7 @@ public sealed unsafe class PagedKvCache : IRewindableSequenceKvCache, IPersistab
             vb[i] = ToBf16Precision(value[i]);
         }
         new ReadOnlySpan<float>(kb, _kvDim).CopyTo(new Span<float>(keyDst, _kvDim));
-        ScatterValue(page, offset, new ReadOnlySpan<float>(vb, _kvDim));
+        ScatterValue(layer, page, offset, new ReadOnlySpan<float>(vb, _kvDim));
         Interlocked.Increment(ref s_kvBf16Appends);
     }
 
@@ -631,7 +648,7 @@ public sealed unsafe class PagedKvCache : IRewindableSequenceKvCache, IPersistab
     /// <c>offset * kvDim</c>, values transposed at <c>kvDim*PageSize + (h*PageSize + offset)*headDim</c>
     /// — with 2-byte elements, so every offset is in <see cref="ushort"/> units.
     /// </summary>
-    private void WriteKvBf16(float* page, int offset,
+    private void WriteKvBf16(int layer, float* page, int offset,
                              ReadOnlySpan<float> key, ReadOnlySpan<float> value)
     {
         ushort* p = (ushort*)page;
@@ -679,32 +696,35 @@ public sealed unsafe class PagedKvCache : IRewindableSequenceKvCache, IPersistab
     }
 
     /// <summary>BF16-store counterpart of <see cref="ScatterValue"/>, narrowing as it scatters.</summary>
-    private void ScatterValueBf16(float* page, int offset, ReadOnlySpan<float> value)
+    private void ScatterValueBf16(int layer, float* page, int offset, ReadOnlySpan<float> value)
     {
+        int hd = HeadDimOf(layer);
         ushort* vBase = (ushort*)page + (long)PageSize * _kvDim;
         for (int h = 0; h < _numKvHeads; h++)
         {
-            ushort* dst = vBase + ((long)h * PageSize + offset) * _headDim;
-            int o = h * _headDim;
-            for (int d = 0; d < _headDim; d++) dst[d] = ToBf16Bits(value[o + d]);
+            ushort* dst = vBase + ((long)h * PageSize + offset) * hd;
+            int o = h * hd;
+            for (int d = 0; d < hd; d++) dst[d] = ToBf16Bits(value[o + d]);
         }
     }
 
-    private void ScatterValue(float* page, int offset, ReadOnlySpan<float> value)
+    private void ScatterValue(int layer, float* page, int offset, ReadOnlySpan<float> value)
     {
+        int hd = HeadDimOf(layer);
         float* vBase = page + (long)PageSize * _kvDim;
         for (int h = 0; h < _numKvHeads; h++)
-            value.Slice(h * _headDim, _headDim)
-                 .CopyTo(new Span<float>(vBase + ((long)h * PageSize + offset) * _headDim, _headDim));
+            value.Slice(h * hd, hd)
+                 .CopyTo(new Span<float>(vBase + ((long)h * PageSize + offset) * hd, hd));
     }
 
     /// <summary>Gathers one position's value row out of the transposed V region into a contiguous span.</summary>
-    private void GatherValue(float* page, int offset, Span<float> dst)
+    private void GatherValue(int layer, float* page, int offset, Span<float> dst)
     {
+        int hd = HeadDimOf(layer);
         float* vBase = page + (long)PageSize * _kvDim;
         for (int h = 0; h < _numKvHeads; h++)
-            new ReadOnlySpan<float>(vBase + ((long)h * PageSize + offset) * _headDim, _headDim)
-                .CopyTo(dst.Slice(h * _headDim, _headDim));
+            new ReadOnlySpan<float>(vBase + ((long)h * PageSize + offset) * hd, hd)
+                .CopyTo(dst.Slice(h * hd, hd));
     }
 
     /// <summary>
@@ -831,7 +851,7 @@ public sealed unsafe class PagedKvCache : IRewindableSequenceKvCache, IPersistab
                             .CopyTo(new Span<float>(dstKey, _kvDim));
                         // Stage rows stay row-major so the survivor order logic below is unchanged;
                         // only the in-page representation is transposed.
-                        GatherValue(srcPage, srcOff, new Span<float>(dstVal, _kvDim));
+                        GatherValue(l, srcPage, srcOff, new Span<float>(dstVal, _kvDim));
                     }
                 }
 
@@ -853,14 +873,14 @@ public sealed unsafe class PagedKvCache : IRewindableSequenceKvCache, IPersistab
                     {
                         ushort* dstKeyB = (ushort*)dstPage + (long)dstOff * _kvDim;
                         for (int j = 0; j < _kvDim; j++) dstKeyB[j] = ToBf16Bits(srcKey[j]);
-                        ScatterValueBf16(dstPage, dstOff, new ReadOnlySpan<float>(srcVal, _kvDim));
+                        ScatterValueBf16(l, dstPage, dstOff, new ReadOnlySpan<float>(srcVal, _kvDim));
                     }
                     else
                     {
                         float* dstKey = dstPage + (long)dstOff * _kvDim;
                         new ReadOnlySpan<float>(srcKey, _kvDim)
                             .CopyTo(new Span<float>(dstKey, _kvDim));
-                        ScatterValue(dstPage, dstOff, new ReadOnlySpan<float>(srcVal, _kvDim));
+                        ScatterValue(l, dstPage, dstOff, new ReadOnlySpan<float>(srcVal, _kvDim));
                     }
                 }
 
