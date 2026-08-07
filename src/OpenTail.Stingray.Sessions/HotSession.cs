@@ -70,6 +70,19 @@ public sealed class HotSession : IDisposable
 
     public SessionId SessionId { get; }
 
+    /// <summary>
+    /// <b>Not the store's revision.</b> This is derived from the cursor's accepted-position count,
+    /// which diverges from <c>InMemorySessionStore</c>'s <c>entry.Revision</c> (a turn counter,
+    /// advanced by <c>.Next()</c> per completed turn) as soon as a turn accepts more than one
+    /// position. <see cref="RunTurnAsync"/> validates <c>expectedRevision</c> against the STORE's
+    /// value, so this property must not be published as an optimistic-concurrency token — doing so
+    /// made the HTTP layer advertise <c>committed_revision: 6</c> and then answer a request
+    /// carrying 6 with <c>409 "Expected revision 6, but current revision is 1"</c>.
+    ///
+    /// <para>Callers wanting the concurrency token should read
+    /// <c>GetSessionSnapshot(id).CommittedRevision</c>, which works for cold-restored sessions too;
+    /// this one does not, because a restored session is not in the hot store.</para>
+    /// </summary>
     public SessionRevision CommittedRevision => new(Cursor.AcceptedPositionCount);
 
     public SessionCursor Cursor
