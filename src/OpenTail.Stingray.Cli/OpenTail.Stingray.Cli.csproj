@@ -94,6 +94,22 @@
     <None Include="..\..\THIRD_PARTY_NOTICES.md" Pack="true" PackagePath="\" />
   </ItemGroup>
 
+  <!-- NativeAOT-safe build identity. Assembly attributes are still emitted for package metadata,
+       but the executable reads this generated constant instead of querying trimmed reflection
+       metadata at runtime. InformationalVersion is supplied by the SDK from the single Version
+       source in Directory.Build.props (and carries the deterministic source revision in Release). -->
+  <Target Name="GenerateStingrayBuildVersion" BeforeTargets="CoreCompile">
+    <PropertyGroup>
+      <_StingrayBuildVersionFile>$(IntermediateOutputPath)Generated\StingrayBuildVersion.g.cs</_StingrayBuildVersionFile>
+    </PropertyGroup>
+    <MakeDir Directories="$(IntermediateOutputPath)Generated" />
+    <WriteLinesToFile File="$(_StingrayBuildVersionFile)" Overwrite="true"
+      Lines="// &lt;auto-generated/&gt;&#xA;namespace OpenTail.Stingray.Cli$([MSBuild]::Escape(';'))&#xA;internal static class StingrayBuildVersion { internal const string Value = &quot;$(InformationalVersion)&quot;$([MSBuild]::Escape(';')) }" />
+    <ItemGroup>
+      <Compile Include="$(_StingrayBuildVersionFile)" Visible="false" />
+    </ItemGroup>
+  </Target>
+
   <ItemGroup>
     <InternalsVisibleTo Include="OpenTail.Stingray.Tests.Cli" />
   </ItemGroup>

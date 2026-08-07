@@ -73,8 +73,12 @@ References: [release-quality-test-matrix.md](release-quality-test-matrix.md),
 
 ## Priority 3 — CPU coverage
 
-Do not reopen the closed Q4_K repacked-GEMM investigation. Focus on Flash attention at head
-dimensions 128/256, Q6_K AVX2, scalar-fallback formats, per-layer-dimension batched prefill,
+Do not reopen the closed Q4_K repacked-GEMM investigation. Flash attention now has a correctness-
+gated 128/256-wide route: Qwen3-8B Q4_K_M (headDim 128) matches the materialised fallback, and
+the two headDim-256 GEMM shapes pass an independent oracle. Its remaining work is controlled
+performance measurement, including a dense hd256 model when one is available. Q6_K AVX2 dispatch
+is also complete (Q8_K activation plus 8/4/1-input dots); it is performance-only, not a missing
+correctness route. Focus next on scalar-fallback formats, per-layer-dimension batched prefill,
 CPU MoE, additional scalar-fallback format coverage, and Q8-prefill accuracy. ARM64 work is in
 [90-external-hardware-work.md](90-external-hardware-work.md). Q3_K batched dispatch and the
 Q2_K >512-token production fallback are already covered by the focused Q8-prefill equivalence

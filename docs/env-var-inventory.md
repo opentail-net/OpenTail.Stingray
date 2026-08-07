@@ -4,7 +4,7 @@
 variables**.
 
 **Drift found 2026-08-07:** `KnownEnvironmentVariables.All`, the source-enforced registry,
-now contains **156** names. The 141 rows below are consequently historical classification input,
+now contains **157** names. The 141 rows below are consequently historical classification input,
 not a complete current environment surface. Regenerate this document from the registry/source
 before using it to define supported configuration, profiles, or precedence.
 
@@ -103,6 +103,7 @@ historical rows only until the full generated refresh replaces this snapshot.
 | Variable | Class | Notes |
 |---|---|---|
 | `STINGRAY_CPU_PREFILL_Q8` | | |
+| `STINGRAY_CPU_VNNI` | test seam | `0` forces the AVX2 chain in `SimdKernels.DotU8I8ToI32` even where VNNI exists. Not a tuning knob: the three branches are claimed bit-identical, but a host only executes one, so this is what lets a VNNI-capable machine run the Q4_K suites both ways and check that claim. |
 
 ## OpenTail.Stingray.Cli, OpenTail.Stingray.Cpu, OpenTail.Stingray.Server
 

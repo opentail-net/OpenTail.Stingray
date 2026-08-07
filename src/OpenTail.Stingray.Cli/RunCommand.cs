@@ -1839,11 +1839,13 @@ public sealed class RunCommand : Command<RunCommand.Settings>
             IForwardPass activeForwardPass = (gpuFwd as IForwardPass) ?? (fwd as IForwardPass) ?? (hybridFwd as IForwardPass)
                 ?? throw new InvalidOperationException("No forward pass was configured.");
             if (settings.ImagePaths is { Length: > 0 })
-                return RunImagePrompt(settings, activeForwardPass, tokenizer, hp, sp, rng);
+                return RunImagePrompt(settings, activeForwardPass, tokenizer, hp, sp, rng,
+                    activeForwardPass.MaxSeqLen);
             if (settings.Prompt is not null)
                 return RunSinglePrompt(settings, forward, prefill, tokenizer, sp, rng, mtpFwd,
                     activeForwardPass.MaxSeqLen);
-            return RunInteractive(settings, forward, prefill, resetCache, tokenizer, sp, rng, mtpFwd);
+            return RunInteractive(settings, forward, prefill, resetCache, tokenizer, sp, rng, mtpFwd,
+                activeForwardPass.MaxSeqLen);
         }
         catch (Exception ex)
         {
@@ -2210,6 +2212,25 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         return 0;
     }
 
+    /// <summary>
+    /// Bounds generation so prompt + output fit the active context. ForwardPass sizes its
+    /// attention-score and RoPE scratch from the same ceiling but its KV cache is far larger, so
+    /// decoding past it is an out-of-bounds native access; the engine now throws, and this is what
+    /// keeps ordinary "context full" from reaching that throw. Returns <paramref name="sp"/>
+    /// unchanged when the request already fits.
+    /// </summary>
+    internal static SamplingParams ClampToRemainingContext(SamplingParams sp, int promptTokens, int maxContextLength)
+    {
+        int room = maxContextLength - promptTokens;
+        if (room >= sp.MaxNewTokens) return sp;
+
+        AnsiConsole.MarkupLine(
+            $"[yellow]Note:[/] --n-predict {sp.MaxNewTokens} exceeds the {maxContextLength}-token context " +
+            $"with a {promptTokens}-token prompt; generating at most {room} token{(room == 1 ? "" : "s")}. " +
+            $"Raise [yellow]--ctx-size[/] for a longer response.");
+        return sp with { MaxNewTokens = room };
+    }
+
     private static int RunSinglePrompt(Settings s,
         Func<int, int, ReadOnlySpan<float>> forward,
         Func<IReadOnlyList<int>, ReadOnlySpan<float>> prefill,
@@ -2242,6 +2263,12 @@ public sealed class RunCommand : Command<RunCommand.Settings>
                 $"{maxContextLength}; shorten the prompt or raise [yellow]--ctx-size[/] so at least one token can be generated.");
             return 1;
         }
+
+        // The prompt check above is necessary but not sufficient: generation continues from the
+        // prompt's last position, so the context bounds prompt + output together. With
+        // --ctx-size 512 and the default --n-predict 512, any prompt at all runs off the end.
+        // Stop at context-full (llama.cpp's -2 semantics) rather than decoding past MaxSeqLen.
+        sp = ClampToRemainingContext(sp, tokens.Count, maxContextLength);
 
         if (s.VerbosePrompt)
         {
@@ -2330,7 +2357,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
     /// </summary>
     private static int RunImagePrompt(Settings s,
         IForwardPass fwd, GgufTokenizer tok, ModelHyperparams hp,
-        SamplingParams sp, Random rng)
+        SamplingParams sp, Random rng, int maxContextLength)
     {
         if (!fwd.SupportsEmbeddingInput)
         {
@@ -2404,6 +2431,22 @@ public sealed class RunCommand : Command<RunCommand.Settings>
                 $"after templating but found {placeholdersFound}; this model may not support image input.");
             return 1;
         }
+
+        // Each placeholder expands to <open> + its soft tokens + <close>, so the prefill is
+        // longer than the token list — an image is easily hundreds of positions. Check the
+        // expanded length before the first Forward: ForwardPass sizes its attention-score and
+        // RoPE scratch from the context bound but not its KV cache, so running past it writes
+        // out of bounds instead of failing.
+        int plannedPrefill = allTokens.Count + nImages + totalSoft;
+        if (plannedPrefill >= maxContextLength)
+        {
+            AnsiConsole.MarkupLine(
+                $"[red]Error:[/] prompt plus images expand to {plannedPrefill} tokens ({totalSoft} image) " +
+                $"but the active context is {maxContextLength}; use fewer/smaller images or raise " +
+                $"[yellow]--ctx-size[/] so at least one token can be generated.");
+            return 1;
+        }
+        sp = ClampToRemainingContext(sp, plannedPrefill, maxContextLength);
 
         var sw = Stopwatch.StartNew();
         int pos = 0;
@@ -2580,7 +2623,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         Func<IReadOnlyList<int>, ReadOnlySpan<float>> prefill,
         Action resetCache,
         GgufTokenizer tok, SamplingParams sp, Random rng,
-        IForwardPass? mtpFwd)
+        IForwardPass? mtpFwd, int maxContextLength)
     {
         // mtpFwd reserved for interactive MTP wiring (follow-up to #32). Today the
         // interactive loop stays on the baseline decode path; the bench surface and
@@ -2603,11 +2646,17 @@ public sealed class RunCommand : Command<RunCommand.Settings>
                 var prompt = FormatPrompt(message, s.SystemPrompt, enableThinking: !s_noThinking);
                 var tokens = tok.Encode(prompt);
 
+                // Same context bound as the single-prompt path: the scratch buffers are sized
+                // from it and the KV cache is not, so overrunning is an out-of-bounds write.
+                // Decline the turn rather than prefill it; the transcript keeps its history.
+                if (tokens.Count >= maxContextLength) return 0;
+                var turnSp = ClampToRemainingContext(sp, tokens.Count, maxContextLength);
+
                 resetCache();
                 var logits = prefill(tokens);
 
                 var (_, totalDecoded) = DecodeLoop(
-                    forward, logits, tokens.Count, tok, sp, rng,
+                    forward, logits, tokens.Count, tok, turnSp, rng,
                     hideThinking: s.HideThinking, maxThinkingTokens: s.MaxThinkingTokens,
                     sink: onText, cancellation: ct, repeatLastN: s.RepeatLastN);
 
@@ -2630,12 +2679,24 @@ public sealed class RunCommand : Command<RunCommand.Settings>
             var prompt = FormatPrompt(input, s.SystemPrompt, enableThinking: !s_noThinking);
             var tokens = tok.Encode(prompt);
 
+            // Reject rather than truncate, and stay in the loop so the session survives a single
+            // oversized paste. ForwardPass sizes its scratch from this bound but its KV cache is
+            // far larger, so prefilling past it would be an out-of-bounds write.
+            if (tokens.Count >= maxContextLength)
+            {
+                AnsiConsole.MarkupLine(
+                    $"[red]Error:[/] message is {tokens.Count} tokens but the active context is " +
+                    $"{maxContextLength}; shorten it or restart with a larger [yellow]--ctx-size[/].");
+                continue;
+            }
+            var turnSp = ClampToRemainingContext(sp, tokens.Count, maxContextLength);
+
             resetCache();
             var sw = Stopwatch.StartNew();
             var logits = prefill(tokens);
 
             sw.Restart();
-            var (generated, totalDecoded) = DecodeLoop(forward, logits, tokens.Count, tok, sp, rng, hideThinking: s.HideThinking, maxThinkingTokens: s.MaxThinkingTokens, repeatLastN: s.RepeatLastN);
+            var (generated, totalDecoded) = DecodeLoop(forward, logits, tokens.Count, tok, turnSp, rng, hideThinking: s.HideThinking, maxThinkingTokens: s.MaxThinkingTokens, repeatLastN: s.RepeatLastN);
             var decodeMs = sw.Elapsed.TotalMilliseconds;
 
             Console.WriteLine();

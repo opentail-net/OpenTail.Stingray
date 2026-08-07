@@ -2594,11 +2594,51 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
         // be offered the work FIRST. Routing BF16 around it was measured to cost 41% of prefill
         // throughput (122.2 -> 72.5 t/s at 5314 tokens) — the loss was the missing Flash-64, not the
         // narrower store.
+        // Tile width is 64 queries/KVs. The machinery below is fully head-width generic (headDim is
+        // a parameter throughout, scratch is sized Tile*headDim) and the strided AVX2 microkernel
+        // supports 128/256-wide heads — but the 128/256 WIDTHS ARE HELD BACK HERE, deliberately.
+        // Restoring `headDim is 64 or 128 or 256` is all it takes to re-enable them.
+        //
+        // Why: Flash128_MatchesMaterialisedAttention (Qwen3-8B, 32 heads / 8 KV, headDim 128,
+        // 36 layers, Q4_K_M, 256 tokens) fails its own gate — final-logit maxAbs 0.310 against a
+        // 0.01 tolerance. Flash-vs-materialised should differ only by FP reassociation, so 0.310 is
+        // not obviously explainable as drift. Flash-64 is default-ON, so shipping the wider widths
+        // would change prefill numerics for the most common head dim on evidence that is currently
+        // ambiguous. Held back rather than reverted: the generalisation is very likely correct and
+        // the open question is about the measurement, not the arithmetic.
+        //
+        // What is already ruled out (do not redo this work):
+        //   * The GEMM kernel. GemmF32StridedParityTests covers the exact shapes this path uses —
+        //     (64,128,64), (64,64,128), (64,128,128), the ragged query-tile tails, and the 256
+        //     variants — and passes. Those tests are retained precisely to pin the kernel for this.
+        //   * A generic headDim-128 defect. Qwen3-0.6B (16 heads / 8 KV, headDim 128) diverges by
+        //     8.3e-6 with an identical greedy token, and the gate above genuinely activates there,
+        //     so that is a real measurement rather than a skipped test.
+        //   * An interaction with int8 activation prefill. The divergence survives with
+        //     SimdKernels.Q8PrefillEnabled=false (0.258).
+        //   * A scratch-sharing race. Ownership is per-iteration `using var` in the default
+        //     schedule and ThreadLocal in the tile-jobs schedule; all nine buffers are sized and
+        //     freed correctly.
+        //   * The BF16 KV branch. Both BF16 store flags are env-driven, not size-driven, so neither
+        //     model above took it.
+        //
+        // The unresolved question, and the next step to return this to active use: decide whether
+        // 0.310 is a defect or an unrealistic tolerance. On the SAME model and input, toggling int8
+        // activation prefill — which ships ENABLED BY DEFAULT — moves the same logits by 0.352,
+        // i.e. more than the delta this test rejects. So measure the right quantity: cosine
+        // similarity and greedy-token agreement for flash-vs-materialised, compared against the
+        // accepted Q8-vs-F32 baseline on the same run (maxAbs on raw logits of a 36-layer model is
+        // the wrong instrument, and cosine is what this project already uses for such judgements).
+        // If flash-vs-materialised is at least as tight as the shipped Q8 baseline, retune the test
+        // to cosine + greedy and re-enable. If it is materially worse, the defect is real and is
+        // specific to the 32-head / headsPerKv=4 geometry, since 16/8 at the same width is clean —
+        // bisect by feeding realistic tokens instead of BuildTokens' out-of-distribution
+        // `1 + i*17 % 997` sequence, which can make attention near-degenerate and amplify.
         if (enableFlash64 && startPos + N >= 256 && _layerHeadDim is null && headDim == 64 &&
             Avx2.IsSupported && Fma.IsSupported)
         {
             PrefillFlashAttention64(batchQ, cache, layer, N, startPos, batchAttnOut,
-                numHeads, numKvHeads, qDim, scale);
+                numHeads, numKvHeads, qDim, headDim, scale);
             return;
         }
 
@@ -2862,7 +2902,7 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
     /// </summary>
     private static void PrefillFlashAttention64(
         float* batchQ, PagedKvCache cache, int layer, int tokenCount, int startPos,
-        float* output, int numHeads, int numKvHeads, int qDim, float scale)
+        float* output, int numHeads, int numKvHeads, int qDim, int headDim, float scale)
     {
         const int Tile = 64;
         int queryTiles = (tokenCount + Tile - 1) / Tile;
@@ -2879,18 +2919,18 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
         {
             Parallel.For(0, numHeads, h =>
             {
-                using var scratch = new PrefillFlash64Scratch();
+                using var scratch = new PrefillFlash64Scratch(headDim);
                 for (int nBase = 0; nBase < tokenCount; nBase += Tile)
                 {
                     ComputePrefillFlashAttention64Tile(batchQ, cache, layer, tokenCount, startPos,
-                        output, qDim, scale, h, h / headsPerKv, nBase, scratch);
+                        output, qDim, headDim, scale, h, h / headsPerKv, nBase, scratch);
                 }
             });
             return;
         }
 
         var threadScratch = new ThreadLocal<PrefillFlash64Scratch>(
-            () => new PrefillFlash64Scratch(), trackAllValues: true);
+            () => new PrefillFlash64Scratch(headDim), trackAllValues: true);
 
         try
         {
@@ -2899,7 +2939,7 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
                 int h = job / queryTiles;
                 int nBase = (job - h * queryTiles) * Tile;
                 ComputePrefillFlashAttention64Tile(batchQ, cache, layer, tokenCount, startPos,
-                    output, qDim, scale, h, h / headsPerKv, nBase, threadScratch.Value!);
+                    output, qDim, headDim, scale, h, h / headsPerKv, nBase, threadScratch.Value!);
             });
         }
         finally
@@ -2911,11 +2951,10 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
 
     private static void ComputePrefillFlashAttention64Tile(
         float* batchQ, PagedKvCache cache, int layer, int tokenCount, int startPos,
-        float* output, int qDim, float scale, int h, int kvHead, int nBase,
+        float* output, int qDim, int headDim, float scale, int h, int kvHead, int nBase,
         PrefillFlash64Scratch scratch)
     {
         const int Tile = 64;
-        const int HeadDim = 64;
         int tn = Math.Min(Tile, tokenCount - nBase);
         bool bf16 = cache.IsBf16Store;
 
@@ -2923,10 +2962,10 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
         {
             scratch.RunningMax[t] = float.NegativeInfinity;
             scratch.RunningSum[t] = 0f;
-            Buffer.MemoryCopy(batchQ + (long)(nBase + t) * qDim + h * HeadDim,
-                scratch.QPack + t * HeadDim, HeadDim * sizeof(float), HeadDim * sizeof(float));
+            Buffer.MemoryCopy(batchQ + (long)(nBase + t) * qDim + h * headDim,
+                scratch.QPack + t * headDim, headDim * sizeof(float), headDim * sizeof(float));
         }
-        new Span<float>(scratch.Accumulator, tn * HeadDim).Clear();
+        new Span<float>(scratch.Accumulator, tn * headDim).Clear();
 
         int endSeqMax = Math.Min(startPos + nBase + tn, cache.Length);
         for (int kvBase = 0; kvBase < endSeqMax; kvBase += Tile)
@@ -2939,8 +2978,8 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
             if (bf16)
             {
                 for (int j = 0; j < kLen; j++)
-                    scratch.Bf16KeyRows[j] = cache.Bf16KeyAt(layer, kvBase + j) + kvHead * HeadDim;
-                for (int d = 0; d < HeadDim; d++)
+                    scratch.Bf16KeyRows[j] = cache.Bf16KeyAt(layer, kvBase + j) + kvHead * headDim;
+                for (int d = 0; d < headDim; d++)
                 {
                     float* packedRow = scratch.KPack + d * Tile;
                     int j = 0;
@@ -2951,8 +2990,8 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
             else
             {
                 for (int j = 0; j < kLen; j++)
-                    scratch.KeyRows[j] = cache.KeyAt(layer, kvBase + j) + kvHead * HeadDim;
-                for (int d = 0; d < HeadDim; d++)
+                    scratch.KeyRows[j] = cache.KeyAt(layer, kvBase + j) + kvHead * headDim;
+                for (int d = 0; d < headDim; d++)
                 {
                     float* packedRow = scratch.KPack + d * Tile;
                     int j = 0;
@@ -2965,9 +3004,9 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
             // (GemmF32StridedParityTests pins that); it is measurably faster all the same, because
             // it hoists the six row base pointers out of the j/k loops instead of recomputing
             // indices. Gated so the two can be interleaved in one binary.
-            if (s_flash64StridedGemm)
+            if (headDim != Tile || s_flash64StridedGemm)
                 SimdKernels.GemmF32_6x2(scratch.QPack, scratch.KPack, scratch.Scores,
-                    tn, HeadDim, Tile, HeadDim, Tile, Tile);
+                    tn, headDim, Tile, headDim, Tile, Tile);
             else
                 SimdKernels.GemmF32_64x64_6x2(scratch.QPack, scratch.KPack, scratch.Scores, tn);
 
@@ -2993,8 +3032,8 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
                 if (rescale != 1f)
                 {
                     var rescaleV = Vector256.Create(rescale);
-                    float* acc = scratch.Accumulator + t * HeadDim;
-                    for (int d = 0; d < HeadDim; d += 8)
+                    float* acc = scratch.Accumulator + t * headDim;
+                    for (int d = 0; d < headDim; d += 8)
                         Avx.Store(acc + d, Avx.Multiply(Avx.LoadVector256(acc + d), rescaleV));
                 }
             }
@@ -3002,16 +3041,16 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
             if (bf16)
                 for (int j = 0; j < kLen; j++)
                     SimdKernels.WidenBf16ToF32(cache.Bf16ValueAtHead(layer, kvBase + j, kvHead),
-                        scratch.VPack + j * HeadDim, HeadDim);
+                        scratch.VPack + j * headDim, headDim);
             else
                 for (int j = 0; j < kLen; j++)
                     Buffer.MemoryCopy(cache.ValueAtHead(layer, kvBase + j, kvHead),
-                        scratch.VPack + j * HeadDim, HeadDim * sizeof(float), HeadDim * sizeof(float));
-            new Span<float>(scratch.VPack + kLen * HeadDim, (Tile - kLen) * HeadDim).Clear();
+                        scratch.VPack + j * headDim, headDim * sizeof(float), headDim * sizeof(float));
+            new Span<float>(scratch.VPack + kLen * headDim, (Tile - kLen) * headDim).Clear();
             // P*V: the transposed shape of the pair above (k = keys, n = head dim).
-            if (s_flash64StridedGemm)
+            if (headDim != Tile || s_flash64StridedGemm)
                 SimdKernels.GemmF32_6x2(scratch.Scores, scratch.VPack, scratch.Accumulator,
-                    tn, Tile, HeadDim, Tile, HeadDim, HeadDim, accumulate: true);
+                    tn, Tile, headDim, Tile, headDim, headDim, accumulate: true);
             else
                 SimdKernels.GemmF32_64x64_6x2(
                     scratch.Scores, scratch.VPack, scratch.Accumulator, tn, accumulate: true);
@@ -3019,28 +3058,38 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
 
         for (int t = 0; t < tn; t++)
         {
-            float* outHead = output + (long)(nBase + t) * qDim + h * HeadDim;
-            float* acc = scratch.Accumulator + t * HeadDim;
+            float* outHead = output + (long)(nBase + t) * qDim + h * headDim;
+            float* acc = scratch.Accumulator + t * headDim;
             var inv = Vector256.Create(1f / scratch.RunningSum[t]);
-            for (int d = 0; d < HeadDim; d += 8)
+            for (int d = 0; d < headDim; d += 8)
                 Avx.Store(outHead + d, Avx.Multiply(Avx.LoadVector256(acc + d), inv));
         }
     }
 
     private sealed class PrefillFlash64Scratch : IDisposable
     {
-        public readonly float* Scores = (float*)NativeMemory.AlignedAlloc(64 * 64 * sizeof(float), 64);
-        public readonly float* Accumulator = (float*)NativeMemory.AlignedAlloc(64 * 64 * sizeof(float), 64);
+        private const int Tile = 64;
+        public readonly float* Scores = (float*)NativeMemory.AlignedAlloc(Tile * Tile * sizeof(float), 64);
+        public readonly float* Accumulator;
         public readonly float* RunningMax = (float*)NativeMemory.AlignedAlloc(64 * sizeof(float), 64);
         public readonly float* RunningSum = (float*)NativeMemory.AlignedAlloc(64 * sizeof(float), 64);
-        public readonly float* QPack = (float*)NativeMemory.AlignedAlloc(64 * 64 * sizeof(float), 64);
-        public readonly float* KPack = (float*)NativeMemory.AlignedAlloc(64 * 64 * sizeof(float), 64);
-        public readonly float* VPack = (float*)NativeMemory.AlignedAlloc(64 * 64 * sizeof(float), 64);
+        public readonly float* QPack;
+        public readonly float* KPack;
+        public readonly float* VPack;
         public readonly float** KeyRows = (float**)NativeMemory.AlignedAlloc((nuint)(64 * sizeof(nint)), 64);
         /// <summary>BF16-store counterpart of <see cref="KeyRows"/>. Only one of the two is ever
         /// populated for a given cache; both are allocated because the scratch is pooled per thread
         /// and 512 bytes is not worth a conditional allocation.</summary>
         public readonly ushort** Bf16KeyRows = (ushort**)NativeMemory.AlignedAlloc((nuint)(64 * sizeof(nint)), 64);
+
+        public PrefillFlash64Scratch(int headDim)
+        {
+            nuint elements = (nuint)(Tile * headDim);
+            Accumulator = (float*)NativeMemory.AlignedAlloc(elements * sizeof(float), 64);
+            QPack = (float*)NativeMemory.AlignedAlloc(elements * sizeof(float), 64);
+            KPack = (float*)NativeMemory.AlignedAlloc(elements * sizeof(float), 64);
+            VPack = (float*)NativeMemory.AlignedAlloc(elements * sizeof(float), 64);
+        }
 
         public void Dispose()
         {
@@ -4135,6 +4184,20 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
     /// </summary>
     private ReadOnlySpan<float> ForwardCore(int token, int pos, PagedKvCache cache)
     {
+        // Scratch sized from _ctxLen, but the KV cache is not: PagedKvCache defaults to 8192
+        // blocks (131,072 positions), so it keeps accepting appends long after `pos` has run off
+        // the end of the ctxLen-sized buffers. Attention writes scores[h * _ctxLen + t] for
+        // t < pos + 1, and RoPE reads _ropeCosTable + pos * _ropeHalfDim; both are unchecked
+        // native accesses, so overrunning corrupts memory rather than failing. Callers are
+        // expected to stop at MaxSeqLen — this makes the invariant unbypassable instead of
+        // trusting each one, and turns silent corruption into a diagnosable throw.
+        if ((uint)pos >= (uint)_ctxLen)
+        {
+            throw new ArgumentOutOfRangeException(nameof(pos), pos,
+                $"Position exceeds the active context length ({_ctxLen}). Generation must stop at " +
+                $"MaxSeqLen; continuing would write past the attention-score and RoPE scratch buffers.");
+        }
+
         EmbedToken(token);
         for (int layer = 0; layer < _hp.NumLayers; layer++)
         {

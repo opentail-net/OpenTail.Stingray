@@ -49,12 +49,13 @@ internal static unsafe partial class BlasInterop
         if (NativeLibrary.TryLoad("libopenblas", out _))
             return true;
 
-        // Try tools/openblas relative to the assembly
-        var asmDir = Path.GetDirectoryName(typeof(BlasInterop).Assembly.Location);
-        if (asmDir is not null)
+        // Try tools/openblas relative to the app. Assembly.Location is empty in NativeAOT
+        // single-file publishing; AppContext.BaseDirectory is the stable deployment anchor.
+        var appDir = AppContext.BaseDirectory;
+        if (!string.IsNullOrEmpty(appDir))
         {
             // Check sibling tools/openblas directory
-            for (var dir = asmDir; dir is not null; dir = Path.GetDirectoryName(dir))
+            for (var dir = appDir; dir is not null; dir = Path.GetDirectoryName(dir))
             {
                 var candidate = Path.Combine(dir, "tools", "openblas", "libopenblas.dll");
                 if (File.Exists(candidate) && NativeLibrary.TryLoad(candidate, out _))

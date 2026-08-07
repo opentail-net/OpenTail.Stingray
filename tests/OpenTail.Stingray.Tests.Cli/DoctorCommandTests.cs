@@ -18,8 +18,11 @@ public sealed class DoctorCommandTests
 
             Assert.Equal(0, exit);
             Assert.Contains("\"schema_version\": 1", output.ToString());
-            Assert.Contains("\"backend.cuda\"", output.ToString());
-            Assert.Contains("\"not_probed\"", output.ToString());
+        Assert.Contains("\"backend.cuda\"", output.ToString());
+        Assert.Contains("\"not_probed\"", output.ToString());
+        Assert.Contains("\"cuda.driver\"", output.ToString());
+        Assert.Contains("\"cuda.runtime\"", output.ToString());
+        Assert.Contains("\"cuda.nvrtc\"", output.ToString());
         }
         finally
         {

@@ -468,6 +468,11 @@ dotnet run --project src/OpenTail.Stingray.Cli -c Release -- \
 dotnet run --project src/OpenTail.Stingray.Cli -c Release -- \
   doctor -m models/SmolLM2-1.7B-Instruct-Q4_K_M.gguf --json
 
+# CUDA readiness is reported in layers: NVIDIA driver, CUDA runtime/cuBLAS, NVRTC kernel JIT,
+# and backend initialization. CUDA is optional: a machine without an NVIDIA GPU is guided to CPU
+# or Vulkan rather than treated as broken. Add --deep for a small device-allocation smoke test.
+dotnet run --project src/OpenTail.Stingray.Cli -c Release -- doctor --deep
+
 # Save the resolved static-planning choices as a strict, replayable JSON profile
 dotnet run --project src/OpenTail.Stingray.Cli -c Release -- \
   plan --save-profile workstation-plan.json --print-effective-config

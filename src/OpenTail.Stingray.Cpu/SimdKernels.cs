@@ -5109,8 +5109,8 @@ public static unsafe class SimdKernels
                 {
                     var qlo = Vector256.LoadUnsafe(ref *(q8a + chunk * 64)).AsSByte();
                     var qhi = Vector256.LoadUnsafe(ref *(q8a + chunk * 64 + 32)).AsSByte();
-                    var i0 = Avx2.MultiplyAddAdjacent(Avx2.MultiplyAddAdjacent(lo, qlo), one16);
-                    var i1 = Avx2.MultiplyAddAdjacent(Avx2.MultiplyAddAdjacent(hi, qhi), one16);
+                    var i0 = DotU8I8ToI32(lo, qlo, one16);
+                    var i1 = DotU8I8ToI32(hi, qhi, one16);
                     facc1 = Fma.MultiplyAdd(Avx.ConvertToVector256Single(i0), Vector256.Create(dSub1[s0] * dsc1), facc1);
                     facc1 = Fma.MultiplyAdd(Avx.ConvertToVector256Single(i1), Vector256.Create(dSub1[s1] * dsc2), facc1);
                 }
@@ -5118,8 +5118,8 @@ public static unsafe class SimdKernels
                 {
                     var qlo = Vector256.LoadUnsafe(ref *(q8b + chunk * 64)).AsSByte();
                     var qhi = Vector256.LoadUnsafe(ref *(q8b + chunk * 64 + 32)).AsSByte();
-                    var i0 = Avx2.MultiplyAddAdjacent(Avx2.MultiplyAddAdjacent(lo, qlo), one16);
-                    var i1 = Avx2.MultiplyAddAdjacent(Avx2.MultiplyAddAdjacent(hi, qhi), one16);
+                    var i0 = DotU8I8ToI32(lo, qlo, one16);
+                    var i1 = DotU8I8ToI32(hi, qhi, one16);
                     facc2 = Fma.MultiplyAdd(Avx.ConvertToVector256Single(i0), Vector256.Create(dSub2[s0] * dsc1), facc2);
                     facc2 = Fma.MultiplyAdd(Avx.ConvertToVector256Single(i1), Vector256.Create(dSub2[s1] * dsc2), facc2);
                 }
@@ -5412,6 +5412,54 @@ public static unsafe class SimdKernels
     /// <para>The min-correction term is NOT here — it is hoisted to one vectorised pass per
     /// super-block in <see cref="MinCorrectionQ4K"/> (perf-loop iteration 63b).</para>
     /// </summary>
+    /// <summary>
+    /// The inner integer product every Q4_K kernel here needs: one int32 lane per four adjacent
+    /// u8×i8 products. Three implementations, chosen widest-availability-last, and <b>bit-identical
+    /// for this data</b> — so the choice is a throughput decision, not a numerics one.
+    ///
+    /// <para><b>Why the middle branch exists.</b> This used to gate on <c>AvxVnniInt8</c> alone,
+    /// which is <c>vpdpbssd</c> — AVX-VNNI-INT8, present only on very recent parts (Zen 5,
+    /// Granite Rapids / Arrow Lake class). Everything older, <i>including all of Zen 4 and Alder
+    /// Lake through Raptor Lake</i>, fell all the way back to the two-instruction AVX2 chain even
+    /// though those CPUs do have plain AVX-VNNI. The operands here are already unsigned weight
+    /// nibbles × signed activations, which is exactly <c>vpdpbusd</c>'s signature, so the wider
+    /// ISA needs no reinterpretation at all — the <c>AsSByte()</c> in the first branch is only
+    /// needed because <c>vpdpbssd</c> is signed×signed.</para>
+    ///
+    /// <para><b>Why all three agree exactly.</b> Q4_K weight nibbles are unsigned 0-15 and Q8
+    /// activations are |a| ≤ 127, so a <c>vpmaddubsw</c> pair peaks at 2·15·127 = 3810, far under
+    /// the int16 saturation point — the AVX2 chain's one lossy step never actually loses anything
+    /// on this data. Both VNNI forms accumulate straight into int32 and cannot saturate at all.
+    /// Reinterpreting the nibbles as signed for <c>vpdpbssd</c> is safe for the same reason
+    /// (0-15 is well below 128). Per the instruction tables, <c>VPDPBUSD</c> is 1 uop with 0.5
+    /// reciprocal throughput on ports P01, against <c>VPMADDUBSW</c>'s 2 uops pinned to P0 — and
+    /// the AVX2 form needs a second <c>vpmaddwd</c> on top of that.</para>
+    /// </summary>
+    /// <summary>
+    /// <c>STINGRAY_CPU_VNNI=0</c> forces the AVX2 chain even where VNNI exists. This is not a
+    /// performance knob — it is what makes <see cref="DotU8I8ToI32"/> testable. All three branches
+    /// are claimed bit-identical, but a machine only ever executes one of them, so on AVX2-only
+    /// hardware the VNNI branches are dead code that no parity suite can reach. With this toggle a
+    /// VNNI-capable host can run the same Q4_K suites both ways and diff them, turning that claim
+    /// into a checked one.
+    /// </summary>
+    internal static bool VnniEnabled { get; } =
+        Environment.GetEnvironmentVariable("STINGRAY_CPU_VNNI") != "0";
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static Vector256<int> DotU8I8ToI32(
+        Vector256<byte> weights, Vector256<sbyte> activations, Vector256<short> one16)
+    {
+        if (VnniEnabled)
+        {
+            if (AvxVnniInt8.IsSupported)
+                return AvxVnniInt8.MultiplyWideningAndAdd(Vector256<int>.Zero, weights.AsSByte(), activations);
+            if (AvxVnni.IsSupported)
+                return AvxVnni.MultiplyWideningAndAdd(Vector256<int>.Zero, weights, activations);
+        }
+        return Avx2.MultiplyAddAdjacent(Avx2.MultiplyAddAdjacent(weights, activations), one16);
+    }
+
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static void AccumQ4KInput(Vector256<byte> lo, Vector256<byte> hi, Vector256<short> one16,
         sbyte* q8, float* dSub, int chunk, int s0, int s1,
@@ -5420,17 +5468,8 @@ public static unsafe class SimdKernels
     {
         var qlo = Vector256.LoadUnsafe(ref *(q8 + chunk * 64)).AsSByte();
         var qhi = Vector256.LoadUnsafe(ref *(q8 + chunk * 64 + 32)).AsSByte();
-        Vector256<int> i0, i1;
-        if (AvxVnniInt8.IsSupported)
-        {
-            i0 = AvxVnniInt8.MultiplyWideningAndAdd(Vector256<int>.Zero, lo.AsSByte(), qlo);
-            i1 = AvxVnniInt8.MultiplyWideningAndAdd(Vector256<int>.Zero, hi.AsSByte(), qhi);
-        }
-        else
-        {
-            i0 = Avx2.MultiplyAddAdjacent(Avx2.MultiplyAddAdjacent(lo, qlo), one16);
-            i1 = Avx2.MultiplyAddAdjacent(Avx2.MultiplyAddAdjacent(hi, qhi), one16);
-        }
+        Vector256<int> i0 = DotU8I8ToI32(lo, qlo, one16);
+        Vector256<int> i1 = DotU8I8ToI32(hi, qhi, one16);
 
         facc = Fma.MultiplyAdd(Avx.ConvertToVector256Single(i0), Vector256.Create(dSub[s0] * dsc1), facc);
         facc = Fma.MultiplyAdd(Avx.ConvertToVector256Single(i1), Vector256.Create(dSub[s1] * dsc2), facc);

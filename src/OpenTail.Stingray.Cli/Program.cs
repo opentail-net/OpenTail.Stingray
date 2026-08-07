@@ -1,4 +1,3 @@
-using System.Reflection;
 using System.Text;
 using OpenTail.Stingray.Cli.CommandLine;
 using OpenTail.Stingray.Cli;
@@ -29,12 +28,9 @@ app.Configure(config =>
     // Report the MinVer-derived version rather than a literal. The hardcoded "0.1.0" that was
     // here never changed with the build, so `--version` was actively misleading — and build
     // identity is the first thing any bug report or support bundle needs to be right.
-    // InformationalVersion carries the full MinVer string (including any pre-release suffix and
-    // git height); fall back to the assembly version, then to "unknown", rather than throwing.
-    config.SetApplicationVersion(
-        Assembly.GetEntryAssembly()?.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion
-        ?? Assembly.GetEntryAssembly()?.GetName().Version?.ToString()
-        ?? "unknown");
+    // Generated from the SDK's InformationalVersion at build time, avoiding reflection metadata
+    // that NativeAOT may trim from the published executable.
+    config.SetApplicationVersion(StingrayBuildVersion.Value);
     config.AddCommand<ListMetadataCommand>("list-metadata")
         .WithDescription("Print all GGUF metadata key/value pairs from a model file");
     config.AddCommand<ListEnvCommand>("list-env")

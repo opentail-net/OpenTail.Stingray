@@ -8,7 +8,7 @@ namespace OpenTail.Stingray.Tests.ForwardPass;
 /// (docs/cpu-architecture-kernel-opportunities.md item 3).
 ///
 /// <para>The hardcoded kernel bakes K, N and all three row strides in as the literal 64, which is
-/// exactly why flash attention refuses to run at <c>headDim = 128</c>: <c>Q·Kᵀ</c> there needs
+/// exactly why flash attention used to refuse to run at <c>headDim = 128</c>: <c>Q·Kᵀ</c> there needs
 /// <c>k=128, n=64</c> and <c>P·V</c> needs <c>k=64, n=128</c>, and feeding either through a
 /// kernel that assumes 64 would read past the operands and produce silently wrong scores rather
 /// than fail. The strided kernel is what unblocks it.</para>
@@ -89,8 +89,8 @@ public sealed unsafe class GemmF32StridedParityTests
     }
 
     /// <summary>
-    /// The two shapes flash-128 actually needs, neither of which the hardcoded kernel can express:
-    /// Q·Kᵀ (k = headDim = 128, n = key tile = 64) and P·V (k = keys = 64, n = headDim = 128).
+    /// The shapes flash attention needs for 128/256-wide heads, none of which the hardcoded kernel
+    /// can express: Q·Kᵀ (k = headDim, n = key tile = 64) and P·V (k = keys = 64, n = headDim).
     /// Checked against the independent triple-loop reference.
     /// </summary>
     [Theory]
@@ -98,6 +98,9 @@ public sealed unsafe class GemmF32StridedParityTests
     [InlineData(64, 64, 128)]    // P·V at headDim 128
     [InlineData(64, 128, 128)]
     [InlineData(13, 128, 64)]    // ragged rows, the real tile tail
+    [InlineData(64, 256, 64)]    // Q·Kᵀ at headDim 256
+    [InlineData(64, 64, 256)]    // P·V at headDim 256
+    [InlineData(13, 256, 64)]    // hd256 ragged query-tile tail
     [InlineData(6, 40, 24)]      // k and n neither 64 nor 128, n ≡ 8 (mod 16) to hit the 8-wide block
     public void Strided_MatchesReference_AtFlash128Shapes(int m, int k, int n)
     {

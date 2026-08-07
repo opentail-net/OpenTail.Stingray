@@ -54,6 +54,7 @@ public static class KnownEnvironmentVariables
         "STINGRAY_CPU_GDN",
         "STINGRAY_CPU_MOE",
         "STINGRAY_CPU_PREFILL_Q8",
+        "STINGRAY_CPU_VNNI",
         "STINGRAY_CPU_THREADS",
         "STINGRAY_CUDA13",
         "STINGRAY_CUDA_GRAPH",

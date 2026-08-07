@@ -49,8 +49,38 @@ human-facing map that a raw commit graph cannot.
   default remains 512. This is deliberate: silently treating `-1` as "generate nothing" or as the
   default would be worse than saying so.
 
+- CPU Q4_K integer dot products now use plain AVX-VNNI (`vpdpbusd`) where available, not only
+  AVX-VNNI-INT8 (`vpdpbssd`). The previous gate covered Zen 5 / Granite Rapids-class parts only, so
+  all of Zen 4 and Alder Lake through Raptor Lake fell back to the two-instruction AVX2 chain
+  despite having the hardware; four of the six call sites with this shape had no VNNI path at all.
+  All six now share one dispatch. The three branches are bit-identical on this data — Q4_K nibbles
+  are 0-15 and Q8 activations |a| ≤ 127, so the AVX2 chain's one saturating step never saturates —
+  and `STINGRAY_CPU_VNNI=0` forces the fallback so a VNNI-capable host can verify that. The
+  throughput benefit is predicted from the instruction tables, **not measured**: the development
+  machine is AVX2-only and cannot execute the new branch.
+- The Flash-64 prefill attention path now accepts head dimension 64 only. The 128/256 widths are
+  implemented but held back at the activation gate: their end-to-end parity check reports a
+  final-logit maxAbs of 0.310 against a 0.01 tolerance on Qwen3-8B, and Flash-64 is on by default,
+  so enabling them would change prefill numerics for the most common head dim on unresolved
+  evidence. No user-visible behaviour changes versus 1.0.2, which never took that path. See the
+  comment at the gate in `ForwardPass` for the investigation and the route back.
+
 ### Fixed
 
+- Generation is now bounded by the active context, not just the prompt. `ForwardPass` sizes its
+  attention-score and RoPE scratch from the context ceiling while its `PagedKvCache` defaults to
+  131,072 positions, so decoding past the ceiling wrote past those native buffers instead of
+  failing. Wiring `--ctx-size` into the CPU forward pass made this reachable in ordinary use —
+  `--ctx-size 512` with the default `--n-predict 512` overruns after any prompt — and on the
+  single-user server path the budget came straight from the client's `max_tokens`, which no layer
+  bounded. `ForwardCore` now rejects an out-of-range position outright, so the invariant holds for
+  every caller rather than relying on each one; the CLI and `InferenceEngine` stop cleanly at
+  context-full (reporting length truncation) rather than reaching that check.
+  `ContinuousBatchingEngine` already clamped this way and is unchanged.
+- The CLI's interactive and image paths now enforce the same context bound as the single-prompt
+  path. Interactive declines an oversized message and stays in the session; the image path checks
+  the *expanded* length, since each placeholder becomes an open token, its soft tokens, and a close
+  token — an image is easily hundreds of positions more than the token list suggests.
 - Post-migration repository plumbing. The standalone repository was missing the root `global.json`
   that selects Microsoft.Testing.Platform, so `dotnet test` fell back to VSTest, found no adapter for
   xunit v3, and exited 0 having run **zero** tests — including in CI. Restored, and both workflows

@@ -1148,7 +1148,17 @@ public sealed class InferenceEngine : IInferenceEngine, IDisposable, IAsyncDispo
                     // throws and skips the Stop-chunk write entirely).
                     bool hitMaxTokens = true;
 
-                    for (int i = 0; i < sp.MaxNewTokens; i++)
+                    // max_tokens arrives straight from the client (SamplingParamsBuilder applies no
+                    // upper bound), and decode writes position startPos+i. ForwardPass sizes its
+                    // attention-score and RoPE scratch from the context ceiling while its KV cache
+                    // is far larger, so an unclamped budget walks off the end of those buffers.
+                    // SelectSlot's footprint gate guards this only for the bounded scratch slot —
+                    // it exempts the full-size owned slot — so the bound has to be applied here
+                    // too. Stopping at the ceiling reports finish_reason "length", which is the
+                    // truthful answer; ContinuousBatchingEngine already clamps the same way.
+                    int decodeBudget = (int)Math.Min(sp.MaxNewTokens, Math.Max(0L, _fwd.MaxSeqLen - startPos));
+
+                    for (int i = 0; i < decodeBudget; i++)
                     {
                         ct.ThrowIfCancellationRequested();
 

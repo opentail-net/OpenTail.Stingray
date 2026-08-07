@@ -1,11 +1,12 @@
 using System.ComponentModel;
 using System.IO.Compression;
-using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Runtime.Intrinsics.X86;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using OpenTail.Stingray.Cli.CommandLine;
 using OpenTail.Stingray.Core;
+using OpenTail.Stingray.Cuda;
 using OpenTail.Stingray.Engine;
 using OpenTail.Stingray.Vulkan;
 
@@ -40,8 +41,7 @@ public sealed class DoctorCommand : Command<DoctorCommand.Settings>
     protected override int Execute(Settings settings, CancellationToken cancellation)
     {
         var checks = new List<DoctorCheck>();
-        string version = Assembly.GetEntryAssembly()?.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion
-            ?? "unknown";
+        string version = StingrayBuildVersion.Value;
         checks.Add(new("runtime", "ok", $"OpenTail.Stingray CLI {version}; {Environment.Version}; {Environment.ProcessorCount} logical CPUs."));
 
         // §6.3 "CPU instruction-set support". AVX2+FMA are REQUIRED by the CPU kernels — without
@@ -78,6 +78,7 @@ public sealed class DoctorCommand : Command<DoctorCommand.Settings>
             }
 
         var facts = StaticPlanRuntimeFacts.Detect(settings.NoGpuProbe);
+        checks.AddRange(ProbeCudaReadiness(settings.NoGpuProbe, facts));
         foreach (var backend in facts.Backends)
         {
             string status = backend.Status == "available" ? "ok" : backend.Status == "not_probed" ? "not_probed" : "warning";
@@ -156,6 +157,23 @@ public sealed class DoctorCommand : Command<DoctorCommand.Settings>
                     checks.Add(new("backend.smoke", "warning", $"Vulkan initialization smoke test failed: {ex.Message}"));
                 }
             }
+
+            if (!settings.NoGpuProbe && facts.Backends.Any(b => b.Name == "cuda" && b.Status == "available"))
+            {
+                try
+                {
+                    using var cuda = CudaBackend.Create();
+                    var tensor = cuda.Allocate(new TensorShape([1024]), DType.Float32);
+                    cuda.Free(tensor);
+                    checks.Add(new("cuda.smoke", "ok",
+                        $"CUDA initialized and allocated/freed a 4 KiB device tensor ({cuda.Name})."));
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    checks.Add(new("cuda.smoke", "warning", $"CUDA allocation smoke test failed: {ex.Message}",
+                        "Update the NVIDIA driver and CUDA runtime, then rerun `stingray doctor --deep`."));
+                }
+            }
         }
 
         var report = new DoctorReport(1, checks);
@@ -181,6 +199,75 @@ public sealed class DoctorCommand : Command<DoctorCommand.Settings>
             }
 
         return checks.Any(x => x.Status == "error") ? 2 : 0;
+    }
+
+    /// <summary>
+    /// Explains CUDA availability in layers. <see cref="CudaBackend.IsAvailable"/> is deliberately
+    /// all-or-nothing for inference, but an operator needs to know whether CUDA is absent because
+    /// there is no NVIDIA driver, a toolkit DLL is missing, or backend initialization itself failed.
+    /// CUDA remains optional: none of these outcomes is an error when CPU/Vulkan are usable.
+    /// </summary>
+    private static IEnumerable<DoctorCheck> ProbeCudaReadiness(bool noGpuProbe, StaticPlanRuntimeFacts facts)
+    {
+        if (noGpuProbe)
+        {
+            yield return new("cuda.driver", "not_probed", "Not probed (--no-gpu-probe).");
+            yield return new("cuda.runtime", "not_probed", "Not probed (--no-gpu-probe).");
+            yield return new("cuda.nvrtc", "not_probed", "Not probed (--no-gpu-probe).");
+            yield break;
+        }
+
+        if (!TryLoadAny(["nvcuda", "libcuda.so.1"], out string? driver))
+        {
+            yield return new("cuda.driver", "warning",
+                "No NVIDIA CUDA driver was detected. CUDA is optional; CPU and Vulkan remain available.",
+                "Install/update an NVIDIA driver only if this machine has an NVIDIA GPU and you want CUDA. " +
+                "Otherwise use CPU (-g 0) or Vulkan.");
+            yield break;
+        }
+        yield return new("cuda.driver", "ok", $"NVIDIA CUDA driver library loaded ({driver}).");
+
+        bool hasRuntime = TryLoadAny(["cudart64_12", "cudart64_13", "libcudart.so.12", "libcudart.so.13"], out string? runtime);
+        bool hasBlas = TryLoadAny(["cublas64_12", "cublas64_13", "libcublas.so.12", "libcublas.so.13"], out string? blas);
+        if (!hasRuntime || !hasBlas)
+        {
+            string missing = !hasRuntime && !hasBlas ? "CUDA runtime and cuBLAS" : !hasRuntime ? "CUDA runtime" : "cuBLAS";
+            yield return new("cuda.runtime", "warning", $"NVIDIA driver is present but {missing} could not be loaded.",
+                "Install a matching CUDA 12.x or 13.x runtime/toolkit and ensure its bin/lib directory is on PATH, " +
+                "then rerun `stingray doctor`. CPU and Vulkan do not require CUDA.");
+            yield break;
+        }
+        yield return new("cuda.runtime", "ok", $"Loaded {runtime} and {blas}.");
+
+        if (!TryLoadAny(["nvrtc64_120_0", "nvrtc64_112_0", "nvrtc64_11", "libnvrtc.so.12", "libnvrtc.so.11.2"], out string? nvrtc))
+        {
+            yield return new("cuda.nvrtc", "warning",
+                "CUDA runtime is present but NVRTC was not found; Stingray cannot JIT its CUDA kernels.",
+                "Install the CUDA toolkit/runtime that supplies NVRTC (CUDA 12.x preferred), then rerun `stingray doctor`." );
+            yield break;
+        }
+        yield return new("cuda.nvrtc", "ok", $"Loaded {nvrtc}; CUDA kernel JIT dependency is present.");
+
+        StaticPlanBackend cuda = facts.Backends.First(b => b.Name == "cuda");
+        if (cuda.Status == "available")
+            yield return new("cuda.probe", "ok", $"CUDA backend initialized successfully: {cuda.Detail}");
+        else
+            yield return new("cuda.probe", "warning", $"CUDA libraries loaded but backend initialization failed: {cuda.Detail}",
+                "Check that the NVIDIA GPU is enabled and supported, then update the driver/toolkit. " +
+                "Run `stingray doctor --deep` after fixing the installation.");
+    }
+
+    private static bool TryLoadAny(IEnumerable<string> candidates, out string? loaded)
+    {
+        foreach (string candidate in candidates)
+        {
+            if (!NativeLibrary.TryLoad(candidate, out nint handle)) continue;
+            NativeLibrary.Free(handle);
+            loaded = candidate;
+            return true;
+        }
+        loaded = null;
+        return false;
     }
 
     /// <summary>

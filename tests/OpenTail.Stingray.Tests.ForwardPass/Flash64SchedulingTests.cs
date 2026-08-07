@@ -77,6 +77,56 @@ public sealed class Flash64SchedulingTests
         }
     }
 
+    /// <summary>
+    /// Production-shape gate for the strided Flash-64 route. Qwen3-8B has 128-wide attention
+    /// heads: before the head-width generalisation it always took the materialised-score path.
+    /// The flash result is compared with that established fallback, rather than only exercising
+    /// the GEMM in isolation.
+    ///
+    /// <para>SKIPPED, and it must stay skipped rather than simply run: the 128/256 head widths are
+    /// currently held back at the Flash-64 activation gate in <c>ForwardPass</c> (see the long
+    /// comment there for the full investigation and the route back). With them held back, both
+    /// arms of this comparison take the materialised path, so the test would report a confident
+    /// PASS while exercising nothing at all — the precise failure mode this suite exists to
+    /// prevent. It last ran for real at maxAbs 0.310 against a 0.01 tolerance.</para>
+    /// </summary>
+    [Fact(Skip = "128/256 head widths are held back at the Flash-64 gate in ForwardPass; " +
+                 "un-skip together with re-enabling them, and see that comment for the next step " +
+                 "(measure cosine + greedy agreement against the accepted Q8-vs-F32 baseline).")]
+    public void Flash128_MatchesMaterialisedAttention()
+    {
+        string? path = FindModelPath("Qwen3-8B-Q4_K_M.gguf");
+        if (path is null || !Avx2.IsSupported || !Fma.IsSupported) return;
+
+        using var model = GgufModel.Open(path);
+        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
+        Assert.Equal(128, hp.HeadDim);
+        using var backend = new CpuBackend();
+        int[] tokens = BuildTokens(256);
+
+        string? previousFlash = Environment.GetEnvironmentVariable(Flash64Variable);
+        try
+        {
+            Environment.SetEnvironmentVariable(Flash64Variable, "0");
+            float[] fallback = Prefill(model, backend, hp, tokens);
+
+            Environment.SetEnvironmentVariable(Flash64Variable, "1");
+            float[] flash = Prefill(model, backend, hp, tokens);
+
+            Assert.Equal(fallback.Length, flash.Length);
+            float maxAbs = 0f;
+            for (int i = 0; i < fallback.Length; i++)
+                maxAbs = MathF.Max(maxAbs, MathF.Abs(fallback[i] - flash[i]));
+
+            Assert.InRange(maxAbs, 0f, 0.01f);
+            Assert.Equal(Sampler.Greedy(fallback), Sampler.Greedy(flash));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(Flash64Variable, previousFlash);
+        }
+    }
+
     private static float[] Prefill(
         GgufModel model, CpuBackend backend, ModelHyperparams hp, int[] tokens)
     {
@@ -103,13 +153,13 @@ public sealed class Flash64SchedulingTests
     private static int[] BuildTokens(int count) =>
         Enumerable.Range(0, count).Select(i => 1 + i * 17 % 997).ToArray();
 
-    private static string? FindModelPath()
+    private static string? FindModelPath(string filename = "SmolLM2-1.7B-Instruct-Q4_K_M.gguf")
     {
         string? directory = Directory.GetCurrentDirectory();
         for (int i = 0; i < 8 && directory is not null; i++)
         {
             string candidate = Path.Combine(
-                directory, "models", "SmolLM2-1.7B-Instruct-Q4_K_M.gguf");
+                directory, "models", filename);
             if (File.Exists(candidate)) return candidate;
             directory = Directory.GetParent(directory)?.FullName;
         }
