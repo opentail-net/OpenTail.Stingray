@@ -25,9 +25,9 @@ Confirmed in code, not inferred from timing: `ForwardPass` computes
 at 27.3 GB/s, 74% of this machine's DRAM ceiling, so the model is not slow; only its prefill is.
 
 This is the quantified cost of the outstanding "per-layer-head-dimension batched prefill" work.
-`STINGRAY_PER_LAYER_HD_PREFILL=1` forces the batched path and is documented as producing wrong
-output for gemma4 (it assumes model-wide KV heads and no sliding window); it exists to make the
-remaining work measurable, and running it would size the prize.
+`STINGRAY_PER_LAYER_HD_PREFILL=1` was documented as forcing the batched path and producing wrong
+output, existing "to make the remaining work measurable". **It does not produce wrong output — it
+produced `AccessViolationException`, "attempted to read or write protected memory".** See below.
 
 ## Long-position self-consistency: attempted, and VACUOUS
 
@@ -58,3 +58,34 @@ with itself. **A test that cannot fail is not evidence**, and this one would hav
    path is correct for per-layer head dims — today it is documented-wrong by construction.
 
 Neither has been run. Long-position parity for Gemma 4 12B is therefore **unevidenced**, not passing.
+
+
+## The sizing switch was unsafe, and is now fail-fast
+
+Attempting to size the batched-prefill prize by setting `STINGRAY_PER_LAYER_HD_PREFILL=1` did not
+yield a fast-but-wrong number. It crashed:
+
+```
+Fatal error.
+System.AccessViolationException: Attempted to read or write protected memory.
+```
+
+Forcing the batched path makes it index KV with the **model-wide** head dim (512) on layers that
+actually carry **256**, so it reads and writes past the buffers. That is an unsafe native access,
+not the numerical inaccuracy the comment described. The distinction matters: "expect wrong output"
+invites someone to run it and read the timing, which is exactly what was attempted here.
+
+It also means the switch could never have served its stated purpose. **A path that corrupts memory
+cannot be timed**, so the prize was never sizeable this way.
+
+`ForwardPass` now throws `NotSupportedException` with an explanation when the variable is set on a
+per-layer-head-dim model, instead of proceeding into the unsafe path. The sequential route is
+unaffected — 405-token prefill still measures 2.8 t/s — and Core/CLI/Server/Sessions remain
+421/367/246/79.
+
+**Consequence for the backlog:** the ~4x prefill penalty is measured and real, but the *upside* of
+fixing it remains unquantified, and cannot be quantified by forcing the existing path. Sizing it
+requires implementing the per-layer plumbing (per-layer KV heads, KV-layer sharing, `attention_k_eq_v`,
+per-head V norm, and a `windowSize` parameter that `PrefillCoreAttention` does not currently have)
+far enough to run correctly. That is a real feature, not a flag flip — which is itself useful to
+know before someone budgets the work off a flag that promised a number.

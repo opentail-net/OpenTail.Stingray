@@ -903,11 +903,29 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
         //   * SLIDING-WINDOW attention — PrefillCoreAttention has no windowSize parameter of any
         //     kind. This is the real blocker: it is a missing feature, not missing plumbing.
         //
-        // Set STINGRAY_PER_LAYER_HD_PREFILL=1 to force the batched path anyway; it will use
-        // model-wide KV heads and no sliding window, so expect wrong output on gemma4. The switch
-        // exists to make the remaining work measurable, not because the path is usable.
-        bool perLayerHdUnsupported = _layerHeadDim is not null
-            && (!s_perLayerHeadDimPrefillForced || _tqKvCache is not null || _snapKvCfg.Enabled);
+        // STINGRAY_PER_LAYER_HD_PREFILL=1 used to force the batched path here, documented as
+        // producing "wrong output on gemma4" and existing "to make the remaining work measurable".
+        //
+        // MEASURED 2026-08-07: it does not produce wrong output — it produces
+        // AccessViolationException, "attempted to read or write protected memory". Forcing the
+        // batched path makes it index KV with the model-wide head dim (512) on layers that actually
+        // carry 256, which walks off the end of the buffers. That is an unsafe native write, not a
+        // numerical inaccuracy.
+        //
+        // So the switch could never serve its stated purpose: a path that corrupts memory cannot be
+        // timed. It now fails fast with an explanation instead, which is strictly better than
+        // crashing — and the honest sizing of the remaining work has to come from implementing the
+        // per-layer plumbing, not from forcing a route that was never bounds-safe.
+        if (s_perLayerHeadDimPrefillForced && _layerHeadDim is not null)
+        {
+            throw new NotSupportedException(
+                "STINGRAY_PER_LAYER_HD_PREFILL=1 cannot force batched prefill for a per-layer " +
+                "head_dim model (gemma4). The batched path indexes KV with the model-wide head dim, " +
+                "so on layers with a smaller head_dim it reads and writes past the buffer — measured " +
+                "as an AccessViolationException, not merely incorrect output. Unset the variable; " +
+                "the sequential route is correct. See docs/gemma4-12b-evidence.md.");
+        }
+        bool perLayerHdUnsupported = _layerHeadDim is not null;
         bool moeUnsupported = _hp.IsMoE && !MoeBatchedPrefillSupported;
         if (moeUnsupported || perLayerHdUnsupported)
         {

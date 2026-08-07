@@ -102,6 +102,14 @@ human-facing map that a raw commit graph cannot.
   activation-point dynamic range) were measured and disproved before landing this; see
   `docs/cpu-prefill-quality-gate.md`.
 
+- `STINGRAY_PER_LAYER_HD_PREFILL=1` now fails fast with an explanation on per-layer-head-dim models
+  (gemma4) instead of entering an unsafe path. It was documented as forcing batched prefill and
+  producing "wrong output"; it actually produced an `AccessViolationException`, because the batched
+  route indexes KV with the model-wide head dim (512) on layers carrying 256 and walks off the
+  buffers. The switch existed to make the outstanding per-layer-head-dim prefill work measurable,
+  which it could never do — a path that corrupts memory cannot be timed. The sequential route is
+  unchanged and correct.
+
 ### Fixed
 
 - Generation is now bounded by the active context, not just the prompt. `ForwardPass` sizes its
