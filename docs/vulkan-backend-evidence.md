@@ -87,3 +87,42 @@ permanently. Tighten it only once the gap is explained.
 
 Worth noting the ordering: an initial threshold of 0.999 was written **before** measuring, and it
 failed. Choosing the bound first is what turned "Vulkan looks fine" into a specific open question.
+
+
+## CORRECTION 2026-08-07 — the 0.992 "open question" was my prompt, not Vulkan
+
+The section above recorded Vulkan/CPU cosine 0.99195 as roughly 12x looser than the CPU-side
+approximations, with no cause established. **That framing was wrong, and the cause was the test
+prompt.** Both that measurement and the first parity test used the synthetic id sequence
+`[1, 2, 3, 5, 7, 11, ...]`. Arbitrary low-numbered ids are an out-of-distribution token sequence,
+and the int8 activation prefill handles them badly.
+
+A sweep over prompt lengths, comparing three ways rather than two, shows it plainly:
+
+| n | Vulkan vs CPU-int8 | Vulkan vs CPU-F32 | CPU-int8 vs CPU-F32 |
+|---:|---:|---:|---:|
+| 1 | 0.998132 | 0.998132 | 1.000000 |
+| 2 | 0.975049 | 0.988505 | 0.987387 |
+| **8** | **0.570589** | **0.997638** | **0.547410** |
+| 32 | 0.997180 | 0.998700 | 0.996181 |
+| 128 | 0.997206 | 0.998126 | 0.996627 |
+
+At n=8 Vulkan agrees with exact-F32 CPU at **0.9976** while the CPU's own int8 path disagrees with
+its own F32 path at **0.547**. The outlier was never Vulkan. Repeating the sweep with real
+tokenizer output puts every pairing at 0.997-0.999 across all lengths.
+
+Two corrections follow:
+
+1. **Vulkan's divergence is normal.** On real text it sits at the same scale as the CPU's own
+   int8-vs-F32 gap. There is no unexplained Vulkan looseness.
+2. **The int8 prefill's out-of-distribution sensitivity is real and broader than the shipped
+   mitigation.** That mitigation skips int8 only when a prompt is *entirely* control/user-defined
+   tokens. This sequence is not — it spans ids up to ~900 — and still produced cosine 0.547 at 8
+   tokens. Synthetic token sequences in any test that compares numerics are therefore actively
+   misleading, which is worth knowing well beyond this file.
+
+The parity test now uses real tokenizer output and asserts a contract that survives it: cosine
+above 0.99, and argmax disagreement permitted **only when it is a near-tie** (CPU rates its own pick
+less than 2% of the logit range above Vulkan's pick). Exact argmax equality was the wrong
+cross-backend contract — near-tied candidates flip on any FP ordering difference and neither
+backend is wrong when the model had no real preference.
