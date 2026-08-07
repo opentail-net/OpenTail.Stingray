@@ -137,6 +137,96 @@ public sealed unsafe class PagedKvCacheTests : IDisposable
         Assert.Equal(777f, request.KeyAt(0, PagedKvCache.PageSize - 1)[0]);
     }
 
+    /// <summary>
+    /// Gemma-style caches size pages for the widest layer while each layer's transposed V planes
+    /// use its own head stride. A prefix fork must retain that geometry; losing it makes higher KV
+    /// heads read a plausible but unrelated part of the V region.
+    /// </summary>
+    [Fact]
+    public void PerLayerHeadDim_ForkRetainsTransposedValueStrides()
+    {
+        const int kvHeads = 2, maxHeadDim = 4;
+        using var source = new PagedKvCache(numLayers: 2, numKvHeads: kvHeads, headDim: maxHeadDim,
+            layerHeadDim: [2, 4]);
+
+        for (int pos = 0; pos < PagedKvCache.PageSize; pos++)
+        {
+            float[] key = new float[kvHeads * maxHeadDim];
+            float[] narrowValue = [100 + pos, 101 + pos, 200 + pos, 201 + pos, 0, 0, 0, 0];
+            float[] wideValue = [300 + pos, 301 + pos, 302 + pos, 303 + pos,
+                                 400 + pos, 401 + pos, 402 + pos, 403 + pos];
+            source.Append(0, key, narrowValue);
+            source.Append(1, key, wideValue);
+            source.IncrementPosition();
+        }
+
+        using var fork = source.ForkSharedPrefix(PagedKvCache.PageSize);
+        source.Dispose();
+
+        Assert.Equal(101f, fork.ValueAtHead(0, 0, 0)[1]);
+        Assert.Equal(201f, fork.ValueAtHead(0, 0, 1)[1]);
+        Assert.Equal(303f, fork.ValueAtHead(1, 0, 0)[3]);
+        Assert.Equal(403f, fork.ValueAtHead(1, 0, 1)[3]);
+    }
+
+    [Fact]
+    public void PerLayerHeadDim_Bf16StoreUsesLayerValueStride()
+    {
+        using var cache = new PagedKvCache(numLayers: 2, numKvHeads: 2, headDim: 4,
+            bf16Store: true, layerHeadDim: [2, 4]);
+        float[] key = new float[8];
+        cache.Append(0, key, [10f, 11f, 20f, 21f, 0f, 0f, 0f, 0f]);
+        cache.Append(1, key, [30f, 31f, 32f, 33f, 40f, 41f, 42f, 43f]);
+        cache.IncrementPosition();
+
+        static float Widen(ushort value) => BitConverter.UInt32BitsToSingle((uint)value << 16);
+        Assert.Equal(21f, Widen(cache.Bf16ValueAtHead(0, 0, 1)[1]));
+        Assert.Equal(43f, Widen(cache.Bf16ValueAtHead(1, 0, 1)[3]));
+    }
+
+    [Fact]
+    public void PerLayerHeadDim_PersistedStateRequiresMatchingGeometry()
+    {
+        using var source = new PagedKvCache(numLayers: 2, numKvHeads: 2, headDim: 4,
+            layerHeadDim: [2, 4]);
+        float[] key = new float[8];
+        source.Append(0, key, [10f, 11f, 20f, 21f, 0f, 0f, 0f, 0f]);
+        source.Append(1, key, [30f, 31f, 32f, 33f, 40f, 41f, 42f, 43f]);
+        source.IncrementPosition();
+        byte[] state = source.ExportKvState();
+
+        using var compatible = new PagedKvCache(numLayers: 2, numKvHeads: 2, headDim: 4,
+            layerHeadDim: [2, 4]);
+        compatible.ImportKvState(state);
+        Assert.Equal(21f, compatible.ValueAtHead(0, 0, 1)[1]);
+        Assert.Equal(43f, compatible.ValueAtHead(1, 0, 1)[3]);
+
+        using var incompatible = new PagedKvCache(numLayers: 2, numKvHeads: 2, headDim: 4);
+        Assert.Throws<InvalidOperationException>(() => incompatible.ImportKvState(state));
+    }
+
+    [Fact]
+    public void PersistedState_Version1UniformGeometry_RemainsImportable()
+    {
+        using var source = new PagedKvCache(numLayers: 1, numKvHeads: 1, headDim: 2);
+        source.Append(0, [1f, 2f], [3f, 4f]);
+        source.IncrementPosition();
+
+        // Version 2 adds a layer-geometry flag immediately after the original 35-byte header.
+        // Remove the false flag from a uniform-cache stream to model an existing v1 artifact.
+        byte[] v2 = source.ExportKvState();
+        const int V1HeaderBytes = 35;
+        byte[] v1 = new byte[v2.Length - 1];
+        v2.AsSpan(0, V1HeaderBytes).CopyTo(v1);
+        v2.AsSpan(V1HeaderBytes + 1).CopyTo(v1.AsSpan(V1HeaderBytes));
+        BitConverter.TryWriteBytes(v1.AsSpan(sizeof(uint)), (ushort)1);
+
+        using var restored = new PagedKvCache(numLayers: 1, numKvHeads: 1, headDim: 2);
+        restored.ImportKvState(v1);
+        Assert.Equal(1f, restored.KeyAt(0, 0)[0]);
+        Assert.Equal(4f, restored.ValueAtHead(0, 0, 0)[1]);
+    }
+
     [Fact]
     public void LayersAreIndependent()
     {

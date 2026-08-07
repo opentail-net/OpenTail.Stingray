@@ -386,7 +386,8 @@ public sealed unsafe class PagedKvCache : IRewindableSequenceKvCache, IPersistab
 
         // The fork must match this cache's element width: it shares pages by reference and
         // copy-on-writes them with a raw byte copy sized by _pageBytes.
-        var fork = new PagedKvCache(_numLayers, _kvDim, 1, _maxBlocks, _bf16Store)
+        var fork = new PagedKvCache(_numLayers, _numKvHeads, _headDim, _maxBlocks, _bf16Store,
+            layerHeadDim: _layerHeadDim)
         {
             _sharedPrefixBlocks = prefixLength / PageSize,
             _length = prefixLength,
@@ -658,9 +659,10 @@ public sealed unsafe class PagedKvCache : IRewindableSequenceKvCache, IPersistab
         ushort* vBase = p + (long)PageSize * _kvDim;
         for (int h = 0; h < _numKvHeads; h++)
         {
-            ushort* dst = vBase + ((long)h * PageSize + offset) * _headDim;
-            int src = h * _headDim;
-            for (int d = 0; d < _headDim; d++) dst[d] = ToBf16Bits(value[src + d]);
+            int hd = HeadDimOf(layer);
+            ushort* dst = vBase + ((long)h * PageSize + offset) * hd;
+            int src = h * hd;
+            for (int d = 0; d < hd; d++) dst[d] = ToBf16Bits(value[src + d]);
         }
         Interlocked.Increment(ref s_kvBf16Appends);
     }
@@ -684,14 +686,15 @@ public sealed unsafe class PagedKvCache : IRewindableSequenceKvCache, IPersistab
     private static float FromBf16Bits(ushort v) => BitConverter.UInt32BitsToSingle((uint)v << 16);
 
     /// <summary>BF16-store counterpart of <see cref="GatherValue"/>, widening as it gathers.</summary>
-    private void GatherValueBf16(float* page, int offset, Span<float> dst)
+    private void GatherValueBf16(int layer, float* page, int offset, Span<float> dst)
     {
+        int hd = HeadDimOf(layer);
         ushort* vBase = (ushort*)page + (long)PageSize * _kvDim;
         for (int h = 0; h < _numKvHeads; h++)
         {
-            ushort* src = vBase + ((long)h * PageSize + offset) * _headDim;
-            int o = h * _headDim;
-            for (int d = 0; d < _headDim; d++) dst[o + d] = FromBf16Bits(src[d]);
+            ushort* src = vBase + ((long)h * PageSize + offset) * hd;
+            int o = h * hd;
+            for (int d = 0; d < hd; d++) dst[o + d] = FromBf16Bits(src[d]);
         }
     }
 
@@ -842,7 +845,7 @@ public sealed unsafe class PagedKvCache : IRewindableSequenceKvCache, IPersistab
                     {
                         ushort* srcKeyB = (ushort*)srcPage + (long)srcOff * _kvDim;
                         for (int j = 0; j < _kvDim; j++) dstKey[j] = FromBf16Bits(srcKeyB[j]);
-                        GatherValueBf16(srcPage, srcOff, new Span<float>(dstVal, _kvDim));
+                        GatherValueBf16(l, srcPage, srcOff, new Span<float>(dstVal, _kvDim));
                     }
                     else
                     {
@@ -961,7 +964,7 @@ public sealed unsafe class PagedKvCache : IRewindableSequenceKvCache, IPersistab
         using var w = new BinaryWriter(ms, Encoding.UTF8, leaveOpen: true);
 
         w.Write(0x504B5643u); // Magic: PKVC
-        w.Write((ushort)1);   // Format version
+        w.Write((ushort)2);   // Format version
         w.Write(_numLayers);
         w.Write(_kvDim);
         w.Write(_numKvHeads);
@@ -971,6 +974,12 @@ public sealed unsafe class PagedKvCache : IRewindableSequenceKvCache, IPersistab
         w.Write(_logicalLength);
         int liveBlocks = Math.Min(_allocatedBlocks, (_length + PageSize - 1) / PageSize);
         w.Write(liveBlocks);
+        w.Write(_layerHeadDim is not null);
+        if (_layerHeadDim is not null)
+        {
+            w.Write(_layerHeadDim.Length);
+            foreach (int headDim in _layerHeadDim) w.Write(headDim);
+        }
 
         for (int b = 0; b < liveBlocks; b++)
         {
@@ -999,6 +1008,20 @@ public sealed unsafe class PagedKvCache : IRewindableSequenceKvCache, IPersistab
         if (_disposed) throw new ObjectDisposedException(nameof(PagedKvCache));
         // magic(4) + version(2) + 4 dims(16) + bf16 flag(1) + length/logicalLength/blocks(12) = 35.
         // A cache with no allocated blocks exports exactly this and must round-trip.
+        //
+        // DO NOT "correct" this to 36 to match the v2 writer. This is the length of the SMALLEST
+        // stream this method must accept, and v1 streams — which have no per-layer-geometry flag —
+        // are exactly 35 bytes and are still supported (see the version check below and
+        // PagedKvCacheTests.PersistedState_Version1UniformGeometry_RemainsImportable). Raising it
+        // to 36 would reject every v1 artifact with "buffer too small", silently breaking the
+        // backward compatibility PKVC v2 was written to preserve.
+        //
+        // v2 headers are 36 bytes (the extra byte is the hasLayerHeadDim flag), so this floor does
+        // not fully validate a truncated v2 stream: one cut to exactly 35 bytes passes here and
+        // fails later in ReadBoolean with EndOfStreamException instead of the message above. That
+        // is a worse diagnostic, not a correctness hole — the stream is rejected either way. Any
+        // fix must stay version-aware (read the version first, then require 35 or 36), never a
+        // flat bump. This constant has already been off by one in the other direction once.
         const int PkvcHeaderBytes = 35;
         if (kvStateBytes.Length < PkvcHeaderBytes)
             throw new InvalidDataException("Invalid PKVC state stream: buffer too small for header.");
@@ -1013,7 +1036,7 @@ public sealed unsafe class PagedKvCache : IRewindableSequenceKvCache, IPersistab
                 throw new InvalidDataException($"Invalid PKVC magic header: 0x{magic:X8}.");
 
             ushort version = r.ReadUInt16();
-            if (version != 1)
+            if (version is not 1 and not 2)
                 throw new InvalidDataException($"Unsupported PKVC version: {version}.");
 
             int numLayers = r.ReadInt32();
@@ -1025,9 +1048,28 @@ public sealed unsafe class PagedKvCache : IRewindableSequenceKvCache, IPersistab
             int logicalLength = r.ReadInt32();
             int allocatedBlocks = r.ReadInt32();
 
+            int[]? layerHeadDim = null;
+            if (version >= 2)
+            {
+                bool hasLayerHeadDim = r.ReadBoolean();
+                if (hasLayerHeadDim)
+                {
+                    int count = r.ReadInt32();
+                    if (count != numLayers)
+                        throw new InvalidDataException(
+                            $"Invalid PKVC layer-head-dimension count {count}; expected {numLayers}.");
+                    layerHeadDim = new int[count];
+                    for (int i = 0; i < count; i++) layerHeadDim[i] = r.ReadInt32();
+                }
+            }
+
             if (numLayers != _numLayers || kvDim != _kvDim || numKvHeads != _numKvHeads || headDim != _headDim)
                 throw new InvalidOperationException(
                     $"PagedKvCache dimensions mismatch on state import. Configured: {numLayers}/{kvDim}/{numKvHeads}/{headDim}, Expected: {_numLayers}/{_kvDim}/{_numKvHeads}/{_headDim}.");
+            if (!LayerHeadDimensionsMatch(layerHeadDim, _layerHeadDim))
+                throw new InvalidOperationException(
+                    "PagedKvCache per-layer head dimensions mismatch on state import. " +
+                    "A cache with mixed per-layer V strides cannot be restored into a different geometry.");
 
             // Element formats may legitimately differ. Under STINGRAY_KV_STORE=auto a cache narrows
             // to BF16 once it passes the crossover, so any session long enough to be worth evicting
@@ -1083,6 +1125,12 @@ public sealed unsafe class PagedKvCache : IRewindableSequenceKvCache, IPersistab
             _length = length;
             _logicalLength = logicalLength;
         }
+    }
+
+    private static bool LayerHeadDimensionsMatch(int[]? source, int[]? target)
+    {
+        if (source is null || target is null) return source is null && target is null;
+        return source.AsSpan().SequenceEqual(target);
     }
 
     public void Dispose()

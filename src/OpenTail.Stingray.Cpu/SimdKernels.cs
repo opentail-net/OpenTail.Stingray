@@ -236,6 +236,10 @@ public static unsafe class SimdKernels
     /// regression), and greedy generation is 100% bit-identical across two real prompts. Suites
     /// that pin the F32 path's exact-equality contract set this to <c>false</c> explicitly rather
     /// than relying on the ambient default.</para>
+    ///
+    /// <para>All-control-token prompts are an explicit exception: <see cref="Engine.ForwardPass"/>
+    /// detects that structural GGUF input and uses its sequential F32 path even while this gate is
+    /// enabled. Mixed prompts (including normal BOS-plus-text input) remain eligible.</para>
     /// </summary>
     /// <summary>
     /// How many times the tiered fallback actually executed. Exists because a performance result

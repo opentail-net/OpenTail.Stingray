@@ -386,16 +386,23 @@ public sealed class ColdSessionPersistenceTests
     }
 
     /// <summary>
-    /// An empty cache exports exactly the 35-byte PKVC header and must round-trip.
+    /// An empty cache exports exactly the 36-byte v2 PKVC header and must round-trip.
     /// </summary>
-    /// <remarks>The guard read <c>&lt; 36</c>, one byte too many, so this payload was rejected as
-    /// "buffer too small" despite being complete and valid.</remarks>
+    /// <remarks>
+    /// Historical, and stated in the numbers of its own era: when the header was 35 bytes the
+    /// import guard required <c>&gt;= 36</c>, one byte too many, so an empty cache's export was
+    /// rejected as "buffer too small" despite being complete and valid. PKVC v2 added the
+    /// per-layer-geometry flag, making the current header 36 — but the guard is deliberately still
+    /// 35, because that is the size of a v1 stream and those must keep importing. Assert the exact
+    /// length here rather than a lower bound: an off-by-one in either direction has already
+    /// shipped once, and only an equality check catches the next one.
+    /// </remarks>
     [Fact]
     public void PagedKvCache_ExportAndImport_EmptyCacheRoundTrips()
     {
         using var empty = new PagedKvCache(numLayers: 2, numKvHeads: 2, headDim: 4);
         byte[] stream = empty.ExportKvState();
-        Assert.Equal(35, stream.Length);
+        Assert.Equal(36, stream.Length);
 
         using var target = new PagedKvCache(numLayers: 2, numKvHeads: 2, headDim: 4);
         target.ImportKvState(stream);

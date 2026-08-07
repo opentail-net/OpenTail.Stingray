@@ -21,6 +21,12 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
     private readonly PagedKvCache _kvCache;
     private readonly int _ctxLen; // scratch buffer sizing (attnScores, TurboQuant)
 
+    // GGUF control/user-defined token IDs, when the model carries the optional tokenizer type
+    // table. An all-control prompt is structurally unlike normal text and is a numerically hostile
+    // input for activation Q8 prefill; PrefillDispatch keeps that narrow case on the sequential
+    // F32 route. Null means the source did not supply token-type classification.
+    private readonly bool[]? _controlTokenIds;
+
     // Norm weight cache: only tiny F32 weights (2048 floats = 8KB each)
     private readonly Dictionary<string, nint> _normCache = new();
 
@@ -267,6 +273,16 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
     {
         _model = model;
         _hp = hp;
+        if (model.Metadata.TryGetValue("tokenizer.ggml.token_type", out object? tokenTypesObj)
+            && tokenTypesObj is object[] tokenTypes)
+        {
+            _controlTokenIds = new bool[tokenTypes.Length];
+            for (int i = 0; i < tokenTypes.Length; i++)
+            {
+                int type = Convert.ToInt32(tokenTypes[i], System.Globalization.CultureInfo.InvariantCulture);
+                _controlTokenIds[i] = type is TokenizerSource.ControlTokenType or TokenizerSource.UserDefinedTokenType;
+            }
+        }
         // ctxLen only governs scratch buffer sizes; PagedKvCache allocates pages lazily.
         int ctxLen = maxContextLength > 0
             ? Math.Min(maxContextLength, hp.ContextLength)
@@ -826,6 +842,22 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
             return single;
         }
 
+        // Quantised activation prefill is well behaved on ordinary prompts, but an all-control
+        // two-token prompt was observed to produce a negative final-logit cosine versus the F32
+        // decode route. Control-only sequences are structural probes, not user prose; retaining
+        // their F32 path costs negligible normal-prompt performance and removes an unsafe default
+        // divergence. A mixed prompt (including the usual BOS + text) remains eligible for Q8.
+        if (IsAllControlTokenPrompt(tokens))
+        {
+            ReadOnlySpan<float> logits = default;
+            for (int i = 0; i < N; i++)
+            {
+                logits = Forward(tokens[i], startPos + i);
+                onAllPositionLogits?.Invoke(i, logits);
+            }
+            return logits;
+        }
+
         // MoE models: batched prefill runs the CSR-bucketed per-expert FFN (MoeFfnBatched) when
         // MoeBatchedPrefillSupported admits the model; the configurations it excludes (TurboQuant
         // cache, router/norm traces, Gemma-family post-layer transforms) still prefill per token.
@@ -887,6 +919,30 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
             return PrefillCoreTq(tokens, startPos);
 
         return PrefillCore(tokens, _kvCache, startPos, onAllPositionLogits);
+    }
+
+    private bool IsAllControlTokenPrompt(IReadOnlyList<int> tokens)
+    {
+        if (_controlTokenIds is null) return false;
+        for (int i = 0; i < tokens.Count; i++)
+        {
+            int token = tokens[i];
+            if ((uint)token >= (uint)_controlTokenIds.Length || !_controlTokenIds[token])
+                return false;
+        }
+        return true;
+    }
+
+    private bool IsAllControlTokenPrompt(ReadOnlySpan<int> tokens)
+    {
+        if (_controlTokenIds is null) return false;
+        for (int i = 0; i < tokens.Length; i++)
+        {
+            int token = tokens[i];
+            if ((uint)token >= (uint)_controlTokenIds.Length || !_controlTokenIds[token])
+                return false;
+        }
+        return true;
     }
 
     /// <summary>
@@ -4018,9 +4074,10 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
     /// Used by <see cref="ContinuousBatchingEngine"/> to allocate per-sequence caches.
     /// </summary>
     public PagedKvCache CreateCache() =>
-        new PagedKvCache(_hp.NumLayers, _hp.NumKvHeads, _headDim,
+        new PagedKvCache(_hp.NumLayers, _hp.NumKvHeads, _maxHeadDim,
             bf16Store: PagedKvCache.Bf16StoreRequested,
-            autoBf16: PagedKvCache.Bf16AutoRequested);
+            autoBf16: PagedKvCache.Bf16AutoRequested,
+            layerHeadDim: _layerHeadDim);
 
     // ── IBatchedForwardPass (issue #190) ────────────────────────────────────────
     // The engine drives this forward pass through the backend-agnostic interface, holding
@@ -4138,7 +4195,10 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
                 "gemma4 per-layer head_dim not yet supported on PrefillWithCache.");
         int N = tokens.Count;
         if (N == 0) throw new ArgumentException("Token list is empty", nameof(tokens));
-        if (N == 1 || (_hp.IsMoE && !MoeBatchedPrefillSupported))
+        // Keep the externally supplied-cache route coherent with PrefillDispatch. Continuous
+        // batching calls this method, so leaving the all-control safeguard only on Prefill would
+        // make server-admitted structural probes take the numerically unsafe Q8 activation path.
+        if (N == 1 || IsAllControlTokenPrompt(tokens) || (_hp.IsMoE && !MoeBatchedPrefillSupported))
         {
             ReadOnlySpan<float> logits = default;
             for (int i = 0; i < N; i++)
@@ -4406,6 +4466,23 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
         if (S == 0) return Array.Empty<float[]?>();
         if (startPos.Length != S || caches.Length != S || wantLogits.Length != S)
             throw new ArgumentException("chunks/startPos/caches/wantLogits lengths must match.");
+
+        // Packed admission is normally the highest-throughput prefill route. It must not,
+        // however, reintroduce Q8 activation quantisation for an all-control structural probe
+        // which Prefill and PrefillWithCache deliberately keep on the F32 route. Such prompts
+        // are rare and short; falling back for the whole affected packed batch avoids silently
+        // changing numerical behaviour based solely on whether another request arrived nearby.
+        for (int s = 0; s < S; s++)
+        {
+            if (!IsAllControlTokenPrompt(chunks[s].Span)) continue;
+            var fallback = new float[]?[S];
+            for (int i = 0; i < S; i++)
+            {
+                ReadOnlySpan<float> logits = PrefillWithCache(chunks[i].ToArray(), caches[i], startPos[i]);
+                if (wantLogits[i]) fallback[i] = logits.ToArray();
+            }
+            return fallback;
+        }
 
         // Packed offsets: sequence s owns packed rows [off[s], off[s+1]).
         var off = new int[S + 1];

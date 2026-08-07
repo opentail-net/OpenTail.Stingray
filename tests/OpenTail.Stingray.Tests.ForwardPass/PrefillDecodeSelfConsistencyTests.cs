@@ -56,6 +56,22 @@ public sealed class PrefillDecodeSelfConsistencyTests : IDisposable
         return tokens;
     }
 
+    private static int[] ControlTokens(GgufModel model, int count)
+    {
+        Assert.True(model.Metadata.TryGetValue("tokenizer.ggml.token_type", out object? raw)
+            && raw is object[], "reference model must expose GGUF token types");
+        var tokenTypes = (object[])raw!;
+        var tokens = new List<int>(count);
+        for (int i = 0; i < tokenTypes.Length && tokens.Count < count; i++)
+        {
+            int type = Convert.ToInt32(tokenTypes[i], System.Globalization.CultureInfo.InvariantCulture);
+            if (type is TokenizerSource.ControlTokenType or TokenizerSource.UserDefinedTokenType)
+                tokens.Add(i);
+        }
+        Assert.Equal(count, tokens.Count);
+        return tokens.ToArray();
+    }
+
     private static double Cosine(float[] a, float[] b)
     {
         double dot = 0, na = 0, nb = 0;
@@ -74,6 +90,28 @@ public sealed class PrefillDecodeSelfConsistencyTests : IDisposable
         using var backend = new CpuBackend();
         using var pass = new Engine.ForwardPass(model, backend, hp);
         return pass.Prefill(tokens).ToArray();
+    }
+
+    /// <summary>
+    /// The per-sequence cache path used by <see cref="Engine.ContinuousBatchingEngine"/>. It is a
+    /// separate public route from <see cref="Engine.ForwardPass.Prefill"/> and must retain the
+    /// same special-token accuracy guard.
+    /// </summary>
+    private static float[] ViaPrefillWithCache(GgufModel model, ModelHyperparams hp, int[] tokens)
+    {
+        using var backend = new CpuBackend();
+        using var pass = new Engine.ForwardPass(model, backend, hp);
+        using var cache = pass.CreateCache();
+        return pass.PrefillWithCache(tokens, cache).ToArray();
+    }
+
+    private static float[] ViaPrefillPacked(GgufModel model, ModelHyperparams hp, int[] tokens)
+    {
+        using var backend = new CpuBackend();
+        using var pass = new Engine.ForwardPass(model, backend, hp);
+        using var cache = pass.CreateCache();
+        float[]?[] results = pass.PrefillPackedMulti([tokens], [0], [cache], [true]);
+        return Assert.IsType<float[]>(results[0]);
     }
 
     /// <summary>The same logits, reached one token at a time. Never takes the int8 path.</summary>
@@ -145,5 +183,66 @@ public sealed class PrefillDecodeSelfConsistencyTests : IDisposable
             + $"(cosine {cosine:F6}). Expected ≳0.99 — a collapse here means the int8 activation "
             + "path is broken for this shape, not merely lossy. STINGRAY_CPU_PREFILL_Q8=0 "
             + "disables it.");
+    }
+
+    /// <summary>
+    /// An all-control prompt is a structural input rather than ordinary text. It previously drove
+    /// the Q8 path to a negative final-logit cosine against decode; it must now use the exact F32
+    /// sequential fallback even though the global Q8 gate remains enabled for normal prompts.
+    /// </summary>
+    [Fact]
+    public void Q8Prefill_AllControlTokenPrompt_FallsBackToF32DecodeParity()
+    {
+        string? path = FindModelPath(ModelFile);
+        if (path is null)
+            Assert.Skip($"{ModelFile} not present under models/.");
+
+        using var model = GgufModel.Open(path);
+        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        int[] tokens = ControlTokens(model, count: 2);
+
+        SimdKernels.Q8PrefillEnabled = true;
+        double cosine = Cosine(ViaDecode(model, hp, tokens), ViaPrefill(model, hp, tokens));
+
+        Assert.True(cosine > 0.9999,
+            $"all-control prompt must use the F32 fallback when Q8 is enabled (cosine {cosine:F6}).");
+    }
+
+    [Fact]
+    public void Q8PrefillWithCache_AllControlTokenPrompt_FallsBackToF32DecodeParity()
+    {
+        string? path = FindModelPath(ModelFile);
+        if (path is null)
+            Assert.Skip($"{ModelFile} not present under models/.");
+
+        using var model = GgufModel.Open(path);
+        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        int[] tokens = ControlTokens(model, count: 2);
+
+        SimdKernels.Q8PrefillEnabled = true;
+        double cosine = Cosine(ViaDecode(model, hp, tokens), ViaPrefillWithCache(model, hp, tokens));
+
+        Assert.True(cosine > 0.9999,
+            $"all-control prompt must use the F32 fallback through PrefillWithCache when Q8 is enabled " +
+            $"(cosine {cosine:F6}).");
+    }
+
+    [Fact]
+    public void Q8PrefillPacked_AllControlTokenPrompt_FallsBackToF32DecodeParity()
+    {
+        string? path = FindModelPath(ModelFile);
+        if (path is null)
+            Assert.Skip($"{ModelFile} not present under models/.");
+
+        using var model = GgufModel.Open(path);
+        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        int[] tokens = ControlTokens(model, count: 2);
+
+        SimdKernels.Q8PrefillEnabled = true;
+        double cosine = Cosine(ViaDecode(model, hp, tokens), ViaPrefillPacked(model, hp, tokens));
+
+        Assert.True(cosine > 0.9999,
+            $"all-control prompt must use the F32 fallback through PrefillPackedMulti when Q8 is enabled " +
+            $"(cosine {cosine:F6}).");
     }
 }
