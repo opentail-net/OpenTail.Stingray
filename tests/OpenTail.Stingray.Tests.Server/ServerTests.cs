@@ -654,6 +654,31 @@ public sealed class ServerTests : IClassFixture<WebApplicationFactory<Program>>
         Assert.Contains("chat.completion", json);
     }
 
+    [Fact]
+    public async Task ChatCompletion_HistoryPenalties_ReachSamplingParams()
+    {
+        var fake = new FakeInferenceEngine("test-model");
+        using var factory = new WebApplicationFactory<Program>().WithWebHostBuilder(b =>
+            b.ConfigureServices(s => s.AddSingleton<IInferenceEngine>(fake)));
+        using var client = factory.CreateClient();
+        var req = new
+        {
+            model = "test-model",
+            messages = new[] { new { role = "user", content = "Hi" } },
+            max_tokens = 5,
+            stream = false,
+            presence_penalty = 0.7f,
+            frequency_penalty = 0.2f,
+        };
+
+        var response = await client.PostAsJsonAsync("/v1/chat/completions", req);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.NotNull(fake.LastSamplingParams);
+        Assert.Equal(0.7f, fake.LastSamplingParams!.PresencePenalty);
+        Assert.Equal(0.2f, fake.LastSamplingParams.FrequencyPenalty);
+    }
+
     // ── response_format (structured outputs) ─────────────────────────────────
 
     [Fact]

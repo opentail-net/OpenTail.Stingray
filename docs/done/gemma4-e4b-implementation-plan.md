@@ -6,7 +6,7 @@ The local Q4_0 CPU no-shared-KV-norm proof passed on 2026-08-07. The resolved ra
 coherence incident and its production-template regression tests are in
 [`gemma4-degenerate-decode-handoff.md`](gemma4-degenerate-decode-handoff.md). Keep this document
 for the verified source layout and design rationale; track only remaining dense-12B and vision
-validation in `current-work.md`.
+validation in `../00-current-work.md`.
 
 **CLI receipt, 2026-08-07:** `stingray -m models/gemma-4-E4B_q4_0-it.gguf -g 0 -p "The capital
 of France is" -n 8 --temp 0` completed the CPU E4B text path and generated `**Paris**` after the

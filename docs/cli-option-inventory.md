@@ -15,7 +15,7 @@ the next drift immediately; it does not substitute for the still-required row-le
 human ownership classification.
 
 Companion to `env-var-inventory.md`; together they are the starting point for the configuration
-work in `quality-of-life-improvements-plan.md`. A current source-backed inventory is required
+work in `02-quality-of-life-improvements-plan.md`. A current source-backed inventory is required
 before the precedence chain (`CLI pin > profile > host > environment > default`) can be specified.
 
 **Class is unfilled deliberately**, same reasoning as the environment inventory: it is a judgement
@@ -89,7 +89,7 @@ hoc at each read site rather than in one place.
 |---|---|---|
 | `--backend` | | With -g -1, which GPU backend to score on: 'cuda' or 'vulkan'. Default: CUDA when present, else Vulkan. Needed on machines with both to gate the Vulkan path explicitly. |
 | `--batch-chunk-size` | | Tokens per Prefill() call in --batched mode (default: 256, matching the engine's STINGRAY_PREFILL_CHUNK default). Smaller chunks exercise more chunk-boundary KV-cache transitions; larger chunks are closer to a single-shot prompt. |
-| `--batched` | | Score every position through batched ForwardPass.Prefill (docs/cpu-prefill-plan.md §14) instead of token-by-token Forward. Default mode NEVER calls MatMulBatched, so it cannot see STINGRAY_CPU_PREFILL_Q8's effect at all -- this flag is required to actually measure that path's perplexity impact. Not supported with --tq, -g -1, or MoE/per-layer-head-dim models (they don't route through the batched dense path either); prompts are evaluated in --batch-chunk-size chunks so KV-cache truncation matches real multi-chunk prefill. |
+| `--batched` | | Score every position through batched ForwardPass.Prefill (docs/03-cpu-prefill-plan.md §14) instead of token-by-token Forward. Default mode NEVER calls MatMulBatched, so it cannot see STINGRAY_CPU_PREFILL_Q8's effect at all -- this flag is required to actually measure that path's perplexity impact. Not supported with --tq, -g -1, or MoE/per-layer-head-dim models (they don't route through the batched dense path either); prompts are evaluated in --batch-chunk-size chunks so KV-cache truncation matches real multi-chunk prefill. |
 | `--ngl|--n-gpu-layers|--gpu-layers|-g` | | Layers on GPU: 0 (default, CPU forward pass) or -1 (full offload — CUDA via CudaForwardPass, else Vulkan via GpuForwardPass). Partial offload is not supported. |
 | `--tq` | | Enable TurboQuant KV cache compression (same flag as the run command) |
 | `--tq-mode` | | TurboQuant quantizer for --tq: auto (default: kvarn where supported, else lloydmax with a quality warning), kvarn (issue #180: 4-bit K / 2-bit V, 128-token tiles), or lloydmax (3-bit codebooks; severely degrades quality on QK-norm models such as Qwen3 — issue #432). |
@@ -111,6 +111,7 @@ hoc at each read site rather than in one place.
 | `--dspark-place <MODE>` | | Where the DSpark draft head runs: auto (default; planner decides from VRAM/RAM headroom), gpu, cpu, off. Unset resolves via STINGRAY_DSPARK_PLACE. An explicit value pins the mode outright, like -g pins the layer split. |
 | `--dspark-verify-len <N>` | | Cap on draft tokens verified per DSpark step. Unset resolves via STINGRAY_DSPARK_VERIFY_LEN, then 0 = the confidence scheduler decides (up to the head's block size). |
 | `--expert-stats` | | MoE: write GPU expert-cache (SLRU) hit-rate stats to this file on exit. Env: STINGRAY_EXPERT_STATS. |
+| `--frequency-penalty <P>` | | Subtract `P` from a token's logit for each prior occurrence in the `--repeat-last-n` history window (0 = disabled). |
 | `--gpu-moe-prefill <BOOL>` | | CPU-MoE: run the routed-expert prefill matmuls on the GPU (transient weight upload, like llama.cpp's op-offload) instead of CPU dots. Default ON (#390); pass 'false' to force the CPU MoE prefill. Sets STINGRAY_MOE_GPU_PREFILL. ~+28-67% PREFILL on the CUDA GDN-hybrid CPU-MoE models, with DECODE within noise of the CPU path — the register-in-place pin mode (STINGRAY_MOE_PIN_MODE, default 'register') cudaHostRegisters the expert mmap pages instead of a ~14 GB copy, so no RAM duplicate and no page-cache eviction; a token gate (STINGRAY_MOE_GPU_PREFILL_MIN_TOKENS, default 64) keeps tiny prefills + decode on the CPU path. Argmax-stable (GPU runs the MoE in F32), not bit-identical to CPU. Auto-falls-back to the CPU path if the GPU scratch can't allocate. |
 | `--hide-thinking` | | Hide reasoning output (the model still reasons; only the answer is shown) |
 | `--image <PATH>` | | Path to a PNG image for multimodal input (Gemma 4 encoder-free vision). Repeatable for multiple images; reference each with an <image> marker in -p (left-to-right), or omit markers to prepend them. Requires --mmproj and a text prompt (-p). Runs on CPU, CUDA (full + partial offload), and Vulkan (full offload). |
@@ -130,6 +131,7 @@ hoc at each read site rather than in one place.
 | `--no-moe-predict-prefetch` | | MoE: disable next-layer predictive expert prefetch (Vulkan; on by default). Env: STINGRAY_MOE_PREDICT_PREFETCH=0. |
 | `--no-thinking` | | Disable reasoning mode (sets enable_thinking=false in the chat template) |
 | `--prefill-dequant-cache-mb` | | Dequant-once BLAS weight-cache budget in MiB for CPU prefill (issue #189): caches the F32 dequant per projection weight so chunked prefill re-pays no dequant (bit-identical). Auto (env STINGRAY_PREFILL_DEQUANT_MB / fit-25%-RAM) by default; 0 = off, negative = unlimited. CPU only. |
+| `--presence-penalty <P>` | | Subtract `P` once from the logit of every token present in the `--repeat-last-n` history window (0 = disabled). |
 | `--repeat-penalty|--rep-penalty` | | Repetition penalty (1.0 = disabled, >1.0 penalizes repeated tokens, default: 1.1). Mirrors llama.cpp's --repeat-penalty. |
 | `--single-turn` | | Generate one response and exit |
 | `--spec-draft-n-max` | | Max draft tokens per MTP step (issue #30 batched verify). Unset resolves via STINGRAY_MTP_DRAFT_N, then defaults to 1 (a 2-token verify batch — the measured optimum). Values > 1 also need snapshot-ring slots: set STINGRAY_MTP_BATCH_MAX >= drafts+1 (default 2; each extra slot costs ~150 MiB VRAM on 27B). Mirrors llama.cpp. |

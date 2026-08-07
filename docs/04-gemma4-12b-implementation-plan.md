@@ -221,7 +221,7 @@ scope for this plan; tracked separately.
 - **Phase 7** (multimodal): separate epic.
 
 ## 7. References
-- Existing E4B plan: `docs/gemma4-e4b-implementation-plan.md`
+- Historical E4B implementation record: `docs/done/gemma4-e4b-implementation-plan.md`
 - Gemma 4 12B announcement (2026-06-03): developers.googleblog.com / blog.google
 - A Visual Guide to Gemma 4 12B — newsletter.maartengrootendorst.com
 - GGUF: `unsloth/gemma-4-12b-it-GGUF`, `lmstudio-community/gemma-4-12B-it-GGUF`

@@ -22,4 +22,4 @@ pass, in-process restore, cache-byte comparison, or cursor-only replay would mee
 
 Historical record: [done/session-native-inference-runtime-plan-rev1.md](done/session-native-inference-runtime-plan-rev1.md),
 [adr-0001-session-cache-lifecycle.md](adr-0001-session-cache-lifecycle.md), and
-[milestone-0-state-topology-audit.md](milestone-0-state-topology-audit.md).
+[done/milestone-0-state-topology-audit.md](done/milestone-0-state-topology-audit.md).

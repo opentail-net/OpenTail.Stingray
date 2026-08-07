@@ -29,7 +29,7 @@ Status: **research / planning, no code written yet.** Tracked by **issue #126**.
 
 This doc scopes adding **image input** to the already-working Gemma 4 E4B text path. Audio (the
 other E-model modality) is noted but deferred. It is the multimodal counterpart to
-`docs/gemma4-e4b-implementation-plan.md` (whose *text* phasing is now stale — the gemma4 text
+`docs/done/gemma4-e4b-implementation-plan.md` (whose *text* phasing is now stale — the gemma4 text
 trunk is implemented in `ForwardPass.cs`: embedding scale, PLE, dual-RoPE, SWA, cross-layer
 KV-share, GeGLU, final-logit softcap are all present).
 
@@ -182,7 +182,7 @@ E2B/E4B audio via the `a.*` encoder (USM/conformer). Separate epic; not required
 ## 5. References
 
 - Issue #82 — Gemma 4 family support (text); vision marked out of scope.
-- `docs/gemma4-e4b-implementation-plan.md` — text trunk plan (phasing now stale; trunk landed).
+- `docs/done/gemma4-e4b-implementation-plan.md` — text trunk plan (phasing now stale; trunk landed).
 - HF docs: [Gemma 4 (transformers)](https://huggingface.co/docs/transformers/main/model_doc/gemma4),
   [Gemma 3n](https://huggingface.co/docs/transformers/main/model_doc/gemma3n),
   [Welcome Gemma 4 (blog)](https://huggingface.co/blog/gemma4).

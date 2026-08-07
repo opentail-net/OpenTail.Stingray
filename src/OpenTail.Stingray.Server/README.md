@@ -90,6 +90,15 @@ Override `EngineFactory` in tests to inject a fake `IInferenceEngine`; the rest 
 
 For CPU-only deployments, `OpenTail.Stingray:CpuThreads` (or `STINGRAY_CPU_THREADS`) controls the SIMD-kernel worker count. Leave it at `0` to use all logical processors. If the host is shared with other CPU- or memory-bandwidth-heavy work, benchmark a smaller value — oversubscribing these memory-bound kernels can lower tokens/sec.
 
+## Sampling
+
+`POST /v1/chat/completions` accepts OpenAI's `presence_penalty` and `frequency_penalty` fields.
+Both default to `0`. Presence penalty subtracts its value once from each token already generated;
+frequency penalty subtracts its value for every prior occurrence. They compose with
+`temperature`, `top_p`, `logit_bias`, and repetition penalty. For correct temperature-zero
+output, requests using any history-based penalty bypass batched raw-argmax sampling and use the
+history-aware sampler instead.
+
 ## Links
 
 - [Repository & docs](https://github.com/opentail-net/OpenTail.Stingray)

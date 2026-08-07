@@ -111,7 +111,7 @@ executes and is subtly wrong is a worse outcome than one that declines to start.
 
 The `dense-llama-cpu` profile is executable end-to-end through the CLI and server. It remains a
 high-precision CPU route: batching, persisted sessions, CUDA and Vulkan execution are not part of
-that profile. Implementation detail and acceptance evidence live in `docs/safetensors-support-plan.md`.
+that profile. Implementation detail and acceptance evidence live in `docs/08-safetensors-support-plan.md`.
 
 ## Text generation
 
@@ -560,7 +560,7 @@ dotnet run --project src/OpenTail.Stingray.Cli -c Release -- image \
 ## More
 
 - Architecture & algorithms: [docs/OpenTail.Stingray-Design.md](docs/OpenTail.Stingray-Design.md)
-- Active engineering roadmap: [docs/current-work.md](docs/current-work.md)
+- Active engineering roadmap: [docs/00-current-work.md](docs/00-current-work.md)
 - Archived investigations and completed work: [docs/done](docs/done)
 - Deployment profiles and live capability checks: [docs/recommended-configurations.md](docs/recommended-configurations.md)
 - Release gates and restart-continuation acceptance criteria: [docs/release-quality-test-matrix.md](docs/release-quality-test-matrix.md)

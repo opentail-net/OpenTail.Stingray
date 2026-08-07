@@ -156,7 +156,7 @@ or a maintained fork. A separate `SessionBatchingEngine` is the last resort, not
 Complete the following using code evidence and executable spikes:
 
 The code-evidence portion is recorded in
-[Milestone 0 state topology audit](../milestone-0-state-topology-audit.md). Its CPU-dense seam spike
+[Milestone 0 state topology audit](milestone-0-state-topology-audit.md). Its CPU-dense seam spike
 remains an execution gate; this table must not treat static evidence as a completed lifecycle test.
 
 | State/backend | Append resume | Exact rewind | Current-head fork | Export/import | Coverage | Logical/physical split |

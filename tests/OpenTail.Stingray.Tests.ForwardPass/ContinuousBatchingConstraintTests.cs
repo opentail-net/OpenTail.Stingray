@@ -109,7 +109,8 @@ public sealed class ContinuousBatchingConstraintTests
         private static float[] Row()
         {
             var r = new float[Vocab];   // all zeros…
-            r[PreferX] = 1f;            // …except 'X', the unconstrained argmax
+            r[PreferX] = 2f;            // …except 'X', the unconstrained argmax
+            r[ForceY] = 1.5f;           // …and a close runner-up for penalty tests
             return r;
         }
 
@@ -202,6 +203,31 @@ public sealed class ContinuousBatchingConstraintTests
         Assert.Equal(fake.ArgmaxCalls, engine.BatchedArgmaxSteps);
         Assert.Equal(0, engine.BatchedFullLogitsSteps);
         Assert.True(engine.BatchedArgmaxSequences >= fake.ArgmaxCalls);
+    }
+
+    [Fact]
+    public async Task HistoryPenalty_BypassesRawBatchedArgmaxAndChangesGreedyChoice()
+    {
+        var fake = new FakeBatchedForwardPass();
+        using var engine = new ContinuousBatchingEngine(fake, new CharTokenizer(), "test", maxBatchSize: 1);
+
+        // Admission samples X without history. On the next token X has a one-point presence
+        // penalty, so Y (1.5) must win over X (2 - 1). The raw batched-argmax path can only
+        // return X and therefore must not be used once token history can affect the result.
+        var sp = new SamplingParams
+        {
+            Temperature = 0f,
+            MaxNewTokens = 2,
+            PresencePenalty = 1f,
+        };
+
+        string text = await RunOne(engine, "prompt", sp);
+
+        Assert.Equal("XY", text);
+        Assert.Equal(0, fake.ArgmaxCalls);
+        Assert.True(fake.FullLogitsCalls > 0);
+        Assert.Equal(0, engine.BatchedArgmaxSteps);
+        Assert.True(engine.BatchedFullLogitsSteps > 0);
     }
 
     [Fact]

@@ -2,7 +2,7 @@
 
 **Generated:** 2026-07-26 by scanning `src/**/*.cs`. **14 checks.**
 
-Phase 0 deliverable 2 of `quality-of-life-improvements-plan.md`: "inventory all
+Phase 0 deliverable 2 of `02-quality-of-life-improvements-plan.md`: "inventory all
 model/backend/feature eligibility checks and their current owners".
 
 **Why this is the deliverable that matters most.** Six times in the performance log a large win

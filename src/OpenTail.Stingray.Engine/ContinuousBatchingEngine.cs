@@ -522,7 +522,10 @@ public sealed class ContinuousBatchingEngine : IInferenceEngine, IContinuousBatc
                 var s = active[i];
                 bool forcedClose = _thinkingEnabled && s.InThinking && s.Sp.MaxThinkingTokens > 0
                                    && s.ThinkingCount >= s.Sp.MaxThinkingTokens && _endThinkTokenId > 0;
-                if (s.Sp.Temperature > 0f || forcedClose || s.Constraint is { IsConstraining: true })
+                // The raw GPU argmax has no visibility of per-sequence token history.
+                // Presence/frequency/repetition penalties can therefore change even a
+                // temperature-zero choice, so those requests must use full logits.
+                if (s.Sp.Temperature > 0f || s.Sp.HasHistoryPenalty || forcedClose || s.Constraint is { IsConstraining: true })
                     allGreedy = false;
             }
 

@@ -3,14 +3,32 @@
 This is the active engineering backlog. It contains only work that is not yet proven or
 product-complete. Historical investigations, experiments, and superseded plans live in [done](done).
 
+## Ordered runway
+
+Work the numbered files in this order unless a concrete defect changes the priority:
+
+1. [01 — session-native inference runtime](01-session-native-inference-runtime-plan.md)
+2. [02 — configuration and operator quality](02-quality-of-life-improvements-plan.md)
+3. [03 — CPU prefill release hardening](03-cpu-prefill-plan.md)
+4. [04 — Gemma 4 12B text validation](04-gemma4-12b-implementation-plan.md)
+5. [05 — Gemma 4 E4B vision](05-gemma4-e4b-vision-plan.md)
+6. [06 — Qwen3.5 MoE/GDN validation](06-qwen35moe-plan.md)
+7. [07 — DSpark remaining integration](07-dspark-plan.md)
+8. [08 — SafeTensors next formats/backends](08-safetensors-support-plan.md)
+9. [09 — CPU architecture coverage](09-cpu-architecture-kernel-opportunities.md)
+
+Hardware that cannot be validated on this PC is intentionally separated in
+[90 — external hardware work](90-external-hardware-work.md). It is not part of the local runway.
+
 ## Priority 1 — release-quality and operator hardening
 
 1. **Productize the proven CPU-dense restart lane.** The real SmolLM2 GGUF cross-process proof
    (persist child exit → fresh runtime restore → greedy continuation → token-for-token replay) now
    passes. Expose a minimal named-session lifecycle only for that capability-gated lane.
 2. **Hardware release runners.** Attach reproducible CPU AVX2, CUDA dense, Vulkan, hybrid MoE,
-   MTP/speculation, and real-session results to the release notes. This machine can supply AVX2
-   and AMD Vulkan receipts; CUDA rows require a designated NVIDIA runner.
+   MTP/speculation, and real-session results to the release notes. Local CPU/Vulkan work stays
+   here; NVIDIA/CUDA and ARM64-only receipts are tracked in
+   [90-external-hardware-work.md](90-external-hardware-work.md).
 3. **Capability fixtures.** Static inspect/plan golden fixtures now cover CPU backend selection,
    TurboQuant selection/fallback, KV-dtype applicability, batching/tool-grammar exclusion, MTP,
    and the unsupported restart-session verdict. Extend the set only where the loader actually
@@ -21,8 +39,8 @@ product-complete. Historical investigations, experiments, and superseded plans l
 
 References: [release-quality-test-matrix.md](release-quality-test-matrix.md),
 [recommended-configurations.md](recommended-configurations.md),
-[quality-of-life-improvements-plan.md](quality-of-life-improvements-plan.md), and
-[session-native-inference-runtime-plan.md](session-native-inference-runtime-plan.md).
+[02-quality-of-life-improvements-plan.md](02-quality-of-life-improvements-plan.md), and
+[01-session-native-inference-runtime-plan.md](01-session-native-inference-runtime-plan.md).
 
 ## Priority 2 — correctness and architecture coverage
 
@@ -51,7 +69,8 @@ References: [release-quality-test-matrix.md](release-quality-test-matrix.md),
 
 Do not reopen the closed Q4_K repacked-GEMM investigation. Focus on Flash attention at head
 dimensions 128/256, Q6_K AVX2, scalar-fallback formats, per-layer-dimension batched prefill,
-CPU MoE, ARM64, additional scalar-fallback format coverage, and Q8-prefill accuracy. Q3_K batched dispatch and the
+CPU MoE, additional scalar-fallback format coverage, and Q8-prefill accuracy. ARM64 work is in
+[90-external-hardware-work.md](90-external-hardware-work.md). Q3_K batched dispatch and the
 Q2_K >512-token production fallback are already covered by the focused Q8-prefill equivalence
 suite; neither is an open correctness gap.
 
@@ -64,8 +83,8 @@ The fused 2/4/8-input Q6_K route is already protected by
 `MatMulBatchedQ8EquivalenceTests` (23/23 focused cases passed on 2026-08-07); the next Q6_K
 slice is therefore performance-only, not missing correctness coverage.
 
-See [cpu-architecture-kernel-opportunities.md](cpu-architecture-kernel-opportunities.md) and
-[cpu-prefill-plan.md](cpu-prefill-plan.md).
+See [09-cpu-architecture-kernel-opportunities.md](09-cpu-architecture-kernel-opportunities.md) and
+[03-cpu-prefill-plan.md](03-cpu-prefill-plan.md).
 
 ## Archive rule
 

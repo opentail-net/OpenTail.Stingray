@@ -227,7 +227,15 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         [Description("Override the model's built-in chat template with a raw Jinja2 source string. Named shortcuts (chatml, llama3, …) are refused — hand-written approximations degrade output silently. Mirrors llama.cpp's --chat-template.")]
         public string? ChatTemplateOverride { get; init; }
 
-        // ── llama.cpp flags recognised and REFUSED ────────────────────────────
+        [CommandOption("--presence-penalty <P>")]
+        [Description("Subtract once from logits of tokens already generated (0 = disabled).")]
+        public float? PresencePenalty { get; init; }
+
+        [CommandOption("--frequency-penalty <P>")]
+        [Description("Subtract once per prior occurrence from a token's logit (0 = disabled).")]
+        public float? FrequencyPenalty { get; init; }
+
+        // ── llama.cpp flags recognised and refused ───────────────────────────
         // Bound so the user gets a message naming the OpenTail alternative rather than
         // "unexpected argument". Never silently accepted: see docs/llamacpp-onramp-plan.md.
 
@@ -256,14 +264,6 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         [CommandOption("--numa <MODE>")]
         [Description("(llama.cpp compat) Not implemented in OpenTail.Stingray.")]
         public string? Numa { get; init; }
-
-        [CommandOption("--presence-penalty <P>")]
-        [Description("Subtract once from logits of tokens already generated (0 = disabled).")]
-        public float? PresencePenalty { get; init; }
-
-        [CommandOption("--frequency-penalty <P>")]
-        [Description("Subtract once per prior occurrence from a token's logit (0 = disabled).")]
-        public float? FrequencyPenalty { get; init; }
 
         [CommandOption("-b|--batch-size <N>")]
         [Description("(llama.cpp compat) Not supported — OpenTail does not expose a configurable batch size.")]
