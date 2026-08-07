@@ -58,3 +58,43 @@ sequential path (6.0896 vs 6.0789), which is why it stayed behind
 - Full wikitext-2 test split rather than a 120 KB subset.
 - Multiple context lengths (only `-c 2048` here; the two position buckets give a partial view).
 - Separating the repack gate from the int8 gate so each can be attributed independently.
+
+
+## KNOWN DEFECT 2026-08-07 — int8 prefill collapses on low-magnitude input
+
+The corpus evidence above says int8 prefill does not degrade quality on wikitext. That remains
+true, and it is not the whole picture. A sweep across input classes found a **user-reachable
+collapse**:
+
+| input class | cos @ n=8 | cos @ n=32 |
+|---|---:|---:|
+| prose | 0.9973 | 0.9697 |
+| code | 0.9776 | 0.9953 |
+| hex | 0.9980 | 0.9981 |
+| base64 | 0.9968 | 0.9984 |
+| repeated word | 0.9965 | 0.9972 |
+| CJK | 0.9986 | 0.9971 |
+| punctuation runs | 0.9972 | 0.9602 |
+| **whitespace only** | **-0.1241** | 0.9776 |
+
+A whitespace-only prompt of 8 tokens yields a final-logit cosine of **-0.124** against exact F32,
+with a different argmax. The logits point in roughly the opposite direction. Deterministic and
+exactly reproducible across runs.
+
+**The shipped mitigation does not cover it.** `ForwardPass` skips int8 only when a prompt is
+composed ENTIRELY of control/user-defined tokens. Whitespace tokens are ordinary vocabulary
+entries. The mitigation keys on token **type**; the failure is driven by activation **magnitude** —
+per-row int8 scaling degrades badly when a row's dynamic range collapses toward zero, and near-empty
+input is exactly that. The earlier all-control-token case was very likely the same underlying
+failure observed through a different door.
+
+**Reachability is real but narrow:** a blank-ish prompt, a document with a long whitespace run, an
+empty template slot. Ordinary text is unaffected. Note also that several ordinary classes sit below
+0.99 (prose at n=32: 0.9697; punctuation at n=32: 0.9602), which matters when calibrating any
+tolerance against this path — the earlier "int8 is 0.35% better on corpus perplexity" result is an
+average over a corpus and does not bound per-prompt divergence.
+
+Pinned by `Q8PrefillLowMagnitudeInputTests`, deliberately **skipped rather than asserted green**: a
+test written to pass against -0.124 would bless the defect. The suggested fix is to gate int8 on
+activation dynamic range rather than token type, so the guard tracks the property that actually
+causes the failure. Un-skip when that lands.

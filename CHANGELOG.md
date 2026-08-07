@@ -90,6 +90,15 @@ human-facing map that a raw commit graph cannot.
   throughput benefit is predicted from the instruction tables, **not measured**: the development
   machine is AVX2-only and cannot execute the new branch.
 
+- **Known defect (int8 CPU prefill):** a whitespace-only prompt of ~8 tokens drives the int8
+  activation-prefill logits to a cosine of **-0.124** against the exact F32 path, with a different
+  argmax. The existing guard skips int8 only for prompts made entirely of control/user-defined
+  tokens; whitespace tokens are ordinary vocabulary, so they take the int8 path. The guard keys on
+  token type while the failure is driven by activation magnitude. Ordinary text is unaffected
+  (0.96-0.999) and corpus perplexity is unchanged, but a blank-ish prompt or a long whitespace run
+  is reachable. `STINGRAY_CPU_PREFILL_Q8=0` avoids it. Pinned by a deliberately skipped test,
+  `Q8PrefillLowMagnitudeInputTests`; see `docs/cpu-prefill-quality-gate.md`.
+
 ### Fixed
 
 - Generation is now bounded by the active context, not just the prompt. `ForwardPass` sizes its
