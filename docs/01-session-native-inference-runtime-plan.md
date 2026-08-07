@@ -6,7 +6,11 @@ processes; restart-safe sessions are not yet a supported CLI/server feature.
 ## Immediate work
 
 1. Expose a minimal named-session lifecycle for the proven CPU-dense lane, with explicit
-   capability refusal outside it.
+   capability refusal outside it. **Loader/DI seam complete:** `EnableSessions` now constructs
+   and publishes `IServerSessionRuntime` only for CPU-dense GGUF batching. `POST`, `GET`, and
+   `DELETE /v1/sessions` plus append-only `POST /v1/sessions/{id}/turns` now provide the hot
+   named-session shell, including optimistic revisions and idempotency IDs. Durable restart
+   lifecycle remains the next slice.
 2. Add a backend/cache conformance matrix for hot reuse, rollback, persistence, and restart.
    Its persisted ABI must represent per-layer KV/head dimensions and V-region stride; a single
    model-level `headDim` silently corrupts Gemma-class mixed-dimension caches.

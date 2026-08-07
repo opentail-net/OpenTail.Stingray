@@ -2646,7 +2646,21 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         int totalDecoded = 0;
         bool inThinking = false;
         int thinkingTokenCount = 0;
-        int historyCap = ResolvePenaltyHistoryCap(repeatLastN);
+        // Presence/frequency count the WHOLE completion (OpenAI), so history may only be trimmed to
+        // the repetition window when neither is active — which is the common case, so the usual
+        // memory profile is unchanged. The repetition window itself is applied by the sampler now,
+        // not by evicting this list, so the two families no longer share one window.
+        int historyCap = (sp.PresencePenalty != 0f || sp.FrequencyPenalty != 0f)
+            ? int.MaxValue
+            : ResolvePenaltyHistoryCap(repeatLastN);
+
+        // --repeat-last-n and SamplingParams.RepeatLastN encode "no limit" differently. Translate
+        // here so the flag's 0/-1 convention stays a CLI concern:
+        //   0  → repetition penalty off entirely (neutralise the multiplier)
+        //   <0 → whole history        (sampler: 0)
+        //   >0 → that many trailing tokens
+        float effectiveRepetition = repeatLastN == 0 ? 1.0f : sp.RepetitionPenalty;
+        int samplerRepeatLastN = repeatLastN < 0 ? 0 : repeatLastN;
         var recentTokens = new List<int>(Math.Min(historyCap, 256));
         var streamDec = new Utf8StreamDecoder();
         // Tool-call grammar constraint (issue #374): start each response from the watching state so
@@ -2662,11 +2676,14 @@ public sealed class RunCommand : Command<RunCommand.Settings>
 
             long nonTrunkStart = profDecode ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
 
-            // `recentTokens` is evicted to historyCap below, so it IS the penalty window — no
-            // per-token slicing, and therefore no per-token allocation in the decode loop.
-            var spWithHistory = (sp.RepetitionPenalty != 1.0f || sp.PresencePenalty != 0f || sp.FrequencyPenalty != 0f)
-                && repeatLastN != 0 && recentTokens.Count > 0
-                ? sp with { PreviousTokens = recentTokens }
+            var spWithHistory = (effectiveRepetition != 1.0f || sp.PresencePenalty != 0f || sp.FrequencyPenalty != 0f)
+                && recentTokens.Count > 0
+                ? sp with
+                {
+                    PreviousTokens = recentTokens,
+                    RepetitionPenalty = effectiveRepetition,
+                    RepeatLastN = samplerRepeatLastN,
+                }
                 : sp;
             int next;
             if (inThinking && maxThinkingTokens > 0 && thinkingTokenCount >= maxThinkingTokens && s_endThinkTokenId > 0)

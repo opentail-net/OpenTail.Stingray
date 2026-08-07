@@ -39,6 +39,7 @@
     <ProjectReference Include="..\OpenTail.Stingray.Vulkan\OpenTail.Stingray.Vulkan.csproj" PrivateAssets="all" />
     <ProjectReference Include="..\OpenTail.Stingray.Cuda\OpenTail.Stingray.Cuda.csproj" PrivateAssets="all" />
     <ProjectReference Include="..\OpenTail.Stingray.Engine\OpenTail.Stingray.Engine.csproj" PrivateAssets="all" />
+    <ProjectReference Include="..\OpenTail.Stingray.Sessions\OpenTail.Stingray.Sessions.csproj" PrivateAssets="all" />
     <ProjectReference Include="..\OpenTail.Stingray.Vision\OpenTail.Stingray.Vision.csproj" PrivateAssets="all" />
     <ProjectReference Include="..\OpenTail.Stingray.Pipeline\OpenTail.Stingray.Pipeline.csproj" PrivateAssets="all" />
     <ProjectReference Include="..\OpenTail.Stingray.TurboQuant\OpenTail.Stingray.TurboQuant.csproj" PrivateAssets="all" />

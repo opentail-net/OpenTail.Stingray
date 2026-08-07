@@ -415,8 +415,13 @@ public sealed record StaticPlanReport(
         // lifecycle contract or a backend/cache conformance guarantee. Saying "available" merely
         // because PagedKvCache can export bytes would turn a useful capability report into an
         // accidental promise.
+        // The server now serves a named-session lifecycle (POST/GET/DELETE /v1/sessions) under
+        // EnableSessions, so "not exposed by the CLI or server" is no longer true of the server
+        // half. What is still absent — and what this decision actually reports — is restart
+        // CONTINUATION: session state is in-process only, with turn submission and durable restart
+        // wiring unimplemented. The CLI exposes neither.
         decisions.Add(new("session_restart_continuation", false,
-            "Not exposed by the CLI or server yet; the CPU-dense reference restart proof passes, but no supported named-session lifecycle or backend/cache conformance contract exists."));
+            "Not exposed by the CLI; the server serves a named-session lifecycle under EnableSessions but holds state in-process only. The CPU-dense reference restart proof passes, yet no durable restart or backend/cache conformance contract exists."));
 
         StaticPlanPlacement? placement = null;
         HardwareProfile hardware = runtimeFacts.HardwareProfile;
