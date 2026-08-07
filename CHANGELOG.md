@@ -49,6 +49,16 @@ human-facing map that a raw commit graph cannot.
   default remains 512. This is deliberate: silently treating `-1` as "generate nothing" or as the
   default would be worse than saying so.
 
+- Recorded a measured CPU baseline against llama.cpp (`b8585`) on identical hardware, model and
+  thread count — see `docs/cpu-benchmark-llamacpp-baseline.md`. On an AVX2-only machine with
+  SmolLM2-1.7B Q4_K_M, prefill throughput crosses over at roughly 2500 tokens: llama.cpp leads by
+  ~27% at 512 tokens and ~10% at 1024, the two are within ~2% at 2048, and Stingray is ~5% ahead at
+  ~3100. Decode is at parity (26.4 vs 26.5 t/s). The short-prompt deficit has the signature of a
+  fixed per-process cost rather than slower kernels — Stingray's throughput *rises* from 512 to
+  1024 tokens before turning over, which is JIT of the hot SIMD kernels being amortised, and a
+  long-lived server pays it once rather than per request. The note records the methodology
+  asymmetry (warmed in-process AOT vs a fresh JIT-ing process per sample) because it favours
+  llama.cpp at short prompts.
 - CPU prefill attention is faster on the Flash-64 path: **+4.0%** end-to-end prefill throughput
   (SmolLM2-1.7B Q4_K_M, 1550 tokens, headDim 64, 12 logical CPUs, 6 interleaved rounds per cell,
   best-of-6; +4.3% on medians). Two changes, measured as a 2×2 because they overlap:
