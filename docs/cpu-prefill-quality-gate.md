@@ -98,3 +98,52 @@ Pinned by `Q8PrefillLowMagnitudeInputTests`, deliberately **skipped rather than 
 test written to pass against -0.124 would bless the defect. The suggested fix is to gate int8 on
 activation dynamic range rather than token type, so the guard tracks the property that actually
 causes the failure. Un-skip when that lands.
+
+
+## Attempted fix 2026-08-07 — "gate int8 on activation dynamic range" does NOT work as stated
+
+The recommended fix was to gate int8 on activation dynamic range instead of token type. Calibrating
+that gate before implementing it shows **the obvious form of it cannot work**, and the measurement
+is recorded so nobody implements it on the strength of the reasoning alone.
+
+Hypothesis: per-row symmetric int8 uses `scale = max|x| / 127`, so a row whose energy sits in small
+components while one outlier sets the scale loses those components. The discriminator would then be
+the outlier ratio `max|x| / rms(x)`, measured on the prompt's embeddings — a pure function of the
+tokens, which is required here (the three existing gate call sites are all prompt-level, and a
+statistic computed over a batch would reintroduce the arrival-dependence and chunk-dependence that
+`ContinuousBatchingTests.PrefillWithCache_Chunked_MatchesFull` exists to prevent).
+
+Measured embedding outlier ratio against the observed int8 damage:
+
+| class | worst ratio | mean ratio | int8 cosine |
+|---|---:|---:|---:|
+| whitespace | 10.78 | 10.78 | **-0.124** |
+| prose | 10.78 | 5.94 | 0.997 |
+| code | **12.58** | 6.11 | 0.978 |
+| repeat | 10.78 | 8.62 | 0.997 |
+| cjk | 4.84 | 3.79 | 0.999 |
+
+**It does not separate.** `code` has a higher worst-case ratio than whitespace and is healthy;
+whitespace shares its worst-case ratio with prose and repetition. Any threshold that catches
+whitespace also catches ordinary prose and code. A gate built on this statistic would either be
+inert or would push common inputs onto the slow exact path while still not being principled.
+
+Why the proxy fails: the embeddings are not where the pathology lives. Whitespace embeddings are
+unremarkable; the activations only become hostile to int8 after passing through norms and
+projections. The statistic has to be measured **where the quantisation happens**, not at the input.
+
+Note the Q8 path already quantises each token's activations independently ("quantize every token's
+activations once up front"), so this is not cross-row contamination — a specific row genuinely
+quantises badly, several layers in.
+
+### What a real fix requires
+
+1. Instrument the actual quantisation point and find which layer's activations first go pathological
+   for whitespace input, and by what statistic.
+2. Gate **per row**, not per batch or per prompt — that keeps the decision a function of the token
+   alone and preserves both the chunked/unchunked equivalence and the "a token's logits must not
+   depend on its neighbours" contract.
+3. Only then choose a threshold, from the separating statistic rather than a plausible one.
+
+Until that exists, `STINGRAY_CPU_PREFILL_Q8=0` is the mitigation, and the defect stays pinned by the
+skipped `Q8PrefillLowMagnitudeInputTests`.
