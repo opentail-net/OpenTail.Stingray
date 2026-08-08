@@ -98,11 +98,31 @@ human-facing map that a raw commit graph cannot.
   (`{"type":"function","function":{"name":"X"}}`) narrows the constrainable tool set to X, so the
   argument grammar forbids every other tool name — the filter *is* the enforcement. Naming a
   function absent from `tools` is a 400 instead of falling back to unconstrained tool use.
-  `tool_choice:"required"` is rejected with a 400 explaining the limitation: forcing a call requires
-  compelling the model to emit an open marker, and the argument constraints only arm once it has
-  already done so. Previously `required` was accepted and ignored, handing prose back to a client
-  that had asked for a guaranteed call with no way to detect the difference. `"none"` and `"auto"`
-  were already correct and are unchanged.
+  `tool_choice:"required"` is now honoured: a new `ForcedToolCallConstraint` masks the vocabulary
+  down to the model family's tool-call open marker until that marker is emitted, then goes inert and
+  hands over to the argument grammar it is AND-composed with. This is the inverse of the existing
+  constraints, which arm *on* the open marker and so can shape a call but never cause one — hence a
+  new per-family `IToolCallAdapter.BuildForcedCallConstraint`, implemented for Qwen, Qwen3-Coder,
+  Llama-3, DeepSeek and Gemma 4. Two consequences worth knowing: forcing puts the marker in the
+  *first* generated position, which suppresses any preamble or reasoning block for that turn (the
+  strict reading of "required" — the response is a call, not prose containing one); and it is
+  deliberately not gated on the server-wide `ToolGrammar` option, since that option governs default
+  argument-shape constraining while `required` is an explicit per-request demand to be constrained.
+  Where a call cannot be forced — no tool in `tools`, no vocabulary loaded, or a family whose marker
+  is not a single token (Qwen3-Coder's `<function=` is text, so it forces the `<tool_call>` envelope
+  instead; DeepSeek forces its outer block marker) — the request is a 400 rather than an unforced
+  generation, because prose returned to a client that asked for a guaranteed call is undetectable at
+  the client. Previously `required` was accepted and ignored. `"none"` and `"auto"` were already
+  correct and are unchanged.
+  <br>Combining `required` with a schema-constrained `response_format` is also a 400: both claim the
+  first generated token — one for the open marker, one for JSON — so their masks intersect to
+  nothing, and a fully masked vocabulary does not fail loudly (`Sampler.Softmax` falls back to
+  uniform, `Greedy` to the raw logits), meaning the turn would come back unconstrained and satisfy
+  neither request.
+  <br>Named `tool_choice` still narrows without compelling: with `ToolGrammar` on, the grammar pins
+  which tool may be called, but the model is not forced to start a call. Making a named choice force
+  as well would reuse the same mechanism and is a deliberate follow-up rather than part of this
+  change.
 
 ### Fixed
 

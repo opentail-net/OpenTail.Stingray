@@ -149,6 +149,18 @@ public sealed class ChatTemplateRenderer
     }
 
     /// <summary>
+    /// Builds the constraint that forces generation to begin a tool call, for OpenAI
+    /// <c>tool_choice:"required"</c>. Null means the request cannot be honoured — no vocabulary
+    /// loaded, or the family's open marker is not a single token — and the caller must reject the
+    /// request rather than generate unforced, since the client asked for a guaranteed call.
+    /// </summary>
+    public ITokenConstraint? BuildForcedToolCallConstraint()
+    {
+        if (_grammarVocabulary is null) return null;
+        return _toolCallAdapter.BuildForcedCallConstraint(_grammarVocabulary);
+    }
+
+    /// <summary>
     /// Reconfigures the renderer with model-specific metadata. Called by the built-in
     /// engine loader once the GGUF file has been opened. Safe to call once; subsequent
     /// calls overwrite previous values (used by hot-reload scenarios).

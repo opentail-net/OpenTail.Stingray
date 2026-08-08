@@ -121,6 +121,32 @@ public interface IToolCallAdapter
     /// <param name="tools">The active tool definitions (name + parsed argument schema).</param>
     /// <param name="vocab">Vocabulary view used to resolve structural tokens and match candidates.</param>
     ITokenConstraint? BuildArgumentConstraint(IReadOnlyList<ToolSchema> tools, GrammarVocabulary vocab) => null;
+
+    /// <summary>
+    /// A constraint that FORCES generation to begin a tool call, for OpenAI
+    /// <c>tool_choice:"required"</c>. Returns null when this family's open marker is not a single
+    /// token in the supplied vocabulary, which means the model cannot be forced.
+    ///
+    /// <para>A null return must be treated as "refuse the request", not "carry on unforced". The
+    /// value of <c>required</c> is that the caller can rely on receiving a call; degrading silently
+    /// to ordinary generation reintroduces exactly the undetectable non-compliance this exists to
+    /// remove.</para>
+    /// </summary>
+    ITokenConstraint? BuildForcedCallConstraint(GrammarVocabulary vocab) => null;
+
+    /// <summary>
+    /// Helper for <see cref="BuildForcedCallConstraint"/>: resolves <paramref name="marker"/> to a
+    /// single vocabulary token and wraps it, or returns null when the marker is not a special token
+    /// (multi-token markers such as Qwen-Coder's <c>&lt;function=</c> cannot be forced this way,
+    /// which is why each adapter passes the marker that IS tokenised whole).
+    /// </summary>
+    public static ITokenConstraint? ForceMarker(GrammarVocabulary vocab, string marker)
+    {
+        ArgumentNullException.ThrowIfNull(vocab);
+        return vocab.TryGetSpecialToken(marker, out int id) && id > 0 && id < vocab.VocabSize
+            ? new ForcedToolCallConstraint(vocab, id)
+            : null;
+    }
 }
 
 /// <summary>
@@ -331,6 +357,10 @@ public sealed class QwenToolCallAdapter(string architecture) : IToolCallAdapter
     /// <c>&lt;tool_call&gt;</c> and diverge on the first body byte, so whichever matches the model's
     /// actual output engages and the other stays inert. Returns null when no supplied tool is
     /// constrainable or <c>&lt;tool_call&gt;</c> isn't a vocabulary token.</remarks>
+    /// <inheritdoc/>
+    public ITokenConstraint? BuildForcedCallConstraint(GrammarVocabulary vocab) =>
+        IToolCallAdapter.ForceMarker(vocab, OpenMarker);
+
     public ITokenConstraint? BuildArgumentConstraint(IReadOnlyList<ToolSchema> tools, GrammarVocabulary vocab)
     {
         ArgumentNullException.ThrowIfNull(tools);
@@ -430,6 +460,14 @@ public sealed class QwenCoderToolCallAdapter : IToolCallAdapter
     public int MaxOpenTagLength => OpenMarker.Length;
 
     /// <inheritdoc/>
+    /// <inheritdoc/>
+    /// <remarks>Forces <c>&lt;tool_call&gt;</c>, not <c>&lt;function=&gt;</c>: the inner XML tag is
+    /// ordinary text spanning several tokens and cannot be compelled by a single-token mask, whereas
+    /// the envelope opener is one special token and is what the parser keys on.</remarks>
+    public ITokenConstraint? BuildForcedCallConstraint(GrammarVocabulary vocab) =>
+        IToolCallAdapter.ForceMarker(vocab, ArmMarker);
+
+    /// <inheritdoc/>
     /// <remarks>Constrains the XML argument body of Qwen3-Coder's
     /// <c>&lt;tool_call&gt;&lt;function=NAME&gt;&lt;parameter=KEY&gt;VALUE&lt;/parameter&gt;…&lt;/function&gt;&lt;/tool_call&gt;</c>
     /// wire format (issue #383) — the XML sibling of the JSON/Gemma constraints. Inert (returns null)
@@ -521,6 +559,11 @@ public sealed class LlamaToolCallAdapter : IToolCallAdapter
 
     public string Architecture => "llama";
     public int MaxOpenTagLength => OpenMarker.Length;
+
+    /// <inheritdoc/>
+    /// <inheritdoc/>
+    public ITokenConstraint? BuildForcedCallConstraint(GrammarVocabulary vocab) =>
+        IToolCallAdapter.ForceMarker(vocab, OpenMarker);
 
     /// <inheritdoc/>
     /// <remarks>Constrains the JSON argument object of Llama-3's
@@ -628,6 +671,14 @@ public sealed class DeepSeekToolCallAdapter : IToolCallAdapter
 
     public string Architecture => "deepseek2";
     public int MaxOpenTagLength => OuterOpen.Length;
+
+    /// <inheritdoc/>
+    /// <inheritdoc/>
+    /// <remarks>Forces the OUTER <c>&lt;|tool_calls_begin|&gt;</c>, which is what DeepSeek emits
+    /// first; the argument constraint then arms on the inner <c>&lt;|tool_call_begin|&gt;</c> as
+    /// usual. Forcing the inner marker instead would produce a block the parser cannot read.</remarks>
+    public ITokenConstraint? BuildForcedCallConstraint(GrammarVocabulary vocab) =>
+        IToolCallAdapter.ForceMarker(vocab, OuterOpen);
 
     /// <inheritdoc/>
     /// <remarks>Constrains the JSON argument object of DeepSeek's
@@ -777,6 +828,11 @@ public sealed class Gemma4ToolCallAdapter : IToolCallAdapter
     /// runs on past the (complete, parseable) tool-call block and hallucinates a trailing turn —
     /// issue #304. The block is left intact because the stop token is consumed, not emitted.</remarks>
     public IReadOnlyList<string> ToolBoundaryStopMarkers => s_toolBoundaryStopMarkers;
+
+    /// <inheritdoc/>
+    /// <inheritdoc/>
+    public ITokenConstraint? BuildForcedCallConstraint(GrammarVocabulary vocab) =>
+        IToolCallAdapter.ForceMarker(vocab, OpenMarker);
 
     /// <inheritdoc/>
     /// <remarks>Constrains the argument object of Gemma's native

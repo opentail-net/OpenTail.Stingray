@@ -174,26 +174,53 @@ public static class OpenAiEndpoints
         // the client forces no tool use (tool_choice:"none"). Restricts the sampler to tokens that
         // keep the arguments schema-conformant in the model's native call syntax.
         //
-        // tool_choice support is deliberately partial and fails LOUD where it is absent:
-        //   "none"                          -> honoured (no constraint; tools not forced)
-        //   "auto" / absent                 -> honoured (this is the default path)
-        //   {"type":"function", name: "X"}  -> honoured by narrowing the constrainable tool set to
-        //                                      X, so the grammar forbids every other tool name
-        //   "required"                      -> NOT honoured, and rejected below rather than ignored
+        // Every tool_choice form is honoured, and any form that CANNOT be honoured fails loud:
+        //   "none"                          -> no constraint; tools are not forced
+        //   "auto" / absent                 -> the default path
+        //   {"type":"function", name: "X"}  -> narrows the constrainable tool set to X, so the
+        //                                      grammar forbids every other tool name. Note this
+        //                                      narrows rather than compels: with ToolGrammar off
+        //                                      there is no grammar to narrow, and even with it on
+        //                                      the model is not forced to start a call at all.
+        //                                      Compelling it too would be a behaviour change beyond
+        //                                      "required" and is left as a separate decision; the
+        //                                      forcing mechanism below is what it would reuse.
+        //   "required"                      -> forces the open marker as the first token (below),
+        //                                      composed with the argument grammar
         //
-        // "required" needs generation to be forced to BEGIN a call, and the argument constraints
-        // only arm once the model has already emitted the open marker — they never compel one. The
-        // open marker is not on IToolCallAdapter either, so honouring it is a per-adapter feature
-        // rather than wiring. Silently accepting it would hand back prose to a client that asked for
-        // a guaranteed call, with no way to detect the difference; a 400 is the honest answer until
-        // the feature exists.
+        // "required" needs a different mechanism from the others: the argument constraints only arm
+        // once the model has already emitted its open marker and never compel one, so forcing takes
+        // a dedicated ForcedToolCallConstraint that masks the vocabulary down to that marker. Not
+        // every model can be forced — the marker has to be a single vocabulary token — and there is
+        // no safe fallback, because generating unforced would hand prose back to a client that asked
+        // for a guaranteed call with no way to tell the difference. So each precondition below
+        // returns 400 rather than degrading quietly.
+        ITokenConstraint? forcedCallConstraint = null;
         if (IsToolChoiceRequired(req.ToolChoice))
         {
-            await WriteBadRequestAsync(ctx,
-                "tool_choice \"required\" is not supported: the server cannot yet force a tool call. " +
-                "Use \"auto\" (the default), or name a specific function with " +
-                "{\"type\":\"function\",\"function\":{\"name\":\"...\"}} to restrict which tool may be called.");
-            return;
+            if (req.Tools is not { Length: > 0 })
+            {
+                await WriteBadRequestAsync(ctx,
+                    "tool_choice \"required\" needs at least one tool in \"tools\".");
+                return;
+            }
+
+            // Deliberately NOT gated on the ToolGrammar option. That option decides whether argument
+            // SHAPES are constrained by default across the server, and defaults off so ordinary
+            // decoding stays byte-identical to unconstrained. "required" is the opposite situation:
+            // a per-request, explicit client demand to be constrained. Gating it would make a
+            // default-configured server 400 a standard OpenAI request, which is a worse failure than
+            // the one this whole block exists to remove.
+            forcedCallConstraint = chatTemplate.BuildForcedToolCallConstraint();
+            if (forcedCallConstraint is null)
+            {
+                await WriteBadRequestAsync(ctx,
+                    "tool_choice \"required\" cannot be honoured for the loaded model: its tool-call " +
+                    "open marker is not a single vocabulary token, so a call cannot be forced. Use " +
+                    "\"auto\" (the default), or name a specific function with " +
+                    "{\"type\":\"function\",\"function\":{\"name\":\"...\"}}.");
+                return;
+            }
         }
 
         string? forcedToolName = GetToolChoiceFunctionName(req.ToolChoice);
@@ -220,6 +247,15 @@ public static class OpenAiEndpoints
                 selected.Select(t => (t.Function?.Name, t.Function?.Parameters)));
             toolConstraint = chatTemplate.BuildToolArgumentConstraint(schemas);
         }
+
+        // Force first, then shape: the forced constraint permits only the open marker until it has
+        // been emitted and then goes inert, at which point the argument grammar arms on that same
+        // marker and takes over. Composing them is what makes "required" mean a WELL-FORMED call
+        // rather than merely a call that started. The forced constraint stands alone when the
+        // argument grammar is inert (e.g. no tool has a constrainable schema) — the guarantee the
+        // client asked for is that a call begins, and that part never depends on the schemas.
+        if (forcedCallConstraint is not null)
+            toolConstraint = TokenConstraints.Combine(forcedCallConstraint, toolConstraint);
 
         // Whole-turn JSON-Schema-constrained output (issue #423 follow-up): the OpenTail.Stingray
         // analogue of OpenAI/llama.cpp's response_format:json_schema (and llama.cpp's flat
@@ -283,6 +319,21 @@ public static class OpenAiEndpoints
                         OpenTailStingrayJsonContext.Default.ErrorResponse), ctx.RequestAborted);
                 return;
             }
+        }
+
+        // A forced tool call and whole-turn schema output both claim the FIRST generated token — one
+        // demands the tool-call open marker, the other JSON — so their intersection is empty. That
+        // does not surface as an error downstream: a fully masked vocabulary makes Sampler.Softmax
+        // fall back to uniform and Greedy to the raw logits, so the turn would come back
+        // unconstrained and satisfy neither request, silently. The contradiction is in the request,
+        // so refuse it here.
+        if (forcedCallConstraint is not null && jsonSchemaConstraint is not null)
+        {
+            await WriteBadRequestAsync(ctx,
+                "tool_choice \"required\" cannot be combined with schema-constrained response_format: " +
+                "one requires the response to begin a tool call, the other requires it to be JSON. " +
+                "Ask for one or the other.");
+            return;
         }
 
         // Caller-supplied whole-turn output constraint (issue #423): independent of tool schemas,
