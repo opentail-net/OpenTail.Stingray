@@ -24,7 +24,7 @@ public sealed unsafe class CudaAttnKernelsTests
     public void RoPEPartial_MatchesCpuReference()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
 
         // Single head, headDim=8, ropeDim=4 (rotate first 4 dims, leave last 4 alone).
         const int NumHeads = 1;
@@ -81,7 +81,7 @@ public sealed unsafe class CudaAttnKernelsTests
     public void RoPEPartial_NonNeoxThrows()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
 
         var x = gpu.Allocate(TensorShape.D1(8));
         Assert.Throws<ArgumentException>(() =>
@@ -93,7 +93,7 @@ public sealed unsafe class CudaAttnKernelsTests
     public void SigmoidMulInPlace_MatchesScalarReference()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
 
         const int N = 257;   // odd, non-block-aligned size to exercise tail handling
         var rng = new Random(9001);
@@ -130,7 +130,7 @@ public sealed unsafe class CudaAttnKernelsTests
     public void SplitQG_MatchesHandComputed()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
 
         const int NumHeads = 3;
         const int HeadDim = 4;
@@ -177,7 +177,7 @@ public sealed unsafe class CudaAttnKernelsTests
     public void ElementwiseMul_MatchesScalarReference()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
 
         const int N = 513;
         var rng = new Random(31415);

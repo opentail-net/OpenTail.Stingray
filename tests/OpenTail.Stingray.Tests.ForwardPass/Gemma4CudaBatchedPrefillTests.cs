@@ -84,9 +84,9 @@ public sealed class Gemma4CudaBatchedPrefillTests
     public void Gemma4_E4B_BatchedPrefill_GemmMatchesSequential()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
         var path = FindModelPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
@@ -145,9 +145,9 @@ public sealed class Gemma4CudaBatchedPrefillTests
     public void Gemma4_E4B_BatchedPrefill_MmqMatchesSequential()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
         var path = FindModelPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
@@ -196,9 +196,9 @@ public sealed class Gemma4CudaBatchedPrefillTests
     public void Gemma4_E4B_BatchedPrefill_FlashTcMatchesSequential()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
         var path = FindModelPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
@@ -244,9 +244,9 @@ public sealed class Gemma4CudaBatchedPrefillTests
     public void Gemma4_E4B_BatchedPrefill_FlashAttnMatchesSequential()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
         var path = FindModelPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
@@ -292,9 +292,9 @@ public sealed class Gemma4CudaBatchedPrefillTests
     public void Gemma4_E4B_BatchedPrefill_GemmOff_MatchesSequentialBitExact()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
         var path = FindModelPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
@@ -361,9 +361,9 @@ public sealed class Gemma4CudaBatchedPrefillTests
     public void Gemma4_E4B_BatchedPrefill_PastWindow_MatchesSequential()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
         var path = FindModelPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
@@ -439,9 +439,9 @@ public sealed class Gemma4CudaBatchedPrefillTests
     public void Gemma4_E4B_ChunkedBatchedPrefill_Over4096_MatchesSequential(int promptLen, int ctx)
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
         var path = FindModelPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);

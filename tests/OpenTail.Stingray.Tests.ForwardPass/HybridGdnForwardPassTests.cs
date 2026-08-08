@@ -68,7 +68,7 @@ public sealed class HybridGdnForwardPassTests
     public void HybridGdnForwardPass_Qwen35Moe_ProducesWellFormedLogits()
     {
         var path = FindHybridModelPath();
-        if (path is null) return;   // silent skip — same pattern as CudaMoeTests
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
@@ -137,7 +137,7 @@ public sealed class HybridGdnForwardPassTests
     public void HybridGdnChunkedPrefill_MatchesSequentialPrefill()
     {
         var path = FindHybridModelPath();
-        if (path is null) return;   // silent skip
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
@@ -247,7 +247,7 @@ public sealed class HybridGdnForwardPassTests
     public void HybridGdnForwardPass_Qwen35Mtp_MtpHeadProducesWellFormedLogits()
     {
         var path = FindMtpModelPath();
-        if (path is null) return;   // silent skip
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
@@ -324,7 +324,7 @@ public sealed class HybridGdnForwardPassTests
     public void HybridGdnForwardPass_Qwen35Mtp_PrefillMtpPopulatesMtpKvCache()
     {
         var path = FindMtpModelPath();
-        if (path is null) return;   // silent skip
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
@@ -404,7 +404,7 @@ public sealed class HybridGdnForwardPassTests
     public void Issue40_MtpDraftMatchesMainArgmax_AtFirstDecode()
     {
         var path = FindMtpModelPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
@@ -488,7 +488,7 @@ public sealed class HybridGdnForwardPassTests
     public async Task InferenceEngine_MtpGreedy_MatchesBaselineGreedy_OnCpu()
     {
         var path = FindMtpModelPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
@@ -574,9 +574,9 @@ public sealed class HybridGdnForwardPassTests
     public async Task MtpDecoder_GreedyParity_LlamaCpp()
     {
         var modelPath = FindMtpModelPath();
-        if (modelPath is null) return;
+        Assert.SkipUnless(modelPath is not null, "model fixture not present in this environment");
         var fixturePath = FindMtpParityFixturePath();
-        if (fixturePath is null) return;
+        Assert.SkipUnless(fixturePath is not null, "model fixture not present in this environment");
 
         using var fixtureDoc = JsonDocument.Parse(File.ReadAllText(fixturePath));
         var fixtureRoot = fixtureDoc.RootElement;
@@ -711,7 +711,7 @@ public sealed class HybridGdnForwardPassTests
     public void HybridGdnForwardPass_Qwen35Mtp_PrefillMtp_ThrowsWhenHistoryUnpopulated()
     {
         var path = FindMtpModelPath();
-        if (path is null) return;   // silent skip
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
@@ -743,7 +743,7 @@ public sealed class HybridGdnForwardPassTests
     public void HybridGdnForwardPass_Qwen35Mtp_HiddenHistorySurvivesGrowAcrossSnapshot()
     {
         var path = FindMtpModelPath();
-        if (path is null) return;   // silent skip
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);

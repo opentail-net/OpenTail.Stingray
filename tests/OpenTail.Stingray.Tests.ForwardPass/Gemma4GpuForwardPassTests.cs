@@ -122,9 +122,9 @@ public sealed class Gemma4GpuForwardPassTests
     public void Gemma4_VulkanMatchesCpuLogits_TeacherForced()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
         var path = FindModelPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         const int steps = 5;
         const int ctx = 2048;

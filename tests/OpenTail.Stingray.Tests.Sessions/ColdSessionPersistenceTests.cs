@@ -260,7 +260,7 @@ public sealed class ColdSessionPersistenceTests
                 await session.RunTurnAsync("hello", sampling, SessionRevision.Initial, SessionOperationId.New(), Digest("hello"));
 
                 expectedAcceptedPositions = session.Cursor.AcceptedPositionCount;
-                expectedRevision = session.CommittedRevision;
+                expectedRevision = hotRuntime.GetSessionSnapshot(session.SessionId).CommittedRevision;
                 expectedKvBytes = session.ExportKvBytes();
                 Assert.NotNull(expectedKvBytes);
                 Assert.True(expectedKvBytes!.Length > 0, "The production cache must export real pages.");
@@ -299,7 +299,7 @@ public sealed class ColdSessionPersistenceTests
             Assert.Equal(address.ToSessionId(), restoredSession.SessionId);
 
             Assert.Equal(expectedAcceptedPositions, restoredSession.Cursor.AcceptedPositionCount);
-            Assert.Equal(expectedRevision, restoredSession.CommittedRevision);
+            Assert.Equal(expectedRevision, hotRuntime.GetSessionSnapshot(restoredSession.SessionId).CommittedRevision);
 
             // The whole point of the test: the KV stream survives chunking across packs and
             // reassembly byte for byte.
@@ -310,7 +310,7 @@ public sealed class ColdSessionPersistenceTests
             var turn2Result = await restoredSession.RunTurnAsync(
                 "world",
                 turn2Sampling,
-                restoredSession.CommittedRevision,
+                hotRuntime.GetSessionSnapshot(restoredSession.SessionId).CommittedRevision,
                 SessionOperationId.New(),
                 Digest("world"));
 

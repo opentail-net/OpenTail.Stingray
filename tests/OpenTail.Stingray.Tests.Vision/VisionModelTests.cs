@@ -9,7 +9,7 @@ public class VisionModelTests
     public void Open_LoadsGemma4UvConfigAndTensors()
     {
         var path = VisionTestPaths.FindMmproj();
-        if (path is null) return;   // model-gated test (mmproj only present on dev machines)
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var m = VisionModel.Open(path);
 
@@ -43,7 +43,7 @@ public class VisionModelTests
     public void Open_RejectsTextModelAsMmproj()
     {
         var textPath = VisionTestPaths.FindTextModel();
-        if (textPath is null) return;   // model-gated test
+        Assert.SkipUnless(textPath is not null, "model fixture not present in this environment");
 
         // The text GGUF is arch=gemma4, not a clip mmproj -> must be rejected clearly.
         Assert.ThrowsAny<NotSupportedException>(() => VisionModel.Open(textPath));

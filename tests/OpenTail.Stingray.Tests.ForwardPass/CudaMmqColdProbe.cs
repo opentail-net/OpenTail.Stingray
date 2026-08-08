@@ -55,7 +55,7 @@ public sealed unsafe class CudaMmqColdProbe
     public void Q4K_PrefillMatmul_ColdRegime_AtRealShapes()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
 
         // Qwen3-8B trunk matmuls (rows=out, cols=in) at the real prefill batch N=1844.
         const int nTok = 1844;

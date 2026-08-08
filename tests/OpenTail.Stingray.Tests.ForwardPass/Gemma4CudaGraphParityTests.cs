@@ -64,9 +64,9 @@ public sealed class Gemma4CudaGraphParityTests
     [Fact]
     public void Gemma4_E4B_CudaGraph_AllGpu_BitMatchesDirectLaunch()
     {
-        if (!CudaBackend.IsAvailable()) return;
+        Assert.SkipUnless(CudaBackend.IsAvailable(), "no CUDA device in this environment");
         var path = FindModelPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
@@ -81,7 +81,7 @@ public sealed class Gemma4CudaGraphParityTests
         var refTokens = new int[NSteps];
         using (var gpu = TryCreate())
         {
-            if (gpu is null) return;
+            Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
             using var fwd = new CudaForwardPass(model, gpu, hp, maxContextLength: 512) { UseCudaGraph = false };
             var logits = fwd.Prefill(tokens);
             refLogits[0] = logits.ToArray();
@@ -98,7 +98,7 @@ public sealed class Gemma4CudaGraphParityTests
         // Candidate: graph ON (capture on first decode token, replay after).
         using (var gpu = TryCreate())
         {
-            if (gpu is null) return;
+            Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
             using var fwd = new CudaForwardPass(model, gpu, hp, maxContextLength: 512) { UseCudaGraph = true };
             var logits = fwd.Prefill(tokens);
             AssertBitIdentical(refLogits[0], logits, step: 0);
@@ -121,9 +121,9 @@ public sealed class Gemma4CudaGraphParityTests
     [Fact]
     public void Gemma4_E4B_CudaGraph_Hybrid_BitMatchesDirectLaunch()
     {
-        if (!CudaBackend.IsAvailable()) return;
+        Assert.SkipUnless(CudaBackend.IsAvailable(), "no CUDA device in this environment");
         var path = FindModelPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
@@ -146,7 +146,7 @@ public sealed class Gemma4CudaGraphParityTests
         var refTokens = new int[NSteps];
         using (var gpu = TryCreate())
         {
-            if (gpu is null) return;
+            Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
             using var fwd = new CudaHybridForwardPass(model, gpu, hp, Placement()) { UseCudaGraph = false };
             var logits = fwd.Prefill(tokens);
             refLogits[0] = logits.ToArray();
@@ -163,7 +163,7 @@ public sealed class Gemma4CudaGraphParityTests
         // Candidate: graph ON.
         using (var gpu = TryCreate())
         {
-            if (gpu is null) return;
+            Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
             using var fwd = new CudaHybridForwardPass(model, gpu, hp, Placement()) { UseCudaGraph = true };
             var logits = fwd.Prefill(tokens);
             AssertBitIdentical(refLogits[0], logits, step: 0);
@@ -189,9 +189,9 @@ public sealed class Gemma4CudaGraphParityTests
         // and graphs MUST engage and match bit-for-bit. (Even on a full-attention model
         // where SnapKV stays enabled, a configured-but-unevicted budget keeps
         // _kvEvictedCount == 0, so the same invariant holds.)
-        if (!CudaBackend.IsAvailable()) return;
+        Assert.SkipUnless(CudaBackend.IsAvailable(), "no CUDA device in this environment");
         var path = FindModelPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         var prev = Environment.GetEnvironmentVariable("STINGRAY_SNAPKV_BUDGET");
         Environment.SetEnvironmentVariable("STINGRAY_SNAPKV_BUDGET", "512"); // configured, but prompt << 512
@@ -209,7 +209,7 @@ public sealed class Gemma4CudaGraphParityTests
             var refTokens = new int[NSteps];
             using (var gpu = TryCreate())
             {
-                if (gpu is null) return;
+                Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
                 using var fwd = new CudaForwardPass(model, gpu, hp, maxContextLength: 1024) { UseCudaGraph = false };
                 var logits = fwd.Prefill(tokens);
                 refLogits[0] = logits.ToArray();
@@ -225,7 +225,7 @@ public sealed class Gemma4CudaGraphParityTests
 
             using (var gpu = TryCreate())
             {
-                if (gpu is null) return;
+                Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
                 using var fwd = new CudaForwardPass(model, gpu, hp, maxContextLength: 1024) { UseCudaGraph = true };
                 var logits = fwd.Prefill(tokens);
                 AssertBitIdentical(refLogits[0], logits, step: 0);

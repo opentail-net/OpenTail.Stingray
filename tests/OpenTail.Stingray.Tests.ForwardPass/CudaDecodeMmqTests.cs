@@ -100,7 +100,7 @@ public sealed unsafe class CudaDecodeMmqTests
     public void DecodeMmq_Q4K_Soa_TracksCpuReference()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
 
         // rows ≥ 2048 (eligible). #205: the dispatcher routes low-row shapes
         // (ceil(rows/64) < 2·SM) to the BM=32 tile and high-row shapes to BM=64, so the
@@ -192,7 +192,7 @@ public sealed unsafe class CudaDecodeMmqTests
     public void DecodeMmq_Q6K_Soa_TracksCpuReference()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
 
         // rows ≥ 2048 (eligible). Same #205 dual-tile coverage as the Q4_K case: 2048 (BM=32,
         // no tail), 2096 (BM=32 with a non-multiple-of-32 row tail), 8192 (BM=64). Batch sizes
@@ -218,7 +218,7 @@ public sealed unsafe class CudaDecodeMmqTests
     public void DecodeMmq_SmallRows_FallsBackToWeightStationary()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
 
         const int rows = 1024, cols = 512;
         var rng = new Random(20260610 + 7);

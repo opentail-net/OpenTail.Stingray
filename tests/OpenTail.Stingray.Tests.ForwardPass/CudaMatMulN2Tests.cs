@@ -174,7 +174,7 @@ public sealed unsafe class CudaMatMulN2Tests
     public void MatMulN2_F32_MatchesSequentialMatMul()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
 
         foreach ((int rows, int cols) in new[] { (8, 256), (33, 512), (64, 1024), (128, 2048) })
         {
@@ -215,7 +215,7 @@ public sealed unsafe class CudaMatMulN2Tests
     public void MatMulN2_Q4K_MatchesSequentialMatMul()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
 
         foreach ((int rows, int cols) in new[] { (8, 256), (33, 512), (64, 1024) })
         {
@@ -233,7 +233,7 @@ public sealed unsafe class CudaMatMulN2Tests
     public void MatMulN2_Q5K_MatchesSequentialMatMul()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
 
         foreach ((int rows, int cols) in new[] { (8, 256), (33, 512), (64, 1024) })
         {
@@ -248,7 +248,7 @@ public sealed unsafe class CudaMatMulN2Tests
     public void MatMulN2_Q6K_MatchesSequentialMatMul()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
 
         foreach ((int rows, int cols) in new[] { (8, 256), (33, 512), (64, 1024) })
         {

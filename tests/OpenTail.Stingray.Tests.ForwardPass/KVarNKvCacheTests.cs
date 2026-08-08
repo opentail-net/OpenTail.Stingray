@@ -225,7 +225,7 @@ public sealed class KVarNKvCacheTests(ITestOutputHelper output)
     public void ForwardPass_KVarN_WithSnapKvEnv_ThrowsAtEnable()
     {
         var path = FindModelPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         var prevBudget = Environment.GetEnvironmentVariable("STINGRAY_SNAPKV_BUDGET");
         Environment.SetEnvironmentVariable("STINGRAY_SNAPKV_BUDGET", "256");
@@ -250,7 +250,7 @@ public sealed class KVarNKvCacheTests(ITestOutputHelper output)
     public void ForwardPass_KVarN_PrefillAndDecode_StaysCoherent()
     {
         var path = FindModelPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         var prevBudget = Environment.GetEnvironmentVariable("STINGRAY_SNAPKV_BUDGET");
         Environment.SetEnvironmentVariable("STINGRAY_SNAPKV_BUDGET", null);

@@ -27,7 +27,7 @@ public sealed unsafe class CudaMmaPrimitiveTests
     public void MmaM16N8K16_F32_MatchesCpuReference()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
 
         const int M = 16, K = 16, N = 8;
         var rng = new Random(20260606);

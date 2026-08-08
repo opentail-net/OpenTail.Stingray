@@ -36,7 +36,24 @@ public sealed record SessionManifestEnvelope(
 public static class FileSessionManifest
 {
     private const uint Magic = 0x4F54534D; // OTSM
-    private const ushort Version = 2;
+
+    /// <summary>
+    /// Current manifest version.
+    ///
+    /// <para><b>v3 changed the MEANING of the revision field</b> without changing its layout: it now
+    /// carries the session store's turn counter — the value <c>RunTurnAsync</c> compares
+    /// <c>expected_revision</c> against — where v1/v2 wrote the cursor's accepted-position count.
+    /// The two coincide only while every turn accepts exactly one position, which is why a restored
+    /// session and a live one used to disagree about what "revision" meant.</para>
+    ///
+    /// <para>v1/v2 files stay readable and are NOT migrated. The optimistic-concurrency contract
+    /// needs the three sources (store, manifest, published token) to AGREE, not to hold a
+    /// particular number: a legacy position count is simply a larger opaque seed for the same
+    /// monotonic counter, and every value the client subsequently reads and echoes comes from the
+    /// store. Rejecting those files would strand working sessions to correct a number nobody can
+    /// observe.</para>
+    /// </summary>
+    private const ushort Version = 3;
     private static readonly Encoding Utf8Strict = new UTF8Encoding(false, true);
 
     public static byte[] Encode(SessionManifestEnvelope manifest)
@@ -107,7 +124,7 @@ public static class FileSessionManifest
             throw new SessionJournalFormatException($"Invalid manifest magic 0x{magic:X8}, expected 0x{Magic:X8}.");
 
         ushort version = reader.ReadUInt16();
-        if (version is not 1 and not Version)
+        if (version is not (1 or 2 or Version))
             throw new SessionJournalFormatException($"Unsupported manifest version {version}.");
 
         Guid sessionGuid = new(reader.ReadBytes(16));

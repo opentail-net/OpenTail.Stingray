@@ -92,36 +92,71 @@ public static class InferenceEngineLoader
                     string.Join("; ", report.Rejections.Select(r => r.Detail)));
             }
 
-            var stSource = SafetensorsTensorSource.Open(modelPath);
-            var tokResult = HuggingFaceTokenizerSource.Load(modelPath);
-            if (!tokResult.IsUsable || tokResult.Source is null)
+            // Everything built here is disposable and multi-gigabyte. Each is registered the moment
+            // it exists so ANY later failure releases it in reverse order. Previously only the
+            // tokenizer check cleaned up, so a throw out of the hyperparameters, the backend, the
+            // forward pass or the batching engine leaked the SafeTensors mapping plus whatever had
+            // been built after it. Ownership transfers to the engine at the end and the list is
+            // cleared, so this catch can never double-dispose what the engine now owns.
+            var stOwned = new List<IDisposable>();
+            try
             {
-                stSource.Dispose();
-                throw new InvalidOperationException($"Failed to load tokenizer from '{modelPath}'.");
+                var stSource = SafetensorsTensorSource.Open(modelPath);
+                stOwned.Add(stSource);
+
+                var tokResult = HuggingFaceTokenizerSource.Load(modelPath);
+                if (!tokResult.IsUsable || tokResult.Source is null)
+                    throw new InvalidOperationException($"Failed to load tokenizer from '{modelPath}'.");
+
+                var stTokenizer = GgufTokenizer.FromSource(tokResult.Source);
+                var stHp = ModelHyperparams.FromGgufMetadata(stSource.Metadata, stSource);
+
+                var cpuBackend = new CpuBackend();
+                stOwned.Add(cpuBackend);
+
+                int stCtxSize = opts.ContextSize > 0 ? opts.ContextSize : stHp.ContextLength;
+                var forwardPass = new ForwardPass(stSource, cpuBackend, stHp, maxContextLength: stCtxSize);
+                stOwned.Add(forwardPass);
+
+                string packageModelId = Path.GetFileNameWithoutExtension(modelPath.TrimEnd('/', '\\'));
+                var (stThinkId, stEndThinkId) = stTokenizer.ReasoningTokens;
+
+                var rawEngine = new ContinuousBatchingEngine(forwardPass, stTokenizer, packageModelId, opts.MaxBatchSize,
+                    stThinkId, stEndThinkId,
+                    prefillChunkTokens: opts.PrefillChunkTokens,
+                    kvBudgetBytes: opts.KvBudgetMb > 0 ? opts.KvBudgetMb * 1024 * 1024 : opts.KvBudgetMb,
+                    prefixCacheBytes: opts.PrefixCacheMb > 0 ? opts.PrefixCacheMb * 1024 * 1024 : opts.PrefixCacheMb);
+
+                // Ownership transfer: from here the engine is responsible for these.
+                var ownedEngine = new OwnedDisposableEngine(rawEngine, [stSource, cpuBackend, forwardPass]);
+                stOwned.Clear();
+
+                var stGrammarVocab = new OpenTail.Stingray.Core.Grammar.GrammarVocabulary(stTokenizer);
+                return new LoadedEngine(ownedEngine, report.ArchitectureId ?? "llama", stTokenizer.ChatTemplate, [], stGrammarVocab,
+                    stTokenizer, CpuBatchedPrefill: forwardPass.GetBatchedPrefillCapability(),
+                    RuntimeResolution: DescribeRuntime(forwardPass, ModelFormat.SafeTensors));
             }
-
-            var stTokenizer = GgufTokenizer.FromSource(tokResult.Source);
-            var stHp = ModelHyperparams.FromGgufMetadata(stSource.Metadata, stSource);
-            var cpuBackend = new CpuBackend();
-            int stCtxSize = opts.ContextSize > 0 ? opts.ContextSize : stHp.ContextLength;
-            var forwardPass = new ForwardPass(stSource, cpuBackend, stHp, maxContextLength: stCtxSize);
-            string packageModelId = Path.GetFileNameWithoutExtension(modelPath.TrimEnd('/', '\\'));
-            var (stThinkId, stEndThinkId) = stTokenizer.ReasoningTokens;
-
-            var rawEngine = new ContinuousBatchingEngine(forwardPass, stTokenizer, packageModelId, opts.MaxBatchSize,
-                stThinkId, stEndThinkId,
-                prefillChunkTokens: opts.PrefillChunkTokens,
-                kvBudgetBytes: opts.KvBudgetMb > 0 ? opts.KvBudgetMb * 1024 * 1024 : opts.KvBudgetMb,
-                prefixCacheBytes: opts.PrefixCacheMb > 0 ? opts.PrefixCacheMb * 1024 * 1024 : opts.PrefixCacheMb);
-
-            var ownedEngine = new OwnedDisposableEngine(rawEngine, [stSource, cpuBackend, forwardPass]);
-            var stGrammarVocab = new OpenTail.Stingray.Core.Grammar.GrammarVocabulary(stTokenizer);
-            return new LoadedEngine(ownedEngine, report.ArchitectureId ?? "llama", stTokenizer.ChatTemplate, [], stGrammarVocab,
-                stTokenizer, CpuBatchedPrefill: forwardPass.GetBatchedPrefillCapability(),
-                RuntimeResolution: DescribeRuntime(forwardPass, ModelFormat.SafeTensors));
+            catch
+            {
+                for (int i = stOwned.Count - 1; i >= 0; i--)
+                    try { stOwned[i].Dispose(); } catch { /* fall through to rethrow */ }
+                throw;
+            }
         }
 
         var model = GgufModel.Open(modelPath);
+
+        // Everything from here to the ownership transfer runs with the model mapped. Compatibility
+        // validation, hyperparameter derivation, tokenizer construction and the TurboQuant argument
+        // checks all throw on bad input, and until this guard existed every one of those paths
+        // leaked the mapping and its file handles — the owned[] cleanup scope did not begin until
+        // after BuildForwardPass, well past all of them.
+        //
+        // The body is deliberately NOT re-indented (same convention as ContinuousBatchingEngine's
+        // BatcherLoop) so this reads as a guard rather than a restructuring. The inner catches
+        // below also dispose the model; that is safe because GgufModel.Dispose is idempotent.
+        try
+        {
         // GGUF is only a container: validate the architecture profile and every tensor's
         // executable storage format before selecting a backend. This prevents a generic
         // model from getting as far as its first request before failing (or, worse, running
@@ -346,6 +381,14 @@ public static class InferenceEngineLoader
             sessionRuntime, coldSessionRuntime,
             fwd is ForwardPass cpuForwardPass ? cpuForwardPass.GetBatchedPrefillCapability() : null,
             DescribeRuntime(fwd, ModelFormat.Gguf));
+        }
+        catch
+        {
+            // Reached only on failure: success returns from inside the try, by which point the
+            // engine owns the mapping.
+            model.Dispose();
+            throw;
+        }
     }
 
     // ── DSpark draft head (docs/dspark-plan.md Phase 6, PR #413) ─────────────
@@ -805,6 +848,15 @@ internal sealed class OwnedDisposableEngine(IInferenceEngine inner, IList<IDispo
     public void Dispose()
     {
         (inner as IDisposable)?.Dispose();
+
+        // owned[] is the forward pass, the compute backend and the mapped model — native, GPU and
+        // mmap'd memory that the batcher loop dereferences directly. If that loop has not exited,
+        // releasing them is not a teardown ordering nit but a use-after-free the moment it takes its
+        // next step. Leak instead: process exit reclaims everything, and a leak at shutdown is
+        // strictly preferable to an access violation. This mirrors the single-user engine's policy.
+        if (inner is ContinuousBatchingEngine { DrainedOnDispose: false })
+            return;
+
         for (int i = owned.Count - 1; i >= 0; i--)
         {
             try { owned[i].Dispose(); } catch { /* best-effort teardown */ }

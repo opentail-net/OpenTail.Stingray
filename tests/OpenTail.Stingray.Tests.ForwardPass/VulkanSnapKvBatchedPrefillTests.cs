@@ -51,9 +51,9 @@ public sealed class VulkanSnapKvBatchedPrefillTests
     public void BatchedPrefillWithSnapKv_MatchesPerTokenPrefill()
     {
         var path = FindModelPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
 
         string? priorBudget = Environment.GetEnvironmentVariable(BudgetVar);
         string? priorWindow = Environment.GetEnvironmentVariable(WindowVar);

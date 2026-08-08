@@ -97,9 +97,9 @@ public sealed class VulkanSpecDecodeE2ETests
     public void Qwen3_8B_SpecDecode_PromptLookup_GreedyParity_E2E()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
         var path = FindModelPath(BatchedModel);
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         const int DecodeTokens = 40;
 

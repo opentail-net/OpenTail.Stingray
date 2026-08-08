@@ -97,9 +97,9 @@ public sealed class VulkanMtpDecoderTests
     public void MtpForward_ProducesFiniteDraftLogits()
     {
         using var gpu = TryCreateVulkan();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
         var path = FindMtpModelPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
@@ -108,7 +108,7 @@ public sealed class VulkanMtpDecoderTests
         var tokenizer = GgufTokenizer.FromGgufModel(model);
 
         using var fwd = CreatePass(model, gpu, hp);
-        if (fwd is null) return;                                    // device OOM → skip
+        Assert.SkipUnless(fwd is not null, "model fixture not present in this environment");
         Assert.True(fwd.HasMtpHead, "PR3 must load the MTP head → HasMtpHead == true.");
 
         var prompt = tokenizer.Encode("The capital of France is").ToArray();
@@ -141,16 +141,16 @@ public sealed class VulkanMtpDecoderTests
     public void MtpDecoder_BatchedGreedy_CoherentWithAcceptedDrafts()
     {
         using var gpu = TryCreateVulkan();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
         var path = FindMtpModelPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
         var tokenizer = GgufTokenizer.FromGgufModel(model);
 
         using var fwd = CreatePass(model, gpu, hp);
-        if (fwd is null) return;                                    // device OOM → skip
+        Assert.SkipUnless(fwd is not null, "model fixture not present in this environment");
         Assert.True(fwd.HasMtpHead);
         Assert.True(fwd.SupportsBatchVerify,
             "27B-MTP without SnapKV must support batched verify (GDN ring + MTP head must have loaded).");

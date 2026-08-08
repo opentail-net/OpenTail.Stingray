@@ -363,16 +363,16 @@ public sealed class HotSessionGreedyReplayTests
         var address = new SessionAddress("restart-proof", "smollm", "thread", RestartModelFingerprint(modelPath));
         using var session = cold.OpenOrCreate(address);
 
-        // NOTE: `session.CommittedRevision` is a cursor POSITION count, not the store's turn
-        // counter — see docs/session-revision-contract-defect.md. It is correct *here* only
-        // because a restored session's persisted revision is itself a position count, so the two
-        // wrong values agree. The turn above deliberately uses
-        // `result.Operation.CommittedRevision`, which is the right source; the difference is left
-        // visible rather than harmonised because harmonising it would fail against the persisted
-        // value. When the persisted-revision semantics are fixed, this line must change with them.
+        // The revision to submit is the STORE's turn counter, read from the snapshot — the same
+        // value the HTTP layer publishes as committed_revision. This line used to pass
+        // `session.CommittedRevision` (the cursor position count) and worked only because the
+        // persisted revision was also a position count, so two wrong values agreed. Both sides are
+        // now the turn counter (manifest v3), so a restored session accepts the value a caller can
+        // actually observe.
         var result = await session.RunTurnAsync(" and the capital of Spain is",
             new SamplingParams { Temperature = 0f, MaxNewTokens = MaxNewTokens },
-            session.CommittedRevision, SessionOperationId.New(), SessionRequestDigest.FromCanonicalValue("turn-3"));
+            hot.GetSessionSnapshot(session.SessionId).CommittedRevision,
+            SessionOperationId.New(), SessionRequestDigest.FromCanonicalValue("turn-3"));
         Assert.Equal(SessionOperationState.Completed, result.Operation.State);
 
         var log = session.Cursor.ExecutionLog;

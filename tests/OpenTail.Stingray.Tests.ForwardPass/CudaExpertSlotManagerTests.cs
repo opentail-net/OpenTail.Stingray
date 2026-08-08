@@ -60,10 +60,10 @@ public sealed class CudaExpertSlotManagerTests
     public void GetOrLoad_HitMissEvictionAccounting_OnSmallMoE()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
 
         var path = FindFirstExisting("models\\OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf");
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
@@ -125,10 +125,10 @@ public sealed class CudaExpertSlotManagerTests
     public void ExpertCacheVram_IsExactSizeSlab_AndStableUnderChurn()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
 
         var path = FindFirstExisting("models\\OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf");
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
@@ -193,10 +193,10 @@ public sealed class CudaExpertSlotManagerTests
     public void ExpertCacheCapacityOne_ChurnDoesNotOverflowFreeSlots()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
 
         var path = FindFirstExisting("models\\OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf");
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
@@ -231,10 +231,10 @@ public sealed class CudaExpertSlotManagerTests
     public void GetOrLoad_HitMissEvictionAccounting_OnQwen35Moe()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
 
         var path = FindFirstExisting("E:\\models\\Qwen3.6-35B-A3B-UD-Q4_K_M.gguf");
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);

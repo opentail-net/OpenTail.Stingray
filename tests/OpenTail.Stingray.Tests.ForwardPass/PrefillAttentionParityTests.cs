@@ -81,7 +81,7 @@ public sealed class PrefillAttentionParityTests
     public void ChunkedPrefill_MatchesUnchunked_AcrossFlash64Threshold()
     {
         var path = FindModelPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
@@ -107,7 +107,7 @@ public sealed class PrefillAttentionParityTests
     public void ChunkedPrefill_MatchesUnchunked_BothChunksAboveThreshold()
     {
         var path = FindModelPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
@@ -132,7 +132,7 @@ public sealed class PrefillAttentionParityTests
     public void ChunkedPrefill_MatchesUnchunked_BothArmsBelowThreshold()
     {
         var path = FindModelPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);

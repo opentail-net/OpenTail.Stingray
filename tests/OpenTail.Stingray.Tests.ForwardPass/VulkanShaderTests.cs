@@ -333,7 +333,7 @@ public sealed unsafe class VulkanShaderTests
     public void MatVecQ4KMatchesCpu()
     {
         var path = FindModelPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         using var backend = new Vulkan.VulkanBackend();
@@ -406,7 +406,7 @@ public sealed unsafe class VulkanShaderTests
         // Q6_K tensors appear as output.weight in Q4_K_M models.
         // We fall back to a synthetic test if the tensor is not present.
         var path = FindModelPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         using var backend = new Vulkan.VulkanBackend();
@@ -414,7 +414,7 @@ public sealed unsafe class VulkanShaderTests
         // Try to find a Q6_K tensor; output.weight is Q6_K in Q4_K_M models
         var tensorInfo = model.FindTensor("output.weight")
                       ?? model.FindTensor("token_embd.weight");
-        if (tensorInfo is null) return;
+        Assert.SkipUnless(tensorInfo is not null, "model fixture not present in this environment");
         var qInfo = tensorInfo.Value;
         if (qInfo.DType != DType.Q6_K) return;
 
@@ -1264,7 +1264,7 @@ public sealed unsafe class VulkanShaderTests
     public void GpuEmbedThenRmsNormMatchesCpu()
     {
         var path = FindModelPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
@@ -1324,7 +1324,7 @@ public sealed unsafe class VulkanShaderTests
     public void GpuEmbedNormMatVecChain()
     {
         var path = FindModelPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
@@ -1401,7 +1401,7 @@ public sealed unsafe class VulkanShaderTests
     public void GpuForwardPassMatchesCpuOutput()
     {
         var path = FindModelPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
@@ -1498,7 +1498,7 @@ public sealed unsafe class VulkanShaderTests
     public void GpuForwardPassTurboQuantRunsPastFp32Window()
     {
         var path = FindTurboQuantModelPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
@@ -1523,7 +1523,7 @@ public sealed unsafe class VulkanShaderTests
     public void HybridForwardPassTurboQuantRunsPastFp32Window()
     {
         var path = FindTurboQuantModelPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
@@ -2428,7 +2428,7 @@ public sealed unsafe class VulkanShaderTests
     public void HybridForwardPass_MoE_ProducesCoherentDecode()
     {
         var path = FindMoEModelPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         // Pass `model` so HasQkNorm / IsPerChannelQkNorm probe the tensor index.
@@ -2464,7 +2464,7 @@ public sealed unsafe class VulkanShaderTests
     public void HybridForwardPass_DenseSmallVocab_ProducesCoherentDecode()
     {
         var path = FindModelPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);

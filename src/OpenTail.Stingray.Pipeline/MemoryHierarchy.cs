@@ -3,11 +3,21 @@ using OpenTail.Stingray.Core;
 namespace OpenTail.Stingray.Pipeline;
 
 /// <summary>
-/// Three-tier memory hierarchy: GPU VRAM ? CPU RAM ? NVMe.
-/// Manages tensor placement, eviction, and asynchronous prefetching
-/// to keep hot weights resident on the fastest available tier.
+/// Three-tier memory hierarchy: GPU VRAM → CPU RAM → NVMe. Intended to manage tensor placement,
+/// eviction, and asynchronous prefetching so hot weights stay on the fastest available tier.
+///
+/// <para><b>Unimplemented scaffolding — internal on purpose.</b> Both operations below throw
+/// <see cref="NotImplementedException"/>. It was public and bundled into the shipped
+/// <c>OpenTail.Stingray</c> meta-package, so the package advertised a working tier manager that
+/// cannot do anything: any caller reaching for it got an exception at the first call, having read
+/// documentation that promised promotion and eviction.</para>
+///
+/// <para>The production three-tier MoE offload path does NOT go through this type. It is
+/// <c>ExpertSlotManager</c>/<c>CudaExpertSlotManager</c> plus <c>MoEPrefetcher</c> in
+/// OpenTail.Stingray.Engine, over this assembly's <c>SlruCache</c>/<c>ExpertCache</c> — those are
+/// implemented, used, and remain public. Make this type public again only when it does something.</para>
 /// </summary>
-public sealed class MemoryHierarchy : IAsyncDisposable
+internal sealed class MemoryHierarchy : IAsyncDisposable
 {
     private readonly TierConfig _gpu;
     private readonly TierConfig _cpu;
@@ -37,4 +47,4 @@ public sealed class MemoryHierarchy : IAsyncDisposable
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 }
 
-public sealed record TierConfig(string Name, long CapacityBytes, string? MmapPath = null);
+internal sealed record TierConfig(string Name, long CapacityBytes, string? MmapPath = null);

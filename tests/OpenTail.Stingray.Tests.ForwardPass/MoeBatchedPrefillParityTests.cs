@@ -76,7 +76,7 @@ public sealed class MoeBatchedPrefillParityTests
     public void BatchedMoePrefill_MatchesSequential_F32()
     {
         var path = FindMoePath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         bool prevQ8 = SimdKernels.Q8PrefillEnabled;
         SimdKernels.Q8PrefillEnabled = false;
@@ -115,7 +115,7 @@ public sealed class MoeBatchedPrefillParityTests
     public void BatchedMoePrefill_MatchesSequential_Int8_ArgmaxStable()
     {
         var path = FindMoePath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
@@ -140,7 +140,7 @@ public sealed class MoeBatchedPrefillParityTests
     public void BatchedMoePrefill_Chunked_MatchesFull()
     {
         var path = FindMoePath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);

@@ -71,19 +71,20 @@ public sealed class HotSession : IDisposable
     public SessionId SessionId { get; }
 
     /// <summary>
-    /// <b>Not the store's revision.</b> This is derived from the cursor's accepted-position count,
-    /// which diverges from <c>InMemorySessionStore</c>'s <c>entry.Revision</c> (a turn counter,
-    /// advanced by <c>.Next()</c> per completed turn) as soon as a turn accepts more than one
-    /// position. <see cref="RunTurnAsync"/> validates <c>expectedRevision</c> against the STORE's
-    /// value, so this property must not be published as an optimistic-concurrency token — doing so
-    /// made the HTTP layer advertise <c>committed_revision: 6</c> and then answer a request
-    /// carrying 6 with <c>409 "Expected revision 6, but current revision is 1"</c>.
+    /// The cursor's accepted-position count, exposed under its own name.
     ///
-    /// <para>Callers wanting the concurrency token should read
-    /// <c>GetSessionSnapshot(id).CommittedRevision</c>, which works for cold-restored sessions too;
-    /// this one does not, because a restored session is not in the hot store.</para>
+    /// <para><b>This is not the optimistic-concurrency token</b>, and it used to be called
+    /// <c>CommittedRevision</c>, which is exactly how it came to be published as one. The token is
+    /// <c>GetSessionSnapshot(id).CommittedRevision</c> — the store's per-turn counter, advanced by
+    /// <c>.Next()</c> per completed turn, and the value <see cref="RunTurnAsync"/> validates
+    /// <c>expectedRevision</c> against. The two diverge the moment a turn accepts more than one
+    /// position, and publishing this one made the server advertise a revision it would then
+    /// reject.</para>
+    ///
+    /// <para>The snapshot route also works for cold-restored sessions; this property does not,
+    /// because a restored session is not in the hot store.</para>
     /// </summary>
-    public SessionRevision CommittedRevision => new(Cursor.AcceptedPositionCount);
+    public long AcceptedPositionCount => Cursor.AcceptedPositionCount;
 
     public SessionCursor Cursor
     {
@@ -331,14 +332,24 @@ public sealed class HotSession : IDisposable
     /// <summary>True while a turn holds this session's retained state.</summary>
     internal bool IsInUse => _state.IsInUse;
 
-    internal void RestoreCursor(SessionCursor cursor)
+    /// <summary>
+    /// Restores cursor state and seeds the store's revision.
+    ///
+    /// <para><paramref name="committedRevision"/> is the persisted turn counter from the manifest and
+    /// is the value to seed with. Seeding from <c>cursor.AcceptedPositionCount</c> instead — which is
+    /// what this used to do unconditionally, and still does when no persisted revision is supplied —
+    /// made a restored session's revision a POSITION count while a live session's was a TURN count.
+    /// The two lanes then meant different things by <c>committed_revision</c>, which is precisely the
+    /// disagreement the manifest-v3 change exists to end.</para>
+    /// </summary>
+    internal void RestoreCursor(SessionCursor cursor, SessionRevision? committedRevision = null)
     {
         lock (_cursorGate)
         {
             _cursor = cursor;
         }
         _state.SetMaterializedPosition(cursor.MaterializedPositionCount);
-        _store.SetRevision(SessionId, new SessionRevision(cursor.AcceptedPositionCount));
+        _store.SetRevision(SessionId, committedRevision ?? new SessionRevision(cursor.AcceptedPositionCount));
     }
 
     internal void RestoreKvBytes(byte[] kvBytes)
@@ -405,7 +416,8 @@ public sealed class HotSessionRuntime
 
     /// <summary>Imports a versioned binary session state envelope into an active hot session (Milestone 2).</summary>
     public HotSession ImportState(ReadOnlySpan<byte> stateBytes, string expectedModelFingerprint = "default",
-        SessionCursorCodecLimits? limits = null, ModelFormat expectedModelFormat = ModelFormat.Gguf)
+        SessionCursorCodecLimits? limits = null, ModelFormat expectedModelFormat = ModelFormat.Gguf,
+        SessionRevision? committedRevision = null)
     {
         var envelope = SessionStateCodec.Decode(stateBytes, limits);
         if (envelope.Abi.ModelFingerprint != expectedModelFingerprint)
@@ -418,7 +430,7 @@ public sealed class HotSessionRuntime
             throw new SessionCursorFormatException($"MaxSequenceLength mismatch. Expected {_engine.MaxSequenceLength}, got {envelope.Abi.MaxSequenceLength}.");
 
         var session = Create(envelope.SessionId);
-        session.RestoreCursor(envelope.CursorEnvelope.Cursor);
+        session.RestoreCursor(envelope.CursorEnvelope.Cursor, committedRevision);
         return session;
     }
 
@@ -428,9 +440,9 @@ public sealed class HotSessionRuntime
     /// </summary>
     public HotSession ImportState(ReadOnlySpan<byte> stateBytes, ReadOnlySpan<byte> kvStateBytes,
         string expectedModelFingerprint = "default", SessionCursorCodecLimits? limits = null,
-        ModelFormat expectedModelFormat = ModelFormat.Gguf)
+        ModelFormat expectedModelFormat = ModelFormat.Gguf, SessionRevision? committedRevision = null)
     {
-        var session = ImportState(stateBytes, expectedModelFingerprint, limits, expectedModelFormat);
+        var session = ImportState(stateBytes, expectedModelFingerprint, limits, expectedModelFormat, committedRevision);
         if (kvStateBytes.Length > 0) session.RestoreKvBytes(kvStateBytes.ToArray());
         return session;
     }

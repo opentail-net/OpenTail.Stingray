@@ -503,7 +503,7 @@ public sealed class GgufModelIntegrationTests
     public void Open_SmolLM2_ParsesCorrectly()
     {
         var path = FindModelPath();
-        if (path is null) return; // Model file not available — skip
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
 
@@ -536,7 +536,7 @@ public sealed class GgufModelIntegrationTests
     public void Open_SmolLM2_MetadataContainsModelInfo()
     {
         var path = FindModelPath();
-        if (path is null) return; // Model file not available — skip
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
 

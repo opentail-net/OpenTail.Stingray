@@ -101,9 +101,9 @@ public sealed class CudaHybridGdnChunkedPrefillTests : IDisposable
     public void ChunkedPrefill_ArgmaxMatchesScan_Moe()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
         var path = FindMoePath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         var prevCpuMoe = Environment.GetEnvironmentVariable("STINGRAY_CPU_MOE");
         Environment.SetEnvironmentVariable("STINGRAY_CPU_MOE", "1");

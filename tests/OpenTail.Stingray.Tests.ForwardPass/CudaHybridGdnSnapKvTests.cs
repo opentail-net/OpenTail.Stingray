@@ -74,10 +74,10 @@ public sealed class CudaHybridGdnSnapKvTests
     public void CudaHybridGdnSnapKv_LongPrompt_CacheShrinksToBudget_DecodeStaysWellFormed()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
 
         var path = FindMtpModelPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         const int budget = 256;
         const int promptTargetLen = 384;
@@ -164,10 +164,10 @@ public sealed class CudaHybridGdnSnapKvTests
     public void CudaHybridGdnSnapKv_MtpDecode_AfterEviction_DoesNotCrash_StaysCoherent()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
 
         var path = FindMtpModelPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         const int budget = 128;
         const int promptTargetLen = 320;
@@ -257,10 +257,10 @@ public sealed class CudaHybridGdnSnapKvTests
     public void CudaHybridGdnSnapKv_SmallCtxDefault_AutoBudgetStaysOff()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
 
         var path = FindMtpModelPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         var prev = Environment.GetEnvironmentVariable("STINGRAY_SNAPKV_BUDGET");
         Environment.SetEnvironmentVariable("STINGRAY_SNAPKV_BUDGET", null);

@@ -38,7 +38,7 @@ public sealed class TierPlannerPinTests
     public void Plan_PinGpuLayers_RepricesExpertBudgetForThatSplit()
     {
         string? path = OlmoePath();
-        if (path is null) return; // model not on disk — skip
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
@@ -74,7 +74,7 @@ public sealed class TierPlannerPinTests
     public void Plan_PinGpuLayers_ClampsToValidRange()
     {
         string? path = OlmoePath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);

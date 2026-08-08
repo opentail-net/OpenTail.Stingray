@@ -103,13 +103,13 @@ public sealed class VulkanHybridGdnE2ETests
     public void VulkanHybridGdn_Dense27B_MatchesCudaArgmax()
     {
         // Quick gates first (avoid loading the 16 GB GGUF when we'd skip anyway).
-        if (!CudaBackend.IsAvailable()) return;                    // CUDA-gated (oracle)
+        Assert.SkipUnless(CudaBackend.IsAvailable(), "no CUDA device in this environment");
         var path = FindDenseModelPath();
-        if (path is null) return;                                  // model-gated
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         // Probe Vulkan availability up front so we don't run the (expensive) CUDA oracle for nothing.
         using (var probe = TryCreateVulkan())
-            if (probe is null) return;                             // Vulkan-gated
+            Assert.SkipUnless(probe is not null, "model fixture not present in this environment");
 
         // fp32 KV on the CUDA oracle removes the KV-dtype confound (Vulkan pass is fp32-KV).
         string? prevKvDtype = Environment.GetEnvironmentVariable("STINGRAY_KV_DTYPE");
@@ -134,7 +134,7 @@ public sealed class VulkanHybridGdnE2ETests
             var cudaTokens = new int[DecodeSteps];
             {
                 using var cuda = TryCreateCuda();
-                if (cuda is null) return;
+                Assert.SkipUnless(cuda is not null, "model fixture not present in this environment");
                 using var cfwd = new CudaHybridGdnForwardPass(model, cuda, hp, GdnPlacement(hp));
 
                 var logits = cfwd.Prefill(prompt);
@@ -222,9 +222,9 @@ public sealed class VulkanHybridGdnE2ETests
     public void VulkanHybridGdn_BatchedPrefill_MatchesSequential()
     {
         var path = FindDenseModelPath();
-        if (path is null) return;                                   // model-gated
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
         using (var probe = TryCreateVulkan())
-            if (probe is null) return;                             // Vulkan-gated
+            Assert.SkipUnless(probe is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
@@ -305,10 +305,10 @@ public sealed class VulkanHybridGdnE2ETests
     public void VulkanHybridGdn_ChunkedPrefill_MatchesFusedScanArgmax()
     {
         var path = FindDenseModelPath();
-        if (path is null) return;                                   // model-gated
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
         using (var probe = TryCreateVulkan())
         {
-            if (probe is null) return;                             // Vulkan-gated
+            Assert.SkipUnless(probe is not null, "model fixture not present in this environment");
             if (!probe.SupportsGdnChunkedPrefill) return;          // device shared-mem too small
         }
 
@@ -384,12 +384,12 @@ public sealed class VulkanHybridGdnE2ETests
     [Fact]
     public void VulkanHybridGdn_Moe35B_MatchesCudaArgmax()
     {
-        if (!CudaBackend.IsAvailable()) return;                    // CUDA-gated (oracle)
+        Assert.SkipUnless(CudaBackend.IsAvailable(), "no CUDA device in this environment");
         var path = FindMoeModelPath();
-        if (path is null) return;                                  // model-gated
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using (var probe = TryCreateVulkan())
-            if (probe is null) return;                             // Vulkan-gated
+            Assert.SkipUnless(probe is not null, "model fixture not present in this environment");
 
         // Remove confounds: fp32 KV on both backends + force CPU-MoE on both so the routed-
         // expert placement matches (the auto-heuristic would pick CPU-MoE on a 12 GB card
@@ -417,7 +417,7 @@ public sealed class VulkanHybridGdnE2ETests
             var cudaTokens = new int[DecodeSteps];
             {
                 using var cuda = TryCreateCuda();
-                if (cuda is null) return;
+                Assert.SkipUnless(cuda is not null, "model fixture not present in this environment");
                 using var cfwd = new CudaHybridGdnForwardPass(model, cuda, hp, GdnPlacement(hp));
 
                 var logits = cfwd.Prefill(prompt);

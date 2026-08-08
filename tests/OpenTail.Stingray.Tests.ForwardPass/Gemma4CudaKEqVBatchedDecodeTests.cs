@@ -107,7 +107,7 @@ public sealed class Gemma4CudaKEqVBatchedDecodeTests : IDisposable
     public void SyntheticKEqV_Loads_AsBatchableGemma4_WithNoAttnV()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
 
         var path = WriteSyntheticGguf(seed: 1234);
         using var model = GgufModel.Open(path);
@@ -135,7 +135,7 @@ public sealed class Gemma4CudaKEqVBatchedDecodeTests : IDisposable
     public void SyntheticKEqV_BatchedDecode_N2_MatchesSingleUser()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
 
         var path = WriteSyntheticGguf(seed: 99);
         using var model = GgufModel.Open(path);
@@ -182,7 +182,7 @@ public sealed class Gemma4CudaKEqVBatchedDecodeTests : IDisposable
     public void SyntheticKEqV_MixedRealVAndKEqV_BatchedDecode_MatchesSingleUser()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
 
         // Layer 0 omits attn_v (k_eq_v branch); layer 1 keeps it (real-V branch). The k_eq_v layer is
         // FIRST so a broken K→V copy propagates through the remaining layer — a stronger discriminator.
@@ -228,7 +228,7 @@ public sealed class Gemma4CudaKEqVBatchedDecodeTests : IDisposable
     public void SyntheticKEqV_BatchedDecode_TwoSteps_MatchSingleUser()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
 
         var path = WriteSyntheticGguf(seed: 7);
         using var model = GgufModel.Open(path);

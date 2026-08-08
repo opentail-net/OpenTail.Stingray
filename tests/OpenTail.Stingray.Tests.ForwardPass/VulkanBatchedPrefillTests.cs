@@ -82,9 +82,9 @@ public sealed class VulkanBatchedPrefillTests
     public void BatchedPrefill_MatchesPerTokenPrefill()
     {
         var path = FindModelPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
         using var gpu = TryCreateBackend();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
@@ -125,9 +125,9 @@ public sealed class VulkanBatchedPrefillTests
     public void BatchedPrefill_ShortPromptBelowOneChunk_MatchesPerToken()
     {
         var path = FindModelPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
         using var gpu = TryCreateBackend();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
@@ -161,9 +161,9 @@ public sealed class VulkanBatchedPrefillTests
     public void BatchedPrefill_ThenDecode_MatchesPerTokenPrefillThenDecode()
     {
         var path = FindModelPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
         using var gpu = TryCreateBackend();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);

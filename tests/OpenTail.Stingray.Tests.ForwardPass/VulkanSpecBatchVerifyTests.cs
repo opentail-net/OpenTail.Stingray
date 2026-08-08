@@ -112,9 +112,9 @@ public sealed class VulkanSpecBatchVerifyTests
     public void Qwen3_0_6B_DenseModel_ReportsSupportsBatchVerify()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
         var path = FindModelPath(SmallModel);
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
@@ -135,9 +135,9 @@ public sealed class VulkanSpecBatchVerifyTests
     public void Qwen3_8B_Q4K_QualifiesForBatchedTrunk()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
         var path = FindModelPath(BatchedModel);
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
@@ -205,9 +205,9 @@ public sealed class VulkanSpecBatchVerifyTests
     private void RunParity(string modelFile, int k, bool expectBatchedTrunk, DType kvDtype = DType.Float32)
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
         var path = FindModelPath(modelFile);
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
@@ -287,9 +287,9 @@ public sealed class VulkanSpecBatchVerifyTests
     public void Qwen3_8B_Q4K_BatchVerify_VariableK_MatchesSequentialForward()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
         var path = FindModelPath(BatchedModel);
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
@@ -346,10 +346,10 @@ public sealed class VulkanSpecBatchVerifyTests
     public void BatchVerify_TruncateAndCommit_MatchesSequential()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
         // Prefer the batched-trunk model; degrade to the small model so CI without the 8B still runs.
         var path = FindModelPath(BatchedModel) ?? FindModelPath(SmallModel);
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
@@ -417,9 +417,9 @@ public sealed class VulkanSpecBatchVerifyTests
             return;
 
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
         var path = FindModelPath(BatchedModel);
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
@@ -504,7 +504,7 @@ public sealed class VulkanSpecBatchVerifyTests
             return;
 
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
 
         // Qwen3-8B-ish trunk matmul: ffn_down is [4096 × 12288]; use that (largest cols).
         const int rows = 4096;

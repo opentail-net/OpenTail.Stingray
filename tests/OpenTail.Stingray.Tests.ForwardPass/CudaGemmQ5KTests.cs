@@ -57,7 +57,7 @@ public sealed unsafe class CudaGemmQ5KTests
     public void MatMulBatchedGemm_Q5K_TracksCpuReference()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
 
         foreach ((int rows, int cols, int nTok) in new[]
                  { (256, 256, 8), (1024, 512, 12), (128, 2560, 64), (300, 256, 5) })

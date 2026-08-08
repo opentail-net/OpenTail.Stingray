@@ -91,7 +91,7 @@ public sealed class Gemma4VisionCudaHybridE2ETests : IDisposable
     public void Gemma4_CudaHybrid_Image_MatchesCudaFull_Argmax()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;                                 // CUDA-gated
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
         var textPath = Find(TextModel);
         var mmprojPath = Find(Mmproj);
         if (textPath is null || mmprojPath is null) return;      // model-gated

@@ -63,7 +63,7 @@ public sealed class CudaRaggedDecodeKernelTests
     private void RopeCase(bool neox)
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
 
         const int numHeads = 8, headDim = 64;
         int rowDim = numHeads * headDim;
@@ -132,7 +132,7 @@ public sealed class CudaRaggedDecodeKernelTests
     private void KvAppendCase(DType dtype)
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
 
         const int kvDim = 128, maxSeqLen = 64;
         int rowBytes = RowBytes(kvDim, dtype);
@@ -267,7 +267,7 @@ public sealed class CudaRaggedDecodeKernelTests
     private void AttentionCase(DType dtype, int maxSeqLen, int[] seqLens, bool withScratch)
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
 
         const int numHeads = 8, numKvHeads = 2, headDim = 64;
         int qDim = numHeads * headDim, kvDim = numKvHeads * headDim;
@@ -378,7 +378,7 @@ public sealed class CudaRaggedDecodeKernelTests
     public void AddBiasBatched_BitwiseMatchesSequential()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
 
         const int dim = 1234;
         foreach (int n in new[] { 1, 5, 17 })

@@ -41,6 +41,12 @@ jobs:
       # NOTE: this option is accepted by `dotnet test` (which forwards it to the platform host),
       # NOT by the test executable directly — running the built .exe with it fails with
       # "unknown option". Keep these invocations going through `dotnet test`.
+      #
+      # ForwardPass is the largest suite and holds most of the CPU inference, batching, KV-cache and
+      # quantisation-parity coverage; it was absent from this gate, so an engine regression could
+      # merge green. Its GPU/model rows self-skip on a runner with neither, and its floor of 900 is a
+      # deliberate lower bound (1,078 [Fact]/[Theory] methods before Theory expansion) because no CI
+      # run has yet established the true discovered count — raise it once one has.
       - name: CPU-safe test suites
         run: |
           dotnet test tests/OpenTail.Stingray.Tests.Core/OpenTail.Stingray.Tests.Core.csproj -c Release --no-restore -- --minimum-expected-tests 350
@@ -50,3 +56,4 @@ jobs:
           dotnet test tests/OpenTail.Stingray.Tests.Cli/OpenTail.Stingray.Tests.Cli.csproj -c Release --no-restore -- --minimum-expected-tests 300
           dotnet test tests/OpenTail.Stingray.Tests.Sessions/OpenTail.Stingray.Tests.Sessions.csproj -c Release --no-restore -- --minimum-expected-tests 60
           dotnet test tests/OpenTail.Stingray.Tests.Vision/OpenTail.Stingray.Tests.Vision.csproj -c Release --no-restore -- --minimum-expected-tests 55
+          dotnet test tests/OpenTail.Stingray.Tests.ForwardPass/OpenTail.Stingray.Tests.ForwardPass.csproj -c Release --no-restore -- --minimum-expected-tests 900

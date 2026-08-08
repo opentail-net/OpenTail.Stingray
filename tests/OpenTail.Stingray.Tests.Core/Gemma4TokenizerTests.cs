@@ -17,7 +17,7 @@ public sealed class Gemma4TokenizerTests
     public void Gemma4_Tokenizer_LoadsFromGguf()
     {
         var tokenizer = CreateTokenizer();
-        if (tokenizer is null) return;
+        Assert.SkipUnless(tokenizer is not null, "model fixture not present in this environment");
 
         Assert.Equal(262_144, tokenizer.VocabSize);
         Assert.Equal(2, tokenizer.BosTokenId);
@@ -29,7 +29,7 @@ public sealed class Gemma4TokenizerTests
     public void Gemma4_Tokenizer_RoundTripsHello()
     {
         var tokenizer = CreateTokenizer();
-        if (tokenizer is null) return;
+        Assert.SkipUnless(tokenizer is not null, "model fixture not present in this environment");
 
         const string text = "Hello world";
         var ids = tokenizer.Encode(text);
@@ -43,7 +43,7 @@ public sealed class Gemma4TokenizerTests
     public void Gemma4_Tokenizer_HandlesSpecialTokens()
     {
         var tokenizer = CreateTokenizer();
-        if (tokenizer is null) return;
+        Assert.SkipUnless(tokenizer is not null, "model fixture not present in this environment");
 
         // In Gemma 4, only token-type-3 control tokens are special; the metadata EOS
         // for this model is <turn|> at id 106 (literal <eos> at id 1 is a normal token).
@@ -60,7 +60,7 @@ public sealed class Gemma4TokenizerTests
     public void Gemma4_DecodeBytes_RoundTripsAscii()
     {
         var tokenizer = CreateTokenizer();
-        if (tokenizer is null) return;
+        Assert.SkipUnless(tokenizer is not null, "model fixture not present in this environment");
 
         const string text = "Hello, world!";
         var ids = tokenizer.Encode(text);

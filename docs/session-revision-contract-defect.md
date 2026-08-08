@@ -1,7 +1,8 @@
 # Session `committed_revision` is not a usable concurrency token
 
-**Found:** 2026-08-07, at the wire, with a reproduction. **Not fixed** — the correct fix changes
-persisted-revision semantics and needs an owner decision. Recorded in full so it is not re-derived.
+**Found:** 2026-08-07, at the wire, with a reproduction. **FIXED 2026-08-08** — see "Resolution"
+at the end. The analysis is kept because it explains why the obvious single-sided fixes are wrong
+and why one test passed over the defect for so long.
 
 ## The defect
 
@@ -79,3 +80,33 @@ misuse that produced this.
 Insert into `SessionEndpointTests` (it needs the private `EnabledSessions`/`CreateClient` harness):
 create a session, run one turn at `expected_revision = 0`, `GET` the session, then run a second turn
 using the advertised value. Before any fix it returns `409`.
+
+
+## Resolution (2026-08-08)
+
+Fixed as the combined change this document called for. The store's turn counter is authoritative,
+and all FOUR sources now agree by construction:
+
+| Source | Before | After |
+|---|---|---|
+| Published `committed_revision` (`SessionEndpoints.ToResponse`) | `HotSession.CommittedRevision` (position count) | `snapshot.CommittedRevision` (turn counter) |
+| Persisted manifest revision (`ColdSessionRuntime.EvictToDisk`) | `session.CommittedRevision` (position count) | store snapshot's turn counter |
+| Restore seeding (`HotSession.RestoreCursor`) | `cursor.AcceptedPositionCount` | the manifest's persisted revision |
+| Validation (`RunTurnAsync`) | store turn counter | unchanged — it was always the right one |
+
+The fourth row is the one this document missed. `RestoreCursor` re-seeded the store from the cursor
+position count on every import, so fixing only the publish and persist sides left restored sessions
+still disagreeing. That is why the two half-fixes measured here each broke a durable test: neither
+touched the seeding.
+
+`HotSession.CommittedRevision` is renamed `AcceptedPositionCount` — it is not a concurrency token and
+its old name is what invited publishing it as one.
+
+**On-disk format:** manifest version 3. The layout is unchanged; only the meaning of the revision
+field is. v1/v2 files are still read and are NOT migrated: the contract requires the sources to
+agree, not to hold a particular number, so a legacy position count is simply a larger opaque seed
+for the same monotonic counter — every value a client subsequently echoes comes from the store.
+
+**Regression test:** `SessionEndpointTests.Turn_AdvertisedCommittedRevision_IsAcceptedAsExpectedRevision`
+runs the read-then-echo pattern against a LIVE session over three turns and asserts a stale revision
+still conflicts. Verified by mutation: publishing any other value fails it.

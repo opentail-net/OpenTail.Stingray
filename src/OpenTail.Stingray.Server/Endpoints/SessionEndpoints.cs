@@ -32,7 +32,11 @@ public static partial class SessionEndpoints
         app.MapPost("/v1/sessions", Create);
         app.MapGet("/v1/sessions/{sessionId:guid}", Get);
         app.MapGet("/v1/sessions/{sessionId:guid}/operations/{operationId:guid}", GetOperation);
-        app.MapPost("/v1/sessions/{sessionId:guid}/turns", RunTurn);
+        // The turns route generates, exactly like /v1/chat/completions and /v1/messages, so it takes
+        // the same bounded-admission filter. Without it MaxQueuedRequests bounded only the three
+        // stateless chat routes while any number of named sessions could enqueue prompts in
+        // parallel — the queue limit was route-shaped rather than engine-shaped.
+        app.MapPost("/v1/sessions/{sessionId:guid}/turns", RunTurn).WithConcurrencyLimit();
         app.MapDelete("/v1/sessions/{sessionId:guid}", Delete);
         return app;
     }
@@ -43,7 +47,7 @@ public static partial class SessionEndpoints
             return Unavailable(sessions);
 
         var session = sessions.ColdRuntime?.Create() ?? runtime.Create();
-        return Results.Json(ToResponse(runtime.GetSessionSnapshot(session.SessionId), session.CommittedRevision),
+        return Results.Json(ToResponse(runtime.GetSessionSnapshot(session.SessionId)),
             OpenTailStingrayJsonContext.Default.SessionResponse, statusCode: StatusCodes.Status201Created);
     }
 
@@ -56,7 +60,7 @@ public static partial class SessionEndpoints
         {
             var id = new SessionId(sessionId);
             var session = sessions.ColdRuntime?.Open(id) ?? runtime.Open(id);
-            return Results.Json(ToResponse(runtime.GetSessionSnapshot(id), session.CommittedRevision),
+            return Results.Json(ToResponse(runtime.GetSessionSnapshot(id)),
                 OpenTailStingrayJsonContext.Default.SessionResponse);
         }
         catch (SessionNotFoundException)
@@ -97,7 +101,7 @@ public static partial class SessionEndpoints
             string text = string.Concat((operation.ResultChunks ?? []).Where(c => c.Kind == GenerateChunkKind.Text).Select(c => c.Text));
             string thinking = string.Concat((operation.ResultChunks ?? []).Where(c => c.Kind == GenerateChunkKind.Thinking).Select(c => c.Text));
             return Results.Json(new SessionOperationResponse(
-                    ToResponse(runtime.GetSessionSnapshot(id), session.CommittedRevision),
+                    ToResponse(runtime.GetSessionSnapshot(id)),
                     operation.OperationId.ToString(), operation.State.ToString().ToLowerInvariant(),
                     operation.CommittedRevision?.Value, operation.CreatedAt, operation.CompletedAt,
                     RedactFilesystemPaths(operation.FailureReason), text, thinking),
@@ -175,7 +179,7 @@ public static partial class SessionEndpoints
             string text = string.Concat(outcome.Chunks.Where(c => c.Kind == GenerateChunkKind.Text).Select(c => c.Text));
             string thinking = string.Concat(outcome.Chunks.Where(c => c.Kind == GenerateChunkKind.Thinking).Select(c => c.Text));
             return Results.Json(new SessionTurnResponse(
-                    ToResponse(snapshot, session.CommittedRevision), operationId.ToString(),
+                    ToResponse(snapshot), operationId.ToString(),
                     outcome.Operation.State.ToString().ToLowerInvariant(), text, thinking,
                     outcome.IsIdempotentReplay),
                 OpenTailStingrayJsonContext.Default.SessionTurnResponse);
@@ -222,19 +226,21 @@ public static partial class SessionEndpoints
             statusCode: StatusCodes.Status409Conflict);
 
     /// <summary>
-    /// Builds the wire response. <paramref name="committedRevision"/> is taken from the SESSION, not
-    /// from <paramref name="snapshot"/>, because those are two different counters and only one of
-    /// them is the concurrency token.
+    /// Builds the wire response. <c>committed_revision</c> comes from the SNAPSHOT, because the
+    /// store's revision is the one <c>RunTurnAsync</c> compares <c>expected_revision</c> against —
+    /// publishing anything else hands the client a token that conflict detection rejects.
     ///
-    /// <para><c>HotSession.CommittedRevision</c> is the accepted-position count and is what
-    /// <c>RunTurnAsync</c> compares <c>expected_revision</c> against; the store snapshot carries a
-    /// separate per-turn counter. Reporting the snapshot's meant the API handed clients a number
-    /// that conflict detection would always reject — one turn returned revision 1 while a turn sent
-    /// at revision 1 was refused with "current revision is 6", so a client echoing back what it was
-    /// just told could never make a second call.</para>
+    /// <para>This previously published <c>HotSession.CommittedRevision</c>, the cursor's
+    /// accepted-position count. The two diverge as soon as a turn accepts more than one position, so
+    /// a session would advertise <c>committed_revision: 6</c> and then answer a turn carrying 6 with
+    /// <c>409 "Expected revision 6, but current revision is 1"</c> — the only workable client
+    /// pattern (read the value, echo it back) failed on its second turn. That property is now named
+    /// <c>AcceptedPositionCount</c> so it cannot be mistaken for a concurrency token again, and the
+    /// durable manifest records the store's counter too (manifest v3), so the live and restored
+    /// lanes finally agree by construction rather than by coincidence.</para>
     /// </summary>
-    private static SessionResponse ToResponse(SessionSnapshot snapshot, SessionRevision committedRevision) => new(
-        snapshot.SessionId.ToString(), committedRevision.Value,
+    private static SessionResponse ToResponse(SessionSnapshot snapshot) => new(
+        snapshot.SessionId.ToString(), snapshot.CommittedRevision.Value,
         snapshot.DurableRevision?.Value, snapshot.CurrentFencingEpoch,
         snapshot.Operations.Count);
 }

@@ -21,6 +21,7 @@ public sealed unsafe class GgufModel : IDisposable, IModelTensorSource
     private readonly byte*[] _shardBasePtrs;
     private readonly long[] _shardFileSizes;
     private readonly long[] _shardDataStartOffsets;
+    private bool _disposed;
 
     public GgufHeader Header { get; }
     public IReadOnlyDictionary<string, object> Metadata { get; }
@@ -186,27 +187,69 @@ public sealed unsafe class GgufModel : IDisposable, IModelTensorSource
     /// Returns a raw pointer to the tensor data in the memory-mapped file. Zero-copy.
     /// The pointer is valid for the lifetime of this GgufModel instance.
     /// </summary>
-    public unsafe byte* GetTensorDataPtr(GgufTensorInfo tensor) =>
-        _shardBasePtrs[tensor.ShardIndex] + _shardDataStartOffsets[tensor.ShardIndex] + (long)tensor.DataOffset;
+    public unsafe byte* GetTensorDataPtr(GgufTensorInfo tensor)
+    {
+        ResolveTensorRange(tensor, out byte* basePtr, out long absoluteOffset, out _);
+        return basePtr + absoluteOffset;
+    }
 
     /// <summary>
     /// Returns a read-only span directly into the memory-mapped file for the given tensor. Zero-copy.
     /// </summary>
     public ReadOnlySpan<byte> GetTensorData(GgufTensorInfo tensor)
     {
-        int s              = tensor.ShardIndex;
-        var absoluteOffset = _shardDataStartOffsets[s] + (long)tensor.DataOffset;
-        var byteSize       = tensor.ByteSize;
-
-        if (absoluteOffset + byteSize > _shardFileSizes[s])
-            throw new InvalidDataException(
-                $"Tensor '{tensor.Name}' data (offset={absoluteOffset}, size={byteSize}) exceeds shard {s} file size ({_shardFileSizes[s]}).");
+        ResolveTensorRange(tensor, out byte* basePtr, out long absoluteOffset, out long byteSize);
 
         if (byteSize > int.MaxValue)
             throw new OverflowException(
                 $"Tensor '{tensor.Name}' byte size ({byteSize} bytes) exceeds ReadOnlySpan max capacity ({int.MaxValue} bytes). Use GetTensorDataPtr for 2+ GiB tensors.");
 
-        return new ReadOnlySpan<byte>(_shardBasePtrs[s] + absoluteOffset, (int)byteSize);
+        return new ReadOnlySpan<byte>(basePtr + absoluteOffset, (int)byteSize);
+    }
+
+    /// <summary>
+    /// The single validated path from a <see cref="GgufTensorInfo"/> to raw memory. Both accessors go
+    /// through it so neither can be the one that forgot a check — the pointer form previously had
+    /// none at all, which made it the weaker of two doors into the same mapping.
+    ///
+    /// <para>Parse-time validation (see <c>ParseTensorInfos</c>) has already proved that every
+    /// tensor belonging to this model lies inside its shard. What cannot be assumed here is that the
+    /// caller passed a tensor from THIS model: <see cref="GgufTensorInfo"/> is a public record struct
+    /// that anyone can construct or mutate with <c>with</c>, so the shard index and the resolved
+    /// range are re-checked rather than trusted.</para>
+    /// </summary>
+    private void ResolveTensorRange(
+        GgufTensorInfo tensor, out byte* basePtr, out long absoluteOffset, out long byteSize)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
+        int s = tensor.ShardIndex;
+        if ((uint)s >= (uint)_shardBasePtrs.Length)
+            throw new ArgumentOutOfRangeException(nameof(tensor),
+                $"Tensor '{tensor.Name}' names shard {s}, but this model has {_shardBasePtrs.Length}.");
+
+        if (tensor.DataOffset > long.MaxValue)
+            throw new InvalidDataException(
+                $"Tensor '{tensor.Name}' has data offset {tensor.DataOffset}, which exceeds the addressable range.");
+
+        try
+        {
+            byteSize = tensor.ByteSize;
+            absoluteOffset = checked(_shardDataStartOffsets[s] + (long)tensor.DataOffset);
+            _ = checked(absoluteOffset + byteSize);
+        }
+        catch (OverflowException ex)
+        {
+            throw new InvalidDataException(
+                $"Tensor '{tensor.Name}' has an offset/size that overflows when resolved against shard {s}.", ex);
+        }
+
+        if (byteSize < 0 || absoluteOffset < 0 || absoluteOffset + byteSize > _shardFileSizes[s])
+            throw new InvalidDataException(
+                $"Tensor '{tensor.Name}' data (offset={absoluteOffset}, size={byteSize}) is outside shard {s} " +
+                $"(file size {_shardFileSizes[s]}).");
+
+        basePtr = _shardBasePtrs[s];
     }
 
     /// <summary>
@@ -233,8 +276,16 @@ public sealed unsafe class GgufModel : IDisposable, IModelTensorSource
     public T GetMetadata<T>(string key, T defaultValue = default!) =>
         Metadata.TryGetValue(key, out var value) ? (T)Convert.ChangeType(value, typeof(T)) : defaultValue;
 
+    /// <summary>
+    /// Releases every shard mapping. Idempotent: a second call is a no-op rather than a second
+    /// <c>ReleasePointer</c> on an already-released handle, which unbalances the refcount and can
+    /// unmap memory other callers still hold pointers into. Double disposal is easy to reach because
+    /// engine teardown paths transfer ownership of this object between owner lists.
+    /// </summary>
     public void Dispose()
     {
+        if (_disposed) return;
+        _disposed = true;
         for (int s = 0; s < _shardAccessors.Length; s++)
         {
             _shardAccessors[s].SafeMemoryMappedViewHandle.ReleasePointer();
@@ -306,10 +357,68 @@ public sealed unsafe class GgufModel : IDisposable, IModelTensorSource
                     "This OpenTail.Stingray build follows current llama.cpp GGUF type IDs and rejects " +
                     "retired or newer tensor formats before model load.");
             var offset = reader.ReadUInt64();
+
+            // Validate the geometry here, at the only place the raw header is still in scope.
+            // GGML's own limit is 4 dimensions; a larger rank means the file is malformed (or
+            // hostile) and every later size computation derived from it would be meaningless.
+            if (nDims > 4)
+                throw new InvalidDataException(
+                    $"Tensor '{tName}' declares {nDims} dimensions; GGUF supports at most 4.");
+            for (uint d = 0; d < nDims; d++)
+                if (dims[d] <= 0)
+                    throw new InvalidDataException(
+                        $"Tensor '{tName}' has non-positive dimension {d} ({dims[d]}).");
+
             tensors[i] = new GgufTensorInfo(tName, (int)nDims, dims, dtype, offset, shardIndex);
         }
 
         dataStartOffset = AlignUp(reader.Position, alignment);
+
+        // Second pass: every tensor's byte range must lie inside this shard. dataStartOffset is only
+        // known once the whole info block has been read, so this cannot fold into the loop above.
+        //
+        // Doing it HERE, once, is what lets the accessors stay cheap: after this, a GgufTensorInfo
+        // that came from this file is known to describe a range inside it, so GetTensorData and
+        // GetTensorDataPtr re-check only what they cannot assume (that the caller passed a tensor
+        // from this model at all).
+        foreach (var tensor in tensors)
+        {
+            long byteSize;
+            try
+            {
+                byteSize = tensor.ByteSize; // checked; throws on a wrapped element count
+            }
+            catch (OverflowException ex)
+            {
+                throw new InvalidDataException(
+                    $"Tensor '{tensor.Name}' has dimensions whose product overflows a 64-bit size.", ex);
+            }
+
+            if (byteSize < 0)
+                throw new InvalidDataException($"Tensor '{tensor.Name}' has a negative byte size ({byteSize}).");
+            // DataOffset is unsigned on the wire but indexed as a signed offset. Reject anything that
+            // would not survive the conversion BEFORE casting, rather than casting to a negative
+            // number that then compares as "below the file size" and passes.
+            if (tensor.DataOffset > long.MaxValue)
+                throw new InvalidDataException(
+                    $"Tensor '{tensor.Name}' has data offset {tensor.DataOffset}, which exceeds the addressable range.");
+
+            long absolute;
+            try
+            {
+                absolute = checked(dataStartOffset + (long)tensor.DataOffset);
+                if (checked(absolute + byteSize) > fileSize)
+                    throw new InvalidDataException(
+                        $"Tensor '{tensor.Name}' data (offset={absolute}, size={byteSize}) exceeds shard " +
+                        $"{shardIndex} file size ({fileSize}).");
+            }
+            catch (OverflowException ex)
+            {
+                throw new InvalidDataException(
+                    $"Tensor '{tensor.Name}' data offset/size overflows when resolved against shard {shardIndex}.", ex);
+            }
+        }
+
         result.AddRange(tensors);
     }
 
@@ -464,19 +573,23 @@ public sealed unsafe class GgufModel : IDisposable, IModelTensorSource
             {
                 case GgufValueType.UInt8:
                 case GgufValueType.Int8:
-                case GgufValueType.Bool:  _pos += 1; break;
+                case GgufValueType.Bool:  SkipBytes(1); break;
                 case GgufValueType.UInt16:
-                case GgufValueType.Int16: _pos += 2; break;
+                case GgufValueType.Int16: SkipBytes(2); break;
                 case GgufValueType.UInt32:
                 case GgufValueType.Int32:
-                case GgufValueType.Float32: _pos += 4; break;
+                case GgufValueType.Float32: SkipBytes(4); break;
                 case GgufValueType.UInt64:
                 case GgufValueType.Int64:
-                case GgufValueType.Float64: _pos += 8; break;
+                case GgufValueType.Float64: SkipBytes(8); break;
                 case GgufValueType.String:
                 {
                     var len = ReadUInt64();
-                    _pos += (long)len;
+                    // Reject before casting: a length above long.MaxValue casts to a NEGATIVE
+                    // advance, which moves the position backwards instead of failing.
+                    if (len > long.MaxValue)
+                        throw new InvalidDataException($"GGUF string length {len} exceeds the addressable range.");
+                    SkipBytes((long)len);
                     break;
                 }
                 case GgufValueType.Array:
@@ -492,11 +605,31 @@ public sealed unsafe class GgufModel : IDisposable, IModelTensorSource
             }
         }
 
+        /// <summary>
+        /// Bounds check for the next <paramref name="bytes"/> bytes.
+        ///
+        /// <para>The negative/overflow cases are not theoretical. Lengths on the wire are
+        /// <c>ulong</c> and get cast to <c>long</c> to advance <c>_pos</c>, so a hostile length can
+        /// drive the position negative or wrap it. A plain <c>_pos + bytes &gt; _length</c> test
+        /// silently PASSES for a negative position and would then read below the mapping.</para>
+        /// </summary>
         private void EnsureAvailable(long bytes)
         {
-            if (_pos + bytes > _length)
+            if (bytes < 0 || _pos < 0 || _pos > _length || _pos + bytes < 0 || _pos + bytes > _length)
                 throw new InvalidDataException(
                     $"Unexpected end of GGUF data at offset {_pos} (need {bytes} bytes, {_length - _pos} available).");
+        }
+
+        /// <summary>
+        /// Advances the position by <paramref name="bytes"/>, validating the result. Skipping is a
+        /// read that discards its result, so it needs the same bounds check a read would get —
+        /// without it a skip can park <c>_pos</c> out of range or negative, and the NEXT read's
+        /// check then evaluates against a nonsense position.
+        /// </summary>
+        private void SkipBytes(long bytes)
+        {
+            EnsureAvailable(bytes);
+            _pos += bytes;
         }
     }
 }

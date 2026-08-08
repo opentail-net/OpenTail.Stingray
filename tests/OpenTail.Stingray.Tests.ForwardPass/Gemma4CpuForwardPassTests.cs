@@ -40,7 +40,7 @@ public sealed class Gemma4CpuForwardPassTests
     public void Gemma4_E4B_CpuForward_ProducesNonGarbageLogits()
     {
         var path = FindModelPath("gemma-4-E4B-it-Q8_0.gguf");
-        if (path is null) return;   // silent skip — same pattern as HybridGdnForwardPassTests
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
@@ -89,7 +89,7 @@ public sealed class Gemma4CpuForwardPassTests
         // It now skips the K-norm for KV-share layers (where ApplyQkNormLayer passes k=null),
         // so the file loads and decodes coherently.
         var path = FindModelPath("gemma-4-E4B_q4_0-it.gguf");
-        if (path is null) return;   // silent skip — file only present on the dev box
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
@@ -126,7 +126,7 @@ public sealed class Gemma4CpuForwardPassTests
         // loop (e.g. <pad> spam) signals broken PLE wiring (wrong row layout, missing
         // norm offset, wrong scaling, etc.).
         var path = FindModelPath("gemma-4-E4B-it-Q8_0.gguf");
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
@@ -185,7 +185,7 @@ public sealed class Gemma4CpuForwardPassTests
             path = FindModelPath(f);
             if (path is not null) break;
         }
-        if (path is null) return;   // silent skip
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);

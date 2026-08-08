@@ -94,7 +94,7 @@ public sealed class VulkanIntegerDotProbeTests(ITestOutputHelper output)
     public void FaultRateIsCharacterisedPerOperandPopulation(string population)
     {
         using var vk = TryCreate();
-        if (vk is null) { output.WriteLine("Vulkan unavailable — skipped."); return; }
+        Assert.SkipUnless(vk is not null, "model fixture not present in this environment");
         if (!vk.HasShaderIntegerDotProduct)
         {
             output.WriteLine("VK_KHR_shader_integer_dot_product not present — skipped.");
@@ -153,7 +153,7 @@ public sealed class VulkanIntegerDotProbeTests(ITestOutputHelper output)
     public void OperandProbeIsNotSufficientToDecideTheGate()
     {
         using var vk = TryCreate();
-        if (vk is null) { output.WriteLine("Vulkan unavailable — skipped."); return; }
+        Assert.SkipUnless(vk is not null, "model fixture not present in this environment");
         if (!vk.HasShaderIntegerDotProduct)
         {
             Assert.False(vk.Dp4aIntrinsicUsable);
@@ -213,7 +213,7 @@ public sealed class VulkanIntegerDotProbeTests(ITestOutputHelper output)
     public void TheGateAgreesWithTheRealKernelAtEveryShape(int rows, int cols)
     {
         using var vk = TryCreate();
-        if (vk is null) { output.WriteLine("Vulkan unavailable — skipped."); return; }
+        Assert.SkipUnless(vk is not null, "model fixture not present in this environment");
         if (!vk.HasShaderIntegerDotProduct)
         {
             output.WriteLine("VK_KHR_shader_integer_dot_product not present — skipped.");

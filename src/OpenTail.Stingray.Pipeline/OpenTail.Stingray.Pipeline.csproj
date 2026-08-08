@@ -8,4 +8,10 @@
     <ProjectReference Include="..\OpenTail.Stingray.Core\OpenTail.Stingray.Core.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- MemoryHierarchy/Prefetcher are internal scaffolding (see MemoryHierarchy.cs); the Pipeline
+         suite still needs to see them. -->
+    <InternalsVisibleTo Include="OpenTail.Stingray.Tests.Pipeline" />
+  </ItemGroup>
+
 </Project>

@@ -86,7 +86,7 @@ public sealed class CudaDSparkE2ETests
     {
         if (FindModels() is not var (ggufPath, headDir) || ggufPath is null) return;
         using var cuda = TryCreate();
-        if (cuda is null) return;
+        Assert.SkipUnless(cuda is not null, "model fixture not present in this environment");
 
         var cfg = DSparkConfig.FromJsonFile(Path.Combine(headDir, "config.json"));
         using var model = GgufModel.Open(ggufPath);
@@ -130,7 +130,7 @@ public sealed class CudaDSparkE2ETests
     {
         if (FindModels() is not var (ggufPath, headDir) || ggufPath is null) return;
         using var cuda = TryCreate();
-        if (cuda is null) return;
+        Assert.SkipUnless(cuda is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(ggufPath);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
@@ -175,7 +175,7 @@ public sealed class CudaDSparkE2ETests
     {
         if (FindModels() is not var (ggufPath, headDir) || ggufPath is null) return;
         using var cuda = TryCreate();
-        if (cuda is null) return;
+        Assert.SkipUnless(cuda is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(ggufPath);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);

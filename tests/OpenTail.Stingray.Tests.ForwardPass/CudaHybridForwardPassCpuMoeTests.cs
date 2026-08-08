@@ -85,10 +85,10 @@ public sealed class CudaHybridForwardPassCpuMoeTests
     public void CudaHybridForwardPass_CpuMoeMode_MatchesCpuReference()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return; // silent skip — no CUDA
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
 
         var path = FindMoEModelPath();
-        if (path is null) return; // silent skip — no MoE model on disk
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         var prev = Environment.GetEnvironmentVariable("STINGRAY_CPU_MOE");
         Environment.SetEnvironmentVariable("STINGRAY_CPU_MOE", "1");

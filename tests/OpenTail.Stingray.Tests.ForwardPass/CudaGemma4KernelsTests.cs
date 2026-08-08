@@ -24,7 +24,7 @@ public sealed unsafe class CudaGemma4KernelsTests
     public void GeluTanhMul_MatchesCpuReference()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
 
         const int N = 4096;
         var rng = new Random(0xCafe);
@@ -64,7 +64,7 @@ public sealed unsafe class CudaGemma4KernelsTests
     public void SoftcapInPlace_MatchesCpuReference()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
 
         const int N = 1024;
         const float Cap = 30.0f;
@@ -101,7 +101,7 @@ public sealed unsafe class CudaGemma4KernelsTests
     public void AttentionSwa_WindowedReadsSubsetOfFullAttention()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
 
         const int NumHeads = 4;
         const int NumKvHeads = 4;

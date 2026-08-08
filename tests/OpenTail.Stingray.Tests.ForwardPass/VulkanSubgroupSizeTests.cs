@@ -36,7 +36,7 @@ public sealed unsafe class VulkanSubgroupSizeTests
     public void SubgroupSizeRangeIsQueried()
     {
         using var backend = TryCreateBackend();
-        if (backend is null) return; // no device
+        Assert.SkipUnless(backend is not null, "model fixture not present in this environment");
 
         if (backend.HasSubgroupSizeControl)
         {
@@ -89,7 +89,7 @@ public sealed unsafe class VulkanSubgroupSizeTests
     public void ShouldPinSubgroupSize32MatchesGate()
     {
         using var backend = TryCreateBackend();
-        if (backend is null) return; // no device
+        Assert.SkipUnless(backend is not null, "model fixture not present in this environment");
 
         // Pinning is needed only when the device could pick a non-32 subgroup (AMD Wave64 → 64,
         // Intel → possibly <32). A device locked to exactly 32 (e.g. NVIDIA) is already correct,
@@ -115,7 +115,7 @@ public sealed unsafe class VulkanSubgroupSizeTests
         // 32-lane row group). Output must match the CPU reference whether or not the pin is
         // applied — i.e. the #318 wiring did not break pipeline creation or compute.
         using var backend = TryCreateBackend();
-        if (backend is null) return; // no device
+        Assert.SkipUnless(backend is not null, "model fixture not present in this environment");
 
         const int N = 2048;
         var input = new float[N];
@@ -155,7 +155,7 @@ public sealed unsafe class VulkanSubgroupSizeTests
     {
         // Surfaces the queried range in test output for the issue report.
         using var backend = TryCreateBackend();
-        if (backend is null) return; // no device
+        Assert.SkipUnless(backend is not null, "model fixture not present in this environment");
 
         Console.WriteLine(
             $"[#318] HasSubgroupSizeControl={backend.HasSubgroupSizeControl} " +

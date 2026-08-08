@@ -130,9 +130,9 @@ public sealed class GpuForwardPassKvDtypeTests
     public void Bf16Kv_ArgmaxStable_VsFp32()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
         var path = FindModelPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         const int steps = 6;
         const int ctx = 2048;
@@ -169,9 +169,9 @@ public sealed class GpuForwardPassKvDtypeTests
     public void Bf16Kv_GreedyDecode_Coherent()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
         var path = FindModelPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         int eosId;
         using (var model = GgufModel.Open(path))
@@ -208,9 +208,9 @@ public sealed class GpuForwardPassKvDtypeTests
     public void Q8Kv_ArgmaxStable_VsFp32()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
         var path = FindModelPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         const int steps = 6;
         const int ctx = 2048;
@@ -248,9 +248,9 @@ public sealed class GpuForwardPassKvDtypeTests
     public void Q8Kv_GreedyDecode_Coherent()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
         var path = FindModelPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         int eosId;
         using (var model = GgufModel.Open(path))

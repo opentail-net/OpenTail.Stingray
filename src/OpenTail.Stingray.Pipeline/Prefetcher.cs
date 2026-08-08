@@ -4,11 +4,15 @@ using OpenTail.Stingray.Core;
 namespace OpenTail.Stingray.Pipeline;
 
 /// <summary>
-/// Asynchronous weight prefetcher.
-/// Analyses the upcoming layer schedule and issues DMA transfers
+/// Asynchronous weight prefetcher. Analyses the upcoming layer schedule and issues DMA transfers
 /// before weights are needed, hiding I/O latency.
+///
+/// <para><b>Internal alongside <see cref="MemoryHierarchy"/>.</b> Every request it dequeues calls
+/// <c>MemoryHierarchy.PromoteToGpuAsync</c>, which throws <see cref="NotImplementedException"/>, so
+/// this cannot function either — it was public only because the type it depends on was. The
+/// implemented expert prefetcher is <c>MoEPrefetcher</c> in OpenTail.Stingray.Engine.</para>
 /// </summary>
-public sealed class Prefetcher : IDisposable
+internal sealed class Prefetcher : IDisposable
 {
     private readonly MemoryHierarchy _memory;
     private readonly Channel<PrefetchRequest> _queue;
@@ -54,4 +58,4 @@ public sealed class Prefetcher : IDisposable
     }
 }
 
-public readonly record struct PrefetchRequest(string TensorName, int Priority = 0);
+internal readonly record struct PrefetchRequest(string TensorName, int Priority = 0);

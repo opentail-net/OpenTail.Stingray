@@ -256,6 +256,50 @@ public sealed class SessionEndpointTests
         Assert.Equal(HttpStatusCode.NotFound, (await client.DeleteAsync($"/v1/sessions/{id}")).StatusCode);
     }
 
+    /// <summary>
+    /// The optimistic-concurrency contract, end to end: read <c>committed_revision</c>, echo it back
+    /// as <c>expected_revision</c>. That is the only pattern the API admits, and it used to fail on
+    /// the SECOND turn — the server advertised the cursor's accepted-position count (6) while
+    /// conflict detection compared against the store's turn counter (1), so it rejected the exact
+    /// value it had just published: <c>409 "Expected revision 6, but current revision is 1"</c>.
+    ///
+    /// <para>The earlier restart test did not catch this because a persisted revision was ALSO a
+    /// position count, so on the durable path the two wrong numbers agreed. This test runs against a
+    /// live session, where they do not.</para>
+    /// </summary>
+    [Fact]
+    public async Task Turn_AdvertisedCommittedRevision_IsAcceptedAsExpectedRevision()
+    {
+        using var sessions = new EnabledSessions();
+        var client = CreateClient(sessions);
+        Guid id = await CreateSessionAsync(client);
+
+        var first = await client.PostAsJsonAsync($"/v1/sessions/{id}/turns", TurnBody("hello", 0));
+        Assert.Equal(HttpStatusCode.OK, first.StatusCode);
+
+        var get = await client.GetAsync($"/v1/sessions/{id}");
+        Assert.Equal(HttpStatusCode.OK, get.StatusCode);
+        using var doc = JsonDocument.Parse(await get.Content.ReadAsStringAsync());
+        long advertised = doc.RootElement.GetProperty("committed_revision").GetInt64();
+
+        var second = await client.PostAsJsonAsync($"/v1/sessions/{id}/turns", TurnBody("world", advertised));
+        Assert.Equal(HttpStatusCode.OK, second.StatusCode);
+
+        // And the value must keep advancing, so a third turn can repeat the pattern rather than the
+        // token happening to be a fixed point.
+        var get2 = await client.GetAsync($"/v1/sessions/{id}");
+        using var doc2 = JsonDocument.Parse(await get2.Content.ReadAsStringAsync());
+        long next = doc2.RootElement.GetProperty("committed_revision").GetInt64();
+        Assert.True(next > advertised, $"committed_revision must advance ({advertised} -> {next}).");
+
+        var third = await client.PostAsJsonAsync($"/v1/sessions/{id}/turns", TurnBody("again", next));
+        Assert.Equal(HttpStatusCode.OK, third.StatusCode);
+
+        // A stale revision must still conflict — the fix must not have disabled conflict detection.
+        var stale = await client.PostAsJsonAsync($"/v1/sessions/{id}/turns", TurnBody("stale", advertised));
+        Assert.Equal(HttpStatusCode.Conflict, stale.StatusCode);
+    }
+
     [Fact]
     public async Task Turn_UnknownSession_Returns404()
     {

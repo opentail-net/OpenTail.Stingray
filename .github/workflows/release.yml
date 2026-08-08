@@ -37,10 +37,19 @@ jobs:
       # With a hand-written <Version>, the classic mistake is tagging stingray-v1.0.4 while
       # Directory.Build.props still says 1.0.3: pack would emit 1.0.3, --skip-duplicate would
       # discard it as already published, and the run would go green having shipped nothing.
-      # Fail loudly instead. Skipped for workflow_dispatch, which has no tag to compare against.
+      # Fail loudly instead.
+      #
+      # This step is NOT skipped for workflow_dispatch. It used to be, which quietly made the
+      # documented "publication is tag-triggered only" policy false: a manual run on any ref could
+      # publish whatever <Version> happened to be in Directory.Build.props, or go green having
+      # published nothing because --skip-duplicate discarded an already-released version. Manual runs
+      # must therefore be dispatched against a stingray-v* tag ref like any other publish.
       - name: Tag must match <Version>
-        if: startsWith(github.ref, 'refs/tags/')
         run: |
+          if ! echo "$GITHUB_REF" | grep -q '^refs/tags/stingray-v'; then
+            echo "::error::This workflow publishes packages and must run on a stingray-v* tag ref (got $GITHUB_REF). Dispatch it against the tag, or push the tag."
+            exit 1
+          fi
           tag_version="${GITHUB_REF#refs/tags/stingray-v}"
           file_version="$(grep -oPm1 '(?<=<Version>)[^<]+' Directory.Build.props)"
           echo "tag=$tag_version  Directory.Build.props=$file_version"
@@ -65,6 +74,7 @@ jobs:
           dotnet test tests/OpenTail.Stingray.Tests.Cli/OpenTail.Stingray.Tests.Cli.csproj -c Release -- --report-trx --report-trx-filename cli.trx --results-directory ./artifacts/test-results --minimum-expected-tests 300
           dotnet test tests/OpenTail.Stingray.Tests.Sessions/OpenTail.Stingray.Tests.Sessions.csproj -c Release -- --report-trx --report-trx-filename sessions.trx --results-directory ./artifacts/test-results --minimum-expected-tests 60
           dotnet test tests/OpenTail.Stingray.Tests.Vision/OpenTail.Stingray.Tests.Vision.csproj -c Release -- --report-trx --report-trx-filename vision.trx --results-directory ./artifacts/test-results --minimum-expected-tests 55
+          dotnet test tests/OpenTail.Stingray.Tests.ForwardPass/OpenTail.Stingray.Tests.ForwardPass.csproj -c Release -- --report-trx --report-trx-filename forwardpass.trx --results-directory ./artifacts/test-results --minimum-expected-tests 900
 
       # A number of heavyweight tests intentionally return early when their GGUF fixture is not
       # installed. Preserve an explicit fixture-coverage receipt beside the TRX files so a green
@@ -74,6 +84,16 @@ jobs:
         # The coverage script intentionally uses Write-Host for a readable local table. Merge
         # PowerShell's host/information stream before teeing it, otherwise the command succeeds
         # but leaves no transcript for the uploaded receipt.
+        #
+        # Deliberately WITHOUT -FailOnMissing: this runner has no model fixtures by design, so the
+        # switch would fail every release. It belongs on a fixture-provisioned runner that is
+        # supposed to hold a given row.
+        #
+        # This receipt used to be the only way to know a model-gated test had not really run,
+        # because those tests returned early and were counted as PASSES. They now call
+        # Assert.SkipUnless, so the TRX files beside this transcript report them as skipped and the
+        # suite totals no longer overstate what executed. The transcript remains useful for naming
+        # WHICH fixtures were absent.
         run: ./scripts/check-test-model-coverage.ps1 *>&1 | Tee-Object ./artifacts/test-results/model-fixture-coverage.txt
 
       - name: Upload release-quality results

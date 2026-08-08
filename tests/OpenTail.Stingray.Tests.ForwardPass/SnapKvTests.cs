@@ -64,7 +64,7 @@ public sealed class SnapKvTests
     public void SnapKv_LongPrompt_CacheShrinksToBudget_DecodeStaysWellFormed()
     {
         var path = FindModelPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         // 256 / 384 split: prompt is 384 tokens, eviction keeps 256 (~33% drop).
         // Window (last-W queries used for scoring) and recency (always-kept
@@ -135,7 +135,7 @@ public sealed class SnapKvTests
     public void SnapKv_DisabledByDefault_NoCacheShrink()
     {
         var path = FindModelPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         // Force-clear the env var so this test is independent of how it was
         // run (e.g. in a session where the long-prompt test set it).
@@ -166,7 +166,7 @@ public sealed class SnapKvTests
     public void SnapKv_BudgetExceedsPrompt_NoEviction()
     {
         var path = FindModelPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         // Budget larger than prompt → gating should skip eviction entirely.
         var prevBudget = Environment.GetEnvironmentVariable("STINGRAY_SNAPKV_BUDGET");

@@ -40,15 +40,27 @@ public readonly record struct GgufTensorInfo(
     ulong DataOffset,
     int ShardIndex = 0)
 {
-    /// <summary>Total number of elements in the tensor.</summary>
+    /// <summary>
+    /// Total number of elements in the tensor.
+    ///
+    /// <para>Multiplication is <c>checked</c> and the dimension count is clamped to the array that
+    /// was actually read. A malformed header can otherwise wrap the product to a small or negative
+    /// value that then passes every downstream size check while the tensor's real extent is
+    /// enormous — the bounds check would be validating a number that bears no relation to the
+    /// bytes about to be read. Overflow has to be an error, not a smaller number.</para>
+    /// </summary>
     public long ElementCount
     {
         get
         {
             if (Dimensions.Length == 0) return 0;
             long count = 1;
-            for (int i = 0; i < NDimensions; i++)
-                count *= Dimensions[i];
+            int rank = Math.Min(NDimensions, Dimensions.Length);
+            checked
+            {
+                for (int i = 0; i < rank; i++)
+                    count *= Dimensions[i];
+            }
             return count;
         }
     }

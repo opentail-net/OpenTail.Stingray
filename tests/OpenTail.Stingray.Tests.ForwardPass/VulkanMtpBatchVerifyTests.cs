@@ -147,9 +147,9 @@ public sealed class VulkanMtpBatchVerifyTests
     public void BatchVerify_MatchesSequentialForward_PerPosition()
     {
         using var gpu = TryCreateVulkan();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
         var path = FindMtpModelPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
@@ -158,7 +158,7 @@ public sealed class VulkanMtpBatchVerifyTests
         var tokenizer = GgufTokenizer.FromGgufModel(model);
 
         using var fwd = CreatePass(model, gpu, hp);
-        if (fwd is null) return;                                    // device OOM → skip
+        Assert.SkipUnless(fwd is not null, "model fixture not present in this environment");
         // SupportsBatchVerify is intentionally false in PR2 (the MTP head isn't loaded yet); we
         // drive BatchVerify directly. The ring decides whether a ≥4-token batch is possible.
         if (fwd.MaxBatchVerifyTokens < 4) return;                  // ring didn't allocate → skip
@@ -192,16 +192,16 @@ public sealed class VulkanMtpBatchVerifyTests
     public void BatchVerify_Rollback_RestoresDeviceGdnState()
     {
         using var gpu = TryCreateVulkan();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
         var path = FindMtpModelPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
         var tokenizer = GgufTokenizer.FromGgufModel(model);
 
         using var fwd = CreatePass(model, gpu, hp);
-        if (fwd is null) return;                                    // device OOM → skip
+        Assert.SkipUnless(fwd is not null, "model fixture not present in this environment");
         if (fwd.MaxBatchVerifyTokens < 4) return;                  // ring didn't allocate → skip
 
         var prompt = tokenizer.Encode("Water boils at one hundred degrees and freezes at").ToArray();

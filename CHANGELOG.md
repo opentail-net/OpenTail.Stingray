@@ -126,6 +126,67 @@ human-facing map that a raw commit graph cannot.
 
 ### Fixed
 
+- **Fixed (sessions, wire contract):** `committed_revision` is now a usable optimistic-concurrency
+  token. The API published the cursor's accepted-position count while `RunTurnAsync` validated
+  `expected_revision` against the store's turn counter, so a session advertised revision 6 and then
+  answered a turn carrying 6 with `409 "Expected revision 6, but current revision is 1"` — the only
+  pattern the API admits (read the value, echo it back) failed on the second turn. Four sources now
+  agree by construction: the endpoint publishes the store's counter, eviction persists it, restore
+  seeds from the persisted value instead of re-deriving a position count, and validation is
+  unchanged. `HotSession.CommittedRevision` is renamed `AcceptedPositionCount` so it cannot be
+  mistaken for a token again. Manifest format is now v3 — same layout, revised meaning of the
+  revision field; v1/v2 files remain readable and are not migrated, because the contract needs the
+  sources to agree rather than to hold a particular number. Full analysis in
+  `docs/session-revision-contract-defect.md`.
+- **Fixed (shutdown safety):** `ContinuousBatchingEngine.Dispose` no longer lets owned native, GPU
+  and mmap'd resources be released while the batcher is still running. It waited five seconds — far
+  less than a large chunked prefill — and then returned regardless, after which the owning engine
+  immediately disposed the forward pass, backend and mapped model underneath the live loop. The wait
+  is now 60s and its result is published as `DrainedOnDispose`; when the batcher has not exited, the
+  prefix caches and owned resources are deliberately leaked instead, since process exit reclaims
+  them and freeing live memory is an access-violation-class race.
+- **Fixed (GGUF robustness):** malformed or hostile GGUF files can no longer reach unsafe pointer
+  arithmetic. `GetTensorDataPtr` performed no validation at all — no shard, range, overflow or
+  disposal check — making it the weaker of two doors into the same mapping; both accessors now share
+  one validated descriptor. Offsets are range-checked *before* the `ulong`→`long` cast that could
+  otherwise produce a negative offset which passed the old `offset + size > fileSize` test; tensor
+  dimensions are validated at parse time (rank ≤ 4, positive extents) with checked element-count
+  multiplication so a wrapped size cannot be bounds-checked as small; `EnsureAvailable` rejects
+  negative and overflowed positions rather than silently passing them; `SkipGgufValue` advances
+  through the same bounds check instead of moving the position unchecked; and `Dispose` is
+  idempotent, so a second call cannot unbalance the mapped-view refcount.
+- **Fixed (startup leaks):** engine construction is exception-safe on both model paths. The GGUF path
+  opened the model mapping ~85 lines before its cleanup scope began, so a failure in compatibility
+  validation, hyperparameter derivation or tokenizer construction leaked the mapping and its file
+  handles; the SafeTensors path cleaned up only on the tokenizer check, leaking the mapping plus the
+  backend and forward pass on any later failure. Both now register each resource as it is created and
+  release them in reverse on any failure, with an explicit ownership transfer to the engine.
+- **Fixed (packaging):** the published `OpenTail.Stingray` meta-package no longer advertises a
+  memory-tier API that cannot work. `Pipeline.MemoryHierarchy` (and its `Prefetcher`, `TierConfig`,
+  `PrefetchRequest`) were public and bundled, while both of `MemoryHierarchy`'s operations throw
+  `NotImplementedException` — a caller following the documentation got an exception on first use.
+  They are now internal. The implemented three-tier MoE offload path is unaffected: it runs through
+  `ExpertSlotManager`/`CudaExpertSlotManager` + `MoEPrefetcher` over this assembly's still-public
+  `SlruCache`/`ExpertCache`.
+- **Fixed (test honesty):** 644 model- and GPU-gated tests across 117 files returned early when their
+  fixture was absent and were therefore counted as **passes**, so suite totals overstated what had
+  actually executed. They now call `Assert.SkipUnless` and report as skipped — Tests.Core alone goes
+  from 0 to 21 skips on a fixture-less machine. No test's assertions changed.
+- **Fixed (server admission):** `POST /v1/sessions/{id}/turns` now sits behind the same bounded
+  admission gate as the chat routes. It generates exactly like `/v1/chat/completions` and
+  `/v1/messages` but was mapped without `WithConcurrencyLimit()`, so `MaxQueuedRequests`
+  (`STINGRAY_MAX_QUEUE`) bounded only the three stateless routes while any number of named sessions
+  could enqueue prompts alongside them — the limit was route-shaped rather than engine-shaped.
+- **Fixed (CI):** `OpenTail.Stingray.Tests.ForwardPass` now runs in both the PR gate and the release
+  workflow. It is the largest suite and carries most of the CPU inference, batching, KV-cache and
+  quantisation-parity coverage, and it was in neither — so an engine regression could merge and
+  publish with green checks.
+- **Fixed (release safety):** the tag/`<Version>` guard no longer exempts `workflow_dispatch`. The
+  documented "publication is tag-triggered only" policy was not enforced: a manual run on any ref
+  could publish whatever `<Version>` was in `Directory.Build.props`, or report success having
+  published nothing because `--skip-duplicate` discarded an already-released version. Manual runs
+  must now be dispatched against a `stingray-v*` tag ref.
+
 - **Fixed (int8 CPU prefill):** prompts consisting of a single repeated token collapsed the int8
   activation path — final-logit cosine 0.40-0.48 against the exact F32 route at every length from 2
   to 64 tokens, and -0.124 for a repeated space. It affected ordinary words too (`the` x8 measured

@@ -51,7 +51,7 @@ public sealed unsafe class CudaQ40SoaTests
     public void Q40SoaDecodeMatvec_BitIdenticalToInterleaved(bool dp4a)
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
         gpu.Q40Dp4aEnabled = dp4a;
 
         // Gemma 4 12B widths + an odd row count for the 8-rows/block tail.
@@ -95,7 +95,7 @@ public sealed unsafe class CudaQ40SoaTests
     public void Q40SoaMmqPrefill_BitIdenticalToInterleaved()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
 
         foreach ((int rows, int cols, int nTok) in new[]
                  { (256, 256, 8), (33, 256, 5), (3840, 3840, 64), (15360, 3840, 128), (3840, 15360, 200) })
@@ -137,7 +137,7 @@ public sealed unsafe class CudaQ40SoaTests
     public void Q40SoaDequantGemm_BitIdenticalToInterleaved()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
 
         // The dequant→fp16→cuBLAS GEMM fallback prefill reader (STINGRAY_PREFILL_MMQ=0):
         // a repacked SoA weight must give MatMulBatchedGemm output bit-identical to the

@@ -186,9 +186,9 @@ public sealed class CudaSpecBatchVerifyGemma4Tests
     public void Gemma4_BatchVerify_MatchesSequentialForward(int k)
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
         var path = FindFirst(TargetCandidates);
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
@@ -210,9 +210,9 @@ public sealed class CudaSpecBatchVerifyGemma4Tests
     public void Gemma4_BatchVerify_Q8Kv_MatchesSequentialForward()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
         var path = FindFirst(TargetCandidates);
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
@@ -234,9 +234,9 @@ public sealed class CudaSpecBatchVerifyGemma4Tests
     public void Gemma4_BatchVerify_AcrossSwaRingBoundary()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
         var path = FindFirst(TargetCandidates);
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
@@ -266,9 +266,9 @@ public sealed class CudaSpecBatchVerifyGemma4Tests
     public void Gemma4_BatchVerify_TruncateAndCommit_MatchesSequential()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
         var path = FindFirst(TargetCandidates);
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
@@ -312,7 +312,7 @@ public sealed class CudaSpecBatchVerifyGemma4Tests
     public void Gemma4_SpecDecode_GreedyParity_E2E()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
         var targetPath = FindFirst(TargetCandidates);
         var draftPath = FindFirst(DraftCandidates);
         if (targetPath is null || draftPath is null) return;

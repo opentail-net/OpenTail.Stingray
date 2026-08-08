@@ -101,9 +101,9 @@ public sealed class CudaHybridBatchedPrefillTests : IDisposable
     public void Inspect_CoderPlacement()
     {
         using var gpu = TryCreate();
-        if (gpu is null) { _out.WriteLine("SKIP: CUDA unavailable"); return; }
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
         var path = FindCoderPath();
-        if (path is null) { _out.WriteLine("SKIP: Coder model not on disk"); return; }
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
@@ -128,9 +128,9 @@ public sealed class CudaHybridBatchedPrefillTests : IDisposable
     public void BatchedPrefill_BitwiseMatchesSequential_Coder()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
         var path = FindCoderPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         bool prev = CudaHybridForwardPass.BatchedPrefillEnabled;
         try
@@ -204,9 +204,9 @@ public sealed class CudaHybridBatchedPrefillTests : IDisposable
     public void BatchedPrefill_ComputeRouting_ArgmaxStableVsMatvec_Coder()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
         var path = FindCoderPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         bool prevBatched = CudaHybridForwardPass.BatchedPrefillEnabled;
         bool prevCompute = CudaHybridForwardPass.HybridPrefillComputeEnabled;
@@ -299,9 +299,9 @@ public sealed class CudaHybridBatchedPrefillTests : IDisposable
     public void BatchedPrefill_CpuEmbedding_ComputeRouting_ArgmaxStableVsMatvec_Coder()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
         var path = FindCoderPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         bool prevBatched = CudaHybridForwardPass.BatchedPrefillEnabled;
         bool prevCompute = CudaHybridForwardPass.HybridPrefillComputeEnabled;
@@ -388,9 +388,9 @@ public sealed class CudaHybridBatchedPrefillTests : IDisposable
     public void BatchedPrefill_MultiChunk_BitwiseMatchesSequential_Coder()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
         var path = FindCoderPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         bool prev = CudaHybridForwardPass.BatchedPrefillEnabled;
         try
@@ -465,9 +465,9 @@ public sealed class CudaHybridBatchedPrefillTests : IDisposable
     public void BatchedPrefill_Over4096_BitwiseMatchesSequential_Coder()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
         var path = FindCoderPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         var prevBudget = Environment.GetEnvironmentVariable("STINGRAY_ATTN_WAVE_BUDGET_MB");
         var prevSplit = Environment.GetEnvironmentVariable("STINGRAY_SPLIT_DECODE");
@@ -538,9 +538,9 @@ public sealed class CudaHybridBatchedPrefillTests : IDisposable
     public void BatchedPrefill_CpuEmbedding_BitwiseMatchesSequential_Coder()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
         var path = FindCoderPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         bool prevBatched = CudaHybridForwardPass.BatchedPrefillEnabled;
         bool prevForce = CudaHybridForwardPass.ForceCpuResidentEmbedding;
@@ -612,9 +612,9 @@ public sealed class CudaHybridBatchedPrefillTests : IDisposable
     public void BatchedPrefill_CpuEmbedding_MultiChunk_BitwiseMatchesSequential_Coder()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
         var path = FindCoderPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         bool prevBatched = CudaHybridForwardPass.BatchedPrefillEnabled;
         bool prevForce = CudaHybridForwardPass.ForceCpuResidentEmbedding;
@@ -689,9 +689,9 @@ public sealed class CudaHybridBatchedPrefillTests : IDisposable
     public void BatchedPrefill_CpuEmbedding_CpuLayersSplit_BitwiseMatchesSequential_Coder()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
         var path = FindCoderPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         bool prevBatched = CudaHybridForwardPass.BatchedPrefillEnabled;
         bool prevForce = CudaHybridForwardPass.ForceCpuResidentEmbedding;
@@ -767,9 +767,9 @@ public sealed class CudaHybridBatchedPrefillTests : IDisposable
     public void BatchedPrefill_GpuEmbedding_CpuLayersSplit_BitwiseMatchesSequential_Coder()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
         var path = FindCoderPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         bool prevBatched = CudaHybridForwardPass.BatchedPrefillEnabled;
         try

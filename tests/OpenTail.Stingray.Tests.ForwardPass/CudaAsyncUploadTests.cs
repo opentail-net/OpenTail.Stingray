@@ -30,7 +30,7 @@ public sealed class CudaAsyncUploadTests
     public void UploadBackground_EventSignalsAfterStreamSync()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
 
         const int N = 1024;
         var data = new float[N];
@@ -62,7 +62,7 @@ public sealed class CudaAsyncUploadTests
     public void UploadBackground_MultipleHandles_AllSignal()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
 
         const int N = 512;
         const int Batch = 5;
@@ -108,7 +108,7 @@ public sealed class CudaAsyncUploadTests
     public void UploadBackground_MatMul_ProducesIdenticalOutputToSyncPath()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
 
         const int Rows = 64;
         const int Cols = 512;
@@ -151,7 +151,7 @@ public sealed class CudaAsyncUploadTests
     public void UploadBackgroundRaw_ProducesIdenticalBytesToSyncPath()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
 
         const int Bytes = 4096;
         var rng = new Random(20260530);
@@ -185,7 +185,7 @@ public sealed class CudaAsyncUploadTests
     public void UploadBackground_RingWrap_AllPayloadsRoundTrip()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
 
         const int N = 64;    // > the 32-slot ring → at least one full wrap (each slot reused)
         const int Len = 257; // distinct, multi-element payload per upload
@@ -224,7 +224,7 @@ public sealed class CudaAsyncUploadTests
     public void UploadStream_LazyInitOnFirstBackgroundUpload()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
 
         Assert.Equal(nint.Zero, gpu.UploadStream);
 
@@ -252,10 +252,10 @@ public sealed class CudaAsyncUploadTests
     public void CudaExpertSlotManager_PreloadThenGetOrLoad_HitsCache_AndOutputMatchesSync()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
 
         var path = FindFirstExisting("models\\OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf");
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);

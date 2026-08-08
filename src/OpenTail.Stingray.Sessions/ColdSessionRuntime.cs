@@ -206,9 +206,14 @@ public sealed class ColdSessionRuntime
             }
         }
 
+        // Persist the STORE's revision — the turn counter RunTurnAsync validates expected_revision
+        // against — not the cursor's accepted-position count. Writing the position count is what
+        // made the durable and live paths disagree: a restored session came back seeded with a
+        // position count while a live one counted turns, so the two lanes could not both be right.
+        // Manifest v3 records this meaning; see FileSessionManifest.
         var manifest = new SessionManifestEnvelope(
             session.SessionId,
-            session.CommittedRevision,
+            _hotRuntime.GetSessionSnapshot(session.SessionId).CommittedRevision,
             envelope.Abi,
             envelope.CompatibilityKey,
             envelope.PayloadHash,
@@ -316,8 +321,10 @@ public sealed class ColdSessionRuntime
                     $"Session '{manifest.SessionId}' KV stream is {written} bytes but the manifest declares {kvBytes.Length}.");
         }
 
+        // Seed the store with the PERSISTED revision, so a restored session's concurrency token
+        // continues the same counter a live one uses instead of restarting from a position count.
         var session = _hotRuntime.ImportState(exportedState, kvBytes, manifest.Abi.ModelFingerprint,
-            expectedModelFormat: _modelFormat);
+            expectedModelFormat: _modelFormat, committedRevision: manifest.Revision);
         session.RestoreCompletedOperations(restoredOperations);
         return session;
     }

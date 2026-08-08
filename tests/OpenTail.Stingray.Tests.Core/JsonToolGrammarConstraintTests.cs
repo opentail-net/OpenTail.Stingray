@@ -12,7 +12,9 @@ namespace OpenTail.Stingray.Tests.Core;
 /// <see cref="JsonToolGrammarMockTests"/>; this asserts the same invariants survive a production
 /// tokenizer.
 /// </summary>
-public sealed class JsonToolGrammarConstraintTests(ITestOutputHelper output)
+// The ITestOutputHelper parameter is gone: its only use was printing "missing model — skip"
+// before an early return, and the skip reason on Assert.SkipUnless now carries that.
+public sealed class JsonToolGrammarConstraintTests
 {
     private static readonly string[] s_modelPaths =
     [
@@ -64,7 +66,7 @@ public sealed class JsonToolGrammarConstraintTests(ITestOutputHelper output)
     public void EngagesAtArgsColon_RejectsMergedEmptyObject()
     {
         var tok = Tok();
-        if (tok is null) { output.WriteLine("missing model — skip"); return; }
+        Assert.SkipUnless(tok is not null, "model fixture not present in this environment");
         var vocab = new GrammarVocabulary(tok);
         var c = new QwenToolCallAdapter("qwen3").BuildArgumentConstraint([Schema("get_weather", Weather)], vocab);
         Assert.NotNull(c);
@@ -82,7 +84,7 @@ public sealed class JsonToolGrammarConstraintTests(ITestOutputHelper output)
     public void RequiredKey_CannotBeOmitted_ForeignKeyRejected()
     {
         var tok = Tok();
-        if (tok is null) { output.WriteLine("missing model — skip"); return; }
+        Assert.SkipUnless(tok is not null, "model fixture not present in this environment");
         var vocab = new GrammarVocabulary(tok);
         var c = new QwenToolCallAdapter("qwen3").BuildArgumentConstraint([Schema("get_weather", Weather)], vocab)!;
 
@@ -100,7 +102,7 @@ public sealed class JsonToolGrammarConstraintTests(ITestOutputHelper output)
     public void EnumValue_RestrictedToDeclaredSet()
     {
         var tok = Tok();
-        if (tok is null) { output.WriteLine("missing model — skip"); return; }
+        Assert.SkipUnless(tok is not null, "model fixture not present in this environment");
         var vocab = new GrammarVocabulary(tok);
         var c = new QwenToolCallAdapter("qwen3").BuildArgumentConstraint([Schema("get_weather", Weather)], vocab)!;
 
@@ -115,7 +117,7 @@ public sealed class JsonToolGrammarConstraintTests(ITestOutputHelper output)
     public void XmlOutput_EngagesViaComposite()
     {
         var tok = Tok();
-        if (tok is null) { output.WriteLine("missing model — skip"); return; }
+        Assert.SkipUnless(tok is not null, "model fixture not present in this environment");
         var vocab = new GrammarVocabulary(tok);
         var c = new QwenToolCallAdapter("qwen3").BuildArgumentConstraint([Schema("get_weather", Weather)], vocab)!;
 
@@ -134,7 +136,7 @@ public sealed class JsonToolGrammarConstraintTests(ITestOutputHelper output)
     public void JsonOutput_StillEngages_ViaComposite()
     {
         var tok = Tok();
-        if (tok is null) { output.WriteLine("missing model — skip"); return; }
+        Assert.SkipUnless(tok is not null, "model fixture not present in this environment");
         var vocab = new GrammarVocabulary(tok);
         var c = new QwenToolCallAdapter("qwen3").BuildArgumentConstraint([Schema("get_weather", Weather)], vocab)!;
 

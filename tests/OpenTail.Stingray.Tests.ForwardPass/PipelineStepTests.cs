@@ -326,7 +326,7 @@ public sealed class PipelineStepTests : IDisposable
     public void Llama4_Tokenizer_MatchesReference()
     {
         var path = FindLlama4Path();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var tokenizer = GgufTokenizer.FromGgufModel(model);
@@ -358,7 +358,7 @@ public sealed class PipelineStepTests : IDisposable
     public void Llama4_Hyperparams_QkNormEnabled()
     {
         var path = FindLlama4Path();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
@@ -371,7 +371,7 @@ public sealed class PipelineStepTests : IDisposable
     public void Llama4_Hyperparams_NoPEStep()
     {
         var path = FindLlama4Path();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
@@ -386,7 +386,7 @@ public sealed class PipelineStepTests : IDisposable
     public void Llama4_Hyperparams_SigmoidGating()
     {
         var path = FindLlama4Path();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
@@ -401,7 +401,7 @@ public sealed class PipelineStepTests : IDisposable
     public void Llama4_Hyperparams_ModelDimensions()
     {
         var path = FindLlama4Path();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
@@ -426,7 +426,7 @@ public sealed class PipelineStepTests : IDisposable
     public void Llama4_Sigmoid_PerPosition_LogitNormsMatchReference()
     {
         var path = FindLlama4Path();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
@@ -474,7 +474,7 @@ public sealed class PipelineStepTests : IDisposable
     public void Llama4_Sigmoid_PerPosition_TopTokensMatchReference()
     {
         var path = FindLlama4Path();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
@@ -511,7 +511,7 @@ public sealed class PipelineStepTests : IDisposable
     public void Llama4_Softmax_FirstToken_MatchesReference()
     {
         var path = FindLlama4Path();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model) with { UseSigmoidGating = false };
@@ -536,7 +536,7 @@ public sealed class PipelineStepTests : IDisposable
     public void Llama4_Sigmoid_FirstToken_MatchesReference()
     {
         var path = FindLlama4Path();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
@@ -563,7 +563,7 @@ public sealed class PipelineStepTests : IDisposable
     public void Llama4_Sigmoid_FullSequence_2Plus2()
     {
         var path = FindLlama4Path();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
@@ -606,7 +606,7 @@ public sealed class PipelineStepTests : IDisposable
     public void Llama4_Softmax_FullSequence_2Plus2()
     {
         var path = FindLlama4Path();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model) with { UseSigmoidGating = false };

@@ -30,7 +30,7 @@ public sealed class ContinuousBatchingTests
     public void PrefillWithCache_MatchesPrefill_SameLogits()
     {
         var path = FindModelPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
@@ -65,7 +65,7 @@ public sealed class ContinuousBatchingTests
     public void PrefillWithCache_SingleToken_MatchesForward()
     {
         var path = FindModelPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
@@ -93,7 +93,7 @@ public sealed class ContinuousBatchingTests
     public void PrefillWithCache_EmptyTokens_Throws()
     {
         var path = FindModelPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
@@ -110,7 +110,7 @@ public sealed class ContinuousBatchingTests
     public void BatchForwardMulti_N2_MatchesIndividualForward()
     {
         var path = FindModelPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
@@ -170,7 +170,7 @@ public sealed class ContinuousBatchingTests
     public void BatchForwardMulti_EmptyTokens_ReturnsEmpty()
     {
         var path = FindModelPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
@@ -187,7 +187,7 @@ public sealed class ContinuousBatchingTests
     public async Task ContinuousBatchingEngine_TwoConcurrentRequests_BothComplete()
     {
         var path = FindModelPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
@@ -229,7 +229,7 @@ public sealed class ContinuousBatchingTests
     public async Task ContinuousBatchingEngine_Dispose_CancelsActiveRequests()
     {
         var path = FindModelPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
@@ -265,7 +265,7 @@ public sealed class ContinuousBatchingTests
     public void PrefillWithCache_Chunked_MatchesFull()
     {
         var path = FindModelPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
@@ -307,10 +307,10 @@ public sealed class ContinuousBatchingTests
         // the cache active produces bit-for-bit the same logits as with it off (same F32
         // dequant feeds the same SGEMM, just sourced from the cache on reuse).
         var path = FindModelPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
         // The cache only diverts the OpenBLAS SGEMM path; without BLAS both runs are identical
         // by construction and the test proves nothing.
-        if (!SimdKernels.BlasAvailable) return;
+        Assert.SkipUnless(SimdKernels.BlasAvailable, "OpenBLAS not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
@@ -351,7 +351,7 @@ public sealed class ContinuousBatchingTests
     public void PrefillPackedMulti_MatchesSequentialPrefill()
     {
         var path = FindModelPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
@@ -398,7 +398,7 @@ public sealed class ContinuousBatchingTests
     public void PrefillPackedMulti_ChunkedContinuation_MatchesFull()
     {
         var path = FindModelPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
@@ -454,7 +454,7 @@ public sealed class ContinuousBatchingTests
     public async Task ContinuousBatchingEngine_ChunkedPrefill_MatchesUnchunked()
     {
         var path = FindModelPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
@@ -504,7 +504,7 @@ public sealed class ContinuousBatchingTests
     public async Task ContinuousBatchingEngine_TinyKvBudget_AllRequestsComplete()
     {
         var path = FindModelPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);

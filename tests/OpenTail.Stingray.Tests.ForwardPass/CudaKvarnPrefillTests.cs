@@ -48,7 +48,7 @@ public sealed unsafe class CudaKvarnPrefillTests(ITestOutputHelper output)
         int tqLen, int f0, int m, int kvHeads, int qHeads, int headDim)
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
 
         Assert.Equal(0, tqLen % Tile);
         int numTiles = tqLen / Tile;
@@ -207,9 +207,9 @@ public sealed unsafe class CudaKvarnPrefillTests(ITestOutputHelper output)
     [Fact]
     public void CudaForwardPass_KvarnChunkedPrefill_MatchesPerToken()
     {
-        if (!CudaBackend.IsAvailable()) return;
+        Assert.SkipUnless(CudaBackend.IsAvailable(), "no CUDA device in this environment");
         var path = FindModelPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         const int PromptLen = 640;
         const int DecodeSteps = 20;
@@ -321,9 +321,9 @@ public sealed unsafe class CudaKvarnPrefillTests(ITestOutputHelper output)
     [Fact]
     public void CudaForwardPass_KvarnChunkedPrefill_SplitCall_MatchesSingleShot()
     {
-        if (!CudaBackend.IsAvailable()) return;
+        Assert.SkipUnless(CudaBackend.IsAvailable(), "no CUDA device in this environment");
         var path = FindModelPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         const int PromptLen = 640;
         const int NumTiles = 3;

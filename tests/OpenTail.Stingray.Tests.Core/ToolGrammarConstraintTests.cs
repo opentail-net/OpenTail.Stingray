@@ -10,7 +10,9 @@ namespace OpenTail.Stingray.Tests.Core;
 /// failure modes the issue describes (dropped required key, hallucinated <c>queries</c> array,
 /// out-of-enum value). Model-gated — skips when the GGUF is absent.
 /// </summary>
-public sealed class ToolGrammarConstraintTests(ITestOutputHelper output)
+// The ITestOutputHelper parameter is gone: its only use was printing "missing model — skip"
+// before an early return, and the skip reason on Assert.SkipUnless now carries that.
+public sealed class ToolGrammarConstraintTests
 {
     private const string ModelPath = @"E:\models\gemma-4-12b-it-qat-q4_0.gguf";
 
@@ -51,7 +53,7 @@ public sealed class ToolGrammarConstraintTests(ITestOutputHelper output)
     public void RequiredKey_CannotBeOmitted()
     {
         var tok = Tok();
-        if (tok is null) { output.WriteLine("missing model — skip"); return; }
+        Assert.SkipUnless(tok is not null, "model fixture not present in this environment");
         var vocab = new GrammarVocabulary(tok);
 
         var schema = Schema("get_weather",
@@ -74,7 +76,7 @@ public sealed class ToolGrammarConstraintTests(ITestOutputHelper output)
     public void WebSearch_ForcesQueryKey_RejectsForeignKeys()
     {
         var tok = Tok();
-        if (tok is null) { output.WriteLine("missing model — skip"); return; }
+        Assert.SkipUnless(tok is not null, "model fixture not present in this environment");
         var vocab = new GrammarVocabulary(tok);
 
         var schema = Schema("web_search",
@@ -95,7 +97,7 @@ public sealed class ToolGrammarConstraintTests(ITestOutputHelper output)
     public void StringValue_FreeContentThenCloseQuote()
     {
         var tok = Tok();
-        if (tok is null) { output.WriteLine("missing model — skip"); return; }
+        Assert.SkipUnless(tok is not null, "model fixture not present in this environment");
         var vocab = new GrammarVocabulary(tok);
         int quote = vocab.TryGetSpecialToken("<|\"|>", out int q) ? q : -1;
         Assert.True(quote > 0);
@@ -129,7 +131,7 @@ public sealed class ToolGrammarConstraintTests(ITestOutputHelper output)
     public void EnumValue_RestrictedToDeclaredSet()
     {
         var tok = Tok();
-        if (tok is null) { output.WriteLine("missing model — skip"); return; }
+        Assert.SkipUnless(tok is not null, "model fixture not present in this environment");
         var vocab = new GrammarVocabulary(tok);
         int quote = vocab.TryGetSpecialToken("<|\"|>", out int q) ? q : -1;
 
@@ -153,7 +155,7 @@ public sealed class ToolGrammarConstraintTests(ITestOutputHelper output)
     public void PartiallyTyped_RequiredTypedKey_Enforced_LooseValueFree()
     {
         var tok = Tok();
-        if (tok is null) { output.WriteLine("missing model — skip"); return; }
+        Assert.SkipUnless(tok is not null, "model fixture not present in this environment");
         var vocab = new GrammarVocabulary(tok);
 
         // 'location' is a required string; 'context' is an open object (free value). Issue #378: the
@@ -175,7 +177,7 @@ public sealed class ToolGrammarConstraintTests(ITestOutputHelper output)
     public void NonGemmaAdapter_BuildsNoConstraint()
     {
         var tok = Tok();
-        if (tok is null) { output.WriteLine("missing model — skip"); return; }
+        Assert.SkipUnless(tok is not null, "model fixture not present in this environment");
         var vocab = new GrammarVocabulary(tok);
         var schema = Schema("get_weather", """{"type":"object","properties":{"location":{"type":"string"}}}""");
         Assert.Null(ToolCallAdapterRegistry.Get("qwen3").BuildArgumentConstraint([schema], vocab));

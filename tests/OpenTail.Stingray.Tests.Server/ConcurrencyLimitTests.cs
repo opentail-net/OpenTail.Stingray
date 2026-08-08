@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.DependencyInjection;
 using OpenTail.Stingray.Engine;
 using OpenTail.Stingray.Server;
+using OpenTail.Stingray.Sessions;
 
 namespace OpenTail.Stingray.Tests.Server;
 
@@ -128,5 +129,63 @@ public sealed class ConcurrencyLimitTests
         fake.Hold!.SetResult();
         var responses = await Task.WhenAll(admitted);
         Assert.All(responses, response => Assert.Equal(HttpStatusCode.OK, response.StatusCode));
+    }
+
+    /// <summary>Session runtime that reports unavailable — its handler answers 409 immediately, which
+    /// is what makes this test discriminating: reaching the handler at all proves the route is
+    /// ungated.</summary>
+    private sealed class UnavailableSessions : IServerSessionRuntime
+    {
+        public HotSessionRuntime? Runtime => null;
+        public ColdSessionRuntime? ColdRuntime => null;
+        public string? UnavailabilityReason => "test lane does not support sessions.";
+    }
+
+    /// <summary>
+    /// The named-session turns route generates, so it must sit behind the same bounded-admission
+    /// gate as the stateless chat routes. It previously did not, which meant MaxQueuedRequests
+    /// bounded the three chat routes while any number of sessions could enqueue prompts alongside
+    /// them.
+    ///
+    /// <para>409-vs-429 is the discriminator: this session runtime reports unavailable, so the
+    /// handler answers 409 the moment it is reached. A 429 can therefore only come from the
+    /// admission filter rejecting the request before the handler runs.</para>
+    /// </summary>
+    [Fact]
+    public async Task SessionTurn_IsSubjectToTheSameAdmissionGateAsChat()
+    {
+        var fake = new FakeInferenceEngine("test-model") { Hold = new TaskCompletionSource() };
+        var client = new WebApplicationFactory<Program>()
+            .WithWebHostBuilder(b => b.ConfigureServices(s =>
+            {
+                s.Configure<OpenTailStingrayServerOptions>(o =>
+                {
+                    o.MaxConcurrentRequests = 1;
+                    o.MaxQueuedRequests = 0;
+                    o.MaxBatchSize = 1;
+                });
+                s.AddSingleton<IInferenceEngine>(fake);
+                s.AddSingleton<IServerSessionRuntime>(new UnavailableSessions());
+            }))
+            .CreateClient();
+
+        // Hold the only admission slot with an ordinary chat request.
+        var held = client.PostAsJsonAsync("/v1/chat/completions", ChatRequest());
+        Assert.True(fake.Entered.Wait(TimeSpan.FromSeconds(5)), "The holding request never reached the engine.");
+
+        var turn = await client.PostAsJsonAsync($"/v1/sessions/{Guid.NewGuid()}/turns",
+            new { append_prompt = "hi", expected_revision = 0L, max_tokens = 4 });
+
+        Assert.Equal(HttpStatusCode.TooManyRequests, turn.StatusCode);
+        Assert.True(turn.Headers.Contains("Retry-After"));
+
+        // Releasing the slot lets a session turn through again — to the handler's own 409, proving
+        // the gate released rather than wedging the route shut.
+        fake.Hold!.SetResult();
+        Assert.Equal(HttpStatusCode.OK, (await held).StatusCode);
+
+        var afterRelease = await client.PostAsJsonAsync($"/v1/sessions/{Guid.NewGuid()}/turns",
+            new { append_prompt = "hi", expected_revision = 0L, max_tokens = 4 });
+        Assert.Equal(HttpStatusCode.Conflict, afterRelease.StatusCode);
     }
 }

@@ -70,9 +70,9 @@ public sealed class Gemma4CudaForwardPassTests
     public void Gemma4_E4B_CudaForward_ProducesNonGarbageLogits()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
         var path = FindModelPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
@@ -143,9 +143,9 @@ public sealed class Gemma4CudaForwardPassTests
         // across 42 layers + softcap means later tokens can diverge; the first
         // step is the tightest parity signal we can demand without bit-exactness.
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
         var path = FindModelPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
@@ -197,9 +197,9 @@ public sealed class Gemma4CudaForwardPassTests
     public void Gemma4_E4B_CudaForward_LongDecodeIsCoherent()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
         var path = FindModelPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
@@ -280,9 +280,9 @@ public sealed class Gemma4CudaForwardPassTests
     public void Gemma4_E4B_CpuMatchesCudaLogits()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
         var path = FindModelPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
@@ -340,9 +340,9 @@ public sealed class Gemma4CudaForwardPassTests
     public void Gemma4_E4B_CudaForward_SnapKvDisabled_NoEvictionEvenOverBudget()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
         var path = FindModelPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         const int budget = 64;
         var prev = Environment.GetEnvironmentVariable("STINGRAY_SNAPKV_BUDGET");
@@ -385,9 +385,9 @@ public sealed class Gemma4CudaForwardPassTests
     public void Gemma4_E4B_Q4_0_CudaForward_LoadsAndMatchesCpuArgmax()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
         var path = FindModelPath("gemma-4-E4B_q4_0-it.gguf");
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);

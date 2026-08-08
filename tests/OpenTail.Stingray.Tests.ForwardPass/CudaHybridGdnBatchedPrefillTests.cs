@@ -91,9 +91,9 @@ public sealed class CudaHybridGdnBatchedPrefillTests : IDisposable
     public void BatchedPrefill_BitwiseMatchesSequential_Carnice()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
         var path = FindCarnicePath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         var prevCpuMoe = Environment.GetEnvironmentVariable("STINGRAY_CPU_MOE");
         Environment.SetEnvironmentVariable("STINGRAY_CPU_MOE", "1");
@@ -195,9 +195,9 @@ public sealed class CudaHybridGdnBatchedPrefillTests : IDisposable
         // failure mode). Greedy verify (pMin=1) relies on this exactness to keep the
         // accept/reject decision identical to a sequential decode.
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
         var path = FindCarnicePath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         var prevCpuMoe = Environment.GetEnvironmentVariable("STINGRAY_CPU_MOE");
         Environment.SetEnvironmentVariable("STINGRAY_CPU_MOE", "1");
@@ -309,9 +309,9 @@ public sealed class CudaHybridGdnBatchedPrefillTests : IDisposable
     public void BatchedAttnWave_BitwiseMatchesPerPosition_Over4096_Carnice()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
         var path = FindCarnicePath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         var prevCpuMoe = Environment.GetEnvironmentVariable("STINGRAY_CPU_MOE");
         var prevBudget = Environment.GetEnvironmentVariable("STINGRAY_ATTN_WAVE_BUDGET_MB");
@@ -385,9 +385,9 @@ public sealed class CudaHybridGdnBatchedPrefillTests : IDisposable
     public void BatchedTrunk_BitwiseMatchesSequentialTrunk_Carnice()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
         var path = FindCarnicePath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         var prevCpuMoe = Environment.GetEnvironmentVariable("STINGRAY_CPU_MOE");
         Environment.SetEnvironmentVariable("STINGRAY_CPU_MOE", "1");
@@ -454,9 +454,9 @@ public sealed class CudaHybridGdnBatchedPrefillTests : IDisposable
     public void BatchedGdnScanAndAttn_BitwiseMatchesPerPosition_Carnice()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
         var path = FindCarnicePath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         var prevCpuMoe = Environment.GetEnvironmentVariable("STINGRAY_CPU_MOE");
         Environment.SetEnvironmentVariable("STINGRAY_CPU_MOE", "1");
@@ -528,9 +528,9 @@ public sealed class CudaHybridGdnBatchedPrefillTests : IDisposable
     public void BatchedFfn_BitwiseMatchesPerTokenFfn_Dense27BMtp()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
         var path = FindDense27BMtpPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         bool prevPrefill = CudaHybridGdnForwardPass.BatchedPrefillEnabled;
         bool prevTrunk = CudaHybridGdnForwardPass.BatchedTrunkEnabled;
@@ -597,9 +597,9 @@ public sealed class CudaHybridGdnBatchedPrefillTests : IDisposable
     public void BatchedCpuDenseFfn_BitwiseMatchesPerTokenCpuFfn_Dense27BMtp()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
         var path = FindDense27BMtpPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         bool prevPrefill = CudaHybridGdnForwardPass.BatchedPrefillEnabled;
         bool prevTrunk = CudaHybridGdnForwardPass.BatchedTrunkEnabled;
@@ -673,9 +673,9 @@ public sealed class CudaHybridGdnBatchedPrefillTests : IDisposable
     public void BatchedTrunkGpuFfn_BitwiseMatchesSequential_Dense27BMtp()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
         var path = FindDense27BMtpPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         bool prevBatched = CudaHybridGdnForwardPass.BatchedPrefillEnabled;
         try
@@ -758,9 +758,9 @@ public sealed class CudaHybridGdnBatchedPrefillTests : IDisposable
     public void BatchedTrunkGpuFfn_MultiChunk_BitwiseMatchesSequential_Dense27BMtp()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
         var path = FindDense27BMtpPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         bool prevBatched = CudaHybridGdnForwardPass.BatchedPrefillEnabled;
         try
@@ -826,9 +826,9 @@ public sealed class CudaHybridGdnBatchedPrefillTests : IDisposable
     public void BatchedTrunkGpuFfn_SnapKvActive_BitwiseMatchesSequential_Dense27BMtp()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
         var path = FindDense27BMtpPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         var prevSnap = Environment.GetEnvironmentVariable("STINGRAY_SNAPKV_BUDGET");
         Environment.SetEnvironmentVariable("STINGRAY_SNAPKV_BUDGET", "128");
@@ -904,9 +904,9 @@ public sealed class CudaHybridGdnBatchedPrefillTests : IDisposable
     public void SnapKvActive_BatchedWave_BitwiseMatchesSequential_Over4096_Carnice()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
         var path = FindCarnicePath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         var prevCpuMoe = Environment.GetEnvironmentVariable("STINGRAY_CPU_MOE");
         var prevBudget = Environment.GetEnvironmentVariable("STINGRAY_ATTN_WAVE_BUDGET_MB");
@@ -990,9 +990,9 @@ public sealed class CudaHybridGdnBatchedPrefillTests : IDisposable
     public void BatchedTrunkGpuFfn_BitwiseMatchesSequential_GpuSlruMoe()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
         var path = FindGpuSlruMoePath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         var prevCpuMoe = Environment.GetEnvironmentVariable("STINGRAY_CPU_MOE");
         Environment.SetEnvironmentVariable("STINGRAY_CPU_MOE", "0"); // force GPU-SLRU MoE
@@ -1076,9 +1076,9 @@ public sealed class CudaHybridGdnBatchedPrefillTests : IDisposable
     public void BatchedPrefill_MultiChunk_BitwiseMatchesSequential_Carnice()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
         var path = FindCarnicePath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         var prevCpuMoe = Environment.GetEnvironmentVariable("STINGRAY_CPU_MOE");
         Environment.SetEnvironmentVariable("STINGRAY_CPU_MOE", "1");

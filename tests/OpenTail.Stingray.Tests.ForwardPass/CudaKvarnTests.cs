@@ -47,7 +47,7 @@ public sealed unsafe class CudaKvarnTests(ITestOutputHelper output)
     public void KvarnRotateQuery_MatchesCpu(int headDim, int numHeads)
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
 
         var rng = new Random(4242 + headDim);
         var query = new float[numHeads * headDim];
@@ -85,7 +85,7 @@ public sealed unsafe class CudaKvarnTests(ITestOutputHelper output)
     public void KvarnCompressTile_MatchesCpu(int headDim)
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
 
         const int NumKvHeads = 2;
         const int NumTiles = 2;   // exercises the tile-index output placement
@@ -218,7 +218,7 @@ public sealed unsafe class CudaKvarnTests(ITestOutputHelper output)
     public void KvarnAttention_MatchesCpuOracle(int tqLen, int fp32Len, int kvHeads, int qHeads, int headDim)
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
 
         RunAttentionParity(gpu, tqLen, fp32Len, kvHeads, qHeads, headDim, useScratch: false,
             seed: 991 + tqLen + headDim);
@@ -234,7 +234,7 @@ public sealed unsafe class CudaKvarnTests(ITestOutputHelper output)
     public void KvarnAttention_ScratchPath_MatchesCpuOracle()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
 
         RunAttentionParity(gpu, tqLen: 4096, fp32Len: 64, kvHeads: 1, qHeads: 1, headDim: 128,
             useScratch: true, seed: 777);
@@ -393,9 +393,9 @@ public sealed unsafe class CudaKvarnTests(ITestOutputHelper output)
     public void CudaForwardPass_Kvarn_PromotionCadence_And_Guards()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
         var path = FindModelPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
@@ -454,9 +454,9 @@ public sealed unsafe class CudaKvarnTests(ITestOutputHelper output)
     [Fact]
     public void CudaForwardPass_Kvarn_GraphDecode_MatchesDirectLaunch()
     {
-        if (!CudaBackend.IsAvailable()) return;
+        Assert.SkipUnless(CudaBackend.IsAvailable(), "no CUDA device in this environment");
         var path = FindModelPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         const int Steps = 400;
         int[] checkpoints = [0, 255, 256, 257, 300, 383, 384, 385, 399];
@@ -544,9 +544,9 @@ public sealed unsafe class CudaKvarnTests(ITestOutputHelper output)
     public void CudaForwardPass_Kvarn_RejectsSnapKvAndNarrowedKv()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
         var path = FindModelPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);

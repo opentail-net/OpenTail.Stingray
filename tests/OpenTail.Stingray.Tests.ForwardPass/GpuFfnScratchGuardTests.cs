@@ -98,7 +98,7 @@ public sealed class GpuFfnScratchGuardTests
     public void GpuForwardPassMoE_ProducesWellFormedLogits()
     {
         var path = FindMoEModelPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         // Pass `model` so HasQkNorm / IsPerChannelQkNorm probe the tensor index (OLMoE needs it).

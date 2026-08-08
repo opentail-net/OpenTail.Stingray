@@ -50,7 +50,7 @@ public sealed class MaxSeqLenContractTests
     public void MaxSeqLen_NeverExceedsRopeTableCapacity_WhenRequestedContextExceedsTrained()
     {
         var path = FindModelPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
@@ -73,7 +73,7 @@ public sealed class MaxSeqLenContractTests
     public void MaxSeqLen_HonoursASmallerRequestedContext()
     {
         var path = FindModelPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);

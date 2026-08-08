@@ -239,7 +239,7 @@ public sealed class SnapKvTurboQuantTests
     public void SnapKvTqPath_LongPrompt_CacheShrinksToBudget()
     {
         var path = FindModelPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         const int budget = 256;
         const int promptTargetLen = 384;
@@ -277,7 +277,7 @@ public sealed class SnapKvTurboQuantTests
     public void SnapKvTqPath_DecodeStaysCoherent()
     {
         var path = FindModelPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         const int budget = 256;
         const int promptTargetLen = 384;
@@ -334,7 +334,7 @@ public sealed class SnapKvTurboQuantTests
     public void SnapKvTqPath_EnvUnset_NoEviction()
     {
         var path = FindModelPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         var prevBudget = Environment.GetEnvironmentVariable("STINGRAY_SNAPKV_BUDGET");
         Environment.SetEnvironmentVariable("STINGRAY_SNAPKV_BUDGET", null);

@@ -68,7 +68,7 @@ public sealed unsafe class CudaActSoaRooflineProbe
     public void ProbeActSoaMmq_Q40_Gemma12BDims()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
 
         // (rows=out, cols=in) for the 12B's dominant prefill GEMMs.
         (int rows, int cols, string what)[] dims =
@@ -122,7 +122,7 @@ public sealed unsafe class CudaActSoaRooflineProbe
     public void ProbeActSoaMmq_FfnShape()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
 
         (int rows, int cols, int nTok, string what)[] shapes =
         {

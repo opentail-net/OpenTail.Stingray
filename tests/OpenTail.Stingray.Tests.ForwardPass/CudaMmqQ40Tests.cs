@@ -57,7 +57,7 @@ public sealed unsafe class CudaMmqQ40Tests
     public void MatMulBatchedMmq_Q4_0_TracksCpuReference()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
 
         // Cover: square, non-multiple-of-16 rows + non-multiple-of-8 tokens (partial
         // tile guards), a wide single-block-token batch, and Gemma 4 12B's ffn width.

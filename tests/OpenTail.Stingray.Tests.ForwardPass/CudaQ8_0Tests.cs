@@ -65,7 +65,7 @@ public sealed unsafe class CudaQ8_0Tests
     public void MatVec_Q8_0_MatchesCpuReference()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
         // Validate the fp32-decode kernel (llm_matvec_q8_0): exact-byte Q8_0 weights
         // dotted with fp32 activations, so only fp16-d rounding + reduction order
         // differ from the CPU reference. Pin off the dp4a path (issue #142), which
@@ -143,7 +143,7 @@ public sealed unsafe class CudaQ8_0Tests
     public void MatVec_Q8_0_Dp4a_TracksCpuReference()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
         gpu.Q80Dp4aEnabled = true;
 
         foreach ((int rows, int cols) in new[] { (256, 256), (1024, 1024), (64, 2560) })
@@ -212,7 +212,7 @@ public sealed unsafe class CudaQ8_0Tests
     public void MatVec_Q8_0_Mmvq_MatchesDp4a()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
         gpu.Q80Dp4aEnabled = true;   // both paths live under the dp4a branch
 
         // Shapes mirror the real Qwen3.6-35B-A3B trunk Q8_0 matrices (#405): attn_qkv
@@ -289,7 +289,7 @@ public sealed unsafe class CudaQ8_0Tests
     public void EmbedLookup_Q8_0_MatchesCpuReference()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
 
         // emb_dim must be a multiple of 256 — match the constraint shared by the
         // Q4_K / Q5_K embed-lookup kernels. Two configurations exercise 1 and 4

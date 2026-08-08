@@ -49,7 +49,7 @@ public sealed unsafe class CudaMoeReduceKernelTests
     public void MoeWeightedReduce_BitwiseMatchesSequentialReduce()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
 
         const int na = 8;       // active experts (Qwen3.6-A3B uses 8)
         const int embDim = 512; // GDN-MoE embedding dim
@@ -107,7 +107,7 @@ public sealed unsafe class CudaMoeReduceKernelTests
     public void ScaleRowsInPlace_BitwiseMatchesPerRowScaleInPlace()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
 
         const int cols = 512;
         foreach (int rows in new[] { 1, 7, 64, 300 })

@@ -21,8 +21,12 @@ The publish workflow writes TRX files for the managed suites and uploads them as
 `release-quality-results` artifact. A reviewer links that artifact and records hardware rows
 actually exercised in the release notes. A skipped model/hardware test remains skipped; it must
 never be described as a pass. The release receipt also retains
-`scripts/check-test-model-coverage.ps1` output: several older model-gated tests return early
-when their local fixture is absent, so a managed-suite pass count alone is not model coverage.
+`scripts/check-test-model-coverage.ps1` output, which names which fixtures were absent.
+
+Model- and GPU-gated tests now call `Assert.SkipUnless` and are reported as **skipped**. They
+previously `return`ed early, so an absent fixture produced a PASS and suite totals silently
+overstated what had executed — the coverage transcript was the only way to tell. Read a suite's
+skip count as the honest measure of what a fixture-less runner did not exercise.
 
 ## Restart-continuation acceptance test
 

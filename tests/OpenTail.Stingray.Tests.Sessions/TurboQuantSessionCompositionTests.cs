@@ -40,7 +40,7 @@ public sealed class TurboQuantSessionCompositionTests
     public async Task TurboQuantForwardPass_CannotBackAHotSession()
     {
         var path = FindModelPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);

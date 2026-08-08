@@ -72,7 +72,7 @@ public sealed class Qwen2BiasModelTests
     public void VibeThinkerGguf_ParsesAsQwen2WithBiasNoQkNorm()
     {
         var path = FindModelPath("models/VibeThinker-1.5B.Q8_0.gguf");
-        if (path is null) return; // Model file not available — skip.
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
 

@@ -35,7 +35,7 @@ public sealed class CudaDSparkDraftModelTests
     public void ProposeBlock_MatchesCpuModel()
     {
         using var cuda = TryCreate();
-        if (cuda is null) return;
+        Assert.SkipUnless(cuda is not null, "model fixture not present in this environment");
 
         using var head = new DSparkDraftModelTests.SyntheticHead(withConfidence: true);
         using var cpu = head.CreateModel();
@@ -61,7 +61,7 @@ public sealed class CudaDSparkDraftModelTests
     public void AppendContext_Incremental_EqualsBatch()
     {
         using var cuda = TryCreate();
-        if (cuda is null) return;
+        Assert.SkipUnless(cuda is not null, "model fixture not present in this environment");
 
         using var head = new DSparkDraftModelTests.SyntheticHead(withConfidence: true);
         var taps = DSparkDraftModelTests.MakeTaps(5, seed: 777);
@@ -85,7 +85,7 @@ public sealed class CudaDSparkDraftModelTests
     public void TruncateContext_Reappend_EqualsFresh()
     {
         using var cuda = TryCreate();
-        if (cuda is null) return;
+        Assert.SkipUnless(cuda is not null, "model fixture not present in this environment");
 
         using var head = new DSparkDraftModelTests.SyntheticHead(withConfidence: true);
         var taps = DSparkDraftModelTests.MakeTaps(5, seed: 999);
@@ -109,7 +109,7 @@ public sealed class CudaDSparkDraftModelTests
     public void ConsecutiveProposals_AdvanceContext()
     {
         using var cuda = TryCreate();
-        if (cuda is null) return;
+        Assert.SkipUnless(cuda is not null, "model fixture not present in this environment");
 
         using var head = new DSparkDraftModelTests.SyntheticHead(withConfidence: true);
         using var gpu = head.CreateCudaModel(cuda);

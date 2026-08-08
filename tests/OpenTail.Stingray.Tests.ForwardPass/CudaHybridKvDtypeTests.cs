@@ -110,8 +110,8 @@ public sealed class CudaHybridKvDtypeTests : IDisposable
     private void AssertHybridSplitKvParity(string? path, string kvDtype, float maxAbsTol)
     {
         using var gpu = TryCreate();
-        if (gpu is null) { _out.WriteLine("SKIP: no CUDA"); return; }
-        if (path is null) { _out.WriteLine("SKIP: model not on disk"); return; }
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         const int steps = 5;
         const int ctx = 5120;          // > the 4096 hybrid split threshold
@@ -166,8 +166,8 @@ public sealed class CudaHybridKvDtypeTests : IDisposable
     private void AssertKvParity(string? path, string kvDtype, string prompt, float maxAbsTol, int ctx = 2048)
     {
         using var gpu = TryCreate();
-        if (gpu is null) { _out.WriteLine("SKIP: no CUDA"); return; }
-        if (path is null) { _out.WriteLine("SKIP: model not on disk"); return; }
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         const int steps = 6;
         float[][] f32, kv; int[] f32Argmax;
@@ -207,8 +207,8 @@ public sealed class CudaHybridKvDtypeTests : IDisposable
     private void AssertGreedyCoherence(string? path, string kvDtype, string userMessage, int ctx = 2048)
     {
         using var gpu = TryCreate();
-        if (gpu is null) { _out.WriteLine("SKIP: no CUDA"); return; }
-        if (path is null) { _out.WriteLine("SKIP: model not on disk"); return; }
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
         // Render the model's OWN chat template (#230 review): a raw continuation prompt makes an
         // instruct model collapse to a single token regardless of KV dtype (the 'prompt must match
         // the chat template' trap), which would falsely flag the narrowed path. Falls back to the
@@ -301,7 +301,7 @@ public sealed class CudaHybridKvDtypeTests : IDisposable
     public void Coder30B_Q8Kv_Wave_ArgmaxStable()
     {
         var path = CoderPath();
-        if (path is null || !CudaBackend.IsAvailable()) { _out.WriteLine("SKIP"); return; }
+        Assert.SkipUnless(path is not null && CudaBackend.IsAvailable(), "model fixture or CUDA device not present in this environment");
         AssertKvParity(path, "q8_0", LongPrompt(path, 4600), maxAbsTol: 8.0f, ctx: 6144);
     }
 

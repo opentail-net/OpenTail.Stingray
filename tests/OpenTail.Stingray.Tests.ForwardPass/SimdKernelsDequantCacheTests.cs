@@ -17,7 +17,7 @@ public sealed unsafe class SimdKernelsDequantCacheTests
     {
         // The cache only diverts the OpenBLAS SGEMM path; below the threshold both fall back
         // to fused MatVec, which is a *different* (register-dequant) kernel — out of scope here.
-        if (!SimdKernels.BlasAvailable) return;
+        Assert.SkipUnless(SimdKernels.BlasAvailable, "OpenBLAS not present in this environment");
 
         const int rows = 96, cols = 160;
         int batch = SimdKernels.MinBatchForBlas + 8; // ensure the SGEMM path is taken

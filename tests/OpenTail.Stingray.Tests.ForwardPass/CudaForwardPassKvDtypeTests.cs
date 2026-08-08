@@ -135,9 +135,9 @@ public sealed class CudaForwardPassKvDtypeTests
     private static void AssertSplitKvDecodeParity(string filename, string kvDtype, float maxAbsTol)
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
         var path = FindModelPath(filename);
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         const int steps = 6;
         const int ctx = 6144;          // partials allocated (>2048) and room for the prompt
@@ -184,9 +184,9 @@ public sealed class CudaForwardPassKvDtypeTests
     private static void AssertKvParity(string filename, string kvDtype, string prompt, int? eosToken, float maxAbsTol)
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
         var path = FindModelPath(filename);
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         const int steps = 6;
         const int ctx = 2048;
@@ -242,9 +242,9 @@ public sealed class CudaForwardPassKvDtypeTests
     private static void AssertKvBatchedPrefillParity(string filename, string kvDtype, string prompt, float maxAbsTol)
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
         var path = FindModelPath(filename);
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         const int steps = 6;
         const int ctx = 2048;
@@ -286,9 +286,9 @@ public sealed class CudaForwardPassKvDtypeTests
     private static void AssertKvChunkedPrefillParity(string filename, string kvDtype, float maxAbsCeiling)
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
         var path = FindModelPath(filename);
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         const int steps = 4;
         const int ctx = 6144;           // > 4096 so the prefill chunk loop runs
@@ -496,9 +496,9 @@ public sealed class CudaForwardPassKvDtypeTests
     public void Gemma4_E4B_SplitKv_GraphReplayCrossesBoundary()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
         var path = FindModelPath("gemma-4-E4B-it-Q8_0.gguf");
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         const int ctx = 4096;
         const int boundary = 6 * 512;        // 3072 — a split-chunk boundary
@@ -585,9 +585,9 @@ public sealed class CudaForwardPassKvDtypeTests
     private static void AssertGroupedSplitKvParity(string filename, string kvDtype, float maxAbsTol)
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
         var path = FindModelPath(filename);
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         const int steps = 6;
         const int ctx = 6144;
@@ -710,9 +710,9 @@ public sealed class CudaForwardPassKvDtypeTests
         string filename, string kvDtype, string prompt, int ctx = 2048, bool batchedPrefill = false)
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
         var path = FindModelPath(filename);
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         int eosId = ReadEosId(path);
         const int steps = 6;
@@ -770,9 +770,9 @@ public sealed class CudaForwardPassKvDtypeTests
     public void Gemma4_E4B_Bf16Kv_GreedyDecodePastSwaRingWrap_Coherent()
     {
         // AssertGreedyCoherence creates its own backend; just gate the prompt build here.
-        if (!CudaBackend.IsAvailable()) return;
+        Assert.SkipUnless(CudaBackend.IsAvailable(), "no CUDA device in this environment");
         var path = FindModelPath("gemma-4-E4B-it-Q8_0.gguf");
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         // Build a >4608-token prompt so the 512-window SWA ring (4608 slots) actually wraps.
         string prompt;

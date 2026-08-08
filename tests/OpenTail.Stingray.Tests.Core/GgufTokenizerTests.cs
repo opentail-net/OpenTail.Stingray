@@ -30,7 +30,7 @@ public sealed class GgufTokenizerTests
     public void FromGgufModel_LoadsSuccessfully()
     {
         var tokenizer = CreateTokenizer();
-        if (tokenizer is null) return;
+        Assert.SkipUnless(tokenizer is not null, "model fixture not present in this environment");
 
         Assert.Equal(49152, tokenizer.VocabSize);
         Assert.Equal(1, tokenizer.BosTokenId);
@@ -43,7 +43,7 @@ public sealed class GgufTokenizerTests
     public void Encode_SimpleText_ReturnsTokenIds()
     {
         var tokenizer = CreateTokenizer();
-        if (tokenizer is null) return;
+        Assert.SkipUnless(tokenizer is not null, "model fixture not present in this environment");
 
         var ids = tokenizer.Encode("Hello");
         Assert.NotEmpty(ids);
@@ -59,7 +59,7 @@ public sealed class GgufTokenizerTests
         // 700). The tokenizer must decompose such tokens into in-vocab byte tokens so every id is
         // addressable in the embedding table.
         var tokenizer = CreateTokenizer();
-        if (tokenizer is null) return;
+        Assert.SkipUnless(tokenizer is not null, "model fixture not present in this environment");
 
         foreach (var text in new[]
                  {
@@ -81,7 +81,7 @@ public sealed class GgufTokenizerTests
         // back to the original indented text. A remap that produced wrong-but-in-vocab ids would
         // pass the in-range check but fail here.
         var tokenizer = CreateTokenizer();
-        if (tokenizer is null) return;
+        Assert.SkipUnless(tokenizer is not null, "model fixture not present in this environment");
 
         var text = "    if (x) {\n        return 0;\n    }";
         var ids = tokenizer.Encode(text);
@@ -96,7 +96,7 @@ public sealed class GgufTokenizerTests
         // single-space in-vocab tokens (issue #267), preserving the whitespace rather than
         // dropping it or emitting an unembeddable id.
         var tokenizer = CreateTokenizer();
-        if (tokenizer is null) return;
+        Assert.SkipUnless(tokenizer is not null, "model fixture not present in this environment");
 
         // Encode N spaces followed by a sentinel and confirm the count of leading whitespace
         // tokens scales with N and every id is in range.
@@ -113,7 +113,7 @@ public sealed class GgufTokenizerTests
     public void Decode_RoundTrips_SimpleText()
     {
         var tokenizer = CreateTokenizer();
-        if (tokenizer is null) return;
+        Assert.SkipUnless(tokenizer is not null, "model fixture not present in this environment");
 
         var text = "Hello, world!";
         var ids = tokenizer.Encode(text);
@@ -126,7 +126,7 @@ public sealed class GgufTokenizerTests
     public void Decode_RoundTrips_LongerText()
     {
         var tokenizer = CreateTokenizer();
-        if (tokenizer is null) return;
+        Assert.SkipUnless(tokenizer is not null, "model fixture not present in this environment");
 
         var text = "The quick brown fox jumps over the lazy dog.";
         var ids = tokenizer.Encode(text);
@@ -139,7 +139,7 @@ public sealed class GgufTokenizerTests
     public void Encode_EmptyString_ReturnsEmpty()
     {
         var tokenizer = CreateTokenizer();
-        if (tokenizer is null) return;
+        Assert.SkipUnless(tokenizer is not null, "model fixture not present in this environment");
 
         var ids = tokenizer.Encode("");
         Assert.Empty(ids);
@@ -149,7 +149,7 @@ public sealed class GgufTokenizerTests
     public void Encode_MultipleWords_ProducesMultipleTokens()
     {
         var tokenizer = CreateTokenizer();
-        if (tokenizer is null) return;
+        Assert.SkipUnless(tokenizer is not null, "model fixture not present in this environment");
 
         var ids = tokenizer.Encode("This is a test of the tokenizer");
         // A sentence with common words should produce several tokens
@@ -160,7 +160,7 @@ public sealed class GgufTokenizerTests
     public void Decode_RoundTrips_SpecialCharacters()
     {
         var tokenizer = CreateTokenizer();
-        if (tokenizer is null) return;
+        Assert.SkipUnless(tokenizer is not null, "model fixture not present in this environment");
 
         var text = "x = 42; // comment\nprint(x)";
         var ids = tokenizer.Encode(text);
@@ -173,7 +173,7 @@ public sealed class GgufTokenizerTests
     public void Decode_RoundTrips_Unicode()
     {
         var tokenizer = CreateTokenizer();
-        if (tokenizer is null) return;
+        Assert.SkipUnless(tokenizer is not null, "model fixture not present in this environment");
 
         var text = "café résumé naïve";
         var ids = tokenizer.Encode(text);
@@ -186,7 +186,7 @@ public sealed class GgufTokenizerTests
     public void DecodeBytes_PerTokenStream_ReassemblesMultiByteUnicode()
     {
         var tokenizer = CreateTokenizer();
-        if (tokenizer is null) return;
+        Assert.SkipUnless(tokenizer is not null, "model fixture not present in this environment");
 
         // Multi-byte UTF-8 (3-byte CJK and curly quotes, em-dash) is the regression
         // case for issue #13: a single character is split across token boundaries.
@@ -205,7 +205,7 @@ public sealed class GgufTokenizerTests
     public void DecodeBytes_StreamedThroughUtf8Decoder_ProducesNoReplacementChars()
     {
         var tokenizer = CreateTokenizer();
-        if (tokenizer is null) return;
+        Assert.SkipUnless(tokenizer is not null, "model fixture not present in this environment");
 
         var text = "你好世界";
         var ids = tokenizer.Encode(text);
@@ -225,7 +225,7 @@ public sealed class GgufTokenizerTests
     public void DecodeBytes_AsciiToken_RoundTripsThroughUtf8()
     {
         var tokenizer = CreateTokenizer();
-        if (tokenizer is null) return;
+        Assert.SkipUnless(tokenizer is not null, "model fixture not present in this environment");
 
         var ids = tokenizer.Encode("Hello, world!");
         var bytes = new System.Collections.Generic.List<byte>();

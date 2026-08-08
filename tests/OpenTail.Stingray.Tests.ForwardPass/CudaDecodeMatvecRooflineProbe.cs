@@ -47,7 +47,7 @@ public sealed unsafe class CudaDecodeMatvecRooflineProbe
     public void DecodeMatvec_Q8_0_AchievedBandwidth_AtDecodeShape()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
 
         // Gemma-4-E4B decode matvecs (rows=out, cols=in), nTok=1.
         (int rows, int cols, string what)[] shapes =

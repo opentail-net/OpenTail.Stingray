@@ -73,7 +73,7 @@ public sealed unsafe class CudaFlashAttnTcTests
     public void FlashAttentionPrefillTc_MatchesScalarBatched()   // #146 single-warp
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
         RunParity(gpu, Configs(), tc2: false, label: "TC1");
         RunParity(gpu, Tc1OnlyConfigs(), tc2: false, label: "TC1-only-hd");
     }
@@ -82,7 +82,7 @@ public sealed unsafe class CudaFlashAttnTcTests
     public void FlashAttentionPrefillTc2_MatchesScalarBatched()  // #147 multi-warp/d-split
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
         RunParity(gpu, Configs(), tc2: true, label: "TC2");
     }
 

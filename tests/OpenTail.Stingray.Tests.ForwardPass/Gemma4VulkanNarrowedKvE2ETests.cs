@@ -105,9 +105,9 @@ public sealed class Gemma4VulkanNarrowedKvE2ETests
     public void Gemma4_E4B_Q4_0_VulkanNarrowedKv_MatchesFp32Argmax()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;                                  // Vulkan-gated
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
         var path = FindModelPath(ModelFile);
-        if (path is null) return;                                 // model-gated
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
@@ -124,13 +124,13 @@ public sealed class Gemma4VulkanNarrowedKvE2ETests
 
         // fp32 Vulkan reference (the only variable across the three runs is the KV store dtype).
         var fp32Pass = TryBuild(model, gpu, hp, DType.Float32);
-        if (fp32Pass is null) return;                             // OOM-gated
+        Assert.SkipUnless(fp32Pass is not null, "model fixture not present in this environment");
         var fp32Decoded = GreedyDecode(fp32Pass, tokens, NSteps);
 
         foreach (var kvDtype in new[] { DType.BFloat16, DType.Q8_0 })
         {
             var pass = TryBuild(model, gpu, hp, kvDtype);
-            if (pass is null) return;                             // OOM-gated
+            Assert.SkipUnless(pass is not null, "model fixture not present in this environment");
             var decoded = GreedyDecode(pass, tokens, NSteps);
 
             Assert.True(fp32Decoded[0] == decoded[0],

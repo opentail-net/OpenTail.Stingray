@@ -26,7 +26,7 @@ public sealed class DebugForwardPass
     public void ListLayer0TensorNames()
     {
         var path = FindModelPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         foreach (var t in model.Tensors.Where(t => t.Name.StartsWith("blk.0.") || !t.Name.StartsWith("blk.")))
@@ -37,7 +37,7 @@ public sealed class DebugForwardPass
     public void VerifyEmbeddingLookup()
     {
         var path = FindModelPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var info = model.FindTensor("token_embd.weight")!.Value;
@@ -67,7 +67,7 @@ public sealed class DebugForwardPass
     public void DebugGeneration()
     {
         var path = FindModelPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
@@ -104,7 +104,7 @@ public sealed class DebugForwardPass
     public void Qwen3_ParsesHyperparams()
     {
         var path = FindQwen3Path();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
@@ -124,7 +124,7 @@ public sealed class DebugForwardPass
     public void Qwen3_ListLayer0TensorNames()
     {
         var path = FindQwen3Path();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         foreach (var t in model.Tensors.Where(t => t.Name.StartsWith("blk.0.") || !t.Name.StartsWith("blk.")))
@@ -139,7 +139,7 @@ public sealed class DebugForwardPass
     public void Qwen3_CpuGeneration()
     {
         var path = FindQwen3Path();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
@@ -179,7 +179,7 @@ public sealed class DebugForwardPass
     public void VerifyRmsNorm()
     {
         var path = FindModelPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
@@ -222,7 +222,7 @@ public sealed class DebugForwardPass
     public void Qwen3Coder_ListLayer0TensorNames()
     {
         var path = FindQwen3CoderPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         foreach (var t in model.Tensors.Where(t => t.Name.StartsWith("blk.0.") || !t.Name.StartsWith("blk.")))
@@ -237,7 +237,7 @@ public sealed class DebugForwardPass
     public void Qwen3Coder_ParsesHyperparams()
     {
         var path = FindQwen3CoderPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
@@ -262,7 +262,7 @@ public sealed class DebugForwardPass
     public void Qwen3Coder_CpuFirstToken()
     {
         var path = FindQwen3CoderPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);

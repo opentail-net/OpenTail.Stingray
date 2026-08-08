@@ -134,9 +134,9 @@ public sealed class CudaSnapKvBatchingTests
     public void Qwen3_8B_ExplicitSnapKv_SupportsContinuousBatching()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
         var path = FindModelPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var env = SnapKvEnv(budget: 512, window: 32);
         using var model = GgufModel.Open(path);
@@ -158,9 +158,9 @@ public sealed class CudaSnapKvBatchingTests
     public void Qwen3_8B_SnapKvBatchedDecode_N1_MatchesSingleUser()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
         var path = FindModelPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         const int budget = 512;
         using var env = SnapKvEnv(budget, window: 32);
@@ -205,9 +205,9 @@ public sealed class CudaSnapKvBatchingTests
     public void Qwen3_8B_SnapKvBatchedDecode_N2_PerSequenceEviction()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
         var path = FindModelPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         const int budget = 512;
         using var env = SnapKvEnv(budget, window: 32);
@@ -264,9 +264,9 @@ public sealed class CudaSnapKvBatchingTests
     public void Qwen3_8B_SnapKvBatchedDecode_MixedEvictedAndNot()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
         var path = FindModelPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         const int budget = 512;
         using var env = SnapKvEnv(budget, window: 32);
@@ -327,9 +327,9 @@ public sealed class CudaSnapKvBatchingTests
     public void Qwen3_8B_RaggedEvictedDecode_BitIdentical_To_PerSequenceLoop_N2()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
         var path = FindModelPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         const int budget = 512;
         using var env = SnapKvEnv(budget, window: 32);
@@ -381,9 +381,9 @@ public sealed class CudaSnapKvBatchingTests
     public void Qwen3_8B_RaggedEvictedDecode_BitIdentical_To_PerSequenceLoop_MixedEvictedAndNot()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
         var path = FindModelPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         const int budget = 512;
         using var env = SnapKvEnv(budget, window: 32);
@@ -436,9 +436,9 @@ public sealed class CudaSnapKvBatchingTests
     public void Qwen3_8B_PreferBatching_SuppressesAutoSnapKv()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
         var path = FindModelPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         // Unset the explicit budget so the auto-enable path is exercised.
         using var env = new EnvScope(

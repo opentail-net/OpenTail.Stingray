@@ -65,7 +65,7 @@ public class ImagePipelineTests
     public void Preprocess_Then_Embed_ProducesFiniteSoftTokens()
     {
         var mmproj = VisionTestPaths.FindMmproj();
-        if (mmproj is null) return;
+        Assert.SkipUnless(mmproj is not null, "model fixture not present in this environment");
 
         // Synthesize a 200x150 RGB gradient, encode to PNG, then run the full pipeline.
         const int sw = 200, sh = 150;
@@ -98,7 +98,7 @@ public class ImagePipelineTests
     public void Forward_RejectsOversizedUnpreprocessedImage()
     {
         var mmproj = VisionTestPaths.FindMmproj();
-        if (mmproj is null) return;
+        Assert.SkipUnless(mmproj is not null, "model fixture not present in this environment");
         using var m = VisionModel.Open(mmproj);
         var embedder = new GemmaUvVisionEmbedder(m);
 

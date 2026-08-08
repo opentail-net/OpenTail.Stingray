@@ -40,7 +40,7 @@ public sealed class VulkanFlashAttentionTests
         int numHeads, int numKvHeads, int headDim, int basePos, int numQueries, int seed)
     {
         using var g = TryCreate();
-        if (g is null) return;
+        Assert.SkipUnless(g is not null, "model fixture not present in this environment");
 
         int qDim = numHeads * headDim;
         int kvDim = numKvHeads * headDim;
@@ -100,7 +100,7 @@ public sealed class VulkanFlashAttentionTests
         int numHeads, int numKvHeads, int headDim, int basePos, int numQueries, int seed)
     {
         using var g = TryCreate();
-        if (g is null) return;
+        Assert.SkipUnless(g is not null, "model fixture not present in this environment");
 
         int qDim = numHeads * headDim;
         int kvDim = numKvHeads * headDim;

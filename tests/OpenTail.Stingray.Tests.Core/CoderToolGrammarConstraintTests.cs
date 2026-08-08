@@ -12,7 +12,9 @@ namespace OpenTail.Stingray.Tests.Core;
 /// model-free by <see cref="CoderToolGrammarMockTests"/>; this asserts the same invariants survive a
 /// production tokenizer.
 /// </summary>
-public sealed class CoderToolGrammarConstraintTests(ITestOutputHelper output)
+// The ITestOutputHelper parameter is gone: its only use was printing "missing model — skip"
+// before an early return, and the skip reason on Assert.SkipUnless now carries that.
+public sealed class CoderToolGrammarConstraintTests
 {
     private static readonly string[] s_modelPaths =
     [
@@ -65,7 +67,7 @@ public sealed class CoderToolGrammarConstraintTests(ITestOutputHelper output)
     public void EngagesAtFunctionTag_BlocksImmediateClose()
     {
         var tok = Tok();
-        if (tok is null) { output.WriteLine("missing model — skip"); return; }
+        Assert.SkipUnless(tok is not null, "model fixture not present in this environment");
         var c = Constraint(tok, out var vocab);
         Assert.NotNull(c);   // <tool_call> resolved as a special token → constrainable
 
@@ -86,7 +88,7 @@ public sealed class CoderToolGrammarConstraintTests(ITestOutputHelper output)
     public void RequiredKey_CannotBeOmitted_ForeignKeyRejected()
     {
         var tok = Tok();
-        if (tok is null) { output.WriteLine("missing model — skip"); return; }
+        Assert.SkipUnless(tok is not null, "model fixture not present in this environment");
         var c = Constraint(tok, out var vocab)!;
 
         Feed(c, tok, "<tool_call>\n<function=get_weather>\n<parameter=");
@@ -100,7 +102,7 @@ public sealed class CoderToolGrammarConstraintTests(ITestOutputHelper output)
     public void EnumValue_RestrictedToDeclaredSet_BareNotQuoted()
     {
         var tok = Tok();
-        if (tok is null) { output.WriteLine("missing model — skip"); return; }
+        Assert.SkipUnless(tok is not null, "model fixture not present in this environment");
         var c = Constraint(tok, out var vocab)!;
 
         Feed(c, tok, "<tool_call>\n<function=get_weather>\n<parameter=unit>\n");
@@ -117,7 +119,7 @@ public sealed class CoderToolGrammarConstraintTests(ITestOutputHelper output)
     public void NumberValue_RejectsNonDigit()
     {
         var tok = Tok();
-        if (tok is null) { output.WriteLine("missing model — skip"); return; }
+        Assert.SkipUnless(tok is not null, "model fixture not present in this environment");
         var c = Constraint(tok, out var vocab)!;
 
         Feed(c, tok, "<tool_call>\n<function=get_weather>\n<parameter=days>\n");
@@ -129,7 +131,7 @@ public sealed class CoderToolGrammarConstraintTests(ITestOutputHelper output)
     public void JsonOutput_DoesNotEngage()
     {
         var tok = Tok();
-        if (tok is null) { output.WriteLine("missing model — skip"); return; }
+        Assert.SkipUnless(tok is not null, "model fixture not present in this environment");
         var c = Constraint(tok, out _)!;
 
         // If the model emitted a JSON envelope instead of the XML <function=…> shape, the Coder

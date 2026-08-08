@@ -1237,18 +1237,51 @@ public sealed class ContinuousBatchingEngine : IInferenceEngine, IContinuousBatc
         active.Add(seq);
     }
 
+    /// <summary>
+    /// Whether the batcher loop had actually exited by the time <see cref="Dispose"/> returned.
+    ///
+    /// <para>This is the signal an owner must consult before releasing anything the loop touches —
+    /// the forward pass, the compute backend, the mapped model. Disposal completes either way,
+    /// because a shutdown path that can hang is its own kind of bug; but when this is false the
+    /// batcher is still running and freeing native, GPU or mmap'd memory underneath it is an
+    /// access-violation-class race, not a leak. See <c>OwnedDisposableEngine.Dispose</c>.</para>
+    /// </summary>
+    public bool DrainedOnDispose { get; private set; }
+
+    /// <summary>How long <see cref="Dispose"/> waits for the batcher to leave its current step.</summary>
+    /// <remarks>
+    /// The loop tests <c>_disposed</c> at the top of each iteration, so the wait only has to cover
+    /// the step already in flight — but that step can be a full chunked prefill on a large model,
+    /// which takes far longer than the five seconds this used to allow. The old timeout was short
+    /// enough that an ordinary long prefill would routinely fall through it.
+    /// </remarks>
+    private static readonly TimeSpan BatcherDrainTimeout = TimeSpan.FromSeconds(60);
+
     public void Dispose()
     {
         if (_disposed) return;
         _disposed = true;
         _queue.Writer.TryComplete();
 
-        // Safely wait for batcher task to finish loop before clearing prefix cache
-        if (!_batcherTask.IsCompleted && Task.CurrentId != _batcherTask.Id)
+        // Wait for the batcher to leave the loop before touching anything it uses. Completing the
+        // writer wakes the idle path immediately (WaitToReadAsync returns false); a step already in
+        // flight has to finish, since a forward pass cannot be cancelled part-way through.
+        if (Task.CurrentId == _batcherTask.Id)
         {
-            try { _batcherTask.Wait(TimeSpan.FromSeconds(5)); }
-            catch { /* Ignore cancellation / task fault exceptions during dispose */ }
+            // Disposing from inside the batcher itself: it cannot wait for its own completion, and
+            // it is by definition still on the stack, so nothing it uses may be released.
+            DrainedOnDispose = false;
         }
+        else
+        {
+            try { DrainedOnDispose = _batcherTask.Wait(BatcherDrainTimeout); }
+            catch { DrainedOnDispose = _batcherTask.IsCompleted; } // faulted/cancelled still means exited
+        }
+
+        // The prefix caches are the batcher's own working set, so they are only safe to release once
+        // it has exited. If it has not, leak them: process teardown reclaims the memory, whereas
+        // freeing it now hands the still-running loop a dangling cache.
+        if (!DrainedOnDispose) return;
 
         foreach (var entry in _prefixCache)
             entry.Cache.Dispose();

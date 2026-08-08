@@ -64,16 +64,16 @@ public sealed class VulkanMtpE2ETests
     public void MtpDecode_MatchesPlainGreedy_Vulkan()
     {
         using var gpu = TryCreateVulkan();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
         var path = FindMtpModelPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
         var tokenizer = GgufTokenizer.FromGgufModel(model);
 
         using var fwd = CreatePass(model, gpu, hp);
-        if (fwd is null) return;
+        Assert.SkipUnless(fwd is not null, "model fixture not present in this environment");
         if (!fwd.HasMtpHead || !fwd.SupportsBatchVerify) return;
 
         // A repetitive prompt — high MTP acceptance, and the greedy continuation is well-separated

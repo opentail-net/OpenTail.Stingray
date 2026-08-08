@@ -61,7 +61,7 @@ public sealed class CudaGpuArgmaxParityTests
     public void Argmax_MaxAtVariousPositions_AndSizes()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
 
         // Span block boundaries (256 threads × 256 blocks) and real vocab sizes (Qwen3 152064,
         // Gemma 4 262144) so the multi-block grid-stride + two-pass reduction is exercised.
@@ -84,7 +84,7 @@ public sealed class CudaGpuArgmaxParityTests
     public void Argmax_TieBreak_LowestIndexWins()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
 
         var a = new float[5000];
         Array.Fill(a, -1f);
@@ -100,7 +100,7 @@ public sealed class CudaGpuArgmaxParityTests
     public void Argmax_AllEqual_ReturnsIndexZero()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
         var a = new float[8192];
         Array.Fill(a, 3.5f);
         AssertArgmaxMatches(gpu, a);   // no element beats another -> index 0
@@ -110,7 +110,7 @@ public sealed class CudaGpuArgmaxParityTests
     public void Argmax_AllNegative()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
         var a = new float[4096];
         var rng = new Random(99);
         for (int i = 0; i < a.Length; i++) a[i] = (float)(-rng.NextDouble() * 50 - 1);
@@ -123,7 +123,7 @@ public sealed class CudaGpuArgmaxParityTests
         // The STINGRAY_GPU_ARGMAX gate only decides whether the engine takes the fast path; the
         // kernel itself is always correct. Toggling the backend flag must not change Argmax's result.
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
         var a = new float[2048];
         var rng = new Random(7);
         for (int i = 0; i < a.Length; i++) a[i] = (float)rng.NextDouble();
@@ -142,7 +142,7 @@ public sealed class CudaGpuArgmaxParityTests
     public void ArgmaxRows_BatchedParity()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
 
         // Packed [rows × vocab] verify logits — each row reduced independently. Cover a few row
         // counts (k for MTP verify) and a real vocab, with a distinct max placed per row.
@@ -182,7 +182,7 @@ public sealed class CudaGpuArgmaxParityTests
     private static void AssertDecodeEquivalence(string path, int steps = 24)
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
@@ -227,7 +227,7 @@ public sealed class CudaGpuArgmaxParityTests
             @"E:\models\SmolLM2-1.7B-Instruct-Q4_K_M.gguf",
             @"C:\p\opentail-llm\models\Qwen3-8B-Q4_K_M.gguf",
             @"E:\models\Qwen3-8B-Q4_K_M.gguf");
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
         AssertDecodeEquivalence(path);
     }
 
@@ -237,7 +237,7 @@ public sealed class CudaGpuArgmaxParityTests
         var path = FindModel(
             @"E:\models\gemma-4-E4B-it-Q8_0.gguf",
             @"C:\p\opentail-llm\models\gemma-4-E4B-it-Q8_0.gguf");
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
         AssertDecodeEquivalence(path);
     }
 }

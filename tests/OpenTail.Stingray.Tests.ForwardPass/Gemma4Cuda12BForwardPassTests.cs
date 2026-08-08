@@ -100,9 +100,9 @@ public sealed class Gemma4Cuda12BForwardPassTests : IDisposable
     public void Gemma4_12B_CudaForward_ProducesCoherentDecode()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
         var path = FindModelPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
@@ -168,7 +168,7 @@ public sealed class Gemma4Cuda12BForwardPassTests : IDisposable
     public void Gemma4_12B_CpuForward_ProducesCoherentDecode()
     {
         var path = FindModelPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
@@ -232,7 +232,7 @@ public sealed class Gemma4Cuda12BForwardPassTests : IDisposable
     public void Gemma4_12B_CpuForward_CrossesSlidingWindowBoundary()
     {
         var path = FindModelPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
@@ -266,9 +266,9 @@ public sealed class Gemma4Cuda12BForwardPassTests : IDisposable
     public void Gemma4_12B_CpuMatchesCudaLogits()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
         var path = FindModelPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
@@ -329,9 +329,9 @@ public sealed class Gemma4Cuda12BForwardPassTests : IDisposable
     public void Gemma4_12B_CudaHybridForward_ProducesCoherentDecode()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
         var path = FindModelPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
@@ -359,9 +359,9 @@ public sealed class Gemma4Cuda12BForwardPassTests : IDisposable
     public void Gemma4_12B_CpuMatchesCudaHybridLogits()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
         var path = FindModelPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);

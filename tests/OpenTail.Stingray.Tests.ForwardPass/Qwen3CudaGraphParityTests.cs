@@ -66,9 +66,9 @@ public sealed class Qwen3CudaGraphParityTests
     [Fact]
     public void Qwen3_8B_CudaGraph_AllGpu_BitMatchesDirectLaunch()
     {
-        if (!CudaBackend.IsAvailable()) return;
+        Assert.SkipUnless(CudaBackend.IsAvailable(), "no CUDA device in this environment");
         var path = FindModelPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
@@ -84,7 +84,7 @@ public sealed class Qwen3CudaGraphParityTests
         var refTokens = new int[NSteps];
         using (var gpu = TryCreate())
         {
-            if (gpu is null) return;
+            Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
             using var fwd = new CudaForwardPass(model, gpu, hp, maxContextLength: 512)
                 { UseCudaGraph = false, BatchedPrefillEnabled = false };
             var logits = fwd.Prefill(Tokens);
@@ -102,7 +102,7 @@ public sealed class Qwen3CudaGraphParityTests
         // Candidate: graph ON (capture on the first decode token, replay after).
         using (var gpu = TryCreate())
         {
-            if (gpu is null) return;
+            Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
             using var fwd = new CudaForwardPass(model, gpu, hp, maxContextLength: 512)
                 { UseCudaGraph = true, BatchedPrefillEnabled = false };
             var logits = fwd.Prefill(Tokens);
@@ -132,9 +132,9 @@ public sealed class Qwen3CudaGraphParityTests
     [Fact]
     public void Qwen3_8B_CudaGraph_SnapKvConfiguredNoEvict_BitMatches()
     {
-        if (!CudaBackend.IsAvailable()) return;
+        Assert.SkipUnless(CudaBackend.IsAvailable(), "no CUDA device in this environment");
         var path = FindModelPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         var prev = Environment.GetEnvironmentVariable("STINGRAY_SNAPKV_BUDGET");
         Environment.SetEnvironmentVariable("STINGRAY_SNAPKV_BUDGET", "512"); // configured, prompt << 512
@@ -148,7 +148,7 @@ public sealed class Qwen3CudaGraphParityTests
             var refTokens = new int[NSteps];
             using (var gpu = TryCreate())
             {
-                if (gpu is null) return;
+                Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
                 using var fwd = new CudaForwardPass(model, gpu, hp, maxContextLength: 1024)
                     { UseCudaGraph = false, BatchedPrefillEnabled = false };
                 var logits = fwd.Prefill(Tokens);
@@ -165,7 +165,7 @@ public sealed class Qwen3CudaGraphParityTests
 
             using (var gpu = TryCreate())
             {
-                if (gpu is null) return;
+                Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
                 using var fwd = new CudaForwardPass(model, gpu, hp, maxContextLength: 1024)
                     { UseCudaGraph = true, BatchedPrefillEnabled = false };
                 var logits = fwd.Prefill(Tokens);

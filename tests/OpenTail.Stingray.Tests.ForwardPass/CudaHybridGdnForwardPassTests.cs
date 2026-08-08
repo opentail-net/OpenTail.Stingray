@@ -67,10 +67,10 @@ public sealed class CudaHybridGdnForwardPassTests
     public void CudaHybridGdnForwardPass_Qwen35Moe_ProducesWellFormedLogits()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;   // silent skip — same pattern as CudaMoeTests
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
 
         var path = FindHybridModelPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
@@ -153,10 +153,10 @@ public sealed class CudaHybridGdnForwardPassTests
     public void CudaHybridGdnForwardPass_Qwen35Moe_FirstTokenMatchesCpuBaseline()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
 
         var path = FindHybridModelPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
@@ -199,10 +199,10 @@ public sealed class CudaHybridGdnForwardPassTests
     public void CudaHybridGdnForwardPass_Qwen35Moe_CpuMoeMode_MatchesCpuBaseline()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
 
         var path = FindHybridModelPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         // Activate the experimental CPU-MoE path for the duration of the test.
         var prev = Environment.GetEnvironmentVariable("STINGRAY_CPU_MOE");
@@ -279,10 +279,10 @@ public sealed class CudaHybridGdnForwardPassTests
     public void CudaHybridGdnForwardPass_Qwen35Mtp_MtpHeadProducesWellFormedLogits()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
 
         var path = FindMtpModelPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
@@ -360,10 +360,10 @@ public sealed class CudaHybridGdnForwardPassTests
     public void CudaHybridGdnForwardPass_Qwen35Mtp_Bf16KvCache_GreedyMatchesFp32()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
 
         var path = FindMtpModelPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         var prev = Environment.GetEnvironmentVariable("STINGRAY_KV_DTYPE");
 
@@ -447,9 +447,9 @@ public sealed class CudaHybridGdnForwardPassTests
     public void CudaHybridGdnForwardPass_SplitKv_MatchesSingleBlock()
     {
         using var gpu = TryCreate();
-        if (gpu is null) return;
+        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
         var path = FindHybridModelPath();
-        if (path is null) return;
+        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         const int steps = 4;
         const int ctx = 9216;          // > the 8192 GDN split threshold
