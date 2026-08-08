@@ -46,7 +46,7 @@ SOFTWARE.
 The MXFP4 decoding implementation in `src/OpenTail.Stingray.Cpu` is derived from
 TensorSharp's managed quantized operations:
 
-- Project: `examples/cpp/TensorSharp`
+- Upstream: <https://github.com/zhongkaifu/TensorSharp>
 - Copyright (c) 2026, Zhongkai Fu
 - License: BSD 3-Clause
 
@@ -80,11 +80,18 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ## llama.cpp / ggml — MIT
 
 OpenTail.Stingray uses the GGUF format and quantization layouts maintained by the
-llama.cpp / ggml project as a compatibility reference. The existing CPU
-dequantizers and GGUF type-layout definitions are maintained against that
-reference. No llama.cpp or ggml binary is bundled with OpenTail.Stingray.
+llama.cpp / ggml project as a compatibility reference. The CPU dequantizers and
+GGUF type-layout definitions are maintained against that reference.
 
-- Project: `examples/cpp/llama.cpp`
+In addition, the byte-level BPE pre-tokenizer split patterns in
+`src/OpenTail.Stingray.Core/PreTokenizerPatterns.cs` are **ported from** llama.cpp's
+`src/llama-vocab.cpp` (the `llm_tokenizer_bpe` regex table), and are therefore
+derived source rather than a format reference.
+
+No llama.cpp or ggml binary is bundled with OpenTail.Stingray.
+
+- Upstream: <https://github.com/ggml-org/llama.cpp>
+- Reference build used for parity evidence: `b8585-cpu`
 - Copyright (c) 2023-2026 The ggml authors
 - License: MIT
 
@@ -113,11 +120,11 @@ SOFTWARE.
 ## vLLM — Apache License 2.0
 
 OpenTail.Stingray's continuous-batching and paged-KV-cache design was reviewed
-against vLLM's published architecture. The vLLM checkout used as that reference
-is at `examples/cpp/vllm`. No vLLM source files or binaries are included in
-OpenTail.Stingray: its cache implementation and kernels are independently written.
-This notice is retained with distributed source and binaries to preserve the
-Apache-2.0 attribution requested for that upstream reference.
+against vLLM's published architecture. No vLLM source files or binaries are
+included in OpenTail.Stingray: its cache implementation and kernels are
+independently written. This notice is retained with distributed source and
+binaries to preserve the Apache-2.0 attribution requested for that upstream
+reference.
 
 - Project: vLLM
 - Upstream: <https://github.com/vllm-project/vllm>

@@ -138,6 +138,16 @@ Acceptance per architecture: a real GGUF, greedy token-for-token agreement with 
 least one prompt, plus a coherence run long enough to cross the model's sliding-window or
 rope-scaling boundary if it has one.
 
+**Working pattern (operator preference, 2026-08-08): one model at a time — download, work through,
+complete, delete, repeat.** Do not accumulate a model zoo on disk. A few GB per model is acceptable;
+prefer the smallest checkpoint that genuinely exercises the architecture, since parity is a property
+of the architecture rather than of parameter count. Two consequences for how tests are written:
+
+- A parity test must **skip**, never silently pass, when its fixture is gone — the fixture is
+  expected to be absent most of the time. `Assert.Skip*`, not `return`.
+- The reference token ids and expected continuation must be **recorded in the test file**, because
+  once the model is deleted the test cannot regenerate them. The receipt has to outlive the GGUF.
+
 ---
 
 ## 2. Tensor storage formats — the IQ family is the largest single gap

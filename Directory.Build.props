@@ -59,7 +59,7 @@
     and the push step's skip-duplicate flag would silently discard everything after the first.
   -->
   <PropertyGroup>
-    <Version>1.0.3</Version>
+    <Version>1.0.4</Version>
   </PropertyGroup>
 
   <!-- SourceLink: lets nupkg consumers step into source from GitHub during debugging. -->
