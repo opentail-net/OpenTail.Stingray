@@ -101,10 +101,10 @@ Run `stingray --help` for the full reference.
 
 ## Acknowledgements
 
-Forked from **[SharpInference](https://github.com/pekkah/SharpInference)** by Pekka Heikura (MIT), which remains actively developed upstream; copyright is retained in `LICENSE` alongside ours.
+Forked from **[SharpInference](https://github.com/pekkah/SharpInference)** by Pekka Heikura (MIT), which remains actively developed upstream; its copyright is retained in `THIRD_PARTY_NOTICES.md`.
 
 Interoperates with **[llama.cpp](https://github.com/ggml-org/llama.cpp)**'s GGUF format and quantization block layouts, and follows `llama-cli` flag names where the meaning matches — **no llama.cpp code is used**. **[LLamaSharp](https://github.com/SciSharp/LLamaSharp)** was studied as the reference for .NET inference API design; **no LLamaSharp code is used**, and unlike it this engine is managed C# end to end rather than P/Invoke bindings to native llama.cpp.
 
 ## License
 
-MIT. Copyright © 2026 Pekka Heikura · Copyright © 2026 OpenTail.
+MIT. Copyright © 2026 OpenTail.

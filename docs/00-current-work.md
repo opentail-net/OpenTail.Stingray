@@ -171,6 +171,31 @@ See [01-gguf-model-coverage-plan.md](01-gguf-model-coverage-plan.md) §1b.
 
 See [01-gguf-model-coverage-plan.md](01-gguf-model-coverage-plan.md) §1d.
 
+**ARCHITECTURE ADMITTED — `smollm3`, 2026-08-08, full 24-token exact greedy match.** One twist over
+the plain llama trunk (NoPE every 4th layer, reusing Llama-4's existing gate expression). See
+[01-gguf-model-coverage-plan.md](01-gguf-model-coverage-plan.md) §1e.
+
+**ARCHITECTURE ADMITTED — `apertus`, 2026-08-08, 11-token exact prefix (one full sentence), first
+new-kernel architecture built this session.** Non-gated FFN (no `ffn_gate` tensor) with xIELU
+activation, detected from tensor inventory not architecture string. Two real bugs found and fixed:
+xIELU's GGUF-stored parameters are pre-softplus and need a transform that lives in llama.cpp's
+`ggml_xielu()` wrapper, not its compute kernel (missing it produced fluent-looking garbage, not an
+error); and `PrefillCore`/`DenseFfn`'s non-gated branches disagreed by 3.3 logits at default Q8
+settings (same known int8-prefill approximation as OLMoE, amplified by xIELU's quadratic term).
+See [01-gguf-model-coverage-plan.md](01-gguf-model-coverage-plan.md) §1g.
+
+**New-kernel plan drafted, 2026-08-08 — design only except item 3 (Apertus/xIELU), now built.** Assessed the six
+previously-"unassessed" architectures (Nemotron, Seed-OSS, Hunyuan, Dots1, LFM2, Apertus): none
+were buildable-and-testable today (3 restrictive-licensed, 2 have no small checkpoint, only
+Apertus is clean on both — Apache-2.0, but only 8B/70B exist). Full plan, grouped by shared
+kernel/mechanism so the highest-leverage item is obvious: [01-gguf-model-coverage-plan.md](01-gguf-model-coverage-plan.md) §1f.
+
+**`minicpm` tried and NOT admitted, 2026-08-08 — tokenizer gap, not a forward-pass bug.** The only
+Apache-2.0 checkpoint available (`MiniCPM4-0.5B`) uses Unigram-LM SentencePiece (`scores` array, no
+`merges` array), a different algorithm from the BPE-order SPM this engine implements. Forward-pass
+scale trio is implemented (reuses Granite's) and presumed correct once a compatible checkpoint or a
+Unigram-SPM implementation exists. See §1d.
+
 **Known defect — one deliberate red test.**
 `ContinuousBatchingTests.PrefillWithCache_Chunked_MatchesFull` fails deterministically across five
 runs with byte-identical values (1.86363602 vs 1.5929451). Cause and the declined fix are analysed

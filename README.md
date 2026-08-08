@@ -579,8 +579,9 @@ dotnet run --project src/OpenTail.Stingray.Cli -c Release -- image \
 
 **[SharpInference](https://github.com/pekkah/SharpInference)** — Pekka Heikura, MIT. OpenTail.Stingray
 began as a fork of it, and the engine architecture, the GGUF loading path, the backend abstraction and
-much of the design documentation originate there. Copyright is retained in [`LICENSE`](LICENSE)
-alongside ours. Upstream is actively maintained and worth looking at directly if you want the original.
+much of the design documentation originate there. Its copyright is retained in
+[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md). Upstream is actively maintained and worth
+looking at directly if you want the original.
 
 **[llama.cpp](https://github.com/ggml-org/llama.cpp)** — Georgi Gerganov and contributors, MIT.
 **No llama.cpp code is used here.** Its influence is nonetheless everywhere: GGUF is its format, and
@@ -603,4 +604,4 @@ over them.
 
 Released under the [MIT License](LICENSE).
 
-Copyright © 2026 Pekka Heikura · Copyright © 2026 OpenTail.
+Copyright © 2026 OpenTail.

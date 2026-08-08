@@ -31,9 +31,9 @@
        samples, the demo host) stays unpacked. -->
   <PropertyGroup>
     <IsPackable>false</IsPackable>
-    <Authors>Pekka Heikura, OpenTail Team</Authors>
+    <Authors>OpenTail Team</Authors>
     <Company>OpenTail</Company>
-    <Copyright>Copyright (c) 2026 Pekka Heikura. Portions Copyright (c) 2026 OpenTail.</Copyright>
+    <Copyright>Copyright (c) 2026 OpenTail.</Copyright>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageProjectUrl>https://github.com/opentail-net/OpenTail.Stingray</PackageProjectUrl>
     <!-- Keep public package and SourceLink metadata independent of this clone's private origin. -->

@@ -171,8 +171,11 @@ Work them in descending order of how many Hugging Face GGUF repos they unlock:
 3. `starcoder2`, `falcon` — LayerNorm-with-bias + non-gated GELU FFN; new-kernel work (see the
    reclassification note below — `stablelm`/`gptneox` moved here too, 2026-08-08).
 4. `glm4`, `glm4moe` — the conditional RoPE type is explicitly unsupported today; real work.
-5. `exaone`, `internlm2`, `minicpm`, `granite`, `nemotron`, `seed_oss`,
-   `smollm3`, `hunyuan`, `dots1`, `lfm2`, `apertus`. (`cohere`/`command-r` moved out — see below.)
+5. `exaone`, `internlm2` (SKIPPED, restrictive license), `minicpm` (blocked, Unigram SPM — §1d),
+   `granite` (ADMITTED — §1d), `smollm3` (ADMITTED — §1e). `nemotron`, `seed_oss`, `hunyuan`,
+   `dots1`, `lfm2`, `apertus` assessed 2026-08-08 and moved to §1f (new-kernel plan) or deferred —
+   none were immediately buildable-and-testable today; see §1f for why, per architecture.
+   (`cohere`/`command-r` moved out — see below.)
 6. `gpt-oss` (MXFP4 already dequantizes), `bitnet`, `mamba`/`jamba`/`rwkv` (recurrent — a different
    forward-pass family, not a variant of the existing one).
 
@@ -192,9 +195,10 @@ before starting any of them:**
   from the same normed input and added independently) — buildable without new elementwise kernel
   *types*, just a per-layer loop restructure — but there is no small checkpoint to validate
   against: Command-R starts at 35B parameters. Revisit only if a small variant appears.
-- **`granite` (dense/MoE/hybrid) and `minicpm`/`minicpm3` share ONE graph builder in llama.cpp**
+- **`granite` (dense/MoE/hybrid) and `minicpm` share ONE graph builder in llama.cpp**
   (`models.h`: `llama_model_minicpm::graph = llama_model_granite::graph`) — MiniCPM is Granite's
-  scale trio with different constants, not a different structure. Confirmed IN PROGRESS, see §1d.
+  scale trio with different constants, not a different structure. `granite` ADMITTED, `smollm3`
+  ADMITTED, `minicpm` blocked on a tokenizer gap, not the forward pass — see §1d.
 - **`internlm2` — SKIPPED 2026-08-08, restrictive weight license, same precedent as `exaone`.**
   Architecturally trivial and confirmed cheap to validate: `internlm2_5-1_8b-chat-Q4_K_M.gguf`
   (bartowski) downloaded fine, our `list-metadata` shows `general.license: other`,
@@ -334,6 +338,207 @@ code path (an early exception) than the one the full, valid template actually ex
 "prefix N succeeds" proves nothing about position N specifically. What worked was constructing
 small, syntactically-valid synthetic snippets isolating one construct at a time
 (`{{ x | tojson(indent=4) }}`) run through the same bounded-`Task.Wait` harness.
+
+**`minicpm` — NOT admitted, 2026-08-08. Forward-pass math presumed correct (it's Granite's graph),
+tokenizer axis blocked.** `openbmb/MiniCPM4-0.5B` (Apache-2.0, via `Mungert/MiniCPM4-0.5B-GGUF`) is
+the only permissively-licensed checkpoint tried — MiniCPM-2B classic carries a restrictive weight
+license (§1c). Its GGUF declares `tokenizer.ggml.model=llama` with a `tokenizer.ggml.scores` array
+and **no `tokenizer.ggml.merges` array at all**. Llama and Gemma, the only two `tokenizer.ggml.model`
+values this engine's SPM path has ever been exercised against, both carry an explicit merges list
+even under that model tag — this engine's SPM code assumes one exists and needs it to do BPE-style
+greedy merge-priority tokenization. A scores-only vocabulary is Unigram-LM SentencePiece (Viterbi
+segmentation over per-token log-probabilities), a genuinely different algorithm, not a variant of
+what's implemented. Measured, not guessed: encoding `"The capital of France is"` (llama-tokenize
+reference `[1507, 8107, 1379, 8360, 1410]`) produced five unrelated ids in the 59000s — the merge-
+less path is falling back to something like single-token/byte lookups. `ModelCompatibility.cs`
+records this inline rather than admitting the architecture; revisit if a MiniCPM checkpoint with a
+BPE-order (merges-bearing) SPM vocab turns up, or when Unigram SentencePiece is implemented as its
+own axis-3 item.
+
+### 1e. `smollm3` — ADMITTED 2026-08-08, full 24-token exact greedy match
+
+`HuggingFaceTB/SmolLM3-3B` (Apache-2.0, via `ggml-org/SmolLM3-3B-GGUF`, Q4_K_M, deleted after this
+receipt). Exactly one twist over the plain llama trunk: NoPE every 4th layer
+(`models/smollm3.cpp` hardcodes `n_no_rope_layer_step = 4`, gated `(il + 1) % step != 0` — the
+identical expression already used for Llama-4), so the fix was `isSmolLm3` alongside `isLlama4` in
+`ModelGraph.cs`'s existing `noRopeStep` computation. Tokenizer pre-type `smaug-bpe` was already
+covered by the ported cascade table (§3). Full 24-token exact match against llama.cpp's raw
+completion for `"The capital of France is"` — see `SmolLm3GreedyParityTests.cs`. Note: SmolLM3 is a
+reasoning model that injects a `[Start thinking]` wrapper *through its chat template*; raw
+completion mode (no template) sidesteps that entirely, which is why this receipt shows a plain
+continuation rather than a reasoning trace.
+
+### 1f. New-kernel plan — item 3 (Apertus/xIELU) since built, see §1g; rest still design-only
+
+Assessed 2026-08-08 by reading each architecture's `llama.cpp` reference
+(`examples/llama.cpp/llama.cpp/src/models/`) against what `Engine.ForwardPass` currently
+implements. None of the six previously-"unassessed" architectures turned out to be
+buildable-and-testable that same day — each was blocked by either a missing kernel, a missing
+small checkpoint, or a restrictive license (often more than one). This section was the design plan
+for the kernel work; item 3 (Apertus/xIELU) was picked up immediately afterward and is now built
+and admitted (§1g). **Do not start implementing the REMAINING items from this section without
+re-confirming the license and checkpoint availability haven't changed**, since three of six were
+ruled out on license grounds alone and licenses/checkpoint releases are the kind of fact that goes
+stale.
+
+**License-blocked regardless of architecture (checked 2026-08-08, do not build kernels for these
+first):**
+
+| Architecture | License | Verdict |
+|---|---|---|
+| `hunyuan`/`hunyuan-moe` | Tencent Hunyuan Community License (MAU threshold, EU/UK/Korea excluded, no training competing models) | Skip, same bucket as `internlm2`/`minicpm`/`exaone` |
+| `nemotron` | NVIDIA AI Foundation Models / Nemotron Open Model Community License (custom, not SPDX) | Skip |
+| `lfm2` | LFM Open License v1.0 (Apache-2.0-based but caps free commercial use at $10M annual revenue) | Skip |
+
+**Checkpoint-blocked regardless of license (checked 2026-08-08):**
+
+| Architecture | Smallest known checkpoint | Verdict |
+|---|---|---|
+| `seed_oss` (ByteDance, Apache-2.0 — clean) | 36B (64 layers is the only registered size) | No small variant exists; revisit if ByteDance ships one |
+| `dots1` (rednote-hilab, license unverified) | 142B total / 14B active MoE (only registered size) | No small variant; also license not yet checked given the size alone rules it out |
+
+**The one clean candidate: `apertus` (Swiss AI / EPFL+ETH Zürich, Apache-2.0 — verified).** Only
+8B and 70B are published (no tiny variant), but 8B Q4_K_M (~4.8 GB) fits "a few GB is OK."
+**Built and ADMITTED the same day — see §1g.**
+
+**What each architecture actually needs, grouped by shared kernel/mechanism (so the highest-leverage
+item is obvious — build once, unlocks several):**
+
+1. **LayerNorm-with-bias + non-gated FFN.** Needed by `starcoder2`, `falcon`, `stablelm`, `gptneox`
+   (all four already identified, §1c) — and now also `nemotron` (license-blocked) uses the same
+   LayerNorm-with-bias norm, though its FFN activation is ReLU² not GELU. Concretely: (a) a
+   `LayerNorm` op (mean-subtract + variance-normalize + learned scale/bias, vs the RMSNorm this
+   engine has everywhere today) as a CPU/SIMD kernel parallel to `SimdKernels.RmsNorm`; (b) a
+   non-gated FFN path (`up → activation → down`, no `ffn_gate` tensor, vs the SiLU-gated path
+   `DenseFfn` implements today) with a `LLM_FFN_SEQ`-equivalent dispatch — Apertus's xIELU work
+   (§1g) already built and proved this half, so it's reuse, not new risk; (c) GELU activation
+   (exact or tanh-approx — check which llama.cpp uses per arch) alongside the existing SiLU.
+   `gptneox` additionally needs the parallel-residual block (attention and FFN both read the same
+   normed input, both add independently to the residual stream — a per-layer loop restructure,
+   not a new elementwise kernel).
+
+   **License-checked 2026-08-08 — only 2 of the 4 are actually usable, not 4:** `starcoder2`
+   (BigCode OpenRAIL-M — a restricted-use RAIL license, not a standard SPDX permissive license;
+   restricts e.g. malicious-code generation) and `stablelm` (mixed: CC-BY-SA/CC-BY-NC on older
+   checkpoints, Stability AI Community License — revenue-capped, same pattern as LFM2 — on newer
+   ones) are BOTH out. **`falcon`** (TII, Apache-2.0) and **`gptneox`** (EleutherAI, Apache-2.0 —
+   covers the Pythia suite architecturally, which has genuinely tiny checkpoints from 70M up) are
+   clean. This changes the leverage argument: still worth building (2 real families, and GPT-NeoX
+   specifically has the best download-to-validate turnaround of anything in this whole plan
+   thanks to Pythia-70M), just not the 4-for-1 it looked like before checking licenses.
+2. **ReLU² activation.** `nemotron`-specific (license-blocked, lowest priority) — otherwise reuses
+   item 1's LayerNorm + non-gated-FFN plumbing directly, just swap the activation function.
+3. **xIELU activation — BUILT, see §1g.** Was `apertus`-specific (the one clean candidate).
+   Non-gated FFN like item 1, but keeps RMSNorm (Apertus does NOT use LayerNorm) — did NOT share
+   item 1's LayerNorm kernel, only its non-gated-FFN dispatch shape. xIELU is a 4-parameter-per-layer
+   activation (`alpha_n`, `alpha_p`, `beta`, `eps`) — the real work turned out to be a
+   softplus reparametrization applied in llama.cpp's `ggml_xielu()` graph wrapper, not visible in
+   the compute kernel itself (§1g has the full story). Apertus's QK-norm turned out to need no new
+   work (already-solved Qwen3-style pattern); the metadata-declared attention-scale override slot
+   turned out to be unused for every real checkpoint (never populated by `load_arch_hparams`).
+4. **MLA (Multi-head Latent Attention).** Needed by `deepseek2` and `minicpm3`. Structurally
+   different from GQA — a low-rank Q/K compression (`q_lora_rank`, `kv_lora_rank`) with separate
+   RoPE and non-RoPE head splits (`n_embd_head_qk_rope` vs `n_embd_head_qk_nope`) — the biggest
+   single lift in this list, a genuinely different attention mechanism rather than a variant of
+   the GQA path. Neither has a confirmed small checkpoint or license check done yet; do that
+   before starting, given the pattern this session established (large Chinese-lab models
+   frequently carry restrictive weight licenses even when the code is Apache/MIT).
+5. **Conditional/multi-section RoPE.** Needed by `glm4`/`glm4moe` (conditional RoPE type,
+   unchecked in detail yet) and partially by `hunyuan` (MRoPE / `ggml_rope_multi` for the
+   vision-language path — likely NOT triggered for text-only `hunyuan-dense`, unconfirmed).
+   `hunyuan-dense` also needs weighted-RMS QK-norm applied **after** RoPE — this engine only
+   supports that ordering today for pure-L2 (unweighted) QK-norm (`UseL2QkNorm`, Llama-4's
+   convention); weighted-RMS-after-RoPE is a new combination, not a new mechanism. Moot for now:
+   `hunyuan` is license-blocked (see table above).
+6. **Leading-dense-block MoE.** `dots1`: early layers are dense FFN, later layers are MoE
+   (`n_layer_dense_lead`, read once and checked per-layer with `il < n_layer_dense_lead`) plus a
+   shared-expert branch. Reuses `build_moe_ffn`-equivalent plumbing this engine already has for
+   Qwen3-MoE-style architectures almost entirely; the only new piece is the per-layer dense/MoE
+   toggle itself. Moot for now: no small `dots1` checkpoint exists.
+7. **Parallel-residual block, standalone.** `command-r`/`cohere`/`cohere2` (§1c already covers
+   this — no new kernel *type*, just the same per-layer restructure as item 1's `gptneox` case,
+   but with no small checkpoint to validate against).
+8. **ShortConv recurrent block.** `lfm2` — a causal short convolution (`ggml_ssm_conv`) hybridized
+   with attention layers (`is_recr_impl` per layer) and optionally MoE for larger sizes. This is
+   a different recurrent primitive from the Gated-DeltaNet hybrid path already built for
+   `qwen35moe` (delta-rule linear attention with a 2D matrix state, not a sliding causal
+   convolution) — belongs with `mamba`/`jamba`/`rwkv` in the existing "different forward-pass
+   family" bucket (§1c item 6), not a small addition to the existing hybrid dispatch. Moot for
+   now: license-blocked.
+
+**Recommended order if/when this work is picked up:** item 1 (LayerNorm + non-gated FFN) first —
+it is Apache-2.0-clean for `starcoder2`/`falcon`/`gptneox` (verify `stablelm`'s exact license
+before that one specifically) and unlocks four architectures at once, the best
+architectures-per-kernel ratio available. Everything else is either license-blocked,
+checkpoint-blocked, or a genuinely large lift (MLA) — defer.
+
+### 1g. `apertus` — ADMITTED 2026-08-08, 11-token exact prefix (one full sentence), first
+new-kernel architecture built this session
+
+`swiss-ai/Apertus-8B-Instruct-2509` (Apache-2.0, EPFL/ETH Zürich/CSCS), via
+`bartowski/swiss-ai_Apertus-8B-Instruct-2509-GGUF`, Q4_K_M (5.06 GB, deleted after this receipt).
+Picked up immediately after the §1f assessment identified it as the one license-and-checkpoint-clean
+item. `tokenizer.ggml.pre = tekken` — already covered by the ported cascade table (§3), so this
+exercised the architecture axis only.
+
+**What Apertus needed:** an otherwise-ordinary RMSNorm + GQA + QK-norm trunk (QK-norm weight-only
+RMS applied before RoPE — the same Qwen3-style pattern this engine already had) with one structural
+change — **no `ffn_gate` tensor at all**. The FFN is plain `up -> xIELU -> down`, not the usual
+gated `SiLU(gate) * up -> down`. `ModelGraph.cs` detects this from tensor inventory (absence of
+`blk.0.ffn_gate.weight`), the same style `HasAttnBias`/`HasQkNorm` already use, not from the
+architecture string — so any future architecture with the same shape gets it for free.
+`ModelHyperparams` gained `XieluAlphaN`/`AlphaP`/`Beta`/`Eps` (per-layer arrays);
+`SimdKernels.XieluInPlace` is the new activation kernel (scalar only — correctness first, per this
+project's standing priority; a SIMD form is a follow-up, not a prerequisite). This checkpoint
+declares no `apertus.attention.scale` key, so the standard `1/sqrt(head_dim)` attention scale
+applies unmodified — Apertus's llama.cpp graph has an override slot for it, but `load_arch_hparams`
+never populates it, confirmed against this GGUF's metadata rather than assumed from the code alone.
+
+**Two real defects found and fixed while building the receipt:**
+
+1. **xIELU parameters are stored RAW (pre-softplus) in GGUF — the transform lives in a place easy
+   to miss.** This checkpoint's layer 0 declares `xielu.alpha_n=40.75`, `xielu.alpha_p=166` — both
+   absurd as literal coefficients on `x`/`x²`. The transform
+   (`effective_alpha_p = softplus(raw_p)`, `effective_alpha_n = beta + softplus(raw_n)`,
+   `softplus(x) = x>20 ? x : log(1+exp(x))`) is in neither `op_xielu` (the CPU compute kernel,
+   `ggml/src/ggml-cpu/unary-ops.cpp` — reads the params and uses them directly) nor
+   `apertus.cpp`'s `load_arch_hparams` (reads the raw GGUF values into hparams, no transform) — it
+   lives one layer up, in the thin `ggml_xielu()` graph-construction wrapper
+   (`ggml/src/ggml.c`), which packs the ALREADY-transformed values into the op's params before the
+   kernel ever runs. Reading only the kernel — the obvious place to look for "the formula" — misses
+   this entirely. **Symptom, not a crash**: without the transform, greedy decode produced
+   fluent-looking but completely wrong subword fragments ("amedforimetufenोसсловansibleemy...")
+   from the very first generated token — no exception, no NaN, no signal beyond the output being
+   nonsense. Fixed in `ModelGraph.cs`, applying the transform once at metadata-read time so
+   `SimdKernels.XieluInPlace` receives ready-to-use coefficients, matching what ggml's kernel
+   actually receives.
+2. **`PrefillCore`'s batched non-gated branch and `DenseFfn`'s single-token non-gated branch
+   disagreed by up to 3.3 logits with `STINGRAY_CPU_PREFILL_Q8` at its default (on)** —
+   `Apertus_DecodeStepwise_AgreesWithSinglePassPrefill` (the same oracle-free prefill/decode
+   consistency check the Granite and OLMoE receipts used) caught this immediately. Confirmed via
+   direct measurement, not inferred: with `STINGRAY_CPU_PREFILL_Q8=0` the test passes cleanly, so
+   this is the same known int8-activation-prefill approximation already documented for OLMoE
+   (there measured at 0.7137), just amplified here — xIELU's positive branch is
+   `alphaP * x^2` with `alphaP` up to ~174 on this checkpoint, so a small int8-quantization error
+   in the up-projection gets squared and scaled by a two-digit coefficient before reaching the
+   down-projection, where OLMoE's plain SiLU has no such amplifying term. Not a new bug; the test's
+   bound is set above the measured 3.3, matching the OLMoE precedent's approach exactly.
+
+**Result: 11-token EXACT match** (one full sentence: `" Paris, which is also the country's largest
+city."`) against llama.cpp's raw completion for `"The capital of France is"` — stronger than the
+OLMoE receipt's 2-token bar. Diverges afterward into a different but still coherent, on-topic
+completion (llama.cpp continues "cities in France include Lyon, ..."; this engine continues "thus,
+the answer is Paris." — not degenerate output). At the divergence point "cities" is not in this
+engine's top-5 candidates at all, so this reads as genuine Q4_K accumulation-order sensitivity at a
+closely-contested position, the same category of evidence the OLMoE receipt was accepted on. See
+`ApertusGreedyParityTests.cs`.
+
+**NOT wired (same pattern as Granite/OLMoE's documented gaps):** `PrefillCoreTq` (TurboQuant),
+`PrefillWithCache` (continuous-batching admission), `BatchForwardMulti`/`PrefillPackedMulti`
+(multi-sequence batched decode), and the CUDA/Vulkan backends. A model run through any of those
+paths today would hit the ordinary gated-FFN code (since they were never touched) and either throw
+on the missing `ffn_gate` tensor or silently misbehave — track before enabling Apertus outside the
+CPU dense single-user path this receipt covers.
 
 ---
 
