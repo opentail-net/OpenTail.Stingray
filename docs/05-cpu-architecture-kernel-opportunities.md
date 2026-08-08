@@ -1,3 +1,11 @@
+> **Reprioritized 2026-08-08 — now last on the local runway.** Everything here is performance;
+> none of it unlocks a model, and the goal now ranks model coverage above speed.
+>
+> **Item 3 is superseded in part.** Native kernels for IQ4_NL, MXFP4 and other scalar-fallback
+> formats are a *follow-up* to §2 of [01-gguf-model-coverage-plan.md](01-gguf-model-coverage-plan.md),
+> which first has to make the unimplemented IQ formats dequantize at all. Correctness admits the
+> model; kernels only make it faster.
+
 # CPU architecture coverage programme
 
 **Status:** active backlog; the Q4_K repacked-GEMM investigation, Flash64 reference case, and

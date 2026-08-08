@@ -1,3 +1,10 @@
+> **ARCHIVED 2026-08-08.** Phases 0-3 and acceptance gates R1-R11 are closed: CPU-dense
+> SafeTensors loads and generates end-to-end from CLI and server, with mutation-verified
+> parsing and GGUF differential parity. **Carried forward, parked:** Phases 4-6 (GPU offload,
+> quantized SafeTensors, further formats) and the deliberate SentencePiece refusal. Parked
+> because the roadmap targets GGUF breadth first; SafeTensors is already the high-precision
+> path and GGUF is the quantized deployment route.
+
 # SafeTensors support plan
 
 > ## HANDOFF — READ THIS SECTION FIRST

@@ -52,7 +52,7 @@ elsewhere should ignore it.
 **Never accept a flag and ignore it.** An accepted-but-unhonoured `--mlock` or `-ts` produces "it ran
 but the numbers are wrong" reports that cannot be reproduced, and it is worse than not supporting the
 flag at all. This is the same *refuse rather than run* principle already governing the SafeTensors
-capability profile in `../08-safetensors-support-plan.md`, and a compatibility surface is exactly where the
+capability profile in `08-safetensors-support-plan.md`, and a compatibility surface is exactly where the
 temptation to accept-and-ignore is strongest.
 
 Every llama.cpp flag lands in one of three states, and there is no fourth:

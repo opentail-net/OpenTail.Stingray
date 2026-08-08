@@ -5,7 +5,7 @@ The options type also has two deliberately non-bindable programmatic hooks
 (`EngineFactory` and `OutputConstraintFactory`); they are excluded from this inventory because
 JSON configuration cannot supply delegates.
 
-Third and final part of Phase 0 deliverable 1 of `02-quality-of-life-improvements-plan.md`,
+Third and final part of Phase 0 deliverable 1 of `04-quality-of-life-improvements-plan.md`,
 alongside `env-var-inventory.md` (a 141-row historical snapshot; the source registry now has 156 names) and
 `cli-option-inventory.md` (a 94-row historical snapshot; source now has 149 declarations).
 
@@ -40,7 +40,7 @@ parallel mechanism.
 | `ToolGrammar` | `bool` | | Enable schema/grammar-constrained decoding for tool-call arguments (issue #374). When on and a tool-active request is served by a family with constraint support (Gemma 4, Qwen a... |
 | `ModelPath` | `string?` | | Path to the GGUF model file. Required unless  is supplied. Relative paths resolve against the current directory, the entry-assembly directory, and a handful of parent directories. |
 | `MmprojPath` | `string?` | | Optional path to a multimodal projector GGUF (mmproj-*.gguf) enabling image input (issue #253). Only Gemma 4 gemma4uv projectors are supported today, and only on a backend whose... |
-| `DSparkModelPath` | `string?` | | Optional path to a DSpark draft head — model.safetensors, or its directory with config.json alongside (docs/07-dspark-plan.md, PR #413 Phase 6). Set via this property or the OPENTA... |
+| `DSparkModelPath` | `string?` | | Optional path to a DSpark draft head — model.safetensors, or its directory with config.json alongside (docs/done/07-dspark-plan.md, PR #413 Phase 6). Set via this property or the OPENTA... |
 | `DSparkPlace` | `string?` | | Where the DSpark draft head runs: auto (default; the placement planner decides from VRAM/RAM headroom), gpu, cpu, or off. Set via this property or the STINGRAY_DSPARK_PLACE e... |
 | `Architecture` | `string` | | Architecture hint used by  as a fallback when the model's GGUF metadata is missing general.architecture and no Jinja template is bundled. Defaults to "qwen2" (ChatML). |
 | `Backend` | `ServerBackend` | | GPU backend selection. Mirrors the CLI's --backend. Auto picks CUDA when available, falls through to Vulkan, then CPU. Only consulted when is non-zero. |

@@ -174,7 +174,7 @@ and shells out to `glslc` only on a table miss, and `tools/SpirvGen` needs the S
 so a new or edited shader cannot be compiled here at all, and `VulkanPrecompiledShaderTests` fails on
 drift by design. No Path 2 kernel was written, because an unverifiable one is worse than none.
 
-This is the same shape as the CUDA finding in `gpu-review-log.md`: a real defect, a cheap fix,
+This is the same shape as the CUDA finding in `../done/gpu-review-log.md`: a real defect, a cheap fix,
 blocked on a toolchain rather than hardware. **Installing the Vulkan SDK unblocks it** — no different
 GPU required.
 

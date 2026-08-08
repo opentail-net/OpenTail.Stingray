@@ -1,3 +1,9 @@
+> **ARCHIVED 2026-08-08.** The CPU-dense restart-continuation lane it scoped is implemented,
+> capability-gated, and proven across two processes on a real SmolLM2 GGUF. Its four numbered
+> items are all closed. **Carried forward:** sessions still have no CLI named-session surface,
+> and the lane remains CPU-dense GGUF only — both are parked, not scheduled. See
+> [../00-current-work.md](../00-current-work.md).
+
 # Session-native inference runtime — current work
 
 **Status:** the narrow CPU-dense restart-continuation lane is proven on a real GGUF across two
@@ -28,7 +34,7 @@ replay was added.
    results can be pruned and must not be treated as an archival transcript.
 2. **Done — cache conformance matrix.** Hot reuse, rollback, persistence/restart, corrupt packs,
    quotas/eviction, and per-model resource partitioning are covered in
-   `sessions-release-gate-matrix.md`. Its persisted ABI represents per-layer KV/head dimensions
+   `../sessions-release-gate-matrix.md`. Its persisted ABI represents per-layer KV/head dimensions
    and V-region stride; a single model-level `headDim` would silently corrupt Gemma-class mixed-
    dimension caches.
 3. **Done for the CPU-dense lane — interrupted writes, corrupt packs, ABI mismatch, quotas, and
@@ -48,8 +54,8 @@ one child process runs and persists two real SmolLM2 GGUF turns, then exits; a s
 a fresh runtime, restores the manifest/KV packs, runs a third greedy turn, and compares every
 generated segment against fresh full replay. No fake forward
 pass, in-process restore, cache-byte comparison, or cursor-only replay would meet that bar. See
-[release-quality-test-matrix.md](release-quality-test-matrix.md).
+[release-quality-test-matrix.md](../release-quality-test-matrix.md).
 
-Historical record: [done/session-native-inference-runtime-plan-rev1.md](done/session-native-inference-runtime-plan-rev1.md),
-[adr-0001-session-cache-lifecycle.md](adr-0001-session-cache-lifecycle.md), and
-[done/milestone-0-state-topology-audit.md](done/milestone-0-state-topology-audit.md).
+Historical record: [session-native-inference-runtime-plan-rev1.md](session-native-inference-runtime-plan-rev1.md),
+[adr-0001-session-cache-lifecycle.md](../adr-0001-session-cache-lifecycle.md), and
+[milestone-0-state-topology-audit.md](milestone-0-state-topology-audit.md).

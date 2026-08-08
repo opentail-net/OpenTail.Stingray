@@ -1,3 +1,9 @@
+> **Reprioritized 2026-08-08 — now runway position 3, and blocked.** Vision is model coverage, so
+> it stays above performance work, but it cannot proceed without an oracle: the local llama.cpp
+> build rejects the paired `gemma4` text GGUF, so it is not a usable reference. Acquire a build
+> that admits `gemma4`, or capture intermediates from another confirmed implementation, before
+> writing encoder code. Do not guess the ViT from tensor names.
+
 # Gemma 4 E4B Multimodal (Vision) — Research & Implementation Plan
 
 Status: **V0 mmproj loader and V1 fixed-grid preprocessing implemented; encoder, projector,

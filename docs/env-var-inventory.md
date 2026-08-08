@@ -40,7 +40,7 @@ The stated current registry count is test-guarded by
 \`KnownEnvironmentVariablesTests.Inventory_DeclaredCurrentRegistryCountMatchesSource\`. It makes
 new registry drift visible immediately; it does not replace the pending owner/use-row refresh.
 
-This is Phase 0 deliverable 1 of `02-quality-of-life-improvements-plan.md`, and it is a
+This is Phase 0 deliverable 1 of `04-quality-of-life-improvements-plan.md`, and it is a
 prerequisite for `--print-effective-config`, saved profiles, and the `ExecutionPlan` work:
 none of those can be correct while the setting surface is unenumerated.
 

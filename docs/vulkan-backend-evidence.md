@@ -25,7 +25,7 @@ a dead heat and prefill is ~12% slower**.
 
 That is the expected result for an **APU**, and worth stating so nobody reads it as a Vulkan defect:
 integrated Radeon graphics share system DRAM with the CPU. Decode is bound by that memory (and by
-the dequant/dot work behind it — see `cpu-speculative-decoding-findings.md`), so moving the work to
+the dequant/dot work behind it — see `done/cpu-speculative-decoding-findings.md`), so moving the work to
 a GPU on the *same* memory bus cannot help. A discrete card with its own VRAM is a different
 measurement entirely, and nothing here predicts it.
 

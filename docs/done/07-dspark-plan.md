@@ -1,3 +1,10 @@
+> **ARCHIVED 2026-08-08.** Phases 0-4 and 6 are implemented and greedy-parity validated across
+> all three placements (CPU/CPU, CUDA/CPU, CUDA/GPU), on CLI and single-user server.
+> **Carried forward, parked:** continuous-batching integration and load-aware verify length.
+> Parked deliberately — DSpark is a throughput feature, and on a 4B target the un-graphed verify
+> pass caps it below plain graph-replayed decode. It is off the current roadmap, which ranks
+> model coverage above speed.
+
 # DSpark Speculative Decoding — Feasibility & Adaptive-Placement Spec
 
 *Drafted 2026-07-01, on branch `claude/dspark-feasibility-61y4au`.*

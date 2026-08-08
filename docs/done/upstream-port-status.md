@@ -1,3 +1,10 @@
+> **ARCHIVED 2026-08-08.** The SharpInference port audit is complete and its final full-suite
+> run is recorded at the end of this file. **Carried forward:** the single known ForwardPass
+> failure and the CI test-count floors, both now stated in
+> [../00-current-work.md](../00-current-work.md). Note the stale line inside: the 1.0.3 release
+> candidate described as unpushed has since been pushed; only the `stingray-v1.0.3` tag is
+> still missing.
+
 # Upstream port status — `examples/SharpInference08086` → OpenTail.Stingray
 
 **Paused 2026-08-08 03:00.** Working state for whoever picks this up (including a later session of
@@ -130,7 +137,7 @@ against llama.cpp was run. Do not repeat that claim as established.
 llama-arch batched prefill), KVarN prefill for llama-arch, VRAM headroom warning.
 
 This machine has no NVIDIA GPU, so none of it can be exercised beyond compiling. Porting it means
-shipping unverifiable code — the same reasoning that left `docs/cuda-fused-gate-up-plan.md` unimplemented.
+shipping unverifiable code — the same reasoning that left `cuda-fused-gate-up-plan.md` unimplemented.
 
 ## Tool-grammar tests — **DONE, and they found a hidden stale assertion**
 
@@ -170,7 +177,7 @@ honest. `ToolGrammarConstraintTests` was the one class where a present fixture w
 - **`Tests.ForwardPass` completes locally and has a verdict** (first achieved 2026-08-08):
   **1,358 tests, ~18 min.** Steady state is **one real failure** —
   `ContinuousBatchingTests.PrefillWithCache_Chunked_MatchesFull`, deterministic across four runs
-  with byte-identical values, pre-existing, and analysed in `docs/03-cpu-prefill-plan.md` item 5.
+  with byte-identical values, pre-existing, and analysed in `docs/done/03-cpu-prefill-plan.md` item 5.
   - Two other failure sources were investigated and resolved as environmental, not defects: a
     once-seen flake under CPU contention that never recurred, and three `VulkanShaderTests` failures
     from unguarded `VulkanBackend` construction (now guarded — see the Vulkan section below).
@@ -182,7 +189,7 @@ honest. `ToolGrammarConstraintTests` was the one class where a present fixture w
     corrected breakdown below. Do not read the other suites' green as covering this one.
   - **Lesson worth keeping:** never pipe a long test run through `tail`. An 18-minute run whose
     failure output is discarded costs another 18 minutes to redo.
-- `docs/03-cpu-prefill-plan.md` item 4 **CLOSED 2026-08-08**: interleaved arms, warm-up and three
+- `docs/done/03-cpu-prefill-plan.md` item 4 **CLOSED 2026-08-08**: interleaved arms, warm-up and three
   samples per arm give **3.48x median** (F32 6.90 -> Q8 24.02 tok/s) with 1.0%/3.6% spread. The
   quality half closed the same day. Both halves of that plan are now evidenced.
 

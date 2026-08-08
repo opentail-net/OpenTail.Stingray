@@ -1,6 +1,6 @@
 # qwen35moe Tensor Layout & Block Math — Authoritative
 
-*Captured 2026-05-19 from `E:\models\Qwen3.6-35B-A3B-UD-Q4_K_M.gguf` via `opentail-llm-cli list-tensors`, cross-referenced against [llama.cpp's `src/models/qwen35moe.cpp`](https://github.com/ggml-org/llama.cpp/blob/master/src/models/qwen35moe.cpp) and `src/models/delta-net-base.cpp` on master. These findings supersede `06-qwen35moe-plan.md` where they conflict.*
+*Captured 2026-05-19 from `E:\models\Qwen3.6-35B-A3B-UD-Q4_K_M.gguf` via `opentail-llm-cli list-tensors`, cross-referenced against [llama.cpp's `src/models/qwen35moe.cpp`](https://github.com/ggml-org/llama.cpp/blob/master/src/models/qwen35moe.cpp) and `src/models/delta-net-base.cpp` on master. These findings supersede `done/qwen35moe-plan-superseded.md` where they conflict.*
 
 ## Architecture summary
 

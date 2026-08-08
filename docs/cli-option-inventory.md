@@ -20,7 +20,7 @@ the next drift immediately; it does not substitute for the still-required row-le
 human ownership classification.
 
 Companion to `env-var-inventory.md`; together they are the starting point for the configuration
-work in `02-quality-of-life-improvements-plan.md`. A current source-backed inventory is required
+work in `04-quality-of-life-improvements-plan.md`. A current source-backed inventory is required
 before the precedence chain (`CLI pin > profile > host > environment > default`) can be specified.
 
 **Class is unfilled deliberately**, same reasoning as the environment inventory: it is a judgement
@@ -124,6 +124,7 @@ hoc at each read site rather than in one place.
 
 | Option | Class | Description |
 |---|---|---|
+| `--allow-unverified-arch` |  | Attempt a GGUF whose architecture has no validated forward-pass profile. Output correctness is UNVERIFIED: GGUF tensor naming does not establish compatible attention, RoPE, normalization or FFN semantics, so the model may produce plausible but wrong tokens. Without this flag such a model is refused. |
 | `--auto` |  | Automatically resolve execution plan based on hardware and target goal |
 | `--backend` |  | GPU backend: auto, vulkan, cuda. Default: auto (prefers CUDA when -g is set and CUDA is available, otherwise Vulkan). |
 | `--batch-size <N>` |  | (llama.cpp compat) Not supported — OpenTail does not expose a configurable batch size. |
@@ -239,3 +240,4 @@ hoc at each read site rather than in one place.
 | `--json` |  | Write machine-readable JSON snapshot to stdout |
 | `--url <URL>` |  | Server URL (default: http://127.0.0.1:8080) |
 | `--watch` |  | Continuously refresh status every second |
+

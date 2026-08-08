@@ -1,3 +1,8 @@
+> **Reprioritized 2026-08-08 — now runway position 4.** Remaining item 1 is partly closed: both
+> inventories are regenerated from source and three phantom environment variables were retired.
+> What is left of it is *classification*, not regeneration. See
+> [00-current-work.md](00-current-work.md) Priority 3.
+
 # Quality-of-life improvements — current work
 
 **Status:** planning/diagnostics baseline shipped; deterministic static-plan decision fixtures

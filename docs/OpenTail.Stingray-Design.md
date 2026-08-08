@@ -946,7 +946,7 @@ on CPU and CUDA (issue #250); `OpenTail.Stingray.Vision` holds the vision-side c
 > **Scope:** this section is the **12B `gemma4uv`** path only. The Gemma 4 **E4B** model uses a
 > *different*, encoder-**full** architecture — a `gemma4v` transformer ViT vision encoder plus a
 > `gemma4a` audio encoder (confirmed from the mmproj header; ~992 MB vs the 12B's ~175 MB). E4B is
-> **not** supported yet; see `docs/05-gemma4-e4b-vision-plan.md` (issue #126).
+> **not** supported yet; see `docs/03-gemma4-e4b-vision-plan.md` (issue #126).
 
 **Projector forward (`GemmaUvVisionEmbedder`)** — mirrors llama.cpp `tools/mtmd/models/gemma4uv.cpp`:
 

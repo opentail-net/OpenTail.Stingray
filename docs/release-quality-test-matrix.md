@@ -63,11 +63,11 @@ top of this document, a pass here is not evidence for a row whose runner this ma
 | Gate | Evidence today | Where it came from |
 |---|---|---|
 | Build and managed regression | **Yes** — Core 421/421, CLI 367/367, Server 246/246, Sessions 79/79, Release, 0 warnings | this session |
-| CPU inference | **Yes** — dense greedy prefill/decode, numerical parity, corpus perplexity | `cpu-prefill-quality-gate.md`, `cpu-benchmark-llamacpp-baseline.md` |
+| CPU inference | **Yes** — dense greedy prefill/decode, numerical parity, corpus perplexity | `done/cpu-prefill-quality-gate.md`, `cpu-benchmark-llamacpp-baseline.md` |
 | CUDA dense | **No — blocked.** No NVIDIA driver on this machine; nothing was run and nothing is claimed | — |
 | Vulkan | **Partial.** Functional load + greedy decode, and CPU/Vulkan logit parity measured. **On an integrated APU, not a discrete card** — every number is APU-specific and does not predict discrete-GPU behaviour | `vulkan-backend-evidence.md` |
 | Hybrid MoE | **Partial.** MoE model runs on CPU with prefill numerics in the dense band. The row's actual subject — CPU-expert and GPU-cache offload paths — is **untested**, needing constrained VRAM this machine cannot provide | `moe-backend-evidence.md` |
-| Speculation | **Measured and negative.** Draft-model speculation is a 37% regression on CPU because the verify pass cannot amortise; no MTP GGUF present for the MTP equivalence check | `cpu-speculative-decoding-findings.md` |
+| Speculation | **Measured and negative.** Draft-model speculation is a 37% regression on CPU because the verify pass cannot amortise; no MTP GGUF present for the MTP equivalence check | `done/cpu-speculative-decoding-findings.md` |
 | Session restart continuation | **CPU-dense GGUF lane proven.** Two real turns persist across child-process exit; a fresh runtime restores them, adds a third greedy turn, and exactly replays every generated segment (1/1 focused receipt, 2026-08-07). Other backend/cache families remain separate conformance work | `HotSessionGreedyReplayTests` |
 | HTTP server | **Yes** — 246/246 including OpenAI, Anthropic, capabilities, status, queue limits | this session |
 | Packaging | **Not run this session** | — |
@@ -95,7 +95,7 @@ top of this document, a pass here is not evidence for a row whose runner this ma
   surface** and should gate advertising sessions as supported. Both single-sided fixes were
   implemented and measured and both break something else; the correct fix is an on-disk
   persisted-revision decision. Full characterisation and reproduction in
-  `session-revision-contract-defect.md`.
+  `done/session-revision-contract-defect.md`.
 - Gemma 4 per-layer-head-dim models get **no batched prefill**: 3.8 t/s prefill against 3.7 t/s
   decode, where every other model measured runs prefill at 1.9-6.6x decode. Against the nearest size
   class (Qwen3-8B) it decodes 1.7x slower — explainable by parameter count — but prefills 9.7x

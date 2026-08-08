@@ -1,3 +1,10 @@
+> **ARCHIVED 2026-08-08.** Both halves of the release decision are now evidenced: the quality
+> half (paired corpus perplexity, all-control-prompt exemption) and the performance half
+> (interleaved arms, 3.48x median). **Carried forward:** the one deterministic known failure,
+> `ContinuousBatchingTests.PrefillWithCache_Chunked_MatchesFull`, whose mechanism is analysed in
+> the final section and whose fix was deliberately declined. It is tracked in
+> [../00-current-work.md](../00-current-work.md) as a known defect, not as a plan.
+
 # CPU prefill — current work
 
 **Status:** existing int8 batched paths and runtime tuning are historical work. The repacked-GEMM
@@ -173,9 +180,9 @@ per-token fallback.
    making Q8 activation scales chunk-invariant; suppressing it would discard the only automated
    detector for that mechanism.
 
-Historical evidence: [done/cpu-prefill-plan-2026-07.md](done/cpu-prefill-plan-2026-07.md),
-[done/cpu-prefill-repack-gemm-plan.md](done/cpu-prefill-repack-gemm-plan.md), and
-[done/repack-gemm](done/repack-gemm).
+Historical evidence: [cpu-prefill-plan-2026-07.md](cpu-prefill-plan-2026-07.md),
+[cpu-prefill-repack-gemm-plan.md](cpu-prefill-repack-gemm-plan.md), and
+[repack-gemm](repack-gemm).
 
 **Current focused receipt (2026-08-07):** `MatMulBatchedQ8EquivalenceTests` passes **24/24** in
 Release. It includes Q3_K's 4/8-input dispatch/remainder cases and Q2_K's 600-token production
