@@ -166,14 +166,41 @@ hypothesis, not a finding — the RoPE convention is one of many things an archi
 
 Work them in descending order of how many Hugging Face GGUF repos they unlock:
 
-1. `olmoe`, `olmo2` — gate-only, code exists.
+1. `olmoe`, `olmo2` — gate-only, code exists. `olmoe` ADMITTED (see §1b). `olmo2` still out.
 2. `deepseek2` — gate-only for the dense path; MLA attention needs checking separately.
-3. `starcoder2`, `stablelm`, `gptneox`, `falcon` — classic decoder-only, NEOX RoPE already declared.
+3. `starcoder2`, `falcon` — LayerNorm-with-bias + non-gated GELU FFN; new-kernel work (see the
+   reclassification note below — `stablelm`/`gptneox` moved here too, 2026-08-08).
 4. `glm4`, `glm4moe` — the conditional RoPE type is explicitly unsupported today; real work.
-5. `exaone`, `internlm2`, `cohere`/`command-r`, `minicpm`, `granite`, `nemotron`, `seed_oss`,
-   `smollm3`, `hunyuan`, `dots1`, `lfm2`, `apertus`.
+5. `exaone`, `internlm2`, `minicpm`, `granite`, `nemotron`, `seed_oss`,
+   `smollm3`, `hunyuan`, `dots1`, `lfm2`, `apertus`. (`cohere`/`command-r` moved out — see below.)
 6. `gpt-oss` (MXFP4 already dequantizes), `bitnet`, `mamba`/`jamba`/`rwkv` (recurrent — a different
    forward-pass family, not a variant of the existing one).
+
+**Reclassified 2026-08-08, checked against the llama.cpp reference (`examples/llama.cpp/llama.cpp/src/models/`)
+before starting any of them:**
+
+- **`stablelm`, `gptneox` moved OUT of the "classic decoder-only" bucket into new-kernel work,
+  alongside `starcoder2`/`falcon`.** Both use LayerNorm-with-bias (not RMSNorm) and a non-gated
+  GELU FFN (`LLM_FFN_GELU, LLM_FFN_SEQ` — plain up→gelu→down, no gate projection at all — not a
+  variant of the existing SiLU-gated FFN). `gptneox` additionally supports a parallel-residual
+  block (`use_parallel_residual`: attention and FFN both read the SAME normed input and both add
+  independently to the residual, rather than the usual sequential attn-then-ffn chain). None of
+  this is a metadata-driven variation of the current trunk; it needs new kernels the same way
+  `starcoder2` does.
+- **`command-r`/`cohere`/`cohere2` moved OUT of the tractable list entirely, not reclassified.**
+  Structurally it is a parallel-residual block like `gptneox` (attn_out and ffn_out both computed
+  from the same normed input and added independently) — buildable without new elementwise kernel
+  *types*, just a per-layer loop restructure — but there is no small checkpoint to validate
+  against: Command-R starts at 35B parameters. Revisit only if a small variant appears.
+- **`granite` (dense/MoE/hybrid) and `minicpm`/`minicpm3` share ONE graph builder in llama.cpp**
+  (`models.h`: `llama_model_minicpm::graph = llama_model_granite::graph`) — MiniCPM is Granite's
+  scale trio with different constants, not a different structure. Confirmed IN PROGRESS, see §1d.
+- **`internlm2` needs no forward-pass change at all** — checked against
+  `llama_model_rope_type()` in `llama-model.cpp`: it uses `LLAMA_ROPE_TYPE_NORM` (our default
+  interleaved convention), plain RMSNorm, standard SiLU-gated FFN, no QKV bias, no QK-norm,
+  standard `1/sqrt(head_dim)` attention scale. `internlm2_5-1_8b-chat` (Apache-2.0,
+  `internlm/internlm2_5-1_8b-chat-gguf` on Hugging Face) is next after Granite: if the tokenizer
+  pre-type is already covered, admission may be gate-entry-only, matching the `olmoe` pattern.
 
 Acceptance per architecture: a real GGUF, greedy token-for-token agreement with llama.cpp for at
 least one prompt, plus a coherence run long enough to cross the model's sliding-window or
@@ -188,6 +215,59 @@ of the architecture rather than of parameter count. Two consequences for how tes
   expected to be absent most of the time. `Assert.Skip*`, not `return`.
 - The reference token ids and expected continuation must be **recorded in the test file**, because
   once the model is deleted the test cannot regenerate them. The receipt has to outlive the GGUF.
+
+### 1d. `granite` — IN PROGRESS 2026-08-08 (implementation done, parity capture running)
+
+`ibm-granite/granite-3.3-2b-instruct` (Apache-2.0, via `bartowski/ibm-granite_granite-3.3-2b-instruct-GGUF`,
+Q4_K_M, 1.55 GB). Tokenizer pre-type `refact` was already covered by the ported cascade table
+(§3), so this exercises only the architecture axis. `general.architecture = granite`.
+
+**What Granite needs beyond the plain llama trunk — a "scale trio" plus one attention override,
+read from GGUF metadata rather than hardcoded** (confirmed present on this checkpoint, not
+defaults): `granite.embedding_scale=12`, `granite.residual_scale=0.22`, `granite.logit_scale=8`,
+`granite.attention.scale=0.015625` (note: **not** `1/sqrt(64)=0.125` — a genuine per-model
+override, not a rounding of the usual formula). `tokenizer.ggml.pre=refact`, no rope scaling
+(plain RoPE, freq_base 1e7, interleaved/NORM convention — no code change needed there).
+`minicpm`/`minicpm3` share the identical graph in llama.cpp (`models.h`), so this same
+implementation covers both once a MiniCPM fixture is validated.
+
+**Implementation (`ModelHyperparams`: `ResidualScale`, `AttentionScaleOverride`, `LogitScale` new;
+`EmbeddingScale` generalized beyond its previous Gemma-4-only use):**
+
+- `ModelGraph.cs`: new `isGraniteFamily` branch (arch ∈ granite/granitemoe/granitehybrid/
+  minicpm/minicpm3) reads the four `{arch}.*` keys. GGUF's "0/absent = off" convention is
+  translated to each field's "1 = off (multiplicative identity)" convention explicitly — a raw 0
+  must NOT flow through as a literal multiply-by-zero.
+- `LogitScale` bakes in llama.cpp's reciprocal convention (`granite.cpp` DIVIDES:
+  `ggml_scale(cur, 1/f_logit_scale)`) so `ForwardPass` can just multiply by the field
+  unconditionally. Command-R uses the OPPOSITE convention (multiplies by the raw value directly)
+  and is deliberately not wired — see the reclassification note above for why it's out of scope.
+- `ForwardPass.cs`: wired into the two call sites the CPU dense single-user path actually uses —
+  `PrefillCore` (batched prefill, N>1) and `Attention`/`RunTrunk` (single-token decode, shared by
+  `Forward`). **Investigated and found a genuine pre-existing gap while doing this**: `PrefillCore`
+  never applied `EmbeddingScale` at all. It happened to never matter before, because the only
+  architecture that ever set a non-1 `EmbeddingScale` was `gemma4`, and `gemma4` always takes the
+  sequential `Forward()` path instead (`_layerHeadDim is not null` forces the
+  `perLayerHdUnsupported` fallback) — so the two conditions never coexisted. Granite is dense with
+  no per-layer head dim, so it genuinely reaches `PrefillCore`, which is what surfaced this. Fixed
+  as part of this change, not filed separately, since it's on the direct path to the receipt.
+- **NOT wired (explicitly out of scope for this receipt, same pattern as OLMoE's CUDA/Vulkan
+  QK-norm gap):** `PrefillCoreTq` (TurboQuant batched prefill), `PrefillWithCache` (continuous-
+  batching admission, a third independent trunk implementation), `BatchForwardMulti`/
+  `PrefillPackedMulti` (multi-sequence batched decode), and the CUDA/Vulkan backends. A Granite or
+  MiniCPM model run through any of those paths today will silently skip the scale trio and produce
+  wrong output. Track before enabling Granite/MiniCPM in the server's continuous-batching path.
+
+**Still needed to close this out:** the llama.cpp reference continuation (`llama-cli -no-cnv`,
+temp 0, top-k 1) is capturing now — this machine is slow enough that a 24-token greedy decode on a
+2B Q4 model takes several minutes. Once captured: write `GraniteGreedyParityTests.cs` following
+the `OlmoeGreedyParityTests.cs` pattern (recorded prompt ids `[1318, 18926, 432, 45600, 438]` for
+`"The capital of France is"`, `Assert.SkipWhen` on missing fixture), admit `granite` to
+`ModelCompatibility` for real (currently added provisionally for local testing only — not yet
+committed as an admission), then delete the GGUF per the working pattern above.
+`tests/OpenTail.Stingray.Tests.ForwardPass/GraniteGreedyParityTests.cs` (the temporary diagnostic
+variant, `GraniteDiagnosticTests`) exists only to capture our own continuation for comparison and
+will be replaced by the real parity test, not kept alongside it.
 
 ---
 
