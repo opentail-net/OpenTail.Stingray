@@ -522,36 +522,63 @@ public sealed record ModelHyperparams
             }
         }
 
-        // Granite (dense/MoE/hybrid) and MiniCPM/MiniCPM3 share ONE graph builder in
-        // llama.cpp (models.h: "using graph = llama_model_granite::graph") — MiniCPM is
-        // Granite's scale trio with different constants, not a different structure. All
-        // four keys are read generically per-arch rather than globally: llama.cpp itself
-        // only calls ml.get_key for these on this specific family (grok and command-r
-        // read logit_scale independently, with a DIFFERENT sign convention — see
+        // Granite (dense/MoE/hybrid) and MiniCPM share ONE graph builder in llama.cpp
+        // (models.h: "using graph = llama_model_granite::graph") — MiniCPM is Granite's
+        // scale trio with different constants, not a different structure. All four keys
+        // are read generically per-arch rather than globally: llama.cpp itself only calls
+        // ml.get_key for these on this specific family (grok and command-r read
+        // logit_scale independently, with a DIFFERENT sign convention — see
         // ModelHyperparams.LogitScale — and are not wired here).
+        //
+        // Deliberately EXCLUDES "minicpm3": despite the name it is a different
+        // architecture, not a MiniCPM variant — models/minicpm3.cpp declares
+        // ATTENTION_Q_LORA_RANK / ATTENTION_KV_LORA_RANK and builds Multi-head Latent
+        // Attention, the same mechanism as deepseek2, not Granite's dense/GQA attention.
+        // Routing it through this branch would silently misapply the scale trio to an
+        // architecture that needs MLA kernels first — new-kernel work, not this.
         //
         // GGUF's convention is "0 / absent = off"; ModelHyperparams' fields are
         // multiplicative identities ("1 = off"), so an absent or exactly-zero key must
         // fall through to 1, not 0 — multiplying embeddings or a residual by a literal 0
         // would zero the trunk instead of leaving it alone.
+        bool isMiniCpm = arch.Equals("minicpm", StringComparison.OrdinalIgnoreCase);
         bool isGraniteFamily = arch.Equals("granite", StringComparison.OrdinalIgnoreCase)
             || arch.Equals("granitemoe", StringComparison.OrdinalIgnoreCase)
             || arch.Equals("granitehybrid", StringComparison.OrdinalIgnoreCase)
-            || arch.Equals("minicpm", StringComparison.OrdinalIgnoreCase)
-            || arch.Equals("minicpm3", StringComparison.OrdinalIgnoreCase);
+            || isMiniCpm;
         if (isGraniteFamily)
         {
+            // MiniCPM ships older GGUFs that omit these keys entirely and rely on
+            // llama.cpp hardcoding formula-based defaults (models/minicpm.cpp) BEFORE
+            // checking for an explicit override — unlike Granite, which has no
+            // architecture-level default and simply leaves scaling off when absent.
+            // Applying these unconditionally for non-MiniCPM archs would be wrong (they
+            // have no such fallback), so they are gated on isMiniCpm specifically.
+            if (isMiniCpm)
+            {
+                embeddingScale = 12.0f;
+                residualScale = numLayers > 0 ? 1.4f / MathF.Sqrt(numLayers) : 1f;
+                logitScale = embDim > 0 ? 256.0f / embDim : 1f;
+            }
+
             float rawEmbeddingScale = GetFloat(metadata, $"{arch}.embedding_scale");
             if (rawEmbeddingScale != 0f) embeddingScale = rawEmbeddingScale;
 
             float rawResidualScale = GetFloat(metadata, $"{arch}.residual_scale");
             if (rawResidualScale != 0f) residualScale = rawResidualScale;
 
-            // kq_scale override: 0 sentinel means "no override — caller falls back to
-            // 1/sqrt(HeadDim)". Granite 3.3 2B declares 0.015625 (1/64), NOT 1/sqrt(64)
-            // (0.125) — this is a real per-architecture override, not a rounding of the
-            // usual formula.
-            attentionScaleOverride = GetFloat(metadata, $"{arch}.attention.scale");
+            // MiniCPM's load_arch_hparams never calls ml.get_key for attention.scale at
+            // all (only Granite does) — so even if a MiniCPM GGUF happened to carry that
+            // key, llama.cpp would ignore it. Mirror that exactly rather than reading it
+            // generically for the whole family.
+            if (!isMiniCpm)
+            {
+                // kq_scale override: 0 sentinel means "no override — caller falls back to
+                // 1/sqrt(HeadDim)". Granite 3.3 2B declares 0.015625 (1/64), NOT
+                // 1/sqrt(64) (0.125) — a real per-architecture override, not a rounding
+                // of the usual formula.
+                attentionScaleOverride = GetFloat(metadata, $"{arch}.attention.scale");
+            }
 
             // llama.cpp's granite.cpp DIVIDES by the raw metadata value
             // (ggml_scale(cur, 1.0f / f_logit_scale)); LogitScale is documented as

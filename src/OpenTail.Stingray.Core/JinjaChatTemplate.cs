@@ -845,16 +845,67 @@ public sealed class JinjaChatTemplate
             };
         }
 
+        /// <summary>
+        /// Positional argument list for a filter call, e.g. <c>| tojson(indent=4)</c> or
+        /// <c>| map('upper')</c>. <see cref="FilterExpr"/> has no kwargs slot, so a <c>name=value</c>
+        /// argument (Granite's chat template: <c>tojson(indent=4)</c>) has its keyword name dropped
+        /// and only the value kept — cosmetic for something like JSON indentation, and better than
+        /// the alternative.
+        /// </summary>
+        /// <remarks>
+        /// <b>Bug this replaced (found admitting Granite):</b> the previous version always called
+        /// <c>ParseOr()</c> directly. For <c>indent=4</c>, <c>ParseOr</c> correctly parses just the
+        /// bare identifier <c>indent</c> as a <see cref="NameExpr"/> and stops — no operator in the
+        /// precedence chain (<c>ParseComparison</c> included) matches a lone <c>=</c>, since `==` is
+        /// two characters. <c>Pos</c> is left sitting on the unconsumed <c>=</c>. Back in the loop,
+        /// the comma check fails (it's not a comma), the close-paren check fails (it's not the
+        /// delimiter), and the loop retries from the exact same position: <c>ParseOr()</c> is called
+        /// again at the <c>=</c>, which <see cref="ParsePrimary"/> can't start an expression from, so
+        /// it returns <c>LiteralExpr(null)</c> — <em>also</em> without moving <c>Pos</c>. Neither path
+        /// ever advances past the <c>=</c>, so the loop runs forever, appending a new null literal to
+        /// <c>args</c> every iteration: unbounded allocation, not just unbounded CPU, which is why it
+        /// presented as a multi-gigabyte memory leak rather than a hang with flat memory.
+        /// </remarks>
         private List<IExpr> ParseArgList(char close)
         {
             var args = new List<IExpr>();
             while (Pos < _s.Length && _s[Pos] != close)
             {
+                int iterStart = Pos;
                 Skip();
                 if (Pos < _s.Length && _s[Pos] == close) break;
+
+                // Keyword argument: bare identifier immediately followed by a single '=' (not '==').
+                // Detected the same way the ParsePrimary function-call arg loop does: try an
+                // identifier, and only commit past it if a lone '=' actually follows.
+                int saved = Pos;
+                string name = ReadIdent();
+                Skip();
+                if (name.Length > 0 && Pos < _s.Length && _s[Pos] == '='
+                    && (Pos + 1 >= _s.Length || _s[Pos + 1] != '='))
+                {
+                    Pos++; // consume '='
+                    Skip();
+                }
+                else
+                {
+                    Pos = saved; // not a keyword arg — re-parse from the start as a value
+                }
+
                 args.Add(ParseOr());
                 Skip();
                 if (Pos < _s.Length && _s[Pos] == ',') Pos++;
+
+                // Defense in depth against the exact failure mode above recurring for some other
+                // construct this doesn't anticipate: every iteration must make progress. A parser
+                // that cannot ever get stuck is worth more than one more `Pos` bookkeeping bug found
+                // by inspection — this is what turns the NEXT one into a fast, clear exception
+                // instead of an hours-long, gigabytes-of-RAM hang discovered by accident.
+                if (Pos == iterStart)
+                    throw new FormatException(
+                        $"Jinja argument list parser made no progress at position {Pos} " +
+                        $"(near \"{_s[Pos..Math.Min(_s.Length, Pos + 30)]}\") — malformed or " +
+                        "unsupported syntax, refusing to loop forever.");
             }
             ExpectChar(close);
             return args;

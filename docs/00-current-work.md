@@ -151,6 +151,26 @@ the answer.
 
 See [01-gguf-model-coverage-plan.md](01-gguf-model-coverage-plan.md) §1b.
 
+**ARCHITECTURE ADMITTED — `granite`, 2026-08-08, full 24-token exact greedy match.**
+
+- Needs a "scale trio" (embedding/residual/logit scale) + an attention-scale override, all read
+  from GGUF metadata (`ModelHyperparams.ResidualScale`/`AttentionScaleOverride`/`LogitScale` new,
+  `EmbeddingScale` generalized). `MiniCPM` (not `MiniCPM3` — that's MLA, unrelated) shares the same
+  llama.cpp graph and reuses this implementation once a permissively-licensed checkpoint exists.
+- **Found and fixed two real bugs while building the receipt, neither specific to Granite's own
+  math:** (1) `PrefillCore` never applied `EmbeddingScale` — latent since Gemma 4 was the only prior
+  architecture to set one, and Gemma 4 never reaches `PrefillCore`. (2) The core Jinja engine's
+  `ExprParser.ParseArgList` hung/leaked unboundedly (measured to 47 GB RAM) on `key=value` filter
+  arguments like `tojson(indent=4)` — Granite's chat template was the first one exercised this
+  session complex enough to trigger it. Both fixed; `JinjaChatTemplate` construction is now lazy too
+  (built on first access, not at every model load) as defense in depth.
+- **NOT wired for Granite/MiniCPM:** TurboQuant prefill, continuous-batching admission
+  (`PrefillWithCache`), multi-sequence batched decode, CUDA/Vulkan. A model run through those paths
+  today silently skips the scale trio and produces wrong output — same category of gap as OLMoE's
+  CUDA/Vulkan QK-norm fix, tracked the same way.
+
+See [01-gguf-model-coverage-plan.md](01-gguf-model-coverage-plan.md) §1d.
+
 **Known defect — one deliberate red test.**
 `ContinuousBatchingTests.PrefillWithCache_Chunked_MatchesFull` fails deterministically across five
 runs with byte-identical values (1.86363602 vs 1.5929451). Cause and the declined fix are analysed

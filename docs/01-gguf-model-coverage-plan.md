@@ -195,16 +195,40 @@ before starting any of them:**
 - **`granite` (dense/MoE/hybrid) and `minicpm`/`minicpm3` share ONE graph builder in llama.cpp**
   (`models.h`: `llama_model_minicpm::graph = llama_model_granite::graph`) — MiniCPM is Granite's
   scale trio with different constants, not a different structure. Confirmed IN PROGRESS, see §1d.
-- **`internlm2` needs no forward-pass change at all** — checked against
-  `llama_model_rope_type()` in `llama-model.cpp`: it uses `LLAMA_ROPE_TYPE_NORM` (our default
-  interleaved convention), plain RMSNorm, standard SiLU-gated FFN, no QKV bias, no QK-norm,
-  standard `1/sqrt(head_dim)` attention scale. `internlm2_5-1_8b-chat` (Apache-2.0,
-  `internlm/internlm2_5-1_8b-chat-gguf` on Hugging Face) is next after Granite: if the tokenizer
-  pre-type is already covered, admission may be gate-entry-only, matching the `olmoe` pattern.
+- **`internlm2` — SKIPPED 2026-08-08, restrictive weight license, same precedent as `exaone`.**
+  Architecturally trivial and confirmed cheap to validate: `internlm2_5-1_8b-chat-Q4_K_M.gguf`
+  (bartowski) downloaded fine, our `list-metadata` shows `general.license: other`,
+  `tokenizer.ggml.model: llama` (SentencePiece — already fully supported, zero tokenizer work),
+  and no scale-trio metadata at all (plain trunk, confirming the `LLAMA_ROPE_TYPE_NORM` +
+  standard-attention-scale prediction from `llama_model_rope_type()` in `llama-model.cpp`). The
+  GGUF's own self-declared `general.license: other` was the tell: InternLM2's model weights (as
+  opposed to the Apache-2.0 code repo) are under a custom "free for commercial use but must
+  register" agreement, not a standard permissive SPDX license. Checked whether InternLM3 rescues
+  this the way MiniCPM4 rescued MiniCPM (genuinely Apache-2.0 weights) — it doesn't help here:
+  `internlm3-8b-instruct`'s own GGUF declares `general.architecture: llama`, not `internlm2` (it
+  reuses the plain llama trunk, not InternLM2's), so it wouldn't be a receipt for this
+  architecture at all, just another already-admitted llama-arch checkpoint. GGUF deleted. Revisit
+  only if a permissively-licensed `internlm2`-architecture checkpoint turns up — the code-side
+  finding (no forward-pass change needed) still holds if one does.
 
 Acceptance per architecture: a real GGUF, greedy token-for-token agreement with llama.cpp for at
 least one prompt, plus a coherence run long enough to cross the model's sliding-window or
 rope-scaling boundary if it has one.
+
+**Operational gotcha (2026-08-08): `llama-cli -no-cnv` still blocks on stdin when backgrounded.**
+`-no-cnv` disables chat-template formatting but NOT interactivity — llama-cli's own `--help`
+confirms conversation mode "enables interactive mode also," which implies (and testing confirmed)
+`-no-cnv` alone does not disable it. Launched without a controlling terminal (i.e. via this
+session's auto-backgrounding after a foreground timeout), the process printed the completion once,
+then sat at a `>` prompt waiting for a follow-up turn on stdin — forever, since nothing was
+feeding it one. Three separate reference-capture runs sat like this for up to 90 minutes before
+being caught (by comparing CPU-time accrual against wall-clock time: real generation is CPU-bound
+and should track closely; these were accruing almost none). Not a slow-hardware symptom — a stuck
+process silently burning wall-clock. **Fix: redirect stdin from empty/closed** (`< /dev/null` in
+this shell) so the process hits EOF and exits after the first completion instead of waiting.
+Verify a capture is actually progressing by checking CPU time against a `Get-Process` call a few
+seconds apart, not just by waiting — a real decode should show CPU time climbing at roughly
+wall-clock rate.
 
 **Working pattern (operator preference, 2026-08-08): one model at a time — download, work through,
 complete, delete, repeat.** Do not accumulate a model zoo on disk. A few GB per model is acceptable;
@@ -216,32 +240,46 @@ of the architecture rather than of parameter count. Two consequences for how tes
 - The reference token ids and expected continuation must be **recorded in the test file**, because
   once the model is deleted the test cannot regenerate them. The receipt has to outlive the GGUF.
 
-### 1d. `granite` — IN PROGRESS 2026-08-08 (implementation done, parity capture running)
+### 1d. `granite` — ADMITTED 2026-08-08, full 24-token exact greedy match
 
 `ibm-granite/granite-3.3-2b-instruct` (Apache-2.0, via `bartowski/ibm-granite_granite-3.3-2b-instruct-GGUF`,
-Q4_K_M, 1.55 GB). Tokenizer pre-type `refact` was already covered by the ported cascade table
-(§3), so this exercises only the architecture axis. `general.architecture = granite`.
+Q4_K_M, 1.55 GB, deleted after this receipt per the working pattern). Tokenizer pre-type `refact`
+was already covered by the ported cascade table (§3), so this exercised only the architecture axis.
+`general.architecture = granite`.
+
+**Result: EXACT match, not just a prefix.** llama.cpp's reference continuation for
+`"The capital of France is"` (prompt ids `[1318, 18926, 432, 45600, 438]`) is
+`" Paris.\n\nStep 1: Identify the topic.\nThe topic is the capital of France."` — this engine
+produces the identical string, all 24 generated tokens, byte for byte. Stronger evidence than the
+`olmoe` receipt (2-token prefix only). See `GraniteGreedyParityTests.cs`.
 
 **What Granite needs beyond the plain llama trunk — a "scale trio" plus one attention override,
 read from GGUF metadata rather than hardcoded** (confirmed present on this checkpoint, not
 defaults): `granite.embedding_scale=12`, `granite.residual_scale=0.22`, `granite.logit_scale=8`,
 `granite.attention.scale=0.015625` (note: **not** `1/sqrt(64)=0.125` — a genuine per-model
-override, not a rounding of the usual formula). `tokenizer.ggml.pre=refact`, no rope scaling
-(plain RoPE, freq_base 1e7, interleaved/NORM convention — no code change needed there).
-`minicpm`/`minicpm3` share the identical graph in llama.cpp (`models.h`), so this same
-implementation covers both once a MiniCPM fixture is validated.
+override, not a rounding of the usual formula). No rope scaling (plain RoPE, freq_base 1e7,
+interleaved/NORM convention — no code change needed there). `minicpm` (NOT `minicpm3` — see below)
+shares the identical graph in llama.cpp (`models.h`), so this same implementation covers it too,
+pending a permissively-licensed checkpoint (§1c reclassification note).
 
 **Implementation (`ModelHyperparams`: `ResidualScale`, `AttentionScaleOverride`, `LogitScale` new;
 `EmbeddingScale` generalized beyond its previous Gemma-4-only use):**
 
-- `ModelGraph.cs`: new `isGraniteFamily` branch (arch ∈ granite/granitemoe/granitehybrid/
-  minicpm/minicpm3) reads the four `{arch}.*` keys. GGUF's "0/absent = off" convention is
-  translated to each field's "1 = off (multiplicative identity)" convention explicitly — a raw 0
-  must NOT flow through as a literal multiply-by-zero.
+- `ModelGraph.cs`: new `isGraniteFamily` branch (arch ∈ granite/granitemoe/granitehybrid/minicpm)
+  reads the four `{arch}.*` keys. GGUF's "0/absent = off" convention is translated to each field's
+  "1 = off (multiplicative identity)" convention explicitly — a raw 0 must NOT flow through as a
+  literal multiply-by-zero. **Deliberately excludes `minicpm3`**: despite the name it is Multi-head
+  Latent Attention (Q-LoRA/KV-LoRA rank), the same mechanism as `deepseek2`, not a MiniCPM variant —
+  routing it through Granite's dense/GQA scale-trio path would silently misapply the wrong math to
+  an architecture that needs MLA kernels first. MiniCPM also carries llama.cpp hardcoded per-arch
+  *defaults* (`embedding_scale=12`, `residual_scale=1.4/sqrt(n_layer)`, `logit_scale=256/n_embd`)
+  for GGUFs that omit the metadata keys, which Granite does not — implemented as an `isMiniCpm`
+  gate inside the family branch. MiniCPM also never reads `attention.scale` at all (only Granite
+  does), mirrored exactly rather than applied generically to the whole family.
 - `LogitScale` bakes in llama.cpp's reciprocal convention (`granite.cpp` DIVIDES:
   `ggml_scale(cur, 1/f_logit_scale)`) so `ForwardPass` can just multiply by the field
   unconditionally. Command-R uses the OPPOSITE convention (multiplies by the raw value directly)
-  and is deliberately not wired — see the reclassification note above for why it's out of scope.
+  and is deliberately not wired — see the §1c reclassification note for why it's out of scope.
 - `ForwardPass.cs`: wired into the two call sites the CPU dense single-user path actually uses —
   `PrefillCore` (batched prefill, N>1) and `Attention`/`RunTrunk` (single-token decode, shared by
   `Forward`). **Investigated and found a genuine pre-existing gap while doing this**: `PrefillCore`
@@ -251,6 +289,8 @@ implementation covers both once a MiniCPM fixture is validated.
   `perLayerHdUnsupported` fallback) — so the two conditions never coexisted. Granite is dense with
   no per-layer head dim, so it genuinely reaches `PrefillCore`, which is what surfaced this. Fixed
   as part of this change, not filed separately, since it's on the direct path to the receipt.
+  `GraniteGreedyParityTests.Granite_DecodeStepwise_AgreesWithSinglePassPrefill` is the regression
+  guard for the two paths staying consistent.
 - **NOT wired (explicitly out of scope for this receipt, same pattern as OLMoE's CUDA/Vulkan
   QK-norm gap):** `PrefillCoreTq` (TurboQuant batched prefill), `PrefillWithCache` (continuous-
   batching admission, a third independent trunk implementation), `BatchForwardMulti`/
@@ -258,16 +298,42 @@ implementation covers both once a MiniCPM fixture is validated.
   MiniCPM model run through any of those paths today will silently skip the scale trio and produce
   wrong output. Track before enabling Granite/MiniCPM in the server's continuous-batching path.
 
-**Still needed to close this out:** the llama.cpp reference continuation (`llama-cli -no-cnv`,
-temp 0, top-k 1) is capturing now — this machine is slow enough that a 24-token greedy decode on a
-2B Q4 model takes several minutes. Once captured: write `GraniteGreedyParityTests.cs` following
-the `OlmoeGreedyParityTests.cs` pattern (recorded prompt ids `[1318, 18926, 432, 45600, 438]` for
-`"The capital of France is"`, `Assert.SkipWhen` on missing fixture), admit `granite` to
-`ModelCompatibility` for real (currently added provisionally for local testing only — not yet
-committed as an admission), then delete the GGUF per the working pattern above.
-`tests/OpenTail.Stingray.Tests.ForwardPass/GraniteGreedyParityTests.cs` (the temporary diagnostic
-variant, `GraniteDiagnosticTests`) exists only to capture our own continuation for comparison and
-will be replaced by the real parity test, not kept alongside it.
+**Incidental discovery: a real hang/memory-leak bug in the core Jinja engine, found and fixed while
+building this receipt — nothing to do with Granite's forward-pass math.**
+`GgufTokenizer.FromGgufModel` used to construct `JinjaChatTemplate` *eagerly*, for every model
+load. Granite's chat template (4,571 chars — tool-call/citation/hallucination-risk sections, a
+`strftime_now()` call, a `tojson(indent=4)` filter) hung it indefinitely — not slow, genuinely
+unbounded: one diagnostic run reached **47 GB of RAM** before being killed. This blocked loading
+the model at all, for any use, even plain completion that never touches a chat template.
+
+Root cause, isolated with a minimal repro (`{{ x | tojson(indent=4) }}` hangs, `{{ x | tojson() }}`
+doesn't): `JinjaChatTemplate`'s `ExprParser.ParseArgList` (filter-call arguments) had no handling
+for `key=value` syntax. For `indent=4`, the expression grammar parses the bare identifier `indent`
+and stops — nothing in the precedence chain, comparison operators included, matches a lone `=`
+(`==` needs two characters). The loop's position never advances past the `=`; the next iteration
+retries from the same spot, `ParsePrimary` can't start an expression at `=` either and returns a
+null literal without moving forward — an unconditional infinite loop, and because each iteration
+appends a new argument to the list, it leaks memory rather than just spinning the CPU. Fixed in two
+parts:
+1. `ParseArgList` now recognises and consumes a keyword-argument prefix before parsing the value
+   (the keyword *name* is dropped — `FilterExpr` has no kwargs slot — which is harmless for
+   something cosmetic like JSON indent width).
+2. The loop now asserts forward progress every iteration and throws a clear `FormatException`
+   rather than spin, so the *next* unanticipated construct becomes a fast, obvious failure instead
+   of another silent multi-gigabyte hang found by accident.
+
+Additionally, `JinjaChatTemplate` construction moved from eager (at tokenizer load) to lazy (on
+first access to `GgufTokenizer.ChatTemplate`) as defense in depth — a pathological template now
+only costs whichever caller actually renders one, not every model load. Both fixes are covered by
+the existing Jinja test suite (498/498 passing, Core project) plus the new minimal repros retained
+in `GraniteGreedyParityTests.cs`'s history; no template-rendering test changed behavior.
+
+**Operational lesson from this investigation, worth its own line:** bisecting by truncating the
+template string was a dead end — any truncation breaks tag balance and fails fast via a *different*
+code path (an early exception) than the one the full, valid template actually exercises, so
+"prefix N succeeds" proves nothing about position N specifically. What worked was constructing
+small, syntactically-valid synthetic snippets isolating one construct at a time
+(`{{ x | tojson(indent=4) }}`) run through the same bounded-`Task.Wait` harness.
 
 ---
 

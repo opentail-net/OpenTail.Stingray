@@ -25,6 +25,15 @@ public static class ModelCompatibility
         // docs/01-gguf-model-coverage-plan.md §1b. Note `olmo2` is deliberately NOT here — it
         // shares neither a fixture nor a receipt.
         "olmoe",
+        // granite — admitted 2026-08-08 on FULL 24-token exact greedy match against llama.cpp
+        // (stronger than the olmoe receipt above, which only reaches a 2-token prefix). Needs a
+        // "scale trio" + attention-scale override beyond the plain llama trunk, read from GGUF
+        // metadata (ModelHyperparams.ResidualScale/AttentionScaleOverride/LogitScale, generalized
+        // EmbeddingScale) — see GraniteGreedyParityTests and docs/01-gguf-model-coverage-plan.md
+        // §1d for the receipt and for what is NOT yet wired (TurboQuant prefill, continuous-batching
+        // admission, CUDA/Vulkan). MiniCPM (not MiniCPM3 — that's MLA, a different architecture)
+        // shares this exact graph in llama.cpp and reuses the same implementation, unvalidated here
+        // pending a permissively-licensed checkpoint on a llama.cpp build that can serve as an oracle.
         "granite",
     };
 

@@ -89,11 +89,18 @@ public sealed partial class GgufTokenizer : ITokenizer
     /// </summary>
     public bool PreTokenizerIsKnown { get; private set; } = true;
 
+    private readonly Lazy<JinjaChatTemplate?> _chatTemplate;
+
     /// <summary>
     /// Jinja2 chat template parsed from GGUF tokenizer.chat_template metadata, if present.
     /// Use this to format messages into a prompt string for any model without hardcoding templates.
+    ///
+    /// <para>Parsed lazily on first access, not at tokenizer construction — see the constructor's
+    /// remarks on <c>chatTemplateSource</c> for why. A malformed template still resolves to
+    /// <c>null</c> (caught internally); a pathologically slow one is the caller's problem the first
+    /// time they touch this property, same as before, just no longer everyone's problem on load.</para>
     /// </summary>
-    public JinjaChatTemplate? ChatTemplate { get; private set; }
+    public JinjaChatTemplate? ChatTemplate => _chatTemplate.Value;
 
     private GgufTokenizer(
         Tokenizer inner,
@@ -112,7 +119,10 @@ public sealed partial class GgufTokenizer : ITokenizer
         Dictionary<(string, string), int>? spmMerges,
         ImmutableArray<int> eogTokenIds,
         Regex[]? preTokenSplit = null,
-        Dictionary<(string, string), int>? byteBpeMerges = null)
+        Dictionary<(string, string), int>? byteBpeMerges = null,
+        string? chatTemplateSource = null,
+        string? chatTemplateBos = null,
+        string? chatTemplateEos = null)
     {
         _inner = inner;
         _specialTokens = specialTokens;
@@ -132,6 +142,22 @@ public sealed partial class GgufTokenizer : ITokenizer
         AddBosToken = addBosToken;
         EogTokenIds = eogTokenIds;
         ReasoningTokens = ResolveReasoningTokens(specialTokens);
+        _chatTemplate = new Lazy<JinjaChatTemplate?>(() =>
+        {
+            if (chatTemplateSource is null) return null;
+            try
+            {
+                return new JinjaChatTemplate(chatTemplateSource)
+                {
+                    BosToken = chatTemplateBos,
+                    EosToken = chatTemplateEos,
+                };
+            }
+            catch
+            {
+                return null;
+            }
+        });
     }
 
     /// <summary>
@@ -392,6 +418,27 @@ public sealed partial class GgufTokenizer : ITokenizer
         var vocabLookup = BuildVocabLookup(source.Tokens);
         var eogIds = BuildEogTokenIds(vocabLookup, new HashSet<int>(specialTokens.Values), eosTokenId);
 
+        // Chat-template parsing is deferred to first access (see the ChatTemplate property) rather
+        // than done here. Some real-world templates are large enough (Granite 3.3: nested loops,
+        // tool-call/citation/hallucination-risk sections, a strftime_now() call) to take unbounded
+        // time in JinjaChatTemplate's parser — measured hanging past 45s with zero progress on one
+        // such template. Every model load called this constructor, so that hang blocked plain
+        // completion use that never touches a chat template at all. Deferring means a pathological
+        // template only costs the caller that actually renders one — see docs/01-gguf-model-coverage-plan.md
+        // §1d for the Granite investigation that found this, and the follow-up to fix the parser itself.
+        string? chatTemplateSource = source.ChatTemplate is { Length: > 0 } tmplStr ? tmplStr : null;
+        // Seed the BOS string so the template's `{{- bos_token -}}` (Gemma, Llama, …) renders it
+        // instead of an empty string — otherwise the prompt ships with no BOS token, which Gemma is
+        // sensitive to (the model degenerates). Only when the model actually prepends BOS
+        // (add_bos_token); add_bos_token=false models (e.g. Qwen) keep bos_token empty.
+        string? chatTemplateBos = addBosToken ? bosToken : null;
+        // Unlike BOS, EOS is seeded unconditionally: it is emitted by the template body to close
+        // assistant turns, not prepended to the prompt, so add_bos_token has no bearing on it.
+        // Mistral and Llama templates close every assistant turn with
+        // `{{ message["content"] + eos_token }}`; with no value the variable renders empty and
+        // multi-turn history arrives with no turn boundaries at all.
+        string? chatTemplateEos = eosToken;
+
         var tokenizer = new GgufTokenizer(
             inner,
             specialTokens,
@@ -409,32 +456,12 @@ public sealed partial class GgufTokenizer : ITokenizer
             spmMerges,
             eogIds,
             preTokenSplit,
-            byteBpeMerges);
+            byteBpeMerges,
+            chatTemplateSource,
+            chatTemplateBos,
+            chatTemplateEos);
         tokenizer.PreTokenizerIsKnown = knownPre;
         tokenizer.DeclaredPreTokenizer = source.TokenizerPre;
-
-        if (source.ChatTemplate is { Length: > 0 } tmplStr)
-        {
-            // Seed the BOS string so the template's `{{- bos_token -}}` (Gemma, Llama, …) renders
-            // it instead of an empty string — otherwise the prompt ships with no BOS token, which
-            // Gemma is sensitive to (the model degenerates). Only when the model actually prepends
-            // BOS (add_bos_token); add_bos_token=false models (e.g. Qwen) keep bos_token empty.
-            try
-            {
-                tokenizer.ChatTemplate = new JinjaChatTemplate(tmplStr)
-                {
-                    BosToken = addBosToken ? bosToken : null,
-                    // Unlike BOS, EOS is seeded unconditionally: it is emitted by the template
-                    // body to close assistant turns, not prepended to the prompt, so
-                    // add_bos_token has no bearing on it. Mistral and Llama templates close every
-                    // assistant turn with `{{ message["content"] + eos_token }}`; with no value
-                    // the variable renders empty and multi-turn history arrives with no turn
-                    // boundaries at all.
-                    EosToken = eosToken,
-                };
-            }
-            catch { /* malformed template — ChatTemplate stays null */ }
-        }
 
         return tokenizer;
     }
