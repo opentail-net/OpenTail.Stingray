@@ -29,7 +29,7 @@ public sealed unsafe class CudaFlashAttnTests
     public void FlashAttentionPrefill_MatchesScalarBatched()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
 
         // (numHeads, numKvHeads, headDim, window, nTok). window=0 → global (full causal).
         (int nh, int nkv, int hd, int win, int nTok)[] cfgs =

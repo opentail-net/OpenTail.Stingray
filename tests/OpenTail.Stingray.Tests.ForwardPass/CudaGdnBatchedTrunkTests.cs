@@ -43,7 +43,7 @@ public sealed unsafe class CudaGdnBatchedTrunkTests
     public void GdnConv1dDecodeBatched_BitwiseMatchesSequential()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
 
         const int channels = 8192, kernelSize = 4, retained = kernelSize - 1;
         // N=1 hits the maximal state-aliasing edge the state-update kernel guards against
@@ -95,7 +95,7 @@ public sealed unsafe class CudaGdnBatchedTrunkTests
     public void GdnL2NormPerHeadBatched_BitwiseMatchesSequential()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
 
         const int headDim = 128, numHeads = 16;
         int rowDim = numHeads * headDim;
@@ -131,7 +131,7 @@ public sealed unsafe class CudaGdnBatchedTrunkTests
     public void GdnTileHeadsBatched_BitwiseMatchesSequential()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
 
         const int srcHeads = 16, repeat = 2, headDim = 128;
         int srcDim = srcHeads * headDim;
@@ -170,7 +170,7 @@ public sealed unsafe class CudaGdnBatchedTrunkTests
     public void GdnRecurrenceScan_BitwiseMatchesSequential()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
 
         const int hv = 4, d = 128;
         int hd = hv * d;
@@ -246,7 +246,7 @@ public sealed unsafe class CudaGdnBatchedTrunkTests
     public void GdnRecurrenceScan_RingCapture_BitwiseMatchesPerSlotState()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
 
         const int hv = 4, d = 128, scanF = hv * d * d, hd = hv * d;
         const int numGdn = 3, gdnIdx = 1;
@@ -333,7 +333,7 @@ public sealed unsafe class CudaGdnBatchedTrunkTests
     public void GdnConv1dStateCaptureRing_BitwiseMatchesPerSlotUpdate()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
 
         const int channels = 8192, kernelSize = 4, retained = kernelSize - 1, convF = retained * channels;
         const int numGdn = 3, gdnIdx = 2;
@@ -386,7 +386,7 @@ public sealed unsafe class CudaGdnBatchedTrunkTests
     public void AttentionBatched_F32_BitwiseMatchesSequential()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
 
         const int numHeads = 8, numKvHeads = 2, headDim = 128;
         int qDim = numHeads * headDim, kvDim = numKvHeads * headDim;
@@ -469,7 +469,7 @@ public sealed unsafe class CudaGdnBatchedTrunkTests
     public void AttentionBatched_Bf16_BitwiseMatchesSequential()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
 
         const int numHeads = 8, numKvHeads = 2, headDim = 128;
         int qDim = numHeads * headDim, kvDim = numKvHeads * headDim;
@@ -543,7 +543,7 @@ public sealed unsafe class CudaGdnBatchedTrunkTests
     public void AttentionBatchedWave_F32_BitwiseMatchesSequential()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
 
         const int numHeads = 8, numKvHeads = 2, headDim = 128;
         int qDim = numHeads * headDim, kvDim = numKvHeads * headDim;
@@ -637,7 +637,7 @@ public sealed unsafe class CudaGdnBatchedTrunkTests
     public void AttentionBatchedWave_Bf16_BitwiseMatchesSequential()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
 
         const int numHeads = 8, numKvHeads = 2, headDim = 128;
         int qDim = numHeads * headDim, kvDim = numKvHeads * headDim;

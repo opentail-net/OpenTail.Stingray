@@ -1,5 +1,6 @@
 using System.Collections.Immutable;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Text.Json;
 using Microsoft.ML.Tokenizers;
 
@@ -9,7 +10,7 @@ namespace OpenTail.Stingray.Core;
 /// Tokenizer that loads BPE vocab and merges from GGUF metadata
 /// and delegates to Microsoft.ML.Tokenizers.CodeGenTokenizer (GPT-2 style byte-level BPE).
 /// </summary>
-public sealed class GgufTokenizer : ITokenizer
+public sealed partial class GgufTokenizer : ITokenizer
 {
     private readonly Tokenizer _inner;
     private readonly Dictionary<string, int> _specialTokens;
@@ -28,6 +29,31 @@ public sealed class GgufTokenizer : ITokenizer
     // ▁ boundaries so merges like "▁ capital → ▁capital" never fire. We do the
     // merge loop ourselves directly against this map.
     private readonly Dictionary<(string, string), int>? _spmMerges;
+
+    // Byte-level BPE pre-tokenizer split, applied BEFORE byte encoding — see EncodeByteLevelBpe
+    // for why that order matters.
+    private readonly Regex? _preTokenSplit;
+    // Byte-level BPE merge ranks, used with _preTokenSplit. Same shape as _spmMerges but keyed on
+    // GPT-2 byte-level pieces rather than the SentencePiece U+2581-prefixed ones.
+    private readonly Dictionary<(string, string), int>? _byteBpeMerges;
+
+    /// <summary>
+    /// Mistral's Tekken pre-tokenizer split pattern, copied verbatim from the
+    /// <c>pre_tokenizer.pretokenizers[0].pattern.Regex</c> field of a Tekken
+    /// <c>tokenizer.json</c> (Mistral-Nemo / Ministral / Pixtral family; GGUF records it as
+    /// <c>tokenizer.ggml.pre = "tekken"</c>). llama.cpp carries an ASCII-approximated rewrite of
+    /// this same pattern because <c>std::regex</c> lacks Unicode category support — .NET has it,
+    /// so we use the original.
+    ///
+    /// <para>The alternatives, in order: a word with an optional leading non-letter/digit and a
+    /// title/upper-case run, the same with the case runs swapped, a single digit (Tekken never
+    /// groups digits), a punctuation/symbol run with an optional leading space and trailing
+    /// newlines or slashes, a newline run, trailing whitespace, and finally any whitespace.</para>
+    /// </summary>
+    [GeneratedRegex("""
+        [^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]*[\p{Ll}\p{Lm}\p{Lo}\p{M}]+|[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]+[\p{Ll}\p{Lm}\p{Lo}\p{M}]*|\p{N}| ?[^\s\p{L}\p{N}]+[\r\n/]*|\s*[\r\n]+|\s+(?!\S)|\s+
+        """)]
+    internal static partial Regex TekkenPreTokenizer();
 
     public int VocabSize { get; }
     public int BosTokenId { get; }
@@ -76,7 +102,9 @@ public sealed class GgufTokenizer : ITokenizer
         bool needsByteEncoding,
         bool isSpmBpe,
         Dictionary<(string, string), int>? spmMerges,
-        ImmutableArray<int> eogTokenIds)
+        ImmutableArray<int> eogTokenIds,
+        Regex? preTokenSplit = null,
+        Dictionary<(string, string), int>? byteBpeMerges = null)
     {
         _inner = inner;
         _specialTokens = specialTokens;
@@ -86,6 +114,8 @@ public sealed class GgufTokenizer : ITokenizer
         _needsByteEncoding = needsByteEncoding;
         _isSpmBpe = isSpmBpe;
         _spmMerges = spmMerges;
+        _preTokenSplit = preTokenSplit;
+        _byteBpeMerges = byteBpeMerges;
         VocabSize = vocabSize;
         BosTokenId = bosTokenId;
         EosTokenId = eosTokenId;
@@ -157,6 +187,7 @@ public sealed class GgufTokenizer : ITokenizer
             PadTokenId = GetMetadataInt(model, "tokenizer.ggml.padding_token_id", eos),
             AddBosToken = GetMetadataBool(model, "tokenizer.ggml.add_bos_token", false),
             ModelFamily = model.Metadata.TryGetValue("tokenizer.ggml.model", out var tmObj) ? (string)tmObj : "",
+            TokenizerPre = model.Metadata.TryGetValue("tokenizer.ggml.pre", out var tpObj) ? (string)tpObj : "",
             ChatTemplate = model.Metadata.TryGetValue("tokenizer.chat_template", out var tmpl) && tmpl is string t ? t : null,
         };
         return FromSource(source);
@@ -250,6 +281,10 @@ public sealed class GgufTokenizer : ITokenizer
         Tokenizer? inner = null;
         bool needsByteEncoding = false;
         bool isSpmBpe = false;
+        // Mistral-Nemo / Ministral / Pixtral declare tokenizer.ggml.pre = "tekken". They are
+        // byte-level BPE like GPT-2, but their pre-tokenizer split differs, and applying the
+        // split BEFORE byte encoding is load-bearing (see EncodeByteLevelBpe).
+        bool isTekken = source.TokenizerPre == "tekken";
 
         // Try CodeGenTokenizer first (better decode quality for GPT-2 style models).
         // CodeGenTokenizer handles GPT-2 byte-level BPE encoding internally.
@@ -289,6 +324,7 @@ public sealed class GgufTokenizer : ITokenizer
         }
 
         Dictionary<(string, string), int>? spmMerges = null;
+        Dictionary<(string, string), int>? byteBpeMerges = null;
         if (inner is null)
         {
             var vocabDict = new Dictionary<string, int>(source.Tokens.Length, StringComparer.Ordinal);
@@ -311,9 +347,9 @@ public sealed class GgufTokenizer : ITokenizer
 
             // SPM mode: build a (left,right)→priority map for our manual BPE.
             // The first space-separated pair per merge line is the merge rule.
-            if (isSpmBpe)
+            if (isSpmBpe || isTekken)
             {
-                spmMerges = new Dictionary<(string, string), int>(source.Merges.Length);
+                var rankTable = new Dictionary<(string, string), int>(source.Merges.Length);
                 for (int i = 0; i < source.Merges.Length; i++)
                 {
                     var line = source.Merges[i];
@@ -321,8 +357,9 @@ public sealed class GgufTokenizer : ITokenizer
                     if (sp <= 0 || sp >= line.Length - 1) continue;
                     var left = line[..sp];
                     var right = line[(sp + 1)..];
-                    spmMerges.TryAdd((left, right), i);
+                    rankTable.TryAdd((left, right), i);
                 }
+                if (isSpmBpe) spmMerges = rankTable; else byteBpeMerges = rankTable;
             }
         }
 
@@ -348,7 +385,9 @@ public sealed class GgufTokenizer : ITokenizer
             needsByteEncoding,
             isSpmBpe,
             spmMerges,
-            eogIds);
+            eogIds,
+            isTekken ? TekkenPreTokenizer() : null,
+            byteBpeMerges);
 
         if (source.ChatTemplate is { Length: > 0 } tmplStr)
         {
@@ -356,7 +395,20 @@ public sealed class GgufTokenizer : ITokenizer
             // it instead of an empty string — otherwise the prompt ships with no BOS token, which
             // Gemma is sensitive to (the model degenerates). Only when the model actually prepends
             // BOS (add_bos_token); add_bos_token=false models (e.g. Qwen) keep bos_token empty.
-            try { tokenizer.ChatTemplate = new JinjaChatTemplate(tmplStr) { BosToken = addBosToken ? bosToken : null }; }
+            try
+            {
+                tokenizer.ChatTemplate = new JinjaChatTemplate(tmplStr)
+                {
+                    BosToken = addBosToken ? bosToken : null,
+                    // Unlike BOS, EOS is seeded unconditionally: it is emitted by the template
+                    // body to close assistant turns, not prepended to the prompt, so
+                    // add_bos_token has no bearing on it. Mistral and Llama templates close every
+                    // assistant turn with `{{ message["content"] + eos_token }}`; with no value
+                    // the variable renders empty and multi-turn history arrives with no turn
+                    // boundaries at all.
+                    EosToken = eosToken,
+                };
+            }
             catch { /* malformed template — ChatTemplate stays null */ }
         }
 
@@ -466,6 +518,11 @@ public sealed class GgufTokenizer : ITokenizer
         // BpeTokenizer doesn't do GPT-2 byte-level encoding internally —
         // we must convert raw bytes to GPT-2 Unicode before BPE lookup.
         // CodeGenTokenizer handles this automatically.
+        // Tekken: split FIRST, then byte-encode each piece. Byte-encoding first would let the
+        // split see GPT-2 replacement characters instead of the real text.
+        if (_preTokenSplit is not null && _byteBpeMerges is not null)
+            return EncodeByteLevelBpe(text, _preTokenSplit, _byteBpeMerges);
+
         if (_needsByteEncoding)
             text = EncodeToGpt2Bytes(text);
         else if (_isSpmBpe)
@@ -638,6 +695,58 @@ public sealed class GgufTokenizer : ITokenizer
     /// Converts a UTF-8 string to GPT-2 byte-level BPE Unicode representation.
     /// Each byte in the UTF-8 encoding is mapped to its GPT-2 Unicode codepoint.
     /// </summary>
+    /// <summary>
+    /// Byte-level BPE encode for vocabs that carry their own pre-tokenizer split (Tekken).
+    ///
+    /// <para>Order is load-bearing: split the RAW text first, then byte-encode each piece. Byte
+    /// encoding first would hand the split GPT-2 replacement characters instead of real letters and
+    /// digits, so its Unicode categories would match the wrong things.</para>
+    /// </summary>
+    private List<int> EncodeByteLevelBpe(
+        string text, Regex split, IReadOnlyDictionary<(string, string), int> merges)
+    {
+        var ids = new List<int>(text.Length);
+        var pieces = new List<string>();
+        int pos = 0;
+
+        void EmitPiece(string raw)
+        {
+            string encoded = EncodeToGpt2Bytes(raw);
+            pieces.Clear();
+            foreach (char ch in encoded) pieces.Add(ch.ToString());
+
+            foreach (var merged in SpmMergePieces(pieces, merges))
+            {
+                if (_vocab.TryGetValue(merged, out int id) && (uint)id < (uint)VocabSize)
+                {
+                    ids.Add(id);
+                    continue;
+                }
+                // A merge produced a string with no vocab entry — impossible for a well-formed
+                // merges table, but fall back to single-byte tokens rather than dropping text.
+                foreach (char ch in merged)
+                {
+                    if (_vocab.TryGetValue(ch.ToString(), out int byteId) && (uint)byteId < (uint)VocabSize)
+                        ids.Add(byteId);
+                    else if ((uint)UnknownTokenId < (uint)VocabSize)
+                        ids.Add(UnknownTokenId);
+                }
+            }
+        }
+
+        foreach (Match m in split.Matches(text))
+        {
+            // The Tekken pattern covers every character, but a gap would silently drop input,
+            // so encode any unmatched run as its own piece instead of trusting that.
+            if (m.Index > pos) EmitPiece(text[pos..m.Index]);
+            if (m.Length > 0) EmitPiece(m.Value);
+            pos = m.Index + m.Length;
+        }
+        if (pos < text.Length) EmitPiece(text[pos..]);
+
+        return ids;
+    }
+
     private static string EncodeToGpt2Bytes(string text)
     {
         byte[] utf8 = Encoding.UTF8.GetBytes(text);

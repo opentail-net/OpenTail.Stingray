@@ -60,7 +60,7 @@ public sealed unsafe class CudaDequantGemmQ3KTests
     public void MatMulBatchedGemm_Q3K_TracksCpuReference()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
 
         // Square, a wide multi-superblock batch, a tall single-superblock batch, and a
         // partial-tile (non-multiple-of-8 rows) case. cols are 256-aligned (Q3_K super-block).

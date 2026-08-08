@@ -45,7 +45,7 @@ public sealed unsafe class CudaMmqRooflineProbe
     public void Mmq_Q8_0_AchievedTops_AtFfnShape()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
 
         // FFN-ish prefill GEMMs for a ~Gemma-4-E4B layer (rows=out, cols=in, N=tokens).
         (int rows, int cols, int nTok, string what)[] shapes =

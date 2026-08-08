@@ -112,7 +112,7 @@ public sealed class VulkanSpecBatchVerifyTests
     public void Qwen3_0_6B_DenseModel_ReportsSupportsBatchVerify()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no usable GPU backend in this environment");
         var path = FindModelPath(SmallModel);
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
@@ -135,7 +135,7 @@ public sealed class VulkanSpecBatchVerifyTests
     public void Qwen3_8B_Q4K_QualifiesForBatchedTrunk()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no usable GPU backend in this environment");
         var path = FindModelPath(BatchedModel);
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
@@ -205,7 +205,7 @@ public sealed class VulkanSpecBatchVerifyTests
     private void RunParity(string modelFile, int k, bool expectBatchedTrunk, DType kvDtype = DType.Float32)
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no usable GPU backend in this environment");
         var path = FindModelPath(modelFile);
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
@@ -287,7 +287,7 @@ public sealed class VulkanSpecBatchVerifyTests
     public void Qwen3_8B_Q4K_BatchVerify_VariableK_MatchesSequentialForward()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no usable GPU backend in this environment");
         var path = FindModelPath(BatchedModel);
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
@@ -346,7 +346,7 @@ public sealed class VulkanSpecBatchVerifyTests
     public void BatchVerify_TruncateAndCommit_MatchesSequential()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no usable GPU backend in this environment");
         // Prefer the batched-trunk model; degrade to the small model so CI without the 8B still runs.
         var path = FindModelPath(BatchedModel) ?? FindModelPath(SmallModel);
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
@@ -417,7 +417,7 @@ public sealed class VulkanSpecBatchVerifyTests
             return;
 
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no usable GPU backend in this environment");
         var path = FindModelPath(BatchedModel);
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
@@ -504,7 +504,7 @@ public sealed class VulkanSpecBatchVerifyTests
             return;
 
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no usable GPU backend in this environment");
 
         // Qwen3-8B-ish trunk matmul: ffn_down is [4096 × 12288]; use that (largest cols).
         const int rows = 4096;

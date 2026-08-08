@@ -82,7 +82,96 @@ per-token fallback.
    neighbours back onto Q8 and making their numerical path arrival-dependent. The new mixed
    control/ordinary regression pins both logits against token-by-token decode.
 4. Measure prefill with interleaved arms, warm-up, multiple samples, and recorded hardware settings.
+
+   **COMPLETE (2026-08-08).** Method: one warm-up run per arm (discarded), then three
+   **interleaved** rounds `F32, Q8, F32, Q8, F32, Q8` — not `AAA/BBB` — so thermal drift and any
+   background load hit both arms alike. Same production harness as the quality receipt
+   (`perplexity … --batched --batch-chunk-size 512`), `Qwen3-8B-Q4_K_M`, `-c 1024`, wiki.test.raw.
+   Hardware: Ryzen 7 5700G, 6 cores / 12 threads, **AVX2 only (no AVX-512, no VNNI)**, OpenBLAS not
+   present (sequential fallback), CPU backend, `-g 0`.
+
+   | Arm | samples (tok/s) | median | mean | spread |
+   |---|---|---|---|---|
+   | `STINGRAY_CPU_PREFILL_Q8=0` (F32) | 6.91, 6.84, 6.90 | **6.90** | 6.883 | 1.01% |
+   | `STINGRAY_CPU_PREFILL_Q8=1` (Q8)  | 24.17, 24.02, 23.31 | **24.02** | 23.833 | 3.58% |
+
+   **Ratio 3.48× on medians (3.46× on means).** Run-to-run spread is 1.0% (F32) and 3.6% (Q8), so
+   the ratio is comfortably outside the noise — this is the first time that has been demonstrated
+   rather than assumed from a single sample per arm.
+
+   **Warm-up mattered, asymmetrically:** the discarded first Q8 run scored 23.40 tok/s, 2.6% below
+   its steady-state median, while F32's warm-up run was indistinguishable from its steady state.
+   Charging that JIT/page-cache cost to whichever arm happened to run first is exactly the
+   methodology error the warm-up exists to remove, and it biases *against* Q8.
+
+   **Determinism confirmed as a by-product:** perplexity was bit-identical across all four runs of
+   each arm (F32 7.2594, Q8 7.2426), so the throughput samples differ only in timing. ΔPPL −0.231%
+   at this length, consistent in sign and magnitude with the −0.341% measured at `-c 2048`.
+
+   **Relationship to the earlier 3.23× figure:** that was `-c 2048`, single sample, no warm-up,
+   sequential. This is `-c 1024` with clean methodology. The two are **not** directly comparable —
+   context length changes the prefill mix — so treat 3.48× as the quotable figure *at 1024 tokens on
+   this hardware*, and do not describe it as a correction of 3.23×.
+
+   **Scope:** one model, one context length, one chunk size, one machine. AVX2-only, so a VNNI or
+   AVX-512 host would land elsewhere; the int8 path is precisely the one that benefits most from
+   instruction sets this CPU does not have.
 5. Verify continuous batching, packed prefill, cancellation, speculation, and fallback.
+
+   **Chunked prefill does NOT match single-shot prefill under Q8 (2026-08-08, first evidence).**
+   `ContinuousBatchingTests.PrefillWithCache_Chunked_MatchesFull` fails on the default configuration:
+   prefilling `[1,2,3,5,7,11,13,17,19,23,29,31,37]` in one call vs three chunks of 5/5/3 gives a
+   logit of **1.8636 vs 1.5929** — a 0.27 gap against the test's 2-decimal-place tolerance.
+
+   Isolated to the int8 activation path by direct experiment: the same test **passes with
+   `STINGRAY_CPU_PREFILL_Q8=0`** and fails with it on (the default). The mechanism is that Q8
+   activation quantisation is computed per prefill call, so a 13-row batch and a 5-row batch derive
+   different scales; the test's comment anticipated "different FP accumulation order" but the
+   divergence is an order of magnitude larger than that would explain.
+
+   **This is pre-existing, not a regression.** It surfaced only because `Tests.ForwardPass` had never
+   been run to completion on this machine. Verified not to come from the 2026-08-08 session work:
+   the only change to `ForwardPass.cs` is a read-only `MinRewindLength` property and
+   `src/OpenTail.Stingray.Cpu/` is untouched.
+
+   **Measured 2026-08-08 — the shipped default is CLEAN; only sub-256 chunks diverge.**
+   SmolLM2-1.7B-Q4_K_M, 600-token prose prompt, full prefill vs chunked, comparing final logits
+   (vocab 49,152). Each chunk size run with the int8 path on (default) and off, to separate the two
+   mechanisms:
+
+   | chunk | Q8 on: maxAbsDiff | Q8 off: maxAbsDiff | logits past 2dp (Q8 on) | argmax agrees |
+   |---|---|---|---|---|
+   | 5   | 0.9310 | 0.5037 | 97.93% | yes |
+   | 64  | 0.9708 | 0.5440 | 97.71% | yes |
+   | **256 (shipped default)** | **0.0000** | **0.0000** | **0.00%** | yes |
+
+   **Two additive mechanisms, not one:**
+   1. *Flash-64 threshold crossing* — present with Q8 OFF (~0.50), so it is not a quantisation
+      effect. This is the **already-documented KNOWN RESIDUAL** in `ForwardPass.cs` (~line 2656):
+      the flash-64-vs-incumbent decision is monotonic in sequence position, which is exact for any
+      chunk ≥ 256, but a prompt whose total exceeds 256 while its chunks do not takes the incumbent
+      early and flash-64 later. The comment's own example is "600 tokens at chunk 64" — which is
+      literally what this measurement reproduces.
+   2. *Q8 per-call activation scales* — the extra ~0.43 that appears when the int8 path is on. This
+      is the mechanism behind the failing unit test, whose 13-token prompt at chunk 5 sits entirely
+      below the flash-64 threshold and therefore cannot involve (1). Consistent with that test
+      passing under `STINGRAY_CPU_PREFILL_Q8=0`.
+
+   **Correction to the 2026-08-08 note initially filed here:** it claimed a prompt admitted under
+   batching can produce different logits than the same prompt served single-shot "on the default
+   configuration". That is **wrong**. At `STINGRAY_PREFILL_CHUNK=256`, the shipped default, chunked
+   and single-shot prefill agree to 0.0000 across the whole vocabulary. The divergence requires a
+   chunk size below 256, which no shipped configuration uses.
+
+   **Argmax survived all six configurations on this prompt** — but that is one prompt, and with
+   ~96–98% of logits past 2dp and maxAbs ~0.5–1.0, a temperature/top-p sampler would see a
+   materially different distribution even where greedy does not move. Do not generalise "greedy
+   agrees" into "sub-256 chunking is safe".
+
+   **Standing status of the red test:** `PrefillWithCache_Chunked_MatchesFull` remains failing and
+   is a legitimate red — it pins mechanism (2) at a chunk size no deployment uses. Fixing it means
+   making Q8 activation scales chunk-invariant; suppressing it would discard the only automated
+   detector for that mechanism.
 
 Historical evidence: [done/cpu-prefill-plan-2026-07.md](done/cpu-prefill-plan-2026-07.md),
 [done/cpu-prefill-repack-gemm-plan.md](done/cpu-prefill-repack-gemm-plan.md), and

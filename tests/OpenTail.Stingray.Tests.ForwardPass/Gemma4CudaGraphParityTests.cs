@@ -81,7 +81,7 @@ public sealed class Gemma4CudaGraphParityTests
         var refTokens = new int[NSteps];
         using (var gpu = TryCreate())
         {
-            Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+            Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
             using var fwd = new CudaForwardPass(model, gpu, hp, maxContextLength: 512) { UseCudaGraph = false };
             var logits = fwd.Prefill(tokens);
             refLogits[0] = logits.ToArray();
@@ -98,7 +98,7 @@ public sealed class Gemma4CudaGraphParityTests
         // Candidate: graph ON (capture on first decode token, replay after).
         using (var gpu = TryCreate())
         {
-            Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+            Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
             using var fwd = new CudaForwardPass(model, gpu, hp, maxContextLength: 512) { UseCudaGraph = true };
             var logits = fwd.Prefill(tokens);
             AssertBitIdentical(refLogits[0], logits, step: 0);
@@ -146,7 +146,7 @@ public sealed class Gemma4CudaGraphParityTests
         var refTokens = new int[NSteps];
         using (var gpu = TryCreate())
         {
-            Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+            Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
             using var fwd = new CudaHybridForwardPass(model, gpu, hp, Placement()) { UseCudaGraph = false };
             var logits = fwd.Prefill(tokens);
             refLogits[0] = logits.ToArray();
@@ -163,7 +163,7 @@ public sealed class Gemma4CudaGraphParityTests
         // Candidate: graph ON.
         using (var gpu = TryCreate())
         {
-            Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+            Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
             using var fwd = new CudaHybridForwardPass(model, gpu, hp, Placement()) { UseCudaGraph = true };
             var logits = fwd.Prefill(tokens);
             AssertBitIdentical(refLogits[0], logits, step: 0);
@@ -209,7 +209,7 @@ public sealed class Gemma4CudaGraphParityTests
             var refTokens = new int[NSteps];
             using (var gpu = TryCreate())
             {
-                Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+                Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
                 using var fwd = new CudaForwardPass(model, gpu, hp, maxContextLength: 1024) { UseCudaGraph = false };
                 var logits = fwd.Prefill(tokens);
                 refLogits[0] = logits.ToArray();
@@ -225,7 +225,7 @@ public sealed class Gemma4CudaGraphParityTests
 
             using (var gpu = TryCreate())
             {
-                Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+                Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
                 using var fwd = new CudaForwardPass(model, gpu, hp, maxContextLength: 1024) { UseCudaGraph = true };
                 var logits = fwd.Prefill(tokens);
                 AssertBitIdentical(refLogits[0], logits, step: 0);

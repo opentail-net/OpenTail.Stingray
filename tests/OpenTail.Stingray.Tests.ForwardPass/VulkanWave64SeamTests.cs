@@ -28,7 +28,7 @@ public sealed unsafe class VulkanWave64SeamTests
     public void MatVecF32Wave64Seam_EveryRowWrittenCorrectly()
     {
         using var backend = TryCreateBackend();
-        Assert.SkipUnless(backend is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(backend is not null, "no usable compute backend in this environment");
 
         // 8 output rows (1 workgroup of 256 threads, 32 lanes per row), 64 columns per row.
         const int rows = 8;

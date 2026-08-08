@@ -58,7 +58,7 @@ public sealed class Gemma4VisionVulkanE2ETests
     public void Gemma4_Vulkan_Image_SplicesAndSteersDecode()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no usable GPU backend in this environment");
         var textPath = Find(TextModel);
         var mmprojPath = Find(Mmproj);
         if (textPath is null || mmprojPath is null) return;     // model-gated

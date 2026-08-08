@@ -10,16 +10,37 @@ namespace OpenTail.Stingray.Tests.Core;
 /// failure modes the issue describes (dropped required key, hallucinated <c>queries</c> array,
 /// out-of-enum value). Model-gated — skips when the GGUF is absent.
 /// </summary>
-// The ITestOutputHelper parameter is gone: its only use was printing "missing model — skip"
-// before an early return, and the skip reason on Assert.SkipUnless now carries that.
 public sealed class ToolGrammarConstraintTests
 {
-    private const string ModelPath = @"E:\models\gemma-4-12b-it-qat-q4_0.gguf";
+    private const string ModelRelativePath = "models/gemma-4-12b-it-qat-q4_0.gguf";
+
+    /// <summary>
+    /// Resolves the fixture by walking up to the repo root, the same convention
+    /// <c>GgufModelTests.FindModelPath</c> uses. Upstream hard-codes an absolute path, so every
+    /// test in this class skipped on any machine without that drive — including one with the model
+    /// sitting in the repo's own <c>models/</c> directory. A skip caused by a PATH rather than an
+    /// absent fixture is invisible coverage loss, and it hid a stale assertion here for as long as
+    /// the class had existed.
+    /// </summary>
+    private static string? FindModelPath()
+    {
+        var dir = Directory.GetCurrentDirectory();
+        for (int i = 0; i < 8; i++)
+        {
+            var candidate = Path.Combine(dir, ModelRelativePath);
+            if (File.Exists(candidate)) return candidate;
+            var parent = Directory.GetParent(dir);
+            if (parent == null) break;
+            dir = parent.FullName;
+        }
+        return null;
+    }
 
     private static GgufTokenizer? Tok()
     {
-        if (!File.Exists(ModelPath)) return null;
-        var m = GgufModel.Open(ModelPath);
+        var path = FindModelPath();
+        if (path is null) return null;
+        var m = GgufModel.Open(path);
         return GgufTokenizer.FromGgufModel(m);
     }
 
@@ -119,12 +140,47 @@ public sealed class ToolGrammarConstraintTests
 
         Feed(c, tok, "Berlin");
         c.Accept(quote);                              // close the string
-        // location satisfied → `}` and `,` both legal now.
+        // The only required key is satisfied, so `}` closes the object.
         Assert.True(Allowed(c, tok, vocab.VocabSize, Id(tok, "}")));
-        Assert.True(Allowed(c, tok, vocab.VocabSize, Id(tok, ",")));
+        // …but `,` is refused: it commits to another key and this schema declares none, which
+        // would strand the machine in OExpectKey where only whitespace is legal and `}` is no
+        // longer accepted. See the comma gate in GemmaToolArgumentConstraint.StepObject.
+        Assert.False(Allowed(c, tok, vocab.VocabSize, Id(tok, ",")));
 
         c.Accept(Id(tok, "}"));
         Assert.False(c.IsConstraining);               // object closed → back to watching
+    }
+
+    [Fact]
+    public void CommaAllowedOnlyWhileAnotherKeyRemains()
+    {
+        var tok = Tok();
+        Assert.SkipUnless(tok is not null, "model fixture not present in this environment");
+        var vocab = new GrammarVocabulary(tok);
+        int quote = vocab.TryGetSpecialToken("<|\"|>", out int q) ? q : -1;
+        Assert.True(quote > 0);
+
+        // Two declared keys, so after the first value a second key genuinely can follow.
+        var schema = Schema("get_weather",
+            """{"type":"object","properties":{"location":{"type":"string"},"unit":{"type":"string"}},"required":["location"]}""");
+        var c = new Gemma4ToolCallAdapter().BuildArgumentConstraint([schema], vocab)!;
+
+        Feed(c, tok, "<|tool_call>call:get_weather{location:");
+        c.Accept(quote);
+        Feed(c, tok, "Berlin");
+        c.Accept(quote);
+
+        // `unit` is still unemitted → `,` is legal here, and `}` too (only location is required).
+        Assert.True(Allowed(c, tok, vocab.VocabSize, Id(tok, ",")));
+        Assert.True(Allowed(c, tok, vocab.VocabSize, Id(tok, "}")));
+
+        // Emit the second pair; now every declared key is spent and `,` closes off.
+        Feed(c, tok, ",unit:");
+        c.Accept(quote);
+        Feed(c, tok, "celsius");
+        c.Accept(quote);
+        Assert.False(Allowed(c, tok, vocab.VocabSize, Id(tok, ",")));
+        Assert.True(Allowed(c, tok, vocab.VocabSize, Id(tok, "}")));
     }
 
     [Fact]

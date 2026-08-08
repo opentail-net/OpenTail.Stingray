@@ -512,6 +512,179 @@ public sealed class InferenceEnginePrefixCacheTests
         Assert.Equal(reusedBefore, engine.PrefillTokensReused);
     }
 
+    /// <summary>
+    /// Issue #452: the MTP path stays single-slot — it skips SelectSlot and runs on the owned
+    /// slot 0 — so <c>activeSlotIdx</c> is never set. Gating the pre-prefill shadow invalidation
+    /// on a bound slot therefore skipped MTP entirely: slot 0's shadow kept describing the PRIOR
+    /// sequence while the request reset and overwrote slot 0's KV. Downgrading <c>_prevTokens</c>
+    /// was not enough, because the next MTP request re-seeds <c>_prevTokens</c> from that stale
+    /// <c>_slotTokens[0]</c>, resurrecting a prefix whose KV is gone. The engine now invalidates
+    /// the slot it MUTATES rather than the one it bound, so the post-abort request reuses nothing.
+    /// </summary>
+    [Fact]
+    public async Task GenerateAsync_TwoSlot_MtpFailedMidDecode_DoesNotReuseDestroyedPrefix()
+    {
+        using var _ = new EnvScope(("STINGRAY_PREFIX_SLOTS", "2"), ("STINGRAY_PREFIX_SCRATCH_TOKENS", "48"));
+
+        var tokenizer = new InterleavedAgenticTokenizer();
+        var fwd = new MultiSlotForwardPass { MtpHead = true, EmitNonStopFirst = true };
+        using var engine = new InferenceEngine(fwd, tokenizer, "mock", thinkTokenId: -1, endThinkTokenId: -1);
+
+        Assert.True(engine.PrefixCacheEnabled);
+        // MaxNewTokens=2: the first emitted token comes from the prefill logits, so the decoder
+        // reaches MtpForward + Forward — where the mid-decode failure lands.
+        var sp = new SamplingParams { Temperature = 0f, MaxNewTokens = 2, SpecType = SpecType.Mtp };
+
+        // A: completes on the owned slot; its transcript becomes slot 0's shadow.
+        await Drain(engine.GenerateAsync("aux32", sp));
+        // MTP never binds a non-owned slot, so nothing was activated.
+        Assert.Empty(fwd.ActivatedIds);
+
+        // B: a disjoint prompt resets slot 0's KV, then throws mid-decode.
+        fwd.FailNextDecode = true;
+        await Assert.ThrowsAnyAsync<Exception>(async () => await Drain(engine.GenerateAsync("aux2", sp)));
+
+        long reusedBefore = engine.PrefillTokensReused;
+
+        // C: same prompt as A. With the stale slot-0 shadow in place, C would page-match A's
+        // transcript and TruncateTo into KV that B reset and overwrote.
+        await Drain(engine.GenerateAsync("aux32", sp));
+
+        Assert.Equal(reusedBefore, engine.PrefillTokensReused);
+    }
+
+    /// <summary>
+    /// Issue #451 companion: the engine's DSpark end-of-decode shadow write used to hard-code
+    /// slot 0 even though DSpark, unlike MTP, takes the ordinary SelectSlot bind and can run
+    /// entirely in the bounded scratch slot. That combination is unreachable in practice only
+    /// because <see cref="InferenceEngine.AttachDSparkDraft"/> rejects it outright — the tap
+    /// buffer is position-indexed against a single KV region. Pin that guard: it is the sole
+    /// reason the shadow write can't be reached with the wrong slot, so silently dropping it
+    /// would re-open #451 rather than merely relaxing a restriction.
+    /// </summary>
+    [Fact]
+    public void AttachDSparkDraft_WithMultiSlotPrefixCache_IsRejected()
+    {
+        using var _ = new EnvScope(("STINGRAY_PREFIX_SLOTS", "2"), ("STINGRAY_PREFIX_SCRATCH_TOKENS", "48"));
+
+        var fwd = new MultiSlotForwardPass { Taps = true };
+        using var engine = new InferenceEngine(fwd, new InterleavedAgenticTokenizer(), "mock",
+            thinkTokenId: -1, endThinkTokenId: -1);
+
+        var ex = Assert.Throws<InvalidOperationException>(
+            () => engine.AttachDSparkDraft(new StubDSparkDraft()));
+        Assert.Contains("multi-slot", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// Issue #450: once prefill completes, KV <c>[0, tokens.Length)</c> is valid — decode only
+    /// appends beyond it. A request aborted mid-decode must therefore hand the next one the WHOLE
+    /// prompt, not just the prefix it happened to inherit. Turn 2 reuses turn 1's 32-token prefix
+    /// and prefills a 16-token suffix before being cancelled; turn 3 extends turn 2's prompt, so
+    /// it can reuse all 48 of turn 2's prefilled tokens. Before this change the cancelled request
+    /// retained only its inherited 32, charging turn 3 a re-prefill of 16 tokens whose KV was
+    /// intact all along — the common agentic pattern of disconnect-then-continue.
+    /// </summary>
+    [Fact]
+    public async Task GenerateAsync_CancelledMidDecode_KeepsFullPromptForNextRequest()
+    {
+        var tokenizer = new MultiTurnTokenizer();
+        var fwd = new RewindCapableForwardPass { DecodeTokenId = 50 };
+        using var engine = new InferenceEngine(fwd, tokenizer, "mock", thinkTokenId: -1, endThinkTokenId: -1);
+
+        // Turn 1 (cold): 32-token prompt becomes the cached sequence.
+        await Drain(engine.GenerateAsync("turn1", new SamplingParams { Temperature = 0f, MaxNewTokens = 1 }));
+
+        // Turn 2: 48 tokens = turn 1's 32 + 16 fresh. Reuses 32, prefills the 16-token suffix,
+        // then cancels from inside the first decode Forward — never reaching end-of-decode.
+        using var cts = new CancellationTokenSource();
+        fwd.CancelOnDecode = cts;
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => Drain(engine.GenerateAsync("turn2", new SamplingParams { Temperature = 0f, MaxNewTokens = 64 }, cts.Token)));
+        fwd.CancelOnDecode = null;
+
+        long reusedAfterCancel = engine.PrefillTokensReused;
+
+        // Turn 3: 64 tokens = turn 2's 48 + 16 more. All 48 of turn 2's prompt are still backed
+        // by valid KV, so the suffix prefill must start at 48 — not 32.
+        await Drain(engine.GenerateAsync("turn3", new SamplingParams { Temperature = 0f, MaxNewTokens = 1 }));
+
+        Assert.Equal(48, fwd.LastTruncateLength);
+        Assert.Equal(48, fwd.LastPrefillStartPos);
+        Assert.Equal(16, fwd.LastPrefillLength);
+        Assert.Equal(reusedAfterCancel + 48, engine.PrefillTokensReused);
+    }
+
+    /// <summary>
+    /// A request cancelled mid-decode must leave the prefix it reused still reusable. The
+    /// engine invalidates the token shadow before mutating KV, but only positions
+    /// &gt;= prefixLen are ever overwritten — so the shadow is downgraded to
+    /// <c>tokens[..prefixLen]</c>, not cleared. Clearing it (the previous behavior) charged
+    /// the next request a full re-prefill of a prompt whose KV was still intact, which is
+    /// the common agentic-client pattern: disconnect mid-generation, immediately retry.
+    /// </summary>
+    [Fact]
+    public async Task GenerateAsync_CancelledMidDecode_KeepsReusedPrefixForNextRequest()
+    {
+        var tokenizer = new MultiTurnTokenizer();
+        // Non-stop decode token so the decode loop keeps running until cancellation.
+        var fwd = new RewindCapableForwardPass { DecodeTokenId = 50 };
+        using var engine = new InferenceEngine(fwd, tokenizer, "mock", thinkTokenId: -1, endThinkTokenId: -1);
+
+        // Turn 1 (cold): 32-token prompt + 1 decoded token becomes the cached sequence.
+        await Drain(engine.GenerateAsync("turn1", new SamplingParams { Temperature = 0f, MaxNewTokens = 1 }));
+
+        // Turn 2: 48-token prompt sharing turn 1's 32-token prefix. It reuses that prefix,
+        // prefills the 16-token suffix, then is cancelled from inside the first decode
+        // Forward — so it never reaches the end-of-decode shadow write.
+        using var cts = new CancellationTokenSource();
+        fwd.CancelOnDecode = cts;
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => Drain(engine.GenerateAsync("turn2", new SamplingParams { Temperature = 0f, MaxNewTokens = 64 }, cts.Token)));
+        fwd.CancelOnDecode = null;
+
+        long reusedAfterCancel = engine.PrefillTokensReused;
+
+        // Turn 3: the retry. KV positions [0, 32) were never touched by turn 2, so the
+        // same 32-token prefix must still be reused — suffix-only prefill, not 48 @ 0.
+        await Drain(engine.GenerateAsync("turn2", new SamplingParams { Temperature = 0f, MaxNewTokens = 1 }));
+
+        Assert.Equal(32, fwd.LastTruncateLength);
+        Assert.Equal(16, fwd.LastPrefillLength);
+        Assert.Equal(32, fwd.LastPrefillStartPos);
+        Assert.Equal(reusedAfterCancel + 32, engine.PrefillTokensReused);
+    }
+
+    /// <summary>
+    /// A TurboQuant pass is rewindable only down to its FP32 recent window; older KV is
+    /// compressed in place and <c>TruncateTo</c> throws for it. The engine must clamp the
+    /// prefix candidate against <see cref="IForwardPass.MinRewindLength"/>: below the floor
+    /// (a long chat whose system prompt carries injected memory or a timestamp, so the
+    /// prompt diverges early) it falls back to a full reset instead of letting the throw
+    /// reach the user; at or above it, reuse stays on — so the fix can't degenerate into
+    /// "TurboQuant disables the prefix cache". turn1/turn2 share a 32-token prefix.
+    /// </summary>
+    [Theory]
+    // floor, truncate (-1 = never called), prefill len, prefill startPos, tokens reused
+    [InlineData(64, -1, 48, 0,  0)]   // below floor  → full re-prefill of turn 2
+    [InlineData(16, 32, 16, 32, 32)]  // above floor  → suffix-only prefill
+    public async Task GenerateAsync_TqRewindFloor_ClampsPrefixReuse(
+        int floor, int expectTruncate, int expectPrefillLen, int expectPrefillStart, long expectReused)
+    {
+        var fwd = new TqCompressedForwardPass(compressedLen: floor);
+        using var engine = new InferenceEngine(
+            fwd, new MultiTurnTokenizer(), "mock", thinkTokenId: -1, endThinkTokenId: -1);
+        var sp = new SamplingParams { Temperature = 0f, MaxNewTokens = 1 };
+
+        await Drain(engine.GenerateAsync("turn1", sp));
+        await Drain(engine.GenerateAsync("turn2", sp));
+
+        Assert.Equal(expectTruncate, fwd.LastTruncateLength);
+        Assert.Equal(expectPrefillLen, fwd.LastPrefillLength);
+        Assert.Equal(expectPrefillStart, fwd.LastPrefillStartPos);
+        Assert.Equal(expectReused, engine.PrefillTokensReused);
+    }
+
     private static IAsyncEnumerable<string> GenerateAsync(
         InferenceEngine engine, string prompt, string canonical, SamplingParams sp)
     {
@@ -585,10 +758,14 @@ public sealed class InferenceEnginePrefixCacheTests
 
         public IReadOnlyList<int> Encode(string text)
         {
-            // 32-token shared prefix for any prompt; "turn2" appends 16 fresh tokens.
+            // 32-token shared prefix for any prompt; "turn2" appends 16 fresh tokens and
+            // "turn3" (issue #450) extends turn2 by a further 16 — so a request that reuses
+            // all of turn2's 48 prefilled tokens is distinguishable from one that reuses 32.
             var prefix = Enumerable.Range(0, 32).ToArray();
             if (text == "turn2")
                 return prefix.Concat(Enumerable.Range(100, 16)).ToArray();
+            if (text == "turn3")
+                return prefix.Concat(Enumerable.Range(100, 16)).Concat(Enumerable.Range(200, 16)).ToArray();
             return prefix;
         }
 
@@ -938,7 +1115,64 @@ public sealed class InferenceEnginePrefixCacheTests
         public int LastPrefillLength { get; private set; } = -1;
         public int LastPrefillStartPos { get; private set; } = -1;
 
+        /// Token the greedy sampler will pick. Defaults to EOS so decode stops after one
+        /// step; set to a non-stop id to keep the decode loop running.
+        public int DecodeTokenId { get; init; } = Eos;
+
+        /// When set, the first decode <see cref="Forward"/> trips this source — the
+        /// deterministic way to land a cancellation mid-decode.
+        public CancellationTokenSource? CancelOnDecode { get; set; }
+
         public bool SupportsPartialRewind => true;
+
+        public int VocabSize => 200;
+        public int MaxSeqLen => 4096;
+
+        public ReadOnlySpan<float> Forward(int token, int position)
+        {
+            CancelOnDecode?.Cancel();
+            return NextLogits();
+        }
+
+        public ReadOnlySpan<float> Prefill(IReadOnlyList<int> tokens, int startPos = 0)
+        {
+            LastPrefillLength = tokens.Count;
+            LastPrefillStartPos = startPos;
+            return NextLogits();
+        }
+
+        public void TruncateTo(int length) => LastTruncateLength = length;
+        public void ResetCache() { }
+        public void Dispose() { }
+
+        private ReadOnlySpan<float> NextLogits()
+        {
+            Array.Clear(_logits);
+            _logits[DecodeTokenId] = 1.0f;
+            return _logits;
+        }
+    }
+
+    /// <summary>
+    /// Models the TurboQuant rewind contract shared by the CUDA/Vulkan dense passes and
+    /// <c>TurboQuantKvCache</c>: partial rewind is supported, but positions below
+    /// <see cref="IForwardPass.MinRewindLength"/> are compressed in place and cannot be
+    /// restored, so <see cref="TruncateTo"/> throws for them — a below-floor call fails
+    /// the test by propagating, no tracking flag needed. The floor stays pinned across
+    /// turns (the real passes clear it in ResetCache); holding it constant keeps the
+    /// fixture on the one axis under test.
+    /// </summary>
+    private sealed class TqCompressedForwardPass(int compressedLen) : IForwardPass
+    {
+        private readonly float[] _logits = new float[200];
+
+        // Sentinel -1 means "never called".
+        public int LastTruncateLength { get; private set; } = -1;
+        public int LastPrefillLength { get; private set; } = -1;
+        public int LastPrefillStartPos { get; private set; } = -1;
+
+        public bool SupportsPartialRewind => true;
+        public int MinRewindLength => compressedLen;
 
         public int VocabSize => 200;
         public int MaxSeqLen => 4096;
@@ -952,7 +1186,15 @@ public sealed class InferenceEnginePrefixCacheTests
             return EosLogits();
         }
 
-        public void TruncateTo(int length) => LastTruncateLength = length;
+        public void TruncateTo(int length)
+        {
+            LastTruncateLength = length;
+            if (length < compressedLen)
+                throw new NotSupportedException(
+                    $"TruncateTo({length}) cannot rewind into the TQ-compressed region " +
+                    $"(tqCompressedLen={compressedLen}).");
+        }
+
         public void ResetCache() { }
         public void Dispose() { }
 
@@ -1003,6 +1245,7 @@ public sealed class InferenceEnginePrefixCacheTests
     /// </summary>
     private sealed class MultiSlotForwardPass : IForwardPass, IMultiSlotKvCache
     {
+        private const int HiddenDim = 16;
         private readonly float[] _logits = new float[600];
         private readonly Slot _owned = new(0);
         private readonly List<Slot> _scratch = [];
@@ -1032,6 +1275,22 @@ public sealed class InferenceEnginePrefixCacheTests
         /// <summary>One-shot: the next Forward throws, simulating a mid-decode failure/cancel.</summary>
         public bool FailNextDecode;
         private const int NonStopToken = 5;
+
+        /// <summary>Issue #452: advertise an MTP head so the engine takes the single-slot MTP
+        /// path (no SelectSlot bind) while still being rewindable + multi-slot capable — the
+        /// exact combination a dense MTP model with STINGRAY_PREFIX_SLOTS=2 presents.</summary>
+        public bool MtpHead { get; init; }
+        /// <summary>Issue #451: DSpark needs hidden taps and batched verify from the target.</summary>
+        public bool Taps { get; init; }
+
+        private readonly float[] _hidden = CreateHidden();
+        private static float[] CreateHidden()
+        {
+            // Non-zero: MtpDecoder.Initialize rejects an empty/zero hidden.
+            var h = new float[HiddenDim];
+            h[0] = 1f;
+            return h;
+        }
 
         // ── IForwardPass: route to the active slot ──
         public bool SupportsPartialRewind => true;
@@ -1070,6 +1329,40 @@ public sealed class InferenceEnginePrefixCacheTests
 
         public void Dispose() { }
 
+        // ── MTP head (issue #452) ──
+        // Just enough surface for MtpDecoder.DecodeSequential: a hidden to save, an MTP
+        // draft forward, and the KV-side no-ops. The draft always proposes EOS, so it is
+        // rejected and decode advances one token per iter through Forward — which is where
+        // FailNextDecode lands the mid-decode abort.
+        public bool HasMtpHead => MtpHead;
+        public ReadOnlySpan<float> LastHidden => MtpHead || Taps ? _hidden : default;
+        public ReadOnlySpan<float> MtpForward(int token, int position, ReadOnlySpan<float> prevHidden)
+            => EosLogits();
+        public void PrefillMtp(IReadOnlyList<int> tokens, int startPos = 0) { }
+        public void MtpResetCache() { }
+        public void MtpTruncateTo(int length) { }
+
+        // ── Hidden taps + batched verify (issue #451, DSpark) ──
+        public bool SupportsHiddenTaps => Taps;
+        public bool SupportsBatchVerify => Taps;
+        public int HiddenTapDim => HiddenDim;
+        public void EnableHiddenTaps(ReadOnlySpan<int> layerIds) { }
+
+        public ReadOnlySpan<float> HiddenTapsAt(int position)
+            => position >= 0 && position < _active.Length ? _hidden : default;
+
+        public float[][] BatchVerify(int[] tokens, int startPos)
+        {
+            _active.Length = startPos + tokens.Length;
+            var rows = new float[tokens.Length][];
+            for (int i = 0; i < tokens.Length; i++)
+            {
+                rows[i] = new float[VocabSize];
+                rows[i][Eos] = 1f;
+            }
+            return rows;
+        }
+
         // ── IMultiSlotKvCache ──
         public bool SupportsMultiSlotPrefix => true;
         public ISequenceKvCache OwnedSlot => _owned;
@@ -1097,6 +1390,29 @@ public sealed class InferenceEnginePrefixCacheTests
             _logits[token] = 1.0f;
             return _logits;
         }
+    }
+
+    /// <summary>
+    /// Inert DSpark draft sized to match <see cref="MultiSlotForwardPass"/>, so the attach-time
+    /// capability checks all pass and the multi-slot rejection (issue #451) is what trips.
+    /// </summary>
+    private sealed class StubDSparkDraft : IDSparkDraft
+    {
+        public int BlockSize => 2;
+        public int VocabSize => 600;
+        public int TapDim => 16;
+        public int ContextLength { get; private set; }
+        public int MaxContext => int.MaxValue;
+
+        public void AppendContext(ReadOnlySpan<float> taps, int startPos, int count)
+            => ContextLength = startPos + count;
+
+        public DSparkProposal ProposeBlock(int anchorToken, int anchorPos)
+            => new(new int[BlockSize], new float[BlockSize]);
+
+        public void TruncateContext(int length) => ContextLength = Math.Min(ContextLength, length);
+        public void ResetContext() => ContextLength = 0;
+        public void Dispose() { }
     }
 
     /// <summary>

@@ -109,7 +109,7 @@ public sealed unsafe class CudaMatMulBatchedWsTests
     public void Ws_Q4K_BitwiseMatchesSequential()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
 
         foreach ((int rows, int cols) in new[] { (33, 512), (64, 1024) })
         {
@@ -126,7 +126,7 @@ public sealed unsafe class CudaMatMulBatchedWsTests
     public void Ws_Q4K_Soa_BitwiseMatchesSequential()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
 
         const int rows = 33, cols = 512;
         var rng = new Random(20260610 + 156);
@@ -165,7 +165,7 @@ public sealed unsafe class CudaMatMulBatchedWsTests
     public void Ws_Q6K_BitwiseMatchesSequential()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
 
         foreach ((int rows, int cols) in new[] { (33, 512), (64, 1024) })
         {
@@ -206,7 +206,7 @@ public sealed unsafe class CudaMatMulBatchedWsTests
     public void Ws_Q5K_BitwiseMatchesSequential()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
 
         foreach ((int rows, int cols) in new[] { (33, 512), (64, 1024) })
         {
@@ -242,7 +242,7 @@ public sealed unsafe class CudaMatMulBatchedWsTests
     public void Ws_Q8_0_BitwiseMatchesSequential()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
         // The WS kernels are fp32; pin the sequential MatMul reference to the fp32
         // kernel too (the default dp4a path quantizes the activation to int8 —
         // argmax-stable, not bit-exact). Issue #142.
@@ -263,7 +263,7 @@ public sealed unsafe class CudaMatMulBatchedWsTests
     public void Ws_Q8_0_Soa_BitwiseMatchesSequential()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
         gpu.Q80Dp4aEnabled = false;
 
         const int rows = 33, cols = 512;
@@ -290,7 +290,7 @@ public sealed unsafe class CudaMatMulBatchedWsTests
     public void Ws_Q6K_V2KillSwitch_BitwiseMatchesSequential()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
 
         const int rows = 64, cols = 1024;
         var rng = new Random(20260610 + 201);
@@ -314,7 +314,7 @@ public sealed unsafe class CudaMatMulBatchedWsTests
     public void Ws_F32_BitwiseMatchesSequential()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
 
         foreach ((int rows, int cols) in new[] { (33, 500), (64, 1024) })
         {

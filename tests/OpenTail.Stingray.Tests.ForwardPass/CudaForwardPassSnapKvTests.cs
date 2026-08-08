@@ -77,7 +77,7 @@ public sealed class CudaForwardPassSnapKvTests
     public void CudaForwardPassSnapKv_LongPrompt_CacheShrinksToBudget_DecodeStaysWellFormed()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
 
         var path = FindModelPath();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
@@ -155,7 +155,7 @@ public sealed class CudaForwardPassSnapKvTests
     public void CudaForwardPassSnapKv_EnvUnset_SmallCtx_CacheUntouched()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
 
         var path = FindModelPath();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
@@ -193,7 +193,7 @@ public sealed class CudaForwardPassSnapKvTests
     public void CudaForwardPassSnapKv_ShortPrompt_BudgetNotTriggered_CacheUntouched()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
 
         var path = FindModelPath();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");

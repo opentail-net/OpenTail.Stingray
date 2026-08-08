@@ -14,6 +14,29 @@ namespace OpenTail.Stingray.Tests.ForwardPass;
 /// </summary>
 public sealed class Gemma4CpuForwardPassTests
 {
+    /// <summary>
+    /// Resolves ANY local Gemma-4 E4B text GGUF, by family rather than by checkpoint. The two
+    /// callers below pinned <c>gemma-4-E4B-it-Q8_0.gguf</c> while asserting only architecture-level
+    /// facts (SWA layer map, per-layer head dims, KV source layers, activation, logit softcap) —
+    /// none of which vary with quantisation. The class already runs another test against the
+    /// q4_0 export, so the pin was history rather than intent.
+    /// </summary>
+    private static string? FindAnyE4BModel()
+    {
+        var dir = Directory.GetCurrentDirectory();
+        for (int i = 0; i < 8; i++)
+        {
+            var models = Path.Combine(dir, "models");
+            if (Directory.Exists(models))
+                foreach (var c in Directory.EnumerateFiles(models, "*E4B*.gguf"))
+                    if (!Path.GetFileName(c).Contains("mmproj", StringComparison.OrdinalIgnoreCase))
+                        return c;
+            if (Directory.GetParent(dir) is not { } parent) break;
+            dir = parent.FullName;
+        }
+        return null;
+    }
+
     private static string? FindModelPath(string fileName)
     {
         string[] absoluteCandidates =
@@ -39,7 +62,7 @@ public sealed class Gemma4CpuForwardPassTests
     [Fact]
     public void Gemma4_E4B_CpuForward_ProducesNonGarbageLogits()
     {
-        var path = FindModelPath("gemma-4-E4B-it-Q8_0.gguf");
+        var path = FindAnyE4BModel();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);
@@ -125,7 +148,7 @@ public sealed class Gemma4CpuForwardPassTests
         // four tokens must produce ≥ 2 distinct token IDs. A degenerate single-token
         // loop (e.g. <pad> spam) signals broken PLE wiring (wrong row layout, missing
         // norm offset, wrong scaling, etc.).
-        var path = FindModelPath("gemma-4-E4B-it-Q8_0.gguf");
+        var path = FindAnyE4BModel();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         using var model = GgufModel.Open(path);

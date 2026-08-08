@@ -84,7 +84,7 @@ public sealed class Qwen3CudaBatchedPrefillTests
     public void Qwen3_8B_BatchedPrefill_DefaultMatchesSequential()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
         var path = FindModelPath();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
@@ -145,7 +145,7 @@ public sealed class Qwen3CudaBatchedPrefillTests
     public void Qwen3_8B_CudaForward_MatchesCpu_QkNormBeforeRope()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
         var path = FindModelPath();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
@@ -211,7 +211,7 @@ public sealed class Qwen3CudaBatchedPrefillTests
     public void Qwen3_8B_ChunkedBatchedPrefill_Over4096_MatchesSequential(int promptLen, int ctx)
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
         var path = FindModelPath();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
@@ -272,7 +272,7 @@ public sealed class Qwen3CudaBatchedPrefillTests
     public void Qwen3_8B_BatchedPrefill_FlashOff_MatchesSequential()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
         var path = FindModelPath();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
@@ -322,7 +322,7 @@ public sealed class Qwen3CudaBatchedPrefillTests
     public void Qwen3_8B_BatchedPrefill_Q4KGemm_ArgmaxStable()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
         var path = FindModelPath();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
@@ -379,7 +379,7 @@ public sealed class Qwen3CudaBatchedPrefillTests
     public void Qwen3_8B_BatchedPrefill_Q4KMmq_ArgmaxStable()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
         var path = FindModelPath();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 

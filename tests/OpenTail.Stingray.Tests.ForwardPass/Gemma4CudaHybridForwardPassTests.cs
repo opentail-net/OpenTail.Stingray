@@ -77,7 +77,7 @@ public sealed class Gemma4CudaHybridForwardPassTests
     public void Gemma4_E4B_CudaHybridForward_ProducesNonGarbageLogits()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
         var path = FindModelPath();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
@@ -145,7 +145,7 @@ public sealed class Gemma4CudaHybridForwardPassTests
     public void Gemma4_E4B_CudaHybridForward_MatchesCpuArgmax()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
         var path = FindModelPath();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
@@ -203,7 +203,7 @@ public sealed class Gemma4CudaHybridForwardPassTests
     public void Gemma4_E4B_CpuMatchesCudaHybridLogits()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
         var path = FindModelPath();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
@@ -266,7 +266,7 @@ public sealed class Gemma4CudaHybridForwardPassTests
     public void Gemma4_E4B_CudaHybridForward_RejectsCrossTierKvShare()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
         var path = FindModelPath();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 

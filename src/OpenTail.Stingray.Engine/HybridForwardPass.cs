@@ -157,6 +157,13 @@ public sealed unsafe class HybridForwardPass : IForwardPass
     /// <inheritdoc />
     public bool SupportsPartialRewind => true;
 
+    /// <inheritdoc />
+    /// <remarks>TurboQuant compresses KV in place once it leaves the FP32 recent window, so
+    /// those positions cannot be rewound into. Reported per read because it grows as decoding
+    /// proceeds.</remarks>
+    public int MinRewindLength =>
+        Math.Max(_gpuTqCompressedLen, _cpuTqKvCache?.MaxTqLength ?? 0);
+
     public HybridForwardPass(GgufModel model, VulkanBackend gpu, ModelHyperparams hp,
         LayerPlacement placement, bool enableTq = false, int tqFp32Window = 256, int tqBits = 3,
         int expertSlotCapacity = -1)

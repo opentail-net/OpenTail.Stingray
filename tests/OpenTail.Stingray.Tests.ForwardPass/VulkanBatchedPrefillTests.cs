@@ -84,7 +84,7 @@ public sealed class VulkanBatchedPrefillTests
         var path = FindModelPath();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
         using var gpu = TryCreateBackend();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no usable GPU backend in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
@@ -127,7 +127,7 @@ public sealed class VulkanBatchedPrefillTests
         var path = FindModelPath();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
         using var gpu = TryCreateBackend();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no usable GPU backend in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
@@ -163,7 +163,7 @@ public sealed class VulkanBatchedPrefillTests
         var path = FindModelPath();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
         using var gpu = TryCreateBackend();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no usable GPU backend in this environment");
 
         using var model = GgufModel.Open(path);
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);

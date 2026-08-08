@@ -29,7 +29,7 @@ public sealed unsafe class CudaTurboQuantTests
     public void TqRotateQuery_MatchesCpu()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
 
         const int NumHeads = 4;
         const int NumKvHeads = 2;     // GQA: 2 query heads share each KV head
@@ -92,7 +92,7 @@ public sealed unsafe class CudaTurboQuantTests
     public void TqKvAppend_RoundTripMatchesCpu()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
 
         const int NumKvHeads = 2;
         const int Positions = 4;
@@ -222,7 +222,7 @@ public sealed unsafe class CudaTurboQuantTests
     public void TqAttention_NeedleInHaystack()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
 
         const int NumHeads = 1;
         const int NumKvHeads = 1;
@@ -324,7 +324,7 @@ public sealed unsafe class CudaTurboQuantTests
     public void TqAttention_RecomputePath_MatchesFastPath()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
 
         const int NumHeads = 1;
         const int NumKvHeads = 1;
@@ -410,7 +410,7 @@ public sealed unsafe class CudaTurboQuantTests
     public void Attention_LongContextScratchPath_MatchesFastPath()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
 
         const int NumHeads = 1;
         const int NumKvHeads = 1;

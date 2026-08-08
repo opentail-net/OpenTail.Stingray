@@ -6,6 +6,69 @@ human-facing map that a raw commit graph cannot.
 
 ## Unreleased
 
+Ported from the upstream SharpInference snapshot in `examples/SharpInference08086`. **Not part of the
+1.0.3 packages**, which were built from the release-candidate commit before this work.
+
+### Added
+
+- **Mistral / Tekken tokenizer support.** Byte-level BPE alongside the existing SentencePiece path,
+  selected by the GGUF `tokenizer.ggml.pre = "tekken"` marker (Mistral-Nemo / Ministral / Pixtral).
+  The pre-tokenizer split runs on raw text *before* byte encoding — the reverse order would hand the
+  split GPT-2 replacement characters instead of real letters and digits, so its Unicode categories
+  would match the wrong things. Verified by the split-pattern tests, which need no model file; the
+  model-backed cases skip here because no local GGUF declares `tekken`.
+
+### Changed
+
+- **Chat templates that reject their input now return HTTP 400, not a bodyless 500.** A template
+  calling Jinja `raise_exception` — Mistral's v3 template refuses a history whose roles don't
+  alternate — raises the new `ChatTemplateException`, which all three endpoint families
+  (OpenAI, Anthropic, Responses) map to 400 carrying the template's own message. Previously it
+  escaped to Kestrel and the client got a 500 it could not diagnose. Any other exception out of the
+  renderer still means a defect on our side and fails loudly as before.
+- **Jinja engine gained multiplicative operators, list literals, quote-aware tag scanning,
+  `selectattr`/`rejectattr`, parameterised `is` tests, string indexing/slicing, and loop filters.**
+  Several of these were silent-wrong-output bugs rather than missing features:
+  - `*`, `/`, `//`, `%` did not parse at all. `1 % 2 == 0` evaluated to `1`, and because nothing
+    checked that an expression was fully consumed, the parser stopped at the `%` and discarded the
+    rest — turning a role-alternation guard into a condition that fires on valid input.
+    `ParseExpr` now warns once when it stops early, making that whole class of truncation visible.
+  - `}}` / `%}` inside a string literal ended the tag. Mistral closes each `[AVAILABLE_TOOLS]` entry
+    with `{{- "}}" }}`, so the tag ended mid-literal and leaked the remainder into the prompt as
+    text — producing a tool block that is not valid JSON, silently, the only symptom being that the
+    model stops calling tools. (Comments stay quote-unaware, matching Jinja2.)
+  - `selectattr`/`rejectattr` were absent, so `messages | selectattr('role','equalto','user') | last`
+    returned the last message of *any* role.
+  - `{% for x in xs if cond %}` parsed as a ternary and evaluated the condition once before the loop
+    with the loop variables undefined, so the filter never excluded anything.
+  - Slicing a string returned null, which emptied Mistral v3's tool-call body (it uses `out[:-1]` to
+    reopen the JSON and splice in the call id).
+- `doctor` no longer reports three names as valid environment variables that nothing reads.
+  `STINGRAY_ARGMAX_NEG_INF` is a CUDA `#define` inside an NVRTC kernel string;
+  `STINGRAY_MOE_` and `STINGRAY_SNAPKV` are glob patterns that appear only in comments
+  (`STINGRAY_MOE_*`). All three had been scooped into the registry by a text scan. The practical
+  effect was on the typo suggester: a user mistyping `STINGRAY_SNAPKV_BUDGET` could be told
+  "did you mean `STINGRAY_SNAPKV`?", a setting with no effect. The registry goes 159 → 156 names.
+- `JinjaChatTemplate.EosToken`, seeded from the tokenizer. Mistral and Llama templates close every
+  assistant turn with `{{ message["content"] + eos_token }}`; with no value the variable rendered
+  empty and multi-turn history arrived with no turn boundaries.
+
+### Fixed
+
+- **Prefix-cache reuse could rewind into compressed or overwritten KV.** Two distinct defects, both
+  producing silent corruption or a crash:
+  - TurboQuant compresses KV in place once it leaves the FP32 recent window, so those positions
+    cannot be rewound into. A new `IForwardPass.MinRewindLength` reports that floor and prefix reuse
+    is gated on it, falling back to a full re-prefill. Without it, a long conversation whose prompt
+    diverges early — a system prompt carrying injected memory or a timestamp — crashed the request
+    once the compressed region grew past the divergence point.
+  - Slot token-shadows were keyed on the slot a request *bound* rather than the one it *mutates*.
+    The MTP path never binds a slot yet still overwrites slot 0, and DSpark bound a slot but wrote
+    to slot 0 regardless; either way a shadow described a sequence the slot's KV no longer held, and
+    the next request matched it and truncated into it. Shadows are now keyed on the mutated slot,
+    downgraded to the retained prefix rather than cleared on abort, and widened to the full prompt
+    once prefill completes.
+
 ## 1.0.3 — 2026-08-08
 
 Tag `stingray-v1.0.3`. Scope of this release: OpenAI `tool_choice:"required"` support, a session

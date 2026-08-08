@@ -122,7 +122,7 @@ public sealed class Gemma4GpuForwardPassTests
     public void Gemma4_VulkanMatchesCpuLogits_TeacherForced()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no usable GPU backend in this environment");
         var path = FindModelPath();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 

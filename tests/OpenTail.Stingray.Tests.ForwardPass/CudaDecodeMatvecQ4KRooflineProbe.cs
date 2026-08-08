@@ -55,7 +55,7 @@ public sealed unsafe class CudaDecodeMatvecQ4KRooflineProbe
     public void DecodeMatvec_Q4K_AchievedBandwidth_AtDecodeShape()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
 
         // Qwen3-8B decode matvecs (rows=out, cols=in), nTok=1.
         // hidden=4096, intermediate=12288, n_head=32 d_head=128, n_kv=8.

@@ -48,7 +48,7 @@ public sealed unsafe class CudaKvarnPrefillTests(ITestOutputHelper output)
         int tqLen, int f0, int m, int kvHeads, int qHeads, int headDim)
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
 
         Assert.Equal(0, tqLen % Tile);
         int numTiles = tqLen / Tile;

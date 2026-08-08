@@ -85,7 +85,7 @@ public sealed class CudaHybridForwardPassCpuMoeTests
     public void CudaHybridForwardPass_CpuMoeMode_MatchesCpuReference()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
 
         var path = FindMoEModelPath();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");

@@ -153,7 +153,7 @@ public sealed class Gemma4Cuda12BBatchForwardMultiTests
     public void Gemma4_12B_Q4KM_SupportsContinuousBatching_WithKEqVOnGlobalAndRealVOnSwa()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
         var path = FindModelPath();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
@@ -192,7 +192,7 @@ public sealed class Gemma4Cuda12BBatchForwardMultiTests
     public void Gemma4_12B_Q4KM_PrefillWithCache_MatchesSingleUserPrefill()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
         var path = FindModelPath();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
@@ -227,7 +227,7 @@ public sealed class Gemma4Cuda12BBatchForwardMultiTests
     public void Gemma4_12B_Q4KM_BatchForwardMulti_N2_MatchesSingleUser()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
         var path = FindModelPath();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
@@ -276,7 +276,7 @@ public sealed class Gemma4Cuda12BBatchForwardMultiTests
     public void Gemma4_12B_Q4KM_BatchForwardMulti_TwoSteps_MatchSingleUser()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
         var path = FindModelPath();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
@@ -342,7 +342,7 @@ public sealed class Gemma4Cuda12BBatchForwardMultiTests
     public void Gemma4_12B_Q4KM_BatchForwardMulti_N6_DecodeMmq_MatchesSingleUser()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
         var path = FindModelPath();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 

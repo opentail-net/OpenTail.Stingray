@@ -82,7 +82,7 @@ public sealed class Gemma4CudaPlumbingTests
     public void Gemma4_CudaForwardPass_ConstructorLoadsPleAsCpuResident()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
         var path = FindModelPath();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
@@ -158,7 +158,7 @@ public sealed class Gemma4CudaPlumbingTests
     public void Gemma4_CudaForwardPass_DisposeWithKvAliasNoDoubleFree()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
         var path = FindModelPath();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
@@ -198,7 +198,7 @@ public sealed class Gemma4CudaPlumbingTests
         // completion. Deeper coherence + CPU↔CUDA parity live in
         // Gemma4CudaForwardPassTests.
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
         var path = FindModelPath();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 

@@ -103,7 +103,7 @@ public sealed class CudaHybridBatchedCpuMoePrefillTests : IDisposable
     public void BatchedCpuMoePrefill_BitwiseMatchesSequential_Coder()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
         var path = FindCoderPath();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
@@ -187,7 +187,7 @@ public sealed class CudaHybridBatchedCpuMoePrefillTests : IDisposable
     public void BatchedCpuMoePrefill_MultiChunk_BitwiseMatchesSequential_Coder()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
         var path = FindCoderPath();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
@@ -261,7 +261,7 @@ public sealed class CudaHybridBatchedCpuMoePrefillTests : IDisposable
     public void BatchedCpuMoePrefill_Q8K_ArgmaxStableVsF32_Coder()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
         var path = FindCoderPath();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 

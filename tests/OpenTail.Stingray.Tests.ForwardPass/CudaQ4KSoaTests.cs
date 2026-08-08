@@ -50,7 +50,7 @@ public sealed unsafe class CudaQ4KSoaTests
     public void Q4KSoaDecodeMatvec_BitIdenticalToInterleaved()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
 
         foreach ((int rows, int cols) in new[]
                  { (256, 256), (1024, 512), (4096, 4096), (6144, 4096), (4096, 12288), (12288, 4096) })
@@ -92,7 +92,7 @@ public sealed unsafe class CudaQ4KSoaTests
     public void Q4KSoaMmqPrefill_BitIdenticalToInterleaved()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
 
         // Exercises the prefill reader: a Q4_K weight repacked to SoA must give MMQ output
         // bit-identical to the interleaved llm_mmq_q4k (same int8 mma, only the weight read
@@ -137,7 +137,7 @@ public sealed unsafe class CudaQ4KSoaTests
     public void Q4KSoaN2_BitIdenticalToInterleaved()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
 
         // Exercises the MTP batched-verify reader (issue #160): the dense Qwen3.6-MTP
         // trunk weights are repacked SoA when STINGRAY_Q4K_SOA is default-on, so MatMulN2
@@ -189,7 +189,7 @@ public sealed unsafe class CudaQ4KSoaTests
     public void Q4KSoaFallbackPrefill_BitIdenticalToInterleaved()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
 
         // The two non-MMQ prefill fallback readers (STINGRAY_PREFILL_MMQ=0): the GEMM-N
         // dp4a path (MatMulBatched → llm_matvec_q4k_gemm_n_soa) and the dequant→fp16→GEMM
@@ -244,7 +244,7 @@ public sealed unsafe class CudaQ4KSoaTests
     public void Q4KSoa_Vs_Interleaved_DecodeSpeed()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
 
         (int rows, int cols, string what)[] shapes =
         {

@@ -33,7 +33,6 @@ public static class KnownEnvironmentVariables
     {
         "STINGRAY_ACT_SOA",
         "STINGRAY_ACT_SOA_CPA",
-        "STINGRAY_ARGMAX_NEG_INF",
         "STINGRAY_ATTN_WAVE_BUDGET_MB",
         "STINGRAY_BACKEND",
         "STINGRAY_BATCHED_ATTN",
@@ -105,7 +104,6 @@ public static class KnownEnvironmentVariables
         "STINGRAY_MMPROJ",
         "STINGRAY_MMQ_SOA",
         "STINGRAY_MODEL",
-        "STINGRAY_MOE_",
         "STINGRAY_MOE_BATCHED_PREFILL",
         "STINGRAY_MOE_GPU_PREFILL",
         "STINGRAY_MOE_GPU_PREFILL_MIN_TOKENS",
@@ -160,7 +158,6 @@ public static class KnownEnvironmentVariables
         "STINGRAY_Q8_0_Q8K",
         "STINGRAY_RAW_PROMPT",
         "STINGRAY_SDCPP",
-        "STINGRAY_SNAPKV",
         "STINGRAY_SNAPKV_BUDGET",
         "STINGRAY_SNAPKV_RECENCY",
         "STINGRAY_SNAPKV_WINDOW",

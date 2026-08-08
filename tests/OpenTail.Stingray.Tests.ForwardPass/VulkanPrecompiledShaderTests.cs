@@ -14,6 +14,33 @@ namespace OpenTail.Stingray.Tests.ForwardPass;
 /// </summary>
 public sealed unsafe class VulkanPrecompiledShaderTests
 {
+    /// <summary>
+    /// Creates the Vulkan backend, or SKIPS when the device cannot be brought up.
+    ///
+    /// <para>These tests constructed <c>new VulkanBackend()</c> directly, so an environmental
+    /// failure surfaced as a test FAILURE rather than a skip. On this integrated-Radeon machine the
+    /// driver intermittently returns <c>ErrorIncompatibleDriver</c> at device creation under
+    /// parallel load: one full run showed three such failures while the rest of the class passed,
+    /// and a neighbouring guarded test skipped one run and passed the next for the same reason.</para>
+    ///
+    /// <para>This absorbs failures from the CONSTRUCTOR only. Once a device exists, every shader
+    /// assertion runs and fails normally, so the guard cannot hide a correctness defect.
+    /// <c>VulkanInitTests</c> is deliberately NOT routed through this — there, bringing the device
+    /// up IS the thing under test.</para>
+    /// </summary>
+    private static Vulkan.VulkanBackend CreateBackendOrSkip()
+    {
+        try
+        {
+            return new Vulkan.VulkanBackend();
+        }
+        catch (Exception ex)
+        {
+            Assert.Skip($"Vulkan device could not be created in this environment: {ex.Message}");
+            throw;   // unreachable: Assert.Skip throws
+        }
+    }
+
     // SPIR-V magic number 0x07230203, little-endian first four bytes.
     private static readonly byte[] SpirvMagic = { 0x03, 0x02, 0x23, 0x07 };
 
@@ -77,7 +104,7 @@ public sealed unsafe class VulkanPrecompiledShaderTests
         // Construct a Vulkan backend and run an op that builds a pipeline from a shipped
         // shader (RmsNorm). If the precompiled path served it, glslc is never invoked.
         Vulkan.VulkanBackend backend;
-        try { backend = new Vulkan.VulkanBackend(); }
+        try { backend = CreateBackendOrSkip(); }
         catch { return; } // no Vulkan device on this host — skip
 
         using (backend)

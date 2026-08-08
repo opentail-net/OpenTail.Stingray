@@ -4,12 +4,42 @@ namespace OpenTail.Stingray.Tests.Core;
 
 public sealed class Gemma4TokenizerTests
 {
-    private const string Gemma4ModelPath = @"E:\models\gemma-4-E4B-it-Q8_0.gguf";
+    /// <summary>
+    /// Resolves ANY local Gemma-4 E4B GGUF, by family rather than by checkpoint filename.
+    ///
+    /// <para>This previously named <c>E:\models\gemma-4-E4B-it-Q8_0.gguf</c> — one absolute path,
+    /// one exact quantisation. Everything asserted here (vocab size, BOS/EOS/UNK ids, special
+    /// tokens, encode/decode round-trip) is a property of the TOKENIZER, which is identical across
+    /// quantisations of the same model. Pinning the quant meant these tests skipped on a machine
+    /// that had a perfectly usable E4B GGUF sitting in the repo's own <c>models/</c> directory.</para>
+    /// </summary>
+    private static string? FindGemma4E4BModel()
+    {
+        var dir = Directory.GetCurrentDirectory();
+        for (int i = 0; i < 8; i++)
+        {
+            var models = Path.Combine(dir, "models");
+            if (Directory.Exists(models))
+            {
+                foreach (var candidate in Directory.EnumerateFiles(models, "*E4B*.gguf"))
+                {
+                    // mmproj files share the name prefix but carry a vision projector, not a text
+                    // model with a tokenizer.
+                    if (!Path.GetFileName(candidate).Contains("mmproj", StringComparison.OrdinalIgnoreCase))
+                        return candidate;
+                }
+            }
+            if (Directory.GetParent(dir) is not { } parent) break;
+            dir = parent.FullName;
+        }
+        return null;
+    }
 
     private static GgufTokenizer? CreateTokenizer()
     {
-        if (!File.Exists(Gemma4ModelPath)) return null;
-        using var model = GgufModel.Open(Gemma4ModelPath);
+        var path = FindGemma4E4BModel();
+        if (path is null) return null;
+        using var model = GgufModel.Open(path);
         return GgufTokenizer.FromGgufModel(model);
     }
 
@@ -21,8 +51,20 @@ public sealed class Gemma4TokenizerTests
 
         Assert.Equal(262_144, tokenizer.VocabSize);
         Assert.Equal(2, tokenizer.BosTokenId);
-        Assert.Equal(106, tokenizer.EosTokenId);
         Assert.Equal(3, tokenizer.UnknownTokenId);
+
+        // Gemma-4 exports DISAGREE about which token is the configured EOS: some declare
+        // <turn|> (106), others the literal <eos> (1). Both are legitimate, so pinning one made
+        // this an assertion about a particular checkpoint rather than about Gemma 4.
+        int eos = tokenizer.SpecialTokens["<eos>"];
+        int turn = tokenizer.SpecialTokens["<turn|>"];
+        Assert.Contains(tokenizer.EosTokenId, new[] { eos, turn });
+
+        // What generation actually depends on: BOTH end tokens are in the stop set, whichever one
+        // the export happened to configure. Miss this and a model whose EOS is <eos> runs straight
+        // through <turn|>, decoding the turn terminator as literal text.
+        Assert.Contains(eos, tokenizer.EogTokenIds);
+        Assert.Contains(turn, tokenizer.EogTokenIds);
     }
 
     [Fact]
@@ -53,7 +95,9 @@ public sealed class Gemma4TokenizerTests
 
         var ids = tokenizer.Encode("<bos>Hello<turn|>");
         Assert.Contains(tokenizer.BosTokenId, ids);
-        Assert.Contains(tokenizer.EosTokenId, ids);
+        // Assert the id of the token actually written, not EosTokenId — those coincide only on
+        // exports that configure <turn|> as EOS.
+        Assert.Contains(tokenizer.SpecialTokens["<turn|>"], ids);
     }
 
     [Fact]

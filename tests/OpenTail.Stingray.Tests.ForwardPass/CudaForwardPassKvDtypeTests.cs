@@ -135,7 +135,7 @@ public sealed class CudaForwardPassKvDtypeTests
     private static void AssertSplitKvDecodeParity(string filename, string kvDtype, float maxAbsTol)
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
         var path = FindModelPath(filename);
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
@@ -184,7 +184,7 @@ public sealed class CudaForwardPassKvDtypeTests
     private static void AssertKvParity(string filename, string kvDtype, string prompt, int? eosToken, float maxAbsTol)
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
         var path = FindModelPath(filename);
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
@@ -242,7 +242,7 @@ public sealed class CudaForwardPassKvDtypeTests
     private static void AssertKvBatchedPrefillParity(string filename, string kvDtype, string prompt, float maxAbsTol)
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
         var path = FindModelPath(filename);
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
@@ -286,7 +286,7 @@ public sealed class CudaForwardPassKvDtypeTests
     private static void AssertKvChunkedPrefillParity(string filename, string kvDtype, float maxAbsCeiling)
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
         var path = FindModelPath(filename);
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
@@ -496,7 +496,7 @@ public sealed class CudaForwardPassKvDtypeTests
     public void Gemma4_E4B_SplitKv_GraphReplayCrossesBoundary()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
         var path = FindModelPath("gemma-4-E4B-it-Q8_0.gguf");
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
@@ -585,7 +585,7 @@ public sealed class CudaForwardPassKvDtypeTests
     private static void AssertGroupedSplitKvParity(string filename, string kvDtype, float maxAbsTol)
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
         var path = FindModelPath(filename);
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
@@ -710,7 +710,7 @@ public sealed class CudaForwardPassKvDtypeTests
         string filename, string kvDtype, string prompt, int ctx = 2048, bool batchedPrefill = false)
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
         var path = FindModelPath(filename);
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 

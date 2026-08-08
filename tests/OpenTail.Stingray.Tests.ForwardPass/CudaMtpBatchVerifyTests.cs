@@ -102,7 +102,7 @@ public sealed class CudaMtpBatchVerifyTests
     public void BatchVerify_MatchesSequentialForward_PerPosition()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
         var path = FindMtpModelPath();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
@@ -153,7 +153,7 @@ public sealed class CudaMtpBatchVerifyTests
     public void BatchVerify_Rollback_RestoresDeviceGdnState()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
         var path = FindMtpModelPath();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
@@ -205,7 +205,7 @@ public sealed class CudaMtpBatchVerifyTests
     public void MtpDecoder_BatchedGreedy_CoherentWithAcceptedDrafts()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
         var path = FindMtpModelPath();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 

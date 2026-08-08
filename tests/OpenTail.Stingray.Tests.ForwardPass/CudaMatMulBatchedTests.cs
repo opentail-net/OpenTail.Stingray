@@ -67,7 +67,7 @@ public sealed unsafe class CudaMatMulBatchedTests
     public void MatMulBatched_Q4K_BitwiseMatchesSequential()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
 
         foreach ((int rows, int cols, int nTok) in
                  new[] { (8, 256, 2), (33, 512, 5), (64, 1024, 17), (256, 2048, 64) })
@@ -133,7 +133,7 @@ public sealed unsafe class CudaMatMulBatchedTests
     public void MatMulBatched_Q6K_BitwiseMatchesSequential()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
 
         foreach ((int rows, int cols, int nTok) in
                  new[] { (8, 256, 2), (33, 512, 5), (64, 1024, 17), (256, 512, 64) })
@@ -199,7 +199,7 @@ public sealed unsafe class CudaMatMulBatchedTests
     public void MatMulBatched_Q5K_BitwiseMatchesSequential()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
 
         foreach ((int rows, int cols, int nTok) in
                  new[] { (8, 256, 2), (33, 512, 5), (64, 1024, 17), (256, 512, 64) })
@@ -260,7 +260,7 @@ public sealed unsafe class CudaMatMulBatchedTests
     public void MatMulBatched_Q8_0_BitwiseMatchesSequential()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
         // The batched matvec GEMM-N path is fp32; pin the sequential MatMul
         // reference to the fp32 kernel too (the default dp4a path quantizes the
         // activation to int8 — argmax-stable, not bit-exact). Issue #142.
@@ -326,7 +326,7 @@ public sealed unsafe class CudaMatMulBatchedTests
     public void RmsNormBatched_BitwiseMatchesSingle()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
         foreach ((int dim, int nTok) in new[] { (256, 3), (2048, 17), (2048, 64) })
         {
             var rng = new Random(7 + dim + nTok);
@@ -361,7 +361,7 @@ public sealed unsafe class CudaMatMulBatchedTests
     public void HeadNormBatched_BitwiseMatchesSingle()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
         int numHeads = 16, headDim = 256;
         foreach (int nTok in new[] { 3, 17, 64 })
         {
@@ -396,7 +396,7 @@ public sealed unsafe class CudaMatMulBatchedTests
     public void HeadNormBatched_PerChannelWeight_BitwiseMatchesSingle()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
         int numHeads = 16, headDim = 256;
         int qDim = numHeads * headDim;
         foreach (int nTok in new[] { 3, 17, 64 })
@@ -432,7 +432,7 @@ public sealed unsafe class CudaMatMulBatchedTests
     public void View_RoundTrips_FreeDoesNotFreeParent_AndBoundsChecked()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
 
         const int n = 4096, off = 512, len = 1024;
         var data = new float[n];
@@ -466,7 +466,7 @@ public sealed unsafe class CudaMatMulBatchedTests
     public void SplitQGBatched_BitwiseMatchesSingle()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
         int numHeads = 16, headDim = 256;
         int qDim = numHeads * headDim;
         foreach (int nTok in new[] { 2, 17, 64 })
@@ -505,7 +505,7 @@ public sealed unsafe class CudaMatMulBatchedTests
     public void RoPEPartialBatched_BitwiseMatchesSingle()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
         int numHeads = 16, headDim = 256, ropeDim = 64;
         int qDim = numHeads * headDim;
         float theta = 1000000f;
@@ -537,7 +537,7 @@ public sealed unsafe class CudaMatMulBatchedTests
     public void HeadNormQk_BitwiseMatchesSeparate()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
         int numHeads = 16, numKvHeads = 4, headDim = 256;
         int qDim = numHeads * headDim, kvDim = numKvHeads * headDim;
         var rng = new Random(909);
@@ -603,7 +603,7 @@ public sealed unsafe class CudaMatMulBatchedTests
     public void RoPEWithFactorsBatched_BitwiseMatchesSingle()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
         int numHeads = 8, headDim = 256;       // Gemma 4 global-layer shape
         int qDim = numHeads * headDim;
         float theta = 1000000f;
@@ -642,7 +642,7 @@ public sealed unsafe class CudaMatMulBatchedTests
     public void AttentionSwaBatched_BitwiseMatchesSingle()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
         int numHeads = 8, numKvHeads = 2, headDim = 256, maxSeqLen = 1024;
         int qDim = numHeads * headDim, kvDim = numKvHeads * headDim;
 
@@ -687,7 +687,7 @@ public sealed unsafe class CudaMatMulBatchedTests
     public void AttentionExplicitScale_BitwiseMatchesSingle_AndDiffersFromSentinel()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
         int numHeads = 8, numKvHeads = 2, headDim = 256, maxSeqLen = 1024;
         int qDim = numHeads * headDim, kvDim = numKvHeads * headDim;
         int startPos = 50, nTok = 12, window = 512;
@@ -759,7 +759,7 @@ public sealed unsafe class CudaMatMulBatchedTests
     public void MatMulBatched_F32_BitwiseMatchesSequential()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
 
         foreach ((int rows, int cols, int nTok) in
                  new[] { (8, 256, 2), (33, 500, 5), (64, 1024, 17), (130, 2048, 40) })

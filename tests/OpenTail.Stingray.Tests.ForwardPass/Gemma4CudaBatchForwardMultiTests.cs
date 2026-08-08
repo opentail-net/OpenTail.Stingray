@@ -116,7 +116,7 @@ public sealed class Gemma4CudaBatchForwardMultiTests
     public void Gemma4_E4B_SupportsContinuousBatching()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
         var path = FindModelPath();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
@@ -143,7 +143,7 @@ public sealed class Gemma4CudaBatchForwardMultiTests
     public void Gemma4_E4B_PrefillWithCache_MatchesSingleUserPrefill()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
         var path = FindModelPath();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
@@ -176,7 +176,7 @@ public sealed class Gemma4CudaBatchForwardMultiTests
     public void Gemma4_E4B_BatchForwardMulti_N2_MatchesSingleUser()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
         var path = FindModelPath();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
@@ -225,7 +225,7 @@ public sealed class Gemma4CudaBatchForwardMultiTests
     public void Gemma4_E4B_BatchForwardMulti_TwoSteps_MatchSingleUser()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
         var path = FindModelPath();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 

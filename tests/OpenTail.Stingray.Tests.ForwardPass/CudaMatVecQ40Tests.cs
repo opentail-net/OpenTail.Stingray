@@ -62,7 +62,7 @@ public sealed unsafe class CudaMatVecQ40Tests
     public void MatVecQ4_0_MatchesCpuReference()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
         // Validate the fp32-decode kernel (llm_matvec_q4_0): exact-byte Q4_0 weights
         // dotted with fp32 activations, so only fp16-d rounding + reduction order differ
         // from the CPU reference. Pin off the dp4a path (issue #124), which quantizes the
@@ -136,7 +136,7 @@ public sealed unsafe class CudaMatVecQ40Tests
     public void MatVecQ4_0_Dp4a_TracksCpuReference()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
         gpu.Q40Dp4aEnabled = true;
 
         foreach ((int rows, int cols) in new[] { (256, 256), (1024, 1024), (64, 3840), (40, 15360) })

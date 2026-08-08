@@ -116,6 +116,19 @@ public static class AnthropicEndpoints
                 canonicalHistoryPrefix = chatTemplate.Format(messages, enableThinking, addGenerationPrompt: false);
             }
         }
+        catch (ChatTemplateException ex)
+        {
+            // The template rejected the message list itself — e.g. Mistral's v3 template refuses a
+            // history whose roles don't alternate. That's the caller's input, not a server fault,
+            // so answer 400 with the template's own message instead of letting it escape to
+            // Kestrel as a bodyless 500 the client can't diagnose.
+            ctx.Response.StatusCode = 400;
+            ctx.Response.ContentType = "application/json";
+            await ctx.Response.WriteAsync(
+                JsonSerializer.Serialize(new ErrorResponse("invalid_request_error", ex.Message),
+                    OpenTailStingrayJsonContext.Default.ErrorResponse), ctx.RequestAborted);
+            return;
+        }
         catch (ImageContentException ex)
         {
             ctx.Response.StatusCode = 400;

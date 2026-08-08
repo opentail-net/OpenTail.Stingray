@@ -111,7 +111,7 @@ public sealed class CudaSpecBatchVerifyTests
     public void Qwen3_8B_BatchVerify_MatchesSequentialForward(int k)
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
         var path = FindModelPath(TargetModelFile);
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
@@ -169,7 +169,7 @@ public sealed class CudaSpecBatchVerifyTests
     public void Qwen3_8B_BatchVerify_TruncateAndCommit_MatchesSequential()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
         var path = FindModelPath(TargetModelFile);
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
@@ -219,7 +219,7 @@ public sealed class CudaSpecBatchVerifyTests
     public void Qwen3_8B_SpecDecode_GreedyParity_E2E()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
         var targetPath = FindModelPath(TargetModelFile);
         var draftPath = FindModelPath(DraftModelFile);
         if (targetPath is null || draftPath is null) return;
@@ -275,7 +275,7 @@ public sealed class CudaSpecBatchVerifyTests
     public void Qwen3_8B_SpecDecode_PromptLookup_GreedyParity_E2E()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
         var targetPath = FindModelPath(TargetModelFile);
         Assert.SkipUnless(targetPath is not null, "model fixture not present in this environment");
 

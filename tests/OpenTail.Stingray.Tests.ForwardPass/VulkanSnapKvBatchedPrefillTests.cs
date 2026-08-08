@@ -53,7 +53,7 @@ public sealed class VulkanSnapKvBatchedPrefillTests
         var path = FindModelPath();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no usable GPU backend in this environment");
 
         string? priorBudget = Environment.GetEnvironmentVariable(BudgetVar);
         string? priorWindow = Environment.GetEnvironmentVariable(WindowVar);

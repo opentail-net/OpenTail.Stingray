@@ -74,7 +74,7 @@ public sealed class CudaHybridGdnSnapKvTests
     public void CudaHybridGdnSnapKv_LongPrompt_CacheShrinksToBudget_DecodeStaysWellFormed()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
 
         var path = FindMtpModelPath();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
@@ -164,7 +164,7 @@ public sealed class CudaHybridGdnSnapKvTests
     public void CudaHybridGdnSnapKv_MtpDecode_AfterEviction_DoesNotCrash_StaysCoherent()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
 
         var path = FindMtpModelPath();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
@@ -257,7 +257,7 @@ public sealed class CudaHybridGdnSnapKvTests
     public void CudaHybridGdnSnapKv_SmallCtxDefault_AutoBudgetStaysOff()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
 
         var path = FindMtpModelPath();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");

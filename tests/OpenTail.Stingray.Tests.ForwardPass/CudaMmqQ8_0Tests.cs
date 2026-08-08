@@ -52,7 +52,7 @@ public sealed unsafe class CudaMmqQ8_0Tests
     public void MatMulBatchedMmq_Q8_0_TracksCpuReference()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
 
         // Cover: square, non-multiple-of-16 rows + non-multiple-of-8 tokens (partial
         // tile guards), and a wide single-block-token batch.

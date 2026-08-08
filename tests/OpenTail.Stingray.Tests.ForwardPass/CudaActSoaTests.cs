@@ -88,7 +88,7 @@ public sealed unsafe class CudaActSoaTests
     public void ActSoaMmq_BitIdenticalToAosActs_AllQuants()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
 
         // (rows, cols, nTok): widths spanning Gemma-12B FFN/qkv shapes + small tiles, with
         // nTok both < and > MMQ_BN (128) to exercise multiple token-blocks. Q4_K needs
@@ -164,7 +164,7 @@ public sealed unsafe class CudaActSoaTests
     public void ActSoaCpaMmq_BitIdenticalToSoaActs(DType dt)
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
 
         (int rows, int cols, int nTok)[] shapes =
         {

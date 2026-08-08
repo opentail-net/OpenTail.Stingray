@@ -5,9 +5,22 @@ variables**.
 
 **Reconciled 2026-08-07:** the table below now lists every name in
 `KnownEnvironmentVariables.All`, the source-enforced registry, which
-now contains **159** names. The row set is therefore no longer a historical subset — it is
+now contains **156** names. The row set is therefore no longer a historical subset — it is
 name-complete as of this date. What remains outstanding is the **Class/Notes** classification
 (see below), not the enumeration.
+
+**Reconciled again 2026-08-08:** three further entries were removed — `STINGRAY_ARGMAX_NEG_INF`,
+`STINGRAY_MOE_` and `STINGRAY_SNAPKV` — bringing the registry to **156**. None was ever an
+environment variable. `STINGRAY_ARGMAX_NEG_INF` is a CUDA `#define` inside an NVRTC kernel string;
+the other two are glob patterns that appear only in comments (`STINGRAY_MOE_*`, `STINGRAY_SNAPKV*`).
+The existing `ListMatchesSource` test could not catch them because it accepts a bare textual match,
+so the scan found the very text that had put the entry there — the entry justified itself.
+
+The practical harm was in `SuggestClosest`: a user typing `STINGRAY_SNAPKV_BUDGE` could be told
+"did you mean `STINGRAY_SNAPKV`?", a name nothing reads. A new test now requires every registry
+entry to appear as a **quoted string literal** in src/, which is how a variable actually gets read.
+(A "no entry is a prefix of another" rule was tried first and rejected — it flags 13 entries and
+most are legitimate, e.g. `STINGRAY_TQ` alongside `STINGRAY_TQ_MODE`.)
 
 Three names appear in the prose here but deliberately **not** in the table, because they are no
 longer read by anything: `STINGRAY_Q4K_ABL`, `STINGRAY_WABL` and `STINGRAY_VABL`, all removed

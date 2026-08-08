@@ -741,6 +741,12 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
     /// <inheritdoc />
     public bool SupportsPartialRewind => true;
 
+    /// <inheritdoc />
+    /// <remarks>TurboQuant compresses KV in place once it leaves the FP32 recent window, so
+    /// those positions cannot be rewound into. Reported per read because it grows as decoding
+    /// proceeds.</remarks>
+    public int MinRewindLength => _tqKvCache?.MaxTqLength ?? 0;
+
     public void ResetCache()
     {
         if (_tqKvCache != null)

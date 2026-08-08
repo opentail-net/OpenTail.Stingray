@@ -130,7 +130,7 @@ public sealed class GpuForwardPassKvDtypeTests
     public void Bf16Kv_ArgmaxStable_VsFp32()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no usable GPU backend in this environment");
         var path = FindModelPath();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
@@ -169,7 +169,7 @@ public sealed class GpuForwardPassKvDtypeTests
     public void Bf16Kv_GreedyDecode_Coherent()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no usable GPU backend in this environment");
         var path = FindModelPath();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
@@ -208,7 +208,7 @@ public sealed class GpuForwardPassKvDtypeTests
     public void Q8Kv_ArgmaxStable_VsFp32()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no usable GPU backend in this environment");
         var path = FindModelPath();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
@@ -248,7 +248,7 @@ public sealed class GpuForwardPassKvDtypeTests
     public void Q8Kv_GreedyDecode_Coherent()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no usable GPU backend in this environment");
         var path = FindModelPath();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 

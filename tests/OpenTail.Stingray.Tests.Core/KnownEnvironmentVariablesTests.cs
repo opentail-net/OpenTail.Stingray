@@ -45,6 +45,18 @@ public sealed partial class KnownEnvironmentVariablesTests
     /// warning trustworthy: adding a new variable without listing it would otherwise make the
     /// warning fire on a legitimate setting, training users to ignore it.
     /// </summary>
+    /// <summary>
+    /// Names that match the <c>STINGRAY_*</c> shape but are not environment variables, so the
+    /// source scan must not treat them as evidence that a registry entry is live.
+    /// </summary>
+    private static readonly HashSet<string> NotEnvironmentVariables = new(StringComparer.Ordinal)
+    {
+        // A CUDA `#define` inside an NVRTC kernel source string, used as a plain C identifier on
+        // the lines that follow it (CudaTextKernels.cs). The `#define` line itself is already
+        // skipped as a directive; its USES are not, which is how it reached the registry.
+        "STINGRAY_ARGMAX_NEG_INF",
+    };
+
     [Fact]
     public void ListMatchesSource()
     {
@@ -77,7 +89,18 @@ public sealed partial class KnownEnvironmentVariablesTests
                     continue;
 
                 foreach (Match m in Regex.Matches(line, "STINGRAY_[A-Z0-9_]+"))
+                {
+                    // A trailing `*` means this is a GLOB in prose ("STINGRAY_MOE_*", "STINGRAY_SNAPKV*"),
+                    // not a variable. Counting the prefix before the star invented two registry
+                    // entries that nothing reads, and made this test's stale-entry half unable to
+                    // notice, because the scan found the text the entry had itself justified.
+                    int after = m.Index + m.Length;
+                    if (after < line.Length && line[after] == '*')
+                        continue;
+                    if (NotEnvironmentVariables.Contains(m.Value))
+                        continue;
                     inSource.Add(m.Value);
+                }
             }
         }
 
@@ -108,6 +131,66 @@ public sealed partial class KnownEnvironmentVariablesTests
         Match count = Regex.Match(inventory, @"now contains \*\*(\d+)\*\* names");
         Assert.True(count.Success, "Environment inventory must declare its current registry count.");
         Assert.Equal(KnownEnvironmentVariables.All.Count, int.Parse(count.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture));
+    }
+
+    /// <summary>
+    /// A typo near a real variable must not be "corrected" to a name nothing reads. Three registry
+    /// entries were exactly that trap: <c>STINGRAY_MOE_</c> and <c>STINGRAY_SNAPKV</c> are prefixes
+    /// that appear in src/ only as glob patterns in prose (<c>STINGRAY_MOE_*</c>), and
+    /// <c>STINGRAY_ARGMAX_NEG_INF</c> is a CUDA <c>#define</c> inside an NVRTC kernel string. The
+    /// source scan in <see cref="ListMatchesSource"/> cannot tell those from an environment read,
+    /// so each entry justified itself and the stale-entry half of that test stayed green.
+    /// </summary>
+    [Fact]
+    public void SuggestClosest_NeverPointsAtANameNothingReads()
+    {
+        foreach (string typo in new[] { "STINGRAY_SNAPKV_BUDGE", "STINGRAY_MOE_WARMPI", "STINGRAY_ARGMAX_NEG_IN" })
+        {
+            string? suggestion = KnownEnvironmentVariables.SuggestClosest(typo);
+            Assert.DoesNotContain(suggestion, new[] { "STINGRAY_SNAPKV", "STINGRAY_MOE_", "STINGRAY_ARGMAX_NEG_INF" });
+        }
+    }
+
+    /// <summary>
+    /// Every registry entry must appear as a QUOTED STRING LITERAL somewhere in src/ outside the
+    /// declaration itself. Environment variables are read by name — <c>GetEnvironmentVariable("X")</c>
+    /// — so a real one is always quoted somewhere.
+    ///
+    /// <para>This is stricter than <see cref="ListMatchesSource"/>, which accepts a bare textual
+    /// match and therefore lets prose justify an entry: <c>STINGRAY_MOE_*</c> and
+    /// <c>STINGRAY_SNAPKV*</c> are glob patterns in comments, and <c>STINGRAY_ARGMAX_NEG_INF</c> is
+    /// a CUDA <c>#define</c> inside an NVRTC kernel string used as a plain C identifier. All three
+    /// were registered, none was ever read, and the stale-entry check stayed green because the scan
+    /// found the text it had itself put there.</para>
+    ///
+    /// <para>A "proper prefix" rule was tried first and rejected: it flags 13 entries, and most are
+    /// legitimate — <c>STINGRAY_TQ</c> and <c>STINGRAY_TQ_MODE</c> are both real variables. Prefix
+    /// relationships are normal; being unquoted everywhere is what actually discriminates.</para>
+    /// </summary>
+    [Fact]
+    public void EveryRegistryEntryIsReadByNameSomewhereInSource()
+    {
+        var root = FindRepoRoot();
+        Assert.SkipWhen(root is null, "repo layout not found — source scan not applicable here");
+
+        var quoted = new HashSet<string>(StringComparer.Ordinal);
+        foreach (string file in Directory.EnumerateFiles(Path.Combine(root!, "src"), "*.cs", SearchOption.AllDirectories))
+        {
+            if (file.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}", StringComparison.Ordinal)
+                || file.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}", StringComparison.Ordinal)
+                || Path.GetFileName(file) == "KnownEnvironmentVariables.cs")
+                continue;
+            foreach (Match m in Regex.Matches(File.ReadAllText(file), "\"(STINGRAY_[A-Z0-9_]+)\""))
+                quoted.Add(m.Groups[1].Value);
+        }
+
+        var unread = KnownEnvironmentVariables.All
+            .Except(quoted, StringComparer.Ordinal)
+            .OrderBy(x => x, StringComparer.Ordinal)
+            .ToList();
+        Assert.True(unread.Count == 0,
+            $"{unread.Count} registry entr(y/ies) are never read by name in src/, so `doctor` lists " +
+            "them as valid and SuggestClosest can steer a typo onto them: " + string.Join(", ", unread));
     }
 
     [Fact]

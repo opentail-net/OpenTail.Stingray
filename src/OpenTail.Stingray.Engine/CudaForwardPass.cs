@@ -4080,6 +4080,12 @@ public sealed unsafe class CudaForwardPass : IForwardPass, IBatchedForwardPass, 
     /// <inheritdoc />
     public bool SupportsPartialRewind => true;
 
+    /// <inheritdoc />
+    /// <remarks>TurboQuant compresses KV in place once it leaves the FP32 recent window, so
+    /// those positions cannot be rewound into. Reported per read because it grows as decoding
+    /// proceeds.</remarks>
+    public int MinRewindLength => _tqEnabled ? _tqCompressedLen : 0;
+
     // ── Hidden-state taps (DSpark draft conditioning, PR #413 Phase 4a) ──
 
     /// <summary>

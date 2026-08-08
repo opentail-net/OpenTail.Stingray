@@ -84,7 +84,7 @@ public sealed class Qwen3CudaGraphParityTests
         var refTokens = new int[NSteps];
         using (var gpu = TryCreate())
         {
-            Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+            Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
             using var fwd = new CudaForwardPass(model, gpu, hp, maxContextLength: 512)
                 { UseCudaGraph = false, BatchedPrefillEnabled = false };
             var logits = fwd.Prefill(Tokens);
@@ -102,7 +102,7 @@ public sealed class Qwen3CudaGraphParityTests
         // Candidate: graph ON (capture on the first decode token, replay after).
         using (var gpu = TryCreate())
         {
-            Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+            Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
             using var fwd = new CudaForwardPass(model, gpu, hp, maxContextLength: 512)
                 { UseCudaGraph = true, BatchedPrefillEnabled = false };
             var logits = fwd.Prefill(Tokens);
@@ -148,7 +148,7 @@ public sealed class Qwen3CudaGraphParityTests
             var refTokens = new int[NSteps];
             using (var gpu = TryCreate())
             {
-                Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+                Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
                 using var fwd = new CudaForwardPass(model, gpu, hp, maxContextLength: 1024)
                     { UseCudaGraph = false, BatchedPrefillEnabled = false };
                 var logits = fwd.Prefill(Tokens);
@@ -165,7 +165,7 @@ public sealed class Qwen3CudaGraphParityTests
 
             using (var gpu = TryCreate())
             {
-                Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+                Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
                 using var fwd = new CudaForwardPass(model, gpu, hp, maxContextLength: 1024)
                     { UseCudaGraph = true, BatchedPrefillEnabled = false };
                 var logits = fwd.Prefill(Tokens);

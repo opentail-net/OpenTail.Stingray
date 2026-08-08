@@ -90,6 +90,12 @@ public sealed unsafe class GpuForwardPass : IForwardPass
     /// <inheritdoc />
     public bool SupportsPartialRewind => true;
 
+    /// <inheritdoc />
+    /// <remarks>TurboQuant compresses KV in place once it leaves the FP32 recent window, so
+    /// those positions cannot be rewound into. Reported per read because it grows as decoding
+    /// proceeds.</remarks>
+    public int MinRewindLength => _tqEnabled ? _tqCompressedLen : 0;
+
     // ── Speculative-decode batched verify (issue #308) ───────────────────────────────────
 
     /// <summary>

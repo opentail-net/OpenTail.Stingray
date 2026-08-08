@@ -35,7 +35,7 @@ public sealed unsafe class CudaGdnKernelsTests
     public void SiLUInPlace_MatchesScalarReference()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
 
         const int N = 513;
         var rng = new Random(123);
@@ -63,7 +63,7 @@ public sealed unsafe class CudaGdnKernelsTests
         // Issue #314: IComputeBackend.SiLU(Tensor) must not throw (it previously
         // did on CUDA); it delegates to the in-place NVRTC kernel.
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
 
         const int N = 257;
         var rng = new Random(321);
@@ -89,7 +89,7 @@ public sealed unsafe class CudaGdnKernelsTests
     public void GdnConv1dDecode_MatchesCpuReference()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
 
         // Use the model's real shape.
         const int Channels = 8192;
@@ -134,7 +134,7 @@ public sealed unsafe class CudaGdnKernelsTests
     public void GdnL2NormPerHead_MatchesCpuReference()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
 
         // Model's real shape: 16 K-heads × 128 head_dim = 2048 floats.
         const int NumHeads = 16;
@@ -164,7 +164,7 @@ public sealed unsafe class CudaGdnKernelsTests
     public void GdnL2NormPerHead_RespectsElementOffset()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
 
         // Lay out [Q‖K‖V] in a single buffer; verify normalization only touches the K slice.
         const int Slice = 2048;   // K-heads × head_dim
@@ -199,7 +199,7 @@ public sealed unsafe class CudaGdnKernelsTests
     public void GdnTileHeads_MatchesCpuReference()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
 
         const int SrcHeads = 16;
         const int Repeat = 2;
@@ -228,7 +228,7 @@ public sealed unsafe class CudaGdnKernelsTests
     public void GdnRecurrenceDecode_MatchesCpuReference()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
 
         // Use the model's real shape: 32 v-heads × 128 head_dim.
         const int Hv = 32;
@@ -313,7 +313,7 @@ public sealed unsafe class CudaGdnKernelsTests
     public void GdnRecurrenceDecodeFast_ArgmaxStableVsCpuReference()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
 
         // #404 Option B: the high-occupancy warp-per-column decode kernel. It reads/writes
         // the per-head state in the TRANSPOSED layout (via GdnStateTranspose), and the
@@ -402,7 +402,7 @@ public sealed unsafe class CudaGdnKernelsTests
     public void GdnStateTranspose_IsInvolutionAndMatchesCpu()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
 
         // #404 Option B: the in-place per-head [d×d] transpose used to flip the GDN
         // state between row-major and the fast kernel's column-major layout. It is a
@@ -440,7 +440,7 @@ public sealed unsafe class CudaGdnKernelsTests
     public void GdnChunkedPrefill_ModelStridesMultiChunk_MatchesCpuReference()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
 
         // Reproduce the EXACT buffer layout CudaHybridGdnForwardPass.GdnBlockBatched
         // feeds the kernel — the one thing the contiguous-stride test above doesn't
@@ -532,7 +532,7 @@ public sealed unsafe class CudaGdnKernelsTests
     public void GdnChunkedPrefill_MatchesCpuSequentialReference()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
 
         // Real GDN shape; n_tok spans more than one GDN_CHUNK (64) to exercise the
         // multi-chunk state carry.

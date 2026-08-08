@@ -97,7 +97,7 @@ public sealed class VulkanMtpDecoderTests
     public void MtpForward_ProducesFiniteDraftLogits()
     {
         using var gpu = TryCreateVulkan();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no usable GPU backend in this environment");
         var path = FindMtpModelPath();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
@@ -141,7 +141,7 @@ public sealed class VulkanMtpDecoderTests
     public void MtpDecoder_BatchedGreedy_CoherentWithAcceptedDrafts()
     {
         using var gpu = TryCreateVulkan();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no usable GPU backend in this environment");
         var path = FindMtpModelPath();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 

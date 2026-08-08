@@ -67,7 +67,7 @@ public sealed class CudaHybridGdnForwardPassTests
     public void CudaHybridGdnForwardPass_Qwen35Moe_ProducesWellFormedLogits()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
 
         var path = FindHybridModelPath();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
@@ -153,7 +153,7 @@ public sealed class CudaHybridGdnForwardPassTests
     public void CudaHybridGdnForwardPass_Qwen35Moe_FirstTokenMatchesCpuBaseline()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
 
         var path = FindHybridModelPath();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
@@ -199,7 +199,7 @@ public sealed class CudaHybridGdnForwardPassTests
     public void CudaHybridGdnForwardPass_Qwen35Moe_CpuMoeMode_MatchesCpuBaseline()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
 
         var path = FindHybridModelPath();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
@@ -279,7 +279,7 @@ public sealed class CudaHybridGdnForwardPassTests
     public void CudaHybridGdnForwardPass_Qwen35Mtp_MtpHeadProducesWellFormedLogits()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
 
         var path = FindMtpModelPath();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
@@ -360,7 +360,7 @@ public sealed class CudaHybridGdnForwardPassTests
     public void CudaHybridGdnForwardPass_Qwen35Mtp_Bf16KvCache_GreedyMatchesFp32()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
 
         var path = FindMtpModelPath();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
@@ -447,7 +447,7 @@ public sealed class CudaHybridGdnForwardPassTests
     public void CudaHybridGdnForwardPass_SplitKv_MatchesSingleBlock()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
         var path = FindHybridModelPath();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 

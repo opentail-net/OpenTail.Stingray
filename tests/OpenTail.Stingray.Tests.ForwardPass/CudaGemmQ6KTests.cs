@@ -59,7 +59,7 @@ public sealed unsafe class CudaGemmQ6KTests
     public void MatMulBatchedGemm_Q6K_TracksCpuReference()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
 
         // Square, a wide multi-superblock single-token-tile batch, and a partial-tile
         // (non-power-of-two rows) case to exercise the GEMM tail.
@@ -129,7 +129,7 @@ public sealed unsafe class CudaGemmQ6KTests
     public void Q6KSoaReaders_AreBitIdenticalToAos()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
 
         // Shapes: attn_v-like (1024 rows → WS/decode-ineligible), ffn_down-half-like (2048),
         // a partial-tile (300), and a wider multi-superblock (512 rows × 1024 cols).

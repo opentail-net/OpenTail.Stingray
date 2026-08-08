@@ -118,7 +118,7 @@ public sealed unsafe class CudaDequantRowsTests
     public void DequantRowsQ8_0_BitIdenticalToCpu(int rows, int rowDim)
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
         var rng = new Random(20260615 + rows * 131 + rowDim);
         AssertBitIdentical(gpu, BuildQ8_0Rows(rows, rowDim, rng), DType.Q8_0, rows, rowDim, q8: true);
     }
@@ -130,7 +130,7 @@ public sealed unsafe class CudaDequantRowsTests
     public void DequantRowsQ6K_BitIdenticalToCpu(int rows, int rowDim)
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
         var rng = new Random(20260615 + rows * 137 + rowDim);
         AssertBitIdentical(gpu, BuildQ6KRows(rows, rowDim, rng), DType.Q6_K, rows, rowDim, q8: false);
     }

@@ -52,6 +52,14 @@ public sealed record TokenizerSource
     /// </summary>
     public string ModelFamily { get; init; } = string.Empty;
 
+    /// <summary>
+    /// The GGUF <c>tokenizer.ggml.pre</c> value, naming the pre-tokenizer variant (e.g.
+    /// <c>"tekken"</c> for the Mistral-Nemo family). Byte-level BPE vocabs that share a merges
+    /// format still differ in how text is split before merging, and that split is not derivable
+    /// from the vocab, so it has to be carried explicitly. Empty when the model declares none.
+    /// </summary>
+    public string TokenizerPre { get; init; } = string.Empty;
+
     /// <summary>Jinja chat template, or null when the package ships none.</summary>
     public string? ChatTemplate { get; init; }
 }

@@ -110,7 +110,7 @@ public sealed class CudaHybridKvDtypeTests : IDisposable
     private void AssertHybridSplitKvParity(string? path, string kvDtype, float maxAbsTol)
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         const int steps = 5;
@@ -166,7 +166,7 @@ public sealed class CudaHybridKvDtypeTests : IDisposable
     private void AssertKvParity(string? path, string kvDtype, string prompt, float maxAbsTol, int ctx = 2048)
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         const int steps = 6;
@@ -207,7 +207,7 @@ public sealed class CudaHybridKvDtypeTests : IDisposable
     private void AssertGreedyCoherence(string? path, string kvDtype, string userMessage, int ctx = 2048)
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
         // Render the model's OWN chat template (#230 review): a raw continuation prompt makes an
         // instruct model collapse to a single token regardless of KV dtype (the 'prompt must match

@@ -134,7 +134,7 @@ public sealed class VulkanHybridGdnE2ETests
             var cudaTokens = new int[DecodeSteps];
             {
                 using var cuda = TryCreateCuda();
-                Assert.SkipUnless(cuda is not null, "model fixture not present in this environment");
+                Assert.SkipUnless(cuda is not null, "no CUDA device in this environment");
                 using var cfwd = new CudaHybridGdnForwardPass(model, cuda, hp, GdnPlacement(hp));
 
                 var logits = cfwd.Prefill(prompt);
@@ -417,7 +417,7 @@ public sealed class VulkanHybridGdnE2ETests
             var cudaTokens = new int[DecodeSteps];
             {
                 using var cuda = TryCreateCuda();
-                Assert.SkipUnless(cuda is not null, "model fixture not present in this environment");
+                Assert.SkipUnless(cuda is not null, "no CUDA device in this environment");
                 using var cfwd = new CudaHybridGdnForwardPass(model, cuda, hp, GdnPlacement(hp));
 
                 var logits = cfwd.Prefill(prompt);

@@ -153,9 +153,17 @@ public sealed class StaticPlanConfigurationTests
             .Sum(path => File.ReadLines(path).Count(line => line.Contains("[CommandOption", StringComparison.Ordinal)));
 
         string inventory = File.ReadAllText(Path.Combine(root, "docs", "cli-option-inventory.md"));
-        Match count = Regex.Match(inventory, @"source scan now finds \*\*(\d+)\*\* `\[CommandOption\]`");
+        Match count = Regex.Match(inventory, @"\*\*(\d+) option declarations\*\*");
         Assert.True(count.Success, "CLI option inventory must declare its current source option count.");
         Assert.Equal(sourceCount, int.Parse(count.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture));
+
+        // The declared count alone was not enough: it tracked source correctly while the TABLE
+        // silently fell to 96 rows against 149 options, which is exactly the drift the document
+        // warned about. Assert the rows too, so the inventory cannot be half-current again.
+        int rows = Regex.Matches(inventory, @"(?m)^\| `[^`]+` \|").Count;
+        Assert.True(rows == sourceCount,
+            $"cli-option-inventory.md has {rows} option rows but src declares {sourceCount}. " +
+            "Regenerate with scripts/gen-cli-option-inventory.ps1.");
     }
 
     private static string FindRepositoryRoot()

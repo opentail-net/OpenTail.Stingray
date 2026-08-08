@@ -55,7 +55,7 @@ public sealed unsafe class CudaQ4KPrefillMatmulProbe
     public void Q4K_PrefillMatmul_AchievedThroughput_AtRealShapes()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
 
         // Qwen3-8B trunk matmuls (rows=out, cols=in) at the real prefill batch N=1844.
         // hidden=4096, intermediate=12288, qkv=6144 (32+8+8 heads × 128).

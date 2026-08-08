@@ -64,7 +64,7 @@ public sealed unsafe class CudaMmqSoaTests
     public void MatMulBatchedMmqSoa_BitIdenticalToInterleaved()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
 
         foreach ((int rows, int cols, int nTok) in new[]
                  { (256, 256, 8), (1024, 512, 12), (128, 2560, 64), (2048, 8192, 256), (6144, 2048, 200) })
@@ -109,7 +109,7 @@ public sealed unsafe class CudaMmqSoaTests
     public void MmqSoa_Vs_Interleaved_Speed_AtRealPrefillNtok()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
 
         // FFN/qkv prefill GEMMs at a REALISTIC prefill nTok (~2K prompt batched at once),
         // not the 1024 the earlier roofline probe used (which mismeasured occupancy).
@@ -169,7 +169,7 @@ public sealed unsafe class CudaMmqSoaTests
     public void GpuRepack_AllSoaReaders_BitIdenticalToInterleaved()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
 
         foreach ((int rows, int cols) in new[] { (256, 256), (1024, 512), (512, 2560) })
         {

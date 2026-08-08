@@ -134,7 +134,7 @@ public sealed class CudaSnapKvBatchingTests
     public void Qwen3_8B_ExplicitSnapKv_SupportsContinuousBatching()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
         var path = FindModelPath();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
@@ -158,7 +158,7 @@ public sealed class CudaSnapKvBatchingTests
     public void Qwen3_8B_SnapKvBatchedDecode_N1_MatchesSingleUser()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
         var path = FindModelPath();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
@@ -205,7 +205,7 @@ public sealed class CudaSnapKvBatchingTests
     public void Qwen3_8B_SnapKvBatchedDecode_N2_PerSequenceEviction()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
         var path = FindModelPath();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
@@ -264,7 +264,7 @@ public sealed class CudaSnapKvBatchingTests
     public void Qwen3_8B_SnapKvBatchedDecode_MixedEvictedAndNot()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
         var path = FindModelPath();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
@@ -327,7 +327,7 @@ public sealed class CudaSnapKvBatchingTests
     public void Qwen3_8B_RaggedEvictedDecode_BitIdentical_To_PerSequenceLoop_N2()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
         var path = FindModelPath();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
@@ -381,7 +381,7 @@ public sealed class CudaSnapKvBatchingTests
     public void Qwen3_8B_RaggedEvictedDecode_BitIdentical_To_PerSequenceLoop_MixedEvictedAndNot()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
         var path = FindModelPath();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
@@ -436,7 +436,7 @@ public sealed class CudaSnapKvBatchingTests
     public void Qwen3_8B_PreferBatching_SuppressesAutoSnapKv()
     {
         using var gpu = TryCreate();
-        Assert.SkipUnless(gpu is not null, "model fixture not present in this environment");
+        Assert.SkipUnless(gpu is not null, "no CUDA device in this environment");
         var path = FindModelPath();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
