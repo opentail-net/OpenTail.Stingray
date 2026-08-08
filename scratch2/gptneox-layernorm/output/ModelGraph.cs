@@ -95,21 +95,23 @@ public sealed record ModelHyperparams
     public bool HasAttnOutputBias { get; init; }
 
     /// <summary>
-    /// Whether the model carries learned biases for its attention, FFN, and output normalization
-    /// tensors. This identifies LayerNorm-style normalization rather than the RMSNorm path.
+    /// Whether the model has learned bias terms on norm layers (attn_norm, ffn_norm, output_norm).
+    /// LayerNorm models (e.g. GPT-NeoX) have bias terms; RMSNorm models do not.
+    /// Detected at load time by probing for "blk.0.attn_norm.bias" in the GGUF tensor index.
     /// </summary>
     public bool HasNormBias { get; init; }
 
     /// <summary>
-    /// Whether the dense FFN carries biases on both the up and down projections. GPT-NeoX uses
-    /// this with a non-gated GELU FFN, so the forward pass adds the up bias before activation and
-    /// the down bias before the residual addition.
+    /// Whether the model has learned bias terms on FFN projections (ffn_up, ffn_down).
+    /// GPT-NeoX models carry FFN bias terms.
+    /// Detected at load time by probing for "blk.0.ffn_up.bias" in the GGUF tensor index.
     /// </summary>
     public bool HasFfnBias { get; init; }
 
     /// <summary>
-    /// Whether attention and FFN consume the same incoming residual and their outputs are added
-    /// together with it, rather than using the ordinary sequential residual structure.
+    /// Whether the model uses parallel residual connections (attention and FFN read the same
+    /// normalized input independently, and layer output is input + attn_out + ffn_out).
+    /// Read from {arch}.use_parallel_residual (true for Pythia/GPT-NeoX).
     /// </summary>
     public bool UseParallelResidual { get; init; }
 
@@ -335,6 +337,7 @@ public sealed record ModelHyperparams
             || (tensorSource?.FindTensor("blk.0.attn_norm.bias") is not null);
         bool hasFfnBias = metadata.ContainsKey("_opentailllm.has_ffn_bias")
             || (tensorSource?.FindTensor("blk.0.ffn_up.bias") is not null);
+        bool useParallelResidual = GetBool(metadata, $"{arch}.use_parallel_residual");
         bool hasQkNorm = metadata.ContainsKey("_opentailllm.has_qk_norm")
             || (tensorSource?.FindTensor("blk.0.attn_q_norm.weight") is not null);
         bool perChannelQkNorm = false;
@@ -465,6 +468,12 @@ public sealed record ModelHyperparams
         IReadOnlyList<int>? layerRopeDim = null;
         IReadOnlyList<int>? layerKvHeads = null;
         bool attentionKEqV = false;
+
+        bool isGptNeox = arch.Equals("gptneox", StringComparison.OrdinalIgnoreCase);
+        if (isGptNeox)
+        {
+            ffnActivation = FfnActivation.Gelu;
+        }
 
         if (isGemma4)
         {
@@ -658,14 +667,6 @@ public sealed record ModelHyperparams
             xieluAlphaP = alphaP;
         }
 
-        if (xieluAlphaN is not null && hasFfnBias)
-        {
-            throw new NotSupportedException(
-                "A non-gated FFN cannot be both xIELU and biased GELU; refusing an ambiguous tensor layout.");
-        }
-
-        bool useParallelResidual = GetBool(metadata, $"{arch}.use_parallel_residual");
-
         return new ModelHyperparams
         {
             VocabSize = GetInt(metadata, $"{arch}.vocab_size"),
@@ -678,8 +679,9 @@ public sealed record ModelHyperparams
                             GetInt(metadata, $"{arch}.attention.head_count")),
             IntermediateDim = GetInt(metadata, $"{arch}.feed_forward_length"),
             HeadDim = headDim,
-            RmsNormEps = GetFloat(metadata, $"{arch}.attention.layer_norm_rms_epsilon",
-                GetFloat(metadata, $"{arch}.attention.layer_norm_epsilon", 1e-5f)),
+            RmsNormEps = GetFloat(metadata, $"{arch}.attention.layer_norm_rms_epsilon") is float rmsEps && rmsEps != 0f
+                ? rmsEps
+                : GetFloat(metadata, $"{arch}.attention.layer_norm_epsilon", 1e-5f),
             RopeTheta = GetFloat(metadata, $"{arch}.rope.freq_base", 10_000f),
             HasAttnBias = hasAttnBias,
             HasAttnOutputBias = hasAttnOutputBias,
@@ -743,11 +745,11 @@ public sealed record ModelHyperparams
         return Convert.ToInt32(v);
     }
 
-    private static bool GetBool(IReadOnlyDictionary<string, object> m, string key, bool fallback = false) =>
-        m.TryGetValue(key, out var v) ? Convert.ToBoolean(v) : fallback;
-
     private static float GetFloat(IReadOnlyDictionary<string, object> m, string key, float fallback = 0f) =>
         m.TryGetValue(key, out var v) ? Convert.ToSingle(v) : fallback;
+
+    private static bool GetBool(IReadOnlyDictionary<string, object> m, string key, bool fallback = false) =>
+        m.TryGetValue(key, out var v) ? Convert.ToBoolean(v) : fallback;
 
     /// <summary>
     /// Reads a per-layer integer array (e.g. Gemma 4's per-layer
@@ -845,6 +847,7 @@ public enum FfnActivation
 {
     Silu = 0,
     GeluApprox = 1,
+    Gelu = 2,
 }
 
 /// <summary>

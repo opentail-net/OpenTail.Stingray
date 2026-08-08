@@ -404,8 +404,9 @@ first):**
 **What each architecture actually needs, grouped by shared kernel/mechanism (so the highest-leverage
 item is obvious — build once, unlocks several):**
 
-1. **LayerNorm-with-bias + non-gated FFN.** Needed by `starcoder2`, `falcon`, `stablelm`, `gptneox`
-   (all four already identified, §1c) — and now also `nemotron` (license-blocked) uses the same
+1. **LayerNorm-with-bias + non-gated FFN. `gptneox` BUILT and ADMITTED — see §1h.** Needed by
+   `starcoder2`, `falcon`, `stablelm`, `gptneox` (all four already identified, §1c) — and now also
+   `nemotron` (license-blocked) uses the same
    LayerNorm-with-bias norm, though its FFN activation is ReLU² not GELU. Concretely: (a) a
    `LayerNorm` op (mean-subtract + variance-normalize + learned scale/bias, vs the RMSNorm this
    engine has everywhere today) as a CPU/SIMD kernel parallel to `SimdKernels.RmsNorm`; (b) a
@@ -539,6 +540,104 @@ closely-contested position, the same category of evidence the OLMoE receipt was 
 paths today would hit the ordinary gated-FFN code (since they were never touched) and either throw
 on the missing `ffn_gate` tensor or silently misbehave — track before enabling Apertus outside the
 CPU dense single-user path this receipt covers.
+
+---
+
+### 1h. `gptneox` — ADMITTED 2026-08-09, 22-of-24-token exact match, second new-kernel
+architecture built this session
+
+`EleutherAI/pythia-160m` (Apache-2.0), via `mradermacher/pythia-160m-GGUF`, Q8_0 (174.6 MB, deleted
+after this receipt). `tokenizer.ggml.pre = olmo` — already covered by the existing pretokenizer
+cascade; `tokenizer.ggml.model = gpt2` (byte-BPE), so this exercised the architecture axis only.
+
+**What GPT-NeoX needs beyond the plain llama trunk — four things, all new to this engine, built and
+independently cross-checked against `examples/llama.cpp/llama.cpp/src/models/gptneox.cpp` and
+`conversion/gptneox.py` (not just against a third-party summary — see the process note below):**
+
+1. **LayerNorm** (mean-subtract + learned scale + learned bias), not RMSNorm, on every norm in the
+   model — `SimdKernels.LayerNorm`, dispatched via a new `ForwardPass.FastNorm` helper whenever
+   `ModelHyperparams.HasNormBias` is set (detected from tensor inventory, `blk.0.attn_norm.bias`,
+   the same pattern `HasAttnBias` already uses — not from the architecture string).
+2. **A non-gated, biased GELU FFN**: `down(gelu(up(x) + bUp)) + bDown` — no `ffn_gate` tensor, same
+   tensor-inventory detection Apertus's xIELU already established (`_wGate[layer].DataPtr is null`);
+   the two non-gated activations are distinguished by `_xieluAlphaN is not null` (xIELU) vs not
+   (GELU). `SimdKernels.GeluInPlace` is the tanh-approximate GELU, same constants as the existing
+   `GeluTanhMul` kernel, confirmed against `ggml_gelu_f32` in `ggml/src/ggml-cpu/vec.h`.
+3. **Parallel residual** (`gptneox.use_parallel_residual`, always true on Pythia checkpoints):
+   attention and FFN both read the SAME pre-layer residual through two INDEPENDENT LayerNorms
+   (`attn_norm`/`ffn_norm`, separate learned weight+bias each), and the layer output is a 3-way sum
+   `x + attn(ln1(x)) + ffn(ln2(x))` — not the ordinary sequential `x1 = x + attn(ln1(x)); out = x1 +
+   ffn(ln2(x1))`. Implemented as an isolated `if (_hp.UseParallelResidual) { ... } else { /*
+   untouched sequential path */ }` branch in both `RunTrunk` (decode) and `PrefillCore` (prefill),
+   so every other architecture's code is byte-identical to before this work.
+4. **Fused `attn_qkv.weight`/`attn_qkv.bias`** (2304-wide on this checkpoint) rather than separate
+   `attn_q`/`attn_k`/`attn_v` tensors. Cross-checked directly against llama.cpp's converter
+   (`conversion/gptneox.py`) and graph builder (`gptneox.cpp`'s `build_qkv`): the fused tensor is a
+   plain **contiguous** concatenation — all Q rows, then all K rows, then all V rows — split here by
+   byte/row offset with zero data copy (three `TensorRef`s pointing into one backing tensor). This
+   matters because an independent third-party review of an earlier draft (see the process note)
+   claimed the layout was **interleaved per head** (`Q0,K0,V0,Q1,K1,V1,...`); that claim was
+   verified false against the actual conversion source before any code was written against it —
+   the interleaved layout does not exist in this checkpoint format.
+
+**Partial RoPE and the epsilon key — both already-generic mechanisms, not gptneox-specific code.**
+`gptneox.rope.dimension_count=16` (headDim is 64) — `ModelHyperparams.RopeDim` already reads this
+generically (added earlier for qwen35moe), so no new metadata-parsing code was needed. What WAS
+missing: `ForwardPass.ApplyRopeLayer` (used by both `RunTrunk` and `PrefillCore`) always rotated the
+full `headDim`, ignoring `RopeDim` — harmless for every prior architecture (where `RopeDim ==
+headDim`) but wrong for gptneox. Fixed by adding a `_ropeDim` field and dispatching to the
+already-existing `SimdKernels.ApplyRoPECachedNeoxPartial` kernel (built earlier for qwen35moe,
+previously unused by the plain CPU dense path) whenever `_ropeDim < headDim`. `RmsNormEps` already
+falls back from `{arch}.attention.layer_norm_rms_epsilon` (absent for gptneox) to
+`{arch}.attention.layer_norm_epsilon` (gptneox's actual key) — extended this fallback chain rather
+than adding new gptneox-specific epsilon-reading code.
+
+**One real defect found by the test, not by inspection:** `PrefillCore`'s final output-norm (both
+the normal last-token-only path and the `onAllPositionLogits` diagnostic path) called
+`SimdKernels.RmsNorm` directly, never updated to the new bias-aware `FastNorm` dispatcher —
+`RunTrunk`'s equivalent final norm WAS updated. Symptom: `GptNeox_GreedyContinuation_MatchesLlamaCpp`
+(argmax-only assertions) passed regardless, because omitting a per-channel additive bias before the
+output projection shifts every position's logits by the same `outputWeight × bias` vector, which
+generally does not reorder the top candidates. `GptNeox_DecodeStepwise_AgreesWithSinglePassPrefill`
+(exact logit-magnitude assertion) caught it immediately: prefill-in-one-call vs prefill-then-decode
+disagreed by 261.6 logits despite computing the *same argmax* at every position — confirmed by a
+temporary per-position argmax dump before touching any code, which is what pointed at "same
+decisions, different scale" rather than a routing/attention bug. Fixed by routing both call sites
+through `FastNorm`; the stepwise test now agrees exactly (`maxDiff` at or near 0.0000, measured
+directly) and is kept at the Apertus/OLMoE precedent bound (`< 5.0`) rather than tightened, since the
+exact margin can shift with unrelated CPU-kernel tuning.
+
+**Result: 22 of 24 tokens EXACT** (reference: `llama-completion -m pythia-160m-Q8_0.gguf -p "The
+capital of France is" -n 24 --temp 0 --top-k 1 --seed 0 -no-cnv --override-kv
+tokenizer.ggml.add_bos_token=bool:false` → `" located in the city of Paris.\n\nThe city is also home
+to the famous French football club, the Paris Saint"`). This engine matches token-for-token through
+"...football club, the " and diverges only at the last two tokens (401 " F", logit 830.052 vs 7785
+" Paris", this engine's own logit 830.045 — a 0.007 near-tie, the same category of evidence the
+OLMoE/Apertus receipts were accepted on). Stronger than the Apertus receipt (11/24) and the OLMoE
+receipt (2-token prefix). See `GptNeoxGreedyParityTests.cs`.
+
+**NOT wired (same pattern as every prior receipt this session):** `PrefillCoreTq` (TurboQuant),
+`PrefillWithCache` (continuous-batching admission), `BatchForwardMulti`/`PrefillPackedMulti`, and the
+CUDA/Vulkan backends know nothing about `HasNormBias`/`HasFfnBias`/`UseParallelResidual`.
+`use_parallel_residual=false` (never set on any Pythia checkpoint) is implemented but has zero test
+coverage — reviewed by inspection only.
+
+**Process note — why this took two build attempts.** An earlier attempt at this same architecture,
+made by a delegated agent within this session, produced a working implementation with a genuine,
+evidence-backed writeup (two real defects found and fixed: a flipped residual-copy direction, and
+three bias pointers aliased into one allocation that corrupted the native heap on `Dispose`). That
+work was subsequently lost from the real `src/` tree by an out-of-band edit unrelated to this task
+(confirmed via `git hash-object` matching a clean pre-gptneox commit), leaving the tree in a
+non-compiling state — `ForwardPass.cs`/`SimdKernels.cs`/`ModelGraph.cs`/`ModelCompatibility.cs`
+inconsistent with each other and with the already-written parity test. Rather than restore the lost
+work verbatim from its last surviving draft copy, it was rebuilt from a fresh, line-by-line review:
+every claim (QKV layout, epsilon key, parallel-residual formula, GELU constants) was independently
+re-verified against the real `llama.cpp` reference source before being written into `src/`, which is
+what caught both the false "interleaved QKV" claim in a third-party review document and the
+PrefillCore final-norm bug above — neither of which the lost draft's own writeup had mentioned,
+meaning that writeup's "0.0000 exact" stepwise-parity claim did not describe the code that was
+actually rebuilt. Consistent with this plan's standing evidence rule: a prior AI's or agent's own
+summary of its results is not evidence of correctness on its own.
 
 ---
 

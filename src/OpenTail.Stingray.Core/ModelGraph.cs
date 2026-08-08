@@ -95,6 +95,31 @@ public sealed record ModelHyperparams
     public bool HasAttnOutputBias { get; init; }
 
     /// <summary>
+    /// Whether the model carries learned biases on its attention-norm, FFN-norm, and
+    /// output-norm tensors — i.e. uses LayerNorm (mean/variance-normalize + learned
+    /// scale/bias) rather than the RMSNorm path. GPT-NeoX/Pythia is the first user.
+    /// Detected at load time by probing for "blk.0.attn_norm.bias".
+    /// </summary>
+    public bool HasNormBias { get; init; }
+
+    /// <summary>
+    /// Whether the dense FFN carries biases on both the up and down projections
+    /// (<c>blk.*.ffn_up.bias</c> / <c>blk.*.ffn_down.bias</c>). GPT-NeoX pairs this with a
+    /// non-gated GELU FFN: <c>down(gelu(up(x) + bUp)) + bDown</c> — the up bias goes inside
+    /// the activation, not after it.
+    /// </summary>
+    public bool HasFfnBias { get; init; }
+
+    /// <summary>
+    /// Whether attention and FFN both read the SAME incoming residual and their outputs are
+    /// summed with it three ways (<c>x + attn(ln1(x)) + ffn(ln2(x))</c>), rather than the
+    /// ordinary sequential residual (<c>x1 = x + attn(ln1(x)); out = x1 + ffn(ln2(x1))</c>).
+    /// GPT-NeoX-family models read this from GGUF metadata (<c>gptneox.use_parallel_residual</c>,
+    /// llama.cpp's <c>LLM_KV_USE_PARALLEL_RESIDUAL</c>); Pythia checkpoints always set it true.
+    /// </summary>
+    public bool UseParallelResidual { get; init; }
+
+    /// <summary>
     /// Whether the model has per-head Q/K RMSNorm (e.g. Qwen3).
     /// Detected at load time by probing for "blk.0.attn_q_norm.weight" in the GGUF tensor index.
     /// </summary>
@@ -306,11 +331,18 @@ public sealed record ModelHyperparams
 
         // Detect features by probing tensor names
         bool hasAttnBias = metadata.ContainsKey("_opentailllm.has_attn_bias")
-            || (tensorSource?.FindTensor("blk.0.attn_q.bias") is not null);
+            || (tensorSource?.FindTensor("blk.0.attn_q.bias") is not null)
+            // GPT-NeoX/Pythia ships a fused blk.N.attn_qkv.bias rather than separate
+            // attn_q/attn_k/attn_v biases — see ForwardPass's fused-QKV constructor path.
+            || (tensorSource?.FindTensor("blk.0.attn_qkv.bias") is not null);
         // The output-projection bias is optional even when Q/K/V bias is present (Qwen2 omits it).
         bool hasAttnOutputBias = hasAttnBias
             && (metadata.ContainsKey("_opentailllm.has_attn_output_bias")
                 || (tensorSource?.FindTensor("blk.0.attn_output.bias") is not null));
+        bool hasNormBias = metadata.ContainsKey("_opentailllm.has_norm_bias")
+            || (tensorSource?.FindTensor("blk.0.attn_norm.bias") is not null);
+        bool hasFfnBias = metadata.ContainsKey("_opentailllm.has_ffn_bias")
+            || (tensorSource?.FindTensor("blk.0.ffn_up.bias") is not null);
         bool hasQkNorm = metadata.ContainsKey("_opentailllm.has_qk_norm")
             || (tensorSource?.FindTensor("blk.0.attn_q_norm.weight") is not null);
         bool perChannelQkNorm = false;
@@ -634,6 +666,25 @@ public sealed record ModelHyperparams
             xieluAlphaP = alphaP;
         }
 
+        if (xieluAlphaN is not null && hasFfnBias)
+        {
+            // Both are non-gated FFN activations, but wire to mutually exclusive tensor sets
+            // (xIELU: unbiased up/down + xielu.* params; GPT-NeoX GELU: biased up/down, no
+            // xielu.* params). A GGUF advertising both would mean the tensor inventory doesn't
+            // match either known non-gated architecture — refuse rather than guess.
+            throw new NotSupportedException(
+                "A non-gated FFN cannot be both xIELU and biased-GELU; refusing an ambiguous tensor layout.");
+        }
+
+        // GPT-NeoX/Pythia parallel-residual flag (llama.cpp LLM_KV_USE_PARALLEL_RESIDUAL).
+        // The converter always writes this key for gptneox (defaulting the HF config's own
+        // absence to true), so the GetBool fallback below only matters for a hand-edited GGUF.
+        // Falcon has no such metadata key at all — its graph (src/models/falcon.cpp) hardcodes
+        // the same 3-way residual sum unconditionally, so it's hardcoded here to match rather
+        // than read from a key that was never written.
+        bool useParallelResidual = arch == "falcon"
+            || GetBool(metadata, $"{arch}.use_parallel_residual");
+
         return new ModelHyperparams
         {
             VocabSize = GetInt(metadata, $"{arch}.vocab_size"),
@@ -646,10 +697,17 @@ public sealed record ModelHyperparams
                             GetInt(metadata, $"{arch}.attention.head_count")),
             IntermediateDim = GetInt(metadata, $"{arch}.feed_forward_length"),
             HeadDim = headDim,
-            RmsNormEps = GetFloat(metadata, $"{arch}.attention.layer_norm_rms_epsilon", 1e-5f),
+            // GPT-NeoX stores LayerNorm epsilon under attention.layer_norm_epsilon (the LayerNorm
+            // key), not attention.layer_norm_rms_epsilon (the RMSNorm key other architectures use)
+            // — the first GetFloat returns its 0f default and falls through for gptneox.
+            RmsNormEps = GetFloat(metadata, $"{arch}.attention.layer_norm_rms_epsilon",
+                GetFloat(metadata, $"{arch}.attention.layer_norm_epsilon", 1e-5f)),
             RopeTheta = GetFloat(metadata, $"{arch}.rope.freq_base", 10_000f),
             HasAttnBias = hasAttnBias,
             HasAttnOutputBias = hasAttnOutputBias,
+            HasNormBias = hasNormBias,
+            HasFfnBias = hasFfnBias,
+            UseParallelResidual = useParallelResidual,
             HasQkNorm = hasQkNorm,
             IsPerChannelQkNorm = perChannelQkNorm,
             IsMoE = isMoE,
@@ -709,6 +767,9 @@ public sealed record ModelHyperparams
 
     private static float GetFloat(IReadOnlyDictionary<string, object> m, string key, float fallback = 0f) =>
         m.TryGetValue(key, out var v) ? Convert.ToSingle(v) : fallback;
+
+    private static bool GetBool(IReadOnlyDictionary<string, object> m, string key, bool fallback = false) =>
+        m.TryGetValue(key, out var v) ? Convert.ToBoolean(v) : fallback;
 
     /// <summary>
     /// Reads a per-layer integer array (e.g. Gemma 4's per-layer

@@ -1,0 +1,802 @@
+there are a couple of important details the other AI has compressed away.
+
+The biggest correction is this: Pythia/GPT-NeoX does not send attention and FFN the exact same normalized tensor. Both branches read the same incoming residual x, but through two different LayerNorms with separate learned weights and biases:
+
+attn = Attention(LayerNorm1(x))
+ffn  = MLP      (LayerNorm2(x))
+out  = x + attn + ffn
+
+That is the GPT-NeoX parallel-residual structure. Hugging Face's reference implementation does exactly this.
+
+What Pythia-160M actually is
+
+For EleutherAI/pythia-160m-deduped, the important architectural values are:
+
+Property	Value
+architecture	GPT-NeoX
+layers	12
+hidden size	768
+attention heads	12
+head dimension	64
+FFN/intermediate	3072
+vocab	50,304
+context	2048
+activation	GELU
+LayerNorm epsilon	1e-5
+RoPE base	10,000
+rotary percentage	25%
+rotary dims/head	16 of 64
+parallel residual	yes
+tied embeddings	no
+BOS	0
+EOS	0
+
+Those values come directly from the published model config.
+
+So supporting it means adding a GPT-NeoX execution shape, rather than merely recognising model_type = gpt_neox.
+
+1. The new LayerNorm primitive
+
+This is the largest genuinely new numerical primitive if your engine currently only has RMSNorm.
+
+RMSNorm essentially does:
+
+rms = sqrt(mean(x²) + eps)
+y[i] = x[i] / rms * weight[i]
+
+LayerNorm does:
+
+mean = mean(x)
+
+variance =
+    mean((x[i] - mean)²)
+
+invStd =
+    1 / sqrt(variance + epsilon)
+
+y[i] =
+    ((x[i] - mean) * invStd)
+    * gamma[i]
+    + beta[i]
+
+The gamma is the LayerNorm weight and beta is the LayerNorm bias.
+
+Critically, variance is the population/biased variance:
+
+sum((x - mean)^2) / N
+
+not:
+
+sum((x - mean)^2) / (N - 1)
+
+That matches PyTorch LayerNorm.
+
+For Pythia:
+
+N = 768
+epsilon = 1e-5
+
+for every transformer LayerNorm.
+
+I would make the engine API generic
+
+Something conceptually like:
+
+LayerNorm(
+    input,
+    weight,
+    bias,
+    output,
+    hiddenSize,
+    epsilon);
+
+rather than a PythiaLayerNorm().
+
+And make bias optionally absent, because that makes the primitive useful for other architectures too.
+
+CPU implementation
+
+For correctness-first implementation I would use a two-pass algorithm:
+
+pass 1:
+    mean = sum(x) / N
+
+pass 2:
+    variance = sum((x - mean)^2) / N
+
+pass 3/vector loop:
+    output =
+        (x - mean)
+        * rsqrt(variance + epsilon)
+        * gamma
+        + beta
+
+You can merge the second/output passes only if you're careful.
+
+I'd accumulate statistics in float at minimum even if the underlying weights are F16. Don't prematurely produce some heroic AVX2 fused kernel until reference parity works.
+
+Then AVX2 optimisation is straightforward because 768 is comfortably vectorisable.
+
+2. LayerNorm biases become first-class weights
+
+This is separate from implementing the calculation.
+
+Your model representation apparently currently assumes norm ≈:
+
+NormWeight
+
+Pythia requires:
+
+NormWeight
+NormBias
+
+And every layer has two LayerNorms.
+
+Conceptually layer i contains:
+
+gpt_neox.layers.i.input_layernorm.weight
+gpt_neox.layers.i.input_layernorm.bias
+
+gpt_neox.layers.i.post_attention_layernorm.weight
+gpt_neox.layers.i.post_attention_layernorm.bias
+
+and after all 12 layers:
+
+gpt_neox.final_layer_norm.weight
+gpt_neox.final_layer_norm.bias
+
+The published GPT-NeoX weight maps confirm these parameters.
+
+So for Pythia-160M that's:
+
+12 × 2 × LayerNorm(weight+bias)
++
+1 final LayerNorm(weight+bias)
+
+or 25 LayerNorm operations per token through the model:
+
+24 inside blocks
+1 final
+3. The parallel residual restructure
+
+This is architecturally more significant than the LayerNorm kernel.
+
+Most Llama-style engines effectively do something like:
+
+x = x + Attention(Norm(x))
+x = x + MLP(Norm(x))
+
+The MLP therefore receives the post-attention residual stream.
+
+Pythia does not.
+
+It does:
+
+residual = x
+
+a = Attention(
+      InputLayerNorm(residual)
+    )
+
+m = MLP(
+      PostAttentionLayerNorm(residual)
+    )
+
+x = residual + a + m
+
+Hugging Face implements the parallel case exactly as:
+
+attention(input_layernorm(hidden_states))
+
+mlp(post_attention_layernorm(hidden_states))
+
+hidden_states =
+    mlp_output
+    + attn_output
+    + hidden_states
+
+That means your execution engine needs to preserve x until both branches have completed.
+
+Don't accidentally implement this
+x1 = x + attention(...)
+ffn = MLP(LN(x1))
+out = x1 + ffn
+
+That is ordinary sequential pre-norm and will produce completely wrong logits.
+
+Also don't implement this
+normed = LayerNorm(x)
+
+attn = Attention(normed)
+ffn  = MLP(normed)
+
+because GPT-NeoX has two independently parameterised LayerNorms.
+
+It's:
+
+attnInput = LN1(x)
+ffnInput  = LN2(x)
+
+They merely have the same source residual.
+
+4. The FFN is simpler than Llama-style gated FFNs
+
+This part really is relatively easy.
+
+A Llama/SwiGLU-style block looks roughly like:
+
+gate = SiLU(Wgate x)
+up   = Wup x
+
+hidden = gate * up
+
+out = Wdown hidden
+
+GPT-NeoX/Pythia is plain old:
+
+hidden =
+    GELU(
+        Wup x + bUp
+    )
+
+out =
+    Wdown hidden + bDown
+
+Hugging Face's GPT-NeoX MLP has exactly two Linear layers surrounding the activation.
+
+Dimensions for 160M are:
+
+768
+ ↓
+Linear 768 → 3072
+ ↓
+GELU
+ ↓
+Linear 3072 → 768
+
+No gate.
+
+No Hadamard multiply.
+
+No SiLU.
+
+No second input projection.
+
+5. FFN bias is important
+
+The tensors are:
+
+gpt_neox.layers.N.mlp.dense_h_to_4h.weight
+gpt_neox.layers.N.mlp.dense_h_to_4h.bias
+
+gpt_neox.layers.N.mlp.dense_4h_to_h.weight
+gpt_neox.layers.N.mlp.dense_4h_to_h.bias
+
+The GPT-NeoX checkpoints explicitly contain those bias tensors.
+
+So mathematically:
+
+u = Wup × x
+u += bUp
+u = GELU(u)
+
+y = Wdown × u
+y += bDown
+
+Notice where bUp goes:
+
+GELU(Wx + b)
+
+not:
+
+GELU(Wx) + b
+
+That distinction matters.
+
+I would strongly consider making this a generic engine facility:
+
+Linear(weight, optionalBias)
+
+rather than adding Pythia-specific bias handling.
+
+That immediately helps other older transformer families.
+
+6. GELU needs the correct variant
+
+The config says:
+
+"hidden_act": "gelu"
+
+That normally means the standard GELU:
+
+GELU(x) = x Φ(x)
+
+equivalently:
+
+0.5 * x *
+(1 + erf(x / sqrt(2)))
+
+rather than automatically assuming the commonly used tanh approximation. PyTorch distinguishes exact GELU from approximate="tanh".
+
+For initial bring-up, I would use the exact/reference GELU.
+
+Once logits match, benchmark an approximation if you want.
+
+For a 160M diagnostic model, correctness is enormously more useful than shaving microseconds here.
+
+7. There is another issue I'd explicitly check: attention biases
+
+The other AI didn't mention this, probably because your engine already supports them.
+
+But GPT-NeoX also has:
+
+attention.query_key_value.bias
+attention.dense.bias
+
+in addition to the attention weights. Published Pythia/GPT-NeoX checkpoint maps show them.
+
+So each attention block is conceptually:
+
+QKV =
+    Wqkv × normalizedInput
+    + bQkv
+
+...
+
+attentionOutput =
+    Wo × attentionResult
+    + bO
+
+If Stingray already has arbitrary linear biases, fine.
+
+If not, the scope is actually larger than the quoted message suggests.
+
+8. There is an even more important thing to verify: GPT-NeoX QKV layout
+
+This is the thing most likely to produce a model that loads perfectly and outputs complete rubbish.
+
+GPT-NeoX uses one fused projection:
+
+768 → 2304
+
+because:
+
+2304 = 12 heads × 3 × 64
+
+But the output is interpreted per head.
+
+Hugging Face reshapes it effectively as:
+
+[..., 12 heads, 3 * 64]
+
+and then splits that last dimension into:
+
+Q 64
+K 64
+V 64
+
+In other words the logical arrangement is:
+
+head 0:
+    Q0[64]
+    K0[64]
+    V0[64]
+
+head 1:
+    Q1[64]
+    K1[64]
+    V1[64]
+
+...
+
+head 11:
+    Q11
+    K11
+    V11
+
+rather than necessarily:
+
+all Q heads
+all K heads
+all V heads
+
+If your current inference engine assumes the latter representation, you need either:
+
+load-time QKV repacking
+
+or:
+
+GPT-NeoX-aware QKV extraction
+
+I would strongly favour load-time repacking if it allows the hot attention kernel to remain generic.
+
+This deserves its own diagnostic.
+
+9. Pythia has partial RoPE — only 25% of each head
+
+This also needs checking because it is unusual compared with modern Llama-family models.
+
+Head dimension:
+
+768 / 12 = 64
+
+Pythia:
+
+rotary_pct = 0.25
+
+therefore:
+
+rotaryDim = 64 × 0.25 = 16
+
+Only:
+
+Q[..., 0..15]
+K[..., 0..15]
+
+get RoPE.
+
+Dimensions:
+
+16..63
+
+pass through untouched.
+
+And GPT-NeoX uses the rotate-half style over those dimensions:
+
+[x0 ... x7 | x8 ... x15]
+
+       ↓
+
+[-x8 ... -x15 | x0 ... x7]
+
+rather than blindly assuming whatever Llama RoPE layout your existing kernel uses. The reference GPT-NeoX implementation explicitly performs this half-rotation.
+
+So I would add a requirement:
+
+Verify existing RoPE supports GPT-NeoX partial rotary + NeoX rotation convention.
+
+The other AI hasn't mentioned this, which may mean it already verified your current code can do it.
+
+But I wouldn't assume that.
+
+10. Normal attention itself is pleasantly boring
+
+Otherwise Pythia's attention is straightforward.
+
+For 160M:
+
+12 query heads
+12 key heads
+12 value heads
+
+headSize = 64
+
+GQA = no
+MQA = no
+
+scale =
+    1 / sqrt(64)
+  = 1 / 8
+  = 0.125
+
+It uses ordinary causal self-attention and normal K/V caching. The GPT-NeoX reference multiplies QKᵀ by the inverse square-root head scale before softmax.
+
+So if your current MHA implementation already works, this shouldn't require a fundamentally new attention kernel.
+
+11. Output embeddings are not tied
+
+This is another loader concern.
+
+The config explicitly says:
+
+tie_word_embeddings = false
+
+So there are two independent large matrices:
+
+gpt_neox.embed_in.weight
+
+and:
+
+embed_out.weight
+
+Conceptually:
+
+token IDs
+   ↓
+embed_in
+   ↓
+12 transformer blocks
+   ↓
+final LayerNorm
+   ↓
+embed_out / LM head
+   ↓
+logits[50304]
+
+Don't alias the output head to token embeddings just because many architectures do.
+
+For this model each is approximately:
+
+50304 × 768
+
+parameters.
+
+12. Final LayerNorm must change too
+
+It's easy to implement the new LayerNorm inside the transformer and accidentally leave the final norm using RMSNorm.
+
+GPT-NeoX does:
+
+12 layers
+↓
+final_layer_norm
+↓
+LM head
+
+and that final norm is also nn.LayerNorm, not RMSNorm.
+
+It therefore requires:
+
+weight[768]
+bias[768]
+epsilon = 1e-5
+13. The complete layer, mathematically
+
+This is essentially the implementation spec I'd give the AI.
+
+For layer L, incoming residual x:
+
+# ATTENTION BRANCH
+
+a0 =
+    LayerNorm(
+        x,
+        ln1.weight,
+        ln1.bias,
+        eps = 1e-5
+    )
+
+qkv =
+    Wqkv × a0
+    + bqkv
+
+split/repack qkv according to GPT-NeoX layout
+
+apply RoPE to first 16 dimensions
+of each Q/K head only
+
+scores =
+    Q × Kᵀ / sqrt(64)
+
+scores =
+    causal_mask(scores)
+
+probs =
+    softmax(scores)
+
+attn =
+    probs × V
+
+attn =
+    Wo × attn
+    + bo
+
+
+# MLP BRANCH
+
+m0 =
+    LayerNorm(
+        x,                 ← ORIGINAL x
+        ln2.weight,
+        ln2.bias,
+        eps = 1e-5
+    )
+
+m1 =
+    Wup × m0
+    + bUp
+
+m2 =
+    GELU(m1)
+
+mlp =
+    Wdown × m2
+    + bDown
+
+
+# PARALLEL RESIDUAL
+
+xNext =
+    x + attn + mlp
+
+That is the essential Pythia transformer block.
+
+After layer 11:
+
+x =
+    LayerNorm(
+        x,
+        final.weight,
+        final.bias,
+        1e-5
+    )
+
+logits =
+    embed_out.weight × x
+14. Approximate tensor inventory for each layer
+
+For 160M, expect each layer to contain roughly:
+
+input_layernorm.weight                  [768]
+input_layernorm.bias                    [768]
+
+attention.query_key_value.weight        [2304, 768]
+attention.query_key_value.bias          [2304]
+
+attention.dense.weight                  [768, 768]
+attention.dense.bias                    [768]
+
+post_attention_layernorm.weight         [768]
+post_attention_layernorm.bias           [768]
+
+mlp.dense_h_to_4h.weight                [3072, 768]
+mlp.dense_h_to_4h.bias                  [3072]
+
+mlp.dense_4h_to_h.weight                [768, 3072]
+mlp.dense_4h_to_h.bias                  [768]
+
+The published checkpoint naming confirms the corresponding parameter families.
+
+Globally:
+
+gpt_neox.embed_in.weight               [50304,768]
+
+gpt_neox.final_layer_norm.weight       [768]
+gpt_neox.final_layer_norm.bias         [768]
+
+embed_out.weight                       [50304,768]
+15. How I'd actually build this
+
+The other AI's “build it now” recommendation is sensible, but I'd divide the work slightly differently.
+
+I would do it in this order:
+
+Generic Linear bias support
+
+MatMul + optional bias
+
+Unit-test it.
+
+Generic LayerNorm
+
+mean + population variance + gamma + beta
+
+Unit-test against PyTorch.
+
+Plain GELU FFN
+
+Linear+bias → GELU → Linear+bias
+GPT-NeoX weight mapping
+including all norm/FFN/attention biases.
+Verify QKV arrangement
+before attempting generation.
+
+Verify partial NeoX RoPE
+
+16 rotary dimensions out of 64
+Implement parallel residual
+keeping original x alive for both branches.
+Final LayerNorm + untied output head.
+Only then attempt generation.
+
+That sequence isolates failures very well.
+
+16. Don't use text generation as your first diagnostic
+
+For this architecture change I'd make the first test numerical, not:
+
+Does "The meaning of life is" produce plausible English?
+
+You want reference values from Transformers at increasingly large boundaries:
+
+token IDs
+↓
+embedding vector
+
+Layer 0:
+    LN1 output
+    QKV output
+    post-RoPE Q/K
+    attention output
+
+    LN2 output
+    FFN-up output
+    GELU output
+    FFN-down output
+
+    residual output
+
+Layer 1 output
+...
+Layer 11 output
+
+final LayerNorm
+logits
+
+Then compare Stingray with Python/Hugging Face.
+
+The best diagnostic is often:
+
+max absolute difference
+mean absolute difference
+cosine similarity
+
+for a fixed tiny prompt.
+
+You will immediately discover where divergence begins.
+
+17. Pythia-160M is actually an excellent model for doing this
+
+Despite the quoted AI saying the support is “bigger than anything built today”, the model itself is ideal for an architectural expansion test.
+
+It's only ~162M parameters total, and EleutherAI deliberately released Pythia as an open research suite under Apache-2.0.
+
+So you get:
+
+fast startup
+fast prefill
+fast decoding
+small RAM footprint
+easy repeated tests
+official Transformers reference
+simple dense architecture
+
+while forcing Stingray to stop being overly Llama-shaped.
+
+That's valuable.
+
+And I'd add three items to the AI's original assessment
+
+Its list was:
+
+✓ LayerNorm
+✓ norm bias
+✓ FFN bias
+✓ non-gated GELU FFN
+✓ parallel residual
+
+I would amend it to:
+
+✓ LayerNorm + learned beta
+✓ TWO independent LayerNorms on the same residual
+✓ final LayerNorm + bias
+
+✓ generic Linear bias
+✓ FFN up bias
+✓ FFN down bias
+✓ QKV attention bias
+✓ attention output bias
+
+✓ non-gated GELU FFN
+
+✓ true GPT-NeoX parallel residual
+
+⚠ verify GPT-NeoX fused-QKV layout
+⚠ verify partial 25% RoPE
+⚠ verify NeoX rotate-half convention
+
+✓ untied input/output embeddings
+
+The QKV layout and RoPE convention are the two things I'd ask that other AI about before telling it simply “1. Build it now.”
+
+They are exactly the sort of architectural details that can give you:
+
+model loads perfectly
+no exception
+all shapes correct
+20 tokens/sec
+utter nonsense output
+
+while LayerNorm and FFN support appear to be working.
+
+Given the broader direction of your inference engine, I'd still choose 1 — build it now. The useful outcome isn't merely “Pythia runs”; it's that you come out with generic LayerNorm, bias-aware Linear, plain GELU MLP, parallel residual, partial-RoPE, and GPT-NeoX QKV support, which materially widens the architecture envelope rather than adding another one-off model handler.

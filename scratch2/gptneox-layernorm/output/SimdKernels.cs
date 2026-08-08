@@ -6133,35 +6133,6 @@ public static unsafe class SimdKernels
     }
 
     /// <summary>
-    /// Layer normalization with learned scale and bias:
-    /// <c>((x - mean) / sqrt(variance + eps)) * weight + bias</c>, where variance is the
-    /// population (divide-by-N, not N-1) variance — matches PyTorch's <c>nn.LayerNorm</c> and
-    /// ggml's <c>ggml_compute_forward_norm_f32</c>.
-    ///
-    /// Scalar by design: this is a correctness-first path for GPT-NeoX/Pythia, whose LayerNorm
-    /// differs from the RMSNorm kernels above by mean-subtraction and the learned bias. Safe for
-    /// in-place use (output == input) since both reduction passes complete before any element is
-    /// written.
-    /// </summary>
-    public static void LayerNorm(float* output, float* input, float* weight, float* bias, int size, float eps)
-    {
-        float sum = 0f;
-        for (int i = 0; i < size; i++) sum += input[i];
-        float mean = sum / size;
-
-        float sumSq = 0f;
-        for (int i = 0; i < size; i++)
-        {
-            float d = input[i] - mean;
-            sumSq += d * d;
-        }
-        float invStd = 1f / MathF.Sqrt(sumSq / size + eps);
-
-        for (int i = 0; i < size; i++)
-            output[i] = (input[i] - mean) * invStd * weight[i] + bias[i];
-    }
-
-    /// <summary>
     /// RMS normalization without learned weights (pure L2 normalize).
     /// Used for Llama4TextL2Norm in QK-norm.
     /// </summary>
@@ -6195,6 +6166,95 @@ public static unsafe class SimdKernels
             float scale = 1.0f / MathF.Sqrt(ss / size + eps);
             for (int i = 0; i < size; i++)
                 output[i] = input[i] * scale;
+        }
+    }
+
+    /// <summary>
+    /// Layer normalization with optional learned scale (<paramref name="weight"/>) and learned bias (<paramref name="bias"/>):
+    /// <c>mean = sum(x) / size</c>
+    /// <c>variance = sum((x - mean)^2) / size</c>
+    /// <c>y[i] = (x[i] - mean) / sqrt(variance + eps) * (weight ? weight[i] : 1) + (bias ? bias[i] : 0)</c>
+    /// </summary>
+    public static void LayerNorm(float* output, float* input, float* weight, float* bias, int size, float eps)
+    {
+        if (Fma.IsSupported && size >= 8)
+        {
+            // Pass 1: sum for mean
+            var sumV = Vector256<float>.Zero;
+            int i = 0;
+            for (; i + 8 <= size; i += 8)
+            {
+                sumV = Avx.Add(sumV, Avx.LoadVector256(input + i));
+            }
+            float sum = HSum256(sumV);
+            for (; i < size; i++) sum += input[i];
+            float mean = sum / size;
+            var meanV = Vector256.Create(mean);
+
+            // Pass 2: sum of squared deviations for variance
+            var sumSqV = Vector256<float>.Zero;
+            i = 0;
+            for (; i + 8 <= size; i += 8)
+            {
+                var diff = Avx.Subtract(Avx.LoadVector256(input + i), meanV);
+                sumSqV = Fma.MultiplyAdd(diff, diff, sumSqV);
+            }
+            float sumSq = HSum256(sumSqV);
+            for (; i < size; i++)
+            {
+                float diff = input[i] - mean;
+                sumSq += diff * diff;
+            }
+            float variance = sumSq / size;
+            float invStd = 1.0f / MathF.Sqrt(variance + eps);
+            var invStdV = Vector256.Create(invStd);
+
+            // Pass 3: normalize, scale, and bias
+            i = 0;
+            for (; i + 8 <= size; i += 8)
+            {
+                var x = Avx.LoadVector256(input + i);
+                var norm = Avx.Multiply(Avx.Subtract(x, meanV), invStdV);
+                if (weight != null)
+                {
+                    norm = Avx.Multiply(norm, Avx.LoadVector256(weight + i));
+                }
+                if (bias != null)
+                {
+                    norm = Avx.Add(norm, Avx.LoadVector256(bias + i));
+                }
+                Avx.Store(output + i, norm);
+            }
+            for (; i < size; i++)
+            {
+                float norm = (input[i] - mean) * invStd;
+                if (weight != null) norm *= weight[i];
+                if (bias != null) norm += bias[i];
+                output[i] = norm;
+            }
+        }
+        else
+        {
+            float sum = 0;
+            for (int i = 0; i < size; i++) sum += input[i];
+            float mean = sum / size;
+
+            float sumSq = 0;
+            for (int i = 0; i < size; i++)
+            {
+                float diff = input[i] - mean;
+                sumSq += diff * diff;
+            }
+            float variance = sumSq / size;
+            float invStd = 1.0f / MathF.Sqrt(variance + eps);
+
+            for (int i = 0; i < size; i++)
+            {
+                float norm = (input[i] - mean) * invStd;
+                if (weight != null) norm *= weight[i];
+                if (bias != null) norm += bias[i];
+                output[i] = norm;
+            }
         }
     }
 
@@ -6668,24 +6728,6 @@ public static unsafe class SimdKernels
         }
     }
 
-    /// <summary>
-    /// Tanh-approximate GELU applied in place: <c>x[i] = 0.5*x[i]*(1 + tanh(sqrt(2/pi) *
-    /// (x[i] + 0.044715*x[i]^3)))</c>. Same constants as <see cref="GeluTanhMul_Scalar"/>
-    /// (verified against <c>ggml_gelu_f32</c>); used by GPT-NeoX/Pythia's non-gated FFN,
-    /// which has no separate gate tensor to fuse the multiply against.
-    /// </summary>
-    public static void GeluInPlace(float* x, int n)
-    {
-        const float kAlpha = 0.7978845608028654f;
-        const float kBeta = 0.044715f;
-        for (int i = 0; i < n; i++)
-        {
-            float v = x[i];
-            float inner = kAlpha * (v + kBeta * v * v * v);
-            x[i] = 0.5f * v * (1f + MathF.Tanh(inner));
-        }
-    }
-
     // ================================================================
     //  xIELU activation (scalar) — Apertus non-gated FFN
     // ================================================================
@@ -6710,6 +6752,56 @@ public static unsafe class SimdKernels
             x[i] = v > 0f
                 ? alphaP * v * v + beta * v
                 : alphaN * (MathF.Exp(MathF.Min(v, eps)) - 1f - v) + beta * v;
+        }
+    }
+
+    /// <summary>
+    /// Unary GELU (tanh approximation), applied in place:
+    /// <c>x[i] = 0.5 * x[i] * (1 + tanh(sqrt(2/π) * (x[i] + 0.044715 * x[i]^3)))</c>.
+    /// Used by GPT-NeoX non-gated FFN activation.
+    /// </summary>
+    public static void GeluInPlace(float* x, int n)
+    {
+        const float kAlpha = 0.7978845608028654f;
+        const float kBeta = 0.044715f;
+
+        if (Fma.IsSupported && n >= 8)
+        {
+            var half = Vector256.Create(0.5f);
+            var one = Vector256.Create(1.0f);
+            var two = Vector256.Create(2.0f);
+            var alpha = Vector256.Create(kAlpha);
+            var beta = Vector256.Create(kBeta);
+            var clampHi = Vector256.Create(20.0f);
+            var clampLo = Vector256.Create(-20.0f);
+            int i = 0;
+            for (; i + 8 <= n; i += 8)
+            {
+                var g = Avx.LoadVector256(x + i);
+                var g2 = Avx.Multiply(g, g);
+                var inner = Avx.Multiply(alpha,
+                    Avx.Multiply(g, Fma.MultiplyAdd(beta, g2, one)));
+                var twoInner = Avx.Max(clampLo, Avx.Min(clampHi, Avx.Multiply(two, inner)));
+                var e2x = ExpApprox256(twoInner);
+                var tanh = Avx.Divide(Avx.Subtract(e2x, one), Avx.Add(e2x, one));
+                var gelu = Avx.Multiply(half, Avx.Multiply(g, Avx.Add(one, tanh)));
+                Avx.Store(x + i, gelu);
+            }
+            for (; i < n; i++)
+            {
+                float gs = x[i];
+                float inner = kAlpha * (gs + kBeta * gs * gs * gs);
+                x[i] = 0.5f * gs * (1.0f + MathF.Tanh(inner));
+            }
+        }
+        else
+        {
+            for (int i = 0; i < n; i++)
+            {
+                float gs = x[i];
+                float inner = kAlpha * (gs + kBeta * gs * gs * gs);
+                x[i] = 0.5f * gs * (1.0f + MathF.Tanh(inner));
+            }
         }
     }
 

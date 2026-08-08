@@ -18,6 +18,10 @@
          lists or overload references. Keep them visible in source while shipping valid XML for
          consumers; malformed XML remains an error and is not suppressed. -->
     <NoWarn>$(NoWarn);CS0419;CS1572;CS1573;CS1574;CS1587;CS1591;CS1734</NoWarn>
+    <!-- scratch/ and scratch2/ hold draft, unreviewed AI-agent output used as reference material
+         while building real changes into src/tests — never a build input. No project currently
+         lives under them, but exclude explicitly so a future project glob can't pull them in. -->
+    <DefaultItemExcludes>$(DefaultItemExcludes);$(MSBuildThisFileDirectory)scratch\**;$(MSBuildThisFileDirectory)scratch2\**</DefaultItemExcludes>
   </PropertyGroup>
 
   <!-- NativeAOT optimizations for Release builds -->

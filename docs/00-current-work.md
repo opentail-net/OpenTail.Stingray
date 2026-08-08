@@ -133,6 +133,17 @@ Do not chase it by re-running until green. The useful next step is to determine 
 the same prefix on a quiet machine produce bit-identical logits, and whether thread count changes
 the answer.
 
+**Related but distinct — a scheduling-timing flake, seen once, 2026-08-08.** Post-`gptneox` full
+`OpenTail.Stingray.Tests.ForwardPass` run (1368 tests): 2 failures, one the known deliberate red
+test (below), the other `ContinuousBatchingConstraintTests.ConstrainedAndUnconstrained_Coexist_PerSequenceMasking`
+— `Assert.Equal(2, fake.MaxBatchWidth)` got `1`. Not a model-math bug: this test drives
+`ContinuousBatchingEngine` against a `FakeBatchedForwardPass`, so it cannot be affected by the
+`RunTrunk`/`PrefillCore`/`Dispose` changes gptneox made — the assertion is purely about whether two
+async requests' decode steps land in the same batching tick, which is scheduler-timing-sensitive by
+construction. Re-ran in isolation 4/4 clean (0.13s each). Read as thread-pool contention from
+running inside a 1368-test parallel suite, not a regression — recorded rather than chased, per the
+policy above for the same reason.
+
 **ARCHITECTURE ADMITTED — `olmoe`, 2026-08-08, after fixing a real QK-norm defect.**
 
 - **Bug fixed:** OLMoE-shaped QK-norm took its RMS per head (128 elements) where the model takes it
@@ -184,7 +195,23 @@ error); and `PrefillCore`/`DenseFfn`'s non-gated branches disagreed by 3.3 logit
 settings (same known int8-prefill approximation as OLMoE, amplified by xIELU's quadratic term).
 See [01-gguf-model-coverage-plan.md](01-gguf-model-coverage-plan.md) §1g.
 
-**New-kernel plan drafted, 2026-08-08 — design only except item 3 (Apertus/xIELU), now built.** Assessed the six
+**ARCHITECTURE ADMITTED — `gptneox`, 2026-08-09, 22-of-24-token exact match, second new-kernel
+architecture built this session.** LayerNorm-with-bias (not RMSNorm), a non-gated biased-GELU FFN,
+fused `attn_qkv.weight`/`bias` (contiguous Q/K/V rows — cross-checked against llama.cpp's actual
+converter, which contradicted an earlier third-party claim that the layout was interleaved
+per-head), and true parallel residual (`x + attn(ln1(x)) + ffn(ln2(x))`, both norms reading the same
+pre-layer input) — implemented as an isolated branch in `RunTrunk`/`PrefillCore` so every other
+architecture's code path is unchanged. One real defect, caught by the stepwise oracle-free
+consistency test rather than by inspection: `PrefillCore`'s final output-norm wasn't updated to the
+new bias-aware dispatcher, so prefill-in-one-call and prefill-then-decode agreed on every argmax but
+disagreed by 261.6 on raw logit magnitude — fixed, now agrees near-exactly. This was rebuilt from a
+from-scratch review after an earlier attempt's work was lost from `src/` mid-session by an unrelated
+out-of-band edit; the rebuild independently re-verified every claim against the real llama.cpp
+source rather than trusting the lost attempt's own (also since found to be inaccurate) writeup. See
+[01-gguf-model-coverage-plan.md](01-gguf-model-coverage-plan.md) §1h.
+
+**New-kernel plan drafted, 2026-08-08 — design only except items 3 and 1 (Apertus/xIELU, GPT-NeoX),
+now built.** Assessed the six
 previously-"unassessed" architectures (Nemotron, Seed-OSS, Hunyuan, Dots1, LFM2, Apertus): none
 were buildable-and-testable today (3 restrictive-licensed, 2 have no small checkpoint, only
 Apertus is clean on both — Apache-2.0, but only 8B/70B exist). Full plan, grouped by shared
@@ -204,10 +231,17 @@ microkernel dispatch and accumulation order depend on batch shape, so chunked an
 prefill diverge. Making it batch-shape-invariant would cost the 3.48x measured on that path. It is
 left red on purpose — it is the only automated detector for this behaviour.
 
-**Test suite.** ForwardPass discovers 1,358 tests, runs in ~18 min, and has exactly the one failure
-above; ~369 skips, of which 327 are "no CUDA device" and 35 are missing model fixtures. Core 488,
-Server 261, Cli 367, Sessions 79, TurboQuant 78, Vision 73, Pipeline 52 — all green, zero warnings
-under `TreatWarningsAsErrors`. CI floors are set from that measured discovery count. Full record in
+**Test suite.** ForwardPass discovers 1,368 tests as of the `gptneox` receipt (2026-08-08; was
+1,358 — the net growth is Granite/SmolLM3/Apertus/GptNeox parity tests added this session), runs in
+~17.5 min (1051s measured directly), and has exactly the two failures above (the one deliberate red
+test, plus the scheduling flake, non-reproducing); 375 skips, most "no CUDA device" or missing model
+fixtures (fixtures are deleted after each receipt by design — a skip there is expected, not a
+coverage gap). Re-confirmed via a full run on 2026-08-09 after the `gptneox` rebuild (RunTrunk/
+PrefillCore/Dispose all touched, shared by every dense CPU architecture): same 1368/2-failed/375-
+skipped, zero new failures, ruling out a regression from that change. Core 488,
+Server 261, Cli 367, Sessions 79, TurboQuant 78, Vision 73, Pipeline 52 — figures not re-verified
+this session, zero warnings under `TreatWarningsAsErrors` as of the last full check. CI floors are
+set from measured discovery counts. Full record in
 [done/upstream-port-status.md](done/upstream-port-status.md).
 
 Never pipe a long test run through `tail`; an 18-minute run whose failure output is discarded costs

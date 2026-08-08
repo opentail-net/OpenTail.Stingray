@@ -6133,6 +6133,33 @@ public static unsafe class SimdKernels
     }
 
     /// <summary>
+    /// Layer normalization with learned scale and bias:
+    /// <c>((x - mean) / sqrt(variance + eps)) * weight + bias</c>.
+    ///
+    /// Scalar by design: this correctness-first path is used by GPT-NeoX/Pythia, whose
+    /// LayerNorm semantics differ from the existing RMSNorm kernels by mean subtraction
+    /// and the learned bias. It supports in-place use because both reductions complete
+    /// before any output element is written.
+    /// </summary>
+    public static void LayerNorm(float* output, float* input, float* weight, float* bias, int size, float eps)
+    {
+        float sum = 0f;
+        for (int i = 0; i < size; i++) sum += input[i];
+
+        float mean = sum / size;
+        float sumSquaredDeviation = 0f;
+        for (int i = 0; i < size; i++)
+        {
+            float deviation = input[i] - mean;
+            sumSquaredDeviation += deviation * deviation;
+        }
+
+        float inverseStdDev = 1f / MathF.Sqrt(sumSquaredDeviation / size + eps);
+        for (int i = 0; i < size; i++)
+            output[i] = (input[i] - mean) * inverseStdDev * weight[i] + bias[i];
+    }
+
+    /// <summary>
     /// RMS normalization without learned weights (pure L2 normalize).
     /// Used for Llama4TextL2Norm in QK-norm.
     /// </summary>
@@ -6636,6 +6663,24 @@ public static unsafe class SimdKernels
             float gs = gate[i];
             float inner = kAlpha * (gs + kBeta * gs * gs * gs);
             outp[i] = 0.5f * gs * (1.0f + MathF.Tanh(inner)) * up[i];
+        }
+    }
+
+    /// <summary>
+    /// Tanh-approximate GELU applied in place:
+    /// <c>x[i] = 0.5 * x[i] * (1 + tanh(sqrt(2/pi) * (x[i] + 0.044715 * x[i]^3)))</c>.
+    /// Used by non-gated GPT-NeoX/Pythia FFNs after their biased up projection.
+    /// Scalar by design; a SIMD form can follow once model parity is established.
+    /// </summary>
+    public static void GeluInPlace(float* x, int n)
+    {
+        const float kAlpha = 0.7978845608028654f;
+        const float kBeta = 0.044715f;
+        for (int i = 0; i < n; i++)
+        {
+            float value = x[i];
+            float inner = kAlpha * (value + kBeta * value * value * value);
+            x[i] = 0.5f * value * (1f + MathF.Tanh(inner));
         }
     }
 

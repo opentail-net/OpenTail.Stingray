@@ -48,10 +48,27 @@ public static class ModelCompatibility
         // (GGUF stores pre-softplus values; llama.cpp's ggml_xielu() wrapper — not the compute
         // kernel — applies softplus before use, easy to miss by reading only the kernel).
         "apertus",
-        // gptneox (Pythia) — CPU dense forward supports LayerNorm with learned bias, a biased
-        // non-gated GELU FFN, contiguous fused Q/K/V projections, and the metadata-controlled
-        // parallel-residual graph. GptNeoxGreedyParityTests records the llama.cpp oracle; the
-        // specialized TurboQuant, continuous-batching, CUDA, and Vulkan paths are not this profile.
+        // gptneox — admitted 2026-08-08 on a 22-of-24-token EXACT match against llama.cpp
+        // (stronger than the apertus/olmoe receipts above), diverging at token 23 into a genuine
+        // near-tie (0.007 apart on logits ~830, confirmed via a top-5 logit dump, not assumed).
+        // Pythia (EleutherAI) is the reference family. Needs three things new to this engine:
+        // LayerNorm with learned bias (SimdKernels.LayerNorm / ForwardPass.FastNorm, gated on
+        // ModelHyperparams.HasNormBias, tensor-inventory-detected like HasAttnBias), non-gated GELU
+        // FFN with learned up/down biases (SimdKernels.GeluInPlace, ModelHyperparams.HasFfnBias),
+        // and true GPT-NeoX parallel residual (ModelHyperparams.UseParallelResidual: attention and
+        // FFN both read the SAME pre-attention layer input, output is a 3-way sum, implemented as
+        // an isolated branch in both RunTrunk and PrefillCore). Also the first architecture this
+        // engine loads with a FUSED attn_qkv.weight/attn_qkv.bias tensor pair on the dense CPU
+        // path (2304-wide bias split by element offset in ForwardPass's constructor).
+        // See GptNeoxGreedyParityTests for the receipt, including two real defects found and fixed
+        // while building it (neither in the "obvious" formula, both in refactored plumbing): (1) a
+        // flipped Copy() direction in PrefillCore's per-token norm setup that fed layer 0's
+        // LayerNorm an all-zero input instead of the token embedding (invisible on layers 1+, since
+        // both buffers already agreed there) — attn_norm's learned bias made the zeroed-out result
+        // still look like a plausible norm output; (2) the fused-QKV-bias split aliased three
+        // pointers into ONE allocation, which Dispose() then freed independently — corrupting the
+        // native heap with a deferred STATUS_HEAP_CORRUPTION crash on model teardown, long after
+        // prefill/decode had already completed and looked fine.
         "gptneox",
     };
     // minicpm — NOT admitted. The forward-pass scale trio (reusing Granite's graph, see

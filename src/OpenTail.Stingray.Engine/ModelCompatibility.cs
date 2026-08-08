@@ -48,6 +48,32 @@ public static class ModelCompatibility
         // (GGUF stores pre-softplus values; llama.cpp's ggml_xielu() wrapper — not the compute
         // kernel — applies softplus before use, easy to miss by reading only the kernel).
         "apertus",
+        // gptneox (Pythia) — LayerNorm (mean/variance + learned bias, not RMSNorm), a biased
+        // non-gated GELU FFN, a fused blk.*.attn_qkv.weight/bias tensor pair (split by
+        // contiguous row offset in ForwardPass's constructor — Q rows, then K rows, then V
+        // rows; confirmed against examples/llama.cpp/llama.cpp/conversion/gptneox.py and
+        // src/models/gptneox.cpp, NOT the interleaved per-head layout an earlier draft
+        // assumed), and the metadata-driven parallel-residual graph (x + attn(ln1(x)) +
+        // ffn(ln2(x)), both norms reading the SAME incoming residual — ModelHyperparams.
+        // HasNormBias/HasFfnBias/UseParallelResidual). See GptNeoxGreedyParityTests and
+        // docs/01-gguf-model-coverage-plan.md for the receipt. TurboQuant prefill, continuous-
+        // batching admission, and CUDA/Vulkan are not wired to this profile.
+        "gptneox",
+        // falcon (7B only — 40B's second attn_norm_2 tensor is NOT implemented, no small 40B
+        // checkpoint to validate against) — reuses every gptneox mechanism (LayerNorm, biased
+        // non-gated GELU FFN [though Falcon carries no biases at all], fused attn_qkv,
+        // UseParallelResidual's 3-way sum) plus one new wrinkle: Falcon-7B has NO separate
+        // ffn_norm tensor at all — attention and FFN read the SAME LayerNorm output (confirmed
+        // against src/models/falcon.cpp: "use the attn norm, not the result"). ForwardPass's
+        // constructor falls _ffnNorm/_bFfnNorm back to _attnNorm/_bAttnNorm's own TensorRef/
+        // pointer when blk.*.ffn_norm.{weight,bias} is absent — Dispose() guards the aliased
+        // bias pointer so it isn't double-freed. use_parallel_residual is never a metadata key
+        // for this arch (llama.cpp hardcodes it in the graph), so ModelGraph.cs hardcodes it too
+        // for arch=="falcon" rather than reading a key that doesn't exist. Also exercises MQA
+        // (head_count=71, head_count_kv=1) through the existing GQA-parametrized fused-QKV
+        // split for the first time on this profile. See FalconGreedyParityTests and
+        // docs/01-gguf-model-coverage-plan.md for the receipt.
+        "falcon",
     };
     // minicpm — NOT admitted. The forward-pass scale trio (reusing Granite's graph, see
     // GraniteGreedyParityTests) is implemented and presumed correct, but MiniCPM4-0.5B — the only

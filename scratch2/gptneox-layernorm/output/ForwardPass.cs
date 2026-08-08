@@ -108,10 +108,6 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
     private readonly float* _hidden;     // [embDim]
     private readonly float* _residual;   // [embDim]
     private readonly float* _normBuf;    // [embDim]
-    // Parallel-residual (gptneox) scratch: holds attn_out while DenseFfn/MoeFfn overwrite
-    // _hidden with ffn_out, since both must be summed with the SAME inpL afterward. Null
-    // (unused) for every architecture with the ordinary sequential residual.
-    private readonly float* _parAttnOut;
     private readonly float* _q;          // [numHeads * headDim]
     private readonly float* _k;          // [numKvHeads * headDim]
     private readonly float* _v;          // [numKvHeads * headDim]
@@ -159,25 +155,24 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
     private readonly bool _hasAttnOutputBias;
     private readonly float*[] _bq, _bk, _bv, _bo;
 
-    // GPT-NeoX/Pythia: LayerNorm bias (attn/ffn/output norm) and FFN up/down bias. Null
-    // arrays when the architecture doesn't carry them (i.e. always, except gptneox today).
-    private readonly bool _hasNormBias;
-    private readonly float*[]? _bAttnNorm;
-    private readonly float*[]? _bFfnNorm;
-    private readonly float* _bOutputNorm;
-    private readonly bool _hasFfnBias;
-    private readonly float*[]? _bFfnUp;
-    private readonly float*[]? _bFfnDown;
-
-    // Partial-RoPE width: leading _ropeDim channels of each head are rotated, the rest pass
-    // through. Equals _headDim for every architecture except gptneox (16 of 64 for Pythia).
-    private readonly int _ropeDim;
-
     // Optional per-head Q/K RMSNorm (Qwen3-style shared weights of size headDim,
     // or OLMoE-style per-channel weights of size numHeads*headDim / numKvHeads*headDim).
     private readonly bool _hasQkNorm;
     private readonly bool _perChannelQkNorm;
     private readonly float*[] _qNorm, _kNorm;
+
+    // Optional norm biases (LayerNorm models like GPT-NeoX)
+    private readonly bool _hasNormBias;
+    private readonly float*[]? _bAttnNorm;
+    private readonly float*[]? _bFfnNorm;
+    private readonly float* _bOutputNorm;
+
+    // Optional FFN biases (GPT-NeoX)
+    private readonly bool _hasFfnBias;
+    private readonly float*[]? _bFfnUp;
+    private readonly float*[]? _bFfnDown;
+
+    private readonly int _ropeDim;
 
     // Wide-vector (AVX-512) RmsNorm fast path. Enabled only when the model has
     // per-layer head_dim (Gemma 4) — for other models the byte-parity oracles
@@ -368,6 +363,7 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
         if (_layerRopeDim is not null)
             for (int i = 0; i < hp.NumLayers; i++)
                 if (_layerRopeDim[i] > maxRopeDim) maxRopeDim = _layerRopeDim[i];
+        _ropeDim = maxRopeDim;
 
         // The dense CPU pass is the only forward pass with BF16 KV readers, so it is the only one
         // that may honour STINGRAY_KV_STORE. See PagedKvCache.Bf16StoreRequested.
@@ -385,7 +381,6 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
         _hidden = Alloc(_embDim);
         _residual = Alloc(_embDim);
         _normBuf = Alloc(_embDim);
-        if (hp.UseParallelResidual) _parAttnOut = Alloc(_embDim);
         _q = Alloc(_numHeads * _maxHeadDim);
         _k = Alloc(_numKvHeads * _maxHeadDim);
         _v = Alloc(_numKvHeads * _maxHeadDim);
@@ -453,6 +448,10 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
         _bq = new float*[L]; _bk = new float*[L];
         _bv = new float*[L]; _bo = new float*[L];
 
+        _hasQkNorm = hp.HasQkNorm;
+        _perChannelQkNorm = hp.IsPerChannelQkNorm;
+        _qNorm = new float*[L]; _kNorm = new float*[L];
+
         _hasNormBias = hp.HasNormBias;
         if (_hasNormBias)
         {
@@ -467,16 +466,6 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
             _bFfnUp = new float*[L];
             _bFfnDown = new float*[L];
         }
-
-        // GPT-NeoX/Pythia partial RoPE (rope.dimension_count < headDim): rotate only the
-        // leading _ropeDim channels of each head, dims [_ropeDim, _headDim) pass through
-        // unchanged. hp.RopeDim already sizes the cos/sin table (see maxRopeDim above); most
-        // architectures leave it at headDim, so this is a no-op for them.
-        _ropeDim = hp.RopeDim > 0 ? hp.RopeDim : _headDim;
-
-        _hasQkNorm = hp.HasQkNorm;
-        _perChannelQkNorm = hp.IsPerChannelQkNorm;
-        _qNorm = new float*[L]; _kNorm = new float*[L];
 
         // MoE weight arrays
         if (hp.IsMoE)
@@ -508,23 +497,7 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
                           && _model.FindTensor($"blk.{i}.attn_k.weight") is not null;
 
             _attnNorm[i] = ResolveTensor($"blk.{i}.attn_norm.weight");
-            _wo[i] = ResolveTensor($"blk.{i}.attn_output.weight");
-            // Falcon-7B has no ffn_norm tensor at all — attention and FFN read the SAME
-            // LayerNorm output (src/models/falcon.cpp: "use the attn norm, not the result").
-            // Reusing _attnNorm[i]'s TensorRef recomputes an identical LayerNorm a second time
-            // (cheap, and deterministic — bit-identical to reusing a cached activation) rather
-            // than requiring a second code path; falls through to the ordinary per-layer
-            // ffn_norm tensor for every other architecture.
-            _ffnNorm[i] = _model.FindTensor($"blk.{i}.ffn_norm.weight") is not null
-                ? ResolveTensor($"blk.{i}.ffn_norm.weight")
-                : _attnNorm[i];
 
-            // GPT-NeoX/Pythia ships one fused blk.N.attn_qkv.weight (shape [embDim, embDim +
-            // 2*kvEmbDim]) rather than separate attn_q/attn_k/attn_v tensors. llama.cpp's
-            // converter (conversion/gptneox.py) concatenates Q rows, then K rows, then V rows
-            // — a plain contiguous split, NOT interleaved per head — so this only needs a
-            // byte-offset TensorRef into the same backing tensor per projection, with no
-            // actual data copy or repacking.
             if (_model.FindTensor($"blk.{i}.attn_qkv.weight") is { } qkvInfo)
             {
                 byte* qkvBase = _model.GetTensorDataPtr(qkvInfo);
@@ -540,17 +513,16 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
             else
             {
                 _wq[i] = ResolveTensor($"blk.{i}.attn_q.weight");
-                // KV-share layers (Gemma 4 tail) don't carry their own attn_k/attn_v weights —
-                // they alias the source layer's K/V pages. Skip the tensor lookup so missing-
-                // tensor errors don't fire; the runtime path also skips these projections.
                 if (!kvShared)
                 {
                     _wk[i] = ResolveTensor($"blk.{i}.attn_k.weight");
-                    // k_eq_v global layers have no attn_v; the runtime reuses K as V.
                     if (!kEqVLayer)
                         _wv[i] = ResolveTensor($"blk.{i}.attn_v.weight");
                 }
             }
+
+            _wo[i] = ResolveTensor($"blk.{i}.attn_output.weight");
+            _ffnNorm[i] = ResolveTensor($"blk.{i}.ffn_norm.weight");
 
             if (hp.IsMoE)
             {
@@ -583,11 +555,14 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
                 {
                     int qDim = _numHeads * layerHd;
                     int kvDim = _numKvHeads * layerHd;
-                    // Load the fused bias into one scratch buffer, then copy each slice into
-                    // its OWN allocation. _bq[i]/_bk[i]/_bv[i] must never alias a shared
-                    // buffer: Dispose() frees all three independently (every other bias array
-                    // in this file is its own allocation), and NativeMemory.Free on a pointer
-                    // that isn't a block's own allocation start corrupts the native heap.
+                    // Load the fused bias into a scratch buffer, then copy each slice into its
+                    // OWN allocation. _bq[i]/_bk[i]/_bv[i] must never alias one shared buffer:
+                    // Dispose() frees all three independently (they're ordinary per-layer bias
+                    // arrays everywhere else in this file, e.g. the non-fused branch below), and
+                    // NativeMemory.Free on a pointer that isn't a block's own allocation start
+                    // (i.e. _bk[i]/_bv[i] as offsets into _bq[i]'s block) corrupts the native
+                    // heap — this crashed with STATUS_HEAP_CORRUPTION on Dispose when first
+                    // wired as three aliasing pointers into one LoadBias buffer.
                     float* qkvBiasScratch = LoadBias($"blk.{i}.attn_qkv.bias", qDim + kvDim + kvDim);
                     _bq[i] = Alloc(qDim);
                     _bk[i] = Alloc(kvDim);
@@ -609,20 +584,6 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
                 // Output-projection bias is optional (Qwen2 omits it; left null when absent).
                 if (_hasAttnOutputBias)
                     _bo[i] = LoadBias($"blk.{i}.attn_output.bias", _embDim);
-            }
-
-            if (_hasNormBias)
-            {
-                _bAttnNorm![i] = LoadBias($"blk.{i}.attn_norm.bias", _embDim);
-                // Falcon: no ffn_norm.bias tensor either — mirrors the weight fallback above.
-                _bFfnNorm![i] = _model.FindTensor($"blk.{i}.ffn_norm.bias") is not null
-                    ? LoadBias($"blk.{i}.ffn_norm.bias", _embDim)
-                    : _bAttnNorm[i];
-            }
-            if (_hasFfnBias)
-            {
-                _bFfnUp![i] = LoadBias($"blk.{i}.ffn_up.bias", _intermDim);
-                _bFfnDown![i] = LoadBias($"blk.{i}.ffn_down.bias", _embDim);
             }
 
             if (_hasQkNorm && !hp.UseL2QkNorm)
@@ -647,6 +608,17 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
                 _postFfwNorm[i] = ResolveTensor($"blk.{i}.post_ffw_norm.weight");
             if (_layerOutputScale is not null)
                 _layerOutputScale[i] = LoadScalarF32($"blk.{i}.layer_output_scale.weight");
+
+            if (_hasNormBias)
+            {
+                _bAttnNorm![i] = LoadBias($"blk.{i}.attn_norm.bias", _embDim);
+                _bFfnNorm![i] = LoadBias($"blk.{i}.ffn_norm.bias", _embDim);
+            }
+            if (_hasFfnBias)
+            {
+                _bFfnUp![i] = LoadBias($"blk.{i}.ffn_up.bias", _intermDim);
+                _bFfnDown![i] = LoadBias($"blk.{i}.ffn_down.bias", _embDim);
+            }
         }
 
         _outputNorm = ResolveTensor("output_norm.weight");
@@ -1439,15 +1411,24 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
 
                     cache.TruncateTo(startPos);
                     var normW = GetNormWeight(_attnNorm[layer]);
-                    var attnNormB = _hasNormBias && _bAttnNorm is not null ? _bAttnNorm[layer] : null;
 
-                    // Batch norm (LayerNorm w/ bias for gptneox, RMSNorm otherwise) for all tokens
+                    // Batch RMS norm for all tokens
                     pStage = profPrefill ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
                     for (int n = 0; n < N; n++)
                     {
-                        Copy(batchResidual + (long)n * _embDim, batchHidden + (long)n * _embDim, _embDim);
-                        FastNorm(batchNorm + (long)n * _embDim,
-                            batchHidden + (long)n * _embDim, normW, attnNormB, _embDim, _hp.RmsNormEps);
+                        float* r = batchResidual + (long)n * _embDim;
+                        float* h = batchHidden + (long)n * _embDim;
+                        float* norm = batchNorm + (long)n * _embDim;
+                        // Save residual = hidden (dst=r, src=h) — NOT the reverse. batchResidual
+                        // starts zeroed before layer 0; a flipped Copy(h, r, ...) here would stomp
+                        // batchHidden (the actual token embedding) with that zero on layer 0's
+                        // attn/ffn norm input, corrupting every subsequent layer. For layer >= 1 the
+                        // two buffers already hold equal values from the previous layer's residual
+                        // store, so the flip's effect is invisible there — a real bug found while
+                        // building the GPT-NeoX parity receipt (see GptNeoxGreedyParityTests).
+                        Copy(r, h, _embDim);
+                        var attnNormB = _hasNormBias && _bAttnNorm is not null ? _bAttnNorm[layer] : null;
+                        FastNorm(norm, h, normW, attnNormB, _embDim, _hp.RmsNormEps);
                     }
                     if (profPrefill)
                     {
@@ -1462,7 +1443,7 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
                     MatMulBatchedCached(batchK, in _wk[layer], batchNorm, N, kvDim, _embDim);
                     MatMulBatchedCached(batchV, in _wv[layer], batchNorm, N, kvDim, _embDim);
 
-                    // Apply QKV biases per token (Qwen/GPT-NeoX models)
+                    // Apply QKV biases per token (Qwen models)
                     if (_hasAttnBias)
                     {
                         for (int n = 0; n < N; n++)
@@ -1570,119 +1551,78 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
                         PrefillProfileTimers.Add(PrefillProfileTimers.Category.OutProj, d);
                         pNamedTicks += d;
                     }
-
-                    if (!_hp.UseParallelResidual)
-                    {
-                    // Add output projection + residual → batchHidden
-                    for (int n = 0; n < N; n++)
-                    {
-                        float* h = batchHidden + (long)n * _embDim;
-                        float* proj = batchNorm + (long)n * _embDim;
-                        float* r = batchResidual + (long)n * _embDim;
-                        Copy(h, proj, _embDim);
-                        // Granite/MiniCPM: scale the sublayer output before it joins the residual.
-                        if (_hp.ResidualScale != 1f)
-                            SimdKernels.ScaleInPlace(h, _hp.ResidualScale, _embDim);
-                        SimdKernels.AddInPlace(h, r, _embDim);
-                    }
-
-                    // Save residual for FFN (post-attn residual, sequential graph only).
-                    for (int n = 0; n < N; n++)
-                        Copy(batchResidual + (long)n * _embDim, batchHidden + (long)n * _embDim, _embDim);
-                    }
-                    // else (parallel residual): batchNorm already holds attn_out (from the
-                    // output projection above) and batchResidual still holds inpL, untouched
-                    // since the attn-norm step at the top of this layer. Stashed into
-                    // batchHidden and combined with the FFN output below.
-
-                    // FFN norm: sequential reads batchHidden (attn_out + inpL); parallel (GPT-
-                    // NeoX) reads batchResidual (inpL) directly — a SEPARATE LayerNorm from the
-                    // attn one, both fed the same incoming residual.
-                    var ffnNormW = GetNormWeight(_ffnNorm[layer]);
-                    var ffnNormB = _hasNormBias && _bFfnNorm is not null ? _bFfnNorm[layer] : null;
-                    pStage = profPrefill ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
                     if (_hp.UseParallelResidual)
                     {
+                        // batchNorm holds attn_out. Stash it into batchHidden
                         for (int n = 0; n < N; n++)
-                        {
                             Copy(batchHidden + (long)n * _embDim, batchNorm + (long)n * _embDim, _embDim);
-                            FastNorm(batchNorm + (long)n * _embDim,
-                                batchResidual + (long)n * _embDim, ffnNormW, ffnNormB, _embDim, _hp.RmsNormEps);
-                        }
-                    }
-                    else
-                    {
-                        for (int n = 0; n < N; n++)
-                            FastNorm(batchNorm + (long)n * _embDim,
-                                batchHidden + (long)n * _embDim, ffnNormW, ffnNormB, _embDim, _hp.RmsNormEps);
-                    }
-                    if (profPrefill)
-                    {
-                        long d = System.Diagnostics.Stopwatch.GetTimestamp() - pStage;
-                        PrefillProfileTimers.Add(PrefillProfileTimers.Category.RmsNorm, d);
-                        pNamedTicks += d;
-                        pStage = System.Diagnostics.Stopwatch.GetTimestamp();
-                    }
 
-                    // Where this layer's FFN output lands: dense reuses batchNorm in place,
-                    // MoE needs its own buffer (see batchMoeOut's declaration).
-                    float* ffnOut = batchedMoe ? batchMoeOut : batchNorm;
-                    if (batchedMoe)
-                    {
-                        MoeFfnBatched(layer, batchNorm, batchMoeOut, N);
-                    }
-                    else if (_wGate[layer].DataPtr is null)
-                    {
-                        // Apertus/GPT-NeoX: no ffn_gate tensor — plain up -> activation -> down.
-                        MatMulBatchedCached(batchFfnUp, in _wUp[layer], batchNorm, N, _intermDim, _embDim);
-                        if (_xieluAlphaN is not null)
+                        // Pre-FFN norm reads batchResidual (inpL) into batchNorm
+                        var ffnNormW = GetNormWeight(_ffnNorm[layer]);
+                        pStage = profPrefill ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
+                        for (int n = 0; n < N; n++)
                         {
-                            for (int n = 0; n < N; n++)
-                                SimdKernels.XieluInPlace(batchFfnUp + (long)n * _intermDim, _intermDim,
-                                    _xieluAlphaN![layer], _xieluAlphaP![layer], _xieluBeta![layer], _xieluEps![layer]);
-                            MatMulBatchedCached(batchNorm, in _wDown[layer], batchFfnUp, N, _embDim, _intermDim);
+                            float* r = batchResidual + (long)n * _embDim;
+                            float* norm = batchNorm + (long)n * _embDim;
+                            var ffnNormB = _hasNormBias && _bFfnNorm is not null ? _bFfnNorm[layer] : null;
+                            FastNorm(norm, r, ffnNormW, ffnNormB, _embDim, _hp.RmsNormEps);
+                        }
+                        if (profPrefill)
+                        {
+                            long d = System.Diagnostics.Stopwatch.GetTimestamp() - pStage;
+                            PrefillProfileTimers.Add(PrefillProfileTimers.Category.RmsNorm, d);
+                            pNamedTicks += d;
+                            pStage = System.Diagnostics.Stopwatch.GetTimestamp();
+                        }
+
+                        float* ffnOut = batchedMoe ? batchMoeOut : batchNorm;
+                        if (batchedMoe)
+                        {
+                            MoeFfnBatched(layer, batchNorm, batchMoeOut, N);
+                        }
+                        else if (_wGate[layer].DataPtr is null)
+                        {
+                            if (_xieluAlphaN is not null)
+                            {
+                                MatMulBatchedCached(batchFfnUp, in _wUp[layer], batchNorm, N, _intermDim, _embDim);
+                                for (int n = 0; n < N; n++)
+                                    SimdKernels.XieluInPlace(batchFfnUp + (long)n * _intermDim, _intermDim,
+                                        _xieluAlphaN![layer], _xieluAlphaP![layer], _xieluBeta![layer], _xieluEps![layer]);
+                                MatMulBatchedCached(batchNorm, in _wDown[layer], batchFfnUp, N, _embDim, _intermDim);
+                            }
+                            else
+                            {
+                                MatMulBatchedCached(batchFfnUp, in _wUp[layer], batchNorm, N, _intermDim, _embDim);
+                                for (int n = 0; n < N; n++)
+                                {
+                                    float* upPtr = batchFfnUp + (long)n * _intermDim;
+                                    if (_hasFfnBias && _bFfnUp is not null)
+                                        SimdKernels.AddInPlace(upPtr, _bFfnUp[layer], _intermDim);
+                                    SimdKernels.GeluInPlace(upPtr, _intermDim);
+                                }
+                                MatMulBatchedCached(batchNorm, in _wDown[layer], batchFfnUp, N, _embDim, _intermDim);
+                                if (_hasFfnBias && _bFfnDown is not null)
+                                {
+                                    for (int n = 0; n < N; n++)
+                                        SimdKernels.AddInPlace(batchNorm + (long)n * _embDim, _bFfnDown[layer], _embDim);
+                                }
+                            }
                         }
                         else
                         {
-                            // GPT-NeoX: biased GELU — up bias goes INSIDE the activation
-                            // (gelu(Wx + b), not gelu(Wx) + b), down bias after.
+                            MatMulBatchedDualCached(batchFfnGate, in _wGate[layer], batchFfnUp, in _wUp[layer], batchNorm, N, _intermDim, _embDim);
                             for (int n = 0; n < N; n++)
-                            {
-                                float* up = batchFfnUp + (long)n * _intermDim;
-                                if (_hasFfnBias && _bFfnUp is not null)
-                                    SimdKernels.AddInPlace(up, _bFfnUp[layer], _intermDim);
-                                SimdKernels.GeluInPlace(up, _intermDim);
-                            }
-                            MatMulBatchedCached(batchNorm, in _wDown[layer], batchFfnUp, N, _embDim, _intermDim);
-                            if (_hasFfnBias && _bFfnDown is not null)
-                            {
-                                for (int n = 0; n < N; n++)
-                                    SimdKernels.AddInPlace(batchNorm + (long)n * _embDim, _bFfnDown[layer], _embDim);
-                            }
+                                SimdKernels.SiLuMul(batchFfnGate + (long)n * _intermDim, batchFfnUp + (long)n * _intermDim, _intermDim);
+                            MatMulBatchedCached(batchNorm, in _wDown[layer], batchFfnGate, N, _embDim, _intermDim);
                         }
-                    }
-                    else
-                    {
-                        MatMulBatchedDualCached(batchFfnGate, in _wGate[layer], batchFfnUp, in _wUp[layer], batchNorm, N, _intermDim, _embDim);
+                        if (profPrefill)
+                        {
+                            long d = System.Diagnostics.Stopwatch.GetTimestamp() - pStage;
+                            PrefillProfileTimers.Add(PrefillProfileTimers.Category.Ffn, d);
+                            pNamedTicks += d;
+                        }
 
-                        // Per-token SiLU(gate) * up
-                        for (int n = 0; n < N; n++)
-                            SimdKernels.SiLuMul(batchFfnGate + (long)n * _intermDim,
-                                batchFfnUp + (long)n * _intermDim, _intermDim);
-
-                        MatMulBatchedCached(batchNorm, in _wDown[layer], batchFfnGate, N, _embDim, _intermDim);
-                    }
-                    if (profPrefill)
-                    {
-                        long d = System.Diagnostics.Stopwatch.GetTimestamp() - pStage;
-                        PrefillProfileTimers.Add(PrefillProfileTimers.Category.Ffn, d);
-                        pNamedTicks += d;
-                    }
-
-                    // Residual add
-                    if (_hp.UseParallelResidual)
-                    {
-                        // 3-way sum: batchHidden(attn_out) + ffnOut(ffn_out) + batchResidual(inpL).
+                        // 3-way residual sum: batchHidden (attn_out) + ffnOut (ffn_out) + batchResidual (inpL) -> batchHidden & batchResidual
                         for (int n = 0; n < N; n++)
                         {
                             float* h = batchHidden + (long)n * _embDim;
@@ -1695,11 +1635,91 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
                     }
                     else
                     {
+                        // Add output projection + residual → batchHidden
+                        for (int n = 0; n < N; n++)
+                        {
+                            float* h = batchHidden + (long)n * _embDim;
+                            float* proj = batchNorm + (long)n * _embDim;
+                            float* r = batchResidual + (long)n * _embDim;
+                            Copy(h, proj, _embDim);
+                            if (_hp.ResidualScale != 1f)
+                                SimdKernels.ScaleInPlace(h, _hp.ResidualScale, _embDim);
+                            SimdKernels.AddInPlace(h, r, _embDim);
+                        }
+
+                        // FFN: batch norm, batched gate/up GEMM, per-token SiLU, batched down GEMM
+                        var ffnNormW = GetNormWeight(_ffnNorm[layer]);
+                        pStage = profPrefill ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
+                        for (int n = 0; n < N; n++)
+                        {
+                            Copy(batchResidual + (long)n * _embDim, batchHidden + (long)n * _embDim, _embDim);
+                            var ffnNormB = _hasNormBias && _bFfnNorm is not null ? _bFfnNorm[layer] : null;
+                            FastNorm(batchNorm + (long)n * _embDim, batchHidden + (long)n * _embDim, ffnNormW, ffnNormB, _embDim, _hp.RmsNormEps);
+                        }
+                        if (profPrefill)
+                        {
+                            long d = System.Diagnostics.Stopwatch.GetTimestamp() - pStage;
+                            PrefillProfileTimers.Add(PrefillProfileTimers.Category.RmsNorm, d);
+                            pNamedTicks += d;
+                            pStage = System.Diagnostics.Stopwatch.GetTimestamp();
+                        }
+
+                        float* ffnOut = batchedMoe ? batchMoeOut : batchNorm;
+                        if (batchedMoe)
+                        {
+                            MoeFfnBatched(layer, batchNorm, batchMoeOut, N);
+                        }
+                        else if (_wGate[layer].DataPtr is null)
+                        {
+                            if (_xieluAlphaN is not null)
+                            {
+                                MatMulBatchedCached(batchFfnUp, in _wUp[layer], batchNorm, N, _intermDim, _embDim);
+                                for (int n = 0; n < N; n++)
+                                    SimdKernels.XieluInPlace(batchFfnUp + (long)n * _intermDim, _intermDim,
+                                        _xieluAlphaN![layer], _xieluAlphaP![layer], _xieluBeta![layer], _xieluEps![layer]);
+                                MatMulBatchedCached(batchNorm, in _wDown[layer], batchFfnUp, N, _embDim, _intermDim);
+                            }
+                            else
+                            {
+                                MatMulBatchedCached(batchFfnUp, in _wUp[layer], batchNorm, N, _intermDim, _embDim);
+                                for (int n = 0; n < N; n++)
+                                {
+                                    float* upPtr = batchFfnUp + (long)n * _intermDim;
+                                    if (_hasFfnBias && _bFfnUp is not null)
+                                        SimdKernels.AddInPlace(upPtr, _bFfnUp[layer], _intermDim);
+                                    SimdKernels.GeluInPlace(upPtr, _intermDim);
+                                }
+                                MatMulBatchedCached(batchNorm, in _wDown[layer], batchFfnUp, N, _embDim, _intermDim);
+                                if (_hasFfnBias && _bFfnDown is not null)
+                                {
+                                    for (int n = 0; n < N; n++)
+                                        SimdKernels.AddInPlace(batchNorm + (long)n * _embDim, _bFfnDown[layer], _embDim);
+                                }
+                            }
+                        }
+                        else
+                        {
+                            MatMulBatchedDualCached(batchFfnGate, in _wGate[layer], batchFfnUp, in _wUp[layer], batchNorm, N, _intermDim, _embDim);
+
+                            // Per-token SiLU(gate) * up
+                            for (int n = 0; n < N; n++)
+                                SimdKernels.SiLuMul(batchFfnGate + (long)n * _intermDim,
+                                    batchFfnUp + (long)n * _intermDim, _intermDim);
+
+                            MatMulBatchedCached(batchNorm, in _wDown[layer], batchFfnGate, N, _embDim, _intermDim);
+                        }
+                        if (profPrefill)
+                        {
+                            long d = System.Diagnostics.Stopwatch.GetTimestamp() - pStage;
+                            PrefillProfileTimers.Add(PrefillProfileTimers.Category.Ffn, d);
+                            pNamedTicks += d;
+                        }
+
+                        // Residual add
                         for (int n = 0; n < N; n++)
                         {
                             float* h = batchHidden + (long)n * _embDim;
                             Copy(h, ffnOut + (long)n * _embDim, _embDim);
-                            // Granite/MiniCPM: scale the sublayer output before it joins the residual.
                             if (_hp.ResidualScale != 1f)
                                 SimdKernels.ScaleInPlace(h, _hp.ResidualScale, _embDim);
                             SimdKernels.AddInPlace(h, batchResidual + (long)n * _embDim, _embDim);
@@ -1757,14 +1777,12 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
             // stays a streaming O(vocab) buffer rather than an O(N*vocab) allocation.
             var outNormW = GetNormWeight(_outputNorm);
 
-            var outNormB = _hasNormBias ? _bOutputNorm : null;
-
             if (onAllPositionLogits != null)
             {
                 for (int n = 0; n < N; n++)
                 {
                     float* hn = batchHidden + (long)n * _embDim;
-                    FastNorm(hn, hn, outNormW, outNormB, _embDim, _hp.RmsNormEps);
+                    FastNorm(hn, hn, outNormW, _hasNormBias ? _bOutputNorm : null, _embDim, _hp.RmsNormEps);
                     FusedMatVec(_logits, _outputWeight, hn, _hp.VocabSize, _embDim);
                     onAllPositionLogits(n, new ReadOnlySpan<float>(_logits, _hp.VocabSize));
                 }
@@ -1772,7 +1790,7 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
             }
 
             float* lastHidden = batchHidden + (long)(N - 1) * _embDim;
-            FastNorm(lastHidden, lastHidden, outNormW, outNormB, _embDim, _hp.RmsNormEps);
+            FastNorm(lastHidden, lastHidden, outNormW, _hasNormBias ? _bOutputNorm : null, _embDim, _hp.RmsNormEps);
             FusedMatVec(_logits, _outputWeight, lastHidden, _hp.VocabSize, _embDim);
 
             return new ReadOnlySpan<float>(_logits, _hp.VocabSize);
@@ -2392,10 +2410,10 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
             // Save residual
             Copy(_residual, _hidden, _embDim);
 
-            // Pre-attention norm (LayerNorm w/ bias for gptneox, RMSNorm otherwise)
+            // Pre-attention norm
             var normW = GetNormWeight(_attnNorm[layer]);
-            stageStart = profDecode ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
             var attnNormB = _hasNormBias && _bAttnNorm is not null ? _bAttnNorm[layer] : null;
+            stageStart = profDecode ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
             FastNorm(_normBuf, _hidden, normW, attnNormB, _embDim, _hp.RmsNormEps);
             StageCapture.Record("cpu", layer, StageCapture.Stages.AttnNorm,
                 new ReadOnlySpan<float>(_normBuf, _embDim));
@@ -2425,21 +2443,11 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
             {
                 if (kEqV)
                 {
-                    // Gemma 4 12B global layers: no attn_v weight — V is the raw K
-                    // projection (copied BEFORE QK-norm and RoPE, then plain-RMS-normed
-                    // below). Mirrors CudaForwardPass CopyDevice(vView, kView).
                     FusedMatVec(_k, _wk[layer], _normBuf, kvDimL, _embDim);
                     Copy(_v, _k, kvDimL);
                 }
                 else if (_layerHeadDim is not null)
                 {
-                    // Gemma 4: K and V share row count and dtype — fuse via
-                    // MatVecDual so the row loops interleave and the input
-                    // vector reads amortize. The row-interleave changes the FP
-                    // ordering vs sequential matvecs by ~ULP; gated to the
-                    // per-layer head_dim path because cumulative trunk drift
-                    // breaks Qwen3.6-27B-MTP byte parity (see
-                    // feedback_qkv_matvecdual_breaks_mtp_parity).
                     SimdKernels.MatVecDual(_k, _wk[layer].DataPtr, _v, _wv[layer].DataPtr,
                         _normBuf, kvDimL, _embDim, _wk[layer].DType, _wv[layer].DType);
                 }
@@ -2474,16 +2482,11 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
             bool useRoPE = _hp.NoRopeLayerStep == 0
                 || (layer + 1) % _hp.NoRopeLayerStep != 0;
 
-            // Qwen3 (weighted QK-norm): apply norm BEFORE RoPE (per reference implementation)
-            // Llama-4 (L2 QK-norm): apply norm AFTER RoPE (per llama.cpp)
             if (_hasQkNorm && !_hp.UseL2QkNorm)
             {
                 ApplyQkNormLayer(_q, kvShared ? null : _k, layer, layerHd, layerKv);
             }
 
-            // Gemma 4: V is plain per-head RmsNorm (no learned weight) before cache.
-            // Matches llama.cpp src/models/gemma4.cpp line 227:
-            //   Vcur = ggml_rms_norm(ctx0, Vcur, hparams.f_norm_rms_eps)
             if (_layerHeadDim is not null && !kvShared)
             {
                 PerHeadPureRmsNorm(_v, layerKv, layerHd, _hp.RmsNormEps);
@@ -2499,7 +2502,6 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
                     ApplyRopeLayer(_k, position, layerKv, layer, layerHd);
             }
 
-            // L2 QK-norm (Llama-4): only on RoPE layers, applied after RoPE
             if (_hasQkNorm && _hp.UseL2QkNorm && useRoPE)
             {
                 PerHeadPureRmsNorm(_q, _numHeads, layerHd, _hp.RmsNormEps);
@@ -2515,10 +2517,6 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
                 stageStart = System.Diagnostics.Stopwatch.GetTimestamp();
             }
 
-            // Store K, V in cache. KV-share layers don't append — the source layer's
-            // cache slot is shared via effLayer in the Attention call below.
-            // PagedKvCache.Append requires exactly cache.KvDim floats; for per-layer
-            // head_dim models the trailing (KvDim - kvDimL) floats were just zeroed.
             if (!kvShared)
             {
                 int appendLen = _layerHeadDim is not null ? _kvCache.KvDim : kvDimL;
@@ -2550,7 +2548,7 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
                 stageStart = System.Diagnostics.Stopwatch.GetTimestamp();
             }
 
-            // Output projection (input width is per-layer qDim).
+            // Output projection
             StageCapture.Record("cpu", layer, StageCapture.Stages.AttnOut,
                 new ReadOnlySpan<float>(_attnOut, qDimL));
 
@@ -2566,32 +2564,16 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
                 namedTicks += d;
             }
 
-            // Gemma 4: post-attention RmsNorm BEFORE the residual add.
-            if (_postAttnNorm is not null)
-            {
-                var paNormW = GetNormWeight(_postAttnNorm[layer]);
-                FastRmsNorm(_hidden, _hidden, paNormW, _embDim, _hp.RmsNormEps);
-            }
-
-            // Granite/MiniCPM: scale the sublayer output before it joins the residual stream.
-            if (_hp.ResidualScale != 1f)
-                SimdKernels.ScaleInPlace(_hidden, _hp.ResidualScale, _embDim);
-
             if (_hp.UseParallelResidual)
             {
-                // GPT-NeoX: x = inpL + attn(ln1(inpL)) + ffn(ln2(inpL)). _hidden currently
-                // holds attn_out (pre-residual, bias/scale already applied above); _residual
-                // still holds inpL untouched (saved before the attn-norm, never overwritten
-                // since — unlike the sequential branch below, nothing here copies into it
-                // until the very end). Stash attn_out before DenseFfn/MoeFfn overwrite
-                // _hidden, and compute the FFN norm from the SAME inpL, not from attn_out+inpL.
-                Copy(_parAttnOut, _hidden, _embDim);
-                if (_traceNorms) _normTraceAttn![layer] = L2Norm(_parAttnOut, _embDim);
+                // Stash attention output into _attnOut buffer
+                Copy(_attnOut, _hidden, _embDim);
 
-                var ffnNormWp = GetNormWeight(_ffnNorm[layer]);
+                // Pre-FFN norm reads original _residual (inpL)
+                var ffnNormW = GetNormWeight(_ffnNorm[layer]);
+                var ffnNormB = _hasNormBias && _bFfnNorm is not null ? _bFfnNorm[layer] : null;
                 stageStart = profDecode ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
-                var ffnNormBp = _hasNormBias && _bFfnNorm is not null ? _bFfnNorm[layer] : null;
-                FastNorm(_normBuf, _residual, ffnNormWp, ffnNormBp, _embDim, _hp.RmsNormEps);
+                FastNorm(_normBuf, _residual, ffnNormW, ffnNormB, _embDim, _hp.RmsNormEps);
                 if (profDecode)
                 {
                     long d = System.Diagnostics.Stopwatch.GetTimestamp() - stageStart;
@@ -2611,60 +2593,61 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
                     namedTicks += d;
                 }
 
-                // 3-way residual sum: _hidden(ffn_out) + _parAttnOut(attn_out) + _residual(inpL).
-                SimdKernels.AddInPlace(_hidden, _parAttnOut, _embDim);
+                // 3-way residual sum: _hidden (ffn_out) + _attnOut (attn_out) + _residual (inpL)
+                SimdKernels.AddInPlace(_hidden, _attnOut, _embDim);
                 SimdKernels.AddInPlace(_hidden, _residual, _embDim);
                 Copy(_residual, _hidden, _embDim);
             }
             else
             {
-            // Residual
-            SimdKernels.AddInPlace(_hidden, _residual, _embDim);
+                if (_postAttnNorm is not null)
+                {
+                    var paNormW = GetNormWeight(_postAttnNorm[layer]);
+                    FastRmsNorm(_hidden, _hidden, paNormW, _embDim, _hp.RmsNormEps);
+                }
+                if (_hp.ResidualScale != 1f)
+                    SimdKernels.ScaleInPlace(_hidden, _hp.ResidualScale, _embDim);
 
-            if (_traceNorms) _normTraceAttn![layer] = L2Norm(_hidden, _embDim);
+                SimdKernels.AddInPlace(_hidden, _residual, _embDim);
+                if (_traceNorms) _normTraceAttn![layer] = L2Norm(_hidden, _embDim);
 
-            StageCapture.Record("cpu", layer, StageCapture.Stages.PostAttnResidual,
-                new ReadOnlySpan<float>(_hidden, _embDim));
+                StageCapture.Record("cpu", layer, StageCapture.Stages.PostAttnResidual,
+                    new ReadOnlySpan<float>(_hidden, _embDim));
 
-            // Save residual for FFN
-            Copy(_residual, _hidden, _embDim);
+                Copy(_residual, _hidden, _embDim);
 
-            // Pre-FFN RMS norm
-            var ffnNormW = GetNormWeight(_ffnNorm[layer]);
-            stageStart = profDecode ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
-            FastRmsNorm(_normBuf, _hidden, ffnNormW, _embDim, _hp.RmsNormEps);
-            if (profDecode)
-            {
-                long d = System.Diagnostics.Stopwatch.GetTimestamp() - stageStart;
-                DecodeProfileTimers.Add(DecodeProfileTimers.Category.RmsNorm, d);
-                namedTicks += d;
-                stageStart = System.Diagnostics.Stopwatch.GetTimestamp();
-            }
+                var ffnNormW = GetNormWeight(_ffnNorm[layer]);
+                var ffnNormB = _hasNormBias && _bFfnNorm is not null ? _bFfnNorm[layer] : null;
+                stageStart = profDecode ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
+                FastNorm(_normBuf, _hidden, ffnNormW, ffnNormB, _embDim, _hp.RmsNormEps);
+                if (profDecode)
+                {
+                    long d = System.Diagnostics.Stopwatch.GetTimestamp() - stageStart;
+                    DecodeProfileTimers.Add(DecodeProfileTimers.Category.RmsNorm, d);
+                    namedTicks += d;
+                    stageStart = System.Diagnostics.Stopwatch.GetTimestamp();
+                }
 
-            if (_hp.IsMoE)
-                MoeFfn(layer);
-            else
-                DenseFfn(layer);
-            if (profDecode)
-            {
-                long d = System.Diagnostics.Stopwatch.GetTimestamp() - stageStart;
-                DecodeProfileTimers.Add(DecodeProfileTimers.Category.Ffn, d);
-                namedTicks += d;
-            }
+                if (_hp.IsMoE)
+                    MoeFfn(layer);
+                else
+                    DenseFfn(layer);
+                if (profDecode)
+                {
+                    long d = System.Diagnostics.Stopwatch.GetTimestamp() - stageStart;
+                    DecodeProfileTimers.Add(DecodeProfileTimers.Category.Ffn, d);
+                    namedTicks += d;
+                }
 
-            // Gemma 4: post-FFN RmsNorm before the residual add.
-            if (_postFfwNorm is not null)
-            {
-                var pfNormW = GetNormWeight(_postFfwNorm[layer]);
-                FastRmsNorm(_hidden, _hidden, pfNormW, _embDim, _hp.RmsNormEps);
-            }
+                if (_postFfwNorm is not null)
+                {
+                    var pfNormW = GetNormWeight(_postFfwNorm[layer]);
+                    FastRmsNorm(_hidden, _hidden, pfNormW, _embDim, _hp.RmsNormEps);
+                }
+                if (_hp.ResidualScale != 1f)
+                    SimdKernels.ScaleInPlace(_hidden, _hp.ResidualScale, _embDim);
 
-            // Granite/MiniCPM: scale the sublayer output before it joins the residual stream.
-            if (_hp.ResidualScale != 1f)
-                SimdKernels.ScaleInPlace(_hidden, _hp.ResidualScale, _embDim);
-
-            // Residual (post-attn output that includes its own residual).
-            SimdKernels.AddInPlace(_hidden, _residual, _embDim);
+                SimdKernels.AddInPlace(_hidden, _residual, _embDim);
             }
 
             StageCapture.Record("cpu", layer, StageCapture.Stages.PostFfnResidual,
@@ -2739,7 +2722,12 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
         var cos = _ropeCosTable + (long)pos * _ropeHalfDim;
         var sin = _ropeSinTable + (long)pos * _ropeHalfDim;
         if (_hp.IsNeoxRope)
-            SimdKernels.ApplyRoPECachedNeox(x, cos, sin, heads, _headDim);
+        {
+            if (_ropeDim < _headDim)
+                SimdKernels.ApplyRoPECachedNeoxPartial(x, cos, sin, heads, _headDim, _ropeDim);
+            else
+                SimdKernels.ApplyRoPECachedNeox(x, cos, sin, heads, _headDim);
+        }
         else
             SimdKernels.ApplyRoPECached(x, cos, sin, heads, _headDim);
     }
@@ -2757,14 +2745,11 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
         if (useSwa) sinTab = _ropeSinTableSwa;
         var cos = cosTab + (long)pos * halfDim;
         var sin = sinTab + (long)pos * halfDim;
+        int rDim = _layerRopeDim is not null ? _layerRopeDim[layer] : _ropeDim;
         if (_hp.IsNeoxRope)
         {
-            // Partial RoPE (GPT-NeoX/Pythia: rope.dimension_count < headDim, e.g. 16 of 64):
-            // rotate only the leading _ropeDim channels, dims [_ropeDim, layerHd) pass
-            // through. _ropeDim == layerHd for every other architecture, so this is a no-op
-            // fast path everywhere except gptneox.
-            if (_ropeDim < layerHd)
-                SimdKernels.ApplyRoPECachedNeoxPartial(x, cos, sin, heads, layerHd, _ropeDim);
+            if (rDim < layerHd)
+                SimdKernels.ApplyRoPECachedNeoxPartial(x, cos, sin, heads, layerHd, rDim);
             else
                 SimdKernels.ApplyRoPECachedNeox(x, cos, sin, heads, layerHd);
         }
@@ -4105,12 +4090,13 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
 
     private void DenseFfn(int layer)
     {
-        // Apertus/GPT-NeoX: no ffn_gate tensor — plain up -> activation -> down, no gate
-        // multiply. Apertus uses xIELU (unbiased); GPT-NeoX uses biased GELU (up bias goes
-        // INSIDE the activation — gelu(Wx + b), not gelu(Wx) + b — down bias after).
+        // Apertus / GPT-NeoX non-gated path: no ffn_gate tensor — plain up -> act -> down.
         if (_wGate[layer].DataPtr is null)
         {
             FusedMatVec(_ffnUp, _wUp[layer], _normBuf, _intermDim, _embDim);
+            if (_hasFfnBias && _bFfnUp is not null)
+                SimdKernels.AddInPlace(_ffnUp, _bFfnUp[layer], _intermDim);
+
             if (_xieluAlphaN is not null)
             {
                 SimdKernels.XieluInPlace(_ffnUp, _intermDim,
@@ -4118,10 +4104,9 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
             }
             else
             {
-                if (_hasFfnBias && _bFfnUp is not null)
-                    SimdKernels.AddInPlace(_ffnUp, _bFfnUp[layer], _intermDim);
                 SimdKernels.GeluInPlace(_ffnUp, _intermDim);
             }
+
             FusedMatVec(_hidden, _wDown[layer], _ffnUp, _embDim, _intermDim);
             if (_hasFfnBias && _bFfnDown is not null)
                 SimdKernels.AddInPlace(_hidden, _bFfnDown[layer], _embDim);
@@ -4132,6 +4117,11 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
             _normBuf, _intermDim, _embDim, _wGate[layer].DType, _wUp[layer].DType);
         if (_hp.FfnActivation == FfnActivation.GeluApprox)
             SimdKernels.GeluTanhMul(_ffnGate, _ffnUp, _ffnGate, _intermDim);
+        else if (_hp.FfnActivation == FfnActivation.Gelu)
+        {
+            SimdKernels.GeluInPlace(_ffnGate, _intermDim);
+            for (int i = 0; i < _intermDim; i++) _ffnGate[i] *= _ffnUp[i];
+        }
         else
             SimdKernels.SiLuMul(_ffnGate, _ffnUp, _intermDim);
         FusedMatVec(_hidden, _wDown[layer], _ffnGate, _embDim, _intermDim);
@@ -4674,15 +4664,15 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
         else               SimdKernels.RmsNorm    (output, input, weight, size, eps);
     }
 
-    /// <summary>
-    /// Dispatches to LayerNorm (GPT-NeoX/Pythia, <see cref="_hasNormBias"/>) or the ordinary
-    /// RMSNorm path every other architecture uses. <paramref name="bias"/> is ignored on the
-    /// RMSNorm path.
-    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void FastNorm(float* output, float* input, float* weight, float* bias, int size, float eps)
     {
-        if (_hasNormBias) SimdKernels.LayerNorm(output, input, weight, bias, size, eps);
-        else              FastRmsNorm(output, input, weight, size, eps);
+        if (_hasNormBias)
+            SimdKernels.LayerNorm(output, input, weight, bias, size, eps);
+        else if (_useWideNorms)
+            SimdKernels.RmsNormWide(output, input, weight, size, eps);
+        else
+            SimdKernels.RmsNorm(output, input, weight, size, eps);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -5538,18 +5528,15 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
             }
         }
 
+        // LayerNorm bias (GPT-NeoX) — each per-layer entry is its own independently-owned
+        // allocation (see the constructor: LoadBias per tensor, never aliased), so a plain
+        // per-index free is safe here, unlike the fused-QKV bias case above.
         if (_hasNormBias)
         {
             for (int i = 0; i < _hp.NumLayers; i++)
             {
                 if (_bAttnNorm![i] != null) NativeMemory.Free(_bAttnNorm[i]);
-                // Falcon has no ffn_norm.bias tensor: _bFfnNorm[i] aliases _bAttnNorm[i] (see
-                // the constructor's fallback) rather than owning an independent allocation —
-                // freeing it too would double-free the same pointer. Every other architecture
-                // with HasNormBias allocates the two independently, so the pointer-equality
-                // check is the discriminator, not the architecture string.
-                if (_bFfnNorm![i] != null && _bFfnNorm[i] != _bAttnNorm[i])
-                    NativeMemory.Free(_bFfnNorm[i]);
+                if (_bFfnNorm![i] != null) NativeMemory.Free(_bFfnNorm[i]);
             }
             if (_bOutputNorm != null) NativeMemory.Free(_bOutputNorm);
         }
@@ -5561,7 +5548,6 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
                 if (_bFfnDown![i] != null) NativeMemory.Free(_bFfnDown[i]);
             }
         }
-        if (_parAttnOut != null) NativeMemory.Free(_parAttnOut);
 
         if (_hp.IsMoE)
         {
