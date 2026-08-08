@@ -71,13 +71,36 @@ accident of which entry point was used.
   `tests/OpenTail.Stingray.Tests.ForwardPass/OlmoeGreedyParityTests.cs` (currently red by design;
   it is the open defect record).
 
-  Two candidate causes ruled in/out so far: tokenization is **not** the cause (the test asserts the
-  prompt ids match llama-tokenize before decoding, and that assertion passes), and BOS is unlikely
-  — the model declares `tokenizer.ggml.add_bos_token = false`, so neither side should prepend one.
-  That second point rests on metadata rather than a direct dump of llama.cpp's prompt tokens; the
-  `--verbose-prompt` run to confirm it errored and should be redone before the cause is narrowed
-  further. The MoE router (`norm_topk_prob=false`) and the per-channel QK-norm are the natural
-  first suspects.
+  **Defect 1 — FOUND AND FIXED: QK-norm reduction width.** `PerChannelRmsNorm` looped per head and
+  took the RMS over `headDim` (128) elements using that head's slice of the weight. OLMoE does not
+  work that way: `models/olmoe.cpp` applies `build_norm` to `Qcur`/`Kcur` while they are still
+  `[n_embd, n_tokens]` and reshapes into heads *afterwards*, so the RMS denominator spans all heads
+  — 2048 elements, not 128. Per-head and whole-vector RMS agree only when every head has the same
+  RMS, so it diverged at layer 0. Fixed; the first generated token now matches and the degenerate
+  newline run is gone.
+
+  **Defect 2 — CONFIRMED PRESENT, NOT YET FOUND.** Parity still fails, now at generated token 2.
+  This is *not* numerical drift, and that was measured rather than assumed. Top-5 logits at the
+  divergence:
+
+  | step | our top-5 | verdict |
+  |---|---|---|
+  | 0 | ` Paris`=14.38, ` called`=11.86, … | matches llama.cpp |
+  | 1 | `.`=16.73, `,`=16.17, … | matches llama.cpp |
+  | 2 | `\n`=14.68, ` The`=14.33, ` It`=13.58, ` France`=13.36, **` Paris`=13.13** | llama.cpp picks ` Paris` — **5th here, 1.55 logits down** |
+
+  A near-tie would be noise from llama.cpp's repacked CPU kernels; four ranks and 1.55 logits is a
+  structural difference. Ruled out so far: tokenization (the test asserts prompt-id equality with
+  llama-tokenize and that passes); BOS (tested directly — prefixing `tokenizer.BosTokenId` gives a
+  *different* wrong continuation, so neither form reproduces the reference); llama.cpp sampler
+  settings (re-run with `--repeat-penalty 1.0 --repeat-last-n 0 --presence-penalty 0
+  --frequency-penalty 0` produces byte-identical reference output); and the MoE router, whose
+  softmax-over-all-experts → top-k → no-renormalisation order already matches
+  `build_moe_ffn(..., norm_w=false, SOFTMAX)`.
+
+  Note the shape of it: steps 0 and 1 are correct and step 2 is not, so whatever it is involves
+  decode state rather than the prefill graph. `OlmoeGreedyParityTests.Olmoe_TopCandidates_AtDivergence`
+  is a `Skip`-ped diagnostic that reproduces the table above in one run.
 
   **This is the standing evidence rule doing its job.** OLMoE loaded, ran at a plausible speed, and
   emitted fluent English — and was wrong. A throughput baseline is not a correctness receipt, and

@@ -4468,11 +4468,23 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
             SimdKernels.RmsNorm(data + h * headDim, data + h * headDim, weight, headDim, eps);
     }
 
-    private static void PerChannelRmsNorm(float* data, float* weight, int numHeads, int headDim, float eps)
-    {
-        for (int h = 0; h < numHeads; h++)
-            SimdKernels.RmsNorm(data + h * headDim, data + h * headDim, weight + h * headDim, headDim, eps);
-    }
+    /// <summary>
+    /// OLMoE-shaped QK-norm: one RMS over the WHOLE projection vector, then a per-channel weight.
+    ///
+    /// <para>The reduction width is the whole point, and it is easy to get wrong. This used to loop
+    /// per head and normalise over <paramref name="headDim"/> elements at a time, using that head's
+    /// slice of the weight — which looks reasonable, and is what "per-head QK-norm with a
+    /// per-channel weight" would mean. It is not what the model does. llama.cpp's
+    /// <c>models/olmoe.cpp</c> applies <c>build_norm</c> to <c>Qcur</c>/<c>Kcur</c> while they are
+    /// still <c>[n_embd, n_tokens]</c> and only reshapes into heads afterwards, so the RMS
+    /// denominator spans all heads (2048 elements for OLMoE-1B-7B, not 128).</para>
+    ///
+    /// <para>Per-head and whole-vector RMS agree only if every head has the same RMS, so the two
+    /// diverge immediately — at layer 0, on the first token. That was the OLMoE parity defect;
+    /// see <c>OlmoeGreedyParityTests</c>.</para>
+    /// </summary>
+    private static void PerChannelRmsNorm(float* data, float* weight, int numHeads, int headDim, float eps) =>
+        SimdKernels.RmsNorm(data, data, weight, numHeads * headDim, eps);
 
     private void ApplyQkNorm(float* q, float* k, int layer)
     {

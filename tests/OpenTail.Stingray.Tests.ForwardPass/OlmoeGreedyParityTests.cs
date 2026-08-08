@@ -46,6 +46,50 @@ public sealed class OlmoeGreedyParityTests
     private const string ReferenceContinuation =
         " Paris. Paris is one of the most popular tourist destinations in the world, known for its iconic";
 
+    /// <summary>
+    /// Diagnostic, not an acceptance test: dumps the top-5 candidates at each of the first few
+    /// generated positions so a divergence can be classified. If the token llama.cpp picked is a
+    /// near-tie runner-up here, the cause is numerical (llama.cpp's CPU backend repacks weights and
+    /// accumulates differently); if it is far down the list, there is a second structural defect.
+    /// Guessing between those two without looking is how a real bug gets written off as noise.
+    /// Marked Skip so it never runs in CI; remove the Skip to use it.
+    /// </summary>
+    [Fact(Skip = "Diagnostic — remove Skip to inspect logits at the divergence point.")]
+    public void Olmoe_TopCandidates_AtDivergence()
+    {
+        var path = FindModel();
+        Assert.SkipWhen(path is null, $"{ModelFile} is required for this parity receipt.");
+
+        using var model = GgufModel.Open(path!);
+        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        var tokenizer = GgufTokenizer.FromGgufModel(model);
+
+        using var backend = new CpuBackend();
+        using var fwd = new Engine.ForwardPass(model, backend, hp, maxContextLength: 2048);
+
+        var report = new System.Text.StringBuilder();
+        var logits = fwd.Prefill(s_promptTokens);
+        int pos = s_promptTokens.Length;
+        for (int step = 0; step < 4; step++)
+        {
+            // Copy out first: `logits` is a span, and a span cannot be captured by a lambda.
+            var snapshot = new float[tokenizer.VocabSize];
+            for (int i = 0; i < snapshot.Length; i++) snapshot[i] = logits[i];
+
+            var ranked = Enumerable.Range(0, tokenizer.VocabSize)
+                .Select(id => (id, logit: snapshot[id]))
+                .OrderByDescending(t => t.logit)
+                .Take(5)
+                .Select(t => $"{tokenizer.Decode([t.id])!.Replace("\n", "\\n")}={t.logit:F4}");
+            report.Append($"step {step}: ").AppendLine(string.Join("  ", ranked));
+
+            int next = Sampler.Greedy(logits);
+            logits = fwd.Forward(next, pos++);
+        }
+
+        Assert.Fail(report.ToString());
+    }
+
     [Fact]
     public void Olmoe_GreedyContinuation_MatchesLlamaCpp()
     {
