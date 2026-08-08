@@ -35,9 +35,20 @@ Hardware that cannot be validated on this PC is intentionally separated in
    TurboQuant selection/fallback, KV-dtype applicability, batching/tool-grammar exclusion, MTP,
    and the unsupported restart-session verdict. Extend the set only where the loader actually
    executes the route; GPU and loader-route claims still require their hardware rows below.
-4. **Configuration ownership.** Regenerate the drifted CLI/environment inventories from source,
-   classify environment variables and host keys, retire stale bench switches, and extend
-   source-tracked effective configuration beyond static planning knobs.
+4. **Configuration ownership.** *Partly closed 2026-08-08.*
+   - **Done — inventories regenerated from source.** `docs/cli-option-inventory.md` went from 96
+     hand-maintained rows to all **149** declared options, produced by the checked-in
+     `scripts/gen-cli-option-inventory.ps1` (`-Check` fails when stale). The count guard now also
+     asserts the ROW count, because the declared count had tracked source correctly the whole time
+     while the table silently fell 53 rows behind — it was measuring the one thing not drifting.
+   - **Done — stale registry entries retired.** Three `KnownEnvironmentVariables` entries were never
+     environment variables at all: `STINGRAY_ARGMAX_NEG_INF` (a CUDA `#define` in an NVRTC kernel
+     string) and the glob patterns `STINGRAY_MOE_` / `STINGRAY_SNAPKV`. Registry 159 → 156. A text
+     scan cannot tell prose from an environment read, so each entry justified itself; a new test
+     requires every entry to appear as a **quoted string literal** in `src/`.
+   - **Still open:** the Class/Notes *classification* of both inventories, and extending
+     source-tracked effective configuration beyond static planning knobs. The generator preserves
+     hand-written Class values across regeneration, so classification work is now safe to start.
 
 References: [release-quality-test-matrix.md](release-quality-test-matrix.md),
 [recommended-configurations.md](recommended-configurations.md),

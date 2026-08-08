@@ -74,7 +74,7 @@ jobs:
           dotnet test tests/OpenTail.Stingray.Tests.Cli/OpenTail.Stingray.Tests.Cli.csproj -c Release -- --report-trx --report-trx-filename cli.trx --results-directory ./artifacts/test-results --minimum-expected-tests 300
           dotnet test tests/OpenTail.Stingray.Tests.Sessions/OpenTail.Stingray.Tests.Sessions.csproj -c Release -- --report-trx --report-trx-filename sessions.trx --results-directory ./artifacts/test-results --minimum-expected-tests 60
           dotnet test tests/OpenTail.Stingray.Tests.Vision/OpenTail.Stingray.Tests.Vision.csproj -c Release -- --report-trx --report-trx-filename vision.trx --results-directory ./artifacts/test-results --minimum-expected-tests 55
-          dotnet test tests/OpenTail.Stingray.Tests.ForwardPass/OpenTail.Stingray.Tests.ForwardPass.csproj -c Release -- --report-trx --report-trx-filename forwardpass.trx --results-directory ./artifacts/test-results --minimum-expected-tests 900
+          dotnet test tests/OpenTail.Stingray.Tests.ForwardPass/OpenTail.Stingray.Tests.ForwardPass.csproj -c Release -- --report-trx --report-trx-filename forwardpass.trx --results-directory ./artifacts/test-results --minimum-expected-tests 1200
 
       # A number of heavyweight tests intentionally return early when their GGUF fixture is not
       # installed. Preserve an explicit fixture-coverage receipt beside the TRX files so a green

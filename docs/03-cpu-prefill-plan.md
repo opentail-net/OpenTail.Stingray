@@ -181,3 +181,40 @@ Historical evidence: [done/cpu-prefill-plan-2026-07.md](done/cpu-prefill-plan-20
 Release. It includes Q3_K's 4/8-input dispatch/remainder cases and Q2_K's 600-token production
 fallback, so the remaining decision is release-quality/performance evidence, not those two
 correctness seams.
+
+
+### Mechanism (2026-08-08, follow-up) — the earlier "per-call activation scale" explanation is WRONG
+
+That claim does not survive reading the code. Int8 activation quantisation is **per row**:
+`DotQ6K` calls `QuantizeRowToQ8K(input, cols, scratch)`, with per-super-block scales inside a single
+token's activation vector. Batch size cannot change the quantisation of a given row, so "a 13-row
+batch and a 5-row batch derive different scales" is not the mechanism.
+
+**Measured instead** (13 tokens, SmolLM2-1.7B-Q4_K_M, max abs logit difference):
+
+| Comparison | maxDiff | What it isolates |
+|---|---|---|
+| `full[13]` vs `[5,5,3]` | 1.4335 | baseline divergence |
+| `full[13]` vs `[12,1]` | 1.0651 | |
+| `full[13]` vs `[6,6,1]` | 1.3838 | |
+| `[12,1]` vs `[6,6,1]` | **1.0905** | **same last chunk (1 row), different history → still diverges** |
+| `[5,5,3]` vs `[10,3]` | 1.4335 | `[10,3]` is numerically indistinguishable from `full[13]` |
+
+The fourth row is the decisive one: two runs whose **final call is byte-identical in shape** still
+differ, so this is not a property of the last batch. Earlier chunks compute different values, write
+them to KV, and the difference propagates.
+
+**Corrected two-mechanism model:**
+1. **Flash-64 threshold** — the attention path is chosen on `startPos + N >= 256`. A 600-token prompt
+   at chunk 256 crosses on its first chunk exactly as the single-shot call does, which is why those
+   two agree to **0.0000**; at chunk 64 the early chunks take the incumbent and later ones flash-64,
+   so they diverge. This mechanism **cannot apply to the 13-token test at all** — it never reaches 256.
+2. **Batch-shape-dependent numerics in the incumbent int8 batched path** — the remaining, and for
+   short prompts the only, mechanism. Q8-gated (the test passes with `STINGRAY_CPU_PREFILL_Q8=0`),
+   and consistent with the 4/8-input dispatch and remainder handling that path documents. Different
+   row counts select different microkernels with different accumulation order.
+
+**Consequence for any fix:** making activation scales chunk-invariant would achieve nothing, because
+they already are. A fix has to make the int8 batched path's *dispatch and accumulation order*
+independent of batch shape — a substantially bigger change, and one that would cost throughput on
+the very path measured at 3.48x. Not attempted here. The shipped default (chunk 256) is unaffected.

@@ -44,9 +44,16 @@ jobs:
       #
       # ForwardPass is the largest suite and holds most of the CPU inference, batching, KV-cache and
       # quantisation-parity coverage; it was absent from this gate, so an engine regression could
-      # merge green. Its GPU/model rows self-skip on a runner with neither, and its floor of 900 is a
-      # deliberate lower bound (1,078 [Fact]/[Theory] methods before Theory expansion) because no CI
-      # run has yet established the true discovered count — raise it once one has.
+      # merge green. Its GPU/model rows self-skip on a runner with neither.
+      #
+      # The floor is 1200, set from a MEASURED discovery count: four full local runs each discovered
+      # 1,358 tests. Discovery does not depend on fixtures or hardware being present — those only
+      # change pass/skip. That was checked, not assumed: the only data-driven Theory sources in the
+      # suite (VulkanIntegerDotProbeTests.Populations, VulkanSplitKvChunkConsistencyTests.Shaders)
+      # return hard-coded literals, so no case count varies with what is on disk. A bare CI runner
+      # therefore discovers the same 1,358. (The earlier 900 was a
+      # guess from counting [Fact]/[Theory] methods before Theory expansion, which is why it was
+      # ~34% below the truth and would not have caught a substantial collapse.)
       - name: CPU-safe test suites
         run: |
           dotnet test tests/OpenTail.Stingray.Tests.Core/OpenTail.Stingray.Tests.Core.csproj -c Release --no-restore -- --minimum-expected-tests 350
@@ -56,4 +63,4 @@ jobs:
           dotnet test tests/OpenTail.Stingray.Tests.Cli/OpenTail.Stingray.Tests.Cli.csproj -c Release --no-restore -- --minimum-expected-tests 300
           dotnet test tests/OpenTail.Stingray.Tests.Sessions/OpenTail.Stingray.Tests.Sessions.csproj -c Release --no-restore -- --minimum-expected-tests 60
           dotnet test tests/OpenTail.Stingray.Tests.Vision/OpenTail.Stingray.Tests.Vision.csproj -c Release --no-restore -- --minimum-expected-tests 55
-          dotnet test tests/OpenTail.Stingray.Tests.ForwardPass/OpenTail.Stingray.Tests.ForwardPass.csproj -c Release --no-restore -- --minimum-expected-tests 900
+          dotnet test tests/OpenTail.Stingray.Tests.ForwardPass/OpenTail.Stingray.Tests.ForwardPass.csproj -c Release --no-restore -- --minimum-expected-tests 1200

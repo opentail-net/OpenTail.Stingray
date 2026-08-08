@@ -38,7 +38,7 @@ that deletion: without `global.json`, `dotnet test` falls back to VSTest, finds 
   `GenerateAsync_TqRewindFloor_ClampsPrefixReuse`; reverting `mutatedSlotIdx` fails
   `GenerateAsync_TwoSlot_MtpFailedMidDecode_DoesNotReuseDestroyedPrefix`.
 
-## Theme B — chat-template hardening — **PARTIALLY DONE (Core suite is RED: 17 known failures)**
+## Theme B — chat-template hardening — **DONE, all 71 tests green**
 
 ### Done and verified
 
@@ -167,20 +167,24 @@ honest. `ToolGrammarConstraintTests` was the one class where a present fixture w
 
 - Release candidate `dbad0d7` is committed and **unpushed**; no `stingray-v1.0.3` tag exists.
   nuget.org has only 1.0.2. Packages are packed at `artifacts/nuget/` (1.0.3, all three + symbols).
-- **`Tests.ForwardPass` HAS now completed locally** (first time, 2026-08-08): **1,358 tests,
-  1,080 s (18 min), 370 skipped, 2 FAILED.** The two failures are not yet identified — the run was
-  piped through `tail -20`, which discarded the diagnostics. A full-capture re-run is in progress;
-  identify them before trusting this suite.
-  - The `--minimum-expected-tests 900` floor in `ci.yml` / `release.yml` / `verify-nuget-package.ps1`
-    is **confirmed safe**: discovery finds 1,358, and discovery does not depend on fixtures being
-    present, so a fixture-less CI runner discovers the same number. The floor could be raised toward
-    ~1,200 once a CI run confirms the count there.
-  - 370 skips is the honest cost of a machine with no NVIDIA GPU and most model fixtures absent.
-    Do not read the green suites elsewhere as covering this.
+- **`Tests.ForwardPass` completes locally and has a verdict** (first achieved 2026-08-08):
+  **1,358 tests, ~18 min.** Steady state is **one real failure** —
+  `ContinuousBatchingTests.PrefillWithCache_Chunked_MatchesFull`, deterministic across four runs
+  with byte-identical values, pre-existing, and analysed in `docs/03-cpu-prefill-plan.md` item 5.
+  - Two other failure sources were investigated and resolved as environmental, not defects: a
+    once-seen flake under CPU contention that never recurred, and three `VulkanShaderTests` failures
+    from unguarded `VulkanBackend` construction (now guarded — see the Vulkan section below).
+  - The `--minimum-expected-tests 900` floor in `ci.yml` / `release.yml` /
+    `verify-nuget-package.ps1` is **confirmed safe**: discovery finds 1,358, and discovery does not
+    depend on fixtures, so a fixture-less CI runner discovers the same number. It could be raised
+    toward ~1,200 once a CI run confirms the count there.
+  - ~367 skips are dominated by the absence of an NVIDIA GPU, not missing models — see the
+    corrected breakdown below. Do not read the other suites' green as covering this one.
   - **Lesson worth keeping:** never pipe a long test run through `tail`. An 18-minute run whose
     failure output is discarded costs another 18 minutes to redo.
-- `docs/03-cpu-prefill-plan.md` item 4 (interleaved arms, warm-up, multiple samples) still open; the
-  quality half closed 2026-08-08.
+- `docs/03-cpu-prefill-plan.md` item 4 **CLOSED 2026-08-08**: interleaved arms, warm-up and three
+  samples per arm give **3.48x median** (F32 6.90 -> Q8 24.02 tok/s) with 1.0%/3.6% spread. The
+  quality half closed the same day. Both halves of that plan are now evidenced.
 
 
 ## Fixture-resolution audit (2026-08-08) — skips that were hiding real coverage
@@ -216,7 +220,15 @@ name the Q8_0 checkpoint. Unlike the tokenizer, per-export metadata is exactly w
 about, so family-resolution there would be wrong, not helpful.
 
 
-## ForwardPass skip audit (2026-08-08) — mostly legitimate, one more fixture pin fixed
+## ~~ForwardPass skip audit~~ — **SUPERSEDED, DO NOT USE THE TABLE BELOW**
+
+> **The reason-breakdown in this section is wrong.** It attributes 354 skips to missing model
+> fixtures and 11 to hardware. The real split is **327 hardware / 35 fixture** — see
+> "Corrected ForwardPass skip breakdown" further down. The cause was my own mislabelling of 323
+> device gates. The *narrative* here (which classes want which models, and the Gemma fixture pin
+> that was fixed) is still accurate; only the reason counts are not.
+
+### Original section, retained for the reasoning
 
 Analysed the 370 skips from the captured full run rather than re-running. Breakdown:
 
@@ -319,3 +331,36 @@ unguarded: there, bringing the device up *is* the thing under test.
 
 **Standing caveat:** the 4th failure remains the known deterministic
 `PrefillWithCache_Chunked_MatchesFull`. That one is a real defect, not an environmental flake.
+
+
+## VERIFIED FINAL STATE (2026-08-08) — full suite, accurate labels
+
+Run after the device-gate relabelling and the Vulkan constructor guard. This is the first
+ForwardPass run whose skip reasons can be read at face value.
+
+**1,358 tests · 1,072 s · 1 failed · 369 skipped.**
+
+| Skip reason | Count |
+|---|---|
+| no CUDA device | **327** |
+| model fixture not present | **35** |
+| no usable GPU backend (transient Vulkan) | 2 |
+| OpenBLAS not present | 2 |
+| model fixture or CUDA device | 1 |
+| glslc not found (Vulkan SDK) | 1 |
+| Flash-64 128/256 widths held at the gate | 1 |
+
+Three things this confirms:
+
+1. **The Vulkan guard worked.** The three `ErrorIncompatibleDriver` failures are gone, and only 2
+   Vulkan skips occurred — so Vulkan was available for essentially the whole run, and an environmental
+   flake now reports as a skip instead of a failure.
+2. **The labels are finally honest.** 327 CUDA vs 35 fixture, stated plainly. The original table
+   claimed the reverse.
+3. **Steady state is exactly one real failure:** `PrefillWithCache_Chunked_MatchesFull`, deterministic
+   across five runs with byte-identical values (1.86363602 vs 1.5929451). Left red deliberately — it
+   is the only automated detector for chunk-dependent Q8 activation scales.
+
+**Whole-tree state at this point:** Core 488, Server 261, Cli 367, Sessions 79, TurboQuant 78,
+Vision 73, Pipeline 52 — all green, 0 warnings under `TreatWarningsAsErrors` — plus ForwardPass
+1,358 with the single known failure. Nothing committed, pushed, or tagged.
