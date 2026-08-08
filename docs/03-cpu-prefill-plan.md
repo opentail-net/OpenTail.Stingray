@@ -41,13 +41,40 @@ per-token fallback.
    while throughput was **19.02** versus **6.26 tok/s**. This is a focused quality/performance
    smoke, not the required multi-length, interleaved release measurement.
 
-    **Deferred / still untested (2026-08-07):** the planned full Wikitext-2 release-quality
-    comparison remains open. The evaluator correctly requires `--batched` and a Q8-eligible chunk
-   (the default loop would not exercise CPU batched prefill), but the 2,048-token F32 control arm
-   exceeded the available work window. Its Q8-on companion completed in 97.7 s (7.3859 PPL), which
-   is deliberately **not** recorded as a quality result because the matched F32 arm did not finish.
-   Resume with paired Q8-on/Q8-off runs at the same corpus slice, context, chunk size, model hash,
-   and environment; retain both raw outputs before drawing any conclusion.
+   **Paired corpus receipt — COMPLETE (2026-08-08).** The 2026-08-07 attempt left this open because
+   the F32 control arm did not finish; only its Q8-on companion (97.7 s, 7.3859 PPL) completed, and
+   that number was correctly withheld as a quality result. The obstruction was the *work window*, not
+   the measurement: `-c` is tokens scored rather than context length, so each arm is a single
+   2,048-token pass, and F32 takes ~5 min. Both arms have now been run back to back.
+
+   Model `Qwen3-8B-Q4_K_M.gguf` (SHA-256 `d98cdcbd03e17ce47681435b5150e34c1417f50b5c0019dd560e4882c5745785`),
+   corpus `scripts/kvarn-gate/wiki.test.raw` (Wikitext-2 test), `-c 2048 --batched
+   --batch-chunk-size 512`, CPU backend, no OpenBLAS, 2,047 tokens scored. Identical in every
+   respect except `STINGRAY_CPU_PREFILL_Q8`:
+
+   | Arm | mean NLL | PPL | elapsed | tok/s |
+   |---|---|---|---|---|
+   | `STINGRAY_CPU_PREFILL_Q8=0` (F32 control) | 2.002994 | **7.4112** | 316.5 s | 6.47 |
+   | `STINGRAY_CPU_PREFILL_Q8=1` (Q8 on) | 1.999567 | **7.3859** | 97.9 s | 20.92 |
+
+   **Δ mean NLL −0.003427 nats, ΔPPL −0.341%, at 3.23× the throughput.** Q8 scores marginally
+   *lower* perplexity than the exact path. That is not evidence Q8 is more accurate — both runs are
+   deterministic, so this is a real reproducible numerical difference rather than noise, but the
+   direction is incidental. The defensible claim is only this: on this slice the int8 approximation
+   costs nothing measurable in quality while tripling prefill throughput.
+
+   Per position bucket (F32 → Q8): `[1,256)` 12.3890 → 12.4026 (+0.110%), `[256,1024)` 6.0789 →
+   6.0579 (−0.345%), `[1024,+)` 7.5660 → 7.5318 (−0.452%). Q8 is slightly worse only in the first
+   bucket and better beyond it — independently reproducing the same shape seen in the earlier
+   unrecorded multi-length runs.
+
+   The Q8 arm reproduced 7.3859 to four decimals against the 2026-08-07 partial run, confirming the
+   configuration is pinned by model hash, corpus slice and chunk size.
+
+   **Scope of this receipt:** one model, one 2,048-token slice, one chunk size, single sample, no
+   warm-up and no interleaving. It closes the corpus/perplexity half of this item. It does **not**
+   satisfy item 4, which still needs interleaved arms, warm-up and multiple samples before the
+   throughput ratio above is quotable as a performance result.
 
    **Packed-admission regression (2026-08-07):** an all-control request in a packed admission
    batch now forces the *whole* batch through exact sequential F32 admission. Previously the

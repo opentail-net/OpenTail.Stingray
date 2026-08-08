@@ -6,6 +6,14 @@ human-facing map that a raw commit graph cannot.
 
 ## Unreleased
 
+## 1.0.3 — 2026-08-08
+
+Tag `stingray-v1.0.3`. Scope of this release: OpenAI `tool_choice:"required"` support, a session
+optimistic-concurrency wire fix, and a set of robustness/packaging corrections found in review.
+Backend and model-format scope is unchanged from 1.0.2 — GGUF remains the recommended quantized
+deployment format, and the CPU-dense GGUF lane is still the only one with restart-continuation
+evidence.
+
 ### Added
 
 - CPU execution for the published dense Llama/Mistral SafeTensors profile (F32/F16/BF16), with

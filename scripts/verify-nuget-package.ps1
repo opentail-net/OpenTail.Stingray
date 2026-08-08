@@ -50,7 +50,11 @@ try {
             'tests\OpenTail.Stingray.Tests.TurboQuant\OpenTail.Stingray.Tests.TurboQuant.csproj',
             'tests\OpenTail.Stingray.Tests.Cli\OpenTail.Stingray.Tests.Cli.csproj',
             'tests\OpenTail.Stingray.Tests.Sessions\OpenTail.Stingray.Tests.Sessions.csproj',
-            'tests\OpenTail.Stingray.Tests.Vision\OpenTail.Stingray.Tests.Vision.csproj'
+            'tests\OpenTail.Stingray.Tests.Vision\OpenTail.Stingray.Tests.Vision.csproj',
+            # Largest suite, and it was missing here for the same reason it was missing from CI:
+            # it carries most of the CPU inference, batching, KV-cache and quantisation-parity
+            # coverage, so a release could be validated without it ever running.
+            'tests\OpenTail.Stingray.Tests.ForwardPass\OpenTail.Stingray.Tests.ForwardPass.csproj'
         )
         foreach ($testProject in $releaseTestProjects) {
             & dotnet test (Join-Path $projectRoot $testProject) -c $Configuration --verbosity minimal -- --minimum-expected-tests 1
