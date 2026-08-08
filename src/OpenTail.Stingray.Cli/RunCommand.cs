@@ -334,6 +334,11 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         [DefaultValue(false)]
         public bool NoThinking { get; init; }
 
+        [CommandOption("--allow-unverified-arch")]
+        [Description("Attempt a GGUF whose architecture has no validated forward-pass profile. Output correctness is UNVERIFIED: GGUF tensor naming does not establish compatible attention, RoPE, normalization or FFN semantics, so the model may produce plausible but wrong tokens. Without this flag such a model is refused.")]
+        [DefaultValue(false)]
+        public bool AllowUnverifiedArch { get; init; }
+
         [CommandOption("--thinking")]
         [Description("Enable reasoning mode (sets enable_thinking=true). Needed for Gemma 4 reasoning " +
             "finetunes, which default off because stock Gemma 4 instruct models aren't reasoning-trained.")]
@@ -850,6 +855,28 @@ public sealed class RunCommand : Command<RunCommand.Settings>
 
         // ── GGUF path (unchanged) ─────────────────────────────────────────────
         model = GgufModel.Open(modelPath);
+
+        // Apply the same compatibility gate the server loader applies. Until 2026-08-08 this path
+        // did not, so the CLI would attempt any architecture while `doctor`, `static-plan` and the
+        // server all refused everything outside the supported set — one entry point ran models
+        // another would not admit. Disagreeing on which models are supported is worse than either
+        // answer alone, so the gate now runs everywhere and --allow-unverified-arch is the explicit
+        // way to override it.
+        if (settings.AllowUnverifiedArch)
+        {
+            string requested = model.Metadata.TryGetValue("general.architecture", out var reqArch)
+                ? Convert.ToString(reqArch) ?? "" : "";
+            if (!ModelCompatibility.IsTextGenerationArchitectureSupported(requested))
+                AnsiConsole.MarkupLine(
+                    $"[yellow]Warning:[/] architecture '[bold]{requested.EscapeMarkup()}[/]' has no validated "
+                    + "forward-pass profile. Running because --allow-unverified-arch was given; output may be "
+                    + "wrong in ways that still look plausible. Do not use this run as evidence of support.");
+        }
+        else
+        {
+            ModelCompatibility.ValidateForTextGeneration(model);
+        }
+
         hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
         s_arch = model.Metadata.TryGetValue("general.architecture", out var archVal) ? (string)archVal : "qwen2";
         // Explicit --ctx-size wins. Under --auto the immutable plan owns this choice, so

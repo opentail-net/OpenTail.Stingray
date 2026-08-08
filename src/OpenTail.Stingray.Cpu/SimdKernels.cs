@@ -152,7 +152,7 @@ public static unsafe class SimdKernels
             // scheme that reuses a weight read. The model predicted T(2) = 97 ms against an actual
             // 98 ms, so this is a validated bound rather than a single observation. Making batched
             // decode faster requires a cheaper dot (e.g. VNNI), not better data movement.
-            // See docs/cpu-speculative-decoding-findings.md.
+            // See docs/done/cpu-speculative-decoding-findings.md.
             if (BatchedMatVecTierEnabled)
             {
                 Interlocked.Increment(ref BatchedMatVecTierCalls);

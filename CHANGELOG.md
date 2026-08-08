@@ -208,7 +208,7 @@ evidence.
   mistaken for a token again. Manifest format is now v3 — same layout, revised meaning of the
   revision field; v1/v2 files remain readable and are not migrated, because the contract needs the
   sources to agree rather than to hold a particular number. Full analysis in
-  `docs/session-revision-contract-defect.md`.
+  `docs/done/session-revision-contract-defect.md`.
 - **Fixed (shutdown safety):** `ContinuousBatchingEngine.Dispose` no longer lets owned native, GPU
   and mmap'd resources be released while the batcher is still running. It waited five seconds — far
   less than a large chunked prefill — and then returned regardless, after which the owning engine
@@ -268,7 +268,7 @@ evidence.
   only by positional effects, so the signal rides as small differences on a large common component
   and per-row int8 scaling quantises it away. Two numerical hypotheses (embedding and
   activation-point dynamic range) were measured and disproved before landing this; see
-  `docs/cpu-prefill-quality-gate.md`.
+  `docs/done/cpu-prefill-quality-gate.md`.
 
 - `STINGRAY_PER_LAYER_HD_PREFILL=1` now fails fast with an explanation on per-layer-head-dim models
   (gemma4) instead of entering an unsafe path. It was documented as forcing batched prefill and

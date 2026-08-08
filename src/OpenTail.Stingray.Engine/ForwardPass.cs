@@ -929,7 +929,7 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
                 "head_dim model (gemma4). The batched path indexes KV with the model-wide head dim, " +
                 "so on layers with a smaller head_dim it reads and writes past the buffer — measured " +
                 "as an AccessViolationException, not merely incorrect output. Unset the variable; " +
-                "the sequential route is correct. See docs/gemma4-12b-evidence.md.");
+                "the sequential route is correct. See docs/done/gemma4-12b-evidence.md.");
         }
         bool perLayerHdUnsupported = _layerHeadDim is not null;
         bool moeUnsupported = _hp.IsMoE && !MoeBatchedPrefillSupported;
@@ -971,7 +971,7 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
     /// prompt's embedding outlier ratio does not separate the failing class (healthy code scores
     /// worse than collapsing whitespace), and neither does the activation outlier ratio taken at
     /// the point of quantisation (healthy prose contains rows with the same maximum as the
-    /// collapsing case). See docs/cpu-prefill-quality-gate.md.</para>
+    /// collapsing case). See docs/done/cpu-prefill-quality-gate.md.</para>
     ///
     /// <para>Why identical tokens break it: with one repeated token the rows entering each matmul
     /// differ only by positional effects, so the information is carried entirely in small

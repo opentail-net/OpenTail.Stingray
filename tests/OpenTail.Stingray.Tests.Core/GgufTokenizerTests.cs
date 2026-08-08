@@ -92,21 +92,29 @@ public sealed class GgufTokenizerTests
     [Fact]
     public void Encode_MultiSpaceRun_DecomposesToInVocabSpaceTokens()
     {
-        // The 2–8-space CodeGenTokenizer tokens (ids 50280–50286) decompose into repeated
-        // single-space in-vocab tokens (issue #267), preserving the whitespace rather than
-        // dropping it or emitting an unembeddable id.
+        // Issue #267: a run of spaces must survive encoding — not dropped, and not emitted as an
+        // id outside the embedding table.
+        //
+        // What this test must NOT assert is that more spaces yield more tokens. It used to, and
+        // that was wrong: it described the CodeGenTokenizer path (which decomposed the 2–8-space
+        // tokens at ids 50280–50286 into repeated single-space tokens) rather than SmolLM2 itself.
+        // With the model's declared `smollm` pre-tokenizer, llama.cpp encodes a whole run as one
+        // token — 4 spaces + "X" is [333, 2273] and 8 spaces + "X" is [415, 2273], both length 2.
+        // Exact-ID parity for those two cases lives in PreTokenizerParityTests, where the reference
+        // values are recorded; this test keeps the in-range and preservation guarantees.
         var tokenizer = CreateTokenizer();
         Assert.SkipUnless(tokenizer is not null, "model fixture not present in this environment");
 
-        // Encode N spaces followed by a sentinel and confirm the count of leading whitespace
-        // tokens scales with N and every id is in range.
-        var four = tokenizer.Encode(new string(' ', 4) + "X");
-        var eight = tokenizer.Encode(new string(' ', 8) + "X");
-        Assert.All(four, id => Assert.InRange(id, 0, tokenizer.VocabSize - 1));
-        Assert.All(eight, id => Assert.InRange(id, 0, tokenizer.VocabSize - 1));
-        // More spaces → at least as many tokens (decomposition is per-space).
-        Assert.True(eight.Count > four.Count,
-            $"expected more tokens for 8 spaces ({eight.Count}) than 4 ({four.Count})");
+        foreach (int spaces in (int[])[2, 4, 8])
+        {
+            var text = new string(' ', spaces) + "X";
+            var ids = tokenizer.Encode(text);
+
+            Assert.NotEmpty(ids);
+            Assert.All(ids, id => Assert.InRange(id, 0, tokenizer.VocabSize - 1));
+            // The whitespace is preserved rather than silently collapsed or dropped.
+            Assert.Equal(text, tokenizer.Decode(ids));
+        }
     }
 
     [Fact]

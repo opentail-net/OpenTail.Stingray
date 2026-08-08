@@ -111,7 +111,7 @@ executes and is subtly wrong is a worse outcome than one that declines to start.
 
 The `dense-llama-cpu` profile is executable end-to-end through the CLI and server. It remains a
 high-precision CPU route: batching, persisted sessions, CUDA and Vulkan execution are not part of
-that profile. Implementation detail and acceptance evidence live in `docs/08-safetensors-support-plan.md`.
+that profile. Implementation detail and acceptance evidence live in `docs/done/08-safetensors-support-plan.md`.
 
 ## Text generation
 

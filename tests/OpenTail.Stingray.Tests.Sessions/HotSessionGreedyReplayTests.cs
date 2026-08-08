@@ -173,8 +173,12 @@ public sealed class HotSessionGreedyReplayTests
         // Seed designed to be exactly PageSize - 1 tokens long, so MaxNewTokens = 1
         // places the turn end exactly on the first page boundary.
         // Each word-with-leading-space is a single BPE token in SmolLM2-1.7B.
+        // Updated 2026-08-08: was one word shorter, which was 15 tokens only under the pre-fix
+        // tokenizer. SmolLM2 declares tokenizer.ggml.pre = "smollm"; encoding used to apply GPT-2's
+        // split regardless, and the old seed's true length is 14 — confirmed against
+        // llama-tokenize b8585, which returns 14 ids for it and 15 for this one.
         const string seed =
-            "The capital of France is Paris and the capital of Spain is Madrid and";
+            "The capital of France is Paris and the capital of Spain is Madrid and the";
         int seedTokens = tokenizer.Encode(seed).Count;
         Assert.True(seedTokens == PagedKvCache.PageSize - 1,
             $"Seed tokenises to {seedTokens} tokens; expected {PagedKvCache.PageSize - 1}. "

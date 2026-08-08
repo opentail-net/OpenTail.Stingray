@@ -13,7 +13,7 @@ namespace OpenTail.Stingray.Cli;
 /// <summary>
 /// Teacher-forced perplexity evaluation over a text file — the llama.cpp
 /// <c>llama-perplexity</c> analogue and the KVarN P0 accuracy gate
-/// (issue #180, docs/kvarn-feasibility-research.md §6).
+/// (issue #180, docs/done/kvarn-feasibility-research.md §6).
 ///
 /// Method: tokenize the file (raw text path, BOS prepended when the model's
 /// <c>add_bos_token</c> asks for it), take the first <c>-c</c> tokens, and feed

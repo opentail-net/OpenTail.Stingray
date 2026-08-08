@@ -12,7 +12,7 @@ namespace OpenTail.Stingray.TurboQuant;
 /// round-to-nearest quantization. Keys are quantized to 4 bits per-channel,
 /// values to 2 bits per-token in channel groups of <see cref="ValueGroupSize"/>.
 /// Clean-room implementation from the algorithm description in
-/// docs/kvarn-feasibility-research.md (Müller et al., arXiv:2606.03458); no
+/// docs/done/kvarn-feasibility-research.md (Müller et al., arXiv:2606.03458); no
 /// code was ported from the reference vLLM fork.
 ///
 /// A tile is <see cref="TileTokens"/> = 128 consecutive token vectors of one
