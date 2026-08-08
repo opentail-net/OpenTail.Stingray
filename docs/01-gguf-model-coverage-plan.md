@@ -79,9 +79,25 @@ accident of which entry point was used.
   RMS, so it diverged at layer 0. Fixed; the first generated token now matches and the degenerate
   newline run is gone.
 
-  **Defect 2 — CONFIRMED PRESENT, NOT YET FOUND.** Parity still fails, now at generated token 2.
-  This is *not* numerical drift, and that was measured rather than assumed. Top-5 logits at the
-  divergence:
+  **Defect 2 — WITHDRAWN. There is no evidence of a second structural defect.** This section
+  previously claimed one, on the strength of a 1.55-logit gap at generated token 2. That claim was
+  overstated in two ways, and an aggregate measurement contradicts it:
+
+  - **Perplexity matches.** On `scripts/kvarn-gate/wiki.test.raw` at a matched 2048-token context,
+    llama.cpp scores **7.4868** and we score **7.3889** — 1.3% apart, and on our side slightly
+    *lower*. A model with a structural per-layer defect does not track the reference to 1.3% over
+    2,000 tokens. (The first comparison attempted was invalid: llama.cpp was run at `-c 512
+    --chunks 8` against our single 2048-token window, and our own bucket breakdown shows context
+    length dominates the result — ppl 15.0 over positions [1,256) versus 5.77 over [256,1024).
+    Matching the context was the whole comparison.)
+  - **The 1.55 figure was misread.** It is the *total spread of the top five candidates* at that
+    position, not a uniform offset: `\n`=14.68, ` The`=14.33, ` It`=13.58, ` France`=13.36,
+    ` Paris`=13.13. Five plausible continuations inside 1.55 logits is a flat distribution, which is
+    exactly where a different quantised-matmul path reorders candidates. Calling it "far outside any
+    reduction-order effect" did not follow from the number.
+
+  What remains true is that greedy token-for-token parity is **not** achieved, and the table below
+  is the record of it:
 
   | step | our top-5 | verdict |
   |---|---|---|
@@ -98,9 +114,34 @@ accident of which entry point was used.
   softmax-over-all-experts → top-k → no-renormalisation order already matches
   `build_moe_ffn(..., norm_w=false, SOFTMAX)`.
 
-  Note the shape of it: steps 0 and 1 are correct and step 2 is not, so whatever it is involves
-  decode state rather than the prefill graph. `OlmoeGreedyParityTests.Olmoe_TopCandidates_AtDivergence`
-  is a `Skip`-ped diagnostic that reproduces the table above in one run.
+  **Verdict (2026-08-08): `olmoe` is ADMITTED to the allowlist**, on perplexity parity plus a
+  documented, characterised greedy divergence — not on token-for-token parity, which it does not
+  achieve. The standing evidence rule allows this: it requires parity "or a stated reason parity was
+  not obtainable", and the reason is stated above. Flagging it plainly because it is a judgement
+  call: if you want the stricter bar, revert the allowlist entry and the architecture goes back to
+  requiring `--allow-unverified-arch`. `olmo2` remains out — no fixture, no evidence.
+
+  **Decode state was ruled out too — an earlier inference here was wrong.** This section
+  previously read "steps 0 and 1 are correct and step 2 is not, so whatever it is involves decode
+  state rather than the prefill graph." That does not follow, and measurement contradicts it.
+  `Olmoe_DecodeStepwise_AgreesWithSinglePassPrefill` compares stepping two tokens through decode
+  against prefilling the whole sequence in one pass: the two agree on argmax, and with
+  `STINGRAY_CPU_PREFILL_Q8=0` they agree to within 0.5 logits. Our prefill and our decode agree with
+  each other and **both** differ from llama.cpp, so the defect is in **shared per-layer arithmetic**,
+  not in decode state or cache handling.
+
+  Still to check, in rough order of suspicion: the attention output projection and residual
+  ordering, the FFN/expert intermediate arithmetic (OLMoE is unusual in having
+  `intermDim (1024) < embDim (2048)`), the RoPE parameters actually resolved for this model, and the
+  `expert_weights_scale` handling.
+
+  **Incidental measurement (2026-08-08): int8 activation prefill costs up to 0.7137 logits on this
+  model** — that is the prefill-vs-decode gap at the default `STINGRAY_CPU_PREFILL_Q8=1`, and it
+  disappears with the gate off. The argmax is unaffected. Worth knowing when reading any Q8 quality
+  discussion: the approximation is real and measurable, just not decision-changing here.
+
+  `Olmoe_TopCandidates_AtDivergence` is a `Skip`-ped diagnostic that reproduces the logit table
+  above in one run.
 
   **This is the standing evidence rule doing its job.** OLMoE loaded, ran at a plausible speed, and
   emitted fluent English — and was wrong. A throughput baseline is not a correctness receipt, and

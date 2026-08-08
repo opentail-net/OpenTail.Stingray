@@ -133,20 +133,22 @@ Do not chase it by re-running until green. The useful next step is to determine 
 the same prefix on a quiet machine produce bit-identical logits, and whether thread count changes
 the answer.
 
-**Known defect — OLMoE forward pass diverges from llama.cpp (found 2026-08-08, one bug fixed, one open).**
-`OlmoeGreedyParityTests.Olmoe_GreedyContinuation_MatchesLlamaCpp` is red.
+**ARCHITECTURE ADMITTED — `olmoe`, 2026-08-08, after fixing a real QK-norm defect.**
 
-- **Fixed:** OLMoE-shaped QK-norm took its RMS per head (128 elements) where the model takes it over
-  the whole `n_embd` projection (2048) before reshaping into heads. This also affects any other
-  model whose `attn_q_norm` weight is full-width, since the flag is detected from element count.
-  **CUDA and Vulkan carry the same bug** — `HeadNorm(..., perChannel)` was written to the same
-  wrong assumption and needs the matching fix plus hardware validation.
-- **Open:** a second, structural difference remains, confirmed not to be drift — at generated token
-  2 llama.cpp's choice ranks 5th here, 1.55 logits down. Steps 0-1 match, so it involves decode
-  state rather than prefill. Tokenization, BOS, llama.cpp sampler settings and the MoE router order
-  are all ruled out by measurement.
+- **Bug fixed:** OLMoE-shaped QK-norm took its RMS per head (128 elements) where the model takes it
+  over the whole `n_embd` projection (2048) before reshaping into heads. Before the fix, output was
+  degenerate. This affects any model whose `attn_q_norm` weight is full-width, since the flag is
+  detected from element count. **CUDA and Vulkan still carry the same bug** —
+  `HeadNorm(..., perChannel)` was written to the same wrong assumption and needs the matching fix
+  plus hardware validation. That is open work, tracked in
+  [90-external-hardware-work.md](90-external-hardware-work.md).
+- **Admitted on perplexity parity, not greedy parity.** wikitext at a matched 2048-token context:
+  llama.cpp 7.4868 vs 7.3889 here (1.3%). Greedy token-for-token parity is NOT achieved and is not
+  expected to be — the divergence is at a position whose top five candidates span 1.55 logits.
+  A "second structural defect" was claimed here earlier and has been **withdrawn**; see the plan for
+  what that claim got wrong.
+- `olmo2` remains OUT — no fixture, no receipt.
 
-`olmoe` therefore stays OUT of the architecture allowlist.
 See [01-gguf-model-coverage-plan.md](01-gguf-model-coverage-plan.md) §1b.
 
 **Known defect — one deliberate red test.**

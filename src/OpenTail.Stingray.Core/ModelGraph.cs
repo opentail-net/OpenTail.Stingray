@@ -35,8 +35,9 @@ public sealed record ModelHyperparams
 
     /// <summary>
     /// Scalar multiplier applied to the token embeddings before they enter the
-    /// transformer trunk. Gemma family multiplies by <c>sqrt(EmbeddingDim)</c>.
-    /// Defaults to 1 (no scaling) for every other architecture.
+    /// transformer trunk. Gemma 4 multiplies by <c>sqrt(EmbeddingDim)</c>; Granite and
+    /// MiniCPM read an explicit <c>{arch}.embedding_scale</c> metadata value (Granite
+    /// 3.3 2B ships 12.0). Defaults to 1 (no scaling) for every other architecture.
     /// </summary>
     public float EmbeddingScale { get; init; } = 1f;
 
@@ -45,6 +46,32 @@ public sealed record ModelHyperparams
     /// 0 disables softcapping (default for non-Gemma architectures). Gemma 4 = 30.0.
     /// </summary>
     public float FinalLogitSoftcap { get; init; }
+
+    /// <summary>
+    /// Scalar multiplier applied to a sublayer's output (attention output and FFN
+    /// output, independently) immediately before it is added to the residual stream.
+    /// Granite-family models (<c>models/granite.cpp</c>'s <c>build_layer_ffn</c>, shared
+    /// verbatim by MiniCPM) apply this at both residual adds. Defaults to 1 (no scaling).
+    /// </summary>
+    public float ResidualScale { get; init; } = 1f;
+
+    /// <summary>
+    /// Explicit attention softmax scale (<c>kq_scale</c>), overriding the usual
+    /// <c>1/sqrt(HeadDim)</c>. 0 means "no override — use the default". Granite reads
+    /// <c>{arch}.attention.scale</c> (3.3 2B ships 0.015625 = 1/64, not 1/sqrt(64)=0.125).
+    /// </summary>
+    public float AttentionScaleOverride { get; init; }
+
+    /// <summary>
+    /// Scalar multiplier applied to the final logits after the output projection.
+    /// Granite/MiniCPM declare a GGUF <c>{arch}.logit_scale</c> that llama.cpp DIVIDES
+    /// by (<c>ggml_scale(cur, 1/f_logit_scale)</c>), so this field already carries the
+    /// reciprocal — <see cref="ModelHyperparams"/> callers just multiply by it. Command-R
+    /// uses the opposite convention (multiplies by the raw value directly); it is not
+    /// wired here since no small Command-R checkpoint has been validated yet. Defaults to
+    /// 1 (no scaling).
+    /// </summary>
+    public float LogitScale { get; init; } = 1f;
 
     /// <summary>
     /// RoPE base frequency used by sliding-window-attention layers. Gemma 4 mixes
@@ -289,10 +316,13 @@ public sealed record ModelHyperparams
         bool hasSharedExpert = isMoE
             && (tensorSource?.FindTensor("blk.0.ffn_gate_shexp.weight") is not null);
 
-        // Llama-4 (arch "llama4") uses NoPE: every 4th layer skips RoPE.
-        // This is hardcoded in llama.cpp (not stored in GGUF metadata).
+        // NoPE: every Nth layer skips RoPE entirely. Hardcoded in llama.cpp rather than stored in
+        // GGUF metadata, for both architectures that use it — Llama-4 (`llama.cpp` sets
+        // n_no_rope_layer_step = 4) and SmolLM3 (`models/smollm3.cpp` does the same). The gate
+        // below, `(layer + 1) % step != 0`, is the same expression llama.cpp applies.
         bool isLlama4 = arch.Equals("llama4", StringComparison.OrdinalIgnoreCase);
-        int noRopeStep = isLlama4 ? 4 : 0;
+        bool isSmolLm3 = arch.Equals("smollm3", StringComparison.OrdinalIgnoreCase);
+        int noRopeStep = isLlama4 || isSmolLm3 ? 4 : 0;
         // Llama-4 uses sigmoid gating with weight-before-FFN per Meta's reference impl.
         bool useSigmoidGating = isLlama4;
         // Llama-4 uses Llama4TextL2Norm for QK-norm: pure RMS norm without learned weights.
@@ -385,6 +415,9 @@ public sealed record ModelHyperparams
         float finalLogitSoftcap = 0f;
         float ropeThetaSwa = 0f;
         float embeddingScale = 1f;
+        float residualScale = 1f;
+        float attentionScaleOverride = 0f;
+        float logitScale = 1f;
         bool hasPostAttnNorm = false;
         bool hasPostFfwNorm = false;
         bool hasPerLayerTokenEmbd = false;
@@ -489,6 +522,45 @@ public sealed record ModelHyperparams
             }
         }
 
+        // Granite (dense/MoE/hybrid) and MiniCPM/MiniCPM3 share ONE graph builder in
+        // llama.cpp (models.h: "using graph = llama_model_granite::graph") — MiniCPM is
+        // Granite's scale trio with different constants, not a different structure. All
+        // four keys are read generically per-arch rather than globally: llama.cpp itself
+        // only calls ml.get_key for these on this specific family (grok and command-r
+        // read logit_scale independently, with a DIFFERENT sign convention — see
+        // ModelHyperparams.LogitScale — and are not wired here).
+        //
+        // GGUF's convention is "0 / absent = off"; ModelHyperparams' fields are
+        // multiplicative identities ("1 = off"), so an absent or exactly-zero key must
+        // fall through to 1, not 0 — multiplying embeddings or a residual by a literal 0
+        // would zero the trunk instead of leaving it alone.
+        bool isGraniteFamily = arch.Equals("granite", StringComparison.OrdinalIgnoreCase)
+            || arch.Equals("granitemoe", StringComparison.OrdinalIgnoreCase)
+            || arch.Equals("granitehybrid", StringComparison.OrdinalIgnoreCase)
+            || arch.Equals("minicpm", StringComparison.OrdinalIgnoreCase)
+            || arch.Equals("minicpm3", StringComparison.OrdinalIgnoreCase);
+        if (isGraniteFamily)
+        {
+            float rawEmbeddingScale = GetFloat(metadata, $"{arch}.embedding_scale");
+            if (rawEmbeddingScale != 0f) embeddingScale = rawEmbeddingScale;
+
+            float rawResidualScale = GetFloat(metadata, $"{arch}.residual_scale");
+            if (rawResidualScale != 0f) residualScale = rawResidualScale;
+
+            // kq_scale override: 0 sentinel means "no override — caller falls back to
+            // 1/sqrt(HeadDim)". Granite 3.3 2B declares 0.015625 (1/64), NOT 1/sqrt(64)
+            // (0.125) — this is a real per-architecture override, not a rounding of the
+            // usual formula.
+            attentionScaleOverride = GetFloat(metadata, $"{arch}.attention.scale");
+
+            // llama.cpp's granite.cpp DIVIDES by the raw metadata value
+            // (ggml_scale(cur, 1.0f / f_logit_scale)); LogitScale is documented as
+            // already carrying that reciprocal, so bake the division in here rather
+            // than at every call site.
+            float rawLogitScale = GetFloat(metadata, $"{arch}.logit_scale");
+            if (rawLogitScale != 0f) logitScale = 1f / rawLogitScale;
+        }
+
         return new ModelHyperparams
         {
             VocabSize = GetInt(metadata, $"{arch}.vocab_size"),
@@ -525,6 +597,9 @@ public sealed record ModelHyperparams
             LayerTypes = layerTypes,
             Gdn = gdn,
             EmbeddingScale = embeddingScale,
+            ResidualScale = residualScale,
+            AttentionScaleOverride = attentionScaleOverride,
+            LogitScale = logitScale,
             FinalLogitSoftcap = finalLogitSoftcap,
             RopeThetaSwa = ropeThetaSwa,
             SlidingWindowSize = slidingWindow,

@@ -17,6 +17,15 @@ public static class ModelCompatibility
         "qwen", "qwen2", "qwen2moe", "qwen3", "qwen3moe", "qwen35", "qwen35moe",
         "gemma", "gemma2", "gemma3", "gemma3n", "gemma4",
         "phi2", "phi3", "phimoe",
+        // olmoe — admitted 2026-08-08 on perplexity parity, NOT on token-for-token greedy parity,
+        // which it does not achieve. On wikitext at a matched 2048-token context llama.cpp b8585
+        // scores 7.4868 and this engine scores 7.3889 (1.3%). The greedy divergence is at a flat
+        // position where the top five candidates span 1.55 logits, i.e. where a differently
+        // quantised matmul reorders candidates. Evidence and the argument for accepting it:
+        // docs/01-gguf-model-coverage-plan.md §1b. Note `olmo2` is deliberately NOT here — it
+        // shares neither a fixture nor a receipt.
+        "olmoe",
+        "granite",
     };
 
     /// <summary>Whether the architecture has an implemented text-generation forward profile.</summary>

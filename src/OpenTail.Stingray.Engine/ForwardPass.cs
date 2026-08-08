@@ -1247,6 +1247,13 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
             for (int n = 0; n < N; n++)
                 EmbedTokenInto(tokens[n], batchHidden + (long)n * _embDim);
 
+            // Gemma 4 always takes the sequential Forward() path (perLayerHdUnsupported), so
+            // this batched trunk previously never needed to apply EmbeddingScale — Granite and
+            // MiniCPM are the first dense architectures to reach PrefillCore with it set.
+            if (_hp.EmbeddingScale != 1f)
+                for (int n = 0; n < N; n++)
+                    SimdKernels.ScaleInPlace(batchHidden + (long)n * _embDim, _hp.EmbeddingScale, _embDim);
+
             // Temp buffers for batched operations
             int qDimMax = _numHeads * _maxHeadDim;
             int kvDimMax = _numKvHeads * _maxHeadDim;
@@ -1444,6 +1451,9 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
                         float* proj = batchNorm + (long)n * _embDim;
                         float* r = batchResidual + (long)n * _embDim;
                         Copy(h, proj, _embDim);
+                        // Granite/MiniCPM: scale the sublayer output before it joins the residual.
+                        if (_hp.ResidualScale != 1f)
+                            SimdKernels.ScaleInPlace(h, _hp.ResidualScale, _embDim);
                         SimdKernels.AddInPlace(h, r, _embDim);
                     }
 
@@ -1494,6 +1504,9 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
                     {
                         float* h = batchHidden + (long)n * _embDim;
                         Copy(h, ffnOut + (long)n * _embDim, _embDim);
+                        // Granite/MiniCPM: scale the sublayer output before it joins the residual.
+                        if (_hp.ResidualScale != 1f)
+                            SimdKernels.ScaleInPlace(h, _hp.ResidualScale, _embDim);
                         SimdKernels.AddInPlace(h, batchResidual + (long)n * _embDim, _embDim);
                     }
 
@@ -2361,6 +2374,10 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
                 FastRmsNorm(_hidden, _hidden, paNormW, _embDim, _hp.RmsNormEps);
             }
 
+            // Granite/MiniCPM: scale the sublayer output before it joins the residual stream.
+            if (_hp.ResidualScale != 1f)
+                SimdKernels.ScaleInPlace(_hidden, _hp.ResidualScale, _embDim);
+
             // Residual
             SimdKernels.AddInPlace(_hidden, _residual, _embDim);
 
@@ -2401,6 +2418,10 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
                 var pfNormW = GetNormWeight(_postFfwNorm[layer]);
                 FastRmsNorm(_hidden, _hidden, pfNormW, _embDim, _hp.RmsNormEps);
             }
+
+            // Granite/MiniCPM: scale the sublayer output before it joins the residual stream.
+            if (_hp.ResidualScale != 1f)
+                SimdKernels.ScaleInPlace(_hidden, _hp.ResidualScale, _embDim);
 
             // Residual (post-attn output that includes its own residual).
             SimdKernels.AddInPlace(_hidden, _residual, _embDim);
@@ -2456,6 +2477,11 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
         long logitsStart = profDecode ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
         FusedMatVec(_logits, _outputWeight, _hidden, _hp.VocabSize, _embDim);
         if (profDecode) DecodeProfileTimers.Add(DecodeProfileTimers.Category.OutProj, System.Diagnostics.Stopwatch.GetTimestamp() - logitsStart);
+
+        // Granite/MiniCPM final-logit scale (already carries llama.cpp's 1/f_logit_scale
+        // reciprocal — see ModelHyperparams.LogitScale).
+        if (_hp.LogitScale != 1f)
+            SimdKernels.ScaleInPlace(_logits, _hp.LogitScale, _hp.VocabSize);
 
         // Gemma 4 final-logit softcap: x = tanh(x/cap) * cap.
         if (_hp.FinalLogitSoftcap > 0f)
@@ -2630,7 +2656,9 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
         // owns the head offset and this is where it was being got wrong.)
         int cacheHeadStride = _layerHeadDim is not null ? _maxHeadDim : headDim;
         int hpkg = numHeads / numKvHeads;
-        float scale = _layerHeadDim is not null ? 1.0f : 1.0f / MathF.Sqrt(headDim);
+        // Kept consistent with the single-token Attention() override above — see its comment.
+        float scale = _hp.AttentionScaleOverride != 0f ? _hp.AttentionScaleOverride
+            : _layerHeadDim is not null ? 1.0f : 1.0f / MathF.Sqrt(headDim);
         int ctxLen = _ctxLen;
         bool enableRegisterValues = Environment.GetEnvironmentVariable(
             "STINGRAY_PREFILL_ATTN_REGISTER_VALUES") != "0";
@@ -3602,7 +3630,10 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
         // Gemma 4 uses self.scaling = 1.0 (no pre-attention scaling); other archs
         // use 1/sqrt(head_dim). See llama.cpp src/models/gemma4.cpp:11
         //   hparams.f_attention_scale = 1.0f
-        float scale = _layerHeadDim is not null ? 1.0f : 1.0f / MathF.Sqrt(hd);
+        // Granite/MiniCPM declare an explicit kq_scale override (Granite 3.3 2B: 0.015625
+        // = 1/64, not 1/sqrt(64) = 0.125) — checked before the Gemma-4/default fallback.
+        float scale = _hp.AttentionScaleOverride != 0f ? _hp.AttentionScaleOverride
+            : _layerHeadDim is not null ? 1.0f : 1.0f / MathF.Sqrt(hd);
         // Head→KV-group ratio for the ACTIVE layer (kvHeads, not the model-level
         // _numKvHeads): Gemma 4 12B global layers are MQA (kvHeads=1 → all _numHeads map
         // to KV head 0), SWA layers GQA (kvHeads=8). For non-per-layer models kvHeads ==

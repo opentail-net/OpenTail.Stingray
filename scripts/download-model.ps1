@@ -39,7 +39,7 @@
     .\download-model.ps1 -Model realesrgan-x4           # Real-ESRGAN x4plus upscaler (67 MB)
 #>
 param(
-    [ValidateSet("smollm2", "vibethinker", "vibethinker-q4", "qwen3-8b", "qwen3-0.6b", "qwen3-4b", "dspark-qwen3-4b", "dspark-qwen3-8b", "olmoe-1b-7b", "llama31-70b", "qwen3-coder-30b-a3b", "qwen36-35b-a3b",
+    [ValidateSet("smollm2", "smollm3", "vibethinker", "vibethinker-q4", "qwen3-8b", "qwen3-0.6b", "qwen3-4b", "dspark-qwen3-4b", "dspark-qwen3-8b", "olmoe-1b-7b", "llama31-70b", "qwen3-coder-30b-a3b", "qwen36-35b-a3b",
                  "qwen36-27b-mtp", "qwen36-27b-mtp-q5", "qwen36-35b-a3b-mtp", "carnice-35b-a3b-mtp",
                  "ornith-9b", "ornith-35b",
                  "gemma4-12b-qat", "gemma4-12b-q4km", "gemma4-e4b-qat", "gemma4-12b-agentic",
@@ -54,6 +54,18 @@ $Models = @{
         Urls  = @("https://huggingface.co/bartowski/SmolLM2-1.7B-Instruct-GGUF/resolve/main/SmolLM2-1.7B-Instruct-Q4_K_M.gguf")
         Size  = "1.1 GB"
         Phase = "1-2"
+    }
+    # SmolLM3-3B (HuggingFaceTB, Apache-2.0) — architecture `smollm3`. A llama-family trunk
+    # (RMSNorm, gated SwiGLU, NORM/interleaved RoPE) with exactly one twist: NoPE layers, where
+    # every 4th layer skips RoPE entirely. llama.cpp fixes `n_no_rope_layer_step = 4` in
+    # `models/smollm3.cpp` rather than reading it from metadata, and gates on
+    # `(il + 1) % step != 0` — the same expression this engine already uses for Llama-4.
+    # Acquired for the architecture-coverage programme (docs/01-gguf-model-coverage-plan.md §1c).
+    "smollm3" = @{
+        Files = @("SmolLM3-3B-Q4_K_M.gguf")
+        Urls  = @("https://huggingface.co/ggml-org/SmolLM3-3B-GGUF/resolve/main/SmolLM3-Q4_K_M.gguf")
+        Size  = "1.8 GB"
+        Phase = "coverage"
     }
     # VibeThinker-1.5B (WeiboAI) — a fine-tune of Qwen2.5-Math-1.5B, so it loads as a
     # standard `qwen2` GGUF: 28 layers, hidden 1536, 12 heads / 2 KV heads (GQA), head_dim
