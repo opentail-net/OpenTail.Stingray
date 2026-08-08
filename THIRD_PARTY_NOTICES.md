@@ -1,9 +1,45 @@
 # Third-party notices for OpenTail.Stingray
 
-OpenTail.Stingray's original source code is licensed under the MIT License in
-[`LICENSE`](LICENSE). This file contains the additional notices that must travel
-with source and binary distributions of OpenTail.Stingray. It does not change the
-license of OpenTail's original work.
+OpenTail-authored source code is licensed under the MIT License in
+[`LICENSE`](LICENSE).
+
+OpenTail.Stingray also contains, derives from, references, or depends upon
+third-party software and upstream projects whose copyright and license notices
+are reproduced below.
+
+These notices do not alter the license of OpenTail-authored work.
+
+## SharpInference — MIT
+
+OpenTail.Stingray is derived in part from SharpInference and contains source
+code originating from SharpInference that has subsequently been modified and
+extended by OpenTail.
+
+- Upstream: <https://github.com/pekkah/SharpInference>
+- Copyright (c) 2026 Pekka Heikura
+- License: MIT
+
+MIT License
+
+Copyright (c) 2026 Pekka Heikura
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
 
 ## TensorSharp — BSD 3-Clause
 
@@ -133,14 +169,14 @@ shall not include works that remain separable from, or merely link (or bind by
 name) to the interfaces of, the Work and Derivative Works thereof.
 
 "Contribution" shall mean any work of authorship, including the original
-version of the Work and any modifications or additions to that Work or
+version of the Work and any modifications or additions to the Work or
 Derivative Works thereof, that is intentionally submitted to Licensor for
 inclusion in the Work by the copyright owner or by an individual or Legal Entity
 authorized to submit on behalf of the copyright owner. For the purposes of this
 definition, "submitted" means any form of electronic, verbal, or written
 communication sent to the Licensor or its representatives for inclusion in the
-Work, excluding communication conspicuously marked or otherwise designated in
-writing by the copyright owner as "Not a Contribution."
+Work, excluding communication that is conspicuously marked or otherwise
+designated in writing by the copyright owner as "Not a Contribution."
 
 "Contributor" shall mean Licensor and any individual or Legal Entity on behalf
 of whom a Contribution has been received by Licensor and subsequently
