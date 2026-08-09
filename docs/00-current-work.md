@@ -243,13 +243,40 @@ fallback to cover any post-norm model. Targeted regression included `Gemma4CpuFo
 specifically (the code path most directly touched by the `ModelGraph.cs` refactor) — clean. See
 [01-gguf-model-coverage-plan.md](01-gguf-model-coverage-plan.md) §1j.
 
-**Architecture queue swept for remaining candidates, 2026-08-09 — license-checked four, scope-
-corrected two; nothing left immediately buildable.** `glm4`/`glm4moe` and `exaone`: SKIPPED,
-restrictive custom licenses (glm-4: registration-gated, PRC jurisdiction; EXAONE: explicitly
-non-commercial) — same bucket as `internlm2`/`hunyuan`. `deepseek2`/`minicpm3` (MLA): SKIPPED, both
-license-blocked too (DeepSeek's custom use-restricted license; MiniCPM3's weights need a separate
-registration-gated license despite Apache-2.0 code) — the MLA lift is now moot regardless of its
-size. `gpt-oss`/`bitnet`: NOT license-blocked, but checked against their real llama.cpp sources and
+**License policy changed, 2026-08-09 (operator decision): architecture code and checkpoint license
+are now separate concerns.** The gate itself is a string check against a GGUF's self-declared
+architecture — it doesn't distribute or vendor anyone's weights, so the CODE can be built and
+admitted regardless of whether the best available checkpoint is permissively licensed. What
+changes: for a "bucket 2" architecture (only a restrictively-licensed checkpoint exists), verify
+once against a transient, never-vendored local download, then delete BOTH the GGUF and the test
+file — no permanently-skipping test referencing a restricted model stays in the tree. The
+verification evidence instead lives as a comment on the `ModelCompatibility` allowlist entry plus
+a plan-doc section, explicitly flagged "no automated test, licence reason" with a "don't modify
+without good reason" warning (there's no regression net for that specific profile — a shared-code
+change could silently break it and nothing in CI would notice). Full policy:
+[01-gguf-model-coverage-plan.md](01-gguf-model-coverage-plan.md), "License policy: code vs.
+checkpoint" (below the standing evidence rule).
+
+**ARCHITECTURE ADMITTED — `exaone`, 2026-08-09, full 24-of-24-token exact match — first bucket-2
+admission under the new policy.** Genuinely gate-only (unlike `olmo2`'s false-positive premise) —
+confirmed against `exaone.cpp` before downloading anything: ordinary pre-norm llama-style trunk,
+already in `isNeoxRope`. The one thing worth checking: this checkpoint's top-level `rope_freqs.weight`
+(llama3.1-style per-dimension frequency correction) is already read generically by `ForwardPass`
+(built for Gemma 4, detected by tensor name/shape, not architecture-gated) — zero new code needed.
+No test persists in the tree; the verification evidence (prompt tokens, reference continuation) is
+recorded as a comment on the `"exaone"` allowlist entry in `ModelCompatibility.cs` and in
+[01-gguf-model-coverage-plan.md](01-gguf-model-coverage-plan.md) §1k.
+
+**Architecture queue swept for remaining candidates, 2026-08-09 — checkpoint license findings from
+before the policy change still stand as fact, just no longer as a hard blocker.**
+`glm4`/`glm4moe`'s checkpoint (registration-gated, PRC jurisdiction), `deepseek2`'s (custom
+use-restricted license), and `minicpm3`'s (registration-gated weight license despite Apache-2.0
+code) are all still not MIT/Apache-2.0/BSD/MPL — but under the new policy that no longer rules the
+architectures out, only means any future receipt for them would be bucket-2 (verify once, no
+persisted test), same as `exaone`. Not built yet: `glm4`/`glm4moe` needs real, contained new kernel
+work (conditional/multi-section RoPE); MLA (`deepseek2`/`minicpm3`) is the biggest single lift in
+the plan, deliberately deprioritized behind smaller wins. `gpt-oss`/`bitnet`: NOT license-blocked
+(gpt-oss's checkpoint is Apache-2.0 already), but checked against their real llama.cpp sources and
 found to need substantially more than the plan's brief note suggested — gpt-oss needs attention
 sinks (a real numerical addition to the softmax), alternating sliding-window attention, biased MoE
 expert tensors, and an OpenAI-specific SwiGLU/gating variant (five real additions, not the "MXFP4

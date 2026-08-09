@@ -185,13 +185,20 @@ Work them in descending order of how many Hugging Face GGUF repos they unlock:
 3. `starcoder2`, `falcon` — LayerNorm-with-bias + non-gated GELU FFN; new-kernel work (see the
    reclassification note below — `stablelm`/`gptneox` moved here too, 2026-08-08).
 4. `glm4`, `glm4moe` — the conditional RoPE type is explicitly unsupported today; real work.
-   **SKIPPED 2026-08-09, restrictive license.** Checked directly against the model card's LICENSE
-   file: custom "glm-4" license — mandatory commercial-use registration, derivative-naming mandate
-   ("glm-4" prefix required), PRC jurisdiction. Not MIT/Apache-2.0/BSD/MPL. Same bucket as
-   `internlm2`/`exaone`/`hunyuan` below.
-5. `exaone` — **SKIPPED 2026-08-09, restrictive license.** "EXAONE AI Model License Agreement
-   1.1 - NC" (LG AI Research) — explicitly non-commercial, same bucket as `internlm2`.
-   `internlm2` (SKIPPED, restrictive license), `minicpm` (blocked, Unigram SPM — §1d),
+   Checkpoint license checked 2026-08-09: custom "glm-4" license — mandatory commercial-use
+   registration, derivative-naming mandate ("glm-4" prefix required), PRC jurisdiction, not
+   MIT/Apache-2.0/BSD/MPL. **No longer a hard blocker** (see "License policy: code vs. checkpoint"
+   below the standing evidence rule) — the RoPE work itself is still real and not yet built, so
+   this stays deferred on scope, not license. Would be a bucket-2 admission if built.
+5. `exaone` — **ADMITTED 2026-08-09, bucket-2 (see §1k)** — genuinely gate-only, full 24-of-24-token
+   exact match, no code changes needed. Checkpoint license: "EXAONE AI Model License Agreement 1.1
+   - NC" (LG AI Research), explicitly non-commercial — same bucket as `internlm2`'s checkpoint, but
+   under the new policy the architecture is admitted anyway; see §1k for the verification-without-
+   persisted-test treatment. `internlm2` looked like the same easy win by the same reasoning, but
+   re-checked 2026-08-09 and turned out to be blocked on the TOKENIZER axis instead (Unigram-LM
+   SentencePiece, same gap as `minicpm` below) — see the §1c reclassification note below for the
+   full finding.
+   `minicpm` (blocked, Unigram SPM — §1d),
    `granite` (ADMITTED — §1d), `smollm3` (ADMITTED — §1e). `nemotron`, `seed_oss`, `hunyuan`,
    `dots1`, `lfm2`, `apertus` assessed 2026-08-08 and moved to §1f (new-kernel plan) or deferred —
    none were immediately buildable-and-testable today; see §1f for why, per architecture.
@@ -245,20 +252,28 @@ before starting any of them:**
   (`models.h`: `llama_model_minicpm::graph = llama_model_granite::graph`) — MiniCPM is Granite's
   scale trio with different constants, not a different structure. `granite` ADMITTED, `smollm3`
   ADMITTED, `minicpm` blocked on a tokenizer gap, not the forward pass — see §1d.
-- **`internlm2` — SKIPPED 2026-08-08, restrictive weight license, same precedent as `exaone`.**
-  Architecturally trivial and confirmed cheap to validate: `internlm2_5-1_8b-chat-Q4_K_M.gguf`
-  (bartowski) downloaded fine, our `list-metadata` shows `general.license: other`,
-  `tokenizer.ggml.model: llama` (SentencePiece — already fully supported, zero tokenizer work),
-  and no scale-trio metadata at all (plain trunk, confirming the `LLAMA_ROPE_TYPE_NORM` +
-  standard-attention-scale prediction from `llama_model_rope_type()` in `llama-model.cpp`). The
-  GGUF's own self-declared `general.license: other` was the tell: InternLM2's model weights (as
-  opposed to the Apache-2.0 code repo) are under a custom "free for commercial use but must
-  register" agreement, not a standard permissive SPDX license. Checked whether InternLM3 rescues
-  this the way MiniCPM4 rescued MiniCPM (genuinely Apache-2.0 weights) — it doesn't help here:
-  `internlm3-8b-instruct`'s own GGUF declares `general.architecture: llama`, not `internlm2` (it
-  reuses the plain llama trunk, not InternLM2's), so it wouldn't be a receipt for this
-  architecture at all, just another already-admitted llama-arch checkpoint. GGUF deleted. Revisit
-  only if a permissively-licensed `internlm2`-architecture checkpoint turns up — the code-side
+- **`internlm2` — SKIPPED 2026-08-09 (re-checked under the new bucket-2 policy): blocked on the
+  TOKENIZER axis, not the architecture axis or the license (which no longer blocks by itself).**
+  The 2026-08-08 assessment ("architecturally trivial... `tokenizer.ggml.model: llama`
+  [SentencePiece] — already fully supported, zero tokenizer work") checked the `tokenizer.ggml.model`
+  key but not whether the GGUF actually carries a `tokenizer.ggml.merges` array — it doesn't. This
+  checkpoint (`internlm2_5-1_8b-chat-Q4_K_M.gguf`, re-downloaded and re-checked 2026-08-09) has
+  `tokenizer.ggml.scores` (92,544 entries) with **no merges array at all** — the exact same
+  Unigram-LM SentencePiece situation already blocking `minicpm` (§1d): a Viterbi/scores-based
+  segmentation algorithm this engine does not implement, not the BPE-order SPM (merges list) that
+  `llama`/`gemma`/`granite`/`exaone` use. Measured directly, not inferred: `tokenizer.Encode("The
+  capital of France is")` fell through this engine's SPM-merge-lookup-failed fallback path and
+  produced one token per CHARACTER (`'T','h','e',' ','c',...`) instead of the reference
+  `[918, 6872, 446, 9760, 505]` — confirming the merge table is genuinely absent, not just empty by
+  coincidence. The architecture code itself is still presumed correct (confirmed against
+  `internlm2.cpp`: plain pre-norm trunk, identical shape to `exaone`, no new kernels needed) but
+  cannot be verified end-to-end without a working tokenizer for this vocab format — same standing
+  as `minicpm`. **Fixing the shared Unigram-LM tokenizer gap would unlock both architectures at
+  once** — worth prioritizing over either individually. Checked whether InternLM3 rescues this the
+  way MiniCPM4 rescued MiniCPM (a differently-tokenized checkpoint) — it doesn't: `internlm3-8b-
+  instruct`'s own GGUF declares `general.architecture: llama`, not `internlm2` (it reuses the plain
+  llama trunk, not InternLM2's), so it isn't a receipt for this architecture at all. GGUF deleted
+  (again). Revisit once Unigram-LM SPM segmentation exists — the code-side
   finding (no forward-pass change needed) still holds if one does.
 
 Acceptance per architecture: a real GGUF, greedy token-for-token agreement with llama.cpp for at
@@ -488,23 +503,29 @@ item is obvious — build once, unlocks several):**
    different from GQA — a low-rank Q/K compression (`q_lora_rank`, `kv_lora_rank`) with separate
    RoPE and non-RoPE head splits (`n_embd_head_qk_rope` vs `n_embd_head_qk_nope`) — the biggest
    single lift in this list, a genuinely different attention mechanism rather than a variant of
-   the GQA path. **LICENSE-CHECKED 2026-08-09, BOTH BLOCKED — moot for now.** The smallest MLA
-   checkpoint, `deepseek-ai/DeepSeek-V2-Lite` (16B total/2.4B active), carries a custom "DeepSeek
+   the GQA path. **LICENSE-CHECKED 2026-08-09 — neither checkpoint is permissive, no longer a hard
+   blocker per the policy below the standing evidence rule, but still deprioritized on sheer
+   size.** The smallest MLA checkpoint, `deepseek-ai/DeepSeek-V2-Lite` (16B total/2.4B active),
+   carries a custom "DeepSeek
    License Agreement" — commercial use permitted subject to use-based restrictions (no military
    use, discrimination, etc.), PRC jurisdiction (Hangzhou courts) — not MIT/Apache-2.0/BSD/MPL.
    `openbmb/MiniCPM3-4B`'s repo code is Apache-2.0 but the WEIGHTS require a separate
    registration-gated "MiniCPM Model License" (same "free but must register" pattern as GLM-4
    below) — also not one of the four permissive licenses. Revisit only if a genuinely
-   Apache/MIT-licensed MLA checkpoint appears.
-5. **Conditional/multi-section RoPE.** Needed by `glm4`/`glm4moe`. **LICENSE-CHECKED 2026-08-09,
-   BLOCKED — moot for now** (see item 4 of §1c above: custom "glm-4" license, registration-gated,
-   PRC jurisdiction). Also partially needed by `hunyuan` (MRoPE / `ggml_rope_multi` for the
-   vision-language path — likely NOT triggered for text-only `hunyuan-dense`, unconfirmed).
-   `hunyuan-dense` also needs weighted-RMS QK-norm applied **after** RoPE — this engine only
-   supports that ordering today for pure-L2 (unweighted) QK-norm (`UseL2QkNorm`, Llama-4's
-   convention); weighted-RMS-after-RoPE is a new combination, not a new mechanism. Moot for now:
-   `hunyuan` is ALSO license-blocked (see table above) — every known architecture needing this
-   kernel is currently license-blocked.
+   Apache/MIT-licensed MLA checkpoint appears — otherwise this is now a bucket-2 candidate (see
+   the license policy below the standing evidence rule), just still the biggest single lift in the
+   plan, deliberately deprioritized behind smaller wins.
+5. **Conditional/multi-section RoPE.** Needed by `glm4`/`glm4moe` (checkpoint: custom "glm-4"
+   license, registration-gated, PRC jurisdiction — see item 4 of §1c above) — under the license
+   policy below the standing evidence rule, this is no longer a hard blocker, just not yet built
+   (real, contained new kernel work). Also partially needed by `hunyuan` (MRoPE / `ggml_rope_multi`
+   for the vision-language path — likely NOT triggered for text-only `hunyuan-dense`, unconfirmed;
+   checkpoint license: Tencent Hunyuan Community License, MAU threshold + territorial exclusions —
+   also no longer a hard blocker under the new policy, but its RoPE need is unconfirmed on top of
+   being unbuilt, so lower priority than `glm4`). `hunyuan-dense` also needs weighted-RMS QK-norm
+   applied **after** RoPE — this engine only supports that ordering today for pure-L2 (unweighted)
+   QK-norm (`UseL2QkNorm`, Llama-4's convention); weighted-RMS-after-RoPE is a new combination, not
+   a new mechanism.
 6. **Leading-dense-block MoE.** `dots1`: early layers are dense FFN, later layers are MoE
    (`n_layer_dense_lead`, read once and checked per-layer with `il < n_layer_dense_lead`) plus a
    shared-expert branch. Reuses `build_moe_ffn`-equivalent plumbing this engine already has for
@@ -809,6 +830,46 @@ receipt this session.
 
 ---
 
+### 1k. `exaone` — ADMITTED 2026-08-09, full 24-of-24-token exact match, first bucket-2 admission
+(no persisted test — see "License policy" below the standing evidence rule)
+
+`LGAI-EXAONE/EXAONE-3.5-2.4B-Instruct` (LG AI Research), via the official
+`EXAONE-3.5-2.4B-Instruct-GGUF`, Q8_0 (2.84 GB) — **downloaded transiently for verification only,
+never vendored, deleted immediately after this receipt.** License: "EXAONE AI Model License
+Agreement 1.1 - NC" — explicitly non-commercial, not MIT/Apache-2.0/BSD/MPL. `tokenizer.ggml.model
+= gpt2` (byte-BPE), `tokenizer.ggml.pre = exaone` (already in the pretokenizer cascade).
+
+**Genuinely gate-only — confirmed, not assumed, after `olmo2`'s premise turned out wrong.**
+Checked directly against `examples/llama.cpp/llama.cpp/src/models/exaone.cpp` BEFORE downloading
+anything: an ordinary pre-norm llama-style trunk — plain RMSNorm pre-attn and pre-FFN, SiLU-gated
+FFN, standard GQA attention (32 query heads / 8 KV heads on this checkpoint), NEOX RoPE (`exaone`
+already in `ModelGraph.cs`'s `isNeoxRope` list). The one thing worth checking rather than assuming:
+this checkpoint declares a top-level `rope_freqs.weight` tensor (`[40]` = ropeHalfDim, a
+llama3.1-style per-dimension frequency correction) — already read generically by `ForwardPass`'s
+constructor (originally built for Gemma 4, but detected purely by tensor name/shape
+`model.FindTensor("rope_freqs.weight")` with a matching element count, not gated to any
+architecture) and fed into the existing `BuildRopeTable(..., freqFactors)` overload, which already
+divides the per-dimension frequency by the factor exactly as `ggml_rope_cache_init`'s `theta/ff`
+does. Zero new code was written for this architecture — only the allowlist entry.
+
+**Result: full 24-of-24-token EXACT match, byte for byte**, verified via a temporary test deleted
+immediately after (per the bucket-2 policy). Reference (`llama-completion`,
+`"The capital of France is"`): `" Paris. Paris is located in northern France on the Seine River. It
+is oneQuestion: What is the capital of"` — this engine reproduced it token-for-token, and the
+prefill/decode stepwise-consistency check agreed (argmax match, logit maxDiff within the standard
+bound). Targeted regression (`OlmoeGreedyParityTests`, `PrefillAttentionParityTests`,
+`Repro_Pos13Parity`, `Gemma4CpuForwardPassTests` — the last one specifically because `exaone`
+exercises the same generic `rope_freqs` code Gemma 4 uses) — clean.
+
+**No automated test kept in the tree** — see the `"exaone"` entry's comment in
+`ModelCompatibility.cs` for the full verification evidence (recorded there instead, since no test
+file persists to carry it). Do not modify this architecture's code path (which is really just the
+shared pre-norm trunk + the generic `rope_freqs` mechanism) without good reason — there is no
+regression test for this specific architecture to catch a mistake, only the generic-mechanism tests
+(Gemma 4, qwen35moe) that happen to also exercise the same code.
+
+---
+
 ## 2. Tensor storage formats — the IQ family is the largest single gap
 
 `DType` (`Core/Tensor.cs`) declares `IQ1_S`, `IQ1_M`, `IQ2_XXS`, `IQ2_XS`, `IQ2_S`, `IQ3_XXS`,
@@ -977,3 +1038,36 @@ An architecture or format is "supported" only with a receipt: named model file a
 command, and either token-for-token parity against llama.cpp or a stated reason parity was not
 obtainable. A model that loads and emits plausible text is **not** evidence — that is precisely the
 failure mode the conservative gate exists to prevent.
+
+## License policy: code vs. checkpoint (operator decision, 2026-08-09)
+
+Through §1i, admission required BOTH the architecture code AND a permissively-licensed
+(MIT/Apache-2.0/BSD/MPL) checkpoint to validate against — several architectures (`glm4`, `exaone`,
+`deepseek2`/`minicpm3`'s MLA) were ruled out purely because every known checkpoint carries a
+restrictive weight license, even though the *code* implementing the technique is original work
+(or derived from the MIT-licensed llama.cpp mirror in `examples/`) and doesn't itself redistribute
+anyone's weights. `ModelCompatibility`'s allowlist is a string check against a GGUF's self-declared
+architecture, not a distribution of any model — same as llama.cpp itself supporting dozens of
+architectures regardless of any individual checkpoint's license.
+
+**Decided: separate the two.** The architecture gate may be built and admitted for ANY technique,
+regardless of whether the best available checkpoint is permissively licensed — the code is safe to
+write either way. What changes is how the checkpoint is used and what evidence persists:
+
+- **Bucket 1 (permissive checkpoint exists)** — unchanged from every receipt through §1i: download,
+  verify, keep the parity test permanently in `tests/` with recorded reference token ids
+  (`Assert.SkipWhen` when the fixture is absent), delete the GGUF. The receipt outlives the model
+  file and re-runs (as a skip) in every future test pass.
+- **Bucket 2 (only a restrictively-licensed checkpoint exists)** — download the checkpoint
+  *transiently, for local verification only* (never vendored/committed/redistributed — the license
+  restricts redistribution and commercial deployment of the WEIGHTS, not a one-time local
+  correctness check), verify full greedy parity with the same rigor as bucket 1, then **delete both
+  the GGUF and the test file** — do not leave a permanently-skipping test in the tree referencing a
+  restrictively-licensed model by name. Instead, record the verification evidence (checkpoint name,
+  license, prompt tokens, reference continuation, any defects found and fixed) directly in prose —
+  in this plan doc's per-architecture section AND as a comment on the architecture's
+  `ModelCompatibility` allowlist entry. That comment must say plainly that there is **no automated
+  test for this architecture, for licence reasons**, and must warn against changing the code path
+  without good reason, since there is no regression test to catch a mistake — a future refactor to
+  shared code (`RunTrunk`, `PrefillCore`, `Dispose`, etc.) could silently break a bucket-2 profile
+  and nothing in CI would notice.
