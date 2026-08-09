@@ -507,14 +507,23 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
             bool kEqVLayer = _model.FindTensor($"blk.{i}.attn_v.weight") is null
                           && _model.FindTensor($"blk.{i}.attn_k.weight") is not null;
 
-            _attnNorm[i] = ResolveTensor($"blk.{i}.attn_norm.weight");
+            // OLMo2 has NO attn_norm tensor at all — attention reads the raw residual directly,
+            // with only a POST-attention norm (_postAttnNorm below) applied to the sublayer's
+            // output before the residual add. Left at its default (DataPtr null) when absent;
+            // RunTrunk/PrefillCore check that sentinel the same way _wGate[i].DataPtr is null
+            // already gates Apertus/GPT-NeoX's non-gated FFN.
+            _attnNorm[i] = _model.FindTensor($"blk.{i}.attn_norm.weight") is not null
+                ? ResolveTensor($"blk.{i}.attn_norm.weight")
+                : default;
             _wo[i] = ResolveTensor($"blk.{i}.attn_output.weight");
             // Falcon-7B has no ffn_norm tensor at all — attention and FFN read the SAME
             // LayerNorm output (src/models/falcon.cpp: "use the attn norm, not the result").
             // Reusing _attnNorm[i]'s TensorRef recomputes an identical LayerNorm a second time
             // (cheap, and deterministic — bit-identical to reusing a cached activation) rather
             // than requiring a second code path; falls through to the ordinary per-layer
-            // ffn_norm tensor for every other architecture.
+            // ffn_norm tensor for every other architecture. For OLMo2, _attnNorm[i] is ALSO
+            // absent (DataPtr null, see above), so this correctly degrades to "no FFN pre-norm
+            // either" rather than accidentally reusing a tensor that doesn't exist.
             _ffnNorm[i] = _model.FindTensor($"blk.{i}.ffn_norm.weight") is not null
                 ? ResolveTensor($"blk.{i}.ffn_norm.weight")
                 : _attnNorm[i];
@@ -1059,7 +1068,13 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
         }
         bool perLayerHdUnsupported = _layerHeadDim is not null;
         bool moeUnsupported = _hp.IsMoE && !MoeBatchedPrefillSupported;
-        if (moeUnsupported || perLayerHdUnsupported)
+        // Post-attention/post-FFW norm (OLMo2, Gemma 4 dense — see MoeBatchedPrefillSupported's
+        // doc comment for the MoE case above) is applied only on the sequential RunTrunk path;
+        // PrefillCore's batched loop has no equivalent step. Gemma 4 never reaches here at all
+        // (perLayerHdUnsupported already routes it away), so this specifically covers OLMo2 and
+        // any future dense post-norm architecture.
+        bool postNormUnsupported = _postAttnNorm is not null || _postFfwNorm is not null;
+        if (moeUnsupported || perLayerHdUnsupported || postNormUnsupported)
         {
             ReadOnlySpan<float> logits = default;
             for (int i = 0; i < N; i++)
@@ -1597,24 +1612,35 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
 
                     // FFN norm: sequential reads batchHidden (attn_out + inpL); parallel (GPT-
                     // NeoX) reads batchResidual (inpL) directly — a SEPARATE LayerNorm from the
-                    // attn one, both fed the same incoming residual.
-                    var ffnNormW = GetNormWeight(_ffnNorm[layer]);
-                    var ffnNormB = _hasNormBias && _bFfnNorm is not null ? _bFfnNorm[layer] : null;
+                    // attn one, both fed the same incoming residual. OLMo2 has no ffn_norm tensor
+                    // at all (see _ffnNorm's fallback in the constructor) — FFN reads the raw
+                    // residual unmodified, normed only by a POST-FFN norm applied to the
+                    // sublayer's output below, before the residual add.
                     pStage = profPrefill ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
-                    if (_hp.UseParallelResidual)
+                    if (_ffnNorm[layer].DataPtr is null)
                     {
                         for (int n = 0; n < N; n++)
-                        {
-                            Copy(batchHidden + (long)n * _embDim, batchNorm + (long)n * _embDim, _embDim);
-                            FastNorm(batchNorm + (long)n * _embDim,
-                                batchResidual + (long)n * _embDim, ffnNormW, ffnNormB, _embDim, _hp.RmsNormEps);
-                        }
+                            Copy(batchNorm + (long)n * _embDim, batchHidden + (long)n * _embDim, _embDim);
                     }
                     else
                     {
-                        for (int n = 0; n < N; n++)
-                            FastNorm(batchNorm + (long)n * _embDim,
-                                batchHidden + (long)n * _embDim, ffnNormW, ffnNormB, _embDim, _hp.RmsNormEps);
+                        var ffnNormW = GetNormWeight(_ffnNorm[layer]);
+                        var ffnNormB = _hasNormBias && _bFfnNorm is not null ? _bFfnNorm[layer] : null;
+                        if (_hp.UseParallelResidual)
+                        {
+                            for (int n = 0; n < N; n++)
+                            {
+                                Copy(batchHidden + (long)n * _embDim, batchNorm + (long)n * _embDim, _embDim);
+                                FastNorm(batchNorm + (long)n * _embDim,
+                                    batchResidual + (long)n * _embDim, ffnNormW, ffnNormB, _embDim, _hp.RmsNormEps);
+                            }
+                        }
+                        else
+                        {
+                            for (int n = 0; n < N; n++)
+                                FastNorm(batchNorm + (long)n * _embDim,
+                                    batchHidden + (long)n * _embDim, ffnNormW, ffnNormB, _embDim, _hp.RmsNormEps);
+                        }
                     }
                     if (profPrefill)
                     {
@@ -2392,11 +2418,20 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
             // Save residual
             Copy(_residual, _hidden, _embDim);
 
-            // Pre-attention norm (LayerNorm w/ bias for gptneox, RMSNorm otherwise)
-            var normW = GetNormWeight(_attnNorm[layer]);
+            // Pre-attention norm (LayerNorm w/ bias for gptneox, RMSNorm otherwise). OLMo2 has no
+            // attn_norm tensor at all — attention reads the raw residual, normed only by a POST-
+            // attention norm applied to the sublayer's output (below, before the residual add).
             stageStart = profDecode ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
-            var attnNormB = _hasNormBias && _bAttnNorm is not null ? _bAttnNorm[layer] : null;
-            FastNorm(_normBuf, _hidden, normW, attnNormB, _embDim, _hp.RmsNormEps);
+            if (_attnNorm[layer].DataPtr is null)
+            {
+                Copy(_normBuf, _hidden, _embDim);
+            }
+            else
+            {
+                var normW = GetNormWeight(_attnNorm[layer]);
+                var attnNormB = _hasNormBias && _bAttnNorm is not null ? _bAttnNorm[layer] : null;
+                FastNorm(_normBuf, _hidden, normW, attnNormB, _embDim, _hp.RmsNormEps);
+            }
             StageCapture.Record("cpu", layer, StageCapture.Stages.AttnNorm,
                 new ReadOnlySpan<float>(_normBuf, _embDim));
             if (profDecode)
@@ -2629,10 +2664,17 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
             // Save residual for FFN
             Copy(_residual, _hidden, _embDim);
 
-            // Pre-FFN RMS norm
-            var ffnNormW = GetNormWeight(_ffnNorm[layer]);
+            // Pre-FFN RMS norm. OLMo2 has no ffn_norm tensor at all — FFN reads the raw
+            // post-attention residual directly, normed only by a POST-FFN norm applied to the
+            // sublayer's output below, before the residual add.
             stageStart = profDecode ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
-            FastRmsNorm(_normBuf, _hidden, ffnNormW, _embDim, _hp.RmsNormEps);
+            if (_ffnNorm[layer].DataPtr is null)
+                Copy(_normBuf, _hidden, _embDim);
+            else
+            {
+                var ffnNormW = GetNormWeight(_ffnNorm[layer]);
+                FastRmsNorm(_normBuf, _hidden, ffnNormW, _embDim, _hp.RmsNormEps);
+            }
             if (profDecode)
             {
                 long d = System.Diagnostics.Stopwatch.GetTimestamp() - stageStart;

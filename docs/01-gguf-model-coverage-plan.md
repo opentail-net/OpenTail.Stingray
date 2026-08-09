@@ -147,7 +147,20 @@ accident of which entry point was used.
   emitted fluent English — and was wrong. A throughput baseline is not a correctness receipt, and
   the conservative gate that looked over-strict was correct.
 
-- **`olmo2`** — no local fixture, no receipt, stays out.
+- **`olmo2`** — no local fixture, no receipt, stays out. **Correction 2026-08-09: NOT "gate-only,
+  code exists" as §1c previously speculated** (that section explicitly flagged itself as "a
+  hypothesis, not a finding" — this is the finding). Checked directly against
+  `examples/llama.cpp/llama.cpp/src/models/olmo2.cpp`: OLMo2 uses **post-norm sandwiching**, a
+  third residual pattern distinct from both the ordinary pre-norm trunk and GPT-NeoX/Falcon's
+  parallel residual — `x1 = x + PostNorm(Attn(x)); x2 = x1 + PostNorm(FFN(x1))`. Attention and FFN
+  both read the RAW, un-normed residual directly (no `attn_norm`/`ffn_norm` tensor exists in the
+  GGUF at all — `load_arch_tensors` never creates them); the norm is applied to each sublayer's
+  OUTPUT, immediately before the residual add, via `attn_post_norm`/`ffn_post_norm` tensors
+  instead. `ForwardPass`'s constructor unconditionally resolves `attn_norm`/`ffn_norm` today, which
+  would throw on a real OLMo2 GGUF. QK-norm reuses the already-fixed OLMoE convention (whole-vector
+  RMS, not per-head — see the `olmoe` defect-1 writeup above) unchanged. Apache-2.0, official
+  first-party GGUF (`allenai/OLMo-2-0425-1B-GGUF`, 1B, Q8_0 1.58 GB) — license and checkpoint are
+  both clean, this is purely a forward-pass scope correction, not a blocker.
 - **`deepseek2`** — `ToolCallAdapter.cs:183` registers a `DeepSeekToolCallAdapter`. Not in the gate.
 
 `CLAUDE.md` claims both `deepseek2` and OLMoE as supported architectures. That claim is wrong as
@@ -166,18 +179,51 @@ hypothesis, not a finding — the RoPE convention is one of many things an archi
 
 Work them in descending order of how many Hugging Face GGUF repos they unlock:
 
-1. `olmoe`, `olmo2` — gate-only, code exists. `olmoe` ADMITTED (see §1b). `olmo2` still out.
+1. `olmoe`, `olmo2` — `olmoe` ADMITTED (see §1b). `olmo2` ADMITTED (see §1j) — turned out NOT to be
+   gate-only; needed post-norm-sandwich support (a third residual pattern), corrected in §1b.
 2. `deepseek2` — gate-only for the dense path; MLA attention needs checking separately.
 3. `starcoder2`, `falcon` — LayerNorm-with-bias + non-gated GELU FFN; new-kernel work (see the
    reclassification note below — `stablelm`/`gptneox` moved here too, 2026-08-08).
 4. `glm4`, `glm4moe` — the conditional RoPE type is explicitly unsupported today; real work.
-5. `exaone`, `internlm2` (SKIPPED, restrictive license), `minicpm` (blocked, Unigram SPM — §1d),
+   **SKIPPED 2026-08-09, restrictive license.** Checked directly against the model card's LICENSE
+   file: custom "glm-4" license — mandatory commercial-use registration, derivative-naming mandate
+   ("glm-4" prefix required), PRC jurisdiction. Not MIT/Apache-2.0/BSD/MPL. Same bucket as
+   `internlm2`/`exaone`/`hunyuan` below.
+5. `exaone` — **SKIPPED 2026-08-09, restrictive license.** "EXAONE AI Model License Agreement
+   1.1 - NC" (LG AI Research) — explicitly non-commercial, same bucket as `internlm2`.
+   `internlm2` (SKIPPED, restrictive license), `minicpm` (blocked, Unigram SPM — §1d),
    `granite` (ADMITTED — §1d), `smollm3` (ADMITTED — §1e). `nemotron`, `seed_oss`, `hunyuan`,
    `dots1`, `lfm2`, `apertus` assessed 2026-08-08 and moved to §1f (new-kernel plan) or deferred —
    none were immediately buildable-and-testable today; see §1f for why, per architecture.
    (`cohere`/`command-r` moved out — see below.)
 6. `gpt-oss` (MXFP4 already dequantizes), `bitnet`, `mamba`/`jamba`/`rwkv` (recurrent — a different
-   forward-pass family, not a variant of the existing one).
+   forward-pass family, not a variant of the existing one). **Both `gpt-oss` and `bitnet` checked
+   against their real llama.cpp sources 2026-08-09 — both are bigger lifts than "MXFP4 already
+   dequantizes" implied; MXFP4 dequant was never the actual blocker.**
+   - **`gpt-oss`** (Apache-2.0, OpenAI; `openai/gpt-oss-20b`, 21B total/3.6B active MoE — no
+     smaller size exists, only 20B/120B; the only full-model GGUF is `gpt-oss-20b-MXFP4.gguf`,
+     12.1 GB — the repo's other, much smaller GGUFs are an unrelated EAGLE3 speculative-decoding
+     draft head, not the model itself). `src/models/openai-moe.cpp` needs, none of it built today:
+     (a) **attention sinks** — a learned per-head scalar (`attn_sinks`, shape `[n_head]`) folded
+     into the softmax denominator, a real numerical addition to the attention kernel, not a
+     metadata toggle; (b) **sliding-window attention alternating every layer** (`swa_period=2`);
+     (c) **biased MoE** — every expert tensor (`ffn_gate_inp`/`ffn_up_exps`/`ffn_gate_exps`/
+     `ffn_down_exps`) carries its own bias tensor, which the existing `MoeFfn`/`MoeFfnBatched`
+     have no parameter for at all; (d) `LLM_FFN_SWIGLU_OAI_MOE` — an OpenAI-specific SwiGLU
+     variant (needs reading `unary-ops.cpp`/`ggml.c` to confirm the exact formula before
+     assuming it's the existing `SiLuMul`); (e) `LLAMA_EXPERT_GATING_FUNC_TYPE_SOFTMAX_WEIGHT` — a
+     gating function distinct from the plain softmax/sigmoid this engine already dispatches on.
+     Five real additions, not one — moot for now given the session's remaining budget, but
+     license/checkpoint-clean and a legitimate future target.
+   - **`bitnet`** (needs a license/checkpoint check — not done yet) needs Sub-LN: an EXTRA RMSNorm
+     applied INSIDE each sublayer (`attn_sub_norm` on attention's raw output before `wo`;
+     `ffn_sub_norm` on the SwiGLU product before `ffn_down`), from the BitNet b1.58 paper's
+     training-stability recipe — a structurally different sublayer shape, not a variant of the
+     existing pre-norm trunk. More fundamentally, BitNet's actual weights are ternary
+     (`{-1,0,1}`-valued) with a per-tensor float scale (`wq_s`/`wk_s`/.../`ffn_down_s`,
+     `TENSOR_NOT_REQUIRED` — optional) — this needs a genuinely new packed weight **format**, not
+     just a new architecture graph, comparable in kind to the IQ-quant gap already flagged as the
+     largest tensor-storage-format gap in §2. Two independent blockers, not one.
 
 **Reclassified 2026-08-08, checked against the llama.cpp reference (`examples/llama.cpp/llama.cpp/src/models/`)
 before starting any of them:**
@@ -442,16 +488,23 @@ item is obvious — build once, unlocks several):**
    different from GQA — a low-rank Q/K compression (`q_lora_rank`, `kv_lora_rank`) with separate
    RoPE and non-RoPE head splits (`n_embd_head_qk_rope` vs `n_embd_head_qk_nope`) — the biggest
    single lift in this list, a genuinely different attention mechanism rather than a variant of
-   the GQA path. Neither has a confirmed small checkpoint or license check done yet; do that
-   before starting, given the pattern this session established (large Chinese-lab models
-   frequently carry restrictive weight licenses even when the code is Apache/MIT).
-5. **Conditional/multi-section RoPE.** Needed by `glm4`/`glm4moe` (conditional RoPE type,
-   unchecked in detail yet) and partially by `hunyuan` (MRoPE / `ggml_rope_multi` for the
+   the GQA path. **LICENSE-CHECKED 2026-08-09, BOTH BLOCKED — moot for now.** The smallest MLA
+   checkpoint, `deepseek-ai/DeepSeek-V2-Lite` (16B total/2.4B active), carries a custom "DeepSeek
+   License Agreement" — commercial use permitted subject to use-based restrictions (no military
+   use, discrimination, etc.), PRC jurisdiction (Hangzhou courts) — not MIT/Apache-2.0/BSD/MPL.
+   `openbmb/MiniCPM3-4B`'s repo code is Apache-2.0 but the WEIGHTS require a separate
+   registration-gated "MiniCPM Model License" (same "free but must register" pattern as GLM-4
+   below) — also not one of the four permissive licenses. Revisit only if a genuinely
+   Apache/MIT-licensed MLA checkpoint appears.
+5. **Conditional/multi-section RoPE.** Needed by `glm4`/`glm4moe`. **LICENSE-CHECKED 2026-08-09,
+   BLOCKED — moot for now** (see item 4 of §1c above: custom "glm-4" license, registration-gated,
+   PRC jurisdiction). Also partially needed by `hunyuan` (MRoPE / `ggml_rope_multi` for the
    vision-language path — likely NOT triggered for text-only `hunyuan-dense`, unconfirmed).
    `hunyuan-dense` also needs weighted-RMS QK-norm applied **after** RoPE — this engine only
    supports that ordering today for pure-L2 (unweighted) QK-norm (`UseL2QkNorm`, Llama-4's
    convention); weighted-RMS-after-RoPE is a new combination, not a new mechanism. Moot for now:
-   `hunyuan` is license-blocked (see table above).
+   `hunyuan` is ALSO license-blocked (see table above) — every known architecture needing this
+   kernel is currently license-blocked.
 6. **Leading-dense-block MoE.** `dots1`: early layers are dense FFN, later layers are MoE
    (`n_layer_dense_lead`, read once and checked per-layer with `il < n_layer_dense_lead`) plus a
    shared-expert branch. Reuses `build_moe_ffn`-equivalent plumbing this engine already has for
@@ -691,6 +744,68 @@ attention branch reads when present, with FFN still reading the plain `attn_norm
 tensor-presence combination this receipt's code never exercises or guards against, and no small 40B
 checkpoint exists to validate it. A 40B GGUF routed through this code today would silently ignore
 `attn_norm_2` and produce wrong output.
+
+---
+
+### 1j. `olmo2` — ADMITTED 2026-08-09, full 24-of-24-token exact match
+
+`allenai/OLMo-2-0425-1B` (Apache-2.0, AI2), official first-party GGUF
+(`allenai/OLMo-2-0425-1B-GGUF`), Q8_0 (1.58 GB, deleted after this receipt). `tokenizer.ggml.model
+= gpt2` (byte-BPE), `tokenizer.ggml.pre = dbrx`.
+
+**§1c's premise for this architecture was wrong — this receipt is also the correction.** §1c
+originally listed `olmo2` as "gate-only, code exists" alongside `olmoe`, explicitly caveated as "a
+hypothesis, not a finding." Checked directly against `examples/llama.cpp/llama.cpp/src/models/
+olmo2.cpp` before writing any code: OLMo2 is a **third residual pattern**, distinct from both the
+ordinary pre-norm trunk and gptneox/falcon's parallel residual (§1h, §1i) — **post-norm
+sandwiching**. There is no `attn_norm`/`ffn_norm` tensor in the GGUF at all; attention and FFN both
+read the RAW residual directly, and the norm (plain RMSNorm, no bias) is applied to each sublayer's
+OUTPUT immediately before the residual add: `x1 = x + PostNorm(Attn(x)); x2 = x1 +
+PostNorm(FFN(x1))`.
+
+**What actually needed building — small, because it reuses three already-existing mechanisms
+rather than adding a new one:**
+
+1. `ForwardPass`'s constructor now leaves `_attnNorm[i]`/`_ffnNorm[i]` at their default (`DataPtr`
+   null) when the tensor is absent — the exact sentinel pattern Apertus/GPT-NeoX already use for
+   "no `ffn_gate` tensor" — and `RunTrunk`/`PrefillCore`'s pre-norm steps now copy the raw
+   residual straight through when that sentinel is set, instead of normalizing (previously they
+   unconditionally called `GetNormWeight` on the tensor, which would have thrown on a real OLMo2
+   GGUF).
+2. The POST-norm application itself is not new: `_postAttnNorm`/`_postFfwNorm` and the
+   "apply, then residual-add" call sites in `RunTrunk` already existed for Gemma 4, and — confirmed
+   directly against llama.cpp's tensor-name table (`LLM_TENSOR_ATTN_POST_NORM`/`FFN_POST_NORM` both
+   map to `blk.%d.post_attention_norm`/`blk.%d.post_ffw_norm`) — OLMo2 uses the exact same tensor
+   names and roles. The only change was generalizing `HasPostAttnNorm`/`HasPostFfwNorm` detection in
+   `ModelGraph.cs` from "gated inside the Gemma-4-only block" to plain tensor-presence, so any
+   architecture can activate it.
+3. QK-norm reuses the OLMoE fix unchanged (§1b) — whole-vector RMS (2048 elements), not per-head —
+   confirmed by this checkpoint's `attn_q_norm`/`attn_k_norm` tensors both being `[2048]`, not
+   `[headDim]` (`[128]`).
+
+**One real gap found by reasoning forward from the architecture, before writing the test — not by
+a failing assertion.** The post-attention/post-FFW norm application was already documented (in
+`MoeBatchedPrefillSupported`'s own doc comment, for the MoE case) as applying "only on `RunTrunk`"
+— `PrefillCore`'s batched loop has no equivalent step at all. Gemma 4 never surfaces this gap
+because its own per-layer-head-dim check already routes it away from `PrefillCore` entirely before
+reaching that missing step. OLMo2 has no per-layer head dims, so without a fix it would have
+silently reached `PrefillCore` and produced wrong output — missing both post-norms — on every
+prefill call, with no test catching it until logits were compared (or not, if only argmax were
+checked). Fixed by widening `PrefillDispatch`'s existing per-layer-head-dim fallback (sequential
+per-token `Forward()` instead of the batched core) to also cover any model with
+`_postAttnNorm`/`_postFfwNorm` set — the same pattern Gemma 4 already uses, just no longer gated to
+that one architecture.
+
+**Result: full 24-of-24-token EXACT match, byte for byte** — the same strength as the Granite,
+SmolLM3, and Falcon receipts, and considerably stronger than OLMoE's own (2-token prefix,
+perplexity-only). Reference: `llama-completion` for `"The capital of France is"` continues `" Paris.
+The French language is spoken in France. The French people are known as the French. The French flag
+is red"` — this engine reproduces it token-for-token. See `Olmo2GreedyParityTests.cs`.
+
+**NOT wired:** `PrefillCoreTq`, `PrefillWithCache` (continuous-batching admission),
+`BatchForwardMulti`/`PrefillPackedMulti`, and CUDA/Vulkan do not know about the post-norm fallback
+above and would still silently misbehave if routed there — same scope boundary as every other
+receipt this session.
 
 ---
 

@@ -462,8 +462,6 @@ public sealed record ModelHyperparams
         float residualScale = 1f;
         float attentionScaleOverride = 0f;
         float logitScale = 1f;
-        bool hasPostAttnNorm = false;
-        bool hasPostFfwNorm = false;
         bool hasPerLayerTokenEmbd = false;
         bool hasLayerOutputScale = false;
         FfnActivation ffnActivation = FfnActivation.Silu;
@@ -473,6 +471,18 @@ public sealed record ModelHyperparams
         IReadOnlyList<int>? layerRopeDim = null;
         IReadOnlyList<int>? layerKvHeads = null;
         bool attentionKEqV = false;
+
+        // Post-sublayer norm (weight applied to the sublayer's OUTPUT, immediately before the
+        // residual add) — tensor-presence detected generically rather than gated to any one
+        // architecture. Gemma 4 combines this with an ordinary pre-norm (sandwich norm). OLMo2
+        // has NO pre-norm tensor at all (attn_norm/ffn_norm are absent from its GGUF) and uses
+        // ONLY this post-norm, reusing the exact same llama.cpp tensor names/roles
+        // (LLM_TENSOR_ATTN_POST_NORM/FFN_POST_NORM both map to blk.%d.post_attention_norm /
+        // blk.%d.post_ffw_norm for both architectures) — see src/models/olmo2.cpp vs gemma4.cpp.
+        bool hasPostAttnNorm = metadata.ContainsKey("_opentailllm.has_post_attn_norm")
+            || (tensorSource?.FindTensor("blk.0.post_attention_norm.weight") is not null);
+        bool hasPostFfwNorm = metadata.ContainsKey("_opentailllm.has_post_ffw_norm")
+            || (tensorSource?.FindTensor("blk.0.post_ffw_norm.weight") is not null);
 
         if (isGemma4)
         {
@@ -487,10 +497,6 @@ public sealed record ModelHyperparams
             embeddingScale = MathF.Sqrt(embDim);
             ffnActivation  = FfnActivation.GeluApprox;
 
-            hasPostAttnNorm      = metadata.ContainsKey("_opentailllm.has_post_attn_norm")
-                || (tensorSource?.FindTensor("blk.0.post_attention_norm.weight") is not null);
-            hasPostFfwNorm       = metadata.ContainsKey("_opentailllm.has_post_ffw_norm")
-                || (tensorSource?.FindTensor("blk.0.post_ffw_norm.weight") is not null);
             hasPerLayerTokenEmbd = metadata.ContainsKey("_opentailllm.has_ple")
                 || (tensorSource?.FindTensor("per_layer_token_embd.weight") is not null);
             hasLayerOutputScale  = metadata.ContainsKey("_opentailllm.has_layer_output_scale")

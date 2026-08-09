@@ -74,6 +74,26 @@ public static class ModelCompatibility
         // split for the first time on this profile. See FalconGreedyParityTests and
         // docs/01-gguf-model-coverage-plan.md for the receipt.
         "falcon",
+        // olmo2 — a THIRD residual pattern, distinct from both the ordinary pre-norm trunk and
+        // gptneox/falcon's parallel residual: post-norm sandwiching. No attn_norm/ffn_norm tensor
+        // exists in the GGUF at all — attention and FFN both read the RAW residual directly, and
+        // the norm (RMSNorm, no bias) is applied to each sublayer's OUTPUT via attn_post_norm/
+        // ffn_post_norm, immediately before the residual add (confirmed against
+        // src/models/olmo2.cpp: x1 = x + PostNorm(Attn(x)); x2 = x1 + PostNorm(FFN(x1))).
+        // ForwardPass's constructor leaves _attnNorm[i]/_ffnNorm[i] at their default (DataPtr
+        // null) when absent — the same tensor-presence sentinel Apertus/GPT-NeoX already use for
+        // "no ffn_gate" — and RunTrunk/PrefillCore's pre-norm steps copy the raw residual through
+        // unmodified when that sentinel is set, instead of normalizing. The post-norm application
+        // itself reuses Gemma 4's existing _postAttnNorm/_postFfwNorm mechanism unchanged (same
+        // llama.cpp tensor names, LLM_TENSOR_ATTN_POST_NORM/FFN_POST_NORM) — generalized in
+        // ModelGraph.cs to detect from tensor presence for any architecture, not just gemma4.
+        // Because that mechanism was never wired into PrefillCore's batched loop (documented
+        // there as Gemma-4-only in MoeBatchedPrefillSupported's doc comment), PrefillDispatch now
+        // also falls back to sequential per-token Forward() for ANY post-norm model, not just
+        // per-layer-head-dim ones — the same fallback pattern Gemma 4 already uses, just widened.
+        // QK-norm reuses the OLMoE whole-vector-RMS fix unchanged (same convention, same code).
+        // See Olmo2GreedyParityTests and docs/01-gguf-model-coverage-plan.md for the receipt.
+        "olmo2",
     };
     // minicpm — NOT admitted. The forward-pass scale trio (reusing Granite's graph, see
     // GraniteGreedyParityTests) is implemented and presumed correct, but MiniCPM4-0.5B — the only

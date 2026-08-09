@@ -226,6 +226,39 @@ smaller, narrower-scope change (targeted OLMoE/PrefillAttentionParityTests/Repro
 Granite/GptNeox classes instead, all clean) — see
 [01-gguf-model-coverage-plan.md](01-gguf-model-coverage-plan.md) §1i.
 
+**ARCHITECTURE ADMITTED — `olmo2`, 2026-08-09, full 24-of-24-token exact match.** §1c's premise for
+this one was wrong — it was listed "gate-only, code exists" alongside `olmoe`; checked directly
+against `olmo2.cpp` and found a genuinely different third residual pattern (**post-norm
+sandwiching**: no `attn_norm`/`ffn_norm` tensor exists at all, attention and FFN read the raw
+residual, norm is applied to each sublayer's OUTPUT before the residual add). Built from three
+already-existing mechanisms recombined, not new kernels: the `_wGate[i].DataPtr is null`-style
+tensor-presence sentinel (Apertus/GPT-NeoX precedent) now also gates `_attnNorm`/`_ffnNorm`'s
+absence; Gemma 4's existing `_postAttnNorm`/`_postFfwNorm` post-norm-before-residual mechanism,
+generalized in `ModelGraph.cs` from Gemma-4-only detection to plain tensor presence; and OLMoE's
+already-fixed whole-vector QK-norm. One real gap found by reasoning forward before writing the
+test, not by a failing assertion: `PrefillCore`'s batched loop has no post-norm step at all
+(previously invisible because Gemma 4's own per-layer-head-dim check already routes it away from
+`PrefillCore`) — fixed by widening `PrefillDispatch`'s existing per-layer-head-dim sequential
+fallback to cover any post-norm model. Targeted regression included `Gemma4CpuForwardPassTests`
+specifically (the code path most directly touched by the `ModelGraph.cs` refactor) — clean. See
+[01-gguf-model-coverage-plan.md](01-gguf-model-coverage-plan.md) §1j.
+
+**Architecture queue swept for remaining candidates, 2026-08-09 — license-checked four, scope-
+corrected two; nothing left immediately buildable.** `glm4`/`glm4moe` and `exaone`: SKIPPED,
+restrictive custom licenses (glm-4: registration-gated, PRC jurisdiction; EXAONE: explicitly
+non-commercial) — same bucket as `internlm2`/`hunyuan`. `deepseek2`/`minicpm3` (MLA): SKIPPED, both
+license-blocked too (DeepSeek's custom use-restricted license; MiniCPM3's weights need a separate
+registration-gated license despite Apache-2.0 code) — the MLA lift is now moot regardless of its
+size. `gpt-oss`/`bitnet`: NOT license-blocked, but checked against their real llama.cpp sources and
+found to need substantially more than the plan's brief note suggested — gpt-oss needs attention
+sinks (a real numerical addition to the softmax), alternating sliding-window attention, biased MoE
+expert tensors, and an OpenAI-specific SwiGLU/gating variant (five real additions, not the "MXFP4
+already dequantizes" framing implied); bitnet needs Sub-LN (an extra norm INSIDE each sublayer) AND
+a genuinely new ternary packed-weight format, two independent blockers. See
+[01-gguf-model-coverage-plan.md](01-gguf-model-coverage-plan.md) §1c item 6 for the full findings.
+Remaining queue: `mamba`/`jamba`/`rwkv` (recurrent, a different forward-pass family entirely —
+biggest lift of anything in the plan) and re-checking `bitnet`'s own license (not yet done).
+
 **New-kernel plan drafted, 2026-08-08 — design only except items 3, 1, and now falcon
 (Apertus/xIELU, GPT-NeoX, Falcon), all built.** Assessed the six
 previously-"unassessed" architectures (Nemotron, Seed-OSS, Hunyuan, Dots1, LFM2, Apertus): none
