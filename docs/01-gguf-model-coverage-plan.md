@@ -405,7 +405,8 @@ first):**
 item is obvious — build once, unlocks several):**
 
 1. **LayerNorm-with-bias + non-gated FFN. `gptneox` BUILT and ADMITTED — see §1h.** Needed by
-   `starcoder2`, `falcon`, `stablelm`, `gptneox` (all four already identified, §1c) — and now also
+   `starcoder2`, `falcon` (BUILT and ADMITTED — see §1i), `stablelm`, `gptneox` (all four already
+   identified, §1c) — and now also
    `nemotron` (license-blocked) uses the same
    LayerNorm-with-bias norm, though its FFN activation is ReLU² not GELU. Concretely: (a) a
    `LayerNorm` op (mean-subtract + variance-normalize + learned scale/bias, vs the RMSNorm this
@@ -638,6 +639,58 @@ PrefillCore final-norm bug above — neither of which the lost draft's own write
 meaning that writeup's "0.0000 exact" stepwise-parity claim did not describe the code that was
 actually rebuilt. Consistent with this plan's standing evidence rule: a prior AI's or agent's own
 summary of its results is not evidence of correctness on its own.
+
+---
+
+### 1i. `falcon` — ADMITTED 2026-08-09, full 10-of-10-token exact match including EOS
+
+`tiiuae/falcon-7b-instruct` (Apache-2.0, TII), Q4_K_M (4.97 GB, deleted after this receipt).
+`tokenizer.ggml.model = gpt2` (byte-BPE), no explicit `tokenizer.ggml.pre` key on this checkpoint.
+
+**What Falcon needed beyond what `gptneox` (§1h) already built — one new wrinkle, otherwise pure
+reuse.** Falcon-7B reuses every gptneox mechanism (LayerNorm-with-bias, non-gated GELU FFN, fused
+`attn_qkv.weight` split by contiguous row offset, `UseParallelResidual`'s 3-way sum) unchanged. The
+one new thing: **Falcon-7B has no separate `ffn_norm` tensor at all** — attention and FFN read the
+SAME LayerNorm output, confirmed directly against `examples/llama.cpp/llama.cpp/src/models/
+falcon.cpp` (`build_ffn(attn_norm, ... // !! use the attn norm, not the result`). `ForwardPass`'s
+constructor now falls `_ffnNorm[i]`/`_bFfnNorm[i]` back to `_attnNorm[i]`/`_bAttnNorm[i]`'s own
+`TensorRef`/pointer whenever `blk.*.ffn_norm.{weight,bias}` is absent — recomputing an identical
+LayerNorm a second time (bit-identical, same deterministic formula and input) rather than adding a
+second code path. `use_parallel_residual` is also never a metadata key for this architecture — it's
+hardcoded unconditionally in llama.cpp's Falcon graph — so `ModelGraph.cs` now hardcodes
+`UseParallelResidual = true` for `arch == "falcon"` too, rather than reading a key that was never
+written (confirmed absent from this checkpoint's own metadata dump).
+
+**One real defect caught before it shipped, by reasoning forward from the GPT-NeoX receipt's own
+history rather than waiting for a test to fail.** The `_ffnNorm[i]`/`_bAttnNorm[i]` aliasing above
+means `_bFfnNorm[i] == _bAttnNorm[i]` for this architecture — and `ForwardPass.Dispose()`'s existing
+`_hasNormBias` free loop unconditionally freed both independently, which would have double-freed the
+same allocation (the same class of bug as the GPT-NeoX receipt's aliased-QKV-bias defect, just
+self-inflicted this time). Fixed by comparing pointers before freeing
+(`if (_bFfnNorm[i] != null && _bFfnNorm[i] != _bAttnNorm[i]) NativeMemory.Free(...)`) — a no-op for
+every other architecture (independent allocations never coincidentally share an address).
+
+**Also exercises Multi-Query Attention for the first time on this profile.** `attention.head_count
+=71`, `attention.head_count_kv=1` (headDim 4544/71=64) — a single shared KV head across 71 query
+heads. The fused-QKV split was already parametrized generically by `_numHeads`/`_numKvHeads` (built
+for ordinary GQA elsewhere), so no new code was needed, but this is a real stress test of that
+arithmetic at an extreme ratio GPT-NeoX's checkpoint (head_count==head_count_kv, no MQA/GQA at all)
+never exercised — and it worked on the first run.
+
+**Result: all 10 generated tokens EXACT, including the terminating EOS.** llama.cpp's own greedy
+completion for `"The capital of France is"` terminates at EOS after only 10 tokens (`" Paris.\nParis
+is the capital of France."`) rather than the requested 24 — this engine matches every one of those
+10 tokens token-for-token and then independently predicts the same EOS token as its 11th generation
+step. A full, unqualified match — not a partial-prefix acceptance like the OLMoE/Apertus/GPT-NeoX
+receipts — the same strength as Granite's and SmolLM3's. See `FalconGreedyParityTests.cs`.
+
+**NOT wired:** `PrefillCoreTq`, `PrefillWithCache`, `BatchForwardMulti`/`PrefillPackedMulti`, and
+CUDA/Vulkan (same gap already documented for gptneox — they share the CPU-only scope). **Falcon-40B
+is explicitly NOT covered**: 40B carries a second per-layer norm (`attn_norm_2`) that only the
+attention branch reads when present, with FFN still reading the plain `attn_norm` — a different
+tensor-presence combination this receipt's code never exercises or guards against, and no small 40B
+checkpoint exists to validate it. A 40B GGUF routed through this code today would silently ignore
+`attn_norm_2` and produce wrong output.
 
 ---
 

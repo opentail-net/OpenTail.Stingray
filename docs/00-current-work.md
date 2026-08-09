@@ -210,8 +210,24 @@ out-of-band edit; the rebuild independently re-verified every claim against the 
 source rather than trusting the lost attempt's own (also since found to be inaccurate) writeup. See
 [01-gguf-model-coverage-plan.md](01-gguf-model-coverage-plan.md) §1h.
 
-**New-kernel plan drafted, 2026-08-08 — design only except items 3 and 1 (Apertus/xIELU, GPT-NeoX),
-now built.** Assessed the six
+**ARCHITECTURE ADMITTED — `falcon`, 2026-08-09, full 10-of-10-token exact match including EOS.**
+Reuses every `gptneox` mechanism unchanged (LayerNorm-with-bias, non-gated GELU FFN, fused
+`attn_qkv.weight`, `UseParallelResidual`'s 3-way sum), plus one new wrinkle: Falcon-7B has no
+separate `ffn_norm` tensor at all — attention and FFN read the SAME LayerNorm output (confirmed
+against `falcon.cpp`: `build_ffn(attn_norm, ... // !! use the attn norm, not the result`).
+`ForwardPass` now falls `_ffnNorm`/`_bFfnNorm` back to `_attnNorm`/`_bAttnNorm` when the tensor is
+absent. Caught and fixed one self-inflicted defect before it could ever crash: that aliasing means
+`_bFfnNorm[i] == _bAttnNorm[i]`, so `Dispose()`'s unconditional free-both loop would have
+double-freed the same allocation the same way the GPT-NeoX receipt's aliased-QKV-bias defect did —
+fixed with a pointer-equality guard before ever running the test, not after a crash. Also the first
+checkpoint on this profile with MQA (71 query heads, 1 shared KV head) — worked first try on the
+existing GQA-parametrized fused-QKV split. Full 1368-test suite regression not re-run for this
+smaller, narrower-scope change (targeted OLMoE/PrefillAttentionParityTests/Repro_Pos13Parity/
+Granite/GptNeox classes instead, all clean) — see
+[01-gguf-model-coverage-plan.md](01-gguf-model-coverage-plan.md) §1i.
+
+**New-kernel plan drafted, 2026-08-08 — design only except items 3, 1, and now falcon
+(Apertus/xIELU, GPT-NeoX, Falcon), all built.** Assessed the six
 previously-"unassessed" architectures (Nemotron, Seed-OSS, Hunyuan, Dots1, LFM2, Apertus): none
 were buildable-and-testable today (3 restrictive-licensed, 2 have no small checkpoint, only
 Apertus is clean on both — Apache-2.0, but only 8B/70B exist). Full plan, grouped by shared
