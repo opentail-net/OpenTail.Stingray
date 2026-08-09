@@ -103,6 +103,33 @@ public sealed record ModelHyperparams
     public bool HasNormBias { get; init; }
 
     /// <summary>
+    /// Whether the model's norm uses true LayerNorm math (mean-subtract + variance-normalize)
+    /// rather than RMSNorm (no mean-subtraction), independent of whether a learned bias exists.
+    /// Always true when <see cref="HasNormBias"/> is (a bias tensor implies LayerNorm), but also
+    /// true for architectures like Command-R (cohere2) that use LayerNorm with a learned scale
+    /// but NO bias tensor at all — a fact llama.cpp's graph hardcodes per-architecture
+    /// (<c>LLM_NORM</c> vs <c>LLM_NORM_RMS</c> in <c>build_norm</c>), not something a GGUF's
+    /// tensor inventory can distinguish on its own (a weight-only norm tensor looks identical
+    /// whether the architecture intends RMSNorm or bias-less LayerNorm), hence the arch-string
+    /// check rather than tensor-presence detection.
+    /// </summary>
+    public bool UsesLayerNorm { get; init; }
+
+    /// <summary>
+    /// Whether the norm has NEITHER a learned scale NOR a bias — pure mean-subtract +
+    /// variance-normalize with no parameters at all. OLMo v1 (<c>src/models/olmo.cpp</c>:
+    /// <c>build_norm(inpL, NULL, NULL, LLM_NORM, il)</c>) is the only known user: its GGUF ships
+    /// no <c>attn_norm</c>/<c>ffn_norm</c>/<c>output_norm</c> tensor at all. Distinct from
+    /// <see cref="UsesLayerNorm"/> (which still implies a learned weight tensor exists) — when
+    /// this is true, <see cref="UsesLayerNorm"/> is irrelevant, since there is no weight to decide
+    /// LayerNorm-vs-RMSNorm math for; the norm is unconditionally
+    /// <c>SimdKernels.PureLayerNorm</c>. Not detectable from tensor presence alone, since a
+    /// missing norm tensor is the SAME signal OLMo2 uses for "no pre-norm at all, sandwich-normed
+    /// on the output instead" — needs the arch-string check to disambiguate.
+    /// </summary>
+    public bool UsesUnweightedNorm { get; init; }
+
+    /// <summary>
     /// Whether the dense FFN carries biases on both the up and down projections
     /// (<c>blk.*.ffn_up.bias</c> / <c>blk.*.ffn_down.bias</c>). GPT-NeoX pairs this with a
     /// non-gated GELU FFN: <c>down(gelu(up(x) + bUp)) + bDown</c> — the up bias goes inside
@@ -178,6 +205,18 @@ public sealed record ModelHyperparams
     public bool UseL2QkNorm { get; init; }
 
     /// <summary>
+    /// Whether WEIGHTED QK-norm (a learned RMSNorm, not <see cref="UseL2QkNorm"/>'s pure L2) is
+    /// applied AFTER RoPE rather than before. Qwen3's convention (the default this engine assumes
+    /// when <see cref="HasQkNorm"/> is set) norms then rotates; Hunyuan-Dense's graph
+    /// (<c>hunyuan-vl.cpp</c>, shared by the dense variant) rotates Q/K first and applies its
+    /// learned <c>attn_q_norm</c>/<c>attn_k_norm</c> to the ALREADY-ROTATED vectors — a timing
+    /// this engine had no combination for until Hunyuan-Dense: Llama-4's after-RoPE case
+    /// (<see cref="UseL2QkNorm"/>) is unweighted, and every weighted case before this one normed
+    /// before RoPE.
+    /// </summary>
+    public bool QkNormAfterRope { get; init; }
+
+    /// <summary>
     /// True for NEOX-style RoPE (rotates dim pairs (i, i + headDim/2)).
     /// False for LLaMA-style "normal" RoPE (rotates consecutive pairs (2i, 2i+1)).
     /// Qwen2/Qwen3, Phi, Gemma, Falcon, and most non-LLaMA architectures use NEOX.
@@ -232,6 +271,19 @@ public sealed record ModelHyperparams
     public int SlidingWindowSize { get; init; }
 
     /// <summary>
+    /// Whether RoPE is applied ONLY on SWA (local) layers, with global layers getting NO
+    /// rotary embedding at all — Command-R's (cohere2) convention, confirmed against
+    /// <c>src/models/cohere2.cpp</c>: its attention block calls <c>ggml_rope_ext</c> only inside
+    /// <c>if (is_swa) { ... }</c>, with no <c>else</c> branch for global layers. This is the
+    /// opposite selection rule from Llama-4/SmolLM3's period-based <see cref="NoRopeLayerStep"/>
+    /// (which is unconditional on layer index, not on SWA-ness), so it's a separate flag rather
+    /// than a variant of that mechanism. Hardcoded per architecture, like
+    /// <see cref="UseParallelResidual"/>'s Falcon/cohere2 case — llama.cpp bakes this into the
+    /// graph rather than reading it from GGUF metadata.
+    /// </summary>
+    public bool RopeOnlySwaLayers { get; init; }
+
+    /// <summary>
     /// Per-Layer-Embedding (PLE) projection width. Gemma 4 E4B = 256. 0 when the
     /// model has no PLE table.
     /// </summary>
@@ -269,6 +321,18 @@ public sealed record ModelHyperparams
     public IReadOnlyList<float>? XieluAlphaP { get; init; }
     public IReadOnlyList<float>? XieluBeta { get; init; }
     public IReadOnlyList<float>? XieluEps { get; init; }
+
+    /// <summary>
+    /// Whether the non-gated FFN (no <c>ffn_gate</c> tensor) uses ReLU-squared
+    /// (<c>max(0,x)^2</c>, llama.cpp's <c>LLM_FFN_RELU_SQR</c>) instead of GELU. JAIS-2 is the
+    /// only known user (confirmed against <c>src/models/jais2.cpp</c>: <c>build_ffn(..., NULL,
+    /// ..., LLM_FFN_RELU_SQR, LLM_FFN_SEQ, il)</c>, biased up/down like GPT-NeoX's GELU shape) —
+    /// not detectable from tensor inventory alone, since a biased non-gated FFN looks identical on
+    /// disk whether it means "GELU" or "ReLU-squared"; needs the arch-string check the same way
+    /// <see cref="XieluAlphaN"/>'s absence-vs-GELU default already relies on <em>xielu.*</em>
+    /// metadata presence rather than a tensor-shape signal.
+    /// </summary>
+    public bool UsesReluSquared { get; init; }
 
     /// <summary>
     /// Per-layer flag: <c>true</c> when the layer uses sliding-window attention,
@@ -366,13 +430,30 @@ public sealed record ModelHyperparams
         // below, `(layer + 1) % step != 0`, is the same expression llama.cpp applies.
         bool isLlama4 = arch.Equals("llama4", StringComparison.OrdinalIgnoreCase);
         bool isSmolLm3 = arch.Equals("smollm3", StringComparison.OrdinalIgnoreCase);
-        int noRopeStep = isLlama4 || isSmolLm3 ? 4 : 0;
+        bool usesReluSquared = arch == "jais2";
+        // GPT-2 has no RoPE at all — position is encoded once via a learned absolute
+        // position-embedding table (ModelHyperparams consumers detect this from
+        // `position_embd.weight`'s tensor presence directly, not a hyperparam flag) added to the
+        // token embedding before the trunk starts. Step=1 makes `(layer+1) % step != 0` false for
+        // every layer, so useRoPE computes to false unconditionally via the SAME formula
+        // Llama-4/SmolLM3 already use for their periodic skip — no new dispatch code needed.
+        // StarCoder (v1) shares GPT-2's exact absolute-position-embedding shape (confirmed against
+        // src/models/starcoder.cpp: same ggml_get_rows(pos_embd, inp_pos) pattern, no RoPE call
+        // anywhere in the graph).
+        bool isGpt2Family = arch is "gpt2" or "starcoder";
+        int noRopeStep = isLlama4 || isSmolLm3 ? 4 : isGpt2Family ? 1 : 0;
         // Llama-4 uses sigmoid gating with weight-before-FFN per Meta's reference impl.
         bool useSigmoidGating = isLlama4;
         // Llama-4 uses Llama4TextL2Norm for QK-norm: pure RMS norm without learned weights.
         // No attn_q_norm.weight tensor exists, so force hasQkNorm for Llama-4.
         bool useL2QkNorm = isLlama4;
         if (isLlama4) hasQkNorm = true;
+
+        // Hunyuan-Dense's graph (src/models/hunyuan-vl.cpp, shared by the dense variant) applies
+        // its WEIGHTED attn_q_norm/attn_k_norm AFTER ggml_rope_ext, not before like every other
+        // weighted-QK-norm architecture this engine has (Qwen3, OLMoE). Distinct from Llama-4's
+        // UseL2QkNorm (also after-RoPE, but unweighted).
+        bool qkNormAfterRope = arch == "hunyuan-dense";
 
         // RoPE convention: NEOX (pairs offset by headDim/2) vs NORM/interleaved (consecutive pairs).
         // Mirrors llama.cpp's llama_model_rope_type() in src/llama-model.cpp (NEOX block).
@@ -571,6 +652,27 @@ public sealed record ModelHyperparams
                 }
             }
         }
+        else if (arch == "cohere2" && numLayers > 0)
+        {
+            // Command-R: sliding-window attention alternates every swaPeriod layers, the LAST
+            // layer of each block being global — llama.cpp's set_swa_pattern(period) with its
+            // default dense_first=false: is_swa[il] = period==0 || (il % period < period-1).
+            // Confirmed against llama-hparams.cpp directly rather than assumed. The period is a
+            // plain scalar in GGUF metadata (cohere2.cpp: ml.get_key_or_arr(..., swa_period=4,
+            // false) — 4 even when the key is absent), NOT a literal per-layer bool array the
+            // way Gemma 4's own sliding_window_pattern key is, so this does not reuse Gemma 4's
+            // GetBoolArray-based cycling above.
+            slidingWindow = GetInt(metadata, $"{arch}.attention.sliding_window");
+            int swaPeriod = GetInt(metadata, $"{arch}.attention.sliding_window_pattern", 4);
+            var swa = new bool[numLayers];
+            for (int i = 0; i < numLayers; i++)
+                swa[i] = swaPeriod == 0 || (i % swaPeriod < swaPeriod - 1);
+            isSwaLayer = swa;
+            // No separate SWA rope table is needed: cohere2 doesn't use a different frequency
+            // for SWA vs global layers, it skips RoPE on global layers ENTIRELY (see
+            // ModelHyperparams.RopeOnlySwaLayers) — ropeThetaSwa stays 0f (unset), so the
+            // SWA-rope-table construction path (gated on RopeThetaSwa > 0f) never fires.
+        }
 
         // Granite (dense/MoE/hybrid) and MiniCPM share ONE graph builder in llama.cpp
         // (models.h: "using graph = llama_model_granite::graph") — MiniCPM is Granite's
@@ -688,8 +790,45 @@ public sealed record ModelHyperparams
         // Falcon has no such metadata key at all — its graph (src/models/falcon.cpp) hardcodes
         // the same 3-way residual sum unconditionally, so it's hardcoded here to match rather
         // than read from a key that was never written.
-        bool useParallelResidual = arch == "falcon"
-            || GetBool(metadata, $"{arch}.use_parallel_residual");
+        //
+        // StableLM is the opposite trap: its GGUF carries a `stablelm.use_parallel_residual` key
+        // (the converter copies it straight from the HF config), but src/models/stablelm.cpp's
+        // graph builder never reads that hparam at all — it branches on whether the per-layer
+        // `ffn_norm` TENSOR exists (`if (layer.ffn_norm) sequential; else cur = inpSA` — reuse the
+        // attn-norm output as the FFN input). StableLM-2-1.6B ships `use_parallel_residual: true`
+        // in metadata while every layer still carries a real `ffn_norm` weight+bias, so trusting
+        // the metadata key here would wrongly take the parallel path; only the 12B variant (no
+        // `ffn_norm` tensor) is genuinely parallel-residual.
+        bool stablelmHasFfnNorm = tensorSource?.FindTensor("blk.0.ffn_norm.weight") is not null;
+        bool useParallelResidual = arch is "falcon" or "cohere2"
+            || (arch == "stablelm" ? !stablelmHasFfnNorm : GetBool(metadata, $"{arch}.use_parallel_residual"));
+
+        // Command-R (cohere2) uses true LayerNorm (build_norm's LLM_NORM, not LLM_NORM_RMS) but
+        // ships no bias tensor at all — hasNormBias (tensor-presence) stays false, so this needs
+        // an explicit arch-string check the same way useParallelResidual does above; a GGUF's
+        // tensor inventory alone can't distinguish "RMSNorm with a weight tensor" from
+        // "bias-less LayerNorm with a weight tensor", since both look identical on disk.
+        bool usesLayerNorm = hasNormBias || arch == "cohere2";
+        bool ropeOnlySwaLayers = arch == "cohere2";
+
+        // OLMo v1 ships no attn_norm/ffn_norm/output_norm tensor at all (confirmed against
+        // src/models/olmo.cpp: build_norm's weight AND bias arguments are both NULL) — the SAME
+        // tensor-absence signal OLMo2 uses for "no pre-norm, sandwich-normed instead", so this
+        // needs its own arch-string check to mean "normalize anyway, just with no parameters" as
+        // opposed to OLMo2's "skip normalizing here entirely".
+        bool usesUnweightedNorm = arch == "olmo";
+
+        // Command-R (cohere2) reads logit_scale independently of the Granite-family block above
+        // (isGraniteFamily deliberately doesn't cover it) and applies it with the OPPOSITE
+        // convention: cohere2.cpp does `ggml_scale(cur, f_logit_scale)` — a direct multiply —
+        // while granite.cpp does `ggml_scale(cur, 1.0f / f_logit_scale)`. LogitScale is documented
+        // as already carrying whatever reciprocal is needed so every call site can just multiply,
+        // so this reads the raw value straight through, not inverted.
+        if (arch == "cohere2")
+        {
+            float rawLogitScaleC2 = GetFloat(metadata, $"{arch}.logit_scale");
+            if (rawLogitScaleC2 != 0f) logitScale = rawLogitScaleC2;
+        }
 
         return new ModelHyperparams
         {
@@ -712,6 +851,9 @@ public sealed record ModelHyperparams
             HasAttnBias = hasAttnBias,
             HasAttnOutputBias = hasAttnOutputBias,
             HasNormBias = hasNormBias,
+            UsesLayerNorm = usesLayerNorm,
+            UsesUnweightedNorm = usesUnweightedNorm,
+            RopeOnlySwaLayers = ropeOnlySwaLayers,
             HasFfnBias = hasFfnBias,
             UseParallelResidual = useParallelResidual,
             HasQkNorm = hasQkNorm,
@@ -728,6 +870,7 @@ public sealed record ModelHyperparams
             NoRopeLayerStep = noRopeStep,
             UseSigmoidGating = useSigmoidGating,
             UseL2QkNorm = useL2QkNorm,
+            QkNormAfterRope = qkNormAfterRope,
             IsNeoxRope = isNeoxRope,
             RopeDim = ropeDim,
             IsHybridSsm = isHybridSsm,
@@ -741,6 +884,7 @@ public sealed record ModelHyperparams
             XieluAlphaP = xieluAlphaP,
             XieluBeta = xieluBeta,
             XieluEps = xieluEps,
+            UsesReluSquared = usesReluSquared,
             FinalLogitSoftcap = finalLogitSoftcap,
             RopeThetaSwa = ropeThetaSwa,
             SlidingWindowSize = slidingWindow,

@@ -124,6 +124,336 @@ public static class ModelCompatibility
         // test to catch a mistake. A change to RunTrunk/PrefillCore/the rope_freqs handling above
         // could silently break this profile and nothing in CI would notice.
         "exaone",
+        // starcoder2 — ADMITTED 2026-08-09, full 24-of-24-token exact match. Reuses gptneox/
+        // falcon's LayerNorm-with-bias + non-gated biased-GELU FFN infrastructure exactly (same
+        // SimdKernels.LayerNorm/GeluInPlace, same HasNormBias/HasFfnBias/HasAttnBias/
+        // HasAttnOutputBias tensor-presence detection), but with the ORDINARY sequential residual
+        // (x1 = x + attn(LN(x)); x2 = x1 + ffn(LN(x1))) — confirmed against
+        // examples/llama.cpp/llama.cpp/src/models/starcoder2.cpp — not gptneox/falcon's parallel
+        // 3-way sum. UseParallelResidual is false here (no metadata key, no arch-string hardcode).
+        //
+        // ONE REAL DEFECT FOUND AND FIXED — a latent bug this receipt was the first thing to
+        // exercise. RunTrunk's sequential (non-parallel-residual) FFN pre-norm still called
+        // FastRmsNorm directly instead of the bias-aware FastNorm dispatcher, because no
+        // previously-admitted architecture had BOTH HasNormBias=true AND UseParallelResidual=false
+        // at the same time (gptneox/falcon are always parallel-residual) — the sequential+LayerNorm
+        // combination was unreachable code until starcoder2. Symptom: greedy continuation matched
+        // llama.cpp for exactly 1 token then diverged completely, and the prefill/decode
+        // consistency check disagreed with ITSELF (maxDiff 30.4, argmax mismatch) — a strong signal
+        // of a structural bug, not a numerical approximation. Fixed by routing that call through
+        // FastNorm with the layer's ffn-norm bias, matching what PrefillCore's equivalent branch
+        // already did correctly.
+        //
+        // NO AUTOMATED TEST FOR THIS ARCHITECTURE, FOR LICENCE REASONS. Checkpoint license:
+        // "bigcode-openrail-m" (BigCode OpenRAIL-M — a restricted-use RAIL license: use-based
+        // restrictions, e.g. malicious-code generation), not MIT/Apache-2.0/BSD/MPL. Verified once
+        // against `bigcode/starcoder2-3b` (via QuantFactory/starcoder2-3b-GGUF, Q8_0), a transient
+        // local download, never vendored, deleted immediately after this receipt. Per the license
+        // policy in docs/01-gguf-model-coverage-plan.md, no permanent test persists.
+        //
+        // Verification evidence (2026-08-09, starcoder2-3b Q8_0, llama.cpp b8585-cad2d3884): prompt
+        // "The capital of France is" -> ids [1338, 18972, 451, 45569, 458]. Reference 24-token
+        // greedy continuation (--temp 0 --top-k 1 --seed 0, no-bos): " Paris.\n\n```\n\nI want to
+        // get the value of the attribute `value` of the `span" -> ids [2736, 316, 51, 222, 222, 932,
+        // 222, 222, 78, 2660, 391, 640, 341, 804, 451, 341, 3895, 548, 872, 101, 451, 341, 548, 681].
+        // This engine matched ALL 24 tokens exactly (after the FastNorm fix above), and the
+        // prefill/decode stepwise-consistency check agreed.
+        //
+        // DO NOT MODIFY THIS ARCHITECTURE'S CODE PATH WITHOUT GOOD REASON — there is no regression
+        // test to catch a mistake. In particular, the RunTrunk sequential-FFN-norm fix above is
+        // currently the ONLY thing exercising that exact code combination; a future change there
+        // could silently reintroduce the bug this receipt just fixed.
+        "starcoder2",
+        // cohere2 (Command-R7B) — ADMITTED 2026-08-09, 1-token exact match plus a documented
+        // near-tie, bucket-2. Reuses gptneox/falcon's shared-attn/ffn-norm fallback (no separate
+        // ffn_norm tensor) and UseParallelResidual's 3-way sum, but needed THREE genuinely new
+        // mechanisms, all confirmed against examples/llama.cpp/llama.cpp/src/models/cohere2.cpp
+        // before writing any code: (1) LayerNorm WITHOUT a learned bias — SimdKernels.LayerNorm's
+        // bias param is now null-safe (skips the bias-add step), and the new
+        // ModelHyperparams.UsesLayerNorm decouples "use LayerNorm math" from HasNormBias ("has a
+        // bias tensor"), since a weight-only norm tensor looks identical on disk whether the
+        // architecture means RMSNorm or bias-less LayerNorm — this is an arch-string fact, not a
+        // tensor-presence one. (2) Generic (non-Gemma4-gated) sliding-window attention — 3 local +
+        // 1 global layers (swaPeriod=4, hardcoded default even when the metadata key is absent),
+        // computed in ModelGraph.cs outside the isGemma4 block via the exact formula in
+        // llama-hparams.cpp's set_swa_pattern (dense_first=false: is_swa[il] = il%period <
+        // period-1) — NOT Gemma 4's literal-bool-array convention, since cohere2's own metadata
+        // key is a plain period scalar. (3) RoPE applied ONLY on SWA layers, none at all on global
+        // ones (ModelHyperparams.RopeOnlySwaLayers) — cohere2.cpp's attention block has no `else`
+        // branch on its `if (is_swa)` rope application, the opposite selection rule from
+        // Llama-4/SmolLM3's period-based NoRopeLayerStep. Also: PrefillCoreAttention has NO
+        // windowSize parameter at all (only ever needed by Gemma 4, which never reaches it — see
+        // perLayerHdUnsupported), so PrefillDispatch now also falls back to sequential Forward()
+        // for any SWA model without per-layer head dims, reusing RunTrunk's Attention() call
+        // (proven correct by every Gemma 4 receipt) instead of teaching PrefillCore SWA masking.
+        // logit_scale is read with the OPPOSITE convention from Granite's (direct multiply, not
+        // reciprocal — cohere2.cpp does ggml_scale(cur, f_logit_scale) unconditionally, not
+        // 1/f_logit_scale).
+        //
+        // NO AUTOMATED TEST FOR THIS ARCHITECTURE, FOR LICENCE REASONS. Checkpoint:
+        // `CohereLabs/c4ai-command-r7b-12-2024` (bartowski GGUF, Q4_K_M), CC-BY-NC-4.0 — not
+        // MIT/Apache-2.0/BSD/MPL. Transient local download, never vendored, deleted immediately
+        // after this receipt.
+        //
+        // Verification evidence (2026-08-09, c4ai-command-r7b-12-2024 Q4_K_M, llama.cpp
+        // b8585-cad2d3884): prompt "The capital of France is" -> ids [2162, 7784, 1719, 5334, 1801].
+        // First generated token matches exactly (id 1690). Second diverges: this engine picks
+        // token 19 (",", logit 13.7218) where llama.cpp's reference implies 1671 (" a", this
+        // engine's own logit for it: 13.6563) — a 0.0655-logit gap, tighter than every other
+        // near-tie accepted this session, on a Q4_K_M checkpoint. Ruled out before accepting:
+        // re-ran with STINGRAY_CPU_PREFILL_Q8=0 (same result — not an int8-prefill artifact);
+        // confirmed this checkpoint declares no rope_freqs.weight tensor (not a missing-mechanism
+        // gap); confirmed via list-tensors that blk.*.attn_norm has no .bias tensor and no
+        // separate ffn_norm tensor (matches the bias-less/shared-norm design exactly, not a
+        // loading defect). Reads as ordinary Q4_K accumulation-order sensitivity at a
+        // closely-contested position, the same category of evidence the OLMoE/Apertus/GPT-NeoX
+        // receipts were accepted on — measured directly via a top-5 logit dump before accepting,
+        // not assumed.
+        //
+        // DO NOT MODIFY THIS ARCHITECTURE'S CODE PATH WITHOUT GOOD REASON — there is no regression
+        // test to catch a mistake. In particular the SWA/RopeOnlySwaLayers/UsesLayerNorm additions
+        // above are new, cohere2-only code paths nothing else in the codebase exercises.
+        "cohere2",
+        // glm4 (non-multimodal/text-only) — admitted 2026-08-09 on a 14-of-24-token exact prefix
+        // (then a documented 0.0214-logit near-tie, the deepest-position/tightest-margin near-tie
+        // accepted this session). Much smaller in scope than earlier estimated: the
+        // "conditional/multi-section RoPE" this plan originally flagged only applies to the
+        // multimodal (use_mrope) branch — a text-only checkpoint takes ordinary ggml_rope_ext,
+        // already fully supported. The sandwich-norm pattern (pre-norm AND post-norm on both
+        // attention and FFN) is Gemma 4's own shape, already generalized to plain tensor-presence
+        // detection while building the OLMo2 receipt. The one genuinely new mechanism: ffn_up is a
+        // single FUSED tensor at double width (no separate ffn_gate) — confirmed against
+        // ggml_vec_swiglu_f32's actual math (first half = gate/SiLU, second half = up/multiplied)
+        // — split by byte offset into independent TensorRefs, the same pattern GPT-NeoX's fused
+        // attn_qkv already established. See Glm4GreedyParityTests / examples/llama.cpp/
+        // llama.cpp/src/models/glm4.cpp and docs/01-gguf-model-coverage-plan.md for the receipt,
+        // including two real defects found and fixed while building it: a fused-tensor-slice
+        // prefault-sizing bug that actually crashed with AccessViolationException (and was fixed
+        // retroactively for the pre-existing GPT-NeoX/Falcon fused-QKV split too, since it's the
+        // identical latent defect there, just not yet triggered), and a wholly missing partial-RoPE
+        // implementation for the "normal"/interleaved (non-NEOX) rotation convention
+        // (SimdKernels.ApplyRoPECachedPartial, new).
+        "glm4",
+        // stablelm — admitted 2026-08-09. Smallest code change of any new-kernel architecture this
+        // session: LayerNorm-with-bias, non-gated-FFN plumbing, and NEOX partial rope were all
+        // already generic (built for gptneox/falcon/glm4), so nothing new was needed for any of
+        // those. The one real finding: this checkpoint's GGUF carries a stale
+        // `stablelm.use_parallel_residual=true` metadata key that stablelm.cpp's graph builder
+        // never actually reads — the real sequential-vs-parallel choice is made by branching on
+        // whether the per-layer `ffn_norm` TENSOR exists, and this checkpoint has real ffn_norm
+        // tensors on every layer (i.e. genuinely sequential, despite the metadata saying true).
+        // Reusing the pre-existing GetBool(metadata, "{arch}.use_parallel_residual") fallback
+        // (written for gptneox, where the key genuinely is consulted) would have silently taken
+        // the wrong branch. Fixed in ModelGraph.cs: stablelm now derives UseParallelResidual from
+        // blk.0.ffn_norm.weight tensor presence instead of the metadata key.
+        //
+        // NO AUTOMATED TEST FOR THIS ARCHITECTURE, FOR LICENCE REASONS. Checkpoint:
+        // `stabilityai/stablelm-2-zephyr-1_6b` (afrideva GGUF, Q8_0), Stability AI "other" license
+        // (non-commercial, gated) — not MIT/Apache-2.0/BSD/MPL. Transient local download, never
+        // vendored, deleted immediately after this receipt.
+        //
+        // Verification evidence (2026-08-09, stablelm-2-zephyr-1_6b Q8_0, llama.cpp
+        // b8585-cad2d3884): prompt "The capital of France is" -> ids [791, 6864, 315, 9822, 374].
+        // First 4 generated tokens match exactly (" Paris, and it"). Diverges at position 4: this
+        // engine picks token 596 ("'s", logit 24.6648) where llama.cpp's reference implies 374
+        // (" is", this engine's own logit: 24.6441) — a 0.0207-logit gap, on a near-lossless Q8_0
+        // checkpoint (every other near-tie accepted this session was Q4_K/Q4_K_M). Ruled out
+        // before accepting: re-ran with STINGRAY_CPU_PREFILL_Q8=0 (identical result); confirmed
+        // via list-tensors that no rope_freqs.weight or attn_q_norm/attn_k_norm tensor is silently
+        // missing; confirmed the post-divergence continuation stays fully coherent English, not
+        // degenerate. Reads as ordinary Q8_0 accumulation-order sensitivity at a closely-contested
+        // position, the same evidentiary category as every other near-tie receipt this session.
+        //
+        // DO NOT MODIFY THE UseParallelResidual TENSOR-PRESENCE BRANCH FOR stablelm WITHOUT GOOD
+        // REASON — there is no regression test to catch a mistake, and reverting to the
+        // metadata-key-only computation would silently break it again.
+        "stablelm",
+        // hunyuan-dense — admitted 2026-08-09 on a FULL 24-of-24-token exact greedy match
+        // (deterministic, though the reference itself is a degenerate repeated-token loop, since
+        // the checkpoint is Instruct-tuned and the receipt used a bare, un-templated prompt — still
+        // valid token-for-token parity evidence, just not a coherent completion). NOT
+        // llama_model_hunyuan_vl (the actual multimodal class) — hunyuan-dense INHERITS its
+        // load_arch_hparams/load_arch_tensors/graph wholesale from hunyuan-vl.cpp with no override,
+        // confirmed by reading models.h before writing any code, so this receipt's evidence covers
+        // both. Ordinary pre-norm RMSNorm trunk, standard GQA (head_count=16, head_count_kv=8),
+        // SiLU-gated FFN, no biases anywhere, no MoE, no MRoPE for the text-only dense checkpoint
+        // (rope.dimension_sections absent) — none of that is new. The one genuinely new mechanism:
+        // weighted QK-norm (a learned per-head RMSNorm, attn_q_norm/attn_k_norm, shape [128] =
+        // headDim, not per-channel) applied AFTER RoPE rather than before — confirmed directly
+        // against hunyuan-vl.cpp's graph (rope first, then build_norm on the already-rotated Q/K).
+        // This engine had two existing QK-norm timings (Qwen3: weighted, before RoPE; Llama-4:
+        // unweighted L2, after RoPE) but no "weighted, after RoPE" combination — added
+        // ModelHyperparams.QkNormAfterRope and wired it into PrefillCore and RunTrunk (the two
+        // paths a plain Prefill()/Forward() receipt exercises; PrefillCoreTq/BatchVerify/
+        // BatchForwardMulti's own QK-norm blocks are untouched and would need the identical fix if
+        // hunyuan-dense is ever run through those paths). Also needed a new pre-tokenizer cascade:
+        // this checkpoint declares tokenizer.ggml.pre=hunyuan-dense, a DISTINCT llama.cpp pre-type
+        // (LLAMA_VOCAB_PRE_TYPE_HUNYUAN_DENSE) from the plain "hunyuan" already in this engine's
+        // table (which is actually the Qwen-2 cascade) — confirmed via llama-vocab.cpp; added as a
+        // 3-stage cascade (PreTokenizerPatterns.DigitRun3/Cjk/HunyuanDenseTail) shared with the
+        // deepseek3-llm/joyai-llm pre-types llama.cpp folds onto the same case, verified by
+        // checking tokenizer.Encode against llama-tokenize before writing any forward-pass code.
+        //
+        // NO AUTOMATED TEST FOR THIS ARCHITECTURE, FOR LICENCE REASONS. Checkpoint:
+        // `tencent/Hunyuan-0.5B-Instruct` (bartowski GGUF, Q8_0, 578 MB), Tencent Hunyuan Community
+        // License (MAU threshold, territorial exclusions) — not MIT/Apache-2.0/BSD/MPL. Transient
+        // local download, never vendored, deleted immediately after this receipt.
+        //
+        // Verification evidence (2026-08-09, hunyuan-0.5b-instruct Q8_0, llama.cpp b8585-cad2d3884):
+        // prompt "The capital of France is" -> ids [628, 6801, 279, 9391, 316] (confirms the new
+        // pre-tokenizer cascade matches the reference exactly). Raw (no chat template) greedy
+        // completion degenerates to token 478 repeated 24 times — this engine reproduces that
+        // EXACT degenerate sequence for all 24 tokens, a full deterministic match.
+        //
+        // DO NOT MODIFY THE QkNormAfterRope TIMING FOR hunyuan-dense WITHOUT GOOD REASON — there is
+        // no regression test to catch a mistake, and this receipt is currently the only thing in
+        // the codebase exercising that combination.
+        "hunyuan-dense",
+        // gpt2 — admitted 2026-08-09, FULL 22-of-22-token exact greedy match, bucket-1 (genuinely
+        // MIT). The first architecture this session without RoPE at all: GPT-2 encodes position
+        // via a learned absolute position-embedding table (`position_embd.weight`) added to the
+        // token embedding once, before the trunk starts, not via rotary embeddings inside
+        // attention. New: ForwardPass._posEmbdTensor (loaded only when the tensor exists) and a
+        // `position` parameter threaded through EmbedTokenInto/EmbedToken and all 8 call sites
+        // (every prefill/decode dispatch path). Disabling RoPE needed no new field at all —
+        // ModelHyperparams.NoRopeLayerStep = 1 makes the EXISTING Llama-4/SmolLM3 periodic-skip
+        // formula ((layer+1) % step != 0) evaluate to "never" for every layer, reusing dispatch
+        // every call site already had. Everything else (LayerNorm-with-bias, fused
+        // attn_qkv.weight/.bias, non-gated biased-GELU FFN) was already generic from
+        // gptneox/falcon. A Q6_K quant tried first diverged at position 5 on only a 0.106-logit
+        // gap — read as ordinary quantization sensitivity for a genuinely small/weak 124M model
+        // (more sensitive than larger checkpoints, not less) and confirmed by re-running against
+        // a near-lossless F16 checkpoint, which matches exactly with no near-tie at all. See
+        // Gpt2GreedyParityTests and docs/01-gguf-model-coverage-plan.md §1q for the receipt.
+        "gpt2",
+        // granitemoe — admitted 2026-08-09, FULL 24-of-24-token exact greedy match, bucket-1
+        // (genuinely Apache-2.0), essentially a free admission. llama_model_granite_moe::graph is
+        // a type alias for llama_model_granite::graph (confirmed in models.h before writing any
+        // code) — the SAME graph as dense Granite (already admitted), which already branches on
+        // n_expert==0 internally. This engine's generic MoE dispatch and the Granite-family scale
+        // block (ResidualScale/EmbeddingScale/LogitScale, isGraniteFamily in ModelGraph.cs) already
+        // explicitly checked arch=="granitemoe" from when the dense receipt was built. Standard
+        // softmax gating, no shared expert, standard GQA — every mechanism this checkpoint
+        // exercises was already correct on the first real attempt (the only failure along the way
+        // was a wrong test assertion, not an engine defect — LogitScale already carries the
+        // reciprocal of the raw metadata value, documented but momentarily forgotten while writing
+        // the test). See GraniteMoeGreedyParityTests and docs/01-gguf-model-coverage-plan.md §1r.
+        "granitemoe",
+        // olmo (v1) — admitted 2026-08-09, FULL 24-of-24-token exact greedy match, bucket-1
+        // (genuinely Apache-2.0, AI2). One genuinely new mechanism: LayerNorm with NEITHER a
+        // learned scale NOR a bias at all — confirmed against olmo.cpp: every build_norm call
+        // passes both weight and bias as NULL, and no attn_norm/ffn_norm/output_norm tensor
+        // exists in the GGUF at all. A third norm shape distinct from weighted LayerNorm-with-bias
+        // (gptneox/falcon/gpt2/starcoder2) and bias-less-but-still-weighted LayerNorm (cohere2). A
+        // missing norm tensor already meant something specific here (OLMo2's "skip normalizing
+        // here entirely, sandwich-normed on the output instead"), so this needed a genuine
+        // arch-string check (ModelHyperparams.UsesUnweightedNorm) to disambiguate from that, not a
+        // generalized tensor-presence rule. Added SimdKernels.PureLayerNorm (mean-subtract +
+        // variance-normalize, no weight/bias parameter) and wired it into RunTrunk's three norm
+        // points ahead of the existing null-DataPtr-means-skip check; PrefillCore's batched norm
+        // steps were NOT taught this third mode, routed to the sequential path instead via a new
+        // unweightedNormUnsupported flag in PrefillDispatch's fallback gate (same pattern
+        // OLMo2/cohere2/Gemma-4 already use for their own PrefillCore gaps). Everything else
+        // (plain MHA, standard interleaved RoPE, SiLU-gated FFN, tied embeddings) was already
+        // generic. Full exact match on the first real attempt. See OlmoGreedyParityTests and
+        // docs/01-gguf-model-coverage-plan.md §1s.
+        "olmo",
+        // starcoder (v1) — admitted 2026-08-09, FULL 23-of-23-token exact greedy match, bucket-2,
+        // near-zero code change. Confirmed against starcoder.cpp before writing any code: SAME
+        // shape as gpt2 (this session's earlier admission) — learned absolute position embeddings
+        // (ggml_get_rows(pos_embd, inp_pos), no RoPE anywhere), LayerNorm-with-bias, fused
+        // attn_qkv.weight/.bias, non-gated biased-GELU FFN. Also exercises MQA (head_count=16,
+        // head_count_kv=1) through the already-generic GQA-parametrized fused-QKV split (first
+        // proven on falcon's identical head_count_kv=1 shape). The only change: extended
+        // ModelGraph.cs's NoRopeLayerStep=1 gate (built for gpt2) from a single-arch check to
+        // arch is "gpt2" or "starcoder". Full exact match on the first real attempt.
+        //
+        // NO AUTOMATED TEST FOR THIS ARCHITECTURE, FOR LICENCE REASONS. Checkpoint:
+        // `bigcode/starcoderbase-1b` (mradermacher GGUF, Q8_0), BigCode OpenRAIL-M — a restricted-
+        // use RAIL license (e.g. malicious-code-generation restrictions), not MIT/Apache-2.0/
+        // BSD/MPL. Transient local download, never vendored, deleted immediately after this
+        // receipt.
+        //
+        // Verification evidence (2026-08-09, starcoderbase-1b Q8_0, llama.cpp b8585-cad2d3884):
+        // prompt "The capital of France is" -> ids [1318, 18926, 432, 45600, 438]. Full 23-of-23
+        // token exact match against the reference continuation, no near-tie, no divergence.
+        //
+        // DO NOT MODIFY THIS ARCHITECTURE'S CODE PATH WITHOUT GOOD REASON — there is no regression
+        // test to catch a mistake.
+        "starcoder",
+        // codeshell — admitted 2026-08-09, FULL 24-of-24-token exact greedy match, bucket-2,
+        // genuinely zero new production code. Confirmed against codeshell.cpp before writing any
+        // test: LayerNorm-with-bias, fused attn_qkv.weight/.bias, non-gated biased-GELU FFN — same
+        // shapes as gptneox/falcon/starcoder — but REAL RoPE (ggml_rope_ext calls present, NEOX
+        // convention per llama_model_rope_type(), and "codeshell" was already in this engine's
+        // isNeoxRope list from an earlier session pass), not gpt2/starcoder's absolute position
+        // embeddings — so it didn't even need the NoRopeLayerStep widening those two used. The
+        // only failure along the way was a wrong test assertion (assumed NORM rope by misreading
+        // llama-model.cpp's rope-type switch; codeshell is genuinely in the NEOX case block), not
+        // an engine defect.
+        //
+        // NO AUTOMATED TEST FOR THIS ARCHITECTURE, FOR LICENCE REASONS. Checkpoint:
+        // `WisdomShell/CodeShell-7B` (mradermacher GGUF, Q4_K_M), custom WisdomShell/CodeShell
+        // license (no SPDX permissive tag found) — not MIT/Apache-2.0/BSD/MPL. Transient local
+        // download, never vendored, deleted immediately after this receipt.
+        //
+        // Verification evidence (2026-08-09, CodeShell-7B Q4_K_M, llama.cpp b8585-cad2d3884):
+        // prompt "The capital of France is" -> ids [46479, 53434, 15979, 48944, 19206, 55391].
+        // Full 24-of-24 token exact match against the reference continuation, no near-tie, no
+        // divergence.
+        //
+        // DO NOT MODIFY THIS ARCHITECTURE'S CODE PATH WITHOUT GOOD REASON — there is no regression
+        // test to catch a mistake.
+        "codeshell",
+        // jais2 — admitted 2026-08-09, FULL 3-of-3-token exact greedy match (including a natural
+        // EOS stop), bucket-2. Confirmed against jais2.cpp before writing any code: LayerNorm-
+        // with-bias, separate (not fused) biased Q/K/V/output projections, and standard NEOX RoPE
+        // (already in this engine's isNeoxRope list) were all already generic. The one genuinely
+        // new piece: non-gated FFN with ReLU-squared activation (max(0,x)^2, LLM_FFN_RELU_SQR),
+        // biased the same way GPT-NeoX's GELU is (up-bias inside the activation, down-bias after)
+        // — added SimdKernels.ReluSqrInPlace and ModelHyperparams.UsesReluSquared
+        // (arch=="jais2"), wired into both DenseFfn and PrefillCore's non-gated-FFN branches
+        // alongside the existing xIELU/GELU dispatch. Also needed a new pre-tokenizer regex
+        // (PreTokenizerPatterns.Jais2, registered under "jais-2") — Llama-3's pattern with the
+        // trailing whitespace alternative replaced by a cascading fixed-length run (512, 256, ...,
+        // 1), ported directly from llama-vocab.cpp's LLAMA_VOCAB_PRE_TYPE_JAIS2 case, verified
+        // against llama-tokenize before writing any forward-pass code. (This is the SAME ReLU²
+        // mechanism built, then fully reverted, for `arcee` earlier this session — arcee turned
+        // out to also need YaRN RoPE scaling, a much bigger unimplemented piece, so it was
+        // abandoned; the kernel design carried over cleanly to jais2, which needed nothing else.)
+        //
+        // NO AUTOMATED TEST FOR THIS ARCHITECTURE, FOR LICENCE REASONS. Checkpoint:
+        // `yoriis/JAIS2-IT-0.3` (a third-party fine-tune of `inceptionai/Jais-2-8B-Chat`, itself
+        // Apache-2.0 but gated — requires accepting terms via the HF web UI, which this session
+        // cannot do programmatically), via `mradermacher/JAIS2-IT-0.3-GGUF`, Q4_K_M — the
+        // fine-tune's own license isn't independently declared, so treated as bucket-2 rather than
+        // assumed to inherit the base's Apache-2.0. Transient local download, never vendored,
+        // deleted immediately after this receipt.
+        //
+        // Verification evidence (2026-08-09, JAIS2-IT-0.3 Q4_K_M, llama.cpp b8585-cad2d3884):
+        // prompt "The capital of France is" -> ids [1947, 9748, 1267, 13517, 1358]. Greedy
+        // completion stops naturally at EOS after " Paris." (3 tokens including EOS, id 150024) —
+        // this engine reproduces the identical 3-token sequence exactly, including landing on EOS
+        // at the same position (confirming the full logit ranking is correct, not just an
+        // argmax-until-something coincidence). A longer receipt was attempted via
+        // `--ignore-eos`, but that flag suppresses EOS in llama.cpp's SAMPLER, not the forward
+        // pass — comparing against it produced a false "divergence" at the exact position this
+        // engine's un-suppressed greedy correctly picks EOS, matching the real (non-suppressed)
+        // reference; the 3-token receipt is the correct evidence.
+        //
+        // DO NOT MODIFY THIS ARCHITECTURE'S CODE PATH WITHOUT GOOD REASON — there is no regression
+        // test to catch a mistake.
+        "jais2",
+        // maincoder — admitted 2026-08-09, FULL 24-of-24-token exact greedy match, bucket-1
+        // (genuinely Apache-2.0), zero new code. Confirmed against maincoder.cpp before writing
+        // any code: a literal Qwen3-shaped architecture — RMSNorm, biasless GQA with weighted
+        // per-head QK-norm before RoPE (this engine's default timing), standard SiLU-gated FFN,
+        // standard interleaved (non-NEOX) RoPE (confirmed via llama_model_rope_type() returning
+        // NORM for LLM_ARCH_MAINCODER, matching the default). tokenizer.ggml.pre=qwen2 with real
+        // merges — already covered. Every mechanism this checkpoint exercises predates this
+        // session. See MaincoderGreedyParityTests and docs/01-gguf-model-coverage-plan.md §1w.
+        "maincoder",
+        "exaone4",
     };
     // minicpm — NOT admitted. The forward-pass scale trio (reusing Granite's graph, see
     // GraniteGreedyParityTests) is implemented and presumed correct, but MiniCPM4-0.5B — the only

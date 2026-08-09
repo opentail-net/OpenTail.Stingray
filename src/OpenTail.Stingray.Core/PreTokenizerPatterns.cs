@@ -52,6 +52,14 @@ public static partial class PreTokenizerPatterns
     private static partial Regex Llama3();
 
     /// <summary>
+    /// JAIS-2. Identical to Llama-3 except the trailing whitespace-run alternative cascades
+    /// through descending fixed lengths (512, 256, ..., 1) before falling to a single space —
+    /// an optimization for text with very long whitespace runs (heavy code indentation).
+    /// </summary>
+    [GeneratedRegex("""(?:'[sS]|'[tT]|'[rR][eE]|'[vV][eE]|'[mM]|'[lL][lL]|'[dD])|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}{1,3}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s{512}(?!\S)|\s{256}(?!\S)|\s{128}(?!\S)|\s{64}(?!\S)|\s{32}(?!\S)|\s{16}(?!\S)|\s{8}(?!\S)|\s{4}(?!\S)|\s{1,2}(?!\S)|\s{1}""")]
+    private static partial Regex Jais2();
+
+    /// <summary>
     /// Qwen-2 family (which is what Qwen3 GGUFs declare). As Llama-3 but with single digits.
     /// </summary>
     [GeneratedRegex("""(?:'[sS]|'[tT]|'[rR][eE]|'[vV][eE]|'[mM]|'[lL][lL]|'[dD])|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+""")]
@@ -69,6 +77,22 @@ public static partial class PreTokenizerPatterns
     /// </summary>
     [GeneratedRegex("""[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]*[\p{Ll}\p{Lm}\p{Lo}\p{M}]+|[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]+[\p{Ll}\p{Lm}\p{Lo}\p{M}]*|\p{N}| ?[^\s\p{L}\p{N}]+[\r\n/]*|\s*[\r\n]+|\s+(?!\S)|\s+""")]
     private static partial Regex Tekken();
+
+    /// <summary>1-3 digit numbers. First stage of the Hunyuan-Dense/DeepSeek3/JoyAI cascade.</summary>
+    [GeneratedRegex("""\p{N}{1,3}""")]
+    private static partial Regex DigitRun3();
+
+    /// <summary>CJK block (Han + Hiragana + Katakana). Second stage of the same cascade.</summary>
+    [GeneratedRegex("""[一-龥぀-ゟ゠-ヿ]+""")]
+    private static partial Regex Cjk();
+
+    /// <summary>
+    /// Hunyuan-Dense (distinct from the plain <c>hunyuan</c>/Qwen-2 pre-type above), DeepSeek3-LLM,
+    /// and JoyAI-LLM share this third stage. Punctuation-then-Latin, then letters/marks, then
+    /// punctuation/symbol runs, then whitespace.
+    /// </summary>
+    [GeneratedRegex("""[!"#$%&'()*+,\-./:;<=>?@\[\\\]^_`{|}~][A-Za-z]+|[^\r\n\p{L}\p{P}\p{S}]?[\p{L}\p{M}]+| ?[\p{P}\p{S}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+""")]
+    private static partial Regex HunyuanDenseTail();
 
     // --- Registry --------------------------------------------------------------------------
 
@@ -88,7 +112,11 @@ public static partial class PreTokenizerPatterns
     {
         switch (pre)
         {
-            // llama.cpp: LLAMA_VOCAB_PRE_TYPE_GPT2 and the cases folded onto it.
+            // llama.cpp: LLAMA_VOCAB_PRE_TYPE_GPT2 and the cases folded onto it. exaone4 is a
+            // deliberate llama.cpp choice, not an oversight — confirmed against llama-vocab.cpp:
+            // tokenizer_pre=="exaone4" maps to the plain GPT2 pre_type, distinct from "exaone"
+            // (already covered below under the SmolLM/digit-split group) and "exaone-moe" (its
+            // own dedicated pre_type, not yet ported).
             case null or "":
             case "gpt-2":
             case "mpt":
@@ -96,6 +124,7 @@ public static partial class PreTokenizerPatterns
             case "jais":
             case "trillion":
             case "granite-docling":
+            case "exaone4":
                 patterns = [Gpt2()];
                 return true;
 
@@ -119,6 +148,10 @@ public static partial class PreTokenizerPatterns
                 patterns = [Llama3()];
                 return true;
 
+            case "jais-2":
+                patterns = [Jais2()];
+                return true;
+
             case "qwen2":
             case "stablelm2":
             case "hunyuan":
@@ -132,6 +165,15 @@ public static partial class PreTokenizerPatterns
 
             case "tekken":
                 patterns = [Tekken()];
+                return true;
+
+            // llama.cpp: LLAMA_VOCAB_PRE_TYPE_HUNYUAN_DENSE and the cases folded onto it
+            // (DEEPSEEK3_LLM, JOYAI_LLM) — distinct from plain "hunyuan" above, which uses the
+            // Qwen-2 cascade instead.
+            case "hunyuan-dense":
+            case "deepseek3-llm":
+            case "joyai-llm":
+                patterns = [DigitRun3(), Cjk(), HunyuanDenseTail()];
                 return true;
 
             default:
@@ -185,11 +227,13 @@ public static partial class PreTokenizerPatterns
         Justification = "Read once by diagnostics and tests, not on a hot path.")]
     public static IReadOnlyList<string> KnownPreTypes { get; } =
     [
-        "gpt-2", "mpt", "olmo", "jais", "trillion", "granite-docling",
+        "gpt-2", "mpt", "olmo", "jais", "trillion", "granite-docling", "exaone4",
         "smollm", "starcoder", "refact", "command-r", "codeshell", "exaone", "minerva-7b", "mellum2",
         "llama3", "llama-bpe", "dbrx", "smaug-bpe",
+        "jais-2",
         "qwen2", "stablelm2", "hunyuan", "solar-open",
         "qwen35",
         "tekken",
+        "hunyuan-dense", "deepseek3-llm", "joyai-llm",
     ];
 }

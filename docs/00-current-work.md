@@ -267,9 +267,84 @@ No test persists in the tree; the verification evidence (prompt tokens, referenc
 recorded as a comment on the `"exaone"` allowlist entry in `ModelCompatibility.cs` and in
 [01-gguf-model-coverage-plan.md](01-gguf-model-coverage-plan.md) §1k.
 
+**`internlm2` re-checked 2026-08-09, still NOT admitted — turned out to be blocked on the TOKENIZER
+axis, not architecture or license.** The 2026-08-08 assessment said "already fully supported, zero
+tokenizer work" based on `tokenizer.ggml.model: llama`, but didn't check for a merges array — this
+checkpoint has `tokenizer.ggml.scores` with NO merges at all, the same Unigram-LM SentencePiece gap
+already blocking `minicpm`. Measured directly: `Encode("The capital of France is")` fell through to
+one-token-per-character output instead of the reference ids. Architecture code is still presumed
+correct (confirmed against `internlm2.cpp`: identical shape to `exaone`) but unverifiable without a
+working Unigram-LM tokenizer — fixing that shared gap would unlock both architectures at once.
+
+**ARCHITECTURE ADMITTED — `starcoder2`, 2026-08-09, full 24-of-24-token exact match — second
+bucket-2 admission, and it found a real bug.** Reuses `gptneox`/`falcon`'s LayerNorm-with-bias +
+non-gated GELU FFN infrastructure exactly, but with the ORDINARY sequential residual, not their
+parallel 3-way sum. Confirmed a latent bug flagged (but not yet triggered) back in the `gptneox`
+receipt: `RunTrunk`'s sequential FFN pre-norm still called `FastRmsNorm` instead of the bias-aware
+`FastNorm`, because no prior architecture combined `HasNormBias=true` with sequential (non-parallel)
+residual — `starcoder2` was the first. Symptom was unambiguous: the engine's own prefill and decode
+disagreed with EACH OTHER (maxDiff 30.4, argmax mismatch), not just with llama.cpp — a structural-bug
+signature, not numerical noise. Fixed, regression-checked, clean. No test persists (BigCode
+OpenRAIL-M license); evidence recorded on the `"starcoder2"` allowlist entry and in
+[01-gguf-model-coverage-plan.md](01-gguf-model-coverage-plan.md) §1l.
+
+**`mistral` (classic Mistral-7B/Mixtral family) confirmed already fully covered, 2026-08-09 — zero
+new work.** These checkpoints declare `general.architecture: llama`, already admitted. The newer
+`mistral3`/`mistral4` arch strings are separate (likely vision-multimodal Pixtral-family variants),
+not assessed.
+
+**ARCHITECTURE ADMITTED — `cohere2` (Command-R7B), 2026-08-09, 1-token exact match plus a
+documented 0.0655-logit near-tie — the tightest accepted this session, and three genuinely new
+mechanisms built.** Confirmed against `cohere2.cpp` before writing code: (1) LayerNorm WITHOUT a
+learned bias (`SimdKernels.LayerNorm`'s bias param is now null-safe; new
+`ModelHyperparams.UsesLayerNorm` decouples "use LayerNorm math" from `HasNormBias`); (2) generic
+(non-Gemma4-gated) sliding-window attention, 3 local + 1 global layers, added to `ModelGraph.cs`
+using the exact formula from `llama-hparams.cpp`'s `set_swa_pattern`; (3) RoPE applied ONLY on SWA
+layers — global layers get none at all, confirmed by `cohere2.cpp` having no `else` branch on its
+`if (is_swa)` rope call, the opposite rule from Llama-4/SmolLM3's period-based NoPE. Also found:
+`PrefillCoreAttention` has no sliding-window-masking parameter at all (only ever needed by Gemma 4,
+which is always routed away before reaching it) — fixed by widening `PrefillDispatch`'s sequential
+fallback to cover any SWA model without per-layer head dims, reusing `RunTrunk`'s already-correct
+`Attention()` windowing instead of teaching `PrefillCore` SWA masking. `logit_scale` also uses the
+OPPOSITE convention from Granite's (direct multiply, not reciprocal). No test persists (CC-BY-NC-4.0
+license); evidence recorded on the `"cohere2"` allowlist entry and in
+[01-gguf-model-coverage-plan.md](01-gguf-model-coverage-plan.md) §1m.
+
+**`ernie4_5` (dense) assessed 2026-08-09 — architecturally trivial AND genuinely Apache-2.0
+(bucket-1, not even bucket-2!), but blocked on the SAME Unigram-LM tokenizer gap as `minicpm`/
+`internlm2`.** Confirmed against `ernie4-5.cpp`: identical shape to `exaone`, zero new code needed.
+`baidu/ERNIE-4.5-0.3B-PT` (386 MB, the smallest checkpoint used all session) has
+`tokenizer.ggml.scores` with no merges array — confirmed the practical symptom directly
+(character-fragment tokenization, same failure signature as `internlm2`). **Unigram-LM
+SentencePiece now confirmed blocking THREE architectures** — the highest-leverage remaining
+tokenizer-axis gap in the plan, one implementation away from three architecture receipts. Not
+attempted (tokenizer axis, not architecture — outside the standing priority), but flagged clearly
+for whenever that priority shifts.
+
+**ARCHITECTURE ADMITTED — `glm4` (non-multimodal), 2026-08-09, 14-of-24-token exact prefix then a
+0.0214-logit near-tie — the deepest/tightest near-tie accepted this session, bucket-1 (genuinely
+MIT), two real defects found and fixed.** Much smaller in scope than §1c's "conditional RoPE"
+estimate: that MRoPE path only applies to the multimodal branch (confirmed against `glm4.cpp`); a
+text-only checkpoint needs ordinary RoPE plus a fused gate+up FFN tensor (`ffn_up` at double
+width, no separate `ffn_gate` — confirmed via `ggml_vec_swiglu_f32`'s actual math: first half=gate,
+second half=up), split by byte offset the same way GPT-NeoX's fused QKV already is. Two real
+defects: (1) the fused-tensor split gave each slice the FULL tensor's `GgufTensorInfo` instead of a
+correctly-sized one, and `PrefaultWeights` sizes its read range from that Info — the second slice's
+prefault range ran off the end of the mmap for the last layer, measured directly as
+`AccessViolationException`, and fixed retroactively for the pre-existing (never-triggered but
+identical) GPT-NeoX/Falcon fused-QKV case too; (2) partial RoPE had no implementation at all for the
+"normal"/non-NEOX rotation convention this checkpoint uses (`rope.dimension_count=64` of
+headDim=128) — only the NEOX variant existed — fixed with a new `SimdKernels.ApplyRoPECachedPartial`
+kernel. Also caught a wrong checkpoint first try (`glm-4-9b-chat-GGUF` declares the legacy `chatglm`
+architecture, not `glm4`) before it wasted the receipt. Unlike every other new-kernel receipt this
+session, the parity test PERSISTS (`Glm4GreedyParityTests.cs`) since the checkpoint used
+(`THUDM/GLM-4-9B-0414`) is genuinely MIT, not registration-gated like the original GLM-4-9B-Chat
+family. See [01-gguf-model-coverage-plan.md](01-gguf-model-coverage-plan.md) §1n.
+
 **Architecture queue swept for remaining candidates, 2026-08-09 — checkpoint license findings from
-before the policy change still stand as fact, just no longer as a hard blocker.**
-`glm4`/`glm4moe`'s checkpoint (registration-gated, PRC jurisdiction), `deepseek2`'s (custom
+before the policy change still stand as fact for the checkpoints they were about, just no longer as
+a hard blocker; `glm4` itself turned out to have a genuinely MIT checkpoint anyway (see above).**
+`glm4moe`'s checkpoint status is unassessed, `deepseek2`'s (custom
 use-restricted license), and `minicpm3`'s (registration-gated weight license despite Apache-2.0
 code) are all still not MIT/Apache-2.0/BSD/MPL — but under the new policy that no longer rules the
 architectures out, only means any future receipt for them would be bucket-2 (verify once, no
@@ -285,6 +360,223 @@ a genuinely new ternary packed-weight format, two independent blockers. See
 [01-gguf-model-coverage-plan.md](01-gguf-model-coverage-plan.md) §1c item 6 for the full findings.
 Remaining queue: `mamba`/`jamba`/`rwkv` (recurrent, a different forward-pass family entirely —
 biggest lift of anything in the plan) and re-checking `bitnet`'s own license (not yet done).
+
+**MLA "biggest single lift" claim VERIFIED against real source, 2026-08-09 — confirmed, not
+revised.** Read `examples/llama.cpp/llama.cpp/src/models/deepseek2.cpp` (721 lines) in full,
+checking whether this session's repeated pattern of "initial estimate was too pessimistic" also
+applied here. It does not: five genuinely new mechanisms confirmed (query nope/rope split with an
+absorption matmul into the compressed latent space, post-attention output decompression via a
+`wv_b` weight the attention op has no parameter for today, a compressed-latent KV cache page
+layout, a DeepSeek-specific YaRN `mscale` correction, and the leading-dense-block MoE toggle also
+needed independently by `dots1`). Still deprioritized behind smaller wins; see §1f item 4 for the
+full breakdown.
+
+**ARCHITECTURE ADMITTED — `stablelm`, 2026-08-09, 4-of-24-token exact prefix then a 0.0207-logit
+near-tie on a near-lossless Q8_0 checkpoint, bucket-2, smallest code change of any new-kernel
+architecture this session.** LayerNorm-with-bias, non-gated-FFN plumbing, and NEOX partial rope
+were all already generic (built for `gptneox`/`falcon`/`glm4`), so `stablelm-2-zephyr-1_6b` needed
+none of them as new work. The one real finding: this checkpoint's GGUF carries a stale
+`stablelm.use_parallel_residual=true` metadata key that `stablelm.cpp`'s graph builder never
+actually reads — the real sequential-vs-parallel choice is made by branching on whether the
+per-layer `ffn_norm` TENSOR exists, and this checkpoint has real `ffn_norm` tensors on every layer
+(genuinely sequential, despite the metadata saying true). Reusing the pre-existing
+`GetBool(metadata, "{arch}.use_parallel_residual")` fallback (written for `gptneox`, where the key
+genuinely is consulted) would have silently taken the wrong branch — fixed by deriving
+`UseParallelResidual` from `blk.0.ffn_norm.weight` tensor presence for `stablelm` specifically.
+Bucket-2 (Stability AI "other" license, non-commercial/gated) — no persisted test; evidence
+recorded on the `"stablelm"` allowlist entry and in
+[01-gguf-model-coverage-plan.md](01-gguf-model-coverage-plan.md) §1o.
+
+**ARCHITECTURE ADMITTED — `hunyuan-dense`, 2026-08-09, FULL 24-of-24-token exact greedy match
+(deterministic, on a degenerate un-templated-prompt reference), bucket-2.** The only family from the
+user's flagship-family list with no prior attempt. `llama_model_hunyuan_dense` turned out to be a
+5-line stub that inherits its entire `load_arch_hparams`/`load_arch_tensors`/graph wholesale from
+`llama_model_hunyuan_vl` (confirmed in `models.h` first) — an ordinary RMSNorm pre-norm trunk,
+standard GQA, SiLU-gated FFN, no MoE, and `use_mrope()` never triggers for a text-only dense
+checkpoint (no `rope.dimension_sections` key). One genuinely new mechanism: weighted QK-norm applied
+AFTER RoPE, not before — this engine had Qwen3's "weighted before RoPE" and Llama-4's "unweighted L2
+after RoPE" but no "weighted after RoPE" combination; added `ModelHyperparams.QkNormAfterRope`,
+wired into `PrefillCore`/`RunTrunk` only (the paths a plain receipt exercises — `PrefillCoreTq`/
+`BatchVerify`/`BatchForwardMulti` still apply the Qwen3 timing unconditionally and would need the
+same fix before running this architecture). Also needed a new tokenizer pre-type:
+`tokenizer.ggml.pre=hunyuan-dense` is a DISTINCT llama.cpp pre-type from the plain `"hunyuan"`
+already in this engine's table (which is actually the Qwen-2 cascade) — added a 3-stage cascade
+(`PreTokenizerPatterns.DigitRun3`/`Cjk`/`HunyuanDenseTail`) shared with `deepseek3-llm`/`joyai-llm`,
+verified against `llama-tokenize` before writing any forward-pass code. The reference completion
+itself degenerates (raw, un-templated prompt against an Instruct-tuned checkpoint) to a repeated
+token — this engine reproduces the identical repeated sequence for all 24 positions, still valid
+token-for-token parity evidence. Regression-checked against the full `Tests.ForwardPass` suite (995
+passes, 2 failures, both confirmed unrelated: `PrefillWithCache_Chunked_MatchesFull` reproduces
+identically on unmodified `HEAD` via `git stash` [FP-accumulation-order sensitivity, unrelated
+SmolLM2 fixture], `ConstrainedAndUnconstrained_Coexist_PerSequenceMasking` passed 3/3 in isolation
+[load-sensitive concurrency flake]) and `Tests.Core` (480 passes, 0 failures — the new pre-tokenizer
+cascade doesn't disturb any existing pre-type). Bucket-2 (Tencent Hunyuan Community License) — no persisted test; evidence
+recorded on the `"hunyuan-dense"` allowlist entry and in
+[01-gguf-model-coverage-plan.md](01-gguf-model-coverage-plan.md) §1p.
+
+**ARCHITECTURE ADMITTED — `gpt2`, 2026-08-09, FULL 22-of-22-token exact greedy match, bucket-1
+(genuinely MIT).** With the flagship-family list fully worked through, picked by scanning every
+`examples/llama.cpp/llama.cpp/src/models/*.cpp` file by line count and taking the smallest genuinely
+unassessed candidate (`gpt2.cpp`, 148 lines). The first architecture this session — this whole
+plan's entire scope until now — with NO RoPE at all: GPT-2 encodes position via a learned absolute
+position-embedding table (`position_embd.weight`) added to the token embedding once, before the
+trunk starts, not via rotary embeddings inside attention. This engine had zero prior support for
+that. Added `ForwardPass._posEmbdTensor` (loaded only when the tensor exists) and threaded a
+`position` parameter through `EmbedTokenInto`/`EmbedToken` and all 8 of their call sites (every
+prefill/decode dispatch path) — mechanical plumbing, since every call site already had the position
+value in scope. Disabling RoPE needed NO new field at all: `ModelHyperparams.NoRopeLayerStep = 1`
+makes the EXISTING Llama-4/SmolLM3 periodic-skip formula (`(layer+1) % step != 0`) evaluate to
+"never" for every layer, reusing dispatch every call site already had. Everything else
+(LayerNorm-with-bias, fused `attn_qkv.weight`/`.bias`, non-gated biased-GELU FFN) was already
+generic from `gptneox`/`falcon` — zero new code. A Q6_K quant tried first diverged at position 5 on
+only a 0.106-logit gap; rather than accept a near-tie on the very first receipt for a brand-new
+mechanism, re-ran against a near-lossless F16 checkpoint of the same base model instead, which
+matched FULLY with no near-tie at all — confirming the quantization explanation rather than assuming
+it. Checkpoint: `openai-community/gpt2` (124M), genuinely MIT (confirmed via the HF API's
+`cardData.license`). Permanent test (bucket-1) — `Gpt2GreedyParityTests.cs` — and evidence also
+recorded on the `"gpt2"` allowlist entry and in
+[01-gguf-model-coverage-plan.md](01-gguf-model-coverage-plan.md) §1q.
+
+**ARCHITECTURE ADMITTED — `granitemoe`, 2026-08-09, FULL 24-of-24-token exact greedy match,
+bucket-1, essentially a free admission.** `llama_model_granite_moe::graph` is a type alias for
+`llama_model_granite::graph` (confirmed in `models.h` before writing any code) — the SAME graph as
+dense Granite (already admitted 2026-08-08). This engine's generic MoE dispatch and the
+Granite-family scale block (`isGraniteFamily` in `ModelGraph.cs`) already explicitly checked
+`arch=="granitemoe"` from when the dense receipt was built, but had never been exercised until now.
+Standard softmax gating, no shared expert, standard GQA — every mechanism this checkpoint exercises
+was already correct; the only failure along the way was a wrong test assertion (`LogitScale`
+already carries the reciprocal of the raw metadata value, momentarily forgotten), not an engine
+defect. Checkpoint: `ibm-granite/granite-3.0-1b-a400m-instruct` (1B total/400M active MoE),
+genuinely Apache-2.0. Permanent test (bucket-1) — `GraniteMoeGreedyParityTests.cs` — and evidence
+also recorded on the `"granitemoe"` allowlist entry and in
+[01-gguf-model-coverage-plan.md](01-gguf-model-coverage-plan.md) §1r.
+
+**ARCHITECTURE ADMITTED — `olmo` (v1), 2026-08-09, FULL 24-of-24-token exact greedy match on the
+first real attempt, bucket-1 (genuinely Apache-2.0, AI2).** Predecessor to the already-admitted
+`olmo2`/`olmoe`. One genuinely new mechanism: LayerNorm with NEITHER a learned scale NOR a bias at
+all (confirmed against `olmo.cpp`: every `build_norm` call passes both weight and bias as `NULL`,
+no `attn_norm`/`ffn_norm`/`output_norm` tensor exists in the GGUF at all) — a THIRD norm shape
+distinct from weighted LayerNorm-with-bias (`gptneox`/`falcon`/`gpt2`) and bias-less-but-weighted
+LayerNorm (`cohere2`). A missing norm tensor already meant something else here (`olmo2`'s "skip
+normalizing entirely, sandwich-normed on the output instead"), so this needed a genuine arch-string
+check (`ModelHyperparams.UsesUnweightedNorm`) rather than a generalized tensor-presence rule. Added
+`SimdKernels.PureLayerNorm` and wired it into `RunTrunk`'s three norm points ahead of the existing
+null-DataPtr-means-skip check; `PrefillCore`'s batched norm steps were not taught this third mode,
+routed to the sequential path instead via a new `unweightedNormUnsupported` flag in
+`PrefillDispatch`'s fallback gate (same established pattern `olmo2`/`cohere2`/Gemma-4 already use).
+Everything else (plain MHA, standard RoPE, SiLU-gated FFN, tied embeddings) was already generic.
+Checkpoint: `allenai/OLMo-1B-hf` (1.25 GB Q8_0). Permanent test (bucket-1) —
+`OlmoGreedyParityTests.cs` — and evidence also recorded on the `"olmo"` allowlist entry and in
+[01-gguf-model-coverage-plan.md](01-gguf-model-coverage-plan.md) §1s.
+
+**ARCHITECTURE ADMITTED — `starcoder` (v1), 2026-08-09, FULL 23-of-23-token exact greedy match on
+the first real attempt, bucket-2, near-zero code change.** Noticed while building `gpt2` that
+`starcoder.cpp`'s graph is structurally identical — same absolute position embeddings, LayerNorm-
+with-bias, fused `attn_qkv.weight`/`.bias`, non-gated biased-GELU FFN. The only change needed:
+widening `gpt2`'s `NoRopeLayerStep=1` gate from a single-arch check to `arch is "gpt2" or
+"starcoder"`. Also exercises MQA (`head_count_kv=1`) through the already-generic fused-QKV split
+(first proven on `falcon`). Checkpoint: `bigcode/starcoderbase-1b` (BigCode OpenRAIL-M — restricted
+use, not permissive) — bucket-2, no persisted test; evidence recorded on the `"starcoder"`
+allowlist entry and in [01-gguf-model-coverage-plan.md](01-gguf-model-coverage-plan.md) §1t.
+
+**`xverse` TRIED and BLOCKED, 2026-08-09 — a genuine tokenizer-axis defect, NOT an architecture
+problem.** `xverse.cpp` is a literal plain-llama clone (zero new code needed), but the checkpoint's
+GGUF has NEITHER `tokenizer.ggml.merges` NOR `tokenizer.ggml.scores`, despite declaring
+`tokenizer.ggml.model=llama`. Root-caused: llama.cpp's own SPM loader defaults every score to
+`0.0f` when the array is absent and still tokenizes correctly (measured: a sensible 7-token
+result); this engine's SPM path produces dramatically fragmented (near byte-level) output on the
+same input. A THIRD distinct tokenizer-axis gap, separate from the Unigram-LM issue blocking
+`minicpm`/`internlm2`/`ernie4_5` — likely a smaller, more contained fix (an existing code path
+mishandling absent scores, not a whole unimplemented algorithm). Not investigated further per the
+standing architecture-first priority; GGUF deleted, allowlist entry reverted. See
+[01-gguf-model-coverage-plan.md](01-gguf-model-coverage-plan.md) for the full finding.
+
+**ARCHITECTURE ADMITTED — `codeshell`, 2026-08-09, FULL 24-of-24-token exact greedy match,
+bucket-2, genuinely zero new production code.** Same LayerNorm-with-bias/fused-QKV/non-gated-GELU-
+FFN shape as `gptneox`/`falcon`/`starcoder`, but uses REAL RoPE (NEOX convention, already in this
+engine's `isNeoxRope` list from an earlier session pass) rather than `gpt2`/`starcoder`'s absolute
+position embeddings — needed neither the `NoRopeLayerStep` widening nor any new RoPE work. The only
+failure along the way was a wrong test assertion (assumed NORM rope, codeshell is genuinely NEOX),
+not an engine defect — same "test bug, not engine bug" pattern as `granitemoe`. Checkpoint:
+`WisdomShell/CodeShell-7B` (custom license, not permissive) — bucket-2, no persisted test; evidence
+recorded on the `"codeshell"` allowlist entry and in
+[01-gguf-model-coverage-plan.md](01-gguf-model-coverage-plan.md) §1u.
+
+**`baichuan`/`orion` CHECKED and BLOCKED, 2026-08-09 — same Unigram-LM tokenizer gap as
+`minicpm`/`internlm2`/`ernie4_5`.** Checked via an HTTP range-request partial download (first 8 MB
+only, enough for the metadata section) instead of pulling either multi-GB checkpoint in full — both
+declare `tokenizer.ggml.scores` with no `merges` key. Architecture side was never the blocker
+(`baichuan`'s 7B variant is a literal zero-code plain-llama clone; `orion` needed only a small new
+LayerNorm-with-bias + gated-SiLU-FFN combination). Neither downloaded in full.
+
+**`arcee` CHECKED and BLOCKED, 2026-08-09 — YaRN RoPE scaling, a substantial unimplemented
+mechanism, not the "easiest" item it first looked like.** Built and then FULLY REVERTED a ReLU²
+activation kernel + `ModelHyperparams.UsesReluSquared` + both FFN call-site wirings once
+`arcee-ai/AFM-4.5B`'s real metadata showed `rope.scaling.type=yarn` (factor 20, confirmed on both
+the Instruct and Base releases via the same partial-download trick) — this engine has no YaRN
+implementation at all (NTK-by-parts frequency interpolation + an attention/mscale factor,
+comparable in complexity to the YaRN piece already flagged in MLA's scope), and it affects every
+position, not just long-context generation, so even a short greedy-parity probe would exercise the
+wrong math. Reverted completely (confirmed via grep) rather than leave inert code for an
+architecture never added to the allowlist. Both checkpoints deleted. See
+[01-gguf-model-coverage-plan.md](01-gguf-model-coverage-plan.md) for the full finding and the
+ReLU² design notes, kept so a future YaRN implementation doesn't need to re-derive them.
+
+**ARCHITECTURE ADMITTED — `jais2`, 2026-08-09, FULL 3-of-3-token exact greedy match (including a
+natural EOS stop), bucket-2 — the `arcee` ReLU² work found a real home.** LayerNorm-with-bias,
+separate biased Q/K/V/output projections, and standard NEOX RoPE were all already generic. The one
+new piece — non-gated FFN with ReLU-squared activation — is the EXACT mechanism reverted for
+`arcee` earlier this session (`arcee` also needed YaRN, `jais2` needs nothing else new), so the
+kernel design carried over cleanly: `SimdKernels.ReluSqrInPlace` + `ModelHyperparams.
+UsesReluSquared`, wired into both `DenseFfn` and `PrefillCore`'s non-gated-FFN branches. Also
+needed a new pre-tokenizer regex (`PreTokenizerPatterns.Jais2`, registered under `"jais-2"`) —
+Llama-3's pattern with the trailing whitespace alternative replaced by a cascading fixed-length run
+(512, 256, ..., 1), ported directly from `llama-vocab.cpp`. Checkpoint: `yoriis/JAIS2-IT-0.3` (a
+third-party fine-tune of the gated `inceptionai/Jais-2-8B-Chat`) — bucket-2, no persisted test;
+evidence recorded on the `"jais2"` allowlist entry and in
+[01-gguf-model-coverage-plan.md](01-gguf-model-coverage-plan.md) §1v.
+
+**`plamo3` CHECKED and BLOCKED, 2026-08-09 — a FOURTH distinct tokenizer-axis gap, not an
+architecture problem.** `plamo3.cpp` needed only one real architecture-side piece (cohere2-style
+scalar-period SWA combined with Gemma-4-style dual-frequency RoPE, since PLaMo-3 runs RoPE on
+every layer at two different bases rather than skipping it on global layers like cohere2) — built,
+then reverted once `tokenizer.ggml.model=plamo2` was found: a genuinely distinct llama.cpp vocab
+TYPE (`LLAMA_VOCAB_TYPE_PLAMO2`), not a pre-type variant within SPM or BPE. This engine has no
+support for it at all — falls through to byte-BPE with no merges array, the same fragmentation
+signature as `xverse`/`baichuan`/`orion` but from a different root cause. Reverted the
+`ModelGraph.cs` SWA/RoPE work completely (confirmed via grep) rather than leave it unverified and
+unreachable, matching `arcee`'s precedent. Checkpoint deleted without ever being tested. See
+[01-gguf-model-coverage-plan.md](01-gguf-model-coverage-plan.md) for the full finding and the
+architecture-side design, kept so a future PLaMo2-tokenizer implementation doesn't need to
+re-derive it.
+
+**ARCHITECTURE ADMITTED — `maincoder`, 2026-08-09, FULL 24-of-24-token exact greedy match,
+bucket-1, genuinely zero new code.** A literal Qwen3-shaped architecture — RMSNorm, biasless GQA
+with weighted per-head QK-norm before RoPE, standard SiLU-gated FFN, standard interleaved RoPE —
+confirmed against `maincoder.cpp` before writing any code. `tokenizer.ggml.pre=qwen2` already
+covered. Picked after `talkie.cpp` (checked first) turned out to need an asymmetric QK-norm,
+unweighted RMSNorm everywhere, and a novel embedding-skip residual topology, on top of only a 13B
+checkpoint existing — deprioritized in favor of `maincoder`'s much smaller lift and genuinely small
+1B checkpoint. Checkpoint: `Maincode/Maincoder-1B` (1.1 GB Q8_0), genuinely Apache-2.0. Permanent
+test (bucket-1) — `MaincoderGreedyParityTests.cs` — and evidence also recorded on the
+`"maincoder"` allowlist entry and in
+[01-gguf-model-coverage-plan.md](01-gguf-model-coverage-plan.md) §1w.
+
+**`nanbeige` CHECKED and BLOCKED, 2026-08-09 — two independent problems, found only after the
+architecture work was already built and compiled clean.** Needed a genuinely new mechanism —
+Universal-Transformer-style "weight looping" (`num_loops=2` on the real checkpoint, physical
+layers reused with a periodic `output_norm` insertion) — built via a clean `LoopedTensorSource :
+IModelTensorSource` decorator that transparently rewrites `blk.{i}...` lookups for looped layers,
+letting `ForwardPass`'s huge per-layer constructor loop stay completely unchanged (avoided a much
+more invasive mechanical rewrite of dozens of call sites). Blocked on: (1) the SAME Unigram-LM
+tokenizer gap already blocking `minicpm`/`internlm2`/`ernie4_5`/`baichuan`/`orion` (now six
+architectures), and (2) independently, this session's local `tools/llama.cpp` reference binary
+doesn't even recognize `nanbeige` as an architecture — the source tree read from is newer than the
+compiled binary, so no reference exists at all right now regardless of the tokenizer. Reverted
+completely (confirmed via grep), matching `arcee`/`plamo3`'s precedent. Checkpoint deleted without
+ever being verified. See [01-gguf-model-coverage-plan.md](01-gguf-model-coverage-plan.md) for the
+full finding and the `LoopedTensorSource` design, kept as the pattern for any future
+weight-looping architecture once both blockers clear.
 
 **New-kernel plan drafted, 2026-08-08 — design only except items 3, 1, and now falcon
 (Apertus/xIELU, GPT-NeoX, Falcon), all built.** Assessed the six

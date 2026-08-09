@@ -6133,15 +6133,20 @@ public static unsafe class SimdKernels
     }
 
     /// <summary>
-    /// Layer normalization with learned scale and bias:
-    /// <c>((x - mean) / sqrt(variance + eps)) * weight + bias</c>, where variance is the
+    /// Layer normalization with learned scale and optional bias:
+    /// <c>((x - mean) / sqrt(variance + eps)) * weight [+ bias]</c>, where variance is the
     /// population (divide-by-N, not N-1) variance — matches PyTorch's <c>nn.LayerNorm</c> and
     /// ggml's <c>ggml_compute_forward_norm_f32</c>.
     ///
-    /// Scalar by design: this is a correctness-first path for GPT-NeoX/Pythia, whose LayerNorm
-    /// differs from the RMSNorm kernels above by mean-subtraction and the learned bias. Safe for
-    /// in-place use (output == input) since both reduction passes complete before any element is
-    /// written.
+    /// <paramref name="bias"/> may be null: llama.cpp's generic <c>build_norm</c> applies the
+    /// mean-subtract/weight/bias steps independently (mean-subtract always, weight-multiply only
+    /// if a weight tensor exists, bias-add only if a bias tensor exists) — GPT-NeoX/Falcon/
+    /// StarCoder2 have both weight and bias; Command-R (cohere2) has weight but no bias tensor at
+    /// all, still needing true LayerNorm's mean-subtraction (unlike the RMSNorm kernels above,
+    /// which never subtract the mean regardless of bias).
+    ///
+    /// Scalar by design: this is a correctness-first path. Safe for in-place use (output == input)
+    /// since both reduction passes complete before any element is written.
     /// </summary>
     public static void LayerNorm(float* output, float* input, float* weight, float* bias, int size, float eps)
     {
@@ -6157,8 +6162,41 @@ public static unsafe class SimdKernels
         }
         float invStd = 1f / MathF.Sqrt(sumSq / size + eps);
 
+        if (bias != null)
+        {
+            for (int i = 0; i < size; i++)
+                output[i] = (input[i] - mean) * invStd * weight[i] + bias[i];
+        }
+        else
+        {
+            for (int i = 0; i < size; i++)
+                output[i] = (input[i] - mean) * invStd * weight[i];
+        }
+    }
+
+    /// <summary>
+    /// LayerNorm (mean-subtract + variance-normalize) with NO learned scale or bias at all —
+    /// distinct from <see cref="LayerNorm"/>'s bias-optional-but-weight-required signature.
+    /// OLMo v1 (src/models/olmo.cpp: <c>build_norm(inpL, NULL, NULL, LLM_NORM, il)</c> — both the
+    /// weight AND bias arguments are null) is the only known user: its GGUF carries no
+    /// attn_norm/ffn_norm/output_norm tensor at all, weighted or not.
+    /// </summary>
+    public static void PureLayerNorm(float* output, float* input, int size, float eps)
+    {
+        float sum = 0f;
+        for (int i = 0; i < size; i++) sum += input[i];
+        float mean = sum / size;
+
+        float sumSq = 0f;
         for (int i = 0; i < size; i++)
-            output[i] = (input[i] - mean) * invStd * weight[i] + bias[i];
+        {
+            float d = input[i] - mean;
+            sumSq += d * d;
+        }
+        float invStd = 1f / MathF.Sqrt(sumSq / size + eps);
+
+        for (int i = 0; i < size; i++)
+            output[i] = (input[i] - mean) * invStd;
     }
 
     /// <summary>
@@ -6686,6 +6724,22 @@ public static unsafe class SimdKernels
         }
     }
 
+    /// <summary>
+    /// ReLU-squared activation, applied in place: <c>x[i] = max(0, x[i])^2</c>. Ported from
+    /// llama.cpp's <c>LLM_FFN_RELU_SQR</c> handling (<c>llama-graph.cpp</c>: <c>ggml_relu</c> then
+    /// <c>ggml_sqr</c>) — JAIS-2's non-gated FFN activation, used in place of GELU
+    /// (GPT-NeoX/Falcon/GPT-2) or xIELU (Apertus) for that architecture's plain
+    /// up -> activation -> down shape.
+    /// </summary>
+    public static void ReluSqrInPlace(float* x, int n)
+    {
+        for (int i = 0; i < n; i++)
+        {
+            float v = MathF.Max(0f, x[i]);
+            x[i] = v * v;
+        }
+    }
+
     // ================================================================
     //  xIELU activation (scalar) — Apertus non-gated FFN
     // ================================================================
@@ -6855,6 +6909,38 @@ public static unsafe class SimdKernels
                     head[2 * i + 1] = x0 * sinTab[i] + x1 * cosTab[i];
                 }
             }
+        }
+    }
+
+    /// <summary>
+    /// "Normal" (GPT-J-style interleaved) RoPE with PARTIAL rotation. Rotates only the first
+    /// <paramref name="ropeDim"/> dims of each head as consecutive pairs (2i, 2i+1); dims
+    /// [ropeDim, headDim) pass through unchanged. GLM4 (non-multimodal) is the first user:
+    /// LLAMA_ROPE_TYPE_NORM with rope.dimension_count=64, headDim=128 — confirmed against
+    /// llama_model_rope_type()'s LLM_ARCH_GLM4 case in llama-model.cpp. The plain
+    /// (non-partial) ApplyRoPECached above has no ropeDim awareness at all, so a model whose
+    /// RopeDim &lt; headDim needs this instead — mirrors ApplyRoPECachedNeoxPartial below,
+    /// just for the interleaved pairing instead of the NEOX halfDim-offset one.
+    /// </summary>
+    public static void ApplyRoPECachedPartial(
+        float* x, float* cosTab, float* sinTab,
+        int numHeads, int headDim, int ropeDim)
+    {
+        if (ropeDim <= 0 || (ropeDim & 1) != 0)
+            throw new ArgumentException("ropeDim must be a positive even number", nameof(ropeDim));
+        if (ropeDim > headDim)
+            throw new ArgumentException("ropeDim must be <= headDim", nameof(ropeDim));
+        int halfRope = ropeDim / 2;
+        for (int h = 0; h < numHeads; h++)
+        {
+            float* head = x + h * headDim;
+            for (int i = 0; i < halfRope; i++)
+            {
+                float x0 = head[2 * i], x1 = head[2 * i + 1];
+                head[2 * i] = x0 * cosTab[i] - x1 * sinTab[i];
+                head[2 * i + 1] = x0 * sinTab[i] + x1 * cosTab[i];
+            }
+            // Dims [ropeDim, headDim) pass through unchanged — nothing to do.
         }
     }
 

@@ -144,9 +144,15 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
     // "is this layer non-gated" signal at the hot path is _wGate[layer].DataPtr is null, not a
     // separate flag — see DenseFfn.
     private readonly float[]? _xieluAlphaN, _xieluAlphaP, _xieluBeta, _xieluEps;
+    // JAIS-2: ReLU-squared non-gated FFN activation. See ModelHyperparams.UsesReluSquared.
+    private readonly bool _usesReluSquared;
 
     // Precomputed tensor metadata for hot-path access
     private readonly TensorRef _embTensor;
+    // GPT-2's learned absolute position embedding table (`position_embd.weight`), added to the
+    // token embedding once per token before the trunk starts. Null for every RoPE architecture.
+    private readonly TensorRef? _posEmbdTensor;
+    private readonly float* _posEmbdScratch;
     private readonly TensorRef[] _attnNorm;
     private readonly TensorRef[] _wq, _wk, _wv, _wo;
     private readonly TensorRef[] _ffnNorm;
@@ -162,6 +168,12 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
     // GPT-NeoX/Pythia: LayerNorm bias (attn/ffn/output norm) and FFN up/down bias. Null
     // arrays when the architecture doesn't carry them (i.e. always, except gptneox today).
     private readonly bool _hasNormBias;
+    // Command-R (cohere2): true LayerNorm math with NO bias tensor at all — _hasNormBias stays
+    // false (no bias arrays to allocate/load) but FastNorm still needs to take the LayerNorm
+    // path, not RMSNorm. See ModelHyperparams.UsesLayerNorm.
+    private readonly bool _usesLayerNorm;
+    // OLMo v1: no learned scale OR bias on any norm at all. See ModelHyperparams.UsesUnweightedNorm.
+    private readonly bool _usesUnweightedNorm;
     private readonly float*[]? _bAttnNorm;
     private readonly float*[]? _bFfnNorm;
     private readonly float* _bOutputNorm;
@@ -354,6 +366,7 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
                 _xieluEps[i] = hp.XieluEps![i];
             }
         }
+        _usesReluSquared = hp.UsesReluSquared;
 
         _maxHeadDim = _headDim;
         int maxRopeDim = hp.RopeDim > 0 ? hp.RopeDim : _headDim;
@@ -441,6 +454,13 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
         // Pre-resolve all tensor references (avoids dictionary lookups in hot loop)
         _embTensor = ResolveTensor("token_embd.weight");
 
+        if (_model.FindTensor("position_embd.weight") is { } posEmbdInfo)
+        {
+            _posEmbdTensor = new TensorRef("position_embd.weight", posEmbdInfo, posEmbdInfo.DType,
+                _model.GetTensorDataPtr(posEmbdInfo));
+            _posEmbdScratch = Alloc(_embDim);
+        }
+
         int L = hp.NumLayers;
         _attnNorm = new TensorRef[L];
         _wq = new TensorRef[L]; _wk = new TensorRef[L];
@@ -454,6 +474,8 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
         _bv = new float*[L]; _bo = new float*[L];
 
         _hasNormBias = hp.HasNormBias;
+        _usesLayerNorm = hp.UsesLayerNorm;
+        _usesUnweightedNorm = hp.UsesUnweightedNorm;
         if (_hasNormBias)
         {
             _bAttnNorm = new float*[L];
@@ -542,9 +564,23 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
                 int qDim = _numHeads * layerHd;
                 int kvDim = _numKvHeads * layerHd;
 
-                _wq[i] = new TensorRef($"blk.{i}.attn_q.weight", qkvInfo, qkvInfo.DType, qkvBase);
-                _wk[i] = new TensorRef($"blk.{i}.attn_k.weight", qkvInfo, qkvInfo.DType, qkvBase + (long)qDim * bytesPerRow);
-                _wv[i] = new TensorRef($"blk.{i}.attn_v.weight", qkvInfo, qkvInfo.DType, qkvBase + (long)(qDim + kvDim) * bytesPerRow);
+                // Each slice needs its OWN Info with its own row count, not the fused tensor's
+                // Info verbatim — PrefaultWeights sizes its read range from Info.ByteSize,
+                // oblivious to any row-offset baked into DataPtr. Reusing the full-width Info
+                // for _wk/_wv would compute a prefault range starting partway through the
+                // tensor and reading a further FULL fused-width past that point — harmless only
+                // because it happens to land on other valid mmap'd tensor data for every layer
+                // except potentially the last one in the file (see the identical, but actually
+                // triggered, defect this exact pattern caused for GLM4's fused ffn_up).
+                GgufTensorInfo SliceRows(int rows)
+                {
+                    var dims = (long[])qkvInfo.Dimensions.Clone();
+                    dims[^1] = rows;
+                    return qkvInfo with { Dimensions = dims };
+                }
+                _wq[i] = new TensorRef($"blk.{i}.attn_q.weight", SliceRows(qDim), qkvInfo.DType, qkvBase);
+                _wk[i] = new TensorRef($"blk.{i}.attn_k.weight", SliceRows(kvDim), qkvInfo.DType, qkvBase + (long)qDim * bytesPerRow);
+                _wv[i] = new TensorRef($"blk.{i}.attn_v.weight", SliceRows(kvDim), qkvInfo.DType, qkvBase + (long)(qDim + kvDim) * bytesPerRow);
             }
             else
             {
@@ -580,9 +616,48 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
                 // _wGate[i] is left at its default (DataPtr null), which DenseFfn/PrefillCore
                 // both check to pick the non-gated path. Every other dense architecture declares
                 // ffn_gate unconditionally, so this lookup is not itself optional for them.
-                if (_model.FindTensor($"blk.{i}.ffn_gate.weight") is not null)
-                    _wGate[i] = ResolveTensor($"blk.{i}.ffn_gate.weight");
-                _wUp[i] = ResolveTensor($"blk.{i}.ffn_up.weight");
+                //
+                // GLM4 is a THIRD case: no ffn_gate tensor either, but NOT non-gated — ffn_up is
+                // fused gate+up into one tensor at double width (blk.N.ffn_up.weight, row count
+                // 2*intermDim), the same contiguous-row-offset packing GPT-NeoX's fused attn_qkv
+                // uses. Confirmed against ggml_vec_swiglu_f32 (the compute kernel
+                // ggml_swiglu(cur) — no separate "b" tensor — actually runs): the FIRST half of
+                // rows is the gate input (SiLU applied) and the SECOND half is the up input
+                // (multiplied directly, no activation) — y = SiLU(rows[0:n]) * rows[n:2n]. Split
+                // by byte offset into two independent TensorRefs pointing into the same backing
+                // tensor, with no data copy, then fall through to the ordinary SiLU-gated
+                // MatVecDual/SiLuMul dispatch completely unchanged.
+                var ffnGateInfo = _model.FindTensor($"blk.{i}.ffn_gate.weight");
+                var ffnUpInfo = _model.FindTensor($"blk.{i}.ffn_up.weight");
+                if (ffnGateInfo is null && ffnUpInfo is { } fusedUpInfo
+                    && fusedUpInfo.Dimensions[^1] == 2L * _intermDim)
+                {
+                    byte* fusedBase = _model.GetTensorDataPtr(fusedUpInfo);
+                    int fusedBytesPerRow = (_embDim / DTypeInfo.BlockSize(fusedUpInfo.DType))
+                                        * DTypeInfo.BytesPerBlock(fusedUpInfo.DType);
+                    // Each half needs its OWN Info with the halved row count, not the fused
+                    // tensor's Info verbatim — PrefaultWeights sizes its read range from
+                    // Info.ByteSize, oblivious to any row-offset baked into DataPtr. Reusing the
+                    // full-width Info for the second half (_wUp) computed a prefault range that
+                    // started halfway through the tensor and read a further FULL fused-width
+                    // past that point — for the last layer in the file, that ran off the end of
+                    // the mmap entirely (measured: AccessViolationException in
+                    // MmapPrefault.StrideRead on a real GLM4 checkpoint, not a per-layer-count
+                    // rounding issue — every layer's _wUp region was oversized, only the last
+                    // layer's overrun had nowhere left to land safely).
+                    var halfDims = (long[])fusedUpInfo.Dimensions.Clone();
+                    halfDims[^1] = _intermDim;
+                    var halfInfo = fusedUpInfo with { Dimensions = halfDims };
+                    _wGate[i] = new TensorRef($"blk.{i}.ffn_gate.weight", halfInfo, halfInfo.DType, fusedBase);
+                    _wUp[i] = new TensorRef($"blk.{i}.ffn_up.weight", halfInfo, halfInfo.DType,
+                        fusedBase + (long)_intermDim * fusedBytesPerRow);
+                }
+                else
+                {
+                    if (ffnGateInfo is not null)
+                        _wGate[i] = ResolveTensor($"blk.{i}.ffn_gate.weight");
+                    _wUp[i] = ResolveTensor($"blk.{i}.ffn_up.weight");
+                }
                 _wDown[i] = ResolveTensor($"blk.{i}.ffn_down.weight");
             }
 
@@ -658,7 +733,12 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
                 _layerOutputScale[i] = LoadScalarF32($"blk.{i}.layer_output_scale.weight");
         }
 
-        _outputNorm = ResolveTensor("output_norm.weight");
+        // OLMo v1 has no output_norm tensor at all (UsesUnweightedNorm) — left at its default
+        // (DataPtr null); RunTrunk's final-norm step calls SimdKernels.PureLayerNorm directly
+        // instead of dereferencing a weight that doesn't exist.
+        _outputNorm = model.FindTensor("output_norm.weight") is not null
+            ? ResolveTensor("output_norm.weight")
+            : default;
         _outputWeight = model.FindTensor("output.weight") is not null
             ? ResolveTensor("output.weight")
             : _embTensor; // tied embeddings
@@ -1074,7 +1154,22 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
         // (perLayerHdUnsupported already routes it away), so this specifically covers OLMo2 and
         // any future dense post-norm architecture.
         bool postNormUnsupported = _postAttnNorm is not null || _postFfwNorm is not null;
-        if (moeUnsupported || perLayerHdUnsupported || postNormUnsupported)
+        // Sliding-window attention (Command-R/cohere2): PrefillCoreAttention has no windowSize
+        // parameter at all — it was never taught SWA masking, because Gemma 4 (the only prior
+        // SWA architecture) is always routed away by perLayerHdUnsupported above before reaching
+        // this check. cohere2 has SWA WITHOUT per-layer head dims, so it would otherwise slip
+        // through and silently attend to the full context on every layer instead of the intended
+        // window. Routing it to the sequential path reuses RunTrunk's Attention(), which already
+        // threads windowSize correctly (proven by every Gemma 4 receipt).
+        bool swaUnsupported = _isSwaLayer is not null && _layerHeadDim is null;
+        // OLMo v1 (UsesUnweightedNorm): PrefillCore's batched norm steps only know how to skip a
+        // null-DataPtr norm tensor entirely (OLMo2's convention) or apply a weighted one — never
+        // taught the third case, "normalize anyway with no learned parameters at all". Routing to
+        // the sequential path reuses RunTrunk's fix instead of teaching PrefillCore a third norm
+        // mode for a single architecture.
+        bool unweightedNormUnsupported = _usesUnweightedNorm;
+        if (moeUnsupported || perLayerHdUnsupported || postNormUnsupported || swaUnsupported
+            || unweightedNormUnsupported)
         {
             ReadOnlySpan<float> logits = default;
             for (int i = 0; i < N; i++)
@@ -1386,7 +1481,7 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
         {
             // 1. Embed all tokens
             for (int n = 0; n < N; n++)
-                EmbedTokenInto(tokens[n], batchHidden + (long)n * _embDim);
+                EmbedTokenInto(tokens[n], batchHidden + (long)n * _embDim, startPos + n);
 
             // Gemma 4 always takes the sequential Forward() path (perLayerHdUnsupported), so
             // this batched trunk previously never needed to apply EmbeddingScale — Granite and
@@ -1507,7 +1602,7 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
                         float* vn = batchV + (long)n * kvDim;
 
                         // Qwen3 (weighted QK-norm): norm BEFORE RoPE
-                        if (_hasQkNorm && !_hp.UseL2QkNorm)
+                        if (_hasQkNorm && !_hp.UseL2QkNorm && !_hp.QkNormAfterRope)
                         {
                             ApplyQkNorm(qn, kn, layer);
                         }
@@ -1516,6 +1611,12 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
                         {
                             ApplyRopeLayer(qn, startPos + n, _numHeads, layer, layerHd);
                             ApplyRopeLayer(kn, startPos + n, _numKvHeads, layer, layerHd);
+                        }
+
+                        // Hunyuan-Dense (weighted QK-norm): norm AFTER RoPE
+                        if (_hasQkNorm && !_hp.UseL2QkNorm && _hp.QkNormAfterRope)
+                        {
+                            ApplyQkNorm(qn, kn, layer);
                         }
 
                         // L2 QK-norm (Llama-4): norm AFTER RoPE, only on RoPE layers
@@ -1667,6 +1768,23 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
                                 SimdKernels.XieluInPlace(batchFfnUp + (long)n * _intermDim, _intermDim,
                                     _xieluAlphaN![layer], _xieluAlphaP![layer], _xieluBeta![layer], _xieluEps![layer]);
                             MatMulBatchedCached(batchNorm, in _wDown[layer], batchFfnUp, N, _embDim, _intermDim);
+                        }
+                        else if (_usesReluSquared)
+                        {
+                            // JAIS-2: biased ReLU-squared — same bias placement as GELU below.
+                            for (int n = 0; n < N; n++)
+                            {
+                                float* up = batchFfnUp + (long)n * _intermDim;
+                                if (_hasFfnBias && _bFfnUp is not null)
+                                    SimdKernels.AddInPlace(up, _bFfnUp[layer], _intermDim);
+                                SimdKernels.ReluSqrInPlace(up, _intermDim);
+                            }
+                            MatMulBatchedCached(batchNorm, in _wDown[layer], batchFfnUp, N, _embDim, _intermDim);
+                            if (_hasFfnBias && _bFfnDown is not null)
+                            {
+                                for (int n = 0; n < N; n++)
+                                    SimdKernels.AddInPlace(batchNorm + (long)n * _embDim, _bFfnDown[layer], _embDim);
+                            }
                         }
                         else
                         {
@@ -1851,7 +1969,7 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
         try
         {
             for (int n = 0; n < N; n++)
-                EmbedTokenInto(tokens[n], batchHidden + (long)n * _embDim);
+                EmbedTokenInto(tokens[n], batchHidden + (long)n * _embDim, startPos + n);
 
             int qDimMax = _numHeads * _maxHeadDim;
             int kvDimMax = _numKvHeads * _maxHeadDim;
@@ -2147,7 +2265,7 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
         {
             // 1. Embed all tokens
             for (int n = 0; n < N; n++)
-                EmbedTokenInto(tokens[n], batchHidden + (long)n * _embDim);
+                EmbedTokenInto(tokens[n], batchHidden + (long)n * _embDim, startPos + n);
 
             int qDim = _numHeads * _headDim;
             int kvDim = _numKvHeads * _headDim;
@@ -2328,7 +2446,7 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
         _currentPos = position;
 
         // 1. Embedding lookup (single-row dequant, no full table materialization)
-        EmbedToken(token);
+        EmbedToken(token, position);
 
         // Gemma family scales embeddings by sqrt(EmbeddingDim) before the trunk.
         if (_hp.EmbeddingScale != 1f)
@@ -2422,7 +2540,11 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
             // attn_norm tensor at all — attention reads the raw residual, normed only by a POST-
             // attention norm applied to the sublayer's output (below, before the residual add).
             stageStart = profDecode ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
-            if (_attnNorm[layer].DataPtr is null)
+            if (_usesUnweightedNorm)
+            {
+                SimdKernels.PureLayerNorm(_normBuf, _hidden, _embDim, _hp.RmsNormEps);
+            }
+            else if (_attnNorm[layer].DataPtr is null)
             {
                 Copy(_normBuf, _hidden, _embDim);
             }
@@ -2505,13 +2627,17 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
                 }
             }
 
-            // NoPE: skip RoPE for NoPE layers
+            // NoPE: skip RoPE for NoPE layers. Command-R (cohere2) has the opposite rule from
+            // Llama-4/SmolLM3's period-based skip: RoPE runs ONLY on SWA layers, never on
+            // global ones (see ModelHyperparams.RopeOnlySwaLayers) — ANDed in on top of the
+            // period-based check, which cohere2 never sets anyway.
             bool useRoPE = _hp.NoRopeLayerStep == 0
                 || (layer + 1) % _hp.NoRopeLayerStep != 0;
+            if (_hp.RopeOnlySwaLayers) useRoPE = useRoPE && isSwa;
 
             // Qwen3 (weighted QK-norm): apply norm BEFORE RoPE (per reference implementation)
             // Llama-4 (L2 QK-norm): apply norm AFTER RoPE (per llama.cpp)
-            if (_hasQkNorm && !_hp.UseL2QkNorm)
+            if (_hasQkNorm && !_hp.UseL2QkNorm && !_hp.QkNormAfterRope)
             {
                 ApplyQkNormLayer(_q, kvShared ? null : _k, layer, layerHd, layerKv);
             }
@@ -2532,6 +2658,12 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
                 ApplyRopeLayer(_q, position, _numHeads, layer, layerHd);
                 if (!kvShared)
                     ApplyRopeLayer(_k, position, layerKv, layer, layerHd);
+            }
+
+            // Hunyuan-Dense (weighted QK-norm): apply norm AFTER RoPE, on the already-rotated Q/K
+            if (_hasQkNorm && !_hp.UseL2QkNorm && _hp.QkNormAfterRope)
+            {
+                ApplyQkNormLayer(_q, kvShared ? null : _k, layer, layerHd, layerKv);
             }
 
             // L2 QK-norm (Llama-4): only on RoPE layers, applied after RoPE
@@ -2664,16 +2796,22 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
             // Save residual for FFN
             Copy(_residual, _hidden, _embDim);
 
-            // Pre-FFN RMS norm. OLMo2 has no ffn_norm tensor at all — FFN reads the raw
-            // post-attention residual directly, normed only by a POST-FFN norm applied to the
-            // sublayer's output below, before the residual add.
+            // Pre-FFN norm (LayerNorm w/ bias for starcoder2/gptneox-style archs, RMSNorm
+            // otherwise). OLMo2 has no ffn_norm tensor at all — FFN reads the raw post-attention
+            // residual directly, normed only by a POST-FFN norm applied to the sublayer's output
+            // below, before the residual add.
             stageStart = profDecode ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
-            if (_ffnNorm[layer].DataPtr is null)
+            if (_usesUnweightedNorm)
+            {
+                SimdKernels.PureLayerNorm(_normBuf, _hidden, _embDim, _hp.RmsNormEps);
+            }
+            else if (_ffnNorm[layer].DataPtr is null)
                 Copy(_normBuf, _hidden, _embDim);
             else
             {
                 var ffnNormW = GetNormWeight(_ffnNorm[layer]);
-                FastRmsNorm(_normBuf, _hidden, ffnNormW, _embDim, _hp.RmsNormEps);
+                var ffnNormBSeq = _hasNormBias && _bFfnNorm is not null ? _bFfnNorm[layer] : null;
+                FastNorm(_normBuf, _hidden, ffnNormW, ffnNormBSeq, _embDim, _hp.RmsNormEps);
             }
             if (profDecode)
             {
@@ -2749,9 +2887,16 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
         float preFinalNorm = _traceNorms ? L2Norm(_hidden, _embDim) : 0f;
 
         // 3. Final norm
-        var outNormW = GetNormWeight(_outputNorm);
         long finalNormStart = profDecode ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
-        FastNorm(_hidden, _hidden, outNormW, _hasNormBias ? _bOutputNorm : null, _embDim, _hp.RmsNormEps);
+        if (_usesUnweightedNorm)
+        {
+            SimdKernels.PureLayerNorm(_hidden, _hidden, _embDim, _hp.RmsNormEps);
+        }
+        else
+        {
+            var outNormW = GetNormWeight(_outputNorm);
+            FastNorm(_hidden, _hidden, outNormW, _hasNormBias ? _bOutputNorm : null, _embDim, _hp.RmsNormEps);
+        }
         if (profDecode) DecodeProfileTimers.Add(DecodeProfileTimers.Category.RmsNorm, System.Diagnostics.Stopwatch.GetTimestamp() - finalNormStart);
 
         float postFinalNorm = _traceNorms ? L2Norm(_hidden, _embDim) : 0f;
@@ -2811,7 +2956,15 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
                 SimdKernels.ApplyRoPECachedNeox(x, cos, sin, heads, layerHd);
         }
         else
-            SimdKernels.ApplyRoPECached(x, cos, sin, heads, layerHd);
+        {
+            // Partial RoPE, "normal"/interleaved convention (GLM4 non-multimodal:
+            // rope.dimension_count=64, headDim=128) — same _ropeDim mechanism as the NEOX
+            // branch above, just the interleaved-pair kernel instead of the halfDim-offset one.
+            if (_ropeDim < layerHd)
+                SimdKernels.ApplyRoPECachedPartial(x, cos, sin, heads, layerHd, _ropeDim);
+            else
+                SimdKernels.ApplyRoPECached(x, cos, sin, heads, layerHd);
+        }
     }
 
     private static float L2Norm(float* x, int n)
@@ -4158,6 +4311,12 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
                 SimdKernels.XieluInPlace(_ffnUp, _intermDim,
                     _xieluAlphaN![layer], _xieluAlphaP![layer], _xieluBeta![layer], _xieluEps![layer]);
             }
+            else if (_usesReluSquared)
+            {
+                if (_hasFfnBias && _bFfnUp is not null)
+                    SimdKernels.AddInPlace(_ffnUp, _bFfnUp[layer], _intermDim);
+                SimdKernels.ReluSqrInPlace(_ffnUp, _intermDim);
+            }
             else
             {
                 if (_hasFfnBias && _bFfnUp is not null)
@@ -4622,7 +4781,7 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
     //  Embedding lookup (single-row dequant)
     // ================================================================
 
-    private void EmbedToken(int token) => EmbedTokenInto(token, _hidden);
+    private void EmbedToken(int token, int position) => EmbedTokenInto(token, _hidden, position);
 
     // ================================================================
     //  Gemma 4 Per-Layer-Embedding (PLE)
@@ -4683,7 +4842,7 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
         SimdKernels.AddInPlace(_hidden, _pleY, _embDim);
     }
 
-    private void EmbedTokenInto(int token, float* dest)
+    private void EmbedTokenInto(int token, float* dest, int position = -1)
     {
         int bytesPerRow = (_embDim / DTypeInfo.BlockSize(_embTensor.DType))
                         * DTypeInfo.BytesPerBlock(_embTensor.DType);
@@ -4696,6 +4855,24 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
         else
         {
             SimdKernels.DequantRow(rowPtr, dest, _embDim, _embTensor.DType);
+        }
+
+        // GPT-2: learned absolute position embedding, added once to the token embedding
+        // (src/models/gpt2.cpp: inpL = ggml_add(tok_embd_lookup, pos_embd_lookup)).
+        if (_posEmbdTensor is { } posEmbd && position >= 0)
+        {
+            int posBytesPerRow = (_embDim / DTypeInfo.BlockSize(posEmbd.DType))
+                                * DTypeInfo.BytesPerBlock(posEmbd.DType);
+            byte* posRowPtr = posEmbd.DataPtr + (long)position * posBytesPerRow;
+            if (posEmbd.DType == DType.Float32)
+            {
+                SimdKernels.AddInPlace(dest, (float*)posRowPtr, _embDim);
+            }
+            else
+            {
+                SimdKernels.DequantRow(posRowPtr, _posEmbdScratch, _embDim, posEmbd.DType);
+                SimdKernels.AddInPlace(dest, _posEmbdScratch, _embDim);
+            }
         }
     }
 
@@ -4717,14 +4894,16 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
     }
 
     /// <summary>
-    /// Dispatches to LayerNorm (GPT-NeoX/Pythia, <see cref="_hasNormBias"/>) or the ordinary
-    /// RMSNorm path every other architecture uses. <paramref name="bias"/> is ignored on the
-    /// RMSNorm path.
+    /// Dispatches to LayerNorm (GPT-NeoX/Falcon/StarCoder2 with a bias tensor, or Command-R/
+    /// cohere2 without one — see <see cref="_usesLayerNorm"/>) or the ordinary RMSNorm path
+    /// every other architecture uses. <paramref name="bias"/> may be null (no bias tensor for
+    /// this architecture, e.g. cohere2) — <see cref="SimdKernels.LayerNorm"/> handles that
+    /// directly; it is ignored entirely on the RMSNorm path.
     /// </summary>
     private void FastNorm(float* output, float* input, float* weight, float* bias, int size, float eps)
     {
-        if (_hasNormBias) SimdKernels.LayerNorm(output, input, weight, bias, size, eps);
-        else              FastRmsNorm(output, input, weight, size, eps);
+        if (_usesLayerNorm) SimdKernels.LayerNorm(output, input, weight, bias, size, eps);
+        else                FastRmsNorm(output, input, weight, size, eps);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -4977,7 +5156,7 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
                 $"MaxSeqLen; continuing would write past the attention-score and RoPE scratch buffers.");
         }
 
-        EmbedToken(token);
+        EmbedToken(token, pos);
         for (int layer = 0; layer < _hp.NumLayers; layer++)
         {
             Copy(_residual, _hidden, _embDim);
@@ -5116,7 +5295,7 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
         try
         {
             for (int n = 0; n < N; n++)
-                EmbedTokenInto(tokens[n], batchHidden + (long)n * _embDim);
+                EmbedTokenInto(tokens[n], batchHidden + (long)n * _embDim, positions[n]);
             var batchNorm = (float*)NativeMemory.AllocZeroed((nuint)((long)N * _embDim * sizeof(float)));
             var batchQ = (float*)NativeMemory.AllocZeroed((nuint)((long)N * qDim * sizeof(float)));
             var batchK = (float*)NativeMemory.AllocZeroed((nuint)((long)N * kvDim * sizeof(float)));
@@ -5372,7 +5551,7 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
             {
                 var span = chunks[s].Span;
                 for (int i = 0; i < span.Length; i++)
-                    EmbedTokenInto(span[i], batchHidden + (long)(off[s] + i) * _embDim);
+                    EmbedTokenInto(span[i], batchHidden + (long)(off[s] + i) * _embDim, startPos[s] + i);
             }
 
             var batchNorm = (float*)NativeMemory.AllocZeroed((nuint)((long)N * _embDim * sizeof(float)));
@@ -5543,6 +5722,7 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
         NativeMemory.Free(_attnScores);
         NativeMemory.Free(_ropeCosTable);
         NativeMemory.Free(_ropeSinTable);
+        if (_posEmbdScratch != null) NativeMemory.Free(_posEmbdScratch);
         if (_ropeCosTableSwa != null) NativeMemory.Free(_ropeCosTableSwa);
         if (_ropeSinTableSwa != null) NativeMemory.Free(_ropeSinTableSwa);
         _taps?.Dispose();
