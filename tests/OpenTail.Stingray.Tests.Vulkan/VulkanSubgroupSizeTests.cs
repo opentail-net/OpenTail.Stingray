@@ -1,7 +1,7 @@
 using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Vulkan;
 
-namespace OpenTail.Stingray.Tests.ForwardPass;
+namespace OpenTail.Stingray.Tests.Vulkan;
 
 /// <summary>
 /// Tests for subgroup-size pinning (issue #318). The reduction shaders assume a 32-wide

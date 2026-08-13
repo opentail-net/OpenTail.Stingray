@@ -4,7 +4,7 @@ using OpenTail.Stingray.Engine;
 using OpenTail.Stingray.Vulkan;
 using Vortice.Vulkan;
 
-namespace OpenTail.Stingray.Tests.ForwardPass;
+namespace OpenTail.Stingray.Tests.Cuda;
 
 /// <summary>
 /// End-to-end parity for <see cref="VulkanHybridGdnForwardPass"/> — the Vulkan + CPU hybrid
@@ -32,12 +32,7 @@ public sealed class VulkanHybridGdnE2ETests
         catch { return null; }
     }
 
-    private static CudaBackend? TryCreateCuda()
-    {
-        if (!CudaBackend.IsAvailable()) return null;
-        try { return CudaBackend.Create(); }
-        catch { return null; }
-    }
+    private static CudaBackend? TryCreateCuda() => CudaTestGpu.TryCreate();
 
     private static string? FindDenseModelPath() =>
         FindModelPath("Qwen3.6-27B-MTP-Q4_K_M.gguf");
@@ -103,7 +98,7 @@ public sealed class VulkanHybridGdnE2ETests
     public void VulkanHybridGdn_Dense27B_MatchesCudaArgmax()
     {
         // Quick gates first (avoid loading the 16 GB GGUF when we'd skip anyway).
-        Assert.SkipUnless(CudaBackend.IsAvailable(), "no CUDA device in this environment");
+        Assert.SkipUnless(CudaTestGpu.IsAvailable, "no CUDA device in this environment");
         var path = FindDenseModelPath();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
@@ -384,7 +379,7 @@ public sealed class VulkanHybridGdnE2ETests
     [Fact]
     public void VulkanHybridGdn_Moe35B_MatchesCudaArgmax()
     {
-        Assert.SkipUnless(CudaBackend.IsAvailable(), "no CUDA device in this environment");
+        Assert.SkipUnless(CudaTestGpu.IsAvailable, "no CUDA device in this environment");
         var path = FindMoeModelPath();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 

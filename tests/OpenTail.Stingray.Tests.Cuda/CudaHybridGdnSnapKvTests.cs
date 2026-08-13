@@ -2,7 +2,7 @@ using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Cuda;
 using OpenTail.Stingray.Engine;
 
-namespace OpenTail.Stingray.Tests.ForwardPass;
+namespace OpenTail.Stingray.Tests.Cuda;
 
 /// <summary>
 /// SnapKV (issue #58) CUDA hybrid GDN port. Mirrors <see cref="SnapKvTests"/>'s
@@ -20,11 +20,14 @@ namespace OpenTail.Stingray.Tests.ForwardPass;
 /// </summary>
 public sealed class CudaHybridGdnSnapKvTests
 {
-    private static CudaBackend? TryCreate()
-    {
-        if (!CudaBackend.IsAvailable()) return null;
-        try { return CudaBackend.Create(); } catch { return null; }
-    }
+    // Gate at construction, not per-[Fact]: this class also holds two pure-logic
+    // SnapKvConfig tests with no hardware dependency of their own, but the whole
+    // point of living in Tests.Cuda is that nothing in this project runs without a
+    // card. A new instance is constructed per test, so this skips every test here.
+    public CudaHybridGdnSnapKvTests() =>
+        Assert.SkipUnless(CudaTestGpu.IsAvailable, "no CUDA device in this environment");
+
+    private static CudaBackend? TryCreate() => CudaTestGpu.TryCreate();
 
     private static string? FindMtpModelPath()
     {
@@ -70,6 +73,7 @@ public sealed class CudaHybridGdnSnapKvTests
         }
     }
 
+    [Trait("Category", "Cuda")]
     [Fact]
     public void CudaHybridGdnSnapKv_LongPrompt_CacheShrinksToBudget_DecodeStaysWellFormed()
     {
@@ -160,6 +164,7 @@ public sealed class CudaHybridGdnSnapKvTests
     /// without throwing and produce non-degenerate output (first argmax != EOS,
     /// ≥2 distinct tokens) — IsFinite alone passes on all-EOS degenerate output.
     /// </summary>
+    [Trait("Category", "Cuda")]
     [Fact]
     public void CudaHybridGdnSnapKv_MtpDecode_AfterEviction_DoesNotCrash_StaysCoherent()
     {
@@ -253,6 +258,7 @@ public sealed class CudaHybridGdnSnapKvTests
     /// keeps small-context smoke runs lossless even though SnapKV is otherwise
     /// auto-enabled on the CUDA hybrid GDN path.
     /// </summary>
+    [Trait("Category", "Cuda")]
     [Fact]
     public void CudaHybridGdnSnapKv_SmallCtxDefault_AutoBudgetStaysOff()
     {

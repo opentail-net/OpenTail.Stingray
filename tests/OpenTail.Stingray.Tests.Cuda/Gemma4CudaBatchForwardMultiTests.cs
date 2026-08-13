@@ -2,7 +2,7 @@ using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Cuda;
 using OpenTail.Stingray.Engine;
 
-namespace OpenTail.Stingray.Tests.ForwardPass;
+namespace OpenTail.Stingray.Tests.Cuda;
 
 /// <summary>
 /// Issue #195: CUDA continuous batching for Gemma 4. <see cref="CudaForwardPass"/> now accepts
@@ -23,16 +23,12 @@ namespace OpenTail.Stingray.Tests.ForwardPass;
 /// batched-prefill oracles hold. One ~8 GB instance per test; silent-skips when CUDA or the GGUF
 /// is absent. Mirrors <see cref="CudaBatchForwardMultiTests"/>.
 /// </summary>
+[Trait("Category", "Cuda")]
 public sealed class Gemma4CudaBatchForwardMultiTests
 {
     private const string ModelFile = "gemma-4-E4B-it-Q8_0.gguf";
 
-    private static CudaBackend? TryCreate()
-    {
-        if (!CudaBackend.IsAvailable()) return null;
-        try { return CudaBackend.Create(); }
-        catch { return null; }
-    }
+    private static CudaBackend? TryCreate() => CudaTestGpu.TryCreate();
 
     // SnapKV pinned off: an active budget makes continuous batching unsupported (it throws), and
     // VRAM-scaled auto-SnapKV could otherwise engage and make these oracles machine-dependent.

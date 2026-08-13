@@ -3,7 +3,7 @@ using OpenTail.Stingray.Cpu;
 using OpenTail.Stingray.Cuda;
 using OpenTail.Stingray.Engine;
 
-namespace OpenTail.Stingray.Tests.ForwardPass;
+namespace OpenTail.Stingray.Tests.Cuda;
 
 /// <summary>
 /// Cross-backend correctness coverage for the CPU-MoE execution mode of
@@ -22,13 +22,10 @@ namespace OpenTail.Stingray.Tests.ForwardPass;
 /// short in-distribution prompt a correctly-wired CPU-MoE path overlaps heavily with the
 /// pure-CPU reference; an overlap collapse signals a real wiring bug, not quant noise.
 /// </summary>
+[Trait("Category", "Cuda")]
 public sealed class CudaHybridForwardPassCpuMoeTests
 {
-    private static CudaBackend? TryCreate()
-    {
-        if (!CudaBackend.IsAvailable()) return null;
-        try { return CudaBackend.Create(); } catch { return null; }
-    }
+    private static CudaBackend? TryCreate() => CudaTestGpu.TryCreate();
 
     private static string? FindMoEModelPath()
     {

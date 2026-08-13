@@ -2,7 +2,7 @@ using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Cuda;
 using OpenTail.Stingray.Engine;
 
-namespace OpenTail.Stingray.Tests.ForwardPass;
+namespace OpenTail.Stingray.Tests.Cuda;
 
 /// <summary>
 /// CUDA-hybrid coverage for the k-token MTP batched verify (issues #30 / #207
@@ -22,13 +22,10 @@ namespace OpenTail.Stingray.Tests.ForwardPass;
 /// </list>
 /// Skipped silently when CUDA is unavailable or the 27B-MTP GGUF isn't on disk.
 /// </summary>
+[Trait("Category", "Cuda")]
 public sealed class CudaMtpBatchVerifyTests
 {
-    private static CudaBackend? TryCreate()
-    {
-        if (!CudaBackend.IsAvailable()) return null;
-        try { return CudaBackend.Create(); } catch { return null; }
-    }
+    private static CudaBackend? TryCreate() => CudaTestGpu.TryCreate();
 
     private static string? FindMtpModelPath()
     {

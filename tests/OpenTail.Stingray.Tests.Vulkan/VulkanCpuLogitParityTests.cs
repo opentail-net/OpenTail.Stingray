@@ -3,7 +3,7 @@ using OpenTail.Stingray.Cpu;
 using OpenTail.Stingray.Engine;
 using OpenTail.Stingray.Vulkan;
 
-namespace OpenTail.Stingray.Tests.ForwardPass;
+namespace OpenTail.Stingray.Tests.Vulkan;
 
 /// <summary>
 /// Vulkan-vs-CPU parity at the logit level, which is the measurement that actually settles whether

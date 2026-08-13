@@ -2,7 +2,7 @@ using System.Diagnostics;
 using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Cuda;
 
-namespace OpenTail.Stingray.Tests.ForwardPass;
+namespace OpenTail.Stingray.Tests.Cuda;
 
 /// <summary>
 /// Issue #149: the SoA-layout int8 MMQ (<see cref="CudaBackend.MatMulBatchedMmqSoa"/>,
@@ -16,14 +16,10 @@ namespace OpenTail.Stingray.Tests.ForwardPass;
 ///
 /// Silent no-op without CUDA.
 /// </summary>
+[Trait("Category", "Cuda")]
 public sealed unsafe class CudaMmqSoaTests
 {
-    private static CudaBackend? TryCreate()
-    {
-        if (!CudaBackend.IsAvailable()) return null;
-        try { return CudaBackend.Create(); }
-        catch { return null; }
-    }
+    private static CudaBackend? TryCreate() => CudaTestGpu.TryCreate();
 
     private static ushort HalfToUshort(Half h) => BitConverter.ToUInt16(BitConverter.GetBytes(h), 0);
 

@@ -2,7 +2,7 @@ using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Engine;
 using OpenTail.Stingray.Vulkan;
 
-namespace OpenTail.Stingray.Tests.ForwardPass;
+namespace OpenTail.Stingray.Tests.Vulkan;
 
 /// <summary>
 /// The batched-prefill chunk size used to be <c>MaxBatchVerifyK</c>, the same constant that bounds

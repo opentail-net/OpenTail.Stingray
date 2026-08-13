@@ -1,7 +1,7 @@
 using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Cuda;
 
-namespace OpenTail.Stingray.Tests.ForwardPass;
+namespace OpenTail.Stingray.Tests.Cuda;
 
 /// <summary>
 /// Track A (#124/#173): the SoA Q8_1 <i>activation</i> layout (<c>llm_quantize_q8_1_soa</c>
@@ -17,14 +17,10 @@ namespace OpenTail.Stingray.Tests.ForwardPass;
 /// three SoA-activation MMQ kernels (the model-level oracles run bench-machine only).
 /// Silent no-op without CUDA.
 /// </summary>
+[Trait("Category", "Cuda")]
 public sealed unsafe class CudaActSoaTests
 {
-    private static CudaBackend? TryCreate()
-    {
-        if (!CudaBackend.IsAvailable()) return null;
-        try { return CudaBackend.Create(); }
-        catch { return null; }
-    }
+    private static CudaBackend? TryCreate() => CudaTestGpu.TryCreate();
 
     private static ushort HalfToUshort(Half h) => BitConverter.ToUInt16(BitConverter.GetBytes(h), 0);
 

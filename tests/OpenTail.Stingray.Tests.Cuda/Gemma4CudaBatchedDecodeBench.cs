@@ -3,7 +3,7 @@ using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Cuda;
 using OpenTail.Stingray.Engine;
 
-namespace OpenTail.Stingray.Tests.ForwardPass;
+namespace OpenTail.Stingray.Tests.Cuda;
 
 /// <summary>
 /// Issue #275/#283: aggregate decode-throughput measurement for the Gemma 4 batched decode. #195
@@ -34,6 +34,7 @@ namespace OpenTail.Stingray.Tests.ForwardPass;
 /// Surfaces t/s, asserts no threshold (mirrors <see cref="CudaBatchedDecodeBench"/>). Silent-skips
 /// without CUDA / the GGUF.
 /// </summary>
+[Trait("Category", "Cuda")]
 public sealed class Gemma4CudaBatchedDecodeBench
 {
     // Default E4B Q8_0; override with STINGRAY_BENCH_MODEL (filename resolved against the model dirs,
@@ -63,12 +64,7 @@ public sealed class Gemma4CudaBatchedDecodeBench
     private static readonly int[] Prompt =
         { 2, 651, 6037, 576, 6081, 603, 1234, 4567, 8901, 222, 333, 444, 555, 666, 777, 888 };
 
-    private static CudaBackend? TryCreate()
-    {
-        if (!CudaBackend.IsAvailable()) return null;
-        try { return CudaBackend.Create(); }
-        catch { return null; }
-    }
+    private static CudaBackend? TryCreate() => CudaTestGpu.TryCreate();
 
     private static string? FindModelPath()
     {

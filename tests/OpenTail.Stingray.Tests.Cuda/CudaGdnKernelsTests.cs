@@ -2,7 +2,7 @@ using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Cpu;
 using OpenTail.Stingray.Cuda;
 
-namespace OpenTail.Stingray.Tests.ForwardPass;
+namespace OpenTail.Stingray.Tests.Cuda;
 
 /// <summary>
 /// Parity tests for the NVRTC kernels backing the qwen35moe GPU GDN block
@@ -15,14 +15,10 @@ namespace OpenTail.Stingray.Tests.ForwardPass;
 /// CPU reference in <see cref="GdnKernels"/>. Skipped silently on hosts
 /// without CUDA.
 /// </summary>
+[Trait("Category", "Cuda")]
 public sealed unsafe class CudaGdnKernelsTests
 {
-    private static CudaBackend? TryCreate()
-    {
-        if (!CudaBackend.IsAvailable()) return null;
-        try { return CudaBackend.Create(); }
-        catch { return null; }
-    }
+    private static CudaBackend? TryCreate() => CudaTestGpu.TryCreate();
 
     private static float[] RandomArray(Random rng, int count, float lo, float hi)
     {

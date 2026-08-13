@@ -3,7 +3,7 @@ using OpenTail.Stingray.Cuda;
 using OpenTail.Stingray.Engine;
 using Xunit;
 
-namespace OpenTail.Stingray.Tests.ForwardPass;
+namespace OpenTail.Stingray.Tests.Cuda;
 
 /// <summary>
 /// Issue #219: GPU-side greedy argmax. Two layers of coverage:
@@ -15,14 +15,10 @@ namespace OpenTail.Stingray.Tests.ForwardPass;
 ///      (<c>Forward</c>) and Gemma-4 (<c>ForwardGemma4</c>) paths.
 /// All tests silently no-op on hosts without CUDA (or, for the gated tests, without the model).
 /// </summary>
+[Trait("Category", "Cuda")]
 public sealed class CudaGpuArgmaxParityTests
 {
-    private static CudaBackend? TryCreate()
-    {
-        if (!CudaBackend.IsAvailable()) return null;
-        try { return CudaBackend.Create(); }
-        catch { return null; }
-    }
+    private static CudaBackend? TryCreate() => CudaTestGpu.TryCreate();
 
     private static string? FindModel(params string[] candidates)
     {

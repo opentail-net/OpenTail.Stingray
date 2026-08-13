@@ -220,13 +220,21 @@ public sealed class InferenceSession : IInferenceSession
     public async ValueTask AppendAsync(ReadOnlyMemory<int> tokens, CancellationToken cancellationToken = default)
     {
         ThrowIfDisposed();
-        if (_state == SessionState.Suspended)
-        {
-            await ResumeAsync(cancellationToken).ConfigureAwait(false);
-        }
         await _mutex.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            // Re-check under the mutex (Suspended-state race fix): the caller-visible _state read
+            // is not synchronized with mutex acquisition, so a racing SuspendAsync could release
+            // the KV sequence in the gap between an unguarded check and this point. Resume here,
+            // still holding the mutex, via the same private helper EnsureActiveAsync/ResumeAsync
+            // use -- it re-validates state itself under the token-history lock.
+            SessionState stateUnderLock;
+            lock (_tokenHistory) { stateUnderLock = _state; }
+            if (stateUnderLock == SessionState.Suspended)
+            {
+                ResumeUnderMutex();
+            }
+
             if (tokens.Length > 0)
             {
                 var span = tokens.Span;
@@ -322,7 +330,17 @@ public sealed class InferenceSession : IInferenceSession
 
                     if (_forwardPass is not null)
                     {
-                        try { _forwardPass.TruncateTo(historyBefore); } catch { }
+                        // Best-effort: the original exception (rethrown below) is what the caller
+                        // sees either way, but a failure here means the forward pass's internal
+                        // decode state is left desynced from _tokenHistory/_kvSequence with no
+                        // signal at all if swallowed silently -- surface it instead of hiding it.
+                        try { _forwardPass.TruncateTo(historyBefore); }
+                        catch (Exception truncateEx)
+                        {
+                            Console.Error.WriteLine(
+                                $"[OpenTail.Stingray] Session {Id}: forward-pass rollback TruncateTo({historyBefore}) " +
+                                $"failed during error recovery -- internal decode state may be desynced: {truncateEx}");
+                        }
                     }
 
                     SetState(SessionState.Ready);
@@ -422,13 +440,17 @@ public sealed class InferenceSession : IInferenceSession
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         ThrowIfDisposed();
-        if (_state == SessionState.Suspended)
-        {
-            await ResumeAsync(cancellationToken).ConfigureAwait(false);
-        }
         await _mutex.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            // Re-check under the mutex (Suspended-state race fix, mirrors AppendAsync above).
+            SessionState stateUnderLock;
+            lock (_tokenHistory) { stateUnderLock = _state; }
+            if (stateUnderLock == SessionState.Suspended)
+            {
+                ResumeUnderMutex();
+            }
+
             SetState(SessionState.Generating);
 
             if (IsContextLimitReached)
@@ -526,7 +548,17 @@ public sealed class InferenceSession : IInferenceSession
 
                     if (_forwardPass is not null)
                     {
-                        try { _forwardPass.TruncateTo(historyBefore); } catch { }
+                        // Best-effort: the original exception (rethrown below) is what the caller
+                        // sees either way, but a failure here means the forward pass's internal
+                        // decode state is left desynced from _tokenHistory/_kvSequence with no
+                        // signal at all if swallowed silently -- surface it instead of hiding it.
+                        try { _forwardPass.TruncateTo(historyBefore); }
+                        catch (Exception truncateEx)
+                        {
+                            Console.Error.WriteLine(
+                                $"[OpenTail.Stingray] Session {Id}: forward-pass rollback TruncateTo({historyBefore}) " +
+                                $"failed during error recovery -- internal decode state may be desynced: {truncateEx}");
+                        }
                     }
 
                     throw;
@@ -621,6 +653,7 @@ public sealed class InferenceSession : IInferenceSession
                 _rngSeed,
                 _rngStep,
                 _tokenHistory.ToArray(),
+                _checkpointGeneration,
                 DateTimeOffset.UtcNow);
         }
     }
@@ -648,6 +681,12 @@ public sealed class InferenceSession : IInferenceSession
                 _tokenHistory.RemoveRange(targetPos, _tokenHistory.Count - targetPos);
                 _rngSeed = checkpoint.RngSeed;
                 _rngStep = checkpoint.RngStep;
+                // Restore the generation counter the checkpoint was taken at (issue: without this,
+                // AppendAsync's per-append _checkpointGeneration++ between checkpoint creation and
+                // rollback left it permanently ahead of the checkpoint's own value, so a
+                // continuation token issued at the checkpoint's position was spuriously rejected
+                // as stale after rolling back, even though position and content now match again).
+                _checkpointGeneration = checkpoint.CheckpointGeneration;
 
                 // Fork sequence at target position to truncate KV page table to checkpoint
                 var truncatedKv = _kvSequence.ForkAt(targetPos);
@@ -796,21 +835,36 @@ public sealed class InferenceSession : IInferenceSession
         _mutex.WaitAsync().GetAwaiter().GetResult();
         try
         {
+            // Build and populate the replacement KV sequence BEFORE mutating any session state
+            // (issue: RestoreFromSnapshot left history/generation updated with no rollback if
+            // Append/Prefill threw). Doing the work that can fail against a fresh sequence first
+            // means a failure here leaves _tokenHistory/_checkpointGeneration/_kvSequence
+            // completely untouched, instead of partially updated to the snapshot's values while
+            // the old KV sequence was still current.
+            var snapshotTokens = snapshot.Tokens;
+            var newKv = _kvCache.AllocateSequence();
+            try
+            {
+                newKv.Append(snapshotTokens.Count);
+                if (_forwardPass is not null && snapshotTokens.Count > 0)
+                {
+                    _forwardPass.Prefill(snapshotTokens);
+                }
+            }
+            catch
+            {
+                newKv.Release();
+                throw;
+            }
+
             lock (_tokenHistory)
             {
                 _tokenHistory.Clear();
-                _tokenHistory.AddRange(snapshot.Tokens);
+                _tokenHistory.AddRange(snapshotTokens);
                 _checkpointGeneration = Math.Max(1, snapshot.Generation);
 
-                var newKv = _kvCache.AllocateSequence();
-                newKv.Append(_tokenHistory.Count);
                 _kvSequence.Release();
                 _kvSequence = newKv;
-
-                if (_forwardPass is not null && _tokenHistory.Count > 0)
-                {
-                    _forwardPass.Prefill(_tokenHistory.ToArray());
-                }
             }
             SetState(SessionState.Ready);
         }

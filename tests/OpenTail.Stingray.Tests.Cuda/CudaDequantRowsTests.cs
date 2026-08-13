@@ -2,7 +2,7 @@ using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Cpu;
 using OpenTail.Stingray.Cuda;
 
-namespace OpenTail.Stingray.Tests.ForwardPass;
+namespace OpenTail.Stingray.Tests.Cuda;
 
 /// <summary>
 /// Issue #247: the Gemma-4 PLE batched pre-pass dequants the chunk's gathered packed
@@ -18,14 +18,10 @@ namespace OpenTail.Stingray.Tests.ForwardPass;
 /// same arithmetic and order as the CPU dequant, so the result must be bit-identical (not
 /// merely close). Silently no-ops on hosts without CUDA, like the rest of the Cuda* tests.
 /// </summary>
+[Trait("Category", "Cuda")]
 public sealed unsafe class CudaDequantRowsTests
 {
-    private static CudaBackend? TryCreate()
-    {
-        if (!CudaBackend.IsAvailable()) return null;
-        try { return CudaBackend.Create(); }
-        catch { return null; }
-    }
+    private static CudaBackend? TryCreate() => CudaTestGpu.TryCreate();
 
     private static ushort HalfToUshort(Half h) => BitConverter.HalfToUInt16Bits(h);
 

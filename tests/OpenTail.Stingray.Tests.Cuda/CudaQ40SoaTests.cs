@@ -1,7 +1,7 @@
 using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Cuda;
 
-namespace OpenTail.Stingray.Tests.ForwardPass;
+namespace OpenTail.Stingray.Tests.Cuda;
 
 /// <summary>
 /// Issue #124/#173 (mirrors #149): the Q4_0 SoA repack
@@ -17,14 +17,10 @@ namespace OpenTail.Stingray.Tests.ForwardPass;
 ///
 /// Silent no-op without CUDA.
 /// </summary>
+[Trait("Category", "Cuda")]
 public sealed unsafe class CudaQ40SoaTests
 {
-    private static CudaBackend? TryCreate()
-    {
-        if (!CudaBackend.IsAvailable()) return null;
-        try { return CudaBackend.Create(); }
-        catch { return null; }
-    }
+    private static CudaBackend? TryCreate() => CudaTestGpu.TryCreate();
 
     private static ushort HalfToUshort(Half h) => BitConverter.ToUInt16(BitConverter.GetBytes(h), 0);
 

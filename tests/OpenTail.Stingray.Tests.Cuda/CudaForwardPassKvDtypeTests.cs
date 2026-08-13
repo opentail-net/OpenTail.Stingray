@@ -2,7 +2,7 @@ using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Cuda;
 using OpenTail.Stingray.Engine;
 
-namespace OpenTail.Stingray.Tests.ForwardPass;
+namespace OpenTail.Stingray.Tests.Cuda;
 
 /// <summary>
 /// bf16 KV-cache parity for the dense CudaForwardPass (issue #179). With
@@ -29,11 +29,14 @@ namespace OpenTail.Stingray.Tests.ForwardPass;
 /// </summary>
 public sealed class CudaForwardPassKvDtypeTests
 {
-    private static CudaBackend? TryCreate()
-    {
-        if (!CudaBackend.IsAvailable()) return null;
-        try { return CudaBackend.Create(); } catch { return null; }
-    }
+    // Gate at construction, not per-[Fact]: this class also holds ~30 pure-logic
+    // solver/allocator tests with no hardware dependency of their own, but the whole
+    // point of living in Tests.Cuda is that nothing in this project runs without a
+    // card. A new instance is constructed per test, so this skips every test here.
+    public CudaForwardPassKvDtypeTests() =>
+        Assert.SkipUnless(CudaTestGpu.IsAvailable, "no CUDA device in this environment");
+
+    private static CudaBackend? TryCreate() => CudaTestGpu.TryCreate();
 
     private static string? FindModelPath(string filename)
     {
@@ -343,11 +346,13 @@ public sealed class CudaForwardPassKvDtypeTests
     private const string LowEntropyPrompt = "The quick brown fox jumps over the lazy";
 
     /// <summary>Qwen3-8B Q4_K: non-SWA dense, exercises the global bf16 attention + append.</summary>
+    [Trait("Category", "Cuda")]
     [Fact]
     public void Qwen3_8B_Bf16Kv_ArgmaxStable_VsFp32()
         => AssertKvParity("Qwen3-8B-Q4_K_M.gguf", "bf16", LowEntropyPrompt, eosToken: null, maxAbsTol: 1.5f);
 
     /// <summary>Gemma 4 E4B Q8_0: SWA + global layers, exercises AttentionSwaBf16.</summary>
+    [Trait("Category", "Cuda")]
     [Fact]
     public void Gemma4_E4B_Bf16Kv_ArgmaxStable_VsFp32()
         => AssertKvParity("gemma-4-E4B-it-Q8_0.gguf", "bf16", LowEntropyPrompt, eosToken: null, maxAbsTol: 1.5f);
@@ -357,6 +362,7 @@ public sealed class CudaForwardPassKvDtypeTests
     /// 4-bit weights over 48 layers accumulate more bf16-store rounding, so the budget
     /// is wider than the Q8_0/Q4_K cases (observed peak ~4.0); top-1/top-5 stay stable.
     /// </summary>
+    [Trait("Category", "Cuda")]
     [Fact]
     public void Gemma4_12B_Bf16Kv_ArgmaxStable_VsFp32()
         => AssertKvParity("gemma-4-12b-it-qat-q4_0.gguf", "bf16", LowEntropyPrompt, eosToken: null, maxAbsTol: 8.0f);
@@ -364,16 +370,19 @@ public sealed class CudaForwardPassKvDtypeTests
     // ── Increment 1.5: bf16 batched prefill agrees with bf16 per-token ──────
 
     /// <summary>Qwen3-8B Q4_K: bf16 global batched prefill (AttentionBatchedBf16).</summary>
+    [Trait("Category", "Cuda")]
     [Fact]
     public void Qwen3_8B_Bf16BatchedPrefill_MatchesPerToken()
         => AssertKvBatchedPrefillParity("Qwen3-8B-Q4_K_M.gguf", "bf16", LowEntropyPrompt, maxAbsTol: 1.5f);
 
     /// <summary>Gemma 4 E4B Q8_0: bf16 SWA + global batched prefill (AttentionSwaBatchedBf16).</summary>
+    [Trait("Category", "Cuda")]
     [Fact]
     public void Gemma4_E4B_Bf16BatchedPrefill_MatchesPerToken()
         => AssertKvBatchedPrefillParity("gemma-4-E4B-it-Q8_0.gguf", "bf16", LowEntropyPrompt, maxAbsTol: 1.5f);
 
     /// <summary>Gemma 4 12B QAT Q4_0: bf16 batched prefill with k_eq_v globals.</summary>
+    [Trait("Category", "Cuda")]
     [Fact]
     public void Gemma4_12B_Bf16BatchedPrefill_MatchesPerToken()
         => AssertKvBatchedPrefillParity("gemma-4-12b-it-qat-q4_0.gguf", "bf16", LowEntropyPrompt, maxAbsTol: 8.0f);
@@ -387,6 +396,7 @@ public sealed class CudaForwardPassKvDtypeTests
     /// (observed ~2.1); a structural cross-chunk bug would produce garbage, not ~2. Top-5
     /// stability is the real argmax-stable check.
     /// </summary>
+    [Trait("Category", "Cuda")]
     [Fact]
     public void Gemma4_E4B_Bf16ChunkedPrefill_MatchesFp32()
         => AssertKvChunkedPrefillParity("gemma-4-E4B-it-Q8_0.gguf", "bf16", maxAbsCeiling: 25.0f);
@@ -398,36 +408,43 @@ public sealed class CudaForwardPassKvDtypeTests
     // and is the real correctness gate. Tolerances were set from observed peaks.
 
     /// <summary>Qwen3-8B Q4_K: non-SWA dense, exercises AttentionQ8_0 / KvAppendQ8_0.</summary>
+    [Trait("Category", "Cuda")]
     [Fact]
     public void Qwen3_8B_Q8Kv_ArgmaxStable_VsFp32()
         => AssertKvParity("Qwen3-8B-Q4_K_M.gguf", "q8_0", LowEntropyPrompt, eosToken: null, maxAbsTol: 2.5f);
 
     /// <summary>Gemma 4 E4B Q8_0: SWA + global layers, exercises AttentionSwaQ8_0.</summary>
+    [Trait("Category", "Cuda")]
     [Fact]
     public void Gemma4_E4B_Q8Kv_ArgmaxStable_VsFp32()
         => AssertKvParity("gemma-4-E4B-it-Q8_0.gguf", "q8_0", LowEntropyPrompt, eosToken: null, maxAbsTol: 2.5f);
 
     /// <summary>Gemma 4 12B QAT Q4_0: the driving model — attention_k_eq_v globals + q8_0 KV.</summary>
+    [Trait("Category", "Cuda")]
     [Fact]
     public void Gemma4_12B_Q8Kv_ArgmaxStable_VsFp32()
         => AssertKvParity("gemma-4-12b-it-qat-q4_0.gguf", "q8_0", LowEntropyPrompt, eosToken: null, maxAbsTol: 10.0f);
 
     /// <summary>Qwen3-8B Q4_K: q8_0 global batched prefill (AttentionBatchedQ8_0).</summary>
+    [Trait("Category", "Cuda")]
     [Fact]
     public void Qwen3_8B_Q8BatchedPrefill_MatchesPerToken()
         => AssertKvBatchedPrefillParity("Qwen3-8B-Q4_K_M.gguf", "q8_0", LowEntropyPrompt, maxAbsTol: 2.5f);
 
     /// <summary>Gemma 4 E4B Q8_0: q8_0 SWA + global batched prefill (AttentionSwaBatchedQ8_0).</summary>
+    [Trait("Category", "Cuda")]
     [Fact]
     public void Gemma4_E4B_Q8BatchedPrefill_MatchesPerToken()
         => AssertKvBatchedPrefillParity("gemma-4-E4B-it-Q8_0.gguf", "q8_0", LowEntropyPrompt, maxAbsTol: 2.5f);
 
     /// <summary>Gemma 4 12B QAT Q4_0: q8_0 batched prefill with k_eq_v globals.</summary>
+    [Trait("Category", "Cuda")]
     [Fact]
     public void Gemma4_12B_Q8BatchedPrefill_MatchesPerToken()
         => AssertKvBatchedPrefillParity("gemma-4-12b-it-qat-q4_0.gguf", "q8_0", LowEntropyPrompt, maxAbsTol: 10.0f);
 
     /// <summary>Gemma 4 E4B Q8_0: q8_0 Tc2-flash chunked prefill across the SWA ring boundary.</summary>
+    [Trait("Category", "Cuda")]
     [Fact]
     public void Gemma4_E4B_Q8ChunkedPrefill_MatchesFp32()
         => AssertKvChunkedPrefillParity("gemma-4-E4B-it-Q8_0.gguf", "q8_0", maxAbsCeiling: 30.0f);
@@ -440,6 +457,7 @@ public sealed class CudaForwardPassKvDtypeTests
     /// Wider blow-up ceiling: Q4_0 weights over 48 layers + q8_0 store accumulate more over
     /// a 5000-token context; top-5 stability is the real argmax-stable gate.
     /// </summary>
+    [Trait("Category", "Cuda")]
     [Fact]
     public void Gemma4_12B_Q8ChunkedPrefill_MatchesFp32()
         => AssertKvChunkedPrefillParity("gemma-4-12b-it-qat-q4_0.gguf", "q8_0", maxAbsCeiling: 45.0f);
@@ -454,22 +472,26 @@ public sealed class CudaForwardPassKvDtypeTests
     // no store rounding so its budget is tightest; bf16/q8 add the narrowed-store noise.
 
     /// <summary>Gemma 4 E4B Q8_0 model, fp32 KV: split-KV global decode vs single-block.</summary>
+    [Trait("Category", "Cuda")]
     [Fact]
     public void Gemma4_E4B_Fp32SplitKv_MatchesSingleBlock()
         => AssertSplitKvDecodeParity("gemma-4-E4B-it-Q8_0.gguf", "fp32", maxAbsTol: 1.0f);
 
     /// <summary>Gemma 4 E4B, bf16 KV: split-KV (bf16 thunk) vs single-block bf16.</summary>
+    [Trait("Category", "Cuda")]
     [Fact]
     public void Gemma4_E4B_Bf16SplitKv_MatchesSingleBlock()
         => AssertSplitKvDecodeParity("gemma-4-E4B-it-Q8_0.gguf", "bf16", maxAbsTol: 2.0f);
 
     /// <summary>Gemma 4 E4B, q8_0 KV: split-KV (q8 thunk, opentail-llm_kv_dot) vs single-block q8.</summary>
+    [Trait("Category", "Cuda")]
     [Fact]
     public void Gemma4_E4B_Q8SplitKv_MatchesSingleBlock()
         => AssertSplitKvDecodeParity("gemma-4-E4B-it-Q8_0.gguf", "q8_0", maxAbsTol: 2.5f);
 
     /// <summary>Qwen3-8B Q4_K, fp32 KV: all-global (non-SWA) decode, 32 heads / head_dim 128 —
     /// a different geometry than E4B's 8 heads / head_dim 512.</summary>
+    [Trait("Category", "Cuda")]
     [Fact]
     public void Qwen3_8B_Fp32SplitKv_MatchesSingleBlock()
         => AssertSplitKvDecodeParity("Qwen3-8B-Q4_K_M.gguf", "fp32", maxAbsTol: 1.0f);
@@ -477,6 +499,7 @@ public sealed class CudaForwardPassKvDtypeTests
     /// <summary>Gemma 4 12B QAT Q4_0, q8_0 KV: split-KV over the k_eq_v / per-layer-KV global
     /// layers — the riskiest geometry (V reuses K storage, 8 GQA / 1 MQA) and the headline
     /// 128K model. The other split tests use E4B (no k_eq_v) / Qwen3 (uniform KV).</summary>
+    [Trait("Category", "Cuda")]
     [Fact]
     public void Gemma4_12B_Q8SplitKv_MatchesSingleBlock()
         => AssertSplitKvDecodeParity("gemma-4-12b-it-qat-q4_0.gguf", "q8_0", maxAbsTol: 4.0f);
@@ -492,6 +515,7 @@ public sealed class CudaForwardPassKvDtypeTests
     /// actually instantiated (else the test would vacuously pass on a direct-launch fallback),
     /// and compare to the single-block reference. fp32 → reduction-order budget only.
     /// </summary>
+    [Trait("Category", "Cuda")]
     [Fact]
     public void Gemma4_E4B_SplitKv_GraphReplayCrossesBoundary()
     {
@@ -626,21 +650,25 @@ public sealed class CudaForwardPassKvDtypeTests
     }
 
     /// <summary>Gemma 4 E4B (2 KV heads, G=4): grouped fp32 vs single-block.</summary>
+    [Trait("Category", "Cuda")]
     [Fact]
     public void Gemma4_E4B_Fp32Grouped_MatchesSingleBlock()
         => AssertGroupedSplitKvParity("gemma-4-E4B-it-Q8_0.gguf", "fp32", maxAbsTol: 1.0f);
 
     /// <summary>Gemma 4 E4B, bf16 KV grouped thunk vs single-block (kernel correct for all dtypes).</summary>
+    [Trait("Category", "Cuda")]
     [Fact]
     public void Gemma4_E4B_Bf16Grouped_MatchesSingleBlock()
         => AssertGroupedSplitKvParity("gemma-4-E4B-it-Q8_0.gguf", "bf16", maxAbsTol: 2.0f);
 
     /// <summary>Gemma 4 E4B, q8_0 KV grouped thunk (opentail-llm_kv_dot_multi block-walk) vs single-block.</summary>
+    [Trait("Category", "Cuda")]
     [Fact]
     public void Gemma4_E4B_Q8Grouped_MatchesSingleBlock()
         => AssertGroupedSplitKvParity("gemma-4-E4B-it-Q8_0.gguf", "q8_0", maxAbsTol: 2.5f);
 
     /// <summary>Qwen3-8B (8 KV heads, G=4): a different group geometry than E4B's 2 KV heads.</summary>
+    [Trait("Category", "Cuda")]
     [Fact]
     public void Qwen3_8B_Fp32Grouped_MatchesSingleBlock()
         => AssertGroupedSplitKvParity("Qwen3-8B-Q4_K_M.gguf", "fp32", maxAbsTol: 1.0f);
@@ -735,11 +763,13 @@ public sealed class CudaForwardPassKvDtypeTests
     }
 
     /// <summary>Qwen3-8B Q4_K (non-SWA dense) bf16 KV: greedy decode stays coherent.</summary>
+    [Trait("Category", "Cuda")]
     [Fact]
     public void Qwen3_8B_Bf16Kv_GreedyDecode_Coherent()
         => AssertGreedyCoherence("Qwen3-8B-Q4_K_M.gguf", "bf16", Qwen3TemplatePrompt);
 
     /// <summary>Qwen3-8B Q4_K q8_0 KV: greedy decode stays coherent.</summary>
+    [Trait("Category", "Cuda")]
     [Fact]
     public void Qwen3_8B_Q8Kv_GreedyDecode_Coherent()
         => AssertGreedyCoherence("Qwen3-8B-Q4_K_M.gguf", "q8_0", Qwen3TemplatePrompt);
@@ -749,11 +779,13 @@ public sealed class CudaForwardPassKvDtypeTests
     /// default). The fp32 synthetic-prompt guard can't run bf16 greedily — this is the only
     /// coverage that the default narrowed dtype decodes coherently on a real prompt.
     /// </summary>
+    [Trait("Category", "Cuda")]
     [Fact]
     public void Gemma4_12B_Bf16Kv_GreedyDecode_Coherent()
         => AssertGreedyCoherence("gemma-4-12b-it-qat-q4_0.gguf", "bf16", Gemma4TemplatePrompt);
 
     /// <summary>Gemma 4 12B QAT q8_0 KV: greedy decode stays coherent.</summary>
+    [Trait("Category", "Cuda")]
     [Fact]
     public void Gemma4_12B_Q8Kv_GreedyDecode_Coherent()
         => AssertGreedyCoherence("gemma-4-12b-it-qat-q4_0.gguf", "q8_0", Gemma4TemplatePrompt);
@@ -766,11 +798,12 @@ public sealed class CudaForwardPassKvDtypeTests
     /// the existing chunked-prefill parity test only exercises teacher-forced. A wrapped-ring
     /// OOB read/write would surface as NaN or a degenerate single-token collapse here.
     /// </summary>
+    [Trait("Category", "Cuda")]
     [Fact]
     public void Gemma4_E4B_Bf16Kv_GreedyDecodePastSwaRingWrap_Coherent()
     {
         // AssertGreedyCoherence creates its own backend; just gate the prompt build here.
-        Assert.SkipUnless(CudaBackend.IsAvailable(), "no CUDA device in this environment");
+        Assert.SkipUnless(CudaTestGpu.IsAvailable, "no CUDA device in this environment");
         var path = FindModelPath("gemma-4-E4B-it-Q8_0.gguf");
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 

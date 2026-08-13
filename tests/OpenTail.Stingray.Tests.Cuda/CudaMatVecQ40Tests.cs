@@ -2,7 +2,7 @@ using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Cpu;
 using OpenTail.Stingray.Cuda;
 
-namespace OpenTail.Stingray.Tests.ForwardPass;
+namespace OpenTail.Stingray.Tests.Cuda;
 
 /// <summary>
 /// Parity test for the Q4_0 CUDA matvec kernel (<c>llm_matvec_q4_0</c>), the
@@ -15,14 +15,10 @@ namespace OpenTail.Stingray.Tests.ForwardPass;
 /// the SAME raw bytes — so this validates the GPU dequant-dot semantics, not a
 /// quantizer's choice of d. Silently skips on hosts without CUDA.
 /// </summary>
+[Trait("Category", "Cuda")]
 public sealed unsafe class CudaMatVecQ40Tests
 {
-    private static CudaBackend? TryCreate()
-    {
-        if (!CudaBackend.IsAvailable()) return null;
-        try { return CudaBackend.Create(); }
-        catch { return null; }
-    }
+    private static CudaBackend? TryCreate() => CudaTestGpu.TryCreate();
 
     /// <summary>
     /// Build <paramref name="rows"/> rows of <paramref name="cols"/> Q4_0-encoded

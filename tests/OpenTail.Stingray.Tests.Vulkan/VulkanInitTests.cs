@@ -1,6 +1,6 @@
 using OpenTail.Stingray.Core;
 
-namespace OpenTail.Stingray.Tests.ForwardPass;
+namespace OpenTail.Stingray.Tests.Vulkan;
 
 public sealed class VulkanInitTests
 {
@@ -17,11 +17,11 @@ public sealed class VulkanInitTests
     /// <para>This only absorbs failures from the CONSTRUCTOR. Once a device exists, every shader
     /// assertion runs and fails normally — the guard cannot hide a correctness defect.</para>
     /// </summary>
-    private static Vulkan.VulkanBackend CreateBackendOrSkip()
+    private static global::OpenTail.Stingray.Vulkan.VulkanBackend CreateBackendOrSkip()
     {
         try
         {
-            return new Vulkan.VulkanBackend();
+            return new global::OpenTail.Stingray.Vulkan.VulkanBackend();
         }
         catch (Exception ex)
         {
@@ -89,7 +89,7 @@ public sealed class VulkanInitTests
         // This shader is written for the test and so is absent from the committed SPIR-V table,
         // which makes it the one path that genuinely needs glslc. Assert.Skip, not `return`: a
         // silent early return is indistinguishable from a pass in the summary.
-        if (Vulkan.ShaderCompiler.FindGlslc() is null)
+        if (global::OpenTail.Stingray.Vulkan.ShaderCompiler.FindGlslc() is null)
             Assert.Skip("glslc not found — install the Vulkan SDK to exercise the compile fallback");
 
         using var backend = CreateBackendOrSkip();
@@ -116,7 +116,7 @@ public sealed class VulkanInitTests
         var gpuB = backend.Upload(srcB, TensorShape.D1(N));
         var gpuC = backend.Allocate(TensorShape.D1(N));
 
-        using var pipeline = new Vulkan.ComputePipeline(backend, shaderSource,
+        using var pipeline = new global::OpenTail.Stingray.Vulkan.ComputePipeline(backend, shaderSource,
             bindingCount: 3, pushConstantSize: sizeof(uint));
 
         var ds = pipeline.AllocateDescriptorSet();

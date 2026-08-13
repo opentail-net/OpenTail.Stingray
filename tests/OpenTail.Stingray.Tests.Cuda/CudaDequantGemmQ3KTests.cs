@@ -2,7 +2,7 @@ using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Cpu;
 using OpenTail.Stingray.Cuda;
 
-namespace OpenTail.Stingray.Tests.ForwardPass;
+namespace OpenTail.Stingray.Tests.Cuda;
 
 /// <summary>
 /// Issue #388: parity for the Q3_K dequant→fp16→cuBLAS GEMM
@@ -24,14 +24,10 @@ namespace OpenTail.Stingray.Tests.ForwardPass;
 ///
 /// Silent no-op on hosts without CUDA, matching the other Cuda* test files.
 /// </summary>
+[Trait("Category", "Cuda")]
 public sealed unsafe class CudaDequantGemmQ3KTests
 {
-    private static CudaBackend? TryCreate()
-    {
-        if (!CudaBackend.IsAvailable()) return null;
-        try { return CudaBackend.Create(); }
-        catch { return null; }
-    }
+    private static CudaBackend? TryCreate() => CudaTestGpu.TryCreate();
 
     private static ushort HalfToUshort(Half h) => BitConverter.HalfToUInt16Bits(h);
 

@@ -1,7 +1,7 @@
 using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Cuda;
 
-namespace OpenTail.Stingray.Tests.ForwardPass;
+namespace OpenTail.Stingray.Tests.Cuda;
 
 /// <summary>
 /// Issue #146: validates the <c>mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32</c>
@@ -14,14 +14,10 @@ namespace OpenTail.Stingray.Tests.ForwardPass;
 ///
 /// Silent no-op on hosts without CUDA, matching the other Cuda* test files.
 /// </summary>
+[Trait("Category", "Cuda")]
 public sealed unsafe class CudaMmaPrimitiveTests
 {
-    private static CudaBackend? TryCreate()
-    {
-        if (!CudaBackend.IsAvailable()) return null;
-        try { return CudaBackend.Create(); }
-        catch { return null; }
-    }
+    private static CudaBackend? TryCreate() => CudaTestGpu.TryCreate();
 
     [Fact]
     public void MmaM16N8K16_F32_MatchesCpuReference()

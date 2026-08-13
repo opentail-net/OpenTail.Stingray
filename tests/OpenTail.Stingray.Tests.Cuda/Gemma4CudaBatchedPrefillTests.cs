@@ -2,7 +2,7 @@ using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Cuda;
 using OpenTail.Stingray.Engine;
 
-namespace OpenTail.Stingray.Tests.ForwardPass;
+namespace OpenTail.Stingray.Tests.Cuda;
 
 /// <summary>
 /// Issue #141: the all-GPU batched-trunk prefill for Gemma 4 routes its Q8_0 trunk
@@ -21,16 +21,12 @@ namespace OpenTail.Stingray.Tests.ForwardPass;
 /// runs (two 8 GB instances would not co-reside). Silent-skips when CUDA or the GGUF
 /// is absent.
 /// </summary>
+[Trait("Category", "Cuda")]
 public sealed class Gemma4CudaBatchedPrefillTests
 {
     private const string ModelFile = "gemma-4-E4B-it-Q8_0.gguf";
 
-    private static CudaBackend? TryCreate()
-    {
-        if (!CudaBackend.IsAvailable()) return null;
-        try { return CudaBackend.Create(); }
-        catch { return null; }
-    }
+    private static CudaBackend? TryCreate() => CudaTestGpu.TryCreate();
 
     private static string? FindModelPath()
     {

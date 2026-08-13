@@ -2,7 +2,7 @@ using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Vulkan;
 using Xunit;
 
-namespace OpenTail.Stingray.Tests.ForwardPass;
+namespace OpenTail.Stingray.Tests.Vulkan;
 
 /// <summary>
 /// Parity gate for <see cref="VulkanBackend.AttentionBatchedFlash"/> against the

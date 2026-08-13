@@ -2,7 +2,7 @@ using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Cpu;
 using OpenTail.Stingray.Cuda;
 
-namespace OpenTail.Stingray.Tests.ForwardPass;
+namespace OpenTail.Stingray.Tests.Cuda;
 
 /// <summary>
 /// Issue #141 (MMQ): parity for the int8 tensor-core Q8_0×Q8_1 batched matmul
@@ -16,14 +16,10 @@ namespace OpenTail.Stingray.Tests.ForwardPass;
 ///
 /// Silent no-op on hosts without CUDA, matching the other Cuda* test files.
 /// </summary>
+[Trait("Category", "Cuda")]
 public sealed unsafe class CudaMmqQ8_0Tests
 {
-    private static CudaBackend? TryCreate()
-    {
-        if (!CudaBackend.IsAvailable()) return null;
-        try { return CudaBackend.Create(); }
-        catch { return null; }
-    }
+    private static CudaBackend? TryCreate() => CudaTestGpu.TryCreate();
 
     private static ushort HalfToUshort(Half h) =>
         BitConverter.ToUInt16(BitConverter.GetBytes(h), 0);

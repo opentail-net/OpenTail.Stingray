@@ -4,7 +4,7 @@ using OpenTail.Stingray.Engine;
 using OpenTail.Stingray.Vulkan;
 using Vortice.Vulkan;
 
-namespace OpenTail.Stingray.Tests.ForwardPass;
+namespace OpenTail.Stingray.Tests.Vulkan;
 
 /// <summary>
 /// End-to-end Gemma 4 inference parity for the Vulkan <see cref="GpuForwardPass"/> (issue #309).

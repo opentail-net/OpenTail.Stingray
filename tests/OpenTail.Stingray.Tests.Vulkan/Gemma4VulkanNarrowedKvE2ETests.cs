@@ -1,9 +1,10 @@
 using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Engine;
+using OpenTail.Stingray.Tests.ForwardPass;
 using OpenTail.Stingray.Vulkan;
 using Vortice.Vulkan;
 
-namespace OpenTail.Stingray.Tests.ForwardPass;
+namespace OpenTail.Stingray.Tests.Vulkan;
 
 /// <summary>
 /// End-to-end Gemma 4 E4B on the Vulkan <see cref="GpuForwardPass"/> with a NARROWED KV cache

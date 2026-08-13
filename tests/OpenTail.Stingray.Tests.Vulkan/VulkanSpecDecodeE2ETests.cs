@@ -2,7 +2,7 @@ using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Engine;
 using OpenTail.Stingray.Vulkan;
 
-namespace OpenTail.Stingray.Tests.ForwardPass;
+namespace OpenTail.Stingray.Tests.Vulkan;
 
 /// <summary>
 /// Issue #308 PR2 (the finale): end-to-end speculative-decoding correctness on the dense Vulkan

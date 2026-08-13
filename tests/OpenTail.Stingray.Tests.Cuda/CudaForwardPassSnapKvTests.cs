@@ -2,7 +2,7 @@ using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Cuda;
 using OpenTail.Stingray.Engine;
 
-namespace OpenTail.Stingray.Tests.ForwardPass;
+namespace OpenTail.Stingray.Tests.Cuda;
 
 /// <summary>
 /// SnapKV (issue #59) CudaForwardPass coverage — the dense full-GPU path that
@@ -19,15 +19,12 @@ namespace OpenTail.Stingray.Tests.ForwardPass;
 ///
 /// Skipped silently when CUDA is unavailable or the Qwen3-8B GGUF isn't on disk.
 /// </summary>
+[Trait("Category", "Cuda")]
 public sealed class CudaForwardPassSnapKvTests
 {
     private const string ModelFile = "Qwen3-8B-Q4_K_M.gguf";
 
-    private static CudaBackend? TryCreate()
-    {
-        if (!CudaBackend.IsAvailable()) return null;
-        try { return CudaBackend.Create(); } catch { return null; }
-    }
+    private static CudaBackend? TryCreate() => CudaTestGpu.TryCreate();
 
     private static string? FindModelPath()
     {

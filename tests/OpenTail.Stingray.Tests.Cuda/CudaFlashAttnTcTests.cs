@@ -1,7 +1,7 @@
 using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Cuda;
 
-namespace OpenTail.Stingray.Tests.ForwardPass;
+namespace OpenTail.Stingray.Tests.Cuda;
 
 /// <summary>
 /// Issue #146: parity for the tensor-core flash-attention prefill
@@ -24,14 +24,10 @@ namespace OpenTail.Stingray.Tests.ForwardPass;
 ///
 /// Silent no-op on hosts without CUDA, matching the other Cuda* test files.
 /// </summary>
+[Trait("Category", "Cuda")]
 public sealed unsafe class CudaFlashAttnTcTests
 {
-    private static CudaBackend? TryCreate()
-    {
-        if (!CudaBackend.IsAvailable()) return null;
-        try { return CudaBackend.Create(); }
-        catch { return null; }
-    }
+    private static CudaBackend? TryCreate() => CudaTestGpu.TryCreate();
 
     // (numHeads, numKvHeads, headDim, window, nTok, startPos). window=0 → global (full causal).
     // All head_dims are multiples of 64 so the same matrix exercises both the #146 single-warp

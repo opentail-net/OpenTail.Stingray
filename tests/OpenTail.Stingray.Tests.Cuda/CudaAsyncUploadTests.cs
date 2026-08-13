@@ -2,7 +2,7 @@ using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Cuda;
 using OpenTail.Stingray.Engine;
 
-namespace OpenTail.Stingray.Tests.ForwardPass;
+namespace OpenTail.Stingray.Tests.Cuda;
 
 /// <summary>
 /// Tests for the issue #78 async CUDA upload stream: dedicated upload stream,
@@ -11,14 +11,10 @@ namespace OpenTail.Stingray.Tests.ForwardPass;
 ///
 /// Silently skips on hosts without CUDA, same pattern as the other Cuda* tests.
 /// </summary>
+[Trait("Category", "Cuda")]
 public sealed class CudaAsyncUploadTests
 {
-    private static CudaBackend? TryCreate()
-    {
-        if (!CudaBackend.IsAvailable()) return null;
-        try { return CudaBackend.Create(); }
-        catch { return null; }
-    }
+    private static CudaBackend? TryCreate() => CudaTestGpu.TryCreate();
 
     /// <summary>
     /// Smoke-test the event signal/wait semantics: UploadBackground returns a

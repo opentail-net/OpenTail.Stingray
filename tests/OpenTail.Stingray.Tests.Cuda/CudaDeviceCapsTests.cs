@@ -1,6 +1,6 @@
 using OpenTail.Stingray.Cuda;
 
-namespace OpenTail.Stingray.Tests.ForwardPass;
+namespace OpenTail.Stingray.Tests.Cuda;
 
 /// <summary>
 /// Synthetic capability tests for <see cref="CudaDeviceCaps"/>, covering every SM family the

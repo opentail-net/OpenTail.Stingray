@@ -23,12 +23,19 @@ public enum SessionState
 /// <summary>
 /// Rich inference checkpoint capturing committed token position, logical KV state, and deterministic sampling RNG state.
 /// </summary>
+/// <param name="CheckpointGeneration">
+/// The session's continuation-token generation counter at the moment this checkpoint was taken.
+/// <see cref="IInferenceSession.Rollback"/> restores it so a continuation token issued at (or
+/// before) the checkpoint's position validates correctly after rolling back, instead of being
+/// spuriously rejected as stale against a generation the session advanced past and then reverted.
+/// </param>
 public readonly record struct SessionCheckpoint(
     SessionId SessionId,
     long TokenPosition,
     int RngSeed,
     int RngStep,
     IReadOnlyList<int> CommittedTokens,
+    long CheckpointGeneration,
     DateTimeOffset CreatedAt);
 
 /// <summary>
@@ -60,6 +67,13 @@ public interface IInferenceSession : IAsyncDisposable
     IReadOnlyList<int> TokenHistory { get; }
     IKvSequence KvSequence { get; }
     ISessionMetadata Metadata { get; }
+
+    /// <summary>
+    /// The identifier of the model this session is bound to. Used (among other things) to
+    /// namespace cross-session KV prefix sharing so sessions running different models are never
+    /// treated as prefix-compatible.
+    /// </summary>
+    string ModelId { get; }
 
     /// <summary>Read-only metrics surface exposing per-session inference and physical KV page usage statistics.</summary>
     ISessionMetrics Metrics { get; }

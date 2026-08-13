@@ -2,7 +2,7 @@ using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Cpu;
 using OpenTail.Stingray.Cuda;
 
-namespace OpenTail.Stingray.Tests.ForwardPass;
+namespace OpenTail.Stingray.Tests.Cuda;
 
 /// <summary>
 /// Unit tests for the three NVRTC kernels added to support the qwen35moe GPU
@@ -11,14 +11,10 @@ namespace OpenTail.Stingray.Tests.ForwardPass;
 /// <see cref="CudaBackend.SplitQG"/>. Each test silently no-ops on hosts
 /// without CUDA, mirroring <c>CudaTurboQuantTests</c>.
 /// </summary>
+[Trait("Category", "Cuda")]
 public sealed unsafe class CudaAttnKernelsTests
 {
-    private static CudaBackend? TryCreate()
-    {
-        if (!CudaBackend.IsAvailable()) return null;
-        try { return CudaBackend.Create(); }
-        catch { return null; }
-    }
+    private static CudaBackend? TryCreate() => CudaTestGpu.TryCreate();
 
     [Fact]
     public void RoPEPartial_MatchesCpuReference()

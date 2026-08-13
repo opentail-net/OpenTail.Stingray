@@ -3,7 +3,7 @@ using OpenTail.Stingray.Cpu;
 using OpenTail.Stingray.Engine;
 using OpenTail.Stingray.Cuda;
 
-namespace OpenTail.Stingray.Tests.ForwardPass;
+namespace OpenTail.Stingray.Tests.Cuda;
 
 /// <summary>
 /// Issue #178: single-user speculative-decode <see cref="CudaForwardPass.BatchVerify"/> on the
@@ -26,6 +26,7 @@ namespace OpenTail.Stingray.Tests.ForwardPass;
 /// the ≥32K context this feature targets. Silent-skips when CUDA or the GGUF is absent; mirrors
 /// <see cref="Gemma4CudaBatchForwardMultiTests"/>.
 /// </summary>
+[Trait("Category", "Cuda")]
 public sealed class CudaSpecBatchVerifyGemma4Tests
 {
     // E4B Q8_0 exercises the richest Gemma-4 geometry (per-layer head_dim 256, SWA rings, the
@@ -44,12 +45,7 @@ public sealed class CudaSpecBatchVerifyGemma4Tests
         "gemma-4-E2B-it-Q8_0.gguf",
     };
 
-    private static CudaBackend? TryCreate()
-    {
-        if (!CudaBackend.IsAvailable()) return null;
-        try { return CudaBackend.Create(); }
-        catch { return null; }
-    }
+    private static CudaBackend? TryCreate() => CudaTestGpu.TryCreate();
 
     // SnapKV pinned off (it is structurally off for Gemma-4 anyway): keeps the oracle
     // machine-independent, matching the other Gemma-4 CUDA test fixtures.

@@ -4,7 +4,7 @@ using OpenTail.Stingray.Engine;
 using OpenTail.Stingray.Pipeline;
 using Xunit;
 
-namespace OpenTail.Stingray.Tests.ForwardPass;
+namespace OpenTail.Stingray.Tests.Cuda;
 
 /// <summary>
 /// Issue #230: narrowed KV (--kv-type bf16/q8_0, #179) on the layer-split pure-attention MoE
@@ -20,6 +20,7 @@ namespace OpenTail.Stingray.Tests.ForwardPass;
 /// q8_0 is skipped for a model whose per-layer kvDim isn't a multiple of 32 (the geometry the
 /// ctor rejects). Compute-routing is pinned OFF so the batched prefill is deterministic per arm.
 /// </summary>
+[Trait("Category", "Cuda")]
 public sealed class CudaHybridKvDtypeTests : IDisposable
 {
     private readonly ITestOutputHelper _out;
@@ -32,11 +33,7 @@ public sealed class CudaHybridKvDtypeTests : IDisposable
     }
     public void Dispose() => CudaHybridForwardPass.HybridPrefillComputeEnabled = _prevCompute;
 
-    private static CudaBackend? TryCreate()
-    {
-        if (!CudaBackend.IsAvailable()) return null;
-        try { return CudaBackend.Create(); } catch { return null; }
-    }
+    private static CudaBackend? TryCreate() => CudaTestGpu.TryCreate();
 
     private static string? FirstExisting(params string[] c)
     {
@@ -301,7 +298,7 @@ public sealed class CudaHybridKvDtypeTests : IDisposable
     public void Coder30B_Q8Kv_Wave_ArgmaxStable()
     {
         var path = CoderPath();
-        Assert.SkipUnless(path is not null && CudaBackend.IsAvailable(), "model fixture or CUDA device not present in this environment");
+        Assert.SkipUnless(path is not null && CudaTestGpu.IsAvailable, "model fixture or CUDA device not present in this environment");
         AssertKvParity(path, "q8_0", LongPrompt(path, 4600), maxAbsTol: 8.0f, ctx: 6144);
     }
 

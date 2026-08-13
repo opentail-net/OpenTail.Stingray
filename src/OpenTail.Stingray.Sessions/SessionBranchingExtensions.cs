@@ -45,17 +45,20 @@ public static class SessionBranchingExtensions
 
         var tasks = branches.Select(async (branch, index) =>
         {
-            var generatedTokens = new List<int>();
+            // GenerateChunk carries decoded TEXT, not a per-chunk token id -- parsing chunk.Text
+            // as an integer only ever succeeds by coincidence (real generated text isn't numeric),
+            // so GeneratedTokens was silently empty for every real generation. Recover the actual
+            // generated token ids from the session's own TokenHistory (before/after this branch's
+            // generation) instead of trying to reconstruct them from the text stream.
+            int tokensBefore = (int)branch.TokenCount;
             var textBuilder = new StringBuilder();
 
             await foreach (var chunk in branch.GenerateAsync(sampling, cancellationToken).ConfigureAwait(false))
             {
-                if (int.TryParse(chunk.Text, out int tokenId))
-                {
-                    generatedTokens.Add(tokenId);
-                }
                 textBuilder.Append(chunk.Text);
             }
+
+            var generatedTokens = branch.TokenHistory.Skip(tokensBefore).ToList();
 
             return new InferenceBranchResult(
                 BranchIndex: index,

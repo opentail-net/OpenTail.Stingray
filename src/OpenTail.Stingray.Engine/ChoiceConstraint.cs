@@ -69,7 +69,15 @@ public sealed class TokenChoiceTrie
             _currentNode = root;
         }
 
-        public bool IsComplete => _currentNode.IsTerminal && _currentNode.Children.Count == 0;
+        // A terminal node is always a valid stopping point, even when it also has children (one
+        // allowed choice is a token-prefix of another, e.g. "APPROVED" / "APPROVED_WITH_CHANGES").
+        // Requiring zero children here made the shorter choice permanently unreachable: the
+        // generation loop checks IsComplete before sampling each next token, so once this node is
+        // reached the loop stops immediately, before MaskLogits could ever force-continue toward
+        // the longer choice. Dropping the children check means the shortest matching choice wins
+        // when choices share a prefix -- deterministic and predictable, versus the prior behavior
+        // of the shorter choice being silently impossible to produce at all.
+        public bool IsComplete => _currentNode.IsTerminal;
         public bool IsTerminal => _currentNode.IsTerminal;
         public bool HasChildren => _currentNode.Children.Count > 0;
 

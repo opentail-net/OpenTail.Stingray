@@ -34,15 +34,10 @@
     <ProjectReference Include="..\..\src\OpenTail.Stingray.Engine\OpenTail.Stingray.Engine.csproj" />
     <ProjectReference Include="..\..\src\OpenTail.Stingray.Vision\OpenTail.Stingray.Vision.csproj" />
     <ProjectReference Include="..\..\src\OpenTail.Stingray.Vulkan\OpenTail.Stingray.Vulkan.csproj" />
-  </ItemGroup>
-
-  <ItemGroup>
-    <!-- CudaDSparkDraftModelTests (Tests.Cuda) reuses DSparkDraftModelTests' internal
-         synthetic-checkpoint generator. -->
-    <InternalsVisibleTo Include="OpenTail.Stingray.Tests.Cuda" />
-    <!-- Gemma4VulkanNarrowedKvE2ETests/Gemma4VulkanPleE2ETests (Tests.Vulkan) reuse the
-         internal Gemma4TestPrompt helper. -->
-    <InternalsVisibleTo Include="OpenTail.Stingray.Tests.Vulkan" />
+    <!-- CudaDSparkDraftModelTests reuses DSparkDraftModelTests' synthetic-checkpoint
+         generator (SyntheticHead/MakeTaps) to build a comparable CPU/CUDA pair — that
+         helper is CPU-only and stays with the CPU test class it belongs to. -->
+    <ProjectReference Include="..\OpenTail.Stingray.Tests.ForwardPass\OpenTail.Stingray.Tests.ForwardPass.csproj" />
   </ItemGroup>
 
 </Project>

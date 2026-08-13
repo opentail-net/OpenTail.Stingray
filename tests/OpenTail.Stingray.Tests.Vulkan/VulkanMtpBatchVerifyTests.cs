@@ -3,7 +3,7 @@ using OpenTail.Stingray.Engine;
 using OpenTail.Stingray.Vulkan;
 using Vortice.Vulkan;
 
-namespace OpenTail.Stingray.Tests.ForwardPass;
+namespace OpenTail.Stingray.Tests.Vulkan;
 
 /// <summary>
 /// Pure-Vulkan coverage for the k-token MTP batched verify mechanism (issues #30 / #207 /

@@ -1,7 +1,7 @@
 using OpenTail.Stingray.Vulkan;
 using Xunit;
 
-namespace OpenTail.Stingray.Tests.ForwardPass;
+namespace OpenTail.Stingray.Tests.Vulkan;
 
 /// <summary>
 /// The split-KV slice size exists in two places that cannot share a symbol: the C# constant
@@ -23,9 +23,9 @@ public sealed class VulkanSplitKvChunkConsistencyTests
     // repo) reject Assembly.GetType/GetField.
     public static TheoryData<string, string> Shaders() => new()
     {
-        { nameof(Vulkan.Shaders.AttentionSplitKvPartial),     Vulkan.Shaders.AttentionSplitKvPartial },
-        { nameof(Vulkan.Shaders.AttentionSplitKvPartialBf16), Vulkan.Shaders.AttentionSplitKvPartialBf16 },
-        { nameof(Vulkan.Shaders.AttentionSplitKvPartialQ8),   Vulkan.Shaders.AttentionSplitKvPartialQ8 },
+        { nameof(global::OpenTail.Stingray.Vulkan.Shaders.AttentionSplitKvPartial),     global::OpenTail.Stingray.Vulkan.Shaders.AttentionSplitKvPartial },
+        { nameof(global::OpenTail.Stingray.Vulkan.Shaders.AttentionSplitKvPartialBf16), global::OpenTail.Stingray.Vulkan.Shaders.AttentionSplitKvPartialBf16 },
+        { nameof(global::OpenTail.Stingray.Vulkan.Shaders.AttentionSplitKvPartialQ8),   global::OpenTail.Stingray.Vulkan.Shaders.AttentionSplitKvPartialQ8 },
     };
 
     [Theory]

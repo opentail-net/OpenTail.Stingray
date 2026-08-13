@@ -4,7 +4,7 @@ using OpenTail.Stingray.Vision;
 using OpenTail.Stingray.Vulkan;
 using Vortice.Vulkan;
 
-namespace OpenTail.Stingray.Tests.ForwardPass;
+namespace OpenTail.Stingray.Tests.Vulkan;
 
 /// <summary>
 /// End-to-end image→text for Gemma 4 on the Vulkan <see cref="GpuForwardPass"/> (issue #252):

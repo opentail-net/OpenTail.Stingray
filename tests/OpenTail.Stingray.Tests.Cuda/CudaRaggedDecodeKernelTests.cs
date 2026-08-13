@@ -1,7 +1,7 @@
 using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Cuda;
 
-namespace OpenTail.Stingray.Tests.ForwardPass;
+namespace OpenTail.Stingray.Tests.Cuda;
 
 /// <summary>
 /// Issue #197 bit-exactness tests for the ragged-batched decode kernels
@@ -20,14 +20,10 @@ namespace OpenTail.Stingray.Tests.ForwardPass;
 ///
 /// Silently skips on hosts without CUDA, mirroring the other Cuda* test files.
 /// </summary>
+[Trait("Category", "Cuda")]
 public sealed class CudaRaggedDecodeKernelTests
 {
-    private static CudaBackend? TryCreate()
-    {
-        if (!CudaBackend.IsAvailable()) return null;
-        try { return CudaBackend.Create(); }
-        catch { return null; }
-    }
+    private static CudaBackend? TryCreate() => CudaTestGpu.TryCreate();
 
     private static readonly int[] BatchSizes = { 1, 2, 3, 5, 8, 16, 17, 20 };
 

@@ -3,7 +3,7 @@ using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Cpu;
 using OpenTail.Stingray.Cuda;
 
-namespace OpenTail.Stingray.Tests.ForwardPass;
+namespace OpenTail.Stingray.Tests.Cuda;
 
 /// <summary>
 /// Parity tests for the Phase-0 Q8_0 CUDA kernels: <c>llm_matvec_q8_0</c> and
@@ -19,14 +19,10 @@ namespace OpenTail.Stingray.Tests.ForwardPass;
 /// CPU and GPU) and float reduction ordering — tolerance 1e-3 absolute or
 /// 1e-3 relative.
 /// </summary>
+[Trait("Category", "Cuda")]
 public sealed unsafe class CudaQ8_0Tests
 {
-    private static CudaBackend? TryCreate()
-    {
-        if (!CudaBackend.IsAvailable()) return null;
-        try { return CudaBackend.Create(); }
-        catch { return null; }
-    }
+    private static CudaBackend? TryCreate() => CudaTestGpu.TryCreate();
 
     /// <summary>
     /// Build <paramref name="rows"/> rows of <paramref name="cols"/> Q8_0-encoded

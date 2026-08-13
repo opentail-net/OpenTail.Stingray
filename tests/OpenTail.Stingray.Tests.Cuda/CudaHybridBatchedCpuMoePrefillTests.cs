@@ -3,7 +3,7 @@ using OpenTail.Stingray.Cuda;
 using OpenTail.Stingray.Engine;
 using OpenTail.Stingray.Pipeline;
 
-namespace OpenTail.Stingray.Tests.ForwardPass;
+namespace OpenTail.Stingray.Tests.Cuda;
 
 /// <summary>
 /// Issue #410: byte-parity guard for the batched CPU-MoE routed-expert prefill on the
@@ -23,6 +23,7 @@ namespace OpenTail.Stingray.Tests.ForwardPass;
 /// Skipped silently when CUDA is unavailable, the model isn't on disk, or construction
 /// OOMs — but a failure INSIDE Prefill must FAIL, not skip.
 /// </summary>
+[Trait("Category", "Cuda")]
 public sealed class CudaHybridBatchedCpuMoePrefillTests : IDisposable
 {
     private readonly ITestOutputHelper _out;
@@ -37,11 +38,7 @@ public sealed class CudaHybridBatchedCpuMoePrefillTests : IDisposable
     }
     public void Dispose() => CudaHybridForwardPass.HybridPrefillComputeEnabled = _prevHybridCompute;
 
-    private static CudaBackend? TryCreate()
-    {
-        if (!CudaBackend.IsAvailable()) return null;
-        try { return CudaBackend.Create(); } catch { return null; }
-    }
+    private static CudaBackend? TryCreate() => CudaTestGpu.TryCreate();
 
     private static string? FindCoderPath() => FirstExisting(
         @"C:\p\opentail-llm\models\Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf",

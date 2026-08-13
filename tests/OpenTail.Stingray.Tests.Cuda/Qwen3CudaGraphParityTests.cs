@@ -2,7 +2,7 @@ using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Cuda;
 using OpenTail.Stingray.Engine;
 
-namespace OpenTail.Stingray.Tests.ForwardPass;
+namespace OpenTail.Stingray.Tests.Cuda;
 
 /// <summary>
 /// Bit-parity oracle for CUDA Graph decode on the <b>non-Gemma dense</b> path (issue #158,
@@ -15,6 +15,7 @@ namespace OpenTail.Stingray.Tests.ForwardPass;
 /// Silent-skip pattern: no-ops when CUDA isn't available or the GGUF isn't on disk, matching
 /// the sibling Qwen3Cuda* / Gemma4Cuda* test files.
 /// </summary>
+[Trait("Category", "Cuda")]
 public sealed class Qwen3CudaGraphParityTests
 {
     private const string ModelFile = "Qwen3-8B-Q4_K_M.gguf";
@@ -24,12 +25,7 @@ public sealed class Qwen3CudaGraphParityTests
     private static readonly int[] Tokens =
         { 9707, 11, 1879, 0, 358, 1079, 264, 4108, 1614, 13, 220, 17, 18, 19 };
 
-    private static CudaBackend? TryCreate()
-    {
-        if (!CudaBackend.IsAvailable()) return null;
-        try { return CudaBackend.Create(); }
-        catch { return null; }
-    }
+    private static CudaBackend? TryCreate() => CudaTestGpu.TryCreate();
 
     private static string? FindModelPath()
     {
@@ -66,7 +62,7 @@ public sealed class Qwen3CudaGraphParityTests
     [Fact]
     public void Qwen3_8B_CudaGraph_AllGpu_BitMatchesDirectLaunch()
     {
-        Assert.SkipUnless(CudaBackend.IsAvailable(), "no CUDA device in this environment");
+        Assert.SkipUnless(CudaTestGpu.IsAvailable, "no CUDA device in this environment");
         var path = FindModelPath();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
@@ -132,7 +128,7 @@ public sealed class Qwen3CudaGraphParityTests
     [Fact]
     public void Qwen3_8B_CudaGraph_SnapKvConfiguredNoEvict_BitMatches()
     {
-        Assert.SkipUnless(CudaBackend.IsAvailable(), "no CUDA device in this environment");
+        Assert.SkipUnless(CudaTestGpu.IsAvailable, "no CUDA device in this environment");
         var path = FindModelPath();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 

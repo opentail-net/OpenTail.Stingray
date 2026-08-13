@@ -3,7 +3,7 @@ using OpenTail.Stingray.Cpu;
 using OpenTail.Stingray.Engine;
 using OpenTail.Stingray.Cuda;
 
-namespace OpenTail.Stingray.Tests.ForwardPass;
+namespace OpenTail.Stingray.Tests.Cuda;
 
 /// <summary>
 /// Issue #207: single-user speculative decoding on the dense CUDA path.
@@ -23,6 +23,7 @@ namespace OpenTail.Stingray.Tests.ForwardPass;
 /// production flow (verify overwrites the stale rewound K/V slots). Silent-skips when CUDA
 /// or the GGUF is absent — mirrors <see cref="CudaBatchForwardMultiTests"/>.
 /// </summary>
+[Trait("Category", "Cuda")]
 public sealed class CudaSpecBatchVerifyTests
 {
     private const string TargetModelFile = "Qwen3-8B-Q4_K_M.gguf";
@@ -30,12 +31,7 @@ public sealed class CudaSpecBatchVerifyTests
 
     private static readonly int[] Prompt = { 9707, 11, 1879, 0, 358, 1079, 264, 4108, 1614, 13 };
 
-    private static CudaBackend? TryCreate()
-    {
-        if (!CudaBackend.IsAvailable()) return null;
-        try { return CudaBackend.Create(); }
-        catch { return null; }
-    }
+    private static CudaBackend? TryCreate() => CudaTestGpu.TryCreate();
 
     // SnapKV pinned off: BatchVerify is unsupported under an active SnapKV budget, and
     // VRAM-scaled auto-SnapKV could otherwise engage on a smaller GPU and flip

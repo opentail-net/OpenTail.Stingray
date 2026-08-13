@@ -2,7 +2,7 @@ using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Cuda;
 using OpenTail.Stingray.Engine;
 
-namespace OpenTail.Stingray.Tests.ForwardPass;
+namespace OpenTail.Stingray.Tests.Cuda;
 
 /// <summary>
 /// Bit-parity oracle for CUDA Graph decode (issue #136). The captured-and-replayed
@@ -13,16 +13,12 @@ namespace OpenTail.Stingray.Tests.ForwardPass;
 /// Silent-skip pattern: no-ops when CUDA isn't available or the GGUF isn't on disk,
 /// matching the sibling Gemma4Cuda* test files.
 /// </summary>
+[Trait("Category", "Cuda")]
 public sealed class Gemma4CudaGraphParityTests
 {
     private const string ModelFile = "gemma-4-E4B-it-Q8_0.gguf";
 
-    private static CudaBackend? TryCreate()
-    {
-        if (!CudaBackend.IsAvailable()) return null;
-        try { return CudaBackend.Create(); }
-        catch { return null; }
-    }
+    private static CudaBackend? TryCreate() => CudaTestGpu.TryCreate();
 
     private static string? FindModelPath()
     {
@@ -64,7 +60,7 @@ public sealed class Gemma4CudaGraphParityTests
     [Fact]
     public void Gemma4_E4B_CudaGraph_AllGpu_BitMatchesDirectLaunch()
     {
-        Assert.SkipUnless(CudaBackend.IsAvailable(), "no CUDA device in this environment");
+        Assert.SkipUnless(CudaTestGpu.IsAvailable, "no CUDA device in this environment");
         var path = FindModelPath();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
@@ -121,7 +117,7 @@ public sealed class Gemma4CudaGraphParityTests
     [Fact]
     public void Gemma4_E4B_CudaGraph_Hybrid_BitMatchesDirectLaunch()
     {
-        Assert.SkipUnless(CudaBackend.IsAvailable(), "no CUDA device in this environment");
+        Assert.SkipUnless(CudaTestGpu.IsAvailable, "no CUDA device in this environment");
         var path = FindModelPath();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
@@ -189,7 +185,7 @@ public sealed class Gemma4CudaGraphParityTests
         // and graphs MUST engage and match bit-for-bit. (Even on a full-attention model
         // where SnapKV stays enabled, a configured-but-unevicted budget keeps
         // _kvEvictedCount == 0, so the same invariant holds.)
-        Assert.SkipUnless(CudaBackend.IsAvailable(), "no CUDA device in this environment");
+        Assert.SkipUnless(CudaTestGpu.IsAvailable, "no CUDA device in this environment");
         var path = FindModelPath();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 

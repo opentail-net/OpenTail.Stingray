@@ -4,7 +4,7 @@ using OpenTail.Stingray.Cuda;
 using OpenTail.Stingray.Engine;
 using OpenTail.Stingray.Vulkan;
 
-namespace OpenTail.Stingray.Tests.ForwardPass;
+namespace OpenTail.Stingray.Tests.Cuda;
 
 /// <summary>
 /// Ad-hoc decode-throughput measurement for the CUDA backend, with and without TurboQuant
@@ -78,7 +78,7 @@ public sealed class CudaTurboQuantBench
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
         Log($"Model: {hp.NumLayers}L numKvHeads={hp.NumKvHeads} headDim={hp.HeadDim} modelMaxCtx={hp.ContextLength}");
 
-        if (CudaBackend.IsAvailable())
+        if (CudaTestGpu.IsAvailable)
         {
             using var cuda = CudaBackend.Create();
             int cudaFp32 = CudaForwardPass.EstimateMaxContext(model, cuda, hp);
@@ -162,7 +162,7 @@ public sealed class CudaTurboQuantBench
     private void Measure(bool enableTq, int prefillTokens, int decodeTokens)
     {
         if (!BenchEnabled) { _out.WriteLine("Set STINGRAY_BENCH_CUDA_TQ=1 to run; skipping."); return; }
-        if (!CudaBackend.IsAvailable()) { _out.WriteLine("CUDA unavailable; skipping."); return; }
+        if (!CudaTestGpu.IsAvailable) { _out.WriteLine("CUDA unavailable; skipping."); return; }
         var path = FindModelPath();
         if (path is null) { _out.WriteLine($"{ModelFile} not found; skipping."); return; }
 

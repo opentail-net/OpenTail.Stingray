@@ -2,7 +2,7 @@ using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Cuda;
 using OpenTail.Stingray.Engine;
 
-namespace OpenTail.Stingray.Tests.ForwardPass;
+namespace OpenTail.Stingray.Tests.Cuda;
 
 /// <summary>
 /// Parity guard for the opt-in FlashQLA chunked GDN prefill on the CUDA hybrid path
@@ -19,6 +19,7 @@ namespace OpenTail.Stingray.Tests.ForwardPass;
 ///
 /// Skipped silently when CUDA is unavailable or the model isn't on disk.
 /// </summary>
+[Trait("Category", "Cuda")]
 public sealed class CudaHybridGdnChunkedPrefillTests : IDisposable
 {
     // Isolate the variable under test: pin the trunk projection matmuls byte-exact
@@ -39,11 +40,7 @@ public sealed class CudaHybridGdnChunkedPrefillTests : IDisposable
         CudaHybridGdnForwardPass.RawQ80WeightsEnabled = _prevRawQ80;
     }
 
-    private static CudaBackend? TryCreate()
-    {
-        if (!CudaBackend.IsAvailable()) return null;
-        try { return CudaBackend.Create(); } catch { return null; }
-    }
+    private static CudaBackend? TryCreate() => CudaTestGpu.TryCreate();
 
     private static string? FindMoePath()
     {

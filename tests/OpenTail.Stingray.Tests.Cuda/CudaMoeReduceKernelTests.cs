@@ -1,7 +1,7 @@
 using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Cuda;
 
-namespace OpenTail.Stingray.Tests.ForwardPass;
+namespace OpenTail.Stingray.Tests.Cuda;
 
 /// <summary>
 /// Issue #129 per-kernel bit-exactness tests for the batched GPU-SLRU MoE prefill
@@ -12,14 +12,10 @@ namespace OpenTail.Stingray.Tests.ForwardPass;
 /// (<c>BatchedTrunkGpuFfn_BitwiseMatchesSequential_GpuSlruMoe</c>) can only cover on the
 /// dev box. Mirrors <see cref="CudaGdnBatchedTrunkTests"/>; silently skips without CUDA.
 /// </summary>
+[Trait("Category", "Cuda")]
 public sealed unsafe class CudaMoeReduceKernelTests
 {
-    private static CudaBackend? TryCreate()
-    {
-        if (!CudaBackend.IsAvailable()) return null;
-        try { return CudaBackend.Create(); }
-        catch { return null; }
-    }
+    private static CudaBackend? TryCreate() => CudaTestGpu.TryCreate();
 
     private static float[] Rand(long n, Random rng)
     {

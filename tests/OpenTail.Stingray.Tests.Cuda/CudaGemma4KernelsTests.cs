@@ -2,7 +2,7 @@ using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Cpu;
 using OpenTail.Stingray.Cuda;
 
-namespace OpenTail.Stingray.Tests.ForwardPass;
+namespace OpenTail.Stingray.Tests.Cuda;
 
 /// <summary>
 /// Unit tests for the three NVRTC kernels added in Phase 7 of the Gemma 4
@@ -11,14 +11,10 @@ namespace OpenTail.Stingray.Tests.ForwardPass;
 /// <see cref="CudaBackend.AttentionSwa"/>. Each test silently no-ops on
 /// hosts without CUDA, mirroring <see cref="CudaAttnKernelsTests"/>.
 /// </summary>
+[Trait("Category", "Cuda")]
 public sealed unsafe class CudaGemma4KernelsTests
 {
-    private static CudaBackend? TryCreate()
-    {
-        if (!CudaBackend.IsAvailable()) return null;
-        try { return CudaBackend.Create(); }
-        catch { return null; }
-    }
+    private static CudaBackend? TryCreate() => CudaTestGpu.TryCreate();
 
     [Fact]
     public void GeluTanhMul_MatchesCpuReference()

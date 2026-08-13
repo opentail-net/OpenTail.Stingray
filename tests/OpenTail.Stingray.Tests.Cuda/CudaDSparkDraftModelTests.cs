@@ -1,7 +1,8 @@
 using OpenTail.Stingray.Cuda;
 using OpenTail.Stingray.Engine;
+using OpenTail.Stingray.Tests.ForwardPass;
 
-namespace OpenTail.Stingray.Tests.ForwardPass;
+namespace OpenTail.Stingray.Tests.Cuda;
 
 /// <summary>
 /// Draft-level tests for <see cref="CudaDSparkDraftModel"/> on the same tiny
@@ -21,15 +22,12 @@ namespace OpenTail.Stingray.Tests.ForwardPass;
 /// proposals, whatever the absolute numerics.</item>
 /// </list>
 /// </summary>
+[Trait("Category", "Cuda")]
 public sealed class CudaDSparkDraftModelTests
 {
     private const int TapDim = 16;   // mirrors DSparkDraftModelTests.TapDim
 
-    private static CudaBackend? TryCreate()
-    {
-        if (!CudaBackend.IsAvailable()) return null;
-        try { return CudaBackend.Create(); } catch { return null; }
-    }
+    private static CudaBackend? TryCreate() => CudaTestGpu.TryCreate();
 
     [Fact]
     public void ProposeBlock_MatchesCpuModel()

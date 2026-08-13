@@ -2,7 +2,7 @@ using System.Diagnostics;
 using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Cuda;
 
-namespace OpenTail.Stingray.Tests.ForwardPass;
+namespace OpenTail.Stingray.Tests.Cuda;
 
 /// <summary>
 /// Track A/B ncu probe (not a correctness test): runs the Q8_0 prefill MMQ at an
@@ -17,14 +17,10 @@ namespace OpenTail.Stingray.Tests.ForwardPass;
 /// Run explicitly: --filter FullyQualifiedName~CudaActSoaRooflineProbe. Silent no-op
 /// without CUDA. Always asserts true.
 /// </summary>
+[Trait("Category", "Cuda")]
 public sealed unsafe class CudaActSoaRooflineProbe
 {
-    private static CudaBackend? TryCreate()
-    {
-        if (!CudaBackend.IsAvailable()) return null;
-        try { return CudaBackend.Create(); }
-        catch { return null; }
-    }
+    private static CudaBackend? TryCreate() => CudaTestGpu.TryCreate();
 
     private static ushort HalfToUshort(Half h) => BitConverter.ToUInt16(BitConverter.GetBytes(h), 0);
 

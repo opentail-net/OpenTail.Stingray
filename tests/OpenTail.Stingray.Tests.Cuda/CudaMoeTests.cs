@@ -2,7 +2,7 @@ using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Cuda;
 using OpenTail.Stingray.Engine;
 
-namespace OpenTail.Stingray.Tests.ForwardPass;
+namespace OpenTail.Stingray.Tests.Cuda;
 
 /// <summary>
 /// End-to-end smoke tests for the CUDA MoE path. Skipped silently when CUDA is
@@ -19,13 +19,10 @@ namespace OpenTail.Stingray.Tests.ForwardPass;
 /// that <see cref="VulkanShaderTests.HybridForwardPass_DenseSmallVocab_ProducesCoherentDecode"/>
 /// caught for the dense path).
 /// </summary>
+[Trait("Category", "Cuda")]
 public sealed class CudaMoeTests
 {
-    private static CudaBackend? TryCreate()
-    {
-        if (!CudaBackend.IsAvailable()) return null;
-        try { return CudaBackend.Create(); } catch { return null; }
-    }
+    private static CudaBackend? TryCreate() => CudaTestGpu.TryCreate();
 
     private static string? FindMoEModelPath()
     {

@@ -2,7 +2,7 @@ using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Cuda;
 using OpenTail.Stingray.Engine;
 
-namespace OpenTail.Stingray.Tests.ForwardPass;
+namespace OpenTail.Stingray.Tests.Cuda;
 
 /// <summary>
 /// Unit tests for <see cref="CudaExpertSlotManager"/> — the CUDA port of the
@@ -10,13 +10,10 @@ namespace OpenTail.Stingray.Tests.ForwardPass;
 /// when the required MoE GGUF isn't on disk, same pattern as
 /// <see cref="CudaMoeTests"/>.
 /// </summary>
+[Trait("Category", "Cuda")]
 public sealed class CudaExpertSlotManagerTests
 {
-    private static CudaBackend? TryCreate()
-    {
-        if (!CudaBackend.IsAvailable()) return null;
-        try { return CudaBackend.Create(); } catch { return null; }
-    }
+    private static CudaBackend? TryCreate() => CudaTestGpu.TryCreate();
 
     /// <summary>
     /// Probe upwards from the current directory for a candidate MoE GGUF path.

@@ -3,7 +3,7 @@ using OpenTail.Stingray.Cpu;
 using OpenTail.Stingray.Cuda;
 using OpenTail.Stingray.Engine;
 
-namespace OpenTail.Stingray.Tests.ForwardPass;
+namespace OpenTail.Stingray.Tests.Cuda;
 
 /// <summary>
 /// First automated coverage of the Gemma 4 12B QAT (dense Q4_0) forward path on BOTH
@@ -42,8 +42,17 @@ public sealed class Gemma4Cuda12BForwardPassTests : IDisposable
     // here target trunk math (k_eq_v, per-layer KV, embed), so the dtype must be
     // deterministic. Restored in Dispose.
     private readonly string? _prevKvDType = Environment.GetEnvironmentVariable("STINGRAY_KV_DTYPE");
-    public Gemma4Cuda12BForwardPassTests() =>
+
+    // Gate at construction, not per-[Fact]: this class also holds two CPU-only tests
+    // (real ~7 GB model load + CPU inference) that don't otherwise check CUDA at all.
+    // The whole point of living in Tests.Cuda is that nothing in this project runs
+    // without a card. A new instance is constructed per test, so this skips every
+    // test here instantly instead of paying for the CPU tests' real work first.
+    public Gemma4Cuda12BForwardPassTests()
+    {
+        Assert.SkipUnless(CudaTestGpu.IsAvailable, "no CUDA device in this environment");
         Environment.SetEnvironmentVariable("STINGRAY_KV_DTYPE", "fp32");
+    }
     public void Dispose() =>
         Environment.SetEnvironmentVariable("STINGRAY_KV_DTYPE", _prevKvDType);
 
@@ -52,12 +61,7 @@ public sealed class Gemma4Cuda12BForwardPassTests : IDisposable
     private static int[] SyntheticPrompt(int bosId) =>
         new[] { bosId, 818, 5279, 529, 7001, 563, 1234, 4567, 8901 };
 
-    private static CudaBackend? TryCreate()
-    {
-        if (!CudaBackend.IsAvailable()) return null;
-        try { return CudaBackend.Create(); }
-        catch { return null; }
-    }
+    private static CudaBackend? TryCreate() => CudaTestGpu.TryCreate();
 
     private static string? FindModelPath()
     {
@@ -96,6 +100,7 @@ public sealed class Gemma4Cuda12BForwardPassTests : IDisposable
         return best;
     }
 
+    [Trait("Category", "Cuda")]
     [Fact]
     public void Gemma4_12B_CudaForward_ProducesCoherentDecode()
     {
@@ -262,6 +267,7 @@ public sealed class Gemma4Cuda12BForwardPassTests : IDisposable
     /// argmax agreement, top-5 overlap, and a loose maxAbs structural bound. A real trunk
     /// bug diverges by many logits (issue #157 was 9.2); q4_0 noise stays well under 5.
     /// </summary>
+    [Trait("Category", "Cuda")]
     [Fact]
     public void Gemma4_12B_CpuMatchesCudaLogits()
     {
@@ -325,6 +331,7 @@ public sealed class Gemma4Cuda12BForwardPassTests : IDisposable
     /// + gated V-norm, the CPU V=copy-K + per-layer-KV attention, and the contiguous
     /// per-head cache stride. Synthetic prompt → finite + non-degenerate decode.
     /// </summary>
+    [Trait("Category", "Cuda")]
     [Fact]
     public void Gemma4_12B_CudaHybridForward_ProducesCoherentDecode()
     {
@@ -355,6 +362,7 @@ public sealed class Gemma4Cuda12BForwardPassTests : IDisposable
     /// but not bit-exact across backends, so we assert on a single prefill: argmax agreement,
     /// top-5 overlap, and a loose maxAbs bound (a real trunk bug diverges by many logits).
     /// </summary>
+    [Trait("Category", "Cuda")]
     [Fact]
     public void Gemma4_12B_CpuMatchesCudaHybridLogits()
     {

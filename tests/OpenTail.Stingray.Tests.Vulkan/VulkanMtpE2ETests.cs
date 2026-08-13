@@ -3,7 +3,7 @@ using OpenTail.Stingray.Engine;
 using OpenTail.Stingray.Vulkan;
 using Vortice.Vulkan;
 
-namespace OpenTail.Stingray.Tests.ForwardPass;
+namespace OpenTail.Stingray.Tests.Vulkan;
 
 /// <summary>
 /// End-to-end #357 PR4 verification on Vulkan: MTP self-speculative greedy decode vs the

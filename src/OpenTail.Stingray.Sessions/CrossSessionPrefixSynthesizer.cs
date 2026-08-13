@@ -124,7 +124,12 @@ public sealed class CrossSessionPrefixSynthesizer : ICrossSessionPrefixSynthesiz
                     continue;
                 }
 
-                var ns = new PrefixCacheNamespace("default-model", "default-kv");
+                // Namespace by the session's actual model (and a cheap proxy for KV physical
+                // layout, page size) instead of a shared constant -- a hardcoded namespace let
+                // sessions running different models be treated as prefix-compatible and share
+                // physical KV pages through Publish/MatchPrefix, exactly what this namespace type
+                // exists to prevent.
+                var ns = new PrefixCacheNamespace(session.ModelId, $"page{pageSize}");
                 int[] prefixArray = new int[pageAlignedCount];
                 for (int t = 0; t < pageAlignedCount; t++)
                 {

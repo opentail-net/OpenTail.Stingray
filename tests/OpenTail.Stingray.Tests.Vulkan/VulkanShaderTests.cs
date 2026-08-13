@@ -1,7 +1,7 @@
 using OpenTail.Stingray.Core;
 using OpenTail.Stingray.TurboQuant;
 
-namespace OpenTail.Stingray.Tests.ForwardPass;
+namespace OpenTail.Stingray.Tests.Vulkan;
 
 public sealed unsafe class VulkanShaderTests
 {
@@ -19,11 +19,11 @@ public sealed unsafe class VulkanShaderTests
     /// <c>VulkanInitTests</c> is deliberately NOT routed through this — there, bringing the device
     /// up IS the thing under test.</para>
     /// </summary>
-    private static Vulkan.VulkanBackend CreateBackendOrSkip()
+    private static global::OpenTail.Stingray.Vulkan.VulkanBackend CreateBackendOrSkip()
     {
         try
         {
-            return new Vulkan.VulkanBackend();
+            return new global::OpenTail.Stingray.Vulkan.VulkanBackend();
         }
         catch (Exception ex)
         {
@@ -174,7 +174,7 @@ public sealed unsafe class VulkanShaderTests
 
         var gpuGate = backend.Upload(gate, TensorShape.D1(N));
         var gpuUp = backend.Upload(up, TensorShape.D1(N));
-        ((Vulkan.VulkanBackend)backend).SiLuMul(gpuGate, gpuUp);
+        ((global::OpenTail.Stingray.Vulkan.VulkanBackend)backend).SiLuMul(gpuGate, gpuUp);
 
         var result = new float[N];
         backend.Download(gpuGate, result);
@@ -559,7 +559,7 @@ public sealed unsafe class VulkanShaderTests
     [InlineData(8)]   // MAX_NTOK
     public void MatVecBatchedQ4KMatchesSingleRow(int nTok)
     {
-        Vulkan.VulkanBackend backend;
+        global::OpenTail.Stingray.Vulkan.VulkanBackend backend;
         try { backend = CreateBackendOrSkip(); }
         catch { return; } // no Vulkan device on this host — skip
 
@@ -678,7 +678,7 @@ public sealed unsafe class VulkanShaderTests
     [InlineData(8)]   // MAX_NTOK / acc[8] upper bound
     public void MatVecBatchedQ6KMatchesSingleRow(int nTok)
     {
-        Vulkan.VulkanBackend backend;
+        global::OpenTail.Stingray.Vulkan.VulkanBackend backend;
         try { backend = CreateBackendOrSkip(); }
         catch { return; } // no Vulkan device on this host — skip
 
@@ -764,7 +764,7 @@ public sealed unsafe class VulkanShaderTests
     [InlineData(8)]
     public void RmsNormBatchedMatchesSingleRow(int k)
     {
-        Vulkan.VulkanBackend backend;
+        global::OpenTail.Stingray.Vulkan.VulkanBackend backend;
         try { backend = CreateBackendOrSkip(); }
         catch { return; } // no Vulkan device on this host — skip
 
@@ -820,7 +820,7 @@ public sealed unsafe class VulkanShaderTests
     [InlineData(6, true)]
     public void HeadNormBatchedMatchesSingleRow(int k, bool perChannel)
     {
-        Vulkan.VulkanBackend backend;
+        global::OpenTail.Stingray.Vulkan.VulkanBackend backend;
         try { backend = CreateBackendOrSkip(); }
         catch { return; } // no Vulkan device on this host — skip
 
@@ -874,7 +874,7 @@ public sealed unsafe class VulkanShaderTests
     [InlineData(6, true)]
     public void RoPEBatchedMatchesSingleRow(int k, bool neox)
     {
-        Vulkan.VulkanBackend backend;
+        global::OpenTail.Stingray.Vulkan.VulkanBackend backend;
         try { backend = CreateBackendOrSkip(); }
         catch { return; } // no Vulkan device on this host — skip
 
@@ -924,7 +924,7 @@ public sealed unsafe class VulkanShaderTests
     [InlineData(8)]
     public void KvAppendBatchedMatchesSingleRow(int k)
     {
-        Vulkan.VulkanBackend backend;
+        global::OpenTail.Stingray.Vulkan.VulkanBackend backend;
         try { backend = CreateBackendOrSkip(); }
         catch { return; } // no Vulkan device on this host — skip
 
@@ -1001,7 +1001,7 @@ public sealed unsafe class VulkanShaderTests
     [InlineData(6)]
     public void AttentionBatchedMatchesSingleQuery(int k)
     {
-        Vulkan.VulkanBackend backend;
+        global::OpenTail.Stingray.Vulkan.VulkanBackend backend;
         try { backend = CreateBackendOrSkip(); }
         catch { return; } // no Vulkan device on this host — skip
 
@@ -1651,7 +1651,7 @@ public sealed unsafe class VulkanShaderTests
         var gpuOut = backend.Allocate(TensorShape.D1(numHeads * headDim));
         long scratchElems = maxSeqLen > 4096 ? (long)numHeads * maxSeqLen : 1L;
         var gpuScratch = backend.Allocate(TensorShape.D1(scratchElems));
-        ((Vulkan.VulkanBackend)backend).Attention(
+        ((global::OpenTail.Stingray.Vulkan.VulkanBackend)backend).Attention(
             gpuQ, gpuK, gpuV, gpuOut, gpuScratch,
             (uint)numHeads, (uint)numKvHeads, (uint)headDim,
             (uint)seqLen, (uint)maxSeqLen);
@@ -1741,7 +1741,7 @@ public sealed unsafe class VulkanShaderTests
 
     /// <summary>
     /// fp32 single-pass windowed parity: builds an fp32 K/V cache, runs
-    /// <see cref="Vulkan.VulkanBackend.Attention"/> with the given <paramref name="window"/>, and
+    /// <see cref="global::OpenTail.Stingray.Vulkan.VulkanBackend.Attention"/> with the given <paramref name="window"/>, and
     /// compares to <see cref="WindowedSdpaReference"/> over [max(0,seqLen-window), seqLen) (or the
     /// full range when window==0). Tolerance &lt; 1e-3.
     /// </summary>
@@ -1769,7 +1769,7 @@ public sealed unsafe class VulkanShaderTests
         var gpuOut = backend.Allocate(TensorShape.D1(numHeads * headDim));
         long scratchElems = maxSeqLen > 4096 ? (long)numHeads * maxSeqLen : 1L;
         var gpuScratch = backend.Allocate(TensorShape.D1(scratchElems));
-        ((Vulkan.VulkanBackend)backend).Attention(
+        ((global::OpenTail.Stingray.Vulkan.VulkanBackend)backend).Attention(
             gpuQ, gpuK, gpuV, gpuOut, gpuScratch,
             (uint)numHeads, (uint)numKvHeads, (uint)headDim,
             (uint)seqLen, (uint)maxSeqLen, window: (uint)window);
@@ -1790,7 +1790,7 @@ public sealed unsafe class VulkanShaderTests
     }
 
     /// <summary>bf16 single-pass windowed parity — mirrors <see cref="AttentionWindowedMatchesCpuReference"/>
-    /// but the K/V cache is fp16-packed (the bytes <see cref="Vulkan.VulkanBackend.AttentionBf16"/>
+    /// but the K/V cache is fp16-packed (the bytes <see cref="global::OpenTail.Stingray.Vulkan.VulkanBackend.AttentionBf16"/>
     /// unpacks) and the CPU reference dequantizes from the SAME fp16 bits. Tolerance &lt; 1e-2.</summary>
     private static void AttentionBf16WindowedMatchesCpuReference(
         int seqLen, int window, int numHeads, int numKvHeads, int headDim)
@@ -1830,7 +1830,7 @@ public sealed unsafe class VulkanShaderTests
         var gpuOut = backend.Allocate(TensorShape.D1(numHeads * headDim));
         long scratchElems = maxSeqLen > 4096 ? (long)numHeads * maxSeqLen : 1L;
         var gpuScratch = backend.Allocate(TensorShape.D1(scratchElems));
-        ((Vulkan.VulkanBackend)backend).AttentionBf16(
+        ((global::OpenTail.Stingray.Vulkan.VulkanBackend)backend).AttentionBf16(
             gpuQ, gpuK, gpuV, gpuOut, gpuScratch,
             (uint)numHeads, (uint)numKvHeads, (uint)headDim,
             (uint)seqLen, (uint)maxSeqLen, window: (uint)window);
@@ -1851,7 +1851,7 @@ public sealed unsafe class VulkanShaderTests
     }
 
     /// <summary>q8_0 single-pass windowed parity — mirrors <see cref="AttentionWindowedMatchesCpuReference"/>
-    /// but the K/V cache is block_q8_0 (the bytes <see cref="Vulkan.VulkanBackend.AttentionQ8_0"/>
+    /// but the K/V cache is block_q8_0 (the bytes <see cref="global::OpenTail.Stingray.Vulkan.VulkanBackend.AttentionQ8_0"/>
     /// byte-gathers) and the CPU reference dequantizes from the SAME blocks. Tolerance &lt; 1e-2.</summary>
     private static void AttentionQ8WindowedMatchesCpuReference(
         int seqLen, int window, int numHeads, int numKvHeads, int headDim)
@@ -1889,7 +1889,7 @@ public sealed unsafe class VulkanShaderTests
         var gpuOut = backend.Allocate(TensorShape.D1(numHeads * headDim));
         long scratchElems = maxSeqLen > 4096 ? (long)numHeads * maxSeqLen : 1L;
         var gpuScratch = backend.Allocate(TensorShape.D1(scratchElems));
-        ((Vulkan.VulkanBackend)backend).AttentionQ8_0(
+        ((global::OpenTail.Stingray.Vulkan.VulkanBackend)backend).AttentionQ8_0(
             gpuQ, gpuK, gpuV, gpuOut, gpuScratch,
             (uint)numHeads, (uint)numKvHeads, (uint)headDim,
             (uint)seqLen, (uint)maxSeqLen, window: (uint)window);
@@ -1942,7 +1942,7 @@ public sealed unsafe class VulkanShaderTests
 
     /// <summary>
     /// Correctness gate for the split-KV partial layout + combine LSE merge. Calls
-    /// <see cref="Vulkan.VulkanBackend.AttentionSplitKv"/> directly (no env gate — the gate only
+    /// <see cref="global::OpenTail.Stingray.Vulkan.VulkanBackend.AttentionSplitKv"/> directly (no env gate — the gate only
     /// controls whether <c>GpuForwardPass</c> routes here) against the same scaled-dot-product +
     /// softmax + GQA reference as <see cref="AttentionShaderMatchesCpuReference"/>. The result
     /// must match the single-pass attention to &lt; 1e-3.
@@ -1991,14 +1991,14 @@ public sealed unsafe class VulkanShaderTests
         }
 
         // GPU split-KV: allocate the two partial buffers sized to the live split count.
-        int nSplits = (seqLen + (int)Vulkan.VulkanBackend.SplitKvChunk - 1) / (int)Vulkan.VulkanBackend.SplitKvChunk;
+        int nSplits = (seqLen + (int)global::OpenTail.Stingray.Vulkan.VulkanBackend.SplitKvChunk - 1) / (int)global::OpenTail.Stingray.Vulkan.VulkanBackend.SplitKvChunk;
         var gpuQ = backend.Upload(q, TensorShape.D1(q.Length));
         var gpuK = backend.Upload(kCache, TensorShape.D2(maxSeqLen, kvDim));
         var gpuV = backend.Upload(vCache, TensorShape.D2(maxSeqLen, kvDim));
         var gpuOut = backend.Allocate(TensorShape.D1(numHeads * headDim));
         var gpuPartialO = backend.Allocate(TensorShape.D1((long)numHeads * nSplits * headDim));
         var gpuPartialMeta = backend.Allocate(TensorShape.D1((long)numHeads * nSplits * 2));
-        ((Vulkan.VulkanBackend)backend).AttentionSplitKv(
+        ((global::OpenTail.Stingray.Vulkan.VulkanBackend)backend).AttentionSplitKv(
             gpuQ, gpuK, gpuV, gpuOut, gpuPartialO, gpuPartialMeta,
             (uint)numHeads, (uint)numKvHeads, (uint)headDim,
             (uint)seqLen, (uint)maxSeqLen);
@@ -2045,7 +2045,7 @@ public sealed unsafe class VulkanShaderTests
     }
 
     /// <summary>
-    /// fp32 split-KV windowed parity: runs <see cref="Vulkan.VulkanBackend.AttentionSplitKv"/>
+    /// fp32 split-KV windowed parity: runs <see cref="global::OpenTail.Stingray.Vulkan.VulkanBackend.AttentionSplitKv"/>
     /// with the given <paramref name="window"/> and compares to <see cref="WindowedSdpaReference"/>.
     /// Exercises the partial-pass chunk-skip (chunks fully below start_seq) and chunk-clamp paths.
     /// </summary>
@@ -2067,14 +2067,14 @@ public sealed unsafe class VulkanShaderTests
 
         var cpuOutput = WindowedSdpaReference(q, kCache, vCache, seqLen, window, kvDim, numHeads, numKvHeads, headDim);
 
-        int nSplits = (seqLen + (int)Vulkan.VulkanBackend.SplitKvChunk - 1) / (int)Vulkan.VulkanBackend.SplitKvChunk;
+        int nSplits = (seqLen + (int)global::OpenTail.Stingray.Vulkan.VulkanBackend.SplitKvChunk - 1) / (int)global::OpenTail.Stingray.Vulkan.VulkanBackend.SplitKvChunk;
         var gpuQ = backend.Upload(q, TensorShape.D1(q.Length));
         var gpuK = backend.Upload(kCache, TensorShape.D2(maxSeqLen, kvDim));
         var gpuV = backend.Upload(vCache, TensorShape.D2(maxSeqLen, kvDim));
         var gpuOut = backend.Allocate(TensorShape.D1(numHeads * headDim));
         var gpuPartialO = backend.Allocate(TensorShape.D1((long)numHeads * nSplits * headDim));
         var gpuPartialMeta = backend.Allocate(TensorShape.D1((long)numHeads * nSplits * 2));
-        ((Vulkan.VulkanBackend)backend).AttentionSplitKv(
+        ((global::OpenTail.Stingray.Vulkan.VulkanBackend)backend).AttentionSplitKv(
             gpuQ, gpuK, gpuV, gpuOut, gpuPartialO, gpuPartialMeta,
             (uint)numHeads, (uint)numKvHeads, (uint)headDim,
             (uint)seqLen, (uint)maxSeqLen, window: (uint)window);
@@ -2100,7 +2100,7 @@ public sealed unsafe class VulkanShaderTests
     /// <summary>
     /// bf16 split-KV (issue #332): GQA, headDim=128, seq_len=5000 ⇒ 10 splits (forces multiple
     /// splits). Builds the K/V cache in the fp16-packed format the bf16 shader reads, runs
-    /// <see cref="Vulkan.VulkanBackend.AttentionSplitKvBf16"/>, and compares to a CPU SDPA
+    /// <see cref="global::OpenTail.Stingray.Vulkan.VulkanBackend.AttentionSplitKvBf16"/>, and compares to a CPU SDPA
     /// reference dequantized from the SAME fp16 bytes (isolates the split-KV combine from fp16
     /// loss). Tolerance &lt; 1e-2 (fp16 K/V is lossy).
     /// </summary>
@@ -2157,14 +2157,14 @@ public sealed unsafe class VulkanShaderTests
         PackHalfPairs(kHalf, kPacked);
         PackHalfPairs(vHalf, vPacked);
 
-        int nSplits = (seqLen + (int)Vulkan.VulkanBackend.SplitKvChunk - 1) / (int)Vulkan.VulkanBackend.SplitKvChunk;
+        int nSplits = (seqLen + (int)global::OpenTail.Stingray.Vulkan.VulkanBackend.SplitKvChunk - 1) / (int)global::OpenTail.Stingray.Vulkan.VulkanBackend.SplitKvChunk;
         var gpuQ = backend.Upload(q, TensorShape.D1(q.Length));
         var gpuK = backend.Upload(kPacked, TensorShape.D1(kvWords));
         var gpuV = backend.Upload(vPacked, TensorShape.D1(kvWords));
         var gpuOut = backend.Allocate(TensorShape.D1(numHeads * headDim));
         var gpuPartialO = backend.Allocate(TensorShape.D1((long)numHeads * nSplits * headDim));
         var gpuPartialMeta = backend.Allocate(TensorShape.D1((long)numHeads * nSplits * 2));
-        ((Vulkan.VulkanBackend)backend).AttentionSplitKvBf16(
+        ((global::OpenTail.Stingray.Vulkan.VulkanBackend)backend).AttentionSplitKvBf16(
             gpuQ, gpuK, gpuV, gpuOut, gpuPartialO, gpuPartialMeta,
             (uint)numHeads, (uint)numKvHeads, (uint)headDim,
             (uint)seqLen, (uint)maxSeqLen);
@@ -2190,7 +2190,7 @@ public sealed unsafe class VulkanShaderTests
     /// <summary>
     /// q8_0 split-KV (issue #332): GQA, headDim=128, seq_len=5000 ⇒ 10 splits. Builds the K/V
     /// cache as ggml block_q8_0 (the exact bytes the q8_0 shader byte-gathers), runs
-    /// <see cref="Vulkan.VulkanBackend.AttentionSplitKvQ8"/>, and compares to a CPU SDPA
+    /// <see cref="global::OpenTail.Stingray.Vulkan.VulkanBackend.AttentionSplitKvQ8"/>, and compares to a CPU SDPA
     /// reference dequantized from the SAME blocks (isolates split-KV from q8_0 loss). q8_0 is
     /// 8-bit so the dequant is exact on both sides; only FP accumulation order differs ⇒ &lt; 1e-2.
     /// </summary>
@@ -2248,12 +2248,12 @@ public sealed unsafe class VulkanShaderTests
         var gpuK = UploadBytesAsFloats(backend, kBytes);
         var gpuV = UploadBytesAsFloats(backend, vBytes);
 
-        int nSplits = (seqLen + (int)Vulkan.VulkanBackend.SplitKvChunk - 1) / (int)Vulkan.VulkanBackend.SplitKvChunk;
+        int nSplits = (seqLen + (int)global::OpenTail.Stingray.Vulkan.VulkanBackend.SplitKvChunk - 1) / (int)global::OpenTail.Stingray.Vulkan.VulkanBackend.SplitKvChunk;
         var gpuQ = backend.Upload(q, TensorShape.D1(q.Length));
         var gpuOut = backend.Allocate(TensorShape.D1(numHeads * headDim));
         var gpuPartialO = backend.Allocate(TensorShape.D1((long)numHeads * nSplits * headDim));
         var gpuPartialMeta = backend.Allocate(TensorShape.D1((long)numHeads * nSplits * 2));
-        ((Vulkan.VulkanBackend)backend).AttentionSplitKvQ8(
+        ((global::OpenTail.Stingray.Vulkan.VulkanBackend)backend).AttentionSplitKvQ8(
             gpuQ, gpuK, gpuV, gpuOut, gpuPartialO, gpuPartialMeta,
             (uint)numHeads, (uint)numKvHeads, (uint)headDim,
             (uint)seqLen, (uint)maxSeqLen);
@@ -2385,7 +2385,7 @@ public sealed unsafe class VulkanShaderTests
 
     /// <summary>Uploads raw bytes reinterpreted as a float[] (4-byte rounded up) — the upload
     /// idiom the quantized-matvec tests use to feed uint[]-bound shader buffers.</summary>
-    private static Tensor UploadBytesAsFloats(Vulkan.VulkanBackend backend, byte[] bytes)
+    private static Tensor UploadBytesAsFloats(global::OpenTail.Stingray.Vulkan.VulkanBackend backend, byte[] bytes)
     {
         int floatCount = (bytes.Length + 3) / 4;
         var asFloats = new float[floatCount];
@@ -2653,7 +2653,7 @@ public sealed unsafe class VulkanShaderTests
         gpu.Free(gpuSigns); gpu.Free(gpuCodebook); gpu.Free(gpuBoundaries);
     }
 
-    private static float[] RunTqAttentionPath(Vulkan.VulkanBackend gpu,
+    private static float[] RunTqAttentionPath(global::OpenTail.Stingray.Vulkan.VulkanBackend gpu,
         int numHeads, int numKvHeads, int headDim, int tqLen, long totalUints,
         float[][] kVecs, float[][] vVecs, float[] queryDir, int blockBytes,
         Tensor gpuSigns, Tensor gpuCodebook, Tensor gpuBoundaries)

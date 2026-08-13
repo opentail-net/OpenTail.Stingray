@@ -4,7 +4,7 @@ using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Cuda;
 using OpenTail.Stingray.Engine;
 
-namespace OpenTail.Stingray.Tests.ForwardPass;
+namespace OpenTail.Stingray.Tests.Cuda;
 
 /// <summary>
 /// Phase-6 smoke tests for the Gemma 4 CUDA plumbing in <see cref="CudaForwardPass"/>.
@@ -25,15 +25,12 @@ namespace OpenTail.Stingray.Tests.ForwardPass;
 /// (model load is ~8 GB through the GGUF mmap + ~3 GB of GPU weight uploads on the
 /// first construction) but only run when the artefact is present.
 /// </summary>
+[Trait("Category", "Cuda")]
 public sealed class Gemma4CudaPlumbingTests
 {
     private const string ModelFile = "gemma-4-E4B-it-Q8_0.gguf";
 
-    private static CudaBackend? TryCreate()
-    {
-        if (!CudaBackend.IsAvailable()) return null;
-        try { return CudaBackend.Create(); } catch { return null; }
-    }
+    private static CudaBackend? TryCreate() => CudaTestGpu.TryCreate();
 
     /// <summary>
     /// Locate the Gemma 4 E4B Q8_0 GGUF. Returns null when not present so the

@@ -2,7 +2,7 @@ using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Cuda;
 using OpenTail.Stingray.Engine;
 
-namespace OpenTail.Stingray.Tests.ForwardPass;
+namespace OpenTail.Stingray.Tests.Cuda;
 
 /// <summary>
 /// Issue #196: SnapKV-aware CUDA continuous batching. Before #196, an active SnapKV budget made
@@ -23,15 +23,12 @@ namespace OpenTail.Stingray.Tests.ForwardPass;
 /// SnapKV decode (owned cache) on dense <b>Qwen3-8B Q4_K</b>. Silent-skips when CUDA / the GGUF is
 /// absent. Mirrors <see cref="CudaForwardPassSnapKvTests"/> + <see cref="CudaBatchForwardMultiTests"/>.
 /// </summary>
+[Trait("Category", "Cuda")]
 public sealed class CudaSnapKvBatchingTests
 {
     private const string ModelFile = "Qwen3-8B-Q4_K_M.gguf";
 
-    private static CudaBackend? TryCreate()
-    {
-        if (!CudaBackend.IsAvailable()) return null;
-        try { return CudaBackend.Create(); } catch { return null; }
-    }
+    private static CudaBackend? TryCreate() => CudaTestGpu.TryCreate();
 
     private static string? FindModelPath()
     {

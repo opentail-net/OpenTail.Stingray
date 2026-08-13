@@ -1,7 +1,7 @@
 using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Cuda;
 
-namespace OpenTail.Stingray.Tests.ForwardPass;
+namespace OpenTail.Stingray.Tests.Cuda;
 
 /// <summary>
 /// Issue #114-B per-kernel bit-exactness tests for the batched GDN trunk +
@@ -11,14 +11,10 @@ namespace OpenTail.Stingray.Tests.ForwardPass;
 /// failure mode the GDN/MTP byte-parity oracles trip on — see the K/V MatVecDual
 /// note). Mirrors <see cref="CudaMatMulBatchedTests"/>; silently skips without CUDA.
 /// </summary>
+[Trait("Category", "Cuda")]
 public sealed unsafe class CudaGdnBatchedTrunkTests
 {
-    private static CudaBackend? TryCreate()
-    {
-        if (!CudaBackend.IsAvailable()) return null;
-        try { return CudaBackend.Create(); }
-        catch { return null; }
-    }
+    private static CudaBackend? TryCreate() => CudaTestGpu.TryCreate();
 
     private static float[] Rand(int n, Random rng)
     {

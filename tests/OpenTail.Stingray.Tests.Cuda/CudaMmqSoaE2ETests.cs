@@ -2,7 +2,7 @@ using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Cuda;
 using OpenTail.Stingray.Engine;
 
-namespace OpenTail.Stingray.Tests.ForwardPass;
+namespace OpenTail.Stingray.Tests.Cuda;
 
 /// <summary>
 /// Issue #149: end-to-end check that repacking the Gemma 4 Q8_0 weights into the SoA
@@ -14,16 +14,12 @@ namespace OpenTail.Stingray.Tests.ForwardPass;
 ///
 /// Silent no-op without CUDA or the GGUF.
 /// </summary>
+[Trait("Category", "Cuda")]
 public sealed class CudaMmqSoaE2ETests
 {
     private const string ModelFile = "gemma-4-E4B-it-Q8_0.gguf";
 
-    private static CudaBackend? TryCreate()
-    {
-        if (!CudaBackend.IsAvailable()) return null;
-        try { return CudaBackend.Create(); }
-        catch { return null; }
-    }
+    private static CudaBackend? TryCreate() => CudaTestGpu.TryCreate();
 
     private static string? FindModelPath()
     {

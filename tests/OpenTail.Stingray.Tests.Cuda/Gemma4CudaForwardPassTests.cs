@@ -3,7 +3,7 @@ using OpenTail.Stingray.Cpu;
 using OpenTail.Stingray.Cuda;
 using OpenTail.Stingray.Engine;
 
-namespace OpenTail.Stingray.Tests.ForwardPass;
+namespace OpenTail.Stingray.Tests.Cuda;
 
 /// <summary>
 /// Phase-8 CUDA forward-pass integration tests for Gemma 4 E4B. Confirms the
@@ -16,16 +16,12 @@ namespace OpenTail.Stingray.Tests.ForwardPass;
 /// Silent-skip pattern: if CUDA isn't available OR the GGUF isn't present on
 /// disk these tests no-op, mirroring the rest of the Cuda* test files.
 /// </summary>
+[Trait("Category", "Cuda")]
 public sealed class Gemma4CudaForwardPassTests
 {
     private const string ModelFile = "gemma-4-E4B-it-Q8_0.gguf";
 
-    private static CudaBackend? TryCreate()
-    {
-        if (!CudaBackend.IsAvailable()) return null;
-        try { return CudaBackend.Create(); }
-        catch { return null; }
-    }
+    private static CudaBackend? TryCreate() => CudaTestGpu.TryCreate();
 
     private static string? FindModelPath() => FindModelPath(ModelFile);
 

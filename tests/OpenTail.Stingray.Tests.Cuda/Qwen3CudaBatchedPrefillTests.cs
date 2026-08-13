@@ -3,7 +3,7 @@ using OpenTail.Stingray.Cpu;
 using OpenTail.Stingray.Cuda;
 using OpenTail.Stingray.Engine;
 
-namespace OpenTail.Stingray.Tests.ForwardPass;
+namespace OpenTail.Stingray.Tests.Cuda;
 
 /// <summary>
 /// Issue #156: the all-GPU batched-trunk prefill (originally Gemma-4-only, #136) was
@@ -22,6 +22,7 @@ namespace OpenTail.Stingray.Tests.ForwardPass;
 /// Single 5 GB model instance toggled via <see cref="CudaForwardPass.BatchedPrefillEnabled"/>
 /// with a <c>ResetCache</c> between runs. Silent-skips when CUDA or the GGUF is absent.
 /// </summary>
+[Trait("Category", "Cuda")]
 public sealed class Qwen3CudaBatchedPrefillTests
 {
     private const string ModelFile = "Qwen3-8B-Q4_K_M.gguf";
@@ -31,12 +32,7 @@ public sealed class Qwen3CudaBatchedPrefillTests
     private static readonly int[] Tokens =
         { 9707, 11, 1879, 0, 358, 1079, 264, 4108, 1614, 13, 220, 17, 18, 19 };
 
-    private static CudaBackend? TryCreate()
-    {
-        if (!CudaBackend.IsAvailable()) return null;
-        try { return CudaBackend.Create(); }
-        catch { return null; }
-    }
+    private static CudaBackend? TryCreate() => CudaTestGpu.TryCreate();
 
     private static string? FindModelPath()
     {

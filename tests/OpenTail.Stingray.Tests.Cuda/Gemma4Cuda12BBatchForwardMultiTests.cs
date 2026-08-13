@@ -2,7 +2,7 @@ using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Cuda;
 using OpenTail.Stingray.Engine;
 
-namespace OpenTail.Stingray.Tests.ForwardPass;
+namespace OpenTail.Stingray.Tests.Cuda;
 
 /// <summary>
 /// Issue #283 — closes the #276 synthetic-vs-real gap for the Gemma 4 12B-global
@@ -28,16 +28,12 @@ namespace OpenTail.Stingray.Tests.ForwardPass;
 /// continuous-batching-eligible. One ~7.4 GB instance per test; silent-skips without CUDA / the GGUF.
 /// </para>
 /// </summary>
+[Trait("Category", "Cuda")]
 public sealed class Gemma4Cuda12BBatchForwardMultiTests
 {
     private const string ModelFile = "gemma-4-12b-it-Q4_K_M.gguf";
 
-    private static CudaBackend? TryCreate()
-    {
-        if (!CudaBackend.IsAvailable()) return null;
-        try { return CudaBackend.Create(); }
-        catch { return null; }
-    }
+    private static CudaBackend? TryCreate() => CudaTestGpu.TryCreate();
 
     // SnapKV pinned off (an active budget makes continuous batching unsupported / machine-dependent)
     // and KV pinned to fp32 so the batched-vs-single comparison is deterministic across cards (since

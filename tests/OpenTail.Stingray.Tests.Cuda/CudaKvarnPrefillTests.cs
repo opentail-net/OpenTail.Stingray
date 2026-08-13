@@ -4,7 +4,7 @@ using OpenTail.Stingray.Cuda;
 using OpenTail.Stingray.Engine;
 using OpenTail.Stingray.TurboQuant;
 
-namespace OpenTail.Stingray.Tests.ForwardPass;
+namespace OpenTail.Stingray.Tests.Cuda;
 
 /// <summary>
 /// Chunked batched KVarN prefill tests (issue #180 Task 6). Two levels:
@@ -24,16 +24,12 @@ namespace OpenTail.Stingray.Tests.ForwardPass;
 /// Every test silently no-ops when CUDA (or the fixture model) is unavailable,
 /// matching <see cref="CudaKvarnTests"/>.
 /// </summary>
+[Trait("Category", "Cuda")]
 public sealed unsafe class CudaKvarnPrefillTests(ITestOutputHelper output)
 {
     private const int Tile = KVarNCompressor.TileTokens; // 128
 
-    private static CudaBackend? TryCreate()
-    {
-        if (!CudaBackend.IsAvailable()) return null;
-        try { return CudaBackend.Create(); }
-        catch { return null; }
-    }
+    private static CudaBackend? TryCreate() => CudaTestGpu.TryCreate();
 
     // ─────────────────────────────────────────────────────────────────────────
     // Kernel-level parity vs the CPU oracle
@@ -207,7 +203,7 @@ public sealed unsafe class CudaKvarnPrefillTests(ITestOutputHelper output)
     [Fact]
     public void CudaForwardPass_KvarnChunkedPrefill_MatchesPerToken()
     {
-        Assert.SkipUnless(CudaBackend.IsAvailable(), "no CUDA device in this environment");
+        Assert.SkipUnless(CudaTestGpu.IsAvailable, "no CUDA device in this environment");
         var path = FindModelPath();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
@@ -321,7 +317,7 @@ public sealed unsafe class CudaKvarnPrefillTests(ITestOutputHelper output)
     [Fact]
     public void CudaForwardPass_KvarnChunkedPrefill_SplitCall_MatchesSingleShot()
     {
-        Assert.SkipUnless(CudaBackend.IsAvailable(), "no CUDA device in this environment");
+        Assert.SkipUnless(CudaTestGpu.IsAvailable, "no CUDA device in this environment");
         var path = FindModelPath();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 

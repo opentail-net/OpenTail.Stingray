@@ -3,7 +3,7 @@ using OpenTail.Stingray.Engine;
 using OpenTail.Stingray.Vulkan;
 using Vortice.Vulkan;
 
-namespace OpenTail.Stingray.Tests.ForwardPass;
+namespace OpenTail.Stingray.Tests.Vulkan;
 
 /// <summary>
 /// Pure-Vulkan coverage for the NEXTN/MTP head forward pass (#357 PR3) on the dense qwen36

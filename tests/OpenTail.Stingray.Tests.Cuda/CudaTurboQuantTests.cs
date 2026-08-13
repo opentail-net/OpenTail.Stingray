@@ -2,7 +2,7 @@ using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Cuda;
 using OpenTail.Stingray.TurboQuant;
 
-namespace OpenTail.Stingray.Tests.ForwardPass;
+namespace OpenTail.Stingray.Tests.Cuda;
 
 /// <summary>
 /// CUDA-side TurboQuant kernel tests. Each test silently no-ops when no CUDA
@@ -14,16 +14,12 @@ namespace OpenTail.Stingray.Tests.ForwardPass;
 /// agree on the rotated query and on the fused dequant-dot per cached position,
 /// the kernels are correctly mirroring the reference implementation.
 /// </summary>
+[Trait("Category", "Cuda")]
 public sealed unsafe class CudaTurboQuantTests
 {
     private const int HeadDim = 128;
 
-    private static CudaBackend? TryCreate()
-    {
-        if (!CudaBackend.IsAvailable()) return null;
-        try { return CudaBackend.Create(); }
-        catch { return null; }
-    }
+    private static CudaBackend? TryCreate() => CudaTestGpu.TryCreate();
 
     [Fact]
     public void TqRotateQuery_MatchesCpu()

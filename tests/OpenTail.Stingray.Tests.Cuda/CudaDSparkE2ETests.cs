@@ -3,7 +3,7 @@ using OpenTail.Stingray.Cpu;
 using OpenTail.Stingray.Cuda;
 using OpenTail.Stingray.Engine;
 
-namespace OpenTail.Stingray.Tests.ForwardPass;
+namespace OpenTail.Stingray.Tests.Cuda;
 
 /// <summary>
 /// DSpark Phase 4 (GPU draft path) validation on real models — silent-skips
@@ -17,6 +17,7 @@ namespace OpenTail.Stingray.Tests.ForwardPass;
 /// which is asserted to be positive so parity isn't vacuously satisfied by
 /// all-rejected drafts.
 /// </summary>
+[Trait("Category", "Cuda")]
 public sealed class CudaDSparkE2ETests
 {
     private const int DecodeTokens = 24;
@@ -24,11 +25,7 @@ public sealed class CudaDSparkE2ETests
     // "Hello, world! I am a virtual model." — same ids as DSparkE2ETests.
     private static readonly int[] Prompt = { 9707, 11, 1879, 0, 358, 1079, 264, 4108, 1614, 13 };
 
-    private static CudaBackend? TryCreate()
-    {
-        if (!CudaBackend.IsAvailable()) return null;
-        try { return CudaBackend.Create(); } catch { return null; }
-    }
+    private static CudaBackend? TryCreate() => CudaTestGpu.TryCreate();
 
     private static string? FindModelPath(string file)
     {

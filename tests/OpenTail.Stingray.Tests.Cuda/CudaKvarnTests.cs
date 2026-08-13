@@ -4,7 +4,7 @@ using OpenTail.Stingray.Cuda;
 using OpenTail.Stingray.Engine;
 using OpenTail.Stingray.TurboQuant;
 
-namespace OpenTail.Stingray.Tests.ForwardPass;
+namespace OpenTail.Stingray.Tests.Cuda;
 
 /// <summary>
 /// CUDA KVarN kernel + decode-integration tests (issue #180 Task 5a). Each test
@@ -25,16 +25,12 @@ namespace OpenTail.Stingray.Tests.ForwardPass;
 ///         TQ CUDA tests use.</item>
 /// </list>
 /// </summary>
+[Trait("Category", "Cuda")]
 public sealed unsafe class CudaKvarnTests(ITestOutputHelper output)
 {
     private const int Tile = KVarNCompressor.TileTokens; // 128
 
-    private static CudaBackend? TryCreate()
-    {
-        if (!CudaBackend.IsAvailable()) return null;
-        try { return CudaBackend.Create(); }
-        catch { return null; }
-    }
+    private static CudaBackend? TryCreate() => CudaTestGpu.TryCreate();
 
     // ─────────────────────────────────────────────────────────────────────────
     // Rotate query
@@ -454,7 +450,7 @@ public sealed unsafe class CudaKvarnTests(ITestOutputHelper output)
     [Fact]
     public void CudaForwardPass_Kvarn_GraphDecode_MatchesDirectLaunch()
     {
-        Assert.SkipUnless(CudaBackend.IsAvailable(), "no CUDA device in this environment");
+        Assert.SkipUnless(CudaTestGpu.IsAvailable, "no CUDA device in this environment");
         var path = FindModelPath();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 

@@ -4,7 +4,7 @@ using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Cuda;
 using OpenTail.Stingray.Engine;
 
-namespace OpenTail.Stingray.Tests.ForwardPass;
+namespace OpenTail.Stingray.Tests.Cuda;
 
 /// <summary>
 /// Issue #276: coverage for the Gemma 4 12B-global <c>attention_k_eq_v</c> path in the BATCHED
@@ -34,6 +34,7 @@ namespace OpenTail.Stingray.Tests.ForwardPass;
 /// (<see cref="Gemma4CudaBatchForwardMultiTests"/>); the realistic 12B pairing of k_eq_v-on-global +
 /// real-V-on-SWA is therefore not reproduced here, but each branch and their selection are.</para>
 /// </summary>
+[Trait("Category", "Cuda")]
 public sealed class Gemma4CudaKEqVBatchedDecodeTests : IDisposable
 {
     // Tiny but valid Gemma-4 geometry. embDim = numHeads*headDim keeps the projections square; all
@@ -51,11 +52,7 @@ public sealed class Gemma4CudaKEqVBatchedDecodeTests : IDisposable
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { /* best-effort temp cleanup */ }
     }
 
-    private static CudaBackend? TryCreate()
-    {
-        if (!CudaBackend.IsAvailable()) return null;
-        try { return CudaBackend.Create(); } catch { return null; }
-    }
+    private static CudaBackend? TryCreate() => CudaTestGpu.TryCreate();
 
     private static int Argmax(ReadOnlySpan<float> logits)
     {

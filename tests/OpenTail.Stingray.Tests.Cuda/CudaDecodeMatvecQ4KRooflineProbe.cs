@@ -2,7 +2,7 @@ using System.Diagnostics;
 using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Cuda;
 
-namespace OpenTail.Stingray.Tests.ForwardPass;
+namespace OpenTail.Stingray.Tests.Cuda;
 
 /// <summary>
 /// Issue #156 DECODE roofline probe (not a correctness test): times the Q4_K dp4a/Q8_1
@@ -21,14 +21,10 @@ namespace OpenTail.Stingray.Tests.ForwardPass;
 /// Run explicitly: --filter FullyQualifiedName~CudaDecodeMatvecQ4KRooflineProbe. Silent
 /// no-op without CUDA. Always asserts true — it only prints the measurement.
 /// </summary>
+[Trait("Category", "Cuda")]
 public sealed unsafe class CudaDecodeMatvecQ4KRooflineProbe
 {
-    private static CudaBackend? TryCreate()
-    {
-        if (!CudaBackend.IsAvailable()) return null;
-        try { return CudaBackend.Create(); }
-        catch { return null; }
-    }
+    private static CudaBackend? TryCreate() => CudaTestGpu.TryCreate();
 
     private static ushort HalfToUshort(Half h) => BitConverter.ToUInt16(BitConverter.GetBytes(h), 0);
 

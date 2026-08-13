@@ -2,7 +2,7 @@ using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Cuda;
 using OpenTail.Stingray.Engine;
 
-namespace OpenTail.Stingray.Tests.ForwardPass;
+namespace OpenTail.Stingray.Tests.Cuda;
 
 /// <summary>
 /// Issue #110: byte-parity guard for batched prompt prefill on the CPU-MoE
@@ -18,6 +18,7 @@ namespace OpenTail.Stingray.Tests.ForwardPass;
 /// the Q8_KS-prepacked batched path and the MTP hidden-history population).
 /// Skipped silently when CUDA is unavailable or the model isn't on disk.
 /// </summary>
+[Trait("Category", "Cuda")]
 public sealed class CudaHybridGdnBatchedPrefillTests : IDisposable
 {
     // Issue #162: these oracles assert the BATCHED prefill is bit-identical to the
@@ -50,11 +51,7 @@ public sealed class CudaHybridGdnBatchedPrefillTests : IDisposable
         CudaHybridGdnForwardPass.RawQ80WeightsEnabled = _prevRawQ80;
     }
 
-    private static CudaBackend? TryCreate()
-    {
-        if (!CudaBackend.IsAvailable()) return null;
-        try { return CudaBackend.Create(); } catch { return null; }
-    }
+    private static CudaBackend? TryCreate() => CudaTestGpu.TryCreate();
 
     private static string? FindCarnicePath()
     {

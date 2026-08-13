@@ -2,7 +2,7 @@ using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Vulkan;
 using Xunit;
 
-namespace OpenTail.Stingray.Tests.ForwardPass;
+namespace OpenTail.Stingray.Tests.Vulkan;
 
 /// <summary>
 /// Characterises the <c>GL_EXT_integer_dot_product</c> <c>dotPacked4x8AccSatEXT</c> intrinsic on

@@ -377,6 +377,36 @@ public sealed class ConstrainedChoiceSamplingTests
         Assert.True(float.IsNegativeInfinity(logits[99]));
     }
 
+    /// <summary>
+    /// Regression for the TokenChoiceTrie prefix bug: Test8_PrefixCollision's two choices
+    /// ("A"->[40], "APPROVED"->[10]) don't actually share a token prefix, so it never exercised
+    /// the real defect. "YES"->[10] is a genuine token-level prefix of "YESSIR"->[10, 20] here --
+    /// the trie node after token 10 is terminal AND has a child toward "YESSIR". The forward pass
+    /// always ranks token 10 highest, so generation reaches that node on the first step.
+    /// </summary>
+    [Fact]
+    public async Task Test17_ShorterChoiceReachableWhenPrefixOfLonger()
+    {
+        using var cache = new CpuKvCache(totalPages: 100, pageSizeTokens: 32);
+        var fwd = new MockChoiceForwardPass();
+        await using var session = new InferenceSession(cache, forwardPass: fwd);
+        session.Tokenizer = new MockChoiceTokenizer();
+
+        await session.AppendAsync(new int[] { 1 });
+
+        var sampling = new SamplingParams
+        {
+            AllowedChoices = new[] { "YES", "YESSIR" },
+            MaxNewTokens = 10
+        };
+
+        var chunks = await session.GenerateAsync(sampling).ToListAsync();
+
+        // Must stop cleanly at "YES" (1 token) instead of being forced to continue toward
+        // "YESSIR" merely because that node also has children in the trie.
+        Assert.Single(chunks);
+    }
+
     private sealed class MockChoiceForwardPass : IForwardPass
     {
         public int Position { get; private set; }
@@ -458,6 +488,7 @@ public sealed class ConstrainedChoiceSamplingTests
             "NEEDS_REVISION" => new int[] { 30, 31, 32 },
             "A" => new int[] { 40 },
             " YES" => new int[] { 50 },
+            "YESSIR" => new int[] { 10, 20 },
             _ => new int[] { 99 }
         };
     }

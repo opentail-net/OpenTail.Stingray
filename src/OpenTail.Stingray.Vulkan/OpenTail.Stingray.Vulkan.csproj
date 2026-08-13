@@ -15,6 +15,8 @@
          covers every shader and that the precompiled path is taken at runtime. -->
     <InternalsVisibleTo Include="SpirvGen" />
     <InternalsVisibleTo Include="OpenTail.Stingray.Tests.ForwardPass" />
+    <InternalsVisibleTo Include="OpenTail.Stingray.Tests.Cuda" />
+    <InternalsVisibleTo Include="OpenTail.Stingray.Tests.Vulkan" />
   </ItemGroup>
 
   <ItemGroup>

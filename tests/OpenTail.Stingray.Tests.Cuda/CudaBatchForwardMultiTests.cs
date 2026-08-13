@@ -2,7 +2,7 @@ using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Engine;
 using OpenTail.Stingray.Cuda;
 
-namespace OpenTail.Stingray.Tests.ForwardPass;
+namespace OpenTail.Stingray.Tests.Cuda;
 
 /// <summary>
 /// Issue #190: CUDA continuous batching on the dense path. <see cref="CudaForwardPass"/> now
@@ -17,6 +17,7 @@ namespace OpenTail.Stingray.Tests.ForwardPass;
 /// batched run follows. Silent-skips when CUDA or the GGUF is absent — mirrors
 /// <see cref="Qwen3CudaBatchedPrefillTests"/>.
 /// </summary>
+[Trait("Category", "Cuda")]
 public sealed class CudaBatchForwardMultiTests
 {
     private const string ModelFile = "Qwen3-8B-Q4_K_M.gguf";
@@ -26,12 +27,7 @@ public sealed class CudaBatchForwardMultiTests
     private static readonly int[] PromptA = { 9707, 11, 1879, 0, 358 };
     private static readonly int[] PromptB = { 1079, 264, 4108, 1614, 13, 220, 17 };
 
-    private static CudaBackend? TryCreate()
-    {
-        if (!CudaBackend.IsAvailable()) return null;
-        try { return CudaBackend.Create(); }
-        catch { return null; }
-    }
+    private static CudaBackend? TryCreate() => CudaTestGpu.TryCreate();
 
     // Construct with SnapKV pinned off: continuous batching is unsupported under an active
     // SnapKV budget (it throws), and VRAM-scaled auto-SnapKV could otherwise engage at this

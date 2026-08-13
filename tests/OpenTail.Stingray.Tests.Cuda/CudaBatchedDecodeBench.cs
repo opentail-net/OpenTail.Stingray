@@ -3,7 +3,7 @@ using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Cuda;
 using OpenTail.Stingray.Engine;
 
-namespace OpenTail.Stingray.Tests.ForwardPass;
+namespace OpenTail.Stingray.Tests.Cuda;
 
 /// <summary>
 /// Issue #190: aggregate decode-throughput measurement for CUDA continuous batching. Compares
@@ -17,6 +17,7 @@ namespace OpenTail.Stingray.Tests.ForwardPass;
 ///   $env:STINGRAY_BENCH_BATCH=1; dotnet test tests/OpenTail.Stingray.Tests.ForwardPass -c Release `
 ///     --filter "FullyQualifiedName~CudaBatchedDecodeBench" --logger "console;verbosity=normal"
 /// </summary>
+[Trait("Category", "Cuda")]
 public sealed class CudaBatchedDecodeBench
 {
     private const string ModelFile = "Qwen3-8B-Q4_K_M.gguf";
@@ -44,12 +45,7 @@ public sealed class CudaBatchedDecodeBench
         { 9707, 11, 1879, 0, 358, 1079, 264, 4108, 1614, 13, 220, 17, 18, 19, 20, 21,
           22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37 };
 
-    private static CudaBackend? TryCreate()
-    {
-        if (!CudaBackend.IsAvailable()) return null;
-        try { return CudaBackend.Create(); }
-        catch { return null; }
-    }
+    private static CudaBackend? TryCreate() => CudaTestGpu.TryCreate();
 
     private static string? FindModelPath()
     {

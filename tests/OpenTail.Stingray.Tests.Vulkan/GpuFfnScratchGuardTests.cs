@@ -1,7 +1,7 @@
 using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Engine;
 
-namespace OpenTail.Stingray.Tests.ForwardPass;
+namespace OpenTail.Stingray.Tests.Vulkan;
 
 /// <summary>
 /// Issue #315: hardening the Vulkan MoE FFN scratch-buffer sizing
@@ -38,11 +38,11 @@ public sealed class GpuFfnScratchGuardTests
     /// <c>VulkanInitTests</c> is deliberately NOT routed through this — there, bringing the device
     /// up IS the thing under test.</para>
     /// </summary>
-    private static Vulkan.VulkanBackend CreateBackendOrSkip()
+    private static global::OpenTail.Stingray.Vulkan.VulkanBackend CreateBackendOrSkip()
     {
         try
         {
-            return new Vulkan.VulkanBackend();
+            return new global::OpenTail.Stingray.Vulkan.VulkanBackend();
         }
         catch (Exception ex)
         {
@@ -135,7 +135,7 @@ public sealed class GpuFfnScratchGuardTests
 
         var tokenizer = GgufTokenizer.FromGgufModel(model);
 
-        Vulkan.VulkanBackend gpu;
+        global::OpenTail.Stingray.Vulkan.VulkanBackend gpu;
         try
         {
             gpu = CreateBackendOrSkip();

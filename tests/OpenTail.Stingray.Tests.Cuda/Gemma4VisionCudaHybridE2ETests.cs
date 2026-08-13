@@ -3,7 +3,7 @@ using OpenTail.Stingray.Cuda;
 using OpenTail.Stingray.Engine;
 using OpenTail.Stingray.Vision;
 
-namespace OpenTail.Stingray.Tests.ForwardPass;
+namespace OpenTail.Stingray.Tests.Cuda;
 
 /// <summary>
 /// Image→text for Gemma 4 on the CUDA partial-offload <see cref="CudaHybridForwardPass"/>
@@ -28,6 +28,7 @@ namespace OpenTail.Stingray.Tests.ForwardPass;
 /// Silent-skips when CUDA is unavailable or the GGUFs aren't on disk. The orchestrator runs
 /// the heavy GPU verification; the implementation pass only builds.
 /// </summary>
+[Trait("Category", "Cuda")]
 public sealed class Gemma4VisionCudaHybridE2ETests : IDisposable
 {
     private readonly ITestOutputHelper _out;
@@ -48,12 +49,7 @@ public sealed class Gemma4VisionCudaHybridE2ETests : IDisposable
     private const string TextModel = "gemma-4-12b-it-qat-q4_0.gguf";
     private const string Mmproj = "mmproj-gemma-4-12b-it-qat-q4_0.gguf";
 
-    private static CudaBackend? TryCreate()
-    {
-        if (!CudaBackend.IsAvailable()) return null;
-        try { return CudaBackend.Create(); }
-        catch { return null; }
-    }
+    private static CudaBackend? TryCreate() => CudaTestGpu.TryCreate();
 
     private static string? Find(string file)
     {

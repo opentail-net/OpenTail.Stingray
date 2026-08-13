@@ -2,7 +2,7 @@ using System.Reflection;
 using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Vulkan;
 
-namespace OpenTail.Stingray.Tests.ForwardPass;
+namespace OpenTail.Stingray.Tests.Vulkan;
 
 /// <summary>
 /// Issue #316 — the published NativeAOT binary serves Vulkan shaders from a committed,
@@ -28,11 +28,11 @@ public sealed unsafe class VulkanPrecompiledShaderTests
     /// <c>VulkanInitTests</c> is deliberately NOT routed through this — there, bringing the device
     /// up IS the thing under test.</para>
     /// </summary>
-    private static Vulkan.VulkanBackend CreateBackendOrSkip()
+    private static global::OpenTail.Stingray.Vulkan.VulkanBackend CreateBackendOrSkip()
     {
         try
         {
-            return new Vulkan.VulkanBackend();
+            return new global::OpenTail.Stingray.Vulkan.VulkanBackend();
         }
         catch (Exception ex)
         {
@@ -103,7 +103,7 @@ public sealed unsafe class VulkanPrecompiledShaderTests
     {
         // Construct a Vulkan backend and run an op that builds a pipeline from a shipped
         // shader (RmsNorm). If the precompiled path served it, glslc is never invoked.
-        Vulkan.VulkanBackend backend;
+        global::OpenTail.Stingray.Vulkan.VulkanBackend backend;
         try { backend = CreateBackendOrSkip(); }
         catch { return; } // no Vulkan device on this host — skip
 
