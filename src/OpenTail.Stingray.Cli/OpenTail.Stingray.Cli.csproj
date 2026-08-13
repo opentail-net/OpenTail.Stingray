@@ -94,6 +94,10 @@
     <None Include="..\..\THIRD_PARTY_NOTICES.md" Pack="true" PackagePath="\" />
   </ItemGroup>
 
+  <ItemGroup Condition="Exists('$(MSBuildThisFileDirectory)..\..\tools\openblas\libopenblas.dll')">
+    <Content Include="$(MSBuildThisFileDirectory)..\..\tools\openblas\libopenblas.dll" Link="tools\openblas\libopenblas.dll" CopyToOutputDirectory="PreserveNewest" Pack="true" PackagePath="tools\openblas\libopenblas.dll" />
+  </ItemGroup>
+
   <!-- NativeAOT-safe build identity. Assembly attributes are still emitted for package metadata,
        but the executable reads this generated constant instead of querying trimmed reflection
        metadata at runtime. InformationalVersion is supplied by the SDK from the single Version

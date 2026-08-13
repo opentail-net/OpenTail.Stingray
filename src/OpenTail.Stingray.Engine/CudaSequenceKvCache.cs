@@ -16,9 +16,13 @@ namespace OpenTail.Stingray.Engine;
 /// KV-cache teardown. <see cref="Length"/> is the logical token count the forward pass advances
 /// as it appends; it lives here (not on the forward pass) so each sequence tracks its own.
 /// </summary>
-internal sealed class CudaSequenceKvCache : ISequenceKvCache
+internal sealed class CudaSequenceKvCache : ISequenceKvCache, IKvSequence
 {
+    private static long s_sequenceIdCounter;
+
     private readonly CudaBackend _gpu;
+    private readonly long _sequenceId;
+    private KvPageId[] _virtualPages = Array.Empty<KvPageId>();
 
     /// <summary>Per-layer key cache. Aliased layers (see <see cref="_aliasedLayers"/>) share the
     /// source layer's tensor instance, exactly as the forward pass's owned cache does.</summary>
@@ -55,7 +59,51 @@ internal sealed class CudaSequenceKvCache : ISequenceKvCache
         V = v;
         _aliasedLayers = aliasedLayers;
         Length = 0;
+        _sequenceId = System.Threading.Interlocked.Increment(ref s_sequenceIdCounter);
     }
+
+    public long SequenceId => _sequenceId;
+    public int TokenCount => Length;
+    public int CapacityTokens => K.Length > 0 && K[0].Shape.Dims.Length > 0 ? (int)K[0].Shape.Dims[0] : int.MaxValue;
+    public int PageSize => 32;
+    public int PageCount => KvPageMath.GetRequiredPageCount(Length, 32);
+
+    public ReadOnlySpan<KvPageId> Pages
+    {
+        get
+        {
+            int req = PageCount;
+            if (_virtualPages.Length != req)
+            {
+                var newPages = new KvPageId[req];
+                for (int i = 0; i < req; i++) newPages[i] = new KvPageId(i);
+                _virtualPages = newPages;
+            }
+            return _virtualPages;
+        }
+    }
+
+    public void Append(int tokenCount)
+    {
+        if (tokenCount < 0) throw new ArgumentOutOfRangeException(nameof(tokenCount));
+        if (tokenCount > CapacityTokens - Length)
+            throw new InvalidOperationException($"CUDA KV cache capacity exceeded: requested {Length + tokenCount}, capacity {CapacityTokens}.");
+        Length += tokenCount;
+    }
+
+    public void TruncateTo(int tokenCount)
+    {
+        if (tokenCount < 0 || tokenCount > Length) throw new ArgumentOutOfRangeException(nameof(tokenCount));
+        Length = tokenCount;
+    }
+
+    public IKvSequence Fork() => ForkAt(Length);
+    public IKvSequence ForkAt(int tokenCount)
+    {
+        throw new NotSupportedException($"CudaSequenceKvCache does not support zero-copy forking without CpuKvCache or paged CUDA allocator (requested position {tokenCount}).");
+    }
+    public void Release() => Dispose();
+    public void Clear() { Length = 0; EvictedCount = 0; }
 
     public void Dispose()
     {

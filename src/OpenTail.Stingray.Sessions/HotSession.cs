@@ -279,7 +279,7 @@ public sealed class HotSession : IDisposable
             if (_disposed) return;
             _disposed = true;
         }
-        _turnGate.Wait();
+        _turnGate.WaitAsync().GetAwaiter().GetResult();
         try
         {
             _state.Dispose();

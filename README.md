@@ -113,6 +113,64 @@ The `dense-llama-cpu` profile is executable end-to-end through the CLI and serve
 high-precision CPU route: batching, persisted sessions, CUDA and Vulkan execution are not part of
 that profile. Implementation detail and acceptance evidence live in `docs/done/08-safetensors-support-plan.md`.
 
+## Native Sessions & Agentic Engine Architecture
+
+Stingray features a first-class **Native Session Engine** (`IInferenceSession`) designed specifically for stateful AI agents:
+
+```csharp
+await using var session = runtime.CreateSession(modelId);
+
+// 1. Zero-Copy Multiverse Branching (Fork parent into 4 parallel candidate paths)
+var branches = session.ForkMany(4);
+
+// 2. Token-Aware JSON Schema Generation (C# DTO Binding)
+await foreach (var chunk in session.GenerateAsync<ToolCallResult>(sampling))
+{
+    Console.Write(chunk.Text);
+}
+
+// 3. Instant Session Rollback & Time Travel
+var checkpoint = session.CreateCheckpoint();
+session.Rollback(checkpoint);
+
+// 4. Token Generation Lifecycle Observation
+session.OnTokenGenerated += (tokenId, text) => Console.Write(text);
+```
+
+### Architectural Pillars (Plans 000 – 020)
+
+| Pillar | Capability | Core API / Abstraction |
+|---|---|---|
+| **Paged KV Cache Engine** | Physical page table management with zero-copy sequence allocation | `CpuKvCache`, `CpuKvSequence`, `TryReserve` |
+| **3-Tier Session Lifecycle** | `Active` (RAM+KV), `Suspended` (RAM), `Cold` (disk snapshot) | `SessionState.Cold`, `EvictToColdAsync`, `EnsureActiveAsync` |
+| **Adaptive Memory Governor** | Automatic pressure-based session eviction and admission control | `KvMemoryGovernor`, `KvGovernorOptions` |
+| **Zero-Copy Branching** | Instant $O(1)$ CoW page table cloning for parallel search & voting | `session.Fork()`, `session.ForkMany(N)` |
+| **JSON Schema Grammar Masker** | Token-level logit masking for 100% valid JSON syntax & DTO binding | `JsonSchemaGrammarMasker`, `session.GenerateAsync<T>()` |
+| **Contextual Tool Contract** | MCP-aligned tool resolution, approval gating, and tool-call continuation | `IToolProvider`, `InferenceToolContext`, `AppendToolResultAsync` |
+| **Cross-Session Prefix Synthesis** | Automated background discovery & page index publishing for common system prompts | `CrossSessionPrefixSynthesizer`, `RadixPrefixTree` |
+| **Session Delta & Wire Compression** | Incremental session state serialization & Brotli/Gzip wire compression | `SessionDelta`, `SessionDeltaWireCompressor` |
+| **Session Performance Metrics** | Read-only surface exposing cumulative inference & physical KV page statistics | `ISessionMetrics`, `session.Metrics` |
+| **Speculative Decoding & PLD** | Multi-token speculation & n-gram Prompt Lookup Decoding | `SpeculativeDecoder`, `PromptLookupDraft` |
+
+---
+
+### 3-Tier Session Lifecycle & Memory Governor
+Managed by `KvMemoryGovernor`, physical KV pages and token histories transition transparently across 3 tiers based on memory pressure:
+- **`Active`**: Physical KV pages resident in RAM/GPU, full token history.
+- **`Suspended`**: Physical KV pages freed back to pool, token history retained in RAM.
+- **`Cold`**: Snapshot persisted to disk via `FileSessionStore`, RAM token history freed. Rehydrated transparently via `EnsureActiveAsync()` with atomic `TryReserve` capacity admission.
+
+### Zero-Copy Multiverse Branching (`Fork` / `ForkMany`)
+Call `session.Fork()` or `session.ForkMany(N)` to spawn independent child sessions instantly. Branches share physical parent KV pages via Copy-on-Write (`CoW`) page tables without duplicating KV tensors in memory. Combine with `InferenceSessionConsensusExtensions` for multi-branch voting.
+
+### Dynamic Token-Level JSON Schema Masker (`JsonSchemaGrammarMasker`)
+Constrains logit sampling at token-selection time using a compact, token-aware state machine (`GrammarStateMachine`). Supports C# DTO type binding (`session.GenerateAsync<T>()`), nested objects, string enums, required properties, and string escape sequences with **sub-millisecond compilation targets**. Fully annotated for Native AOT.
+
+### Contextual Tool Contract & Continuation
+Integrate MCP-aligned tools via `IToolProvider` and `InferenceToolContext`. Sessions handle model-facing tool contracts and continuation streams (`AppendToolResultAsync`), while the host application owns tool permissions, discovery, and execution.
+
+---
+
 ## Text generation
 
 Supported architectures: `llama`, `llama4`, `olmoe`, `qwen3`, `qwen3moe`, `qwen35moe`

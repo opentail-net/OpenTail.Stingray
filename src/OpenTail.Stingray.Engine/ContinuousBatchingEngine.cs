@@ -36,6 +36,8 @@ public sealed class ContinuousBatchingEngine : IInferenceEngine, IContinuousBatc
     // prevents an abandoned reader from accumulating an unbounded response in its channel.
     private const int MaxBufferedOutputChunks = 4_096;
     private readonly IBatchedForwardPass _fwd;
+    private readonly IKvCache _kvCache;
+    private readonly bool _ownsKvCache;
     private readonly ITokenizer _tokenizer;
     private readonly int _maxBatchSize;
     private readonly int _thinkTokenId;
@@ -197,7 +199,8 @@ public sealed class ContinuousBatchingEngine : IInferenceEngine, IContinuousBatc
         int endThinkTokenId = -1,
         int prefillChunkTokens = -1,
         long kvBudgetBytes = 0,
-        long prefixCacheBytes = 256L * 1024 * 1024)
+        long prefixCacheBytes = 256L * 1024 * 1024,
+        IKvCache? kvCache = null)
     {
         ArgumentNullException.ThrowIfNull(fwd);
         ArgumentNullException.ThrowIfNull(tokenizer);
@@ -231,10 +234,39 @@ public sealed class ContinuousBatchingEngine : IInferenceEngine, IContinuousBatc
             ? long.MaxValue
             : Math.Max(1, budgetBytes / Math.Max(1, fwd.KvBytesPerToken));
 
+        if (kvCache != null)
+        {
+            _kvCache = kvCache;
+            _ownsKvCache = false;
+        }
+        else
+        {
+            // This cache is not consulted by real admission control (see the KvCache property
+            // doc) — it exists only for callers that want to observe/compose with it directly.
+            // Since nothing here writes to it, an unbounded token budget must not translate into
+            // an unbounded (1,000,000-page) eager allocation at startup; a small placeholder size
+            // is sized the same as the real, budget-driven case below would be for a moderate
+            // budget, not the degenerate "unlimited" one.
+            int totalPages = _kvTokenBudget == long.MaxValue
+                ? 4_096
+                : (int)Math.Clamp(_kvTokenBudget / 32, 1, int.MaxValue);
+            _kvCache = new CpuKvCache(totalPages, pageSizeTokens: 32, bytesPerToken: Math.Max(1, fwd.KvBytesPerToken));
+            _ownsKvCache = true;
+        }
+
         _batcherTask = Task.Run(BatcherLoop);
     }
 
     public string ModelId { get; }
+
+    /// <summary>
+    /// A paged KV cache instance sized from the same budget as real admission control, exposed for
+    /// callers that want to observe/compose with it directly. <b>Not currently consulted by this
+    /// engine's own admission control</b> — that runs entirely on <see cref="_committedTokens"/> /
+    /// <see cref="_kvTokenBudget"/>, tracked independently. Reading <see cref="IKvCache.GetStatistics"/>
+    /// here does not reflect this engine's real traffic.
+    /// </summary>
+    public IKvCache KvCache => _kvCache;
 
     /// <summary>Number of requests queued but not yet being generated.</summary>
     public int QueueDepth => _pendingCount;
@@ -793,6 +825,20 @@ public sealed class ContinuousBatchingEngine : IInferenceEngine, IContinuousBatc
                 if (cache is not null)
                 {
                     req.RetainedCache = null;
+                    // Diagnostic guard (hot-session replay divergence investigation): the
+                    // RetainedState path below already refuses to admit a rewindable cache whose
+                    // LogicalPosition disagrees with the recorded turn boundary -- this in-process
+                    // HotSession path reuses the cache object directly and had no equivalent check,
+                    // so a drift between HotSession's own cursor bookkeeping and the cache's actual
+                    // materialized position could silently write the next turn's tokens at the
+                    // wrong position instead of failing loudly.
+                    if (cache is IRewindableSequenceKvCache retainedRewindable
+                        && retainedRewindable.LogicalPosition != req.TurnStartPosition)
+                    {
+                        throw new InvalidOperationException(
+                            $"Retained cache logical position {retainedRewindable.LogicalPosition} does not " +
+                            $"match turn start position {req.TurnStartPosition} (HotSession cursor drift at admission).");
+                    }
                 }
                 else if (req.RetainedState is not null)
                 {
@@ -1288,5 +1334,10 @@ public sealed class ContinuousBatchingEngine : IInferenceEngine, IContinuousBatc
         _prefixCache.Clear();
         _prefixCacheUsedBytes = 0;
         Volatile.Write(ref _prefixCacheEntryCount, 0);
+
+        if (_ownsKvCache && _kvCache is IDisposable disposableCache)
+        {
+            disposableCache.Dispose();
+        }
     }
 }

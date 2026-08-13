@@ -67,6 +67,13 @@ public sealed class SpeculativeDecoder
     // Acceptance statistics
     private long _totalAccepted;
     private long _totalEmitted;
+    private long _pldAttempts;
+    private long _pldHits;
+    private long _pldProposed;
+    private long _pldAccepted;
+    private long _draftFallbacks;
+    private long _draftProposed;
+    private long _draftAccepted;
 
     // Phase timing (issue #207 bench reporting): cumulative wall time spent drafting,
     // batch-verifying, and committing (truncate + correction forwards) across all steps.
@@ -91,6 +98,28 @@ public sealed class SpeculativeDecoder
         _batchVerify = Environment.GetEnvironmentVariable("STINGRAY_SPEC_BATCH_VERIFY") != "0";
         _lookahead = Math.Max(1, lookahead);
         _savedTargetLogits = new float[target.VocabSize];
+    }
+
+    /// <summary>
+    /// Speculative Cascade Ensemble (Plan 011): attempts prompt lookup (PLD) first;
+    /// if PLD produces no candidates, falls back to the neural draft model.
+    /// </summary>
+    public SpeculativeDecoder(IForwardPass target, PromptLookupDraft lookup, IForwardPass draft, int lookahead = 4)
+        : this(target, draft, lookahead)
+    {
+        ArgumentNullException.ThrowIfNull(lookup);
+        _lookup = lookup;
+    }
+
+    /// <summary>
+    /// Sampled Speculative Cascade Ensemble (Plan 011): attempts prompt lookup (PLD) first;
+    /// if PLD produces no candidates, falls back to the neural draft model under speculative sampling.
+    /// </summary>
+    public SpeculativeDecoder(IForwardPass target, PromptLookupDraft lookup, IForwardPass draft, SamplingParams sampling, Random rng, int lookahead = 4)
+        : this(target, draft, sampling, rng, lookahead)
+    {
+        ArgumentNullException.ThrowIfNull(lookup);
+        _lookup = lookup;
     }
 
     public SpeculativeDecoder(IForwardPass target, IForwardPass draft, int lookahead = 4)
@@ -160,8 +189,17 @@ public sealed class SpeculativeDecoder
         set => _lookahead = Math.Max(1, value);
     }
 
+    /// <summary>When true, dynamically adjusts lookahead K per step based on acceptance rate.</summary>
+    public bool EnableAdaptiveLookahead { get; set; } = true;
+
     /// <summary>Running acceptance rate (accepted tokens / total emitted tokens).</summary>
     public float AcceptanceRate => _totalEmitted > 0 ? (float)_totalAccepted / _totalEmitted : 0f;
+
+    /// <summary>Total accepted tokens.</summary>
+    public long TotalAccepted => _totalAccepted;
+
+    /// <summary>Total emitted tokens.</summary>
+    public long TotalEmitted => _totalEmitted;
 
     /// <summary>Cumulative milliseconds spent in the draft phase (k−1 draft forwards per step).</summary>
     public double DraftMs { get; private set; }
@@ -171,6 +209,22 @@ public sealed class SpeculativeDecoder
 
     /// <summary>Cumulative milliseconds spent in cache truncation + draft-sync forwards.</summary>
     public double CommitMs { get; private set; }
+
+    /// <summary>Structured metrics snapshot for diagnostic logging and inspection.</summary>
+    public SpeculativeMetrics Metrics => new(
+        TotalAccepted,
+        TotalEmitted,
+        AcceptanceRate,
+        DraftMs,
+        VerifyMs,
+        CommitMs,
+        _pldAttempts,
+        _pldHits,
+        _pldProposed,
+        _pldAccepted,
+        _draftFallbacks,
+        _draftProposed,
+        _draftAccepted);
 
     /// <summary>
     /// Initialize the decoder after both models have processed the prompt.
@@ -258,30 +312,42 @@ public sealed class SpeculativeDecoder
 
         // ── Draft phase ──────────────────────────────────────────────────────────
         _phaseSw.Restart();
-        int[] tokens;
+        int[] tokens = Array.Empty<int>();
+        bool usedPld = false;
+
         if (_lookup is not null)
         {
-            // Prompt-lookup: tokens[0] is certain, so it joins the history before
-            // matching; proposals are whatever the tail n-gram match yields (possibly
-            // none — then the step is a plain single-token decode).
+            _pldAttempts++;
             _lookup.Append(n0);
             int[] proposals = _lookup.Propose(k - 1);
-            tokens = new int[1 + proposals.Length];
-            tokens[0] = n0;
-            proposals.CopyTo(tokens, 1);
+            if (proposals.Length > 0)
+            {
+                _pldHits++;
+                _pldProposed += proposals.Length;
+                tokens = new int[1 + proposals.Length];
+                tokens[0] = n0;
+                proposals.CopyTo(tokens, 1);
+                usedPld = true;
+            }
         }
-        else
+
+        if (!usedPld && _draft is not null)
         {
-            // Model draft: k−1 draft forwards propose tokens[1..k-1]; the draft cache
-            // advances to P + k - 1 (appended tokens[0..k-2]).
+            if (_lookup is not null) _draftFallbacks++;
             tokens = new int[k];
             tokens[0] = n0;
             for (int i = 1; i < k; i++)
             {
-                var logits = _draft!.Forward(tokens[i - 1], P + i - 1);
+                var logits = _draft.Forward(tokens[i - 1], P + i - 1);
                 tokens[i] = ArgMax(logits);
             }
+            _draftProposed += k - 1;
         }
+        else if (!usedPld)
+        {
+            tokens = new int[1] { n0 };
+        }
+
         DraftMs += _phaseSw.Elapsed.TotalMilliseconds;
 
         // ── Target batch-verify ──────────────────────────────────────────────────
@@ -303,6 +369,14 @@ public sealed class SpeculativeDecoder
 
         _totalAccepted += accepted;
         _totalEmitted += accepted + 1;
+        if (usedPld)
+        {
+            _pldAccepted += accepted;
+        }
+        else if (_draft is not null)
+        {
+            _draftAccepted += accepted;
+        }
 
         // ── Roll both caches back to the last emitted token ──────────────────────
         // Emitted: tokens[0..accepted] → new length newPos. The batch already holds the
@@ -312,21 +386,26 @@ public sealed class SpeculativeDecoder
         int newPos = P + 1 + accepted;
         _target.TruncateTo(newPos);
 
-        if (_lookup is not null)
+        if (usedPld)
         {
-            // No draft cache to manage; record the accepted proposals (tokens[0] was
-            // appended before matching) so future tail n-grams can match them.
-            for (int i = 1; i <= accepted; i++) _lookup.Append(tokens[i]);
+            for (int i = 1; i <= accepted; i++) _lookup!.Append(tokens[i]);
+            if (_draft is not null)
+            {
+                var acceptedSlice = new int[1 + accepted];
+                Array.Copy(tokens, 0, acceptedSlice, 0, 1 + accepted);
+                _draft.Prefill(acceptedSlice, P);
+            }
         }
-        else if (accepted == tokens.Length - 1)
+        else if (_draft is not null)
         {
-            // Fully accepted: the draft never processed tokens[k-1] (its cache is at
-            // P+k-1 = newPos-1). Sync it so the next step's draft chain starts at newPos.
-            _draft!.Forward(tokens[^1], P + tokens.Length - 1);
-        }
-        else
-        {
-            _draft!.TruncateTo(newPos);
+            if (accepted == tokens.Length - 1)
+            {
+                _draft.Forward(tokens[^1], P + tokens.Length - 1);
+            }
+            else
+            {
+                _draft.TruncateTo(newPos);
+            }
         }
         CommitMs += _phaseSw.Elapsed.TotalMilliseconds;
 
@@ -337,6 +416,20 @@ public sealed class SpeculativeDecoder
         // ── Emitted token list: the certain token + accepted proposals ───────────
         var emitted = new int[accepted + 1];
         for (int i = 0; i <= accepted; i++) emitted[i] = tokens[i];
+
+        if (EnableAdaptiveLookahead && tokens.Length > 1)
+        {
+            float stepAcceptance = (float)accepted / (tokens.Length - 1);
+            if (stepAcceptance > 0.8f)
+            {
+                _lookahead = Math.Min(_lookahead + 1, 8);
+            }
+            else if (stepAcceptance < 0.4f)
+            {
+                _lookahead = Math.Max(_lookahead - 1, 1);
+            }
+        }
+
         return emitted;
     }
 
@@ -361,18 +454,44 @@ public sealed class SpeculativeDecoder
 
         // tokens[0] is CERTAIN — it was sampled last step (the deferred correction/bonus), so it
         // is NOT re-drawn here (re-sampling would consume an extra RNG draw and break determinism).
-        var tokens = new int[k];
-        tokens[0] = _savedSampledToken;
-
         // ── Draft phase ──────────────────────────────────────────────────────────
-        // Each proposal is SAMPLED from the draft's filtered distribution; the full distribution
-        // is retained in draftDists[i] so a rejection at i can resample from the residual.
         _phaseSw.Restart();
-        for (int i = 1; i < k; i++)
+        int[] tokens = Array.Empty<int>();
+        bool usedPld = false;
+
+        if (_lookup is not null)
         {
-            var draftLogits = _draft!.Forward(tokens[i - 1], P + i - 1);
-            tokens[i] = Sampler.SampleWithDistribution(draftLogits, sampling, draftDists[i], rng);
+            _pldAttempts++;
+            _lookup.Append(_savedSampledToken);
+            int[] proposals = _lookup.Propose(k - 1);
+            if (proposals.Length > 0)
+            {
+                _pldHits++;
+                _pldProposed += proposals.Length;
+                tokens = new int[1 + proposals.Length];
+                tokens[0] = _savedSampledToken;
+                proposals.CopyTo(tokens, 1);
+                usedPld = true;
+            }
         }
+
+        if (!usedPld && _draft is not null)
+        {
+            if (_lookup is not null) _draftFallbacks++;
+            tokens = new int[k];
+            tokens[0] = _savedSampledToken;
+            for (int i = 1; i < k; i++)
+            {
+                var draftLogits = _draft.Forward(tokens[i - 1], P + i - 1);
+                tokens[i] = Sampler.SampleWithDistribution(draftLogits, sampling, draftDists[i], rng);
+            }
+            _draftProposed += k - 1;
+        }
+        else if (!usedPld)
+        {
+            tokens = new int[1] { _savedSampledToken };
+        }
+
         DraftMs += _phaseSw.Elapsed.TotalMilliseconds;
 
         // ── Target batch-verify ──────────────────────────────────────────────────
@@ -384,13 +503,13 @@ public sealed class SpeculativeDecoder
         // ── Speculative-sampling accept / reject ──────────────────────────────────
         int accepted = 0;
         int correction = -1;   // residual/bonus token, deferred to next step's tokens[0]
-        for (int i = 1; i < k; i++)
+        for (int i = 1; i < tokens.Length; i++)
         {
             // p_i = target distribution after tokens[i-1] (predicts the slot tokens[i] sits in).
             Sampler.BuildFilteredDistribution(batch[i - 1], sampling, pDist);
             float px = pDist[tokens[i]];
             bool accept;
-            if (_trueSpecSampling)
+            if (_trueSpecSampling && !usedPld)
             {
                 float qx = draftDists[i][tokens[i]];
                 float a = qx > 0f ? MathF.Min(1f, px / qx) : (px > 0f ? 1f : 0f);
@@ -398,21 +517,11 @@ public sealed class SpeculativeDecoder
             }
             else
             {
-                // Looser opt-in (--spec-draft-p-min): accept iff the target's prob of the draft
-                // token ≥ pMin OR the draft token is the target's own argmax. Diverges from the
-                // target distribution. Same threshold shape as MtpDecoder.AcceptDraft, but px is
-                // the FILTERED target prob (temp/top-k/top-p/min-p applied) — consistent with the
-                // p used by the strict path — whereas MtpDecoder thresholds a raw temp-1 softmax,
-                // so a given pMin is not numerically identical across the two paths.
                 accept = px >= sampling.SpecDraftPMin || tokens[i] == Sampler.Greedy(batch[i - 1]);
             }
             if (accept) { accepted++; continue; }
 
-            // Reject at i: correction from the residual at this position (true sampling) or a
-            // fresh target sample (looser pMin mode — already off-distribution). pDist already
-            // holds BuildFilteredDistribution(batch[i-1]) from the accept test above, so the
-            // looser path samples it directly rather than rebuilding it.
-            correction = _trueSpecSampling
+            correction = (_trueSpecSampling && !usedPld)
                 ? Sampler.ResampleResidual(pDist, draftDists[i], rng)
                 : Sampler.SampleFromProbs(pDist, rng);
             break;
@@ -445,6 +554,20 @@ public sealed class SpeculativeDecoder
         // Emit tokens[0..accepted]; the correction/bonus rides into the next step (folded form).
         var emitted = new int[accepted + 1];
         for (int i = 0; i <= accepted; i++) emitted[i] = tokens[i];
+
+        if (EnableAdaptiveLookahead && tokens.Length > 1)
+        {
+            float stepAcceptance = (float)accepted / (tokens.Length - 1);
+            if (stepAcceptance > 0.8f)
+            {
+                _lookahead = Math.Min(_lookahead + 1, 8);
+            }
+            else if (stepAcceptance < 0.4f)
+            {
+                _lookahead = Math.Max(_lookahead - 1, 1);
+            }
+        }
+
         return emitted;
     }
 
@@ -497,4 +620,31 @@ public sealed class SpeculativeDecoder
             if (token == s) return true;
         return false;
     }
+}
+
+/// <summary>
+/// Structured performance and acceptance statistics snapshot for speculative decoding.
+/// </summary>
+public readonly record struct SpeculativeMetrics(
+    long TotalAccepted,
+    long TotalEmitted,
+    float AcceptanceRate,
+    double DraftMs,
+    double VerifyMs,
+    double CommitMs,
+    long PromptLookupAttempts = 0,
+    long PromptLookupHits = 0,
+    long PromptLookupProposedTokens = 0,
+    long PromptLookupAcceptedTokens = 0,
+    long DraftFallbackAttempts = 0,
+    long DraftProposedTokens = 0,
+    long DraftAcceptedTokens = 0)
+{
+    public float PromptLookupAcceptanceRate => PromptLookupProposedTokens > 0
+        ? (float)PromptLookupAcceptedTokens / PromptLookupProposedTokens
+        : 0f;
+
+    public float DraftAcceptanceRate => DraftProposedTokens > 0
+        ? (float)DraftAcceptedTokens / DraftProposedTokens
+        : 0f;
 }

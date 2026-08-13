@@ -666,6 +666,12 @@ public sealed record SamplingParams
     public float TopP { get; init; } = 1.0f;
     public float MinP { get; init; } = 0.0f;
     public float RepetitionPenalty { get; init; } = 1.0f;
+
+    /// <summary>
+    /// Optional list of exact text choices to constrain generation (e.g. ["APPROVED", "REJECTED", "NEEDS_REVISION"]).
+    /// When non-null and non-empty, generation is restricted to one of the specified choices.
+    /// </summary>
+    public System.Collections.Generic.IReadOnlyList<string>? AllowedChoices { get; init; }
     /// <summary>
     /// How many trailing entries of <see cref="PreviousTokens"/> the REPETITION penalty considers
     /// (llama.cpp's <c>--repeat-last-n</c>). 0 means the whole history.

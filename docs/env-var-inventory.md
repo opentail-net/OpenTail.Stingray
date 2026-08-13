@@ -5,7 +5,7 @@ variables**.
 
 **Reconciled 2026-08-07:** the table below now lists every name in
 `KnownEnvironmentVariables.All`, the source-enforced registry, which
-now contains **156** names. The row set is therefore no longer a historical subset — it is
+now contains **161** names. The row set is therefore no longer a historical subset — it is
 name-complete as of this date. What remains outstanding is the **Class/Notes** classification
 (see below), not the enumeration.
 

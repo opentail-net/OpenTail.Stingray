@@ -2719,7 +2719,7 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, ID
         // valid either way — but when int8 is permitted the caller is spec-decode verify at k<=16,
         // where Path 1's dp4a kernel is the faster shape. Declining keeps this measurement about
         // prefill, which is the only place a tiled GEMM can pay.
-        if (allowInt8) return false;
+        if (allowInt8 && !VulkanPath2Config.IsEnabled) return false;
 
         bool isQ6 = weightDType == DType.Q6_K;
         try

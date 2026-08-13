@@ -51,6 +51,8 @@ app.Configure(config =>
         .WithDescription("Check local runtime, backends, and optionally a GGUF model without inference");
     config.AddCommand<StatusCommand>("status")
         .WithDescription("View live runtime status, throughput, KV occupancy, and queue metrics from a running server");
+    config.AddCommand<InspectKvCommand>("inspect-kv")
+        .WithDescription("Inspect KV cache capacity, page distribution, forking and CoW statistics");
     config.AddCommand<PerplexityCommand>("perplexity")
         .WithDescription("Teacher-forced perplexity over a text file (llama.cpp llama-perplexity analogue; CPU only). Reports mean NLL, perplexity, and position-bucket NLLs — the TurboQuant/KVarN accuracy gate (issue #180).");
     config.AddCommand<ImageCommand>("image")

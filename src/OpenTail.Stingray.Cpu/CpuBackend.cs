@@ -243,6 +243,9 @@ public sealed unsafe class CpuBackend : IComputeBackend
         var b = (float*)B.Handle;
         var c = (float*)C.Handle;
 
+        if (MicroGemmConfig.IsEnabled && MicroGemmKernel.TryMatMulF32(a, b, c, M, K, N))
+            return;
+
         if (BlasInterop.IsAvailable)
         {
             BlasInterop.Sgemm(

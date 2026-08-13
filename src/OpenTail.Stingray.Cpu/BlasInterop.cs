@@ -45,6 +45,10 @@ internal static unsafe partial class BlasInterop
 
     private static bool ProbeLibrary()
     {
+        // Diagnostic override (perf investigation): force BLAS off regardless of what's on disk.
+        if (Environment.GetEnvironmentVariable("STINGRAY_FORCE_NO_BLAS") == "1")
+            return false;
+
         // Try standard search paths first
         if (NativeLibrary.TryLoad("libopenblas", out _))
             return true;

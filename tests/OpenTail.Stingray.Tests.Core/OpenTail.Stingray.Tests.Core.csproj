@@ -30,6 +30,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\OpenTail.Stingray.Core\OpenTail.Stingray.Core.csproj" />
+    <ProjectReference Include="..\..\src\OpenTail.Stingray.Cpu\OpenTail.Stingray.Cpu.csproj" />
   </ItemGroup>
 
 </Project>

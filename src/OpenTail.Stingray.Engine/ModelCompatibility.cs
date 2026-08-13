@@ -15,6 +15,7 @@ public static class ModelCompatibility
         // Decoder-only transformer profiles exercised by OpenTail's forward passes.
         "llama", "llama4",
         "qwen", "qwen2", "qwen2moe", "qwen3", "qwen3moe", "qwen35", "qwen35moe",
+        "mimo", "mimo2",
         "gemma", "gemma2", "gemma3", "gemma3n", "gemma4",
         "phi2", "phi3", "phimoe",
         // olmoe — admitted 2026-08-08 on perplexity parity, NOT on token-for-token greedy parity,
@@ -454,6 +455,9 @@ public static class ModelCompatibility
         // session. See MaincoderGreedyParityTests and docs/01-gguf-model-coverage-plan.md §1w.
         "maincoder",
         "exaone4",
+        "mistral3",
+        "ministral",
+        "deepseek2",
     };
     // minicpm — NOT admitted. The forward-pass scale trio (reusing Granite's graph, see
     // GraniteGreedyParityTests) is implemented and presumed correct, but MiniCPM4-0.5B — the only

@@ -53,7 +53,7 @@ internal sealed class Prefetcher : IDisposable
     public void Dispose()
     {
         _cts.Cancel();
-        _worker.Wait();
+        _worker.GetAwaiter().GetResult();
         _cts.Dispose();
     }
 }

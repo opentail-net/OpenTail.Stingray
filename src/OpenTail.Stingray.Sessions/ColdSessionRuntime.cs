@@ -329,15 +329,28 @@ public sealed class ColdSessionRuntime
         return session;
     }
 
+    /// <summary>
+    /// Deletes leftover <c>.tmp_{guid}</c> files from an interrupted <see cref="SegmentPackStore.SaveBlock"/>
+    /// write. The glob is deliberately narrow: <c>SegmentPackStore</c> is the only writer of this
+    /// pattern (<c>packPath + ".tmp_" + Guid</c>), so it cannot collide with any other store's temp
+    /// files sharing this directory — notably <c>FileSessionStore</c>, whose atomic-write temp files
+    /// are named <c>finalPath + ".tmp"</c> with no trailing GUID and would otherwise also match a
+    /// broader <c>*.tmp*</c> glob. The age guard is defense in depth against sweeping a temp file
+    /// still being written by a concurrent operation in this same store.
+    /// </summary>
     private static void SweepStaleTempFiles(string directory)
     {
+        var staleThreshold = DateTime.UtcNow - TimeSpan.FromMinutes(5);
         try
         {
             foreach (var tempFile in Directory.EnumerateFiles(directory, "*.tmp_*"))
             {
                 try
                 {
-                    File.Delete(tempFile);
+                    if (File.GetLastWriteTimeUtc(tempFile) <= staleThreshold)
+                    {
+                        File.Delete(tempFile);
+                    }
                 }
                 catch
                 {

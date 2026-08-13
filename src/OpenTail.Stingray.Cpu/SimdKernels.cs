@@ -118,6 +118,10 @@ public static unsafe class SimdKernels
             // Default-ON as of the Q8-prefill ship (see Q8PrefillEnabled); opt out with
             // STINGRAY_CPU_PREFILL_Q8=0. Only prefill call sites pass allowQ8 -- see the
             // parameter's doc for why batch size alone cannot make that decision.
+            if (MicroGemmConfig.IsEnabled && dtype == DType.Q4_K &&
+                MicroGemmQ4K.TryMatMulQ4K(output, input, (byte*)weights, batchSize, rows, cols))
+                return;
+
             if (allowQ8 && Q8PrefillEnabled && batchSize >= MinBatchForQ8Prefill &&
                 TryMatMulBatchedQ8(output, weights, input, batchSize, rows, cols, dtype))
                 return;
@@ -205,6 +209,9 @@ public static unsafe class SimdKernels
             // In row-major: C = input * W^T
             // sgemm(RowMajor, NoTrans, Trans, M=batchSize, N=rows, K=cols,
             //        alpha=1, A=input, lda=cols, B=W, ldb=cols, beta=0, C=output, ldc=rows)
+            if (MicroGemmConfig.IsEnabled && MicroGemmKernel.TryMatMulF32(input, wf32, output, batchSize, cols, rows))
+                return;
+
             BlasInterop.Sgemm(
                 BlasInterop.RowMajor, BlasInterop.NoTrans, BlasInterop.Trans,
                 batchSize, rows, cols,
@@ -217,6 +224,9 @@ public static unsafe class SimdKernels
         // F32 weights with BLAS
         if (BlasInterop.IsAvailable && dtype == DType.Float32)
         {
+            if (MicroGemmConfig.IsEnabled && MicroGemmKernel.TryMatMulF32(input, (float*)weights, output, batchSize, cols, rows))
+                return;
+
             BlasInterop.Sgemm(
                 BlasInterop.RowMajor, BlasInterop.NoTrans, BlasInterop.Trans,
                 batchSize, rows, cols,

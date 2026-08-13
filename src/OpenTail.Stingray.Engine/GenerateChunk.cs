@@ -36,26 +36,23 @@ public enum GenerateChunkKind
     /// emit this chunk (e.g. test doubles) leave callers defaulting to "not truncated".
     /// </summary>
     Stop,
+
+    /// <summary>
+    /// Out-of-band chunk emitted when generation halts because one or more structured
+    /// tool calls were emitted by the model.
+    /// </summary>
+    ToolCall,
 }
 
 /// <summary>
 /// A single typed chunk in an engine output stream. The wrapper itself is
 /// allocation-free (<c>readonly record struct</c>); only the inner string allocates.
-/// The boundary tokens themselves (<c>&lt;think&gt;</c> / <c>&lt;/think&gt;</c>) are
-/// never emitted as content — they're protocol markers consumed by the engine.
-/// <para>
-/// <see cref="PromptTokens"/> is meaningful only on a <see cref="GenerateChunkKind.Usage"/>
-/// chunk (0 on Text/Thinking chunks). <see cref="TruncatedByMaxTokens"/> is meaningful only
-/// on a <see cref="GenerateChunkKind.Stop"/> chunk (false on Text/Thinking/Usage chunks).
-/// </para>
 /// </summary>
-/// <param name="TruncatedByResourceBudget">
-/// Set on a <see cref="GenerateChunkKind.Stop"/> chunk when generation ended because the session's
-/// KV byte budget could not fund another token — NOT because the caller's token limit was reached.
-/// The two demand opposite responses (retry with a larger <c>MaxNewTokens</c> versus back off or
-/// free state), so reporting budget exhaustion as <see cref="TruncatedByMaxTokens"/> actively
-/// misleads. Both may be false (natural stop); they are never both true.
-/// </param>
 public readonly record struct GenerateChunk(
-    GenerateChunkKind Kind, string Text, int PromptTokens = 0, bool TruncatedByMaxTokens = false,
-    bool TruncatedByResourceBudget = false);
+    GenerateChunkKind Kind,
+    string Text,
+    int PromptTokens = 0,
+    bool TruncatedByMaxTokens = false,
+    bool TruncatedByResourceBudget = false,
+    System.Collections.Generic.IReadOnlyList<OpenTail.Stingray.Core.Tools.ToolCall>? ToolCalls = null,
+    bool HasUnauthorizedToolCall = false);

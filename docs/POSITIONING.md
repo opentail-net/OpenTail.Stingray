@@ -44,6 +44,31 @@ llama.cpp or vLLM, and we should say so rather than compete on a claim we lose.
   slot in behind existing clients.
 - **Grammar-constrained decoding** including whole-turn JSON-schema structured output.
 
+## The Agentic Killer Feature: Native Session Continuation & Contextual Tool Harness
+
+While traditional inference servers (vLLM, llama.cpp server, Ollama) were built around the **stateless HTTP `/v1/chat/completions` API**—forcing expensive prompt re-tokenization and KV prefill passes on every tool call step—OpenTail.Stingray introduces a fundamentally superior architectural model for **autonomous agentic workloads**:
+
+1. **Native Sub-Millisecond Harness Continuation**:
+   - `AppendToolResultAsync()` feeds tool results directly into the active `IInferenceSession`.
+   - Physical KV page tables, token history, model logits, and sampling state are preserved in-place.
+   - Continuing a multi-turn tool cycle takes **$< 1\text{ms}$** with zero re-prefill penalty.
+
+2. **Contextual Capability Harness & Fail-Closed Security**:
+   - `ToolProvider` and `ToolContext` are dynamically bound **per session**, enforcing strict capability sandboxes.
+   - `ValidateToolCall()` is fail-closed (`ToolProvider == null` $\rightarrow$ rejected).
+   - Unauthorized tool calls emit explicit status (`IsAuthorized = false`, `HasUnauthorizedToolCall = true`) rather than silently disappearing, giving host orchestrators total visibility.
+
+3. **OS-Kernel Virtual Memory Architecture**:
+   - **Paged KV Memory**: Memory is structured into physical pages (`KvPageId`).
+   - **Zero-Copy Prompt Sharing**: Multi-tenant user sessions sharing common prompts use zero-copy `Fork()` with Copy-on-Write (COW). Memory usage scales with unique user edits, not prompt length $\times$ user count.
+   - **Lock-Free Admission Control**: Page-accurate `_reservedPages` accounting using atomic CAS loops (`Interlocked.CompareExchange`) prevents VRAM/RAM overcommit under continuous batching.
+   - **3-Way Transactional Rollback**: If page allocation or GPU prefill fails at any stage, `TokenHistory`, `KvSequence` (with physical page release), and `ForwardPass` roll back in lockstep. Failed operations leave the session completely uncorrupted.
+
+4. **Engineered for Multi-Tenant / Multi-User Environments**:
+   - Per-session security sandboxing isolates tenant capabilities.
+   - Shared prompt page deduplication reduces memory footprint under multi-user concurrency.
+   - Complete blast-radius containment guarantees that a single user's failed request never corrupts global memory or impacts concurrent sessions.
+
 ## Honest performance position
 
 Measured on the development box (AMD Ryzen 7 5700G, 12 logical cores, Radeon integrated GPU,

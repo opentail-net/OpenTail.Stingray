@@ -458,6 +458,68 @@ public sealed unsafe class PagedKvCacheTests : IDisposable
         Assert.Equal(99f, _cache.ValueAtHead(1, PagedKvCache.PageSize, 0)[0]);
     }
 
+    // ── Explicit-position writes (AppendAt/ReserveBlockAt) across a page boundary ──────────
+    //
+    // Every test above drives PagedKvCache through Append (implicit position == Length).
+    // AppendAt/ReserveBlockAt (explicit position) had zero coverage before these tests, despite
+    // being the primitive a caller must use whenever it writes KV at a position it tracks itself
+    // rather than one PagedKvCache is counting for it -- e.g. a retained multi-turn session
+    // continuing from a previously materialized position. These are a hunt for a page-boundary
+    // regression seen at that exact seam (HotSession replay divergence investigation); they pass
+    // today, which narrows that bug away from PagedKvCache itself and toward its caller.
+
+    [Fact]
+    public void AppendAt_ExplicitPositionsAcrossPageBoundary_RoundTripCorrectly()
+    {
+        // "Turn 1": fill exactly one page via the normal implicit-position path.
+        for (int i = 0; i < PagedKvCache.PageSize; i++)
+            AppendToken(_cache, i, i * 10f);
+        Assert.Equal(PagedKvCache.PageSize, _cache.Length);
+
+        // "Turn 2": a caller that tracks position itself (mirroring a retained session resuming
+        // at a recorded position) writes new tokens via AppendAt instead of Append, starting
+        // exactly at the boundary and crossing into a fresh page.
+        for (int i = 0; i < 4; i++)
+        {
+            int pos = PagedKvCache.PageSize + i;
+            _cache.ReserveBlockAt(pos);
+            float[] k = [900f + i, 900f + i, 900f + i, 900f + i, 900f + i, 900f + i, 900f + i, 900f + i];
+            float[] v = [800f + i, 800f + i, 800f + i, 800f + i, 800f + i, 800f + i, 800f + i, 800f + i];
+            _cache.AppendAt(0, pos, k, v);
+            _cache.AppendAt(1, pos, k, v);
+            _cache.IncrementPosition();
+        }
+
+        Assert.Equal(PagedKvCache.PageSize + 4, _cache.Length);
+
+        // Page 0 (written via the implicit path) must be untouched by the explicit-position writes.
+        for (int i = 0; i < PagedKvCache.PageSize; i++)
+            Assert.Equal((float)i, _cache.KeyAt(0, i)[0]);
+
+        // Page 1 (written via AppendAt, crossing the boundary) must read back exactly what was
+        // written, at the correct position -- not shifted, not aliased with page 0.
+        for (int i = 0; i < 4; i++)
+        {
+            int pos = PagedKvCache.PageSize + i;
+            Assert.Equal(900f + i, _cache.KeyAt(0, pos)[0]);
+            Assert.Equal(800f + i, _cache.ValueAtHead(0, pos, 0)[0]);
+        }
+    }
+
+    [Fact]
+    public void AppendAt_WithoutReservingBlock_ThrowsRatherThanCorrupting()
+    {
+        for (int i = 0; i < PagedKvCache.PageSize; i++)
+            AppendToken(_cache, i, 0f);
+
+        // The next position (PageSize) is a fresh page that was never reserved. AppendAt must
+        // fail loudly rather than silently write into an unallocated/wrong block.
+        float[] k = new float[8];
+        float[] v = new float[8];
+        Assert.Throws<InvalidOperationException>(
+            () => _cache.AppendAt(0, PagedKvCache.PageSize, k, v));
+    }
+
     // ── SnapKV (issue #51) compaction ──────────────────────────────────────
 
     [Fact]

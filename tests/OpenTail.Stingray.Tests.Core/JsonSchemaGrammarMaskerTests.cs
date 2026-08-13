@@ -1,0 +1,554 @@
+using System;
+using System.Collections.Generic;
+using System.Text;
+using System.Text.Json;
+using OpenTail.Stingray.Core.Grammar;
+using Xunit;
+
+namespace OpenTail.Stingray.Tests.Core;
+
+public enum TestRole { User, Admin, Guest }
+
+public class SampleDto
+{
+    public string Name { get; set; } = "";
+    public int Age { get; set; }
+    public TestRole Role { get; set; }
+}
+
+public class JsonSchemaGrammarMaskerTests
+{
+    [Fact]
+    public void Test01_Compiler_SubMillisecondLatency()
+    {
+        using var doc = JsonDocument.Parse("""
+        {
+          "type": "object",
+          "properties": {
+            "name": { "type": "string" },
+            "age": { "type": "integer" },
+            "role": { "type": "string", "enum": ["admin", "user", "guest"] }
+          },
+          "required": ["name", "role"]
+        }
+        """);
+
+        var sm = JsonSchemaGrammarCompiler.CompileWithBenchmark(doc.RootElement, out var compilationDuration);
+
+        Assert.NotNull(sm);
+        Assert.Equal(3, sm.Properties.Count);
+        Assert.True(compilationDuration.TotalMilliseconds < 50.0, $"Compilation took {compilationDuration.TotalMilliseconds}ms");
+    }
+
+    [Fact]
+    public void Test02_SimpleObjectSyntax()
+    {
+        using var doc = JsonDocument.Parse("""
+        {
+          "type": "object",
+          "properties": {
+            "greeting": { "type": "string" }
+          },
+          "required": ["greeting"]
+        }
+        """);
+
+        var sm = JsonSchemaGrammarCompiler.Compile(doc.RootElement);
+
+        Assert.Equal(JsonLexicalState.RootObjectStart, sm.CurrentState);
+        Assert.True(sm.CanAcceptChar('{'));
+        Assert.False(sm.CanAcceptChar(']'));
+    }
+
+    [Fact]
+    public void Test03_EnumConstraintMasking()
+    {
+        using var doc = JsonDocument.Parse("""
+        {
+          "type": "object",
+          "properties": {
+            "status": { "type": "string", "enum": ["active", "pending"] }
+          },
+          "required": ["status"]
+        }
+        """);
+
+        var sm = JsonSchemaGrammarCompiler.Compile(doc.RootElement);
+        var statusProp = sm.Properties[0];
+
+        Assert.NotNull(statusProp.EnumValues);
+        Assert.Contains("active", statusProp.EnumValues);
+        Assert.Contains("pending", statusProp.EnumValues);
+    }
+
+    [Fact]
+    public void Test04_RequiredPropertiesCheck()
+    {
+        using var doc = JsonDocument.Parse("""
+        {
+          "type": "object",
+          "properties": {
+            "id": { "type": "string" },
+            "token": { "type": "string" }
+          },
+          "required": ["id"]
+        }
+        """);
+
+        var sm = JsonSchemaGrammarCompiler.Compile(doc.RootElement);
+        Assert.False(sm.AreAllRequiredPropertiesEmitted());
+
+        sm.RecordPropertyEmitted("id");
+        Assert.True(sm.AreAllRequiredPropertiesEmitted());
+    }
+
+    [Fact]
+    public void Test05_BpeTokenBoundaryHandling()
+    {
+        var tok = new FakeJsonTokenizer();
+        var vocab = new GrammarVocabulary(tok);
+
+        using var doc = JsonDocument.Parse("""
+        {
+          "type": "object",
+          "properties": {
+            "action": { "type": "string" }
+          },
+          "required": ["action"]
+        }
+        """);
+
+        var sm = JsonSchemaGrammarCompiler.Compile(doc.RootElement);
+        var masker = new JsonSchemaGrammarMasker(vocab, sm);
+
+        Assert.True(masker.IsConstraining);
+
+        Span<float> logits = new float[vocab.VocabSize];
+        var masked = masker.Filter(logits);
+
+        Assert.Equal(vocab.VocabSize, masked.Length);
+    }
+
+    [Fact]
+    public void Test06_CompilerForType_Dto()
+    {
+        var sm = JsonSchemaGrammarCompiler.CompileForType<SampleDto>();
+
+        Assert.NotNull(sm);
+        Assert.Equal(3, sm.Properties.Count);
+        Assert.Equal("Name", sm.Properties[0].Name);
+        Assert.Equal("string", sm.Properties[0].Type);
+        Assert.Equal("Role", sm.Properties[2].Name);
+        Assert.NotNull(sm.Properties[2].EnumValues);
+        Assert.Contains("User", sm.Properties[2].EnumValues!);
+    }
+
+    [Fact]
+    public void Test07_NestedObjectProperties()
+    {
+        using var doc = JsonDocument.Parse("""
+        {
+          "type": "object",
+          "properties": {
+            "user": {
+              "type": "object",
+              "properties": {
+                "id": { "type": "integer" }
+              }
+            }
+          }
+        }
+        """);
+
+        var sm = JsonSchemaGrammarCompiler.Compile(doc.RootElement);
+
+        Assert.Single(sm.Properties);
+        Assert.Equal("object", sm.Properties[0].Type);
+        Assert.NotNull(sm.Properties[0].ChildProperties);
+        Assert.Single(sm.Properties[0].ChildProperties!);
+        Assert.Equal("id", sm.Properties[0].ChildProperties![0].Name);
+    }
+
+    [Fact]
+    public void Test08_StringEscapeHandling()
+    {
+        var sm = new GrammarStateMachine(Array.Empty<SchemaPropertyNode>());
+        sm.AdvanceLexicalState(JsonLexicalState.StringValue);
+
+        Assert.False(sm.IsEscaped);
+        sm.IsEscaped = true;
+
+        Assert.True(sm.CanAcceptChar('"'));
+    }
+
+    [Fact]
+    public void Test09_ArrayItemSchema()
+    {
+        using var doc = JsonDocument.Parse("""
+        {
+          "type": "object",
+          "properties": {
+            "tags": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "tag": { "type": "string" }
+                }
+              }
+            }
+          }
+        }
+        """);
+
+        var sm = JsonSchemaGrammarCompiler.Compile(doc.RootElement);
+
+        Assert.Single(sm.Properties);
+        Assert.Equal("array", sm.Properties[0].Type);
+        Assert.NotNull(sm.Properties[0].ArrayItemSchema);
+    }
+
+    [Fact]
+    public void Test10_UnicodeInsideStrings()
+    {
+        var tokens = new List<byte[]>
+        {
+            Encoding.UTF8.GetBytes("{\"text\":\""),
+            Encoding.UTF8.GetBytes("café"),
+            Encoding.UTF8.GetBytes("日本語"),
+            Encoding.UTF8.GetBytes("🎉"),
+            Encoding.UTF8.GetBytes("\"}")
+        };
+        var tok = new CustomByteTokenizer(tokens);
+        var vocab = new GrammarVocabulary(tok);
+
+        using var doc = JsonDocument.Parse("""
+        {
+          "type": "object",
+          "properties": {
+            "text": { "type": "string" }
+          },
+          "required": ["text"]
+        }
+        """);
+
+        var sm = JsonSchemaGrammarCompiler.Compile(doc.RootElement);
+        var masker = new JsonSchemaGrammarMasker(vocab, sm);
+
+        // Accept {"text":"
+        masker.Accept(3);
+        Assert.Equal(JsonLexicalState.StringValue, sm.CurrentState);
+
+        // Accept "café", "日本語", "🎉"
+        masker.Accept(4);
+        masker.Accept(5);
+        masker.Accept(6);
+        Assert.Equal(JsonLexicalState.StringValue, sm.CurrentState);
+
+        // Filter logits before closing
+        Span<float> logits = new float[vocab.VocabSize];
+        var masked = masker.Filter(logits);
+        Assert.True(masked[7] > float.NegativeInfinity, "Token 7 ('\"}') must be allowed to close string and object.");
+
+        // Accept "}
+        masker.Accept(7);
+        Assert.True(sm.IsTerminal);
+    }
+
+    [Fact]
+    public void Test11_MultibyteCharacterSplitAcrossTokens()
+    {
+        // '日' = 0xE6, 0x97, 0xA5 (3 bytes)
+        // '🎉' = 0xF0, 0x9F, 0x8E, 0x89 (4 bytes)
+        var tokens = new List<byte[]>
+        {
+            Encoding.UTF8.GetBytes("{\"val\":\""),   // Token 3
+            new byte[] { 0xE6, 0x97 },              // Token 4: first 2 bytes of '日'
+            new byte[] { 0xA5 },                    // Token 5: last byte of '日'
+            new byte[] { 0xF0, 0x9F },              // Token 6: first 2 bytes of '🎉'
+            new byte[] { 0x8E },                    // Token 7: 3rd byte of '🎉'
+            new byte[] { 0x89 },                    // Token 8: 4th byte of '🎉'
+            Encoding.UTF8.GetBytes("\"}")           // Token 9: "}
+        };
+        var tok = new CustomByteTokenizer(tokens);
+        var vocab = new GrammarVocabulary(tok);
+
+        using var doc = JsonDocument.Parse("""
+        {
+          "type": "object",
+          "properties": {
+            "val": { "type": "string" }
+          },
+          "required": ["val"]
+        }
+        """);
+
+        var sm = JsonSchemaGrammarCompiler.Compile(doc.RootElement);
+        var masker = new JsonSchemaGrammarMasker(vocab, sm);
+
+        masker.Accept(3); // {"val":"
+
+        // Filter logits: Token 4 (partial UTF-8 bytes) must be allowed inside string
+        Span<float> logits = new float[vocab.VocabSize];
+        var masked1 = masker.Filter(logits);
+        Assert.True(masked1[4] > float.NegativeInfinity, "Token 4 (first 2 bytes of '日') must be allowed inside string literal.");
+
+        masker.Accept(4); // Accept 0xE6, 0x97 (pending 2 bytes)
+
+        // Filter logits while 2 bytes are pending: Token 5 (0xA5) must complete '日' and be allowed
+        logits.Clear();
+        var masked2 = masker.Filter(logits);
+        Assert.True(masked2[5] > float.NegativeInfinity, "Token 5 (0xA5) completing '日' must be allowed.");
+        Assert.Equal(float.NegativeInfinity, masked2[9]); // Token 9 ("}") cannot be allowed with incomplete UTF-8 bytes pending
+
+        masker.Accept(5); // Accept 0xA5 (completes '日')
+        masker.Accept(6); // Accept 0xF0, 0x9F (first 2 bytes of 🎉)
+        masker.Accept(7); // Accept 0x8E (3rd byte of 🎉)
+        masker.Accept(8); // Accept 0x89 (4th byte of 🎉, completes 🎉)
+
+        Assert.Equal(JsonLexicalState.StringValue, sm.CurrentState);
+
+        masker.Accept(9); // "}
+        Assert.True(sm.IsTerminal);
+    }
+
+    [Fact]
+    public void Test12_EscapedUnicode()
+    {
+        var tokens = new List<byte[]>
+        {
+            Encoding.UTF8.GetBytes("{\"code\":\""), // Token 3
+            Encoding.UTF8.GetBytes("\\u65"),       // Token 4
+            Encoding.UTF8.GetBytes("e5"),          // Token 5
+            Encoding.UTF8.GetBytes("\\n"),         // Token 6
+            Encoding.UTF8.GetBytes("\\\""),        // Token 7
+            Encoding.UTF8.GetBytes("\\\\"),        // Token 8
+            Encoding.UTF8.GetBytes("\"}")          // Token 9
+        };
+        var tok = new CustomByteTokenizer(tokens);
+        var vocab = new GrammarVocabulary(tok);
+
+        using var doc = JsonDocument.Parse("""
+        {
+          "type": "object",
+          "properties": {
+            "code": { "type": "string" }
+          },
+          "required": ["code"]
+        }
+        """);
+
+        var sm = JsonSchemaGrammarCompiler.Compile(doc.RootElement);
+        var masker = new JsonSchemaGrammarMasker(vocab, sm);
+
+        masker.Accept(3); // {"code":"
+        masker.Accept(4); // \u65
+        masker.Accept(5); // e5
+        masker.Accept(6); // \n
+        masker.Accept(7); // \"
+        masker.Accept(8); // \\
+        Assert.Equal(JsonLexicalState.StringValue, sm.CurrentState);
+
+        masker.Accept(9); // "}
+        Assert.True(sm.IsTerminal);
+    }
+
+    [Fact]
+    public void Test13_PunctuationAdjacentToUnicode()
+    {
+        var tokens = new List<byte[]>
+        {
+            Encoding.UTF8.GetBytes("{\""),          // Token 3
+            Encoding.UTF8.GetBytes("日"),           // Token 4: '日' in key
+            Encoding.UTF8.GetBytes("\":\""),        // Token 5: ":"
+            Encoding.UTF8.GetBytes("val"),         // Token 6
+            Encoding.UTF8.GetBytes("\"}")           // Token 7
+        };
+        var tok = new CustomByteTokenizer(tokens);
+        var vocab = new GrammarVocabulary(tok);
+
+        using var doc = JsonDocument.Parse("""
+        {
+          "type": "object",
+          "properties": {
+            "日": { "type": "string" }
+          },
+          "required": ["日"]
+        }
+        """);
+
+        var sm = JsonSchemaGrammarCompiler.Compile(doc.RootElement);
+        var masker = new JsonSchemaGrammarMasker(vocab, sm);
+
+        masker.Accept(3); // {"
+        Assert.Equal(JsonLexicalState.ObjectKeyContent, sm.CurrentState);
+
+        masker.Accept(4); // 日
+        Assert.Equal(JsonLexicalState.ObjectKeyContent, sm.CurrentState);
+
+        masker.Accept(5); // ":"
+        Assert.Equal(JsonLexicalState.StringValue, sm.CurrentState);
+
+        masker.Accept(6); // val
+        masker.Accept(7); // "}
+        Assert.True(sm.IsTerminal);
+    }
+
+    [Fact]
+    public void Test14_DeadState_ThrowsJsonGrammarDeadStateException()
+    {
+        // Only real tokens available are the opener up to the value position, and a byte that
+        // cannot legally continue any JSON value ('z' is not '"', '{', '[', a digit, '-', 't',
+        // 'f', or 'n'). Once the value position is reached, no candidate token validates.
+        var tokens = new List<byte[]>
+        {
+            Encoding.UTF8.GetBytes("{\"key\":"), // Token 3: opens through ValueStart
+            Encoding.UTF8.GetBytes("z"),          // Token 4: illegal at ValueStart
+        };
+        var tok = new CustomByteTokenizer(tokens);
+        var vocab = new GrammarVocabulary(tok);
+
+        using var doc = JsonDocument.Parse("""
+        {
+          "type": "object",
+          "properties": { "key": { "type": "string" } },
+          "required": ["key"]
+        }
+        """);
+
+        var sm = JsonSchemaGrammarCompiler.Compile(doc.RootElement);
+        var masker = new JsonSchemaGrammarMasker(vocab, sm);
+
+        masker.Accept(3); // {"key":
+        Assert.Equal(JsonLexicalState.ValueStart, sm.CurrentState);
+
+        Span<float> logits = new float[vocab.VocabSize];
+        JsonGrammarDeadStateException? caught = null;
+        try
+        {
+            masker.Filter(logits);
+        }
+        catch (JsonGrammarDeadStateException ex)
+        {
+            caught = ex;
+        }
+
+        Assert.NotNull(caught);
+        Assert.Equal(JsonLexicalState.ValueStart, caught.State);
+    }
+
+    [Fact]
+    public void Test15_TerminalState_ForcesEndOfGenerationOnly()
+    {
+        var tokens = new List<byte[]>
+        {
+            Encoding.UTF8.GetBytes("{\"k\":\"v\"}"), // Token 3: closes the whole object in one token
+            Encoding.UTF8.GetBytes("more"),           // Token 4: plausible-looking garbage continuation
+        };
+        var tok = new CustomByteTokenizer(tokens);
+        var vocab = new GrammarVocabulary(tok);
+
+        using var doc = JsonDocument.Parse("""
+        {
+          "type": "object",
+          "properties": { "k": { "type": "string" } },
+          "required": ["k"]
+        }
+        """);
+
+        var sm = JsonSchemaGrammarCompiler.Compile(doc.RootElement);
+        var masker = new JsonSchemaGrammarMasker(vocab, sm);
+
+        masker.Accept(3); // {"k":"v"}
+        Assert.True(sm.IsTerminal);
+        Assert.True(masker.IsConstraining, "must keep constraining post-completion to force a stop.");
+
+        Span<float> logits = new float[vocab.VocabSize];
+        logits.Fill(5.0f); // every token looks equally attractive to the sampler
+        var masked = masker.Filter(logits);
+
+        // Only the EOS id (2) may survive; everything else -- including the plausible-looking
+        // continuation token 4 -- must be masked to -inf so the sampler is forced to stop.
+        Assert.Equal(5.0f, masked[CustomByteTokenizer.Eos]);
+        for (int i = 0; i < masked.Length; i++)
+        {
+            if (i == CustomByteTokenizer.Eos) continue;
+            Assert.True(float.IsNegativeInfinity(masked[i]), $"token {i} must be masked once the JSON is complete.");
+        }
+
+        // A token sampled after completion (forced EOS or otherwise) must not throw when accepted.
+        masker.Accept(CustomByteTokenizer.Eos);
+        masker.Accept(4);
+        Assert.True(sm.IsTerminal);
+    }
+
+    [Fact]
+    public void Test16_EmptyByteTokensForbiddenMidGeneration()
+    {
+        var tokens = new List<byte[]>
+        {
+            Encoding.UTF8.GetBytes("{\"k\":\""), // Token 3: opens into a string value (StringValue state)
+            Encoding.UTF8.GetBytes("hello"),       // Token 4: plain string content, stays in StringValue
+        };
+        var tok = new CustomByteTokenizer(tokens);
+        var vocab = new GrammarVocabulary(tok);
+
+        using var doc = JsonDocument.Parse("""
+        {
+          "type": "object",
+          "properties": { "k": { "type": "string" } },
+          "required": ["k"]
+        }
+        """);
+
+        var sm = JsonSchemaGrammarCompiler.Compile(doc.RootElement);
+        var masker = new JsonSchemaGrammarMasker(vocab, sm);
+
+        masker.Accept(3); // {"k":"
+        Assert.Equal(JsonLexicalState.StringValue, sm.CurrentState);
+
+        Span<float> logits = new float[vocab.VocabSize];
+        var masked = masker.Filter(logits);
+
+        // Pad(0)/Bos(1)/Eos(2) carry no bytes and must never be selectable mid-string -- letting
+        // one through would truncate the call before the object closes.
+        Assert.True(float.IsNegativeInfinity(masked[0]));
+        Assert.True(float.IsNegativeInfinity(masked[1]));
+        Assert.True(float.IsNegativeInfinity(masked[CustomByteTokenizer.Eos]));
+        Assert.True(masked[4] > float.NegativeInfinity, "plain string content must remain allowed.");
+    }
+}
+
+internal sealed class CustomByteTokenizer : OpenTail.Stingray.Core.ITokenizer
+{
+    public const int Pad = 0, Bos = 1, Eos = 2;
+
+    private readonly List<byte[]> _tokenBytes = new();
+    private readonly Dictionary<string, int> _specials = new(StringComparer.Ordinal);
+
+    public CustomByteTokenizer(IEnumerable<byte[]> tokens)
+    {
+        _tokenBytes.Add([]); // Pad = 0
+        _tokenBytes.Add([]); // Bos = 1
+        _tokenBytes.Add([]); // Eos = 2
+        foreach (var t in tokens)
+        {
+            _tokenBytes.Add(t);
+        }
+    }
+
+    public int VocabSize => _tokenBytes.Count;
+    public int BosTokenId => 1;
+    public int EosTokenId => 2;
+    public int UnknownTokenId => 0;
+    public int PadTokenId => 0;
+    public bool AddBosToken => false;
+    public System.Collections.Immutable.ImmutableArray<int> EogTokenIds => [2];
+    public IReadOnlyDictionary<string, int> SpecialTokens => _specials;
+
+    public byte[] DecodeBytes(int token) => token >= 0 && token < _tokenBytes.Count ? _tokenBytes[token] : [];
+    public IReadOnlyList<int> Encode(string text) => throw new NotImplementedException();
+    public string Decode(IEnumerable<int> tokens) => throw new NotImplementedException();
+}
+
+

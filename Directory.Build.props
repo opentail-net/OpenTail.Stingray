@@ -11,6 +11,8 @@
     <EnableAotAnalyzer>true</EnableAotAnalyzer>
     <SuppressTrimAnalysisWarnings>false</SuppressTrimAnalysisWarnings>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <!-- Test and benchmark projects are not publishable entry points -->
+    <IsPublishable Condition="$(MSBuildProjectName.Contains('.Tests.')) Or $(MSBuildProjectName.Contains('.Bench')) Or $(MSBuildProjectName.Contains('Bench'))">false</IsPublishable>
     <!-- Emit IntelliSense XML for every public package assembly. CS1591 remains advisory until
          documentation coverage is intentionally made a release gate. -->
     <GenerateDocumentationFile>true</GenerateDocumentationFile>

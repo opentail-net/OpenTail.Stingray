@@ -13,7 +13,7 @@ namespace OpenTail.Stingray.Engine;
 /// <see cref="NgramMin"/> defaults to 2 — 1-gram matches fire constantly and mostly
 /// propose junk, which makes every step pay a wider verify batch for nothing.
 /// </summary>
-public sealed class PromptLookupDraft
+public sealed class PromptLookupDraft : IPromptLookupDecoder
 {
     private readonly List<int> _history = new();
 
@@ -45,36 +45,47 @@ public sealed class PromptLookupDraft
     public void Append(int token) => _history.Add(token);
 
     /// <summary>
-    /// Propose up to <paramref name="maxTokens"/> continuation tokens for the current
-    /// history. Returns an empty array when no tail n-gram of length
-    /// [<see cref="NgramMin"/>, <see cref="NgramMax"/>] recurs earlier in the history.
+    /// Propose up to <paramref name="maxTokens"/> continuation tokens for the current history.
     /// </summary>
     public int[] Propose(int maxTokens)
     {
-        var h = _history;
-        int len = h.Count;
-        if (maxTokens <= 0) return Array.Empty<int>();
+        var span = System.Runtime.InteropServices.CollectionsMarshal.AsSpan(_history);
+        return Propose(span, _history.Count, maxTokens);
+    }
+
+    /// <summary>
+    /// Propose continuation tokens by matching the tail n-gram of <paramref name="tokenHistory"/> up to <paramref name="currentPosition"/>.
+    /// </summary>
+    public int[] Propose(ReadOnlySpan<int> tokenHistory, int currentPosition, int maxDraftTokens)
+    {
+        if (maxDraftTokens <= 0 || tokenHistory.IsEmpty || currentPosition <= 0) return Array.Empty<int>();
+
+        int len = Math.Min(currentPosition, tokenHistory.Length);
 
         for (int n = NgramMax; n >= NgramMin; n--)
         {
             if (len < n + 1) continue;
 
-            // Most recent earlier occurrence of the tail h[len-n .. len): candidate start
-            // positions i walk backward; the matched occurrence must end before the tail
-            // ends (i + n < len) so there is at least one continuation token to copy.
             for (int i = len - n - 1; i >= 0; i--)
             {
                 bool match = true;
                 for (int j = 0; j < n; j++)
                 {
-                    if (h[i + j] != h[len - n + j]) { match = false; break; }
+                    if (tokenHistory[i + j] != tokenHistory[len - n + j])
+                    {
+                        match = false;
+                        break;
+                    }
                 }
                 if (!match) continue;
 
                 int start = i + n;
-                int count = Math.Min(maxTokens, len - start);
+                int available = len - start;
+                int count = Math.Min(maxDraftTokens, available);
+                if (count <= 0) continue;
+
                 var proposal = new int[count];
-                h.CopyTo(start, proposal, 0, count);
+                tokenHistory.Slice(start, count).CopyTo(proposal);
                 return proposal;
             }
         }

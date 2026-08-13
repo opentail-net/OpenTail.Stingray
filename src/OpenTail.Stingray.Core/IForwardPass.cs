@@ -6,6 +6,13 @@ namespace OpenTail.Stingray.Core;
 /// </summary>
 public interface IForwardPass : IDisposable, IThreadAffineBackend
 {
+    /// <summary>
+    /// Spawns an independent execution context for session forking.
+    /// Defaults to <c>this</c> for stateless forward passes. Stateful implementations override this
+    /// to return an isolated execution context bound to shared model weights.
+    /// </summary>
+    IForwardPass CreateContext() => this;
+
     /// <summary>Run one token through the model and return logits[vocabSize].</summary>
     ReadOnlySpan<float> Forward(int token, int position);
 

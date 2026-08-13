@@ -177,6 +177,15 @@ public sealed record ModelHyperparams
     /// <summary>Whether the model has a shared expert that runs on every token (e.g. Llama 4, DeepSeek-V2).</summary>
     public bool HasSharedExpert { get; init; }
 
+    /// <summary>Number of shared experts per MoE layer (e.g. 2 for DeepSeek-V2).</summary>
+    public int NumSharedExperts { get; init; }
+
+    /// <summary>Number of leading dense blocks before MoE layers begin (e.g. 1 for DeepSeek-V2).</summary>
+    public int LeadingDenseBlockCount { get; init; }
+
+    /// <summary>MLA (Multi-head Latent Attention) compressed KV rank (e.g. 512 for DeepSeek-V2).</summary>
+    public int KvLoraRank { get; init; }
+
     /// <summary>
     /// Whether MoE router top-k weights should be renormalized to sum to 1 after
     /// selecting the top-k experts. Most architectures (Qwen3-MoE, Mixtral) do.
@@ -422,7 +431,9 @@ public sealed record ModelHyperparams
                 perChannelQkNorm = qNormInfo.Value.ElementCount >= (long)numHeadsTmp * headDimTmp;
         }
         bool hasSharedExpert = isMoE
-            && (tensorSource?.FindTensor("blk.0.ffn_gate_shexp.weight") is not null);
+            && (GetInt(metadata, $"{arch}.expert_shared_count") > 0
+                || (tensorSource?.FindTensor("blk.0.ffn_gate_shexp.weight") is not null)
+                || (tensorSource?.FindTensor("blk.1.ffn_gate_shexp.weight") is not null));
 
         // NoPE: every Nth layer skips RoPE entirely. Hardcoded in llama.cpp rather than stored in
         // GGUF metadata, for both architectures that use it — Llama-4 (`llama.cpp` sets
@@ -864,6 +875,9 @@ public sealed record ModelHyperparams
             ExpertIntermediateDim = GetInt(metadata, $"{arch}.expert_feed_forward_length",
                                        GetInt(metadata, $"{arch}.feed_forward_length")),
             HasSharedExpert = hasSharedExpert,
+            NumSharedExperts = GetInt(metadata, $"{arch}.expert_shared_count", hasSharedExpert ? 1 : 0),
+            LeadingDenseBlockCount = GetInt(metadata, $"{arch}.leading_dense_block_count", 0),
+            KvLoraRank = GetInt(metadata, $"{arch}.attention.kv_lora_rank", 0),
             // OLMoE was trained without top-k renormalization. Other softmax-gated
             // MoE architectures (Qwen3-MoE, Mixtral, qwen35moe) renormalize.
             NormalizeMoeTopKWeights = !arch.Equals("olmoe", StringComparison.OrdinalIgnoreCase),

@@ -1,8 +1,8 @@
 # CLI option inventory — generated from source
 
 **Generated:** by `scripts/gen-cli-option-inventory.ps1`, which scans `[CommandOption]` /
-`[Description]` pairs under `src/OpenTail.Stingray.Cli`. Last regenerated **2026-08-08**, recording
-**149 option declarations** across 11 command files — the same count the
+`[Description]` pairs under `src/OpenTail.Stingray.Cli`. Last regenerated **2026-08-11**, recording
+**153 option declarations** across 12 command files — the same count the
 `StaticPlanConfigurationTests` guard enforces against source.
 
 The tables below are no longer hand-maintained. They had drifted to 96 rows against 149 declared
@@ -57,8 +57,8 @@ hoc at each read site rather than in one place.
 | `--device` |  | (Z-Image) GPU to use: auto (default), none/cpu, an index (0, 1), or a named device (CUDA0, Vulkan1) |
 | `--height` |  | Output image height in pixels — must be divisible by 16 (default: 512) |
 | `--model` |  | Path to diffusion model GGUF or safetensors directory (FLUX.1, Z-Image-Turbo, …) |
-| `--n-gpu-layers` |  | (Z-Image) GPU acceleration: -1 = auto (CUDA→Vulkan→CPU, default), 0 = CPU only |
 | `--negative-prompt` |  | Negative prompt — what to avoid in the generated image |
+| `--n-gpu-layers` |  | (Z-Image) GPU acceleration: -1 = auto (CUDA→Vulkan→CPU, default), 0 = CPU only |
 | `--output` |  | Output PNG file path (default: output.png) |
 | `--prompt` |  | Text prompt describing the image to generate |
 | `--qwen-encoder` |  | (Z-Image) Path to Qwen3-4B GGUF text encoder (from Qwen/Qwen3-4B-GGUF) |
@@ -75,6 +75,14 @@ hoc at each read site rather than in one place.
 | `--vae` |  | Path to VAE safetensors file or directory (ae.safetensors or vae/ dir) |
 | `--verbose` |  | Show per-step timing and progress |
 | `--width` |  | Output image width in pixels — must be divisible by 16 (default: 512) |
+
+## InspectKvCommand
+
+| Option | Class | Description |
+|---|---|---|
+| `--json` |  | Write machine-readable JSON snapshot to stdout |
+| `--pages <PAGES>` |  | Simulate total page capacity (default: 65536) |
+| `--page-size <TOKENS>` |  | Tokens per page (default: 32) |
 
 ## ListEnvCommand
 
@@ -135,6 +143,7 @@ hoc at each read site rather than in one place.
 | `--ctx-size` |  | Context size / max sequence length (0 = model default) |
 | `--device` |  |  |
 | `--draft-lookup` |  | Speculative decoding via prompt-lookup (n-gram) drafting — proposes tokens by matching the generated tail against prompt+history; no draft model needed (greedy only, requires --temp 0) |
+| `--draft-model` |  | Path to a smaller draft model for speculative decoding (greedy only, requires --temp 0). Mirrors llama.cpp's --model-draft. |
 | `--dspark-min-confidence <P>` |  | Floor on the DSpark confidence head's predicted acceptance probability; positions below it are trimmed from the verify batch. Unset resolves via STINGRAY_DSPARK_MIN_CONFIDENCE, then 0 = verify the whole block. |
 | `--dspark-model <PATH>` |  | Path to a DSpark draft-head model.safetensors (deepseek-ai/DeepSpec, e.g. dspark_qwen3_4b_block7) with its config.json alongside. Enables DSpark block-speculative decoding (greedy only, CPU target for now — PR #413 spec). |
 | `--dspark-place <MODE>` |  | Where the DSpark draft head runs: auto (default; planner decides from VRAM/RAM headroom), gpu, cpu, off. Unset resolves via STINGRAY_DSPARK_PLACE. An explicit value pins the mode outright, like -g pins the layer split. |
@@ -160,23 +169,22 @@ hoc at each read site rather than in one place.
 | `--mlock` |  | (llama.cpp compat) Not implemented in OpenTail.Stingray. |
 | `--mmproj` |  | Path to the multimodal projector GGUF (mmproj-*.gguf). Required with --image. Mirrors llama.cpp's --mmproj. |
 | `--model` |  | Path to GGUF model file |
-| `--model-draft` |  | Path to a smaller draft model for speculative decoding (greedy only, requires --temp 0). Mirrors llama.cpp's --model-draft. |
 | `--moe-warmpin` |  | MoE: also pin the top-N hottest experts per layer into the GPU cache after warmup (default 0 = off; frequency-aware eviction already retains hot experts). Env: STINGRAY_MOE_WARMPIN. |
 | `--moe-warmpin-after` |  | MoE: expert accesses to observe before warm-pinning selects the hot set (default 512). Only used with --moe-warmpin. Env: STINGRAY_MOE_WARMPIN_AFTER. |
-| `--n-cpu-moe` |  | MoE: keep the routed experts of N layers on the CPU (llama.cpp --n-cpu-moe). DEFERRED / not yet supported — OpenTail.Stingray's expert placement is all-or-nothing (no per-layer split in the engine), so passing any value errors with that rationale. Use --cpu-moe (all on CPU) or omit (auto). |
+| `--ncmoe <N>` |  | MoE: keep the routed experts of N layers on the CPU (llama.cpp --n-cpu-moe). DEFERRED / not yet supported — OpenTail.Stingray's expert placement is all-or-nothing (no per-layer split in the engine), so passing any value errors with that rationale. Use --cpu-moe (all on CPU) or omit (auto). |
 | `--n-gpu-layers` |  | Layers on GPU (0=CPU only, -1=all). Mirrors llama.cpp's --n-gpu-layers/--ngl. |
-| `--n-predict` |  | Number of tokens to predict (default: 512) |
 | `--no-display-prompt` |  | Don't echo the prompt |
 | `--no-mmap` |  | (llama.cpp compat) Not implemented in OpenTail.Stingray. |
 | `--no-moe-predict-prefetch` |  | MoE: disable next-layer predictive expert prefetch (Vulkan; on by default). Env: STINGRAY_MOE_PREDICT_PREFETCH=0. |
 | `--no-thinking` |  | Disable reasoning mode (sets enable_thinking=false in the chat template) |
 | `--no-warmup` |  | (llama.cpp compat) No effect — OpenTail has no separate warmup step. Accepted with a warning. |
+| `--n-predict` |  | Number of tokens to predict (default: 512) |
 | `--numa <MODE>` |  | (llama.cpp compat) Not implemented in OpenTail.Stingray. |
 | `--prefill-dequant-cache-mb` |  | Dequant-once BLAS weight-cache budget in MiB for CPU prefill (issue #189): caches the F32 dequant per projection weight so chunked prefill re-pays no dequant (bit-identical). Auto (env STINGRAY_PREFILL_DEQUANT_MB / fit-25%-RAM) by default; 0 = off, negative = unlimited. CPU only. |
 | `--presence-penalty <P>` |  | Subtract once from logits of tokens already generated (0 = disabled). |
 | `--prompt` |  | Input prompt (default: interactive chat) |
+| `--repeat_penalty` |  | Repetition penalty (1.0 = disabled, >1.0 penalizes repeated tokens, default: 1.1). Mirrors llama.cpp's --repeat-penalty/--repeat_penalty. |
 | `--repeat-last-n` |  | Number of recent tokens the repetition penalty considers (default: 64; 0 = disabled; -1 = full context). Mirrors llama.cpp's --repeat-last-n. |
-| `--repeat-penalty` |  | Repetition penalty (1.0 = disabled, >1.0 penalizes repeated tokens, default: 1.1). Mirrors llama.cpp's --repeat-penalty/--repeat_penalty. |
 | `--seed` |  | RNG seed (-1 = random, default: -1) |
 | `--single-turn` |  | Generate one response and exit |
 | `--spec-draft-n-max` |  | Max draft tokens per MTP step (issue #30 batched verify). Unset resolves via STINGRAY_MTP_DRAFT_N, then defaults to 1 (a 2-token verify batch — the measured optimum). Values > 1 also need snapshot-ring slots: set STINGRAY_MTP_BATCH_MAX >= drafts+1 (default 2; each extra slot costs ~150 MiB VRAM on 27B). Mirrors llama.cpp. |
@@ -240,4 +248,3 @@ hoc at each read site rather than in one place.
 | `--json` |  | Write machine-readable JSON snapshot to stdout |
 | `--url <URL>` |  | Server URL (default: http://127.0.0.1:8080) |
 | `--watch` |  | Continuously refresh status every second |
-

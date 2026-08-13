@@ -31,7 +31,8 @@ public sealed class TekkenTokenizerTests
                 {
                     using var model = GgufModel.Open(path);
                     if (model.Metadata.TryGetValue("tokenizer.ggml.pre", out var pre)
-                        && pre as string == "tekken")
+                        && pre as string == "tekken"
+                        && (path.Contains("mistral", StringComparison.OrdinalIgnoreCase) || (model.Metadata.TryGetValue("general.name", out var name) && name is string s && s.Contains("mistral", StringComparison.OrdinalIgnoreCase))))
                         return GgufTokenizer.FromGgufModel(model);
                 }
                 catch

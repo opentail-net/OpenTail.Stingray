@@ -73,6 +73,18 @@ public static class Dequantize
             case DType.IQ4_NL:
                 DequantIq4Nl(src, dst, elementCount);
                 break;
+            case DType.IQ2_XXS:
+                DequantIq2Xxs(src, dst, elementCount);
+                break;
+            case DType.IQ3_XXS:
+                DequantIq3Xxs(src, dst, elementCount);
+                break;
+            case DType.IQ3_S:
+                DequantIq3S(src, dst, elementCount);
+                break;
+            case DType.IQ4_XS:
+                DequantIq4Xs(src, dst, elementCount);
+                break;
             default:
                 throw new NotSupportedException($"Dequantization not implemented for {dtype}");
         }
@@ -677,6 +689,106 @@ public static class Dequantize
         {
             ushort bits = (ushort)(src[i * 2] | (src[i * 2 + 1] << 8));
             dst[i] = BitConverter.Int32BitsToSingle(bits << 16);
+        }
+    }
+
+    /// <summary>IQ2_XXS scalar dequantization decoder (256 elements / 66 bytes per block).</summary>
+    private static void DequantIq2Xxs(ReadOnlySpan<byte> src, Span<float> dst, long elementCount)
+    {
+        const int kK = 256;
+        const int bytesPerBlock = 66;
+        int numBlocks = (int)(elementCount / kK);
+
+        for (int b = 0; b < numBlocks; b++)
+        {
+            var block = src.Slice(b * bytesPerBlock, bytesPerBlock);
+            float d = HalfToFloat(block[0], block[1]);
+            int dstOffset = b * kK;
+
+            for (int i = 0; i < 32; i++)
+            {
+                byte idx = block[2 + i];
+                sbyte[] gridVec = IqCodebooks.Iq2XxsGrid[idx];
+                for (int j = 0; j < 8; j++)
+                {
+                    dst[dstOffset + i * 8 + j] = d * gridVec[j];
+                }
+            }
+        }
+    }
+
+    /// <summary>IQ3_XXS scalar dequantization decoder (256 elements / 98 bytes per block).</summary>
+    private static void DequantIq3Xxs(ReadOnlySpan<byte> src, Span<float> dst, long elementCount)
+    {
+        const int kK = 256;
+        const int bytesPerBlock = 98;
+        int numBlocks = (int)(elementCount / kK);
+
+        for (int b = 0; b < numBlocks; b++)
+        {
+            var block = src.Slice(b * bytesPerBlock, bytesPerBlock);
+            float d = HalfToFloat(block[0], block[1]);
+            int dstOffset = b * kK;
+
+            for (int i = 0; i < 64; i++)
+            {
+                byte idx = block[2 + i];
+                sbyte[] gridVec = IqCodebooks.Iq3XxsGrid[idx];
+                for (int j = 0; j < 4; j++)
+                {
+                    dst[dstOffset + i * 4 + j] = d * gridVec[j];
+                }
+            }
+        }
+    }
+
+    /// <summary>IQ3_S scalar dequantization decoder (256 elements / 110 bytes per block).</summary>
+    private static void DequantIq3S(ReadOnlySpan<byte> src, Span<float> dst, long elementCount)
+    {
+        const int kK = 256;
+        const int bytesPerBlock = 110;
+        int numBlocks = (int)(elementCount / kK);
+
+        for (int b = 0; b < numBlocks; b++)
+        {
+            var block = src.Slice(b * bytesPerBlock, bytesPerBlock);
+            float d = HalfToFloat(block[0], block[1]);
+            int dstOffset = b * kK;
+
+            for (int i = 0; i < 64; i++)
+            {
+                byte idx = block[2 + i];
+                sbyte[] gridVec = IqCodebooks.Iq3SGrid[idx];
+                for (int j = 0; j < 4; j++)
+                {
+                    dst[dstOffset + i * 4 + j] = d * gridVec[j];
+                }
+            }
+        }
+    }
+
+    /// <summary>IQ4_XS scalar dequantization decoder (256 elements / 136 bytes per block).</summary>
+    private static void DequantIq4Xs(ReadOnlySpan<byte> src, Span<float> dst, long elementCount)
+    {
+        const int kK = 256;
+        const int bytesPerBlock = 136;
+        int numBlocks = (int)(elementCount / kK);
+
+        for (int b = 0; b < numBlocks; b++)
+        {
+            var block = src.Slice(b * bytesPerBlock, bytesPerBlock);
+            float d = HalfToFloat(block[0], block[1]);
+            int dstOffset = b * kK;
+
+            for (int i = 0; i < 32; i++)
+            {
+                byte idx = block[2 + i];
+                sbyte[] gridVec = IqCodebooks.Iq4XsGrid[idx];
+                for (int j = 0; j < 8; j++)
+                {
+                    dst[dstOffset + i * 8 + j] = d * gridVec[j];
+                }
+            }
         }
     }
 

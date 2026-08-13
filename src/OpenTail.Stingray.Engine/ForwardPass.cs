@@ -5234,7 +5234,25 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
         // Keep the externally supplied-cache route coherent with PrefillDispatch. Continuous
         // batching calls this method, so leaving the all-control safeguard only on Prefill would
         // make server-admitted structural probes take the numerically unsafe Q8 activation path.
-        if (N == 1 || IsAllControlTokenPrompt(tokens) || IsSingleDistinctTokenPrompt(tokens)
+        //
+        // Deliberately NOT short-circuiting on N == 1 here, unlike PrefillDispatch (issue: hot-
+        // session replay divergence investigation, 2026-08-13). This method is the one path a
+        // retained session's per-turn admission calls (ContinuousBatchingEngine), and a session's
+        // turns are chunked arbitrarily by caller-supplied prompt length -- a one-word continuation
+        // (e.g. " capital") is exactly as likely to land here with N == 1 as N == 8. PrefillCore's
+        // MatMulBatchedCached already takes the Q8/repacked-Q4Kx8 path for any batch size,
+        // including 1 (see its "ragged tail" handling), so there is no throughput reason to route
+        // N == 1 through the non-quantized PrefillWithCacheSequential/ForwardCore path here the way
+        // there is for a genuinely fresh, large single-shot Prefill() call. Taking the sequential
+        // shortcut at N == 1 meant a retained session's short continuations silently ran full-F32
+        // while its own longer turns and its full-replay oracle both ran Q8-quantized -- the same
+        // logical sequence computed with two different, non-bit-exact precisions depending on how
+        // the caller happened to chunk it across turns. Measured impact: maxAbsDiff ~0.85 across
+        // every vocab logit for the same position (see PrefillPathParityTests.cs) -- large enough
+        // to flip a close greedy choice a few tokens later, which is what
+        // HotSessionGreedyReplayTests catches. The other conditions (control/degenerate prompts,
+        // unsupported MoE) are unrelated numerical-safety cases and still take the sequential path.
+        if (IsAllControlTokenPrompt(tokens) || IsSingleDistinctTokenPrompt(tokens)
             || (_hp.IsMoE && !MoeBatchedPrefillSupported))
             return PrefillWithCacheSequential(tokens, cache, startPos);
         return PrefillCore(tokens, cache, startPos);
