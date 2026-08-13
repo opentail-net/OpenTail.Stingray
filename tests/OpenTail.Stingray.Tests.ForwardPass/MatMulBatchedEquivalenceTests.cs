@@ -35,9 +35,25 @@ public sealed unsafe class MatMulBatchedEquivalenceTests : IDisposable
     // this mirrors the same discipline MatMulBatchedQ8EquivalenceTests documents.
     private readonly bool _savedQ8Gate = SimdKernels.Q8PrefillEnabled;
 
-    public MatMulBatchedEquivalenceTests() => SimdKernels.Q8PrefillEnabled = false;
+    // The "without OpenBLAS, MatMulBatched literally loops MatVec" contract this suite pins
+    // (see class doc) only holds when a batch never reaches the BLAS threshold. On a machine
+    // with OpenBLAS actually loaded, every batchSize this suite exercises is >= the shipped
+    // default (16), so without this override BLAS's sgemm — not bit-identical to the scalar
+    // loop by construction, just mathematically equivalent — silently became the thing under
+    // test instead of the loop reorder this suite exists to characterize.
+    private readonly int _savedMinBatchForBlas = SimdKernels.MinBatchForBlas;
 
-    public void Dispose() => SimdKernels.Q8PrefillEnabled = _savedQ8Gate;
+    public MatMulBatchedEquivalenceTests()
+    {
+        SimdKernels.Q8PrefillEnabled = false;
+        SimdKernels.MinBatchForBlas = int.MaxValue;
+    }
+
+    public void Dispose()
+    {
+        SimdKernels.Q8PrefillEnabled = _savedQ8Gate;
+        SimdKernels.MinBatchForBlas = _savedMinBatchForBlas;
+    }
 
     /// <summary>Deterministic bytes, so a failure is always reproducible.</summary>
     private static byte[] PseudoRandomBytes(int count, int seed)

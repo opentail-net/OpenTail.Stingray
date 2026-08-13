@@ -388,7 +388,15 @@ public sealed unsafe class MatMulBatchedQ8EquivalenceTests
         // internal 512-token split, where an earlier wrapper falsely claimed unsupported dtypes
         // were handled and left output unwritten.
         bool priorGate = SimdKernels.Q8PrefillEnabled;
+        // batchSize=600 is >= MinBatchForBlas, so on a machine with OpenBLAS actually loaded,
+        // MatMulBatched would dequantize-and-sgemm instead of looping MatVec — a different
+        // (mathematically equivalent, not bit-identical) kernel than the per-token reference
+        // this test compares against. Push the threshold out of reach so this is genuinely a
+        // "batched matches per-token, dtype fallback included" check, not an OpenBLAS-availability
+        // coin flip.
+        int priorMinBatchForBlas = SimdKernels.MinBatchForBlas;
         SimdKernels.Q8PrefillEnabled = true;
+        SimdKernels.MinBatchForBlas = int.MaxValue;
         try
         {
             const int rows = 8, cols = 256, batchSize = 600;
@@ -411,6 +419,7 @@ public sealed unsafe class MatMulBatchedQ8EquivalenceTests
         finally
         {
             SimdKernels.Q8PrefillEnabled = priorGate;
+            SimdKernels.MinBatchForBlas = priorMinBatchForBlas;
         }
     }
 

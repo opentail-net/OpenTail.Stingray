@@ -79,7 +79,16 @@ public sealed class MoeBatchedPrefillParityTests
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
         bool prevQ8 = SimdKernels.Q8PrefillEnabled;
+        // Each expert's batched GEMM (MatMulBatched, allowQ8: true) still runs its bucket size
+        // through the ordinary batch-size gate: >= MinBatchForBlas routes to OpenBLAS sgemm
+        // regardless of Q8PrefillEnabled. On a machine with OpenBLAS actually loaded, 96 tokens
+        // over 64 experts can easily bucket >=16 tokens onto a single expert, and BLAS's summation
+        // order is not bit-identical to the per-token FusedMatVec the sequential oracle uses.
+        // Push the threshold out of reach so this arm's "must agree bit for bit" contract holds
+        // regardless of what's installed on the machine running it.
+        int prevMinBatchForBlas = SimdKernels.MinBatchForBlas;
         SimdKernels.Q8PrefillEnabled = false;
+        SimdKernels.MinBatchForBlas = int.MaxValue;
         try
         {
             using var model = GgufModel.Open(path);
@@ -102,7 +111,11 @@ public sealed class MoeBatchedPrefillParityTests
                 + "— the F32 arms must agree bit for bit");
             Assert.Equal(Sampler.Greedy(seq), Sampler.Greedy(bat));
         }
-        finally { SimdKernels.Q8PrefillEnabled = prevQ8; }
+        finally
+        {
+            SimdKernels.Q8PrefillEnabled = prevQ8;
+            SimdKernels.MinBatchForBlas = prevMinBatchForBlas;
+        }
     }
 
     /// <summary>

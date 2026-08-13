@@ -67,6 +67,17 @@ public sealed class SpeculativeDecoder
     // Acceptance statistics
     private long _totalAccepted;
     private long _totalEmitted;
+
+    // Consecutive steps stuck at the adaptive-lookahead floor (see AdjustAdaptiveLookahead).
+    private int _lookaheadFloorStreak;
+
+    /// <summary>
+    /// Steps to wait at lookahead=1 before re-probing. Once _lookahead hits its floor, a step
+    /// drafts nothing (tokens.Length==1), so there is no step-acceptance to measure and the
+    /// ordinary ratchet-up branch never runs — without this probe, an early rough patch would
+    /// disable speculation for the rest of the session even if the draft would do fine later.
+    /// </summary>
+    private const int LookaheadFloorProbeInterval = 20;
     private long _pldAttempts;
     private long _pldHits;
     private long _pldProposed;
@@ -297,6 +308,32 @@ public sealed class SpeculativeDecoder
     }
 
     /// <summary>
+    /// Adaptive-lookahead ratchet shared by <see cref="Step"/> and <see cref="StepSampled"/>.
+    /// Grows lookahead on a strong step, shrinks it on a weak one, and — because a step at the
+    /// floor drafts nothing and so never produces a step-acceptance to measure — periodically
+    /// re-probes from the floor so a rough early patch cannot lock speculation off permanently.
+    /// </summary>
+    private void AdjustAdaptiveLookahead(int accepted, int tokensLength)
+    {
+        if (!EnableAdaptiveLookahead) return;
+
+        if (tokensLength > 1)
+        {
+            _lookaheadFloorStreak = 0;
+            float stepAcceptance = (float)accepted / (tokensLength - 1);
+            if (stepAcceptance > 0.8f)
+                _lookahead = Math.Min(_lookahead + 1, 8);
+            else if (stepAcceptance < 0.4f)
+                _lookahead = Math.Max(_lookahead - 1, 1);
+        }
+        else if (_lookahead == 1 && ++_lookaheadFloorStreak >= LookaheadFloorProbeInterval)
+        {
+            _lookahead = 2;
+            _lookaheadFloorStreak = 0;
+        }
+    }
+
+    /// <summary>
     /// Run one speculative step (llama.cpp formulation): pack the certain next token with
     /// k−1 draft proposals, batch-verify all k in ONE target pass, accept greedily.
     /// Returns the emitted token array (1 + accepted tokens). Updates internal state
@@ -417,18 +454,7 @@ public sealed class SpeculativeDecoder
         var emitted = new int[accepted + 1];
         for (int i = 0; i <= accepted; i++) emitted[i] = tokens[i];
 
-        if (EnableAdaptiveLookahead && tokens.Length > 1)
-        {
-            float stepAcceptance = (float)accepted / (tokens.Length - 1);
-            if (stepAcceptance > 0.8f)
-            {
-                _lookahead = Math.Min(_lookahead + 1, 8);
-            }
-            else if (stepAcceptance < 0.4f)
-            {
-                _lookahead = Math.Max(_lookahead - 1, 1);
-            }
-        }
+        AdjustAdaptiveLookahead(accepted, tokens.Length);
 
         return emitted;
     }
@@ -555,18 +581,7 @@ public sealed class SpeculativeDecoder
         var emitted = new int[accepted + 1];
         for (int i = 0; i <= accepted; i++) emitted[i] = tokens[i];
 
-        if (EnableAdaptiveLookahead && tokens.Length > 1)
-        {
-            float stepAcceptance = (float)accepted / (tokens.Length - 1);
-            if (stepAcceptance > 0.8f)
-            {
-                _lookahead = Math.Min(_lookahead + 1, 8);
-            }
-            else if (stepAcceptance < 0.4f)
-            {
-                _lookahead = Math.Max(_lookahead - 1, 1);
-            }
-        }
+        AdjustAdaptiveLookahead(accepted, tokens.Length);
 
         return emitted;
     }

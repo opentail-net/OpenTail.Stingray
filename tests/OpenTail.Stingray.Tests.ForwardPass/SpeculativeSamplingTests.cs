@@ -27,6 +27,10 @@ public sealed class SpeculativeSamplingTests
         var target = new FixedDistForwardPass(PTarget, supportsBatchVerify: true);
         var draft  = new FixedDistForwardPass(QDraft,  supportsBatchVerify: false);
         var spec = new SpeculativeDecoder(target, draft, new SamplingParams { Temperature = 1f }, new Random(12345), lookahead: 4);
+        // Adaptive lookahead is an unrelated performance heuristic (and, until fixed, could
+        // floor at 1 and never recover — see SpeculativeDecoder.AdjustAdaptiveLookahead). Disable
+        // it here so this test isolates the distribution-preservation invariant it's named for.
+        spec.EnableAdaptiveLookahead = false;
         spec.Initialize(1, PTarget);
 
         const int n = 40000;
