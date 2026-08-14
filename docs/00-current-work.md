@@ -34,6 +34,31 @@ Work needing hardware this machine does not have is in
 
 ---
 
+## Also active, separate from the GGUF-coverage goal — session architecture migration
+
+Not ordered by "run any GGUF" — a parallel, session/runtime-layer thread.
+[028 — InferenceSession → HotSession migration plan](028-inference-session-to-hotsession-migration-plan.md)
+is fully done: Phases 1 (KV memory governance), 2 (cross-session prefix sharing), and 3
+(fork/branching) are all implemented and verified against real models, each with its own
+`HotSession`-native test.
+
+**Remaining**: [030 — delete InferenceSession/InferenceRuntime](030-delete-inferencesession-todo.md).
+The plan's own stated end state — once all three phases are done, the superseded
+`InferenceSession`/`InferenceRuntime` architecture and its ~20+ tests get deleted, not archived —
+has not been executed yet. Two items need an explicit decision (port or deliberately drop) before
+that deletion, rather than deleting by default: `ISessionMetadata`/`SessionMetrics` (confirmed
+novel, no `HotSession` equivalent) and the `GenerationResult`/`GenerationStream`/`FinishReason`
+bundling shape (partial — `HotSessionTurnResult` doesn't carry the same fields). See doc 030 for
+the full breakdown.
+
+**Also found while stress-testing this path**: a severe, unrelated kernel-layer defect affecting
+real concurrent `HotSession` traffic at 5–15 simultaneous requests — see the "Known defect (SEVERE,
+core path)" entry below and [031](031-concurrent-decode-batch-tier-divergence-bug.md). Not a
+migration-plan defect and not blocking Phases 1-3 (all three are done/verified independent of this),
+but worth knowing before treating `HotSession` as production-hardened at realistic concurrency.
+
+---
+
 ## Priority 1 — model coverage
 
 See [01-gguf-model-coverage-plan.md](01-gguf-model-coverage-plan.md) for the audit and the ordered
@@ -598,6 +623,20 @@ in [done/03-cpu-prefill-plan.md](done/03-cpu-prefill-plan.md): the int8 batched 
 microkernel dispatch and accumulation order depend on batch shape, so chunked and single-shot
 prefill diverge. Making it batch-shape-invariant would cost the 3.48x measured on that path. It is
 left red on purpose — it is the only automated detector for this behaviour.
+
+**Known defect (SEVERE, core path), two more deliberate red tests, 2026-08-14.**
+`SimdKernels.MatMulBatched`'s small-batch tiered dispatch (`MatVec4In`/`MatVec2In`/`MatVec`) is
+batch-composition-dependent the same way the item above is — but this instance is in the exact-F32
+DECODE path (`allowQ8: false`, supposedly immune to exactly this class of issue) and reachable by
+any real `HotSession`/`ContinuousBatchingEngine` traffic, not just a chunked-admission edge case.
+Found via a real-model concurrency stress test: N identical, deterministic (greedy) concurrent
+`HotSession` requests must all produce the same output, and don't for **5 ≤ N ≤ 15** — confirmed
+reproducible at N = 5, 6, 7, 8, 10, always the same session/token, every run. N ≤ 4 (one tiered-
+dispatch call) and N ≥ 16 (crosses `MinBatchForBlas`, routes to OpenBLAS GEMM instead) are both
+clean. Exact non-associative line not yet isolated. Left red on purpose in
+`HotSessionConcurrencyStressTests.cs` (`Stress_5ConcurrentSessions`, `Stress_10ConcurrentSessions`),
+same pattern as the item above. Full investigation, bisection, and reproduction steps:
+[031-concurrent-decode-batch-tier-divergence-bug.md](031-concurrent-decode-batch-tier-divergence-bug.md).
 
 **Test suite.** ForwardPass discovers 1,368 tests as of the `gptneox` receipt (2026-08-08; was
 1,358 — the net growth is Granite/SmolLM3/Apertus/GptNeox parity tests added this session), runs in

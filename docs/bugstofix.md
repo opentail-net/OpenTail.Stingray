@@ -59,6 +59,12 @@
     "line": 127,
     "summary": "The prefix-cache namespace is hardcoded to (\"default-model\",\"default-kv\") for every session instead of being derived from the session's actual ModelId, defeating the namespace's documented purpose of preventing cross-model page sharing.",
     "failure_scenario": "Two sessions running different models (or different KV quantization configs) are treated as prefix-compatible and can share physical KV pages through Publish/MatchPrefix — exactly the invalid cross-model sharing IPrefixCacheIndex's namespace type exists to prevent."
+  },
+  {
+    "file": "src/OpenTail.Stingray.Cpu/SimdKernels.cs",
+    "line": 1092,
+    "summary": "SimdKernels.MatMulBatched's small-batch tiered dispatch (MatVec4In groups of 4, then MatVec2In, then plain MatVec for the remainder) produces batch-composition-dependent results: a value computed for one row differs depending on what OTHER calls/tiers run in the same batched step, even though decode's allowQ8:false path is supposed to be exact F32 regardless of batching. CONFIRMED via a real-model concurrency stress test, deterministic and 100% reproducible: N<=4 concurrent HotSession decode requests (single tiered-dispatch call) always match; N=16+ (crosses MinBatchForBlas, routes to OpenBLAS GEMM instead) always match; every N in [5,15] tested (5,6,7,8,10) diverges identically on every run. N=8 (two back-to-back MatVec4In calls, no other tier) still diverges, ruling out 'mixing different tiers' specifically and pointing at repeated/multiple invocation of the small-batch dispatch within one step. Exact non-associative line not yet isolated — see docs/031-concurrent-decode-batch-tier-divergence-bug.md for the full bisection, evidence, and reproduction.",
+    "failure_scenario": "Any deployment serving 5 to 15 concurrent HotSession requests on the same ContinuousBatchingEngine (the CORE production continuous-batching decode path, no opt-in flag) can have one session's greedy decode silently continue past where it should have stopped (or otherwise diverge), producing different output than the identical request would produce alone or at a different concurrency level. Not a crash, not flagged anywhere — looks like ordinary model output. Left red on purpose in HotSessionConcurrencyStressTests.cs (Stress_5ConcurrentSessions, Stress_10ConcurrentSessions), the same standing pattern as ContinuousBatchingTests.PrefillWithCache_Chunked_MatchesFull."
   }
 ]
 ```
