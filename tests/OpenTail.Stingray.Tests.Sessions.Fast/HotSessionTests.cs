@@ -129,8 +129,16 @@ public sealed class HotSessionTests
         Assert.Equal(0, runtime.ResidentBytes);
     }
 
+    /// <summary>
+    /// docs/028 Phase 1: an over-budget admission first tries reclaiming idle siblings before
+    /// rejecting. <c>first</c> is idle (its turn completed) by the time <c>second</c> tries, so
+    /// reclaim succeeds and <c>second</c> is admitted instead of rejected — this test used to
+    /// assert the pre-Phase-1 hard-rejection; see
+    /// <see cref="OpenTail.Stingray.Tests.Sessions.Fast.SessionResourceBudgetEvictionTests"/> for
+    /// the dedicated reclaim-path coverage this scenario is now a duplicate of in spirit.
+    /// </summary>
     [Fact]
-    public async Task HotSession_ReservesProjectedBytesAndRejectsOverBudgetAdmission()
+    public async Task HotSession_OverBudgetAdmission_ReclaimsIdleSiblingInsteadOfRejecting()
     {
         var fwd = new FakeForwardPass();
         using var engine = new ContinuousBatchingEngine(fwd, new Tokenizer(), "test", maxBatchSize: 1);
@@ -143,12 +151,45 @@ public sealed class HotSessionTests
         await first.RunTurnAsync("one", sampling, SessionRevision.Initial, SessionOperationId.New(), Digest("first"));
         Assert.Equal(2, runtime.ResidentBytes);
 
-        var ex = await Assert.ThrowsAsync<SessionResourceBudgetExceededException>(() => second.RunTurnAsync(
-            "one", sampling, SessionRevision.Initial, SessionOperationId.New(), Digest("second")));
+        var result = await second.RunTurnAsync(
+            "one", sampling, SessionRevision.Initial, SessionOperationId.New(), Digest("second"));
 
-        Assert.Equal(3, ex.RequestedBytes);
-        Assert.Equal(1, ex.AvailableBytes);
+        Assert.Equal(SessionOperationState.Completed, result.Operation.State);
+        // first was evicted to make room; resident total reflects only second now.
         Assert.Equal(2, runtime.ResidentBytes);
+    }
+
+    /// <summary>
+    /// The genuine rejection case docs/028 Phase 1 does NOT fix: a sibling that is actively
+    /// in-use (mid-turn, not idle) cannot be reclaimed regardless of pressure. Uses
+    /// <see cref="FakeForwardPass.BlockDecode"/> to hold <c>first</c> inside an active turn while
+    /// <c>second</c> attempts admission.
+    /// </summary>
+    [Fact]
+    public async Task HotSession_OverBudgetAdmission_StillRejectsWhenSiblingIsActiveNotIdle()
+    {
+        var fwd = new FakeForwardPass { EmitNonStopOnPrefill = true, BlockDecode = true };
+        using var engine = new ContinuousBatchingEngine(fwd, new Tokenizer(), "test", maxBatchSize: 2);
+        var runtime = new HotSessionRuntime(engine, new Tokenizer(),
+            new HotSessionRuntimeOptions(maxResidentBytes: 3, maxSessionBytes: 3));
+        using var first = runtime.Create();
+        using var second = runtime.Create();
+        var sampling = new SamplingParams { Temperature = 0f, MaxNewTokens = 1 };
+
+        var firstTurn = first.RunTurnAsync("one", sampling, SessionRevision.Initial, SessionOperationId.New(), Digest("first"));
+        await fwd.DecodeStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        try
+        {
+            var ex = await Assert.ThrowsAsync<SessionResourceBudgetExceededException>(() => second.RunTurnAsync(
+                "one", sampling, SessionRevision.Initial, SessionOperationId.New(), Digest("second")));
+            Assert.Equal(3, ex.RequestedBytes);
+        }
+        finally
+        {
+            fwd.BlockDecode = false;
+            fwd.ReleaseDecode.Set();
+            await firstTurn;
+        }
     }
 
     [Fact]

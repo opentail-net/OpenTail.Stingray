@@ -23,8 +23,36 @@ namespace OpenTail.Stingray.Tests.Sessions;
 /// text-level replay would therefore diverge for a reason that has nothing to do with state reuse,
 /// and would either fail spuriously or, worse, be "fixed" by loosening the assertion until it
 /// stopped meaning anything. The session's own execution log records the exact token ids of every
-/// segment, so the oracle prefills precisely those and decodes greedily from a fresh
-/// <see cref="Engine.ForwardPass"/> that shares no state with the session.</para>
+/// segment, so the oracle replays precisely those.</para>
+///
+/// <para><b>The oracle replays through the SAME entry points the session uses, on its own
+/// independent cache</b> — see docs/029-prefill-batch-composition-numerics-bug.md for the full
+/// investigation. A single <c>Engine.ForwardPass</c> and its own, session-independent
+/// <c>PagedKvCache</c> (via <c>CreateCache</c> — sharing no state with the session, same isolation
+/// as before) are created ONCE per test and CONTINUED turn to turn: each prompt segment is
+/// prefilled with <c>PrefillWithCache</c> at the oracle's own running position and each generated
+/// segment is replayed token-by-token via <c>BatchForwardMulti</c> — the LITERAL functions
+/// <c>HotSession</c>'s own admission and decode call, not merely functions with similar numerics.
+/// That equivalence matters specifically: <c>Engine.ForwardPass.Prefill</c> (the single-user
+/// top-level API) short-circuits a length-1 prompt straight to <c>Forward</c>'s exact-F32 path,
+/// while <c>PrefillWithCache</c> deliberately does not (see its own doc comment, "Deliberately NOT
+/// short-circuiting on N == 1 here, unlike PrefillDispatch") — an earlier version of this oracle
+/// used <c>Prefill</c>/<c>Forward</c> directly and silently reintroduced exactly the class of
+/// mismatch this rewrite exists to eliminate, just relocated to short continuation prompts instead
+/// of the original bug's decode-vs-prefill boundary. Calling the session's own entry points closes
+/// that off by construction instead of chasing each new instance of it.</para>
+///
+/// <para>An earlier version of this oracle instead re-prefilled the ENTIRE growing history as one
+/// blanket cold call every turn — including positions the session had actually DECODED (always
+/// exact F32), Q8-quantizing them as if they'd been prompt text. That silently graded the session
+/// against a reference it could never match: <c>PrefillCore</c>'s Q8 path and
+/// <c>BatchForwardMulti</c>'s F32 path are each individually correct and deliberate, but produce
+/// different precision for the same logical token depending on whether it arrived via prefill or
+/// decode, and a session's cache legitimately mixes both across turns. Continuing one oracle cache
+/// per-segment, instead of re-deriving the whole history from scratch, replays each position with
+/// the SAME precision path the session actually used to produce it — the comparison this test can
+/// actually promise to hold, and the one docs/adr-0001-session-cache-lifecycle.md's "ExactLossless"
+/// continuation claim is actually about.</para>
 ///
 /// <para>The restart acceptance test is explicitly skipped when the reference model is not on disk.
 /// A failure inside a turn must FAIL.</para>
@@ -95,29 +123,29 @@ public sealed class HotSessionGreedyReplayTests : HeavyTestBase
         // The log alternates prompt segment / generated segment, one pair per turn.
         Assert.Equal(turns.Length * 2, log.Length);
 
-        // ── Arm B: full replay. For each generated segment, a FRESH forward pass prefills the
-        //    exact token prefix that preceded it and decodes greedily. No retained state, no
-        //    shared cache, no shared engine — the only thing carried over is the token ids.
+        // ── Arm B: precision-consistent replay. One oracle forward pass, its own cache continued
+        //    turn to turn — no retained state, no shared cache, no shared engine with the session
+        //    itself, but each segment replayed via the SAME computation path (prefill vs decode)
+        //    the session actually used to produce it. See this file's header comment for why.
         using (var backend = new CpuBackend())
+        using (var oracleFwd = new Engine.ForwardPass(model, backend, hp, maxContextLength: 2048))
         {
-            var replay = new List<int>();
+            using var oracleCache = oracleFwd.CreateCache();
+            int pos = 0;
             for (int seg = 0; seg < log.Length; seg += 2)
             {
                 var promptSeg = Assert.IsType<TokenSegment>(log[seg]);
                 var generatedSeg = Assert.IsType<TokenSegment>(log[seg + 1]);
-                replay.AddRange(promptSeg.TokenIds);
 
                 var expected = generatedSeg.TokenIds;
-                var actual = GreedyContinuation(model, backend, hp, replay, expected.Length);
+                var actual = GreedyContinuationSegment(oracleFwd, oracleCache, promptSeg.TokenIds, expected.Length, ref pos);
 
                 Assert.Equal(expected.Length, actual.Length);
                 for (int i = 0; i < expected.Length; i++)
                     Assert.True(expected[i] == actual[i],
                         $"turn {seg / 2 + 1}, generated token {i}: session produced {expected[i]} "
-                        + $"({Show(tokenizer, expected[i])}) but full greedy replay of the identical "
-                        + $"{replay.Count}-token prefix produced {actual[i]} ({Show(tokenizer, actual[i])})");
-
-                replay.AddRange(expected);
+                        + $"({Show(tokenizer, expected[i])}) but precision-consistent replay produced "
+                        + $"{actual[i]} ({Show(tokenizer, actual[i])})");
             }
         }
     }
@@ -149,7 +177,7 @@ public sealed class HotSessionGreedyReplayTests : HeavyTestBase
     /// class of model.</para>
     ///
     /// <para><b>Both arms use <c>maxContextLength: 2048</c>, matching
-    /// <see cref="GreedyContinuation"/>.</b> This is hygiene — an A/B whose arms differ in an
+    /// <see cref="GreedyContinuationSegment"/>.</b> This is hygiene — an A/B whose arms differ in an
     /// unrelated parameter is not a comparison — and NOT because context length was observed to
     /// change the model's output. It was measured directly and it does not: greedy decoding of both
     /// the 5-token and the 15-token seed produces byte-identical output at <c>-c 512</c> and
@@ -221,22 +249,23 @@ public sealed class HotSessionGreedyReplayTests : HeavyTestBase
             log = t2.Cursor.ExecutionLog;
         }
 
-        // Full replay of every generated segment, exactly as §8.1 does.
-        // Turn 1's single generated token lands at the page boundary (position 16);
-        // turn 2's prompt opens the next page. Both are checked against fresh replay.
+        // Precision-consistent replay of every generated segment, exactly as §8.1 does (see this
+        // file's header comment). Turn 1's single generated token lands at the page boundary
+        // (position 16); turn 2's prompt opens the next page.
         using (var backend = new CpuBackend())
+        using (var oracleFwd = new Engine.ForwardPass(model, backend, hp, maxContextLength: 2048))
         {
-            var replay = new List<int>();
+            using var oracleCache = oracleFwd.CreateCache();
+            int pos = 0;
             for (int seg = 0; seg + 1 < log.Length; seg += 2)
             {
-                replay.AddRange(Assert.IsType<TokenSegment>(log[seg]).TokenIds);
+                var promptSeg = Assert.IsType<TokenSegment>(log[seg]).TokenIds;
                 var expected = Assert.IsType<TokenSegment>(log[seg + 1]).TokenIds;
-                var actual = GreedyContinuation(model, backend, hp, replay, expected.Length);
+                var actual = GreedyContinuationSegment(oracleFwd, oracleCache, promptSeg, expected.Length, ref pos);
                 for (int i = 0; i < expected.Length; i++)
                     Assert.True(expected[i] == actual[i],
                         $"turn {seg / 2 + 1}, token {i}: session {expected[i]} vs replay {actual[i]} "
                         + "— an append landing exactly on a page boundary diverged from replay.");
-                replay.AddRange(expected);
             }
         }
     }
@@ -386,15 +415,15 @@ public sealed class HotSessionGreedyReplayTests : HeavyTestBase
         var log = session.Cursor.ExecutionLog;
         Assert.True(log.Length > 0 && log.Length % 2 == 0,
             "The restart proof expects alternating prompt/generated token segments.");
-        var replay = new List<int>();
+        using var oracleFwd = new Engine.ForwardPass(model, backend, hp, maxContextLength: 2048);
+        using var oracleCache = oracleFwd.CreateCache();
+        int pos = 0;
         for (int i = 0; i < log.Length; i += 2)
         {
             var prompt = Assert.IsType<TokenSegment>(log[i]);
             var generated = Assert.IsType<TokenSegment>(log[i + 1]);
-            replay.AddRange(prompt.TokenIds);
-            var actual = GreedyContinuation(model, backend, hp, replay, generated.TokenIds.Length);
+            var actual = GreedyContinuationSegment(oracleFwd, oracleCache, prompt.TokenIds, generated.TokenIds.Length, ref pos);
             Assert.Equal(generated.TokenIds, actual);
-            replay.AddRange(generated.TokenIds);
         }
     }
 
@@ -402,21 +431,35 @@ public sealed class HotSessionGreedyReplayTests : HeavyTestBase
         $"{Path.GetFileName(modelPath)}:{new FileInfo(modelPath).Length}";
 
     /// <summary>
-    /// Full replay: a brand-new forward pass, prefill the whole prefix, then greedy-decode
-    /// <paramref name="count"/> tokens. This is the "re-run the conversation from scratch" arm.
+    /// Replays exactly one turn's worth of a precision-consistent oracle: prefills
+    /// <paramref name="promptSegment"/> at <paramref name="pos"/> (Q8-prefill, matching
+    /// <c>PrefillWithCache</c>'s own admission), then greedy-decodes <paramref name="count"/>
+    /// tokens (exact F32, matching <c>BatchForwardMulti</c>'s own decode) — continuing
+    /// <paramref name="fwd"/>'s own cache from whatever the PREVIOUS call to this method left it at,
+    /// rather than re-deriving the whole history from scratch. See this file's header comment and
+    /// docs/029-prefill-batch-composition-numerics-bug.md for why blanket re-prefilling the growing
+    /// history is not a valid oracle. <paramref name="pos"/> is advanced past every position this
+    /// call materializes, so the caller's next segment continues correctly.
     /// </summary>
-    private static int[] GreedyContinuation(GgufModel model, CpuBackend backend, ModelHyperparams hp,
-        List<int> prefix, int count)
+    private static int[] GreedyContinuationSegment(
+        Engine.ForwardPass fwd, PagedKvCache cache, IReadOnlyList<int> promptSegment, int count, ref int pos)
     {
-        using var fwd = new Engine.ForwardPass(model, backend, hp, maxContextLength: 2048);
-        var logits = fwd.Prefill(prefix);
+        var logits = fwd.PrefillWithCache(promptSegment, cache, startPos: pos);
+        pos += promptSegment.Count;
         var outTokens = new int[count];
-        int pos = prefix.Count;
         for (int i = 0; i < count; i++)
         {
             int next = Sampler.Greedy(logits);
             outTokens[i] = next;
-            if (i + 1 < count) logits = fwd.Forward(next, pos++);
+            // Every generated token must be appended to the cache (BatchForwardMulti's side
+            // effect) -- including the last one. Unlike the old from-scratch-per-turn oracle
+            // (which discarded its ForwardPass immediately after returning, so an incomplete final
+            // append never mattered), this cache is CONTINUED into the next segment: skipping the
+            // last append would leave this position missing from the history the next
+            // PrefillWithCache call attends back over, silently corrupting it instead of just
+            // wasting one decode step.
+            logits = fwd.BatchForwardMulti([next], [pos], [cache])[0];
+            pos++;
         }
         return outTokens;
     }

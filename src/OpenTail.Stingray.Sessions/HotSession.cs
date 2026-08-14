@@ -32,6 +32,7 @@ public sealed class HotSession : IDisposable
     private readonly int _maxCapturedOutputChunks;
     private readonly string _modelKey;
     private readonly Action<SessionId, HotSession>? _onDisposed;
+    private readonly Func<SessionId, long, long>? _reclaimIdleBytes;
     private readonly RetainedSequenceState _state = new();
     private readonly object _lifecycleGate = new();
     private SessionCursor _cursor = new([], 0, 0, 0, 0, StateCoverage.Full);
@@ -47,7 +48,8 @@ public sealed class HotSession : IDisposable
         int maxCapturedOutputChunks,
         SessionId sessionId,
         Action<SessionId, HotSession>? onDisposed = null,
-        string? modelKey = null)
+        string? modelKey = null,
+        Func<SessionId, long, long>? reclaimIdleBytes = null)
     {
         _engine = engine;
         _tokenizer = tokenizer;
@@ -59,6 +61,56 @@ public sealed class HotSession : IDisposable
         SessionId = sessionId;
         _onDisposed = onDisposed;
         _modelKey = modelKey ?? engine.ModelId;
+        _reclaimIdleBytes = reclaimIdleBytes;
+    }
+
+    /// <summary>Whether this session holds a retained cache and has no turn queued or active —
+    /// i.e. whether <see cref="EvictRetainedCacheIfIdle"/> could free anything right now. Racy by
+    /// nature (see <see cref="RetainedSequenceState.IsReclaimable"/>); a caller iterating
+    /// candidates should call the evict method directly rather than branching on this first.</summary>
+    internal bool IsIdle => _state.IsReclaimable;
+
+    /// <summary>
+    /// Drops this session's retained cache if it is currently idle, reconciling
+    /// <see cref="SessionResourceBudget"/>'s accounting to match. The session itself is
+    /// unaffected — its next turn simply starts cold instead of resuming hot. Returns the number
+    /// of bytes freed (0 if the session was in use or had nothing retained).
+    /// </summary>
+    internal long EvictRetainedCacheIfIdle()
+    {
+        int freedPositions = _state.EvictIfIdle();
+        if (freedPositions == 0) return 0;
+        _resources.SetResidentBytes(SessionId, 0);
+        return checked(freedPositions * _kvBytesPerToken);
+    }
+
+    /// <summary>
+    /// docs/028 Phase 2, source side: attempts to fork up to <paramref name="maxPrefixLength"/>
+    /// leading positions of this session's retained cache for a new sibling to seed from. Requires
+    /// this session to be idle at the moment of the call (enforced atomically inside
+    /// <see cref="RetainedSequenceState.TryForkSharedPrefix"/>, not by a separate check here — see
+    /// that method for why); returns null on any reason sharing isn't possible right now, which a
+    /// caller must always tolerate by falling back to an ordinary cold session.
+    /// </summary>
+    internal (ISequenceKvCache Cache, int Length)? TryForkSharedPrefixCache(int maxPrefixLength) =>
+        _engine.TryForkSharedPrefix(_state, maxPrefixLength);
+
+    /// <summary>
+    /// docs/028 Phase 2, destination side: seeds this brand-new session's retained state and
+    /// cursor from a prefix forked off a sibling (<see cref="TryForkSharedPrefixCache"/>), so this
+    /// session's first <see cref="RunTurnAsync"/> call only has to prefill whatever comes after
+    /// <paramref name="prefixTokens"/> — the same append-only contract every later turn already
+    /// follows, just starting from a non-empty cursor instead of an empty one. Only valid before
+    /// this session's first turn; see <see cref="RetainedSequenceState.SeedWithForkedCache"/>.
+    /// </summary>
+    internal void SeedFromSharedPrefix(ImmutableArray<int> prefixTokens, ISequenceKvCache forkedCache)
+    {
+        _state.SeedWithForkedCache(forkedCache, prefixTokens.Length);
+        var log = ImmutableArray.Create<ExecutionSegment>(new TokenSegment(prefixTokens));
+        var seededCursor = new SessionCursor(log, prefixTokens.Length, prefixTokens.Length,
+            prefixTokens.Length, prefixTokens.Length, StateCoverage.Full);
+        lock (_cursorGate) _cursor = seededCursor;
+        _resources.SetResidentBytes(SessionId, checked((long)prefixTokens.Length * _kvBytesPerToken));
     }
 
     /// <summary>
@@ -142,16 +194,33 @@ public sealed class HotSession : IDisposable
             }
 
             SessionResourceBudget.SessionResourceReservation reservation;
+            int initialPositions = checked(priorCursor.MaterializedPositionCount + appendTokens.Length
+                + (sampling.MaxNewTokens > 0 ? 1 : 0));
+            long neededBytes = checked((long)initialPositions * _kvBytesPerToken);
             try
             {
-                int initialPositions = checked(priorCursor.MaterializedPositionCount + appendTokens.Length
-                    + (sampling.MaxNewTokens > 0 ? 1 : 0));
-                reservation = _resources.Reserve(SessionId, checked((long)initialPositions * _kvBytesPerToken), _modelKey);
+                reservation = _resources.Reserve(SessionId, neededBytes, _modelKey);
             }
             catch (SessionResourceBudgetExceededException ex)
             {
-                _store.Fail(lease, operationId, ex.Message);
-                throw;
+                // The budget is exhausted, but not necessarily by work that's actually running:
+                // idle, retained sibling sessions hold committed bytes SessionResourceBudget has
+                // no way to reclaim on its own (docs/028 Phase 1). Evict idle siblings once, then
+                // retry exactly once before failing for real.
+                if (_reclaimIdleBytes is null || _reclaimIdleBytes(SessionId, neededBytes) <= 0)
+                {
+                    _store.Fail(lease, operationId, ex.Message);
+                    throw;
+                }
+                try
+                {
+                    reservation = _resources.Reserve(SessionId, neededBytes, _modelKey);
+                }
+                catch (SessionResourceBudgetExceededException retryEx)
+                {
+                    _store.Fail(lease, operationId, retryEx.Message);
+                    throw;
+                }
             }
 
             using (reservation)
@@ -394,7 +463,8 @@ public sealed class HotSessionRuntime
         var snapshot = _store.Create(sessionId);
         var session = new HotSession(_engine, _tokenizer, _store, _resources,
             _engine.KvBytesPerToken, _engine.MaxSequenceLength,
-            _options.MaxCapturedOutputChunks, snapshot.SessionId, RemoveDisposedSession, modelKey);
+            _options.MaxCapturedOutputChunks, snapshot.SessionId, RemoveDisposedSession, modelKey,
+            ReclaimIdleBytes);
         if (!_sessions.TryAdd(snapshot.SessionId, session))
         {
             session.Dispose();
@@ -404,6 +474,105 @@ public sealed class HotSessionRuntime
     }
 
     public HotSession Create(SessionAddress address) => Create(address.ToSessionId(), address.ModelFingerprint);
+
+    /// <summary>
+    /// docs/028 Phase 2: creates a new session pre-seeded from the longest matching prefix among
+    /// currently idle sibling sessions on this runtime, when the active backend supports prefix
+    /// forking (<see cref="HotSession.TryForkSharedPrefixCache"/>) — e.g. many chat sessions
+    /// opening with an identical system prompt reuse its already-computed KV pages instead of
+    /// each re-prefilling it from nothing.
+    ///
+    /// <para>Best-effort: any reason sharing doesn't happen (no idle sibling shares a prefix, the
+    /// backend doesn't support forking, the seeded size is rejected by <see cref="SessionResourceBudget"/>)
+    /// silently falls back to an ordinary cold session, exactly what <see cref="Create(SessionId?, string?)"/>
+    /// alone would have produced — this must never be the reason session creation itself fails.</para>
+    ///
+    /// <para>Returns the session together with how many leading tokens of
+    /// <paramref name="desiredPromptTokens"/> were actually seeded (0 if none). The caller's first
+    /// <see cref="HotSession.RunTurnAsync"/> call must submit only the remaining suffix as its
+    /// append prompt — the same append-only contract every later turn already follows. Token-level
+    /// prefix matching is only guaranteed correct when <paramref name="desiredPromptTokens"/> was
+    /// produced by encoding the shared text in isolation (e.g. every session's first turn is
+    /// literally the same system-prompt string) — BPE merge boundaries mean re-encoding a longer,
+    /// merged string is not guaranteed to reproduce the same leading token IDs.</para>
+    /// </summary>
+    public (HotSession Session, int SeededPrefixLength) CreateWithSharedPrefixHint(
+        ImmutableArray<int> desiredPromptTokens, SessionId? sessionId = null, string? modelKey = null)
+    {
+        var session = Create(sessionId, modelKey);
+        if (desiredPromptTokens.IsDefaultOrEmpty) return (session, 0);
+
+        HotSession? bestSibling = null;
+        int bestMatch = 0;
+        foreach (var (id, sibling) in _sessions)
+        {
+            if (id == session.SessionId || !sibling.IsIdle) continue;
+            int match = CommonPrefixLength(sibling.Cursor.ExecutionLog, desiredPromptTokens);
+            if (match > bestMatch)
+            {
+                bestMatch = match;
+                bestSibling = sibling;
+            }
+        }
+        if (bestSibling is null || bestMatch == 0) return (session, 0);
+
+        var forked = bestSibling.TryForkSharedPrefixCache(bestMatch);
+        if (forked is null) return (session, 0);
+
+        try
+        {
+            session.SeedFromSharedPrefix(desiredPromptTokens[..forked.Value.Length], forked.Value.Cache);
+            return (session, forked.Value.Length);
+        }
+        catch
+        {
+            forked.Value.Cache.Dispose();
+            return (session, 0);
+        }
+    }
+
+    /// <summary>
+    /// Longest run of leading tokens <paramref name="desired"/> shares with <paramref name="log"/>,
+    /// stopping at the first mismatch or the first non-token (atomic) segment — a fork can only
+    /// share KV positions that came from actual token execution.
+    /// </summary>
+    private static int CommonPrefixLength(ImmutableArray<ExecutionSegment> log, ImmutableArray<int> desired)
+    {
+        int matched = 0;
+        foreach (var segment in log)
+        {
+            if (matched >= desired.Length) break;
+            if (segment is not TokenSegment tokenSegment) break;
+            foreach (var token in tokenSegment.TokenIds)
+            {
+                if (matched >= desired.Length || token != desired[matched]) return matched;
+                matched++;
+            }
+        }
+        return matched;
+    }
+
+    /// <summary>
+    /// docs/028 Phase 1's eviction policy: evict idle sibling sessions (oldest-created first, an
+    /// arbitrary but stable and starvation-free order — <see cref="ConcurrentDictionary{TKey,TValue}"/>
+    /// enumeration order is not insertion order, so this does not currently guarantee that; true
+    /// LRU-by-last-use would need each session to track its own last-active timestamp, deferred
+    /// until a real workload shows FIFO-by-creation is the wrong policy) until at least
+    /// <paramref name="neededBytes"/> has been freed or every session has been tried. Returns the
+    /// actual total reclaimed, which may be less than requested — the caller (the requesting
+    /// session's own reservation retry) decides whether that's enough.
+    /// </summary>
+    private long ReclaimIdleBytes(SessionId requester, long neededBytes)
+    {
+        long reclaimed = 0;
+        foreach (var (id, session) in _sessions)
+        {
+            if (reclaimed >= neededBytes) break;
+            if (id == requester) continue;
+            reclaimed += session.EvictRetainedCacheIfIdle();
+        }
+        return reclaimed;
+    }
 
     /// <summary>Opens an active in-memory hot session. Cold restoration is a later milestone.</summary>
     public HotSession Open(SessionId sessionId) =>

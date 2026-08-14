@@ -54,6 +54,7 @@ public sealed class ContinuousBatchingEngine : IInferenceEngine, IContinuousBatc
     private readonly long _prefixCacheBytes;
     private long _prefixCacheUsedBytes;
     private long _prefillTokensReused;
+    private long _crossSessionPrefixTokensShared;
     private long _prefixCacheHits;
     private long _prefixCacheMisses;
     private long _prefixCacheHitTokens;
@@ -296,6 +297,24 @@ public sealed class ContinuousBatchingEngine : IInferenceEngine, IContinuousBatc
     /// <summary>Maximum logical sequence length accepted by the active backend.</summary>
     public int MaxSequenceLength => _fwd.MaxSeqLen;
 
+    /// <summary>
+    /// docs/028 Phase 2: forks up to <paramref name="maxPrefixLength"/> leading positions off
+    /// <paramref name="source"/>'s retained cache for a sibling session to seed from, using this
+    /// engine's own <see cref="IPrefixCacheableBatchedForwardPass"/> — the same mechanism this
+    /// engine's cross-request prefix cache already relies on for non-retained admissions, now
+    /// reused for cross-session sharing rather than duplicated. Returns null when the active
+    /// backend doesn't support prefix forking at all (the CPU forward pass does; CUDA
+    /// deliberately opts out); <see cref="RetainedSequenceState.TryForkSharedPrefix"/> covers the
+    /// remaining reasons (source in use, nothing retained, below one alignment block).
+    /// </summary>
+    internal (ISequenceKvCache Cache, int Length)? TryForkSharedPrefix(RetainedSequenceState source, int maxPrefixLength)
+    {
+        if (_prefixFwd is null) return null;
+        var forked = source.TryForkSharedPrefix(_prefixFwd, maxPrefixLength);
+        if (forked is { } result) Interlocked.Add(ref _crossSessionPrefixTokensShared, result.Length);
+        return forked;
+    }
+
     /// <inheritdoc/>
     public bool IsContinuousBatching => true;
 
@@ -319,6 +338,15 @@ public sealed class ContinuousBatchingEngine : IInferenceEngine, IContinuousBatc
 
     /// <summary>Prefix-cache lookups which found no reusable prefix.</summary>
     public long PrefixCacheMisses => Interlocked.Read(ref _prefixCacheMisses);
+
+    /// <summary>
+    /// docs/028 Phase 2: total tokens shared via <see cref="TryForkSharedPrefix"/> (cross-session
+    /// forking, driven by <c>HotSessionRuntime.CreateWithSharedPrefixHint</c>) — deliberately a
+    /// separate counter from <see cref="PrefixCacheHits"/>/<see cref="PrefillTokensReused"/>, which
+    /// track this engine's own LRU prefix cache for non-retained admissions, a related but
+    /// distinct mechanism.
+    /// </summary>
+    public long CrossSessionPrefixTokensShared => Interlocked.Read(ref _crossSessionPrefixTokensShared);
 
     /// <summary>Prefix snapshots evicted to honour the configured cache capacity.</summary>
     public long PrefixCacheEvictions => Interlocked.Read(ref _prefixCacheEvictions);

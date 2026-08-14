@@ -127,22 +127,32 @@ public sealed class HotSessionRollingReservationTests
     /// <summary>
     /// Characterises what rolling reservation ACTUALLY does when two sessions share a global
     /// budget: it is first-come-first-served, and a session that starts earlier can grow into the
-    /// whole budget and starve one that starts later.
+    /// whole budget. Historically this starved a peer that started later outright. docs/028 Phase
+    /// 1 changed that for exactly this shape of scenario: A finishes (goes idle) before B tries,
+    /// so B's over-budget admission now reclaims A's idle retained state instead of being
+    /// rejected — see <see cref="OpenTail.Stingray.Tests.Sessions.Fast.SessionResourceBudgetEvictionTests"/>
+    /// for the dedicated reclaim-path coverage.
     ///
-    /// <para><b>This is a known gap, not a passing feature.</b> Plan §7 still lists "bounded
-    /// admission and output queues", "fair waiters" and "per-model/device budget partitions" as
-    /// unchecked. Renewal today asks only "is there capacity right now", with no notion of
-    /// reserving a share for an admitted peer — so A grows to the ceiling and B is refused at
-    /// admission.</para>
+    /// <para><b>This is not full fairness, and the remaining gap is still real.</b> Plan §7 still
+    /// lists "bounded admission and output queues", "fair waiters" and "per-model/device budget
+    /// partitions" as unchecked. Phase 1's reclaim only helps when the peer holding the budget is
+    /// IDLE. If A and B were genuinely concurrent — both mid-turn, neither idle — reclaim finds
+    /// nothing to evict and B is still refused; that scenario is what the "remedy" section below
+    /// (give each session an explicit share) actually addresses, and it's a different mechanism
+    /// from reclaim, not a duplicate of it.</para>
     ///
     /// <para>An earlier version of this test asserted BOTH sessions complete and failed for
-    /// exactly this reason. A permanently red test trains people to ignore failures, so it is
-    /// written here as an assertion about current behaviour instead. <b>When fairness lands this
-    /// test must fail</b> — that failure is the signal to rewrite it as the fairness spec, not to
-    /// relax it.</para>
+    /// exactly this reason, before rolling reservation existed. A permanently red test trains
+    /// people to ignore failures, so it was rewritten as an assertion about current behaviour
+    /// instead — first documenting the starvation gap, now documenting Phase 1's fix for the idle
+    /// half of it. <b>When true concurrent fairness lands, the second assertion in this test
+    /// (`Assert.Equal(SessionOperationState.Completed, resultB.Operation.State)`) is not the one
+    /// that should change — B already succeeds today. What would change is the CoW / token-level
+    /// behavior mid-flight if this test is ever adapted to genuinely concurrent (not
+    /// sequential-then-idle) admission.</b></para>
     /// </summary>
     [Fact]
-    public async Task HotSession_RollingReservation_StarvesAPeerOnlyWhenSessionCapEqualsGlobalBudget()
+    public async Task HotSession_RollingReservation_IdleReclaimRescuesAPeerWhenSessionCapEqualsGlobalBudget()
     {
         // Global budget 80 bytes = 8 tokens at 10 bytes/token. Each prompt is 2 tokens, so the
         // initial reservation is prompt + 1 = 30 bytes; A's renewals then grow into the rest.
@@ -163,17 +173,22 @@ public sealed class HotSessionRollingReservationTests
         var stopA = first.Chunks.Single(c => c.Kind == GenerateChunkKind.Stop);
         Assert.True(stopA.TruncatedByResourceBudget);
 
-        // B is now refused at admission — not throttled, not queued. THIS is the gap.
-        var starved = await Assert.ThrowsAsync<SessionResourceBudgetExceededException>(() =>
-            sessionB.RunTurnAsync("world", sampling,
-                SessionRevision.Initial, SessionOperationId.New(), Digest("turn-B")));
+        // A is idle now (its turn completed). B's over-budget admission triggers reclaim, evicts
+        // A's retained state, and succeeds -- not throttled, not queued, not rejected.
+        var resultB = await sessionB.RunTurnAsync("world", sampling,
+            SessionRevision.Initial, SessionOperationId.New(), Digest("turn-B"));
+        Assert.Equal(SessionOperationState.Completed, resultB.Operation.State);
 
-        Assert.True(starved.AvailableBytes < starved.RequestedBytes,
-            $"expected B to be starved, but {starved.AvailableBytes} bytes were available for a "
-            + $"{starved.RequestedBytes}-byte request — capacity was not actually exhausted.");
-
-        // And the global accounting is exact: everything resident belongs to A.
-        Assert.Equal(first.Cursor.MaterializedPositionCount * 10, runtime.ResidentBytes);
+        // B's own rolling renewal grows the same way A's did -- nothing makes B "smaller", so
+        // comparing byte counts between them isn't the meaningful check here. What reclaim
+        // actually guarantees: B's admission never exceeded the global ceiling (proving room was
+        // genuinely freed, not merely tolerated by an accounting bug), and B independently hits
+        // the same honest budget-truncation stop A did, symmetric behavior for the peer that
+        // reclaim rescued.
+        Assert.True(runtime.ResidentBytes <= 80, "B's admission must never exceed the global ceiling.");
+        var stopB = resultB.Chunks.Single(c => c.Kind == GenerateChunkKind.Stop);
+        Assert.True(stopB.TruncatedByResourceBudget,
+            "expected B, once admitted via reclaim, to grow into the same budget ceiling A did.");
 
         // ── THE REMEDY, demonstrated in the same test so the gap is never read as unfixable ──
         // Starvation above is a CONFIGURATION outcome, not a missing mechanism: MaxSessionBytes
