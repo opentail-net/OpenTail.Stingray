@@ -91,7 +91,8 @@ public sealed class MoeBatchedPrefillParityTests
         SimdKernels.MinBatchForBlas = int.MaxValue;
         try
         {
-            using var model = GgufModel.Open(path);
+            using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
+            var model = modelHandle.Model;
             var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
             Assert.True(hp.IsMoE, "expected an MoE model — the batched path under test is MoE-only");
             using var backend = new CpuBackend();
@@ -130,7 +131,8 @@ public sealed class MoeBatchedPrefillParityTests
         var path = FindMoePath();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
-        using var model = GgufModel.Open(path);
+        using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
+        var model = modelHandle.Model;
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
         if (!hp.IsMoE) return;
         using var backend = new CpuBackend();
@@ -155,7 +157,8 @@ public sealed class MoeBatchedPrefillParityTests
         var path = FindMoePath();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
-        using var model = GgufModel.Open(path);
+        using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
+        var model = modelHandle.Model;
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
         if (!hp.IsMoE) return;
         using var backend = new CpuBackend();

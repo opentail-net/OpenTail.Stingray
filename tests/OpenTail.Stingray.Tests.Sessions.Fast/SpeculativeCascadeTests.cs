@@ -4,7 +4,7 @@ using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Engine;
 using Xunit;
 
-namespace OpenTail.Stingray.Tests.Sessions;
+namespace OpenTail.Stingray.Tests.Sessions.Fast;
 
 public sealed class SpeculativeCascadeTests
 {

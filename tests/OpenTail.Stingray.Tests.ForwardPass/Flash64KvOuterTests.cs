@@ -28,7 +28,8 @@ public sealed class Flash64KvOuterTests
         Assert.SkipWhen(path is null, "SmolLM2 GGUF not present — model-backed comparison not applicable");
         Assert.SkipUnless(Avx2.IsSupported && Fma.IsSupported, "AVX2/FMA required for the Flash-64 path");
 
-        using var model = GgufModel.Open(path!);
+        using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path!);
+        var model = modelHandle.Model;
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
         using var backend = new CpuBackend();
         int[] tokens = BuildTokens(Tokens);
@@ -72,7 +73,8 @@ public sealed class Flash64KvOuterTests
         Assert.SkipWhen(path is null, "SmolLM2 GGUF not present — model-backed comparison not applicable");
         Assert.SkipUnless(Avx2.IsSupported && Fma.IsSupported, "AVX2/FMA required for the Flash-64 path");
 
-        using var model = GgufModel.Open(path!);
+        using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path!);
+        var model = modelHandle.Model;
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
         using var backend = new CpuBackend();
         int[] tokens = BuildTokens(Tokens);

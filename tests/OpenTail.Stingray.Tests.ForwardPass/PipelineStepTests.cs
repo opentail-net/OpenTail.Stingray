@@ -328,7 +328,8 @@ public sealed class PipelineStepTests : IDisposable
         var path = FindLlama4Path();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
-        using var model = GgufModel.Open(path);
+        using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
+        var model = modelHandle.Model;
         var tokenizer = GgufTokenizer.FromGgufModel(model);
 
         int[] expected = [200000, 200005, 1556, 200006, 368, 3668, 373, 220, 30, 23,
@@ -360,7 +361,8 @@ public sealed class PipelineStepTests : IDisposable
         var path = FindLlama4Path();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
-        using var model = GgufModel.Open(path);
+        using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
+        var model = modelHandle.Model;
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
 
         Assert.True(hp.HasQkNorm, "Llama-4 must have QK-norm enabled (L2 pure RMS norm)");
@@ -373,7 +375,8 @@ public sealed class PipelineStepTests : IDisposable
         var path = FindLlama4Path();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
-        using var model = GgufModel.Open(path);
+        using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
+        var model = modelHandle.Model;
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
 
         Assert.Equal(4, hp.NoRopeLayerStep);
@@ -388,7 +391,8 @@ public sealed class PipelineStepTests : IDisposable
         var path = FindLlama4Path();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
-        using var model = GgufModel.Open(path);
+        using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
+        var model = modelHandle.Model;
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
 
         Assert.True(hp.UseSigmoidGating, "Llama-4 must use sigmoid gating for MoE router");
@@ -403,7 +407,8 @@ public sealed class PipelineStepTests : IDisposable
         var path = FindLlama4Path();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
-        using var model = GgufModel.Open(path);
+        using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
+        var model = modelHandle.Model;
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
 
         Assert.Equal(5120, hp.EmbeddingDim);
@@ -428,7 +433,8 @@ public sealed class PipelineStepTests : IDisposable
         var path = FindLlama4Path();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
-        using var model = GgufModel.Open(path);
+        using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
+        var model = modelHandle.Model;
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
         using var backend = new CpuBackend();
         using var fwd = new Engine.ForwardPass(model, backend, hp, maxContextLength: 512);
@@ -476,7 +482,8 @@ public sealed class PipelineStepTests : IDisposable
         var path = FindLlama4Path();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
-        using var model = GgufModel.Open(path);
+        using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
+        var model = modelHandle.Model;
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
         using var backend = new CpuBackend();
         using var fwd = new Engine.ForwardPass(model, backend, hp, maxContextLength: 512);
@@ -513,7 +520,8 @@ public sealed class PipelineStepTests : IDisposable
         var path = FindLlama4Path();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
-        using var model = GgufModel.Open(path);
+        using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
+        var model = modelHandle.Model;
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model) with { UseSigmoidGating = false };
         Assert.False(hp.UseSigmoidGating);
         Assert.True(hp.HasQkNorm, "QK-norm must be enabled for Llama-4");
@@ -538,7 +546,8 @@ public sealed class PipelineStepTests : IDisposable
         var path = FindLlama4Path();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
-        using var model = GgufModel.Open(path);
+        using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
+        var model = modelHandle.Model;
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
         Assert.True(hp.UseSigmoidGating);
         Assert.True(hp.HasQkNorm, "QK-norm must be enabled for Llama-4");
@@ -565,7 +574,8 @@ public sealed class PipelineStepTests : IDisposable
         var path = FindLlama4Path();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
-        using var model = GgufModel.Open(path);
+        using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
+        var model = modelHandle.Model;
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
         using var backend = new CpuBackend();
         using var fwd = new Engine.ForwardPass(model, backend, hp, maxContextLength: 512);
@@ -608,7 +618,8 @@ public sealed class PipelineStepTests : IDisposable
         var path = FindLlama4Path();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
-        using var model = GgufModel.Open(path);
+        using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
+        var model = modelHandle.Model;
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model) with { UseSigmoidGating = false };
         using var backend = new CpuBackend();
         using var fwd = new Engine.ForwardPass(model, backend, hp, maxContextLength: 512);

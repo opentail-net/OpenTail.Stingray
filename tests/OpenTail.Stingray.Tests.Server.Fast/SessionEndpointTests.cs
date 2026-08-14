@@ -9,7 +9,7 @@ using OpenTail.Stingray.Engine;
 using OpenTail.Stingray.Server;
 using OpenTail.Stingray.Sessions;
 
-namespace OpenTail.Stingray.Tests.Server;
+namespace OpenTail.Stingray.Tests.Server.Fast;
 
 /// <summary>
 /// Wire contracts for the named-session endpoints under <c>/v1/sessions</c>.
@@ -24,8 +24,15 @@ namespace OpenTail.Stingray.Tests.Server;
 /// the interface exposes a concrete <see cref="HotSessionRuntime"/> rather than an abstraction,
 /// so an enabled runtime has to be a real one over a fake forward pass.</para>
 /// </summary>
-public sealed class SessionEndpointTests
+public sealed class SessionEndpointTests : IDisposable
 {
+    private readonly List<WebApplicationFactory<Program>> _factories = new();
+
+    public void Dispose()
+    {
+        foreach (var factory in _factories) factory.Dispose();
+    }
+
     private const int Eos = 31;
 
     // Mirrors the fakes the Sessions suite already uses; they are private nested types there, so
@@ -187,14 +194,17 @@ public sealed class SessionEndpointTests
         public void Dispose() => _engine.Dispose();
     }
 
-    private static HttpClient CreateClient(IServerSessionRuntime sessions) =>
-        new WebApplicationFactory<Program>()
+    private HttpClient CreateClient(IServerSessionRuntime sessions)
+    {
+        var factory = new WebApplicationFactory<Program>()
             .WithWebHostBuilder(builder => builder.ConfigureServices(services =>
             {
                 services.AddSingleton<IInferenceEngine>(new FakeInferenceEngine("test-model"));
                 services.AddSingleton(sessions);
-            }))
-            .CreateClient();
+            }));
+        _factories.Add(factory);
+        return factory.CreateClient();
+    }
 
     private static async Task<Guid> CreateSessionAsync(HttpClient client)
     {

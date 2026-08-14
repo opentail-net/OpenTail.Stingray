@@ -48,7 +48,8 @@ public sealed class Q8PrefillLowMagnitudeInputTests
     {
         string? path = FindModelPath();
         Assert.SkipWhen(path is null, "SmolLM2 GGUF not present");
-        using var model = GgufModel.Open(path!);
+        using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path!);
+        var model = modelHandle.Model;
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
         var tk = GgufTokenizer.FromGgufModel(model);
 

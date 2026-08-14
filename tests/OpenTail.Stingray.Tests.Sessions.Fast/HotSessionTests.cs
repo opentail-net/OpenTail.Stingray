@@ -2,7 +2,7 @@ using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Engine;
 using OpenTail.Stingray.Sessions;
 
-namespace OpenTail.Stingray.Tests.Sessions;
+namespace OpenTail.Stingray.Tests.Sessions.Fast;
 
 public sealed class HotSessionTests
 {

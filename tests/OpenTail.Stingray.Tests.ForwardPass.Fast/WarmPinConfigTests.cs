@@ -1,6 +1,6 @@
 using OpenTail.Stingray.Engine;
 
-namespace OpenTail.Stingray.Tests.ForwardPass;
+namespace OpenTail.Stingray.Tests.ForwardPass.Fast;
 
 /// <summary>
 /// Unit tests for <see cref="WarmPinConfig"/>'s auto-enable rule. The env-var

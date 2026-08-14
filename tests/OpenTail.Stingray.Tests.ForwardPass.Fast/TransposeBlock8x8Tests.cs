@@ -2,7 +2,7 @@ using System.Runtime.InteropServices;
 using System.Runtime.Intrinsics.X86;
 using OpenTail.Stingray.Cpu;
 
-namespace OpenTail.Stingray.Tests.ForwardPass;
+namespace OpenTail.Stingray.Tests.ForwardPass.Fast;
 
 /// <summary>
 /// <see cref="SimdKernels.TransposeBlock8x8"/> replaces the scalar K-pack transpose in Flash-64

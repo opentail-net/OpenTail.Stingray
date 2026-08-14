@@ -9,7 +9,7 @@ using OpenTail.Stingray.Engine;
 using OpenTail.Stingray.Sessions;
 using Xunit;
 
-namespace OpenTail.Stingray.Tests.Sessions;
+namespace OpenTail.Stingray.Tests.Sessions.Fast;
 
 /// <summary>
 /// Verifies cooperative cancellation invariants across all long-running Stingray operations.

@@ -1,6 +1,6 @@
 using OpenTail.Stingray.Engine;
 
-namespace OpenTail.Stingray.Tests.ForwardPass;
+namespace OpenTail.Stingray.Tests.ForwardPass.Fast;
 
 /// <summary>
 /// Unit coverage for <see cref="MtpBatchTail.Group4"/> — the width-4 batched-verify

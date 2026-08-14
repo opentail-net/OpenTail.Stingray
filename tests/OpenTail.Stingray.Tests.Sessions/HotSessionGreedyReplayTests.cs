@@ -62,7 +62,8 @@ public sealed class HotSessionGreedyReplayTests
 
         string[] turns = ["The capital of France is", " and the capital of Spain is", " and of Italy is"];
 
-        using var model = GgufModel.Open(path);
+        using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
+        var model = modelHandle.Model;
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
         var tokenizer = GgufTokenizer.FromGgufModel(model);
 
@@ -166,7 +167,8 @@ public sealed class HotSessionGreedyReplayTests
         // never executed.
         Assert.SkipWhen(path is null, "SmolLM2-1.7B-Instruct-Q4_K_M.gguf is required for this replay test.");
 
-        using var model = GgufModel.Open(path);
+        using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
+        var model = modelHandle.Model;
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
         var tokenizer = GgufTokenizer.FromGgufModel(model);
 
@@ -324,7 +326,8 @@ public sealed class HotSessionGreedyReplayTests
 
     private static async Task PersistRestartFixture(string modelPath, string storage)
     {
-        using var model = GgufModel.Open(modelPath);
+        using var modelHandle = SharedModelCacheFixture.Instance.Acquire(modelPath);
+        var model = modelHandle.Model;
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
         var tokenizer = GgufTokenizer.FromGgufModel(model);
         using var backend = new CpuBackend();
@@ -356,7 +359,8 @@ public sealed class HotSessionGreedyReplayTests
 
     private static async Task RestoreAndReplayRestartFixture(string modelPath, string storage)
     {
-        using var model = GgufModel.Open(modelPath);
+        using var modelHandle = SharedModelCacheFixture.Instance.Acquire(modelPath);
+        var model = modelHandle.Model;
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
         var tokenizer = GgufTokenizer.FromGgufModel(model);
         using var backend = new CpuBackend();

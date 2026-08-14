@@ -70,7 +70,8 @@ public sealed class HybridGdnForwardPassTests
         var path = FindHybridModelPath();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
-        using var model = GgufModel.Open(path);
+        using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
+        var model = modelHandle.Model;
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
 
         // Defensive: this test should only fire on a hybrid GDN model with MoE.
@@ -139,7 +140,8 @@ public sealed class HybridGdnForwardPassTests
         var path = FindHybridModelPath();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
-        using var model = GgufModel.Open(path);
+        using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
+        var model = modelHandle.Model;
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
         var tokenizer = GgufTokenizer.FromGgufModel(model);
         using var backend = new CpuBackend();
@@ -249,7 +251,8 @@ public sealed class HybridGdnForwardPassTests
         var path = FindMtpModelPath();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
-        using var model = GgufModel.Open(path);
+        using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
+        var model = modelHandle.Model;
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
 
         Assert.True(hp.IsHybridSsm, "Expected hp.IsHybridSsm for qwen35 hybrid GDN model");
@@ -326,7 +329,8 @@ public sealed class HybridGdnForwardPassTests
         var path = FindMtpModelPath();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
-        using var model = GgufModel.Open(path);
+        using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
+        var model = modelHandle.Model;
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
         Assert.Equal(1, hp.NumMtpLayers);
 
@@ -406,7 +410,8 @@ public sealed class HybridGdnForwardPassTests
         var path = FindMtpModelPath();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
-        using var model = GgufModel.Open(path);
+        using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
+        var model = modelHandle.Model;
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
         var tokenizer = GgufTokenizer.FromGgufModel(model);
         using var backend = new CpuBackend();
@@ -490,7 +495,8 @@ public sealed class HybridGdnForwardPassTests
         var path = FindMtpModelPath();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
-        using var model = GgufModel.Open(path);
+        using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
+        var model = modelHandle.Model;
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
         Assert.True(hp.NumMtpLayers > 0);
 
@@ -591,7 +597,8 @@ public sealed class HybridGdnForwardPassTests
                 $"fixture continuation_prefix is shorter ({expectedPrefix.Length}) " +
                 $"than min_match_bytes ({minMatchBytes}); re-capture with a higher -n.");
 
-        using var model = GgufModel.Open(modelPath);
+        using var modelHandle = SharedModelCacheFixture.Instance.Acquire(modelPath);
+        var model = modelHandle.Model;
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
         Assert.True(hp.NumMtpLayers > 0);
 
@@ -713,7 +720,8 @@ public sealed class HybridGdnForwardPassTests
         var path = FindMtpModelPath();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
-        using var model = GgufModel.Open(path);
+        using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
+        var model = modelHandle.Model;
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
         var tokenizer = GgufTokenizer.FromGgufModel(model);
         using var backend = new CpuBackend();
@@ -745,7 +753,8 @@ public sealed class HybridGdnForwardPassTests
         var path = FindMtpModelPath();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
-        using var model = GgufModel.Open(path);
+        using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
+        var model = modelHandle.Model;
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
         var tokenizer = GgufTokenizer.FromGgufModel(model);
         using var backend = new CpuBackend();

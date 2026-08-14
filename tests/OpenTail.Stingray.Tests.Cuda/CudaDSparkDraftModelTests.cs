@@ -1,6 +1,7 @@
 using OpenTail.Stingray.Cuda;
 using OpenTail.Stingray.Engine;
 using OpenTail.Stingray.Tests.ForwardPass;
+using OpenTail.Stingray.Tests.ForwardPass.Fast;
 
 namespace OpenTail.Stingray.Tests.Cuda;
 

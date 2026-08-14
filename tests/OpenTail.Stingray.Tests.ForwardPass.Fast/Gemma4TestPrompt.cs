@@ -1,6 +1,6 @@
 using OpenTail.Stingray.Core;
 
-namespace OpenTail.Stingray.Tests.ForwardPass;
+namespace OpenTail.Stingray.Tests.ForwardPass.Fast;
 
 /// <summary>
 /// Builds a production-equivalent instruction prompt for the Gemma 4 E4B-it model tests.

@@ -6,26 +6,36 @@ using Microsoft.Extensions.DependencyInjection;
 using OpenTail.Stingray.Engine;
 using OpenTail.Stingray.Server;
 
-namespace OpenTail.Stingray.Tests.Server;
+namespace OpenTail.Stingray.Tests.Server.Fast;
 
 /// <summary>
 /// A compact external-client regression suite. Endpoint-specific tests retain detailed parsing
 /// coverage elsewhere; these tests protect the cross-protocol wire contracts that must remain
 /// true while server configuration and planning work evolves.
 /// </summary>
-public sealed class CompatibilityContractTests
+public sealed class CompatibilityContractTests : IDisposable
 {
-    private static HttpClient CreateClient(
+    private readonly List<WebApplicationFactory<Program>> _factories = new();
+
+    public void Dispose()
+    {
+        foreach (var factory in _factories) factory.Dispose();
+    }
+
+    private HttpClient CreateClient(
         FakeInferenceEngine engine,
-        Action<OpenTailStingrayServerOptions>? configure = null) =>
-        new WebApplicationFactory<Program>()
+        Action<OpenTailStingrayServerOptions>? configure = null)
+    {
+        var factory = new WebApplicationFactory<Program>()
             .WithWebHostBuilder(builder => builder.ConfigureServices(services =>
             {
                 if (configure is not null)
                     services.Configure(configure);
                 services.AddSingleton<IInferenceEngine>(engine);
-            }))
-            .CreateClient();
+            }));
+        _factories.Add(factory);
+        return factory.CreateClient();
+    }
 
     [Fact]
     public async Task Capabilities_DescribeMappedProtocolsAndEffectiveCompatibilityConfiguration()

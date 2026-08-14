@@ -4,7 +4,7 @@ using Microsoft.Extensions.DependencyInjection;
 using OpenTail.Stingray.Engine;
 using OpenTail.Stingray.Server;
 
-namespace OpenTail.Stingray.Tests.Server;
+namespace OpenTail.Stingray.Tests.Server.Fast;
 
 /// <summary>
 /// Standalone cross-surface privacy suite (§8 Phase 2 item 5 of the QoL plan). The individual
@@ -15,12 +15,20 @@ namespace OpenTail.Stingray.Tests.Server;
 /// the same configured secret in one sweep, so a new endpoint added later has to be added here too
 /// rather than silently sitting outside redaction coverage.
 /// </summary>
-public sealed class DiagnosticSurfaceRedactionTests
+public sealed class DiagnosticSurfaceRedactionTests : IDisposable
 {
+    private readonly List<WebApplicationFactory<Program>> _factories = new();
+
+    public void Dispose()
+    {
+        foreach (var factory in _factories) factory.Dispose();
+    }
+
     // Every path-shaped setting OpenTailStingrayServerOptions exposes. A path discloses a username, a
     // project name, or a private/unreleased model name — the thing this suite exists to catch.
-    private static HttpClient CreateClientWithConfiguredPaths() =>
-        new WebApplicationFactory<Program>()
+    private HttpClient CreateClientWithConfiguredPaths()
+    {
+        var factory = new WebApplicationFactory<Program>()
             .WithWebHostBuilder(builder => builder.ConfigureServices(services =>
             {
                 services.Configure<OpenTailStingrayServerOptions>(o =>
@@ -36,8 +44,10 @@ public sealed class DiagnosticSurfaceRedactionTests
                     o.SessionStorageDirectory = @"C:\Users\dmitri\private-models\sessions-sk-9137";
                 });
                 services.AddSingleton<IInferenceEngine>(new FakeInferenceEngine("test-model"));
-            }))
-            .CreateClient();
+            }));
+        _factories.Add(factory);
+        return factory.CreateClient();
+    }
 
     public static IEnumerable<object[]> DiagnosticGetEndpoints =>
     [

@@ -1,7 +1,7 @@
 using OpenTail.Stingray.Cpu;
 using System.Linq;
 
-namespace OpenTail.Stingray.Tests.ForwardPass;
+namespace OpenTail.Stingray.Tests.ForwardPass.Fast;
 
 /// <summary>
 /// Correctness gate for <see cref="SimdKernels.DotQ4K_Wide8"/> (perf-loop-progress.md

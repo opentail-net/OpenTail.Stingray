@@ -1,7 +1,7 @@
 using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Vulkan;
 
-namespace OpenTail.Stingray.Tests.Vulkan;
+namespace OpenTail.Stingray.Tests.Vulkan.Fast;
 
 /// <summary>
 /// Tests for the Vulkan matmul path switch and its instrumentation.

@@ -6,7 +6,7 @@ using Microsoft.Extensions.DependencyInjection;
 using OpenTail.Stingray.Engine;
 using OpenTail.Stingray.Server;
 
-namespace OpenTail.Stingray.Tests.Server;
+namespace OpenTail.Stingray.Tests.Server.Fast;
 
 /// <summary>
 /// End-to-end coverage for the tool-call wire formats wired up by issues #95–#97:
@@ -17,18 +17,28 @@ namespace OpenTail.Stingray.Tests.Server;
 /// exercise the parser by swapping the configured architecture via
 /// <see cref="OpenTailStingrayServerOptions.Architecture"/>.
 /// </summary>
-public sealed class ToolCallEndpointTests
+public sealed class ToolCallEndpointTests : IDisposable
 {
-    private static HttpClient CreateClient(
+    private readonly List<WebApplicationFactory<Program>> _factories = new();
+
+    public void Dispose()
+    {
+        foreach (var factory in _factories) factory.Dispose();
+    }
+
+    private HttpClient CreateClient(
         FakeInferenceEngine fake,
-        string architecture = "qwen2") =>
-        new WebApplicationFactory<Program>()
+        string architecture = "qwen2")
+    {
+        var factory = new WebApplicationFactory<Program>()
             .WithWebHostBuilder(b => b.ConfigureServices(s =>
             {
                 s.Configure<OpenTailStingrayServerOptions>(o => o.Architecture = architecture);
                 s.AddSingleton<IInferenceEngine>(fake);
-            }))
-            .CreateClient();
+            }));
+        _factories.Add(factory);
+        return factory.CreateClient();
+    }
 
     // ── /v1/messages with Qwen3-Coder bare-function shape (#95) ────────────────
 

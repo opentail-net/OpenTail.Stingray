@@ -13,11 +13,27 @@
          correctness rule, and the v2->v3 move surfaced it at ~340 existing call sites; the
          suite is fast and not cancellation-driven, so it is suppressed rather than churned. -->
     <NoWarn>$(NoWarn);xUnit1051</NoWarn>
+
+    <!-- Sequential model-loading tests (xunit.runner.json sets parallelizeTestCollections=
+         false) each allocate and discard several GB; the default GC config (workstation,
+         background/concurrent collection) defers a full collection long enough for memory
+         to climb to multiple GB before finally reclaiming it — measured ~7.7GB peak on a
+         9-file/1-model slice in Tests.ForwardPass, vs ~2.6GB with these three settings (same
+         slice, tight sawtooth instead of a slow climb). Concurrent GC trades extra memory for
+         shorter pauses, irrelevant for a batch test run; ConserveMemory=9 makes the collector
+         maximally eager to return memory to the OS. Scoped to test projects only —
+         production hosts (Cli/Server) keep their own GC characteristics. -->
+    <ServerGarbageCollection>false</ServerGarbageCollection>
+    <ConcurrentGarbageCollection>false</ConcurrentGarbageCollection>
   </PropertyGroup>
 
   <ItemGroup>
     <PackageReference Include="xunit.v3" Version="3.2.2" />
     <PackageReference Include="Microsoft.Testing.Extensions.TrxReport" Version="1.9.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <RuntimeHostConfigurationOption Include="System.GC.ConserveMemory" Value="9" />
   </ItemGroup>
 
   <ItemGroup>
@@ -38,6 +54,7 @@
          generator (SyntheticHead/MakeTaps) to build a comparable CPU/CUDA pair — that
          helper is CPU-only and stays with the CPU test class it belongs to. -->
     <ProjectReference Include="..\OpenTail.Stingray.Tests.ForwardPass\OpenTail.Stingray.Tests.ForwardPass.csproj" />
+    <ProjectReference Include="..\OpenTail.Stingray.Tests.ForwardPass.Fast\OpenTail.Stingray.Tests.ForwardPass.Fast.csproj" />
   </ItemGroup>
 
 </Project>

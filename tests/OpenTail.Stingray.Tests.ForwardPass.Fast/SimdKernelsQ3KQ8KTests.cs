@@ -1,7 +1,7 @@
 using System.Runtime.Intrinsics.X86;
 using OpenTail.Stingray.Cpu;
 
-namespace OpenTail.Stingray.Tests.ForwardPass;
+namespace OpenTail.Stingray.Tests.ForwardPass.Fast;
 
 /// <summary>
 /// Parity tests for the new <c>SimdKernels.DotQ3K_Q8K_Avx2</c> kernel and

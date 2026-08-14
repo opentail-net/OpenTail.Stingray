@@ -1,7 +1,7 @@
 using System.Runtime.InteropServices;
 using OpenTail.Stingray.Engine;
 
-namespace OpenTail.Stingray.Tests.ForwardPass;
+namespace OpenTail.Stingray.Tests.ForwardPass.Fast;
 
 /// <summary>
 /// Unit tests for the issue #221 mmap pre-fault helper. The gating decision is tested

@@ -16,7 +16,8 @@ public sealed class Flash64SchedulingTests
         string? path = FindModelPath();
         if (path is null || !Avx2.IsSupported || !Fma.IsSupported) return;
 
-        using var model = GgufModel.Open(path);
+        using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
+        var model = modelHandle.Model;
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
         using var backend = new CpuBackend();
         int[] tokens = BuildTokens(320); // Above Flash64's 256-token activation threshold.
@@ -47,7 +48,8 @@ public sealed class Flash64SchedulingTests
         string? path = FindModelPath();
         if (path is null || !Avx2.IsSupported || !Fma.IsSupported) return;
 
-        using var model = GgufModel.Open(path);
+        using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
+        var model = modelHandle.Model;
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
         using var backend = new CpuBackend();
         int[] tokens = BuildTokens(512);
@@ -98,7 +100,8 @@ public sealed class Flash64SchedulingTests
         string? path = FindModelPath("Qwen3-8B-Q4_K_M.gguf");
         if (path is null || !Avx2.IsSupported || !Fma.IsSupported) return;
 
-        using var model = GgufModel.Open(path);
+        using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
+        var model = modelHandle.Model;
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
         Assert.Equal(128, hp.HeadDim);
         using var backend = new CpuBackend();

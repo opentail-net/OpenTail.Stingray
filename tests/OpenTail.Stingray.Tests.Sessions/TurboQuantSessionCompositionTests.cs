@@ -42,7 +42,8 @@ public sealed class TurboQuantSessionCompositionTests
         var path = FindModelPath();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
-        using var model = GgufModel.Open(path);
+        using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
+        var model = modelHandle.Model;
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
         var tokenizer = GgufTokenizer.FromGgufModel(model);
         using var backend = new CpuBackend();

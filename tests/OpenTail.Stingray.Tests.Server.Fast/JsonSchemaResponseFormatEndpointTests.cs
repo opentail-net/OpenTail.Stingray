@@ -9,7 +9,7 @@ using OpenTail.Stingray.Core.Grammar;
 using OpenTail.Stingray.Engine;
 using OpenTail.Stingray.Server;
 
-namespace OpenTail.Stingray.Tests.Server;
+namespace OpenTail.Stingray.Tests.Server.Fast;
 
 /// <summary>
 /// End-to-end wiring tests for <c>response_format.json_schema</c> / the llama.cpp-style flat
@@ -20,8 +20,15 @@ namespace OpenTail.Stingray.Tests.Server;
 /// <see cref="FakeInferenceEngine.LastSamplingParams"/> or the HTTP response) -- masking behavior
 /// itself is covered by <c>OpenTail.Stingray.Tests.Core.JsonSchemaOutputConstraintTests</c>.
 /// </summary>
-public sealed class JsonSchemaResponseFormatEndpointTests
+public sealed class JsonSchemaResponseFormatEndpointTests : IDisposable
 {
+    private readonly List<WebApplicationFactory<Program>> _factories = new();
+
+    public void Dispose()
+    {
+        foreach (var factory in _factories) factory.Dispose();
+    }
+
     /// <summary>Bare-minimum tokenizer. Whole-body mode needs no special/envelope token, only a
     /// working <see cref="GrammarVocabulary"/> to construct against -- but the "AND-composed with
     /// tool-grammar" test also needs Qwen's JSON tool-arg constraint to actually engage, which
@@ -50,18 +57,21 @@ public sealed class JsonSchemaResponseFormatEndpointTests
         return renderer;
     }
 
-    private static HttpClient CreateClient(
+    private HttpClient CreateClient(
         FakeInferenceEngine fake,
         Action<OpenTailStingrayServerOptions>? configure = null,
-        ChatTemplateRenderer? renderer = null) =>
-        new WebApplicationFactory<Program>()
+        ChatTemplateRenderer? renderer = null)
+    {
+        var factory = new WebApplicationFactory<Program>()
             .WithWebHostBuilder(b => b.ConfigureServices(s =>
             {
                 if (configure is not null) s.Configure(configure);
                 if (renderer is not null) s.AddSingleton(renderer);
                 s.AddSingleton<IInferenceEngine>(fake);
-            }))
-            .CreateClient();
+            }));
+        _factories.Add(factory);
+        return factory.CreateClient();
+    }
 
     private static readonly object ValidSchema = new
     {
@@ -114,7 +124,7 @@ public sealed class JsonSchemaResponseFormatEndpointTests
 
     /// <summary>POSTs a chat completion with <paramref name="responseFormat"/> and asserts the
     /// engine received a <see cref="JsonSchemaOutputConstraint"/> with ordered mode ON.</summary>
-    private static async Task AssertOrderedConstraint(object responseFormat)
+    private async Task AssertOrderedConstraint(object responseFormat)
     {
         var fake = new FakeInferenceEngine("test-model");
         var client = CreateClient(fake, renderer: RendererWithVocab());

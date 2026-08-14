@@ -6,7 +6,7 @@ using OpenTail.Stingray.Engine;
 using OpenTail.Stingray.Sessions;
 using Xunit;
 
-namespace OpenTail.Stingray.Tests.Sessions;
+namespace OpenTail.Stingray.Tests.Sessions.Fast;
 
 /// <summary>
 /// Fast (no real model), page-boundary-focused regression tests for the layer between

@@ -1,6 +1,6 @@
 using OpenTail.Stingray.Server;
 
-namespace OpenTail.Stingray.Tests.Server;
+namespace OpenTail.Stingray.Tests.Server.Fast;
 
 /// <summary>
 /// <see cref="ServingRequestTiming"/> in isolation. The endpoint-level tests

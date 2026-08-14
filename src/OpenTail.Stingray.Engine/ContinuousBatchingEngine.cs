@@ -243,13 +243,14 @@ public sealed class ContinuousBatchingEngine : IInferenceEngine, IContinuousBatc
         {
             // This cache is not consulted by real admission control (see the KvCache property
             // doc) — it exists only for callers that want to observe/compose with it directly.
-            // Since nothing here writes to it, an unbounded token budget must not translate into
-            // an unbounded (1,000,000-page) eager allocation at startup; a small placeholder size
-            // is sized the same as the real, budget-driven case below would be for a moderate
-            // budget, not the degenerate "unlimited" one.
-            int totalPages = _kvTokenBudget == long.MaxValue
-                ? 4_096
-                : (int)Math.Clamp(_kvTokenBudget / 32, 1, int.MaxValue);
+            // Since nothing here writes to it, it must never be sized off _kvTokenBudget: the
+            // default "auto" budget (half of available system RAM, see kvBudgetBytes above) is
+            // a large but finite number, not long.MaxValue, so a budget-scaled placeholder here
+            // eagerly allocates on the order of half the machine's RAM (CpuKvCache's constructor
+            // is O(totalPages) — a billion-page cache does a billion-iteration enqueue loop in
+            // the constructor itself) for a cache nothing ever reads from by default. A small
+            // fixed placeholder is correct regardless of what the real budget resolves to.
+            const int totalPages = 4_096;
             _kvCache = new CpuKvCache(totalPages, pageSizeTokens: 32, bytesPerToken: Math.Max(1, fwd.KvBytesPerToken));
             _ownsKvCache = true;
         }

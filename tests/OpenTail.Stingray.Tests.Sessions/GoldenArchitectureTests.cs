@@ -462,7 +462,8 @@ public class GoldenArchitectureTests
         var path = FindModelPath();
         Assert.SkipWhen(path is null, "SmolLM2-1.7B-Instruct-Q4_K_M.gguf is required for this replay test.");
 
-        using var model = GgufModel.Open(path!);
+        using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path!);
+        var model = modelHandle.Model;
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
         var tokenizer = GgufTokenizer.FromGgufModel(model);
         int[] promptTokens = tokenizer.Encode("The capital of France is").ToArray();

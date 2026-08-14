@@ -4,7 +4,7 @@ using Microsoft.Extensions.Options;
 using OpenTail.Stingray.Server;
 using Xunit;
 
-namespace OpenTail.Stingray.Tests.Server;
+namespace OpenTail.Stingray.Tests.Server.Fast;
 
 /// <summary>
 /// Pins the configuration precedence that the server host depends on.

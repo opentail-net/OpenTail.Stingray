@@ -1,7 +1,7 @@
 using System.Linq;
 using System.Runtime.InteropServices;
 
-namespace OpenTail.Stingray.Tests.ForwardPass;
+namespace OpenTail.Stingray.Tests.ForwardPass.Fast;
 
 /// <summary>
 /// Perf-loop iteration 7 (docs/perf-loop-progress.md): a ChatGPT-assisted review pointed out our

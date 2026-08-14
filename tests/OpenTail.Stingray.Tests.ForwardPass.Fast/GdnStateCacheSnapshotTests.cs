@@ -3,7 +3,7 @@ using System.Runtime.InteropServices;
 using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Engine;
 
-namespace OpenTail.Stingray.Tests.ForwardPass;
+namespace OpenTail.Stingray.Tests.ForwardPass.Fast;
 
 /// <summary>
 /// Issue #21 coverage for <see cref="GdnStateCache.SnapshotInto"/> /

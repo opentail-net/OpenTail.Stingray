@@ -2,7 +2,7 @@ using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Engine;
 using OpenTail.Stingray.Sessions;
 
-namespace OpenTail.Stingray.Tests.Sessions;
+namespace OpenTail.Stingray.Tests.Sessions.Fast;
 
 /// <summary>
 /// Coverage for the uncommitted-turn compensation path — the release gate's "rollback" dimension.

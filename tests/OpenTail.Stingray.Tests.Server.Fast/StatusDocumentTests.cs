@@ -7,7 +7,7 @@ using OpenTail.Stingray.Cpu;
 using OpenTail.Stingray.Engine;
 using OpenTail.Stingray.Server;
 
-namespace OpenTail.Stingray.Tests.Server;
+namespace OpenTail.Stingray.Tests.Server.Fast;
 
 /// <summary>
 /// Wire contract for the versioned <c>/status</c> document (§7.4 of the QoL plan). These pin the
@@ -15,19 +15,29 @@ namespace OpenTail.Stingray.Tests.Server;
 /// internal sentinel or a path as if it were data, and its warnings describe conditions the
 /// operator can act on.
 /// </summary>
-public sealed class StatusDocumentTests
+public sealed class StatusDocumentTests : IDisposable
 {
-    private static HttpClient CreateClient(
+    private readonly List<WebApplicationFactory<Program>> _factories = new();
+
+    public void Dispose()
+    {
+        foreach (var factory in _factories) factory.Dispose();
+    }
+
+    private HttpClient CreateClient(
         IInferenceEngine engine,
-        Action<OpenTailStingrayServerOptions>? configure = null) =>
-        new WebApplicationFactory<Program>()
+        Action<OpenTailStingrayServerOptions>? configure = null)
+    {
+        var factory = new WebApplicationFactory<Program>()
             .WithWebHostBuilder(builder => builder.ConfigureServices(services =>
             {
                 if (configure is not null)
                     services.Configure(configure);
                 services.AddSingleton<IInferenceEngine>(engine);
-            }))
-            .CreateClient();
+            }));
+        _factories.Add(factory);
+        return factory.CreateClient();
+    }
 
     private static async Task<JsonDocument> GetStatusAsync(HttpClient client)
     {
@@ -36,15 +46,18 @@ public sealed class StatusDocumentTests
         return JsonDocument.Parse(await response.Content.ReadAsStringAsync());
     }
 
-    private static HttpClient CreateLoadedClient(CpuBatchedPrefillCapability capability,
-        ServerRuntimeResolution? runtimeResolution = null) =>
-        new WebApplicationFactory<Program>()
+    private HttpClient CreateLoadedClient(CpuBatchedPrefillCapability capability,
+        ServerRuntimeResolution? runtimeResolution = null)
+    {
+        var factory = new WebApplicationFactory<Program>()
             .WithWebHostBuilder(builder => builder.ConfigureServices(services =>
                 services.Configure<OpenTailStingrayServerOptions>(options =>
                     options.EngineFactory = _ => new LoadedEngine(
                         new StatusFakeEngine("smol.gguf"), "llama", null,
-                        CpuBatchedPrefill: capability, RuntimeResolution: runtimeResolution))))
-            .CreateClient();
+                        CpuBatchedPrefill: capability, RuntimeResolution: runtimeResolution))));
+        _factories.Add(factory);
+        return factory.CreateClient();
+    }
 
     /// <summary>
     /// The server's shared JSON context omits null properties, so "unknown" is an absent field

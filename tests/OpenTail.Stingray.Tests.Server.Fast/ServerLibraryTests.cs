@@ -16,7 +16,7 @@ using OpenTail.Stingray.Engine;
 using OpenTail.Stingray.Server;
 using OpenTail.Stingray.Server.Endpoints;
 
-namespace OpenTail.Stingray.Tests.Server;
+namespace OpenTail.Stingray.Tests.Server.Fast;
 
 /// <summary>Defaults baked into <see cref="OpenTailStingrayServerOptions"/>.</summary>
 public sealed class OpenTailStingrayServerOptionsTests
@@ -158,7 +158,7 @@ public sealed class SamplingDefaultsTests
     public async Task RequestOverrides_BeatHostDefaults()
     {
         var fake = new FakeInferenceEngine("m");
-        var factory = new WebApplicationFactory<Program>().WithWebHostBuilder(b =>
+        using var factory = new WebApplicationFactory<Program>().WithWebHostBuilder(b =>
             b.ConfigureServices(s =>
             {
                 s.Configure<OpenTailStingrayServerOptions>(o =>
@@ -195,7 +195,7 @@ public sealed class SamplingDefaultsTests
     public async Task SpecDecodeOptions_ReachSamplingParams()
     {
         var fake = new FakeInferenceEngine("m");
-        var factory = new WebApplicationFactory<Program>().WithWebHostBuilder(b =>
+        using var factory = new WebApplicationFactory<Program>().WithWebHostBuilder(b =>
             b.ConfigureServices(s =>
             {
                 s.Configure<OpenTailStingrayServerOptions>(o =>

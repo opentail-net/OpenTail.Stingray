@@ -1,6 +1,6 @@
 using OpenTail.Stingray.Engine;
 
-namespace OpenTail.Stingray.Tests.ForwardPass;
+namespace OpenTail.Stingray.Tests.ForwardPass.Fast;
 
 /// <summary>
 /// Pins the BF16 precision gate used to evaluate narrowing the KV cache

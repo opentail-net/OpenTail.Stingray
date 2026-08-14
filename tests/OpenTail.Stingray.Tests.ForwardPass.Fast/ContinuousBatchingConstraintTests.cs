@@ -4,7 +4,7 @@ using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Core.Grammar;
 using OpenTail.Stingray.Engine;
 
-namespace OpenTail.Stingray.Tests.ForwardPass;
+namespace OpenTail.Stingray.Tests.ForwardPass.Fast;
 
 /// <summary>
 /// Model-independent wiring tests for grammar-constrained tool-argument decoding under continuous

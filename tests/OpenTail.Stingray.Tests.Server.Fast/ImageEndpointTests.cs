@@ -5,7 +5,7 @@ using Microsoft.Extensions.DependencyInjection;
 using OpenTail.Stingray.Engine;
 using OpenTail.Stingray.Server;
 
-namespace OpenTail.Stingray.Tests.Server;
+namespace OpenTail.Stingray.Tests.Server.Fast;
 
 /// <summary>
 /// Wire-format tests for multimodal image input (issue #253). They exercise the Anthropic

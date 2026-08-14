@@ -1,4 +1,4 @@
-namespace OpenTail.Stingray.Tests.Sessions;
+namespace OpenTail.Stingray.Tests.Sessions.Fast;
 
 using System;
 using System.Collections.Generic;

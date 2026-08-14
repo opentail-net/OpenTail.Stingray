@@ -6,19 +6,30 @@ using Microsoft.Extensions.DependencyInjection;
 using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Engine;
 
-namespace OpenTail.Stingray.Tests.Server;
+namespace OpenTail.Stingray.Tests.Server.Fast;
 
 /// <summary>Wire contracts for the small llama-server compatibility endpoints. These endpoints
 /// must remain useful without becoming a second inference protocol.</summary>
-public sealed class LlamaCompatEndpointTests
+public sealed class LlamaCompatEndpointTests : IDisposable
 {
-    private static HttpClient CreateClient() => new WebApplicationFactory<Program>()
-        .WithWebHostBuilder(builder => builder.ConfigureServices(services =>
-        {
-            services.AddSingleton<IInferenceEngine>(new FakeInferenceEngine("test-model"));
-            services.AddSingleton<ITokenizer>(new TestTokenizer());
-        }))
-        .CreateClient();
+    private readonly List<WebApplicationFactory<Program>> _factories = new();
+
+    public void Dispose()
+    {
+        foreach (var factory in _factories) factory.Dispose();
+    }
+
+    private HttpClient CreateClient()
+    {
+        var factory = new WebApplicationFactory<Program>()
+            .WithWebHostBuilder(builder => builder.ConfigureServices(services =>
+            {
+                services.AddSingleton<IInferenceEngine>(new FakeInferenceEngine("test-model"));
+                services.AddSingleton<ITokenizer>(new TestTokenizer());
+            }));
+        _factories.Add(factory);
+        return factory.CreateClient();
+    }
 
     [Fact]
     public async Task Tokenize_EncodesAndOptionallyPrependsBos()

@@ -2,7 +2,7 @@ using System.Runtime.InteropServices;
 using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Cpu;
 
-namespace OpenTail.Stingray.Tests.ForwardPass;
+namespace OpenTail.Stingray.Tests.ForwardPass.Fast;
 
 /// <summary>
 /// Pins the contract that batched prefill on the <b>F32 path</b> must produce exactly what

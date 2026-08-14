@@ -1,5 +1,5 @@
 
-namespace OpenTail.Stingray.Tests.ForwardPass;
+namespace OpenTail.Stingray.Tests.ForwardPass.Fast;
 
 public sealed class ForwardPassTests
 {

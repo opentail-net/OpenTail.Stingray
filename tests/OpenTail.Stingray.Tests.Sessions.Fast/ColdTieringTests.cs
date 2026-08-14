@@ -9,7 +9,7 @@ using OpenTail.Stingray.Engine;
 using OpenTail.Stingray.Sessions;
 using Xunit;
 
-namespace OpenTail.Stingray.Tests.Sessions;
+namespace OpenTail.Stingray.Tests.Sessions.Fast;
 
 /// <summary>
 /// Comprehensive unit tests for Cold-Storage Session Tiering, Admission Control, and AutoSessionEviction.

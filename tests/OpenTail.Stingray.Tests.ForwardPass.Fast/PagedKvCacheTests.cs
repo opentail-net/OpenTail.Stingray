@@ -1,6 +1,6 @@
 using OpenTail.Stingray.Engine;
 
-namespace OpenTail.Stingray.Tests.ForwardPass;
+namespace OpenTail.Stingray.Tests.ForwardPass.Fast;
 
 /// <summary>
 /// Tests for PagedKvCache: paged memory layout, cross-page access, soft truncate, prefix reuse.

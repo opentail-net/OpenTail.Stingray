@@ -65,7 +65,8 @@ public sealed class Gemma4CpuForwardPassTests
         var path = FindAnyE4BModel();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
-        using var model = GgufModel.Open(path);
+        using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
+        var model = modelHandle.Model;
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
 
         // Defensive: this test must only fire against an actual gemma4 GGUF where the
@@ -114,7 +115,8 @@ public sealed class Gemma4CpuForwardPassTests
         var path = FindModelPath("gemma-4-E4B_q4_0-it.gguf");
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
-        using var model = GgufModel.Open(path);
+        using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
+        var model = modelHandle.Model;
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
 
         // Regression precondition: this file must actually have a KV-share layer whose
@@ -151,7 +153,8 @@ public sealed class Gemma4CpuForwardPassTests
         var path = FindAnyE4BModel();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
-        using var model = GgufModel.Open(path);
+        using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
+        var model = modelHandle.Model;
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
         if (!hp.HasPerLayerTokenEmbd) return;
 
@@ -210,7 +213,8 @@ public sealed class Gemma4CpuForwardPassTests
         }
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
-        using var model = GgufModel.Open(path);
+        using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
+        var model = modelHandle.Model;
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
         Assert.Null(hp.LayerHeadDim);
         Assert.Null(hp.IsSwaLayer);

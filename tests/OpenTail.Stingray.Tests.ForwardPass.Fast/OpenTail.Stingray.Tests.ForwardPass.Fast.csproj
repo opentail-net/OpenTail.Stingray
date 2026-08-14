@@ -1,0 +1,39 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <IsPackable>false</IsPackable>
+    <OutputType>Exe</OutputType>
+    <NoWarn>$(NoWarn);xUnit1051</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="xunit.v3" Version="3.2.2" />
+    <PackageReference Include="Microsoft.Testing.Extensions.TrxReport" Version="1.9.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- No real model, no real GPU device: these are SIMD kernel, dequant, cache-invariant,
+         and pure-logic unit tests that run fully in-memory, so unlike
+         OpenTail.Stingray.Tests.ForwardPass (which loads real GGUF models and must stay
+         serial), this project keeps xUnit's default parallel test execution. -->
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\OpenTail.Stingray.Cpu\OpenTail.Stingray.Cpu.csproj" />
+    <ProjectReference Include="..\..\src\OpenTail.Stingray.Cuda\OpenTail.Stingray.Cuda.csproj" />
+    <ProjectReference Include="..\..\src\OpenTail.Stingray.Engine\OpenTail.Stingray.Engine.csproj" />
+    <ProjectReference Include="..\..\src\OpenTail.Stingray.Vision\OpenTail.Stingray.Vision.csproj" />
+    <ProjectReference Include="..\..\src\OpenTail.Stingray.Vulkan\OpenTail.Stingray.Vulkan.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- DSparkDraftModelTests' internal synthetic-checkpoint generator is reused by
+         CudaDSparkDraftModelTests (Tests.Cuda). Gemma4TestPrompt's internal helper is reused
+         by Gemma4VulkanNarrowedKvE2ETests/Gemma4VulkanPleE2ETests (Tests.Vulkan). Both moved
+         here from Tests.ForwardPass, so the grants move with them. -->
+    <InternalsVisibleTo Include="OpenTail.Stingray.Tests.Cuda" />
+    <InternalsVisibleTo Include="OpenTail.Stingray.Tests.Vulkan" />
+  </ItemGroup>
+
+</Project>

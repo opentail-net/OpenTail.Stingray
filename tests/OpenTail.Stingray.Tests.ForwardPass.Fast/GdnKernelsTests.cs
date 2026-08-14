@@ -1,6 +1,6 @@
 using OpenTail.Stingray.Cpu;
 
-namespace OpenTail.Stingray.Tests.ForwardPass;
+namespace OpenTail.Stingray.Tests.ForwardPass.Fast;
 
 /// <summary>
 /// Phase 2 unit tests for the Gated DeltaNet (GDN) CPU kernels that back

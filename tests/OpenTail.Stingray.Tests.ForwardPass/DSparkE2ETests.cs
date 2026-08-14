@@ -137,7 +137,8 @@ public sealed class DSparkE2ETests
         var headDir = FindDSparkHeadDir();
         if (ggufPath is null || headDir is null) return;
 
-        using var model = GgufModel.Open(ggufPath);
+        using var modelHandle = SharedModelCacheFixture.Instance.Acquire(ggufPath);
+        var model = modelHandle.Model;
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
         using var cpu = new CpuBackend();
 

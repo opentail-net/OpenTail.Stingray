@@ -40,7 +40,8 @@ public sealed class TierPlannerPinTests
         string? path = OlmoePath();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
-        using var model = GgufModel.Open(path);
+        using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
+        var model = modelHandle.Model;
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
         Assert.True(hp.IsMoE, "OLMoE must be detected as MoE");
         Assert.True(hp.NumLayers >= 4, "need enough layers for a meaningful split");
@@ -76,7 +77,8 @@ public sealed class TierPlannerPinTests
         string? path = OlmoePath();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
-        using var model = GgufModel.Open(path);
+        using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
+        var model = modelHandle.Model;
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
         var hw = FixedHw();
 

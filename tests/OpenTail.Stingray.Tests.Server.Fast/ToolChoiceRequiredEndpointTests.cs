@@ -8,7 +8,7 @@ using OpenTail.Stingray.Core.Grammar;
 using OpenTail.Stingray.Engine;
 using OpenTail.Stingray.Server;
 
-namespace OpenTail.Stingray.Tests.Server;
+namespace OpenTail.Stingray.Tests.Server.Fast;
 
 /// <summary>
 /// OpenAI <c>tool_choice:"required"</c> (forced tool call).
@@ -21,8 +21,15 @@ namespace OpenTail.Stingray.Tests.Server;
 /// because the constraint may legitimately arrive alone or AND-composed with the argument
 /// grammar.</para>
 /// </summary>
-public sealed class ToolChoiceRequiredEndpointTests
+public sealed class ToolChoiceRequiredEndpointTests : IDisposable
 {
+    private readonly List<WebApplicationFactory<Program>> _factories = new();
+
+    public void Dispose()
+    {
+        foreach (var factory in _factories) factory.Dispose();
+    }
+
     private const int ToolCallMarkerToken = 1;
 
     /// <summary>
@@ -68,11 +75,12 @@ public sealed class ToolChoiceRequiredEndpointTests
         public string Decode(IEnumerable<int> tokens) => "";
     }
 
-    private static HttpClient CreateClient(
+    private HttpClient CreateClient(
         FakeInferenceEngine fake,
         ITokenizer? tokenizer = null,
-        bool toolGrammar = false) =>
-        new WebApplicationFactory<Program>()
+        bool toolGrammar = false)
+    {
+        var factory = new WebApplicationFactory<Program>()
             .WithWebHostBuilder(b => b.ConfigureServices(s =>
             {
                 s.Configure<OpenTailStingrayServerOptions>(o =>
@@ -89,8 +97,10 @@ public sealed class ToolChoiceRequiredEndpointTests
                     s.AddSingleton(renderer);
                 }
                 s.AddSingleton<IInferenceEngine>(fake);
-            }))
-            .CreateClient();
+            }));
+        _factories.Add(factory);
+        return factory.CreateClient();
+    }
 
     private static object BuildRequest(object toolChoice, bool withParameters = false) => new
     {

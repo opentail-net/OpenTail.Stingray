@@ -1,6 +1,6 @@
 using OpenTail.Stingray.Cpu;
 
-namespace OpenTail.Stingray.Tests.ForwardPass;
+namespace OpenTail.Stingray.Tests.ForwardPass.Fast;
 
 /// <summary>
 /// Parity gate for <see cref="SimdKernels.GemmF32_6x2"/>, the strided generalization of the

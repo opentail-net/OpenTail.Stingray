@@ -2,7 +2,7 @@ using System.Text;
 using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Engine;
 
-namespace OpenTail.Stingray.Tests.ForwardPass;
+namespace OpenTail.Stingray.Tests.ForwardPass.Fast;
 
 /// <summary>
 /// Regression tests for issue #302: <see cref="InferenceEngine"/> must drive the forward pass

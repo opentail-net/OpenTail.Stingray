@@ -141,7 +141,8 @@ public sealed class PrefillDecodeSelfConsistencyTests : IDisposable
         if (path is null)
             Assert.Skip($"{ModelFile} not present under models/.");
 
-        using var model = GgufModel.Open(path);
+        using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
+        var model = modelHandle.Model;
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
         int[] tokens = OrdinaryTokens(promptLength, seed: 3);
 
@@ -171,7 +172,8 @@ public sealed class PrefillDecodeSelfConsistencyTests : IDisposable
         if (path is null)
             Assert.Skip($"{ModelFile} not present under models/.");
 
-        using var model = GgufModel.Open(path);
+        using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
+        var model = modelHandle.Model;
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
         int[] tokens = OrdinaryTokens(promptLength, seed: 3);
 
@@ -197,7 +199,8 @@ public sealed class PrefillDecodeSelfConsistencyTests : IDisposable
         if (path is null)
             Assert.Skip($"{ModelFile} not present under models/.");
 
-        using var model = GgufModel.Open(path);
+        using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
+        var model = modelHandle.Model;
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
         int[] tokens = ControlTokens(model, count: 2);
 
@@ -215,7 +218,8 @@ public sealed class PrefillDecodeSelfConsistencyTests : IDisposable
         if (path is null)
             Assert.Skip($"{ModelFile} not present under models/.");
 
-        using var model = GgufModel.Open(path);
+        using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
+        var model = modelHandle.Model;
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
         int[] tokens = ControlTokens(model, count: 2);
 
@@ -234,7 +238,8 @@ public sealed class PrefillDecodeSelfConsistencyTests : IDisposable
         if (path is null)
             Assert.Skip($"{ModelFile} not present under models/.");
 
-        using var model = GgufModel.Open(path);
+        using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
+        var model = modelHandle.Model;
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
         int[] tokens = ControlTokens(model, count: 2);
 
@@ -258,7 +263,8 @@ public sealed class PrefillDecodeSelfConsistencyTests : IDisposable
         if (path is null)
             Assert.Skip($"{ModelFile} not present under models/.");
 
-        using var model = GgufModel.Open(path);
+        using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
+        var model = modelHandle.Model;
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
         int[] control = ControlTokens(model, count: 2);
         int[] ordinary = OrdinaryTokens(count: 3, seed: 31);

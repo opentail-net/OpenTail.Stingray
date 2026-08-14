@@ -1,6 +1,6 @@
 using OpenTail.Stingray.Engine;
 
-namespace OpenTail.Stingray.Tests.ForwardPass;
+namespace OpenTail.Stingray.Tests.ForwardPass.Fast;
 
 /// <summary>Locks the load-time exclusions published by the CPU prefill diagnostic.</summary>
 public sealed class CpuBatchedPrefillCapabilityTests

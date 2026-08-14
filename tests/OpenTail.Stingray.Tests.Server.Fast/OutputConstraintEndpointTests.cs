@@ -8,7 +8,7 @@ using OpenTail.Stingray.Core.Grammar;
 using OpenTail.Stingray.Engine;
 using OpenTail.Stingray.Server;
 
-namespace OpenTail.Stingray.Tests.Server;
+namespace OpenTail.Stingray.Tests.Server.Fast;
 
 /// <summary>
 /// End-to-end wiring tests for the caller-supplied whole-turn output constraint
@@ -21,8 +21,15 @@ namespace OpenTail.Stingray.Tests.Server;
 /// <c>OpenTail.Stingray.Tests.ForwardPass.SayShowTagConstraintTests</c> and
 /// <c>OpenTail.Stingray.Tests.Core.AndTokenConstraintTests</c>.
 /// </summary>
-public sealed class OutputConstraintEndpointTests
+public sealed class OutputConstraintEndpointTests : IDisposable
 {
+    private readonly List<WebApplicationFactory<Program>> _factories = new();
+
+    public void Dispose()
+    {
+        foreach (var factory in _factories) factory.Dispose();
+    }
+
     /// <summary>Trivial never-constraining stub -- its TYPE is all these tests need to assert on.</summary>
     private sealed class StubConstraint : ITokenConstraint
     {
@@ -55,18 +62,21 @@ public sealed class OutputConstraintEndpointTests
         public string Decode(IEnumerable<int> tokens) => "";
     }
 
-    private static HttpClient CreateClient(
+    private HttpClient CreateClient(
         FakeInferenceEngine fake,
         Action<OpenTailStingrayServerOptions>? configure = null,
-        ChatTemplateRenderer? renderer = null) =>
-        new WebApplicationFactory<Program>()
+        ChatTemplateRenderer? renderer = null)
+    {
+        var factory = new WebApplicationFactory<Program>()
             .WithWebHostBuilder(b => b.ConfigureServices(s =>
             {
                 if (configure is not null) s.Configure(configure);
                 if (renderer is not null) s.AddSingleton(renderer);
                 s.AddSingleton<IInferenceEngine>(fake);
-            }))
-            .CreateClient();
+            }));
+        _factories.Add(factory);
+        return factory.CreateClient();
+    }
 
     [Fact]
     public async Task NoFactory_NoTools_ConstraintStaysNull()

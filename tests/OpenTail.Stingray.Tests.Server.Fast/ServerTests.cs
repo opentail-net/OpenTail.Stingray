@@ -10,7 +10,7 @@ using OpenTail.Stingray.Engine;
 using OpenTail.Stingray.Server;
 using OpenTail.Stingray.Server.Endpoints;
 
-namespace OpenTail.Stingray.Tests.Server;
+namespace OpenTail.Stingray.Tests.Server.Fast;
 
 /// <summary>
 /// Integration tests for the API server endpoints.
@@ -62,7 +62,7 @@ public sealed class ServerTests : IClassFixture<WebApplicationFactory<Program>>
     {
         // Make one request then verify the counter went up.
         // Note: this test uses its own factory to get an isolated counter state.
-        var factory = new WebApplicationFactory<Program>().WithWebHostBuilder(b =>
+        using var factory = new WebApplicationFactory<Program>().WithWebHostBuilder(b =>
             b.ConfigureServices(s => s.AddSingleton<IInferenceEngine>(new FakeInferenceEngine("m"))));
         var client = factory.CreateClient();
 
@@ -84,7 +84,7 @@ public sealed class ServerTests : IClassFixture<WebApplicationFactory<Program>>
     [Fact]
     public async Task Metrics_TokenCountIncrements_AfterChatRequest()
     {
-        var factory = new WebApplicationFactory<Program>().WithWebHostBuilder(b =>
+        using var factory = new WebApplicationFactory<Program>().WithWebHostBuilder(b =>
             b.ConfigureServices(s => s.AddSingleton<IInferenceEngine>(new FakeInferenceEngine("m"))));
         var client = factory.CreateClient();
 
@@ -224,7 +224,7 @@ public sealed class ServerTests : IClassFixture<WebApplicationFactory<Program>>
     {
         // Regression guard: a response with no Thinking chunks must keep the pre-thinking
         // wire shape — exactly one element in content[], of type "text".
-        var factory = new WebApplicationFactory<Program>().WithWebHostBuilder(b =>
+        using var factory = new WebApplicationFactory<Program>().WithWebHostBuilder(b =>
             b.ConfigureServices(s => s.AddSingleton<IInferenceEngine>(new FakeInferenceEngine(
                 "test-model",
                 [(GenerateChunkKind.Text, "just the answer")]))));
@@ -252,7 +252,7 @@ public sealed class ServerTests : IClassFixture<WebApplicationFactory<Program>>
     [Fact]
     public async Task AnthropicMessages_NonStreaming_WithThinking_EmitsThinkingThenTextBlock()
     {
-        var factory = new WebApplicationFactory<Program>().WithWebHostBuilder(b =>
+        using var factory = new WebApplicationFactory<Program>().WithWebHostBuilder(b =>
             b.ConfigureServices(s => s.AddSingleton<IInferenceEngine>(new FakeInferenceEngine(
                 "test-model",
                 [
@@ -296,7 +296,7 @@ public sealed class ServerTests : IClassFixture<WebApplicationFactory<Program>>
     [Fact]
     public async Task AnthropicMessages_Streaming_TextOnly_NoThinkingEvents()
     {
-        var factory = new WebApplicationFactory<Program>().WithWebHostBuilder(b =>
+        using var factory = new WebApplicationFactory<Program>().WithWebHostBuilder(b =>
             b.ConfigureServices(s => s.AddSingleton<IInferenceEngine>(new FakeInferenceEngine(
                 "test-model",
                 [(GenerateChunkKind.Text, "Hi"), (GenerateChunkKind.Text, "!")]))));
@@ -329,7 +329,7 @@ public sealed class ServerTests : IClassFixture<WebApplicationFactory<Program>>
     [Fact]
     public async Task AnthropicMessages_Streaming_WithThinking_EmitsTypedEventSequence()
     {
-        var factory = new WebApplicationFactory<Program>().WithWebHostBuilder(b =>
+        using var factory = new WebApplicationFactory<Program>().WithWebHostBuilder(b =>
             b.ConfigureServices(s => s.AddSingleton<IInferenceEngine>(new FakeInferenceEngine(
                 "test-model",
                 [
@@ -382,7 +382,7 @@ public sealed class ServerTests : IClassFixture<WebApplicationFactory<Program>>
     [Fact]
     public async Task ChatCompletion_NonStreaming_TextOnly_OmitsReasoningContent()
     {
-        var factory = new WebApplicationFactory<Program>().WithWebHostBuilder(b =>
+        using var factory = new WebApplicationFactory<Program>().WithWebHostBuilder(b =>
             b.ConfigureServices(s => s.AddSingleton<IInferenceEngine>(new FakeInferenceEngine(
                 "test-model",
                 [(GenerateChunkKind.Text, "just the answer")]))));
@@ -408,7 +408,7 @@ public sealed class ServerTests : IClassFixture<WebApplicationFactory<Program>>
     [Fact]
     public async Task ChatCompletion_NonStreaming_WithReasoning_EmitsReasoningContentAndUsageDetails()
     {
-        var factory = new WebApplicationFactory<Program>().WithWebHostBuilder(b =>
+        using var factory = new WebApplicationFactory<Program>().WithWebHostBuilder(b =>
             b.ConfigureServices(s => s.AddSingleton<IInferenceEngine>(new FakeInferenceEngine(
                 "test-model",
                 [
@@ -449,7 +449,7 @@ public sealed class ServerTests : IClassFixture<WebApplicationFactory<Program>>
     [Fact]
     public async Task ChatCompletion_NonStreaming_TruncatedByMaxTokens_ReportsLengthFinishReason()
     {
-        var factory = new WebApplicationFactory<Program>().WithWebHostBuilder(b =>
+        using var factory = new WebApplicationFactory<Program>().WithWebHostBuilder(b =>
             b.ConfigureServices(s => s.AddSingleton<IInferenceEngine>(new FakeInferenceEngine(
                 "test-model",
                 [(GenerateChunkKind.Text, "cut off mid-sen")])
@@ -473,7 +473,7 @@ public sealed class ServerTests : IClassFixture<WebApplicationFactory<Program>>
     [Fact]
     public async Task ChatCompletion_Streaming_TruncatedByMaxTokens_ReportsLengthFinishReason()
     {
-        var factory = new WebApplicationFactory<Program>().WithWebHostBuilder(b =>
+        using var factory = new WebApplicationFactory<Program>().WithWebHostBuilder(b =>
             b.ConfigureServices(s => s.AddSingleton<IInferenceEngine>(new FakeInferenceEngine(
                 "test-model",
                 [(GenerateChunkKind.Text, "cut off mid-sen")])
@@ -496,7 +496,7 @@ public sealed class ServerTests : IClassFixture<WebApplicationFactory<Program>>
     [Fact]
     public async Task Messages_NonStreaming_TruncatedByMaxTokens_ReportsMaxTokensStopReason()
     {
-        var factory = new WebApplicationFactory<Program>().WithWebHostBuilder(b =>
+        using var factory = new WebApplicationFactory<Program>().WithWebHostBuilder(b =>
             b.ConfigureServices(s => s.AddSingleton<IInferenceEngine>(new FakeInferenceEngine(
                 "test-model",
                 [(GenerateChunkKind.Text, "cut off mid-sen")])
@@ -519,7 +519,7 @@ public sealed class ServerTests : IClassFixture<WebApplicationFactory<Program>>
     [Fact]
     public async Task Messages_Streaming_TruncatedByMaxTokens_ReportsMaxTokensStopReason()
     {
-        var factory = new WebApplicationFactory<Program>().WithWebHostBuilder(b =>
+        using var factory = new WebApplicationFactory<Program>().WithWebHostBuilder(b =>
             b.ConfigureServices(s => s.AddSingleton<IInferenceEngine>(new FakeInferenceEngine(
                 "test-model",
                 [(GenerateChunkKind.Text, "cut off mid-sen")])
@@ -544,7 +544,7 @@ public sealed class ServerTests : IClassFixture<WebApplicationFactory<Program>>
     {
         // Guards against a regression where the new Stop-chunk handling accidentally flips
         // finish_reason to "length" for ordinary, non-truncated completions.
-        var factory = new WebApplicationFactory<Program>().WithWebHostBuilder(b =>
+        using var factory = new WebApplicationFactory<Program>().WithWebHostBuilder(b =>
             b.ConfigureServices(s => s.AddSingleton<IInferenceEngine>(new FakeInferenceEngine(
                 "test-model",
                 [(GenerateChunkKind.Text, "Hi"), (GenerateChunkKind.Text, "!")])
@@ -568,7 +568,7 @@ public sealed class ServerTests : IClassFixture<WebApplicationFactory<Program>>
     [Fact]
     public async Task ChatCompletion_Streaming_TextOnly_NoReasoningContentDeltas()
     {
-        var factory = new WebApplicationFactory<Program>().WithWebHostBuilder(b =>
+        using var factory = new WebApplicationFactory<Program>().WithWebHostBuilder(b =>
             b.ConfigureServices(s => s.AddSingleton<IInferenceEngine>(new FakeInferenceEngine(
                 "test-model",
                 [(GenerateChunkKind.Text, "Hi"), (GenerateChunkKind.Text, "!")]))));
@@ -596,7 +596,7 @@ public sealed class ServerTests : IClassFixture<WebApplicationFactory<Program>>
     [Fact]
     public async Task ChatCompletion_Streaming_WithReasoning_SplitsReasoningThenContentDeltas()
     {
-        var factory = new WebApplicationFactory<Program>().WithWebHostBuilder(b =>
+        using var factory = new WebApplicationFactory<Program>().WithWebHostBuilder(b =>
             b.ConfigureServices(s => s.AddSingleton<IInferenceEngine>(new FakeInferenceEngine(
                 "test-model",
                 [
@@ -678,97 +678,9 @@ public sealed class ServerTests : IClassFixture<WebApplicationFactory<Program>>
         Assert.Contains("disabled", json);
     }
 
-    [Fact]
-    public async Task SessionLifecycle_RealCpuGguf_RestoresAcrossServerRestart()
-    {
-        string? modelPath = FindSessionReferenceModel();
-        // Skip, never silently pass. This is the acceptance test behind a capability the server
-        // reports as available:true, so a green run that never executed it would read as "restart
-        // continuation is verified" when nothing ran — and CI has no models/ directory. Assert.Skip
-        // makes the absence visible in the summary, matching the Sessions-layer counterpart
-        // ColdSession_RealModel_CrossProcessRestore_MatchesFullGreedyReplay.
-        Assert.SkipUnless(modelPath is not null,
-            "SmolLM2-1.7B-Instruct-Q4_K_M.gguf is required for the server session restart acceptance test.");
-
-        string storage = Path.Combine(Path.GetTempPath(), $"opentail_server_session_{Guid.NewGuid():N}");
-        try
-        {
-            string id;
-            long revision;
-            using (var first = CreatePersistentSessionServer(modelPath, storage))
-            using (var client = first.CreateClient())
-            {
-                var create = await client.PostAsync("/v1/sessions", content: null);
-                Assert.Equal(HttpStatusCode.Created, create.StatusCode);
-                using var created = JsonDocument.Parse(await create.Content.ReadAsStringAsync());
-                id = created.RootElement.GetProperty("id").GetString()!;
-
-                var turn = await client.PostAsJsonAsync($"/v1/sessions/{id}/turns", new
-                {
-                    append_prompt = "The capital of France is",
-                    expected_revision = 0,
-                    max_tokens = 1,
-                    temperature = 0f,
-                });
-                Assert.Equal(HttpStatusCode.OK, turn.StatusCode);
-                using var result = JsonDocument.Parse(await turn.Content.ReadAsStringAsync());
-                Assert.Equal("completed", result.RootElement.GetProperty("state").GetString());
-                revision = result.RootElement.GetProperty("session").GetProperty("committed_revision").GetInt64();
-                Assert.True(revision > 0);
-            }
-
-            // A fresh host has no hot state. GET must load the persisted manifest + KV packs,
-            // not merely retrieve the first factory's in-memory session.
-            using (var second = CreatePersistentSessionServer(modelPath, storage))
-            using (var client = second.CreateClient())
-            {
-                var restored = await client.GetAsync($"/v1/sessions/{id}");
-                Assert.Equal(HttpStatusCode.OK, restored.StatusCode);
-                using var snapshot = JsonDocument.Parse(await restored.Content.ReadAsStringAsync());
-                Assert.Equal(revision, snapshot.RootElement.GetProperty("committed_revision").GetInt64());
-
-                var continuation = await client.PostAsJsonAsync($"/v1/sessions/{id}/turns", new
-                {
-                    append_prompt = " Paris.",
-                    expected_revision = revision,
-                    max_tokens = 1,
-                    temperature = 0f,
-                });
-                Assert.Equal(HttpStatusCode.OK, continuation.StatusCode);
-            }
-        }
-        finally
-        {
-            if (Directory.Exists(storage)) Directory.Delete(storage, recursive: true);
-        }
-    }
-
-    private static WebApplicationFactory<Program> CreatePersistentSessionServer(string modelPath, string storage) =>
-        new WebApplicationFactory<Program>().WithWebHostBuilder(builder => builder.ConfigureServices(services =>
-            services.Configure<OpenTailStingrayServerOptions>(options =>
-            {
-                options.ModelPath = modelPath;
-                options.Backend = ServerBackend.Cpu;
-                options.NGpuLayers = 0;
-                options.ContextSize = 512;
-                options.MaxBatchSize = 1;
-                options.EnableSessions = true;
-                options.SessionStorageDirectory = storage;
-            })));
-
-    private static string? FindSessionReferenceModel()
-    {
-        string directory = Directory.GetCurrentDirectory();
-        for (int i = 0; i < 8; i++)
-        {
-            string candidate = Path.Combine(directory, "models", "SmolLM2-1.7B-Instruct-Q4_K_M.gguf");
-            if (File.Exists(candidate)) return candidate;
-            var parent = Directory.GetParent(directory);
-            if (parent is null) break;
-            directory = parent.FullName;
-        }
-        return null;
-    }
+    // SessionLifecycle_RealCpuGguf_RestoresAcrossServerRestart moved to
+    // OpenTail.Stingray.Tests.Server.SessionRestartPersistenceTests — the one real-model test
+    // in this surface, split out so it doesn't force the rest of this project to run serially.
 
     [Fact]
     public async Task ChatCompletion_HistoryPenalties_ReachSamplingParams()
@@ -963,7 +875,7 @@ public sealed class ServerTests : IClassFixture<WebApplicationFactory<Program>>
     public async Task AnthropicMessages_ThinkingBudgetTokens_ReachesSamplingParams()
     {
         var fake = new FakeInferenceEngine("test-model");
-        var factory = new WebApplicationFactory<Program>().WithWebHostBuilder(b =>
+        using var factory = new WebApplicationFactory<Program>().WithWebHostBuilder(b =>
             b.ConfigureServices(s => s.AddSingleton<IInferenceEngine>(fake)));
         var client = factory.CreateClient();
 
@@ -987,7 +899,7 @@ public sealed class ServerTests : IClassFixture<WebApplicationFactory<Program>>
     {
         // Absence of thinking.budget_tokens must leave MaxThinkingTokens at its 0 (unlimited) default.
         var fake = new FakeInferenceEngine("test-model");
-        var factory = new WebApplicationFactory<Program>().WithWebHostBuilder(b =>
+        using var factory = new WebApplicationFactory<Program>().WithWebHostBuilder(b =>
             b.ConfigureServices(s => s.AddSingleton<IInferenceEngine>(fake)));
         var client = factory.CreateClient();
 
@@ -1009,7 +921,7 @@ public sealed class ServerTests : IClassFixture<WebApplicationFactory<Program>>
     public async Task ChatCompletion_MaxThinkingTokens_ReachesSamplingParams()
     {
         var fake = new FakeInferenceEngine("test-model");
-        var factory = new WebApplicationFactory<Program>().WithWebHostBuilder(b =>
+        using var factory = new WebApplicationFactory<Program>().WithWebHostBuilder(b =>
             b.ConfigureServices(s => s.AddSingleton<IInferenceEngine>(fake)));
         var client = factory.CreateClient();
 
@@ -1032,7 +944,7 @@ public sealed class ServerTests : IClassFixture<WebApplicationFactory<Program>>
     public async Task ChatCompletion_NoMaxThinkingTokens_DefaultsToZero()
     {
         var fake = new FakeInferenceEngine("test-model");
-        var factory = new WebApplicationFactory<Program>().WithWebHostBuilder(b =>
+        using var factory = new WebApplicationFactory<Program>().WithWebHostBuilder(b =>
             b.ConfigureServices(s => s.AddSingleton<IInferenceEngine>(fake)));
         var client = factory.CreateClient();
 
@@ -1056,7 +968,7 @@ public sealed class ServerTests : IClassFixture<WebApplicationFactory<Program>>
     public async Task ChatCompletion_PassesCanonicalHistoryPrefixToEngine()
     {
         var fake = new FakeInferenceEngine("test-model");
-        var factory = new WebApplicationFactory<Program>().WithWebHostBuilder(b =>
+        using var factory = new WebApplicationFactory<Program>().WithWebHostBuilder(b =>
             b.ConfigureServices(s => s.AddSingleton<IInferenceEngine>(fake)));
         var client = factory.CreateClient();
 
@@ -1088,7 +1000,7 @@ public sealed class ServerTests : IClassFixture<WebApplicationFactory<Program>>
     public async Task AnthropicMessages_PassesCanonicalHistoryPrefixToEngine()
     {
         var fake = new FakeInferenceEngine("test-model");
-        var factory = new WebApplicationFactory<Program>().WithWebHostBuilder(b =>
+        using var factory = new WebApplicationFactory<Program>().WithWebHostBuilder(b =>
             b.ConfigureServices(s => s.AddSingleton<IInferenceEngine>(fake)));
         var client = factory.CreateClient();
 
@@ -1127,7 +1039,7 @@ public sealed class ServerTests : IClassFixture<WebApplicationFactory<Program>>
     {
         // Model output contains a <tool_call> block — endpoint must parse it and return
         // a tool_use content block with stop_reason = "tool_use".
-        var factory = ToolHostFactory(new FakeInferenceEngine(
+        using var factory = ToolHostFactory(new FakeInferenceEngine(
             "test-model",
             [
                 (GenerateChunkKind.Text, "<tool_call>\n"),
@@ -1172,7 +1084,7 @@ public sealed class ServerTests : IClassFixture<WebApplicationFactory<Program>>
     [Fact]
     public async Task AnthropicMessages_WithTools_NonStreaming_TextBeforeToolCall_ReturnsBothBlocks()
     {
-        var factory = ToolHostFactory(new FakeInferenceEngine(
+        using var factory = ToolHostFactory(new FakeInferenceEngine(
             "test-model",
             [
                 (GenerateChunkKind.Text, "Let me check that for you."),
@@ -1204,7 +1116,7 @@ public sealed class ServerTests : IClassFixture<WebApplicationFactory<Program>>
     [Fact]
     public async Task AnthropicMessages_WithTools_Streaming_EmitsToolUseEvents()
     {
-        var factory = ToolHostFactory(new FakeInferenceEngine(
+        using var factory = ToolHostFactory(new FakeInferenceEngine(
             "test-model",
             [
                 (GenerateChunkKind.Text, "<tool_call>\n"),
@@ -1273,8 +1185,15 @@ public sealed class ServerTests : IClassFixture<WebApplicationFactory<Program>>
     }
 }
 
-public sealed class ChatTemplateScrubTests
+public sealed class ChatTemplateScrubTests : IDisposable
 {
+    private readonly List<WebApplicationFactory<Program>> _factories = new();
+
+    public void Dispose()
+    {
+        foreach (var factory in _factories) factory.Dispose();
+    }
+
     [Fact]
     public void Scrub_RemovesClosedBlock()
     {
@@ -1341,7 +1260,7 @@ public sealed class ChatTemplateScrubTests
     private const string ThinkProbeTemplate =
         "{% if enable_thinking %}<<THINK>>{% else %}<<NOTHINK>>{% endif %}{% for m in messages %}{{ m.content }}{% endfor %}";
 
-    private static (HttpClient client, FakeInferenceEngine fake) ProbeClient(bool disableThinking)
+    private (HttpClient client, FakeInferenceEngine fake) ProbeClient(bool disableThinking)
     {
         var fake = new FakeInferenceEngine("m");
         var renderer = new ChatTemplateRenderer("test", new JinjaChatTemplate(ThinkProbeTemplate));
@@ -1352,6 +1271,7 @@ public sealed class ChatTemplateScrubTests
                 s.AddSingleton<IInferenceEngine>(fake);
                 s.Configure<OpenTailStingrayServerOptions>(o => o.DisableThinking = disableThinking);
             }));
+        _factories.Add(factory);
         return (factory.CreateClient(), fake);
     }
 
@@ -1419,14 +1339,21 @@ public sealed class ChatTemplateScrubTests
 /// prior assistant turn's reasoning survives into the rendered chat-template history instead of
 /// being stripped by <see cref="ChatTemplate.ScrubAssistantThinking"/>.
 /// </summary>
-public sealed class PreserveThinkingTests
+public sealed class PreserveThinkingTests : IDisposable
 {
+    private readonly List<WebApplicationFactory<Program>> _factories = new();
+
+    public void Dispose()
+    {
+        foreach (var factory in _factories) factory.Dispose();
+    }
+
     // Echoes role/content verbatim so the test can see exactly what reached the template,
     // independent of enable_thinking (unlike ThinkProbeTemplate above, which only probes that flag).
     private const string EchoTemplate =
         "{% for m in messages %}[{{ m.role }}:{{ m.content }}]{% endfor %}";
 
-    private static (HttpClient client, FakeInferenceEngine fake) ProbeClient(
+    private (HttpClient client, FakeInferenceEngine fake) ProbeClient(
         bool serverPreserveThinking = false, bool disableThinking = false)
     {
         var fake = new FakeInferenceEngine("m");
@@ -1442,6 +1369,7 @@ public sealed class PreserveThinkingTests
                     o.DisableThinking = disableThinking;
                 });
             }));
+        _factories.Add(factory);
         return (factory.CreateClient(), fake);
     }
 

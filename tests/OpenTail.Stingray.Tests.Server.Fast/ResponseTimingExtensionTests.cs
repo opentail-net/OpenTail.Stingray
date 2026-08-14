@@ -5,20 +5,30 @@ using Microsoft.Extensions.DependencyInjection;
 using OpenTail.Stingray.Engine;
 using OpenTail.Stingray.Server;
 
-namespace OpenTail.Stingray.Tests.Server;
+namespace OpenTail.Stingray.Tests.Server.Fast;
 
 /// <summary>
 /// Wire contract for the opt-in <c>opentail_timing</c> response extension (§8 Phase 2 item 3 of
 /// the QoL plan). Non-streaming only for both protocols — see the field's own doc comment in
 /// <c>ResponseTimingExtension.cs</c> for why opt-in rather than always-on.
 /// </summary>
-public sealed class ResponseTimingExtensionTests
+public sealed class ResponseTimingExtensionTests : IDisposable
 {
-    private static HttpClient CreateClient() =>
-        new WebApplicationFactory<Program>()
+    private readonly List<WebApplicationFactory<Program>> _factories = new();
+
+    public void Dispose()
+    {
+        foreach (var factory in _factories) factory.Dispose();
+    }
+
+    private HttpClient CreateClient()
+    {
+        var factory = new WebApplicationFactory<Program>()
             .WithWebHostBuilder(builder => builder.ConfigureServices(services =>
-                services.AddSingleton<IInferenceEngine>(new FakeInferenceEngine("test-model"))))
-            .CreateClient();
+                services.AddSingleton<IInferenceEngine>(new FakeInferenceEngine("test-model"))));
+        _factories.Add(factory);
+        return factory.CreateClient();
+    }
 
     [Fact]
     public async Task OpenAi_DefaultRequest_OmitsTimingExtension()

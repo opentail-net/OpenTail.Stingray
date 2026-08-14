@@ -1,7 +1,7 @@
 using System.Runtime.InteropServices;
 using OpenTail.Stingray.Cpu;
 
-namespace OpenTail.Stingray.Tests.ForwardPass;
+namespace OpenTail.Stingray.Tests.ForwardPass.Fast;
 
 /// <summary>
 /// Parity tests for <b>Path 2</b> — the literal C# port of llama.cpp's AVX2

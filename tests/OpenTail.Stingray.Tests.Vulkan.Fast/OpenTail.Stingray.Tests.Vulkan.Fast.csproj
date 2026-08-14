@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <IsPackable>false</IsPackable>
+    <OutputType>Exe</OutputType>
+    <NoWarn>$(NoWarn);xUnit1051</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="xunit.v3" Version="3.2.2" />
+    <PackageReference Include="Microsoft.Testing.Extensions.TrxReport" Version="1.9.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- No real Vulkan device construction: these test static config/predicate logic
+         (GpuForwardPass.ChooseDefaultKvDType, VulkanMatMulPathConfig/Stats, shader-constant
+         consistency), so unlike OpenTail.Stingray.Tests.Vulkan (which must stay serial: real
+         GPU device creation is intermittently flaky under parallel load, see VulkanInitTests'
+         CreateBackendOrSkip), this project keeps xUnit's default parallel test execution. -->
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\OpenTail.Stingray.Cpu\OpenTail.Stingray.Cpu.csproj" />
+    <ProjectReference Include="..\..\src\OpenTail.Stingray.Engine\OpenTail.Stingray.Engine.csproj" />
+    <ProjectReference Include="..\..\src\OpenTail.Stingray.Vulkan\OpenTail.Stingray.Vulkan.csproj" />
+  </ItemGroup>
+
+</Project>

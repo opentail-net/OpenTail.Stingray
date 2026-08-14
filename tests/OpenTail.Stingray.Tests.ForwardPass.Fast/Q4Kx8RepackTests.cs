@@ -3,7 +3,7 @@ using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Cpu;
 using Xunit;
 
-namespace OpenTail.Stingray.Tests.ForwardPass;
+namespace OpenTail.Stingray.Tests.ForwardPass.Fast;
 
 /// <summary>
 /// Correctness gate for the <c>block_q4_Kx8</c> 8-row weight repack (perf-loop iteration 39).

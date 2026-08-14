@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <IsPackable>false</IsPackable>
+    <OutputType>Exe</OutputType>
+    <NoWarn>$(NoWarn);xUnit1051</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="xunit.v3" Version="3.2.2" />
+    <PackageReference Include="Microsoft.Testing.Extensions.TrxReport" Version="1.9.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- No real model, no real GPU device: these run fully in-memory against fakes, so unlike
+         OpenTail.Stingray.Tests.Sessions (which loads real GGUF models and must stay serial to
+         avoid resource contention), this project keeps xUnit's default parallel test execution. -->
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\OpenTail.Stingray.Sessions\OpenTail.Stingray.Sessions.csproj" />
+  </ItemGroup>
+
+</Project>

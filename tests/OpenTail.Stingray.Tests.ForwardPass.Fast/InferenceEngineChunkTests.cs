@@ -2,7 +2,7 @@ using System.Text;
 using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Engine;
 
-namespace OpenTail.Stingray.Tests.ForwardPass;
+namespace OpenTail.Stingray.Tests.ForwardPass.Fast;
 
 /// <summary>
 /// Tests for <see cref="InferenceEngine.GenerateChunksAsync"/> — the typed chunk stream

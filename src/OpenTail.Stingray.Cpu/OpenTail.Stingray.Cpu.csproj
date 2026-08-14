@@ -10,6 +10,7 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="OpenTail.Stingray.Tests.ForwardPass" />
+    <InternalsVisibleTo Include="OpenTail.Stingray.Tests.ForwardPass.Fast" />
     <InternalsVisibleTo Include="OpenTail.Stingray.Tests.Cuda" />
     <InternalsVisibleTo Include="OpenTail.Stingray.Tests.Vulkan" />
     <InternalsVisibleTo Include="OpenTail.Stingray.KernelBench" />

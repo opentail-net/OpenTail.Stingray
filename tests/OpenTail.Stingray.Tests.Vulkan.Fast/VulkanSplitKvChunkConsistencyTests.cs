@@ -1,7 +1,7 @@
 using OpenTail.Stingray.Vulkan;
 using Xunit;
 
-namespace OpenTail.Stingray.Tests.Vulkan;
+namespace OpenTail.Stingray.Tests.Vulkan.Fast;
 
 /// <summary>
 /// The split-KV slice size exists in two places that cannot share a symbol: the C# constant

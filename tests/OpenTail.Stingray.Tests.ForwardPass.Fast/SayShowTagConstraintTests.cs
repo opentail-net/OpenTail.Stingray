@@ -4,7 +4,7 @@ using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Core.Grammar;
 using OpenTail.Stingray.Engine;
 
-namespace OpenTail.Stingray.Tests.ForwardPass;
+namespace OpenTail.Stingray.Tests.ForwardPass.Fast;
 
 /// <summary>
 /// Demo whole-turn output constraint (issue #423) implementing the grammar from the issue's own

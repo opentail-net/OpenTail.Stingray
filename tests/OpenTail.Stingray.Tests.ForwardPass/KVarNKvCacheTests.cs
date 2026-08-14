@@ -231,7 +231,8 @@ public sealed class KVarNKvCacheTests(ITestOutputHelper output)
         Environment.SetEnvironmentVariable("STINGRAY_SNAPKV_BUDGET", "256");
         try
         {
-            using var model = GgufModel.Open(path);
+            using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
+            var model = modelHandle.Model;
             var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
             using var backend = new CpuBackend();
             using var fwd = new Engine.ForwardPass(model, backend, hp);
@@ -256,7 +257,8 @@ public sealed class KVarNKvCacheTests(ITestOutputHelper output)
         Environment.SetEnvironmentVariable("STINGRAY_SNAPKV_BUDGET", null);
         try
         {
-            using var model = GgufModel.Open(path);
+            using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
+            var model = modelHandle.Model;
             var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
             using var backend = new CpuBackend();
             using var fwd = new Engine.ForwardPass(model, backend, hp);

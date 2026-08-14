@@ -2,7 +2,7 @@ using System.Runtime.Intrinsics;
 using System.Runtime.Intrinsics.X86;
 using OpenTail.Stingray.Cpu;
 
-namespace OpenTail.Stingray.Tests.ForwardPass;
+namespace OpenTail.Stingray.Tests.ForwardPass.Fast;
 
 /// <summary>
 /// Phase-2 attempt at a literal port of llama.cpp's real AVX2 GEMM kernel

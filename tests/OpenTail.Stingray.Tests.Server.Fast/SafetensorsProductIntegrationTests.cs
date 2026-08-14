@@ -5,7 +5,7 @@ using OpenTail.Stingray.Engine;
 using OpenTail.Stingray.Server;
 using Xunit;
 
-namespace OpenTail.Stingray.Tests.Server;
+namespace OpenTail.Stingray.Tests.Server.Fast;
 
 public sealed class SafetensorsProductIntegrationTests : IDisposable
 {

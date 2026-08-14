@@ -19,7 +19,8 @@ public sealed class Exaone4VerifyTemp
         var path = FindModel();
         Assert.SkipWhen(path is null, $"{ModelFile} is required for this parity receipt.");
 
-        using var model = GgufModel.Open(path!);
+        using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path!);
+        var model = modelHandle.Model;
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
         var tokenizer = GgufTokenizer.FromGgufModel(model);
 
@@ -53,7 +54,8 @@ public sealed class Exaone4VerifyTemp
         var path = FindModel();
         Assert.SkipWhen(path is null, $"{ModelFile} is required for this consistency check.");
 
-        using var model = GgufModel.Open(path!);
+        using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path!);
+        var model = modelHandle.Model;
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
         var tokenizer = GgufTokenizer.FromGgufModel(model);
 

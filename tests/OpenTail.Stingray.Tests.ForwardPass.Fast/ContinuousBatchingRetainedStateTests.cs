@@ -1,7 +1,7 @@
 using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Engine;
 
-namespace OpenTail.Stingray.Tests.ForwardPass;
+namespace OpenTail.Stingray.Tests.ForwardPass.Fast;
 
 /// <summary>Ownership and append-resume coverage for the retained CPU-dense lifecycle seam.</summary>
 public sealed class ContinuousBatchingRetainedStateTests

@@ -52,7 +52,8 @@ public sealed class ForwardPassHiddenTapTests : IDisposable
     public void Taps_SequentialForward_vs_Prefill_Match()
     {
         var path = WriteSyntheticLlamaGguf(seed: 42);
-        using var model = GgufModel.Open(path);
+        using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
+        var model = modelHandle.Model;
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
         using var backend = new CpuBackend();
         using var fwdA = new Engine.ForwardPass(model, backend, hp);
@@ -95,7 +96,8 @@ public sealed class ForwardPassHiddenTapTests : IDisposable
     public void Taps_BatchVerify_Match()
     {
         var path = WriteSyntheticLlamaGguf(seed: 77);
-        using var model = GgufModel.Open(path);
+        using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
+        var model = modelHandle.Model;
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
         using var backend = new CpuBackend();
         using var fwdA = new Engine.ForwardPass(model, backend, hp);
@@ -134,7 +136,8 @@ public sealed class ForwardPassHiddenTapTests : IDisposable
     public void TapsAt_Unpopulated_ReturnsEmpty()
     {
         var path = WriteSyntheticLlamaGguf(seed: 11);
-        using var model = GgufModel.Open(path);
+        using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
+        var model = modelHandle.Model;
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
         using var backend = new CpuBackend();
         using var fwd = new Engine.ForwardPass(model, backend, hp);
@@ -159,7 +162,8 @@ public sealed class ForwardPassHiddenTapTests : IDisposable
     public void EnableHiddenTaps_Validation()
     {
         var path = WriteSyntheticLlamaGguf(seed: 13);
-        using var model = GgufModel.Open(path);
+        using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
+        var model = modelHandle.Model;
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
         using var backend = new CpuBackend();
         using var fwd = new Engine.ForwardPass(model, backend, hp);
@@ -182,7 +186,8 @@ public sealed class ForwardPassHiddenTapTests : IDisposable
     public void Taps_OverwrittenAfterRewind()
     {
         var path = WriteSyntheticLlamaGguf(seed: 21);
-        using var model = GgufModel.Open(path);
+        using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
+        var model = modelHandle.Model;
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
         using var backend = new CpuBackend();
         using var fwd = new Engine.ForwardPass(model, backend, hp);
@@ -220,7 +225,8 @@ public sealed class ForwardPassHiddenTapTests : IDisposable
     public void SupportsHiddenTaps_TrueOnPlainCpuPass()
     {
         var path = WriteSyntheticLlamaGguf(seed: 31);
-        using var model = GgufModel.Open(path);
+        using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
+        var model = modelHandle.Model;
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
         using var backend = new CpuBackend();
         using var fwd = new Engine.ForwardPass(model, backend, hp);

@@ -2,7 +2,7 @@ using System.Runtime.InteropServices;
 using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Cpu;
 
-namespace OpenTail.Stingray.Tests.ForwardPass;
+namespace OpenTail.Stingray.Tests.ForwardPass.Fast;
 
 /// <summary>
 /// Correctness gate for the int8 batched-prefill path (docs/cpu-prefill-plan.md §6 step 4).

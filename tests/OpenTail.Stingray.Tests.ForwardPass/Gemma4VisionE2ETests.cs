@@ -42,7 +42,8 @@ public sealed class Gemma4VisionE2ETests
         var mmprojPath = Find(Mmproj);
         if (textPath is null || mmprojPath is null) return;   // model-gated
 
-        using var model = GgufModel.Open(textPath);
+        using var modelHandle = SharedModelCacheFixture.Instance.Acquire(textPath);
+        var model = modelHandle.Model;
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
         var tok = GgufTokenizer.FromGgufModel(model);
         using var backend = new CpuBackend();

@@ -28,7 +28,8 @@ public sealed class DebugForwardPass
         var path = FindModelPath();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
-        using var model = GgufModel.Open(path);
+        using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
+        var model = modelHandle.Model;
         foreach (var t in model.Tensors.Where(t => t.Name.StartsWith("blk.0.") || !t.Name.StartsWith("blk.")))
             Console.WriteLine($"{t.Name}: [{string.Join(",", t.Dimensions.Take(t.NDimensions))}] {t.DType}");
     }
@@ -39,7 +40,8 @@ public sealed class DebugForwardPass
         var path = FindModelPath();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
-        using var model = GgufModel.Open(path);
+        using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
+        var model = modelHandle.Model;
         var info = model.FindTensor("token_embd.weight")!.Value;
         var rawData = model.GetTensorData(info);
 
@@ -69,7 +71,8 @@ public sealed class DebugForwardPass
         var path = FindModelPath();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
-        using var model = GgufModel.Open(path);
+        using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
+        var model = modelHandle.Model;
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
         var tokenizer = GgufTokenizer.FromGgufModel(model);
         using var backend = new CpuBackend();
@@ -106,7 +109,8 @@ public sealed class DebugForwardPass
         var path = FindQwen3Path();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
-        using var model = GgufModel.Open(path);
+        using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
+        var model = modelHandle.Model;
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
 
         Assert.Equal(151936, hp.VocabSize);
@@ -126,7 +130,8 @@ public sealed class DebugForwardPass
         var path = FindQwen3Path();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
-        using var model = GgufModel.Open(path);
+        using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
+        var model = modelHandle.Model;
         foreach (var t in model.Tensors.Where(t => t.Name.StartsWith("blk.0.") || !t.Name.StartsWith("blk.")))
             Console.WriteLine($"{t.Name}: [{string.Join(",", t.Dimensions.Take(t.NDimensions))}] {t.DType}");
 
@@ -141,7 +146,8 @@ public sealed class DebugForwardPass
         var path = FindQwen3Path();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
-        using var model = GgufModel.Open(path);
+        using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
+        var model = modelHandle.Model;
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
         var tokenizer = GgufTokenizer.FromGgufModel(model);
         using var backend = new CpuBackend();
@@ -181,7 +187,8 @@ public sealed class DebugForwardPass
         var path = FindModelPath();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
-        using var model = GgufModel.Open(path);
+        using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
+        var model = modelHandle.Model;
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
 
         // Get embedding for token 1
@@ -224,7 +231,8 @@ public sealed class DebugForwardPass
         var path = FindQwen3CoderPath();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
-        using var model = GgufModel.Open(path);
+        using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
+        var model = modelHandle.Model;
         foreach (var t in model.Tensors.Where(t => t.Name.StartsWith("blk.0.") || !t.Name.StartsWith("blk.")))
             Console.WriteLine($"{t.Name}: [{string.Join(",", t.Dimensions.Take(t.NDimensions))}] {t.DType}");
 
@@ -239,7 +247,8 @@ public sealed class DebugForwardPass
         var path = FindQwen3CoderPath();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
-        using var model = GgufModel.Open(path);
+        using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
+        var model = modelHandle.Model;
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
         Console.WriteLine($"IsMoE={hp.IsMoE}, NumExperts={hp.NumExperts}, NumActive={hp.NumActiveExperts}");
         Console.WriteLine($"ExpertIntermediateDim={hp.ExpertIntermediateDim}, IntermediateDim={hp.IntermediateDim}");
@@ -264,7 +273,8 @@ public sealed class DebugForwardPass
         var path = FindQwen3CoderPath();
         Assert.SkipUnless(path is not null, "model fixture not present in this environment");
 
-        using var model = GgufModel.Open(path);
+        using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
+        var model = modelHandle.Model;
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
         var tokenizer = GgufTokenizer.FromGgufModel(model);
         using var backend = new CpuBackend();

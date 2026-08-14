@@ -43,7 +43,8 @@ public sealed class SafetensorsDifferentialFixtureTests : IDisposable
         BuildGgufFile(ggufPath, weights, vocabSize: 128, hiddenSize: 64, layers: 2, heads: 4, kvHeads: 2, intermediateSize: 128, tied: false);
         BuildSafetensorsPackage(safetensorsDir, weights, vocabSize: 128, hiddenSize: 64, layers: 2, heads: 4, kvHeads: 2, intermediateSize: 128, tied: false, isF16: false);
 
-        using var ggufModel = GgufModel.Open(ggufPath);
+        using var ggufModelHandle = SharedModelCacheFixture.Instance.Acquire(ggufPath);
+        var ggufModel = ggufModelHandle.Model;
         using var stSource = SafetensorsTensorSource.Open(safetensorsDir);
 
         // 1. Verify tensor enumeration and shape equivalence
@@ -95,7 +96,8 @@ public sealed class SafetensorsDifferentialFixtureTests : IDisposable
         BuildGgufFile(ggufPath, weights, vocabSize: 128, hiddenSize: 64, layers: 2, heads: 4, kvHeads: 2, intermediateSize: 128, tied: false);
         BuildSafetensorsPackage(safetensorsDir, weights, vocabSize: 128, hiddenSize: 64, layers: 2, heads: 4, kvHeads: 2, intermediateSize: 128, tied: false, isF16: true);
 
-        using var ggufModel = GgufModel.Open(ggufPath);
+        using var ggufModelHandle = SharedModelCacheFixture.Instance.Acquire(ggufPath);
+        var ggufModel = ggufModelHandle.Model;
         using var stSource = SafetensorsTensorSource.Open(safetensorsDir);
 
         var ggufHp = ModelHyperparams.FromGgufMetadata(ggufModel.Metadata);
@@ -147,7 +149,8 @@ public sealed class SafetensorsDifferentialFixtureTests : IDisposable
         BuildGgufFile(ggufPath, weights, vocabSize: 128, hiddenSize: 64, layers: 2, heads: 4, kvHeads: 2, intermediateSize: 128, tied: true);
         BuildSafetensorsPackage(safetensorsDir, weights, vocabSize: 128, hiddenSize: 64, layers: 2, heads: 4, kvHeads: 2, intermediateSize: 128, tied: true, isF16: false);
 
-        using var ggufModel = GgufModel.Open(ggufPath);
+        using var ggufModelHandle = SharedModelCacheFixture.Instance.Acquire(ggufPath);
+        var ggufModel = ggufModelHandle.Model;
         using var stSource = SafetensorsTensorSource.Open(safetensorsDir);
 
         var ggufHp = ModelHyperparams.FromGgufMetadata(ggufModel.Metadata);
@@ -181,7 +184,8 @@ public sealed class SafetensorsDifferentialFixtureTests : IDisposable
         BuildGgufFile(ggufPath, weights, vocabSize: 128, hiddenSize: 64, layers: 2, heads: 4, kvHeads: 2, intermediateSize: 128, tied: false);
         BuildSafetensorsPackageWithDtype(safetensorsDir, weights, vocabSize: 128, hiddenSize: 64, layers: 2, heads: 4, kvHeads: 2, intermediateSize: 128, tied: false, dtypeStr: "BF16");
 
-        using var ggufModel = GgufModel.Open(ggufPath);
+        using var ggufModelHandle = SharedModelCacheFixture.Instance.Acquire(ggufPath);
+        var ggufModel = ggufModelHandle.Model;
         using var stSource = SafetensorsTensorSource.Open(safetensorsDir);
 
         var ggufHp = ModelHyperparams.FromGgufMetadata(ggufModel.Metadata);

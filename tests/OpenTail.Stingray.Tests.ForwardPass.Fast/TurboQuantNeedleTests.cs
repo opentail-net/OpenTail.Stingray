@@ -1,7 +1,7 @@
 using OpenTail.Stingray.Engine;
 using OpenTail.Stingray.TurboQuant;
 
-namespace OpenTail.Stingray.Tests.ForwardPass;
+namespace OpenTail.Stingray.Tests.ForwardPass.Fast;
 
 /// <summary>
 /// Needle-in-a-haystack tests for TurboQuantKvCache.

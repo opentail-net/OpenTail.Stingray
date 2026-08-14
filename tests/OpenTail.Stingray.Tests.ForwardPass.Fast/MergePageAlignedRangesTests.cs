@@ -1,6 +1,6 @@
 using OpenTail.Stingray.Engine;
 
-namespace OpenTail.Stingray.Tests.ForwardPass;
+namespace OpenTail.Stingray.Tests.ForwardPass.Fast;
 
 /// <summary>
 /// CPU-only unit tests for <see cref="CudaHybridGdnForwardPass.MergePageAlignedRanges"/> — the

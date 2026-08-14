@@ -6,18 +6,26 @@ using OpenTail.Stingray.Engine;
 using OpenTail.Stingray.Server;
 using OpenTail.Stingray.Sessions;
 
-namespace OpenTail.Stingray.Tests.Server;
+namespace OpenTail.Stingray.Tests.Server.Fast;
 
 /// <summary>
 /// Bounded admission rejects excess generation work with HTTP 429 instead of silently retaining
 /// an unbounded number of requests. Setting MaxQueuedRequests to zero retains the legacy
 /// MaxConcurrentRequests-only behaviour.
 /// </summary>
-public sealed class ConcurrencyLimitTests
+public sealed class ConcurrencyLimitTests : IDisposable
 {
-    private static HttpClient CreateClient(FakeInferenceEngine fake, int? maxConcurrent,
-        int maxQueued = 0, int maxBatch = 1) =>
-        new WebApplicationFactory<Program>()
+    private readonly List<WebApplicationFactory<Program>> _factories = new();
+
+    public void Dispose()
+    {
+        foreach (var factory in _factories) factory.Dispose();
+    }
+
+    private HttpClient CreateClient(FakeInferenceEngine fake, int? maxConcurrent,
+        int maxQueued = 0, int maxBatch = 1)
+    {
+        var factory = new WebApplicationFactory<Program>()
             .WithWebHostBuilder(b => b.ConfigureServices(s =>
             {
                 s.Configure<OpenTailStingrayServerOptions>(o =>
@@ -27,8 +35,10 @@ public sealed class ConcurrencyLimitTests
                     o.MaxBatchSize = maxBatch;
                 });
                 s.AddSingleton<IInferenceEngine>(fake);
-            }))
-            .CreateClient();
+            }));
+        _factories.Add(factory);
+        return factory.CreateClient();
+    }
 
     private static object ChatRequest() => new
     {
@@ -155,7 +165,7 @@ public sealed class ConcurrencyLimitTests
     public async Task SessionTurn_IsSubjectToTheSameAdmissionGateAsChat()
     {
         var fake = new FakeInferenceEngine("test-model") { Hold = new TaskCompletionSource() };
-        var client = new WebApplicationFactory<Program>()
+        using var factory = new WebApplicationFactory<Program>()
             .WithWebHostBuilder(b => b.ConfigureServices(s =>
             {
                 s.Configure<OpenTailStingrayServerOptions>(o =>
@@ -166,8 +176,8 @@ public sealed class ConcurrencyLimitTests
                 });
                 s.AddSingleton<IInferenceEngine>(fake);
                 s.AddSingleton<IServerSessionRuntime>(new UnavailableSessions());
-            }))
-            .CreateClient();
+            }));
+        var client = factory.CreateClient();
 
         // Hold the only admission slot with an ordinary chat request.
         var held = client.PostAsJsonAsync("/v1/chat/completions", ChatRequest());

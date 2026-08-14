@@ -10,6 +10,7 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="OpenTail.Stingray.Tests.Sessions" />
+    <InternalsVisibleTo Include="OpenTail.Stingray.Tests.Sessions.Fast" />
   </ItemGroup>
 
 </Project>

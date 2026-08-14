@@ -73,7 +73,8 @@ public sealed class Repro_Pos13Parity
         var modelPath = FindMtpModelPath();
         Assert.NotNull(modelPath);
 
-        using var model = GgufModel.Open(modelPath!);
+        using var modelHandle = SharedModelCacheFixture.Instance.Acquire(modelPath!);
+        var model = modelHandle.Model;
         var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
 
         using var backend = new CpuBackend();

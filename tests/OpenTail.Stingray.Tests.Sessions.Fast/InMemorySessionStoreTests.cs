@@ -1,7 +1,7 @@
 using OpenTail.Stingray.Sessions;
 using System.Collections.Immutable;
 
-namespace OpenTail.Stingray.Tests.Sessions;
+namespace OpenTail.Stingray.Tests.Sessions.Fast;
 
 public sealed class InMemorySessionStoreTests
 {

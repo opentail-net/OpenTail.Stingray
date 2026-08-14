@@ -28,7 +28,8 @@ public sealed class Repro_Tokenize
         var path = FindMtpModelPath();
         Assert.NotNull(path);
 
-        using var model = GgufModel.Open(path!);
+        using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path!);
+        var model = modelHandle.Model;
         var tokenizer = GgufTokenizer.FromGgufModel(model);
 
         string rendered =
