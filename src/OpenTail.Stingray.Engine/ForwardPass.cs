@@ -1280,10 +1280,16 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
     /// <see cref="SimdKernels.MatMulBatched"/>'s <c>allowQ8</c> parameter for why that distinction
     /// is made by the caller rather than inferred from batch size.</para>
     /// </summary>
+    /// <param name="allowBlas">
+    /// Forwarded to <see cref="SimdKernels.MatMulBatched"/> (and gates the dequant-cache BLAS
+    /// path above it). Defaults to true; <see cref="PrefillPackedMulti"/> passes false because its
+    /// rows span multiple INDEPENDENT sessions' prompts, not positions within one prompt -- see
+    /// that parameter's doc for why batch-composition-dependent kernel choice is unsafe there.
+    /// </param>
     private void MatMulBatchedCached(float* output, in TensorRef w, float* input,
-        int N, int rows, int cols)
+        int N, int rows, int cols, bool allowBlas = true)
     {
-        if (_dequantCacheEnabled && w.DType != DType.Float32 && N >= SimdKernels.MinBatchForBlas)
+        if (allowBlas && _dequantCacheEnabled && w.DType != DType.Float32 && N >= SimdKernels.MinBatchForBlas)
         {
             float* wf32 = GetDequantWeightF32(in w, rows, cols);
             if (wf32 != null)
@@ -1312,7 +1318,7 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
                 return;
         }
 
-        SimdKernels.MatMulBatched(output, w.DataPtr, input, N, rows, cols, w.DType, allowQ8: true);
+        SimdKernels.MatMulBatched(output, w.DataPtr, input, N, rows, cols, w.DType, allowQ8: true, allowBlas: allowBlas);
     }
 
     /// <summary>
@@ -1327,10 +1333,10 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
     /// falls back for).
     /// </summary>
     private void MatMulBatchedDualCached(float* output1, in TensorRef w1, float* output2, in TensorRef w2,
-        float* input, int N, int rows, int cols)
+        float* input, int N, int rows, int cols, bool allowBlas = true)
     {
-        bool useCache1 = _dequantCacheEnabled && w1.DType != DType.Float32 && N >= SimdKernels.MinBatchForBlas;
-        bool useCache2 = _dequantCacheEnabled && w2.DType != DType.Float32 && N >= SimdKernels.MinBatchForBlas;
+        bool useCache1 = allowBlas && _dequantCacheEnabled && w1.DType != DType.Float32 && N >= SimdKernels.MinBatchForBlas;
+        bool useCache2 = allowBlas && _dequantCacheEnabled && w2.DType != DType.Float32 && N >= SimdKernels.MinBatchForBlas;
 
         // The repacked Q4_K path OUTRANKS the dual-Q8 path when both are available.
         //
@@ -1353,8 +1359,8 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
             && GetRepackedQ4Kx8(in w1, rows, cols) != null
             && GetRepackedQ4Kx8(in w2, rows, cols) != null)
         {
-            MatMulBatchedCached(output1, in w1, input, N, rows, cols);
-            MatMulBatchedCached(output2, in w2, input, N, rows, cols);
+            MatMulBatchedCached(output1, in w1, input, N, rows, cols, allowBlas);
+            MatMulBatchedCached(output2, in w2, input, N, rows, cols, allowBlas);
             return;
         }
 
@@ -1373,8 +1379,8 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
             if (SimdKernels.TryMatMulBatchedDualQ8(output1, w1.DataPtr, output2, w2.DataPtr, input, N, rows, cols, w1.DType))
                 return;
         }
-        MatMulBatchedCached(output1, in w1, input, N, rows, cols);
-        MatMulBatchedCached(output2, in w2, input, N, rows, cols);
+        MatMulBatchedCached(output1, in w1, input, N, rows, cols, allowBlas);
+        MatMulBatchedCached(output2, in w2, input, N, rows, cols, allowBlas);
     }
 
     /// <summary>
@@ -5597,9 +5603,15 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
                             batchHidden + (long)n * _embDim, normW, _embDim, _hp.RmsNormEps);
                     }
 
-                    MatMulBatchedCached(batchQ, in _wq[layer], batchNorm, N, qDim, _embDim);
-                    MatMulBatchedCached(batchK, in _wk[layer], batchNorm, N, kvDim, _embDim);
-                    MatMulBatchedCached(batchV, in _wv[layer], batchNorm, N, kvDim, _embDim);
+                    // allowBlas: false throughout PrefillPackedMulti -- N here is the SUM of
+                    // multiple independent sessions' chunk lengths, not positions within one
+                    // prompt. Letting that combined size decide BLAS-vs-tiered kernel choice would
+                    // make a session's own numerics depend on how many OTHER, unrelated sessions
+                    // happened to be packed alongside it in the same call -- see allowBlas's doc on
+                    // SimdKernels.MatMulBatched and docs/031-concurrent-decode-batch-tier-divergence-bug.md.
+                    MatMulBatchedCached(batchQ, in _wq[layer], batchNorm, N, qDim, _embDim, allowBlas: false);
+                    MatMulBatchedCached(batchK, in _wk[layer], batchNorm, N, kvDim, _embDim, allowBlas: false);
+                    MatMulBatchedCached(batchV, in _wv[layer], batchNorm, N, kvDim, _embDim, allowBlas: false);
 
                     if (_hasAttnBias)
                     {
@@ -5652,7 +5664,7 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
                         }
                     }
 
-                    MatMulBatchedCached(batchNorm, in _wo[layer], batchAttnOut, N, _embDim, qDim);
+                    MatMulBatchedCached(batchNorm, in _wo[layer], batchAttnOut, N, _embDim, qDim, allowBlas: false);
                     if (_hasAttnOutputBias)
                     {
                         for (int n = 0; n < N; n++)
@@ -5672,12 +5684,12 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
                         SimdKernels.RmsNorm(batchNorm + (long)n * _embDim,
                             batchHidden + (long)n * _embDim, ffnNormW, _embDim, _hp.RmsNormEps);
                     }
-                    MatMulBatchedCached(batchFfnGate, in _wGate[layer], batchNorm, N, _intermDim, _embDim);
-                    MatMulBatchedCached(batchFfnUp, in _wUp[layer], batchNorm, N, _intermDim, _embDim);
+                    MatMulBatchedCached(batchFfnGate, in _wGate[layer], batchNorm, N, _intermDim, _embDim, allowBlas: false);
+                    MatMulBatchedCached(batchFfnUp, in _wUp[layer], batchNorm, N, _intermDim, _embDim, allowBlas: false);
                     for (int n = 0; n < N; n++)
                         SimdKernels.SiLuMul(batchFfnGate + (long)n * _intermDim,
                             batchFfnUp + (long)n * _intermDim, _intermDim);
-                    MatMulBatchedCached(batchNorm, in _wDown[layer], batchFfnGate, N, _embDim, _intermDim);
+                    MatMulBatchedCached(batchNorm, in _wDown[layer], batchFfnGate, N, _embDim, _intermDim, allowBlas: false);
                     for (int n = 0; n < N; n++)
                     {
                         float* h = batchHidden + (long)n * _embDim;

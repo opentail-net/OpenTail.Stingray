@@ -84,8 +84,18 @@ public static unsafe class SimdKernels
     /// prefill chunk are both "5"), so the caller states its intent instead. Defaulting to false
     /// means a call site that is never audited stays on the safe F32 path.</para>
     /// </param>
+    /// <param name="allowBlas">
+    /// Whether this call may take the OpenBLAS SGEMM path once <c>batchSize &gt;= MinBatchForBlas</c>.
+    /// <b>Defaults to true.</b> A packed batch whose rows span MULTIPLE INDEPENDENT prompts (not
+    /// positions within one prompt -- see <see cref="Engine.ForwardPass.PrefillPackedMulti"/>) must
+    /// pass <c>false</c>: BLAS SGEMM's summation order is not bit-identical to the dot-product/
+    /// tiered fallback, so whether a session's own prefill takes BLAS would otherwise depend on how
+    /// many OTHER, unrelated sessions happened to be packed alongside it in the same call --
+    /// producing output that is silently sensitive to unrelated concurrent traffic (found via a
+    /// real-model concurrency stress test, docs/031-concurrent-decode-batch-tier-divergence-bug.md).
+    /// </param>
     public static void MatMulBatched(float* output, byte* weights, float* input,
-        int batchSize, int rows, int cols, DType dtype, bool allowQ8 = false)
+        int batchSize, int rows, int cols, DType dtype, bool allowQ8 = false, bool allowBlas = true)
     {
         if (!s_blasLogged)
         {
@@ -95,7 +105,7 @@ public static unsafe class SimdKernels
         // For small batches, fused MatVec is faster (no dequant overhead)
         // BLAS only wins when N is large enough to amortize F32 dequantization
 
-        if (batchSize < MinBatchForBlas || !BlasInterop.IsAvailable)
+        if (!allowBlas || batchSize < MinBatchForBlas || !BlasInterop.IsAvailable)
         {
             // Sequential fused MatVec (dequant in registers, no temp buffer).
             //

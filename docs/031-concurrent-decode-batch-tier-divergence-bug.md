@@ -1,114 +1,102 @@
-# Bug: concurrent decode output depends on how many OTHER sessions share the batch (5–15 wide)
+# Bug (FIXED): concurrent prefill output depended on how many OTHER sessions were packed alongside it
 
-**Status: root cause narrowed to a precise, reproducible boundary condition. Not fixed — the exact
-non-associative line inside `SimdKernels`'s small-batch tiered dispatch has not been isolated. Found
-while stress-testing `HotSession`/`ContinuousBatchingEngine` under concurrent load, unrelated to any
-of docs/028's three phases or docs/029's Q8-vs-F32 mechanism.**
+**Status: fixed.** Root cause was **not** decode's kernel tiering (the original hypothesis below,
+now disproven) — it was `ForwardPass.PrefillPackedMulti` letting OpenBLAS SGEMM engage or not
+based on the COMBINED packed batch size across MULTIPLE UNRELATED sessions, which is not a
+property of any single request. Found while stress-testing `HotSession`/`ContinuousBatchingEngine`
+under concurrent load, unrelated to any of docs/028's three phases or docs/029's Q8-vs-F32
+mechanism.
 
-## One-paragraph summary
+## One-paragraph summary (corrected)
 
 Run N identical sessions (same prompt, greedy/temperature-0 sampling — deterministic by
-construction) concurrently against one `ContinuousBatchingEngine`. For **N ≤ 4** and **N ≥ 16**,
-every session produces byte-identical output, as it must. For **5 ≤ N ≤ 15**, at least one session
-silently diverges from the rest — in the reproduced case, one session continues generating a token
-past the point every other (otherwise-identical) session stopped. This is not a race, not
-nondeterminism, not thread-count-sensitive noise: the same wrong token, from the same session
-index, every single run. The boundary lines up exactly with
-`SimdKernels.MatMulBatched`'s own internal dispatch: `N < MinBatchForBlas` (default 16) takes a
-small-batch tiered path (`MatVec4In` for groups of 4, `MatVec2In` for groups of 2, plain `MatVec`
-for the odd one out); `N ≥ MinBatchForBlas` takes an entirely different OpenBLAS GEMM path. The
-defect lives somewhere in the tiered path, specifically whenever a batch needs **more than one**
-call into that dispatch to cover all N rows — never when a single call handles the whole batch.
+construction) concurrently against one `ContinuousBatchingEngine`. For roughly 5 ≤ N ≤ 15, at
+least one session would silently diverge from the rest — the same wrong token, from the same
+session index, every run: not a race, not thread-count noise. The actual mechanism: when
+`ContinuousBatchingEngine.RunPrefillStep` admits multiple prompts in the same tick, it calls
+`ForwardPass.PrefillPackedMulti`, which packs every admitted session's prompt tokens into ONE
+combined batch of size `N = sum of each session's chunk length` and runs the whole layer stack's
+matmuls (`MatMulBatchedCached`) over that combined `N`. `SimdKernels.MatMulBatched` engages
+OpenBLAS SGEMM whenever `N >= MinBatchForBlas` (default 16) and falls back to a dot-product/
+tiered kernel otherwise — and **that gate does not know or care that the combined `N` is made up
+of several independent prompts**, only one of which is the session you're looking at. A short
+prompt (5 tokens) prefilled alone never gets near 16 and always takes the non-BLAS path; the same
+prompt packed with 7 other short prompts (`N = 40`) crosses the threshold and takes BLAS instead.
+BLAS SGEMM and the dot-product kernels are both individually correct — they are just not
+bit-identical to each other (different summation order) — so a session's own numerics silently
+depended on how many *other*, unrelated sessions happened to be packed alongside it in the same
+admission tick. The drift is tiny per layer but compounds over several decode steps and
+eventually flips a close-margin greedy argmax decision.
 
-## Why this matters
+## Why the original hypothesis was wrong
 
-This is the **core continuous-batching decode path** — every `HotSession` turn, every concurrent
-request, real production traffic. It is not gated behind any opt-in flag, not related to Q8/prefill
-precision (confirmed: reproduces identically with `STINGRAY_CPU_PREFILL_Q8=0`), and it affects a
-batch-size range (5–15 concurrent sequences) squarely inside normal operating conditions — most
-real deployments will see this range constantly, not as an edge case.
+The first write-up of this bug (see git history of this file) attributed it to
+`SimdKernels.MatMulBatched`'s small-batch tiered dispatch (`MatVec4In`/`MatVec2In`/`MatVec`),
+reached from **decode**, based on a bisection that varied session count and watched decode output
+diverge in the same N range. That bisection was real, but its attribution was wrong — it never
+isolated prefill from decode, and this codebase's continuous-batching path always prefills before
+it decodes, so "N concurrent sessions" conflates "N sessions packed in one `PrefillPackedMulti`
+call" with "N sessions later decoding together." Two controlled diagnostics (raw `ForwardPass`
+API calls, bypassing `ContinuousBatchingEngine`/`HotSession` entirely) separated the two:
 
-## How this was found
+1. **`BatchForwardMulti` (decode) at N=8, in isolation**: zero divergence between "slot 1 in an
+   8-wide batch" and "slot 1 computed alone." Decode's own tiered dispatch is safe, exactly as
+   its own bit-identity test (`SimdKernelsQ8KSTests.MatVec4In_BitwiseMatchesSingleMatVec`) claims.
+2. **The full engine repro, with `prefillChunkTokens: 0`** (forces `RunPrefillStep`'s
+   one-prompt-at-a-time branch, which calls `PrefillWithCache` per session and never calls
+   `PrefillPackedMulti`, even though the SAME 8 sessions still decode together afterward): all 8
+   sessions produced identical, correct output. This is the decisive result — it proves the
+   defect requires `PrefillPackedMulti` specifically, not shared decode.
 
-Requested as a stress test for the `HotSession` continuous-batching path: "pretend there are 5,
-then 10, then 40 requests at the same time." All three levels ran the identical prompt
-("The capital of France is") with greedy sampling on `SmolLM2-1.7B-Instruct-Q4_K_M.gguf`, real CPU
-dense model, one shared `ContinuousBatchingEngine`/`HotSessionRuntime`, `maxBatchSize` set to match
-each level's concurrency. Because every session's input is identical and sampling is deterministic,
-any single session disagreeing with the rest is decisive evidence of a defect — there is no
-"expected" source of variation to explain it away.
+From there, a raw `PrefillPackedMulti(N=8 identical 5-token prompts)` call (no engine at all)
+reproduced the divergence directly against a solo `PrefillWithCache` reference. Toggling
+`SimdKernels.Q8PrefillEnabled` off did **not** make it go away (ruling out the Q8 activation-
+quantization path, and confirming `MinBatchForQ8Prefill`'s default of 1 was never actually the
+active variable here, since it applies uniformly to solo and packed alike). Forcing
+`SimdKernels.MinBatchForBlas` to 1000 — so the packed call's `N=40` stayed on the same non-BLAS
+route solo's `N=5` was already using — made the divergence disappear completely, with both Q8 on
+and Q8 off. That isolated the BLAS/non-BLAS crossover as the sole remaining variable and the
+confirmed mechanism.
 
-N = 5 and N = 10 both failed on the first run:
+## The fix
 
-```
-session 1 of 5 produced [7042,30,198] but session 0 produced [7042,30] for the IDENTICAL prompt
-under greedy sampling -- 5-way concurrent load corrupted or crossed session state.
-```
+`SimdKernels.MatMulBatched` gained an `allowBlas` parameter (default `true`, preserving existing
+behavior everywhere). `ForwardPass.MatMulBatchedCached`/`MatMulBatchedDualCached` gained the same
+parameter, threaded through to both their own dequant-cache BLAS branch and to
+`SimdKernels.MatMulBatched`. `PrefillPackedMulti`'s six matmul call sites now pass
+`allowBlas: false` — packed multi-session prefill never lets its combined `N` decide BLAS
+eligibility, so a session's own prefill numerics no longer depend on how many other sessions
+happened to be packed alongside it. Solo prefill (`Prefill`/`PrefillWithCache`) is unaffected —
+every call site there keeps the default `true` and behaves exactly as before.
 
-N = 40 passed cleanly.
+This trades away BLAS's throughput benefit specifically for packed admission of long prompts
+(prompts individually long enough to justify BLAS on their own now stay on the dot-product/Q8
+path when prefilled via packed admission) in exchange for determinism: packed prefill output no
+longer depends on unrelated concurrent traffic. Q8Prefill's own dot8/dot4/dot1 tiering already
+provides substantial weight-read amortization across packed tokens independent of BLAS, so the
+practical throughput cost is real but narrower than it sounds — most real concurrent traffic
+(interactive chat messages, individually well under 16 tokens) was never BLAS-eligible on its own
+account anyway, and is exactly the case this bug hit.
 
-## Bisection
+## Verification
 
-| N | Result | `SimdKernels.MatMulBatched` dispatch for this N |
-|---|---|---|
-| 2 | pass | one `MatVec2In` call (rows 0–1) |
-| 3 | pass | one `MatVec2In` call (0–1) + one `MatVec` call (2) |
-| **4** | **pass** | **one `MatVec4In` call (0–3), nothing else** |
-| **5** | **fail** | `MatVec4In` (0–3) + `MatVec` (4) |
-| 6 | fail | `MatVec4In` (0–3) + `MatVec2In` (4–5) |
-| 7 | fail | `MatVec4In` (0–3) + `MatVec2In` (4–5) + `MatVec` (6) |
-| **8** | **fail** | **`MatVec4In` (0–3) + `MatVec4In` (4–7) — two calls of the SAME tier, no other tier involved** |
-| 10 | fail | `MatVec4In` ×2 (0–3, 4–7) + `MatVec2In` (8–9) |
-| **40** | **pass** | **`N ≥ MinBatchForBlas` (16) → OpenBLAS GEMM path entirely, tiered dispatch never runs** |
+`HotSessionConcurrencyStressTests` (5, 10, 40 concurrent sessions, plus 4/8 boundary tests) is
+fully green — `Boundary_8Concurrent_StillDiverges` (kept its original name; the divergence it
+demonstrated is gone) now passes alongside everything else. A direct raw-API repro
+(`PrefillPackedMulti(N=8 identical 5-token prompts)` compared against solo `PrefillWithCache`,
+replaying 3 greedy decode steps) matches solo exactly at every step post-fix, both with Q8Prefill
+at its default (on) and explicitly disabled.
 
-N = 3 (two different kernel calls: `MatVec2In` then `MatVec`) passes. N = 8 (two calls of the
-*same* kernel, `MatVec4In` twice, no other tier) fails. This rules out "mixing different tiers" as
-the necessary ingredient — the common factor across every failing N is specifically that
-**`MatVec4In` is invoked, and something else (another `MatVec4In` call, a `MatVec2In` call, or a
-`MatVec` call) also runs within the same `MatMulBatched`/`BatchForwardMulti` step.** N = 4 (the
-only case where `MatVec4In` runs exactly once and nothing else follows it) is clean. This points at
-`MatVec4In` itself — most likely some state it reads or writes is not fully isolated between
-separate invocations or from whatever runs immediately after it — but the exact line has not been
-located; `MatVec4In`'s per-call parameters (`output0..3`, `input0..3`, a freshly-sliced `weights`
-pointer) looked properly scoped on a first read of `SimdKernels.cs` (Q4_K branch: a `Parallel.For`
-over weight rows writing into the four caller-supplied output pointers, no obviously-shared static
-or thread-local buffer) — the defect is real and precisely bounded, but not yet pinned to a
-specific line.
-
-## What's confirmed and what isn't
-
-**Confirmed:**
-- Deterministic and 100% reproducible at every N tested in [5, 10] (5, 6, 7, 8, 10 all fail
-  identically on repeat runs).
-- Unrelated to `docs/029`'s Q8-vs-F32 mechanism (reproduces with `STINGRAY_CPU_PREFILL_Q8=0`).
-- Confined to `SimdKernels.MatMulBatched`'s `batchSize < MinBatchForBlas` branch — N ≥ 16 (BLAS
-  path) is clean at N = 40.
-- Reproduces via `BatchForwardMulti` (decode), which always calls `SimdKernels.MatMulBatched` with
-  `allowQ8: false` — i.e. this is NOT a quantization-precision issue at all, it reproduces in the
-  supposedly-exact F32 tiered path.
-- Not a `HotSession`/`ContinuousBatchingEngine` scheduling bug in the sense of "wrong session's data
-  read" — the affected session's own prior tokens (positions 1–2) matched every other session
-  exactly; only the decision at one specific later step diverged, consistent with a numeric result
-  differing by kernel-tier composition rather than a session getting the wrong cache/position
-  entirely.
-
-**Not yet confirmed (plausible, not verified):**
-- Whether this **also** affects prefill, not just decode. `PrefillCore`'s `MatMulBatchedCached`
-  eventually calls the same `SimdKernels.MatMulBatched` in its own fallback branch, gated the same
-  way — if several different sessions' prompts get admitted via `PrefillPackedMulti` and land in
-  the same 5–15 combined-row range, the same defect class plausibly applies there too. Not
-  independently tested; the reproduction here isolates decode specifically (positions 1–2 matched
-  across all sessions, meaning prefill and the first two decode steps were NOT where this
-  particular repro's divergence originated — but that doesn't rule out prefill being vulnerable
-  under different conditions).
-- The precise non-associative operation inside `MatVec4In`/`MatVec2In`/`MatVec`'s interaction.
-  `SimdKernelsQ8KSTests.MatVec4In_BitwiseMatchesSingleMatVec` (cited in `SimdKernels.cs`'s own
-  `BatchedMatVecTierEnabled` comment) apparently asserts bit-identity between `MatVec4In` and a
-  solo `MatVec` call — worth re-running that specific test and checking whether it covers the
-  scenario found here (a `MatVec4In` call immediately followed by ANOTHER batched call in the same
-  step, rather than in isolation).
-- Whether GPU backends (`CudaForwardPass`) have an equivalent tiered dispatch with the same
-  vulnerability, or whether this is CPU-`SimdKernels`-specific.
+Full regression: `Tests.ForwardPass.Fast` (602/602), `Tests.Sessions.Fast` (394/394),
+`Tests.Server.Fast` (260/260), and the real-model `ContinuousBatchingTests` class all pass except
+three PRE-EXISTING, unrelated failures confirmed (via `git stash`, re-running against the pre-fix
+baseline) to fail identically with or without this change: `PrefillWithCache_Chunked_MatchesFull`
+(the codebase's existing, already-documented deliberate-red test —
+see `docs/00-current-work.md`), `PrefillWithCache_SingleToken_MatchesForward` (flagged as a
+still-open issue in `docs/029-prefill-batch-composition-numerics-bug.md` / `docs/bugstofix.md`),
+and `PrefillWithCache_DequantCacheOnOff_BitIdentical`. None of the three touch
+`PrefillPackedMulti`; all three are solo-`PrefillWithCache`-only, and this fix does not change
+solo `PrefillWithCache`'s behavior at all (its call sites keep the default `allowBlas: true`).
 
 ## Reproduction
 
@@ -117,29 +105,5 @@ STINGRAY_RUN_HEAVY_TESTS=1 dotnet test tests/OpenTail.Stingray.Tests.Sessions \
   --filter-method "*HotSessionConcurrencyStressTests*"
 ```
 
-`tests/OpenTail.Stingray.Tests.Sessions/HotSessionConcurrencyStressTests.cs` — `Stress_5ConcurrentSessions`
-and `Stress_10ConcurrentSessions` are **left red on purpose**, the same standing pattern this
-codebase already uses for `ContinuousBatchingTests.PrefillWithCache_Chunked_MatchesFull` (see
-`docs/00-current-work.md`, "Known defect — one deliberate red test"). `Boundary_4Concurrent_AllMatch`
-and `Boundary_8Concurrent_StillDiverges` are the bisection evidence, kept as permanent regression
-markers for the exact boundary. `Stress_40ConcurrentSessions` is expected to pass (BLAS path).
-Needs `models/SmolLM2-1.7B-Instruct-Q4_K_M.gguf` on disk.
-
-## Suggested next steps for whoever picks this up
-
-1. Confirm/refute the prefill exposure question above — construct a repro where several different
-   sessions' PROMPTS (not just decode steps) land in the same packed 5–15 range and check for the
-   same class of divergence.
-2. Read `MatVec2In`/`MatVec4In`'s full implementation for every `DType` branch (only Q4_K's branch
-   was read here) — the model used is Q4_K_M, but other quant formats' branches weren't checked and
-   could have a different or additional issue.
-3. Check whether `Parallel.For`'s `s_parallelOpts` (shared across calls) has any per-call state
-   that could leak between two back-to-back `MatVec4In` invocations in the same `BatchForwardMulti`
-   step — the N=8 case (two `MatVec4In` calls, nothing else) is the narrowest reproduction and the
-   best starting point for a kernel-level bisection, since it removes tier-mixing as a variable
-   entirely.
-4. Once the exact line is found, the fix likely follows the same shape as
-   `SimdKernelsQ8KSTests.MatVec4In_BitwiseMatchesSingleMatVec`'s existing contract: assert bit
-   identity between a value computed via any tier combination and the same value computed as a lone
-   `MatVec` call, and fix until that holds for every N, not just the specific N used to invent the
-   original test.
+All five tests in `tests/OpenTail.Stingray.Tests.Sessions/HotSessionConcurrencyStressTests.cs`
+now pass. Needs `models/SmolLM2-1.7B-Instruct-Q4_K_M.gguf` on disk.
