@@ -28,7 +28,7 @@ namespace OpenTail.Stingray.Tests.ForwardPass;
 ///
 /// <para>Skipped silently when the MoE model is not on disk; a failure inside prefill must FAIL.</para>
 /// </summary>
-public sealed class MoeBatchedPrefillParityTests
+public sealed class MoeBatchedPrefillParityTests : HeavyTestBase
 {
     /// <summary>OLMoE: 16 layers, 64 experts, top-8, no shared expert — the smallest real MoE here.</summary>
     private static string? FindMoePath()

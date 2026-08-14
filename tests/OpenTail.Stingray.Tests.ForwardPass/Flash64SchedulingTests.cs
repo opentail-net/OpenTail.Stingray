@@ -5,7 +5,7 @@ using OpenTail.Stingray.Engine;
 
 namespace OpenTail.Stingray.Tests.ForwardPass;
 
-public sealed class Flash64SchedulingTests
+public sealed class Flash64SchedulingTests : HeavyTestBase
 {
     private const string Flash64Variable = "STINGRAY_PREFILL_ATTN_FLASH64";
     private const string TileJobsVariable = "STINGRAY_PREFILL_ATTN_FLASH64_TILE_JOBS";

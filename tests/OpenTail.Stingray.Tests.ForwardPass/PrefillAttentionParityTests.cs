@@ -32,7 +32,7 @@ namespace OpenTail.Stingray.Tests.ForwardPass;
 /// same argmax, not bit equality. A genuine kernel-selection divergence shows up far outside that
 /// tolerance, not just below it.</para>
 /// </remarks>
-public sealed class PrefillAttentionParityTests
+public sealed class PrefillAttentionParityTests : HeavyTestBase
 {
     private static string? FindModelPath(string filename = "SmolLM2-1.7B-Instruct-Q4_K_M.gguf")
     {

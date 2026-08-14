@@ -75,7 +75,7 @@ namespace OpenTail.Stingray.Tests.ForwardPass;
 /// perplexity-only — see the <c>olmoe</c> writeup in the plan doc §1b, whose QK-norm defect fix
 /// this checkpoint's Q/K-norm reuses unchanged). See <c>Olmo2GreedyParityTests.cs</c> — this file.</para>
 /// </summary>
-public sealed class Olmo2GreedyParityTests
+public sealed class Olmo2GreedyParityTests : HeavyTestBase
 {
     private const string ModelFile = "OLMo-2-0425-1B-Q8_0.gguf";
 

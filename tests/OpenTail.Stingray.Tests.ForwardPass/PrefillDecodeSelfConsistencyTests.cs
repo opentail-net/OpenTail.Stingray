@@ -25,7 +25,7 @@ namespace OpenTail.Stingray.Tests.ForwardPass;
 /// <see cref="MatMulBatchedQ8EquivalenceTests"/> documents.
 /// </para>
 /// </summary>
-public sealed class PrefillDecodeSelfConsistencyTests : IDisposable
+public sealed class PrefillDecodeSelfConsistencyTests : HeavyTestBase, IDisposable
 {
     private const string ModelFile = "SmolLM2-1.7B-Instruct-Q4_K_M.gguf";
 

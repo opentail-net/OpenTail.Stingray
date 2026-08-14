@@ -22,7 +22,7 @@ namespace OpenTail.Stingray.Tests.Vulkan;
 /// equals the correct expertDim, so reverting to the bug would neither garble OLMoE nor trip the guard —
 /// the unit test above is what pins the regression direction.
 /// </summary>
-public sealed class GpuFfnScratchGuardTests
+public sealed class GpuFfnScratchGuardTests : HeavyTestBase
 {
     /// <summary>
     /// Creates the Vulkan backend, or SKIPS when the device cannot be brought up.

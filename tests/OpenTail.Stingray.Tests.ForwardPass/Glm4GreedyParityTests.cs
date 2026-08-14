@@ -97,7 +97,7 @@ namespace OpenTail.Stingray.Tests.ForwardPass;
 /// bug, especially given both real defects above were found and fixed BEFORE this measurement, not
 /// papered over by a loose bound.</para>
 /// </summary>
-public sealed class Glm4GreedyParityTests
+public sealed class Glm4GreedyParityTests : HeavyTestBase
 {
     private const string ModelFile = "THUDM_GLM-4-9B-0414-Q4_K_M.gguf";
 

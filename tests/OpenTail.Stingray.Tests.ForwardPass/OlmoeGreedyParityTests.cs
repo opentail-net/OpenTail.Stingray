@@ -32,7 +32,7 @@ namespace OpenTail.Stingray.Tests.ForwardPass;
 /// </code>
 /// </para>
 /// </summary>
-public sealed class OlmoeGreedyParityTests
+public sealed class OlmoeGreedyParityTests : HeavyTestBase
 {
     private const string ModelFile = "OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf";
 

@@ -26,7 +26,7 @@ namespace OpenTail.Stingray.Tests.ForwardPass;
 /// caught, it terminates the runner. So the contract is asserted on the advertised limit itself,
 /// which is the thing callers actually consume.</para>
 /// </summary>
-public sealed class MaxSeqLenContractTests
+public sealed class MaxSeqLenContractTests : HeavyTestBase
 {
     private static string? FindModelPath(string filename = "SmolLM2-1.7B-Instruct-Q4_K_M.gguf")
     {

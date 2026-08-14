@@ -49,7 +49,7 @@ namespace OpenTail.Stingray.Tests.ForwardPass;
 /// zero-new-code prediction: every generic mechanism this checkpoint exercises (Granite-family
 /// scale block, standard softmax-gated MoE, standard GQA) was already correct.</para>
 /// </summary>
-public sealed class GraniteMoeGreedyParityTests
+public sealed class GraniteMoeGreedyParityTests : HeavyTestBase
 {
     private const string ModelFile = "granite-3.0-1b-a400m-instruct-Q8_0.gguf";
 

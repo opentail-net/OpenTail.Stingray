@@ -56,7 +56,7 @@ namespace OpenTail.Stingray.Tests.ForwardPass;
 /// position agrees with llama.cpp's F16 reference exactly, including through the entirely new
 /// position-embedding and no-RoPE code paths.</para>
 /// </summary>
-public sealed class Gpt2GreedyParityTests
+public sealed class Gpt2GreedyParityTests : HeavyTestBase
 {
     private const string ModelFile = "gpt2-f16.gguf";
 

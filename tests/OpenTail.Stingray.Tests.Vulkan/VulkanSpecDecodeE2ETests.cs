@@ -19,7 +19,7 @@ namespace OpenTail.Stingray.Tests.Vulkan;
 ///
 /// Runs on GPU and silent-skips when Vulkan or the Q4_K GGUF is unavailable.
 /// </summary>
-public sealed class VulkanSpecDecodeE2ETests
+public sealed class VulkanSpecDecodeE2ETests : HeavyTestBase
 {
     // Q4_K_M dense model = the batched-trunk-eligible target (CanBatchedTrunk == true). This is
     // the model the CLI --draft-lookup Vulkan path is meant for.

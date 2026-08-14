@@ -20,7 +20,7 @@ namespace OpenTail.Stingray.Tests.Vulkan;
 /// query attention (kv_head mapping), a query count that is not a multiple of the 8-wide tile, and
 /// a sequence length that is not a multiple of the tile either.</para>
 /// </summary>
-public sealed class VulkanFlashAttentionTests
+public sealed class VulkanFlashAttentionTests : HeavyTestBase
 {
     private static VulkanBackend? TryCreate()
     {

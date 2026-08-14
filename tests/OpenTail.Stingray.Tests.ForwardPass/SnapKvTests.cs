@@ -19,7 +19,7 @@ namespace OpenTail.Stingray.Tests.ForwardPass;
 /// </list>
 /// Skipped silently when the small-model file isn't on disk.
 /// </summary>
-public sealed class SnapKvTests
+public sealed class SnapKvTests : HeavyTestBase
 {
     private static string? FindModelPath(string filename = "SmolLM2-1.7B-Instruct-Q4_K_M.gguf")
     {

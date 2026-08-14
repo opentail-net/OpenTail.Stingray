@@ -80,6 +80,7 @@ public static class KnownEnvironmentVariables
         "STINGRAY_EXPERT_STATS",
         "STINGRAY_FLASH64_STRIDED_GEMM",
         "STINGRAY_FORCE_CPU_EMBED",
+        "STINGRAY_FORCE_NO_BLAS",
         "STINGRAY_GDN_CHUNKED_PREFILL",
         "STINGRAY_GDN_DECODE_FAST",
         "STINGRAY_GDN_PREFILL_COMPUTE",

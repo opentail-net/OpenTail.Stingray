@@ -37,7 +37,7 @@ namespace OpenTail.Stingray.Tests.ForwardPass;
 /// <para><b>Result: FULL 24-of-24-token exact match, no near-tie, no divergence anywhere</b> — on
 /// the very first real attempt, with zero engine code changes.</para>
 /// </summary>
-public sealed class MaincoderGreedyParityTests
+public sealed class MaincoderGreedyParityTests : HeavyTestBase
 {
     private const string ModelFile = "maincoder-1b-Q8_0.gguf";
 

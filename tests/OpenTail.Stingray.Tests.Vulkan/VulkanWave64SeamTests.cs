@@ -10,7 +10,7 @@ namespace OpenTail.Stingray.Tests.Vulkan;
 /// compute correct dot products and write their outputs without subgroup reduction corruption or
 /// unwritten (0.0000) slots.
 /// </summary>
-public sealed unsafe class VulkanWave64SeamTests
+public sealed unsafe class VulkanWave64SeamTests : HeavyTestBase
 {
     private static VulkanBackend? TryCreateBackend()
     {

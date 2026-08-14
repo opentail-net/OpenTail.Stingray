@@ -20,7 +20,7 @@ namespace OpenTail.Stingray.Tests.ForwardPass;
 ///         decode stays coherent, and env-unset disables eviction.</item>
 /// </list>
 /// </summary>
-public sealed class SnapKvTurboQuantTests
+public sealed class SnapKvTurboQuantTests : HeavyTestBase
 {
     private const int HeadDim = 128;
     private const int NumLayers = 1;

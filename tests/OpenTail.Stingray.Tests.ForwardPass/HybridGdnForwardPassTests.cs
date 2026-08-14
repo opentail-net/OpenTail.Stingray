@@ -15,7 +15,7 @@ namespace OpenTail.Stingray.Tests.ForwardPass;
 /// least two distinct argmax tokens over a short decode window. Greedy output may
 /// be garbled in v1 — the synth doesn't have to be coherent, only non-collapsed.
 /// </summary>
-public sealed class HybridGdnForwardPassTests
+public sealed class HybridGdnForwardPassTests : HeavyTestBase
 {
     /// <summary>
     /// Probes the two known disks where the qwen35moe GGUF could live. The model is

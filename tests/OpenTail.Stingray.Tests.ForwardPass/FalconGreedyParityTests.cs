@@ -86,7 +86,7 @@ namespace OpenTail.Stingray.Tests.ForwardPass;
 /// This is a full, unqualified match (not a partial-prefix acceptance like the OLMoE/Apertus/
 /// GPT-NeoX receipts) — the same strength of receipt as Granite's and SmolLM3's.</para>
 /// </summary>
-public sealed class FalconGreedyParityTests
+public sealed class FalconGreedyParityTests : HeavyTestBase
 {
     private const string ModelFile = "falcon-7b-instruct-Q4_K_M.gguf";
 

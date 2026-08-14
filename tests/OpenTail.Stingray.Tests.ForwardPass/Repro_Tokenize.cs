@@ -6,7 +6,7 @@ namespace OpenTail.Stingray.Tests.ForwardPass;
 /// Investigation harness: dump opentail-llm's tokenization of the rendered chat
 /// prompt to compare with llama.cpp's. Runs only when STINGRAY_REPRO_POS13=1.
 /// </summary>
-public sealed class Repro_Tokenize
+public sealed class Repro_Tokenize : HeavyTestBase
 {
     private static string? FindMtpModelPath()
     {

@@ -4,7 +4,7 @@ using OpenTail.Stingray.Engine;
 
 namespace OpenTail.Stingray.Tests.ForwardPass;
 
-public sealed class Exaone4VerifyTemp
+public sealed class Exaone4VerifyTemp : HeavyTestBase
 {
     private const string ModelFile = "exaone4-1.2b-Q8_0.gguf";
 

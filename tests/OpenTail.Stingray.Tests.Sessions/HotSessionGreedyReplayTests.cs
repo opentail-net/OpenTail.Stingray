@@ -29,7 +29,7 @@ namespace OpenTail.Stingray.Tests.Sessions;
 /// <para>The restart acceptance test is explicitly skipped when the reference model is not on disk.
 /// A failure inside a turn must FAIL.</para>
 /// </summary>
-public sealed class HotSessionGreedyReplayTests
+public sealed class HotSessionGreedyReplayTests : HeavyTestBase
 {
     private const string RestartPhaseEnvironment = "OPENTAIL_TEST_RESTART_PHASE";
     private const string RestartModelEnvironment = "OPENTAIL_TEST_RESTART_MODEL";

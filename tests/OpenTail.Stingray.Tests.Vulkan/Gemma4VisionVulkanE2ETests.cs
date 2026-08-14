@@ -26,7 +26,7 @@ namespace OpenTail.Stingray.Tests.Vulkan;
 /// Vulkan is unavailable, the device is out of memory for full offload, or the GGUFs aren't on
 /// disk. NOT run by the implementation pass (the orchestrator verifies on a real GPU).
 /// </summary>
-public sealed class Gemma4VisionVulkanE2ETests
+public sealed class Gemma4VisionVulkanE2ETests : HeavyTestBase
 {
     private readonly ITestOutputHelper _out;
     public Gemma4VisionVulkanE2ETests(ITestOutputHelper output) => _out = output;

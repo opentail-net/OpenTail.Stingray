@@ -41,7 +41,7 @@ namespace OpenTail.Stingray.Tests.ForwardPass;
 /// <para>This test keeps the whitespace case because it was the reproduction that surfaced the
 /// defect. The general contract is covered alongside it.</para>
 /// </summary>
-public sealed class Q8PrefillLowMagnitudeInputTests
+public sealed class Q8PrefillLowMagnitudeInputTests : HeavyTestBase
 {
     [Fact]
     public void Q8Prefill_OnSingleRepeatedToken_StaysCloseToExactF32()

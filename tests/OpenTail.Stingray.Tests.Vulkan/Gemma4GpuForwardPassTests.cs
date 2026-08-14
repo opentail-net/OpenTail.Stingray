@@ -30,7 +30,7 @@ namespace OpenTail.Stingray.Tests.Vulkan;
 /// Silent-skip: no-ops when Vulkan is unavailable OR the GGUF isn't on disk. NOT run by the
 /// implementation pass (the orchestrator verifies end-to-end on a real GPU).
 /// </summary>
-public sealed class Gemma4GpuForwardPassTests
+public sealed class Gemma4GpuForwardPassTests : HeavyTestBase
 {
     private const string ModelFile = "gemma4-v2-Q4_K_M.gguf";
 

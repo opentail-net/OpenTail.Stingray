@@ -8,7 +8,7 @@ namespace OpenTail.Stingray.Tests.ForwardPass;
 /// Tests for Phase 7c continuous batching: PrefillWithCache, BatchForwardMulti, ContinuousBatchingEngine.
 /// Integration tests skip silently if the model file is not present.
 /// </summary>
-public sealed class ContinuousBatchingTests
+public sealed class ContinuousBatchingTests : HeavyTestBase
 {
     private static string? FindModelPath(string filename = "SmolLM2-1.7B-Instruct-Q4_K_M.gguf")
     {

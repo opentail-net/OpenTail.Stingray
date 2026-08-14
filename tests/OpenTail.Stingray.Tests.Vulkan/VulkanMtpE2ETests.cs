@@ -12,7 +12,7 @@ namespace OpenTail.Stingray.Tests.Vulkan;
 /// drafts must land accepts on a repetitive prompt. Silent-skips when Vulkan or the GGUF is
 /// absent, or the device can't fit the trunk + ring. NOT run by the implementation pass.
 /// </summary>
-public sealed class VulkanMtpE2ETests
+public sealed class VulkanMtpE2ETests : HeavyTestBase
 {
     private static VulkanBackend? TryCreateVulkan()
     {

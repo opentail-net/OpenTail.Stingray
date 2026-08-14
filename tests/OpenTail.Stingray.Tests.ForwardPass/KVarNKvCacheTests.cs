@@ -22,7 +22,7 @@ namespace OpenTail.Stingray.Tests.ForwardPass;
 ///         unsupported combos (SnapKV, sub-tile FP32 window, non-pow2 head dim).</item>
 /// </list>
 /// </summary>
-public sealed class KVarNKvCacheTests(ITestOutputHelper output)
+public sealed class KVarNKvCacheTests(ITestOutputHelper output) : HeavyTestBase
 {
     private const int Tile = KVarNCompressor.TileTokens; // 128
 

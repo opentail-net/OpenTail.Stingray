@@ -12,7 +12,7 @@ namespace OpenTail.Stingray.Tests.Vulkan;
 ///
 /// The completeness/count tests need no GPU. The no-fallback test loads a Vulkan device.
 /// </summary>
-public sealed unsafe class VulkanPrecompiledShaderTests
+public sealed unsafe class VulkanPrecompiledShaderTests : HeavyTestBase
 {
     /// <summary>
     /// Creates the Vulkan backend, or SKIPS when the device cannot be brought up.

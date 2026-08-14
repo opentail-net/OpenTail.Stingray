@@ -24,7 +24,7 @@ namespace OpenTail.Stingray.Tests.ForwardPass;
 /// tap wiring. Batched GEMM rounds slightly differently from the sequential matvec path, hence
 /// the 1e-4 element tolerance.</para>
 /// </summary>
-public sealed class ForwardPassHiddenTapTests : IDisposable
+public sealed class ForwardPassHiddenTapTests : HeavyTestBase, IDisposable
 {
     // Tiny but valid llama geometry. embDim = numHeads*headDim keeps the Q projection square.
     private const int EmbDim = 32, NumHeads = 4, HeadDim = 8, NumKvHeads = 2, FfnDim = 64;

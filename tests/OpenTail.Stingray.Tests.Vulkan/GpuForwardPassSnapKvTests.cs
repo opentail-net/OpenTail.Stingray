@@ -18,7 +18,7 @@ namespace OpenTail.Stingray.Tests.Vulkan;
 ///
 /// Skipped silently when Vulkan is unavailable or the Qwen3-8B GGUF isn't on disk.
 /// </summary>
-public sealed class GpuForwardPassSnapKvTests
+public sealed class GpuForwardPassSnapKvTests : HeavyTestBase
 {
     private const string ModelFile = "Qwen3-8B-Q4_K_M.gguf";
 

@@ -26,7 +26,7 @@ namespace OpenTail.Stingray.Tests.ForwardPass;
 /// emitted spurious high-entropy predictions. See feedback-prompt-must-match-
 /// chat-template in user-memory and the parity-bug memory note.
 /// </summary>
-public sealed class Repro_Pos13Parity
+public sealed class Repro_Pos13Parity : HeavyTestBase
 {
     private static int[] PromptTokens
     {

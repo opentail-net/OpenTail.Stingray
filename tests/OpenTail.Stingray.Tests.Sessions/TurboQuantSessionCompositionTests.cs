@@ -20,7 +20,7 @@ namespace OpenTail.Stingray.Tests.Sessions;
 /// regression: it means §3.4.13's roadmap conclusion is stale and the plan needs updating. The
 /// message says so.</para>
 /// </summary>
-public sealed class TurboQuantSessionCompositionTests
+public sealed class TurboQuantSessionCompositionTests : HeavyTestBase
 {
     private static string? FindModelPath()
     {

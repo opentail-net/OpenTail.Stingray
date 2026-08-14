@@ -23,7 +23,7 @@ namespace OpenTail.Stingray.Tests.Vulkan;
 ///
 /// All cases run on GPU and silent-skip when Vulkan is unavailable or the GGUF isn't on disk.
 /// </summary>
-public sealed class VulkanSpecBatchVerifyTests
+public sealed class VulkanSpecBatchVerifyTests : HeavyTestBase
 {
     private const string SmallModel = "Qwen3-0.6B-Q8_0.gguf";   // Q8_0 weights → K-loop fallback
     private const string BatchedModel = "Qwen3-8B-Q4_K_M.gguf"; // Q4_K weights → batched trunk

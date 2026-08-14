@@ -21,7 +21,7 @@ namespace OpenTail.Stingray.Tests.ForwardPass;
 /// cache and got a spurious maxAbsDiff of ~23 with a flipped argmax. Use a second, separately
 /// <c>Prefill</c>-ed <c>ForwardPass</c> instance for the oracle arm, as below.</para>
 /// </summary>
-public sealed class DecodePathParityTests
+public sealed class DecodePathParityTests : HeavyTestBase
 {
     private static string? FindModelPath()
     {

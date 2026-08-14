@@ -3,7 +3,7 @@ using OpenTail.Stingray.TurboQuant;
 
 namespace OpenTail.Stingray.Tests.Vulkan;
 
-public sealed unsafe class VulkanShaderTests
+public sealed unsafe class VulkanShaderTests : HeavyTestBase
 {
     /// <summary>
     /// Creates the Vulkan backend, or SKIPS when the device cannot be brought up.

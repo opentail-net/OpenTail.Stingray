@@ -13,7 +13,7 @@ namespace OpenTail.Stingray.Tests.ForwardPass;
 /// (b) image-dependence — two different images must yield different decode streams, proving
 /// the vision embeddings actually flow into and steer the language model.
 /// </summary>
-public sealed class Gemma4VisionE2ETests
+public sealed class Gemma4VisionE2ETests : HeavyTestBase
 {
     private readonly ITestOutputHelper _out;
     public Gemma4VisionE2ETests(ITestOutputHelper output) => _out = output;

@@ -23,7 +23,7 @@ namespace OpenTail.Stingray.Tests.Vulkan;
 ///
 /// <para>Silent-skip when Vulkan or the extension is unavailable.</para>
 /// </summary>
-public sealed class VulkanIntegerDotProbeTests(ITestOutputHelper output)
+public sealed class VulkanIntegerDotProbeTests(ITestOutputHelper output) : HeavyTestBase
 {
     private static VulkanBackend? TryCreate()
     {

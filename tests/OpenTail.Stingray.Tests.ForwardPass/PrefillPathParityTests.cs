@@ -26,7 +26,7 @@ namespace OpenTail.Stingray.Tests.ForwardPass;
 /// batched call -- and assert they are now bit-identical. No session/engine/chunking machinery
 /// involved, so a regression here can only come from <c>PrefillWithCache</c>'s dispatch itself.</para>
 /// </summary>
-public sealed class PrefillPathParityTests
+public sealed class PrefillPathParityTests : HeavyTestBase
 {
     private static string? FindModelPath()
     {

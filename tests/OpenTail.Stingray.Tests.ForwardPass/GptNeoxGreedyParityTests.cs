@@ -112,7 +112,7 @@ namespace OpenTail.Stingray.Tests.ForwardPass;
 /// source rather than a third party's summary of it, reads as ordinary Q8_0 accumulation-order
 /// sensitivity rather than a remaining structural bug.</para>
 /// </summary>
-public sealed class GptNeoxGreedyParityTests
+public sealed class GptNeoxGreedyParityTests : HeavyTestBase
 {
     private const string ModelFile = "pythia-160m-Q8_0.gguf";
 

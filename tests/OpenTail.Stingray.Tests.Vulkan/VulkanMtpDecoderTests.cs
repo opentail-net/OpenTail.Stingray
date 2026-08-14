@@ -24,7 +24,7 @@ namespace OpenTail.Stingray.Tests.Vulkan;
 /// allocate), or the 27B-MTP GGUF isn't on disk. NOT run by the implementation pass (the
 /// orchestrator verifies on a real GPU).
 /// </summary>
-public sealed class VulkanMtpDecoderTests
+public sealed class VulkanMtpDecoderTests : HeavyTestBase
 {
     private static VulkanBackend? TryCreateVulkan()
     {

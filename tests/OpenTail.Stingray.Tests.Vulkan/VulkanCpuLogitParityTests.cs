@@ -23,7 +23,7 @@ namespace OpenTail.Stingray.Tests.Vulkan;
 /// allowed only when it is a near-tie — see the assertions for why exact argmax equality is the
 /// wrong cross-backend contract.</para>
 /// </summary>
-public sealed class VulkanCpuLogitParityTests
+public sealed class VulkanCpuLogitParityTests : HeavyTestBase
 {
     /// <summary>
     /// REAL tokens from the real tokenizer. An earlier version of this test used the synthetic id

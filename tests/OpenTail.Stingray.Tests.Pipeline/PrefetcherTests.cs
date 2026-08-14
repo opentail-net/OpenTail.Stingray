@@ -65,7 +65,9 @@ public sealed class PrefetcherTests
         // item. Wait for the actual worker fault rather than relying on a timing delay.
         await Assert.ThrowsAsync<System.NotImplementedException>(async () => await prefetcher.Completion);
 
-        var ex = Assert.Throws<System.AggregateException>(prefetcher.Dispose);
-        Assert.IsType<System.NotImplementedException>(ex.InnerException);
+        // Dispose() awaits the faulted worker via GetAwaiter().GetResult(), which unwraps and
+        // rethrows the original exception directly (unlike .Wait()/.Result, which wrap it in an
+        // AggregateException) — that's the whole reason to prefer GetAwaiter().GetResult() here.
+        Assert.Throws<System.NotImplementedException>(prefetcher.Dispose);
     }
 }

@@ -20,7 +20,7 @@ namespace OpenTail.Stingray.Tests.ForwardPass;
 /// disposed deterministically and the baseline pass is freed before the DSpark
 /// pass + head are built.
 /// </summary>
-public sealed class DSparkE2ETests
+public sealed class DSparkE2ETests : HeavyTestBase
 {
     private const string HeadDirName = "dspark_qwen3_4b_block7";
     private const int DecodeTokens = 24;

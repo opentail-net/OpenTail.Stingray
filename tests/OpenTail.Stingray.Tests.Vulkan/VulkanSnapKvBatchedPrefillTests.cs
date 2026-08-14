@@ -16,7 +16,7 @@ namespace OpenTail.Stingray.Tests.Vulkan;
 /// computes: with SnapKV active, batched and per-token prefill must agree on the logits AND leave
 /// the cache in the same evicted state, so continued decoding matches too.</para>
 /// </summary>
-public sealed class VulkanSnapKvBatchedPrefillTests
+public sealed class VulkanSnapKvBatchedPrefillTests : HeavyTestBase
 {
     private const string BudgetVar = "STINGRAY_SNAPKV_BUDGET";
     private const string WindowVar = "STINGRAY_SNAPKV_WINDOW";

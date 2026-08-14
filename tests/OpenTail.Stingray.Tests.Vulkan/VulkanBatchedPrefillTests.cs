@@ -27,7 +27,7 @@ namespace OpenTail.Stingray.Tests.Vulkan;
 /// cover — it perturbs logits enough to flip the argmax on near-tied short prompts, which would
 /// change the first generated token.</para>
 /// </summary>
-public sealed class VulkanBatchedPrefillTests
+public sealed class VulkanBatchedPrefillTests : HeavyTestBase
 {
     /// <summary>See the class remarks: ~80x the measured delta, ~4000x below the logit scale.</summary>
     private const double FpReassociationTolerance = 5e-3;

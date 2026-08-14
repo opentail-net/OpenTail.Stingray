@@ -17,7 +17,7 @@ namespace OpenTail.Stingray.Tests.Vulkan;
 /// chunked-vs-unchunked prefill parity</b>. So the load-bearing test here is not that the constants
 /// are separate, it is <see cref="Prefill_IsChunkSizeIndependent"/>.</para>
 /// </remarks>
-public sealed class VulkanPrefillChunkSplitTests
+public sealed class VulkanPrefillChunkSplitTests : HeavyTestBase
 {
     private static string? FindModelPath()
     {

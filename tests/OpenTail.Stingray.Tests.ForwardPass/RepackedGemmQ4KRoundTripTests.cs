@@ -1,7 +1,7 @@
 using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Cpu;
 
-namespace OpenTail.Stingray.Tests.ForwardPass.Fast;
+namespace OpenTail.Stingray.Tests.ForwardPass;
 
 /// <summary>
 /// Phase-2 (docs/cpu-prefill-repack-gemm-plan.md) checkpoint 1: proves the Q4_K row-interleave
@@ -10,7 +10,7 @@ namespace OpenTail.Stingray.Tests.ForwardPass.Fast;
 /// dequantizing straight out of the repacked buffer must equal dequantizing that row's
 /// original bytes via the existing scalar <see cref="Dequantize"/> path.
 /// </summary>
-public sealed class RepackedGemmQ4KRoundTripTests(ITestOutputHelper output)
+public sealed class RepackedGemmQ4KRoundTripTests(ITestOutputHelper output) : HeavyTestBase
 {
     private static byte[] MakeRandomQ4KRows(int rows, int blocksPerRow, int seed)
     {

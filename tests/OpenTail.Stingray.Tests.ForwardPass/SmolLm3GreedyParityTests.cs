@@ -38,7 +38,7 @@ namespace OpenTail.Stingray.Tests.ForwardPass;
 /// (`[Start thinking]`) entirely, which only applies through the template, not raw continuation.
 /// </para>
 /// </summary>
-public sealed class SmolLm3GreedyParityTests
+public sealed class SmolLm3GreedyParityTests : HeavyTestBase
 {
     private const string ModelFile = "SmolLM3-3B-Q4_K_M.gguf";
 

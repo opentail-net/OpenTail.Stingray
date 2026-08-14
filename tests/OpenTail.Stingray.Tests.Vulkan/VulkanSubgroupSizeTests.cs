@@ -16,7 +16,7 @@ namespace OpenTail.Stingray.Tests.Vulkan;
 /// so no pin is even applied). These tests verify the host-side wiring (properties queried,
 /// device/pipeline still create, output unchanged) and the pin-gate logic.
 /// </summary>
-public sealed unsafe class VulkanSubgroupSizeTests
+public sealed unsafe class VulkanSubgroupSizeTests : HeavyTestBase
 {
     /// <summary>Construct a backend, returning null (test skipped) if no Vulkan device exists.</summary>
     private static VulkanBackend? TryCreateBackend()

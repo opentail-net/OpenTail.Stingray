@@ -26,7 +26,7 @@ namespace OpenTail.Stingray.Tests.Vulkan;
 /// out of memory for full offload, or the GGUF isn't on disk. NOT run by the implementation pass
 /// (the orchestrator verifies on a real GPU).
 /// </summary>
-public sealed class Gemma4VulkanPleE2ETests
+public sealed class Gemma4VulkanPleE2ETests : HeavyTestBase
 {
     private const string ModelFile = "gemma-4-E4B_q4_0-it.gguf";
 

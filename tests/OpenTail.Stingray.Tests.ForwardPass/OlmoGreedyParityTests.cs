@@ -68,7 +68,7 @@ namespace OpenTail.Stingray.Tests.ForwardPass;
 /// the very first real attempt, including through the entirely new unweighted-norm code path this
 /// receipt exists to validate.</para>
 /// </summary>
-public sealed class OlmoGreedyParityTests
+public sealed class OlmoGreedyParityTests : HeavyTestBase
 {
     private const string ModelFile = "olmo-1b-Q8_0.gguf";
 

@@ -1,7 +1,7 @@
 using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Cpu;
 
-namespace OpenTail.Stingray.Tests.ForwardPass.Fast;
+namespace OpenTail.Stingray.Tests.ForwardPass;
 
 /// <summary>
 /// Perf-loop iteration 2 (see docs/perf-loop-progress.md): the batch=256 GEMM-shape threading
@@ -17,7 +17,7 @@ namespace OpenTail.Stingray.Tests.ForwardPass.Fast;
 /// already-trusted kernel, so the seam-test-against-a-hand-computed-reference rule doesn't apply
 /// (nothing new is being computed, just measured).
 /// </summary>
-public sealed unsafe class DecodeMatVecDispatchPerfTests(ITestOutputHelper output)
+public sealed unsafe class DecodeMatVecDispatchPerfTests(ITestOutputHelper output) : HeavyTestBase
 {
     [Fact]
     public unsafe void PerfGauge_MatVecQ4K_ParallelForVsPersistentPool_DecodeShapes()

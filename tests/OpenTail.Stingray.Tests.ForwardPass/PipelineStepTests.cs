@@ -9,7 +9,7 @@ namespace OpenTail.Stingray.Tests.ForwardPass;
 /// SIMD kernel tests run without a model; pipeline tests require model files.
 /// Run with: dotnet test --filter "FullyQualifiedName~PipelineStepTests"
 /// </summary>
-public sealed class PipelineStepTests : IDisposable
+public sealed class PipelineStepTests : HeavyTestBase, IDisposable
 {
     private readonly List<IntPtr> _allocations = [];
 

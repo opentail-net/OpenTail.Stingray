@@ -11,7 +11,7 @@ using Xunit;
 
 namespace OpenTail.Stingray.Tests.Sessions;
 
-public class GoldenArchitectureTests
+public class GoldenArchitectureTests : HeavyTestBase
 {
     [Fact]
     public async Task GoldenTest1_Checkpoint_Generate_Rollback_Generate_ProducesIdenticalDeterministicReplay()

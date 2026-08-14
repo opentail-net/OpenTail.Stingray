@@ -12,7 +12,7 @@ namespace OpenTail.Stingray.Tests.ForwardPass;
 /// 8.2 GB unsloth GGUF. Also runs a Qwen3-MoE coherence check to confirm the same
 /// refactor didn't regress non-Gemma 4 models.
 /// </summary>
-public sealed class Gemma4CpuForwardPassTests
+public sealed class Gemma4CpuForwardPassTests : HeavyTestBase
 {
     /// <summary>
     /// Resolves ANY local Gemma-4 E4B text GGUF, by family rather than by checkpoint. The two

@@ -11,8 +11,11 @@ OpenTail.Stingray is a high-performance LLM inference engine and image generatio
 ```bash
 dotnet build                # Debug build
 dotnet build -c Release     # Release (NativeAOT opts: IlcOptimizationPreference=Speed, IlcInstructionSet=native)
-dotnet test                 # Run all tests (~2,570 tests across 8 test projects). Never add --nologo:
+dotnet test                 # Run all tests (~3,200 tests across 14 test projects). Never add --nologo:
                             # Microsoft.Testing.Platform rejects it and reports "Zero tests ran".
+                            # Tests.Sessions/Tests.ForwardPass/Tests.Vulkan (real model / real GPU
+                            # device, serial) skip by default — set STINGRAY_RUN_HEAVY_TESTS=1 to
+                            # actually run them. See "Test Projects" below.
 dotnet test --filter "FullyQualifiedName~SomeTest"  # Run a single test
 dotnet test tests/OpenTail.Stingray.Tests.ForwardPass  # Run one test project
 
@@ -159,18 +162,41 @@ Shared settings live in `Directory.Build.props` (net10.0, LangVersion 14, Nullab
 
 ## Test Projects
 
-~2,570 tests across 8 projects (xUnit v3, `[Fact]`/`[Theory]`):
+~3,200 tests across 14 projects (xUnit v3, `[Fact]`/`[Theory]`):
 
 | Test Project | Covers |
 |---|---|
 | Tests.Core | GGUF parsing, tokenizer (SPM/BPE), Jinja chat templates, model graph, tool-call adapter, grammar constraints / JSON-schema structured output, UTF-8 stream decode |
-| Tests.ForwardPass | Forward pass (CPU/Vulkan/CUDA), KV cache, sampler, batched/ragged decode, MTP, SnapKV, quantization parity (largest suite, ~100 files) |
+| Tests.ForwardPass.Fast | Forward pass, KV cache, sampler, dequant/SIMD kernels, quantization parity — everything in the largest suite that needs no real model or GPU device. Runs in parallel. |
+| Tests.ForwardPass | The real-model subset of the above (bit-exactness/parity acceptance tests) plus the perf-gauge benchmarks (slow by design — JIT warmup + timed loops, would corrupt their own measurements if parallelized). Real model, serial. |
 | Tests.Pipeline | Memory hierarchy, image pipeline integration |
 | Tests.TurboQuant | KV cache compression (codebooks, encode/decode parity) |
-| Tests.Server | API endpoints (OpenAI/Anthropic compatibility) |
-| Tests.Sessions | Transactional/revisioned hot-session orchestration (`OpenTail.Stingray.Sessions`) |
+| Tests.Server.Fast | API endpoints (OpenAI/Anthropic compatibility) against a fake inference engine — no real model. Runs in parallel. |
+| Tests.Server | The one real-model test in the Server surface (session restart/persistence across two host instances). Real model, serial. |
+| Tests.Sessions.Fast | Hot-session orchestration (`OpenTail.Stingray.Sessions`) against fakes — no real model. Runs in parallel. |
+| Tests.Sessions | The real-model subset of session orchestration (golden-replay/greedy-parity acceptance tests). Real model, serial. |
 | Tests.Cli | GPU device queries, CLI flags (e.g. `--cpu-moe`) |
 | Tests.Vision | Gemma 4 vision embedder parity, image I/O, mmproj GGUF loading |
+| Tests.Cuda | CUDA backend correctness. Silent-skips fast on a machine with no CUDA card (see below). |
+| Tests.Vulkan.Fast | The handful of Vulkan-adjacent tests needing no real GPU device (config/predicate logic, shader-constant consistency). Runs in parallel. |
+| Tests.Vulkan | Real Vulkan device tests (parity, E2E, shader dispatch). Real GPU, serial. |
+
+**Fast/heavy split.** `Tests.Sessions`, `Tests.ForwardPass`, `Tests.Vulkan`, and `Tests.Server`
+each split into a `.Fast` sibling (no real model or GPU device, default xUnit parallelism — safe
+to run on every save) and the plain-named project (real model and/or real GPU device, forced
+serial via `xunit.runner.json`, since concurrent real-model/real-device work is what caused a
+59.5 GB test-suite memory blowup this split exists to prevent). The plain-named heavy projects
+additionally **skip every test by default** — every test class derives from a per-project
+`HeavyTestBase` whose constructor does `Assert.SkipUnless(...)` on `STINGRAY_RUN_HEAVY_TESTS`.
+This is deliberate, not a hidden gap: a full `dotnet test` run stays fast for everyday iteration,
+and the skip shows up honestly in the results (not silently absent) so it's visible when it
+matters. Set `STINGRAY_RUN_HEAVY_TESTS=1` to actually run the heavy suites — before a commit that
+touches model-loading/GPU-dispatch code, or in CI.
+
+`Tests.Cuda`/`Tests.Vulkan` (the GPU-hardware projects) additionally gate on hardware
+availability regardless of `STINGRAY_RUN_HEAVY_TESTS`: `Assert.SkipUnless(CudaTestGpu.IsAvailable, ...)`
+/ the `VulkanBackend` try/skip pattern means a run on a machine without that card still completes
+in well under a second instead of waiting out ~400 individual timeouts.
 
 Shared test data lives in `tests/fixtures/`.
 

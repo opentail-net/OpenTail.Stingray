@@ -2,7 +2,7 @@ using OpenTail.Stingray.Core;
 
 namespace OpenTail.Stingray.Tests.Vulkan;
 
-public sealed class VulkanInitTests
+public sealed class VulkanInitTests : HeavyTestBase
 {
 
     /// <summary>

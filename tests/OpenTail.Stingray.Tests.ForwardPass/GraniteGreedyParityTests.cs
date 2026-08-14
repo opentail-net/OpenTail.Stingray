@@ -61,7 +61,7 @@ namespace OpenTail.Stingray.Tests.ForwardPass;
 /// first access to `GgufTokenizer.ChatTemplate`, not at load time) so a pathological template only
 /// costs whichever caller actually renders one, not every model load.</para>
 /// </summary>
-public sealed class GraniteGreedyParityTests
+public sealed class GraniteGreedyParityTests : HeavyTestBase
 {
     private const string ModelFile = "granite-3.3-2b-instruct-Q4_K_M.gguf";
 

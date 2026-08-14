@@ -16,7 +16,7 @@ namespace OpenTail.Stingray.Tests.ForwardPass;
 /// schedule-comparison test would put both arms on the reordered path and compare it with itself —
 /// green, and worthless.</para>
 /// </summary>
-public sealed class Flash64KvOuterTests
+public sealed class Flash64KvOuterTests : HeavyTestBase
 {
     /// <summary>Above Flash-64's 256-token activation threshold, and several query tiles wide.</summary>
     private const int Tokens = 448;

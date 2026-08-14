@@ -3,7 +3,7 @@ using OpenTail.Stingray.Cpu;
 
 namespace OpenTail.Stingray.Tests.ForwardPass;
 
-public sealed class DebugForwardPass
+public sealed class DebugForwardPass : HeavyTestBase
 {
     private static string? FindModelPath(string filename = "SmolLM2-1.7B-Instruct-Q4_K_M.gguf")
     {

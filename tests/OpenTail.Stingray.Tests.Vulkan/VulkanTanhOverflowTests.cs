@@ -23,7 +23,7 @@ namespace OpenTail.Stingray.Tests.Vulkan;
 ///
 /// <para>Silent-skip when no Vulkan device is present, matching the other Vulkan suites.</para>
 /// </summary>
-public sealed class VulkanTanhOverflowTests
+public sealed class VulkanTanhOverflowTests : HeavyTestBase
 {
     private static VulkanBackend? TryCreate()
     {

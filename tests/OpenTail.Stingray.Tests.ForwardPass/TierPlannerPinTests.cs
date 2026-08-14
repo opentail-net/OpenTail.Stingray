@@ -16,7 +16,7 @@ namespace OpenTail.Stingray.Tests.ForwardPass;
 /// <see cref="HardwareProfile"/> so the budget math is deterministic. Skipped when the model is
 /// not on disk (the planner needs real tensor sizes).
 /// </summary>
-public sealed class TierPlannerPinTests
+public sealed class TierPlannerPinTests : HeavyTestBase
 {
     private static string? OlmoePath() => FirstExisting(
         @"C:\p\opentail-llm\models\OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf",

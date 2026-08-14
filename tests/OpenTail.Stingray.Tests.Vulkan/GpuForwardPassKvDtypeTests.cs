@@ -27,7 +27,7 @@ namespace OpenTail.Stingray.Tests.Vulkan;
 /// the KV dtype is the only variable. Each case is skipped silently when Vulkan is unavailable or
 /// the GGUF isn't on disk.
 /// </summary>
-public sealed class GpuForwardPassKvDtypeTests
+public sealed class GpuForwardPassKvDtypeTests : HeavyTestBase
 {
     private const string ModelFile = "Qwen3-8B-Q4_K_M.gguf";
 

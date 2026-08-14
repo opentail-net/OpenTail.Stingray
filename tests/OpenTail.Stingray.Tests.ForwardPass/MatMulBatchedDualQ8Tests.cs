@@ -1,7 +1,7 @@
 using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Cpu;
 
-namespace OpenTail.Stingray.Tests.ForwardPass.Fast;
+namespace OpenTail.Stingray.Tests.ForwardPass;
 
 /// <summary>
 /// Correctness gate for <see cref="SimdKernels.TryMatMulBatchedDualQ8"/> (perf-loop-progress.md
@@ -14,7 +14,7 @@ namespace OpenTail.Stingray.Tests.ForwardPass.Fast;
 /// same quantize call, same dot kernel, same floating-point operations, just fewer redundant
 /// calls to reach them).
 /// </summary>
-public sealed unsafe class MatMulBatchedDualQ8Tests
+public sealed unsafe class MatMulBatchedDualQ8Tests : HeavyTestBase
 {
     [Theory]
     [InlineData(1, 2048, 2048)]   // batch=1 edge case

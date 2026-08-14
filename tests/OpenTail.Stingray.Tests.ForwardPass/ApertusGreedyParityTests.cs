@@ -63,7 +63,7 @@ namespace OpenTail.Stingray.Tests.ForwardPass;
 /// </code>
 /// </para>
 /// </summary>
-public sealed class ApertusGreedyParityTests
+public sealed class ApertusGreedyParityTests : HeavyTestBase
 {
     private const string ModelFile = "Apertus-8B-Instruct-2509-Q4_K_M.gguf";
 

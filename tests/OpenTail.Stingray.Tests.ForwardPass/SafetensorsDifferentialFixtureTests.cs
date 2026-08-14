@@ -13,7 +13,7 @@ using OpenTail.Stingray.Cpu;
 using OpenTail.Stingray.Engine;
 using Xunit;
 
-public sealed class SafetensorsDifferentialFixtureTests : IDisposable
+public sealed class SafetensorsDifferentialFixtureTests : HeavyTestBase, IDisposable
 {
     private readonly string _tempDir;
 
