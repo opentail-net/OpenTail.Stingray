@@ -41,20 +41,26 @@ try {
     }
 
     if (-not $SkipTests) {
-        # Match the hosted release gate. ForwardPass includes designated-hardware/model tests;
-        # those are recorded separately in the release matrix rather than silently skipped here.
+        # Match the hosted release gate. Sessions/ForwardPass/Server each split into a `.Fast`
+        # project (no real model/GPU device -- the bulk of each suite's coverage) and a
+        # plain-named heavy project (real model, skipped by default via STINGRAY_RUN_HEAVY_TESTS).
+        # Only the `.Fast` siblings run here: on a machine with no models/ (or with
+        # STINGRAY_RUN_HEAVY_TESTS unset), every test in the heavy projects would skip, and
+        # Microsoft.Testing.Platform treats an all-skipped run as a failure (exit 8, "Zero tests
+        # ran") regardless of --minimum-expected-tests. Run the heavy projects separately with
+        # STINGRAY_RUN_HEAVY_TESTS=1 on a model-provisioned machine if you need that coverage too.
         $releaseTestProjects = @(
             'tests\OpenTail.Stingray.Tests.Core\OpenTail.Stingray.Tests.Core.csproj',
             'tests\OpenTail.Stingray.Tests.Pipeline\OpenTail.Stingray.Tests.Pipeline.csproj',
-            'tests\OpenTail.Stingray.Tests.Server\OpenTail.Stingray.Tests.Server.csproj',
+            'tests\OpenTail.Stingray.Tests.Server.Fast\OpenTail.Stingray.Tests.Server.Fast.csproj',
             'tests\OpenTail.Stingray.Tests.TurboQuant\OpenTail.Stingray.Tests.TurboQuant.csproj',
             'tests\OpenTail.Stingray.Tests.Cli\OpenTail.Stingray.Tests.Cli.csproj',
-            'tests\OpenTail.Stingray.Tests.Sessions\OpenTail.Stingray.Tests.Sessions.csproj',
+            'tests\OpenTail.Stingray.Tests.Sessions.Fast\OpenTail.Stingray.Tests.Sessions.Fast.csproj',
             'tests\OpenTail.Stingray.Tests.Vision\OpenTail.Stingray.Tests.Vision.csproj',
             # Largest suite, and it was missing here for the same reason it was missing from CI:
             # it carries most of the CPU inference, batching, KV-cache and quantisation-parity
             # coverage, so a release could be validated without it ever running.
-            'tests\OpenTail.Stingray.Tests.ForwardPass\OpenTail.Stingray.Tests.ForwardPass.csproj'
+            'tests\OpenTail.Stingray.Tests.ForwardPass.Fast\OpenTail.Stingray.Tests.ForwardPass.Fast.csproj'
         )
         foreach ($testProject in $releaseTestProjects) {
             & dotnet test (Join-Path $projectRoot $testProject) -c $Configuration --verbosity minimal -- --minimum-expected-tests 1

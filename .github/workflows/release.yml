@@ -65,16 +65,25 @@ jobs:
       # TRX comes from the Microsoft.Testing.Extensions.TrxReport extension referenced by each
       # test project, so the options go after `--` to the test app: `--logger "trx;..."` is a
       # VSTest option and Microsoft.Testing.Platform rejects it. Likewise never pass `--nologo`.
+      #
+      # Sessions/ForwardPass/Server each split into a `.Fast` project (no real model/GPU device;
+      # invoked below) and a plain-named heavy project (real model, skipped by default via
+      # STINGRAY_RUN_HEAVY_TESTS). The heavy projects are deliberately NOT invoked here, same as
+      # this runner never had models/ for the pre-split ForwardPass's GPU/model rows: every test
+      # in them would skip (no models/ on this runner), and Microsoft.Testing.Platform treats an
+      # all-skipped run as exit code 8 ("Zero tests ran") regardless of --minimum-expected-tests.
+      # Verify the heavy suites for real on a model-provisioned runner with
+      # STINGRAY_RUN_HEAVY_TESTS=1 — see ci.yml for the full reasoning.
       - name: Release-quality managed tests
         run: |
-          dotnet test tests/OpenTail.Stingray.Tests.Core/OpenTail.Stingray.Tests.Core.csproj -c Release -- --report-trx --report-trx-filename core.trx --results-directory ./artifacts/test-results --minimum-expected-tests 350
+          dotnet test tests/OpenTail.Stingray.Tests.Core/OpenTail.Stingray.Tests.Core.csproj -c Release -- --report-trx --report-trx-filename core.trx --results-directory ./artifacts/test-results --minimum-expected-tests 450
           dotnet test tests/OpenTail.Stingray.Tests.Pipeline/OpenTail.Stingray.Tests.Pipeline.csproj -c Release -- --report-trx --report-trx-filename pipeline.trx --results-directory ./artifacts/test-results --minimum-expected-tests 40
-          dotnet test tests/OpenTail.Stingray.Tests.Server/OpenTail.Stingray.Tests.Server.csproj -c Release -- --report-trx --report-trx-filename server.trx --results-directory ./artifacts/test-results --minimum-expected-tests 180
           dotnet test tests/OpenTail.Stingray.Tests.TurboQuant/OpenTail.Stingray.Tests.TurboQuant.csproj -c Release -- --report-trx --report-trx-filename turboquant.trx --results-directory ./artifacts/test-results --minimum-expected-tests 60
           dotnet test tests/OpenTail.Stingray.Tests.Cli/OpenTail.Stingray.Tests.Cli.csproj -c Release -- --report-trx --report-trx-filename cli.trx --results-directory ./artifacts/test-results --minimum-expected-tests 300
-          dotnet test tests/OpenTail.Stingray.Tests.Sessions/OpenTail.Stingray.Tests.Sessions.csproj -c Release -- --report-trx --report-trx-filename sessions.trx --results-directory ./artifacts/test-results --minimum-expected-tests 60
           dotnet test tests/OpenTail.Stingray.Tests.Vision/OpenTail.Stingray.Tests.Vision.csproj -c Release -- --report-trx --report-trx-filename vision.trx --results-directory ./artifacts/test-results --minimum-expected-tests 55
-          dotnet test tests/OpenTail.Stingray.Tests.ForwardPass/OpenTail.Stingray.Tests.ForwardPass.csproj -c Release -- --report-trx --report-trx-filename forwardpass.trx --results-directory ./artifacts/test-results --minimum-expected-tests 1200
+          dotnet test tests/OpenTail.Stingray.Tests.Server.Fast/OpenTail.Stingray.Tests.Server.Fast.csproj -c Release -- --report-trx --report-trx-filename server-fast.trx --results-directory ./artifacts/test-results --minimum-expected-tests 200
+          dotnet test tests/OpenTail.Stingray.Tests.Sessions.Fast/OpenTail.Stingray.Tests.Sessions.Fast.csproj -c Release -- --report-trx --report-trx-filename sessions-fast.trx --results-directory ./artifacts/test-results --minimum-expected-tests 300
+          dotnet test tests/OpenTail.Stingray.Tests.ForwardPass.Fast/OpenTail.Stingray.Tests.ForwardPass.Fast.csproj -c Release -- --report-trx --report-trx-filename forwardpass-fast.trx --results-directory ./artifacts/test-results --minimum-expected-tests 480
 
       # A number of heavyweight tests intentionally return early when their GGUF fixture is not
       # installed. Preserve an explicit fixture-coverage receipt beside the TRX files so a green

@@ -31,8 +31,7 @@ jobs:
       # rejects it and fails the run with "Zero tests ran", which reads like a discovery error.
       #
       # `--minimum-expected-tests` makes thin discovery a failure. The floors are per-suite and
-      # sit ~15-25% below the counts measured on 2026-08-07 (Core 421, Cli 363, Server 219,
-      # TurboQuant 78, Sessions 74, Vision 70, Pipeline 52), so ordinary churn does not trip them
+      # sit ~15-25% below the counts measured on 2026-08-14, so ordinary churn does not trip them
       # while a collapse does. A flat `1` would only have caught total collapse, not the case
       # where a suite silently discovers a handful of its tests. Raise a floor when a suite grows
       # substantially; never lower one to make a red build green without establishing why the
@@ -42,25 +41,30 @@ jobs:
       # NOT by the test executable directly — running the built .exe with it fails with
       # "unknown option". Keep these invocations going through `dotnet test`.
       #
-      # ForwardPass is the largest suite and holds most of the CPU inference, batching, KV-cache and
-      # quantisation-parity coverage; it was absent from this gate, so an engine regression could
-      # merge green. Its GPU/model rows self-skip on a runner with neither.
+      # Sessions/ForwardPass/Server each split into a `.Fast` project (no real model/GPU device,
+      # default parallelism -- the bulk of each suite's coverage now lives here) and the
+      # plain-named heavy project (real model, forced serial, skipped by default via
+      # STINGRAY_RUN_HEAVY_TESTS -- see CLAUDE.md's "Test Projects" section). The heavy projects
+      # are deliberately NOT invoked below, same as Vulkan/Cuda already weren't: this runner has
+      # no models/ directory, so every test in them would skip regardless of that env var (their
+      # own real-model fixture checks self-skip independently of the heavy-suite gate). That
+      # isn't just wasted CI time -- it actively fails the build. Microsoft.Testing.Platform
+      # treats an all-skipped run (0 passed, 0 failed, N skipped) as exit code 8 ("Zero tests
+      # ran"), a DIFFERENT check than --minimum-expected-tests (which only looks at discovery
+      # count and is satisfied here). Confirmed by running each heavy project standalone after
+      # the split: all three exit 8 on this runner. Verify the heavy suites for real on a machine
+      # with models/ (`STINGRAY_RUN_HEAVY_TESTS=1 dotnet test tests/OpenTail.Stingray.Tests.Sessions/...`).
       #
-      # The floor is 1200, set from a MEASURED discovery count: four full local runs each discovered
-      # 1,358 tests. Discovery does not depend on fixtures or hardware being present — those only
-      # change pass/skip. That was checked, not assumed: the only data-driven Theory sources in the
-      # suite (VulkanIntegerDotProbeTests.Populations, VulkanSplitKvChunkConsistencyTests.Shaders)
-      # return hard-coded literals, so no case count varies with what is on disk. A bare CI runner
-      # therefore discovers the same 1,358. (The earlier 900 was a
-      # guess from counting [Fact]/[Theory] methods before Theory expansion, which is why it was
-      # ~34% below the truth and would not have caught a substantial collapse.)
+      # Discovery does not depend on fixtures or hardware being present -- those only change
+      # pass/skip. All floors below are measured discovery counts (not [Fact]/[Theory] method
+      # counts, which undercounts Theory expansion), each `dotnet test` run standalone.
       - name: CPU-safe test suites
         run: |
-          dotnet test tests/OpenTail.Stingray.Tests.Core/OpenTail.Stingray.Tests.Core.csproj -c Release --no-restore -- --minimum-expected-tests 350
+          dotnet test tests/OpenTail.Stingray.Tests.Core/OpenTail.Stingray.Tests.Core.csproj -c Release --no-restore -- --minimum-expected-tests 450
           dotnet test tests/OpenTail.Stingray.Tests.Pipeline/OpenTail.Stingray.Tests.Pipeline.csproj -c Release --no-restore -- --minimum-expected-tests 40
-          dotnet test tests/OpenTail.Stingray.Tests.Server/OpenTail.Stingray.Tests.Server.csproj -c Release --no-restore -- --minimum-expected-tests 180
           dotnet test tests/OpenTail.Stingray.Tests.TurboQuant/OpenTail.Stingray.Tests.TurboQuant.csproj -c Release --no-restore -- --minimum-expected-tests 60
           dotnet test tests/OpenTail.Stingray.Tests.Cli/OpenTail.Stingray.Tests.Cli.csproj -c Release --no-restore -- --minimum-expected-tests 300
-          dotnet test tests/OpenTail.Stingray.Tests.Sessions/OpenTail.Stingray.Tests.Sessions.csproj -c Release --no-restore -- --minimum-expected-tests 60
           dotnet test tests/OpenTail.Stingray.Tests.Vision/OpenTail.Stingray.Tests.Vision.csproj -c Release --no-restore -- --minimum-expected-tests 55
-          dotnet test tests/OpenTail.Stingray.Tests.ForwardPass/OpenTail.Stingray.Tests.ForwardPass.csproj -c Release --no-restore -- --minimum-expected-tests 1200
+          dotnet test tests/OpenTail.Stingray.Tests.Server.Fast/OpenTail.Stingray.Tests.Server.Fast.csproj -c Release --no-restore -- --minimum-expected-tests 200
+          dotnet test tests/OpenTail.Stingray.Tests.Sessions.Fast/OpenTail.Stingray.Tests.Sessions.Fast.csproj -c Release --no-restore -- --minimum-expected-tests 300
+          dotnet test tests/OpenTail.Stingray.Tests.ForwardPass.Fast/OpenTail.Stingray.Tests.ForwardPass.Fast.csproj -c Release --no-restore -- --minimum-expected-tests 480

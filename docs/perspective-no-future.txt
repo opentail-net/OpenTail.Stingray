@@ -1,0 +1,273 @@
+you're absolutely right to call that out. I had been reasoning from our earlier roadmap rather than treating the current repository as the source of truth.
+I have now inspected the current main tree and searched the actual implementation. The difference is significant.
+The repo describes itself as a pure C# local inference/runtime stack with CPU AVX2/AVX-512, Vulkan and CUDA, NativeAOT, OpenAI/Anthropic-compatible serving, sessions, KV management, speculative decoding and more.  
+The big correction
+Stingray is considerably further along than the roadmap I just gave you implied.
+A lot of the things I called "future architecture" are already implemented.
+Already implemented / materially present
+Area	Current repo evidence
+Paged KV cache	CpuKvCache, CpuKvSequence, CUDA sequence KV cache
+Session runtime	InferenceSession, IInferenceSession, InferenceRuntime
+Session persistence	SessionStateCodec, SessionDelta, session handoff/state files
+3-tier session lifecycle	KvMemoryGovernor, suspended/cold tier tests
+KV memory governance	KvMemoryGovernor, IKvMemoryGovernor, options + tests
+Zero-copy branching	Fork, ForkMany, session branching extensions
+Prefix caching	RadixPrefixTree, cross-session prefix work
+Continuous batching	ContinuousBatchingEngine
+Speculative decoding	SpeculativeDecoder, tests
+PLD	PromptLookupDraft / PLD implementation
+Speculative cascade	SpeculativeCascadeTests
+JSON constrained generation	JsonSchemaGrammarMasker, grammar extensions + tests
+Tool continuation	IToolProvider, InferenceToolContext, AppendToolResultAsync
+Session metrics	ISessionMetrics / SessionMetricsSnapshot
+GPU KV	CudaSequenceKvCache
+Hybrid execution	HybridForwardPass, CudaHybridForwardPass
+MTP	MtpDecoder
+Benchmarking	continuous batching, GEMM, KV, prefill, quantisation etc.
+Model capability discovery	capability plan + CLI capability/inspect path
+Multiple architectures	llama, llama4, OLMoE, Qwen3, Qwen3MoE, Qwen3.5MoE, Gemma 4
+SafeTensors	implemented profile-based support
+
+
+The repository itself explicitly lists the first ~20 architectural pillars as implemented, including paged KV, the memory governor, zero-copy branching, grammar masking, tool continuation, prefix synthesis, session compression, metrics and speculation. 
+And this isn't just documentation: the code search finds the corresponding implementation files. For example, InferenceSession, CpuKvCache, CpuKvSequence, ContinuousBatchingEngine, RadixPrefixTree, CUDA KV and hybrid forward-pass implementations are actually present.     
+That's a very different project from the one I was mentally modelling.
+And the session architecture is much further along than I realised
+This is particularly important.
+I previously suggested:
+"Sessions should become a first-class abstraction."
+
+They already are.
+The repo has:
+IInferenceSession
+InferenceSession
+HotSession
+SessionStateCodec
+SessionDelta
+SessionBranchingExtensions
+SessionRuntimeRelay
+session endpoints
+session resource budgeting
+session metrics
+Those are real implementation artifacts, not just plans.     
+And the README describes the session model as:
+Active
+Suspended
+Cold
+with KV pages, token history and disk snapshots moving between those states. 
+That's already a fairly sophisticated inference runtime.
+Same story with speculative decoding
+I was treating speculative decoding as something to develop.
+It's already there.
+There is a real:
+SpeculativeDecoder.cs
+and corresponding tests, plus:
+PromptLookupDraft
+SpeculativeCascadeTests
+SpeculativeSamplingTests
+MtpDecoder
+So Plan 011 isn't a greenfield feature anymore; we're talking about improving/validating an existing subsystem.
+That's a major distinction.
+And continuous batching is already there
+This is another big one.
+The tree contains:
+ContinuousBatchingEngine.cs
+and a dedicated benchmark harness:
+ContinuousBatchingHarness.cs
+So when we talk about "eventually add continuous batching", that's simply wrong for the current repository.
+The question is now:
+How good is the existing continuous batching implementation?
+
+not:
+Should we build one?
+
+KV is a particularly mature area
+There is:
+CpuKvCache
+CpuKvSequence
+CudaSequenceKvCache
+LegacySequenceKvCacheAdapter
+RadixPrefixTree
+ContinuousBatchingEngine
+plus the memory governor and session lifecycle.   
+That tells me something important:
+The next question isn't "do we need paged KV?"
+It's:
+Is the existing KV architecture now the correct substrate for everything else?
+
+That's a much more interesting architectural review.
+The grammar/tooling side is also real
+There's an actual:
+JsonSchemaGrammarMasker.cs
+InferenceSessionGrammarExtensions.cs
+JsonSchemaGrammarMaskerTests.cs
+And the README says the session layer supports MCP-aligned tool contracts and AppendToolResultAsync. 
+So again, this isn't a basic inference engine waiting to become agentic.
+It's already trying to be an agent-oriented runtime.
+This changes what I think the project needs
+After seeing the actual repository, I would not recommend the roadmap I just gave you.
+I'd now frame Stingray's next stage as:
+"Integration, correctness and performance consolidation"
+rather than:
+"Build the missing runtime architecture."
+You've built a lot.
+The danger now is actually the opposite:
+There are enough advanced subsystems that the biggest risk may be the seams between them.
+
+That's where I'd concentrate.
+The seams I'd investigate first
+1. Session ↔ KV ↔ batching
+You now have:
+Session
+   ↓
+KV
+   ↓
+Continuous batching
+I'd want to establish that these three have one coherent lifecycle model.
+Questions:
+Can a suspended session safely leave a batch?
+Can a forked session enter a batch independently?
+What happens to CoW pages during batching?
+Can KV pages be reclaimed while a batch is assembling?
+Does cancellation release every reservation?
+Can a session transition state during generation?
+This is much more valuable than adding another feature.
+2. Session ↔ speculative decoding
+You have:
+Session
+   +
+Fork
+   +
+Speculation
+That's potentially extremely powerful.
+But it creates nasty correctness questions.
+For example:
+parent KV
+   │
+   ├── draft branch
+   │      ↓
+   │   speculative tokens
+   │
+   └── verification
+Does rejection correctly restore the parent sequence?
+Does CoW happen at the correct page boundary?
+Are speculative pages released?
+Can a speculative branch accidentally mutate shared state?
+This is exactly the kind of integration testing I'd now prioritise.
+3. Session ↔ memory governor ↔ prefix cache
+This may be the most interesting one.
+You've got:
+Session memory governor
+       +
+Paged KV
+       +
+Radix prefix cache
+Now consider:
+Session A
+   ↓
+shared prefix
+   ↓
+Session B
+Then A becomes idle.
+The governor wants to evict A's KV.
+But some pages are also serving B through prefix sharing.
+That requires extremely precise ownership/reference semantics.
+I'd audit this deeply.
+4. Continuous batching ↔ model residency
+This is where today's cache work suddenly becomes much more interesting.
+You already have:
+ContinuousBatchingEngine
+and now you're introducing:
+SharedModelCache
+The question becomes:
+What happens when a batch is executing while the model cache wants to evict its model?
+
+This is precisely why I previously argued that model residency eventually needs active-reference semantics.
+But now I can see that the existing runtime already has most of the machinery required to answer that cleanly.
+And I see something else
+Your project has reached the point where performance engineering should become evidence-driven at subsystem level.
+The repository already has a substantial benchmark suite:
+inference
+continuous batching
+prefill
+GEMM
+KV reads
+TurboQuant
+CUDA microbenchmarks
+Scout hot-path benchmarks
+So I'd stop asking:
+"What feature should we add?"
+
+and start asking:
+"Where is Stingray actually leaving performance on the table?"
+
+That could uncover much higher-value work.
+My revised project assessment
+Having now looked at the actual repo:
+I think Stingray is approximately here:
+                    ┌──────────────────────────┐
+                    │      Model support       │
+                    │  ████████████████░░░░    │
+                    └────────────┬─────────────┘
+                                 │
+              ┌──────────────────┼──────────────────┐
+              │                  │                  │
+          Execution             KV              Sessions
+          ████████████░░     █████████████░     ███████████████░
+              │                  │                  │
+              └──────────────────┼──────────────────┘
+                                 │
+                         Advanced inference
+                         ████████████░░░░
+                                 │
+                         Server / tooling
+                         ███████████░░░░░
+The horizontal integration layer is now the thing that interests me most.
+And this changes my opinion of 025/026
+I now think the Shared Model Cache work is actually more strategically relevant than I did before.
+Not because you need a full multi-model scheduler.
+But because it fills a missing piece in an already sophisticated runtime:
+Existing:
+    Session
+       ↓
+    KV Governor
+       ↓
+    Batching
+       ↓
+    Inference
+
+New:
+    Model Residency
+       ↓
+    Session / Batching / Inference
+That's a sensible missing primitive.
+And the current plan's decision not to jump straight into 024 still looks correct.
+What I'd like to do next
+I think we should do a proper current-state architecture audit of the repository, rather than another roadmap based on memory.
+Specifically, I'd inspect the actual implementation and classify every major subsystem as:
+🟢 Implemented + integrated
+🟡 Implemented but needs hardening/integration
+🟠 Implemented but performance-limited
+🔴 Planned/missing
+⚪ Experimental / needs validation
+Across:
+Model loading / residency
+KV cache
+Sessions
+Memory governor
+Continuous batching
+Speculative decoding / PLD / MTP
+Prefix caching
+Grammar/tool calling
+Model architecture support
+Quantisation
+CPU SIMD
+CUDA
+Vulkan
+Server/API
+Benchmarks
+Conformance/correctness
+NativeAOT
+Failure/cancellation/resource safety
+Then we can identify what is genuinely missing, rather than planning features you've already built.
+I think that audit could produce a much better next-10-plans list for Stingray than the roadmap we've been using so far.
