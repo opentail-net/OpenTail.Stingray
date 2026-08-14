@@ -37,7 +37,7 @@ public sealed class CrossSessionPrefixSynthesisTests
         Assert.True(published > 0);
         Assert.True(metrics.PublishedPrefixes > 0);
 
-        var ns = new PrefixCacheNamespace("default-model", "default-kv");
+        var ns = new PrefixCacheNamespace("default", "page16");
         var match = index.MatchPrefix(ns, prompt);
         Assert.Equal(32, match.MatchedTokenCount);
         Assert.Equal(2, match.MatchedPageCount);
@@ -130,7 +130,7 @@ public sealed class CrossSessionPrefixSynthesisTests
         Assert.Equal(1, metrics.PublishedPrefixes);
         Assert.Equal(2, metrics.PublishedPages);
 
-        var ns = new PrefixCacheNamespace("default-model", "default-kv");
+        var ns = new PrefixCacheNamespace("default", "page32");
         var match = index.MatchPrefix(ns, prompt);
         Assert.Equal(64, match.MatchedTokenCount);
         Assert.Equal(2, match.MatchedPageCount);
@@ -157,7 +157,7 @@ public sealed class CrossSessionPrefixSynthesisTests
         Assert.Equal(1, metrics.PublishedPrefixes);
         Assert.Equal(2, metrics.PublishedPages);
 
-        var ns = new PrefixCacheNamespace("default-model", "default-kv");
+        var ns = new PrefixCacheNamespace("default", "page32");
         var match = index.MatchPrefix(ns, prompt.AsSpan(0, 64).ToArray());
         Assert.Equal(64, match.MatchedTokenCount);
         Assert.Equal(2, match.MatchedPageCount);
@@ -208,7 +208,7 @@ public sealed class CrossSessionPrefixSynthesisTests
         // Must be 1 complete page, not 2 (the old bug produced 2)
         Assert.Equal(1, metrics.PublishedPages);
 
-        var ns = new PrefixCacheNamespace("default-model", "default-kv");
+        var ns = new PrefixCacheNamespace("default", "page32");
         var match = index.MatchPrefix(ns, prompt.AsSpan(0, 32).ToArray());
         Assert.Equal(32, match.MatchedTokenCount);
         Assert.Equal(1, match.MatchedPageCount);
@@ -236,7 +236,7 @@ public sealed class CrossSessionPrefixSynthesisTests
         Assert.Equal(1, metrics.PublishedPrefixes);
         Assert.Equal(1, metrics.PublishedPages);
 
-        var ns = new PrefixCacheNamespace("default-model", "default-kv");
+        var ns = new PrefixCacheNamespace("default", "page64");
         var match = index.MatchPrefix(ns, prompt.AsSpan(0, 64).ToArray());
         Assert.Equal(64, match.MatchedTokenCount);
         Assert.Equal(1, match.MatchedPageCount);

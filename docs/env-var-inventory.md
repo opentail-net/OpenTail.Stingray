@@ -5,7 +5,7 @@ variables**.
 
 **Reconciled 2026-08-07:** the table below now lists every name in
 `KnownEnvironmentVariables.All`, the source-enforced registry, which
-now contains **161** names. The row set is therefore no longer a historical subset — it is
+now contains **162** names. The row set is therefore no longer a historical subset — it is
 name-complete as of this date. What remains outstanding is the **Class/Notes** classification
 (see below), not the enumeration.
 
@@ -259,6 +259,7 @@ historical rows only until the full generated refresh replaces this snapshot.
 | `STINGRAY_DISABLE_BATCH_VERIFY` | | |
 | `STINGRAY_DISABLE_DUAL_Q8` | | |
 | `STINGRAY_FORCE_CPU_EMBED` | | |
+| `STINGRAY_FORCE_NO_BLAS` | | |
 | `STINGRAY_GDN_CHUNKED_PREFILL` | | |
 | `STINGRAY_GDN_DECODE_FAST` | | |
 | `STINGRAY_GDN_PREFILL_COMPUTE` | | |
