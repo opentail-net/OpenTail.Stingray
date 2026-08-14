@@ -56,6 +56,7 @@ public sealed class CrossSessionPrefixSharingRealModelTests : HeavyTestBase
         Assert.True(seedTokens == PagedKvCache.PageSize - 1,
             $"Seed tokenises to {seedTokens} tokens; expected {PagedKvCache.PageSize - 1}.");
 
+        ImmutableArray<ExecutionSegment> historyLog;
         ImmutableArray<int> history;
         ImmutableArray<int> bGenerated;
         int seeded;
@@ -73,7 +74,8 @@ public sealed class CrossSessionPrefixSharingRealModelTests : HeavyTestBase
             Assert.Equal(SessionOperationState.Completed, t1.Operation.State);
             Assert.Equal(PagedKvCache.PageSize, t1.Cursor.MaterializedPositionCount);
 
-            history = [.. t1.Cursor.ExecutionLog.SelectMany(s => ((TokenSegment)s).TokenIds)];
+            historyLog = t1.Cursor.ExecutionLog;
+            history = [.. historyLog.SelectMany(s => ((TokenSegment)s).TokenIds)];
             Assert.Equal(PagedKvCache.PageSize, history.Length);
 
             var (sessionB, seededLength) = runtime.CreateWithSharedPrefixHint(history);
@@ -102,29 +104,58 @@ public sealed class CrossSessionPrefixSharingRealModelTests : HeavyTestBase
             bGenerated = ((TokenSegment)bLog[^1]).TokenIds;
         }
 
-        // Oracle: a completely independent forward pass/backend, no shared state whatsoever with
-        // the engine above, prefilling the exact same token ids A's cache actually held for its
-        // shared prefix plus B's own appended suffix. If the fork shared stale, wrong, or
-        // partially-copy-on-written pages, this is where it would show up as a token mismatch.
+        // Oracle: a completely independent forward pass/backend/cache, no shared state whatsoever
+        // with the engine above, REPLAYING A's own execution log segment by segment -- Q8 prefill
+        // for the prompt segment, F32 decode (via A's own recorded token) for the generated
+        // segment -- rather than one blanket cold Prefill call over the whole history. A's turn 1
+        // decoded its last position; re-deriving it via a fresh Q8 prefill re-Q8-quantizes a
+        // position that was actually exact F32 in A's (and therefore B's forked) real cache --
+        // exactly the docs/029-prefill-batch-composition-numerics-bug.md mismatch, on the shared
+        // prefix itself rather than a genuine sharing defect. Then continues with B's own suffix
+        // via PrefillWithCache/BatchForwardMulti, the same pair B itself used. If the fork shared
+        // stale, wrong, or partially-copy-on-written pages, this is where it would show up as a
+        // token mismatch.
         using (var backend = new CpuBackend())
         using (var oracleFwd = new Engine.ForwardPass(model, backend, hp, maxContextLength: 2048))
         {
-            var prefix = new List<int>(history);
-            prefix.AddRange(tokenizer.Encode(" and the capital of Italy is"));
-            var logits = oracleFwd.Prefill(prefix);
+            using var oracleCache = oracleFwd.CreateCache();
+            int pos = 0;
+            ReadOnlySpan<float> logits = default;
+            for (int seg = 0; seg < historyLog.Length; seg++)
+            {
+                var tokens = ((TokenSegment)historyLog[seg]).TokenIds;
+                if (seg % 2 == 0)
+                {
+                    logits = oracleFwd.PrefillWithCache(tokens, oracleCache, startPos: pos);
+                    pos += tokens.Length;
+                }
+                else
+                {
+                    foreach (var token in tokens)
+                    {
+                        logits = oracleFwd.BatchForwardMulti([token], [pos], [oracleCache])[0];
+                        pos++;
+                    }
+                }
+            }
+
+            var suffix = tokenizer.Encode(" and the capital of Italy is");
+            logits = oracleFwd.PrefillWithCache(suffix, oracleCache, startPos: pos);
+            pos += suffix.Count;
+
             var actual = new int[bGenerated.Length];
-            int pos = prefix.Count;
             for (int i = 0; i < actual.Length; i++)
             {
                 actual[i] = Sampler.Greedy(logits);
-                if (i + 1 < actual.Length) logits = oracleFwd.Forward(actual[i], pos++);
+                if (i + 1 < actual.Length) logits = oracleFwd.BatchForwardMulti([actual[i]], [pos], [oracleCache])[0];
+                pos++;
             }
 
             Assert.Equal(bGenerated.Length, actual.Length);
             for (int i = 0; i < actual.Length; i++)
                 Assert.True(bGenerated[i] == actual[i],
-                    $"generated token {i}: cross-session-seeded B produced {bGenerated[i]} but a full "
-                    + $"from-scratch replay of the identical {prefix.Count}-token prefix produced {actual[i]} "
+                    $"generated token {i}: cross-session-seeded B produced {bGenerated[i]} but a "
+                    + $"precision-consistent replay of the identical history produced {actual[i]} "
                     + "— the forked shared prefix computed different numbers than fresh pages would.");
         }
     }

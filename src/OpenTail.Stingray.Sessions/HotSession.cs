@@ -553,6 +553,99 @@ public sealed class HotSessionRuntime
     }
 
     /// <summary>
+    /// docs/028 Phase 3: creates <paramref name="count"/> independent branches from
+    /// <paramref name="parent"/>'s current retained state, sharing its physical KV pages
+    /// zero-copy (the same <see cref="HotSession.TryForkSharedPrefixCache"/> ref-counted
+    /// mechanism Phase 2's cross-session sharing uses) instead of re-prefilling or copying
+    /// tensors. Copy-on-write happens automatically at the existing cache layer the moment a
+    /// branch's own generation writes to a still-shared page — nothing here needs to know about
+    /// that.
+    ///
+    /// <para><b>Page-aligned boundary.</b> The underlying fork can only share whole pages, at
+    /// whatever block size the active backend reports — deliberately not assumed here, the same
+    /// way <see cref="CreateWithSharedPrefixHint"/> defers to it rather than hard-coding a
+    /// concrete cache type's alignment into this layer. A parent not currently sitting on that
+    /// boundary shares everything up to its last full page; a branch's returned cursor reflects
+    /// that (possibly shorter) shared length, not the parent's exact current position. The
+    /// caller's next <see cref="RunTurnAsync"/> call on a branch supplies whatever text covers the
+    /// remaining tail — the same "encode the shared portion in isolation" contract
+    /// <see cref="CreateWithSharedPrefixHint"/> already documents, not a new caveat. The shared
+    /// prefix also stops at the first non-token (atomic) execution segment in the parent's
+    /// history, for the same reason <see cref="CommonPrefixLength"/> does: a fork can only share
+    /// KV positions that came from actual token execution.</para>
+    ///
+    /// <para><b>Atomic</b>, unlike <see cref="CreateWithSharedPrefixHint"/>'s best-effort
+    /// fallback: this call either produces all <paramref name="count"/> branches genuinely sharing
+    /// the parent's state, or none. <paramref name="parent"/> must be idle (no queued or active
+    /// turn); if it becomes busy partway through this call (a caller racing its own
+    /// <see cref="RunTurnAsync"/> against its own <see cref="Fork"/> call on the same session is a
+    /// caller bug, not something to paper over) or the active backend doesn't support prefix
+    /// forking at all, every branch already created by this call is torn down — its reservation
+    /// and pages released — before the exception propagates. A caller never has to distinguish
+    /// "some branches exist" from "the call failed."</para>
+    /// </summary>
+    public IReadOnlyList<HotSession> Fork(HotSession parent, int count)
+    {
+        ArgumentNullException.ThrowIfNull(parent);
+        if (count < 1)
+            throw new ArgumentOutOfRangeException(nameof(count), "Fork count must be at least 1.");
+
+        // The cap here is the token-only prefix length (stops at any atomic segment) -- a
+        // session-layer concept the engine-level fork has no way to know about. The engine still
+        // floors this to its own backend-reported block size internally; that authoritative,
+        // possibly-smaller result (forked.Length below) is what actually gets shared, not this cap.
+        var (tokens, tokenOnlyLength) = TokenOnlyPrefix(
+            parent.Cursor.ExecutionLog, parent.Cursor.MaterializedPositionCount);
+
+        var branches = new List<HotSession>(count);
+        try
+        {
+            ImmutableArray<int>? sharedTokens = null;
+            for (int i = 0; i < count; i++)
+            {
+                var branch = Create();
+                branches.Add(branch);
+                if (tokenOnlyLength == 0) continue;
+
+                var forked = parent.TryForkSharedPrefixCache(tokenOnlyLength)
+                    ?? throw new InvalidOperationException(
+                        "Cannot fork session: it is not idle, or the active backend does not support prefix forking.");
+                sharedTokens ??= tokens[..forked.Length];
+                branch.SeedFromSharedPrefix(sharedTokens.Value, forked.Cache);
+            }
+            return branches;
+        }
+        catch
+        {
+            foreach (var branch in branches) Delete(branch.SessionId);
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// The leading run of <paramref name="log"/> that is plain token execution, capped at
+    /// <paramref name="maxLength"/> positions — stops at the first non-token (atomic) segment
+    /// even if that lands short of the cap. See <see cref="Fork"/> for why this matters: a shared
+    /// prefix can only cover positions that came from actual token execution.
+    /// </summary>
+    private static (ImmutableArray<int> Tokens, int Length) TokenOnlyPrefix(
+        ImmutableArray<ExecutionSegment> log, int maxLength)
+    {
+        var tokens = ImmutableArray.CreateBuilder<int>();
+        foreach (var segment in log)
+        {
+            if (tokens.Count >= maxLength) break;
+            if (segment is not TokenSegment tokenSegment) break;
+            foreach (var token in tokenSegment.TokenIds)
+            {
+                if (tokens.Count >= maxLength) break;
+                tokens.Add(token);
+            }
+        }
+        return (tokens.ToImmutable(), tokens.Count);
+    }
+
+    /// <summary>
     /// docs/028 Phase 1's eviction policy: evict idle sibling sessions (oldest-created first, an
     /// arbitrary but stable and starvation-free order — <see cref="ConcurrentDictionary{TKey,TValue}"/>
     /// enumeration order is not insertion order, so this does not currently guarantee that; true

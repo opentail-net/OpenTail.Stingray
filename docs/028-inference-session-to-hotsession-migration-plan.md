@@ -192,25 +192,104 @@ and the full heavy Sessions suite show no regressions; one pre-existing heavy-su
 (`HotSessionGreedyReplayTests.HotSession_MultiTurn_MatchesFullGreedyReplay_OnRealModel`) was
 confirmed unrelated by reverting every Phase 2 file and reproducing the identical failure without
 them — a real, standing issue in the original single-session retained-replay path, out of scope
-for this phase, not yet filed.
+for this phase. Since resolved: see docs/029-prefill-batch-composition-numerics-bug.md (root cause
+was the test's own replay oracle grading the session against an unachievable reference, not a
+session defect; fixed by replaying through the session's own entry points).
 
-## Phase 3 — Fork / branching / consensus voting
+## Phase 3 — Fork / branching / consensus voting (done, verified)
 
-**Confirmed novel and highest-risk of the three.** `HotSession` has zero fork support today
-(grep-verified). This is also the seam with the sharpest correctness questions from the original
-investigation (does rejection restore the parent sequence correctly, are speculative/branch
-pages released, can CoW happen at the wrong boundary). `docs/008`/`010` already did serious design
-thinking here — re-read them in full before starting, since they're pre-existing, reviewed design
-docs for this exact feature, not something to redesign from scratch.
+**Confirmed novel, but materially lower-risk than originally scoped once `docs/008`/`010` were
+re-read against what Phases 1 and 2 already established.** `HotSession` has zero fork support
+today (grep-verified) — but the hard, novel primitive it would need already exists and is already
+proven: `PagedKvCache.ForkSharedPrefix` (ref-counted `AddRef`/`Release`, same mechanism Phase 2
+uses) plus `EnsureWritableBlock`'s automatic copy-on-write on first write to a shared block is
+exactly the "share physical pages, CoW only on divergence" contract `docs/008` asks for, verified
+against a real model in Phase 2's own test. What was missing is session-level plumbing, not
+physical-layer machinery — the same pattern as Phases 1 and 2.
 
-- This phase should NOT be attempted until Phases 1 and 2 are done and verified. Forking
-  interacts with both governance (what happens to a forked branch's pages under memory pressure)
-  and prefix sharing (a fork IS a form of page sharing) — doing it first would mean redoing this
-  work once those land.
-- **Verification**: this is exactly where a dedicated test belongs before any fix — construct
-  the fork/reject/verify scenario from the original seam questions and observe actual current
-  behavior (there is none today, so the test starts as "assert this capability exists and behaves
-  correctly," not a regression check).
+- **`docs/010`'s central concern (duplicating a *stateful* forward-pass instance per branch, with
+  per-backend costs and GDN state flagged as the hardest tier) does not apply to `HotSession` at
+  all.** `docs/010` is about `InferenceSession`'s architecture, where each session's own
+  `ForwardPass` instance embeds its own internal `PagedKvCache`. `ContinuousBatchingEngine`/
+  `HotSession` never had that problem: the forward pass is already one shared, stateless-per-
+  sequence instance (immutable weights + lazily-populated caches only), and each session's mutable
+  state already lives in an *externally*-owned `ISequenceKvCache`
+  (`CreateCache()` → `PrefillWithCache`/`BatchForwardMulti(cache)`). Forking a `HotSession` means
+  forking that external cache, not duplicating a forward pass.
+- **Checked and closed**: whether GDN-hybrid models (`HybridGdnForwardPass`/
+  `CudaHybridGdnForwardPass`, qwen35moe-style) could break this, since `docs/010` flags GDN state
+  as "destructively updated per token and NOT arbitrarily rewindable" and it lives inside the
+  forward-pass instance rather than externalized. Confirmed moot: neither implements
+  `IBatchedForwardPass`, so neither can be wired into `ContinuousBatchingEngine`/`HotSession` at
+  all today, fork or no fork — a pre-existing scope boundary, not a new risk this phase
+  introduces. Fork support only needs to cover backends that actually implement
+  `IBatchedForwardPass` (CPU dense today; CUDA dense once/if it implements
+  `IPrefixCacheableBatchedForwardPass` the same way — not yet confirmed).
+- **Checked and closed**: `docs/008`'s RNG-independence requirement (Test 10 — branches must not
+  contend over one shared mutable RNG). Already true by construction:
+  `ContinuousBatchingEngine.ActivateSeq` creates a fresh `Random()` per admitted request, not a
+  shared instance field — no cross-sequence RNG state exists to leak between a parent and its
+  forks in the first place. Per-request grammar/constraint state (`req.Sp.Constraint?.Reset()`) is
+  the same story. Fork doesn't need to do anything special here.
+- **The one real design decision**: `ForkSharedPrefix(prefixLength)` requires page-aligned length
+  (a multiple of `PagedKvCache.PageSize`), and a session forking mid-conversation is essentially
+  never sitting exactly on that boundary. Decided: fork zero-copy-shares everything up to the last
+  full page; the caller's next `RunTurnAsync` call on each branch supplies whatever text covers
+  the remaining (at most `PageSize - 1`-token) tail — the same "caller must encode the shared
+  portion in isolation" contract Phase 2's `CreateWithSharedPrefixHint` already documents, not a
+  new kind of caveat. Rejected: giving each branch an exact, immediate snapshot of the parent's
+  precise current position, which would need a new token-level (not text) admission path bypassing
+  `RunTurnAsync` — real, bounded, but more surface area than this phase's payoff justifies right
+  now.
+- **Fork semantics, per `docs/008`**: atomic and all-or-nothing (§30) — if any of `count` branches
+  fails partway (source not idle, backend doesn't support forking, budget rejects a branch),
+  every already-created branch in that call is torn down and its reservation/pages released before
+  the failure propagates; a caller never has to distinguish "3 of 4 branches exist" from "the call
+  failed." `count >= 1` validated (§16); `count == 1` still valid, same semantics as a single fork.
+  Lives on `HotSessionRuntime` (`Fork(HotSession parent, int count)`), not on `HotSession` itself —
+  following this codebase's own established convention (`Create`/`CreateWithSharedPrefixHint`/
+  `Open`/`ImportState` are all runtime-level factory methods), which is exactly what `docs/008`
+  itself instructs when it says existing API conventions should win over its own suggested shape.
+  Fork and Generate stay separate (§4): `Fork` returns ready `HotSession`s; driving `RunTurnAsync`
+  on them (concurrently or not) is entirely the caller's business, reusing the existing
+  continuous-batching engine — no new scheduler, matching §14/§34's explicit "do not overbuild."
+- **Implementation**: `HotSessionRuntime.Fork` (`src/OpenTail.Stingray.Sessions/HotSession.cs`)
+  reuses `TryForkSharedPrefixCache`/`SeedFromSharedPrefix` from Phase 2 directly — no new
+  engine-level code was needed, only the session-level orchestration and rollback. One design
+  correction made while implementing: the first draft computed the page-aligned shared length
+  itself using `PagedKvCache.PageSize` directly, a concrete-type constant that has no business in
+  the Sessions layer (the same layering discipline Phase 2 already established — the backend's own
+  reported `PrefixCacheBlockSize` is what must be authoritative). Fixed to pass the token-only
+  prefix length as a *cap* and let `TryForkSharedPrefixCache`'s own return value report the actual
+  aligned length used, matching `CreateWithSharedPrefixHint`'s existing pattern exactly.
+- **Verification**: `docs/008`'s own test list (§27) was the acceptance bar. A fake-based
+  orchestration suite (`tests/OpenTail.Stingray.Tests.Sessions.Fast/HotSessionForkTests.cs`, 10
+  tests) covers independent branches sharing the parent's prefix, the zero-copy claim (via the
+  `CrossSessionPrefixTokensShared` counter Phase 2 added), alignment flooring, `count` validation,
+  cold-branch forking from a session with no materialized content, atomic rollback with no residual
+  reservation when the parent isn't idle, parent/sibling isolation, and nested forking. A real-model
+  test (`tests/OpenTail.Stingray.Tests.Sessions/HotSessionForkRealModelTests.cs`) forks two branches
+  from a real 16-token parent state, drives each to a genuinely different continuation (the actual
+  copy-on-write trigger), and checks both that the engine's shared-prefix counter fired for each
+  branch and that each branch's output exactly matches a precision-consistent replay oracle.
+
+  That real-model test caught a real bug in itself before it caught anything in the production
+  code: its first version built the oracle by cold-`PrefillWithCache`-ing the parent's whole
+  16-token history in one call — which silently re-Q8-quantizes whatever position the parent
+  actually *decoded* (permanently F32-exact), reproducing the exact
+  docs/029-prefill-batch-composition-numerics-bug.md mismatch on the shared prefix itself rather
+  than testing anything about forking. Fixed by replaying the parent's own execution log segment by
+  segment (prefill for prompt segments, decode-with-the-parent's-own-recorded-token for generated
+  segments), the same fix shape as `HotSessionGreedyReplayTests`'s corrected oracle. Once fixed, it
+  passed immediately — meaning `Fork`/CoW were correct from the start; only the test's own oracle
+  had the bug. **Phase 2's real-model test (`CrossSessionPrefixSharingRealModelTests.cs`) had the
+  identical latent flaw** — it happened to pass because the affected position's numeric influence
+  wasn't large enough to flip that test's specific greedy choice, the same kind of coincidence that
+  let `HotSession_ExactAppendAtPageBoundary_MatchesFullGreedyReplay` pass before docs/029 was found.
+  Fixed with the same per-segment-replay pattern while this was fresh, rather than leaving a known
+  landmine for whoever next touches it. Full heavy `Tests.Sessions` suite: 24/24. `Tests.Sessions.Fast`:
+  394/394 (384 + the 10 new fork tests). `Tests.Server.Fast`/`Tests.ForwardPass.Fast`: unaffected,
+  no production code outside `HotSession.cs` was touched this phase.
 
 ## End state
 
