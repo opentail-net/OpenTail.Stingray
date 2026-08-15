@@ -22,7 +22,7 @@ whose version differs from `<Version>`.
    each package's README/notices and load-bearing assembly/tool entries, restores and executes a
    fresh .NET 10 library consumer, compiles a clean ASP.NET Core Server consumer, and
    installs/runs the CLI from the locally packed feed.
-4. Complete every applicable row in [release-quality-test-matrix.md](release-quality-test-matrix.md).
+4. Complete every applicable row in [reference/release-quality-test-matrix.md](reference/release-quality-test-matrix.md).
    A runner or hardware class that was not exercised remains **not run**, never a pass.
    Run `./scripts/check-test-model-coverage.ps1` alongside the managed suite and retain its
    output with the receipt. It reports the locally present/absent real-model fixtures; a normal

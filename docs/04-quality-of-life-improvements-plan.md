@@ -23,7 +23,7 @@ and typed host-key classification are now in place. Environment ownership and ex
    attributes (`"..." + "..."`) silently produced blank descriptions (3 rows affected, all in
    `RunCommand`); fixed to accumulate across lines, re-ran clean at the same 153-row count, then
    classified every row. The 41 typed server keys have their own ownership register in
-   `host-config-inventory.md`, already complete since 2026-08-08. **Not done as part of this pass:**
+   `reference/host-config-inventory.md`, already complete since 2026-08-08. **Not done as part of this pass:**
    removing obsolete bench switches — classification surfaced which rows are `bench`/dead-looking
    `experimental` candidates, but retiring any of them needs a per-variable owner call, not a
    drive-by deletion.
@@ -49,7 +49,7 @@ and typed host-key classification are now in place. Environment ownership and ex
    has a named lifecycle and capability gate. The proof itself is now covered by the real-GGUF,
    cross-process replay acceptance test; it is not yet a product contract.
 
-Inputs: [env-var-inventory.md](env-var-inventory.md), [host-config-inventory.md](host-config-inventory.md),
-and [eligibility-check-inventory.md](eligibility-check-inventory.md).
+Inputs: [env-var-inventory.md](env-var-inventory.md), [reference/host-config-inventory.md](reference/host-config-inventory.md),
+and [reference/eligibility-check-inventory.md](reference/eligibility-check-inventory.md).
 
 Historical implementation record: [done/quality-of-life-improvements-plan-2026-07.md](done/quality-of-life-improvements-plan-2026-07.md).

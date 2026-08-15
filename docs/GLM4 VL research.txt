@@ -1,0 +1,568 @@
+ I'm about to port llama.cpp's GLM4V vision encoder (`tools/mtmd/models/glm4v.cpp`, `clip_graph_glm4v::build()`) into C# for a from-scratch reimplementation (OpenTail.Stingray, a C# LLM inference engine). This is the vision-tower-only port — no text-decoder changes, same scope as two prior successful ports in this codebase (Gemma 4 E4B `gemma4v` and Llama 4 `llama4` ViT encoders, both already implemented in `src/OpenTail.Stingray.Vision/`). I have the GLM4V build() source already (pasted by the user, don't need to re-fetch it), but I need the EXACT low-level math for several pieces that the build() function calls into but doesn't itself define. There's a local llama.cpp checkout at `C:\Git-Public\OpenTail.Stingray\examples\llama.cpp\llama.cpp`.
+
+  I need four things researched precisely, with exact code/formulas (not paraphrased):
+
+  1. **`ggml_rope_multi` with `GGML_ROPE_TYPE_VISION`**: find the actual CPU implementation (search `ggml/src/ggml-cpu/` or wherever `ggml_compute_forward_rope` lives, look for how it branches on `GGML_ROPE_TYPE_VISION` specifically vs the plain `GGML_ROPE_TYPE_MROPE`/normal modes, and how `sections`/`mrope_sections` (here `{d_head/4, d_head/4, d_head/4, d_head/4}`, n_dims=`d_head/2`) determine which of the 4 parallel position streams (`positions` is a flat `n_patches*4` array) applies to which channel-pairs of the head dimension. I need to know: is this NEOX-style (split-half pairing) or NORM-style (interleaved consecutive pairs)? Does each of the 4 sections get its own contiguous channel range, or are they interleaved across the head-dim in some other pattern? What is `attn_factor`/`ext_factor`/`beta_fast`/`beta_slow` doing here (the call passes `1, 0, 1, 32, 1` for `freq_scale, ext_factor, attn_factor, beta_fast, beta_slow` — are ext_factor=0 and freq_scale=1 effectively disabling YaRN-style scaling, leaving plain rope?). Also check where the actual per-patch position VALUES get filled into that `n_patches*4` flat array for `PROJECTOR_TYPE_GLM4V` specifically in `clip.cpp` (search near where `GLM4V`/`glm4v` appears, or wherever the shared code that also serves QWEN2VL's position-fill lives, since my own earlier research this session found GLM4V reuses "the same plain positions block... shared with GLM4V" -- confirm this and give me the exact fill loop).
+
+  2. **Dual-conv patch embed reshape** (the "second conv dimension" block in the pasted build() -- two `ggml_conv_2d` calls summed, then `ggml_permute(inp,1,2,0,3)` -> `ggml_cont_4d(n_embd*2, n_patches_x/2, n_patches_y, 1)` -> `ggml_reshape_4d(n_embd*2, n_patches_x/2, 2, n_patches_y/2)` -> `ggml_permute(0,2,1,3)` -> `ggml_cont_3d(n_embd, n_patches_x*n_patches_y, 1)`). I need to trace through this exactly, ggml-axis-by-axis (ne[0]=fastest convention), to determine: for a given OUTPUT token index t in [0,n_patches), which INPUT (row,col) patch position and which of the 2 conv kernels'output channels does it correspond to? I did this derivation myself for a similar (but distinct) pixel-shuffle reshape in llama4's merger last session and need the same rigor here -- don't guess, trace the actual index arithmetic through each ggml_permute/reshape call (ggml_permute(t, a0,a1,a2,a3) means old axis i moves to new axis position a_i).
+
+  3. **Patch merger `ggml_conv_2d`** (the "patch merger (downsample)" block: reshape to `[n_embd, n_merge, n_merge, n_token_out]`, permute(2,0,1,3), cont, then `ggml_conv_2d(model.mm_patch_merger_w, cur, n_merge, n_merge, 0,0,1,1)`, reshape to `[cur->ne[2], n_token_out]`). This is a REAL 2D convolution (not a linear reshape trick like llama4's pixel-shuffle) with kernel size == stride == n_merge, applied per output token over an n_merge x n_merge x n_embd input patch. I need `mm_patch_merger_w`'s expected GGUF tensor shape/layout (check `clip.cpp`'s tensor loading for `PROJECTOR_TYPE_GLM4V`, likely a`TN_...` constant name, and how `ggml_conv_2d`'s kernel tensor layout maps to output channels) so I can implement the equivalent as a plain loop (kernel_h=kernel_w=n_merge=stride, no padding, so it's really just "for each output channel c_out, output[c_out] = sum over (dy,dx,c_in) ofweight[c_out,dy,dx,c_in] * input[dy,dx,c_in], plus bias[c_out]" -- confirm this simplification is correct given stride==kernel==n_merge and 0 padding, and pin down the exact weight tensor axis order so I know how to index into it).
+
+  4. **GLM4V-specific hparams and tensor names** from `clip.cpp`: the `PROJECTOR_TYPE_GLM4V` metadata-parsing case (`rope_theta`, `n_merge` default +override key, any `set_warmup_n_tokens`/`set_limit_image_tokens` calls and what they mean for image size constraints), and the tensor-loading case for GLM4V (exact GGUF tensor name strings for `patch_embeddings_0/1`, `patch_bias`, `norm_embd_w/b`, `position_embeddings` (optional -- GLM-OCR variant hasnone), `mm_patch_merger_w/b`, `mm_fc_w`, `mm_post_norm_w/b`, `mm_ffn_up/gate/down_w/b`, and the per-block tensor names -- confirm whether GLM4V uses fused QKV (`layer.qkv_w`) or separate Q/K/V, and whether per-block biases are present, by checking `model.patch_bias != nullptr` assertion context andany GLM4V-specific loading branch versus the generic per-block loader).
+
+  Report factually with exact code snippets and line references (this feeds an implementation, precision matters more than brevity). If something is genuinely ambiguous or you can't find it, say so explicitly rather than guessing.
+
+  Searched for 15 patterns, read 9 files, ran 15 shell commands
+Loaded ..\..\..\..\..\CLAUDE.md
+Loaded ..\..\..\..\..\examples\llama.cpp\llama.cpp\CLAUDE.md
+
+❯ can you round this up please, this is taking too long
+
+GLM4V Vision Encoder — Low-Level Math Research (from local llama.cpp checkout)
+
+All line numbers refer to C:\Git-Public\OpenTail.Stingray\examples\llama.cpp\llama.cpp.
+
+---
+1. ggml_rope_multi / GGML_ROPE_TYPE_VISION
+
+1a. Doc contract (ggml/include/ggml.h:1839-1869)
+
+// multi-dimensional RoPE, for Qwen-VL and similar vision models
+// mode can be either VISION, MROPE, IMROPE, cannot be combined with NORMAL or NEOX
+// ...
+// important note:
+//   - NEOX ordering is automatically applied and cannot be disabled for MROPE and VISION
+//   - for VISION, n_dims must be head_size/2
+//
+// example vision RoPE:
+//  given sections = [y=4, x=4, 0, 0] (last 2 sections are ignored)
+//  given a single head with size = 8 --> [00000000]
+//  GGML_ROPE_TYPE_VISION  n_dims = 4 --> [yyyyxxxx]
+//  note: unlike MROPE, the theta for each dim is computed differently for each section
+//        in other words, idx used for theta: [0123] for y section, then [0123] for x section
+GGML_API struct ggml_tensor * ggml_rope_multi(...)
+GGML_ROPE_TYPE_VISION = 24, GGML_ROPE_TYPE_MROPE = 8, GGML_ROPE_TYPE_NEOX = 2, GGML_MROPE_SECTIONS = 4 (ggml/include/ggml.h:250-256).
+
+Signature/argument mapping for the GLM4V call (ggml_rope_multi(ctx, a, b, c, n_dims, sections, mode, n_ctx_orig, freq_base, freq_scale, ext_factor, attn_factor, beta_fast, beta_slow), ggml.h:1869-1883), against glm4v.cpp:65-68:
+
+return ggml_rope_multi(
+    ctx0, cur, positions, nullptr,
+    d_head/2, mrope_sections, GGML_ROPE_TYPE_VISION,
+    32768, hparams.rope_theta, 1, 0, 1, 32, 1);
+→ n_dims=d_head/2, sections={d_head/4}×4, mode=VISION, n_ctx_orig=32768, freq_base=rope_theta(=10000), freq_scale=1, ext_factor=0, attn_factor=1,beta_fast=32, beta_slow=1.
+
+1b. CPU implementation — ggml/src/ggml-cpu/ops.cpp
+
+Cache/theta computation, ggml_mrope_cache_init (ops.cpp:5862-5930):
+
+int sect_dims = sections[0] + sections[1] + sections[2] + sections[3];
+int sec_w = sections[1] + sections[0];
+int sec_e = sections[2] + sec_w;
+for (int64_t i0 = 0; i0 < ne0; i0 += 2) {
+    int sector = (i0 / 2) % sect_dims;
+    if (indep_sects) {                    // true for is_vision
+        if (sector == 0)            theta_t = theta_base_t;
+        else if (sector == sections[0]) theta_h = theta_base_h;
+        else if (sector == sec_w)       theta_w = theta_base_w;
+        else if (sector == sec_e)       theta_e = theta_base_e;
+    }
+    float theta = theta_t;                // default
+    // (is_imrope branch skipped, mode is VISION not IMROPE)
+    else {
+        if (sector >= sections[0] && sector < sec_w) theta = theta_h;
+        else if (sector >= sec_w && sector < sec_w+sections[2]) theta = theta_w;
+        else if (sector >= sec_w+sections[2]) theta = theta_e;
+    }
+    rope_yarn(theta/ff, freq_scale, corr_dims, i0, ext_factor, mscale, &cache[i0+0], &cache[i0+1]);
+    cache[i0+1] *= sin_sign;
+    theta_t *= theta_scale; theta_w *= theta_scale; theta_h *= theta_scale; theta_e *= theta_scale;
+}
+where theta_scale = powf(freq_base, -2.0f/n_dims) computed once (ops.cpp:6008), ne0 here is the full head dim (called with ne0 = dst->ne[0], ops.cpp:6058-6060), and p_t=pos[i2], p_h=pos[i2+ne2], p_w=pos[i2+2*ne2], p_e=pos[i2+3*ne2] from the flat positions tensor (ops.cpp:6054-6057).
+
+For GLM4V: n_dims = d_head/2, sections = {d_head/4, d_head/4, d_head/4, d_head/4}, so sect_dims = sum(sections) = d_head but the loop only runs i0 from 0to ne0(=d_head), i.e. i0/2 (=sector, since sect_dims=d_head > d_head/2) ranges only over [0, d_head/2) — exactly the first two sections (sections[0] and sections[1]). theta_w and theta_e (position streams 2 and 3) are never selected — they're computed/reset but unused. Only theta_t (stream 0) and theta_h(stream 1) matter.
+
+Because indep_sects=true, the frequency exponent resets to 0 at the sector boundary sector == sections[0] — i.e. within each quarter the local index restarts, matching the doc's "idx used for theta: [0123] for y section, then [0123] for x section" note. But the step size theta_scale is fixed globallyat rope_theta^(-2/n_dims) = rope_theta^(-4/d_head) (uses n_dims=d_head/2, not the quarter size d_head/4).
+
+Rotation application, rotate_pairs (ops.cpp:5933-5950) called for VISION mode as (ops.cpp:6078-6080):
+case GGML_ROPE_TYPE_VISION:
+    rotate_pairs<T>(ne0, n_dims, cache, src, dst_data);   // n=ne0=d_head, n_offset=n_dims=d_head/2, scale=2(default)
+template<typename T>
+static void rotate_pairs(int64_t n, int64_t n_offset, const float* cache, const T* src, T* dst, int scale=2) {
+  for (int64_t i0 = 0; i0 < n; i0 += 2) {
+    const int64_t ic = i0/scale;           // ic = i0/2 ∈ [0, n/2) = [0, d_head/2)
+    const float cos_theta = cache[i0+0], sin_theta = cache[i0+1];
+    const T* src_ = src + ic;  T* dst_ = dst + ic;
+    float x0 = f32(src_[0]), x1 = f32(src_[n_offset]);
+    dst_[0]        = f32_to_T(x0*cos_theta - x1*sin_theta);
+    dst_[n_offset] = f32_to_T(x0*sin_theta + x1*cos_theta);
+  }
+}
+This is NEOX-style split-half pairing (channel ic paired with ic + n_offset), not interleaved-adjacent NORM style (that's only for GGML_ROPE_TYPE_NORMAL, rotate_pairs<T>(n_dims, 1, ..., scale=1), ops.cpp:6070-6072). Also note if (!is_vision) { ...fill remaining channels... } (ops.cpp:6085-6094) is skippedfor VISION — every channel of d_head gets overwritten by the rotation (no passthrough tail), since ic covers [0,d_head/2) writing both dst[ic] and dst[ic+d_head/2].
+
+1c. Net effect — exact formula for GLM4V
+
+Split the head dim into 4 contiguous quarters of size d_head/4: Q0=[0,H/4) Q1=[H/4,H/2) Q2=[H/2,3H/4) Q3=[3H/4,H) (H=d_head). Let k ∈ [0,H/4) be thewithin-quarter index, theta_scale = rope_theta^(-4/H), pos_row = positions[i2] (stream 0), pos_col = positions[i2+n_patches] (stream 1):
+
+inv_freq(k) = theta_scale^k = rope_theta^(-4k/H)
+theta_row(k) = pos_row * inv_freq(k)
+theta_col(k) = pos_col * inv_freq(k)
+cos/sin computed as cos(theta)*attn_factor, sin(theta)*attn_factor   (attn_factor=1)
+
+for k in [0, H/4):
+    (Q0[k], Q2[k])  -> rotated by (cos(theta_row(k)), sin(theta_row(k)))
+        out Q0[k] = Q0[k]*cos - Q2[k]*sin
+        out Q2[k] = Q0[k]*sin + Q2[k]*cos
+    (Q1[k], Q3[k])  -> rotated by (cos(theta_col(k)), sin(theta_col(k)))
+        out Q1[k] = Q1[k]*cos - Q3[k]*sin
+        out Q3[k] = Q1[k]*sin + Q3[k]*cos
+i.e. the classic Qwen2VL-style vision-rope pattern [h_freq, w_freq, h_freq, w_freq] (duplicated concat + rotate-half), applied to the entire head dim — this independently matches the well-known open-source Qwen2VL vision-rope semantics, confirming the trace.
+
+1d. ext_factor/attn_factor/freq_scale — confirmed disabling YaRN
+
+rope_yarn (ops.cpp:5829-5844):
+float theta_interp = freq_scale * theta_extrap;
+float theta = theta_interp;
+if (ext_factor != 0.0f) {                 // SKIPPED: ext_factor=0
+    float ramp_mix = rope_yarn_ramp(...) * ext_factor;
+    theta = theta_interp*(1-ramp_mix) + theta_extrap*ramp_mix;
+    mscale *= 1.0f + 0.1f*logf(1.0f/freq_scale);
+}
+*cos_theta = cosf(theta) * mscale;
+*sin_theta = sinf(theta) * mscale;
+With freq_scale=1 and ext_factor=0, theta = theta_extrap exactly (no interpolation, ramp branch entirely skipped), and mscale = attn_factor = 1unmodified. This is plain, unscaled rotary embedding — beta_fast=32/beta_slow=1 are YaRN correction-dim parameters that are computed into corr_dims (ggml_rope_yarn_corr_dims, ops.cpp:6010-6011) but never consulted because the ext_factor != 0.0f branch that uses them never executes. Confirmed: yourreading is correct.
+
+1e. Position fill — confirmed shared with QWEN2VL/QWEN3VL
+
+clip.cpp:4330-4354:
+case PROJECTOR_TYPE_QWEN2VL:
+case PROJECTOR_TYPE_QWEN3VL:
+case PROJECTOR_TYPE_GLM4V:
+    {
+        const int merge_ratio = hparams.n_merge;
+        const int pw = image_size_width  / patch_size;
+        const int ph = image_size_height / patch_size;
+        std::vector<int> positions(n_pos * 4);
+        int ptr = 0;
+        for (int y = 0; y < ph; y += merge_ratio) {
+            for (int x = 0; x < pw; x += merge_ratio) {
+                for (int dy = 0; dy < 2; dy++) {
+                    for (int dx = 0; dx < 2; dx++) {
+                        positions[                  ptr] = y + dy;
+                        positions[    num_patches + ptr] = x + dx;
+                        positions[2 * num_patches + ptr] = y + dy;
+                        positions[3 * num_patches + ptr] = x + dx;
+                        ptr++;
+                    }
+                }
+            }
+        }
+        set_input_i32("positions", positions);
+    } break;
+Streams 2/3 duplicate streams 0/1 (harmless since VISION rope never reads them, §1b). The inner dy,dx∈{0,1} loops are hardwired to 2×2 regardless ofmerge_ratio/n_merge — this is only self-consistent when n_merge==2, which is exactly GLM4V's value (confirmed §4). Note this loop's token enumeration order (block of merge_ratio stride, then 2×2 sub-block dy outer/dx inner) is exactly the same token order produced by the patch-embed reshape in item 2below — they must match for RoPE positions to align with tokens.
+
+---
+2. Dual-conv patch-embed reshape — exact index trace
+
+ggml_conv_2d output convention (ggml/src/ggml.c:4653-4680, ne[] = fastest-first):
+// a (kernel): ne=[KW,KH,IC,OC]   b (input): ne=[IW,IH,IC,N]   result: ne=[OW,OH,OC,N]
+ggml_permute(ctx,a,axis0,axis1,axis2,axis3) (ggml.c:3815-3855): old axis i moves to new position axis_i (new_ne[axis_i] = old_ne[i]) — confirmed bysource.
+
+ggml_cont_4d/ggml_cont_3d (ggml.c:3607-3623) materializes a numpy-style reshape of the source's current logical shape (walking it via strides in row-major nested-loop order i3,i2,i1,i0 with i0 fastest, per ggml_compute_forward_dup_bytes, ggml-cpu/ops.cpp:372-410) into a new contiguous tensor of the targetne. This is genuinely numpy.reshape semantics on the permuted view's logical shape, not a physical-memory reinterpretation.
+
+Trace (glm4v.cpp:12,24-37), C=n_embd, W=n_patches_x, H=n_patches_y, B=1:
+
+1. inp = conv2d(patch_embeddings_0, inp_raw); inp_1 = conv2d(patch_embeddings_1, inp_raw); inp = inp + inp_1 — both dual convs are summed elementwise into the same n_embd channels before any reshuffling. (Channel count/identity is untouched by everything that follows — see origin note below.) Post-add inp:ne=[W,H,C,B].
+2. ggml_permute(inp, 1,2,0,3) → ne=[C,W,H,B] (comment [w,h,c,b]→[c,w,h,b] confirmed).
+3. ggml_cont_4d(→[2C, W/2, H, B]): solving flat_src(c,w,h)=h·W·C+w·C+c against flat_dst(c2,w2,h2)=h2·W·C+w2·2C+c2 gives:
+h2 = h
+w2 = w // 2
+c2 = (w % 2)*C + c
+4. ggml_reshape_4d(→[2C, W/2, 2, H/2]) (pure reinterpretation, contiguous): decomposes h = 2·q + p (p=h%2, q=h//2), giving indices (c2, w2, p, q).
+5. ggml_permute(0,2,1,3) → logical ne=[2C, 2, W/2, H/2], axes (c2, p, w2, q).
+6. ggml_cont_3d(→[C, W·H, B]): solving flat_src = ((q·(W/2)+w2)·2+p)·2C + c2 against flat_dst = t·C + c gives:
+t = 2M + (c2 // C)      where M = (q·(W/2)+w2)·2 + p
+c = c2 % C
+6. Substituting c2 = (w%2)·C + c_orig (from step 3): c2 // C = w%2, c2 % C = c_orig — so the final channel c equals the original summed-conv channelc_orig unchanged. And:
+t = 2·(h//2)·W + 4·(w//2) + 2·(h%2) + (w%2)
+
+Verified numerically (W=H=4): this produces token order t=0..15 mapping to (h,w):(0,0)(0,1)(1,0)(1,1),(0,2)(0,3)(1,2)(1,3),(2,0)(2,1)(3,0)(3,1),(2,2)(2,3)(3,2)(3,3) — a 2×2-block raster reorder: block_row=h//2 outer, block_col=w//2 next, then within-block (sub_row=h%2, sub_col=w%2) with sub_row outer / sub_col inner. This is exactly the token order the positions fill loop in §1eproduces (dy outer, dx inner, block stride = n_merge=2).
+
+Answer to your channel question: it's not a channel split at all — the two conv kernels' outputs are already summed into one n_embd-wide tensor before this reshape runs; the entire permute/reshape sequence's only job is spatial patch reordering (raster → 2×2-block-raster), not channel manipulation.Channel c in the final [n_embd, n_patches, 1] output equals the channel of the pre-summed conv output at the corresponding (h,w).
+
+Origin of the two convs (explains the naming): conversion/qwen3vl.py:128-141 (used for GLM4V too, see §4):
+if name == "visual.patch_embed.proj.weight":
+    # split Conv3D into Conv2Ds along temporal dimension
+    c1, c2, kt, _, _ = data_torch.shape
+    if kt != 2: raise ValueError(...)
+    yield (V_ENC_EMBD_PATCH + ".weight",   data_torch[:, :, 0, ...])   # patch_embeddings_0
+    yield (V_ENC_EMBD_PATCH + ".weight.1", data_torch[:, :, 1, ...])   # patch_embeddings_1
+The original HF weight is a single Conv3d with temporal kernel=2 (for video frame pairs); it's split into two Conv2d kernels at conversion time. For astill image, conv3d(img,img) ≡ conv2d_0(img)+conv2d_1(img), which is exactly what the C++ graph does.
+
+---
+3. Patch-merger ggml_conv_2d — confirmed real conv, simplification valid
+
+glm4v.cpp:84-96:
+int n_merge = hparams.n_merge;
+int n_token_out = n_patches / n_merge / n_merge;
+cur = ggml_reshape_4d(ctx0, cur, n_embd, n_merge, n_merge, n_token_out);
+cur = ggml_cont(ctx0, ggml_permute(ctx0, cur, 2, 0, 1, 3)); // [n_merge, n_merge, n_embd, n_token_out]
+cur = ggml_conv_2d(ctx0, model.mm_patch_merger_w, cur, n_merge, n_merge, 0, 0, 1, 1);
+cur = ggml_reshape_2d(ctx0, cur, cur->ne[2], n_token_out);
+cur = ggml_add(ctx0, cur, model.mm_patch_merger_b);
+
+Reshape step: cur in ([n_embd, n_patches, 1]) contiguous; reshape_4d(→[C, M, M, tok]) (M=n_merge) gives t = tok·M² + b·M + a for indices (c,a,b,tok) — i.e. each contiguous run of M² tokens (in the token order established by item 2) becomes one merged output token tok, with a(=dx/sub_col) andb(=dy/sub_row) as local index b·M+a. Since item 2's block-raster order is exactly 4·block + (dy·2+dx) with M=2, this lines up perfectly — tok = block_row·(W/2)+block_col, a=dx, b=dy.
+
+Permute (2,0,1,3) → new ne=[M(a), M(b), C, tok] (matches comment [n_merge, n_merge, n_embd, n_token_out]); cont materializes it. Fed as conv-2d input b:ne=[IW,IH,IC,N] = [M(a=dx), M(b=dy), C, tok] — i.e. conv batch dimension N = n_token_out, one independent M×M×C "image" per output token.
+
+Kernel model.mm_patch_merger_w: per ggml_conv_2d convention ne=[KW,KH,IC,OC] = [n_merge, n_merge, n_embd, n_embd_out] — in GGUF/HF row-major (reversed) shape notation that's [n_embd_out, n_embd, n_merge, n_merge] ([OC, IC, KH, KW]), i.e. a genuine nn.Conv2d(n_embd, n_embd_out, kernel_size=n_merge,stride=n_merge) kernel (confirmed by tensor_mapping.py:1850: "visual.downsample" # glm4v — a real HF Conv2d named downsample).
+
+Since stride==kernel==n_merge and padding=0, OH=OW=1, so ggml_conv_2d's output ne=[1,1,OC,N], and the final reshape_2d(cur, cur->ne[2], n_token_out) (=[OC,N]) is a trivial squeeze (flat order preserved: flat = n·OC+oc both before and after).
+
+Confirmed simplification, with kx↔a↔dx(sub_col), ky↔b↔dy(sub_row):
+out[oc, tok] = bias[oc] + Σ_{ky=0}^{M-1} Σ_{kx=0}^{M-1} Σ_{ic=0}^{C-1}
+                  W[oc][ic][ky][kx] · vit_out[ic, tok·M² + ky·M + kx]
+where W indexed in [OC][IC][KH][KW] order (matching the GGUF-shape reading of mm_patch_merger_w), and vit_out[ic, t] is the ViT output token stream in the order established by item 2 (i.e. no extra permutation needed at this stage beyond consuming tokens in contiguous runs of M²).
+
+---
+4. GLM4V hparams and tensor names
+
+4a. Hparams (clip.cpp:1629-1637)
+
+case PROJECTOR_TYPE_GLM4V:
+    {
+        hparams.rope_theta = 10000.0f;                 // hardcoded, not read from GGUF
+        hparams.n_merge = 2;                            // default value for GLM4-V
+        hparams.image_resize_algo = RESIZE_ALGO_BILINEAR;
+        get_u32(KEY_SPATIAL_MERGE_SIZE, hparams.n_merge, false);   // optional override
+        hparams.set_limit_image_tokens(8, 4096);
+        hparams.set_warmup_n_tokens(46*46);              // avoid OOM on warmup
+    } break;
+- rope_theta = 10000.0 is a fixed constant, never overridden by any GGUF key for GLM4V (unlike e.g. QWEN25VL which reads it). n_merge defaults to 2,overridable via KEY_SPATIAL_MERGE_SIZE ("clip.vision.spatial_merge_size").
+- set_limit_image_tokens(8,4096) (clip-model.h:166-171): image_min_pixels = 8·patch_area, image_max_pixels = 4096·patch_area where patch_area =patch_size²·n_merge²; sets warmup_image_size = sqrt(image_max_pixels) as a side-effect, but that's then overridden by:
+- set_warmup_n_tokens(46*46) (clip-model.h:184-189): warmup_image_size = 46·patch_size·n_merge — forces the graph-warmup pass to use a smaller image (2116 tokens) than the theoretical max (4096) purely to bound warmup memory; doesn't affect real inference math.
+
+4b. Vision-tower tensor names (constants at clip-impl.h)
+
+┌───────────────────────┬──────────────────────────────────────┬─────────────────────────────────┬───────────────────────────────────────────────────┐
+│         Field         │             TN_ constant             │       Resolved (prefix v)       │                     Required?                     │
+├───────────────────────┼──────────────────────────────────────┼─────────────────────────────────┼───────────────────────────────────────────────────┤
+│                       │                                      │                                 │ required-ish (GGML_ASSERT(model.patch_bias !=     │
+│ patch_embeddings_0    │ TN_PATCH_EMBD =                      │ v.patch_embd.weight             │ nullptr) at build-time implies patch stack        │
+│                       │ "v.patch_embd.weight"                │                                 │ loaded; get_tensor(...,false) optional at load,   │
+│                       │                                      │                                 │ but build() will fail if null)                    │
+├───────────────────────┼──────────────────────────────────────┼─────────────────────────────────┼───────────────────────────────────────────────────┤
+│ patch_embeddings_1    │ TN_PATCH_EMBD_1 =                    │ v.patch_embd.weight.1           │ present for GLM4V (temporal-split conv, §2)       │
+│                       │ "v.patch_embd.weight.1"              │                                 │                                                   │
+├───────────────────────┼──────────────────────────────────────┼─────────────────────────────────┼───────────────────────────────────────────────────┤
+│ patch_bias            │ TN_PATCH_BIAS = "v.patch_embd.bias"  │ v.patch_embd.bias               │ required — GGML_ASSERT(model.patch_bias !=        │
+│                       │                                      │                                 │ nullptr) at glm4v.cpp:4                           │
+├───────────────────────┼──────────────────────────────────────┼─────────────────────────────────┼───────────────────────────────────────────────────┤
+│ norm_embd_w/b         │ TN_NORM_EMBD = "v.norm_embd.%s"      │ v.norm_embd.weight /            │ required by build_norm call (RMS norm applied     │
+│                       │                                      │ v.norm_embd.bias                │ post patch-embed)                                 │
+├───────────────────────┼──────────────────────────────────────┼─────────────────────────────────┼───────────────────────────────────────────────────┤
+│                       │ TN_POS_EMBD =                        │                                 │ optional (get_tensor(...,false), clip.cpp:2065) — │
+│ position_embeddings   │ "%s.position_embd.weight"            │ v.position_embd.weight          │  absent for GLM-OCR (glm4v.cpp:47-49: if          │
+│                       │                                      │                                 │ (model.position_embeddings != nullptr) { ... })   │
+├───────────────────────┼──────────────────────────────────────┼─────────────────────────────────┼───────────────────────────────────────────────────┤
+│                       │                                      │                                 │ must be absent —                                  │
+│ class_embedding       │ TN_CLASS_EMBD = "v.class_embd"       │ —                               │ GGML_ASSERT(model.class_embedding == nullptr) at  │
+│                       │                                      │                                 │ glm4v.cpp:5                                       │
+├───────────────────────┼──────────────────────────────────────┼─────────────────────────────────┼───────────────────────────────────────────────────┤
+│ mm_patch_merger_w/b   │ TN_MM_PATCH_MERGER =                 │ mm.patch_merger.weight / .bias  │ both required (get_tensor(...) no false,          │
+│                       │ "mm.patch_merger.%s"                 │                                 │ clip.cpp:2396-2397)                               │
+├───────────────────────┼──────────────────────────────────────┼─────────────────────────────────┼───────────────────────────────────────────────────┤
+│ mm_fc_w               │ TN_MM_PROJECTOR = "mm.model.fc.%s"   │ mm.model.fc.weight              │ required, no bias tensor loaded for GLM4V's FC    │
+│                       │                                      │                                 │ (only "weight" requested, clip.cpp:2387)          │
+├───────────────────────┼──────────────────────────────────────┼─────────────────────────────────┼───────────────────────────────────────────────────┤
+│ mm_post_norm_w/b      │ TN_MM_POST_NORM = "mm.post_norm.%s"  │ mm.post_norm.weight (req.) /    │ clip.cpp:2394-2395                                │
+│                       │                                      │ .bias (optional)                │                                                   │
+├───────────────────────┼──────────────────────────────────────┼─────────────────────────────────┼───────────────────────────────────────────────────┤
+│ mm_ffn_up/gate/down_w │ TN_MM_UP/GATE/DOWN =                 │ mm.up.weight etc.               │ weight required, bias (_b) optional,              │
+│                       │ "mm.up/gate/down.%s"                 │                                 │ clip.cpp:2388-2393                                │
+├───────────────────────┼──────────────────────────────────────┼─────────────────────────────────┼───────────────────────────────────────────────────┤
+│                       │ TN_ATTN_QKV =                        │                                 │ both are attempted optionally by the generic      │
+│ per-block attn        │ "%s.blk.%d.attn_qkv.%s" and          │ v.blk.N.attn_qkv.{weight,bias}  │ loader (clip.cpp:2076-2095); which set is         │
+│                       │ TN_ATTN_Q/K/V =                      │ (fused)                         │ actually populated depends on the GGUF (see 4c)   │
+│                       │ "%s.blk.%d.attn_{q,k,v}.%s"          │                                 │                                                   │
+├───────────────────────┼──────────────────────────────────────┼─────────────────────────────────┼───────────────────────────────────────────────────┤
+│                       │                                      │                                 │ optional; per tensor_mapping.py:1543,1569 comment │
+│ q_norm/k_norm         │ TN_ATTN_Q_NORM/K_NORM =              │ v.blk.N.attn_q_norm.weight etc. │  # GLM-OCR — populated only for the GLM-OCR       │
+│                       │ "%s.blk.%d.attn_{q,k}_norm.%s"       │                                 │ variant, standard GLM4V (with position            │
+│                       │                                      │                                 │ embeddings) has none                              │
+└───────────────────────┴──────────────────────────────────────┴─────────────────────────────────┴───────────────────────────────────────────────────┘
+
+4c. Fused vs separate QKV — confirmed FUSED for GLM4V
+
+There is no GLM4V-specific branch in the per-block tensor loader (clip.cpp:2071-2151) — it's fully generic, always attempting both layer.qkv_w/qkv_b and layer.q_w/k_w/v_w optionally. Which one is actually present in the GGUF is determined by the converter/original checkpoint. Tracing the conversion path:
+
+- GLM4V's vision converter (conversion/qwen3vl.py:225-245, class Glm4VVisionModel(Qwen3VLVisionModel)) does not override or split attention-QKV naming; it passes tensor names through to the base MmprojModel.modify_tensors.
+- gguf-py/gguf/tensor_mapping.py:1511-1519 (MODEL_TENSOR.V_ENC_ATTN_QKV) lists "visual.blocks.{bid}.attn.qkv" tagged # qwen3vl (no separate GLM4V splitlogic exists anywhere in the conversion scripts) — the fused HF qkv Linear name is what GLM4V's actual checkpoint uses (same as Qwen3VL), mapping straight to TN_ATTN_QKV.
+- By contrast, the separate TN_ATTN_Q/K/V mapping entries (tensor_mapping.py:1532,1558,1584, tagged # qwen2vl, generated) are produced only by the legacy Qwen2VL converter path (conversion/qwenvl.py), which is a different, unrelated converter not used for GLM4V.
+
+Conclusion: GLM4V uses fused QKV (layer.qkv_w/layer.qkv_b, GGUF tensor v.blk.N.attn_qkv.{weight,bias}), split at graph-build time via ggml_view_4d(clip.cpp:381-405):
+if (layer.qkv_w != nullptr) {
+    cur = build_mm(layer.qkv_w, cur);
+    if (layer.qkv_b != nullptr) cur = ggml_add(ctx0, cur, layer.qkv_b);
+    // Q at offset 0, K at offset n_head*d_head, V at offset 2*n_head*d_head
+    // — concatenated [Q;K;V] along the output/embedding axis, NOT interleaved per-head
+    Qcur = ggml_view_4d(ctx0, cur, d_head, n_head, n_pos, B, ..., /*offset*/ 0);
+    Kcur = ggml_view_4d(ctx0, cur, d_head, n_head, n_pos, B, ..., /*offset*/ ggml_row_size(cur->type, n_head*d_head));
+    Vcur = ggml_view_4d(ctx0, cur, d_head, n_head, n_pos, B, ..., /*offset*/ ggml_row_size(cur->type, 2*n_head*d_head));
+    if (layer.q_norm) Qcur = build_norm(Qcur, layer.q_norm, NULL, norm_t, eps, il);
+    if (layer.k_norm) Kcur = build_norm(Kcur, layer.k_norm, NULL, norm_t, eps, il);
+}
+
+One item I could not fully confirm from llama.cpp source alone: whether the per-block qkv_b bias tensor is actually present in real GLM4V GGUFs (i.e.whether the original HF qkv nn.Linear has bias=True). The loader treats it as optional either way (get_tensor(..., "bias", false), clip.cpp:2095) and the graph code (clip.cpp:384) already guards with if (layer.qkv_b != nullptr), so this is safe to implement conditionally — but I'd recommend checkinglist-tensors on an actual GLM4V mmproj GGUF to confirm bias presence rather than assuming. Similarly, q_norm/k_norm presence is a variant switch: standard GLM4V chat model = no QK-norm, GLM-OCR = has QK-norm + no position embeddings; your loader should treat both as independently-optional (!= nullptrchecks), not GLM4V-vs-GLM-OCR special cases.
+
+I've completed the research. Here's the full report with exact code, line references, and derivations for all four items.
+
+1. ggml_rope_multi / GGML_ROPE_TYPE_VISION — CPU implementation
+
+File: ggml/src/ggml-cpu/ops.cpp
+
+Constants (ggml/include/ggml.h:250-256):
+#define GGML_ROPE_TYPE_NORMAL 0
+#define GGML_ROPE_TYPE_NEOX   2
+#define GGML_ROPE_TYPE_MROPE  8
+#define GGML_ROPE_TYPE_VISION 24
+#define GGML_ROPE_TYPE_IMROPE 40
+#define GGML_MROPE_SECTIONS   4
+
+Dispatch in ggml_compute_forward_rope_flt (ops.cpp:6013-6094):
+const bool is_imrope   = mode == GGML_ROPE_TYPE_IMROPE;
+const bool mrope_used  = mode & GGML_ROPE_TYPE_MROPE;   // true for VISION too (24 & 8)
+const bool is_vision    = mode == GGML_ROPE_TYPE_VISION;
+if (is_vision) { GGML_ASSERT(n_dims == ne0/2); }
+...
+if (!mrope_used) { ggml_rope_cache_init(...); }
+else {
+    const int64_t p_t = pos[i2];
+    const int64_t p_h = pos[i2 + ne2];
+    const int64_t p_w = pos[i2 + ne2*2];
+    const int64_t p_e = pos[i2 + ne2*3];
+    ggml_mrope_cache_init(p_t,p_h,p_w,p_e, sections, is_imrope, is_vision,
+                           freq_scale, freq_factors, corr_dims, ne0, ext_factor, attn_factor,
+                           cache, sin_sign, theta_scale);
+}
+...
+switch (mode) {
+    case GGML_ROPE_TYPE_NORMAL: rotate_pairs<T>(n_dims, 1, cache, src, dst_data, 1); break;
+    case GGML_ROPE_TYPE_NEOX:
+    case GGML_ROPE_TYPE_MROPE:
+    case GGML_ROPE_TYPE_IMROPE: rotate_pairs<T>(n_dims, n_dims/2, cache, src, dst_data); break;
+    case GGML_ROPE_TYPE_VISION: rotate_pairs<T>(ne0, n_dims, cache, src, dst_data); break;
+}
+if (!is_vision) { /* copy-through of unrotated tail channels — SKIPPED for vision, all channels rotated */ }
+
+rotate_pairs (ops.cpp:5933-5950, default scale=2):
+for (i0 = 0; i0 < n; i0 += 2) {
+    ic = i0/scale;              // ic = i0/2 for VISION
+    cos_theta = cache[i0]; sin_theta = cache[i0+1];
+    src/dst pair: [ic] and [ic + n_offset]
+    dst[0]        = x0*cos - x1*sin
+    dst[n_offset] = x0*sin + x1*cos
+}
+For VISION, called with n=ne0 (full d_head), n_offset=n_dims=d_head/2, scale=2 (default). So ic runs 0..d_head/2-1, pairing channel ic with channel ic+d_head/2. This is NEOX-style split-half pairing (first half channel ic rotated with second half channel ic+d_head/2), not interleaved-adjacentNORMAL-style pairing (that's only used for mode==GGML_ROPE_TYPE_NORMAL). All d_head channels get rewritten — nothing passes through unrotated (matches n_dims == ne0/2 assert).
+
+ggml_mrope_cache_init (ops.cpp:5862-5930), indep_sects = is_vision = true:
+int sect_dims = sections[0]+sections[1]+sections[2]+sections[3]; // = d_head for GLM4V (4×d_head/4)
+int sec_w = sections[1] + sections[0];                            // = d_head/2
+for (i0 = 0; i0 < ne0; i0 += 2) {           // ne0 = d_head, so 0..d_head/2-1 pair-indices
+    int sector = (i0/2) % sect_dims;         // sector == i0/2 always, since i0/2 < d_head/2 < sect_dims
+    if (indep_sects) {                       // reset each theta stream at its section boundary
+        if (sector == 0)          theta_t = theta_base_t;
+        else if (sector == sections[0]) theta_h = theta_base_h;
+        else if (sector == sec_w)       theta_w = theta_base_w;
+        else if (sector == sec_e)       theta_e = theta_base_e;
+    }
+    float theta = theta_t;   // default
+    if (!is_imrope) {
+        if (sector >= sections[0] && sector < sec_w)        theta = theta_h;
+        else if (sector >= sec_w && sector < sec_w+sections[2]) theta = theta_w;
+        else if (sector >= sec_w+sections[2])                theta = theta_e;
+    }
+    rope_yarn(theta/ff, freq_scale, corr_dims, i0, ext_factor, mscale, &cache[i0], &cache[i0+1]);
+    cache[i0+1] *= sin_sign;
+    theta_t *= theta_scale; theta_w *= theta_scale; theta_h *= theta_scale; theta_e *= theta_scale;
+}
+
+Critical finding for GLM4V: with sections={d_head/4,d_head/4,d_head/4,d_head/4} and n_dims=d_head/2, the loop's pair-index (i0/2) only ever reaches0..d_head/2-1 — it never reaches sec_w=d_head/2, so the theta_w/theta_e branches (and thus position streams p_w, p_e = positions[i2+2*ne2], positions[i2+3*ne2]) are dead code / never used for GLM4V vision rope. Only p_t=positions[i2] and p_h=positions[i2+ne2] (the first two of the four flatposition streams) actually drive the rotation.
+
+Concretely, for real GLM4V params (d_head head dim, n_dims=d_head/2, quarter size Q=d_head/4), the head-dim splits into 4 contiguous quarters [0,Q) [Q,2Q) [2Q,3Q) [3Q,4Q):
+- local index k ∈ [0,Q) in quarter 0 pairs with quarter 2 (k, k+2Q), rotated by theta_row(k) = pos_y · rope_theta^(-4k/d_head) where pos_y = positions[i2].
+- local index k ∈ [0,Q) in quarter 1 pairs with quarter 3 (Q+k, 3Q+k), rotated by theta_col(k) = pos_x · rope_theta^(-4k/d_head) where pos_x = positions[i2+ne2].
+- theta_scale = powf(freq_base, -2.0f/n_dims) is computed once, using n_dims=d_head/2 (not the quarter size Q), i.e. theta_scale = rope_theta^(-4/d_head). The per-quarter "reset" (indep_sects) only resets the base angle at the section boundary, not the exponent step size.
+
+rope_yarn (ops.cpp:5829-5844):
+float theta_interp = freq_scale * theta_extrap;
+float theta = theta_interp;
+if (ext_factor != 0.0f) { /* YaRN ramp mixing + mscale correction */ }
+*cos_theta = cosf(theta) * mscale;
+*sin_theta = sinf(theta) * mscale;
+With the GLM4V call ggml_rope_multi(ctx0, cur, positions, nullptr, d_head/2, mrope_sections, GGML_ROPE_TYPE_VISION, 32768, hparams.rope_theta,/*freq_scale=*/1, /*ext_factor=*/0, /*attn_factor=*/1, /*beta_fast=*/32, /*beta_slow=*/1) (matches ggml_rope_multi signature ctx,a,b,c,n_dims,sections,mode,n_ctx_orig,freq_base,freq_scale,ext_factor,attn_factor,beta_fast,beta_slow at ggml.h:1869-1883): ext_factor==0 skips theentire YaRN ramp branch, freq_scale==1 means no interpolation, attn_factor==1 means mscale=1 unmodified. So it reduces exactly to plain rotary embedding: cos=cos(theta), sin=sin(theta), theta = position · rope_theta^(-4k/d_head). Confirmed: YaRN is fully disabled, this is plain 2D vision RoPE.
+
+Position fill for PROJECTOR_TYPE_GLM4V — confirmed identical code path shared with QWEN2VL/QWEN3VL (clip.cpp:4330-4354):
+case PROJECTOR_TYPE_QWEN2VL:
+case PROJECTOR_TYPE_QWEN3VL:
+case PROJECTOR_TYPE_GLM4V:
+{
+    const int merge_ratio = hparams.n_merge;   // = 2 for GLM4V
+    const int pw = image_size_width  / patch_size;
+    const int ph = image_size_height / patch_size;
+    std::vector<int> positions(n_pos * 4);
+    int ptr = 0;
+    for (int y = 0; y < ph; y += merge_ratio)
+      for (int x = 0; x < pw; x += merge_ratio)
+        for (int dy = 0; dy < 2; dy++)
+          for (int dx = 0; dx < 2; dx++) {
+              positions[                  ptr] = y + dy;
+              positions[    num_patches + ptr] = x + dx;
+              positions[2 * num_patches + ptr] = y + dy;   // dead for vision-mode rope
+              positions[3 * num_patches + ptr] = x + dx;   // dead for vision-mode rope
+              ptr++;
+          }
+    set_input_i32("positions", positions);
+} break;
+Since dy,dx are hardcoded 0..1 (not merge_ratio), this assumes n_merge==2 (true for GLM4V, hparams.n_merge=2 default). This produces the token stream in"2×2-block order" (see item 2) with p_t=row, p_h=col filled per-token in that order — this is exactly what the rope math consumes.
+
+2. Dual-conv patch-embed reshape — exact index trace
+
+glm4v.cpp:12,24-38:
+ggml_tensor * inp = ggml_conv_2d(ctx0, model.patch_embeddings_0, inp_raw, patch_size, patch_size, 0,0,1,1);
+auto inp_1 = ggml_conv_2d(ctx0, model.patch_embeddings_1, inp_raw, patch_size, patch_size, 0,0,1,1);
+inp = ggml_add(ctx0, inp, inp_1);                     // <-- outputs SUMMED, same n_embd channels
+inp = ggml_permute(ctx0, inp, 1, 2, 0, 3);
+inp = ggml_cont_4d(ctx0, inp, n_embd*2, n_patches_x/2, n_patches_y, batch_size);
+inp = ggml_reshape_4d(ctx0, inp, n_embd*2, n_patches_x/2, 2, batch_size*(n_patches_y/2));
+inp = ggml_permute(ctx0, inp, 0, 2, 1, 3);
+inp = ggml_cont_3d(ctx0, inp, n_embd, n_patches_x*n_patches_y, batch_size);
+
+Important clarification first: patch_embeddings_0/patch_embeddings_1 are not concatenated or channel-split — they are ggml_add-summed elementwise before any of the permute/reshape gymnastics. This is because the original HF module is a single Conv3d with temporal kernel size 2 (visual.patch_embed.proj,weight shape [OC,IC,kt=2,KH,KW]), which the converter splits into two Conv2d kernels along the temporal axis (conversion/qwen3vl.py:128-141):
+if name == "visual.patch_embed.proj.weight":
+    c1, c2, kt, _, _ = data_torch.shape
+    if kt != 2: raise ValueError(...)
+    yield (V_ENC_EMBD_PATCH + ".weight",   data_torch[:, :, 0, ...])   # patch_embeddings_0
+    yield (V_ENC_EMBD_PATCH + ".weight.1", data_torch[:, :, 1, ...])   # patch_embeddings_1
+Conv3d output = Σ over kt of conv2d_kt(frame_kt); for a still image the two temporal frames are the same image, so conv0(img)+conv1(img) reproduces the Conv3d result. So the permute/reshape block's only job is reordering PATCH POSITIONS, not channels. Channel index is passed through unchanged.
+
+Confirmed ggml semantics used:
+- ggml_conv_2d (ggml.c:4653-4680): comment convention is "numpy order" (reversed of ne[]): a:[OC,IC,KH,KW] → ne=[KW,KH,IC,OC]; b:[N,IC,IH,IW] → ne=[IW,IH,IC,N]; result:[N,OC,OH,OW] → ne=[OW,OH,OC,N]. So inp after conv+add has ne = [n_patches_x, n_patches_y, n_embd, 1] (W,H,C,B).
+- ggml_permute(ctx,a,axis0,axis1,axis2,axis3) (ggml.c:3815-3855): new_ne[axis_i] = old_ne[i] — old axis i moves to new position axis_i.
+- ggml_cont_*d/reshape (backed by ggml_compute_forward_dup_bytes, ops.cpp:326-410, contiguous-dst branch at ops.cpp:372-409): walks the source's ownlogical shape (post-permute, via strides) in nested loops i03,i02,i01,i00 (i00 innermost/fastest) and writes sequentially into the destination's flat contiguous buffer, i.e. exactly numpy reshape semantics applied to the permuted logical shape, ne0-fastest.
+
+Trace (C=n_embd, W=n_patches_x, H=n_patches_y, B=1):
+
+Step 1 — permute(1,2,0,3): [W,H,C,B] → [C,W,H,B] (logical view; new_ne[1]=old W, new_ne[2]=old H, new_ne[0]=old C).
+
+Step 2 — cont_4d(2C, W/2, H, B): flattening (c,w,h,b) (ne0=c fastest) and re-splitting into (c2,w2,h2,b) gives:
+h2 = h
+w2 = w // 2
+c2 = (w % 2)*C + c
+
+Step 3 — reshape_4d(2C, W/2, 2, B*(H/2)) on axes (c2,w2,p,q):
+p = h % 2
+q = h // 2
+(c2, w2 unchanged.)
+
+Step 4 — permute(0,2,1,3): [c2,p,w2,q] → [c2, w2, p...  — concretely new logical shape becomes ne=[2C, 2, W/2, B*H/2], axes (c2, p, w2, q).
+
+Step 5 — cont_3d(C, W*H, B): flatten source axes (q,w2,p,c2) (q slowest .. c2 fastest) into target (b,t,c):
+c = c2 % C                         // = original conv-output channel, unchanged
+t = 2*[(q*(W/2)+w2)*2 + p] + (c2 // C)
+  = 2*q*W + 4*w2 + 2*p + (w % 2)
+Substituting back q=h//2, p=h%2, w2=w//2:
+t(h,w) = 2*(h//2)*W + 4*(w//2) + 2*(h%2) + (w%2)
+
+Result (verified against the pos-fill loop, exact match): output token index t ∈ [0, n_patches) corresponds to spatial patch (h,w) via 2×2-block reordering:
+block_row = h // 2,  block_col = w // 2         (raster order over blocks: row-major, block_row outer / block_col inner)
+sub_row   = h % 2,   sub_col   = w % 2           (raster order within block: sub_row outer / sub_col inner)
+t = (block_row * (W/2) + block_col) * 4 + (sub_row * 2 + sub_col)
+Channel index is unchanged (c = c2 % C, i.e. simply the summed-conv output channel, n_embd-wide). This exactly matches the positions[] fill loop in item 1 (y+=merge_ratio(=2), x+=merge_ratio(=2), then dy∈{0,1} outer, dx∈{0,1} inner) — confirming the reorder exists specifically so that RoPE position streams and the later patch-merger's "consume 4 consecutive tokens" grouping line up with spatial 2×2 blocks. This derivation assumed n_merge==2 (GLM4V'sactual/default value); the reshape's /2 and 2 literals are hardcoded to exactly 2, so it is not generic over n_merge.
+
+The same reshape (steps identical) is applied to learned_pos_embd at glm4v.cpp:51-60 for identical reasons (align interpolated position embeddings with the same token ordering).
+
+3. Patch-merger ggml_conv_2d — confirmed as a plain grouped linear combination
+
+glm4v.cpp:84-96:
+int n_merge = hparams.n_merge;                                   // 2
+int n_token_out = n_patches / n_merge / n_merge;
+cur = ggml_reshape_4d(ctx0, cur, n_embd, n_merge, n_merge, n_token_out);
+cur = ggml_cont(ctx0, ggml_permute(ctx0, cur, 2, 0, 1, 3));       // -> [n_merge, n_merge, n_embd, n_token_out]
+cur = ggml_conv_2d(ctx0, model.mm_patch_merger_w, cur, n_merge, n_merge, 0,0,1,1);
+cur = ggml_reshape_2d(ctx0, cur, cur->ne[2], n_token_out);        // [n_embd_out, n_token_out]
+cur = ggml_add(ctx0, cur, model.mm_patch_merger_b);
+
+Input cur at this point has ne=[n_embd, n_patches, 1], tokens already in the item-2 2×2-block order, i.e. consecutive runs of n_merge²=4 tokens are exactly one spatial 2×2 merge-block (no extra shuffling needed — reshape_4d(n_embd, n_merge, n_merge, n_token_out) on axes (c,a,b,tok) gives t =tok*n_merge² + b*n_merge + a, i.e. local index a=fastest=sub_col≈dx, b=sub_row≈dy, matching item 2's local ordering exactly).
+
+After permute(2,0,1,3) + cont: logical/physical shape ne=[n_merge(a), n_merge(b), n_embd(c), n_token_out(tok)]. Feeding this as ggml_conv_2d's input b, per the comment convention b:[N,IC,IH,IW]→ne=[IW,IH,IC,N]: IW=n_merge(a=dx-axis), IH=n_merge(b=dy-axis), IC=n_embd, N=n_token_out — each merged outputtoken is treated as its own independent "image" in the conv batch dimension. Kernel a:[OC,IC,KH,KW]→ne=[KW,KH,IC,OC] = model.mm_patch_merger_w with ne=[n_merge, n_merge, n_embd, n_embd_out] (GGUF/HF-style shape reversed: [n_embd_out, n_embd, n_merge, n_merge], i.e. exactly the naturalnn.Conv2d(n_embd, n_embd_out, kernel_size=n_merge, stride=n_merge) weight layout — HF source is visual.downsample per tensor_mapping.py:1850, confirming it's a real Conv2d, not a linear-reshape trick).
+
+Since stride==kernel==n_merge and padding 0, OH=OW=1; ggml_conv_2d result ne=[1,1,OC,N], and the final reshape_2d(cur->ne[2]=OC, n_token_out) triviallysqueezes the two size-1 dims (flat order is preserved bit-for-bit). Confirmed simplification is exactly correct:
+out[oc, tok] = bias[oc] + Σ_{ky=0}^{M-1} Σ_{kx=0}^{M-1} Σ_{ic=0}^{n_embd-1}
+                   W[oc][ic][ky][kx] * vit_out[ic, tok*M*M + ky*M + kx]
+where M=n_merge, W indexed in numpy/GGUF order [oc][ic][ky][kx] (ky↔input's IH/b-axis/sub_row/dy, kx↔input's IW/a-axis/sub_col/dx), and vit_out[ic, t] isthe ViT output in the item-2 token order (so no separate un-shuffle step is needed in the C# port — just walk vit_out sequentially in groups of 4).
+
+4. GLM4V hparams and tensor names
+
+hparams parsing (clip.cpp:1629-1637):
+case PROJECTOR_TYPE_GLM4V:
+{
+    hparams.rope_theta = 10000.0f;                    // hardcoded constant, NOT read from GGUF metadata
+    hparams.n_merge = 2;                                // default value for GLM4-V
+    hparams.image_resize_algo = RESIZE_ALGO_BILINEAR;
+    get_u32(KEY_SPATIAL_MERGE_SIZE, hparams.n_merge, false);  // optional override
+    hparams.set_limit_image_tokens(8, 4096);
+    hparams.set_warmup_n_tokens(46*46);                 // avoid OOM on warmup
+} break;
+set_limit_image_tokens(n_min,n_max) (clip-model.h:166-171): patch_area = patch_size²·n_merge²; image_min_pixels = n_min·patch_area (=8×), image_max_pixels = n_max·patch_area (=4096×); warmup_image_size = sqrt(image_max_pixels) — this is then overridden by set_warmup_n_tokens(46*46) (clip-model.h:184-189):warmup_image_size = 46 · patch_size · n_merge, i.e. forces the warmup pass to use a 46×46-token image (2116 tokens) instead of the theoretical 4096-token max, purely to avoid an OOM during warmup — no effect on real inference, just constrains what the internal warmup forward pass allocates for.
+
+Tensor names (clip-impl.h):
+
+┌─────────────────────────────┬───────────────────────────────────────────────────────────────┬───────────────────────────────────────────────────────┐
+│            field            │                           GGUF name                           │                       required?                       │
+├─────────────────────────────┼───────────────────────────────────────────────────────────────┼───────────────────────────────────────────────────────┤
+│ model.class_embedding       │ TN_CLASS_EMBD="v.class_embd"                                  │ must be absent — GGML_ASSERT(model.class_embedding == │
+│                             │                                                               │  nullptr) at glm4v.cpp:5                              │
+├─────────────────────────────┼───────────────────────────────────────────────────────────────┼───────────────────────────────────────────────────────┤
+│ model.patch_bias            │ TN_PATCH_BIAS="v.patch_embd.bias"                             │ required — GGML_ASSERT(model.patch_bias != nullptr)   │
+│                             │                                                               │ at glm4v.cpp:4                                        │
+├─────────────────────────────┼───────────────────────────────────────────────────────────────┼───────────────────────────────────────────────────────┤
+│ model.patch_embeddings_0    │ TN_PATCH_EMBD="v.patch_embd.weight"                           │ required (loaded false=optional but build() would     │
+│                             │                                                               │ fail without it)                                      │
+├─────────────────────────────┼───────────────────────────────────────────────────────────────┼───────────────────────────────────────────────────────┤
+│ model.patch_embeddings_1    │ TN_PATCH_EMBD_1="v.patch_embd.weight.1"                       │ present for GLM4V (temporal-split Conv3d, see item 2) │
+├─────────────────────────────┼───────────────────────────────────────────────────────────────┼───────────────────────────────────────────────────────┤
+│ model.norm_embd_w/b         │ TN_NORM_EMBD="v.norm_embd.%s" → "v.norm_embd.weight"/"bias"   │ required for GLM4V's post-conv RMSNorm                │
+├─────────────────────────────┼───────────────────────────────────────────────────────────────┼───────────────────────────────────────────────────────┤
+│ model.position_embeddings   │ TN_POS_EMBD="%s.position_embd.weight" (prefix "v") →          │ optional (get_tensor(...,false)) — absent for GLM-OCR │
+│                             │ "v.position_embd.weight"                                      │  variant per code comment at glm4v.cpp:48             │
+├─────────────────────────────┼───────────────────────────────────────────────────────────────┼───────────────────────────────────────────────────────┤
+│ model.mm_patch_merger_w/b   │ TN_MM_PATCH_MERGER="mm.patch_merger.%s"                       │ required, both weight+bias (clip.cpp:2396-2397)       │
+├─────────────────────────────┼───────────────────────────────────────────────────────────────┼───────────────────────────────────────────────────────┤
+│ model.mm_fc_w               │ TN_MM_PROJECTOR="mm.model.fc.%s" → "mm.model.fc.weight"       │ required; no bias tensor loaded for this one          │
+│                             │                                                               │ (clip.cpp:2387)                                       │
+├─────────────────────────────┼───────────────────────────────────────────────────────────────┼───────────────────────────────────────────────────────┤
+│ model.mm_post_norm_w/b      │ TN_MM_POST_NORM="mm.post_norm.%s"                             │ weight required, bias optional                        │
+├─────────────────────────────┼───────────────────────────────────────────────────────────────┼───────────────────────────────────────────────────────┤
+│ model.mm_ffn_up/gate/down_w │ TN_MM_UP/TN_MM_GATE/TN_MM_DOWN="mm.{up,gate,down}.%s"         │ weight required, bias optional (all present per GLM4V │
+│                             │                                                               │  FFN)                                                 │
+└─────────────────────────────┴───────────────────────────────────────────────────────────────┴───────────────────────────────────────────────────────┘
+
+Per-block attention (clip.cpp:2076-2095, fully generic loader, no GLM4V-specific branch): both fused (TN_ATTN_QKV="%s.blk.%d.attn_qkv.%s") and separate(TN_ATTN_Q/K/V) are attempted optionally; which one is actually populated is determined by the GGUF file, which in turn is determined by the converter. Tracing the converter: GLM4V's vision tower is registered as Glm4VVisionModel(Qwen3VLVisionModel) in conversion/qwen3vl.py:225-245, and does not overrideattention-tensor naming — it falls through to the base MmprojModel.modify_tensors, so the raw HF tensor name visual.blocks.{bid}.attn.qkv.{weight,bias} passes straight through and matches tensor_mapping.py:1511-1519's V_ENC_ATTN_QKV pattern "visual.blocks.{bid}.attn.qkv" (tagged for qwen3vl, and byinheritance for GLM4V too — GLM4V is not listed among the entries in the V_ENC_ATTN_Q/K/V split-tensor group, which are explicitly tagged # qwen2vl, generated, i.e. produced only by the separate legacy qwen2vl converter). Conclusion: standard GLM4V uses a fused attn_qkv.weight/.bias tensor per block(layer.qkv_w/layer.qkv_b), not separate Q/K/V. I could not find an explicit assertion on bias presence in clip.cpp; biases are loaded optionally either way (get_tensor(...,false)), so bias presence is determined purely by what's in the actual GGUF — worth confirming against a real GLM4V GGUF's tensor list before assuming bias exists, though Qwen-family vision qkv projections conventionally do have bias.
+
+Fused-QKV split at inference (clip.cpp:381-405):
+if (layer.qkv_w != nullptr) {
+    cur = build_mm(layer.qkv_w, cur);
+    if (layer.qkv_b != nullptr) cur = ggml_add(ctx0, cur, layer.qkv_b);
+    // concat layout along output/embedding dim: [Q | K | V], each n_head*d_head wide
+    Qcur = view at offset 0;
+    Kcur = view at offset ggml_row_size(cur->type, n_head*d_head);
+    Vcur = view at offset ggml_row_size(cur->type, 2*n_head*d_head);
+    // each reshaped to [d_head, n_head, n_pos, B]
+    if (layer.q_norm) Qcur = build_norm(Qcur, layer.q_norm, NULL, norm_t, eps, il);  // RMSNorm, no bias
+    if (layer.k_norm) Kcur = build_norm(Kcur, layer.k_norm, NULL, norm_t, eps, il);
+}
+TN_ATTN_Q_NORM/TN_ATTN_K_NORM = "%s.blk.%d.attn_{q,k}_norm.%s" are optional and, per tensor_mapping.py:1543,1569 ("visual.blocks.{bid}.attn.q_norm" # GLM-OCR), only present for the GLM-OCR variant — the same variant that lacks position_embeddings. Standard GLM4V (with learned position embeddings) has no per-head QK-norm.
+
+One documentation caveat
+
+The header comment example for GGML_ROPE_TYPE_VISION in ggml.h:1862-1866 ("sections=[y=4,x=4,0,0], head=8, n_dims=4 → [yyyyxxxx]") does not numerically reproduce when I mechanically execute the real ggml_mrope_cache_init/rotate_pairs code with those literal parameters — sections in that toy example don'tsatisfy the code's own invariant. I did not rely on that comment; the formulas above come from directly tracing the actual ops.cpp source with GLM4V's real parameter shapes (sections={d_head/4}×4, n_dims=d_head/2), cross-checked three independent ways (sector arithmetic, rotate_pairs bounds, andconsistency with the positions[] fill loop / patch-merger token grouping), so I'm confident in it — just flagging that the header comment itself shouldn't be trusted as a cross-check.

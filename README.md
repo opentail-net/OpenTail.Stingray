@@ -622,11 +622,11 @@ dotnet run --project src/OpenTail.Stingray.Cli -c Release -- image \
 
 ## More
 
-- Architecture & algorithms: [docs/OpenTail.Stingray-Design.md](docs/OpenTail.Stingray-Design.md)
+- Architecture & algorithms: [docs/reference/OpenTail.Stingray-Design.md](docs/reference/OpenTail.Stingray-Design.md)
 - Active engineering roadmap: [docs/00-current-work.md](docs/00-current-work.md)
 - Archived investigations and completed work: [docs/done](docs/done)
-- Deployment profiles and live capability checks: [docs/recommended-configurations.md](docs/recommended-configurations.md)
-- Release gates and restart-continuation acceptance criteria: [docs/release-quality-test-matrix.md](docs/release-quality-test-matrix.md)
+- Deployment profiles and live capability checks: [docs/reference/recommended-configurations.md](docs/reference/recommended-configurations.md)
+- Release gates and restart-continuation acceptance criteria: [docs/reference/release-quality-test-matrix.md](docs/reference/release-quality-test-matrix.md)
 - User-visible release history: [CHANGELOG.md](CHANGELOG.md)
 - All CLI flags: `stingray --help`, `stingray image --help`
 - Model downloads: `scripts/download-model.ps1 -Model <smollm2|qwen3-8b|qwen3-coder-30b-a3b|llama4-scout|z-image-turbo|realesrgan-x4|…>`

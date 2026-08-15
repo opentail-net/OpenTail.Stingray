@@ -1,3 +1,14 @@
+> **ARCHIVED, 2026-08-15.** Implemented as an `IInferenceSession`/`InferenceSession`-era
+> Sessions-layer feature (confirmed against source, not just this document's own claim). That
+> whole lineage is being superseded by the `HotSession` architecture — see
+> [028](028-inference-session-to-hotsession-migration-plan.md) for current migration status
+> (Phases 1-3 done) and [030](../030-delete-inferencesession-todo.md) for the still-open
+> deletion of the legacy `InferenceSession`/`InferenceRuntime` types once HotSession fully
+> replaces them. Carried forward: nothing beyond what 028/030 already track in
+> [00-current-work.md](../00-current-work.md).
+
+---
+
 This is a strong improvement. The architecture is now substantially more coherent, and the session/KV/prefix-cache/batching work is moving in the right direction. **Please keep the current design and build on it rather than backing anything out.**
 
 I reviewed the latest implementation more deeply and found a few places where we can make the semantics clearer and more robust. These are refinement items, not a request to redesign the system.

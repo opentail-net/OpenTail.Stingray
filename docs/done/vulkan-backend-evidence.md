@@ -1,3 +1,8 @@
+> **ARCHIVED, 2026-08-15.** Completed measurement/investigation snapshot, not an open plan.
+> Filed here as evidence per the [archive convention](README.md).
+
+---
+
 # Vulkan backend — measured evidence (AMD APU)
 
 **Measured:** 2026-08-07. Ryzen 7 5700G with integrated AMD Radeon Graphics, Vulkan reporting a

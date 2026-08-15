@@ -1,3 +1,8 @@
+> **ARCHIVED, 2026-08-15.** Implemented as designed (confirmed against source). No open
+> remainder tracked separately from [00-current-work.md](../00-current-work.md).
+
+---
+
 # Implementation Plan — Prompt Lookup Speculation (PLD) (`Plan 009`)
 
 ## Objective

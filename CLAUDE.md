@@ -132,7 +132,7 @@ Supporting libraries:
 - **OpenTail.Stingray.Vision** — Gemma 4 encoder-free vision projector (`gemma4uv`). `VisionModel` loads the mmproj GGUF; `GemmaUvVisionEmbedder` does im2col patches → projection → soft tokens; `ImagePreprocessor`/`ImageIO` handle image loading.
 - **OpenTail.Stingray.TurboQuant** — KV cache compression. Two codecs: KVarN (Hadamard + dual-axis Sinkhorn variance normalization + asymmetric RTN, 4-bit K / 2-bit V, 128-token tiles — issue #180) and Lloyd-Max codebooks (3-4 bit; severely degrades quality on QK-norm models such as Qwen3, issue #432). `--tq-mode` defaults to `auto`: KVarN where supported, else Lloyd-Max fallback with a quality warning (#436). Lloyd-Max remains the fallback for Vulkan / partial-offload / MoE-on-GPU / SnapKV. KVarN runs on CPU (AVX2 fused read kernels) and the CUDA decode path (CUDA-graph decode + chunked prefill). Codebook data lives in `codebooks/`.
 - **OpenTail.Stingray.Pipeline** — 3-tier memory hierarchy (VRAM → pinned RAM → NVMe), SLRU expert cache, async prefetcher.
-- **OpenTail.Stingray.Sessions** — Transactional, revisioned hot-session orchestration over inference state. Design notes in `docs/adr-0001-session-cache-lifecycle.md` and `docs/session-native-inference-runtime-plan.md`; restart-continuation is still experimental internals rather than a supported product feature (see `CHANGELOG.md`).
+- **OpenTail.Stingray.Sessions** — Transactional, revisioned hot-session orchestration over inference state. Design notes in `docs/reference/adr-0001-session-cache-lifecycle.md` and `docs/session-native-inference-runtime-plan.md`; restart-continuation is still experimental internals rather than a supported product feature (see `CHANGELOG.md`).
 
 ## Key Interfaces & Patterns
 
@@ -230,4 +230,4 @@ make thin discovery fail): accepted by `dotnet test`, rejected by the exe.
 
 ## Design Documentation
 
-Detailed architecture doc at `docs/OpenTail.Stingray-Design.md` covering all subsystems, algorithms, data layouts, and the (mostly completed) implementation phases. `docs/research/` and the various `docs/*-plan.md` files hold per-feature design notes (Gemma 4, qwen35moe, MoE offloading, KV-compression feasibility).
+Detailed architecture doc at `docs/reference/OpenTail.Stingray-Design.md` covering all subsystems, algorithms, data layouts, and the (mostly completed) implementation phases. `docs/research/` and the various `docs/*-plan.md` files hold per-feature design notes (Gemma 4, qwen35moe, MoE offloading, KV-compression feasibility).

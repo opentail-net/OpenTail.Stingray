@@ -1,3 +1,14 @@
+> **ARCHIVED, 2026-08-15.** Implemented as an `IInferenceSession`/`InferenceSession`-era
+> Sessions-layer feature (confirmed against source, not just this document's own claim). That
+> whole lineage is being superseded by the `HotSession` architecture — see
+> [028](028-inference-session-to-hotsession-migration-plan.md) for current migration status
+> (Phases 1-3 done) and [030](../030-delete-inferencesession-todo.md) for the still-open
+> deletion of the legacy `InferenceSession`/`InferenceRuntime` types once HotSession fully
+> replaces them. Carried forward: nothing beyond what 028/030 already track in
+> [00-current-work.md](../00-current-work.md).
+
+---
+
 This is a very good update. The previous review points have been acted on well, and the architecture is now much clearer.
 
 In particular, I like the explicit ownership/mutability matrix, the OpenTail policy vs. Stingray execution boundary, and the documentation of the two execution modes. The session lifecycle, KV page accounting, fork/CoW tests, snapshot terminology and runtime/session registry are all moving in the right direction.

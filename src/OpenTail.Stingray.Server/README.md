@@ -117,7 +117,7 @@ history-aware sampler instead.
 ## Links
 
 - [Repository & docs](https://github.com/opentail-net/OpenTail.Stingray)
-- [Design document](https://github.com/opentail-net/OpenTail.Stingray/blob/master/docs/OpenTail.Stingray-Design.md)
+- [Design document](https://github.com/opentail-net/OpenTail.Stingray/blob/master/docs/reference/OpenTail.Stingray-Design.md)
 - [Issues](https://github.com/opentail-net/OpenTail.Stingray/issues)
 
 ---

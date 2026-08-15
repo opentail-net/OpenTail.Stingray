@@ -87,7 +87,7 @@ gate admits. Correct it in the same change that resolves the gate.
 1. **Qwen3.5 MoE / GDN.** Ornith-1.0 9B exercises the hybrid Gated-DeltaNet path end to end, which
    covers items 1 and 2 of that plan in practice. What remains is GDN state-lifecycle conformance
    coverage and a benchmark once correctness is settled. Use
-   [qwen35moe-tensor-layout.md](qwen35moe-tensor-layout.md) as the authoritative layout, never the
+   [reference/qwen35moe-tensor-layout.md](reference/qwen35moe-tensor-layout.md) as the authoritative layout, never the
    superseded SSM plan.
 2. **Gemma 4 E4B vision.** **Updated 2026-08-15** — the `gemma4v` mmproj load boundary, fixed-grid
    preprocessing, ViT encoder forward pass, token-reduction pool, and projector are now all

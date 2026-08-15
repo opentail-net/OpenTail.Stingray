@@ -178,7 +178,7 @@ image-token mask semantics, and CLI/API surface remain open (Phases V4-V5). Trac
 >
 > **This is NOT the 12B path.** The Gemma 4 **12B** uses encoder-free `gemma4uv` (raw patches →
 > linear projection, no ViT) and is implemented in `src/OpenTail.Stingray.Vision` (issue #250, see the
-> gemma4uv section of `docs/OpenTail.Stingray-Design.md`). E4B (`gemma4v`+`gemma4a`) has only its
+> gemma4uv section of `docs/reference/OpenTail.Stingray-Design.md`). E4B (`gemma4v`+`gemma4a`) has only its
 > `gemma4v` load/preprocessing boundary implemented; it is not yet usable for image inference.
 
 > **Implementation update (2026-08-07): V0 is now complete.** `Gemma4VVisionModel` owns and

@@ -1,3 +1,8 @@
+> **ARCHIVED, 2026-08-15.** Implemented as designed (confirmed against source). No open
+> remainder tracked separately from [00-current-work.md](../00-current-work.md).
+
+---
+
 # Implementation Plan — Grammar & JSON Schema Constrained Sampling (`Plan 007`)
 
 Implement a lightweight, incremental **Constraint Engine** for OpenTail.Stingray that can constrain token generation to a supplied JSON grammar or JSON Schema and guarantee that emitted output remains syntactically valid according to the active constraint.

@@ -125,7 +125,7 @@ evidence.
   default would be worse than saying so.
 
 - Recorded a measured CPU baseline against llama.cpp (`b8585`) on identical hardware, model and
-  thread count — see `docs/cpu-benchmark-llamacpp-baseline.md`. On an AVX2-only machine with
+  thread count — see `docs/reference/cpu-benchmark-llamacpp-baseline.md`. On an AVX2-only machine with
   SmolLM2-1.7B Q4_K_M, prefill throughput crosses over at roughly 2500 tokens: llama.cpp leads by
   ~27% at 512 tokens and ~10% at 1024, the two are within ~2% at 2048, and Stingray is ~5% ahead at
   ~3100. Decode is at parity (26.4 vs 26.5 t/s). The short-prompt deficit has the signature of a

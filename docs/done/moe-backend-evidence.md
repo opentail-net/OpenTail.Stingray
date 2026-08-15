@@ -1,3 +1,8 @@
+> **ARCHIVED, 2026-08-15.** Completed measurement/investigation snapshot, not an open plan.
+> Filed here as evidence per the [archive convention](README.md).
+
+---
+
 # MoE (mixture-of-experts) — measured CPU evidence
 
 **Measured:** 2026-08-07. `OLMoE-1B-7B-0924-Instruct-Q4_K_M`, Ryzen 7 5700G (Zen 3, AVX2 only),
