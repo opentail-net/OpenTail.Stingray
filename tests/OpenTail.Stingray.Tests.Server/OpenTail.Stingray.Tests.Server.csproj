@@ -28,6 +28,9 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\OpenTail.Stingray.Server\OpenTail.Stingray.Server.csproj" />
     <ProjectReference Include="..\..\src\OpenTail.Stingray.Server.Host\OpenTail.Stingray.Server.Host.csproj" />
+    <!-- CrossModelConcurrencyTests.cs drives IInferenceEngine/SamplingParams directly (bypassing
+         the HTTP layer) to measure real wall-clock overlap between two models' generation. -->
+    <ProjectReference Include="..\..\src\OpenTail.Stingray.Engine\OpenTail.Stingray.Engine.csproj" />
   </ItemGroup>
 
 </Project>

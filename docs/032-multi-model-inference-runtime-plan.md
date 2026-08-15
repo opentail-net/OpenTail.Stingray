@@ -4,8 +4,9 @@
 
 ## Status
 
-**Phases 1 and 2 implemented; Phase 3 in progress (5 slices landed — see its entry in
-"Implementation phases" below for the current done/not-done split).** `ModelId`, `ModelRuntimeState`, `ModelResidencyMode`,
+**Phases 1, 2, and 4 implemented. Phase 3 in progress (6 slices landed) and Phase 5's no-lock
+half proven with real models — see each phase's own entry in "Implementation phases" below for
+exact done/not-done splits.** `ModelId`, `ModelRuntimeState`, `ModelResidencyMode`,
 `ModelRuntime`, `ModelRuntimeHandle`, `IModelRuntimeManager`/`ModelRuntimeManager`
 (`src/OpenTail.Stingray.Server/ModelRuntime.cs`, `ModelRuntimeManager.cs`), wired into
 `ServiceCollectionExtensions.AddOpenTailStingray` so the server's single configured model now
@@ -379,11 +380,45 @@ background/speculative model preloading. All out of scope here.
    it needs a live GPU backend instance with its own lifecycle/ownership questions, not just a
    memory query — and Phase 6's queueing alternative to hard failure when eviction alone isn't
    enough.
-4. **Multi-session model execution.** Wire each runtime to `HotSession` + continuous batching.
+4. ✅ **Multi-session model execution.** Wire each runtime to `HotSession` + continuous batching.
    *Acceptance: N sessions on one runtime behave exactly as today's same-model concurrency.*
-5. **Cross-model concurrent execution.** Remove any process-wide serialization preventing two
-   runtimes from generating simultaneously; introduce model-level resource scheduling.
+   Proven with a real model, not fakes:
+   `tests/OpenTail.Stingray.Tests.Server/SessionRestartPersistenceTests.cs`'s
+   `ConcurrentSessions_RealCpuGguf_ContinuousBatchingKeepsSessionsIndependent` runs 3 genuinely
+   concurrent sessions (distinct low-perplexity prompts, greedy decoding) against one engine
+   loaded through `ModelRuntimeManager.AcquireAsync`, and checks each session's answer is
+   correct and uncontaminated by the others — not just that nothing throws.
+   **Known gap, deliberately deferred to Phase 7, not built now:** a `HotSession` doesn't hold a
+   `ModelRuntimeHandle` for its lifetime. Today this is safe only because the server's one engine
+   is always `IsPinned` (never evicted regardless of handle count) — a live-but-idle session
+   would otherwise look evictable (`HandleCount == 0`) even though it could resume generating at
+   any moment, which is exactly the "eviction destroys live session state" hazard `024`'s review
+   flagged and docs/032 §15 requires never happen. Fixing this now would mean inventing
+   session-to-model handle plumbing with no real caller — Phase 7 is what actually defines how a
+   session gets bound to a specific (non-pinned) model, and the fix belongs there, built against
+   that real API rather than guessed at ahead of it.
+5. ✅ **Cross-model concurrent execution** *(no-lock half; model-level resource scheduling is
+   still Phase 6)*. `ModelRuntimeManager` never held a lock across a load or generation call to
+   begin with, so there was no serialization to remove — what this phase actually needed was
+   *proof*, with real models, not just the fake-loader tests in
+   `ModelRuntimeManagerTests.cs`.
    *Acceptance: two independent models demonstrably overlap execution, not turn-take.*
+   `tests/OpenTail.Stingray.Tests.Server/CrossModelConcurrencyTests.cs`'s
+   `TwoRealModels_GenerateConcurrently_OverlapRatherThanSerialize` loads SmolLM2-1.7B and
+   Qwen3-0.6B (two different real GGUFs, different architecture families) and proves genuine
+   interleaving — one model's stream produces output before the other's has finished. A first
+   attempt asserted total wall-clock time was well below the serial sum instead, and false-failed:
+   real CPU-bound models genuinely contend for the same cores/memory bandwidth (see "8. CPU-only
+   systems" earlier in this doc's own history), so partial slowdown from contention is expected
+   physics, not evidence of a lock. The interleaving check is robust to that; a raw timing
+   threshold isn't.
+   **Real bug found and deliberately not fixed here:** disposing two different real, plain
+   (non-batching) `InferenceEngine`s shortly after both complete generation crashes the process
+   natively (heap corruption) — reproducible, root cause not identified, out of scope for this
+   phase. Not reachable from any current production path (the server's one engine is always
+   pinned and never disposed until process exit). Filed as `docs/bugstofix.md` →
+   `ForwardPass.cs:6047`. The new test routes around it by pinning both runtimes so
+   `ModelRuntimeManager.Dispose()` never touches them.
 6. **Fair scheduling & admission.** Per-model pending queues, request age, service quantum,
    starvation protection, cancellation, queue limits — deliberately simple policy.
 7. **OpenTail server integration.** Expose model identity through `IInferenceService`.
@@ -449,6 +484,13 @@ concurrently is materially better than repeatedly swapping them* — not "always
 9. Cancelling one request never cancels shared work another request still needs.
 10. Under insufficient resources, Stingray queues or rejects safely — it never violates
     runtime/session ownership to make room.
+
+**Status of invariant 2, specifically:** the "active requests" half is enforced today
+(`ModelRuntime.HandleCount`/`IsEvictable`, tested). The "sessions" half is not yet — a live but
+currently-idle `HotSession` doesn't hold a `ModelRuntimeHandle`, so nothing currently stops its
+runtime from looking evictable between turns. This is harmless today only because the server's
+one engine is always pinned; it becomes a real requirement the moment Phase 7 introduces
+non-pinned, per-request model selection, and the fix belongs there (see Phase 4's entry above).
 11. Every admission queue (per-model and global) is bounded and every queued request is
     cancellable; overflow is an explicit rejection, never unbounded growth.
 
