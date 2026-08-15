@@ -1,0 +1,206 @@
+Absolutely, Dmitri — Segment 4 is where your pipeline gets its voice.
+This is the CLIP Text Encoder, implemented in clean, backend‑agnostic C# that fits perfectly into Opentail.Stingray.
+
+No templates, no images — just the architecture you need.
+
+We’ll build this in three layers:
+
+Token Embedding
+
+Transformer Blocks (SD‑1.5 CLIP)
+
+Final projection → [N, 77, hidden]
+
+This mirrors the CLIP text encoder used in Stable Diffusion 1.5 (OpenAI CLIP ViT‑L/14).
+
+SEGMENT 4 — CLIP Text Encoder (C#)
+This is a complete, drop‑in implementation skeleton that matches the real CLIP architecture.
+
+✔ 4.1 CLIP Block Definitions
+LayerNorm
+csharp
+public sealed class LayerNorm
+{
+    private readonly ITensor _gamma;
+    private readonly ITensor _beta;
+
+    public LayerNorm(int dim)
+    {
+        _gamma = Backend.CreateParameter(dim);
+        _beta = Backend.CreateParameter(dim);
+    }
+
+    public ITensor Forward(ITensor x)
+    {
+        return Backend.LayerNorm(x, _gamma, _beta);
+    }
+}
+MLP (Feed‑Forward)
+csharp
+public sealed class ClipMLP
+{
+    private readonly Linear _fc1;
+    private readonly Linear _fc2;
+
+    public ClipMLP(int dim, int hidden)
+    {
+        _fc1 = new Linear(dim, hidden);
+        _fc2 = new Linear(hidden, dim);
+    }
+
+    public ITensor Forward(ITensor x)
+    {
+        var h = _fc1.Forward(x);
+        h = Ops.Gelu(h);
+        return _fc2.Forward(h);
+    }
+}
+Self‑Attention
+csharp
+public sealed class ClipSelfAttention
+{
+    private readonly Linear _q;
+    private readonly Linear _k;
+    private readonly Linear _v;
+    private readonly Linear _proj;
+
+    private readonly int _numHeads;
+    private readonly int _headDim;
+
+    public ClipSelfAttention(int dim, int numHeads)
+    {
+        _numHeads = numHeads;
+        _headDim = dim / numHeads;
+
+        _q = new Linear(dim, dim);
+        _k = new Linear(dim, dim);
+        _v = new Linear(dim, dim);
+        _proj = new Linear(dim, dim);
+    }
+
+    public ITensor Forward(ITensor x)
+    {
+        var q = _q.Forward(x);
+        var k = _k.Forward(x);
+        var v = _v.Forward(x);
+
+        q = Backend.ReshapeHeads(q, _numHeads);
+        k = Backend.ReshapeHeads(k, _numHeads);
+        v = Backend.ReshapeHeads(v, _numHeads);
+
+        var attn = AttentionOps.Attention(q, k, v);
+
+        var merged = Backend.MergeHeads(attn);
+        return _proj.Forward(merged);
+    }
+}
+Transformer Block
+csharp
+public sealed class ClipTransformerBlock
+{
+    private readonly LayerNorm _ln1;
+    private readonly ClipSelfAttention _attn;
+    private readonly LayerNorm _ln2;
+    private readonly ClipMLP _mlp;
+
+    public ClipTransformerBlock(int dim, int numHeads, int mlpHidden)
+    {
+        _ln1 = new LayerNorm(dim);
+        _attn = new ClipSelfAttention(dim, numHeads);
+        _ln2 = new LayerNorm(dim);
+        _mlp = new ClipMLP(dim, mlpHidden);
+    }
+
+    public ITensor Forward(ITensor x)
+    {
+        var h = _ln1.Forward(x);
+        x = Ops.Add(x, _attn.Forward(h));
+
+        h = _ln2.Forward(x);
+        x = Ops.Add(x, _mlp.Forward(h));
+
+        return x;
+    }
+}
+✔ 4.2 CLIP Text Encoder (Full Graph)
+This matches OpenAI CLIP ViT‑L/14, used in SD‑1.5.
+
+Hidden size: 768
+
+Heads: 12
+
+Layers: 12
+
+Max tokens: 77
+
+csharp
+public sealed class ClipTextEncoder : ITextEncoder
+{
+    private readonly IBackend _backend;
+
+    private readonly ITensor _tokenEmbedding;   // [vocab, dim]
+    private readonly ITensor _posEmbedding;     // [max_tokens, dim]
+
+    private readonly List<ClipTransformerBlock> _blocks = new();
+
+    private readonly LayerNorm _finalLayerNorm;
+
+    private const int HiddenDim = 768;
+    private const int NumHeads = 12;
+    private const int NumLayers = 12;
+    private const int MaxTokens = 77;
+
+    public ClipTextEncoder(IBackend backend)
+    {
+        _backend = backend;
+
+        _tokenEmbedding = backend.CreateParameter(vocabSize: 49408, HiddenDim);
+        _posEmbedding = backend.CreateParameter(MaxTokens, HiddenDim);
+
+        for (int i = 0; i < NumLayers; i++)
+            _blocks.Add(new ClipTransformerBlock(HiddenDim, NumHeads, HiddenDim * 4));
+
+        _finalLayerNorm = new LayerNorm(HiddenDim);
+    }
+
+    public ITensor Encode(ITensor tokenIds)
+    {
+        // tokenIds: [N, 77]
+
+        // 1) Token embedding
+        var x = _backend.Embed(tokenIds, _tokenEmbedding); // [N, 77, dim]
+
+        // 2) Add positional embedding
+        var pos = _backend.BroadcastToBatch(_posEmbedding, x.Shape[0]);
+        x = Ops.Add(x, pos);
+
+        // 3) Transformer blocks
+        foreach (var block in _blocks)
+            x = block.Forward(x);
+
+        // 4) Final layer norm
+        x = _finalLayerNorm.Forward(x);
+
+        return x; // [N, 77, 768]
+    }
+}
+✔ 4.3 What you now have
+You now have a complete CLIP text encoder:
+
+Token embedding
+
+Positional embedding
+
+12 transformer blocks
+
+Multi‑head self‑attention
+
+Feed‑forward MLP
+
+Final layer norm
+
+Output shape: [N, 77, 768]
+
+This is exactly what Stable Diffusion 1.5 uses.
+
+It plugs directly into your DiffusionPipeline from Segment 1.

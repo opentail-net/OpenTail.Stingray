@@ -1,0 +1,222 @@
+using System;
+using System.Collections.Generic;
+
+namespace AnimateDiff
+{
+    public class MotionModuleConfig
+    {
+        public int MaxFrames = 32;
+        public long NumHeads = 8;
+        public int NormNumGroups = 32;
+        public List<long> DownChannels = new() { 320, 640, 1280, 1280 };
+        public List<long> UpChannels = new() { 1280, 1280, 640, 320 };
+        public int NumDownMotionPerBlock = 2;
+        public int NumUpMotionPerBlock = 3;
+        public bool EnableMidBlock = false;
+        public long MidChannels = 1280;
+    }
+
+    // You’ll need your own GGMLBlock, Tensor, RunnerContext, etc.
+    public abstract class GGMLBlock
+    {
+        protected readonly Dictionary<string, object> Blocks = new();
+        protected readonly Dictionary<string, Tensor> Params = new();
+
+        public virtual void InitParams(GgmlContext ctx,
+                                       Dictionary<string, Tensor> tensorStorageMap = null,
+                                       string prefix = "") { }
+
+        public virtual Tensor Forward(RunnerContext ctx, Tensor x) =>
+            throw new NotImplementedException();
+    }
+
+    public class TemporalAttention : GGMLBlock
+    {
+        private readonly long _channels;
+        private readonly long _numHeads;
+        private readonly int _maxFrames;
+
+        public TemporalAttention(long channels, long numHeads, int maxFrames)
+        {
+            _channels = channels;
+            _numHeads = numHeads;
+            _maxFrames = maxFrames;
+
+            Blocks["to_q"] = new Linear(channels, channels, false);
+            Blocks["to_k"] = new Linear(channels, channels, false);
+            Blocks["to_v"] = new Linear(channels, channels, false);
+            Blocks["to_out.0"] = new Linear(channels, channels, true);
+        }
+
+        public override void InitParams(GgmlContext ctx,
+                                        Dictionary<string, Tensor> tensorStorageMap = null,
+                                        string prefix = "")
+        {
+            Params["pos_encoder.pe"] = Tensor.New3D(ctx, TensorType.F32, _channels, _maxFrames, 1);
+        }
+
+        public override Tensor Forward(RunnerContext ctx, Tensor x)
+        {
+            var toQ = (Linear)Blocks["to_q"];
+            var toK = (Linear)Blocks["to_k"];
+            var toV = (Linear)Blocks["to_v"];
+            var toOut = (Linear)Blocks["to_out.0"];
+
+            long C = x.Shape[0];
+            long F = x.Shape[1];
+
+            var pe = Params["pos_encoder.pe"];
+            Tensor peF;
+
+            if (F == pe.Shape[1])
+            {
+                peF = pe;
+            }
+            else
+            {
+                peF = Tensor.View3D(ctx.GgmlCtx, pe, C, F, 1, pe.Stride[1], pe.Stride[2], 0);
+            }
+
+            var xPe = Ops.Add(ctx.GgmlCtx, x, Ops.Repeat(ctx.GgmlCtx, peF, x));
+
+            var q = toQ.Forward(ctx, xPe);
+            var k = toK.Forward(ctx, xPe);
+            var v = toV.Forward(ctx, xPe);
+
+            var a = Ops.AttentionExt(ctx.GgmlCtx, ctx.Backend, q, k, v, (int)_numHeads, null, false);
+            return toOut.Forward(ctx, a);
+        }
+    }
+
+    public class TemporalTransformerBlock : GGMLBlock
+    {
+        public TemporalTransformerBlock(long channels, long numHeads, int maxFrames)
+        {
+            Blocks["attention_blocks.0"] = new TemporalAttention(channels, numHeads, maxFrames);
+            Blocks["attention_blocks.1"] = new TemporalAttention(channels, numHeads, maxFrames);
+            Blocks["norms.0"] = new LayerNorm(channels);
+            Blocks["norms.1"] = new LayerNorm(channels);
+            Blocks["ff"] = new FeedForward(channels, channels, 4, FeedForward.Activation.Geglu);
+            Blocks["ff_norm"] = new LayerNorm(channels);
+        }
+
+        public override Tensor Forward(RunnerContext ctx, Tensor x)
+        {
+            var attn0 = (TemporalAttention)Blocks["attention_blocks.0"];
+            var attn1 = (TemporalAttention)Blocks["attention_blocks.1"];
+            var norm0 = (LayerNorm)Blocks["norms.0"];
+            var norm1 = (LayerNorm)Blocks["norms.1"];
+            var ff = (FeedForward)Blocks["ff"];
+            var ffNorm = (LayerNorm)Blocks["ff_norm"];
+
+            var r = x;
+            x = Ops.Add(ctx.GgmlCtx, attn0.Forward(ctx, norm0.Forward(ctx, x)), r);
+
+            r = x;
+            x = Ops.Add(ctx.GgmlCtx, attn1.Forward(ctx, norm1.Forward(ctx, x)), r);
+
+            r = x;
+            x = Ops.Add(ctx.GgmlCtx, ff.Forward(ctx, ffNorm.Forward(ctx, x)), r);
+
+            return x;
+        }
+    }
+
+    public class TemporalTransformer : GGMLBlock
+    {
+        public TemporalTransformer(long channels, long numHeads, int normNumGroups, int maxFrames)
+        {
+            Blocks["norm"] = new GroupNorm(normNumGroups, channels);
+            Blocks["proj_in"] = new Linear(channels, channels, true);
+            Blocks["transformer_blocks.0"] = new TemporalTransformerBlock(channels, numHeads, maxFrames);
+            Blocks["proj_out"] = new Linear(channels, channels, true);
+        }
+
+        public Tensor Forward(RunnerContext ctx, Tensor x, long numFrames)
+        {
+            var norm = (GroupNorm)Blocks["norm"];
+            var projIn = (Linear)Blocks["proj_in"];
+            var tb0 = (TemporalTransformerBlock)Blocks["transformer_blocks.0"];
+            var projOut = (Linear)Blocks["proj_out"];
+
+            long W = x.Shape[0];
+            long H = x.Shape[1];
+            long C = x.Shape[2];
+
+            if (x.Shape[3] != numFrames)
+                throw new InvalidOperationException("num_frames mismatch");
+
+            var residual = x;
+            var h = norm.Forward(ctx, x);
+
+            h = Ops.Cont(ctx.GgmlCtx, Ops.Permute(ctx.GgmlCtx, h, 2, 3, 0, 1));
+            h = Ops.Reshape3D(ctx.GgmlCtx, h, C, numFrames, W * H);
+            h = projIn.Forward(ctx, h);
+            h = tb0.Forward(ctx, h);
+            h = projOut.Forward(ctx, h);
+            h = Ops.Reshape4D(ctx.GgmlCtx, h, C, numFrames, W, H);
+            h = Ops.Cont(ctx.GgmlCtx, Ops.Permute(ctx.GgmlCtx, h, 2, 3, 0, 1));
+
+            return Ops.Add(ctx.GgmlCtx, h, residual);
+        }
+    }
+
+    public class MotionModule : GGMLBlock
+    {
+        public MotionModule(long channels, long numHeads, int normNumGroups, int maxFrames)
+        {
+            Blocks["temporal_transformer"] =
+                new TemporalTransformer(channels, numHeads, normNumGroups, maxFrames);
+        }
+
+        public Tensor Forward(RunnerContext ctx, Tensor x, long numFrames)
+        {
+            var tt = (TemporalTransformer)Blocks["temporal_transformer"];
+            return tt.Forward(ctx, x, numFrames);
+        }
+    }
+
+    public class AnimateDiffModel : GGMLBlock
+    {
+        public MotionModuleConfig Config { get; }
+
+        public AnimateDiffModel(MotionModuleConfig cfg)
+        {
+            Config = cfg;
+
+            for (int i = 0; i < cfg.DownChannels.Count; i++)
+            {
+                long ch = cfg.DownChannels[i];
+                for (int j = 0; j < cfg.NumDownMotionPerBlock; j++)
+                {
+                    string key = $"down_blocks.{i}.motion_modules.{j}";
+                    Blocks[key] = new MotionModule(ch, cfg.NumHeads, cfg.NormNumGroups, cfg.MaxFrames);
+                }
+            }
+
+            for (int i = 0; i < cfg.UpChannels.Count; i++)
+            {
+                long ch = cfg.UpChannels[i];
+                for (int j = 0; j < cfg.NumUpMotionPerBlock; j++)
+                {
+                    string key = $"up_blocks.{i}.motion_modules.{j}";
+                    Blocks[key] = new MotionModule(ch, cfg.NumHeads, cfg.NormNumGroups, cfg.MaxFrames);
+                }
+            }
+
+            if (cfg.EnableMidBlock)
+            {
+                Blocks["mid_block.motion_modules.0"] =
+                    new MotionModule(cfg.MidChannels, cfg.NumHeads, cfg.NormNumGroups, cfg.MaxFrames);
+            }
+        }
+
+        public MotionModule Motion(string key)
+        {
+            if (!Blocks.TryGetValue(key, out var block))
+                return null;
+
+            return block as MotionModule;
+        }
+    }
+}

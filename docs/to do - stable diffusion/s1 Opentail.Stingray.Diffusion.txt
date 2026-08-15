@@ -1,0 +1,95 @@
+namespace Opentail.Stingray.Diffusion
+{
+    public interface ITextEncoder
+    {
+        // promptTokens: [N, max_tokens]
+        ITensor Encode(ITensor promptTokens); // [N, 77, hidden_size]
+    }
+
+    public interface IUNet
+    {
+        // latents: [N, C, H, W]
+        // timesteps: [N]
+        // context: [N, 77, hidden_size]
+        // control: optional extra conditioning (e.g. ControlNet outputs)
+        ITensor PredictNoise(
+            ITensor latents,
+            ITensor timesteps,
+            ITensor context,
+            IReadOnlyList<ITensor>? control = null);
+    }
+
+    public interface IVaeDecoder
+    {
+        // latents: [N, C, H, W]
+        ITensor Decode(ITensor latents); // [N, 3, H_out, W_out]
+    }
+
+    public interface IScheduler
+    {
+        // Initializes latents for given noise + timesteps
+        ITensor InitLatents(ITensor noise, int width, int height);
+
+        // Single step: returns updated latents
+        ITensor Step(
+            ITensor latents,
+            ITensor noisePred,
+            ITensor timesteps);
+    }
+
+    public sealed class DiffusionPipeline
+    {
+        private readonly IBackend _backend;
+        private readonly ITextEncoder _textEncoder;
+        private readonly IUNet _unet;
+        private readonly IVaeDecoder _vae;
+        private readonly IScheduler _scheduler;
+
+        public DiffusionPipeline(
+            IBackend backend,
+            ITextEncoder textEncoder,
+            IUNet unet,
+            IVaeDecoder vae,
+            IScheduler scheduler)
+        {
+            _backend = backend;
+            _textEncoder = textEncoder;
+            _unet = unet;
+            _vae = vae;
+            _scheduler = scheduler;
+        }
+
+        public ITensor Generate(
+            ITensor promptTokens,
+            int width,
+            int height,
+            int numSteps,
+            IReadOnlyList<ITensor>? control = null)
+        {
+            // 1) Encode text
+            var context = _textEncoder.Encode(promptTokens); // [N, 77, hidden]
+
+            // 2) Sample initial noise
+            var noise = _backend.RandomNormalLikeShape(
+                batch: promptTokens.Shape[0],
+                channels: 4,
+                height: height / 8,
+                width: width / 8);
+
+            // 3) Init latents via scheduler
+            var latents = _scheduler.InitLatents(noise, width, height);
+
+            // 4) Main diffusion loop
+            for (int i = 0; i < numSteps; i++)
+            {
+                var t = _backend.MakeTimesteps(i, batchSize: promptTokens.Shape[0]); // [N]
+                var noisePred = _unet.PredictNoise(latents, t, context, control);
+                latents = _scheduler.Step(latents, noisePred, t);
+            }
+
+            // 5) Decode latents to image
+            var image = _vae.Decode(latents); // [N, 3, H, W]
+            return image;
+        }
+    }
+}

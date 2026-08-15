@@ -716,6 +716,32 @@ public sealed class ServiceCollectionExtensionsTests
     }
 
     [Fact]
+    public void AddOpenTailStingray_ResourceAdmission_OffByDefault()
+    {
+        // docs/032: opt-in only — an existing deployment's startup behavior must not change
+        // just because the multi-model runtime manager now exists underneath it.
+        var s = new ServiceCollection();
+        s.AddOpenTailStingray();
+
+        var sp = s.BuildServiceProvider();
+        var manager = sp.GetRequiredService<IModelRuntimeManager>();
+
+        Assert.Null(manager.ResourceBudget);
+    }
+
+    [Fact]
+    public void AddOpenTailStingray_ResourceAdmission_ExplicitlyEnabled_WiresHostResourceBudget()
+    {
+        var s = new ServiceCollection();
+        s.AddOpenTailStingray(opts => opts.EnableResourceAdmission = true);
+
+        var sp = s.BuildServiceProvider();
+        var manager = sp.GetRequiredService<IModelRuntimeManager>();
+
+        Assert.IsType<HostResourceBudget>(manager.ResourceBudget);
+    }
+
+    [Fact]
     public void AddOpenTailStingray_EngineFactory_NotInvokedUntilEngineResolved()
     {
         // Lazy registration: if no one resolves IInferenceEngine, the factory never runs.

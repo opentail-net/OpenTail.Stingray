@@ -65,9 +65,16 @@ public static class ServiceCollectionExtensions
         services.TryAddSingleton<IModelRuntimeManager>(sp =>
         {
             var opts = sp.GetRequiredService<IOptions<OpenTailStingrayServerOptions>>().Value;
-            return new ModelRuntimeManager(
+            var manager = new ModelRuntimeManager(
                 _ => (opts.EngineFactory ?? (s => InferenceEngineLoader.Load(opts)))(sp),
                 opts.ModelResidencyMode ?? ResolveResidencyModeFromEnvironment());
+
+            // Off unless explicitly opted into (see OpenTailStingrayServerOptions.EnableResourceAdmission
+            // doc for why this isn't a new default) — leaving it null preserves today's exact behavior.
+            if (opts.EnableResourceAdmission ?? ResolveEnableResourceAdmissionFromEnvironment())
+                manager.ResourceBudget = new HostResourceBudget(manager);
+
+            return manager;
         });
 
         services.TryAddSingleton<IInferenceEngine>(sp =>
@@ -171,5 +178,17 @@ public static class ServiceCollectionExtensions
             _ => throw new InvalidOperationException(
                 $"Unknown STINGRAY_MODEL_RESIDENCY_MODE '{raw}'. Expected 'single' or 'multi'."),
         };
+    }
+
+    /// <summary>
+    /// Resolves <see cref="OpenTailStingrayServerOptions.EnableResourceAdmission"/>'s
+    /// environment-variable fallback, <c>STINGRAY_ENABLE_RESOURCE_ADMISSION</c> (<c>1</c>/<c>true</c>,
+    /// case-insensitive). Unset/anything else → off, matching the option's own documented default.
+    /// </summary>
+    private static bool ResolveEnableResourceAdmissionFromEnvironment()
+    {
+        var raw = Environment.GetEnvironmentVariable("STINGRAY_ENABLE_RESOURCE_ADMISSION");
+        return string.Equals(raw, "1", StringComparison.Ordinal)
+            || string.Equals(raw, "true", StringComparison.OrdinalIgnoreCase);
     }
 }

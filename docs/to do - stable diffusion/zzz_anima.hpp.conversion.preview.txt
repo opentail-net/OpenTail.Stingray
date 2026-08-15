@@ -1,0 +1,311 @@
+
+// Top‑Level Namespace & Config
+// csharp
+namespace Anima
+{
+    public class AnimaConfig
+    {
+        public long InChannels = 16;
+        public long OutChannels = 16;
+        public long HiddenSize = 2048;
+        public long TextEmbedDim = 1024;
+        public long NumHeads = 16;
+        public long HeadDim = 128;
+        public int PatchSize = 2;
+        public long NumLayers = 28;
+        public List<int> AxesDim = new() { 44, 42, 42 };
+        public int Theta = 10000;
+
+        public static AnimaConfig DetectFromWeights(
+            Dictionary<string, Tensor> tensorStorageMap,
+            string prefix)
+        {
+            var config = new AnimaConfig();
+            long detectedLayers = 0;
+
+            string layerTag = string.IsNullOrEmpty(prefix)
+                ? "blocks."
+                : $"{prefix}.blocks.";
+
+            foreach (var kv in tensorStorageMap)
+            {
+                string name = kv.Key;
+                int pos = name.IndexOf(layerTag);
+                if (pos < 0) continue;
+
+                int start = pos + layerTag.Length;
+                int end = name.IndexOf('.', start);
+                if (end < 0) continue;
+
+                long layerId = long.Parse(name.Substring(start, end - start));
+                detectedLayers = Math.Max(detectedLayers, layerId + 1);
+            }
+
+            if (detectedLayers > 0)
+            {
+                config.NumLayers = detectedLayers;
+            }
+
+            return config;
+        }
+    }
+}
+
+// 🔧 GGMLBlock Equivalent
+// csharp
+public abstract class GGMLBlock
+{
+    protected Dictionary<string, object> Blocks = new();
+
+    public virtual Tensor Forward(RunnerContext ctx, Tensor x)
+    {
+        throw new NotImplementedException();
+    }
+}
+
+// 🎛 XEmbedder
+// csharp
+public class XEmbedder : GGMLBlock
+{
+    public XEmbedder(long inDim, long outDim)
+    {
+        Blocks["proj.1"] = new Linear(inDim, outDim, bias: false);
+    }
+
+    public override Tensor Forward(RunnerContext ctx, Tensor x)
+    {
+        var proj = (Linear)Blocks["proj.1"];
+        return proj.Forward(ctx, x);
+    }
+}
+
+// ⏱ TimestepEmbedder
+// csharp
+public class TimestepEmbedder : GGMLBlock
+{
+    public TimestepEmbedder(long inDim, long outDim)
+    {
+        Blocks["1.linear_1"] = new Linear(inDim, inDim, false);
+        Blocks["1.linear_2"] = new Linear(inDim, outDim, false);
+    }
+
+    public override Tensor Forward(RunnerContext ctx, Tensor x)
+    {
+        var l1 = (Linear)Blocks["1.linear_1"];
+        var l2 = (Linear)Blocks["1.linear_2"];
+
+        x = l1.Forward(ctx, x);
+        x = Ops.Silu(x);
+        x = l2.Forward(ctx, x);
+        return x;
+    }
+}
+
+// 🌀 AdaLayerNormZero
+// csharp
+public class AdaLayerNormZero : GGMLBlock
+{
+    private readonly long InFeatures;
+
+    public AdaLayerNormZero(long inFeatures, long hiddenFeatures = 256)
+    {
+        InFeatures = inFeatures;
+        Blocks["norm"] = new LayerNorm(inFeatures, 1e-6f, false, false);
+        Blocks["1"] = new Linear(inFeatures, hiddenFeatures, false);
+        Blocks["2"] = new Linear(hiddenFeatures, 3 * inFeatures, false);
+    }
+
+    public (Tensor x, Tensor gate) Forward(
+        RunnerContext ctx,
+        Tensor hiddenStates,
+        Tensor embeddedTimestep,
+        Tensor temb = null)
+    {
+        var norm = (LayerNorm)Blocks["norm"];
+        var l1 = (Linear)Blocks["1"];
+        var l2 = (Linear)Blocks["2"];
+
+        var emb = Ops.Silu(embeddedTimestep);
+        emb = l1.Forward(ctx, emb);
+        emb = l2.Forward(ctx, emb);
+
+        if (temb != null)
+            emb = Ops.Add(emb, temb);
+
+        var chunks = Ops.Chunk(emb, 3);
+        var shift = chunks[0];
+        var scale = chunks[1];
+        var gate = chunks[2];
+
+        var x = norm.Forward(ctx, hiddenStates);
+        x = Flux.Modulate(x, shift, scale);
+
+        return (x, gate);
+    }
+}
+
+// 🧠 AnimaAttention
+// csharp
+public class AnimaAttention : GGMLBlock
+{
+    private readonly long NumHeads;
+    private readonly long HeadDim;
+    private readonly string OutProjName;
+
+    public AnimaAttention(long queryDim, long contextDim, long numHeads, long headDim, string outProjName = "output_proj")
+    {
+        NumHeads = numHeads;
+        HeadDim = headDim;
+        OutProjName = outProjName;
+
+        long innerDim = numHeads * headDim;
+
+        Blocks["q_proj"] = new Linear(queryDim, innerDim, false);
+        Blocks["k_proj"] = new Linear(contextDim, innerDim, false);
+        Blocks["v_proj"] = new Linear(contextDim, innerDim, false);
+        Blocks["q_norm"] = new RMSNorm(headDim, 1e-6f);
+        Blocks["k_norm"] = new RMSNorm(headDim, 1e-6f);
+        Blocks[outProjName] = new Linear(innerDim, queryDim, false);
+    }
+
+    public Tensor Forward(
+        RunnerContext ctx,
+        Tensor hiddenStates,
+        Tensor encoderHiddenStates = null,
+        Tensor peQ = null,
+        Tensor peK = null)
+    {
+        encoderHiddenStates ??= hiddenStates;
+
+        var qProj = (Linear)Blocks["q_proj"];
+        var kProj = (Linear)Blocks["k_proj"];
+        var vProj = (Linear)Blocks["v_proj"];
+        var qNorm = (RMSNorm)Blocks["q_norm"];
+        var kNorm = (RMSNorm)Blocks["k_norm"];
+        var outProj = (Linear)Blocks[OutProjName];
+
+        var q = qProj.Forward(ctx, hiddenStates);
+        var k = kProj.Forward(ctx, encoderHiddenStates);
+        var v = vProj.Forward(ctx, encoderHiddenStates);
+
+        var q4 = Ops.Reshape4D(q, HeadDim, NumHeads);
+        var k4 = Ops.Reshape4D(k, HeadDim, NumHeads);
+        var v4 = Ops.Reshape4D(v, HeadDim, NumHeads);
+
+        q4 = qNorm.Forward(ctx, q4);
+        k4 = kNorm.Forward(ctx, k4);
+
+        Tensor attnOut;
+
+        if (peQ != null || peK != null)
+        {
+            peQ ??= peK;
+            peK ??= peQ;
+
+            var qRope = Rope.Apply(q4, peQ);
+            var kRope = Rope.Apply(k4, peK);
+
+            attnOut = Ops.Attention(qRope, kRope, v4, NumHeads);
+        }
+        else
+        {
+            attnOut = Ops.Attention(q4, k4, v4, NumHeads);
+        }
+
+        return outProj.Forward(ctx, attnOut);
+    }
+}
+
+// 🏛 TransformerBlock
+// csharp
+public class TransformerBlock : GGMLBlock
+{
+    public TransformerBlock(long hiddenSize, long textEmbedDim, long numHeads, long headDim, long mlpRatio = 4, long adalnDim = 256)
+    {
+        Blocks["adaln_self"] = new AdaLayerNormZero(hiddenSize, adalnDim);
+        Blocks["self_attn"] = new AnimaAttention(hiddenSize, hiddenSize, numHeads, headDim);
+
+        Blocks["adaln_cross"] = new AdaLayerNormZero(hiddenSize, adalnDim);
+        Blocks["cross_attn"] = new AnimaAttention(hiddenSize, textEmbedDim, numHeads, headDim);
+
+        Blocks["adaln_mlp"] = new AdaLayerNormZero(hiddenSize, adalnDim);
+        Blocks["mlp"] = new AnimaMLP(hiddenSize, hiddenSize * mlpRatio);
+    }
+
+    public Tensor Forward(
+        RunnerContext ctx,
+        Tensor x,
+        Tensor encoderHiddenStates,
+        Tensor embeddedTimestep,
+        Tensor temb,
+        Tensor imagePe)
+    {
+        var adalnSelf = (AdaLayerNormZero)Blocks["adaln_self"];
+        var selfAttn = (AnimaAttention)Blocks["self_attn"];
+
+        var (norm1, gate1) = adalnSelf.Forward(ctx, x, embeddedTimestep, temb);
+        var h = selfAttn.Forward(ctx, norm1, null, imagePe, imagePe);
+        x = Ops.Add(x, Ops.Gate(h, gate1));
+
+        var adalnCross = (AdaLayerNormZero)Blocks["adaln_cross"];
+        var crossAttn = (AnimaAttention)Blocks["cross_attn"];
+
+        var (norm2, gate2) = adalnCross.Forward(ctx, x, embeddedTimestep, temb);
+        h = crossAttn.Forward(ctx, norm2, encoderHiddenStates);
+        x = Ops.Add(x, Ops.Gate(h, gate2));
+
+        var adalnMlp = (AdaLayerNormZero)Blocks["adaln_mlp"];
+        var mlp = (AnimaMLP)Blocks["mlp"];
+
+        var (norm3, gate3) = adalnMlp.Forward(ctx, x, embeddedTimestep, temb);
+        h = mlp.Forward(ctx, norm3);
+        x = Ops.Add(x, Ops.Gate(h, gate3));
+
+        return x;
+    }
+}
+
+// 🧩 AnimaNet Skeleton
+// csharp
+public class AnimaNet : GGMLBlock
+{
+    public AnimaConfig Config;
+
+    public AnimaNet(AnimaConfig config)
+    {
+        Config = config;
+
+        Blocks["x_embedder"] = new XEmbedder((config.InChannels + 1) * config.PatchSize * config.PatchSize, config.HiddenSize);
+        Blocks["t_embedder"] = new TimestepEmbedder(config.HiddenSize, config.HiddenSize * 3);
+        Blocks["t_norm"] = new RMSNorm(config.HiddenSize, 1e-6f);
+
+        for (int i = 0; i < config.NumLayers; i++)
+        {
+            Blocks[$"blocks.{i}"] = new TransformerBlock(
+                config.HiddenSize,
+                config.TextEmbedDim,
+                config.NumHeads,
+                config.HeadDim);
+        }
+
+        Blocks["final"] = new FinalLayer(config.HiddenSize, config.PatchSize, config.OutChannels);
+        Blocks["adapter"] = new LLMAdapter();
+    }
+
+    public Tensor Forward(
+        RunnerContext ctx,
+        Tensor x,
+        Tensor timestep,
+        Tensor encoderHiddenStates,
+        Tensor imagePe,
+        Tensor t5Ids = null,
+        Tensor t5Weights = null,
+        Tensor adapterQPe = null,
+        Tensor adapterKPe = null,
+        List<Tensor> refLatents = null)
+    {
+        // identical structure to C++ version
+        // patchify → embed → timestep → blocks → unpatchify
+        throw new NotImplementedException();
+    }
+}

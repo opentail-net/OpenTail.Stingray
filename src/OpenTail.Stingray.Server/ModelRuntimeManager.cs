@@ -40,6 +40,10 @@ public interface IModelRuntimeManager
 
     /// <summary>Point-in-time snapshot of every currently resident runtime.</summary>
     IReadOnlyList<ModelRuntimeStats> Snapshot();
+
+    /// <summary>System-wide activity snapshot (docs/032 §"Metrics that matter") — resident/active
+    /// counts plus cumulative load/eviction/admission-reject counters since construction.</summary>
+    MultiModelRuntimeStats GetStats();
 }
 
 /// <inheritdoc cref="IModelRuntimeManager"/>
@@ -53,6 +57,15 @@ public sealed class ModelRuntimeManager : IModelRuntimeManager, IDisposable
     private TaskCompletionSource _residencyChanged = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private ModelResidencyMode _residencyMode;
     private bool _disposed;
+
+    // Cumulative activity counters (docs/032 §"Metrics that matter") — never reset, read via
+    // GetStats(). Incremented at the exact points the corresponding event actually happens, not
+    // inferred after the fact.
+    private long _modelLoads;
+    private long _modelLoadFailures;
+    private long _modelEvictions;
+    private long _admissionRejects;
+    private long _residencyPressureEvents;
 
     /// <summary>Off by default (see interface doc) — deliberately not passed by the server DI
     /// wiring yet, so production behavior for the existing single-model path is unchanged until
@@ -95,6 +108,33 @@ public sealed class ModelRuntimeManager : IModelRuntimeManager, IDisposable
                 list.Add(new ModelRuntimeStats(rt.Id, rt.State, rt.EstimatedModelBytes, rt.HandleCount,
                     rt.ActiveRequests, rt.IsPinned, rt.LastUsed));
             return list;
+        }
+    }
+
+    public MultiModelRuntimeStats GetStats()
+    {
+        lock (_lock)
+        {
+            int active = 0;
+            long estimatedBytes = 0;
+            foreach (var rt in _resident.Values)
+            {
+                if (rt.HandleCount > 0) active++;
+                estimatedBytes += rt.EstimatedModelBytes;
+            }
+            int pendingLoads = _pendingLoads.Count;
+
+            return new MultiModelRuntimeStats(
+                KnownModels: _resident.Count + pendingLoads,
+                ResidentModels: _resident.Count,
+                ActiveModels: active,
+                EstimatedResidentModelBytes: estimatedBytes,
+                PendingLoads: pendingLoads,
+                ModelLoads: Interlocked.Read(ref _modelLoads),
+                ModelLoadFailures: Interlocked.Read(ref _modelLoadFailures),
+                ModelEvictions: Interlocked.Read(ref _modelEvictions),
+                AdmissionRejects: Interlocked.Read(ref _admissionRejects),
+                ResidencyPressureEvents: Interlocked.Read(ref _residencyPressureEvents));
         }
     }
 
@@ -202,6 +242,7 @@ public sealed class ModelRuntimeManager : IModelRuntimeManager, IDisposable
             (toDispose ??= new List<ModelRuntime>()).Add(rt);
         }
         if (toDispose is null) return;
+        Interlocked.Add(ref _modelEvictions, toDispose.Count);
         // Disposing while holding _lock mirrors SharedModelCache.Dispose's existing precedent in
         // this codebase (synchronous disposal under the same lock) rather than introducing a new
         // async-disposal pattern for Phase 1.
@@ -226,12 +267,18 @@ public sealed class ModelRuntimeManager : IModelRuntimeManager, IDisposable
         if (budget.EstimateAdmission(candidateBytes) == ResourceAdmission.Allowed)
             return;
 
-        // Doesn't fit as things stand — free whatever's safely reclaimable (idle, non-pinned,
-        // never the candidate itself) and re-check once before giving up.
+        // Doesn't fit as things stand — this is "under pressure" regardless of whether eviction
+        // below manages to resolve it, so it's counted separately from AdmissionRejects (which
+        // only counts the harder, unresolved case).
+        Interlocked.Increment(ref _residencyPressureEvents);
+
+        // Free whatever's safely reclaimable (idle, non-pinned, never the candidate itself) and
+        // re-check once before giving up.
         EvictIdleOthersLocked(keep: model);
         if (budget.EstimateAdmission(candidateBytes) == ResourceAdmission.Allowed)
             return;
 
+        Interlocked.Increment(ref _admissionRejects);
         throw new InsufficientResourcesException(model, candidateBytes, budget.GetCurrent());
     }
 
@@ -246,6 +293,7 @@ public sealed class ModelRuntimeManager : IModelRuntimeManager, IDisposable
                 _resident[model] = runtime;
                 _pendingLoads.Remove(model);
             }
+            Interlocked.Increment(ref _modelLoads);
             NotifyResidencyChanged();
             tcs.TrySetResult(runtime);
         }
@@ -254,6 +302,7 @@ public sealed class ModelRuntimeManager : IModelRuntimeManager, IDisposable
             // A failed load must not poison the single-flight table forever — remove the entry
             // so a later acquisition retries instead of awaiting a permanently-faulted task.
             lock (_lock) { _pendingLoads.Remove(model); }
+            Interlocked.Increment(ref _modelLoadFailures);
             NotifyResidencyChanged();
             tcs.TrySetException(ex);
         }

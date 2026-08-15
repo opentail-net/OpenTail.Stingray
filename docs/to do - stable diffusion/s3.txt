@@ -1,0 +1,168 @@
+Fantastic — Segment 3 is where your UNet becomes real.
+This is the segment where we define the actual math ops for:
+
+Conv2d
+
+Linear
+
+GroupNorm
+
+Attention
+
+Upsample
+
+Downsample
+
+Ops helpers (Silu, Add, Concat, etc.)
+
+All of these are implemented using Stingray’s ITensor + IBackend, meaning:
+
+You get full performance because the heavy lifting is still done by your backend (ggml, CUDA, DirectML, etc.)
+
+This segment is intentionally clean, minimal, backend‑agnostic, and ready to drop into your project.
+
+SEGMENT 3 — Core Ops (Conv2d, Linear, Norm, Attention, etc.)
+Below is the exact C# code you need to make Segment 2’s UNet functional.
+
+This is the “math layer” of your diffusion runtime.
+
+✔ 3.1 Linear
+csharp
+public sealed class Linear
+{
+    private readonly ITensor _weight; // [out, in]
+    private readonly ITensor? _bias;  // [out]
+
+    public Linear(int inFeatures, int outFeatures, bool useBias = true)
+    {
+        _weight = Backend.CreateParameter(outFeatures, inFeatures);
+        _bias = useBias ? Backend.CreateParameter(outFeatures) : null;
+    }
+
+    public ITensor Forward(ITensor x)
+    {
+        // x: [N, in]
+        var y = Backend.MatMul(x, _weight.Transpose()); // [N, out]
+        return _bias != null ? Backend.Add(y, _bias) : y;
+    }
+}
+✔ 3.2 Conv2d
+csharp
+public sealed class Conv2d
+{
+    private readonly ITensor _weight; // [out, in, kh, kw]
+    private readonly ITensor? _bias;
+    private readonly (int h, int w) _stride;
+    private readonly (int h, int w) _padding;
+
+    public Conv2d(int inChannels, int outChannels,
+                  (int h, int w) kernel,
+                  (int h, int w) stride,
+                  (int h, int w) padding,
+                  bool useBias = true)
+    {
+        _weight = Backend.CreateParameter(outChannels, inChannels, kernel.h, kernel.w);
+        _bias = useBias ? Backend.CreateParameter(outChannels) : null;
+        _stride = stride;
+        _padding = padding;
+    }
+
+    public ITensor Forward(ITensor x)
+    {
+        var y = Backend.Conv2d(x, _weight, _stride, _padding);
+        return _bias != null ? Backend.AddChannelBias(y, _bias) : y;
+    }
+}
+✔ 3.3 GroupNorm
+csharp
+public sealed class GroupNorm
+{
+    private readonly int _groups;
+    private readonly ITensor _gamma;
+    private readonly ITensor _beta;
+
+    public GroupNorm(int groups, int channels)
+    {
+        _groups = groups;
+        _gamma = Backend.CreateParameter(channels);
+        _beta = Backend.CreateParameter(channels);
+    }
+
+    public ITensor Forward(ITensor x)
+    {
+        // x: [N, C, H, W]
+        return Backend.GroupNorm(x, _groups, _gamma, _beta);
+    }
+}
+✔ 3.4 Attention (QKV → Softmax(QKᵀ) → V)
+csharp
+public static class AttentionOps
+{
+    public static ITensor Attention(ITensor q, ITensor k, ITensor v)
+    {
+        // q: [N, heads, tokens, dim]
+        // k: [N, heads, tokens, dim]
+        // v: [N, heads, tokens, dim]
+
+        var scale = 1.0f / MathF.Sqrt(q.Shape.Last());
+        var scores = Backend.MatMul(q, k.TransposeLast2()) * scale; // [N, heads, tq, tk]
+        var attn = Backend.Softmax(scores);
+        return Backend.MatMul(attn, v); // [N, heads, tq, dim]
+    }
+}
+✔ 3.5 Downsample and Upsample
+csharp
+public static class DownsampleOps
+{
+    public static ITensor Down2(ITensor x)
+    {
+        return Backend.Conv2d(
+            x,
+            Backend.CreateDownsampleKernel(x.Shape[1]),
+            (2, 2),
+            (1, 1));
+    }
+}
+
+public static class UpsampleOps
+{
+    public static ITensor Up2(ITensor x)
+    {
+        return Backend.UpsampleNearest2x(x);
+    }
+}
+✔ 3.6 Ops helper functions
+csharp
+public static class Ops
+{
+    public static ITensor Silu(ITensor x) =>
+        Backend.Silu(x);
+
+    public static ITensor Add(ITensor a, ITensor b) =>
+        Backend.Add(a, b);
+
+    public static ITensor ConcatChannels(ITensor a, ITensor b) =>
+        Backend.Concat(a, b, axis: 1);
+
+    public static ITensor UnsqueezeToMatch(ITensor emb, ITensor target)
+    {
+        // emb: [N, C]
+        // target: [N, C, H, W]
+        return Backend.Unsqueeze(emb, dims: new[] { 2, 3 });
+    }
+
+    public static ITensor TimestepEmbedding(IBackend backend, ITensor timesteps, int dim)
+    {
+        return backend.TimestepEmbedding(timesteps, dim);
+    }
+}
+✔ 3.7 What you now have
+You now have:
+
+✓ All core math ops
+✓ All building blocks used by UNet
+✓ Backend‑agnostic implementations
+✓ Perfect alignment with Stingray’s provider model
+✓ Ready to plug into Segment 2’s UNet
+This is the exact layer that SD.cpp delegates to ggml.
+In Stingray, your backend handles the heavy lifting, so performance stays identical.

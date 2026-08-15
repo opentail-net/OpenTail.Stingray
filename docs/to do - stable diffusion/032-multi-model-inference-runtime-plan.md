@@ -4,8 +4,7 @@
 
 ## Status
 
-**Phases 1 and 2 implemented; Phase 3 in progress (5 slices landed — see its entry in
-"Implementation phases" below for the current done/not-done split).** `ModelId`, `ModelRuntimeState`, `ModelResidencyMode`,
+**Phases 1 and 2 implemented.** `ModelId`, `ModelRuntimeState`, `ModelResidencyMode`,
 `ModelRuntime`, `ModelRuntimeHandle`, `IModelRuntimeManager`/`ModelRuntimeManager`
 (`src/OpenTail.Stingray.Server/ModelRuntime.cs`, `ModelRuntimeManager.cs`), wired into
 `ServiceCollectionExtensions.AddOpenTailStingray` so the server's single configured model now
@@ -355,19 +354,12 @@ background/speculative model preloading. All out of scope here.
    always bypass the gate entirely (fast path returns before admission is ever consulted).
    **Slice 4 done:** `OpenTailStingrayServerOptions.EnableResourceAdmission` (bool?, default
    `null`/off) / `STINGRAY_ENABLE_RESOURCE_ADMISSION` — the only way to actually reach this
-   machinery from the real server, since Slice 3's wiring lives on the manager and nothing set it
-   in DI until this. Explicitly opt-in rather than a new default: flipping it on changes an
+   machinery from the real server today, since Slice 3's wiring lives on the manager and nothing
+   set it in DI until now. Explicitly opt-in rather than a new default: flipping it on changes an
    existing deployment's startup behavior (a load that always succeeded can now throw
    `InsufficientResourcesException` on a machine sized close to the wire), so that's the
-   operator's call. Verified default-off leaves the real single-model DI path byte-for-byte
-   unchanged, including a live real-GGUF end-to-end rerun.
-   **Slice 5 done (docs/032 §"Metrics that matter"):** `MultiModelRuntimeStats`/`GetStats()` —
-   cumulative `ModelLoads`/`ModelLoadFailures`/`ModelEvictions`/`AdmissionRejects`/
-   `ResidencyPressureEvents` counters incremented at their exact real event sites, plus a
-   point-in-time `ResidentModels`/`ActiveModels`/`PendingLoads`/`KnownModels`/
-   `EstimatedResidentModelBytes` snapshot. `ResidencyPressureEvents` (pressure detected) is
-   counted separately from `AdmissionRejects` (pressure eviction couldn't resolve) — the two
-   answer different operational questions. Purely additive/observational, no behavior change.
+   operator's call, not a silent default. Verified default-off leaves the real single-model DI
+   path byte-for-byte unchanged, including a live real-GGUF end-to-end rerun.
    **Not yet done:** accelerator (VRAM) accounting — deliberately not attempted as a small slice;
    it needs a live GPU backend instance with its own lifecycle/ownership questions, not just a
    memory query — and Phase 6's queueing alternative to hard failure when eviction alone isn't

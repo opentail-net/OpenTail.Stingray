@@ -1,0 +1,143 @@
+namespace Opentail.Stingray.Diffusion.UNet
+{
+    public sealed class UNetSD15 : IUNet
+    {
+        private readonly IBackend _backend;
+
+        // Embedding
+        private readonly Linear _timeEmbed1;
+        private readonly Linear _timeEmbed2;
+
+        // Down path
+        private readonly List<IUNetBlock> _downBlocks = new();
+        private readonly List<IUNetBlock> _downSamples = new();
+
+        // Middle
+        private readonly IUNetBlock _midRes1;
+        private readonly IUNetBlock _midAttn;
+        private readonly IUNetBlock _midRes2;
+
+        // Up path
+        private readonly List<IUNetBlock> _upBlocks = new();
+        private readonly List<IUNetBlock> _upSamples = new();
+
+        // Final
+        private readonly GroupNorm _outNorm;
+        private readonly Conv2d _outConv;
+
+        public UNetSD15(IBackend backend)
+        {
+            _backend = backend;
+
+            // Time embedding
+            _timeEmbed1 = new Linear(320, 1280);
+            _timeEmbed2 = new Linear(1280, 1280);
+
+            // SD 1.5 channel multipliers
+            int[] chMult = { 1, 2, 4, 4 };
+            int baseChannels = 320;
+
+            int inCh = baseChannels;
+
+            // Down blocks
+            foreach (var mult in chMult)
+            {
+                int outCh = baseChannels * mult;
+
+                _downBlocks.Add(new ResBlock(inCh, outCh, 1280));
+
+                if (mult == 1 || mult == 2 || mult == 4)
+                    _downBlocks.Add(new AttentionBlock(outCh));
+
+                inCh = outCh;
+
+                if (mult != chMult.Last())
+                    _downSamples.Add(new Downsample(inCh));
+            }
+
+            // Middle
+            _midRes1 = new ResBlock(inCh, inCh, 1280);
+            _midAttn = new AttentionBlock(inCh);
+            _midRes2 = new ResBlock(inCh, inCh, 1280);
+
+            // Up blocks
+            foreach (var mult in chMult.Reverse())
+            {
+                int outCh = baseChannels * mult;
+
+                _upBlocks.Add(new ResBlock(inCh + outCh, outCh, 1280));
+
+                if (mult == 1 || mult == 2 || mult == 4)
+                    _upBlocks.Add(new AttentionBlock(outCh));
+
+                inCh = outCh;
+
+                if (mult != chMult.First())
+                    _upSamples.Add(new Upsample(inCh));
+            }
+
+            // Final
+            _outNorm = new GroupNorm(32, baseChannels);
+            _outConv = new Conv2d(baseChannels, 4, (3, 3), (1, 1), (1, 1));
+        }
+
+        public ITensor PredictNoise(
+            ITensor latents,
+            ITensor timesteps,
+            ITensor context,
+            IReadOnlyList<ITensor>? control = null)
+        {
+            // 1) Time embedding
+            var tEmb = Ops.TimestepEmbedding(_backend, timesteps, 320);
+            tEmb = Ops.Silu(_timeEmbed1.Forward(tEmb));
+            tEmb = _timeEmbed2.Forward(tEmb);
+
+            // 2) Down path
+            var skips = new List<ITensor>();
+            var h = latents;
+
+            int downIndex = 0;
+            foreach (var block in _downBlocks)
+            {
+                h = block.Forward(h, tEmb, context);
+                skips.Add(h);
+
+                if (downIndex < _downSamples.Count)
+                {
+                    h = _downSamples[downIndex].Forward(h, tEmb, context);
+                }
+
+                downIndex++;
+            }
+
+            // 3) Middle
+            h = _midRes1.Forward(h, tEmb, context);
+            h = _midAttn.Forward(h, tEmb, context);
+            h = _midRes2.Forward(h, tEmb, context);
+
+            // 4) Up path
+            int upIndex = 0;
+            foreach (var block in _upBlocks)
+            {
+                var skip = skips[skips.Count - 1 - upIndex];
+                h = Ops.ConcatChannels(h, skip);
+
+                h = block.Forward(h, tEmb, context);
+
+                if (upIndex < _upSamples.Count)
+                {
+                    h = _upSamples[upIndex].Forward(h, tEmb, context);
+                }
+
+                upIndex++;
+            }
+
+            // 5) Final
+            h = _outNorm.Forward(h);
+            h = Ops.Silu(h);
+            h = _outConv.Forward(h);
+
+            return h;
+        }
+    }
+}

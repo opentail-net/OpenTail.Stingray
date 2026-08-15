@@ -419,4 +419,103 @@ public sealed class ModelRuntimeManagerTests
         Assert.Same(first.Runtime, second.Runtime);
         Assert.Equal(0, budget.EstimateAdmissionCallCount);
     }
+
+    // ── Phase 3 slice: aggregate activity counters (GetStats) ───────────────
+
+    [Fact]
+    public async Task GetStats_TracksLoadsAndResidentActiveCounts()
+    {
+        using var manager = new ModelRuntimeManager(id => Load(id.Value));
+
+        using var ha = await manager.AcquireAsync(Id("a"));
+        using (await manager.AcquireAsync(Id("b"))) { } // acquire then immediately release — idle
+
+        var stats = manager.GetStats();
+        Assert.Equal(2, stats.ModelLoads);
+        Assert.Equal(0, stats.ModelLoadFailures);
+        Assert.Equal(2, stats.ResidentModels);
+        Assert.Equal(1, stats.ActiveModels); // only "a" still has a live handle
+        Assert.Equal(2, stats.KnownModels);
+        Assert.Equal(0, stats.PendingLoads);
+        Assert.True(stats.EstimatedResidentModelBytes >= 0);
+    }
+
+    [Fact]
+    public async Task GetStats_TracksLoadFailures_WithoutCountingThemAsSuccesses()
+    {
+        using var manager = new ModelRuntimeManager(id =>
+            id.Value == "bad" ? throw new InvalidOperationException("boom") : Load(id.Value));
+
+        await Assert.ThrowsAsync<InvalidOperationException>(async () => await manager.AcquireAsync(Id("bad")));
+        using var ok = await manager.AcquireAsync(Id("good"));
+
+        var stats = manager.GetStats();
+        Assert.Equal(1, stats.ModelLoadFailures);
+        Assert.Equal(1, stats.ModelLoads);
+        Assert.Equal(1, stats.ResidentModels); // only the successful one is resident
+    }
+
+    [Fact]
+    public async Task GetStats_TracksEvictions_FromSingleSlotResidencyEnforcement()
+    {
+        using var manager = new ModelRuntimeManager(id => Load(id.Value), ModelResidencyMode.SingleSlot);
+
+        var ha = await manager.AcquireAsync(Id("a"));
+        ha.Dispose(); // idle — evictable
+        using var hb = await manager.AcquireAsync(Id("b")); // evicts "a" to enforce single-slot
+
+        Assert.Equal(1, manager.GetStats().ModelEvictions);
+    }
+
+    [Fact]
+    public async Task GetStats_TracksResidencyPressureAndAdmissionRejects_Distinctly()
+    {
+        using var manager = new ModelRuntimeManager(id => Load(id.Value));
+
+        // Pressure that eviction resolves: pressure event fires, but it's not a hard reject.
+        using (var ha = await manager.AcquireAsync(Id("a")))
+        {
+            // released immediately below — idle before "b" is requested
+        }
+        int calls = 0;
+        manager.ResourceBudget = new FakeResourceBudget(_ => ++calls == 1
+            ? ResourceAdmission.InsufficientHostMemory
+            : ResourceAdmission.Allowed);
+        using (await manager.AcquireAsync(Id("b"))) { }
+
+        var afterResolvedPressure = manager.GetStats();
+        Assert.Equal(1, afterResolvedPressure.ResidencyPressureEvents);
+        Assert.Equal(0, afterResolvedPressure.AdmissionRejects);
+
+        // Pressure that eviction CANNOT resolve (nothing evictable): hard reject.
+        manager.ResourceBudget = new FakeResourceBudget(_ => ResourceAdmission.InsufficientHostMemory);
+        await Assert.ThrowsAsync<InsufficientResourcesException>(async () => await manager.AcquireAsync(Id("c")));
+
+        var afterHardReject = manager.GetStats();
+        Assert.Equal(2, afterHardReject.ResidencyPressureEvents);
+        Assert.Equal(1, afterHardReject.AdmissionRejects);
+    }
+
+    [Fact]
+    public async Task GetStats_TracksPendingLoads_WhileALoadIsStillInFlight()
+    {
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var manager = new ModelRuntimeManager(id =>
+        {
+            gate.Task.GetAwaiter().GetResult();
+            return Load(id.Value);
+        });
+
+        var acquiring = manager.AcquireAsync(Id("slow")).AsTask();
+        await Task.Delay(30); // let the load genuinely start
+
+        var midFlight = manager.GetStats();
+        Assert.Equal(1, midFlight.PendingLoads);
+        Assert.Equal(0, midFlight.ResidentModels);
+        Assert.Equal(1, midFlight.KnownModels); // known even though not yet resident
+
+        gate.SetResult();
+        using var handle = await acquiring;
+        Assert.Equal(0, manager.GetStats().PendingLoads);
+    }
 }

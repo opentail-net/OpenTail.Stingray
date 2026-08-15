@@ -1,0 +1,353 @@
+Yes. I’ve looked at the current tree rather than just the old SD1.5-era layout. The repo has grown into a fairly large, modular diffusion engine, and for the Stingray port there are some files that are vastly more important than others.
+
+The files I'd study first
+1. src/stable-diffusion.cpp — start here
+
+src/stable-diffusion.cpp
+
+This is the orchestration layer.
+
+It pulls together:
+
+model loading
+backend selection
+text conditioning
+diffusion model
+VAE
+ControlNet
+LoRA
+sampling
+RNG
+model version detection
+generation
+
+The current file explicitly references the major model implementations, including:
+
+unet.hpp
+mmdit.hpp
+flux.hpp
+z_image.hpp
+VAE implementations
+conditioner
+LoRA
+ControlNet
+scheduler/denoising infrastructure.
+
+For our port: this tells us how the pieces fit together, not necessarily how each piece should be implemented.
+
+2. src/model/diffusion/unet.hpp/.cpp — SD1.5 + SDXL
+
+UNet implementation
+
+This is probably the single most important place for us if we're starting with SD1.5.
+
+It contains the classic Stable Diffusion architecture:
+
+UNet
+├── input blocks
+├── ResBlocks
+├── spatial transformer
+├── attention
+├── cross attention
+├── middle block
+└── output blocks
+
+This is the major architectural piece Stingray needs to add for SD1.5/SDXL.
+
+3. src/model/diffusion/mmdit.hpp/.cpp — SD3.5
+
+This is the one to study for SD3/3.5.
+
+The current project explicitly identifies SD3.x as a model family and has a dedicated MMDiT implementation.
+
+For Stingray this is particularly interesting because we already have transformer-heavy FLUX/Z-Image implementations.
+
+I'd compare:
+
+Stingray FLUX
+       │
+       ├── attention
+       ├── transformer blocks
+       ├── conditioning
+       └── positional encoding
+             │
+             ▼
+         SD3 MMDiT
+
+rather than treating SD3.5 as a completely new engine.
+
+4. src/model/diffusion/model.hpp/.cpp
+
+This is the common diffusion model abstraction.
+
+It's important because this is where we should understand how stable-diffusion.cpp avoids having the entire application know whether it's running:
+
+UNet
+DiT
+MMDiT
+FLUX
+etc.
+
+That's directly relevant to how we should structure Stingray.
+
+5. src/model/vae/
+
+Look at:
+
+src/model/vae/vae.hpp
+src/model/vae/auto_encoder_kl.hpp
+
+The current repository has a common VAE layer plus model-specific VAEs.
+
+This is particularly important because Stingray already has VAE/image-generation infrastructure, so this is an area where we may be able to reuse a lot rather than port everything.
+
+6. src/conditioning/conditioner.hpp
+
+This is very important.
+
+Don't underestimate the text-conditioning side.
+
+The repository treats text encoders/conditioners as a distinct subsystem, and its current backend documentation explicitly separates the te module from the diffusion model and VAE.
+
+For SD1.5:
+
+Prompt
+ ↓
+Tokenizer
+ ↓
+CLIP
+ ↓
+conditioning
+ ↓
+UNet
+
+For SDXL:
+
+Prompt
+ ↓
+CLIP-L + CLIP-G
+ ↓
+conditioning
+ ↓
+UNet
+
+For SD3.5:
+
+Prompt
+ ├── CLIP-L
+ ├── CLIP-G
+ └── T5-XXL
+        ↓
+   conditioning
+        ↓
+      MMDiT
+
+So this is one of the areas I'd map against Stingray very carefully before writing anything.
+
+7. src/runtime/denoiser.hpp/.cpp
+
+This is another key one.
+
+The diffusion model isn't simply:
+
+latent → model → latent
+
+There is a runtime layer managing the denoising process.
+
+The current source explicitly uses:
+
+runtime/denoiser.hpp
+runtime/guidance.h
+runtime/sample-cache.h
+
+and the top-level runtime owns a Denoiser instance.
+
+This is likely highly reusable conceptually for Stingray's scheduler/sampling architecture.
+
+8. src/model_loader.h
+
+Very important for the Stingray port.
+
+Don't initially focus only on neural-network maths.
+
+A huge amount of the work in a production diffusion runtime is:
+
+"How do I identify what model this is and map its tensors into the right architecture?"
+
+The current engine has a dedicated ModelLoader, and the top-level runtime uses it through ModelManager.
+
+This is where I'd study:
+
+SafeTensors
+GGUF
+tensor naming
+model detection
+tensor mapping
+split models
+external text encoders
+model metadata
+9. src/model_manager.h/.cpp
+
+This sits above the model loader and manages the actual collection of model components.
+
+It's particularly interesting because the current engine has separate modules for:
+
+diffusion
+text encoder
+VAE
+ControlNet
+LoRA
+IP Adapter
+
+rather than treating a model as one monolithic file.
+
+That architecture is worth borrowing conceptually for Stingray.
+
+10. src/core/ — study, don't port
+
+This is the other enormous part of the repository.
+
+In particular:
+
+src/core/ggml_extend.hpp
+src/core/backend_fit.h
+src/core/rng.hpp
+src/core/rng_mt19937.hpp
+src/core/rng_philox.hpp
+src/core/...
+
+The current project is explicitly built around ggml and its backend system.
+
+For Stingray:
+
+Do not port ggml.
+
+Stingray already has its own tensor/runtime substrate.
+
+Instead, use this directory to answer:
+
+"What operations does diffusion actually require?"
+
+That's much more valuable.
+
+11. src/model/adapter/lora.hpp
+
+Worth looking at, but later.
+
+This gives us the implementation model for:
+
+base model
++
+adapter
+=
+modified model
+
+Eventually I'd like Stingray to have a generic adapter mechanism shared by:
+
+SD1.5
+SDXL
+SD3.5
+FLUX
+Z-Image
+
+rather than five separate LoRA systems.
+
+12. src/model/diffusion/flux.hpp
+
+This one is actually very useful as a cross-reference, even though Stingray already has FLUX.
+
+Compare their FLUX implementation against Stingray's:
+
+stable-diffusion.cpp
+       ↓
+flux.cpp
+       ↓
+attention / transformer / conditioning / RoPE
+
+versus:
+
+Stingray
+       ↓
+existing FLUX implementation
+
+This could expose missing generic abstractions in Stingray that would help both SD3.5 and future models.
+
+13. src/model/diffusion/z_image.hpp
+
+Same reason.
+
+It's particularly useful because the current stable-diffusion.cpp supports Z-Image and Stingray already has its own Z-Image pipeline.
+
+So this gives us an excellent independent implementation to compare against.
+
+14. src/runtime/
+
+I'd eventually study this directory as a whole.
+
+The interesting pieces include:
+
+denoiser
+guidance
+sample-cache
+latent-preview
+
+The repository's current runtime has considerably more sophistication than a simple text→image pipeline.
+
+What I'd actually open first
+
+If you've just cloned it and want to understand it without drowning in 1000s of files, I'd go in this exact order:
+
+01  src/stable-diffusion.cpp
+        ↓
+02  src/model_manager.h/.cpp
+        ↓
+03  src/model_loader.h/.cpp
+        ↓
+04  src/model/diffusion/model.hpp/.cpp
+        ↓
+05  src/model/diffusion/unet.hpp/.cpp
+        ↓
+06  src/model/diffusion/mmdit.hpp/.cpp
+        ↓
+07  src/conditioning/conditioner.hpp
+        ↓
+08  src/model/vae/vae.hpp
+        ↓
+09  src/runtime/denoiser.hpp/.cpp
+        ↓
+10  src/model/diffusion/flux.hpp/.cpp
+        ↓
+11  src/model/diffusion/z_image.hpp/.cpp
+        ↓
+12  src/model/adapter/lora.hpp/.cpp
+And don't start with core/
+
+That's the trap.
+
+core/ is where you'll find the ggml abstraction, backends, graph machinery, tensor helpers, etc. But that's their execution substrate, not the Stable Diffusion architecture itself.
+
+For Stingray we're effectively doing:
+
+stable-diffusion.cpp             Stingray
+
+
+ggml                         →   Stingray Tensor
+ggml backend                 →   Stingray Backend
+ModelLoader                  →   existing Stingray loaders
+ModelManager                 →   Stingray model runtime
+UNet                         →   NEW native C#
+MMDiT                        →   existing/extended transformer infrastructure
+Conditioner                  →   existing/extended text infrastructure
+VAE                          →   existing/extended VAE
+Denoiser                     →   Stingray scheduler/runtime
+RNG                          →   Stingray RNG
+
+That is the port.
+
+And one thing I noticed from the current repository that is particularly useful: the project itself has a clean conceptual separation between diffusion, text encoders, VAE, ControlNet, and other modules. That's a very good architectural model for the Stingray implementation.
+
+Also, stable-diffusion.cpp currently documents a C# binding (DarthAffe/StableDiffusion.NET), but that is a wrapper around the C/C++ engine rather than the native C# implementation we're after. So I would not use that as the porting target; use the C++ implementation itself as the behavioural reference.
+
+If you want, the next useful step is for me to 
+map those specific stable-diffusion.cpp files against the actual files/classes already present in OpenTail.Stingray, 
+producing a "reuse / extend / port / ignore" table. That would tell us where the real work is before the coder starts.

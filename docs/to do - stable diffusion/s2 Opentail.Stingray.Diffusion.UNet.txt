@@ -1,0 +1,102 @@
+namespace Opentail.Stingray.Diffusion.UNet
+{
+    public interface IUNetBlock
+    {
+        ITensor Forward(ITensor x, ITensor emb, ITensor? context = null);
+    }
+
+    public sealed class ResBlock : IUNetBlock
+    {
+        private readonly Linear _embProj;
+        private readonly Conv2d _conv1;
+        private readonly Conv2d _conv2;
+        private readonly GroupNorm _norm1;
+        private readonly GroupNorm _norm2;
+
+        public ResBlock(int inChannels, int outChannels, int embChannels)
+        {
+            _embProj = new Linear(embChannels, outChannels);
+            _conv1 = new Conv2d(inChannels, outChannels, (3, 3), (1, 1), (1, 1));
+            _conv2 = new Conv2d(outChannels, outChannels, (3, 3), (1, 1), (1, 1));
+            _norm1 = new GroupNorm(32, inChannels);
+            _norm2 = new GroupNorm(32, outChannels);
+        }
+
+        public ITensor Forward(ITensor x, ITensor emb, ITensor? context = null)
+        {
+            var h = _norm1.Forward(x);
+            h = Ops.Silu(h);
+            h = _conv1.Forward(h);
+
+            var embOut = _embProj.Forward(emb);
+            h = Ops.Add(h, Ops.UnsqueezeToMatch(embOut, h));
+
+            h = _norm2.Forward(h);
+            h = Ops.Silu(h);
+            h = _conv2.Forward(h);
+
+            return Ops.Add(h, x); // skip connection
+        }
+    }
+
+    public sealed class AttentionBlock : IUNetBlock
+    {
+        private readonly GroupNorm _norm;
+        private readonly Linear _q;
+        private readonly Linear _k;
+        private readonly Linear _v;
+        private readonly Linear _proj;
+
+        public AttentionBlock(int channels)
+        {
+            _norm = new GroupNorm(32, channels);
+            _q = new Linear(channels, channels);
+            _k = new Linear(channels, channels);
+            _v = new Linear(channels, channels);
+            _proj = new Linear(channels, channels);
+        }
+
+        public ITensor Forward(ITensor x, ITensor emb, ITensor? context = null)
+        {
+            var h = _norm.Forward(x);
+
+            var q = _q.Forward(h);
+            var k = _k.Forward(context ?? h);
+            var v = _v.Forward(context ?? h);
+
+            var attn = Ops.Attention(q, k, v);
+            return Ops.Add(x, _proj.Forward(attn));
+        }
+    }
+
+    public sealed class Downsample : IUNetBlock
+    {
+        private readonly Conv2d _conv;
+
+        public Downsample(int channels)
+        {
+            _conv = new Conv2d(channels, channels, (3, 3), (2, 2), (1, 1));
+        }
+
+        public ITensor Forward(ITensor x, ITensor emb, ITensor? context = null)
+        {
+            return _conv.Forward(x);
+        }
+    }
+
+    public sealed class Upsample : IUNetBlock
+    {
+        private readonly Conv2d _conv;
+
+        public Upsample(int channels)
+        {
+            _conv = new Conv2d(channels, channels, (3, 3), (1, 1), (1, 1));
+        }
+
+        public ITensor Forward(ITensor x, ITensor emb, ITensor? context = null)
+        {
+            var up = Ops.UpsampleNearest2x(x);
+            return _conv.Forward(up);
+        }
+    }
+}

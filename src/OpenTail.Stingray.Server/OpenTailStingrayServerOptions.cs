@@ -127,6 +127,19 @@ public sealed class OpenTailStingrayServerOptions
     /// </summary>
     public ModelResidencyMode? ModelResidencyMode { get; set; }
 
+    /// <summary>
+    /// Enables host-memory admission checking (<see cref="HostResourceBudget"/>) on the
+    /// <see cref="IModelRuntimeManager"/> this server registers (docs/032 §"Resource admission").
+    /// <c>null</c> (default) resolves to the <c>STINGRAY_ENABLE_RESOURCE_ADMISSION</c> environment
+    /// variable (<c>1</c>/<c>true</c>, case-insensitive) when set, otherwise <b>off</b>. Off means
+    /// exactly today's behavior: a cold model load is never rejected or made to wait on memory
+    /// pressure. Deliberately opt-in rather than a new default — flipping it on changes an
+    /// existing deployment's startup behavior (a model load that always succeeded before can now
+    /// throw <see cref="InsufficientResourcesException"/> on a machine sized close to the wire),
+    /// so that's a decision an operator makes explicitly, not one made for them.
+    /// </summary>
+    public bool? EnableResourceAdmission { get; set; }
+
     // ── Backend / hardware ───────────────────────────────────────────────────
 
     /// <summary>

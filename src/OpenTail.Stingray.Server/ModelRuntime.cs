@@ -99,6 +99,27 @@ public readonly record struct ModelRuntimeStats(
     DateTimeOffset LastUsed);
 
 /// <summary>
+/// System-wide activity snapshot for <see cref="IModelRuntimeManager"/> (docs/032
+/// §"Observability"/§"Metrics that matter"). The count fields (<see cref="ModelLoads"/> onward)
+/// are cumulative since the manager was constructed, not point-in-time — everything else is a
+/// snapshot as of the call. Narrower than the plan's own sketch in one place: <see cref="PendingLoads"/>
+/// replaces its <c>PendingRequests</c> name, because what this manager actually tracks is
+/// in-flight physical loads, not per-inference-request queue depth (that lives on
+/// <c>IInferenceEngine.QueueDepth</c> per resident runtime instead).
+/// </summary>
+public readonly record struct MultiModelRuntimeStats(
+    int KnownModels,
+    int ResidentModels,
+    int ActiveModels,
+    long EstimatedResidentModelBytes,
+    int PendingLoads,
+    long ModelLoads,
+    long ModelLoadFailures,
+    long ModelEvictions,
+    long AdmissionRejects,
+    long ResidencyPressureEvents);
+
+/// <summary>
 /// A complete, independently executable model runtime — the production successor to
 /// <see cref="OpenTail.Stingray.Core.SharedModelCache"/>'s <see cref="OpenTail.Stingray.Core.ModelHandle"/>,
 /// extended with residency state and handle-based lifetime instead of a bare refcount
