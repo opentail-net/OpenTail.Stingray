@@ -32,6 +32,30 @@
     "line": 5606,
     "summary": "RESOLVED (was open as SimdKernels.cs:1092). Original hypothesis (SimdKernels.MatMulBatched's small-batch tiered dispatch, MatVec4In/MatVec2In, batch-composition-dependent in DECODE) was disproven by a controlled raw-API diagnostic: BatchForwardMulti at N=8 in isolation showed zero divergence. The real mechanism was in PREFILL: ContinuousBatchingEngine.RunPrefillStep packs multiple UNRELATED sessions' prompt tokens into one combined batch via ForwardPass.PrefillPackedMulti, and SimdKernels.MatMulBatched's OpenBLAS-SGEMM-vs-tiered-dot-product kernel choice was gated purely on that COMBINED batch size (N >= MinBatchForBlas, default 16) -- with no awareness that N spans multiple independent prompts. Fixed by adding an allowBlas parameter (default true) to SimdKernels.MatMulBatched and ForwardPass.MatMulBatchedCached/MatMulBatchedDualCached; PrefillPackedMulti's six matmul call sites now pass allowBlas:false. Full writeup: 031-concurrent-decode-batch-tier-divergence-bug.md.",
     "failure_scenario": "RESOLVED. Was: any deployment serving roughly 5-15 concurrent HotSession requests admitted together could have one session's prefill (and downstream decode) silently diverge from what the identical request would produce alone or with different concurrent traffic. Now fully green; see 031 for full regression detail."
+  },
+  {
+    "file": "src/OpenTail.Stingray.Sessions/CrossSessionPrefixSynthesizer.cs",
+    "line": 127,
+    "summary": "ALREADY FIXED (found already resolved when picked up, not fixed in this pass -- landed in commit faed736 \"test changes\", 2026-08-14, alongside unrelated test-project changes so this entry was never removed from the open list). The prefix-cache namespace is now derived from the session's actual ModelId plus a page-size proxy for KV physical layout (`new PrefixCacheNamespace(session.ModelId, $\"page{pageSize}\")`) instead of the hardcoded (\"default-model\",\"default-kv\") constant, with a comment at the call site documenting exactly the bug this replaced. Verified: session.ModelId exists on IInferenceSession, PrefixCacheNamespace's shape matches the call, and OpenTail.Stingray.Sessions builds clean (0 warnings/errors).",
+    "failure_scenario": "N/A -- resolved before this entry was next picked up."
+  },
+  {
+    "file": "src/OpenTail.Stingray.Sessions/SessionBranchingExtensions.cs",
+    "line": 53,
+    "summary": "ALREADY FIXED (same commit faed736, same batch as the CrossSessionPrefixSynthesizer entry above). GenerateChunk carries decoded text, not a per-chunk token id, so `int.TryParse(chunk.Text, out int tokenId)` only ever succeeded by coincidence -- GeneratedTokens was silently empty for every real generation. Fixed by recording `tokensBefore = branch.TokenCount` before the generation loop and deriving `generatedTokens` from `branch.TokenHistory.Skip(tokensBefore).ToList()` afterward, recovering the real generated token ids from the session's own token history instead of trying to reconstruct them from the text stream. Verified: TokenCount/TokenHistory exist on IInferenceSession and OpenTail.Stingray.Sessions builds clean.",
+    "failure_scenario": "N/A -- resolved before this entry was next picked up."
+  },
+  {
+    "file": "src/OpenTail.Stingray.Sessions/InferenceSession.cs",
+    "line": 223,
+    "summary": "ALREADY FIXED (same commit faed736). AppendAsync/GenerateAsync used to check `_state == Suspended` before acquiring the session mutex and never re-check after, unlike EnsureActiveAsync's existing double-check-under-lock pattern. Both methods now acquire the mutex first, then re-read state under `lock (_tokenHistory)` and call the new private `ResumeUnderMutex()` helper if still Suspended -- closing the window where a racing SuspendAsync could release the KV sequence between the old unguarded check and lock acquisition. Also hardened nearby: the `TruncateTo` rollback in both methods' error paths went from a silently-swallowed `catch {}` to a `catch (Exception)` that logs the desync to stderr instead of hiding it.",
+    "failure_scenario": "N/A -- resolved before this entry was next picked up."
+  },
+  {
+    "file": "src/OpenTail.Stingray.Sessions/InferenceSession.cs",
+    "line": 799,
+    "summary": "ALREADY FIXED (same commit faed736). RestoreFromSnapshot used to mutate `_tokenHistory`/`_checkpointGeneration` before calling the new KV sequence's Append, with no rollback if that threw. Reordered so the new KV sequence is built and populated (Append + Prefill) against a temporary `newKv` BEFORE any session state is touched; if that throws, `newKv.Release()` runs and the exception propagates with `_tokenHistory`/`_checkpointGeneration`/`_kvSequence` completely untouched, instead of left partially updated to the snapshot's values. The old `_kvSequence` is only released and swapped for `newKv` once the risky work has already succeeded, inside the same `lock (_tokenHistory)` block as the history/generation update. (Same commit also fixed a related bug: `_checkpointGeneration` wasn't restored from the checkpoint on `Rollback`, causing spurious `StaleContinuationException` after a rollback to a valid position.)",
+    "failure_scenario": "N/A -- resolved before this entry was next picked up."
   }
 ]
 ```

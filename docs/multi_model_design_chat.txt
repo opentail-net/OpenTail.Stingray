@@ -1,0 +1,2185 @@
+alk me through benefits and risks of being able to run more than one LLM locally (at the same time). Also tell me of how this is achieved, and out of the box or not.
+
+
+
+
+
+
+
+
+
+
+
+
+Yes — and for Stingray/OpenTail, I think this is a surprisingly important capability. There are actually three different meanings of “multiple LLMs at once”, and they have quite different benefits.
+1. First: what do we mean by "multiple"?
+Imagine you have:
+Qwen3-Coder 30B
+Gemma 4
+LFM2 24B
+a small 4B model
+perhaps a vision model
+There are three ways you can run them.
+A. Multiple models loaded, but only one actually generating
+RAM / VRAM
+┌──────────────────────────────┐
+│ Qwen3-Coder 30B       20 GB  │
+│ Gemma 4                8 GB  │
+│ LFM2 24B              14 GB  │
+└──────────────────────────────┘
+
+                  ↓
+              one request
+They're resident and immediately available, but inference may effectively be serial.
+This is still useful because model switching becomes cheap.
+B. Multiple requests against the same model simultaneously
+For example:
+             Qwen3-Coder
+                  │
+        ┌─────────┼─────────┐
+        ↓         ↓         ↓
+     Session A Session B Session C
+This is generally called parallel sequences / slots / continuous batching.
+llama-server, for example, has server slots and continuous batching built in. GitHub
+This isn't really "multiple LLMs", though. It's one model serving multiple sessions.
+C. Different models actually infer simultaneously
+This is the interesting one:
+                    CPU / GPU / RAM
+                         │
+             ┌───────────┼───────────┐
+             ↓           ↓           ↓
+        Qwen Coder    Gemma 4     LFM2
+          Session       Session     Session
+             │           │           │
+             └───────────┼───────────┘
+                         ↓
+                    OpenTail
+Now you can do things like:
+Qwen writes the code
+Gemma reviews it
+a small model classifies the result
+another model handles vision
+
+at the same time.
+That's where the architecture gets really interesting.
+Why would you want this?
+There are some genuinely excellent use cases.
+2. Model specialisation
+Rather than asking one enormous model to do everything:
+                  OpenTail
+                     │
+       ┌─────────────┼─────────────┐
+       ↓             ↓             ↓
+   Coder model   Reasoning     Vision model
+       │             │             │
+      code         analysis        image
+You can use the cheapest/fastest appropriate model.
+For example:
+Small model
+classification
+intent detection
+routing
+summarisation
+extraction
+tool selection
+Medium model
+normal conversation
+planning
+document analysis
+Large model
+difficult reasoning
+coding
+complicated synthesis
+Vision model
+image understanding
+This can be dramatically more efficient than using a 30B model for everything.
+3. Model ensembles become possible
+This is probably the more interesting possibility for Stingray.
+Suppose you ask:
+"What's wrong with this C# implementation?"
+
+You could have:
+                 Problem
+                    │
+          ┌─────────┼─────────┐
+          ↓         ↓         ↓
+       Qwen       Gemma      LFM
+        │           │          │
+        ↓           ↓          ↓
+      answer      answer      answer
+          └─────────┼──────────┘
+                    ↓
+              judge/synthesise
+                    ↓
+                 answer
+The models don't have to agree.
+You could have a final model examine:
+Qwen's solution
+Gemma's solution
+LFM's solution
+and produce a consensus.
+That's essentially local model committee / ensemble inference.
+It costs more compute, obviously, but for difficult engineering tasks it could be extremely powerful.
+4. You can have a "worker swarm"
+This gets even more interesting.
+Suppose OpenTail receives:
+Analyse this 5,000-line project.
+
+Instead of:
+one model
+   ↓
+do everything
+you could do:
+                    Planner
+                       │
+        ┌──────────────┼──────────────┐
+        ↓              ↓              ↓
+    Worker 1        Worker 2       Worker 3
+    architecture     SQL           C#
+        │              │              │
+        ↓              ↓              ↓
+        └──────────────┼──────────────┘
+                       ↓
+                    Synthesiser
+And those workers could genuinely execute concurrently.
+This is where local multi-model inference starts looking less like "a chatbot" and more like a local AI compute fabric.
+5. It can make a local machine feel much more responsive
+There's another benefit that is easy to overlook.
+Suppose you're talking to a large 30B model.
+While it's generating, OpenTail could simultaneously have a tiny model:
+classify incoming work
+prepare retrieval
+summarise conversation history
+inspect tool results
+predict whether another model is required
+So:
+Large model
+████████████████████████ inference
+
+Small model
+  ████ routing
+       ███ classification
+            ███ tool planning
+The small model isn't competing for your attention.
+It's doing infrastructure work in parallel.
+That could be particularly valuable for the OpenTail architecture you're building.
+6. There is also a big benefit for multimodal AI
+You could have:
+Image
+  ↓
+Vision model
+  ↓
+structured description
+  ↓
+reasoning model
+  ↓
+answer
+while another model handles something else.
+Or:
+                 User
+                   │
+            ┌──────┴──────┐
+            ↓             ↓
+        Vision          Text
+         model          model
+            │             │
+            └──────┬──────┘
+                   ↓
+                Judge
+This is a much more natural architecture than expecting one model to be excellent at every modality.
+But there is a big downside
+Memory.
+This is the elephant in the room.
+If you load:
+Qwen3-Coder 30B Q4       ~20 GB
+LFM2 24B Q4              ~14 GB
+Gemma 4                  ~10 GB
+small model               ~3 GB
+you're already somewhere around:
+47 GB of model weights.
+And that's before:
+KV cache
+activations
+temporary buffers
+batching
+CUDA/ROCm allocations
+runtime overhead
+OS
+application memory
+And KV cache can become enormous with long contexts and parallel requests.
+This is why "I can fit three models on disk" is completely irrelevant.
+The question is:
+Can I keep all three resident while giving each enough working memory to actually infer?
+
+7. VRAM makes this much more difficult
+Suppose you eventually have an 8 GB GPU.
+You might have:
+GPU VRAM
+8 GB
+│
+├── 7 GB model
+└── 1 GB KV / workspace
+Trying to load another model isn't going to work.
+You can instead do:
+GPU
+└── current model
+
+RAM
+├── model A
+├── model B
+└── model C
+but now you're moving weights between RAM and GPU, which can destroy the benefit.
+There are clever approaches to mitigate this, but there's no magic.
+8. CPU-only systems are actually rather interesting here
+This is where Stingray has an opportunity.
+With CPU inference:
+System RAM
+┌──────────────────────────────┐
+│ Model A                      │
+│ Model B                      │
+│ Model C                      │
+│                              │
+│ shared runtime               │
+│ KV caches                    │
+└──────────────────────────────┘
+you don't have the hard VRAM boundary.
+But now you have:
+memory bandwidth contention
+CPU contention
+cache contention
+thermal/power constraints
+If two models both try to consume 100 GB/s of memory bandwidth, they don't magically get 200 GB/s.
+You may actually make both models slower.
+9. And this is where scheduling becomes critical
+Imagine:
+Model A: 30B
+Model B: 4B
+Both running simultaneously.
+A naïve scheduler might give them:
+A: 50% CPU
+B: 50% CPU
+That sounds fair.
+But perhaps the 4B model only needs 5% of the machine to achieve its required latency.
+So a smarter scheduler might do:
+A: 90%
+B: 10%
+Or dynamically:
+       CPU utilisation
+            │
+            ↓
+      ┌─────────────┐
+      │  Scheduler  │
+      └──────┬──────┘
+             │
+       ┌─────┼─────┐
+       ↓     ↓     ↓
+      LLM1  LLM2  LLM3
+This is much more interesting from a Stingray perspective than simply "support multiple models."
+10. How is this actually achieved?
+There are several architectures.
+Architecture 1 — separate processes
+The simplest:
+Process 1
+llama-server Qwen
+
+Process 2
+llama-server Gemma
+
+Process 3
+llama-server LFM
+Each owns its own model.
+OpenTail talks to all three.
+Advantages
+Very easy.
+Disadvantages
+You duplicate:
+runtime state
+memory management
+scheduling
+potentially model weights
+CPU resources
+And there's no central understanding of the machine's total inference workload.
+11. Architecture 2 — one server, multiple model instances
+This is becoming more common.
+Interestingly, current llama.cpp already supports this.
+Its server can run in router mode, dynamically loading/unloading models and routing requests to the appropriate model instance. Its current router supports a configurable maximum number of simultaneously loaded models; the documented default is four. GitHub
+Conceptually:
+                 llama-server
+                      │
+               ┌──────┼──────┐
+               ↓      ↓      ↓
+            Model A Model B Model C
+So this is not something you would need to invent from scratch if Stingray is using llama.cpp-style infrastructure.
+12. Ollama already does this too
+Ollama explicitly supports multiple models being loaded concurrently if sufficient memory is available.
+Its documentation describes:
+multiple models loaded simultaneously
+configurable maximum loaded models
+parallel requests per model
+queuing when memory isn't sufficient
+automatic unloading of idle models
+For CPU inference, the constraint is system memory; for GPU inference, the models need to fit in available VRAM for concurrent loads. Ollama
+So:
+"Can Ollama run multiple local LLMs?"
+Yes.
+"Can it automatically manage which models stay resident?"
+Yes.
+"Can multiple models actually infer concurrently?"
+Yes, when the hardware has enough memory/resources.
+13. There's another distinction: multiple models vs multiple adapters
+This is worth knowing because it can save enormous memory.
+Suppose you have:
+Llama 3 8B
+       │
+ ┌─────┼─────┐
+ ↓     ↓     ↓
+Coder  SQL   Maths
+LoRA   LoRA  LoRA
+You don't necessarily need three copies of the 8B model.
+You can have:
+          Base model
+              │
+      ┌───────┼────────┐
+      ↓       ↓        ↓
+    LoRA A   LoRA B   LoRA C
+This is far cheaper.
+vLLM, for example, supports serving multiple LoRA adapters alongside the base model and routing requests to them as model identifiers. vLLM
+That's a different problem from running genuinely different architectures/models, though.
+14. What about GPUs?
+There's an important distinction between:
+one model across multiple GPUs
+and:
+multiple models across GPUs.
+For example:
+GPU 0             GPU 1
+
+Qwen              Gemma
+  │                  │
+  └──────┐    ┌──────┘
+         ↓    ↓
+       OpenTail
+This can be excellent.
+Or:
+Qwen 30B
+   │
+   ├── GPU 0
+   └── GPU 1
+That's multi-GPU model parallelism, not multiple-model inference.
+llama.cpp currently supports multiple GPUs and several split strategies for putting one model across GPUs. GitHub
+15. The really interesting architecture for Stingray
+I'd actually separate the concepts.
+I wouldn't make:
+Stingray = one model
+
+the fundamental abstraction.
+I'd make:
+Stingray = inference runtime capable of managing many model instances.
+
+Something like:
+                    OpenTail
+                       │
+                Inference Manager
+                       │
+        ┌──────────────┼──────────────┐
+        │              │              │
+        ↓              ↓              ↓
+   Model Instance  Model Instance  Model Instance
+        │              │              │
+      Qwen           Gemma           LFM
+        │              │              │
+        └──────────────┼──────────────┘
+                       ↓
+                Resource Scheduler
+                       │
+              ┌────────┴────────┐
+              ↓                 ↓
+             CPU              GPU
+              │                 │
+           RAM/KV          VRAM/KV
+Then you can add policies such as:
+Residency
+Keep Gemma loaded because it's used frequently.
+
+Eviction
+LFM hasn't been used for 10 minutes; unload it.
+
+Priority
+User-facing Qwen request gets priority over background summarisation.
+
+Resource limits
+Don't allow more than 28 GB of model/KV memory.
+
+Admission control
+Don't start another model if doing so will cause swapping.
+
+Scheduling
+Run the small classifier alongside the large model, but don't allow it to starve the main request.
+
+16. This connects very nicely with your existing Stingray work
+You've already been moving Stingray toward:
+paged KV cache
+session-native inference
+session forking
+model cache
+memory governor
+scheduler
+speculative decoding
+prefix caching
+Those things become considerably more valuable if you have multiple model instances.
+For example:
+                 Model Cache
+                      │
+        ┌─────────────┼─────────────┐
+        ↓             ↓             ↓
+      Qwen           Gemma          LFM
+        │             │             │
+        ↓             ↓             ↓
+      KV cache      KV cache      KV cache
+        │             │             │
+        └─────────────┼─────────────┘
+                      ↓
+              Memory Governor
+                      ↓
+                 Scheduler
+Your Automatic KV Memory Governor becomes a system-wide memory governor, rather than just a per-model mechanism.
+And your paged KV abstraction becomes useful across all those sessions.
+17. There's an especially powerful possibility: heterogeneous models
+This is the bit I'd be most excited about for OpenTail.
+You could eventually have a local setup like:
+Model	Role
+4B	Router / classifier
+8B	Fast conversational worker
+14B	Coding
+24B	Deep reasoning
+Vision model	Images
+Embedding model	Retrieval
+Reranker	Retrieval quality
+
+
+And OpenTail decides:
+Which model should handle this piece of work?
+
+That is much more powerful than:
+"Which model should OpenTail use?"
+
+18. But there's a trap
+Don't assume:
+more models = better AI.
+
+If you have:
+Qwen → Gemma → LFM → Qwen → Gemma
+for every request, you've built a very expensive Rube Goldberg machine.
+The additional models need to provide enough benefit to justify:
+memory
+latency
+power
+complexity
+coordination
+additional failure modes
+For many tasks:
+one good model + good KV caching + good scheduling
+will beat a complicated ensemble.
+19. So is this "out of the box"?
+Ollama
+Yes.
+Multiple models loaded concurrently, parallel requests, memory-aware loading/unloading and queueing are already supported. Ollama
+llama.cpp
+Increasingly yes.
+It now has:
+multiple server slots
+continuous batching
+parallel sequences
+router mode
+dynamic multi-model loading
+configurable simultaneous model count
+So the basic machinery is already there. GitHub
+vLLM
+Yes, but its sweet spot is more server/GPU-oriented.
+It has sophisticated batching and adapter/model-serving capabilities, including concurrent LoRA serving. vLLM
+Stingray
+Not really — but that's actually an opportunity.
+Stingray can support the inference mechanics, but the interesting missing layer is a multi-model resource/scheduling abstraction.
+20. What I'd build into Stingray
+I wouldn't make "run multiple models" a huge standalone feature.
+I'd make it an architectural capability underneath the existing runtime:
+IModelInstance
+    │
+    ├── Model
+    ├── Contexts
+    ├── KV cache
+    ├── Memory footprint
+    ├── Scheduler state
+    └── Capabilities
+          │
+          ↓
+IInferenceScheduler
+          │
+          ↓
+IModelPool
+          │
+          ↓
+Memory Governor
+Then expose something conceptually like:
+ModelPool
+ ├── qwen3-coder-30b
+ ├── gemma4
+ ├── lfm2-24b
+ └── phi4-mini
+and let the scheduler decide:
+resident / sleeping / unloaded / actively generating
+
+for each.
+That would also make your existing shared model cache work much harder for you.
+The key distinction
+I'd think about the capability in four levels:
+LEVEL 1
+Multiple sessions
+        ↓
+LEVEL 2
+Multiple sessions concurrently
+        ↓
+LEVEL 3
+Multiple different models resident
+        ↓
+LEVEL 4
+Multiple different models actively cooperating
+Levels 1–3 are largely solved technology.
+Level 4 is where OpenTail + Stingray could become genuinely interesting.
+And given the direction you've already taken Stingray — particularly paged KV, memory governance, session management and scheduling — I'd say multi-model residency is worth designing for now, even if you don't implement model ensembles yet.
+The important thing is not to build "multi-model AI" as a gimmick. Build the runtime so that a machine is a pool of inference resources rather than a single loaded model. That gives you the flexibility later to do routing, parallel workers, model committees, background AI and specialist models without having to redesign Stingray's core.
+
+GitHubOllamavLLM
+
+
+
+
+
+
+
+
+
+At opentail level, I was really hoping to get a sidekick that works with tools, cheaply. Also the model that would orchestrate is likely the same. Deep reasoning would be down to a clever model. So that limits the Ram requirements, likely helps with speed. At stingray, Id allow memory pressure driven setup, or single-slot.
+
+
+
+
+
+
+
+
+
+
+
+
+Yes — that changes my view quite a bit, and I think your instinct is right.
+You're not really proposing a "multi-LLM workstation" where you have five huge models sitting in RAM competing with each other. You're proposing something more like:
+One primary local model that acts as the OpenTail sidekick/orchestrator, with the ability to bring in a specialist/deep-reasoning model when needed.
+
+That is a much more attractive architecture.
+The OpenTail picture I'd aim for
+Something like:
+                         USER
+                           │
+                           ▼
+                  ┌─────────────────┐
+                  │ OpenTail         │
+                  │ Sidekick         │
+                  │                 │
+                  │ small/cheap LLM │
+                  └────────┬────────┘
+                           │
+             ┌─────────────┼──────────────┐
+             │             │              │
+             ▼             ▼              ▼
+          Tools        Normal work    "This is hard"
+             │             │              │
+             ▼             ▼              ▼
+        filesystem       itself       Deep model
+        GitHub etc.                    │
+                                      ▼
+                                  result back
+                                      │
+                                      ▼
+                                Sidekick
+                                      │
+                                      ▼
+                                   USER
+And importantly:
+the sidekick and orchestrator can be the same model.
+That's a very different resource profile from running an ensemble.
+The clever bit: don't keep the deep model resident
+Suppose your normal sidekick is something like a 4B–8B model.
+It could live in RAM almost permanently.
+Then:
+"I need a serious architectural analysis of this 15,000-line C# subsystem."
+
+The sidekick decides:
+Normal task?
+     │
+     ├── YES → handle locally
+     │
+     └── NO
+          ↓
+     load reasoning model
+          ↓
+     give it carefully prepared context
+          ↓
+     reasoning model returns result
+          ↓
+     unload reasoning model
+          ↓
+     sidekick continues
+That means you don't need:
+30B + 24B + 14B + 8B + 4B
+resident simultaneously.
+You might instead have:
+RAM
+
+Sidekick             5 GB
+OpenTail             1 GB
+Stingray             <1 GB
+KV/cache             variable
+────────────────────────────
+Deep model           20–30 GB
+                    ↑
+               only when needed
+That is much more realistic on a normal desktop.
+And there's a really important performance benefit
+The cheap model can be fast.
+So most interactions are:
+User
+ ↓
+4B/8B sidekick
+ ↓
+tool
+ ↓
+4B/8B sidekick
+ ↓
+answer
+No 30B model needs to wake up.
+But occasionally:
+User
+ ↓
+sidekick
+ ↓
+"needs serious reasoning"
+ ↓
+30B reasoning model
+ ↓
+sidekick
+ ↓
+answer
+You're effectively using the large model as a specialist consultant.
+That's a much better use of local compute than making the big model handle every:
+"What's the weather?"
+
+or
+"Run git status."
+
+And tools make the small model much more useful
+This is the part I think is particularly important for OpenTail.
+A small model doesn't need to know everything if it can do things.
+For example:
+User:
+"What's changed in Stingray since yesterday?"
+
+Sidekick:
+  ├── git status
+  ├── git log
+  ├── inspect diffs
+  ├── maybe run tests
+  └── summarise
+The model is essentially acting as a reasoning/control layer over deterministic tools.
+That reduces the amount of intelligence you need in the model itself.
+And if the tool contracts are strong and your existing fail-closed approach is maintained, this becomes much safer too.
+This also makes model selection much easier
+I wouldn't have OpenTail thinking:
+"Which of my 17 models should answer this?"
+
+I'd have something more like:
+Tier 0 — deterministic
+Can a tool answer it?
+       ↓
+       YES → use tool
+Tier 1 — sidekick
+Can the small local model handle it?
+       ↓
+       YES → use sidekick
+Tier 2 — specialist
+Does it require specialist capability?
+       ↓
+       YES → specialist model
+Tier 3 — deep reasoning
+Is this genuinely difficult?
+       ↓
+       YES → big reasoning model
+That's a very sane local architecture.
+Which makes Stingray's job clearer
+I think your proposed Stingray behaviour is exactly right:
+Don't force multi-model residency.
+
+Instead:
+Mode 1 — single-slot
+┌─────────────────────┐
+│ Stingray             │
+│                     │
+│ Model A              │
+└─────────────────────┘
+Load one model.
+When another is requested:
+Model A
+   ↓
+unload
+   ↓
+Model B
+This is the lowest-RAM mode.
+Mode 2 — memory-pressure driven
+             Model request
+                  │
+                  ▼
+          ┌───────────────┐
+          │ Memory        │
+          │ Governor      │
+          └───────┬───────┘
+                  │
+       ┌──────────┴──────────┐
+       ↓                     ↓
+   enough RAM             insufficient
+       │                     │
+       ▼                     ▼
+ load alongside        evict/suspend
+ existing model          another model
+That's much better than an arbitrary:
+MaxModels = 3
+
+type of policy.
+And this is where your existing Model Cache work becomes important
+I'd actually redefine the conceptual purpose of the cache.
+It's not necessarily:
+"models that are loaded."
+
+It's:
+"models Stingray can make resident quickly."
+
+So:
+                  Model Cache
+                       │
+       ┌───────────────┼───────────────┐
+       ↓               ↓               ↓
+    Sidekick       Reasoning       Vision
+    cached          cached         cached
+       │               │               │
+       └───────────────┼───────────────┘
+                       ↓
+                Memory Governor
+                       │
+             decides residency
+A model can be:
+catalogued
+loaded
+warm
+active
+idle
+evicted
+reloaded
+without OpenTail needing to care about the mechanics.
+There's also an important distinction around "simultaneous"
+For your use case, I don't think OpenTail necessarily needs:
+two models generating tokens at the exact same instant.
+
+It mostly needs:
+multiple model instances to be available as resources, with residency controlled by Stingray.
+
+That's considerably easier.
+For example:
+11:00:00  Sidekick generates
+11:00:01  Sidekick calls tool
+11:00:02  Sidekick generates
+11:00:05  Deep model requested
+11:00:05  Sidekick becomes idle
+11:00:06  Deep model loads
+11:00:20  Deep model finishes
+11:00:21  Deep model becomes idle
+11:00:22  Sidekick resumes
+No need for enormous simultaneous memory consumption.
+And the existing runtimes validate this approach
+This isn't theoretical.
+Ollama already uses memory-aware concurrent model loading and will queue requests when there isn't enough memory; it can unload idle models to make room. Ollama
+And llama.cpp's current server has a router mode specifically for dynamically loading/unloading different models, with a configurable maximum number simultaneously resident and automatic loading on demand. GitHub
+So Stingray wouldn't be inventing an alien model.
+The opportunity is to make the policy much more sophisticated and native to your session/KV/memory architecture.
+I think there's a particularly nice OpenTail arrangement
+I'd actually envisage:
+                     OPEN TAIL
+                         │
+                 ┌───────┴───────┐
+                 │                │
+              Sidekick         Tools
+                 │                │
+                 │          Git / Files / Web
+                 │          Shell / MCP etc.
+                 │
+          ┌──────┴─────────┐
+          │                │
+       Normal           Escalation
+       tasks                │
+          │                 ▼
+          │          Deep Reasoner
+          │                 │
+          └─────────┬───────┘
+                    ▼
+                  User
+The sidekick remains the permanent personality/interface.
+The big model is almost like a brain-on-demand.
+That gives you something much closer to the "personal local AI" idea you've been aiming at.
+And there's a surprisingly big consequence for Stingray
+I wouldn't prioritise:
+"Support N models simultaneously."
+
+I'd prioritise:
+"Support N model residency states, subject to a memory budget."
+
+That's a much more powerful abstraction.
+Something like:
+State	Meaning
+Available	Model exists in cache/storage
+Loading	Becoming resident
+Resident	Weights loaded
+Active	Currently generating
+Idle	Loaded but unused
+Suspending	Being evicted
+Unloaded	No RAM consumed
+
+
+Then the Memory Governor decides what happens.
+And then "multi-model concurrent inference" falls naturally out of that when the machine has enough memory.
+My conclusion
+For OpenTail, I'd absolutely support the concept of multiple local models — but I'd make the product story:
+One cheap, capable local sidekick; specialist intelligence on demand.
+
+For Stingray, I'd make the engine capable of:
+single-slot operation by default, with memory-pressure-driven multi-model residency when resources permit.
+
+That gives you the best of both worlds:
+8–16 GB machine:
+Sidekick
+   ↓
+unload
+   ↓
+Deep model
+   ↓
+unload
+   ↓
+Sidekick
+32–64 GB machine:
+Sidekick ─────────────┐
+                      ├── resident
+Deep model ───────────┘
+Very large machine:
+Sidekick ──┐
+Coder ─────┤
+Reasoner ──┤── all resident
+Vision ────┘
+Same OpenTail. Same Stingray. The hardware determines how much concurrency you get rather than the architecture imposing an arbitrary limit.
+And I think that fits extremely well with the Stingray direction you've already been taking. Ollama
+
+OllamaGitHub
+
+
+
+
+
+
+
+
+
+They might generate at the same time, it multiuser environment after all.
+
+
+
+
+
+
+
+
+
+
+
+
+Exactly. That changes the requirement at the Stingray level. I was framing it too much around a single-user desktop.
+If OpenTail is potentially a multiuser local inference service, then genuine simultaneous generation is not an edge case — it's a core workload.
+The architecture should therefore support both:
+                    Stingray
+                       │
+             ┌─────────┴─────────┐
+             │                   │
+       Single model          Multiple models
+             │                   │
+       ┌─────┼─────┐       ┌─────┼─────┐
+       ↓     ↓     ↓       ↓     ↓     ↓
+     User A User B User C User A User B User C
+The important distinction
+There are actually two dimensions of concurrency:
+1. Same model, multiple users
+Qwen 30B
+   │
+   ├── Session A
+   ├── Session B
+   ├── Session C
+   └── Session D
+This is where continuous batching and your paged KV cache are enormously valuable.
+You don't want four independent copies of Qwen.
+You want:
+one set of weights + multiple independent KV sequences + batched token evaluation.
+
+That's probably the most efficient workload Stingray can have.
+2. Different models, multiple users
+Then you might have:
+                 Stingray
+                    │
+       ┌────────────┼────────────┐
+       ↓            ↓            ↓
+    Qwen 30B      Gemma       LFM2
+       │            │            │
+     User A       User B       User C
+       │            │            │
+     User D       User E
+Now Stingray needs to schedule across model instances, as well as within each model.
+That's the more interesting problem.
+This makes your memory-pressure idea even better
+I'd make concurrency the desired state, not something Stingray avoids.
+For example:
+64 GB machine
+RAM
+──────────────────────────────
+Qwen 30B             20 GB
+Sidekick 8B           5 GB
+Gemma 12B             8 GB
+KV caches             15 GB
+Stingray/OpenTail      2 GB
+OS/etc                 8 GB
+──────────────────────────────
+                      58 GB
+Fine.
+Run all three.
+32 GB machine
+Maybe:
+Sidekick 8B            5 GB
+Qwen 30B               20 GB
+KV                     4 GB
+OS/etc                 3 GB
+Gemma isn't resident.
+If someone requests Gemma:
+Memory pressure says something has to go.
+
+Stingray can decide which model to evict/suspend.
+16 GB machine
+You may effectively operate:
+Sidekick
+   ↓
+single-slot
+   ↓
+Deep model
+   ↓
+single-slot
+But if two users request the deep model simultaneously, they share that one loaded model rather than loading two copies.
+That's a critical distinction.
+So the actual resource hierarchy becomes
+I'd think about Stingray like this:
+                    MACHINE
+                       │
+                 Memory Governor
+                       │
+              ┌────────┴────────┐
+              │                 │
+        Model Instances       KV Memory
+              │                 │
+       ┌──────┼──────┐          │
+       ↓      ↓      ↓          │
+     Qwen   Gemma   LFM          │
+       │      │      │          │
+       └──────┼──────┘          │
+              │                 │
+          Scheduler ────────────┘
+              │
+       ┌──────┼─────────┐
+       ↓      ↓         ↓
+    User A  User B    User C
+The scheduler therefore has two levels:
+Model-level scheduling
+Which model gets compute?
+
+Sequence-level scheduling
+Which user's sequence gets the next token batch?
+
+That's a much richer problem than simply "run multiple LLMs."
+And continuous batching becomes really important
+Suppose 10 users are all using the same 8B sidekick.
+You ideally don't do:
+A → token
+A → token
+A → token
+
+B → token
+B → token
+
+C → token
+...
+Instead:
+                  Sidekick
+                     │
+                Batch scheduler
+                     │
+             ┌───────┼───────┐
+             ↓       ↓       ↓
+            A       B       C
+             │       │       │
+           token   token   token
+The model processes a batch containing whichever sequences are ready.
+That's where your paged KV cache + scheduler work is directly relevant.
+And different models can have different policies
+This is where I think Stingray could eventually become quite sophisticated.
+For example:
+Model	Priority	Typical use
+Sidekick 8B	High	interactive users
+Coder 14B	High	development
+Reasoner 30B	Medium	expensive jobs
+Vision 4B	Medium	image tasks
+Embedding	Very high	infrastructure
+
+
+Then:
+Five users ask the sidekick something
+
+could take priority over:
+One user is running a 30B deep-reasoning job.
+
+The reasoner doesn't necessarily need to monopolise the machine.
+There's also an interesting "fairness" problem
+Imagine:
+User A → 30B reasoning
+User B → 8B sidekick
+User C → 8B sidekick
+If A's 30B request consumes all CPU/memory bandwidth, B and C shouldn't suddenly experience a terrible interactive service.
+So eventually Stingray needs something resembling:
+weighted fair scheduling / QoS.
+For example:
+Interactive:
+  high priority
+  low latency
+
+Background:
+  lower priority
+  maximise throughput
+
+Deep reasoning:
+  expensive
+  bounded concurrency
+That starts to look much more like a real inference server than a local chatbot runtime.
+And this is another reason I like your memory-pressure approach
+Don't configure:
+"Maximum 2 models."
+
+Configure:
+"Maximum resource pressure."
+
+Something like:
+Memory budget:       90%
+Active model limit:  automatic
+Concurrent models:   automatic
+KV budget:           automatic
+Eviction:             LRU / priority
+Then the same Stingray binary works on:
+16 GB
+→ essentially single-slot.
+32 GB
+→ one big + one small.
+64 GB
+→ several resident models.
+128 GB
+→ genuine multi-model concurrent inference.
+That's much more elegant.
+One thing I'd change from my previous recommendation
+I previously said:
+"I wouldn't prioritise multiple models generating simultaneously."
+
+For OpenTail as a multiuser service, I retract that.
+I would absolutely make the Stingray architecture concurrency-first.
+But I wouldn't make multi-model concurrency the first optimisation.
+I'd prioritise:
+Multiple sessions on one model
+Continuous/batched generation
+Paged KV across those sessions
+Fair/priority scheduling
+Multiple resident model instances
+Concurrent generation across model instances
+Memory-pressure-driven residency/eviction
+That ordering gives you a very useful system at every stage.
+And it fits beautifully with the work you're already doing: the same KV/scheduler/memory primitives that make one model serve 20 users efficiently become the foundations for serving several different models concurrently.
+The end state I'd aim for is essentially:
+Stingray doesn't think "I am running a model." It thinks "I am managing inference capacity across a pool of model instances and sessions."
+
+That's the abstraction I think is worth baking into the architecture now.
+
+
+
+
+
+
+
+
+
+
+Its good to code for many, reality will likely be two.
+
+
+
+
+
+
+
+
+
+
+
+
+Yes — and I think that's the right engineering target.
+Design Stingray so that N is valid, but optimise the real-world case around 1–2 concurrently resident models.
+That's a much better proposition than designing for an enormous inference cluster.
+The likely OpenTail reality
+I can see the common case being:
+                 OpenTail
+                    │
+          ┌─────────┴─────────┐
+          │                   │
+       Sidekick            Specialist
+        4–8B                 14–30B
+          │                   │
+     many users          occasional users
+The sidekick might be permanently resident.
+The specialist may be resident because the machine has enough RAM, or loaded on demand if it doesn't.
+And importantly, both can serve multiple sessions.
+So Stingray should have a very simple mental model
+N is a capability, not a promise.
+If the machine can handle:
+Model A + Model B
+great.
+If it can handle:
+Model A + Model B + Model C
+also fine.
+If it can only handle:
+Model A
+Stingray gracefully becomes single-slot.
+No special configuration should be necessary.
+I'd therefore avoid hard architectural assumptions like
+CurrentModel
+and instead think:
+ModelInstance[]
+Even if 95% of deployments contain:
+ModelInstance[0]
+ModelInstance[1]
+The rest of the runtime can already understand:
+ModelInstance[0..N]
+That makes the architecture future-proof without making the implementation unnecessarily complicated.
+And two models is actually a very powerful combination
+You can get:
+Model 1 — Sidekick
+cheap
+fast
+tool capable
+interactive
+always available
+handles orchestration
+Model 2 — Specialist
+larger
+slower
+expensive
+used for difficult reasoning/coding/analysis
+So:
+User
+ │
+ ▼
+Sidekick
+ │
+ ├── easy → answer
+ │
+ ├── tool → execute → answer
+ │
+ └── difficult
+        │
+        ▼
+   Specialist
+        │
+        ▼
+    Sidekick
+        │
+        ▼
+      User
+That's a really compelling local AI architecture.
+And because both are potentially serving multiple users, Stingray's job becomes:
+Make two models behave as though they're a coherent shared inference service.
+
+That's a very reasonable sweet spot.
+
+
+
+
+
+
+
+
+
+
+024-multi-model-serving-and-request-scheduling-plan.md025-shared-model-cache-phase1-plan.md026-shared-model-cache-phase2-eviction-plan.md027-model-cache-scope-decision.md
+
+Ok. Keeping in mind that the design we discussed is the one we are after, and https://github.com/opentail-net/OpenTail.Stingray is my repo, and the attached files were prior thoughts on the matter - can you come up with the new plan document, along the lines of the prior ones, but better??
+
+
+
+
+
+
+
+
+
+
+
+
+Worked for 25s
+
+Yes. Having gone back through the repo and the earlier documents, I think the previous 024 was directionally right but aimed at the wrong centre of gravity.
+The key change is:
+We are not building a model-switching server. We are building a multi-model inference runtime.
+
+The expected deployment is still only one or two resident models — typically a cheap tool-capable sidekick and an occasional larger reasoning model — but Stingray should make no architectural assumption that N == 2. At the same time, if two models are resident and two users hit them simultaneously, they must genuinely be able to generate concurrently.
+That fits the current repo much better. The current SharedModelCache is deliberately still test-only and does reference-counted sharing by model path; it isn't wired into production loading yet.  The old scope decision explicitly shelved production multi-model serving because concurrent multi-model traffic wasn't then demonstrated.  That's no longer the requirement we're designing against.
+I'd make this Plan 032 — Multi-Model Inference Runtime, Residency & Scheduling.
+Plan 032 — Multi-Model Inference Runtime, Residency & Scheduling
+Status
+Implementation-ready design.
+This plan supersedes the shelved production portion of 024-multi-model-serving-and-request-scheduling-plan.md.
+It does not simply revive 024 unchanged.
+The intended deployment model has now been clarified:
+OpenTail is a multiuser local AI service, not merely a single-user CLI.
+The normal deployment will likely have one or two resident models.
+A small/medium model can act as the persistent sidekick, tool caller and orchestrator.
+A larger model can be brought in as a specialist/deep-reasoning model.
+Two models may genuinely generate simultaneously when hardware permits.
+Multiple users may generate against the same model simultaneously.
+Stingray must support N model instances architecturally, without assuming that N is large.
+Residency should be resource/memory-pressure driven, not an arbitrary fixed model count.
+On constrained machines, Stingray must naturally degrade to single-slot operation.
+The expected sweet spot is 1–2 resident models, not a large model farm.
+The earlier 025/026 work remains useful as groundwork: reference-counted model sharing and bounded eviction are exactly the lower-level mechanisms needed here. The previous Phase 2 plan deliberately stopped short of scheduling and session awareness. 026-shared-model-cache-phase2-eviction-plan.mdMD
+1. Problem this plan solves
+Stingray currently has strong machinery for:
+model execution;
+HotSession lifecycle;
+paged KV;
+concurrent decode;
+continuous batching;
+KV memory governance;
+prefix sharing;
+session branching;
+model coverage.
+The missing abstraction is above those pieces:
+There is no first-class concept of several independently loaded model runtimes sharing one Stingray process and competing for finite machine resources.
+
+The old 024 identified the underlying problem correctly, but deliberately treated concurrent execution of multiple models as a future concern.
+That assumption is no longer appropriate for OpenTail.
+A realistic OpenTail deployment can look like:
+                    OpenTail
+                       │
+             ┌─────────┴──────────┐
+             │                    │
+          Sidekick             Reasoner
+           8B-ish                20–30B
+             │                    │
+       Users A/B/C             User D
+At another moment:
+Sidekick + Reasoner resident
+          │
+          ├── User A → Sidekick
+          ├── User B → Sidekick
+          └── User C → Reasoner
+And on a smaller machine:
+Sidekick resident
+
+Reasoner requested
+       ↓
+memory pressure
+       ↓
+Sidekick suspended/evicted if safe
+       ↓
+Reasoner runs
+The runtime therefore needs to solve three related but distinct problems:
+Model residency — which complete models are loaded?
+Resource admission — can another model/session safely run?
+Inference scheduling — which sessions/models receive compute?
+These should be separate concerns.
+2. Design principles
+2.1 N is a capability, not the expected deployment size
+Do not design around:
+MaxModels = 2;
+Instead:
+Model instances = N
+with resource policy determining how many can actually remain resident.
+A 16 GB machine may operate as:
+1 resident model
+A 64 GB machine might naturally operate as:
+2 resident models
+A larger workstation might support:
+3+
+without changing the architecture.
+2.2 Model count is not the resource budget
+Do not equate:
+2 models = safe
+because:
+models have radically different sizes;
+KV requirements differ;
+sessions differ;
+batch sizes differ;
+CPU and memory bandwidth matter;
+accelerator memory may be independent of host RAM.
+The admission decision must therefore be resource-based.
+2.3 Same-model concurrency is the common case
+Ten users requesting the sidekick should not mean ten copies of the model.
+Instead:
+                  Sidekick
+                     │
+              continuous batch
+                     │
+        ┌────────────┼────────────┐
+        ↓            ↓            ↓
+     Session A    Session B    Session C
+       KV A          KV B          KV C
+The existing continuous-batching and KV/session architecture remains responsible for this.
+Multi-model scheduling must sit above it.
+2.4 Different-model concurrency is allowed
+If:
+Sidekick
+Reasoner
+are both resident and resources permit, both may have active work.
+There is no global "only one model may generate" lock.
+Instead:
+ModelRuntime A
+     │
+     └── batch A
+
+ModelRuntime B
+     │
+     └── batch B
+can progress concurrently.
+The runtime scheduler controls resource fairness rather than serialising unrelated models unnecessarily.
+3. New core abstraction: ModelRuntime
+The fundamental unit becomes a complete independently executable model runtime.
+Conceptually:
+public sealed class ModelRuntime : IDisposable
+{
+    public ModelId Id { get; }
+
+    public GgufModel Model { get; }
+
+    public IInferenceEngine Engine { get; }
+
+    public long EstimatedModelBytes { get; }
+
+    public ModelRuntimeState State { get; }
+
+    public int ActiveRequests { get; }
+
+    public int ActiveSessions { get; }
+
+    public bool IsPinned { get; }
+}
+Possible states:
+public enum ModelRuntimeState
+{
+    Unloaded,
+    Loading,
+    Ready,
+    Active,
+    Draining,
+    Evicting,
+    Failed,
+    Disposed
+}
+The exact implementation should follow existing Stingray conventions rather than blindly reproducing this sketch.
+Important invariant
+A runtime may only be evicted when:
+State permits eviction
+AND
+ActiveRequests == 0
+AND
+ActiveSessions == 0
+AND
+not pinned
+A model being "least recently used" is not sufficient to make it evictable.
+4. ModelRuntimeManager
+Introduce a production model-runtime manager.
+Conceptually:
+public interface IModelRuntimeManager
+{
+    ValueTask<ModelRuntimeHandle> AcquireAsync(
+        ModelId model,
+        CancellationToken cancellationToken = default);
+
+    bool TryGetResident(
+        ModelId model,
+        out ModelRuntime runtime);
+}
+The manager owns:
+model lookup;
+canonical identity;
+loading;
+single-flight loading;
+residency;
+reference/lifetime tracking;
+eviction;
+runtime disposal.
+It should build on the already-proven SharedModelCache concepts rather than creating a second unrelated ownership system.
+The existing cache is currently process-wide and reference-counted by canonical model path. 
+5. Single-flight model loading
+This is mandatory.
+If five users simultaneously request a cold model:
+User A ─┐
+User B ─┤
+User C ─┼──> Model X
+User D ─┤
+User E ─┘
+Stingray must perform:
+             one physical load
+                   │
+          ┌────────┼────────┐
+          ↓        ↓        ↓
+          A        B        C
+not:
+five × GgufModel.Open()
+Use:
+Dictionary<ModelId, Task<ModelRuntime>>
+or an equivalent existing async single-flight primitive.
+All callers await the same load.
+6. Residency states
+A model's lifecycle must distinguish physical residency from active use.
+Recommended conceptual states:
+UNLOADED
+   │
+   ▼
+LOADING
+   │
+   ▼
+READY
+   │
+   ▼
+ACTIVE
+   │
+   ▼
+READY
+   │
+   ▼
+EVICTING
+   │
+   ▼
+UNLOADED
+A runtime can therefore be:
+Resident + idle
+Loaded but doing nothing.
+Resident + active
+Serving one or more sessions.
+Loading
+Not yet available for inference.
+Draining
+No new work accepted; existing work is completing.
+Evicting
+Guaranteed no active references remain; physical resources being released.
+7. Resource admission
+The old 024's IResourceBudget idea should be retained, but simplified and made concrete.
+The key abstraction is:
+public interface IResourceBudget
+{
+    ResourceSnapshot GetCurrent();
+
+    ResourceAvailability EstimateAdmission(
+        ModelRuntimeSpec model,
+        InferenceWorkEstimate work);
+}
+The exact API can be adjusted to existing resource abstractions.
+At minimum, distinguish:
+Host memory
+Accelerator memory
+Model residency
+KV memory
+Do not collapse these into one number.
+For example:
+RAM available:       20 GB
+VRAM available:       1 GB
+Model requires:      12 GB RAM
+KV requires:          4 GB RAM
+may be admissible.
+Whereas:
+RAM available:       40 GB
+VRAM available:       1 GB
+Model requires:       8 GB VRAM
+is not.
+8. Memory pressure is the residency policy
+Do not use:
+MaximumResidentModels = 2
+as the primary policy.
+Instead:
+                    New model request
+                           │
+                           ▼
+                   Resource admission
+                           │
+              ┌────────────┼────────────┐
+              ↓            ↓            ↓
+           Allowed     Evictable      Reject /
+                        model exists    wait
+              │            │
+              │            ▼
+              │         evict it
+              │            │
+              └────────────┘
+                     │
+                     ▼
+                 load model
+A configurable soft residency target may still be useful, but it is subordinate to actual resource pressure.
+9. Single-slot mode
+This is an explicit supported operating mode, but should not require a different architecture.
+On a constrained machine:
+Model A resident
+Request Model B:
+Model A
+   │
+   ├── no active work
+   └── evict
+        ↓
+Model B
+If Model A has live users:
+Model A
+   │
+   └── active
+       ↓
+Model B requested
+       ↓
+cannot safely evict
+       ↓
+queue Model B
+Do not kill active inference simply to satisfy residency.
+This gives the desired behaviour:
+small machine = naturally single-slot; larger machine = naturally multi-model.
+
+10. Concurrent model execution
+This is the major change from 024.
+If:
+Model A = resident + active
+Model B = resident + active
+Stingray must permit:
+A → inference
+B → inference
+to overlap.
+There must be no process-wide:
+lock (_inferenceEngine)
+or equivalent architectural bottleneck.
+Each ModelRuntime owns its own execution state.
+11. Scheduling hierarchy
+Scheduling should occur at two levels.
+Level 1 — model runtime
+Which model runtimes are eligible to execute?
+Sidekick
+Reasoner
+Vision
+Level 2 — session/batch
+Which sessions within that model are included in its next decode batch?
+Sidekick
+ ├── User A
+ ├── User B
+ └── User C
+The second level remains the responsibility of the existing continuous-batching machinery.
+Do not duplicate token scheduling in the multi-model scheduler.
+12. Model scheduling policy
+The initial cross-model policy should be deliberately simple.
+Each runtime exposes:
+public readonly record struct ModelSchedulingInfo(
+    ModelId ModelId,
+    int PendingRequests,
+    int ActiveRequests,
+    int ActiveSessions,
+    bool IsResident,
+    bool IsPinned,
+    TimeSpan OldestRequestAge,
+    TimeSpan EstimatedLoadCost);
+The scheduler uses this information to determine whether a model should receive execution time.
+Initial policy:
+never starve a model indefinitely;
+favour already-resident models;
+favour interactive work;
+respect request age;
+respect resource limits;
+don't evict an actively useful model merely to save a small amount of memory;
+don't allow a busy model to monopolise all execution capacity.
+Do not build a complex optimisation/scoring engine initially.
+The stable ModelSchedulingInfo seam is more important than the first scoring formula.
+13. Service quantum
+Retain the useful idea from 024:
+A continuously busy model should not necessarily consume all available execution indefinitely.
+Conceptually:
+Model A
+████████████████
+       quantum
+          ↓
+Model B
+██████
+But unlike 024, this is not a reason to serialise models that can genuinely execute concurrently.
+The quantum applies when the underlying resource is contended.
+If CPU/GPU resources are sufficiently available:
+A ────────────────
+B ────────────────
+can run concurrently.
+If resources are saturated:
+A ──────┐
+        ├── scheduler
+B ──────┘
+the scheduler applies fairness.
+14. Session/model affinity
+A HotSession must have an immutable model identity.
+Conceptually:
+HotSession
+   │
+   └── ModelId
+A session cannot silently move:
+Model A → Model B
+because its KV state, tokenizer assumptions, architecture and runtime state are model-specific.
+If a request asks for another model, OpenTail must create/use another session.
+15. Model eviction and live sessions
+This remains a hard correctness rule from 024.
+Never:
+LRU says Model A is cold
+        ↓
+dispose Model A
+        ↓
+discover Session A still owns KV/state
+Instead:
+Model A
+ │
+ ├── active requests
+ ├── live sessions
+ └── KV/session state
+        ↓
+      pinned
+        ↓
+    not evictable
+When the final model/session reference disappears:
+ActiveRequests = 0
+ActiveSessions = 0
+the runtime becomes eligible.
+16. KV memory and model residency are separate
+The existing KV memory governor must remain responsible for KV pressure.
+The new model residency manager is responsible for whole-model pressure.
+Conceptually:
+             Stingray resources
+                    │
+        ┌───────────┴───────────┐
+        ↓                       ↓
+   Model residency          KV residency
+        │                       │
+ Model eviction          Session suspension
+        │                       │
+        └───────────┬───────────┘
+                    ↓
+             Resource budget
+Do not make the model manager reach into KV internals.
+Do not make the KV cache know about models.
+This separation is particularly important because the existing KV governor already has well-defined suspension semantics and must not directly release physical pages. 
+17. Eviction hierarchy
+When memory pressure occurs, prefer reclamation in this order:
+1. Unused model runtime
+2. Idle/evictable model runtime
+3. Model runtime whose active sessions can safely be drained
+4. KV/session suspension
+5. Queue/admission
+6. Hard failure
+However, do not automatically combine these mechanisms in Phase 1.
+The first implementation should establish explicit ownership:
+model manager → model residency;
+KV governor → KV residency;
+scheduler → execution;
+session → session correctness.
+A later policy layer can coordinate them.
+18. Request admission
+A request must not disappear into an unbounded queue.
+When a model is:
+resident + runnable
+execute it.
+When:
+loading
+join the single-flight load.
+When:
+resident but resource constrained
+queue subject to scheduler policy.
+When:
+cannot ever be admitted
+return a deterministic resource error.
+The API must distinguish:
+queued
+loading
+running
+completed
+cancelled
+rejected
+19. Cancellation
+Cancellation must propagate through:
+request
+  ↓
+scheduler
+  ↓
+model runtime
+  ↓
+session
+  ↓
+generation
+If the last waiting request for a cold model is cancelled before loading begins, Stingray should be allowed to cancel the load if safe.
+If another request is waiting on the same single-flight load:
+A cancels
+B remains
+the shared load must continue.
+The cancellation belongs to the caller, not the shared load.
+20. Model loading failure
+A failed load must not poison the model registry indefinitely.
+For:
+Model A → Loading → Failed
+waiting requests receive the same failure.
+Subsequent requests may retry according to a bounded retry/backoff policy.
+Do not leave:
+Task<ModelRuntime>
+permanently faulted in the single-flight dictionary.
+21. Observability
+This feature needs unusually good instrumentation because resource decisions are otherwise impossible to diagnose.
+Expose a snapshot such as:
+public readonly record struct ModelRuntimeStats(
+    ModelId ModelId,
+    ModelRuntimeState State,
+    long EstimatedModelBytes,
+    int ActiveRequests,
+    int ActiveSessions,
+    int PendingRequests,
+    bool Pinned,
+    DateTimeOffset LastUsed,
+    TimeSpan ResidentDuration);
+And system-wide:
+public readonly record struct MultiModelRuntimeStats(
+    int KnownModels,
+    int ResidentModels,
+    int ActiveModels,
+    long EstimatedResidentModelBytes,
+    int PendingRequests,
+    long ModelLoads,
+    long ModelLoadFailures,
+    long ModelEvictions,
+    long AdmissionRejects,
+    long ResidencyPressureEvents);
+Critically distinguish:
+ResidentModels
+from:
+ActiveModels
+and:
+KnownModels
+22. Metrics that matter
+Measure at least:
+Residency
+model load count;
+model unload count;
+model load duration;
+resident model count;
+peak resident model count;
+model residency duration.
+Scheduling
+pending requests;
+queue wait time;
+execution time;
+oldest request age;
+per-model fairness.
+Resources
+host memory;
+accelerator memory;
+model memory;
+KV memory;
+admission failures;
+eviction count.
+User-facing
+time-to-first-token;
+tokens/sec;
+request latency;
+cold-model penalty;
+warm-model latency.
+This lets us answer the practical question:
+Is having two models resident actually better than repeatedly swapping between them?
+
+23. Default policy
+The initial defaults should reflect the real OpenTail use case.
+Do not default to:
+Maximum 1 model
+or:
+Maximum 2 models
+Instead:
+Memory-aware admission: enabled
+Concurrent model execution: enabled
+Eviction: enabled
+Single-flight loading: enabled
+Pinned models: opt-in
+The runtime determines how many models fit.
+A deployment may optionally configure:
+resident model budget
+as a safety ceiling, but that is a policy override rather than the fundamental capacity mechanism.
+24. Backwards compatibility
+Existing:
+STINGRAY_MODEL=foo.gguf
+must continue to work.
+If only one model is ever requested:
+ModelRuntimeManager
+       │
+       └── Model A
+the observable behaviour should remain equivalent to the existing single-model server.
+There should be no requirement for OpenTail to know that multi-model infrastructure exists.
+This is critical.
+25. OpenTail-facing API
+Do not expose the full scheduler/resource machinery to OpenTail.
+OpenTail should see something closer to:
+public interface IInferenceService
+{
+    IAsyncEnumerable<InferenceChunk> GenerateAsync(
+        InferenceRequest request,
+        CancellationToken cancellationToken = default);
+}
+where the request identifies the desired model:
+public sealed record InferenceRequest
+{
+    public required ModelId Model { get; init; }
+
+    public required SessionId Session { get; init; }
+
+    // existing generation parameters...
+}
+The service resolves:
+request
+  ↓
+ModelId
+  ↓
+ModelRuntime
+  ↓
+HotSession
+  ↓
+continuous batch
+OpenTail should not need to know whether the model was:
+already resident;
+loaded 2 seconds ago;
+evicted;
+sharing a batch with another user;
+executing alongside another model.
+That is Stingray's responsibility.
+26. The important OpenTail use case
+The architecture should naturally support:
+OpenTail Sidekick
+        │
+        ├── User request
+        │
+        ├── Tool call
+        │
+        ├── normal answer
+        │
+        └── difficult task
+                  │
+                  ▼
+            Deep Reasoner
+                  │
+                  ▼
+              Sidekick
+The sidekick can therefore remain warm while the reasoner is:
+resident
+when resources permit, or:
+loaded on demand
+on a constrained machine.
+The orchestration model does not need to be the largest model.
+That is an OpenTail policy decision, not a Stingray architectural constraint.
+27. What this does NOT implement
+Explicit non-goals:
+distributed inference;
+multi-machine model routing;
+model ensembles;
+voting between models;
+automatic "best model" selection;
+prompt routing intelligence;
+LoRA adapter scheduling;
+cross-model physical batching;
+model quantisation changes;
+model conversion;
+speculative decoding changes;
+new KV-cache implementation;
+replacing continuous batching;
+replacing HotSession;
+replacing the KV memory governor;
+GPU-specific optimisation beyond resource accounting/admission;
+arbitrary background model preloading.
+Those belong elsewhere.
+28. Implementation phases
+Phase 1 — Production model-runtime abstraction
+Build:
+ModelRuntime
+ModelRuntimeHandle
+ModelRuntimeManager
+ModelRuntimeState
+Move the existing single-model loading path behind the manager.
+Acceptance:
+Existing single-model server tests remain green and use the new abstraction.
+Phase 2 — Shared residency and single-flight loading
+Carry the proven SharedModelCache ownership semantics into production model runtime management.
+Implement:
+canonical model identity;
+shared handles;
+async single-flight;
+safe disposal;
+load failure cleanup.
+Acceptance:
+100 concurrent requests for one cold model result in:
+1 physical model load
+100 logical users
+Phase 3 — Bounded/resource-aware residency
+Implement:
+resident model tracking;
+memory estimates;
+resource budget;
+admission;
+safe eviction.
+Start with host RAM.
+Add accelerator accounting through the same abstraction rather than a second policy.
+Acceptance:
+Two models can coexist when resources permit.
+A third model causes safe eviction/queueing when they do not.
+Phase 4 — Multi-session model execution
+Connect each runtime to existing HotSession and continuous-batching infrastructure.
+Verify:
+Model A
+ ├── A1
+ ├── A2
+ └── A3
+works exactly as existing same-model concurrency does.
+Phase 5 — Cross-model concurrent execution
+Remove any process-wide inference serialisation that prevents:
+Model A → generating
+Model B → generating
+simultaneously.
+Introduce model-level resource scheduling.
+Acceptance:
+A test with two independent models demonstrates overlapping execution rather than turn-taking.
+Phase 6 — Fair scheduling and admission
+Add:
+per-model pending queues;
+request age;
+service quantum;
+starvation protection;
+cancellation;
+queue limits;
+resource-aware admission.
+Keep the policy deliberately simple.
+Phase 7 — Integration with OpenTail server
+Expose model identity through the inference service/API.
+Verify:
+User A → Sidekick
+User B → Sidekick
+User C → Reasoner
+User D → Reasoner
+with:
+same-model batching;
+different-model concurrency;
+model residency;
+session isolation.
+29. Test matrix
+The implementation is not complete until these cases are covered.
+Model lifecycle
+one model loads;
+repeated acquisition shares one runtime;
+concurrent cold acquisitions single-flight;
+load failure cleans up;
+runtime disposal is idempotent.
+Residency
+one model stays resident;
+two models coexist;
+third model triggers admission logic;
+inactive model evicts;
+active model never evicts;
+pinned model never evicts.
+Same-model concurrency
+1 model
+10 sessions
+must continue to use the existing batching path correctly.
+Cross-model concurrency
+Model A + Model B
+both generate concurrently.
+Verify neither corrupts:
+model state;
+KV;
+session state;
+sampling;
+tokenizer state.
+Memory pressure
+Test:
+ample memory
+tight memory
+insufficient memory
+and verify deterministic behaviour.
+Eviction race
+Explicitly test:
+candidate selected
+       ↓
+new request arrives
+       ↓
+candidate becomes active
+The runtime must not be disposed.
+Load/evict race
+Test:
+Model A loading
+Model B causes pressure
+Model A request cancelled
+and equivalent permutations.
+Cancellation
+Verify cancellation of one waiter does not cancel another request sharing the same model load.
+30. End-to-end acceptance test
+The most important test should resemble the actual OpenTail deployment.
+Configure:
+Model A = small sidekick
+Model B = larger reasoner
+Then concurrently issue:
+User 1 → A
+User 2 → A
+User 3 → B
+User 4 → B
+Verify:
+A loads once.
+B loads once.
+A serves multiple sessions through continuous batching.
+B serves multiple sessions through continuous batching.
+A and B can execute concurrently when resources permit.
+KV remains session-isolated.
+neither runtime is evicted while active.
+memory pressure is observable.
+when B becomes idle, it becomes evictable.
+on a constrained-memory configuration, the same workload degrades to safe queueing/single-slot operation rather than OOM or corruption.
+31. Performance acceptance
+Do not judge this feature purely by aggregate tokens/sec.
+Measure:
+Scenario	Important metric
+One model / one user	baseline latency
+One model / many users	throughput + fairness
+Two models / one user each	overlap
+Two models / many users	throughput + latency
+Cold second model	load penalty
+Memory-pressure eviction	recovery time
+Repeated model switching	physical load count
+
+
+The desired result is not:
+"Always run two models."
+
+It is:
+"When two models fit, running them concurrently should be materially better than repeatedly swapping them."
+
+32. Critical invariants
+These should be written into tests and code comments.
+Invariant 1
+A model runtime is disposed exactly once.
+Invariant 2
+A runtime with active requests or sessions cannot be evicted.
+Invariant 3
+Concurrent acquisition of one cold model produces one physical load.
+Invariant 4
+One session belongs to exactly one model runtime.
+Invariant 5
+One model runtime may serve many sessions concurrently.
+Invariant 6
+Different model runtimes may execute concurrently.
+Invariant 7
+Resource admission never relies solely on model count.
+Invariant 8
+KV memory ownership remains with the KV/session subsystem.
+Invariant 9
+Cancellation of one request cannot cancel shared work needed by another request.
+Invariant 10
+When resources are insufficient, Stingray queues or rejects work safely; it never violates runtime/session ownership to make room.
+33. What I would explicitly not carry forward from 024
+This is where I think the new plan is materially better.
+I would not resurrect the old architecture wholesale.
+In particular, don't build:
+huge resource taxonomy
++
+complex scheduler
++
+SLA preemption
++
+model selection intelligence
++
+new session architecture
++
+new KV architecture
+all at once.
+The old 024 correctly identified several hard problems, including live-session eviction and synchronous 20–50 GB loading, but it also deliberately excluded concurrent multi-model execution. 
+The new plan takes the useful pieces:
+ModelRuntime;
+async single-flight;
+resource admission;
+model/session affinity;
+safe eviction;
+scheduling seam;
+and combines them with the current reality of Stingray:
+HotSession;
+continuous batching;
+paged KV;
+KV memory governance;
+existing model cache work.
+That is much less speculative.
+34. Final architecture
+The resulting shape is:
+                         OpenTail
+                            │
+                            ▼
+                    IInferenceService
+                            │
+                    ┌───────┴───────┐
+                    │               │
+                 Model A          Model B
+                 Sidekick         Reasoner
+                    │               │
+             ┌──────┴──────┐  ┌─────┴─────┐
+             │             │  │           │
+           HotSession    HotSession    HotSession
+             │             │              │
+             └──────┬──────┘              │
+                    ▼                     ▼
+             Continuous Batch       Continuous Batch
+                    │                     │
+                    └─────────┬───────────┘
+                              ▼
+                     Model Scheduler
+                              │
+                     Resource Admission
+                              │
+                ┌─────────────┴─────────────┐
+                ▼                           ▼
+          Model Residency              KV Governor
+                │                           │
+                ▼                           ▼
+           Model Cache                  KV Cache
+And the key point is:
+The scheduler doesn't own the models, the model cache doesn't own sessions, and the KV governor doesn't own models.
+
+Each subsystem has one job.
+My recommendation
+I think this is the plan I would now use instead of 024.
+The previous 025/026 work was not wasted — it established the ownership and eviction mechanics we need. The scope decision was also reasonable at the time, because the repository explicitly had no demonstrated production multi-model requirement. 027-model-cache-scope-decision.mdMD
+But with the OpenTail requirement now being:
+cheap persistent sidekick + on-demand deep model + multiuser + genuine concurrent generation where hardware permits
+
+the old decision has become obsolete.
+The particularly important design choice is not "support two models." It's:
+Make model instances first-class resources, and let memory/resource pressure determine whether the machine behaves as a one-model, two-model, or N-model system.
+
+That gives us the reality you expect — probably two — without baking "two" into Stingray, and without accidentally turning the project into a miniature vLLM clone. The current repo's stated direction is already centred on broad GGUF coverage and the newer HotSession architecture, so this plan should sit above those rather than compete with them.

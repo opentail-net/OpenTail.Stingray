@@ -1,6 +1,3 @@
-> **ARCHIVED, 2026-08-15.** Implemented as designed (confirmed against source). No open
-> remainder tracked separately from [00-current-work.md](../00-current-work.md).
-
 ---
 
 # Why the Model-Serving Design Was Descoped — Reasoning for Review
