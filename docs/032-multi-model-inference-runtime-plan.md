@@ -4,6 +4,20 @@
 
 ## Status
 
+**Phase 1 implemented** — `ModelId`, `ModelRuntimeState`, `ModelResidencyMode`, `ModelRuntime`,
+`ModelRuntimeHandle`, `IModelRuntimeManager`/`ModelRuntimeManager`
+(`src/OpenTail.Stingray.Server/ModelRuntime.cs`, `ModelRuntimeManager.cs`), wired into
+`ServiceCollectionExtensions.AddOpenTailStingray` so the server's single configured model now
+loads through the manager's single-flight path (pinned, so DI retains sole disposal ownership).
+`ModelResidencyMode` (`SingleSlot`/`MultiSlot`) is configurable via
+`OpenTailStingrayServerOptions.ModelResidencyMode` or `STINGRAY_MODEL_RESIDENCY_MODE`, and is a
+runtime-mutable property (not just a boot-time constant) so residency policy can change without a
+restart. Covered by `tests/OpenTail.Stingray.Tests.Server.Fast/ModelRuntimeManagerTests.cs`
+(single-flight, lifecycle, SingleSlot eviction/wait, live mode-switch, no-global-lock, isolated
+cancellation) plus the full existing `Tests.Server.Fast` suite (271/271) and the real-GGUF
+`Tests.Server` session-restart acceptance test, both green with zero behavior change to the
+single-model path. Phases 2–7 (below) remain design only.
+
 Implementation-ready design. Supersedes the shelved production portion of
 `done/024-multi-model-serving-and-request-scheduling-plan.md`. Builds directly on
 `done/025-shared-model-cache-phase1-plan.md` and `done/026-shared-model-cache-phase2-eviction-plan.md`

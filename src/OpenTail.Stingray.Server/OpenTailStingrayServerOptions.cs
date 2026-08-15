@@ -117,6 +117,16 @@ public sealed class OpenTailStingrayServerOptions
     /// </summary>
     public Func<IServiceProvider, LoadedEngine>? EngineFactory { get; set; }
 
+    /// <summary>
+    /// Multi-model residency policy (docs/032-multi-model-inference-runtime-plan.md).
+    /// <c>null</c> (default) resolves to the <c>STINGRAY_MODEL_RESIDENCY_MODE</c> environment
+    /// variable (<c>single</c> / <c>multi</c>, case-insensitive) when set, otherwise
+    /// <see cref="OpenTail.Stingray.Server.ModelResidencyMode.MultiSlot"/>. This only seeds the initial value —
+    /// <see cref="IModelRuntimeManager.ResidencyMode"/> can be changed at runtime without
+    /// reloading any model (e.g. by OpenTail deciding to switch modes later).
+    /// </summary>
+    public ModelResidencyMode? ModelResidencyMode { get; set; }
+
     // ── Backend / hardware ───────────────────────────────────────────────────
 
     /// <summary>

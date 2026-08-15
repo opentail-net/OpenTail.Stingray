@@ -58,10 +58,32 @@ public static class ServiceCollectionExtensions
             return new ChatTemplateRenderer(opts.Architecture);
         });
 
+        // Multi-model runtime manager (docs/032-multi-model-inference-runtime-plan.md). Registered
+        // even though today's DI wiring below only ever acquires the one configured model — this
+        // is Phase 1's abstraction seam, not a behavior change. Lazily constructed like everything
+        // else here; constructing it does not itself invoke the loader.
+        services.TryAddSingleton<IModelRuntimeManager>(sp =>
+        {
+            var opts = sp.GetRequiredService<IOptions<OpenTailStingrayServerOptions>>().Value;
+            return new ModelRuntimeManager(
+                _ => (opts.EngineFactory ?? (s => InferenceEngineLoader.Load(opts)))(sp),
+                opts.ModelResidencyMode ?? ResolveResidencyModeFromEnvironment());
+        });
+
         services.TryAddSingleton<IInferenceEngine>(sp =>
         {
             var opts = sp.GetRequiredService<IOptions<OpenTailStingrayServerOptions>>().Value;
-            var loaded = (opts.EngineFactory ?? (s => InferenceEngineLoader.Load(opts)))(sp);
+            var manager = sp.GetRequiredService<IModelRuntimeManager>();
+            var modelId = ModelId.Canonicalize(opts.ModelPath ?? "engine-factory-model");
+
+            // Acquire through the runtime manager (single-flight, state-tracked load) but release
+            // our own lease immediately — DI's own IInferenceEngine singleton registration below
+            // remains the sole owner of this engine's disposal lifecycle, so IsPinned keeps the
+            // manager's shutdown cleanup (ModelRuntimeManager.Dispose) from ever touching it and
+            // racing that ownership.
+            using var handle = manager.AcquireAsync(modelId, CancellationToken.None).GetAwaiter().GetResult();
+            handle.Runtime.IsPinned = true;
+            var loaded = handle.Runtime.Loaded;
 
             // Hand the single-user engine the host's logger so its per-request perf trace
             // (Debug level) flows through the configured logging pipeline rather than stderr.
@@ -128,5 +150,26 @@ public static class ServiceCollectionExtensions
     {
         services.Configure<OpenTailStingrayServerOptions>(configuration.GetSection(DefaultConfigurationSection));
         return services.AddOpenTailStingray(configure);
+    }
+
+    /// <summary>
+    /// Resolves <see cref="OpenTailStingrayServerOptions.ModelResidencyMode"/>'s environment-variable
+    /// fallback, <c>STINGRAY_MODEL_RESIDENCY_MODE</c> (<c>single</c>/<c>singleslot</c> or
+    /// <c>multi</c>/<c>multislot</c>, case-insensitive). Mirrors the existing
+    /// options-property-first-then-env-var convention used by <c>InferenceEngineLoader</c> (e.g.
+    /// <c>STINGRAY_DSPARK_MODEL</c>) rather than routing through ASP.NET configuration binding,
+    /// so this works the same whether or not the host also binds <c>IConfiguration</c>.
+    /// </summary>
+    private static ModelResidencyMode ResolveResidencyModeFromEnvironment()
+    {
+        var raw = Environment.GetEnvironmentVariable("STINGRAY_MODEL_RESIDENCY_MODE");
+        if (string.IsNullOrWhiteSpace(raw)) return ModelResidencyMode.MultiSlot;
+        return raw.Trim().ToLowerInvariant() switch
+        {
+            "single" or "singleslot" or "single-slot" => ModelResidencyMode.SingleSlot,
+            "multi" or "multislot" or "multi-slot" => ModelResidencyMode.MultiSlot,
+            _ => throw new InvalidOperationException(
+                $"Unknown STINGRAY_MODEL_RESIDENCY_MODE '{raw}'. Expected 'single' or 'multi'."),
+        };
     }
 }
