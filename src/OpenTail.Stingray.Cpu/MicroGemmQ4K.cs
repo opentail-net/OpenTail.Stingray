@@ -1,4 +1,3 @@
-using System.Runtime.Intrinsics;
 using System.Runtime.Intrinsics.X86;
 
 namespace OpenTail.Stingray.Cpu;
@@ -58,32 +57,48 @@ public static unsafe class MicroGemmQ4K
                     byte* scales = block + 4;
                     byte* qs = block + 16;
 
-                    // Process 256 elements in 8 chunks of 32
-                    for (int chunk = 0; chunk < 8; chunk++)
+                    // ggml's q4_K layout (dequantize_row_q4_K / get_scale_min_k4 in
+                    // ggml-quants.c, mirrored by Dequantize.DequantQ4K/GetScaleMinK4): 256
+                    // elements as four 64-element super-chunks. Each super-chunk consumes 32
+                    // bytes of qs and TWO 6-bit scale/min pairs (spliced out of the 12-byte
+                    // scales buffer, not read as 16 contiguous bytes) -- the LOW nibble of all
+                    // 32 bytes forms the first 32 elements (scale/min pair j), the HIGH nibble
+                    // of the SAME 32 bytes forms the next 32 elements (scale/min pair j+1). This
+                    // is not the same decomposition as "32 independent 2-values-per-byte
+                    // chunks" -- getting the low/high-nibble grouping wrong silently corrupts
+                    // half of every super-chunk even with the scale/min splice fixed.
+                    int qIdx = 0;
+                    for (int outer = 0; outer < 4; outer++)
                     {
-                        byte sc = scales[chunk];
-                        byte mn = scales[chunk + 8];
+                        int j1 = outer * 2;
+                        int j2 = outer * 2 + 1;
 
-                        float scale = d * (sc & 63);
-                        float min = dmin * (mn & 63);
+                        GetScaleMinK4(scales, j1, out byte sc1, out byte mn1);
+                        GetScaleMinK4(scales, j2, out byte sc2, out byte mn2);
 
-                        float* inPtr = inBlock + chunk * 32;
-                        byte* qPtr = qs + chunk * 16;
+                        float scaleLow = d * sc1;
+                        float minLow = dmin * mn1;
+                        float scaleHigh = d * sc2;
+                        float minHigh = dmin * mn2;
 
-                        Vector256<float> acc = Vector256<float>.Zero;
+                        float* inLow = inBlock + outer * 64;
+                        float* inHigh = inLow + 32;
+                        byte* qPtr = qs + qIdx;
 
-                        for (int i = 0; i < 16; i++)
+                        for (int l = 0; l < 32; l++)
                         {
-                            byte packed = qPtr[i];
-                            int q0 = packed & 0x0F;
-                            int q1 = (packed >> 4) & 0x0F;
+                            byte packed = qPtr[l];
+                            int qLow = packed & 0x0F;
+                            int qHigh = packed >> 4;
 
-                            float val0 = q0 * scale - min;
-                            float val1 = q1 * scale - min;
+                            float valLow = qLow * scaleLow - minLow;
+                            float valHigh = qHigh * scaleHigh - minHigh;
 
-                            sum += inPtr[i * 2 + 0] * val0;
-                            sum += inPtr[i * 2 + 1] * val1;
+                            sum += inLow[l] * valLow;
+                            sum += inHigh[l] * valHigh;
                         }
+
+                        qIdx += 32;
                     }
                 }
 
@@ -92,6 +107,24 @@ public static unsafe class MicroGemmQ4K
         }
 
         return true;
+    }
+
+    /// <summary>
+    /// Decode one 6-bit scale and min from the packed 12-byte scale/min buffer.
+    /// Matches get_scale_min_k4 in ggml-quants.c (and Dequantize.GetScaleMinK4).
+    /// </summary>
+    private static void GetScaleMinK4(byte* scales, int j, out byte scale, out byte min)
+    {
+        if (j < 4)
+        {
+            scale = (byte)(scales[j] & 63);
+            min = (byte)(scales[j + 4] & 63);
+        }
+        else
+        {
+            scale = (byte)((scales[j + 4] & 0x0F) | ((scales[j - 4] >> 6) << 4));
+            min = (byte)((scales[j + 4] >> 4) | ((scales[j] >> 6) << 4));
+        }
     }
 
     private static float HalfToFloat(ushort half)

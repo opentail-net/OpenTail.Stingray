@@ -394,16 +394,26 @@ public class JsonSchemaGrammarMaskerTests
         Assert.True(sm.IsTerminal);
     }
 
+    /// <summary>
+    /// Was: an opener token replayed as its own "illegal continuation" probe from ValueStart. That
+    /// stopped being a genuine dead end once nested-object support was added -- '{' now legitimately
+    /// opens a nested value at ANY value position (that's the point of the fix), so replaying an
+    /// opener like {"key": now validates as "open a new nested object, key, colon" and no longer
+    /// proves the state is dead. Redesigned around an enum-prefix mismatch instead: inside a string
+    /// value constrained to enum ["active","pending"], a character that isn't a prefix of either is
+    /// still a genuine, un-escapable dead end regardless of nesting -- '{'/'[' are ordinary string
+    /// content there (a string CAN contain a literal brace), not structural, so this reproduces the
+    /// same class of defect docs/bugstofix.md described without depending on a byte sequence nesting
+    /// support has since made legal. See ChoiceConstraint.cs/GrammarStateMachine.cs for the sibling
+    /// "narrow grammar must fail closed rather than silently accept" pattern this guards.
+    /// </summary>
     [Fact]
     public void Test14_DeadState_ThrowsJsonGrammarDeadStateException()
     {
-        // Only real tokens available are the opener up to the value position, and a byte that
-        // cannot legally continue any JSON value ('z' is not '"', '{', '[', a digit, '-', 't',
-        // 'f', or 'n'). Once the value position is reached, no candidate token validates.
         var tokens = new List<byte[]>
         {
-            Encoding.UTF8.GetBytes("{\"key\":"), // Token 3: opens through ValueStart
-            Encoding.UTF8.GetBytes("z"),          // Token 4: illegal at ValueStart
+            Encoding.UTF8.GetBytes("{\"status\":\""), // Token 3: opens through StringValue (enum-constrained)
+            Encoding.UTF8.GetBytes("z"),               // Token 4: not a prefix of "active" or "pending"
         };
         var tok = new CustomByteTokenizer(tokens);
         var vocab = new GrammarVocabulary(tok);
@@ -411,16 +421,16 @@ public class JsonSchemaGrammarMaskerTests
         using var doc = JsonDocument.Parse("""
         {
           "type": "object",
-          "properties": { "key": { "type": "string" } },
-          "required": ["key"]
+          "properties": { "status": { "type": "string", "enum": ["active", "pending"] } },
+          "required": ["status"]
         }
         """);
 
         var sm = JsonSchemaGrammarCompiler.Compile(doc.RootElement);
         var masker = new JsonSchemaGrammarMasker(vocab, sm);
 
-        masker.Accept(3); // {"key":
-        Assert.Equal(JsonLexicalState.ValueStart, sm.CurrentState);
+        masker.Accept(3); // {"status":"
+        Assert.Equal(JsonLexicalState.StringValue, sm.CurrentState);
 
         Span<float> logits = new float[vocab.VocabSize];
         JsonGrammarDeadStateException? caught = null;
@@ -434,7 +444,7 @@ public class JsonSchemaGrammarMaskerTests
         }
 
         Assert.NotNull(caught);
-        Assert.Equal(JsonLexicalState.ValueStart, caught.State);
+        Assert.Equal(JsonLexicalState.StringValue, caught.State);
     }
 
     [Fact]
@@ -516,6 +526,235 @@ public class JsonSchemaGrammarMaskerTests
         Assert.True(float.IsNegativeInfinity(masked[1]));
         Assert.True(float.IsNegativeInfinity(masked[CustomByteTokenizer.Eos]));
         Assert.True(masked[4] > float.NegativeInfinity, "plain string content must remain allowed.");
+    }
+
+    /// <summary>
+    /// Regression for GrammarStateMachine.cs:146 (docs/bugstofix.md): '{' at a value position used
+    /// to have no transition at all, leaving the state stuck at ValueStart with no way to enter or
+    /// correctly close a nested object. Also exercises required-property enforcement at a NESTED
+    /// level (not just the root), via the same PushFrame/RecordPropertyEmitted/CanEvict-style
+    /// machinery this file's Test04 only exercised manually.
+    /// </summary>
+    [Fact]
+    public void Test17_NestedObjectRequiredPropertyEnforced()
+    {
+        using var doc = JsonDocument.Parse("""
+        {
+          "type": "object",
+          "properties": {
+            "user": {
+              "type": "object",
+              "properties": { "id": { "type": "string" } },
+              "required": ["id"]
+            }
+          },
+          "required": ["user"]
+        }
+        """);
+
+        var sm = JsonSchemaGrammarCompiler.Compile(doc.RootElement);
+
+        foreach (char c in "{\"user\":{") Assert.True(sm.TryAcceptChar(c));
+        Assert.Equal(JsonLexicalState.ObjectKeyStart, sm.CurrentState);
+
+        // Nested object's own required "id" hasn't been emitted yet -- closing early is illegal.
+        Assert.False(sm.CanAcceptChar('}'));
+
+        foreach (char c in "\"id\":\"x\"") Assert.True(sm.TryAcceptChar(c));
+        Assert.True(sm.TryAcceptChar('}')); // closes the nested object (its own "id" satisfied)
+        Assert.True(sm.TryAcceptChar('}')); // closes the root object ("user" satisfied)
+        Assert.True(sm.IsTerminal);
+    }
+
+    /// <summary>
+    /// Regression for GrammarStateMachine.cs:146: '[' had no transition either, and ArrayStart/
+    /// ArrayValueStart/ArrayValueEnd existed in the enum with zero reachable code. Covers array of
+    /// objects specifically (not just scalars) so PushFrame's ArrayItemSchema resolution and the
+    /// per-element required-property check both get exercised, and that closing one element
+    /// correctly returns to ArrayValueEnd (not the object-context ValueEnd) so a second element or
+    /// ']' is offered next rather than another object key.
+    /// </summary>
+    [Fact]
+    public void Test18_ArrayOfObjectsRoundTrip()
+    {
+        using var doc = JsonDocument.Parse("""
+        {
+          "type": "object",
+          "properties": {
+            "tags": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": { "tag": { "type": "string" } },
+                "required": ["tag"]
+              }
+            }
+          },
+          "required": ["tags"]
+        }
+        """);
+
+        var sm = JsonSchemaGrammarCompiler.Compile(doc.RootElement);
+
+        foreach (char c in "{\"tags\":[{") Assert.True(sm.TryAcceptChar(c));
+        Assert.Equal(JsonLexicalState.ObjectKeyStart, sm.CurrentState);
+
+        // First element's own required "tag" hasn't been emitted -- can't close it yet.
+        Assert.False(sm.CanAcceptChar('}'));
+
+        foreach (char c in "\"tag\":\"a\"}") Assert.True(sm.TryAcceptChar(c));
+        Assert.Equal(JsonLexicalState.ArrayValueEnd, sm.CurrentState);
+
+        foreach (char c in ",{\"tag\":\"b\"}") Assert.True(sm.TryAcceptChar(c));
+        Assert.Equal(JsonLexicalState.ArrayValueEnd, sm.CurrentState);
+
+        Assert.True(sm.TryAcceptChar(']'));
+        Assert.Equal(JsonLexicalState.ValueEnd, sm.CurrentState);
+
+        Assert.True(sm.TryAcceptChar('}'));
+        Assert.True(sm.IsTerminal);
+    }
+
+    /// <summary>Regression for GrammarStateMachine.cs:146: 'n' at a value position had no
+    /// transition, so null-valued properties could never be produced.</summary>
+    [Fact]
+    public void Test19_NullLiteralAccepted()
+    {
+        using var doc = JsonDocument.Parse("""
+        {
+          "type": "object",
+          "properties": { "maybe": { "type": "string" } },
+          "required": ["maybe"]
+        }
+        """);
+
+        var sm = JsonSchemaGrammarCompiler.Compile(doc.RootElement);
+
+        foreach (char c in "{\"maybe\":null}") Assert.True(sm.TryAcceptChar(c));
+        Assert.True(sm.IsTerminal);
+    }
+
+    /// <summary>
+    /// The exact failure scenario from docs/bugstofix.md: "letting a model emit {} for a schema
+    /// requiring fields." Required-property enforcement (PushFrame/RecordPropertyEmitted/
+    /// AreAllRequiredPropertiesEmitted) existed with zero callers before this fix -- nothing
+    /// actually gated the closing '}' on it.
+    /// </summary>
+    [Fact]
+    public void Test20_RootObjectCannotCloseEmpty_WhenRequiredPropertyMissing()
+    {
+        using var doc = JsonDocument.Parse("""
+        {
+          "type": "object",
+          "properties": { "name": { "type": "string" } },
+          "required": ["name"]
+        }
+        """);
+
+        var sm = JsonSchemaGrammarCompiler.Compile(doc.RootElement);
+
+        Assert.True(sm.TryAcceptChar('{'));
+        Assert.Equal(JsonLexicalState.ObjectKeyStart, sm.CurrentState);
+
+        Assert.False(sm.CanAcceptChar('}'));
+        Assert.False(sm.TryAcceptChar('}'));
+        Assert.Equal(JsonLexicalState.ObjectKeyStart, sm.CurrentState); // rejected: no state change
+
+        foreach (char c in "\"name\":\"x\"") Assert.True(sm.TryAcceptChar(c));
+        Assert.True(sm.TryAcceptChar('}'));
+        Assert.True(sm.IsTerminal);
+    }
+
+    /// <summary>
+    /// Enum enforcement through the ACTUAL masker path (Filter()'s per-candidate-token masking),
+    /// not just the state machine directly -- docs/bugstofix.md specifically called out that no
+    /// test exercised this. A token that cannot possibly complete to an allowed enum value must be
+    /// masked; one that can (even mid-spelling) must not be.
+    /// </summary>
+    [Fact]
+    public void Test21_EnumConstraintRejectsInvalidValueThroughMasker()
+    {
+        var tokens = new List<byte[]>
+        {
+            Encoding.UTF8.GetBytes("{\"status\":\""), // Token 3
+            Encoding.UTF8.GetBytes("active"),          // Token 4: a valid enum value
+            Encoding.UTF8.GetBytes("banana"),          // Token 5: not a prefix of any allowed value
+            Encoding.UTF8.GetBytes("\"}"),              // Token 6: closes string + object
+        };
+        var tok = new CustomByteTokenizer(tokens);
+        var vocab = new GrammarVocabulary(tok);
+
+        using var doc = JsonDocument.Parse("""
+        {
+          "type": "object",
+          "properties": { "status": { "type": "string", "enum": ["active", "pending"] } },
+          "required": ["status"]
+        }
+        """);
+
+        var sm = JsonSchemaGrammarCompiler.Compile(doc.RootElement);
+        var masker = new JsonSchemaGrammarMasker(vocab, sm);
+
+        masker.Accept(3); // {"status":"
+
+        Span<float> logits = new float[vocab.VocabSize];
+        var masked = masker.Filter(logits);
+
+        Assert.True(masked[4] > float.NegativeInfinity, "'active' is a legal prefix toward an allowed enum value.");
+        Assert.True(float.IsNegativeInfinity(masked[5]), "'banana' cannot lead to any allowed enum value.");
+
+        masker.Accept(4); // active
+        masker.Accept(6); // "}
+        Assert.True(sm.IsTerminal);
+    }
+
+    /// <summary>
+    /// Regression for JsonSchemaGrammarMasker.cs:78 (docs/bugstofix.md): Filter() used to
+    /// GrammarStateMachine.Clone() once PER VOCABULARY ENTRY -- 100k+ allocations per decode step
+    /// on a real tokenizer. With a single reused scratch instance (GrammarStateMachine.CopyFrom),
+    /// allocated bytes should stay roughly flat regardless of vocab size rather than scaling
+    /// linearly with it.
+    /// </summary>
+    [Fact]
+    public void Test22_FilterDoesNotAllocateProportionallyToVocabSize()
+    {
+        var tokens = new List<byte[]> { Encoding.UTF8.GetBytes("{\"k\":\"") }; // Token 3: opens into StringValue
+        for (int i = 0; i < 2000; i++)
+        {
+            tokens.Add(Encoding.UTF8.GetBytes(((char)('a' + (i % 26))).ToString()));
+        }
+        var tok = new CustomByteTokenizer(tokens);
+        var vocab = new GrammarVocabulary(tok);
+
+        using var doc = JsonDocument.Parse("""
+        {
+          "type": "object",
+          "properties": { "k": { "type": "string" } },
+          "required": ["k"]
+        }
+        """);
+
+        var sm = JsonSchemaGrammarCompiler.Compile(doc.RootElement);
+        var masker = new JsonSchemaGrammarMasker(vocab, sm);
+        masker.Accept(3); // {"k":" -- now inside StringValue, where the single-letter tokens are plausible continuations
+        Assert.Equal(JsonLexicalState.StringValue, sm.CurrentState);
+
+        // Warm up so the scratch instance's internal List/StringBuilder capacities stabilize
+        // before the measured call -- otherwise one-time growth would be charged to it.
+        Span<float> warmup = new float[vocab.VocabSize];
+        masker.Filter(warmup);
+
+        long before = GC.GetAllocatedBytesForCurrentThread();
+        Span<float> logits = new float[vocab.VocabSize];
+        masker.Filter(logits);
+        long allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        // The old per-token Clone() allocated a whole GrammarStateMachine (frame stack, string
+        // builders, backing object) per vocabulary entry -- far more than 32 bytes/token. Budget
+        // generously to catch a real regression without being brittle to incidental bookkeeping.
+        Assert.True(allocated < vocab.VocabSize * 32,
+            $"Filter() allocated {allocated} bytes for {vocab.VocabSize} vocab entries " +
+            $"({(double)allocated / vocab.VocabSize:F1} bytes/token) -- expected roughly flat, not scaling with vocab size.");
     }
 }
 

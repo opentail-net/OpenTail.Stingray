@@ -378,11 +378,28 @@ public sealed class ConstrainedChoiceSamplingTests
     }
 
     /// <summary>
-    /// Regression for the TokenChoiceTrie prefix bug: Test8_PrefixCollision's two choices
-    /// ("A"->[40], "APPROVED"->[10]) don't actually share a token prefix, so it never exercised
-    /// the real defect. "YES"->[10] is a genuine token-level prefix of "YESSIR"->[10, 20] here --
-    /// the trie node after token 10 is terminal AND has a child toward "YESSIR". The forward pass
-    /// always ranks token 10 highest, so generation reaches that node on the first step.
+    /// Regression guard for the ChoiceConstraint.cs:81 defect (see docs/bugstofix.md):
+    /// <c>TokenChoiceTrie.ChoiceState.IsComplete</c> used to require zero children, so a
+    /// terminal node that ALSO had children (one allowed choice being a token-prefix of
+    /// another) could never be accepted as a stopping point -- the shorter choice became
+    /// permanently unreachable, and generation was silently forced to continue toward the
+    /// longer one every time. The fix is <c>IsComplete =&gt; _currentNode.IsTerminal</c> (no
+    /// children check); if that regresses back to a childless check, THIS test is what catches
+    /// it -- it fails by hanging/over-generating past 1 token, not by an assertion on the wrong
+    /// value, so a failure here should be read as "the trie forced continuation again," not a
+    /// flaky test.
+    ///
+    /// Test8_PrefixCollision's two choices ("A"-&gt;[40], "APPROVED"-&gt;[10]) don't actually
+    /// share a token prefix, so it never exercised the real defect. "YES"-&gt;[10] is a genuine
+    /// token-level prefix of "YESSIR"-&gt;[10, 20] here -- the trie node after token 10 is
+    /// terminal AND has a child toward "YESSIR". The forward pass always ranks token 10
+    /// highest, so generation reaches that node on the first step.
+    ///
+    /// Uses <see cref="InferenceSession"/>, which is slated for deletion once docs/030 executes
+    /// (docs/028's HotSession migration is done) -- whoever does that deletion must port this
+    /// specific regression case to HotSession's own choice-constraint coverage rather than
+    /// dropping it, since the underlying <see cref="TokenChoiceTrie"/> machinery (in
+    /// ChoiceConstraint.cs) is not being deleted, only this session wrapper around it.
     /// </summary>
     [Fact]
     public async Task Test17_ShorterChoiceReachableWhenPrefixOfLonger()

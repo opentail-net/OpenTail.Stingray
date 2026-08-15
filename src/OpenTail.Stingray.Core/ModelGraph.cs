@@ -187,6 +187,37 @@ public sealed record ModelHyperparams
     public int KvLoraRank { get; init; }
 
     /// <summary>
+    /// MLA's per-head VALUE width ({arch}.attention.value_length), read separately from
+    /// <see cref="HeadDim"/> (which is the Q/K width, {arch}.attention.key_length) because MLA's
+    /// decompressed nope+rope Q/K width and its decompressed V width are independent GGUF keys --
+    /// DeepSeek-V2-Lite ships key_length=192 (128 nope + 64 rope) and value_length=128, not equal
+    /// by any structural necessity. 0 when absent (every non-MLA architecture).
+    /// </summary>
+    public int MlaVHeadDim { get; init; }
+
+    /// <summary>
+    /// YaRN RoPE scaling factor ({arch}.rope.scaling.factor, e.g. 40 for DeepSeek-V2-Lite).
+    /// 1 (the default) means no scaling -- RopeYarnOrigCtxLen/RopeYarnLogMul are then unused.
+    /// See ggml-cpu/ops.cpp rope_yarn() / rope_yarn_corr_dims() for the reference formula this
+    /// mirrors (llama.cpp), and MlaAttention.cs / ForwardPass.cs's YaRN table builder for where
+    /// it's applied. Only meaningful when {arch}.rope.scaling.type == "yarn".
+    /// </summary>
+    public float RopeYarnFactor { get; init; } = 1f;
+
+    /// <summary>Original (pre-extension) training context length ({arch}.rope.scaling.original_context_length),
+    /// used by the YaRN correction-range formula. Only meaningful when <see cref="RopeYarnFactor"/> &gt; 1.</summary>
+    public int RopeYarnOrigCtxLen { get; init; }
+
+    /// <summary>
+    /// DeepSeek2-specific YaRN attention-score correction ({arch}.rope.scaling.yarn_log_multiplier).
+    /// Unlike the rest of the YaRN parameters (which feed the RoPE cos/sin table itself), this one
+    /// ONLY scales the attention softmax's kq_scale (see deepseek2.cpp's mscale/attn_factor_org
+    /// derivation) -- 0 (the default) leaves kq_scale at the standard YaRN-adjusted value with no
+    /// further correction.
+    /// </summary>
+    public float RopeYarnLogMul { get; init; }
+
+    /// <summary>
     /// Whether MoE router top-k weights should be renormalized to sum to 1 after
     /// selecting the top-k experts. Most architectures (Qwen3-MoE, Mixtral) do.
     /// OLMoE was trained with <c>norm_topk_prob=false</c> and uses the raw
@@ -751,6 +782,40 @@ public sealed record ModelHyperparams
             if (rawLogitScale != 0f) logitScale = 1f / rawLogitScale;
         }
 
+        // DeepSeek2 (MLA) YaRN attention-score correction (src/models/deepseek2.cpp): YaRN's
+        // own magnitude scaling (baked into the RoPE cos/sin table itself, see the YaRN table
+        // builder ForwardPass.cs constructs) uses the ambient attn_factor. This is a SEPARATE,
+        // architecture-specific second correction applied only to the attention softmax scale
+        // (kq_scale):
+        //   attn_factor_org = attn_factor * (1 + 0.1*log(factor))
+        //   mscale = attn_factor_org * (1 + 0.1*RopeYarnLogMul*log(factor))
+        //   kq_scale = mscale^2 / sqrt(n_embd_head_k_mla)
+        // where factor = RopeYarnFactor and "attn_factor" is NOT a constant 1 -- it's
+        // llama-context.cpp's cparams.yarn_attn_factor, which that file deliberately PRE-DIVIDES
+        // by (1 + 0.1*log(factor)) ("cancel this factor" -- discussions/7416, PR #17945)
+        // specifically so deepseek2.cpp's attn_factor_org multiplication cancels it back out.
+        // The pre-division and re-multiplication always cancel exactly, so attn_factor_org
+        // reduces to the PRE-cancellation value: 1 when RopeYarnLogMul != 0 (llama-context.cpp's
+        // DEEPSEEK2 special case forces get_mscale(factor,mscale)/get_mscale(factor,mscale)'s
+        // ratio to 1 regardless of the value), else get_mscale(factor, 1) = 1 + 0.1*log(factor).
+        // With RopeYarnFactor==1 (no YaRN) this all collapses to the ordinary 1/sqrt(HeadDim)
+        // every other architecture gets from AttentionScaleOverride's 0 sentinel -- so it's safe
+        // to compute unconditionally for any KvLoraRank>0 (MLA) model, not just YaRN ones.
+        bool isMla = GetInt(metadata, $"{arch}.attention.kv_lora_rank", 0) > 0;
+        if (isMla && headDim > 0)
+        {
+            float freqScale = GetFloat(metadata, $"{arch}.rope.scaling.factor", 1f) is var yf && yf > 0f ? 1f / yf : 1f;
+            float factor = 1f / freqScale;
+            // [TAG_DEEPSEEK2_YARN_LOG_MUL_FIX] llama.cpp's load_arch_hparams divides the raw
+            // GGUF value by 0.1f right after reading it ("cancel the factor from the convert
+            // script") -- every downstream consumer (this formula and llama-context.cpp's
+            // ambient yarn_attn_factor) uses that ADJUSTED value, not the raw metadata one.
+            float logMul = GetFloat(metadata, $"{arch}.rope.scaling.yarn_log_multiplier", 0f) / 0.1f;
+            float attnFactorOrg = logMul != 0f ? 1f : (factor <= 1f ? 1f : 0.1f * MathF.Log(factor) + 1f);
+            float mscale = attnFactorOrg * (1f + 0.1f * logMul * MathF.Log(factor));
+            attentionScaleOverride = mscale * mscale / MathF.Sqrt(headDim);
+        }
+
         // xIELU non-gated FFN (Apertus): detected from tensor inventory (no ffn_gate weight),
         // same style as HasAttnBias/HasQkNorm — not gated on architecture string, since the
         // xielu.* GGUF keys are declared without an {arch}. prefix in llama.cpp's own key table
@@ -878,6 +943,12 @@ public sealed record ModelHyperparams
             NumSharedExperts = GetInt(metadata, $"{arch}.expert_shared_count", hasSharedExpert ? 1 : 0),
             LeadingDenseBlockCount = GetInt(metadata, $"{arch}.leading_dense_block_count", 0),
             KvLoraRank = GetInt(metadata, $"{arch}.attention.kv_lora_rank", 0),
+            MlaVHeadDim = GetInt(metadata, $"{arch}.attention.value_length", 0),
+            RopeYarnFactor = GetFloat(metadata, $"{arch}.rope.scaling.factor", 1f),
+            RopeYarnOrigCtxLen = GetInt(metadata, $"{arch}.rope.scaling.original_context_length", 0),
+            // [TAG_DEEPSEEK2_YARN_LOG_MUL_FIX] see the matching comment above -- same /0.1f
+            // correction llama.cpp applies at load time, not just in the local kq_scale calc.
+            RopeYarnLogMul = GetFloat(metadata, $"{arch}.rope.scaling.yarn_log_multiplier", 0f) / 0.1f,
             // OLMoE was trained without top-k renormalization. Other softmax-gated
             // MoE architectures (Qwen3-MoE, Mixtral, qwen35moe) renormalize.
             NormalizeMoeTopKWeights = !arch.Equals("olmoe", StringComparison.OrdinalIgnoreCase),

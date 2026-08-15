@@ -21,6 +21,7 @@ public sealed class JsonSchemaGrammarMasker : ITokenConstraint
 {
     private readonly GrammarVocabulary _vocab;
     private readonly GrammarStateMachine _stateMachine;
+    private readonly GrammarStateMachine _scratchStateMachine;
     private readonly float[] _maskedLogits;
     private readonly StringBuilder _accumulatedText = new();
     private readonly byte[] _pendingBytes = new byte[4];
@@ -30,6 +31,11 @@ public sealed class JsonSchemaGrammarMasker : ITokenConstraint
     {
         _vocab = vocab ?? throw new ArgumentNullException(nameof(vocab));
         _stateMachine = stateMachine ?? throw new ArgumentNullException(nameof(stateMachine));
+        // One reused "scratch" instance for candidate-token validation in Filter() below, instead
+        // of allocating a fresh GrammarStateMachine.Clone() per vocabulary entry per decode step
+        // (previously 100k+ allocations/step -- see docs/bugstofix.md). Must share the same root
+        // properties as _stateMachine; GrammarStateMachine.CopyFrom resets it without allocating.
+        _scratchStateMachine = new GrammarStateMachine(_stateMachine.Properties);
         _maskedLogits = new float[vocab.VocabSize];
     }
 
@@ -74,9 +80,11 @@ public sealed class JsonSchemaGrammarMasker : ITokenConstraint
             }
 
             // BPE tokens commonly contain more than one JSON character or partial UTF-8 bytes.
-            // Validate combined pending + candidate token bytes against an isolated state snapshot.
-            var candidateState = _stateMachine.Clone();
-            if (EvaluateCandidateToken(bytes, candidateState))
+            // Validate combined pending + candidate token bytes against an isolated state snapshot
+            // -- reusing one scratch instance (reset per candidate, not reallocated) rather than
+            // cloning a whole new GrammarStateMachine for every vocabulary entry.
+            _scratchStateMachine.CopyFrom(_stateMachine);
+            if (EvaluateCandidateToken(bytes, _scratchStateMachine))
             {
                 anyAllowed = true;
             }

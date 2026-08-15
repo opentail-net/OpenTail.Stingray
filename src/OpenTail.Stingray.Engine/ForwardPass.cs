@@ -238,6 +238,39 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
                                       //   indexed by (token, slot) so the final reduce can run in
                                       //   top-k order — see MoeFfnBatched's phase 4.
 
+    // MLA (Multi-head Latent Attention, DeepSeek-V2/V3/R1). Q stays a plain per-head projection
+    // (wq) for "lite" checkpoints (q_lora_rank==0, the only variant implemented so far -- see
+    // ResolveTensor's deepseek2 branch). K/V are produced from a compressed 512+64-dim latent
+    // instead of separate wk/wv projections: wKvAMqa compresses the residual down, kvANorm RMS-
+    // normalizes the 512-dim latent part, wKvB decompresses it back up to full per-head K-nope
+    // and V (this engine only implements the legacy unsplit wkv_b tensor layout -- see
+    // MlaComputeKv's doc comment for why the split wk_b/wv_b "absorption" layout isn't handled).
+    // Internal per-head layout is [rope(ropeDim), nope(headDim-ropeDim)] -- ROPE FIRST, unlike
+    // ggml's [nope, rope] -- specifically so the existing partial-RoPE mechanism (_ropeDim <
+    // layerHd rotates only the LEADING _ropeDim channels) can rotate the MLA rope component with
+    // zero new RoPE code; attention's dot product is order-invariant as long as Q and K use the
+    // same permutation, which they do here.
+    private readonly bool _isMla;
+    private readonly TensorRef[]? _wKvAMqa;  // [embDim, kvLoraRank + ropeDim] per layer
+    private readonly TensorRef[]? _kvANorm;  // [kvLoraRank] per layer (RMSNorm weight)
+    private readonly TensorRef[]? _wKvB;     // legacy unsplit [kvLoraRank, numHeads*(nopeDim+vDim)] per layer
+    private readonly int _mlaKvLoraRank;
+    private readonly int _mlaNopeDim;        // headDim - ropeDim (K's non-RoPE component width)
+    private readonly int _mlaVDim;           // per-head V width (attention.value_length)
+    private readonly float* _mlaKvCmprPe;    // scratch [kvLoraRank + ropeDim]: compressed latent + shared rope key
+    private readonly float* _mlaDecompressed; // scratch [numHeads * (nopeDim + vDim)]: decompressed k_nope+v, per head
+    private readonly float* _mlaAttnOutCompact; // scratch [numHeads * vDim]: attention output with the zero-pad tail dropped, ready for _wo
+
+    /// <summary>
+    /// Whether layer <paramref name="layer"/> uses the MoE FFN. DeepSeek-V2/V3's leading
+    /// LeadingDenseBlockCount layers (blk.0 only, for DeepSeek-V2-Lite) are plain dense FFN even
+    /// though hp.IsMoE is true for the model overall -- every OTHER MoE architecture this engine
+    /// supports has LeadingDenseBlockCount==0, so this collapses to the model-level hp.IsMoE flag
+    /// for them (every layer MoE-or-not is decided once, not per layer).
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private bool IsMoeLayer(int layer) => _hp.IsMoE && layer >= _hp.LeadingDenseBlockCount;
+
     // Optional TurboQuant KV cache (Phase 3)
     private TurboQuantKvCache? _tqKvCache;
     private float* _rotatedQuery;  // scratch for WHT-rotated query [headDim]
@@ -437,7 +470,29 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
         fixed (float* p = ropeFreqsBuf)
         {
             globalFreqFactors = p;
-            SimdKernels.BuildRopeTable(_ropeCosTable, _ropeSinTable, ctxLen, maxRopeDim, hp.RopeTheta, globalFreqFactors);
+            // MLA (DeepSeek-V2/V3): YaRN-scaled table instead of the plain one. freqFactors
+            // (Gemma 4's per-pair rope_freqs.weight) never coexists with MLA, so no conflict.
+            if (hp.KvLoraRank > 0 && hp.RopeYarnFactor > 1f)
+            {
+                // llama-context.cpp deliberately pre-divides cparams.yarn_attn_factor by
+                // (1 + 0.1*log(factor)) ("cancel this factor" -- discussions/7416, PR #17945)
+                // specifically so it cancels back out inside deepseek2.cpp's attn_factor_org
+                // recovery (attn_factor * (1 + 0.1*log(factor))). Passing 1f here (skipping the
+                // pre-division) left an extra (1+0.1*log(factor)) factor baked into the RoPE
+                // table's magnitude scaling that shouldn't be there. With RopeYarnLogMul != 0
+                // (true for every deepseek2 GGUF we've seen), deepseek2.cpp's own DEEPSEEK2
+                // special case (llama-context.cpp:211) forces that formula's numerator/
+                // denominator to match, so the pre-division reduces to this closed form.
+                float attnFactorForTable = hp.RopeYarnLogMul != 0f
+                    ? 1f / (1f + 0.1f * MathF.Log(hp.RopeYarnFactor))
+                    : 1f;
+                SimdKernels.BuildYarnRopeTable(_ropeCosTable, _ropeSinTable, ctxLen, maxRopeDim, hp.RopeTheta,
+                    hp.RopeYarnOrigCtxLen, freqScale: 1f / hp.RopeYarnFactor, extFactor: 1f, attnFactor: attnFactorForTable);
+            }
+            else
+            {
+                SimdKernels.BuildRopeTable(_ropeCosTable, _ropeSinTable, ctxLen, maxRopeDim, hp.RopeTheta, globalFreqFactors);
+            }
         }
 
         if (hp.RopeThetaSwa > 0f && _layerRopeDim is not null)
@@ -499,6 +554,23 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
         _hasQkNorm = hp.HasQkNorm;
         _perChannelQkNorm = hp.IsPerChannelQkNorm;
         _qNorm = new float*[L]; _kNorm = new float*[L];
+
+        _isMla = hp.KvLoraRank > 0;
+        if (_isMla)
+        {
+            _mlaKvLoraRank = hp.KvLoraRank;
+            _mlaNopeDim = _headDim - _ropeDim;
+            _mlaVDim = hp.MlaVHeadDim > 0 ? hp.MlaVHeadDim : _mlaNopeDim;
+            if (_mlaNopeDim < 1)
+                throw new NotSupportedException(
+                    $"MLA head_dim ({_headDim}) must exceed rope_dim ({_ropeDim}) to leave room for the non-RoPE component.");
+            _wKvAMqa = new TensorRef[L];
+            _kvANorm = new TensorRef[L];
+            _wKvB = new TensorRef[L];
+            _mlaKvCmprPe = Alloc(_mlaKvLoraRank + _ropeDim);
+            _mlaDecompressed = Alloc(_numHeads * (_mlaNopeDim + _mlaVDim));
+            _mlaAttnOutCompact = Alloc(_numHeads * _mlaVDim);
+        }
 
         // MoE weight arrays
         if (hp.IsMoE)
@@ -582,6 +654,22 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
                 _wk[i] = new TensorRef($"blk.{i}.attn_k.weight", SliceRows(kvDim), qkvInfo.DType, qkvBase + (long)qDim * bytesPerRow);
                 _wv[i] = new TensorRef($"blk.{i}.attn_v.weight", SliceRows(kvDim), qkvInfo.DType, qkvBase + (long)(qDim + kvDim) * bytesPerRow);
             }
+            else if (_isMla)
+            {
+                // "Lite" MLA checkpoints (DeepSeek-V2-Lite) have q_lora_rank==0: Q is a plain
+                // per-head projection, same tensor name and layout as any other architecture's
+                // wq. Full-size DeepSeek-V2/V3/R1 (q_lora_rank>0, separate wq_a/wq_b + a q-side
+                // RMSNorm) are NOT handled -- ResolveTensor will throw "Missing tensor:
+                // blk.N.attn_q.weight" on such a checkpoint rather than silently mis-loading it.
+                _wq[i] = ResolveTensor($"blk.{i}.attn_q.weight");
+                _wKvAMqa![i] = ResolveTensor($"blk.{i}.attn_kv_a_mqa.weight");
+                _kvANorm![i] = ResolveTensor($"blk.{i}.attn_kv_a_norm.weight");
+                // Only the legacy unsplit wkv_b tensor is handled (see MlaComputeKv's doc
+                // comment). A GGUF shipping the split wk_b/wv_b "absorption" layout instead has
+                // no attn_kv_b tensor at all, so this throws "Missing tensor" rather than loading
+                // nothing and producing silently-wrong attention.
+                _wKvB![i] = ResolveTensor($"blk.{i}.attn_kv_b.weight");
+            }
             else
             {
                 _wq[i] = ResolveTensor($"blk.{i}.attn_q.weight");
@@ -597,7 +685,13 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
                 }
             }
 
-            if (hp.IsMoE)
+            // DeepSeek-V2/V3: the first LeadingDenseBlockCount layers are plain dense FFN
+            // (blk.0 here — leading_dense_block_count=1), MoE only kicks in from that layer
+            // on. hp.IsMoE alone is a MODEL-level flag ("this architecture has MoE layers
+            // somewhere"); every other MoE architecture this engine supports (Qwen3-MoE,
+            // OLMoE, Mixtral, ...) has NO leading dense layers, so LeadingDenseBlockCount is 0
+            // and this collapses to the original "IsMoE ⇒ every layer" check for them.
+            if (hp.IsMoE && i >= hp.LeadingDenseBlockCount)
             {
                 _wGateInp![i] = ResolveTensor($"blk.{i}.ffn_gate_inp.weight");
                 _wGateExps![i] = ResolveTensor($"blk.{i}.ffn_gate_exps.weight");
@@ -872,7 +966,7 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
             if (_postAttnNorm is not null) Add(_postAttnNorm[i]);
             if (_postFfwNorm is not null) Add(_postFfwNorm[i]);
 
-            if (_hp.IsMoE)
+            if (IsMoeLayer(i))
             {
                 Add(_wGateInp![i]);
                 Add(_wGateExps![i]); Add(_wUpExps![i]); Add(_wDownExps![i]);
@@ -1521,6 +1615,11 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
             var batchMoeOut = batchedMoe
                 ? (float*)NativeMemory.AllocZeroed((nuint)((long)N * _embDim * sizeof(float)))
                 : null;
+            // MLA: attention output before _wo needs numHeads*_mlaVDim per token, not the
+            // zero-padded numHeads*_maxHeadDim batchAttnOut carries (see MlaCompactAttnOutBatched).
+            var batchMlaAttnOutCompact = _isMla
+                ? (float*)NativeMemory.AllocZeroed((nuint)((long)N * _numHeads * _mlaVDim * sizeof(float)))
+                : null;
 
             try
             {
@@ -1573,10 +1672,19 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
                     }
 
                     pStage = profPrefill ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
-                    // Batched Q/K/V projections (single GEMM per weight matrix)
-                    MatMulBatchedCached(batchQ, in _wq[layer], batchNorm, N, qDim, _embDim);
-                    MatMulBatchedCached(batchK, in _wk[layer], batchNorm, N, kvDim, _embDim);
-                    MatMulBatchedCached(batchV, in _wv[layer], batchNorm, N, kvDim, _embDim);
+                    if (_isMla)
+                    {
+                        // MLA (DeepSeek-V2/V3): compressed-latent K/V, not a direct wk/wv
+                        // projection — see MlaComputeQkvBatched's doc comment.
+                        MlaComputeQkvBatched(layer, batchNorm, N, batchQ, batchK, batchV);
+                    }
+                    else
+                    {
+                        // Batched Q/K/V projections (single GEMM per weight matrix)
+                        MatMulBatchedCached(batchQ, in _wq[layer], batchNorm, N, qDim, _embDim);
+                        MatMulBatchedCached(batchK, in _wk[layer], batchNorm, N, kvDim, _embDim);
+                        MatMulBatchedCached(batchV, in _wv[layer], batchNorm, N, kvDim, _embDim);
+                    }
 
                     // Apply QKV biases per token (Qwen/GPT-NeoX models)
                     if (_hasAttnBias)
@@ -1678,7 +1786,18 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
 
                     pStage = profPrefill ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
                     // Batched output projection
-                    MatMulBatchedCached(batchNorm, in _wo[layer], batchAttnOut, N, _embDim, qDim);
+                    if (_isMla)
+                    {
+                        // batchAttnOut is zero-padded to _maxHeadDim per head (see
+                        // MlaComputeQkvBatched); _wo's real GGUF shape expects
+                        // numHeads*_mlaVDim, not numHeads*_maxHeadDim.
+                        MlaCompactAttnOutBatched(batchAttnOut, batchMlaAttnOutCompact!, N);
+                        MatMulBatchedCached(batchNorm, in _wo[layer], batchMlaAttnOutCompact!, N, _embDim, _numHeads * _mlaVDim);
+                    }
+                    else
+                    {
+                        MatMulBatchedCached(batchNorm, in _wo[layer], batchAttnOut, N, _embDim, qDim);
+                    }
 
                     // Apply output projection bias (Qwen models)
                     if (_hasAttnOutputBias)
@@ -1758,9 +1877,12 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
                     }
 
                     // Where this layer's FFN output lands: dense reuses batchNorm in place,
-                    // MoE needs its own buffer (see batchMoeOut's declaration).
-                    float* ffnOut = batchedMoe ? batchMoeOut : batchNorm;
-                    if (batchedMoe)
+                    // MoE needs its own buffer (see batchMoeOut's declaration). Per-LAYER check
+                    // (not the model-level batchedMoe) so DeepSeek-V2's leading dense block(s)
+                    // correctly take the dense path even though the model overall IsMoE.
+                    bool layerIsMoe = IsMoeLayer(layer);
+                    float* ffnOut = layerIsMoe ? batchMoeOut : batchNorm;
+                    if (layerIsMoe)
                     {
                         MoeFfnBatched(layer, batchNorm, batchMoeOut, N);
                     }
@@ -1896,6 +2018,7 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
                 NativeMemory.Free(batchFfnGate);
                 NativeMemory.Free(batchFfnUp);
                 if (batchMoeOut != null) NativeMemory.Free(batchMoeOut);
+                if (batchMlaAttnOutCompact != null) NativeMemory.Free(batchMlaAttnOutCompact);
                 if (kStage != null) NativeMemory.Free(kStage);
                 if (vStage != null) NativeMemory.Free(vStage);
             }
@@ -2583,33 +2706,42 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
                 new Span<float>(_k, kvBytes).Clear();
                 new Span<float>(_v, kvBytes).Clear();
             }
-            FusedMatVec(_q, _wq[layer], _normBuf, qDimL, _embDim);
-            if (!kvShared)
+            if (_isMla)
             {
-                if (kEqV)
+                // MLA (DeepSeek-V2/V3): compressed-latent K/V, not a direct wk/wv projection --
+                // see MlaComputeQkv's doc comment for the internal layout this writes.
+                MlaComputeQkv(layer, _normBuf, _q, _k, _v);
+            }
+            else
+            {
+                FusedMatVec(_q, _wq[layer], _normBuf, qDimL, _embDim);
+                if (!kvShared)
                 {
-                    // Gemma 4 12B global layers: no attn_v weight — V is the raw K
-                    // projection (copied BEFORE QK-norm and RoPE, then plain-RMS-normed
-                    // below). Mirrors CudaForwardPass CopyDevice(vView, kView).
-                    FusedMatVec(_k, _wk[layer], _normBuf, kvDimL, _embDim);
-                    Copy(_v, _k, kvDimL);
-                }
-                else if (_layerHeadDim is not null)
-                {
-                    // Gemma 4: K and V share row count and dtype — fuse via
-                    // MatVecDual so the row loops interleave and the input
-                    // vector reads amortize. The row-interleave changes the FP
-                    // ordering vs sequential matvecs by ~ULP; gated to the
-                    // per-layer head_dim path because cumulative trunk drift
-                    // breaks Qwen3.6-27B-MTP byte parity (see
-                    // feedback_qkv_matvecdual_breaks_mtp_parity).
-                    SimdKernels.MatVecDual(_k, _wk[layer].DataPtr, _v, _wv[layer].DataPtr,
-                        _normBuf, kvDimL, _embDim, _wk[layer].DType, _wv[layer].DType);
-                }
-                else
-                {
-                    FusedMatVec(_k, _wk[layer], _normBuf, kvDimL, _embDim);
-                    FusedMatVec(_v, _wv[layer], _normBuf, kvDimL, _embDim);
+                    if (kEqV)
+                    {
+                        // Gemma 4 12B global layers: no attn_v weight — V is the raw K
+                        // projection (copied BEFORE QK-norm and RoPE, then plain-RMS-normed
+                        // below). Mirrors CudaForwardPass CopyDevice(vView, kView).
+                        FusedMatVec(_k, _wk[layer], _normBuf, kvDimL, _embDim);
+                        Copy(_v, _k, kvDimL);
+                    }
+                    else if (_layerHeadDim is not null)
+                    {
+                        // Gemma 4: K and V share row count and dtype — fuse via
+                        // MatVecDual so the row loops interleave and the input
+                        // vector reads amortize. The row-interleave changes the FP
+                        // ordering vs sequential matvecs by ~ULP; gated to the
+                        // per-layer head_dim path because cumulative trunk drift
+                        // breaks Qwen3.6-27B-MTP byte parity (see
+                        // feedback_qkv_matvecdual_breaks_mtp_parity).
+                        SimdKernels.MatVecDual(_k, _wk[layer].DataPtr, _v, _wv[layer].DataPtr,
+                            _normBuf, kvDimL, _embDim, _wk[layer].DType, _wv[layer].DType);
+                    }
+                    else
+                    {
+                        FusedMatVec(_k, _wk[layer], _normBuf, kvDimL, _embDim);
+                        FusedMatVec(_v, _wv[layer], _normBuf, kvDimL, _embDim);
+                    }
                 }
             }
             if (profDecode)
@@ -2727,7 +2859,17 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
             StageCapture.Record("cpu", layer, StageCapture.Stages.AttnOut,
                 new ReadOnlySpan<float>(_attnOut, qDimL));
 
-            FusedMatVec(_hidden, _wo[layer], _attnOut, _embDim, qDimL);
+            if (_isMla)
+            {
+                // _attnOut is zero-padded to _maxHeadDim per head (see MlaComputeQkv); _wo's
+                // real GGUF shape expects numHeads*_mlaVDim, not numHeads*_maxHeadDim.
+                MlaCompactAttnOut(_attnOut, _mlaAttnOutCompact);
+                FusedMatVec(_hidden, _wo[layer], _mlaAttnOutCompact, _embDim, _numHeads * _mlaVDim);
+            }
+            else
+            {
+                FusedMatVec(_hidden, _wo[layer], _attnOut, _embDim, qDimL);
+            }
             if (_hasAttnOutputBias)
                 SimdKernels.AddInPlace(_hidden, _bo[layer], _embDim);
             StageCapture.Record("cpu", layer, StageCapture.Stages.OProj,
@@ -2773,7 +2915,7 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
                     stageStart = System.Diagnostics.Stopwatch.GetTimestamp();
                 }
 
-                if (_hp.IsMoE)
+                if (IsMoeLayer(layer))
                     MoeFfn(layer);
                 else
                     DenseFfn(layer);
@@ -2827,7 +2969,7 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
                 stageStart = System.Diagnostics.Stopwatch.GetTimestamp();
             }
 
-            if (_hp.IsMoE)
+            if (IsMoeLayer(layer))
                 MoeFfn(layer);
             else
                 DenseFfn(layer);
@@ -2973,11 +3115,207 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
         }
     }
 
+    /// <summary>
+    /// MLA (DeepSeek-V2/V3/R1) Q/K/V for one token, replacing the standard wq/wk/wv projections
+    /// for this architecture. Writes <paramref name="q"/>/<paramref name="k"/>/<paramref name="v"/>
+    /// (each <c>_numHeads * _maxHeadDim</c>-wide, same buffers/stride the standard path uses) with
+    /// this class's internal per-head layout: K is <c>[rope(_ropeDim), nope(_mlaNopeDim)]</c> --
+    /// ROPE FIRST, unlike ggml's <c>[nope, rope]</c> -- so the existing partial-RoPE path
+    /// (<see cref="ApplyRopeLayer"/>, which rotates only the LEADING <c>_ropeDim</c> channels) can
+    /// rotate it with no new RoPE code; attention's dot product doesn't care which permutation Q
+    /// and K agree on, only that they DO agree, which this and Q's own reordering below guarantee.
+    /// V is <c>[v(_mlaVDim), zero-pad(_maxHeadDim - _mlaVDim)]</c> -- padded because
+    /// <see cref="PagedKvCache"/>/<see cref="Attention(PagedKvCache,int,int)"/> assume one shared
+    /// width for K and V per head, which MLA's independent 192/128 GGUF dims don't naturally have;
+    /// the padding contributes exactly zero to the attention-weighted sum by construction, and
+    /// callers must read only the first <c>_mlaVDim</c> floats of each head's attention OUTPUT
+    /// before the wo projection (see PrefillCoreAttention/RunTrunk's MLA branches).
+    ///
+    /// <para>Q is a plain per-head projection (<c>_wq[layer]</c>, ggml <c>[nope, rope]</c> order)
+    /// since only q_lora_rank==0 "lite" checkpoints are handled -- reordered into this class's
+    /// <c>[rope, nope]</c> convention below. Only the legacy unsplit <c>wkv_b</c> tensor layout is
+    /// handled for K/V (DeepSeek-V2-Lite ships this); the split <c>wk_b</c>/<c>wv_b</c>
+    /// "absorption" layout some newer checkpoints use is not implemented -- such a GGUF has no
+    /// <c>attn_kv_b</c> tensor at all, so <see cref="ResolveTensor"/> already fails closed
+    /// ("Missing tensor") at load time rather than silently mis-attending.</para>
+    /// </summary>
+    private void MlaComputeQkv(int layer, float* normBuf, float* q, float* k, float* v)
+    {
+        int qDimMla = _numHeads * _headDim;
+
+        // Q: standard per-head projection, ggml [nope, rope] order -> reorder to [rope, nope].
+        FusedMatVec(_q, _wq[layer], normBuf, qDimMla, _embDim);
+        for (int h = 0; h < _numHeads; h++)
+        {
+            float* src = _q + (long)h * _headDim;      // [nope(_mlaNopeDim), rope(_ropeDim)]
+            float* dst = q + (long)h * _maxHeadDim;     // [rope(_ropeDim), nope(_mlaNopeDim)]
+            Copy(dst, src + _mlaNopeDim, _ropeDim);
+            Copy(dst + _ropeDim, src, _mlaNopeDim);
+        }
+
+        // K/V: compress -> norm -> decompress (see the doc comment above for the full shape story).
+        FusedMatVec(_mlaKvCmprPe, _wKvAMqa![layer], normBuf, _mlaKvLoraRank + _ropeDim, _embDim);
+
+        if (s_mlaDebug && layer == 0)
+            DebugMlaStats("kv_cmpr_pe (pre-norm)", _mlaKvCmprPe, _mlaKvLoraRank + _ropeDim);
+
+        var kvANormW = GetNormWeight(_kvANorm![layer]);
+        FastNorm(_mlaKvCmprPe, _mlaKvCmprPe, kvANormW, null, _mlaKvLoraRank, _hp.RmsNormEps);
+
+        if (s_mlaDebug && layer == 0)
+        {
+            DebugMlaStats("kv_cmpr (post-norm)", _mlaKvCmprPe, _mlaKvLoraRank);
+            DebugMlaStats("normBuf", normBuf, _embDim);
+            DebugMlaStats("q (raw, [nope,rope])", _q, qDimMla);
+        }
+
+        FusedMatVec(_mlaDecompressed, _wKvB![layer], _mlaKvCmprPe,
+            _numHeads * (_mlaNopeDim + _mlaVDim), _mlaKvLoraRank);
+
+        if (s_mlaDebug && layer == 0)
+            DebugMlaStats("decompressed kv", _mlaDecompressed, _numHeads * (_mlaNopeDim + _mlaVDim));
+
+        float* kPe = _mlaKvCmprPe + _mlaKvLoraRank; // MQA: identical across every head
+        int decompStride = _mlaNopeDim + _mlaVDim;
+        for (int h = 0; h < _numHeads; h++)
+        {
+            float* kHead = k + (long)h * _maxHeadDim;
+            float* vHead = v + (long)h * _maxHeadDim;
+            float* decompHead = _mlaDecompressed + (long)h * decompStride;
+
+            Copy(kHead, kPe, _ropeDim);
+            Copy(kHead + _ropeDim, decompHead, _mlaNopeDim);
+
+            Copy(vHead, decompHead + _mlaNopeDim, _mlaVDim);
+            if (_mlaVDim < _maxHeadDim)
+                new Span<float>(vHead + _mlaVDim, _maxHeadDim - _mlaVDim).Clear();
+        }
+    }
+
+    /// <summary>
+    /// Compacts an MLA attention output from this class's zero-padded per-head width
+    /// (<c>_maxHeadDim</c>, see <see cref="MlaComputeQkv"/>) down to the REAL per-head V width
+    /// (<c>_mlaVDim</c>) that <c>_wo</c>'s actual GGUF shape expects
+    /// (<c>n_head * n_embd_head_v_mla</c>, not <c>n_head * _maxHeadDim</c>). The dropped tail is
+    /// always exactly zero by construction, so this is a lossless truncation, not an approximation.
+    /// </summary>
+    private void MlaCompactAttnOut(float* attnOutPadded, float* attnOutCompact)
+    {
+        for (int h = 0; h < _numHeads; h++)
+            Copy(attnOutCompact + (long)h * _mlaVDim, attnOutPadded + (long)h * _maxHeadDim, _mlaVDim);
+    }
+
+    /// <summary>
+    /// Batched (N-token) sibling of <see cref="MlaCompactAttnOut"/> for <see cref="PrefillCore"/>:
+    /// <paramref name="batchAttnOutPadded"/> is <c>N * (numHeads * _maxHeadDim)</c>-strided,
+    /// <paramref name="batchAttnOutCompact"/> is <c>N * (numHeads * _mlaVDim)</c>-strided.
+    /// </summary>
+    private void MlaCompactAttnOutBatched(float* batchAttnOutPadded, float* batchAttnOutCompact, int N)
+    {
+        int paddedStride = _numHeads * _maxHeadDim;
+        int compactStride = _numHeads * _mlaVDim;
+        for (int n = 0; n < N; n++)
+            MlaCompactAttnOut(batchAttnOutPadded + (long)n * paddedStride, batchAttnOutCompact + (long)n * compactStride);
+    }
+
+    /// <summary>
+    /// Batched (N-token) sibling of <see cref="MlaComputeQkv"/> for <see cref="PrefillCore"/>:
+    /// same per-token math and layout (see that method's doc comment), but Q/K-nope-and-V's three
+    /// projections each run as ONE batched GEMM across all N tokens (via
+    /// <see cref="MatMulBatchedCached"/>) instead of N separate MatVec calls, matching how the
+    /// standard (non-MLA) path amortizes weight reads across a whole prefill chunk.
+    /// <paramref name="batchQ"/>/<paramref name="batchK"/>/<paramref name="batchV"/> are each
+    /// <c>N * (numHeads * _maxHeadDim)</c>-strided, matching PrefillCore's existing batch buffers.
+    /// </summary>
+    private void MlaComputeQkvBatched(int layer, float* batchNorm, int N, float* batchQ, float* batchK, float* batchV)
+    {
+        int qDimMla = _numHeads * _headDim;
+        int kvCmprPeDim = _mlaKvLoraRank + _ropeDim;
+        int decompDim = _numHeads * (_mlaNopeDim + _mlaVDim);
+
+        var batchQRaw = (float*)NativeMemory.AllocZeroed((nuint)((long)N * qDimMla * sizeof(float)));
+        var batchKvCmprPe = (float*)NativeMemory.AllocZeroed((nuint)((long)N * kvCmprPeDim * sizeof(float)));
+        var batchKvCmprNormed = (float*)NativeMemory.AllocZeroed((nuint)((long)N * _mlaKvLoraRank * sizeof(float)));
+        var batchDecompressed = (float*)NativeMemory.AllocZeroed((nuint)((long)N * decompDim * sizeof(float)));
+        try
+        {
+            MatMulBatchedCached(batchQRaw, in _wq[layer], batchNorm, N, qDimMla, _embDim);
+            MatMulBatchedCached(batchKvCmprPe, in _wKvAMqa![layer], batchNorm, N, kvCmprPeDim, _embDim);
+
+            var kvANormW = GetNormWeight(_kvANorm![layer]);
+            for (int n = 0; n < N; n++)
+            {
+                float* src = batchKvCmprPe + (long)n * kvCmprPeDim;
+                float* dst = batchKvCmprNormed + (long)n * _mlaKvLoraRank;
+                FastNorm(dst, src, kvANormW, null, _mlaKvLoraRank, _hp.RmsNormEps);
+            }
+
+            MatMulBatchedCached(batchDecompressed, in _wKvB![layer], batchKvCmprNormed, N, decompDim, _mlaKvLoraRank);
+
+            int decompStride = _mlaNopeDim + _mlaVDim;
+            int qStride = _numHeads * _maxHeadDim;
+            for (int n = 0; n < N; n++)
+            {
+                float* qRawTok = batchQRaw + (long)n * qDimMla;
+                float* qTok = batchQ + (long)n * qStride;
+                float* kTok = batchK + (long)n * qStride;
+                float* vTok = batchV + (long)n * qStride;
+                float* kPe = batchKvCmprPe + (long)n * kvCmprPeDim + _mlaKvLoraRank; // MQA: shared across heads
+                float* decompTok = batchDecompressed + (long)n * decompDim;
+
+                for (int h = 0; h < _numHeads; h++)
+                {
+                    float* qSrc = qRawTok + (long)h * _headDim;   // ggml [nope, rope]
+                    float* qDst = qTok + (long)h * _maxHeadDim;   // this class's [rope, nope]
+                    Copy(qDst, qSrc + _mlaNopeDim, _ropeDim);
+                    Copy(qDst + _ropeDim, qSrc, _mlaNopeDim);
+
+                    float* kHead = kTok + (long)h * _maxHeadDim;
+                    float* vHead = vTok + (long)h * _maxHeadDim;
+                    float* decompHead = decompTok + (long)h * decompStride;
+
+                    Copy(kHead, kPe, _ropeDim);
+                    Copy(kHead + _ropeDim, decompHead, _mlaNopeDim);
+
+                    Copy(vHead, decompHead + _mlaNopeDim, _mlaVDim);
+                    if (_mlaVDim < _maxHeadDim)
+                        new Span<float>(vHead + _mlaVDim, _maxHeadDim - _mlaVDim).Clear();
+                }
+            }
+        }
+        finally
+        {
+            NativeMemory.Free(batchQRaw);
+            NativeMemory.Free(batchKvCmprPe);
+            NativeMemory.Free(batchKvCmprNormed);
+            NativeMemory.Free(batchDecompressed);
+        }
+    }
+
     private static float L2Norm(float* x, int n)
     {
         double s = 0;
         for (int i = 0; i < n; i++) { double v = x[i]; s += v * v; }
         return (float)Math.Sqrt(s);
+    }
+
+    // TEMP diagnostic (STINGRAY_MLA_DEBUG=1) for isolating the DeepSeek2 MLA numerical bug.
+    private static readonly bool s_mlaDebug = Environment.GetEnvironmentVariable("STINGRAY_MLA_DEBUG") == "1";
+    private static void DebugMlaStats(string label, float* x, int n)
+    {
+        double sum = 0, sumSq = 0, absMax = 0;
+        bool hasNaN = false;
+        for (int i = 0; i < n; i++)
+        {
+            float v = x[i];
+            if (float.IsNaN(v) || float.IsInfinity(v)) hasNaN = true;
+            sum += v; sumSq += (double)v * v;
+            double a = Math.Abs(v);
+            if (a > absMax) absMax = a;
+        }
+        double mean = sum / n;
+        double rms = Math.Sqrt(sumSq / n);
+        Console.Error.WriteLine($"[MLA-DBG] {label}: n={n} mean={mean:F4} rms={rms:F4} absMax={absMax:F4} nan/inf={hasNaN} first5=[{x[0]:F3},{x[1]:F3},{x[2]:F3},{x[3]:F3},{x[4]:F3}]");
     }
 
     private void EmitNormTrace(int token, int position,

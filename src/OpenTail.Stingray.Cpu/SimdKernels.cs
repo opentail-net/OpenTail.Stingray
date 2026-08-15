@@ -7146,6 +7146,68 @@ public static unsafe class SimdKernels
         }
     }
 
+    /// <summary>
+    /// Precompute YaRN-scaled RoPE cos/sin tables for all positions [0, maxSeqLen). Reference:
+    /// rope_yarn / rope_yarn_corr_dims / ggml_rope_cache_init in llama.cpp's ggml-cpu/ops.cpp
+    /// (MIT-licensed, itself citing https://github.com/jquesnelle/yarn). cosOut/sinOut must each
+    /// point to maxSeqLen * (headDim / 2) floats, matching <see cref="BuildRopeTable"/>'s layout
+    /// so either can back the same lookup table.
+    ///
+    /// <para>Degenerates to plain <see cref="BuildRopeTable"/> when <paramref name="freqScale"/> is
+    /// 1 and <paramref name="extFactor"/> is 0 (ramp_mix never applies, theta stays the
+    /// unscaled extrapolated angle, mscale stays attnFactor) -- callers don't need a separate
+    /// "is YaRN active" branch at the call site, just correct (1, 0, 1) defaults when a model has
+    /// no rope.scaling metadata.</para>
+    /// </summary>
+    /// <param name="attnFactor">Baseline magnitude scale (llama.cpp default 1.0 absent an explicit
+    /// {arch}.rope.scaling.attn_factor key). NOT the same as ModelHyperparams.RopeYarnLogMul's
+    /// separate attention-softmax-only correction (see ModelGraph.cs) -- this one is baked into
+    /// the cos/sin table itself.</param>
+    public static void BuildYarnRopeTable(float* cosOut, float* sinOut, int maxSeqLen, int headDim,
+        float theta, int origCtxLen, float freqScale, float extFactor, float attnFactor,
+        float betaFast = 32f, float betaSlow = 1f)
+    {
+        int halfDim = headDim / 2;
+
+        // rope_yarn_corr_dim: n_dims * log(n_ctx_orig / (n_rot * 2*PI)) / (2*log(base))
+        static float CorrDim(int nDims, int nCtxOrig, float nRot, float b) =>
+            nDims * MathF.Log(nCtxOrig / (nRot * 2f * MathF.PI)) / (2f * MathF.Log(b));
+
+        float corrLow = 0f, corrHigh = halfDim * 2f - 1f;
+        if (origCtxLen > 0)
+        {
+            corrLow = MathF.Max(0f, MathF.Floor(CorrDim(headDim, origCtxLen, betaFast, theta)));
+            corrHigh = MathF.Min(headDim - 1, MathF.Ceiling(CorrDim(headDim, origCtxLen, betaSlow, theta)));
+        }
+
+        float thetaScale = MathF.Pow(theta, -2.0f / headDim);
+
+        for (int p = 0; p < maxSeqLen; p++)
+        {
+            float* c = cosOut + (long)p * halfDim;
+            float* s = sinOut + (long)p * halfDim;
+            float thetaExtrap = p; // theta_base for position p; scaled by thetaScale each step below
+            for (int i = 0; i < halfDim; i++)
+            {
+                float thetaInterp = freqScale * thetaExtrap;
+                float thetaFinal = thetaInterp;
+                float mscale = attnFactor;
+                if (extFactor != 0f)
+                {
+                    // rope_yarn_ramp(low, high, i0) with i0 = 2*i (rope_yarn indexes by the
+                    // ungrouped dim, this table by the pair index).
+                    float y = (i - corrLow) / MathF.Max(0.001f, corrHigh - corrLow);
+                    float rampMix = (1f - MathF.Min(1f, MathF.Max(0f, y))) * extFactor;
+                    thetaFinal = thetaInterp * (1f - rampMix) + thetaExtrap * rampMix;
+                    mscale *= 1f + 0.1f * MathF.Log(1f / freqScale);
+                }
+                c[i] = MathF.Cos(thetaFinal) * mscale;
+                s[i] = MathF.Sin(thetaFinal) * mscale;
+                thetaExtrap *= thetaScale;
+            }
+        }
+    }
+
     // ================================================================
     //  Single-row dequantization (for embedding lookup)
     // ================================================================
