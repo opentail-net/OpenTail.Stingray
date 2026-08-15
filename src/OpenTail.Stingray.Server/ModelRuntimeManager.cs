@@ -16,6 +16,17 @@ public interface IModelRuntimeManager
     ModelResidencyMode ResidencyMode { get; set; }
 
     /// <summary>
+    /// Optional resource-pressure gate on <em>new</em> loads (docs/032 §"Resource admission").
+    /// <c>null</c> (default) disables admission checking entirely — every acquisition behaves
+    /// exactly as before this existed. When set, a cold acquisition first evicts idle/evictable
+    /// resident runtimes if needed and re-checks; if the candidate still doesn't fit, it throws
+    /// <see cref="InsufficientResourcesException"/> rather than overcommitting host memory.
+    /// Already-resident acquisitions are never affected — admission only gates starting a new
+    /// physical load.
+    /// </summary>
+    IResourceBudget? ResourceBudget { get; set; }
+
+    /// <summary>
     /// Returns a lease on the resident runtime for <paramref name="model"/>, loading it first if
     /// necessary. Concurrent cold acquisitions for the same <paramref name="model"/> single-flight
     /// onto one physical load. The returned handle must be disposed by the caller when the work
@@ -42,6 +53,11 @@ public sealed class ModelRuntimeManager : IModelRuntimeManager, IDisposable
     private TaskCompletionSource _residencyChanged = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private ModelResidencyMode _residencyMode;
     private bool _disposed;
+
+    /// <summary>Off by default (see interface doc) — deliberately not passed by the server DI
+    /// wiring yet, so production behavior for the existing single-model path is unchanged until
+    /// this is explicitly opted into.</summary>
+    public IResourceBudget? ResourceBudget { get; set; }
 
     public ModelResidencyMode ResidencyMode
     {
@@ -116,6 +132,9 @@ public sealed class ModelRuntimeManager : IModelRuntimeManager, IDisposable
                     if (_residencyMode == ModelResidencyMode.SingleSlot)
                         EvictIdleOthersLocked(keep: model);
 
+                    if (ResourceBudget is { } budget)
+                        EnsureAdmissibleLocked(model, budget);
+
                     var newTcs = new TaskCompletionSource<ModelRuntime>(TaskCreationOptions.RunContinuationsAsynchronously);
                     _pendingLoads[model] = newTcs;
                     pendingLoad = newTcs.Task;
@@ -187,6 +206,33 @@ public sealed class ModelRuntimeManager : IModelRuntimeManager, IDisposable
         // this codebase (synchronous disposal under the same lock) rather than introducing a new
         // async-disposal pattern for Phase 1.
         foreach (var rt in toDispose) rt.Dispose();
+    }
+
+    /// <summary>Resource-pressure admission gate for a fresh cold load. Caller must hold
+    /// <see cref="_lock"/>. Reentrant-safe: <paramref name="budget"/>'s
+    /// <c>GetCurrent()</c>/<c>EstimateAdmission</c> calls back into this same manager's
+    /// <see cref="Snapshot"/>, which re-enters <see cref="_lock"/> — safe because <c>Monitor</c>
+    /// (what <c>lock</c> compiles to) is reentrant per-thread, and this is always called
+    /// synchronously from the same thread that already holds it.
+    ///
+    /// Best-effort, not exact: eviction disposes memory-mapped GGUF handles, which typically
+    /// frees host pages promptly, but nothing here waits for the OS to actually reflect it before
+    /// re-checking — see docs/032 §"Resource admission" on why Phase 1/3's admission story is
+    /// conservative rather than exact. Throws as the documented hard-failure last resort; Phase 6's
+    /// queueing alternative isn't built yet.</summary>
+    private void EnsureAdmissibleLocked(ModelId model, IResourceBudget budget)
+    {
+        long candidateBytes = _estimateBytes(model);
+        if (budget.EstimateAdmission(candidateBytes) == ResourceAdmission.Allowed)
+            return;
+
+        // Doesn't fit as things stand — free whatever's safely reclaimable (idle, non-pinned,
+        // never the candidate itself) and re-check once before giving up.
+        EvictIdleOthersLocked(keep: model);
+        if (budget.EstimateAdmission(candidateBytes) == ResourceAdmission.Allowed)
+            return;
+
+        throw new InsufficientResourcesException(model, candidateBytes, budget.GetCurrent());
     }
 
     private void RunLoad(ModelId model, TaskCompletionSource<ModelRuntime> tcs)

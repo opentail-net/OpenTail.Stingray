@@ -12,6 +12,25 @@ public readonly record struct ResourceSnapshot(
     long? AcceleratorMemoryAvailableBytes,
     long ResidentModelBytes);
 
+/// <summary>
+/// Thrown by <see cref="ModelRuntimeManager.AcquireAsync"/> when a cold load's candidate model
+/// still doesn't pass <see cref="IResourceBudget.EstimateAdmission"/> even after evicting every
+/// idle/evictable resident runtime — the documented hard-failure last resort in docs/032's
+/// eviction hierarchy. Only reachable when <see cref="IModelRuntimeManager.ResourceBudget"/> is
+/// explicitly set; the default (<c>null</c>) never throws this.
+/// </summary>
+public sealed class InsufficientResourcesException(ModelId model, long candidateModelBytes, ResourceSnapshot snapshot)
+    : InvalidOperationException(
+        $"Cannot admit model '{model}' (~{candidateModelBytes:N0} bytes estimated) — insufficient " +
+        $"host memory even after evicting idle resident models (available: " +
+        $"{snapshot.HostMemoryAvailableBytes:N0} bytes, currently resident: " +
+        $"{snapshot.ResidentModelBytes:N0} bytes).")
+{
+    public ModelId Model { get; } = model;
+    public long CandidateModelBytes { get; } = candidateModelBytes;
+    public ResourceSnapshot Snapshot { get; } = snapshot;
+}
+
 /// <summary>Result of <see cref="IResourceBudget.EstimateAdmission"/>.</summary>
 public enum ResourceAdmission
 {

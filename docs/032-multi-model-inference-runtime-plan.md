@@ -345,10 +345,15 @@ background/speculative model preloading. All out of scope here.
    (`src/OpenTail.Stingray.Server/ResourceBudget.cs`) — host memory (via `GC.GetGCMemoryInfo`,
    portable, no P/Invoke) plus resident-model-bytes totals, purely observational.
    **Slice 2 done:** `IResourceBudget.EstimateAdmission(long candidateModelBytes)` — a
-   weight-only, conservative (25% safety-margin) admission *check*, still advisory only, nothing
-   calls it from `AcquireAsync` yet. **Not yet done:** actually wiring an admission call into
-   `AcquireAsync`'s admit/evict/queue decision, accelerator (VRAM) accounting, and the
-   eviction-under-pressure behavior the acceptance test above needs.
+   weight-only, conservative (25% safety-margin) admission *check*.
+   **Slice 3 done:** wired into `AcquireAsync` via the new `IModelRuntimeManager.ResourceBudget`
+   property — `null` by default (feature off, zero behavior change; the server DI wiring still
+   doesn't set it). When set, a cold load first checks admission, evicts idle/evictable resident
+   runtimes and re-checks once if it doesn't fit, and throws `InsufficientResourcesException` as
+   the documented hard-failure last resort if it still doesn't. Already-resident acquisitions
+   always bypass the gate entirely (fast path returns before admission is ever consulted).
+   **Not yet done:** accelerator (VRAM) accounting, and Phase 6's queueing alternative to hard
+   failure when eviction alone isn't enough.
 4. **Multi-session model execution.** Wire each runtime to `HotSession` + continuous batching.
    *Acceptance: N sessions on one runtime behave exactly as today's same-model concurrency.*
 5. **Cross-model concurrent execution.** Remove any process-wide serialization preventing two

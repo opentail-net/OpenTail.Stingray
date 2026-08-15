@@ -41,6 +41,17 @@ public sealed class ModelRuntimeManagerTests
     private static LoadedEngine Load(string modelId) =>
         new(new DisposableFakeEngine(modelId), "qwen2", null);
 
+    private sealed class FakeResourceBudget(Func<long, ResourceAdmission> estimateAdmission) : IResourceBudget
+    {
+        public int EstimateAdmissionCallCount { get; private set; }
+        public ResourceSnapshot GetCurrent() => new(0, 0, null, 0);
+        public ResourceAdmission EstimateAdmission(long candidateModelBytes)
+        {
+            EstimateAdmissionCallCount++;
+            return estimateAdmission(candidateModelBytes);
+        }
+    }
+
     // ── Lifecycle ────────────────────────────────────────────────────────────
 
     [Fact]
@@ -315,5 +326,97 @@ public sealed class ModelRuntimeManagerTests
         // A candidate sized exactly at "currently available" still needs the 25% margin on top —
         // proves the margin is actually applied, not just documented.
         Assert.Equal(ResourceAdmission.InsufficientHostMemory, budget.EstimateAdmission(available));
+    }
+
+    // ── Phase 3 slice: wiring admission into AcquireAsync ───────────────────
+
+    [Fact]
+    public async Task AcquireAsync_NoResourceBudgetSet_AdmissionNeverConsulted_ExistingBehaviorUnchanged()
+    {
+        using var manager = new ModelRuntimeManager(id => Load(id.Value));
+        Assert.Null(manager.ResourceBudget); // off by default
+
+        using var handle = await manager.AcquireAsync(Id("a"));
+        Assert.Equal(Id("a"), handle.Runtime.Id);
+    }
+
+    [Fact]
+    public async Task AcquireAsync_ResourceBudgetAllows_LoadsNormallyWithoutEvictingAnything()
+    {
+        using var manager = new ModelRuntimeManager(id => Load(id.Value))
+        {
+            ResourceBudget = new FakeResourceBudget(_ => ResourceAdmission.Allowed),
+        };
+
+        using var ha = await manager.AcquireAsync(Id("a"));
+        ha.Dispose(); // idle, but nothing should evict it since nothing else was admission-gated
+        using var hb = await manager.AcquireAsync(Id("b"));
+
+        Assert.True(manager.TryGetResident(Id("a"), out _)); // still resident — never touched
+        Assert.True(manager.TryGetResident(Id("b"), out _));
+    }
+
+    [Fact]
+    public async Task AcquireAsync_InsufficientButEvictionFreesRoom_SucceedsAfterEvictingIdleOther()
+    {
+        using var manager = new ModelRuntimeManager(id => Load(id.Value))
+        {
+            ResourceBudget = new FakeResourceBudget(_ => ResourceAdmission.Allowed),
+        };
+
+        var ha = await manager.AcquireAsync(Id("a"));
+        var engineA = (DisposableFakeEngine)ha.Runtime.Engine;
+        ha.Dispose(); // idle — evictable
+
+        // Swapped in fresh right before "b" so its own call count starts at zero: first check
+        // (before eviction) insufficient, second (after evicting idle "a") fits.
+        int calls = 0;
+        manager.ResourceBudget = new FakeResourceBudget(_ => ++calls == 1
+            ? ResourceAdmission.InsufficientHostMemory
+            : ResourceAdmission.Allowed);
+
+        using var hb = await manager.AcquireAsync(Id("b"));
+
+        Assert.True(engineA.Disposed);
+        Assert.False(manager.TryGetResident(Id("a"), out _));
+        Assert.True(manager.TryGetResident(Id("b"), out _));
+    }
+
+    [Fact]
+    public async Task AcquireAsync_StillInsufficientAfterEviction_ThrowsAndLeavesNoPoisonedState()
+    {
+        using var manager = new ModelRuntimeManager(id => Load(id.Value))
+        {
+            ResourceBudget = new FakeResourceBudget(_ => ResourceAdmission.InsufficientHostMemory),
+        };
+
+        var ex = await Assert.ThrowsAsync<InsufficientResourcesException>(
+            async () => await manager.AcquireAsync(Id("too-big")));
+        Assert.Equal(Id("too-big"), ex.Model);
+        Assert.False(manager.TryGetResident(Id("too-big"), out _));
+
+        // Not poisoned: a later acquisition (once the budget allows it) still works cleanly.
+        manager.ResourceBudget = new FakeResourceBudget(_ => ResourceAdmission.Allowed);
+        using var handle = await manager.AcquireAsync(Id("too-big"));
+        Assert.Equal(Id("too-big"), handle.Runtime.Id);
+    }
+
+    [Fact]
+    public async Task AcquireAsync_AlreadyResidentModel_BypassesAdmissionEntirely()
+    {
+        using var manager = new ModelRuntimeManager(id => Load(id.Value))
+        {
+            ResourceBudget = new FakeResourceBudget(_ => ResourceAdmission.Allowed),
+        };
+        using var first = await manager.AcquireAsync(Id("a"));
+
+        var budget = new FakeResourceBudget(_ => ResourceAdmission.InsufficientHostMemory);
+        manager.ResourceBudget = budget;
+
+        // Re-acquiring an ALREADY-resident model must hit the fast path, never the admission
+        // gate — admission only governs starting a brand-new physical load.
+        using var second = await manager.AcquireAsync(Id("a"));
+        Assert.Same(first.Runtime, second.Runtime);
+        Assert.Equal(0, budget.EstimateAdmissionCallCount);
     }
 }
