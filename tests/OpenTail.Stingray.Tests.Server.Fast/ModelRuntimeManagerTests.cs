@@ -283,4 +283,37 @@ public sealed class ModelRuntimeManagerTests
 
         Assert.Equal(350, budget.GetCurrent().ResidentModelBytes);
     }
+
+    [Fact]
+    public void EstimateAdmission_CandidateFarBelowAvailable_IsAllowed()
+    {
+        using var manager = new ModelRuntimeManager(id => Load(id.Value));
+        var budget = new HostResourceBudget(manager);
+        long available = budget.GetCurrent().HostMemoryAvailableBytes;
+
+        // Deterministic regardless of the test machine's actual RAM: a candidate at 1% of
+        // whatever's currently available must clear the 25% safety margin comfortably.
+        Assert.Equal(ResourceAdmission.Allowed, budget.EstimateAdmission(available / 100));
+    }
+
+    [Fact]
+    public void EstimateAdmission_CandidateFarAboveAnyRealMachine_IsInsufficientHostMemory()
+    {
+        using var manager = new ModelRuntimeManager(id => Load(id.Value));
+        var budget = new HostResourceBudget(manager);
+
+        Assert.Equal(ResourceAdmission.InsufficientHostMemory, budget.EstimateAdmission(long.MaxValue / 4));
+    }
+
+    [Fact]
+    public void EstimateAdmission_CandidateExactlyAtAvailable_IsRejectedBySafetyMargin()
+    {
+        using var manager = new ModelRuntimeManager(id => Load(id.Value));
+        var budget = new HostResourceBudget(manager);
+        long available = budget.GetCurrent().HostMemoryAvailableBytes;
+
+        // A candidate sized exactly at "currently available" still needs the 25% margin on top —
+        // proves the margin is actually applied, not just documented.
+        Assert.Equal(ResourceAdmission.InsufficientHostMemory, budget.EstimateAdmission(available));
+    }
 }

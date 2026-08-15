@@ -466,7 +466,7 @@ scripts/kvarn-gate/wikitext-2-raw-v1.zip
 scripts/kvarn-gate/.wikitext-extract/
 scripts/kvarn-gate/results/
 
-# Generated CMake output — machine-specific absolute paths, 384 files
+# Generated CMake output ï¿½ machine-specific absolute paths, 384 files
 tools/kernel-bench/build*/
 # Scratch capture files
 _gemeni.txt
@@ -481,3 +481,7 @@ docs2/
 .opentail/
 .opentail-shadow.git/
 examples/
+
+# Scratch working directories â€” throwaway per-session output, not project content.
+/scratch/
+/scratch2/

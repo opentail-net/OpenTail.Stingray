@@ -12,16 +12,32 @@ public readonly record struct ResourceSnapshot(
     long? AcceleratorMemoryAvailableBytes,
     long ResidentModelBytes);
 
+/// <summary>Result of <see cref="IResourceBudget.EstimateAdmission"/>.</summary>
+public enum ResourceAdmission
+{
+    Allowed,
+    InsufficientHostMemory,
+}
+
 /// <summary>
-/// Reports current resource availability. This is the observation half of docs/032's admission
-/// design only — <see cref="GetCurrent"/> is read-only and has no say in whether an acquisition
-/// proceeds. Wiring a snapshot into an actual admit/evict/queue decision inside
-/// <see cref="ModelRuntimeManager.AcquireAsync"/> is separate, not-yet-built work; introducing
-/// that here would risk the existing single-model path for no tested benefit.
+/// Reports current resource availability and, given a candidate's estimated weight, whether it
+/// looks admissible. Still purely advisory — nothing calls <see cref="EstimateAdmission"/> from
+/// <see cref="ModelRuntimeManager.AcquireAsync"/> yet. Wiring this into an actual
+/// admit/evict/queue decision is separate, not-yet-built work; introducing that here would risk
+/// the existing single-model path for no tested benefit.
 /// </summary>
 public interface IResourceBudget
 {
     ResourceSnapshot GetCurrent();
+
+    /// <summary>
+    /// Conservative host-memory-only admission estimate for a candidate model of
+    /// <paramref name="candidateModelBytes"/> resident weight. Deliberately narrower than
+    /// docs/032's full <c>ResourceAvailability EstimateAdmission(ModelRuntimeSpec, InferenceWorkEstimate)</c>
+    /// sketch — KV/session-aware estimation needs types that don't exist yet; this is the
+    /// weight-only slice of that seam.
+    /// </summary>
+    ResourceAdmission EstimateAdmission(long candidateModelBytes);
 }
 
 /// <summary>
@@ -34,7 +50,8 @@ public interface IResourceBudget
 /// estimate, not an exact accounting — see docs/032 §"Resource admission" on why Phase 1/2's
 /// admission story stays conservative rather than exact.
 /// </summary>
-public sealed class HostResourceBudget(IModelRuntimeManager modelRuntimes) : IResourceBudget
+public sealed class HostResourceBudget(IModelRuntimeManager modelRuntimes, double safetyMarginMultiplier = 1.25)
+    : IResourceBudget
 {
     public ResourceSnapshot GetCurrent()
     {
@@ -51,5 +68,22 @@ public sealed class HostResourceBudget(IModelRuntimeManager modelRuntimes) : IRe
             HostMemoryAvailableBytes: available,
             AcceleratorMemoryAvailableBytes: null, // not wired yet — see class doc
             ResidentModelBytes: residentBytes);
+    }
+
+    /// <summary>
+    /// Requires <paramref name="candidateModelBytes"/> * <paramref name="safetyMarginMultiplier"/>
+    /// (default 1.25 — 25% headroom) to fit in currently available host memory. The margin exists
+    /// because the raw weight estimate covers neither KV/workspace allocations nor runtime
+    /// overhead (docs/032 §"Resource admission": "Phase 1 admission is an estimate, not an exact
+    /// allocator"); biasing toward under-admitting is the deliberate, conservative default rather
+    /// than trying to model every real allocation.
+    /// </summary>
+    public ResourceAdmission EstimateAdmission(long candidateModelBytes)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(candidateModelBytes);
+        long required = (long)(candidateModelBytes * safetyMarginMultiplier);
+        return required <= GetCurrent().HostMemoryAvailableBytes
+            ? ResourceAdmission.Allowed
+            : ResourceAdmission.InsufficientHostMemory;
     }
 }

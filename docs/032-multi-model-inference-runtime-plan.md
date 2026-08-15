@@ -343,9 +343,12 @@ background/speculative model preloading. All out of scope here.
    permit; a third triggers safe eviction/queueing.*
    — **Slice 1 done:** `IResourceBudget`/`ResourceSnapshot`/`HostResourceBudget`
    (`src/OpenTail.Stingray.Server/ResourceBudget.cs`) — host memory (via `GC.GetGCMemoryInfo`,
-   portable, no P/Invoke) plus resident-model-bytes totals, purely observational. **Not yet
-   done:** wiring a snapshot into `AcquireAsync`'s actual admit/evict/queue decision, accelerator
-   (VRAM) accounting, and the eviction-under-pressure behavior the acceptance test above needs.
+   portable, no P/Invoke) plus resident-model-bytes totals, purely observational.
+   **Slice 2 done:** `IResourceBudget.EstimateAdmission(long candidateModelBytes)` — a
+   weight-only, conservative (25% safety-margin) admission *check*, still advisory only, nothing
+   calls it from `AcquireAsync` yet. **Not yet done:** actually wiring an admission call into
+   `AcquireAsync`'s admit/evict/queue decision, accelerator (VRAM) accounting, and the
+   eviction-under-pressure behavior the acceptance test above needs.
 4. **Multi-session model execution.** Wire each runtime to `HotSession` + continuous batching.
    *Acceptance: N sessions on one runtime behave exactly as today's same-model concurrency.*
 5. **Cross-model concurrent execution.** Remove any process-wide serialization preventing two
