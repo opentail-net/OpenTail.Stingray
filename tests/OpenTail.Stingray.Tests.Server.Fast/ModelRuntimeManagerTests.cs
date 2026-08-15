@@ -70,8 +70,13 @@ public sealed class ModelRuntimeManagerTests
     }
 
     [Fact]
-    public async Task Acquire_ConcurrentColdRequests_SingleFlightToOnePhysicalLoad()
+    public async Task Acquire_100ConcurrentColdRequests_ResultIn1PhysicalLoad_100LogicalUsers()
     {
+        // Literal Phase 2 acceptance bar (docs/032 §"Implementation phases", Phase 2): "100
+        // concurrent requests for one cold model result in 1 physical model load, 100 logical
+        // users." Built during Phase 1 already (single-flight was load-bearing for AcquireAsync
+        // to be correct at all, not deferrable) — this pins the exact numbers down explicitly.
+        const int concurrentCallers = 100;
         int loadCount = 0;
         var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         using var manager = new ModelRuntimeManager(id =>
@@ -81,14 +86,24 @@ public sealed class ModelRuntimeManagerTests
             return Load(id.Value);
         });
 
-        var tasks = Enumerable.Range(0, 20).Select(_ => manager.AcquireAsync(Id("cold")).AsTask()).ToArray();
-        await Task.Delay(50); // let all 20 callers reach the manager and observe the in-flight load
+        var tasks = Enumerable.Range(0, concurrentCallers)
+            .Select(_ => manager.AcquireAsync(Id("cold")).AsTask()).ToArray();
+        await Task.Delay(75); // let all 100 callers reach the manager and observe the in-flight load
         gate.SetResult();
         var handles = await Task.WhenAll(tasks);
 
-        Assert.Equal(1, loadCount);
-        Assert.All(handles, h => Assert.Same(handles[0].Runtime, h.Runtime));
+        var runtime = handles[0].Runtime; // captured before disposal — Handle.Runtime throws once disposed
+        Assert.Equal(1, loadCount); // 1 physical load ...
+        Assert.All(handles, h => Assert.Same(runtime, h.Runtime));
+        Assert.Equal(concurrentCallers, runtime.HandleCount); // ... 100 logical users
+
+        // Safe disposal at scale: releasing all 100 handles must land exactly back at zero, with
+        // no over-release exception (the codebase-wide convention ModelRuntime.OnHandleReleased
+        // enforces) and without physically disposing the still-resident, still-usable runtime.
         foreach (var h in handles) h.Dispose();
+        Assert.Equal(0, runtime.HandleCount);
+        Assert.Equal(ModelRuntimeState.Ready, runtime.State);
+        Assert.False(((DisposableFakeEngine)runtime.Engine).Disposed);
     }
 
     [Fact]

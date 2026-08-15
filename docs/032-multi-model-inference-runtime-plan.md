@@ -4,19 +4,30 @@
 
 ## Status
 
-**Phase 1 implemented** — `ModelId`, `ModelRuntimeState`, `ModelResidencyMode`, `ModelRuntime`,
-`ModelRuntimeHandle`, `IModelRuntimeManager`/`ModelRuntimeManager`
+**Phases 1 and 2 implemented.** `ModelId`, `ModelRuntimeState`, `ModelResidencyMode`,
+`ModelRuntime`, `ModelRuntimeHandle`, `IModelRuntimeManager`/`ModelRuntimeManager`
 (`src/OpenTail.Stingray.Server/ModelRuntime.cs`, `ModelRuntimeManager.cs`), wired into
 `ServiceCollectionExtensions.AddOpenTailStingray` so the server's single configured model now
 loads through the manager's single-flight path (pinned, so DI retains sole disposal ownership).
 `ModelResidencyMode` (`SingleSlot`/`MultiSlot`) is configurable via
 `OpenTailStingrayServerOptions.ModelResidencyMode` or `STINGRAY_MODEL_RESIDENCY_MODE`, and is a
 runtime-mutable property (not just a boot-time constant) so residency policy can change without a
-restart. Covered by `tests/OpenTail.Stingray.Tests.Server.Fast/ModelRuntimeManagerTests.cs`
-(single-flight, lifecycle, SingleSlot eviction/wait, live mode-switch, no-global-lock, isolated
-cancellation) plus the full existing `Tests.Server.Fast` suite (271/271) and the real-GGUF
-`Tests.Server` session-restart acceptance test, both green with zero behavior change to the
-single-model path. Phases 2–7 (below) remain design only.
+restart.
+
+Phase 2's canonical-identity/shared-handle/single-flight/safe-disposal/load-failure-cleanup work
+(carrying forward `SharedModelCache`'s (`025`/`026`) proven refcount ownership) turned out to be
+load-bearing for Phase 1's `AcquireAsync` to be correct at all, so it landed in the same pass
+rather than as a separate increment — nothing here reflects a second implementation effort, just
+the literal Phase 2 acceptance bar pinned down explicitly in its own test. (`026`'s
+capacity-bounded-eviction/overflow-table mechanism is genuinely separate work and remains
+Phase 3, "Bounded, resource-aware residency" — not yet built.)
+
+Covered by `tests/OpenTail.Stingray.Tests.Server.Fast/ModelRuntimeManagerTests.cs`: single-flight
+(100 concurrent cold requests → 1 physical load, 100 logical users, verified safe mass-release
+back to zero with no over-release and no premature disposal), lifecycle, SingleSlot eviction/wait,
+live mode-switch, no-global-lock, isolated cancellation. Plus the full existing `Tests.Server.Fast`
+suite (271/271) and the real-GGUF `Tests.Server` session-restart acceptance test, both green with
+zero behavior change to the single-model path. Phases 3–7 (below) remain design only.
 
 Implementation-ready design. Supersedes the shelved production portion of
 `done/024-multi-model-serving-and-request-scheduling-plan.md`. Builds directly on
@@ -317,15 +328,15 @@ background/speculative model preloading. All out of scope here.
 
 ## Implementation phases
 
-1. **Production `ModelRuntime` abstraction.** `ModelRuntime`, `ModelRuntimeHandle`,
+1. ✅ **Production `ModelRuntime` abstraction.** `ModelRuntime`, `ModelRuntimeHandle`,
    `ModelRuntimeManager`, `ModelRuntimeState`. Move the existing single-model load path
    (`InferenceEngineLoader`) behind it. *Acceptance: existing single-model server tests stay
    green, now routed through the new abstraction.*
-2. **Shared residency & single-flight loading.** Carry `SharedModelCache`'s proven
+2. ✅ **Shared residency & single-flight loading.** Carry `SharedModelCache`'s proven
    refcount/overflow-table ownership (`025`/`026`) into `ModelRuntimeManager`: canonical
    identity, shared handles, async single-flight, safe disposal, load-failure cleanup.
    *Acceptance: 100 concurrent requests for one cold model → 1 physical load, 100 logical
-   users.*
+   users.* (Landed alongside Phase 1 — see Status above.)
 3. **Bounded, resource-aware residency.** Resident tracking, memory estimates, `IResourceBudget`,
    admission, safe eviction — host RAM first, accelerator accounting added through the same
    abstraction rather than a parallel policy. *Acceptance: two models coexist when resources
