@@ -337,10 +337,15 @@ background/speculative model preloading. All out of scope here.
    identity, shared handles, async single-flight, safe disposal, load-failure cleanup.
    *Acceptance: 100 concurrent requests for one cold model → 1 physical load, 100 logical
    users.* (Landed alongside Phase 1 — see Status above.)
-3. **Bounded, resource-aware residency.** Resident tracking, memory estimates, `IResourceBudget`,
+3. 🔶 **Bounded, resource-aware residency.** Resident tracking, memory estimates, `IResourceBudget`,
    admission, safe eviction — host RAM first, accelerator accounting added through the same
    abstraction rather than a parallel policy. *Acceptance: two models coexist when resources
    permit; a third triggers safe eviction/queueing.*
+   — **Slice 1 done:** `IResourceBudget`/`ResourceSnapshot`/`HostResourceBudget`
+   (`src/OpenTail.Stingray.Server/ResourceBudget.cs`) — host memory (via `GC.GetGCMemoryInfo`,
+   portable, no P/Invoke) plus resident-model-bytes totals, purely observational. **Not yet
+   done:** wiring a snapshot into `AcquireAsync`'s actual admit/evict/queue decision, accelerator
+   (VRAM) accounting, and the eviction-under-pressure behavior the acceptance test above needs.
 4. **Multi-session model execution.** Wire each runtime to `HotSession` + continuous batching.
    *Acceptance: N sessions on one runtime behave exactly as today's same-model concurrency.*
 5. **Cross-model concurrent execution.** Remove any process-wide serialization preventing two

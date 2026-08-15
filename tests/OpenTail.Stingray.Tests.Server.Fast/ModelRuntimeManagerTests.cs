@@ -255,4 +255,32 @@ public sealed class ModelRuntimeManagerTests
         using var handle = await survivingWaiter.WaitAsync(TimeSpan.FromSeconds(5));
         Assert.Equal(Id("shared"), handle.Runtime.Id);
     }
+
+    // ── Phase 3 slice: resource observability (not wired into admission yet) ───
+
+    [Fact]
+    public void HostResourceBudget_ReportsSaneHostMemoryFigures()
+    {
+        using var manager = new ModelRuntimeManager(id => Load(id.Value));
+        var budget = new HostResourceBudget(manager);
+
+        var snapshot = budget.GetCurrent();
+
+        Assert.True(snapshot.HostMemoryTotalBytes > 0);
+        Assert.True(snapshot.HostMemoryAvailableBytes >= 0);
+        Assert.True(snapshot.HostMemoryAvailableBytes <= snapshot.HostMemoryTotalBytes);
+        Assert.Null(snapshot.AcceleratorMemoryAvailableBytes); // not wired yet — see class doc
+    }
+
+    [Fact]
+    public async Task HostResourceBudget_ResidentModelBytes_SumsAcrossResidentRuntimes()
+    {
+        using var manager = new ModelRuntimeManager(id => Load(id.Value), estimateBytes: id => id.Value == "a" ? 100 : 250);
+        var budget = new HostResourceBudget(manager);
+
+        using var ha = await manager.AcquireAsync(Id("a"));
+        using var hb = await manager.AcquireAsync(Id("b"));
+
+        Assert.Equal(350, budget.GetCurrent().ResidentModelBytes);
+    }
 }
