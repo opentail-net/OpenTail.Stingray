@@ -4,9 +4,12 @@
 
 ## Status
 
-**Phases 1, 2, and 4 implemented. Phase 3 in progress (6 slices landed) and Phase 5's no-lock
-half proven with real models — see each phase's own entry in "Implementation phases" below for
-exact done/not-done splits.** `ModelId`, `ModelRuntimeState`, `ModelResidencyMode`,
+**Phases 1, 2, and 4 implemented. Phase 3 at 9 slices (host + accelerator admission, eviction,
+observability). Phase 5's no-lock half proven with real models. Phase 6 at 3 slices (the queue
+step of the eviction hierarchy, bounded, observable, and now fair among queued waiters —
+execution-level service quantum/starvation-protection still open). Phase 7 not started.** See
+each phase's own entry in "Implementation phases" below for exact done/not-done
+splits. `ModelId`, `ModelRuntimeState`, `ModelResidencyMode`,
 `ModelRuntime`, `ModelRuntimeHandle`, `IModelRuntimeManager`/`ModelRuntimeManager`
 (`src/OpenTail.Stingray.Server/ModelRuntime.cs`, `ModelRuntimeManager.cs`), wired into
 `ServiceCollectionExtensions.AddOpenTailStingray` so the server's single configured model now
@@ -409,11 +412,35 @@ background/speculative model preloading. All out of scope here.
    `tests/OpenTail.Stingray.Tests.Server/AcceleratorResidencyTests.cs` loads an actual Qwen3-0.6B
    GGUF on the real device and confirms residency + a positive byte estimate come out of the
    genuine `DescribeRuntime` dispatch path (plus a CPU-loaded counterpart confirming `false`/0).
-   **Not yet done:** wiring accelerator memory into `EstimateAdmission`'s actual decision (the
-   data now exists; the admission math still doesn't consult it), byte-exact hybrid/partial-offload
-   tracking (see above), a CUDA equivalent of the VRAM-capacity probe (still no hardware here to
-   verify against), and Phase 6's queueing alternative to hard failure when eviction alone isn't
-   enough.
+   **Slice 9 done:** `EstimateAdmission` now actually consults accelerator memory.
+   `IResourceBudget.EstimateAdmission` grew a `candidateAcceleratorBytes` parameter (default 0 —
+   "not expected to be accelerator-resident", so a caller that never opts in sees byte-identical
+   behavior to before this parameter existed). `ModelRuntimeManager` grew a matching
+   `estimateAcceleratorBytes` constructor delegate mirroring `estimateBytes` exactly (no default
+   estimator — inferring GPU intent isn't the manager's job, it's whatever backend policy the
+   loader closure already captures); absent, every candidate is treated as 0 accelerator bytes.
+   `HostResourceBudget.EstimateAdmission` checks host memory first (an accelerator-bound candidate
+   that already fails on host is reported as a host failure, never silently overwritten), then —
+   only when the candidate declares nonzero accelerator need AND capacity is known — applies the
+   same safety margin to `capacity - EstimatedAcceleratorResidentBytes` (that subtraction computed
+   fresh on every call from a live `Snapshot()` sum, never cached, so it can't go stale relative to
+   eviction/new loads). A candidate with real accelerator need but *unknown* capacity is never
+   blocked on that alone — no positive evidence it won't fit, so it falls through to the host check.
+   `InsufficientResourcesException` restructured to carry the actual `ResourceAdmission` `Reason`
+   plus `CandidateAcceleratorBytes`, with a message that correctly names VRAM vs. host memory
+   instead of always assuming host. `ResourceSnapshot` gained `EstimatedAcceleratorResidentBytes`
+   for symmetry with `ResidentModelBytes`. Verified twice over: deterministic fake-based tests for
+   the wiring itself (estimator reaches `EstimateAdmission`, exception carries the right
+   reason/bytes, host-vs-accelerator precedence), and — the strongest proof — a full real-hardware
+   round trip in `AcceleratorResidencyTests.cs`: a reasonable accelerator estimate loads normally
+   on the real Vulkan device with admission ON, and an absurd one (`long.MaxValue / 4`) is rejected
+   with `InsufficientAcceleratorMemory` *before* `InferenceEngineLoader.Load` ever runs — confirmed
+   via `Assert.Empty(manager.Snapshot())`, i.e. no wasted real GPU load attempt. 304/304 fast,
+   8/8 real-model, full solution build clean.
+   **Not yet done:** byte-exact hybrid/partial-offload tracking (still the file-size-based
+   overestimate from Slice 8), and Phase 6's queueing alternative to hard failure when eviction
+   alone isn't enough. A CUDA equivalent of the VRAM-capacity probe is parked, not planned — no
+   CUDA hardware in this environment to build or verify it against; revisit if that changes.
 4. ✅ **Multi-session model execution.** Wire each runtime to `HotSession` + continuous batching.
    *Acceptance: N sessions on one runtime behave exactly as today's same-model concurrency.*
    Proven with a real model, not fakes:
@@ -457,8 +484,98 @@ background/speculative model preloading. All out of scope here.
    verification (four test suites rerun green, including the largest one touching this file):
    `docs/done/bugstofix-resolved-2026-08.md` → `ForwardPass.cs:6047`. Regression guard:
    `CrossModelConcurrencyTests.cs`'s `SingleRealModel_DisposeAfterGeneration_DoesNotCorruptTheNativeHeap`.
-6. **Fair scheduling & admission.** Per-model pending queues, request age, service quantum,
+6. 🔶 **Fair scheduling & admission.** Per-model pending queues, request age, service quantum,
    starvation protection, cancellation, queue limits — deliberately simple policy.
+   **Slice 1 done: the "queue" step itself** (docs/032's own eviction hierarchy: unused → idle →
+   drain → KV suspension → queue → hard failure — this was the one step still unbuilt).
+   `IModelRuntimeManager.AdmissionWaitTimeout` (`TimeSpan?`, default `null` — an admission
+   failure still hard-fails immediately unless explicitly opted into, same discipline as every
+   other slice). When set, a candidate that fails admission (even after eviction) waits, bounded
+   by this duration and always cancellable via the caller's own token, for a residency change —
+   a handle released, a runtime evicted elsewhere, `ResidencyMode` switched — then retries the
+   *whole* acquisition from scratch rather than failing immediately. Built by reusing the exact
+   wait-and-retry mechanism already proven for `SingleSlot` mode's blocking-wait path
+   (`_residencyChanged`), not new machinery — the only new logic is the timeout wrapped around
+   that same wait, and routing `TryEnsureAdmissibleLocked`'s failure through either "throw now"
+   or "queue" depending on whether a timeout is configured. `EnsureAdmissibleLocked` (threw
+   directly) became `TryEnsureAdmissibleLocked` (returns `bool` + `out` exception) so the *caller*
+   decides which of those two policies applies, keeping the admission-check method itself
+   policy-free. `AdmissionRejects` only increments on an actual give-up (immediate hard-fail, or
+   a queue timeout) — a caller that queues and then successfully retries is correctly never
+   counted as a rejection, verified explicitly by test. Honest scope limits, stated in the
+   property's own doc comment: bounded *per admission attempt*, not in total (a candidate that
+   repeatedly almost-fits can retry across several timeouts); and bounded by wait duration only,
+   not yet also by a queue-depth limit (no cap on how many callers can simultaneously queue).
+   Verified: 4 new tests covering queue-then-succeed, queue-then-timeout (with the real elapsed
+   duration measured, not just the exception type), cancellation during a queued wait producing
+   `OperationCanceledException` not a resource exception, and the pre-existing hard-fail-immediately
+   behavior staying byte-identical when the timeout isn't configured. 308/308 fast, 8/8 real-model,
+   full solution build clean — this touched the core `AcquireAsync` loop directly, so the full
+   regression suite mattered more than usual here.
+   **Slice 2 done: queue-depth bound + observability.** `IModelRuntimeManager.MaxQueuedAdmissions`
+   (`int`, default 16 — matching the existing `OpenTailStingrayServerOptions.MaxQueuedRequests`
+   precedent elsewhere in the codebase). A candidate that would otherwise queue is instead
+   rejected immediately (counted as both `AdmissionRejects` and a new `AdmissionQueueOverflows`)
+   once `_queuedAdmissions` is already at the cap — an unbounded number of simultaneous waiters
+   was the one remaining way this feature could turn a resource-pressure moment into unbounded
+   memory/task growth, the same "every queue has a capacity" invariant the plan already requires
+   elsewhere (see the eviction-hierarchy note above). `MultiModelRuntimeStats` gained three
+   fields: `QueuedAdmissions` (current waiter count), `OldestQueuedAdmissionAge` (`TimeSpan?`,
+   how long the longest-waiting candidate has been queued — `null` when nothing is queued), and
+   `AdmissionQueueOverflows` (cumulative rejection-due-to-full-queue count). Bookkeeping is
+   `lock`-protected alongside the existing admission state; the wait path increments on entry and
+   decrements in a `finally` so a timeout, a cancellation, or a successful retry all correctly
+   free the slot. Verified: 2 new tests (queue-at-capacity rejects immediately rather than
+   waiting; `OldestQueuedAdmissionAge` tracks real elapsed time via `Stopwatch`, not just
+   presence/absence). 310/310 fast, full solution build clean; the 8/8 real-model suite re-run
+   after this slice too since it again touched `AcquireAsync` directly.
+   **Slice 3 done: admission fairness (oldest-admissible wake, not broadcast re-race).** Replaced
+   the shared-broadcast-then-everyone-races wake with a real per-waiter ordered queue.
+   `_admissionQueue` (`List<AdmissionWaiter>`) holds one `AdmissionWaiter` per currently-queued
+   caller — `ModelId`, its candidate byte estimates cached at first queue entry, `EnqueuedAt`, and
+   its own `TaskCompletionSource`. `WakeOldestAdmissibleQueuedWaiter` (called from
+   `NotifyResidencyChanged`) evaluates every queued candidate against the current
+   `ResourceBudget`, oldest-`EnqueuedAt`-first, and wakes **exactly one**: the admissible candidate
+   with the smallest `EnqueuedAt`, not just the physically-oldest entry. This is deliberately
+   *oldest-admissible*, not strict head-of-line FIFO — a strict-FIFO design would let one
+   oversized, permanently-unfittable oldest waiter block every smaller, genuinely-serviceable
+   waiter behind it forever, which `032`'s own resource-based (not count-based) admission model
+   makes a real risk, not a hypothetical one. A waiter that's woken, retries via the unchanged
+   `TryEnsureAdmissibleLocked`, and still fails re-queues *itself* (same `AdmissionWaiter`
+   instance, `EnqueuedAt` untouched) rather than being treated as a new arrival, so a repeatedly-
+   almost-fitting request never loses its place in line. `EvictIdleOthersLocked`'s `keep`
+   parameter became nullable (`ModelId?`) so the scan can evict every idle resident runtime with
+   no exception — safe because none of the queued candidates are themselves resident.
+   **Found and fixed during this slice, not before it shipped:** wiring the scan into
+   `NotifyResidencyChanged()` unconditionally created a real, deterministic infinite-load bug —
+   `RunLoad`'s own success path already called `NotifyResidencyChanged()` (pre-existing, for
+   SingleSlot's benefit), and a model is briefly idle/evictable in the window between `RunLoad`
+   registering it as resident and the awaiting caller actually constructing its `ModelRuntimeHandle`
+   one lock acquisition later. With the scan wired in, that freshly-loaded-but-not-yet-handled
+   model looked "idle" to `EvictIdleOthersLocked` and got evicted by its own completion event,
+   which made the caller reload it, which evicted it again — observed directly via a test
+   diagnostic as `ModelLoads` reaching 1.6M in under 2 seconds. Fixed by giving
+   `NotifyResidencyChanged` a `mayHaveFreedResources` parameter (default `true`) and having both of
+   `RunLoad`'s call sites (success and failure) pass `false`: a completed load never frees
+   host/accelerator budget — it only ever consumes it or consumes nothing — so it has no business
+   triggering the fairness scan in the first place; only a handle release or a `ResidencyMode`
+   switch can actually free something. Verified: 2 new tests (an older queued waiter always wins
+   the wake over a newer, equally-admissible one — proven with a real elapsed-time bound, not just
+   ordering; an oversized oldest waiter never blocks a smaller admissible waiter queued behind it).
+   312/312 fast, full solution build clean, 8/8 real-model re-run again since this is the third
+   slice in a row to touch `AcquireAsync`/`NotifyResidencyChanged` directly.
+   **Not yet done:** request age is now both observable (`OldestQueuedAdmissionAge`) *and* the
+   actual scheduling key (oldest-admissible wins) — that part of "deliberately simple policy" is
+   done. Still open: service quantum and starvation protection for *execution*, not admission —
+   i.e. once a model is loaded and generating, nothing yet bounds how long it monopolizes
+   contended compute before another resident model gets a turn. That's a materially different,
+   bigger problem (would need an execution-mediation layer that doesn't exist: can generation be
+   interrupted/checkpointed, what happens to in-flight KV, does preemption wreck batching
+   efficiency) and is explicitly left for a real Level-1 scheduler phase, not folded into this
+   admission-queue work. Also still open, noted honestly rather than silently: only queued waiters
+   are ordered fairly against each other — a brand-new caller arriving fresh through `AcquireAsync`
+   never consults `_admissionQueue` at all and can still win the lock/load race against everyone
+   already queued, since nothing reserves a queued winner's resources ahead of its actual retry.
 7. **OpenTail server integration.** Expose model identity through `IInferenceService`.
    *Acceptance: Users A/B → sidekick, Users C/D → reasoner, with same-model batching,
    cross-model concurrency, residency, and session isolation all verified together.*

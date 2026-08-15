@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Engine;
@@ -44,10 +45,12 @@ public sealed class ModelRuntimeManagerTests
     private sealed class FakeResourceBudget(Func<long, ResourceAdmission> estimateAdmission) : IResourceBudget
     {
         public int EstimateAdmissionCallCount { get; private set; }
-        public ResourceSnapshot GetCurrent() => new(0, 0, null, 0);
-        public ResourceAdmission EstimateAdmission(long candidateModelBytes)
+        public long LastCandidateAcceleratorBytes { get; private set; }
+        public ResourceSnapshot GetCurrent() => new(0, 0, null, 0, 0);
+        public ResourceAdmission EstimateAdmission(long candidateModelBytes, long candidateAcceleratorBytes = 0)
         {
             EstimateAdmissionCallCount++;
+            LastCandidateAcceleratorBytes = candidateAcceleratorBytes;
             return estimateAdmission(candidateModelBytes);
         }
     }
@@ -340,6 +343,75 @@ public sealed class ModelRuntimeManagerTests
         // A candidate sized exactly at "currently available" still needs the 25% margin on top —
         // proves the margin is actually applied, not just documented.
         Assert.Equal(ResourceAdmission.InsufficientHostMemory, budget.EstimateAdmission(available));
+    }
+
+    [Fact]
+    public void EstimateAdmission_ZeroAcceleratorCandidate_NeverConsultsAcceleratorCapacity()
+    {
+        // The default (0 = "not expected to be accelerator-resident") must behave identically to
+        // before this parameter existed, on ANY machine — with or without a real accelerator.
+        using var manager = new ModelRuntimeManager(id => Load(id.Value));
+        var budget = new HostResourceBudget(manager);
+        long available = budget.GetCurrent().HostMemoryAvailableBytes;
+
+        Assert.Equal(ResourceAdmission.Allowed, budget.EstimateAdmission(available / 100, candidateAcceleratorBytes: 0));
+        Assert.Equal(ResourceAdmission.Allowed, budget.EstimateAdmission(available / 100));
+    }
+
+    [Fact]
+    public void EstimateAdmission_AcceleratorCandidateFarBelowCapacity_IsAllowed()
+    {
+        using var manager = new ModelRuntimeManager(id => Load(id.Value));
+        var budget = new HostResourceBudget(manager);
+        var snapshot = budget.GetCurrent();
+        Assert.SkipUnless(snapshot.AcceleratorMemoryAvailableBytes is not null,
+            "No accelerator detected in this environment — nothing to measure against.");
+
+        // Deterministic regardless of the real GPU's actual capacity: 1% of measured capacity,
+        // host bytes negligible, must clear the 25% safety margin comfortably.
+        long candidateAccel = snapshot.AcceleratorMemoryAvailableBytes!.Value / 100;
+        Assert.Equal(ResourceAdmission.Allowed, budget.EstimateAdmission(1024, candidateAccel));
+    }
+
+    [Fact]
+    public void EstimateAdmission_AcceleratorCandidateFarAboveAnyRealGpu_IsInsufficientAcceleratorMemory()
+    {
+        using var manager = new ModelRuntimeManager(id => Load(id.Value));
+        var budget = new HostResourceBudget(manager);
+        Assert.SkipUnless(budget.GetCurrent().AcceleratorMemoryAvailableBytes is not null,
+            "No accelerator detected in this environment — nothing to measure against.");
+
+        Assert.Equal(ResourceAdmission.InsufficientAcceleratorMemory,
+            budget.EstimateAdmission(1024, long.MaxValue / 4));
+    }
+
+    [Fact]
+    public void EstimateAdmission_AcceleratorCandidateExactlyAtCapacity_IsRejectedBySafetyMargin()
+    {
+        using var manager = new ModelRuntimeManager(id => Load(id.Value));
+        var budget = new HostResourceBudget(manager);
+        var snapshot = budget.GetCurrent();
+        Assert.SkipUnless(snapshot.AcceleratorMemoryAvailableBytes is not null,
+            "No accelerator detected in this environment — nothing to measure against.");
+
+        // Sized exactly at capacity (with nothing else resident, so capacity == available) still
+        // needs the margin on top — proves the margin actually applies to the accelerator branch
+        // too, not just the host one.
+        long capacity = snapshot.AcceleratorMemoryAvailableBytes!.Value;
+        Assert.Equal(ResourceAdmission.InsufficientAcceleratorMemory,
+            budget.EstimateAdmission(1024, capacity));
+    }
+
+    [Fact]
+    public void EstimateAdmission_HostInsufficient_ReportsHostReason_EvenIfAcceleratorAlsoInsufficient()
+    {
+        using var manager = new ModelRuntimeManager(id => Load(id.Value));
+        var budget = new HostResourceBudget(manager);
+
+        // Both dimensions are hopelessly oversized — host is checked first, so that's the
+        // reported reason regardless of the accelerator figure also failing.
+        Assert.Equal(ResourceAdmission.InsufficientHostMemory,
+            budget.EstimateAdmission(long.MaxValue / 4, long.MaxValue / 4));
     }
 
     // ── Phase 3 slice: wiring admission into AcquireAsync ───────────────────
@@ -653,5 +725,296 @@ public sealed class ModelRuntimeManagerTests
         using var cpu = await manager.AcquireAsync(Id("cpu"));
 
         Assert.Equal(500, manager.GetStats().EstimatedAcceleratorResidentBytes);
+    }
+
+    // ── Phase 3 slice: wiring the accelerator dimension into admission ──────
+
+    [Fact]
+    public async Task AcquireAsync_NoAcceleratorEstimatorSupplied_AlwaysPassesZeroToEstimateAdmission()
+    {
+        var budget = new FakeResourceBudget(_ => ResourceAdmission.Allowed);
+        using var manager = new ModelRuntimeManager(id => Load(id.Value)) { ResourceBudget = budget };
+
+        using var handle = await manager.AcquireAsync(Id("a"));
+
+        Assert.Equal(0, budget.LastCandidateAcceleratorBytes);
+    }
+
+    [Fact]
+    public async Task AcquireAsync_AcceleratorEstimatorSupplied_ValueReachesEstimateAdmission()
+    {
+        var budget = new FakeResourceBudget(_ => ResourceAdmission.Allowed);
+        using var manager = new ModelRuntimeManager(
+            id => Load(id.Value), estimateAcceleratorBytes: _ => 12345)
+        { ResourceBudget = budget };
+
+        using var handle = await manager.AcquireAsync(Id("a"));
+
+        Assert.Equal(12345, budget.LastCandidateAcceleratorBytes);
+    }
+
+    [Fact]
+    public async Task AcquireAsync_InsufficientAcceleratorMemory_ThrowsWithCorrectReasonAndCandidateBytes()
+    {
+        using var manager = new ModelRuntimeManager(
+            id => Load(id.Value), estimateAcceleratorBytes: _ => 777)
+        {
+            ResourceBudget = new FakeResourceBudget(_ => ResourceAdmission.InsufficientAcceleratorMemory),
+        };
+
+        var ex = await Assert.ThrowsAsync<InsufficientResourcesException>(
+            async () => await manager.AcquireAsync(Id("a")));
+
+        Assert.Equal(ResourceAdmission.InsufficientAcceleratorMemory, ex.Reason);
+        Assert.Equal(777, ex.CandidateAcceleratorBytes);
+        Assert.Contains("VRAM", ex.Message);
+    }
+
+    [Fact]
+    public async Task AcquireAsync_InsufficientHostMemory_ExceptionMessageMentionsHostNotVram()
+    {
+        using var manager = new ModelRuntimeManager(id => Load(id.Value))
+        {
+            ResourceBudget = new FakeResourceBudget(_ => ResourceAdmission.InsufficientHostMemory),
+        };
+
+        var ex = await Assert.ThrowsAsync<InsufficientResourcesException>(
+            async () => await manager.AcquireAsync(Id("a")));
+
+        Assert.Equal(ResourceAdmission.InsufficientHostMemory, ex.Reason);
+        Assert.Contains("host memory", ex.Message);
+        Assert.DoesNotContain("VRAM", ex.Message);
+    }
+
+    // ── Phase 6 slice: bounded queue as the alternative to hard failure ─────
+
+    [Fact]
+    public async Task AcquireAsync_NoAdmissionWaitTimeoutSet_StillThrowsImmediately_ExistingBehaviorUnchanged()
+    {
+        using var manager = new ModelRuntimeManager(id => Load(id.Value))
+        {
+            ResourceBudget = new FakeResourceBudget(_ => ResourceAdmission.InsufficientHostMemory),
+        };
+        Assert.Null(manager.AdmissionWaitTimeout); // off by default
+
+        var sw = Stopwatch.StartNew();
+        await Assert.ThrowsAsync<InsufficientResourcesException>(async () => await manager.AcquireAsync(Id("a")));
+        Assert.True(sw.Elapsed < TimeSpan.FromSeconds(1)); // no waiting happened at all
+    }
+
+    [Fact]
+    public async Task AcquireAsync_AdmissionWaitTimeoutSet_QueuesThenSucceedsOnceResourcesFreeUp()
+    {
+        using var manager = new ModelRuntimeManager(id => Load(id.Value))
+        {
+            AdmissionWaitTimeout = TimeSpan.FromSeconds(5),
+        };
+
+        var handleA = await manager.AcquireAsync(Id("a")); // held open, unrelated to the fake below
+
+        // First attempt (both the pre- and post-eviction checks inside one TryEnsureAdmissibleLocked
+        // call) fails; the retry after the queue wakes succeeds.
+        int calls = 0;
+        manager.ResourceBudget = new FakeResourceBudget(_ => ++calls <= 2
+            ? ResourceAdmission.InsufficientHostMemory
+            : ResourceAdmission.Allowed);
+
+        var acquireB = manager.AcquireAsync(Id("b")).AsTask();
+        await Task.Delay(50); // let it genuinely enter the queue wait
+
+        var early = await Task.WhenAny(acquireB, Task.Delay(200));
+        Assert.NotSame(acquireB, early); // still queued, not already resolved
+
+        handleA.Dispose(); // any residency-change notification wakes a queued waiter for a re-check
+
+        using var handleB = await acquireB.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(Id("b"), handleB.Runtime.Id);
+
+        // Queuing-then-succeeding must never be counted as a hard rejection — only a caller that
+        // actually gives up (immediately, or after a queue timeout) counts.
+        Assert.Equal(0, manager.GetStats().AdmissionRejects);
+        Assert.True(manager.GetStats().ResidencyPressureEvents >= 1);
+    }
+
+    [Fact]
+    public async Task AcquireAsync_AdmissionWaitTimeoutSet_ElapsesAndThrowsOriginalReason()
+    {
+        using var manager = new ModelRuntimeManager(id => Load(id.Value))
+        {
+            AdmissionWaitTimeout = TimeSpan.FromMilliseconds(150),
+            ResourceBudget = new FakeResourceBudget(_ => ResourceAdmission.InsufficientAcceleratorMemory),
+        };
+
+        var sw = Stopwatch.StartNew();
+        var ex = await Assert.ThrowsAsync<InsufficientResourcesException>(
+            async () => await manager.AcquireAsync(Id("a")));
+        sw.Stop();
+
+        Assert.Equal(ResourceAdmission.InsufficientAcceleratorMemory, ex.Reason);
+        Assert.True(sw.Elapsed >= TimeSpan.FromMilliseconds(120)); // genuinely waited out the timeout
+        Assert.Equal(1, manager.GetStats().AdmissionRejects); // counted exactly once
+    }
+
+    [Fact]
+    public async Task AcquireAsync_AdmissionWaitTimeoutSet_CallerCancellationPropagatesAsOperationCanceled()
+    {
+        using var manager = new ModelRuntimeManager(id => Load(id.Value))
+        {
+            AdmissionWaitTimeout = TimeSpan.FromSeconds(30),
+            ResourceBudget = new FakeResourceBudget(_ => ResourceAdmission.InsufficientHostMemory),
+        };
+
+        using var cts = new CancellationTokenSource();
+        var acquiring = manager.AcquireAsync(Id("a"), cts.Token).AsTask();
+        await Task.Delay(30); // let it genuinely enter the queue wait
+        cts.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await acquiring);
+        // The rejection counter is specifically for gave-up-with-a-resource-reason outcomes —
+        // a caller cancelling its own wait is a different, already-covered case (invariant 9).
+        Assert.Equal(0, manager.GetStats().AdmissionRejects);
+    }
+
+    [Fact]
+    public async Task AcquireAsync_QueueAtCapacity_RejectsImmediatelyRatherThanWaiting()
+    {
+        using var manager = new ModelRuntimeManager(id => Load(id.Value))
+        {
+            AdmissionWaitTimeout = TimeSpan.FromSeconds(30), // long enough a real wait would stall this test
+            MaxQueuedAdmissions = 1,
+            ResourceBudget = new FakeResourceBudget(_ => ResourceAdmission.InsufficientHostMemory),
+        };
+
+        using var cts = new CancellationTokenSource();
+        var firstQueued = manager.AcquireAsync(Id("a"), cts.Token).AsTask();
+        await Task.Delay(50); // let it genuinely occupy the one queue slot
+
+        var sw = Stopwatch.StartNew();
+        await Assert.ThrowsAsync<InsufficientResourcesException>(async () => await manager.AcquireAsync(Id("b")));
+        sw.Stop();
+        Assert.True(sw.Elapsed < TimeSpan.FromSeconds(1)); // rejected immediately, never entered the wait
+
+        Assert.Equal(1, manager.GetStats().AdmissionQueueOverflows);
+        Assert.Equal(1, manager.GetStats().QueuedAdmissions); // still just "a"
+
+        cts.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await firstQueued);
+        Assert.Equal(0, manager.GetStats().QueuedAdmissions); // released back to zero on cleanup
+    }
+
+    [Fact]
+    public async Task AcquireAsync_QueuedAdmission_OldestQueuedAdmissionAgeTracksElapsedTime()
+    {
+        using var manager = new ModelRuntimeManager(id => Load(id.Value))
+        {
+            AdmissionWaitTimeout = TimeSpan.FromSeconds(30),
+            ResourceBudget = new FakeResourceBudget(_ => ResourceAdmission.InsufficientHostMemory),
+        };
+
+        Assert.Null(manager.GetStats().OldestQueuedAdmissionAge); // nothing queued yet
+
+        using var cts = new CancellationTokenSource();
+        var queued = manager.AcquireAsync(Id("a"), cts.Token).AsTask();
+        await Task.Delay(150);
+
+        var age = manager.GetStats().OldestQueuedAdmissionAge;
+        Assert.NotNull(age);
+        Assert.True(age!.Value >= TimeSpan.FromMilliseconds(100));
+
+        cts.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await queued);
+        Assert.Null(manager.GetStats().OldestQueuedAdmissionAge); // cleared once the queue empties
+    }
+
+    // ── Phase 6 slice: admission-fairness (oldest-admissible wake, not broadcast re-race) ──
+
+    [Fact]
+    public async Task AcquireAsync_TwoEquallyAdmissibleQueuedWaiters_OlderAlwaysWinsOverNewer()
+    {
+        // Both candidates fail admission identically until "freedUp" flips — proving this exercises
+        // the resource-admission queue (WakeOldestAdmissibleQueuedWaiter), not SingleSlot's separate,
+        // unchanged broadcast-wait path. Once both are equally admissible, only ONE waiter is woken
+        // per residency-change event (see WakeOldestAdmissibleQueuedWaiter's doc), and it must always
+        // be the older of the two — never the newer one, regardless of how a broadcast/re-race
+        // implementation might have let them compete for the lock.
+        using var manager = new ModelRuntimeManager(id => Load(id.Value))
+        {
+            AdmissionWaitTimeout = TimeSpan.FromSeconds(5),
+        };
+
+        using var handle = await manager.AcquireAsync(Id("holder")); // no budget set yet — always succeeds
+
+        bool freedUp = false;
+        manager.ResourceBudget = new FakeResourceBudget(
+            _ => freedUp ? ResourceAdmission.Allowed : ResourceAdmission.InsufficientHostMemory);
+
+        var older = manager.AcquireAsync(Id("older")).AsTask();
+        await Task.Delay(60); // "older" genuinely queues first
+        var newer = manager.AcquireAsync(Id("newer")).AsTask();
+        await Task.Delay(60); // "newer" queues second, strictly after "older"
+
+        freedUp = true;
+        handle.Dispose(); // triggers the fairness scan — both are now admissible; only one is woken
+
+        var firstDone = await Task.WhenAny(older, newer).WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Same(older, firstDone);
+        using var olderHandle = await older;
+        Assert.Equal(Id("older"), olderHandle.Runtime.Id);
+
+        // "newer" is still queued — only one waiter is woken per notify event, and "older" won it.
+        var stillWaiting = await Task.WhenAny(newer, Task.Delay(200));
+        Assert.NotSame(newer, stillWaiting);
+
+        // Not permanently stuck, just correctly ordered behind "older" — a second notify lets it
+        // through too.
+        olderHandle.Dispose();
+        using var newerHandle = await newer.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(Id("newer"), newerHandle.Runtime.Id);
+    }
+
+    [Fact]
+    public async Task AcquireAsync_OversizedOldestWaiter_DoesNotBlockSmallerAdmissibleWaiterBehindIt()
+    {
+        // "big" can never fit (>= 1e9 bytes always rejected); "small" fits once resources free up.
+        // Both start out queued identically (gated by the same "freedUp" flag) so this proves the
+        // scan actually evaluates every candidate rather than "small" merely succeeding outright on
+        // its own first attempt. A strict head-only FIFO would let "big" (the oldest) permanently
+        // block "small" from ever being woken — oldest-ADMISSIBLE selection must skip "big" instead.
+        using var manager = new ModelRuntimeManager(
+            id => Load(id.Value),
+            estimateBytes: id => id.Value == "big" ? 1_000_000_000L : 1_000L)
+        {
+            AdmissionWaitTimeout = TimeSpan.FromSeconds(5),
+        };
+
+        using var handle = await manager.AcquireAsync(Id("holder")); // no budget set yet — always succeeds
+
+        bool freedUp = false;
+        manager.ResourceBudget = new FakeResourceBudget(bytes =>
+            !freedUp ? ResourceAdmission.InsufficientHostMemory
+            : bytes >= 1_000_000_000L ? ResourceAdmission.InsufficientHostMemory
+            : ResourceAdmission.Allowed);
+
+        using var bigCts = new CancellationTokenSource();
+        var big = manager.AcquireAsync(Id("big"), bigCts.Token).AsTask();
+        await Task.Delay(60); // "big" genuinely queues first — it's the oldest
+        var small = manager.AcquireAsync(Id("small")).AsTask();
+        await Task.Delay(60); // "small" queues second, strictly newer than "big"
+
+        freedUp = true;
+        var sw = Stopwatch.StartNew();
+        handle.Dispose(); // triggers the fairness scan
+
+        using var smallHandle = await small.WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.True(sw.Elapsed < TimeSpan.FromSeconds(1), $"small took {sw.Elapsed} to resolve");
+        Assert.Equal(Id("small"), smallHandle.Runtime.Id);
+
+        // "big" never becomes admissible — it stays queued rather than blocking "small".
+        var stillWaiting = await Task.WhenAny(big, Task.Delay(200));
+        Assert.NotSame(big, stillWaiting);
+        Assert.Equal(1, manager.GetStats().QueuedAdmissions); // just "big"
+
+        bigCts.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await big);
     }
 }

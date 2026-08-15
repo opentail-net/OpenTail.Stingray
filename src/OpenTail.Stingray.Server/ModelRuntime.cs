@@ -107,7 +107,11 @@ public readonly record struct ModelRuntimeStats(
 /// snapshot as of the call. Narrower than the plan's own sketch in one place: <see cref="PendingLoads"/>
 /// replaces its <c>PendingRequests</c> name, because what this manager actually tracks is
 /// in-flight physical loads, not per-inference-request queue depth (that lives on
-/// <c>IInferenceEngine.QueueDepth</c> per resident runtime instead).
+/// <c>IInferenceEngine.QueueDepth</c> per resident runtime instead). <see cref="QueuedAdmissions"/>/
+/// <see cref="OldestQueuedAdmissionAge"/>/<see cref="AdmissionQueueOverflows"/> are the Phase 6
+/// "queue" step's own counters — see <see cref="IModelRuntimeManager.AdmissionWaitTimeout"/> and
+/// <see cref="IModelRuntimeManager.MaxQueuedAdmissions"/>; all three stay at their zero/null
+/// defaults when that feature is off.
 /// </summary>
 public readonly record struct MultiModelRuntimeStats(
     int KnownModels,
@@ -120,7 +124,10 @@ public readonly record struct MultiModelRuntimeStats(
     long ModelLoadFailures,
     long ModelEvictions,
     long AdmissionRejects,
-    long ResidencyPressureEvents);
+    long ResidencyPressureEvents,
+    int QueuedAdmissions,
+    TimeSpan? OldestQueuedAdmissionAge,
+    long AdmissionQueueOverflows);
 
 /// <summary>
 /// A complete, independently executable model runtime — the production successor to
