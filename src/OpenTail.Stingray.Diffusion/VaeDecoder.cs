@@ -28,7 +28,7 @@ namespace OpenTail.Stingray.Diffusion;
 ///
 /// The VAE scaling constant 0.3611 and shift 0.1159 are applied before decoding.
 /// </summary>
-public sealed class VaeDecoder : IDisposable
+public sealed class VaeDecoder : IDisposable, IVaeDecoder
 {
     private readonly IWeightLoader _st;
     private readonly IComputeBackend? _backend;

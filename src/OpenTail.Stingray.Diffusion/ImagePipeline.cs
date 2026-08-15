@@ -19,7 +19,7 @@ namespace OpenTail.Stingray.Diffusion;
 ///   var pipeline = ImagePipeline.Load(...);
 ///   pipeline.Generate("a cat", width: 512, height: 512, steps: 4, output: "out.png");
 /// </summary>
-public sealed class ImagePipeline : IDisposable
+public sealed class ImagePipeline : IDisposable, IDiffusionPipeline
 {
     private readonly FluxDiT _dit;
     private readonly VaeDecoder _vae;
@@ -156,6 +156,13 @@ public sealed class ImagePipeline : IDisposable
         }
         PngWriter.Write(outputPath, pixels, outWidth, outHeight);
     }
+
+    /// <summary>IDiffusionPipeline adapter — delegates to <see cref="Generate(string,int,int,int,float,int,string,Action{int,int}?,RRDBNet?,float)"/> unchanged.</summary>
+    void IDiffusionPipeline.Generate(ImageGenerationRequest request) => Generate(
+        request.Prompt, request.Width, request.Height,
+        steps: request.Steps < 0 ? 4 : request.Steps,
+        guidance: request.Guidance, seed: request.Seed, outputPath: request.OutputPath,
+        progress: request.Progress, upscaler: request.Upscaler, upscaleBlend: request.UpscaleBlend);
 
     public void Dispose()
     {
