@@ -4,6 +4,12 @@
 **Target:** `opentail-net/OpenTail.Stingray`  
 **Execution:** **100% local/native C# — no cloud, Python, P/Invoke, or external inference process**
 
+## Status
+
+**Phase 0 (reference freeze + operator audit) and Phase 1 (common diffusion abstraction) done.**
+Details, the operator matrix, and the exact next step: `034-native-sd-family-port-phase0-status.md`
+in this folder. Phase 2 (SD1.5) has not started — this is a deliberate pause point.
+
 ## 1. Objective
 
 Add native C# support for the three major Stable Diffusion generations:
