@@ -38,7 +38,11 @@ public interface IModelRuntimeManager
     /// only use this for observability; acquiring a real lease requires <see cref="AcquireAsync"/>.</summary>
     bool TryGetResident(ModelId model, out ModelRuntime? runtime);
 
-    /// <summary>Point-in-time snapshot of every currently resident runtime.</summary>
+    /// <summary>Point-in-time snapshot of every currently resident OR currently-loading model.
+    /// A model mid-load appears with <see cref="ModelRuntimeState.Loading"/>, an estimated
+    /// (pre-load) <c>EstimatedModelBytes</c>, zeroed <c>HandleCount</c>/<c>ActiveRequests</c>
+    /// (nothing can hold a handle to a runtime that doesn't exist yet), and <c>LastUsed</c> set
+    /// to when the load started rather than "last used".</summary>
     IReadOnlyList<ModelRuntimeStats> Snapshot();
 
     /// <summary>System-wide activity snapshot (docs/032 §"Metrics that matter") — resident/active
@@ -49,11 +53,20 @@ public interface IModelRuntimeManager
 /// <inheritdoc cref="IModelRuntimeManager"/>
 public sealed class ModelRuntimeManager : IModelRuntimeManager, IDisposable
 {
+    /// <summary>A load in flight, plus when it started — the latter exists purely so
+    /// <see cref="ModelRuntimeManager.Snapshot"/> can report something meaningful for
+    /// <c>LastUsed</c> on a model that doesn't have a <see cref="ModelRuntime"/> yet.</summary>
+    private sealed class PendingLoad
+    {
+        public required TaskCompletionSource<ModelRuntime> Tcs { get; init; }
+        public required DateTimeOffset StartedAt { get; init; }
+    }
+
     private readonly Func<ModelId, LoadedEngine> _loader;
     private readonly Func<ModelId, long> _estimateBytes;
     private readonly object _lock = new();
     private readonly Dictionary<ModelId, ModelRuntime> _resident = new();
-    private readonly Dictionary<ModelId, TaskCompletionSource<ModelRuntime>> _pendingLoads = new();
+    private readonly Dictionary<ModelId, PendingLoad> _pendingLoads = new();
     private TaskCompletionSource _residencyChanged = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private ModelResidencyMode _residencyMode;
     private bool _disposed;
@@ -103,10 +116,16 @@ public sealed class ModelRuntimeManager : IModelRuntimeManager, IDisposable
     {
         lock (_lock)
         {
-            var list = new List<ModelRuntimeStats>(_resident.Count);
+            var list = new List<ModelRuntimeStats>(_resident.Count + _pendingLoads.Count);
             foreach (var rt in _resident.Values)
                 list.Add(new ModelRuntimeStats(rt.Id, rt.State, rt.EstimatedModelBytes, rt.HandleCount,
                     rt.ActiveRequests, rt.IsPinned, rt.LastUsed));
+            // A model mid-load has no ModelRuntime yet (that's only created once RunLoad
+            // succeeds) — without this, it's invisible to every observer between "acquisition
+            // started" and "acquisition finished", which for a large GGUF can be a long window.
+            foreach (var (id, pending) in _pendingLoads)
+                list.Add(new ModelRuntimeStats(id, ModelRuntimeState.Loading, _estimateBytes(id),
+                    HandleCount: 0, ActiveRequests: 0, Pinned: false, pending.StartedAt));
             return list;
         }
     }
@@ -156,9 +175,9 @@ public sealed class ModelRuntimeManager : IModelRuntimeManager, IDisposable
                 if (_resident.TryGetValue(model, out var resident) && resident.State != ModelRuntimeState.Disposed)
                     return new ModelRuntimeHandle(this, resident);
 
-                if (_pendingLoads.TryGetValue(model, out var tcs))
+                if (_pendingLoads.TryGetValue(model, out var pending))
                 {
-                    pendingLoad = tcs.Task;
+                    pendingLoad = pending.Tcs.Task;
                 }
                 else if (_residencyMode == ModelResidencyMode.SingleSlot && HasBlockingOtherResident(model))
                 {
@@ -176,7 +195,7 @@ public sealed class ModelRuntimeManager : IModelRuntimeManager, IDisposable
                         EnsureAdmissibleLocked(model, budget);
 
                     var newTcs = new TaskCompletionSource<ModelRuntime>(TaskCreationOptions.RunContinuationsAsynchronously);
-                    _pendingLoads[model] = newTcs;
+                    _pendingLoads[model] = new PendingLoad { Tcs = newTcs, StartedAt = DateTimeOffset.UtcNow };
                     pendingLoad = newTcs.Task;
                     _ = Task.Run(() => RunLoad(model, newTcs));
                 }

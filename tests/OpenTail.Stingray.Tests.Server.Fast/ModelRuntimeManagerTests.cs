@@ -518,4 +518,61 @@ public sealed class ModelRuntimeManagerTests
         using var handle = await acquiring;
         Assert.Equal(0, manager.GetStats().PendingLoads);
     }
+
+    // ── Pending-load visibility in Snapshot() ───────────────────────────────
+
+    [Fact]
+    public async Task Snapshot_ShowsAModelMidLoad_WithLoadingStateAndPreLoadEstimate()
+    {
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var manager = new ModelRuntimeManager(
+            id => { gate.Task.GetAwaiter().GetResult(); return Load(id.Value); },
+            estimateBytes: _ => 12345);
+
+        var before = DateTimeOffset.UtcNow;
+        var acquiring = manager.AcquireAsync(Id("slow")).AsTask();
+        await Task.Delay(30); // let the load genuinely start
+
+        var entry = Assert.Single(manager.Snapshot());
+        Assert.Equal(Id("slow"), entry.ModelId);
+        Assert.Equal(ModelRuntimeState.Loading, entry.State);
+        Assert.Equal(12345, entry.EstimatedModelBytes); // pre-load estimate, not from a real ModelRuntime
+        Assert.Equal(0, entry.HandleCount);
+        Assert.Equal(0, entry.ActiveRequests);
+        Assert.False(entry.Pinned);
+        Assert.True(entry.LastUsed >= before); // reports load-start time, not a stale default
+
+        gate.SetResult();
+        using var handle = await acquiring;
+
+        // Once loaded, the SAME model now appears as a real resident entry instead.
+        var resident = Assert.Single(manager.Snapshot());
+        Assert.Equal(ModelRuntimeState.Ready, resident.State);
+    }
+
+    [Fact]
+    public async Task Snapshot_IncludesBothResidentAndPendingEntriesSimultaneously()
+    {
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var manager = new ModelRuntimeManager(id =>
+            id.Value == "loading" ? Gate(id) : Load(id.Value));
+
+        LoadedEngine Gate(ModelId id)
+        {
+            gate.Task.GetAwaiter().GetResult();
+            return Load(id.Value);
+        }
+
+        using var ready = await manager.AcquireAsync(Id("ready"));
+        var stillLoading = manager.AcquireAsync(Id("loading")).AsTask();
+        await Task.Delay(30);
+
+        var snapshot = manager.Snapshot();
+        Assert.Equal(2, snapshot.Count);
+        Assert.Contains(snapshot, s => s.ModelId.Equals(Id("ready")) && s.State == ModelRuntimeState.Ready);
+        Assert.Contains(snapshot, s => s.ModelId.Equals(Id("loading")) && s.State == ModelRuntimeState.Loading);
+
+        gate.SetResult();
+        using var handle = await stillLoading;
+    }
 }

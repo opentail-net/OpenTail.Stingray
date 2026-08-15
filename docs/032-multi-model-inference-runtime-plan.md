@@ -368,6 +368,13 @@ background/speculative model preloading. All out of scope here.
    `EstimatedResidentModelBytes` snapshot. `ResidencyPressureEvents` (pressure detected) is
    counted separately from `AdmissionRejects` (pressure eviction couldn't resolve) — the two
    answer different operational questions. Purely additive/observational, no behavior change.
+   **Slice 6 done:** `Snapshot()` now includes models currently mid-load
+   (`ModelRuntimeState.Loading`, pre-load `EstimatedModelBytes` estimate, zeroed
+   `HandleCount`/`ActiveRequests` since no `ModelRuntime` exists yet, `LastUsed` reporting when
+   the load started) alongside resident entries — previously a model between "acquisition
+   started" and "acquisition finished" was invisible to every observer. `TryGetResident`
+   deliberately left unchanged: it promises a *usable* `ModelRuntime`, and a loading model
+   genuinely doesn't have one yet, so returning `false` for it is correct, not a gap.
    **Not yet done:** accelerator (VRAM) accounting — deliberately not attempted as a small slice;
    it needs a live GPU backend instance with its own lifecycle/ownership questions, not just a
    memory query — and Phase 6's queueing alternative to hard failure when eviction alone isn't
