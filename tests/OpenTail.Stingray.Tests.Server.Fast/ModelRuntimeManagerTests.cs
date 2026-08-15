@@ -280,7 +280,21 @@ public sealed class ModelRuntimeManagerTests
         Assert.True(snapshot.HostMemoryTotalBytes > 0);
         Assert.True(snapshot.HostMemoryAvailableBytes >= 0);
         Assert.True(snapshot.HostMemoryAvailableBytes <= snapshot.HostMemoryTotalBytes);
-        Assert.Null(snapshot.AcceleratorMemoryAvailableBytes); // not wired yet — see class doc
+    }
+
+    [Fact]
+    public void HostResourceBudget_AcceleratorMemory_IsNullOrARealPositiveVramFigure()
+    {
+        // Portable across dev machines / CI: no Vulkan device -> null ("unknown"); a Vulkan
+        // device present -> a real, positive VRAM capacity figure. Never a fabricated or zero
+        // placeholder either way — asserting a specific outcome here would make this test
+        // hardware-dependent, which the rest of this ("Fast", no-real-GPU-device) suite avoids.
+        using var manager = new ModelRuntimeManager(id => Load(id.Value));
+        var budget = new HostResourceBudget(manager);
+
+        var snapshot = budget.GetCurrent();
+
+        Assert.True(snapshot.AcceleratorMemoryAvailableBytes is null or > 0);
     }
 
     [Fact]
@@ -574,5 +588,70 @@ public sealed class ModelRuntimeManagerTests
 
         gate.SetResult();
         using var handle = await stillLoading;
+    }
+
+    // ── Phase 3 slice: per-runtime accelerator (GPU) residency tracking ─────
+
+    private static LoadedEngine LoadOnBackend(string modelId, string backend) =>
+        new(new DisposableFakeEngine(modelId), "qwen2", null,
+            RuntimeResolution: new ServerRuntimeResolution(backend, "fake", "gguf", 512));
+
+    [Fact]
+    public async Task IsAcceleratorResident_TrueForCudaAndVulkan_FalseForCpu()
+    {
+        using var manager = new ModelRuntimeManager(id => id.Value switch
+        {
+            "cpu-model" => LoadOnBackend(id.Value, "cpu"),
+            "cuda-model" => LoadOnBackend(id.Value, "cuda"),
+            "vulkan-model" => LoadOnBackend(id.Value, "vulkan"),
+            _ => throw new InvalidOperationException(),
+        });
+
+        using var cpu = await manager.AcquireAsync(Id("cpu-model"));
+        using var cuda = await manager.AcquireAsync(Id("cuda-model"));
+        using var vulkan = await manager.AcquireAsync(Id("vulkan-model"));
+
+        Assert.False(cpu.Runtime.IsAcceleratorResident);
+        Assert.True(cuda.Runtime.IsAcceleratorResident);
+        Assert.True(vulkan.Runtime.IsAcceleratorResident);
+    }
+
+    [Fact]
+    public async Task IsAcceleratorResident_FalseWhenRuntimeResolutionIsUnavailable()
+    {
+        // e.g. a caller-supplied EngineFactory that never set RuntimeResolution — must not
+        // crash or default to "resident" just because the signal is missing.
+        using var manager = new ModelRuntimeManager(id => Load(id.Value));
+        using var handle = await manager.AcquireAsync(Id("a"));
+
+        Assert.False(handle.Runtime.IsAcceleratorResident);
+        Assert.Equal(0, handle.Runtime.AcceleratorResidentBytesEstimate);
+    }
+
+    [Fact]
+    public async Task AcceleratorResidentBytesEstimate_EqualsModelBytesOnlyWhenAcceleratorResident()
+    {
+        using var manager = new ModelRuntimeManager(
+            id => id.Value == "gpu" ? LoadOnBackend(id.Value, "vulkan") : LoadOnBackend(id.Value, "cpu"),
+            estimateBytes: _ => 999);
+
+        using var gpu = await manager.AcquireAsync(Id("gpu"));
+        using var cpu = await manager.AcquireAsync(Id("cpu"));
+
+        Assert.Equal(999, gpu.Runtime.AcceleratorResidentBytesEstimate);
+        Assert.Equal(0, cpu.Runtime.AcceleratorResidentBytesEstimate);
+    }
+
+    [Fact]
+    public async Task GetStats_EstimatedAcceleratorResidentBytes_SumsOnlyAcceleratorResidentRuntimes()
+    {
+        using var manager = new ModelRuntimeManager(
+            id => id.Value == "gpu" ? LoadOnBackend(id.Value, "cuda") : LoadOnBackend(id.Value, "cpu"),
+            estimateBytes: id => id.Value == "gpu" ? 500 : 300);
+
+        using var gpu = await manager.AcquireAsync(Id("gpu"));
+        using var cpu = await manager.AcquireAsync(Id("cpu"));
+
+        Assert.Equal(500, manager.GetStats().EstimatedAcceleratorResidentBytes);
     }
 }

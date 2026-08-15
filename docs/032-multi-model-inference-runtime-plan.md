@@ -376,9 +376,43 @@ background/speculative model preloading. All out of scope here.
    started" and "acquisition finished" was invisible to every observer. `TryGetResident`
    deliberately left unchanged: it promises a *usable* `ModelRuntime`, and a loading model
    genuinely doesn't have one yet, so returning `false` for it is correct, not a gap.
-   **Not yet done:** accelerator (VRAM) accounting — deliberately not attempted as a small slice;
-   it needs a live GPU backend instance with its own lifecycle/ownership questions, not just a
-   memory query — and Phase 6's queueing alternative to hard failure when eviction alone isn't
+   **Slice 7 done:** `ResourceSnapshot.AcceleratorMemoryAvailableBytes` now reports real Vulkan
+   VRAM capacity when a device is present (`HostResourceBudget`, a throwaway `VulkanBackend`
+   probe read once and cached process-wide via `Lazy<T>` — VRAM capacity can't change during a
+   process's lifetime, and repeated device probes would be wasteful). Verified against real
+   hardware in this environment (not assumed): a temporary strict assertion confirmed a real,
+   sane, non-zero figure (~15.7 GiB) before being replaced with the portable
+   `is null or > 0` check the permanent test uses, so CI/dev machines without a GPU still pass
+   honestly. Deliberately scoped narrow, twice over: (1) this reports total DEVICE_LOCAL
+   *capacity*, not capacity-minus-current-usage — Vulkan has no portable "free VRAM right now"
+   query without the `VK_EXT_memory_budget` extension, so this stays consistent with the same
+   conservative-estimate posture host-memory admission already has; (2) `EstimateAdmission`
+   itself is still host-memory-only — wiring an accelerator dimension into the actual admission
+   decision needs per-runtime GPU-residency tracking (which runtime actually consumed how much
+   VRAM) that doesn't exist yet, since `ModelRuntime` doesn't currently know which backend a
+   given `LoadedEngine` runs on. CUDA was not attempted: no CUDA device in this environment to
+   verify against, and shipping an unverified native-memory-query path isn't an acceptable
+   trade for a "small, safe, tested" slice.
+   **Slice 8 done:** `ModelRuntime.IsAcceleratorResident`/`AcceleratorResidentBytesEstimate` —
+   per-runtime GPU-residency, derived from `LoadedEngine.RuntimeResolution.Backend`
+   ("cpu"/"cuda"/"vulkan"), which `InferenceEngineLoader.DescribeRuntime` already computes
+   correctly for every dispatch branch, so this needed zero new loader plumbing. Deliberately
+   didn't thread the per-branch `LayerPlacement.GpuWeightBytes` the loader computes internally
+   through instead — that would mean touching the many backend-dispatch branches inside
+   `InferenceEngineLoader.BuildForwardPass` (CUDA/Vulkan × full/hybrid/hybrid-GDN), real risk in
+   a performance-critical, multi-path method, for a precision gain not needed yet. Reuses
+   `EstimatedModelBytes` instead: **exact for full GPU offload**, an **overestimate for
+   hybrid/partial offload** (documented explicitly in the property's own doc comment) — the safe
+   direction for an eventual admission check, so it's usable now, with the honest gap flagged for
+   later. `ModelRuntimeStats`/`MultiModelRuntimeStats` extended to expose both the per-runtime and
+   aggregate figures. Verified against real Vulkan hardware end-to-end, not just fakes:
+   `tests/OpenTail.Stingray.Tests.Server/AcceleratorResidencyTests.cs` loads an actual Qwen3-0.6B
+   GGUF on the real device and confirms residency + a positive byte estimate come out of the
+   genuine `DescribeRuntime` dispatch path (plus a CPU-loaded counterpart confirming `false`/0).
+   **Not yet done:** wiring accelerator memory into `EstimateAdmission`'s actual decision (the
+   data now exists; the admission math still doesn't consult it), byte-exact hybrid/partial-offload
+   tracking (see above), a CUDA equivalent of the VRAM-capacity probe (still no hardware here to
+   verify against), and Phase 6's queueing alternative to hard failure when eviction alone isn't
    enough.
 4. ✅ **Multi-session model execution.** Wire each runtime to `HotSession` + continuous batching.
    *Acceptance: N sessions on one runtime behave exactly as today's same-model concurrency.*
@@ -412,13 +446,17 @@ background/speculative model preloading. All out of scope here.
    systems" earlier in this doc's own history), so partial slowdown from contention is expected
    physics, not evidence of a lock. The interleaving check is robust to that; a raw timing
    threshold isn't.
-   **Real bug found and deliberately not fixed here:** disposing two different real, plain
-   (non-batching) `InferenceEngine`s shortly after both complete generation crashes the process
-   natively (heap corruption) — reproducible, root cause not identified, out of scope for this
-   phase. Not reachable from any current production path (the server's one engine is always
-   pinned and never disposed until process exit). Filed as `docs/bugstofix.md` →
-   `ForwardPass.cs:6047`. The new test routes around it by pinning both runtimes so
-   `ModelRuntimeManager.Dispose()` never touches them.
+   **Real bug found and fixed along the way:** disposing a plain (non-batching) `InferenceEngine`
+   after real generation crashed the process natively (heap corruption). Bisection showed neither
+   two models nor concurrency nor even generation were required — a single model, load-then-
+   immediately-dispose, reproduced it just as reliably, which pointed straight at the real cause:
+   `InferenceEngine.DisposeCore` calls `_fwd.Dispose()` explicitly and then disposes every item in
+   `_owned`, which also contains that same `ForwardPass` instance — a double-free, since
+   `ForwardPass.Dispose()` had no idempotency guard (unlike every other disposal type in this
+   codebase). Fixed with that same established `_disposed`-guard pattern. Full writeup and
+   verification (four test suites rerun green, including the largest one touching this file):
+   `docs/done/bugstofix-resolved-2026-08.md` → `ForwardPass.cs:6047`. Regression guard:
+   `CrossModelConcurrencyTests.cs`'s `SingleRealModel_DisposeAfterGeneration_DoesNotCorruptTheNativeHeap`.
 6. **Fair scheduling & admission.** Per-model pending queues, request age, service quantum,
    starvation protection, cancellation, queue limits — deliberately simple policy.
 7. **OpenTail server integration.** Expose model identity through `IInferenceService`.

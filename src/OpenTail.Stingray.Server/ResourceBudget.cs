@@ -1,10 +1,16 @@
+using OpenTail.Stingray.Vulkan;
+
 namespace OpenTail.Stingray.Server;
 
 /// <summary>
 /// Point-in-time resource snapshot (docs/032-multi-model-inference-runtime-plan.md §"Resource
 /// admission"). Host and accelerator memory are kept as separate figures deliberately — never
 /// collapse them into one number. <see cref="AcceleratorMemoryAvailableBytes"/> is <c>null</c>
-/// until a later phase wires in real VRAM accounting; treat <c>null</c> as "unknown", not zero.
+/// when no accelerator was detected (or querying it isn't supported/enabled) — treat <c>null</c>
+/// as "unknown", not zero. When non-null, it currently reports total DEVICE_LOCAL VRAM
+/// <em>capacity</em> (see <see cref="HostResourceBudget"/>'s class doc), not capacity minus
+/// what's already been loaded onto the accelerator by this or any other process — that
+/// finer-grained accounting needs per-runtime GPU-residency tracking that doesn't exist yet.
 /// </summary>
 public readonly record struct ResourceSnapshot(
     long HostMemoryTotalBytes,
@@ -60,18 +66,50 @@ public interface IResourceBudget
 }
 
 /// <summary>
-/// <see cref="IResourceBudget"/> backed by <see cref="GC.GetGCMemoryInfo"/> — portable across
-/// Windows/Linux/macOS with no P/Invoke, since the runtime already queries the OS for this
-/// internally to size the GC heap. <see cref="GCMemoryInfo.TotalAvailableMemoryBytes"/> is the
-/// memory limit the GC believes it can use (a solid proxy for total physical/container memory);
-/// subtracting <see cref="GCMemoryInfo.MemoryLoadBytes"/> (current system-wide physical memory in
-/// use, as the GC observes it) gives an approximate free-memory figure. This is deliberately an
-/// estimate, not an exact accounting — see docs/032 §"Resource admission" on why Phase 1/2's
-/// admission story stays conservative rather than exact.
+/// <see cref="IResourceBudget"/> backed by <see cref="GC.GetGCMemoryInfo"/> for host memory —
+/// portable across Windows/Linux/macOS with no P/Invoke, since the runtime already queries the OS
+/// for this internally to size the GC heap. <see cref="GCMemoryInfo.TotalAvailableMemoryBytes"/>
+/// is the memory limit the GC believes it can use (a solid proxy for total physical/container
+/// memory); subtracting <see cref="GCMemoryInfo.MemoryLoadBytes"/> (current system-wide physical
+/// memory in use, as the GC observes it) gives an approximate free-memory figure. This is
+/// deliberately an estimate, not an exact accounting — see docs/032 §"Resource admission" on why
+/// Phase 1/2's admission story stays conservative rather than exact.
+///
+/// <para>Accelerator memory is reported when a Vulkan device is present, via a real
+/// <see cref="VulkanBackend.VramBytes"/> query (device-local heap capacity — the exact figure
+/// <c>TierPlanner</c> already budgets against for model placement). Unlike host memory, Vulkan
+/// has no portable "free VRAM right now" query without the <c>VK_EXT_memory_budget</c> extension,
+/// so this reports total capacity, not capacity-minus-current-usage; see the class-level
+/// <see cref="ResourceSnapshot"/> doc for what that does and doesn't mean. The probe constructs a
+/// throwaway <see cref="VulkanBackend"/> purely to read this static hardware property and disposes
+/// it immediately — same one-shot pattern <c>DoctorCommand</c>'s Vulkan smoke test already uses —
+/// then caches the result process-wide (<see cref="Lazy{T}"/>) since VRAM capacity cannot change
+/// during a process's lifetime and repeated device probes would be wasteful. No Vulkan device (or
+/// a probe failure) leaves <see cref="ResourceSnapshot.AcceleratorMemoryAvailableBytes"/>
+/// <c>null</c> — "unknown", not zero, matching the same convention host memory already follows on
+/// probe failure paths elsewhere in this codebase.</para>
 /// </summary>
 public sealed class HostResourceBudget(IModelRuntimeManager modelRuntimes, double safetyMarginMultiplier = 1.25)
     : IResourceBudget
 {
+    private static readonly Lazy<long?> s_acceleratorVramCapacityBytes = new(ProbeAcceleratorVramCapacity);
+
+    private static long? ProbeAcceleratorVramCapacity()
+    {
+        try
+        {
+            using var vk = new VulkanBackend();
+            return (long)vk.VramBytes;
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            // No Vulkan device, driver/SDK unavailable, or init failed for any other reason —
+            // accelerator memory stays "unknown", exactly like DoctorCommand's own Vulkan probe
+            // treats this as a non-fatal "not available" rather than surfacing the exception.
+            return null;
+        }
+    }
+
     public ResourceSnapshot GetCurrent()
     {
         var gc = GC.GetGCMemoryInfo();
@@ -85,7 +123,7 @@ public sealed class HostResourceBudget(IModelRuntimeManager modelRuntimes, doubl
         return new ResourceSnapshot(
             HostMemoryTotalBytes: total,
             HostMemoryAvailableBytes: available,
-            AcceleratorMemoryAvailableBytes: null, // not wired yet — see class doc
+            AcceleratorMemoryAvailableBytes: s_acceleratorVramCapacityBytes.Value,
             ResidentModelBytes: residentBytes);
     }
 

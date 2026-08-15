@@ -119,13 +119,17 @@ public sealed class ModelRuntimeManager : IModelRuntimeManager, IDisposable
             var list = new List<ModelRuntimeStats>(_resident.Count + _pendingLoads.Count);
             foreach (var rt in _resident.Values)
                 list.Add(new ModelRuntimeStats(rt.Id, rt.State, rt.EstimatedModelBytes, rt.HandleCount,
-                    rt.ActiveRequests, rt.IsPinned, rt.LastUsed));
+                    rt.ActiveRequests, rt.IsPinned, rt.LastUsed, rt.IsAcceleratorResident,
+                    rt.AcceleratorResidentBytesEstimate));
             // A model mid-load has no ModelRuntime yet (that's only created once RunLoad
             // succeeds) — without this, it's invisible to every observer between "acquisition
             // started" and "acquisition finished", which for a large GGUF can be a long window.
+            // Backend isn't known yet either at this point, so accelerator fields stay at their
+            // not-yet-resolved default (false / 0) rather than guessing.
             foreach (var (id, pending) in _pendingLoads)
                 list.Add(new ModelRuntimeStats(id, ModelRuntimeState.Loading, _estimateBytes(id),
-                    HandleCount: 0, ActiveRequests: 0, Pinned: false, pending.StartedAt));
+                    HandleCount: 0, ActiveRequests: 0, Pinned: false, pending.StartedAt,
+                    IsAcceleratorResident: false, AcceleratorResidentBytesEstimate: 0));
             return list;
         }
     }
@@ -136,10 +140,12 @@ public sealed class ModelRuntimeManager : IModelRuntimeManager, IDisposable
         {
             int active = 0;
             long estimatedBytes = 0;
+            long acceleratorBytes = 0;
             foreach (var rt in _resident.Values)
             {
                 if (rt.HandleCount > 0) active++;
                 estimatedBytes += rt.EstimatedModelBytes;
+                acceleratorBytes += rt.AcceleratorResidentBytesEstimate;
             }
             int pendingLoads = _pendingLoads.Count;
 
@@ -148,6 +154,7 @@ public sealed class ModelRuntimeManager : IModelRuntimeManager, IDisposable
                 ResidentModels: _resident.Count,
                 ActiveModels: active,
                 EstimatedResidentModelBytes: estimatedBytes,
+                EstimatedAcceleratorResidentBytes: acceleratorBytes,
                 PendingLoads: pendingLoads,
                 ModelLoads: Interlocked.Read(ref _modelLoads),
                 ModelLoadFailures: Interlocked.Read(ref _modelLoadFailures),

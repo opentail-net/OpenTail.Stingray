@@ -24,17 +24,7 @@ public sealed class CrossModelConcurrencyTests
             "SmolLM2-1.7B-Instruct-Q4_K_M.gguf and Qwen3-0.6B-Q8_0.gguf are required for the " +
             "cross-model concurrency acceptance test.");
 
-        // Deliberately NOT `using` the manager or holding handles open for disposal: as found
-        // below, calling InferenceEngine.Dispose() immediately after a real generation crashes
-        // the process natively (heap corruption in ForwardPass.Dispose), a pre-existing hazard
-        // this test is apparently the first thing to actually exercise (ContinuousBatchingEngine
-        // has an equivalent DrainedOnDispose guard against exactly this class of race; plain
-        // InferenceEngine does not). Fixing that is real, separate work, out of scope here —
-        // pinning both runtimes makes ModelRuntimeManager.Dispose() skip them entirely, so this
-        // test leaks them to process exit instead, matching this codebase's own documented
-        // policy elsewhere (OwnedDisposableEngine.Dispose): "a leak at shutdown is strictly
-        // preferable to an access violation."
-        var manager = new ModelRuntimeManager(id => InferenceEngineLoader.Load(
+        using var manager = new ModelRuntimeManager(id => InferenceEngineLoader.Load(
             new OpenTailStingrayServerOptions
             {
                 ModelPath = id.Value,
@@ -43,10 +33,8 @@ public sealed class CrossModelConcurrencyTests
                 ContextSize = 512,
             }));
 
-        var handleA = await manager.AcquireAsync(ModelId.Canonicalize(modelA!));
-        var handleB = await manager.AcquireAsync(ModelId.Canonicalize(modelB!));
-        handleA.Runtime.IsPinned = true;
-        handleB.Runtime.IsPinned = true;
+        using var handleA = await manager.AcquireAsync(ModelId.Canonicalize(modelA!));
+        using var handleB = await manager.AcquireAsync(ModelId.Canonicalize(modelB!));
 
         var sp = new SamplingParams { Temperature = 0f, MaxNewTokens = 32 };
         const string prompt = "The capital of France is";
@@ -84,6 +72,38 @@ public sealed class CrossModelConcurrencyTests
             $"Expected the two models' generations to interleave (one starts before the other " +
             $"finishes) when run concurrently: aFirst={aFirst:o} aLast={aLast:o} bFirst={bFirst:o} " +
             $"bLast={bLast:o} — no overlap detected, looks fully serialized instead.");
+    }
+
+    /// <summary>
+    /// Regression guard for the double-free found while building the test above: a plain
+    /// (non-batching) InferenceEngine's Dispose() used to run ForwardPass.Dispose() twice —
+    /// once explicitly, once again via the _owned[] loop, which also contains the same
+    /// ForwardPass instance — corrupting the native heap and crashing the process (fixed by an
+    /// idempotency guard in ForwardPass.Dispose(), docs/bugstofix.md → ForwardPass.cs). Real
+    /// generation, not just construction, because the original repro went through a full
+    /// generate-then-dispose cycle even though the fixed bug turned out not to need it.
+    /// </summary>
+    [Fact]
+    public async Task SingleRealModel_DisposeAfterGeneration_DoesNotCorruptTheNativeHeap()
+    {
+        string? modelPath = FindModel("SmolLM2-1.7B-Instruct-Q4_K_M.gguf");
+        Assert.SkipUnless(modelPath is not null,
+            "SmolLM2-1.7B-Instruct-Q4_K_M.gguf is required for this regression test.");
+
+        var loaded = InferenceEngineLoader.Load(new OpenTailStingrayServerOptions
+        {
+            ModelPath = modelPath,
+            Backend = ServerBackend.Cpu,
+            NGpuLayers = 0,
+            ContextSize = 512,
+        });
+
+        var sp = new SamplingParams { Temperature = 0f, MaxNewTokens = 8 };
+        await foreach (var _ in loaded.Engine.GenerateChunksAsync("The capital of France is", sp)) { }
+
+        // If this double-frees, the process crashes natively (no exception to catch) — the test
+        // passing at all, not any assertion inside it, is the actual proof.
+        (loaded.Engine as IDisposable)?.Dispose();
     }
 
     private static string? FindModel(string fileName)

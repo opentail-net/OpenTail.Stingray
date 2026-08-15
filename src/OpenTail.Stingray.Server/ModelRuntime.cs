@@ -96,7 +96,9 @@ public readonly record struct ModelRuntimeStats(
     int HandleCount,
     int ActiveRequests,
     bool Pinned,
-    DateTimeOffset LastUsed);
+    DateTimeOffset LastUsed,
+    bool IsAcceleratorResident,
+    long AcceleratorResidentBytesEstimate);
 
 /// <summary>
 /// System-wide activity snapshot for <see cref="IModelRuntimeManager"/> (docs/032
@@ -112,6 +114,7 @@ public readonly record struct MultiModelRuntimeStats(
     int ResidentModels,
     int ActiveModels,
     long EstimatedResidentModelBytes,
+    long EstimatedAcceleratorResidentBytes,
     int PendingLoads,
     long ModelLoads,
     long ModelLoadFailures,
@@ -148,6 +151,32 @@ public sealed class ModelRuntime : IDisposable
     /// workspace, not runtime overhead — see docs/032 §"Resource admission" on why Phase 1
     /// admission is deliberately conservative rather than exact.</summary>
     public long EstimatedModelBytes { get; }
+
+    /// <summary>
+    /// Whether this runtime's forward pass runs on an accelerator (docs/032 §"Resource
+    /// admission" — per-runtime GPU-residency tracking). Reads <see cref="LoadedEngine.RuntimeResolution"/>'s
+    /// already-computed <c>Backend</c> string ("cpu"/"cuda"/"vulkan"), set correctly for every
+    /// dispatch branch in <c>InferenceEngineLoader.DescribeRuntime</c> — no new loader plumbing
+    /// needed to know this. <c>false</c> when resolution info is unavailable (e.g. a caller-supplied
+    /// <see cref="OpenTailStingrayServerOptions.EngineFactory"/> that didn't set it).
+    /// </summary>
+    public bool IsAcceleratorResident =>
+        Loaded.RuntimeResolution is { Backend: "cuda" or "vulkan" };
+
+    /// <summary>
+    /// Estimated VRAM this runtime consumes, for observability only (docs/032's admission math
+    /// doesn't factor this in yet). Currently just <see cref="EstimatedModelBytes"/> when
+    /// <see cref="IsAcceleratorResident"/>, otherwise 0 — <b>exact for full GPU offload</b>
+    /// (all weights genuinely on the accelerator), but an <b>overestimate for hybrid/partial
+    /// offload</b> (some layers stay on CPU, so the accelerator isn't actually holding the full
+    /// file-size-worth of weights). Getting that precise needs threading the per-branch
+    /// <c>LayerPlacement.GpuWeightBytes</c> the loader already computes internally through to
+    /// here — real, separate work, deliberately not attempted in this slice to avoid touching
+    /// the many backend-dispatch branches inside <c>InferenceEngineLoader.BuildForwardPass</c>
+    /// without a concrete need driving exactly how. Overestimating is the safe direction for an
+    /// eventual admission check, so this is usable as-is until that precision lands.
+    /// </summary>
+    public long AcceleratorResidentBytesEstimate => IsAcceleratorResident ? EstimatedModelBytes : 0;
 
     public ModelRuntimeState State { get; internal set; }
 

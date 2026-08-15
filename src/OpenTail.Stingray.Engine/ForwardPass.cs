@@ -20,6 +20,7 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
     private readonly ModelHyperparams _hp;
     private readonly PagedKvCache _kvCache;
     private readonly int _ctxLen; // scratch buffer sizing (attnScores, TurboQuant)
+    private bool _disposed;
 
     // GGUF control/user-defined token IDs, when the model carries the optional tokenizer type
     // table. An all-control prompt is structurally unlike normal text and is a numerically hostile
@@ -6046,6 +6047,19 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
 
     public void Dispose()
     {
+        // Idempotency guard (matches the codebase-wide convention elsewhere, e.g.
+        // OpenTail.Stingray.Core.ModelHandle / SharedModelCache): InferenceEngine.DisposeCore
+        // calls _fwd.Dispose() explicitly AND separately disposes every item in its _owned
+        // array, which also contains this same ForwardPass instance (InferenceEngineLoader adds
+        // it to owned[] when constructing the CPU dense path) -- without this guard, every
+        // NativeMemory.Free() call below runs twice, a double-free that corrupts the native heap
+        // (bugstofix.md, discovered via docs/032's Phase 5 real-model concurrency work: even a
+        // single plain, non-batching InferenceEngine crashed on Dispose() after ANY real model
+        // load, with or without ever generating -- ContinuousBatchingEngine's OwnedDisposableEngine
+        // never hit this because its DrainedOnDispose guard is a different, unrelated check).
+        if (_disposed) return;
+        _disposed = true;
+
         NativeMemory.Free(_hidden);
         NativeMemory.Free(_residual);
         NativeMemory.Free(_normBuf);
