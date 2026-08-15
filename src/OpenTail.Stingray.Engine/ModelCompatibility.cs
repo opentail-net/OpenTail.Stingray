@@ -457,8 +457,26 @@ public static class ModelCompatibility
         "exaone4",
         "mistral3",
         "ministral",
-        "deepseek2",
     };
+    // deepseek2 — NOT admitted. Was previously listed here with zero verification evidence (the
+    // architecture string was admitted before any of the six IForwardPass implementations loaded
+    // its MLA-specific tensors at all -- see docs/bugstofix.md's ModelCompatibility.cs entry for
+    // the original finding). A CPU-only MLA implementation was since built in ForwardPass.cs
+    // (compressed-latent K/V via attn_kv_a_mqa/attn_kv_a_norm/attn_kv_b, a YaRN-scaled RoPE table,
+    // the deepseek2-specific kq_scale/mscale correction, per-layer dense/MoE dispatch for
+    // leading_dense_block_count) and verified end-to-end against a real GGUF
+    // (DeepSeek-V2-Lite-Chat.Q2_K): the model loads and generates with zero crashes, but produces
+    // NUMERICALLY WRONG output ("The capital of France is" does not continue with "Paris", while
+    // the same GGUF via a reference llama.cpp build does) -- three real bugs were found and fixed
+    // in the YaRN/kq_scale formula chain along the way, but the remaining defect was not
+    // identified despite exhausting formula-level re-derivation against the reference source
+    // (examples/llama.cpp/llama.cpp's src/models/deepseek2.cpp, src/llama-context.cpp) and
+    // verifying the Q2_K quantization kernels bit-for-bit. Do not re-admit this architecture
+    // without either a passing greedy-parity receipt or an explicit decision to ship it
+    // known-wrong behind --allow-unverified-arch. GPU backends (GpuForwardPass/CudaForwardPass/
+    // hybrid variants) have no MLA support at all -- CPU-only was the deliberately agreed scope.
+    // See docs/bugstofix.md for the full investigation record.
+    //
     // minicpm — NOT admitted. The forward-pass scale trio (reusing Granite's graph, see
     // GraniteGreedyParityTests) is implemented and presumed correct, but MiniCPM4-0.5B — the only
     // Apache-2.0 checkpoint tried (2026-08-08) — declares tokenizer.ggml.model=llama with a

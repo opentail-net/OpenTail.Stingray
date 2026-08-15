@@ -1,32 +1,25 @@
-# `STINGRAY_*` environment-variable inventory — name-complete, classification pending
+# `STINGRAY_*` environment-variable inventory — name-complete and classified
 
 **Snapshot originally generated:** 2026-07-26 by scanning `src/**/*.cs`, recording **141 unique
 variables**.
 
-**Reconciled 2026-08-07:** the table below now lists every name in
-`KnownEnvironmentVariables.All`, the source-enforced registry, which
-now contains **162** names. The row set is therefore no longer a historical subset — it is
-name-complete as of this date. What remains outstanding is the **Class/Notes** classification
-(see below), not the enumeration.
+**Reconciled 2026-08-07:** the table below was made to list every name in
+`KnownEnvironmentVariables.All`, the source-enforced registry, which at that time contained
+**162** names.
 
-**Reconciled again 2026-08-08:** three further entries were removed — `STINGRAY_ARGMAX_NEG_INF`,
-`STINGRAY_MOE_` and `STINGRAY_SNAPKV` — bringing the registry to **156**. None was ever an
-environment variable. `STINGRAY_ARGMAX_NEG_INF` is a CUDA `#define` inside an NVRTC kernel string;
-the other two are glob patterns that appear only in comments (`STINGRAY_MOE_*`, `STINGRAY_SNAPKV*`).
-The existing `ListMatchesSource` test could not catch them because it accepts a bare textual match,
-so the scan found the very text that had put the entry there — the entry justified itself.
+**Reconciled 2026-08-08:** three ghost entries were removed from the source registry —
+`STINGRAY_ARGMAX_NEG_INF`, `STINGRAY_MOE_` and `STINGRAY_SNAPKV` — bringing the registry to
+**156**. None was ever an environment variable: `STINGRAY_ARGMAX_NEG_INF` is a CUDA `#define`
+inside an NVRTC kernel string; the other two are glob patterns that appear only in comments
+(`STINGRAY_MOE_*`, `STINGRAY_SNAPKV*`). The existing `ListMatchesSource` test could not catch them
+because it accepts a bare textual match, so the scan found the very text that had put the entry
+there — the entry justified itself.
 
 The practical harm was in `SuggestClosest`: a user typing `STINGRAY_SNAPKV_BUDGE` could be told
 "did you mean `STINGRAY_SNAPKV`?", a name nothing reads. A new test now requires every registry
 entry to appear as a **quoted string literal** in src/, which is how a variable actually gets read.
 (A "no entry is a prefix of another" rule was tried first and rejected — it flags 13 entries and
 most are legitimate, e.g. `STINGRAY_TQ` alongside `STINGRAY_TQ_MODE`.)
-
-Three names appear in the prose here but deliberately **not** in the table, because they are no
-longer read by anything: `STINGRAY_Q4K_ABL`, `STINGRAY_WABL` and `STINGRAY_VABL`, all removed
-ablation switches. `STINGRAY_VABL` was retired on 2026-08-07: its field was still declared but
-referenced nowhere, and its own comment read "Both non-zero modes produce WRONG output ...
-Revert before shipping." Registering it meant `doctor` reported it as a valid setting.
 
 The reconciliation also found a live defect rather than mere drift. `STINGRAY_MAX_QUEUED_REQUESTS`
 was registered and named in the server's queue-overload warning, but **nothing ever read it** — it
@@ -36,17 +29,31 @@ names are treated as valid, `doctor` would not have flagged it either. The warni
 `STINGRAY_MAX_QUEUE` and the dead entry is out of the registry, so the mistake is now reported with
 a closest-match suggestion.
 
+**Reconciled again 2026-08-15 — `KnownEnvironmentVariables.All` now contains **162** names**
+(architecture-support and kernel work between 2026-08-08 and 2026-08-15 added new dispatch-toggle
+variables faster than the doc was updated, growing the registry back up past the 156 recorded
+above). The table below had also drifted independently of that count change:
+five names present in `KnownEnvironmentVariables.All` had no row at all (`STINGRAY_CPU_MICRO_GEMM`,
+`STINGRAY_MICRO_GEMM`, `STINGRAY_Q4K_MICRO_GEMM` — three aliases for one `MicroGemmKernel`/
+`MicroGemmQ4K` feature flag in `OpenTail.Stingray.Cpu`; `STINGRAY_VULKAN_PATH2`,
+`STINGRAY_VULKAN_PATH2_EXPERIMENTAL` — two aliases for one `VulkanPath2Dispatcher` feature flag in
+`OpenTail.Stingray.Vulkan`), while the three 2026-08-08 ghost removals (`STINGRAY_ARGMAX_NEG_INF`,
+`STINGRAY_MOE_`, `STINGRAY_SNAPKV`) were still sitting in the table as rows despite no longer being
+in source at all. Both fixed: the table below is re-verified name-complete against
+`KnownEnvironmentVariables.All` (162 names, 162 rows, zero drift either direction) as of this
+reconciliation. **Classification is also now complete for every row** — see below.
+
 The stated current registry count is test-guarded by
-\`KnownEnvironmentVariablesTests.Inventory_DeclaredCurrentRegistryCountMatchesSource\`. It makes
-new registry drift visible immediately; it does not replace the pending owner/use-row refresh.
+\`KnownEnvironmentVariablesTests.Inventory_DeclaredCurrentRegistryCountMatchesSource\`, which reads
+the "now contains **NNN** names" sentence above. It makes new registry drift visible immediately;
+it does not by itself catch table-level row drift (that requires re-diffing the table against
+`KnownEnvironmentVariables.All`, which is what this reconciliation did by hand).
 
 This is Phase 0 deliverable 1 of `04-quality-of-life-improvements-plan.md`, and it is a
-prerequisite for `--print-effective-config`, saved profiles, and the `ExecutionPlan` work:
-none of those can be correct while the setting surface is unenumerated.
+prerequisite for `--print-effective-config`, saved profiles, and the `ExecutionPlan` work: none of
+those can be correct while the setting surface is unenumerated.
 
-**The Class column is deliberately empty.** Classification is a judgement call per variable and
-must be made by whoever owns the behaviour — it cannot be inferred from the name. Fill each with
-one of:
+**Class values, in the same table below (no separate register from this reconciliation on):**
 
 | Class | Meaning |
 |---|---|
@@ -55,314 +62,294 @@ one of:
 | `diagnostic` | Troubleshooting only. Never written to a profile. |
 | `bench` | Benchmark/measurement harness only. Must not affect a shipped run. |
 | `experimental` | May change or vanish without notice. Must never become a default. |
+| `test seam` | Not a tuning knob at all — an A/B correctness-verification handle whose two branches are claimed bit-identical (e.g. `STINGRAY_CPU_KPACK_SIMD`, `STINGRAY_CPU_VNNI`). Exists so a suite can exercise both code paths on the same host and assert they agree. |
 
-Until a variable is classified, treat it as `experimental` — the safe assumption.
+**How each row below was classified.** ~half (the previously-existing "ownership register", now
+folded row-by-row into the table instead of living as a separate summary) were reviewed
+individually with a stated reason. The remainder — the great majority of the surface, matching the
+doc's original observation that "a kernel-selection, bypass, ablation, trace, probe, profile, or
+`*_BENCH` switch is not a supported profile setting" — are classified mechanically by name pattern:
+`TRACE_*`/`PROBE_*`/`PROFILE_*`/`*_STATS`/`*_VALIDATION` → `diagnostic`; `*_BENCH` → `bench`;
+everything else with no stated product-facing use → `experimental`. A handful of clear sibling
+groups (e.g. the three `SNAPKV_*` budget/window/recency knobs, which are one feature, not three)
+were classified together rather than letting an arbitrary alphabetical split give two siblings
+different classes. None of this is a promise that every `experimental` row is equally unimportant —
+it means none of them has had an owner review yet, which is the explicit remaining work this
+reconciliation does NOT close (see `04-quality-of-life-improvements-plan.md`).
 
-## Ownership register — product-facing variables (reviewed)
+**Retirement is the point, not documentation.** The QoL plan inventories these but retires none. A
+surface of 162 variables is itself the usability defect. Expect a meaningful fraction of the
+`experimental` rows below to be dead ablation/bench leftovers that should be deleted outright once
+an owner confirms they're unused, rather than classified and kept forever — this project has
+already removed several exactly that way (`STINGRAY_VABL`, `STINGRAY_WABL`, `STINGRAY_Q4K_ABL`).
 
-The generated inventory below remains the complete source list. This register records the
-high-confidence deployment surface that may be documented or represented in effective
-configuration; all names not listed here remain `experimental` pending an owner review. In
-particular, a kernel-selection, bypass, ablation, trace, probe, profile, or `*_BENCH` switch is
-not a supported profile setting.
-
-| Class | Variables |
-|---|---|
-| stable | `STINGRAY_BACKEND`, `STINGRAY_MODEL`, `STINGRAY_N_GPU_LAYERS`, `STINGRAY_MAX_BATCH`, `STINGRAY_MAX_CONCURRENT`, `STINGRAY_MAX_QUEUE`, `STINGRAY_KV_BUDGET_MB`, `STINGRAY_NO_THINKING`, `STINGRAY_PRESERVE_THINKING` |
-| expert | `STINGRAY_CPU_THREADS`, `STINGRAY_KV_DTYPE`, `STINGRAY_KV_STORE`, `STINGRAY_KV_BF16_MIN_TOKENS`, `STINGRAY_MMPROJ`, `STINGRAY_MIN_BATCH_BLAS`, `STINGRAY_PREFILL_CHUNK`, `STINGRAY_PREFILL_DEQUANT_MB`, `STINGRAY_PREFIX_CACHE_MB`, `STINGRAY_TQ`, `STINGRAY_TQ_MODE`, `STINGRAY_SNAPKV_BUDGET`, `STINGRAY_TOOL_GRAMMAR`, `STINGRAY_CPU_MOE`, `STINGRAY_MOE_PREDICT_PREFETCH`, `STINGRAY_MOE_WARMPIN`, `STINGRAY_MOE_WARMPIN_AFTER`, `STINGRAY_MTP_DRAFT_N`, `STINGRAY_MTP_BATCH_MAX`, `STINGRAY_RAW_PROMPT`, `STINGRAY_SDCPP` |
-| diagnostic | `STINGRAY_EXPERT_STATS`, `STINGRAY_GEMMA4_PROBE`, `STINGRAY_TRACE_DSPARK`, `STINGRAY_TRACE_GDN_INTERNAL`, `STINGRAY_TRACE_GDN_LAYERS`, `STINGRAY_TRACE_GDN_POS`, `STINGRAY_TRACE_LAYERS`, `STINGRAY_TRACE_MTP`, `STINGRAY_TRACE_NORMS`, `STINGRAY_TRACE_POS`, `STINGRAY_TRACE_ROUTERS`, `STINGRAY_TRACE_SNAPSHOT`, `STINGRAY_TRACE_VRAM`, `STINGRAY_CUDA_PROFILE`, `STINGRAY_DECODE_PROFILE`, `STINGRAY_PREFILL_PROFILE`, `STINGRAY_PROFILE_DECODE`, `STINGRAY_PROFILE_PREFILL`, `STINGRAY_PROBE_IDS`, `STINGRAY_PROBE_LOGITS`, `STINGRAY_PROBE_POS`, `STINGRAY_VULKAN_MM_STATS`, `STINGRAY_VULKAN_VALIDATION` |
-| experimental | `STINGRAY_DSPARK_MODEL`, `STINGRAY_DSPARK_PLACE`, `STINGRAY_DSPARK_MIN_CONFIDENCE`, `STINGRAY_DSPARK_VERIFY_LEN`, `STINGRAY_DSPARK_TIMING`, `STINGRAY_MOE_GPU_PREFILL`, `STINGRAY_MOE_GPU_PREFILL_MIN_TOKENS`, `STINGRAY_MOE_PIN_MODE`, `STINGRAY_DISABLE_MTP`, `STINGRAY_SPEC_SAMPLE`, `STINGRAY_BATCHED_MATVEC_TIER`, `STINGRAY_FLASH64_STRIDED_GEMM`, `STINGRAY_GEMM_PATH`, `STINGRAY_MOE_BATCHED_PREFILL`, `STINGRAY_PER_LAYER_HD_PREFILL`, `STINGRAY_PREFILL_ATTN_FLASH64`, `STINGRAY_PREFILL_ATTN_FLASH64_TILE_JOBS`, `STINGRAY_PREFILL_ATTN_REGISTER_VALUES`, `STINGRAY_VULKAN_MM_PATH`, `STINGRAY_VULKAN_PREFILL_CHUNK` |
-
-**Retirement is the point, not documentation.** The QoL plan inventories these but retires none.
-A surface of 141 variables is itself the usability defect. Expect a meaningful fraction to be
-`bench` or `diagnostic` leftovers that should be deleted outright rather than documented forever;
-this session alone added and removed several (`STINGRAY_VABL`, `STINGRAY_WABL`,
-`STINGRAY_Q4K_ABL`) as throwaway ablation switches.
-
-**Counting note:** this counts distinct string literals, so a variable read in two projects
-appears once, grouped under both. It does not detect dynamically composed names.
-
-## 2026-08-07 reconciliation ledger
-
-Compared with `KnownEnvironmentVariables.All`, the historical table is missing the 14 names
-below. Their presence means the registry's source-drift test accepts them; it does **not** imply
-support. Their source-traced class is recorded in the ownership register above; add the generated
-owner/use rows during the refresh.
-
-| Current name absent from the 2026-07 snapshot |
-|---|
-| `STINGRAY_BATCHED_MATVEC_TIER` |
-| `STINGRAY_FLASH64_STRIDED_GEMM` |
-| `STINGRAY_GEMM_PATH` |
-| `STINGRAY_GEMMA4_PROBE` |
-| `STINGRAY_KV_BF16_MIN_TOKENS` |
-| `STINGRAY_KV_STORE` |
-| `STINGRAY_MOE_BATCHED_PREFILL` |
-| `STINGRAY_PER_LAYER_HD_PREFILL` |
-| `STINGRAY_PREFILL_ATTN_FLASH64` |
-| `STINGRAY_PREFILL_ATTN_FLASH64_TILE_JOBS` |
-| `STINGRAY_PREFILL_ATTN_REGISTER_VALUES` |
-| `STINGRAY_VULKAN_MM_PATH` |
-| `STINGRAY_VULKAN_MM_STATS` |
-| `STINGRAY_VULKAN_PREFILL_CHUNK` |
-
-Conversely, `STINGRAY_Q4K_ABL` and `STINGRAY_WABL` remain in the historical table but are no
-longer in the registry, confirming they were retired experimental/ablation switches. Retain their
-historical rows only until the full generated refresh replaces this snapshot.
-
+**Counting note:** this counts distinct string literals, so a variable read in two projects appears
+once, grouped under both (the project-group headers below reflect that). It does not detect
+dynamically composed names.
 
 ## OpenTail.Stingray.Cli
 
 | Variable | Class | Notes |
 |---|---|---|
-| `STINGRAY_DSPARK_TIMING` | | |
-| `STINGRAY_RAW_PROMPT` | | |
-| `STINGRAY_SDCPP` | | |
-| `STINGRAY_SPEC_SAMPLE` | | |
+| `STINGRAY_DSPARK_TIMING` | experimental | |
+| `STINGRAY_RAW_PROMPT` | expert | |
+| `STINGRAY_SDCPP` | expert | |
+| `STINGRAY_SPEC_SAMPLE` | experimental | |
 
 ## OpenTail.Stingray.Cli, OpenTail.Stingray.Core, OpenTail.Stingray.Engine
 
 | Variable | Class | Notes |
 |---|---|---|
-| `STINGRAY_MTP_BATCH_MAX` | | |
+| `STINGRAY_MTP_BATCH_MAX` | expert | |
 
 ## OpenTail.Stingray.Cli, OpenTail.Stingray.Cpu
 
 | Variable | Class | Notes |
 |---|---|---|
-| `STINGRAY_CPU_PREFILL_Q8` | | |
+| `STINGRAY_CPU_PREFILL_Q8` | experimental | Default-ON int8 batched-prefill dispatch tier; `=0` opts out. |
 | `STINGRAY_PREFILL_ATTN_WIDE_HEADS` | experimental | `1` admits head dims 128/256 to the Flash-64 prefill path. **Off by default by decision, not by omission**: the wikitext-2 gate measured +0.52% perplexity for +14% prefill throughput (6.0579 -> 6.0896), which is worse than the exact sequential path and two orders of magnitude above the ~0% precedent set by the Q4Kx8 repack. A real speed/quality trade for the model owner to opt into, not a default. |
 | `STINGRAY_PREFILL_ATTN_KV_OUTER` | expert | `0` restores the per-query-tile prefill-attention schedule. The KV-outer reorder packs each KV tile once per group of query tiles and is ON by default: measured +1.6% alone and +4.0% with `STINGRAY_CPU_KPACK_SIMD`, bit-exactness pinned by `Flash64KvOuterTests`. |
 | `STINGRAY_PREFILL_ATTN_KV_OUTER_TILES` | experimental | Query tiles held live per KV pack in the reorder above (default 8 = 512 queries, ~256 KB scratch at headDim 64). Trades footprint for K-pack reuse; proven not to change results. |
 | `STINGRAY_CPU_KPACK_SIMD` | test seam | `0` restores the scalar K-pack transpose in Flash-64 prefill. Both forms emit identical bytes (a transpose only moves floats), so this is a bisect seam and an A/B measurement handle, not a tuning knob. |
 | `STINGRAY_CPU_VNNI` | test seam | `0` forces the AVX2 chain in `SimdKernels.DotU8I8ToI32` even where VNNI exists. Not a tuning knob: the three branches are claimed bit-identical, but a host only executes one, so this is what lets a VNNI-capable machine run the Q4_K suites both ways and check that claim. |
+| `STINGRAY_CPU_MICRO_GEMM` | experimental | Alias of `STINGRAY_Q4K_MICRO_GEMM`/`STINGRAY_MICRO_GEMM` (`MicroGemmKernel.ReadFromEnvironment` reads all three, first match wins) — gates the small-batch Q4_K micro-GEMM kernel (`MicroGemmQ4K`). |
+| `STINGRAY_MICRO_GEMM` | experimental | Alias of `STINGRAY_CPU_MICRO_GEMM`/`STINGRAY_Q4K_MICRO_GEMM`, same feature flag. |
+| `STINGRAY_Q4K_MICRO_GEMM` | experimental | Alias of `STINGRAY_CPU_MICRO_GEMM`/`STINGRAY_MICRO_GEMM`, same feature flag; this is the name the class-level doc comment leads with. |
 
 ## OpenTail.Stingray.Cli, OpenTail.Stingray.Cpu, OpenTail.Stingray.Server
 
 | Variable | Class | Notes |
 |---|---|---|
-| `STINGRAY_MIN_BATCH_BLAS` | | |
+| `STINGRAY_MIN_BATCH_BLAS` | expert | Mirrors `OpenTailStingrayServerOptions.MinBatchBlas`, already classified `expert` in the (now-folded-in) host-config surface. |
 
 ## OpenTail.Stingray.Cli, OpenTail.Stingray.Cuda, OpenTail.Stingray.Engine, OpenTail.Stingray.Server
 
 | Variable | Class | Notes |
 |---|---|---|
-| `STINGRAY_SNAPKV_BUDGET` | | |
+| `STINGRAY_SNAPKV_BUDGET` | expert | One of three SnapKV eviction knobs (with `STINGRAY_SNAPKV_RECENCY`/`STINGRAY_SNAPKV_WINDOW` below) — classified together as one feature, not three independent switches. |
 
 ## OpenTail.Stingray.Cli, OpenTail.Stingray.Engine
 
 | Variable | Class | Notes |
 |---|---|---|
-| `STINGRAY_DISABLE_MTP` | | |
-| `STINGRAY_DSPARK_MIN_CONFIDENCE` | | |
-| `STINGRAY_DSPARK_VERIFY_LEN` | | |
-| `STINGRAY_MTP_DRAFT_N` | | |
-| `STINGRAY_TRACE_MTP` | | |
+| `STINGRAY_DISABLE_MTP` | experimental | |
+| `STINGRAY_DSPARK_MIN_CONFIDENCE` | experimental | |
+| `STINGRAY_DSPARK_VERIFY_LEN` | experimental | |
+| `STINGRAY_MTP_DRAFT_N` | expert | |
+| `STINGRAY_TRACE_MTP` | diagnostic | |
 
 ## OpenTail.Stingray.Cli, OpenTail.Stingray.Engine, OpenTail.Stingray.Server
 
 | Variable | Class | Notes |
 |---|---|---|
-| `STINGRAY_CPU_MOE` | | |
-| `STINGRAY_DSPARK_PLACE` | | |
-| `STINGRAY_EXPERT_STATS` | | |
-| `STINGRAY_MOE_GPU_PREFILL` | | |
-| `STINGRAY_MOE_GPU_PREFILL_MIN_TOKENS` | | |
-| `STINGRAY_MOE_PIN_MODE` | | |
-| `STINGRAY_MOE_PREDICT_PREFETCH` | | |
-| `STINGRAY_MOE_WARMPIN` | | |
-| `STINGRAY_MOE_WARMPIN_AFTER` | | |
+| `STINGRAY_CPU_MOE` | expert | Mirrors `OpenTailStingrayServerOptions.CpuMoe`. |
+| `STINGRAY_DSPARK_PLACE` | experimental | Mirrors `OpenTailStingrayServerOptions.DSparkPlace`; DSpark itself is parked (docs/00-current-work.md), not scheduled. |
+| `STINGRAY_EXPERT_STATS` | diagnostic | Mirrors `OpenTailStingrayServerOptions.ExpertStatsPath` (writes SLRU hit-rate stats to a file on exit — troubleshooting only). |
+| `STINGRAY_MOE_GPU_PREFILL` | experimental | Mirrors `OpenTailStingrayServerOptions.GpuMoePrefill`. |
+| `STINGRAY_MOE_GPU_PREFILL_MIN_TOKENS` | experimental | |
+| `STINGRAY_MOE_PIN_MODE` | experimental | |
+| `STINGRAY_MOE_PREDICT_PREFETCH` | expert | Mirrors `OpenTailStingrayServerOptions.MoePredictPrefetch`. |
+| `STINGRAY_MOE_WARMPIN` | expert | Mirrors `OpenTailStingrayServerOptions.MoeWarmPin`. |
+| `STINGRAY_MOE_WARMPIN_AFTER` | expert | Mirrors `OpenTailStingrayServerOptions.MoeWarmPinAfter`. |
 
 ## OpenTail.Stingray.Cli, OpenTail.Stingray.Engine, OpenTail.Stingray.Server, OpenTail.Stingray.Server.Host
 
 | Variable | Class | Notes |
 |---|---|---|
-| `STINGRAY_PREFILL_CHUNK` | | |
-| `STINGRAY_PREFILL_DEQUANT_MB` | | |
+| `STINGRAY_PREFILL_CHUNK` | expert | Mirrors `OpenTailStingrayServerOptions.PrefillChunkTokens`. |
+| `STINGRAY_PREFILL_DEQUANT_MB` | expert | Mirrors `OpenTailStingrayServerOptions.PrefillDequantCacheMb`. |
 
 ## OpenTail.Stingray.Cli, OpenTail.Stingray.Engine, OpenTail.Stingray.Server, OpenTail.Stingray.Server.Host, OpenTail.Stingray.Vulkan
 
 | Variable | Class | Notes |
 |---|---|---|
-| `STINGRAY_KV_DTYPE` | | |
+| `STINGRAY_KV_DTYPE` | expert | Mirrors `OpenTailStingrayServerOptions.KvType`. |
 
 ## OpenTail.Stingray.Core, OpenTail.Stingray.Server, OpenTail.Stingray.Server.Host
 
 | Variable | Class | Notes |
 |---|---|---|
-| `STINGRAY_TOOL_GRAMMAR` | | |
+| `STINGRAY_TOOL_GRAMMAR` | expert | Mirrors `OpenTailStingrayServerOptions.ToolGrammar`. |
 
 ## OpenTail.Stingray.Cpu
 
 | Variable | Class | Notes |
 |---|---|---|
-| `STINGRAY_MATVEC_WIDE8` | | |
-| `STINGRAY_TRACE_GDN_INTERNAL` | | |
-| `STINGRAY_TRACE_GDN_LAYERS` | | |
-| `STINGRAY_TRACE_GDN_POS` | | |
+| `STINGRAY_BATCHED_MATVEC_TIER` | experimental | |
+| `STINGRAY_GEMM_PATH` | experimental | |
+| `STINGRAY_MATVEC_WIDE8` | experimental | |
+| `STINGRAY_TRACE_GDN_INTERNAL` | diagnostic | |
+| `STINGRAY_TRACE_GDN_LAYERS` | diagnostic | |
+| `STINGRAY_TRACE_GDN_POS` | diagnostic | |
 
 ## OpenTail.Stingray.Cpu, OpenTail.Stingray.Server
 
 | Variable | Class | Notes |
 |---|---|---|
-| `STINGRAY_CPU_THREADS` | | |
+| `STINGRAY_CPU_THREADS` | expert | Mirrors `OpenTailStingrayServerOptions.CpuThreads`. |
 
 ## OpenTail.Stingray.Cuda
 
 | Variable | Class | Notes |
 |---|---|---|
-| `STINGRAY_ACT_SOA` | | |
-| `STINGRAY_ACT_SOA_CPA` | | |
-| `STINGRAY_ARGMAX_NEG_INF` | | |
-| `STINGRAY_ATTN_WAVE_BUDGET_MB` | | |
-| `STINGRAY_BATCH_DECODE_WS_V2` | | |
-| `STINGRAY_CUDA13` | | |
-| `STINGRAY_CUDA_PRECISION` | | |
-| `STINGRAY_DECODE_MMQ_BM32` | | |
-| `STINGRAY_GPU_ARGMAX` | | |
-| `STINGRAY_Q40_DP4A` | | |
-| `STINGRAY_Q6K_DECODE_MMQ` | | |
-| `STINGRAY_Q80_DP4A` | | |
+| `STINGRAY_ACT_SOA` | experimental | |
+| `STINGRAY_ACT_SOA_CPA` | experimental | |
+| `STINGRAY_ATTN_WAVE_BUDGET_MB` | experimental | |
+| `STINGRAY_BATCH_DECODE_WS_V2` | experimental | |
+| `STINGRAY_CUDA13` | experimental | |
+| `STINGRAY_CUDA_PRECISION` | experimental | |
+| `STINGRAY_DECODE_MMQ_BM32` | experimental | |
+| `STINGRAY_GPU_ARGMAX` | experimental | |
+| `STINGRAY_Q40_DP4A` | experimental | |
+| `STINGRAY_Q6K_DECODE_MMQ` | experimental | |
+| `STINGRAY_Q80_DP4A` | experimental | |
 
 ## OpenTail.Stingray.Cuda, OpenTail.Stingray.Engine
 
 | Variable | Class | Notes |
 |---|---|---|
-| `STINGRAY_BATCH_DECODE_MMQ` | | |
-| `STINGRAY_PREFILL_MMQ` | | |
-| `STINGRAY_TRUNK_MATVEC_FAST` | | |
+| `STINGRAY_BATCH_DECODE_MMQ` | experimental | |
+| `STINGRAY_PREFILL_MMQ` | experimental | |
+| `STINGRAY_TRUNK_MATVEC_FAST` | experimental | |
 
 ## OpenTail.Stingray.Engine
 
 | Variable | Class | Notes |
 |---|---|---|
-| `STINGRAY_BATCHED_ATTN` | | |
-| `STINGRAY_BATCHED_CPU_FFN` | | |
-| `STINGRAY_BATCHED_FFN` | | |
-| `STINGRAY_BATCHED_GDN_SCAN` | | |
-| `STINGRAY_BATCHED_PREFILL` | | |
-| `STINGRAY_BATCHED_TRUNK` | | |
-| `STINGRAY_BATCH_DECODE_GEMM` | | |
-| `STINGRAY_BATCH_DECODE_RAGGED` | | |
-| `STINGRAY_BATCH_DECODE_WS` | | |
-| `STINGRAY_BYPASS_ATTN` | | |
-| `STINGRAY_BYPASS_GDN` | | |
-| `STINGRAY_BYPASS_MOE` | | |
-| `STINGRAY_CPU_GDN` | | |
-| `STINGRAY_CUDA_GRAPH` | | |
-| `STINGRAY_CUDA_MATVEC_BENCH` | | |
-| `STINGRAY_CUDA_PROFILE` | | |
-| `STINGRAY_DECODE_CUDA_GRAPH` | | |
-| `STINGRAY_DECODE_PROFILE` | | |
-| `STINGRAY_DECODE_REGIONS` | | |
-| `STINGRAY_DENSE_FFN_GPU_MARGIN_MB` | | |
-| `STINGRAY_DISABLE_BATCH_VERIFY` | | |
-| `STINGRAY_DISABLE_DUAL_Q8` | | |
-| `STINGRAY_FORCE_CPU_EMBED` | | |
-| `STINGRAY_FORCE_NO_BLAS` | | |
-| `STINGRAY_GDN_CHUNKED_PREFILL` | | |
-| `STINGRAY_GDN_DECODE_FAST` | | |
-| `STINGRAY_GDN_PREFILL_COMPUTE` | | |
-| `STINGRAY_GDN_RAW_Q8_0` | | |
-| `STINGRAY_HYBRID_BATCHED_MOE` | | |
-| `STINGRAY_HYBRID_PREFILL_COMPUTE` | | |
-| `STINGRAY_KVARN_BATCHED_PREFILL` | | |
-| `STINGRAY_MMQ_SOA` | | |
-| `STINGRAY_MOE_GPU_ROUTER` | | |
-| `STINGRAY_MOE_THREADS` | | |
-| `STINGRAY_MTP_BATCHED_MOE_VERIFY` | | |
-| `STINGRAY_MTP_MIN_ACCEPT` | | |
-| `STINGRAY_MTP_PROBE_STEPS` | | |
-| `STINGRAY_PLE_GPU_DEQUANT` | | |
-| `STINGRAY_PREFAULT` | | |
-| `STINGRAY_PREFILL_FLASH` | | |
-| `STINGRAY_PREFILL_FLASH_TC` | | |
-| `STINGRAY_PREFILL_FLASH_TC1` | | |
-| `STINGRAY_PREFILL_GEMM` | | |
-| `STINGRAY_PREFILL_PROFILE` | | |
-| `STINGRAY_PREFIX_SCRATCH_TOKENS` | | |
-| `STINGRAY_PREFIX_SLOTS` | | |
-| `STINGRAY_PROBE_IDS` | | |
-| `STINGRAY_PROBE_LOGITS` | | |
-| `STINGRAY_PROBE_POS` | | |
-| `STINGRAY_PROFILE_DECODE` | | |
-| `STINGRAY_PROFILE_PREFILL` | | |
-| `STINGRAY_Q3K_DEQUANT_GEMM` | | |
-| `STINGRAY_Q3K_Q8K` | | |
-| `STINGRAY_Q4KX8_CACHE_MB` | | |
-| `STINGRAY_Q4K_Q8K` | | |
-| `STINGRAY_Q4K_SOA` | | |
-| `STINGRAY_Q6K_SOA` | | |
-| `STINGRAY_Q8_0_Q8K` | | |
-| `STINGRAY_SNAPKV` | | |
-| `STINGRAY_SNAPKV_RECENCY` | | |
-| `STINGRAY_SNAPKV_WINDOW` | | |
-| `STINGRAY_SPEC_BATCH_VERIFY` | | |
-| `STINGRAY_SPLIT_DECODE_GROUPED` | | |
-| `STINGRAY_TRACE_DSPARK` | | |
-| `STINGRAY_TRACE_LAYERS` | | |
-| `STINGRAY_TRACE_NORMS` | | |
-| `STINGRAY_TRACE_POS` | | |
-| `STINGRAY_TRACE_ROUTERS` | | |
-| `STINGRAY_TRACE_SNAPSHOT` | | |
-| `STINGRAY_TRACE_VRAM` | | |
-| `STINGRAY_VULKAN_BATCHED_PREFILL` | | |
-| `STINGRAY_VULKAN_GDN_CHUNKED_PREFILL` | | |
-| `STINGRAY_VULKAN_NO_BATCHED_PREFILL` | | |
-| `STINGRAY_VULKAN_NO_FLASH_ATTN` | | |
-| `STINGRAY_VULKAN_SPLIT_DECODE_MIN` | | |
+| `STINGRAY_BATCHED_ATTN` | experimental | |
+| `STINGRAY_BATCHED_CPU_FFN` | experimental | |
+| `STINGRAY_BATCHED_FFN` | experimental | |
+| `STINGRAY_BATCHED_GDN_SCAN` | experimental | |
+| `STINGRAY_BATCHED_PREFILL` | experimental | |
+| `STINGRAY_BATCHED_TRUNK` | experimental | |
+| `STINGRAY_BATCH_DECODE_GEMM` | experimental | |
+| `STINGRAY_BATCH_DECODE_RAGGED` | experimental | |
+| `STINGRAY_BATCH_DECODE_WS` | experimental | |
+| `STINGRAY_BYPASS_ATTN` | experimental | |
+| `STINGRAY_BYPASS_GDN` | experimental | |
+| `STINGRAY_BYPASS_MOE` | experimental | |
+| `STINGRAY_CPU_GDN` | experimental | |
+| `STINGRAY_CUDA_GRAPH` | experimental | |
+| `STINGRAY_CUDA_MATVEC_BENCH` | bench | |
+| `STINGRAY_CUDA_PROFILE` | diagnostic | |
+| `STINGRAY_DECODE_CUDA_GRAPH` | experimental | |
+| `STINGRAY_DECODE_PROFILE` | diagnostic | |
+| `STINGRAY_DECODE_REGIONS` | experimental | |
+| `STINGRAY_DENSE_FFN_GPU_MARGIN_MB` | experimental | |
+| `STINGRAY_DISABLE_BATCH_VERIFY` | experimental | |
+| `STINGRAY_DISABLE_DUAL_Q8` | experimental | |
+| `STINGRAY_FLASH64_STRIDED_GEMM` | experimental | |
+| `STINGRAY_FORCE_CPU_EMBED` | experimental | |
+| `STINGRAY_FORCE_NO_BLAS` | experimental | |
+| `STINGRAY_GDN_CHUNKED_PREFILL` | experimental | |
+| `STINGRAY_GDN_DECODE_FAST` | experimental | |
+| `STINGRAY_GDN_PREFILL_COMPUTE` | experimental | |
+| `STINGRAY_GDN_RAW_Q8_0` | experimental | |
+| `STINGRAY_GEMMA4_PROBE` | diagnostic | |
+| `STINGRAY_HYBRID_BATCHED_MOE` | experimental | |
+| `STINGRAY_HYBRID_PREFILL_COMPUTE` | experimental | |
+| `STINGRAY_KVARN_BATCHED_PREFILL` | experimental | |
+| `STINGRAY_KV_BF16_MIN_TOKENS` | expert | |
+| `STINGRAY_KV_STORE` | expert | |
+| `STINGRAY_MMQ_SOA` | experimental | |
+| `STINGRAY_MOE_BATCHED_PREFILL` | experimental | |
+| `STINGRAY_MOE_GPU_ROUTER` | experimental | |
+| `STINGRAY_MOE_THREADS` | experimental | |
+| `STINGRAY_MTP_BATCHED_MOE_VERIFY` | experimental | |
+| `STINGRAY_MTP_MIN_ACCEPT` | experimental | |
+| `STINGRAY_MTP_PROBE_STEPS` | diagnostic | |
+| `STINGRAY_PER_LAYER_HD_PREFILL` | experimental | |
+| `STINGRAY_PLE_GPU_DEQUANT` | experimental | |
+| `STINGRAY_PREFAULT` | experimental | |
+| `STINGRAY_PREFILL_ATTN_FLASH64` | experimental | |
+| `STINGRAY_PREFILL_ATTN_FLASH64_TILE_JOBS` | experimental | |
+| `STINGRAY_PREFILL_ATTN_REGISTER_VALUES` | experimental | |
+| `STINGRAY_PREFILL_FLASH` | experimental | |
+| `STINGRAY_PREFILL_FLASH_TC` | experimental | |
+| `STINGRAY_PREFILL_FLASH_TC1` | experimental | |
+| `STINGRAY_PREFILL_GEMM` | experimental | |
+| `STINGRAY_PREFILL_PROFILE` | diagnostic | |
+| `STINGRAY_PREFIX_SCRATCH_TOKENS` | experimental | |
+| `STINGRAY_PREFIX_SLOTS` | experimental | |
+| `STINGRAY_PROBE_IDS` | diagnostic | |
+| `STINGRAY_PROBE_LOGITS` | diagnostic | |
+| `STINGRAY_PROBE_POS` | diagnostic | |
+| `STINGRAY_PROFILE_DECODE` | diagnostic | |
+| `STINGRAY_PROFILE_PREFILL` | diagnostic | |
+| `STINGRAY_Q3K_DEQUANT_GEMM` | experimental | |
+| `STINGRAY_Q3K_Q8K` | experimental | |
+| `STINGRAY_Q4KX8_CACHE_MB` | experimental | |
+| `STINGRAY_Q4K_Q8K` | experimental | |
+| `STINGRAY_Q4K_SOA` | experimental | |
+| `STINGRAY_Q6K_SOA` | experimental | |
+| `STINGRAY_Q8_0_Q8K` | experimental | |
+| `STINGRAY_SNAPKV_RECENCY` | expert | Sibling of `STINGRAY_SNAPKV_BUDGET` (above) — one feature, classified together. |
+| `STINGRAY_SNAPKV_WINDOW` | expert | Sibling of `STINGRAY_SNAPKV_BUDGET` (above) — one feature, classified together. |
+| `STINGRAY_SPEC_BATCH_VERIFY` | experimental | |
+| `STINGRAY_SPLIT_DECODE_GROUPED` | experimental | |
+| `STINGRAY_TRACE_DSPARK` | diagnostic | |
+| `STINGRAY_TRACE_LAYERS` | diagnostic | |
+| `STINGRAY_TRACE_NORMS` | diagnostic | |
+| `STINGRAY_TRACE_POS` | diagnostic | |
+| `STINGRAY_TRACE_ROUTERS` | diagnostic | |
+| `STINGRAY_TRACE_SNAPSHOT` | diagnostic | |
+| `STINGRAY_TRACE_VRAM` | diagnostic | |
+| `STINGRAY_VULKAN_BATCHED_PREFILL` | experimental | |
+| `STINGRAY_VULKAN_GDN_CHUNKED_PREFILL` | experimental | |
+| `STINGRAY_VULKAN_NO_BATCHED_PREFILL` | experimental | |
+| `STINGRAY_VULKAN_NO_FLASH_ATTN` | experimental | |
+| `STINGRAY_VULKAN_PREFILL_CHUNK` | experimental | |
+| `STINGRAY_VULKAN_SPLIT_DECODE_MIN` | experimental | |
 
 ## OpenTail.Stingray.Engine, OpenTail.Stingray.Server
 
 | Variable | Class | Notes |
 |---|---|---|
-| `STINGRAY_DSPARK_MODEL` | | |
+| `STINGRAY_DSPARK_MODEL` | experimental | Mirrors `OpenTailStingrayServerOptions.DSparkModelPath`; DSpark is parked, not scheduled. |
 
 ## OpenTail.Stingray.Engine, OpenTail.Stingray.Server, OpenTail.Stingray.Server.Host
 
 | Variable | Class | Notes |
 |---|---|---|
-| `STINGRAY_MAX_BATCH` | | |
-| `STINGRAY_MMPROJ` | | |
+| `STINGRAY_MAX_BATCH` | stable | Mirrors `OpenTailStingrayServerOptions.MaxBatchSize`. |
+| `STINGRAY_MMPROJ` | expert | Mirrors `OpenTailStingrayServerOptions.MmprojPath`. |
 
 ## OpenTail.Stingray.Engine, OpenTail.Stingray.Vulkan
 
 | Variable | Class | Notes |
 |---|---|---|
-| `STINGRAY_SPLIT_DECODE` | | |
-| `STINGRAY_VULKAN_SPLIT_DECODE` | | |
-
-## OpenTail.Stingray.Server
-
-| Variable | Class | Notes |
-|---|---|---|
-| `STINGRAY_MOE_` | | |
+| `STINGRAY_SPLIT_DECODE` | experimental | |
+| `STINGRAY_VULKAN_SPLIT_DECODE` | experimental | |
 
 ## OpenTail.Stingray.Server, OpenTail.Stingray.Server.Host
 
 | Variable | Class | Notes |
 |---|---|---|
-| `STINGRAY_KV_BUDGET_MB` | | |
-| `STINGRAY_MAX_CONCURRENT` | | |
-| `STINGRAY_MAX_QUEUE` | | |
-| `STINGRAY_MODEL` | | |
-| `STINGRAY_NO_THINKING` | | |
-| `STINGRAY_PREFIX_CACHE_MB` | | |
-| `STINGRAY_PRESERVE_THINKING` | | |
+| `STINGRAY_KV_BUDGET_MB` | stable | Mirrors `OpenTailStingrayServerOptions.KvBudgetMb`. |
+| `STINGRAY_MAX_CONCURRENT` | stable | Mirrors `OpenTailStingrayServerOptions.MaxConcurrentRequests`. |
+| `STINGRAY_MAX_QUEUE` | stable | Mirrors `OpenTailStingrayServerOptions.MaxQueuedRequests`. See the `STINGRAY_MAX_QUEUED_REQUESTS` dead-name note above. |
+| `STINGRAY_MODEL` | stable | Mirrors `OpenTailStingrayServerOptions.ModelPath`. |
+| `STINGRAY_NO_THINKING` | stable | Mirrors `OpenTailStingrayServerOptions.DisableThinking`. |
+| `STINGRAY_PREFIX_CACHE_MB` | expert | Mirrors `OpenTailStingrayServerOptions.PrefixCacheMb`. |
+| `STINGRAY_PRESERVE_THINKING` | stable | Mirrors `OpenTailStingrayServerOptions.PreserveThinking`. |
 
 ## OpenTail.Stingray.Server.Host
 
 | Variable | Class | Notes |
 |---|---|---|
-| `STINGRAY_BACKEND` | | |
-| `STINGRAY_N_GPU_LAYERS` | | |
-| `STINGRAY_TQ` | | |
-| `STINGRAY_TQ_MODE` | | |
+| `STINGRAY_BACKEND` | stable | Mirrors `OpenTailStingrayServerOptions.Backend`. |
+| `STINGRAY_N_GPU_LAYERS` | stable | Mirrors `OpenTailStingrayServerOptions.NGpuLayers`. |
+| `STINGRAY_TQ` | expert | Mirrors `OpenTailStingrayServerOptions.TurboQuant`. |
+| `STINGRAY_TQ_MODE` | expert | Mirrors `OpenTailStingrayServerOptions.TqMode`. |
 
 ## OpenTail.Stingray.Vulkan
 
 | Variable | Class | Notes |
 |---|---|---|
-| `STINGRAY_VULKAN_DP4A` | | |
-| `STINGRAY_VULKAN_UMA_FRACTION` | | |
-| `STINGRAY_VULKAN_VALIDATION` | | |
+| `STINGRAY_VULKAN_DP4A` | experimental | |
+| `STINGRAY_VULKAN_MM_PATH` | experimental | |
+| `STINGRAY_VULKAN_MM_STATS` | diagnostic | |
+| `STINGRAY_VULKAN_PATH2` | experimental | Alias of `STINGRAY_VULKAN_PATH2_EXPERIMENTAL` (`VulkanPath2Dispatcher.ReadFromEnvironment` reads both, first match wins) — gates the Vulkan Path 2 cooperative-tiled-GEMM kernel (`MatMulTiledQ4K`). Defaults off. |
+| `STINGRAY_VULKAN_PATH2_EXPERIMENTAL` | experimental | Alias of `STINGRAY_VULKAN_PATH2`, same feature flag; this is the name the class-level doc comment leads with. |
+| `STINGRAY_VULKAN_UMA_FRACTION` | experimental | |
+| `STINGRAY_VULKAN_VALIDATION` | diagnostic | |

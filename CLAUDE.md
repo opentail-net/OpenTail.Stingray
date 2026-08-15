@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-OpenTail.Stingray is a high-performance LLM inference engine and image generation pipeline in C# 14 / .NET 10. It reads GGUF model files and runs transformer inference on CPU (AVX2/AVX-512 SIMD), Vulkan compute shaders, and CUDA/cuBLAS. Architectures supported include `llama`/`llama4`, `qwen2`, `qwen3`, `qwen3moe`, `qwen35moe` (hybrid Gated-DeltaNet + attention + MoE), `gemma`/`gemma2`/`gemma3`/`gemma4`, `phi2`/`phi3`, `deepseek2`, and OLMoE. It also supports text-to-image generation (Z-Image-Turbo and FLUX.1), 4× image upscaling via RRDBNet (Real-ESRGAN), and Gemma 4 encoder-free multimodal vision. Targets NativeAOT for single-binary deployment.
+OpenTail.Stingray is a high-performance LLM inference engine and image generation pipeline in C# 14 / .NET 10. It reads GGUF model files and runs transformer inference on CPU (AVX2/AVX-512 SIMD), Vulkan compute shaders, and CUDA/cuBLAS. Architectures supported include `llama`/`llama4`, `qwen2`, `qwen3`, `qwen3moe`, `qwen35moe` (hybrid Gated-DeltaNet + attention + MoE), `gemma`/`gemma2`/`gemma3`/`gemma4`, `phi2`/`phi3`, and OLMoE. `deepseek2` (DeepSeek-V2/V3/R1's MLA attention) has a CPU-only implementation that loads and runs but produces numerically wrong output — not yet admitted as supported; see `docs/bugstofix.md`. It also supports text-to-image generation (Z-Image-Turbo and FLUX.1), 4× image upscaling via RRDBNet (Real-ESRGAN), and Gemma 4 encoder-free multimodal vision. Targets NativeAOT for single-binary deployment.
 
 ## Build & Test Commands
 

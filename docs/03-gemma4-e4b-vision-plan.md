@@ -1,13 +1,87 @@
-> **Reprioritized 2026-08-08 — now runway position 3, and blocked.** Vision is model coverage, so
-> it stays above performance work, but it cannot proceed without an oracle: the local llama.cpp
-> build rejects the paired `gemma4` text GGUF, so it is not a usable reference. Acquire a build
-> that admits `gemma4`, or capture intermediates from another confirmed implementation, before
-> writing encoder code. Do not guess the ViT from tensor names.
+> **Reprioritized 2026-08-15 — runway position 3.** Architecture is fully reverse-engineered from
+> the real mmproj + local llama.cpp source, and Phase V2 (the ViT encoder) is now IMPLEMENTED and
+> passes a real-file structural sanity check. **The "blocked on oracle" status below is stale** —
+> the absence of a Gemma-4-capable oracle blocks NUMERICAL PARITY, not implementation; those are
+> different things. Do not re-derive the architecture from tensor names or resurrect the historical
+> MobileNet-V5/Gemma-3n material further down this document — see the current contract immediately
+> below instead.
 
 # Gemma 4 E4B Multimodal (Vision) — Research & Implementation Plan
 
-Status: **V0 mmproj loader and V1 fixed-grid preprocessing implemented; encoder, projector,
-embedding splice, and end-to-end image parity remain open.** Tracked by **issue #126**.
+## CURRENT IMPLEMENTATION CONTRACT — 2026-08-15
+
+Everything below is verified against the real `models/gemma-4-E4B-it-mmproj.gguf` (metadata +
+tensor inventory) and the real reference graph (`examples/llama.cpp/llama.cpp`'s
+`tools/mtmd/models/gemma4v.cpp` + the shared `clip_graph::build_vit`/`build_attn`/`build_ffn`/
+`build_mm` helpers in `tools/mtmd/clip.cpp`), not inferred. Implemented in
+`src/OpenTail.Stingray.Vision/Gemma4VVisionEncoder.cs` (Phase V2).
+
+```
+input:              224x224 RGB, preprocessed to [0,1] by Gemma4VImagePreprocessor
+                     (encoder itself applies the range fix: x' = 2x - 1)
+patch:               16x16 conv, stride 16, NO bias -> 14x14 = 196 patches, embedding 768
+position:            learned lookup, two stacked [768,10240] tables (x-table then y-table on the
+                     trailing axis) -- NOT a square grid, NOT RoPE, NOT interpolated
+blocks:              16, each sandwich-normed (RMSNorm before AND after both sublayers):
+                       RMSNorm(ln1)
+                       -> separate Q/K/V projections, EACH a clamped linear (see below)
+                       -> per-head RMSNorm on Q (weighted, attn_q_norm)
+                       -> per-head RMSNorm on K (weighted, attn_k_norm)
+                       -> 2D RoPE on Q and K only (NEOX, theta=100 -- gemma4v-specific constant,
+                          NOT the paired text model's theta; leading half of each 64-wide head
+                          rotated using the patch's COLUMN as position, trailing half using its ROW)
+                       -> per-head RMSNorm on V (UNWEIGHTED, gemma4v-specific -- lives in the
+                          shared build_vit helper gated on projector type, invisible in
+                          gemma4v.cpp alone)
+                       -> attention, scale = 1.0 (UNSCALED, not the usual 1/sqrt(head_dim))
+                       -> output projection (clamped)
+                       -> RMSNorm(attn_post_norm)
+                       -> residual add
+                       -> RMSNorm(ln2)
+                       -> gated FFN: gate = QuickGelu(clamped ffn_gate(x)), up = clamped ffn_up(x),
+                          ffn_out = clamped ffn_down(gate * up)
+                       -> RMSNorm(ffn_post_norm)
+                       -> residual add
+heads:               12, head_dim = 64 (32+32 split for the 2D RoPE halves)
+clamp:               ALL SEVEN per-block linear weights (attn_q/k/v/out, ffn_gate/up/down) --
+                     confirmed via real per-tensor <name>.input_min/.input_max/.output_min/
+                     .output_max scalar tensors in the mmproj, for every block. NOT the final
+                     projection (mm.input_projection has no clamp tensors). Contract per linear:
+                       x' = clamp(x, input_min, input_max)
+                       y  = clamp(W @ x', output_min, output_max)
+FFN activation:      Quick GELU: gelu_quick(x) = x * sigmoid(1.702*x) -- NOT the tanh-approximation
+                     GELU used elsewhere in this codebase (mmproj declares neither use_gelu nor
+                     use_silu, so clip.cpp's FFN_GELU_QUICK default applies)
+post-blocks:         no final post-layernorm (no v.post_ln tensor for this projector)
+token reduction:     3x3 average pool, stride 3, no padding (n_merge=3 -- NOT 4, a corrected
+                     earlier misreading; confirmed absent from mmproj metadata so the hardcoded
+                     default applies) -> 14x14 pools to 4x4 = 16 tokens, silently dropping the
+                     last 2 patches per axis (14 is not a multiple of 3)
+post-pool:           scale by sqrt(768)
+projection:          unweighted RMSNorm (embedding_pre_projection_norm) -> linear 768->2560
+                     (NOT clamped)
+output:              16 soft-token embeddings, 2560-wide each
+std_bias/std_scale:  absent from the real E4B mmproj (that branch is inert here)
+audio (gemma4a):     deferred, out of scope for this contract
+decoder-side splice/mask (Phase V4): NOT covered by this contract -- see the explicit note in
+                     Phase V4 below. Do not assume Gemma-3's bidirectional-within-image mask
+                     transfers without checking the actual Gemma-4 multimodal runtime; the vision
+                     encoder above is unconditionally bidirectional, which is a separate question
+                     from how the TEXT decoder should attend to the 16 spliced image positions.
+```
+
+Ignore all historical MobileNet-V5/Gemma-3n/768²/256-token/`<start_of_image>`-marker assumptions
+in the sections below — they predate the real mmproj verification and are retained only as
+research archaeology, not as an implementation contract.
+
+Status: **V0 (mmproj loader), V1 (fixed-grid preprocessing), V2 (ViT encoder), and V3 (token
+reduction + projector) implemented** — `Gemma4VVisionEncoder.Forward` runs blocks, pooling, and
+the final projection as one call, so V2/V3 shipped together rather than as separate phases. Passes
+a real-file structural sanity check (`Gemma4VVisionEncoderTests.cs`: correct shape, no NaN/Inf,
+non-degenerate, sane magnitude) but is **NOT numerically parity-verified** — no Gemma-4-capable
+oracle exists on this machine to compare against yet. Embedding splice into the text decoder,
+image-token mask semantics, and CLI/API surface remain open (Phases V4-V5). Tracked by
+**issue #126**.
 
 > ## ⚠️ Verification update (2026-06-15) — architecture confirmed from the real mmproj
 > The §1 "verification debt" is now **retired**: the E4B mmproj header was dumped
@@ -156,26 +230,38 @@ the alignment/interpolation choice behind V2's reference gate until a Gemma-4-ca
 confirms it. PNG/JPEG decoding is already provided by `ImageIO`; **Pan & Scan remains open** until
 its exact E4B crop policy is derived from the reference rather than guessed.
 
-### Phase V2 — `gemma4v` ViT encoder forward pass (HIGH risk)
-The load-bearing piece. Implement the verified 16-block, 768-wide, 12-head QK-norm/GeGLU
-transformer encoder, preceded by its 16px convolutional patch embedding and learned 2D position
-table. Start with a CPU reference that reuses existing RMSNorm, attention and MLP semantics, then
-define GPU capability gates. **Parity-gate each stage** against llama.cpp's Gemma 4 `clip` path
-using captured intermediate tensors. The main unknowns are exact vision attention/mask and token
-reduction semantics, not a MobileNet convolution graph.
+### Phase V2 — `gemma4v` ViT encoder forward pass — **IMPLEMENTED 2026-08-15, NOT parity-verified**
+`Gemma4VVisionEncoder.cs`. The verified 16-block, 768-wide, 12-head transformer encoder (real
+per-head QK-norm, gemma4v-only V-norm, 2D RoPE theta=100, unscaled attention, per-block clamped
+linears, quick-GELU FFN — see the contract at the top of this doc), preceded by its 16px
+convolutional patch embedding and learned 2D position table. A CPU reference, as planned — no GPU
+path yet. Passes a real-mmproj structural sanity test (shape, no NaN/Inf, non-degenerate, sane
+magnitude — `Gemma4VVisionEncoderTests.cs`), but **stage-by-stage parity against llama.cpp's
+`clip` path has NOT been done** — no working Gemma-4-capable oracle exists locally yet (see the
+handover-state section below). Do not treat this as numerically verified.
 
-### Phase V3 — token reduction + projector MLP (medium risk)
-Apply the verified model's token-reduction rule (do not hard-code the historical 256-token
-assumption), then run the `mm.*` projector to the 2560-wide text embedding space. Parity-gate the
-resulting embedding sequence against llama.cpp `mtmd_get_output_embd`.
+### Phase V3 — token reduction + projector MLP — **IMPLEMENTED 2026-08-15, shipped inside V2**
+`Gemma4VVisionEncoder.Forward` runs the 3×3 average pool, `sqrt(768)` scale, unweighted RMSNorm,
+and `mm.input_projection` (768→2560) as the tail of the same call that runs the 16 blocks, rather
+than as a separately invoked phase. Same parity caveat as V2 — not yet checked against
+`mtmd_get_output_embd` or any other oracle output.
 
-### Phase V4 — embedding splice + bidirectional mask (HIGH risk)
+### Phase V4 — embedding splice + bidirectional mask (HIGH risk) — **NOT STARTED, do not begin
+without re-reading this note**
 - Add `ForwardPass`/`Prefill` support to accept **precomputed input embeddings** at given
   positions (overload of `EmbedTokenInto`; skip `token_embd` lookup; decide embedding-scale
   handling for image rows — text tokens get `× sqrt(2560)`, image embeddings come pre-scaled from
   the projector, *confirm*).
-- Build the **causal-except-bidirectional-within-image** attention mask; verify interaction with
-  SWA layers and cross-layer KV-share in `PagedKvCache`.
+- **The "causal-except-bidirectional-within-image" mask below is NOT yet confirmed for Gemma 4 —
+  do not assume it transfers from Gemma 3.** V2's ViT encoder is unconditionally bidirectional
+  internally (that part IS settled — attention over image patches, before splicing), but how the
+  TEXT DECODER should attend to the 16 spliced image positions once they're embedded in the token
+  sequence is a genuinely separate, independent question this session has not investigated. Gemma
+  4's PLE, SWA, cross-layer KV-share, dual-RoPE, and paged KV cache are all real interactions a
+  wrong assumption here could break silently. **Confirm the actual Gemma-4 multimodal runtime's
+  decoder-side mask semantics — via the real llama.cpp mtmd graph construction code (the same
+  standard this whole doc has held V2 to) or a working oracle — before writing or modifying any
+  `PagedKvCache`/global-causal-masking code for this.**
 - Chat-template rendering of `<start_of_image>`/`<end_of_image>` + the soft-token placeholders
   (`GgufTokenizer` Jinja path).
 - Acceptance: greedy-decode parity vs `llama-mtmd-cli` on a fixed image+prompt (e.g. "describe
@@ -314,15 +400,50 @@ tell.
 - **2D RoPE with neox ordering** is applied inside attention *in addition to* the learned position
   embeddings. Both are needed; neither substitutes for the other.
 - **Token reduction is average pooling**, kernel `n_merge`, then a scale by `sqrt(n_embd)`.
-  `n_merge` comes from `KEY_PROJ_SCALE_FACTOR` and defaults to 4, asserted to be 2 or 4. This mmproj
-  declares no such key, so the default applies: 14x14 patches pool by 4 → **3x3 = 9 soft tokens**
-  (integer division), not 196.
+  **Correction (2026-08-15) — the "defaults to 4 / 9 tokens" claim below was wrong.** `n_merge`/
+  `rope_theta` are set by the case block for `PROJECTOR_TYPE_GEMMA4V` specifically in `clip.cpp`
+  (`load_hparams`, ~line 1522), NOT the `PROJECTOR_TYPE_GEMMA3` block one case above it (where the
+  wrong "defaults to 4" reading came from — easy to misattribute since they're adjacent in the same
+  switch): `hparams.rope_theta = 100.0f; hparams.n_merge = 3;` — then optionally overridden by the
+  `clip.vision.projector.scale_factor` metadata key (`KEY_PROJ_SCALE_FACTOR`) if present.
+  **`rope_theta = 100.0f` is load-bearing and had no other source in this plan** — the 2D-RoPE
+  frequency base for the ViT is NOT the text model's `rope_theta` and must be hardcoded to 100.0 for
+  `gemma4v` unless mmproj metadata overrides it (verify the metadata key against the real file
+  before trusting the hardcoded default). No `n_merge∈{2,4}` assertion applies to this projector
+  type (that assertion belongs to a different case in the same switch). With the corrected default
+  `n_merge=3`: a 14×14 patch grid pools with kernel=stride=3, no padding →
+  `floor((14-3)/3)+1 = 4` per side → **4×4 = 16 soft tokens**, not 9 — and since 14 isn't a multiple
+  of 3, the pool only covers the first 12 patches per axis (`4*3`), silently dropping patches 12-13
+  (the last two rows/columns) per side, same as any non-overlapping pool over a non-divisible grid.
+  Verify the real mmproj's `clip.vision.projector.scale_factor` key (present or absent) before
+  implementing, since its presence would override 3 entirely.
 - **Projection** is RMS norm (`embedding_pre_projection_norm`) followed by a *clippable* linear:
   `build_mm` consults a per-tensor clamp map and, when present, clamps input and output around the
   matmul.
 - Optional `std_bias` / `std_scale` tensors are applied before projection when present. Verified
   absent from this mmproj, so that branch is inert here — but a differently exported projector could
   carry them, and the loader would silently ignore them.
+- **Attention is unscaled.** `gemma4v.cpp` sets `kq_scale = 1.0f` explicitly, before calling the
+  shared `build_vit()`. This is NOT the standard `1/sqrt(head_dim)` every other attention path in
+  this codebase (and most generic attention kernels) defaults to — a reused kernel that doesn't
+  accept an explicit override, or that silently falls back to the usual scale, will produce
+  plausible-looking but wrong attention weights with no error.
+- **V gets its own RMS-norm, gated on projector type — not visible in `gemma4v.cpp` at all.** The
+  per-block ops (Q/K/V projection, QK-norm, 2D RoPE, attention, sandwich norms, FFN) live in a
+  SHARED `clip_graph::build_vit()` (`tools/mtmd/clip.cpp:334`), called by every ViT-family model
+  file including this one. Inside it, one branch is architecture-specific:
+  `if (proj_type == PROJECTOR_TYPE_GEMMA4V) { Vcur = ggml_rms_norm(ctx0, Vcur, eps); }` — applied
+  to V (not just Q/K) right before attention, after `add_pos` has already rotated Q/K. A ViT
+  implementation written only from `gemma4v.cpp` (the model-specific file) would miss this entirely,
+  since it's not called there — it's injected inside the shared helper based on the projector-type
+  enum. Confirmed full per-block order from `build_vit` (clip.cpp:334-562): residual → `ln_1`
+  (RMSNorm) → separate (not fused) Q/K/V projections → per-head QK-norm applied AFTER reshaping to
+  `(d_head, n_head, n_pos, B)` (matches the mmproj's declared 64-wide per-head `attn_q_norm`/
+  `attn_k_norm`) → 2D RoPE (neox, x/y split) on Q and K only → **V RMS-norm (gemma4v-only)** →
+  unscaled attention → output projection → `attn_post_norm` (RMSNorm) → residual add → `ln_2`
+  (RMSNorm) → gated FFN (GeGLU) → `ffn_post_norm` (RMSNorm) → residual add. This is the complete,
+  load-bearing block structure for Phase V2 — every step is now sourced from the actual shared
+  graph code, not inferred.
 
 ### Revised status
 
@@ -330,3 +451,45 @@ The encoder is no longer blocked on knowledge — it is blocked only on being wr
 be built stage-by-stage against a real reference. The staged-parity recommendation stands and is now
 actionable: patch conv → +pos(x,y) → one block with 2D RoPE → all 16 → pool/scale → norm+projection,
 comparing at each stage rather than only at the end.
+
+## CORRECTION 2026-08-15 — three more load-bearing findings, verified against the real local mmproj
+
+Everything below was checked against the actual `models/gemma-4-E4B-it-mmproj.gguf` (991 MB,
+present locally), not just read from source — `list-metadata`/`list-tensors` confirm every claim.
+
+1. **Per-block linear layers carry a real INT8-range clamp, not just the final projection.**
+   `clip_graph_gemma4v::build_mm` (the pasted-code function) checks a `clamp_info_map` for ANY
+   weight tensor it's given — the plan previously only registered this for the final
+   `mm.input_projection`. It is NOT special to that one tensor: `build_vit`'s attention block calls
+   `build_mm(layer.q_w, ...)`, `build_mm(layer.k_w, ...)`, `build_mm(layer.v_w, ...)`, and
+   `build_attn`'s output stage calls `build_mm(wo, ...)`; `build_ffn` calls `build_mm` for `up`,
+   `gate`, AND `down`. **All seven per-block linear weights** (`attn_q/k/v/out`,
+   `ffn_gate/up/down`) go through this path. Confirmed directly against the real file: EVERY one of
+   those seven tensors in EVERY block has four accompanying scalar tensors —
+   `<name>.input_min`/`.input_max`/`.output_min`/`.output_max` (e.g. `v.blk.0.attn_q.input_max`).
+   The clamp is real and load-bearing: `x_clamped = clamp(x, input_min, input_max)`,
+   `out = clamp(w @ x_clamped, output_min, output_max)`. Skipping it would silently produce wrong
+   activations for every block, in a way that looks like a numerically-close-but-off encoder rather
+   than a missing feature. `mm.input_projection` itself has NO such tensors (confirmed absent) —
+   the clamp is per-block only, not on the final projector.
+2. **FFN activation is quick-GELU, not plain GELU.** `hparams.ffn_op` defaults to `FFN_GELU_QUICK`
+   (`clip.cpp` ~line 1321) unless the mmproj declares `use_gelu`/`use_silu` metadata keys — neither
+   is present in the real file (confirmed via the full 37-key metadata dump). `FFN_GELU_QUICK`
+   dispatches to `ggml_geglu_quick_split`, i.e. `gelu_quick(x) = x * sigmoid(1.702*x)` (the
+   sigmoid/logistic approximation), NOT the tanh-approximation GELU
+   (`0.5*x*(1+tanh(sqrt(2/pi)*(x+0.044715*x^3)))`) that `SimdKernels.GeluInPlace` already
+   implements for other architectures in this codebase. Reusing `GeluInPlace` directly — the
+   obvious, natural choice given it's the only GELU kernel already in the codebase — would have
+   been silently wrong. A new quick-GELU kernel is needed.
+3. **`n_merge=3`/`rope_theta=100.0` (the correction above) and no `scale_factor`/rope-override
+   metadata key** are now directly confirmed absent from the real file, not just inferred from
+   `clip.cpp` reading alone — both hardcoded defaults apply exactly as derived. `v.post_ln` is also
+   confirmed absent (no post-layernorm step), matching the loader's tensor inventory.
+
+Net: the architecture is now FULLY pinned down against the real file with no remaining unknowns
+short of full numerical parity (which needs a working oracle to run end-to-end, still unavailable
+locally) — but it took going two levels deeper than the model-specific `gemma4v.cpp` file alone
+(into the shared `build_vit`/`build_attn`/`build_ffn`/`build_mm` helpers in `clip.cpp`) plus direct
+verification against the real GGUF's tensor inventory and metadata to find the clamp mechanism and
+activation variant. Neither would have been visible from `gemma4v.cpp` or the mmproj header summary
+alone.

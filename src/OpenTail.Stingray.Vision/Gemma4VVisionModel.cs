@@ -1,4 +1,5 @@
 using OpenTail.Stingray.Core;
+using OpenTail.Stingray.Cpu;
 
 namespace OpenTail.Stingray.Vision;
 
@@ -29,6 +30,26 @@ public sealed class Gemma4VVisionModel : IDisposable
     public required int BlockCount { get; init; }
     public required int HeadCount { get; init; }
     public required float LayerNormEps { get; init; }
+
+    /// <summary>
+    /// 2D-RoPE frequency base for this ViT's attention, per <c>clip.cpp</c>'s
+    /// <c>PROJECTOR_TYPE_GEMMA4V</c> case (<c>hparams.rope_theta = 100.0f</c>) — a hardcoded
+    /// constant for this projector type, never read from mmproj metadata (confirmed: no
+    /// <c>KEY_ROPE_THETA</c>-style key exists anywhere in <c>clip.cpp</c>). NOT the same value as
+    /// the paired text model's own rope theta.
+    /// </summary>
+    public const float RopeTheta = 100f;
+
+    /// <summary>
+    /// Average-pool kernel/stride (per side) for the post-ViT token-reduction step. Defaults to
+    /// <b>3</b> for <c>gemma4v</c> (<c>clip.cpp</c>'s <c>PROJECTOR_TYPE_GEMMA4V</c> case;
+    /// deliberately NOT 4 — that is the adjacent <c>PROJECTOR_TYPE_GEMMA3</c> case's default, easy
+    /// to misattribute since they sit next to each other in the same switch), optionally
+    /// overridden by the <c>clip.vision.projector.scale_factor</c> metadata key
+    /// (<c>KEY_PROJ_SCALE_FACTOR</c>) if the mmproj declares one. Confirmed absent from the real
+    /// E4B mmproj, so the hardcoded 3 applies there.
+    /// </summary>
+    public required int NMerge { get; init; }
 
     /// <summary>Vision input channel mean from the mmproj header.</summary>
     public required float[] ImageMean { get; init; }
@@ -80,28 +101,45 @@ public sealed class Gemma4VVisionModel : IDisposable
 
             var imageMean = FloatArray("clip.vision.image_mean", requireNonZero: false);
             var imageStd = FloatArray("clip.vision.image_std", requireNonZero: true);
+            var nMerge = gguf.GetMetadata("clip.vision.projector.scale_factor", 3);
 
             GgufTensorInfo Required(string name) => gguf.FindTensor(name)
                 ?? throw new InvalidDataException($"mmproj '{mmprojPath}' is missing tensor '{name}'.");
+
+            // Every per-block linear (attn_q/k/v/out, ffn_gate/up/down) routes through
+            // clip_graph::build_mm, which clamps input then output around the matmul when the
+            // weight has a registered clamp range -- confirmed present for all seven per-block
+            // weights in the real mmproj (each carries <name>.input_min/.input_max/.output_min/
+            // .output_max scalar tensors). mm.input_projection has none: the clamp is per-block
+            // only, not on the final projector.
+            Gemma4VClamp Clamp(string weightName) => new(
+                LoadScalar(Required(weightName + ".input_min")),
+                LoadScalar(Required(weightName + ".input_max")),
+                LoadScalar(Required(weightName + ".output_min")),
+                LoadScalar(Required(weightName + ".output_max")));
 
             var blocks = new Gemma4VBlockWeights[blockCount];
             for (var i = 0; i < blocks.Length; i++)
             {
                 var prefix = $"v.blk.{i}.";
+                var attnQ = Required(prefix + "attn_q.weight");
+                var attnK = Required(prefix + "attn_k.weight");
+                var attnV = Required(prefix + "attn_v.weight");
+                var attnOut = Required(prefix + "attn_out.weight");
+                var ffnGate = Required(prefix + "ffn_gate.weight");
+                var ffnUp = Required(prefix + "ffn_up.weight");
+                var ffnDown = Required(prefix + "ffn_down.weight");
                 blocks[i] = new Gemma4VBlockWeights(
                     Required(prefix + "ln1.weight"),
                     Required(prefix + "ln2.weight"),
-                    Required(prefix + "attn_q.weight"),
-                    Required(prefix + "attn_k.weight"),
-                    Required(prefix + "attn_v.weight"),
-                    Required(prefix + "attn_out.weight"),
+                    attnQ, attnK, attnV, attnOut,
                     Required(prefix + "attn_q_norm.weight"),
                     Required(prefix + "attn_k_norm.weight"),
                     Required(prefix + "attn_post_norm.weight"),
-                    Required(prefix + "ffn_gate.weight"),
-                    Required(prefix + "ffn_up.weight"),
-                    Required(prefix + "ffn_down.weight"),
-                    Required(prefix + "ffn_post_norm.weight"));
+                    ffnGate, ffnUp, ffnDown,
+                    Required(prefix + "ffn_post_norm.weight"),
+                    Clamp(prefix + "attn_q"), Clamp(prefix + "attn_k"), Clamp(prefix + "attn_v"), Clamp(prefix + "attn_out"),
+                    Clamp(prefix + "ffn_gate"), Clamp(prefix + "ffn_up"), Clamp(prefix + "ffn_down"));
 
                 RequireVector(blocks[i].Ln1, embeddingLength);
                 RequireVector(blocks[i].Ln2, embeddingLength);
@@ -135,6 +173,7 @@ public sealed class Gemma4VVisionModel : IDisposable
                 BlockCount = blockCount,
                 HeadCount = headCount,
                 LayerNormEps = layerNormEps,
+                NMerge = nMerge,
                 ImageMean = imageMean,
                 ImageStd = imageStd,
                 PatchEmbedding = patchEmbedding,
@@ -142,6 +181,15 @@ public sealed class Gemma4VVisionModel : IDisposable
                 InputProjection = inputProjection,
                 Blocks = blocks,
             };
+
+            float LoadScalar(GgufTensorInfo t)
+            {
+                if (t.ElementCount != 1)
+                    throw new InvalidDataException($"mmproj tensor '{t.Name}' has {t.ElementCount} elements; expected a scalar (1).");
+                var buf = new float[1];
+                Dequantize.ToFloat32(gguf.GetTensorData(t), buf, t.DType, 1);
+                return buf[0];
+            }
 
             int RequiredPositiveInt(string key)
             {
@@ -205,6 +253,16 @@ public sealed class Gemma4VVisionModel : IDisposable
 
     internal void EnsureNotDisposed() => ObjectDisposedException.ThrowIf(_disposed, this);
 
+    /// <summary>Dequantizes a tensor's full contents to a fresh float array. Mirrors
+    /// <see cref="VisionModel.LoadFloats"/> for the non-mmap'd (small, F32-or-quantized) tensors
+    /// this encoder needs materialized once at load time (position table, norm weights).</summary>
+    internal float[] LoadFloats(GgufTensorInfo t)
+    {
+        var dst = new float[t.ElementCount];
+        Dequantize.ToFloat32(_gguf.GetTensorData(t), dst, t.DType, t.ElementCount);
+        return dst;
+    }
+
     public void Dispose()
     {
         if (_disposed) return;
@@ -212,6 +270,16 @@ public sealed class Gemma4VVisionModel : IDisposable
         _gguf.Dispose();
     }
 }
+
+/// <summary>
+/// Real INT8-range clamp for one <c>build_mm</c> linear projection, per
+/// <c>clip_graph_gemma4v::build_mm</c>'s <c>clamp_info_map</c>: input is clamped to
+/// [<see cref="InputMin"/>, <see cref="InputMax"/>] before the matmul, output is clamped to
+/// [<see cref="OutputMin"/>, <see cref="OutputMax"/>] after it. Applies to all seven per-block
+/// linear weights (attn_q/k/v/out, ffn_gate/up/down) -- confirmed present for every one of them
+/// in the real mmproj -- but NOT to <c>mm.input_projection</c>, which has no clamp tensors at all.
+/// </summary>
+internal readonly record struct Gemma4VClamp(float InputMin, float InputMax, float OutputMin, float OutputMax);
 
 /// <summary>Resolved tensor names for one <c>gemma4v</c> ViT transformer block.</summary>
 internal sealed record Gemma4VBlockWeights(
@@ -227,4 +295,11 @@ internal sealed record Gemma4VBlockWeights(
     GgufTensorInfo FfnGate,
     GgufTensorInfo FfnUp,
     GgufTensorInfo FfnDown,
-    GgufTensorInfo FfnPostNorm);
+    GgufTensorInfo FfnPostNorm,
+    Gemma4VClamp AttnQClamp,
+    Gemma4VClamp AttnKClamp,
+    Gemma4VClamp AttnVClamp,
+    Gemma4VClamp AttnOutClamp,
+    Gemma4VClamp FfnGateClamp,
+    Gemma4VClamp FfnUpClamp,
+    Gemma4VClamp FfnDownClamp);

@@ -6745,6 +6745,24 @@ public static unsafe class SimdKernels
     }
 
     /// <summary>
+    /// "Quick" GELU (sigmoid/logistic approximation): <c>x * sigmoid(1.702*x)</c>. Distinct from
+    /// <see cref="GeluInPlace"/>'s tanh approximation -- NOT interchangeable, they diverge by a
+    /// measurable margin away from x=0. Ported from ggml's <c>ggml_geglu_quick</c>/
+    /// <c>ggml_gelu_quick</c>, used by <c>FFN_GELU_QUICK</c> (llama.cpp <c>tools/mtmd/clip.cpp</c>'s
+    /// default FFN activation for a mmproj that declares neither <c>use_gelu</c> nor
+    /// <c>use_silu</c> metadata -- e.g. Gemma 4 E4B's <c>gemma4v</c> ViT).
+    /// </summary>
+    public static void GeluQuickInPlace(float* x, int n)
+    {
+        const float kAlpha = 1.702f;
+        for (int i = 0; i < n; i++)
+        {
+            float v = x[i];
+            x[i] = v / (1f + MathF.Exp(-kAlpha * v));
+        }
+    }
+
+    /// <summary>
     /// ReLU-squared activation, applied in place: <c>x[i] = max(0, x[i])^2</c>. Ported from
     /// llama.cpp's <c>LLM_FFN_RELU_SQR</c> handling (<c>llama-graph.cpp</c>: <c>ggml_relu</c> then
     /// <c>ggml_sqr</c>) — JAIS-2's non-gated FFN activation, used in place of GELU

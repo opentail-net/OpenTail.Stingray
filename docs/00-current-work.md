@@ -89,29 +89,51 @@ gate admits. Correct it in the same change that resolves the gate.
    coverage and a benchmark once correctness is settled. Use
    [qwen35moe-tensor-layout.md](qwen35moe-tensor-layout.md) as the authoritative layout, never the
    superseded SSM plan.
-2. **Gemma 4 E4B vision.** The `gemma4v` mmproj load boundary and fixed-grid preprocessing are
-   implemented; the ViT encoder forward, projector, embedding splice, and image parity are not.
-   Blocked on an oracle: the local llama.cpp build rejects the paired `gemma4` text GGUF, so it
-   cannot serve as a reference. Do not guess the encoder from tensor names.
-   Note the 12B is a different, working path (encoder-free `gemma4uv`) and is not blocked by this.
+2. **Gemma 4 E4B vision.** **Updated 2026-08-15** — the `gemma4v` mmproj load boundary, fixed-grid
+   preprocessing, ViT encoder forward pass, token-reduction pool, and projector are now all
+   implemented (`Gemma4VVisionEncoder.cs`), architecture fully reverse-engineered against the real
+   mmproj + local llama.cpp source (not guessed from tensor names — see
+   [03-gemma4-e4b-vision-plan.md](03-gemma4-e4b-vision-plan.md)'s current implementation contract).
+   Passes a real-mmproj structural sanity test but is **not numerically parity-verified**: the
+   local llama.cpp build still rejects the paired `gemma4` text GGUF, so no oracle exists yet for
+   end-to-end comparison — that is a parity blocker, not an implementation blocker, and does not
+   block the remaining work. Still open: embedding splice into the text decoder, decoder-side
+   image-token mask semantics (explicitly NOT assumed to match Gemma 3 — needs its own
+   investigation before touching `PagedKvCache`), and CLI/API surface.
+   Note the 12B is a different, working path (encoder-free `gemma4uv`) and was never blocked by
+   any of this.
 
 ## Priority 3 — operator quality
 
 [04-quality-of-life-improvements-plan.md](04-quality-of-life-improvements-plan.md). Configuration
-ownership is partly closed as of 2026-08-08:
+ownership Phase 0 deliverable 1 (both inventories) is now **DONE, 2026-08-15**:
 
 - **Done — inventories regenerated from source.** `docs/cli-option-inventory.md` went from 96
-  hand-maintained rows to all **149** declared options, produced by the checked-in
-  `scripts/gen-cli-option-inventory.ps1` (`-Check` fails when stale). The count guard now also
-  asserts the ROW count: the declared count had tracked source correctly the whole time while the
-  table silently fell 53 rows behind — it was measuring the one thing not drifting.
+  hand-maintained rows to all **149** (then, as of the 2026-08-15 pass below, **153**) declared
+  options, produced by the checked-in `scripts/gen-cli-option-inventory.ps1` (`-Check` fails when
+  stale). The count guard now also asserts the ROW count: the declared count had tracked source
+  correctly the whole time while the table silently fell 53 rows behind — it was measuring the one
+  thing not drifting.
 - **Done — stale registry entries retired.** Three `KnownEnvironmentVariables` entries were never
   environment variables: `STINGRAY_ARGMAX_NEG_INF` (a CUDA `#define` in an NVRTC kernel string) and
   the glob patterns `STINGRAY_MOE_` / `STINGRAY_SNAPKV`. Registry 159 → 156. A new test requires
   every entry to appear as a **quoted string literal** in `src/`.
-- **Still open:** Class/Notes classification of both inventories, and extending source-tracked
-  effective configuration beyond static planning knobs. The generator preserves hand-written Class
-  values across regeneration, so classification is now safe to start.
+- **Done, 2026-08-15 — Class classification complete for every row of both inventories.** The
+  registry had drifted again since 2026-08-08 (grew back to **162** names across later sessions'
+  architecture/kernel work; the doc's own reconciliation prose said 156, which was stale) and the
+  table had separately drifted from the registry in both directions (5 rows missing, the same 3
+  ghost names from the paragraph above still sitting in the table despite being removed from
+  source) — re-diffed to zero drift, then every one of the 162 env-var rows and 153 CLI-option rows
+  given an explicit Class, not just the ~half that had one via a summary "ownership register" that
+  was never propagated into the actual per-row table. Also found and fixed a real
+  `gen-cli-option-inventory.ps1` bug: its description parser only matched single-line
+  `[Description("...")]`, so multi-line concatenated descriptions (`"..." + "..."`) silently
+  produced blank cells — 3 `RunCommand` rows affected, now populated. Full detail in
+  [04-quality-of-life-improvements-plan.md](04-quality-of-life-improvements-plan.md) item 1.
+- **Still open:** extending source-tracked effective configuration beyond static planning knobs
+  (item 2 of the plan), and removing the obsolete/dead-looking switches classification surfaced —
+  that needs a per-variable owner call, not a drive-by deletion, so it wasn't done as part of the
+  classification pass itself.
 
 ## Priority 4 — performance
 

@@ -39,8 +39,23 @@ foreach ($file in Get-ChildItem -Path $cliDir -Filter *.cs -Recurse |
         $name = @($names | Sort-Object -Property Length -Descending)[0]
         $desc = ''
         for ($j = $i + 1; $j -lt [Math]::Min($i + 4, $lines.Count); $j++) {
-            $d = [regex]::Match($lines[$j], '\[Description\("(.*)"\)\]')
-            if ($d.Success) { $desc = $d.Groups[1].Value; break }
+            if ($lines[$j] -notmatch '\[Description\(') { continue }
+            # The attribute may be a single-line literal ([Description("...")]) or a
+            # multi-line concatenation ([Description("..." +\n    "..." +\n    "...")]) --
+            # accumulate lines until one closes the attribute, then pull out every
+            # double-quoted segment (handles \" escapes) and join them. This also covers
+            # the single-line case: one quoted segment, joined with nothing else.
+            $descLines = [System.Collections.Generic.List[string]]::new()
+            $k = $j
+            while ($k -lt $lines.Count) {
+                $descLines.Add($lines[$k])
+                if ($lines[$k] -match '\)\]\s*$') { break }
+                $k++
+            }
+            $joined = [string]::Join("`n", $descLines)
+            $parts = [regex]::Matches($joined, '"((?:[^"\\]|\\.)*)"') | ForEach-Object { $_.Groups[1].Value }
+            $desc = [string]::Join('', $parts)
+            break
         }
         $desc = $desc -replace '\\"', '"' -replace '\|', '\|'
         $rows.Add([pscustomobject]@{ Command = $command; Name = $name; Description = $desc })

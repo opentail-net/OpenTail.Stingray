@@ -3156,24 +3156,11 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
         // K/V: compress -> norm -> decompress (see the doc comment above for the full shape story).
         FusedMatVec(_mlaKvCmprPe, _wKvAMqa![layer], normBuf, _mlaKvLoraRank + _ropeDim, _embDim);
 
-        if (s_mlaDebug && layer == 0)
-            DebugMlaStats("kv_cmpr_pe (pre-norm)", _mlaKvCmprPe, _mlaKvLoraRank + _ropeDim);
-
         var kvANormW = GetNormWeight(_kvANorm![layer]);
         FastNorm(_mlaKvCmprPe, _mlaKvCmprPe, kvANormW, null, _mlaKvLoraRank, _hp.RmsNormEps);
 
-        if (s_mlaDebug && layer == 0)
-        {
-            DebugMlaStats("kv_cmpr (post-norm)", _mlaKvCmprPe, _mlaKvLoraRank);
-            DebugMlaStats("normBuf", normBuf, _embDim);
-            DebugMlaStats("q (raw, [nope,rope])", _q, qDimMla);
-        }
-
         FusedMatVec(_mlaDecompressed, _wKvB![layer], _mlaKvCmprPe,
             _numHeads * (_mlaNopeDim + _mlaVDim), _mlaKvLoraRank);
-
-        if (s_mlaDebug && layer == 0)
-            DebugMlaStats("decompressed kv", _mlaDecompressed, _numHeads * (_mlaNopeDim + _mlaVDim));
 
         float* kPe = _mlaKvCmprPe + _mlaKvLoraRank; // MQA: identical across every head
         int decompStride = _mlaNopeDim + _mlaVDim;
@@ -3299,24 +3286,6 @@ public sealed unsafe class ForwardPass : IForwardPass, IBatchedForwardPass, IPre
         return (float)Math.Sqrt(s);
     }
 
-    // TEMP diagnostic (STINGRAY_MLA_DEBUG=1) for isolating the DeepSeek2 MLA numerical bug.
-    private static readonly bool s_mlaDebug = Environment.GetEnvironmentVariable("STINGRAY_MLA_DEBUG") == "1";
-    private static void DebugMlaStats(string label, float* x, int n)
-    {
-        double sum = 0, sumSq = 0, absMax = 0;
-        bool hasNaN = false;
-        for (int i = 0; i < n; i++)
-        {
-            float v = x[i];
-            if (float.IsNaN(v) || float.IsInfinity(v)) hasNaN = true;
-            sum += v; sumSq += (double)v * v;
-            double a = Math.Abs(v);
-            if (a > absMax) absMax = a;
-        }
-        double mean = sum / n;
-        double rms = Math.Sqrt(sumSq / n);
-        Console.Error.WriteLine($"[MLA-DBG] {label}: n={n} mean={mean:F4} rms={rms:F4} absMax={absMax:F4} nan/inf={hasNaN} first5=[{x[0]:F3},{x[1]:F3},{x[2]:F3},{x[3]:F3},{x[4]:F3}]");
-    }
 
     private void EmitNormTrace(int token, int position,
         float embNorm, float preFinalNorm, float postFinalNorm)
