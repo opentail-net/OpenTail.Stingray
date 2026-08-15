@@ -7,7 +7,7 @@
               qwen36-27b-mtp, qwen36-27b-mtp-q5, qwen36-35b-a3b-mtp, carnice-35b-a3b-mtp,
               ornith-9b, ornith-35b,
               gemma4-12b-qat, gemma4-12b-q4km, gemma4-e4b-qat, gemma4-12b-agentic,
-              llama4-scout, z-image-turbo, z-image-turbo-q8, realesrgan-x4
+              llama4-scout, llama4-scout-mmproj, z-image-turbo, z-image-turbo-q8, realesrgan-x4
 .PARAMETER Model
     Which model to download. Default: downloads all text models (skips large image models).
 .EXAMPLE
@@ -34,6 +34,7 @@
     .\download-model.ps1 -Model gemma4-e4b-qat -DestDir E:\models  # Gemma 4 E4B-it QAT q4_0 (~5.15 GB) — fast small Gemma (~1.6× decode vs Q8_0)
     .\download-model.ps1 -Model gemma4-12b-agentic -DestDir E:\models  # Gemma 4 12B agentic/tool-use finetune (yuxinlu1) Q4_K_M (~7.4 GB) — dense gemma4 arch (reasoning; pass --thinking for the thought chain)
     .\download-model.ps1 -Model llama4-scout            # Llama 4 Scout Q4_K_M (60.9 GB, 2 shards)
+    .\download-model.ps1 -Model llama4-scout-mmproj     # Llama 4 Scout vision-only mmproj F16 (~1.75 GB) — docs/06-llama4-vision-plan.md
     .\download-model.ps1 -Model z-image-turbo           # Z-Image-Turbo Q5_K_M + abliterated encoder (~8.5 GB)
     .\download-model.ps1 -Model z-image-turbo-q8        # Z-Image-Turbo Q8_0 + abliterated encoder Q8_0 (~12 GB)
     .\download-model.ps1 -Model realesrgan-x4           # Real-ESRGAN x4plus upscaler (67 MB)
@@ -43,7 +44,7 @@ param(
                  "qwen36-27b-mtp", "qwen36-27b-mtp-q5", "qwen36-35b-a3b-mtp", "carnice-35b-a3b-mtp",
                  "ornith-9b", "ornith-35b",
                  "gemma4-12b-qat", "gemma4-12b-q4km", "gemma4-e4b-qat", "gemma4-12b-agentic",
-                 "llama4-scout", "z-image-turbo", "z-image-turbo-q8", "realesrgan-x4")]
+                 "llama4-scout", "llama4-scout-mmproj", "z-image-turbo", "z-image-turbo-q8", "realesrgan-x4")]
     [string]$Model,
     [string]$DestDir
 )
@@ -353,6 +354,16 @@ $Models = @{
         )
         Size  = "60.9 GB (2 shards: 46.4 GB + 14.5 GB)"
         Phase = "5b"
+    }
+    # Vision-only mmproj for the Llama 4 Scout ViT encoder (docs/06-llama4-vision-plan.md) --
+    # does NOT need the 60.9 GB text weights above; this alone is enough for
+    # Llama4VisionModel/Llama4VisionEncoder's own structural sanity test.
+    "llama4-scout-mmproj" = @{
+        Files = @("mmproj-llama-4-scout-17b-16e-instruct-f16.gguf")
+        Urls  = @("https://huggingface.co/ggml-org/Llama-4-Scout-17B-16E-Instruct-GGUF/resolve/main/mmproj-Llama-4-Scout-17B-16E-Instruct-f16.gguf")
+        Size  = "~1.75 GB"
+        SizeGB = 1.75
+        Phase = "Llama 4 vision encoder (docs/06-llama4-vision-plan.md), mmproj only"
     }
     # ── Image generation ──────────────────────────────────────────────────────
     # Z-Image-Turbo Q5_K_M (recommended balance of quality and size)

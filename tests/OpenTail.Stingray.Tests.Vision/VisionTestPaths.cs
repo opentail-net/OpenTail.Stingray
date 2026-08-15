@@ -6,6 +6,9 @@ internal static class VisionTestPaths
     public const string MmprojFile = "mmproj-gemma-4-12b-it-qat-q4_0.gguf";
     public const string TextModelFile = "gemma-4-12b-it-qat-q4_0.gguf";
     public const string E4BMmprojFile = "gemma-4-E4B-it-mmproj.gguf";
+    public const string Gemma3MmprojFile = "mmproj-gemma-3-4b-it-f16.gguf";
+    public const string Gemma3TextModelFile = "gemma-3-4b-it-Q4_K_M.gguf";
+    public const string Llama4MmprojFile = "mmproj-llama-4-scout-17b-16e-instruct-f16.gguf";
 
     private static string? FindModel(string file)
     {
@@ -26,6 +29,9 @@ internal static class VisionTestPaths
     public static string? FindMmproj() => FindModel(MmprojFile);
     public static string? FindE4BMmproj() => FindModel(E4BMmprojFile);
     public static string? FindTextModel() => FindModel(TextModelFile);
+    public static string? FindGemma3Mmproj() => FindModel(Gemma3MmprojFile);
+    public static string? FindGemma3TextModel() => FindModel(Gemma3TextModelFile);
+    public static string? FindLlama4Mmproj() => FindModel(Llama4MmprojFile);
 
     /// <summary>Repo-root-relative golden fixtures produced by scripts/gemma4uv_ref.py.</summary>
     public static string? FindFixtureDir()

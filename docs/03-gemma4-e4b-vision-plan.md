@@ -70,6 +70,78 @@ decoder-side splice/mask (Phase V4): NOT covered by this contract -- see the exp
                      from how the TEXT decoder should attend to the 16 spliced image positions.
 ```
 
+## ADDENDUM 2026-08-15 — Gemma 3 SigLIP encoder also implemented (`clip.projector_type=gemma3`)
+
+Separate architecture from the E4B `gemma4v` contract above — a DIFFERENT, simpler ViT family
+(`llama.cpp`'s `clip_graph_siglip`, `tools/mtmd/models/siglip.cpp`'s `PROJECTOR_TYPE_GEMMA3`
+branch), paired with the Gemma 3 4B text model rather than E4B. Both `gemma3` and `gemma4` text
+architectures are already admitted in `ModelCompatibility.cs`, so this path — once Phase V4
+(splice/mask) exists — could reach genuine end-to-end multimodal inference sooner than the E4B
+path, which still needs V4 regardless. Implemented in `Gemma3VisionModel.cs` (loader) and
+`Gemma3VisionEncoder.cs` (encoder), verified against the real
+`models/mmproj-gemma-3-4b-it-f16.gguf` (851 MB, downloaded from `ggml-org/gemma-3-4b-it-GGUF`) and
+its paired `models/gemma-3-4b-it-Q4_K_M.gguf` text model (2.49 GB).
+
+**Genuinely simpler than `gemma4v`**: no 2D RoPE, no per-head QK-norm, no V-norm, no per-block QAT
+clamp, a single learned position table `[1152,4096]` added once (not two stacked x/y tables looked
+up per patch — confirmed one-to-one via `list-tensors`: 4096 = 64×64 patches exactly, added by
+straight `ggml_add`, no `ggml_get_rows` lookup at all), a plain (non-gated) FFN with ordinary
+tanh-GELU (`clip.use_gelu=true` in the real metadata — NOT quick-GELU, unlike `gemma4v`'s
+metadata-absent default), the standard `1/sqrt(head_dim)` attention scale (no override), and a
+REAL post-layernorm (`v.post_ln` exists here, unlike `gemma4v`). Confirmed geometry: 896×896
+input, 14px patches → 4096 patches, embedding 1152, 16 heads (head_dim 72), FFN width 4304, 27
+blocks, `n_merge=4` (default for this projector type — the plan's *original* draft here
+misattributed the adjacent `PROJECTOR_TYPE_GEMMA3`-in-`clip.cpp`'s literal default to `gemma4v`;
+this addendum's `n_merge=4` is for the actual `gemma3` SigLIP path and is correct as written)
+→ 16×16 = 256 soft tokens (896/14=64, exactly divisible by 4, unlike `gemma4v`'s non-divisible
+14/3 — no dropped patches here).
+
+**Two new, genuinely surprising findings, both confirmed via direct verification against the real
+file rather than guessed — the second one cost real debugging time and is worth remembering:**
+
+1. **Different metadata key convention.** This mmproj declares `clip.projector_type` (no
+   `.vision.` segment), NOT `clip.vision.projector_type` like `gemma4v`/`gemma4uv` use. Confirmed
+   via `list-metadata`; the two conventions genuinely differ between exports and must not be
+   assumed interchangeable.
+2. **`ffn_up`/`ffn_down` tensor NAMES are swapped relative to their FUNCTIONAL role in this
+   specific checkpoint export** — NOT a storage-transpose issue (unlike `mm.input_projection`,
+   which genuinely IS stored transposed, matching `siglip.cpp`'s own explicit
+   `ggml_cont(ggml_transpose(...))` before using it). Proven unambiguously via bias length (a bias
+   vector's length is exactly its projection's output width — no axis-order ambiguity possible,
+   unlike a weight matrix): the GGUF tensor named `ffn_up` has an `embeddingLength`-wide bias
+   (1152) — it is actually the SECOND/reducing step (ffLen→embd) — and the tensor named `ffn_down`
+   has a `feedForwardLength`-wide bias (4304) — it is actually the FIRST/expanding step
+   (embd→ffLen). The reference C++ code works correctly regardless, because `build_ffn` never
+   trusts the tensor's name — it just uses `layer.ff_up_w` as "whatever runs first" and
+   `layer.ff_down_w` as "whatever runs second," and each tensor's OWN shape (not its name) is
+   self-consistent with its actual position in the graph. `Gemma3VisionModel`'s loader now binds
+   the GGUF tensors by FUNCTION (swapped) rather than by name, with both the swap and the
+   evidence documented inline — do not "fix" this back to name-matching without re-reading that
+   comment.
+
+**Performance note (new, not present in the `gemma4v` contract):** at 4096 patches, unscaled
+per-head attention is ~1 trillion MACs per `Forward()` call (~21× `gemma4v`'s 196-patch cost) —
+measured single-threaded at ~75s/block (~34 min total for 27 blocks), impractically slow to
+re-run routinely. `Gemma3VisionEncoder` parallelizes both the attention loop (across the 16 heads)
+and the per-patch QKV/output-projection/FFN loops (across the 4096 patches) via `Parallel.For`,
+each task given its own local scratch instead of sharing one buffer, which would otherwise race.
+Net measured result: 562.5s (~9.4 min) end to end on this machine's 12 logical processors — a real
+but modest win over the attention-only-parallelized version's 604.9s, well short of the naive
+per-core-count expectation (per-task scheduling overhead across 4096 small `Parallel.For` work
+items eats into the gain). Not pursued further — diminishing returns for a structural sanity check
+that only needs to run occasionally, not routinely. `gemma4v`'s 196-patch encoder was never
+parallelized and doesn't need to be (sub-second).
+
+**Status: CONFIRMED PASSING, 2026-08-15.** Structurally implemented, passes the loader's strict
+validation, and the end-to-end structural sanity test (`Gemma3VisionEncoderTests.cs` — shape, no
+NaN/Inf, sane magnitude) is green: 1/1, 0 failures, 562.5s (~9.4 min, fully parallelized — see the
+performance note above) against the real 851 MB mmproj. Further speedup was not pursued past this
+point (diminishing returns, operator decision to stop). **Like `gemma4v`, still NOT numerically
+parity-verified** — no Gemma-4-capable oracle exists locally (llama.cpp's own architecture is
+`gemma4`; the paired `gemma3` architecture is a DIFFERENT, older, and — per `ModelCompatibility.cs`
+— already-admitted text model, but this session did not attempt to build or acquire a llama.cpp
+binary that supports `gemma3` multimodal inference specifically to use as an oracle).
+
 Ignore all historical MobileNet-V5/Gemma-3n/768²/256-token/`<start_of_image>`-marker assumptions
 in the sections below — they predate the real mmproj verification and are retained only as
 research archaeology, not as an implementation contract.

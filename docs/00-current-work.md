@@ -102,6 +102,38 @@ gate admits. Correct it in the same change that resolves the gate.
    investigation before touching `PagedKvCache`), and CLI/API surface.
    Note the 12B is a different, working path (encoder-free `gemma4uv`) and was never blocked by
    any of this.
+3. **Gemma 3 vision (SigLIP).** **New, 2026-08-15** — a separate, simpler ViT family
+   (`clip.projector_type=gemma3`, `Gemma3VisionModel.cs`/`Gemma3VisionEncoder.cs`) paired with the
+   Gemma 3 4B text model rather than E4B. Both `gemma3` and `gemma4` text architectures are already
+   admitted, so once the splice/mask work above lands (shared infrastructure, not
+   architecture-specific) this path could reach genuine end-to-end multimodal inference sooner
+   than E4B, which needs the same work regardless. Loader and encoder implemented and verified
+   against the real `models/mmproj-gemma-3-4b-it-f16.gguf`; structural sanity test passes
+   (1/1, 604.9s — attention parallelized across heads since it's ~21x gemma4v's compute at 4096
+   patches). Two real, non-obvious findings from this checkpoint's export, documented in
+   [03-gemma4-e4b-vision-plan.md](03-gemma4-e4b-vision-plan.md)'s addendum: a different metadata
+   key convention (`clip.projector_type`, not `clip.vision.projector_type`) and a NAME-vs-FUNCTION
+   swap on the `ffn_up`/`ffn_down` tensors (proven via bias-length evidence, not a storage
+   transpose). Same caveat as `gemma4v`: not numerically parity-verified, no oracle available.
+4. **Llama 4 vision (E4B Scout/Maverick).** **New, 2026-08-15** — a third ViT family
+   (`clip.projector_type=llama4`, `Llama4VisionModel.cs`/`Llama4VisionEncoder.cs`), the only one of
+   four researched candidates (`llama4`/`qwen2vl`/`qwen3vl`/`glm4v`) whose paired text decoder
+   (`llama4`) is already admitted AND needs no new engine-wide RoPE machinery — the other three all
+   require genuine multi-axis M-RoPE, which doesn't exist anywhere in this engine yet (see
+   [06-llama4-vision-plan.md](06-llama4-vision-plan.md)'s Context section for the full comparison).
+   Structural sanity test passes against the real
+   `models/mmproj-llama-4-scout-17b-16e-instruct-f16.gguf` (1/1, 132.1s — one 336x336 tile, 34
+   blocks, 577 tokens including a real [CLS] token this checkpoint has that neither `gemma4v` nor
+   `gemma3` do). Real findings this time: a flat F16 (not 4D F32) patch-embed tensor, no FFN gate
+   tensor at all (plain, not gated, FFN), real pre- AND post-layernorm both present, and — the one
+   that would have been a silent wrong-answer bug if missed — a NORM/interleaved 2D-RoPE pairing
+   convention, genuinely different from `gemma4v`'s NEOX split-half convention, confirmed only by
+   reading `clip.cpp`'s shared `build_rope_2d` helper directly rather than assuming the existing
+   `ApplyRope2DHalf` helper would transfer. Multi-tile ("llava-uhd") preprocessing and decoder
+   splice are both explicitly out of scope, same precedent as the other two encoders — this
+   processes one fixed-square tile per call. llama.cpp's own code separately flags this exact
+   projector as known to have degraded quality (ggml-org/llama.cpp#13282), independent of whether
+   the port itself is correct. Same caveat as the other two: not numerically parity-verified.
 
 ## Priority 3 — operator quality
 
