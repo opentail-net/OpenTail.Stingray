@@ -22,8 +22,7 @@ public static class AnthropicEndpoints
 
     private static async Task HandleMessages(
         HttpContext ctx,
-        IInferenceEngine engine,
-        ChatTemplateRenderer chatTemplate,
+        IInferenceService inferenceService,
         ServerMetrics metrics,
         IOptions<OpenTailStingrayServerOptions> options)
     {
@@ -61,6 +60,57 @@ public static class AnthropicEndpoints
                     OpenTailStingrayJsonContext.Default.AErrorResponse), ctx.RequestAborted);
             return;
         }
+
+        // docs/032 Phase 7: resolve + acquire the requested model — but ONLY in multi-model mode.
+        // Single-model mode keeps resolving IInferenceEngine/ChatTemplateRenderer directly from DI,
+        // exactly as before Phase 7 existed — see OpenAiEndpoints.HandleChatCompletion's identical
+        // branch for why (tests/deployments that replace IInferenceEngine directly must keep
+        // bypassing IModelRuntimeManager's loader entirely).
+        IInferenceEngine engine;
+        ChatTemplateRenderer chatTemplate;
+        ModelRuntimeHandle? handle = null;
+        if (inferenceService.IsMultiModel)
+        {
+            ModelId resolvedModelId;
+            try
+            {
+                resolvedModelId = inferenceService.ResolveModel(req.Model);
+            }
+            catch (ModelNotFoundException ex)
+            {
+                ctx.Response.StatusCode = 404;
+                ctx.Response.ContentType = "application/json";
+                await ctx.Response.WriteAsync(
+                    JsonSerializer.Serialize(new AErrorResponse("invalid_request_error", ex.Message),
+                        OpenTailStingrayJsonContext.Default.AErrorResponse), ctx.RequestAborted);
+                return;
+            }
+
+            try
+            {
+                handle = await inferenceService.AcquireAsync(resolvedModelId, ctx.RequestAborted);
+            }
+            catch (InsufficientResourcesException ex)
+            {
+                ctx.Response.StatusCode = 503;
+                ctx.Response.ContentType = "application/json";
+                await ctx.Response.WriteAsync(
+                    JsonSerializer.Serialize(new AErrorResponse("server_error", ex.Message),
+                        OpenTailStingrayJsonContext.Default.AErrorResponse), ctx.RequestAborted);
+                return;
+            }
+
+            engine = handle.Runtime.Loaded.Engine;
+            chatTemplate = new ChatTemplateRenderer(handle.Runtime.Loaded.Architecture, handle.Runtime.Loaded.ChatTemplate);
+            chatTemplate.Configure(handle.Runtime.Loaded.Architecture, handle.Runtime.Loaded.ChatTemplate,
+                handle.Runtime.Loaded.ToolBoundaryStopTokenIds, handle.Runtime.Loaded.Grammar);
+        }
+        else
+        {
+            engine = ctx.RequestServices.GetRequiredService<IInferenceEngine>();
+            chatTemplate = ctx.RequestServices.GetRequiredService<ChatTemplateRenderer>();
+        }
+        using var handleGuard = handle;
 
         metrics.RecordRequest();
 

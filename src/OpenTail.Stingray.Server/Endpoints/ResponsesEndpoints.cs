@@ -3,6 +3,7 @@ using System.Text.Json;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using OpenTail.Stingray.Engine;
 
@@ -25,8 +26,7 @@ public static class ResponsesEndpoints
 
     private static async Task HandleCreateResponse(
         HttpContext ctx,
-        IInferenceEngine engine,
-        ChatTemplateRenderer chatTemplate,
+        IInferenceService inferenceService,
         ServerMetrics metrics,
         IOptions<OpenTailStingrayServerOptions> options)
     {
@@ -47,6 +47,48 @@ public static class ResponsesEndpoints
             ctx.Response.StatusCode = 400;
             return;
         }
+
+        // docs/032 Phase 7: resolve + acquire the requested model — but ONLY in multi-model mode.
+        // Single-model mode keeps resolving IInferenceEngine/ChatTemplateRenderer directly from DI,
+        // exactly as before Phase 7 existed — see OpenAiEndpoints.HandleChatCompletion's identical
+        // branch for why.
+        IInferenceEngine engine;
+        ChatTemplateRenderer chatTemplate;
+        ModelRuntimeHandle? handle = null;
+        if (inferenceService.IsMultiModel)
+        {
+            ModelId resolvedModelId;
+            try
+            {
+                resolvedModelId = inferenceService.ResolveModel(req.Model);
+            }
+            catch (ModelNotFoundException)
+            {
+                ctx.Response.StatusCode = 404;
+                return;
+            }
+
+            try
+            {
+                handle = await inferenceService.AcquireAsync(resolvedModelId, ctx.RequestAborted);
+            }
+            catch (InsufficientResourcesException)
+            {
+                ctx.Response.StatusCode = 503;
+                return;
+            }
+
+            engine = handle.Runtime.Loaded.Engine;
+            chatTemplate = new ChatTemplateRenderer(handle.Runtime.Loaded.Architecture, handle.Runtime.Loaded.ChatTemplate);
+            chatTemplate.Configure(handle.Runtime.Loaded.Architecture, handle.Runtime.Loaded.ChatTemplate,
+                handle.Runtime.Loaded.ToolBoundaryStopTokenIds, handle.Runtime.Loaded.Grammar);
+        }
+        else
+        {
+            engine = ctx.RequestServices.GetRequiredService<IInferenceEngine>();
+            chatTemplate = ctx.RequestServices.GetRequiredService<ChatTemplateRenderer>();
+        }
+        using var handleGuard = handle;
 
         metrics.RecordRequest();
 

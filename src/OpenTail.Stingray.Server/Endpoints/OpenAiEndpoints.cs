@@ -24,8 +24,7 @@ public static class OpenAiEndpoints
 
     private static async Task HandleChatCompletion(
         HttpContext ctx,
-        IInferenceEngine engine,
-        ChatTemplateRenderer chatTemplate,
+        IInferenceService inferenceService,
         ServerMetrics metrics,
         IOptions<OpenTailStingrayServerOptions> options)
     {
@@ -63,6 +62,63 @@ public static class OpenAiEndpoints
                     OpenTailStingrayJsonContext.Default.ErrorResponse), ctx.RequestAborted);
             return;
         }
+
+        // docs/032 Phase 7: resolve + acquire the requested model — but ONLY in multi-model mode.
+        // Single-model mode keeps resolving IInferenceEngine/ChatTemplateRenderer directly from DI,
+        // exactly as before Phase 7 existed: many tests (and real deployments) replace
+        // IInferenceEngine directly (services.AddSingleton<IInferenceEngine>(fake)), bypassing
+        // IModelRuntimeManager's loader entirely — routing everything through
+        // IInferenceService.AcquireAsync unconditionally would silently stop honouring that
+        // replacement and instead try to cold-load a real GGUF via the manager's own loader.
+        IInferenceEngine engine;
+        ChatTemplateRenderer chatTemplate;
+        ModelRuntimeHandle? handle = null;
+        if (inferenceService.IsMultiModel)
+        {
+            ModelId modelId;
+            try
+            {
+                modelId = inferenceService.ResolveModel(req.Model);
+            }
+            catch (ModelNotFoundException ex)
+            {
+                ctx.Response.StatusCode = 404;
+                ctx.Response.ContentType = "application/json";
+                await ctx.Response.WriteAsync(
+                    JsonSerializer.Serialize(new ErrorResponse("invalid_request_error", ex.Message),
+                        OpenTailStingrayJsonContext.Default.ErrorResponse), ctx.RequestAborted);
+                return;
+            }
+
+            try
+            {
+                handle = await inferenceService.AcquireAsync(modelId, ctx.RequestAborted);
+            }
+            catch (InsufficientResourcesException ex)
+            {
+                ctx.Response.StatusCode = 503;
+                ctx.Response.ContentType = "application/json";
+                await ctx.Response.WriteAsync(
+                    JsonSerializer.Serialize(new ErrorResponse("server_error", ex.Message),
+                        OpenTailStingrayJsonContext.Default.ErrorResponse), ctx.RequestAborted);
+                return;
+            }
+
+            engine = handle.Runtime.Loaded.Engine;
+            // A fresh renderer per request (not the DI ChatTemplateRenderer singleton, which is
+            // only ever configured for the single-model path) — cheap, stateless-after-construction,
+            // and required for correctness under concurrent requests to different models: reusing
+            // one shared mutable renderer across concurrent Model A / Model B requests would race.
+            chatTemplate = new ChatTemplateRenderer(handle.Runtime.Loaded.Architecture, handle.Runtime.Loaded.ChatTemplate);
+            chatTemplate.Configure(handle.Runtime.Loaded.Architecture, handle.Runtime.Loaded.ChatTemplate,
+                handle.Runtime.Loaded.ToolBoundaryStopTokenIds, handle.Runtime.Loaded.Grammar);
+        }
+        else
+        {
+            engine = ctx.RequestServices.GetRequiredService<IInferenceEngine>();
+            chatTemplate = ctx.RequestServices.GetRequiredService<ChatTemplateRenderer>();
+        }
+        using var handleGuard = handle;
 
         metrics.RecordRequest();
 
@@ -679,10 +735,20 @@ public static class OpenAiEndpoints
         metrics.RecordTokens(tokenCount);
     }
 
-    private static Task HandleListModels(HttpContext ctx, IInferenceEngine engine)
+    private static Task HandleListModels(HttpContext ctx, IInferenceService inferenceService)
     {
         long created = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-        var response = new ModelsResponse("list", [new ModelInfo(engine.ModelId, "model", created, "opentail-llm")]);
+
+        // docs/032 Phase 7: multi-model deployments list every configured alias — the shape a
+        // client actually needs to pick a model. Single-model mode keeps resolving IInferenceEngine
+        // directly (rather than IInferenceService.AvailableModelAliases, which reports the
+        // canonicalized ModelId — a different string from IInferenceEngine.ModelId's bare
+        // filename) so this endpoint's output stays byte-for-byte unchanged from before Phase 7.
+        ModelInfo[] models = inferenceService.IsMultiModel
+            ? [.. inferenceService.AvailableModelAliases.Select(a => new ModelInfo(a, "model", created, "opentail-llm"))]
+            : [new ModelInfo(ctx.RequestServices.GetRequiredService<IInferenceEngine>().ModelId, "model", created, "opentail-llm")];
+
+        var response = new ModelsResponse("list", models);
         ctx.Response.ContentType = "application/json";
         return ctx.Response.WriteAsync(
             JsonSerializer.Serialize(response, OpenTailStingrayJsonContext.Default.ModelsResponse),

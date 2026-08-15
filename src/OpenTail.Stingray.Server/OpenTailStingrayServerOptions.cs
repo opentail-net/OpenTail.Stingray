@@ -140,6 +140,22 @@ public sealed class OpenTailStingrayServerOptions
     /// </summary>
     public bool? EnableResourceAdmission { get; set; }
 
+    /// <summary>
+    /// Named multi-model deployment (docs/032-multi-model-inference-runtime-plan.md Phase 7 —
+    /// "OpenTail server integration"). Empty (the default) means exactly today's single-model
+    /// behavior: one engine loaded from <see cref="ModelPath"/> and the other singular loading
+    /// fields above, eagerly loaded and pinned at startup — completely unchanged, byte-for-byte.
+    /// A non-empty list opts into multi-model routing: each entry becomes an independently
+    /// loadable/evictable <see cref="ModelRuntime"/> through <see cref="IModelRuntimeManager"/>,
+    /// selected per request by matching the OpenAI/Anthropic/Responses request's <c>model</c>
+    /// field against <see cref="NamedModelOptions.Alias"/> (case-insensitive). Unlike the
+    /// single-model path, multi-model entries load lazily on first request and are never pinned,
+    /// so normal residency/eviction/admission applies to them — matching docs/032's design
+    /// premise that residency is driven by memory pressure, not a fixed deployment size. Aliases
+    /// must be unique (validated at startup by <c>ServiceCollectionExtensions.AddOpenTailStingray</c>).
+    /// </summary>
+    public IReadOnlyList<NamedModelOptions> Models { get; set; } = Array.Empty<NamedModelOptions>();
+
     // ── Backend / hardware ───────────────────────────────────────────────────
 
     /// <summary>
@@ -393,6 +409,12 @@ public sealed class OpenTailStingrayServerOptions
     /// — these are only the fallback when the client didn't say.
     /// </summary>
     public SamplingDefaults Sampling { get; set; } = new();
+
+    /// <summary>Shallow copy used by multi-model loading (<see cref="Models"/>) to derive one
+    /// per-model options instance from the shared/global settings, then override just the fields
+    /// <see cref="NamedModelOptions"/> exposes — see
+    /// <c>ServiceCollectionExtensions.LoadNamedModel</c>.</summary>
+    internal OpenTailStingrayServerOptions Clone() => (OpenTailStingrayServerOptions)MemberwiseClone();
 }
 
 /// <summary>GPU backend selector. String values bind from <c>appsettings.json</c>.</summary>
@@ -467,6 +489,59 @@ public sealed class SamplingDefaults
         MaxNewTokens      = MaxNewTokens,
         MaxThinkingTokens = MaxThinkingTokens,
     };
+}
+
+/// <summary>
+/// One named model in a multi-model deployment (see
+/// <see cref="OpenTailStingrayServerOptions.Models"/>). Every field besides <see cref="Alias"/>
+/// and <see cref="ModelPath"/> is a per-model override — <c>null</c> inherits the corresponding
+/// top-level <see cref="OpenTailStingrayServerOptions"/> value, so a deployment that only needs
+/// to vary the model file itself (the common case: same backend/context/architecture across
+/// models) doesn't have to repeat every knob per entry.
+/// </summary>
+public sealed class NamedModelOptions
+{
+    /// <summary>Client-facing name, e.g. <c>"sidekick"</c>/<c>"reasoner"</c>. Matched against the
+    /// OpenAI/Anthropic/Responses request's <c>model</c> field, case-insensitively. Must be
+    /// unique within <see cref="OpenTailStingrayServerOptions.Models"/>.</summary>
+    public required string Alias { get; set; }
+
+    /// <summary>Path to this model's GGUF file. Same resolution rules as the top-level
+    /// <see cref="OpenTailStingrayServerOptions.ModelPath"/>.</summary>
+    public required string ModelPath { get; set; }
+
+    /// <summary>Per-model override of <see cref="OpenTailStingrayServerOptions.MmprojPath"/>.
+    /// <c>null</c> = no image input for this model (does not inherit the top-level value, since a
+    /// projector is architecture-specific and rarely shared across different models).</summary>
+    public string? MmprojPath { get; set; }
+
+    /// <summary>Per-model override of <see cref="OpenTailStingrayServerOptions.Architecture"/>.
+    /// <c>null</c> = inherit the server-wide default.</summary>
+    public string? Architecture { get; set; }
+
+    /// <summary>Per-model override of <see cref="OpenTailStingrayServerOptions.Backend"/>.
+    /// <c>null</c> = inherit.</summary>
+    public ServerBackend? Backend { get; set; }
+
+    /// <summary>Per-model override of <see cref="OpenTailStingrayServerOptions.NGpuLayers"/>.
+    /// <c>null</c> = inherit.</summary>
+    public int? NGpuLayers { get; set; }
+
+    /// <summary>Per-model override of <see cref="OpenTailStingrayServerOptions.ContextSize"/>.
+    /// <c>null</c> = inherit.</summary>
+    public int? ContextSize { get; set; }
+
+    /// <summary>
+    /// Per-model escape hatch, independent of the top-level
+    /// <see cref="OpenTailStingrayServerOptions.EngineFactory"/>. The top-level factory takes no
+    /// model identity — it exists for the single-model case, where there's only ever one possible
+    /// model to build — so it can't tell which <see cref="NamedModelOptions"/> entry a multi-model
+    /// cold load is for. Set this instead when a specific named model needs custom loading (e.g. a
+    /// test's fake engine); leave it <c>null</c> to use the built-in GGUF loader with this entry's
+    /// <see cref="ModelPath"/>/overrides, exactly like the top-level <c>EngineFactory</c> being
+    /// unset does for the single-model path.
+    /// </summary>
+    public Func<IServiceProvider, LoadedEngine>? EngineFactory { get; set; }
 }
 
 /// <summary>

@@ -7,8 +7,10 @@
 **Phases 1, 2, and 4 implemented. Phase 3 at 9 slices (host + accelerator admission, eviction,
 observability). Phase 5's no-lock half proven with real models. Phase 6 at 3 slices (the queue
 step of the eviction hierarchy, bounded, observable, and now fair among queued waiters —
-execution-level service quantum/starvation-protection still open). Phase 7 not started.** See
-each phase's own entry in "Implementation phases" below for exact done/not-done
+execution-level service quantum/starvation-protection still open). Phase 7 implemented for the
+stateless request surface (chat completions, messages, responses, model listing) — `/v1/sessions/*`
+remains single-model, deliberately deferred.** See each phase's own entry in "Implementation phases"
+below for exact done/not-done
 splits. `ModelId`, `ModelRuntimeState`, `ModelResidencyMode`,
 `ModelRuntime`, `ModelRuntimeHandle`, `IModelRuntimeManager`/`ModelRuntimeManager`
 (`src/OpenTail.Stingray.Server/ModelRuntime.cs`, `ModelRuntimeManager.cs`), wired into
@@ -576,9 +578,87 @@ background/speculative model preloading. All out of scope here.
    are ordered fairly against each other — a brand-new caller arriving fresh through `AcquireAsync`
    never consults `_admissionQueue` at all and can still win the lock/load race against everyone
    already queued, since nothing reserves a queued winner's resources ahead of its actual retry.
-7. **OpenTail server integration.** Expose model identity through `IInferenceService`.
+7. 🔶 **OpenTail server integration.** Expose model identity through `IInferenceService`.
    *Acceptance: Users A/B → sidekick, Users C/D → reasoner, with same-model batching,
    cross-model concurrency, residency, and session isolation all verified together.*
+   **Done: multi-model config + routing for the stateless request surface.**
+   `OpenTailStingrayServerOptions.Models` (`IReadOnlyList<NamedModelOptions>`, empty by default —
+   today's exact single-model behavior, unchanged byte-for-byte) opts a deployment into N named
+   models (`Alias` + `ModelPath`, with `MmprojPath`/`Architecture`/`Backend`/`NGpuLayers`/`ContextSize`
+   as per-model overrides of the shared/global settings — everything else, TurboQuant/KV
+   type/MoE/spec-decode/sampling defaults, stays one shared config across all models, deliberately
+   narrower than a fully independent per-model surface). Unlike the single-model path (eagerly
+   loaded and pinned at startup), multi-model entries load lazily on first request and are never
+   pinned — ordinary residency/eviction/admission applies, matching the design premise that
+   residency is memory-pressure-driven, not a fixed deployment size.
+   `IInferenceService` (`src/OpenTail.Stingray.Server/InferenceService.cs`) is deliberately narrower
+   than the plan's own `GenerateAsync(InferenceRequest, ct)` sketch: `ResolveModel(string?
+   requestedModel)` maps the OpenAI/Anthropic/Responses request's `model` field to a `ModelId`
+   (case-insensitive alias match; single-model mode ignores the field entirely, exactly like
+   today), and `AcquireAsync` is a thin passthrough to `IModelRuntimeManager.AcquireAsync` — an
+   endpoint gets back the real `ModelRuntimeHandle` and reads `handle.Runtime.Loaded` for
+   everything prompt-building needs (chat template, tokenizer, grammar, tool-boundary tokens)
+   rather than the API wrapping generation itself, since that's the shape prompt-building already
+   needed. All three chat-style endpoints (`OpenAiEndpoints.HandleChatCompletion`,
+   `AnthropicEndpoints.HandleMessages`, `ResponsesEndpoints.HandleCreateResponse`) branch on
+   `IInferenceService.IsMultiModel`: single-model mode keeps resolving `IInferenceEngine`/
+   `ChatTemplateRenderer` directly from DI exactly as before Phase 7 existed; multi-model mode
+   resolves + acquires the requested model per request (handle held for the request's whole
+   duration — acquire → build prompt → generate → dispose, per the handle-lifetime contract) and
+   builds a fresh per-request `ChatTemplateRenderer` from the acquired runtime's `Loaded` bundle
+   (cheap, stateless-after-construction — reusing the shared DI singleton across concurrent
+   different-model requests would race). `/v1/models` similarly branches: multi-model mode lists
+   every configured alias; single-model mode keeps reading the injected `IInferenceEngine.ModelId`
+   directly, since that string (a bare filename) is not the same value
+   `IInferenceService.AvailableModelAliases` reports in single-model mode (a canonicalized full
+   path) — the two are different strings, so unifying them would have silently changed
+   `/v1/models`' single-model output.
+   **Two real bugs found and fixed while building this, not before it shipped:**
+   (1) An unconditional-branch first draft routed *every* request (including single-model ones)
+   through `IInferenceService.AcquireAsync`, which broke ~79 of the ~320 fast tests: the
+   established, pervasive test convention (`services.AddSingleton<IInferenceEngine>(fake)`,
+   used throughout the whole endpoint test suite) replaces `IInferenceEngine` directly, bypassing
+   `IModelRuntimeManager`'s loader entirely — routing unconditionally through the manager silently
+   stopped honouring that replacement and tried to cold-load a real (nonexistent) GGUF instead.
+   Fixed by the `IsMultiModel` branch above, confirmed by re-running the full fast suite (not just
+   a clean build) before moving on. (2) The first real-model acceptance-test run failed two
+   assertions with an *empty* answer where a real model should have produced text — not a routing
+   bug: Qwen3 (the reasoner stand-in) defaults reasoning on, and an 8–48 token budget was being
+   consumed entirely by `<think>` content before any answer text, exactly the omission the test
+   was meant to catch cross-talk with, not thinking behavior. Fixed by setting
+   `enable_thinking:false` explicitly in the acceptance test's requests.
+   **Verified:** `tests/OpenTail.Stingray.Tests.Server.Fast/InferenceServiceTests.cs` (model
+   resolution/discovery, fakes only) and `MultiModelEndpointTests.cs` (routing through the real
+   HTTP surface, fakes only) — 327/327 fast suite green throughout. Real-model acceptance:
+   `tests/OpenTail.Stingray.Tests.Server/MultiModelHttpAcceptanceTests.cs` — two real GGUFs
+   (SmolLM2-1.7B, Qwen3-0.6B, standing in for sidekick/reasoner) driven through the *actual* HTTP
+   endpoints (not `ModelRuntimeManager` directly, unlike Phase 5's `CrossModelConcurrencyTests`,
+   which never exercised this phase's routing at all): four concurrent users split across the two
+   models each get the right model's correct answer with the right `response.model`, each model
+   loads exactly once despite two concurrent requests per model (single-flight, invariant 3),
+   residency is observable (`GetStats().ResidentModels == 2`); a second test proves genuine
+   cross-model overlap through real SSE streaming (the same interleaving-timestamp proof Phase 5
+   used at the engine layer, now through the HTTP/SSE pipeline, catching a hypothetical
+   `RequestConcurrencyGate`-level serialization that Phase 5's own test couldn't see). 10/10
+   real-model tests, full solution build clean.
+   **Deliberately not built this pass: making `/v1/sessions/*` multi-model-aware** — the Phase 4
+   "known gap" (`HotSession` not holding a `ModelRuntimeHandle` for its lifetime) genuinely
+   "belongs" to Phase 7 per that entry's own note, but doing it properly means turning several
+   currently-global DI singletons that feed exactly one pinned model
+   (`SessionRuntimeRelay`/`IServerSessionRuntime`, `TokenizerRelay`, and `ChatTemplateRenderer`'s
+   relationship to sessions) into per-model registries, plus routing the `/v1/sessions/*` endpoint
+   handlers by model too — a materially larger, separable refactor of the Sessions subsystem with
+   real regression risk to a working, presumably-in-use feature, not a small addition alongside
+   the stateless-endpoint work above. "Session isolation" in this phase's acceptance line is
+   instead proven at the stateless-request level (concurrent requests to different models, and
+   concurrent requests to the same model, never cross-contaminate each other's prompt or output —
+   see the acceptance tests above); the *existing*, single-model `/v1/sessions/*` multi-session
+   isolation (`SessionRestartPersistenceTests.ConcurrentSessions_RealCpuGguf_ContinuousBatchingKeepsSessionsIndependent`,
+   Phase 4) is untouched and still passes. Revisit as a dedicated follow-up phase/slice once there's
+   a real caller for multi-model sessions specifically, rather than building session-to-model handle
+   plumbing speculatively ahead of one — the same discipline Phase 4's own deferral already argued
+   for. Also not built: per-model overrides for TurboQuant/KV-type/MoE/spec-decode/sampling (all
+   stay global across every configured model in this slice).
 
 ## Test matrix
 

@@ -65,9 +65,17 @@ public static class ServiceCollectionExtensions
         services.TryAddSingleton<IModelRuntimeManager>(sp =>
         {
             var opts = sp.GetRequiredService<IOptions<OpenTailStingrayServerOptions>>().Value;
+
+            // Models empty (the default): today's exact single-model loader, unchanged — the id
+            // argument is discarded because there's only ever one possible model. Models non-empty
+            // (docs/032 Phase 7): dispatch each cold load to whichever NamedModelOptions entry's
+            // canonicalized ModelPath matches the requested id.
+            Func<ModelId, LoadedEngine> loader = opts.Models.Count == 0
+                ? (_ => (opts.EngineFactory ?? (s => InferenceEngineLoader.Load(opts)))(sp))
+                : (id => LoadNamedModel(opts, id, sp));
+
             var manager = new ModelRuntimeManager(
-                _ => (opts.EngineFactory ?? (s => InferenceEngineLoader.Load(opts)))(sp),
-                opts.ModelResidencyMode ?? ResolveResidencyModeFromEnvironment());
+                loader, opts.ModelResidencyMode ?? ResolveResidencyModeFromEnvironment());
 
             // Off unless explicitly opted into (see OpenTailStingrayServerOptions.EnableResourceAdmission
             // doc for why this isn't a new default) — leaving it null preserves today's exact behavior.
@@ -76,6 +84,11 @@ public static class ServiceCollectionExtensions
 
             return manager;
         });
+
+        // docs/032 Phase 7 — model resolution + discovery for the multi-model chat-style
+        // endpoints. Cheap to construct (no loading); safe to register unconditionally even in
+        // single-model deployments, where it's a thin, side-effect-free wrapper.
+        services.TryAddSingleton<IInferenceService, InferenceService>();
 
         services.TryAddSingleton<IInferenceEngine>(sp =>
         {
@@ -157,6 +170,40 @@ public static class ServiceCollectionExtensions
     {
         services.Configure<OpenTailStingrayServerOptions>(configuration.GetSection(DefaultConfigurationSection));
         return services.AddOpenTailStingray(configure);
+    }
+
+    /// <summary>
+    /// Loads one entry of <see cref="OpenTailStingrayServerOptions.Models"/> — the
+    /// <see cref="IModelRuntimeManager"/> loader used in multi-model mode (docs/032 Phase 7).
+    /// Derives a per-model <see cref="OpenTailStingrayServerOptions"/> via
+    /// <see cref="OpenTailStingrayServerOptions.Clone"/> so every knob besides the ones
+    /// <see cref="NamedModelOptions"/> exposes (TurboQuant, KV type, MoE tuning, speculative
+    /// decoding, sampling defaults, ...) stays shared/global across all configured models rather
+    /// than needing to be repeated per entry — deliberately narrower than a fully independent
+    /// per-model options surface, matching the scope <see cref="NamedModelOptions"/>'s own doc
+    /// comment states.
+    /// </summary>
+    private static LoadedEngine LoadNamedModel(OpenTailStingrayServerOptions opts, ModelId id, IServiceProvider sp)
+    {
+        NamedModelOptions? named = null;
+        foreach (var candidate in opts.Models)
+        {
+            if (ModelId.Canonicalize(candidate.ModelPath).Equals(id)) { named = candidate; break; }
+        }
+        if (named is null)
+            throw new InvalidOperationException($"No configured model in OpenTailStingrayServerOptions.Models matches '{id}'.");
+
+        var perModelOpts = opts.Clone();
+        perModelOpts.ModelPath = named.ModelPath;
+        perModelOpts.MmprojPath = named.MmprojPath;
+        perModelOpts.Architecture = named.Architecture ?? opts.Architecture;
+        perModelOpts.Backend = named.Backend ?? opts.Backend;
+        perModelOpts.NGpuLayers = named.NGpuLayers ?? opts.NGpuLayers;
+        perModelOpts.ContextSize = named.ContextSize ?? opts.ContextSize;
+
+        // named.EngineFactory (per-model, knows which entry it's building) takes precedence over
+        // the top-level EngineFactory (which has no model identity to dispatch on — see its doc).
+        return (named.EngineFactory ?? opts.EngineFactory ?? (s => InferenceEngineLoader.Load(perModelOpts)))(sp);
     }
 
     /// <summary>
