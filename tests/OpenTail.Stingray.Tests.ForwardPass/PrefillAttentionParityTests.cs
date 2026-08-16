@@ -94,8 +94,15 @@ public sealed class PrefillAttentionParityTests : HeavyTestBase
         float[] split = PrefillLogits(model, backend, hp, tokens, chunk: 512);
 
         Assert.Equal(full.Length, split.Length);
+        // Assert.Equal(_, _, precision: 2) rounds each side independently before comparing, so two
+        // values that differ by ~1.9e-6 (e.g. 5.34500122 vs 5.34499931) can round to opposite sides
+        // of a .xx5 boundary (5.35 vs 5.34) and fail despite being numerically indistinguishable --
+        // measured on this exact test. An absolute-tolerance check on the raw difference doesn't
+        // have that boundary, and still catches the "far outside tolerance" genuine divergence this
+        // test exists to detect (see the class remarks).
         for (int i = 0; i < full.Length; i++)
-            Assert.Equal(full[i], split[i], precision: 2);
+            Assert.True(Math.Abs(full[i] - split[i]) < 0.01,
+                $"logit {i}: full={full[i]}, split={split[i]}, diff={Math.Abs(full[i] - split[i])}");
         Assert.Equal(Sampler.Greedy(full), Sampler.Greedy(split));
     }
 
@@ -121,8 +128,12 @@ public sealed class PrefillAttentionParityTests : HeavyTestBase
         float[] split = PrefillLogits(model, backend, hp, tokens, chunk: 300);
 
         Assert.Equal(full.Length, split.Length);
+        // See ChunkedPrefill_MatchesUnchunked_AcrossFlash64Threshold's comment: precision:2 rounds
+        // each side independently and can fail on a ~1.9e-6 difference that straddles a .xx5
+        // boundary. Absolute tolerance avoids that without loosening what the test actually checks.
         for (int i = 0; i < full.Length; i++)
-            Assert.Equal(full[i], split[i], precision: 2);
+            Assert.True(Math.Abs(full[i] - split[i]) < 0.01,
+                $"logit {i}: full={full[i]}, split={split[i]}, diff={Math.Abs(full[i] - split[i])}");
         Assert.Equal(Sampler.Greedy(full), Sampler.Greedy(split));
     }
 
