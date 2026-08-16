@@ -62,34 +62,13 @@ public sealed class ContinuousBatchingTests : HeavyTestBase
         Assert.Equal(tokens.Length, cache.Length);
     }
 
-    [Fact]
-    public void PrefillWithCache_SingleToken_MatchesForward()
-    {
-        var path = FindModelPath();
-        Assert.SkipUnless(path is not null, "model fixture not present in this environment");
-
-        using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
-        var model = modelHandle.Model;
-        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
-        using var backend = new CpuBackend();
-
-        using var fwdRef = new Engine.ForwardPass(model, backend, hp);
-        using var fwdTest = new Engine.ForwardPass(model, backend, hp);
-
-        // Single-token path uses ForwardCore internally
-        ReadOnlySpan<float> refLogits = fwdRef.Forward(42, 0);
-        float[] refArr = refLogits.ToArray();
-
-        using var cache = fwdTest.CreateCache();
-        ReadOnlySpan<float> testLogits = fwdTest.PrefillWithCache([42], cache);
-        float[] testArr = testLogits.ToArray();
-
-        Assert.Equal(refArr.Length, testArr.Length);
-        for (int i = 0; i < refArr.Length; i++)
-            Assert.Equal(refArr[i], testArr[i], precision: 2);
-
-        Assert.Equal(1, cache.Length);
-    }
+    // PrefillWithCache_SingleToken_MatchesForward removed: it asserted single-token
+    // PrefillWithCache matches Forward()'s exact F32 path, an invariant deliberately dropped by
+    // the 2026-08-13 hot-session replay divergence fix (ForwardPass.PrefillWithCache now routes
+    // N==1 through the same Q8-quantized PrefillCore path as every other N, so a session's turns
+    // are consistently quantized instead of silently mixing F32/Q8 precision). The current,
+    // correct invariant for this scenario is covered by
+    // PrefillPathParityTests.SingleTokenContinuation_MatchesFreshBatchedPrefill_ForTheSamePosition.
 
     [Fact]
     public void PrefillWithCache_EmptyTokens_Throws()
@@ -284,22 +263,46 @@ public sealed class ContinuousBatchingTests : HeavyTestBase
 
         int[] tokens = [1, 2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37];
 
-        using var refCache = fwdRef.CreateCache();
-        float[] refArr = fwdRef.PrefillWithCache(tokens, refCache).ToArray();
-
-        // Same prompt prefilled in 3 chunks via successive startPos calls — the
-        // continuation pattern the chunked-admission engine path uses (issue #183 Gap 1).
-        using var cache = fwdTest.CreateCache();
-        const int chunk = 5;
-        float[] testArr = [];
-        for (int start = 0; start < tokens.Length; start += chunk)
+        // This test's purpose (issue #183 Gap 1) is chunked-continuation MECHANICS: cache
+        // position tracking and attention scope across successive startPos calls, not the
+        // numerics of any one matmul kernel. Left at its default (on), Q8PrefillEnabled's
+        // repacked Q4K×8 path (perf-loop iteration 42, MatMulBatchedCached in ForwardPass.cs)
+        // groups tokens into 8-row batches for a single N=13 call but falls fully to its
+        // ragged single-token kernel for three N=5/5/3 chunk calls -- different SIMD
+        // accumulation order that compounds across every layer into a final-logit divergence
+        // (~0.27, measured) far past this test's precision:2 tolerance, despite both paths
+        // computing the "same" dot products. That batch-composition-dependent FP noise is
+        // exactly what PrefillAttentionParityTests.ChunkedPrefill_MatchesUnchunked_* and
+        // PrefillWithCache_DequantCacheOnOff_BitIdentical exist to characterize; pin it off
+        // here so this test isolates the thing it actually means to check.
+        bool savedQ8Prefill = SimdKernels.Q8PrefillEnabled;
+        SimdKernels.Q8PrefillEnabled = false;
+        float[] refArr, testArr;
+        int cacheLength;
+        try
         {
-            int take = Math.Min(chunk, tokens.Length - start);
-            var segment = new ArraySegment<int>(tokens, start, take);
-            testArr = fwdTest.PrefillWithCache(segment, cache, startPos: start).ToArray();
+            using var refCache = fwdRef.CreateCache();
+            refArr = fwdRef.PrefillWithCache(tokens, refCache).ToArray();
+
+            // Same prompt prefilled in 3 chunks via successive startPos calls — the
+            // continuation pattern the chunked-admission engine path uses (issue #183 Gap 1).
+            using var cache = fwdTest.CreateCache();
+            const int chunk = 5;
+            testArr = [];
+            for (int start = 0; start < tokens.Length; start += chunk)
+            {
+                int take = Math.Min(chunk, tokens.Length - start);
+                var segment = new ArraySegment<int>(tokens, start, take);
+                testArr = fwdTest.PrefillWithCache(segment, cache, startPos: start).ToArray();
+            }
+            cacheLength = cache.Length;
+        }
+        finally
+        {
+            SimdKernels.Q8PrefillEnabled = savedQ8Prefill;
         }
 
-        Assert.Equal(tokens.Length, cache.Length);
+        Assert.Equal(tokens.Length, cacheLength);
         Assert.Equal(refArr.Length, testArr.Length);
         // Chunk boundaries change GEMM batch sizes (different FP accumulation order),
         // so assert close logits + same argmax rather than bit equality.
@@ -331,8 +334,25 @@ public sealed class ContinuousBatchingTests : HeavyTestBase
                         53, 59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127,
                         131, 137, 139, 149, 151, 157, 163, 167, 173, 179, 181, 191, 193, 197, 199, 211];
 
-        float[] cacheOff = ChunkedPrefillLogits(model, backend, hp, tokens, chunk: 16, dequantCacheBytes: 0);
-        float[] cacheOn = ChunkedPrefillLogits(model, backend, hp, tokens, chunk: 16, dequantCacheBytes: -1);
+        // The perf-loop-42 repacked Q4K×8 path (MatMulBatchedCached, ForwardPass.cs) sits ahead
+        // of the plain BLAS fallback and is gated only on SimdKernels.Q8PrefillEnabled -- NOT on
+        // the dequant cache being off. Left at its default (on), the "cache off" run below would
+        // silently take that path instead of the BLAS-without-cache path this test means to
+        // compare against, and it is explicitly documented as "not byte-exact with the F32 path"
+        // (SimdKernels.TryMatMulBatchedQ8). Pin it off for both runs so the only variable is the
+        // dequant cache itself, which is what this test is actually about.
+        bool savedQ8Prefill = SimdKernels.Q8PrefillEnabled;
+        SimdKernels.Q8PrefillEnabled = false;
+        float[] cacheOff, cacheOn;
+        try
+        {
+            cacheOff = ChunkedPrefillLogits(model, backend, hp, tokens, chunk: 16, dequantCacheBytes: 0);
+            cacheOn = ChunkedPrefillLogits(model, backend, hp, tokens, chunk: 16, dequantCacheBytes: -1);
+        }
+        finally
+        {
+            SimdKernels.Q8PrefillEnabled = savedQ8Prefill;
+        }
 
         Assert.Equal(cacheOff.Length, cacheOn.Length);
         for (int i = 0; i < cacheOff.Length; i++)
