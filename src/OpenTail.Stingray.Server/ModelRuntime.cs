@@ -172,18 +172,18 @@ public sealed class ModelRuntime : IDisposable
 
     /// <summary>
     /// Estimated VRAM this runtime consumes, for observability only (docs/032's admission math
-    /// doesn't factor this in yet). Currently just <see cref="EstimatedModelBytes"/> when
-    /// <see cref="IsAcceleratorResident"/>, otherwise 0 — <b>exact for full GPU offload</b>
-    /// (all weights genuinely on the accelerator), but an <b>overestimate for hybrid/partial
-    /// offload</b> (some layers stay on CPU, so the accelerator isn't actually holding the full
-    /// file-size-worth of weights). Getting that precise needs threading the per-branch
-    /// <c>LayerPlacement.GpuWeightBytes</c> the loader already computes internally through to
-    /// here — real, separate work, deliberately not attempted in this slice to avoid touching
-    /// the many backend-dispatch branches inside <c>InferenceEngineLoader.BuildForwardPass</c>
-    /// without a concrete need driving exactly how. Overestimating is the safe direction for an
-    /// eventual admission check, so this is usable as-is until that precision lands.
+    /// doesn't factor this in yet). When <see cref="IsAcceleratorResident"/>: uses
+    /// <see cref="LoadedEngine.GpuWeightBytesExact"/> when the loader dispatch branch had a real
+    /// per-layer figure available (docs/032 Phase 3 Slice 8 follow-up — currently the CUDA/Vulkan
+    /// partial-offload hybrid paths, via <c>TierPlanner</c>'s own placement), falling back to
+    /// <see cref="EstimatedModelBytes"/> otherwise — <b>exact for full GPU offload</b> (all
+    /// weights genuinely on the accelerator, so the whole-file estimate is already correct), and
+    /// still an overestimate for the hybrid-GDN paths (their placement isn't
+    /// <c>TierPlanner</c>-driven, so no precise figure exists there yet). 0 when not accelerator
+    /// resident.
     /// </summary>
-    public long AcceleratorResidentBytesEstimate => IsAcceleratorResident ? EstimatedModelBytes : 0;
+    public long AcceleratorResidentBytesEstimate =>
+        IsAcceleratorResident ? Loaded.GpuWeightBytesExact ?? EstimatedModelBytes : 0;
 
     public ModelRuntimeState State { get; internal set; }
 

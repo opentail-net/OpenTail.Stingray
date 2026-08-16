@@ -43,6 +43,9 @@ public static class ServiceCollectionExtensions
                 ? "The engine has not been loaded yet, or it does not expose the CPU-dense session runtime."
                 : "Sessions are disabled by server configuration."));
         services.TryAddSingleton<IServerSessionRuntime>(sp => sp.GetRequiredService<SessionRuntimeRelay>());
+        // Multi-model session routing (docs/032 Phase 7 follow-up) — unused, harmless to
+        // construct, in single-model deployments.
+        services.TryAddSingleton<SessionModelRegistry>();
         services.TryAddSingleton<CpuPrefillRuntimeReceiptRelay>();
         services.TryAddSingleton<ServerRuntimeResolutionRelay>();
 

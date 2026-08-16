@@ -320,10 +320,7 @@ public sealed class ModelRuntimeManager : IModelRuntimeManager, IDisposable
                     }
                     else
                     {
-                        var newTcs = new TaskCompletionSource<ModelRuntime>(TaskCreationOptions.RunContinuationsAsynchronously);
-                        _pendingLoads[model] = new PendingLoad { Tcs = newTcs, StartedAt = DateTimeOffset.UtcNow };
-                        pendingLoad = newTcs.Task;
-                        _ = Task.Run(() => RunLoad(model, newTcs));
+                        pendingLoad = StartLoadLocked(model);
                     }
                 }
             }
@@ -387,6 +384,19 @@ public sealed class ModelRuntimeManager : IModelRuntimeManager, IDisposable
         }
     }
 
+    /// <summary>Caller must hold <see cref="_lock"/>. Registers a new pending load for
+    /// <paramref name="model"/> and kicks off <see cref="RunLoad"/> in the background, returning
+    /// the shared task every concurrent caller for this cold model awaits (single-flight).
+    /// Factored out so <see cref="WakeOldestAdmissibleQueuedWaiter"/> can reserve a winner's load
+    /// atomically with picking it, not just <see cref="AcquireAsync"/>'s own cold-load path.</summary>
+    private Task<ModelRuntime> StartLoadLocked(ModelId model)
+    {
+        var tcs = new TaskCompletionSource<ModelRuntime>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _pendingLoads[model] = new PendingLoad { Tcs = tcs, StartedAt = DateTimeOffset.UtcNow };
+        _ = Task.Run(() => RunLoad(model, tcs));
+        return tcs.Task;
+    }
+
     /// <summary>Called by <see cref="ModelRuntimeHandle.Dispose"/> whenever a handle is released,
     /// by the <see cref="ResidencyMode"/> setter, and by <see cref="RunLoad"/> on both success and
     /// failure — all events that can unblock a SingleSlot acquisition waiting for another model to
@@ -425,11 +435,19 @@ public sealed class ModelRuntimeManager : IModelRuntimeManager, IDisposable
     /// candidate — none of the queued models are resident to begin with, so which one eventually
     /// wins doesn't change what's evictable), and the admissible one with the smallest
     /// <see cref="AdmissionWaiter.EnqueuedAt"/> wins. An older waiter can therefore never be
-    /// overtaken by a newer one that is <em>also</em> queued — but this says nothing about brand
-    /// new callers arriving fresh through <see cref="AcquireAsync"/>: those never consult this
-    /// queue at all and can still win the lock/load race against everyone already queued. Fixing
-    /// that is a materially bigger change (reserving capacity ahead of an actual load, not just
-    /// ahead of a wake) and is explicitly out of scope for this slice.</summary>
+    /// overtaken by a newer one that is <em>also</em> queued.
+    ///
+    /// The winner's load is reserved right here, atomically with picking it (via
+    /// <see cref="StartLoadLocked"/>, still under <see cref="_lock"/>) rather than merely signalling
+    /// the winner and letting it re-run <see cref="AcquireAsync"/>'s own admission check on its own
+    /// time. Without this, a brand new caller arriving fresh through <see cref="AcquireAsync"/>
+    /// between the wake and the winner's continuation actually resuming (which, on a
+    /// <c>RunContinuationsAsynchronously</c> TCS, is never immediate) could observe the
+    /// just-freed budget first and steal it — the winner would then lose the race it had already
+    /// won and go back to the end of its own bounded wait. Reserving here closes that window: the
+    /// winner's model is counted as pending (via <see cref="Snapshot"/>, which already includes
+    /// in-flight loads) before this method's lock scope — and therefore before any concurrently
+    /// racing fresh caller's own admission check — can run.</summary>
     private void WakeOldestAdmissibleQueuedWaiter()
     {
         if (ResourceBudget is not { } budget) return;
@@ -451,10 +469,19 @@ public sealed class ModelRuntimeManager : IModelRuntimeManager, IDisposable
                 }
             }
 
-            if (winner is not null) _admissionQueue.Remove(winner);
+            if (winner is null) return;
+            _admissionQueue.Remove(winner);
+
+            // Reserve immediately unless something else already resolved this model in the
+            // meantime (already resident, or another waiter for the same model already started
+            // its load) — in that case the winner's own retry will just attach via the normal
+            // fast paths in AcquireAsync, and starting a second concurrent load here would break
+            // single-flight.
+            if (!_resident.ContainsKey(winner.Model) && !_pendingLoads.ContainsKey(winner.Model))
+                StartLoadLocked(winner.Model);
         }
 
-        winner?.WakeSignal.TrySetResult();
+        winner.WakeSignal.TrySetResult();
     }
 
     /// <summary>Caller must hold <see cref="_lock"/>.</summary>

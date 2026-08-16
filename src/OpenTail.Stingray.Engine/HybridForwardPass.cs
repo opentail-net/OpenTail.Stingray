@@ -21,6 +21,7 @@ public sealed unsafe class HybridForwardPass : IForwardPass
     private readonly VulkanBackend _gpu;
     private readonly ModelHyperparams _hp;
     private readonly LayerPlacement _placement;
+    private bool _disposed;
 
     // Dimensions
     private readonly int _embDim, _headDim, _numHeads, _numKvHeads, _headsPerKvGroup, _intermDim, _expertDim;
@@ -1696,6 +1697,16 @@ public sealed unsafe class HybridForwardPass : IForwardPass
 
     public void Dispose()
     {
+        // Idempotency guard (matches ForwardPass.Dispose's fix, ForwardPass.cs:6060 —
+        // InferenceEngine.DisposeCore calls _fwd.Dispose() explicitly AND separately disposes
+        // every item in its _owned array, which also contains this same instance
+        // (InferenceEngineLoader adds it to owned[] when constructing the Vulkan hybrid/partial-
+        // offload path) — without this guard every _gpu.Free() call below runs twice, a
+        // double-free that corrupts the native/VRAM heap. Discovered via docs/032 Phase 3 Slice 8
+        // follow-up's real-hardware partial-offload accelerator-accounting test.
+        if (_disposed) return;
+        _disposed = true;
+
         _gpu.Free(_gpuHidden); _gpu.Free(_gpuResidual); _gpu.Free(_gpuNormBuf);
         _gpu.Free(_gpuQ); _gpu.Free(_gpuK); _gpu.Free(_gpuV); _gpu.Free(_gpuAttnOut);
         _gpu.Free(_gpuFfnGate); _gpu.Free(_gpuFfnUp); _gpu.Free(_gpuLogits);

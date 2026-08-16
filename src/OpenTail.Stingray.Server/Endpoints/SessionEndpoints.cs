@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using OpenTail.Stingray.Engine;
 using OpenTail.Stingray.Sessions;
@@ -18,11 +19,21 @@ namespace OpenTail.Stingray.Server.Endpoints;
 /// bounded completed-operation/idempotency ledger travels with the persisted session, so a client
 /// can retrieve or replay a retained response after restart; it is not an archival transcript.
 ///
-/// <para>Every handler takes an unused <see cref="IInferenceEngine"/> parameter. That is not an
-/// oversight: resolving it makes these routes share the engine's construction and failure
-/// behaviour with the chat endpoints, so a host with no usable engine fails the same way here as
-/// everywhere else instead of serving session routes over a runtime that was never brought up.
-/// Discard the value with <c>_</c> rather than deleting the parameter.</para>
+/// <para>Single-model mode (the default): every handler forces the one configured
+/// <see cref="IInferenceEngine"/> to load by resolving it explicitly before checking
+/// <see cref="IServerSessionRuntime"/>. That is not an oversight — it makes these routes share the
+/// engine's construction and failure behaviour with the chat endpoints, so a host with no usable
+/// engine fails the same way here as everywhere else instead of serving session routes over a
+/// runtime that was never brought up.</para>
+///
+/// <para>Multi-model mode (docs/032-multi-model-inference-runtime-plan.md Phase 7 follow-up):
+/// a session is created against one resolved model and holds a real <see cref="ModelRuntimeHandle"/>
+/// for its entire lifetime via <see cref="SessionModelRegistry"/> — closing the Phase 4 gap where
+/// a live session's model runtime had no lease keeping it resident. The single configured
+/// <see cref="IInferenceEngine"/> singleton is never resolved in this mode (it would try to
+/// eagerly load <c>OpenTailStingrayServerOptions.ModelPath</c>, which may not even be set) — see
+/// <see cref="TryResolveExistingSession"/> and <see cref="Create"/>, mirroring the branch
+/// <c>OpenAiEndpoints.HandleChatCompletion</c> already established.</para>
 /// </summary>
 public static partial class SessionEndpoints
 {
@@ -41,26 +52,117 @@ public static partial class SessionEndpoints
         return app;
     }
 
-    private static IResult Create(IInferenceEngine _, IServerSessionRuntime sessions)
+    /// <summary>The (runtime, optional cold runtime, engine model id) needed to operate an
+    /// <em>existing</em> session — resolved once per request by <see cref="TryResolveExistingSession"/>
+    /// so every handler below shares the same single-vs-multi-model branch instead of repeating it.</summary>
+    private readonly record struct SessionRoute(HotSessionRuntime Runtime, ColdSessionRuntime? ColdRuntime, string EngineModelId);
+
+    /// <summary>
+    /// Resolves the route for an existing session. Single-model mode forces the configured engine
+    /// to load and checks <see cref="IServerSessionRuntime"/> exactly as every handler did before
+    /// multi-model mode existed. Multi-model mode looks up the <see cref="SessionModelRegistry"/>
+    /// binding created by <see cref="Create"/> — a miss means "no such live session" (404), a
+    /// materially different outcome from "sessions are unavailable" (409), since the feature works
+    /// fine here, this particular id just isn't bound to anything.
+    /// </summary>
+    /// <returns>The <see cref="IResult"/> to return immediately, or <c>null</c> when
+    /// <paramref name="route"/> was resolved successfully and the caller should proceed.</returns>
+    private static IResult? TryResolveExistingSession(
+        HttpContext ctx, Guid sessionId, IInferenceService inferenceService, out SessionRoute route)
     {
+        if (inferenceService.IsMultiModel)
+        {
+            var registry = ctx.RequestServices.GetRequiredService<SessionModelRegistry>();
+            if (!registry.TryGet(new SessionId(sessionId), out var handle))
+            {
+                route = default;
+                return Results.NotFound();
+            }
+            var loaded = handle.Runtime.Loaded;
+            // SessionRuntime is guaranteed non-null here — Create only ever binds a session after
+            // confirming it, and a binding's model identity never changes for its lifetime.
+            route = new SessionRoute(loaded.SessionRuntime!, loaded.ColdSessionRuntime, loaded.Engine.ModelId);
+            return null;
+        }
+
+        var engine = ctx.RequestServices.GetRequiredService<IInferenceEngine>();
+        var sessions = ctx.RequestServices.GetRequiredService<IServerSessionRuntime>();
         if (sessions.Runtime is not { } runtime)
+        {
+            route = default;
+            return Unavailable(sessions);
+        }
+        route = new SessionRoute(runtime, sessions.ColdRuntime, engine.ModelId);
+        return null;
+    }
+
+    private static async Task<IResult> Create(
+        HttpContext ctx, IInferenceService inferenceService, SessionCreateRequest? request = null)
+    {
+        if (inferenceService.IsMultiModel)
+        {
+            ModelId modelId;
+            try
+            {
+                modelId = inferenceService.ResolveModel(request?.Model);
+            }
+            catch (ModelNotFoundException ex)
+            {
+                return Results.Json(new ErrorResponse("invalid_request_error", ex.Message),
+                    OpenTailStingrayJsonContext.Default.ErrorResponse, statusCode: StatusCodes.Status404NotFound);
+            }
+
+            ModelRuntimeHandle handle;
+            try
+            {
+                handle = await inferenceService.AcquireAsync(modelId, ctx.RequestAborted);
+            }
+            catch (InsufficientResourcesException ex)
+            {
+                return Results.Json(new ErrorResponse("server_error", ex.Message),
+                    OpenTailStingrayJsonContext.Default.ErrorResponse, statusCode: StatusCodes.Status503ServiceUnavailable);
+            }
+
+            if (handle.Runtime.Loaded.SessionRuntime is not { } runtime)
+            {
+                // Not keeping the handle — release it immediately rather than leaking a residency
+                // claim on a model this request is about to fail against.
+                handle.Dispose();
+                return Results.Json(new ErrorResponse("session_unavailable",
+                        $"The loaded engine for model '{modelId}' does not expose the CPU-dense session runtime."),
+                    OpenTailStingrayJsonContext.Default.ErrorResponse, statusCode: StatusCodes.Status409Conflict);
+            }
+
+            var coldRuntime = handle.Runtime.Loaded.ColdSessionRuntime;
+            var session = coldRuntime?.Create() ?? runtime.Create();
+            // The handle is now owned by the registry for this session's whole lifetime — not
+            // disposed here (docs/032 Phase 4 gap fix: this is what keeps the model resident).
+            ctx.RequestServices.GetRequiredService<SessionModelRegistry>().Bind(session.SessionId, handle);
+            return Results.Json(ToResponse(runtime.GetSessionSnapshot(session.SessionId)),
+                OpenTailStingrayJsonContext.Default.SessionResponse, statusCode: StatusCodes.Status201Created);
+        }
+
+        // Single-model mode: byte-identical to before multi-model session routing existed.
+        _ = ctx.RequestServices.GetRequiredService<IInferenceEngine>();
+        var sessions = ctx.RequestServices.GetRequiredService<IServerSessionRuntime>();
+        if (sessions.Runtime is not { } singleRuntime)
             return Unavailable(sessions);
 
-        var session = sessions.ColdRuntime?.Create() ?? runtime.Create();
-        return Results.Json(ToResponse(runtime.GetSessionSnapshot(session.SessionId)),
+        var singleSession = sessions.ColdRuntime?.Create() ?? singleRuntime.Create();
+        return Results.Json(ToResponse(singleRuntime.GetSessionSnapshot(singleSession.SessionId)),
             OpenTailStingrayJsonContext.Default.SessionResponse, statusCode: StatusCodes.Status201Created);
     }
 
-    private static IResult Get(Guid sessionId, IInferenceEngine engine, IServerSessionRuntime sessions)
+    private static IResult Get(Guid sessionId, HttpContext ctx, IInferenceService inferenceService)
     {
-        if (sessions.Runtime is not { } runtime)
-            return Unavailable(sessions);
+        if (TryResolveExistingSession(ctx, sessionId, inferenceService, out var route) is { } error)
+            return error;
 
         try
         {
             var id = new SessionId(sessionId);
-            var session = sessions.ColdRuntime?.Open(id) ?? runtime.Open(id);
-            return Results.Json(ToResponse(runtime.GetSessionSnapshot(id)),
+            _ = route.ColdRuntime?.Open(id) ?? route.Runtime.Open(id);
+            return Results.Json(ToResponse(route.Runtime.GetSessionSnapshot(id)),
                 OpenTailStingrayJsonContext.Default.SessionResponse);
         }
         catch (SessionNotFoundException)
@@ -69,13 +171,18 @@ public static partial class SessionEndpoints
         }
     }
 
-    private static IResult Delete(Guid sessionId, IInferenceEngine _, IServerSessionRuntime sessions)
+    private static IResult Delete(Guid sessionId, HttpContext ctx, IInferenceService inferenceService)
     {
-        if (sessions.Runtime is not { } runtime)
-            return Unavailable(sessions);
+        if (TryResolveExistingSession(ctx, sessionId, inferenceService, out var route) is { } error)
+            return error;
 
         var id = new SessionId(sessionId);
-        bool deleted = sessions.ColdRuntime?.Delete(id) ?? runtime.Delete(id);
+        bool deleted = route.ColdRuntime?.Delete(id) ?? route.Runtime.Delete(id);
+        // Release the binding regardless of `deleted` — a session the registry knows about but
+        // the runtime no longer does (shouldn't happen, but never leave a dangling residency
+        // claim on the strength of an assumption) must not permanently pin its model.
+        if (inferenceService.IsMultiModel)
+            ctx.RequestServices.GetRequiredService<SessionModelRegistry>().Release(id);
         return deleted ? Results.NoContent() : Results.NotFound();
     }
 
@@ -87,21 +194,21 @@ public static partial class SessionEndpoints
     private static IResult GetOperation(
         Guid sessionId,
         Guid operationId,
-        IInferenceEngine _,
-        IServerSessionRuntime sessions)
+        HttpContext ctx,
+        IInferenceService inferenceService)
     {
-        if (sessions.Runtime is not { } runtime)
-            return Unavailable(sessions);
+        if (TryResolveExistingSession(ctx, sessionId, inferenceService, out var route) is { } error)
+            return error;
 
         try
         {
             var id = new SessionId(sessionId);
-            var session = sessions.ColdRuntime?.Open(id) ?? runtime.Open(id);
-            var operation = runtime.GetOperation(id, new SessionOperationId(operationId));
+            _ = route.ColdRuntime?.Open(id) ?? route.Runtime.Open(id);
+            var operation = route.Runtime.GetOperation(id, new SessionOperationId(operationId));
             string text = string.Concat((operation.ResultChunks ?? []).Where(c => c.Kind == GenerateChunkKind.Text).Select(c => c.Text));
             string thinking = string.Concat((operation.ResultChunks ?? []).Where(c => c.Kind == GenerateChunkKind.Thinking).Select(c => c.Text));
             return Results.Json(new SessionOperationResponse(
-                    ToResponse(runtime.GetSessionSnapshot(id)),
+                    ToResponse(route.Runtime.GetSessionSnapshot(id)),
                     operation.OperationId.ToString(), operation.State.ToString().ToLowerInvariant(),
                     operation.CommittedRevision?.Value, operation.CreatedAt, operation.CompletedAt,
                     RedactFilesystemPaths(operation.FailureReason), text, thinking),
@@ -122,13 +229,13 @@ public static partial class SessionEndpoints
     private static async Task<IResult> RunTurn(
         Guid sessionId,
         SessionTurnRequest request,
-        IInferenceEngine engine,
-        IServerSessionRuntime sessions,
+        HttpContext ctx,
+        IInferenceService inferenceService,
         IOptions<OpenTailStingrayServerOptions> options,
         CancellationToken cancellationToken)
     {
-        if (sessions.Runtime is not { } runtime)
-            return Unavailable(sessions);
+        if (TryResolveExistingSession(ctx, sessionId, inferenceService, out var route) is { } error)
+            return error;
         if (string.IsNullOrEmpty(request.AppendPrompt))
             return Results.BadRequest(new ErrorResponse("invalid_request_error", "append_prompt must not be empty."));
         if (request.ExpectedRevision is not { } expectedRevision || expectedRevision < 0)
@@ -170,12 +277,12 @@ public static partial class SessionEndpoints
         try
         {
             var id = new SessionId(sessionId);
-            var session = sessions.ColdRuntime?.Open(id) ?? runtime.Open(id);
+            var session = route.ColdRuntime?.Open(id) ?? route.Runtime.Open(id);
             var outcome = await session.RunTurnAsync(
                 request.AppendPrompt, sampling, new SessionRevision(expectedRevision), operationId, digest, cancellationToken);
-            var snapshot = runtime.GetSessionSnapshot(id);
-            if (sessions.ColdRuntime is not null && outcome.Operation.State == SessionOperationState.Completed)
-                sessions.ColdRuntime.EvictToDisk(session, engine.ModelId);
+            var snapshot = route.Runtime.GetSessionSnapshot(id);
+            if (route.ColdRuntime is not null && outcome.Operation.State == SessionOperationState.Completed)
+                route.ColdRuntime.EvictToDisk(session, route.EngineModelId);
             string text = string.Concat(outcome.Chunks.Where(c => c.Kind == GenerateChunkKind.Text).Select(c => c.Text));
             string thinking = string.Concat(outcome.Chunks.Where(c => c.Kind == GenerateChunkKind.Thinking).Select(c => c.Text));
             return Results.Json(new SessionTurnResponse(
@@ -244,6 +351,14 @@ public static partial class SessionEndpoints
         snapshot.DurableRevision?.Value, snapshot.CurrentFencingEpoch,
         snapshot.Operations.Count);
 }
+
+/// <summary>Optional session-creation body. <c>model</c> is meaningful only in multi-model mode
+/// (matches an <see cref="NamedModelOptions.Alias"/>, case-insensitively; null/unmatched-empty
+/// resolves to the first configured model, same contract as the chat-style endpoints'
+/// <c>model</c> field) — single-model mode ignores it entirely, exactly like every other field
+/// here would be ignored if a client sent one before this type existed.</summary>
+public sealed record SessionCreateRequest(
+    [property: JsonPropertyName("model")] string? Model = null);
 
 /// <summary>Bounded session metadata returned by the lifecycle endpoints.</summary>
 public sealed record SessionResponse(

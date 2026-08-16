@@ -72,6 +72,40 @@ public sealed class AcceleratorResidencyTests
         Assert.Equal("cpu", handle.Runtime.Loaded.RuntimeResolution?.Backend);
     }
 
+    [Fact]
+    public async Task RealVulkanModel_PartialOffload_AcceleratorEstimate_IsSmallerThanFullFileSize()
+    {
+        // docs/032 Phase 3 Slice 8 follow-up: a hybrid/partial-offload model previously reported
+        // the whole file size as its accelerator-resident estimate (a documented overestimate).
+        // With GpuWeightBytesExact threaded through from TierPlanner's own placement, only a few
+        // GPU-resident layers should report a meaningfully smaller figure than the full file —
+        // proving the precise value is actually being used, not silently falling back.
+        string? modelPath = FindModel("Qwen3-0.6B-Q8_0.gguf"); // 28 layers total (qwen3.block_count)
+        Assert.SkipUnless(modelPath is not null,
+            "Qwen3-0.6B-Q8_0.gguf is required for this accelerator-residency test.");
+        SkipUnlessVulkanAvailable();
+
+        using var manager = new ModelRuntimeManager(id => InferenceEngineLoader.Load(
+            new OpenTailStingrayServerOptions
+            {
+                ModelPath = id.Value,
+                Backend = ServerBackend.Vulkan,
+                NGpuLayers = 4, // well short of 28 — forces the genuinely-partial hybrid path
+                ContextSize = 512,
+            }));
+
+        using var handle = await manager.AcquireAsync(ModelId.Canonicalize(modelPath!));
+
+        long fileSize = new FileInfo(modelPath!).Length;
+        Assert.True(handle.Runtime.IsAcceleratorResident);
+        Assert.NotNull(handle.Runtime.Loaded.GpuWeightBytesExact);
+        long estimate = handle.Runtime.AcceleratorResidentBytesEstimate;
+        Assert.True(estimate > 0, $"expected a positive accelerator byte estimate, got {estimate}");
+        Assert.True(estimate < fileSize,
+            $"partial offload (4/28 layers) should report meaningfully less than the full file " +
+            $"size ({fileSize:N0} bytes), got {estimate:N0} bytes — looks like the fix isn't wired up.");
+    }
+
     // ── Full end-to-end admission through the real HostResourceBudget ───────
 
     [Fact]

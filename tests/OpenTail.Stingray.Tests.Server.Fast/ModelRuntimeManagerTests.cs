@@ -3,6 +3,7 @@ using System.Runtime.CompilerServices;
 using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Engine;
 using OpenTail.Stingray.Server;
+using OpenTail.Stingray.Sessions;
 
 namespace OpenTail.Stingray.Tests.Server.Fast;
 
@@ -53,6 +54,21 @@ public sealed class ModelRuntimeManagerTests
             LastCandidateAcceleratorBytes = candidateAcceleratorBytes;
             return estimateAdmission(candidateModelBytes);
         }
+    }
+
+    /// <summary>Unlike <see cref="FakeResourceBudget"/> (externally flag-controlled), this derives
+    /// admission from the manager's own <see cref="ModelRuntimeManager.Snapshot"/> — exactly like
+    /// the real <see cref="HostResourceBudget"/> does — so it organically reflects in-flight
+    /// pending loads as consumed capacity, not just resident runtimes. Needed to exercise the
+    /// atomic-reservation race below: a fake driven purely by a test flag can't tell the difference
+    /// between "the winner's load was reserved" and "nothing happened yet".</summary>
+    private sealed class CapacityFakeResourceBudget(Func<IReadOnlyList<ModelRuntimeStats>> snapshot, int capacitySlots)
+        : IResourceBudget
+    {
+        public ResourceSnapshot GetCurrent() => new(0, 0, null, 0, 0);
+
+        public ResourceAdmission EstimateAdmission(long candidateModelBytes, long candidateAcceleratorBytes = 0) =>
+            snapshot().Count < capacitySlots ? ResourceAdmission.Allowed : ResourceAdmission.InsufficientHostMemory;
     }
 
     // ── Lifecycle ────────────────────────────────────────────────────────────
@@ -1016,5 +1032,99 @@ public sealed class ModelRuntimeManagerTests
 
         bigCts.Cancel();
         await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await big);
+    }
+
+    [Fact]
+    public async Task AcquireAsync_WokenWaiter_ReservesLoadAtomically_FreshCallerCannotStealTheSlot()
+    {
+        // Regression test for the gap WakeOldestAdmissibleQueuedWaiter's own doc used to flag as
+        // "explicitly out of scope for this slice": a brand-new caller arriving fresh through
+        // AcquireAsync must not be able to win the just-freed resource ahead of a waiter that was
+        // already selected as the wake winner. Uses CapacityFakeResourceBudget (real
+        // Snapshot()-driven accounting, one slot) rather than an external flag, so the race is
+        // actually exercised through the same admission accounting production code uses — not
+        // simulated by a test-controlled switch.
+        ModelRuntimeManager? manager = null;
+        var budget = new CapacityFakeResourceBudget(() => manager!.Snapshot(), capacitySlots: 1);
+        manager = new ModelRuntimeManager(id => Load(id.Value))
+        {
+            AdmissionWaitTimeout = TimeSpan.FromSeconds(5),
+            ResourceBudget = budget,
+        };
+
+        var holder = await manager.AcquireAsync(Id("holder")); // takes the one slot
+
+        var older = manager.AcquireAsync(Id("older")).AsTask();
+        await Task.Delay(60); // "older" genuinely queues first — the one slot is taken
+
+        // Freeing the slot wakes "older" as the winner. With the fix, "older"'s load is reserved
+        // synchronously inside this call, before it returns — closing the window a fresh caller
+        // could otherwise race into.
+        holder.Dispose();
+
+        var interloper = manager.AcquireAsync(Id("interloper")).AsTask();
+
+        using var olderHandle = await older.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(Id("older"), olderHandle.Runtime.Id);
+
+        // The interloper must not have grabbed the freed slot ahead of "older" — the slot was
+        // already claimed atomically, so it's still queued/waiting, not resolved.
+        var stillWaiting = await Task.WhenAny(interloper, Task.Delay(200));
+        Assert.NotSame(interloper, stillWaiting);
+
+        olderHandle.Dispose(); // frees the slot again — "interloper" gets its turn
+        using var interloperHandle = await interloper.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(Id("interloper"), interloperHandle.Runtime.Id);
+    }
+
+    // ── SessionModelRegistry integration (docs/032 Phase 4/7 gap fix) ───────
+
+    [Fact]
+    public async Task SessionModelRegistry_BoundHandle_KeepsModelResident_UntilSessionReleased()
+    {
+        // Regression test for the Phase 4 "known gap" docs/032 flagged: a HotSession didn't hold
+        // a ModelRuntimeHandle, so a live-but-idle session's model could look evictable between
+        // turns. SessionModelRegistry.Bind is the fix — proven the same way this file already
+        // proves "active model never evicts" elsewhere: SingleSlot mode's own eviction/wait
+        // behavior (SingleSlot_AcquiringNewModel_EvictsIdleOtherModel vs.
+        // ...WaitsForBusyOtherModel_NeverLoadsAlongsideIt above), not a private internal flag.
+        using var manager = new ModelRuntimeManager(id => Load(id.Value), ModelResidencyMode.SingleSlot);
+        var registry = new SessionModelRegistry();
+
+        var handle = await manager.AcquireAsync(Id("a"));
+        var sessionId = new SessionId(Guid.NewGuid());
+        registry.Bind(sessionId, handle); // the "session" now owns model a's residency claim —
+                                           // deliberately NOT disposed here (that's the point).
+
+        // Acquiring a different model under SingleSlot must WAIT rather than evict "a" — if the
+        // bound handle didn't keep "a" busy, this would instead evict "a" and load "b" immediately
+        // (see SingleSlot_AcquiringNewModel_EvictsIdleOtherModel above for that contrasting case).
+        var acquireB = manager.AcquireAsync(Id("b")).AsTask();
+        var completed = await Task.WhenAny(acquireB, Task.Delay(200));
+        Assert.NotSame(acquireB, completed);
+        Assert.True(manager.TryGetResident(Id("a"), out _)); // still resident, never evicted
+
+        registry.Release(sessionId); // the "session" ends — model a's claim is released
+
+        using var hb = await acquireB.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(Id("b"), hb.Runtime.Id);
+        Assert.False(manager.TryGetResident(Id("a"), out _)); // now evicted, exactly as SingleSlot would for any idle model
+    }
+
+    [Fact]
+    public async Task SessionModelRegistry_Release_IsIdempotent_AndSafeWhenNeverBound()
+    {
+        var registry = new SessionModelRegistry();
+        var unboundId = new SessionId(Guid.NewGuid());
+        registry.Release(unboundId); // must not throw
+
+        using var manager = new ModelRuntimeManager(id => Load(id.Value));
+        var handle = await manager.AcquireAsync(Id("a"));
+        var sessionId = new SessionId(Guid.NewGuid());
+        registry.Bind(sessionId, handle);
+
+        registry.Release(sessionId);
+        registry.Release(sessionId); // second release: no-op, must not throw or double-dispose
+        Assert.False(registry.TryGet(sessionId, out _));
     }
 }

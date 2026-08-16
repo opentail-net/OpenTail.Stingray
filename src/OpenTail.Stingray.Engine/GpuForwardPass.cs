@@ -21,6 +21,7 @@ public sealed unsafe class GpuForwardPass : IForwardPass
     private readonly VulkanBackend _gpu;
     private readonly GgufModel _model;
     private readonly ModelHyperparams _hp;
+    private bool _disposed;
 
     // Pre-allocated logits download buffer (avoids GC allocation per token)
     private readonly float[] _logitsBuf;
@@ -3232,6 +3233,15 @@ public sealed unsafe class GpuForwardPass : IForwardPass
 
     public void Dispose()
     {
+        // Idempotency guard (matches ForwardPass.Dispose's fix, ForwardPass.cs:6060 —
+        // InferenceEngine.DisposeCore calls _fwd.Dispose() explicitly AND separately disposes
+        // every item in its _owned array, which also contains this same instance
+        // (InferenceEngineLoader adds it to owned[] when constructing the full-GPU-offload
+        // path) — without this guard every _gpu.Free() call below runs twice, a double-free
+        // that corrupts the native/VRAM heap).
+        if (_disposed) return;
+        _disposed = true;
+
         _taps?.Dispose();
         _gpu.Free(_hidden); _gpu.Free(_residual); _gpu.Free(_normBuf);
         _gpu.Free(_q); _gpu.Free(_k); _gpu.Free(_v); _gpu.Free(_attnOut);

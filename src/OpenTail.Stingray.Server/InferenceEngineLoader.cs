@@ -245,10 +245,11 @@ public static class InferenceEngineLoader
         var owned = new List<IDisposable>();
         IForwardPass fwd;
         bool batchingSupported;
+        long? gpuWeightBytesExact;
 
         try
         {
-            (fwd, batchingSupported) = BuildForwardPass(model, hp, arch, ctxSize, nGpuLayers, opts.Backend, turboQuant,
+            (fwd, batchingSupported, gpuWeightBytesExact) = BuildForwardPass(model, hp, arch, ctxSize, nGpuLayers, opts.Backend, turboQuant,
                 tqQuantizer, tqModeIsAuto, owned,
                 DequantCacheBytes(opts.PrefillDequantCacheMb), preferBatchingOverAutoSnapKv: opts.MaxBatchSize > 1);
             owned.Add(model);
@@ -380,7 +381,7 @@ public static class InferenceEngineLoader
         return new LoadedEngine(engine, arch, tokenizer.ChatTemplate, toolBoundaryStopTokenIds, grammarVocab, tokenizer,
             sessionRuntime, coldSessionRuntime,
             fwd is ForwardPass cpuForwardPass ? cpuForwardPass.GetBatchedPrefillCapability() : null,
-            DescribeRuntime(fwd, ModelFormat.Gguf));
+            DescribeRuntime(fwd, ModelFormat.Gguf), gpuWeightBytesExact);
         }
         catch
         {
@@ -509,7 +510,18 @@ public static class InferenceEngineLoader
         return new ServerRuntimeResolution(backend, route, format.ToString().ToLowerInvariant(), forwardPass.MaxSeqLen);
     }
 
-    private static (IForwardPass Fwd, bool BatchingSupported) BuildForwardPass(
+    /// <summary>
+    /// <paramref name="model"/>'s forward pass, plus <c>GpuWeightBytesExact</c> — a precise
+    /// accelerator-resident weight-byte figure when one is genuinely available (currently only
+    /// the CUDA/Vulkan <em>partial</em>-offload hybrid branches, which already ask
+    /// <see cref="TierPlanner"/> for a real per-layer placement and previously discarded it —
+    /// docs/032 Phase 3 Slice 8's "not yet done" byte-exact hybrid/partial-offload tracking).
+    /// <c>null</c> everywhere else (CPU-only; full dense GPU offload, where the existing
+    /// file-size estimate is already exact; hybrid-GDN, whose placement is driven by
+    /// <c>hp.LayerTypes</c> rather than <see cref="TierPlanner"/> and isn't attempted here) —
+    /// callers fall back to the existing <c>ModelRuntime.EstimatedModelBytes</c> heuristic.
+    /// </summary>
+    private static (IForwardPass Fwd, bool BatchingSupported, long? GpuWeightBytesExact) BuildForwardPass(
         GgufModel model, ModelHyperparams hp, string arch, int ctxSize, int nGpuLayers,
         ServerBackend backend, bool turboQuant, TqQuantizer tqQuantizer, bool tqModeIsAuto,
         List<IDisposable> owned, long prefillDequantCacheBytes,
@@ -573,7 +585,7 @@ public static class InferenceEngineLoader
             {
                 var hybrid = new HybridGdnForwardPass(model, cpuBackend, hp);
                 owned.Add(hybrid);
-                return (hybrid, BatchingSupported: false);
+                return (hybrid, BatchingSupported: false, GpuWeightBytesExact: null);
             }
 
             var dense = new ForwardPass(model, cpuBackend, hp,
@@ -586,7 +598,7 @@ public static class InferenceEngineLoader
             // PrefillPackedMulti all throw NotSupportedException) — those fall back to
             // the single-user InferenceEngine instead of failing every request.
             bool batchOk = !hp.IsMoE && !turboQuant && hp.LayerHeadDim is null;
-            return (dense, batchOk);
+            return (dense, batchOk, GpuWeightBytesExact: null);
         }
 
         // GPU paths share a CPU baseline (for the hybrid-CPU half of partial offload).
@@ -615,7 +627,7 @@ public static class InferenceEngineLoader
                     RecommendedCtxSize: ctxSize > 0 ? ctxSize : Math.Min(hp.ContextLength, 4096));
                 var chgdn = new CudaHybridGdnForwardPass(model, cuda, hp, placement);
                 owned.Add(chgdn);
-                return (chgdn, BatchingSupported: false);
+                return (chgdn, BatchingSupported: false, GpuWeightBytesExact: null);
             }
 
             // Dense + CUDA: ask TierPlanner for a layer count when -1, then route to
@@ -632,7 +644,7 @@ public static class InferenceEngineLoader
             {
                 // GPU planner says nothing fits — fall back to CPU dense.
                 if (turboQuant) cpuDense!.EnableTurboQuant(fp32WindowSize: 256, bits: 3, quantizer: ResolveTq(null));
-                return (cpuDense!, BatchingSupported: !hp.IsMoE && !turboQuant);
+                return (cpuDense!, BatchingSupported: !hp.IsMoE && !turboQuant, GpuWeightBytesExact: null);
             }
 
             if (gpuLayers >= hp.NumLayers)
@@ -664,7 +676,7 @@ public static class InferenceEngineLoader
                         "[InferenceEngineLoader] MaxBatchSize>1 suppressed SnapKV auto-enable, but this " +
                         "model does not support continuous batching (it will run single-user). Set an " +
                         "explicit STINGRAY_SNAPKV_BUDGET>0 or a narrowed --kv-type to keep KV memory bounded.");
-                return (cfwd, batches);
+                return (cfwd, batches, GpuWeightBytesExact: null); // full offload — EstimatedModelBytes is already exact
             }
 
             // pinGpuLayers (not a `with { GpuLayers = }` override) so the expert-cache budget the
@@ -676,7 +688,11 @@ public static class InferenceEngineLoader
                 kvDtype: CudaForwardPass.ResolveConfiguredKvDType(), pinGpuLayers: gpuLayers);
             var chfwd = new CudaHybridForwardPass(model, cuda, hp, planForHybrid, turboQuant);
             owned.Add(chfwd);
-            return (chfwd, BatchingSupported: false);
+            // The real fix (docs/032 Phase 3 Slice 8 follow-up): TierPlanner already computed a
+            // precise per-layer GPU weight-byte figure for this exact partial-offload split —
+            // previously thrown away, forcing ModelRuntime to fall back to the whole-file
+            // overestimate for every hybrid/partial-offload model.
+            return (chfwd, BatchingSupported: false, GpuWeightBytesExact: planForHybrid.GpuWeightBytes);
         }
 
         if (backend == ServerBackend.Vulkan)
@@ -698,7 +714,7 @@ public static class InferenceEngineLoader
                     RecommendedCtxSize: ctxSize > 0 ? ctxSize : Math.Min(hp.ContextLength, 4096));
                 var vhgdn = new VulkanHybridGdnForwardPass(model, vulkan, hp, placement);
                 owned.Add(vhgdn);
-                return (vhgdn, BatchingSupported: false);
+                return (vhgdn, BatchingSupported: false, GpuWeightBytesExact: null);
             }
 
             var hwProfile = HardwareProfile.Detect(vulkan);
@@ -709,7 +725,7 @@ public static class InferenceEngineLoader
             if (gpuLayers <= 0)
             {
                 if (turboQuant) cpuDense!.EnableTurboQuant(fp32WindowSize: 256, bits: 3, quantizer: ResolveTq(null));
-                return (cpuDense!, BatchingSupported: !hp.IsMoE && !turboQuant);
+                return (cpuDense!, BatchingSupported: !hp.IsMoE && !turboQuant, GpuWeightBytesExact: null);
             }
 
             if (gpuLayers >= hp.NumLayers)
@@ -719,7 +735,7 @@ public static class InferenceEngineLoader
                 var gfwd = new GpuForwardPass(model, vulkan, hp, ctxSize, enableTurboQuant: turboQuant,
                     kvDtype: CudaForwardPass.ResolveConfiguredKvDType());
                 owned.Add(gfwd);
-                return (gfwd, BatchingSupported: false);
+                return (gfwd, BatchingSupported: false, GpuWeightBytesExact: null); // full offload — EstimatedModelBytes is already exact
             }
 
             _ = ResolveTq(TqSupport.VulkanReason);
@@ -727,7 +743,8 @@ public static class InferenceEngineLoader
                 pinGpuLayers: gpuLayers);
             var hfwd = new HybridForwardPass(model, vulkan, hp, planForHybrid, turboQuant);
             owned.Add(hfwd);
-            return (hfwd, BatchingSupported: false);
+            // The real fix — see the identical CUDA branch's comment above.
+            return (hfwd, BatchingSupported: false, GpuWeightBytesExact: planForHybrid.GpuWeightBytes);
         }
 
         throw new InvalidOperationException($"Unknown backend selection: {backend}");

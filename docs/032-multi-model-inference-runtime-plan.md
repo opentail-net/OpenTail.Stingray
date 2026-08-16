@@ -5,12 +5,15 @@
 ## Status
 
 **Phases 1, 2, and 4 implemented. Phase 3 at 9 slices (host + accelerator admission, eviction,
-observability). Phase 5's no-lock half proven with real models. Phase 6 at 3 slices (the queue
-step of the eviction hierarchy, bounded, observable, and now fair among queued waiters —
-execution-level service quantum/starvation-protection still open). Phase 7 implemented for the
-stateless request surface (chat completions, messages, responses, model listing) — `/v1/sessions/*`
-remains single-model, deliberately deferred.** See each phase's own entry in "Implementation phases"
-below for exact done/not-done
+observability). Phase 5's no-lock half proven with real models. Phase 6 at 4 slices (the queue
+step of the eviction hierarchy, bounded, observable, fair among queued waiters, and now immune to
+a fresh caller jumping that queue — execution-level service quantum/starvation-protection still
+open). Phase 7 implemented for the
+stateless request surface (chat completions, messages, responses, model listing) and, as a
+follow-up, `/v1/sessions/*` — a session now holds a real `ModelRuntimeHandle` for its lifetime via
+`SessionModelRegistry`, closing the Phase 4 gap; durable/cold session restore across a process
+restart in multi-model mode remains explicitly deferred.** See each phase's own entry in
+"Implementation phases" below for exact done/not-done
 splits. `ModelId`, `ModelRuntimeState`, `ModelResidencyMode`,
 `ModelRuntime`, `ModelRuntimeHandle`, `IModelRuntimeManager`/`ModelRuntimeManager`
 (`src/OpenTail.Stingray.Server/ModelRuntime.cs`, `ModelRuntimeManager.cs`), wired into
@@ -439,10 +442,45 @@ background/speculative model preloading. All out of scope here.
    with `InsufficientAcceleratorMemory` *before* `InferenceEngineLoader.Load` ever runs — confirmed
    via `Assert.Empty(manager.Snapshot())`, i.e. no wasted real GPU load attempt. 304/304 fast,
    8/8 real-model, full solution build clean.
-   **Not yet done:** byte-exact hybrid/partial-offload tracking (still the file-size-based
-   overestimate from Slice 8), and Phase 6's queueing alternative to hard failure when eviction
-   alone isn't enough. A CUDA equivalent of the VRAM-capacity probe is parked, not planned — no
-   CUDA hardware in this environment to build or verify it against; revisit if that changes.
+   **Slice 10 done: byte-exact hybrid/partial-offload accelerator accounting**, closing the one
+   gap Slice 8 left open. `InferenceEngineLoader.BuildForwardPass` already asked `TierPlanner` for
+   a precise per-layer `LayerPlacement` on the CUDA/Vulkan *partial*-offload hybrid paths
+   (`CudaHybridForwardPass`/`HybridForwardPass`) — the real number existed, it was just discarded
+   after construction. `BuildForwardPass` now also returns `GpuWeightBytesExact` (`long?`): the
+   real `planForHybrid.GpuWeightBytes` on those two branches, `null` everywhere else (CPU-only;
+   full dense GPU offload, where the whole-file estimate is already exact by construction; and
+   hybrid-GDN, whose placement is driven by `hp.LayerTypes` rather than `TierPlanner` and still
+   isn't attempted — genuinely separate work, not a discarded-but-available number like the fix
+   above). Threaded through a new `LoadedEngine.GpuWeightBytesExact` field;
+   `ModelRuntime.AcceleratorResidentBytesEstimate` now prefers it over `EstimatedModelBytes` when
+   present, falling back exactly as before when not.
+   **Real bug found and fixed along the way, not before it shipped** — a second instance of the
+   exact double-free class Phase 5 found and fixed in `ForwardPass.Dispose()`
+   (`docs/done/bugstofix-resolved-2026-08.md` → `ForwardPass.cs:6047`), this time in four *other*
+   forward-pass types that turned out to share the same missing-idempotency-guard gap:
+   `GpuForwardPass`, `CudaForwardPass`, `CudaHybridForwardPass`, and `HybridForwardPass`.
+   `InferenceEngineLoader` adds each to both `_fwd` and its engine's `_owned[]` array, and
+   `InferenceEngine.DisposeCore` disposes `_fwd` explicitly and then every item in `_owned` —
+   without an idempotency guard, every native/VRAM free in `Dispose()` ran twice. Caught by this
+   slice's own new real-hardware test (`AcceleratorResidencyTests.RealVulkanModel_PartialOffload_...`,
+   the first test in this codebase to construct-then-dispose a genuinely partial-offload
+   `HybridForwardPass` through `ModelRuntimeManager`): a native access violation
+   (`0xC0000005` in `NativeMemory.Free`) during `manager.Dispose()`, not a managed exception —
+   exactly the same crash signature Phase 5's writeup describes. `GpuForwardPass`/`CudaForwardPass`
+   had silently lacked the guard the whole time too (full-offload real-model tests had run and
+   "passed" repeatedly without visibly crashing — a double-`NativeMemory.Free`/VRAM-free is
+   undefined behavior, not a guaranteed-immediate fault, so its absence had gone undetected). Fixed
+   all four with the same established `_disposed`-guard pattern
+   (`if (_disposed) return; _disposed = true;` as the first statement in `Dispose()`), verified
+   both by the new test passing cleanly and by rerunning the full existing accelerator/cross-model
+   real-model suites. 5/5 `AcceleratorResidencyTests`, 12/12 `Tests.Server` real-model, full
+   solution build clean.
+   **Not yet done:** the hybrid-GDN full-offload branches (CUDA/Vulkan) still fall back to the
+   file-size estimate rather than a `TierPlanner`-precise figure — their placement isn't
+   `TierPlanner`-driven, so no ready-made precise number exists there the way it did for the two
+   branches this slice fixed; computing one would mean new placement logic, not just threading an
+   existing value through. A CUDA equivalent of the VRAM-capacity probe is parked, not planned —
+   no CUDA hardware in this environment to build or verify it against; revisit if that changes.
 4. ✅ **Multi-session model execution.** Wire each runtime to `HotSession` + continuous batching.
    *Acceptance: N sessions on one runtime behave exactly as today's same-model concurrency.*
    Proven with a real model, not fakes:
@@ -574,10 +612,33 @@ background/speculative model preloading. All out of scope here.
    bigger problem (would need an execution-mediation layer that doesn't exist: can generation be
    interrupted/checkpointed, what happens to in-flight KV, does preemption wreck batching
    efficiency) and is explicitly left for a real Level-1 scheduler phase, not folded into this
-   admission-queue work. Also still open, noted honestly rather than silently: only queued waiters
-   are ordered fairly against each other — a brand-new caller arriving fresh through `AcquireAsync`
-   never consults `_admissionQueue` at all and can still win the lock/load race against everyone
-   already queued, since nothing reserves a queued winner's resources ahead of its actual retry.
+   admission-queue work.
+   **Slice 4 done: closed the fresh-caller-jumps-the-queue race.** The one gap Slice 3 left open
+   — "a brand-new caller arriving fresh through `AcquireAsync` never consults `_admissionQueue`
+   at all and can still win the lock/load race against everyone already queued, since nothing
+   reserves a queued winner's resources ahead of its actual retry" — is fixed. `WakeOldestAdmissibleQueuedWaiter`
+   now reserves the winner's load atomically with picking it: still inside the same `_lock` scope
+   that selects the winner and removes it from `_admissionQueue`, it registers a `PendingLoad` and
+   kicks off `RunLoad` immediately (factored into a new `StartLoadLocked` helper, shared with
+   `AcquireAsync`'s own cold-load path) rather than merely completing the winner's `WakeSignal` and
+   trusting it to re-win the admission check on its own time. This closes the actual race: the
+   winner's `WakeSignal` is a `TaskCompletionSource` with `RunContinuationsAsynchronously`, so its
+   continuation never resumes synchronously — without reserving first, a fresh caller racing in
+   through `AcquireAsync` during that gap could see the just-freed budget before the winner's retry
+   ever ran, admit itself, and leave the winner to lose the race it had already won. Since
+   `Snapshot()` (Slice 6, Phase 3) already counts in-flight pending loads as consumed capacity,
+   reserving the winner's `PendingLoad` before releasing the lock is sufficient — any caller
+   evaluated afterward, whether already-queued or brand new, sees accounting that already reflects
+   the winner's claim. Skips the reservation if the model is somehow already resident/pending by
+   the time it's picked (e.g. another waiter for the same model already started it), so
+   single-flight is never violated by a duplicate load.
+   Verified: `AcquireAsync_WokenWaiter_ReservesLoadAtomically_FreshCallerCannotStealTheSlot` — a
+   new `CapacityFakeResourceBudget` derives admission from the manager's own `Snapshot()` (like
+   the real `HostResourceBudget` does) rather than an external test flag, so the race is exercised
+   through the same accounting production code uses. Confirmed as a genuine regression guard, not
+   just a plausible-looking test: manually reverting the reservation line reproduces the failure
+   (the woken waiter times out, starved by a fresh caller repeatedly re-stealing the slot) before
+   being restored. 328/328 fast, full solution build clean.
 7. 🔶 **OpenTail server integration.** Expose model identity through `IInferenceService`.
    *Acceptance: Users A/B → sidekick, Users C/D → reasoner, with same-model batching,
    cross-model concurrency, residency, and session isolation all verified together.*
@@ -641,24 +702,67 @@ background/speculative model preloading. All out of scope here.
    used at the engine layer, now through the HTTP/SSE pipeline, catching a hypothetical
    `RequestConcurrencyGate`-level serialization that Phase 5's own test couldn't see). 10/10
    real-model tests, full solution build clean.
-   **Deliberately not built this pass: making `/v1/sessions/*` multi-model-aware** — the Phase 4
-   "known gap" (`HotSession` not holding a `ModelRuntimeHandle` for its lifetime) genuinely
-   "belongs" to Phase 7 per that entry's own note, but doing it properly means turning several
-   currently-global DI singletons that feed exactly one pinned model
-   (`SessionRuntimeRelay`/`IServerSessionRuntime`, `TokenizerRelay`, and `ChatTemplateRenderer`'s
-   relationship to sessions) into per-model registries, plus routing the `/v1/sessions/*` endpoint
-   handlers by model too — a materially larger, separable refactor of the Sessions subsystem with
-   real regression risk to a working, presumably-in-use feature, not a small addition alongside
-   the stateless-endpoint work above. "Session isolation" in this phase's acceptance line is
-   instead proven at the stateless-request level (concurrent requests to different models, and
-   concurrent requests to the same model, never cross-contaminate each other's prompt or output —
-   see the acceptance tests above); the *existing*, single-model `/v1/sessions/*` multi-session
-   isolation (`SessionRestartPersistenceTests.ConcurrentSessions_RealCpuGguf_ContinuousBatchingKeepsSessionsIndependent`,
-   Phase 4) is untouched and still passes. Revisit as a dedicated follow-up phase/slice once there's
-   a real caller for multi-model sessions specifically, rather than building session-to-model handle
-   plumbing speculatively ahead of one — the same discipline Phase 4's own deferral already argued
-   for. Also not built: per-model overrides for TurboQuant/KV-type/MoE/spec-decode/sampling (all
-   stay global across every configured model in this slice).
+   **Follow-up done: `/v1/sessions/*` is now multi-model-aware**, closing the Phase 4 "known gap"
+   (`HotSession` not holding a `ModelRuntimeHandle` for its lifetime) for real rather than merely
+   documenting it. The original deferral note above worried about turning several global DI
+   singletons into per-model registries — that concern turned out to be smaller than it looked:
+   `LoadedEngine` (the per-`ModelRuntime` bundle both the single-model loader and `LoadNamedModel`
+   already produce) already carries `SessionRuntime`/`ColdSessionRuntime` per model, so
+   `IModelRuntimeManager` itself already *is* the per-model registry. The only genuinely missing
+   piece was routing a session's later calls back to the model it was created against, and holding
+   a handle for the session's whole life instead of per-request.
+   New: `SessionModelRegistry` (`src/OpenTail.Stingray.Server/SessionModelRegistry.cs`) —
+   `ConcurrentDictionary<SessionId, ModelRuntimeHandle>`. `Bind` is called once at session
+   creation with the handle `IInferenceService.AcquireAsync` returned; that handle is held, not
+   disposed, until `Release` runs on session delete — the one legitimate case for retaining a
+   handle past a single operation (docs/032's "scope the handle to the operation" guidance is
+   about not pinning a model as a standing "currently selected" marker, not about a session that
+   genuinely needs residency guaranteed across many turns). As long as a binding exists,
+   `ModelRuntime.HandleCount > 0`, so the runtime is never evictable — Invariant 2 made real for
+   the multi-model path instead of relying on the single-model path's blanket `IsPinned`.
+   `SessionEndpoints.cs` now branches on `IInferenceService.IsMultiModel`, mirroring
+   `OpenAiEndpoints.HandleChatCompletion`'s established split: every handler used to take an
+   unconditional `IInferenceEngine _` parameter specifically to force the one configured engine to
+   load; that forced-load must not happen in multi-model mode (it would try to eagerly load
+   `OpenTailStingrayServerOptions.ModelPath`, which may not even be set), so `IInferenceEngine` is
+   now resolved explicitly only inside the single-model branch, exactly like the chat endpoint
+   already does. `Create` gained an optional JSON body, `SessionCreateRequest(string? Model)` —
+   same `model` field contract chat/messages/responses already use (null/unmatched-empty resolves
+   to the first configured model); a client posting no body at all (today's exact behavior) is
+   unaffected. `Get`/`Delete`/`GetOperation`/`RunTurn` resolve an existing session's route via a
+   small shared helper, `TryResolveExistingSession`: multi-model mode looks up the
+   `SessionModelRegistry` binding (a miss means "no such live session" → 404, a materially
+   different outcome from "sessions unavailable" → 409, since the feature works fine here, this id
+   just isn't bound to anything); single-model mode is byte-identical to before this existed.
+   `Delete` additionally releases the binding on success, letting the model become evictable again
+   once no other session references it.
+   **Explicitly still out of scope, documented rather than silently dropped: durable/cold session
+   restore across a process restart in multi-model mode.** `SessionModelRegistry` is in-memory
+   only. Restoring a durable session's model binding after a restart would require reverse-mapping
+   the manifest's stored model fingerprint (`ColdSessionRuntime.EvictToDisk`'s
+   `modelFingerprint` argument) back to a currently-configured `NamedModelOptions` alias — a
+   genuinely separate problem (what if that alias was renamed or removed from config since the
+   manifest was written?) from "route a live session's calls to the model it was created against."
+   After a restart, a multi-model call on a session id the registry doesn't know returns 404, same
+   as any other unknown session id — never a silent wrong-model guess. Single-model mode's
+   durable/cold restore is completely untouched. Also still not built: per-model overrides for
+   TurboQuant/KV-type/MoE/spec-decode/sampling (all stay global across every configured model).
+   **Verified:** fast suite (fakes only) — `MultiModelSessionEndpointTests.cs` (routing through
+   the real HTTP surface: create+turn routes to the right model, case-insensitive alias, two
+   sessions on different models don't cross-talk, unknown alias/session id → 404/404, delete
+   releases and a subsequent get is 404) and two new tests in `ModelRuntimeManagerTests.cs`
+   proving the actual invariant directly — `SessionModelRegistry_BoundHandle_KeepsModelResident_UntilSessionReleased`
+   uses the same `SingleSlot`-mode eviction/wait behavior the file's own residency tests already
+   use as proof (a bound session's model is waited-for, never evicted, exactly like an "active"
+   model already isn't) and `SessionModelRegistry_Release_IsIdempotent_AndSafeWhenNeverBound`. The
+   complete pre-existing `SessionEndpointTests.cs` suite (single-model) passes unmodified —
+   byte-for-byte parity confirmed, not assumed. 338/338 fast suite green. Real-model acceptance:
+   `tests/OpenTail.Stingray.Tests.Server/MultiModelSessionHttpAcceptanceTests.cs` — the same two
+   real GGUFs `MultiModelHttpAcceptanceTests` uses, one session created per model via
+   `POST /v1/sessions {"model": "..."}`, a real turn run on each with a distinguishing low-perplexity
+   prompt, correct/isolated answers confirmed, `GetStats()` shows exactly one load and one resident
+   runtime per model, and deleting one session leaves the other's still fully functional. 11/11
+   real-model tests, full solution build clean.
 
 ## Test matrix
 
@@ -720,12 +824,12 @@ concurrently is materially better than repeatedly swapping them* — not "always
 10. Under insufficient resources, Stingray queues or rejects safely — it never violates
     runtime/session ownership to make room.
 
-**Status of invariant 2, specifically:** the "active requests" half is enforced today
-(`ModelRuntime.HandleCount`/`IsEvictable`, tested). The "sessions" half is not yet — a live but
-currently-idle `HotSession` doesn't hold a `ModelRuntimeHandle`, so nothing currently stops its
-runtime from looking evictable between turns. This is harmless today only because the server's
-one engine is always pinned; it becomes a real requirement the moment Phase 7 introduces
-non-pinned, per-request model selection, and the fix belongs there (see Phase 4's entry above).
+**Status of invariant 2, specifically:** both halves are now enforced. "Active requests" via
+`ModelRuntime.HandleCount`/`IsEvictable` (Phase 1, tested). "Sessions" via `SessionModelRegistry`
+(Phase 7 follow-up, tested) — a multi-model session holds a real `ModelRuntimeHandle` for its
+entire lifetime, so its runtime is never evictable between turns. In single-model mode this
+remains moot (harmless) rather than newly-enforced, since the one configured engine is still
+always pinned regardless.
 11. Every admission queue (per-model and global) is bounded and every queued request is
     cancellable; overflow is an explicit rejection, never unbounded growth.
 
