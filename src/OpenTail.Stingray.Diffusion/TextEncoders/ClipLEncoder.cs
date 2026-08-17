@@ -8,7 +8,7 @@ namespace OpenTail.Stingray.Diffusion.TextEncoders;
 ///   - last_hidden_state [seq, 768] — used as secondary conditioning in some models
 ///   - pooled_output [768]          — the [EOS] token embedding, main conditioning for FLUX vector_in
 ///
-/// Loads weights from clip_l.safetensors (comfyanonymous/flux_text_encoders).
+/// Loads weights from clip_l.safetensors or unified SD 1.5 checkpoints.
 /// Architecture: 12 transformer encoder layers, 768-dim, 12 heads, head_dim=64.
 /// Activation: QuickGELU (x * sigmoid(1.702*x)).
 /// </summary>
@@ -22,9 +22,10 @@ public sealed class ClipLEncoder : IDisposable
     private const int MaxSeqLen = 77;
     private const int VocabSize = 49408;
 
-    private readonly SafetensorsLoader _st;
+    private readonly IWeightLoader _st;
 
     public ClipLEncoder(string path) => _st = SafetensorsLoader.Open(path);
+    public ClipLEncoder(IWeightLoader st) => _st = st;
 
     /// <summary>
     /// Encode a list of token ids (length ≤ 77, padded to 77 with 0).

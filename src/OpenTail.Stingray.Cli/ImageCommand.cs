@@ -6,6 +6,7 @@ using OpenTail.Stingray.Cli.CommandLine;
 using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Cuda;
 using OpenTail.Stingray.Diffusion;
+using OpenTail.Stingray.Diffusion.StableDiffusion;
 using OpenTail.Stingray.Vulkan;
 
 namespace OpenTail.Stingray.Cli;
@@ -194,9 +195,11 @@ public sealed class ImageCommand : Command<ImageCommand.Settings>
             return 1;
         }
 
-        return IsZImage(modelPath)
-            ? RunZImage(s, modelPath, deviceIndex, deviceNone)
-            : RunFlux(s, modelPath, deviceIndex, deviceNone);
+        if (IsZImage(modelPath))
+            return RunZImage(s, modelPath, deviceIndex, deviceNone);
+        if (IsStableDiffusion(modelPath))
+            return RunStableDiffusion(s, modelPath);
+        return RunFlux(s, modelPath, deviceIndex, deviceNone);
     }
 
     private static int RunZImage(Settings s, string modelPath, int deviceIndex, bool deviceNone)
@@ -624,6 +627,64 @@ public sealed class ImageCommand : Command<ImageCommand.Settings>
         AnsiConsole.MarkupLine("FLUX.1-schnell GGUF: [link]https://huggingface.co/city96/FLUX.1-schnell-gguf[/]");
     }
 
+
+    private static int RunStableDiffusion(Settings s, string modelPath)
+    {
+        string output = s.OutputPath ?? "output.png";
+        int steps = s.Steps > 0 ? s.Steps : 20;
+        float guidance = s.CfgScale > 0f ? s.CfgScale : 7.5f;
+
+        AnsiConsole.MarkupLine("[bold]Stable Diffusion 1.5[/] (Native C# CPU Baseline)");
+        AnsiConsole.MarkupLine($"[dim]Model:[/]    {Markup.Escape(modelPath)}");
+        AnsiConsole.MarkupLine($"[dim]Size:[/]     {s.Width}×{s.Height}  steps={steps}  guidance={guidance}  seed={s.Seed}");
+        if (s.UpscalerPath is not null)
+            AnsiConsole.MarkupLine($"[dim]Upscaler:[/] {Markup.Escape(s.UpscalerPath)}");
+        AnsiConsole.MarkupLine($"[dim]Output:[/]   {Markup.Escape(output)}");
+        AnsiConsole.WriteLine();
+
+        try
+        {
+            var sw = Stopwatch.StartNew();
+            RRDBNet? upscaler = null;
+            if (s.UpscalerPath is not null)
+                upscaler = RRDBNet.Load(s.UpscalerPath);
+
+            using var pipeline = StableDiffusionPipeline.Load(modelPath, s.ClipTokenizerPath);
+
+            AnsiConsole.Status()
+                .Spinner(Spinner.Known.Dots)
+                .SpinnerStyle(Style.Parse("blue"))
+                .Start($"Denoising ({steps} steps on CPU)…", ctx =>
+                {
+                    pipeline.Generate(
+                        prompt: s.Prompt!,
+                        width: s.Width,
+                        height: s.Height,
+                        steps: steps,
+                        guidance: guidance,
+                        seed: s.Seed,
+                        outputPath: output,
+                        progress: (step, total) => ctx.Status($"Denoising step {step}/{total}…"),
+                        upscaler: upscaler,
+                        upscaleBlend: s.UpscaleBlend);
+                });
+
+            sw.Stop();
+            AnsiConsole.MarkupLine($"[green]✓[/] Image saved: [cyan]{Markup.Escape(Path.GetFullPath(output))}[/] in [yellow]{sw.Elapsed.TotalSeconds:F1}s[/]");
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            AnsiConsole.MarkupLine($"[red]Error:[/] {Markup.Escape(ex.Message)}");
+            return 1;
+        }
+    }
+
+    private static bool IsStableDiffusion(string path)
+    {
+        string n = Path.GetFileNameWithoutExtension(path).ToLowerInvariant();
+        return n.Contains("v1-5") || n.Contains("sd-v1") || n.Contains("sd15") || n.Contains("stable-diffusion") || n.Contains("v1_5");
+    }
     private static bool IsZImage(string path)
     {
         string n = Path.GetFileNameWithoutExtension(path).ToLowerInvariant();
@@ -668,3 +729,6 @@ public sealed class ImageCommand : Command<ImageCommand.Settings>
     private static string Q(string s) =>
         s.Contains(' ') || s.Contains('"') ? $"\"{s.Replace("\"", "\\\"")}\"" : s;
 }
+
+
+

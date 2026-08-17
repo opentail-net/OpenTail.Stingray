@@ -36,7 +36,7 @@ public sealed class ClipTokenizer
         var vocabEl = model.GetProperty("vocab");
         var mergesEl = model.GetProperty("merges");
 
-        var vocab = new Dictionary<string, int>(vocabEl.GetArrayLength(), StringComparer.Ordinal);
+        var vocab = new Dictionary<string, int>(StringComparer.Ordinal);
         foreach (var kv in vocabEl.EnumerateObject())
             vocab[kv.Name] = kv.Value.GetInt32();
 
@@ -98,40 +98,46 @@ public sealed class ClipTokenizer
         {
             int bestRank = int.MaxValue;
             int bestIdx  = -1;
+
             for (int i = 0; i < pairs.Count - 1; i++)
             {
-                if (mergeRank.TryGetValue((pairs[i], pairs[i + 1]), out int rank) && rank < bestRank)
+                var pair = (pairs[i], pairs[i + 1]);
+                if (mergeRank.TryGetValue(pair, out int rank) && rank < bestRank)
                 {
                     bestRank = rank;
                     bestIdx  = i;
                 }
             }
-            if (bestIdx < 0) break;
 
+            if (bestIdx < 0) break; // no more applicable merges
+
+            // Merge best pair
             string merged = pairs[bestIdx] + pairs[bestIdx + 1];
-            pairs.RemoveAt(bestIdx);
             pairs[bestIdx] = merged;
+            pairs.RemoveAt(bestIdx + 1);
         }
+
         return pairs;
     }
 
-    private static IEnumerable<string> SplitWords(string text)
+    private static List<string> SplitWords(string text)
     {
-        // Basic tokenization matching CLIP's regex loosely:
-        // letters+numbers, apostrophes contracted, punctuation as own tokens
+        var result = new List<string>();
         var sb = new StringBuilder();
+
         foreach (char c in text)
         {
-            if (char.IsLetterOrDigit(c) || c == '\'')
+            if (char.IsWhiteSpace(c) || char.IsPunctuation(c))
             {
-                sb.Append(c);
+                if (sb.Length > 0) { result.Add(sb.ToString()); sb.Clear(); }
+                if (char.IsPunctuation(c)) result.Add(c.ToString());
             }
             else
             {
-                if (sb.Length > 0) { yield return sb.ToString(); sb.Clear(); }
-                if (!char.IsWhiteSpace(c)) yield return c.ToString();
+                sb.Append(c);
             }
         }
-        if (sb.Length > 0) yield return sb.ToString();
+        if (sb.Length > 0) result.Add(sb.ToString());
+        return result;
     }
 }
