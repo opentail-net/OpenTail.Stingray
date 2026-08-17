@@ -14,6 +14,7 @@ namespace OpenTail.Stingray.Diffusion.StableDiffusion;
 /// - Middle Block (ResBlock + SpatialTransformer + ResBlock)
 /// - 12 Output Blocks with Skip Connection Concatenations
 /// - SpatialTransformer with Asymmetric Cross-Attention (Query: H×W, Key/Value: 77)
+/// - GEGLU FeedForward activation
 /// </summary>
 public sealed class UNet2DConditionModel
 {
@@ -58,21 +59,22 @@ public sealed class UNet2DConditionModel
 
     /// <summary>
     /// Computes sinusoidal timestep embedding and passes through 2-layer MLP.
+    /// Uses flip_sin_to_cos = true (CompVis / SD1.5 standard).
     /// </summary>
     public float[] ComputeTimeEmbedding(float timestep)
     {
         int dim = ModelChannels; // 320
         var sinEmb = new float[dim];
         int half = dim / 2;
-        float factor = 10000.0f;
-        float logFactor = MathF.Log(factor) / (half - 1);
+        float maxPeriod = 10000.0f;
+        float logMaxPeriod = MathF.Log(maxPeriod);
 
         for (int i = 0; i < half; i++)
         {
-            float freq = MathF.Exp(-i * logFactor);
+            float freq = MathF.Exp(-logMaxPeriod * i / half);
             float arg = timestep * freq;
-            sinEmb[i] = MathF.Sin(arg);
-            sinEmb[half + i] = MathF.Cos(arg);
+            sinEmb[i]        = MathF.Cos(arg); // flip_sin_to_cos: first cos, then sin
+            sinEmb[half + i] = MathF.Sin(arg);
         }
 
         // Linear: 320 -> 1280
@@ -156,7 +158,7 @@ public sealed class UNet2DConditionModel
     }
 
     /// <summary>
-    /// SpatialTransformer block (Self-Attention + Cross-Attention + FeedForward).
+    /// SpatialTransformer block (Self-Attention + Cross-Attention + GEGLU FeedForward).
     /// </summary>
     public float[] SpatialTransformer(string prefix, float[] x, float[] context, int c, int h, int w)
     {
@@ -181,7 +183,7 @@ public sealed class UNet2DConditionModel
                 xSeq[s * c + ch] = xProj[chOff + s];
         }
 
-        // BasicTransformerBlock 0:
+        // 2. Transformer Block (depth = 1 in SD 1.5)
         string tb = $"{prefix}.transformer_blocks.0";
 
         // A. Self-Attention:
@@ -228,7 +230,7 @@ public sealed class UNet2DConditionModel
         for (int i = 0; i < xSeq.Length; i++)
             xSeq[i] += caProjOut[i];
 
-        // C. Feed-Forward:
+        // C. Feed-Forward with GEGLU:
         var ffNormW = GetWeight($"{tb}.norm3.weight");
         var ffNormB = GetWeight($"{tb}.norm3.bias");
         var ffNorm = (float[])xSeq.Clone();
@@ -240,9 +242,24 @@ public sealed class UNet2DConditionModel
         var ff2B = GetWeight($"{tb}.ff.net.2.bias");
 
         int mlpDim = c * 4;
-        var ffH = DiffusionOps.Linear(ffNorm, ff1W, ff1B, hw, c, mlpDim);
-        DiffusionOps.GeluInPlace(ffH);
-        var ffOut = DiffusionOps.Linear(ffH, ff2W, ff2B, hw, mlpDim, c);
+        // net.0.proj projects c -> mlpDim * 2
+        var ffH = DiffusionOps.Linear(ffNorm, ff1W, ff1B, hw, c, mlpDim * 2);
+        var ffGated = new float[hw * mlpDim];
+        Parallel.For(0, hw, s =>
+        {
+            int srcOff = s * mlpDim * 2;
+            int dstOff = s * mlpDim;
+            for (int d = 0; d < mlpDim; d++)
+            {
+                float val = ffH[srcOff + d];
+                float gate = ffH[srcOff + mlpDim + d];
+                // GELU(gate): approximate tanh version
+                float geluGate = 0.5f * gate * (1.0f + MathF.Tanh(0.79788456f * (gate + 0.044715f * gate * gate * gate)));
+                ffGated[dstOff + d] = val * geluGate;
+            }
+        });
+
+        var ffOut = DiffusionOps.Linear(ffGated, ff2W, ff2B, hw, mlpDim, c);
 
         for (int i = 0; i < xSeq.Length; i++)
             xSeq[i] += ffOut[i];
@@ -296,7 +313,7 @@ public sealed class UNet2DConditionModel
                 }
 
                 // Softmax
-                DiffusionOps.Softmax(scores, kvLen);
+                DiffusionOps.Softmax(scores, 0, kvLen);
 
                 // Weighted sum: sum_kj (scores[kj] * V_h[kj])
                 int outBase = qi * c + headOffset;

@@ -5,22 +5,20 @@ namespace OpenTail.Stingray.Diffusion.TextEncoders;
 
 /// <summary>
 /// CLIP BPE tokenizer compatible with OpenAI CLIP / Stable Diffusion.
-/// Loads vocabulary and merges from a tokenizer.json (HuggingFace format),
-/// which is commonly distributed alongside clip_l.safetensors.
+/// Loads vocabulary and merges from a tokenizer.json (HuggingFace format).
 ///
 /// Output tokens are in range [0, 49407] with:
 ///   BOS = 49406 (start of text)
-///   EOS = 49407 (end of text, used as pooling token)
-///   PAD = 0
+///   EOS = 49407 (end of text / padding token)
 /// Maximum sequence length: 77.
 /// </summary>
 public sealed class ClipTokenizer
 {
     private readonly Dictionary<string, int> _vocab;
     private readonly List<(string first, string second)> _merges;
-    private const int BosToken = 49406;
-    private const int EosToken = 49407;
-    private const int MaxLen   = 77;
+    public const int BosToken = 49406;
+    public const int EosToken = 49407;
+    public const int MaxLen   = 77;
 
     private ClipTokenizer(Dictionary<string, int> vocab, List<(string, string)> merges)
     {
@@ -51,14 +49,13 @@ public sealed class ClipTokenizer
     }
 
     /// <summary>
-    /// Tokenize a text string. Returns token ids padded to MaxLen.
-    /// Includes BOS at position 0 and EOS immediately after text tokens.
+    /// Tokenize a text string. Returns 77 token ids.
+    /// Padded with EosToken (49407) as required by CLIP/SD1.5.
     /// </summary>
     public int[] Tokenize(string text)
     {
         var ids = new List<int> { BosToken };
 
-        // Simple whitespace + punctuation split (CLIP style)
         var words = SplitWords(text.ToLowerInvariant());
         foreach (var word in words)
         {
@@ -73,8 +70,8 @@ public sealed class ClipTokenizer
 
         ids.Add(EosToken);
 
-        // Pad to MaxLen
-        while (ids.Count < MaxLen) ids.Add(0);
+        // Pad to MaxLen with EosToken (49407)
+        while (ids.Count < MaxLen) ids.Add(EosToken);
         return ids.ToArray();
     }
 
@@ -82,14 +79,11 @@ public sealed class ClipTokenizer
     {
         if (word.Length == 0) return new List<string>();
 
-        // CLIP BPE initial seed symbols: characters 0..N-2 as individual chars,
-        // and the last character fused with </w> (e.g. ['c', 'a', 't</w>']).
         var pairs = new List<string>(word.Length);
         for (int i = 0; i < word.Length - 1; i++)
             pairs.Add(word[i].ToString());
         pairs.Add(word[^1] + "</w>");
 
-        // Apply BPE merges greedily in priority order
         var mergeRank = new Dictionary<(string, string), int>(_merges.Count);
         for (int i = 0; i < _merges.Count; i++)
             mergeRank[_merges[i]] = i;
@@ -109,9 +103,8 @@ public sealed class ClipTokenizer
                 }
             }
 
-            if (bestIdx < 0) break; // no more applicable merges
+            if (bestIdx < 0) break;
 
-            // Merge best pair
             string merged = pairs[bestIdx] + pairs[bestIdx + 1];
             pairs[bestIdx] = merged;
             pairs.RemoveAt(bestIdx + 1);
