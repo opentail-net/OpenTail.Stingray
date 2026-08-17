@@ -115,12 +115,18 @@ internal static class DiffusionOps
     /// Kernel: [outC, inC, kH, kW].  Bias: [outC] (nullable).
     /// Supports stride=1 or stride=2, padding computed as "same" for stride=1.
     /// </summary>
-    public static float[] Conv2D(float[] input, float[] kernel, float[]? bias,
+        public static float[] Conv2D(float[] input, float[] kernel, float[]? bias,
                                   int n, int inC, int inH, int inW,
                                   int outC, int kH, int kW,
                                   int stride = 1, int padding = -1)
     {
         if (padding < 0) padding = (kH - 1) / 2; // "same" padding for odd kernels
+
+        // Fast-path: 1x1 convolution (stride=1, padding=0) using hardware-accelerated SIMD dot products
+        if (kH == 1 && kW == 1 && stride == 1 && padding == 0)
+        {
+            return Conv2D1x1Simd(input, kernel, bias, n, inC, inH, inW, outC);
+        }
 
         int outH = (inH + 2 * padding - kH) / stride + 1;
         int outW = (inW + 2 * padding - kW) / stride + 1;
@@ -168,6 +174,57 @@ internal static class DiffusionOps
                 }
             }
         });
+        return output;
+    }
+
+    private static float[] Conv2D1x1Simd(float[] input, float[] kernel, float[]? bias,
+                                         int n, int inC, int h, int w, int outC)
+    {
+        int hw = h * w;
+        var output = new float[n * outC * hw];
+
+        for (int b = 0; b < n; b++)
+        {
+            int inBatchBase = b * inC * hw;
+            int outBatchBase = b * outC * hw;
+
+            // 1. Pack input NCHW -> [HW, inC]
+            var packedIn = new float[hw * inC];
+            Parallel.For(0, hw, p =>
+            {
+                int dstOff = p * inC;
+                for (int ic = 0; ic < inC; ic++)
+                {
+                    packedIn[dstOff + ic] = input[inBatchBase + ic * hw + p];
+                }
+            });
+
+            // 2. Compute packed output: [HW, outC] = [HW, inC] @ [outC, inC]^T via TensorPrimitives.Dot
+            var packedOut = new float[hw * outC];
+            Parallel.For(0, hw, p =>
+            {
+                var rowIn = packedIn.AsSpan(p * inC, inC);
+                var rowOut = packedOut.AsSpan(p * outC, outC);
+
+                for (int oc = 0; oc < outC; oc++)
+                {
+                    var kRow = kernel.AsSpan(oc * inC, inC);
+                    float dot = TensorPrimitives.Dot(rowIn, kRow);
+                    rowOut[oc] = dot + (bias is not null ? bias[oc] : 0f);
+                }
+            });
+
+            // 3. Unpack packed output [HW, outC] -> output NCHW [outC, H, W]
+            Parallel.For(0, outC, oc =>
+            {
+                int outBase = outBatchBase + oc * hw;
+                for (int p = 0; p < hw; p++)
+                {
+                    output[outBase + p] = packedOut[p * outC + oc];
+                }
+            });
+        }
+
         return output;
     }
 
@@ -507,3 +564,4 @@ internal static class DiffusionOps
         for (int i = 0; i < n; i++) scores[i] *= inv;
     }
 }
+
