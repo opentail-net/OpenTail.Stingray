@@ -2417,8 +2417,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
             return 1;
         }
 
-        using var vision = VisionModel.Open(s.MmprojPath!);
-        var embedder = new GemmaUvVisionEmbedder(vision);
+        using var vision = UnifiedVisionPipeline.Open(s.MmprojPath!);
         int embd = hp.EmbeddingDim;
 
         // Project every image to its soft-token block up front, in --image order.
@@ -2426,11 +2425,11 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         int totalSoft = 0;
         for (int i = 0; i < nImages; i++)
         {
-            byte[] rgb;
-            int srcW, srcH;
+            float[] soft;
+            int nTok;
             try
             {
-                rgb = ImageIO.LoadRgb(imagePaths[i], out srcW, out srcH);
+                soft = vision.EmbedImageFile(imagePaths[i], out nTok);
             }
             catch (Exception ex) when (ex is IOException or NotSupportedException or InvalidDataException
                                           or UnauthorizedAccessException or System.Security.SecurityException)
@@ -2438,33 +2437,34 @@ public sealed class RunCommand : Command<RunCommand.Settings>
                 AnsiConsole.MarkupLine($"[red]Error reading image[/] {Markup.Escape(imagePaths[i])}: {Markup.Escape(ex.Message)}");
                 return 1;
             }
-            var img = ImagePreprocessor.Preprocess(rgb, srcW, srcH, vision);
-            var soft = embedder.Forward(img.Chw, img.Height, img.Width, out int nTok);
             blocks[i] = (soft, nTok);
             totalSoft += nTok;
-            AnsiConsole.MarkupLine($"[dim]Image {i + 1}/{nImages}: {srcW}x{srcH} -> {img.Width}x{img.Height} -> {nTok} soft tokens[/]");
+            AnsiConsole.MarkupLine($"[dim]Image {i + 1}/{nImages}: {vision.ProjectorType} -> {nTok} soft tokens ({embd}-dim)[/]");
         }
 
-        int imgOpen = tok.SpecialTokens.TryGetValue("<|image>", out var o) ? o : 255999;
-        int imgClose = tok.SpecialTokens.TryGetValue("<image|>", out var c) ? c : 258882;
-        int placeholder = tok.SpecialTokens.TryGetValue("<|image|>", out var ph) ? ph : 258880;
+        int imgOpen = !string.IsNullOrEmpty(vision.ImageOpenMarker) && tok.SpecialTokens.TryGetValue(vision.ImageOpenMarker, out var o) ? o : -1;
+        int imgClose = !string.IsNullOrEmpty(vision.ImageCloseMarker) && tok.SpecialTokens.TryGetValue(vision.ImageCloseMarker, out var c) ? c : -1;
+        int placeholder = tok.SpecialTokens.TryGetValue(vision.PlaceholderMarker, out var ph) ? ph :
+                          (tok.SpecialTokens.TryGetValue("<|image|>", out var ph2) ? ph2 :
+                          (tok.SpecialTokens.TryGetValue("<image_soft_token>", out var ph3) ? ph3 : 258880));
 
         var prompt = FormatPrompt(userMsg, s.SystemPrompt, enableThinking: !s_noThinking);
         var allTokens = tok.Encode(prompt).ToList();
         int placeholdersFound = allTokens.Count(t => t == placeholder);
         if (placeholdersFound != nImages)
         {
-            AnsiConsole.MarkupLine($"[red]Error:[/] expected {nImages} image placeholder token(s) (<|image|>, {placeholder}) " +
+            AnsiConsole.MarkupLine($"[red]Error:[/] expected {nImages} image placeholder token(s) ({vision.PlaceholderMarker}, {placeholder}) " +
                 $"after templating but found {placeholdersFound}; this model may not support image input.");
             return 1;
         }
 
-        // Each placeholder expands to <open> + its soft tokens + <close>, so the prefill is
+        // Each placeholder expands to [open] + its soft tokens + [close], so the prefill is
         // longer than the token list — an image is easily hundreds of positions. Check the
         // expanded length before the first Forward: ForwardPass sizes its attention-score and
         // RoPE scratch from the context bound but not its KV cache, so running past it writes
         // out of bounds instead of failing.
-        int plannedPrefill = allTokens.Count + nImages + totalSoft;
+        int markerTokens = (imgOpen >= 0 ? 1 : 0) + (imgClose >= 0 ? 1 : 0);
+        int plannedPrefill = allTokens.Count + (nImages * markerTokens) + totalSoft - nImages;
         if (plannedPrefill >= maxContextLength)
         {
             AnsiConsole.MarkupLine(
@@ -2484,10 +2484,10 @@ public sealed class RunCommand : Command<RunCommand.Settings>
             if (id == placeholder)
             {
                 var (soft, nTok) = blocks[imgIdx++];
-                logits = fwd.Forward(imgOpen, pos++);
+                if (imgOpen >= 0) logits = fwd.Forward(imgOpen, pos++);
                 for (int t = 0; t < nTok; t++)
                     logits = fwd.ForwardEmbedding(soft.AsSpan(t * embd, embd), pos++);
-                logits = fwd.Forward(imgClose, pos++);
+                if (imgClose >= 0) logits = fwd.Forward(imgClose, pos++);
             }
             else
             {

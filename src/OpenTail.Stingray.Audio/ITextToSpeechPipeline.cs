@@ -12,6 +12,11 @@ public interface ITextToSpeechPipeline : IDisposable
     /// Synthesizes text to audio samples at native sample rate.
     /// </summary>
     AudioGenerationResult Generate(AudioGenerationRequest request);
+
+    /// <summary>
+    /// Synthesizes text in streaming fashion, yielding clause/sentence audio waveforms as they are generated.
+    /// </summary>
+    IAsyncEnumerable<float[]> GenerateStreamAsync(AudioGenerationRequest request, CancellationToken ct = default);
 }
 
 public record AudioGenerationRequest

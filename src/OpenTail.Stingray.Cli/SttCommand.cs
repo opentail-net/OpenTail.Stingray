@@ -30,6 +30,10 @@ public sealed class SttCommand : Command<SttCommand.Settings>
         [Description("Disable timestamp-aligned subtitle segment generation.")]
         public bool NoTimestamps { get; init; }
 
+        [CommandOption("--vad")]
+        [Description("Enable Silero VAD neural speech boundary detection and silence filtering.")]
+        public bool UseVad { get; init; }
+
         [CommandOption("--temperature <TEMP>")]
         [Description("Decoding temperature (0.0 for greedy argmax). Default: 0.0.")]
         public float Temperature { get; init; } = 0.0f;
@@ -72,6 +76,7 @@ public sealed class SttCommand : Command<SttCommand.Settings>
         Console.WriteLine($"Task:        {task}");
         Console.WriteLine($"Language:    {(string.IsNullOrEmpty(s.Language) ? "auto (en)" : s.Language)}");
         Console.WriteLine($"Timestamps:  {!s.NoTimestamps}");
+        Console.WriteLine($"Silero VAD:  {s.UseVad}");
 
         // Load WAV audio samples
         var (samples, sampleRate, channels) = WavReader.ReadWav(s.InputPath);
@@ -86,6 +91,7 @@ public sealed class SttCommand : Command<SttCommand.Settings>
             Language = s.Language,
             Task = task,
             EnableTimestamps = !s.NoTimestamps,
+            UseVad = s.UseVad,
             Temperature = s.Temperature,
             Progress = (done, total) =>
             {

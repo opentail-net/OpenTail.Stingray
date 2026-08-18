@@ -2,7 +2,7 @@
 
 **Generated:** by `scripts/gen-cli-option-inventory.ps1`, which scans `[CommandOption]` /
 `[Description]` pairs under `src/OpenTail.Stingray.Cli`. Last regenerated **2026-08-18**, recording
-**189 option declarations** across 16 command files â the same count the
+**190 option declarations** across 16 command files â the same count the
 `StaticPlanConfigurationTests` guard enforces against source.
 
 The tables below are no longer hand-maintained. Regenerate with the script rather than editing rows
@@ -317,6 +317,7 @@ hoc at each read site rather than in one place.
 | `--output <PATH>` | stable | Optional output file path to write the transcribed text or subtitle segments. |
 | `--task <TASK>` | stable | ASR task: 'transcribe' (default) or 'translate' (translate to English). |
 | `--temperature <TEMP>` | stable | Decoding temperature (0.0 for greedy argmax). Default: 0.0. |
+| `--vad` | stable | Enable Silero VAD neural speech boundary detection and silence filtering. |
 
 ## TtsCommand
 

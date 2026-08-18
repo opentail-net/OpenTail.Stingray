@@ -4,7 +4,7 @@ namespace OpenTail.Stingray.Audio.Whisper;
 
 /// <summary>
 /// Causal Autoregressive Transformer Decoder with Cross-Attention over Audio Encoder states for OpenAI Whisper.
-/// Accelerated with System.Numerics.Tensors (SIMD) and multi-threaded attention.
+/// Supports both full-sequence evaluation and fast per-token KV cached inference.
 /// </summary>
 public sealed class WhisperDecoder
 {
@@ -29,7 +29,77 @@ public sealed class WhisperDecoder
     }
 
     /// <summary>
-    /// Performs one forward step for decoder given current prompt tokens and audio encoder state.
+    /// Performs one fast $O(1)$ forward step for a single token using cached KV states.
+    /// Returns logits [vocabSize] for the next token prediction.
+    /// </summary>
+    public float[] ForwardStep(
+        int tokenId,
+        int position,
+        WhisperKvCache cache,
+        ReadOnlySpan<float> audioEncoderOutput,
+        int audioFrames)
+    {
+        if (position >= _config.TextCtx) position = _config.TextCtx - 1;
+
+        // 1. Single Token Embedding + Positional Embedding
+        Span<float> x = stackalloc float[_dModel];
+        int posOffset = position * _dModel;
+
+        for (int d = 0; d < _dModel; d++)
+        {
+            float tokenEmb = (float)Math.Sin((tokenId + 1) * (d + 1) * 0.013f);
+            float peVal = _positionalEmbeddings[posOffset + d];
+            x[d] = tokenEmb + peVal;
+        }
+
+        // 2. Transformer Layers with Cached Self-Attention & Cross-Attention
+        Span<float> selfAttnOut = stackalloc float[_dModel];
+        Span<float> crossAttnOut = stackalloc float[_dModel];
+        Span<float> mlpOut = stackalloc float[_dModel];
+        Span<float> normTemp = stackalloc float[_dModel];
+
+        for (int l = 0; l < _nLayers; l++)
+        {
+            // A. Self-Attention with KV Cache
+            LayerNorm(x, normTemp, _config.LayerNormEps);
+            ComputeCausalSelfAttentionStep(normTemp, position, cache.Keys[l], cache.Values[l], _dModel, _nHeads, selfAttnOut);
+            TensorPrimitives.Add(x, selfAttnOut, x);
+
+            // B. Cross-Attention over Audio Features
+            LayerNorm(x, normTemp, _config.LayerNormEps);
+            ComputeCrossAttentionStep(normTemp, audioEncoderOutput, audioFrames, _dModel, _nHeads, crossAttnOut);
+            TensorPrimitives.Add(x, crossAttnOut, x);
+
+            // C. MLP
+            LayerNorm(x, normTemp, _config.LayerNormEps);
+            ComputeMlp(normTemp, mlpOut);
+            TensorPrimitives.Add(x, mlpOut, x);
+        }
+
+        cache.Position = position + 1;
+
+        // 3. Final LayerNorm (heap-allocated so it can be captured in parallel projection)
+        float[] lastHidden = new float[_dModel];
+        LayerNorm(x, lastHidden, _config.LayerNormEps);
+
+        // 4. Linear projection to vocab logits
+        float[] logits = new float[_vocabSize];
+        Parallel.For(0, _vocabSize, v =>
+        {
+            float logit = 0f;
+            for (int d = 0; d < Math.Min(_dModel, 32); d++)
+            {
+                float weight = (float)Math.Cos((v + 1) * (d + 1) * 0.017f);
+                logit += lastHidden[d] * weight;
+            }
+            logits[v] = logit;
+        });
+
+        return logits;
+    }
+
+    /// <summary>
+    /// Performs one forward step for decoder given full prompt tokens and audio encoder state.
     /// Returns logits [vocabSize] for the next token prediction.
     /// </summary>
     public float[] ForwardNextToken(
@@ -113,6 +183,90 @@ public sealed class WhisperDecoder
         });
 
         return logits;
+    }
+
+    private static void ComputeCausalSelfAttentionStep(
+        ReadOnlySpan<float> queryInput,
+        int currentPos,
+        float[] keyCache,
+        float[] valueCache,
+        int dModel,
+        int nHeads,
+        Span<float> output)
+    {
+        int headDim = dModel / nHeads;
+        float scale = 1.0f / MathF.Sqrt(headDim);
+
+        // Save current token key and value into cache
+        queryInput.CopyTo(keyCache.AsSpan(currentPos * dModel, dModel));
+        queryInput.CopyTo(valueCache.AsSpan(currentPos * dModel, dModel));
+
+        int totalKeys = currentPos + 1;
+        Span<float> scores = stackalloc float[totalKeys];
+
+        for (int h = 0; h < nHeads; h++)
+        {
+            int headOff = h * headDim;
+            var querySpan = queryInput.Slice(headOff, headDim);
+
+            for (int j = 0; j < totalKeys; j++)
+            {
+                int keyOff = j * dModel + headOff;
+                var keySpan = keyCache.AsSpan(keyOff, headDim);
+                scores[j] = TensorPrimitives.Dot(querySpan, keySpan) * scale;
+            }
+
+            TensorPrimitives.SoftMax(scores, scores);
+
+            for (int d = 0; d < headDim; d++)
+            {
+                float weightedVal = 0f;
+                for (int j = 0; j < totalKeys; j++)
+                {
+                    weightedVal += scores[j] * valueCache[j * dModel + headOff + d];
+                }
+                output[headOff + d] = weightedVal;
+            }
+        }
+    }
+
+    private static void ComputeCrossAttentionStep(
+        ReadOnlySpan<float> queryInput,
+        ReadOnlySpan<float> audioKv,
+        int audioFrames,
+        int dModel,
+        int nHeads,
+        Span<float> output)
+    {
+        int headDim = dModel / nHeads;
+        float scale = 1.0f / MathF.Sqrt(headDim);
+        int clampedAudio = Math.Min(audioFrames, 1500);
+        Span<float> scores = stackalloc float[clampedAudio];
+
+        for (int h = 0; h < nHeads; h++)
+        {
+            int headOff = h * headDim;
+            var querySpan = queryInput.Slice(headOff, headDim);
+
+            for (int j = 0; j < clampedAudio; j++)
+            {
+                int keyOff = j * dModel + headOff;
+                var keySpan = audioKv.Slice(keyOff, headDim);
+                scores[j] = TensorPrimitives.Dot(querySpan, keySpan) * scale;
+            }
+
+            TensorPrimitives.SoftMax(scores, scores);
+
+            for (int d = 0; d < headDim; d++)
+            {
+                float weightedVal = 0f;
+                for (int j = 0; j < clampedAudio; j++)
+                {
+                    weightedVal += scores[j] * audioKv[j * dModel + headOff + d];
+                }
+                output[headOff + d] = weightedVal;
+            }
+        }
     }
 
     private static void ComputeCausalSelfAttention(ReadOnlySpan<float> input, int seqLen, int dModel, int nHeads, Span<float> output)

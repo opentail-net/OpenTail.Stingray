@@ -3,23 +3,47 @@ using System.Buffers.Binary;
 namespace OpenTail.Stingray.Audio;
 
 /// <summary>
-/// High-performance 16-bit PCM RIFF WAVE audio file writer.
+/// Dithering mode for float-to-16-bit PCM quantization.
+/// </summary>
+public enum DitherMode
+{
+    /// <summary>No dithering applied (direct truncation/rounding).</summary>
+    None = 0,
+
+    /// <summary>Triangular Probability Density Function (TPDF) 2 LSB peak-to-peak dither with silence thresholding.</summary>
+    Tpdf = 1
+}
+
+/// <summary>
+/// High-performance 16-bit PCM RIFF WAVE audio file writer with optional TPDF dithering.
 /// </summary>
 public static class WavWriter
 {
+    private const double SilenceThreshold = 1e-5; // ~ -100 dBFS
+
     /// <summary>
     /// Writes float audio samples in [-1.0, 1.0] to a standard 16-bit PCM WAV file.
     /// </summary>
-    public static void WriteWav(string path, ReadOnlySpan<float> samples, int sampleRate = 24000, int channels = 1)
+    public static void WriteWav(
+        string path,
+        ReadOnlySpan<float> samples,
+        int sampleRate = 24000,
+        int channels = 1,
+        DitherMode dither = DitherMode.Tpdf)
     {
         using var stream = File.Create(path);
-        WriteWav(stream, samples, sampleRate, channels);
+        WriteWav(stream, samples, sampleRate, channels, dither);
     }
 
     /// <summary>
     /// Writes float audio samples in [-1.0, 1.0] to a stream in WAV format.
     /// </summary>
-    public static void WriteWav(Stream stream, ReadOnlySpan<float> samples, int sampleRate = 24000, int channels = 1)
+    public static void WriteWav(
+        Stream stream,
+        ReadOnlySpan<float> samples,
+        int sampleRate = 24000,
+        int channels = 1,
+        DitherMode dither = DitherMode.Tpdf)
     {
         int bytesPerSample = 2; // 16-bit
         int dataChunkSize = samples.Length * bytesPerSample;
@@ -50,17 +74,17 @@ public static class WavWriter
 
         stream.Write(header);
 
-        // Convert float samples to 16-bit signed PCM
+        // Convert float samples to 16-bit signed PCM with optional TPDF dither
         byte[] pcmBuffer = new byte[Math.Min(4096, samples.Length * 2)];
         int offset = 0;
+        uint rngState = 0x853c49e6; // Fast deterministic XorShift32 seed
 
         while (offset < samples.Length)
         {
             int count = Math.Min(pcmBuffer.Length / 2, samples.Length - offset);
             for (int i = 0; i < count; i++)
             {
-                float s = Math.Clamp(samples[offset + i], -1.0f, 1.0f);
-                short sample16 = (short)(s * 32767.0f);
+                short sample16 = QuantizeSample(samples[offset + i], dither, ref rngState);
                 BinaryPrimitives.WriteInt16LittleEndian(pcmBuffer.AsSpan(i * 2, 2), sample16);
             }
             stream.Write(pcmBuffer, 0, count * 2);
@@ -71,10 +95,39 @@ public static class WavWriter
     /// <summary>
     /// Converts float audio samples in [-1.0, 1.0] to a standalone WAV byte array.
     /// </summary>
-    public static byte[] ToWavBytes(ReadOnlySpan<float> samples, int sampleRate = 24000, int channels = 1)
+    public static byte[] ToWavBytes(
+        ReadOnlySpan<float> samples,
+        int sampleRate = 24000,
+        int channels = 1,
+        DitherMode dither = DitherMode.Tpdf)
     {
         using var ms = new MemoryStream();
-        WriteWav(ms, samples, sampleRate, channels);
+        WriteWav(ms, samples, sampleRate, channels, dither);
         return ms.ToArray();
+    }
+
+    private static short QuantizeSample(float sample, DitherMode dither, ref uint rngState)
+    {
+        double clamped = Math.Clamp((double)sample, -1.0, 1.0);
+        double scaled = clamped < 0 ? clamped * 32768.0 : clamped * 32767.0;
+
+        if (dither == DitherMode.Tpdf && Math.Abs(clamped) > SilenceThreshold)
+        {
+            // 2-point XorShift32 uniform PRNG -> Triangular PDF
+            rngState ^= rngState << 13;
+            rngState ^= rngState >> 17;
+            rngState ^= rngState << 5;
+            double r1 = (rngState & 0x00FFFFFF) / 16777216.0;
+
+            rngState ^= rngState << 13;
+            rngState ^= rngState >> 17;
+            rngState ^= rngState << 5;
+            double r2 = (rngState & 0x00FFFFFF) / 16777216.0;
+
+            scaled += (r1 + r2 - 1.0);
+        }
+
+        double quantized = Math.Round(scaled, MidpointRounding.AwayFromZero);
+        return (short)Math.Clamp(quantized, short.MinValue, short.MaxValue);
     }
 }

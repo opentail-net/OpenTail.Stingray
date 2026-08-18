@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-OpenTail.Stingray is a high-performance LLM inference engine and image generation pipeline in C# 14 / .NET 10. It reads GGUF model files and runs transformer inference on CPU (AVX2/AVX-512 SIMD), Vulkan compute shaders, and CUDA/cuBLAS. Architectures supported include `llama`/`llama4`, `qwen2`, `qwen3`, `qwen3moe`, `qwen35moe` (hybrid Gated-DeltaNet + attention + MoE), `gemma`/`gemma2`/`gemma3`/`gemma4`, `phi2`/`phi3`, and OLMoE. `deepseek2` (DeepSeek-V2/V3/R1's MLA attention) has a CPU-only implementation that loads and runs but produces numerically wrong output — not yet admitted as supported; see `docs/bugstofix.md`. It also supports text-to-image and text-to-video generation (Stable Diffusion 1.5, SDXL, SD 3/3.5, FLUX.1, Z-Image-Turbo, Qwen Image & Edit, Wan 2.1/2.2 Video, HunyuanVideo, and LTX-Video), 4× image upscaling via RRDBNet (Real-ESRGAN), Gemma 4 encoder-free multimodal vision, Native Text-to-Speech (TTS) with Voice Cloning (Kokoro-82M, Piper VITS, F5-TTS Flow-Matching DiT, Chatterbox-Turbo, and MeloTTS Multilingual VITS), and Native Dynamic Multi-LoRA Serving across concurrent sessions. Targets NativeAOT for single-binary deployment.
+OpenTail.Stingray is a high-performance LLM inference engine and image generation pipeline in C# 14 / .NET 10. It reads GGUF model files and runs transformer inference on CPU (AVX2/AVX-512 SIMD), Vulkan compute shaders, and CUDA/cuBLAS. Architectures supported include `llama`/`llama4`, `qwen2`, `qwen3`, `qwen3moe`, `qwen35moe` (hybrid Gated-DeltaNet + attention + MoE), `gemma`/`gemma2`/`gemma3`/`gemma4`, `phi2`/`phi3`, and OLMoE. `deepseek2` (DeepSeek-V2/V3/R1's MLA attention) has a CPU-only implementation that loads and runs but produces numerically wrong output — not yet admitted as supported; see `docs/bugstofix.md`. It also supports text-to-image and text-to-video generation (Stable Diffusion 1.5, SDXL, SD 3/3.5, FLUX.1, Z-Image-Turbo, Qwen Image & Edit, Wan 2.1/2.2 Video, HunyuanVideo, and LTX-Video), 4× image upscaling via RRDBNet (Real-ESRGAN), Multimodal Vision understanding (Gemma 4 `gemma4uv`/`gemma4v`, Gemma 3 SigLIP, Llama 4), Native Text-to-Speech (TTS) with Voice Cloning (Kokoro-82M, Piper VITS, F5-TTS Flow-Matching DiT, Chatterbox-Turbo, and MeloTTS Multilingual VITS), and Native Dynamic Multi-LoRA Serving across concurrent sessions. Targets NativeAOT for single-binary deployment.
 
 ## Build & Test Commands
 
@@ -55,10 +55,10 @@ dotnet run --project src/OpenTail.Stingray.Cli -c Release -- \
   --temp 0.6 --top-p 0.95 --top-k 0 \
   -p "If 5x + 3 = 2x + 18, what is x? Show your reasoning."
 
-# Gemma 4 encoder-free vision (issue #250): pass one or more PNGs with --image and
-# --mmproj (the gemma4uv projector GGUF). CPU-only single-prompt path for now (-g 0).
+# Multimodal vision (Gemma 4, Gemma 3, Llama 4): pass one or more images with --image
+# and --mmproj. UnifiedVisionPipeline auto-detects the projector type.
 dotnet run --project src/OpenTail.Stingray.Cli -c Release -- \
-  -m models/gemma-4-E4B-it.gguf --mmproj models/gemma4-mmproj.gguf -g 0 \
+  -m models/gemma-4-E4B-it.gguf --mmproj models/gemma-4-E4B-it-mmproj.gguf -g 0 \
   --image photo.png -p "Describe <image>"
 
 # Start API server (OpenAI + Anthropic compatible). OpenTail.Stingray.Server is the
@@ -129,7 +129,7 @@ The solution (`OpenTail.Stingray.slnx`) is a four-layer stack, bottom-up:
 
 Supporting libraries:
 - **OpenTail.Stingray.Diffusion** — Native image-generation pipelines. `ZImagePipeline` (Z-Image-Turbo: `ZImageDiT` single-stream S3-DiT + Qwen3-4B encoder + FLUX VAE) and `ImagePipeline` (`FluxDiT` multi-stream MMDiT + CLIP-L/T5 encoders). Includes `VaeDecoder`, `RRDBNet` (Real-ESRGAN 4× upscaler), `EulerFlowScheduler`, 2D RoPE, FP8 conversion, and Safetensors/GGUF weight loaders. Text encoders live in `TextEncoders/`.
-- **OpenTail.Stingray.Vision** — Gemma 4 encoder-free vision projector (`gemma4uv`). `VisionModel` loads the mmproj GGUF; `GemmaUvVisionEmbedder` does im2col patches → projection → soft tokens; `ImagePreprocessor`/`ImageIO` handle image loading.
+- **OpenTail.Stingray.Vision** — Unified Multimodal Vision Pipeline (`UnifiedVisionPipeline` / `IVisionEmbedder`). Auto-detects and runs Gemma 4 encoder-free (`gemma4uv`), Gemma 4 ViT (`gemma4v`), Gemma 3 SigLIP (`gemma3`), and Llama 4 (`llama4`) projectors, with model-matched image preprocessing and soft-token embedding.
 - **OpenTail.Stingray.TurboQuant** — KV cache compression. Two codecs: KVarN (Hadamard + dual-axis Sinkhorn variance normalization + asymmetric RTN, 4-bit K / 2-bit V, 128-token tiles — issue #180) and Lloyd-Max codebooks (3-4 bit; severely degrades quality on QK-norm models such as Qwen3, issue #432). `--tq-mode` defaults to `auto`: KVarN where supported, else Lloyd-Max fallback with a quality warning (#436). Lloyd-Max remains the fallback for Vulkan / partial-offload / MoE-on-GPU / SnapKV. KVarN runs on CPU (AVX2 fused read kernels) and the CUDA decode path (CUDA-graph decode + chunked prefill). Codebook data lives in `codebooks/`.
 - **OpenTail.Stingray.Pipeline** — 3-tier memory hierarchy (VRAM → pinned RAM → NVMe), SLRU expert cache, async prefetcher.
 - **OpenTail.Stingray.Sessions** — Transactional, revisioned hot-session orchestration over inference state. Design notes in `docs/reference/adr-0001-session-cache-lifecycle.md` and `docs/session-native-inference-runtime-plan.md`; restart-continuation is still experimental internals rather than a supported product feature (see `CHANGELOG.md`).
@@ -176,7 +176,7 @@ Shared settings live in `Directory.Build.props` (net10.0, LangVersion 14, Nullab
 | Tests.Sessions.Fast | Hot-session orchestration (`OpenTail.Stingray.Sessions`) against fakes — no real model. Runs in parallel. |
 | Tests.Sessions | The real-model subset of session orchestration (golden-replay/greedy-parity acceptance tests). Real model, serial. |
 | Tests.Cli | GPU device queries, CLI flags (e.g. `--cpu-moe`) |
-| Tests.Vision | Gemma 4 vision embedder parity, image I/O, mmproj GGUF loading |
+| Tests.Vision | Unified vision pipeline, Gemma 3/4 and Llama 4 ViT encoders, image I/O, mmproj loading |
 | Tests.Diffusion | Diffusion pipeline acceptance and conformance tests (SD 1.5, SDXL, SD 3, Qwen Image, Wan, Hunyuan, LTX-Video) |
 | Tests.Audio | Kokoro-82M Text-to-Speech unit tests (G2P, PLBERT, AdaIN, iSTFT, WavWriter) |
 | Tests.Cuda | CUDA backend correctness. Silent-skips fast on a machine with no CUDA card (see below). |

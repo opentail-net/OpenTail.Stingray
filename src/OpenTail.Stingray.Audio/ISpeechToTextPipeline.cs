@@ -12,6 +12,14 @@ public interface ISpeechToTextPipeline : IDisposable
     /// Transcribes or translates audio samples into text with timestamps and segments.
     /// </summary>
     SpeechToTextResult Transcribe(SpeechToTextRequest request);
+
+    /// <summary>
+    /// Transcribes incoming streaming audio chunks in real-time.
+    /// </summary>
+    IAsyncEnumerable<SpeechSegment> TranscribeStreamAsync(
+        IAsyncEnumerable<ReadOnlyMemory<float>> audioStream,
+        SpeechToTextRequest baseRequest,
+        CancellationToken ct = default);
 }
 
 public enum SpeechTask
@@ -27,6 +35,7 @@ public sealed record SpeechToTextRequest
     public string? Language { get; init; }
     public SpeechTask Task { get; init; } = SpeechTask.Transcribe;
     public bool EnableTimestamps { get; init; } = true;
+    public bool UseVad { get; init; } = false;
     public float Temperature { get; init; } = 0.0f;
     public int BeamSize { get; init; } = 1;
     public string? InitialPrompt { get; init; }

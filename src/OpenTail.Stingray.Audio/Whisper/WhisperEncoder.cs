@@ -106,6 +106,7 @@ public sealed class WhisperEncoder
     {
         float[] inCopy = input.ToArray();
         float[] outCopy = new float[_dModel * outFrames];
+        int inFrames = inChannels > 0 ? inCopy.Length / inChannels : outFrames;
 
         Parallel.For(0, _dModel, oc =>
         {
@@ -117,15 +118,19 @@ public sealed class WhisperEncoder
 
                 for (int ic = 0; ic < inChannels; ic++)
                 {
-                    int inChannelOff = ic * (stride == 1 ? outFrames : outFrames * 2);
+                    int inChannelOff = ic * inFrames;
                     for (int k = -1; k <= 1; k++)
                     {
                         int srcT = inCenter + k;
-                        if (srcT >= 0 && srcT < outFrames)
+                        if (srcT >= 0 && srcT < inFrames)
                         {
-                            float inVal = inCopy[inChannelOff + srcT];
-                            float weight = (float)Math.Sin((oc + 1) * (ic + 1) + k) * 0.05f;
-                            sum += inVal * weight;
+                            int idx = inChannelOff + srcT;
+                            if (idx >= 0 && idx < inCopy.Length)
+                            {
+                                float inVal = inCopy[idx];
+                                float weight = (float)Math.Sin((oc + 1) * (ic + 1) + k) * 0.05f;
+                                sum += inVal * weight;
+                            }
                         }
                     }
                 }
