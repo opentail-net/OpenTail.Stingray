@@ -101,6 +101,7 @@ public sealed class InferenceSession : IInferenceSession
         }
     }
     public DateTimeOffset LastActivityUtc { get; private set; } = DateTimeOffset.UtcNow;
+    public OpenTail.Stingray.Core.Lora.LoraAdapter? ActiveLora { get; set; }
     public OpenTail.Stingray.Core.Tools.IToolProvider? ToolProvider { get; set; }
     public OpenTail.Stingray.Core.Tools.InferenceToolContext? ToolContext { get; set; }
     public OpenTail.Stingray.Core.ITokenizer? Tokenizer { get; set; }
@@ -1282,3 +1283,4 @@ public sealed class InferenceSession : IInferenceSession
         return (int)h;
     }
 }
+

@@ -11,8 +11,8 @@ NativeAOT-publishes to a single binary.
 > **Built by [opentail.net](https://opentail.net)**
 
 Runs GGUF models on CPU (AVX2/AVX-512 SIMD) and GPU (Vulkan compute shaders or CUDA cuBLAS), with an
-OpenAI- and Anthropic-compatible API server and native pipelines for
-[Z-Image-Turbo](https://huggingface.co/Tongyi-MAI/Z-Image-Turbo) and FLUX.1.
+OpenAI- and Anthropic-compatible API server, native dynamic Multi-LoRA serving, and native pipelines for
+Stable Diffusion 1.5, SDXL, SD 3/3.5, FLUX.1, Z-Image-Turbo, Qwen Image & Edit, Wan 2.1/2.2 Video, and HunyuanVideo.
 
 ---
 
@@ -663,3 +663,4 @@ over them.
 Released under the [MIT License](LICENSE).
 
 Copyright © 2026 OpenTail.
+

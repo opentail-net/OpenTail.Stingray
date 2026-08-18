@@ -92,3 +92,5 @@ $$W_{\text{effective}} = W_{\text{base}} + \Delta W$$
 * **Full Solution Build:** Clean 0-warning, 0-error build across all 35 projects in `OpenTail.Stingray.slnx`.
 
 
+
+

@@ -272,6 +272,12 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private bool IsMoeLayer(int layer) => _hp.IsMoE && layer >= _hp.LeadingDenseBlockCount;
 
+    /// <summary>
+    /// Active fine-tuned LoRA adapter dynamically applied during this forward pass.
+    /// When null, the forward pass runs base model weights with zero overhead.
+    /// </summary>
+    public OpenTail.Stingray.Core.Lora.LoraAdapter? ActiveLora { get; set; }
+
     // Optional TurboQuant KV cache (Phase 3)
     private TurboQuantKvCache? _tqKvCache;
     private float* _rotatedQuery;  // scratch for WHT-rotated query [headDim]
@@ -1542,3 +1548,4 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
     }
 
 }
+

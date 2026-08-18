@@ -93,6 +93,7 @@ public interface IInferenceSession : IAsyncDisposable
     /// <summary>Remaining token capacity before MaxContextTokens is reached. Returns int.MaxValue if session is unlimited.</summary>
     int RemainingContextTokens { get; }
 
+    OpenTail.Stingray.Core.Lora.LoraAdapter? ActiveLora { get; set; }
     OpenTail.Stingray.Core.Tools.IToolProvider? ToolProvider { get; set; }
     OpenTail.Stingray.Core.Tools.InferenceToolContext? ToolContext { get; set; }
     OpenTail.Stingray.Core.ITokenizer? Tokenizer { get; set; }
@@ -135,3 +136,4 @@ public interface IInferenceSession : IAsyncDisposable
     IInferenceSession Fork();
     IReadOnlyList<IInferenceSession> ForkMany(int count);
 }
+

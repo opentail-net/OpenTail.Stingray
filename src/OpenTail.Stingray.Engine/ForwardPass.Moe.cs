@@ -496,3 +496,4 @@ public sealed unsafe partial class ForwardPass
     }
 
 }
+

@@ -395,3 +395,4 @@ public interface IForwardPass : IDisposable, IThreadAffineBackend
     /// </summary>
     ReadOnlySpan<float> HiddenTapsAt(int position) => default;
 }
+

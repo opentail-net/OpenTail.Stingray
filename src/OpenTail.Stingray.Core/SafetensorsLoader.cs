@@ -243,6 +243,8 @@ public sealed class SafetensorsLoader : IWeightLoader
     public int TensorCount => _tensors.Count;
 
     /// <summary>Returns the storage dtype declared for a tensor without reading its data.</summary>
+
+
     public string GetDtype(string name)
     {
         if (!_tensors.TryGetValue(name, out var info))
@@ -468,3 +470,5 @@ public sealed class SafetensorsLoader : IWeightLoader
         return false;
     }
 }
+
+

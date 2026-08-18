@@ -1191,6 +1191,47 @@ public sealed class ImageCommand : Command<ImageCommand.Settings>
             gpu?.Dispose();
         }
     }
+    private static bool IsLtxVideo(string path)
+    {
+        string n = Path.GetFileNameWithoutExtension(path).ToLowerInvariant();
+        return n.Contains("ltx") || n.Contains("ltxv");
+    }
+
+    private static int RunLtxVideo(Settings s, string modelPath, int deviceIndex, bool deviceNone)
+    {
+        string output = s.OutputPath ?? "ltx_video_output.png";
+        int width = s.Width > 0 ? s.Width : 768;
+        int height = s.Height > 0 ? s.Height : 512;
+        int steps = s.Steps > 0 ? s.Steps : 25;
+        float cfgScale = s.CfgScale > 0 ? s.CfgScale : 3.0f;
+        int videoFrames = s.VideoFrames > 0 ? s.VideoFrames : 25;
+
+        AnsiConsole.MarkupLine("[bold]LTX-Video[/] (Lightricks Video DiT)");
+        AnsiConsole.MarkupLine($"[dim]Model:[/]   {Markup.Escape(modelPath)}");
+        AnsiConsole.MarkupLine($"[dim]Prompt:[/]  \"{Markup.Escape(s.Prompt!)}\"");
+        AnsiConsole.MarkupLine($"[dim]Size:[/]    {width}x{height}, {videoFrames} frames, {steps} steps, CFG {cfgScale:F1}");
+
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        using var pipeline = new OpenTail.Stingray.Diffusion.LTXVideo.LtxVideoPipeline();
+
+        var req = new OpenTail.Stingray.Diffusion.ImageGenerationRequest
+        {
+            Prompt = s.Prompt!,
+            Width = width,
+            Height = height,
+            Steps = steps,
+            Guidance = cfgScale,
+            Seed = s.Seed,
+            OutputPath = output
+        };
+
+        pipeline.Generate(req);
+        sw.Stop();
+
+        AnsiConsole.MarkupLine($"[green]✓[/] Primary frame saved: [cyan]{Markup.Escape(Path.GetFullPath(output))}[/] in [yellow]{sw.Elapsed.TotalSeconds:F1}s[/]");
+        return 0;
+    }
+
     private static bool IsStableDiffusion(string path)
     {
         string n = Path.GetFileNameWithoutExtension(path).ToLowerInvariant();
@@ -1273,6 +1314,9 @@ public sealed class ImageCommand : Command<ImageCommand.Settings>
     private static string Q(string s) =>
         s.Contains(' ') || s.Contains('"') ? $"\"{s.Replace("\"", "\\\"")}\"" : s;
 }
+
+
+
 
 
 
