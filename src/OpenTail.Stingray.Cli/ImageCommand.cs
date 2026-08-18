@@ -768,6 +768,84 @@ public sealed class ImageCommand : Command<ImageCommand.Settings>
 
 
 
+    private static bool IsHunyuanVideo(string path)
+    {
+        string n = Path.GetFileNameWithoutExtension(path).ToLowerInvariant();
+        return n.Contains("hunyuan") || n.Contains("hyvideo");
+    }
+
+    private static int RunHunyuanVideo(Settings s, string modelPath, int deviceIndex, bool deviceNone)
+    {
+        string output = s.OutputPath ?? "output.png";
+        int steps = s.Steps > 0 ? s.Steps : 20;
+        float guidance = s.CfgScale > 0 ? s.CfgScale : 6.0f;
+        int frames = s.VideoFrames > 0 ? s.VideoFrames : 1;
+        float[]? initImage = LoadInitImage(s.InitImagePath);
+
+        IComputeBackend? gpu = null;
+        if (!deviceNone && deviceIndex >= 0)
+        {
+            try { gpu = new VulkanBackend(deviceIndex); }
+            catch { }
+        }
+
+        AnsiConsole.MarkupLine("[bold]HunyuanVideo Video Diffusion (DiT + Dual Text Conditioning)[/]");
+        AnsiConsole.MarkupLine($"[dim]Model:[/]    {Markup.Escape(modelPath)}");
+        AnsiConsole.MarkupLine($"[dim]Size:[/]     {s.Width}×{s.Height} (frames={frames})  steps={steps}  guidance={guidance}  seed={s.Seed}");
+        if (initImage is not null)
+            AnsiConsole.MarkupLine($"[dim]Init Image:[/] {Markup.Escape(s.InitImagePath!)} (I2V mode)");
+        if (s.UpscalerPath is not null)
+            AnsiConsole.MarkupLine($"[dim]Upscaler:[/] {Markup.Escape(s.UpscalerPath)}");
+        AnsiConsole.MarkupLine($"[dim]Output:[/]   {Markup.Escape(output)}");
+        AnsiConsole.WriteLine();
+
+        try
+        {
+            var sw = Stopwatch.StartNew();
+            RRDBNet? upscaler = null;
+            if (s.UpscalerPath is not null)
+                upscaler = RRDBNet.Load(s.UpscalerPath, gpu);
+
+            using var pipeline = OpenTail.Stingray.Diffusion.HunyuanVideo.HunyuanVideoPipeline.Load(modelPath, s.VaePath, gpu);
+
+            string target = gpu is not null ? gpu.Name : "CPU";
+            AnsiConsole.Status()
+                .Spinner(Spinner.Known.Dots)
+                .SpinnerStyle(Style.Parse("blue"))
+                .Start($"Denoising ({steps} steps on {target})…", ctx =>
+                {
+                    pipeline.Generate(
+                        prompt: s.Prompt!,
+                        negativePrompt: s.NegativePrompt,
+                        width: s.Width,
+                        height: s.Height,
+                        numFrames: frames,
+                        steps: steps,
+                        guidance: guidance,
+                        flowShift: 7.0f,
+                        seed: s.Seed,
+                        outputPath: output,
+                        progress: (step, total) => ctx.Status($"Denoising step {step}/{total} on {target}…"),
+                        upscaler: upscaler,
+                        upscaleBlend: s.UpscaleBlend,
+                        initImageRgb: initImage);
+                });
+
+            sw.Stop();
+            AnsiConsole.MarkupLine($"[green]✓[/] Output saved: [cyan]{Markup.Escape(Path.GetFullPath(output))}[/] in [yellow]{sw.Elapsed.TotalSeconds:F1}s[/]");
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            AnsiConsole.MarkupLine($"[red]Error:[/] {Markup.Escape(ex.Message)}");
+            return 1;
+        }
+        finally
+        {
+            gpu?.Dispose();
+        }
+    }
+
     private static bool IsWan(string path)
     {
         string n = Path.GetFileNameWithoutExtension(path).ToLowerInvariant();
@@ -1195,6 +1273,7 @@ public sealed class ImageCommand : Command<ImageCommand.Settings>
     private static string Q(string s) =>
         s.Contains(' ') || s.Contains('"') ? $"\"{s.Replace("\"", "\\\"")}\"" : s;
 }
+
 
 
 

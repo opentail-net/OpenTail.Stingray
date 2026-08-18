@@ -170,3 +170,4 @@ The test project validates:
 * **`VaeEncoderTests`:** Resolution constraints and dimension pyramid validation.
 * **`Sd15PipelineTests`:** Full end-to-end image generation through UNet and VAE decoder.
 
+

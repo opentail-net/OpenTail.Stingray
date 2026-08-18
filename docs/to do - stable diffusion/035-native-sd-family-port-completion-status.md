@@ -91,3 +91,4 @@ $$W_{\text{effective}} = W_{\text{base}} + \Delta W$$
   * `Sd15PipelineTests`: Executes 256x256 end-to-end generation across UNet and VAE.
 * **Full Solution Build:** Clean 0-warning, 0-error build across all 35 projects in `OpenTail.Stingray.slnx`.
 
+
