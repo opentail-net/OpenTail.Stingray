@@ -4,6 +4,7 @@ namespace OpenTail.Stingray.Diffusion.Wan;
 
 /// <summary>
 /// Native C# Wan 2.1 / 2.2 Video and Image Diffusion pipeline.
+/// Supports Text-to-Video (T2V), Image-to-Video (I2V), and Dual-Model Low/High Noise swapping (Wan2.2 A14B).
 /// Reference: stable-diffusion.cpp:src/stable-diffusion.cpp:sd_type_t::WAN
 /// </summary>
 public sealed class WanPipeline : IDiffusionPipeline
@@ -47,9 +48,9 @@ public sealed class WanPipeline : IDiffusionPipeline
     }
 
     /// <summary>
-    /// Generates image or video frames using Wan Flow-Matching DiT.
+    /// Generates image or multi-frame video using Wan Flow-Matching DiT.
     /// </summary>
-    public void Generate(
+    public List<float[]> Generate(
         string prompt,
         string? negativePrompt = null,
         int width = 832,
@@ -63,7 +64,10 @@ public sealed class WanPipeline : IDiffusionPipeline
         Action<int, int>? progress = null,
         RRDBNet? upscaler = null,
         float upscaleBlend = 1.0f,
-        float[]? textContext = null)
+        float[]? textContext = null,
+        float[]? initImageRgb = null,
+        WanModel? highNoiseTransformer = null,
+        float highNoiseBoundary = 0.5f)
     {
         if (width % 16 != 0 || height % 16 != 0)
             throw new ArgumentException($"Width and height must be divisible by 16 (got {width}x{height})");
@@ -80,6 +84,16 @@ public sealed class WanPipeline : IDiffusionPipeline
         // 2. Initial Gaussian noise in video latent space [16, numFrames, latH, latW]
         var latent = SampleGaussianNoise(latC * numFrames * latH * latW, seed);
 
+        // If initial image provided (I2V), blend encoded image into starting frame
+        if (initImageRgb is not null)
+        {
+            using var vaeEnc = new VaeEncoder(_weights);
+            var initLatent = vaeEnc.Encode(initImageRgb, height, width, latentChannels: 16, seed: seed);
+            int frameLen = latC * latH * latW;
+            for (int i = 0; i < Math.Min(frameLen, initLatent.Length); i++)
+                latent[i] = initLatent[i] + 0.1f * latent[i];
+        }
+
         // 3. Rectified Flow-Matching Timesteps with Flow Shift s = 3.0:
         var timesteps = new float[steps + 1];
         for (int i = 0; i <= steps; i++)
@@ -88,19 +102,23 @@ public sealed class WanPipeline : IDiffusionPipeline
             timesteps[i] = (flowShift * linearT) / (1.0f + (flowShift - 1.0f) * linearT);
         }
 
-        // 4. Euler Flow trajectory loop
+        // 4. Euler Flow trajectory loop with optional Dual-Model Low/High Noise switching
         for (int step = 0; step < steps; step++)
         {
             float t = timesteps[step];
             float tNext = timesteps[step + 1];
             float dt = t - tNext;
 
-            var condVelocity = _transformer.Forward(latent, t * 1000.0f, condContext, numFrames, latH, latW);
+            var activeModel = (highNoiseTransformer is not null && t >= highNoiseBoundary)
+                ? highNoiseTransformer
+                : _transformer;
+
+            var condVelocity = activeModel.Forward(latent, t * 1000.0f, condContext, numFrames, latH, latW);
             float[] velocity;
 
             if (guidance > 1.0f)
             {
-                var uncondVelocity = _transformer.Forward(latent, t * 1000.0f, uncondContext, numFrames, latH, latW);
+                var uncondVelocity = activeModel.Forward(latent, t * 1000.0f, uncondContext, numFrames, latH, latW);
                 velocity = new float[condVelocity.Length];
                 for (int i = 0; i < velocity.Length; i++)
                     velocity[i] = uncondVelocity[i] + guidance * (condVelocity[i] - uncondVelocity[i]);
@@ -116,34 +134,57 @@ public sealed class WanPipeline : IDiffusionPipeline
             progress?.Invoke(step + 1, steps);
         }
 
-        // 5. Decode latents to RGB pixels
-        var frameLatent = latent;
-        if (numFrames > 1)
+        // 5. Decode all video frame latents to RGB pixels via 16-channel VAE
+        int singleFrameLen = latC * latH * latW;
+        var allFrames = new List<float[]>(numFrames);
+
+        for (int f = 0; f < numFrames; f++)
         {
-            // For first milestone, decode the primary anchor frame
-            int frameLen = latC * latH * latW;
-            frameLatent = new float[frameLen];
-            Array.Copy(latent, 0, frameLatent, 0, frameLen);
+            var singleFrameLatent = new float[singleFrameLen];
+            for (int c = 0; c < latC; c++)
+            {
+                int srcOff = ((c * numFrames) + f) * (latH * latW);
+                int dstOff = c * (latH * latW);
+                Array.Copy(latent, srcOff, singleFrameLatent, dstOff, latH * latW);
+            }
+
+            var framePixels = _vae.Decode(singleFrameLatent, latH, latW);
+
+            // Optional super-resolution upscaling per frame
+            if (upscaler is not null)
+            {
+                var preUpscale = framePixels;
+                var (up, uw, uh) = upscaler.Upscale(framePixels, width, height);
+                framePixels = up;
+                if (upscaleBlend < 1f)
+                {
+                    var bicubic = DiffusionOps.UpsampleBicubic(preUpscale, 3, height, width, uh, uw);
+                    framePixels = DiffusionOps.BlendRgb(framePixels, bicubic, upscaleBlend);
+                }
+            }
+
+            allFrames.Add(framePixels);
         }
 
-        var pixels = _vae.Decode(frameLatent, latH, latW);
+        // 6. Save primary anchor frame
+        PngWriter.Write(outputPath, allFrames[0], width, height);
 
-        // 6. Optional Super-Resolution Upscaling
-        int outWidth = width, outHeight = height;
-        if (upscaler is not null)
+        // 7. If video sequence (numFrames > 1), save all frames alongside
+        if (numFrames > 1)
         {
-            var preUpscalePixels = pixels;
-            var (up, uw, uh) = upscaler.Upscale(pixels, width, height);
-            pixels = up; outWidth = uw; outHeight = uh;
-            if (upscaleBlend < 1f)
+            string dir = Path.GetDirectoryName(outputPath) ?? ".";
+            string stem = Path.GetFileNameWithoutExtension(outputPath);
+            string ext = Path.GetExtension(outputPath);
+            if (string.IsNullOrEmpty(ext)) ext = ".png";
+
+            for (int f = 0; f < numFrames; f++)
             {
-                var bicubic = DiffusionOps.UpsampleBicubic(preUpscalePixels, 3, height, width, outHeight, outWidth);
-                pixels = DiffusionOps.BlendRgb(pixels, bicubic, upscaleBlend);
+                string framePath = Path.Combine(dir, $"{stem}_frame_{f:D3}{ext}");
+                PngWriter.Write(framePath, allFrames[f], width, height);
             }
         }
 
-        // 7. Write output PNG
-        PngWriter.Write(outputPath, pixels, outWidth, outHeight);
+        return allFrames;
     }
 
     private static float[] SampleGaussianNoise(int length, int seed)

@@ -3,7 +3,7 @@ using OpenTail.Stingray.Core;
 namespace OpenTail.Stingray.Diffusion.QwenImage;
 
 /// <summary>
-/// Native C# Qwen Image text-to-image inference pipeline.
+/// Native C# Qwen Image text-to-image and image-edit inference pipeline.
 /// Reference: stable-diffusion.cpp:src/stable-diffusion.cpp:sd_type_t::QWEN_IMAGE
 /// </summary>
 public sealed class QwenImagePipeline : IDiffusionPipeline
@@ -48,6 +48,7 @@ public sealed class QwenImagePipeline : IDiffusionPipeline
 
     /// <summary>
     /// Generates an image using Qwen Image Rectified Flow-Matching.
+    /// Supports Text-to-Image and Qwen Image Edit (reference visual conditioning).
     /// </summary>
     public void Generate(
         string prompt,
@@ -62,7 +63,8 @@ public sealed class QwenImagePipeline : IDiffusionPipeline
         Action<int, int>? progress = null,
         RRDBNet? upscaler = null,
         float upscaleBlend = 1.0f,
-        float[]? textContext = null)
+        float[]? textContext = null,
+        float[]? initImageRgb = null)
     {
         if (width % 16 != 0 || height % 16 != 0)
             throw new ArgumentException($"Width and height must be divisible by 16 (got {width}x{height})");
@@ -71,16 +73,23 @@ public sealed class QwenImagePipeline : IDiffusionPipeline
         int latW = width / 8;
         int latC = 16;
 
-        // 1. Text conditioning context [seqLen, 3584] (or default dummy context for conformance)
+        // 1. Text conditioning context [seqLen, 3584]
         int seqLen = 77;
         var condContext = textContext ?? new float[seqLen * QwenImageModel.ContextDim];
         var uncondContext = new float[seqLen * QwenImageModel.ContextDim];
 
-        // 2. Initial Gaussian noise in latent space [16, latH, latW]
+        // 2. Reference image latents for Qwen Image Edit
+        float[]? refLatent = null;
+        if (initImageRgb is not null)
+        {
+            using var vaeEnc = new VaeEncoder(_weights);
+            refLatent = vaeEnc.Encode(initImageRgb, height, width, latentChannels: 16, seed: seed);
+        }
+
+        // 3. Initial Gaussian noise in latent space [16, latH, latW]
         var latent = SampleGaussianNoise(latC * latH * latW, seed);
 
-        // 3. Rectified Flow-Matching Timesteps with Flow Shift s = 3.0:
-        // t_shifted = (s * t) / (1 + (s - 1) * t)
+        // 4. Rectified Flow-Matching Timesteps with Flow Shift s = 3.0:
         var timesteps = new float[steps + 1];
         for (int i = 0; i <= steps; i++)
         {
@@ -88,20 +97,19 @@ public sealed class QwenImagePipeline : IDiffusionPipeline
             timesteps[i] = (flowShift * linearT) / (1.0f + (flowShift - 1.0f) * linearT);
         }
 
-        // 4. Euler Flow trajectory loop
+        // 5. Euler Flow trajectory loop
         for (int step = 0; step < steps; step++)
         {
             float t = timesteps[step];
             float tNext = timesteps[step + 1];
             float dt = t - tNext;
 
-            // Velocity predictions
-            var condVelocity = _transformer.Forward(latent, t * 1000.0f, condContext, latH, latW);
+            var condVelocity = _transformer.Forward(latent, t * 1000.0f, condContext, latH, latW, refLatent);
             float[] velocity;
 
             if (guidance > 1.0f)
             {
-                var uncondVelocity = _transformer.Forward(latent, t * 1000.0f, uncondContext, latH, latW);
+                var uncondVelocity = _transformer.Forward(latent, t * 1000.0f, uncondContext, latH, latW, refLatent);
                 velocity = new float[condVelocity.Length];
                 for (int i = 0; i < velocity.Length; i++)
                     velocity[i] = uncondVelocity[i] + guidance * (condVelocity[i] - uncondVelocity[i]);
@@ -111,17 +119,16 @@ public sealed class QwenImagePipeline : IDiffusionPipeline
                 velocity = condVelocity;
             }
 
-            // Step update: x_{t - dt} = x_t - dt * v
             for (int i = 0; i < latent.Length; i++)
                 latent[i] -= dt * velocity[i];
 
             progress?.Invoke(step + 1, steps);
         }
 
-        // 5. Decode 16-channel latents to RGB pixels via VAE
+        // 6. Decode 16-channel latents to RGB pixels via VAE
         var pixels = _vae.Decode(latent, latH, latW);
 
-        // 6. Optional Super-Resolution Upscaling
+        // 7. Optional Super-Resolution Upscaling
         int outWidth = width, outHeight = height;
         if (upscaler is not null)
         {
@@ -135,7 +142,7 @@ public sealed class QwenImagePipeline : IDiffusionPipeline
             }
         }
 
-        // 7. Write output PNG
+        // 8. Write output PNG
         PngWriter.Write(outputPath, pixels, outWidth, outHeight);
     }
 

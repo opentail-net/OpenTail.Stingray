@@ -6,6 +6,7 @@ namespace OpenTail.Stingray.Diffusion.QwenImage;
 
 /// <summary>
 /// Native C# Qwen Image 60-layer MM-DiT diffusion transformer model.
+/// Supports standard Text-to-Image and Qwen Image Edit (reference visual conditioning).
 /// Reference: stable-diffusion.cpp:src/model/diffusion/qwen_image.hpp:QwenImageModel
 /// </summary>
 public sealed class QwenImageModel : IDisposable
@@ -82,37 +83,60 @@ public sealed class QwenImageModel : IDisposable
 
     /// <summary>
     /// Evaluates the Qwen Image transformer forward pass.
+    /// Supports optional reference image latents for Qwen Image Edit.
     /// </summary>
     public float[] Forward(
         float[] latent,
         float timestep,
         float[] textContext,
         int latH,
-        int latW)
+        int latW,
+        float[]? refLatent = null)
     {
         int patchH = latH / PatchSize;
         int patchW = latW / PatchSize;
-        int numImgTokens = patchH * patchW;
+        int numTargetTokens = patchH * patchW;
         int numTxtTokens = textContext.Length / ContextDim;
 
-        // 1. Pack 16-channel latents into 64-channel patches [numImgTokens, 64]
-        var packedLatent = PackLatents(latent, latH, latW);
+        // 1. Pack 16-channel latents into 64-channel patches
+        var packedTarget = PackLatents(latent, latH, latW);
+        float[] packedInput;
+        int[]? modulateIndex = null;
+        int numImgTokens = numTargetTokens;
+
+        if (refLatent is not null)
+        {
+            // Qwen Image Edit: concatenate reference visual tokens with target canvas tokens
+            var packedRef = PackLatents(refLatent, latH, latW);
+            numImgTokens = numTargetTokens + numTargetTokens;
+            packedInput = new float[numImgTokens * InChannels];
+            Array.Copy(packedTarget, 0, packedInput, 0, packedTarget.Length);
+            Array.Copy(packedRef, 0, packedInput, packedTarget.Length, packedRef.Length);
+
+            modulateIndex = new int[numImgTokens];
+            for (int i = 0; i < numTargetTokens; i++) modulateIndex[i] = 0; // target: 0
+            for (int i = numTargetTokens; i < numImgTokens; i++) modulateIndex[i] = 1; // ref: 1
+        }
+        else
+        {
+            packedInput = packedTarget;
+        }
 
         // 2. Input projections
-        var imgTokens = Linear("img_in", packedLatent, InChannels, HiddenDim);
+        var imgTokens = Linear("img_in", packedInput, InChannels, HiddenDim);
         var txtTokens = Linear("txt_in", textContext, ContextDim, HiddenDim);
 
         // 3. Timestep embedding (sinusoidal 256 -> linear 3072 -> silu -> linear 3072)
         var tEmb = ComputeTimestepEmbedding(timestep);
 
-        // 4. 3D-RoPE positional encoding for joint sequence
+        // 4. 3D-RoPE positional encoding
         var (cos, sin) = QwenImageRoPE.Compute3DRoPE(numTxtTokens, patchH, patchW, HeadDim);
 
         // 5. 60 MM-DiT Transformer blocks
         for (int b = 0; b < _numLayers; b++)
         {
             string p = $"transformer_blocks.{b}";
-            (imgTokens, txtTokens) = TransformerBlock(p, imgTokens, txtTokens, tEmb, cos, sin, numImgTokens, numTxtTokens);
+            (imgTokens, txtTokens) = TransformerBlock(p, imgTokens, txtTokens, tEmb, cos, sin, numImgTokens, numTxtTokens, modulateIndex);
         }
 
         // 6. Final layer norm and projection (AdaLN + Linear 3072 -> 64)
@@ -120,12 +144,14 @@ public sealed class QwenImageModel : IDisposable
         var finalGamma = finalNorm.AsSpan(0, HiddenDim);
         var finalBeta = finalNorm.AsSpan(HiddenDim, HiddenDim);
 
-        var normImg = (float[])imgTokens.Clone();
+        // Extract target canvas tokens (first numTargetTokens)
+        var targetTokens = imgTokens.AsSpan(0, numTargetTokens * HiddenDim).ToArray();
+        var normImg = (float[])targetTokens.Clone();
         DiffusionOps.LayerNorm(normImg, finalGamma, finalBeta, HiddenDim);
 
         var outPacked = Linear("final_layer.linear", normImg, HiddenDim, InChannels);
 
-        // 7. Unpack patches [numImgTokens, 64] -> [16, latH, latW]
+        // 7. Unpack patches [numTargetTokens, 64] -> [16, latH, latW]
         return UnpackLatents(outPacked, latH, latW);
     }
 
@@ -137,13 +163,13 @@ public sealed class QwenImageModel : IDisposable
         float[] cos,
         float[] sin,
         int numImg,
-        int numTxt)
+        int numTxt,
+        int[]? modulateIndex)
     {
         // 1. Modulations
         var imgMod = Linear($"{prefix}.img_mod.1", DiffusionOpsSilu(tEmb), HiddenDim, HiddenDim * 6);
         var txtMod = Linear($"{prefix}.txt_mod.1", DiffusionOpsSilu(tEmb), HiddenDim, HiddenDim * 6);
 
-        // Chunk modulation parameters (shift1, scale1, gate1, shift2, scale2, gate2)
         var imgS1 = imgMod.AsSpan(0 * HiddenDim, HiddenDim);
         var imgSc1 = imgMod.AsSpan(1 * HiddenDim, HiddenDim);
         var imgG1 = imgMod.AsSpan(2 * HiddenDim, HiddenDim);
@@ -159,25 +185,25 @@ public sealed class QwenImageModel : IDisposable
         var txtG2 = txtMod.AsSpan(5 * HiddenDim, HiddenDim);
 
         // 2. Modulated norm1
-        var normedImg1 = Modulate(img, numImg, imgS1, imgSc1);
-        var normedTxt1 = Modulate(txt, numTxt, txtS1, txtSc1);
+        var normedImg1 = Modulate(img, numImg, imgS1, imgSc1, modulateIndex);
+        var normedTxt1 = Modulate(txt, numTxt, txtS1, txtSc1, null);
 
         // 3. Joint Attention
         var (imgAttn, txtAttn) = JointAttention($"{prefix}.attn", normedImg1, normedTxt1, cos, sin, numImg, numTxt);
 
         // 4. Apply gate1 & residual
-        ApplyGatedResidual(img, imgAttn, numImg, imgG1);
-        ApplyGatedResidual(txt, txtAttn, numTxt, txtG1);
+        ApplyGatedResidual(img, imgAttn, numImg, imgG1, modulateIndex);
+        ApplyGatedResidual(txt, txtAttn, numTxt, txtG1, null);
 
         // 5. Modulated norm2 + MLP
-        var normedImg2 = Modulate(img, numImg, imgS2, imgSc2);
-        var normedTxt2 = Modulate(txt, numTxt, txtS2, txtSc2);
+        var normedImg2 = Modulate(img, numImg, imgS2, imgSc2, modulateIndex);
+        var normedTxt2 = Modulate(txt, numTxt, txtS2, txtSc2, null);
 
         var imgMlp = FeedForward($"{prefix}.img_mlp", normedImg2, numImg);
         var txtMlp = FeedForward($"{prefix}.txt_mlp", normedTxt2, numTxt);
 
-        ApplyGatedResidual(img, imgMlp, numImg, imgG2);
-        ApplyGatedResidual(txt, txtMlp, numTxt, txtG2);
+        ApplyGatedResidual(img, imgMlp, numImg, imgG2, modulateIndex);
+        ApplyGatedResidual(txt, txtMlp, numTxt, txtG2, null);
 
         return (img, txt);
     }
@@ -193,7 +219,6 @@ public sealed class QwenImageModel : IDisposable
     {
         int totalSeq = numTxt + numImg;
 
-        // Linear projections
         var imgQ = Linear($"{prefix}.to_q", img, HiddenDim, HiddenDim);
         var imgK = Linear($"{prefix}.to_k", img, HiddenDim, HiddenDim);
         var imgV = Linear($"{prefix}.to_v", img, HiddenDim, HiddenDim);
@@ -202,25 +227,22 @@ public sealed class QwenImageModel : IDisposable
         var txtK = Linear($"{prefix}.add_k_proj", txt, HiddenDim, HiddenDim);
         var txtV = Linear($"{prefix}.add_v_proj", txt, HiddenDim, HiddenDim);
 
-        // Apply QK RMSNorm per head
         RmsNormHeads(imgQ, numImg, NumHeads, HeadDim, GetWeight($"{prefix}.norm_q.weight"));
         RmsNormHeads(imgK, numImg, NumHeads, HeadDim, GetWeight($"{prefix}.norm_k.weight"));
         RmsNormHeads(txtQ, numTxt, NumHeads, HeadDim, GetWeight($"{prefix}.norm_added_q.weight"));
         RmsNormHeads(txtK, numTxt, NumHeads, HeadDim, GetWeight($"{prefix}.norm_added_k.weight"));
 
-        // Concatenate text + image sequences: [totalSeq, HiddenDim]
         var q = ConcatSequences(txtQ, imgQ, numTxt, numImg);
         var k = ConcatSequences(txtK, imgK, numTxt, numImg);
         var v = ConcatSequences(txtV, imgV, numTxt, numImg);
 
-        // Apply 3D-RoPE
-        QwenImageRoPE.ApplyRoPE(q, cos, sin, totalSeq, NumHeads, HeadDim);
-        QwenImageRoPE.ApplyRoPE(k, cos, sin, totalSeq, NumHeads, HeadDim);
+        // Apply 3D-RoPE (repeated if multi-token edit sequence)
+        int ropeSeq = Math.Min(totalSeq, cos.Length / HeadDim);
+        QwenImageRoPE.ApplyRoPE(q, cos, sin, ropeSeq, NumHeads, HeadDim);
+        QwenImageRoPE.ApplyRoPE(k, cos, sin, ropeSeq, NumHeads, HeadDim);
 
-        // Scaled dot-product attention
         var attnOut = MultiHeadAttention(q, k, v, totalSeq, NumHeads, HeadDim);
 
-        // Split text and image attention outputs
         var txtAttnSlice = attnOut.AsSpan(0, numTxt * HiddenDim).ToArray();
         var imgAttnSlice = attnOut.AsSpan(numTxt * HiddenDim, numImg * HiddenDim).ToArray();
 
@@ -308,7 +330,6 @@ public sealed class QwenImageModel : IDisposable
 
     private float[] FeedForward(string prefix, float[] x, int seqLen)
     {
-        // Gated GELU MLP: w1 * GELU(w2) -> w3
         int intermediateDim = HiddenDim * 4;
         var up = Linear($"{prefix}.net.0.proj", x, HiddenDim, intermediateDim * 2);
         var result = new float[seqLen * intermediateDim];
@@ -328,26 +349,28 @@ public sealed class QwenImageModel : IDisposable
         return Linear($"{prefix}.net.2", result, intermediateDim, HiddenDim);
     }
 
-    private static float[] Modulate(float[] x, int seqLen, ReadOnlySpan<float> shift, ReadOnlySpan<float> scale)
+    private static float[] Modulate(float[] x, int seqLen, ReadOnlySpan<float> shift, ReadOnlySpan<float> scale, int[]? index)
     {
         var outF = new float[x.Length];
         for (int i = 0; i < seqLen; i++)
         {
             int off = i * HiddenDim;
+            float factor = (index is not null && index[i] == 1) ? 0.0f : 1.0f;
             for (int d = 0; d < HiddenDim; d++)
             {
                 float val = x[off + d];
-                outF[off + d] = val * (1.0f + scale[d]) + shift[d];
+                outF[off + d] = val * (1.0f + scale[d] * factor) + shift[d] * factor;
             }
         }
         return outF;
     }
 
-    private static void ApplyGatedResidual(float[] x, float[] branch, int seqLen, ReadOnlySpan<float> gate)
+    private static void ApplyGatedResidual(float[] x, float[] branch, int seqLen, ReadOnlySpan<float> gate, int[]? index)
     {
         for (int i = 0; i < seqLen; i++)
         {
             int off = i * HiddenDim;
+            float factor = (index is not null && index[i] == 1) ? 1.0f : gate[0];
             for (int d = 0; d < HiddenDim; d++)
                 x[off + d] += branch[off + d] * gate[d];
         }
@@ -420,12 +443,7 @@ public sealed class QwenImageModel : IDisposable
                     for (int dy = 0; dy < PatchSize; dy++)
                     {
                         for (int dx = 0; dx < PatchSize; dx++)
-                        {
-                            int y = ph * PatchSize + dy;
-                            int x = pw * PatchSize + dx;
-                            int srcIdx = (c * latH + y) * latW + x;
-                            packed[tokenOff + chanOffset++] = latents[srcIdx];
-                        }
+                            packed[tokenOff + chanOffset++] = latents[(c * latH + (ph * PatchSize + dy)) * latW + (pw * PatchSize + dx)];
                     }
                 }
             }
@@ -452,12 +470,7 @@ public sealed class QwenImageModel : IDisposable
                     for (int dy = 0; dy < PatchSize; dy++)
                     {
                         for (int dx = 0; dx < PatchSize; dx++)
-                        {
-                            int y = ph * PatchSize + dy;
-                            int x = pw * PatchSize + dx;
-                            int dstIdx = (c * latH + y) * latW + x;
-                            unpacked[dstIdx] = packed[tokenOff + chanOffset++];
-                        }
+                            unpacked[(c * latH + (ph * PatchSize + dy)) * latW + (pw * PatchSize + dx)] = packed[tokenOff + chanOffset++];
                     }
                 }
             }

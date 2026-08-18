@@ -60,8 +60,40 @@ public sealed class WanTests
         Assert.Equal(0.75f, shifted, tolerance: 1e-6f);
 
         float flowShift14B = 5.0f;
-        // (5 * 0.5) / (1 + 4 * 0.5) = 2.5 / 3.0 = 0.833333
         float shifted14B = (flowShift14B * linearT) / (1.0f + (flowShift14B - 1.0f) * linearT);
         Assert.Equal(2.5f / 3.0f, shifted14B, tolerance: 1e-6f);
+    }
+
+    [Fact]
+    public void Wan_MultiFrame_LatentSliceExtraction_MatchesExpectedOffsets()
+    {
+        int numFrames = 3;
+        int latH = 4, latW = 4, latC = 16;
+        int singleFrameLen = latC * latH * latW;
+        var videoLatent = new float[latC * numFrames * latH * latW];
+
+        // Fill video latent with distinct markers per frame
+        for (int c = 0; c < latC; c++)
+        {
+            for (int f = 0; f < numFrames; f++)
+            {
+                int baseOff = ((c * numFrames) + f) * (latH * latW);
+                for (int p = 0; p < latH * latW; p++)
+                    videoLatent[baseOff + p] = f + 1.0f;
+            }
+        }
+
+        // Extract frame 1 (f=1)
+        var frame1 = new float[singleFrameLen];
+        int targetFrame = 1;
+        for (int c = 0; c < latC; c++)
+        {
+            int srcOff = ((c * numFrames) + targetFrame) * (latH * latW);
+            int dstOff = c * (latH * latW);
+            Array.Copy(videoLatent, srcOff, frame1, dstOff, latH * latW);
+        }
+
+        for (int i = 0; i < frame1.Length; i++)
+            Assert.Equal(2.0f, frame1[i]);
     }
 }

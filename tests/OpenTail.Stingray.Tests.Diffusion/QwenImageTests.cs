@@ -56,8 +56,27 @@ public sealed class QwenImageTests
     {
         float flowShift = 3.0f;
         float linearT = 0.5f;
-        // t_shifted = (s * t) / (1 + (s - 1) * t) = (3 * 0.5) / (1 + 2 * 0.5) = 1.5 / 2.0 = 0.75
         float shifted = (flowShift * linearT) / (1.0f + (flowShift - 1.0f) * linearT);
         Assert.Equal(0.75f, shifted, tolerance: 1e-6f);
+    }
+
+    [Fact]
+    public void QwenImageEdit_DualTokenSequence_MaintainsTargetAndReferenceDimensions()
+    {
+        int latH = 8, latW = 8, latC = 16;
+        var targetLatent = new float[latC * latH * latW];
+        var refLatent = new float[latC * latH * latW];
+
+        var packedTarget = QwenImageModel.PackLatents(targetLatent, latH, latW);
+        var packedRef = QwenImageModel.PackLatents(refLatent, latH, latW);
+
+        Assert.Equal(16 * 64, packedTarget.Length);
+        Assert.Equal(16 * 64, packedRef.Length);
+
+        var combined = new float[packedTarget.Length + packedRef.Length];
+        Array.Copy(packedTarget, 0, combined, 0, packedTarget.Length);
+        Array.Copy(packedRef, 0, combined, packedTarget.Length, packedRef.Length);
+
+        Assert.Equal(32 * 64, combined.Length);
     }
 }
