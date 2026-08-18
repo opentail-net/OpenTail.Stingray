@@ -1,8 +1,8 @@
 # OpenTail.Stingray.Diffusion
 
-Native, high-performance diffusion inference runtime for .NET 10 — 100% managed C#, running in-process with zero Python, zero subprocesses, zero P/Invoke, and full NativeAOT compatibility.
+Native, high-performance diffusion and multimodal video/audio inference runtime for .NET 10 — 100% managed C#, running in-process with zero Python, zero subprocesses, zero P/Invoke, and full NativeAOT compatibility.
 
-Supports the entire modern image and video diffusion landscape: **Stable Diffusion 1.5, SDXL, Stable Diffusion 3 / 3.5, FLUX.1, Z-Image-Turbo, Qwen Image & Edit, Wan 2.1 / 2.2 Video, and HunyuanVideo / 1.5**, accelerated natively on CPU (AVX2/AVX-512) and GPU (Vulkan / CUDA).
+Supports the entire modern image and video diffusion landscape: **Stable Diffusion 1.5, SDXL, Stable Diffusion 3 / 3.5, FLUX.1, FLUX 3 Multimodal A/V, Z-Image-Turbo, Qwen Image & Edit, Wan 2.1 / 2.2 Video, and HunyuanVideo / 1.5**, accelerated natively on CPU (AVX2/AVX-512) and GPU (Vulkan / CUDA).
 
 [![.NET 10](https://img.shields.io/badge/.NET-10-blue)]()
 [![NativeAOT](https://img.shields.io/badge/NativeAOT-ready-green)]()
@@ -16,10 +16,11 @@ Supports the entire modern image and video diffusion landscape: **Stable Diffusi
 
 | Model Family | Core Backbone | Text Conditioning | Schedulers | Latent Channels | VAE | Capabilities |
 |---|---|---|---|:---:|:---:|---|
-| **Stable Diffusion 1.5** | 4-Stage UNet + Spatial Cross-Attn | CLIP-L (768d, ViT-L/14) | Euler, Euler-A, DDIM, DPM++ 2M, DPM++ 2M Karras | 4 | 4-ch AutoencoderKL | Text-to-Image, Img2Img, ControlNet, LoRA |
-| **Stable Diffusion XL (SDXL)** | 3-Stage UNet + 2048d Cross-Attn | Dual: CLIP-L (768d) + OpenCLIP-bigG (1280d) + Pooled (1280d) + Micro-Coords | Euler, Euler-A, DDIM, DPM++ 2M, DPM++ 2M Karras | 4 | 4-ch AutoencoderKL | Text-to-Image, Img2Img, LoRA |
+| **Stable Diffusion 1.5** | 4-Stage UNet + Spatial Cross-Attn | CLIP-L (768d, ViT-L/14) | Euler, Euler-A, DDIM, DPM++ 2M, DPM++ 2M Karras | 4 | 4-ch AutoencoderKL | Text-to-Image, Img2Img, Inpainting, ControlNet, LoRA |
+| **Stable Diffusion XL (SDXL)** | 3-Stage UNet + 2048d Cross-Attn | Dual: CLIP-L (768d) + OpenCLIP-bigG (1280d) + Pooled (1280d) + Micro-Coords | Euler, Euler-A, DDIM, DPM++ 2M, DPM++ 2M Karras | 4 | 4-ch AutoencoderKL | Text-to-Image, Img2Img, Inpainting, LoRA |
 | **Stable Diffusion 3 / 3.5** | MMDiT Dual-Stream + Single-Stream DiT | Triple: CLIP-L (768d) + OpenCLIP-bigG (1280d) + T5-XXL + Pooled (2048d) | Rectified Flow-Matching | 16 | 16-ch AutoencoderKL | Text-to-Image |
 | **FLUX.1 (schnell / dev)** | MM-DiT Dual-Stream + Single-Stream DiT | Dual: CLIP-L + T5-XXL | Rectified Flow-Matching | 16 | 16-ch AutoencoderKL | Text-to-Image |
+| **FLUX 3 (Multimodal A/V)** | Triple-Stream (Video+Audio+Text) DiT | Dual: CLIP-L + T5-XXL | Self-Flow Rectified Flow ODE | 64 (Vid) / 32 (Aud) | 3D Causal VAE + Neural Vocoder | Text-to-Video, Synchronized Audio, 3D/4D RoPE, Layer KV Cache |
 | **Z-Image-Turbo** | S3-DiT Scaled Transformer | Qwen3-4B LLM Text Encoder | Rectified Flow-Matching (4 steps) | 16 | 16-ch AutoencoderKL | Distilled Text-to-Image |
 | **Qwen Image & Edit** | 60-layer MM-DiT + 3D-RoPE {16,56,56} | Qwen2.5-VL (3584d) | Rectified Flow-Matching (s=3.0) | 16 | 16-ch Qwen/Wan VAE | Text-to-Image, Image-to-Image Edit |
 | **Wan 2.1 / 2.2** | Video DiT (1.3B / 14B) + 3D-RoPE {44,42,42} | UMT5-XXL (4096d) | Rectified Flow-Matching (s=3.0/5.0) | 16 | 16-ch Causal Wan VAE | Text-to-Video, Image-to-Video, Dual-Model A14B, Video Sequences |
@@ -29,9 +30,16 @@ Supports the entire modern image and video diffusion landscape: **Stable Diffusi
 
 ## Key Capabilities
 
-* **100% Native C# Engine:** Every tensor operation, cross-attention layer, normalization kernel, scheduler step, 3D RoPE calculation, and VAE decode runs directly inside the .NET 10 CLR / NativeAOT runtime.
-* **Unified Abstractions (`IDiffusionPipeline`):** Consistent API across UNet, DiT, MMDiT, and Video DiT model families with standardized generation requests and progress reporting.
-* **Video Generation & Frame Sequence Exporters:** Multi-frame video latents are automatically decoded through 16-channel 3D causal VAEs and exported both as primary anchor frames and complete numbered PNG sequences (`_frame_000.png`).
+* **100% Native C# Engine:** Every tensor operation, cross-attention layer, normalization kernel, scheduler step, 3D/4D RoPE calculation, and VAE decode runs directly inside the .NET 10 CLR / NativeAOT runtime.
+* **Unified Abstractions (`IDiffusionPipeline`):** Consistent API across UNet, DiT, MMDiT, and Video DiT model families with standardized generation requests (`InitImagePath`, `MaskImagePath`, `Strength`, `ControlImagePath`, `VideoFrames`) and progress reporting.
+* **Video Generation & Animated GIF Exporters:**
+  * `GifWriter`: Standalone zero-dependency GIF89a streaming animator with 256-color uniform palette quantization, Netscape 2.0 infinite looping, and variable-length LZW compression.
+  * `VideoFrameExporter`: Automatically saves output directly to looping `.gif` animations or numbered 24-bit PNG frame sequences (`_frame_0001.png`).
+* **FLUX 3 Multimodal Architecture (`Flux3/`):**
+  * `Flux3RoPE`: 3D spatiotemporal $(t, y, x)$ and 2D audio $(t, \text{freq})$ rotary frequency embedding engine.
+  * `Flux3KvCache`: Reference token KV cache across double and single layers for keyframe conditioning and context extension.
+  * `Flux3SelfFlowScheduler`: Continuous probability flow ODE solver with higher-order Heun predictor-corrector updates.
+  * `Flux3Pipeline`: Orchestrates synchronized video and acoustic synthesis.
 * **Universal Multi-Scheduler:**
   * **Euler & Euler Ancestral:** Discrete 1000-step linear beta schedule.
   * **DPM++ 2M & DPM++ 2M Karras:** 2nd-order Adams-Bashforth ODE solver with Karras $\sigma$-distribution ($\rho = 7.0$).

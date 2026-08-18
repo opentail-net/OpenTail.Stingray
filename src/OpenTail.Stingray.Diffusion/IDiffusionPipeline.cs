@@ -21,6 +21,7 @@ public interface IDiffusionPipeline : IDisposable
 public sealed record ImageGenerationRequest
 {
     public required string Prompt { get; init; }
+    public string? NegativePrompt { get; init; }
     public int Width { get; init; } = 512;
     public int Height { get; init; } = 512;
 
@@ -32,6 +33,25 @@ public sealed record ImageGenerationRequest
     public required string OutputPath { get; init; }
     public RRDBNet? Upscaler { get; init; }
     public float UpscaleBlend { get; init; } = 1.0f;
+
+    /// <summary>Optional initial image path for image-to-image (img2img) transformation.</summary>
+    public string? InitImagePath { get; init; }
+
+    /// <summary>Optional inpainting binary mask image path (white = inpaint region, black = preserve).</summary>
+    public string? MaskImagePath { get; init; }
+
+    /// <summary>Denoising strength for img2img in [0.0, 1.0] (1.0 = completely new image, 0.0 = unchanged).</summary>
+    public float Strength { get; init; } = 0.75f;
+
+    /// <summary>Optional ControlNet condition hint image path (Canny edges, depth map, openpose, etc.).</summary>
+    public string? ControlImagePath { get; init; }
+
+    /// <summary>ControlNet conditioning scale/strength (default: 1.0).</summary>
+    public float ControlStrength { get; init; } = 1.0f;
+
+    /// <summary>Optional frame count for video generation models (Wan, Hunyuan, LTX).</summary>
+    public int VideoFrames { get; init; } = 1;
+
     public Action<int, int>? Progress { get; init; }
     public Action<string>? StatusCallback { get; init; }
 }

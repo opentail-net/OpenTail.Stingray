@@ -150,6 +150,10 @@ public sealed class ImageCommand : Command<ImageCommand.Settings>
         [Description("Path to initial image for image-to-image (img2img) generation")]
         public string? InitImagePath { get; init; }
 
+        [CommandOption("--mask-image|--mask-img|--mask")]
+        [Description("Path to inpainting mask image (white = inpaint region, black = preserve original)")]
+        public string? MaskImagePath { get; init; }
+
         [CommandOption("--strength")]
         [Description("Strength for img2img generation (0.0 to 1.0, default: 0.75). Higher values add more variation from the initial image.")]
         [DefaultValue(0.75f)]

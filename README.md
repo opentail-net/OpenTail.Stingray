@@ -13,10 +13,12 @@ NativeAOT-publishes to a single binary.
 Runs GGUF models on CPU (AVX2/AVX-512 SIMD) and GPU (Vulkan compute shaders or CUDA cuBLAS), with an
 OpenAI- and Anthropic-compatible API server (/v1/chat/completions, /v1/audio/speech), native dynamic Multi-LoRA serving,
 native Multimodal Vision understanding (Gemma 4 unified `gemma4uv`, Gemma 4 ViT `gemma4v`, Gemma 3 SigLIP `gemma3`, and Llama 4 `llama4`),
-native Whisper Speech-to-Text (ASR) with Silero VAD,
-native Text-to-Speech (TTS) synthesis (Kokoro-82M, Piper VITS, F5-TTS Flow-Matching DiT with Voice Cloning, Chatterbox-Turbo, and MeloTTS Multilingual VITS),
-and native diffusion pipelines for Stable Diffusion 1.5, SDXL, SD 3/3.5, FLUX.1, Z-Image-Turbo, Qwen Image & Edit,
-Wan 2.1/2.2 Video, HunyuanVideo, and LTX-Video.
+native Whisper Speech-to-Text (ASR) with Autoregressive KV Caching, rational windowed-sinc resampling, and Silero VAD,
+native Text-to-Speech (TTS) synthesis (Kokoro-82M, Piper VITS, F5-TTS Flow-Matching DiT with Voice Cloning, Chatterbox-Turbo, and MeloTTS Multilingual VITS) with clause-level real-time streaming,
+native studio-grade DSP (rational windowed-sinc resamplers, ATSC A/85 broadcast downmixing, and TPDF noise-shaped dithered WAV export),
+OpenAI API server parity (/v1/chat/completions, /v1/audio/speech, /v1/audio/transcriptions, /v1/audio/translations with SRT, VTT, verbose_json, and SSE streaming),
+and native diffusion & video synthesis pipelines (Stable Diffusion 1.5, SDXL, SD 3/3.5, FLUX.1, FLUX 3 Multimodal Video+Audio DiT, Z-Image-Turbo, Qwen Image & Edit,
+Wan 2.1/2.2 Video, HunyuanVideo, and LTX-Video) with zero-dependency Animated GIF and sequence exporters.
 
 ---
 
