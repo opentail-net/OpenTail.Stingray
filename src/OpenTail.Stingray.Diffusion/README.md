@@ -169,3 +169,4 @@ The test project validates:
 * **`DiffusionLoraTests`:** Accurate rank-1 / rank-$r$ outer product matrix expansion and in-place delta updates.
 * **`VaeEncoderTests`:** Resolution constraints and dimension pyramid validation.
 * **`Sd15PipelineTests`:** Full end-to-end image generation through UNet and VAE decoder.
+
