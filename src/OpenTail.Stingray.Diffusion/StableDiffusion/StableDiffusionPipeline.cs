@@ -4,10 +4,10 @@ using OpenTail.Stingray.Diffusion.TextEncoders;
 namespace OpenTail.Stingray.Diffusion.StableDiffusion;
 
 /// <summary>
-/// Native Stable Diffusion 1.5 Image Generation Pipeline.
-/// Supports both CPU and GPU (Vulkan/CUDA via IComputeBackend).
+/// Native C# Stable Diffusion 1.5 end-to-end inference pipeline.
+/// Reference: stable-diffusion.cpp:src/stable-diffusion.cpp:sd_type_t::SD1_x
 /// </summary>
-public sealed class StableDiffusionPipeline : IDisposable, IDiffusionPipeline
+public sealed class StableDiffusionPipeline : IDiffusionPipeline
 {
     private readonly IWeightLoader _weights;
     private readonly ClipTokenizer _tokenizer;
@@ -15,6 +15,8 @@ public sealed class StableDiffusionPipeline : IDisposable, IDiffusionPipeline
     private readonly UNet2DConditionModel _unet;
     private readonly VaeDecoder _vae;
     private bool _disposed;
+
+    public string Architecture => "StableDiffusion1.5";
 
     public StableDiffusionPipeline(
         IWeightLoader weights,
@@ -31,11 +33,13 @@ public sealed class StableDiffusionPipeline : IDisposable, IDiffusionPipeline
     }
 
     /// <summary>
-    /// Loads a Stable Diffusion 1.5 pipeline from a unified checkpoint.
+    /// Loads a Stable Diffusion 1.5 pipeline from a unified checkpoint (.safetensors or .gguf).
     /// </summary>
     public static StableDiffusionPipeline Load(string modelPath, string? tokenizerPath = null, IComputeBackend? backend = null)
     {
-        var weights = SafetensorsLoader.Open(modelPath);
+        IWeightLoader weights = modelPath.EndsWith(".gguf", StringComparison.OrdinalIgnoreCase)
+            ? GgufWeightLoader.Open(modelPath)
+            : SafetensorsLoader.Open(modelPath);
 
         tokenizerPath ??= Path.Combine(Path.GetDirectoryName(modelPath) ?? ".", "clip_tokenizer.json");
         if (!File.Exists(tokenizerPath))
@@ -59,7 +63,7 @@ public sealed class StableDiffusionPipeline : IDisposable, IDiffusionPipeline
     }
 
     /// <summary>
-    /// Generates an image from a text prompt and saves to disk as PNG.
+    /// Generates an image from a text prompt and saves to disk as PNG. Supports text-to-image and image-to-image (img2img).
     /// </summary>
     public void Generate(
         string prompt,
@@ -73,7 +77,9 @@ public sealed class StableDiffusionPipeline : IDisposable, IDiffusionPipeline
         string outputPath = "output.png",
         Action<int, int>? progress = null,
         RRDBNet? upscaler = null,
-        float upscaleBlend = 1.0f)
+        float upscaleBlend = 1.0f,
+        float[]? initImageRgb = null,
+        float strength = 0.75f)
     {
         if (width % 8 != 0 || height % 8 != 0)
             throw new ArgumentException($"Width and height must be divisible by 8 (got {width}x{height})");
@@ -90,9 +96,23 @@ public sealed class StableDiffusionPipeline : IDisposable, IDiffusionPipeline
         var uncondTokens = _tokenizer.Tokenize(negativePrompt ?? "");
         var (uncondContext, _) = _textEncoder.Encode(uncondTokens);
 
-        // 3. Scheduler & Initial Noise:
-        var scheduler = new EulerDiscreteScheduler(steps, schedulerType);
-        var latent = scheduler.SampleNoise(latC * latH * latW, seed);
+        // 3. Scheduler & Initial Noise / Latent Setup:
+        var scheduler = new EulerDiscreteScheduler(steps, schedulerType: schedulerType);
+        int startStep = 0;
+        float[] latent;
+
+        if (initImageRgb is not null)
+        {
+            using var vaeEnc = new VaeEncoder(_weights);
+            var cleanLatent = vaeEnc.Encode(initImageRgb, height, width, latentChannels: 4, seed: seed);
+            startStep = (int)Math.Clamp(steps * (1.0f - strength), 0, steps - 1);
+            var noise = scheduler.CreateInitialLatents(1, latC, latH, latW, seed);
+            latent = scheduler.CreateNoisyLatent(cleanLatent, noise, startStep);
+        }
+        else
+        {
+            latent = scheduler.CreateInitialLatents(1, latC, latH, latW, seed);
+        }
 
         // 4. Denoising loop with 2-pass CFG:
         var denoised = scheduler.Denoise(latent, (scaledLatent, timestep) =>
@@ -100,7 +120,7 @@ public sealed class StableDiffusionPipeline : IDisposable, IDiffusionPipeline
             var condPred = _unet.Forward(scaledLatent, timestep, condContext, latH, latW);
             var uncondPred = _unet.Forward(scaledLatent, timestep, uncondContext, latH, latW);
             return scheduler.CombineGuidance(condPred, uncondPred, guidance);
-        }, progress);
+        }, progress, startStep: startStep);
 
         // 5. Decode latent to RGB pixels via VAE:
         var pixels = _vae.Decode(denoised, latH, latW);
@@ -145,10 +165,11 @@ public sealed class StableDiffusionPipeline : IDisposable, IDiffusionPipeline
         if (!_disposed)
         {
             _disposed = true;
-            _textEncoder.Dispose();
+            _weights.Dispose();
             _unet.Dispose();
             _vae.Dispose();
-            _weights.Dispose();
         }
     }
 }
+
+

@@ -5,11 +5,10 @@ using OpenTail.Stingray.Diffusion.TextEncoders;
 namespace OpenTail.Stingray.Diffusion.SDXL;
 
 /// <summary>
-/// Stable Diffusion XL (SDXL) Image Generation Pipeline.
-/// Orchestrates dual text tokenization (CLIP-L + OpenCLIP-bigG), micro-conditioning embeddings,
-/// 3-level SDXL UNet denoising, and 4-channel VAE decoding.
+/// Native C# Stable Diffusion XL (SDXL) end-to-end inference pipeline.
+/// Reference: stable-diffusion.cpp:src/stable-diffusion.cpp:sd_type_t::SDXL
 /// </summary>
-public sealed class SdxlPipeline : IDisposable, IDiffusionPipeline
+public sealed class SdxlPipeline : IDiffusionPipeline
 {
     private readonly IWeightLoader _weights;
     private readonly ClipTokenizer _clipTokenizer;
@@ -18,6 +17,8 @@ public sealed class SdxlPipeline : IDisposable, IDiffusionPipeline
     private readonly SdxlUNet2DConditionModel _unet;
     private readonly VaeDecoder _vae;
     private bool _disposed;
+
+    public string Architecture => "SDXL";
 
     public SdxlPipeline(
         IWeightLoader weights,
@@ -37,7 +38,9 @@ public sealed class SdxlPipeline : IDisposable, IDiffusionPipeline
 
     public static SdxlPipeline Load(string modelPath, string? tokenizerPath = null, IComputeBackend? backend = null)
     {
-        var weights = SafetensorsLoader.Open(modelPath);
+        IWeightLoader weights = modelPath.EndsWith(".gguf", StringComparison.OrdinalIgnoreCase)
+            ? GgufWeightLoader.Open(modelPath)
+            : SafetensorsLoader.Open(modelPath);
 
         tokenizerPath ??= Path.Combine(Path.GetDirectoryName(modelPath) ?? ".", "clip_tokenizer.json");
         if (!File.Exists(tokenizerPath))
@@ -79,7 +82,9 @@ public sealed class SdxlPipeline : IDisposable, IDiffusionPipeline
         string outputPath = "output.png",
         Action<int, int>? progress = null,
         RRDBNet? upscaler = null,
-        float upscaleBlend = 1.0f)
+        float upscaleBlend = 1.0f,
+        float[]? initImageRgb = null,
+        float strength = 0.75f)
     {
         if (width % 8 != 0 || height % 8 != 0)
             throw new ArgumentException($"Width and height must be divisible by 8 (got {width}x{height})");
@@ -104,8 +109,22 @@ public sealed class SdxlPipeline : IDisposable, IDiffusionPipeline
         var uncondAddEmbeds = BuildAddEmbeddings(uncondPooledG, height, width, 0, 0, height, width);
 
         // 3. Scheduler & Noise
-        var scheduler = new EulerDiscreteScheduler(steps, schedulerType);
-        var latent = scheduler.SampleNoise(latC * latH * latW, seed);
+        var scheduler = new EulerDiscreteScheduler(steps, schedulerType: schedulerType);
+        int startStep = 0;
+        float[] latent;
+
+        if (initImageRgb is not null)
+        {
+            using var vaeEnc = new VaeEncoder(_weights);
+            var cleanLatent = vaeEnc.Encode(initImageRgb, height, width, latentChannels: 4, seed: seed);
+            startStep = (int)Math.Clamp(steps * (1.0f - strength), 0, steps - 1);
+            var noise = scheduler.CreateInitialLatents(1, latC, latH, latW, seed);
+            latent = scheduler.CreateNoisyLatent(cleanLatent, noise, startStep);
+        }
+        else
+        {
+            latent = scheduler.CreateInitialLatents(1, latC, latH, latW, seed);
+        }
 
         // 4. Denoising loop
         var denoised = scheduler.Denoise(latent, (scaledLatent, timestep) =>
@@ -113,7 +132,7 @@ public sealed class SdxlPipeline : IDisposable, IDiffusionPipeline
             var condPred = _unet.Forward(scaledLatent, timestep, condContext, condAddEmbeds, latH, latW);
             var uncondPred = _unet.Forward(scaledLatent, timestep, uncondContext, uncondAddEmbeds, latH, latW);
             return scheduler.CombineGuidance(condPred, uncondPred, guidance);
-        }, progress);
+        }, progress, startStep: startStep);
 
         // 5. VAE Decode
         var pixels = _vae.Decode(denoised, latH, latW);
@@ -138,44 +157,47 @@ public sealed class SdxlPipeline : IDisposable, IDiffusionPipeline
     private static float[] ConcatContext(float[] hiddenL, float[] hiddenG)
     {
         // Concatenate [77, 768] + [77, 1280] -> [77, 2048]
-        var cat = new float[77 * 2048];
-        for (int t = 0; t < 77; t++)
+        int seqLen = 77;
+        int dimL = 768;
+        int dimG = 1280;
+        int outDim = dimL + dimG;
+        var concat = new float[seqLen * outDim];
+
+        for (int i = 0; i < seqLen; i++)
         {
-            Array.Copy(hiddenL, t * 768, cat, t * 2048, 768);
-            Array.Copy(hiddenG, t * 1280, cat, t * 2048 + 768, 1280);
+            Array.Copy(hiddenL, i * dimL, concat, i * outDim, dimL);
+            Array.Copy(hiddenG, i * dimG, concat, i * outDim + dimL, dimG);
         }
-        return cat;
+        return concat;
     }
 
-    private static float[] BuildAddEmbeddings(float[] pooled, int origH, int origW, int cropH, int cropW, int targetH, int targetW)
+    public static float[] BuildAddEmbeddings(float[] pooledText, int origH, int origW, int cropTop, int cropLeft, int targetH, int targetW)
     {
-        var result = new float[2816];
-        Array.Copy(pooled, 0, result, 0, 1280);
+        // SDXL addition condition vector layout: [pooledText(1280), origH(256), origW(256), cropTop(256), cropLeft(256), targetH(256), targetW(256)] = 2816
+        var addEmbed = new float[1280 + 6 * 256];
+        Array.Copy(pooledText, 0, addEmbed, 0, Math.Min(1280, pooledText.Length));
 
-        int[] coords = [origH, origW, cropH, cropW, targetH, targetW];
-        for (int i = 0; i < coords.Length; i++)
-        {
-            var sinEmb = ComputeFourierCoordinate(coords[i], 256);
-            Array.Copy(sinEmb, 0, result, 1280 + i * 256, 256);
-        }
+        int offset = 1280;
+        AppendFourierEmbedding(addEmbed, offset + 0 * 256, origH, 256);
+        AppendFourierEmbedding(addEmbed, offset + 1 * 256, origW, 256);
+        AppendFourierEmbedding(addEmbed, offset + 2 * 256, cropTop, 256);
+        AppendFourierEmbedding(addEmbed, offset + 3 * 256, cropLeft, 256);
+        AppendFourierEmbedding(addEmbed, offset + 4 * 256, targetH, 256);
+        AppendFourierEmbedding(addEmbed, offset + 5 * 256, targetW, 256);
 
-        return result;
+        return addEmbed;
     }
 
-    private static float[] ComputeFourierCoordinate(float val, int dim)
+    private static void AppendFourierEmbedding(float[] dst, int dstOffset, float val, int dim)
     {
-        var emb = new float[dim];
         int half = dim / 2;
-        float logMaxPeriod = MathF.Log(10000.0f);
-
+        float factor = 10000.0f;
         for (int i = 0; i < half; i++)
         {
-            float freq = MathF.Exp(-logMaxPeriod * i / half);
-            float arg = val * freq;
-            emb[i]        = MathF.Cos(arg);
-            emb[half + i] = MathF.Sin(arg);
+            float freq = MathF.Exp(-MathF.Log(factor) * i / half);
+            dst[dstOffset + i] = MathF.Cos(val * freq);
+            dst[dstOffset + half + i] = MathF.Sin(val * freq);
         }
-        return emb;
     }
 
     public void Generate(ImageGenerationRequest request)
@@ -200,11 +222,9 @@ public sealed class SdxlPipeline : IDisposable, IDiffusionPipeline
         if (!_disposed)
         {
             _disposed = true;
-            _clipL.Dispose();
-            _clipG.Dispose();
+            _weights.Dispose();
             _unet.Dispose();
             _vae.Dispose();
-            _weights.Dispose();
         }
     }
 }

@@ -6,11 +6,10 @@ namespace OpenTail.Stingray.Diffusion;
 /// <summary>
 /// IWeightLoader backed by a GGUF file (via GgufModel + Dequantize).
 ///
-/// GGUF files converted from diffusers safetensors typically preserve the
-/// original tensor names (e.g. "all_x_embedder.2-1.weight").
-/// If a name is not found verbatim, a few common prefix patterns are tried
-/// ("model.diffusion_model.", "transformer.", "model.") so that both
-/// naming conventions are handled transparently.
+/// GGUF files converted from diffusers safetensors or SD checkpoints typically preserve
+/// original tensor names or use standard GGUF prefixes.
+/// If a name is not found verbatim, common prefix patterns are tried transparently
+/// ("model.diffusion_model.", "diffusion_model.", "unet.", "transformer.", "model.").
 /// </summary>
 public sealed class GgufWeightLoader : IWeightLoader
 {
@@ -23,8 +22,15 @@ public sealed class GgufWeightLoader : IWeightLoader
     [
         "",
         "model.diffusion_model.",
+        "diffusion_model.",
+        "unet.",
         "transformer.",
         "model.",
+        "cond_stage_model.transformer.",
+        "text_encoders.clip_l.transformer.",
+        "text_encoders.clip_g.transformer.",
+        "first_stage_model.",
+        "vae.",
     ];
 
     public GgufWeightLoader(GgufModel model)
@@ -60,7 +66,6 @@ public sealed class GgufWeightLoader : IWeightLoader
         Dequantize.ToFloat32(raw, result, info.DType, count);
 
         // Only cache small tensors (norms, biases, small embeddings) to avoid GB-scale heap usage.
-        // Large weight matrices should be accessed via TryGetRaw → SimdKernels.MatMulBatched.
         if (count <= 1_000_000)
             _cache[name] = result;
 
@@ -80,8 +85,6 @@ public sealed class GgufWeightLoader : IWeightLoader
         }
 
         // Zero-copy: return a direct pointer into the memory-mapped file data.
-        // GGUF convention: Dimensions[0] = ne0 = innermost = input features (cols),
-        //                  Dimensions[1] = ne1 = outer     = output features (rows).
         dataPtr = (nint)_model.GetTensorDataPtr(info);
         byteLen = info.ByteSize;
         dtype   = info.DType;
@@ -117,3 +120,4 @@ public sealed class GgufWeightLoader : IWeightLoader
         }
     }
 }
+

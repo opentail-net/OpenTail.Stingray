@@ -146,6 +146,19 @@ public sealed class ImageCommand : Command<ImageCommand.Settings>
         [DefaultValue(false)]
         public bool Verbose { get; init; }
 
+        [CommandOption("-i|--init-image|--init-img")]
+        [Description("Path to initial image for image-to-image (img2img) generation")]
+        public string? InitImagePath { get; init; }
+
+        [CommandOption("--strength")]
+        [Description("Strength for img2img generation (0.0 to 1.0, default: 0.75). Higher values add more variation from the initial image.")]
+        [DefaultValue(0.75f)]
+        public float Strength { get; init; } = 0.75f;
+
+        [CommandOption("--sampler")]
+        [Description("Diffusion scheduler algorithm: euler (default), euler-a, ddim, dpm2m, dpm2m-karras")]
+        public string? Sampler { get; init; }
+
         // ── sd-cli fallback ───────────────────────────────────────────────
 
         [CommandOption("--use-sdcpp")]
@@ -675,9 +688,14 @@ public sealed class ImageCommand : Command<ImageCommand.Settings>
             AnsiConsole.MarkupLine("[dim]Compute:[/]  [yellow]CPU SIMD[/]");
         }
 
+        var schedulerType = ParseScheduler(s.Sampler);
+        float[]? initImage = LoadInitImage(s.InitImagePath);
+
         AnsiConsole.MarkupLine("[bold]Stable Diffusion 1.5[/]");
         AnsiConsole.MarkupLine($"[dim]Model:[/]    {Markup.Escape(modelPath)}");
-        AnsiConsole.MarkupLine($"[dim]Size:[/]     {s.Width}×{s.Height}  steps={steps}  guidance={guidance}  seed={s.Seed}");
+        AnsiConsole.MarkupLine($"[dim]Size:[/]     {s.Width}×{s.Height}  steps={steps}  guidance={guidance}  seed={s.Seed}  sampler={schedulerType}");
+        if (initImage is not null)
+            AnsiConsole.MarkupLine($"[dim]Init Image:[/] {Markup.Escape(s.InitImagePath!)} (strength={s.Strength:F2})");
         if (s.UpscalerPath is not null)
             AnsiConsole.MarkupLine($"[dim]Upscaler:[/] {Markup.Escape(s.UpscalerPath)}");
         AnsiConsole.MarkupLine($"[dim]Output:[/]   {Markup.Escape(output)}");
@@ -706,11 +724,13 @@ public sealed class ImageCommand : Command<ImageCommand.Settings>
                         steps: steps,
                         guidance: guidance,
                         seed: s.Seed,
-                        schedulerType: DiffusionSchedulerType.Euler,
+                        schedulerType: schedulerType,
                         outputPath: output,
                         progress: (step, total) => ctx.Status($"Denoising step {step}/{total} on {target}…"),
                         upscaler: upscaler,
-                        upscaleBlend: s.UpscaleBlend);
+                        upscaleBlend: s.UpscaleBlend,
+                        initImageRgb: initImage,
+                        strength: s.Strength);
                 });
 
             sw.Stop();
@@ -886,6 +906,9 @@ public sealed class ImageCommand : Command<ImageCommand.Settings>
             if (s.UpscalerPath is not null)
                 upscaler = RRDBNet.Load(s.UpscalerPath, gpu);
 
+            var schedulerType = ParseScheduler(s.Sampler);
+            float[]? initImage = LoadInitImage(s.InitImagePath);
+
             using var pipeline = SdxlPipeline.Load(modelPath, s.ClipTokenizerPath, gpu);
 
             string target = gpu is not null ? gpu.Name : "CPU";
@@ -902,11 +925,13 @@ public sealed class ImageCommand : Command<ImageCommand.Settings>
                         steps: steps,
                         guidance: guidance,
                         seed: s.Seed,
-                        schedulerType: DiffusionSchedulerType.Euler,
+                        schedulerType: schedulerType,
                         outputPath: output,
                         progress: (step, total) => ctx.Status($"Denoising step {step}/{total} on {target}…"),
                         upscaler: upscaler,
-                        upscaleBlend: s.UpscaleBlend);
+                        upscaleBlend: s.UpscaleBlend,
+                        initImageRgb: initImage,
+                        strength: s.Strength);
                 });
 
             sw.Stop();
@@ -954,6 +979,39 @@ public sealed class ImageCommand : Command<ImageCommand.Settings>
         return n.Contains("flux") || n.Contains("z_image") || n.Contains("z-image");
     }
 
+    private static DiffusionSchedulerType ParseScheduler(string? sampler)
+    {
+        if (string.IsNullOrWhiteSpace(sampler)) return DiffusionSchedulerType.Euler;
+        string s = sampler.Trim().ToLowerInvariant().Replace("_", "").Replace("-", "").Replace("+", "plus");
+        return s switch
+        {
+            "eulera" or "eulerancestral" => DiffusionSchedulerType.EulerAncestral,
+            "ddim" => DiffusionSchedulerType.Ddim,
+            "dpm2m" or "dpmplusplus2m" or "dpmpp2m" => DiffusionSchedulerType.DpmPlusPlus2M,
+            "dpm2mkarras" or "dpmplusplus2mkarras" or "dpmpp2mkarras" or "karras" => DiffusionSchedulerType.DpmPlusPlus2MKarras,
+            _ => DiffusionSchedulerType.Euler
+        };
+    }
+
+    private static float[]? LoadInitImage(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) return null;
+        byte[] raw = OpenTail.Stingray.Vision.ImageIO.LoadRgb(path, out int w, out int h);
+        var planar = new float[3 * h * w];
+        for (int y = 0; y < h; y++)
+        {
+            for (int x = 0; x < w; x++)
+            {
+                int src = (y * w + x) * 3;
+                int dst = y * w + x;
+                planar[0 * (h * w) + dst] = raw[src + 0] / 255.0f;
+                planar[1 * (h * w) + dst] = raw[src + 1] / 255.0f;
+                planar[2 * (h * w) + dst] = raw[src + 2] / 255.0f;
+            }
+        }
+        return planar;
+    }
+
     private static string? FindSdCli(string? explicit_)
     {
         if (explicit_ is not null) return File.Exists(explicit_) ? explicit_ : null;
@@ -972,6 +1030,7 @@ public sealed class ImageCommand : Command<ImageCommand.Settings>
     private static string Q(string s) =>
         s.Contains(' ') || s.Contains('"') ? $"\"{s.Replace("\"", "\\\"")}\"" : s;
 }
+
 
 
 

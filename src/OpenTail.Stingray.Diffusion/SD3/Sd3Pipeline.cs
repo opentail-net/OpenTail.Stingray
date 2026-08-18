@@ -37,7 +37,7 @@ public sealed class Sd3Pipeline : IDisposable, IDiffusionPipeline
 
     public static Sd3Pipeline Load(string modelPath, string? tokenizerPath = null, IComputeBackend? backend = null)
     {
-        var weights = SafetensorsLoader.Open(modelPath);
+        IWeightLoader weights = modelPath.EndsWith(".gguf", StringComparison.OrdinalIgnoreCase) ? GgufWeightLoader.Open(modelPath) : SafetensorsLoader.Open(modelPath);
 
         tokenizerPath ??= Path.Combine(Path.GetDirectoryName(modelPath) ?? ".", "clip_tokenizer.json");
         if (!File.Exists(tokenizerPath))
@@ -204,3 +204,4 @@ public sealed class Sd3Pipeline : IDisposable, IDiffusionPipeline
         }
     }
 }
+

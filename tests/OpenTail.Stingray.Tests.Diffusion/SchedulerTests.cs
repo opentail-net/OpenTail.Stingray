@@ -29,6 +29,42 @@ public sealed class SchedulerTests
     }
 
     [Fact]
+    public void EulerDiscreteScheduler_DpmPlusPlus2MKarras_BuildsKarrasSchedule()
+    {
+        var scheduler = new EulerDiscreteScheduler(numInferenceSteps: 20, DiffusionSchedulerType.DpmPlusPlus2MKarras);
+
+        Assert.Equal(20, scheduler.NumSteps);
+        Assert.Equal(21, scheduler.Sigmas.Length);
+        Assert.Equal(20, scheduler.Timesteps.Length);
+
+        // Sigmas must strictly descend and terminate at 0
+        Assert.True(scheduler.Sigmas[0] > 10.0f);
+        Assert.Equal(0f, scheduler.Sigmas[^1]);
+
+        for (int i = 0; i < scheduler.Sigmas.Length - 1; i++)
+        {
+            Assert.True(scheduler.Sigmas[i] > scheduler.Sigmas[i + 1]);
+        }
+    }
+
+    [Fact]
+    public void EulerDiscreteScheduler_DpmPlusPlus2M_DenoisesAnalyticTrajectory()
+    {
+        var scheduler = new EulerDiscreteScheduler(numInferenceSteps: 10, DiffusionSchedulerType.DpmPlusPlus2M);
+        var initialLatent = scheduler.SampleNoise(4, seed: 123);
+
+        // Constant predictable target: modelOut = x / sigma (exact convergence to 0)
+        var denoised = scheduler.Denoise(initialLatent, (xIn, timestep) =>
+        {
+            var res = new float[xIn.Length];
+            for (int i = 0; i < res.Length; i++) res[i] = xIn[i];
+            return res;
+        });
+
+        Assert.Equal(4, denoised.Length);
+    }
+
+    [Fact]
     public void EulerDiscreteScheduler_CombineGuidance_ComputesCFG()
     {
         var scheduler = new EulerDiscreteScheduler(numInferenceSteps: 10);

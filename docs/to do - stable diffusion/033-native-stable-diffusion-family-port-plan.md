@@ -6,9 +6,9 @@
 
 ## Status
 
-**Phase 0 (reference freeze + operator audit) and Phase 1 (common diffusion abstraction) done.**
-Details, the operator matrix, and the exact next step: `034-native-sd-family-port-phase0-status.md`
-in this folder. Phase 2 (SD1.5) has not started — this is a deliberate pause point.
+**Phases 0 through 5, Advanced Schedulers (Phase 2.4/D), LoRA Engine (Phase 7/B), and VAE Encoder (Phase 8/C) are COMPLETE.**
+Full architecture matrix, scheduler formulations, LoRA engine, and test results: `035-native-sd-family-port-completion-status.md` in this folder.
+All core Stable Diffusion generations (SD 1.5, SDXL, SD 3 / 3.5) are implemented in 100% native C# and integrated into `ImageCommand.cs`.
 
 ## 1. Objective
 
@@ -645,3 +645,4 @@ The Stingray implementation must remain:
 The desired result is not merely "Stable Diffusion works in Stingray".
 
 It is a **unified native C# diffusion runtime** in which SD1.5, SDXL, SD3.5, FLUX and Z-Image share Stingray's common tensor, model, memory, scheduling and hardware infrastructure.
+

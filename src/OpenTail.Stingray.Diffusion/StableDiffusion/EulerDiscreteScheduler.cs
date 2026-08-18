@@ -1,135 +1,151 @@
+using OpenTail.Stingray.Core;
+
 namespace OpenTail.Stingray.Diffusion.StableDiffusion;
 
 public enum DiffusionSchedulerType
 {
     Euler,
     EulerAncestral,
-    Ddim
+    Ddim,
+    DpmPlusPlus2M,
+    DpmPlusPlus2MKarras
 }
 
 /// <summary>
-/// Discrete Euler and Ancestral scheduler and CFG sampler for Stable Diffusion 1.5.
-/// Uses the 1000-step scaled linear beta schedule (beta_start=0.00085, beta_end=0.012).
+/// Universal Discrete Scheduler supporting:
+///   - Euler Discrete
+///   - Euler Ancestral (stochastic)
+///   - DDIM (deterministic inversion / step)
+///   - DPM++ 2M / DPM++ 2M Karras (2nd order ODE solver)
+/// Matching stable-diffusion.cpp:src/runtime/denoiser.hpp (sample_euler, sample_euler_ancestral, sample_dpmpp_2m)
 /// </summary>
-public sealed class EulerDiscreteScheduler : IDiffusionScheduler, IDiffusionSampler
+public sealed class EulerDiscreteScheduler
 {
-    private const int TotalTrainTimesteps = 1000;
-    private const float BetaStart = 0.00085f;
-    private const float BetaEnd = 0.012f;
-
-    private readonly float[] _trainSigmas;
-    private readonly float[] _trainLogSigmas;
-    private readonly DiffusionSchedulerType _schedulerType;
-
+    public float[] Betas { get; }
+    public float[] Alphas { get; }
+    public float[] AlphasCumprod { get; }
     public float[] Sigmas { get; }
     public float[] Timesteps { get; }
-    public int NumSteps => Timesteps.Length;
+    public int NumSteps { get; }
 
-    public EulerDiscreteScheduler(int numInferenceSteps, DiffusionSchedulerType schedulerType = DiffusionSchedulerType.Euler)
+    private readonly DiffusionSchedulerType _schedulerType;
+
+    public EulerDiscreteScheduler(int numInferenceSteps = 20, float betaStart = 0.00085f, float betaEnd = 0.012f, int trainSteps = 1000, DiffusionSchedulerType schedulerType = DiffusionSchedulerType.Euler)
     {
+        NumSteps = numInferenceSteps;
         _schedulerType = schedulerType;
 
-        // 1. Build the 1000-step training betas & sigmas
-        _trainSigmas = new float[TotalTrainTimesteps];
-        _trainLogSigmas = new float[TotalTrainTimesteps];
+        // 1. Generate 1000-step linear beta schedule
+        Betas = new float[trainSteps];
+        Alphas = new float[trainSteps];
+        AlphasCumprod = new float[trainSteps];
 
-        float sqrtBetaStart = MathF.Sqrt(BetaStart);
-        float sqrtBetaEnd = MathF.Sqrt(BetaEnd);
-        double cumulativeAlpha = 1.0;
+        float start = MathF.Sqrt(betaStart);
+        float end = MathF.Sqrt(betaEnd);
+        float step = (end - start) / (trainSteps - 1);
 
-        for (int i = 0; i < TotalTrainTimesteps; i++)
+        float cumprod = 1.0f;
+        for (int i = 0; i < trainSteps; i++)
         {
-            float tNorm = (float)i / (TotalTrainTimesteps - 1);
-            float sqrtBeta = sqrtBetaStart + tNorm * (sqrtBetaEnd - sqrtBetaStart);
-            float beta = sqrtBeta * sqrtBeta;
-            float alpha = 1f - beta;
-            cumulativeAlpha *= alpha;
-
-            // sigma = sqrt((1 - alpha_cumprod) / alpha_cumprod)
-            float sigma = MathF.Sqrt((float)((1.0 - cumulativeAlpha) / cumulativeAlpha));
-            _trainSigmas[i] = sigma;
-            _trainLogSigmas[i] = MathF.Log(sigma);
+            float linear = start + i * step;
+            float beta = linear * linear;
+            Betas[i] = beta;
+            Alphas[i] = 1.0f - beta;
+            cumprod *= Alphas[i];
+            AlphasCumprod[i] = cumprod;
         }
 
-        // 2. Compute inference sigmas (discrete spacing from 999 down to 0)
-        Sigmas = new float[numInferenceSteps + 1];
+        // Full trained sigmas
+        var allSigmas = new float[trainSteps];
+        for (int i = 0; i < trainSteps; i++)
+        {
+            float alphaBar = AlphasCumprod[i];
+            allSigmas[i] = MathF.Sqrt((1f - alphaBar) / alphaBar);
+        }
+
+        // 2. Select discrete timesteps & sigmas
         Timesteps = new float[numInferenceSteps];
+        Sigmas = new float[numInferenceSteps + 1];
 
-        if (numInferenceSteps == 1)
+        float stepRatio = (float)(trainSteps - 1) / (numInferenceSteps - 1);
+        for (int i = 0; i < numInferenceSteps; i++)
         {
-            Sigmas[0] = _trainSigmas[TotalTrainTimesteps - 1];
-            Sigmas[1] = 0f;
-            Timesteps[0] = TotalTrainTimesteps - 1;
+            float t = (numInferenceSteps - 1 - i) * stepRatio;
+            Timesteps[i] = t;
+
+            int low = (int)MathF.Floor(t);
+            int high = (int)MathF.Ceiling(t);
+            float weight = t - low;
+
+            float sigmaLow = allSigmas[Math.Clamp(low, 0, trainSteps - 1)];
+            float sigmaHigh = allSigmas[Math.Clamp(high, 0, trainSteps - 1)];
+            Sigmas[i] = sigmaLow + weight * (sigmaHigh - sigmaLow);
         }
-        else
+        Sigmas[numInferenceSteps] = 0f;
+
+        // If Karras noise distribution requested, remap sigmas
+        if (schedulerType == DiffusionSchedulerType.DpmPlusPlus2MKarras)
         {
-            float step = (float)(TotalTrainTimesteps - 1) / (numInferenceSteps - 1);
-            for (int i = 0; i < numInferenceSteps; i++)
-            {
-                float t = (TotalTrainTimesteps - 1) - step * i;
-                Timesteps[i] = t;
-                Sigmas[i] = TimestepToSigma(t);
-            }
-            Sigmas[numInferenceSteps] = 0f;
+            Sigmas = BuildKarrasSigmas(numInferenceSteps, Sigmas[0], Sigmas[^2]);
         }
     }
 
-    /// <summary>Convert continuous/fractional timestep t to sigma via log-linear interpolation.</summary>
-    public float TimestepToSigma(float t)
+    private static float[] BuildKarrasSigmas(int numSteps, float sigmaMax, float sigmaMin, float rho = 7.0f)
     {
-        int lowIdx = Math.Clamp((int)MathF.Floor(t), 0, TotalTrainTimesteps - 2);
-        int highIdx = lowIdx + 1;
-        float w = t - lowIdx;
-        float logSigma = (1f - w) * _trainLogSigmas[lowIdx] + w * _trainLogSigmas[highIdx];
-        return MathF.Exp(logSigma);
-    }
+        var sigmas = new float[numSteps + 1];
+        float invRho = 1.0f / rho;
+        float minInv = MathF.Pow(sigmaMin, invRho);
+        float maxInv = MathF.Pow(sigmaMax, invRho);
 
-    /// <summary>Convert sigma to continuous timestep t.</summary>
-    public float SigmaToTimestep(float sigma)
-    {
-        float logSigma = MathF.Log(sigma);
-        int lowIdx = 0;
-        for (int i = 0; i < TotalTrainTimesteps; i++)
+        for (int i = 0; i < numSteps; i++)
         {
-            if (logSigma - _trainLogSigmas[i] >= 0)
-                lowIdx++;
+            float ramp = (float)i / (numSteps - 1);
+            sigmas[i] = MathF.Pow(maxInv + ramp * (minInv - maxInv), rho);
         }
-        lowIdx = Math.Clamp(lowIdx - 1, 0, TotalTrainTimesteps - 2);
-        int highIdx = lowIdx + 1;
-
-        float low = _trainLogSigmas[lowIdx];
-        float high = _trainLogSigmas[highIdx];
-        float w = (low - logSigma) / (low - high);
-        w = Math.Clamp(w, 0f, 1f);
-        return (1f - w) * lowIdx + w * highIdx;
+        sigmas[numSteps] = 0f;
+        return sigmas;
     }
 
-    /// <summary>Generate Gaussian latent noise.</summary>
-    public float[] SampleNoise(int elementCount, int seed)
+    /// <summary>
+    /// Computes CFG guided noise prediction: e_cfg = e_uncond + guidance * (e_cond - e_uncond).
+    /// </summary>
+    public float[] CombineGuidance(float[] noiseCond, float[] noiseUncond, float guidanceScale)
     {
-        var noise = new float[elementCount];
+        var result = new float[noiseCond.Length];
+        for (int i = 0; i < result.Length; i++)
+        {
+            float uncond = noiseUncond[i];
+            float cond = noiseCond[i];
+            result[i] = uncond + guidanceScale * (cond - uncond);
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// Sample random Gaussian noise vector scaled by initial sigmaMax.
+    /// </summary>
+    public float[] SampleNoise(int length, int seed = -1)
+    {
+        var noise = new float[length];
         var rng = seed >= 0 ? new Random(seed) : new Random();
 
-        // Box-Muller transform
-        for (int i = 0; i < elementCount - 1; i += 2)
+        for (int i = 0; i < length - 1; i += 2)
         {
             double u1 = 1.0 - rng.NextDouble();
             double u2 = 1.0 - rng.NextDouble();
             double radius = Math.Sqrt(-2.0 * Math.Log(u1));
             double theta = 2.0 * Math.PI * u2;
-
             noise[i] = (float)(radius * Math.Cos(theta));
             noise[i + 1] = (float)(radius * Math.Sin(theta));
         }
 
-        if ((elementCount & 1) == 1)
+        if ((length & 1) == 1)
         {
             double u1 = 1.0 - rng.NextDouble();
             double u2 = 1.0 - rng.NextDouble();
             noise[^1] = (float)(Math.Sqrt(-2.0 * Math.Log(u1)) * Math.Cos(2.0 * Math.PI * u2));
         }
 
-        // Scale initial noise by max sigma
         float sigmaMax = Sigmas[0];
         for (int i = 0; i < noise.Length; i++)
             noise[i] *= sigmaMax;
@@ -138,16 +154,35 @@ public sealed class EulerDiscreteScheduler : IDiffusionScheduler, IDiffusionSamp
     }
 
     /// <summary>
+    /// Generates initial scaled Gaussian noise vector for the starting latent space.
+    /// </summary>
+    public float[] CreateInitialLatents(int batch, int channels, int height, int width, int seed = -1)
+        => SampleNoise(batch * channels * height * width, seed);
+
+    /// <summary>
+    /// Adds noise to initial latent at specified start step for img2img workflows.
+    /// </summary>
+    public float[] CreateNoisyLatent(float[] latent, float[] noise, int startStep)
+    {
+        float sigma = Sigmas[Math.Clamp(startStep, 0, Sigmas.Length - 1)];
+        var result = new float[latent.Length];
+        for (int i = 0; i < latent.Length; i++)
+            result[i] = latent[i] + noise[i] * sigma;
+        return result;
+    }
+
+    /// <summary>
     /// Executes the denoising loop.
     /// predictNoise receives (scaledLatent, timestep) and returns predicted noise.
     /// </summary>
-    public float[] Denoise(float[] initialLatent, Func<float[], float, float[]> predictNoise, Action<int, int>? progress = null)
+    public float[] Denoise(float[] initialLatent, Func<float[], float, float[]> predictNoise, Action<int, int>? progress = null, int startStep = 0)
     {
         var x = (float[])initialLatent.Clone();
         int steps = NumSteps;
         var rng = new Random(42);
+        float[]? oldDenoised = null;
 
-        for (int i = 0; i < steps; i++)
+        for (int i = startStep; i < steps; i++)
         {
             float sigma = Sigmas[i];
             float sigmaNext = Sigmas[i + 1];
@@ -162,24 +197,81 @@ public sealed class EulerDiscreteScheduler : IDiffusionScheduler, IDiffusionSamp
             // 2. Predict noise
             var modelOut = predictNoise(xIn, timestep);
 
-            // 3. Step update
-            if (_schedulerType == DiffusionSchedulerType.EulerAncestral && sigmaNext > 0f)
+            // 3. Step update based on scheduler algorithm
+            if (_schedulerType is DiffusionSchedulerType.DpmPlusPlus2M or DiffusionSchedulerType.DpmPlusPlus2MKarras)
             {
-                float sigmaUp = MathF.Min(sigmaNext, MathF.Sqrt(sigmaNext * sigmaNext * (sigma * sigma - sigmaNext * sigmaNext) / (sigma * sigma)));
+                // DPM-Solver++ (2M) formulation (reference: stable-diffusion.cpp:sample_dpmpp_2m)
+                // denoised estimate: d = x - sigma * modelOut
+                var denoised = new float[x.Length];
+                for (int j = 0; j < x.Length; j++)
+                    denoised[j] = x[j] - sigma * modelOut[j];
+
+                if (sigmaNext <= 0f)
+                {
+                    // Final step directly maps to denoised estimate
+                    x = denoised;
+                }
+                else
+                {
+                    float t = -MathF.Log(sigma);
+                    float tNext = -MathF.Log(sigmaNext);
+                    float h = tNext - t;
+                    float a = sigmaNext / sigma;
+                    float b = MathF.Exp(-h) - 1.0f;
+
+                    if (i == startStep || oldDenoised is null)
+                    {
+                        // 1st order Euler step on ODE
+                        for (int j = 0; j < x.Length; j++)
+                            x[j] = a * x[j] - b * denoised[j];
+                    }
+                    else
+                    {
+                        // 2nd order multi-step update
+                        float tPrev = -MathF.Log(Sigmas[i - 1]);
+                        float hLast = t - tPrev;
+                        float r = hLast / h;
+                        float w1 = 1.0f + 1.0f / (2.0f * r);
+                        float w2 = 1.0f / (2.0f * r);
+
+                        for (int j = 0; j < x.Length; j++)
+                        {
+                            float denoisedD = w1 * denoised[j] - w2 * oldDenoised[j];
+                            x[j] = a * x[j] - b * denoisedD;
+                        }
+                    }
+                }
+                oldDenoised = denoised;
+            }
+            else if (_schedulerType == DiffusionSchedulerType.EulerAncestral)
+            {
+                // Euler Ancestral (stochastic)
+                float sigmaUp = MathF.Sqrt(sigmaNext * sigmaNext * (sigma * sigma - sigmaNext * sigmaNext) / (sigma * sigma));
                 float sigmaDown = MathF.Sqrt(sigmaNext * sigmaNext - sigmaUp * sigmaUp);
                 float dt = sigmaDown - sigma;
 
                 for (int j = 0; j < x.Length; j++)
                 {
-                    double u1 = 1.0 - rng.NextDouble();
-                    double u2 = 1.0 - rng.NextDouble();
-                    float noise = (float)(Math.Sqrt(-2.0 * Math.Log(u1)) * Math.Cos(2.0 * Math.PI * u2));
-                    x[j] += modelOut[j] * dt + noise * sigmaUp;
+                    x[j] += modelOut[j] * dt;
+                    if (sigmaUp > 0f)
+                    {
+                        double u1 = 1.0 - rng.NextDouble();
+                        double u2 = 1.0 - rng.NextDouble();
+                        float z = (float)(Math.Sqrt(-2.0 * Math.Log(u1)) * Math.Cos(2.0 * Math.PI * u2));
+                        x[j] += z * sigmaUp;
+                    }
                 }
+            }
+            else if (_schedulerType == DiffusionSchedulerType.Ddim)
+            {
+                // DDIM Step update
+                float dt = sigmaNext - sigma;
+                for (int j = 0; j < x.Length; j++)
+                    x[j] += modelOut[j] * dt;
             }
             else
             {
-                // Standard Euler step: x_{t+1} = x_t + modelOut * (sigma_{t+1} - sigma_t)
+                // Standard Discrete Euler: x_{t-1} = x_t + d_t * dt
                 float dt = sigmaNext - sigma;
                 for (int j = 0; j < x.Length; j++)
                     x[j] += modelOut[j] * dt;
@@ -190,18 +282,4 @@ public sealed class EulerDiscreteScheduler : IDiffusionScheduler, IDiffusionSamp
 
         return x;
     }
-
-    /// <summary>Combine conditional and unconditional noise predictions via Classifier-Free Guidance (CFG).</summary>
-    public float[] CombineGuidance(float[] noisePredConditional, float[] noisePredUnconditional, float guidanceScale)
-    {
-        var result = new float[noisePredConditional.Length];
-        for (int i = 0; i < result.Length; i++)
-        {
-            float uncond = noisePredUnconditional[i];
-            float cond = noisePredConditional[i];
-            result[i] = uncond + guidanceScale * (cond - uncond);
-        }
-        return result;
-    }
 }
-
