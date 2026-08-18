@@ -172,6 +172,11 @@ public sealed class ImageCommand : Command<ImageCommand.Settings>
         [DefaultValue(1.0f)]
         public float ControlStrength { get; init; } = 1.0f;
 
+        [CommandOption("--video-frames|--frames")]
+        [Description("Number of video frames to generate for Wan video diffusion models (default: 1)")]
+        [DefaultValue(1)]
+        public int VideoFrames { get; init; } = 1;
+
         // ── sd-cli fallback ───────────────────────────────────────────────
 
         [CommandOption("--use-sdcpp")]
@@ -763,6 +768,80 @@ public sealed class ImageCommand : Command<ImageCommand.Settings>
 
 
 
+    private static bool IsWan(string path)
+    {
+        string n = Path.GetFileNameWithoutExtension(path).ToLowerInvariant();
+        return n.Contains("wan") || n.Contains("wan2");
+    }
+
+    private static int RunWan(Settings s, string modelPath, int deviceIndex, bool deviceNone)
+    {
+        string output = s.OutputPath ?? "output.png";
+        int steps = s.Steps > 0 ? s.Steps : 20;
+        float guidance = s.CfgScale > 0 ? s.CfgScale : 6.0f;
+        int frames = s.VideoFrames > 0 ? s.VideoFrames : 1;
+
+        IComputeBackend? gpu = null;
+        if (!deviceNone && deviceIndex >= 0)
+        {
+            try { gpu = new VulkanBackend(deviceIndex); }
+            catch { }
+        }
+
+        AnsiConsole.MarkupLine("[bold]Wan 2.1 / 2.2 Video Diffusion (DiT + UMT5)[/]");
+        AnsiConsole.MarkupLine($"[dim]Model:[/]    {Markup.Escape(modelPath)}");
+        AnsiConsole.MarkupLine($"[dim]Size:[/]     {s.Width}×{s.Height} (frames={frames})  steps={steps}  guidance={guidance}  seed={s.Seed}");
+        if (s.UpscalerPath is not null)
+            AnsiConsole.MarkupLine($"[dim]Upscaler:[/] {Markup.Escape(s.UpscalerPath)}");
+        AnsiConsole.MarkupLine($"[dim]Output:[/]   {Markup.Escape(output)}");
+        AnsiConsole.WriteLine();
+
+        try
+        {
+            var sw = Stopwatch.StartNew();
+            RRDBNet? upscaler = null;
+            if (s.UpscalerPath is not null)
+                upscaler = RRDBNet.Load(s.UpscalerPath, gpu);
+
+            using var pipeline = OpenTail.Stingray.Diffusion.Wan.WanPipeline.Load(modelPath, s.VaePath, gpu);
+
+            string target = gpu is not null ? gpu.Name : "CPU";
+            AnsiConsole.Status()
+                .Spinner(Spinner.Known.Dots)
+                .SpinnerStyle(Style.Parse("blue"))
+                .Start($"Denoising ({steps} steps on {target})…", ctx =>
+                {
+                    pipeline.Generate(
+                        prompt: s.Prompt!,
+                        negativePrompt: s.NegativePrompt,
+                        width: s.Width,
+                        height: s.Height,
+                        numFrames: frames,
+                        steps: steps,
+                        guidance: guidance,
+                        flowShift: 3.0f,
+                        seed: s.Seed,
+                        outputPath: output,
+                        progress: (step, total) => ctx.Status($"Denoising step {step}/{total} on {target}…"),
+                        upscaler: upscaler,
+                        upscaleBlend: s.UpscaleBlend);
+                });
+
+            sw.Stop();
+            AnsiConsole.MarkupLine($"[green]✓[/] Output saved: [cyan]{Markup.Escape(Path.GetFullPath(output))}[/] in [yellow]{sw.Elapsed.TotalSeconds:F1}s[/]");
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            AnsiConsole.MarkupLine($"[red]Error:[/] {Markup.Escape(ex.Message)}");
+            return 1;
+        }
+        finally
+        {
+            gpu?.Dispose();
+        }
+    }
+
     private static bool IsQwenImage(string path)
     {
         string n = Path.GetFileNameWithoutExtension(path).ToLowerInvariant();
@@ -1116,6 +1195,8 @@ public sealed class ImageCommand : Command<ImageCommand.Settings>
     private static string Q(string s) =>
         s.Contains(' ') || s.Contains('"') ? $"\"{s.Replace("\"", "\\\"")}\"" : s;
 }
+
+
 
 
 

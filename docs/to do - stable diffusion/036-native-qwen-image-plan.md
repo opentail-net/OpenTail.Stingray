@@ -8,7 +8,14 @@
 
 ## Status
 
-**PLANNED**
+**IMPLEMENTED & VERIFIED** (Text-to-Image Milestone)
+
+### Completed Implementation:
+- **QwenImageRoPE.cs**: 3D-RoPE frequency calculation decomposing 128 head dim across {16, 56, 56} for (t, y, x).
+- **QwenImageModel.cs**: 60-layer MM-DiT with \times 2$ patch packing ( \to 64$ ch), joint attention across text (=3584$) and image (=3072$), QK RMSNorm, AdaLN modulation, and Gated GELU FeedForward networks.
+- **QwenImagePipeline.cs**: Rectified Flow-Matching Euler pipeline with flow shift =3.0$, 2-pass CFG (guidance .5$), and 16-channel Wan/Qwen VAE decoding.
+- **ImageCommand.cs**: CLI command dispatch with IsQwenImage auto-detection and CPU/Vulkan GPU hardware acceleration.
+- **QwenImageTests.cs**: Unit tests verifying 3D-RoPE generation, lossless latent patch packing/unpacking, and flow shift scheduling (all passing in OpenTail.Stingray.Tests.Diffusion).
 
 OpenTail.Stingray already contains substantial native diffusion infrastructure, including:
 
@@ -1448,3 +1455,4 @@ Qwen Image
 The strategic objective is **not** merely to make Qwen Image work.
 
 It is to prove that Stingray's existing native diffusion architecture can absorb another major modern transformer-diffusion family with **small, reusable additions rather than another bespoke inference stack**.
+
