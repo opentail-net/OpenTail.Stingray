@@ -5,7 +5,7 @@ namespace OpenTail.Stingray.Diffusion.StableDiffusion;
 
 /// <summary>
 /// Native Stable Diffusion 1.5 Image Generation Pipeline.
-/// 100% managed C# implementation running completely in-process.
+/// Supports both CPU and GPU (Vulkan/CUDA via IComputeBackend).
 /// </summary>
 public sealed class StableDiffusionPipeline : IDisposable, IDiffusionPipeline
 {
@@ -31,13 +31,12 @@ public sealed class StableDiffusionPipeline : IDisposable, IDiffusionPipeline
     }
 
     /// <summary>
-    /// Loads a Stable Diffusion 1.5 pipeline from a unified checkpoint (e.g. v1-5-pruned-emaonly.safetensors).
+    /// Loads a Stable Diffusion 1.5 pipeline from a unified checkpoint.
     /// </summary>
-    public static StableDiffusionPipeline Load(string modelPath, string? tokenizerPath = null)
+    public static StableDiffusionPipeline Load(string modelPath, string? tokenizerPath = null, IComputeBackend? backend = null)
     {
         var weights = SafetensorsLoader.Open(modelPath);
 
-        // Fallback tokenizer resolution if not provided
         tokenizerPath ??= Path.Combine(Path.GetDirectoryName(modelPath) ?? ".", "clip_tokenizer.json");
         if (!File.Exists(tokenizerPath))
         {
@@ -47,15 +46,14 @@ public sealed class StableDiffusionPipeline : IDisposable, IDiffusionPipeline
 
         var tokenizer = ClipTokenizer.FromFile(tokenizerPath);
 
-        // Sub-loaders with prefix resolution
         var clipLoader = new PrefixWeightLoader(weights, "cond_stage_model.transformer.");
         var clip = new ClipLEncoder(clipLoader);
 
         var unetLoader = new PrefixWeightLoader(weights, "model.diffusion_model.");
-        var unet = new UNet2DConditionModel(unetLoader, prefix: "");
+        var unet = new UNet2DConditionModel(unetLoader, prefix: "", backend: backend);
 
         var vaeLoader = new PrefixWeightLoader(weights, "first_stage_model.");
-        var vae = new VaeDecoder(vaeLoader);
+        var vae = new VaeDecoder(vaeLoader, backend: backend);
 
         return new StableDiffusionPipeline(weights, tokenizer, clip, unet, vae);
     }
@@ -144,6 +142,7 @@ public sealed class StableDiffusionPipeline : IDisposable, IDiffusionPipeline
         {
             _disposed = true;
             _textEncoder.Dispose();
+            _unet.Dispose();
             _vae.Dispose();
             _weights.Dispose();
         }

@@ -1,4 +1,4 @@
-using System.ComponentModel;
+﻿using System.ComponentModel;
 using System.Diagnostics;
 using System.Globalization;
 using OpenTail.Stingray.Cli.Terminal;
@@ -198,7 +198,7 @@ public sealed class ImageCommand : Command<ImageCommand.Settings>
         if (IsZImage(modelPath))
             return RunZImage(s, modelPath, deviceIndex, deviceNone);
         if (IsStableDiffusion(modelPath))
-            return RunStableDiffusion(s, modelPath);
+            return RunStableDiffusion(s, modelPath, deviceIndex, deviceNone);
         return RunFlux(s, modelPath, deviceIndex, deviceNone);
     }
 
@@ -628,13 +628,48 @@ public sealed class ImageCommand : Command<ImageCommand.Settings>
     }
 
 
-    private static int RunStableDiffusion(Settings s, string modelPath)
+    private static int RunStableDiffusion(Settings s, string modelPath, int deviceIndex, bool deviceNone)
     {
         string output = s.OutputPath ?? "output.png";
         int steps = s.Steps > 0 ? s.Steps : 20;
         float guidance = s.CfgScale > 0f ? s.CfgScale : 7.5f;
 
-        AnsiConsole.MarkupLine("[bold]Stable Diffusion 1.5[/] (Native C# CPU Baseline)");
+        string backendChoice = (s.Backend ?? "auto").ToLowerInvariant();
+        if (deviceNone && (backendChoice is "cuda" or "vulkan"))
+            AnsiConsole.MarkupLine("[yellow]Note:[/] --device none overrides --backend; running on CPU.");
+        bool forceCpu = s.NGpuLayers == 0 || backendChoice == "cpu" || deviceNone;
+        bool forceCuda = backendChoice == "cuda";
+        bool forceVulkan = backendChoice == "vulkan";
+
+        IComputeBackend? gpu = null;
+        if (!forceCpu)
+        {
+            if (forceCuda || (!forceVulkan && CudaBackend.IsAvailable()))
+            {
+                gpu = CudaBackend.Create();
+                AnsiConsole.MarkupLine("[dim]Compute:[/]  [green]CUDA GPU[/]");
+            }
+            else
+            {
+                try
+                {
+                    var vulkan = new VulkanBackend(deviceIndex);
+                    gpu = vulkan;
+                    vulkan.PrintDeviceInfo();
+                    AnsiConsole.MarkupLine($"[dim]Compute:[/]  [green]Vulkan GPU[/] ({vulkan.Name})");
+                }
+                catch when (deviceIndex < 0)
+                {
+                    AnsiConsole.MarkupLine("[dim]Compute:[/]  [yellow]CPU (no Vulkan GPU detected)[/]");
+                }
+            }
+        }
+        else
+        {
+            AnsiConsole.MarkupLine("[dim]Compute:[/]  [yellow]CPU SIMD[/]");
+        }
+
+        AnsiConsole.MarkupLine("[bold]Stable Diffusion 1.5[/]");
         AnsiConsole.MarkupLine($"[dim]Model:[/]    {Markup.Escape(modelPath)}");
         AnsiConsole.MarkupLine($"[dim]Size:[/]     {s.Width}×{s.Height}  steps={steps}  guidance={guidance}  seed={s.Seed}");
         if (s.UpscalerPath is not null)
@@ -647,14 +682,15 @@ public sealed class ImageCommand : Command<ImageCommand.Settings>
             var sw = Stopwatch.StartNew();
             RRDBNet? upscaler = null;
             if (s.UpscalerPath is not null)
-                upscaler = RRDBNet.Load(s.UpscalerPath);
+                upscaler = RRDBNet.Load(s.UpscalerPath, gpu);
 
-            using var pipeline = StableDiffusionPipeline.Load(modelPath, s.ClipTokenizerPath);
+            using var pipeline = StableDiffusionPipeline.Load(modelPath, s.ClipTokenizerPath, gpu);
 
+            string target = gpu is not null ? gpu.Name : "CPU";
             AnsiConsole.Status()
                 .Spinner(Spinner.Known.Dots)
                 .SpinnerStyle(Style.Parse("blue"))
-                .Start($"Denoising ({steps} steps on CPU)…", ctx =>
+                .Start($"Denoising ({steps} steps on {target})…", ctx =>
                 {
                     pipeline.Generate(
                         prompt: s.Prompt!,
@@ -664,7 +700,7 @@ public sealed class ImageCommand : Command<ImageCommand.Settings>
                         guidance: guidance,
                         seed: s.Seed,
                         outputPath: output,
-                        progress: (step, total) => ctx.Status($"Denoising step {step}/{total}…"),
+                        progress: (step, total) => ctx.Status($"Denoising step {step}/{total} on {target}…"),
                         upscaler: upscaler,
                         upscaleBlend: s.UpscaleBlend);
                 });
@@ -677,6 +713,10 @@ public sealed class ImageCommand : Command<ImageCommand.Settings>
         {
             AnsiConsole.MarkupLine($"[red]Error:[/] {Markup.Escape(ex.Message)}");
             return 1;
+        }
+        finally
+        {
+            gpu?.Dispose();
         }
     }
 

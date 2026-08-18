@@ -1,36 +1,35 @@
+using System.Buffers;
 using System.Numerics.Tensors;
 using OpenTail.Stingray.Core;
+using CoreTensor = OpenTail.Stingray.Core.Tensor;
 
 namespace OpenTail.Stingray.Diffusion.StableDiffusion;
 
 /// <summary>
 /// Stable Diffusion 1.5 UNet (2D Condition Model).
-/// Input: Noisy latent [4, H, W], timestep t ∈ [0, 999], CLIP text context [77, 768].
-/// Output: Predicted noise [4, H, W].
-///
-/// Architecture:
-/// - 4 Resolution Levels (Channels: 320, 640, 1280, 1280)
-/// - 12 Input Blocks with Skip Connections
-/// - Middle Block (ResBlock + SpatialTransformer + ResBlock)
-/// - 12 Output Blocks with Skip Connection Concatenations
-/// - SpatialTransformer with Asymmetric Cross-Attention (Query: H×W, Key/Value: 77)
-/// - GEGLU FeedForward activation
+/// Supports both CPU (SIMD AVX2/AVX-512) and GPU (Vulkan/CUDA SGEMM via IComputeBackend).
 /// </summary>
-public sealed class UNet2DConditionModel
+public sealed class UNet2DConditionModel : IDisposable
 {
     private readonly IWeightLoader _weights;
+    private readonly IComputeBackend? _backend;
     private readonly Dictionary<string, float[]> _weightCache = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, CoreTensor>? _gpuWeights;
     private readonly string _prefix;
 
     private const int ModelChannels = 320;
     private const int TimeEmbedDim = 1280;
     private const int ContextDim = 768;
     private const int NumHeads = 8;
+    private const int MaxColChunkFloats = 8 * 1024 * 1024; // 32MB im2col buffer chunk
 
-    public UNet2DConditionModel(IWeightLoader weights, string prefix = "model.diffusion_model.")
+    public UNet2DConditionModel(IWeightLoader weights, string prefix = "model.diffusion_model.", IComputeBackend? backend = null)
     {
         _weights = weights;
         _prefix = prefix;
+        _backend = backend;
+        if (_backend is not null)
+            _gpuWeights = new Dictionary<string, CoreTensor>(StringComparer.Ordinal);
     }
 
     private float[] GetWeight(string name)
@@ -57,9 +56,157 @@ public sealed class UNet2DConditionModel
         return null;
     }
 
+    private CoreTensor GetGpuWeight(string name, float[] cpuWeight)
+    {
+        string fullName = _prefix + name;
+        if (_gpuWeights!.TryGetValue(fullName, out var wGpu)) return wGpu;
+
+        wGpu = _backend!.Upload(cpuWeight.AsSpan(), TensorShape.D1(cpuWeight.Length));
+        _gpuWeights[fullName] = wGpu;
+        return wGpu;
+    }
+
+    public float[] Conv(string name, float[] x, int inC, int h, int w, int outC, int ksize, int stride = 1, int padding = -1)
+    {
+        var wF = GetWeight($"{name}.weight");
+        var bF = TryGetWeight($"{name}.bias");
+
+        if (_backend is null)
+        {
+            return DiffusionOps.Conv2D(x, wF, bF, 1, inC, h, w, outC, ksize, ksize, stride, padding);
+        }
+
+        if (padding < 0) padding = (ksize - 1) / 2;
+        int outH = (h + 2 * padding - ksize) / stride + 1;
+        int outW = (w + 2 * padding - ksize) / stride + 1;
+        int hw = outH * outW;
+        int kPts = inC * ksize * ksize;
+
+        var wGpu = GetGpuWeight($"{name}.weight", wF);
+
+        int chunkRows = kPts > 0 ? Math.Max(1, Math.Min(outH, MaxColChunkFloats / (outW * kPts))) : outH;
+        var output = new float[outC * hw];
+
+        var colBuf = ArrayPool<float>.Shared.Rent(chunkRows * outW * kPts);
+        var resBuf = ArrayPool<float>.Shared.Rent(chunkRows * outW * outC);
+
+        try
+        {
+            for (int rowStart = 0; rowStart < outH; rowStart += chunkRows)
+            {
+                int rowEnd = Math.Min(rowStart + chunkRows, outH);
+                int chunkH = rowEnd - rowStart;
+                int chunkHW = chunkH * outW;
+                int colSize = chunkHW * kPts;
+
+                // Build im2col for this chunk
+                int idx = 0;
+                for (int oh = rowStart; oh < rowEnd; oh++)
+                {
+                    int ih0 = oh * stride - padding;
+                    for (int ow = 0; ow < outW; ow++)
+                    {
+                        int iw0 = ow * stride - padding;
+                        for (int ic = 0; ic < inC; ic++)
+                        {
+                            int inChannelBase = ic * h * w;
+                            for (int kh = 0; kh < ksize; kh++)
+                            {
+                                int ih = ih0 + kh;
+                                if ((uint)ih < (uint)h)
+                                {
+                                    int inRow = inChannelBase + ih * w;
+                                    for (int kw = 0; kw < ksize; kw++)
+                                    {
+                                        int iw = iw0 + kw;
+                                        colBuf[idx++] = ((uint)iw < (uint)w) ? x[inRow + iw] : 0f;
+                                    }
+                                }
+                                else
+                                {
+                                    for (int kw = 0; kw < ksize; kw++)
+                                        colBuf[idx++] = 0f;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // GPU SGEMM
+                var colGpu = _backend.Upload(colBuf.AsSpan(0, colSize), TensorShape.D1(colSize));
+                var cGpu = _backend.Allocate(TensorShape.D1(chunkHW * outC));
+                try
+                {
+                    _backend.Sgemm(cGpu, colGpu, wGpu, chunkHW, kPts, outC);
+                    _backend.Synchronize();
+                    _backend.Download(cGpu, resBuf.AsSpan(0, chunkHW * outC));
+                }
+                finally
+                {
+                    _backend.Free(colGpu);
+                    _backend.Free(cGpu);
+                }
+
+                int basePos = rowStart * outW;
+                for (int pos = 0; pos < chunkHW; pos++)
+                {
+                    int absPos = basePos + pos;
+                    for (int oc = 0; oc < outC; oc++)
+                        output[oc * hw + absPos] = resBuf[pos * outC + oc] + (bF is not null ? bF[oc] : 0f);
+                }
+            }
+        }
+        finally
+        {
+            ArrayPool<float>.Shared.Return(colBuf);
+            ArrayPool<float>.Shared.Return(resBuf);
+        }
+
+        return output;
+    }
+
+    public float[] Lin(string name, float[] x, int n, int inDim, int outDim)
+    {
+        var wF = GetWeight($"{name}.weight");
+        var bF = TryGetWeight($"{name}.bias");
+
+        if (_backend is null)
+        {
+            return DiffusionOps.Linear(x, wF, bF, n, inDim, outDim);
+        }
+
+        var wGpu = GetGpuWeight($"{name}.weight", wF);
+        var xGpu = _backend.Upload(x.AsSpan(0, n * inDim), TensorShape.D1(n * inDim));
+        var cGpu = _backend.Allocate(TensorShape.D1(n * outDim));
+        var result = new float[n * outDim];
+
+        try
+        {
+            _backend.Sgemm(cGpu, xGpu, wGpu, n, inDim, outDim);
+            _backend.Synchronize();
+            _backend.Download(cGpu, result);
+        }
+        finally
+        {
+            _backend.Free(xGpu);
+            _backend.Free(cGpu);
+        }
+
+        if (bF is not null)
+        {
+            Parallel.For(0, n, i =>
+            {
+                int off = i * outDim;
+                for (int o = 0; o < outDim; o++)
+                    result[off + o] += bF[o];
+            });
+        }
+
+        return result;
+    }
+
     /// <summary>
     /// Computes sinusoidal timestep embedding and passes through 2-layer MLP.
-    /// Uses flip_sin_to_cos = true (CompVis / SD1.5 standard).
     /// </summary>
     public float[] ComputeTimeEmbedding(float timestep)
     {
@@ -73,22 +220,13 @@ public sealed class UNet2DConditionModel
         {
             float freq = MathF.Exp(-logMaxPeriod * i / half);
             float arg = timestep * freq;
-            sinEmb[i]        = MathF.Cos(arg); // flip_sin_to_cos: first cos, then sin
+            sinEmb[i]        = MathF.Cos(arg);
             sinEmb[half + i] = MathF.Sin(arg);
         }
 
-        // Linear: 320 -> 1280
-        var w0 = GetWeight("time_embed.0.weight");
-        var b0 = GetWeight("time_embed.0.bias");
-        var emb = DiffusionOps.Linear(sinEmb, w0, b0, 1, dim, TimeEmbedDim);
-
-        // SiLU
+        var emb = Lin("time_embed.0", sinEmb, 1, dim, TimeEmbedDim);
         DiffusionOps.SiluInPlace(emb);
-
-        // Linear: 1280 -> 1280
-        var w2 = GetWeight("time_embed.2.weight");
-        var b2 = GetWeight("time_embed.2.bias");
-        return DiffusionOps.Linear(emb, w2, b2, 1, TimeEmbedDim, TimeEmbedDim);
+        return Lin("time_embed.2", emb, 1, TimeEmbedDim, TimeEmbedDim);
     }
 
     /// <summary>
@@ -103,16 +241,12 @@ public sealed class UNet2DConditionModel
         DiffusionOps.GroupNorm(hNorm, gn1W, gn1B, 1, inC, h, w, groups: 32);
         DiffusionOps.SiluInPlace(hNorm);
 
-        var conv1W = GetWeight($"{prefix}.in_layers.2.weight");
-        var conv1B = GetWeight($"{prefix}.in_layers.2.bias");
-        var hOut = DiffusionOps.Conv2D(hNorm, conv1W, conv1B, 1, inC, h, w, outC, 3, 3);
+        var hOut = Conv($"{prefix}.in_layers.2", hNorm, inC, h, w, outC, 3);
 
         // 2. emb_layers: SiLU(tEmb) -> Linear(1280 -> outC) added spatially
         var tEmbAct = (float[])tEmb.Clone();
         DiffusionOps.SiluInPlace(tEmbAct);
-        var embW = GetWeight($"{prefix}.emb_layers.1.weight");
-        var embB = GetWeight($"{prefix}.emb_layers.1.bias");
-        var tProj = DiffusionOps.Linear(tEmbAct, embW, embB, 1, TimeEmbedDim, outC);
+        var tProj = Lin($"{prefix}.emb_layers.1", tEmbAct, 1, TimeEmbedDim, outC);
 
         int spatial = h * w;
         for (int c = 0; c < outC; c++)
@@ -129,17 +263,13 @@ public sealed class UNet2DConditionModel
         DiffusionOps.GroupNorm(hOut, gn2W, gn2B, 1, outC, h, w, groups: 32);
         DiffusionOps.SiluInPlace(hOut);
 
-        var conv2W = GetWeight($"{prefix}.out_layers.3.weight");
-        var conv2B = GetWeight($"{prefix}.out_layers.3.bias");
-        hOut = DiffusionOps.Conv2D(hOut, conv2W, conv2B, 1, outC, h, w, outC, 3, 3);
+        hOut = Conv($"{prefix}.out_layers.3", hOut, outC, h, w, outC, 3);
 
         // 4. Skip connection (nin_shortcut if inC != outC)
         float[] xRes;
-        var skipW = TryGetWeight($"{prefix}.skip_connection.weight");
-        if (skipW is not null)
+        if (TryGetWeight($"{prefix}.skip_connection.weight") is not null)
         {
-            var skipB = TryGetWeight($"{prefix}.skip_connection.bias");
-            xRes = DiffusionOps.Conv2D(x, skipW, skipB, 1, inC, h, w, outC, 1, 1, stride: 1, padding: 0);
+            xRes = Conv($"{prefix}.skip_connection", x, inC, h, w, outC, 1, stride: 1, padding: 0);
         }
         else if (inC != outC)
         {
@@ -170,9 +300,7 @@ public sealed class UNet2DConditionModel
         var xNorm = (float[])x.Clone();
         DiffusionOps.GroupNorm(xNorm, normW, normB, 1, c, h, w, groups: 32);
 
-        var projInW = GetWeight($"{prefix}.proj_in.weight");
-        var projInB = GetWeight($"{prefix}.proj_in.bias");
-        var xProj = DiffusionOps.Conv2D(xNorm, projInW, projInB, 1, c, h, w, c, 1, 1, stride: 1, padding: 0);
+        var xProj = Conv($"{prefix}.proj_in", xNorm, c, h, w, c, 1, stride: 1, padding: 0);
 
         // Permute [1, C, H, W] -> [H*W, C] sequence
         var xSeq = new float[hw * c];
@@ -192,18 +320,12 @@ public sealed class UNet2DConditionModel
         var saNorm = (float[])xSeq.Clone();
         DiffusionOps.LayerNorm(saNorm, saNormW, saNormB, c);
 
-        var saQW = GetWeight($"{tb}.attn1.to_q.weight");
-        var saKW = GetWeight($"{tb}.attn1.to_k.weight");
-        var saVW = GetWeight($"{tb}.attn1.to_v.weight");
-        var saOutW = GetWeight($"{tb}.attn1.to_out.0.weight");
-        var saOutB = GetWeight($"{tb}.attn1.to_out.0.bias");
-
-        var saQ = DiffusionOps.Linear(saNorm, saQW, null, hw, c, c);
-        var saK = DiffusionOps.Linear(saNorm, saKW, null, hw, c, c);
-        var saV = DiffusionOps.Linear(saNorm, saVW, null, hw, c, c);
+        var saQ = Lin($"{tb}.attn1.to_q", saNorm, hw, c, c);
+        var saK = Lin($"{tb}.attn1.to_k", saNorm, hw, c, c);
+        var saV = Lin($"{tb}.attn1.to_v", saNorm, hw, c, c);
 
         var saAttnOut = MultiHeadAttention(saQ, saK, saV, hw, hw, c, NumHeads);
-        var saProjOut = DiffusionOps.Linear(saAttnOut, saOutW, saOutB, hw, c, c);
+        var saProjOut = Lin($"{tb}.attn1.to_out.0", saAttnOut, hw, c, c);
 
         for (int i = 0; i < xSeq.Length; i++)
             xSeq[i] += saProjOut[i];
@@ -214,18 +336,12 @@ public sealed class UNet2DConditionModel
         var caNorm = (float[])xSeq.Clone();
         DiffusionOps.LayerNorm(caNorm, caNormW, caNormB, c);
 
-        var caQW = GetWeight($"{tb}.attn2.to_q.weight");
-        var caKW = GetWeight($"{tb}.attn2.to_k.weight");
-        var caVW = GetWeight($"{tb}.attn2.to_v.weight");
-        var caOutW = GetWeight($"{tb}.attn2.to_out.0.weight");
-        var caOutB = GetWeight($"{tb}.attn2.to_out.0.bias");
-
-        var caQ = DiffusionOps.Linear(caNorm, caQW, null, hw, c, c);
-        var caK = DiffusionOps.Linear(context, caKW, null, 77, ContextDim, c);
-        var caV = DiffusionOps.Linear(context, caVW, null, 77, ContextDim, c);
+        var caQ = Lin($"{tb}.attn2.to_q", caNorm, hw, c, c);
+        var caK = Lin($"{tb}.attn2.to_k", context, 77, ContextDim, c);
+        var caV = Lin($"{tb}.attn2.to_v", context, 77, ContextDim, c);
 
         var caAttnOut = MultiHeadAttention(caQ, caK, caV, hw, 77, c, NumHeads);
-        var caProjOut = DiffusionOps.Linear(caAttnOut, caOutW, caOutB, hw, c, c);
+        var caProjOut = Lin($"{tb}.attn2.to_out.0", caAttnOut, hw, c, c);
 
         for (int i = 0; i < xSeq.Length; i++)
             xSeq[i] += caProjOut[i];
@@ -236,14 +352,8 @@ public sealed class UNet2DConditionModel
         var ffNorm = (float[])xSeq.Clone();
         DiffusionOps.LayerNorm(ffNorm, ffNormW, ffNormB, c);
 
-        var ff1W = GetWeight($"{tb}.ff.net.0.proj.weight");
-        var ff1B = GetWeight($"{tb}.ff.net.0.proj.bias");
-        var ff2W = GetWeight($"{tb}.ff.net.2.weight");
-        var ff2B = GetWeight($"{tb}.ff.net.2.bias");
-
         int mlpDim = c * 4;
-        // net.0.proj projects c -> mlpDim * 2
-        var ffH = DiffusionOps.Linear(ffNorm, ff1W, ff1B, hw, c, mlpDim * 2);
+        var ffH = Lin($"{tb}.ff.net.0.proj", ffNorm, hw, c, mlpDim * 2);
         var ffGated = new float[hw * mlpDim];
         Parallel.For(0, hw, s =>
         {
@@ -253,13 +363,12 @@ public sealed class UNet2DConditionModel
             {
                 float val = ffH[srcOff + d];
                 float gate = ffH[srcOff + mlpDim + d];
-                // GELU(gate): approximate tanh version
                 float geluGate = 0.5f * gate * (1.0f + MathF.Tanh(0.79788456f * (gate + 0.044715f * gate * gate * gate)));
                 ffGated[dstOff + d] = val * geluGate;
             }
         });
 
-        var ffOut = DiffusionOps.Linear(ffGated, ff2W, ff2B, hw, mlpDim, c);
+        var ffOut = Lin($"{tb}.ff.net.2", ffGated, hw, mlpDim, c);
 
         for (int i = 0; i < xSeq.Length; i++)
             xSeq[i] += ffOut[i];
@@ -274,9 +383,7 @@ public sealed class UNet2DConditionModel
         }
 
         // proj_out (Conv2D 1x1) + residual with input x
-        var projOutW = GetWeight($"{prefix}.proj_out.weight");
-        var projOutB = GetWeight($"{prefix}.proj_out.bias");
-        var projOut = DiffusionOps.Conv2D(xSpatial, projOutW, projOutB, 1, c, h, w, c, 1, 1, stride: 1, padding: 0);
+        var projOut = Conv($"{prefix}.proj_out", xSpatial, c, h, w, c, 1, stride: 1, padding: 0);
 
         for (int i = 0; i < x.Length; i++)
             projOut[i] += x[i];
@@ -284,9 +391,6 @@ public sealed class UNet2DConditionModel
         return projOut;
     }
 
-    /// <summary>
-    /// Multi-head scaled dot-product attention for Q [qLen, C], K [kvLen, C], V [kvLen, C].
-    /// </summary>
     private static float[] MultiHeadAttention(float[] q, float[] k, float[] v, int qLen, int kvLen, int c, int nHeads)
     {
         int headDim = c / nHeads;
@@ -302,7 +406,6 @@ public sealed class UNet2DConditionModel
             {
                 int qBase = qi * c + headOffset;
 
-                // Compute scores: Q_h[qi] . K_h[kj] * scale
                 for (int kj = 0; kj < kvLen; kj++)
                 {
                     int kBase = kj * c + headOffset;
@@ -312,10 +415,8 @@ public sealed class UNet2DConditionModel
                     scores[kj] = dot * scale;
                 }
 
-                // Softmax
                 DiffusionOps.Softmax(scores, 0, kvLen);
 
-                // Weighted sum: sum_kj (scores[kj] * V_h[kj])
                 int outBase = qi * c + headOffset;
                 for (int d = 0; d < headDim; d++)
                 {
@@ -330,93 +431,67 @@ public sealed class UNet2DConditionModel
         return output;
     }
 
-    /// <summary>
-    /// UNet 2D Condition Model Forward Pass:
-    /// Takes noisy latent x [4, H, W], scalar timestep t, and CLIP text context [77, 768].
-    /// Returns predicted noise [4, H, W].
-    /// </summary>
     public float[] Forward(float[] x, float timestep, float[] context, int latH, int latW)
     {
-        // 1. Timestep embedding: [1280]
         var tEmb = ComputeTimeEmbedding(timestep);
-
         var savedInputs = new List<float[]>(12);
 
         // ── Input Blocks ────────────────────────────────────────────────────────
-        // Block 0: Conv2D(4 -> 320, 3x3)
         int h = latH, w = latW;
-        var in0W = GetWeight("input_blocks.0.0.weight");
-        var in0B = GetWeight("input_blocks.0.0.bias");
-        var cur = DiffusionOps.Conv2D(x, in0W, in0B, 1, 4, h, w, 320, 3, 3);
+        var cur = Conv("input_blocks.0.0", x, 4, h, w, 320, 3);
         savedInputs.Add(cur);
 
-        // Block 1: ResBlock(320 -> 320) + SpatialTransformer(320)
         cur = ResBlock("input_blocks.1.0", cur, tEmb, 320, 320, h, w);
         cur = SpatialTransformer("input_blocks.1.1", cur, context, 320, h, w);
         savedInputs.Add(cur);
 
-        // Block 2: ResBlock(320 -> 320) + SpatialTransformer(320)
         cur = ResBlock("input_blocks.2.0", cur, tEmb, 320, 320, h, w);
         cur = SpatialTransformer("input_blocks.2.1", cur, context, 320, h, w);
         savedInputs.Add(cur);
 
         // Block 3: Downsample (Conv2D 320 -> 320, stride 2)
-        var ds3W = GetWeight("input_blocks.3.0.op.weight");
-        var ds3B = GetWeight("input_blocks.3.0.op.bias");
-        cur = DiffusionOps.Conv2D(cur, ds3W, ds3B, 1, 320, h, w, 320, 3, 3, stride: 2);
+        cur = Conv("input_blocks.3.0.op", cur, 320, h, w, 320, 3, stride: 2);
         h /= 2; w /= 2;
         savedInputs.Add(cur);
 
-        // Block 4: ResBlock(320 -> 640) + SpatialTransformer(640)
         cur = ResBlock("input_blocks.4.0", cur, tEmb, 320, 640, h, w);
         cur = SpatialTransformer("input_blocks.4.1", cur, context, 640, h, w);
         savedInputs.Add(cur);
 
-        // Block 5: ResBlock(640 -> 640) + SpatialTransformer(640)
         cur = ResBlock("input_blocks.5.0", cur, tEmb, 640, 640, h, w);
         cur = SpatialTransformer("input_blocks.5.1", cur, context, 640, h, w);
         savedInputs.Add(cur);
 
         // Block 6: Downsample (Conv2D 640 -> 640, stride 2)
-        var ds6W = GetWeight("input_blocks.6.0.op.weight");
-        var ds6B = GetWeight("input_blocks.6.0.op.bias");
-        cur = DiffusionOps.Conv2D(cur, ds6W, ds6B, 1, 640, h, w, 640, 3, 3, stride: 2);
+        cur = Conv("input_blocks.6.0.op", cur, 640, h, w, 640, 3, stride: 2);
         h /= 2; w /= 2;
         savedInputs.Add(cur);
 
-        // Block 7: ResBlock(640 -> 1280) + SpatialTransformer(1280)
         cur = ResBlock("input_blocks.7.0", cur, tEmb, 640, 1280, h, w);
         cur = SpatialTransformer("input_blocks.7.1", cur, context, 1280, h, w);
         savedInputs.Add(cur);
 
-        // Block 8: ResBlock(1280 -> 1280) + SpatialTransformer(1280)
         cur = ResBlock("input_blocks.8.0", cur, tEmb, 1280, 1280, h, w);
         cur = SpatialTransformer("input_blocks.8.1", cur, context, 1280, h, w);
         savedInputs.Add(cur);
 
         // Block 9: Downsample (Conv2D 1280 -> 1280, stride 2)
-        var ds9W = GetWeight("input_blocks.9.0.op.weight");
-        var ds9B = GetWeight("input_blocks.9.0.op.bias");
-        cur = DiffusionOps.Conv2D(cur, ds9W, ds9B, 1, 1280, h, w, 1280, 3, 3, stride: 2);
+        cur = Conv("input_blocks.9.0.op", cur, 1280, h, w, 1280, 3, stride: 2);
         h /= 2; w /= 2;
         savedInputs.Add(cur);
 
-        // Block 10: ResBlock(1280 -> 1280)
         cur = ResBlock("input_blocks.10.0", cur, tEmb, 1280, 1280, h, w);
         savedInputs.Add(cur);
 
-        // Block 11: ResBlock(1280 -> 1280)
         cur = ResBlock("input_blocks.11.0", cur, tEmb, 1280, 1280, h, w);
         savedInputs.Add(cur);
 
         // ── Middle Block ────────────────────────────────────────────────────────
-        // ResBlock(1280, 1280) + SpatialTransformer(1280) + ResBlock(1280, 1280)
         cur = ResBlock("middle_block.0", cur, tEmb, 1280, 1280, h, w);
         cur = SpatialTransformer("middle_block.1", cur, context, 1280, h, w);
         cur = ResBlock("middle_block.2", cur, tEmb, 1280, 1280, h, w);
 
         // ── Output Blocks ───────────────────────────────────────────────────────
-        // Helper to concatenate skip connection along channel dimension C
         static float[] CatSkip(float[] current, float[] skip, int curC, int skipC, int curH, int curW)
         {
             int hw = curH * curW;
@@ -438,10 +513,8 @@ public sealed class UNet2DConditionModel
         cur = CatSkip(cur, savedInputs[9], 1280, 1280, h, w);
         cur = ResBlock("output_blocks.2.0", cur, tEmb, 2560, 1280, h, w);
         cur = DiffusionOps.Upsample2x(cur, 1, 1280, h, w);
-        var us2W = GetWeight("output_blocks.2.1.conv.weight");
-        var us2B = GetWeight("output_blocks.2.1.conv.bias");
         h *= 2; w *= 2;
-        cur = DiffusionOps.Conv2D(cur, us2W, us2B, 1, 1280, h, w, 1280, 3, 3);
+        cur = Conv("output_blocks.2.1.conv", cur, 1280, h, w, 1280, 3);
 
         // Block 3: ResBlock(1280 + 1280 -> 1280) + SpatialTransformer(1280)
         cur = CatSkip(cur, savedInputs[8], 1280, 1280, h, w);
@@ -458,10 +531,8 @@ public sealed class UNet2DConditionModel
         cur = ResBlock("output_blocks.5.0", cur, tEmb, 1920, 1280, h, w);
         cur = SpatialTransformer("output_blocks.5.1", cur, context, 1280, h, w);
         cur = DiffusionOps.Upsample2x(cur, 1, 1280, h, w);
-        var us5W = GetWeight("output_blocks.5.2.conv.weight");
-        var us5B = GetWeight("output_blocks.5.2.conv.bias");
         h *= 2; w *= 2;
-        cur = DiffusionOps.Conv2D(cur, us5W, us5B, 1, 1280, h, w, 1280, 3, 3);
+        cur = Conv("output_blocks.5.2.conv", cur, 1280, h, w, 1280, 3);
 
         // Block 6: ResBlock(1280 + 640 -> 640) + SpatialTransformer(640)
         cur = CatSkip(cur, savedInputs[5], 1280, 640, h, w);
@@ -478,10 +549,8 @@ public sealed class UNet2DConditionModel
         cur = ResBlock("output_blocks.8.0", cur, tEmb, 960, 640, h, w);
         cur = SpatialTransformer("output_blocks.8.1", cur, context, 640, h, w);
         cur = DiffusionOps.Upsample2x(cur, 1, 640, h, w);
-        var us8W = GetWeight("output_blocks.8.2.conv.weight");
-        var us8B = GetWeight("output_blocks.8.2.conv.bias");
         h *= 2; w *= 2;
-        cur = DiffusionOps.Conv2D(cur, us8W, us8B, 1, 640, h, w, 640, 3, 3);
+        cur = Conv("output_blocks.8.2.conv", cur, 640, h, w, 640, 3);
 
         // Block 9: ResBlock(640 + 320 -> 320) + SpatialTransformer(320)
         cur = CatSkip(cur, savedInputs[2], 640, 320, h, w);
@@ -499,14 +568,22 @@ public sealed class UNet2DConditionModel
         cur = SpatialTransformer("output_blocks.11.1", cur, context, 320, h, w);
 
         // ── Final Output ────────────────────────────────────────────────────────
-        // GroupNorm(32, 320) + SiLU + Conv2D(320 -> 4, 3x3)
         var outGnW = GetWeight("out.0.weight");
         var outGnB = GetWeight("out.0.bias");
         DiffusionOps.GroupNorm(cur, outGnW, outGnB, 1, 320, h, w, groups: 32);
         DiffusionOps.SiluInPlace(cur);
 
-        var outConvW = GetWeight("out.2.weight");
-        var outConvB = GetWeight("out.2.bias");
-        return DiffusionOps.Conv2D(cur, outConvW, outConvB, 1, 320, h, w, 4, 3, 3);
+        return Conv("out.2", cur, 320, h, w, 4, 3);
+    }
+
+    public void Dispose()
+    {
+        if (_gpuWeights is not null)
+        {
+            foreach (var t in _gpuWeights.Values) _backend!.Free(t);
+            _gpuWeights.Clear();
+        }
+        _weightCache.Clear();
     }
 }
+
