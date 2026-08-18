@@ -30,7 +30,7 @@ public sealed class EulerDiscreteScheduler
 
     private readonly DiffusionSchedulerType _schedulerType;
 
-    public EulerDiscreteScheduler(int numInferenceSteps = 20, float betaStart = 0.00085f, float betaEnd = 0.012f, int trainSteps = 1000, DiffusionSchedulerType schedulerType = DiffusionSchedulerType.Euler)
+    public EulerDiscreteScheduler(int numInferenceSteps = 20, DiffusionSchedulerType schedulerType = DiffusionSchedulerType.Euler, float betaStart = 0.00085f, float betaEnd = 0.012f, int trainSteps = 1000)
     {
         NumSteps = numInferenceSteps;
         _schedulerType = schedulerType;

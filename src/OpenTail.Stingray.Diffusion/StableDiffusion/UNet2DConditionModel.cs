@@ -431,7 +431,7 @@ public sealed class UNet2DConditionModel : IDisposable
         return output;
     }
 
-    public float[] Forward(float[] x, float timestep, float[] context, int latH, int latW)
+    public float[] Forward(float[] x, float timestep, float[] context, int latH, int latW, IReadOnlyList<float[]>? controlDownResiduals = null, float[]? controlMidResidual = null)
     {
         var tEmb = ComputeTimeEmbedding(timestep);
         var savedInputs = new List<float[]>(12);
@@ -486,10 +486,28 @@ public sealed class UNet2DConditionModel : IDisposable
         cur = ResBlock("input_blocks.11.0", cur, tEmb, 1280, 1280, h, w);
         savedInputs.Add(cur);
 
+        // Apply ControlNet down residuals to skip connections
+        if (controlDownResiduals is not null)
+        {
+            for (int i = 0; i < Math.Min(savedInputs.Count, controlDownResiduals.Count); i++)
+            {
+                var res = controlDownResiduals[i];
+                var inp = savedInputs[i];
+                for (int j = 0; j < Math.Min(inp.Length, res.Length); j++)
+                    inp[j] += res[j];
+            }
+        }
+
         // ── Middle Block ────────────────────────────────────────────────────────
         cur = ResBlock("middle_block.0", cur, tEmb, 1280, 1280, h, w);
         cur = SpatialTransformer("middle_block.1", cur, context, 1280, h, w);
         cur = ResBlock("middle_block.2", cur, tEmb, 1280, 1280, h, w);
+
+        if (controlMidResidual is not null)
+        {
+            for (int j = 0; j < Math.Min(cur.Length, controlMidResidual.Length); j++)
+                cur[j] += controlMidResidual[j];
+        }
 
         // ── Output Blocks ───────────────────────────────────────────────────────
         static float[] CatSkip(float[] current, float[] skip, int curC, int skipC, int curH, int curW)
@@ -586,4 +604,5 @@ public sealed class UNet2DConditionModel : IDisposable
         _weightCache.Clear();
     }
 }
+
 

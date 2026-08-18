@@ -159,6 +159,19 @@ public sealed class ImageCommand : Command<ImageCommand.Settings>
         [Description("Diffusion scheduler algorithm: euler (default), euler-a, ddim, dpm2m, dpm2m-karras")]
         public string? Sampler { get; init; }
 
+        [CommandOption("--control-net|--controlnet")]
+        [Description("Path to ControlNet weights (.safetensors or .gguf)")]
+        public string? ControlNetPath { get; init; }
+
+        [CommandOption("--control-image|--control-img")]
+        [Description("Path to ControlNet condition hint image (Canny edge, depth map, openpose, etc.)")]
+        public string? ControlImagePath { get; init; }
+
+        [CommandOption("--control-strength")]
+        [Description("ControlNet conditioning scale/strength (default: 1.0)")]
+        [DefaultValue(1.0f)]
+        public float ControlStrength { get; init; } = 1.0f;
+
         // ── sd-cli fallback ───────────────────────────────────────────────
 
         [CommandOption("--use-sdcpp")]
@@ -1030,6 +1043,7 @@ public sealed class ImageCommand : Command<ImageCommand.Settings>
     private static string Q(string s) =>
         s.Contains(' ') || s.Contains('"') ? $"\"{s.Replace("\"", "\\\"")}\"" : s;
 }
+
 
 
 

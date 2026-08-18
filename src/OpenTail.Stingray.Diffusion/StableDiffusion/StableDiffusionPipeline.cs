@@ -1,4 +1,5 @@
 using OpenTail.Stingray.Core;
+using OpenTail.Stingray.Diffusion.ControlNet;
 using OpenTail.Stingray.Diffusion.TextEncoders;
 
 namespace OpenTail.Stingray.Diffusion.StableDiffusion;
@@ -63,7 +64,7 @@ public sealed class StableDiffusionPipeline : IDiffusionPipeline
     }
 
     /// <summary>
-    /// Generates an image from a text prompt and saves to disk as PNG. Supports text-to-image and image-to-image (img2img).
+    /// Generates an image from a text prompt and saves to disk as PNG. Supports text-to-image, img2img, and ControlNet guidance.
     /// </summary>
     public void Generate(
         string prompt,
@@ -79,7 +80,10 @@ public sealed class StableDiffusionPipeline : IDiffusionPipeline
         RRDBNet? upscaler = null,
         float upscaleBlend = 1.0f,
         float[]? initImageRgb = null,
-        float strength = 0.75f)
+        float strength = 0.75f,
+        ControlNetModel? controlNet = null,
+        float[]? controlHintRgb = null,
+        float controlStrength = 1.0f)
     {
         if (width % 8 != 0 || height % 8 != 0)
             throw new ArgumentException($"Width and height must be divisible by 8 (got {width}x{height})");
@@ -114,11 +118,19 @@ public sealed class StableDiffusionPipeline : IDiffusionPipeline
             latent = scheduler.CreateInitialLatents(1, latC, latH, latW, seed);
         }
 
-        // 4. Denoising loop with 2-pass CFG:
+        // 4. Denoising loop with 2-pass CFG + ControlNet guidance:
         var denoised = scheduler.Denoise(latent, (scaledLatent, timestep) =>
         {
-            var condPred = _unet.Forward(scaledLatent, timestep, condContext, latH, latW);
-            var uncondPred = _unet.Forward(scaledLatent, timestep, uncondContext, latH, latW);
+            List<float[]>? downRes = null;
+            float[]? midRes = null;
+
+            if (controlNet is not null && controlHintRgb is not null)
+            {
+                (downRes, midRes) = controlNet.Forward(scaledLatent, timestep, condContext, controlHintRgb, latH, latW, conditioningScale: controlStrength);
+            }
+
+            var condPred = _unet.Forward(scaledLatent, timestep, condContext, latH, latW, downRes, midRes);
+            var uncondPred = _unet.Forward(scaledLatent, timestep, uncondContext, latH, latW, downRes, midRes);
             return scheduler.CombineGuidance(condPred, uncondPred, guidance);
         }, progress, startStep: startStep);
 
@@ -171,5 +183,3 @@ public sealed class StableDiffusionPipeline : IDiffusionPipeline
         }
     }
 }
-
-

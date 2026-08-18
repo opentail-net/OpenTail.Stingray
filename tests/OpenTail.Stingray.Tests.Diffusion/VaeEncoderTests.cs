@@ -17,7 +17,7 @@ public sealed class VaeEncoderTests
     [Fact]
     public void EulerDiscreteScheduler_CreateNoisyLatent_BlendsAtStartStep()
     {
-        var scheduler = new EulerDiscreteScheduler(numSteps: 20);
+        var scheduler = new EulerDiscreteScheduler(numInferenceSteps: 20);
         var cleanLatent = new float[64];
         Array.Fill(cleanLatent, 1.0f);
 
@@ -37,7 +37,7 @@ public sealed class VaeEncoderTests
     [Fact]
     public void EulerDiscreteScheduler_Denoise_RespectsStartStep()
     {
-        var scheduler = new EulerDiscreteScheduler(numSteps: 20);
+        var scheduler = new EulerDiscreteScheduler(numInferenceSteps: 20);
         var initialLatent = new float[16];
         Array.Fill(initialLatent, 2.0f);
 
