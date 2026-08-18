@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using OpenTail.Stingray.Audio;
 using OpenTail.Stingray.Audio.Kokoro;
+using OpenTail.Stingray.Audio.Piper;
 
 namespace OpenTail.Stingray.Server.Endpoints;
 
@@ -38,16 +39,23 @@ public static class OpenAiAudioEndpoints
             string voice = string.IsNullOrWhiteSpace(req.Voice) ? "af_heart" : req.Voice;
             float speed = req.Speed > 0 ? req.Speed : 1.0f;
 
-            using var pipeline = new KokoroPipeline();
-            var audioReq = new AudioGenerationRequest
-            {
-                Text = req.Input,
-                Voice = voice,
-                Speed = speed
-            };
+            bool isPiper = req.Model != null && (req.Model.Contains("piper", StringComparison.OrdinalIgnoreCase) || req.Model.Contains("vits", StringComparison.OrdinalIgnoreCase));
 
-            var result = pipeline.Generate(audioReq);
-            byte[] wavBytes = result.ToWavBytes();
+            ITextToSpeechPipeline pipeline = isPiper ? new PiperPipeline() : new KokoroPipeline();
+            byte[] wavBytes;
+
+            using (pipeline)
+            {
+                var audioReq = new AudioGenerationRequest
+                {
+                    Text = req.Input,
+                    Voice = voice,
+                    Speed = speed
+                };
+
+                var result = pipeline.Generate(audioReq);
+                wavBytes = result.ToWavBytes();
+            }
 
             ctx.Response.StatusCode = 200;
             ctx.Response.ContentType = "audio/wav";

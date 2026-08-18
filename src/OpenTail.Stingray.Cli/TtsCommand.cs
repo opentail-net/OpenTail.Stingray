@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Diagnostics;
 using OpenTail.Stingray.Audio;
 using OpenTail.Stingray.Audio.Kokoro;
+using OpenTail.Stingray.Audio.Piper;
 using OpenTail.Stingray.Cli.CommandLine;
 
 namespace OpenTail.Stingray.Cli;
@@ -14,6 +15,10 @@ public sealed class TtsCommand : Command<TtsCommand.Settings>
         [Description("Input text to synthesize into speech audio.")]
         public string? Text { get; init; }
 
+        [CommandOption("-e|--engine <ENGINE>")]
+        [Description("TTS architecture engine: kokoro (default) or piper.")]
+        public string Engine { get; init; } = "kokoro";
+
         [CommandOption("-v|--voice <VOICE>")]
         [Description("Voice persona style preset (e.g. af_heart, af_bella, am_adam, bf_alice, bm_george). Default: af_heart.")]
         public string Voice { get; init; } = "af_heart";
@@ -21,6 +26,10 @@ public sealed class TtsCommand : Command<TtsCommand.Settings>
         [CommandOption("-s|--speed <SPEED>")]
         [Description("Speech generation speed multiplier. Default: 1.0.")]
         public float Speed { get; init; } = 1.0f;
+
+        [CommandOption("-c|--config <PATH>")]
+        [Description("Path to optional Piper model config JSON (.onnx.json).")]
+        public string? ConfigPath { get; init; }
 
         [CommandOption("-o|--output <PATH>")]
         [Description("Output WAV file path. Default: speech.wav.")]
@@ -49,31 +58,40 @@ public sealed class TtsCommand : Command<TtsCommand.Settings>
             return 1;
         }
 
-        Console.WriteLine("Kokoro-82M Native Text-to-Speech");
-        Console.WriteLine($"Voice:    {s.Voice}");
-        Console.WriteLine($"Speed:    {s.Speed:F2}x");
-        Console.WriteLine($"Prompt:   \"{s.Text}\"");
+        bool isPiper = s.Engine.Equals("piper", StringComparison.OrdinalIgnoreCase) ||
+                       (!string.IsNullOrEmpty(s.ConfigPath) && s.ConfigPath.EndsWith(".json", StringComparison.OrdinalIgnoreCase));
 
-        var sw = Stopwatch.StartNew();
-        using var pipeline = new KokoroPipeline();
+        ITextToSpeechPipeline pipeline = isPiper
+            ? (!string.IsNullOrEmpty(s.ConfigPath) ? PiperPipeline.FromConfigFile(s.ConfigPath) : new PiperPipeline())
+            : new KokoroPipeline();
 
-        var req = new AudioGenerationRequest
+        using (pipeline)
         {
-            Text = s.Text,
-            Voice = s.Voice,
-            Speed = s.Speed,
-            OutputPath = s.OutputPath
-        };
+            Console.WriteLine($"{pipeline.Architecture} Native Text-to-Speech");
+            Console.WriteLine($"Voice:    {s.Voice}");
+            Console.WriteLine($"Speed:    {s.Speed:F2}x");
+            Console.WriteLine($"Prompt:   \"{s.Text}\"");
 
-        var result = pipeline.Generate(req);
-        sw.Stop();
+            var sw = Stopwatch.StartNew();
 
-        double audioDuration = result.Duration.TotalSeconds;
-        double rtf = sw.Elapsed.TotalSeconds / Math.Max(0.001, audioDuration);
+            var req = new AudioGenerationRequest
+            {
+                Text = s.Text,
+                Voice = s.Voice,
+                Speed = s.Speed,
+                OutputPath = s.OutputPath
+            };
 
-        Console.WriteLine($"✓ Audio synthesized: {Path.GetFullPath(s.OutputPath)}");
-        Console.WriteLine($"Duration:       {audioDuration:F2}s ({result.Samples.Length:N0} samples @ {result.SampleRate}Hz)");
-        Console.WriteLine($"Inference time: {sw.Elapsed.TotalSeconds:F2}s ({1.0 / Math.Max(0.001, rtf):F1}x real-time)");
+            var result = pipeline.Generate(req);
+            sw.Stop();
+
+            double audioDuration = result.Duration.TotalSeconds;
+            double rtf = sw.Elapsed.TotalSeconds / Math.Max(0.001, audioDuration);
+
+            Console.WriteLine($"✓ Audio synthesized: {Path.GetFullPath(s.OutputPath)}");
+            Console.WriteLine($"Duration:       {audioDuration:F2}s ({result.Samples.Length:N0} samples @ {result.SampleRate}Hz)");
+            Console.WriteLine($"Inference time: {sw.Elapsed.TotalSeconds:F2}s ({1.0 / Math.Max(0.001, rtf):F1}x real-time)");
+        }
 
         return 0;
     }
