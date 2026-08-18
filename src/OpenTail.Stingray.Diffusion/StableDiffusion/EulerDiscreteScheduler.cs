@@ -1,7 +1,14 @@
 namespace OpenTail.Stingray.Diffusion.StableDiffusion;
 
+public enum DiffusionSchedulerType
+{
+    Euler,
+    EulerAncestral,
+    Ddim
+}
+
 /// <summary>
-/// Discrete Euler scheduler and CFG sampler for Stable Diffusion 1.5.
+/// Discrete Euler and Ancestral scheduler and CFG sampler for Stable Diffusion 1.5.
 /// Uses the 1000-step scaled linear beta schedule (beta_start=0.00085, beta_end=0.012).
 /// </summary>
 public sealed class EulerDiscreteScheduler : IDiffusionScheduler, IDiffusionSampler
@@ -12,13 +19,16 @@ public sealed class EulerDiscreteScheduler : IDiffusionScheduler, IDiffusionSamp
 
     private readonly float[] _trainSigmas;
     private readonly float[] _trainLogSigmas;
+    private readonly DiffusionSchedulerType _schedulerType;
 
     public float[] Sigmas { get; }
     public float[] Timesteps { get; }
     public int NumSteps => Timesteps.Length;
 
-    public EulerDiscreteScheduler(int numInferenceSteps)
+    public EulerDiscreteScheduler(int numInferenceSteps, DiffusionSchedulerType schedulerType = DiffusionSchedulerType.Euler)
     {
+        _schedulerType = schedulerType;
+
         // 1. Build the 1000-step training betas & sigmas
         _trainSigmas = new float[TotalTrainTimesteps];
         _trainLogSigmas = new float[TotalTrainTimesteps];
@@ -128,13 +138,14 @@ public sealed class EulerDiscreteScheduler : IDiffusionScheduler, IDiffusionSamp
     }
 
     /// <summary>
-    /// Executes the Euler discrete denoising loop.
-    /// predictNoise receives (scaledLatent, timestep) and returns predicted noise (or model output).
+    /// Executes the denoising loop.
+    /// predictNoise receives (scaledLatent, timestep) and returns predicted noise.
     /// </summary>
     public float[] Denoise(float[] initialLatent, Func<float[], float, float[]> predictNoise, Action<int, int>? progress = null)
     {
         var x = (float[])initialLatent.Clone();
         int steps = NumSteps;
+        var rng = new Random(42);
 
         for (int i = 0; i < steps; i++)
         {
@@ -151,10 +162,28 @@ public sealed class EulerDiscreteScheduler : IDiffusionScheduler, IDiffusionSamp
             // 2. Predict noise
             var modelOut = predictNoise(xIn, timestep);
 
-            // 3. Euler step: x_{t+1} = x_t + modelOut * (sigma_{t+1} - sigma_t)
-            float dt = sigmaNext - sigma;
-            for (int j = 0; j < x.Length; j++)
-                x[j] += modelOut[j] * dt;
+            // 3. Step update
+            if (_schedulerType == DiffusionSchedulerType.EulerAncestral && sigmaNext > 0f)
+            {
+                float sigmaUp = MathF.Min(sigmaNext, MathF.Sqrt(sigmaNext * sigmaNext * (sigma * sigma - sigmaNext * sigmaNext) / (sigma * sigma)));
+                float sigmaDown = MathF.Sqrt(sigmaNext * sigmaNext - sigmaUp * sigmaUp);
+                float dt = sigmaDown - sigma;
+
+                for (int j = 0; j < x.Length; j++)
+                {
+                    double u1 = 1.0 - rng.NextDouble();
+                    double u2 = 1.0 - rng.NextDouble();
+                    float noise = (float)(Math.Sqrt(-2.0 * Math.Log(u1)) * Math.Cos(2.0 * Math.PI * u2));
+                    x[j] += modelOut[j] * dt + noise * sigmaUp;
+                }
+            }
+            else
+            {
+                // Standard Euler step: x_{t+1} = x_t + modelOut * (sigma_{t+1} - sigma_t)
+                float dt = sigmaNext - sigma;
+                for (int j = 0; j < x.Length; j++)
+                    x[j] += modelOut[j] * dt;
+            }
 
             progress?.Invoke(i + 1, steps);
         }
@@ -175,3 +204,4 @@ public sealed class EulerDiscreteScheduler : IDiffusionScheduler, IDiffusionSamp
         return result;
     }
 }
+

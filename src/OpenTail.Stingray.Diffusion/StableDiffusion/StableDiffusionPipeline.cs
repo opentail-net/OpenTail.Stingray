@@ -63,11 +63,13 @@ public sealed class StableDiffusionPipeline : IDisposable, IDiffusionPipeline
     /// </summary>
     public void Generate(
         string prompt,
+        string? negativePrompt = null,
         int width = 512,
         int height = 512,
         int steps = 20,
         float guidance = 7.5f,
         int seed = -1,
+        DiffusionSchedulerType schedulerType = DiffusionSchedulerType.Euler,
         string outputPath = "output.png",
         Action<int, int>? progress = null,
         RRDBNet? upscaler = null,
@@ -84,12 +86,12 @@ public sealed class StableDiffusionPipeline : IDisposable, IDiffusionPipeline
         var condTokens = _tokenizer.Tokenize(prompt);
         var (condContext, _) = _textEncoder.Encode(condTokens);
 
-        // 2. Unconditional Conditioning (empty prompt for CFG):
-        var uncondTokens = _tokenizer.Tokenize("");
+        // 2. Negative / Unconditional Conditioning:
+        var uncondTokens = _tokenizer.Tokenize(negativePrompt ?? "");
         var (uncondContext, _) = _textEncoder.Encode(uncondTokens);
 
         // 3. Scheduler & Initial Noise:
-        var scheduler = new EulerDiscreteScheduler(steps);
+        var scheduler = new EulerDiscreteScheduler(steps, schedulerType);
         var latent = scheduler.SampleNoise(latC * latH * latW, seed);
 
         // 4. Denoising loop with 2-pass CFG:
@@ -125,11 +127,13 @@ public sealed class StableDiffusionPipeline : IDisposable, IDiffusionPipeline
     {
         Generate(
             request.Prompt,
+            negativePrompt: null,
             width: request.Width <= 0 ? 512 : request.Width,
             height: request.Height <= 0 ? 512 : request.Height,
             steps: request.Steps <= 0 ? 20 : request.Steps,
             guidance: request.Guidance == 1.0f ? 7.5f : request.Guidance,
             seed: request.Seed,
+            schedulerType: DiffusionSchedulerType.Euler,
             outputPath: request.OutputPath,
             progress: request.Progress,
             upscaler: request.Upscaler,
