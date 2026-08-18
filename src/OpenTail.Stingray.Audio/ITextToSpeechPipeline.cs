@@ -14,12 +14,14 @@ public interface ITextToSpeechPipeline : IDisposable
     AudioGenerationResult Generate(AudioGenerationRequest request);
 }
 
-public sealed record AudioGenerationRequest
+public record AudioGenerationRequest
 {
     public required string Text { get; init; }
     public string Voice { get; init; } = "af_heart";
     public float Speed { get; init; } = 1.0f;
     public string? OutputPath { get; init; }
+    public string? ReferenceAudioPath { get; init; }
+    public string? ReferenceText { get; init; }
     public Action<int, int>? Progress { get; init; }
 }
 

@@ -1,6 +1,8 @@
 using System.ComponentModel;
 using System.Diagnostics;
 using OpenTail.Stingray.Audio;
+using OpenTail.Stingray.Audio.Chatterbox;
+using OpenTail.Stingray.Audio.F5TTS;
 using OpenTail.Stingray.Audio.Kokoro;
 using OpenTail.Stingray.Audio.Piper;
 using OpenTail.Stingray.Cli.CommandLine;
@@ -16,11 +18,11 @@ public sealed class TtsCommand : Command<TtsCommand.Settings>
         public string? Text { get; init; }
 
         [CommandOption("-e|--engine <ENGINE>")]
-        [Description("TTS architecture engine: kokoro (default) or piper.")]
+        [Description("TTS architecture engine: kokoro (default), piper, f5tts, or chatterbox.")]
         public string Engine { get; init; } = "kokoro";
 
         [CommandOption("-v|--voice <VOICE>")]
-        [Description("Voice persona style preset (e.g. af_heart, af_bella, am_adam, bf_alice, bm_george). Default: af_heart.")]
+        [Description("Voice persona style preset (e.g. af_heart, af_bella, am_adam, resemble_default, narrator). Default: af_heart.")]
         public string Voice { get; init; } = "af_heart";
 
         [CommandOption("-s|--speed <SPEED>")]
@@ -30,6 +32,14 @@ public sealed class TtsCommand : Command<TtsCommand.Settings>
         [CommandOption("-c|--config <PATH>")]
         [Description("Path to optional Piper model config JSON (.onnx.json).")]
         public string? ConfigPath { get; init; }
+
+        [CommandOption("--ref-audio <PATH>")]
+        [Description("Path to reference audio file for zero-shot voice cloning (F5-TTS).")]
+        public string? ReferenceAudioPath { get; init; }
+
+        [CommandOption("--ref-text <TEXT>")]
+        [Description("Reference transcription for the voice cloning audio (F5-TTS).")]
+        public string? ReferenceText { get; init; }
 
         [CommandOption("-o|--output <PATH>")]
         [Description("Output WAV file path. Default: speech.wav.")]
@@ -44,11 +54,11 @@ public sealed class TtsCommand : Command<TtsCommand.Settings>
     {
         if (s.ListVoices)
         {
-            Console.WriteLine("Available Kokoro-82M Voice Presets:");
-            foreach (var voice in KokoroVoices.AvailableVoices)
-            {
-                Console.WriteLine($"  • {voice}");
-            }
+            Console.WriteLine("Available Voice Presets:");
+            Console.WriteLine("  Kokoro-82M:");
+            foreach (var voice in KokoroVoices.AvailableVoices) Console.WriteLine($"    • {voice}");
+            Console.WriteLine("  Chatterbox-Turbo:");
+            foreach (var voice in ChatterboxVoices.AvailableVoices) Console.WriteLine($"    • {voice}");
             return 0;
         }
 
@@ -58,29 +68,49 @@ public sealed class TtsCommand : Command<TtsCommand.Settings>
             return 1;
         }
 
+        bool isChatterbox = s.Engine.Contains("chatter", StringComparison.OrdinalIgnoreCase);
+        bool isF5 = s.Engine.Contains("f5", StringComparison.OrdinalIgnoreCase) || !string.IsNullOrEmpty(s.ReferenceAudioPath);
         bool isPiper = s.Engine.Equals("piper", StringComparison.OrdinalIgnoreCase) ||
                        (!string.IsNullOrEmpty(s.ConfigPath) && s.ConfigPath.EndsWith(".json", StringComparison.OrdinalIgnoreCase));
 
-        ITextToSpeechPipeline pipeline = isPiper
-            ? (!string.IsNullOrEmpty(s.ConfigPath) ? PiperPipeline.FromConfigFile(s.ConfigPath) : new PiperPipeline())
-            : new KokoroPipeline();
+        ITextToSpeechPipeline pipeline = isChatterbox
+            ? new ChatterboxPipeline()
+            : (isF5
+                ? new F5TtsPipeline()
+                : (isPiper
+                    ? (!string.IsNullOrEmpty(s.ConfigPath) ? PiperPipeline.FromConfigFile(s.ConfigPath) : new PiperPipeline())
+                    : new KokoroPipeline()));
 
         using (pipeline)
         {
             Console.WriteLine($"{pipeline.Architecture} Native Text-to-Speech");
             Console.WriteLine($"Voice:    {s.Voice}");
             Console.WriteLine($"Speed:    {s.Speed:F2}x");
+            if (!string.IsNullOrEmpty(s.ReferenceAudioPath))
+            {
+                Console.WriteLine($"Ref Audio: {s.ReferenceAudioPath} (Zero-Shot Voice Cloning)");
+            }
             Console.WriteLine($"Prompt:   \"{s.Text}\"");
 
             var sw = Stopwatch.StartNew();
 
-            var req = new AudioGenerationRequest
-            {
-                Text = s.Text,
-                Voice = s.Voice,
-                Speed = s.Speed,
-                OutputPath = s.OutputPath
-            };
+            AudioGenerationRequest req = isF5
+                ? new F5AudioGenerationRequest
+                {
+                    Text = s.Text,
+                    Voice = s.Voice,
+                    Speed = s.Speed,
+                    OutputPath = s.OutputPath,
+                    ReferenceAudioPath = s.ReferenceAudioPath,
+                    ReferenceText = s.ReferenceText
+                }
+                : new AudioGenerationRequest
+                {
+                    Text = s.Text,
+                    Voice = s.Voice,
+                    Speed = s.Speed,
+                    OutputPath = s.OutputPath
+                };
 
             var result = pipeline.Generate(req);
             sw.Stop();

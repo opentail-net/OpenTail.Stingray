@@ -12,8 +12,9 @@ NativeAOT-publishes to a single binary.
 
 Runs GGUF models on CPU (AVX2/AVX-512 SIMD) and GPU (Vulkan compute shaders or CUDA cuBLAS), with an
 OpenAI- and Anthropic-compatible API server (/v1/chat/completions, /v1/audio/speech), native dynamic Multi-LoRA serving,
-native Kokoro-82M Text-to-Speech synthesis, and native diffusion pipelines for Stable Diffusion 1.5, SDXL, SD 3/3.5,
-FLUX.1, Z-Image-Turbo, Qwen Image & Edit, Wan 2.1/2.2 Video, HunyuanVideo, and LTX-Video.
+native Text-to-Speech (TTS) synthesis (Kokoro-82M, Piper VITS, F5-TTS Flow-Matching DiT with Voice Cloning, and Chatterbox-Turbo Autoregressive LM),
+and native diffusion pipelines for Stable Diffusion 1.5, SDXL, SD 3/3.5, FLUX.1, Z-Image-Turbo, Qwen Image & Edit,
+Wan 2.1/2.2 Video, HunyuanVideo, and LTX-Video.
 
 ---
 
@@ -622,6 +623,50 @@ dotnet run --project src/OpenTail.Stingray.Cli -c Release -- image \
   -p "a fox in autumn forest" -W 512 -H 512 --steps 4 -o fox.png
 ```
 
+
+## Text-to-Speech (TTS) & Voice Cloning
+
+OpenTail.Stingray includes a **100% native managed C# audio synthesis engine** with zero external binaries, Python, or ONNX Runtime dependencies. It exposes three complementary neural architectures:
+
+| Engine | Architecture | Sample Rate | Real-Time Factor (RTF) | Capabilities |
+|---|---|---:|---:|---|
+| **Kokoro-82M** | StyleTTS2 / PLBERT + AdaIN-ResBlocks + iSTFT | 24000 Hz | **~58.7×** real-time | Fast, expressive persona presets (f_heart, f_bella, m_adam, f_alice, m_george, etc.) |
+| **Piper** | VITS (Prior RelPos Transformer + Flow + HiFi-GAN MRF) | 22050 Hz | **~98.6×** real-time | Lightweight, low-latency, and multi-speaker across 40+ language voices |
+| **F5-TTS** | Flow-Matching 22-Layer DiT + Vocos Neural Vocoder | 24000 Hz | High-Fidelity DiT | **Zero-Shot Voice Cloning** with reference audio conditioning (--ref-audio) |
+| **Chatterbox-Turbo** | 24-Layer Autoregressive Acoustic LM + Neural Decoder | 24000 Hz | **~450×** real-time | Autoregressive discrete token generation with speaker style banks |
+
+### CLI Speech Synthesis
+
+`ash
+# 1. Kokoro-82M native speech synthesis
+stingray tts -t "Hello from OpenTail Stingray native speech synthesis!" -v af_heart -o kokoro.wav
+
+# 2. Piper (VITS) ultra-fast synthesis
+stingray tts -t "Piper VITS synthesizes lightweight audio with zero dependencies." -e piper -o piper.wav
+
+# 3. F5-TTS with Zero-Shot Voice Cloning from reference audio
+stingray tts -t "This audio is synthesized using zero-shot voice cloning from my reference file." \
+  -e f5tts --ref-audio reference_voice.wav --ref-text "Reference speaker sentence" -o cloned.wav
+
+# 4. Chatterbox-Turbo autoregressive speech synthesis
+stingray tts -t "Chatterbox Turbo synthesizes expressive audio via acoustic language modeling." \
+  -e chatterbox -v narrator -o chatterbox.wav
+`
+
+### OpenAI-Compatible Speech API
+
+The server exposes POST /v1/audio/speech returning real-time udio/wav streams:
+
+`ash
+curl http://localhost:8080/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "f5-tts",
+    "input": "OpenTail Stingray brings native AI inference to .NET 10.",
+    "voice": "af_heart",
+    "speed": 1.0
+  }' --output speech.wav
+`
 ## More
 
 - Architecture & algorithms: [docs/reference/OpenTail.Stingray-Design.md](docs/reference/OpenTail.Stingray-Design.md)
@@ -665,4 +710,6 @@ over them.
 Released under the [MIT License](LICENSE).
 
 Copyright © 2026 OpenTail.
+
+
 
