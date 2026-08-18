@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <Description>Native Text-to-Speech (TTS) audio synthesis and voice generation for OpenTail.Stingray (Kokoro-82M).</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\OpenTail.Stingray.Core\OpenTail.Stingray.Core.csproj" />
+    <ProjectReference Include="..\OpenTail.Stingray.Cpu\OpenTail.Stingray.Cpu.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="System.Numerics.Tensors" Version="10.0.5" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="OpenTail.Stingray.Tests.Audio" />
+  </ItemGroup>
+
+</Project>

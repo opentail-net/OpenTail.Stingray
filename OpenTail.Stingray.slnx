@@ -43,3 +43,4 @@
     <Project Path="tests/OpenTail.Stingray.Tests.Vulkan.Fast/OpenTail.Stingray.Tests.Vulkan.Fast.csproj" />
   </Folder>
 </Solution>
+

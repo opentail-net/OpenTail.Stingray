@@ -18,6 +18,7 @@ public static class EndpointRouteBuilderExtensions
     public static IEndpointRouteBuilder MapOpenTailStingray(this IEndpointRouteBuilder endpoints)
     {
         endpoints.MapOpenAiEndpoints();
+        endpoints.MapOpenAiAudioEndpoints();
         endpoints.MapAnthropicEndpoints();
         endpoints.MapResponsesEndpoints();
         endpoints.MapHealthEndpoints();
@@ -28,3 +29,4 @@ public static class EndpointRouteBuilderExtensions
         return endpoints;
     }
 }
+

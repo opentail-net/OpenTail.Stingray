@@ -53,6 +53,7 @@
     <ProjectReference Include="..\OpenTail.Stingray.Diffusion\OpenTail.Stingray.Diffusion.csproj" />
     <ProjectReference Include="..\OpenTail.Stingray.Engine\OpenTail.Stingray.Engine.csproj" />
     <ProjectReference Include="..\OpenTail.Stingray.Vision\OpenTail.Stingray.Vision.csproj" />
+    <ProjectReference Include="..\OpenTail.Stingray.Audio\OpenTail.Stingray.Audio.csproj" />
     <ProjectReference Include="..\OpenTail.Stingray.Vulkan\OpenTail.Stingray.Vulkan.csproj" />
     <ProjectReference Include="..\OpenTail.Stingray.Cuda\OpenTail.Stingray.Cuda.csproj" />
 
@@ -119,3 +120,4 @@
   </ItemGroup>
 
 </Project>
+

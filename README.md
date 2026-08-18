@@ -11,8 +11,9 @@ NativeAOT-publishes to a single binary.
 > **Built by [opentail.net](https://opentail.net)**
 
 Runs GGUF models on CPU (AVX2/AVX-512 SIMD) and GPU (Vulkan compute shaders or CUDA cuBLAS), with an
-OpenAI- and Anthropic-compatible API server, native dynamic Multi-LoRA serving, and native pipelines for
-Stable Diffusion 1.5, SDXL, SD 3/3.5, FLUX.1, Z-Image-Turbo, Qwen Image & Edit, Wan 2.1/2.2 Video, and HunyuanVideo.
+OpenAI- and Anthropic-compatible API server (/v1/chat/completions, /v1/audio/speech), native dynamic Multi-LoRA serving,
+native Kokoro-82M Text-to-Speech synthesis, and native diffusion pipelines for Stable Diffusion 1.5, SDXL, SD 3/3.5,
+FLUX.1, Z-Image-Turbo, Qwen Image & Edit, Wan 2.1/2.2 Video, HunyuanVideo, and LTX-Video.
 
 ---
 
@@ -24,6 +25,7 @@ dotnet tool install -g OpenTail.Stingray.Cli
 stingray -m models/SmolLM2-1.7B-Instruct-Q4_K_M.gguf -p "Once upon a time"
 stingray -m models/Qwen3-8B-Q4_K_M.gguf -p "Explain mmap" -g -1     # all layers on GPU
 stingray -m models/Qwen3-8B-Q4_K_M.gguf                             # interactive chat
+stingray tts -t "Hello from OpenTail Stingray!" -v af_heart -o speech.wav # native TTS
 ```
 
 Or use it as a library:

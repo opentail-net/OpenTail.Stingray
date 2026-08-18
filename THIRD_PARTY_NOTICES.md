@@ -322,3 +322,17 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+## Kokoro TTS References (KOKORO-GPT2, kokoro.cpp, kokoro-infer) — MIT / Apache-2.0
+
+The native C# Text-to-Speech (TTS) architecture, G2P phonemizer frontend, and PLBERT/AdaIN neural vocoder graph in src/OpenTail.Stingray.Audio reference the following C++ implementations:
+
+- **KOKORO-GPT2**: <https://github.com/Himanshu040604/KOKORO-GPT2>
+  - Copyright (c) 2026 Himanshu & Contributors
+  - License: Apache 2.0 / MIT
+- **kokoro.cpp**: <https://github.com/Zackriya-Solutions/kokoro.cpp>
+  - Copyright (c) 2026 Zackriya Solutions & Contributors
+  - License: MIT
+- **kokoro-infer / kokoro-server**: <https://github.com/remsnet/kokoro-server>
+  - Copyright (c) 2026 Contributors
+  - License: MIT

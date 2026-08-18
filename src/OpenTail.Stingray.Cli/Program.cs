@@ -57,6 +57,9 @@ app.Configure(config =>
         .WithDescription("Teacher-forced perplexity over a text file (llama.cpp llama-perplexity analogue; CPU only). Reports mean NLL, perplexity, and position-bucket NLLs — the TurboQuant/KVarN accuracy gate (issue #180).");
     config.AddCommand<ImageCommand>("image")
         .WithDescription("Generate an image from a text prompt using a native FLUX or Z-Image-Turbo diffusion pipeline (VAE + CLIP-L + T5-XXL + DiT GGUF). See 'opentail-llm-cli image --help' for required model paths.");
+    config.AddCommand<TtsCommand>("tts")
+        .WithDescription("Synthesize high-quality speech audio from text using native Kokoro-82M TTS.");
 });
 
 return app.Run(args);
+
