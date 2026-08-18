@@ -8,6 +8,7 @@ using OpenTail.Stingray.Cuda;
 using OpenTail.Stingray.Diffusion;
 using OpenTail.Stingray.Diffusion.StableDiffusion;
 using OpenTail.Stingray.Diffusion.SDXL;
+using OpenTail.Stingray.Diffusion.SD3;
 using OpenTail.Stingray.Vulkan;
 
 namespace OpenTail.Stingray.Cli;
@@ -198,6 +199,8 @@ public sealed class ImageCommand : Command<ImageCommand.Settings>
 
         if (IsZImage(modelPath))
             return RunZImage(s, modelPath, deviceIndex, deviceNone);
+        if (IsSd3(modelPath))
+            return RunSd3(s, modelPath, deviceIndex, deviceNone);
         if (IsSdxl(modelPath))
             return RunSdxl(s, modelPath, deviceIndex, deviceNone);
         if (IsStableDiffusion(modelPath))
@@ -726,6 +729,103 @@ public sealed class ImageCommand : Command<ImageCommand.Settings>
     }
 
 
+
+    private static bool IsSd3(string path)
+    {
+        string n = Path.GetFileNameWithoutExtension(path).ToLowerInvariant();
+        return n.Contains("sd3") || n.Contains("sd35") || n.Contains("sd-3") || n.Contains("sd_3") || n.Contains("mmdit");
+    }
+
+    private static int RunSd3(Settings s, string modelPath, int deviceIndex, bool deviceNone)
+    {
+        string output = s.OutputPath ?? "output.png";
+        int steps = s.Steps > 0 ? s.Steps : 20;
+        float guidance = s.CfgScale > 0f ? s.CfgScale : 4.5f;
+
+        string backendChoice = (s.Backend ?? "auto").ToLowerInvariant();
+        if (deviceNone && (backendChoice is "cuda" or "vulkan"))
+            AnsiConsole.MarkupLine("[yellow]Note:[/] --device none overrides --backend; running on CPU.");
+        bool forceCpu = s.NGpuLayers == 0 || backendChoice == "cpu" || deviceNone;
+        bool forceCuda = backendChoice == "cuda";
+        bool forceVulkan = backendChoice == "vulkan";
+
+        IComputeBackend? gpu = null;
+        if (!forceCpu)
+        {
+            if (forceCuda || (!forceVulkan && CudaBackend.IsAvailable()))
+            {
+                gpu = CudaBackend.Create();
+            }
+            else
+            {
+                try
+                {
+                    var vulkan = new VulkanBackend(deviceIndex);
+                    gpu = vulkan;
+                    vulkan.PrintDeviceInfo();
+                }
+                catch when (deviceIndex < 0) { }
+            }
+        }
+
+        int width = s.Width > 0 ? s.Width : 1024;
+        int height = s.Height > 0 ? s.Height : 1024;
+
+        AnsiConsole.MarkupLine("[bold]Stable Diffusion 3 / 3.5 (MMDiT)[/]");
+        AnsiConsole.MarkupLine($"[dim]Model:[/]    {Markup.Escape(modelPath)}");
+        AnsiConsole.MarkupLine($"[dim]Size:[/]     {width}×{height}  steps={steps}  guidance={guidance}  seed={s.Seed}");
+        if (gpu is not null)
+            AnsiConsole.MarkupLine($"[dim]Compute:[/]  [green]{Markup.Escape(gpu.Name)}[/]");
+        else
+            AnsiConsole.MarkupLine("[dim]Compute:[/]  [yellow]CPU SIMD[/]");
+        if (s.UpscalerPath is not null)
+            AnsiConsole.MarkupLine($"[dim]Upscaler:[/] {Markup.Escape(s.UpscalerPath)}");
+        AnsiConsole.MarkupLine($"[dim]Output:[/]   {Markup.Escape(output)}");
+        AnsiConsole.WriteLine();
+
+        try
+        {
+            var sw = Stopwatch.StartNew();
+            RRDBNet? upscaler = null;
+            if (s.UpscalerPath is not null)
+                upscaler = RRDBNet.Load(s.UpscalerPath, gpu);
+
+            using var pipeline = Sd3Pipeline.Load(modelPath, s.ClipTokenizerPath, gpu);
+
+            string target = gpu is not null ? gpu.Name : "CPU";
+            AnsiConsole.Status()
+                .Spinner(Spinner.Known.Dots)
+                .SpinnerStyle(Style.Parse("blue"))
+                .Start($"Denoising ({steps} steps on {target})…", ctx =>
+                {
+                    pipeline.Generate(
+                        prompt: s.Prompt!,
+                        negativePrompt: s.NegativePrompt,
+                        width: width,
+                        height: height,
+                        steps: steps,
+                        guidance: guidance,
+                        seed: s.Seed,
+                        outputPath: output,
+                        progress: (step, total) => ctx.Status($"Denoising step {step}/{total} on {target}…"),
+                        upscaler: upscaler,
+                        upscaleBlend: s.UpscaleBlend);
+                });
+
+            sw.Stop();
+            AnsiConsole.MarkupLine($"[green]✓[/] Image saved: [cyan]{Markup.Escape(Path.GetFullPath(output))}[/] in [yellow]{sw.Elapsed.TotalSeconds:F1}s[/]");
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            AnsiConsole.MarkupLine($"[red]Error:[/] {Markup.Escape(ex.Message)}");
+            return 1;
+        }
+        finally
+        {
+            gpu?.Dispose();
+        }
+    }
     private static bool IsSdxl(string path)
     {
         string n = Path.GetFileNameWithoutExtension(path).ToLowerInvariant();
@@ -872,6 +972,7 @@ public sealed class ImageCommand : Command<ImageCommand.Settings>
     private static string Q(string s) =>
         s.Contains(' ') || s.Contains('"') ? $"\"{s.Replace("\"", "\\\"")}\"" : s;
 }
+
 
 
 
