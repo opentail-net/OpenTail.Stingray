@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <Description>Native Text-to-Speech (TTS) audio synthesis and voice generation for OpenTail.Stingray (Kokoro-82M).</Description>
+    <Description>Native Text-to-Speech (TTS) voice generation and Speech-to-Text (STT / ASR) transcription for OpenTail.Stingray (Kokoro, MeloTTS, Piper, F5-TTS, Chatterbox, OpenAI Whisper).</Description>
   </PropertyGroup>
 
   <ItemGroup>

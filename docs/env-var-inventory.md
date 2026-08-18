@@ -29,7 +29,7 @@ names are treated as valid, `doctor` would not have flagged it either. The warni
 `STINGRAY_MAX_QUEUE` and the dead entry is out of the registry, so the mistake is now reported with
 a closest-match suggestion.
 
-**Reconciled again 2026-08-15 — `KnownEnvironmentVariables.All` now contains **162** names**
+**Reconciled again 2026-08-18 — `KnownEnvironmentVariables.All` now contains **166** names**
 (architecture-support and kernel work between 2026-08-08 and 2026-08-15 added new dispatch-toggle
 variables faster than the doc was updated, growing the registry back up past the 156 recorded
 above). The table below had also drifted independently of that count change:
