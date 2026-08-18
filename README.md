@@ -12,7 +12,7 @@ NativeAOT-publishes to a single binary.
 
 Runs GGUF models on CPU (AVX2/AVX-512 SIMD) and GPU (Vulkan compute shaders or CUDA cuBLAS), with an
 OpenAI- and Anthropic-compatible API server (/v1/chat/completions, /v1/audio/speech), native dynamic Multi-LoRA serving,
-native Text-to-Speech (TTS) synthesis (Kokoro-82M, Piper VITS, F5-TTS Flow-Matching DiT with Voice Cloning, and Chatterbox-Turbo Autoregressive LM),
+native Text-to-Speech (TTS) synthesis (Kokoro-82M, Piper VITS, F5-TTS Flow-Matching DiT with Voice Cloning, Chatterbox-Turbo, and MeloTTS Multilingual VITS),
 and native diffusion pipelines for Stable Diffusion 1.5, SDXL, SD 3/3.5, FLUX.1, Z-Image-Turbo, Qwen Image & Edit,
 Wan 2.1/2.2 Video, HunyuanVideo, and LTX-Video.
 
@@ -634,6 +634,7 @@ OpenTail.Stingray includes a **100% native managed C# audio synthesis engine** w
 | **Piper** | VITS (Prior RelPos Transformer + Flow + HiFi-GAN MRF) | 22050 Hz | **~98.6×** real-time | Lightweight, low-latency, and multi-speaker across 40+ language voices |
 | **F5-TTS** | Flow-Matching 22-Layer DiT + Vocos Neural Vocoder | 24000 Hz | High-Fidelity DiT | **Zero-Shot Voice Cloning** with reference audio conditioning (--ref-audio) |
 | **Chatterbox-Turbo** | 24-Layer Autoregressive Acoustic LM + Neural Decoder | 24000 Hz | **~450×** real-time | Autoregressive discrete token generation with speaker style banks |
+| **MeloTTS** | Multilingual VITS + Tonal & Phone-Level BERT Features | 44100 Hz | **~75.9×** real-time | High-fidelity multilingual & multi-accent synthesis (EN-US, EN-BR, ZH, etc.) |
 
 ### CLI Speech Synthesis
 
@@ -651,6 +652,10 @@ stingray tts -t "This audio is synthesized using zero-shot voice cloning from my
 # 4. Chatterbox-Turbo autoregressive speech synthesis
 stingray tts -t "Chatterbox Turbo synthesizes expressive audio via acoustic language modeling." \
   -e chatterbox -v narrator -o chatterbox.wav
+
+# 5. MeloTTS multilingual & multi-accent synthesis (44.1 kHz)
+stingray tts -t "MeloTTS provides high-fidelity multilingual synthesis with tone conditioning." \
+  -e melo -v EN-US -o melo.wav
 `
 
 ### OpenAI-Compatible Speech API
@@ -710,6 +715,7 @@ over them.
 Released under the [MIT License](LICENSE).
 
 Copyright © 2026 OpenTail.
+
 
 
 

@@ -4,6 +4,7 @@ using OpenTail.Stingray.Audio;
 using OpenTail.Stingray.Audio.Chatterbox;
 using OpenTail.Stingray.Audio.F5TTS;
 using OpenTail.Stingray.Audio.Kokoro;
+using OpenTail.Stingray.Audio.MeloTTS;
 using OpenTail.Stingray.Audio.Piper;
 using OpenTail.Stingray.Cli.CommandLine;
 
@@ -18,11 +19,11 @@ public sealed class TtsCommand : Command<TtsCommand.Settings>
         public string? Text { get; init; }
 
         [CommandOption("-e|--engine <ENGINE>")]
-        [Description("TTS architecture engine: kokoro (default), piper, f5tts, or chatterbox.")]
+        [Description("TTS architecture engine: kokoro (default), piper, f5tts, chatterbox, or melo.")]
         public string Engine { get; init; } = "kokoro";
 
         [CommandOption("-v|--voice <VOICE>")]
-        [Description("Voice persona style preset (e.g. af_heart, af_bella, am_adam, resemble_default, narrator). Default: af_heart.")]
+        [Description("Voice persona style preset (e.g. af_heart, af_bella, resemble_default, EN-US, EN-BR, ZH). Default: af_heart.")]
         public string Voice { get; init; } = "af_heart";
 
         [CommandOption("-s|--speed <SPEED>")]
@@ -59,6 +60,8 @@ public sealed class TtsCommand : Command<TtsCommand.Settings>
             foreach (var voice in KokoroVoices.AvailableVoices) Console.WriteLine($"    • {voice}");
             Console.WriteLine("  Chatterbox-Turbo:");
             foreach (var voice in ChatterboxVoices.AvailableVoices) Console.WriteLine($"    • {voice}");
+            Console.WriteLine("  MeloTTS Regional Accents:");
+            foreach (var voice in MeloVoices.AvailableVoices) Console.WriteLine($"    • {voice}");
             return 0;
         }
 
@@ -68,18 +71,21 @@ public sealed class TtsCommand : Command<TtsCommand.Settings>
             return 1;
         }
 
+        bool isMelo = s.Engine.Contains("melo", StringComparison.OrdinalIgnoreCase);
         bool isChatterbox = s.Engine.Contains("chatter", StringComparison.OrdinalIgnoreCase);
         bool isF5 = s.Engine.Contains("f5", StringComparison.OrdinalIgnoreCase) || !string.IsNullOrEmpty(s.ReferenceAudioPath);
         bool isPiper = s.Engine.Equals("piper", StringComparison.OrdinalIgnoreCase) ||
                        (!string.IsNullOrEmpty(s.ConfigPath) && s.ConfigPath.EndsWith(".json", StringComparison.OrdinalIgnoreCase));
 
-        ITextToSpeechPipeline pipeline = isChatterbox
-            ? new ChatterboxPipeline()
-            : (isF5
-                ? new F5TtsPipeline()
-                : (isPiper
-                    ? (!string.IsNullOrEmpty(s.ConfigPath) ? PiperPipeline.FromConfigFile(s.ConfigPath) : new PiperPipeline())
-                    : new KokoroPipeline()));
+        ITextToSpeechPipeline pipeline = isMelo
+            ? new MeloPipeline()
+            : (isChatterbox
+                ? new ChatterboxPipeline()
+                : (isF5
+                    ? new F5TtsPipeline()
+                    : (isPiper
+                        ? (!string.IsNullOrEmpty(s.ConfigPath) ? PiperPipeline.FromConfigFile(s.ConfigPath) : new PiperPipeline())
+                        : new KokoroPipeline())));
 
         using (pipeline)
         {

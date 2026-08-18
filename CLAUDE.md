@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-OpenTail.Stingray is a high-performance LLM inference engine and image generation pipeline in C# 14 / .NET 10. It reads GGUF model files and runs transformer inference on CPU (AVX2/AVX-512 SIMD), Vulkan compute shaders, and CUDA/cuBLAS. Architectures supported include `llama`/`llama4`, `qwen2`, `qwen3`, `qwen3moe`, `qwen35moe` (hybrid Gated-DeltaNet + attention + MoE), `gemma`/`gemma2`/`gemma3`/`gemma4`, `phi2`/`phi3`, and OLMoE. `deepseek2` (DeepSeek-V2/V3/R1's MLA attention) has a CPU-only implementation that loads and runs but produces numerically wrong output — not yet admitted as supported; see `docs/bugstofix.md`. It also supports text-to-image and text-to-video generation (Stable Diffusion 1.5, SDXL, SD 3/3.5, FLUX.1, Z-Image-Turbo, Qwen Image & Edit, Wan 2.1/2.2 Video, HunyuanVideo, and LTX-Video), 4× image upscaling via RRDBNet (Real-ESRGAN), Gemma 4 encoder-free multimodal vision, Native Text-to-Speech (TTS) with Voice Cloning (Kokoro-82M, Piper VITS, F5-TTS Flow-Matching DiT, and Chatterbox-Turbo Autoregressive LM), and Native Dynamic Multi-LoRA Serving across concurrent sessions. Targets NativeAOT for single-binary deployment.
+OpenTail.Stingray is a high-performance LLM inference engine and image generation pipeline in C# 14 / .NET 10. It reads GGUF model files and runs transformer inference on CPU (AVX2/AVX-512 SIMD), Vulkan compute shaders, and CUDA/cuBLAS. Architectures supported include `llama`/`llama4`, `qwen2`, `qwen3`, `qwen3moe`, `qwen35moe` (hybrid Gated-DeltaNet + attention + MoE), `gemma`/`gemma2`/`gemma3`/`gemma4`, `phi2`/`phi3`, and OLMoE. `deepseek2` (DeepSeek-V2/V3/R1's MLA attention) has a CPU-only implementation that loads and runs but produces numerically wrong output — not yet admitted as supported; see `docs/bugstofix.md`. It also supports text-to-image and text-to-video generation (Stable Diffusion 1.5, SDXL, SD 3/3.5, FLUX.1, Z-Image-Turbo, Qwen Image & Edit, Wan 2.1/2.2 Video, HunyuanVideo, and LTX-Video), 4× image upscaling via RRDBNet (Real-ESRGAN), Gemma 4 encoder-free multimodal vision, Native Text-to-Speech (TTS) with Voice Cloning (Kokoro-82M, Piper VITS, F5-TTS Flow-Matching DiT, Chatterbox-Turbo, and MeloTTS Multilingual VITS), and Native Dynamic Multi-LoRA Serving across concurrent sessions. Targets NativeAOT for single-binary deployment.
 
 ## Build & Test Commands
 
@@ -233,6 +233,7 @@ make thin discovery fail): accepted by `dotnet test`, rejected by the exe.
 ## Design Documentation
 
 Detailed architecture doc at `docs/reference/OpenTail.Stingray-Design.md` covering all subsystems, algorithms, data layouts, and the (mostly completed) implementation phases. `docs/research/` and the various `docs/*-plan.md` files hold per-feature design notes (Gemma 4, qwen35moe, MoE offloading, KV-compression feasibility).
+
 
 
 

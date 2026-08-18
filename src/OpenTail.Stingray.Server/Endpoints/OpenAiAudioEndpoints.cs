@@ -7,6 +7,7 @@ using OpenTail.Stingray.Audio;
 using OpenTail.Stingray.Audio.Chatterbox;
 using OpenTail.Stingray.Audio.F5TTS;
 using OpenTail.Stingray.Audio.Kokoro;
+using OpenTail.Stingray.Audio.MeloTTS;
 using OpenTail.Stingray.Audio.Piper;
 
 namespace OpenTail.Stingray.Server.Endpoints;
@@ -41,15 +42,18 @@ public static class OpenAiAudioEndpoints
             string voice = string.IsNullOrWhiteSpace(req.Voice) ? "af_heart" : req.Voice;
             float speed = req.Speed > 0 ? req.Speed : 1.0f;
 
+            bool isMelo = req.Model != null && req.Model.Contains("melo", StringComparison.OrdinalIgnoreCase);
             bool isChatterbox = req.Model != null && req.Model.Contains("chatter", StringComparison.OrdinalIgnoreCase);
             bool isF5 = req.Model != null && req.Model.Contains("f5", StringComparison.OrdinalIgnoreCase);
             bool isPiper = req.Model != null && (req.Model.Contains("piper", StringComparison.OrdinalIgnoreCase) || req.Model.Contains("vits", StringComparison.OrdinalIgnoreCase));
 
-            ITextToSpeechPipeline pipeline = isChatterbox
-                ? new ChatterboxPipeline()
-                : (isF5
-                    ? new F5TtsPipeline()
-                    : (isPiper ? new PiperPipeline() : new KokoroPipeline()));
+            ITextToSpeechPipeline pipeline = isMelo
+                ? new MeloPipeline()
+                : (isChatterbox
+                    ? new ChatterboxPipeline()
+                    : (isF5
+                        ? new F5TtsPipeline()
+                        : (isPiper ? new PiperPipeline() : new KokoroPipeline())));
 
             byte[] wavBytes;
 
