@@ -58,7 +58,15 @@ public sealed class WhisperTokenizer
     private readonly Dictionary<int, string> _idToToken = [];
     private readonly Dictionary<string, int> _langTokenMap = new(StringComparer.OrdinalIgnoreCase);
 
-    public WhisperTokenizer(IReadOnlyDictionary<string, int>? customVocab = null, bool isV3 = false)
+    public WhisperTokenizer() : this(null, false)
+    {
+    }
+
+    public WhisperTokenizer(IReadOnlyDictionary<string, int>? customVocab) : this(customVocab, false)
+    {
+    }
+
+    public WhisperTokenizer(IReadOnlyDictionary<string, int>? customVocab, bool isV3)
     {
         IsV3 = isV3;
         string[] languages = isV3 ? LanguageCodesV3 : LanguageCodesV1V2;
@@ -84,8 +92,8 @@ public sealed class WhisperTokenizer
         }
     }
 
-    public static WhisperTokenizer CreateV3() => new(isV3: true);
-    public static WhisperTokenizer CreateV2() => new(isV3: false);
+    public static WhisperTokenizer CreateV3() => new(null, isV3: true);
+    public static WhisperTokenizer CreateV2() => new(null, isV3: false);
 
     private void InitializeDefaultVocab()
     {
@@ -167,6 +175,13 @@ public sealed class WhisperTokenizer
         if (!IsTimestampToken(tokenId)) return 0.0f;
         return (tokenId - TimestampBegin) * 0.02f;
     }
+
+    /// <summary>
+    /// Decodes a sequence of tokens into text segments with timestamps.
+    /// </summary>
+    public (string FullText, List<SpeechSegment> Segments) DecodeSegments(
+        ReadOnlySpan<int> tokens,
+        TimeSpan timeOffset) => DecodeWithTimestamps(tokens, timeOffset);
 
     /// <summary>
     /// Decodes a sequence of tokens into text segments with timestamps.

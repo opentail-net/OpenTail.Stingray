@@ -11,10 +11,10 @@ NativeAOT-publishes to a single binary.
 > **Built by [opentail.net](https://opentail.net)**
 
 Runs GGUF models on CPU (AVX2/AVX-512 SIMD) and GPU (Vulkan compute shaders or CUDA cuBLAS), with an
-OpenAI- and Anthropic-compatible API server (/v1/chat/completions, /v1/audio/speech), native dynamic Multi-LoRA serving,
+OpenAI- and Anthropic-compatible API server (/v1/chat/completions, /v1/audio/speech, /v1/audio/transcriptions), native dynamic Multi-LoRA serving,
 native Multimodal Vision understanding (Gemma 4 unified `gemma4uv`, Gemma 4 ViT `gemma4v`, Gemma 3 SigLIP `gemma3`, and Llama 4 `llama4`),
-native Whisper Speech-to-Text (ASR) with Autoregressive KV Caching, rational windowed-sinc resampling, and Silero VAD,
-native Text-to-Speech (TTS) synthesis (Kokoro-82M, Piper VITS, F5-TTS Flow-Matching DiT with Voice Cloning, Chatterbox-Turbo, and MeloTTS Multilingual VITS) with clause-level real-time streaming,
+native Speech-to-Text (ASR) & Forced Alignment (OpenAI Whisper Large-v3 & Large-v3-Turbo with 100 languages, NVIDIA NeMo Parakeet FastConformer CTC/TDT, Alibaba Qwen3-ASR 0.6B/1.7B, Qwen3-ForcedAligner, and Silero VAD),
+native Text-to-Speech (TTS) synthesis (CosyVoice 3, Qwen3-TTS 12Hz with VoiceDesign & Dialects, Kokoro-82M, Piper VITS, F5-TTS Flow-Matching DiT with Voice Cloning, Chatterbox-Turbo, and MeloTTS Multilingual VITS) with clause-level real-time streaming,
 native studio-grade DSP (rational windowed-sinc resamplers, ATSC A/85 broadcast downmixing, and TPDF noise-shaped dithered WAV export),
 OpenAI API server parity (/v1/chat/completions, /v1/audio/speech, /v1/audio/transcriptions, /v1/audio/translations with SRT, VTT, verbose_json, and SSE streaming),
 and native diffusion & video synthesis pipelines (Stable Diffusion 1.5, SDXL, SD 3/3.5, FLUX.1, FLUX.2 (Klein & Kontext Multi-Reference DiT), FLUX 3 Multimodal Video+Audio DiT, Stable Audio 3 Continuous MMDiT (Variable-Length 1s-6min 44.1kHz Stereo), Z-Image-Turbo, Qwen Image & Edit,
@@ -627,55 +627,104 @@ dotnet run --project src/OpenTail.Stingray.Cli -c Release -- image \
   -p "a fox in autumn forest" -W 512 -H 512 --steps 4 -o fox.png
 ```
 
-
 ## Text-to-Speech (TTS) & Voice Cloning
 
-OpenTail.Stingray includes a **100% native managed C# audio synthesis engine** with zero external binaries, Python, or ONNX Runtime dependencies. It exposes three complementary neural architectures:
+OpenTail.Stingray includes a **100% native managed C# audio synthesis engine** with zero external binaries, Python, or ONNX Runtime dependencies. It exposes state-of-the-art neural architectures:
 
 | Engine | Architecture | Sample Rate | Real-Time Factor (RTF) | Capabilities |
 |---|---|---:|---:|---|
-| **Kokoro-82M** | StyleTTS2 / PLBERT + AdaIN-ResBlocks + iSTFT | 24000 Hz | **~58.7×** real-time | Fast, expressive persona presets (f_heart, f_bella, m_adam, f_alice, m_george, etc.) |
+| **Kokoro-82M** | StyleTTS2 / PLBERT + AdaIN-ResBlocks + iSTFT | 24000 Hz | **~58.7×** real-time | Fast, expressive persona presets (`af_heart`, `af_bella`, `am_adam`, `af_alice`, `am_george`, etc.) |
 | **Piper** | VITS (Prior RelPos Transformer + Flow + HiFi-GAN MRF) | 22050 Hz | **~98.6×** real-time | Lightweight, low-latency, and multi-speaker across 40+ language voices |
-| **F5-TTS** | Flow-Matching 22-Layer DiT + Vocos Neural Vocoder | 24000 Hz | High-Fidelity DiT | **Zero-Shot Voice Cloning** with reference audio conditioning (--ref-audio) |
+| **F5-TTS** | Flow-Matching 22-Layer DiT + Vocos Neural Vocoder | 24000 Hz | High-Fidelity DiT | **Zero-Shot Voice Cloning** with reference audio conditioning (`--ref-audio`) |
+| **CosyVoice 3** | Multilingual CFM Flow-Matching DiT + HiFT Vocoder | 24000 Hz | High-Fidelity DiT | **Emotion & Vocalization Control** (`[laughter]`, `[sigh]`, `[breath]`, `<strong>`), cross-lingual cloning |
+| **Qwen3-TTS 12Hz** | Hierarchical Talker LM + MTP Code Predictor + 12Hz DAC v2 | 24000 Hz | Low Latency (~12.5Hz) | **VoiceDesign & Dialects** (Named personas: `eric`/`sichuan`, `dylan`/`beijing`, `serena`, `alex`, `chelsea`) |
 | **Chatterbox-Turbo** | 24-Layer Autoregressive Acoustic LM + Neural Decoder | 24000 Hz | **~450×** real-time | Autoregressive discrete token generation with speaker style banks |
 | **MeloTTS** | Multilingual VITS + Tonal & Phone-Level BERT Features | 44100 Hz | **~75.9×** real-time | High-fidelity multilingual & multi-accent synthesis (EN-US, EN-BR, ZH, etc.) |
 
 ### CLI Speech Synthesis
 
-`ash
+```bash
 # 1. Kokoro-82M native speech synthesis
 stingray tts -t "Hello from OpenTail Stingray native speech synthesis!" -v af_heart -o kokoro.wav
 
-# 2. Piper (VITS) ultra-fast synthesis
-stingray tts -t "Piper VITS synthesizes lightweight audio with zero dependencies." -e piper -o piper.wav
+# 2. CosyVoice 3 with emotion tags and zero-shot voice cloning
+stingray tts -t "I am so happy today! [laughter] It feels amazing." -e cosyvoice \
+  --ref-audio reference.wav --ref-text "Reference speaker text" -o cosyvoice.wav
 
-# 3. F5-TTS with Zero-Shot Voice Cloning from reference audio
+# 3. Qwen3-TTS 12Hz with VoiceDesign & Dialect styling
+stingray tts -t "Welcome to the future of voice synthesis." -e qwentts \
+  -v eric --prompt "A friendly radio host with energetic tone" -o qwentts.wav
+
+# 4. F5-TTS with Zero-Shot Voice Cloning
 stingray tts -t "This audio is synthesized using zero-shot voice cloning from my reference file." \
   -e f5tts --ref-audio reference_voice.wav --ref-text "Reference speaker sentence" -o cloned.wav
 
-# 4. Chatterbox-Turbo autoregressive speech synthesis
-stingray tts -t "Chatterbox Turbo synthesizes expressive audio via acoustic language modeling." \
-  -e chatterbox -v narrator -o chatterbox.wav
+# 5. Piper (VITS) ultra-fast synthesis
+stingray tts -t "Piper VITS synthesizes lightweight audio with zero dependencies." -e piper -o piper.wav
 
-# 5. MeloTTS multilingual & multi-accent synthesis (44.1 kHz)
+# 6. MeloTTS multilingual & multi-accent synthesis (44.1 kHz)
 stingray tts -t "MeloTTS provides high-fidelity multilingual synthesis with tone conditioning." \
   -e melo -v EN-US -o melo.wav
-`
+```
 
 ### OpenAI-Compatible Speech API
 
-The server exposes POST /v1/audio/speech returning real-time udio/wav streams:
+The server exposes `POST /v1/audio/speech` returning real-time `audio/wav` streams:
 
-`ash
-curl http://localhost:8080/v1/audio/speech \
+```bash
+curl http://localhost:5000/v1/audio/speech \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "f5-tts",
+    "model": "qwen3-tts",
     "input": "OpenTail Stingray brings native AI inference to .NET 10.",
-    "voice": "af_heart",
+    "voice": "eric",
     "speed": 1.0
   }' --output speech.wav
-`
+```
+
+---
+
+## Speech-to-Text (ASR) & Forced Alignment
+
+OpenTail.Stingray provides **100% native managed C# speech recognition and word-level forced alignment**:
+
+| Engine | Architecture | Sample Rate | Capabilities |
+|---|---|---:|---|
+| **OpenAI Whisper** | Transformer Encoder-Decoder (1280-dim, 32 enc layers) | 16000 Hz | Tiny, Base, Small, Medium, Large-v1/v2, **Large-v3**, **Large-v3-Turbo** (4-layer fast decoder, 100 languages with Cantonese `yue`, timestamps) |
+| **NVIDIA NeMo Parakeet** | FastConformer CTC / RNNT / TDT (8x subsampling) | 16000 Hz | Non-autoregressive ultra-fast transcription, 80-channel log-mel frontend, SentencePiece tokenization |
+| **Alibaba Qwen3-ASR** | 8× Conv2D Stem + AuT Encoder + Qwen3 LLM Decoder | 16000 Hz | Multimodal Speech-to-Text in 30+ languages, ChatML prompt routing, dynamic range clamping (max - 8.0 dB) |
+| **Qwen3-ForcedAligner** | Dynamic Time Warping (DTW) Frame-to-Token Matrix | 16000 Hz | Word-level and subword-level precise start/end timestamp alignment |
+| **Silero VAD** | 4-layer CNN + Stateful Recurrent LSTM (512 samples / 31.25ms) | 16000 Hz | Zero-overhead neural Voice Activity Detection for streaming speech boundary isolation |
+
+### CLI Speech Recognition & Alignment
+
+```bash
+# 1. Transcribe audio with Whisper Large-v3-Turbo
+stingray asr -m whisper-large-v3-turbo -f audio.wav --lang en -o transcript.txt
+
+# 2. Ultra-fast non-autoregressive transcription with NVIDIA Parakeet
+stingray asr -m parakeet-tdt-1.1b -f speech.wav -o transcript.json
+
+# 3. Multimodal speech recognition with Alibaba Qwen3-ASR (0.6B / 1.7B)
+stingray asr -m qwen3-asr-0.6b -f interview.wav --lang en --timestamps
+
+# 4. Word-level forced alignment with Qwen3-ForcedAligner
+stingray align -m qwen3-forced-aligner -f speech.wav --text "Exact reference transcript to align" -o aligned.json
+```
+
+### OpenAI-Compatible Transcription & Translation API
+
+The server exposes `POST /v1/audio/transcriptions` and `POST /v1/audio/translations`:
+
+```bash
+# Transcribe with word-level timestamps (verbose_json)
+curl http://localhost:5000/v1/audio/transcriptions \
+  -F file="@audio.wav" \
+  -F model="whisper-large-v3-turbo" \
+  -F response_format="verbose_json" \
+  -F timestamp_granularities[]="word"
+```
+
 ## More
 
 - Architecture & algorithms: [docs/reference/OpenTail.Stingray-Design.md](docs/reference/OpenTail.Stingray-Design.md)

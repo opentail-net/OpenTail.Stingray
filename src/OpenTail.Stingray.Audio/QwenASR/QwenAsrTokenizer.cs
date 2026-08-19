@@ -19,7 +19,7 @@ public sealed partial class QwenAsrTokenizer
     private readonly Dictionary<string, int> _vocab = new(StringComparer.Ordinal);
     private readonly Dictionary<int, string> _idToToken = [];
 
-    [GeneratedRegex(@"([a-zA-Z]+|[\d]+|[^\s\w]|[\s]+|<\|[^>]+\|>)", RegexOptions.Compiled)]
+    [GeneratedRegex(@"(<\|.*?\|>|[a-zA-Z]+|[\d]+|[^\s\w]|[\s]+)", RegexOptions.Compiled)]
     private static partial Regex TokenRegex();
 
     public int VocabSize => 151936;
@@ -244,3 +244,5 @@ public sealed partial class QwenAsrTokenizer
         return (fullText.ToString(), segments);
     }
 }
+
+

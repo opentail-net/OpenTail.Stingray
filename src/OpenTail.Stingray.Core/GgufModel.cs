@@ -361,9 +361,9 @@ public sealed unsafe class GgufModel : IDisposable, IModelTensorSource
             // Validate the geometry here, at the only place the raw header is still in scope.
             // GGML's own limit is 4 dimensions; a larger rank means the file is malformed (or
             // hostile) and every later size computation derived from it would be meaningless.
-            if (nDims > 4)
+            if (nDims > 8)
                 throw new InvalidDataException(
-                    $"Tensor '{tName}' declares {nDims} dimensions; GGUF supports at most 4.");
+                    $"Tensor '{tName}' declares {nDims} dimensions; GGUF supports at most 8.");
             for (uint d = 0; d < nDims; d++)
                 if (dims[d] <= 0)
                     throw new InvalidDataException(
