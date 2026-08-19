@@ -1,5 +1,10 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
 using System.Runtime.CompilerServices;
 using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace OpenTail.Stingray.Audio.Parakeet;
 
@@ -15,17 +20,45 @@ public sealed class ParakeetPipeline : ISpeechToTextPipeline
     private readonly ParakeetTokenizer _tokenizer;
     private readonly ParakeetConformerEncoder _encoder;
     private readonly ParakeetCtcDecoder _decoder;
+    private readonly ParakeetWeights? _weights;
 
     public ParakeetPipeline(
         ParakeetMelExtractor? melExtractor = null,
         ParakeetTokenizer? tokenizer = null,
         ParakeetConformerEncoder? encoder = null,
-        ParakeetCtcDecoder? decoder = null)
+        ParakeetCtcDecoder? decoder = null,
+        ParakeetWeights? weights = null)
     {
+        _weights = weights;
         _melExtractor = melExtractor ?? new ParakeetMelExtractor();
         _tokenizer = tokenizer ?? new ParakeetTokenizer();
         _encoder = encoder ?? new ParakeetConformerEncoder();
-        _decoder = decoder ?? new ParakeetCtcDecoder(_tokenizer);
+        _decoder = decoder ?? new ParakeetCtcDecoder(_tokenizer, weights);
+    }
+
+    /// <summary>
+    /// Loads a real Parakeet ASR pipeline directly from a GGUF model file.
+    /// </summary>
+    public static ParakeetPipeline Load(string ggufPath)
+    {
+        if (string.IsNullOrWhiteSpace(ggufPath) || !File.Exists(ggufPath))
+            throw new FileNotFoundException($"Parakeet GGUF model not found: {ggufPath}");
+
+        var weights = new ParakeetWeights(ggufPath);
+        var tokenizer = ParakeetTokenizer.FromGguf(weights.Model);
+        var encoderConfig = new ParakeetEncoderConfig
+        {
+            HiddenDim = weights.HiddenDim,
+            NumLayers = weights.NumLayers,
+            NumHeads = weights.NumHeads,
+            SubsampleFactor = weights.SubsampleFactor
+        };
+
+        var melExtractor = new ParakeetMelExtractor();
+        var encoder = new ParakeetConformerEncoder(encoderConfig);
+        var decoder = new ParakeetCtcDecoder(tokenizer, weights);
+
+        return new ParakeetPipeline(melExtractor, tokenizer, encoder, decoder, weights);
     }
 
     /// <summary>
@@ -81,104 +114,45 @@ public sealed class ParakeetPipeline : ISpeechToTextPipeline
         SpeechToTextRequest baseRequest,
         [EnumeratorCancellation] CancellationToken ct = default)
     {
-        var accumulatedSamples = new List<float>();
-        TimeSpan streamTimeOffset = TimeSpan.Zero;
-        int chunkSampleThreshold = SampleRate * 2; // 2-second streaming chunk window
+        var buffer = new List<float>();
+        int chunkFrames = SampleRate * 2; // 2-second streaming chunks
+        TimeSpan timeOffset = TimeSpan.Zero;
 
         await foreach (var chunk in audioStream.WithCancellation(ct))
         {
-            if (ct.IsCancellationRequested) yield break;
-
-            accumulatedSamples.AddRange(chunk.ToArray());
-
-            if (accumulatedSamples.Count >= chunkSampleThreshold)
+            buffer.AddRange(chunk.ToArray());
+            if (buffer.Count >= chunkFrames)
             {
-                float[] chunkArray = accumulatedSamples.ToArray();
-                accumulatedSamples.Clear();
-
-                float[] pcm16k = (baseRequest.SampleRate != SampleRate)
-                    ? ResampleTo16k(chunkArray, baseRequest.SampleRate)
-                    : chunkArray;
-
-                float[] mel = _melExtractor.ExtractMel(pcm16k);
-                int inMelFrames = mel.Length / ParakeetMelExtractor.NumMels;
-
-                if (inMelFrames > 0)
+                var req = baseRequest with { AudioSamples = buffer.ToArray() };
+                var res = Transcribe(req);
+                foreach (var seg in res.Segments)
                 {
-                    var (embeddings, numConformerFrames) = _encoder.Forward(mel, inMelFrames);
-                    var (_, _, segments) = _decoder.DecodeGreedy(
-                        embeddings: embeddings,
-                        numFrames: numConformerFrames,
-                        hiddenDim: _encoder.Config.HiddenDim,
-                        timeOffset: streamTimeOffset);
-
-                    foreach (var seg in segments)
-                    {
-                        yield return seg;
-                    }
+                    yield return seg with { Start = seg.Start + timeOffset, End = seg.End + timeOffset };
                 }
-
-                streamTimeOffset += TimeSpan.FromSeconds((double)pcm16k.Length / SampleRate);
-                await Task.Yield();
+                timeOffset += TimeSpan.FromSeconds((double)chunkFrames / SampleRate);
+                buffer.RemoveRange(0, chunkFrames);
             }
         }
 
-        // Process any remaining tail samples
-        if (accumulatedSamples.Count > 0 && !ct.IsCancellationRequested)
+        if (buffer.Count > 0)
         {
-            float[] pcm16k = (baseRequest.SampleRate != SampleRate)
-                ? ResampleTo16k(accumulatedSamples.ToArray(), baseRequest.SampleRate)
-                : accumulatedSamples.ToArray();
-
-            float[] mel = _melExtractor.ExtractMel(pcm16k);
-            int inMelFrames = mel.Length / ParakeetMelExtractor.NumMels;
-
-            if (inMelFrames > 0)
+            var req = baseRequest with { AudioSamples = buffer.ToArray() };
+            var res = Transcribe(req);
+            foreach (var seg in res.Segments)
             {
-                var (embeddings, numConformerFrames) = _encoder.Forward(mel, inMelFrames);
-                var (_, _, segments) = _decoder.DecodeGreedy(
-                    embeddings: embeddings,
-                    numFrames: numConformerFrames,
-                    hiddenDim: _encoder.Config.HiddenDim,
-                    timeOffset: streamTimeOffset);
-
-                foreach (var seg in segments)
-                {
-                    yield return seg;
-                }
+                yield return seg with { Start = seg.Start + timeOffset, End = seg.End + timeOffset };
             }
         }
     }
 
     private static float[] ResampleTo16k(float[] input, int srcRate)
     {
-        if (srcRate == 16000) return input;
-        double ratio = 16000.0 / srcRate;
-        int outLength = (int)(input.Length * ratio);
-        var output = new float[outLength];
-
-        for (int i = 0; i < outLength; i++)
-        {
-            double srcIdx = i / ratio;
-            int idx = (int)srcIdx;
-            double frac = srcIdx - idx;
-
-            if (idx + 1 < input.Length)
-            {
-                output[i] = (float)((1.0 - frac) * input[idx] + frac * input[idx + 1]);
-            }
-            else if (idx < input.Length)
-            {
-                output[i] = input[idx];
-            }
-        }
-
-        return output;
+        if (srcRate == 16000 || input.Length == 0) return input;
+        return AudioResampler.Resample(input, srcRate, 16000);
     }
 
     public void Dispose()
     {
-        _encoder.Dispose();
-        _decoder.Dispose();
+        _weights?.Dispose();
     }
 }

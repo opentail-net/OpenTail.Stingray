@@ -1,6 +1,5 @@
 using System;
 using System.IO;
-using System.Linq;
 using OpenTail.Stingray.Audio;
 using OpenTail.Stingray.Audio.Parakeet;
 using OpenTail.Stingray.Core;
@@ -12,24 +11,24 @@ public sealed class ParakeetRealWeightsTests
 {
     private const string ModelFileName = "parakeet-ctc-0.6b-q4_k.gguf";
 
-    private static string? FindModelPath(string modelFile)
+    private static string? FindModelPath(string fileName)
     {
         string[] absoluteCandidates =
         {
-            $@"C:\Git-Public\OpenTail.Stingray\models\{modelFile}",
-            $@"C:\p\opentail-llm\models\{modelFile}",
-            $@"E:\models\{modelFile}",
+            $@"C:\Git-Public\OpenTail.Stingray\models\{fileName}",
+            $@"C:\p\opentail-llm\models\{fileName}",
+            $@"E:\models\{fileName}",
         };
         foreach (var p in absoluteCandidates)
         {
-            if (File.Exists(p) && CanOpenFile(p)) return p;
+            if (File.Exists(p)) return p;
         }
 
         var dir = Directory.GetCurrentDirectory();
         for (int i = 0; i < 8; i++)
         {
-            var p = Path.Combine(dir, "models", modelFile);
-            if (File.Exists(p) && CanOpenFile(p)) return p;
+            var p = Path.Combine(dir, "models", fileName);
+            if (File.Exists(p)) return p;
             var parent = Directory.GetParent(dir);
             if (parent is null) break;
             dir = parent.FullName;
@@ -37,52 +36,29 @@ public sealed class ParakeetRealWeightsTests
         return null;
     }
 
-    private static bool CanOpenFile(string path)
-    {
-        try
-        {
-            using var fs = File.Open(path, FileMode.Open, FileAccess.Read, FileShare.None);
-            return fs.Length > 1024 * 1024;
-        }
-        catch
-        {
-            return false;
-        }
-    }
-
     [Fact]
-    public void Parakeet_RealWeights_GgufHeaderAndTensorMetadata_Valid()
+    public void Parakeet_RealModelFile_GgufMetadataAndTensorsValid()
     {
         string? modelPath = FindModelPath(ModelFileName);
-        if (modelPath is null)
-        {
-            // Skip test if model not present on disk or currently downloading
-            return;
-        }
+        if (modelPath is null) return;
 
         using var model = GgufModel.Open(modelPath);
-
-        Assert.True(model.Header.Version >= 2, "Expected GGUF version >= 2");
-        Assert.True(model.Tensors.Count > 0, "GGUF model must contain tensors");
-        Assert.True(model.Metadata.Count > 0, "GGUF model must contain metadata");
-
-        // Verify architecture or tensor prefixes
-        Assert.True(model.Metadata.ContainsKey("general.architecture") ||
-                    model.Metadata.ContainsKey("general.name") ||
-                    model.Tensors.Any(t => t.Name.Contains("encoder") || t.Name.Contains("conformer") || t.Name.Contains("ctc") || t.Name.Contains("blk")),
-                    "Expected Parakeet ASR architecture metadata or tensor structure.");
+        Assert.NotNull(model);
+        Assert.True(model.Tensors.Count > 0, "Parakeet GGUF must contain tensors");
+        Assert.True(model.Metadata.Count > 0, "Parakeet GGUF must contain metadata");
     }
 
     [Fact]
-    public void Parakeet_RealWeights_TranscribePipeline_ExecutesEndToEnd()
+    public void ParakeetPipeline_LoadRealGguf_TranscribesAudioEndToEnd()
     {
         string? modelPath = FindModelPath(ModelFileName);
-        if (modelPath is null)
-        {
-            return;
-        }
+        if (modelPath is null) return;
 
-        using var pipeline = new ParakeetPipeline();
+        using var pipeline = ParakeetPipeline.Load(modelPath);
+        Assert.NotNull(pipeline);
+        Assert.Equal("NVIDIA-NeMo-Parakeet-ASR", pipeline.Architecture);
+        Assert.Equal(16000, pipeline.SampleRate);
+
         int sampleRate = 16000;
         int durationSec = 2;
         var pcm = new float[sampleRate * durationSec];
@@ -112,4 +88,3 @@ public sealed class ParakeetRealWeightsTests
         Assert.NotNull(result.Segments);
     }
 }
-

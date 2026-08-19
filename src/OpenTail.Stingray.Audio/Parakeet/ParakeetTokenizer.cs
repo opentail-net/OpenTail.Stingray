@@ -1,9 +1,13 @@
+using System;
+using System.Collections.Generic;
 using System.Text;
+using OpenTail.Stingray.Core;
 
 namespace OpenTail.Stingray.Audio.Parakeet;
 
 /// <summary>
 /// SentencePiece BPE tokenizer with subword reconstruction for NVIDIA NeMo Parakeet ASR.
+/// Supports both standard procedural vocab and GGUF header tokens via <see cref="FromGguf"/>.
 /// </summary>
 public sealed class ParakeetTokenizer
 {
@@ -20,6 +24,27 @@ public sealed class ParakeetTokenizer
     public ParakeetTokenizer()
     {
         InitializeVocab();
+    }
+
+    /// <summary>
+    /// Constructs a Parakeet tokenizer by ingesting vocabulary tokens directly from GGUF metadata.
+    /// </summary>
+    public static ParakeetTokenizer FromGguf(GgufModel model)
+    {
+        var tokenizer = new ParakeetTokenizer();
+        if (model.Metadata.TryGetValue("tokenizer.ggml.tokens", out var obj) && obj is object[] tokens)
+        {
+            tokenizer._vocab.Clear();
+            tokenizer._idToToken.Clear();
+
+            for (int i = 0; i < tokens.Length; i++)
+            {
+                string tok = tokens[i]?.ToString() ?? string.Empty;
+                tokenizer._vocab[tok] = i;
+                tokenizer._idToToken[i] = tok;
+            }
+        }
+        return tokenizer;
     }
 
     private void InitializeVocab()
@@ -67,23 +92,22 @@ public sealed class ParakeetTokenizer
             "\u2581time", "\u2581has", "\u2581look", "\u2581two", "\u2581more", "\u2581write", "\u2581go", "\u2581see",
             "\u2581number", "\u2581no", "\u2581way", "\u2581could", "\u2581people", "\u2581my", "\u2581than", "\u2581first",
             "\u2581water", "\u2581been", "\u2581call", "\u2581who", "\u2581oil", "\u2581its", "\u2581now", "\u2581find",
-            "\u2581long", "\u2581down", "\u2581day", "\u2581did", "\u2581get", "\u2581come", "\u2581made", "\u2581may",
-            "\u2581part", "\u2581speech", "\u2581audio", "\u2581model", "\u2581parakeet", "\u2581recognition", "\u2581native"
+            "\u2581speech", "\u2581recognition", "\u2581model", "\u2581fast", "\u2581accurate"
         ];
 
-        foreach (string w in commonWords)
+        foreach (var word in commonWords)
         {
-            if (!_vocab.ContainsKey(w))
+            if (!_vocab.ContainsKey(word))
             {
-                _vocab[w] = id;
-                _idToToken[id] = w;
+                _vocab[word] = id;
+                _idToToken[id] = word;
                 id++;
             }
         }
     }
 
     /// <summary>
-    /// Encodes a text string into token IDs.
+    /// Encodes a reference text string into a sequence of SentencePiece token IDs.
     /// </summary>
     public int[] Encode(string text)
     {
@@ -92,25 +116,21 @@ public sealed class ParakeetTokenizer
         var tokens = new List<int>();
         string[] words = text.Split(' ', StringSplitOptions.RemoveEmptyEntries);
 
-        foreach (string word in words)
+        for (int w = 0; w < words.Length; w++)
         {
-            string prefixed = "\u2581" + word.ToLowerInvariant();
-            if (_vocab.TryGetValue(prefixed, out int wordId))
+            string piece = "\u2581" + words[w];
+            if (_vocab.TryGetValue(piece, out int tid))
             {
-                tokens.Add(wordId);
+                tokens.Add(tid);
             }
             else
             {
-                // Fallback to character decomposition with initial marker
-                bool isFirst = true;
-                foreach (char c in word.ToLowerInvariant())
+                for (int c = 0; c < words[w].Length; c++)
                 {
-                    string sub = isFirst ? ("\u2581" + c) : c.ToString();
-                    isFirst = false;
-
-                    if (_vocab.TryGetValue(sub, out int charId))
+                    string charPiece = (c == 0) ? ("\u2581" + words[w][c]) : words[w][c].ToString();
+                    if (_vocab.TryGetValue(charPiece, out int cid))
                     {
-                        tokens.Add(charId);
+                        tokens.Add(cid);
                     }
                     else
                     {
@@ -124,33 +144,40 @@ public sealed class ParakeetTokenizer
     }
 
     /// <summary>
-    /// Decodes a sequence of token IDs into text, removing SentencePiece subword markers and collapsing whitespace.
+    /// Decodes a sequence of emitted token IDs into a reconstructed text string.
+    /// Handles SentencePiece prefix '\u2581' space boundary replacement.
     /// </summary>
-    public string Decode(ReadOnlySpan<int> tokens)
+    public string Decode(ReadOnlySpan<int> tokenIds)
     {
-        var sb = new StringBuilder();
+        if (tokenIds.IsEmpty) return string.Empty;
 
-        foreach (int tid in tokens)
+        var sb = new StringBuilder();
+        foreach (int tid in tokenIds)
         {
             if (tid == BlankTokenId || tid == BosTokenId || tid == EosTokenId)
             {
                 continue;
             }
 
-            if (_idToToken.TryGetValue(tid, out string? piece))
+            if (_idToToken.TryGetValue(tid, out var token))
             {
-                if (piece.StartsWith("\u2581", StringComparison.Ordinal))
+                if (token.StartsWith("\u2581"))
                 {
                     if (sb.Length > 0) sb.Append(' ');
-                    sb.Append(piece.AsSpan(1));
+                    sb.Append(token[1..]);
                 }
                 else
                 {
-                    sb.Append(piece);
+                    sb.Append(token);
                 }
             }
         }
 
         return sb.ToString().Trim();
+    }
+
+    public string GetToken(int tokenId)
+    {
+        return _idToToken.TryGetValue(tokenId, out var t) ? t : "<unk>";
     }
 }

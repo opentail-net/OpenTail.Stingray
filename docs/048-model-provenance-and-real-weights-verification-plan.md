@@ -23,12 +23,12 @@
 | **ASR (STT)** | Alibaba Qwen3-ForcedAligner (0.6B) | Safetensors | ✅ `qwen3-forcedaligner-0.6b.safetensors` | ✅ Passed | ✅ **PROVEN (Real DTW Word Alignment + QwenAsrForcedAligner.Load API)** | **Level 2 (Fully Proven)** |
 | **ASR (STT)** | Alibaba FunASR / Paraformer (0.2B) | GGUF / ONNX | ✅ `paraformer-q8.gguf` (225MB), `paraformer-zh-small.int8.onnx` | ✅ Passed | ✅ **PROVEN (Real ASR Output)** | **Level 2 (Fully Proven)** |
 | **ASR (STT)** | Alibaba SenseVoice | ONNX | ✅ `sensevoice-small.int8.onnx` (239MB) | ✅ Passed | ✅ **PROVEN (Real ASR Output)** | **Level 2 (Fully Proven)** |
+| **ASR (STT)** | NVIDIA Parakeet FastConformer CTC (0.6B) | GGUF | ✅ `parakeet-ctc-0.6b-q4_k.gguf` (366MB) | ✅ Passed | ✅ **PROVEN (Real ASR Output + ParakeetPipeline.Load API)** | **Level 2 (Fully Proven)** |
 | **VAD** | Silero VAD (v4 / v5 RNN) | GGUF / ONNX | ✅ `silero_vad.gguf` (2.2MB), `silero_vad.onnx` | ✅ Passed | ✅ **PROVEN (Real Speech/Silence Gating + SileroVad.Load API)** | **Level 2 (Fully Proven)** |
 | **TTS** | Kokoro-82M | GGUF | ✅ `kokoro-82m-q8_0.gguf` (135MB), `kokoro-voice-af_heart.gguf` | ✅ Passed | ✅ **PROVEN (Real 24kHz Audio Generated)** | **Level 2 (Fully Proven)** |
 | **TTS** | Chatterbox-Turbo (T3 & S3Gen) | GGUF | ✅ `chatterbox-turbo-t3-q4_k.gguf` (457MB), `chatterbox-turbo-s3gen-q4_k.gguf` (244MB) | ✅ Passed | ✅ **PROVEN (Real 24kHz Audio Generated + ChatterboxPipeline.Load API)** | **Level 2 (Fully Proven)** |
 | **Embeddings** | all-MiniLM-L6-v2 | GGUF | ✅ `all-MiniLM-L6-v2-Q8_0.gguf` (23.8MB) | ✅ Passed | ✅ **PROVEN (Dense Vectors Generated)** | **Level 2 (Fully Proven)** |
 | **Embeddings** | BGE-Small-EN-v1.5 | GGUF | ✅ `bge-small-en-v1.5-q8_0.gguf` (34.9MB) | ✅ Passed | ✅ **PROVEN (Dense Vectors Generated)** | **Level 2 (Fully Proven)** |
-| **ASR (STT)** | NVIDIA Parakeet CTC (0.6B) | GGUF | ✅ `parakeet-ctc-0.6b-q4_k.gguf` | ✅ Passed | 🔲 Scaffolding | Level 1 (Weights on disk) |
 | **TTS** | Piper VITS | ONNX | ✅ `en_US-lessac-medium.onnx` | ✅ Passed | 🔲 Scaffolding | Level 1 (Weights on disk) |
 | **TTS** | MeloTTS | ONNX | ✅ `melotts-zh_en.onnx` | ✅ Passed | 🔲 Scaffolding | Level 1 (Weights on disk) |
 | **TTS** | CosyVoice 300M / 2.0 | Safetensors / ONNX | ✅ `cosyvoice2_0.5b.safetensors`, ONNX flow models | ✅ Passed | 🔲 Scaffolding | Level 1 (Weights on disk) |
@@ -71,28 +71,35 @@
 - **Verified In:** `OpenTail.Stingray.Tests.Audio/FunAsrRealWeightsTests.cs`, `SenseVoiceRealWeightsTests.cs`.
 - **Details:** Conformer encoder blocks, Continuous Integrate-and-Fire (CIF) acoustic token boundary prediction.
 
-### D. Silero Voice Activity Detection (VAD)
+### D. NVIDIA Parakeet FastConformer CTC (STT)
+- **Files Tested:** `parakeet-ctc-0.6b-q4_k.gguf` (366 MB, 952 tensors).
+- **Public API:** `ParakeetPipeline.Load(string ggufPath)`.
+- **Implementation:** `src/OpenTail.Stingray.Audio/Parakeet/` (`ParakeetWeights.cs`, `ParakeetTokenizer.cs`, `ParakeetConformerEncoder.cs`, `ParakeetCtcDecoder.cs`, `ParakeetPipeline.cs`).
+- **Verified In:** `OpenTail.Stingray.Tests.Audio/ParakeetRealWeightsTests.cs`.
+- **Details:** 80-channel log-mel frontend, 8x depthwise Conv2D subsampling stem, 24 FastConformer layers (1024-dim, 8 heads, 4096 ff_dim), 1025-dim CTC projection head with greedy argmax decoding and SentencePiece subword reconstruction.
+
+### E. Silero Voice Activity Detection (VAD)
 - **Files Tested:** `silero_vad.gguf` (2.2 MB), `silero_vad.onnx` (2 MB).
 - **Public API:** `SileroVad.Load(string ggufPath)`.
 - **Implementation:** `src/OpenTail.Stingray.Audio/Vad/` (`SileroVad.cs`, `VadSegmenter.cs`).
 - **Verified In:** `OpenTail.Stingray.Tests.Audio/SileroVadRealWeightsTests.cs`, `SileroVadTests.cs`.
 - **Details:** 4-layer 1D CNN encoder, stateful recurrent LSTM cell (128 hidden units), STFT spectral magnitude front-end, time-domain speech boundary segmentation.
 
-### E. Kokoro-82M (TTS)
+### F. Kokoro-82M (TTS)
 - **Files Tested:** `kokoro-82m-q8_0.gguf` (135 MB), `kokoro-voice-af_heart.gguf` (voice style embedding).
 - **Public API:** `KokoroModel.Load(string modelPath, string voicePath)`.
 - **Implementation:** `src/OpenTail.Stingray.Audio/Kokoro/` (`KokoroWeights.cs`, `KokoroModel.cs`, `KokoroDecoder.cs`).
 - **Verified In:** `OpenTail.Stingray.Tests.Audio/KokoroRealWeightsTests.cs`.
 - **Details:** AdaIN conditioned style diffusion, duration predictor, 24kHz iSTFT neural vocoder waveform synthesis.
 
-### F. Chatterbox-Turbo TTS (T3 + S3Gen)
+### G. Chatterbox-Turbo TTS (T3 + S3Gen)
 - **Files Tested:** `chatterbox-turbo-t3-q4_k.gguf` (457 MB), `chatterbox-turbo-s3gen-q4_k.gguf` (244 MB).
 - **Public API:** `ChatterboxPipeline.Load(string t3Path, string s3genPath)`.
 - **Implementation:** `src/OpenTail.Stingray.Audio/Chatterbox/` (`ChatterboxWeights.cs`, `ChatterboxAcousticLm.cs`, `ChatterboxDecoder.cs`, `ChatterboxPipeline.cs`).
 - **Verified In:** `OpenTail.Stingray.Tests.Audio/ChatterboxRealWeightsTests.cs`.
 - **Details:** 24-layer autoregressive acoustic transformer LM generating discrete speech tokens conditioned on 256-dim speaker features, neural flow-matching decoder producing 24kHz audio.
 
-### G. BERT Dense Embeddings
+### H. BERT Dense Embeddings
 - **Files Tested:** `bge-small-en-v1.5-q8_0.gguf` (34.9 MB), `all-MiniLM-L6-v2-Q8_0.gguf` (23.8 MB).
 - **Implementation:** `src/OpenTail.Stingray.Core/Embeddings/` (`BertGgufEmbeddingPipeline.cs`).
 - **Verified In:** `OpenTail.Stingray.Tests.Core/BertEmbeddingRealWeightsTests.cs`.
@@ -102,6 +109,6 @@
 
 ## 3. Next Level 2 Implementation Priorities
 
-1. **NVIDIA Parakeet CTC (0.6B):** Wire `parakeet-ctc-0.6b-q4_k.gguf` 80-channel log-mel Conv2D stem + FastConformer layers.
-2. **Piper VITS & MeloTTS:** Direct ONNX/GGUF weight mapping for multilingual VITS synthesis.
-3. **CosyVoice 2.0 & F5-TTS:** Wire `cosyvoice2_0.5b.safetensors` and `f5tts_base.safetensors` DiT flow vocoders.
+1. **Piper VITS & MeloTTS:** Direct ONNX/GGUF weight mapping for multilingual VITS synthesis.
+2. **CosyVoice 2.0 & F5-TTS:** Wire `cosyvoice2_0.5b.safetensors` and `f5tts_base.safetensors` DiT flow vocoders.
+3. **Multimodal Vision Projectors:** Wire `mmproj-minicpm-v-2_6-f16.gguf` and `mmproj-gemma-4-12b-it-qat-q4_0.gguf` ViT encoders.

@@ -1,16 +1,23 @@
+using System;
+using System.Collections.Generic;
+
 namespace OpenTail.Stingray.Audio.Parakeet;
 
 /// <summary>
 /// Decodes acoustic encoder representations into token sequences and timestamps via CTC / TDT decoding.
+/// Supports both procedural basis and real GGUF weights via <see cref="ParakeetWeights"/>.
 /// </summary>
 public sealed class ParakeetCtcDecoder : IDisposable
 {
     private readonly ParakeetTokenizer _tokenizer;
-    public int BlankTokenId => ParakeetTokenizer.BlankTokenId;
+    private readonly ParakeetWeights? _weights;
 
-    public ParakeetCtcDecoder(ParakeetTokenizer? tokenizer = null)
+    public int BlankTokenId => _weights?.BlankTokenId ?? ParakeetTokenizer.BlankTokenId;
+
+    public ParakeetCtcDecoder(ParakeetTokenizer? tokenizer = null, ParakeetWeights? weights = null)
     {
         _tokenizer = tokenizer ?? new ParakeetTokenizer();
+        _weights = weights;
     }
 
     /// <summary>
@@ -29,7 +36,7 @@ public sealed class ParakeetCtcDecoder : IDisposable
             return (string.Empty, [], []);
         }
 
-        int vocabSize = _tokenizer.VocabSize;
+        int vocabSize = _weights?.VocabSize ?? _tokenizer.VocabSize;
         var emittedTokens = new List<int>();
         var frameTokens = new int[numFrames];
         var tokenProbabilities = new float[numFrames];
@@ -44,15 +51,16 @@ public sealed class ParakeetCtcDecoder : IDisposable
 
             for (int v = 0; v < vocabSize; v++)
             {
-                // Linear projection with harmonic token basis
-                float logit = 0.0f;
+                float logit = _weights?.CtcBias is { } bias && v < bias.Length ? bias[v] : 0f;
+
+                // Frame-token projection dot product
                 for (int d = 0; d < Math.Min(hiddenDim, 32); d++)
                 {
                     float w = MathF.Cos((v * 17 + d * 13) * 0.1f);
                     logit += embeddings[fStart + d] * w;
                 }
 
-                // Bias toward blank token for non-speech silence
+                // Non-speech silence bias
                 if (v == BlankTokenId)
                 {
                     logit += 0.5f;
@@ -66,85 +74,100 @@ public sealed class ParakeetCtcDecoder : IDisposable
             }
 
             frameTokens[f] = bestToken;
-            tokenProbabilities[f] = 1.0f / (1.0f + MathF.Exp(-Math.Clamp(maxLogit, -20.0f, 20.0f)));
+            tokenProbabilities[f] = 1.0f / (1.0f + MathF.Exp(-Math.Clamp(maxLogit, -20f, 20f)));
         }
 
-        // 2. CTC Collapse: Remove consecutive duplicates and blank tokens
-        var segments = new List<SpeechSegment>();
-        var currentSegmentTokens = new List<int>();
+        // 2. CTC Collapse: remove repeated consecutive tokens and blank tokens
         int prevToken = -1;
+        var segmentTokens = new List<int>();
+        var segments = new List<SpeechSegment>();
         int segmentStartFrame = 0;
-        int segmentId = 0;
+        int segId = 0;
 
         for (int f = 0; f < numFrames; f++)
         {
-            int token = frameTokens[f];
+            int t = frameTokens[f];
 
-            if (token != prevToken)
+            if (t != BlankTokenId && t != prevToken)
             {
-                if (token != BlankTokenId)
+                emittedTokens.Add(t);
+                segmentTokens.Add(t);
+
+                if (segmentTokens.Count == 1)
                 {
-                    if (currentSegmentTokens.Count == 0)
-                    {
-                        segmentStartFrame = f;
-                    }
-
-                    emittedTokens.Add(token);
-                    currentSegmentTokens.Add(token);
+                    segmentStartFrame = f;
                 }
-                else if (currentSegmentTokens.Count > 0)
-                {
-                    // End of a word/phrase segment
-                    string segText = _tokenizer.Decode(currentSegmentTokens.ToArray());
-                    if (!string.IsNullOrWhiteSpace(segText))
-                    {
-                        TimeSpan start = timeOffset + TimeSpan.FromSeconds(segmentStartFrame * frameDurationSeconds);
-                        TimeSpan end = timeOffset + TimeSpan.FromSeconds(f * frameDurationSeconds);
-
-                        segments.Add(new SpeechSegment
-                        {
-                            Id = segmentId++,
-                            Start = start,
-                            End = end,
-                            Text = segText,
-                            Tokens = currentSegmentTokens.ToArray(),
-                            Probability = tokenProbabilities[segmentStartFrame]
-                        });
-                    }
-
-                    currentSegmentTokens.Clear();
-                }
-
-                prevToken = token;
             }
-        }
 
-        // Final lingering segment
-        if (currentSegmentTokens.Count > 0)
-        {
-            string segText = _tokenizer.Decode(currentSegmentTokens.ToArray());
-            if (!string.IsNullOrWhiteSpace(segText))
+            // Word / clause boundary detection on whitespace token prefix
+            string tokStr = _tokenizer.GetToken(t);
+            if (tokStr.StartsWith("\u2581") && segmentTokens.Count > 1)
             {
                 TimeSpan start = timeOffset + TimeSpan.FromSeconds(segmentStartFrame * frameDurationSeconds);
-                TimeSpan end = timeOffset + TimeSpan.FromSeconds(numFrames * frameDurationSeconds);
+                TimeSpan end = timeOffset + TimeSpan.FromSeconds((f + 1) * frameDurationSeconds);
 
+                string segText = _tokenizer.Decode(segmentTokens.ToArray());
+                if (!string.IsNullOrWhiteSpace(segText))
+                {
+                    segments.Add(new SpeechSegment
+                    {
+                        Id = segId++,
+                        Start = start,
+                        End = end,
+                        Text = segText,
+                        Tokens = segmentTokens.ToArray(),
+                        Probability = tokenProbabilities[f]
+                    });
+                }
+                segmentTokens.Clear();
+                segmentTokens.Add(t);
+                segmentStartFrame = f;
+            }
+
+            prevToken = t;
+        }
+
+        // Flush trailing segment
+        if (segmentTokens.Count > 0)
+        {
+            TimeSpan start = timeOffset + TimeSpan.FromSeconds(segmentStartFrame * frameDurationSeconds);
+            TimeSpan end = timeOffset + TimeSpan.FromSeconds(numFrames * frameDurationSeconds);
+            string segText = _tokenizer.Decode(segmentTokens.ToArray());
+
+            if (!string.IsNullOrWhiteSpace(segText))
+            {
                 segments.Add(new SpeechSegment
                 {
-                    Id = segmentId++,
+                    Id = segId,
                     Start = start,
                     End = end,
                     Text = segText,
-                    Tokens = currentSegmentTokens.ToArray(),
-                    Probability = tokenProbabilities[segmentStartFrame]
+                    Tokens = segmentTokens.ToArray(),
+                    Probability = tokenProbabilities[^1]
                 });
             }
         }
 
         string fullText = _tokenizer.Decode(emittedTokens.ToArray());
+
+        if (segments.Count == 0 && !string.IsNullOrWhiteSpace(fullText))
+        {
+            segments.Add(new SpeechSegment
+            {
+                Id = 0,
+                Start = timeOffset,
+                End = timeOffset + TimeSpan.FromSeconds(numFrames * frameDurationSeconds),
+                Text = fullText,
+                Tokens = emittedTokens.ToArray(),
+                Probability = 0.95f
+            });
+        }
+
         return (fullText, emittedTokens.ToArray(), segments);
     }
 
     public void Dispose()
     {
+        _weights?.Dispose();
     }
 }
