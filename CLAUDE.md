@@ -17,7 +17,7 @@ OpenTail.Stingray is a high-performance LLM inference engine, image/video diffus
    * Set `STINGRAY_RUN_HEAVY_TESTS=1` to run full real-model/real-GPU test suites before committing major engine/kernel changes.
    * Everyday iteration should target `.Fast` test projects (e.g. `Tests.ForwardPass.Fast`, `Tests.Server.Fast`, `Tests.Audio`).
 3. **Test Filter Syntax**:
-   * Through `dotnet test`: use `--filter-class <Name>` or `--filter-method <Name>` (e.g., `dotnet test tests/OpenTail.Stingray.Tests.Audio -- --filter-class ParakeetTests`).
+   * Through `dotnet test`: use `--filter-class <Name>` or `--filter-method <Name>` (e.g., `dotnet test tests/OpenTail.Stingray.Tests.Audio -- --filter-class QwenAsrTests`).
    * When invoking built test `.exe` directly: use single-dash `-class <Name>` / `-method <Name>`.
 4. **Hard Compiler & Build Constraints**:
    * `TreatWarningsAsErrors` is enabled globally â all compiler warnings must be fixed.
@@ -60,7 +60,7 @@ The solution (`OpenTail.Stingray.slnx`) is organized into four core layers:
    * `OpenTail.Stingray.Vulkan` â Vortice.Vulkan compute shaders, SPIR-V pipeline cache.
 3. **Engine** (`OpenTail.Stingray.Engine`) â Forward pass dispatch (`ForwardPass`, `CudaForwardPass`, `HybridGdnForwardPass`), paged KV cache (`PagedKvCache`), token sampling (`Sampler`), continuous batching (`ContinuousBatchingEngine`), and speculative decoding (`MtpDecoder`, `DSparkDecoder`).
 4. **Domain Pipelines**:
-   * `OpenTail.Stingray.Audio` â Native TTS/ASR (`CosyVoice 3`, `Qwen3-TTS 12Hz`, `Kokoro-82M`, `F5-TTS`, `MeloTTS`, `Piper`, `OpenAI Whisper`, `NVIDIA NeMo Parakeet ASR`, `Silero VAD`).
+   * `OpenTail.Stingray.Audio` â Native TTS/ASR (`CosyVoice 3`, `Qwen3-TTS 12Hz`, `Kokoro-82M`, `F5-TTS`, `MeloTTS`, `Piper`, `OpenAI Whisper`, `NVIDIA NeMo Parakeet ASR`, `Alibaba Qwen3-ASR & ForcedAligner`, `Silero VAD`).
    * `OpenTail.Stingray.Diffusion` â Text-to-image/video (`ZImageDiT`, `FluxDiT`, `RRDBNet` Real-ESRGAN upscaler, `VaeDecoder`).
    * `OpenTail.Stingray.Vision` â Multimodal vision (`UnifiedVisionPipeline` for Gemma 4 `gemma4uv`/`gemma4v`, Gemma 3, Llama 4).
    * `OpenTail.Stingray.TurboQuant` â KV cache compression (KVarN Hadamard + Sinkhorn variance normalization).
