@@ -120,7 +120,7 @@ public sealed unsafe class VisionOpsTests
         VisionOps.Gelu(gelu);
         Assert.InRange(gelu[0], -0.05f, -0.04f);
         Assert.Equal(0f, gelu[1]);
-        Assert.InRange(gelu[2], 1.90f, 1.92f);
+        Assert.InRange(gelu[2], 1.95f, 1.96f);
 
         // SiLU(0) = 0, SiLU(2) = 2 / (1 + e^-2) ≈ 1.7616
         var silu = (float[])vals.Clone();

@@ -2,6 +2,7 @@ using System;
 using System.Numerics.Tensors;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using System.Runtime.Intrinsics;
 using System.Threading.Tasks;
 using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Cpu;
@@ -83,23 +84,75 @@ public static unsafe class VisionOps
     {
         if (weights == null) return;
 
-        Parallel.For(0, nTokens, t =>
+        fixed (float* pIn = input)
+        fixed (float* pOut = output)
         {
-            int inOff = t * inDim;
-            int outOff = t * outDim;
+            var inPtr = pIn;
+            var outPtr = pOut;
+            var wPtr = weights;
+            var bPtr = bias;
 
-            for (int o = 0; o < outDim; o++)
+            Parallel.For(0, nTokens, t =>
             {
-                float sum = bias != null ? bias[o] : 0f;
-                int rowOff = o * inDim;
+                float* rowIn = inPtr + (long)t * inDim;
+                float* rowOut = outPtr + (long)t * outDim;
 
-                for (int i = 0; i < inDim; i++)
+                for (int o = 0; o < outDim; o++)
                 {
-                    sum += input[inOff + i] * (float)weights[rowOff + i];
+                    float sum = bPtr != null ? bPtr[o] : 0f;
+                    Half* rowW = wPtr + (long)o * inDim;
+
+                    int i = 0;
+
+                    if (Vector256.IsHardwareAccelerated && inDim >= 32)
+                    {
+                        var acc0 = Vector256<float>.Zero;
+                        var acc1 = Vector256<float>.Zero;
+                        var acc2 = Vector256<float>.Zero;
+                        var acc3 = Vector256<float>.Zero;
+
+                        int vecLimit = inDim - 31;
+
+                        for (; i < vecLimit; i += 32)
+                        {
+                            var vIn0 = Vector256.Load(rowIn + i + 0);
+                            var vW0 = Vector256.Create(
+                                (float)rowW[i + 0], (float)rowW[i + 1], (float)rowW[i + 2], (float)rowW[i + 3],
+                                (float)rowW[i + 4], (float)rowW[i + 5], (float)rowW[i + 6], (float)rowW[i + 7]);
+                            acc0 = Vector256.MultiplyAddEstimate(vIn0, vW0, acc0);
+
+                            var vIn1 = Vector256.Load(rowIn + i + 8);
+                            var vW1 = Vector256.Create(
+                                (float)rowW[i + 8], (float)rowW[i + 9], (float)rowW[i + 10], (float)rowW[i + 11],
+                                (float)rowW[i + 12], (float)rowW[i + 13], (float)rowW[i + 14], (float)rowW[i + 15]);
+                            acc1 = Vector256.MultiplyAddEstimate(vIn1, vW1, acc1);
+
+                            var vIn2 = Vector256.Load(rowIn + i + 16);
+                            var vW2 = Vector256.Create(
+                                (float)rowW[i + 16], (float)rowW[i + 17], (float)rowW[i + 18], (float)rowW[i + 19],
+                                (float)rowW[i + 20], (float)rowW[i + 21], (float)rowW[i + 22], (float)rowW[i + 23]);
+                            acc2 = Vector256.MultiplyAddEstimate(vIn2, vW2, acc2);
+
+                            var vIn3 = Vector256.Load(rowIn + i + 24);
+                            var vW3 = Vector256.Create(
+                                (float)rowW[i + 24], (float)rowW[i + 25], (float)rowW[i + 26], (float)rowW[i + 27],
+                                (float)rowW[i + 28], (float)rowW[i + 29], (float)rowW[i + 30], (float)rowW[i + 31]);
+                            acc3 = Vector256.MultiplyAddEstimate(vIn3, vW3, acc3);
+                        }
+
+                        var totalAcc = (acc0 + acc1) + (acc2 + acc3);
+                        sum += Vector256.Sum(totalAcc);
+                    }
+
+                    for (; i < inDim; i++)
+                    {
+                        sum += rowIn[i] * (float)rowW[i];
+                    }
+
+                    rowOut[o] = sum;
                 }
-                output[outOff + o] = sum;
-            }
-        });
+            });
+        }
     }
 
     /// <summary>
