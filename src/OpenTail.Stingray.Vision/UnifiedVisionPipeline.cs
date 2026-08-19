@@ -903,4 +903,140 @@ public static class UnifiedVisionPipeline
 
         public void Dispose() => _model.Dispose();
     }
+
+    private sealed class PaddleOcrAdapter : IVisionEmbedder
+    {
+        private readonly PaddleOcrVisionModel _model;
+        private readonly PaddleOcrVisionEncoder _encoder;
+
+        public PaddleOcrAdapter(PaddleOcrVisionModel model)
+        {
+            _model = model;
+            _encoder = new PaddleOcrVisionEncoder(model);
+        }
+
+        public string ProjectorType => _model.ProjectorType;
+        public int EmbeddingDim => _model.ProjectionDim;
+        public int ImageWidth => _model.ImageSize;
+        public int ImageHeight => _model.ImageSize;
+        public string ImageOpenMarker => "<image>";
+        public string ImageCloseMarker => "</image>";
+        public string PlaceholderMarker => "<image_pad>";
+
+        public float[] EmbedImage(ReadOnlySpan<byte> rgb, int width, int height, out int tokenCount)
+        {
+            var pre = PaddleOcrImagePreprocessor.Preprocess(rgb, width, height, _model.PatchSize);
+            return _encoder.Forward(pre.Chw, pre.TargetWidth, pre.TargetHeight, pre.PatchesX, pre.PatchesY, out tokenCount);
+        }
+
+        public float[] EmbedImageFile(string filePath, out int tokenCount)
+        {
+            var rgb = ImageIO.LoadRgb(filePath, out int w, out int h);
+            return EmbedImage(rgb, w, h, out tokenCount);
+        }
+
+        public void Dispose() => _model.Dispose();
+    }
+
+    private sealed class CogVlmAdapter : IVisionEmbedder
+    {
+        private readonly CogVlmVisionModel _model;
+        private readonly CogVlmVisionEncoder _encoder;
+
+        public CogVlmAdapter(CogVlmVisionModel model)
+        {
+            _model = model;
+            _encoder = new CogVlmVisionEncoder(model);
+        }
+
+        public string ProjectorType => _model.ProjectorType;
+        public int EmbeddingDim => _model.ProjectionDim;
+        public int ImageWidth => _model.ImageSize;
+        public int ImageHeight => _model.ImageSize;
+        public string ImageOpenMarker => "<boi>";
+        public string ImageCloseMarker => "<eoi>";
+        public string PlaceholderMarker => "<image_pad>";
+
+        public float[] EmbedImage(ReadOnlySpan<byte> rgb, int width, int height, out int tokenCount)
+        {
+            var pre = CogVlmImagePreprocessor.Preprocess(rgb, width, height, _model.ImageSize, _model.PatchSize);
+            return _encoder.Forward(pre.Chw, pre.TargetWidth, pre.TargetHeight, pre.PatchesX, pre.PatchesY, out tokenCount);
+        }
+
+        public float[] EmbedImageFile(string filePath, out int tokenCount)
+        {
+            var rgb = ImageIO.LoadRgb(filePath, out int w, out int h);
+            return EmbedImage(rgb, w, h, out tokenCount);
+        }
+
+        public void Dispose() => _model.Dispose();
+    }
+
+    private sealed class Granite4Adapter : IVisionEmbedder
+    {
+        private readonly Granite4VisionModel _model;
+        private readonly Granite4VisionEncoder _encoder;
+
+        public Granite4Adapter(Granite4VisionModel model)
+        {
+            _model = model;
+            _encoder = new Granite4VisionEncoder(model);
+        }
+
+        public string ProjectorType => _model.ProjectorType;
+        public int EmbeddingDim => _model.ProjectionDim;
+        public int ImageWidth => _model.ImageSize;
+        public int ImageHeight => _model.ImageSize;
+        public string ImageOpenMarker => "<image>";
+        public string ImageCloseMarker => "</image>";
+        public string PlaceholderMarker => "<image_pad>";
+
+        public float[] EmbedImage(ReadOnlySpan<byte> rgb, int width, int height, out int tokenCount)
+        {
+            var pre = Granite4ImagePreprocessor.Preprocess(rgb, width, height, _model.ImageSize, _model.PatchSize);
+            return _encoder.Forward(pre.Chw, pre.TargetWidth, pre.TargetHeight, pre.PatchesX, pre.PatchesY, out tokenCount);
+        }
+
+        public float[] EmbedImageFile(string filePath, out int tokenCount)
+        {
+            var rgb = ImageIO.LoadRgb(filePath, out int w, out int h);
+            return EmbedImage(rgb, w, h, out tokenCount);
+        }
+
+        public void Dispose() => _model.Dispose();
+    }
+
+    private sealed class MobileNetV5Adapter : IVisionEmbedder
+    {
+        private readonly MobileNetV5VisionModel _model;
+        private readonly MobileNetV5VisionEncoder _encoder;
+
+        public MobileNetV5Adapter(MobileNetV5VisionModel model)
+        {
+            _model = model;
+            _encoder = new MobileNetV5VisionEncoder(model);
+        }
+
+        public string ProjectorType => _model.ProjectorType;
+        public int EmbeddingDim => _model.ProjectionDim;
+        public int ImageWidth => _model.ImageSize;
+        public int ImageHeight => _model.ImageSize;
+        public string ImageOpenMarker => "<image>";
+        public string ImageCloseMarker => "</image>";
+        public string PlaceholderMarker => "<image_pad>";
+
+        public float[] EmbedImage(ReadOnlySpan<byte> rgb, int width, int height, out int tokenCount)
+        {
+            var pre = MobileNetV5ImagePreprocessor.Preprocess(rgb, width, height, _model.ImageSize, _model.PatchSize);
+            return _encoder.Forward(pre.Chw, pre.TargetWidth, pre.TargetHeight, pre.PatchesX, pre.PatchesY, out tokenCount);
+        }
+
+        public float[] EmbedImageFile(string filePath, out int tokenCount)
+        {
+            var rgb = ImageIO.LoadRgb(filePath, out int w, out int h);
+            return EmbedImage(rgb, w, h, out tokenCount);
+        }
+
+        public void Dispose() => _model.Dispose();
+    }
 }
