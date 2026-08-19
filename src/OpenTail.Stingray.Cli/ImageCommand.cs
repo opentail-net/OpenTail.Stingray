@@ -160,7 +160,7 @@ public sealed class ImageCommand : Command<ImageCommand.Settings>
         public float Strength { get; init; } = 0.75f;
 
         [CommandOption("--sampler")]
-        [Description("Diffusion scheduler algorithm: euler (default), euler-a, ddim, dpm2m, dpm2m-karras")]
+        [Description("Diffusion scheduler algorithm: euler (default), euler-a, ddim, dpm2m, dpm2m-karras, lcm")]
         public string? Sampler { get; init; }
 
         [CommandOption("--control-net|--controlnet")]
@@ -1096,7 +1096,24 @@ public sealed class ImageCommand : Command<ImageCommand.Settings>
     private static bool IsSdxl(string path)
     {
         string n = Path.GetFileNameWithoutExtension(path).ToLowerInvariant();
-        return n.Contains("sdxl") || n.Contains("sd_xl") || n.Contains("ssd-1b") || n.Contains("ssd1b") || n.Contains("segmind") || n.Contains("sd-xl");
+        if (n.Contains("sdxl") || n.Contains("sd_xl") || n.Contains("ssd-1b") || n.Contains("ssd1b") || 
+            n.Contains("segmind") || n.Contains("sd-xl") || n.Contains("ponyxl") || n.Contains("animagine") || 
+            n.Contains("juggernautxl") || n.Contains("realvisxl"))
+            return true;
+
+        if (File.Exists(path) && path.EndsWith(".safetensors", StringComparison.OrdinalIgnoreCase))
+        {
+            try
+            {
+                using var loader = SafetensorsLoader.Open(path);
+                if (loader.Contains("model.diffusion_model.input_blocks.4.1.transformer_blocks.0.attn2.to_k.weight") ||
+                    loader.Contains("diffusion_model.input_blocks.4.1.transformer_blocks.0.attn2.to_k.weight") ||
+                    loader.Contains("conditioner.embedders.1.model.transformer.resblocks.0.attn.in_proj_weight"))
+                    return true;
+            }
+            catch { }
+        }
+        return false;
     }
 
     private static int RunSdxl(Settings s, string modelPath, int deviceIndex, bool deviceNone)
@@ -1239,7 +1256,27 @@ public sealed class ImageCommand : Command<ImageCommand.Settings>
     private static bool IsStableDiffusion(string path)
     {
         string n = Path.GetFileNameWithoutExtension(path).ToLowerInvariant();
-        return n.Contains("v1-5") || n.Contains("sd-v1") || n.Contains("sd15") || n.Contains("stable-diffusion") || n.Contains("v1_5");
+        if (n.Contains("v1-5") || n.Contains("sd-v1") || n.Contains("sd15") || n.Contains("stable-diffusion") || 
+            n.Contains("v1_5") || n.Contains("v1.5") || n.Contains("sd1.5") || n.Contains("realistic") || 
+            n.Contains("dreamshaper") || n.Contains("cyberrealistic") || n.Contains("epicrealism") || 
+            n.Contains("deliberate") || n.Contains("revanimated") || n.Contains("chillout") || 
+            n.Contains("counterfeit") || n.Contains("meina") || n.Contains("anything") || n.Contains("abyss"))
+            return true;
+
+        if (File.Exists(path) && path.EndsWith(".safetensors", StringComparison.OrdinalIgnoreCase))
+        {
+            try
+            {
+                using var loader = SafetensorsLoader.Open(path);
+                if (loader.Contains("model.diffusion_model.input_blocks.1.1.transformer_blocks.0.attn2.to_k.weight") ||
+                    loader.Contains("diffusion_model.input_blocks.1.1.transformer_blocks.0.attn2.to_k.weight") ||
+                    loader.Contains("cond_stage_model.transformer.text_model.encoder.layers.0.self_attn.k_proj.weight"))
+                    return true;
+            }
+            catch { }
+        }
+
+        return !IsSdxl(path) && !IsSd3(path) && !IsFlowMatching(path) && !IsZImage(path) && !path.ToLowerInvariant().Contains("wan") && !IsHunyuanVideo(path) && !IsLtxVideo(path);
     }
     private static bool IsZImage(string path)
     {
@@ -1277,6 +1314,7 @@ public sealed class ImageCommand : Command<ImageCommand.Settings>
             "ddim" => DiffusionSchedulerType.Ddim,
             "dpm2m" or "dpmplusplus2m" or "dpmpp2m" => DiffusionSchedulerType.DpmPlusPlus2M,
             "dpm2mkarras" or "dpmplusplus2mkarras" or "dpmpp2mkarras" or "karras" => DiffusionSchedulerType.DpmPlusPlus2MKarras,
+            "lcm" => DiffusionSchedulerType.Lcm,
             _ => DiffusionSchedulerType.Euler
         };
     }

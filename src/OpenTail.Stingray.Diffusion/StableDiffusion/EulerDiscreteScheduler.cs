@@ -8,7 +8,8 @@ public enum DiffusionSchedulerType
     EulerAncestral,
     Ddim,
     DpmPlusPlus2M,
-    DpmPlusPlus2MKarras
+    DpmPlusPlus2MKarras,
+    Lcm
 }
 
 /// <summary>
@@ -268,6 +269,18 @@ public sealed class EulerDiscreteScheduler
                 float dt = sigmaNext - sigma;
                 for (int j = 0; j < x.Length; j++)
                     x[j] += modelOut[j] * dt;
+            }
+            else if (_schedulerType == DiffusionSchedulerType.Lcm)
+            {
+                // LCM Step: x0 = c_skip * x + c_out * modelOut
+                float sigmaData = 0.5f;
+                float scaledT = timestep * 0.01f;
+                float denom = scaledT * scaledT + sigmaData * sigmaData;
+                float cSkip = (sigmaData * sigmaData) / denom;
+                float cOut = scaledT / MathF.Sqrt(denom);
+
+                for (int j = 0; j < x.Length; j++)
+                    x[j] = cSkip * x[j] + cOut * modelOut[j];
             }
             else
             {

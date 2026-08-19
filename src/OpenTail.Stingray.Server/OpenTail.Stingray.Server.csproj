@@ -54,8 +54,8 @@
     <!-- Vision: image-input loader path (#253). Bundled inside the OpenTail.Stingray meta-package. -->
     <ProjectReference Include="..\OpenTail.Stingray.Vision\OpenTail.Stingray.Vision.csproj" PrivateAssets="all" />
     <ProjectReference Include="..\OpenTail.Stingray.Audio\OpenTail.Stingray.Audio.csproj" PrivateAssets="all" />
+    <ProjectReference Include="..\OpenTail.Stingray.Diffusion\OpenTail.Stingray.Diffusion.csproj" PrivateAssets="all" />
     <ProjectReference Include="..\OpenTail.Stingray\OpenTail.Stingray.csproj" />
   </ItemGroup>
 
 </Project>
-

@@ -2,7 +2,7 @@
 
 Native, high-performance diffusion and multimodal video/audio inference runtime for .NET 10 — 100% managed C#, running in-process with zero Python, zero subprocesses, zero P/Invoke, and full NativeAOT compatibility.
 
-Supports the entire modern image and video diffusion landscape: **Stable Diffusion 1.5, SDXL, Stable Diffusion 3 / 3.5, FLUX.1, FLUX 3 Multimodal A/V, Z-Image-Turbo, Qwen Image & Edit, Wan 2.1 / 2.2 Video, and HunyuanVideo / 1.5**, accelerated natively on CPU (AVX2/AVX-512) and GPU (Vulkan / CUDA).
+Supports the entire modern image, video, and acoustic diffusion landscape: **Stable Diffusion 1.5, SDXL, Stable Diffusion 3 / 3.5, FLUX.1, FLUX.2 (Klein & Kontext), FLUX 3 Multimodal A/V, Stable Audio 3, Z-Image-Turbo, Qwen Image & Edit, Wan 2.1 / 2.2 Video, and HunyuanVideo / 1.5**, accelerated natively on CPU (AVX2/AVX-512) and GPU (Vulkan / CUDA).
 
 [![.NET 10](https://img.shields.io/badge/.NET-10-blue)]()
 [![NativeAOT](https://img.shields.io/badge/NativeAOT-ready-green)]()
@@ -16,11 +16,13 @@ Supports the entire modern image and video diffusion landscape: **Stable Diffusi
 
 | Model Family | Core Backbone | Text Conditioning | Schedulers | Latent Channels | VAE | Capabilities |
 |---|---|---|---|:---:|:---:|---|
-| **Stable Diffusion 1.5** | 4-Stage UNet + Spatial Cross-Attn | CLIP-L (768d, ViT-L/14) | Euler, Euler-A, DDIM, DPM++ 2M, DPM++ 2M Karras | 4 | 4-ch AutoencoderKL | Text-to-Image, Img2Img, Inpainting, ControlNet, LoRA |
-| **Stable Diffusion XL (SDXL)** | 3-Stage UNet + 2048d Cross-Attn | Dual: CLIP-L (768d) + OpenCLIP-bigG (1280d) + Pooled (1280d) + Micro-Coords | Euler, Euler-A, DDIM, DPM++ 2M, DPM++ 2M Karras | 4 | 4-ch AutoencoderKL | Text-to-Image, Img2Img, Inpainting, LoRA |
+| **Stable Diffusion 1.5** | 4-Stage UNet + Spatial Cross-Attn | CLIP-L (768d, ViT-L/14) | Euler, Euler-A, DDIM, DPM++ 2M, DPM++ 2M Karras, LCM | 4 | 4-ch AutoencoderKL | Text-to-Image, Img2Img, Inpainting, ControlNet, LoRA |
+| **Stable Diffusion XL (SDXL)** | 3-Stage UNet + 2048d Cross-Attn | Dual: CLIP-L (768d) + OpenCLIP-bigG (1280d) + Pooled (1280d) + Micro-Coords | Euler, Euler-A, DDIM, DPM++ 2M, DPM++ 2M Karras, LCM | 4 | 4-ch AutoencoderKL | Text-to-Image, Img2Img, Inpainting, LoRA |
 | **Stable Diffusion 3 / 3.5** | MMDiT Dual-Stream + Single-Stream DiT | Triple: CLIP-L (768d) + OpenCLIP-bigG (1280d) + T5-XXL + Pooled (2048d) | Rectified Flow-Matching | 16 | 16-ch AutoencoderKL | Text-to-Image |
 | **FLUX.1 (schnell / dev)** | MM-DiT Dual-Stream + Single-Stream DiT | Dual: CLIP-L + T5-XXL | Rectified Flow-Matching | 16 | 16-ch AutoencoderKL | Text-to-Image |
+| **FLUX.2 (Klein & Kontext)** | Multi-Reference MM-DiT + 3D Context RoPE | Dual: CLIP-L + T5-XXL | Rectified Flow-Matching | 64 | 16-ch AutoencoderKL | Multi-Image Conditioning, Character Consistency, Contextual Editing |
 | **FLUX 3 (Multimodal A/V)** | Triple-Stream (Video+Audio+Text) DiT | Dual: CLIP-L + T5-XXL | Self-Flow Rectified Flow ODE | 64 (Vid) / 32 (Aud) | 3D Causal VAE + Neural Vocoder | Text-to-Video, Synchronized Audio, 3D/4D RoPE, Layer KV Cache |
+| **Stable Audio 3** | Continuous MMDiT Audio Transformer | T5-XXL + Continuous Timing Fourier Features | Rectified Flow-Matching | 64 | Semantic-Acoustic Latent Decoder | Variable-Length Audio (1s-6min), 44.1kHz Stereo, TPDF Dithered WAV |
 | **Z-Image-Turbo** | S3-DiT Scaled Transformer | Qwen3-4B LLM Text Encoder | Rectified Flow-Matching (4 steps) | 16 | 16-ch AutoencoderKL | Distilled Text-to-Image |
 | **Qwen Image & Edit** | 60-layer MM-DiT + 3D-RoPE {16,56,56} | Qwen2.5-VL (3584d) | Rectified Flow-Matching (s=3.0) | 16 | 16-ch Qwen/Wan VAE | Text-to-Image, Image-to-Image Edit |
 | **Wan 2.1 / 2.2** | Video DiT (1.3B / 14B) + 3D-RoPE {44,42,42} | UMT5-XXL (4096d) | Rectified Flow-Matching (s=3.0/5.0) | 16 | 16-ch Causal Wan VAE | Text-to-Video, Image-to-Video, Dual-Model A14B, Video Sequences |
@@ -35,16 +37,27 @@ Supports the entire modern image and video diffusion landscape: **Stable Diffusi
 * **Video Generation & Animated GIF Exporters:**
   * `GifWriter`: Standalone zero-dependency GIF89a streaming animator with 256-color uniform palette quantization, Netscape 2.0 infinite looping, and variable-length LZW compression.
   * `VideoFrameExporter`: Automatically saves output directly to looping `.gif` animations or numbered 24-bit PNG frame sequences (`_frame_0001.png`).
+* **FLUX.2 Multi-Reference Architecture (`Flux2/`):**
+  * `Flux2RoPE`: 3D Context RoPE $(i_{\text{image}}, y, x)$ assigning distinct coordinate planes to arbitrary reference images.
+  * `Flux2DiT` & `Flux2Pipeline`: Multi-reference conditioning for zero-shot subject transfer and contextual editing.
 * **FLUX 3 Multimodal Architecture (`Flux3/`):**
   * `Flux3RoPE`: 3D spatiotemporal $(t, y, x)$ and 2D audio $(t, \text{freq})$ rotary frequency embedding engine.
   * `Flux3KvCache`: Reference token KV cache across double and single layers for keyframe conditioning and context extension.
   * `Flux3SelfFlowScheduler`: Continuous probability flow ODE solver with higher-order Heun predictor-corrector updates.
   * `Flux3Pipeline`: Orchestrates synchronized video and acoustic synthesis.
+* **Stable Audio 3 Engine (`StableAudio/`):**
+  * `StableAudioDiT`: Continuous MMDiT transformer supporting variable sequence lengths (1s to 6min) with continuous duration/start timing Fourier embeddings.
+  * `AcousticVaeDecoder`: Decompresses continuous 64-channel latent frames into pristine 44.1 kHz stereo audio waveforms.
+  * `StableAudioPipeline`: Full end-to-end music and sound generation exporting directly to TPDF dithered 44.1 kHz stereo WAV files.
+* **1–4 Step Distillation & Real-Time Streaming:**
+  * `LcmScheduler`: Latent Consistency Model ODE solver ($c_{\text{skip}}$ / $c_{\text{out}}$ scaling) for ultra-fast 1–4 step generation with LCM-LoRAs.
+  * `StreamBatchPipeline`: StreamDiffusion temporal batch pipelining (Batch = Time Step) and Residual Classifier-Free Guidance (R-CFG) for real-time 30–60 FPS processing.
 * **Universal Multi-Scheduler:**
   * **Euler & Euler Ancestral:** Discrete 1000-step linear beta schedule.
   * **DPM++ 2M & DPM++ 2M Karras:** 2nd-order Adams-Bashforth ODE solver with Karras $\sigma$-distribution ($\rho = 7.0$).
   * **DDIM:** Deterministic inversion and sampling trajectory.
   * **Rectified Flow-Matching:** Euler flow trajectory with configurable flow shift ($s = 3.0, 5.0, 7.0$).
+  * **LCM:** 1–4 step consistency trajectory.
 * **LoRA Runtime Engine (`DiffusionLoraApplier`):** Load `.safetensors` LoRA weights and apply low-rank parameter deltas $\Delta W = \alpha \cdot \frac{1}{r}(A \times B)$ in-memory to base weights.
 * **Universal VAE Subsystem:**
   * `VaeDecoder`: Decodes 4-channel and 16-channel latents to RGB pixels $[3, H, W]$ and video frames $[3, T, H, W]$.

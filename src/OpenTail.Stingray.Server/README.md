@@ -50,84 +50,26 @@ Bind from configuration instead:
 builder.Services.AddOpenTailStingray(builder.Configuration);
 ```
 
-## What you get
+## Complete API Surface
 
-| Endpoint                       | Wire-compatible with     |
-|--------------------------------|--------------------------|
-| `POST /v1/chat/completions`    | OpenAI Chat Completions  |
-| `POST /v1/completions`         | OpenAI Completions       |
-| `POST /v1/messages`            | Anthropic Messages       |
-| `POST /v1/responses`           | OpenAI Responses         |
-| `GET  /v1/models`              | OpenAI Models            |
-| `GET  /health`, `/metrics`     | Liveness + Prometheus    |
-| `GET  /capabilities`           | Read-only protocol/configuration diagnostics |
-| `POST/GET/DELETE /v1/sessions` | Opt-in CPU-dense GGUF named-session lifecycle |
-| `GET /v1/sessions/{id}/operations/{operationId}` | Bounded idempotent-result reconnect lookup |
+| Endpoint | Wire-compatible with | Capabilities |
+|---|---|---|
+| `POST /v1/chat/completions` | OpenAI Chat Completions | Streaming SSE, Tool Calling, Structured JSON, Multimodal Vision |
+| `POST /v1/completions` | OpenAI Completions | Text completion |
+| `POST /v1/audio/transcriptions` | OpenAI Audio Transcriptions | Whisper STT with SRT, VTT, verbose_json |
+| `POST /v1/audio/translations` | OpenAI Audio Translations | Whisper Speech Translation |
+| `POST /v1/audio/speech` | OpenAI Audio Speech | Kokoro, Piper, MeloTTS, Chatterbox, F5-TTS with clause streaming |
+| `POST /v1/images/generations` | OpenAI Image Generations | SD 1.5, SDXL, SD 3/3.5, FLUX, Z-Image with Base64 / URL outputs |
+| `POST /v1/images/edits` | OpenAI Image Edits | Img2Img and Inpainting modifications |
+| `POST /v1/images/variations` | OpenAI Image Variations | Image variation generation |
+| `POST /v1/embeddings` | OpenAI Embeddings | Dense text embeddings |
+| `POST /v1/rerank` | Cohere Rerank | Cross-encoder sequence reranking |
+| `POST /v1/messages` | Anthropic Messages | Anthropic Messages API parity |
+| `POST /v1/responses` | OpenAI Responses | OpenAI Responses endpoint |
+| `GET  /v1/models` | OpenAI Models | Model enumeration |
+| `GET  /health`, `/metrics` | Observability | Liveness + Prometheus metrics |
+| `GET  /capabilities` | Diagnostics | Read-only protocol/configuration diagnostics |
+| `POST/GET/DELETE /v1/sessions` | Sessions | Opt-in CPU-dense GGUF named-session lifecycle |
+| `GET /v1/sessions/{id}/operations/{operationId}` | Operations | Bounded idempotent-result reconnect lookup |
 
 Streaming (SSE) is enabled for every chat/completion endpoint, and the JSON pipeline is wired through a source-generated `JsonSerializerContext` so the package is AOT-friendly even though the project itself is not AOT-published.
-
-When routes are mapped through `MapOpenTailStingray()`, `GET /capabilities` is a versioned
-diagnostics snapshot for local tooling and support. It reports the mapped OpenAI/Anthropic
-routes plus compatibility-relevant effective settings (backend, batching, reasoning, tool
-grammar, and image-input support), but deliberately excludes model paths, credentials,
-prompts, generated text, and inference-loop state.
-
-## Configuration
-
-`OpenTailStingrayServerOptions` is the single options record (`Options` pattern, validated on first request):
-
-```csharp
-public sealed class OpenTailStingrayServerOptions
-{
-    public string  ModelPath      { get; set; } = "";
-    public int     GpuLayers      { get; set; }       // -1 = all, 0 = CPU-only
-    public int     MaxContext     { get; set; } = 4096;
-    public string? Architecture   { get; set; }       // override GGUF detection
-    public Func<IServiceProvider, LoadedEngine>? EngineFactory { get; set; } // tests
-    // …
-}
-```
-
-Override `EngineFactory` in tests to inject a fake `IInferenceEngine`; the rest of the DI graph (chat-template renderer, metrics, JSON context) stays intact.
-
-For CPU-only deployments, `OpenTail.Stingray:CpuThreads` (or `STINGRAY_CPU_THREADS`) controls the SIMD-kernel worker count. Leave it at `0` to use all logical processors. If the host is shared with other CPU- or memory-bandwidth-heavy work, benchmark a smaller value — oversubscribing these memory-bound kernels can lower tokens/sec.
-
-### Persisted named sessions (CPU-dense GGUF only)
-
-Set `EnableSessions = true` and a `SessionStorageDirectory` to enable named sessions for the
-built-in CPU-dense GGUF batching lane. A completed turn persists its cursor, KV state, and a
-bounded completed-operation result ledger. After a restart, clients can reopen the session or
-retrieve/replay a retained operation through the routes above. This is not an archival transcript:
-old or oversized operation results may be pruned. CUDA, Vulkan, hybrid, TurboQuant, and other
-cache families deliberately report sessions unavailable rather than accepting a request they
-cannot restore safely.
-
-Sessions do not add authentication or tenancy policy. Apply those controls at the host or reverse
-proxy before exposing `/v1/sessions` outside a trusted local boundary.
-
-## Sampling
-
-`POST /v1/chat/completions` accepts OpenAI's `presence_penalty` and `frequency_penalty` fields.
-Both default to `0`. Presence penalty subtracts its value once from each token already generated;
-frequency penalty subtracts its value for every prior occurrence. They compose with
-`temperature`, `top_p`, `logit_bias`, and repetition penalty. For correct temperature-zero
-output, requests using any history-based penalty bypass batched raw-argmax sampling and use the
-history-aware sampler instead.
-
-## Links
-
-- [Repository & docs](https://github.com/opentail-net/OpenTail.Stingray)
-- [Design document](https://github.com/opentail-net/OpenTail.Stingray/blob/master/docs/reference/OpenTail.Stingray-Design.md)
-- [Issues](https://github.com/opentail-net/OpenTail.Stingray/issues)
-
----
-
-## Acknowledgements
-
-Forked from **[SharpInference](https://github.com/pekkah/SharpInference)** by Pekka Heikura (MIT), which remains actively developed upstream; its copyright is retained in `THIRD_PARTY_NOTICES.md`.
-
-Interoperates with **[llama.cpp](https://github.com/ggml-org/llama.cpp)**'s GGUF format and quantization block layouts, and follows `llama-cli` flag names where the meaning matches — **no llama.cpp code is used**. **[LLamaSharp](https://github.com/SciSharp/LLamaSharp)** was studied as the reference for .NET inference API design; **no LLamaSharp code is used**, and unlike it this engine is managed C# end to end rather than P/Invoke bindings to native llama.cpp.
-
-## License
-
-MIT. Copyright © 2026 OpenTail.
