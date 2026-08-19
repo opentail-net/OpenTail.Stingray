@@ -20,13 +20,13 @@
 | :--- | :--- | :---: | :---: | :---: | :---: | :--- |
 | **ASR (STT)** | OpenAI Whisper (Tiny/Base/Small/Med) | GGML | ✅ `ggml-tiny.bin`, `base`, `small`, `medium` | ✅ Passed | ✅ **PROVEN (Real ASR Output + WhisperPipeline.Load API)** | **Level 2 (Fully Proven)** |
 | **ASR (STT)** | Alibaba Qwen3-ASR (0.6B / 1.7B) | GGUF | ✅ `qwen3-asr-0.6b-q4_k.gguf` | ✅ Passed | ✅ **PROVEN (Real ASR Output + QwenAsrPipeline.Load API)** | **Level 2 (Fully Proven)** |
+| **ASR (STT)** | Alibaba Qwen3-ForcedAligner (0.6B) | Safetensors | ✅ `qwen3-forcedaligner-0.6b.safetensors` | ✅ Passed | ✅ **PROVEN (Real DTW Word Alignment + QwenAsrForcedAligner.Load API)** | **Level 2 (Fully Proven)** |
 | **ASR (STT)** | Alibaba FunASR / Paraformer (0.2B) | GGUF / ONNX | ✅ `paraformer-q8.gguf` (225MB), `paraformer-zh-small.int8.onnx` | ✅ Passed | ✅ **PROVEN (Real ASR Output)** | **Level 2 (Fully Proven)** |
 | **ASR (STT)** | Alibaba SenseVoice | ONNX | ✅ `sensevoice-small.int8.onnx` (239MB) | ✅ Passed | ✅ **PROVEN (Real ASR Output)** | **Level 2 (Fully Proven)** |
 | **TTS** | Kokoro-82M | GGUF | ✅ `kokoro-82m-q8_0.gguf` (135MB), `kokoro-voice-af_heart.gguf` | ✅ Passed | ✅ **PROVEN (Real 24kHz Audio Generated)** | **Level 2 (Fully Proven)** |
 | **TTS** | Chatterbox-Turbo (T3 & S3Gen) | GGUF | ✅ `chatterbox-turbo-t3-q4_k.gguf` (457MB), `chatterbox-turbo-s3gen-q4_k.gguf` (244MB) | ✅ Passed | ✅ **PROVEN (Real 24kHz Audio Generated + ChatterboxPipeline.Load API)** | **Level 2 (Fully Proven)** |
 | **Embeddings** | all-MiniLM-L6-v2 | GGUF | ✅ `all-MiniLM-L6-v2-Q8_0.gguf` (23.8MB) | ✅ Passed | ✅ **PROVEN (Dense Vectors Generated)** | **Level 2 (Fully Proven)** |
 | **Embeddings** | BGE-Small-EN-v1.5 | GGUF | ✅ `bge-small-en-v1.5-q8_0.gguf` (34.9MB) | ✅ Passed | ✅ **PROVEN (Dense Vectors Generated)** | **Level 2 (Fully Proven)** |
-| **ASR (STT)** | Alibaba Qwen3-ForcedAligner (0.6B) | Safetensors | ✅ `qwen3-forcedaligner-0.6b.safetensors` | ✅ Passed | 🔲 Scaffolding | Level 1 (Weights on disk) |
 | **ASR (STT)** | NVIDIA Parakeet CTC (0.6B) | GGUF | ✅ `parakeet-ctc-0.6b-q4_k.gguf` | ✅ Passed | 🔲 Scaffolding | Level 1 (Weights on disk) |
 | **VAD** | Silero VAD (v4 / v5 RNN) | ONNX | ✅ `silero_vad.onnx` | ✅ Passed | 🔲 Scaffolding | Level 1 (Weights on disk) |
 | **TTS** | Piper VITS | ONNX | ✅ `en_US-lessac-medium.onnx` | ✅ Passed | 🔲 Scaffolding | Level 1 (Weights on disk) |

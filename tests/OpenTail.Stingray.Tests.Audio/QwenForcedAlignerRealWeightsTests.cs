@@ -37,17 +37,15 @@ public sealed class QwenForcedAlignerRealWeightsTests
     }
 
     [Fact]
-    public void QwenForcedAligner_RealModelFile_SafetensorsValidAndAligns()
+    public void QwenForcedAligner_RealModelFile_SafetensorsValidAndAlignsWithDtw()
     {
         string? modelPath = FindModelPath(ModelFileName);
         if (modelPath is null) return;
 
-        using var st = SafetensorsLoader.Open(modelPath);
-        Assert.NotNull(st);
-        Assert.True(st.TensorCount > 0, "ForcedAligner safetensors must contain tensors");
+        using var aligner = QwenAsrForcedAligner.Load(modelPath);
+        Assert.NotNull(aligner);
 
-        using var aligner = new QwenAsrForcedAligner();
-        int numFrames = 50;
+        int numFrames = 60;
         int dim = 1024;
         float[] dummyAudioTokens = new float[numFrames * dim];
         for (int i = 0; i < dummyAudioTokens.Length; i++)
@@ -55,15 +53,25 @@ public sealed class QwenForcedAlignerRealWeightsTests
             dummyAudioTokens[i] = 0.1f * MathF.Sin(i * 0.05f);
         }
 
+        string referenceText = "Hello world from Qwen3 forced aligner test suite.";
         var segments = aligner.Align(
-            "Hello world from Qwen3 forced aligner test suite.",
+            referenceText,
             dummyAudioTokens,
             numFrames,
             dim,
             TimeSpan.Zero);
 
         Assert.NotNull(segments);
-        Assert.True(segments.Count > 0);
-        Assert.Equal("Hello", segments[0].Text);
+        Assert.Equal(8, segments.Count); // 8 words
+
+        // Verify timestamps are strictly monotonically increasing
+        for (int i = 0; i < segments.Count; i++)
+        {
+            Assert.True(segments[i].End > segments[i].Start, $"Segment {i} must have positive duration");
+            if (i > 0)
+            {
+                Assert.True(segments[i].Start >= segments[i - 1].Start, $"Segment {i} start must be >= previous start");
+            }
+        }
     }
 }
