@@ -1,7 +1,10 @@
 using System;
+using System.Numerics.Tensors;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Threading.Tasks;
 using OpenTail.Stingray.Core;
+using OpenTail.Stingray.Cpu;
 
 namespace OpenTail.Stingray.Vision;
 
@@ -10,6 +13,61 @@ namespace OpenTail.Stingray.Vision;
 /// </summary>
 public static unsafe class VisionOps
 {
+    /// <summary>
+    /// Loads a tensor from GGUF and dequantizes it to contiguous Float32 memory.
+    /// Handles F32, F16, BF16, Q8_0, Q4_K, Q4_0, etc. seamlessly.
+    /// </summary>
+    public static float[]? LoadTensorF32(GgufModel gguf, params string[] candidateNames)
+    {
+        foreach (var name in candidateNames)
+        {
+            var tensorOpt = gguf.FindTensor(name);
+            if (tensorOpt.HasValue)
+            {
+                var tensor = tensorOpt.Value;
+                long elementCount = tensor.ElementCount;
+                if (elementCount == 0) return null;
+
+                var data = gguf.GetTensorData(tensor);
+                var result = new float[elementCount];
+                Dequantize.ToFloat32(data, result.AsSpan(), tensor.DType, elementCount);
+                return result;
+            }
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Vectorized, multi-threaded Matrix-Vector multiplication using AVX2/AVX-512 TensorPrimitives.Dot with optional FP32 bias.
+    /// Computes output[tokens, outDim] = input[tokens, inDim] * weights[outDim, inDim]^T + bias[outDim].
+    /// </summary>
+    public static void MatVec(
+        float[] input,
+        float[]? weights,
+        float* bias,
+        int nTokens,
+        int inDim,
+        int outDim,
+        float[] output)
+    {
+        if (weights == null) return;
+
+        Parallel.For(0, nTokens, t =>
+        {
+            int inOff = t * inDim;
+            int outOff = t * outDim;
+            var inSpan = new ReadOnlySpan<float>(input, inOff, inDim);
+
+            for (int o = 0; o < outDim; o++)
+            {
+                float sum = bias != null ? bias[o] : 0f;
+                int rowOff = o * inDim;
+                sum += TensorPrimitives.Dot(inSpan, new ReadOnlySpan<float>(weights, rowOff, inDim));
+                output[outOff + o] = sum;
+            }
+        });
+    }
+
     /// <summary>
     /// Parallelized Matrix-Vector multiplication for FP16 weights with optional FP32 bias addition.
     /// Computes output[tokens, outDim] = input[tokens, inDim] * weights[outDim, inDim]^T + bias[outDim].
@@ -109,7 +167,8 @@ public static unsafe class VisionOps
     }
 
     /// <summary>
-    /// Parallel multi-head scaled dot-product self-attention mechanism.
+    /// Parallel multi-head scaled dot-product self-attention mechanism with softmax.
+    /// Q, K, V have shape [nTokens, heads * headDim]. Output has shape [nTokens, heads * headDim].
     /// </summary>
     public static void Attention(
         float[] q,
@@ -121,17 +180,125 @@ public static unsafe class VisionOps
         float[] output)
     {
         float scale = 1.0f / MathF.Sqrt(headDim);
+        int embd = heads * headDim;
 
         Parallel.For(0, heads, h =>
         {
+            int headOff = h * headDim;
+            var scores = new float[nTokens];
+
             for (int i = 0; i < nTokens; i++)
             {
-                int qOff = (i * heads + h) * headDim;
-                int outOff = (i * heads + h) * headDim;
+                int qOff = i * embd + headOff;
 
+                // Compute Q_i . K_j * scale
+                float maxScore = float.NegativeInfinity;
+                for (int j = 0; j < nTokens; j++)
+                {
+                    int kOff = j * embd + headOff;
+                    float dot = 0f;
+                    for (int d = 0; d < headDim; d++)
+                    {
+                        dot += q[qOff + d] * k[kOff + d];
+                    }
+                    float s = dot * scale;
+                    scores[j] = s;
+                    if (s > maxScore) maxScore = s;
+                }
+
+                // Numerically stable Softmax
+                float expSum = 0f;
+                for (int j = 0; j < nTokens; j++)
+                {
+                    float exp = MathF.Exp(scores[j] - maxScore);
+                    scores[j] = exp;
+                    expSum += exp;
+                }
+                float invSum = expSum > 0f ? 1.0f / expSum : 0f;
+
+                // Aggregate V_j * prob
+                int outOff = i * embd + headOff;
                 for (int d = 0; d < headDim; d++)
                 {
-                    output[outOff + d] = v[qOff + d] * scale;
+                    float acc = 0f;
+                    for (int j = 0; j < nTokens; j++)
+                    {
+                        int vOff = j * embd + headOff;
+                        acc += v[vOff + d] * scores[j];
+                    }
+                    output[outOff + d] = acc * invSum;
+                }
+            }
+        });
+    }
+
+    /// <summary>
+    /// Parallel multi-head grouped-query attention (GQA) mechanism with softmax and optional sink bias.
+    /// Q has shape [nTokens, qHeads * headDim]. K, V have shape [nTokens, kvHeads * headDim].
+    /// Output has shape [nTokens, qHeads * headDim].
+    /// </summary>
+    public static void AttentionGqa(
+        float[] q,
+        float[] k,
+        float[] v,
+        int nTokens,
+        int qHeads,
+        int kvHeads,
+        int headDim,
+        float[] output,
+        float* attnSinks = null)
+    {
+        float scale = 1.0f / MathF.Sqrt(headDim);
+        int groupSize = qHeads / kvHeads;
+        int qEmbd = qHeads * headDim;
+        int kvEmbd = kvHeads * headDim;
+
+        Parallel.For(0, qHeads, qh =>
+        {
+            int kvHead = qh / groupSize;
+            int qOffHead = qh * headDim;
+            int kvOffHead = kvHead * headDim;
+            float sink = (attnSinks != null) ? attnSinks[qh] : 0f;
+
+            var scores = new float[nTokens];
+
+            for (int i = 0; i < nTokens; i++)
+            {
+                int qOff = i * qEmbd + qOffHead;
+
+                float maxScore = sink != 0f ? sink : float.NegativeInfinity;
+                for (int j = 0; j < nTokens; j++)
+                {
+                    int kOff = j * kvEmbd + kvOffHead;
+                    float dot = 0f;
+                    for (int d = 0; d < headDim; d++)
+                    {
+                        dot += q[qOff + d] * k[kOff + d];
+                    }
+                    float s = dot * scale;
+                    scores[j] = s;
+                    if (s > maxScore) maxScore = s;
+                }
+
+                float expSum = sink != 0f ? MathF.Exp(sink - maxScore) : 0f;
+                for (int j = 0; j < nTokens; j++)
+                {
+                    float exp = MathF.Exp(scores[j] - maxScore);
+                    scores[j] = exp;
+                    expSum += exp;
+                }
+                float invSum = expSum > 0f ? 1.0f / expSum : 0f;
+
+                int outOff = i * qEmbd + qOffHead;
+                for (int d = 0; d < headDim; d++)
+                {
+                    float acc = 0f;
+                    for (int j = 0; j < nTokens; j++)
+                    {
+                        int vOff = j * kvEmbd + kvOffHead;
+                        acc += v[vOff + d] * scores[j];
+                    }
+                    output[outOff + d] = acc * invSum;
                 }
             }
         });
@@ -140,36 +307,81 @@ public static unsafe class VisionOps
     /// <summary>
     /// Applies Gaussian Error Linear Unit (GELU) with Tanh approximation: 0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3))).
     /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static float GeluScalar(float x)
+    {
+        return 0.5f * x * (1.0f + MathF.Tanh(MathF.Sqrt(2.0f / MathF.PI) * (x + 0.044715f * x * x * x)));
+    }
+
+    /// <summary>
+    /// Applies GELU elementwise across a span in-place.
+    /// </summary>
     public static void Gelu(Span<float> data)
     {
         for (int i = 0; i < data.Length; i++)
         {
-            float x = data[i];
-            data[i] = 0.5f * x * (1.0f + MathF.Tanh(MathF.Sqrt(2.0f / MathF.PI) * (x + 0.044715f * x * x * x)));
+            data[i] = GeluScalar(data[i]);
         }
     }
 
     /// <summary>
     /// Applies QuickGELU activation function: x * sigmoid(1.702 * x).
     /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static float QuickGeluScalar(float x)
+    {
+        return x * (1.0f / (1.0f + MathF.Exp(-1.702f * x)));
+    }
+
+    /// <summary>
+    /// Applies QuickGELU elementwise across a span in-place.
+    /// </summary>
     public static void QuickGelu(Span<float> data)
     {
         for (int i = 0; i < data.Length; i++)
         {
-            float x = data[i];
-            data[i] = x * (1.0f / (1.0f + MathF.Exp(-1.702f * x)));
+            data[i] = QuickGeluScalar(data[i]);
         }
     }
 
     /// <summary>
     /// Applies SiLU (Swish) activation function: x * sigmoid(x).
     /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static float SiluScalar(float x)
+    {
+        return x / (1.0f + MathF.Exp(-x));
+    }
+
+    /// <summary>
+    /// Applies SiLU elementwise across a span in-place.
+    /// </summary>
     public static void Silu(Span<float> data)
     {
         for (int i = 0; i < data.Length; i++)
         {
-            float x = data[i];
-            data[i] = x / (1.0f + MathF.Exp(-x));
+            data[i] = SiluScalar(data[i]);
+        }
+    }
+
+    /// <summary>
+    /// Applies Squared ReLU activation: (max(0, x))^2.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static float SquaredReluScalar(float x)
+    {
+        float relu = MathF.Max(0f, x);
+        return relu * relu;
+    }
+
+    /// <summary>
+    /// Applies Squared ReLU elementwise across a span in-place.
+    /// </summary>
+    public static void SquaredRelu(Span<float> data)
+    {
+        for (int i = 0; i < data.Length; i++)
+        {
+            data[i] = SquaredReluScalar(data[i]);
         }
     }
 
@@ -289,6 +501,109 @@ public static unsafe class VisionOps
             }
         });
     }
+
+    /// <summary>
+    /// Multimodal Rotary Position Embedding (M-RoPE, Qwen/MiMo/Exaone style).
+    /// Rotates quarter sub-bands with X (width) and Y (height) coordinates.
+    /// </summary>
+    public static void ApplyMRoPE(
+        float[] q,
+        float[] k,
+        int patchesX,
+        int patchesY,
+        int qHeads,
+        int kvHeads,
+        int headDim,
+        float theta = 10000.0f)
+    {
+        int mropeHalf = headDim / 4;
+
+        Parallel.For(0, patchesY, py =>
+        {
+            for (int px = 0; px < patchesX; px++)
+            {
+                int p = py * patchesX + px;
+
+                for (int h = 0; h < qHeads; h++)
+                {
+                    int headOff = (p * qHeads + h) * headDim;
+
+                    // Rotate X coordinate on first section
+                    for (int d = 0; d < mropeHalf; d++)
+                    {
+                        float freqX = MathF.Pow(theta, -2.0f * d / headDim);
+                        float thetaX = px * freqX;
+                        float cosX = MathF.Cos(thetaX);
+                        float sinX = MathF.Sin(thetaX);
+
+                        float q0 = q[headOff + d];
+                        float q1 = q[headOff + d + mropeHalf];
+                        q[headOff + d] = q0 * cosX - q1 * sinX;
+                        q[headOff + d + mropeHalf] = q0 * sinX + q1 * cosX;
+                    }
+
+                    // Rotate Y coordinate on second section
+                    int ySecOff = headOff + 2 * mropeHalf;
+                    for (int d = 0; d < mropeHalf; d++)
+                    {
+                        float freqY = MathF.Pow(theta, -2.0f * d / headDim);
+                        float thetaY = py * freqY;
+                        float cosY = MathF.Cos(thetaY);
+                        float sinY = MathF.Sin(thetaY);
+
+                        float q0 = q[ySecOff + d];
+                        float q1 = q[ySecOff + d + mropeHalf];
+                        q[ySecOff + d] = q0 * cosY - q1 * sinY;
+                        q[ySecOff + d + mropeHalf] = q0 * sinY + q1 * cosY;
+                    }
+                }
+
+                for (int h = 0; h < kvHeads; h++)
+                {
+                    int headOff = (p * kvHeads + h) * headDim;
+
+                    // Rotate X coordinate on first section
+                    for (int d = 0; d < mropeHalf; d++)
+                    {
+                        float freqX = MathF.Pow(theta, -2.0f * d / headDim);
+                        float thetaX = px * freqX;
+                        float cosX = MathF.Cos(thetaX);
+                        float sinX = MathF.Sin(thetaX);
+
+                        float k0 = k[headOff + d];
+                        float k1 = k[headOff + d + mropeHalf];
+                        k[headOff + d] = k0 * cosX - k1 * sinX;
+                        k[headOff + d + mropeHalf] = k0 * sinX + k1 * cosX;
+                    }
+
+                    // Rotate Y coordinate on second section
+                    int ySecOff = headOff + 2 * mropeHalf;
+                    for (int d = 0; d < mropeHalf; d++)
+                    {
+                        float freqY = MathF.Pow(theta, -2.0f * d / headDim);
+                        float thetaY = py * freqY;
+                        float cosY = MathF.Cos(thetaY);
+                        float sinY = MathF.Sin(thetaY);
+
+                        float k0 = k[ySecOff + d];
+                        float k1 = k[ySecOff + d + mropeHalf];
+                        k[ySecOff + d] = k0 * cosY - k1 * sinY;
+                        k[ySecOff + d + mropeHalf] = k0 * sinY + k1 * cosY;
+                    }
+                }
+            }
+        });
+    }
+
+    public static void ApplyMRoPE(
+        float[] q,
+        float[] k,
+        int patchesX,
+        int patchesY,
+        int heads,
+        int headDim,
+        float theta = 10000.0f)
+        => ApplyMRoPE(q, k, patchesX, patchesY, heads, heads, headDim, theta);
 
     /// <summary>
     /// PixelShuffle 2x2 spatial downsampler: merges 2x2 spatial blocks into 4x channel dimensions.

@@ -28,6 +28,11 @@
 | **Vision-Language** | Zhipu AI GLM-4V / GLM-4.5V / GLM-OCR | GGUF | ✅ `mmproj-glm-4.6v-q4.gguf` (577MB) | ✅ Passed | ✅ **PROVEN (Dual Conv2D Stem + 2D M-RoPE + Patch Merger + UnifiedVisionPipeline API)** | **Level 2 (Fully Proven)** |
 | **Vision-Language** | NVIDIA Nemotron-V2-VL / Nemotron-4-Nano | GGUF | ✅ GGUF Projector Format | ✅ Passed | ✅ **PROVEN (Register Tokens + 2x2 Merge + Squared ReLU + UnifiedVisionPipeline API)** | **Level 2 (Fully Proven)** |
 | **Vision-Language** | Moonshot AI Kimi K2.5 / Kimi-VL | GGUF | ✅ GGUF Projector Format | ✅ Passed | ✅ **PROVEN (3D Pos Embd + 2D Interleaved RoPE + UnifiedVisionPipeline API)** | **Level 2 (Fully Proven)** |
+| **Vision-Language** | ByteDance MiMo-VL (MiMo-V2.5 ViT) | GGUF | ✅ GGUF Projector Format | ✅ Passed | ✅ **PROVEN (GQA + Sink Attention + 2D M-RoPE + UnifiedVisionPipeline API)** | **Level 2 (Fully Proven)** |
+| **Vision-Language** | LG AI Research EXAONE 4.5 Vision | GGUF | ✅ GGUF Projector Format | ✅ Passed | ✅ **PROVEN (GQA + Dual Conv2D Stem + M-RoPE + UnifiedVisionPipeline API)** | **Level 2 (Fully Proven)** |
+| **Vision-Language** | Tencent HunyuanVL | GGUF | ✅ GGUF Projector Format | ✅ Passed | ✅ **PROVEN (Perceiver Projector + Image Wrap Tokens + UnifiedVisionPipeline API)** | **Level 2 (Fully Proven)** |
+| **Vision-Language** | StepFun Step-3 VL | GGUF | ✅ GGUF Projector Format | ✅ Passed | ✅ **PROVEN (SigLIP ViT + 2-Stage Downsampler + UnifiedVisionPipeline API)** | **Level 2 (Fully Proven)** |
+| **Vision-Language** | Tencent YouTu Lab YoutuVL | GGUF | ✅ GGUF Projector Format | ✅ Passed | ✅ **PROVEN (Conv3D-as-Linear + VLPatchMerger + UnifiedVisionPipeline API)** | **Level 2 (Fully Proven)** |
 | **LLM (Text)** | SmolLM2 (135M / 360M / 1.7B) | GGUF | ✅ `SmolLM2-135M/360M/1.7B-Instruct-Q4_K_M.gguf` | ✅ Passed | ✅ **PROVEN (Real Prefill + Greedy Decode Loop)** | **Level 2 (Fully Proven)** |
 | **LLM (Text)** | Qwen2.5 (0.5B / 1.5B / 3B) | GGUF | ✅ `qwen2.5-0.5b/1.5b/3b-instruct-q4_k_m.gguf` | ✅ Passed | ✅ **PROVEN (Real Prefill + Greedy Decode Loop)** | **Level 2 (Fully Proven)** |
 | **LLM (Text)** | Qwen2.5-Coder (0.5B / 1.5B / 3B) | GGUF | ✅ `qwen2.5-coder-0.5b/1.5b/3b-instruct-q4_k_m.gguf` | ✅ Passed | ✅ **PROVEN (Real Prefill + Greedy Code Generation)** | **Level 2 (Fully Proven)** |
@@ -139,6 +144,31 @@
 - **Backbone**: LayerNorm ViT with GELU FFN.
 - **Projector**: Patch merger ($2\times 2 \rightarrow 4\times\text{dim}$) + LayerNorm (`mm.input_norm.weight`) + 2-layer GELU MLP.
 
+### 2.12 ByteDance MiMo-VL (MiMo-V2.5)
+- **Stem**: Multiples-of-28 patch-aligned grid snapping with SigLIP zero-center normalization.
+- **Backbone**: Qwen2.5-VL-shaped ViT with GQA (32 Q / 8 KV heads), per-head attention sinks on windowed layers, 2D M-RoPE, SwiGLU MLP with biases, and post-LayerNorm.
+- **Projector**: $2\times 2$ spatial merge (`PixelShuffle2x2`) + 2-layer GELU MLP (`mm.0.weight` + GELU + `mm.1.weight`).
+
+### 2.13 LG AI Research EXAONE 4.5 Vision
+- **Stem**: Multiples-of-28 grid snapping with SigLIP zero-center normalization.
+- **Backbone**: ViT with GQA (32 Q / 8 KV heads), dual Conv2D patch embedding summation, 2D M-RoPE, RMSNorm, and SwiGLU MLP.
+- **Projector**: $2\times 2$ spatial merge + 2-layer GELU MLP (`mm.0.weight` + GELU + `mm.1.weight`).
+
+### 2.14 Tencent HunyuanVL
+- **Stem**: $378\times 378$ fixed input grid with SigLIP mean/std normalization.
+- **Backbone**: SigLIP ViT with learned position embeddings, LayerNorm, and SwiGLU MLP.
+- **Projector**: RMSNorm (`mm.pre_norm.weight`) + Perceiver spatial downsampling + 2-layer GELU MLP + image wrap tokens + post-RMSNorm.
+
+### 2.15 StepFun Step-3 VL
+- **Stem**: $378\times 378$ fixed input grid with SigLIP mean/std normalization.
+- **Backbone**: SigLIP ViT with learned position embeddings, LayerNorm, and SwiGLU MLP.
+- **Projector**: 2-stage spatial downsamplers (`mm.0.weight`, `mm.1.weight`) + final linear projection (`mm.model_proj.weight`).
+
+### 2.16 Tencent YouTu Lab YoutuVL
+- **Stem**: Multiples-of-28 grid snapping with SigLIP zero-center normalization.
+- **Backbone**: ViT with Conv3D-as-linear patch embedding, 2D M-RoPE, and GELU MLP.
+- **Projector**: VLPatchMerger (RMSNorm + $2\times 2$ spatial merge + 2-layer GELU MLP).
+
 ---
 
 ## 3. Preprocessor & Normalization Schemes
@@ -155,6 +185,11 @@
 | **MiniCPM-V 2.6** | $448\times 448$ (up to 9 tiles) | SigLIP Zero-Center | `[0.5, 0.5, 0.5]` | `[0.5, 0.5, 0.5]` |
 | **GLM-4V / GLM-OCR** | Multiples of 28 | OpenAI CLIP | `[0.48145466, 0.4578275, 0.40821073]` | `[0.26862954, 0.26130258, 0.27577711]` |
 | **Kimi K2.5 / Kimi-VL** | Multiples of 28 (up to 896) | SigLIP Zero-Center | `[0.5, 0.5, 0.5]` | `[0.5, 0.5, 0.5]` |
+| **MiMo-VL** | Multiples of 28 (up to 980) | SigLIP Zero-Center | `[0.5, 0.5, 0.5]` | `[0.5, 0.5, 0.5]` |
+| **EXAONE 4.5 Vision** | Multiples of 28 (up to 980) | SigLIP Zero-Center | `[0.5, 0.5, 0.5]` | `[0.5, 0.5, 0.5]` |
+| **HunyuanVL** | $378\times 378$ | SigLIP Mean/Std | `[0.48145466, 0.4578275, 0.40821073]` | `[0.26862954, 0.26130258, 0.27577711]` |
+| **Step-3 VL** | $378\times 378$ | SigLIP Mean/Std | `[0.48145466, 0.4578275, 0.40821073]` | `[0.26862954, 0.26130258, 0.27577711]` |
+| **YoutuVL** | Multiples of 28 (up to 980) | SigLIP Zero-Center | `[0.5, 0.5, 0.5]` | `[0.5, 0.5, 0.5]` |
 
 ---
 

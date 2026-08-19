@@ -81,15 +81,21 @@ public sealed class TtsCommand : Command<TtsCommand.Settings>
         {
             pipeline = engine switch
             {
-                "kokoro" => KokoroPipeline.Load(s.ModelPath, s.VoicesDir),
-                "piper" => PiperPipeline.Load(s.ModelPath),
-                "f5" or "f5tts" or "f5-tts" => F5TtsPipeline.Load(
-                    modelPath: s.ModelPath,
-                    vocabPath: s.VocabPath,
-                    odeSteps: s.Nfe,
-                    cfgStrength: s.CfgStrength),
-                "chatterbox" or "chatterbox-turbo" => ChatterboxPipeline.Load(s.ModelPath),
-                "melo" or "melotts" => MeloPipeline.Load(s.ModelPath),
+                "kokoro" => s.ModelPath is not null
+                    ? new KokoroPipeline(KokoroModel.Load(s.ModelPath, s.VoicesDir))
+                    : new KokoroPipeline(),
+                "piper" => s.ModelPath is not null
+                    ? PiperPipeline.FromConfigFile(s.ModelPath)
+                    : throw new ArgumentException("--model (-m) is required for the piper engine (path to .onnx.json config)."),
+                "f5" or "f5tts" or "f5-tts" => s.ModelPath is not null
+                    ? F5TtsPipeline.Load(s.ModelPath)
+                    : throw new ArgumentException("--model (-m) is required for the f5tts engine (path to .safetensors model file)."),
+                "chatterbox" or "chatterbox-turbo" => s.ModelPath is not null
+                    ? ChatterboxPipeline.Load(s.ModelPath)
+                    : throw new ArgumentException("--model (-m) is required for the chatterbox engine (path to T3 .gguf model file)."),
+                "melo" or "melotts" => s.ModelPath is not null
+                    ? MeloPipeline.Load(s.ModelPath)
+                    : throw new ArgumentException("--model (-m) is required for the melo engine (path to model file)."),
                 _ => throw new ArgumentException($"Unknown TTS engine: '{s.Engine}'. Supported: kokoro, piper, f5tts, chatterbox, melo.")
             };
         }
