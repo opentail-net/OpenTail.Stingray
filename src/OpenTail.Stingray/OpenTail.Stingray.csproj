@@ -2,7 +2,7 @@
 
   <!--
     `OpenTail.Stingray` is the one library NuGet. It bundles every OpenTail.Stingray.*
-    assembly (Core, Cpu, Vulkan, Cuda, Engine, Pipeline, TurboQuant, Diffusion)
+    assembly (Core, Cpu, Vulkan, Cuda, Engine, Sessions, Vision, Audio, Pipeline, TurboQuant, Diffusion)
     so a single `dotnet add package OpenTail.Stingray` brings in the whole stack.
     The CLI ships separately as `OpenTail.Stingray.Cli` (dotnet tool); nothing else
     is published.
@@ -11,17 +11,10 @@
   <PropertyGroup>
     <PackageId>OpenTail.Stingray</PackageId>
     <IsPackable>true</IsPackable>
-    <Description>High-performance LLM inference engine and image generation pipeline in C# / .NET. Reads GGUF models and runs transformer inference on CPU (AVX2/AVX-512 SIMD), Vulkan, and CUDA. Includes Z-Image-Turbo text-to-image and Real-ESRGAN upscaling. NativeAOT-friendly.</Description>
+    <Description>High-performance LLM, multimodal vision, speech, and image generation inference engine in C# / .NET 10. Reads GGUF and SafeTensors models and runs transformer inference on CPU (AVX2/AVX-512 SIMD), Vulkan, and CUDA. Includes Multimodal Vision (Qwen2.5/3-VL, DeepSeek-OCR, Pixtral, LLaVA, InternVL, MiniCPM-V, GLM-4V, Nemotron, Dots-OCR, Kimi-VL, Gemma 4), Speech (Whisper, Parakeet, Qwen3-ASR/TTS, Kokoro, F5-TTS, CosyVoice), Diffusion (SD 1.5, SDXL, Z-Image-Turbo), and Real-ESRGAN upscaling. NativeAOT-friendly.</Description>
     <PackageReadmeFile>README.md</PackageReadmeFile>
-    <PackageTags>llm;gguf;inference;ai;gemma4;qwen3;vulkan;cuda;simd;nativeaot</PackageTags>
+    <PackageTags>llm;gguf;inference;ai;gemma4;qwen3;vision;tts;asr;vulkan;cuda;simd;nativeaot</PackageTags>
 
-    <!--
-      Custom target below routes referenced project outputs into the package.
-      BuildOutputInPackage is the canonical channel: .dll goes to the main .nupkg
-      and matching .pdb goes to the .snupkg automatically. This requires
-      IncludeBuildOutput=true (the default), so the meta-project's own (tiny,
-      ~5 KB) stub OpenTail.Stingray.dll also ships — that's standard for meta-packages.
-    -->
     <TargetsForTfmSpecificBuildOutput>$(TargetsForTfmSpecificBuildOutput);IncludeProjectReferenceOutputs</TargetsForTfmSpecificBuildOutput>
   </PropertyGroup>
 
@@ -41,6 +34,7 @@
     <ProjectReference Include="..\OpenTail.Stingray.Engine\OpenTail.Stingray.Engine.csproj" PrivateAssets="all" />
     <ProjectReference Include="..\OpenTail.Stingray.Sessions\OpenTail.Stingray.Sessions.csproj" PrivateAssets="all" />
     <ProjectReference Include="..\OpenTail.Stingray.Vision\OpenTail.Stingray.Vision.csproj" PrivateAssets="all" />
+    <ProjectReference Include="..\OpenTail.Stingray.Audio\OpenTail.Stingray.Audio.csproj" PrivateAssets="all" />
     <ProjectReference Include="..\OpenTail.Stingray.Pipeline\OpenTail.Stingray.Pipeline.csproj" PrivateAssets="all" />
     <ProjectReference Include="..\OpenTail.Stingray.TurboQuant\OpenTail.Stingray.TurboQuant.csproj" PrivateAssets="all" />
     <ProjectReference Include="..\OpenTail.Stingray.Diffusion\OpenTail.Stingray.Diffusion.csproj" PrivateAssets="all" />
@@ -56,13 +50,6 @@
     <ItemGroup>
       <BuildOutputInPackage Include="@(ReferenceCopyLocalPaths)"
                             Condition="'%(ReferenceCopyLocalPaths.ReferenceSourceTarget)' == 'ProjectReference' AND '%(Extension)' == '.dll'" />
-      <!--
-        Documentation XML must be derived from the .dll items, exactly as .pdb is below. Matching
-        '%(Extension)' == '.xml' directly does NOT work: doc files reach ReferenceCopyLocalPaths
-        without ReferenceSourceTarget metadata, so the ProjectReference clause excludes every one of
-        them and the package silently ships IntelliSense for the stub assembly alone. Verified by
-        packing: the old form produced 10 DLLs and 1 XML.
-      -->
       <BuildOutputInPackage Include="@(ReferenceCopyLocalPaths -> '%(RootDir)%(Directory)%(Filename).xml')"
                             Condition="'%(ReferenceCopyLocalPaths.ReferenceSourceTarget)' == 'ProjectReference' AND '%(Extension)' == '.dll' AND Exists('%(RootDir)%(Directory)%(Filename).xml')" />
       <BuildOutputInPackage Include="@(ReferenceCopyLocalPaths -> '%(RootDir)%(Directory)%(Filename).pdb')"

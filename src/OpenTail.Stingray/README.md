@@ -24,11 +24,22 @@ In Python and C++, running modern local AI requires juggling 4–5 fragmented, h
 ## Superpowers at a Glance
 
 * 💬 **Text LLMs & Sparse MoE:** Llama 3 / 3.1 / 3.2 / 3.3 / 4, Qwen 2.5 / Qwen 3.5 MoE, DeepSeek-V3 / R1, Gemma 3 / 4, SmolLM2. Full tool calling, JSON schema constrained decoding, and grammar masks.
-* 👁️ **Multimodal Vision:** Native Gemma 4 unified (`gemma4uv`) & ViT (`gemma4v`), Gemma 3 SigLIP (`gemma3`), Llama 4 ViT, and GLM-4V patch grids.
-* 🎙️ **Studio Audio Stack:**
-  * **Speech-to-Text (STT):** Whisper with $O(N)$ KV Cache, cross-attention projection, and Silero VAD.
-  * **5 Neural Voice Engines (TTS):** Kokoro, Piper (VITS), MeloTTS, Chatterbox, and F5-TTS Flow-Matching DiT with real-time clause streaming.
-  * **Broadcast DSP:** Rational windowed-sinc resampler, ATSC A/85 downmixing, and TPDF dithered 16-bit/24-bit WAV exporter.
+* 👁️ **Multimodal Vision (11+ Architectures):**
+  * **Alibaba:** Qwen2.5-VL, Qwen3-VL (3D Conv stem, M-RoPE, $2\times 2$ spatial merge).
+  * **DeepSeek:** DeepSeek-OCR & DeepSeek-OCR2 (Dual SAM + CLIP ViT fusion, $1024\times 1024$ grid).
+  * **Mistral AI:** Pixtral 12B (2D Continuous RoPE, SwiGLU, dynamic aspect ratios).
+  * **LLaVA Team:** LLaVA-1.5, LLaVA-NeXT, LLaVA-OneVision (CLIP/SigLIP ViT + GELU MLP).
+  * **OpenGVLab:** InternVL 2.5, InternVL 3, InternVL 4 (PixelShuffle $2\times 2$ downsampling).
+  * **OpenBMB:** MiniCPM-V 2.6 (Dynamic HD 9-slice grid + 2D sinusoidal cross-attention Resampler).
+  * **Zhipu AI:** GLM-4V, GLM-4.5V, GLM-OCR (Dual Conv2D stem, 2D M-RoPE, Conv2D patch merger).
+  * **NVIDIA:** Nemotron-V2-VL / Nemotron-4-Nano (Learned register tokens + $2\times 2$ merge + Squared ReLU MLP).
+  * **Baidu / Dots:** PaddleOCR-VL, Dots-OCR (2D M-RoPE + patch merger + GELU MLP).
+  * **Moonshot AI:** Kimi K2.5 / Kimi-VL (3D learned position embeddings + 2D interleaved RoPE).
+  * **Google & Meta:** Gemma 4 UV (`gemma4uv`), Gemma 4 ViT (`gemma4v`), Gemma 3 SigLIP (`gemma3`), and Llama 4 (`llama4`).
+* 🎙️ **Studio Audio & Voice Stack:**
+  * **Speech-to-Text (ASR):** Whisper (Large-v3 / Turbo), NVIDIA NeMo Parakeet FastConformer CTC, Alibaba Qwen3-ASR (0.6B/1.7B), Qwen3-ForcedAligner (word timestamps), FunASR Paraformer, SenseVoice, and Silero VAD.
+  * **Neural Voice & Voice Cloning (TTS):** Qwen3-TTS 12Hz (with ERes2NetV2 192-dim voice cloning speaker encoder), Kokoro-82M, Chatterbox-Turbo, F5-TTS Flow-Matching DiT, CosyVoice 2.0 / 300M, Piper VITS, and MeloTTS Multilingual VITS.
+  * **Broadcast DSP:** Rational windowed-sinc resamplers, ATSC A/85 downmixing, and TPDF dithered 16-bit/24-bit WAV exporter.
 * 🎨 **State-of-the-Art Diffusion & Video:**
   * **Image Architectures:** SD 1.5, SDXL, SD 3 / 3.5 (MMDiT), FLUX.1 (schnell/dev), FLUX.2 (Klein & Kontext multi-reference), FLUX 3 (3D/4D RoPE Multimodal), and Z-Image-Turbo.
   * **Acoustic Diffusion:** Stable Audio 3 (Variable-Length 44.1kHz Stereo DiT).
@@ -42,14 +53,27 @@ In Python and C++, running modern local AI requires juggling 4–5 fragmented, h
 ## Installation
 
 ```bash
-dotnet add package OpenTail.Stingray
+dotnet add package OpenTail.Stingray --version 1.0.6
 ```
 
 ---
 
 ## Quick Starts
 
-### 1. LLM Chat with Streaming
+### 1. Unified Multimodal Vision (Qwen-VL, DeepSeek-OCR, Pixtral, LLaVA, InternVL, MiniCPM, GLM-4V)
+
+```csharp
+using OpenTail.Stingray.Vision;
+
+// 1. Open any multimodal vision GGUF projector (auto-detects architecture)
+using var embedder = UnifiedVisionPipeline.Open("models/mmproj-deepseek-ocr-2-q8_0.gguf");
+
+// 2. Load and embed an image into visual token embeddings
+float[] visualTokens = embedder.EmbedImageFile("document.png", out int tokenCount);
+Console.WriteLine($"Generated {tokenCount} visual tokens with embedding dim {embedder.EmbeddingDim}");
+```
+
+### 2. LLM Chat with Streaming
 
 ```csharp
 using OpenTail.Stingray.Core;
@@ -57,100 +81,45 @@ using OpenTail.Stingray.Cpu;
 using OpenTail.Stingray.Engine;
 
 // 1. Open GGUF model and initialize hardware backend
-var model     = GgufModel.Open("models/Llama-3.2-3B-Instruct-Q4_K_M.gguf");
-var hp        = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
-var tokenizer = GgufTokenizer.FromGgufModel(model);
-var backend   = new CpuBackend();
-var forward   = new ForwardPass(model, backend, hp);
+var model = GgufModel.Open("models/Llama-3.2-3B-Instruct-Q4_K_M.gguf");
+var cpu   = new CpuBackend();
+using var engine = new InferenceEngine(model, cpu);
 
-using var engine = new InferenceEngine(forward, tokenizer, modelId: "llama3", owned: [backend, model]);
-
-var sampling = new SamplingParams
+// 2. Stream tokens in real time
+await foreach (var token in engine.StreamChatAsync("Explain quantisation in simple terms."))
 {
-    Temperature  = 0.7f,
-    TopP         = 0.9f,
-    MaxNewTokens = 512,
-    StopTokenIds = [.. tokenizer.EogTokenIds]
-};
-
-// 2. Stream generation in real-time
-await foreach (var chunk in engine.GenerateChunksAsync("Explain quantum computing in simple terms:", sampling))
-{
-    if (chunk.Kind == GenerateChunkKind.Text)
-        Console.Write(chunk.Text);
+    Console.Write(token);
 }
 ```
 
----
-
-### 2. Studio Voice Synthesis (Text-to-Speech)
+### 3. Native TTS Synthesis & Voice Cloning
 
 ```csharp
 using OpenTail.Stingray.Audio;
-using OpenTail.Stingray.Audio.Kokoro;
+using OpenTail.Stingray.Audio.QwenTTS;
 
-ITextToSpeechPipeline tts = new KokoroPipeline();
-await tts.LoadAsync("models/kokoro-v1.0.safetensors");
+// 1. Initialize Qwen3-TTS pipeline
+using var tts = new QwenTtsPipeline();
 
-// Synthesize high-fidelity 24kHz audio
-AudioBuffer audio = await tts.SynthesizeAsync("Welcome to OpenTail Stingray.", voice: "af_heart", speed: 1.0f);
-
-// Save with broadcast-quality TPDF dithering
-WavWriter.Write("output.wav", audio);
-```
-
----
-
-### 3. Image Generation with FLUX.2 or SDXL
-
-```csharp
-using OpenTail.Stingray.Diffusion;
-using OpenTail.Stingray.Diffusion.Flux2;
-
-var pipeline = new Flux2Pipeline();
-await pipeline.LoadAsync("models/flux-2-klein-4step.safetensors");
-
-var prompt = new DiffusionPrompt
+// 2. Generate 24kHz speech with reference audio voice cloning
+var result = tts.Generate(new AudioGenerationRequest
 {
-    Positive = "A cinematic shot of an astronaut riding a horse on Mars, 8k, photorealistic",
-    Width = 1024,
-    Height = 1024,
-    Steps = 4,
-    GuidanceScale = 3.5f
-};
+    Text = "OpenTail Stingray is the unified, high-performance native .NET 10 multimodal AI engine.",
+    ReferenceAudioPath = "samples/speaker_reference.wav",
+    OutputPath = "output.wav"
+});
 
-var rgb = await pipeline.GenerateAsync(prompt);
-PngWriter.Write("astronaut.png", rgb, prompt.Width, prompt.Height);
+Console.WriteLine($"Synthesized {result.Duration.TotalSeconds:F2}s of audio to output.wav");
 ```
 
 ---
 
-## What's in the Package
+## Verification & Provenance
 
-One `dotnet add package OpenTail.Stingray` brings the complete, unified engine:
-
-| Assembly | Modality & Functionality |
-|---|---|
-| `OpenTail.Stingray.Core` | GGUF/Safetensors parser, BPE/SentencePiece tokenizers, chat templates, grammar masks, `HardwareCapabilities` zero-latency profiler, and `SmartOffloadPlanner`. |
-| `OpenTail.Stingray.Engine` | Autoregressive forward pass, paged KV cache, speculative decoding, continuous batching, and sampling. |
-| `OpenTail.Stingray.Cpu` | CPU SIMD kernels (AVX-512/AVX2/NEON), fast dequantization (`Q4_K`, `Q8_0`), and multithreaded GEMM. |
-| `OpenTail.Stingray.Vulkan` | High-performance Vulkan compute backend with precompiled SPIR-V shaders. |
-| `OpenTail.Stingray.Cuda` | CUDA backend with cuBLAS GEMM and runtime NVRTC shader compilation. |
-| `OpenTail.Stingray.Vision` | Unified vision projection for Gemma 4 (`gemma4uv`/`gemma4v`), Gemma 3 SigLIP, Llama 4, and GLM-4V. |
-| `OpenTail.Stingray.Audio` | Studio Audio: Whisper STT ($O(N)$ KV Cache + Silero VAD), 5 Neural TTS engines (Kokoro, Piper, Melo, Chatterbox, F5-TTS), rational sinc resampler, ATSC A/85 downmixing, and TPDF dithered WAV export. |
-| `OpenTail.Stingray.Diffusion` | Diffusion & Video: SD 1.5, SDXL, SD 3/3.5, FLUX.1, FLUX.2, FLUX 3 Multimodal, Stable Audio 3, Z-Image-Turbo, Wan 2.1/2.2, HunyuanVideo, LTX-Video, LCM 1–4 step distillation, StreamDiffusion pipelining, and GIF/PNG sequence exporters. |
-| `OpenTail.Stingray.Pipeline` | Three-tier VRAM → RAM → NVMe weight streaming for MoE expert offload. |
-| `OpenTail.Stingray.TurboQuant` | KV-cache compression (KVarN 4/2-bit, Lloyd-Max 3/4-bit). |
-
----
-
-## Related Packages
-
-* **[`OpenTail.Stingray.Server`](https://www.nuget.org/packages/OpenTail.Stingray.Server):** Drop-in ASP.NET Core endpoints exposing full OpenAI Chat, Audio (`/v1/audio/*`), and Image Generation (`/v1/images/*`) API parity.
-* **[`OpenTail.Stingray.Cli`](https://www.nuget.org/packages/OpenTail.Stingray.Cli):** Standalone command-line tool (`stingray run`, `stingray image`, `stingray tts`, `stingray serve`).
+Stingray rigorously validates models against real weight binary checkpoints on disk. See [`docs/048-model-provenance-and-real-weights-verification-plan.md`](docs/048-model-provenance-and-real-weights-verification-plan.md) for the complete provenance matrix and benchmark test runs.
 
 ---
 
 ## License
 
-OpenTail.Stingray is licensed under the [MIT License](https://opensource.org/licenses/MIT).
+MIT License — Copyright (c) 2026 OpenTail.

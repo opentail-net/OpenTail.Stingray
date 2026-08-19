@@ -54,46 +54,15 @@
   <!--
     Plain versions only. This is the single source of truth: bump the number here, then tag the
     release commit `stingray-v<Version>` to match.
-
-    Previously MinVer derived the version from git tags, which meant every commit that was not
-    exactly on a tag produced a pre-release version (`1.0.3-alpha.0.<commit-height>`) and the
-    release workflow published those previews on every push. No pre-release versions are wanted,
-    so the derivation is gone and the number is stated outright.
-
-    Because the version no longer changes on its own, publication is tag-triggered ONLY (see
-    .github/workflows/release.yml) — otherwise every push to main would re-push the same version
-    and the push step's skip-duplicate flag would silently discard everything after the first.
   -->
   <PropertyGroup>
-    <Version>1.0.5</Version>
+    <Version>1.0.6</Version>
   </PropertyGroup>
 
   <!-- SourceLink: lets nupkg consumers step into source from GitHub during debugging. -->
   <PropertyGroup>
     <EmbedUntrackedSources>true</EmbedUntrackedSources>
-    <!--
-      SourceLink derives its per-file URLs from the LOCAL Git remote, not from RepositoryUrl or
-      PrivateRepositoryUrl (both were tried and verified ineffective). Releases must therefore be
-      built from a clone whose `origin` is the PUBLIC repository — as this one is — or every
-      published PDB points at a URL consumers cannot read.
-
-      Verify after packing, do not assume: grep the .snupkg PDBs for any non-public repo name.
-    -->
     <DebugType>portable</DebugType>
-    <!--
-      Deterministic, repeatable builds — path-normalized so package validation reports
-      "Deterministic (dll/exe)" and consumers can verify the binary against the source.
-
-      Keyed on Configuration, NOT on the ambient CI variable. That earlier form ("CI=true", which
-      GitHub Actions sets) was correct in principle and useless in practice: the release workflow
-      could not fire after the repository migration, so releases were hand-packed on a developer
-      machine with CI unset, and every assembly in the shipped 1.0.2 packages was flagged
-      non-deterministic. Tying it to Release makes any pack deterministic wherever it runs, which
-      is the property that actually matters.
-
-      Debug builds deliberately keep verbatim local source paths so step-into works on uncommitted
-      code; determinism is only needed for what ships.
-    -->
     <ContinuousIntegrationBuild Condition="'$(Configuration)' == 'Release'">true</ContinuousIntegrationBuild>
   </PropertyGroup>
 

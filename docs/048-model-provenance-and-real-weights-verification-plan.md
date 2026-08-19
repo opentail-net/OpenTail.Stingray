@@ -19,6 +19,7 @@
 | Domain | Architecture / Model Family | Format | Real Weights File on Disk | Level 1: Container Validated | Level 2: End-to-End Wired & Inferenced | Current Status |
 | :--- | :--- | :---: | :---: | :---: | :---: | :--- |
 | **Vision-Language** | Alibaba Qwen2.5-VL / Qwen3-VL (3B / 7B ViT) | GGUF | ✅ `mmproj-qwen2.5-vl-7b-f16.gguf` (1.29GB) | ✅ Passed | ✅ **PROVEN (Real M-RoPE ViT + Spatial 2x2 Merge + UnifiedVisionPipeline API)** | **Level 2 (Fully Proven)** |
+| **Vision-Language** | Dots-OCR / PaddleOCR-VL | GGUF | ✅ `PaddleOCR-VL-1.6-GGUF-mmproj.gguf` (881MB) | ✅ Passed | ✅ **PROVEN (2D M-RoPE + Patch Merger + GELU MLP + UnifiedVisionPipeline API)** | **Level 2 (Fully Proven)** |
 | **Vision-Language** | DeepSeek-OCR / DeepSeek-OCR2 (SAM + CLIP) | GGUF | ✅ `mmproj-deepseek-ocr-2-q8_0.gguf` (512MB) | ✅ Passed | ✅ **PROVEN (SAM Window Part + CLIP ViT + FC Projector + UnifiedVisionPipeline API)** | **Level 2 (Fully Proven)** |
 | **Vision-Language** | Mistral Pixtral 12B (2D RoPE ViT) | GGUF | ✅ `mmproj-pixtral-12b-f16.gguf` (870MB) | ✅ Passed | ✅ **PROVEN (2D Continuous RoPE + SwiGLU + UnifiedVisionPipeline API)** | **Level 2 (Fully Proven)** |
 | **Vision-Language** | LLaVA-1.5 / NeXT / LLaVA-OneVision | GGUF | ✅ `mmproj-llava-v1.5-7b-f16.gguf` (624MB) | ✅ Passed | ✅ **PROVEN (CLIP/SigLIP ViT + GELU MLP + UnifiedVisionPipeline API)** | **Level 2 (Fully Proven)** |
@@ -26,7 +27,6 @@
 | **Vision-Language** | MiniCPM-V 2.6 (HD Resampler + ViT) | GGUF | ✅ `mmproj-minicpm-v-2_6-f16.gguf` (1.04GB) | ✅ Passed | ✅ **PROVEN (HD Slicing + 2D Sinusoidal Resampler + UnifiedVisionPipeline API)** | **Level 2 (Fully Proven)** |
 | **Vision-Language** | Zhipu AI GLM-4V / GLM-4.5V / GLM-OCR | GGUF | ✅ `mmproj-glm-4.6v-q4.gguf` (577MB) | ✅ Passed | ✅ **PROVEN (Dual Conv2D Stem + 2D M-RoPE + Patch Merger + UnifiedVisionPipeline API)** | **Level 2 (Fully Proven)** |
 | **Vision-Language** | NVIDIA Nemotron-V2-VL / Nemotron-4-Nano | GGUF | ✅ GGUF Projector Format | ✅ Passed | ✅ **PROVEN (Register Tokens + 2x2 Merge + Squared ReLU + UnifiedVisionPipeline API)** | **Level 2 (Fully Proven)** |
-| **Vision-Language** | Dots-OCR / PaddleOCR-VL | GGUF | ✅ GGUF Projector Format | ✅ Passed | ✅ **PROVEN (2D M-RoPE + Patch Merger + GELU MLP + UnifiedVisionPipeline API)** | **Level 2 (Fully Proven)** |
 | **Vision-Language** | Moonshot AI Kimi K2.5 / Kimi-VL | GGUF | ✅ GGUF Projector Format | ✅ Passed | ✅ **PROVEN (3D Pos Embd + 2D Interleaved RoPE + UnifiedVisionPipeline API)** | **Level 2 (Fully Proven)** |
 | **LLM (Text)** | SmolLM2 (135M / 360M / 1.7B) | GGUF | ✅ `SmolLM2-135M/360M/1.7B-Instruct-Q4_K_M.gguf` | ✅ Passed | ✅ **PROVEN (Real Prefill + Greedy Decode Loop)** | **Level 2 (Fully Proven)** |
 | **LLM (Text)** | Qwen2.5 (0.5B / 1.5B / 3B) | GGUF | ✅ `qwen2.5-0.5b/1.5b/3b-instruct-q4_k_m.gguf` | ✅ Passed | ✅ **PROVEN (Real Prefill + Greedy Decode Loop)** | **Level 2 (Fully Proven)** |
@@ -64,17 +64,18 @@
 
 ## 2. Multimodal Vision & Audio Architectural Breakdown
 
-### 2.1 NVIDIA Nemotron-V2-VL / Nemotron-4-Nano
+### 2.1 Dots-OCR / PaddleOCR-VL
+- **Stem**: Grid-snapped document input with multiples-of-14 alignment and CLIP normalization.
+- **Position Scheme**: 2D M-RoPE rotary position embeddings with 4 frequency sub-bands per head.
+- **ViT Layers**: RMSNorm ViT backbone with parallel multi-head self-attention.
+- **Projector**: LayerNorm (`mm.input_norm.weight`) + $2\times 2$ patch merger + 2-layer GELU MLP (`mm.1.weight` + GELU + `mm.2.weight`).
+- **Real File Verified**: `PaddleOCR-VL-1.6-GGUF-mmproj.gguf` (881 MB).
+
+### 2.2 NVIDIA Nemotron-V2-VL / Nemotron-4-Nano
 - **Stem**: $512 \times 512$ fixed input resolution with OpenAI CLIP normalization.
 - **Position & Registers**: Adds 4 learned register tokens (`v.class_embedding`) prepended to the visual patch tokens + learned position embeddings.
 - **Spatial Reduction**: Strips register tokens, then applies $2\times 2$ patch merge permute ($4 \times \text{dim}$).
 - **Projector**: RMSNorm (`mm.0.weight`) + 2-layer Squared ReLU MLP (`mm.1.weight` + $(\max(0, x))^2$ + `mm.3.weight`).
-
-### 2.2 Dots-OCR / PaddleOCR-VL
-- **Stem**: Grid-snapped document input with multiples-of-14 alignment and CLIP normalization.
-- **Position Scheme**: 2D M-RoPE rotary position embeddings with 4 frequency sub-bands per head.
-- **ViT Layers**: RMSNorm ViT backbone with parallel multi-head self-attention.
-- **Projector**: LayerNorm (`mm.input_norm.weight`) + $2\times 2$ patch merger + 2-layer GELU MLP (`mm.0.weight` + GELU + `mm.2.weight`).
 
 ### 2.3 Alibaba Qwen3-TTS & Speaker Encoder (ERes2NetV2)
 - **Frontend**: 1D Conv TDNN ($K=5$, reflect padding) projecting 128 Mel channels to 512 channels.
@@ -177,5 +178,5 @@ dotnet test tests/OpenTail.Stingray.Tests.Audio/OpenTail.Stingray.Tests.Audio.cs
 8. `DeepSeekOcrVisionTests`: Passed (1/1)
 9. `NemotronVisionTests`: Passed (1/1)
 10. `DotsOcrVisionTests`: Passed (1/1)
-11. `MultimodalRealWeightsTests`: Passed (4/4) — LLaVA, Pixtral, InternVL, DeepSeek-OCR
+11. `MultimodalRealWeightsTests`: Passed (5/5) — LLaVA, Pixtral, InternVL, DeepSeek-OCR, PaddleOCR
 12. `Qwen3TtsSpeakerEncoderTests`: Passed (2/2) — ERes2NetV2 192-dim voice cloning + 24kHz Qwen3-TTS pipeline

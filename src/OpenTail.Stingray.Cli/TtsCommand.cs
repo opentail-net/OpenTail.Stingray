@@ -1,5 +1,8 @@
+using System;
 using System.ComponentModel;
 using System.Diagnostics;
+using System.IO;
+using System.Threading;
 using OpenTail.Stingray.Audio;
 using OpenTail.Stingray.Audio.Chatterbox;
 using OpenTail.Stingray.Audio.F5TTS;
@@ -30,62 +33,71 @@ public sealed class TtsCommand : Command<TtsCommand.Settings>
         [Description("Speech generation speed multiplier. Default: 1.0.")]
         public float Speed { get; init; } = 1.0f;
 
-        [CommandOption("-c|--config <PATH>")]
-        [Description("Path to optional Piper model config JSON (.onnx.json).")]
-        public string? ConfigPath { get; init; }
+        [CommandOption("-o|--output <PATH>")]
+        [Description("Output destination path (.wav). Default: speech.wav.")]
+        public string OutputPath { get; init; } = "speech.wav";
+
+        [CommandOption("-m|--model <PATH>")]
+        [Description("Custom model checkpoint path (.gguf, .onnx, or .safetensors).")]
+        public string? ModelPath { get; init; }
+
+        [CommandOption("--voices-dir <PATH>")]
+        [Description("Kokoro voice directory containing .bin / .gguf voice vectors.")]
+        public string? VoicesDir { get; init; }
 
         [CommandOption("--ref-audio <PATH>")]
-        [Description("Path to reference audio file for zero-shot voice cloning (F5-TTS).")]
+        [Description("Reference audio path (.wav) for Zero-Shot Voice Cloning (F5-TTS).")]
         public string? ReferenceAudioPath { get; init; }
 
         [CommandOption("--ref-text <TEXT>")]
-        [Description("Reference transcription for the voice cloning audio (F5-TTS).")]
+        [Description("Reference audio transcript text for Zero-Shot Voice Cloning (F5-TTS).")]
         public string? ReferenceText { get; init; }
 
-        [CommandOption("-o|--output <PATH>")]
-        [Description("Output WAV file path. Default: speech.wav.")]
-        public string OutputPath { get; init; } = "speech.wav";
+        [CommandOption("--vocab <PATH>")]
+        [Description("Custom vocabulary / token file path (F5-TTS vocab.txt).")]
+        public string? VocabPath { get; init; }
 
-        [CommandOption("--list-voices")]
-        [Description("List all available registered voice styles.")]
-        public bool ListVoices { get; init; }
+        [CommandOption("--nfe <NFE>")]
+        [Description("Number of Function Evaluations / ODE solver steps for Flow-Matching DiT (default: 32).")]
+        public int Nfe { get; init; } = 32;
+
+        [CommandOption("--cfg <CFG>")]
+        [Description("Classifier-Free Guidance strength for Flow-Matching DiT (default: 2.0).")]
+        public float CfgStrength { get; init; } = 2.0f;
     }
 
     protected override int Execute(Settings s, CancellationToken cancellation)
     {
-        if (s.ListVoices)
-        {
-            Console.WriteLine("Available Voice Presets:");
-            Console.WriteLine("  Kokoro-82M:");
-            foreach (var voice in KokoroVoices.AvailableVoices) Console.WriteLine($"    • {voice}");
-            Console.WriteLine("  Chatterbox-Turbo:");
-            foreach (var voice in ChatterboxVoices.AvailableVoices) Console.WriteLine($"    • {voice}");
-            Console.WriteLine("  MeloTTS Regional Accents:");
-            foreach (var voice in MeloVoices.AvailableVoices) Console.WriteLine($"    • {voice}");
-            return 0;
-        }
-
         if (string.IsNullOrWhiteSpace(s.Text))
         {
-            Console.Error.WriteLine("Error: Text prompt is required. Use -t or --text \"Your sentence here\".");
+            Console.Error.WriteLine("Error: --text (-t) is required for text-to-speech generation.");
             return 1;
         }
 
-        bool isMelo = s.Engine.Contains("melo", StringComparison.OrdinalIgnoreCase);
-        bool isChatterbox = s.Engine.Contains("chatter", StringComparison.OrdinalIgnoreCase);
-        bool isF5 = s.Engine.Contains("f5", StringComparison.OrdinalIgnoreCase) || !string.IsNullOrEmpty(s.ReferenceAudioPath);
-        bool isPiper = s.Engine.Equals("piper", StringComparison.OrdinalIgnoreCase) ||
-                       (!string.IsNullOrEmpty(s.ConfigPath) && s.ConfigPath.EndsWith(".json", StringComparison.OrdinalIgnoreCase));
+        ITextToSpeechPipeline pipeline;
+        string engine = s.Engine.ToLowerInvariant();
 
-        ITextToSpeechPipeline pipeline = isMelo
-            ? new MeloPipeline()
-            : (isChatterbox
-                ? new ChatterboxPipeline()
-                : (isF5
-                    ? new F5TtsPipeline()
-                    : (isPiper
-                        ? (!string.IsNullOrEmpty(s.ConfigPath) ? PiperPipeline.FromConfigFile(s.ConfigPath) : new PiperPipeline())
-                        : new KokoroPipeline())));
+        try
+        {
+            pipeline = engine switch
+            {
+                "kokoro" => KokoroPipeline.Load(s.ModelPath, s.VoicesDir),
+                "piper" => PiperPipeline.Load(s.ModelPath),
+                "f5" or "f5tts" or "f5-tts" => F5TtsPipeline.Load(
+                    modelPath: s.ModelPath,
+                    vocabPath: s.VocabPath,
+                    odeSteps: s.Nfe,
+                    cfgStrength: s.CfgStrength),
+                "chatterbox" or "chatterbox-turbo" => ChatterboxPipeline.Load(s.ModelPath),
+                "melo" or "melotts" => MeloPipeline.Load(s.ModelPath),
+                _ => throw new ArgumentException($"Unknown TTS engine: '{s.Engine}'. Supported: kokoro, piper, f5tts, chatterbox, melo.")
+            };
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"Error initializing TTS pipeline '{s.Engine}': {ex.Message}");
+            return 1;
+        }
 
         using (pipeline)
         {
@@ -100,23 +112,15 @@ public sealed class TtsCommand : Command<TtsCommand.Settings>
 
             var sw = Stopwatch.StartNew();
 
-            AudioGenerationRequest req = isF5
-                ? new F5AudioGenerationRequest
-                {
-                    Text = s.Text,
-                    Voice = s.Voice,
-                    Speed = s.Speed,
-                    OutputPath = s.OutputPath,
-                    ReferenceAudioPath = s.ReferenceAudioPath,
-                    ReferenceText = s.ReferenceText
-                }
-                : new AudioGenerationRequest
-                {
-                    Text = s.Text,
-                    Voice = s.Voice,
-                    Speed = s.Speed,
-                    OutputPath = s.OutputPath
-                };
+            var req = new AudioGenerationRequest
+            {
+                Text = s.Text,
+                Voice = s.Voice,
+                Speed = s.Speed,
+                OutputPath = s.OutputPath,
+                ReferenceAudioPath = s.ReferenceAudioPath,
+                ReferenceText = s.ReferenceText
+            };
 
             var result = pipeline.Generate(req);
             sw.Stop();
@@ -124,11 +128,8 @@ public sealed class TtsCommand : Command<TtsCommand.Settings>
             double audioDuration = result.Duration.TotalSeconds;
             double rtf = sw.Elapsed.TotalSeconds / Math.Max(0.001, audioDuration);
 
-            Console.WriteLine($"✓ Audio synthesized: {Path.GetFullPath(s.OutputPath)}");
-            Console.WriteLine($"Duration:       {audioDuration:F2}s ({result.Samples.Length:N0} samples @ {result.SampleRate}Hz)");
-            Console.WriteLine($"Inference time: {sw.Elapsed.TotalSeconds:F2}s ({1.0 / Math.Max(0.001, rtf):F1}x real-time)");
+            Console.WriteLine($"Generated {audioDuration:F2}s audio in {sw.Elapsed.TotalSeconds:F2}s ({rtf:F2}x RTF) -> {s.OutputPath}");
+            return 0;
         }
-
-        return 0;
     }
 }
