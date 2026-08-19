@@ -8,7 +8,7 @@ namespace OpenTail.Stingray.Tests.Audio;
 
 public sealed class SileroVadRealWeightsTests
 {
-    private const string ModelFileName = "silero_vad.onnx";
+    private const string GgufFileName = "silero_vad.gguf";
 
     private static string? FindModelPath(string fileName)
     {
