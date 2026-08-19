@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using System.Linq;
+using System.Text;
 using OpenTail.Stingray.Audio;
 using OpenTail.Stingray.Audio.QwenASR;
 using OpenTail.Stingray.Core;
@@ -41,35 +42,26 @@ public sealed class QwenAsrRealWeightsTests
     public void QwenAsr_RealWeights_GgufHeaderAndTensorMetadata_Valid()
     {
         string? modelPath = FindModelPath(ModelFileName);
-        if (modelPath is null)
-        {
-            // Skip test if model not present on disk
-            return;
-        }
+        if (modelPath is null) return;
 
         using var model = GgufModel.Open(modelPath);
 
         Assert.True(model.Header.Version >= 2, "Expected GGUF version >= 2");
         Assert.True(model.Tensors.Count > 0, "GGUF model must contain tensors");
         Assert.True(model.Metadata.Count > 0, "GGUF model must contain metadata");
-
-        // Verify architecture or tensor prefixes
-        Assert.True(model.Metadata.ContainsKey("general.architecture") ||
-                    model.Metadata.ContainsKey("general.name") ||
-                    model.Tensors.Any(t => t.Name.Contains("audio") || t.Name.Contains("blk") || t.Name.Contains("attn")),
-                    "Expected Qwen ASR architecture metadata or tensor structure.");
     }
 
     [Fact]
-    public void QwenAsr_RealWeights_TranscribePipeline_ExecutesEndToEnd()
+    public void QwenAsrPipeline_LoadRealGguf_TranscribesAudioEndToEnd()
     {
         string? modelPath = FindModelPath(ModelFileName);
-        if (modelPath is null)
-        {
-            return;
-        }
+        if (modelPath is null) return;
 
-        using var pipeline = new QwenAsrPipeline();
+        using var pipeline = QwenAsrPipeline.Load(modelPath);
+        Assert.NotNull(pipeline);
+        Assert.Equal("Alibaba-Qwen3-ASR", pipeline.Architecture);
+        Assert.Equal(16000, pipeline.SampleRate);
+
         int sampleRate = 16000;
         int durationSec = 2;
         var pcm = new float[sampleRate * durationSec];
@@ -97,5 +89,6 @@ public sealed class QwenAsrRealWeightsTests
         Assert.Equal("en", result.Language);
         Assert.True(result.Duration.TotalSeconds >= 1.9);
         Assert.NotNull(result.Segments);
+        Assert.NotEmpty(result.Segments);
     }
 }

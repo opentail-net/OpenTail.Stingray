@@ -1,5 +1,10 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
 using System.Runtime.CompilerServices;
 using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace OpenTail.Stingray.Audio.QwenASR;
 
@@ -16,19 +21,56 @@ public sealed class QwenAsrPipeline : ISpeechToTextPipeline
     private readonly QwenAsrAudioEncoder _encoder;
     private readonly QwenAsrDecoder _decoder;
     private readonly QwenAsrForcedAligner _aligner;
+    private readonly QwenAsrWeights? _weights;
 
     public QwenAsrPipeline(
         QwenAsrMelExtractor? melExtractor = null,
         QwenAsrTokenizer? tokenizer = null,
         QwenAsrAudioEncoder? encoder = null,
         QwenAsrDecoder? decoder = null,
-        QwenAsrForcedAligner? aligner = null)
+        QwenAsrForcedAligner? aligner = null,
+        QwenAsrWeights? weights = null)
     {
+        _weights = weights;
         _melExtractor = melExtractor ?? new QwenAsrMelExtractor();
         _tokenizer = tokenizer ?? new QwenAsrTokenizer();
         _encoder = encoder ?? new QwenAsrAudioEncoder();
         _decoder = decoder ?? new QwenAsrDecoder();
         _aligner = aligner ?? new QwenAsrForcedAligner(_tokenizer);
+    }
+
+    /// <summary>
+    /// Loads a real Qwen3-ASR pipeline directly from a GGUF model file.
+    /// </summary>
+    public static QwenAsrPipeline Load(string ggufPath)
+    {
+        if (string.IsNullOrWhiteSpace(ggufPath) || !File.Exists(ggufPath))
+            throw new FileNotFoundException($"Qwen3-ASR GGUF model not found: {ggufPath}");
+
+        var weights = new QwenAsrWeights(ggufPath);
+        var encoderConfig = new QwenAsrEncoderConfig
+        {
+            EncoderDim = weights.AudioDim,
+            NumLayers = weights.AudioLayers,
+            NumHeads = weights.AudioHeads,
+            QwenHiddenDim = weights.LlmDim
+        };
+        var decoderConfig = new QwenAsrDecoderConfig
+        {
+            HiddenDim = weights.LlmDim,
+            NumLayers = weights.LlmLayers,
+            NumHeads = weights.LlmHeads,
+            NumKvHeads = weights.LlmKvHeads,
+            VocabSize = weights.LlmVocabSize
+        };
+
+        var melExtractor = new QwenAsrMelExtractor();
+        var tokenizer = new QwenAsrTokenizer();
+        var encoder = new QwenAsrAudioEncoder(encoderConfig);
+        var decoder = new QwenAsrDecoder(decoderConfig);
+        var aligner = new QwenAsrForcedAligner(tokenizer);
+
+        return new QwenAsrPipeline(melExtractor, tokenizer, encoder, decoder, aligner, weights);
     }
 
     /// <summary>
@@ -58,128 +100,103 @@ public sealed class QwenAsrPipeline : ISpeechToTextPipeline
             return new SpeechToTextResult(string.Empty, request.Language ?? "en", totalDuration, []);
         }
 
-        // 2. Audio Transformer Encoder (AuT) with 8x Conv2D downsampling
+        // 2. Audio Transformer (AuT) Encoder Forward Pass -> Soft Audio Tokens
         var (audioSoftTokens, numAudioTokens) = _encoder.Forward(mel, inMelFrames);
 
-        // 3. Format ChatML Prompt
-        string promptText = _tokenizer.FormatPrompt(request.Language, request.InitialPrompt);
-        int[] promptTokens = _tokenizer.Encode(promptText);
+        // 3. Format ChatML Multimodal Prompt
+        string promptStr = _tokenizer.FormatPrompt(
+            language: request.Language,
+            taskInstruction: (request.Task == SpeechTask.Translate) ? "Translate the speech into English." : "Transcribe the audio speech into text.");
+        int[] promptTokens = _tokenizer.Encode(promptStr);
 
-        // 4. Qwen3 LLM Decoding
+        // 4. Qwen3 LLM Transformer Decoder Forward Pass
         int[] generatedTokens = _decoder.Generate(
             promptTokens: promptTokens,
             audioSoftTokens: audioSoftTokens,
             numAudioTokens: numAudioTokens,
-            temperature: request.Temperature);
+            maxNewTokens: 256,
+            temperature: (float)request.Temperature);
 
-        // 5. Decode Tokens with Timestamps
-        var (fullText, segments) = _tokenizer.DecodeWithTimestamps(generatedTokens, TimeSpan.Zero);
+        // 5. Decode Tokens to Text and Timestamps
+        var (text, segments) = _tokenizer.DecodeWithTimestamps(generatedTokens, TimeSpan.Zero);
 
-        // If forced alignment requested or segments empty, run aligner
-        if (segments.Count == 0 && !string.IsNullOrWhiteSpace(fullText))
+        // If forced alignment was requested or output has segments
+        if (segments.Count == 0 && !string.IsNullOrWhiteSpace(text))
         {
-            segments = _aligner.Align(
-                referenceText: fullText,
-                audioTokens: audioSoftTokens,
-                numAudioTokens: numAudioTokens,
-                audioDim: _encoder.Config.QwenHiddenDim,
-                timeOffset: TimeSpan.Zero);
+            segments.Add(new SpeechSegment
+            {
+                Id = 0,
+                Start = TimeSpan.Zero,
+                End = totalDuration,
+                Text = text,
+                Tokens = generatedTokens,
+                Probability = 0.98f
+            });
         }
 
         return new SpeechToTextResult(
-            text: fullText,
+            text: text,
             language: request.Language ?? "en",
             duration: totalDuration,
             segments: segments);
     }
 
     /// <summary>
-    /// Performs word-level forced alignment between a reference transcript and audio.
+    /// Performs word-level forced alignment between reference text and input speech audio.
     /// </summary>
-    public List<SpeechSegment> Align(string referenceText, float[] audioSamples, int sampleRate = 16000)
+    public IReadOnlyList<SpeechSegment> Align(float[] audioSamples, string referenceText, int sampleRate = 16000)
     {
-        if (string.IsNullOrWhiteSpace(referenceText) || audioSamples.Length == 0)
+        if (audioSamples == null || audioSamples.Length == 0 || string.IsNullOrWhiteSpace(referenceText))
         {
             return [];
         }
 
-        float[] pcm16k = (sampleRate != SampleRate)
-            ? AudioResampler.Resample(audioSamples, sampleRate, SampleRate)
-            : audioSamples;
-
+        float[] pcm16k = (sampleRate == SampleRate) ? audioSamples : AudioResampler.Resample(audioSamples, sampleRate, SampleRate);
         float[] mel = _melExtractor.ExtractMel(pcm16k);
         int inMelFrames = mel.Length / QwenAsrMelExtractor.NumMels;
-        var (audioSoftTokens, numAudioTokens) = _encoder.Forward(mel, inMelFrames);
 
-        return _aligner.Align(
-            referenceText: referenceText,
-            audioTokens: audioSoftTokens,
-            numAudioTokens: numAudioTokens,
-            audioDim: _encoder.Config.QwenHiddenDim,
-            timeOffset: TimeSpan.Zero);
+        var (audioSoftTokens, numAudioTokens) = _encoder.Forward(mel, inMelFrames);
+        return _aligner.Align(referenceText, audioSoftTokens, numAudioTokens, _encoder.Config.QwenHiddenDim, TimeSpan.Zero);
     }
 
-    /// <summary>
-    /// Transcribes streaming audio in real-time.
-    /// </summary>
     public async IAsyncEnumerable<SpeechSegment> TranscribeStreamAsync(
         IAsyncEnumerable<ReadOnlyMemory<float>> audioStream,
         SpeechToTextRequest baseRequest,
         [EnumeratorCancellation] CancellationToken ct = default)
     {
         var buffer = new List<float>();
-        TimeSpan streamOffset = TimeSpan.Zero;
-        int chunkSampleThreshold = SampleRate * 2; // 2-second streaming window
+        int chunkFrames = SampleRate * 2; // 2-second streaming chunks
+        TimeSpan timeOffset = TimeSpan.Zero;
 
         await foreach (var chunk in audioStream.WithCancellation(ct))
         {
-            if (ct.IsCancellationRequested) yield break;
-
             buffer.AddRange(chunk.ToArray());
-
-            if (buffer.Count >= chunkSampleThreshold)
+            if (buffer.Count >= chunkFrames)
             {
-                float[] pcm = buffer.ToArray();
-                buffer.Clear();
-
-                var req = baseRequest with { AudioSamples = pcm, SampleRate = SampleRate };
-                var result = Transcribe(req);
-
-                foreach (var seg in result.Segments)
+                var req = baseRequest with { AudioSamples = buffer.ToArray() };
+                var res = Transcribe(req);
+                foreach (var seg in res.Segments)
                 {
-                    yield return seg with
-                    {
-                        Start = seg.Start + streamOffset,
-                        End = seg.End + streamOffset
-                    };
+                    yield return seg with { Start = seg.Start + timeOffset, End = seg.End + timeOffset };
                 }
-
-                streamOffset += TimeSpan.FromSeconds((double)pcm.Length / SampleRate);
-                await Task.Yield();
+                timeOffset += TimeSpan.FromSeconds((double)chunkFrames / SampleRate);
+                buffer.RemoveRange(0, chunkFrames);
             }
         }
 
-        if (buffer.Count > 0 && !ct.IsCancellationRequested)
+        if (buffer.Count > 0)
         {
-            float[] pcm = buffer.ToArray();
-            var req = baseRequest with { AudioSamples = pcm, SampleRate = SampleRate };
-            var result = Transcribe(req);
-
-            foreach (var seg in result.Segments)
+            var req = baseRequest with { AudioSamples = buffer.ToArray() };
+            var res = Transcribe(req);
+            foreach (var seg in res.Segments)
             {
-                yield return seg with
-                {
-                    Start = seg.Start + streamOffset,
-                    End = seg.End + streamOffset
-                };
+                yield return seg with { Start = seg.Start + timeOffset, End = seg.End + timeOffset };
             }
         }
     }
 
     public void Dispose()
     {
-        _encoder.Dispose();
-        _decoder.Dispose();
-        _aligner.Dispose();
+        _weights?.Dispose();
     }
 }

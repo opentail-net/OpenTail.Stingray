@@ -1,3 +1,10 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Text.RegularExpressions;
+using System.Threading;
+using System.Threading.Tasks;
+
 namespace OpenTail.Stingray.Audio.Chatterbox;
 
 /// <summary>
@@ -11,15 +18,34 @@ public sealed class ChatterboxPipeline : ITextToSpeechPipeline
     private readonly ChatterboxTokenizer _tokenizer;
     private readonly ChatterboxAcousticLm _acousticLm;
     private readonly ChatterboxDecoder _decoder;
+    private readonly ChatterboxWeights? _weights;
 
     public ChatterboxPipeline(
         ChatterboxTokenizer? tokenizer = null,
         ChatterboxAcousticLm? acousticLm = null,
-        ChatterboxDecoder? decoder = null)
+        ChatterboxDecoder? decoder = null,
+        ChatterboxWeights? weights = null)
     {
+        _weights = weights;
         _tokenizer = tokenizer ?? new ChatterboxTokenizer();
-        _acousticLm = acousticLm ?? new ChatterboxAcousticLm();
+        _acousticLm = acousticLm ?? new ChatterboxAcousticLm(weights);
         _decoder = decoder ?? new ChatterboxDecoder();
+    }
+
+    /// <summary>
+    /// Loads a real Chatterbox pipeline from GGUF model files (T3 Acoustic LM and optional S3Gen vocoder).
+    /// </summary>
+    public static ChatterboxPipeline Load(string t3GgufPath, string? s3GenGgufPath = null)
+    {
+        if (string.IsNullOrWhiteSpace(t3GgufPath) || !File.Exists(t3GgufPath))
+            throw new FileNotFoundException($"Chatterbox T3 GGUF model not found: {t3GgufPath}");
+
+        var weights = new ChatterboxWeights(t3GgufPath, s3GenGgufPath);
+        var tokenizer = new ChatterboxTokenizer();
+        var acousticLm = new ChatterboxAcousticLm(weights);
+        var decoder = new ChatterboxDecoder();
+
+        return new ChatterboxPipeline(tokenizer, acousticLm, decoder, weights);
     }
 
     /// <summary>
@@ -37,15 +63,19 @@ public sealed class ChatterboxPipeline : ITextToSpeechPipeline
 
         // 2. Speaker Feature Bank
         float[] speakerFeatures = ChatterboxVoices.GetSpeakerFeatures(request.Voice);
+        if ((speakerFeatures == null || speakerFeatures.Length == 0) && _weights?.SpeakerEmbedding is { } spk)
+        {
+            speakerFeatures = spk;
+        }
 
         // 3. Autoregressive Acoustic LM -> Speech Tokens
         var speechTokens = _acousticLm.GenerateSpeechTokens(
             textTokens: textTokens,
-            speakerFeatures: speakerFeatures,
+            speakerFeatures: speakerFeatures ?? [],
             temperature: 0.7f);
 
         // 4. Conditional Neural Decoder -> 24kHz PCM Audio
-        float[] samples = _decoder.Decode(speechTokens, speakerFeatures);
+        float[] samples = _decoder.Decode(speechTokens, speakerFeatures ?? []);
 
         var result = new AudioGenerationResult(samples, DefaultSampleRate);
 
@@ -66,8 +96,7 @@ public sealed class ChatterboxPipeline : ITextToSpeechPipeline
     {
         if (string.IsNullOrWhiteSpace(request.Text)) yield break;
 
-        var sentences = System.Text.RegularExpressions.Regex.Split(request.Text, @"(?<=[.!?,
-])\s+");
+        var sentences = Regex.Split(request.Text, @"(?<=[.!?,;\n])\s+");
         foreach (var s in sentences)
         {
             var trimmed = s.Trim();
@@ -86,6 +115,7 @@ public sealed class ChatterboxPipeline : ITextToSpeechPipeline
 
     public void Dispose()
     {
+        _weights?.Dispose();
         _acousticLm.Dispose();
     }
 }

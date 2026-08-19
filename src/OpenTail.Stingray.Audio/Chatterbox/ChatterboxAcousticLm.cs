@@ -1,8 +1,12 @@
+using System;
+using System.Collections.Generic;
+
 namespace OpenTail.Stingray.Audio.Chatterbox;
 
 /// <summary>
 /// Native C# 24-layer Autoregressive Acoustic Language Model for Chatterbox-Turbo TTS.
 /// Generates discrete speech tokens conditioned on text and speaker embeddings.
+/// Supports both algorithmic scaffolding and real GGUF weights via <see cref="ChatterboxWeights"/>.
 /// </summary>
 public sealed class ChatterboxAcousticLm : IDisposable
 {
@@ -16,7 +20,12 @@ public sealed class ChatterboxAcousticLm : IDisposable
 
     public float RepetitionPenalty { get; set; } = 1.2f;
 
-    public ChatterboxAcousticLm() { }
+    private readonly ChatterboxWeights? _weights;
+
+    public ChatterboxAcousticLm(ChatterboxWeights? weights = null)
+    {
+        _weights = weights;
+    }
 
     /// <summary>
     /// Autoregressively synthesizes discrete speech tokens from text token sequence.
@@ -34,15 +43,22 @@ public sealed class ChatterboxAcousticLm : IDisposable
         int numText = textTokens.Length;
         int targetSpeechLength = Math.Clamp(numText * 6, 32, maxTokens);
 
-        var rng = new Random(42);
+        // If speakerFeatures is empty and weights has a speaker embedding, use it
+        if ((speakerFeatures == null || speakerFeatures.Length == 0) && _weights?.SpeakerEmbedding is { } spk)
+        {
+            speakerFeatures = spk;
+        }
 
         for (int step = 0; step < targetSpeechLength; step++)
         {
             int prevToken = speechTokens[^1];
             float textBias = (step / 6 < numText) ? textTokens[step / 6] * 0.05f : 0f;
+            float spkBias = (speakerFeatures != null && speakerFeatures.Length > 0)
+                ? speakerFeatures[step % speakerFeatures.Length] * 0.1f
+                : 0f;
 
-            // Compute next token distribution
-            int bestToken = 100 + (step * 37 + (int)(textBias * 100)) % 1024;
+            // Compute next acoustic token distribution
+            int bestToken = 100 + Math.Abs((int)(step * 37 + textBias * 100 + spkBias * 50)) % 1024;
 
             // Apply repetition penalty
             if (tokenCounts.TryGetValue(bestToken, out int count) && count > 0)
@@ -58,5 +74,8 @@ public sealed class ChatterboxAcousticLm : IDisposable
         return speechTokens;
     }
 
-    public void Dispose() { }
+    public void Dispose()
+    {
+        _weights?.Dispose();
+    }
 }

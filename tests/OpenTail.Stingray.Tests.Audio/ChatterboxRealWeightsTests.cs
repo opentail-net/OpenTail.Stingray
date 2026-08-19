@@ -2,14 +2,13 @@ using System;
 using System.IO;
 using OpenTail.Stingray.Audio;
 using OpenTail.Stingray.Audio.Chatterbox;
+using OpenTail.Stingray.Core;
 using Xunit;
 
 namespace OpenTail.Stingray.Tests.Audio;
 
 public sealed class ChatterboxRealWeightsTests
 {
-    private const string ModelFileName = "chatterbox-speech_encoder.onnx";
-
     private static string? FindModelPath(string fileName)
     {
         string[] absoluteCandidates =
@@ -36,18 +35,21 @@ public sealed class ChatterboxRealWeightsTests
     }
 
     [Fact]
-    public void Chatterbox_RealModelFile_OnnxHeaderValidAndSynthesizesSpeech()
+    public void ChatterboxPipeline_LoadRealGgufModels_Synthesizes24kHzAudio()
     {
-        string? modelPath = FindModelPath(ModelFileName);
-        if (modelPath is null) return;
+        string? t3Path = FindModelPath("chatterbox-turbo-t3-q4_k.gguf");
+        string? s3GenPath = FindModelPath("chatterbox-turbo-s3gen-q4_k.gguf");
 
-        var fileInfo = new FileInfo(modelPath);
-        Assert.True(fileInfo.Length > 50 * 1024 * 1024, "Chatterbox ONNX model file must be > 50MB");
+        if (t3Path is null) return;
 
-        var pipeline = new ChatterboxPipeline();
+        using var pipeline = ChatterboxPipeline.Load(t3Path, s3GenPath);
+        Assert.NotNull(pipeline);
+        Assert.Equal("Chatterbox-Turbo", pipeline.Architecture);
+        Assert.Equal(24000, pipeline.DefaultSampleRate);
+
         var request = new AudioGenerationRequest
         {
-            Text = "Chatterbox turbo zero shot expressive text to speech synthesis.",
+            Text = "Chatterbox Turbo zero-shot expressive voice generation running natively in OpenTail Stingray.",
             Voice = "nova",
             Speed = 1.0f
         };
@@ -55,13 +57,41 @@ public sealed class ChatterboxRealWeightsTests
         var result = pipeline.Generate(request);
         Assert.NotNull(result);
         Assert.Equal(24000, result.SampleRate);
-        Assert.True(result.Samples.Length > 0);
-        Assert.True(result.Duration.TotalSeconds > 0.5);
+        Assert.NotEmpty(result.Samples);
+        Assert.True(result.Duration.TotalSeconds > 0.5, "Generated audio must have positive duration");
 
+        // Verify audio is non-silent and finite
+        float energy = 0f;
         for (int i = 0; i < result.Samples.Length; i++)
         {
-            Assert.False(float.IsNaN(result.Samples[i]), $"NaN in Chatterbox sample {i}");
-            Assert.False(float.IsInfinity(result.Samples[i]), $"Infinity in Chatterbox sample {i}");
+            float s = result.Samples[i];
+            Assert.False(float.IsNaN(s), $"Sample {i} must not be NaN");
+            Assert.False(float.IsInfinity(s), $"Sample {i} must not be Infinity");
+            energy += s * s;
         }
+        Assert.True(energy > 0.1f, "Audio energy must be non-zero");
+    }
+
+    [Fact]
+    public void Chatterbox_T3_GgufRealModelFile_LoadsAndInspectsTensors()
+    {
+        string? modelPath = FindModelPath("chatterbox-turbo-t3-q4_k.gguf");
+        if (modelPath is null) return;
+
+        using var model = GgufModel.Open(modelPath);
+        Assert.NotNull(model);
+        Assert.True(model.Tensors.Count > 0, "Chatterbox T3 GGUF must have tensors");
+        Assert.True(model.Metadata.Count > 0, "Chatterbox T3 GGUF must have metadata");
+    }
+
+    [Fact]
+    public void Chatterbox_S3Gen_GgufRealModelFile_LoadsAndInspectsTensors()
+    {
+        string? modelPath = FindModelPath("chatterbox-turbo-s3gen-q4_k.gguf");
+        if (modelPath is null) return;
+
+        using var model = GgufModel.Open(modelPath);
+        Assert.NotNull(model);
+        Assert.True(model.Tensors.Count > 0, "Chatterbox S3Gen GGUF must have tensors");
     }
 }
