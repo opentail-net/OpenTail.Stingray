@@ -136,34 +136,34 @@ public sealed class WanPipeline : IDiffusionPipeline
 
         // 5. Decode all video frame latents to RGB pixels via 16-channel VAE
         int singleFrameLen = latC * latH * latW;
-        var allFrames = new List<float[]>(numFrames);
-
-        for (int f = 0; f < numFrames; f++)
+        // 5. Decode 3D Latents to full RGB video frames
+        List<float[]> allFrames;
+        if (numFrames > 1)
         {
-            var singleFrameLatent = new float[singleFrameLen];
-            for (int c = 0; c < latC; c++)
-            {
-                int srcOff = ((c * numFrames) + f) * (latH * latW);
-                int dstOff = c * (latH * latW);
-                Array.Copy(latent, srcOff, singleFrameLatent, dstOff, latH * latW);
-            }
+            using var vae3d = new WanVaeDecoder3D(_weights);
+            allFrames = vae3d.Decode(latent, numFrames, latH, latW);
+        }
+        else
+        {
+            var singleFrameLatent = new float[latC * latH * latW];
+            Array.Copy(latent, 0, singleFrameLatent, 0, singleFrameLatent.Length);
+            allFrames = [_vae.Decode(singleFrameLatent, latH, latW)];
+        }
 
-            var framePixels = _vae.Decode(singleFrameLatent, latH, latW);
-
-            // Optional super-resolution upscaling per frame
-            if (upscaler is not null)
+        // Optional super-resolution upscaling per frame
+        if (upscaler is not null)
+        {
+            for (int f = 0; f < allFrames.Count; f++)
             {
-                var preUpscale = framePixels;
-                var (up, uw, uh) = upscaler.Upscale(framePixels, width, height);
-                framePixels = up;
+                var preUpscale = allFrames[f];
+                var (up, uw, uh) = upscaler.Upscale(allFrames[f], width, height);
+                allFrames[f] = up;
                 if (upscaleBlend < 1f)
                 {
                     var bicubic = DiffusionOps.UpsampleBicubic(preUpscale, 3, height, width, uh, uw);
-                    framePixels = DiffusionOps.BlendRgb(framePixels, bicubic, upscaleBlend);
+                    allFrames[f] = DiffusionOps.BlendRgb(allFrames[f], bicubic, upscaleBlend);
                 }
             }
-
-            allFrames.Add(framePixels);
         }
 
         // 6. Save primary anchor frame
