@@ -6,7 +6,7 @@ using OpenTail.Stingray.Core;
 namespace OpenTail.Stingray.Vision;
 
 /// <summary>
-/// Unified factory and dispatcher for multimodal vision models (Qwen 2.5 VL, Gemma 4 UV, Gemma 4 ViT, Gemma 3, Llama 4).
+/// Unified factory and dispatcher for multimodal vision models (Nemotron-V2-VL, Dots-OCR, DeepSeek-OCR, Kimi-VL, GLM-4V, LLaVA, InternVL, Pixtral, MiniCPM-V, Qwen 2.5/3 VL, Gemma 4 UV, Gemma 4 ViT, Gemma 3, Llama 4).
 /// Automatically determines the projector type from the GGUF file and provides an <see cref="IVisionEmbedder"/>.
 /// </summary>
 public static class UnifiedVisionPipeline
@@ -27,6 +27,60 @@ public static class UnifiedVisionPipeline
             projType = ptStr.Trim().ToLowerInvariant();
         else if (gguf.Metadata.TryGetValue("clip.projector_type", out var ptObj2) && ptObj2 is string ptStr2)
             projType = ptStr2.Trim().ToLowerInvariant();
+
+        if (projType != null && (projType.Contains("nemotron") || projType.Contains("nemotron_v2_vl") || projType.Contains("nemotron-v2-vl")))
+        {
+            var model = NemotronVisionModel.Open(mmprojPath);
+            return new NemotronAdapter(model);
+        }
+
+        if (projType != null && (projType.Contains("dotsocr") || projType.Contains("dots_ocr") || projType.Contains("paddleocr") || projType.Contains("paddle_ocr")))
+        {
+            var model = DotsOcrVisionModel.Open(mmprojPath);
+            return new DotsOcrAdapter(model);
+        }
+
+        if (projType != null && (projType.Contains("deepseekocr") || projType.Contains("deepseek-ocr") || projType.Contains("deepseek_ocr")))
+        {
+            var model = DeepSeekOcrVisionModel.Open(mmprojPath);
+            return new DeepSeekOcrAdapter(model);
+        }
+
+        if (projType != null && (projType.Contains("kimi") || projType.Contains("kimik25") || projType.Contains("kimivl")))
+        {
+            var model = KimiVisionModel.Open(mmprojPath);
+            return new KimiAdapter(model);
+        }
+
+        if (projType != null && (projType.Contains("glm4v") || projType.Contains("glm-4v") || projType.Contains("glm_edge")))
+        {
+            var model = Glm4VisionModel.Open(mmprojPath);
+            return new Glm4Adapter(model);
+        }
+
+        if (projType != null && (projType == "llava" || projType.Contains("llava-onevision") || projType.Contains("llava-next") || projType == "mlp"))
+        {
+            var model = LlavaVisionModel.Open(mmprojPath);
+            return new LlavaAdapter(model);
+        }
+
+        if (projType != null && projType.Contains("internvl"))
+        {
+            var model = InternVlVisionModel.Open(mmprojPath);
+            return new InternVlAdapter(model);
+        }
+
+        if (projType != null && projType.Contains("pixtral"))
+        {
+            var model = PixtralVisionModel.Open(mmprojPath);
+            return new PixtralAdapter(model);
+        }
+
+        if (projType != null && (projType.Contains("minicpm") || projType.Contains("resampler")))
+        {
+            var model = MiniCpmVisionModel.Open(mmprojPath);
+            return new MiniCpmAdapter(model);
+        }
 
         if (projType != null && (projType.Contains("qwen2.5vl") || projType.Contains("qwen2vl") || projType.Contains("qwen3vl") || projType.Contains("qwenvl")))
         {
@@ -60,6 +114,54 @@ public static class UnifiedVisionPipeline
         }
 
         // Fallback heuristics based on tensors
+        if (gguf.Tensors.Any(t => t.Name.Contains("v.class_embedding") && t.Name.Contains("mm.0.weight") && t.Name.Contains("mm.3.weight")))
+        {
+            var model = NemotronVisionModel.Open(mmprojPath);
+            return new NemotronAdapter(model);
+        }
+
+        if (gguf.Tensors.Any(t => t.Name.Contains("model.view_seperator") || t.Name.Contains("resample_query_1024")))
+        {
+            var model = DeepSeekOcrVisionModel.Open(mmprojPath);
+            return new DeepSeekOcrAdapter(model);
+        }
+
+        if (gguf.Tensors.Any(t => t.Name.Contains("mm.input_norm.weight") && t.Name.Contains("mm.2.weight")))
+        {
+            var model = DotsOcrVisionModel.Open(mmprojPath);
+            return new DotsOcrAdapter(model);
+        }
+
+        if (gguf.Tensors.Any(t => t.Name.Contains("mm.input_norm.weight") && t.Name.Contains("mm.1.weight")))
+        {
+            var model = KimiVisionModel.Open(mmprojPath);
+            return new KimiAdapter(model);
+        }
+
+        if (gguf.Tensors.Any(t => t.Name.Contains("mm.patch_merger.weight") && t.Name.Contains("mm.fc.weight")))
+        {
+            var model = Glm4VisionModel.Open(mmprojPath);
+            return new Glm4Adapter(model);
+        }
+
+        if (gguf.Tensors.Any(t => t.Name.Contains("v.class_embd") || t.Name.Contains("v.cls_embd")))
+        {
+            var model = InternVlVisionModel.Open(mmprojPath);
+            return new InternVlAdapter(model);
+        }
+
+        if (gguf.Tensors.Any(t => t.Name.Contains("v.token_embd.img_break") || t.Name.Contains("mm.patch_merger.weight")))
+        {
+            var model = PixtralVisionModel.Open(mmprojPath);
+            return new PixtralAdapter(model);
+        }
+
+        if (gguf.Tensors.Any(t => t.Name.Contains("resampler.query") || t.Name.Contains("mm.model.query")))
+        {
+            var model = MiniCpmVisionModel.Open(mmprojPath);
+            return new MiniCpmAdapter(model);
+        }
+
         if (gguf.Tensors.Any(t => t.Name.StartsWith("v.patch_embd.0.") || t.Name.StartsWith("v.patch_embd.1.")))
         {
             var model = QwenVlVisionModel.Open(mmprojPath);
@@ -78,9 +180,321 @@ public static class UnifiedVisionPipeline
             return new Gemma4VAdapter(model);
         }
 
+        if (gguf.Tensors.Any(t => t.Name == "mm.0.weight" && t.Name != "mm.0.bias"))
+        {
+            var model = LlavaVisionModel.Open(mmprojPath);
+            return new LlavaAdapter(model);
+        }
+
         throw new NotSupportedException(
             $"Unsupported or unrecognized vision projector type '{projType ?? "unknown"}' in {Path.GetFileName(mmprojPath)}. " +
-            "Supported types: qwen2.5vl, gemma4uv, gemma4v, gemma3, llama4.");
+            "Supported types: nemotron_v2_vl, dotsocr, deepseekocr, kimik25, glm4v, llava, internvl, pixtral, minicpmv, qwen2.5vl, gemma4uv, gemma4v, gemma3, llama4.");
+    }
+
+    private sealed class NemotronAdapter : IVisionEmbedder
+    {
+        private readonly NemotronVisionModel _model;
+        private readonly NemotronVisionEncoder _encoder;
+
+        public NemotronAdapter(NemotronVisionModel model)
+        {
+            _model = model;
+            _encoder = new NemotronVisionEncoder(model);
+        }
+
+        public string ProjectorType => _model.ProjectorType;
+        public int EmbeddingDim => _model.ProjectionDim;
+        public int ImageWidth => _model.ImageSize;
+        public int ImageHeight => _model.ImageSize;
+        public string ImageOpenMarker => "<image>";
+        public string ImageCloseMarker => "</image>";
+        public string PlaceholderMarker => "<image_pad>";
+
+        public float[] EmbedImage(ReadOnlySpan<byte> rgb, int width, int height, out int tokenCount)
+        {
+            var pre = NemotronImagePreprocessor.Preprocess(rgb, width, height, _model.ImageSize, _model.PatchSize);
+            return _encoder.Forward(pre.Chw, pre.TargetWidth, pre.TargetHeight, pre.PatchesX, pre.PatchesY, out tokenCount);
+        }
+
+        public float[] EmbedImageFile(string filePath, out int tokenCount)
+        {
+            var rgb = ImageIO.LoadRgb(filePath, out int w, out int h);
+            return EmbedImage(rgb, w, h, out tokenCount);
+        }
+
+        public void Dispose() => _model.Dispose();
+    }
+
+    private sealed class DotsOcrAdapter : IVisionEmbedder
+    {
+        private readonly DotsOcrVisionModel _model;
+        private readonly DotsOcrVisionEncoder _encoder;
+
+        public DotsOcrAdapter(DotsOcrVisionModel model)
+        {
+            _model = model;
+            _encoder = new DotsOcrVisionEncoder(model);
+        }
+
+        public string ProjectorType => _model.ProjectorType;
+        public int EmbeddingDim => _model.ProjectionDim;
+        public int ImageWidth => _model.ImageSize;
+        public int ImageHeight => _model.ImageSize;
+        public string ImageOpenMarker => "<image>";
+        public string ImageCloseMarker => "</image>";
+        public string PlaceholderMarker => "<image_pad>";
+
+        public float[] EmbedImage(ReadOnlySpan<byte> rgb, int width, int height, out int tokenCount)
+        {
+            var pre = DotsOcrImagePreprocessor.Preprocess(rgb, width, height, _model.PatchSize);
+            return _encoder.Forward(pre.Chw, pre.TargetWidth, pre.TargetHeight, pre.PatchesX, pre.PatchesY, out tokenCount);
+        }
+
+        public float[] EmbedImageFile(string filePath, out int tokenCount)
+        {
+            var rgb = ImageIO.LoadRgb(filePath, out int w, out int h);
+            return EmbedImage(rgb, w, h, out tokenCount);
+        }
+
+        public void Dispose() => _model.Dispose();
+    }
+
+    private sealed class DeepSeekOcrAdapter : IVisionEmbedder
+    {
+        private readonly DeepSeekOcrVisionModel _model;
+        private readonly DeepSeekOcrVisionEncoder _encoder;
+
+        public DeepSeekOcrAdapter(DeepSeekOcrVisionModel model)
+        {
+            _model = model;
+            _encoder = new DeepSeekOcrVisionEncoder(model);
+        }
+
+        public string ProjectorType => _model.ProjectorType;
+        public int EmbeddingDim => _model.ProjectionDim;
+        public int ImageWidth => _model.ImageSize;
+        public int ImageHeight => _model.ImageSize;
+        public string ImageOpenMarker => "<image>";
+        public string ImageCloseMarker => "</image>";
+        public string PlaceholderMarker => "<image_pad>";
+
+        public float[] EmbedImage(ReadOnlySpan<byte> rgb, int width, int height, out int tokenCount)
+        {
+            var pre = DeepSeekOcrImagePreprocessor.Preprocess(rgb, width, height, _model.ImageSize, _model.PatchSize);
+            return _encoder.Forward(pre.Chw, pre.TargetWidth, pre.TargetHeight, pre.PatchesX, pre.PatchesY, out tokenCount);
+        }
+
+        public float[] EmbedImageFile(string filePath, out int tokenCount)
+        {
+            var rgb = ImageIO.LoadRgb(filePath, out int w, out int h);
+            return EmbedImage(rgb, w, h, out tokenCount);
+        }
+
+        public void Dispose() => _model.Dispose();
+    }
+
+    private sealed class KimiAdapter : IVisionEmbedder
+    {
+        private readonly KimiVisionModel _model;
+        private readonly KimiVisionEncoder _encoder;
+
+        public KimiAdapter(KimiVisionModel model)
+        {
+            _model = model;
+            _encoder = new KimiVisionEncoder(model);
+        }
+
+        public string ProjectorType => _model.ProjectorType;
+        public int EmbeddingDim => _model.ProjectionDim;
+        public int ImageWidth => _model.ImageSize;
+        public int ImageHeight => _model.ImageSize;
+        public string ImageOpenMarker => "<|vision_start|>";
+        public string ImageCloseMarker => "<|vision_end|>";
+        public string PlaceholderMarker => "<|image_pad|>";
+
+        public float[] EmbedImage(ReadOnlySpan<byte> rgb, int width, int height, out int tokenCount)
+        {
+            var pre = KimiImagePreprocessor.Preprocess(rgb, width, height, _model.PatchSize, _model.MergeFactor);
+            return _encoder.Forward(pre.Chw, pre.TargetWidth, pre.TargetHeight, pre.PatchesX, pre.PatchesY, out tokenCount);
+        }
+
+        public float[] EmbedImageFile(string filePath, out int tokenCount)
+        {
+            var rgb = ImageIO.LoadRgb(filePath, out int w, out int h);
+            return EmbedImage(rgb, w, h, out tokenCount);
+        }
+
+        public void Dispose() => _model.Dispose();
+    }
+
+    private sealed class Glm4Adapter : IVisionEmbedder
+    {
+        private readonly Glm4VisionModel _model;
+        private readonly Glm4VisionEncoder _encoder;
+
+        public Glm4Adapter(Glm4VisionModel model)
+        {
+            _model = model;
+            _encoder = new Glm4VisionEncoder(model);
+        }
+
+        public string ProjectorType => _model.ProjectorType;
+        public int EmbeddingDim => _model.ProjectionDim;
+        public int ImageWidth => _model.ImageSize;
+        public int ImageHeight => _model.ImageSize;
+        public string ImageOpenMarker => "<|begin_of_image|>";
+        public string ImageCloseMarker => "<|end_of_image|>";
+        public string PlaceholderMarker => "<|image|>";
+
+        public float[] EmbedImage(ReadOnlySpan<byte> rgb, int width, int height, out int tokenCount)
+        {
+            var pre = Glm4ImagePreprocessor.Preprocess(rgb, width, height, _model.PatchSize, _model.MergeFactor);
+            return _encoder.Forward(pre.Chw, pre.TargetWidth, pre.TargetHeight, pre.PatchesX, pre.PatchesY, out tokenCount);
+        }
+
+        public float[] EmbedImageFile(string filePath, out int tokenCount)
+        {
+            var rgb = ImageIO.LoadRgb(filePath, out int w, out int h);
+            return EmbedImage(rgb, w, h, out tokenCount);
+        }
+
+        public void Dispose() => _model.Dispose();
+    }
+
+    private sealed class LlavaAdapter : IVisionEmbedder
+    {
+        private readonly LlavaVisionModel _model;
+        private readonly LlavaVisionEncoder _encoder;
+
+        public LlavaAdapter(LlavaVisionModel model)
+        {
+            _model = model;
+            _encoder = new LlavaVisionEncoder(model);
+        }
+
+        public string ProjectorType => _model.ProjectorType;
+        public int EmbeddingDim => _model.ProjectionDim;
+        public int ImageWidth => _model.ImageSize;
+        public int ImageHeight => _model.ImageSize;
+        public string ImageOpenMarker => "<image>";
+        public string ImageCloseMarker => "</image>";
+        public string PlaceholderMarker => "<image>";
+
+        public float[] EmbedImage(ReadOnlySpan<byte> rgb, int width, int height, out int tokenCount)
+        {
+            var pre = LlavaImagePreprocessor.Preprocess(rgb, width, height, _model.ImageSize, _model.PatchSize);
+            return _encoder.Forward(pre.Chw, pre.TargetWidth, pre.TargetHeight, pre.PatchesX, pre.PatchesY, out tokenCount);
+        }
+
+        public float[] EmbedImageFile(string filePath, out int tokenCount)
+        {
+            var rgb = ImageIO.LoadRgb(filePath, out int w, out int h);
+            return EmbedImage(rgb, w, h, out tokenCount);
+        }
+
+        public void Dispose() => _model.Dispose();
+    }
+
+    private sealed class InternVlAdapter : IVisionEmbedder
+    {
+        private readonly InternVlVisionModel _model;
+        private readonly InternVlVisionEncoder _encoder;
+
+        public InternVlAdapter(InternVlVisionModel model)
+        {
+            _model = model;
+            _encoder = new InternVlVisionEncoder(model);
+        }
+
+        public string ProjectorType => _model.ProjectorType;
+        public int EmbeddingDim => _model.ProjectionDim;
+        public int ImageWidth => _model.ImageSize;
+        public int ImageHeight => _model.ImageSize;
+        public string ImageOpenMarker => "<img>";
+        public string ImageCloseMarker => "</img>";
+        public string PlaceholderMarker => "<IMG_CONTEXT>";
+
+        public float[] EmbedImage(ReadOnlySpan<byte> rgb, int width, int height, out int tokenCount)
+        {
+            var pre = InternVlImagePreprocessor.Preprocess(rgb, width, height, _model.ImageSize, _model.PatchSize);
+            return _encoder.Forward(pre.Chw, pre.TargetWidth, pre.TargetHeight, pre.PatchesX, pre.PatchesY, out tokenCount);
+        }
+
+        public float[] EmbedImageFile(string filePath, out int tokenCount)
+        {
+            var rgb = ImageIO.LoadRgb(filePath, out int w, out int h);
+            return EmbedImage(rgb, w, h, out tokenCount);
+        }
+
+        public void Dispose() => _model.Dispose();
+    }
+
+    private sealed class PixtralAdapter : IVisionEmbedder
+    {
+        private readonly PixtralVisionModel _model;
+        private readonly PixtralVisionEncoder _encoder;
+
+        public PixtralAdapter(PixtralVisionModel model)
+        {
+            _model = model;
+            _encoder = new PixtralVisionEncoder(model);
+        }
+
+        public string ProjectorType => _model.ProjectorType;
+        public int EmbeddingDim => _model.ProjectionDim;
+        public int ImageWidth => _model.ImageSize;
+        public int ImageHeight => _model.ImageSize;
+        public string ImageOpenMarker => "[IMG]";
+        public string ImageCloseMarker => "[/IMG]";
+        public string PlaceholderMarker => "[IMG_PAD]";
+
+        public float[] EmbedImage(ReadOnlySpan<byte> rgb, int width, int height, out int tokenCount)
+        {
+            var pre = PixtralImagePreprocessor.Preprocess(rgb, width, height, _model.PatchSize, _model.ImageSize);
+            return _encoder.Forward(pre.Chw, pre.TargetWidth, pre.TargetHeight, pre.PatchesX, pre.PatchesY, out tokenCount);
+        }
+
+        public float[] EmbedImageFile(string filePath, out int tokenCount)
+        {
+            var rgb = ImageIO.LoadRgb(filePath, out int w, out int h);
+            return EmbedImage(rgb, w, h, out tokenCount);
+        }
+
+        public void Dispose() => _model.Dispose();
+    }
+
+    private sealed class MiniCpmAdapter : IVisionEmbedder
+    {
+        private readonly MiniCpmVisionModel _model;
+        private readonly MiniCpmVisionEncoder _encoder;
+
+        public MiniCpmAdapter(MiniCpmVisionModel model)
+        {
+            _model = model;
+            _encoder = new MiniCpmVisionEncoder(model);
+        }
+
+        public string ProjectorType => _model.ProjectorType;
+        public int EmbeddingDim => _model.ProjectionDim;
+        public int ImageWidth => _model.ImageSize;
+        public int ImageHeight => _model.ImageSize;
+        public string ImageOpenMarker => "<image>";
+        public string ImageCloseMarker => "</image>";
+        public string PlaceholderMarker => "<unk>";
+
+        public float[] EmbedImage(ReadOnlySpan<byte> rgb, int width, int height, out int tokenCount)
+        {
+            var slices = MiniCpmImagePreprocessor.Preprocess(rgb, width, height, _model.ImageSize);
+            return _encoder.Forward(slices, out tokenCount);
+        }
+
+        public float[] EmbedImageFile(string filePath, out int tokenCount)
+        {
+            var rgb = ImageIO.LoadRgb(filePath, out int w, out int h);
+            return EmbedImage(rgb, w, h, out tokenCount);
+        }
+
+        public void Dispose() => _model.Dispose();
     }
 
     private sealed class QwenVlAdapter : IVisionEmbedder

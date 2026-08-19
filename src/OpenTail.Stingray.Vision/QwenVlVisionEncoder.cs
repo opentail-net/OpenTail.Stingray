@@ -7,9 +7,9 @@ using OpenTail.Stingray.Core;
 namespace OpenTail.Stingray.Vision;
 
 /// <summary>
-/// Native C# Qwen2-VL / Qwen2.5-VL / Qwen3-VL Vision ViT Encoder + 2x2 Spatial Merger + Multimodal Projector.
+/// Native C# Qwen2-VL, Qwen2.5-VL, and Qwen3-VL Vision ViT Encoder + 2x2 Spatial Merger + Multimodal Projector.
 /// Binds real Float16 / Float32 memory-mapped weights directly from the GGUF container.
-/// Reference: examples/llama.cpp/llama.cpp/tools/mtmd/models/qwen2vl.cpp
+/// Reference: examples/llama.cpp/llama.cpp/tools/mtmd/models/qwen2vl.cpp and qwen3vl.cpp
 /// </summary>
 public sealed unsafe class QwenVlVisionEncoder
 {
@@ -24,6 +24,8 @@ public sealed unsafe class QwenVlVisionEncoder
 
     private readonly Half* _patchEmbd0W;
     private readonly Half* _patchEmbd1W;
+    private readonly float* _patchBias;
+    private readonly float* _positionEmbd;
     private readonly float* _postLnW;
     private readonly Half* _mm0W;
     private readonly float* _mm0B;
@@ -35,15 +37,19 @@ public sealed unsafe class QwenVlVisionEncoder
     private sealed class LayerWeights
     {
         public float* Ln1W;
+        public float* Ln1B;
         public Half* AttnQW;
         public float* AttnQB;
         public Half* AttnKW;
         public float* AttnKB;
         public Half* AttnVW;
         public float* AttnVB;
+        public Half* AttnQkvW;
+        public float* AttnQkvB;
         public Half* AttnOutW;
         public float* AttnOutB;
         public float* Ln2W;
+        public float* Ln2B;
         public Half* FfnGateW;
         public float* FfnGateB;
         public Half* FfnUpW;
@@ -71,7 +77,16 @@ public sealed unsafe class QwenVlVisionEncoder
 
         // Ingest Stem & Global Tensors
         _patchEmbd0W = GetTensorPtr<Half>(gguf, "v.patch_embd.weight");
+        if (_patchEmbd0W == null) _patchEmbd0W = GetTensorPtr<Half>(gguf, "v.patch_embd.0.weight");
+
         _patchEmbd1W = GetTensorPtr<Half>(gguf, "v.patch_embd.weight.1");
+        if (_patchEmbd1W == null) _patchEmbd1W = GetTensorPtr<Half>(gguf, "v.patch_embd.1.weight");
+
+        _patchBias = GetTensorPtr<float>(gguf, "v.patch_bias");
+
+        _positionEmbd = GetTensorPtr<float>(gguf, "v.position_embd.weight");
+        if (_positionEmbd == null) _positionEmbd = GetTensorPtr<float>(gguf, "v.position_embd");
+
         _postLnW = GetTensorPtr<float>(gguf, "v.post_ln.weight");
 
         _mm0W = GetTensorPtr<Half>(gguf, "mm.0.weight");
@@ -93,15 +108,19 @@ public sealed unsafe class QwenVlVisionEncoder
             _blocks[l] = new LayerWeights
             {
                 Ln1W = GetTensorPtr<float>(gguf, $"v.blk.{l}.ln1.weight"),
+                Ln1B = GetTensorPtr<float>(gguf, $"v.blk.{l}.ln1.bias"),
                 AttnQW = GetTensorPtr<Half>(gguf, $"v.blk.{l}.attn_q.weight"),
                 AttnQB = GetTensorPtr<float>(gguf, $"v.blk.{l}.attn_q.bias"),
                 AttnKW = GetTensorPtr<Half>(gguf, $"v.blk.{l}.attn_k.weight"),
                 AttnKB = GetTensorPtr<float>(gguf, $"v.blk.{l}.attn_k.bias"),
                 AttnVW = GetTensorPtr<Half>(gguf, $"v.blk.{l}.attn_v.weight"),
                 AttnVB = GetTensorPtr<float>(gguf, $"v.blk.{l}.attn_v.bias"),
+                AttnQkvW = GetTensorPtr<Half>(gguf, $"v.blk.{l}.attn_qkv.weight"),
+                AttnQkvB = GetTensorPtr<float>(gguf, $"v.blk.{l}.attn_qkv.bias"),
                 AttnOutW = GetTensorPtr<Half>(gguf, $"v.blk.{l}.attn_out.weight"),
                 AttnOutB = GetTensorPtr<float>(gguf, $"v.blk.{l}.attn_out.bias"),
                 Ln2W = GetTensorPtr<float>(gguf, $"v.blk.{l}.ln2.weight"),
+                Ln2B = GetTensorPtr<float>(gguf, $"v.blk.{l}.ln2.bias"),
                 FfnGateW = GetTensorPtr<Half>(gguf, $"v.blk.{l}.ffn_gate.weight"),
                 FfnGateB = GetTensorPtr<float>(gguf, $"v.blk.{l}.ffn_gate.bias"),
                 FfnUpW = GetTensorPtr<Half>(gguf, $"v.blk.{l}.ffn_up.weight"),
@@ -122,7 +141,7 @@ public sealed unsafe class QwenVlVisionEncoder
 
     /// <summary>
     /// Executes the full Qwen-VL ViT encoder pipeline:
-    /// Preprocessed CHW pixels -> Dual Conv2D Patch Embeddings -> 32 ViT Layers with M-RoPE -> Post-Norm -> 2x2 Spatial Merge MLP -> LLM Visual Tokens.
+    /// Preprocessed CHW pixels -> Dual Conv2D Patch Embeddings -> ViT Layers with M-RoPE -> Post-Norm -> 2x2 Spatial Merge MLP -> LLM Visual Tokens.
     /// </summary>
     public float[] Forward(ReadOnlySpan<float> chw, int targetWidth, int targetHeight, out int tokenCount)
     {
@@ -150,14 +169,28 @@ public sealed unsafe class QwenVlVisionEncoder
         {
             var blk = _blocks[l];
 
-            // RMSNorm 1
+            // Norm 1
             Array.Copy(hiddenStates, normed, hiddenStates.Length);
-            ApplyRmsNorm(normed, numPatches, _embd, blk.Ln1W);
+            ApplyNorm(normed, numPatches, _embd, blk.Ln1W, blk.Ln1B);
 
             // Q, K, V Linear Projections (FP16 weights + FP32 biases)
-            MatVecF16(normed, blk.AttnQW, blk.AttnQB, numPatches, _embd, _embd, qBuf);
-            MatVecF16(normed, blk.AttnKW, blk.AttnKB, numPatches, _embd, _embd, kBuf);
-            MatVecF16(normed, blk.AttnVW, blk.AttnVB, numPatches, _embd, _embd, vBuf);
+            if (blk.AttnQkvW != null)
+            {
+                var qkvBuf = new float[numPatches * 3 * _embd];
+                MatVecF16(normed, blk.AttnQkvW, blk.AttnQkvB, numPatches, _embd, 3 * _embd, qkvBuf);
+                for (int p = 0; p < numPatches; p++)
+                {
+                    Array.Copy(qkvBuf, p * 3 * _embd, qBuf, p * _embd, _embd);
+                    Array.Copy(qkvBuf, p * 3 * _embd + _embd, kBuf, p * _embd, _embd);
+                    Array.Copy(qkvBuf, p * 3 * _embd + 2 * _embd, vBuf, p * _embd, _embd);
+                }
+            }
+            else
+            {
+                MatVecF16(normed, blk.AttnQW, blk.AttnQB, numPatches, _embd, _embd, qBuf);
+                MatVecF16(normed, blk.AttnKW, blk.AttnKB, numPatches, _embd, _embd, kBuf);
+                MatVecF16(normed, blk.AttnVW, blk.AttnVB, numPatches, _embd, _embd, vBuf);
+            }
 
             // Multimodal 2D RoPE (M-RoPE)
             ApplyMrope(qBuf, kBuf, patchesX, patchesY);
@@ -169,9 +202,9 @@ public sealed unsafe class QwenVlVisionEncoder
             // Residual 1
             for (int i = 0; i < hiddenStates.Length; i++) hiddenStates[i] += attnOut[i];
 
-            // RMSNorm 2
+            // Norm 2
             Array.Copy(hiddenStates, normed, hiddenStates.Length);
-            ApplyRmsNorm(normed, numPatches, _embd, blk.Ln2W);
+            ApplyNorm(normed, numPatches, _embd, blk.Ln2W, blk.Ln2B);
 
             // SwiGLU FFN
             int ffnDim = blk.FfnIntermediate;
@@ -196,7 +229,7 @@ public sealed unsafe class QwenVlVisionEncoder
         }
 
         // 3. Post-Norm
-        ApplyRmsNorm(hiddenStates, numPatches, _embd, _postLnW);
+        ApplyNorm(hiddenStates, numPatches, _embd, _postLnW, null);
 
         // 4. 2x2 Spatial Merge & Multimodal MLP Projection (5120 -> 5120 -> 3584)
         var visualTokens = new float[tokenCount * _projDim];
@@ -223,7 +256,7 @@ public sealed unsafe class QwenVlVisionEncoder
                 {
                     for (int d = 0; d < _embd; d++)
                     {
-                        float sum = 0f;
+                        float sum = _patchBias != null ? _patchBias[d] : 0f;
                         int wOffset = d * (3 * patchArea);
                         for (int c = 0; c < 3; c++)
                         {
@@ -239,6 +272,12 @@ public sealed unsafe class QwenVlVisionEncoder
                                 }
                             }
                         }
+
+                        if (_positionEmbd != null)
+                        {
+                            sum += _positionEmbd[patchIdx * _embd + d];
+                        }
+
                         output[outOffset + d] = sum;
                     }
                 }
@@ -246,22 +285,44 @@ public sealed unsafe class QwenVlVisionEncoder
         }
     }
 
-    private void ApplyRmsNorm(float[] states, int nPatches, int dim, float* weights)
+    private void ApplyNorm(float[] states, int nPatches, int dim, float* weights, float* bias)
     {
         for (int p = 0; p < nPatches; p++)
         {
             int off = p * dim;
-            float sumSq = 0f;
-            for (int d = 0; d < dim; d++) sumSq += states[off + d] * states[off + d];
-            float rms = MathF.Sqrt(sumSq / dim + _eps);
-
-            if (weights != null)
+            if (_useRmsNorm)
             {
-                for (int d = 0; d < dim; d++) states[off + d] = (states[off + d] / rms) * weights[d];
+                float sumSq = 0f;
+                for (int d = 0; d < dim; d++) sumSq += states[off + d] * states[off + d];
+                float rms = MathF.Sqrt(sumSq / dim + _eps);
+
+                if (weights != null)
+                {
+                    for (int d = 0; d < dim; d++) states[off + d] = (states[off + d] / rms) * weights[d];
+                }
+                else
+                {
+                    for (int d = 0; d < dim; d++) states[off + d] /= rms;
+                }
             }
             else
             {
-                for (int d = 0; d < dim; d++) states[off + d] /= rms;
+                float mean = 0f;
+                for (int d = 0; d < dim; d++) mean += states[off + d];
+                mean /= dim;
+                float var = 0f;
+                for (int d = 0; d < dim; d++)
+                {
+                    float diff = states[off + d] - mean;
+                    var += diff * diff;
+                }
+                float std = MathF.Sqrt(var / dim + _eps);
+                for (int d = 0; d < dim; d++)
+                {
+                    float w = weights != null ? weights[d] : 1f;
+                    float b = bias != null ? bias[d] : 0f;
+                    states[off + d] = ((states[off + d] - mean) / std) * w + b;
+                }
             }
         }
     }
