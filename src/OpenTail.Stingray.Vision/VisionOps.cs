@@ -644,6 +644,91 @@ public static unsafe class VisionOps
     }
 
     /// <summary>
+    /// 3D Spatio-Temporal RoPE for video/temporal transformer architectures.
+    /// </summary>
+    public static void ApplyRoPE3D(
+        float[] q,
+        float[] k,
+        int numTokens,
+        int numHeads,
+        int headDim,
+        int tDim,
+        int hDim,
+        int wDim,
+        float theta = 10000.0f)
+    {
+        int bandSize = headDim / 6;
+        int hw = hDim * wDim;
+
+        Parallel.For(0, numTokens, tokenIdx =>
+        {
+            int pt = tokenIdx / (hw > 0 ? hw : 1);
+            int rem = tokenIdx % (hw > 0 ? hw : 1);
+            int py = rem / (wDim > 0 ? wDim : 1);
+            int px = rem % (wDim > 0 ? wDim : 1);
+
+            for (int h = 0; h < numHeads; h++)
+            {
+                int headOff = (tokenIdx * numHeads + h) * headDim;
+
+                // Temporal
+                for (int d = 0; d < bandSize; d++)
+                {
+                    float freqT = MathF.Pow(theta, -2.0f * d / (bandSize * 2));
+                    float cosT = MathF.Cos(pt * freqT);
+                    float sinT = MathF.Sin(pt * freqT);
+
+                    int i0 = headOff + d;
+                    int i1 = headOff + d + bandSize;
+                    float q0 = q[i0], q1 = q[i1];
+                    q[i0] = q0 * cosT - q1 * sinT;
+                    q[i1] = q0 * sinT + q1 * cosT;
+
+                    float k0 = k[i0], k1 = k[i1];
+                    k[i0] = k0 * cosT - k1 * sinT;
+                    k[i1] = k0 * sinT + k1 * cosT;
+                }
+
+                // Height/Y
+                for (int d = 0; d < bandSize; d++)
+                {
+                    float freqY = MathF.Pow(theta, -2.0f * d / (bandSize * 2));
+                    float cosY = MathF.Cos(py * freqY);
+                    float sinY = MathF.Sin(py * freqY);
+
+                    int i0 = headOff + 2 * bandSize + d;
+                    int i1 = headOff + 3 * bandSize + d;
+                    float q0 = q[i0], q1 = q[i1];
+                    q[i0] = q0 * cosY - q1 * sinY;
+                    q[i1] = q0 * sinY + q1 * cosY;
+
+                    float k0 = k[i0], k1 = k[i1];
+                    k[i0] = k0 * cosY - k1 * sinY;
+                    k[i1] = k0 * sinY + k1 * cosY;
+                }
+
+                // Width/X
+                for (int d = 0; d < bandSize; d++)
+                {
+                    float freqX = MathF.Pow(theta, -2.0f * d / (bandSize * 2));
+                    float cosX = MathF.Cos(px * freqX);
+                    float sinX = MathF.Sin(px * freqX);
+
+                    int i0 = headOff + 4 * bandSize + d;
+                    int i1 = headOff + 5 * bandSize + d;
+                    float q0 = q[i0], q1 = q[i1];
+                    q[i0] = q0 * cosX - q1 * sinX;
+                    q[i1] = q0 * sinX + q1 * cosX;
+
+                    float k0 = k[i0], k1 = k[i1];
+                    k[i0] = k0 * cosX - k1 * sinX;
+                    k[i1] = k0 * sinX + k1 * cosX;
+                }
+            }
+        });
+    }
+
+    /// <summary>
     /// Resolves typed unmanaged pointer to tensor data inside a GgufModel, checking multiple fallback aliases.
     /// </summary>
     public static T* GetTensorPtr<T>(GgufModel gguf, params string[] candidateNames) where T : unmanaged

@@ -635,6 +635,179 @@ extern ""C"" __global__ void squared_relu_inplace(float* __restrict__ x, int n)
     float r = v > 0.0f ? v : 0.0f;
     x[idx] = r * r;
 }
+
+// ── adaln_modulate ────────────────────────────────────────────────────────
+extern ""C"" __global__ void adaln_modulate(
+    const float* __restrict__ input,
+    const float* __restrict__ shift,
+    const float* __restrict__ scale,
+    float* __restrict__ output,
+    int nTokens, int dim, int isRmsNorm, float eps)
+{
+    int t = (int)(blockIdx.x * blockDim.x + threadIdx.x);
+    if (t >= nTokens) return;
+
+    int off = t * dim;
+    if (isRmsNorm != 0) {
+        float sumSq = 0.0f;
+        for (int i = 0; i < dim; i++) {
+            float v = input[off + i];
+            sumSq += v * v;
+        }
+        float invStd = rsqrtf(sumSq / (float)dim + eps);
+        for (int i = 0; i < dim; i++) {
+            float norm = input[off + i] * invStd;
+            float s = scale ? scale[i] : 0.0f;
+            float sh = shift ? shift[i] : 0.0f;
+            output[off + i] = norm * (1.0f + s) + sh;
+        }
+    } else {
+        float sum = 0.0f;
+        for (int i = 0; i < dim; i++) sum += input[off + i];
+        float mean = sum / (float)dim;
+        float sumSq = 0.0f;
+        for (int i = 0; i < dim; i++) {
+            float d = input[off + i] - mean;
+            sumSq += d * d;
+        }
+        float invStd = rsqrtf(sumSq / (float)dim + eps);
+        for (int i = 0; i < dim; i++) {
+            float norm = (input[off + i] - mean) * invStd;
+            float s = scale ? scale[i] : 0.0f;
+            float sh = shift ? shift[i] : 0.0f;
+            output[off + i] = norm * (1.0f + s) + sh;
+        }
+    }
+}
+
+// ── scale_gate_add ────────────────────────────────────────────────────────
+extern ""C"" __global__ void scale_gate_add(
+    float* __restrict__ x,
+    const float* __restrict__ proj,
+    const float* __restrict__ gate,
+    int nTokens, int dim)
+{
+    int t = (int)(blockIdx.x * blockDim.x + threadIdx.x);
+    if (t >= nTokens) return;
+    int off = t * dim;
+    for (int i = 0; i < dim; i++) {
+        float g = gate ? gate[i] : 1.0f;
+        x[off + i] += proj[off + i] * g;
+    }
+}
+
+// ── qk_norm ───────────────────────────────────────────────────────────────
+extern ""C"" __global__ void qk_norm(
+    float* __restrict__ q,
+    float* __restrict__ k,
+    const float* __restrict__ qScale,
+    const float* __restrict__ kScale,
+    int nTokens, int numHeads, int headDim, float eps)
+{
+    int idx = (int)(blockIdx.x * blockDim.x + threadIdx.x);
+    int totalHeads = nTokens * numHeads;
+    if (idx >= totalHeads) return;
+
+    int off = idx * headDim;
+
+    // RMSNorm Q
+    float sumSqQ = 0.0f;
+    for (int i = 0; i < headDim; i++) {
+        float v = q[off + i];
+        sumSqQ += v * v;
+    }
+    float invStdQ = rsqrtf(sumSqQ / (float)headDim + eps);
+    for (int i = 0; i < headDim; i++) {
+        float s = qScale ? qScale[i] : 1.0f;
+        q[off + i] = (q[off + i] * invStdQ) * s;
+    }
+
+    // RMSNorm K
+    float sumSqK = 0.0f;
+    for (int i = 0; i < headDim; i++) {
+        float v = k[off + i];
+        sumSqK += v * v;
+    }
+    float invStdK = rsqrtf(sumSqK / (float)headDim + eps);
+    for (int i = 0; i < headDim; i++) {
+        float s = kScale ? kScale[i] : 1.0f;
+        k[off + i] = (k[off + i] * invStdK) * s;
+    }
+}
+
+// ── rope_3d ───────────────────────────────────────────────────────────────
+extern ""C"" __global__ void rope_3d(
+    float* __restrict__ q,
+    float* __restrict__ k,
+    int numTokens, int numHeads, int headDim,
+    int tDim, int hDim, int wDim, float theta)
+{
+    int tokenIdx = (int)(blockIdx.x * blockDim.x + threadIdx.x);
+    if (tokenIdx >= numTokens) return;
+
+    int hw = hDim * wDim;
+    int pt = tokenIdx / (hw > 0 ? hw : 1);
+    int rem = tokenIdx % (hw > 0 ? hw : 1);
+    int py = rem / (wDim > 0 ? wDim : 1);
+    int px = rem % (wDim > 0 ? wDim : 1);
+
+    int bandSize = headDim / 6;
+
+    for (int h = 0; h < numHeads; h++) {
+        int headOff = (tokenIdx * numHeads + h) * headDim;
+
+        // Temporal rotation
+        for (int d = 0; d < bandSize; d++) {
+            float freqT = powf(theta, -2.0f * (float)d / (float)(bandSize * 2));
+            float cosT = cosf((float)pt * freqT);
+            float sinT = sinf((float)pt * freqT);
+
+            int i0 = headOff + d;
+            int i1 = headOff + d + bandSize;
+            float q0 = q[i0], q1 = q[i1];
+            q[i0] = q0 * cosT - q1 * sinT;
+            q[i1] = q0 * sinT + q1 * cosT;
+
+            float k0 = k[i0], k1 = k[i1];
+            k[i0] = k0 * cosT - k1 * sinT;
+            k[i1] = k0 * sinT + k1 * cosT;
+        }
+
+        // Height/Y rotation
+        for (int d = 0; d < bandSize; d++) {
+            float freqY = powf(theta, -2.0f * (float)d / (float)(bandSize * 2));
+            float cosY = cosf((float)py * freqY);
+            float sinY = sinf((float)py * freqY);
+
+            int i0 = headOff + 2 * bandSize + d;
+            int i1 = headOff + 3 * bandSize + d;
+            float q0 = q[i0], q1 = q[i1];
+            q[i0] = q0 * cosY - q1 * sinY;
+            q[i1] = q0 * sinY + q1 * cosY;
+
+            float k0 = k[i0], k1 = k[i1];
+            k[i0] = k0 * cosY - k1 * sinY;
+            k[i1] = k0 * sinY + k1 * cosY;
+        }
+
+        // Width/X rotation
+        for (int d = 0; d < bandSize; d++) {
+            float freqX = powf(theta, -2.0f * (float)d / (float)(bandSize * 2));
+            float cosX = cosf((float)px * freqX);
+            float sinX = sinf((float)px * freqX);
+
+            int i0 = headOff + 4 * bandSize + d;
+            int i1 = headOff + 5 * bandSize + d;
+            float q0 = q[i0], q1 = q[i1];
+            q[i0] = q0 * cosX - q1 * sinX;
+            q[i1] = q0 * sinX + q1 * cosX;
+
+            float k0 = k[i0], k1 = k[i1];
+            k[i0] = k0 * cosX - k1 * sinX;
+            k[i1] = k0 * sinX + k1 * cosX;
+        }
+    }
+}
 ";
 }
 

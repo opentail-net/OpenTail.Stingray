@@ -110,7 +110,7 @@ public sealed unsafe class CudaBackend : IComputeBackend, IImageOpsBackend, IVis
     private nint   _punshuffleKernel;
     private nint   _upsample2xKernel;
 
-    // Vision kernels (IVisionOpsBackend)
+    // Vision & DiT kernels (IVisionOpsBackend)
     private nint   _visionPixelShuffleKernel;
     private nint   _visionMropeKernel;
     private nint   _visionContinuousRopeKernel;
@@ -118,6 +118,10 @@ public sealed unsafe class CudaBackend : IComputeBackend, IImageOpsBackend, IVis
     private nint   _visionGeluKernel;
     private nint   _visionQuickGeluKernel;
     private nint   _visionSquaredReluKernel;
+    private nint   _adalnModulateKernel;
+    private nint   _scaleGateAddKernel;
+    private nint   _qkNormKernel;
+    private nint   _rope3dKernel;
 
     // LLM transformer kernels (loaded by the same NVRTC compilation as the image kernels).
     private nint   _rmsNormKernel;
@@ -7440,7 +7444,7 @@ public sealed unsafe class CudaBackend : IComputeBackend, IImageOpsBackend, IVis
         _punshuffleKernel  = GetKernelFunc("pixel_unshuffle");
         _upsample2xKernel  = GetKernelFunc("upsample2x");
 
-        // Vision kernels (IVisionOpsBackend)
+        // Vision & DiT kernels (IVisionOpsBackend)
         _visionPixelShuffleKernel   = GetKernelFunc("vision_pixel_shuffle_2x2");
         _visionMropeKernel          = GetKernelFunc("vision_mrope_2d");
         _visionContinuousRopeKernel = GetKernelFunc("vision_continuous_rope_2d");
@@ -7448,6 +7452,10 @@ public sealed unsafe class CudaBackend : IComputeBackend, IImageOpsBackend, IVis
         _visionGeluKernel           = GetKernelFunc("gelu_inplace");
         _visionQuickGeluKernel      = GetKernelFunc("quick_gelu_inplace");
         _visionSquaredReluKernel    = GetKernelFunc("squared_relu_inplace");
+        _adalnModulateKernel        = GetKernelFunc("adaln_modulate");
+        _scaleGateAddKernel         = GetKernelFunc("scale_gate_add");
+        _qkNormKernel               = GetKernelFunc("qk_norm");
+        _rope3dKernel               = GetKernelFunc("rope_3d");
 
         // LLM kernels (same NVRTC module).
         _rmsNormKernel         = GetKernelFunc("llm_rmsnorm");
@@ -8140,6 +8148,77 @@ public sealed unsafe class CudaBackend : IComputeBackend, IImageOpsBackend, IVis
         int p1 = n;
         nint* args = stackalloc nint[2] { (nint)(&p0), (nint)(&p1) };
         Launch1D(_visionSquaredReluKernel, n, args);
+    }
+
+    /// <inheritdoc/>
+    public void AdaLNModulate(Tensor output, Tensor input, Tensor shift, Tensor scale, int nTokens, int dim, bool isRmsNorm = true, float eps = 1e-5f)
+    {
+        EnsureImageKernels();
+        if (!_imageKernelsAvailable)
+            throw new NotSupportedException("NVRTC is not available; cannot run CUDA image kernels.");
+
+        nint p0 = GetDevPtr(input), p1 = GetDevPtr(shift), p2 = GetDevPtr(scale), p3 = GetDevPtr(output);
+        int p4 = nTokens, p5 = dim, p6 = isRmsNorm ? 1 : 0;
+        float p7 = eps;
+        nint* args = stackalloc nint[8]
+        {
+            (nint)(&p0), (nint)(&p1), (nint)(&p2), (nint)(&p3),
+            (nint)(&p4), (nint)(&p5), (nint)(&p6), (nint)(&p7)
+        };
+        Launch1D(_adalnModulateKernel, nTokens, args);
+    }
+
+    /// <inheritdoc/>
+    public void ScaleGateAdd(Tensor x, Tensor proj, Tensor gate, int nTokens, int dim)
+    {
+        EnsureImageKernels();
+        if (!_imageKernelsAvailable)
+            throw new NotSupportedException("NVRTC is not available; cannot run CUDA image kernels.");
+
+        nint p0 = GetDevPtr(x), p1 = GetDevPtr(proj), p2 = GetDevPtr(gate);
+        int p3 = nTokens, p4 = dim;
+        nint* args = stackalloc nint[5]
+        {
+            (nint)(&p0), (nint)(&p1), (nint)(&p2),
+            (nint)(&p3), (nint)(&p4)
+        };
+        Launch1D(_scaleGateAddKernel, nTokens, args);
+    }
+
+    /// <inheritdoc/>
+    public void QKNorm(Tensor q, Tensor k, Tensor qScale, Tensor kScale, int nTokens, int numHeads, int headDim, float eps = 1e-5f)
+    {
+        EnsureImageKernels();
+        if (!_imageKernelsAvailable)
+            throw new NotSupportedException("NVRTC is not available; cannot run CUDA image kernels.");
+
+        nint p0 = GetDevPtr(q), p1 = GetDevPtr(k), p2 = GetDevPtr(qScale), p3 = GetDevPtr(kScale);
+        int p4 = nTokens, p5 = numHeads, p6 = headDim;
+        float p7 = eps;
+        nint* args = stackalloc nint[8]
+        {
+            (nint)(&p0), (nint)(&p1), (nint)(&p2), (nint)(&p3),
+            (nint)(&p4), (nint)(&p5), (nint)(&p6), (nint)(&p7)
+        };
+        Launch1D(_qkNormKernel, nTokens * numHeads, args);
+    }
+
+    /// <inheritdoc/>
+    public void RoPE3D(Tensor q, Tensor k, int numTokens, int numHeads, int headDim, int tDim, int hDim, int wDim, float theta = 10000.0f)
+    {
+        EnsureImageKernels();
+        if (!_imageKernelsAvailable)
+            throw new NotSupportedException("NVRTC is not available; cannot run CUDA image kernels.");
+
+        nint p0 = GetDevPtr(q), p1 = GetDevPtr(k);
+        int p2 = numTokens, p3 = numHeads, p4 = headDim, p5 = tDim, p6 = hDim, p7 = wDim;
+        float p8 = theta;
+        nint* args = stackalloc nint[9]
+        {
+            (nint)(&p0), (nint)(&p1),
+            (nint)(&p2), (nint)(&p3), (nint)(&p4), (nint)(&p5), (nint)(&p6), (nint)(&p7), (nint)(&p8)
+        };
+        Launch1D(_rope3dKernel, numTokens, args);
     }
 
     // ── Disposal ──────────────────────────────────────────────────────────

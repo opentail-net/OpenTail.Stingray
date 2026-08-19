@@ -107,4 +107,89 @@ public sealed unsafe class GpuVisionOpsTests
             Assert.InRange(mean, 0.49f, 0.51f);
         }
     }
+
+    [Fact]
+    public void DiffusionOps_AdaLNModulate_MatchesMathematicalDefinition()
+    {
+        int nTokens = 2;
+        int dim = 8;
+        var input = new float[] { 1f, 2f, 3f, 4f, 5f, 6f, 7f, 8f,  2f, 3f, 4f, 5f, 6f, 7f, 8f, 9f };
+        var shift = new float[] { 0.1f, 0.2f, 0.3f, 0.4f, 0.5f, 0.6f, 0.7f, 0.8f };
+        var scale = new float[] { 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f };
+        var output = new float[input.Length];
+
+        Diffusion.DiffusionOps.AdaLNModulate(output, input, shift, scale, nTokens, dim, isRmsNorm: true, eps: 1e-5f);
+
+        // For token 0: sum of squares = 1+4+9+16+25+36+49+64 = 204. invStd = 1/sqrt(204/8) = 1/sqrt(25.5) = 0.19803
+        // Element 0: 1 * 0.19803 * 1.5 + 0.1 = 0.397045
+        float expected0 = 1f * (1f / MathF.Sqrt(204f / 8f + 1e-5f)) * 1.5f + 0.1f;
+        Assert.Equal(expected0, output[0], precision: 4);
+    }
+
+    [Fact]
+    public void DiffusionOps_ScaleGateAdd_ModulatesResidualAccurately()
+    {
+        int nTokens = 2;
+        int dim = 4;
+        var x = new float[] { 1f, 1f, 1f, 1f,  2f, 2f, 2f, 2f };
+        var proj = new float[] { 2f, 3f, 4f, 5f,  1f, 2f, 3f, 4f };
+        var gate = new float[] { 0.5f, 0.5f, 0.5f, 0.5f };
+
+        Diffusion.DiffusionOps.ScaleGateAdd(x, proj, gate, nTokens, dim);
+
+        // Token 0: [1 + 2*0.5, 1 + 3*0.5, 1 + 4*0.5, 1 + 5*0.5] = [2, 2.5, 3, 3.5]
+        Assert.Equal(2.0f, x[0]);
+        Assert.Equal(2.5f, x[1]);
+        Assert.Equal(3.0f, x[2]);
+        Assert.Equal(3.5f, x[3]);
+    }
+
+    [Fact]
+    public void DiffusionOps_QKNorm_NormalizesPerHeadIndependently()
+    {
+        int nTokens = 1;
+        int numHeads = 2;
+        int headDim = 4;
+        var q = new float[] { 1f, 2f, 3f, 4f,  10f, 20f, 30f, 40f };
+        var k = new float[] { 2f, 2f, 2f, 2f,  5f, 5f, 5f, 5f };
+        var qScale = new float[] { 1.5f, 1.5f, 1.5f, 1.5f };
+        var kScale = new float[] { 0.8f, 0.8f, 0.8f, 0.8f };
+
+        Diffusion.DiffusionOps.QKNorm(q, k, qScale, kScale, nTokens, numHeads, headDim, 1e-5f);
+
+        // Check head 0 of Q: sumSq = 1+4+9+16 = 30. invStd = 1/sqrt(30/4) = 1/sqrt(7.5) = 0.365148.
+        // Element 0: 1 * 0.365148 * 1.5 = 0.54772
+        float expectedQ0 = 1f * (1f / MathF.Sqrt(7.5f + 1e-5f)) * 1.5f;
+        Assert.Equal(expectedQ0, q[0], precision: 4);
+
+        // Check head 0 of K: sumSq = 4*4 = 16. invStd = 1/sqrt(16/4) = 1/2 = 0.5.
+        // Element 0: 2 * 0.5 * 0.8 = 0.8
+        Assert.Equal(0.8f, k[0], precision: 4);
+    }
+
+    [Fact]
+    public void VisionOps_RoPE3D_PreservesNormsAcrossTemporalAndSpatialAxes()
+    {
+        int numTokens = 8;
+        int numHeads = 2;
+        int headDim = 12; // 6 sub-bands: 2 temporal, 2 height, 2 width
+        int tDim = 2, hDim = 2, wDim = 2;
+
+        var q = new float[numTokens * numHeads * headDim];
+        var k = new float[numTokens * numHeads * headDim];
+        for (int i = 0; i < q.Length; i++) { q[i] = (i * 0.37f) % 5f; k[i] = (i * 0.51f) % 5f; }
+
+        var qCopy = (float[])q.Clone();
+        var kCopy = (float[])k.Clone();
+
+        VisionOps.ApplyRoPE3D(q, k, numTokens, numHeads, headDim, tDim, hDim, wDim, 10000.0f);
+
+        float qNormBefore = TensorPrimitives.SumOfSquares(qCopy.AsSpan());
+        float qNormAfter = TensorPrimitives.SumOfSquares(q.AsSpan());
+        Assert.InRange(qNormAfter, qNormBefore * 0.999f, qNormBefore * 1.001f);
+
+        float kNormBefore = TensorPrimitives.SumOfSquares(kCopy.AsSpan());
+        float kNormAfter = TensorPrimitives.SumOfSquares(k.AsSpan());
+        Assert.InRange(kNormAfter, kNormBefore * 0.999f, kNormBefore * 1.001f);
+    }
 }

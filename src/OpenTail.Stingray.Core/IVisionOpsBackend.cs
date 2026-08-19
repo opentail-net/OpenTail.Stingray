@@ -42,4 +42,29 @@ public interface IVisionOpsBackend : IComputeBackend
     /// Vision Squared ReLU activation in-place (max(0, x)^2).
     /// </summary>
     void VisionSquaredReluInPlace(Tensor x);
+
+    /// <summary>
+    /// Fused AdaLN-Zero Modulation:
+    /// y = Norm(x, eps) * (1 + scale) + shift
+    /// where Norm is RMSNorm (if isRmsNorm=true) or LayerNorm.
+    /// </summary>
+    void AdaLNModulate(Tensor output, Tensor input, Tensor shift, Tensor scale, int nTokens, int dim, bool isRmsNorm = true, float eps = 1e-5f);
+
+    /// <summary>
+    /// Modulated residual addition:
+    /// x = x + proj * gate
+    /// </summary>
+    void ScaleGateAdd(Tensor x, Tensor proj, Tensor gate, int nTokens, int dim);
+
+    /// <summary>
+    /// Per-head QK Normalization in VRAM:
+    /// q_h = RMSNorm(q_h) * qScale, k_h = RMSNorm(k_h) * kScale
+    /// </summary>
+    void QKNorm(Tensor q, Tensor k, Tensor qScale, Tensor kScale, int nTokens, int numHeads, int headDim, float eps = 1e-5f);
+
+    /// <summary>
+    /// 3D Spatio-Temporal Rotary Position Embedding for video DiTs (e.g. Wan2.1, HunyuanVideo).
+    /// Rotates Q and K across (temporal, height, width) sub-bands.
+    /// </summary>
+    void RoPE3D(Tensor q, Tensor k, int numTokens, int numHeads, int headDim, int tDim, int hDim, int wDim, float theta = 10000.0f);
 }

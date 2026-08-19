@@ -7327,4 +7327,215 @@ internal static class Shaders
             data[idx] = r * r;
         }
         """;
+
+    internal const string AdaLNModulate = """
+        #version 450
+        layout(local_size_x = 256) in;
+
+        layout(binding = 0) readonly buffer InputBuf { float inData[]; };
+        layout(binding = 1) readonly buffer ShiftBuf { float shiftData[]; };
+        layout(binding = 2) readonly buffer ScaleBuf { float scaleData[]; };
+        layout(binding = 3) writeonly buffer OutputBuf { float outData[]; };
+
+        layout(push_constant) uniform Params {
+            uint nTokens;
+            uint dim;
+            uint isRmsNorm;
+            float eps;
+        };
+
+        void main() {
+            uint t = gl_GlobalInvocationID.x;
+            if (t >= nTokens) return;
+
+            uint off = t * dim;
+            if (isRmsNorm != 0u) {
+                float sumSq = 0.0;
+                for (uint i = 0u; i < dim; i++) {
+                    float v = inData[off + i];
+                    sumSq += v * v;
+                }
+                float invStd = inversesqrt(sumSq / float(dim) + eps);
+                for (uint i = 0u; i < dim; i++) {
+                    float norm = inData[off + i] * invStd;
+                    float s = scaleData[i];
+                    float sh = shiftData[i];
+                    outData[off + i] = norm * (1.0 + s) + sh;
+                }
+            } else {
+                float sum = 0.0;
+                for (uint i = 0u; i < dim; i++) sum += inData[off + i];
+                float mean = sum / float(dim);
+                float sumSq = 0.0;
+                for (uint i = 0u; i < dim; i++) {
+                    float d = inData[off + i] - mean;
+                    sumSq += d * d;
+                }
+                float invStd = inversesqrt(sumSq / float(dim) + eps);
+                for (uint i = 0u; i < dim; i++) {
+                    float norm = (inData[off + i] - mean) * invStd;
+                    float s = scaleData[i];
+                    float sh = shiftData[i];
+                    outData[off + i] = norm * (1.0 + s) + sh;
+                }
+            }
+        }
+        """;
+
+    internal const string ScaleGateAdd = """
+        #version 450
+        layout(local_size_x = 256) in;
+
+        layout(binding = 0) buffer XBuf { float xData[]; };
+        layout(binding = 1) readonly buffer ProjBuf { float projData[]; };
+        layout(binding = 2) readonly buffer GateBuf { float gateData[]; };
+
+        layout(push_constant) uniform Params {
+            uint nTokens;
+            uint dim;
+        };
+
+        void main() {
+            uint t = gl_GlobalInvocationID.x;
+            if (t >= nTokens) return;
+
+            uint off = t * dim;
+            for (uint i = 0u; i < dim; i++) {
+                xData[off + i] += projData[off + i] * gateData[i];
+            }
+        }
+        """;
+
+    internal const string QKNorm = """
+        #version 450
+        layout(local_size_x = 256) in;
+
+        layout(binding = 0) buffer QBuf { float qData[]; };
+        layout(binding = 1) buffer KBuf { float kData[]; };
+        layout(binding = 2) readonly buffer QScaleBuf { float qScaleData[]; };
+        layout(binding = 3) readonly buffer KScaleBuf { float kScaleData[]; };
+
+        layout(push_constant) uniform Params {
+            uint nTokens;
+            uint numHeads;
+            uint headDim;
+            float eps;
+        };
+
+        void main() {
+            uint idx = gl_GlobalInvocationID.x;
+            uint totalHeads = nTokens * numHeads;
+            if (idx >= totalHeads) return;
+
+            uint off = idx * headDim;
+
+            // RMSNorm Q
+            float sumSqQ = 0.0;
+            for (uint i = 0u; i < headDim; i++) {
+                float v = qData[off + i];
+                sumSqQ += v * v;
+            }
+            float invStdQ = inversesqrt(sumSqQ / float(headDim) + eps);
+            for (uint i = 0u; i < headDim; i++) {
+                qData[off + i] = (qData[off + i] * invStdQ) * qScaleData[i];
+            }
+
+            // RMSNorm K
+            float sumSqK = 0.0;
+            for (uint i = 0u; i < headDim; i++) {
+                float v = kData[off + i];
+                sumSqK += v * v;
+            }
+            float invStdK = inversesqrt(sumSqK / float(headDim) + eps);
+            for (uint i = 0u; i < headDim; i++) {
+                kData[off + i] = (kData[off + i] * invStdK) * kScaleData[i];
+            }
+        }
+        """;
+
+    internal const string RoPE3D = """
+        #version 450
+        layout(local_size_x = 256) in;
+
+        layout(binding = 0) buffer QBuf { float qData[]; };
+        layout(binding = 1) buffer KBuf { float kData[]; };
+
+        layout(push_constant) uniform Params {
+            uint numTokens;
+            uint numHeads;
+            uint headDim;
+            uint tDim;
+            uint hDim;
+            uint wDim;
+            float theta;
+        };
+
+        void main() {
+            uint tokenIdx = gl_GlobalInvocationID.x;
+            if (tokenIdx >= numTokens) return;
+
+            uint hw = hDim * wDim;
+            uint pt = tokenIdx / (hw > 0u ? hw : 1u);
+            uint rem = tokenIdx % (hw > 0u ? hw : 1u);
+            uint py = rem / (wDim > 0u ? wDim : 1u);
+            uint px = rem % (wDim > 0u ? wDim : 1u);
+
+            uint bandSize = headDim / 6u;
+
+            for (uint h = 0u; h < numHeads; h++) {
+                uint headOff = (tokenIdx * numHeads + h) * headDim;
+
+                // Temporal
+                for (uint d = 0u; d < bandSize; d++) {
+                    float freqT = pow(theta, -2.0 * float(d) / float(bandSize * 2u));
+                    float cosT = cos(float(pt) * freqT);
+                    float sinT = sin(float(pt) * freqT);
+
+                    uint i0 = headOff + d;
+                    uint i1 = headOff + d + bandSize;
+                    float q0 = qData[i0], q1 = qData[i1];
+                    qData[i0] = q0 * cosT - q1 * sinT;
+                    qData[i1] = q0 * sinT + q1 * cosT;
+
+                    float k0 = kData[i0], k1 = kData[i1];
+                    kData[i0] = k0 * cosT - k1 * sinT;
+                    kData[i1] = k0 * sinT + k1 * cosT;
+                }
+
+                // Height/Y
+                for (uint d = 0u; d < bandSize; d++) {
+                    float freqY = pow(theta, -2.0 * float(d) / float(bandSize * 2u));
+                    float cosY = cos(float(py) * freqY);
+                    float sinY = sin(float(py) * freqY);
+
+                    uint i0 = headOff + 2u * bandSize + d;
+                    uint i1 = headOff + 3u * bandSize + d;
+                    float q0 = qData[i0], q1 = qData[i1];
+                    qData[i0] = q0 * cosY - q1 * sinY;
+                    qData[i1] = q0 * sinY + q1 * cosY;
+
+                    float k0 = kData[i0], k1 = kData[i1];
+                    kData[i0] = k0 * cosY - k1 * sinY;
+                    kData[i1] = k0 * sinY + k1 * cosY;
+                }
+
+                // Width/X
+                for (uint d = 0u; d < bandSize; d++) {
+                    float freqX = pow(theta, -2.0 * float(d) / float(bandSize * 2u));
+                    float cosX = cos(float(px) * freqX);
+                    float sinX = sin(float(px) * freqX);
+
+                    uint i0 = headOff + 4u * bandSize + d;
+                    uint i1 = headOff + 5u * bandSize + d;
+                    float q0 = qData[i0], q1 = qData[i1];
+                    qData[i0] = q0 * cosX - q1 * sinX;
+                    qData[i1] = q0 * sinX + q1 * cosX;
+
+                    float k0 = kData[i0], k1 = kData[i1];
+                    kData[i0] = k0 * cosX - k1 * sinX;
+                    kData[i1] = k0 * sinX + k1 * cosX;
+                }
+            }
+        }
+        """;
 }

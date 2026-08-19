@@ -1479,7 +1479,7 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
     private ComputePipeline? _pixelUnshufflePipeline;
     private ComputePipeline? _upsample2xPipeline;
 
-    // Vision ops pipelines (IVisionOpsBackend)
+    // Vision & DiT ops pipelines (IVisionOpsBackend)
     private ComputePipeline? _visionPixelShufflePipeline;
     private ComputePipeline? _visionMropePipeline;
     private ComputePipeline? _visionContinuousRopePipeline;
@@ -1487,6 +1487,10 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
     private ComputePipeline? _visionGeluPipeline;
     private ComputePipeline? _visionQuickGeluPipeline;
     private ComputePipeline? _visionSquaredReluPipeline;
+    private ComputePipeline? _adalnModulatePipeline;
+    private ComputePipeline? _scaleGateAddPipeline;
+    private ComputePipeline? _qkNormPipeline;
+    private ComputePipeline? _rope3dPipeline;
 
     private struct RmsNormParams{ public uint n; public float eps; }
     private struct RmsNormBatchedParams { public uint n; public float eps; public uint numTokens; }
@@ -1564,12 +1568,16 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
     private struct PixelShuffleParams { public uint inCh; public uint h; public uint w; public uint factor; }
     private struct SpatialParams  { public uint ch; public uint h; public uint w; }
 
-    // Vision ops push constant structs (IVisionOpsBackend)
+    // Vision & DiT ops push constant structs (IVisionOpsBackend)
     private struct VisionPixelShuffleParams { public uint gridY; public uint gridX; public uint inDim; }
     private struct VisionMRoPEParams { public uint patchesX; public uint patchesY; public uint qHeads; public uint kvHeads; public uint headDim; public float theta; }
     private struct VisionContinuous2DRoPEParams { public uint patchesX; public uint patchesY; public uint heads; public uint headDim; public float theta; }
     private struct VisionLayerNormParams { public uint nTokens; public uint embd; public float eps; public uint hasBias; }
     private struct VisionActParams { public uint n; }
+    private struct AdaLNModulateParams { public uint nTokens; public uint dim; public uint isRmsNorm; public float eps; }
+    private struct ScaleGateAddParams { public uint nTokens; public uint dim; }
+    private struct QKNormParams { public uint nTokens; public uint numHeads; public uint headDim; public float eps; }
+    private struct RoPE3DParams { public uint numTokens; public uint numHeads; public uint headDim; public uint tDim; public uint hDim; public uint wDim; public float theta; }
 
     private void DispatchOrRecord(ComputePipeline pipe, ReadOnlySpan<GpuBuffer> buffers,
         uint groupX, void* push, uint groupY = 1, uint groupZ = 1)
@@ -3739,6 +3747,59 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
         DispatchOrRecord(_visionSquaredReluPipeline, [GetBuffer(x)], groups, &p);
     }
 
+    public void AdaLNModulate(Tensor output, Tensor input, Tensor shift, Tensor scale, int nTokens, int dim, bool isRmsNorm = true, float eps = 1e-5f)
+    {
+        _adalnModulatePipeline ??= new ComputePipeline(this, Shaders.AdaLNModulate, 4, pushConstantSize: sizeof(AdaLNModulateParams));
+        var p = new AdaLNModulateParams
+        {
+            nTokens = (uint)nTokens,
+            dim = (uint)dim,
+            isRmsNorm = isRmsNorm ? 1u : 0u,
+            eps = eps
+        };
+        uint groups = ((uint)nTokens + 255u) / 256u;
+        DispatchOrRecord(_adalnModulatePipeline, [GetBuffer(input), GetBuffer(shift), GetBuffer(scale), GetBuffer(output)], groups, &p);
+    }
+
+    public void ScaleGateAdd(Tensor x, Tensor proj, Tensor gate, int nTokens, int dim)
+    {
+        _scaleGateAddPipeline ??= new ComputePipeline(this, Shaders.ScaleGateAdd, 3, pushConstantSize: sizeof(ScaleGateAddParams));
+        var p = new ScaleGateAddParams { nTokens = (uint)nTokens, dim = (uint)dim };
+        uint groups = ((uint)nTokens + 255u) / 256u;
+        DispatchOrRecord(_scaleGateAddPipeline, [GetBuffer(x), GetBuffer(proj), GetBuffer(gate)], groups, &p);
+    }
+
+    public void QKNorm(Tensor q, Tensor k, Tensor qScale, Tensor kScale, int nTokens, int numHeads, int headDim, float eps = 1e-5f)
+    {
+        _qkNormPipeline ??= new ComputePipeline(this, Shaders.QKNorm, 4, pushConstantSize: sizeof(QKNormParams));
+        var p = new QKNormParams
+        {
+            nTokens = (uint)nTokens,
+            numHeads = (uint)numHeads,
+            headDim = (uint)headDim,
+            eps = eps
+        };
+        uint groups = ((uint)(nTokens * numHeads) + 255u) / 256u;
+        DispatchOrRecord(_qkNormPipeline, [GetBuffer(q), GetBuffer(k), GetBuffer(qScale), GetBuffer(kScale)], groups, &p);
+    }
+
+    public void RoPE3D(Tensor q, Tensor k, int numTokens, int numHeads, int headDim, int tDim, int hDim, int wDim, float theta = 10000.0f)
+    {
+        _rope3dPipeline ??= new ComputePipeline(this, Shaders.RoPE3D, 2, pushConstantSize: sizeof(RoPE3DParams));
+        var p = new RoPE3DParams
+        {
+            numTokens = (uint)numTokens,
+            numHeads = (uint)numHeads,
+            headDim = (uint)headDim,
+            tDim = (uint)tDim,
+            hDim = (uint)hDim,
+            wDim = (uint)wDim,
+            theta = theta
+        };
+        uint groups = ((uint)numTokens + 255u) / 256u;
+        DispatchOrRecord(_rope3dPipeline, [GetBuffer(q), GetBuffer(k)], groups, &p);
+    }
+
     // ================================================================
     //  Disposal
     // ================================================================
@@ -3918,6 +3979,10 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IV
         _visionGeluPipeline?.Dispose();
         _visionQuickGeluPipeline?.Dispose();
         _visionSquaredReluPipeline?.Dispose();
+        _adalnModulatePipeline?.Dispose();
+        _scaleGateAddPipeline?.Dispose();
+        _qkNormPipeline?.Dispose();
+        _rope3dPipeline?.Dispose();
 
         _downloadStaging?.Dispose();
         _uploadStaging?.Dispose();

@@ -68,6 +68,89 @@ internal static class DiffusionOps
     }
 
     /// <summary>
+    /// AdaLN-Zero Modulation: y = Norm(x) * (1 + scale) + shift.
+    /// </summary>
+    public static void AdaLNModulate(Span<float> output, ReadOnlySpan<float> input, ReadOnlySpan<float> shift, ReadOnlySpan<float> scale,
+                                     int nTokens, int dim, bool isRmsNorm = true, float eps = 1e-5f)
+    {
+        for (int t = 0; t < nTokens; t++)
+        {
+            var inRow = input.Slice(t * dim, dim);
+            var outRow = output.Slice(t * dim, dim);
+            if (isRmsNorm)
+            {
+                float sumSq = TensorPrimitives.SumOfSquares(inRow);
+                float invStd = 1f / MathF.Sqrt(sumSq / dim + eps);
+                for (int i = 0; i < dim; i++)
+                {
+                    float s = i < scale.Length ? scale[i] : 0f;
+                    float sh = i < shift.Length ? shift[i] : 0f;
+                    outRow[i] = inRow[i] * invStd * (1f + s) + sh;
+                }
+            }
+            else
+            {
+                float mean = TensorPrimitives.Sum(inRow) / dim;
+                float sumSq = 0f;
+                for (int i = 0; i < dim; i++) { float d = inRow[i] - mean; sumSq += d * d; }
+                float invStd = 1f / MathF.Sqrt(sumSq / dim + eps);
+                for (int i = 0; i < dim; i++)
+                {
+                    float s = i < scale.Length ? scale[i] : 0f;
+                    float sh = i < shift.Length ? shift[i] : 0f;
+                    outRow[i] = (inRow[i] - mean) * invStd * (1f + s) + sh;
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Modulated residual addition: x += proj * gate.
+    /// </summary>
+    public static void ScaleGateAdd(Span<float> x, ReadOnlySpan<float> proj, ReadOnlySpan<float> gate, int nTokens, int dim)
+    {
+        for (int t = 0; t < nTokens; t++)
+        {
+            var xRow = x.Slice(t * dim, dim);
+            var projRow = proj.Slice(t * dim, dim);
+            for (int i = 0; i < dim; i++)
+            {
+                float g = i < gate.Length ? gate[i] : 1f;
+                xRow[i] += projRow[i] * g;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Per-head QK Normalization.
+    /// </summary>
+    public static void QKNorm(Span<float> q, Span<float> k, ReadOnlySpan<float> qScale, ReadOnlySpan<float> kScale,
+                              int nTokens, int numHeads, int headDim, float eps = 1e-5f)
+    {
+        int totalHeads = nTokens * numHeads;
+        for (int idx = 0; idx < totalHeads; idx++)
+        {
+            var qSlice = q.Slice(idx * headDim, headDim);
+            float qSq = TensorPrimitives.SumOfSquares(qSlice);
+            float qInv = 1f / MathF.Sqrt(qSq / headDim + eps);
+            for (int i = 0; i < headDim; i++)
+            {
+                float s = i < qScale.Length ? qScale[i] : 1f;
+                qSlice[i] = (qSlice[i] * qInv) * s;
+            }
+
+            var kSlice = k.Slice(idx * headDim, headDim);
+            float kSq = TensorPrimitives.SumOfSquares(kSlice);
+            float kInv = 1f / MathF.Sqrt(kSq / headDim + eps);
+            for (int i = 0; i < headDim; i++)
+            {
+                float s = i < kScale.Length ? kScale[i] : 1f;
+                kSlice[i] = (kSlice[i] * kInv) * s;
+            }
+        }
+    }
+
+    /// <summary>
     /// Group Normalization: groups of channels along C axis.
     /// Input layout: [N, C, H, W] flattened. Normalizes within each group.
     /// </summary>
