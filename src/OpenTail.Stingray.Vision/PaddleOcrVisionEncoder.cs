@@ -1,0 +1,254 @@
+using System;
+using System.Threading.Tasks;
+using OpenTail.Stingray.Core;
+
+namespace OpenTail.Stingray.Vision;
+
+/// <summary>
+/// Native C# PaddleOCR Vision ViT Encoder + 2D M-RoPE + Patch Merger + GELU MLP Projector.
+/// Reference: examples/llama.cpp/llama.cpp/tools/mtmd/models/paddleocr.cpp
+/// </summary>
+public sealed unsafe class PaddleOcrVisionEncoder
+{
+    private readonly PaddleOcrVisionModel _m;
+    private readonly int _embd;
+    private readonly int _heads;
+    private readonly int _headDim;
+    private readonly int _layers;
+    private readonly int _projDim;
+    private readonly int _mergeFactor;
+    private readonly float _eps;
+
+    private readonly Half* _patchEmbdW;
+    private readonly float* _patchEmbdB;
+    private readonly float* _posEmbd;
+    private readonly float* _preLnW;
+    private readonly float* _postLnW;
+
+    private readonly float* _inputNormW;
+    private readonly float* _inputNormB;
+    private readonly Half* _mlp0W;
+    private readonly float* _mlp0B;
+    private readonly Half* _mlp2W;
+    private readonly float* _mlp2B;
+
+    private readonly LayerWeights[] _blocks;
+
+    private sealed class LayerWeights
+    {
+        public float* Ln1W;
+        public float* Ln1B;
+        public Half* AttnQW;
+        public float* AttnQB;
+        public Half* AttnKW;
+        public float* AttnKB;
+        public Half* AttnVW;
+        public float* AttnVB;
+        public Half* AttnOutW;
+        public float* AttnOutB;
+        public float* Ln2W;
+        public float* Ln2B;
+        public Half* FfnUpW;
+        public float* FfnUpB;
+        public Half* FfnDownW;
+        public float* FfnDownB;
+        public int FfnIntermediate;
+    }
+
+    public int EmbeddingDim => _embd;
+    public int ProjectionDim => _projDim;
+
+    public PaddleOcrVisionEncoder(PaddleOcrVisionModel model)
+    {
+        _m = model;
+        _embd = model.EmbeddingDim;
+        _heads = model.HeadCount;
+        _headDim = model.HeadDim;
+        _layers = model.LayerCount;
+        _projDim = model.ProjectionDim;
+        _mergeFactor = model.MergeFactor;
+        _eps = model.Eps;
+
+        var gguf = model.Gguf;
+        _patchEmbdW = VisionOps.GetTensorPtr<Half>(gguf, "v.patch_embd.weight");
+        _patchEmbdB = VisionOps.GetTensorPtr<float>(gguf, "v.patch_embd.bias");
+        _posEmbd = VisionOps.GetTensorPtr<float>(gguf, "v.position_embd.weight", "v.position_embd");
+        _preLnW = VisionOps.GetTensorPtr<float>(gguf, "v.pre_ln.weight");
+        _postLnW = VisionOps.GetTensorPtr<float>(gguf, "v.post_ln.weight");
+
+        _inputNormW = VisionOps.GetTensorPtr<float>(gguf, "mm.input_norm.weight", "mm.0.weight");
+        _inputNormB = VisionOps.GetTensorPtr<float>(gguf, "mm.input_norm.bias", "mm.0.bias");
+        _mlp0W = VisionOps.GetTensorPtr<Half>(gguf, "mm.1.weight", "mm.0.weight");
+        _mlp0B = VisionOps.GetTensorPtr<float>(gguf, "mm.1.bias", "mm.0.bias");
+        _mlp2W = VisionOps.GetTensorPtr<Half>(gguf, "mm.2.weight", "mm.3.weight", "mm.fc.weight");
+        _mlp2B = VisionOps.GetTensorPtr<float>(gguf, "mm.2.bias", "mm.3.bias", "mm.fc.bias");
+
+        _blocks = new LayerWeights[_layers];
+        for (int l = 0; l < _layers; l++)
+        {
+            var upTensor = gguf.FindTensor($"v.blk.{l}.ffn_up.weight");
+            int intermediate = upTensor.HasValue ? (int)upTensor.Value.Dimensions[1] : (_embd * 4);
+
+            _blocks[l] = new LayerWeights
+            {
+                Ln1W = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.ln1.weight"),
+                Ln1B = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.ln1.bias"),
+                AttnQW = VisionOps.GetTensorPtr<Half>(gguf, $"v.blk.{l}.attn_q.weight"),
+                AttnQB = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.attn_q.bias"),
+                AttnKW = VisionOps.GetTensorPtr<Half>(gguf, $"v.blk.{l}.attn_k.weight"),
+                AttnKB = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.attn_k.bias"),
+                AttnVW = VisionOps.GetTensorPtr<Half>(gguf, $"v.blk.{l}.attn_v.weight"),
+                AttnVB = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.attn_v.bias"),
+                AttnOutW = VisionOps.GetTensorPtr<Half>(gguf, $"v.blk.{l}.attn_out.weight"),
+                AttnOutB = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.attn_out.bias"),
+                Ln2W = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.ln2.weight"),
+                Ln2B = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.ln2.bias"),
+                FfnUpW = VisionOps.GetTensorPtr<Half>(gguf, $"v.blk.{l}.ffn_up.weight"),
+                FfnUpB = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.ffn_up.bias"),
+                FfnDownW = VisionOps.GetTensorPtr<Half>(gguf, $"v.blk.{l}.ffn_down.weight"),
+                FfnDownB = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.ffn_down.bias"),
+                FfnIntermediate = intermediate
+            };
+        }
+    }
+
+    public float[] Forward(float[] chw, int targetWidth, int targetHeight, int patchesX, int patchesY, out int tokenCount)
+    {
+        var img = new PaddleOcrPreprocessedImage(chw, targetWidth, targetHeight, patchesX, patchesY);
+        var result = Encode(img);
+        tokenCount = (patchesX / _mergeFactor) * (patchesY / _mergeFactor);
+        return result;
+    }
+
+    public float[] Encode(PaddleOcrPreprocessedImage img)
+    {
+        int numPatches = img.PatchesX * img.PatchesY;
+        var hiddenStates = new float[numPatches * _embd];
+
+        fixed (float* chwPtr = img.Chw)
+        {
+            ExtractPatches(chwPtr, img.TargetWidth, img.TargetHeight, img.PatchesX, img.PatchesY, hiddenStates);
+        }
+
+        if (_preLnW != null) VisionOps.RmsNorm(hiddenStates, numPatches, _embd, _preLnW, _eps);
+
+        var qBuf = new float[numPatches * _embd];
+        var kBuf = new float[numPatches * _embd];
+        var vBuf = new float[numPatches * _embd];
+        var attnOut = new float[numPatches * _embd];
+        var normed = new float[numPatches * _embd];
+
+        for (int l = 0; l < _layers; l++)
+        {
+            var blk = _blocks[l];
+
+            Array.Copy(hiddenStates, normed, hiddenStates.Length);
+            VisionOps.RmsNorm(normed, numPatches, _embd, blk.Ln1W, _eps);
+
+            VisionOps.MatVecF16(normed, blk.AttnQW, blk.AttnQB, numPatches, _embd, _embd, qBuf);
+            VisionOps.MatVecF16(normed, blk.AttnKW, blk.AttnKB, numPatches, _embd, _embd, kBuf);
+            VisionOps.MatVecF16(normed, blk.AttnVW, blk.AttnVB, numPatches, _embd, _embd, vBuf);
+
+            // 2D M-RoPE
+            VisionOps.Interleaved2DRoPE(qBuf, kBuf, img.PatchesX, img.PatchesY, _heads, _headDim);
+
+            VisionOps.Attention(qBuf, kBuf, vBuf, numPatches, _heads, _headDim, normed);
+            VisionOps.MatVecF16(normed, blk.AttnOutW, blk.AttnOutB, numPatches, _embd, _embd, attnOut);
+
+            for (int i = 0; i < hiddenStates.Length; i++) hiddenStates[i] += attnOut[i];
+
+            Array.Copy(hiddenStates, normed, hiddenStates.Length);
+            VisionOps.RmsNorm(normed, numPatches, _embd, blk.Ln2W, _eps);
+
+            int intermediate = blk.FfnIntermediate;
+            var ffnMid = new float[numPatches * intermediate];
+            VisionOps.MatVecF16(normed, blk.FfnUpW, blk.FfnUpB, numPatches, _embd, intermediate, ffnMid);
+            VisionOps.Gelu(ffnMid);
+            VisionOps.MatVecF16(ffnMid, blk.FfnDownW, blk.FfnDownB, numPatches, intermediate, _embd, attnOut);
+
+            for (int i = 0; i < hiddenStates.Length; i++) hiddenStates[i] += attnOut[i];
+        }
+
+        if (_postLnW != null) VisionOps.RmsNorm(hiddenStates, numPatches, _embd, _postLnW, _eps);
+
+        if (_inputNormW != null)
+        {
+            VisionOps.LayerNorm(hiddenStates, numPatches, _embd, _inputNormW, _inputNormB, _eps);
+        }
+
+        // Patch merge 2x2
+        int downH = img.PatchesY / 2;
+        int downW = img.PatchesX / 2;
+        int tokenCount = downH * downW;
+        int mergedDim = _embd * 4;
+
+        var merged = new float[tokenCount * mergedDim];
+        VisionOps.PixelShuffle2x2(hiddenStates, img.PatchesY, img.PatchesX, _embd, merged);
+
+        // 2-layer GELU MLP Projector
+        var visualTokens = new float[tokenCount * _projDim];
+        if (_mlp0W != null && _mlp2W != null)
+        {
+            var midBuf = new float[tokenCount * mergedDim];
+            VisionOps.MatVecF16(merged, _mlp0W, _mlp0B, tokenCount, mergedDim, mergedDim, midBuf);
+            VisionOps.Gelu(midBuf);
+            VisionOps.MatVecF16(midBuf, _mlp2W, _mlp2B, tokenCount, mergedDim, _projDim, visualTokens);
+        }
+        else
+        {
+            for (int t = 0; t < tokenCount; t++)
+            {
+                int copyDim = Math.Min(mergedDim, _projDim);
+                Array.Copy(merged, t * mergedDim, visualTokens, t * _projDim, copyDim);
+            }
+        }
+
+        return visualTokens;
+    }
+
+    private void ExtractPatches(float* chw, int width, int height, int patchesX, int patchesY, float[] output)
+    {
+        int patchSize = _m.PatchSize;
+        int patchArea = patchSize * patchSize;
+        int planeSize = width * height;
+
+        Parallel.For(0, patchesY, py =>
+        {
+            for (int px = 0; px < patchesX; px++)
+            {
+                int patchIdx = py * patchesX + px;
+                int outOffset = patchIdx * _embd;
+
+                if (_patchEmbdW != null)
+                {
+                    for (int d = 0; d < _embd; d++)
+                    {
+                        float sum = _patchEmbdB != null ? _patchEmbdB[d] : 0f;
+                        int wOffset = d * (3 * patchArea);
+                        for (int c = 0; c < 3; c++)
+                        {
+                            for (int dy = 0; dy < patchSize; dy++)
+                            {
+                                int y = py * patchSize + dy;
+                                for (int dx = 0; dx < patchSize; dx++)
+                                {
+                                    int x = px * patchSize + dx;
+                                    float pixel = chw[c * planeSize + (y * width + x)];
+                                    int weightIdx = wOffset + c * patchArea + (dy * patchSize + dx);
+                                    sum += pixel * (float)_patchEmbdW[weightIdx];
+                                }
+                            }
+                        }
+
+                        if (_posEmbd != null && patchIdx < 729)
+                        {
+                            sum += _posEmbd[patchIdx * _embd + d];
+                        }
+
+                        output[outOffset + d] = sum;
+                    }
+                }
+            }
+        });
+    }
+}

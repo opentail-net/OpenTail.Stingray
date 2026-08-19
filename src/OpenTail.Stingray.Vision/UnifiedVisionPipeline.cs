@@ -37,10 +37,34 @@ public static class UnifiedVisionPipeline
             return new NemotronAdapter(model);
         }
 
-        if (projType != null && (projType.Contains("dotsocr") || projType.Contains("dots_ocr") || projType.Contains("paddleocr") || projType.Contains("paddle_ocr")))
+        if (projType != null && (projType.Contains("paddleocr") || projType.Contains("paddle_ocr")))
+        {
+            var model = PaddleOcrVisionModel.Open(mmprojPath);
+            return new PaddleOcrAdapter(model);
+        }
+
+        if (projType != null && (projType.Contains("dotsocr") || projType.Contains("dots_ocr")))
         {
             var model = DotsOcrVisionModel.Open(mmprojPath);
             return new DotsOcrAdapter(model);
+        }
+
+        if (projType != null && (projType.Contains("cogvlm") || projType.Contains("cogagent")))
+        {
+            var model = CogVlmVisionModel.Open(mmprojPath);
+            return new CogVlmAdapter(model);
+        }
+
+        if (projType != null && (projType.Contains("granite4") || projType.Contains("granite-vision") || projType.Contains("granite4-vision")))
+        {
+            var model = Granite4VisionModel.Open(mmprojPath);
+            return new Granite4Adapter(model);
+        }
+
+        if (projType != null && (projType.Contains("mobilenetv5") || projType.Contains("mobilenet_v5")))
+        {
+            var model = MobileNetV5VisionModel.Open(mmprojPath);
+            return new MobileNetV5Adapter(model);
         }
 
         if (projType != null && (projType.Contains("deepseekocr") || projType.Contains("deepseek-ocr") || projType.Contains("deepseek_ocr")))
