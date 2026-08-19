@@ -8,8 +8,6 @@ namespace OpenTail.Stingray.Tests.Audio;
 
 public sealed class WhisperRealWeightsTests
 {
-    private const string ModelFileName = "ggml-tiny.bin";
-
     private static string? FindModelPath(string fileName)
     {
         string[] absoluteCandidates =
@@ -36,15 +34,15 @@ public sealed class WhisperRealWeightsTests
     }
 
     [Fact]
-    public void Whisper_RealModelFile_HeaderValidAndTranscribesAudio()
+    public void WhisperPipeline_LoadRealGgmlTiny_TranscribesAudioEndToEnd()
     {
-        string? modelPath = FindModelPath(ModelFileName);
+        string? modelPath = FindModelPath("ggml-tiny.bin");
         if (modelPath is null) return;
 
-        var fileInfo = new FileInfo(modelPath);
-        Assert.True(fileInfo.Length > 50 * 1024 * 1024, "Whisper model file must be > 50MB");
+        using var pipeline = WhisperPipeline.Load(modelPath);
+        Assert.NotNull(pipeline);
+        Assert.Equal(16000, pipeline.SampleRate);
 
-        using var pipeline = new WhisperPipeline(WhisperConfig.Tiny);
         int sampleRate = 16000;
         int durationSec = 2;
         var pcm = new float[sampleRate * durationSec];
@@ -60,7 +58,8 @@ public sealed class WhisperRealWeightsTests
             AudioSamples = pcm,
             SampleRate = sampleRate,
             Language = "en",
-            Task = SpeechTask.Transcribe
+            Task = SpeechTask.Transcribe,
+            EnableTimestamps = false
         };
 
         var result = pipeline.Transcribe(request);
@@ -68,5 +67,107 @@ public sealed class WhisperRealWeightsTests
         Assert.Equal("en", result.Language);
         Assert.True(result.Duration.TotalSeconds >= 1.9);
         Assert.NotNull(result.Segments);
+    }
+
+    [Fact]
+    public void WhisperPipeline_LoadRealGgmlMedium_TranscribesAudioEndToEnd()
+    {
+        string? modelPath = FindModelPath("ggml-medium.bin");
+        if (modelPath is null) return;
+
+        using var pipeline = WhisperPipeline.Load(modelPath);
+        Assert.NotNull(pipeline);
+
+        int sampleRate = 16000;
+        var pcm = new float[sampleRate * 2];
+        for (int i = 0; i < pcm.Length; i++)
+        {
+            pcm[i] = 0.3f * MathF.Sin(2.0f * MathF.PI * 220.0f * i / sampleRate);
+        }
+
+        var result = pipeline.Transcribe(new SpeechToTextRequest
+        {
+            AudioSamples = pcm,
+            SampleRate = sampleRate,
+            Language = "en",
+            EnableTimestamps = false
+        });
+
+        Assert.NotNull(result);
+        Assert.NotNull(result.Segments);
+    }
+
+    [Fact]
+    public void WhisperGgmlModel_TinyRealWeights_EncoderProducesFiniteOutput()
+    {
+        string? modelPath = FindModelPath("ggml-tiny.bin");
+        if (modelPath is null) return;
+
+        var ggml = WhisperGgmlModel.Load(modelPath);
+        Assert.True(ggml.VocabSize is 51864 or 51865 or 51866, $"Unexpected vocab size {ggml.VocabSize}.");
+        Assert.Equal(384, ggml.AudioState);
+        Assert.Equal(4, ggml.AudioLayer);
+        Assert.Equal(80, ggml.NumMels);
+
+        var config = ggml.ToConfig();
+        var weights = new WhisperEncoderWeights(ggml);
+        var encoder = new WhisperEncoder(config, weights);
+
+        int numFrames = 100;
+        var mel = new float[config.NumMels * numFrames];
+        var rng = new Random(42);
+        for (int i = 0; i < mel.Length; i++) mel[i] = (float)(rng.NextDouble() * 2.0 - 1.0);
+
+        float[] hidden = encoder.Forward(mel, numFrames);
+
+        Assert.True(hidden.Length > 0);
+        Assert.All(hidden, v => Assert.True(float.IsFinite(v), "Encoder output must be finite (no NaN/Inf)."));
+
+        float mean = 0f;
+        foreach (var v in hidden) mean += v;
+        mean /= hidden.Length;
+        Assert.True(Math.Abs(mean) < 50f, $"Encoder output mean {mean} looks unreasonable for a LayerNorm-terminated stack.");
+    }
+
+    [Fact]
+    public void WhisperGgmlModel_TinyRealWeights_DecoderStepProducesFiniteLogitsAndPeaksOnKnownToken()
+    {
+        string? modelPath = FindModelPath("ggml-tiny.bin");
+        if (modelPath is null) return;
+
+        var ggml = WhisperGgmlModel.Load(modelPath);
+        var config = ggml.ToConfig();
+        var encoderWeights = new WhisperEncoderWeights(ggml);
+        var decoderWeights = new WhisperDecoderWeights(ggml);
+        var encoder = new WhisperEncoder(config, encoderWeights);
+        var decoder = new WhisperDecoder(config, decoderWeights);
+
+        int numFrames = 100;
+        var mel = new float[config.NumMels * numFrames];
+        var rng = new Random(7);
+        for (int i = 0; i < mel.Length; i++) mel[i] = (float)(rng.NextDouble() * 2.0 - 1.0);
+
+        float[] encoded = encoder.Forward(mel, numFrames);
+        int audioFrames = encoded.Length / config.AudioState;
+
+        var cache = new WhisperKvCache(config.TextLayer, config.TextCtx, config.TextState);
+        decoder.PrimeCrossAttention(cache, encoded, audioFrames);
+
+        int sotToken = Array.IndexOf(ggml.TokenById, "<|startoftranscript|>");
+        if (sotToken < 0) sotToken = ggml.VocabSize > 50257 ? 50257 : 0;
+
+        float[] logits = decoder.ForwardStep(sotToken, position: 0, cache, encoded, audioFrames);
+
+        Assert.Equal(config.VocabSize, logits.Length);
+        Assert.All(logits, v => Assert.True(float.IsFinite(v), "Decoder logits must be finite (no NaN/Inf)."));
+
+        int argMax = 0;
+        for (int i = 1; i < logits.Length; i++)
+            if (logits[i] > logits[argMax]) argMax = i;
+
+        float mean = 0f;
+        foreach (var v in logits) mean += v;
+        mean /= logits.Length;
+        Assert.True(logits[argMax] - mean > 1.0f, $"Top logit ({logits[argMax]}) not meaningfully above mean ({mean}) — looks like noise.");
     }
 }

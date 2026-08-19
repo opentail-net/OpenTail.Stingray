@@ -12,6 +12,16 @@ public sealed class WhisperKvCache
     public int DModel { get; }
     public int Position { get; set; }
 
+    /// <summary>
+    /// Cross-attention Keys/Values projected once from the audio encoder output per layer.
+    /// Encoder output is fixed for the whole utterance, so these are computed a single time
+    /// (see <see cref="WhisperDecoder.PrimeCrossAttention"/>) and reused across every decode step,
+    /// instead of re-projecting all audio frames on every generated token.
+    /// </summary>
+    public float[][]? CrossKeys { get; private set; }
+    public float[][]? CrossValues { get; private set; }
+    public int CrossFrames { get; private set; }
+
     public WhisperKvCache(int nLayers, int maxCtx, int dModel)
     {
         MaxCtx = maxCtx;
@@ -29,10 +39,18 @@ public sealed class WhisperKvCache
     }
 
     /// <summary>
-    /// Resets the cached token position to 0.
+    /// Resets the cached token position to 0. Cross-attention cache is left intact since it
+    /// only depends on the (unchanged) audio encoder output.
     /// </summary>
     public void Reset()
     {
         Position = 0;
+    }
+
+    public void SetCrossAttentionCache(float[][] crossKeys, float[][] crossValues, int audioFrames)
+    {
+        CrossKeys = crossKeys;
+        CrossValues = crossValues;
+        CrossFrames = audioFrames;
     }
 }

@@ -1,3 +1,5 @@
+using OpenTail.Stingray.Audio.Primitives;
+
 namespace OpenTail.Stingray.Audio.QwenASR;
 
 /// <summary>
@@ -17,7 +19,7 @@ public sealed class QwenAsrMelExtractor
 
     public QwenAsrMelExtractor()
     {
-        _hannWindow = CreateHannWindow(WindowSize);
+        _hannWindow = SpectralKernels.CreateSymmetricHannWindow(WindowSize);
         _melFilters = CreateSlaneyMelFilterBank(NumMels, NFft, SampleRate, 0.0f, 8000.0f);
     }
 
@@ -33,7 +35,6 @@ public sealed class QwenAsrMelExtractor
         var mel = new float[NumMels * numFrames];
 
         var real = new float[NFft];
-        var imag = new float[NFft];
         var powerSpectrum = new float[NFft / 2 + 1];
         var rawMel = new float[NumMels * numFrames];
 
@@ -44,7 +45,6 @@ public sealed class QwenAsrMelExtractor
         {
             int startSample = f * HopLength;
             Array.Clear(real, 0, NFft);
-            Array.Clear(imag, 0, NFft);
 
             for (int i = 0; i < WindowSize; i++)
             {
@@ -54,20 +54,10 @@ public sealed class QwenAsrMelExtractor
             }
 
             // Power Spectrum (modulus squared of DFT)
+            SpectralKernels.ComputePowerSpectrum(real, powerSpectrum);
             for (int k = 0; k <= NFft / 2; k++)
             {
-                float r = 0.0f;
-                float im = 0.0f;
-                float angle = -2.0f * MathF.PI * k / NFft;
-
-                for (int n = 0; n < WindowSize; n++)
-                {
-                    float a = angle * n;
-                    r += real[n] * MathF.Cos(a);
-                    im += real[n] * MathF.Sin(a);
-                }
-
-                powerSpectrum[k] = (r * r + im * im) / NFft;
+                powerSpectrum[k] /= NFft;
             }
 
             for (int m = 0; m < NumMels; m++)
@@ -99,16 +89,6 @@ public sealed class QwenAsrMelExtractor
         }
 
         return mel;
-    }
-
-    private static float[] CreateHannWindow(int size)
-    {
-        var win = new float[size];
-        for (int i = 0; i < size; i++)
-        {
-            win[i] = 0.5f * (1.0f - MathF.Cos(2.0f * MathF.PI * i / (size - 1)));
-        }
-        return win;
     }
 
     private static float[][] CreateSlaneyMelFilterBank(int numMels, int nFft, int sampleRate, float fMin, float fMax)

@@ -1,10 +1,14 @@
 using System.Numerics.Tensors;
+using OpenTail.Stingray.Cpu;
 
 namespace OpenTail.Stingray.Audio.Whisper;
 
 /// <summary>
 /// Audio Transformer Encoder for OpenAI Whisper with 2x Conv1D downsamplers and sinusoidal positional embeddings.
 /// Accelerated with System.Numerics.Tensors (SIMD) and multi-threaded attention.
+/// Runs against real weights when constructed with a <see cref="WhisperEncoderWeights"/> (parsed from a
+/// whisper.cpp ggml model file via <see cref="WhisperGgmlModel"/>); otherwise falls back to a deterministic
+/// placeholder weight generator that preserves output shapes for structural/unit testing without a model file.
 /// </summary>
 public sealed class WhisperEncoder
 {
@@ -14,16 +18,18 @@ public sealed class WhisperEncoder
     private readonly int _headDim;
     private readonly int _nLayers;
     private readonly float[] _positionalEmbeddings; // [AudioCtx * dModel]
+    private readonly WhisperEncoderWeights? _weights;
 
-    public WhisperEncoder(WhisperConfig config)
+    public WhisperEncoder(WhisperConfig config, WhisperEncoderWeights? weights = null)
     {
         _config = config;
         _dModel = config.AudioState;
         _nHeads = config.AudioHead;
         _headDim = _dModel / _nHeads;
         _nLayers = config.AudioLayer;
+        _weights = weights;
 
-        _positionalEmbeddings = GenerateSinusoidalPositionalEmbeddings(config.AudioCtx, _dModel);
+        _positionalEmbeddings = weights?.PositionalEmbedding ?? GenerateSinusoidalPositionalEmbeddings(config.AudioCtx, _dModel);
     }
 
     /// <summary>
@@ -39,12 +45,18 @@ public sealed class WhisperEncoder
         // Stage 1: stride 1
         int conv1Frames = numFrames;
         float[] conv1 = new float[_dModel * conv1Frames];
-        ApplyConv1D(mel, numMels, conv1Frames, conv1, stride: 1);
+        if (_weights != null)
+            ApplyConv1DReal(mel, numMels, conv1Frames, conv1, stride: 1, _weights.Conv1Weight, _weights.Conv1Bias);
+        else
+            ApplyConv1D(mel, numMels, conv1Frames, conv1, stride: 1);
 
         // Stage 2: stride 2
         int conv2Frames = (conv1Frames + 1) / 2;
         float[] conv2 = new float[_dModel * conv2Frames];
-        ApplyConv1D(conv1, _dModel, conv2Frames, conv2, stride: 2);
+        if (_weights != null)
+            ApplyConv1DReal(conv1, _dModel, conv2Frames, conv2, stride: 2, _weights.Conv2Weight, _weights.Conv2Bias);
+        else
+            ApplyConv1D(conv1, _dModel, conv2Frames, conv2, stride: 2);
 
         // 2. Transpose [dModel, conv2Frames] -> [conv2Frames, dModel] and add sinusoidal positional embeddings
         int encFrames = Math.Min(conv2Frames, _config.AudioCtx);
@@ -62,19 +74,28 @@ public sealed class WhisperEncoder
         }
 
         // 3. Encoder Transformer Blocks
+        float[] normed = new float[encFrames * _dModel];
         float[] attnOut = new float[encFrames * _dModel];
         float[] mlpOut = new float[encFrames * _dModel];
 
         for (int l = 0; l < _nLayers; l++)
         {
+            var lw = _weights?.Layers[l];
+
             // Pre-LayerNorm & Self-Attention
             Parallel.For(0, encFrames, t =>
             {
                 int off = t * _dModel;
-                LayerNorm(x.AsSpan(off, _dModel), attnOut.AsSpan(off, _dModel), _config.LayerNormEps);
+                if (lw != null)
+                    LayerNormAffine(x.AsSpan(off, _dModel), lw.AttnLnWeight, lw.AttnLnBias, normed.AsSpan(off, _dModel), _config.LayerNormEps);
+                else
+                    LayerNorm(x.AsSpan(off, _dModel), normed.AsSpan(off, _dModel), _config.LayerNormEps);
             });
 
-            ComputeMultiHeadSelfAttention(attnOut, encFrames, _dModel, _nHeads, attnOut);
+            if (lw != null)
+                ComputeMultiHeadSelfAttentionReal(normed, encFrames, _dModel, _nHeads, lw, attnOut);
+            else
+                ComputeMultiHeadSelfAttention(normed, encFrames, _dModel, _nHeads, attnOut);
 
             // Residual connection
             TensorPrimitives.Add(x, attnOut, x);
@@ -83,10 +104,22 @@ public sealed class WhisperEncoder
             Parallel.For(0, encFrames, t =>
             {
                 int off = t * _dModel;
-                Span<float> tempNorm = stackalloc float[_dModel];
-                LayerNorm(x.AsSpan(off, _dModel), tempNorm, _config.LayerNormEps);
-                ComputeMlp(tempNorm, mlpOut.AsSpan(off, _dModel));
+                if (lw != null)
+                    LayerNormAffine(x.AsSpan(off, _dModel), lw.MlpLnWeight, lw.MlpLnBias, normed.AsSpan(off, _dModel), _config.LayerNormEps);
+                else
+                    LayerNorm(x.AsSpan(off, _dModel), normed.AsSpan(off, _dModel), _config.LayerNormEps);
             });
+
+            if (lw != null)
+                ComputeMlpReal(normed, encFrames, _dModel, lw, mlpOut);
+            else
+            {
+                Parallel.For(0, encFrames, t =>
+                {
+                    int off = t * _dModel;
+                    ComputeMlp(normed.AsSpan(off, _dModel), mlpOut.AsSpan(off, _dModel));
+                });
+            }
 
             // Residual connection
             TensorPrimitives.Add(x, mlpOut, x);
@@ -96,10 +129,147 @@ public sealed class WhisperEncoder
         Parallel.For(0, encFrames, t =>
         {
             int off = t * _dModel;
-            LayerNorm(x.AsSpan(off, _dModel), x.AsSpan(off, _dModel), _config.LayerNormEps);
+            if (_weights != null)
+                LayerNormAffine(x.AsSpan(off, _dModel), _weights.LnPostWeight, _weights.LnPostBias, x.AsSpan(off, _dModel), _config.LayerNormEps);
+            else
+                LayerNorm(x.AsSpan(off, _dModel), x.AsSpan(off, _dModel), _config.LayerNormEps);
         });
 
         return x;
+    }
+
+    /// <summary>
+    /// Real Conv1D (kernel=3, padding=1) against loaded weights [outCh, inCh, 3] (file storage order, k fastest).
+    /// </summary>
+    private void ApplyConv1DReal(ReadOnlySpan<float> input, int inChannels, int outFrames, Span<float> output, int stride, float[] weight, float[] bias)
+    {
+        float[] inCopy = input.ToArray();
+        float[] outCopy = new float[_dModel * outFrames];
+        int inFrames = inChannels > 0 ? inCopy.Length / inChannels : outFrames;
+
+        Parallel.For(0, _dModel, oc =>
+        {
+            int outChannelOff = oc * outFrames;
+            int wOcOff = oc * inChannels * 3;
+            for (int t = 0; t < outFrames; t++)
+            {
+                int inCenter = t * stride;
+                float sum = bias[oc];
+
+                for (int ic = 0; ic < inChannels; ic++)
+                {
+                    int inChannelOff = ic * inFrames;
+                    int wIcOff = wOcOff + ic * 3;
+                    for (int k = -1; k <= 1; k++)
+                    {
+                        int srcT = inCenter + k;
+                        if (srcT >= 0 && srcT < inFrames)
+                        {
+                            sum += inCopy[inChannelOff + srcT] * weight[wIcOff + (k + 1)];
+                        }
+                    }
+                }
+
+                outCopy[outChannelOff + t] = Gelu(sum);
+            }
+        });
+
+        outCopy.CopyTo(output);
+    }
+
+    /// <summary>Linear layer: output[seqLen, outDim] = input[seqLen, inDim] @ weight[outDim, inDim]^T + bias.</summary>
+    private static unsafe void LinearReal(ReadOnlySpan<float> input, int seqLen, int inDim, float[] weight, float[]? bias, int outDim, Span<float> output)
+    {
+        fixed (float* pIn = input, pW = weight, pOut = output)
+        {
+            SimdKernels.MatMulBatchedF32(pOut, pW, pIn, seqLen, outDim, inDim);
+        }
+
+        if (bias != null)
+        {
+            for (int t = 0; t < seqLen; t++)
+            {
+                var row = output.Slice(t * outDim, outDim);
+                TensorPrimitives.Add(row, bias, row);
+            }
+        }
+    }
+
+    private static void ComputeMultiHeadSelfAttentionReal(float[] input, int seqLen, int dModel, int nHeads, WhisperEncoderLayerWeights lw, Span<float> output)
+    {
+        int headDim = dModel / nHeads;
+        float scale = 1.0f / MathF.Sqrt(headDim);
+
+        float[] q = new float[seqLen * dModel];
+        float[] k = new float[seqLen * dModel];
+        float[] v = new float[seqLen * dModel];
+        LinearReal(input, seqLen, dModel, lw.QueryWeight, lw.QueryBias, dModel, q);
+        LinearReal(input, seqLen, dModel, lw.KeyWeight, null, dModel, k);
+        LinearReal(input, seqLen, dModel, lw.ValueWeight, lw.ValueBias, dModel, v);
+
+        float[] attnRaw = new float[seqLen * dModel];
+
+        Parallel.For(0, nHeads, h =>
+        {
+            int headOff = h * headDim;
+            float[] scores = new float[seqLen];
+
+            for (int i = 0; i < seqLen; i++)
+            {
+                var querySpan = q.AsSpan(i * dModel + headOff, headDim);
+
+                for (int j = 0; j < seqLen; j++)
+                {
+                    var keySpan = k.AsSpan(j * dModel + headOff, headDim);
+                    scores[j] = TensorPrimitives.Dot(querySpan, keySpan) * scale;
+                }
+
+                TensorPrimitives.SoftMax(scores.AsSpan(0, seqLen), scores.AsSpan(0, seqLen));
+
+                for (int d = 0; d < headDim; d++)
+                {
+                    float weightedVal = 0f;
+                    for (int j = 0; j < seqLen; j++)
+                    {
+                        weightedVal += scores[j] * v[j * dModel + headOff + d];
+                    }
+                    attnRaw[i * dModel + headOff + d] = weightedVal;
+                }
+            }
+        });
+
+        LinearReal(attnRaw, seqLen, dModel, lw.OutWeight, lw.OutBias, dModel, output);
+    }
+
+    private static void ComputeMlpReal(float[] input, int seqLen, int dModel, WhisperEncoderLayerWeights lw, Span<float> output)
+    {
+        int hiddenDim = dModel * 4;
+        float[] hidden = new float[seqLen * hiddenDim];
+        LinearReal(input, seqLen, dModel, lw.Mlp0Weight, lw.Mlp0Bias, hiddenDim, hidden);
+
+        Parallel.For(0, hidden.Length, i => hidden[i] = Gelu(hidden[i]));
+
+        LinearReal(hidden, seqLen, hiddenDim, lw.Mlp2Weight, lw.Mlp2Bias, dModel, output);
+    }
+
+    private static void LayerNormAffine(ReadOnlySpan<float> input, float[] weight, float[] bias, Span<float> output, float eps)
+    {
+        int n = input.Length;
+        float mean = TensorPrimitives.Sum(input) / n;
+
+        float variance = 0f;
+        for (int i = 0; i < n; i++)
+        {
+            float diff = input[i] - mean;
+            variance += diff * diff;
+        }
+        variance /= n;
+
+        float invStd = 1.0f / MathF.Sqrt(variance + eps);
+        for (int i = 0; i < n; i++)
+        {
+            output[i] = (input[i] - mean) * invStd * weight[i] + bias[i];
+        }
     }
 
     private void ApplyConv1D(ReadOnlySpan<float> input, int inChannels, int outFrames, Span<float> output, int stride)

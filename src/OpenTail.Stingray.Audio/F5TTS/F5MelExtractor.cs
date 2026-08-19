@@ -1,3 +1,5 @@
+using OpenTail.Stingray.Audio.Primitives;
+
 namespace OpenTail.Stingray.Audio.F5TTS;
 
 /// <summary>
@@ -17,11 +19,7 @@ public sealed class F5MelExtractor
 
     public F5MelExtractor()
     {
-        _hannWindow = new float[WinLength];
-        for (int i = 0; i < WinLength; i++)
-        {
-            _hannWindow[i] = 0.5f * (1.0f - MathF.Cos(2.0f * MathF.PI * i / WinLength));
-        }
+        _hannWindow = SpectralKernels.CreateHannWindow(WinLength);
 
         _melFilters = CreateMelFilterbank(NumMels, Nfft, SampleRate, 0f, 12000f);
     }
@@ -41,28 +39,24 @@ public sealed class F5MelExtractor
         int numBins = Nfft / 2 + 1; // 513
         var magSpec = new float[numBins];
 
+        var windowed = new float[WinLength];
+
         for (int f = 0; f < numFrames; f++)
         {
             int pcmOff = f * HopLength;
 
+            for (int n = 0; n < WinLength; n++)
+            {
+                int sampleIdx = pcmOff + n;
+                float sample = (sampleIdx < pcm.Length) ? pcm[sampleIdx] : 0f;
+                windowed[n] = sample * _hannWindow[n];
+            }
+
             // Compute STFT magnitude for this frame
+            SpectralKernels.ComputePowerSpectrum(windowed, magSpec);
             for (int k = 0; k < numBins; k++)
             {
-                float real = 0f;
-                float imag = 0f;
-                float freq = 2.0f * MathF.PI * k / Nfft;
-
-                for (int n = 0; n < WinLength; n++)
-                {
-                    int sampleIdx = pcmOff + n;
-                    float sample = (sampleIdx < pcm.Length) ? pcm[sampleIdx] : 0f;
-                    float winSample = sample * _hannWindow[n];
-
-                    real += winSample * MathF.Cos(freq * n);
-                    imag -= winSample * MathF.Sin(freq * n);
-                }
-
-                magSpec[k] = MathF.Sqrt(real * real + imag * imag + 1e-9f);
+                magSpec[k] = MathF.Sqrt(magSpec[k] + 1e-9f);
             }
 
             // Apply Mel filterbank & log compression

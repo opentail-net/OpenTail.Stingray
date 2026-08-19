@@ -108,4 +108,20 @@ public sealed record WhisperConfig
         NumMels = 128,
         IsV3 = true
     };
+
+    /// <summary>
+    /// Distil-Whisper Large-v3 / Large-v3.5: same frozen encoder as Large-v3, decoder distilled to 2 layers.
+    /// </summary>
+    public static WhisperConfig DistilLargeV3 => new()
+    {
+        VocabSize = 51866,
+        AudioState = 1280,
+        AudioHead = 20,
+        AudioLayer = 32,
+        TextState = 1280,
+        TextHead = 20,
+        TextLayer = 2, // Distilled 2-layer decoder
+        NumMels = 128,
+        IsV3 = true
+    };
 }

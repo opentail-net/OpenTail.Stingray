@@ -68,6 +68,7 @@ public sealed class SttCommand : Command<SttCommand.Settings>
             "medium" => WhisperConfig.Medium,
             "large" or "large-v3" => WhisperConfig.LargeV3,
             "turbo" or "large-v3-turbo" => WhisperConfig.LargeV3Turbo,
+            "distil" or "distil-large-v3" or "distil-whisper" => WhisperConfig.DistilLargeV3,
             _ => WhisperConfig.Tiny
         };
 

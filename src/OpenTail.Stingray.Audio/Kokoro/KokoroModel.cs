@@ -1,9 +1,11 @@
-using System.Numerics.Tensors;
+using System;
+using System.IO;
 
 namespace OpenTail.Stingray.Audio.Kokoro;
 
 /// <summary>
 /// Native C# implementation of the Kokoro-82M PLBERT + AdaIN-ResBlock + iSTFT neural synthesis graph.
+/// Supports both pure simulated/procedural evaluation and real GGUF weights via <see cref="KokoroWeights"/>.
 /// </summary>
 public sealed class KokoroModel : IDisposable
 {
@@ -14,10 +16,19 @@ public sealed class KokoroModel : IDisposable
     public int HopLength { get; } = 256;
     public int SampleRate { get; } = 24000;
 
-    public KokoroModel(int hiddenDim = 512, int numLayers = 3)
+    private readonly KokoroWeights? _weights;
+
+    public KokoroModel(int hiddenDim = 512, int numLayers = 3, KokoroWeights? weights = null)
     {
         HiddenDim = hiddenDim;
         NumLayers = numLayers;
+        _weights = weights;
+    }
+
+    public static KokoroModel Load(string modelPath, string? voicePath = null)
+    {
+        var weights = new KokoroWeights(modelPath, voicePath);
+        return new KokoroModel(512, 3, weights);
     }
 
     /// <summary>
@@ -27,6 +38,12 @@ public sealed class KokoroModel : IDisposable
     {
         int numTokens = tokens.Length;
         if (numTokens == 0) return [];
+
+        // If styleVector is empty and we have a loaded voice vector in weights, use it
+        if (styleVector.IsEmpty && _weights?.StyleVector is { } loadedStyle)
+        {
+            styleVector = loadedStyle;
+        }
 
         // 1. PLBERT Phoneme Embedding & Transformer Encoder
         var encoded = new float[numTokens * HiddenDim];
@@ -214,5 +231,8 @@ public sealed class KokoroModel : IDisposable
         }
     }
 
-    public void Dispose() { }
+    public void Dispose()
+    {
+        _weights?.Dispose();
+    }
 }

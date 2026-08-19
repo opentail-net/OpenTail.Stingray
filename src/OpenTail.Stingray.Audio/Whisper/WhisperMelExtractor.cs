@@ -1,4 +1,5 @@
 using System.Numerics.Tensors;
+using OpenTail.Stingray.Audio.Primitives;
 
 namespace OpenTail.Stingray.Audio.Whisper;
 
@@ -22,12 +23,7 @@ public sealed class WhisperMelExtractor
     public WhisperMelExtractor(int numMels = 80, float[]? customFilters = null)
     {
         NumMels = numMels;
-        _hannWindow = new float[WinLength];
-        for (int i = 0; i < WinLength; i++)
-        {
-            // Hann window: 0.5 * (1 - cos(2 * pi * i / N))
-            _hannWindow[i] = 0.5f * (1.0f - MathF.Cos(2.0f * MathF.PI * i / WinLength));
-        }
+        _hannWindow = SpectralKernels.CreateHannWindow(WinLength);
 
         if (customFilters != null && customFilters.Length == NumMels * HalfFft)
         {
@@ -87,7 +83,7 @@ public sealed class WhisperMelExtractor
             }
 
             // Compute Power Spectrum (modulus^2 of DFT)
-            ComputePowerSpectrum(fftIn, powerSpec);
+            SpectralKernels.ComputePowerSpectrum(fftIn, powerSpec);
 
             // Apply Mel filterbank & log10 compression
             for (int m = 0; m < NumMels; m++)
@@ -121,32 +117,6 @@ public sealed class WhisperMelExtractor
         }
 
         return melData;
-    }
-
-    /// <summary>
-    /// Computes Power Spectrum |FFT(x)|^2 for real input of size 400.
-    /// </summary>
-    private static void ComputePowerSpectrum(ReadOnlySpan<float> input, Span<float> powerSpectrum)
-    {
-        int n = input.Length;
-        int half = n / 2 + 1; // 201
-
-        for (int k = 0; k < half; k++)
-        {
-            float real = 0f;
-            float imag = 0f;
-            float angleStep = -2.0f * MathF.PI * k / n;
-
-            for (int t = 0; t < n; t++)
-            {
-                float angle = angleStep * t;
-                float s = input[t];
-                real += s * MathF.Cos(angle);
-                imag += s * MathF.Sin(angle);
-            }
-
-            powerSpectrum[k] = real * real + imag * imag;
-        }
     }
 
     /// <summary>

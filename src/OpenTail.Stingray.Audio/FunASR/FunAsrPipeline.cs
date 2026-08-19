@@ -22,17 +22,20 @@ public sealed class FunAsrPipeline : ISpeechToTextPipeline
     private readonly SanmEncoder _encoder;
     private readonly CifPredictor _cifPredictor;
     private readonly FunAsrTokenizer _tokenizer;
+    private readonly GgufModel? _ggufModel;
 
     public FunAsrPipeline(
         FunAsrMelExtractor? melExtractor = null,
         SanmEncoder? encoder = null,
         CifPredictor? cifPredictor = null,
-        FunAsrTokenizer? tokenizer = null)
+        FunAsrTokenizer? tokenizer = null,
+        GgufModel? ggufModel = null)
     {
         _melExtractor = melExtractor ?? new FunAsrMelExtractor();
         _encoder = encoder ?? new SanmEncoder();
         _cifPredictor = cifPredictor ?? new CifPredictor();
         _tokenizer = tokenizer ?? new FunAsrTokenizer();
+        _ggufModel = ggufModel;
     }
 
     public static FunAsrPipeline Load(string modelPath)
@@ -40,7 +43,13 @@ public sealed class FunAsrPipeline : ISpeechToTextPipeline
         if (string.IsNullOrWhiteSpace(modelPath) || !File.Exists(modelPath))
             throw new FileNotFoundException($"FunASR model file not found: {modelPath}");
 
-        return new FunAsrPipeline();
+        GgufModel? gguf = null;
+        if (modelPath.EndsWith(".gguf", StringComparison.OrdinalIgnoreCase))
+        {
+            gguf = GgufModel.Open(modelPath);
+        }
+
+        return new FunAsrPipeline(ggufModel: gguf);
     }
 
     public SpeechToTextResult Transcribe(SpeechToTextRequest request)
@@ -123,7 +132,10 @@ public sealed class FunAsrPipeline : ISpeechToTextPipeline
         }
     }
 
-    public void Dispose() { }
+    public void Dispose()
+    {
+        _ggufModel?.Dispose();
+    }
 }
 
 public sealed class FunAsrMelExtractor

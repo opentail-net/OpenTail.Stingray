@@ -1,3 +1,5 @@
+using OpenTail.Stingray.Diffusion.Primitives;
+
 namespace OpenTail.Stingray.Diffusion.QwenImage;
 
 /// <summary>
@@ -29,7 +31,7 @@ public static class QwenImageRoPE
         for (int i = 0; i < txtLen; i++)
         {
             int off = i * headDim;
-            FillFrequencies(cos, sin, off, pos: i, dim: headDim, theta: theta);
+            SplitHalfRoPE.FillFrequencies(cos, sin, off, pos: i, dim: headDim, theta: theta);
         }
 
         // 2. Image tokens: 3D coordinates (t=0, y=row, x=col)
@@ -41,60 +43,22 @@ public static class QwenImageRoPE
                 int baseOff = tokenIdx * headDim;
 
                 // Time axis: pos=0, dim=16
-                FillFrequencies(cos, sin, baseOff + 0, pos: 0, dim: dimT, theta: theta);
+                SplitHalfRoPE.FillFrequencies(cos, sin, baseOff + 0, pos: 0, dim: dimT, theta: theta);
 
                 // Height axis: pos=row, dim=56
-                FillFrequencies(cos, sin, baseOff + dimT, pos: row, dim: dimH, theta: theta);
+                SplitHalfRoPE.FillFrequencies(cos, sin, baseOff + dimT, pos: row, dim: dimH, theta: theta);
 
                 // Width axis: pos=col, dim=56
-                FillFrequencies(cos, sin, baseOff + dimT + dimH, pos: col, dim: dimW, theta: theta);
+                SplitHalfRoPE.FillFrequencies(cos, sin, baseOff + dimT + dimH, pos: col, dim: dimW, theta: theta);
             }
         }
 
         return (cos, sin);
     }
 
-    private static void FillFrequencies(float[] cos, float[] sin, int offset, float pos, int dim, float theta)
-    {
-        int half = dim / 2;
-        for (int i = 0; i < half; i++)
-        {
-            float freq = MathF.Pow(theta, -2.0f * i / dim);
-            float angle = pos * freq;
-            float c = MathF.Cos(angle);
-            float s = MathF.Sin(angle);
-
-            cos[offset + i] = c;
-            cos[offset + half + i] = c;
-
-            sin[offset + i] = s;
-            sin[offset + half + i] = s;
-        }
-    }
-
     /// <summary>
     /// Applies 3D RoPE in-place to Q or K tensor [seqLen, numHeads, headDim].
     /// </summary>
     public static void ApplyRoPE(float[] qk, float[] cos, float[] sin, int seqLen, int numHeads, int headDim)
-    {
-        int half = headDim / 2;
-        for (int s = 0; s < seqLen; s++)
-        {
-            int peOff = s * headDim;
-            for (int h = 0; h < numHeads; h++)
-            {
-                int headBase = (s * numHeads + h) * headDim;
-                for (int d = 0; d < half; d++)
-                {
-                    float x1 = qk[headBase + d];
-                    float x2 = qk[headBase + half + d];
-                    float c = cos[peOff + d];
-                    float sRot = sin[peOff + d];
-
-                    qk[headBase + d] = x1 * c - x2 * sRot;
-                    qk[headBase + half + d] = x1 * sRot + x2 * c;
-                }
-            }
-        }
-    }
+        => SplitHalfRoPE.ApplyRoPE(qk, cos, sin, seqLen, numHeads, headDim);
 }

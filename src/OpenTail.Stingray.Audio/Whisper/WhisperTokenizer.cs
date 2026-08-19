@@ -95,6 +95,16 @@ public sealed class WhisperTokenizer
     public static WhisperTokenizer CreateV3() => new(null, isV3: true);
     public static WhisperTokenizer CreateV2() => new(null, isV3: false);
 
+    public static WhisperTokenizer FromGgml(WhisperGgmlModel ggml)
+    {
+        var dict = new Dictionary<string, int>(ggml.VocabSize, StringComparer.Ordinal);
+        for (int i = 0; i < ggml.TokenById.Length; i++)
+        {
+            dict[ggml.TokenById[i]] = i;
+        }
+        return new WhisperTokenizer(dict, isV3: ggml.VocabSize == 51866);
+    }
+
     private void InitializeDefaultVocab()
     {
         _vocab["<|endoftext|>"] = EndOfText;
@@ -284,7 +294,8 @@ public sealed class WhisperTokenizer
             {
                 return string.Empty; // Skip control tags in text stream
             }
-            return text;
+            // Byte-pair replacement for leading whitespace 'Ġ'
+            return text.Replace("Ġ", " ");
         }
 
         // Fallback for character / byte fallback tokens
