@@ -1,16 +1,17 @@
+using System.Runtime.CompilerServices;
 using OpenTail.Stingray.Audio.Vad;
 
 namespace OpenTail.Stingray.Audio.Whisper;
 
 /// <summary>
-/// Native end-to-end Speech-to-Text (ASR) and Speech Translation pipeline for OpenAI Whisper.
+/// Native end-to-end Speech-to-Text (ASR) and Speech Translation pipeline for OpenAI Whisper (Tiny, Base, Small, Medium, Large-v1/v2/v3, Large-v3-Turbo).
 /// Supports Silero VAD silence pruning, timestamp decoding, and chunked execution.
 /// </summary>
 public sealed class WhisperPipeline : ISpeechToTextPipeline
 {
     public const int ChunkSamples = 16000 * 30; // 30 seconds = 480,000 samples
 
-    public string Architecture => "OpenAI-Whisper";
+    public string Architecture => _config.IsV3 ? (_config.TextLayer == 4 ? "OpenAI-Whisper-Large-V3-Turbo" : "OpenAI-Whisper-Large-V3") : "OpenAI-Whisper";
     public int SampleRate => 16000;
 
     private readonly WhisperConfig _config;
@@ -19,6 +20,8 @@ public sealed class WhisperPipeline : ISpeechToTextPipeline
     private readonly WhisperEncoder _encoder;
     private readonly WhisperDecoder _decoder;
     private readonly SileroVad _vad;
+
+    public WhisperConfig Config => _config;
 
     public WhisperPipeline(
         WhisperConfig? config = null,
@@ -30,10 +33,42 @@ public sealed class WhisperPipeline : ISpeechToTextPipeline
     {
         _config = config ?? WhisperConfig.Tiny;
         _melExtractor = melExtractor ?? new WhisperMelExtractor(_config.NumMels);
-        _tokenizer = tokenizer ?? new WhisperTokenizer();
+        _tokenizer = tokenizer ?? (_config.IsV3 ? WhisperTokenizer.CreateV3() : new WhisperTokenizer());
         _encoder = encoder ?? new WhisperEncoder(_config);
         _decoder = decoder ?? new WhisperDecoder(_config);
         _vad = vad ?? new SileroVad();
+    }
+
+    /// <summary>
+    /// Creates a pre-configured Whisper Large-v3 pipeline (128 mels, 1280 dim, 32 enc layers, 32 dec layers, 100 languages).
+    /// </summary>
+    public static WhisperPipeline CreateLargeV3(
+        WhisperMelExtractor? melExtractor = null,
+        WhisperTokenizer? tokenizer = null,
+        SileroVad? vad = null)
+    {
+        var config = WhisperConfig.LargeV3;
+        return new WhisperPipeline(
+            config: config,
+            melExtractor: melExtractor,
+            tokenizer: tokenizer ?? WhisperTokenizer.CreateV3(),
+            vad: vad);
+    }
+
+    /// <summary>
+    /// Creates a pre-configured Whisper Large-v3-Turbo pipeline (128 mels, 1280 dim, 32 enc layers, 4 dec layers, 100 languages).
+    /// </summary>
+    public static WhisperPipeline CreateLargeV3Turbo(
+        WhisperMelExtractor? melExtractor = null,
+        WhisperTokenizer? tokenizer = null,
+        SileroVad? vad = null)
+    {
+        var config = WhisperConfig.LargeV3Turbo;
+        return new WhisperPipeline(
+            config: config,
+            melExtractor: melExtractor,
+            tokenizer: tokenizer ?? WhisperTokenizer.CreateV3(),
+            vad: vad);
     }
 
     /// <summary>
@@ -61,48 +96,39 @@ public sealed class WhisperPipeline : ISpeechToTextPipeline
             var speechSegments = _vad.DetectSegments(samples);
             if (speechSegments.Count == 0)
             {
-                // No voice detected in the entire recording
                 return new SpeechToTextResult(string.Empty, request.Language ?? "en", TimeSpan.FromSeconds((double)totalSamples / SampleRate), []);
             }
 
-            for (int i = 0; i < speechSegments.Count; i++)
+            foreach (var chunk in speechSegments)
             {
-                var vadSeg = speechSegments[i];
-                int start = Math.Clamp(vadSeg.StartSample, 0, totalSamples);
-                int length = Math.Clamp(vadSeg.EndSample - start, 0, totalSamples - start);
-                if (length <= 0) continue;
+                int startIdx = chunk.StartSample;
+                int endIdx = Math.Min(totalSamples, chunk.EndSample);
+                if (endIdx <= startIdx) continue;
 
-                var segAudio = samples.AsSpan(start, length);
-                TimeSpan segTimeOffset = TimeSpan.FromSeconds(vadSeg.StartSeconds);
-
-                ProcessAudioChunk(segAudio, segTimeOffset, request, allSegments, fullTextBuilder);
-                request.Progress?.Invoke(i + 1, speechSegments.Count);
+                var chunkSpan = samples.AsSpan(startIdx, endIdx - startIdx);
+                TimeSpan chunkOffset = TimeSpan.FromSeconds(chunk.StartSeconds);
+                ProcessAudioChunk(chunkSpan, chunkOffset, request, allSegments, fullTextBuilder);
             }
         }
         else
         {
-            int numChunks = (totalSamples + ChunkSamples - 1) / ChunkSamples;
-            if (numChunks == 0) numChunks = 1;
-
-            for (int chunkIdx = 0; chunkIdx < numChunks; chunkIdx++)
+            // Standard 30s chunking
+            int offset = 0;
+            while (offset < totalSamples)
             {
-                int startOffset = chunkIdx * ChunkSamples;
-                int length = Math.Min(ChunkSamples, totalSamples - startOffset);
-                TimeSpan chunkTimeOffset = TimeSpan.FromSeconds((double)startOffset / SampleRate);
+                int len = Math.Min(ChunkSamples, totalSamples - offset);
+                var chunkSpan = samples.AsSpan(offset, len);
+                TimeSpan chunkTime = TimeSpan.FromSeconds((double)offset / SampleRate);
 
-                var chunkSpan = samples.AsSpan(startOffset, length);
-
-                ProcessAudioChunk(chunkSpan, chunkTimeOffset, request, allSegments, fullTextBuilder);
-                request.Progress?.Invoke(chunkIdx + 1, numChunks);
+                ProcessAudioChunk(chunkSpan, chunkTime, request, allSegments, fullTextBuilder);
+                offset += len;
             }
         }
 
-        string detectedLanguage = request.Language ?? "en";
-        TimeSpan totalDuration = TimeSpan.FromSeconds((double)totalSamples / SampleRate);
         return new SpeechToTextResult(
-            text: fullTextBuilder.ToString(),
-            language: detectedLanguage,
-            duration: totalDuration,
+            text: fullTextBuilder.ToString().Trim(),
+            language: request.Language ?? "en",
+            duration: TimeSpan.FromSeconds((double)totalSamples / SampleRate),
             segments: allSegments);
     }
 
@@ -113,127 +139,143 @@ public sealed class WhisperPipeline : ISpeechToTextPipeline
         List<SpeechSegment> allSegments,
         System.Text.StringBuilder fullTextBuilder)
     {
-        // 1. Extract 80/128-channel Log-Mel Spectrogram
-        float[] mel = _melExtractor.ExtractMel(chunkSpan, padTo30Seconds: false);
+        // 1. Extract Mel Spectrogram (padded to 30s)
+        float[] mel = _melExtractor.ExtractMel(chunkSpan, padTo30Seconds: true);
         int numFrames = mel.Length / _config.NumMels;
 
-        // 2. Audio Transformer Encoder Forward Pass
-        float[] audioEncoderState = _encoder.Forward(mel, numFrames);
-        int encFrames = audioEncoderState.Length / _config.AudioState;
+        // 2. Audio Encoder Forward Pass
+        float[] audioFeatures = _encoder.Forward(mel, numFrames);
+        int audioFrames = audioFeatures.Length / _config.AudioState;
 
-        // 3. Prepare Decoder Prompt Tokens
-        int[] prompt = _tokenizer.BuildInitialPrompt(request.Language, request.Task, request.EnableTimestamps);
-        var generatedTokens = new List<int>(prompt);
+        // 3. Construct Initial Decoder Prompt
+        int[] initialPrompt = _tokenizer.BuildInitialPrompt(
+            request.Language,
+            request.Task,
+            request.EnableTimestamps);
 
-        // 4. Autoregressive KV-Cached Greedy / Temperature Decoding Loop
+        // 4. Autoregressive Greedy Decoding with KV Cache
+        var generatedTokens = new List<int>(initialPrompt);
         var kvCache = new WhisperKvCache(_config.TextLayer, _config.TextCtx, _config.TextState);
-        for (int i = 0; i < prompt.Length - 1; i++)
+
+        int maxNewTokens = _config.TextCtx - initialPrompt.Length;
+        int currentPos = 0;
+
+        // Prefill initial prompt tokens into KV cache
+        for (int i = 0; i < initialPrompt.Length - 1; i++)
         {
-            _decoder.ForwardStep(prompt[i], i, kvCache, audioEncoderState, encFrames);
+            _decoder.ForwardStep(initialPrompt[i], currentPos++, kvCache, audioFeatures, audioFrames);
         }
 
-        int currentToken = prompt[^1];
-        int currentPos = prompt.Length - 1;
-        int maxTokens = Math.Min(_config.TextCtx - prompt.Length, 64);
-        var rng = new Random(42);
+        int lastToken = initialPrompt[^1];
 
-        for (int step = 0; step < maxTokens; step++)
+        for (int step = 0; step < maxNewTokens; step++)
         {
-            float[] logits = _decoder.ForwardStep(currentToken, currentPos++, kvCache, audioEncoderState, encFrames);
-            int nextToken = SampleNextToken(logits, request.Temperature, rng);
+            float[] logits = _decoder.ForwardStep(lastToken, currentPos++, kvCache, audioFeatures, audioFrames);
+
+            // Suppress non-speech / blank tokens if at beginning
+            if (step == 0)
+            {
+                logits[_tokenizer.NoSpeechToken] = float.NegativeInfinity;
+            }
+
+            // Suppress timestamps if timestamps disabled
+            if (!request.EnableTimestamps)
+            {
+                for (int t = _tokenizer.TimestampBegin; t <= _tokenizer.TimestampEnd; t++)
+                {
+                    logits[t] = float.NegativeInfinity;
+                }
+            }
+
+            int nextToken = SampleNextToken(logits, request.Temperature);
+            generatedTokens.Add(nextToken);
+            lastToken = nextToken;
 
             if (nextToken == WhisperTokenizer.EndOfText)
             {
                 break;
             }
-
-            generatedTokens.Add(nextToken);
-            currentToken = nextToken;
         }
 
-        // 5. Decode Segment Tokens & Timestamps
-        var (chunkText, chunkSegments) = _tokenizer.DecodeSegments(generatedTokens.ToArray(), chunkTimeOffset);
-
-        if (chunkSegments.Count > 0)
-        {
-            allSegments.AddRange(chunkSegments);
-        }
+        // 5. Decode Tokens to Text Segments with Timestamps
+        var (chunkText, chunkSegments) = _tokenizer.DecodeWithTimestamps(
+            generatedTokens.ToArray(),
+            chunkTimeOffset);
 
         if (!string.IsNullOrWhiteSpace(chunkText))
         {
             if (fullTextBuilder.Length > 0) fullTextBuilder.Append(' ');
             fullTextBuilder.Append(chunkText);
         }
+
+        foreach (var seg in chunkSegments)
+        {
+            allSegments.Add(seg with { Id = allSegments.Count });
+        }
     }
 
-    private int SampleNextToken(ReadOnlySpan<float> logits, float temperature, Random rng)
+    private static int SampleNextToken(float[] logits, float temperature)
     {
         if (temperature <= 0.0f)
         {
             // Greedy argmax
-            int bestToken = 0;
-            float maxLogit = float.MinValue;
-
-            for (int i = 0; i < logits.Length; i++)
+            int bestIdx = 0;
+            float maxVal = logits[0];
+            for (int i = 1; i < logits.Length; i++)
             {
-                if (logits[i] > maxLogit)
+                if (logits[i] > maxVal)
                 {
-                    maxLogit = logits[i];
-                    bestToken = i;
+                    maxVal = logits[i];
+                    bestIdx = i;
                 }
             }
-
-            return bestToken;
+            return bestIdx;
         }
 
-        // Temperature Softmax & Categorical Sampling
-        Span<float> expProbs = stackalloc float[Math.Min(logits.Length, 1024)];
-        float maxL = float.MinValue;
-        for (int i = 0; i < expProbs.Length; i++)
+        // Softmax with temperature
+        float maxLogit = float.NegativeInfinity;
+        for (int i = 0; i < logits.Length; i++)
         {
-            if (logits[i] > maxL) maxL = logits[i];
+            if (logits[i] > maxLogit) maxLogit = logits[i];
         }
 
-        float sumExp = 0f;
-        for (int i = 0; i < expProbs.Length; i++)
+        float sumExp = 0.0f;
+        var expLogits = new float[logits.Length];
+        for (int i = 0; i < logits.Length; i++)
         {
-            float e = MathF.Exp((logits[i] - maxL) / temperature);
-            expProbs[i] = e;
-            sumExp += e;
+            expLogits[i] = MathF.Exp((logits[i] - maxLogit) / temperature);
+            sumExp += expLogits[i];
         }
 
-        float roll = (float)rng.NextDouble() * sumExp;
-        float accum = 0f;
-
-        for (int i = 0; i < expProbs.Length; i++)
+        float r = Random.Shared.NextSingle() * sumExp;
+        float accum = 0.0f;
+        for (int i = 0; i < expLogits.Length; i++)
         {
-            accum += expProbs[i];
-            if (accum >= roll) return i;
+            accum += expLogits[i];
+            if (accum >= r) return i;
         }
 
-        return 0;
+        return logits.Length - 1;
     }
 
     /// <summary>
-    /// Transcribes incoming streaming audio chunks in real-time.
+    /// Transcribes streaming audio in real-time.
     /// </summary>
     public async IAsyncEnumerable<SpeechSegment> TranscribeStreamAsync(
         IAsyncEnumerable<ReadOnlyMemory<float>> audioStream,
         SpeechToTextRequest baseRequest,
-        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct = default)
+        [EnumeratorCancellation] CancellationToken ct = default)
     {
         var buffer = new List<float>();
-        int segmentCounter = 0;
         TimeSpan streamTimeOffset = TimeSpan.Zero;
+        int segmentCounter = 0;
 
         await foreach (var chunk in audioStream.WithCancellation(ct))
         {
-            if (chunk.Length == 0) continue;
-
-            ReadOnlySpan<float> span = chunk.Span;
+            var span = chunk.Span;
             if (baseRequest.SampleRate != SampleRate && baseRequest.SampleRate > 0)
             {
-                float[] resampled = AudioResampler.Resample(span, baseRequest.SampleRate, SampleRate);
+                var resampled = AudioResampler.Resample(span.ToArray(), baseRequest.SampleRate, SampleRate);
                 buffer.AddRange(resampled);
             }
             else

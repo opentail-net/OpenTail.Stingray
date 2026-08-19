@@ -1,7 +1,7 @@
 namespace OpenTail.Stingray.Audio.Whisper;
 
 /// <summary>
-/// Architectural hyper-parameters for OpenAI Whisper models.
+/// Architectural hyper-parameters for OpenAI Whisper models (Tiny, Base, Small, Medium, Large-v1/v2/v3, Large-v3-Turbo).
 /// </summary>
 public sealed record WhisperConfig
 {
@@ -16,6 +16,7 @@ public sealed record WhisperConfig
     public int TextLayer { get; init; } = 4;
     public int NumMels { get; init; } = 80;
     public float LayerNormEps { get; init; } = 1e-5f;
+    public bool IsV3 { get; init; } = false;
 
     public static WhisperConfig Tiny => new()
     {
@@ -26,7 +27,8 @@ public sealed record WhisperConfig
         TextState = 384,
         TextHead = 6,
         TextLayer = 4,
-        NumMels = 80
+        NumMels = 80,
+        IsV3 = false
     };
 
     public static WhisperConfig Base => new()
@@ -38,7 +40,8 @@ public sealed record WhisperConfig
         TextState = 512,
         TextHead = 8,
         TextLayer = 6,
-        NumMels = 80
+        NumMels = 80,
+        IsV3 = false
     };
 
     public static WhisperConfig Small => new()
@@ -50,7 +53,8 @@ public sealed record WhisperConfig
         TextState = 768,
         TextHead = 12,
         TextLayer = 12,
-        NumMels = 80
+        NumMels = 80,
+        IsV3 = false
     };
 
     public static WhisperConfig Medium => new()
@@ -62,30 +66,46 @@ public sealed record WhisperConfig
         TextState = 1024,
         TextHead = 16,
         TextLayer = 24,
-        NumMels = 80
+        NumMels = 80,
+        IsV3 = false
     };
 
-    public static WhisperConfig LargeV3 => new()
+    public static WhisperConfig LargeV2 => new()
     {
-        VocabSize = 51865,
+        VocabSize = 51864,
         AudioState = 1280,
         AudioHead = 20,
         AudioLayer = 32,
         TextState = 1280,
         TextHead = 20,
         TextLayer = 32,
-        NumMels = 128
+        NumMels = 80,
+        IsV3 = false
     };
 
-    public static WhisperConfig LargeV3Turbo => new()
+    public static WhisperConfig LargeV3 => new()
     {
-        VocabSize = 51865,
+        VocabSize = 51866,
         AudioState = 1280,
         AudioHead = 20,
         AudioLayer = 32,
         TextState = 1280,
         TextHead = 20,
-        TextLayer = 4,
-        NumMels = 128
+        TextLayer = 32,
+        NumMels = 128,
+        IsV3 = true
+    };
+
+    public static WhisperConfig LargeV3Turbo => new()
+    {
+        VocabSize = 51866,
+        AudioState = 1280,
+        AudioHead = 20,
+        AudioLayer = 32,
+        TextState = 1280,
+        TextHead = 20,
+        TextLayer = 4, // Truncated 4-layer decoder
+        NumMels = 128,
+        IsV3 = true
     };
 }

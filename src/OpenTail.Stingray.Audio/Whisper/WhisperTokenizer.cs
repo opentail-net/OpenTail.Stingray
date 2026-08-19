@@ -5,26 +5,27 @@ using System.Text.RegularExpressions;
 namespace OpenTail.Stingray.Audio.Whisper;
 
 /// <summary>
-/// Multilingual BPE tokenizer and timestamp decoder for OpenAI Whisper.
-/// Supports 99+ languages, special control tokens, and time-aligned subtitle tokens (&lt;|0.00|&gt; .. &lt;|30.00|&gt;).
+/// Multilingual BPE tokenizer and timestamp decoder for OpenAI Whisper (supporting v1/v2 and Large-v3/Large-v3-Turbo with 100 languages).
 /// </summary>
 public sealed class WhisperTokenizer
 {
-    // Standard Whisper Special Tokens (Multilingual)
+    // Standard Whisper Special Tokens (v1 / v2)
     public const int EndOfText = 50257;
     public const int StartOfTranscript = 50258;
     public const int EnglishLanguageToken = 50259;
-    public const int TranslateToken = 50358;
-    public const int TranscribeToken = 50359;
-    public const int StartOfLmToken = 50360;
-    public const int StartOfPrevToken = 50361;
-    public const int NoSpeechToken = 50362;
-    public const int NoTimestampsToken = 50363;
-    public const int TimestampBegin = 50364; // <|0.00|>
-    public const int TimestampEnd = 51864;   // <|30.00|>
+
+    public bool IsV3 { get; }
+    public int TranslateToken => IsV3 ? 50359 : 50358;
+    public int TranscribeToken => IsV3 ? 50360 : 50359;
+    public int StartOfLmToken => IsV3 ? 50361 : 50360;
+    public int StartOfPrevToken => IsV3 ? 50362 : 50361;
+    public int NoSpeechToken => IsV3 ? 50363 : 50362;
+    public int NoTimestampsToken => IsV3 ? 50364 : 50363;
+    public int TimestampBegin => IsV3 ? 50365 : 50364; // <|0.00|>
+    public int TimestampEnd => IsV3 ? 51865 : 51864;   // <|30.00|>
 
     // Language codes mapped to token IDs in standard multilingual Whisper
-    private static readonly string[] LanguageCodes =
+    private static readonly string[] LanguageCodesV1V2 =
     [
         "en", "zh", "de", "es", "ru", "ko", "fr", "ja", "pt", "tr",
         "pl", "ca", "nl", "ar", "sv", "it", "id", "hi", "fi", "vi",
@@ -38,17 +39,35 @@ public sealed class WhisperTokenizer
         "mg", "as", "tt", "haw", "ln", "ha", "ba", "jw", "su"
     ];
 
+    // Language codes for Large-v3 and Large-v3-Turbo (includes Cantonese "yue" as 100th language)
+    private static readonly string[] LanguageCodesV3 =
+    [
+        "en", "zh", "de", "es", "ru", "ko", "fr", "ja", "pt", "tr",
+        "pl", "ca", "nl", "ar", "sv", "it", "id", "hi", "fi", "vi",
+        "he", "uk", "el", "ms", "cs", "ro", "da", "hu", "ta", "no",
+        "th", "ur", "hr", "bg", "lt", "la", "mi", "ml", "cy", "sk",
+        "te", "fa", "lv", "bn", "sr", "az", "sl", "kn", "et", "mk",
+        "br", "eu", "is", "hy", "ne", "mn", "bs", "kk", "sq", "sw",
+        "gl", "mr", "pa", "si", "km", "sn", "yo", "so", "af", "oc",
+        "ka", "be", "tg", "sd", "gu", "am", "yi", "lo", "uz", "fo",
+        "ht", "ps", "tk", "nn", "mt", "sa", "lb", "my", "bo", "tl",
+        "mg", "as", "tt", "haw", "ln", "ha", "ba", "jw", "su", "yue"
+    ];
+
     private readonly Dictionary<string, int> _vocab = new(StringComparer.Ordinal);
     private readonly Dictionary<int, string> _idToToken = [];
     private readonly Dictionary<string, int> _langTokenMap = new(StringComparer.OrdinalIgnoreCase);
 
-    public WhisperTokenizer(IReadOnlyDictionary<string, int>? customVocab = null)
+    public WhisperTokenizer(IReadOnlyDictionary<string, int>? customVocab = null, bool isV3 = false)
     {
-        // Populate standard language mapping
-        for (int i = 0; i < LanguageCodes.Length; i++)
+        IsV3 = isV3;
+        string[] languages = isV3 ? LanguageCodesV3 : LanguageCodesV1V2;
+
+        // Populate language mapping
+        for (int i = 0; i < languages.Length; i++)
         {
             int tokenId = StartOfTranscript + 1 + i;
-            _langTokenMap[LanguageCodes[i]] = tokenId;
+            _langTokenMap[languages[i]] = tokenId;
         }
 
         if (customVocab != null)
@@ -61,10 +80,12 @@ public sealed class WhisperTokenizer
         }
         else
         {
-            // Build fallback standard token mappings for basic transcription
             InitializeDefaultVocab();
         }
     }
+
+    public static WhisperTokenizer CreateV3() => new(isV3: true);
+    public static WhisperTokenizer CreateV2() => new(isV3: false);
 
     private void InitializeDefaultVocab()
     {
@@ -98,7 +119,7 @@ public sealed class WhisperTokenizer
     }
 
     /// <summary>
-    /// Gets the token ID for a language code (e.g. "en" -> 50259).
+    /// Gets the token ID for a language code (e.g. "en" -> 50259, "yue" -> 50358 in v3).
     /// </summary>
     public int GetLanguageToken(string language)
     {
@@ -118,8 +139,8 @@ public sealed class WhisperTokenizer
         var tokens = new List<int>
         {
             StartOfTranscript,
-            string.IsNullOrEmpty(language) ? EnglishLanguageToken : GetLanguageToken(language),
-            task == SpeechTask.Translate ? TranslateToken : TranscribeToken
+            GetLanguageToken(language ?? "en"),
+            (task == SpeechTask.Translate) ? TranslateToken : TranscribeToken
         };
 
         if (!enableTimestamps)
@@ -131,134 +152,132 @@ public sealed class WhisperTokenizer
     }
 
     /// <summary>
-    /// Decodes a sequence of Whisper tokens into text and time-stamped segments.
+    /// Determines if a given token ID represents a time-aligned timestamp token (&lt;|0.00|&gt; .. &lt;|30.00|&gt;).
     /// </summary>
-    public (string FullText, List<SpeechSegment> Segments) DecodeSegments(ReadOnlySpan<int> tokens, TimeSpan chunkOffset)
+    public bool IsTimestampToken(int tokenId)
     {
-        var segments = new List<SpeechSegment>();
-        var fullTextBuilder = new StringBuilder();
-        var currentSegmentText = new StringBuilder();
-        var currentSegmentTokens = new List<int>();
+        return tokenId >= TimestampBegin && tokenId <= TimestampEnd;
+    }
 
-        TimeSpan segStart = chunkOffset;
-        TimeSpan segEnd = chunkOffset;
-        bool inSegment = false;
+    /// <summary>
+    /// Converts a timestamp token ID to its duration in seconds.
+    /// </summary>
+    public float TokenToSeconds(int tokenId)
+    {
+        if (!IsTimestampToken(tokenId)) return 0.0f;
+        return (tokenId - TimestampBegin) * 0.02f;
+    }
+
+    /// <summary>
+    /// Decodes a sequence of tokens into text segments with timestamps.
+    /// </summary>
+    public (string FullText, List<SpeechSegment> Segments) DecodeWithTimestamps(
+        ReadOnlySpan<int> tokens,
+        TimeSpan timeOffset)
+    {
+        var sbFull = new StringBuilder();
+        var segments = new List<SpeechSegment>();
+
+        var currentText = new StringBuilder();
+        var currentTokens = new List<int>();
+        float? segmentStartSec = null;
         int segmentId = 0;
 
-        for (int i = 0; i < tokens.Length; i++)
+        foreach (int tokenId in tokens)
         {
-            int token = tokens[i];
-
-            if (token == EndOfText || token == StartOfTranscript)
+            if (tokenId == EndOfText || tokenId == StartOfTranscript)
             {
                 continue;
             }
 
-            if (IsTimestamp(token))
+            if (IsTimestampToken(tokenId))
             {
-                float timeSeconds = (token - TimestampBegin) * 0.02f;
-                TimeSpan timestamp = chunkOffset + TimeSpan.FromSeconds(timeSeconds);
+                float sec = TokenToSeconds(tokenId);
 
-                if (!inSegment)
+                if (segmentStartSec == null)
                 {
-                    segStart = timestamp;
-                    inSegment = true;
+                    segmentStartSec = sec;
                 }
                 else
                 {
-                    segEnd = timestamp;
-                    string segText = currentSegmentText.ToString().Trim();
-                    if (segText.Length > 0)
+                    float startSec = segmentStartSec.Value;
+                    float endSec = sec;
+                    if (endSec < startSec) endSec = startSec + 0.1f;
+
+                    string segStr = currentText.ToString().Trim();
+                    if (segStr.Length > 0)
                     {
                         segments.Add(new SpeechSegment
                         {
                             Id = segmentId++,
-                            Start = segStart,
-                            End = segEnd,
-                            Text = segText,
-                            Tokens = currentSegmentTokens.ToArray()
+                            Start = timeOffset + TimeSpan.FromSeconds(startSec),
+                            End = timeOffset + TimeSpan.FromSeconds(endSec),
+                            Text = segStr,
+                            Tokens = currentTokens.ToArray(),
+                            Probability = 1.0f
                         });
 
-                        if (fullTextBuilder.Length > 0) fullTextBuilder.Append(' ');
-                        fullTextBuilder.Append(segText);
+                        if (sbFull.Length > 0) sbFull.Append(' ');
+                        sbFull.Append(segStr);
                     }
 
-                    currentSegmentText.Clear();
-                    currentSegmentTokens.Clear();
-                    inSegment = false;
+                    currentText.Clear();
+                    currentTokens.Clear();
+                    segmentStartSec = null;
                 }
-                continue;
             }
-
-            if (IsSpecialToken(token))
+            else
             {
-                continue;
+                currentTokens.Add(tokenId);
+                string piece = DecodeSingleToken(tokenId);
+                currentText.Append(piece);
             }
-
-            // Normal text token
-            currentSegmentTokens.Add(token);
-            string tokenStr = DecodeToken(token);
-            currentSegmentText.Append(tokenStr);
         }
 
-        // Catch trailing text if no closing timestamp was emitted
-        if (currentSegmentText.Length > 0)
+        // Emit any trailing segment
+        if (currentText.Length > 0)
         {
-            string segText = currentSegmentText.ToString().Trim();
-            if (segText.Length > 0)
+            string segStr = currentText.ToString().Trim();
+            if (segStr.Length > 0)
             {
+                float startSec = segmentStartSec ?? 0.0f;
+                float endSec = startSec + 1.0f;
+
                 segments.Add(new SpeechSegment
                 {
                     Id = segmentId++,
-                    Start = segStart,
-                    End = segEnd > segStart ? segEnd : segStart + TimeSpan.FromSeconds(1),
-                    Text = segText,
-                    Tokens = currentSegmentTokens.ToArray()
+                    Start = timeOffset + TimeSpan.FromSeconds(startSec),
+                    End = timeOffset + TimeSpan.FromSeconds(endSec),
+                    Text = segStr,
+                    Tokens = currentTokens.ToArray(),
+                    Probability = 1.0f
                 });
 
-                if (fullTextBuilder.Length > 0) fullTextBuilder.Append(' ');
-                fullTextBuilder.Append(segText);
+                if (sbFull.Length > 0) sbFull.Append(' ');
+                sbFull.Append(segStr);
             }
         }
 
-        return (fullTextBuilder.ToString(), segments);
+        return (sbFull.ToString(), segments);
     }
 
-    public static bool IsTimestamp(int token) => token >= TimestampBegin && token <= TimestampEnd;
-
-    public static bool IsSpecialToken(int token) => token >= EndOfText && token < TimestampBegin;
-
-    public string DecodeToken(int token)
+    private string DecodeSingleToken(int tokenId)
     {
-        if (_idToToken.TryGetValue(token, out var str))
+        if (_idToToken.TryGetValue(tokenId, out string? text))
         {
-            // Replace GPT2 BPE leading space character '\u0120' with ' '
-            return str.Replace('\u0120', ' ');
-        }
-
-        // Fallback for byte-level tokens
-        if (token >= 0 && token < 256)
-        {
-            return ((char)token).ToString();
-        }
-
-        return string.Empty;
-    }
-
-    /// <summary>
-    /// Decodes a sequence of tokens directly into a text string.
-    /// </summary>
-    public string Decode(ReadOnlySpan<int> tokens)
-    {
-        var sb = new StringBuilder();
-        for (int i = 0; i < tokens.Length; i++)
-        {
-            int t = tokens[i];
-            if (!IsSpecialToken(t) && !IsTimestamp(t))
+            if (text.StartsWith("<|") && text.EndsWith("|>"))
             {
-                sb.Append(DecodeToken(t));
+                return string.Empty; // Skip control tags in text stream
             }
+            return text;
         }
-        return sb.ToString().Trim();
+
+        // Fallback for character / byte fallback tokens
+        if (tokenId >= 0 && tokenId < 256)
+        {
+            return ((char)tokenId).ToString();
+        }
+
+        return " ";
     }
 }

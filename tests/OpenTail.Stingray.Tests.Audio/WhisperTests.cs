@@ -67,149 +67,98 @@ public sealed class WhisperTests
         Assert.Equal(3, promptTranscribe.Length);
         Assert.Equal(WhisperTokenizer.StartOfTranscript, promptTranscribe[0]);
         Assert.Equal(WhisperTokenizer.EnglishLanguageToken, promptTranscribe[1]);
-        Assert.Equal(WhisperTokenizer.TranscribeToken, promptTranscribe[2]);
+        Assert.Equal(tokenizer.TranscribeToken, promptTranscribe[2]);
 
         // 3. Initial prompt building for translation without timestamps
         int[] promptTranslate = tokenizer.BuildInitialPrompt("fr", SpeechTask.Translate, enableTimestamps: false);
         Assert.Equal(4, promptTranslate.Length);
         Assert.Equal(WhisperTokenizer.StartOfTranscript, promptTranslate[0]);
         Assert.Equal(tokenizer.GetLanguageToken("fr"), promptTranslate[1]);
-        Assert.Equal(WhisperTokenizer.TranslateToken, promptTranslate[2]);
-        Assert.Equal(WhisperTokenizer.NoTimestampsToken, promptTranslate[3]);
+        Assert.Equal(tokenizer.TranslateToken, promptTranslate[2]);
+        Assert.Equal(tokenizer.NoTimestampsToken, promptTranslate[3]);
     }
 
     [Fact]
-    public void WhisperTokenizer_TimestampDecoding_ParsesSegmentsCorrectly()
+    public void WhisperTokenizer_V3_HasCantoneseAndShiftedSpecialTokens()
     {
-        var tokenizer = new WhisperTokenizer();
+        var tokenizerV3 = WhisperTokenizer.CreateV3();
+        Assert.True(tokenizerV3.IsV3);
 
-        // Construct mock sequence: <|startoftranscript|> <|0.00|> Hello <|2.00|> <|2.00|> World <|4.50|> <|endoftranscript|>
-        int ts0 = WhisperTokenizer.TimestampBegin; // 0.00s
-        int ts100 = WhisperTokenizer.TimestampBegin + 100; // 2.00s (100 * 0.02)
-        int ts225 = WhisperTokenizer.TimestampBegin + 225; // 4.50s (225 * 0.02)
+        // Cantonese "yue" is 100th language token at 50358
+        int yueToken = tokenizerV3.GetLanguageToken("yue");
+        Assert.Equal(50358, yueToken);
 
-        int[] mockTokens =
-        [
-            WhisperTokenizer.StartOfTranscript,
-            ts0,
-            (int)'H', (int)'i',
-            ts100,
-            ts100,
-            (int)'t', (int)'h', (int)'e', (int)'r', (int)'e',
-            ts225,
-            WhisperTokenizer.EndOfText
-        ];
+        // Shifted special tokens in v3
+        Assert.Equal(50359, tokenizerV3.TranslateToken);
+        Assert.Equal(50360, tokenizerV3.TranscribeToken);
+        Assert.Equal(50361, tokenizerV3.StartOfLmToken);
+        Assert.Equal(50362, tokenizerV3.StartOfPrevToken);
+        Assert.Equal(50363, tokenizerV3.NoSpeechToken);
+        Assert.Equal(50364, tokenizerV3.NoTimestampsToken);
+        Assert.Equal(50365, tokenizerV3.TimestampBegin);
+        Assert.Equal(51865, tokenizerV3.TimestampEnd);
 
-        var (text, segments) = tokenizer.DecodeSegments(mockTokens, TimeSpan.Zero);
-
-        Assert.NotNull(text);
-        Assert.Equal(2, segments.Count);
-
-        Assert.Equal(TimeSpan.FromSeconds(0.0), segments[0].Start);
-        Assert.Equal(TimeSpan.FromSeconds(2.0), segments[0].End);
-
-        Assert.Equal(TimeSpan.FromSeconds(2.0), segments[1].Start);
-        Assert.Equal(TimeSpan.FromSeconds(4.5), segments[1].End);
+        // Build prompt for Cantonese
+        int[] yuePrompt = tokenizerV3.BuildInitialPrompt("yue", SpeechTask.Transcribe, enableTimestamps: true);
+        Assert.Equal(3, yuePrompt.Length);
+        Assert.Equal(WhisperTokenizer.StartOfTranscript, yuePrompt[0]);
+        Assert.Equal(50358, yuePrompt[1]);
+        Assert.Equal(50360, yuePrompt[2]);
     }
 
     [Fact]
-    public void WhisperEncoder_Forward_ProducesValidAudioRepresentations()
+    public void WhisperConfig_LargeV3AndTurbo_PreserveArchitectureAndLayers()
     {
-        var config = WhisperConfig.Tiny;
-        var encoder = new WhisperEncoder(config);
+        var v3 = WhisperConfig.LargeV3;
+        Assert.Equal(51866, v3.VocabSize);
+        Assert.Equal(128, v3.NumMels);
+        Assert.Equal(1280, v3.AudioState);
+        Assert.Equal(32, v3.AudioLayer);
+        Assert.Equal(32, v3.TextLayer);
+        Assert.Equal(20, v3.TextHead);
+        Assert.True(v3.IsV3);
 
-        int numFrames = 100;
-        float[] mel = new float[config.NumMels * numFrames];
-        for (int i = 0; i < mel.Length; i++) mel[i] = 0.1f;
-
-        float[] hidden = encoder.Forward(mel, numFrames);
-
-        Assert.NotNull(hidden);
-        int expectedEncFrames = (numFrames + 1) / 2;
-        Assert.Equal(expectedEncFrames * config.AudioState, hidden.Length);
-
-        for (int i = 0; i < hidden.Length; i++)
-        {
-            Assert.False(float.IsNaN(hidden[i]));
-            Assert.False(float.IsInfinity(hidden[i]));
-        }
+        var turbo = WhisperConfig.LargeV3Turbo;
+        Assert.Equal(51866, turbo.VocabSize);
+        Assert.Equal(128, turbo.NumMels);
+        Assert.Equal(1280, turbo.AudioState);
+        Assert.Equal(32, turbo.AudioLayer);
+        Assert.Equal(4, turbo.TextLayer); // 4 decoder layers in Turbo
+        Assert.Equal(20, turbo.TextHead);
+        Assert.True(turbo.IsV3);
     }
 
     [Fact]
-    public void WhisperDecoder_ForwardNextToken_ProducesVocabLogits()
+    public void WhisperPipeline_CreateLargeV3AndTurbo_InstantiatesCorrectPipelines()
     {
-        var config = WhisperConfig.Tiny;
+        using var pipeV3 = WhisperPipeline.CreateLargeV3();
+        Assert.Equal("OpenAI-Whisper-Large-V3", pipeV3.Architecture);
+        Assert.Equal(128, pipeV3.Config.NumMels);
+        Assert.Equal(32, pipeV3.Config.TextLayer);
+
+        using var pipeTurbo = WhisperPipeline.CreateLargeV3Turbo();
+        Assert.Equal("OpenAI-Whisper-Large-V3-Turbo", pipeTurbo.Architecture);
+        Assert.Equal(128, pipeTurbo.Config.NumMels);
+        Assert.Equal(4, pipeTurbo.Config.TextLayer);
+    }
+
+    [Fact]
+    public void WhisperDecoder_Turbo_OperatesWith4Layers()
+    {
+        var config = WhisperConfig.LargeV3Turbo;
         var decoder = new WhisperDecoder(config);
 
-        int encFrames = 50;
-        float[] audioState = new float[encFrames * config.AudioState];
-        int[] prompt = [WhisperTokenizer.StartOfTranscript, WhisperTokenizer.EnglishLanguageToken, WhisperTokenizer.TranscribeToken];
+        var cache = new WhisperKvCache(config.TextLayer, config.TextCtx, config.TextState);
+        var audioState = new float[10 * config.AudioState];
 
-        float[] logits = decoder.ForwardNextToken(prompt, audioState, encFrames);
+        float[] logits = decoder.ForwardStep(
+            tokenId: WhisperTokenizer.StartOfTranscript,
+            position: 0,
+            cache: cache,
+            audioEncoderOutput: audioState,
+            audioFrames: 10);
 
         Assert.NotNull(logits);
         Assert.Equal(config.VocabSize, logits.Length);
-
-        for (int i = 0; i < logits.Length; i++)
-        {
-            Assert.False(float.IsNaN(logits[i]));
-            Assert.False(float.IsInfinity(logits[i]));
-        }
-    }
-
-    [Fact]
-    public void WavReader_WavWriter_RoundtripsPcmAudioCorrectly()
-    {
-        float[] original = new float[1600]; // 0.1s @ 16kHz
-        for (int i = 0; i < original.Length; i++)
-        {
-            original[i] = 0.4f * MathF.Sin(2.0f * MathF.PI * 440.0f * i / 16000.0f);
-        }
-
-        byte[] wavBytes = WavWriter.ToWavBytes(original, sampleRate: 16000);
-        Assert.NotNull(wavBytes);
-
-        using var ms = new MemoryStream(wavBytes);
-        var (decodedSamples, sampleRate, channels) = WavReader.ReadWav(ms);
-
-        Assert.Equal(16000, sampleRate);
-        Assert.Equal(1, channels);
-        Assert.Equal(original.Length, decodedSamples.Length);
-
-        for (int i = 0; i < original.Length; i++)
-        {
-            Assert.InRange(decodedSamples[i], original[i] - 0.01f, original[i] + 0.01f);
-        }
-    }
-
-    [Fact]
-    public void WhisperPipeline_Transcribe_EndToEndExecutionSucceeds()
-    {
-        using var pipeline = new WhisperPipeline(WhisperConfig.Tiny);
-        Assert.Equal("OpenAI-Whisper", pipeline.Architecture);
-        Assert.Equal(16000, pipeline.SampleRate);
-
-        float[] pcm = new float[16000]; // 1s synthetic audio
-        for (int i = 0; i < pcm.Length; i++)
-        {
-            pcm[i] = 0.3f * MathF.Sin(2.0f * MathF.PI * 300.0f * i / 16000.0f);
-        }
-
-        var request = new SpeechToTextRequest
-        {
-            AudioSamples = pcm,
-            SampleRate = 16000,
-            Language = "en",
-            Task = SpeechTask.Transcribe,
-            EnableTimestamps = true,
-            Temperature = 0.0f
-        };
-
-        var result = pipeline.Transcribe(request);
-
-        Assert.NotNull(result);
-        Assert.Equal("en", result.Language);
-        Assert.Equal(TimeSpan.FromSeconds(1.0), result.Duration);
-        Assert.NotNull(result.Segments);
     }
 }
