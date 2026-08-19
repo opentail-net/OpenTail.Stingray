@@ -1,4 +1,7 @@
+using System;
 using System.Buffers;
+using System.Collections.Generic;
+using System.IO;
 using OpenTail.Stingray.Core;
 using CoreTensor = OpenTail.Stingray.Core.Tensor;
 
@@ -62,8 +65,10 @@ public sealed class HunyuanVideoModel : IDisposable
 
         for (int i = 60; i >= 0; i--)
         {
-            string key = $"{prefix}double_blocks.{i}.img_attn.qkv.weight";
-            if (weights.Contains(key) || weights.Contains("model.diffusion_model." + key))
+            string key1 = $"{prefix}double_blocks.{i}.img_attn.qkv.weight";
+            string key2 = $"{prefix}double_blocks.{i}.img_attn_qkv.weight";
+            if (weights.Contains(key1) || weights.Contains(key2) ||
+                weights.Contains("model.diffusion_model." + key1) || weights.Contains("model.diffusion_model." + key2))
             {
                 detectedDouble = i + 1;
                 break;
@@ -72,8 +77,8 @@ public sealed class HunyuanVideoModel : IDisposable
 
         for (int i = 60; i >= 0; i--)
         {
-            string key = $"{prefix}single_blocks.{i}.linear1.weight";
-            if (weights.Contains(key) || weights.Contains("model.diffusion_model." + key))
+            string key1 = $"{prefix}single_blocks.{i}.linear1.weight";
+            if (weights.Contains(key1) || weights.Contains("model.diffusion_model." + key1))
             {
                 detectedSingle = i + 1;
                 break;
@@ -81,12 +86,11 @@ public sealed class HunyuanVideoModel : IDisposable
         }
 
         int detectedDim = defDim;
-        string inKey = $"{prefix}img_in.proj.weight";
-        if (!weights.Contains(inKey)) inKey = "model.diffusion_model." + inKey;
-        if (weights.Contains(inKey))
+        string inProjKey = $"{prefix}img_in.proj.weight";
+        if (weights.Contains(inProjKey))
         {
-            var w = weights.ReadF32(inKey);
-            if (w.Length > 0 && InChannels > 0)
+            var w = weights.ReadF32(inProjKey);
+            if (w.Length >= InChannels && w.Length % InChannels == 0)
                 detectedDim = w.Length / InChannels;
         }
 
@@ -100,6 +104,30 @@ public sealed class HunyuanVideoModel : IDisposable
         if (_weights.Contains(direct)) return direct;
         if (_weights.Contains("model.diffusion_model." + direct)) return "model.diffusion_model." + direct;
         if (_weights.Contains("diffusion_model." + direct)) return "diffusion_model." + direct;
+
+        // Alternate naming variants between diffusers / ComfyUI / official Tencent formats
+        string[] candidateReplacements =
+        {
+            direct.Replace("time_in.in_layer", "time_in.mlp.0"),
+            direct.Replace("time_in.out_layer", "time_in.mlp.2"),
+            direct.Replace("txt_in.in_layer", "txt_in.input_embedder"),
+            direct.Replace("img_attn.qkv", "img_attn_qkv"),
+            direct.Replace("img_attn.proj", "img_attn_proj"),
+            direct.Replace("txt_attn.qkv", "txt_attn_qkv"),
+            direct.Replace("txt_attn.proj", "txt_attn_proj"),
+            direct.Replace("img_attn.norm.key_norm", "img_attn_k_norm"),
+            direct.Replace("img_attn.norm.query_norm", "img_attn_q_norm"),
+            direct.Replace("txt_attn.norm.key_norm", "txt_attn_k_norm"),
+            direct.Replace("txt_attn.norm.query_norm", "txt_attn_q_norm"),
+        };
+
+        foreach (var cand in candidateReplacements)
+        {
+            if (_weights.Contains(cand)) return cand;
+            if (_weights.Contains("model.diffusion_model." + cand)) return "model.diffusion_model." + cand;
+            if (_weights.Contains("diffusion_model." + cand)) return "diffusion_model." + cand;
+        }
+
         return direct;
     }
 
@@ -290,21 +318,19 @@ public sealed class HunyuanVideoModel : IDisposable
         var g = mod.AsSpan(2 * _dim, _dim);
 
         var normed = Modulate(x, totalSeq, s, sc);
-        var qkvMlp = Linear($"{prefix}.linear1", normed, _dim, _dim * 3 + _dim * 4);
 
-        int qkvLen = _dim * 3;
-        int mlpLen = _dim * 4;
-        var qkv = new float[totalSeq * qkvLen];
-        var mlpUp = new float[totalSeq * mlpLen];
+        // QKV + MLP in single linear1
+        int mlpHidden = _dim * 4;
+        int linear1Out = _dim * 3 + mlpHidden;
+        var preAttnMlp = Linear($"{prefix}.linear1", normed, _dim, linear1Out);
 
-        for (int i = 0; i < totalSeq; i++)
-        {
-            int srcOff = i * (qkvLen + mlpLen);
-            Array.Copy(qkvMlp, srcOff, qkv, i * qkvLen, qkvLen);
-            Array.Copy(qkvMlp, srcOff + qkvLen, mlpUp, i * mlpLen, mlpLen);
-        }
+        var qkv = preAttnMlp.AsSpan(0, totalSeq * _dim * 3).ToArray();
+        var mlpIn = preAttnMlp.AsSpan(totalSeq * _dim * 3, totalSeq * mlpHidden).ToArray();
 
         var (q, k, v) = SplitQkv(qkv, totalSeq, _dim);
+
+        var normK = TryGetWeight($"{prefix}.k_norm.weight") ?? TryGetWeight($"{prefix}.k_norm.scale");
+        if (normK is not null) RmsNormHeads(k, totalSeq, _numHeads, _headDim, normK);
 
         int ropeSeq = Math.Min(totalSeq, cos.Length / _headDim);
         HunyuanVideoRoPE.ApplyRoPE(q, cos, sin, ropeSeq, _numHeads, _headDim);
@@ -312,19 +338,27 @@ public sealed class HunyuanVideoModel : IDisposable
 
         var attnOut = MultiHeadAttention(q, k, v, totalSeq, _numHeads, _headDim);
 
-        DiffusionOps.GeluInPlace(mlpUp);
+        // MLP activation
+        DiffusionOps.GeluInPlace(mlpIn);
 
-        var fused = new float[totalSeq * (_dim + mlpLen)];
-        for (int i = 0; i < totalSeq; i++)
-        {
-            int dstOff = i * (_dim + mlpLen);
-            Array.Copy(attnOut, i * _dim, fused, dstOff, _dim);
-            Array.Copy(mlpUp, i * mlpLen, fused, dstOff + _dim, mlpLen);
-        }
+        // Linear2 projects [attnOut (dim) + mlpIn (4*dim)] -> dim
+        var combined = ConcatFeatures(attnOut, mlpIn, totalSeq, _dim, mlpHidden);
+        var blockOut = Linear($"{prefix}.linear2", combined, _dim + mlpHidden, _dim);
 
-        var projOut = Linear($"{prefix}.linear2", fused, _dim + mlpLen, _dim);
-        ApplyGatedResidual(x, projOut, totalSeq, g);
+        ApplyGatedResidual(x, blockOut, totalSeq, g);
         return x;
+    }
+
+    private static float[] ConcatFeatures(float[] a, float[] b, int seqLen, int dimA, int dimB)
+    {
+        int outDim = dimA + dimB;
+        var res = new float[seqLen * outDim];
+        for (int i = 0; i < seqLen; i++)
+        {
+            Array.Copy(a, i * dimA, res, i * outDim, dimA);
+            Array.Copy(b, i * dimB, res, i * outDim + dimA, dimB);
+        }
+        return res;
     }
 
     private static (float[] q, float[] k, float[] v) SplitQkv(float[] qkv, int seqLen, int dim)
@@ -335,64 +369,15 @@ public sealed class HunyuanVideoModel : IDisposable
 
         for (int i = 0; i < seqLen; i++)
         {
-            int src = i * (dim * 3);
-            int dst = i * dim;
-            Array.Copy(qkv, src + 0 * dim, q, dst, dim);
-            Array.Copy(qkv, src + 1 * dim, k, dst, dim);
-            Array.Copy(qkv, src + 2 * dim, v, dst, dim);
+            int qkvOff = i * dim * 3;
+            Array.Copy(qkv, qkvOff, q, i * dim, dim);
+            Array.Copy(qkv, qkvOff + dim, k, i * dim, dim);
+            Array.Copy(qkv, qkvOff + dim * 2, v, i * dim, dim);
         }
         return (q, k, v);
     }
 
-    private static float[] MultiHeadAttention(float[] q, float[] k, float[] v, int seqLen, int numHeads, int headDim)
-    {
-        float scale = 1.0f / MathF.Sqrt(headDim);
-        var output = new float[seqLen * numHeads * headDim];
-
-        for (int h = 0; h < numHeads; h++)
-        {
-            int hOff = h * headDim;
-            for (int i = 0; i < seqLen; i++)
-            {
-                int qRow = (i * numHeads + h) * headDim;
-                var scores = new float[seqLen];
-                float maxScore = float.NegativeInfinity;
-
-                for (int j = 0; j < seqLen; j++)
-                {
-                    int kRow = (j * numHeads + h) * headDim;
-                    float dot = 0f;
-                    for (int d = 0; d < headDim; d++)
-                        dot += q[qRow + d] * k[kRow + d];
-                    dot *= scale;
-                    scores[j] = dot;
-                    if (dot > maxScore) maxScore = dot;
-                }
-
-                float sumExp = 0f;
-                for (int j = 0; j < seqLen; j++)
-                {
-                    scores[j] = MathF.Exp(scores[j] - maxScore);
-                    sumExp += scores[j];
-                }
-                float invSum = 1f / sumExp;
-                for (int j = 0; j < seqLen; j++) scores[j] *= invSum;
-
-                int outRow = (i * numHeads + h) * headDim;
-                for (int d = 0; d < headDim; d++)
-                {
-                    float sum = 0f;
-                    for (int j = 0; j < seqLen; j++)
-                        sum += scores[j] * v[(j * numHeads + h) * headDim + d];
-                    output[outRow + d] = sum;
-                }
-            }
-        }
-
-        return output;
-    }
-
-    private static void RmsNormHeads(float[] qk, int seqLen, int numHeads, int headDim, float[] gamma)
+    private static void RmsNormHeads(float[] x, int seqLen, int numHeads, int headDim, ReadOnlySpan<float> weight)
     {
         for (int s = 0; s < seqLen; s++)
         {
@@ -402,36 +387,85 @@ public sealed class HunyuanVideoModel : IDisposable
                 float sumSq = 0f;
                 for (int d = 0; d < headDim; d++)
                 {
-                    float val = qk[off + d];
+                    float val = x[off + d];
                     sumSq += val * val;
                 }
-                float invRms = 1.0f / MathF.Sqrt(sumSq / headDim + 1e-6f);
+                float rms = 1.0f / MathF.Sqrt(sumSq / headDim + 1e-6f);
                 for (int d = 0; d < headDim; d++)
-                    qk[off + d] = qk[off + d] * invRms * gamma[d % gamma.Length];
+                    x[off + d] = x[off + d] * rms * (weight.Length > d ? weight[d] : 1.0f);
             }
         }
     }
 
-    private static float[] ConcatSequences(float[] a, float[] b, int lenA, int lenB)
+    private static float[] MultiHeadAttention(float[] q, float[] k, float[] v, int seqLen, int numHeads, int headDim)
     {
-        int dim = a.Length / lenA;
-        var result = new float[(lenA + lenB) * dim];
-        Array.Copy(a, 0, result, 0, lenA * dim);
-        Array.Copy(b, 0, result, lenA * dim, lenB * dim);
-        return result;
+        int dim = numHeads * headDim;
+        var outF = new float[seqLen * dim];
+        float scale = 1.0f / MathF.Sqrt(headDim);
+        var scores = new float[seqLen];
+
+        for (int h = 0; h < numHeads; h++)
+        {
+            for (int i = 0; i < seqLen; i++)
+            {
+                int qOff = (i * numHeads + h) * headDim;
+                float maxScore = float.NegativeInfinity;
+
+                for (int j = 0; j < seqLen; j++)
+                {
+                    int kOff = (j * numHeads + h) * headDim;
+                    float dot = 0f;
+                    for (int d = 0; d < headDim; d++)
+                        dot += q[qOff + d] * k[kOff + d];
+                    dot *= scale;
+                    scores[j] = dot;
+                    if (dot > maxScore) maxScore = dot;
+                }
+
+                float sumExp = 0f;
+                for (int j = 0; j < seqLen; j++)
+                {
+                    float exp = MathF.Exp(scores[j] - maxScore);
+                    scores[j] = exp;
+                    sumExp += exp;
+                }
+                float invSum = 1.0f / (sumExp + 1e-8f);
+
+                int outOff = (i * numHeads + h) * headDim;
+                for (int d = 0; d < headDim; d++)
+                {
+                    float val = 0f;
+                    for (int j = 0; j < seqLen; j++)
+                    {
+                        int vOff = (j * numHeads + h) * headDim;
+                        val += scores[j] * invSum * v[vOff + d];
+                    }
+                    outF[outOff + d] = val;
+                }
+            }
+        }
+        return outF;
     }
 
     private float[] FeedForward(string prefix, float[] x, int seqLen)
     {
-        int intermediateDim = _dim * 4;
-        var h1 = Linear($"{prefix}.0", x, _dim, intermediateDim);
-        DiffusionOps.GeluInPlace(h1);
-        return Linear($"{prefix}.2", h1, intermediateDim, _dim);
+        int mlpHidden = _dim * 4;
+        var fc1 = Linear($"{prefix}.fc1", x, _dim, mlpHidden);
+        DiffusionOps.GeluInPlace(fc1);
+        return Linear($"{prefix}.fc2", fc1, mlpHidden, _dim);
+    }
+
+    private static float[] ConcatSequences(float[] a, float[] b, int lenA, int lenB)
+    {
+        var res = new float[a.Length + b.Length];
+        Array.Copy(a, 0, res, 0, a.Length);
+        Array.Copy(b, 0, res, a.Length, b.Length);
+        return res;
     }
 
     private float[] Modulate(float[] x, int seqLen, ReadOnlySpan<float> shift, ReadOnlySpan<float> scale)
     {
-        var outF = new float[x.Length];
+        var outF = new float[seqLen * _dim];
         for (int i = 0; i < seqLen; i++)
         {
             int off = i * _dim;
@@ -518,7 +552,7 @@ public sealed class HunyuanVideoModel : IDisposable
                     int tokenOff = tokenIdx * InChannels;
                     int chanOffset = 0;
 
-                    for (int c = 0; c < OutChannels; c++)
+                    for (int c = 0; c < 16; c++)
                     {
                         for (int dy = 0; dy < 2; dy++)
                         {
@@ -526,8 +560,8 @@ public sealed class HunyuanVideoModel : IDisposable
                             {
                                 int y = ph * 2 + dy;
                                 int x = pw * 2 + dx;
-                                int srcIdx = ((c * numFrames + f) * latH + y) * latW + x;
-                                packed[tokenOff + chanOffset++] = latents[srcIdx];
+                                int latIdx = ((c * numFrames + f) * latH + y) * latW + x;
+                                packed[tokenOff + chanOffset++] = latents[latIdx];
                             }
                         }
                     }
@@ -541,7 +575,8 @@ public sealed class HunyuanVideoModel : IDisposable
     {
         int patchH = latH / 2;
         int patchW = latW / 2;
-        var unpacked = new float[OutChannels * numFrames * latH * latW];
+        int totalLatents = 16 * numFrames * latH * latW;
+        var latents = new float[totalLatents];
 
         for (int f = 0; f < numFrames; f++)
         {
@@ -553,7 +588,7 @@ public sealed class HunyuanVideoModel : IDisposable
                     int tokenOff = tokenIdx * InChannels;
                     int chanOffset = 0;
 
-                    for (int c = 0; c < OutChannels; c++)
+                    for (int c = 0; c < 16; c++)
                     {
                         for (int dy = 0; dy < 2; dy++)
                         {
@@ -561,23 +596,25 @@ public sealed class HunyuanVideoModel : IDisposable
                             {
                                 int y = ph * 2 + dy;
                                 int x = pw * 2 + dx;
-                                int dstIdx = ((c * numFrames + f) * latH + y) * latW + x;
-                                unpacked[dstIdx] = packed[tokenOff + chanOffset++];
+                                int latIdx = ((c * numFrames + f) * latH + y) * latW + x;
+                                latents[latIdx] = packed[tokenOff + chanOffset++];
                             }
                         }
                     }
                 }
             }
         }
-        return unpacked;
+        return latents;
     }
 
     public void Dispose()
     {
-        if (!_disposed)
+        if (_disposed) return;
+        _disposed = true;
+        if (_gpuWeights is not null)
         {
-            _disposed = true;
-            _weights.Dispose();
+            foreach (var t in _gpuWeights.Values) t.Dispose();
+            _gpuWeights.Clear();
         }
     }
 }

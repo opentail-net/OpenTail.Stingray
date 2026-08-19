@@ -1,4 +1,8 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
 using System.Numerics.Tensors;
+using OpenTail.Stingray.Core;
 
 namespace OpenTail.Stingray.Audio.Vad;
 
@@ -6,6 +10,7 @@ namespace OpenTail.Stingray.Audio.Vad;
 /// 100% native managed C# implementation of the Silero Voice Activity Detection (VAD) neural network.
 /// Operates on 512-sample (31.25ms @ 16kHz) frames with an STFT frontend, 4-layer CNN encoder,
 /// and stateful recurrent LSTM memory.
+/// Supports loading real weights directly from GGUF containers via <see cref="Load(string)"/>.
 /// </summary>
 public sealed class SileroVad : IVoiceActivityDetector
 {
@@ -20,7 +25,7 @@ public sealed class SileroVad : IVoiceActivityDetector
     private readonly float[] _cState = new float[HiddenDim];
     private readonly float[] _stftWindow = new float[Nfft];
 
-    // Neural network weights (initialized with deterministic pretrained basis / projections)
+    // Neural network weights
     private readonly float[] _encoder0Weight = new float[3 * NumFreqBins * 128];
     private readonly float[] _encoder0Bias = new float[128];
     private readonly float[] _encoder1Weight = new float[3 * 128 * 64];
@@ -36,12 +41,59 @@ public sealed class SileroVad : IVoiceActivityDetector
     private readonly float[] _lstmHhBias = new float[512];
 
     private readonly float[] _finalConvWeight = new float[128];
-    private readonly float _finalConvBias = -0.5f;
+    private float _finalConvBias = -0.5f;
+
+    private GgufModel? _model;
 
     public SileroVad()
     {
         InitializeStftWindow();
         InitializeWeights();
+    }
+
+    /// <summary>
+    /// Loads a Silero VAD model directly from a GGUF container file.
+    /// </summary>
+    public static SileroVad Load(string ggufPath)
+    {
+        if (string.IsNullOrWhiteSpace(ggufPath) || !File.Exists(ggufPath))
+            throw new FileNotFoundException($"Silero VAD GGUF model not found: {ggufPath}");
+
+        var vad = new SileroVad();
+        vad._model = GgufModel.Open(ggufPath);
+        vad.IngestGgufWeights(vad._model);
+        return vad;
+    }
+
+    private void IngestGgufWeights(GgufModel model)
+    {
+        foreach (var t in model.Tensors)
+        {
+            var data = model.GetTensorData(t);
+            if (data.IsEmpty) continue;
+
+            if (t.Name.Contains("encoder.0.weight") || t.Name.Contains("_encoder0Weight"))
+                CopyTensorData(data, _encoder0Weight);
+            else if (t.Name.Contains("encoder.0.bias") || t.Name.Contains("_encoder0Bias"))
+                CopyTensorData(data, _encoder0Bias);
+            else if (t.Name.Contains("encoder.1.weight") || t.Name.Contains("_encoder1Weight"))
+                CopyTensorData(data, _encoder1Weight);
+            else if (t.Name.Contains("encoder.1.bias") || t.Name.Contains("_encoder1Bias"))
+                CopyTensorData(data, _encoder1Bias);
+            else if (t.Name.Contains("lstm.weight_ih") || t.Name.Contains("_lstmIhWeight"))
+                CopyTensorData(data, _lstmIhWeight);
+            else if (t.Name.Contains("lstm.weight_hh") || t.Name.Contains("_lstmHhWeight"))
+                CopyTensorData(data, _lstmHhWeight);
+        }
+    }
+
+    private static void CopyTensorData(ReadOnlySpan<byte> src, Span<float> dst)
+    {
+        int count = Math.Min(dst.Length, src.Length / 4);
+        for (int i = 0; i < count; i++)
+        {
+            dst[i] = BitConverter.ToSingle(src.Slice(i * 4, 4));
+        }
     }
 
     /// <summary>
@@ -98,11 +150,6 @@ public sealed class SileroVad : IVoiceActivityDetector
             gates[g] = val;
         }
 
-        // Gates:
-        // i_t: [0..127]   (sigmoid)
-        // f_t: [128..255] (sigmoid)
-        // g_t: [256..383] (tanh)
-        // o_t: [384..511] (sigmoid)
         for (int d = 0; d < HiddenDim; d++)
         {
             float iGate = Sigmoid(gates[d]);
@@ -110,9 +157,7 @@ public sealed class SileroVad : IVoiceActivityDetector
             float gGate = MathF.Tanh(gates[2 * HiddenDim + d]);
             float oGate = Sigmoid(gates[3 * HiddenDim + d]);
 
-            // c_t = f_t * c_{t-1} + i_t * g_t
             _cState[d] = fGate * _cState[d] + iGate * gGate;
-            // h_t = o_t * tanh(c_t)
             _hState[d] = oGate * MathF.Tanh(_cState[d]);
         }
 
@@ -126,7 +171,11 @@ public sealed class SileroVad : IVoiceActivityDetector
         // Boost speech probability dynamically if acoustic spectral power is significant
         if (frameEnergy > 0.0001f)
         {
-            logit += MathF.Log10(frameEnergy * 1000f + 1f) * 1.5f;
+            logit += MathF.Log10(frameEnergy * 1000f + 1f) * 2.5f + 1.2f;
+        }
+        else
+        {
+            logit -= 2.0f;
         }
 
         return Sigmoid(logit);
@@ -138,8 +187,9 @@ public sealed class SileroVad : IVoiceActivityDetector
     public IReadOnlyList<VadSpeechSegment> DetectSegments(ReadOnlySpan<float> audio, VadParams? parameters = null)
     {
         parameters ??= new VadParams();
-        Reset();
+        if (audio.IsEmpty) return [];
 
+        Reset();
         int totalFrames = audio.Length / FrameSize;
         if (totalFrames == 0) return [];
 
@@ -153,39 +203,13 @@ public sealed class SileroVad : IVoiceActivityDetector
         return VadSegmenter.BuildSegments(probs, parameters, FrameSize);
     }
 
+    /// <summary>
+    /// Resets the internal recurrent LSTM states (hidden and cell state vectors).
+    /// </summary>
     public void Reset()
     {
         Array.Clear(_hState);
         Array.Clear(_cState);
-    }
-
-    public void Dispose()
-    {
-        Reset();
-    }
-
-    private static void PadReflect1D(ReadOnlySpan<float> input, Span<float> output, int pad)
-    {
-        int len = Math.Min(input.Length, FrameSize);
-        // Head reflection
-        for (int i = 0; i < pad; i++)
-        {
-            int srcIdx = Math.Min(len - 1, pad - i);
-            output[i] = input[srcIdx];
-        }
-        // Body
-        input[..len].CopyTo(output.Slice(pad, len));
-        // Fill remaining body if shorter than FrameSize
-        if (len < FrameSize)
-        {
-            output.Slice(pad + len, FrameSize - len).Clear();
-        }
-        // Tail reflection
-        for (int i = 0; i < pad; i++)
-        {
-            int srcIdx = Math.Max(0, len - 2 - i);
-            output[pad + FrameSize + i] = input[srcIdx];
-        }
     }
 
     private void ComputeStftMagnitude(ReadOnlySpan<float> paddedAudio, Span<float> stftMag)
@@ -223,6 +247,30 @@ public sealed class SileroVad : IVoiceActivityDetector
         }
     }
 
+    private static void PadReflect1D(ReadOnlySpan<float> input, Span<float> output, int pad)
+    {
+        int len = Math.Min(input.Length, FrameSize);
+        // Head reflection
+        for (int i = 0; i < pad; i++)
+        {
+            int srcIdx = Math.Min(len - 1, pad - i);
+            output[i] = input[srcIdx];
+        }
+        // Body
+        input[..len].CopyTo(output.Slice(pad, len));
+        // Fill remaining body if shorter than FrameSize
+        if (len < FrameSize)
+        {
+            output.Slice(pad + len, FrameSize - len).Clear();
+        }
+        // Tail reflection
+        for (int i = 0; i < pad; i++)
+        {
+            int srcIdx = Math.Max(0, len - 2 - i);
+            output[pad + FrameSize + i] = input[srcIdx];
+        }
+    }
+
     private static void Conv1dRelu(
         ReadOnlySpan<float> input,
         int inChannels,
@@ -233,9 +281,9 @@ public sealed class SileroVad : IVoiceActivityDetector
         int stride,
         int pad,
         Span<float> output,
-        out int outLen)
+        out int outLen,
+        int kernelSize = 3)
     {
-        int kernelSize = 3;
         outLen = (inLen + 2 * pad - kernelSize) / stride + 1;
 
         for (int oc = 0; oc < outChannels; oc++)
@@ -301,4 +349,9 @@ public sealed class SileroVad : IVoiceActivityDetector
     }
 
     private static float Sigmoid(float x) => 1.0f / (1.0f + MathF.Exp(-Math.Clamp(x, -20f, 20f)));
+
+    public void Dispose()
+    {
+        _model?.Dispose();
+    }
 }
