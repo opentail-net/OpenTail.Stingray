@@ -37,7 +37,7 @@ public sealed class F5TtsRealWeightsTests
     }
 
     [Fact]
-    public void F5Tts_RealModelFile_SafetensorsValidAndSynthesizesSpeech()
+    public void F5Tts_RealModelFile_SafetensorsValid()
     {
         string? modelPath = FindModelPath(ModelFileName);
         if (modelPath is null) return;
@@ -45,11 +45,22 @@ public sealed class F5TtsRealWeightsTests
         using var st = SafetensorsLoader.Open(modelPath);
         Assert.NotNull(st);
         Assert.True(st.TensorCount > 0, "F5-TTS safetensors must contain tensors");
+    }
 
-        var pipeline = new F5TtsPipeline();
+    [Fact]
+    public void F5TtsPipeline_LoadRealSafetensors_SynthesizesAudio()
+    {
+        string? modelPath = FindModelPath(ModelFileName);
+        if (modelPath is null) return;
+
+        using var pipeline = F5TtsPipeline.Load(modelPath);
+        Assert.NotNull(pipeline);
+        Assert.Equal("F5-TTS", pipeline.Architecture);
+        Assert.Equal(24000, pipeline.DefaultSampleRate);
+
         var request = new AudioGenerationRequest
         {
-            Text = "F5-TTS non-autoregressive flow matching speech synthesis.",
+            Text = "Hello world! Flow matching text to speech.",
             Speed = 1.0f
         };
 

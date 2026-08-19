@@ -1,14 +1,14 @@
 using System;
 using System.IO;
 using OpenTail.Stingray.Core;
-using OpenTail.Stingray.Diffusion.StableDiffusion;
+using OpenTail.Stingray.Diffusion.SDXL;
 using Xunit;
 
 namespace OpenTail.Stingray.Tests.Diffusion;
 
-public sealed class Sd15PipelineTests
+public sealed class SdxlRealWeightsTests
 {
-    private const string ModelFileName = "v1-5-pruned-emaonly.safetensors";
+    private const string ModelFileName = "sd_xl_turbo_1.0_fp16.safetensors";
 
     private static string? FindModelPath(string fileName)
     {
@@ -36,24 +36,24 @@ public sealed class Sd15PipelineTests
     }
 
     [Fact]
-    public void Sd15_RealModelFile_SafetensorsValid()
+    public void Sdxl_RealModelFile_SafetensorsValid()
     {
         string? modelPath = FindModelPath(ModelFileName);
         if (modelPath is null) return;
 
         using var st = SafetensorsLoader.Open(modelPath);
         Assert.NotNull(st);
-        Assert.True(st.TensorCount > 0, "SD 1.5 safetensors must contain tensors");
+        Assert.True(st.TensorCount > 0, "SDXL Turbo safetensors must contain tensors");
     }
 
     [Fact]
-    public void Sd15Pipeline_LoadRealModel_InitializesPipeline()
+    public void SdxlPipeline_LoadRealSafetensors_InitializesPipeline()
     {
         string? modelPath = FindModelPath(ModelFileName);
         if (modelPath is null) return;
 
-        using var pipeline = StableDiffusionPipeline.Load(modelPath);
+        using var pipeline = SdxlPipeline.Load(modelPath);
         Assert.NotNull(pipeline);
-        Assert.Equal("StableDiffusion1.5", pipeline.Architecture);
+        Assert.Equal("SDXL", pipeline.Architecture);
     }
 }

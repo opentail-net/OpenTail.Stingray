@@ -1,6 +1,10 @@
 using System;
 using System.IO;
+using System.Text;
+using System.Threading.Tasks;
 using OpenTail.Stingray.Core;
+using OpenTail.Stingray.Cpu;
+using OpenTail.Stingray.Engine;
 using Xunit;
 
 namespace OpenTail.Stingray.Tests.ForwardPass.Fast;
@@ -45,26 +49,27 @@ public sealed class QwenCoderRealWeightsTests
     }
 
     [Fact]
-    public void QwenCoder_15B_RealModelFile_LoadsAndInspectsMetadata()
+    public async Task QwenCoder_05B_RealModel_ExecutesPrefillAndGreedyDecode()
     {
-        string? modelPath = FindModelPath("qwen2.5-coder-1.5b-instruct-q4_k_m.gguf");
+        string? modelPath = FindModelPath("qwen2.5-coder-0.5b-instruct-q4_k_m.gguf");
         if (modelPath is null) return;
 
         using var model = GgufModel.Open(modelPath);
-        Assert.NotNull(model);
-        Assert.True(model.Tensors.Count > 0, "Qwen2.5-Coder 1.5B GGUF must contain tensors");
-        Assert.True(model.Metadata.Count > 0, "Qwen2.5-Coder 1.5B GGUF must contain metadata");
-    }
+        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
+        var tokenizer = GgufTokenizer.FromGgufModel(model);
+        using var backend = new CpuBackend();
+        var fwd = new OpenTail.Stingray.Engine.ForwardPass(model, backend, hp, maxContextLength: 512);
+        using var engine = new InferenceEngine(fwd, tokenizer, "qwen2.5-coder-0.5b");
 
-    [Fact]
-    public void QwenCoder_3B_RealModelFile_LoadsAndInspectsMetadata()
-    {
-        string? modelPath = FindModelPath("qwen2.5-coder-3b-instruct-q4_k_m.gguf");
-        if (modelPath is null) return;
+        var sp = new SamplingParams { Temperature = 0f, MaxNewTokens = 6 };
+        var sb = new StringBuilder();
+        await foreach (var tok in engine.GenerateAsync("def add(a, b):\n    return", sp))
+        {
+            sb.Append(tok);
+        }
 
-        using var model = GgufModel.Open(modelPath);
-        Assert.NotNull(model);
-        Assert.True(model.Tensors.Count > 0, "Qwen2.5-Coder 3B GGUF must contain tensors");
-        Assert.True(model.Metadata.Count > 0, "Qwen2.5-Coder 3B GGUF must contain metadata");
+        string generated = sb.ToString();
+        Assert.NotNull(generated);
+        Assert.NotEmpty(generated);
     }
 }

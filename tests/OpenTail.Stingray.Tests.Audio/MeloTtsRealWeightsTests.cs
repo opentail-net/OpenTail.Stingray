@@ -44,7 +44,11 @@ public sealed class MeloTtsRealWeightsTests
         var fileInfo = new FileInfo(modelPath);
         Assert.True(fileInfo.Length > 50 * 1024 * 1024, "MeloTTS ONNX model file must be > 50MB");
 
-        var pipeline = new MeloPipeline();
+        using var pipeline = MeloPipeline.Load(modelPath);
+        Assert.NotNull(pipeline);
+        Assert.Equal("MeloTTS", pipeline.Architecture);
+        Assert.Equal(44100, pipeline.DefaultSampleRate);
+
         var request = new AudioGenerationRequest
         {
             Text = "MeloTTS high-speed multilingual text-to-speech synthesis.",

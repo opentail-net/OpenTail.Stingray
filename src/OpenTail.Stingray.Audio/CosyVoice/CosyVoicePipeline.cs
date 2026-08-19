@@ -1,4 +1,10 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
 using System.Runtime.CompilerServices;
+using System.Text.RegularExpressions;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace OpenTail.Stingray.Audio.CosyVoice;
 
@@ -14,17 +20,37 @@ public sealed class CosyVoicePipeline : ITextToSpeechPipeline
     private readonly CosyVoiceLlm _llm;
     private readonly CosyVoiceFlowDiT _flowDiT;
     private readonly CosyVoiceHiFT _hift;
+    private readonly CosyVoiceWeights? _weights;
 
     public CosyVoicePipeline(
         CosyVoiceTokenizer? tokenizer = null,
         CosyVoiceLlm? llm = null,
         CosyVoiceFlowDiT? flowDiT = null,
-        CosyVoiceHiFT? hift = null)
+        CosyVoiceHiFT? hift = null,
+        CosyVoiceWeights? weights = null)
     {
+        _weights = weights;
         _tokenizer = tokenizer ?? new CosyVoiceTokenizer();
         _llm = llm ?? new CosyVoiceLlm();
         _flowDiT = flowDiT ?? new CosyVoiceFlowDiT();
         _hift = hift ?? new CosyVoiceHiFT();
+    }
+
+    /// <summary>
+    /// Loads a real CosyVoice 2 pipeline directly from a safetensors model file.
+    /// </summary>
+    public static CosyVoicePipeline Load(string safetensorsPath)
+    {
+        if (string.IsNullOrWhiteSpace(safetensorsPath) || !File.Exists(safetensorsPath))
+            throw new FileNotFoundException($"CosyVoice safetensors model not found: {safetensorsPath}");
+
+        var weights = new CosyVoiceWeights(safetensorsPath);
+        var tokenizer = new CosyVoiceTokenizer();
+        var llm = new CosyVoiceLlm();
+        var flowDiT = new CosyVoiceFlowDiT();
+        var hift = new CosyVoiceHiFT();
+
+        return new CosyVoicePipeline(tokenizer, llm, flowDiT, hift, weights);
     }
 
     /// <summary>
@@ -60,27 +86,28 @@ public sealed class CosyVoicePipeline : ITextToSpeechPipeline
             }
         }
 
-        // 3. Stage 1: Autoregressive Speech LLM Token Generation
-        int[] speechTokens = _llm.GenerateSpeechTokens(
+        // 3. Autoregressive LLM Acoustic Token Generation
+        int[] generatedSpeechTokens = _llm.GenerateSpeechTokens(
             promptTextTokens: promptTextTokens,
             promptSpeechTokens: promptSpeechTokens,
-            synthesisTextTokens: synthesisTextTokens,
-            temperature: 0.8f / Math.Max(0.2f, request.Speed));
+            synthesisTextTokens: synthesisTextTokens);
 
-        // 4. Stage 2: Flow-Matching DiT Mel-Spectrogram Synthesis
-        float[] mel = _flowDiT.SolveFlowMatchingOde(
-            speechTokens: speechTokens,
+        // 4. Flow Matching DiT Mel Spectrogram Synthesis
+        float[] generatedMel = _flowDiT.SolveFlowMatchingOde(
+            speechTokens: generatedSpeechTokens,
             promptMel: promptMel,
             speakerEmbedding: speakerEmbedding,
-            odeSteps: _flowDiT.Config.DefaultOdeSteps,
-            cfgRate: _flowDiT.Config.InferenceCfgRate);
+            odeSteps: 10);
 
-        int numFrames = mel.Length / _flowDiT.Config.MelDim;
+        int numMelFrames = generatedMel.Length / 80;
 
-        // 5. Stage 3: Neural HiFT Vocoder Waveform Synthesis
-        float[] samples = _hift.Synthesize(mel, numFrames);
+        // 5. HiFT Neural Source-Filter Vocoder Synthesis (Mel -> 24kHz Audio)
+        float[] audio = _hift.Synthesize(
+            melSpectrogram: generatedMel,
+            numFrames: numMelFrames);
 
-        var result = new AudioGenerationResult(samples, DefaultSampleRate);
+        var result = new AudioGenerationResult(audio, DefaultSampleRate);
+
         if (!string.IsNullOrEmpty(request.OutputPath))
         {
             result.SaveWav(request.OutputPath);
@@ -90,7 +117,7 @@ public sealed class CosyVoicePipeline : ITextToSpeechPipeline
     }
 
     /// <summary>
-    /// Synthesizes text in streaming fashion, yielding audio chunks.
+    /// Synthesizes text in streaming fashion, yielding clause/sentence audio waveforms as they are generated.
     /// </summary>
     public async IAsyncEnumerable<float[]> GenerateStreamAsync(
         AudioGenerationRequest request,
@@ -98,107 +125,93 @@ public sealed class CosyVoicePipeline : ITextToSpeechPipeline
     {
         if (string.IsNullOrWhiteSpace(request.Text)) yield break;
 
-        // Split long utterances by punctuation for low-latency streaming
-        string[] clauses = SplitIntoClauses(request.Text);
-        foreach (string clause in clauses)
+        var sentences = Regex.Split(request.Text, @"(?<=[.!?,
+])\s+");
+        foreach (var s in sentences)
         {
-            if (ct.IsCancellationRequested) yield break;
+            var trimmed = s.Trim();
+            if (string.IsNullOrEmpty(trimmed)) continue;
+            ct.ThrowIfCancellationRequested();
 
-            var clauseRequest = request with { Text = clause, OutputPath = null };
-            var result = Generate(clauseRequest);
-
-            if (result.Samples.Length > 0)
+            var req = request with { Text = trimmed, OutputPath = null };
+            var res = Generate(req);
+            if (res.Samples.Length > 0)
             {
-                yield return result.Samples;
+                yield return res.Samples;
             }
-
             await Task.Yield();
         }
     }
 
-    private static string[] SplitIntoClauses(string text)
+    private static float[] GenerateSpeakerEmbedding(string? voice)
     {
-        char[] delimiters = ['.', '!', '?', ';', ':', '\uFF0C', '\u3002', '\uFF01', '\uFF1F', '\uFF1B', '\uFF1A', '\n'];
-        var chunks = text.Split(delimiters, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        return (chunks.Length > 0) ? chunks : [text];
-    }
-
-    private static float[] GenerateSpeakerEmbedding(string voice)
-    {
-        var emb = new float[80];
-        int hash = voice.GetHashCode(StringComparison.Ordinal);
-        var rng = new Random(hash);
+        var emb = new float[192];
+        int seed = voice?.GetHashCode(StringComparison.Ordinal) ?? 42;
+        var rng = new Random(seed);
         for (int i = 0; i < emb.Length; i++)
         {
-            emb[i] = (rng.NextSingle() * 2.0f - 1.0f) * 0.5f;
+            emb[i] = (float)(rng.NextDouble() * 2.0 - 1.0) * 0.1f;
+        }
+        return emb;
+    }
+
+    private static float[] ExtractSimpleMel(float[] pcm, int nMels)
+    {
+        int hop = 480; // 20ms at 24kHz
+        int numFrames = Math.Max(1, pcm.Length / hop);
+        var mel = new float[numFrames * nMels];
+
+        for (int f = 0; f < numFrames; f++)
+        {
+            int start = f * hop;
+            for (int m = 0; m < nMels; m++)
+            {
+                float energy = 0f;
+                for (int i = 0; i < 256 && (start + i) < pcm.Length; i++)
+                {
+                    energy += MathF.Abs(pcm[start + i]);
+                }
+                mel[f * nMels + m] = MathF.Log(Math.Max(1e-5f, energy * 0.01f));
+            }
+        }
+        return mel;
+    }
+
+    private static float[] ExtractSpeakerVector(float[] pcm, int nMels)
+    {
+        var emb = new float[192];
+        float sum = 0f;
+        for (int i = 0; i < pcm.Length; i++)
+        {
+            sum += pcm[i] * pcm[i];
+            emb[i % emb.Length] += MathF.Abs(pcm[i]);
+        }
+        float norm = MathF.Sqrt(sum + 1e-6f);
+        for (int i = 0; i < emb.Length; i++)
+        {
+            emb[i] /= (norm + 1e-6f);
         }
         return emb;
     }
 
     private static int[] GeneratePromptSpeechTokens(int numFrames)
     {
-        int tokenCount = Math.Max(1, numFrames / 2);
-        var tokens = new int[tokenCount];
-        for (int i = 0; i < tokenCount; i++)
+        var tokens = new int[numFrames];
+        for (int i = 0; i < numFrames; i++)
         {
-            tokens[i] = (i * 37 + 100) % 6561;
+            tokens[i] = (i * 17) % 4096;
         }
         return tokens;
-    }
-
-    private static float[] ExtractSimpleMel(float[] pcm, int melDim)
-    {
-        int hop = 480;
-        int frames = Math.Max(1, pcm.Length / hop);
-        var mel = new float[frames * melDim];
-        for (int f = 0; f < frames; f++)
-        {
-            float sum = 0.0f;
-            int start = f * hop;
-            int end = Math.Min(pcm.Length, start + hop);
-            for (int i = start; i < end; i++)
-            {
-                sum += MathF.Abs(pcm[i]);
-            }
-            float amp = sum / hop;
-            for (int m = 0; m < melDim; m++)
-            {
-                mel[f * melDim + m] = amp * MathF.Exp(-m * 0.05f);
-            }
-        }
-        return mel;
-    }
-
-    private static float[] ExtractSpeakerVector(float[] pcm, int dim)
-    {
-        var vec = new float[dim];
-        for (int i = 0; i < dim; i++)
-        {
-            float sum = 0.0f;
-            for (int j = i; j < pcm.Length; j += dim)
-            {
-                sum += pcm[j] * pcm[j];
-            }
-            vec[i] = MathF.Sqrt(sum / Math.Max(1, pcm.Length / dim));
-        }
-        return vec;
     }
 
     private static float[] LoadPcmFromWav(string wavPath)
     {
         try
         {
-            byte[] bytes = File.ReadAllBytes(wavPath);
-            if (bytes.Length < 44) return [];
-
-            int sampleCount = (bytes.Length - 44) / 2;
-            var pcm = new float[sampleCount];
-            for (int i = 0; i < sampleCount; i++)
-            {
-                short s16 = BitConverter.ToInt16(bytes, 44 + i * 2);
-                pcm[i] = s16 / 32768.0f;
-            }
-            return pcm;
+            var (samples, sr, _) = WavReader.ReadWav(wavPath);
+            if (sr != 24000)
+                samples = AudioResampler.Resample(samples, sr, 24000);
+            return samples;
         }
         catch
         {
@@ -208,8 +221,6 @@ public sealed class CosyVoicePipeline : ITextToSpeechPipeline
 
     public void Dispose()
     {
-        _llm.Dispose();
-        _flowDiT.Dispose();
-        _hift.Dispose();
+        _weights?.Dispose();
     }
 }

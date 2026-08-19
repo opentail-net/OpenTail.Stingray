@@ -1,5 +1,9 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 
 namespace OpenTail.Stingray.Diffusion.TextEncoders;
 
@@ -27,8 +31,31 @@ public sealed class ClipTokenizer
     }
 
     /// <summary>Load from a HuggingFace tokenizer.json file.</summary>
-    public static ClipTokenizer FromFile(string path)
+    public static ClipTokenizer FromFile(string? path = null)
     {
+        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+        {
+            string[] candidates =
+            {
+                path ?? "",
+                @"C:\Git-Public\OpenTail.Stingray\models\clip_tokenizer.json",
+                Path.Combine(AppContext.BaseDirectory, "models", "clip_tokenizer.json"),
+                Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "models", "clip_tokenizer.json"),
+                Path.Combine(Directory.GetCurrentDirectory(), "models", "clip_tokenizer.json")
+            };
+            foreach (var c in candidates)
+            {
+                if (!string.IsNullOrWhiteSpace(c) && File.Exists(c))
+                {
+                    path = c;
+                    break;
+                }
+            }
+        }
+
+        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+            throw new FileNotFoundException($"CLIP tokenizer JSON file not found: {path}");
+
         using var doc = JsonDocument.Parse(File.ReadAllBytes(path));
         var model  = doc.RootElement.GetProperty("model");
         var vocabEl = model.GetProperty("vocab");
@@ -59,78 +86,72 @@ public sealed class ClipTokenizer
         var words = SplitWords(text.ToLowerInvariant());
         foreach (var word in words)
         {
-            var wordTokens = BpeEncode(word);
-            foreach (var tok in wordTokens)
+            var bpeTokens = Bpe(word);
+            foreach (var tok in bpeTokens)
             {
-                if (ids.Count >= MaxLen - 1) break;
-                if (_vocab.TryGetValue(tok, out int id)) ids.Add(id);
+                if (ids.Count >= MaxLen - 1) break; // leave room for EOS
+                if (_vocab.TryGetValue(tok, out var id))
+                    ids.Add(id);
             }
             if (ids.Count >= MaxLen - 1) break;
         }
 
-        ids.Add(EosToken);
+        while (ids.Count < MaxLen)
+            ids.Add(EosToken);
 
-        // Pad to MaxLen with EosToken (49407)
-        while (ids.Count < MaxLen) ids.Add(EosToken);
         return ids.ToArray();
-    }
-
-    private List<string> BpeEncode(string word)
-    {
-        if (word.Length == 0) return new List<string>();
-
-        var pairs = new List<string>(word.Length);
-        for (int i = 0; i < word.Length - 1; i++)
-            pairs.Add(word[i].ToString());
-        pairs.Add(word[^1] + "</w>");
-
-        var mergeRank = new Dictionary<(string, string), int>(_merges.Count);
-        for (int i = 0; i < _merges.Count; i++)
-            mergeRank[_merges[i]] = i;
-
-        while (pairs.Count > 1)
-        {
-            int bestRank = int.MaxValue;
-            int bestIdx  = -1;
-
-            for (int i = 0; i < pairs.Count - 1; i++)
-            {
-                var pair = (pairs[i], pairs[i + 1]);
-                if (mergeRank.TryGetValue(pair, out int rank) && rank < bestRank)
-                {
-                    bestRank = rank;
-                    bestIdx  = i;
-                }
-            }
-
-            if (bestIdx < 0) break;
-
-            string merged = pairs[bestIdx] + pairs[bestIdx + 1];
-            pairs[bestIdx] = merged;
-            pairs.RemoveAt(bestIdx + 1);
-        }
-
-        return pairs;
     }
 
     private static List<string> SplitWords(string text)
     {
         var result = new List<string>();
-        var sb = new StringBuilder();
+        // Match word characters (with apostrophes) or punctuation
+        foreach (Match m in Regex.Matches(text, @"\w+|[^\w\s]"))
+            result.Add(m.Value + "</w>");
+        return result;
+    }
 
-        foreach (char c in text)
+    private List<string> Bpe(string token)
+    {
+        // Start with individual characters
+        var word = new List<string>();
+        for (int i = 0; i < token.Length; i++)
         {
-            if (char.IsWhiteSpace(c) || char.IsPunctuation(c))
+            if (token.Substring(i).StartsWith("</w>"))
             {
-                if (sb.Length > 0) { result.Add(sb.ToString()); sb.Clear(); }
-                if (char.IsPunctuation(c)) result.Add(c.ToString());
+                word.Add("</w>");
+                i += 3;
             }
             else
             {
-                sb.Append(c);
+                word.Add(token[i].ToString());
             }
         }
-        if (sb.Length > 0) result.Add(sb.ToString());
-        return result;
+
+        while (word.Count > 1)
+        {
+            // Find the highest-priority merge in _merges that exists in word
+            int bestMergeIdx = int.MaxValue;
+            int bestPos = -1;
+
+            for (int i = 0; i < word.Count - 1; i++)
+            {
+                var pair = (word[i], word[i + 1]);
+                int idx = _merges.IndexOf(pair);
+                if (idx >= 0 && idx < bestMergeIdx)
+                {
+                    bestMergeIdx = idx;
+                    bestPos = i;
+                }
+            }
+
+            if (bestPos < 0) break; // No more merges possible
+
+            var merged = word[bestPos] + word[bestPos + 1];
+            word[bestPos] = merged;
+            word.RemoveAt(bestPos + 1);
+        }
+
+        return word;
     }
 }

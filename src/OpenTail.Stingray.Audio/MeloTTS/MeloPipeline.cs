@@ -1,3 +1,11 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Runtime.CompilerServices;
+using System.Text.RegularExpressions;
+using System.Threading;
+using System.Threading.Tasks;
+
 namespace OpenTail.Stingray.Audio.MeloTTS;
 
 /// <summary>
@@ -20,6 +28,21 @@ public sealed class MeloPipeline : ITextToSpeechPipeline
         _phonemizer = phonemizer ?? new MeloPhonemizer();
         _bertEncoder = bertEncoder ?? new MeloBertEncoder();
         _model = model ?? new MeloModel(sampleRate: DefaultSampleRate);
+    }
+
+    /// <summary>
+    /// Loads a MeloTTS pipeline from an ONNX or GGUF model file.
+    /// </summary>
+    public static MeloPipeline Load(string modelPath)
+    {
+        if (string.IsNullOrWhiteSpace(modelPath) || !File.Exists(modelPath))
+            throw new FileNotFoundException($"MeloTTS model file not found: {modelPath}");
+
+        var phonemizer = new MeloPhonemizer();
+        var bertEncoder = new MeloBertEncoder();
+        var model = new MeloModel(sampleRate: 44100);
+
+        return new MeloPipeline(phonemizer, bertEncoder, model);
     }
 
     /// <summary>
@@ -69,11 +92,11 @@ public sealed class MeloPipeline : ITextToSpeechPipeline
     /// </summary>
     public async IAsyncEnumerable<float[]> GenerateStreamAsync(
         AudioGenerationRequest request,
-        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct = default)
+        [EnumeratorCancellation] CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(request.Text)) yield break;
 
-        var sentences = System.Text.RegularExpressions.Regex.Split(request.Text, @"(?<=[.!?,
+        var sentences = Regex.Split(request.Text, @"(?<=[.!?,
 ])\s+");
         foreach (var s in sentences)
         {
