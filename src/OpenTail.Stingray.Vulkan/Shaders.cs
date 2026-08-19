@@ -7049,4 +7049,282 @@ internal static class Shaders
             }
         }
         """;
+
+    internal const string VisionPixelShuffle2x2 = """
+        #version 450
+        layout(local_size_x = 256) in;
+
+        layout(binding = 0) readonly  buffer Input  { float input_data[];  };
+        layout(binding = 1) writeonly buffer Output { float output_data[]; };
+
+        layout(push_constant) uniform Params {
+            uint gridY;
+            uint gridX;
+            uint inDim;
+        };
+
+        void main() {
+            uint outY = gridY / 2u;
+            uint outX = gridX / 2u;
+            uint totalTokens = outY * outX;
+
+            uint tokenIdx = gl_GlobalInvocationID.x;
+            if (tokenIdx >= totalTokens) return;
+
+            uint ty = tokenIdx / outX;
+            uint tx = tokenIdx % outX;
+            uint py0 = ty * 2u;
+            uint px0 = tx * 2u;
+            uint outDim = inDim * 4u;
+
+            uint p00 = (py0 * gridX + px0) * inDim;
+            uint p01 = (py0 * gridX + px0 + 1u) * inDim;
+            uint p10 = ((py0 + 1u) * gridX + px0) * inDim;
+            uint p11 = ((py0 + 1u) * gridX + px0 + 1u) * inDim;
+            uint dstOff = tokenIdx * outDim;
+
+            for (uint c = 0u; c < inDim; c++) {
+                output_data[dstOff + c]              = input_data[p00 + c];
+                output_data[dstOff + inDim + c]      = input_data[p01 + c];
+                output_data[dstOff + inDim * 2u + c] = input_data[p10 + c];
+                output_data[dstOff + inDim * 3u + c] = input_data[p11 + c];
+            }
+        }
+        """;
+
+    internal const string VisionMRoPE = """
+        #version 450
+        layout(local_size_x = 256) in;
+
+        layout(binding = 0) buffer QBuffer { float q_data[]; };
+        layout(binding = 1) buffer KBuffer { float k_data[]; };
+
+        layout(push_constant) uniform Params {
+            uint patchesX;
+            uint patchesY;
+            uint qHeads;
+            uint kvHeads;
+            uint headDim;
+            float theta;
+        };
+
+        void main() {
+            uint tokenIdx = gl_GlobalInvocationID.x;
+            uint totalTokens = patchesX * patchesY;
+            if (tokenIdx >= totalTokens) return;
+
+            uint py = tokenIdx / patchesX;
+            uint px = tokenIdx % patchesX;
+            uint mropeHalf = headDim / 4u;
+
+            for (uint h = 0u; h < qHeads; h++) {
+                uint headOff = (tokenIdx * qHeads + h) * headDim;
+                for (uint d = 0u; d < mropeHalf; d++) {
+                    float freqX = pow(theta, -2.0 * float(d) / float(headDim));
+                    float cosX = cos(float(px) * freqX);
+                    float sinX = sin(float(px) * freqX);
+
+                    float q0 = q_data[headOff + d];
+                    float q1 = q_data[headOff + d + mropeHalf];
+                    q_data[headOff + d]             = q0 * cosX - q1 * sinX;
+                    q_data[headOff + d + mropeHalf] = q0 * sinX + q1 * cosX;
+
+                    uint ySecOff = headOff + 2u * mropeHalf;
+                    float freqY = pow(theta, -2.0 * float(d) / float(headDim));
+                    float cosY = cos(float(py) * freqY);
+                    float sinY = sin(float(py) * freqY);
+
+                    float qY0 = q_data[ySecOff + d];
+                    float qY1 = q_data[ySecOff + d + mropeHalf];
+                    q_data[ySecOff + d]             = qY0 * cosY - qY1 * sinY;
+                    q_data[ySecOff + d + mropeHalf] = qY0 * sinY + qY1 * cosY;
+                }
+            }
+
+            for (uint h = 0u; h < kvHeads; h++) {
+                uint headOff = (tokenIdx * kvHeads + h) * headDim;
+                for (uint d = 0u; d < mropeHalf; d++) {
+                    float freqX = pow(theta, -2.0 * float(d) / float(headDim));
+                    float cosX = cos(float(px) * freqX);
+                    float sinX = sin(float(px) * freqX);
+
+                    float k0 = k_data[headOff + d];
+                    float k1 = k_data[headOff + d + mropeHalf];
+                    k_data[headOff + d]             = k0 * cosX - k1 * sinX;
+                    k_data[headOff + d + mropeHalf] = k0 * sinX + k1 * cosX;
+
+                    uint ySecOff = headOff + 2u * mropeHalf;
+                    float freqY = pow(theta, -2.0 * float(d) / float(headDim));
+                    float cosY = cos(float(py) * freqY);
+                    float sinY = sin(float(py) * freqY);
+
+                    float kY0 = k_data[ySecOff + d];
+                    float kY1 = k_data[ySecOff + d + mropeHalf];
+                    k_data[ySecOff + d]             = kY0 * cosY - kY1 * sinY;
+                    k_data[ySecOff + d + mropeHalf] = kY0 * sinY + kY1 * cosY;
+                }
+            }
+        }
+        """;
+
+    internal const string VisionContinuous2DRoPE = """
+        #version 450
+        layout(local_size_x = 256) in;
+
+        layout(binding = 0) buffer QBuffer { float q_data[]; };
+        layout(binding = 1) buffer KBuffer { float k_data[]; };
+
+        layout(push_constant) uniform Params {
+            uint patchesX;
+            uint patchesY;
+            uint heads;
+            uint headDim;
+            float theta;
+        };
+
+        void main() {
+            uint tokenIdx = gl_GlobalInvocationID.x;
+            uint totalTokens = patchesX * patchesY;
+            if (tokenIdx >= totalTokens) return;
+
+            uint py = tokenIdx / patchesX;
+            uint px = tokenIdx % patchesX;
+            uint halfDim = headDim / 2u;
+            uint quarterDim = halfDim / 2u;
+
+            for (uint h = 0u; h < heads; h++) {
+                uint headOff = (tokenIdx * heads + h) * headDim;
+
+                for (uint d = 0u; d < quarterDim; d++) {
+                    float freq = pow(theta, -(2.0 * float(d)) / float(halfDim));
+                    float cosX = cos(float(px) * freq);
+                    float sinX = sin(float(px) * freq);
+
+                    uint i0 = headOff + d * 2u;
+                    uint i1 = headOff + d * 2u + 1u;
+
+                    float q0 = q_data[i0], q1 = q_data[i1];
+                    q_data[i0] = q0 * cosX - q1 * sinX;
+                    q_data[i1] = q0 * sinX + q1 * cosX;
+
+                    float k0 = k_data[i0], k1 = k_data[i1];
+                    k_data[i0] = k0 * cosX - k1 * sinX;
+                    k_data[i1] = k0 * sinX + k1 * cosX;
+                }
+
+                for (uint d = 0u; d < quarterDim; d++) {
+                    float freq = pow(theta, -(2.0 * float(d)) / float(halfDim));
+                    float cosY = cos(float(py) * freq);
+                    float sinY = sin(float(py) * freq);
+
+                    uint i0 = headOff + halfDim + d * 2u;
+                    uint i1 = headOff + halfDim + d * 2u + 1u;
+
+                    float q0 = q_data[i0], q1 = q_data[i1];
+                    q_data[i0] = q0 * cosY - q1 * sinY;
+                    q_data[i1] = q0 * sinY + q1 * cosY;
+
+                    float k0 = k_data[i0], k1 = k_data[i1];
+                    k_data[i0] = k0 * cosY - k1 * sinY;
+                    k_data[i1] = k0 * sinY + k1 * cosY;
+                }
+            }
+        }
+        """;
+
+    internal const string VisionLayerNorm = """
+        #version 450
+        layout(local_size_x = 256) in;
+
+        layout(binding = 0) readonly  buffer Input  { float input_data[];  };
+        layout(binding = 1) readonly  buffer Weight { float weight_data[]; };
+        layout(binding = 2) readonly  buffer Bias   { float bias_data[];   };
+        layout(binding = 3) writeonly buffer Output { float output_data[]; };
+
+        layout(push_constant) uniform Params {
+            uint nTokens;
+            uint embd;
+            float eps;
+            uint hasBias;
+        };
+
+        void main() {
+            uint t = gl_GlobalInvocationID.x;
+            if (t >= nTokens) return;
+
+            uint off = t * embd;
+            float sum = 0.0;
+            for (uint i = 0u; i < embd; i++) sum += input_data[off + i];
+            float mean = sum / float(embd);
+
+            float sumSq = 0.0;
+            for (uint i = 0u; i < embd; i++) {
+                float diff = input_data[off + i] - mean;
+                sumSq += diff * diff;
+            }
+            float invStd = inversesqrt(sumSq / float(embd) + eps);
+
+            for (uint i = 0u; i < embd; i++) {
+                float normalized = (input_data[off + i] - mean) * invStd;
+                float w = weight_data[i];
+                float b = (hasBias != 0u) ? bias_data[i] : 0.0;
+                output_data[off + i] = normalized * w + b;
+            }
+        }
+        """;
+
+    internal const string VisionGelu = """
+        #version 450
+        layout(local_size_x = 256) in;
+
+        layout(binding = 0) buffer Data { float data[]; };
+
+        layout(push_constant) uniform Params {
+            uint n;
+        };
+
+        void main() {
+            uint idx = gl_GlobalInvocationID.x;
+            if (idx >= n) return;
+            float v = data[idx];
+            data[idx] = 0.5 * v * (1.0 + tanh(0.79788456 * (v + 0.044715 * v * v * v)));
+        }
+        """;
+
+    internal const string VisionQuickGelu = """
+        #version 450
+        layout(local_size_x = 256) in;
+
+        layout(binding = 0) buffer Data { float data[]; };
+
+        layout(push_constant) uniform Params {
+            uint n;
+        };
+
+        void main() {
+            uint idx = gl_GlobalInvocationID.x;
+            if (idx >= n) return;
+            float v = data[idx];
+            data[idx] = v * (1.0 / (1.0 + exp(-1.702 * v)));
+        }
+        """;
+
+    internal const string VisionSquaredRelu = """
+        #version 450
+        layout(local_size_x = 256) in;
+
+        layout(binding = 0) buffer Data { float data[]; };
+
+        layout(push_constant) uniform Params {
+            uint n;
+        };
+
+        void main() {
+            uint idx = gl_GlobalInvocationID.x;
+            if (idx >= n) return;
+            float v = data[idx];
+            float r = max(0.0, v);
+            data[idx] = r * r;
+        }
+        """;
 }

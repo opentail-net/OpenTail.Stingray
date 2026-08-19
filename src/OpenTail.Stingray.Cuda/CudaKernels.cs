@@ -224,5 +224,417 @@ extern ""C"" __global__ void upsample2x(
     int c  = idx / (outH * outW);
     output[idx] = input[c * H * W + (oh / 2) * W + (ow / 2)];
 }
+
+// ── vision_pixel_shuffle_2x2 ──────────────────────────────────────────────
+// ViT token grid spatial downsampler: [gridY, gridX, inDim] → [gridY/2, gridX/2, 4*inDim]
+extern ""C"" __global__ void vision_pixel_shuffle_2x2(
+    const float* __restrict__ input, float* __restrict__ output,
+    int gridY, int gridX, int inDim)
+{
+    int outY = gridY / 2;
+    int outX = gridX / 2;
+    int totalMerged = outY * outX;
+    int tokenIdx = (int)(blockIdx.x * blockDim.x + threadIdx.x);
+    if (tokenIdx >= totalMerged) return;
+
+    int ty = tokenIdx / outX;
+    int tx = tokenIdx % outX;
+    int py0 = ty * 2;
+    int px0 = tx * 2;
+    int outDim = inDim * 4;
+
+    int p00 = (py0 * gridX + px0) * inDim;
+    int p01 = (py0 * gridX + px0 + 1) * inDim;
+    int p10 = ((py0 + 1) * gridX + px0) * inDim;
+    int p11 = ((py0 + 1) * gridX + px0 + 1) * inDim;
+    int dstOff = tokenIdx * outDim;
+
+    for (int c = 0; c < inDim; c++)
+    {
+        output[dstOff + c]             = input[p00 + c];
+        output[dstOff + inDim + c]     = input[p01 + c];
+        output[dstOff + inDim * 2 + c] = input[p10 + c];
+        output[dstOff + inDim * 3 + c] = input[p11 + c];
+    }
+}
+
+// ── vision_mrope_2d ───────────────────────────────────────────────────────
+// 2D Multimodal Rotary Position Embedding (M-RoPE) for Q and K
+extern ""C"" __global__ void vision_mrope_2d(
+    float* __restrict__ q, float* __restrict__ k,
+    int patchesX, int patchesY, int qHeads, int kvHeads, int headDim, float theta)
+{
+    int tokenIdx = (int)(blockIdx.x * blockDim.x + threadIdx.x);
+    int totalTokens = patchesX * patchesY;
+    if (tokenIdx >= totalTokens) return;
+
+    int py = tokenIdx / patchesX;
+    int px = tokenIdx % patchesX;
+    int mropeHalf = headDim / 4;
+
+    // Apply to Q
+    for (int h = 0; h < qHeads; h++)
+    {
+        int headOff = (tokenIdx * qHeads + h) * headDim;
+        for (int d = 0; d < mropeHalf; d++)
+        {
+            float freqX = powf(theta, -2.0f * (float)d / (float)headDim);
+            float cosX = cosf((float)px * freqX);
+            float sinX = sinf((float)px * freqX);
+
+            float q0 = q[headOff + d];
+            float q1 = q[headOff + d + mropeHalf];
+            q[headOff + d]             = q0 * cosX - q1 * sinX;
+            q[headOff + d + mropeHalf] = q0 * sinX + q1 * cosX;
+
+            int ySecOff = headOff + 2 * mropeHalf;
+            float freqY = powf(theta, -2.0f * (float)d / (float)headDim);
+            float cosY = cosf((float)py * freqY);
+            float sinY = sinf((float)py * freqY);
+
+            float qY0 = q[ySecOff + d];
+            float qY1 = q[ySecOff + d + mropeHalf];
+            q[ySecOff + d]             = qY0 * cosY - qY1 * sinY;
+            q[ySecOff + d + mropeHalf] = qY0 * sinY + qY1 * cosY;
+        }
+    }
+
+    // Apply to K
+    for (int h = 0; h < kvHeads; h++)
+    {
+        int headOff = (tokenIdx * kvHeads + h) * headDim;
+        for (int d = 0; d < mropeHalf; d++)
+        {
+            float freqX = powf(theta, -2.0f * (float)d / (float)headDim);
+            float cosX = cosf((float)px * freqX);
+            float sinX = sinf((float)px * freqX);
+
+            float k0 = k[headOff + d];
+            float k1 = k[headOff + d + mropeHalf];
+            k[headOff + d]             = k0 * cosX - k1 * sinX;
+            k[headOff + d + mropeHalf] = k0 * sinX + k1 * cosX;
+
+            int ySecOff = headOff + 2 * mropeHalf;
+            float freqY = powf(theta, -2.0f * (float)d / (float)headDim);
+            float cosY = cosf((float)py * freqY);
+            float sinY = sinf((float)py * freqY);
+
+            float kY0 = k[ySecOff + d];
+            float kY1 = k[ySecOff + d + mropeHalf];
+            k[ySecOff + d]             = kY0 * cosY - kY1 * sinY;
+            k[ySecOff + d + mropeHalf] = kY0 * sinY + kY1 * cosY;
+        }
+    }
+}
+
+// ── vision_continuous_rope_2d ─────────────────────────────────────────────
+extern ""C"" __global__ void vision_continuous_rope_2d(
+    float* __restrict__ q, float* __restrict__ k,
+    int patchesX, int patchesY, int heads, int headDim, float theta)
+{
+    int tokenIdx = (int)(blockIdx.x * blockDim.x + threadIdx.x);
+    int totalTokens = patchesX * patchesY;
+    if (tokenIdx >= totalTokens) return;
+
+    int py = tokenIdx / patchesX;
+    int px = tokenIdx % patchesX;
+    int halfDim = headDim / 2;
+    int quarterDim = halfDim / 2;
+
+    for (int h = 0; h < heads; h++)
+    {
+        int headOff = (tokenIdx * heads + h) * headDim;
+
+        // Rotate X on first half
+        for (int d = 0; d < quarterDim; d++)
+        {
+            float freq = powf(theta, -(float)(2 * d) / (float)halfDim);
+            float cosX = cosf((float)px * freq);
+            float sinX = sinf((float)px * freq);
+
+            int i0 = headOff + d * 2;
+            int i1 = headOff + d * 2 + 1;
+
+            float q0 = q[i0], q1 = q[i1];
+            q[i0] = q0 * cosX - q1 * sinX;
+            q[i1] = q0 * sinX + q1 * cosX;
+
+            float k0 = k[i0], k1 = k[i1];
+            k[i0] = k0 * cosX - k1 * sinX;
+            k[i1] = k0 * sinX + k1 * cosX;
+        }
+
+        // Rotate Y on second half
+        for (int d = 0; d < quarterDim; d++)
+        {
+            float freq = powf(theta, -(float)(2 * d) / (float)halfDim);
+            float cosY = cosf((float)py * freq);
+            float sinY = sinf((float)py * freq);
+
+            int i0 = headOff + halfDim + d * 2;
+            int i1 = headOff + halfDim + d * 2 + 1;
+
+            float q0 = q[i0], q1 = q[i1];
+            q[i0] = q0 * cosY - q1 * sinY;
+            q[i1] = q0 * sinY + q1 * cosY;
+
+            float k0 = k[i0], k1 = k[i1];
+            k[i0] = k0 * cosY - k1 * sinY;
+            k[i1] = k0 * sinY + k1 * cosY;
+        }
+    }
+}
+
+// ── vision_layernorm ──────────────────────────────────────────────────────
+extern ""C"" __global__ void vision_layernorm(
+    const float* __restrict__ input, const float* __restrict__ weight, const float* __restrict__ bias,
+    float* __restrict__ output, int nTokens, int embd, float eps)
+{
+    int t = (int)(blockIdx.x * blockDim.x + threadIdx.x);
+    if (t >= nTokens) return;
+
+    int off = t * embd;
+    float sum = 0.0f;
+    for (int i = 0; i < embd; i++) sum += input[off + i];
+    float mean = sum / (float)embd;
+
+    float sumSq = 0.0f;
+    for (int i = 0; i < embd; i++) {
+        float diff = input[off + i] - mean;
+        sumSq += diff * diff;
+    }
+    float invStd = rsqrtf(sumSq / (float)embd + eps);
+
+    for (int i = 0; i < embd; i++) {
+        float normalized = (input[off + i] - mean) * invStd;
+        float w = weight ? weight[i] : 1.0f;
+        float b = bias ? bias[i] : 0.0f;
+        output[off + i] = normalized * w + b;
+    }
+}
+
+// ── gelu_inplace ──────────────────────────────────────────────────────────
+extern ""C"" __global__ void gelu_inplace(float* __restrict__ x, int n)
+{
+    int idx = (int)(blockIdx.x * blockDim.x + threadIdx.x);
+    if (idx >= n) return;
+    float v = x[idx];
+    x[idx] = 0.5f * v * (1.0f + tanhf(0.79788456f * (v + 0.044715f * v * v * v)));
+}
+
+// ── quick_gelu_inplace ────────────────────────────────────────────────────
+extern ""C"" __global__ void quick_gelu_inplace(float* __restrict__ x, int n)
+{
+    int idx = (int)(blockIdx.x * blockDim.x + threadIdx.x);
+    if (idx >= n) return;
+    float v = x[idx];
+    x[idx] = v * (1.0f / (1.0f + expf(-1.702f * v)));
+}
+
+// ── squared_relu_inplace ──────────────────────────────────────────────────
+extern ""C"" __global__ void squared_relu_inplace(float* __restrict__ x, int n)
+    int tx = tokenIdx % outX;
+    int py0 = ty * 2;
+    int px0 = tx * 2;
+    int outDim = inDim * 4;
+
+    int p00 = (py0 * gridX + px0) * inDim;
+    int p01 = (py0 * gridX + px0 + 1) * inDim;
+    int p10 = ((py0 + 1) * gridX + px0) * inDim;
+    int p11 = ((py0 + 1) * gridX + px0 + 1) * inDim;
+    int dstOff = tokenIdx * outDim;
+
+    for (int c = 0; c < inDim; c++)
+    {
+        output[dstOff + c]             = input[p00 + c];
+        output[dstOff + inDim + c]     = input[p01 + c];
+        output[dstOff + inDim * 2 + c] = input[p10 + c];
+        output[dstOff + inDim * 3 + c] = input[p11 + c];
+    }
+}
+
+// ── vision_mrope_2d ───────────────────────────────────────────────────────
+// 2D Multimodal Rotary Position Embedding (M-RoPE) for Q and K
+extern ""C"" __global__ void vision_mrope_2d(
+    float* __restrict__ q, float* __restrict__ k,
+    int patchesX, int patchesY, int qHeads, int kvHeads, int headDim, float theta)
+{
+    int tokenIdx = (int)(blockIdx.x * blockDim.x + threadIdx.x);
+    int totalTokens = patchesX * patchesY;
+    if (tokenIdx >= totalTokens) return;
+
+    int py = tokenIdx / patchesX;
+    int px = tokenIdx % patchesX;
+    int mropeHalf = headDim / 4;
+
+    // Apply to Q
+    for (int h = 0; h < qHeads; h++)
+    {
+        int headOff = (tokenIdx * qHeads + h) * headDim;
+        for (int d = 0; d < mropeHalf; d++)
+        {
+            float freqX = powf(theta, -2.0f * (float)d / (float)headDim);
+            float cosX = cosf((float)px * freqX);
+            float sinX = sinf((float)px * freqX);
+
+            float q0 = q[headOff + d];
+            float q1 = q[headOff + d + mropeHalf];
+            q[headOff + d]             = q0 * cosX - q1 * sinX;
+            q[headOff + d + mropeHalf] = q0 * sinX + q1 * cosX;
+
+            int ySecOff = headOff + 2 * mropeHalf;
+            float freqY = powf(theta, -2.0f * (float)d / (float)headDim);
+            float cosY = cosf((float)py * freqY);
+            float sinY = sinf((float)py * freqY);
+
+            float qY0 = q[ySecOff + d];
+            float qY1 = q[ySecOff + d + mropeHalf];
+            q[ySecOff + d]             = qY0 * cosY - qY1 * sinY;
+            q[ySecOff + d + mropeHalf] = qY0 * sinY + qY1 * cosY;
+        }
+    }
+
+    // Apply to K
+    for (int h = 0; h < kvHeads; h++)
+    {
+        int headOff = (tokenIdx * kvHeads + h) * headDim;
+        for (int d = 0; d < mropeHalf; d++)
+        {
+            float freqX = powf(theta, -2.0f * (float)d / (float)headDim);
+            float cosX = cosf((float)px * freqX);
+            float sinX = sinf((float)px * freqX);
+
+            float k0 = k[headOff + d];
+            float k1 = k[headOff + d + mropeHalf];
+            k[headOff + d]             = k0 * cosX - k1 * sinX;
+            k[headOff + d + mropeHalf] = k0 * sinX + k1 * cosX;
+
+            int ySecOff = headOff + 2 * mropeHalf;
+            float freqY = powf(theta, -2.0f * (float)d / (float)headDim);
+            float cosY = cosf((float)py * freqY);
+            float sinY = sinf((float)py * freqY);
+
+            float kY0 = k[ySecOff + d];
+            float kY1 = k[ySecOff + d + mropeHalf];
+            k[ySecOff + d]             = kY0 * cosY - kY1 * sinY;
+            k[ySecOff + d + mropeHalf] = kY0 * sinY + kY1 * cosY;
+        }
+    }
+}
+
+// ── vision_continuous_rope_2d ─────────────────────────────────────────────
+extern ""C"" __global__ void vision_continuous_rope_2d(
+    float* __restrict__ q, float* __restrict__ k,
+    int patchesX, int patchesY, int heads, int headDim, float theta)
+{
+    int tokenIdx = (int)(blockIdx.x * blockDim.x + threadIdx.x);
+    int totalTokens = patchesX * patchesY;
+    if (tokenIdx >= totalTokens) return;
+
+    int py = tokenIdx / patchesX;
+    int px = tokenIdx % patchesX;
+    int halfDim = headDim / 2;
+    int quarterDim = halfDim / 2;
+
+    for (int h = 0; h < heads; h++)
+    {
+        int headOff = (tokenIdx * heads + h) * headDim;
+
+        // Rotate X on first half
+        for (int d = 0; d < quarterDim; d++)
+        {
+            float freq = powf(theta, -(float)(2 * d) / (float)halfDim);
+            float cosX = cosf((float)px * freq);
+            float sinX = sinf((float)px * freq);
+
+            int i0 = headOff + d * 2;
+            int i1 = headOff + d * 2 + 1;
+
+            float q0 = q[i0], q1 = q[i1];
+            q[i0] = q0 * cosX - q1 * sinX;
+            q[i1] = q0 * sinX + q1 * cosX;
+
+            float k0 = k[i0], k1 = k[i1];
+            k[i0] = k0 * cosX - k1 * sinX;
+            k[i1] = k0 * sinX + k1 * cosX;
+        }
+
+        // Rotate Y on second half
+        for (int d = 0; d < quarterDim; d++)
+        {
+            float freq = powf(theta, -(float)(2 * d) / (float)halfDim);
+            float cosY = cosf((float)py * freq);
+            float sinY = sinf((float)py * freq);
+
+            int i0 = headOff + halfDim + d * 2;
+            int i1 = headOff + halfDim + d * 2 + 1;
+
+            float q0 = q[i0], q1 = q[i1];
+            q[i0] = q0 * cosY - q1 * sinY;
+            q[i1] = q0 * sinY + q1 * cosY;
+
+            float k0 = k[i0], k1 = k[i1];
+            k[i0] = k0 * cosY - k1 * sinY;
+            k[i1] = k0 * sinY + k1 * cosY;
+        }
+    }
+}
+
+// ── vision_layernorm ──────────────────────────────────────────────────────
+extern ""C"" __global__ void vision_layernorm(
+    const float* __restrict__ input, const float* __restrict__ weight, const float* __restrict__ bias,
+    float* __restrict__ output, int nTokens, int embd, float eps)
+{
+    int t = (int)(blockIdx.x * blockDim.x + threadIdx.x);
+    if (t >= nTokens) return;
+
+    int off = t * embd;
+    float sum = 0.0f;
+    for (int i = 0; i < embd; i++) sum += input[off + i];
+    float mean = sum / (float)embd;
+
+    float sumSq = 0.0f;
+    for (int i = 0; i < embd; i++) {
+        float diff = input[off + i] - mean;
+        sumSq += diff * diff;
+    }
+    float invStd = rsqrtf(sumSq / (float)embd + eps);
+
+    for (int i = 0; i < embd; i++) {
+        float normalized = (input[off + i] - mean) * invStd;
+        float w = weight ? weight[i] : 1.0f;
+        float b = bias ? bias[i] : 0.0f;
+        output[off + i] = normalized * w + b;
+    }
+}
+
+// ── gelu_inplace ──────────────────────────────────────────────────────────
+extern ""C"" __global__ void gelu_inplace(float* __restrict__ x, int n)
+{
+    int idx = (int)(blockIdx.x * blockDim.x + threadIdx.x);
+    if (idx >= n) return;
+    float v = x[idx];
+    x[idx] = 0.5f * v * (1.0f + tanhf(0.79788456f * (v + 0.044715f * v * v * v)));
+}
+
+// ── quick_gelu_inplace ────────────────────────────────────────────────────
+extern ""C"" __global__ void quick_gelu_inplace(float* __restrict__ x, int n)
+{
+    int idx = (int)(blockIdx.x * blockDim.x + threadIdx.x);
+    if (idx >= n) return;
+    float v = x[idx];
+    x[idx] = v * (1.0f / (1.0f + expf(-1.702f * v)));
+}
+
+// ── squared_relu_inplace ──────────────────────────────────────────────────
+extern ""C"" __global__ void squared_relu_inplace(float* __restrict__ x, int n)
+{
+    int idx = (int)(blockIdx.x * blockDim.x + threadIdx.x);
+    if (idx >= n) return;
+    float v = x[idx];
+    float r = v > 0.0f ? v : 0.0f;
+    x[idx] = r * r;
+}
 ";
 }
+

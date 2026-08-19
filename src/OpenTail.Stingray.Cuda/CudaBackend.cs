@@ -14,7 +14,7 @@ namespace OpenTail.Stingray.Cuda;
 ///   fallback → fp32
 /// All LLM transformer operations throw NotSupportedException; this backend is DiT-only.
 /// </summary>
-public sealed unsafe class CudaBackend : IComputeBackend, IImageOpsBackend, IDisposable
+public sealed unsafe class CudaBackend : IComputeBackend, IImageOpsBackend, IVisionOpsBackend, IDisposable
 {
     /// <summary>
     /// Round <paramref name="byteSize"/> up to the bucket size the buffer pool will
@@ -109,6 +109,15 @@ public sealed unsafe class CudaBackend : IComputeBackend, IImageOpsBackend, IDis
     private nint   _pshuffleKernel;
     private nint   _punshuffleKernel;
     private nint   _upsample2xKernel;
+
+    // Vision kernels (IVisionOpsBackend)
+    private nint   _visionPixelShuffleKernel;
+    private nint   _visionMropeKernel;
+    private nint   _visionContinuousRopeKernel;
+    private nint   _visionLayerNormKernel;
+    private nint   _visionGeluKernel;
+    private nint   _visionQuickGeluKernel;
+    private nint   _visionSquaredReluKernel;
 
     // LLM transformer kernels (loaded by the same NVRTC compilation as the image kernels).
     private nint   _rmsNormKernel;
@@ -7431,6 +7440,15 @@ public sealed unsafe class CudaBackend : IComputeBackend, IImageOpsBackend, IDis
         _punshuffleKernel  = GetKernelFunc("pixel_unshuffle");
         _upsample2xKernel  = GetKernelFunc("upsample2x");
 
+        // Vision kernels (IVisionOpsBackend)
+        _visionPixelShuffleKernel   = GetKernelFunc("vision_pixel_shuffle_2x2");
+        _visionMropeKernel          = GetKernelFunc("vision_mrope_2d");
+        _visionContinuousRopeKernel = GetKernelFunc("vision_continuous_rope_2d");
+        _visionLayerNormKernel      = GetKernelFunc("vision_layernorm");
+        _visionGeluKernel           = GetKernelFunc("gelu_inplace");
+        _visionQuickGeluKernel      = GetKernelFunc("quick_gelu_inplace");
+        _visionSquaredReluKernel    = GetKernelFunc("squared_relu_inplace");
+
         // LLM kernels (same NVRTC module).
         _rmsNormKernel         = GetKernelFunc("llm_rmsnorm");
         _headNormKernel        = GetKernelFunc("llm_head_norm");
@@ -7998,6 +8016,131 @@ public sealed unsafe class CudaBackend : IComputeBackend, IImageOpsBackend, IDis
     /// The stream is synchronised exactly once at <see cref="Download"/> time.
     /// </remarks>
     public void EndBatch() { }
+
+    // ── IVisionOpsBackend ──────────────────────────────────────────────────
+
+    /// <inheritdoc/>
+    public Tensor VisionPixelShuffle2x2(Tensor input, int gridY, int gridX, int inDim)
+    {
+        EnsureImageKernels();
+        if (!_imageKernelsAvailable)
+            throw new NotSupportedException("NVRTC is not available; cannot run CUDA image kernels.");
+
+        int outY = gridY / 2;
+        int outX = gridX / 2;
+        int outDim = inDim * 4;
+        var output = Allocate(TensorShape.D1((long)outY * outX * outDim));
+        nint p0 = GetDevPtr(input), p1 = GetDevPtr(output);
+        int p2 = gridY, p3 = gridX, p4 = inDim;
+        nint* args = stackalloc nint[5]
+        {
+            (nint)(&p0), (nint)(&p1),
+            (nint)(&p2), (nint)(&p3), (nint)(&p4)
+        };
+        Launch1D(_visionPixelShuffleKernel, outY * outX, args);
+        return output;
+    }
+
+    /// <inheritdoc/>
+    public void VisionMRoPE(Tensor q, Tensor k, int patchesX, int patchesY, int qHeads, int kvHeads, int headDim, float theta = 10000.0f)
+    {
+        EnsureImageKernels();
+        if (!_imageKernelsAvailable)
+            throw new NotSupportedException("NVRTC is not available; cannot run CUDA image kernels.");
+
+        nint p0 = GetDevPtr(q), p1 = GetDevPtr(k);
+        int p2 = patchesX, p3 = patchesY, p4 = qHeads, p5 = kvHeads, p6 = headDim;
+        float p7 = theta;
+        nint* args = stackalloc nint[8]
+        {
+            (nint)(&p0), (nint)(&p1),
+            (nint)(&p2), (nint)(&p3), (nint)(&p4), (nint)(&p5), (nint)(&p6), (nint)(&p7)
+        };
+        Launch1D(_visionMropeKernel, patchesX * patchesY, args);
+    }
+
+    /// <inheritdoc/>
+    public void VisionContinuous2DRoPE(Tensor q, Tensor k, int patchesX, int patchesY, int heads, int headDim, float theta = 10000.0f)
+    {
+        EnsureImageKernels();
+        if (!_imageKernelsAvailable)
+            throw new NotSupportedException("NVRTC is not available; cannot run CUDA image kernels.");
+
+        nint p0 = GetDevPtr(q), p1 = GetDevPtr(k);
+        int p2 = patchesX, p3 = patchesY, p4 = heads, p5 = headDim;
+        float p6 = theta;
+        nint* args = stackalloc nint[7]
+        {
+            (nint)(&p0), (nint)(&p1),
+            (nint)(&p2), (nint)(&p3), (nint)(&p4), (nint)(&p5), (nint)(&p6)
+        };
+        Launch1D(_visionContinuousRopeKernel, patchesX * patchesY, args);
+    }
+
+    /// <inheritdoc/>
+    public void VisionLayerNorm(Tensor output, Tensor input, Tensor weight, Tensor? bias, float eps = 1e-5f)
+    {
+        EnsureImageKernels();
+        if (!_imageKernelsAvailable)
+            throw new NotSupportedException("NVRTC is not available; cannot run CUDA image kernels.");
+
+        int total = (int)input.ElementCount;
+        int embd = (int)weight.ElementCount;
+        int nTokens = total / embd;
+
+        nint p0 = GetDevPtr(input), p1 = GetDevPtr(weight), p2 = bias is not null ? GetDevPtr(bias) : nint.Zero;
+        nint p3 = GetDevPtr(output);
+        int p4 = nTokens, p5 = embd;
+        float p6 = eps;
+        nint* args = stackalloc nint[7]
+        {
+            (nint)(&p0), (nint)(&p1), (nint)(&p2), (nint)(&p3),
+            (nint)(&p4), (nint)(&p5), (nint)(&p6)
+        };
+        Launch1D(_visionLayerNormKernel, nTokens, args);
+    }
+
+    /// <inheritdoc/>
+    public void VisionGeluInPlace(Tensor x)
+    {
+        EnsureImageKernels();
+        if (!_imageKernelsAvailable)
+            throw new NotSupportedException("NVRTC is not available; cannot run CUDA image kernels.");
+
+        int n = (int)x.ElementCount;
+        nint p0 = GetDevPtr(x);
+        int p1 = n;
+        nint* args = stackalloc nint[2] { (nint)(&p0), (nint)(&p1) };
+        Launch1D(_visionGeluKernel, n, args);
+    }
+
+    /// <inheritdoc/>
+    public void VisionQuickGeluInPlace(Tensor x)
+    {
+        EnsureImageKernels();
+        if (!_imageKernelsAvailable)
+            throw new NotSupportedException("NVRTC is not available; cannot run CUDA image kernels.");
+
+        int n = (int)x.ElementCount;
+        nint p0 = GetDevPtr(x);
+        int p1 = n;
+        nint* args = stackalloc nint[2] { (nint)(&p0), (nint)(&p1) };
+        Launch1D(_visionQuickGeluKernel, n, args);
+    }
+
+    /// <inheritdoc/>
+    public void VisionSquaredReluInPlace(Tensor x)
+    {
+        EnsureImageKernels();
+        if (!_imageKernelsAvailable)
+            throw new NotSupportedException("NVRTC is not available; cannot run CUDA image kernels.");
+
+        int n = (int)x.ElementCount;
+        nint p0 = GetDevPtr(x);
+        int p1 = n;
+        nint* args = stackalloc nint[2] { (nint)(&p0), (nint)(&p1) };
+        Launch1D(_visionSquaredReluKernel, n, args);
+    }
 
     // ── Disposal ──────────────────────────────────────────────────────────
 

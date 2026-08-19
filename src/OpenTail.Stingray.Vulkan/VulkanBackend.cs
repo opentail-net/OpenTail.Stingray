@@ -12,7 +12,7 @@ namespace OpenTail.Stingray.Vulkan;
 /// Selects a discrete GPU, creates a compute-only queue, and manages
 /// VRAM buffers for inference tensor operations.
 /// </summary>
-public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IDisposable
+public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, IVisionOpsBackend, IDisposable
 {
     private readonly VkInstance _instance;
     private readonly VkInstanceApi _vki;
@@ -1479,6 +1479,15 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, ID
     private ComputePipeline? _pixelUnshufflePipeline;
     private ComputePipeline? _upsample2xPipeline;
 
+    // Vision ops pipelines (IVisionOpsBackend)
+    private ComputePipeline? _visionPixelShufflePipeline;
+    private ComputePipeline? _visionMropePipeline;
+    private ComputePipeline? _visionContinuousRopePipeline;
+    private ComputePipeline? _visionLayerNormPipeline;
+    private ComputePipeline? _visionGeluPipeline;
+    private ComputePipeline? _visionQuickGeluPipeline;
+    private ComputePipeline? _visionSquaredReluPipeline;
+
     private struct RmsNormParams{ public uint n; public float eps; }
     private struct RmsNormBatchedParams { public uint n; public float eps; public uint numTokens; }
     private struct HeadNormParams { public uint headDim; public uint numHeads; public float eps; }
@@ -1554,6 +1563,13 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, ID
     private struct CatChannelsParams { public uint aCh; public uint bCh; public uint hw; }
     private struct PixelShuffleParams { public uint inCh; public uint h; public uint w; public uint factor; }
     private struct SpatialParams  { public uint ch; public uint h; public uint w; }
+
+    // Vision ops push constant structs (IVisionOpsBackend)
+    private struct VisionPixelShuffleParams { public uint gridY; public uint gridX; public uint inDim; }
+    private struct VisionMRoPEParams { public uint patchesX; public uint patchesY; public uint qHeads; public uint kvHeads; public uint headDim; public float theta; }
+    private struct VisionContinuous2DRoPEParams { public uint patchesX; public uint patchesY; public uint heads; public uint headDim; public float theta; }
+    private struct VisionLayerNormParams { public uint nTokens; public uint embd; public float eps; public uint hasBias; }
+    private struct VisionActParams { public uint n; }
 
     private void DispatchOrRecord(ComputePipeline pipe, ReadOnlySpan<GpuBuffer> buffers,
         uint groupX, void* push, uint groupY = 1, uint groupZ = 1)
@@ -3629,6 +3645,100 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, ID
         return output;
     }
 
+    // ── IVisionOpsBackend ──────────────────────────────────────────────────
+
+    public Tensor VisionPixelShuffle2x2(Tensor input, int gridY, int gridX, int inDim)
+    {
+        int outY = gridY / 2;
+        int outX = gridX / 2;
+        int outDim = inDim * 4;
+        var output = Allocate(TensorShape.D1(outY * outX * outDim));
+
+        _visionPixelShufflePipeline ??= new ComputePipeline(this, Shaders.VisionPixelShuffle2x2, 2, pushConstantSize: sizeof(VisionPixelShuffleParams));
+        var p = new VisionPixelShuffleParams { gridY = (uint)gridY, gridX = (uint)gridX, inDim = (uint)inDim };
+
+        uint total = (uint)(outY * outX);
+        uint groups = (total + 255u) / 256u;
+        DispatchOrRecord(_visionPixelShufflePipeline, [GetBuffer(input), GetBuffer(output)], groups, &p);
+        return output;
+    }
+
+    public void VisionMRoPE(Tensor q, Tensor k, int patchesX, int patchesY, int qHeads, int kvHeads, int headDim, float theta = 10000.0f)
+    {
+        _visionMropePipeline ??= new ComputePipeline(this, Shaders.VisionMRoPE, 2, pushConstantSize: sizeof(VisionMRoPEParams));
+        var p = new VisionMRoPEParams
+        {
+            patchesX = (uint)patchesX, patchesY = (uint)patchesY,
+            qHeads = (uint)qHeads, kvHeads = (uint)kvHeads,
+            headDim = (uint)headDim, theta = theta
+        };
+
+        uint total = (uint)(patchesX * patchesY);
+        uint groups = (total + 255u) / 256u;
+        DispatchOrRecord(_visionMropePipeline, [GetBuffer(q), GetBuffer(k)], groups, &p);
+    }
+
+    public void VisionContinuous2DRoPE(Tensor q, Tensor k, int patchesX, int patchesY, int heads, int headDim, float theta = 10000.0f)
+    {
+        _visionContinuousRopePipeline ??= new ComputePipeline(this, Shaders.VisionContinuous2DRoPE, 2, pushConstantSize: sizeof(VisionContinuous2DRoPEParams));
+        var p = new VisionContinuous2DRoPEParams
+        {
+            patchesX = (uint)patchesX, patchesY = (uint)patchesY,
+            heads = (uint)heads, headDim = (uint)headDim, theta = theta
+        };
+
+        uint total = (uint)(patchesX * patchesY);
+        uint groups = (total + 255u) / 256u;
+        DispatchOrRecord(_visionContinuousRopePipeline, [GetBuffer(q), GetBuffer(k)], groups, &p);
+    }
+
+    public void VisionLayerNorm(Tensor output, Tensor input, Tensor weight, Tensor? bias, float eps = 1e-5f)
+    {
+        int total = (int)input.ElementCount;
+        int embd = (int)weight.ElementCount;
+        int nTokens = total / embd;
+
+        _visionLayerNormPipeline ??= new ComputePipeline(this, Shaders.VisionLayerNorm, 4, pushConstantSize: sizeof(VisionLayerNormParams));
+        var p = new VisionLayerNormParams
+        {
+            nTokens = (uint)nTokens,
+            embd = (uint)embd,
+            eps = eps,
+            hasBias = bias is not null ? 1u : 0u
+        };
+
+        var biasBuffer = bias is not null ? GetBuffer(bias) : GetBuffer(weight);
+        uint groups = ((uint)nTokens + 255u) / 256u;
+        DispatchOrRecord(_visionLayerNormPipeline, [GetBuffer(input), GetBuffer(weight), biasBuffer, GetBuffer(output)], groups, &p);
+    }
+
+    public void VisionGeluInPlace(Tensor x)
+    {
+        int n = (int)x.ElementCount;
+        _visionGeluPipeline ??= new ComputePipeline(this, Shaders.VisionGelu, 1, pushConstantSize: sizeof(VisionActParams));
+        var p = new VisionActParams { n = (uint)n };
+        uint groups = ((uint)n + 255u) / 256u;
+        DispatchOrRecord(_visionGeluPipeline, [GetBuffer(x)], groups, &p);
+    }
+
+    public void VisionQuickGeluInPlace(Tensor x)
+    {
+        int n = (int)x.ElementCount;
+        _visionQuickGeluPipeline ??= new ComputePipeline(this, Shaders.VisionQuickGelu, 1, pushConstantSize: sizeof(VisionActParams));
+        var p = new VisionActParams { n = (uint)n };
+        uint groups = ((uint)n + 255u) / 256u;
+        DispatchOrRecord(_visionQuickGeluPipeline, [GetBuffer(x)], groups, &p);
+    }
+
+    public void VisionSquaredReluInPlace(Tensor x)
+    {
+        int n = (int)x.ElementCount;
+        _visionSquaredReluPipeline ??= new ComputePipeline(this, Shaders.VisionSquaredRelu, 1, pushConstantSize: sizeof(VisionActParams));
+        var p = new VisionActParams { n = (uint)n };
+        uint groups = ((uint)n + 255u) / 256u;
+        DispatchOrRecord(_visionSquaredReluPipeline, [GetBuffer(x)], groups, &p);
+    }
+
     // ================================================================
     //  Disposal
     // ================================================================
@@ -3801,6 +3911,13 @@ public sealed unsafe class VulkanBackend : IComputeBackend, IImageOpsBackend, ID
         _pixelShufflePipeline?.Dispose();
         _pixelUnshufflePipeline?.Dispose();
         _upsample2xPipeline?.Dispose();
+        _visionPixelShufflePipeline?.Dispose();
+        _visionMropePipeline?.Dispose();
+        _visionContinuousRopePipeline?.Dispose();
+        _visionLayerNormPipeline?.Dispose();
+        _visionGeluPipeline?.Dispose();
+        _visionQuickGeluPipeline?.Dispose();
+        _visionSquaredReluPipeline?.Dispose();
 
         _downloadStaging?.Dispose();
         _uploadStaging?.Dispose();
