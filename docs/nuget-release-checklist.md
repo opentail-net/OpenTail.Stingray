@@ -14,7 +14,7 @@ whose version differs from `<Version>`.
 3. Run the managed release suite and package smoke test locally or on the designated release runner:
 
    ```powershell
-   ./scripts/verify-nuget-package.ps1 -PackageVersion 1.0.4
+   ./scripts/verify-nuget-package.ps1 -PackageVersion 1.0.5
    ```
 
    The script runs the same managed projects as the hosted release gate (unless `-SkipTests` is
@@ -45,8 +45,8 @@ whose version differs from `<Version>`.
 ## Receipt template
 
 ```text
-Release: OpenTail.Stingray X.Y.Z
-Tag / commit: stingray-vX.Y.Z / <sha>
+Release: OpenTail.Stingray 1.0.5
+Tag / commit: stingray-v1.0.5 / <sha>
 Package SHA-256: <hash>
 Managed suite: <TRX artifact link or local transcript>
 Model-fixture coverage: <check-test-model-coverage.ps1 transcript>

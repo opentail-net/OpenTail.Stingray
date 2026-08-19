@@ -52,6 +52,66 @@ public sealed class SmartOffloadPlannerTests
         Assert.Equal(32, plan.GpuLayersToOffload);
         Assert.Equal("cuda", plan.RecommendedBackend);
         Assert.Equal(12, plan.RecommendedThreads);
+        Assert.Single(plan.DeviceAllocations);
+        Assert.Equal(32, plan.DeviceAllocations[0].LayerCount);
+    }
+
+    [Fact]
+    public void SmartOffloadPlanner_MultiGpu_PoolsVramAndSplitsLayersProportionally()
+    {
+        var topology = new HardwareTopology
+        {
+            Cpu = new CpuProfile
+            {
+                LogicalCores = 16,
+                PhysicalCores = 12,
+                HasAvx2 = true
+            },
+            Gpus =
+            [
+                new GpuProfile
+                {
+                    Index = 0,
+                    Name = "NVIDIA RTX 3060",
+                    Backend = "cuda",
+                    DeviceType = GpuDeviceType.Discrete,
+                    TotalMemoryBytes = 12L * 1024 * 1024 * 1024,
+                    AvailableMemoryBytes = 10L * 1024 * 1024 * 1024 // 10GB usable
+                },
+                new GpuProfile
+                {
+                    Index = 1,
+                    Name = "AMD Radeon RX 6600",
+                    Backend = "vulkan",
+                    DeviceType = GpuDeviceType.Discrete,
+                    TotalMemoryBytes = 8L * 1024 * 1024 * 1024,
+                    AvailableMemoryBytes = 6L * 1024 * 1024 * 1024 // 6GB usable
+                }
+            ]
+        };
+
+        long modelSize = 14L * 1024 * 1024 * 1024; // 14GB model (cannot fit on either card alone!)
+        int layers = 32;
+
+        var plan = SmartOffloadPlanner.Plan(modelSize, layers, contextTokens: 2048, topology);
+
+        Assert.Equal(ExecutionStrategy.MultiGpuPooled, plan.Strategy);
+        Assert.Equal(32, plan.GpuLayersToOffload); // 100% of layers offloaded across the 2 pooled GPUs!
+        Assert.Equal(2, plan.DeviceAllocations.Count);
+
+        var gpu0 = plan.DeviceAllocations[0];
+        var gpu1 = plan.DeviceAllocations[1];
+
+        Assert.Equal(0, gpu0.DeviceIndex);
+        Assert.Equal("cuda", gpu0.Backend);
+        Assert.True(gpu0.LayerCount > gpu1.LayerCount); // GPU 0 has more VRAM, gets more layers!
+        Assert.Equal(0, gpu0.StartLayer);
+
+        Assert.Equal(1, gpu1.DeviceIndex);
+        Assert.Equal("vulkan", gpu1.Backend);
+        Assert.Equal(gpu0.EndLayer + 1, gpu1.StartLayer); // Continuous layer range!
+        Assert.Equal(31, gpu1.EndLayer);
+        Assert.Equal(32, gpu0.LayerCount + gpu1.LayerCount);
     }
 
     [Fact]
