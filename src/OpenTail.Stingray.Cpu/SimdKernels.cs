@@ -105,6 +105,24 @@ public static unsafe class SimdKernels
         // For small batches, fused MatVec is faster (no dequant overhead)
         // BLAS only wins when N is large enough to amortize F32 dequantization
 
+        // Checked BEFORE the BLAS availability gate below, not after: MicroGemm and the Q8
+        // activation-quantized path (measured +47% over the old baseline, see Q8PrefillEnabled)
+        // are faster than OpenBLAS's dequant-to-F32-then-sgemm route for the dtypes they support
+        // (Q6_K's ffn_down/attn_v tensors on a Q4_K_M model, e.g.), and "BLAS happens to be
+        // available" is not evidence it is faster for a given call. Previously these were only
+        // tried once BLAS was ruled out, so merely having libopenblas.dll on disk silently routed
+        // every large-enough batch straight to the slower BLAS path -- the same class of bug fixed
+        // in ForwardPass.MatMulBatchedCached for the Q4_K repacked-x8 path (see its comment and
+        // docs/cpu-performance-baseline.md). Only actually falls through to BLAS when these
+        // decline (wrong dtype, disabled, or batch below MinBatchForQ8Prefill).
+        if (MicroGemmConfig.IsEnabled && dtype == DType.Q4_K &&
+            MicroGemmQ4K.TryMatMulQ4K(output, input, (byte*)weights, batchSize, rows, cols))
+            return;
+
+        if (allowQ8 && Q8PrefillEnabled && batchSize >= MinBatchForQ8Prefill &&
+            TryMatMulBatchedQ8(output, weights, input, batchSize, rows, cols, dtype))
+            return;
+
         if (!allowBlas || batchSize < MinBatchForBlas || !BlasInterop.IsAvailable)
         {
             // Sequential fused MatVec (dequant in registers, no temp buffer).
@@ -125,16 +143,8 @@ public static unsafe class SimdKernels
             // docs/cpu-prefill-plan.md §6 step 3: the int8 (_4In) dots below ARE that
             // data-layout change -- weight reuse happens at register level inside one kernel
             // call, not via a re-ordered loop, so the failure mode above doesn't apply to it.
-            // Default-ON as of the Q8-prefill ship (see Q8PrefillEnabled); opt out with
-            // STINGRAY_CPU_PREFILL_Q8=0. Only prefill call sites pass allowQ8 -- see the
-            // parameter's doc for why batch size alone cannot make that decision.
-            if (MicroGemmConfig.IsEnabled && dtype == DType.Q4_K &&
-                MicroGemmQ4K.TryMatMulQ4K(output, input, (byte*)weights, batchSize, rows, cols))
-                return;
-
-            if (allowQ8 && Q8PrefillEnabled && batchSize >= MinBatchForQ8Prefill &&
-                TryMatMulBatchedQ8(output, weights, input, batchSize, rows, cols, dtype))
-                return;
+            // MicroGemm and Q8Prefill are tried above, before this gate, now -- see this method's
+            // opening comment.
 
             // fp32 multi-input tiering (session runtime plan §3.4.6). One weight row read, dotted
             // against 4 (then 2, then 1) activation vectors -- the SAME amortisation the int8 path
