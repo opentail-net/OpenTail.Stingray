@@ -83,105 +83,18 @@ public static unsafe class VisionOps
     }
 
     /// <summary>
-    /// Parallelized Matrix-Vector multiplication for FP16 weights with optional FP32 bias addition.
-    /// Computes output[tokens, outDim] = input[tokens, inDim] * weights[outDim, inDim]^T + bias[outDim].
-    /// </summary>
-    public static void MatVecF16(
-        float[] input,
-        Half* weights,
-        float* bias,
-        int nTokens,
-        int inDim,
-        int outDim,
-        float[] output)
-    {
-        if (weights == null) return;
-
-        fixed (float* pIn = input)
-        fixed (float* pOut = output)
-        {
-            var inPtr = pIn;
-            var outPtr = pOut;
-            var wPtr = weights;
-            var bPtr = bias;
-
-            Parallel.For(0, nTokens, t =>
-            {
-                float* rowIn = inPtr + (long)t * inDim;
-                float* rowOut = outPtr + (long)t * outDim;
-
-                for (int o = 0; o < outDim; o++)
-                {
-                    float sum = bPtr != null ? bPtr[o] : 0f;
-                    Half* rowW = wPtr + (long)o * inDim;
-
-                    int i = 0;
-
-                    if (Vector256.IsHardwareAccelerated && inDim >= 32)
-                    {
-                        var acc0 = Vector256<float>.Zero;
-                        var acc1 = Vector256<float>.Zero;
-                        var acc2 = Vector256<float>.Zero;
-                        var acc3 = Vector256<float>.Zero;
-
-                        int vecLimit = inDim - 31;
-
-                        for (; i < vecLimit; i += 32)
-                        {
-                            var vIn0 = Vector256.Load(rowIn + i + 0);
-                            var vW0 = Vector256.Create(
-                                (float)rowW[i + 0], (float)rowW[i + 1], (float)rowW[i + 2], (float)rowW[i + 3],
-                                (float)rowW[i + 4], (float)rowW[i + 5], (float)rowW[i + 6], (float)rowW[i + 7]);
-                            acc0 = Vector256.MultiplyAddEstimate(vIn0, vW0, acc0);
-
-                            var vIn1 = Vector256.Load(rowIn + i + 8);
-                            var vW1 = Vector256.Create(
-                                (float)rowW[i + 8], (float)rowW[i + 9], (float)rowW[i + 10], (float)rowW[i + 11],
-                                (float)rowW[i + 12], (float)rowW[i + 13], (float)rowW[i + 14], (float)rowW[i + 15]);
-                            acc1 = Vector256.MultiplyAddEstimate(vIn1, vW1, acc1);
-
-                            var vIn2 = Vector256.Load(rowIn + i + 16);
-                            var vW2 = Vector256.Create(
-                                (float)rowW[i + 16], (float)rowW[i + 17], (float)rowW[i + 18], (float)rowW[i + 19],
-                                (float)rowW[i + 20], (float)rowW[i + 21], (float)rowW[i + 22], (float)rowW[i + 23]);
-                            acc2 = Vector256.MultiplyAddEstimate(vIn2, vW2, acc2);
-
-                            var vIn3 = Vector256.Load(rowIn + i + 24);
-                            var vW3 = Vector256.Create(
-                                (float)rowW[i + 24], (float)rowW[i + 25], (float)rowW[i + 26], (float)rowW[i + 27],
-                                (float)rowW[i + 28], (float)rowW[i + 29], (float)rowW[i + 30], (float)rowW[i + 31]);
-                            acc3 = Vector256.MultiplyAddEstimate(vIn3, vW3, acc3);
-                        }
-
-                        var totalAcc = (acc0 + acc1) + (acc2 + acc3);
-                        sum += Vector256.Sum(totalAcc);
-                    }
-
-                    for (; i < inDim; i++)
-                    {
-                        sum += rowIn[i] * (float)rowW[i];
-                    }
-
-                    rowOut[o] = sum;
-                }
-            });
-        }
-    }
-
-    /// <summary>
     /// Resolves a tensor's full GGUF info (name, shape, dtype) together with its raw data pointer,
-    /// checking multiple fallback aliases. This is the structural replacement for
-    /// <see cref="GetTensorPtr{T}"/>: that method threw away the tensor's actual dtype and handed
-    /// callers a pointer blindly cast to a fixed CLR type (<c>Half</c> or <c>float</c>), which is
-    /// how a Q8_0-quantized mmproj got silently reinterpreted as raw F16 and corrupted memory (see
-    /// docs/done/vl-untested-code-findings-2026-08-20.md). Pair this with <see cref="MatVecAny"/>,
-    /// which dispatches on the returned dtype instead of assuming one — the same pattern
-    /// <c>OpenTail.Stingray.Cpu.SimdKernels.MatVec</c> already uses for the main LLM engine.
-    ///
-    /// <para>Migration in progress: new encoders (and encoders being fixed for real quantized-mmproj
-    /// support) should use this + <see cref="MatVecAny"/> instead of <see cref="GetTensorPtr{T}"/> +
-    /// <see cref="MatVecF16"/>/<see cref="MatVec"/>. <see cref="GetTensorPtr{T}"/> stays until every
-    /// caller has moved over, then gets deleted rather than kept as a second, less-safe path.</para>
+    /// checking multiple fallback aliases. This is the structural replacement for the removed
+    /// <c>GetTensorPtr&lt;Half&gt;</c> + <c>MatVecF16</c> pair: those threw away the tensor's actual
+    /// dtype and handed callers a pointer blindly cast to a fixed CLR type, which is how a
+    /// Q8_0-quantized mmproj got silently reinterpreted as raw F16 and corrupted memory (see
+    /// docs/done/vl-untested-code-findings-2026-08-20.md and docs/vl-migration-plan-2026-08-20.md).
+    /// Pair this with <see cref="MatVecAny"/>, which dispatches on the returned dtype instead of
+    /// assuming one — the same pattern <c>OpenTail.Stingray.Cpu.SimdKernels.MatVec</c> already uses
+    /// for the main LLM engine. Every vision encoder's matmul-bound weights (attention/FFN/proj) now
+    /// go through this + <see cref="MatVecAny"/>. <see cref="GetTensorPtr{T}"/> (float-only in
+    /// practice now) stays for norm/bias tensors, which are read element-wise rather than matvec'd
+    /// and are genuinely always F32 in real mmproj files — it remains dtype-guarded either way.
     /// </summary>
     public static VisionTensorRef GetTensor(GgufModel gguf, params string[] candidateNames)
     {
@@ -892,26 +805,27 @@ public static unsafe class VisionOps
     }
 
     /// <summary>
-    /// Resolves typed unmanaged pointer to tensor data inside a GgufModel, checking multiple fallback aliases.
+    /// Resolves typed unmanaged pointer to tensor data inside a GgufModel, checking multiple fallback
+    /// aliases. Only used for <c>float</c> now (norm/bias tensors, read element-wise rather than
+    /// matvec'd, genuinely always F32 in real mmproj files) -- matmul-bound weights (attention/FFN/
+    /// proj) go through <see cref="GetTensor"/> + <see cref="MatVecAny"/> instead, which carry the
+    /// tensor's real dtype end-to-end (see docs/vl-migration-plan-2026-08-20.md).
     /// </summary>
     /// <exception cref="NotSupportedException">
     /// The tensor was found under one of <paramref name="candidateNames"/> but its actual GGUF
     /// storage dtype does not match <typeparamref name="T"/> -- e.g. a quantized mmproj (Q8_0,
-    /// Q4_K, ...) where this caller expects raw F16/F32. Found 2026-08-20: every vision encoder in
-    /// this project reads weights via this method assuming a fixed dtype (typically Half for
-    /// projection/attention/FFN weights), with no verification against the GGUF's declared type.
-    /// Against a Q8_0-quantized mmproj (InternVL3-2B, confirmed via `list-tensors`), that produced
-    /// a real crash: MatVecF16's row-stride pointer arithmetic assumes 2-byte-per-element Half
-    /// data, but Q8_0 packs ~1.06 bytes/element, so later rows walk past the tensor's true
-    /// (smaller) allocation into unmapped memory -- an AccessViolationException deep inside a
-    /// Parallel.For lambda, with no indication of which tensor or why. This check turns that into
-    /// a clear, immediate, catchable error instead (see RunCommand.cs's catch around
-    /// UnifiedVisionPipeline.Open) -- it does not add quantized-weight support, which needs a
-    /// dequant-aware MatVec path (mirroring OpenTail.Stingray.Cpu.SimdKernels' approach for the
-    /// main LLM engine) as separate follow-up work. The real llama.cpp reference for these
-    /// encoders is examples/llama.cpp/llama.cpp/tools/mtmd/models -- ggml's own kernels are
-    /// dtype-generic, which is why the reference never needed this guard; this port's per-dtype
-    /// assumption is the gap.
+    /// Q4_K, ...) where this caller expects raw F32. Found 2026-08-20: every vision encoder in this
+    /// project originally read weights via this method (then also used for Half) assuming a fixed
+    /// dtype, with no verification against the GGUF's declared type. Against a Q8_0-quantized mmproj
+    /// (InternVL3-2B, confirmed via `list-tensors`), that produced a real crash: the since-removed
+    /// MatVecF16's row-stride pointer arithmetic assumed 2-byte-per-element Half data, but Q8_0
+    /// packs ~1.06 bytes/element, so later rows walked past the tensor's true (smaller) allocation
+    /// into unmapped memory -- an AccessViolationException deep inside a Parallel.For lambda, with
+    /// no indication of which tensor or why. This check turns that into a clear, immediate,
+    /// catchable error instead (see RunCommand.cs's catch around UnifiedVisionPipeline.Open). The
+    /// real llama.cpp reference for these encoders is
+    /// examples/llama.cpp/llama.cpp/tools/mtmd/models -- ggml's own kernels are dtype-generic, which
+    /// is why the reference never needed this guard; this port's per-dtype assumption was the gap.
     /// </exception>
     public static T* GetTensorPtr<T>(GgufModel gguf, params string[] candidateNames) where T : unmanaged
     {

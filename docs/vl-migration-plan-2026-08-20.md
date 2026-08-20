@@ -160,15 +160,34 @@ via this path) and Llava (dtype crash gone, see Llava's row below for what surfa
   table supports. Real gap (AnyRes tiling isn't implemented), out of scope for this migration —
   flagged, not fixed here.
 
-## Cleanup (only after every row above is checked off)
+## Cleanup (done 2026-08-20)
 
-- [ ] Delete `VisionOps.GetTensorPtr<T>` and `VisionOps.MatVecF16` entirely — no caller left once
-      migration is complete. Do not delete early "just to be tidy"; every unmigrated encoder still
-      depends on them being present and dtype-guarded.
-- [ ] Sweep for any other direct `Half*`/blind-cast pattern this list missed (the `HunyuanVlVisionEncoder`
-      false-positive during discovery — it has its own *local* copy of the same pattern instead of
-      calling `VisionOps.GetTensorPtr` directly, but turned out to have zero `Half` usage in practice;
-      worth a final grep pass for other private duplicates before deleting the shared method).
+- [x] **Delete `VisionOps.MatVecF16` entirely** — confirmed zero remaining callers (grep for
+      `MatVecF16` across `src/OpenTail.Stingray.Vision` turns up only doc-comment mentions and
+      `Tests.Vision`'s own private `MatVecF16_Scalar` reimplementation, which never called the real
+      one). Deleted. **`VisionOps.GetTensorPtr<T>` was NOT deleted** — the plan's original wording
+      ("delete both entirely") turned out to be imprecise once the migration was actually finished:
+      `GetTensorPtr<float>` is still genuinely load-bearing in every migrated encoder for norm/bias
+      tensors, which are read element-wise (not through a matvec) and are always F32 in real mmproj
+      files — it never needed `VisionTensorRef`/`MatVecAny`, and stays dtype-guarded either way.
+      Only the `Half`-typed usage (paired with the now-deleted `MatVecF16`) was the unsafe path;
+      that usage is gone (confirmed: no `GetTensorPtr<Half>` call anywhere). Refreshed both methods'
+      doc comments to describe the current, not aspirational, state. Vision + Cli + Tests.Vision all
+      build clean after the deletion.
+- [x] Swept for other private-duplicate `GetTensorPtr`/`MatVecF16`-shaped helpers (the concern that
+      motivated this item — `HunyuanVlVisionEncoder`'s local copy turned out to have zero `Half`
+      usage, and Kimi's/Glm4's real local duplicates were already removed during their own migration
+      steps earlier). Grepped for any `static ... T* GetTensorPtr` or `static void MatVec*` outside
+      `VisionOps.cs` — none found. Confirmed clean.
+
+**Migration fully closed.** All 13 encoders migrated and build-verified; the old unsafe
+Half-blind-cast path (`MatVecF16` + `GetTensorPtr<Half>`) no longer exists anywhere in the codebase.
+Remaining open items are downstream of this work, not part of it: two text-generation architecture
+gaps (`deepseek2-ocr`, `nemotron_h`) block full end-to-end runs for DeepSeekOcr/Nemotron; a
+chat-template placeholder gap blocks DotsOcr/Granite4; LLaVA-Next AnyRes multi-tile cropping isn't
+implemented (surfaced via Llava); and CogVlm/MobileNetV5 have no real public GGUF conversion for the
+exact architecture their encoders target. All flagged in their own rows above, none are migration
+bugs.
 
 ## Notes for whoever (including future-me) continues this
 
