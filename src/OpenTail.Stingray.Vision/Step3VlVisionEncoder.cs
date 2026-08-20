@@ -127,6 +127,14 @@ public sealed unsafe class Step3VlVisionEncoder
         var vBuf   = new float[nP * _embd];
         var tmp    = new float[nP * _embd];
 
+        int maxIntermediate = 0;
+        for (int l = 0; l < _layers; l++)
+        {
+            if (_blocks[l].FfnIntermediate > maxIntermediate) maxIntermediate = _blocks[l].FfnIntermediate;
+        }
+        var mid  = new float[nP * maxIntermediate];
+        var gate = new float[nP * maxIntermediate];
+
         for (int l = 0; l < _layers; l++)
         {
             var b = _blocks[l];
@@ -145,19 +153,18 @@ public sealed unsafe class Step3VlVisionEncoder
             VisionOps.LayerNorm(normed, nP, _embd, b.Ln2W, b.Ln2B, _eps);
 
             int inter = b.FfnIntermediate;
-            var mid   = new float[nP * inter];
+            int interLen = nP * inter;
             VisionOps.MatVec(normed, b.FfnUpW, b.FfnUpB, nP, _embd, inter, mid);
 
             if (b.FfnGateW != null)
             {
-                var gate = new float[nP * inter];
                 VisionOps.MatVec(normed, b.FfnGateW, b.FfnGateB, nP, _embd, inter, gate);
-                VisionOps.Silu(mid);
-                for (int i = 0; i < mid.Length; i++) mid[i] *= gate[i];
+                VisionOps.Silu(mid.AsSpan(0, interLen));
+                for (int i = 0; i < interLen; i++) mid[i] *= gate[i];
             }
             else
             {
-                VisionOps.Gelu(mid);
+                VisionOps.Gelu(mid.AsSpan(0, interLen));
             }
 
             VisionOps.MatVec(mid, b.FfnDownW, b.FfnDownB, nP, inter, _embd, tmp);

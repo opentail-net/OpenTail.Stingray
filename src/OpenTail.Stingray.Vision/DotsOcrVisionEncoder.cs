@@ -135,6 +135,13 @@ public sealed unsafe class DotsOcrVisionEncoder
         var attnOut = new float[numPatches * _embd];
         var normed = new float[numPatches * _embd];
 
+        int maxIntermediate = 0;
+        for (int l = 0; l < _layers; l++)
+        {
+            if (_blocks[l].FfnIntermediate > maxIntermediate) maxIntermediate = _blocks[l].FfnIntermediate;
+        }
+        var ffnMid = new float[numPatches * maxIntermediate];
+
         for (int l = 0; l < _layers; l++)
         {
             var blk = _blocks[l];
@@ -158,9 +165,8 @@ public sealed unsafe class DotsOcrVisionEncoder
             VisionOps.RmsNorm(normed, numPatches, _embd, blk.Ln2W, _eps);
 
             int intermediate = blk.FfnIntermediate;
-            var ffnMid = new float[numPatches * intermediate];
             VisionOps.MatVecAny(normed, blk.FfnUpW, blk.FfnUpB, numPatches, _embd, intermediate, ffnMid);
-            VisionOps.Gelu(ffnMid);
+            VisionOps.Gelu(ffnMid.AsSpan(0, numPatches * intermediate));
             VisionOps.MatVecAny(ffnMid, blk.FfnDownW, blk.FfnDownB, numPatches, intermediate, _embd, attnOut);
 
             for (int i = 0; i < hiddenStates.Length; i++) hiddenStates[i] += attnOut[i];

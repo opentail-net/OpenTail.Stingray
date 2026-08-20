@@ -113,6 +113,14 @@ public sealed unsafe class PixtralVisionEncoder
         var attnOut = new float[tokenCount * _embd];
         var normed = new float[tokenCount * _embd];
 
+        int maxFfnDim = 0;
+        for (int l = 0; l < _layers; l++)
+        {
+            if (_blocks[l].FfnIntermediate > maxFfnDim) maxFfnDim = _blocks[l].FfnIntermediate;
+        }
+        var gateBuf = new float[tokenCount * maxFfnDim];
+        var upBuf = new float[tokenCount * maxFfnDim];
+
         for (int l = 0; l < _layers; l++)
         {
             var blk = _blocks[l];
@@ -136,14 +144,12 @@ public sealed unsafe class PixtralVisionEncoder
             VisionOps.RmsNorm(normed, tokenCount, _embd, blk.Ln2W);
 
             int ffnDim = blk.FfnIntermediate;
-            var gateBuf = new float[tokenCount * ffnDim];
-            var upBuf = new float[tokenCount * ffnDim];
-
             VisionOps.MatVecAny(normed, blk.FfnGateW, null, tokenCount, _embd, ffnDim, gateBuf);
             VisionOps.MatVecAny(normed, blk.FfnUpW, null, tokenCount, _embd, ffnDim, upBuf);
 
             // SwiGLU: silu(gate) * up
-            for (int i = 0; i < gateBuf.Length; i++)
+            int ffnLen = tokenCount * ffnDim;
+            for (int i = 0; i < ffnLen; i++)
             {
                 float g = gateBuf[i];
                 float silu = g / (1.0f + MathF.Exp(-g));

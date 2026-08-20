@@ -145,6 +145,14 @@ public sealed unsafe class KimiVisionEncoder
         var vBuf = new float[numPatches * _embd];
         var attnOut = new float[numPatches * _embd];
         var normed = new float[numPatches * _embd];
+        var qkv = new float[numPatches * 3 * _embd];
+
+        int maxIntermediate = 0;
+        for (int l = 0; l < _layers; l++)
+        {
+            if (_blocks[l].FfnIntermediate > maxIntermediate) maxIntermediate = _blocks[l].FfnIntermediate;
+        }
+        var ffnMid = new float[numPatches * maxIntermediate];
 
         for (int l = 0; l < _layers; l++)
         {
@@ -157,7 +165,6 @@ public sealed unsafe class KimiVisionEncoder
             // Self-Attention Q, K, V
             if (blk.AttnQkvW.IsValid)
             {
-                var qkv = new float[numPatches * 3 * _embd];
                 VisionOps.MatVecAny(normed, blk.AttnQkvW, blk.AttnQkvB, numPatches, _embd, 3 * _embd, qkv);
                 for (int p = 0; p < numPatches; p++)
                 {
@@ -188,11 +195,11 @@ public sealed unsafe class KimiVisionEncoder
             ApplyLayerNorm(normed, numPatches, _embd, blk.Ln2W, blk.Ln2B);
 
             int intermediate = blk.FfnIntermediate;
-            var ffnMid = new float[numPatches * intermediate];
             VisionOps.MatVecAny(normed, blk.FfnUpW, blk.FfnUpB, numPatches, _embd, intermediate, ffnMid);
 
             // GELU
-            for (int i = 0; i < ffnMid.Length; i++)
+            int ffnLen = numPatches * intermediate;
+            for (int i = 0; i < ffnLen; i++)
             {
                 float x = ffnMid[i];
                 ffnMid[i] = 0.5f * x * (1.0f + MathF.Tanh(MathF.Sqrt(2.0f / MathF.PI) * (x + 0.044715f * x * x * x)));

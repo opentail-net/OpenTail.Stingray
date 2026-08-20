@@ -180,6 +180,13 @@ via this path) and Llava (dtype crash gone, see Llava's row below for what surfa
       steps earlier). Grepped for any `static ... T* GetTensorPtr` or `static void MatVec*` outside
       `VisionOps.cs` — none found. Confirmed clean.
 
+**Follow-up (2026-08-20, same day, user-directed second pass)**: with all encoders freshly migrated
+and real models locally available, did a full re-read of every Vision file for further optimization
+and safety opportunities. Found and fixed a real per-layer scratch-buffer reallocation bug across 15
+encoders (FFN/QKV buffers reallocated every layer instead of once per `Forward()` call) and did a
+structural safety review of the remaining raw-pointer surface. Full writeup:
+`docs/done/vision-encoder-buffer-reuse-2026-08-20.md`.
+
 **Migration fully closed.** All 13 encoders migrated and build-verified; the old unsafe
 Half-blind-cast path (`MatVecF16` + `GetTensorPtr<Half>`) no longer exists anywhere in the codebase.
 Remaining open items are downstream of this work, not part of it: two text-generation architecture

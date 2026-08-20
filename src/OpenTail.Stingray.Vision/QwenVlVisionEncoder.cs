@@ -148,6 +148,15 @@ public sealed unsafe class QwenVlVisionEncoder
         var vBuf = new float[numPatches * _embd];
         var attnOut = new float[numPatches * _embd];
         var normed = new float[numPatches * _embd];
+        var qkvBuf = new float[numPatches * 3 * _embd];
+
+        int maxFfnDim = 0;
+        for (int l = 0; l < _layers; l++)
+        {
+            if (_blocks[l].FfnIntermediate > maxFfnDim) maxFfnDim = _blocks[l].FfnIntermediate;
+        }
+        var gateBuf = new float[numPatches * maxFfnDim];
+        var upBuf = new float[numPatches * maxFfnDim];
 
         for (int l = 0; l < _layers; l++)
         {
@@ -160,7 +169,6 @@ public sealed unsafe class QwenVlVisionEncoder
             // Q, K, V Linear Projections
             if (blk.AttnQkvW.IsValid)
             {
-                var qkvBuf = new float[numPatches * 3 * _embd];
                 VisionOps.MatVecAny(normed, blk.AttnQkvW, blk.AttnQkvB, numPatches, _embd, 3 * _embd, qkvBuf);
                 for (int p = 0; p < numPatches; p++)
                 {
@@ -192,13 +200,12 @@ public sealed unsafe class QwenVlVisionEncoder
 
             // SwiGLU FFN
             int ffnDim = blk.FfnIntermediate;
-            var gateBuf = new float[numPatches * ffnDim];
-            var upBuf = new float[numPatches * ffnDim];
             VisionOps.MatVecAny(normed, blk.FfnGateW, blk.FfnGateB, numPatches, _embd, ffnDim, gateBuf);
             VisionOps.MatVecAny(normed, blk.FfnUpW, blk.FfnUpB, numPatches, _embd, ffnDim, upBuf);
 
             // SiLU(gate) * up
-            for (int i = 0; i < gateBuf.Length; i++)
+            int ffnLen = numPatches * ffnDim;
+            for (int i = 0; i < ffnLen; i++)
             {
                 float g = gateBuf[i];
                 float silu = g / (1.0f + MathF.Exp(-g));

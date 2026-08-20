@@ -125,6 +125,13 @@ public sealed unsafe class YoutuVlVisionEncoder
         var attnOut = new float[nP * _embd];
         var tmp    = new float[nP * _embd];
 
+        int maxIntermediate = 0;
+        for (int l = 0; l < _layers; l++)
+        {
+            if (_blocks[l].FfnIntermediate > maxIntermediate) maxIntermediate = _blocks[l].FfnIntermediate;
+        }
+        var mid = new float[nP * maxIntermediate];
+
         for (int l = 0; l < _layers; l++)
         {
             var b = _blocks[l];
@@ -147,9 +154,8 @@ public sealed unsafe class YoutuVlVisionEncoder
             VisionOps.LayerNorm(normed, nP, _embd, b.Ln2W, b.Ln2B, _eps);
 
             int inter = b.FfnIntermediate;
-            var mid = new float[nP * inter];
             VisionOps.MatVec(normed, b.FfnUpW, b.FfnUpB, nP, _embd, inter, mid);
-            VisionOps.Gelu(mid);
+            VisionOps.Gelu(mid.AsSpan(0, nP * inter));
 
             VisionOps.MatVec(mid, b.FfnDownW, b.FfnDownB, nP, inter, _embd, tmp);
             for (int i = 0; i < x.Length; i++) x[i] += tmp[i];

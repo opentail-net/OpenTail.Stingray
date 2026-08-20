@@ -126,6 +126,14 @@ public sealed unsafe class MimoVlVisionEncoder
         var attnOut = new float[nPatches * _heads * _headDim];
         var tmp = new float[nPatches * _embd];
 
+        int maxIntermediate = 0;
+        for (int l = 0; l < _layers; l++)
+        {
+            if (_blocks[l].FfnIntermediate > maxIntermediate) maxIntermediate = _blocks[l].FfnIntermediate;
+        }
+        var up = new float[nPatches * maxIntermediate];
+        var gate = new float[nPatches * maxIntermediate];
+
         for (int l = 0; l < _layers; l++)
         {
             var b = _blocks[l];
@@ -154,13 +162,11 @@ public sealed unsafe class MimoVlVisionEncoder
 
             // SwiGLU FFN with optional biases
             int inter = b.FfnIntermediate;
-            var up = new float[nPatches * inter];
-            var gate = new float[nPatches * inter];
-
             VisionOps.MatVec(normed, b.FfnUpW, b.FfnUpB, nPatches, _embd, inter, up);
             VisionOps.MatVec(normed, b.FfnGateW, b.FfnGateB, nPatches, _embd, inter, gate);
-            VisionOps.Silu(gate);
-            for (int i = 0; i < up.Length; i++) up[i] *= gate[i];
+            int interLen = nPatches * inter;
+            VisionOps.Silu(gate.AsSpan(0, interLen));
+            for (int i = 0; i < interLen; i++) up[i] *= gate[i];
 
             VisionOps.MatVec(up, b.FfnDownW, b.FfnDownB, nPatches, inter, _embd, tmp);
             for (int i = 0; i < x.Length; i++) x[i] += tmp[i];

@@ -125,6 +125,14 @@ public sealed unsafe class Exaone4VisionEncoder
         var attnOut  = new float[nP * _heads * _headDim];
         var tmp      = new float[nP * _embd];
 
+        int maxIntermediate = 0;
+        for (int l = 0; l < _layers; l++)
+        {
+            if (_blocks[l].FfnIntermediate > maxIntermediate) maxIntermediate = _blocks[l].FfnIntermediate;
+        }
+        var up   = new float[nP * maxIntermediate];
+        var gate = new float[nP * maxIntermediate];
+
         for (int l = 0; l < _layers; l++)
         {
             var b = _blocks[l];
@@ -151,12 +159,11 @@ public sealed unsafe class Exaone4VisionEncoder
             VisionOps.RmsNorm(normed, nP, _embd, b.Ln2W, _eps);
 
             int inter = b.FfnIntermediate;
-            var up   = new float[nP * inter];
-            var gate = new float[nP * inter];
             VisionOps.MatVec(normed, b.FfnUpW, b.FfnUpB, nP, _embd, inter, up);
             VisionOps.MatVec(normed, b.FfnGateW, b.FfnGateB, nP, _embd, inter, gate);
-            VisionOps.Silu(gate);
-            for (int i = 0; i < up.Length; i++) up[i] *= gate[i];
+            int interLen = nP * inter;
+            VisionOps.Silu(gate.AsSpan(0, interLen));
+            for (int i = 0; i < interLen; i++) up[i] *= gate[i];
 
             VisionOps.MatVec(up, b.FfnDownW, b.FfnDownB, nP, inter, _embd, tmp);
             for (int i = 0; i < x.Length; i++) x[i] += tmp[i];

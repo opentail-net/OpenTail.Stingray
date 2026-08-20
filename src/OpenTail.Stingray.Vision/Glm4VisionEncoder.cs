@@ -146,6 +146,14 @@ public sealed unsafe class Glm4VisionEncoder
         var attnOut = new float[numPatches * _embd];
         var normed = new float[numPatches * _embd];
 
+        int maxFfnDim = 0;
+        for (int l = 0; l < _layers; l++)
+        {
+            if (_blocks[l].FfnIntermediate > maxFfnDim) maxFfnDim = _blocks[l].FfnIntermediate;
+        }
+        var gateBuf = new float[numPatches * maxFfnDim];
+        var upBuf = new float[numPatches * maxFfnDim];
+
         for (int l = 0; l < _layers; l++)
         {
             var blk = _blocks[l];
@@ -174,12 +182,11 @@ public sealed unsafe class Glm4VisionEncoder
             ApplyRmsNorm(normed, numPatches, _embd, blk.Ln2W);
 
             int ffnDim = blk.FfnIntermediate;
-            var gateBuf = new float[numPatches * ffnDim];
-            var upBuf = new float[numPatches * ffnDim];
             VisionOps.MatVecAny(normed, blk.FfnGateW, blk.FfnGateB, numPatches, _embd, ffnDim, gateBuf);
             VisionOps.MatVecAny(normed, blk.FfnUpW, blk.FfnUpB, numPatches, _embd, ffnDim, upBuf);
 
-            for (int i = 0; i < gateBuf.Length; i++)
+            int ffnLen = numPatches * ffnDim;
+            for (int i = 0; i < ffnLen; i++)
             {
                 float g = gateBuf[i];
                 float silu = g / (1.0f + MathF.Exp(-g));

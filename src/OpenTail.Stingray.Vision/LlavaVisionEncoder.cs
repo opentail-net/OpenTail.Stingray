@@ -139,6 +139,14 @@ public sealed unsafe class LlavaVisionEncoder
         var vBuf = new float[totalTokensIn * _embd];
         var attnOut = new float[totalTokensIn * _embd];
         var normed = new float[totalTokensIn * _embd];
+        var qkv = new float[totalTokensIn * 3 * _embd];
+
+        int maxIntermediate = 0;
+        for (int l = 0; l < _layers; l++)
+        {
+            if (_blocks[l].FfnIntermediate > maxIntermediate) maxIntermediate = _blocks[l].FfnIntermediate;
+        }
+        var ffnMid = new float[totalTokensIn * maxIntermediate];
 
         for (int l = 0; l < _layers; l++)
         {
@@ -149,7 +157,6 @@ public sealed unsafe class LlavaVisionEncoder
 
             if (blk.AttnQkvW.IsValid)
             {
-                var qkv = new float[totalTokensIn * 3 * _embd];
                 VisionOps.MatVecAny(normed, blk.AttnQkvW, blk.AttnQkvB, totalTokensIn, _embd, 3 * _embd, qkv);
                 for (int p = 0; p < totalTokensIn; p++)
                 {
@@ -174,9 +181,8 @@ public sealed unsafe class LlavaVisionEncoder
             VisionOps.LayerNorm(normed, totalTokensIn, _embd, blk.Ln2W, blk.Ln2B, _eps);
 
             int intermediate = blk.FfnIntermediate;
-            var ffnMid = new float[totalTokensIn * intermediate];
             VisionOps.MatVecAny(normed, blk.FfnUpW, blk.FfnUpB, totalTokensIn, _embd, intermediate, ffnMid);
-            VisionOps.QuickGelu(ffnMid);
+            VisionOps.QuickGelu(ffnMid.AsSpan(0, totalTokensIn * intermediate));
             VisionOps.MatVecAny(ffnMid, blk.FfnDownW, blk.FfnDownB, totalTokensIn, intermediate, _embd, attnOut);
 
             for (int i = 0; i < hiddenStates.Length; i++) hiddenStates[i] += attnOut[i];
