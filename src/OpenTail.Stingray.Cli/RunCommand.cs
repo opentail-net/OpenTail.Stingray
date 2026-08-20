@@ -2401,26 +2401,6 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         var imagePaths = s.ImagePaths!;
         int nImages = imagePaths.Length;
 
-        // Reconcile the number of <image> markers in the prompt with the number of --image
-        // files. No markers → prepend one placeholder per image (in --image order). Otherwise
-        // the counts must match so the i-th marker pairs with the i-th --image.
-        int markerCount = CountOccurrences(s.Prompt!, ImageMarker);
-        string userMsg;
-        if (markerCount == 0)
-        {
-            userMsg = string.Concat(Enumerable.Repeat("<|image|>", nImages)) + s.Prompt;
-        }
-        else if (markerCount == nImages)
-        {
-            userMsg = s.Prompt!.Replace(ImageMarker, "<|image|>");
-        }
-        else
-        {
-            AnsiConsole.MarkupLine($"[red]Error:[/] prompt has {markerCount} '{ImageMarker}' marker(s) but " +
-                $"{nImages} --image file(s) were given; the counts must match (or omit markers to prepend the images).");
-            return 1;
-        }
-
         IVisionEmbedder vision;
         try
         {
@@ -2435,6 +2415,34 @@ public sealed class RunCommand : Command<RunCommand.Settings>
                                 // returns below (e.g. the EmbedImageFile catch) also don't dispose
                                 // vision explicitly; process exit reclaims it for a CLI invocation.
         int embd = hp.EmbeddingDim;
+
+        // Reconcile the number of <image> markers in the prompt with the number of --image
+        // files. No markers → prepend one placeholder per image (in --image order). Otherwise
+        // the counts must match so the i-th marker pairs with the i-th --image.
+        //
+        // The text substituted in must be the model's own placeholder marker (vision.
+        // PlaceholderMarker), not a hardcoded literal: this method originally only supported
+        // Gemma 4, whose marker happens to literally be "<|image|>", but every other architecture
+        // uses its own text (DotsOcr/Granite4 = "<image_pad>", InternVL = "<IMG_CONTEXT>", etc.).
+        // Hardcoding "<|image|>" for all of them meant the substituted text tokenized back to
+        // ordinary characters instead of the model's real placeholder token id, so the later
+        // placeholder-count check always found 0 -- see docs/vl-migration-plan-2026-08-20.md.
+        int markerCount = CountOccurrences(s.Prompt!, ImageMarker);
+        string userMsg;
+        if (markerCount == 0)
+        {
+            userMsg = string.Concat(Enumerable.Repeat(vision.PlaceholderMarker, nImages)) + s.Prompt;
+        }
+        else if (markerCount == nImages)
+        {
+            userMsg = s.Prompt!.Replace(ImageMarker, vision.PlaceholderMarker);
+        }
+        else
+        {
+            AnsiConsole.MarkupLine($"[red]Error:[/] prompt has {markerCount} '{ImageMarker}' marker(s) but " +
+                $"{nImages} --image file(s) were given; the counts must match (or omit markers to prepend the images).");
+            return 1;
+        }
 
         // Project every image to its soft-token block up front, in --image order.
         var blocks = new (float[] Soft, int NTok)[nImages];

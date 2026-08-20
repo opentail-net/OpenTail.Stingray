@@ -270,9 +270,12 @@ public static class UnifiedVisionPipeline
         public int EmbeddingDim => _model.ProjectionDim;
         public int ImageWidth => _model.ImageSize;
         public int ImageHeight => _model.ImageSize;
-        public string ImageOpenMarker => "<image>";
-        public string ImageCloseMarker => "</image>";
-        public string PlaceholderMarker => "<image_pad>";
+        // Verified against the real GGUF vocab (nemotron-nano-12b-v2-vl-Q2_K.gguf): the only
+        // image-related special token is "<image>" -- see Granite4Adapter's comment for the
+        // same finding and why "<image_pad>"/"</image>" never worked here.
+        public string ImageOpenMarker => "";
+        public string ImageCloseMarker => "";
+        public string PlaceholderMarker => "<image>";
 
         public float[] EmbedImage(ReadOnlySpan<byte> rgb, int width, int height, out int tokenCount)
         {
@@ -304,9 +307,13 @@ public static class UnifiedVisionPipeline
         public int EmbeddingDim => _model.ProjectionDim;
         public int ImageWidth => _model.ImageSize;
         public int ImageHeight => _model.ImageSize;
-        public string ImageOpenMarker => "<image>";
-        public string ImageCloseMarker => "</image>";
-        public string PlaceholderMarker => "<image_pad>";
+        // Verified against the real GGUF vocab (dots.ocr-Q8_0.gguf, Qwen2-based tokenizer) --
+        // these are NOT "<image>"/"</image>"/"<image_pad>" (that trio never existed in this
+        // model's vocab, which is why every --image request against dots.ocr silently found 0
+        // placeholder tokens after templating; see docs/vl-migration-plan-2026-08-20.md).
+        public string ImageOpenMarker => "<|vision_start|>";
+        public string ImageCloseMarker => "<|vision_end|>";
+        public string PlaceholderMarker => "<|image_pad|>";
 
         public float[] EmbedImage(ReadOnlySpan<byte> rgb, int width, int height, out int tokenCount)
         {
@@ -338,9 +345,12 @@ public static class UnifiedVisionPipeline
         public int EmbeddingDim => _model.ProjectionDim;
         public int ImageWidth => _model.ImageSize;
         public int ImageHeight => _model.ImageSize;
-        public string ImageOpenMarker => "<image>";
-        public string ImageCloseMarker => "</image>";
-        public string PlaceholderMarker => "<image_pad>";
+        // Verified against the real GGUF vocab (deepseek-ocr-2-Q4_K_M.gguf): the only
+        // image-related special token is "<image>" -- see Granite4Adapter's comment for the
+        // same finding and why "<image_pad>"/"</image>" never worked here.
+        public string ImageOpenMarker => "";
+        public string ImageCloseMarker => "";
+        public string PlaceholderMarker => "<image>";
 
         public float[] EmbedImage(ReadOnlySpan<byte> rgb, int width, int height, out int tokenCount)
         {
@@ -987,9 +997,15 @@ public static class UnifiedVisionPipeline
         public int EmbeddingDim => _model.ProjectionDim;
         public int ImageWidth => _model.ImageSize;
         public int ImageHeight => _model.ImageSize;
-        public string ImageOpenMarker => "<image>";
-        public string ImageCloseMarker => "</image>";
-        public string PlaceholderMarker => "<image_pad>";
+        // Verified against the real GGUF vocab (granite-4.0-3b-vision-Q4_K_M.gguf): the only
+        // image-related special token is "<image>" -- no "<image_pad>", no separate open/close
+        // wrapper tokens. "<image>" is itself the per-slot placeholder that gets expanded with
+        // this image's soft tokens; the old "<image_pad>"/"</image>" values never existed in this
+        // model's vocab, so every --image request silently found 0 placeholder tokens after
+        // templating. See docs/vl-migration-plan-2026-08-20.md.
+        public string ImageOpenMarker => "";
+        public string ImageCloseMarker => "";
+        public string PlaceholderMarker => "<image>";
 
         public float[] EmbedImage(ReadOnlySpan<byte> rgb, int width, int height, out int tokenCount)
         {

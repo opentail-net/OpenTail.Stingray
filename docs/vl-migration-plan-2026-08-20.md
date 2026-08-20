@@ -32,7 +32,11 @@ something else, same honesty as the InternVL writeup) in the findings doc.
       support," a much bigger, separate undertaking, not a vision-encoder migration task. Encoder
       migration itself is done and presumed correct by the same standard InternVL was (builds,
       follows the proven pattern exactly) but literally cannot be exercised end-to-end on this
-      architecture until that separate gap is closed.
+      architecture until that separate gap is closed. **Placeholder marker also fixed 2026-08-20**
+      (same root cause as DotsOcr/Granite4, see below) — `DeepSeekOcrAdapter` declared
+      `<image>`/`</image>`/`<image_pad>`, but the real vocab (verified against the local
+      `deepseek-ocr-2-Q4_K_M.gguf`) has only `<image>`. Fixed the marker regardless of the separate
+      text-arch block, so it's ready the moment that gap closes.
 - [x] **Kimi (KimiVL)** — **encoder migrated, builds clean.** Had its own private, duplicated
       `GetTensorPtr<T>`/`MatVecF16` (not even calling VisionOps's) -- removed, now uses
       `VisionOps.GetTensor`/`MatVecAny` like every other migrated encoder. **Separate real bug found
@@ -88,11 +92,12 @@ after each. Remaining 5 below need both files downloaded fresh.
       Downloaded dots.ocr-Q8_0.gguf (1.76GiB) + mmproj-dots.ocr-Q8_0.gguf (1.25GiB), both Q8_0.
       **Verified end-to-end**: encoder runs clean against real Q8_0 weights, produces
       `81 soft tokens (1536-dim)` for a test image, no crash, no memory corruption — the migration
-      itself is proven. Blocked one step further by a *separate*, expected bug class (flagged in the
-      plan's own notes below, same as InternVL's original `<IMG_CONTEXT>` issue): the chat template
-      doesn't emit the `<image_pad>` placeholder token dots.ocr expects, so
-      `RunCommand.cs`'s placeholder-count check rejects the request before generation. Not an encoder
-      bug — separate finding, not fixed here (chat-template/prompt-formatting scope).
+      itself is proven. **Placeholder gap found 2026-08-20, fixed same day** (see
+      "Chat-template placeholder gap — root cause and fix" below): not a chat-template bug at all —
+      `DotsOcrAdapter` in `UnifiedVisionPipeline.cs` declared the wrong marker strings
+      (`<image>`/`</image>`/`<image_pad>`, none of which exist in dots.ocr's real Qwen2-based
+      vocab). Fixed to the verified real tokens (`<|vision_start|>`/`<|vision_end|>`/
+      `<|image_pad|>`). Now runs a full real prefill+decode (`90 tokens (81 image + 9 text)`).
 - [x] **Granite4** — **encoder migrated, builds clean.** Clean pattern (SigLIP tower + WindowQFormer
       projector), used shared VisionOps.Attention/LayerNorm correctly already, no broken-attention
       stub found. Mechanical migration only: patch-embed → DequantizeToFloat32, all block/proj
@@ -104,9 +109,13 @@ after each. Remaining 5 below need both files downloaded fresh.
       f16.gguf`, same source repo, no guessed pairing) — confirmed via metadata
       (`clip.projector_type: granite4_vision`) before running. **Verified end-to-end**: encoder runs
       clean against real Q4_K weights, produces `576 soft tokens (2560-dim)` for a test image, no
-      crash, no memory corruption. Blocked one step further by the same chat-template placeholder
-      gap as DotsOcr (separate scope, not an encoder bug) — `<image_pad>` isn't emitted by the
-      template for this architecture either.
+      crash, no memory corruption. **Placeholder gap found 2026-08-20, fixed same day**: same root
+      cause as DotsOcr — `Granite4Adapter` declared `<image>`/`</image>`/`<image_pad>`, but this
+      model's real vocab has only a single `<image>` special token, no separate wrapper or `_pad`
+      variant. Fixed (`ImageOpenMarker`/`ImageCloseMarker` → `""`, `PlaceholderMarker` → `"<image>"`).
+      **Now produces real generated text end-to-end** for the first time:
+      `Describe this image.A large, diverse group of animals living in a certain area...`
+      (`611 tokens (576 image + 35 text)` prefill, 30 tokens decoded) — full pipeline proven working.
 - [x] **Nemotron** — **encoder migrated, builds clean.** Register-token ViT (4 register tokens
       stripped after post-LN) + 2x2 patch merge + squared-ReLU MLP projector, matches QKV-fused and
       split-QKV variants (fused path taken when `attn_qkv` tensor present). Clean pattern, no
@@ -116,7 +125,9 @@ after each. Remaining 5 below need both files downloaded fresh.
       isn't in `ModelCompatibility.ValidateForTextGeneration`'s supported list — rejected before
       vision code runs. Separate, much bigger undertaking (add nemotron_h text-gen support), not a
       vision-encoder migration task. Encoder itself presumed correct by the same standard as the
-      others (builds, follows the proven pattern).
+      others (builds, follows the proven pattern). **Placeholder marker also fixed 2026-08-20** (see
+      below) — same wrong `<image_pad>` guess as Granite4/DeepSeekOcr, corrected to the verified
+      real token (`<image>`), ready the moment the text-arch gap closes.
 - [x] **MobileNetV5** — **encoder migrated, builds clean.** Simplest encoder in the set (stem conv +
       RMSNorm + GELU + single-layer projection, no transformer blocks). Mechanical migration only.
       **Download blocked, not just deferred** (same situation as CogVlm below): gemma-3n looked like
@@ -130,6 +141,66 @@ after each. Remaining 5 below need both files downloaded fresh.
       any GGUF actually declaring that projector type and found none. Deleted the wrongly-targeted
       gemma-3n mmproj rather than keep a misleading download. Revisit if/when a real
       `mobilenetv5`-projector conversion surfaces.
+
+## Chat-template placeholder gap — root cause and fix (2026-08-20, same day as the raw-pointer
+## redesign)
+
+The "chat-template placeholder gap" flagged throughout this doc (DotsOcr, Granite4, DeepSeekOcr) was
+never actually a chat-template bug. Root cause, found by tracing `RunCommand.RunImagePrompt`:
+
+1. **The prompt-building code hardcoded a literal string.** With no `<image>` marker in the user's
+   prompt (the common case), the code did
+   `userMsg = string.Concat(Enumerable.Repeat("<|image|>", nImages)) + s.Prompt` — a hardcoded
+   `"<|image|>"` literal, not the model's actual placeholder text
+   (`vision.PlaceholderMarker`). This method was originally written for Gemma 4 only (its own doc
+   comment says so — "issue #250"), where `<|image|>` happens to literally be the real marker. When
+   the CLI's gemma4-only gate was removed earlier in this same session (see
+   `docs/done/vl-untested-code-findings-2026-08-20.md`), this hardcoded literal was never updated
+   for the 21 other architectures now reachable through it. **Fixed**: `vision` (the
+   `IVisionEmbedder`) is now opened *before* building `userMsg`, and both branches use
+   `vision.PlaceholderMarker` instead of the `"<|image|>"` literal.
+2. **Several adapters' declared marker strings were themselves wrong.** Fixing (1) alone didn't fix
+   DotsOcr — its `DotsOcrAdapter.PlaceholderMarker` was `"<image_pad>"`, which never existed in
+   dots.ocr's real vocab either. Checked by grepping the actual GGUF bytes for every model with a
+   local download (`grep -a -o` against the raw file, no tool needed) rather than guessing:
+
+   | Adapter | Declared (wrong) | Real (verified against local GGUF) |
+   |---|---|---|
+   | `DotsOcrAdapter` | open `<image>`, close `</image>`, placeholder `<image_pad>` | open `<\|vision_start\|>`, close `<\|vision_end\|>`, placeholder `<\|image_pad\|>` (Qwen2 convention) |
+   | `Granite4Adapter` | open `<image>`, close `</image>`, placeholder `<image_pad>` | no open/close tokens exist; single placeholder `<image>` |
+   | `NemotronAdapter` | same as Granite4 | same as Granite4 — single `<image>`, no wrapper |
+   | `DeepSeekOcrAdapter` | same as Granite4 | same as Granite4 — single `<image>`, no wrapper |
+
+   All four fixed. `QwenVlAdapter` and `KimiAdapter` already correctly declared
+   `<\|image_pad\|>` (Qwen2 convention) — spared by luck, not by the same bug being absent; worth
+   noting they weren't touched here because they were already right.
+
+**Verified end-to-end after the fix** (both explicitly requested by name):
+- **DotsOcr**: placeholder-count check now passes; ran a real prefill+decode —
+  `Prefill: 90 tokens (81 image + 9 text), 24.5 t/s | Decode: 1 tokens, 15.7 t/s`. Only 1 token
+  decoded before stopping — plausibly this small OCR-tuned base model just isn't suited to an
+  open-ended "describe this image" prompt (not re-investigated; the placeholder bug itself is
+  conclusively fixed, decode-length behavior is a separate, lower-priority question).
+- **Granite4**: full real generation, working end-to-end for the first time —
+  `Prefill: 611 tokens (576 image + 35 text), 14.8 t/s | Decode: 30 tokens, 14.1 t/s`, output:
+  *"Describe this image.A large, diverse group of animals living in a certain area. The image shows
+  a variety of habitats including grasslands, forests, wetlands and des[...]"* — coherent, on-topic
+  text, proving the whole pipeline (encoder → projector → placeholder expansion → text generation)
+  end-to-end for this architecture.
+- **Bonus, unprompted**: re-ran InternVL as a regression check on the fix and it went from *blocked*
+  (the exact same "expected 1 image placeholder token(s) (`<IMG_CONTEXT>`, 151667) ... found 0"
+  error documented throughout this whole doc) to fully working —
+  `Prefill: 291 tokens (256 image + 35 text), 31.4 t/s | Decode: 37 tokens, 30.1 t/s`. InternVL's
+  own `PlaceholderMarker` (`<IMG_CONTEXT>`) was already correct; only fix (1) above (the hardcoded
+  `"<\|image\|>"` literal) was blocking it. First fully-working end-to-end VL generation this whole
+  session, on the model that was the very first one tested at the start of it.
+
+**Not checked, no local model to verify against** (same "never guess a pairing/marker" discipline as
+the rest of this doc): `HunyuanVlAdapter`, `Step3VlAdapter`, `YoutuVlAdapter`, `MimoVlAdapter`,
+`PaddleOcrAdapter`, `CogVlmAdapter`, `MobileNetV5Adapter` all declare `<image_pad>`-style markers
+that fit the same wrong-guess pattern found in 4/4 checked encoders so far. Strongly suspect the same
+bug, but won't change these without a real GGUF to grep against — flagged for whoever downloads a
+model for one of these next.
 
 ## Systemic finding: position/class-embedding dtype guard gap (found and fixed for all 9 affected
 ## encoders during verification, 2026-08-20)
