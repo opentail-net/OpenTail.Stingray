@@ -151,6 +151,14 @@ public sealed unsafe class CogVlmVisionEncoder
         var attnOut = new float[totalTokens * _embd];
         var normBuf = new float[totalTokens * _embd];
 
+        int maxIntermediate = 0;
+        for (int l = 0; l < _layers; l++)
+        {
+            if (_blocks[l].FfnIntermediate > maxIntermediate) maxIntermediate = _blocks[l].FfnIntermediate;
+        }
+        var ffnMid = new float[totalTokens * maxIntermediate];
+        var gateBuf = new float[totalTokens * maxIntermediate];
+
         for (int l = 0; l < _layers; l++)
         {
             var blk = _blocks[l];
@@ -177,19 +185,18 @@ public sealed unsafe class CogVlmVisionEncoder
 
             // 2. FFN
             int intermediate = blk.FfnIntermediate;
-            var ffnMid = new float[totalTokens * intermediate];
+            int midCount = totalTokens * intermediate;
             VisionOps.MatVecF16(hiddenStates, blk.FfnUpW, blk.FfnUpB, totalTokens, _embd, intermediate, ffnMid);
 
             if (blk.FfnGateW != null)
             {
-                var gateBuf = new float[totalTokens * intermediate];
                 VisionOps.MatVecF16(hiddenStates, blk.FfnGateW, blk.FfnGateB, totalTokens, _embd, intermediate, gateBuf);
-                VisionOps.Silu(gateBuf);
-                for (int i = 0; i < ffnMid.Length; i++) ffnMid[i] *= gateBuf[i];
+                VisionOps.Silu(gateBuf.AsSpan(0, midCount));
+                for (int i = 0; i < midCount; i++) ffnMid[i] *= gateBuf[i];
             }
             else
             {
-                VisionOps.Gelu(ffnMid);
+                VisionOps.Gelu(ffnMid.AsSpan(0, midCount));
             }
 
             VisionOps.MatVecF16(ffnMid, blk.FfnDownW, blk.FfnDownB, totalTokens, intermediate, _embd, attnOut);
