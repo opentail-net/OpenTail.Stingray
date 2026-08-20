@@ -235,26 +235,31 @@ public static unsafe class VisionOps
         float scale = 1.0f / MathF.Sqrt(headDim);
         int embd = heads * headDim;
 
+        // Vectorized via TensorPrimitives (Dot/Multiply/Add) instead of scalar accumulation
+        // loops -- same algorithm as Gemma3VisionEncoder's hand-rolled attention (see that
+        // class's doc comment: at large token counts, scalar loops here were measured as "far
+        // too slow", which is why that encoder never used this shared method). Bringing this
+        // method up to the same technique lets every OTHER caller (Pixtral, and any future
+        // encoder) get that speedup for free, rather than each hand-rolling its own fast path.
+        // See docs/done/vision-attention-vectorization-2026-08-20.md for the measurement.
         Parallel.For(0, heads, h =>
         {
             int headOff = h * headDim;
             var scores = new float[nTokens];
+            var temp = new float[headDim];
 
             for (int i = 0; i < nTokens; i++)
             {
                 int qOff = i * embd + headOff;
+                var qi = new ReadOnlySpan<float>(q, qOff, headDim);
 
                 // Compute Q_i . K_j * scale
                 float maxScore = float.NegativeInfinity;
                 for (int j = 0; j < nTokens; j++)
                 {
                     int kOff = j * embd + headOff;
-                    float dot = 0f;
-                    for (int d = 0; d < headDim; d++)
-                    {
-                        dot += q[qOff + d] * k[kOff + d];
-                    }
-                    float s = dot * scale;
+                    var kj = new ReadOnlySpan<float>(k, kOff, headDim);
+                    float s = TensorPrimitives.Dot(qi, kj) * scale;
                     scores[j] = s;
                     if (s > maxScore) maxScore = s;
                 }
@@ -268,18 +273,20 @@ public static unsafe class VisionOps
                     expSum += exp;
                 }
                 float invSum = expSum > 0f ? 1.0f / expSum : 0f;
+                var scoresSpan = new Span<float>(scores);
+                TensorPrimitives.Multiply(scoresSpan, invSum, scoresSpan);
 
                 // Aggregate V_j * prob
                 int outOff = i * embd + headOff;
-                for (int d = 0; d < headDim; d++)
+                var outSpan = new Span<float>(output, outOff, headDim);
+                outSpan.Clear();
+                var tempSpan = new Span<float>(temp);
+                for (int j = 0; j < nTokens; j++)
                 {
-                    float acc = 0f;
-                    for (int j = 0; j < nTokens; j++)
-                    {
-                        int vOff = j * embd + headOff;
-                        acc += v[vOff + d] * scores[j];
-                    }
-                    output[outOff + d] = acc * invSum;
+                    int vOff = j * embd + headOff;
+                    var vj = new ReadOnlySpan<float>(v, vOff, headDim);
+                    TensorPrimitives.Multiply(vj, scores[j], tempSpan);
+                    TensorPrimitives.Add(outSpan, tempSpan, outSpan);
                 }
             }
         });
@@ -314,21 +321,19 @@ public static unsafe class VisionOps
             float sink = (attnSinks != null) ? attnSinks[qh] : 0f;
 
             var scores = new float[nTokens];
+            var temp = new float[headDim];
 
             for (int i = 0; i < nTokens; i++)
             {
                 int qOff = i * qEmbd + qOffHead;
+                var qi = new ReadOnlySpan<float>(q, qOff, headDim);
 
                 float maxScore = sink != 0f ? sink : float.NegativeInfinity;
                 for (int j = 0; j < nTokens; j++)
                 {
                     int kOff = j * kvEmbd + kvOffHead;
-                    float dot = 0f;
-                    for (int d = 0; d < headDim; d++)
-                    {
-                        dot += q[qOff + d] * k[kOff + d];
-                    }
-                    float s = dot * scale;
+                    var kj = new ReadOnlySpan<float>(k, kOff, headDim);
+                    float s = TensorPrimitives.Dot(qi, kj) * scale;
                     scores[j] = s;
                     if (s > maxScore) maxScore = s;
                 }
@@ -341,17 +346,24 @@ public static unsafe class VisionOps
                     expSum += exp;
                 }
                 float invSum = expSum > 0f ? 1.0f / expSum : 0f;
+                // The sink's mass (if any) is included in expSum/invSum above but was never
+                // written into `scores`, so normalizing scores in place here still correctly
+                // leaves the sink's share unaccounted-for in the V-weighted sum below -- same
+                // "extra probability mass with no output contribution" effect as the original
+                // acc*invSum scaling, just applied earlier.
+                var scoresSpan = new Span<float>(scores);
+                TensorPrimitives.Multiply(scoresSpan, invSum, scoresSpan);
 
                 int outOff = i * qEmbd + qOffHead;
-                for (int d = 0; d < headDim; d++)
+                var outSpan = new Span<float>(output, outOff, headDim);
+                outSpan.Clear();
+                var tempSpan = new Span<float>(temp);
+                for (int j = 0; j < nTokens; j++)
                 {
-                    float acc = 0f;
-                    for (int j = 0; j < nTokens; j++)
-                    {
-                        int vOff = j * kvEmbd + kvOffHead;
-                        acc += v[vOff + d] * scores[j];
-                    }
-                    output[outOff + d] = acc * invSum;
+                    int vOff = j * kvEmbd + kvOffHead;
+                    var vj = new ReadOnlySpan<float>(v, vOff, headDim);
+                    TensorPrimitives.Multiply(vj, scores[j], tempSpan);
+                    TensorPrimitives.Add(outSpan, tempSpan, outSpan);
                 }
             }
         });
@@ -784,6 +796,25 @@ public static unsafe class VisionOps
     /// <summary>
     /// Resolves typed unmanaged pointer to tensor data inside a GgufModel, checking multiple fallback aliases.
     /// </summary>
+    /// <exception cref="NotSupportedException">
+    /// The tensor was found under one of <paramref name="candidateNames"/> but its actual GGUF
+    /// storage dtype does not match <typeparamref name="T"/> -- e.g. a quantized mmproj (Q8_0,
+    /// Q4_K, ...) where this caller expects raw F16/F32. Found 2026-08-20: every vision encoder in
+    /// this project reads weights via this method assuming a fixed dtype (typically Half for
+    /// projection/attention/FFN weights), with no verification against the GGUF's declared type.
+    /// Against a Q8_0-quantized mmproj (InternVL3-2B, confirmed via `list-tensors`), that produced
+    /// a real crash: MatVecF16's row-stride pointer arithmetic assumes 2-byte-per-element Half
+    /// data, but Q8_0 packs ~1.06 bytes/element, so later rows walk past the tensor's true
+    /// (smaller) allocation into unmapped memory -- an AccessViolationException deep inside a
+    /// Parallel.For lambda, with no indication of which tensor or why. This check turns that into
+    /// a clear, immediate, catchable error instead (see RunCommand.cs's catch around
+    /// UnifiedVisionPipeline.Open) -- it does not add quantized-weight support, which needs a
+    /// dequant-aware MatVec path (mirroring OpenTail.Stingray.Cpu.SimdKernels' approach for the
+    /// main LLM engine) as separate follow-up work. The real llama.cpp reference for these
+    /// encoders is examples/llama.cpp/llama.cpp/tools/mtmd/models -- ggml's own kernels are
+    /// dtype-generic, which is why the reference never needed this guard; this port's per-dtype
+    /// assumption is the gap.
+    /// </exception>
     public static T* GetTensorPtr<T>(GgufModel gguf, params string[] candidateNames) where T : unmanaged
     {
         foreach (var name in candidateNames)
@@ -791,6 +822,17 @@ public static unsafe class VisionOps
             var tensor = gguf.FindTensor(name);
             if (tensor.HasValue)
             {
+                DType? expected = typeof(T) == typeof(Half) ? DType.Float16
+                    : typeof(T) == typeof(float) ? DType.Float32
+                    : null;
+                if (expected is { } exp && tensor.Value.DType != exp)
+                {
+                    throw new NotSupportedException(
+                        $"Tensor '{name}' is stored as {tensor.Value.DType}, but this vision encoder " +
+                        $"expects {exp} ({typeof(T).Name}). Quantized mmproj weights (Q8_0, Q4_K, ...) " +
+                        "are not yet supported by this encoder -- use an F16/F32 mmproj for this model, " +
+                        "or see VisionOps.GetTensorPtr's doc comment for what a fix needs.");
+                }
                 return (T*)gguf.GetTensorDataPtr(tensor.Value);
             }
         }

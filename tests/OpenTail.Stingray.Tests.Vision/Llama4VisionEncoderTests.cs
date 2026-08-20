@@ -13,7 +13,9 @@ public class Llama4VisionEncoderTests
     /// real mmproj (one fixed-square tile, no multi-tile orchestration) without crashing, produces
     /// the expected shape, and produces finite, non-degenerate output.
     /// </summary>
-    [Fact]
+    // See Gemma3VisionEncoderTests' Timeout comment -- same reasoning, one fixed-square tile so a
+    // shorter bound is still generous headroom.
+    [Fact(Timeout = 300_000)]
     public void Forward_OnRealLlama4Mmproj_ProducesFiniteExpectedShapeOutput()
     {
         var path = VisionTestPaths.FindLlama4Mmproj();

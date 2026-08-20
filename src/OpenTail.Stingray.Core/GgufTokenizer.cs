@@ -519,7 +519,25 @@ public sealed partial class GgufTokenizer : ITokenizer
         return [.. eogIds];
     }
 
+    private static readonly bool s_profileTokenize =
+        Environment.GetEnvironmentVariable("STINGRAY_PROFILE_TOKENIZE") == "1";
+
     public IReadOnlyList<int> Encode(string text)
+    {
+        if (!s_profileTokenize)
+            return EncodeCore(text);
+
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var result = EncodeCore(text);
+        sw.Stop();
+        double ms = sw.Elapsed.TotalMilliseconds;
+        Console.Error.WriteLine(
+            $"[TokenizeProfile] {text.Length} chars -> {result.Count} tokens in {ms:F3}ms " +
+            $"({(ms > 0 ? text.Length / ms : 0):F0} chars/ms, {(ms > 0 ? result.Count / ms : 0):F0} tok/ms)");
+        return result;
+    }
+
+    private IReadOnlyList<int> EncodeCore(string text)
     {
         if (_specialTokens.Count == 0)
             return EncodeTextSegment(text);
@@ -753,6 +771,18 @@ public sealed partial class GgufTokenizer : ITokenizer
     /// encoding first would hand the split GPT-2 replacement characters instead of real letters and
     /// digits, so its Unicode categories would match the wrong things.</para>
     /// </summary>
+    // EncodeByteToGpt2's output range is fixed and small (printable ASCII, extended printable,
+    // and U+0100-U+0142 -- see its doc comment), so every single-char string EmitPiece needs is
+    // one of at most 0x143 possibilities. Cached once instead of allocating fresh per character
+    // per call -- see docs/perf-loop-project-review-progress.md for the measurement.
+    private static readonly string[] s_singleCharCache = BuildSingleCharCache();
+    private static string[] BuildSingleCharCache()
+    {
+        var arr = new string[0x143];
+        for (int i = 0; i < arr.Length; i++) arr[i] = ((char)i).ToString();
+        return arr;
+    }
+
     private List<int> EncodeByteLevelBpe(
         string text, Regex[] split, IReadOnlyDictionary<(string, string), int> merges)
     {
@@ -763,7 +793,8 @@ public sealed partial class GgufTokenizer : ITokenizer
         {
             string encoded = EncodeToGpt2Bytes(raw);
             pieces.Clear();
-            foreach (char ch in encoded) pieces.Add(ch.ToString());
+            foreach (char ch in encoded)
+                pieces.Add(ch < s_singleCharCache.Length ? s_singleCharCache[ch] : ch.ToString());
 
             foreach (var merged in SpmMergePieces(pieces, merges))
             {

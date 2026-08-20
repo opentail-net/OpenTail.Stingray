@@ -154,6 +154,7 @@ public static class KnownEnvironmentVariables
         "STINGRAY_PROBE_POS",
         "STINGRAY_PROFILE_DECODE",
         "STINGRAY_PROFILE_PREFILL",
+        "STINGRAY_PROFILE_TOKENIZE",
         "STINGRAY_Q3K_DEQUANT_GEMM",
         "STINGRAY_Q3K_Q8K",
         "STINGRAY_Q40_DP4A",

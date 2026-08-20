@@ -914,15 +914,19 @@ public sealed class RunCommand : Command<RunCommand.Settings>
             AnsiConsole.MarkupLine("infinite \"wait, but actually\" loops. Consider [yellow]--temp 0.6 --top-p 0.95 --top-k 20[/].");
         }
 
-        // Image input (issue #250): encoder-free Gemma 4 vision. CPU-only single-prompt path.
+        // Image input: multimodal vision via --mmproj. CPU-only single-prompt path.
         // Validate the preconditions up front so we fail fast before building any forward pass.
+        //
+        // No longer gated to gemma4 (found 2026-08-20: RunCommand's actual embedding path below
+        // already goes through UnifiedVisionPipeline.Open, which dispatches ALL 22+ supported
+        // architectures generically from the mmproj's own clip.vision.projector_type metadata --
+        // it never was gemma4-specific. This stale guard rejected every other architecture before
+        // that generic path ever ran, even though the encoders themselves were implemented and
+        // working -- see docs/perf-loop-project-review-progress.md. UnifiedVisionPipeline.Open
+        // still throws a clear NotSupportedException for a genuinely unrecognized mmproj, so this
+        // isn't removing validation, just the redundant and wrong one.
         if (settings.ImagePaths is { Length: > 0 } imagePaths)
         {
-            if (s_arch != "gemma4")
-            {
-                AnsiConsole.MarkupLine($"[red]Error:[/] --image is only supported for Gemma 4 models (model arch: {s_arch}).");
-                return 1;
-            }
             if (settings.MmprojPath is not { Length: > 0 })
             {
                 AnsiConsole.MarkupLine("[red]Error:[/] --image requires --mmproj <mmproj.gguf> (the multimodal projector).");
@@ -2417,7 +2421,19 @@ public sealed class RunCommand : Command<RunCommand.Settings>
             return 1;
         }
 
-        using var vision = UnifiedVisionPipeline.Open(s.MmprojPath!);
+        IVisionEmbedder vision;
+        try
+        {
+            vision = UnifiedVisionPipeline.Open(s.MmprojPath!);
+        }
+        catch (NotSupportedException ex)
+        {
+            AnsiConsole.MarkupLine($"[red]Error:[/] {Markup.Escape(ex.Message)}");
+            return 1;
+        }
+        using var __ = vision; // matches this method's existing risk tolerance: other early
+                                // returns below (e.g. the EmbedImageFile catch) also don't dispose
+                                // vision explicitly; process exit reclaims it for a CLI invocation.
         int embd = hp.EmbeddingDim;
 
         // Project every image to its soft-token block up front, in --image order.

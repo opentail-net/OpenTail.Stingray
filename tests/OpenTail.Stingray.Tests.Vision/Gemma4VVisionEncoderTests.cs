@@ -12,7 +12,9 @@ public class Gemma4VVisionEncoderTests
     /// shape, and produces finite, non-degenerate output -- the same class of check this repo has
     /// used elsewhere (e.g. the DeepSeek2 MLA work) when a real reference isn't available yet.
     /// </summary>
-    [Fact]
+    // See Gemma3VisionEncoderTests' Timeout comment -- same reasoning, lighter grid (196 patches)
+    // so a shorter bound is still generous headroom.
+    [Fact(Timeout = 300_000)]
     public void Forward_OnRealE4BMmproj_ProducesFiniteExpectedShapeOutput()
     {
         var path = VisionTestPaths.FindE4BMmproj();

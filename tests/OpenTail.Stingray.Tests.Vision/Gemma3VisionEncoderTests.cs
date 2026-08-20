@@ -12,7 +12,12 @@ public class Gemma3VisionEncoderTests
     /// At 4096 patches x 27 blocks this is a genuinely heavier computation than gemma4v's 196
     /// patches -- expect this test to take noticeably longer.
     /// </summary>
-    [Fact]
+    // Timeout so a genuinely stuck run fails fast with a clear message instead of hanging
+    // indefinitely (found 2026-08-20: a full-suite run needed a manual kill after 30+ minutes with
+    // no signal on which test, or whether it was stuck vs. just slow). 4096 patches x 27 blocks is
+    // real, heavy, unbounded CPU compute -- 10 minutes is generous headroom over any expected
+    // runtime, not a tight bound.
+    [Fact(Timeout = 600_000)]
     public void Forward_OnRealGemma3Mmproj_ProducesFiniteExpectedShapeOutput()
     {
         var path = VisionTestPaths.FindGemma3Mmproj();

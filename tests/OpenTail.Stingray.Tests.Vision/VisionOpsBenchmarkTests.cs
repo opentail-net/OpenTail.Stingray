@@ -2,12 +2,242 @@ using System;
 using System.Diagnostics;
 using System.Runtime.Intrinsics;
 using System.Threading.Tasks;
+using OpenTail.Stingray.Vision;
 using Xunit;
 
 namespace OpenTail.Stingray.Tests.Vision;
 
 public sealed unsafe class VisionOpsBenchmarkTests
 {
+    /// <summary>
+    /// Pre-vectorization VisionOps.Attention, kept verbatim as the comparison baseline for
+    /// <see cref="Benchmark_Attention_ScalarVsVectorized"/> -- see
+    /// docs/done/vision-attention-vectorization-2026-08-20.md.
+    /// </summary>
+    private static void Attention_Scalar(
+        float[] q, float[] k, float[] v, int nTokens, int heads, int headDim, float[] output)
+    {
+        float scale = 1.0f / MathF.Sqrt(headDim);
+        int embd = heads * headDim;
+
+        Parallel.For(0, heads, h =>
+        {
+            int headOff = h * headDim;
+            var scores = new float[nTokens];
+
+            for (int i = 0; i < nTokens; i++)
+            {
+                int qOff = i * embd + headOff;
+
+                float maxScore = float.NegativeInfinity;
+                for (int j = 0; j < nTokens; j++)
+                {
+                    int kOff = j * embd + headOff;
+                    float dot = 0f;
+                    for (int d = 0; d < headDim; d++)
+                        dot += q[qOff + d] * k[kOff + d];
+                    float s = dot * scale;
+                    scores[j] = s;
+                    if (s > maxScore) maxScore = s;
+                }
+
+                float expSum = 0f;
+                for (int j = 0; j < nTokens; j++)
+                {
+                    float exp = MathF.Exp(scores[j] - maxScore);
+                    scores[j] = exp;
+                    expSum += exp;
+                }
+                float invSum = expSum > 0f ? 1.0f / expSum : 0f;
+
+                int outOff = i * embd + headOff;
+                for (int d = 0; d < headDim; d++)
+                {
+                    float acc = 0f;
+                    for (int j = 0; j < nTokens; j++)
+                    {
+                        int vOff = j * embd + headOff;
+                        acc += v[vOff + d] * scores[j];
+                    }
+                    output[outOff + d] = acc * invSum;
+                }
+            }
+        });
+    }
+
+    /// <summary>
+    /// Confirms VisionOps.Attention's TensorPrimitives-vectorized rewrite is actually faster than
+    /// the scalar version it replaced, at a scale representative of a real ViT (1024 tokens, 16
+    /// heads, head_dim 64 -- comparable to Pixtral's patch grid). Also checks the two
+    /// implementations agree numerically (same algorithm, different accumulation order --
+    /// tolerance accounts for floating-point reassociation, not a correctness bug).
+    /// </summary>
+    [Fact]
+    public void Benchmark_Attention_ScalarVsVectorized()
+    {
+        int nTokens = 1024, heads = 16, headDim = 64;
+        int total = nTokens * heads * headDim;
+
+        var q = new float[total];
+        var k = new float[total];
+        var v = new float[total];
+        var rng = new Random(42);
+        for (int i = 0; i < total; i++)
+        {
+            q[i] = (float)(rng.NextDouble() * 2.0 - 1.0);
+            k[i] = (float)(rng.NextDouble() * 2.0 - 1.0);
+            v[i] = (float)(rng.NextDouble() * 2.0 - 1.0);
+        }
+
+        var outScalar = new float[total];
+        var outVectorized = new float[total];
+
+        // Warmup
+        for (int w = 0; w < 2; w++)
+        {
+            Attention_Scalar(q, k, v, nTokens, heads, headDim, outScalar);
+            VisionOps.Attention(q, k, v, nTokens, heads, headDim, outVectorized);
+        }
+
+        // Numerical agreement check (float reassociation tolerance, not a correctness bound).
+        float maxDiff = 0f;
+        for (int i = 0; i < total; i++)
+            maxDiff = MathF.Max(maxDiff, MathF.Abs(outScalar[i] - outVectorized[i]));
+        Assert.True(maxDiff < 1e-3f, $"Scalar vs vectorized Attention diverged: maxDiff={maxDiff}");
+
+        int iterations = 5;
+        var sw = Stopwatch.StartNew();
+        for (int it = 0; it < iterations; it++)
+            Attention_Scalar(q, k, v, nTokens, heads, headDim, outScalar);
+        sw.Stop();
+        double scalarMs = sw.Elapsed.TotalMilliseconds / iterations;
+
+        sw.Restart();
+        for (int it = 0; it < iterations; it++)
+            VisionOps.Attention(q, k, v, nTokens, heads, headDim, outVectorized);
+        sw.Stop();
+        double vectorizedMs = sw.Elapsed.TotalMilliseconds / iterations;
+
+        double speedup = scalarMs / vectorizedMs;
+        Assert.True(speedup > 1.2, $"Speedup was only {speedup:F2}x (scalar={scalarMs:F2}ms, vectorized={vectorizedMs:F2}ms)");
+    }
+
+    /// <summary>
+    /// Pre-vectorization VisionOps.AttentionGqa, kept verbatim as the comparison baseline for
+    /// <see cref="Benchmark_AttentionGqa_ScalarVsVectorized"/> -- see
+    /// docs/done/vision-attention-vectorization-2026-08-20.md.
+    /// </summary>
+    private static void AttentionGqa_Scalar(
+        float[] q, float[] k, float[] v, int nTokens, int qHeads, int kvHeads, int headDim,
+        float[] output, float* attnSinks = null)
+    {
+        float scale = 1.0f / MathF.Sqrt(headDim);
+        int groupSize = qHeads / kvHeads;
+        int qEmbd = qHeads * headDim;
+        int kvEmbd = kvHeads * headDim;
+
+        Parallel.For(0, qHeads, qh =>
+        {
+            int kvHead = qh / groupSize;
+            int qOffHead = qh * headDim;
+            int kvOffHead = kvHead * headDim;
+            float sink = (attnSinks != null) ? attnSinks[qh] : 0f;
+
+            var scores = new float[nTokens];
+
+            for (int i = 0; i < nTokens; i++)
+            {
+                int qOff = i * qEmbd + qOffHead;
+
+                float maxScore = sink != 0f ? sink : float.NegativeInfinity;
+                for (int j = 0; j < nTokens; j++)
+                {
+                    int kOff = j * kvEmbd + kvOffHead;
+                    float dot = 0f;
+                    for (int d = 0; d < headDim; d++)
+                        dot += q[qOff + d] * k[kOff + d];
+                    float s = dot * scale;
+                    scores[j] = s;
+                    if (s > maxScore) maxScore = s;
+                }
+
+                float expSum = sink != 0f ? MathF.Exp(sink - maxScore) : 0f;
+                for (int j = 0; j < nTokens; j++)
+                {
+                    float exp = MathF.Exp(scores[j] - maxScore);
+                    scores[j] = exp;
+                    expSum += exp;
+                }
+                float invSum = expSum > 0f ? 1.0f / expSum : 0f;
+
+                int outOff = i * qEmbd + qOffHead;
+                for (int d = 0; d < headDim; d++)
+                {
+                    float acc = 0f;
+                    for (int j = 0; j < nTokens; j++)
+                    {
+                        int vOff = j * kvEmbd + kvOffHead;
+                        acc += v[vOff + d] * scores[j];
+                    }
+                    output[outOff + d] = acc * invSum;
+                }
+            }
+        });
+    }
+
+    /// <summary>
+    /// Same shape/tolerance/speedup checks as <see cref="Benchmark_Attention_ScalarVsVectorized"/>,
+    /// for the GQA sibling (2:1 query:kv head ratio, matching a typical GQA vision model).
+    /// </summary>
+    [Fact]
+    public void Benchmark_AttentionGqa_ScalarVsVectorized()
+    {
+        int nTokens = 1024, qHeads = 16, kvHeads = 8, headDim = 64;
+        int qTotal = nTokens * qHeads * headDim;
+        int kvTotal = nTokens * kvHeads * headDim;
+
+        var q = new float[qTotal];
+        var k = new float[kvTotal];
+        var v = new float[kvTotal];
+        var rng = new Random(43);
+        for (int i = 0; i < qTotal; i++) q[i] = (float)(rng.NextDouble() * 2.0 - 1.0);
+        for (int i = 0; i < kvTotal; i++)
+        {
+            k[i] = (float)(rng.NextDouble() * 2.0 - 1.0);
+            v[i] = (float)(rng.NextDouble() * 2.0 - 1.0);
+        }
+
+        var outScalar = new float[qTotal];
+        var outVectorized = new float[qTotal];
+
+        for (int w = 0; w < 2; w++)
+        {
+            AttentionGqa_Scalar(q, k, v, nTokens, qHeads, kvHeads, headDim, outScalar);
+            VisionOps.AttentionGqa(q, k, v, nTokens, qHeads, kvHeads, headDim, outVectorized);
+        }
+
+        float maxDiff = 0f;
+        for (int i = 0; i < qTotal; i++)
+            maxDiff = MathF.Max(maxDiff, MathF.Abs(outScalar[i] - outVectorized[i]));
+        Assert.True(maxDiff < 1e-3f, $"Scalar vs vectorized AttentionGqa diverged: maxDiff={maxDiff}");
+
+        int iterations = 5;
+        var sw = Stopwatch.StartNew();
+        for (int it = 0; it < iterations; it++)
+            AttentionGqa_Scalar(q, k, v, nTokens, qHeads, kvHeads, headDim, outScalar);
+        sw.Stop();
+        double scalarMs = sw.Elapsed.TotalMilliseconds / iterations;
+
+        sw.Restart();
+        for (int it = 0; it < iterations; it++)
+            VisionOps.AttentionGqa(q, k, v, nTokens, qHeads, kvHeads, headDim, outVectorized);
+        sw.Stop();
+        double vectorizedMs = sw.Elapsed.TotalMilliseconds / iterations;
+
+        double speedup = scalarMs / vectorizedMs;
+        Assert.True(speedup > 1.2, $"Speedup was only {speedup:F2}x (scalar={scalarMs:F2}ms, vectorized={vectorizedMs:F2}ms)");
+    }
+
     private static void MatVecF16_Scalar(
         float[] input,
         Half* weights,
