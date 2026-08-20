@@ -209,24 +209,31 @@ public sealed unsafe class CpuBackend : IComputeBackend
         var count = (int)x.ElementCount;
         var px = (float*)x.Handle;
         int halfDim = headDim / 2;
-
         int numHeads = count / headDim;
-        for (int h = 0; h < numHeads; h++)
-        {
-            var head = px + h * headDim;
-            for (int i = 0; i < halfDim; i++)
-            {
-                float freq = 1.0f / MathF.Pow(ropeTheta, 2.0f * i / headDim);
-                float angle = position * freq;
-                float cos = MathF.Cos(angle);
-                float sin = MathF.Sin(angle);
+        if (numHeads <= 0 || halfDim <= 0) return;
 
-                int a = neox ? i : 2 * i;
-                int b = neox ? i + halfDim : 2 * i + 1;
-                float x0 = head[a];
-                float x1 = head[b];
-                head[a] = x0 * cos - x1 * sin;
-                head[b] = x0 * sin + x1 * cos;
+        Span<float> cosTab = halfDim <= 256 ? stackalloc float[halfDim] : new float[halfDim];
+        Span<float> sinTab = halfDim <= 256 ? stackalloc float[halfDim] : new float[halfDim];
+
+        // Compute trig pairs ONCE per position across all heads
+        for (int i = 0; i < halfDim; i++)
+        {
+            float freq = 1.0f / MathF.Pow(ropeTheta, 2.0f * i / headDim);
+            float angle = position * freq;
+            cosTab[i] = MathF.Cos(angle);
+            sinTab[i] = MathF.Sin(angle);
+        }
+
+        fixed (float* pCos = cosTab)
+        fixed (float* pSin = sinTab)
+        {
+            if (neox)
+            {
+                SimdKernels.ApplyRoPECachedNeox(px, pCos, pSin, numHeads, headDim);
+            }
+            else
+            {
+                SimdKernels.ApplyRoPECached(px, pCos, pSin, numHeads, headDim);
             }
         }
     }
