@@ -167,6 +167,34 @@ public static unsafe class VisionOps
     }
 
     /// <summary>
+    /// Resolves and dequantizes a norm/bias tensor to a managed, GC-owned <c>float[]</c>, checking
+    /// multiple fallback aliases -- the safe replacement for <see cref="GetTensorPtr{T}"/> when a
+    /// caller wants to stop holding a raw pointer as a long-lived field. Returns <c>null</c> (not an
+    /// empty array) when the tensor isn't found: callers pin the result with a C# <c>fixed</c>
+    /// statement to get a <c>float*</c> for the duration of a single kernel call, and <c>fixed</c>
+    /// on a genuinely null array reference is guaranteed by the language spec to yield a null
+    /// pointer -- fixing a zero-length (non-null) array is NOT guaranteed to yield null, so this
+    /// deliberately does not reuse <see cref="DequantizeToFloat32"/>'s "empty means absent"
+    /// convention here; getting that wrong would silently reintroduce a real memory-safety hazard.
+    /// Two real differences from <see cref="GetTensorPtr{T}"/>: (1) no dtype exception -- like
+    /// <see cref="DequantizeToFloat32"/>, this dequantizes whatever the tensor's real GGUF dtype is
+    /// instead of demanding exactly Float32, so it also tolerates a quantized norm/bias tensor (not
+    /// a hazard here the way the original Half-blind-cast bug was, since <c>Dequantize.ToFloat32</c>
+    /// is the same dtype-aware decoder every matmul weight already goes through via
+    /// <see cref="MatVecAny"/>); (2) the returned array is a one-time copy owned by the caller, with
+    /// a lifetime tied to the encoder instance rather than to the GGUF's memory mapping, and is
+    /// bounds-checked like any other managed array. Intended for norm weights/biases specifically --
+    /// these are O(dim) elements (a few KB at most), so the one-time copy is cheap; do not use this
+    /// for matmul-bound weight tensors (attention/FFN/proj), which stay on <see cref="GetTensor"/> +
+    /// <see cref="MatVecAny"/> to avoid materializing GB-scale tensors off the memory-mapped file.
+    /// </summary>
+    public static float[]? GetTensorArray(GgufModel gguf, params string[] candidateNames)
+    {
+        var t = GetTensor(gguf, candidateNames);
+        return t.IsValid ? DequantizeToFloat32(t) : null;
+    }
+
+    /// <summary>
     /// Parallelized Layer Normalization over the last dimension: (x - mean) / sqrt(var + eps) * weight + bias.
     /// </summary>
     public static void LayerNorm(
