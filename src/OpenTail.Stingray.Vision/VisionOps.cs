@@ -10,6 +10,19 @@ using OpenTail.Stingray.Cpu;
 namespace OpenTail.Stingray.Vision;
 
 /// <summary>
+/// A resolved GGUF tensor: its full metadata (name, shape, dtype) plus the raw data pointer,
+/// returned by <see cref="VisionOps.GetTensor"/>. Default (all-zero) value means "not found" --
+/// check <see cref="IsValid"/> rather than comparing to a null tuple, since a pointer can't be a
+/// generic type argument for <c>Nullable&lt;T&gt;</c>.
+/// </summary>
+public readonly unsafe struct VisionTensorRef(GgufTensorInfo info, byte* data)
+{
+    public readonly GgufTensorInfo Info = info;
+    public readonly byte* Data = data;
+    public bool IsValid => Data != null;
+}
+
+/// <summary>
 /// High-performance shared neural compute kernels, tensor operations, and pointer helpers for Multimodal Vision Transformers.
 /// </summary>
 public static unsafe class VisionOps
@@ -150,6 +163,75 @@ public static unsafe class VisionOps
                     }
 
                     rowOut[o] = sum;
+                }
+            });
+        }
+    }
+
+    /// <summary>
+    /// Resolves a tensor's full GGUF info (name, shape, dtype) together with its raw data pointer,
+    /// checking multiple fallback aliases. This is the structural replacement for
+    /// <see cref="GetTensorPtr{T}"/>: that method threw away the tensor's actual dtype and handed
+    /// callers a pointer blindly cast to a fixed CLR type (<c>Half</c> or <c>float</c>), which is
+    /// how a Q8_0-quantized mmproj got silently reinterpreted as raw F16 and corrupted memory (see
+    /// docs/done/vl-untested-code-findings-2026-08-20.md). Pair this with <see cref="MatVecAny"/>,
+    /// which dispatches on the returned dtype instead of assuming one — the same pattern
+    /// <c>OpenTail.Stingray.Cpu.SimdKernels.MatVec</c> already uses for the main LLM engine.
+    ///
+    /// <para>Migration in progress: new encoders (and encoders being fixed for real quantized-mmproj
+    /// support) should use this + <see cref="MatVecAny"/> instead of <see cref="GetTensorPtr{T}"/> +
+    /// <see cref="MatVecF16"/>/<see cref="MatVec"/>. <see cref="GetTensorPtr{T}"/> stays until every
+    /// caller has moved over, then gets deleted rather than kept as a second, less-safe path.</para>
+    /// </summary>
+    public static VisionTensorRef GetTensor(GgufModel gguf, params string[] candidateNames)
+    {
+        foreach (var name in candidateNames)
+        {
+            var tensor = gguf.FindTensor(name);
+            if (tensor.HasValue)
+                return new VisionTensorRef(tensor.Value, gguf.GetTensorDataPtr(tensor.Value));
+        }
+        return default;
+    }
+
+    /// <summary>
+    /// Dtype-generic batched matrix-vector multiply for vision-encoder weights: computes
+    /// <c>output[tokens, outDim] = input[tokens, inDim] * weights[outDim, inDim]^T + bias[outDim]</c>,
+    /// dispatching per-dtype through <c>OpenTail.Stingray.Cpu.SimdKernels.MatVec</c> -- the same
+    /// tested, dequant-in-register kernel set (F32/F16/BF16/Q8_0/Q4_K/Q6_K/Q5_K/Q3_K/Q2_K/Q4_0/...)
+    /// the main LLM engine runs on, rather than a second, vision-only implementation that only
+    /// covers F16 (<see cref="MatVecF16"/>'s gap). No-ops if <paramref name="weight"/> is null (a
+    /// missing optional tensor), matching <see cref="MatVecF16"/>'s existing contract.
+    /// </summary>
+    public static void MatVecAny(
+        float[] input,
+        VisionTensorRef weight,
+        float* bias,
+        int nTokens,
+        int inDim,
+        int outDim,
+        float[] output)
+    {
+        if (!weight.IsValid) return;
+
+        fixed (float* pIn = input)
+        fixed (float* pOut = output)
+        {
+            var inPtr = pIn;
+            var outPtr = pOut;
+            var data = weight.Data;
+            var dtype = weight.Info.DType;
+            var bPtr = bias;
+
+            Parallel.For(0, nTokens, t =>
+            {
+                float* rowIn = inPtr + (long)t * inDim;
+                float* rowOut = outPtr + (long)t * outDim;
+                SimdKernels.MatVec(rowOut, data, rowIn, outDim, inDim, dtype);
+                if (bPtr != null)
+                {
+                    var outSpan = new Span<float>(rowOut, outDim);
+                    TensorPrimitives.Add(outSpan, new ReadOnlySpan<float>(bPtr, outDim), outSpan);
                 }
             });
         }

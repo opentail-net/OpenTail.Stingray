@@ -74,12 +74,56 @@ the retained pre-change scalar implementation) remains the right evidence for th
 correctness — this investigation didn't touch it and found nothing wrong with it. It found bugs in
 code around it that had simply never been exercised before.
 
+## Update — bug 2 actually fixed, not just made safe (same day)
+
+User's call, and the right one: the dtype guard was a stopgap, not the real fix, and the underlying
+design (`VisionOps.GetTensorPtr<T>` handing out a bare pointer with no dtype/shape attached) is more
+primitive than this codebase's own established pattern — the main LLM engine already carries dtype
+alongside shape (`TensorRef`, dispatched through `SimdKernels.MatVec`'s per-dtype switch) instead of
+assuming a fixed CLR type at the API boundary. Built the structural fix properly:
+
+- **`VisionTensorRef`** (new, `VisionOps.cs`): a small struct bundling a tensor's full `GgufTensorInfo`
+  (name, shape, dtype) with its raw data pointer. `VisionOps.GetTensor(...)` returns this instead of
+  a blindly-cast pointer.
+- **`VisionOps.MatVecAny(...)`** (new): the batched, bias-fused matvec `MatVecF16` already provided,
+  but dispatching per-dtype through `OpenTail.Stingray.Cpu.SimdKernels.MatVec` — the same tested
+  kernel set (F32/F16/BF16/Q8_0/Q4_K/Q6_K/Q5_K/Q3_K/Q2_K/Q4_0/dequant-fallback) the main LLM engine
+  runs on — instead of a second, vision-only implementation that only ever covered F16.
+- **`InternVlVisionEncoder.cs` fully migrated** as the proof case (all block/projector weights now
+  `VisionTensorRef` + `MatVecAny`; `v.patch_embd.weight`, read per-pixel in an inline conv loop
+  rather than through a batched matvec, is dequantized once to F32 at construction via
+  `Dequantize.ToFloat32` instead of blind-cast). Also fixed the `mm.1`/`mm.3` → real
+  `mm.model.mlp.1`/`mm.model.mlp.3` tensor-name mismatch (bug 3) as a fallback candidate name while
+  in there.
+
+**Verified against the real Q8_0 InternVL3-2B model, not just a synthetic case**: the crash is gone
+and the encoder runs to completion —
+
+```
+Image 1/1: internvl -> 256 soft tokens (1536-dim)
+```
+
+Correct token count, correct dimension (matches the paired text model's embedding dim exactly). This
+is the first time any of the 14 `VisionOps`-based encoders has produced real output against
+quantized weights. Full end-to-end generation still blocked on a separate, smaller issue: InternVL's
+chat template doesn't emit its `<IMG_CONTEXT>` placeholder token (151667) the way the CLI's generic
+`<image>`→marker substitution expects — likely needs the placeholder repeated per soft-token rather
+than once, or a per-architecture templating convention. Not a vision-math bug; distinct follow-up.
+
+**Migration status**: `InternVL` is translated. The other 20 encoders (`Pixtral`, `LLaVA`, `MiniCPM`,
+etc.) still use `GetTensorPtr<T>`/`MatVecF16`, protected by the dtype guard from the first pass (so
+they fail clearly instead of corrupting memory on a quantized mmproj, but don't yet run against one).
+Per plan: migrate the rest the same way, then delete `GetTensorPtr<T>`/`MatVecF16` entirely rather
+than keep two paths — not done yet, real remaining work.
+
 ## Files changed
 
 - `src/OpenTail.Stingray.Cli/RunCommand.cs` — removed the gemma4-only `--image` gate, added a
   try/catch around `UnifiedVisionPipeline.Open` for clean CLI error reporting.
-- `src/OpenTail.Stingray.Vision/VisionOps.cs` — `GetTensorPtr<T>` now verifies dtype and throws
-  clearly on mismatch instead of returning a garbage-typed pointer.
+- `src/OpenTail.Stingray.Vision/VisionOps.cs` — added `VisionTensorRef`, `GetTensor`, `MatVecAny`
+  (the structural fix); `GetTensorPtr<T>` still exists (dtype-guarded) for not-yet-migrated encoders.
+- `src/OpenTail.Stingray.Vision/InternVlVisionEncoder.cs` — fully migrated to the new API; fixed the
+  `mm.1`/`mm.3` tensor-name mismatch.
 - `models/InternVL3-2B.Q4_K_M.gguf` — downloaded (1.12GB, from `mradermacher/InternVL3-2B-GGUF`,
-  correctly paired with the pre-existing local `mmproj-internvl3-2b-q8_0.gguf`). Still can't
-  complete end-to-end until Q8_0 support exists (bug 2's real fix).
+  correctly paired with the pre-existing local `mmproj-internvl3-2b-q8_0.gguf`). Runs end-to-end
+  through the vision encoder now; full text generation blocked on the chat-template issue above.
