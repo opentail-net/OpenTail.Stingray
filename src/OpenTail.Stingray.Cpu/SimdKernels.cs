@@ -6117,14 +6117,33 @@ public static unsafe class SimdKernels
     {
         if (Fma.IsSupported && size >= 8)
         {
-            // Pass 1: sum of squares
-            var sumSq = Vector256<float>.Zero;
+            var acc0 = Vector256<float>.Zero;
+            var acc1 = Vector256<float>.Zero;
+            var acc2 = Vector256<float>.Zero;
+            var acc3 = Vector256<float>.Zero;
             int i = 0;
+
+            for (; i + 32 <= size; i += 32)
+            {
+                var v0 = Avx.LoadVector256(input + i);
+                var v1 = Avx.LoadVector256(input + i + 8);
+                var v2 = Avx.LoadVector256(input + i + 16);
+                var v3 = Avx.LoadVector256(input + i + 24);
+
+                acc0 = Fma.MultiplyAdd(v0, v0, acc0);
+                acc1 = Fma.MultiplyAdd(v1, v1, acc1);
+                acc2 = Fma.MultiplyAdd(v2, v2, acc2);
+                acc3 = Fma.MultiplyAdd(v3, v3, acc3);
+            }
+
+            var sumSq = Avx.Add(Avx.Add(acc0, acc1), Avx.Add(acc2, acc3));
+
             for (; i + 8 <= size; i += 8)
             {
                 var v = Avx.LoadVector256(input + i);
                 sumSq = Fma.MultiplyAdd(v, v, sumSq);
             }
+
             float ss = HSum256(sumSq);
             for (; i < size; i++) ss += input[i] * input[i];
 
@@ -6133,12 +6152,31 @@ public static unsafe class SimdKernels
 
             // Pass 2: scale and weight
             i = 0;
+            for (; i + 32 <= size; i += 32)
+            {
+                var v0 = Avx.LoadVector256(input + i);
+                var v1 = Avx.LoadVector256(input + i + 8);
+                var v2 = Avx.LoadVector256(input + i + 16);
+                var v3 = Avx.LoadVector256(input + i + 24);
+
+                var w0 = Avx.LoadVector256(weight + i);
+                var w1 = Avx.LoadVector256(weight + i + 8);
+                var w2 = Avx.LoadVector256(weight + i + 16);
+                var w3 = Avx.LoadVector256(weight + i + 24);
+
+                Avx.Store(output + i,      Avx.Multiply(Avx.Multiply(v0, scaleV), w0));
+                Avx.Store(output + i + 8,  Avx.Multiply(Avx.Multiply(v1, scaleV), w1));
+                Avx.Store(output + i + 16, Avx.Multiply(Avx.Multiply(v2, scaleV), w2));
+                Avx.Store(output + i + 24, Avx.Multiply(Avx.Multiply(v3, scaleV), w3));
+            }
+
             for (; i + 8 <= size; i += 8)
             {
                 var v = Avx.LoadVector256(input + i);
                 var w = Avx.LoadVector256(weight + i);
                 Avx.Store(output + i, Avx.Multiply(Avx.Multiply(v, scaleV), w));
             }
+
             for (; i < size; i++)
                 output[i] = input[i] * scale * weight[i];
         }
@@ -6227,13 +6265,33 @@ public static unsafe class SimdKernels
     {
         if (Fma.IsSupported && size >= 8)
         {
-            var sumSq = Vector256<float>.Zero;
+            var acc0 = Vector256<float>.Zero;
+            var acc1 = Vector256<float>.Zero;
+            var acc2 = Vector256<float>.Zero;
+            var acc3 = Vector256<float>.Zero;
             int i = 0;
+
+            for (; i + 32 <= size; i += 32)
+            {
+                var v0 = Avx.LoadVector256(input + i);
+                var v1 = Avx.LoadVector256(input + i + 8);
+                var v2 = Avx.LoadVector256(input + i + 16);
+                var v3 = Avx.LoadVector256(input + i + 24);
+
+                acc0 = Fma.MultiplyAdd(v0, v0, acc0);
+                acc1 = Fma.MultiplyAdd(v1, v1, acc1);
+                acc2 = Fma.MultiplyAdd(v2, v2, acc2);
+                acc3 = Fma.MultiplyAdd(v3, v3, acc3);
+            }
+
+            var sumSq = Avx.Add(Avx.Add(acc0, acc1), Avx.Add(acc2, acc3));
+
             for (; i + 8 <= size; i += 8)
             {
                 var v = Avx.LoadVector256(input + i);
                 sumSq = Fma.MultiplyAdd(v, v, sumSq);
             }
+
             float ss = HSum256(sumSq);
             for (; i < size; i++) ss += input[i] * input[i];
 
@@ -6241,8 +6299,22 @@ public static unsafe class SimdKernels
             var scaleV = Vector256.Create(scale);
 
             i = 0;
+            for (; i + 32 <= size; i += 32)
+            {
+                var v0 = Avx.LoadVector256(input + i);
+                var v1 = Avx.LoadVector256(input + i + 8);
+                var v2 = Avx.LoadVector256(input + i + 16);
+                var v3 = Avx.LoadVector256(input + i + 24);
+
+                Avx.Store(output + i,      Avx.Multiply(v0, scaleV));
+                Avx.Store(output + i + 8,  Avx.Multiply(v1, scaleV));
+                Avx.Store(output + i + 16, Avx.Multiply(v2, scaleV));
+                Avx.Store(output + i + 24, Avx.Multiply(v3, scaleV));
+            }
+
             for (; i + 8 <= size; i += 8)
                 Avx.Store(output + i, Avx.Multiply(Avx.LoadVector256(input + i), scaleV));
+
             for (; i < size; i++)
                 output[i] = input[i] * scale;
         }

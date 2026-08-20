@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Collections.Immutable;
+using System.Numerics.Tensors;
 using OpenTail.Stingray.Core.Grammar;
 
 namespace OpenTail.Stingray.Engine;
@@ -60,8 +61,7 @@ public static class Sampler
             if (p.Temperature != 1.0f)
             {
                 float invTemp = 1.0f / p.Temperature;
-                for (int i = 0; i < vocabSize; i++)
-                    probs[i] *= invTemp;
+                TensorPrimitives.Multiply(probs, invTemp, probs);
             }
 
             // Softmax
@@ -441,24 +441,13 @@ public static class Sampler
     /// </summary>
     public static int Greedy(ReadOnlySpan<float> logits)
     {
-        int maxIdx = 0;
-        float maxVal = logits[0];
-        for (int i = 1; i < logits.Length; i++)
-        {
-            if (logits[i] > maxVal)
-            {
-                maxVal = logits[i];
-                maxIdx = i;
-            }
-        }
-        return maxIdx;
+        if (logits.IsEmpty) return 0;
+        return TensorPrimitives.IndexOfMax(logits);
     }
 
     private static void Softmax(Span<float> x)
     {
-        float max = float.NegativeInfinity;
-        for (int i = 0; i < x.Length; i++)
-            if (x[i] > max) max = x[i];
+        float max = TensorPrimitives.Max(x);
 
         if (float.IsNegativeInfinity(max) || float.IsNaN(max))
         {
@@ -475,9 +464,11 @@ public static class Sampler
             sum += x[i];
         }
 
-        float invSum = sum > 0f ? 1.0f / sum : 0f;
-        for (int i = 0; i < x.Length; i++)
-            x[i] *= invSum;
+        if (sum > 0f && sum != 1.0f)
+        {
+            float invSum = 1.0f / sum;
+            TensorPrimitives.Multiply(x, invSum, x);
+        }
     }
 
     /// <summary>
@@ -501,9 +492,7 @@ public static class Sampler
     /// </summary>
     private static void ApplyMinP(Span<float> probs, float minP)
     {
-        float maxProb = 0;
-        for (int i = 0; i < probs.Length; i++)
-            if (probs[i] > maxProb) maxProb = probs[i];
+        float maxProb = TensorPrimitives.Max(probs);
 
         float threshold = minP * maxProb;
         for (int i = 0; i < probs.Length; i++)
@@ -563,15 +552,12 @@ public static class Sampler
 
     private static void Normalize(Span<float> probs)
     {
-        float sum = 0;
-        for (int i = 0; i < probs.Length; i++)
-            sum += probs[i];
+        float sum = TensorPrimitives.Sum(probs);
 
         if (sum > 0f && sum != 1.0f)
         {
             float invSum = 1.0f / sum;
-            for (int i = 0; i < probs.Length; i++)
-                probs[i] *= invSum;
+            TensorPrimitives.Multiply(probs, invSum, probs);
         }
     }
 
