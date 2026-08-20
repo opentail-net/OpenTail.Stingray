@@ -1,6 +1,7 @@
 using System;
 using System.Threading.Tasks;
 using OpenTail.Stingray.Core;
+using OpenTail.Stingray.Cpu;
 
 namespace OpenTail.Stingray.Vision;
 
@@ -16,10 +17,10 @@ public sealed unsafe class MobileNetV5VisionEncoder
     private readonly int _projDim;
     private readonly float _eps;
 
-    private readonly Half* _stemConvW;
+    private readonly float[] _stemConvWF32;
     private readonly float* _stemBnW;
 
-    private readonly Half* _projW;
+    private readonly VisionTensorRef _projW;
     private readonly float* _projB;
 
     public int EmbeddingDim => _embd;
@@ -34,10 +35,10 @@ public sealed unsafe class MobileNetV5VisionEncoder
         _eps = model.Eps;
 
         var gguf = model.Gguf;
-        _stemConvW = VisionOps.GetTensorPtr<Half>(gguf, "v.stem_conv.weight", "v.patch_embd.weight");
+        _stemConvWF32 = VisionOps.DequantizeToFloat32(VisionOps.GetTensor(gguf, "v.stem_conv.weight", "v.patch_embd.weight"));
         _stemBnW = VisionOps.GetTensorPtr<float>(gguf, "v.stem_bn.weight");
 
-        _projW = VisionOps.GetTensorPtr<Half>(gguf, "mm.proj.weight", "mm.0.weight");
+        _projW = VisionOps.GetTensor(gguf, "mm.proj.weight", "mm.0.weight");
         _projB = VisionOps.GetTensorPtr<float>(gguf, "mm.proj.bias", "mm.0.bias");
     }
 
@@ -66,9 +67,9 @@ public sealed unsafe class MobileNetV5VisionEncoder
         VisionOps.Gelu(tokens);
 
         var projOut = new float[numPatches * _projDim];
-        if (_projW != null)
+        if (_projW.IsValid)
         {
-            VisionOps.MatVecF16(tokens, _projW, _projB, numPatches, _embd, _projDim, projOut);
+            VisionOps.MatVecAny(tokens, _projW, _projB, numPatches, _embd, _projDim, projOut);
         }
         else
         {
@@ -95,7 +96,7 @@ public sealed unsafe class MobileNetV5VisionEncoder
                 int patchIdx = py * patchesX + px;
                 int outOffset = patchIdx * _embd;
 
-                if (_stemConvW != null)
+                if (_stemConvWF32.Length > 0)
                 {
                     for (int d = 0; d < _embd; d++)
                     {
@@ -111,7 +112,7 @@ public sealed unsafe class MobileNetV5VisionEncoder
                                     int x = px * patchSize + dx;
                                     float pixel = chw[c * planeSize + (y * width + x)];
                                     int weightIdx = wOffset + c * patchArea + (dy * patchSize + dx);
-                                    sum += pixel * (float)_stemConvW[weightIdx];
+                                    sum += pixel * _stemConvWF32[weightIdx];
                                 }
                             }
                         }

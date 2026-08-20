@@ -21,8 +21,8 @@ public sealed unsafe class CogVlmVisionEncoder
 
     private readonly float[] _patchEmbdWF32;
     private readonly float* _patchEmbdB;
-    private readonly float* _clsEmbd;
-    private readonly float* _posEmbd;
+    private readonly float[] _clsEmbdF32;
+    private readonly float[] _posEmbdF32;
 
     private readonly VisionTensorRef _modelProjW;
     private readonly float* _modelProjB;
@@ -72,8 +72,8 @@ public sealed unsafe class CogVlmVisionEncoder
         var gguf = model.Gguf;
         _patchEmbdWF32 = VisionOps.DequantizeToFloat32(VisionOps.GetTensor(gguf, "v.patch_embd.weight"));
         _patchEmbdB = VisionOps.GetTensorPtr<float>(gguf, "v.patch_embd.bias");
-        _clsEmbd = VisionOps.GetTensorPtr<float>(gguf, "v.class_embd.weight", "v.class_embd");
-        _posEmbd = VisionOps.GetTensorPtr<float>(gguf, "v.position_embd.weight", "v.position_embd");
+        _clsEmbdF32 = VisionOps.DequantizeToFloat32(VisionOps.GetTensor(gguf, "v.class_embd.weight", "v.class_embd"));
+        _posEmbdF32 = VisionOps.DequantizeToFloat32(VisionOps.GetTensor(gguf, "v.position_embd.weight", "v.position_embd"));
 
         _modelProjW = VisionOps.GetTensor(gguf, "mm.model_proj.weight", "mm.0.weight");
         _modelProjB = VisionOps.GetTensorPtr<float>(gguf, "mm.model_proj.bias", "mm.0.bias");
@@ -130,9 +130,9 @@ public sealed unsafe class CogVlmVisionEncoder
         var hiddenStates = new float[totalTokens * _embd];
 
         // Class embedding token at index 0
-        if (_clsEmbd != null)
+        if (_clsEmbdF32.Length > 0)
         {
-            for (int d = 0; d < _embd; d++) hiddenStates[d] = _clsEmbd[d];
+            for (int d = 0; d < _embd; d++) hiddenStates[d] = _clsEmbdF32[d];
         }
 
         fixed (float* chwPtr = img.Chw)
@@ -140,9 +140,9 @@ public sealed unsafe class CogVlmVisionEncoder
             ExtractPatches(chwPtr, img.TargetWidth, img.TargetHeight, img.PatchesX, img.PatchesY, hiddenStates, 1);
         }
 
-        if (_posEmbd != null)
+        if (_posEmbdF32.Length > 0)
         {
-            for (int i = 0; i < hiddenStates.Length; i++) hiddenStates[i] += _posEmbd[i % _embd];
+            for (int i = 0; i < hiddenStates.Length; i++) hiddenStates[i] += _posEmbdF32[i % _embd];
         }
 
         var qkvBuf = new float[totalTokens * _embd * 3];

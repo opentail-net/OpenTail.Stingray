@@ -26,7 +26,7 @@ public sealed unsafe class QwenVlVisionEncoder
     private readonly float[] _patchEmbd0WF32;
     private readonly VisionTensorRef _patchEmbd1W;
     private readonly float* _patchBias;
-    private readonly float* _positionEmbd;
+    private readonly float[] _positionEmbdF32;
     private readonly float* _postLnW;
     private readonly VisionTensorRef _mm0W;
     private readonly float* _mm0B;
@@ -81,7 +81,7 @@ public sealed unsafe class QwenVlVisionEncoder
             VisionOps.GetTensor(gguf, "v.patch_embd.weight", "v.patch_embd.0.weight"));
         _patchEmbd1W = VisionOps.GetTensor(gguf, "v.patch_embd.weight.1", "v.patch_embd.1.weight");
         _patchBias = VisionOps.GetTensorPtr<float>(gguf, "v.patch_bias");
-        _positionEmbd = VisionOps.GetTensorPtr<float>(gguf, "v.position_embd.weight", "v.position_embd");
+        _positionEmbdF32 = VisionOps.DequantizeToFloat32(VisionOps.GetTensor(gguf, "v.position_embd.weight", "v.position_embd"));
         _postLnW = VisionOps.GetTensorPtr<float>(gguf, "v.post_ln.weight");
 
         _mm0W = VisionOps.GetTensor(gguf, "mm.0.weight");
@@ -257,9 +257,9 @@ public sealed unsafe class QwenVlVisionEncoder
                             }
                         }
 
-                        if (_positionEmbd != null)
+                        if (_positionEmbdF32.Length > 0)
                         {
-                            sum += _positionEmbd[patchIdx * _embd + d];
+                            sum += _positionEmbdF32[patchIdx * _embd + d];
                         }
 
                         output[outOffset + d] = sum;

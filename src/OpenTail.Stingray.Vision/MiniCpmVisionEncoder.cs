@@ -24,7 +24,7 @@ public sealed unsafe class MiniCpmVisionEncoder
 
     private readonly float[] _patchEmbdWF32;
     private readonly float* _patchEmbdB;
-    private readonly float* _posEmbd;
+    private readonly float[] _posEmbdF32;
     private readonly float* _postLnW;
     private readonly float* _postLnB;
 
@@ -90,7 +90,7 @@ public sealed unsafe class MiniCpmVisionEncoder
         // Stem & Position
         _patchEmbdWF32 = VisionOps.DequantizeToFloat32(VisionOps.GetTensor(gguf, "v.patch_embd.weight"));
         _patchEmbdB = VisionOps.GetTensorPtr<float>(gguf, "v.patch_embd.bias");
-        _posEmbd = VisionOps.GetTensorPtr<float>(gguf, "v.position_embd.weight", "v.position_embd");
+        _posEmbdF32 = VisionOps.DequantizeToFloat32(VisionOps.GetTensor(gguf, "v.position_embd.weight", "v.position_embd"));
         _postLnW = VisionOps.GetTensorPtr<float>(gguf, "v.post_ln.weight");
         _postLnB = VisionOps.GetTensorPtr<float>(gguf, "v.post_ln.bias");
 
@@ -335,9 +335,9 @@ public sealed unsafe class MiniCpmVisionEncoder
                             }
                         }
 
-                        if (_posEmbd != null)
+                        if (_posEmbdF32.Length > 0)
                         {
-                            sum += _posEmbd[patchIdx * _embd + d];
+                            sum += _posEmbdF32[patchIdx * _embd + d];
                         }
 
                         output[outOffset + d] = sum;

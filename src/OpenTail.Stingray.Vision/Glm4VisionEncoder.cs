@@ -28,7 +28,7 @@ public sealed unsafe class Glm4VisionEncoder
     private readonly float* _patchBias;
     private readonly float* _normEmbdW;
     private readonly float* _normEmbdB;
-    private readonly float* _posEmbd;
+    private readonly float[] _posEmbdF32;
     private readonly float* _postLnW;
 
     private readonly VisionTensorRef _patchMergerW;
@@ -82,7 +82,7 @@ public sealed unsafe class Glm4VisionEncoder
         _patchBias = VisionOps.GetTensorPtr<float>(gguf, "v.patch_bias");
         _normEmbdW = VisionOps.GetTensorPtr<float>(gguf, "v.norm_embd.weight");
         _normEmbdB = VisionOps.GetTensorPtr<float>(gguf, "v.norm_embd.bias");
-        _posEmbd = VisionOps.GetTensorPtr<float>(gguf, "v.position_embd.weight", "v.position_embd");
+        _posEmbdF32 = VisionOps.DequantizeToFloat32(VisionOps.GetTensor(gguf, "v.position_embd.weight", "v.position_embd"));
         _postLnW = VisionOps.GetTensorPtr<float>(gguf, "v.post_ln.weight");
 
         _patchMergerW = VisionOps.GetTensor(gguf, "mm.patch_merger.weight");
@@ -256,9 +256,9 @@ public sealed unsafe class Glm4VisionEncoder
                             }
                         }
 
-                        if (_posEmbd != null)
+                        if (_posEmbdF32.Length > 0)
                         {
-                            sum += _posEmbd[patchIdx * _embd + d];
+                            sum += _posEmbdF32[patchIdx * _embd + d];
                         }
 
                         output[outOffset + d] = sum;

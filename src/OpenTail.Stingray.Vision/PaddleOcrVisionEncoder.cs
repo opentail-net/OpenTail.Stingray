@@ -22,7 +22,7 @@ public sealed unsafe class PaddleOcrVisionEncoder
 
     private readonly float[] _patchEmbdWF32;
     private readonly float* _patchEmbdB;
-    private readonly float* _posEmbd;
+    private readonly float[] _posEmbdF32;
     private readonly float* _preLnW;
     private readonly float* _postLnW;
 
@@ -73,7 +73,7 @@ public sealed unsafe class PaddleOcrVisionEncoder
         var gguf = model.Gguf;
         _patchEmbdWF32 = VisionOps.DequantizeToFloat32(VisionOps.GetTensor(gguf, "v.patch_embd.weight"));
         _patchEmbdB = VisionOps.GetTensorPtr<float>(gguf, "v.patch_embd.bias");
-        _posEmbd = VisionOps.GetTensorPtr<float>(gguf, "v.position_embd.weight", "v.position_embd");
+        _posEmbdF32 = VisionOps.DequantizeToFloat32(VisionOps.GetTensor(gguf, "v.position_embd.weight", "v.position_embd"));
         _preLnW = VisionOps.GetTensorPtr<float>(gguf, "v.pre_ln.weight");
         _postLnW = VisionOps.GetTensorPtr<float>(gguf, "v.post_ln.weight");
 
@@ -247,9 +247,9 @@ public sealed unsafe class PaddleOcrVisionEncoder
                             }
                         }
 
-                        if (_posEmbd != null && patchIdx < 729)
+                        if (_posEmbdF32.Length > 0 && patchIdx < 729)
                         {
-                            sum += _posEmbd[patchIdx * _embd + d];
+                            sum += _posEmbdF32[patchIdx * _embd + d];
                         }
 
                         output[outOffset + d] = sum;

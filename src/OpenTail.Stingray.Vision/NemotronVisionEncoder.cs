@@ -4,6 +4,7 @@ using System.Linq;
 using System.Runtime.InteropServices;
 using System.Threading.Tasks;
 using OpenTail.Stingray.Core;
+using OpenTail.Stingray.Cpu;
 
 namespace OpenTail.Stingray.Vision;
 
@@ -22,16 +23,16 @@ public sealed unsafe class NemotronVisionEncoder
     private readonly int _mergeFactor;
     private readonly float _eps;
 
-    private readonly Half* _patchEmbdW;
+    private readonly float[] _patchEmbdWF32;
     private readonly float* _patchEmbdB;
-    private readonly float* _clsEmbd; // Register tokens
-    private readonly float* _posEmbd;
+    private readonly float[] _clsEmbdF32; // Register tokens
+    private readonly float[] _posEmbdF32;
     private readonly float* _postLnW;
     private readonly float* _postLnB;
 
     private readonly float* _mm0NormW;
-    private readonly Half* _mm1W;
-    private readonly Half* _mm3W;
+    private readonly VisionTensorRef _mm1W;
+    private readonly VisionTensorRef _mm3W;
 
     private readonly LayerWeights[] _blocks;
 
@@ -39,21 +40,21 @@ public sealed unsafe class NemotronVisionEncoder
     {
         public float* Ln1W;
         public float* Ln1B;
-        public Half* AttnQkvW;
+        public VisionTensorRef AttnQkvW;
         public float* AttnQkvB;
-        public Half* AttnQW;
+        public VisionTensorRef AttnQW;
         public float* AttnQB;
-        public Half* AttnKW;
+        public VisionTensorRef AttnKW;
         public float* AttnKB;
-        public Half* AttnVW;
+        public VisionTensorRef AttnVW;
         public float* AttnVB;
-        public Half* AttnOutW;
+        public VisionTensorRef AttnOutW;
         public float* AttnOutB;
         public float* Ln2W;
         public float* Ln2B;
-        public Half* FfnUpW;
+        public VisionTensorRef FfnUpW;
         public float* FfnUpB;
-        public Half* FfnDownW;
+        public VisionTensorRef FfnDownW;
         public float* FfnDownB;
         public int FfnIntermediate;
     }
@@ -74,16 +75,16 @@ public sealed unsafe class NemotronVisionEncoder
 
         var gguf = model.Gguf;
 
-        _patchEmbdW = VisionOps.GetTensorPtr<Half>(gguf, "v.patch_embd.weight");
+        _patchEmbdWF32 = VisionOps.DequantizeToFloat32(VisionOps.GetTensor(gguf, "v.patch_embd.weight"));
         _patchEmbdB = VisionOps.GetTensorPtr<float>(gguf, "v.patch_embd.bias");
-        _clsEmbd = VisionOps.GetTensorPtr<float>(gguf, "v.class_embedding", "v.class_embd");
-        _posEmbd = VisionOps.GetTensorPtr<float>(gguf, "v.position_embd.weight", "v.position_embd");
+        _clsEmbdF32 = VisionOps.DequantizeToFloat32(VisionOps.GetTensor(gguf, "v.class_embedding", "v.class_embd"));
+        _posEmbdF32 = VisionOps.DequantizeToFloat32(VisionOps.GetTensor(gguf, "v.position_embd.weight", "v.position_embd"));
         _postLnW = VisionOps.GetTensorPtr<float>(gguf, "v.post_ln.weight");
         _postLnB = VisionOps.GetTensorPtr<float>(gguf, "v.post_ln.bias");
 
         _mm0NormW = VisionOps.GetTensorPtr<float>(gguf, "mm.0.weight");
-        _mm1W = VisionOps.GetTensorPtr<Half>(gguf, "mm.1.weight");
-        _mm3W = VisionOps.GetTensorPtr<Half>(gguf, "mm.3.weight");
+        _mm1W = VisionOps.GetTensor(gguf, "mm.1.weight");
+        _mm3W = VisionOps.GetTensor(gguf, "mm.3.weight");
 
         _blocks = new LayerWeights[_layers];
         for (int l = 0; l < _layers; l++)
@@ -95,21 +96,21 @@ public sealed unsafe class NemotronVisionEncoder
             {
                 Ln1W = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.ln1.weight"),
                 Ln1B = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.ln1.bias"),
-                AttnQkvW = VisionOps.GetTensorPtr<Half>(gguf, $"v.blk.{l}.attn_qkv.weight"),
+                AttnQkvW = VisionOps.GetTensor(gguf, $"v.blk.{l}.attn_qkv.weight"),
                 AttnQkvB = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.attn_qkv.bias"),
-                AttnQW = VisionOps.GetTensorPtr<Half>(gguf, $"v.blk.{l}.attn_q.weight"),
+                AttnQW = VisionOps.GetTensor(gguf, $"v.blk.{l}.attn_q.weight"),
                 AttnQB = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.attn_q.bias"),
-                AttnKW = VisionOps.GetTensorPtr<Half>(gguf, $"v.blk.{l}.attn_k.weight"),
+                AttnKW = VisionOps.GetTensor(gguf, $"v.blk.{l}.attn_k.weight"),
                 AttnKB = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.attn_k.bias"),
-                AttnVW = VisionOps.GetTensorPtr<Half>(gguf, $"v.blk.{l}.attn_v.weight"),
+                AttnVW = VisionOps.GetTensor(gguf, $"v.blk.{l}.attn_v.weight"),
                 AttnVB = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.attn_v.bias"),
-                AttnOutW = VisionOps.GetTensorPtr<Half>(gguf, $"v.blk.{l}.attn_out.weight"),
+                AttnOutW = VisionOps.GetTensor(gguf, $"v.blk.{l}.attn_out.weight"),
                 AttnOutB = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.attn_out.bias"),
                 Ln2W = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.ln2.weight"),
                 Ln2B = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.ln2.bias"),
-                FfnUpW = VisionOps.GetTensorPtr<Half>(gguf, $"v.blk.{l}.ffn_up.weight"),
+                FfnUpW = VisionOps.GetTensor(gguf, $"v.blk.{l}.ffn_up.weight"),
                 FfnUpB = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.ffn_up.bias"),
-                FfnDownW = VisionOps.GetTensorPtr<Half>(gguf, $"v.blk.{l}.ffn_down.weight"),
+                FfnDownW = VisionOps.GetTensor(gguf, $"v.blk.{l}.ffn_down.weight"),
                 FfnDownB = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.ffn_down.bias"),
                 FfnIntermediate = intermediate
             };
@@ -141,10 +142,10 @@ public sealed unsafe class NemotronVisionEncoder
             Array.Copy(hiddenStates, normed, hiddenStates.Length);
             VisionOps.LayerNorm(normed, totalTokensIn, _embd, blk.Ln1W, blk.Ln1B, _eps);
 
-            if (blk.AttnQkvW != null)
+            if (blk.AttnQkvW.IsValid)
             {
                 var qkv = new float[totalTokensIn * 3 * _embd];
-                VisionOps.MatVecF16(normed, blk.AttnQkvW, blk.AttnQkvB, totalTokensIn, _embd, 3 * _embd, qkv);
+                VisionOps.MatVecAny(normed, blk.AttnQkvW, blk.AttnQkvB, totalTokensIn, _embd, 3 * _embd, qkv);
                 for (int p = 0; p < totalTokensIn; p++)
                 {
                     Array.Copy(qkv, p * 3 * _embd, qBuf, p * _embd, _embd);
@@ -154,13 +155,13 @@ public sealed unsafe class NemotronVisionEncoder
             }
             else
             {
-                VisionOps.MatVecF16(normed, blk.AttnQW, blk.AttnQB, totalTokensIn, _embd, _embd, qBuf);
-                VisionOps.MatVecF16(normed, blk.AttnKW, blk.AttnKB, totalTokensIn, _embd, _embd, kBuf);
-                VisionOps.MatVecF16(normed, blk.AttnVW, blk.AttnVB, totalTokensIn, _embd, _embd, vBuf);
+                VisionOps.MatVecAny(normed, blk.AttnQW, blk.AttnQB, totalTokensIn, _embd, _embd, qBuf);
+                VisionOps.MatVecAny(normed, blk.AttnKW, blk.AttnKB, totalTokensIn, _embd, _embd, kBuf);
+                VisionOps.MatVecAny(normed, blk.AttnVW, blk.AttnVB, totalTokensIn, _embd, _embd, vBuf);
             }
 
             VisionOps.Attention(qBuf, kBuf, vBuf, totalTokensIn, _heads, _headDim, normed);
-            VisionOps.MatVecF16(normed, blk.AttnOutW, blk.AttnOutB, totalTokensIn, _embd, _embd, attnOut);
+            VisionOps.MatVecAny(normed, blk.AttnOutW, blk.AttnOutB, totalTokensIn, _embd, _embd, attnOut);
 
             for (int i = 0; i < hiddenStates.Length; i++) hiddenStates[i] += attnOut[i];
 
@@ -169,9 +170,9 @@ public sealed unsafe class NemotronVisionEncoder
 
             int intermediate = blk.FfnIntermediate;
             var ffnMid = new float[totalTokensIn * intermediate];
-            VisionOps.MatVecF16(normed, blk.FfnUpW, blk.FfnUpB, totalTokensIn, _embd, intermediate, ffnMid);
+            VisionOps.MatVecAny(normed, blk.FfnUpW, blk.FfnUpB, totalTokensIn, _embd, intermediate, ffnMid);
             VisionOps.QuickGelu(ffnMid);
-            VisionOps.MatVecF16(ffnMid, blk.FfnDownW, blk.FfnDownB, totalTokensIn, intermediate, _embd, attnOut);
+            VisionOps.MatVecAny(ffnMid, blk.FfnDownW, blk.FfnDownB, totalTokensIn, intermediate, _embd, attnOut);
 
             for (int i = 0; i < hiddenStates.Length; i++) hiddenStates[i] += attnOut[i];
         }
@@ -193,12 +194,12 @@ public sealed unsafe class NemotronVisionEncoder
 
         // Projector: RMSNorm (mm.0) + MLP1 (mm.1) + Squared ReLU + MLP3 (mm.3)
         var visualTokens = new float[tokenCount * _projDim];
-        if (_mm1W != null && _mm3W != null)
+        if (_mm1W.IsValid && _mm3W.IsValid)
         {
             if (_mm0NormW != null) VisionOps.RmsNorm(merged, tokenCount, mergedDim, _mm0NormW, _eps);
 
             var midBuf = new float[tokenCount * _projDim];
-            VisionOps.MatVecF16(merged, _mm1W, null, tokenCount, mergedDim, _projDim, midBuf);
+            VisionOps.MatVecAny(merged, _mm1W, null, tokenCount, mergedDim, _projDim, midBuf);
 
             // Squared ReLU: (max(0, x))^2
             for (int i = 0; i < midBuf.Length; i++)
@@ -207,7 +208,7 @@ public sealed unsafe class NemotronVisionEncoder
                 midBuf[i] = x * x;
             }
 
-            VisionOps.MatVecF16(midBuf, _mm3W, null, tokenCount, _projDim, _projDim, visualTokens);
+            VisionOps.MatVecAny(midBuf, _mm3W, null, tokenCount, _projDim, _projDim, visualTokens);
         }
         else
         {
@@ -228,11 +229,11 @@ public sealed unsafe class NemotronVisionEncoder
         int planeSize = width * height;
 
         // Populate register tokens at the beginning
-        if (_clsEmbd != null)
+        if (_clsEmbdF32.Length > 0)
         {
             for (int r = 0; r < nRegisters; r++)
             {
-                for (int d = 0; d < _embd; d++) output[r * _embd + d] = _clsEmbd[r * _embd + d];
+                for (int d = 0; d < _embd; d++) output[r * _embd + d] = _clsEmbdF32[r * _embd + d];
             }
         }
 
@@ -244,7 +245,7 @@ public sealed unsafe class NemotronVisionEncoder
                 int tokenIdx = nRegisters + patchIdx;
                 int outOffset = tokenIdx * _embd;
 
-                if (_patchEmbdW != null)
+                if (_patchEmbdWF32.Length > 0)
                 {
                     for (int d = 0; d < _embd; d++)
                     {
@@ -260,14 +261,14 @@ public sealed unsafe class NemotronVisionEncoder
                                     int x = px * patchSize + dx;
                                     float pixel = chw[c * planeSize + (y * width + x)];
                                     int weightIdx = wOffset + c * patchArea + (dy * patchSize + dx);
-                                    sum += pixel * (float)_patchEmbdW[weightIdx];
+                                    sum += pixel * _patchEmbdWF32[weightIdx];
                                 }
                             }
                         }
 
-                        if (_posEmbd != null)
+                        if (_posEmbdF32.Length > 0)
                         {
-                            sum += _posEmbd[tokenIdx * _embd + d];
+                            sum += _posEmbdF32[tokenIdx * _embd + d];
                         }
 
                         output[outOffset + d] = sum;

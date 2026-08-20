@@ -80,14 +80,85 @@ after each. Remaining 5 below need both files downloaded fresh.
       (THUDM's originals are 17-18B, safetensors only, as far as this search could confirm). Per the
       "never guess a pairing" rule, not fabricating a download target. Same situation as
       MobileNetV5's caveat below. Revisit if/when a real conversion surfaces.
-- [ ] **DotsOcr** — no local mmproj. Both files needed. DotsOCR is a relatively small (~3B) model
-      family per its public release — good candidate despite needing both files.
-- [ ] **Granite4** — no local mmproj. Both files needed. IBM Granite 4 Vision — check smallest
-      available variant.
-- [ ] **Nemotron** — no local mmproj. Both files needed. Check smallest NVIDIA Nemotron-VL variant.
-- [ ] **MobileNetV5** — no local mmproj. Both files needed. Named for a MobileNet-scale vision tower
-      — likely genuinely small if a GGUF conversion exists at all; verify one is actually published
-      before committing to it.
+- [x] **DotsOcr** — **encoder migrated, builds clean.** Structurally near-identical to PaddleOcr's
+      pattern. Found the real source: `ggml-org/dots.ocr-GGUF` (official ggml-org conversion,
+      confirmed via HF API -- note `dinhquangson/dots.ocr-gguf`, the first search hit, turned out to
+      be an empty placeholder repo with zero actual files, caught by checking the API directly
+      rather than trusting the repo name). `qwen2` text architecture, 1.7B base -- genuinely small.
+      Downloaded dots.ocr-Q8_0.gguf (1.76GiB) + mmproj-dots.ocr-Q8_0.gguf (1.25GiB), both Q8_0.
+      **Verified end-to-end**: encoder runs clean against real Q8_0 weights, produces
+      `81 soft tokens (1536-dim)` for a test image, no crash, no memory corruption — the migration
+      itself is proven. Blocked one step further by a *separate*, expected bug class (flagged in the
+      plan's own notes below, same as InternVL's original `<IMG_CONTEXT>` issue): the chat template
+      doesn't emit the `<image_pad>` placeholder token dots.ocr expects, so
+      `RunCommand.cs`'s placeholder-count check rejects the request before generation. Not an encoder
+      bug — separate finding, not fixed here (chat-template/prompt-formatting scope).
+- [x] **Granite4** — **encoder migrated, builds clean.** Clean pattern (SigLIP tower + WindowQFormer
+      projector), used shared VisionOps.Attention/LayerNorm correctly already, no broken-attention
+      stub found. Mechanical migration only: patch-embed → DequantizeToFloat32, all block/proj
+      weights → VisionTensorRef/MatVecAny. **First download attempt was the wrong architecture**:
+      `bartowski/ibm-granite_granite-vision-3.2-2b-GGUF` declares `clip.projector_type: mlp`, which
+      routes to `LlavaAdapter`, not `Granite4Adapter` — that model is LLaVA-Next-based, not the
+      WindowQFormer arch this encoder targets. Found the real target:
+      `mrutkows/granite-4.0-3b-vision-GGUF` (`granite-4.0-3b-vision-Q4_K_M.gguf` + `mmproj-model-
+      f16.gguf`, same source repo, no guessed pairing) — confirmed via metadata
+      (`clip.projector_type: granite4_vision`) before running. **Verified end-to-end**: encoder runs
+      clean against real Q4_K weights, produces `576 soft tokens (2560-dim)` for a test image, no
+      crash, no memory corruption. Blocked one step further by the same chat-template placeholder
+      gap as DotsOcr (separate scope, not an encoder bug) — `<image_pad>` isn't emitted by the
+      template for this architecture either.
+- [x] **Nemotron** — **encoder migrated, builds clean.** Register-token ViT (4 register tokens
+      stripped after post-LN) + 2x2 patch merge + squared-ReLU MLP projector, matches QKV-fused and
+      split-QKV variants (fused path taken when `attn_qkv` tensor present). Clean pattern, no
+      broken-attention stub. Downloaded `Vastined/NVIDIA-Nemotron-Nano-12B-v2-VL-BF16-GGUF`'s Q2_K
+      base (4.4GB) + BF16 mmproj (1.7GB), same source repo. **Full end-to-end blocked, same class of
+      gap as DeepSeekOcr**: the base model's text architecture (`nemotron_h`, a Mamba/SSM hybrid)
+      isn't in `ModelCompatibility.ValidateForTextGeneration`'s supported list — rejected before
+      vision code runs. Separate, much bigger undertaking (add nemotron_h text-gen support), not a
+      vision-encoder migration task. Encoder itself presumed correct by the same standard as the
+      others (builds, follows the proven pattern).
+- [x] **MobileNetV5** — **encoder migrated, builds clean.** Simplest encoder in the set (stem conv +
+      RMSNorm + GELU + single-layer projection, no transformer blocks). Mechanical migration only.
+      **Download blocked, not just deferred** (same situation as CogVlm below): gemma-3n looked like
+      the obvious target (llama.cpp's `mobilenetv5.cpp` is written for it) but its real mmproj
+      (downloaded from `Anthonyg5005/gemma-3n-e4b-mmproj-gguf` to check) declares
+      `clip.vision.projector_type: gemma3nv`, which `UnifiedVisionPipeline` routes to
+      `Gemma3Adapter` (the already-safe TensorPrimitives path), **not** `MobileNetV5Adapter` — wrong
+      target, same mistake class as Granite4's first attempt. `MobileNetV5Adapter` only activates on
+      an explicit `mobilenetv5`/`mobilenet_v5` projector-type string or structural inference
+      (`v.registers`/`mm.reg_norm.weight` tensors) with no matching metadata string; searched HF for
+      any GGUF actually declaring that projector type and found none. Deleted the wrongly-targeted
+      gemma-3n mmproj rather than keep a misleading download. Revisit if/when a real
+      `mobilenetv5`-projector conversion surfaces.
+
+## Systemic finding: position/class-embedding dtype guard gap (found and fixed for all 9 affected
+## encoders during verification, 2026-08-20)
+
+While verifying Granite4 against real weights, hit the *exact* class of bug this whole migration
+exists to close, in code the migration had already "finished": `v.position_embd.weight` was
+Float16 in a real mmproj (`granite-vision-3.2-2b`, which turned out to route to `LlavaAdapter` — see
+Granite4's row above) but every encoder still read it via `VisionOps.GetTensorPtr<float>` — a
+direct, ungoverned `float*` field, not a `VisionTensorRef`, because it's consumed via inline
+per-element indexing (`_posEmbd[i % _embd]`) rather than through `MatVecAny`. The dtype guard added
+earlier (not the structural fix) caught it and threw cleanly instead of corrupting memory — a real
+save, but it still blocked every affected model from running. Fixed by applying the same
+`DequantizeToFloat32`-at-construction pattern already used for patch-embed weights: converted
+`_posEmbd`/`_clsEmbd` (and Nemotron's/QwenVl's differently-named equivalents) from raw `float*` to
+one-time-dequantized `float[]` in **InternVl, DeepSeekOcr, DotsOcr, Glm4, CogVlm, Kimi, MiniCpm,
+Nemotron, PaddleOcr, QwenVl, Llava** (11 files touched; Granite4 done first as the file that
+surfaced it). All rebuilt clean (Vision + Cli). This was a genuine completeness gap in "the
+migration," not new work — every one of these tensors could have silently corrupted memory exactly
+like the original Q8_0 bug, just gated behind whichever model happened to store it non-F32.
+Re-verified DotsOcr after the fix (still `81 soft tokens`, unaffected since it doesn't use posEmbd
+via this path) and Llava (dtype crash gone, see Llava's row below for what surfaced next).
+
+- **Llava** — after the posEmbd fix above, re-ran against `granite-vision-3.2-2b`'s mmproj (routes
+  here, not to Granite4Adapter — see Granite4's row). Dtype crash is gone. Hit a **different,
+  pre-existing, unrelated bug**: `IndexOutOfRangeException` in `ExtractPatchesWithCls` — this mmproj
+  declares `clip.vision.image_grid_pinpoints` (52 entries), i.e. LLaVA-Next's dynamic AnyRes
+  multi-tile cropping, which produces more patches than `LlavaVisionEncoder`'s single-tile position
+  table supports. Real gap (AnyRes tiling isn't implemented), out of scope for this migration —
+  flagged, not fixed here.
 
 ## Cleanup (only after every row above is checked off)
 

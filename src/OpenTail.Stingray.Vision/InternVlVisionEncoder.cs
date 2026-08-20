@@ -29,8 +29,8 @@ public sealed unsafe class InternVlVisionEncoder
     // batched MatVec, so it can't route through MatVecAny the way the block/projector weights do.
     private readonly float[] _patchEmbdWF32;
     private readonly float* _patchEmbdB;
-    private readonly float* _clsEmbd;
-    private readonly float* _posEmbd;
+    private readonly float[] _clsEmbdF32;
+    private readonly float[] _posEmbdF32;
     private readonly float* _preLnW;
     private readonly float* _preLnB;
     private readonly float* _postLnW;
@@ -92,8 +92,8 @@ public sealed unsafe class InternVlVisionEncoder
         var patchEmbdT = VisionOps.GetTensor(gguf, "v.patch_embd.weight");
         _patchEmbdWF32 = VisionOps.DequantizeToFloat32(patchEmbdT);
         _patchEmbdB = VisionOps.GetTensorPtr<float>(gguf, "v.patch_embd.bias");
-        _clsEmbd = VisionOps.GetTensorPtr<float>(gguf, "v.class_embd", "v.cls_embd");
-        _posEmbd = VisionOps.GetTensorPtr<float>(gguf, "v.position_embd.weight", "v.position_embd");
+        _clsEmbdF32 = VisionOps.DequantizeToFloat32(VisionOps.GetTensor(gguf, "v.class_embd", "v.cls_embd"));
+        _posEmbdF32 = VisionOps.DequantizeToFloat32(VisionOps.GetTensor(gguf, "v.position_embd.weight", "v.position_embd"));
         _preLnW = VisionOps.GetTensorPtr<float>(gguf, "v.pre_ln.weight");
         _preLnB = VisionOps.GetTensorPtr<float>(gguf, "v.pre_ln.bias");
         _postLnW = VisionOps.GetTensorPtr<float>(gguf, "v.post_ln.weight");
@@ -273,13 +273,13 @@ public sealed unsafe class InternVlVisionEncoder
         int patchArea = patchSize * patchSize;
         int planeSize = width * height;
 
-        if (_clsEmbd != null)
+        if (_clsEmbdF32.Length > 0)
         {
-            for (int d = 0; d < _embd; d++) output[d] = _clsEmbd[d];
+            for (int d = 0; d < _embd; d++) output[d] = _clsEmbdF32[d];
         }
-        if (_posEmbd != null)
+        if (_posEmbdF32.Length > 0)
         {
-            for (int d = 0; d < _embd; d++) output[d] += _posEmbd[d];
+            for (int d = 0; d < _embd; d++) output[d] += _posEmbdF32[d];
         }
 
         Parallel.For(0, patchesY, py =>
@@ -311,9 +311,9 @@ public sealed unsafe class InternVlVisionEncoder
                             }
                         }
 
-                        if (_posEmbd != null)
+                        if (_posEmbdF32.Length > 0)
                         {
-                            sum += _posEmbd[tokenIdx * _embd + d];
+                            sum += _posEmbdF32[tokenIdx * _embd + d];
                         }
 
                         output[outOffset + d] = sum;

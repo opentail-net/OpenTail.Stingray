@@ -1,6 +1,7 @@
 using System;
 using System.Threading.Tasks;
 using OpenTail.Stingray.Core;
+using OpenTail.Stingray.Cpu;
 
 namespace OpenTail.Stingray.Vision;
 
@@ -18,15 +19,15 @@ public sealed unsafe class Granite4VisionEncoder
     private readonly int _projDim;
     private readonly float _eps;
 
-    private readonly Half* _patchEmbdW;
+    private readonly float[] _patchEmbdWF32;
     private readonly float* _patchEmbdB;
-    private readonly float* _posEmbd;
+    private readonly float[] _posEmbdF32;
     private readonly float* _postLnW;
     private readonly float* _postLnB;
 
     private readonly float* _projNormW;
     private readonly float* _projNormB;
-    private readonly Half* _projW;
+    private readonly VisionTensorRef _projW;
     private readonly float* _projB;
 
     private readonly LayerWeights[] _blocks;
@@ -35,19 +36,19 @@ public sealed unsafe class Granite4VisionEncoder
     {
         public float* Ln1W;
         public float* Ln1B;
-        public Half* AttnQW;
+        public VisionTensorRef AttnQW;
         public float* AttnQB;
-        public Half* AttnKW;
+        public VisionTensorRef AttnKW;
         public float* AttnKB;
-        public Half* AttnVW;
+        public VisionTensorRef AttnVW;
         public float* AttnVB;
-        public Half* AttnOutW;
+        public VisionTensorRef AttnOutW;
         public float* AttnOutB;
         public float* Ln2W;
         public float* Ln2B;
-        public Half* FfnUpW;
+        public VisionTensorRef FfnUpW;
         public float* FfnUpB;
-        public Half* FfnDownW;
+        public VisionTensorRef FfnDownW;
         public float* FfnDownB;
         public int FfnIntermediate;
     }
@@ -66,15 +67,15 @@ public sealed unsafe class Granite4VisionEncoder
         _eps = model.Eps;
 
         var gguf = model.Gguf;
-        _patchEmbdW = VisionOps.GetTensorPtr<Half>(gguf, "v.patch_embd.weight");
+        _patchEmbdWF32 = VisionOps.DequantizeToFloat32(VisionOps.GetTensor(gguf, "v.patch_embd.weight"));
         _patchEmbdB = VisionOps.GetTensorPtr<float>(gguf, "v.patch_embd.bias");
-        _posEmbd = VisionOps.GetTensorPtr<float>(gguf, "v.position_embd.weight", "v.position_embd");
+        _posEmbdF32 = VisionOps.DequantizeToFloat32(VisionOps.GetTensor(gguf, "v.position_embd.weight", "v.position_embd"));
         _postLnW = VisionOps.GetTensorPtr<float>(gguf, "v.post_ln.weight");
         _postLnB = VisionOps.GetTensorPtr<float>(gguf, "v.post_ln.bias");
 
         _projNormW = VisionOps.GetTensorPtr<float>(gguf, "mm.proj_norm.weight", "mm.0.weight");
         _projNormB = VisionOps.GetTensorPtr<float>(gguf, "mm.proj_norm.bias", "mm.0.bias");
-        _projW = VisionOps.GetTensorPtr<Half>(gguf, "mm.proj.weight", "mm.1.weight");
+        _projW = VisionOps.GetTensor(gguf, "mm.proj.weight", "mm.1.weight");
         _projB = VisionOps.GetTensorPtr<float>(gguf, "mm.proj.bias", "mm.1.bias");
 
         _blocks = new LayerWeights[_layers];
@@ -87,19 +88,19 @@ public sealed unsafe class Granite4VisionEncoder
             {
                 Ln1W = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.ln1.weight"),
                 Ln1B = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.ln1.bias"),
-                AttnQW = VisionOps.GetTensorPtr<Half>(gguf, $"v.blk.{l}.attn_q.weight"),
+                AttnQW = VisionOps.GetTensor(gguf, $"v.blk.{l}.attn_q.weight"),
                 AttnQB = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.attn_q.bias"),
-                AttnKW = VisionOps.GetTensorPtr<Half>(gguf, $"v.blk.{l}.attn_k.weight"),
+                AttnKW = VisionOps.GetTensor(gguf, $"v.blk.{l}.attn_k.weight"),
                 AttnKB = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.attn_k.bias"),
-                AttnVW = VisionOps.GetTensorPtr<Half>(gguf, $"v.blk.{l}.attn_v.weight"),
+                AttnVW = VisionOps.GetTensor(gguf, $"v.blk.{l}.attn_v.weight"),
                 AttnVB = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.attn_v.bias"),
-                AttnOutW = VisionOps.GetTensorPtr<Half>(gguf, $"v.blk.{l}.attn_out.weight"),
+                AttnOutW = VisionOps.GetTensor(gguf, $"v.blk.{l}.attn_out.weight"),
                 AttnOutB = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.attn_out.bias"),
                 Ln2W = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.ln2.weight"),
                 Ln2B = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.ln2.bias"),
-                FfnUpW = VisionOps.GetTensorPtr<Half>(gguf, $"v.blk.{l}.ffn_up.weight"),
+                FfnUpW = VisionOps.GetTensor(gguf, $"v.blk.{l}.ffn_up.weight"),
                 FfnUpB = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.ffn_up.bias"),
-                FfnDownW = VisionOps.GetTensorPtr<Half>(gguf, $"v.blk.{l}.ffn_down.weight"),
+                FfnDownW = VisionOps.GetTensor(gguf, $"v.blk.{l}.ffn_down.weight"),
                 FfnDownB = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.ffn_down.bias"),
                 FfnIntermediate = intermediate
             };
@@ -124,9 +125,9 @@ public sealed unsafe class Granite4VisionEncoder
             ExtractPatches(chwPtr, img.TargetWidth, img.TargetHeight, img.PatchesX, img.PatchesY, hiddenStates);
         }
 
-        if (_posEmbd != null)
+        if (_posEmbdF32.Length > 0)
         {
-            for (int i = 0; i < hiddenStates.Length; i++) hiddenStates[i] += _posEmbd[i % _embd];
+            for (int i = 0; i < hiddenStates.Length; i++) hiddenStates[i] += _posEmbdF32[i % _embd];
         }
 
         var qBuf = new float[numPatches * _embd];
@@ -149,12 +150,12 @@ public sealed unsafe class Granite4VisionEncoder
             Array.Copy(hiddenStates, normed, hiddenStates.Length);
             VisionOps.LayerNorm(normed, numPatches, _embd, blk.Ln1W, blk.Ln1B, _eps);
 
-            VisionOps.MatVecF16(normed, blk.AttnQW, blk.AttnQB, numPatches, _embd, _embd, qBuf);
-            VisionOps.MatVecF16(normed, blk.AttnKW, blk.AttnKB, numPatches, _embd, _embd, kBuf);
-            VisionOps.MatVecF16(normed, blk.AttnVW, blk.AttnVB, numPatches, _embd, _embd, vBuf);
+            VisionOps.MatVecAny(normed, blk.AttnQW, blk.AttnQB, numPatches, _embd, _embd, qBuf);
+            VisionOps.MatVecAny(normed, blk.AttnKW, blk.AttnKB, numPatches, _embd, _embd, kBuf);
+            VisionOps.MatVecAny(normed, blk.AttnVW, blk.AttnVB, numPatches, _embd, _embd, vBuf);
 
             VisionOps.Attention(qBuf, kBuf, vBuf, numPatches, _heads, _headDim, normed);
-            VisionOps.MatVecF16(normed, blk.AttnOutW, blk.AttnOutB, numPatches, _embd, _embd, attnOut);
+            VisionOps.MatVecAny(normed, blk.AttnOutW, blk.AttnOutB, numPatches, _embd, _embd, attnOut);
 
             for (int i = 0; i < hiddenStates.Length; i++) hiddenStates[i] += attnOut[i];
 
@@ -162,9 +163,9 @@ public sealed unsafe class Granite4VisionEncoder
             VisionOps.LayerNorm(normed, numPatches, _embd, blk.Ln2W, blk.Ln2B, _eps);
 
             int intermediate = blk.FfnIntermediate;
-            VisionOps.MatVecF16(normed, blk.FfnUpW, blk.FfnUpB, numPatches, _embd, intermediate, ffnMid);
+            VisionOps.MatVecAny(normed, blk.FfnUpW, blk.FfnUpB, numPatches, _embd, intermediate, ffnMid);
             VisionOps.Gelu(ffnMid.AsSpan(0, numPatches * intermediate));
-            VisionOps.MatVecF16(ffnMid, blk.FfnDownW, blk.FfnDownB, numPatches, intermediate, _embd, attnOut);
+            VisionOps.MatVecAny(ffnMid, blk.FfnDownW, blk.FfnDownB, numPatches, intermediate, _embd, attnOut);
 
             for (int i = 0; i < hiddenStates.Length; i++) hiddenStates[i] += attnOut[i];
         }
@@ -173,13 +174,13 @@ public sealed unsafe class Granite4VisionEncoder
 
         // Projector: WindowQFormer / MLP downsampler
         var projOut = new float[numPatches * _projDim];
-        if (_projW != null)
+        if (_projW.IsValid)
         {
             if (_projNormW != null)
             {
                 VisionOps.LayerNorm(hiddenStates, numPatches, _embd, _projNormW, _projNormB, 1e-5f);
             }
-            VisionOps.MatVecF16(hiddenStates, _projW, _projB, numPatches, _embd, _projDim, projOut);
+            VisionOps.MatVecAny(hiddenStates, _projW, _projB, numPatches, _embd, _projDim, projOut);
         }
         else
         {
@@ -206,7 +207,7 @@ public sealed unsafe class Granite4VisionEncoder
                 int patchIdx = py * patchesX + px;
                 int outOffset = patchIdx * _embd;
 
-                if (_patchEmbdW != null)
+                if (_patchEmbdWF32.Length > 0)
                 {
                     for (int d = 0; d < _embd; d++)
                     {
@@ -222,7 +223,7 @@ public sealed unsafe class Granite4VisionEncoder
                                     int x = px * patchSize + dx;
                                     float pixel = chw[c * planeSize + (y * width + x)];
                                     int weightIdx = wOffset + c * patchArea + (dy * patchSize + dx);
-                                    sum += pixel * (float)_patchEmbdW[weightIdx];
+                                    sum += pixel * _patchEmbdWF32[weightIdx];
                                 }
                             }
                         }

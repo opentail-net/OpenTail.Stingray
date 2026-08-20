@@ -33,11 +33,19 @@ Other corners of Cpu/Engine not touched by that investigation are still fair gam
 
 ## Projects (14 total)
 
-- [ ] OpenTail.Stingray (root/meta) — likely low-yield, no hot-path code of its own; do near the end
+- [x] OpenTail.Stingray (root/meta) — reviewed. `src/OpenTail.Stingray/_PackageMarker.cs` is the
+      project's only source file — a marker class for the NuGet meta-package, no logic. Confirmed
+      no hot-path code of its own, as predicted. No change made.
 - [x] OpenTail.Stingray.Core — tokenizer char-cache fix shipped (~4-8% faster Encode); PreTokenizerPatterns
       already uses build-time [GeneratedRegex]; GgufModel/ModelGraph are one-time load cost, not hot path;
       JinjaChatTemplate not yet reviewed (once per turn, not per-token — low urgency)
-- [ ] OpenTail.Stingray.Cpu (partially covered — see note above; re-scan corners not covered)
+- [x] OpenTail.Stingray.Cpu — rescanned the corners the OpenBLAS investigation didn't touch:
+      `PersistentThreadPool` (already has its own extensive doc comment recording two alternative
+      designs tried and measured worse — spin-wait, dynamic-chunk-claiming — this static-partition
+      version won on real numbers, not left unturned), `GdnKernels.ChunkedScan` (per-chunk scratch
+      buffers already allocated once per call and reused across heads/chunks, stackalloc'd below a
+      256-element cap with a documented heap fallback for larger chunk sizes — deliberate, not an
+      oversight). Both already mature. No change made.
 - [x] OpenTail.Stingray.Cuda — reviewed independently (not just citing docs/done/gpu-review-log.md,
       though that doc's context — this machine has literally zero NVIDIA hardware, confirmed there —
       still applies). Checked hardware-independent anti-patterns specifically, since kernel-level
@@ -56,7 +64,13 @@ Other corners of Cpu/Engine not touched by that investigation are still fair gam
       auto-detected from hardware presence, so no BLAS-style silent-regression risk here. gpu-review-
       log.md already measured this integrated APU's Vulkan ceiling at 74.1 t/s prefill vs 150+ t/s
       CPU for the same model — a hardware bandwidth limit, not a software bug. No change made.
-- [ ] OpenTail.Stingray.Engine (partially covered — see note above; re-scan corners not covered)
+- [x] OpenTail.Stingray.Engine — rescanned corners the OpenBLAS investigation didn't touch, focused
+      on `Sampler.cs` (runs once per decoded token — genuinely hot). `ApplyTopP` already carries its
+      own doc comment describing the exact optimization a fresh pass would propose: after top-k,
+      only the ~k non-zero survivors are gathered into a `stackalloc`/heap-fallback span and sorted,
+      instead of an O(V·logV) sort + V-element allocation over the full vocabulary (Gemma 4 =
+      262144) every token — already shipped, already documented as "the dominant decode-time
+      sampling cost" fix. No further low-risk win found. No change made.
 - [x] OpenTail.Stingray.Pipeline — reviewed. Prefetcher.cs is dead code (own doc comment: "cannot
       function", throws NotImplementedException via MemoryHierarchy.PromoteToGpuAsync; real impl is
       Engine's MoEPrefetcher — flagged for when the loop revisits Engine, not yet reviewed). SlruCache
@@ -151,7 +165,27 @@ Other corners of Cpu/Engine not touched by that investigation are still fair gam
       field, not re-parsed per request; regexes use [GeneratedRegex]. ModelRuntimeManager's locking
       is coarse but scoped to admin bookkeeping (model load/evict/route decisions), not held during
       per-token inference. No change made.
-- [ ] OpenTail.Stingray.Cli / OpenTail.Stingray.Server.Host (thin frontends, likely low-yield — do last)
+- [x] OpenTail.Stingray.Cli — reviewed (RunCommand.cs, the 19 command files, CommandLine/Terminal/Tui
+      subfolders). Confirmed thin-frontend as predicted: command handlers are one-shot argument
+      validation + setup (AnsiConsole.MarkupLine calls, file existence checks), not hot loops. The
+      only per-token code is the streaming-output `Console.Write(tail)` calls in the decode loops
+      (~4 call sites in RunCommand.cs) — negligible next to the matmul cost of producing each token,
+      and Engine's ForwardPass (the actual hot path) is already covered by prior firings/docs. No
+      change made.
+- [x] OpenTail.Stingray.Server.Host — already reviewed (see entry above, firing predates this one).
+
+## Conclusion (2026-08-20)
+
+All 14 projects reviewed at least once (several twice, including the Cpu/Engine "partial coverage"
+rescans deferred earlier). One kept performance win (tokenizer char-cache, firing 1) and one kept
+vectorization (VisionOps.Attention/AttentionGqa, folded in from the DRY-scope widening) shipped and
+verified. Several credible-but-unverifiable leads were explicitly declined rather than forced
+(CUDA kernel tuning — no real NVIDIA hardware to measure on; Audio's O(N²) DFT rewrite — needs a
+reference-signal correctness test built first, real complexity, not a one-firing squeeze). Every
+other project came back mature: existing code already implements the obvious optimization with a
+doc comment recording the measurement that justified it (PersistentThreadPool, GdnKernels' chunk
+scratch reuse, Sampler's top-p survivor-only sort, TurboQuant's stackalloc hot paths). No further
+promising leads remain. **Stopping the loop.**
 
 ## Firing log
 
