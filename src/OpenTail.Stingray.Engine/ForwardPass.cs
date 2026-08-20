@@ -1375,17 +1375,13 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
     private void MatMulBatchedCached(float* output, in TensorRef w, float* input,
         int N, int rows, int cols, bool allowBlas = true)
     {
-        if (allowBlas && _dequantCacheEnabled && w.DType != DType.Float32 && N >= SimdKernels.MinBatchForBlas)
-        {
-            float* wf32 = GetDequantWeightF32(in w, rows, cols);
-            if (wf32 != null)
-            {
-                SimdKernels.MatMulBatchedF32(output, wf32, input, N, rows, cols);
-                return;
-            }
-        }
         // Repacked 8-row Q4_K path (perf-loop iteration 42): measured 2.6x over the row-major
-        // _8In at the trunk's Q4_K shape.
+        // _8In at the trunk's Q4_K shape, and separately measured faster end-to-end than the
+        // issue #189 dequant-cache/BLAS path below (147 vs 74 t/s prefill, SmolLM2-1.7B-Q4_K_M,
+        // CPU baseline) once that path started auto-engaging merely because libopenblas.dll was
+        // present on disk. Checked first for that reason: BLAS availability is not evidence BLAS
+        // is faster than this kernel for the same tensor, so it must not win the race by ordering
+        // alone. See docs/cpu-performance-baseline.md.
         //
         // Deliberately NOT gated on a minimum N. An "N >= 8" gate looks harmless — below it there
         // is no token amortisation to pair with the row amortisation — but it is a NUMERICS
@@ -1402,6 +1398,16 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
             if (packed != null &&
                 SimdKernels.TryMatMulBatchedQ4Kx8(output, packed, input, N, rows, cols))
                 return;
+        }
+
+        if (allowBlas && _dequantCacheEnabled && w.DType != DType.Float32 && N >= SimdKernels.MinBatchForBlas)
+        {
+            float* wf32 = GetDequantWeightF32(in w, rows, cols);
+            if (wf32 != null)
+            {
+                SimdKernels.MatMulBatchedF32(output, wf32, input, N, rows, cols);
+                return;
+            }
         }
 
         SimdKernels.MatMulBatched(output, w.DataPtr, input, N, rows, cols, w.DType, allowQ8: true, allowBlas: allowBlas);
