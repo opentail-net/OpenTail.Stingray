@@ -23,50 +23,50 @@ public sealed unsafe class MiniCpmVisionEncoder
     private readonly float _eps;
 
     private readonly float[] _patchEmbdWF32;
-    private readonly float* _patchEmbdB;
+    private readonly float[]? _patchEmbdB;
     private readonly float[] _posEmbdF32;
-    private readonly float* _postLnW;
-    private readonly float* _postLnB;
+    private readonly float[]? _postLnW;
+    private readonly float[]? _postLnB;
 
-    private readonly float* _resamplerQuery;
+    private readonly float[]? _resamplerQuery;
     private readonly VisionTensorRef _resamplerKvProjW;
-    private readonly float* _resamplerLnQW;
-    private readonly float* _resamplerLnQB;
-    private readonly float* _resamplerLnKvW;
-    private readonly float* _resamplerLnKvB;
+    private readonly float[]? _resamplerLnQW;
+    private readonly float[]? _resamplerLnQB;
+    private readonly float[]? _resamplerLnKvW;
+    private readonly float[]? _resamplerLnKvB;
     private readonly VisionTensorRef _resamplerAttnQW;
-    private readonly float* _resamplerAttnQB;
+    private readonly float[]? _resamplerAttnQB;
     private readonly VisionTensorRef _resamplerAttnKW;
-    private readonly float* _resamplerAttnKB;
+    private readonly float[]? _resamplerAttnKB;
     private readonly VisionTensorRef _resamplerAttnVW;
-    private readonly float* _resamplerAttnVB;
+    private readonly float[]? _resamplerAttnVB;
     private readonly VisionTensorRef _resamplerAttnOutW;
-    private readonly float* _resamplerAttnOutB;
+    private readonly float[]? _resamplerAttnOutB;
     private readonly VisionTensorRef _resamplerProjW;
-    private readonly float* _resamplerProjB;
+    private readonly float[]? _resamplerProjB;
 
     private readonly LayerWeights[] _blocks;
 
     private sealed class LayerWeights
     {
-        public float* Ln1W;
-        public float* Ln1B;
+        public float[]? Ln1W;
+        public float[]? Ln1B;
         public VisionTensorRef AttnQkvW;
-        public float* AttnQkvB;
+        public float[]? AttnQkvB;
         public VisionTensorRef AttnQW;
-        public float* AttnQB;
+        public float[]? AttnQB;
         public VisionTensorRef AttnKW;
-        public float* AttnKB;
+        public float[]? AttnKB;
         public VisionTensorRef AttnVW;
-        public float* AttnVB;
+        public float[]? AttnVB;
         public VisionTensorRef AttnOutW;
-        public float* AttnOutB;
-        public float* Ln2W;
-        public float* Ln2B;
+        public float[]? AttnOutB;
+        public float[]? Ln2W;
+        public float[]? Ln2B;
         public VisionTensorRef FfnUpW;
-        public float* FfnUpB;
+        public float[]? FfnUpB;
         public VisionTensorRef FfnDownW;
-        public float* FfnDownB;
+        public float[]? FfnDownB;
         public int FfnIntermediate;
     }
 
@@ -89,28 +89,28 @@ public sealed unsafe class MiniCpmVisionEncoder
 
         // Stem & Position
         _patchEmbdWF32 = VisionOps.DequantizeToFloat32(VisionOps.GetTensor(gguf, "v.patch_embd.weight"));
-        _patchEmbdB = VisionOps.GetTensorPtr<float>(gguf, "v.patch_embd.bias");
+        _patchEmbdB = VisionOps.GetTensorArray(gguf, "v.patch_embd.bias");
         _posEmbdF32 = VisionOps.DequantizeToFloat32(VisionOps.GetTensor(gguf, "v.position_embd.weight", "v.position_embd"));
-        _postLnW = VisionOps.GetTensorPtr<float>(gguf, "v.post_ln.weight");
-        _postLnB = VisionOps.GetTensorPtr<float>(gguf, "v.post_ln.bias");
+        _postLnW = VisionOps.GetTensorArray(gguf, "v.post_ln.weight");
+        _postLnB = VisionOps.GetTensorArray(gguf, "v.post_ln.bias");
 
         // Resampler Tensors
-        _resamplerQuery = VisionOps.GetTensorPtr<float>(gguf, "resampler.query", "mm.model.query");
+        _resamplerQuery = VisionOps.GetTensorArray(gguf, "resampler.query", "mm.model.query");
         _resamplerKvProjW = VisionOps.GetTensor(gguf, "resampler.kv.weight", "mm.model.kv_proj.weight");
-        _resamplerLnQW = VisionOps.GetTensorPtr<float>(gguf, "resampler.ln_q.weight", "mm.model.ln_q.weight");
-        _resamplerLnQB = VisionOps.GetTensorPtr<float>(gguf, "resampler.ln_q.bias", "mm.model.ln_q.bias");
-        _resamplerLnKvW = VisionOps.GetTensorPtr<float>(gguf, "resampler.ln_kv.weight", "mm.model.ln_kv.weight");
-        _resamplerLnKvB = VisionOps.GetTensorPtr<float>(gguf, "resampler.ln_kv.bias", "mm.model.ln_kv.bias");
+        _resamplerLnQW = VisionOps.GetTensorArray(gguf, "resampler.ln_q.weight", "mm.model.ln_q.weight");
+        _resamplerLnQB = VisionOps.GetTensorArray(gguf, "resampler.ln_q.bias", "mm.model.ln_q.bias");
+        _resamplerLnKvW = VisionOps.GetTensorArray(gguf, "resampler.ln_kv.weight", "mm.model.ln_kv.weight");
+        _resamplerLnKvB = VisionOps.GetTensorArray(gguf, "resampler.ln_kv.bias", "mm.model.ln_kv.bias");
         _resamplerAttnQW = VisionOps.GetTensor(gguf, "resampler.attn.q.weight", "mm.model.attn_q.weight");
-        _resamplerAttnQB = VisionOps.GetTensorPtr<float>(gguf, "resampler.attn.q.bias", "mm.model.attn_q.bias");
+        _resamplerAttnQB = VisionOps.GetTensorArray(gguf, "resampler.attn.q.bias", "mm.model.attn_q.bias");
         _resamplerAttnKW = VisionOps.GetTensor(gguf, "resampler.attn.k.weight", "mm.model.attn_k.weight");
-        _resamplerAttnKB = VisionOps.GetTensorPtr<float>(gguf, "resampler.attn.k.bias", "mm.model.attn_k.bias");
+        _resamplerAttnKB = VisionOps.GetTensorArray(gguf, "resampler.attn.k.bias", "mm.model.attn_k.bias");
         _resamplerAttnVW = VisionOps.GetTensor(gguf, "resampler.attn.v.weight", "mm.model.attn_v.weight");
-        _resamplerAttnVB = VisionOps.GetTensorPtr<float>(gguf, "resampler.attn.v.bias", "mm.model.attn_v.bias");
+        _resamplerAttnVB = VisionOps.GetTensorArray(gguf, "resampler.attn.v.bias", "mm.model.attn_v.bias");
         _resamplerAttnOutW = VisionOps.GetTensor(gguf, "resampler.attn.out.weight", "mm.model.attn_o.weight");
-        _resamplerAttnOutB = VisionOps.GetTensorPtr<float>(gguf, "resampler.attn.out.bias", "mm.model.attn_o.bias");
+        _resamplerAttnOutB = VisionOps.GetTensorArray(gguf, "resampler.attn.out.bias", "mm.model.attn_o.bias");
         _resamplerProjW = VisionOps.GetTensor(gguf, "resampler.proj.weight", "mm.model.proj.weight");
-        _resamplerProjB = VisionOps.GetTensorPtr<float>(gguf, "resampler.proj.bias", "mm.model.proj.bias");
+        _resamplerProjB = VisionOps.GetTensorArray(gguf, "resampler.proj.bias", "mm.model.proj.bias");
 
         // Layers
         _blocks = new LayerWeights[_layers];
@@ -121,24 +121,24 @@ public sealed unsafe class MiniCpmVisionEncoder
 
             _blocks[l] = new LayerWeights
             {
-                Ln1W = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.ln1.weight"),
-                Ln1B = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.ln1.bias"),
+                Ln1W = VisionOps.GetTensorArray(gguf, $"v.blk.{l}.ln1.weight"),
+                Ln1B = VisionOps.GetTensorArray(gguf, $"v.blk.{l}.ln1.bias"),
                 AttnQkvW = VisionOps.GetTensor(gguf, $"v.blk.{l}.attn_qkv.weight"),
-                AttnQkvB = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.attn_qkv.bias"),
+                AttnQkvB = VisionOps.GetTensorArray(gguf, $"v.blk.{l}.attn_qkv.bias"),
                 AttnQW = VisionOps.GetTensor(gguf, $"v.blk.{l}.attn_q.weight"),
-                AttnQB = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.attn_q.bias"),
+                AttnQB = VisionOps.GetTensorArray(gguf, $"v.blk.{l}.attn_q.bias"),
                 AttnKW = VisionOps.GetTensor(gguf, $"v.blk.{l}.attn_k.weight"),
-                AttnKB = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.attn_k.bias"),
+                AttnKB = VisionOps.GetTensorArray(gguf, $"v.blk.{l}.attn_k.bias"),
                 AttnVW = VisionOps.GetTensor(gguf, $"v.blk.{l}.attn_v.weight"),
-                AttnVB = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.attn_v.bias"),
+                AttnVB = VisionOps.GetTensorArray(gguf, $"v.blk.{l}.attn_v.bias"),
                 AttnOutW = VisionOps.GetTensor(gguf, $"v.blk.{l}.attn_out.weight"),
-                AttnOutB = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.attn_out.bias"),
-                Ln2W = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.ln2.weight"),
-                Ln2B = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.ln2.bias"),
+                AttnOutB = VisionOps.GetTensorArray(gguf, $"v.blk.{l}.attn_out.bias"),
+                Ln2W = VisionOps.GetTensorArray(gguf, $"v.blk.{l}.ln2.weight"),
+                Ln2B = VisionOps.GetTensorArray(gguf, $"v.blk.{l}.ln2.bias"),
                 FfnUpW = VisionOps.GetTensor(gguf, $"v.blk.{l}.ffn_up.weight"),
-                FfnUpB = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.ffn_up.bias"),
+                FfnUpB = VisionOps.GetTensorArray(gguf, $"v.blk.{l}.ffn_up.bias"),
                 FfnDownW = VisionOps.GetTensor(gguf, $"v.blk.{l}.ffn_down.weight"),
-                FfnDownB = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.ffn_down.bias"),
+                FfnDownB = VisionOps.GetTensorArray(gguf, $"v.blk.{l}.ffn_down.bias"),
                 FfnIntermediate = intermediate
             };
         }
@@ -199,57 +199,65 @@ public sealed unsafe class MiniCpmVisionEncoder
         {
             var blk = _blocks[l];
 
-            // LayerNorm 1
-            Array.Copy(hiddenStates, normed, hiddenStates.Length);
-            ApplyLayerNorm(normed, numPatches, _embd, blk.Ln1W, blk.Ln1B);
-
-            // Self-Attention Q, K, V
-            if (blk.AttnQkvW.IsValid)
+            fixed (float* ln1W = blk.Ln1W, ln1B = blk.Ln1B, attnQkvB = blk.AttnQkvB, attnQB = blk.AttnQB,
+                   attnKB = blk.AttnKB, attnVB = blk.AttnVB, attnOutB = blk.AttnOutB, ln2W = blk.Ln2W,
+                   ln2B = blk.Ln2B, ffnUpB = blk.FfnUpB, ffnDownB = blk.FfnDownB)
             {
-                VisionOps.MatVecAny(normed, blk.AttnQkvW, blk.AttnQkvB, numPatches, _embd, 3 * _embd, qkv);
-                for (int p = 0; p < numPatches; p++)
+                // LayerNorm 1
+                Array.Copy(hiddenStates, normed, hiddenStates.Length);
+                ApplyLayerNorm(normed, numPatches, _embd, ln1W, ln1B);
+
+                // Self-Attention Q, K, V
+                if (blk.AttnQkvW.IsValid)
                 {
-                    Array.Copy(qkv, p * 3 * _embd, qBuf, p * _embd, _embd);
-                    Array.Copy(qkv, p * 3 * _embd + _embd, kBuf, p * _embd, _embd);
-                    Array.Copy(qkv, p * 3 * _embd + 2 * _embd, vBuf, p * _embd, _embd);
+                    VisionOps.MatVecAny(normed, blk.AttnQkvW, attnQkvB, numPatches, _embd, 3 * _embd, qkv);
+                    for (int p = 0; p < numPatches; p++)
+                    {
+                        Array.Copy(qkv, p * 3 * _embd, qBuf, p * _embd, _embd);
+                        Array.Copy(qkv, p * 3 * _embd + _embd, kBuf, p * _embd, _embd);
+                        Array.Copy(qkv, p * 3 * _embd + 2 * _embd, vBuf, p * _embd, _embd);
+                    }
                 }
+                else
+                {
+                    VisionOps.MatVecAny(normed, blk.AttnQW, attnQB, numPatches, _embd, _embd, qBuf);
+                    VisionOps.MatVecAny(normed, blk.AttnKW, attnKB, numPatches, _embd, _embd, kBuf);
+                    VisionOps.MatVecAny(normed, blk.AttnVW, attnVB, numPatches, _embd, _embd, vBuf);
+                }
+
+                ComputeAttention(qBuf, kBuf, vBuf, numPatches, _heads, _headDim, normed);
+                VisionOps.MatVecAny(normed, blk.AttnOutW, attnOutB, numPatches, _embd, _embd, attnOut);
+
+                // Residual 1
+                for (int i = 0; i < hiddenStates.Length; i++) hiddenStates[i] += attnOut[i];
+
+                // LayerNorm 2 & FFN
+                Array.Copy(hiddenStates, normed, hiddenStates.Length);
+                ApplyLayerNorm(normed, numPatches, _embd, ln2W, ln2B);
+
+                int intermediate = blk.FfnIntermediate;
+                VisionOps.MatVecAny(normed, blk.FfnUpW, ffnUpB, numPatches, _embd, intermediate, ffnMid);
+
+                // GELU
+                int ffnLen = numPatches * intermediate;
+                for (int i = 0; i < ffnLen; i++)
+                {
+                    float x = ffnMid[i];
+                    ffnMid[i] = 0.5f * x * (1.0f + MathF.Tanh(MathF.Sqrt(2.0f / MathF.PI) * (x + 0.044715f * x * x * x)));
+                }
+
+                VisionOps.MatVecAny(ffnMid, blk.FfnDownW, ffnDownB, numPatches, intermediate, _embd, attnOut);
+
+                // Residual 2
+                for (int i = 0; i < hiddenStates.Length; i++) hiddenStates[i] += attnOut[i];
             }
-            else
-            {
-                VisionOps.MatVecAny(normed, blk.AttnQW, blk.AttnQB, numPatches, _embd, _embd, qBuf);
-                VisionOps.MatVecAny(normed, blk.AttnKW, blk.AttnKB, numPatches, _embd, _embd, kBuf);
-                VisionOps.MatVecAny(normed, blk.AttnVW, blk.AttnVB, numPatches, _embd, _embd, vBuf);
-            }
-
-            ComputeAttention(qBuf, kBuf, vBuf, numPatches, _heads, _headDim, normed);
-            VisionOps.MatVecAny(normed, blk.AttnOutW, blk.AttnOutB, numPatches, _embd, _embd, attnOut);
-
-            // Residual 1
-            for (int i = 0; i < hiddenStates.Length; i++) hiddenStates[i] += attnOut[i];
-
-            // LayerNorm 2 & FFN
-            Array.Copy(hiddenStates, normed, hiddenStates.Length);
-            ApplyLayerNorm(normed, numPatches, _embd, blk.Ln2W, blk.Ln2B);
-
-            int intermediate = blk.FfnIntermediate;
-            VisionOps.MatVecAny(normed, blk.FfnUpW, blk.FfnUpB, numPatches, _embd, intermediate, ffnMid);
-
-            // GELU
-            int ffnLen = numPatches * intermediate;
-            for (int i = 0; i < ffnLen; i++)
-            {
-                float x = ffnMid[i];
-                ffnMid[i] = 0.5f * x * (1.0f + MathF.Tanh(MathF.Sqrt(2.0f / MathF.PI) * (x + 0.044715f * x * x * x)));
-            }
-
-            VisionOps.MatVecAny(ffnMid, blk.FfnDownW, blk.FfnDownB, numPatches, intermediate, _embd, attnOut);
-
-            // Residual 2
-            for (int i = 0; i < hiddenStates.Length; i++) hiddenStates[i] += attnOut[i];
         }
 
         // Post-LN
-        ApplyLayerNorm(hiddenStates, numPatches, _embd, _postLnW, _postLnB);
+        fixed (float* postLnW = _postLnW, postLnB = _postLnB)
+        {
+            ApplyLayerNorm(hiddenStates, numPatches, _embd, postLnW, postLnB);
+        }
 
         // 3. Resampler Projector: 2D Sinusoidal Cross-Attention
         return ApplyResampler(hiddenStates, patchesX, patchesY);
@@ -260,52 +268,59 @@ public sealed unsafe class MiniCpmVisionEncoder
         int numPatches = patchesX * patchesY;
         int resamplerDim = _projDim; // 3584
 
-        // V = KV_proj(vitEmbeddings)
-        var vProj = new float[numPatches * resamplerDim];
-        VisionOps.MatVecAny(vitEmbeddings, _resamplerKvProjW, null, numPatches, _embd, resamplerDim, vProj);
-        ApplyLayerNorm(vProj, numPatches, resamplerDim, _resamplerLnKvW, _resamplerLnKvB);
-
-        // Learned Q
-        var qLearned = new float[_queryCount * resamplerDim];
-        if (_resamplerQuery != null)
+        fixed (float* resamplerLnKvW = _resamplerLnKvW, resamplerLnKvB = _resamplerLnKvB,
+               resamplerLnQW = _resamplerLnQW, resamplerLnQB = _resamplerLnQB,
+               resamplerAttnQB = _resamplerAttnQB, resamplerAttnKB = _resamplerAttnKB,
+               resamplerAttnVB = _resamplerAttnVB, resamplerAttnOutB = _resamplerAttnOutB,
+               resamplerProjB = _resamplerProjB)
         {
-            for (int i = 0; i < qLearned.Length; i++) qLearned[i] = _resamplerQuery[i];
+            // V = KV_proj(vitEmbeddings)
+            var vProj = new float[numPatches * resamplerDim];
+            VisionOps.MatVecAny(vitEmbeddings, _resamplerKvProjW, null, numPatches, _embd, resamplerDim, vProj);
+            ApplyLayerNorm(vProj, numPatches, resamplerDim, resamplerLnKvW, resamplerLnKvB);
+
+            // Learned Q
+            var qLearned = new float[_queryCount * resamplerDim];
+            if (_resamplerQuery != null)
+            {
+                for (int i = 0; i < qLearned.Length; i++) qLearned[i] = _resamplerQuery[i];
+            }
+            ApplyLayerNorm(qLearned, _queryCount, resamplerDim, resamplerLnQW, resamplerLnQB);
+
+            // 2D Sinusoidal Position Embeddings added to K: K = V + pos_embed
+            var kPos = new float[numPatches * resamplerDim];
+            Array.Copy(vProj, kPos, vProj.Length);
+            Add2dSinusoidalPositionEmbedding(kPos, patchesX, patchesY, resamplerDim);
+
+            // Cross-Attention: Q (_queryCount) x K (numPatches) -> V (numPatches)
+            var resamplerQ = new float[_queryCount * resamplerDim];
+            var resamplerK = new float[numPatches * resamplerDim];
+            var resamplerV = new float[numPatches * resamplerDim];
+
+            VisionOps.MatVecAny(qLearned, _resamplerAttnQW, resamplerAttnQB, _queryCount, resamplerDim, resamplerDim, resamplerQ);
+            VisionOps.MatVecAny(kPos, _resamplerAttnKW, resamplerAttnKB, numPatches, resamplerDim, resamplerDim, resamplerK);
+            VisionOps.MatVecAny(vProj, _resamplerAttnVW, resamplerAttnVB, numPatches, resamplerDim, resamplerDim, resamplerV);
+
+            int resHeads = resamplerDim / 128;
+            if (resHeads <= 0) resHeads = 16;
+            int resHeadDim = resamplerDim / resHeads;
+
+            var crossAttnOut = new float[_queryCount * resamplerDim];
+            ComputeCrossAttention(resamplerQ, resamplerK, resamplerV, _queryCount, numPatches, resHeads, resHeadDim, crossAttnOut);
+
+            var finalTokens = new float[_queryCount * _projDim];
+            VisionOps.MatVecAny(crossAttnOut, _resamplerAttnOutW, resamplerAttnOutB, _queryCount, resamplerDim, resamplerDim, finalTokens);
+
+            // Optional final projection layer
+            if (_resamplerProjW.IsValid)
+            {
+                var projected = new float[_queryCount * _projDim];
+                VisionOps.MatVecAny(finalTokens, _resamplerProjW, resamplerProjB, _queryCount, resamplerDim, _projDim, projected);
+                return projected;
+            }
+
+            return finalTokens;
         }
-        ApplyLayerNorm(qLearned, _queryCount, resamplerDim, _resamplerLnQW, _resamplerLnQB);
-
-        // 2D Sinusoidal Position Embeddings added to K: K = V + pos_embed
-        var kPos = new float[numPatches * resamplerDim];
-        Array.Copy(vProj, kPos, vProj.Length);
-        Add2dSinusoidalPositionEmbedding(kPos, patchesX, patchesY, resamplerDim);
-
-        // Cross-Attention: Q (_queryCount) x K (numPatches) -> V (numPatches)
-        var resamplerQ = new float[_queryCount * resamplerDim];
-        var resamplerK = new float[numPatches * resamplerDim];
-        var resamplerV = new float[numPatches * resamplerDim];
-
-        VisionOps.MatVecAny(qLearned, _resamplerAttnQW, _resamplerAttnQB, _queryCount, resamplerDim, resamplerDim, resamplerQ);
-        VisionOps.MatVecAny(kPos, _resamplerAttnKW, _resamplerAttnKB, numPatches, resamplerDim, resamplerDim, resamplerK);
-        VisionOps.MatVecAny(vProj, _resamplerAttnVW, _resamplerAttnVB, numPatches, resamplerDim, resamplerDim, resamplerV);
-
-        int resHeads = resamplerDim / 128;
-        if (resHeads <= 0) resHeads = 16;
-        int resHeadDim = resamplerDim / resHeads;
-
-        var crossAttnOut = new float[_queryCount * resamplerDim];
-        ComputeCrossAttention(resamplerQ, resamplerK, resamplerV, _queryCount, numPatches, resHeads, resHeadDim, crossAttnOut);
-
-        var finalTokens = new float[_queryCount * _projDim];
-        VisionOps.MatVecAny(crossAttnOut, _resamplerAttnOutW, _resamplerAttnOutB, _queryCount, resamplerDim, resamplerDim, finalTokens);
-
-        // Optional final projection layer
-        if (_resamplerProjW.IsValid)
-        {
-            var projected = new float[_queryCount * _projDim];
-            VisionOps.MatVecAny(finalTokens, _resamplerProjW, _resamplerProjB, _queryCount, resamplerDim, _projDim, projected);
-            return projected;
-        }
-
-        return finalTokens;
     }
 
     private void ExtractPatches(ReadOnlySpan<float> chw, int width, int height, int patchesX, int patchesY, float[] output)

@@ -20,36 +20,36 @@ public sealed unsafe class Granite4VisionEncoder
     private readonly float _eps;
 
     private readonly float[] _patchEmbdWF32;
-    private readonly float* _patchEmbdB;
+    private readonly float[]? _patchEmbdB;
     private readonly float[] _posEmbdF32;
-    private readonly float* _postLnW;
-    private readonly float* _postLnB;
+    private readonly float[]? _postLnW;
+    private readonly float[]? _postLnB;
 
-    private readonly float* _projNormW;
-    private readonly float* _projNormB;
+    private readonly float[]? _projNormW;
+    private readonly float[]? _projNormB;
     private readonly VisionTensorRef _projW;
-    private readonly float* _projB;
+    private readonly float[]? _projB;
 
     private readonly LayerWeights[] _blocks;
 
     private sealed class LayerWeights
     {
-        public float* Ln1W;
-        public float* Ln1B;
+        public float[]? Ln1W;
+        public float[]? Ln1B;
         public VisionTensorRef AttnQW;
-        public float* AttnQB;
+        public float[]? AttnQB;
         public VisionTensorRef AttnKW;
-        public float* AttnKB;
+        public float[]? AttnKB;
         public VisionTensorRef AttnVW;
-        public float* AttnVB;
+        public float[]? AttnVB;
         public VisionTensorRef AttnOutW;
-        public float* AttnOutB;
-        public float* Ln2W;
-        public float* Ln2B;
+        public float[]? AttnOutB;
+        public float[]? Ln2W;
+        public float[]? Ln2B;
         public VisionTensorRef FfnUpW;
-        public float* FfnUpB;
+        public float[]? FfnUpB;
         public VisionTensorRef FfnDownW;
-        public float* FfnDownB;
+        public float[]? FfnDownB;
         public int FfnIntermediate;
     }
 
@@ -68,15 +68,15 @@ public sealed unsafe class Granite4VisionEncoder
 
         var gguf = model.Gguf;
         _patchEmbdWF32 = VisionOps.DequantizeToFloat32(VisionOps.GetTensor(gguf, "v.patch_embd.weight"));
-        _patchEmbdB = VisionOps.GetTensorPtr<float>(gguf, "v.patch_embd.bias");
+        _patchEmbdB = VisionOps.GetTensorArray(gguf, "v.patch_embd.bias");
         _posEmbdF32 = VisionOps.DequantizeToFloat32(VisionOps.GetTensor(gguf, "v.position_embd.weight", "v.position_embd"));
-        _postLnW = VisionOps.GetTensorPtr<float>(gguf, "v.post_ln.weight");
-        _postLnB = VisionOps.GetTensorPtr<float>(gguf, "v.post_ln.bias");
+        _postLnW = VisionOps.GetTensorArray(gguf, "v.post_ln.weight");
+        _postLnB = VisionOps.GetTensorArray(gguf, "v.post_ln.bias");
 
-        _projNormW = VisionOps.GetTensorPtr<float>(gguf, "mm.proj_norm.weight", "mm.0.weight");
-        _projNormB = VisionOps.GetTensorPtr<float>(gguf, "mm.proj_norm.bias", "mm.0.bias");
+        _projNormW = VisionOps.GetTensorArray(gguf, "mm.proj_norm.weight", "mm.0.weight");
+        _projNormB = VisionOps.GetTensorArray(gguf, "mm.proj_norm.bias", "mm.0.bias");
         _projW = VisionOps.GetTensor(gguf, "mm.proj.weight", "mm.1.weight");
-        _projB = VisionOps.GetTensorPtr<float>(gguf, "mm.proj.bias", "mm.1.bias");
+        _projB = VisionOps.GetTensorArray(gguf, "mm.proj.bias", "mm.1.bias");
 
         _blocks = new LayerWeights[_layers];
         for (int l = 0; l < _layers; l++)
@@ -86,22 +86,22 @@ public sealed unsafe class Granite4VisionEncoder
 
             _blocks[l] = new LayerWeights
             {
-                Ln1W = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.ln1.weight"),
-                Ln1B = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.ln1.bias"),
+                Ln1W = VisionOps.GetTensorArray(gguf, $"v.blk.{l}.ln1.weight"),
+                Ln1B = VisionOps.GetTensorArray(gguf, $"v.blk.{l}.ln1.bias"),
                 AttnQW = VisionOps.GetTensor(gguf, $"v.blk.{l}.attn_q.weight"),
-                AttnQB = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.attn_q.bias"),
+                AttnQB = VisionOps.GetTensorArray(gguf, $"v.blk.{l}.attn_q.bias"),
                 AttnKW = VisionOps.GetTensor(gguf, $"v.blk.{l}.attn_k.weight"),
-                AttnKB = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.attn_k.bias"),
+                AttnKB = VisionOps.GetTensorArray(gguf, $"v.blk.{l}.attn_k.bias"),
                 AttnVW = VisionOps.GetTensor(gguf, $"v.blk.{l}.attn_v.weight"),
-                AttnVB = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.attn_v.bias"),
+                AttnVB = VisionOps.GetTensorArray(gguf, $"v.blk.{l}.attn_v.bias"),
                 AttnOutW = VisionOps.GetTensor(gguf, $"v.blk.{l}.attn_out.weight"),
-                AttnOutB = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.attn_out.bias"),
-                Ln2W = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.ln2.weight"),
-                Ln2B = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.ln2.bias"),
+                AttnOutB = VisionOps.GetTensorArray(gguf, $"v.blk.{l}.attn_out.bias"),
+                Ln2W = VisionOps.GetTensorArray(gguf, $"v.blk.{l}.ln2.weight"),
+                Ln2B = VisionOps.GetTensorArray(gguf, $"v.blk.{l}.ln2.bias"),
                 FfnUpW = VisionOps.GetTensor(gguf, $"v.blk.{l}.ffn_up.weight"),
-                FfnUpB = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.ffn_up.bias"),
+                FfnUpB = VisionOps.GetTensorArray(gguf, $"v.blk.{l}.ffn_up.bias"),
                 FfnDownW = VisionOps.GetTensor(gguf, $"v.blk.{l}.ffn_down.weight"),
-                FfnDownB = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.ffn_down.bias"),
+                FfnDownB = VisionOps.GetTensorArray(gguf, $"v.blk.{l}.ffn_down.bias"),
                 FfnIntermediate = intermediate
             };
         }
@@ -147,40 +147,54 @@ public sealed unsafe class Granite4VisionEncoder
         {
             var blk = _blocks[l];
 
-            Array.Copy(hiddenStates, normed, hiddenStates.Length);
-            VisionOps.LayerNorm(normed, numPatches, _embd, blk.Ln1W, blk.Ln1B, _eps);
+            fixed (float* ln1W = blk.Ln1W, ln1B = blk.Ln1B, attnQB = blk.AttnQB, attnKB = blk.AttnKB,
+                   attnVB = blk.AttnVB, attnOutB = blk.AttnOutB, ln2W = blk.Ln2W, ln2B = blk.Ln2B,
+                   ffnUpB = blk.FfnUpB, ffnDownB = blk.FfnDownB)
+            {
+                Array.Copy(hiddenStates, normed, hiddenStates.Length);
+                VisionOps.LayerNorm(normed, numPatches, _embd, ln1W, ln1B, _eps);
 
-            VisionOps.MatVecAny(normed, blk.AttnQW, blk.AttnQB, numPatches, _embd, _embd, qBuf);
-            VisionOps.MatVecAny(normed, blk.AttnKW, blk.AttnKB, numPatches, _embd, _embd, kBuf);
-            VisionOps.MatVecAny(normed, blk.AttnVW, blk.AttnVB, numPatches, _embd, _embd, vBuf);
+                VisionOps.MatVecAny(normed, blk.AttnQW, attnQB, numPatches, _embd, _embd, qBuf);
+                VisionOps.MatVecAny(normed, blk.AttnKW, attnKB, numPatches, _embd, _embd, kBuf);
+                VisionOps.MatVecAny(normed, blk.AttnVW, attnVB, numPatches, _embd, _embd, vBuf);
 
-            VisionOps.Attention(qBuf, kBuf, vBuf, numPatches, _heads, _headDim, normed);
-            VisionOps.MatVecAny(normed, blk.AttnOutW, blk.AttnOutB, numPatches, _embd, _embd, attnOut);
+                VisionOps.Attention(qBuf, kBuf, vBuf, numPatches, _heads, _headDim, normed);
+                VisionOps.MatVecAny(normed, blk.AttnOutW, attnOutB, numPatches, _embd, _embd, attnOut);
 
-            for (int i = 0; i < hiddenStates.Length; i++) hiddenStates[i] += attnOut[i];
+                for (int i = 0; i < hiddenStates.Length; i++) hiddenStates[i] += attnOut[i];
 
-            Array.Copy(hiddenStates, normed, hiddenStates.Length);
-            VisionOps.LayerNorm(normed, numPatches, _embd, blk.Ln2W, blk.Ln2B, _eps);
+                Array.Copy(hiddenStates, normed, hiddenStates.Length);
+                VisionOps.LayerNorm(normed, numPatches, _embd, ln2W, ln2B, _eps);
 
-            int intermediate = blk.FfnIntermediate;
-            VisionOps.MatVecAny(normed, blk.FfnUpW, blk.FfnUpB, numPatches, _embd, intermediate, ffnMid);
-            VisionOps.Gelu(ffnMid.AsSpan(0, numPatches * intermediate));
-            VisionOps.MatVecAny(ffnMid, blk.FfnDownW, blk.FfnDownB, numPatches, intermediate, _embd, attnOut);
+                int intermediate = blk.FfnIntermediate;
+                VisionOps.MatVecAny(normed, blk.FfnUpW, ffnUpB, numPatches, _embd, intermediate, ffnMid);
+                VisionOps.Gelu(ffnMid.AsSpan(0, numPatches * intermediate));
+                VisionOps.MatVecAny(ffnMid, blk.FfnDownW, ffnDownB, numPatches, intermediate, _embd, attnOut);
 
-            for (int i = 0; i < hiddenStates.Length; i++) hiddenStates[i] += attnOut[i];
+                for (int i = 0; i < hiddenStates.Length; i++) hiddenStates[i] += attnOut[i];
+            }
         }
 
-        if (_postLnW != null) VisionOps.LayerNorm(hiddenStates, numPatches, _embd, _postLnW, _postLnB, _eps);
+        if (_postLnW != null)
+        {
+            fixed (float* postLnW = _postLnW, postLnB = _postLnB)
+            {
+                VisionOps.LayerNorm(hiddenStates, numPatches, _embd, postLnW, postLnB, _eps);
+            }
+        }
 
         // Projector: WindowQFormer / MLP downsampler
         var projOut = new float[numPatches * _projDim];
         if (_projW.IsValid)
         {
-            if (_projNormW != null)
+            fixed (float* projNormW = _projNormW, projNormB = _projNormB, projB = _projB)
             {
-                VisionOps.LayerNorm(hiddenStates, numPatches, _embd, _projNormW, _projNormB, 1e-5f);
+                if (projNormW != null)
+                {
+                    VisionOps.LayerNorm(hiddenStates, numPatches, _embd, projNormW, projNormB, 1e-5f);
+                }
+                VisionOps.MatVecAny(hiddenStates, _projW, projB, numPatches, _embd, _projDim, projOut);
             }
-            VisionOps.MatVecAny(hiddenStates, _projW, _projB, numPatches, _embd, _projDim, projOut);
         }
         else
         {

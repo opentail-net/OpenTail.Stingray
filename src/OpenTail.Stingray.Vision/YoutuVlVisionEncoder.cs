@@ -19,16 +19,16 @@ public sealed unsafe class YoutuVlVisionEncoder
     private readonly float _eps;
 
     private readonly float[]? _patchEmbdW;
-    private readonly float*   _patchEmbdB;
-    private readonly float*   _preLnW;
-    private readonly float*   _preLnB;
-    private readonly float*   _postLnW;
-    private readonly float*   _postLnB;
-    private readonly float*   _mmInputNormW;
+    private readonly float[]? _patchEmbdB;
+    private readonly float[]? _preLnW;
+    private readonly float[]? _preLnB;
+    private readonly float[]? _postLnW;
+    private readonly float[]? _postLnB;
+    private readonly float[]? _mmInputNormW;
     private readonly float[]? _mm0W;
-    private readonly float*   _mm0B;
+    private readonly float[]? _mm0B;
     private readonly float[]? _mm1W;
-    private readonly float*   _mm1B;
+    private readonly float[]? _mm1B;
 
     private readonly int _mm0OutDim;
     private readonly int _mm1OutDim;
@@ -37,11 +37,11 @@ public sealed unsafe class YoutuVlVisionEncoder
 
     private sealed class LayerWeights
     {
-        public float* Ln1W, Ln1B, Ln2W, Ln2B;
+        public float[]? Ln1W, Ln1B, Ln2W, Ln2B;
         public float[]? QW, KW, VW, OW;
-        public float* QB, KB, VB, OB;
+        public float[]? QB, KB, VB, OB;
         public float[]? FfnUpW, FfnDownW;
-        public float* FfnUpB, FfnDownB;
+        public float[]? FfnUpB, FfnDownB;
         public int FfnIntermediate;
     }
 
@@ -61,16 +61,16 @@ public sealed unsafe class YoutuVlVisionEncoder
         var gguf = model.Gguf;
 
         _patchEmbdW   = VisionOps.LoadTensorF32(gguf, "v.patch_embd.weight");
-        _patchEmbdB   = Ptr<float>(gguf, "v.patch_embd.bias");
-        _preLnW       = Ptr<float>(gguf, "v.pre_ln.weight");
-        _preLnB       = Ptr<float>(gguf, "v.pre_ln.bias");
-        _postLnW      = Ptr<float>(gguf, "v.post_ln.weight");
-        _postLnB      = Ptr<float>(gguf, "v.post_ln.bias");
-        _mmInputNormW = Ptr<float>(gguf, "mm.input_norm.weight");
+        _patchEmbdB   = VisionOps.GetTensorArray(gguf, "v.patch_embd.bias");
+        _preLnW       = VisionOps.GetTensorArray(gguf, "v.pre_ln.weight");
+        _preLnB       = VisionOps.GetTensorArray(gguf, "v.pre_ln.bias");
+        _postLnW      = VisionOps.GetTensorArray(gguf, "v.post_ln.weight");
+        _postLnB      = VisionOps.GetTensorArray(gguf, "v.post_ln.bias");
+        _mmInputNormW = VisionOps.GetTensorArray(gguf, "mm.input_norm.weight");
         _mm0W         = VisionOps.LoadTensorF32(gguf, "mm.0.weight");
-        _mm0B         = Ptr<float>(gguf, "mm.0.bias");
+        _mm0B         = VisionOps.GetTensorArray(gguf, "mm.0.bias");
         _mm1W         = VisionOps.LoadTensorF32(gguf, "mm.1.weight");
-        _mm1B         = Ptr<float>(gguf, "mm.1.bias");
+        _mm1B         = VisionOps.GetTensorArray(gguf, "mm.1.bias");
 
         var mm0T = gguf.FindTensor("mm.0.weight");
         _mm0OutDim = mm0T.HasValue ? (int)mm0T.Value.Dimensions[1] : _projDim;
@@ -83,22 +83,22 @@ public sealed unsafe class YoutuVlVisionEncoder
             var upT = gguf.FindTensor($"v.blk.{l}.ffn_up.weight");
             _blocks[l] = new LayerWeights
             {
-                Ln1W     = Ptr<float>(gguf, $"v.blk.{l}.ln1.weight"),
-                Ln1B     = Ptr<float>(gguf, $"v.blk.{l}.ln1.bias"),
+                Ln1W     = VisionOps.GetTensorArray(gguf, $"v.blk.{l}.ln1.weight"),
+                Ln1B     = VisionOps.GetTensorArray(gguf, $"v.blk.{l}.ln1.bias"),
                 QW       = VisionOps.LoadTensorF32(gguf, $"v.blk.{l}.attn_q.weight"),
-                QB       = Ptr<float>(gguf, $"v.blk.{l}.attn_q.bias"),
+                QB       = VisionOps.GetTensorArray(gguf, $"v.blk.{l}.attn_q.bias"),
                 KW       = VisionOps.LoadTensorF32(gguf, $"v.blk.{l}.attn_k.weight"),
-                KB       = Ptr<float>(gguf, $"v.blk.{l}.attn_k.bias"),
+                KB       = VisionOps.GetTensorArray(gguf, $"v.blk.{l}.attn_k.bias"),
                 VW       = VisionOps.LoadTensorF32(gguf, $"v.blk.{l}.attn_v.weight"),
-                VB       = Ptr<float>(gguf, $"v.blk.{l}.attn_v.bias"),
+                VB       = VisionOps.GetTensorArray(gguf, $"v.blk.{l}.attn_v.bias"),
                 OW       = VisionOps.LoadTensorF32(gguf, $"v.blk.{l}.attn_out.weight"),
-                OB       = Ptr<float>(gguf, $"v.blk.{l}.attn_out.bias"),
-                Ln2W     = Ptr<float>(gguf, $"v.blk.{l}.ln2.weight"),
-                Ln2B     = Ptr<float>(gguf, $"v.blk.{l}.ln2.bias"),
+                OB       = VisionOps.GetTensorArray(gguf, $"v.blk.{l}.attn_out.bias"),
+                Ln2W     = VisionOps.GetTensorArray(gguf, $"v.blk.{l}.ln2.weight"),
+                Ln2B     = VisionOps.GetTensorArray(gguf, $"v.blk.{l}.ln2.bias"),
                 FfnUpW   = VisionOps.LoadTensorF32(gguf, $"v.blk.{l}.ffn_up.weight"),
-                FfnUpB   = Ptr<float>(gguf, $"v.blk.{l}.ffn_up.bias"),
+                FfnUpB   = VisionOps.GetTensorArray(gguf, $"v.blk.{l}.ffn_up.bias"),
                 FfnDownW = VisionOps.LoadTensorF32(gguf, $"v.blk.{l}.ffn_down.weight"),
-                FfnDownB = Ptr<float>(gguf, $"v.blk.{l}.ffn_down.bias"),
+                FfnDownB = VisionOps.GetTensorArray(gguf, $"v.blk.{l}.ffn_down.bias"),
                 FfnIntermediate = upT.HasValue ? (int)upT.Value.Dimensions[1] : _embd * 4,
             };
         }
@@ -116,7 +116,9 @@ public sealed unsafe class YoutuVlVisionEncoder
         Im2ColAndEmbed(chw, imgWidth, imgHeight, ps, patchesX, patchesY, x);
 
         if (_preLnW != null)
-            VisionOps.LayerNorm(x, nP, _embd, _preLnW, _preLnB, _eps);
+        {
+            fixed (float* preLnW = _preLnW, preLnB = _preLnB) VisionOps.LayerNorm(x, nP, _embd, preLnW, preLnB, _eps);
+        }
 
         var normed = new float[nP * _embd];
         var qBuf   = new float[nP * _embd];
@@ -136,37 +138,45 @@ public sealed unsafe class YoutuVlVisionEncoder
         {
             var b = _blocks[l];
 
-            Array.Copy(x, normed, x.Length);
-            VisionOps.LayerNorm(normed, nP, _embd, b.Ln1W, b.Ln1B, _eps);
+            fixed (float* ln1W = b.Ln1W, ln1B = b.Ln1B, qb = b.QB, kb = b.KB, vb = b.VB, ob = b.OB,
+                   ln2W = b.Ln2W, ln2B = b.Ln2B, ffnUpB = b.FfnUpB, ffnDownB = b.FfnDownB)
+            {
+                Array.Copy(x, normed, x.Length);
+                VisionOps.LayerNorm(normed, nP, _embd, ln1W, ln1B, _eps);
 
-            VisionOps.MatVec(normed, b.QW, b.QB, nP, _embd, _embd, qBuf);
-            VisionOps.MatVec(normed, b.KW, b.KB, nP, _embd, _embd, kBuf);
-            VisionOps.MatVec(normed, b.VW, b.VB, nP, _embd, _embd, vBuf);
+                VisionOps.MatVec(normed, b.QW, qb, nP, _embd, _embd, qBuf);
+                VisionOps.MatVec(normed, b.KW, kb, nP, _embd, _embd, kBuf);
+                VisionOps.MatVec(normed, b.VW, vb, nP, _embd, _embd, vBuf);
 
-            // 2D M-RoPE
-            VisionOps.ApplyMRoPE(qBuf, kBuf, patchesY, patchesX, _heads, _heads, _headDim, theta: 10000.0f);
+                // 2D M-RoPE
+                VisionOps.ApplyMRoPE(qBuf, kBuf, patchesY, patchesX, _heads, _heads, _headDim, theta: 10000.0f);
 
-            VisionOps.Attention(qBuf, kBuf, vBuf, nP, _heads, _headDim, attnOut);
-            VisionOps.MatVec(attnOut, b.OW, b.OB, nP, _embd, _embd, tmp);
-            for (int i = 0; i < x.Length; i++) x[i] += tmp[i];
+                VisionOps.Attention(qBuf, kBuf, vBuf, nP, _heads, _headDim, attnOut);
+                VisionOps.MatVec(attnOut, b.OW, ob, nP, _embd, _embd, tmp);
+                for (int i = 0; i < x.Length; i++) x[i] += tmp[i];
 
-            Array.Copy(x, normed, x.Length);
-            VisionOps.LayerNorm(normed, nP, _embd, b.Ln2W, b.Ln2B, _eps);
+                Array.Copy(x, normed, x.Length);
+                VisionOps.LayerNorm(normed, nP, _embd, ln2W, ln2B, _eps);
 
-            int inter = b.FfnIntermediate;
-            VisionOps.MatVec(normed, b.FfnUpW, b.FfnUpB, nP, _embd, inter, mid);
-            VisionOps.Gelu(mid.AsSpan(0, nP * inter));
+                int inter = b.FfnIntermediate;
+                VisionOps.MatVec(normed, b.FfnUpW, ffnUpB, nP, _embd, inter, mid);
+                VisionOps.Gelu(mid.AsSpan(0, nP * inter));
 
-            VisionOps.MatVec(mid, b.FfnDownW, b.FfnDownB, nP, inter, _embd, tmp);
-            for (int i = 0; i < x.Length; i++) x[i] += tmp[i];
+                VisionOps.MatVec(mid, b.FfnDownW, ffnDownB, nP, inter, _embd, tmp);
+                for (int i = 0; i < x.Length; i++) x[i] += tmp[i];
+            }
         }
 
         if (_postLnW != null)
-            VisionOps.LayerNorm(x, nP, _embd, _postLnW, _postLnB, _eps);
+        {
+            fixed (float* postLnW = _postLnW, postLnB = _postLnB) VisionOps.LayerNorm(x, nP, _embd, postLnW, postLnB, _eps);
+        }
 
         // VLPatchMerger: RMSNorm -> spatial merge -> mm.0 (GELU) -> mm.1
         if (_mmInputNormW != null)
-            VisionOps.RmsNorm(x, nP, _embd, _mmInputNormW, _eps);
+        {
+            fixed (float* mmInputNormW = _mmInputNormW) VisionOps.RmsNorm(x, nP, _embd, mmInputNormW, _eps);
+        }
 
         int m = _mergeFactor;
         int outX = Math.Max(1, patchesX / m);
@@ -178,13 +188,16 @@ public sealed unsafe class YoutuVlVisionEncoder
         VisionOps.PixelShuffle2x2(x, patchesY, patchesX, _embd, merged);
 
         var mm0Out = new float[tokenCount * _mm0OutDim];
-        VisionOps.MatVec(merged, _mm0W, _mm0B, tokenCount, mergedDim, _mm0OutDim, mm0Out);
-        VisionOps.Gelu(mm0Out);
+        fixed (float* mm0B = _mm0B, mm1B = _mm1B)
+        {
+            VisionOps.MatVec(merged, _mm0W, mm0B, tokenCount, mergedDim, _mm0OutDim, mm0Out);
+            VisionOps.Gelu(mm0Out);
 
-        var mm1Out = new float[tokenCount * _mm1OutDim];
-        VisionOps.MatVec(mm0Out, _mm1W, _mm1B, tokenCount, _mm0OutDim, _mm1OutDim, mm1Out);
+            var mm1Out = new float[tokenCount * _mm1OutDim];
+            VisionOps.MatVec(mm0Out, _mm1W, mm1B, tokenCount, _mm0OutDim, _mm1OutDim, mm1Out);
 
-        return mm1Out;
+            return mm1Out;
+        }
     }
 
     private void Im2ColAndEmbed(float[] chw, int imgW, int imgH, int ps, int px, int py, float[] dst)
@@ -214,12 +227,10 @@ public sealed unsafe class YoutuVlVisionEncoder
             }
         });
 
-        VisionOps.MatVec(patches, _patchEmbdW, _patchEmbdB, nP, patchDim, _embd, dst);
+        fixed (float* patchEmbdB = _patchEmbdB)
+        {
+            VisionOps.MatVec(patches, _patchEmbdW, patchEmbdB, nP, patchDim, _embd, dst);
+        }
     }
 
-    private static T* Ptr<T>(GgufModel gguf, string name) where T : unmanaged
-    {
-        var t = gguf.FindTensor(name);
-        return t.HasValue ? (T*)gguf.GetTensorDataPtr(t.Value) : null;
-    }
 }

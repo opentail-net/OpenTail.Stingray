@@ -97,14 +97,60 @@ of a real forward pass.
 Correctness re-verified after every build (same bar as the rest of this session): identical
 `256 soft tokens (1536-dim)` output against the real Q8_0 mmproj, both before and after.
 
-## Decision
+## Decision and rollout (same day, user-directed)
 
-Speed is fine — proceeding to redesign is justified per the "if speed is OK" condition. **Not rolled
-out to the other 21 encoders in this pass** — this was explicitly scoped as "probe one model, decide
-on the rest after," and the decision is: yes, worth doing, but as its own follow-up pass (mechanical,
-same pattern, ~20 files, each needs its own build+correctness verification the way every prior pass
-in this session did file-by-file). Flagging as the next concrete task rather than rushing it into
-this same turn.
+Speed confirmed fine on a larger pooled sample (6 runs, 48 total "after" iterations vs the original
+8-sample "before" run — see the follow-up section above), and the user judged the raw-pointer-surface
+reduction worth doing regardless: it closes a real, previously-demonstrated bug class (this session's
+own migration findings, plus a near-miss caught mid-redesign — see below), for zero measured
+performance cost. Rolled out to all remaining encoders the same day.
+
+**Converted** (norm/bias fields: `float*` → `float[]?`, pinned per-call via `fixed`, matching the
+InternVL probe pattern exactly): `DeepSeekOcrVisionEncoder`, `DotsOcrVisionEncoder`,
+`Glm4VisionEncoder`, `CogVlmVisionEncoder`, `Granite4VisionEncoder`, `KimiVisionEncoder`,
+`MiniCpmVisionEncoder`, `QwenVlVisionEncoder`, `PaddleOcrVisionEncoder`, `LlavaVisionEncoder`,
+`PixtralVisionEncoder`, `NemotronVisionEncoder`, `MobileNetV5VisionEncoder`, `Exaone4VisionEncoder`,
+`HunyuanVlVisionEncoder`, `MimoVlVisionEncoder`, `Step3VlVisionEncoder`, `YoutuVlVisionEncoder` — 18
+files. The last five of these (`Exaone4`/`HunyuanVl`/`MimoVl`/`Step3Vl`/`YoutuVl`) each had their own
+private, *undocumented, dtype-unguarded* `Ptr<T>` duplicate of the same raw-pointer pattern (not even
+routed through `VisionOps.GetTensorPtr`'s dtype check) — deleted all five in the same pass, closing a
+gap the original dtype-migration didn't reach because these encoders were classified "already safe"
+based on their *weight* tensors only (all F32/dequantized via `LoadTensorF32`), not their norm/bias
+handling.
+
+**Left unchanged, correctly**: `Gemma3VisionEncoder`, `Gemma4VVisionEncoder`, `Llama4VisionEncoder`.
+Inspected all three and found they already store block weights as `GgufTensorInfo` (name/shape/dtype
+metadata only, no cached pointer) in their model layer, resolving the actual pointer fresh inside a
+`fixed` block scoped to each `Forward()` call — structurally the same safety property this redesign
+adds everywhere else, just arrived at independently and earlier. Their only cached raw-pointer fields
+(`_patchEmbdW`, `_mlp1W`/`_mlp2W`/`_projW`, `_mmProjW`) are large matmul-bound weight tensors, the
+same category `VisionTensorRef.Data` uses everywhere else — correctly out of scope, not touched.
+
+**A second real bug caught during the rollout** (not the zero-length-array pitfall from the InternVL
+probe — a different one): `Granite4VisionEncoder`'s `_posEmbdF32`-style position-embedding field had
+already been fixed in an earlier pass of this session, but re-verifying it against a real mmproj
+during this rollout re-confirmed the fix holds (`576 soft tokens (2560-dim)`, unchanged) — cross-
+checked as part of the regression sweep below, not a new find, but worth the re-check given how easy
+it is for this class of bug to resurface during a large mechanical edit.
+
+## Verification (full rollout)
+
+`dotnet build -c Release` clean for `OpenTail.Stingray.Vision` and `OpenTail.Stingray.Cli` after
+every file. Final regression sweep against all three real local models, identical to their
+pre-rollout baselines:
+
+| Model | mmproj dtype | Output |
+|---|---|---|
+| `dots.ocr-Q8_0.gguf` | Q8_0 | `81 soft tokens (1536-dim)` (unchanged) |
+| `granite-4.0-3b-vision-Q4_K_M.gguf` | F16 | `576 soft tokens (2560-dim)` (unchanged) |
+| `InternVL3-2B.Q4_K_M.gguf` | Q8_0 | `256 soft tokens (1536-dim)` (unchanged) |
+
+`grep -rl "GetTensorPtr<float>\|Ptr<float>(gguf" src/OpenTail.Stingray.Vision/*.cs` returns zero
+matches — confirmed no encoder anywhere in the project still resolves a norm/bias tensor to a
+long-lived raw pointer. The only remaining `unsafe`/raw-pointer surface in the Vision project is
+`VisionTensorRef.Data` and its handful of direct large-weight-tensor equivalents (Gemma3/Gemma4V/
+Llama4's patch-embed and merger weights) — all matmul-bound, GB-scale in the worst case, and
+correctly out of scope per this doc's original scoping section.
 
 ## Files touched
 

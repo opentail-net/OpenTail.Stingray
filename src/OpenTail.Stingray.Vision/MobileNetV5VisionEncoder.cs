@@ -18,10 +18,10 @@ public sealed unsafe class MobileNetV5VisionEncoder
     private readonly float _eps;
 
     private readonly float[] _stemConvWF32;
-    private readonly float* _stemBnW;
+    private readonly float[]? _stemBnW;
 
     private readonly VisionTensorRef _projW;
-    private readonly float* _projB;
+    private readonly float[]? _projB;
 
     public int EmbeddingDim => _embd;
     public int ProjectionDim => _projDim;
@@ -36,10 +36,10 @@ public sealed unsafe class MobileNetV5VisionEncoder
 
         var gguf = model.Gguf;
         _stemConvWF32 = VisionOps.DequantizeToFloat32(VisionOps.GetTensor(gguf, "v.stem_conv.weight", "v.patch_embd.weight"));
-        _stemBnW = VisionOps.GetTensorPtr<float>(gguf, "v.stem_bn.weight");
+        _stemBnW = VisionOps.GetTensorArray(gguf, "v.stem_bn.weight");
 
         _projW = VisionOps.GetTensor(gguf, "mm.proj.weight", "mm.0.weight");
-        _projB = VisionOps.GetTensorPtr<float>(gguf, "mm.proj.bias", "mm.0.bias");
+        _projB = VisionOps.GetTensorArray(gguf, "mm.proj.bias", "mm.0.bias");
     }
 
     public float[] Forward(float[] chw, int targetWidth, int targetHeight, int patchesX, int patchesY, out int tokenCount)
@@ -62,14 +62,17 @@ public sealed unsafe class MobileNetV5VisionEncoder
 
         if (_stemBnW != null)
         {
-            VisionOps.RmsNorm(tokens, numPatches, _embd, _stemBnW, _eps);
+            fixed (float* stemBnW = _stemBnW) VisionOps.RmsNorm(tokens, numPatches, _embd, stemBnW, _eps);
         }
         VisionOps.Gelu(tokens);
 
         var projOut = new float[numPatches * _projDim];
         if (_projW.IsValid)
         {
-            VisionOps.MatVecAny(tokens, _projW, _projB, numPatches, _embd, _projDim, projOut);
+            fixed (float* projB = _projB)
+            {
+                VisionOps.MatVecAny(tokens, _projW, projB, numPatches, _embd, _projDim, projOut);
+            }
         }
         else
         {
