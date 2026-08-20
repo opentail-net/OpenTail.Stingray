@@ -123,9 +123,19 @@ public static unsafe class SimdKernels
             TryMatMulBatchedQ8(output, weights, input, batchSize, rows, cols, dtype))
             return;
 
-        if (!allowBlas || batchSize < MinBatchForBlas || !BlasInterop.IsAvailable)
         {
-            // Sequential fused MatVec (dequant in registers, no temp buffer).
+            // Sequential fused MatVec (dequant in registers, no temp buffer). Tried
+            // UNCONDITIONALLY here, before ever checking BLAS availability -- not gated behind
+            // "BLAS unavailable" the way it used to be. That gate was the exact bug this method
+            // opened with: allowQ8=false callers (batched DECODE -- BatchForwardMulti,
+            // speculative verify) used to skip straight past this whole tiered/fused block to
+            // OpenBLAS whenever BLAS was available and batchSize >= MinBatchForBlas, even though
+            // this is the path measured (below) to fix batched-decode throughput, and BLAS is
+            // measured (docs/done/openblas-elimination-findings-2026-08-20.md) to never win a
+            // single case tested against the kernels in this file. `allowBlas`/`MinBatchForBlas`
+            // are kept as parameters/fields for anyone re-measuring this later, but nothing here
+            // should special-case "route around this block toward BLAS" again without new
+            // evidence -- see that doc before reintroducing any such gate.
             //
             // MEASURED DEAD END: a weight-stationary variant of this loop (rows outermost,
             // tokens tiled 32-inner, so each weight row is fetched once and reused across the
@@ -203,6 +213,19 @@ public static unsafe class SimdKernels
             return;
         }
 
+        // --- Everything below this line is OpenBLAS. It is UNREACHABLE under any shipped
+        // default configuration: the block above always returns first (BatchedMatVecTierEnabled
+        // or the plain MatVec loop, both unconditional, neither can decline). That is
+        // intentional, not a bug to "fix" by moving BLAS earlier or by gating the block above
+        // again -- see docs/done/openblas-elimination-findings-2026-08-20.md for the measurements
+        // (every shape/dtype/batch-size tested, OpenBLAS lost) and the pain of re-discovering
+        // this after two separate ordering regressions shipped it back to the front of the race.
+        // Kept in source, genuinely last-resort, for anyone who wants to re-measure on different
+        // hardware or an untested shape -- not deleted, per explicit instruction. If you are
+        // tempted to route a call here ahead of the block above: don't, without new measurements
+        // to justify it, written up the same way.
+
+#pragma warning disable CS0162 // unreachable -- see the comment above this line
         // OpenBLAS GEMM path for large batches: dequant weights to F32, then sgemm
         if (dtype != DType.Float32)
         {
@@ -255,6 +278,7 @@ public static unsafe class SimdKernels
                 0.0f, output, rows);
             return;
         }
+#pragma warning restore CS0162
 
     }
 
@@ -675,20 +699,25 @@ public static unsafe class SimdKernels
     public static void MatMulBatchedF32(float* output, float* weightsF32, float* input,
         int batchSize, int rows, int cols)
     {
-        if (batchSize < MinBatchForBlas || !BlasInterop.IsAvailable)
-        {
-            // Mirror the small-batch / no-BLAS fallback, but the weights are already F32.
-            for (int n = 0; n < batchSize; n++)
-                MatVecF32(output + n * rows, weightsF32, input + n * cols, rows, cols);
-            return;
-        }
+        // Tried unconditionally, not gated behind "batch too small for BLAS to be worth it" --
+        // same reasoning as MatMulBatched above: BLAS has never won a measured case in this file
+        // (docs/done/openblas-elimination-findings-2026-08-20.md), including large batches, so
+        // there is no batch size at which routing to it ahead of this loop is justified by
+        // evidence. Kept structurally last-resort, not deleted -- do not re-gate this behind a
+        // batch-size or BLAS-availability check without new measurements written up the same way.
+        for (int n = 0; n < batchSize; n++)
+            MatVecF32(output + n * rows, weightsF32, input + n * cols, rows, cols);
+        return;
 
+        // Unreachable below by design -- see comment above.
+#pragma warning disable CS0162
         BlasInterop.Sgemm(
             BlasInterop.RowMajor, BlasInterop.NoTrans, BlasInterop.Trans,
             batchSize, rows, cols,
             1.0f, input, cols,
             weightsF32, cols,
             0.0f, output, rows);
+#pragma warning restore CS0162
     }
 
     // ================================================================
