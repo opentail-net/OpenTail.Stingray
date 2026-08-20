@@ -11,7 +11,7 @@ namespace OpenTail.Stingray.Diffusion;
 /// All methods operate on flat float[] arrays with explicit shape parameters.
 /// Tensors are NCHW (batch × channels × height × width) for spatial ops.
 /// </summary>
-internal static class DiffusionOps
+internal static unsafe class DiffusionOps
 {
     // ── Activation functions ──────────────────────────────────────────────
 
@@ -218,45 +218,56 @@ internal static class DiffusionOps
         int hw = outH * outW;
         int inHW = inH * inW;
 
-        Parallel.For(0, n * outC, bo =>
+        fixed (float* pIn = input)
+        fixed (float* pKernel = kernel)
+        fixed (float* pOut = output)
+        fixed (float* pBias = bias)
         {
-            int b  = bo / outC;
-            int oc = bo % outC;
+            var inPtr = pIn;
+            var kPtr = pKernel;
+            var outPtr = pOut;
+            var bPtr = pBias;
 
-            float biasVal = bias is not null ? bias[oc] : 0f;
-            int outBase = b * outC * hw + oc * hw;
-            int kBase0  = oc * inC * kH * kW;
-            int inBatch = b * inC * inHW;
-
-            for (int oh = 0; oh < outH; oh++)
+            Parallel.For(0, n * outC, bo =>
             {
-                int ih0 = oh * stride - padding;
-                for (int ow2 = 0; ow2 < outW; ow2++)
+                int b  = bo / outC;
+                int oc = bo % outC;
+
+                float biasVal = bPtr != null ? bPtr[oc] : 0f;
+                int outBase = b * outC * hw + oc * hw;
+                int kBase0  = oc * inC * kH * kW;
+                int inBatch = b * inC * inHW;
+
+                for (int oh = 0; oh < outH; oh++)
                 {
-                    int iw0 = ow2 * stride - padding;
-                    float sum = biasVal;
-                    for (int ic = 0; ic < inC; ic++)
+                    int ih0 = oh * stride - padding;
+                    for (int ow2 = 0; ow2 < outW; ow2++)
                     {
-                        int kBase = kBase0 + ic * kH * kW;
-                        int inBase = inBatch + ic * inHW;
-                        for (int kh = 0; kh < kH; kh++)
+                        int iw0 = ow2 * stride - padding;
+                        float sum = biasVal;
+                        for (int ic = 0; ic < inC; ic++)
                         {
-                            int ih = ih0 + kh;
-                            if ((uint)ih >= (uint)inH) continue;
-                            int inRow = inBase + ih * inW;
-                            int kRow  = kBase + kh * kW;
-                            for (int kw = 0; kw < kW; kw++)
+                            int kBase = kBase0 + ic * kH * kW;
+                            int inBase = inBatch + ic * inHW;
+                            for (int kh = 0; kh < kH; kh++)
                             {
-                                int iw = iw0 + kw;
-                                if ((uint)iw >= (uint)inW) continue;
-                                sum += input[inRow + iw] * kernel[kRow + kw];
+                                int ih = ih0 + kh;
+                                if ((uint)ih >= (uint)inH) continue;
+                                int inRow = inBase + ih * inW;
+                                int kRow  = kBase + kh * kW;
+                                for (int kw = 0; kw < kW; kw++)
+                                {
+                                    int iw = iw0 + kw;
+                                    if ((uint)iw >= (uint)inW) continue;
+                                    sum += inPtr[inRow + iw] * kPtr[kRow + kw];
+                                }
                             }
                         }
+                        outPtr[outBase + oh * outW + ow2] = sum;
                     }
-                    output[outBase + oh * outW + ow2] = sum;
                 }
-            }
-        });
+            });
+        }
         return output;
     }
 

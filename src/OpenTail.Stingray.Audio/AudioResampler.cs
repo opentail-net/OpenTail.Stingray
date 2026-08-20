@@ -23,7 +23,7 @@ public enum ResampleQuality
 /// </summary>
 public static class AudioResampler
 {
-    private static readonly ConcurrentDictionary<KernelKey, Lazy<double[]>> s_kernelCache = new();
+    private static readonly ConcurrentDictionary<KernelKey, double[][]> s_kernelPhaseBanks = new();
 
     private readonly record struct KernelKey(int HalfWidth, int Numerator, int Denominator);
 
@@ -55,9 +55,11 @@ public static class AudioResampler
         int p = inRate / rateGcd;
         int q = outRate / rateGcd;
 
+        var phaseBank = GetPhaseBank(kernelHalfWidth, p, q);
+
         if (channels == 1)
         {
-            return ResampleSingleChannel(inputData, ratio, p, q, kernelHalfWidth);
+            return ResampleSingleChannel(inputData, ratio, p, q, kernelHalfWidth, phaseBank);
         }
 
         // Multi-channel: split -> resample each -> interleave
@@ -73,7 +75,7 @@ public static class AudioResampler
         float[][] resampledChannels = new float[channels][];
         Parallel.For(0, channels, c =>
         {
-            resampledChannels[c] = ResampleSingleChannel(channelData[c], ratio, p, q, kernelHalfWidth);
+            resampledChannels[c] = ResampleSingleChannel(channelData[c], ratio, p, q, kernelHalfWidth, phaseBank);
         });
 
         int outFrames = resampledChannels[0].Length;
@@ -87,12 +89,28 @@ public static class AudioResampler
         return output;
     }
 
-    private static float[] ResampleSingleChannel(
+    private static double[][] GetPhaseBank(int kernelHalfWidth, int p, int q)
+    {
+        var key = new KernelKey(kernelHalfWidth, p, q);
+        return s_kernelPhaseBanks.GetOrAdd(key, static k =>
+        {
+            int qVal = k.Denominator;
+            var bank = new double[qVal][];
+            for (int rem = 0; rem < qVal; rem++)
+            {
+                bank[rem] = ComputeKernel(rem, qVal, k.HalfWidth);
+            }
+            return bank;
+        });
+    }
+
+    private static unsafe float[] ResampleSingleChannel(
         ReadOnlySpan<float> channel,
         double ratio,
         int p,
         int q,
-        int kernelHalfWidth)
+        int kernelHalfWidth,
+        double[][] phaseBank)
     {
         int inputLength = channel.Length;
         int outputLength = (int)Math.Round(inputLength * ratio);
@@ -116,26 +134,60 @@ public static class AudioResampler
 
         int kernelLength = 2 * kernelHalfWidth;
 
-        for (int i = 0; i < outputLength; i++)
+        fixed (double* pPad = padded)
+        fixed (float* pOut = output)
         {
-            long num = (long)i * p;
-            int inputCenter = (int)(num / q);
-            int rem = (int)(num % q);
-            double frac = (double)rem / q;
+            var padPtr = pPad;
+            var outPtr = pOut;
 
-            var key = new KernelKey(kernelHalfWidth, rem, q);
-            double[] kernel = s_kernelCache.GetOrAdd(key, k => new Lazy<double[]>(() => ComputeKernel(k.Numerator, k.Denominator, k.HalfWidth))).Value;
-
-            int startIdx = totalPad + inputCenter - kernelHalfWidth + 1;
-            var window = padded.AsSpan(startIdx, kernelLength);
-
-            double sum = 0;
-            for (int k = 0; k < kernelLength; k++)
+            if (outputLength >= 4096)
             {
-                sum += window[k] * kernel[k];
-            }
+                Parallel.For(0, outputLength, i =>
+                {
+                    long num = (long)i * p;
+                    int inputCenter = (int)(num / q);
+                    int rem = (int)(num % q);
 
-            output[i] = (float)sum;
+                    double[] kernel = phaseBank[rem];
+                    int startIdx = totalPad + inputCenter - kernelHalfWidth + 1;
+                    double* winPtr = padPtr + startIdx;
+
+                    double sum = 0.0;
+                    fixed (double* kPtr = kernel)
+                    {
+                        for (int k = 0; k < kernelLength; k++)
+                        {
+                            sum += winPtr[k] * kPtr[k];
+                        }
+                    }
+
+                    outPtr[i] = (float)sum;
+                });
+            }
+            else
+            {
+                for (int i = 0; i < outputLength; i++)
+                {
+                    long num = (long)i * p;
+                    int inputCenter = (int)(num / q);
+                    int rem = (int)(num % q);
+
+                    double[] kernel = phaseBank[rem];
+                    int startIdx = totalPad + inputCenter - kernelHalfWidth + 1;
+                    double* winPtr = padPtr + startIdx;
+
+                    double sum = 0.0;
+                    fixed (double* kPtr = kernel)
+                    {
+                        for (int k = 0; k < kernelLength; k++)
+                        {
+                            sum += winPtr[k] * kPtr[k];
+                        }
+                    }
+
+                    outPtr[i] = (float)sum;
+                }
+            }
         }
 
         return output;

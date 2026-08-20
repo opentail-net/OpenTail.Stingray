@@ -64,12 +64,12 @@ public sealed class WhisperMelExtractor
 
         // mel output: [NumMels, numFrames]
         float[] melData = new float[NumMels * numFrames];
-        float[] fftIn = new float[WinLength];
-        float[] powerSpec = new float[HalfFft];
 
-        for (int f = 0; f < numFrames; f++)
+        Parallel.For(0, numFrames, f =>
         {
             int offset = f * HopLength;
+            Span<float> fftIn = stackalloc float[WinLength];
+            Span<float> powerSpec = stackalloc float[HalfFft];
 
             // Apply Hann window
             int avail = Math.Min(WinLength, paddedLength - offset);
@@ -79,7 +79,7 @@ public sealed class WhisperMelExtractor
             }
             if (avail < WinLength)
             {
-                Array.Clear(fftIn, avail, WinLength - avail);
+                fftIn.Slice(avail, WinLength - avail).Clear();
             }
 
             // Compute Power Spectrum (modulus^2 of DFT)
@@ -99,7 +99,7 @@ public sealed class WhisperMelExtractor
                 float logEnergy = MathF.Log10(MathF.Max((float)sum, 1e-10f));
                 melData[m * numFrames + f] = logEnergy;
             }
-        }
+        });
 
         // 4. Dynamic range clamping to (max - 8.0) and normalization to [-1, 1] range: (x + 4.0) / 4.0
         float maxVal = -1e20f;
