@@ -90,7 +90,7 @@ public sealed unsafe class InternVlVisionEncoder
         var gguf = model.Gguf;
 
         var patchEmbdT = VisionOps.GetTensor(gguf, "v.patch_embd.weight");
-        _patchEmbdWF32 = DequantizeToFloat32(patchEmbdT);
+        _patchEmbdWF32 = VisionOps.DequantizeToFloat32(patchEmbdT);
         _patchEmbdB = VisionOps.GetTensorPtr<float>(gguf, "v.patch_embd.bias");
         _clsEmbd = VisionOps.GetTensorPtr<float>(gguf, "v.class_embd", "v.cls_embd");
         _posEmbd = VisionOps.GetTensorPtr<float>(gguf, "v.position_embd.weight", "v.position_embd");
@@ -139,22 +139,6 @@ public sealed unsafe class InternVlVisionEncoder
                 FfnIntermediate = intermediate
             };
         }
-    }
-
-    /// <summary>
-    /// Dequantizes a tensor to F32 once (used only for the patch-embed conv weight, which is read
-    /// per-pixel in an inline loop rather than through a batched MatVec, so it can't go through
-    /// MatVecAny's per-call dtype dispatch the way the block/projector weights do). Empty array if
-    /// the tensor is missing, matching the null-check contract the constructor's other optional
-    /// tensors already use.
-    /// </summary>
-    private static float[] DequantizeToFloat32(VisionTensorRef t)
-    {
-        if (!t.IsValid) return [];
-        long n = t.Info.ElementCount;
-        var dst = new float[n];
-        Dequantize.ToFloat32(new ReadOnlySpan<byte>(t.Data, (int)t.Info.ByteSize), dst, t.Info.DType, n);
-        return dst;
     }
 
     public float[] Forward(ReadOnlySpan<float> chw, int targetWidth, int targetHeight, int patchesX, int patchesY, out int tokenCount)

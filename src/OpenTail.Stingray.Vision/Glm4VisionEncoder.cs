@@ -3,6 +3,7 @@ using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
 using OpenTail.Stingray.Core;
+using OpenTail.Stingray.Cpu;
 
 namespace OpenTail.Stingray.Vision;
 
@@ -22,17 +23,17 @@ public sealed unsafe class Glm4VisionEncoder
     private readonly float _ropeTheta;
     private readonly float _eps;
 
-    private readonly Half* _patchEmbd0W;
-    private readonly Half* _patchEmbd1W;
+    private readonly float[] _patchEmbd0WF32;
+    private readonly VisionTensorRef _patchEmbd1W;
     private readonly float* _patchBias;
     private readonly float* _normEmbdW;
     private readonly float* _normEmbdB;
     private readonly float* _posEmbd;
     private readonly float* _postLnW;
 
-    private readonly Half* _patchMergerW;
+    private readonly VisionTensorRef _patchMergerW;
     private readonly float* _patchMergerB;
-    private readonly Half* _fcW;
+    private readonly VisionTensorRef _fcW;
     private readonly float* _fcB;
 
     private readonly LayerWeights[] _blocks;
@@ -40,20 +41,20 @@ public sealed unsafe class Glm4VisionEncoder
     private sealed class LayerWeights
     {
         public float* Ln1W;
-        public Half* AttnQW;
+        public VisionTensorRef AttnQW;
         public float* AttnQB;
-        public Half* AttnKW;
+        public VisionTensorRef AttnKW;
         public float* AttnKB;
-        public Half* AttnVW;
+        public VisionTensorRef AttnVW;
         public float* AttnVB;
-        public Half* AttnOutW;
+        public VisionTensorRef AttnOutW;
         public float* AttnOutB;
         public float* Ln2W;
-        public Half* FfnGateW;
+        public VisionTensorRef FfnGateW;
         public float* FfnGateB;
-        public Half* FfnUpW;
+        public VisionTensorRef FfnUpW;
         public float* FfnUpB;
-        public Half* FfnDownW;
+        public VisionTensorRef FfnDownW;
         public float* FfnDownB;
         public int FfnIntermediate;
     }
@@ -75,28 +76,20 @@ public sealed unsafe class Glm4VisionEncoder
 
         var gguf = model.Gguf;
 
-        _patchEmbd0W = GetTensorPtr<Half>(gguf, "v.patch_embd.0.weight");
-        if (_patchEmbd0W == null) _patchEmbd0W = GetTensorPtr<Half>(gguf, "v.patch_embd.weight");
+        _patchEmbd0WF32 = VisionOps.DequantizeToFloat32(
+            VisionOps.GetTensor(gguf, "v.patch_embd.0.weight", "v.patch_embd.weight"));
+        _patchEmbd1W = VisionOps.GetTensor(gguf, "v.patch_embd.1.weight", "v.patch_embd.weight.1");
+        _patchBias = VisionOps.GetTensorPtr<float>(gguf, "v.patch_bias");
+        _normEmbdW = VisionOps.GetTensorPtr<float>(gguf, "v.norm_embd.weight");
+        _normEmbdB = VisionOps.GetTensorPtr<float>(gguf, "v.norm_embd.bias");
+        _posEmbd = VisionOps.GetTensorPtr<float>(gguf, "v.position_embd.weight", "v.position_embd");
+        _postLnW = VisionOps.GetTensorPtr<float>(gguf, "v.post_ln.weight");
 
-        _patchEmbd1W = GetTensorPtr<Half>(gguf, "v.patch_embd.1.weight");
-        if (_patchEmbd1W == null) _patchEmbd1W = GetTensorPtr<Half>(gguf, "v.patch_embd.weight.1");
+        _patchMergerW = VisionOps.GetTensor(gguf, "mm.patch_merger.weight");
+        _patchMergerB = VisionOps.GetTensorPtr<float>(gguf, "mm.patch_merger.bias");
 
-        _patchBias = GetTensorPtr<float>(gguf, "v.patch_bias");
-        _normEmbdW = GetTensorPtr<float>(gguf, "v.norm_embd.weight");
-        _normEmbdB = GetTensorPtr<float>(gguf, "v.norm_embd.bias");
-
-        _posEmbd = GetTensorPtr<float>(gguf, "v.position_embd.weight");
-        if (_posEmbd == null) _posEmbd = GetTensorPtr<float>(gguf, "v.position_embd");
-
-        _postLnW = GetTensorPtr<float>(gguf, "v.post_ln.weight");
-
-        _patchMergerW = GetTensorPtr<Half>(gguf, "mm.patch_merger.weight");
-        _patchMergerB = GetTensorPtr<float>(gguf, "mm.patch_merger.bias");
-
-        _fcW = GetTensorPtr<Half>(gguf, "mm.fc.weight");
-        if (_fcW == null) _fcW = GetTensorPtr<Half>(gguf, "mm.0.weight");
-        _fcB = GetTensorPtr<float>(gguf, "mm.fc.bias");
-        if (_fcB == null) _fcB = GetTensorPtr<float>(gguf, "mm.0.bias");
+        _fcW = VisionOps.GetTensor(gguf, "mm.fc.weight", "mm.0.weight");
+        _fcB = VisionOps.GetTensorPtr<float>(gguf, "mm.fc.bias", "mm.0.bias");
 
         _blocks = new LayerWeights[_layers];
         for (int l = 0; l < _layers; l++)
@@ -106,32 +99,25 @@ public sealed unsafe class Glm4VisionEncoder
 
             _blocks[l] = new LayerWeights
             {
-                Ln1W = GetTensorPtr<float>(gguf, $"v.blk.{l}.ln1.weight"),
-                AttnQW = GetTensorPtr<Half>(gguf, $"v.blk.{l}.attn_q.weight"),
-                AttnQB = GetTensorPtr<float>(gguf, $"v.blk.{l}.attn_q.bias"),
-                AttnKW = GetTensorPtr<Half>(gguf, $"v.blk.{l}.attn_k.weight"),
-                AttnKB = GetTensorPtr<float>(gguf, $"v.blk.{l}.attn_k.bias"),
-                AttnVW = GetTensorPtr<Half>(gguf, $"v.blk.{l}.attn_v.weight"),
-                AttnVB = GetTensorPtr<float>(gguf, $"v.blk.{l}.attn_v.bias"),
-                AttnOutW = GetTensorPtr<Half>(gguf, $"v.blk.{l}.attn_out.weight"),
-                AttnOutB = GetTensorPtr<float>(gguf, $"v.blk.{l}.attn_out.bias"),
-                Ln2W = GetTensorPtr<float>(gguf, $"v.blk.{l}.ln2.weight"),
-                FfnGateW = GetTensorPtr<Half>(gguf, $"v.blk.{l}.ffn_gate.weight"),
-                FfnGateB = GetTensorPtr<float>(gguf, $"v.blk.{l}.ffn_gate.bias"),
-                FfnUpW = GetTensorPtr<Half>(gguf, $"v.blk.{l}.ffn_up.weight"),
-                FfnUpB = GetTensorPtr<float>(gguf, $"v.blk.{l}.ffn_up.bias"),
-                FfnDownW = GetTensorPtr<Half>(gguf, $"v.blk.{l}.ffn_down.weight"),
-                FfnDownB = GetTensorPtr<float>(gguf, $"v.blk.{l}.ffn_down.bias"),
+                Ln1W = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.ln1.weight"),
+                AttnQW = VisionOps.GetTensor(gguf, $"v.blk.{l}.attn_q.weight"),
+                AttnQB = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.attn_q.bias"),
+                AttnKW = VisionOps.GetTensor(gguf, $"v.blk.{l}.attn_k.weight"),
+                AttnKB = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.attn_k.bias"),
+                AttnVW = VisionOps.GetTensor(gguf, $"v.blk.{l}.attn_v.weight"),
+                AttnVB = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.attn_v.bias"),
+                AttnOutW = VisionOps.GetTensor(gguf, $"v.blk.{l}.attn_out.weight"),
+                AttnOutB = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.attn_out.bias"),
+                Ln2W = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.ln2.weight"),
+                FfnGateW = VisionOps.GetTensor(gguf, $"v.blk.{l}.ffn_gate.weight"),
+                FfnGateB = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.ffn_gate.bias"),
+                FfnUpW = VisionOps.GetTensor(gguf, $"v.blk.{l}.ffn_up.weight"),
+                FfnUpB = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.ffn_up.bias"),
+                FfnDownW = VisionOps.GetTensor(gguf, $"v.blk.{l}.ffn_down.weight"),
+                FfnDownB = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.ffn_down.bias"),
                 FfnIntermediate = ffnDim
             };
         }
-    }
-
-    private static T* GetTensorPtr<T>(GgufModel gguf, string name) where T : unmanaged
-    {
-        var tensor = gguf.FindTensor(name);
-        if (!tensor.HasValue) return null;
-        return (T*)gguf.GetTensorDataPtr(tensor.Value);
     }
 
     /// <summary>
@@ -169,16 +155,16 @@ public sealed unsafe class Glm4VisionEncoder
             ApplyRmsNorm(normed, numPatches, _embd, blk.Ln1W);
 
             // Q, K, V Linear Projections
-            MatVecF16(normed, blk.AttnQW, blk.AttnQB, numPatches, _embd, _embd, qBuf);
-            MatVecF16(normed, blk.AttnKW, blk.AttnKB, numPatches, _embd, _embd, kBuf);
-            MatVecF16(normed, blk.AttnVW, blk.AttnVB, numPatches, _embd, _embd, vBuf);
+            VisionOps.MatVecAny(normed, blk.AttnQW, blk.AttnQB, numPatches, _embd, _embd, qBuf);
+            VisionOps.MatVecAny(normed, blk.AttnKW, blk.AttnKB, numPatches, _embd, _embd, kBuf);
+            VisionOps.MatVecAny(normed, blk.AttnVW, blk.AttnVB, numPatches, _embd, _embd, vBuf);
 
             // M-RoPE 2D Multimodal Rotary Embeddings
             ApplyMrope(qBuf, kBuf, patchesX, patchesY);
 
             // Self-Attention & Out-Projection
             ComputeAttention(qBuf, kBuf, vBuf, numPatches, _heads, _headDim, normed);
-            MatVecF16(normed, blk.AttnOutW, blk.AttnOutB, numPatches, _embd, _embd, attnOut);
+            VisionOps.MatVecAny(normed, blk.AttnOutW, blk.AttnOutB, numPatches, _embd, _embd, attnOut);
 
             // Residual 1
             for (int i = 0; i < hiddenStates.Length; i++) hiddenStates[i] += attnOut[i];
@@ -190,8 +176,8 @@ public sealed unsafe class Glm4VisionEncoder
             int ffnDim = blk.FfnIntermediate;
             var gateBuf = new float[numPatches * ffnDim];
             var upBuf = new float[numPatches * ffnDim];
-            MatVecF16(normed, blk.FfnGateW, blk.FfnGateB, numPatches, _embd, ffnDim, gateBuf);
-            MatVecF16(normed, blk.FfnUpW, blk.FfnUpB, numPatches, _embd, ffnDim, upBuf);
+            VisionOps.MatVecAny(normed, blk.FfnGateW, blk.FfnGateB, numPatches, _embd, ffnDim, gateBuf);
+            VisionOps.MatVecAny(normed, blk.FfnUpW, blk.FfnUpB, numPatches, _embd, ffnDim, upBuf);
 
             for (int i = 0; i < gateBuf.Length; i++)
             {
@@ -200,7 +186,7 @@ public sealed unsafe class Glm4VisionEncoder
                 gateBuf[i] = silu * upBuf[i];
             }
 
-            MatVecF16(gateBuf, blk.FfnDownW, blk.FfnDownB, numPatches, ffnDim, _embd, attnOut);
+            VisionOps.MatVecAny(gateBuf, blk.FfnDownW, blk.FfnDownB, numPatches, ffnDim, _embd, attnOut);
 
             // Residual 2
             for (int i = 0; i < hiddenStates.Length; i++) hiddenStates[i] += attnOut[i];
@@ -220,9 +206,9 @@ public sealed unsafe class Glm4VisionEncoder
 
         // 4. FC Projector: (mergedDim -> projDim)
         var visualTokens = new float[tokenCount * _projDim];
-        if (_fcW != null)
+        if (_fcW.IsValid)
         {
-            MatVecF16(merged, _fcW, _fcB, tokenCount, mergedDim, _projDim, visualTokens);
+            VisionOps.MatVecAny(merged, _fcW, _fcB, tokenCount, mergedDim, _projDim, visualTokens);
         }
         else
         {
@@ -249,7 +235,7 @@ public sealed unsafe class Glm4VisionEncoder
                 int patchIdx = py * patchesX + px;
                 int outOffset = patchIdx * _embd;
 
-                if (_patchEmbd0W != null)
+                if (_patchEmbd0WF32.Length > 0)
                 {
                     for (int d = 0; d < _embd; d++)
                     {
@@ -265,7 +251,7 @@ public sealed unsafe class Glm4VisionEncoder
                                     int x = px * patchSize + dx;
                                     float pixel = chw[c * planeSize + (y * width + x)];
                                     int weightIdx = wOffset + c * patchArea + (dy * patchSize + dx);
-                                    sum += pixel * (float)_patchEmbd0W[weightIdx];
+                                    sum += pixel * _patchEmbd0WF32[weightIdx];
                                 }
                             }
                         }
@@ -365,29 +351,10 @@ public sealed unsafe class Glm4VisionEncoder
         }
     }
 
-    private static void MatVecF16(float[] input, Half* weights, float* bias, int nTokens, int inDim, int outDim, float[] output)
-    {
-        if (weights == null) return;
-
-        for (int t = 0; t < nTokens; t++)
-        {
-            int inOff = t * inDim;
-            int outOff = t * outDim;
-
-            for (int o = 0; o < outDim; o++)
-            {
-                float sum = bias != null ? bias[o] : 0f;
-                int rowOff = o * inDim;
-
-                for (int i = 0; i < inDim; i++)
-                {
-                    sum += input[inOff + i] * (float)weights[rowOff + i];
-                }
-                output[outOff + o] = sum;
-            }
-        }
-    }
-
+    // FOUND, NOT FIXED (out of scope for this migration -- same finding as KimiVisionEncoder.cs,
+    // MiniCpmVisionEncoder.cs, QwenVlVisionEncoder.cs): never reads q or k, never scores, never
+    // softmaxes -- copies scaled v straight through. Real, pre-existing, unrelated to this pass's
+    // dtype migration.
     private static void ComputeAttention(float[] q, float[] k, float[] v, int nTokens, int heads, int headDim, float[] output)
     {
         float scale = 1.0f / MathF.Sqrt(headDim);

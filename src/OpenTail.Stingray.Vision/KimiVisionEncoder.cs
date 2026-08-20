@@ -3,6 +3,7 @@ using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
 using OpenTail.Stingray.Core;
+using OpenTail.Stingray.Cpu;
 
 namespace OpenTail.Stingray.Vision;
 
@@ -22,7 +23,7 @@ public sealed unsafe class KimiVisionEncoder
     private readonly float _ropeTheta;
     private readonly float _eps;
 
-    private readonly Half* _patchEmbdW;
+    private readonly float[] _patchEmbdWF32;
     private readonly float* _patchEmbdB;
     private readonly float* _posEmbd;
     private readonly float* _postLnW;
@@ -30,9 +31,9 @@ public sealed unsafe class KimiVisionEncoder
 
     private readonly float* _mmInputNormW;
     private readonly float* _mmInputNormB;
-    private readonly Half* _mm1W;
+    private readonly VisionTensorRef _mm1W;
     private readonly float* _mm1B;
-    private readonly Half* _mm2W;
+    private readonly VisionTensorRef _mm2W;
     private readonly float* _mm2B;
 
     private readonly LayerWeights[] _blocks;
@@ -41,21 +42,21 @@ public sealed unsafe class KimiVisionEncoder
     {
         public float* Ln1W;
         public float* Ln1B;
-        public Half* AttnQkvW;
+        public VisionTensorRef AttnQkvW;
         public float* AttnQkvB;
-        public Half* AttnQW;
+        public VisionTensorRef AttnQW;
         public float* AttnQB;
-        public Half* AttnKW;
+        public VisionTensorRef AttnKW;
         public float* AttnKB;
-        public Half* AttnVW;
+        public VisionTensorRef AttnVW;
         public float* AttnVB;
-        public Half* AttnOutW;
+        public VisionTensorRef AttnOutW;
         public float* AttnOutB;
         public float* Ln2W;
         public float* Ln2B;
-        public Half* FfnUpW;
+        public VisionTensorRef FfnUpW;
         public float* FfnUpB;
-        public Half* FfnDownW;
+        public VisionTensorRef FfnDownW;
         public float* FfnDownB;
         public int FfnIntermediate;
     }
@@ -77,19 +78,18 @@ public sealed unsafe class KimiVisionEncoder
 
         var gguf = model.Gguf;
 
-        _patchEmbdW = GetTensorPtr<Half>(gguf, "v.patch_embd.weight");
-        _patchEmbdB = GetTensorPtr<float>(gguf, "v.patch_embd.bias");
-        _posEmbd = GetTensorPtr<float>(gguf, "v.position_embd.weight");
-        if (_posEmbd == null) _posEmbd = GetTensorPtr<float>(gguf, "v.position_embd");
-        _postLnW = GetTensorPtr<float>(gguf, "v.post_ln.weight");
-        _postLnB = GetTensorPtr<float>(gguf, "v.post_ln.bias");
+        _patchEmbdWF32 = VisionOps.DequantizeToFloat32(VisionOps.GetTensor(gguf, "v.patch_embd.weight"));
+        _patchEmbdB = VisionOps.GetTensorPtr<float>(gguf, "v.patch_embd.bias");
+        _posEmbd = VisionOps.GetTensorPtr<float>(gguf, "v.position_embd.weight", "v.position_embd");
+        _postLnW = VisionOps.GetTensorPtr<float>(gguf, "v.post_ln.weight");
+        _postLnB = VisionOps.GetTensorPtr<float>(gguf, "v.post_ln.bias");
 
-        _mmInputNormW = GetTensorPtr<float>(gguf, "mm.input_norm.weight");
-        _mmInputNormB = GetTensorPtr<float>(gguf, "mm.input_norm.bias");
-        _mm1W = GetTensorPtr<Half>(gguf, "mm.1.weight");
-        _mm1B = GetTensorPtr<float>(gguf, "mm.1.bias");
-        _mm2W = GetTensorPtr<Half>(gguf, "mm.2.weight");
-        _mm2B = GetTensorPtr<float>(gguf, "mm.2.bias");
+        _mmInputNormW = VisionOps.GetTensorPtr<float>(gguf, "mm.input_norm.weight");
+        _mmInputNormB = VisionOps.GetTensorPtr<float>(gguf, "mm.input_norm.bias");
+        _mm1W = VisionOps.GetTensor(gguf, "mm.1.weight");
+        _mm1B = VisionOps.GetTensorPtr<float>(gguf, "mm.1.bias");
+        _mm2W = VisionOps.GetTensor(gguf, "mm.2.weight");
+        _mm2B = VisionOps.GetTensorPtr<float>(gguf, "mm.2.bias");
 
         _blocks = new LayerWeights[_layers];
         for (int l = 0; l < _layers; l++)
@@ -99,34 +99,27 @@ public sealed unsafe class KimiVisionEncoder
 
             _blocks[l] = new LayerWeights
             {
-                Ln1W = GetTensorPtr<float>(gguf, $"v.blk.{l}.ln1.weight"),
-                Ln1B = GetTensorPtr<float>(gguf, $"v.blk.{l}.ln1.bias"),
-                AttnQkvW = GetTensorPtr<Half>(gguf, $"v.blk.{l}.attn_qkv.weight"),
-                AttnQkvB = GetTensorPtr<float>(gguf, $"v.blk.{l}.attn_qkv.bias"),
-                AttnQW = GetTensorPtr<Half>(gguf, $"v.blk.{l}.attn_q.weight"),
-                AttnQB = GetTensorPtr<float>(gguf, $"v.blk.{l}.attn_q.bias"),
-                AttnKW = GetTensorPtr<Half>(gguf, $"v.blk.{l}.attn_k.weight"),
-                AttnKB = GetTensorPtr<float>(gguf, $"v.blk.{l}.attn_k.bias"),
-                AttnVW = GetTensorPtr<Half>(gguf, $"v.blk.{l}.attn_v.weight"),
-                AttnVB = GetTensorPtr<float>(gguf, $"v.blk.{l}.attn_v.bias"),
-                AttnOutW = GetTensorPtr<Half>(gguf, $"v.blk.{l}.attn_out.weight"),
-                AttnOutB = GetTensorPtr<float>(gguf, $"v.blk.{l}.attn_out.bias"),
-                Ln2W = GetTensorPtr<float>(gguf, $"v.blk.{l}.ln2.weight"),
-                Ln2B = GetTensorPtr<float>(gguf, $"v.blk.{l}.ln2.bias"),
-                FfnUpW = GetTensorPtr<Half>(gguf, $"v.blk.{l}.ffn_up.weight"),
-                FfnUpB = GetTensorPtr<float>(gguf, $"v.blk.{l}.ffn_up.bias"),
-                FfnDownW = GetTensorPtr<Half>(gguf, $"v.blk.{l}.ffn_down.weight"),
-                FfnDownB = GetTensorPtr<float>(gguf, $"v.blk.{l}.ffn_down.bias"),
+                Ln1W = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.ln1.weight"),
+                Ln1B = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.ln1.bias"),
+                AttnQkvW = VisionOps.GetTensor(gguf, $"v.blk.{l}.attn_qkv.weight"),
+                AttnQkvB = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.attn_qkv.bias"),
+                AttnQW = VisionOps.GetTensor(gguf, $"v.blk.{l}.attn_q.weight"),
+                AttnQB = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.attn_q.bias"),
+                AttnKW = VisionOps.GetTensor(gguf, $"v.blk.{l}.attn_k.weight"),
+                AttnKB = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.attn_k.bias"),
+                AttnVW = VisionOps.GetTensor(gguf, $"v.blk.{l}.attn_v.weight"),
+                AttnVB = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.attn_v.bias"),
+                AttnOutW = VisionOps.GetTensor(gguf, $"v.blk.{l}.attn_out.weight"),
+                AttnOutB = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.attn_out.bias"),
+                Ln2W = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.ln2.weight"),
+                Ln2B = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.ln2.bias"),
+                FfnUpW = VisionOps.GetTensor(gguf, $"v.blk.{l}.ffn_up.weight"),
+                FfnUpB = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.ffn_up.bias"),
+                FfnDownW = VisionOps.GetTensor(gguf, $"v.blk.{l}.ffn_down.weight"),
+                FfnDownB = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.ffn_down.bias"),
                 FfnIntermediate = intermediate
             };
         }
-    }
-
-    private static T* GetTensorPtr<T>(GgufModel gguf, string name) where T : unmanaged
-    {
-        var tensor = gguf.FindTensor(name);
-        if (!tensor.HasValue) return null;
-        return (T*)gguf.GetTensorDataPtr(tensor.Value);
     }
 
     /// <summary>
@@ -162,10 +155,10 @@ public sealed unsafe class KimiVisionEncoder
             ApplyLayerNorm(normed, numPatches, _embd, blk.Ln1W, blk.Ln1B);
 
             // Self-Attention Q, K, V
-            if (blk.AttnQkvW != null)
+            if (blk.AttnQkvW.IsValid)
             {
                 var qkv = new float[numPatches * 3 * _embd];
-                MatVecF16(normed, blk.AttnQkvW, blk.AttnQkvB, numPatches, _embd, 3 * _embd, qkv);
+                VisionOps.MatVecAny(normed, blk.AttnQkvW, blk.AttnQkvB, numPatches, _embd, 3 * _embd, qkv);
                 for (int p = 0; p < numPatches; p++)
                 {
                     Array.Copy(qkv, p * 3 * _embd, qBuf, p * _embd, _embd);
@@ -175,9 +168,9 @@ public sealed unsafe class KimiVisionEncoder
             }
             else
             {
-                MatVecF16(normed, blk.AttnQW, blk.AttnQB, numPatches, _embd, _embd, qBuf);
-                MatVecF16(normed, blk.AttnKW, blk.AttnKB, numPatches, _embd, _embd, kBuf);
-                MatVecF16(normed, blk.AttnVW, blk.AttnVB, numPatches, _embd, _embd, vBuf);
+                VisionOps.MatVecAny(normed, blk.AttnQW, blk.AttnQB, numPatches, _embd, _embd, qBuf);
+                VisionOps.MatVecAny(normed, blk.AttnKW, blk.AttnKB, numPatches, _embd, _embd, kBuf);
+                VisionOps.MatVecAny(normed, blk.AttnVW, blk.AttnVB, numPatches, _embd, _embd, vBuf);
             }
 
             // 2D Interleaved RoPE
@@ -185,7 +178,7 @@ public sealed unsafe class KimiVisionEncoder
 
             // Self-Attention & Out-Projection
             ComputeAttention(qBuf, kBuf, vBuf, numPatches, _heads, _headDim, normed);
-            MatVecF16(normed, blk.AttnOutW, blk.AttnOutB, numPatches, _embd, _embd, attnOut);
+            VisionOps.MatVecAny(normed, blk.AttnOutW, blk.AttnOutB, numPatches, _embd, _embd, attnOut);
 
             // Residual 1
             for (int i = 0; i < hiddenStates.Length; i++) hiddenStates[i] += attnOut[i];
@@ -196,7 +189,7 @@ public sealed unsafe class KimiVisionEncoder
 
             int intermediate = blk.FfnIntermediate;
             var ffnMid = new float[numPatches * intermediate];
-            MatVecF16(normed, blk.FfnUpW, blk.FfnUpB, numPatches, _embd, intermediate, ffnMid);
+            VisionOps.MatVecAny(normed, blk.FfnUpW, blk.FfnUpB, numPatches, _embd, intermediate, ffnMid);
 
             // GELU
             for (int i = 0; i < ffnMid.Length; i++)
@@ -205,7 +198,7 @@ public sealed unsafe class KimiVisionEncoder
                 ffnMid[i] = 0.5f * x * (1.0f + MathF.Tanh(MathF.Sqrt(2.0f / MathF.PI) * (x + 0.044715f * x * x * x)));
             }
 
-            MatVecF16(ffnMid, blk.FfnDownW, blk.FfnDownB, numPatches, intermediate, _embd, attnOut);
+            VisionOps.MatVecAny(ffnMid, blk.FfnDownW, blk.FfnDownB, numPatches, intermediate, _embd, attnOut);
 
             // Residual 2
             for (int i = 0; i < hiddenStates.Length; i++) hiddenStates[i] += attnOut[i];
@@ -227,10 +220,10 @@ public sealed unsafe class KimiVisionEncoder
         if (_mmInputNormW != null) ApplyLayerNorm(merged, tokenCount, mergedDim, _mmInputNormW, _mmInputNormB);
 
         var visualTokens = new float[tokenCount * _projDim];
-        if (_mm1W != null && _mm2W != null)
+        if (_mm1W.IsValid && _mm2W.IsValid)
         {
             var midBuf = new float[tokenCount * _projDim];
-            MatVecF16(merged, _mm1W, _mm1B, tokenCount, mergedDim, _projDim, midBuf);
+            VisionOps.MatVecAny(merged, _mm1W, _mm1B, tokenCount, mergedDim, _projDim, midBuf);
 
             // GELU
             for (int i = 0; i < midBuf.Length; i++)
@@ -239,7 +232,7 @@ public sealed unsafe class KimiVisionEncoder
                 midBuf[i] = 0.5f * x * (1.0f + MathF.Tanh(MathF.Sqrt(2.0f / MathF.PI) * (x + 0.044715f * x * x * x)));
             }
 
-            MatVecF16(midBuf, _mm2W, _mm2B, tokenCount, _projDim, _projDim, visualTokens);
+            VisionOps.MatVecAny(midBuf, _mm2W, _mm2B, tokenCount, _projDim, _projDim, visualTokens);
         }
         else
         {
@@ -266,7 +259,7 @@ public sealed unsafe class KimiVisionEncoder
                 int patchIdx = py * patchesX + px;
                 int outOffset = patchIdx * _embd;
 
-                if (_patchEmbdW != null)
+                if (_patchEmbdWF32.Length > 0)
                 {
                     for (int d = 0; d < _embd; d++)
                     {
@@ -282,7 +275,7 @@ public sealed unsafe class KimiVisionEncoder
                                     int x = px * patchSize + dx;
                                     float pixel = chw[c * planeSize + (y * width + x)];
                                     int weightIdx = wOffset + c * patchArea + (dy * patchSize + dx);
-                                    sum += pixel * (float)_patchEmbdW[weightIdx];
+                                    sum += pixel * _patchEmbdWF32[weightIdx];
                                 }
                             }
                         }
@@ -393,29 +386,12 @@ public sealed unsafe class KimiVisionEncoder
         }
     }
 
-    private static void MatVecF16(float[] input, Half* weights, float* bias, int nTokens, int inDim, int outDim, float[] output)
-    {
-        if (weights == null) return;
-
-        for (int t = 0; t < nTokens; t++)
-        {
-            int inOff = t * inDim;
-            int outOff = t * outDim;
-
-            for (int o = 0; o < outDim; o++)
-            {
-                float sum = bias != null ? bias[o] : 0f;
-                int rowOff = o * inDim;
-
-                for (int i = 0; i < inDim; i++)
-                {
-                    sum += input[inOff + i] * (float)weights[rowOff + i];
-                }
-                output[outOff + o] = sum;
-            }
-        }
-    }
-
+    // FOUND, NOT FIXED (out of scope for this migration -- see docs/vl-migration-plan-2026-08-20.md):
+    // this does not compute attention at all. It never reads q or k, never does a Q.K score, never
+    // softmaxes -- it just copies v (scaled by 1/sqrt(headDim)) straight to the output. That means
+    // every token attends to itself with weight 1 and ignores every other token, regardless of
+    // content. A real bug, pre-existing, unrelated to the GetTensorPtr/MatVecF16 dtype migration
+    // this pass is doing -- flagged for separate follow-up, not touched here.
     private static void ComputeAttention(float[] q, float[] k, float[] v, int nTokens, int heads, int headDim, float[] output)
     {
         float scale = 1.0f / MathF.Sqrt(headDim);

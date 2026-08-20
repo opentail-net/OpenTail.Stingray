@@ -4,6 +4,7 @@ using System.Linq;
 using System.Runtime.InteropServices;
 using System.Threading.Tasks;
 using OpenTail.Stingray.Core;
+using OpenTail.Stingray.Cpu;
 
 namespace OpenTail.Stingray.Vision;
 
@@ -20,14 +21,14 @@ public sealed unsafe class PixtralVisionEncoder
     private readonly int _layers;
     private readonly int _projDim;
 
-    private readonly Half* _patchEmbdW;
+    private readonly float[] _patchEmbdWF32;
     private readonly float* _patchEmbdB;
     private readonly float* _preLnW;
     private readonly float* _postLnW;
 
-    private readonly Half* _mlp0W;
+    private readonly VisionTensorRef _mlp0W;
     private readonly float* _mlp0B;
-    private readonly Half* _mlp2W;
+    private readonly VisionTensorRef _mlp2W;
     private readonly float* _mlp2B;
 
     private readonly LayerWeights[] _blocks;
@@ -35,14 +36,14 @@ public sealed unsafe class PixtralVisionEncoder
     private sealed class LayerWeights
     {
         public float* Ln1W;
-        public Half* AttnQW;
-        public Half* AttnKW;
-        public Half* AttnVW;
-        public Half* AttnOutW;
+        public VisionTensorRef AttnQW;
+        public VisionTensorRef AttnKW;
+        public VisionTensorRef AttnVW;
+        public VisionTensorRef AttnOutW;
         public float* Ln2W;
-        public Half* FfnGateW;
-        public Half* FfnUpW;
-        public Half* FfnDownW;
+        public VisionTensorRef FfnGateW;
+        public VisionTensorRef FfnUpW;
+        public VisionTensorRef FfnDownW;
         public float* FfnDownB;
         public int FfnIntermediate;
     }
@@ -61,14 +62,14 @@ public sealed unsafe class PixtralVisionEncoder
 
         var gguf = model.Gguf;
 
-        _patchEmbdW = VisionOps.GetTensorPtr<Half>(gguf, "v.patch_embd.weight");
+        _patchEmbdWF32 = VisionOps.DequantizeToFloat32(VisionOps.GetTensor(gguf, "v.patch_embd.weight"));
         _patchEmbdB = VisionOps.GetTensorPtr<float>(gguf, "v.patch_embd.bias");
         _preLnW = VisionOps.GetTensorPtr<float>(gguf, "v.pre_ln.weight");
         _postLnW = VisionOps.GetTensorPtr<float>(gguf, "v.post_ln.weight");
 
-        _mlp0W = VisionOps.GetTensorPtr<Half>(gguf, "mm.0.weight");
+        _mlp0W = VisionOps.GetTensor(gguf, "mm.0.weight");
         _mlp0B = VisionOps.GetTensorPtr<float>(gguf, "mm.0.bias");
-        _mlp2W = VisionOps.GetTensorPtr<Half>(gguf, "mm.2.weight");
+        _mlp2W = VisionOps.GetTensor(gguf, "mm.2.weight");
         _mlp2B = VisionOps.GetTensorPtr<float>(gguf, "mm.2.bias");
 
         _blocks = new LayerWeights[_layers];
@@ -80,14 +81,14 @@ public sealed unsafe class PixtralVisionEncoder
             _blocks[l] = new LayerWeights
             {
                 Ln1W = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.ln1.weight"),
-                AttnQW = VisionOps.GetTensorPtr<Half>(gguf, $"v.blk.{l}.attn_q.weight"),
-                AttnKW = VisionOps.GetTensorPtr<Half>(gguf, $"v.blk.{l}.attn_k.weight"),
-                AttnVW = VisionOps.GetTensorPtr<Half>(gguf, $"v.blk.{l}.attn_v.weight"),
-                AttnOutW = VisionOps.GetTensorPtr<Half>(gguf, $"v.blk.{l}.attn_out.weight"),
+                AttnQW = VisionOps.GetTensor(gguf, $"v.blk.{l}.attn_q.weight"),
+                AttnKW = VisionOps.GetTensor(gguf, $"v.blk.{l}.attn_k.weight"),
+                AttnVW = VisionOps.GetTensor(gguf, $"v.blk.{l}.attn_v.weight"),
+                AttnOutW = VisionOps.GetTensor(gguf, $"v.blk.{l}.attn_out.weight"),
                 Ln2W = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.ln2.weight"),
-                FfnGateW = VisionOps.GetTensorPtr<Half>(gguf, $"v.blk.{l}.ffn_gate.weight"),
-                FfnUpW = VisionOps.GetTensorPtr<Half>(gguf, $"v.blk.{l}.ffn_up.weight"),
-                FfnDownW = VisionOps.GetTensorPtr<Half>(gguf, $"v.blk.{l}.ffn_down.weight"),
+                FfnGateW = VisionOps.GetTensor(gguf, $"v.blk.{l}.ffn_gate.weight"),
+                FfnUpW = VisionOps.GetTensor(gguf, $"v.blk.{l}.ffn_up.weight"),
+                FfnDownW = VisionOps.GetTensor(gguf, $"v.blk.{l}.ffn_down.weight"),
                 FfnDownB = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.ffn_down.bias"),
                 FfnIntermediate = intermediate
             };
@@ -119,15 +120,15 @@ public sealed unsafe class PixtralVisionEncoder
             Array.Copy(hiddenStates, normed, hiddenStates.Length);
             VisionOps.RmsNorm(normed, tokenCount, _embd, blk.Ln1W);
 
-            VisionOps.MatVecF16(normed, blk.AttnQW, null, tokenCount, _embd, _embd, qBuf);
-            VisionOps.MatVecF16(normed, blk.AttnKW, null, tokenCount, _embd, _embd, kBuf);
-            VisionOps.MatVecF16(normed, blk.AttnVW, null, tokenCount, _embd, _embd, vBuf);
+            VisionOps.MatVecAny(normed, blk.AttnQW, null, tokenCount, _embd, _embd, qBuf);
+            VisionOps.MatVecAny(normed, blk.AttnKW, null, tokenCount, _embd, _embd, kBuf);
+            VisionOps.MatVecAny(normed, blk.AttnVW, null, tokenCount, _embd, _embd, vBuf);
 
             // 2D Continuous RoPE
             VisionOps.Continuous2DRoPE(qBuf, kBuf, patchesX, patchesY, _heads, _headDim);
 
             VisionOps.Attention(qBuf, kBuf, vBuf, tokenCount, _heads, _headDim, normed);
-            VisionOps.MatVecF16(normed, blk.AttnOutW, null, tokenCount, _embd, _embd, attnOut);
+            VisionOps.MatVecAny(normed, blk.AttnOutW, null, tokenCount, _embd, _embd, attnOut);
 
             for (int i = 0; i < hiddenStates.Length; i++) hiddenStates[i] += attnOut[i];
 
@@ -138,8 +139,8 @@ public sealed unsafe class PixtralVisionEncoder
             var gateBuf = new float[tokenCount * ffnDim];
             var upBuf = new float[tokenCount * ffnDim];
 
-            VisionOps.MatVecF16(normed, blk.FfnGateW, null, tokenCount, _embd, ffnDim, gateBuf);
-            VisionOps.MatVecF16(normed, blk.FfnUpW, null, tokenCount, _embd, ffnDim, upBuf);
+            VisionOps.MatVecAny(normed, blk.FfnGateW, null, tokenCount, _embd, ffnDim, gateBuf);
+            VisionOps.MatVecAny(normed, blk.FfnUpW, null, tokenCount, _embd, ffnDim, upBuf);
 
             // SwiGLU: silu(gate) * up
             for (int i = 0; i < gateBuf.Length; i++)
@@ -149,7 +150,7 @@ public sealed unsafe class PixtralVisionEncoder
                 gateBuf[i] = silu * upBuf[i];
             }
 
-            VisionOps.MatVecF16(gateBuf, blk.FfnDownW, blk.FfnDownB, tokenCount, ffnDim, _embd, attnOut);
+            VisionOps.MatVecAny(gateBuf, blk.FfnDownW, blk.FfnDownB, tokenCount, ffnDim, _embd, attnOut);
 
             for (int i = 0; i < hiddenStates.Length; i++) hiddenStates[i] += attnOut[i];
         }
@@ -157,12 +158,12 @@ public sealed unsafe class PixtralVisionEncoder
         if (_postLnW != null) VisionOps.RmsNorm(hiddenStates, tokenCount, _embd, _postLnW);
 
         var visualTokens = new float[tokenCount * _projDim];
-        if (_mlp0W != null && _mlp2W != null)
+        if (_mlp0W.IsValid && _mlp2W.IsValid)
         {
             var midBuf = new float[tokenCount * _projDim];
-            VisionOps.MatVecF16(hiddenStates, _mlp0W, _mlp0B, tokenCount, _embd, _projDim, midBuf);
+            VisionOps.MatVecAny(hiddenStates, _mlp0W, _mlp0B, tokenCount, _embd, _projDim, midBuf);
             VisionOps.Gelu(midBuf);
-            VisionOps.MatVecF16(midBuf, _mlp2W, _mlp2B, tokenCount, _projDim, _projDim, visualTokens);
+            VisionOps.MatVecAny(midBuf, _mlp2W, _mlp2B, tokenCount, _projDim, _projDim, visualTokens);
         }
         else
         {
@@ -189,7 +190,7 @@ public sealed unsafe class PixtralVisionEncoder
                 int patchIdx = py * patchesX + px;
                 int outOffset = patchIdx * _embd;
 
-                if (_patchEmbdW != null)
+                if (_patchEmbdWF32.Length > 0)
                 {
                     for (int d = 0; d < _embd; d++)
                     {
@@ -205,7 +206,7 @@ public sealed unsafe class PixtralVisionEncoder
                                     int x = px * patchSize + dx;
                                     float pixel = chw[c * planeSize + (y * width + x)];
                                     int weightIdx = wOffset + c * patchArea + (dy * patchSize + dx);
-                                    sum += pixel * (float)_patchEmbdW[weightIdx];
+                                    sum += pixel * _patchEmbdWF32[weightIdx];
                                 }
                             }
                         }

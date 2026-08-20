@@ -4,6 +4,7 @@ using System.Linq;
 using System.Runtime.InteropServices;
 using System.Threading.Tasks;
 using OpenTail.Stingray.Core;
+using OpenTail.Stingray.Cpu;
 
 namespace OpenTail.Stingray.Vision;
 
@@ -22,7 +23,7 @@ public sealed unsafe class DotsOcrVisionEncoder
     private readonly int _mergeFactor;
     private readonly float _eps;
 
-    private readonly Half* _patchEmbdW;
+    private readonly float[] _patchEmbdWF32;
     private readonly float* _patchEmbdB;
     private readonly float* _posEmbd;
     private readonly float* _preLnW;
@@ -30,9 +31,9 @@ public sealed unsafe class DotsOcrVisionEncoder
 
     private readonly float* _inputNormW;
     private readonly float* _inputNormB;
-    private readonly Half* _mlp0W;
+    private readonly VisionTensorRef _mlp0W;
     private readonly float* _mlp0B;
-    private readonly Half* _mlp2W;
+    private readonly VisionTensorRef _mlp2W;
     private readonly float* _mlp2B;
 
     private readonly LayerWeights[] _blocks;
@@ -41,19 +42,19 @@ public sealed unsafe class DotsOcrVisionEncoder
     {
         public float* Ln1W;
         public float* Ln1B;
-        public Half* AttnQW;
+        public VisionTensorRef AttnQW;
         public float* AttnQB;
-        public Half* AttnKW;
+        public VisionTensorRef AttnKW;
         public float* AttnKB;
-        public Half* AttnVW;
+        public VisionTensorRef AttnVW;
         public float* AttnVB;
-        public Half* AttnOutW;
+        public VisionTensorRef AttnOutW;
         public float* AttnOutB;
         public float* Ln2W;
         public float* Ln2B;
-        public Half* FfnUpW;
+        public VisionTensorRef FfnUpW;
         public float* FfnUpB;
-        public Half* FfnDownW;
+        public VisionTensorRef FfnDownW;
         public float* FfnDownB;
         public int FfnIntermediate;
     }
@@ -74,7 +75,7 @@ public sealed unsafe class DotsOcrVisionEncoder
 
         var gguf = model.Gguf;
 
-        _patchEmbdW = VisionOps.GetTensorPtr<Half>(gguf, "v.patch_embd.weight");
+        _patchEmbdWF32 = VisionOps.DequantizeToFloat32(VisionOps.GetTensor(gguf, "v.patch_embd.weight"));
         _patchEmbdB = VisionOps.GetTensorPtr<float>(gguf, "v.patch_embd.bias");
         _posEmbd = VisionOps.GetTensorPtr<float>(gguf, "v.position_embd.weight", "v.position_embd");
         _preLnW = VisionOps.GetTensorPtr<float>(gguf, "v.pre_ln.weight");
@@ -82,9 +83,9 @@ public sealed unsafe class DotsOcrVisionEncoder
 
         _inputNormW = VisionOps.GetTensorPtr<float>(gguf, "mm.input_norm.weight", "mm.0.weight");
         _inputNormB = VisionOps.GetTensorPtr<float>(gguf, "mm.input_norm.bias", "mm.0.bias");
-        _mlp0W = VisionOps.GetTensorPtr<Half>(gguf, "mm.1.weight", "mm.0.weight");
+        _mlp0W = VisionOps.GetTensor(gguf, "mm.1.weight", "mm.0.weight");
         _mlp0B = VisionOps.GetTensorPtr<float>(gguf, "mm.1.bias", "mm.0.bias");
-        _mlp2W = VisionOps.GetTensorPtr<Half>(gguf, "mm.2.weight", "mm.3.weight");
+        _mlp2W = VisionOps.GetTensor(gguf, "mm.2.weight", "mm.3.weight");
         _mlp2B = VisionOps.GetTensorPtr<float>(gguf, "mm.2.bias", "mm.3.bias");
 
         _blocks = new LayerWeights[_layers];
@@ -97,19 +98,19 @@ public sealed unsafe class DotsOcrVisionEncoder
             {
                 Ln1W = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.ln1.weight"),
                 Ln1B = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.ln1.bias"),
-                AttnQW = VisionOps.GetTensorPtr<Half>(gguf, $"v.blk.{l}.attn_q.weight"),
+                AttnQW = VisionOps.GetTensor(gguf, $"v.blk.{l}.attn_q.weight"),
                 AttnQB = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.attn_q.bias"),
-                AttnKW = VisionOps.GetTensorPtr<Half>(gguf, $"v.blk.{l}.attn_k.weight"),
+                AttnKW = VisionOps.GetTensor(gguf, $"v.blk.{l}.attn_k.weight"),
                 AttnKB = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.attn_k.bias"),
-                AttnVW = VisionOps.GetTensorPtr<Half>(gguf, $"v.blk.{l}.attn_v.weight"),
+                AttnVW = VisionOps.GetTensor(gguf, $"v.blk.{l}.attn_v.weight"),
                 AttnVB = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.attn_v.bias"),
-                AttnOutW = VisionOps.GetTensorPtr<Half>(gguf, $"v.blk.{l}.attn_out.weight"),
+                AttnOutW = VisionOps.GetTensor(gguf, $"v.blk.{l}.attn_out.weight"),
                 AttnOutB = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.attn_out.bias"),
                 Ln2W = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.ln2.weight"),
                 Ln2B = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.ln2.bias"),
-                FfnUpW = VisionOps.GetTensorPtr<Half>(gguf, $"v.blk.{l}.ffn_up.weight"),
+                FfnUpW = VisionOps.GetTensor(gguf, $"v.blk.{l}.ffn_up.weight"),
                 FfnUpB = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.ffn_up.bias"),
-                FfnDownW = VisionOps.GetTensorPtr<Half>(gguf, $"v.blk.{l}.ffn_down.weight"),
+                FfnDownW = VisionOps.GetTensor(gguf, $"v.blk.{l}.ffn_down.weight"),
                 FfnDownB = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.ffn_down.bias"),
                 FfnIntermediate = intermediate
             };
@@ -141,15 +142,15 @@ public sealed unsafe class DotsOcrVisionEncoder
             Array.Copy(hiddenStates, normed, hiddenStates.Length);
             VisionOps.RmsNorm(normed, numPatches, _embd, blk.Ln1W, _eps);
 
-            VisionOps.MatVecF16(normed, blk.AttnQW, blk.AttnQB, numPatches, _embd, _embd, qBuf);
-            VisionOps.MatVecF16(normed, blk.AttnKW, blk.AttnKB, numPatches, _embd, _embd, kBuf);
-            VisionOps.MatVecF16(normed, blk.AttnVW, blk.AttnVB, numPatches, _embd, _embd, vBuf);
+            VisionOps.MatVecAny(normed, blk.AttnQW, blk.AttnQB, numPatches, _embd, _embd, qBuf);
+            VisionOps.MatVecAny(normed, blk.AttnKW, blk.AttnKB, numPatches, _embd, _embd, kBuf);
+            VisionOps.MatVecAny(normed, blk.AttnVW, blk.AttnVB, numPatches, _embd, _embd, vBuf);
 
             // 2D M-RoPE
             VisionOps.Interleaved2DRoPE(qBuf, kBuf, patchesX, patchesY, _heads, _headDim);
 
             VisionOps.Attention(qBuf, kBuf, vBuf, numPatches, _heads, _headDim, normed);
-            VisionOps.MatVecF16(normed, blk.AttnOutW, blk.AttnOutB, numPatches, _embd, _embd, attnOut);
+            VisionOps.MatVecAny(normed, blk.AttnOutW, blk.AttnOutB, numPatches, _embd, _embd, attnOut);
 
             for (int i = 0; i < hiddenStates.Length; i++) hiddenStates[i] += attnOut[i];
 
@@ -158,9 +159,9 @@ public sealed unsafe class DotsOcrVisionEncoder
 
             int intermediate = blk.FfnIntermediate;
             var ffnMid = new float[numPatches * intermediate];
-            VisionOps.MatVecF16(normed, blk.FfnUpW, blk.FfnUpB, numPatches, _embd, intermediate, ffnMid);
+            VisionOps.MatVecAny(normed, blk.FfnUpW, blk.FfnUpB, numPatches, _embd, intermediate, ffnMid);
             VisionOps.Gelu(ffnMid);
-            VisionOps.MatVecF16(ffnMid, blk.FfnDownW, blk.FfnDownB, numPatches, intermediate, _embd, attnOut);
+            VisionOps.MatVecAny(ffnMid, blk.FfnDownW, blk.FfnDownB, numPatches, intermediate, _embd, attnOut);
 
             for (int i = 0; i < hiddenStates.Length; i++) hiddenStates[i] += attnOut[i];
         }
@@ -184,12 +185,12 @@ public sealed unsafe class DotsOcrVisionEncoder
 
         // 2-layer GELU MLP Projector
         var visualTokens = new float[tokenCount * _projDim];
-        if (_mlp0W != null && _mlp2W != null)
+        if (_mlp0W.IsValid && _mlp2W.IsValid)
         {
             var midBuf = new float[tokenCount * mergedDim];
-            VisionOps.MatVecF16(merged, _mlp0W, _mlp0B, tokenCount, mergedDim, mergedDim, midBuf);
+            VisionOps.MatVecAny(merged, _mlp0W, _mlp0B, tokenCount, mergedDim, mergedDim, midBuf);
             VisionOps.Gelu(midBuf);
-            VisionOps.MatVecF16(midBuf, _mlp2W, _mlp2B, tokenCount, mergedDim, _projDim, visualTokens);
+            VisionOps.MatVecAny(midBuf, _mlp2W, _mlp2B, tokenCount, mergedDim, _projDim, visualTokens);
         }
         else
         {
@@ -216,7 +217,7 @@ public sealed unsafe class DotsOcrVisionEncoder
                 int patchIdx = py * patchesX + px;
                 int outOffset = patchIdx * _embd;
 
-                if (_patchEmbdW != null)
+                if (_patchEmbdWF32.Length > 0)
                 {
                     for (int d = 0; d < _embd; d++)
                     {
@@ -232,7 +233,7 @@ public sealed unsafe class DotsOcrVisionEncoder
                                     int x = px * patchSize + dx;
                                     float pixel = chw[c * planeSize + (y * width + x)];
                                     int weightIdx = wOffset + c * patchArea + (dy * patchSize + dx);
-                                    sum += pixel * (float)_patchEmbdW[weightIdx];
+                                    sum += pixel * _patchEmbdWF32[weightIdx];
                                 }
                             }
                         }

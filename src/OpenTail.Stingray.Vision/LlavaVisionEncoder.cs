@@ -4,6 +4,7 @@ using System.Linq;
 using System.Runtime.InteropServices;
 using System.Threading.Tasks;
 using OpenTail.Stingray.Core;
+using OpenTail.Stingray.Cpu;
 
 namespace OpenTail.Stingray.Vision;
 
@@ -21,7 +22,7 @@ public sealed unsafe class LlavaVisionEncoder
     private readonly int _projDim;
     private readonly float _eps;
 
-    private readonly Half* _patchEmbdW;
+    private readonly float[] _patchEmbdWF32;
     private readonly float* _patchEmbdB;
     private readonly float* _clsEmbd;
     private readonly float* _posEmbd;
@@ -30,9 +31,9 @@ public sealed unsafe class LlavaVisionEncoder
     private readonly float* _postLnW;
     private readonly float* _postLnB;
 
-    private readonly Half* _mlp0W;
+    private readonly VisionTensorRef _mlp0W;
     private readonly float* _mlp0B;
-    private readonly Half* _mlp2W;
+    private readonly VisionTensorRef _mlp2W;
     private readonly float* _mlp2B;
 
     private readonly LayerWeights[] _blocks;
@@ -41,21 +42,21 @@ public sealed unsafe class LlavaVisionEncoder
     {
         public float* Ln1W;
         public float* Ln1B;
-        public Half* AttnQkvW;
+        public VisionTensorRef AttnQkvW;
         public float* AttnQkvB;
-        public Half* AttnQW;
+        public VisionTensorRef AttnQW;
         public float* AttnQB;
-        public Half* AttnKW;
+        public VisionTensorRef AttnKW;
         public float* AttnKB;
-        public Half* AttnVW;
+        public VisionTensorRef AttnVW;
         public float* AttnVB;
-        public Half* AttnOutW;
+        public VisionTensorRef AttnOutW;
         public float* AttnOutB;
         public float* Ln2W;
         public float* Ln2B;
-        public Half* FfnUpW;
+        public VisionTensorRef FfnUpW;
         public float* FfnUpB;
-        public Half* FfnDownW;
+        public VisionTensorRef FfnDownW;
         public float* FfnDownB;
         public int FfnIntermediate;
     }
@@ -75,7 +76,7 @@ public sealed unsafe class LlavaVisionEncoder
 
         var gguf = model.Gguf;
 
-        _patchEmbdW = VisionOps.GetTensorPtr<Half>(gguf, "v.patch_embd.weight");
+        _patchEmbdWF32 = VisionOps.DequantizeToFloat32(VisionOps.GetTensor(gguf, "v.patch_embd.weight"));
         _patchEmbdB = VisionOps.GetTensorPtr<float>(gguf, "v.patch_embd.bias");
         _clsEmbd = VisionOps.GetTensorPtr<float>(gguf, "v.class_embd", "v.cls_embd");
         _posEmbd = VisionOps.GetTensorPtr<float>(gguf, "v.position_embd.weight", "v.position_embd");
@@ -84,9 +85,9 @@ public sealed unsafe class LlavaVisionEncoder
         _postLnW = VisionOps.GetTensorPtr<float>(gguf, "v.post_ln.weight");
         _postLnB = VisionOps.GetTensorPtr<float>(gguf, "v.post_ln.bias");
 
-        _mlp0W = VisionOps.GetTensorPtr<Half>(gguf, "mm.0.weight");
+        _mlp0W = VisionOps.GetTensor(gguf, "mm.0.weight");
         _mlp0B = VisionOps.GetTensorPtr<float>(gguf, "mm.0.bias");
-        _mlp2W = VisionOps.GetTensorPtr<Half>(gguf, "mm.2.weight");
+        _mlp2W = VisionOps.GetTensor(gguf, "mm.2.weight");
         _mlp2B = VisionOps.GetTensorPtr<float>(gguf, "mm.2.bias");
 
         _blocks = new LayerWeights[_layers];
@@ -99,21 +100,21 @@ public sealed unsafe class LlavaVisionEncoder
             {
                 Ln1W = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.ln1.weight"),
                 Ln1B = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.ln1.bias"),
-                AttnQkvW = VisionOps.GetTensorPtr<Half>(gguf, $"v.blk.{l}.attn_qkv.weight"),
+                AttnQkvW = VisionOps.GetTensor(gguf, $"v.blk.{l}.attn_qkv.weight"),
                 AttnQkvB = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.attn_qkv.bias"),
-                AttnQW = VisionOps.GetTensorPtr<Half>(gguf, $"v.blk.{l}.attn_q.weight"),
+                AttnQW = VisionOps.GetTensor(gguf, $"v.blk.{l}.attn_q.weight"),
                 AttnQB = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.attn_q.bias"),
-                AttnKW = VisionOps.GetTensorPtr<Half>(gguf, $"v.blk.{l}.attn_k.weight"),
+                AttnKW = VisionOps.GetTensor(gguf, $"v.blk.{l}.attn_k.weight"),
                 AttnKB = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.attn_k.bias"),
-                AttnVW = VisionOps.GetTensorPtr<Half>(gguf, $"v.blk.{l}.attn_v.weight"),
+                AttnVW = VisionOps.GetTensor(gguf, $"v.blk.{l}.attn_v.weight"),
                 AttnVB = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.attn_v.bias"),
-                AttnOutW = VisionOps.GetTensorPtr<Half>(gguf, $"v.blk.{l}.attn_out.weight"),
+                AttnOutW = VisionOps.GetTensor(gguf, $"v.blk.{l}.attn_out.weight"),
                 AttnOutB = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.attn_out.bias"),
                 Ln2W = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.ln2.weight"),
                 Ln2B = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.ln2.bias"),
-                FfnUpW = VisionOps.GetTensorPtr<Half>(gguf, $"v.blk.{l}.ffn_up.weight"),
+                FfnUpW = VisionOps.GetTensor(gguf, $"v.blk.{l}.ffn_up.weight"),
                 FfnUpB = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.ffn_up.bias"),
-                FfnDownW = VisionOps.GetTensorPtr<Half>(gguf, $"v.blk.{l}.ffn_down.weight"),
+                FfnDownW = VisionOps.GetTensor(gguf, $"v.blk.{l}.ffn_down.weight"),
                 FfnDownB = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.ffn_down.bias"),
                 FfnIntermediate = intermediate
             };
@@ -146,10 +147,10 @@ public sealed unsafe class LlavaVisionEncoder
             Array.Copy(hiddenStates, normed, hiddenStates.Length);
             VisionOps.LayerNorm(normed, totalTokensIn, _embd, blk.Ln1W, blk.Ln1B, _eps);
 
-            if (blk.AttnQkvW != null)
+            if (blk.AttnQkvW.IsValid)
             {
                 var qkv = new float[totalTokensIn * 3 * _embd];
-                VisionOps.MatVecF16(normed, blk.AttnQkvW, blk.AttnQkvB, totalTokensIn, _embd, 3 * _embd, qkv);
+                VisionOps.MatVecAny(normed, blk.AttnQkvW, blk.AttnQkvB, totalTokensIn, _embd, 3 * _embd, qkv);
                 for (int p = 0; p < totalTokensIn; p++)
                 {
                     Array.Copy(qkv, p * 3 * _embd, qBuf, p * _embd, _embd);
@@ -159,13 +160,13 @@ public sealed unsafe class LlavaVisionEncoder
             }
             else
             {
-                VisionOps.MatVecF16(normed, blk.AttnQW, blk.AttnQB, totalTokensIn, _embd, _embd, qBuf);
-                VisionOps.MatVecF16(normed, blk.AttnKW, blk.AttnKB, totalTokensIn, _embd, _embd, kBuf);
-                VisionOps.MatVecF16(normed, blk.AttnVW, blk.AttnVB, totalTokensIn, _embd, _embd, vBuf);
+                VisionOps.MatVecAny(normed, blk.AttnQW, blk.AttnQB, totalTokensIn, _embd, _embd, qBuf);
+                VisionOps.MatVecAny(normed, blk.AttnKW, blk.AttnKB, totalTokensIn, _embd, _embd, kBuf);
+                VisionOps.MatVecAny(normed, blk.AttnVW, blk.AttnVB, totalTokensIn, _embd, _embd, vBuf);
             }
 
             VisionOps.Attention(qBuf, kBuf, vBuf, totalTokensIn, _heads, _headDim, normed);
-            VisionOps.MatVecF16(normed, blk.AttnOutW, blk.AttnOutB, totalTokensIn, _embd, _embd, attnOut);
+            VisionOps.MatVecAny(normed, blk.AttnOutW, blk.AttnOutB, totalTokensIn, _embd, _embd, attnOut);
 
             for (int i = 0; i < hiddenStates.Length; i++) hiddenStates[i] += attnOut[i];
 
@@ -174,9 +175,9 @@ public sealed unsafe class LlavaVisionEncoder
 
             int intermediate = blk.FfnIntermediate;
             var ffnMid = new float[totalTokensIn * intermediate];
-            VisionOps.MatVecF16(normed, blk.FfnUpW, blk.FfnUpB, totalTokensIn, _embd, intermediate, ffnMid);
+            VisionOps.MatVecAny(normed, blk.FfnUpW, blk.FfnUpB, totalTokensIn, _embd, intermediate, ffnMid);
             VisionOps.QuickGelu(ffnMid);
-            VisionOps.MatVecF16(ffnMid, blk.FfnDownW, blk.FfnDownB, totalTokensIn, intermediate, _embd, attnOut);
+            VisionOps.MatVecAny(ffnMid, blk.FfnDownW, blk.FfnDownB, totalTokensIn, intermediate, _embd, attnOut);
 
             for (int i = 0; i < hiddenStates.Length; i++) hiddenStates[i] += attnOut[i];
         }
@@ -190,12 +191,12 @@ public sealed unsafe class LlavaVisionEncoder
 
         // 2-layer GELU MLP Projector
         var visualTokens = new float[tokenCount * _projDim];
-        if (_mlp0W != null && _mlp2W != null)
+        if (_mlp0W.IsValid && _mlp2W.IsValid)
         {
             var midBuf = new float[tokenCount * _projDim];
-            VisionOps.MatVecF16(patchEmbeddings, _mlp0W, _mlp0B, tokenCount, _embd, _projDim, midBuf);
+            VisionOps.MatVecAny(patchEmbeddings, _mlp0W, _mlp0B, tokenCount, _embd, _projDim, midBuf);
             VisionOps.Gelu(midBuf);
-            VisionOps.MatVecF16(midBuf, _mlp2W, _mlp2B, tokenCount, _projDim, _projDim, visualTokens);
+            VisionOps.MatVecAny(midBuf, _mlp2W, _mlp2B, tokenCount, _projDim, _projDim, visualTokens);
         }
         else
         {
@@ -232,7 +233,7 @@ public sealed unsafe class LlavaVisionEncoder
                 int tokenIdx = patchIdx + 1;
                 int outOffset = tokenIdx * _embd;
 
-                if (_patchEmbdW != null)
+                if (_patchEmbdWF32.Length > 0)
                 {
                     for (int d = 0; d < _embd; d++)
                     {
@@ -248,7 +249,7 @@ public sealed unsafe class LlavaVisionEncoder
                                     int x = px * patchSize + dx;
                                     float pixel = chw[c * planeSize + (y * width + x)];
                                     int weightIdx = wOffset + c * patchArea + (dy * patchSize + dx);
-                                    sum += pixel * (float)_patchEmbdW[weightIdx];
+                                    sum += pixel * _patchEmbdWF32[weightIdx];
                                 }
                             }
                         }

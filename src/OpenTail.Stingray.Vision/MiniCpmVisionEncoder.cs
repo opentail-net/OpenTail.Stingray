@@ -3,6 +3,7 @@ using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
 using OpenTail.Stingray.Core;
+using OpenTail.Stingray.Cpu;
 
 namespace OpenTail.Stingray.Vision;
 
@@ -21,27 +22,27 @@ public sealed unsafe class MiniCpmVisionEncoder
     private readonly int _queryCount;
     private readonly float _eps;
 
-    private readonly Half* _patchEmbdW;
+    private readonly float[] _patchEmbdWF32;
     private readonly float* _patchEmbdB;
     private readonly float* _posEmbd;
     private readonly float* _postLnW;
     private readonly float* _postLnB;
 
     private readonly float* _resamplerQuery;
-    private readonly Half* _resamplerKvProjW;
+    private readonly VisionTensorRef _resamplerKvProjW;
     private readonly float* _resamplerLnQW;
     private readonly float* _resamplerLnQB;
     private readonly float* _resamplerLnKvW;
     private readonly float* _resamplerLnKvB;
-    private readonly Half* _resamplerAttnQW;
+    private readonly VisionTensorRef _resamplerAttnQW;
     private readonly float* _resamplerAttnQB;
-    private readonly Half* _resamplerAttnKW;
+    private readonly VisionTensorRef _resamplerAttnKW;
     private readonly float* _resamplerAttnKB;
-    private readonly Half* _resamplerAttnVW;
+    private readonly VisionTensorRef _resamplerAttnVW;
     private readonly float* _resamplerAttnVB;
-    private readonly Half* _resamplerAttnOutW;
+    private readonly VisionTensorRef _resamplerAttnOutW;
     private readonly float* _resamplerAttnOutB;
-    private readonly Half* _resamplerProjW;
+    private readonly VisionTensorRef _resamplerProjW;
     private readonly float* _resamplerProjB;
 
     private readonly LayerWeights[] _blocks;
@@ -50,21 +51,21 @@ public sealed unsafe class MiniCpmVisionEncoder
     {
         public float* Ln1W;
         public float* Ln1B;
-        public Half* AttnQkvW;
+        public VisionTensorRef AttnQkvW;
         public float* AttnQkvB;
-        public Half* AttnQW;
+        public VisionTensorRef AttnQW;
         public float* AttnQB;
-        public Half* AttnKW;
+        public VisionTensorRef AttnKW;
         public float* AttnKB;
-        public Half* AttnVW;
+        public VisionTensorRef AttnVW;
         public float* AttnVB;
-        public Half* AttnOutW;
+        public VisionTensorRef AttnOutW;
         public float* AttnOutB;
         public float* Ln2W;
         public float* Ln2B;
-        public Half* FfnUpW;
+        public VisionTensorRef FfnUpW;
         public float* FfnUpB;
-        public Half* FfnDownW;
+        public VisionTensorRef FfnDownW;
         public float* FfnDownB;
         public int FfnIntermediate;
     }
@@ -87,54 +88,29 @@ public sealed unsafe class MiniCpmVisionEncoder
         var gguf = model.Gguf;
 
         // Stem & Position
-        _patchEmbdW = GetTensorPtr<Half>(gguf, "v.patch_embd.weight");
-        _patchEmbdB = GetTensorPtr<float>(gguf, "v.patch_embd.bias");
-        _posEmbd = GetTensorPtr<float>(gguf, "v.position_embd.weight");
-        if (_posEmbd == null) _posEmbd = GetTensorPtr<float>(gguf, "v.position_embd");
-        _postLnW = GetTensorPtr<float>(gguf, "v.post_ln.weight");
-        _postLnB = GetTensorPtr<float>(gguf, "v.post_ln.bias");
+        _patchEmbdWF32 = VisionOps.DequantizeToFloat32(VisionOps.GetTensor(gguf, "v.patch_embd.weight"));
+        _patchEmbdB = VisionOps.GetTensorPtr<float>(gguf, "v.patch_embd.bias");
+        _posEmbd = VisionOps.GetTensorPtr<float>(gguf, "v.position_embd.weight", "v.position_embd");
+        _postLnW = VisionOps.GetTensorPtr<float>(gguf, "v.post_ln.weight");
+        _postLnB = VisionOps.GetTensorPtr<float>(gguf, "v.post_ln.bias");
 
         // Resampler Tensors
-        _resamplerQuery = GetTensorPtr<float>(gguf, "resampler.query");
-        if (_resamplerQuery == null) _resamplerQuery = GetTensorPtr<float>(gguf, "mm.model.query");
-
-        _resamplerKvProjW = GetTensorPtr<Half>(gguf, "resampler.kv.weight");
-        if (_resamplerKvProjW == null) _resamplerKvProjW = GetTensorPtr<Half>(gguf, "mm.model.kv_proj.weight");
-
-        _resamplerLnQW = GetTensorPtr<float>(gguf, "resampler.ln_q.weight");
-        if (_resamplerLnQW == null) _resamplerLnQW = GetTensorPtr<float>(gguf, "mm.model.ln_q.weight");
-        _resamplerLnQB = GetTensorPtr<float>(gguf, "resampler.ln_q.bias");
-        if (_resamplerLnQB == null) _resamplerLnQB = GetTensorPtr<float>(gguf, "mm.model.ln_q.bias");
-
-        _resamplerLnKvW = GetTensorPtr<float>(gguf, "resampler.ln_kv.weight");
-        if (_resamplerLnKvW == null) _resamplerLnKvW = GetTensorPtr<float>(gguf, "mm.model.ln_kv.weight");
-        _resamplerLnKvB = GetTensorPtr<float>(gguf, "resampler.ln_kv.bias");
-        if (_resamplerLnKvB == null) _resamplerLnKvB = GetTensorPtr<float>(gguf, "mm.model.ln_kv.bias");
-
-        _resamplerAttnQW = GetTensorPtr<Half>(gguf, "resampler.attn.q.weight");
-        if (_resamplerAttnQW == null) _resamplerAttnQW = GetTensorPtr<Half>(gguf, "mm.model.attn_q.weight");
-        _resamplerAttnQB = GetTensorPtr<float>(gguf, "resampler.attn.q.bias");
-        if (_resamplerAttnQB == null) _resamplerAttnQB = GetTensorPtr<float>(gguf, "mm.model.attn_q.bias");
-
-        _resamplerAttnKW = GetTensorPtr<Half>(gguf, "resampler.attn.k.weight");
-        if (_resamplerAttnKW == null) _resamplerAttnKW = GetTensorPtr<Half>(gguf, "mm.model.attn_k.weight");
-        _resamplerAttnKB = GetTensorPtr<float>(gguf, "resampler.attn.k.bias");
-        if (_resamplerAttnKB == null) _resamplerAttnKB = GetTensorPtr<float>(gguf, "mm.model.attn_k.bias");
-
-        _resamplerAttnVW = GetTensorPtr<Half>(gguf, "resampler.attn.v.weight");
-        if (_resamplerAttnVW == null) _resamplerAttnVW = GetTensorPtr<Half>(gguf, "mm.model.attn_v.weight");
-        _resamplerAttnVB = GetTensorPtr<float>(gguf, "resampler.attn.v.bias");
-        if (_resamplerAttnVB == null) _resamplerAttnVB = GetTensorPtr<float>(gguf, "mm.model.attn_v.bias");
-
-        _resamplerAttnOutW = GetTensorPtr<Half>(gguf, "resampler.attn.out.weight");
-        if (_resamplerAttnOutW == null) _resamplerAttnOutW = GetTensorPtr<Half>(gguf, "mm.model.attn_o.weight");
-        _resamplerAttnOutB = GetTensorPtr<float>(gguf, "resampler.attn.out.bias");
-        if (_resamplerAttnOutB == null) _resamplerAttnOutB = GetTensorPtr<float>(gguf, "mm.model.attn_o.bias");
-
-        _resamplerProjW = GetTensorPtr<Half>(gguf, "resampler.proj.weight");
-        if (_resamplerProjW == null) _resamplerProjW = GetTensorPtr<Half>(gguf, "mm.model.proj.weight");
-        _resamplerProjB = GetTensorPtr<float>(gguf, "resampler.proj.bias");
-        if (_resamplerProjB == null) _resamplerProjB = GetTensorPtr<float>(gguf, "mm.model.proj.bias");
+        _resamplerQuery = VisionOps.GetTensorPtr<float>(gguf, "resampler.query", "mm.model.query");
+        _resamplerKvProjW = VisionOps.GetTensor(gguf, "resampler.kv.weight", "mm.model.kv_proj.weight");
+        _resamplerLnQW = VisionOps.GetTensorPtr<float>(gguf, "resampler.ln_q.weight", "mm.model.ln_q.weight");
+        _resamplerLnQB = VisionOps.GetTensorPtr<float>(gguf, "resampler.ln_q.bias", "mm.model.ln_q.bias");
+        _resamplerLnKvW = VisionOps.GetTensorPtr<float>(gguf, "resampler.ln_kv.weight", "mm.model.ln_kv.weight");
+        _resamplerLnKvB = VisionOps.GetTensorPtr<float>(gguf, "resampler.ln_kv.bias", "mm.model.ln_kv.bias");
+        _resamplerAttnQW = VisionOps.GetTensor(gguf, "resampler.attn.q.weight", "mm.model.attn_q.weight");
+        _resamplerAttnQB = VisionOps.GetTensorPtr<float>(gguf, "resampler.attn.q.bias", "mm.model.attn_q.bias");
+        _resamplerAttnKW = VisionOps.GetTensor(gguf, "resampler.attn.k.weight", "mm.model.attn_k.weight");
+        _resamplerAttnKB = VisionOps.GetTensorPtr<float>(gguf, "resampler.attn.k.bias", "mm.model.attn_k.bias");
+        _resamplerAttnVW = VisionOps.GetTensor(gguf, "resampler.attn.v.weight", "mm.model.attn_v.weight");
+        _resamplerAttnVB = VisionOps.GetTensorPtr<float>(gguf, "resampler.attn.v.bias", "mm.model.attn_v.bias");
+        _resamplerAttnOutW = VisionOps.GetTensor(gguf, "resampler.attn.out.weight", "mm.model.attn_o.weight");
+        _resamplerAttnOutB = VisionOps.GetTensorPtr<float>(gguf, "resampler.attn.out.bias", "mm.model.attn_o.bias");
+        _resamplerProjW = VisionOps.GetTensor(gguf, "resampler.proj.weight", "mm.model.proj.weight");
+        _resamplerProjB = VisionOps.GetTensorPtr<float>(gguf, "resampler.proj.bias", "mm.model.proj.bias");
 
         // Layers
         _blocks = new LayerWeights[_layers];
@@ -145,34 +121,27 @@ public sealed unsafe class MiniCpmVisionEncoder
 
             _blocks[l] = new LayerWeights
             {
-                Ln1W = GetTensorPtr<float>(gguf, $"v.blk.{l}.ln1.weight"),
-                Ln1B = GetTensorPtr<float>(gguf, $"v.blk.{l}.ln1.bias"),
-                AttnQkvW = GetTensorPtr<Half>(gguf, $"v.blk.{l}.attn_qkv.weight"),
-                AttnQkvB = GetTensorPtr<float>(gguf, $"v.blk.{l}.attn_qkv.bias"),
-                AttnQW = GetTensorPtr<Half>(gguf, $"v.blk.{l}.attn_q.weight"),
-                AttnQB = GetTensorPtr<float>(gguf, $"v.blk.{l}.attn_q.bias"),
-                AttnKW = GetTensorPtr<Half>(gguf, $"v.blk.{l}.attn_k.weight"),
-                AttnKB = GetTensorPtr<float>(gguf, $"v.blk.{l}.attn_k.bias"),
-                AttnVW = GetTensorPtr<Half>(gguf, $"v.blk.{l}.attn_v.weight"),
-                AttnVB = GetTensorPtr<float>(gguf, $"v.blk.{l}.attn_v.bias"),
-                AttnOutW = GetTensorPtr<Half>(gguf, $"v.blk.{l}.attn_out.weight"),
-                AttnOutB = GetTensorPtr<float>(gguf, $"v.blk.{l}.attn_out.bias"),
-                Ln2W = GetTensorPtr<float>(gguf, $"v.blk.{l}.ln2.weight"),
-                Ln2B = GetTensorPtr<float>(gguf, $"v.blk.{l}.ln2.bias"),
-                FfnUpW = GetTensorPtr<Half>(gguf, $"v.blk.{l}.ffn_up.weight"),
-                FfnUpB = GetTensorPtr<float>(gguf, $"v.blk.{l}.ffn_up.bias"),
-                FfnDownW = GetTensorPtr<Half>(gguf, $"v.blk.{l}.ffn_down.weight"),
-                FfnDownB = GetTensorPtr<float>(gguf, $"v.blk.{l}.ffn_down.bias"),
+                Ln1W = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.ln1.weight"),
+                Ln1B = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.ln1.bias"),
+                AttnQkvW = VisionOps.GetTensor(gguf, $"v.blk.{l}.attn_qkv.weight"),
+                AttnQkvB = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.attn_qkv.bias"),
+                AttnQW = VisionOps.GetTensor(gguf, $"v.blk.{l}.attn_q.weight"),
+                AttnQB = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.attn_q.bias"),
+                AttnKW = VisionOps.GetTensor(gguf, $"v.blk.{l}.attn_k.weight"),
+                AttnKB = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.attn_k.bias"),
+                AttnVW = VisionOps.GetTensor(gguf, $"v.blk.{l}.attn_v.weight"),
+                AttnVB = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.attn_v.bias"),
+                AttnOutW = VisionOps.GetTensor(gguf, $"v.blk.{l}.attn_out.weight"),
+                AttnOutB = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.attn_out.bias"),
+                Ln2W = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.ln2.weight"),
+                Ln2B = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.ln2.bias"),
+                FfnUpW = VisionOps.GetTensor(gguf, $"v.blk.{l}.ffn_up.weight"),
+                FfnUpB = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.ffn_up.bias"),
+                FfnDownW = VisionOps.GetTensor(gguf, $"v.blk.{l}.ffn_down.weight"),
+                FfnDownB = VisionOps.GetTensorPtr<float>(gguf, $"v.blk.{l}.ffn_down.bias"),
                 FfnIntermediate = intermediate
             };
         }
-    }
-
-    private static T* GetTensorPtr<T>(GgufModel gguf, string name) where T : unmanaged
-    {
-        var tensor = gguf.FindTensor(name);
-        if (!tensor.HasValue) return null;
-        return (T*)gguf.GetTensorDataPtr(tensor.Value);
     }
 
     /// <summary>
@@ -227,10 +196,10 @@ public sealed unsafe class MiniCpmVisionEncoder
             ApplyLayerNorm(normed, numPatches, _embd, blk.Ln1W, blk.Ln1B);
 
             // Self-Attention Q, K, V
-            if (blk.AttnQkvW != null)
+            if (blk.AttnQkvW.IsValid)
             {
                 var qkv = new float[numPatches * 3 * _embd];
-                MatVecF16(normed, blk.AttnQkvW, blk.AttnQkvB, numPatches, _embd, 3 * _embd, qkv);
+                VisionOps.MatVecAny(normed, blk.AttnQkvW, blk.AttnQkvB, numPatches, _embd, 3 * _embd, qkv);
                 for (int p = 0; p < numPatches; p++)
                 {
                     Array.Copy(qkv, p * 3 * _embd, qBuf, p * _embd, _embd);
@@ -240,13 +209,13 @@ public sealed unsafe class MiniCpmVisionEncoder
             }
             else
             {
-                MatVecF16(normed, blk.AttnQW, blk.AttnQB, numPatches, _embd, _embd, qBuf);
-                MatVecF16(normed, blk.AttnKW, blk.AttnKB, numPatches, _embd, _embd, kBuf);
-                MatVecF16(normed, blk.AttnVW, blk.AttnVB, numPatches, _embd, _embd, vBuf);
+                VisionOps.MatVecAny(normed, blk.AttnQW, blk.AttnQB, numPatches, _embd, _embd, qBuf);
+                VisionOps.MatVecAny(normed, blk.AttnKW, blk.AttnKB, numPatches, _embd, _embd, kBuf);
+                VisionOps.MatVecAny(normed, blk.AttnVW, blk.AttnVB, numPatches, _embd, _embd, vBuf);
             }
 
             ComputeAttention(qBuf, kBuf, vBuf, numPatches, _heads, _headDim, normed);
-            MatVecF16(normed, blk.AttnOutW, blk.AttnOutB, numPatches, _embd, _embd, attnOut);
+            VisionOps.MatVecAny(normed, blk.AttnOutW, blk.AttnOutB, numPatches, _embd, _embd, attnOut);
 
             // Residual 1
             for (int i = 0; i < hiddenStates.Length; i++) hiddenStates[i] += attnOut[i];
@@ -257,7 +226,7 @@ public sealed unsafe class MiniCpmVisionEncoder
 
             int intermediate = blk.FfnIntermediate;
             var ffnMid = new float[numPatches * intermediate];
-            MatVecF16(normed, blk.FfnUpW, blk.FfnUpB, numPatches, _embd, intermediate, ffnMid);
+            VisionOps.MatVecAny(normed, blk.FfnUpW, blk.FfnUpB, numPatches, _embd, intermediate, ffnMid);
 
             // GELU
             for (int i = 0; i < ffnMid.Length; i++)
@@ -266,7 +235,7 @@ public sealed unsafe class MiniCpmVisionEncoder
                 ffnMid[i] = 0.5f * x * (1.0f + MathF.Tanh(MathF.Sqrt(2.0f / MathF.PI) * (x + 0.044715f * x * x * x)));
             }
 
-            MatVecF16(ffnMid, blk.FfnDownW, blk.FfnDownB, numPatches, intermediate, _embd, attnOut);
+            VisionOps.MatVecAny(ffnMid, blk.FfnDownW, blk.FfnDownB, numPatches, intermediate, _embd, attnOut);
 
             // Residual 2
             for (int i = 0; i < hiddenStates.Length; i++) hiddenStates[i] += attnOut[i];
@@ -286,7 +255,7 @@ public sealed unsafe class MiniCpmVisionEncoder
 
         // V = KV_proj(vitEmbeddings)
         var vProj = new float[numPatches * resamplerDim];
-        MatVecF16(vitEmbeddings, _resamplerKvProjW, null, numPatches, _embd, resamplerDim, vProj);
+        VisionOps.MatVecAny(vitEmbeddings, _resamplerKvProjW, null, numPatches, _embd, resamplerDim, vProj);
         ApplyLayerNorm(vProj, numPatches, resamplerDim, _resamplerLnKvW, _resamplerLnKvB);
 
         // Learned Q
@@ -307,9 +276,9 @@ public sealed unsafe class MiniCpmVisionEncoder
         var resamplerK = new float[numPatches * resamplerDim];
         var resamplerV = new float[numPatches * resamplerDim];
 
-        MatVecF16(qLearned, _resamplerAttnQW, _resamplerAttnQB, _queryCount, resamplerDim, resamplerDim, resamplerQ);
-        MatVecF16(kPos, _resamplerAttnKW, _resamplerAttnKB, numPatches, resamplerDim, resamplerDim, resamplerK);
-        MatVecF16(vProj, _resamplerAttnVW, _resamplerAttnVB, numPatches, resamplerDim, resamplerDim, resamplerV);
+        VisionOps.MatVecAny(qLearned, _resamplerAttnQW, _resamplerAttnQB, _queryCount, resamplerDim, resamplerDim, resamplerQ);
+        VisionOps.MatVecAny(kPos, _resamplerAttnKW, _resamplerAttnKB, numPatches, resamplerDim, resamplerDim, resamplerK);
+        VisionOps.MatVecAny(vProj, _resamplerAttnVW, _resamplerAttnVB, numPatches, resamplerDim, resamplerDim, resamplerV);
 
         int resHeads = resamplerDim / 128;
         if (resHeads <= 0) resHeads = 16;
@@ -319,13 +288,13 @@ public sealed unsafe class MiniCpmVisionEncoder
         ComputeCrossAttention(resamplerQ, resamplerK, resamplerV, _queryCount, numPatches, resHeads, resHeadDim, crossAttnOut);
 
         var finalTokens = new float[_queryCount * _projDim];
-        MatVecF16(crossAttnOut, _resamplerAttnOutW, _resamplerAttnOutB, _queryCount, resamplerDim, resamplerDim, finalTokens);
+        VisionOps.MatVecAny(crossAttnOut, _resamplerAttnOutW, _resamplerAttnOutB, _queryCount, resamplerDim, resamplerDim, finalTokens);
 
         // Optional final projection layer
-        if (_resamplerProjW != null)
+        if (_resamplerProjW.IsValid)
         {
             var projected = new float[_queryCount * _projDim];
-            MatVecF16(finalTokens, _resamplerProjW, _resamplerProjB, _queryCount, resamplerDim, _projDim, projected);
+            VisionOps.MatVecAny(finalTokens, _resamplerProjW, _resamplerProjB, _queryCount, resamplerDim, _projDim, projected);
             return projected;
         }
 
@@ -345,7 +314,7 @@ public sealed unsafe class MiniCpmVisionEncoder
                 int patchIdx = py * patchesX + px;
                 int outOffset = patchIdx * _embd;
 
-                if (_patchEmbdW != null)
+                if (_patchEmbdWF32.Length > 0)
                 {
                     for (int d = 0; d < _embd; d++)
                     {
@@ -361,7 +330,7 @@ public sealed unsafe class MiniCpmVisionEncoder
                                     int x = px * patchSize + dx;
                                     float pixel = chw[c * planeSize + (y * width + x)];
                                     int weightIdx = wOffset + c * patchArea + (dy * patchSize + dx);
-                                    sum += pixel * (float)_patchEmbdW[weightIdx];
+                                    sum += pixel * _patchEmbdWF32[weightIdx];
                                 }
                             }
                         }
@@ -404,29 +373,13 @@ public sealed unsafe class MiniCpmVisionEncoder
         }
     }
 
-    private static void MatVecF16(float[] input, Half* weights, float* bias, int nTokens, int inDim, int outDim, float[] output)
-    {
-        if (weights == null) return;
-
-        for (int t = 0; t < nTokens; t++)
-        {
-            int inOff = t * inDim;
-            int outOff = t * outDim;
-
-            for (int o = 0; o < outDim; o++)
-            {
-                float sum = bias != null ? bias[o] : 0f;
-                int rowOff = o * inDim;
-
-                for (int i = 0; i < inDim; i++)
-                {
-                    sum += input[inOff + i] * (float)weights[rowOff + i];
-                }
-                output[outOff + o] = sum;
-            }
-        }
-    }
-
+    // FOUND, NOT FIXED (out of scope for this migration -- see docs/vl-migration-plan-2026-08-20.md
+    // and the identical finding in KimiVisionEncoder.cs): neither this nor ComputeCrossAttention
+    // below actually computes attention. This one never reads q or k, never scores, never
+    // softmaxes -- it copies v straight through scaled by 1/sqrt(headDim). ComputeCrossAttention is
+    // the same shape of bug but copies q instead (so the resampler's output doesn't depend on the
+    // image patches -- k and v -- at all). Both real, pre-existing, unrelated to this pass's
+    // GetTensorPtr/MatVecF16 dtype migration.
     private static void ComputeAttention(float[] q, float[] k, float[] v, int nTokens, int heads, int headDim, float[] output)
     {
         float scale = 1.0f / MathF.Sqrt(headDim);

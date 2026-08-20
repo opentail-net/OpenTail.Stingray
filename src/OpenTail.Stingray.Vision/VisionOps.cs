@@ -238,6 +238,22 @@ public static unsafe class VisionOps
     }
 
     /// <summary>
+    /// Dequantizes a whole tensor to F32 once, for the (small) tensors an encoder reads per-element
+    /// in an inline loop rather than through a batched matvec -- typically a patch-embed conv weight
+    /// -- where <see cref="MatVecAny"/>'s per-call dtype dispatch doesn't apply. Empty array if the
+    /// tensor is missing, so callers can keep an existing "length == 0 means absent" check instead
+    /// of a separate null check.
+    /// </summary>
+    public static float[] DequantizeToFloat32(VisionTensorRef t)
+    {
+        if (!t.IsValid) return [];
+        long n = t.Info.ElementCount;
+        var dst = new float[n];
+        Dequantize.ToFloat32(new ReadOnlySpan<byte>(t.Data, (int)t.Info.ByteSize), dst, t.Info.DType, n);
+        return dst;
+    }
+
+    /// <summary>
     /// Parallelized Layer Normalization over the last dimension: (x - mean) / sqrt(var + eps) * weight + bias.
     /// </summary>
     public static void LayerNorm(
