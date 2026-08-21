@@ -1,5 +1,17 @@
 # Model Provenance & Real-Weights Verification Plan
 
+> **⚠️ FLAGGED AS UNRELIABLE (2026-08-21):** at least the Piper VITS row below is
+> confirmed FALSE by direct code inspection — `PiperPipeline.FromConfigFile` only loads
+> `.onnx.json` voice metadata, never the `.onnx` weights (no ONNX runtime is referenced
+> anywhere in this codebase), so `PiperModel.Forward()` runs on 100% hardcoded procedural
+> math despite the real `en_US-lessac-medium.onnx` sitting in `models/`. This directly
+> contradicts several rows here ("PROVEN Level 2") for pipelines `docs/
+> audio-review-progress.md` independently confirmed fake (MeloTTS, F5-TTS, CosyVoice,
+> Parakeet, QwenASR, QwenTTS, Piper). The non-audio rows (Vision/LLM/Diffusion/
+> Embeddings) have NOT been re-verified — treat every claim in this document as unverified
+> until spot-checked against the actual code, not as ground truth. See
+> `docs/audio-review-progress.md` for the audio pipelines' real, verified status.
+
 **Target:** `opentail-net/OpenTail.Stingray`  
 **Purpose:** Honest, rigorous inventory, tracking checklist, and architecture map of all model formats, weight files, and pipelines in OpenTail.Stingray.
 

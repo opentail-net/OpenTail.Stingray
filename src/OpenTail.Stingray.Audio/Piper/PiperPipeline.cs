@@ -25,7 +25,19 @@ public sealed class PiperPipeline : ITextToSpeechPipeline
     public static PiperPipeline FromConfigFile(string configPath)
     {
         var config = PiperConfig.Load(configPath);
-        return new PiperPipeline(config);
+
+        // Piper's convention: "{voice}.onnx.json" alongside "{voice}.onnx". Falls back to the
+        // procedural placeholder model if the weights file isn't actually present (matches the
+        // "keep a fake fallback" precedent from Chatterbox/Kokoro).
+        string onnxPath = configPath.EndsWith(".json", StringComparison.OrdinalIgnoreCase)
+            ? configPath[..^".json".Length]
+            : configPath + ".onnx";
+
+        var model = File.Exists(onnxPath)
+            ? new PiperModel(onnxPath, sampleRate: config.Audio.SampleRate)
+            : new PiperModel(sampleRate: config.Audio.SampleRate);
+
+        return new PiperPipeline(config, model);
     }
 
     /// <summary>

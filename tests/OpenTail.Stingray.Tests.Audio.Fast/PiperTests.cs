@@ -49,13 +49,14 @@ public sealed class PiperTests
         Assert.Equal(1, raw[0]); // BOS
         Assert.Equal(2, raw[^1]); // EOS
 
-        // With interspersing: [0, BOS, 0, a, 0, b, 0, c, 0, EOS, 0]
+        // With interspersing: [BOS, 0, a, 0, b, 0, c, 0, EOS] -- a pad between each adjacent pair,
+        // none at the outer ends (confirmed against real Piper ONNX golden input_ids; VITS's
+        // `commons.intersperse`, not "pad at both ends").
         int[] interspersed = phonemizer.Tokenize(text, interspersePad: true);
-        Assert.Equal(raw.Length * 2 + 1, interspersed.Length);
-        Assert.Equal(0, interspersed[0]);
-        Assert.Equal(1, interspersed[1]);
-        Assert.Equal(0, interspersed[2]);
-        Assert.Equal(0, interspersed[^1]);
+        Assert.Equal(raw.Length * 2 - 1, interspersed.Length);
+        Assert.Equal(1, interspersed[0]); // BOS
+        Assert.Equal(0, interspersed[1]);
+        Assert.Equal(2, interspersed[^1]); // EOS
     }
 
     [Fact]

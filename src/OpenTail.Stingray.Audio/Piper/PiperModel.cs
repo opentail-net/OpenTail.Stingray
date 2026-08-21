@@ -3,20 +3,39 @@ namespace OpenTail.Stingray.Audio.Piper;
 /// <summary>
 /// Native C# implementation of Piper (VITS) neural synthesis graph:
 /// Prior Text Encoder + Duration Predictor + Normalizing Flow + HiFi-GAN MRF vocoder.
+///
+/// When constructed with a real .onnx weights file (see <see cref="PiperModel(string, int)"/>),
+/// runs the real weight-driven pipeline (PiperTextEncoder -&gt; PiperDurationPredictor -&gt;
+/// PiperLengthRegulator -&gt; PiperFlow -&gt; PiperHifiGanDecoder), each stage independently verified
+/// against real onnxruntime golden output (see tests/OpenTail.Stingray.Tests.Audio/Piper*.cs).
+/// Otherwise falls back to the original procedural placeholder synthesis (kept so parameterless/
+/// no-model-file callers -- e.g. Fast tests -- still get a valid, fast, non-real waveform).
 /// </summary>
 public sealed class PiperModel : IDisposable
 {
-    public int HiddenDim { get; } = 192;
+    public int HiddenDim { get; }
     public int NumHeads { get; } = 2;
     public int HeadDim => HiddenDim / NumHeads;
     public int NumLayers { get; } = 6;
     public int HopLength { get; } = 256;
-    public int SampleRate { get; } = 22050;
+    public int SampleRate { get; }
 
+    private readonly PiperOnnxWeights? _weights;
+
+    /// <summary>Fake/placeholder synthesis path (no real weights). Kept for callers without an ONNX model file.</summary>
     public PiperModel(int sampleRate = 22050, int hiddenDim = 192)
     {
         SampleRate = sampleRate;
         HiddenDim = hiddenDim;
+        _weights = null;
+    }
+
+    /// <summary>Real weight-driven synthesis path, loading Piper's ONNX weights.</summary>
+    public PiperModel(string onnxPath, int sampleRate = 22050)
+    {
+        SampleRate = sampleRate;
+        _weights = new PiperOnnxWeights(onnxPath);
+        HiddenDim = _weights.HiddenDim;
     }
 
     /// <summary>
@@ -31,6 +50,44 @@ public sealed class PiperModel : IDisposable
     {
         int numTokens = tokens.Length;
         if (numTokens == 0) return [];
+
+        return _weights is null
+            ? ForwardFake(tokens, speakerId, noiseScale, lengthScale, noiseW)
+            : ForwardReal(_weights, tokens, noiseScale, lengthScale, noiseW);
+    }
+
+    private static float[] ForwardReal(PiperOnnxWeights w, ReadOnlySpan<int> tokens, float noiseScale, float lengthScale, float noiseW)
+    {
+        int numTokens = tokens.Length;
+        var tokenArray = tokens.ToArray();
+
+        var (encoderHidden, mu, logs) = PiperTextEncoder.Forward(w, tokenArray);
+
+        var rng = new GaussianRandom();
+        float[] sdpNoise = rng.NextArray(2 * numTokens);
+        float[] logw = PiperDurationPredictor.Predict(w, encoderHidden, numTokens, sdpNoise, noiseW);
+
+        var durations = new int[numTokens];
+        int totalFrames = 0;
+        for (int i = 0; i < numTokens; i++)
+        {
+            int d = (int)MathF.Ceiling(MathF.Exp(logw[i]) * lengthScale);
+            if (d < 1) d = 1;
+            durations[i] = d;
+            totalFrames += d;
+        }
+
+        float[] flowNoise = rng.NextArray(w.HiddenDim * totalFrames);
+        var (zp, tFrames, _) = PiperLengthRegulator.ExpandWithDurations(mu, logs, w.HiddenDim, numTokens, durations, flowNoise, noiseScale);
+
+        float[] flowOut = PiperFlow.Reverse(w, zp, tFrames);
+
+        return PiperHifiGanDecoder.Forward(w, flowOut, tFrames);
+    }
+
+    private float[] ForwardFake(ReadOnlySpan<int> tokens, int speakerId, float noiseScale, float lengthScale, float noiseW)
+    {
+        int numTokens = tokens.Length;
 
         // 1. VITS Prior Text Encoder (Relative Positional Transformer)
         var mu = new float[numTokens * HiddenDim];
@@ -214,4 +271,28 @@ public sealed class PiperModel : IDisposable
     }
 
     public void Dispose() { }
+}
+
+/// <summary>Box-Muller N(0,1) sampler -- the real Piper ONNX graph's `RandomNormalLike` draws are
+/// per-run RNG (not reproducible weights), so production inference just needs valid Gaussian noise,
+/// not a specific seed/sequence match (that isolation is covered separately by the golden-noise
+/// tests, which feed an exact captured draw instead of using this sampler).</summary>
+internal sealed class GaussianRandom
+{
+    private readonly Random _rng = new();
+
+    public float[] NextArray(int count)
+    {
+        var result = new float[count];
+        for (int i = 0; i < count; i++) result[i] = Next();
+        return result;
+    }
+
+    private float Next()
+    {
+        // Box-Muller transform.
+        double u1 = 1.0 - _rng.NextDouble();
+        double u2 = _rng.NextDouble();
+        return (float)(Math.Sqrt(-2.0 * Math.Log(u1)) * Math.Cos(2.0 * Math.PI * u2));
+    }
 }

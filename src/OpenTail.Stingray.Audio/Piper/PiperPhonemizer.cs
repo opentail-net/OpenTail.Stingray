@@ -86,7 +86,11 @@ public sealed class PiperPhonemizer
     }
 
     /// <summary>
-    /// Tokenizes input text with Piper pad token interspersing ([0, t1, 0, t2, ..., 0]).
+    /// Tokenizes input text with Piper pad token interspersing: [BOS, 0, t1, 0, t2, ..., 0, EOS]
+    /// (a single pad between each pair of adjacent raw tokens -- confirmed against the real ONNX
+    /// graph's actual input_ids for a known phrase, e.g. [1,0,25,0,32,0,41,0,38,0,2] for 4
+    /// phonemes: BOS and EOS carry no surrounding pad of their own, matching VITS's reference
+    /// `commons.intersperse(text_ids, 0)`, NOT "pad at both ends").
     /// </summary>
     public int[] Tokenize(string text, bool interspersePad = true)
     {
@@ -114,14 +118,12 @@ public sealed class PiperPhonemizer
             return rawTokens.ToArray();
         }
 
-        // Intersperse pad token (0) between each token and at ends: [0, t1, 0, t2, ..., 0]
-        var interspersed = new int[rawTokens.Count * 2 + 1];
-        interspersed[0] = PadId;
-
+        // commons.intersperse: a pad token between every adjacent pair, none at the outer ends.
+        var interspersed = new int[rawTokens.Count * 2 - 1];
         for (int i = 0; i < rawTokens.Count; i++)
         {
-            interspersed[i * 2 + 1] = rawTokens[i];
-            interspersed[i * 2 + 2] = PadId;
+            interspersed[i * 2] = rawTokens[i];
+            if (i < rawTokens.Count - 1) interspersed[i * 2 + 1] = PadId;
         }
 
         return interspersed;
