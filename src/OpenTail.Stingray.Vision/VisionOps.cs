@@ -274,18 +274,20 @@ public static unsafe class VisionOps
         float scale = 1.0f / MathF.Sqrt(headDim);
         int embd = heads * headDim;
 
-        // Vectorized via TensorPrimitives (Dot/Multiply/Add) instead of scalar accumulation
+        // Vectorized via TensorPrimitives (Dot/MultiplyAdd) instead of scalar accumulation
         // loops -- same algorithm as Gemma3VisionEncoder's hand-rolled attention (see that
         // class's doc comment: at large token counts, scalar loops here were measured as "far
         // too slow", which is why that encoder never used this shared method). Bringing this
         // method up to the same technique lets every OTHER caller (Pixtral, and any future
         // encoder) get that speedup for free, rather than each hand-rolling its own fast path.
         // See docs/done/vision-attention-vectorization-2026-08-20.md for the measurement.
+        // The V-weighted sum uses a single fused MultiplyAdd (out = v*prob + out) instead of a
+        // separate Multiply-into-temp + Add pass -- one vectorized pass instead of two, no temp
+        // buffer, for the single hottest inner loop here (O(heads*nTokens^2) iterations).
         Parallel.For(0, heads, h =>
         {
             int headOff = h * headDim;
             var scores = new float[nTokens];
-            var temp = new float[headDim];
 
             for (int i = 0; i < nTokens; i++)
             {
@@ -319,13 +321,11 @@ public static unsafe class VisionOps
                 int outOff = i * embd + headOff;
                 var outSpan = new Span<float>(output, outOff, headDim);
                 outSpan.Clear();
-                var tempSpan = new Span<float>(temp);
                 for (int j = 0; j < nTokens; j++)
                 {
                     int vOff = j * embd + headOff;
                     var vj = new ReadOnlySpan<float>(v, vOff, headDim);
-                    TensorPrimitives.Multiply(vj, scores[j], tempSpan);
-                    TensorPrimitives.Add(outSpan, tempSpan, outSpan);
+                    TensorPrimitives.MultiplyAdd(vj, scores[j], outSpan, outSpan);
                 }
             }
         });
@@ -360,7 +360,6 @@ public static unsafe class VisionOps
             float sink = (attnSinks != null) ? attnSinks[qh] : 0f;
 
             var scores = new float[nTokens];
-            var temp = new float[headDim];
 
             for (int i = 0; i < nTokens; i++)
             {
@@ -393,16 +392,16 @@ public static unsafe class VisionOps
                 var scoresSpan = new Span<float>(scores);
                 TensorPrimitives.Multiply(scoresSpan, invSum, scoresSpan);
 
+                // Single fused MultiplyAdd instead of Multiply-into-temp + Add -- see Attention()
+                // above for the same fix and rationale.
                 int outOff = i * qEmbd + qOffHead;
                 var outSpan = new Span<float>(output, outOff, headDim);
                 outSpan.Clear();
-                var tempSpan = new Span<float>(temp);
                 for (int j = 0; j < nTokens; j++)
                 {
                     int vOff = j * kvEmbd + kvOffHead;
                     var vj = new ReadOnlySpan<float>(v, vOff, headDim);
-                    TensorPrimitives.Multiply(vj, scores[j], tempSpan);
-                    TensorPrimitives.Add(outSpan, tempSpan, outSpan);
+                    TensorPrimitives.MultiplyAdd(vj, scores[j], outSpan, outSpan);
                 }
             }
         });
