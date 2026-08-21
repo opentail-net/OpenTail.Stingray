@@ -1803,3 +1803,75 @@ fake — only the weight-loading layer is real so far.
 4. Port `ParakeetConformerEncoder.cs`'s forward pass (subsampling -> pos-enc -> 24 blocks ->
    CTC head) against the now-real `ParakeetWeights`, verifying every stage against the oracle
    (cosine >0.99 bar, same as every other pipeline in this doc) before calling it done.
+
+### ParakeetConformerEncoder.cs fully ported (structurally complete, NOT yet golden-verified) (2026-08-21, loop iteration 3)
+
+**Fixed a real bug found while re-deriving the BN-fold before trusting it (step 1 above)**:
+the previous iteration's `FoldBatchNorm` assumed depthwise conv weight storage order
+`k*channels+c`. Reading `canary_ctc.cpp`'s actual `cc_fold_batchnorm` loop
+(`w_f32[ki + c * K] *= s[c]`) shows the real order is `c*K+k` (GGML `ne=[K,1,d]`, K
+fastest-varying, so flattening is channel-major not kernel-major). Fixed in
+`ParakeetWeights.cs`'s `FoldBatchNorm`.
+
+**Also found our checkpoint DOES carry attn q/k/v/out biases** (`encoder.layers.{i}.attn.
+{q,k,v,out}.bias`, all `Float32 [1024]`, confirmed present in the tensor listing) —
+contradicting this doc's earlier note that "parakeet/canary_ctc has NO bias on q/k/v/out".
+That note came from `canary_ctc.cpp`'s doc-comment describing the *generic* parakeet/
+canary_ctc family, but `BlockWeights`'s bias fields are optional (`get_opt`) precisely
+because specific checkpoints can differ — ours has them. Added `AttnQBias`/`AttnKBias`/
+`AttnVBias`/`AttnOutBias` (all `float[]?`, loaded via `TryGetTensor`) to
+`ParakeetConformerLayer`. `attn.pos` (rel-pos projection) genuinely has no bias tensor —
+that part of the original note was correct.
+
+**Wrote the full encoder forward pass** in `ParakeetConformerEncoder.cs` (now a static class,
+replacing the 100%-fake instance-based placeholder): 3-stage dw_striding subsampling (full
+conv2d -> ReLU -> depthwise+pointwise conv2d -> ReLU -> depthwise+pointwise conv2d -> ReLU,
+channel-major flatten -> Linear), sinusoidal rel-pos table (length 2T-1, descending position),
+24x Conformer block (macaron FFN1 half-step -> rel-pos self-attention with untied u/v biases
+and the full Transformer-XL `rel_shift` derivation `BD[q,k] = BD_raw[(T-1)+k-q, q]` computed
+directly per (query,key) pair rather than materializing the shifted matrix -> GLU depthwise-
+conv module with the BN-folded weights -> macaron FFN2 half-step -> final LayerNorm), CTC head.
+Reused the per-head `qU`/`qV` precompute + `Parallel.For` + SIMD-dot-product attention pattern
+from `Chatterbox/ChatterboxFlowEncoder.cs`'s `RelPositionSelfAttention` (same Transformer-XL
+rel-pos family, S3Gen's simplified case where pos_emb length always equals key length so it
+skips `rel_shift` entirely — Parakeet's version needed the full shift since pos_emb is 2T-1).
+
+**Rewired `ParakeetCtcDecoder.DecodeGreedy`** to take real per-frame CTC logits directly
+(`ctcLogits[frame][vocab+1]`) instead of its previous fake cosine-based per-vocab scoring
+loop — now genuinely just argmax + collapse-repeats + drop-blank, the standard greedy CTC
+recipe, no synthetic math left in the decode path. Updated `ParakeetPipeline.cs` to call the
+new static `ParakeetConformerEncoder.Forward(weights, mel, tMel)` and pass its CTC logits
+straight to the decoder; the pipeline's no-args constructor now throws if used without real
+GGUF weights (`ParakeetPipeline.Load` is required — no procedural fallback exists for this
+pipeline anymore, unlike some others that keep a fast/fake path for quick structural tests).
+
+**Test changes**: removed the four `Tests.Audio.Fast/ParakeetTests.cs` tests that exercised
+the old fake procedural encoder/decoder/pipeline APIs (their constructors no longer exist).
+Added `Tests.Audio/ParakeetConformerEncoderTests.cs` (`HeavyTestBase`, real GGUF weights):
+loads real weights and checks all 24 layers' folded conv tensors are finite; runs the full
+encoder forward pass on synthetic mel input and checks output shapes/finiteness; loads the
+full pipeline via `ParakeetPipeline.Load` and transcribes 1s of synthetic audio without
+crashing. All 3 tests PASS (`STINGRAY_RUN_HEAVY_TESTS=1 dotnet test
+tests/OpenTail.Stingray.Tests.Audio -- --filter-class
+OpenTail.Stingray.Tests.Audio.ParakeetConformerEncoderTests`, ~16s).
+
+**NOT yet golden-verified** — no crispasr oracle run has been done yet, so per-stage cosine
+similarity against real output is still unconfirmed; these tests only prove the real weights
+load and the forward pass runs end-to-end without NaN/Inf, the same "does it even run for
+real" bar every other pipeline passed before golden verification followed later. Mel
+preprocessing exact formula also still unverified against `canary_ctc.cpp` (step 2 above,
+still open). **Do not claim Parakeet is "done" yet** — structurally complete only.
+
+**Unrelated pre-existing bug found, NOT part of this iteration's changes**: building
+`tests/OpenTail.Stingray.Tests.Audio.Fast` fails on `F5TtsTests.cs` (`F5DiTModel` was made
+static in an earlier session's F5-TTS DiT work but this test file was never updated to
+match — `Cannot create an instance of the static class 'F5DiTModel'` etc, 7 compile errors).
+Confirmed via `git status`/`git diff` that this file is untouched by this session. Flagging
+for whoever picks up F5-TTS-adjacent work next; did not fix it here since it's out of scope
+for the Parakeet queue item and unrelated to the changes in this iteration.
+
+**Next iteration**: (1) fix the `F5TtsTests.cs` compile break so the Fast test project builds
+again (small, unrelated fix, doesn't need its own full iteration). (2) Verify mel
+preprocessing against `canary_ctc.cpp`. (3) Build a real oracle (compile `examples/crispasr`
+or find its existing diff-harness mode) and golden-verify each encoder stage numerically
+before calling Parakeet done. (4) Then move to CosyVoice per the queue.

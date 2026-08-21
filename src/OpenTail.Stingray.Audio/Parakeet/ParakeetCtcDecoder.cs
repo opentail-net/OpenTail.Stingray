@@ -21,54 +21,37 @@ public sealed class ParakeetCtcDecoder : IDisposable
     }
 
     /// <summary>
-    /// Performs greedy CTC decoding across acoustic encoder frame representations.
+    /// Performs greedy CTC decoding over real per-frame CTC logits (`ctcLogits[frame][vocab+1]`,
+    /// as produced by <see cref="ParakeetConformerEncoder.Forward"/>'s CTC head -- no synthetic
+    /// scoring, just argmax + collapse-repeats + drop-blank, the standard greedy CTC recipe).
     /// Returns decoded text, token list, and timestamped speech segments.
     /// </summary>
     public (string FullText, int[] Tokens, List<SpeechSegment> Segments) DecodeGreedy(
-        ReadOnlySpan<float> embeddings,
+        IReadOnlyList<float[]> ctcLogits,
         int numFrames,
-        int hiddenDim,
         TimeSpan timeOffset,
         float frameDurationSeconds = 0.08f) // 80ms per conformer frame (10ms * 8x subsampling)
     {
-        if (numFrames <= 0 || embeddings.IsEmpty)
+        if (numFrames <= 0 || ctcLogits.Count == 0)
         {
             return (string.Empty, [], []);
         }
 
-        int vocabSize = _weights?.VocabSize ?? _tokenizer.VocabSize;
         var emittedTokens = new List<int>();
         var frameTokens = new int[numFrames];
         var tokenProbabilities = new float[numFrames];
 
-        // 1. Compute frame-level argmax token predictions
+        // 1. Compute frame-level argmax token predictions directly from the real CTC logits.
         for (int f = 0; f < numFrames; f++)
         {
-            int fStart = f * hiddenDim;
-
+            var logits = ctcLogits[f];
             int bestToken = BlankTokenId;
             float maxLogit = float.NegativeInfinity;
-
-            for (int v = 0; v < vocabSize; v++)
+            for (int v = 0; v < logits.Length; v++)
             {
-                float logit = _weights?.CtcBias is { } bias && v < bias.Length ? bias[v] : 0f;
-
-                // Frame-token projection dot product
-                for (int d = 0; d < Math.Min(hiddenDim, 32); d++)
+                if (logits[v] > maxLogit)
                 {
-                    float w = MathF.Cos((v * 17 + d * 13) * 0.1f);
-                    logit += embeddings[fStart + d] * w;
-                }
-
-                // Non-speech silence bias
-                if (v == BlankTokenId)
-                {
-                    logit += 0.5f;
-                }
-
-                if (logit > maxLogit)
-                {
-                    maxLogit = logit;
+                    maxLogit = logits[v];
                     bestToken = v;
                 }
             }

@@ -153,9 +153,13 @@ public sealed class ParakeetConformerLayer
     public float[] NormAttnWeight { get; }
     public float[] NormAttnBias { get; }
     public float[] AttnQWeight { get; }
+    public float[]? AttnQBias { get; }
     public float[] AttnKWeight { get; }
+    public float[]? AttnKBias { get; }
     public float[] AttnVWeight { get; }
+    public float[]? AttnVBias { get; }
     public float[] AttnOutWeight { get; }
+    public float[]? AttnOutBias { get; }
     public float[] AttnPosWeight { get; }
     public float[] AttnPosBiasU { get; }  // [head_dim, n_heads]
     public float[] AttnPosBiasV { get; }  // [head_dim, n_heads]
@@ -192,9 +196,13 @@ public sealed class ParakeetConformerLayer
         NormAttnWeight = w.GetTensor($"{prefix}.norm_attn.weight");
         NormAttnBias = w.GetTensor($"{prefix}.norm_attn.bias");
         AttnQWeight = w.GetTensor($"{prefix}.attn.q.weight");
+        AttnQBias = w.TryGetTensor($"{prefix}.attn.q.bias");
         AttnKWeight = w.GetTensor($"{prefix}.attn.k.weight");
+        AttnKBias = w.TryGetTensor($"{prefix}.attn.k.bias");
         AttnVWeight = w.GetTensor($"{prefix}.attn.v.weight");
+        AttnVBias = w.TryGetTensor($"{prefix}.attn.v.bias");
         AttnOutWeight = w.GetTensor($"{prefix}.attn.out.weight");
+        AttnOutBias = w.TryGetTensor($"{prefix}.attn.out.bias");
         AttnPosWeight = w.GetTensor($"{prefix}.attn.pos.weight");
         AttnPosBiasU = w.GetTensor($"{prefix}.attn.pos_bias_u");
         AttnPosBiasV = w.GetTensor($"{prefix}.attn.pos_bias_v");
@@ -241,10 +249,13 @@ public sealed class ParakeetConformerLayer
             s[c] = bnWeight[c] / MathF.Sqrt(bnVar[c] + eps);
 
         var foldedWeight = new float[dwWeight.Length];
-        // Storage order [K, 1, d]: index = k*channels + c (matches GGUF dims [9,1,1024] reversed to [K,1,d] row-major).
-        for (int k = 0; k < kernel; k++)
-            for (int c = 0; c < channels; c++)
-                foldedWeight[k * channels + c] = dwWeight[k * channels + c] * s[c];
+        // GGML ne=[K,1,d] (K fastest-varying) -> flat index = k + c*K, confirmed against
+        // canary_ctc.cpp's cc_fold_batchnorm: `w_f32[ki + c * K] *= s[c]` (an earlier version
+        // of this port assumed k*channels+c, the wrong order -- caught by reading the actual
+        // fold loop's indexing instead of guessing from the GGUF dims listing alone).
+        for (int c = 0; c < channels; c++)
+            for (int k = 0; k < kernel; k++)
+                foldedWeight[c * kernel + k] = dwWeight[c * kernel + k] * s[c];
 
         var foldedBias = new float[channels];
         for (int c = 0; c < channels; c++)

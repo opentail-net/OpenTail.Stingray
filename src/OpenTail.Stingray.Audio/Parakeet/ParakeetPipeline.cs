@@ -18,21 +18,18 @@ public sealed class ParakeetPipeline : ISpeechToTextPipeline
 
     private readonly ParakeetMelExtractor _melExtractor;
     private readonly ParakeetTokenizer _tokenizer;
-    private readonly ParakeetConformerEncoder _encoder;
     private readonly ParakeetCtcDecoder _decoder;
     private readonly ParakeetWeights? _weights;
 
     public ParakeetPipeline(
         ParakeetMelExtractor? melExtractor = null,
         ParakeetTokenizer? tokenizer = null,
-        ParakeetConformerEncoder? encoder = null,
         ParakeetCtcDecoder? decoder = null,
         ParakeetWeights? weights = null)
     {
         _weights = weights;
         _melExtractor = melExtractor ?? new ParakeetMelExtractor();
         _tokenizer = tokenizer ?? new ParakeetTokenizer();
-        _encoder = encoder ?? new ParakeetConformerEncoder();
         _decoder = decoder ?? new ParakeetCtcDecoder(_tokenizer, weights);
     }
 
@@ -46,19 +43,10 @@ public sealed class ParakeetPipeline : ISpeechToTextPipeline
 
         var weights = new ParakeetWeights(ggufPath);
         var tokenizer = ParakeetTokenizer.FromGguf(weights.Model);
-        var encoderConfig = new ParakeetEncoderConfig
-        {
-            HiddenDim = weights.HiddenDim,
-            NumLayers = weights.NumLayers,
-            NumHeads = weights.NumHeads,
-            SubsampleFactor = weights.SubsampleFactor
-        };
-
         var melExtractor = new ParakeetMelExtractor();
-        var encoder = new ParakeetConformerEncoder(encoderConfig);
         var decoder = new ParakeetCtcDecoder(tokenizer, weights);
 
-        return new ParakeetPipeline(melExtractor, tokenizer, encoder, decoder, weights);
+        return new ParakeetPipeline(melExtractor, tokenizer, decoder, weights);
     }
 
     /// <summary>
@@ -89,14 +77,16 @@ public sealed class ParakeetPipeline : ISpeechToTextPipeline
             return new SpeechToTextResult(string.Empty, request.Language ?? "en", totalDuration, []);
         }
 
-        // 2. FastConformer Acoustic Encoding (8x subsampling + conformer blocks)
-        var (embeddings, numConformerFrames) = _encoder.Forward(mel, inMelFrames);
+        if (_weights == null)
+            throw new InvalidOperationException("ParakeetPipeline requires real GGUF weights (use ParakeetPipeline.Load) -- no procedural fallback exists for the FastConformer encoder.");
+
+        // 2. FastConformer Acoustic Encoding (8x subsampling + conformer blocks + CTC head)
+        var (_, ctcLogits, numConformerFrames) = ParakeetConformerEncoder.Forward(_weights, mel, inMelFrames);
 
         // 3. CTC Greedy Decoding & Timestamp Alignment
         var (fullText, _, segments) = _decoder.DecodeGreedy(
-            embeddings: embeddings,
+            ctcLogits: ctcLogits,
             numFrames: numConformerFrames,
-            hiddenDim: _encoder.Config.HiddenDim,
             timeOffset: TimeSpan.Zero);
 
         return new SpeechToTextResult(
