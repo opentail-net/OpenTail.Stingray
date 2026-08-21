@@ -1,9 +1,23 @@
+using OpenTail.Stingray.Audio.Primitives;
+
 namespace OpenTail.Stingray.Audio.MeloTTS;
 
 /// <summary>
-/// Native C# implementation of MeloTTS Multilingual VITS Neural Generator:
-/// Prior Text Encoder (Phones+Tones+Lang+BERT) + Stochastic Duration Predictor +
-/// Invertible Normalizing Flow + 44.1kHz HiFi-GAN MRF Vocoder.
+/// Native C# implementation of MeloTTS's VITS2 synthesis graph: TextEncoder + blended
+/// StochasticDurationPredictor/DurationPredictor + TransformerCouplingBlock flow + 44.1kHz
+/// HiFi-GAN Generator.
+///
+/// When constructed with a real .onnx weights file (see <see cref="MeloModel(string, int)"/>),
+/// runs the real weight-driven pipeline (MeloTextEncoder -&gt; MeloDurationPredictor -&gt;
+/// VitsLengthRegulator -&gt; MeloFlow -&gt; MeloGenerator), each stage independently verified against
+/// real onnxruntime golden output (see tests/OpenTail.Stingray.Tests.Audio/Melo*.cs). Otherwise
+/// falls back to the original procedural placeholder synthesis (kept so parameterless/no-model-
+/// file callers -- e.g. Fast tests -- still get a valid, fast, non-real waveform).
+///
+/// The real path only consumes `phones`/`tones`/`speakerId` -- per this checkpoint's confirmed
+/// quirks (see `MeloOnnxWeights`'s class doc), `langIds` and `bertFeatures` are NOT real inputs
+/// to the exported graph (language resolves to a fixed position-parity pattern; bert/ja_bert are
+/// always zero), so the real path ignores them rather than pretending to honor them.
 /// </summary>
 public sealed class MeloModel : IDisposable
 {
@@ -11,10 +25,22 @@ public sealed class MeloModel : IDisposable
     public int HopLength { get; } = 256;
     public int SampleRate { get; } = 44100;
 
+    private readonly MeloOnnxWeights? _weights;
+
+    /// <summary>Fake/placeholder synthesis path (no real weights). Kept for callers without an ONNX model file.</summary>
     public MeloModel(int sampleRate = 44100, int hiddenDim = 192)
     {
         SampleRate = sampleRate;
         HiddenDim = hiddenDim;
+        _weights = null;
+    }
+
+    /// <summary>Real weight-driven synthesis path, loading MeloTTS's ONNX weights.</summary>
+    public MeloModel(string onnxPath, int sampleRate = 44100)
+    {
+        SampleRate = sampleRate;
+        _weights = new MeloOnnxWeights(onnxPath);
+        HiddenDim = _weights.HiddenDim;
     }
 
     /// <summary>
@@ -33,6 +59,9 @@ public sealed class MeloModel : IDisposable
     {
         int numTokens = phones.Length;
         if (numTokens == 0) return [];
+
+        if (_weights is not null)
+            return ForwardReal(_weights, phones, tones, speakerId, speed, sdpRatio, noiseScale, noiseScaleW);
 
         // 1. Multilingual Prior Text Encoder (Phone + Tone + Lang + BERT Context)
         var mu = new float[numTokens * HiddenDim];
@@ -122,6 +151,44 @@ public sealed class MeloModel : IDisposable
         SynthesizeMeloWaveform(latents, totalFrames, audio);
 
         return audio;
+    }
+
+    private static float[] ForwardReal(
+        MeloOnnxWeights w, ReadOnlySpan<int> tokens, ReadOnlySpan<int> tones, int speakerId,
+        float speed, float sdpRatio, float noiseScale, float noiseScaleW)
+    {
+        int numTokens = tokens.Length;
+        var tokenArray = tokens.ToArray();
+        var toneArray = tones.ToArray();
+
+        var (encoderHidden, mu, logs) = MeloTextEncoder.Forward(w, tokenArray, toneArray, speakerId);
+
+        var g = new float[w.GinChannels];
+        Array.Copy(w.EmbGWeight, speakerId * w.GinChannels, g, 0, w.GinChannels);
+
+        var rng = new GaussianRandom();
+        float[] sdpNoise = rng.NextArray(2 * numTokens);
+        float[] logw = MeloDurationPredictor.PredictLogDuration(w, encoderHidden, numTokens, g, sdpNoise, noiseScaleW, sdpRatio);
+
+        // length_scale = 1/speed: matches this checkpoint's convention (higher speed -> shorter
+        // durations), same relationship the original fake path used.
+        float lengthScale = 1f / Math.Max(0.1f, speed);
+        var durations = new int[numTokens];
+        int totalFrames = 0;
+        for (int i = 0; i < numTokens; i++)
+        {
+            int d = (int)MathF.Ceiling(MathF.Exp(logw[i]) * lengthScale);
+            if (d < 1) d = 1;
+            durations[i] = d;
+            totalFrames += d;
+        }
+
+        float[] flowNoise = rng.NextArray(w.HiddenDim * totalFrames);
+        var (zp, tFrames, _) = VitsLengthRegulator.ExpandWithDurations(mu, logs, w.HiddenDim, numTokens, durations, flowNoise, noiseScale);
+
+        float[] flowOut = MeloFlow.Reverse(w, zp, tFrames, g);
+
+        return MeloGenerator.Forward(w, flowOut, tFrames, g);
     }
 
     private void ApplyPriorAttention(float[] h, int seqLen)

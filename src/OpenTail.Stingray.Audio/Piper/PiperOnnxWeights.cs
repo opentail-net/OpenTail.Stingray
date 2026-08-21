@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using OpenTail.Stingray.Audio.Primitives;
 using OpenTail.Stingray.Core;
 
 namespace OpenTail.Stingray.Audio.Piper;
@@ -39,14 +40,14 @@ public sealed class PiperOnnxWeights
     // --- dp.* : StochasticDurationPredictor ---
     public float[] DpPreWeight { get; }
     public float[] DpPreBias { get; }
-    public PiperDdsConvWeights DpConvs { get; }
+    public VitsDdsConvWeights DpConvs { get; }
     public float[] DpProjWeight { get; }
     public float[] DpProjBias { get; }
     public float[] DpFlow0M { get; }              // dp.flows.0.m, ElementwiseAffine's m [2]
     public float[] DpFlow0ExpNegLogs { get; }      // /dp/flows.0/Exp_output_0, constant-folded exp(-logs) [2]
-    public PiperConvFlowWeights DpFlow3 { get; }
-    public PiperConvFlowWeights DpFlow5 { get; }
-    public PiperConvFlowWeights DpFlow7 { get; }
+    public VitsConvFlowWeights DpFlow3 { get; }
+    public VitsConvFlowWeights DpFlow5 { get; }
+    public VitsConvFlowWeights DpFlow7 { get; }
 
     // --- flow.* : ResidualCouplingBlock (4 ResidualCouplingLayers at list-indices 0,2,4,6;
     // indices 1,3,5,7 are parameter-free Flip). Reverse (inference) execution order is
@@ -94,7 +95,7 @@ public sealed class PiperOnnxWeights
 
         DpPreWeight = GetFloat("dp.pre.weight");
         DpPreBias = GetFloat("dp.pre.bias");
-        DpConvs = new PiperDdsConvWeights(this, "dp.convs");
+        DpConvs = new VitsDdsConvWeights(GetFloat, "dp.convs");
         DpProjWeight = GetFloat("dp.proj.weight");
         DpProjBias = GetFloat("dp.proj.bias");
         DpFlow0M = GetFloat("dp.flows.0.m");
@@ -103,9 +104,9 @@ public sealed class PiperOnnxWeights
         // via TryGetTensor's fallback to the model's node-output-named constants (OnnxModel treats
         // any protobuf initializer entry uniformly regardless of its Constant-node-style name).
         DpFlow0ExpNegLogs = GetFloat("/dp/flows.0/Exp_output_0");
-        DpFlow3 = new PiperConvFlowWeights(this, "dp.flows.3");
-        DpFlow5 = new PiperConvFlowWeights(this, "dp.flows.5");
-        DpFlow7 = new PiperConvFlowWeights(this, "dp.flows.7");
+        DpFlow3 = new VitsConvFlowWeights(GetFloat, "dp.flows.3");
+        DpFlow5 = new VitsConvFlowWeights(GetFloat, "dp.flows.5");
+        DpFlow7 = new VitsConvFlowWeights(GetFloat, "dp.flows.7");
 
         FlowLayer0 = new PiperCouplingLayerWeights(this, "flow.flows.0");
         FlowLayer2 = new PiperCouplingLayerWeights(this, "flow.flows.2");
@@ -134,54 +135,6 @@ public sealed class PiperOnnxWeights
     public float[] GetFloatViaNode(string nodeName) => OnnxModel.ToFloat32(Model.GetWeightViaNode(nodeName, 1));
 
     public float[] GetFloat(string name) => OnnxModel.ToFloat32(Model.GetTensor(name));
-}
-
-/// <summary>DDSConv (Dilated and Depth-Separable Convolution): 3 layers, kernel=3, dilation=3^i.</summary>
-public sealed class PiperDdsConvWeights
-{
-    public int NumLayers { get; } = 3;
-    public float[][] ConvsSepWeight { get; } = new float[3][]; // depthwise: [ch,1,kernel]
-    public float[][] ConvsSepBias { get; } = new float[3][];
-    public float[][] Convs1x1Weight { get; } = new float[3][];
-    public float[][] Convs1x1Bias { get; } = new float[3][];
-    public float[][] Norms1Gamma { get; } = new float[3][];
-    public float[][] Norms1Beta { get; } = new float[3][];
-    public float[][] Norms2Gamma { get; } = new float[3][];
-    public float[][] Norms2Beta { get; } = new float[3][];
-
-    public PiperDdsConvWeights(PiperOnnxWeights w, string prefix)
-    {
-        for (int i = 0; i < NumLayers; i++)
-        {
-            ConvsSepWeight[i] = w.GetFloat($"{prefix}.convs_sep.{i}.weight");
-            ConvsSepBias[i] = w.GetFloat($"{prefix}.convs_sep.{i}.bias");
-            Convs1x1Weight[i] = w.GetFloat($"{prefix}.convs_1x1.{i}.weight");
-            Convs1x1Bias[i] = w.GetFloat($"{prefix}.convs_1x1.{i}.bias");
-            Norms1Gamma[i] = w.GetFloat($"{prefix}.norms_1.{i}.gamma");
-            Norms1Beta[i] = w.GetFloat($"{prefix}.norms_1.{i}.beta");
-            Norms2Gamma[i] = w.GetFloat($"{prefix}.norms_2.{i}.gamma");
-            Norms2Beta[i] = w.GetFloat($"{prefix}.norms_2.{i}.beta");
-        }
-    }
-}
-
-/// <summary>ConvFlow: pre (1x1, half_channels->filter_channels) -> DDSConv -> proj (1x1, filter_channels->half_channels*(num_bins*3-1)).</summary>
-public sealed class PiperConvFlowWeights
-{
-    public float[] PreWeight { get; }
-    public float[] PreBias { get; }
-    public PiperDdsConvWeights Convs { get; }
-    public float[] ProjWeight { get; }
-    public float[] ProjBias { get; }
-
-    public PiperConvFlowWeights(PiperOnnxWeights w, string prefix)
-    {
-        PreWeight = w.GetFloat($"{prefix}.pre.weight");
-        PreBias = w.GetFloat($"{prefix}.pre.bias");
-        Convs = new PiperDdsConvWeights(w, $"{prefix}.convs");
-        ProjWeight = w.GetFloat($"{prefix}.proj.weight");
-        ProjBias = w.GetFloat($"{prefix}.proj.bias");
-    }
 }
 
 public sealed class PiperEncoderLayerWeights

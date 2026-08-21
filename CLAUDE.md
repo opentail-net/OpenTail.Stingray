@@ -25,6 +25,8 @@ OpenTail.Stingray is a high-performance LLM inference engine, image/video diffus
    * NativeAOT / trim analyzers are active â no reflection-heavy patterns or dynamic code generation; use source-generated JSON (`OpenTailStingrayJsonContext`).
 5. **Vulkan SPIR-V Shaders**:
    * Shaders are defined in `src/OpenTail.Stingray.Vulkan/Shaders.cs` and precompiled into `Shaders.Precompiled.g.cs`. If GLSL shader constants change, run `scripts/gen-spirv.ps1` (requires Vulkan SDK) or tests will fail on table drift.
+6. **Do not use subagents in this project**:
+   * Do all work directly in the main session — no `Agent`/subagent delegation. The user has explicitly opted out of subagent use here (they add overhead and drain tokens without the coordinating session retaining useful context). This applies project-wide, not just to the Audio rebuild work.
 
 ---
 

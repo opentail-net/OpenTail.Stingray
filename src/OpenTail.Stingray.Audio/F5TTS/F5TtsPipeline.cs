@@ -10,6 +10,14 @@ namespace OpenTail.Stingray.Audio.F5TTS;
 
 /// <summary>
 /// End-to-end Flow-Matching Diffusion Transformer (DiT) Text-to-Speech pipeline with Voice Cloning.
+///
+/// When constructed with a real `.safetensors` weights file (see <see cref="Load"/>), the text
+/// encoding + DiT + flow-matching ODE stages are real and weight-driven (verified against the
+/// real PyTorch reference, see tests/OpenTail.Stingray.Tests.Audio/F5DiTModelTests.cs). The
+/// Vocos vocoder stage (mel -&gt; waveform) is STILL the original procedural placeholder --
+/// blocked on a real Vocos checkpoint, which is not present under `models/` (F5-TTS's own
+/// checkpoint only contains the DiT + a `mel_spec` filterbank/window, not a separate vocoder).
+/// See docs/audio-review-progress.md's F5-TTS section for the full status.
 /// </summary>
 public sealed class F5TtsPipeline : ITextToSpeechPipeline
 {
@@ -18,28 +26,30 @@ public sealed class F5TtsPipeline : ITextToSpeechPipeline
 
     private readonly F5MelExtractor _melExtractor;
     private readonly F5TextEncoder _textEncoder;
-    private readonly F5DiTModel _ditModel;
     private readonly F5VocosVocoder _vocoder;
     private readonly F5TtsWeights? _weights;
+    private readonly F5Tokenizer? _tokenizer;
 
     public F5TtsPipeline(
         F5MelExtractor? melExtractor = null,
         F5TextEncoder? textEncoder = null,
-        F5DiTModel? ditModel = null,
         F5VocosVocoder? vocoder = null,
-        F5TtsWeights? weights = null)
+        F5TtsWeights? weights = null,
+        F5Tokenizer? tokenizer = null)
     {
         _weights = weights;
+        _tokenizer = tokenizer;
         _melExtractor = melExtractor ?? new F5MelExtractor();
         _textEncoder = textEncoder ?? new F5TextEncoder();
-        _ditModel = ditModel ?? new F5DiTModel();
         _vocoder = vocoder ?? new F5VocosVocoder();
     }
 
     /// <summary>
-    /// Loads a real F5-TTS pipeline directly from a safetensors model file.
+    /// Loads a real F5-TTS pipeline directly from a safetensors model file. `vocabPath` defaults
+    /// to `models/f5tts_vocab.txt` next to the weights file if not given (falls back to the fake
+    /// text path if neither is found, same as the no-weights constructor).
     /// </summary>
-    public static F5TtsPipeline Load(string safetensorsPath)
+    public static F5TtsPipeline Load(string safetensorsPath, string? vocabPath = null)
     {
         if (string.IsNullOrWhiteSpace(safetensorsPath) || !File.Exists(safetensorsPath))
             throw new FileNotFoundException($"F5-TTS model file not found: {safetensorsPath}");
@@ -47,10 +57,12 @@ public sealed class F5TtsPipeline : ITextToSpeechPipeline
         var weights = new F5TtsWeights(safetensorsPath);
         var melExtractor = new F5MelExtractor();
         var textEncoder = new F5TextEncoder();
-        var ditModel = new F5DiTModel();
         var vocoder = new F5VocosVocoder();
 
-        return new F5TtsPipeline(melExtractor, textEncoder, ditModel, vocoder, weights);
+        string resolvedVocabPath = vocabPath ?? Path.Combine(Path.GetDirectoryName(safetensorsPath) ?? ".", "f5tts_vocab.txt");
+        F5Tokenizer? tokenizer = File.Exists(resolvedVocabPath) ? new F5Tokenizer(resolvedVocabPath) : null;
+
+        return new F5TtsPipeline(melExtractor, textEncoder, vocoder, weights, tokenizer);
     }
 
     /// <summary>
@@ -69,33 +81,34 @@ public sealed class F5TtsPipeline : ITextToSpeechPipeline
         int numFrames = (int)(baseSeconds * (DefaultSampleRate / 256.0f));
         numFrames = Math.Clamp(numFrames, 32, 2048);
 
-        // 1. Encode Text Features via 4-Stage ConvNeXtV2
-        float[] textFeatures = _textEncoder.Encode(request.Text, numFrames);
-
-        // 2. Reference Audio Conditioning (Voice Cloning)
+        // Reference Audio Conditioning (Voice Cloning): real for both paths, F5MelExtractor is
+        // already a real STFT+mel-filterbank implementation with no learned weights of its own.
         float[] condMel = new float[numFrames * F5MelExtractor.NumMels];
         if (!string.IsNullOrEmpty(request.ReferenceAudioPath) && File.Exists(request.ReferenceAudioPath))
         {
-            // Load and extract reference mel
             float[] refPcm = LoadPcmFromWav(request.ReferenceAudioPath);
             float[] refMel = _melExtractor.ExtractMel(refPcm);
             int refFrames = refMel.Length / F5MelExtractor.NumMels;
 
-            // Copy ref conditioning onto prefix of condMel
             int copyFrames = Math.Min(refFrames, numFrames / 2);
             Array.Copy(refMel, 0, condMel, 0, copyFrames * F5MelExtractor.NumMels);
         }
 
-        // 3. Flow-Matching ODE Trajectory Solver (Euler steps)
-        float[] generatedMel = _ditModel.SolveFlowMatchingOde(
-            condMel: condMel,
-            textFeatures: textFeatures,
-            numFrames: numFrames,
-            odeSteps: 8,
-            cfgStrength: 2.0f,
-            seed: 42);
+        float[] generatedMel;
+        if (_weights is not null && _tokenizer is not null)
+        {
+            int[] tokens = _tokenizer.Encode(request.Text);
+            generatedMel = F5FlowMatchingOde.Solve(_weights, condMel, tokens, numFrames, steps: 32, cfgStrength: 2.0f, swaySamplingCoef: -1.0f);
+        }
+        else
+        {
+            // Fake/placeholder path (no real weights or vocab file) -- old procedural DiT stand-in.
+            float[] textFeatures = _textEncoder.Encode(request.Text, numFrames);
+            generatedMel = FakeSolveFlowMatchingOde(condMel, textFeatures, numFrames);
+        }
 
-        // 4. Vocos Waveform Synthesis (Mel -> 24kHz Audio)
+        // Vocos Waveform Synthesis (Mel -> 24kHz Audio) -- STILL the fake placeholder (see class
+        // doc comment: blocked on a real Vocos checkpoint, not present under models/).
         float[] audio = _vocoder.Synthesize(generatedMel, numFrames);
 
         var result = new AudioGenerationResult(audio, DefaultSampleRate);
@@ -135,6 +148,77 @@ public sealed class F5TtsPipeline : ITextToSpeechPipeline
         }
     }
 
+    /// <summary>
+    /// Fake/placeholder flow-matching ODE + DiT stand-in (no real weights) -- kept so parameterless
+    /// callers (e.g. Fast tests) still get a valid, fast, non-real waveform. This is the original
+    /// procedural implementation that used to live in F5DiTModel.cs before that class was rewritten
+    /// to be the real weight-driven port (see docs/audio-review-progress.md's F5-TTS section).
+    /// </summary>
+    private static float[] FakeSolveFlowMatchingOde(float[] condMel, float[] textFeatures, int numFrames, int odeSteps = 8, float cfgStrength = 2.0f, int seed = 42)
+    {
+        const int inChannels = 100, hiddenDim = 1024;
+        var rng = new Random(seed);
+        var x = new float[numFrames * inChannels];
+        for (int i = 0; i < x.Length; i++)
+        {
+            float u1 = 1.0f - (float)rng.NextDouble();
+            float u2 = 1.0f - (float)rng.NextDouble();
+            x[i] = MathF.Sqrt(-2.0f * MathF.Log(u1)) * MathF.Cos(2.0f * MathF.PI * u2);
+        }
+
+        var nullCond = new float[condMel.Length];
+        var nullText = new float[textFeatures.Length];
+        float dt = 1.0f / odeSteps;
+
+        for (int step = 0; step < odeSteps; step++)
+        {
+            float t = (float)step / odeSteps;
+            var vCond = FakeForwardVelocity(x, condMel, textFeatures, t, numFrames, inChannels, hiddenDim);
+            var vUncond = FakeForwardVelocity(x, nullCond, nullText, t, numFrames, inChannels, hiddenDim);
+            for (int i = 0; i < x.Length; i++)
+            {
+                float v = vUncond[i] + cfgStrength * (vCond[i] - vUncond[i]);
+                x[i] += dt * v;
+            }
+        }
+        return x;
+    }
+
+    private static float[] FakeForwardVelocity(float[] x, float[] cond, float[] text, float timestep, int numFrames, int inChannels, int hiddenDim)
+    {
+        var h = new float[numFrames * hiddenDim];
+        for (int f = 0; f < numFrames; f++)
+        {
+            int offX = f * inChannels;
+            int offH = f * hiddenDim;
+            for (int d = 0; d < hiddenDim; d++)
+            {
+                int idxX = d % inChannels;
+                int idxText = (d + 37) % F5TextEncoder.TextDim;
+                float sum = (offX + idxX < x.Length) ? x[offX + idxX] * 0.5f : 0f;
+                sum += (offX + idxX < cond.Length) ? cond[offX + idxX] * 0.3f : 0f;
+                int offText = f * F5TextEncoder.TextDim;
+                sum += (offText + idxText < text.Length) ? text[offText + idxText] * 0.4f : 0f;
+                h[offH + d] = sum;
+            }
+        }
+
+        float tPhase = timestep * MathF.PI;
+        var velocity = new float[numFrames * inChannels];
+        for (int f = 0; f < numFrames; f++)
+        {
+            int offH = f * hiddenDim;
+            int offV = f * inChannels;
+            for (int c = 0; c < inChannels; c++)
+            {
+                float val = 0f;
+                for (int d = 0; d < 8; d++) val += h[offH + c * 8 + d] * 0.125f;
+                velocity[offV + c] = val * MathF.Cos(tPhase);
+            }
+        }
+        return velocity;
+    }
+
     private static float[] LoadPcmFromWav(string wavPath)
     {
         try
@@ -153,6 +237,5 @@ public sealed class F5TtsPipeline : ITextToSpeechPipeline
     public void Dispose()
     {
         _weights?.Dispose();
-        _ditModel.Dispose();
     }
 }

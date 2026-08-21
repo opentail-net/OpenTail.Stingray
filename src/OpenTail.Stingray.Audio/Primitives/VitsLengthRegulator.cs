@@ -1,18 +1,20 @@
 using System;
 
-namespace OpenTail.Stingray.Audio.Piper;
+namespace OpenTail.Stingray.Audio.Primitives;
 
 /// <summary>
-/// Bridges the StochasticDurationPredictor's per-token log-duration output to the flow's
-/// per-frame latent input. Ported from VITS's `SynthesizerTrn.infer`: `w = exp(logw) * length_scale`,
-/// `w_ceil = ceil(w)`, each token `i` is repeated `w_ceil[i]` consecutive frames (a monotonic,
-/// non-overlapping alignment -- the reference builds this via a `generate_path` matmul against a
-/// [T_frames, T_tokens] mask, which is mathematically a repeat-interleave since the mask has
-/// exactly one contiguous run of 1s per token). `z_p[frame] = m_p_exp[frame] + noise[frame] *
-/// exp(logs_p_exp[frame]) * noise_scale`, where `noise` is a fresh [dim, T_frames] N(0,1) draw
-/// (the second RandomNormalLike in the graph, distinct from the SDP's own noise draw).
+/// Bridges a duration predictor's per-token log-duration output to a normalizing flow's per-frame
+/// latent input -- shared across the whole VITS family (Piper, MeloTTS). Ported from VITS's
+/// `SynthesizerTrn.infer`: `w = exp(logw) * length_scale`, `w_ceil = ceil(w)`, each token `i` is
+/// repeated `w_ceil[i]` consecutive frames (a monotonic, non-overlapping alignment -- the
+/// reference builds this via a `generate_path` matmul against a [T_frames, T_tokens] mask, which
+/// is mathematically a repeat-interleave since the mask has exactly one contiguous run of 1s per
+/// token). `z_p[frame] = m_p_exp[frame] + noise[frame] * exp(logs_p_exp[frame]) * noise_scale`,
+/// where `noise` is a fresh [dim, T_frames] N(0,1) draw (a second RandomNormalLike in the graph,
+/// distinct from the duration predictor's own noise draw). Extracted from the original Piper-only
+/// implementation so MeloTTS's port reuses the same math instead of a second hand-rolled copy.
 /// </summary>
-public static class PiperLengthRegulator
+public static class VitsLengthRegulator
 {
     /// <summary>
     /// mu/logs are the TextEncoder's per-token [dim, tTokens] outputs; logw is the duration

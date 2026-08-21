@@ -2,12 +2,13 @@ using System;
 using System.IO;
 using System.Text;
 using OpenTail.Stingray.Audio.Piper;
+using OpenTail.Stingray.Audio.Primitives;
 using Xunit;
 
 namespace OpenTail.Stingray.Tests.Audio;
 
 /// <summary>
-/// Verifies PiperLengthRegulator + PiperFlow (VITS ResidualCouplingBlock, reverse/inference path)
+/// Verifies VitsLengthRegulator + PiperFlow (VITS ResidualCouplingBlock, reverse/inference path)
 /// against real ONNX weights and real onnxruntime golden output
 /// (scratch-llamacpp-ref/piper_golden_flow.py). Feeds the exact golden noise draw and golden logw
 /// (from PiperDurationPredictorTests' own golden dump) so the test isolates "is the flow math
@@ -96,7 +97,7 @@ public sealed class PiperFlowTests : HeavyTestBase
         float noiseScale = 0.667f; // scales[0]
         float[] flowNoise = ReadNpyFloat32(flowNoisePath);
 
-        var (zp, tFrames, _) = PiperLengthRegulator.ExpandWithDurations(mu, logs, dim, tTokens, durations, flowNoise, noiseScale);
+        var (zp, tFrames, _) = VitsLengthRegulator.ExpandWithDurations(mu, logs, dim, tTokens, durations, flowNoise, noiseScale);
 
         float[] goldenZp = ReadNpyFloat32(zpPath);
         Assert.Equal(goldenZp.Length, zp.Length);

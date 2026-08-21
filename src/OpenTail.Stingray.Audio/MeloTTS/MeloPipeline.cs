@@ -40,7 +40,11 @@ public sealed class MeloPipeline : ITextToSpeechPipeline
 
         var phonemizer = new MeloPhonemizer();
         var bertEncoder = new MeloBertEncoder();
-        var model = new MeloModel(sampleRate: 44100);
+        // NOTE: previously always constructed the fake/placeholder MeloModel here regardless of
+        // modelPath -- Load() validated the file exists but never actually wired it into the
+        // model, so every "real weights" pipeline run silently used procedural/sinusoidal fake
+        // synthesis. Fixed to load real weights the same way PiperPipeline.Load does.
+        var model = new MeloModel(modelPath, sampleRate: 44100);
 
         return new MeloPipeline(phonemizer, bertEncoder, model);
     }

@@ -1,3 +1,5 @@
+using OpenTail.Stingray.Audio.Primitives;
+
 namespace OpenTail.Stingray.Audio.Piper;
 
 /// <summary>
@@ -6,7 +8,7 @@ namespace OpenTail.Stingray.Audio.Piper;
 ///
 /// When constructed with a real .onnx weights file (see <see cref="PiperModel(string, int)"/>),
 /// runs the real weight-driven pipeline (PiperTextEncoder -&gt; PiperDurationPredictor -&gt;
-/// PiperLengthRegulator -&gt; PiperFlow -&gt; PiperHifiGanDecoder), each stage independently verified
+/// VitsLengthRegulator -&gt; PiperFlow -&gt; PiperHifiGanDecoder), each stage independently verified
 /// against real onnxruntime golden output (see tests/OpenTail.Stingray.Tests.Audio/Piper*.cs).
 /// Otherwise falls back to the original procedural placeholder synthesis (kept so parameterless/
 /// no-model-file callers -- e.g. Fast tests -- still get a valid, fast, non-real waveform).
@@ -78,7 +80,7 @@ public sealed class PiperModel : IDisposable
         }
 
         float[] flowNoise = rng.NextArray(w.HiddenDim * totalFrames);
-        var (zp, tFrames, _) = PiperLengthRegulator.ExpandWithDurations(mu, logs, w.HiddenDim, numTokens, durations, flowNoise, noiseScale);
+        var (zp, tFrames, _) = VitsLengthRegulator.ExpandWithDurations(mu, logs, w.HiddenDim, numTokens, durations, flowNoise, noiseScale);
 
         float[] flowOut = PiperFlow.Reverse(w, zp, tFrames);
 
@@ -271,37 +273,4 @@ public sealed class PiperModel : IDisposable
     }
 
     public void Dispose() { }
-}
-
-/// <summary>Box-Muller N(0,1) sampler -- the real Piper ONNX graph's `RandomNormalLike` draws are
-/// per-run RNG (not reproducible weights), so production inference just needs valid Gaussian noise,
-/// not a specific seed/sequence match (that isolation is covered separately by the golden-noise
-/// tests, which feed an exact captured draw instead of using this sampler).</summary>
-internal sealed class GaussianRandom
-{
-    private readonly Random _rng = new();
-
-    public float[] NextArray(int count)
-    {
-        var result = new float[count];
-        int i = 0;
-        // Box-Muller produces two independent N(0,1) samples per (log,sqrt,sin,cos) evaluation --
-        // use both instead of discarding the sin branch (halves the transcendental-call count).
-        for (; i + 1 < count; i += 2)
-        {
-            double u1 = 1.0 - _rng.NextDouble();
-            double u2 = _rng.NextDouble();
-            double r = Math.Sqrt(-2.0 * Math.Log(u1));
-            double theta = 2.0 * Math.PI * u2;
-            result[i] = (float)(r * Math.Cos(theta));
-            result[i + 1] = (float)(r * Math.Sin(theta));
-        }
-        if (i < count)
-        {
-            double u1 = 1.0 - _rng.NextDouble();
-            double u2 = _rng.NextDouble();
-            result[i] = (float)(Math.Sqrt(-2.0 * Math.Log(u1)) * Math.Cos(2.0 * Math.PI * u2));
-        }
-        return result;
-    }
 }

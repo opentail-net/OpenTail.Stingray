@@ -1,5 +1,468 @@
 # Audio subsystem review — progress log
 
+## MASTER REBUILD PLAN (2026-08-21, restarted as an autonomous `/loop`) — go through every remaining fake pipeline
+
+Restarting the earlier "decision needed" stop: user has now given explicit direction —
+go through ALL remaining fake pipelines, one at a time, autonomously, via a recurring
+`/loop` while AFK. Disk is no longer a blocker (79GB free, checked this session). Full
+model inventory checked in `models/` and `examples/` this session before restarting; see
+per-pipeline notes below for exactly what's available for each.
+
+**Status snapshot before this loop starts (verified against git log + working tree,
+NOT just this doc's older prose, which had drifted stale):**
+
+| Pipeline | Status | Evidence |
+|---|---|---|
+| Whisper | REAL, working | fully verified earlier this doc |
+| Kokoro | REAL, working | 7-stage forward pass, verified vs golden ONNX, see above |
+| Chatterbox | REAL, working | T3 GPT2-medium LM + S3Gen (Conformer/CFM/HiFiGAN), perf-tuned, commits `2760907`/`3168cf8`/`bb97260` |
+| Piper | REAL, just landed | VITS text encoder + flow + duration predictor + HiFiGAN decoder, commits `bcce3d8`/`349a1bf` — **not yet doc'd in detail, not yet golden-verified the way Kokoro was; spot-check first thing this loop does** |
+| MeloTTS | FAKE, not started | model: `models/melotts-zh_en.onnx` (ONNX only, no native ref); C++ ref: `examples/MeloTTS.cpp` (custom, no ggml/onnx hits per earlier audit — needs closer read); same VITS-family architecture as Piper, should be much faster now that Piper's flow/duration-predictor/HiFiGAN code exists as a template |
+| F5-TTS | DiT core REAL & golden-verified; Vocos vocoder BLOCKED (no local weights) | see the dedicated "F5-TTS DiT" section near the end of this doc for the full writeup |
+| CosyVoice | FAKE, not started | models: `models/cosyvoice2_0.5b.safetensors` (LLM+flow weights), `models/cosyvoice_speech_tokenizer.onnx`, `models/campplus.onnx` (speaker embedding), `models/flow.decoder.estimator.fp32.onnx` (flow decoder, ONNX — same trim/AOT constraint issue as before, may need pure-C# port of just this small graph rather than an ONNX Runtime dependency); reference: `examples/cosyvoice.cpp` (mostly native GGML) |
+| Parakeet | FAKE, not started | model: `models/parakeet-ctc-0.6b-q4_k.gguf`; reference: `examples/parakeet.cpp` (native GGML) + `examples/nemo-toolkit-py` (real NeMo FastConformer source, pip-extracted, not yet verified to contain the exact model class per earlier note — check this first) |
+| QwenASR | FAKE, not started | model: `models/qwen3-asr-0.6b-q4_k.gguf`; reference: `examples/qwen3-asr.cpp` (native GGML) |
+| QwenTTS | FAKE, not started | **no model weight file found anywhere under `models/`** (checked this session) — reference source exists (`examples/qwen-tts-py`, real pip-extracted PyTorch) so the forward pass CAN be written and structurally verified, but cannot be numerically golden-verified until a real checkpoint is available locally. Implement last, or on a best-effort/structural-only basis, and say so explicitly rather than claiming false confidence. |
+| FunASR | FAKE, not started | models: `models/paraformer-q8.gguf`, `models/sensevoice-small.int8.onnx`; reference: `examples/FunASR-GGML`, `examples/paraformer.cpp` |
+| Silero VAD | Partially real, messier than expected | model: `models/silero_vad.gguf` + `models/silero_vad.onnx`; real architecture is fused `reparam_conv` + learned STFT frontend + graph-structured 8kHz/16kHz `If` branch, NOT the flat sequential pipeline `SileroVad.cs` assumes — needs decoding the real ONNX graph structure first, comparable effort to a full pipeline rebuild |
+
+**Piper verification CONFIRMED DONE (checked directly, no subagent, 2026-08-21 follow-up):**
+ran each Piper test class individually (`STINGRAY_RUN_HEAVY_TESTS=1 dotnet test
+tests/OpenTail.Stingray.Tests.Audio -- --filter-class <FQN>`, one at a time per user
+instruction, not the whole suite at once):
+- `OpenTail.Stingray.Tests.Audio.PiperTextEncoderTests` — PASS. Golden-verified: cosine
+  similarity >0.999 vs real onnxruntime `/enc_p/proj/Conv_output_0` (mu/logs).
+- `OpenTail.Stingray.Tests.Audio.PiperDurationPredictorTests` — PASS. Golden-verified:
+  cosine >0.99 vs real onnxruntime `dp_Split_output_0` (StochasticDurationPredictor logw).
+- `OpenTail.Stingray.Tests.Audio.PiperFlowTests` — PASS. Golden-verified: cosine >0.999
+  (length-regulator z_p) and >0.99 (ResidualCouplingBlock reverse flow output) vs real
+  onnxruntime golden dumps.
+- `OpenTail.Stingray.Tests.Audio.PiperHifiGanDecoderTests` — PASS. Golden-verified: cosine
+  >0.99 vs real onnxruntime final waveform output.
+- `OpenTail.Stingray.Tests.Audio.Fast.PiperRealWeightsTests` — PASS (end-to-end, real
+  weights, ~5s). NOTE: this one only checks shape/sample-rate/finite/duration, NOT cosine
+  vs golden — the per-stage tests above are what actually prove correctness.
+
+All golden dump scripts/data already existed on disk in `scratch-llamacpp-ref/
+piper_golden_{textenc,sdp,flow}*` (real onnxruntime runs against `models/
+en_US-lessac-medium.onnx`), so this verification work was in fact already done in an
+earlier iteration, just not reflected in this doc — **Piper is genuinely done and
+verified, not just "builds and produces sound."** No bugs found needing a fix. Move
+straight to MeloTTS next; do not re-spend a whole iteration re-verifying Piper.
+
+**Execution order for this loop** (most template-reuse and highest-confidence first,
+hardest/most-blocked last):
+
+1. ~~**Piper**~~ — DONE, see confirmation above.
+
+**MeloTTS investigation checkpoint (2026-08-21, this iteration, done directly — no
+subagents per user instruction):**
+
+Real PyTorch reference source recovered: `MeloTTS` on PyPI (0.1.1) has a broken sdist
+(setup.py references a missing `requirements.txt`, `pip download`/`pip install` both fail
+to build) — but the sdist tarball itself downloads fine directly from
+`files.pythonhosted.org` and extracts cleanly without running `setup.py`. Extracted to
+`examples/melotts-py/` (`models.py`, `modules.py`, `attentions.py`, `mel_processing.py`,
+etc. — the exact `SynthesizerTrn`/`TextEncoder`/`StochasticDurationPredictor`/
+`DurationPredictor`/`TransformerCouplingBlock`/`Generator` module source, same family as
+`chatterbox-tts-py`/`f5-tts-py`/`kokoro-py` recovered earlier this doc). `examples/
+MeloTTS.cpp` (the OpenVINO C++ wrapper) is confirmed NOT a useful math reference — it
+wraps a compiled OpenVINO IR graph, same "ONNX-wrapper-only" situation as
+Chatterbox-turbo-cpp/kokoro.cpp earlier in this doc; use `examples/melotts-py` instead.
+
+**Confirmed via `models.py`:** MeloTTS's `SynthesizerTrn.infer` (line ~970) is VITS2, same
+overall shape as Piper but with two real architectural differences — do NOT port Piper's
+flow/duration code assuming they're identical:
+1. **Duration blend**: `logw = self.sdp(...) * sdp_ratio + self.dp(...) * (1 - sdp_ratio)`
+   — MeloTTS runs BOTH a StochasticDurationPredictor AND a plain DurationPredictor and
+   blends them (`sdp_ratio`, default 0.2, already a parameter on this codebase's
+   `MeloModel.Forward`). Check whether Piper's port only implements the SDP half.
+2. **Flow is `TransformerCouplingBlock`, not `ResidualCouplingBlock`**: confirmed by
+   walking the real ONNX graph (see below) — each flow block (`/flow/flows.0`, alternating
+   with `Flip`) has an internal `enc` with its own 3 relative-attention layers + FFN +
+   `spk_emb_linear`, i.e. a small transformer inside each coupling layer, not a plain
+   dilated-conv WaveNet stack like Piper's flow. Materially more complex than
+   `PiperFlow.cs` — reuse only its "reverse loop over flow blocks" structure, not its
+   per-block math.
+
+**Weight extraction: a real, reusable technique for this specific ONNX file.**
+`models/melotts-zh_en.onnx`'s raw initializer *tensor* names are NOT clean module paths
+(auto-generated `onnx::Conv_15858`-style names from constant folding, unlike Piper's
+`en_US-lessac-medium.onnx` which has clean `enc_p.encoder.attn_layers.0.conv_q.weight`-
+style names directly) — BUT the graph's *node output* names DO retain the full module
+path (e.g. `/enc_p/encoder/attn_layers.0/conv_q/Conv_output_0`). Built a path->raw-name
+mapping by walking `Conv`/`Gemm`/`MatMul`/`ConvTranspose` nodes and reading each node's
+own `.input[1]`(weight)/`.input[2]`(bias), keyed by its path-stripped output name. Saved
+(not a permanent script, but the OUTPUT is checked in): `scratch-llamacpp-ref/
+melo_weight_map.json` (259 entries: clean path -> {op, weight init name, bias init name})
+and `scratch-llamacpp-ref/melo_module_structure.txt` (readable dp/sdp/flow/dec listing).
+Module coverage confirmed complete: `enc_p` (40 ops), `dp` (4), `sdp` (33), `flow` (84),
+`dec` (98) — all 5 real VITS2 submodules present and extractable.
+
+**Concrete simplification found, worth exploiting:** traced `/enc_p/bert_proj`'s Conv
+input back through the graph — it's fed by a `ConstantOfShape` node (an all-**zero**
+runtime-shaped tensor), NOT by any of this ONNX's 7 actual graph inputs (`x`, `x_lengths`,
+`tones`, `sid`, `noise_scale`, `length_scale`, `noise_scale_w` — there is no `bert` input
+at all in this exported graph). Same for `ja_bert_proj`. **This means this checkpoint's
+BERT conditioning is always zero at inference** — the C# port does NOT need real BERT
+features to match this exact model; `MeloBertEncoder.cs`'s current external-BERT plumbing
+is unnecessary for correctness here (only `bert_proj.bias`/`ja_bert_proj.bias` need adding
+as fixed per-channel offsets — the weight matmul contributes nothing since its input is
+always zero). Re-check against `melo_weight_map.json` if a future checkpoint DOES take
+real BERT input, but for `melotts-zh_en.onnx` specifically, zero-BERT is confirmed correct.
+
+**NOT yet done, next concrete steps for whoever picks this up (no C# code changed yet this
+iteration — confirmed `MeloModel.cs` is still the original 211-line fake sine-wave/
+procedural implementation, no weight tensor reads at all):**
+1. Write `MeloOnnxWeights.cs` (ONNX initializer loader, analogous to `PiperOnnxWeights.cs`
+   but consuming `scratch-llamacpp-ref/melo_weight_map.json` to resolve opaque raw names).
+2. Port `TextEncoder` (6 relative-attention layers + FFN, same pattern Piper already has
+   code for, but check `attentions.py` in `examples/melotts-py/` for the exact relative
+   attention formula rather than assuming it's byte-identical to Piper's).
+3. Port `DurationPredictor` (plain conv stack) AND `StochasticDurationPredictor`
+   (`modules.py`'s `ConvFlow`/`DDSConv`, 4 flow blocks) plus the `sdp_ratio` blend — verify
+   against `modules.py` directly, same family as Piper's SDP but not necessarily identical.
+4. Port `TransformerCouplingBlock` (harder than Piper's flow, has internal attention — see
+   above) using `modules.py`'s `TransformerCouplingLayer` / `attentions.py`'s `FFT` class.
+5. Port `Generator` (HiFi-GAN, likely close to `PiperHifiGanDecoder.cs`, but confirm
+   channel counts/upsample rates against `modules.py` — MeloTTS targets 44.1kHz vs Piper's
+   22.05kHz, so upsample rates differ).
+6. Build a golden-output oracle the same way as Piper's `piper_golden_*.py` scripts
+   (template still in `scratch-llamacpp-ref/`) — run `models/melotts-zh_en.onnx` via
+   onnxruntime with fixed `x`/`tones`/`sid` inputs, fetch named intermediate node outputs
+   directly (the clean `/enc_p/...`-style names above make `session.run([exact_name], ...)`
+   work directly, same trick used for Piper/Kokoro).
+7. Verify each C# stage against its golden dump via cosine similarity (>0.99, matching
+   Piper's bar) before considering MeloTTS done — do not skip numeric verification, that's
+   exactly how the original fake pipelines went unnoticed.
+
+**MeloTTS TextEncoder DONE and verified (2026-08-21, this iteration, done directly, no
+subagents per user instruction):** step 1 (`MeloOnnxWeights.cs`) and step 2 (TextEncoder
+port) from the list above are complete.
+
+- **Shared kernel extraction first** (per user feedback to reuse existing code rather than
+  hand-roll a second copy): pulled Piper's relative-position-attention/conv1x1/conv-same-
+  pad/layernorm/softmax math out of `Piper/PiperTextEncoder.cs` into a new
+  `Primitives/VitsAttentionKernels.cs`, shared by any VITS-family pipeline. Refactored
+  `PiperTextEncoder.cs` to call it and re-ran all 5 Piper test classes individually
+  afterward to confirm zero regression (all still pass, same cosine-similarity numbers).
+- **`MeloTTS/MeloOnnxWeights.cs`** (new): loads real `models/melotts-zh_en.onnx` enc_p
+  weights (emb/tone_emb/language_emb/bert_proj-bias/ja_bert_proj-bias/emb_g/proj/
+  spk_emb_linear + 6 relative-attention layers). Confirmed empirically (not just by static
+  graph reading) via `scratch-llamacpp-ref/melo_golden_textenc.py`: NumHeads=2, Window=4,
+  HiddenDim=192, FfnKernel=3, NumEncoderLayers=6 (same core config as Piper).
+- **`MeloTTS/MeloTextEncoder.cs`** (new): ports `examples/melotts-py/models.py`'s
+  `TextEncoder.forward` + `attentions.py`'s `Encoder.forward` — embedding sum (token+tone+
+  language+bert-bias+ja_bert-bias, scaled by sqrt(hidden)) -> 6-layer relative-attention
+  Transformer with a speaker-embedding injection at layer index 2 (`cond_layer_idx`, a
+  real architectural difference from Piper's single-speaker checkpoint) -> proj to mu/logs.
+- **One real, source-verified bug found and fixed via per-stage verification** (exactly
+  the failure mode this whole rebuild process exists to catch, not "compiles and runs"):
+  `spk_emb_linear`'s weight is exported as a bare ONNX `MatMul` (not `Gemm`), and
+  confirmed via direct initializer inspection that PyTorch's `nn.Linear`-to-`MatMul` export
+  pre-transposes the weight to `[inDim, outDim]` (256x192 = gin_channels x hidden) --
+  the OPPOSITE of torch's usual `[outDim, inDim]` nn.Linear layout that every other weight
+  in this codebase (including Piper's) uses. The first implementation assumed the usual
+  layout and got a plausible-looking but wrong result (final mu/logs cosine similarity
+  0.715 -- clearly wrong, but not obviously-broken-looking, i.e. exactly the kind of subtle
+  bug this whole doc exists to catch). Found by bisecting stage-by-stage against golden
+  dumps (pre-encoder embedding sum: matched >0.999; layer 0 output: matched; layer 1
+  output: matched; layer 2 output -- the first one after the speaker-conditioning add --
+  0.688, i.e. the exact layer where the bug lived), not by guessing. Fixed by indexing the
+  weight as `weight[i*outDim+o]` instead of `weight[o*inDim+i]` in `LinearVec`. After the
+  fix: `MeloTextEncoderTests.MeloTextEncoder_RealOnnxWeights_MatchesOnnxGoldenOutput`
+  passes, mu/logs cosine similarity both >0.999 vs real onnxruntime golden output.
+- **Golden dump scripts** (checked in, reusable): `scratch-llamacpp-ref/
+  melo_golden_textenc.py` (final mu/logs + individual embedding-table gathers + language-id
+  empirical trace) plus two more intermediate-node dumps added ad hoc while bisecting the
+  bug above (pre-encoder `/enc_p/Mul_output_0`, and `/enc_p/encoder/norm_layers_2.{0,1,2}/
+  Transpose_1_output_0` for per-layer verification) -- the `.npy` outputs for all of these
+  are in `scratch-llamacpp-ref/melo_golden_textenc/`, re-run the `.py` script if they're
+  ever deleted (they're gitignored scratch data, not committed).
+- **Test**: `tests/OpenTail.Stingray.Tests.Audio/MeloTextEncoderTests.cs` (new), asserts
+  final mu/logs cosine >0.999 vs golden AND (as an internal stage check before the final
+  assert) the pre-encoder embedding-sum cosine >0.999 vs golden `/enc_p/Mul_output_0` --
+  keeps one intermediate checkpoint in the permanent test, not just the final output, so a
+  future regression here is easier to localize than "the whole encoder is somehow wrong."
+
+**MeloTTS duration predictor (sdp+dp blend) DONE and verified (2026-08-21, continued in the
+same session, done directly, no subagents):**
+
+- **Shared kernel extraction, again** (same reuse-over-hand-roll principle applied to the
+  SDP): pulled Piper's DDSConv/ConvFlow-spline/ElementwiseAffine/Flip math out of
+  `Piper/PiperDurationPredictor.cs` into `Primitives/VitsDurationFlowKernels.cs` (new,
+  alongside the earlier `VitsAttentionKernels.cs`), with `VitsDdsConvWeights`/
+  `VitsConvFlowWeights` as the shared weight-holder types (constructed via a caller-supplied
+  `Func&lt;string,float[]&gt;` tensor getter so both Piper's and MeloTTS's different ONNX
+  name-resolution strategies can build them). `PiperOnnxWeights`/`PiperDurationPredictor`
+  refactored to use the shared types; re-ran all 5 Piper test classes individually
+  afterward -- zero regression, identical cosine-similarity numbers.
+- **`MeloOnnxWeights.cs` extended**: added `dp.*` (plain `DurationPredictor`: cond, conv_1,
+  norm_1, conv_2, norm_2, proj -- all plain-named initializers, no weight_norm anonymization
+  unlike enc_p's attention convs) and `sdp.*` (`StochasticDurationPredictor`: cond, pre,
+  convs (DDSConv), proj, flows.{3,5,7} (ConvFlow) + flows.0.m/exp(-logs) -- confirmed via
+  the real ONNX graph that `filter_channels == in_channels == HiddenDim` here, per the
+  reference's own `models.py` comment "filter_channels = in_channels # it needs to be
+  removed from future version", and that the SDP's flow pruning/execution order is
+  IDENTICAL to Piper's dp -- Flip(8)-&gt;ConvFlow(7)-&gt;Flip(6)-&gt;ConvFlow(5)-&gt;
+  Flip(4)-&gt;ConvFlow(3)-&gt;Flip(2)-&gt;ElementwiseAffine(0), same "remove a useless
+  vflow" trick, confirmed both by reading `models.py`'s reverse-path list slicing AND by
+  checking the real ONNX graph only has flows.{3,5,7} (not 1) as VITS2's `n_flows=4` +
+  pruning always produces this exact set regardless of checkpoint).
+- **`MeloTTS/MeloDurationPredictor.cs`** (new): implements the SDP half (same flow math as
+  Piper via the shared kernels, but with a real speaker-conditioning `cond` 1x1 conv added
+  to `x` right after `pre` -- Piper's checkpoint has no such conditioning, `gin_channels=0`
+  there) and the plain DP half (`conv_1(k=3)-&gt;ReLU-&gt;LayerNorm-&gt;conv_2(k=3)-&gt;
+  ReLU-&gt;LayerNorm-&gt;proj`, also cond-conditioned), then blends:
+  `logw = logwSdp*sdpRatio + logwDp*(1-sdpRatio)` per `SynthesizerTrn.infer`'s real formula.
+  `cond`'s weight is a plain Conv1d `[out,in,1]` layout here (NOT the transposed-MatMul
+  layout `spk_emb_linear` had in the TextEncoder stage -- confirmed via direct shape
+  inspection before assuming either convention, since guessing wrong here would silently
+  repeat the exact bug just found and fixed in the TextEncoder stage).
+- **No bugs found this stage** -- passed golden verification on the first attempt (unlike
+  the TextEncoder stage's transposed-weight bug), most likely because the shared-kernel
+  extraction from the already-verified Piper SDP meant the hardest, most error-prone math
+  (the rational-quadratic spline, DDSConv, flow pruning order) was reused verbatim rather
+  than re-transcribed from scratch, and the only genuinely new code (the `cond` speaker
+  conditioning and the sdp/dp blend) is comparatively simple arithmetic.
+- **Golden dump**: `scratch-llamacpp-ref/melo_golden_durpred.py` (checked in), capturing the
+  SDP's exact raw noise draw (`/sdp/RandomNormalLike_output_0`, so the C# test isolates
+  "is the flow math right" from "does the RNG match", same technique as Piper's SDP test),
+  the SDP's pre-blend logw (`/sdp/Split_output_0`), and the DP's pre-blend logw
+  (`/dp/proj/Conv_output_0`).
+- **Test**: `tests/OpenTail.Stingray.Tests.Audio/MeloDurationPredictorTests.cs` (new) --
+  verifies the SDP half (`sdpRatio=1.0`) and DP half (`sdpRatio=0.0`) SEPARATELY against
+  their own golden node outputs, not just the final blend -- checking only the blend could
+  hide an 80%-wrong DP half behind a low `sdpRatio` (this checkpoint's default is 0.2).
+  Both halves: cosine similarity >0.99 vs real onnxruntime golden output. Passed on first
+  run after implementation (no debugging iteration needed, unlike the TextEncoder stage).
+- **Full individual regression pass this iteration** (per user instruction: run heavy
+  tests one class at a time, never the whole suite at once): all 5 Piper test classes +
+  `PiperRealWeightsTests` (end-to-end) + `MeloTextEncoderTests` + `MeloDurationPredictorTests`
+  all pass individually.
+
+### MeloTTS `TransformerCouplingBlock` flow -- DONE and verified
+
+- Read `examples/melotts-py/modules.py`'s `TransformerCouplingLayer`/`Flip` and `models.py`'s
+  `TransformerCouplingBlock` as ground truth: 4 coupling layers (`flows.0/2/4/6` in ONNX weight
+  paths) interleaved with parameter-free `Flip`s (`flows.1/3/5/7`) -- 8 sub-flows total, `mean_only=True`
+  for every layer (so `logs` is implicitly zero: reverse update simplifies to `x1 - m`, no `exp`).
+  Each coupling layer has its OWN internal 3-layer relative-attention encoder (`enc`,
+  `attentions.py`'s `Encoder`, `ffnKernel=5` -- differs from enc_p's `ffnKernel=3`) plus its own
+  `spk_emb_linear`, confirmed distinct (non-shared) per-layer weights by checking the ONNX
+  initializer list directly (`flow.flows.{0,2,4,6}.enc.*` all have their own tensors, not just
+  `flows.0`'s reused -- i.e. `share_parameter=False` for this checkpoint).
+- **Second application of the shared-kernel extraction pattern this session**: pulled the
+  `attentions.py` `Encoder.forward` loop (the N-layer relative-attention + optional speaker-
+  conditioning loop) out of `MeloTextEncoder.cs` into a new `MeloRelativeEncoder.cs`, since this
+  exact module is instantiated twice in the graph (enc_p's 6-layer encoder AND each flow layer's
+  3-layer internal encoder) -- reused by both instead of a second hand-rolled copy. Also moved
+  the `LinearVec` helper (the `[inDim,outDim]`-layout `spk_emb_linear` MatMul quirk) there since
+  both call sites need it.
+- Generalized `MeloEncoderLayerWeights`'s constructor to take explicit `modBase`/`nodeBase`
+  prefixes plus a `weightNormAnonymized` flag: enc_p's attention conv weights are anonymized by
+  weight_norm-style ONNX export fusion (must resolve via `GetWeightViaNode`), but confirmed by
+  direct ONNX initializer inspection that the flow's internal encoders are NOT weight_norm'd in
+  this checkpoint (clean `model.model.flow.flows.0.enc.attn_layers.0.conv_q.weight` names exist
+  directly) -- reading them by name instead of via node avoids an unnecessary (and for this case,
+  wrong) `GetWeightViaNode` lookup.
+- New `MeloFlowLayerWeights` in `MeloOnnxWeights.cs`: `pre`/`post` convs (clean names, not
+  anonymized -- confirmed via direct shape inspection) plus `SpkEmbLinearWeight` (still resolved
+  via `GetWeightViaNode`, since only `spk_emb_linear`'s bare-MatMul export is anonymized here, not
+  the Conv1d weights) and a `Layers[3]` of the generalized `MeloEncoderLayerWeights`.
+- New `MeloFlow.cs`: `Reverse(w, zP, t, g)` implements `TransformerCouplingBlock.forward(reverse=True)`
+  (inference only ever runs reverse) plus a full-channel-reversal `Flip` (torch.flip on the
+  channel axis -- NOT the 2-channel swap in `VitsDurationFlowKernels.Flip`, which is specific to
+  the SDP's 2-channel flow).
+- Golden dump (`scratch-llamacpp-ref/melo_golden_flow.py`) captures the frame-rate `z_p` fed into
+  the flow (`/Add_2_output_0`) and the flow's final output (`/flow/flows.0/Concat_output_0`),
+  feeding the golden z_p directly into `MeloFlow.Reverse` rather than requiring the (not yet
+  built) length regulator -- isolates flow correctness from length-regulator correctness, same
+  bisection philosophy as the duration-predictor stage.
+- **Bug found and fixed via golden bisection**: cosine similarity was initially -0.06 (garbage).
+  First hypothesis (wrong) -- a separate one-off debug dump script captured intermediate node
+  outputs in a SEPARATE `sess.run()` call from the main golden dump. `/Add_2_output_0` (z_p) sits
+  downstream of a `RandomNormalLike` noise draw that onnxruntime does NOT seed, so every session
+  run draws different noise -- comparing intermediates captured across two different script
+  invocations was comparing against two different random draws, producing nonsense mismatches
+  even for `Flip` (a channel reversal that is mathematically guaranteed to be exact). Fixed by
+  consolidating ALL golden targets (final input/output plus every per-coupling-layer bisection
+  checkpoint) into a single `sess.run()` call in one script -- now documented directly in
+  `melo_golden_flow.py`'s target list as a durable warning for the next pipeline. Also disabled
+  onnxruntime graph optimization (`ORT_DISABLE_ALL`) when dumping, after separately discovering
+  that default-optimization-level intermediate-output extraction can return a value that doesn't
+  match what was actually fed to a downstream node (found via the same bisection: `Flip`'s output
+  didn't match `np.flip` of its dumped input under default optimization, but matched exactly with
+  optimizations disabled).
+- With golden dumps fixed, re-bisection showed the per-coupling-layer math was already correct
+  (all 4 intermediate checkpoints matched >0.9999999) -- the REAL bug was a spurious extra `Flip`
+  call after the reverse loop. `TransformerCouplingBlock.forward(reverse=True)` iterates
+  `reversed(self.flows)` where `self.flows = [TCL0,Flip,TCL1,Flip,TCL2,Flip,TCL3,Flip]`; reversed
+  this is `Flip,TCL3,Flip,TCL2,Flip,TCL1,Flip,TCL0` -- 4 Flips and 4 TCLs alternating, ending on
+  TCL0 with NO trailing Flip. An early version of `MeloFlow.Reverse` had exactly one too many
+  `Flip` calls (correct 4 inside the loop, plus one more after) -- every per-TCL golden
+  checkpoint passed (since they're captured mid-loop, before the extra Flip), but the actual
+  returned tensor was channel-order-reversed relative to golden. Caught by comparing the real
+  `Reverse()` return value against the final golden output, not just the loop's intermediates --
+  exactly the "verify the actual output, not just that intermediate stages look plausible"
+  discipline this whole rebuild exists to enforce.
+- New `MeloFlowTests.cs`: cosine similarity >0.99 vs real onnxruntime golden output (currently
+  ~1.0). Passes individually.
+- **Full individual regression pass this iteration**: `MeloTextEncoderTests`,
+  `MeloDurationPredictorTests`, `PiperTextEncoderTests`, `PiperFlowTests`,
+  `PiperDurationPredictorTests`, `MeloFlowTests` all pass individually (no regression from the
+  `MeloEncoderLayerWeights`/`MeloTextEncoder` refactor into shared `MeloRelativeEncoder`).
+
+### MeloTTS length regulator -- DONE and verified (reuses Piper's, no new math)
+
+- The length regulator (bridging enc_p's token-rate mu/logs to the flow's frame-rate z_p via
+  `w = exp(logw)*length_scale`, `w_ceil = ceil(w)`, repeat-interleave expansion, `z_p = m_p_exp +
+  noise*exp(logs_p_exp)*noise_scale`) is pipeline-agnostic VITS math with NO model-specific
+  weights -- Piper's `PiperLengthRegulator.cs` already implemented it exactly. **Third
+  application of the shared-kernel pattern this session**: promoted it to
+  `Primitives/VitsLengthRegulator.cs` (renamed from `Piper.PiperLengthRegulator`) rather than
+  writing a second copy for MeloTTS. Updated both call sites (`PiperModel.cs`,
+  `PiperFlowTests.cs`) to the new name/namespace; reran `PiperFlowTests` individually to confirm
+  zero regression from the rename before writing any MeloTTS-specific code.
+- Golden dump (`scratch-llamacpp-ref/melo_golden_lengthreg.py`, same single-`sess.run()` +
+  `ORT_DISABLE_ALL` discipline established during the flow stage) captures the REAL per-token
+  durations (`/Ceil_output_0`) and REAL frame-rate noise draw (`/RandomNormalLike_output_0`)
+  alongside the target `/Add_2_output_0` -- lets the test feed real golden durations/noise through
+  our OWN already-verified `MeloTextEncoder` mu/logs, isolating length-regulator correctness
+  end-to-end without needing to re-derive the sdp_ratio-blended durations ourselves.
+- New `MeloLengthRegulatorTests.cs`: cosine similarity >0.99 vs golden `z_p` (passed on the first
+  run, unsurprising since both the encoder and the length-regulator math were already
+  independently golden-verified).
+- **Full individual regression pass this iteration**: `MeloTextEncoderTests`,
+  `MeloDurationPredictorTests`, `MeloFlowTests`, `MeloLengthRegulatorTests`,
+  `PiperTextEncoderTests`, `PiperFlowTests`, `PiperDurationPredictorTests`,
+  `PiperHifiGanDecoderTests` all pass individually.
+
+### MeloTTS `Generator` (HiFi-GAN, 44.1kHz) -- DONE and verified
+
+- Read `models.py`'s `Generator` and `modules.py`'s `ResBlock1` as ground truth, then confirmed
+  the real topology via direct ONNX Conv/ConvTranspose node attribute inspection (never assumed
+  from the class name, since Piper's own decoder -- also nominally "HiFi-GAN" -- turned out to use
+  a structurally simpler resblock): 5 upsample stages (512→256→128→64→32→16 channels, kernels
+  [16,16,8,2,2], strides [8,8,2,2,2], total factor 512 -- matching MeloTTS's 44.1kHz/hop-512 mel
+  rate), 15 resblocks (5 stages × 3 kernel sizes [3,7,11]), each a real `ResBlock1` (3 conv PAIRS
+  per resblock: convs1[j] at dilation from a FIXED (1,3,5) tuple, convs2[j] always dilation 1) --
+  NOT Piper's simpler 2-conv-per-kernel-group resblock.
+- **Fourth application of the shared-kernel pattern this session**: extracted Piper's low-level
+  conv/upsample math (dilated "same"-pad Conv1d, ConvTranspose1d, LeakyReLU) into
+  `Primitives/HifiGanKernels.cs` and refactored `PiperHifiGanDecoder.cs` to use it (reran
+  `PiperHifiGanDecoderTests` individually to confirm zero regression before writing MeloTTS code).
+  The resblock LOOP STRUCTURE itself is genuinely different between the two checkpoints (Piper: 2
+  layers per resblock, dilation indexed by kernel group; MeloTTS: 3 layers per resblock, ALL
+  reusing the same (1,3,5) dilation tuple regardless of kernel group) so that part is NOT shared,
+  only the underlying conv primitives are.
+- New `MeloOnnxWeights.Dec*` fields + `MeloResBlockWeights` (conv weights anonymized by
+  weight_norm-style export fusion, resolved via `GetWeightViaNode`, same as enc_p's attention
+  convs) and new `MeloGenerator.cs`.
+- Golden dump (`scratch-llamacpp-ref/melo_golden_generator.py`) feeds the golden flow output
+  directly (== dec's real input, since the mask is all-ones for this unpadded test input) and
+  targets the model's final waveform graph output ("y"), isolating generator correctness from
+  flow correctness.
+- **Bug found and fixed via golden bisection**: initial cosine was 0.69 (plausible-but-wrong).
+  Bisection showed conv_pre+cond and the first upsample were both ~1.0, but the very first
+  resblock's own output dropped to ~0.86 -- pinpointing the bug inside `ResBlock1Forward`. Root
+  cause: the method took a single `dilation` parameter equal to `ResblockDilations[k]` (the
+  resblock's OWN kernel-group index k, 0/1/2 -> kernel 3/7/11), applying that SAME dilation to all
+  3 internal j-sublayers -- but the reference's `ResBlock1(ch, kernel_size, dilation=(1,3,5))`
+  reuses the identical `(1,3,5)` dilation tuple across ITS OWN 3 internal j-iterations regardless
+  of which kernel-size group the resblock belongs to. Fixed by removing the `dilation` parameter
+  and cycling `ResblockDilations[j]` = 1,3,5 internally for every resblock's 3 sublayers. Verified
+  fix: all bisection checkpoints (conv_pre+cond, upsample-0, resblock-0's own output, stage-0
+  average) matched >0.9999999, and the final waveform cosine went from 0.69 to ~1.0.
+- New `MeloGeneratorTests.cs`: cosine similarity >0.99 vs golden waveform (currently ~1.0).
+- **Full individual regression pass this iteration**: `MeloTextEncoderTests`,
+  `MeloDurationPredictorTests`, `MeloFlowTests`, `MeloLengthRegulatorTests`,
+  `MeloGeneratorTests`, `PiperTextEncoderTests`, `PiperFlowTests`, `PiperDurationPredictorTests`,
+  `PiperHifiGanDecoderTests`, `Fast.PiperRealWeightsTests` (end-to-end) all pass individually.
+
+### MeloTTS end-to-end wiring -- DONE (MeloTTS complete, moving to F5-TTS next)
+
+- `MeloModel.cs`: added a real weight-driven path (`ForwardReal`, gated on a new `MeloOnnxWeights?
+  _weights` field + a `MeloModel(string onnxPath, ...)` constructor, mirroring `PiperModel`'s
+  fake/real dual-constructor pattern exactly) that chains MeloTextEncoder -> MeloDurationPredictor
+  -> VitsLengthRegulator -> MeloFlow -> MeloGenerator with real `GaussianRandom` noise draws
+  (production RNG, not golden-dumped noise -- that isolation stays in the per-stage golden tests).
+  The original fake/procedural `Forward` body is kept as the no-model-file fallback (renamed
+  nothing, just gated behind `_weights is null`), same as Piper's pattern.
+- **Fifth application of the shared-kernel pattern this session**: promoted Piper's
+  `GaussianRandom` Box-Muller sampler to `Primitives/GaussianRandom.cs` (it had zero Piper-specific
+  logic) instead of writing a second copy for MeloTTS's real RNG draws.
+- Per `MeloOnnxWeights`'s already-documented checkpoint quirks, the real path only consumes
+  `phones`/`tones`/`speakerId` -- `langIds`/`bertFeatures` are accepted (kept in the public
+  `Forward` signature for API compatibility) but NOT forwarded into the real graph, since this
+  checkpoint's `language`/`bert`/`ja_bert` are not real dynamic inputs (see the class doc's
+  position-parity-pattern / always-zero-bert findings from the TextEncoder stage).
+- **Found and fixed a second, pre-existing "compiles but doesn't use real weights" bug** while
+  wiring this up: `MeloPipeline.Load(modelPath)` validated that the ONNX file exists/is large
+  enough, but then ALWAYS constructed `new MeloModel(sampleRate: 44100)` -- the no-weights fake
+  path -- regardless of `modelPath`, silently discarding it. Every prior "real weights" pipeline
+  run (including `MeloTtsRealWeightsTests`'s own smoke test, which only checks the output is
+  non-empty/finite/long-enough, not that it's real) was actually running procedural/sinusoidal
+  fake synthesis end-to-end. Fixed to load real weights via `new MeloModel(modelPath, ...)`,
+  mirroring `PiperPipeline.Load`'s already-correct pattern.
+- Reran `MeloTtsRealWeightsTests` (the pre-existing pipeline-level smoke test, unmodified) after
+  the fix: still passes, now genuinely exercising the real weight-driven path end-to-end (visibly
+  slower -- ~18s vs near-instant before -- consistent with real neural computation replacing fake
+  sine synthesis).
+- **Full and final individual regression pass for MeloTTS this iteration**: `MeloTextEncoderTests`,
+  `MeloDurationPredictorTests`, `MeloFlowTests`, `MeloLengthRegulatorTests`, `MeloGeneratorTests`,
+  `Fast.MeloTtsRealWeightsTests`, plus the full Piper suite (`PiperTextEncoderTests`,
+  `PiperFlowTests`, `PiperDurationPredictorTests`, `PiperHifiGanDecoderTests`,
+  `Fast.PiperRealWeightsTests`) -- 11 test classes, all pass individually.
+
+**MeloTTS is now COMPLETE per the MASTER REBUILD PLAN**: every sub-stage is real, weight-driven,
+independently golden-verified against real onnxruntime output, AND wired end-to-end through both
+`MeloModel` and `MeloPipeline`. Known residual limitation (out of scope for this rebuild, same as
+Piper): `MeloPhonemizer`/`MeloBertEncoder` are still placeholder text->token/tone/feature
+implementations, not a real espeak-NG-equivalent multilingual phonemizer -- the neural math this
+whole effort targets is real and verified, but end-to-end audio *quality* from arbitrary free text
+still depends on that separate, much larger phonemization undertaking.
+
+**Next per the MASTER REBUILD PLAN's order**: F5-TTS.
+
+3. **F5-TTS** — real safetensors + real DiT/CFM reference source both available locally,
+   no ONNX/trim complications. Build a golden-output dump from the real
+   `f5-tts` pip package (same technique as Kokoro's `kokoro_golden.py`) before writing the
+   C# forward pass, not after.
+4. **Parakeet** — verify `examples/nemo-toolkit-py` actually contains the FastConformer
+   model class first (flagged as unconfirmed earlier this doc), then port against
+   `examples/parakeet.cpp` (native GGML) as the structural reference.
+5. **QwenASR** — native GGML reference (`qwen3-asr.cpp`), real GGUF weight file present.
+6. **FunASR** — two reference implementations available, both models present locally.
+7. **CosyVoice** — most architecturally complex remaining (LLM + flow decoder + speaker
+   embedding, one component is ONNX-only). Do NOT add an ONNX Runtime dependency without
+   re-confirming the `TrimMode=full`/`PublishAot=true` blocker still applies — if the
+   flow decoder graph is small, prefer hand-porting it in pure C# over reopening that
+   architecture decision.
+8. **Silero VAD** — needs real ONNX graph decoding first (structural investigation, not
+   just porting known math) since the actual conv/reshape/LSTM sequence isn't confirmed.
+9. **QwenTTS** — no local weight file; best-effort structural port from
+   `examples/qwen-tts-py` only, explicitly flagged as numerically-unverified when done,
+   don't claim it's "golden-verified" when there's nothing to verify against.
+
+**Standing ground rules for every pipeline in this loop (carried over, still binding):**
+- Every stage gets a golden-output oracle (real reference model run via Python/onnxruntime
+  or the pip-extracted PyTorch source) BEFORE being declared done — "compiles and produces
+  non-silent audio" is exactly the failure mode this whole rebuild exists to fix. Cosine
+  similarity vs. golden tensors, not just shape/finite checks.
+- Don't touch `ModelGraph.cs` / `ForwardPass.Moe.cs` / `ModelCompatibility.cs` (other
+  session's WIP).
+- Keep `tests/OpenTail.Stingray.Tests.Audio` green after each pipeline; add a
+  `*RealWeightsTests`-style regression test with real audio/text and known-correct output
+  wherever the reference makes that possible (Whisper's JFK test is the template).
+- Update this doc after every pipeline (or every meaningful sub-stage) — it's the handoff
+  point between loop iterations, not a session log to fill in at the end.
+- Commit only if explicitly asked — leave changes uncommitted like every prior iteration
+  unless told otherwise.
+- If genuinely blocked on a scope/architecture decision (like the CosyVoice ONNX/trim
+  question), document the blocker clearly and move to the next pipeline in the order above
+  rather than stalling the whole loop on one open question.
+
 ## REBUILD PLAN (2026-08-21, scope change) — porting real math from examples/ reference repos
 
 User reframed the task: instead of just auditing, port the real algorithms from the
