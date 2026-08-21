@@ -1,5 +1,63 @@
 # Audio subsystem review — progress log
 
+## LOOP RESTART PLAN (2026-08-21, user going AFK, autonomous `/loop` re-armed)
+
+User is stepping away and wants this session to keep grinding through the remaining fake
+pipelines unattended via `/loop`. Per `CLAUDE.md`, no subagents — all work done directly in
+this session, one pipeline/stage at a time, each iteration reading this doc first to avoid
+re-deriving what's already known, then updating this doc at the end of the iteration before
+stopping (so progress survives context compaction and is visible to the user on return).
+
+**Remaining work queue, in order** (skip Piper/Whisper/Kokoro/Chatterbox/F5-TTS DiT+Vocos —
+those are done and verified per the table below):
+
+1. ~~**MeloTTS**~~ — CONFIRMED FULLY DONE (2026-08-21, this loop iteration). All of
+   `MeloDurationPredictor.cs` (SDP + plain DP + sdp_ratio blend), `MeloFlow.cs`
+   (TransformerCouplingBlock reverse), `MeloGenerator.cs` (HiFi-GAN), and length-regulator
+   code already existed real/weight-driven from an earlier session, just not reflected in
+   this doc's queue list. Ran every Melo test class individually
+   (`STINGRAY_RUN_HEAVY_TESTS=1 dotnet test tests/OpenTail.Stingray.Tests.Audio --
+   --filter-class <FQN>`, one at a time): `MeloDurationPredictorTests`, `MeloFlowTests`,
+   `MeloGeneratorTests`, `MeloLengthRegulatorTests` — all PASS. Also ran the end-to-end
+   real-weights test `OpenTail.Stingray.Tests.Audio.Fast.MeloTtsRealWeightsTests` — PASS
+   (18s). MeloTTS is genuinely done, do not re-spend an iteration on it. Move straight to
+   Parakeet next.
+2. **Parakeet** — NOT blocked (false blocker corrected this session); full architecture spec
+   already written out below (subsampling, positional encoding, 24-layer Conformer block,
+   CTC head). Next: read `examples/crispasr/src/canary_ctc.cpp` for BN-fold/mel/ln_eps
+   details, build a golden oracle, port `ParakeetConformerEncoder.cs`, verify per-stage.
+3. **CosyVoice** — not started. Weights present (`cosyvoice2_0.5b.safetensors`,
+   `cosyvoice_speech_tokenizer.onnx`, `campplus.onnx`, `flow.decoder.estimator.fp32.onnx`);
+   reference `examples/cosyvoice.cpp` (native GGML, mostly usable). Investigate the ONNX flow
+   decoder trim/AOT constraint before assuming a pure-C# port is needed.
+4. **QwenASR** — not started. Model `models/qwen3-asr-0.6b-q4_k.gguf`; reference
+   `examples/qwen3-asr.cpp` (native GGML).
+5. **FunASR** — not started. Models `models/paraformer-q8.gguf`,
+   `models/sensevoice-small.int8.onnx`; references `examples/FunASR-GGML`,
+   `examples/paraformer.cpp`.
+6. **Silero VAD** — partially real; needs decoding the real ONNX graph (fused
+   `reparam_conv` + learned STFT frontend + graph-structured 8kHz/16kHz `If` branch) instead
+   of the current flat-sequential assumption. Comparable effort to a full rebuild.
+7. **QwenTTS** — do LAST or best-effort only: **no model weight file exists locally** for
+   this one, so it can be structurally written against `examples/qwen-tts-py` (real PyTorch
+   source) but cannot be numerically golden-verified. Say so explicitly, do not claim
+   false confidence, when/if this gets implemented.
+
+**Per-iteration discipline** (same bar every other pipeline in this doc was held to — do not
+relax it under autonomous operation):
+- Read this doc's relevant section fully before starting; don't re-derive already-known specs.
+- Real reference source only (native C++/GGML or extracted real PyTorch) — never guess math.
+- Golden-verify each stage numerically (cosine similarity, >0.99 bar) against a real oracle
+  before calling a stage done; "compiles and produces plausible-looking audio" is not done.
+- Run heavy/real-weight tests individually (`STINGRAY_RUN_HEAVY_TESTS=1`, one filter-class at
+  a time), never the whole heavy suite at once, matching this doc's established practice.
+- Never pipe verbose test output through tail/head — use the full output or a saved file.
+- Update this doc at the end of every iteration with what was done/found/blocked, so the next
+  wakeup (or the user on return) has a true, current picture — this doc drifting stale caused
+  real confusion earlier in this session (see the Piper status-snapshot correction above).
+- If a pipeline turns out genuinely blocked (missing weights, no real reference anywhere),
+  document the blocker precisely and move to the next item in the queue rather than guessing.
+
 ## MASTER REBUILD PLAN (2026-08-21, restarted as an autonomous `/loop`) — go through every remaining fake pipeline
 
 Restarting the earlier "decision needed" stop: user has now given explicit direction —
@@ -1358,3 +1416,390 @@ branch-free now, and the actual accumulate is vectorized. Verified against the r
 word-for-word JFK regression test (tiny+base, still exact) and the medium-model end-to-end
 test (1m03s, passed) — no correctness change. No known unvectorized conv loops remain
 across Chatterbox/Kokoro/Whisper.
+
+---
+
+## F5-TTS DiT — REAL and golden-verified; Vocos vocoder BLOCKED (2026-08-21, continuation of the MASTER REBUILD PLAN after MeloTTS)
+
+F5-TTS is architecturally a completely different family from the VITS-based pipelines
+(Piper/MeloTTS) done earlier in this doc: a flow-matching Diffusion Transformer (DiT), not
+a normalizing-flow TTS. Ships as a single `.safetensors` checkpoint (`models/
+f5tts_base.safetensors`, raw torch state_dict layout -- no ONNX weight_norm-fusion
+anonymization or MatMul-transpose quirks to worry about, unlike the VITS pipelines) plus a
+real, runnable PyTorch reference (`examples/f5-tts-py`, from the official SWivid/F5-TTS
+repo).
+
+### Golden verification method: run the REAL PyTorch reference directly, not ONNX
+
+Since F5-TTS ships as safetensors with working PyTorch source, golden dumps for this
+pipeline load the ACTUAL reference `f5_tts.model.backbones.dit.DiT` class with the real
+checkpoint and call it directly -- no ONNX re-export step, unlike Piper/MeloTTS. Getting the
+reference source importable required installing several pip dependencies (`torchaudio`,
+`librosa`, `rjieba`, `torchdiffeq`, `x_transformers`, `ema_pytorch`) and bypassing `f5_tts/
+model/__init__.py` (which pulls in unrelated heavy deps like `wandb`/`trainer`) by
+pre-registering stub package modules in `sys.modules` before importing just the submodules
+needed (`f5_tts.model.backbones.dit`) -- see `scratch-llamacpp-ref/f5_golden_dit.py`'s
+header comment for the exact trick. Config was confirmed exactly by loading the real
+weights into the real `DiT` class with `strict=True` and getting zero missing/unexpected
+keys: `dim=1024, depth=22, heads=16, dim_head=64, ff_mult=2` (NOT the more common default of
+4 -- confirmed via `ff.ff.0.0.weight`'s `[2048,1024]` shape), `text_dim=512, conv_layers=4,
+qk_norm=None, long_skip_connection=False, attn_mask_enabled=False` (single-utterance
+inference, no batch padding to mask).
+
+### Architecture ported (all in `src/OpenTail.Stingray.Audio/F5TTS/`)
+
+- **`F5Kernels.cs`**: low-level math on SEQUENCE-MAJOR (channel-last, `[T,D]`) arrays -- a
+  DELIBERATE convention difference from the VITS-family pipelines' channel-first `[D,T]`
+  layout (DiT/Transformer math is naturally per-timestep-row; VITS convs are naturally
+  per-channel-row). Includes per-timestep `Linear`, affine/non-affine `LayerNorm`, exact
+  erf-based GELU (`nn.GELU()` default) vs. tanh-approx GELU (`nn.GELU(approximate='tanh')`,
+  used by the DiT FeedForward) as TWO DISTINCT functions (confirmed both variants are really
+  used, in different places, by reading the reference source directly), depthwise and
+  grouped "same"-padded Conv1d, and GRN (Global Response Normalization -- confirmed via
+  reading `modules.py` that its L2-norm reduction axis is the SEQUENCE dimension, not
+  per-timestep, a genuinely easy-to-miss detail).
+- **`F5TextEmbedding.cs`**: token ids -> zero-padded-to-audio-frame-length embedding (`text
+  = text + 1` for the 0-filler-token convention, truncate/pad to `numFrames`) + fixed
+  sinusoidal position embedding (`precompute_freqs_cis`, concatenated cos/sin halves -- NOT
+  interleaved, a different formula from the attention RoPE below) + 4x ConvNeXtV2Block,
+  re-masking to zero at padded positions after every stage. Has a `dropText` parameter for
+  CFG's null/unconditional branch (every position's embedding lookup becomes row 0, but the
+  zero-mask still reflects the ORIGINAL pad boundary, not "everything is padding" -- a real
+  subtlety in `dit.py`'s `TextEmbedding.forward`, ported faithfully after reading the exact
+  order of operations).
+- **`F5InputEmbedding.cs`**: `proj(cat[x,cond,text_embed])` + `ConvPositionEmbedding` (2x
+  grouped Conv1d, `groups=16`, `k=31`, + Mish).
+- **`F5TimestepEmbedding.cs`**: `SinusPositionEmbedding(256)` + 2-layer MLP with SiLU.
+- **`F5RotaryEmbedding.cs`** + the RoPE application in **`F5DiTBlock.cs`**: interleaved
+  ("GPT-J style") rotary embedding -- confirmed by installing the real `x_transformers`
+  package and reading its actual `RotaryEmbedding`/`apply_rotary_pos_emb`/`rotate_half`
+  source, NOT assumed from memory of "how RoPE usually works" (the split-half "rotate_half"
+  convention used elsewhere is a DIFFERENT, incompatible convention from this one). Uses the
+  checkpoint's own real `inv_freq` tensor directly rather than recomputing a theta formula.
+- **`F5DiTBlock.cs`**: AdaLN-Zero modulation (`shift/scale/gate` x2, from one
+  `Linear(1024,6144)` over `silu(t)`) + RoPE self-attention (no qk_norm, no mask) + gated
+  FFN (tanh-approx GELU).
+- **`F5DiTModel.cs`**: orchestrates all 22 blocks + `AdaLayerNorm_Final` + `proj_out` ->
+  velocity.
+- **`F5Tokenizer.cs`**: real character-vocabulary lookup loaded from the checkpoint's own
+  `vocab.txt` (copied to `models/f5tts_vocab.txt`, 2545 lines matching `VocabSize` exactly),
+  literal per-char id lookup with unknown-char fallback to id 0 (space) -- matching
+  `list_str_to_idx`'s `vocab_char_map.get(c, 0)`. Does NOT implement the reference's
+  `rjieba`+pinyin conversion for Chinese text (`convert_char_to_pinyin`) -- same documented
+  scope boundary as Piper/MeloTTS's simplified phonemizers elsewhere in this doc: real
+  neural math, simplified text normalization/g2p.
+- **`F5FlowMatchingOde.cs`**: Euler ODE sampler with classifier-free guidance, ported from
+  `cfm.py`'s `CFM.sample`. Documented simplification: uses the older `linspace(0,1,steps+1)`
+  + optional `sway_sampling_coef` step schedule instead of the reference's newer default
+  "Empirically Pruned Step Sampling" (EPSS, a precomputed lookup-table schedule) -- a real,
+  still-supported non-EPSS code path in the reference, just not the newest optimization.
+- **`F5TtsPipeline.cs`**: rewired to a real/fake dual path (mirroring
+  `PiperModel`/`MeloModel`'s pattern) -- real path used when both a `.safetensors` weights
+  file AND a resolvable `vocab.txt` are present; falls back to the original fake procedural
+  DiT stand-in (moved here from the old `F5DiTModel.cs`, preserved verbatim as
+  `FakeSolveFlowMatchingOde`/`FakeForwardVelocity`) otherwise.
+
+### Bug found and fixed via golden bisection — in the DUMP SCRIPT, not the C# port
+
+Initial `input_embed`/`pos_only`/`conv0_only` comparisons gave cosine similarities near 0
+(`0.0015`, `-0.0057`, `0.163`) against otherwise-passing `text_embed`/`time_embed`/
+`proj_only`/final-`velocity` checks -- looked exactly like a real transpose/indexing bug.
+Root cause, found by replicating the EXACT SAME grouped-conv formula independently in pure
+numpy against real checkpoint weights (matched the golden target at cosine `0.9999999`,
+proving the C# math and weight-reading were both already correct) and then inspecting the
+failing `.npy` files' raw headers directly: three golden dumps (`input_embed.npy`,
+`pos_only.npy`, `conv0_only.npy`) were saved from tensors that had gone through
+`.permute(...)` without a following `.contiguous()` call. `np.save` on a non-contiguous
+torch tensor's `.numpy()` view writes the file with `'fortran_order': True` in its header --
+a flat-byte `.npy` reader that assumes C (row-major) order, like every reader used
+throughout this whole rebuild effort, silently misinterprets Fortran-ordered data as
+row-major, which is numerically equivalent to reading a TRANSPOSED array. Fixed by adding
+`.contiguous()` before every `.numpy()` call in `f5_golden_dit.py`, regenerating the
+affected dumps, and adding an explicit `fortran_order` check (that throws with a clear
+message) to `F5DiTModelTests.cs`'s npy reader so this class of mistake fails loudly instead
+of silently next time. **No C# code changed as a result of this bisection** -- the DiT port
+was correct on the first real attempt; only the verification harness was wrong. Documented
+prominently in `F5DiTModelTests.cs`'s class doc comment as a durable warning.
+
+### Test coverage
+
+`F5DiTModelTests.cs`: checks `text_embed`, `time_embed`, `input_embed`, and the final
+`velocity` output separately against their own real-PyTorch-reference golden targets (all
+now pass, cosine similarity >0.999 for the intermediates, >0.99 for the final velocity).
+Passes individually (`STINGRAY_RUN_HEAVY_TESTS=1`).
+
+### NOT yet done / blocked for F5-TTS
+
+- ~~Vocos vocoder blocked~~ -- **RESOLVED, see the dedicated "Vocos vocoder" section below.**
+- `F5MelExtractor.cs` (reference-audio mel extraction for voice cloning) is REAL STFT +
+  triangular mel filterbank code (pre-existing, not written this iteration), but NOT
+  golden-verified against the checkpoint's own shipped `mel_spec.mel_stft.mel_scale.fb`/
+  `window` buffers this pass -- worth doing before trusting voice-cloning conditioning
+  quality, since `torchaudio.transforms.MelSpectrogram`'s exact padding/centering/
+  normalization conventions were not independently confirmed to match.
+- `F5TtsPipeline`'s duration estimate (chars-per-second heuristic -> `numFrames`) is a
+  simplification, same category as the tokenizer/phonemizer scope boundary above.
+- `F5TtsRealWeightsTests` (existing pipeline-level smoke test) is slow end-to-end on CPU
+  (22-layer DiT x 32 Euler steps x 2 forward passes for CFG) -- expect it to take multiple
+  minutes, not the ~1-20s of the VITS-family pipelines' equivalent smoke tests.
+
+---
+
+## Vocos vocoder — REAL and golden-verified (unblocks F5-TTS end-to-end; 2026-08-21, same session)
+
+The user pointed at `charactr/vocos-mel-24khz` on HuggingFace as a candidate real Vocos
+checkpoint (after correctly rejecting an earlier candidate GGUF repo that turned out to be
+just a re-export of the DiT, not a vocoder — see above). Checked and confirmed real: MIT
+license, `pytorch_model.bin` + `config.yaml`, and literally the vocoder backing most public
+F5-TTS demo Spaces on HuggingFace.
+
+### Getting the weights into this project's existing loading infrastructure
+
+`pytorch_model.bin` is a pickled `torch.save` state_dict, NOT safetensors — this project's
+`SafetensorsLoader` can't read it directly. Converted via `torch.load(weights_only=True)` +
+`safetensors.torch.save_file()` into `models/vocos-mel-24khz.safetensors` (83 tensors,
+verified same key set/shapes as the original). Per explicit user request ("I want GGUF and
+ST. Both"), ALSO exported a real, spec-correct `models/vocos-mel-24khz.gguf` using the
+official `gguf` PyPI package's `GGUFWriter` (not hand-rolled) — verified readable via
+`gguf.GGUFReader` (all 83 tensors present, correct shapes in GGUF's reversed-dims
+convention). The C# port uses the safetensors copy (this project's `SafetensorsLoader`
+already handles this checkpoint's flat native-torch tensor layout with zero transpose/
+anonymization quirks, same as F5-TTS's own checkpoint) — the `.gguf` copy exists as an
+equally-valid alternative artifact via this project's existing `GgufModel` reader, not
+currently wired to a second code path (would be pure duplication with no numerical
+difference, since both contain byte-identical F32 tensor data).
+
+### Architecture ported (`src/OpenTail.Stingray.Audio/F5TTS/VocosWeights.cs` + `VocosVocoder.cs`)
+
+Read the real `vocos` PyPI package's source directly (`vocos/models.py`, `vocos/modules.py`,
+`vocos/heads.py`, `vocos/spectral_ops.py`) rather than assumed from the "ConvNeXt vocoder"
+name. Config confirmed via `models/vocos-mel-24khz-config.yaml` + real key/shape inspection:
+`VocosBackbone(input_channels=100, dim=512, intermediate_dim=1536, num_layers=8)` -- no
+AdaLayerNorm conditioning (this checkpoint has no per-bandwidth embeddings, unlike the
+`VocosResNetBackbone`/multi-bandwidth variants some other Vocos checkpoints use).
+`ISTFTHead(dim=512, n_fft=1024, hop_length=256, padding="center")`.
+
+- `Conv1d(100,512,k=7)` embed -> `LayerNorm` -> 8x `ConvNeXtBlock` (depthwise `k=7` conv ->
+  `LayerNorm` -> `Linear(512,1536)` -> exact GELU -> `Linear(1536,512)` -> per-channel
+  learned `gamma` layer-scale -> residual add) -- notably SIMPLER than F5-TTS's own
+  `ConvNeXtV2Block`: no GRN, just a scalar-per-channel `gamma` (confirmed by reading both
+  reference sources side by side rather than assuming they're identical just because both
+  are called "ConvNeXt blocks").
+- -> `LayerNorm` (final) -> `ISTFTHead`: `Linear(512, 1026)` -> split into magnitude (`exp`,
+  clipped at 100) and phase (`cos`/`sin`) -> complex spectrum -> **centered ISTFT**.
+- **New primitive**: `SpectralKernels.InverseRealFft` (real->complex-conjugate-symmetric
+  inverse DFT via the existing forward-DFT twiddle tables, reusable by direction since
+  `cos` is even and the sign of `sin` just flips) plus a hand-written `CenteredIstft`
+  (`VocosVocoder.cs`) implementing `torch.istft(..., center=True)`'s exact convention:
+  per-frame inverse FFT, multiply by the analysis Hann window, overlap-add at `hop_length`
+  spacing, normalize by the overlap-added squared-window envelope, then trim `n_fft/2`
+  samples off each end (undoing the implicit center-padding the forward STFT would have
+  used) -- confirmed output length `(numFrames-1)*hop_length` matches the real reference
+  exactly for a 20-frame test input (`(20-1)*256 = 4864`, exactly what the golden dump
+  produced).
+- Reuses `F5Kernels`'s channel-last `[T,D]` primitives (`Linear`, `LayerNorm`, `GeluExact`,
+  `DepthwiseConv1dSamePad`) and adds one new one, `Conv1dSamePad` (standard non-grouped
+  conv, needed for the embed layer since `MelDim(100) != HiddenDim(512)` -- the existing
+  `GroupedConv1dSamePad`/`DepthwiseConv1dSamePad` both assume equal in/out channel counts).
+
+### Golden verification
+
+`scratch-llamacpp-ref/vocos_golden_decode.py`: loads the real `vocos` package's
+`VocosBackbone`/`ISTFTHead` classes directly with the real checkpoint, feeds a random mel
+input straight into `decode()` (bypassing the feature extractor -- isolates vocoder
+correctness from mel-extraction correctness, same bisection philosophy used throughout this
+rebuild), dumps intermediate stages (`embed_out`, `norm_out`, `after_block0`,
+`backbone_out`, `audio_out`). `VocosVocoderTests.cs` (new) checks the final waveform
+against golden PyTorch output: **passed on the first attempt**, cosine similarity >0.99, no
+bugs found this time (the F5-TTS DiT port established enough of the right conventions --
+channel-last layout, real weight-loading via safetensors, careful reading of the actual
+reference source rather than assumption -- that this smaller, structurally-simpler vocoder
+came out correct immediately).
+
+### Wired end-to-end
+
+`F5TtsPipeline.Load` now also resolves `models/vocos-mel-24khz.safetensors` next to the
+F5-TTS weights file (configurable via a new `vocosPath` parameter) and uses the real
+`VocosVocoder.Decode` for the mel->waveform stage when found, falling back to the original
+fake `F5VocosVocoder` placeholder otherwise -- exact same real/fake dual-path pattern as
+every other pipeline in this doc.
+
+### F5-TTS pipeline status update
+
+With Vocos done, **every stage of F5-TTS's synthesis path is now real and independently
+golden-verified**: text embedding, timestep embedding, input embedding, 22-layer DiT,
+flow-matching ODE sampler, AND the vocoder. Remaining non-blocking caveats (same as noted
+in the F5-TTS section above): `F5MelExtractor` (reference-audio mel extraction for voice
+cloning) is real STFT code but not independently re-verified against the checkpoint's own
+shipped mel filterbank this pass; the tokenizer/phonemizer and duration-estimate heuristics
+are documented simplifications, same category as every other pipeline's phonemizer gap in
+this doc. The pipeline-level smoke test (`Fast.F5TtsRealWeightsTests`) is genuinely slow on
+CPU (22-layer DiT x 32 Euler steps x 2 CFG forward passes, observed ~8+ minutes) -- ran
+individually per this doc's own testing discipline, not part of routine iteration.
+
+## Parakeet — investigation resolved a false "blocked" conclusion; real reference found (2026-08-21, same session)
+
+Investigation found `examples/nemo-toolkit-py` (the doc's previously-noted "not yet
+verified" NeMo reference) is actually EMPTY (0 bytes) -- not just unverified, genuinely
+absent. `examples/parakeet.cpp` (24MB, real git checkout, `mudler/parakeet.cpp`, confirmed
+0 commits behind `origin/master`) IS a complete real GGML C++ FastConformer CTC reference,
+but its `subsampling.cpp`/`subsampling.hpp` use tensor names `encoder.pre_encode.conv.0/2/3/
+5/6.*`, while our local `models/parakeet-ctc-0.6b-q4_k.gguf` (`general.architecture =
+canary_ctc`) uses `encoder.pre.conv.0/2/3/5/6.*` -- an initial (INCORRECT) read of this
+mismatch concluded Parakeet was blocked on a missing subsampling reference.
+
+**That conclusion was wrong, caught and corrected within the same iteration**: a full
+(non-deduplicated) re-listing of the checkpoint's `encoder.pre.*` tensors showed `conv.0`
+(full conv), `conv.2`+`conv.3` (depthwise+pointwise), `conv.5`+`conv.6` (depthwise+pointwise)
+-- the EXACT same 3-stage `dw_striding` structure `parakeet.cpp` implements. The earlier
+listing script deduplicated tensor names by a `\.\d+\.` regex substitution BEFORE printing,
+which collapsed `conv.0/2/3/5/6` down to showing only the alphabetically-first match --
+an artifact of the listing script, not a real architecture difference. Lesson: never
+conclude "different architecture" from a tensor listing that was deduplicated for
+readability -- always re-check the FULL undeduplicated list before declaring a mismatch.
+
+**The real naming difference is just a renaming convention from a different GGUF converter**:
+found `models/convert-canary-ctc-to-gguf.py` inside `CrispStrobe/CrispASR`
+(github.com/CrispStrobe/CrispASR, already available locally under `examples/crispasr` --
+the user had independently fetched it), whose `remap_name()` function shows the exact 1:1
+rename table this specific checkpoint's converter used: `pre_encode`->`pre`,
+`feed_forward1/2`->`ff1/2`, `norm_self_att`->`norm_attn`, `self_attn.linear_q/k/v/out/pos`->
+`attn.q/k/v/out/pos`, `conv.pointwise_conv1/2`->`conv.pw1/pw2`, `conv.depthwise_conv`->
+`conv.dw`, `conv.batch_norm`->`conv.bn` -- confirming the underlying NeMo module structure
+is IDENTICAL to what `parakeet.cpp` already implements, just shorter tensor names. This repo
+also ships the actual matching C++ runtime for this exact checkpoint/naming convention:
+`src/canary_ctc.cpp` (1394 lines) + `src/core/fastconformer.h` (993 lines) -- a real,
+directly-applicable oracle, on top of `parakeet.cpp`'s own `conformer.cpp`/
+`relpos_attention.cpp`/`subsampling.cpp` for cross-reference (same architecture family).
+
+**Not actually blocked.** Config confirmed via the checkpoint's own GGUF metadata:
+`d_model=1024, n_layers=24, n_heads=8, head_dim=128, ff_dim=4096, subsampling_factor=8,
+subsampling_channels=256, conv_kernel=9, n_mels=80, n_fft=512, win_length=400,
+hop_length=160, sample_rate=16000, vocab_size=1024, blank_id=1024` (CTC blank is the last
+vocab index). **Ran out of session budget before implementing** -- full architecture spec
+below so the next iteration can go straight to writing+verifying C# without re-deriving.
+
+### Full architecture spec (read directly from `examples/crispasr/src/core/fastconformer.h`, lines 98-991 -- READ THIS FILE FIRST next iteration, it is the actual math, not a summary)
+
+**Subsampling (`build_pre_encode`, dw_striding, 8x)**: input mel `[n_mels=80, T]` as a 2D
+"image" (1 in-channel). `Conv2d(1->256,k=3,s=2,p=1)+bias -> ReLU -> DWConv2d(256,k=3,s=2,
+p=1)+bias -> PWConv2d(256->256,k=1)+bias -> ReLU -> DWConv2d(256,k=3,s=2,p=1)+bias ->
+PWConv2d(256->256,k=1)+bias -> ReLU`. Output `[OW=freq_out, OH=T_enc, OC=256]`; flatten via
+permute(1,2,0,3): `feature[k] = channel*OW + freq_ow` (channel-major, NOT freq-major -- this
+ordering is called out explicitly in the source, get it backwards and everything downstream
+breaks silently). Then `Linear(256*W3=2560 -> 1024)+bias` (`encoder.pre.out`). Tensor names:
+`encoder.pre.conv.{0,2,3,5,6}.{weight,bias}` + `encoder.pre.out.{weight,bias}` (already
+matches our GGUF, see the corrected finding above).
+
+**Positional encoding (`make_pos_enc`)**: sinusoidal, length `2T-1`, `pe[p*d+2i] =
+sin(pos*div)`, `pe[p*d+2i+1] = cos(pos*div)` where `pos = T-1-p` (descending from `+(T-1)`
+to `-(T-1)`), `div = exp(-log(10000)*2i/d)`. This is a fixed (non-learned) table, computed
+fresh per utterance length, NOT loaded from the checkpoint.
+
+**Conformer block (`build_block`, x24, macaron structure)**:
+1. `FFN1`: `LayerNorm(norm_ff1) -> Linear(d,ff)+bias(ff1.linear1) -> SiLU ->
+   Linear(ff,d)+bias(ff1.linear2)`; `x = x + 0.5*ffn_out` (macaron HALF-step, note the 0.5
+   scale -- easy to miss).
+2. `Self-attention` (Transformer-XL-style relative position, untied `u`/`v` biases -- this
+   is the Conformer paper's exact rel-pos MHSA, NOT the interleaved/split-half RoPE used
+   elsewhere in this codebase for F5-TTS -- a THIRD distinct positional-encoding convention
+   in this repo now, don't cross-contaminate): `LayerNorm(norm_attn)`, then
+   `Q=Linear(d,d)(x)`, `K=Linear(d,d)(x)`, `V=Linear(d,d)(x)` -- **NO bias** on q/k/v/out/ff
+   linears for this checkpoint family (`parakeet`/`canary_ctc`; `canary` proper has biases on
+   everything -- confirmed via `BlockWeights`'s comment and the checkpoint's own converter,
+   which never emits q/k/v/out/ff bias tensors for this arch). `R = Linear(d,d)(pos_enc)`
+   (`attn.pos`, no bias). `Q_u = Q + pos_bias_u` (broadcast add per-head, `pos_bias_u`/`v`
+   shape `[head_dim, n_heads]`, i.e. one head_dim-length vector per head, added to Q's
+   corresponding head slice). Reshape Q/K/V into `[head_dim, n_heads, T]` heads. Per head:
+   `AC = Q_u @ K^T` (`[T,T]`); `BD_raw = R @ Q_v^T` giving `[2T-1, T]` (relative-position
+   score per query, per relative offset); `BD = rel_shift(BD_raw)`: the standard
+   Transformer-XL shift, `BD[q,k] = BD_raw[q, (T-1-q)+k]` for `k=0..T-1` (derived directly
+   from the `pos = T-1-p` indexing above -- verify this derivation against `rel_shift`'s
+   ggml view-stride trick, lines 98-102, before trusting it blindly). `scores =
+   (AC+BD)*scale` where `scale=1/sqrt(head_dim)`; softmax over k; `attn_out = softmax @ V`
+   per head, concat heads, `Linear(d,d)` (`attn.out`, no bias). Residual add (full step, no
+   0.5 here).
+3. `Conv module`: `LayerNorm(norm_conv)`, `pw1: Linear(d,2d)+bias` -> **GLU**: split into two
+   `d`-halves, `out = first_half * sigmoid(second_half)` (verify exact half order against
+   `ggml_siglu_swapped` -- the "swapped" in the name is suspicious, don't assume standard
+   GLU order without checking) -> depthwise Conv1d (kernel=`conv_kernel`=9,
+   padding=`(K-1)/2`=4, groups=d) + bias (**BN already folded into this bias at load time**
+   for `parakeet`/`canary_ctc` -- our GGUF's `conv.dw.bias` is a SYNTHETIC zero tensor added
+   by the converter as a BN-fold target, see `convert-canary-ctc-to-gguf.py` lines 272-279;
+   the real BN scale/shift must be folded into `conv.dw.weight`/`conv.dw.bias` -- check if
+   our GGUF's `conv.bn.*` tensors are ALSO present in raw (unfolded) form, since our
+   checkpoint might ship both and expect the C# port to do the fold itself, unlike the
+   already-fused `.gguf` this fold-at-load logic assumes) -> `SiLU` -> `pw2: Linear(d,d)+bias`.
+   Residual add.
+4. `FFN2`: identical structure to FFN1 (own `norm_ff2`/`ff2.linear1/2` weights), same 0.5 scale.
+5. `LayerNorm(norm_out)` (block-final norm, own weights per layer).
+
+**CTC head**: `Linear(1024, vocab_size+1=1025)+bias` (`ctc.weight/bias`) over the encoder's
+final `[T_enc, 1024]` output, then log-softmax per frame; greedy CTC decode = argmax per
+frame, collapse consecutive repeats, drop blank (`blank_id` = last vocab index).
+
+**Mel preprocessing** (`preprocessor.fb [257,80]`, `preprocessor.window [400]`, real
+filterbank + window SHIPPED in the checkpoint -- use them directly, don't recompute a
+formula, same principle as this doc's MeloTTS mel-filterbank note): NOT yet read this
+session -- check `examples/crispasr/src/canary_ctc.cpp` (1394 lines, not yet opened) for the
+exact log-compression/normalization/dithering NeMo uses; do NOT assume it matches
+`ParakeetMelExtractor.cs`'s existing (unverified) formula.
+
+**LayerNorm epsilon**: `BlockParams::ln_eps` -- value not yet read from
+`examples/crispasr/src/canary_ctc.cpp`'s weight-loading code; check there (likely `1e-5`,
+NeMo's Conformer default, but VERIFY, don't assume).
+
+**Next iteration**: read `examples/crispasr/src/canary_ctc.cpp` for (a) the exact BN-fold
+formula if not already fused in our GGUF, (b) mel preprocessing exact formula, (c)
+`ln_eps`/`BlockParams` construction, (d) tokenizer (SentencePiece vocab is embedded in the
+GGUF via `tokenizer.ggml.tokens`, already loadable). Then build a golden-output oracle
+(compile `examples/crispasr` and run it against `models/parakeet-ctc-0.6b-q4_k.gguf` with a
+short WAV to dump intermediate tensors, OR add debug output to the C++ source and rebuild --
+check if it already has a "diff harness" mode, since `fastconformer.h`'s comments mention a
+"diff harness" / "staged comparison" mechanism (`snap_conv4d`, `gf` param) that may ALREADY
+support dumping intermediate activations without modification). Then port
+`ParakeetConformerEncoder.cs` (currently 100% fake, see file) against real GGUF weights,
+verifying every stage against that oracle -- same discipline as every other pipeline in this
+doc. This is comparable in scope to the F5-TTS DiT effort (also 20+ layers, real attention +
+conv module), should take a similar number of iterations.
+
+### ParakeetWeights.cs rewritten with the full real tensor set + BN fold (2026-08-21, loop iteration 2)
+
+`ParakeetWeights.cs` was previously a skeleton (only exposed `CtcBias`). Rewrote it to load
+every real tensor confirmed present in `models/parakeet-ctc-0.6b-q4_k.gguf` (verified via
+`dotnet run --project src/OpenTail.Stingray.Cli -c Release -- list-tensors -m models/
+parakeet-ctc-0.6b-q4_k.gguf`, 957 lines, all tensor names match the spec above exactly):
+subsampling front-end (`encoder.pre.conv.{0,2,3,5,6}`, `encoder.pre.out`), per-layer Conformer
+weights (`ParakeetConformerLayer`, one instance per layer: `norm_ff1/attn/conv/ff2/out`,
+`ff1/ff2.linear1/2`, `attn.q/k/v/out/pos` + `pos_bias_u/v`, `conv.pw1/pw2` + folded
+`conv.dw`), mel preprocessing (`preprocessor.fb`, `preprocessor.window`), CTC head
+(`ctc.weight` [1024,1025], `ctc.bias` [1025]). Follows the same eager-dequantize-to-float32
+pattern as `ChatterboxWeights.cs`/`KokoroWeights.cs` (`Dequantize.ToFloat32` per tensor).
+
+**Confirmed our checkpoint ships UNFUSED BatchNorm tensors** (`encoder.layers.{i}.conv.bn.
+{weight,bias,running_mean,running_var}`, all present, all `Float32 [1024]`, verified via the
+same tensor listing) alongside `conv.dw.weight`/`conv.dw.bias` -- so the BN-fold-at-load step
+flagged as uncertain in the spec above IS required for this checkpoint (not already fused).
+Implemented `ParakeetConformerLayer.FoldBatchNorm` matching `canary_ctc.cpp`'s
+`cc_fold_batchnorm` exactly: `s[c] = bn_weight[c] / sqrt(bn_var[c] + 1e-5)`,
+`w_folded[k,c] = w[k,c] * s[c]`, `b_folded[c] = s[c]*orig_bias[c] - bn_mean[c]*s[c] + bn_bias[c]`.
+Depthwise conv weight storage order assumed `[K, 1, d]` -> flat index `k*channels + c`
+(matches GGUF's listed dims `[9, 1, 1024]` reversed to row-major `[K,1,d]`, same
+dims-reversed-vs-torch convention noted in `ChatterboxWeights.cs`'s doc comment) -- **not yet
+cross-checked against `canary_ctc.cpp`'s actual indexing of `conv_dw_w`, do this first next
+iteration** before trusting the fold numerically.
+
+`dotnet build src/OpenTail.Stingray.Audio -c Debug` — clean build, no errors. Not yet
+golden-verified (no oracle run yet) and `ParakeetConformerEncoder.cs` itself is still 100%
+fake — only the weight-loading layer is real so far.
+
+**Next iteration (unchanged in substance, just re-sequenced)**:
+1. Verify the `conv.dw` storage-order/BN-fold assumption above against `canary_ctc.cpp`'s
+   actual tensor read code before trusting it.
+2. Read `canary_ctc.cpp` for mel preprocessing exact formula (log-compression/normalization/
+   dithering) — do NOT assume `ParakeetMelExtractor.cs`'s existing formula matches.
+3. Build a golden-output oracle (compile `examples/crispasr` against a short WAV, dump
+   intermediate tensors — check for an existing "diff harness"/`snap_conv4d` mode first).
+4. Port `ParakeetConformerEncoder.cs`'s forward pass (subsampling -> pos-enc -> 24 blocks ->
+   CTC head) against the now-real `ParakeetWeights`, verifying every stage against the oracle
+   (cosine >0.99 bar, same as every other pipeline in this doc) before calling it done.

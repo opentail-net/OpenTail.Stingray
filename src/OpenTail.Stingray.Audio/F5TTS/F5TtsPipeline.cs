@@ -14,9 +14,11 @@ namespace OpenTail.Stingray.Audio.F5TTS;
 /// When constructed with a real `.safetensors` weights file (see <see cref="Load"/>), the text
 /// encoding + DiT + flow-matching ODE stages are real and weight-driven (verified against the
 /// real PyTorch reference, see tests/OpenTail.Stingray.Tests.Audio/F5DiTModelTests.cs). The
-/// Vocos vocoder stage (mel -&gt; waveform) is STILL the original procedural placeholder --
-/// blocked on a real Vocos checkpoint, which is not present under `models/` (F5-TTS's own
-/// checkpoint only contains the DiT + a `mel_spec` filterbank/window, not a separate vocoder).
+/// Vocos vocoder stage (mel -&gt; waveform) is ALSO real when a Vocos weights file is found
+/// (`models/vocos-mel-24khz.safetensors`, converted from `charactr/vocos-mel-24khz`'s
+/// `pytorch_model.bin` -- see <see cref="VocosWeights"/>'s class doc; verified against the real
+/// PyTorch reference, see tests/OpenTail.Stingray.Tests.Audio/VocosVocoderTests.cs); falls back
+/// to the original procedural placeholder (`F5VocosVocoder`) if that file isn't present.
 /// See docs/audio-review-progress.md's F5-TTS section for the full status.
 /// </summary>
 public sealed class F5TtsPipeline : ITextToSpeechPipeline
@@ -29,16 +31,19 @@ public sealed class F5TtsPipeline : ITextToSpeechPipeline
     private readonly F5VocosVocoder _vocoder;
     private readonly F5TtsWeights? _weights;
     private readonly F5Tokenizer? _tokenizer;
+    private readonly VocosWeights? _vocosWeights;
 
     public F5TtsPipeline(
         F5MelExtractor? melExtractor = null,
         F5TextEncoder? textEncoder = null,
         F5VocosVocoder? vocoder = null,
         F5TtsWeights? weights = null,
-        F5Tokenizer? tokenizer = null)
+        F5Tokenizer? tokenizer = null,
+        VocosWeights? vocosWeights = null)
     {
         _weights = weights;
         _tokenizer = tokenizer;
+        _vocosWeights = vocosWeights;
         _melExtractor = melExtractor ?? new F5MelExtractor();
         _textEncoder = textEncoder ?? new F5TextEncoder();
         _vocoder = vocoder ?? new F5VocosVocoder();
@@ -47,9 +52,11 @@ public sealed class F5TtsPipeline : ITextToSpeechPipeline
     /// <summary>
     /// Loads a real F5-TTS pipeline directly from a safetensors model file. `vocabPath` defaults
     /// to `models/f5tts_vocab.txt` next to the weights file if not given (falls back to the fake
-    /// text path if neither is found, same as the no-weights constructor).
+    /// text path if neither is found, same as the no-weights constructor). `vocosPath` defaults
+    /// to `models/vocos-mel-24khz.safetensors` next to the weights file if not given (falls back
+    /// to the fake vocoder if not found).
     /// </summary>
-    public static F5TtsPipeline Load(string safetensorsPath, string? vocabPath = null)
+    public static F5TtsPipeline Load(string safetensorsPath, string? vocabPath = null, string? vocosPath = null)
     {
         if (string.IsNullOrWhiteSpace(safetensorsPath) || !File.Exists(safetensorsPath))
             throw new FileNotFoundException($"F5-TTS model file not found: {safetensorsPath}");
@@ -59,10 +66,14 @@ public sealed class F5TtsPipeline : ITextToSpeechPipeline
         var textEncoder = new F5TextEncoder();
         var vocoder = new F5VocosVocoder();
 
-        string resolvedVocabPath = vocabPath ?? Path.Combine(Path.GetDirectoryName(safetensorsPath) ?? ".", "f5tts_vocab.txt");
+        string modelDir = Path.GetDirectoryName(safetensorsPath) ?? ".";
+        string resolvedVocabPath = vocabPath ?? Path.Combine(modelDir, "f5tts_vocab.txt");
         F5Tokenizer? tokenizer = File.Exists(resolvedVocabPath) ? new F5Tokenizer(resolvedVocabPath) : null;
 
-        return new F5TtsPipeline(melExtractor, textEncoder, vocoder, weights, tokenizer);
+        string resolvedVocosPath = vocosPath ?? Path.Combine(modelDir, "vocos-mel-24khz.safetensors");
+        VocosWeights? vocosWeights = File.Exists(resolvedVocosPath) ? new VocosWeights(resolvedVocosPath) : null;
+
+        return new F5TtsPipeline(melExtractor, textEncoder, vocoder, weights, tokenizer, vocosWeights);
     }
 
     /// <summary>
@@ -107,9 +118,11 @@ public sealed class F5TtsPipeline : ITextToSpeechPipeline
             generatedMel = FakeSolveFlowMatchingOde(condMel, textFeatures, numFrames);
         }
 
-        // Vocos Waveform Synthesis (Mel -> 24kHz Audio) -- STILL the fake placeholder (see class
-        // doc comment: blocked on a real Vocos checkpoint, not present under models/).
-        float[] audio = _vocoder.Synthesize(generatedMel, numFrames);
+        // Vocos Waveform Synthesis (Mel -> 24kHz Audio): real when a Vocos weights file was
+        // found at construction time, otherwise the original procedural placeholder.
+        float[] audio = _vocosWeights is not null
+            ? VocosVocoder.Decode(_vocosWeights, generatedMel, numFrames)
+            : _vocoder.Synthesize(generatedMel, numFrames);
 
         var result = new AudioGenerationResult(audio, DefaultSampleRate);
 
@@ -237,5 +250,6 @@ public sealed class F5TtsPipeline : ITextToSpeechPipeline
     public void Dispose()
     {
         _weights?.Dispose();
+        _vocosWeights?.Dispose();
     }
 }

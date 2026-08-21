@@ -93,6 +93,32 @@ public static class F5Kernels
         return sign * y;
     }
 
+    /// <summary>Standard (non-grouped) "same"-padded Conv1d, sequence-major [T,inCh]-&gt;[T,outCh]. weight is [outCh,inCh,kernel].</summary>
+    public static float[] Conv1dSamePad(float[] x, int t, int inCh, float[] weight, float[] bias, int outCh, int kernel)
+    {
+        int pad = kernel / 2;
+        var y = new float[t * outCh];
+        Parallel.For(0, outCh, oc =>
+        {
+            int wBase = oc * inCh * kernel;
+            for (int ti = 0; ti < t; ti++)
+            {
+                float sum = bias[oc];
+                for (int ic = 0; ic < inCh; ic++)
+                {
+                    int wcBase = wBase + ic * kernel;
+                    for (int k = 0; k < kernel; k++)
+                    {
+                        int src = ti - pad + k;
+                        if ((uint)src < (uint)t) sum += weight[wcBase + k] * x[src * inCh + ic];
+                    }
+                }
+                y[ti * outCh + oc] = sum;
+            }
+        });
+        return y;
+    }
+
     /// <summary>Depthwise (groups=dim) "same"-padded Conv1d, sequence-major [T,dim] in/out. weight is [dim,1,kernel].</summary>
     public static float[] DepthwiseConv1dSamePad(float[] x, int t, int dim, float[] weight, float[] bias, int kernel)
     {
