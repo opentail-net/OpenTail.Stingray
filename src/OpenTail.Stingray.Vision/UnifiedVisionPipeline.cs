@@ -382,9 +382,17 @@ public static class UnifiedVisionPipeline
         public int EmbeddingDim => _model.ProjectionDim;
         public int ImageWidth => _model.ImageSize;
         public int ImageHeight => _model.ImageSize;
-        public string ImageOpenMarker => "<|vision_start|>";
-        public string ImageCloseMarker => "<|vision_end|>";
-        public string PlaceholderMarker => "<|image_pad|>";
+        // Verified against moonshotai/Kimi-VL-A3B-Instruct's real chat_template.jinja (fetched via
+        // HF API). Kimi-VL is NOT Qwen2.5-VL-style despite the old "<|vision_start|>" guess -- its
+        // real template emits "<|media_start|>image<|media_content|><|media_pad|><|media_end|>" for
+        // each image. The critical part (the placeholder that gets counted/expanded with soft
+        // tokens) is "<|media_pad|>", not "<|image_pad|>" -- that was a real, confirmed bug. The
+        // literal "image" text and "<|media_content|>" token between open and placeholder can't be
+        // represented by this interface's single-open-marker model, so this is a best-effort fix:
+        // exact placeholder count now works, the wrapper text is a close-but-imperfect subset.
+        public string ImageOpenMarker => "<|media_start|>";
+        public string ImageCloseMarker => "<|media_end|>";
+        public string PlaceholderMarker => "<|media_pad|>";
 
         public float[] EmbedImage(ReadOnlySpan<byte> rgb, int width, int height, out int tokenCount)
         {
@@ -620,9 +628,18 @@ public static class UnifiedVisionPipeline
         public int EmbeddingDim => _model.ProjectionDim;
         public int ImageWidth => _model.ImageSize;
         public int ImageHeight => _model.ImageSize;
-        public string ImageOpenMarker => "<image>";
-        public string ImageCloseMarker => "</image>";
-        public string PlaceholderMarker => "<image_pad>";
+        // Checked against HunyuanVL's real chat template (no local model to grep bytes against,
+        // but no real Tencent Hunyuan-VL repo is even published on HF yet -- used the closest
+        // available evidence, hf-tiny-v2/tiny-random-HunYuanVLForConditionalGeneration's
+        // chat_template.jinja, an HF-testing repo that mirrors the real tokenizer/vocab; lower
+        // confidence than the grep-verified fixes elsewhere in this file, flagged as such).
+        // HunyuanVL uses its own unique numbered-placeholder convention, nothing like
+        // "<image_pad>": open/placeholder/close are
+        // "<｜hy_place▁holder▁no▁100｜>" / "<｜hy_place▁holder▁no▁102｜>" / "<｜hy_place▁holder▁no▁101｜>"
+        // (note: 102 = placeholder, 100/101 = open/close -- the template emits them in that order).
+        public string ImageOpenMarker => "<｜hy_place▁holder▁no▁100｜>";
+        public string ImageCloseMarker => "<｜hy_place▁holder▁no▁101｜>";
+        public string PlaceholderMarker => "<｜hy_place▁holder▁no▁102｜>";
 
         public float[] EmbedImage(ReadOnlySpan<byte> rgb, int width, int height, out int tokenCount)
         {
@@ -654,9 +671,11 @@ public static class UnifiedVisionPipeline
         public int EmbeddingDim => _model.ProjectionDim;
         public int ImageWidth => _model.ImageSize;
         public int ImageHeight => _model.ImageSize;
-        public string ImageOpenMarker => "<image>";
-        public string ImageCloseMarker => "</image>";
-        public string PlaceholderMarker => "<image_pad>";
+        // Verified against stepfun-ai/Step3-VL-10B's real tokenizer_config.json (fetched via HF
+        // API, not downloaded as a full model -- Qwen2.5-VL convention).
+        public string ImageOpenMarker => "<|vision_start|>";
+        public string ImageCloseMarker => "<|vision_end|>";
+        public string PlaceholderMarker => "<|image_pad|>";
 
         public float[] EmbedImage(ReadOnlySpan<byte> rgb, int width, int height, out int tokenCount)
         {
@@ -688,9 +707,11 @@ public static class UnifiedVisionPipeline
         public int EmbeddingDim => _model.ProjectionDim;
         public int ImageWidth => _model.ImageSize;
         public int ImageHeight => _model.ImageSize;
-        public string ImageOpenMarker => "<image>";
-        public string ImageCloseMarker => "</image>";
-        public string PlaceholderMarker => "<image_pad>";
+        // Verified against tencent/Youtu-VL-4B-Instruct's real chat_template.json (fetched via HF
+        // API, not downloaded as a full model -- Qwen2.5-VL convention).
+        public string ImageOpenMarker => "<|vision_start|>";
+        public string ImageCloseMarker => "<|vision_end|>";
+        public string PlaceholderMarker => "<|image_pad|>";
 
         public float[] EmbedImage(ReadOnlySpan<byte> rgb, int width, int height, out int tokenCount)
         {
@@ -756,9 +777,12 @@ public static class UnifiedVisionPipeline
         public int EmbeddingDim => _model.ProjectionDim;
         public int ImageWidth => _model.ImageSize;
         public int ImageHeight => _model.ImageSize;
-        public string ImageOpenMarker => "<image>";
-        public string ImageCloseMarker => "</image>";
-        public string PlaceholderMarker => "<image_pad>";
+        // Verified against XiaomiMiMo/MiMo-VL-7B-RL's real tokenizer_config.json (fetched via HF
+        // API, not downloaded as a full model -- confirms the "Qwen2.5-VL-shaped ViT" comment in
+        // llama.cpp's mimovl.cpp also extends to the chat template convention).
+        public string ImageOpenMarker => "<|vision_start|>";
+        public string ImageCloseMarker => "<|vision_end|>";
+        public string PlaceholderMarker => "<|image_pad|>";
 
         public float[] EmbedImage(ReadOnlySpan<byte> rgb, int width, int height, out int tokenCount)
         {
@@ -929,9 +953,14 @@ public static class UnifiedVisionPipeline
         public int EmbeddingDim => _model.ProjectionDim;
         public int ImageWidth => _model.ImageSize;
         public int ImageHeight => _model.ImageSize;
-        public string ImageOpenMarker => "<image>";
-        public string ImageCloseMarker => "</image>";
-        public string PlaceholderMarker => "<image_pad>";
+        // Verified against PaddlePaddle/PaddleOCR-VL's real chat_template.jinja (fetched via HF
+        // API, not downloaded as a full model). PaddleOCR-VL has its own convention, NOT Qwen's
+        // "<|image_pad|>" despite that token also existing (unused) in its vocab -- the template
+        // literally emits "<|IMAGE_START|><|IMAGE_PLACEHOLDER|><|IMAGE_END|>" as one fused unit
+        // per image, so open/placeholder/close are three distinct real tokens here.
+        public string ImageOpenMarker => "<|IMAGE_START|>";
+        public string ImageCloseMarker => "<|IMAGE_END|>";
+        public string PlaceholderMarker => "<|IMAGE_PLACEHOLDER|>";
 
         public float[] EmbedImage(ReadOnlySpan<byte> rgb, int width, int height, out int tokenCount)
         {

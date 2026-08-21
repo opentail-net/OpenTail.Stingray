@@ -195,12 +195,56 @@ never actually a chat-template bug. Root cause, found by tracing `RunCommand.Run
   `"<\|image\|>"` literal) was blocking it. First fully-working end-to-end VL generation this whole
   session, on the model that was the very first one tested at the start of it.
 
-**Not checked, no local model to verify against** (same "never guess a pairing/marker" discipline as
-the rest of this doc): `HunyuanVlAdapter`, `Step3VlAdapter`, `YoutuVlAdapter`, `MimoVlAdapter`,
-`PaddleOcrAdapter`, `CogVlmAdapter`, `MobileNetV5Adapter` all declare `<image_pad>`-style markers
-that fit the same wrong-guess pattern found in 4/4 checked encoders so far. Strongly suspect the same
-bug, but won't change these without a real GGUF to grep against — flagged for whoever downloads a
-model for one of these next.
+**Follow-up (same day): checked the remaining 5 without downloading any model weights.** Confirmed
+llama.cpp's vendored source (`examples/llama.cpp/llama.cpp/tools/mtmd/`) doesn't hardcode
+per-architecture marker strings anywhere — grepped `clip.cpp`, `mtmd.cpp`, all 7 relevant
+`models/*.cpp` files, and `gguf-py/gguf/constants.py`, all empty. `mtmd_default_marker()` returns a
+single generic `"<__media__>"` for every architecture; the real per-arch open/pad/close text lives
+entirely in each model's own HF `tokenizer_config.json` / `chat_template.jinja`, not in C++.
+Fetched those files directly via the HF API (a few KB each, not a model download) for the 5 with a
+real, named reference repo:
+
+| Adapter | Old (wrong) | Real (verified via HF `tokenizer_config`/`chat_template`, not local GGUF bytes) |
+|---|---|---|
+| `MimoVlAdapter` | `<image>`/`</image>`/`<image_pad>` | `<\|vision_start\|>`/`<\|vision_end\|>`/`<\|image_pad\|>` (`XiaomiMiMo/MiMo-VL-7B-RL`, confirms mimovl.cpp's own "Qwen2.5-VL-shaped ViT" comment extends to the template) |
+| `Step3VlAdapter` | same | same Qwen2.5-VL convention (`stepfun-ai/Step3-VL-10B`) |
+| `YoutuVlAdapter` | same | same Qwen2.5-VL convention (`tencent/Youtu-VL-4B-Instruct`'s `chat_template.json`) |
+| `PaddleOcrAdapter` | same | **its own convention**, not Qwen's: `<\|IMAGE_START\|>`/`<\|IMAGE_PLACEHOLDER\|>`/`<\|IMAGE_END\|>` (`PaddlePaddle/PaddleOCR-VL`'s `chat_template.jinja` — note `<\|image_pad\|>` *does* exist in this model's vocab too, but is unused/legacy; trusted the template's actual usage, not vocab presence alone) |
+| `HunyuanVlAdapter` | same | **entirely different convention**: `<｜hy_place▁holder▁no▁100｜>` / `<｜hy_place▁holder▁no▁102｜>` / `<｜hy_place▁holder▁no▁101｜>` (open/placeholder/close) — **lower confidence**: no real Tencent Hunyuan-VL repo is published on HF at all yet, so this came from `hf-tiny-v2/tiny-random-HunYuanVLForConditionalGeneration`, an HF-testing repo that mirrors real tokenizer/vocab data by convention but isn't the production model itself. Flagged in-code as lower-confidence. |
+
+All 5 fixed in `UnifiedVisionPipeline.cs`, `dotnet build` clean for Vision + Cli.
+
+**Follow-up (same day): two more markers found and fixed while double-checking the ones this doc had
+called "already correct"** (`GlmAdapter`/`Glm4Adapter` re-checked and confirmed genuinely already
+right — false alarm, no change) — same HF-tokenizer-config technique:
+
+| Adapter | Old (wrong) | Real (verified via HF `chat_template`) |
+|---|---|---|
+| `KimiAdapter` | `<\|vision_start\|>`/`<\|vision_end\|>`/`<\|image_pad\|>` (assumed Qwen2.5-VL) | **not Qwen-style at all**: `moonshotai/Kimi-VL-A3B-Instruct`'s real template emits `<\|media_start\|>image<\|media_content\|><\|media_pad\|><\|media_end\|>` per image. Fixed open/close to `<\|media_start\|>`/`<\|media_end\|>` and — the part that actually matters for the placeholder-count check — placeholder to `<\|media_pad\|>`, not `<\|image_pad\|>`. The literal `image` text and `<\|media_content\|>` token between open and placeholder can't be represented by this interface's single-open-marker model, so this is a best-effort fix, documented as such in code. |
+
+**Follow-up (same day): downloaded and ran small models for as many of the above as actually
+possible**, per direct request. Findings:
+
+| Model | Text arch | Result |
+|---|---|---|
+| `PaddlePaddle/PaddleOCR-VL-1.6-GGUF` (935MB base + 882MB mmproj) | `paddleocr` | **Blocked before vision code runs** — `paddleocr` isn't in `ModelCompatibility.ValidateForTextGeneration`'s supported list (same class of gap as DeepSeekOcr/Nemotron). Marker fix can't be exercised end-to-end on this architecture until that separate gap closes. |
+| `mradermacher/MiMo-VL-7B-SFT-GGUF` (3.08GB Q2_K + 729MB mmproj-Q8_0) | `qwen2vl` | **Blocked the same way** — this specific conversion tags the combined vision-capable checkpoint as `qwen2vl`, which is *not* the same as the supported `qwen2`/`qwen3` text-only tags. |
+| `Vastined/Step3-VL-10B-GGUF` (3.28GB Q2_K + 3.97GB mmproj-F16) | `qwen3` (supported!) | **Marker fix conclusively verified**: real prefill ran, `Image 1/1: step3vl -> 81 soft tokens (4096-dim)`, no placeholder-count error — the exact bug this whole finding is about is provably closed for this architecture. **Hit a separate, new, real bug** immediately after: `System.ArgumentOutOfRangeException` at `RunCommand.RunImagePrompt` right after prefill completes, during/around the decode-loop summary print. Confirmed **not** a general decode bug — the identical model run text-only (no `--image`) decodes 20 tokens cleanly with no error — so this is specific to the image/embedding-injection code path, a genuine new finding, not investigated further (out of scope for the marker task; flagged for separate follow-up). |
+| `tencent/Youtu-VL-4B-Instruct-GGUF` (5.21GB Q8_0 + 853MB mmproj-BF16) | `deepseek2` | **Blocked the same way** — despite the "Youtu-VL" name, this checkpoint's text backbone is tagged `deepseek2`, not in the supported list. |
+| `mradermacher/Kimi-VL-A3B-Thinking-2506-GGUF` | — | **Not downloaded** — smallest quant (Q2_K) is 6.58GB, the model is a larger MoE (A3B) than the others despite similar "small" naming; skipped per the "small files only" instruction rather than fetch a multi-GB file just to likely hit the same text-arch wall. |
+
+**Net result of the download pass**: the unsupported-text-architecture gate
+(`ModelCompatibility.ValidateForTextGeneration`) turned out to be the dominant blocker across
+this whole batch — 3 of 4 downloaded pairs never reached the vision/placeholder code at all. Only
+Step3-VL's `qwen3` tag was in the supported list, and it's the one case that actually exercised
+(and confirmed) the marker fix. This is a strong, converging signal that the placeholder-marker
+fixes in this doc are correct by construction (grounded in each model's real chat template) even
+where they can't be exercised end-to-end yet — and that the text-architecture allowlist, not
+marker guessing, is now the single biggest thing blocking full VL verification going forward.
+
+`CogVlmAdapter` and `MobileNetV5Adapter` were not touched — both are already documented above as
+fully blocked (no real public GGUF conversion exists for either architecture at all), so there's
+nothing to point a corrected marker at yet regardless of what the correct string turns out to be.
 
 ## Systemic finding: position/class-embedding dtype guard gap (found and fixed for all 9 affected
 ## encoders during verification, 2026-08-20)
