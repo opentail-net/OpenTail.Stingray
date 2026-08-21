@@ -226,14 +226,16 @@ public sealed class WhisperEncoder
 
                 TensorPrimitives.SoftMax(scores.AsSpan(0, seqLen), scores.AsSpan(0, seqLen));
 
-                for (int d = 0; d < headDim; d++)
+                // weighted = sum_j scores[j] * v[j, headOff:headOff+headDim]. Looping j-outer/
+                // d-inner (rather than the reverse) keeps each v access a contiguous headDim-wide
+                // span instead of a dModel-strided one, and lets TensorPrimitives vectorize the
+                // per-row multiply-accumulate instead of doing headDim*seqLen scalar mults.
+                var weighted = attnRaw.AsSpan(i * dModel + headOff, headDim);
+                weighted.Clear();
+                for (int j = 0; j < seqLen; j++)
                 {
-                    float weightedVal = 0f;
-                    for (int j = 0; j < seqLen; j++)
-                    {
-                        weightedVal += scores[j] * v[j * dModel + headOff + d];
-                    }
-                    attnRaw[i * dModel + headOff + d] = weightedVal;
+                    var vRow = v.AsSpan(j * dModel + headOff, headDim);
+                    TensorPrimitives.MultiplyAdd(vRow, scores[j], weighted, weighted);
                 }
             }
         });
@@ -339,15 +341,14 @@ public sealed class WhisperEncoder
                 // SoftMax
                 TensorPrimitives.SoftMax(scores.AsSpan(0, seqLen), scores.AsSpan(0, seqLen));
 
-                // Weighted sum over Values
-                for (int d = 0; d < headDim; d++)
+                // Weighted sum over Values (see the real-weights path above for why j-outer/
+                // d-inner with TensorPrimitives.MultiplyAdd beats the reverse loop order).
+                var weighted = outCopy.AsSpan(i * dModel + headOff, headDim);
+                weighted.Clear();
+                for (int j = 0; j < seqLen; j++)
                 {
-                    float weightedVal = 0f;
-                    for (int j = 0; j < seqLen; j++)
-                    {
-                        weightedVal += scores[j] * inCopy[j * dModel + headOff + d];
-                    }
-                    outCopy[i * dModel + headOff + d] = weightedVal;
+                    var vRow = inCopy.AsSpan(j * dModel + headOff, headDim);
+                    TensorPrimitives.MultiplyAdd(vRow, scores[j], weighted, weighted);
                 }
             }
         });

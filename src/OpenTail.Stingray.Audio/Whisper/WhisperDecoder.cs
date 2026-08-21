@@ -371,14 +371,16 @@ public sealed class WhisperDecoder
 
             TensorPrimitives.SoftMax(scores, scores);
 
-            for (int d = 0; d < headDim; d++)
+            // j-outer/d-inner (contiguous valueCache row + TensorPrimitives.MultiplyAdd) instead
+            // of d-outer/j-inner (dModel-strided scalar reads) -- see WhisperEncoder.cs's real
+            // attention path for the full rationale. This is the incremental decode-step path,
+            // called once per generated token, so it's the hottest of the attention variants.
+            var weighted = output.Slice(headOff, headDim);
+            weighted.Clear();
+            for (int j = 0; j < totalKeys; j++)
             {
-                float weightedVal = 0f;
-                for (int j = 0; j < totalKeys; j++)
-                {
-                    weightedVal += scores[j] * valueCache[j * dModel + headOff + d];
-                }
-                output[headOff + d] = weightedVal;
+                var vRow = valueCache.AsSpan(j * dModel + headOff, headDim);
+                TensorPrimitives.MultiplyAdd(vRow, scores[j], weighted, weighted);
             }
         }
     }
@@ -405,14 +407,12 @@ public sealed class WhisperDecoder
 
                 TensorPrimitives.SoftMax(scores.AsSpan(0, i + 1), scores.AsSpan(0, i + 1));
 
-                for (int d = 0; d < headDim; d++)
+                var weighted = output.AsSpan(i * dModel + headOff, headDim);
+                weighted.Clear();
+                for (int j = 0; j <= i; j++)
                 {
-                    float weightedVal = 0f;
-                    for (int j = 0; j <= i; j++)
-                    {
-                        weightedVal += scores[j] * v[j * dModel + headOff + d];
-                    }
-                    output[i * dModel + headOff + d] = weightedVal;
+                    var vRow = v.AsSpan(j * dModel + headOff, headDim);
+                    TensorPrimitives.MultiplyAdd(vRow, scores[j], weighted, weighted);
                 }
             }
         });
@@ -440,14 +440,12 @@ public sealed class WhisperDecoder
 
                 TensorPrimitives.SoftMax(scores.AsSpan(0, audioLen), scores.AsSpan(0, audioLen));
 
-                for (int d = 0; d < headDim; d++)
+                var weighted = output.AsSpan(i * dModel + headOff, headDim);
+                weighted.Clear();
+                for (int j = 0; j < audioLen; j++)
                 {
-                    float weightedVal = 0f;
-                    for (int j = 0; j < audioLen; j++)
-                    {
-                        weightedVal += scores[j] * v[j * dModel + headOff + d];
-                    }
-                    output[i * dModel + headOff + d] = weightedVal;
+                    var vRow = v.AsSpan(j * dModel + headOff, headDim);
+                    TensorPrimitives.MultiplyAdd(vRow, scores[j], weighted, weighted);
                 }
             }
         });
@@ -525,14 +523,12 @@ public sealed class WhisperDecoder
 
             TensorPrimitives.SoftMax(scores, scores);
 
-            for (int d = 0; d < headDim; d++)
+            var weighted = output.Slice(headOff, headDim);
+            weighted.Clear();
+            for (int j = 0; j < totalKeys; j++)
             {
-                float weightedVal = 0f;
-                for (int j = 0; j < totalKeys; j++)
-                {
-                    weightedVal += scores[j] * valueCache[j * dModel + headOff + d];
-                }
-                output[headOff + d] = weightedVal;
+                var vRow = valueCache.AsSpan(j * dModel + headOff, headDim);
+                TensorPrimitives.MultiplyAdd(vRow, scores[j], weighted, weighted);
             }
         }
     }
@@ -564,14 +560,12 @@ public sealed class WhisperDecoder
 
             TensorPrimitives.SoftMax(scores, scores);
 
-            for (int d = 0; d < headDim; d++)
+            var weighted = output.Slice(headOff, headDim);
+            weighted.Clear();
+            for (int j = 0; j < clampedAudio; j++)
             {
-                float weightedVal = 0f;
-                for (int j = 0; j < clampedAudio; j++)
-                {
-                    weightedVal += scores[j] * audioKv[j * dModel + headOff + d];
-                }
-                output[headOff + d] = weightedVal;
+                var vRow = audioKv.Slice(j * dModel + headOff, headDim);
+                TensorPrimitives.MultiplyAdd(vRow, scores[j], weighted, weighted);
             }
         }
     }
@@ -603,14 +597,12 @@ public sealed class WhisperDecoder
                 // Causal SoftMax over [0..i]
                 TensorPrimitives.SoftMax(scores.AsSpan(0, i + 1), scores.AsSpan(0, i + 1));
 
-                for (int d = 0; d < headDim; d++)
+                var weighted = outCopy.AsSpan(i * dModel + headOff, headDim);
+                weighted.Clear();
+                for (int j = 0; j <= i; j++)
                 {
-                    float weightedVal = 0f;
-                    for (int j = 0; j <= i; j++)
-                    {
-                        weightedVal += scores[j] * inCopy[j * dModel + headOff + d];
-                    }
-                    outCopy[i * dModel + headOff + d] = weightedVal;
+                    var vRow = inCopy.AsSpan(j * dModel + headOff, headDim);
+                    TensorPrimitives.MultiplyAdd(vRow, scores[j], weighted, weighted);
                 }
             }
         });
@@ -653,14 +645,12 @@ public sealed class WhisperDecoder
 
                 TensorPrimitives.SoftMax(scores.AsSpan(0, clampedAudio), scores.AsSpan(0, clampedAudio));
 
-                for (int d = 0; d < headDim; d++)
+                var weighted = outCopy.AsSpan(i * dModel + headOff, headDim);
+                weighted.Clear();
+                for (int j = 0; j < clampedAudio; j++)
                 {
-                    float weightedVal = 0f;
-                    for (int j = 0; j < clampedAudio; j++)
-                    {
-                        weightedVal += scores[j] * kvCopy[j * dModel + headOff + d];
-                    }
-                    outCopy[i * dModel + headOff + d] = weightedVal;
+                    var vRow = kvCopy.AsSpan(j * dModel + headOff, headDim);
+                    TensorPrimitives.MultiplyAdd(vRow, scores[j], weighted, weighted);
                 }
             }
         });
