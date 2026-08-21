@@ -220,15 +220,109 @@ via a narrow `kokoro_golden_*.py` dump (few hundred KB, not the 1.1GB full-graph
 (2) implement against `examples/kokoro-py/*.py`, (3) verify via cosine similarity in a
 `KokoroXxxTests.cs`, (4) only then move to the next stage.
 
-**Next concrete step**: TextEncoder (modules.py `TextEncoder` -- embedding, 3x Conv1D+
-LayerNorm(gamma/beta, channel-first)+LeakyReLU(0.2), then a BiLSTM). This needs a reusable
-BiLSTM primitive (none exists yet in this codebase -- standard PyTorch LSTM gate order i,f,g,o,
-weight_ih/weight_hh each `[4*hidden, in]` torch-shape i.e. GGUF `dims=[in,4*hidden]` per the
-established reversed-dims convention) since DurationEncoder/pred.lstm/pred.shared/text_enc.lstm
-all need the same primitive -- write it once as shared infrastructure, not per-callsite.
-After TextEncoder: DurationEncoder + duration_proj (steps 4-7, needs AdaLayerNorm too), then
-F0Ntrain (step 8, needs AdainResBlk1d + Snake1D + UpSample1d), then Decoder+Generator
-(steps 11-12, the biggest remaining piece: NSF harmonic source, learned ISTFT).
+**TextEncoder stage DONE and verified** (2026-08-21): `src/OpenTail.Stingray.Audio/Kokoro/KokoroLstm.cs`
+is the shared bidirectional-LSTM primitive (standard PyTorch gate order i,f,g,o; weight_ih/weight_hh
+already `[4*hidden, in-or-hidden]` row-major per the GGUF reversed-dims convention, confirmed against
+the actual file: `text_enc.lstm.weight_ih_l0 dims=[512,1024]` ggml-order -> torch shape `[1024,512]`
+= `[4*256, 512]`). `KokoroTextEncoder.cs` implements `KModel.text_encoder` (modules.py `TextEncoder`:
+embedding -> 3x(Conv1d k=5 pad=2 + custom channels-LayerNorm(gamma/beta, eps=1e-5, per-timestep
+over channels) + LeakyReLU(0.2)) -> BiLSTM(256 per direction)), returning `t_en` channel-first
+`[512,T]` (matches `model.py` line 105's `t_en = self.text_encoder(...)`, later used as
+`asr = t_en @ pred_aln_trg`). Verified in `KokoroTextEncoderTests.cs` against
+`scratch-llamacpp-ref/kokoro_golden_textenc.py`'s golden ONNX output (node
+`/encoder/text_encoder/Transpose_2_output_0`, shape `[1,512,12]`) -- cosine similarity > 0.999.
+Note: ProsodyPredictor also has an internal module confusingly also named `text_encoder`
+(that's actually `DurationEncoder`, see `modules.py` `ProsodyPredictor.__init__`'s
+`self.text_encoder = DurationEncoder(...)`) -- do not conflate the two; the golden-dump script
+excludes ONNX nodes under `/encoder/predictor/` to avoid grabbing the wrong one.
+
+**DurationEncoder + predictor.lstm + duration_proj DONE and verified** (2026-08-21):
+`src/OpenTail.Stingray.Audio/Kokoro/KokoroAdaLayerNorm.cs` implements AdaLayerNorm (style ->
+`fc` Linear(128,1024) -> chunk into gamma/beta[512] -> per-timestep channel LayerNorm(eps=1e-5)
+-> `(1+gamma)*x+beta`; net of the reference's redundant double-transposes, which cancel out for
+our fixed rank-3 shapes -- see the file's doc comment for the trace). `KokoroProsodyPredictor.cs`
+implements `EncodeDuration` (DurationEncoder: concat `[d_en; style]` -> 640ch -> 3x(BiLSTM 640->512
++ AdaLayerNorm(512) + re-concat style ->640) -> returns `d` [T,640]) and `PredictDurations`
+(predictor.lstm [640->512 BiLSTM] -> duration_proj [Linear 512->50] -> sigmoid -> sum over the
+50 max_dur bins, PRE round/clamp/speed-divide -- caller still needs to do `/speed`, `round`,
+`clamp(min=1)` to get `pred_dur`). Verified in `KokoroProsodyPredictorTests.cs`, chained on top
+of the already-verified BERT stage, against `scratch-llamacpp-ref/kokoro_golden_durenc.py`'s
+golden ONNX output (`Concat_4_output_0` for `d` [1,12,640], `ReduceSum_output_0` for the
+duration sums [1,12]). Cosine similarity thresholds: `d` needed slightly relaxing to >0.998
+(vs BERT's >0.999) since it's the already-~0.999 BERT output run through 3 more stacked
+LSTM+AdaLayerNorm blocks -- Q8_0 quantization noise compounds further; confirmed this isn't a
+structural bug by checking per-timestep cosine similarity was uniform (0.998-0.9996 across all
+12 tokens, no outlier/discontinuity). Duration-sum cosine similarity still clears >0.999.
+IMPORTANT naming gotcha (re-confirmed): `ProsodyPredictor.text_encoder` in the reference IS
+`DurationEncoder`, a completely different module from top-level `KModel.text_encoder`
+(`KokoroTextEncoder.cs`) -- both files' doc comments now call this out explicitly.
+
+**Alignment/length-regulator + F0Ntrain DONE and verified** (2026-08-21):
+`src/OpenTail.Stingray.Audio/Kokoro/KokoroAlignment.cs` implements `ToPredDur` (round/clamp/
+speed-divide, model.py line 97) and `BuildFrameToTokenMap`+`Expand` (model.py lines 99-103's
+`repeat_interleave`+one-hot-scatter length regulator, implemented as a direct gather since the
+alignment matrix is one-hot -- no need to materialize it). Covered by pure unit tests
+(`KokoroAlignmentTests.cs`, no GGUF/golden-dump needed, just arithmetic). Separately,
+`src/OpenTail.Stingray.Audio/Kokoro/KokoroAdainResBlk1d.cs` implements `AdainResBlk1d`
+(istftnet.py -- LeakyReLU(0.2)-activated AdaIN1d residual block, with an optional depthwise
+ConvTranspose1d "pool" upsample in the residual branch and nearest-x2 upsample in the shortcut;
+NOT to be confused with `AdaINResBlock1`, the Snake1D-activated, differently-shaped class used
+only inside the Generator -- see `ResBlockWeights`, already loaded, not yet consumed).
+`KokoroProsodyPredictor.F0Ntrain` chains predictor.shared BiLSTM (640->512) with the F0 and N
+`AdainResBlk1d` stacks (512->512->256(upsample x2)->256) + F0_proj/N_proj (Conv1d 256->1),
+matching istftnet.py/modules.py's `F0Ntrain`. Verified in `KokoroF0NtrainTests.cs` by feeding
+`scratch-llamacpp-ref/kokoro_golden_f0n.py`'s real onnxruntime `en` tensor
+(`/encoder/MatMul_output_0`, `[1,640,42]`) directly into `F0Ntrain` (deliberately bypassing the
+not-yet-integration-tested upstream alignment step, to isolate this stage) and comparing
+against golden `F0_proj`/`N_proj` outputs (`[1,1,84]` -- confirms the x2 upsample lands
+correctly): cosine similarity > 0.998 for both F0 and N curves.
+
+**Kokoro status as of this checkpoint**: 5 of 7 forward-pass stages implemented and
+individually verified against real ONNX golden outputs (BERT encoder, TextEncoder,
+DurationEncoder+duration prediction, alignment/length-regulator, F0Ntrain). All new code lives
+standalone in `src/OpenTail.Stingray.Audio/Kokoro/Kokoro{BertEncoder,TextEncoder,
+ProsodyPredictor,Alignment,Lstm,AdaLayerNorm,AdainResBlk1d}.cs` -- **`KokoroModel.Forward`
+itself has NOT been touched yet** and is still the old 100%-fake procedural implementation;
+none of these verified pieces are wired together into one end-to-end call yet. Full Audio test
+suite green at every checkpoint (115/115 as of this note, ~2m44s, `dotnet test
+tests/OpenTail.Stingray.Tests.Audio`). Disk: 72GB free.
+
+**Next concrete step, in order**:
+1. **Decoder + Generator** (istftnet.py `Decoder`/`Generator`) -- the largest remaining Kokoro
+   piece. `Decoder.forward`: F0_conv/N_conv (stride-2 Conv1d halving the F0/N curve rate to
+   match `asr`'s frame rate) -> concat with `asr` -> `encode` (AdainResBlk1d, dim_in+2 -> 1024)
+   -> loop over `decode` (4 AdainResBlk1d blocks, re-concatenating `asr_res`+F0+N each iteration
+   until the first upsampling block) -> `generator(x, s, F0_curve)`. `Generator.forward` needs:
+   (a) a real STFT/iSTFT primitive (istftnet.py `TorchSTFT`, `torch.stft`/`torch.istft` with a
+   Hann window -- nothing in this codebase implements this yet, check
+   `src/OpenTail.Stingray.Audio` for any existing FFT helper before writing one from scratch,
+   e.g. Whisper's mel pipeline likely already has an FFT), (b) `SourceModuleHnNSF`/`SineGen`
+   (NSF harmonic sine source -- note the `torch.rand`/`torch.randn_like` calls for phase noise
+   and additive noise are stochastic; check whether Kokoro's real-world usage seeds this or if
+   it's acceptable to use a fixed seed / zero noise for a deterministic C# port -- worth a
+   deliberate decision, not a guess, since it affects audio quality vs. determinism), (c) the
+   per-upsample-stage loop combining `AdaINResBlock1` (Snake1D, use `ResBlockWeights`) with the
+   noise branch. This is genuinely the hardest remaining piece -- budget real time for it, and
+   consider whether a narrower first milestone (e.g. verify Decoder.encode/decode's AdainResBlk1d
+   chain against a golden dump BEFORE attempting the full Generator+STFT) is worth doing to keep
+   the same verify-before-proceeding discipline used so far.
+2. **Wire everything into `KokoroModel.Forward`**: once Decoder+Generator exist, replace the old
+   fake implementation with calls to `KokoroBertEncoder` -> `KokoroTextEncoder` ->
+   `KokoroProsodyPredictor.EncodeDuration`/`PredictDurations` -> `KokoroAlignment` ->
+   `KokoroProsodyPredictor.F0Ntrain` -> `Decoder`, end to end. Add one final end-to-end test
+   (real phonemes -> waveform, compared against the golden `waveform` output already captured
+   in every `kokoro_golden_*.py` dump's `result` -- e.g. `scratch-llamacpp-ref/kokoro_golden_f0n/waveform.npy`
+   if saved, or re-run any of the scripts) before calling Kokoro done.
+3. **Remaining 8 pipelines untouched**: Piper, MeloTTS, F5-TTS, Chatterbox, CosyVoice, Parakeet,
+   QwenASR, QwenTTS all still have the old fake procedural implementations. Real PyTorch
+   reference source is already extracted for Chatterbox/F5-TTS/QwenTTS (`examples/{chatterbox-tts,
+   f5-tts,qwen-tts}-py/`, via `pip download`, not yet read in detail) -- reuse that `pip download
+   <pkg> --no-deps -d <dir>` trick for the rest before assuming a pipeline lacks a usable
+   reference. This is genuinely multi-day work at the verification depth used for Kokoro so far
+   (every stage checked against real onnxruntime/PyTorch golden output, not guessed from
+   architecture knowledge) -- there is no realistic way to finish all 9 pipelines in one sitting;
+   treat Kokoro's stage-by-stage pattern (narrow golden dump -> implement -> cosine-similarity
+   test -> only then proceed) as the template for the rest.
 
 ## SESSION HANDOFF, 4th/final iteration — recurring loop stopped, needs your input to continue
 

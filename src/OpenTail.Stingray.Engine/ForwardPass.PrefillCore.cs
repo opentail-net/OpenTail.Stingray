@@ -138,15 +138,15 @@ public sealed unsafe partial class ForwardPass
 
                         if (s_mlaTrace)
                         {
-                            double sAttnNorm = 0, sQ = 0;
+                            double sAttnNorm = 0, sAttnNormAbs = 0, sQ = 0;
                             for (int n = 0; n < N; n++)
                             {
                                 float* nb = batchNorm + (long)n * _embDim;
-                                for (int d = 0; d < _embDim; d++) sAttnNorm += nb[d];
+                                for (int d = 0; d < _embDim; d++) { sAttnNorm += nb[d]; sAttnNormAbs += Math.Abs((double)nb[d]); }
                                 float* qb = batchQ + (long)n * qDim;
                                 for (int d = 0; d < qDim; d++) sQ += qb[d];
                             }
-                            Console.Error.WriteLine($"[MLA-TRACE] L{layer} attn_norm sum={sAttnNorm:F6} q(pre-rope) sum={sQ:F6}");
+                            Console.Error.WriteLine($"[MLA-TRACE] L{layer} attn_norm sum={sAttnNorm:F6} sumAbs={sAttnNormAbs:F6} q(pre-rope) sum={sQ:F6}");
                         }
                     }
                     else
@@ -285,12 +285,20 @@ public sealed unsafe partial class ForwardPass
 
                         if (s_mlaTrace)
                         {
-                            double s = 0;
+                            double s = 0, sAbs = 0;
                             int compactDim = _numHeads * _mlaVDim;
                             for (int n = 0; n < N; n++)
                                 for (int d = 0; d < compactDim; d++)
-                                    s += batchMlaAttnOutCompact![(long)n * compactDim + d];
-                            Console.Error.WriteLine($"[MLA-TRACE] L{layer} kqv_out(compact) sum={s:F6}");
+                                {
+                                    double v = batchMlaAttnOutCompact![(long)n * compactDim + d];
+                                    s += v;
+                                    sAbs += Math.Abs(v);
+                                }
+                            float* t0 = batchMlaAttnOutCompact!;
+                            Console.Error.WriteLine(
+                                $"[MLA-TRACE] L{layer} kqv_out(compact) sum={s:F6} sumAbs={sAbs:F6} " +
+                                $"tok0first3=[{t0[0]:F4},{t0[1]:F4},{t0[2]:F4}] " +
+                                $"tok0last3=[{t0[compactDim - 3]:F4},{t0[compactDim - 2]:F4},{t0[compactDim - 1]:F4}]");
                         }
 
                         MatMulBatchedCached(batchNorm, in _wo[layer], batchMlaAttnOutCompact!, N, _embDim, _numHeads * _mlaVDim);
@@ -481,11 +489,16 @@ public sealed unsafe partial class ForwardPass
 
                     if (s_mlaTrace)
                     {
-                        double s = 0;
+                        double s = 0, sAbs = 0;
                         for (int n = 0; n < N; n++)
                             for (int d = 0; d < _embDim; d++)
-                                s += batchHidden[(long)n * _embDim + d];
-                        Console.Error.WriteLine($"[MLA-TRACE] L{layer} l_out sum={s:F6}");
+                            {
+                                double v = batchHidden[(long)n * _embDim + d];
+                                s += v; sAbs += Math.Abs(v);
+                            }
+                        Console.Error.WriteLine($"[MLA-TRACE] L{layer} l_out sum={s:F6} sumAbs={sAbs:F6} " +
+                            $"tok0first3=[{batchHidden[0]:F4},{batchHidden[1]:F4},{batchHidden[2]:F4}] " +
+                            $"tok0last3=[{batchHidden[_embDim - 3]:F4},{batchHidden[_embDim - 2]:F4},{batchHidden[_embDim - 1]:F4}]");
                     }
 
                     // Hidden-state taps: batchHidden rows are this layer's outputs.

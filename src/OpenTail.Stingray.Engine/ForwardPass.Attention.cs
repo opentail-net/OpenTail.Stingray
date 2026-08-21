@@ -198,6 +198,12 @@ public sealed unsafe partial class ForwardPass
         // is the real constraint; it was never going to be L1-resident at any useful tile size.
         const int TokenTile = 64;
 
+        // Diagnostic (STINGRAY_MLA_TRACE=1): post-softmax attention weight sample, head 0 --
+        // ground-truth-comparable against llama.cpp's kq_soft_max-N tensor (only visible with
+        // -fa off, since flash attention fuses score/softmax/weighted-V into one opaque
+        // FLASH_ATTN_EXT node with no inspectable intermediate).
+        bool traceThisLayer = s_mlaTrace && _isMla;
+
         Parallel.For(0, numHeads, h =>
         {
             int kvHead = h / hpkg;
@@ -271,11 +277,33 @@ public sealed unsafe partial class ForwardPass
                         }
                     }
 
+                    if (traceThisLayer && h == 0 && nBase == 0)
+                    {
+                        int lastTPre = tn - 1;
+                        float* rowPre = scores + (long)lastTPre * stride;
+                        Console.Error.WriteLine(
+                            $"[MLA-TRACE] L{layer} kq(pre-softmax) h0 tokLast first3=[{rowPre[0]:F4},{rowPre[1]:F4},{rowPre[2]:F4}]");
+                    }
+
                     // ── Phase 2: per-token softmax over its own causal length ──
                     for (int t = 0; t < tn; t++)
                     {
                         int endSeq = Math.Min(startPos + nBase + t + 1, cache.Length);
                         SimdKernels.SoftmaxInPlace(scores + (long)t * stride, endSeq);
+                    }
+
+                    if (traceThisLayer && h == 0 && nBase == 0)
+                    {
+                        // Post-softmax attention weights, head 0, LAST token in this tile --
+                        // ground-truth-comparable against llama.cpp's kq_soft_max-N tensor's
+                        // head-0 block, last row (only visible with -fa off — flash attention
+                        // fuses this away). Masked (causally invalid) positions are exactly 0
+                        // on both sides, so unlike the raw pre-softmax scores this is a fair,
+                        // apples-to-apples comparison (no padded-position mismatch).
+                        int lastT = tn - 1;
+                        float* row = scores + (long)lastT * stride;
+                        Console.Error.WriteLine(
+                            $"[MLA-TRACE] L{layer} kq_soft_max h0 tokLast first3=[{row[0]:F4},{row[1]:F4},{row[2]:F4}]");
                     }
 
                     if (registerValues)
