@@ -883,14 +883,15 @@ expected win. Verified via the real word-for-word JFK transcription regression t
 (`WhisperPipeline_RealModel_TranscribesJfkSampleCorrectly`, tiny+base) — still passes,
 no correctness change.
 
-### Remaining known opportunity (not pursued, flagged for whoever picks this up next)
-Whisper's `stride=2` conv (`WhisperEncoder.ApplyConv1DReal`, the `else` branch) is the one
-conv loop across all four pipelines that was deliberately left unvectorized — it's the more
-expensive of Whisper's two conv calls at large model sizes (dModel² channel scaling vs.
-conv1's dModel×numMels), but the strided-gather access pattern needs a different technique
-(e.g. pre-extracting even/odd strided views into contiguous temp buffers before the
-vectorized MAC, or accepting the smaller win of vectorizing only within each stride class)
-than the simple contiguous-shift trick used everywhere else. Not attempted this session;
-Whisper's overall performance was already reasonable before this sweep (unlike Chatterbox/
-Kokoro, which were the actual motivating problem), so this is optional polish, not a
-known-broken gap.
+### UPDATE: Whisper's stride=2 conv also fixed (closes the gap noted above)
+`WhisperEncoder.ApplyConv1DReal`'s `else` branch (the `stride=2` mel-downsampling conv) was
+initially left unvectorized because output `t` maps to input `t*stride+k`, a strided
+gather rather than the contiguous shift the `AxpyShifted` trick assumes. Closed it: compute
+the valid `t` range analytically (same idea as `AxpyShifted`, removing the per-element
+bounds check), gather the strided read into a small contiguous scratch buffer, then run the
+weight-multiply-accumulate as one vectorized `TensorPrimitives.MultiplyAdd`. The gather
+itself is still a scalar strided copy (no SIMD gather primitive available here), but it's
+branch-free now, and the actual accumulate is vectorized. Verified against the real
+word-for-word JFK regression test (tiny+base, still exact) and the medium-model end-to-end
+test (1m03s, passed) — no correctness change. No known unvectorized conv loops remain
+across Chatterbox/Kokoro/Whisper.
