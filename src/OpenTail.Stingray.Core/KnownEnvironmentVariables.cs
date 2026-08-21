@@ -108,6 +108,7 @@ public static class KnownEnvironmentVariables
         // operator who followed the old overload warning and set it got no "unknown variable"
         // hint. Removed so the typo is reported and SuggestClosest points at STINGRAY_MAX_QUEUE.
         "STINGRAY_MIN_BATCH_BLAS",
+        "STINGRAY_MLA_TRACE",
         "STINGRAY_MMPROJ",
         "STINGRAY_MMQ_SOA",
         "STINGRAY_MODEL",

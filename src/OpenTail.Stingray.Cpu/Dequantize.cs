@@ -657,8 +657,7 @@ public static class Dequantize
     /// <summary>IQ4_NL: [d:FP16][16 non-linear-codebook nibbles].</summary>
     private static void DequantIq4Nl(ReadOnlySpan<byte> src, Span<float> dst, long elementCount)
     {
-        ReadOnlySpan<sbyte> codebook = [-127, -104, -83, -65, -49, -35, -22, -10,
-            1, 13, 25, 38, 53, 69, 89, 113];
+        var codebook = IqCodebooks.Iq4NlCodebook;
         const int elementsPerBlock = 32;
         const int bytesPerBlock = 18;
         for (long block = 0; block < elementCount / elementsPerBlock; block++)
@@ -692,102 +691,187 @@ public static class Dequantize
         }
     }
 
-    /// <summary>IQ2_XXS scalar dequantization decoder (256 elements / 66 bytes per block).</summary>
+    /// <summary>
+    /// IQ2_XXS scalar dequantization decoder (256 elements / 66 bytes per block), matching
+    /// ggml's dequantize_row_iq2_xxs exactly: 8 groups of 32 elements, each group carrying a
+    /// packed 32-bit scale/sign-select word (top 4 bits + 0.5 offset, quarter-scale) alongside
+    /// four 8-byte grid lookups, each negated per-element by a 7-bit sign field decoded through
+    /// <see cref="IqCodebooks.KSignsIq2Xs"/>. The previous version ignored the per-group scale
+    /// and sign bits entirely, treating every byte as a flat codebook index under one global
+    /// scale -- see docs/bugstofix.md's IqCodebooks.cs entry.
+    /// </summary>
     private static void DequantIq2Xxs(ReadOnlySpan<byte> src, Span<float> dst, long elementCount)
     {
         const int kK = 256;
         const int bytesPerBlock = 66;
         int numBlocks = (int)(elementCount / kK);
+        var grid = IqCodebooks.Iq2XxsGrid;
+        var ksigns = IqCodebooks.KSignsIq2Xs;
+        var kmask = IqCodebooks.KMaskIq2Xs;
 
         for (int b = 0; b < numBlocks; b++)
         {
             var block = src.Slice(b * bytesPerBlock, bytesPerBlock);
             float d = HalfToFloat(block[0], block[1]);
-            int dstOffset = b * kK;
+            var qs = block.Slice(2, 64);
+            int y = b * kK;
 
-            for (int i = 0; i < 32; i++)
+            for (int ib32 = 0; ib32 < 8; ib32++)
             {
-                byte idx = block[2 + i];
-                sbyte[] gridVec = IqCodebooks.Iq2XxsGrid[idx];
-                for (int j = 0; j < 8; j++)
+                int off = ib32 * 8;
+                uint aux0 = (uint)(qs[off] | (qs[off + 1] << 8) | (qs[off + 2] << 16) | (qs[off + 3] << 24));
+                uint aux1 = (uint)(qs[off + 4] | (qs[off + 5] << 8) | (qs[off + 6] << 16) | (qs[off + 7] << 24));
+                float db = d * (0.5f + (aux1 >> 28)) * 0.25f;
+                for (int l = 0; l < 4; l++)
                 {
-                    dst[dstOffset + i * 8 + j] = d * gridVec[j];
+                    ulong gridVal = grid[(byte)(aux0 >> (8 * l))];
+                    byte signs = ksigns[(int)((aux1 >> (7 * l)) & 127)];
+                    for (int j = 0; j < 8; j++)
+                        dst[y + j] = db * (byte)(gridVal >> (8 * j)) * ((signs & kmask[j]) != 0 ? -1f : 1f);
+                    y += 8;
                 }
             }
         }
     }
 
-    /// <summary>IQ3_XXS scalar dequantization decoder (256 elements / 98 bytes per block).</summary>
+    /// <summary>
+    /// IQ3_XXS scalar dequantization decoder (256 elements / 98 bytes per block), matching
+    /// ggml's dequantize_row_iq3_xxs: 64 grid-index bytes (2 per 8-element half-group) followed
+    /// by 8 packed scale/sign words (one per 32-element group), each grid lookup is a 4-byte
+    /// vector negated per-element by a 7-bit sign field. See DequantIq2Xxs's remarks.
+    /// </summary>
     private static void DequantIq3Xxs(ReadOnlySpan<byte> src, Span<float> dst, long elementCount)
     {
         const int kK = 256;
         const int bytesPerBlock = 98;
         int numBlocks = (int)(elementCount / kK);
+        var grid = IqCodebooks.Iq3XxsGrid;
+        var ksigns = IqCodebooks.KSignsIq2Xs;
+        var kmask = IqCodebooks.KMaskIq2Xs;
 
         for (int b = 0; b < numBlocks; b++)
         {
             var block = src.Slice(b * bytesPerBlock, bytesPerBlock);
             float d = HalfToFloat(block[0], block[1]);
-            int dstOffset = b * kK;
+            var qs = block.Slice(2, 64);
+            var scalesAndSigns = block.Slice(2 + 64, 32);
+            int y = b * kK;
+            int qsOff = 0;
 
-            for (int i = 0; i < 64; i++)
+            for (int ib32 = 0; ib32 < 8; ib32++)
             {
-                byte idx = block[2 + i];
-                sbyte[] gridVec = IqCodebooks.Iq3XxsGrid[idx];
-                for (int j = 0; j < 4; j++)
+                int so = ib32 * 4;
+                uint aux32 = (uint)(scalesAndSigns[so] | (scalesAndSigns[so + 1] << 8)
+                    | (scalesAndSigns[so + 2] << 16) | (scalesAndSigns[so + 3] << 24));
+                float db = d * (0.5f + (aux32 >> 28)) * 0.5f;
+                for (int l = 0; l < 4; l++)
                 {
-                    dst[dstOffset + i * 4 + j] = d * gridVec[j];
+                    byte signs = ksigns[(int)((aux32 >> (7 * l)) & 127)];
+                    uint grid1 = grid[qs[qsOff + 2 * l]];
+                    uint grid2 = grid[qs[qsOff + 2 * l + 1]];
+                    for (int j = 0; j < 4; j++)
+                    {
+                        dst[y + j] = db * (byte)(grid1 >> (8 * j)) * ((signs & kmask[j]) != 0 ? -1f : 1f);
+                        dst[y + j + 4] = db * (byte)(grid2 >> (8 * j)) * ((signs & kmask[j + 4]) != 0 ? -1f : 1f);
+                    }
+                    y += 8;
                 }
+                qsOff += 8;
             }
         }
     }
 
-    /// <summary>IQ3_S scalar dequantization decoder (256 elements / 110 bytes per block).</summary>
+    /// <summary>
+    /// IQ3_S scalar dequantization decoder (256 elements / 110 bytes per block), matching
+    /// ggml's dequantize_row_iq3_s: grid indices carry a 9th bit from the qh side-channel byte
+    /// (one per 32-element sub-group pair), each 4-byte grid lookup negated per-element by an
+    /// explicit sign byte (not the packed 7-bit field the XXS variants use), and per-32-element
+    /// scales taken directly from a 4-bit nibble (linear, not the 0.5-offset quarter-scale the
+    /// XXS variants use). See DequantIq2Xxs's remarks.
+    /// </summary>
     private static void DequantIq3S(ReadOnlySpan<byte> src, Span<float> dst, long elementCount)
     {
         const int kK = 256;
         const int bytesPerBlock = 110;
         int numBlocks = (int)(elementCount / kK);
+        var grid = IqCodebooks.Iq3SGrid;
+        var kmask = IqCodebooks.KMaskIq2Xs;
 
         for (int b = 0; b < numBlocks; b++)
         {
             var block = src.Slice(b * bytesPerBlock, bytesPerBlock);
             float d = HalfToFloat(block[0], block[1]);
-            int dstOffset = b * kK;
+            var qs = block.Slice(2, 64);
+            var qh = block.Slice(2 + 64, 8);
+            var signs = block.Slice(2 + 64 + 8, 32);
+            var scales = block.Slice(2 + 64 + 8 + 32, 4);
+            int y = b * kK;
+            int qsOff = 0, signsOff = 0;
 
-            for (int i = 0; i < 64; i++)
+            for (int ib32 = 0; ib32 < 8; ib32 += 2)
             {
-                byte idx = block[2 + i];
-                sbyte[] gridVec = IqCodebooks.Iq3SGrid[idx];
-                for (int j = 0; j < 4; j++)
+                float db1 = d * (1 + 2 * (scales[ib32 / 2] & 0xF));
+                float db2 = d * (1 + 2 * (scales[ib32 / 2] >> 4));
+                for (int half = 0; half < 2; half++)
                 {
-                    dst[dstOffset + i * 4 + j] = d * gridVec[j];
+                    float db = half == 0 ? db1 : db2;
+                    byte qhByte = qh[ib32 + half];
+                    for (int l = 0; l < 4; l++)
+                    {
+                        uint grid1 = grid[qs[qsOff + 2 * l] | ((uint)(qhByte << (8 - 2 * l)) & 256)];
+                        uint grid2 = grid[qs[qsOff + 2 * l + 1] | ((uint)(qhByte << (7 - 2 * l)) & 256)];
+                        byte s = signs[signsOff + l];
+                        for (int j = 0; j < 4; j++)
+                        {
+                            dst[y + j] = db * (byte)(grid1 >> (8 * j)) * ((s & kmask[j]) != 0 ? -1f : 1f);
+                            dst[y + j + 4] = db * (byte)(grid2 >> (8 * j)) * ((s & kmask[j + 4]) != 0 ? -1f : 1f);
+                        }
+                        y += 8;
+                    }
+                    qsOff += 8;
+                    signsOff += 4;
                 }
             }
         }
     }
 
-    /// <summary>IQ4_XS scalar dequantization decoder (256 elements / 136 bytes per block).</summary>
+    /// <summary>
+    /// IQ4_XS scalar dequantization decoder (256 elements / 136 bytes per block), matching
+    /// ggml's dequantize_row_iq4_xs. Unlike the other three IQ formats, IQ4_XS is NOT a
+    /// grid/codebook-vector format at all -- it reuses IQ4_NL's 16-entry non-linear scalar
+    /// codebook per-nibble (<see cref="IqCodebooks.Iq4NlCodebook"/>), split into eight
+    /// 32-element sub-groups each with its own 6-bit scale (4 bits from scales_l, 2 from
+    /// scales_h). The previous version fabricated an unrelated 256-entry ±1 "grid" for this
+    /// format; see docs/bugstofix.md's IqCodebooks.cs entry.
+    /// </summary>
     private static void DequantIq4Xs(ReadOnlySpan<byte> src, Span<float> dst, long elementCount)
     {
         const int kK = 256;
         const int bytesPerBlock = 136;
         int numBlocks = (int)(elementCount / kK);
+        var cb = IqCodebooks.Iq4NlCodebook;
 
         for (int b = 0; b < numBlocks; b++)
         {
             var block = src.Slice(b * bytesPerBlock, bytesPerBlock);
             float d = HalfToFloat(block[0], block[1]);
-            int dstOffset = b * kK;
+            int scalesH = block[2] | (block[3] << 8);
+            var scalesL = block.Slice(4, 4);
+            var qs = block.Slice(8, 128);
+            int y = b * kK;
+            int qsOff = 0;
 
-            for (int i = 0; i < 32; i++)
+            for (int ib = 0; ib < 8; ib++)
             {
-                byte idx = block[2 + i];
-                sbyte[] gridVec = IqCodebooks.Iq4XsGrid[idx];
-                for (int j = 0; j < 8; j++)
+                int ls = ((scalesL[ib / 2] >> (4 * (ib % 2))) & 0xF) | (((scalesH >> (2 * ib)) & 3) << 4);
+                float dl = d * (ls - 32);
+                for (int j = 0; j < 16; j++)
                 {
-                    dst[dstOffset + i * 8 + j] = d * gridVec[j];
+                    dst[y + j] = dl * cb[qs[qsOff + j] & 0xF];
+                    dst[y + j + 16] = dl * cb[qs[qsOff + j] >> 4];
                 }
+                y += 32;
+                qsOff += 16;
             }
         }
     }

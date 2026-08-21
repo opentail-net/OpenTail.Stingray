@@ -757,6 +757,9 @@ public static unsafe class SimdKernels
             case DType.Q4_0:
                 MatVecQ4_0(output, weights, input, rows, cols);
                 break;
+            case DType.IQ4_NL:
+                MatVecIq4Nl(output, weights, input, rows, cols);
+                break;
             default:
                 MatVecDequantFallback(output, weights, input, rows, cols, dtype);
                 break;
@@ -866,22 +869,26 @@ public static unsafe class SimdKernels
             case DType.Q3_K:
             {
                 int bpr = (cols / 256) * 110;
+                int scratchBytes = Q8KScratchBytes(cols);
+                byte* scratch = stackalloc byte[scratchBytes];
+                QuantizeRowToQ8K(input, cols, scratch);
+
                 if (rows >= MinRowsForParallel)
                 {
-                    var w1 = weights1; var w2 = weights2; var inp = input;
+                    var w1 = weights1; var w2 = weights2; var s = scratch;
                     var o1 = output1; var o2 = output2; int c = cols;
                     Parallel.For(0, rows, s_parallelOpts, r =>
                     {
-                        o1[r] = DotQ3K(w1 + (long)r * bpr, inp, c);
-                        o2[r] = DotQ3K(w2 + (long)r * bpr, inp, c);
+                        o1[r] = DotQ3K_Q8K(w1 + (long)r * bpr, s, c);
+                        o2[r] = DotQ3K_Q8K(w2 + (long)r * bpr, s, c);
                     });
                 }
                 else
                 {
                     for (int r = 0; r < rows; r++)
                     {
-                        output1[r] = DotQ3K(weights1 + (long)r * bpr, input, cols);
-                        output2[r] = DotQ3K(weights2 + (long)r * bpr, input, cols);
+                        output1[r] = DotQ3K_Q8K(weights1 + (long)r * bpr, scratch, cols);
+                        output2[r] = DotQ3K_Q8K(weights2 + (long)r * bpr, scratch, cols);
                     }
                 }
                 break;
@@ -889,22 +896,26 @@ public static unsafe class SimdKernels
             case DType.Q2_K:
             {
                 int bpr = (cols / 256) * 84;
+                int scratchBytes = Q8KScratchBytes(cols);
+                byte* scratch = stackalloc byte[scratchBytes];
+                QuantizeRowToQ8K(input, cols, scratch);
+
                 if (rows >= MinRowsForParallel)
                 {
-                    var w1 = weights1; var w2 = weights2; var inp = input;
+                    var w1 = weights1; var w2 = weights2; var s = scratch;
                     var o1 = output1; var o2 = output2; int c = cols;
                     Parallel.For(0, rows, s_parallelOpts, r =>
                     {
-                        o1[r] = DotQ2K(w1 + (long)r * bpr, inp, c);
-                        o2[r] = DotQ2K(w2 + (long)r * bpr, inp, c);
+                        o1[r] = DotQ2K_Q8K(w1 + (long)r * bpr, s, c);
+                        o2[r] = DotQ2K_Q8K(w2 + (long)r * bpr, s, c);
                     });
                 }
                 else
                 {
                     for (int r = 0; r < rows; r++)
                     {
-                        output1[r] = DotQ2K(weights1 + (long)r * bpr, input, cols);
-                        output2[r] = DotQ2K(weights2 + (long)r * bpr, input, cols);
+                        output1[r] = DotQ2K_Q8K(weights1 + (long)r * bpr, scratch, cols);
+                        output2[r] = DotQ2K_Q8K(weights2 + (long)r * bpr, scratch, cols);
                     }
                 }
                 break;
@@ -2699,6 +2710,28 @@ public static unsafe class SimdKernels
         }
     }
 
+    public static void MatVecIq4Nl(float* output, byte* weights, float* input, int rows, int cols)
+    {
+        int bytesPerRow = (cols / 32) * 18;
+        int scratchBytes = Q8_0ScratchBytes(cols);
+        byte* scratch = stackalloc byte[scratchBytes];
+        QuantizeRowToQ8_0(input, cols, scratch);
+
+        if (rows >= MinRowsForParallel)
+        {
+            var w = weights; var s = scratch; var outp = output; int c = cols;
+            Parallel.For(0, rows, s_parallelOpts, i =>
+            {
+                outp[i] = DotIq4Nl_Q8_0(w + (long)i * bytesPerRow, s, c);
+            });
+        }
+        else
+        {
+            for (int i = 0; i < rows; i++)
+                output[i] = DotIq4Nl_Q8_0(weights + (long)i * bytesPerRow, scratch, cols);
+        }
+    }
+
     public static void MatVecQ8_0(float* output, byte* weights, float* input, int rows, int cols)
     {
         int bytesPerRow = (cols / 32) * 34;
@@ -2845,6 +2878,47 @@ public static unsafe class SimdKernels
                 dot += ((qs[j] >> 4) - 8) * q8[j + 16];
             }
             acc += d4 * d8 * dot;
+        }
+        return acc;
+    }
+
+    // ================================================================
+    //  IQ4_NL · Q8_0 Dot Product  (one row, pre-quantized input)
+    // ================================================================
+    // Mirrors ggml_vec_dot_iq4_nl_q8_0 exactly (examples/ggml/src/ggml-cpu/quants.c). Unlike
+    // Dequantize.DequantIq4Nl's per-element float dequant-then-FMA path this file's other
+    // callers use, ggml quantizes the activation to Q8_0 (32-element blocks, matching IQ4_NL's
+    // own QK4_NL=32) rather than dotting against the raw F32 activation -- see this file's
+    // DotQ2K_Q8K/DotQ3K_Q8K/DotQ6K_Q8K for the same pattern applied to the K-quant family, and
+    // docs/bugstofix.md's 2026-08-21 deepseek2 investigation for why this matters for
+    // greedy-parity: every quantized weight type in ggml is paired with an activation-precision-
+    // reducing vec_dot_type, and IQ4_NL's is Q8_0, not a full-precision F32 dot.
+    private static readonly sbyte[] s_iq4NlCodebook =
+        [-127, -104, -83, -65, -49, -35, -22, -10, 1, 13, 25, 38, 53, 69, 89, 113];
+
+    public static float DotIq4Nl_Q8_0(byte* row, byte* scratch, int cols)
+    {
+        int numBlocks = cols / 32;
+        float acc = 0f;
+        fixed (sbyte* cb = s_iq4NlCodebook)
+        {
+            for (int b = 0; b < numBlocks; b++)
+            {
+                byte* wb = row + b * 18;
+                byte* sb = scratch + b * 36;
+                float d4 = HalfToFloat(wb[0], wb[1]);
+                float d8 = *(float*)sb;
+                byte* qs = wb + 2;
+                sbyte* q8 = (sbyte*)(sb + 4);
+
+                int sumi1 = 0, sumi2 = 0;
+                for (int j = 0; j < 16; j++)
+                {
+                    sumi1 += q8[j] * cb[qs[j] & 0xF];
+                    sumi2 += q8[j + 16] * cb[qs[j] >> 4];
+                }
+                acc += d4 * d8 * (sumi1 + sumi2);
+            }
         }
         return acc;
     }
@@ -3055,19 +3129,22 @@ public static unsafe class SimdKernels
     public static void MatVecQ3K(float* output, byte* weights, float* input, int rows, int cols)
     {
         int bytesPerRow = (cols / 256) * 110;
+        int scratchBytes = Q8KScratchBytes(cols);
+        byte* scratch = stackalloc byte[scratchBytes];
+        QuantizeRowToQ8K(input, cols, scratch);
 
         if (rows >= MinRowsForParallel)
         {
-            var w = weights; var inp = input; var outp = output;
+            var w = weights; var s = scratch; var outp = output; int c = cols;
             Parallel.For(0, rows, s_parallelOpts, i =>
             {
-                outp[i] = DotQ3K(w + (long)i * bytesPerRow, inp, cols);
+                outp[i] = DotQ3K_Q8K(w + (long)i * bytesPerRow, s, c);
             });
         }
         else
         {
             for (int i = 0; i < rows; i++)
-                output[i] = DotQ3K(weights + (long)i * bytesPerRow, input, cols);
+                output[i] = DotQ3K_Q8K(weights + (long)i * bytesPerRow, scratch, cols);
         }
     }
 
@@ -3249,19 +3326,22 @@ public static unsafe class SimdKernels
     public static void MatVecQ2K(float* output, byte* weights, float* input, int rows, int cols)
     {
         int bytesPerRow = (cols / 256) * 84;
+        int scratchBytes = Q8KScratchBytes(cols);
+        byte* scratch = stackalloc byte[scratchBytes];
+        QuantizeRowToQ8K(input, cols, scratch);
 
         if (rows >= MinRowsForParallel)
         {
-            var w = weights; var inp = input; var outp = output;
+            var w = weights; var s = scratch; var outp = output; int c = cols;
             Parallel.For(0, rows, s_parallelOpts, i =>
             {
-                outp[i] = DotQ2K(w + (long)i * bytesPerRow, inp, cols);
+                outp[i] = DotQ2K_Q8K(w + (long)i * bytesPerRow, s, c);
             });
         }
         else
         {
             for (int i = 0; i < rows; i++)
-                output[i] = DotQ2K(weights + (long)i * bytesPerRow, input, cols);
+                output[i] = DotQ2K_Q8K(weights + (long)i * bytesPerRow, scratch, cols);
         }
     }
 
@@ -3387,6 +3467,74 @@ public static unsafe class SimdKernels
             elemOff += 256;
         }
         return acc;
+    }
+
+    // ================================================================
+    //  Q2_K · Q8_K Dot Product  (one row, pre-quantized input)
+    // ================================================================
+    // Mirrors ggml_vec_dot_q2_K_q8_K exactly (examples/ggml/src/ggml-cpu/quants.c). Unlike
+    // DotQ2K's per-element float dequant-then-FMA, this quantizes the activation to int8 ONCE
+    // per super-block (via QuantizeRowToQ8K -- same scratch this file already builds for
+    // DotQ6K_Q8K/DotQ3K_Q8K), then keeps the whole 256-element reduction in INTEGER (isum, isuml)
+    // domain, applying the two FP scale corrections (dall, dmin) only once per super-block at
+    // the very end. This is not merely "more precise" or "less precise" than the float path --
+    // it is ggml's actual arithmetic, bit-for-bit reproducible, whereas the float path's
+    // per-element rounding order can never exactly match it. See docs/bugstofix.md's 2026-08-21
+    // deepseek2 investigation for the full derivation of why this matters for greedy-parity.
+    public static float DotQ2K_Q8K(byte* row, byte* scratch, int cols)
+    {
+        int numBlocks = cols / 256;
+        float* dArr = (float*)scratch;
+        sbyte* qsArr = (sbyte*)(scratch + numBlocks * 4);
+        short* bsumsArr = (short*)(scratch + numBlocks * 4 + numBlocks * 256);
+
+        float sumf = 0f;
+        for (int b = 0; b < numBlocks; b++)
+        {
+            byte* x = row + b * 84;
+            byte* sc = x;       // scales[16]
+            byte* q2 = x + 16;  // qs[64]
+            float dw = HalfToFloat(x[80], x[81]);
+            float dminW = HalfToFloat(x[82], x[83]);
+            float dy = dArr[b];
+
+            sbyte* q8 = qsArr + b * 256;
+            short* bsums = bsumsArr + b * 16;
+
+            int summs = 0;
+            for (int j = 0; j < 16; j++)
+                summs += bsums[j] * (sc[j] >> 4);
+
+            float dall = dy * dw;
+            float dmin = dy * dminW;
+
+            int isum = 0;
+            int isIdx = 0;
+            int q2Off = 0;
+            int q8Off = 0;
+            for (int k = 0; k < 2; k++) // QK_K/128 = 256/128
+            {
+                int shift = 0;
+                for (int j = 0; j < 4; j++)
+                {
+                    int d0 = sc[isIdx++] & 0xF;
+                    int isuml = 0;
+                    for (int l = 0; l < 16; l++) isuml += q8[q8Off + l] * ((q2[q2Off + l] >> shift) & 3);
+                    isum += d0 * isuml;
+
+                    int d1 = sc[isIdx++] & 0xF;
+                    isuml = 0;
+                    for (int l = 0; l < 16; l++) isuml += q8[q8Off + 16 + l] * ((q2[q2Off + 16 + l] >> shift) & 3);
+                    isum += d1 * isuml;
+
+                    shift += 2;
+                    q8Off += 32;
+                }
+                q2Off += 32;
+            }
+            sumf += dall * isum - dmin * summs;
+        }
+        return sumf;
     }
 
     // ================================================================

@@ -29,6 +29,12 @@ names are treated as valid, `doctor` would not have flagged it either. The warni
 `STINGRAY_MAX_QUEUE` and the dead entry is out of the registry, so the mistake is now reported with
 a closest-match suggestion.
 
+**Reconciled again 2026-08-21 — `KnownEnvironmentVariables.All` now contains **168** names**
+(added `STINGRAY_MLA_TRACE`, a temporary diagnostic env var for the deepseek2 MLA
+ground-truth-diffing investigation — see `docs/bugstofix.md` — plus one further pre-existing
+count drift not re-diffed row-by-row here; see the note above about this test not catching
+table-level row drift).
+
 **Reconciled again 2026-08-18 — `KnownEnvironmentVariables.All` now contains **166** names**
 (architecture-support and kernel work between 2026-08-08 and 2026-08-15 added new dispatch-toggle
 variables faster than the doc was updated, growing the registry back up past the 156 recorded
@@ -251,6 +257,7 @@ dynamically composed names.
 | `STINGRAY_KVARN_BATCHED_PREFILL` | experimental | |
 | `STINGRAY_KV_BF16_MIN_TOKENS` | expert | |
 | `STINGRAY_KV_STORE` | expert | |
+| `STINGRAY_MLA_TRACE` | diagnostic | Temporary: prints per-layer MLA/attention/MoE intermediate sums for ground-truth diffing against llama.cpp (see `docs/bugstofix.md`'s deepseek2 investigation). |
 | `STINGRAY_MMQ_SOA` | experimental | |
 | `STINGRAY_MOE_BATCHED_PREFILL` | experimental | |
 | `STINGRAY_MOE_GPU_ROUTER` | experimental | |

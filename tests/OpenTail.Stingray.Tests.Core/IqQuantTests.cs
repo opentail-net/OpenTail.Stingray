@@ -10,17 +10,23 @@ public class IqQuantTests
     [Fact]
     public void IqCodebooks_GridSizesAndValuesAreValid()
     {
+        // These are ggml's real reference tables (examples/ggml/src/ggml-common.h's
+        // iq2xxs_grid/iq3xxs_grid/iq3s_grid), not the previous fabricated bit-pattern grids --
+        // each entry packs its N signed-magnitude bytes into one integer (byte j is
+        // (value >> (8*j)), matching ggml's little-endian pointer-cast reading order).
         Assert.Equal(256, IqCodebooks.Iq2XxsGrid.Length);
-        Assert.Equal(8, IqCodebooks.Iq2XxsGrid[0].Length);
-
         Assert.Equal(256, IqCodebooks.Iq3XxsGrid.Length);
-        Assert.Equal(4, IqCodebooks.Iq3XxsGrid[0].Length);
-
         Assert.Equal(512, IqCodebooks.Iq3SGrid.Length);
-        Assert.Equal(4, IqCodebooks.Iq3SGrid[0].Length);
 
-        Assert.Equal(256, IqCodebooks.Iq4XsGrid.Length);
-        Assert.Equal(8, IqCodebooks.Iq4XsGrid[0].Length);
+        // IQ4_XS is not grid-based at all -- it shares IQ4_NL's 16-entry non-linear codebook.
+        Assert.Equal(16, IqCodebooks.Iq4NlCodebook.Length);
+        Assert.Equal(128, IqCodebooks.KSignsIq2Xs.Length);
+        Assert.Equal(8, IqCodebooks.KMaskIq2Xs.Length);
+
+        // Spot-check a couple of entries against ggml's own table literals.
+        Assert.Equal(0x0808080808080808UL, IqCodebooks.Iq2XxsGrid[0]);
+        Assert.Equal(0x04040404U, IqCodebooks.Iq3XxsGrid[0]);
+        Assert.Equal(0x01010101U, IqCodebooks.Iq3SGrid[0]);
     }
 
     [Theory]
