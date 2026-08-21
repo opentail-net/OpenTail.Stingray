@@ -675,12 +675,34 @@ public sealed unsafe partial class ForwardPass
             MatMulBatchedCached(batchQRaw, in _wq[layer], batchNorm, N, qDimMla, _embDim);
             MatMulBatchedCached(batchKvCmprPe, in _wKvAMqa![layer], batchNorm, N, kvCmprPeDim, _embDim);
 
+            if (s_mlaTrace && layer == 0)
+            {
+                double sFull = 0, sView = 0;
+                for (int n = 0; n < N; n++)
+                {
+                    float* row = batchKvCmprPe + (long)n * kvCmprPeDim;
+                    for (int d = 0; d < kvCmprPeDim; d++) sFull += row[d];
+                    for (int d = 0; d < _mlaKvLoraRank; d++) sView += row[d];
+                }
+                Console.Error.WriteLine($"[MLA-TRACE] L0 kv_cmpr_pe(full576) sum={sFull:F6} kv_cmpr(view512,pre-norm) sum={sView:F6}");
+                Console.Error.WriteLine($"[MLA-TRACE] L0 tok0 kv_cmpr_pe first3=[{batchKvCmprPe[0]:F4},{batchKvCmprPe[1]:F4},{batchKvCmprPe[2]:F4}] last3=[{batchKvCmprPe[kvCmprPeDim-3]:F4},{batchKvCmprPe[kvCmprPeDim-2]:F4},{batchKvCmprPe[kvCmprPeDim-1]:F4}]");
+            }
+
             var kvANormW = GetNormWeight(_kvANorm![layer]);
             for (int n = 0; n < N; n++)
             {
                 float* src = batchKvCmprPe + (long)n * kvCmprPeDim;
                 float* dst = batchKvCmprNormed + (long)n * _mlaKvLoraRank;
                 FastNorm(dst, src, kvANormW, null, _mlaKvLoraRank, _hp.RmsNormEps);
+            }
+
+            if (s_mlaTrace)
+            {
+                double s = 0;
+                for (int n = 0; n < N; n++)
+                    for (int d = 0; d < _mlaKvLoraRank; d++)
+                        s += batchKvCmprNormed[(long)n * _mlaKvLoraRank + d];
+                Console.Error.WriteLine($"[MLA-TRACE] L{layer} kv_cmpr(post-norm) sum={s:F6}");
             }
 
             MatMulBatchedCached(batchDecompressed, in _wKvB![layer], batchKvCmprNormed, N, decompDim, _mlaKvLoraRank);

@@ -149,6 +149,77 @@ public sealed class WhisperTokenizer
     }
 
     /// <summary>
+    /// Looks up a token's exact vocab ID by its literal text (e.g. " " for the blank/space
+    /// token), or -1 if not present in the loaded vocabulary.
+    /// </summary>
+    public int GetTokenId(string text) => _vocab.TryGetValue(text, out int id) ? id : -1;
+
+    /// <summary>
+    /// Applies OpenAI Whisper's decode-time logit suppression rules in place, ported from
+    /// whisper.cpp's whisper_full sampling loop (itself a port of openai/whisper's
+    /// decoding.py ApplyTimestampRules/SuppressTokens). Without these, prompt-only special
+    /// tokens (notably &lt;|notimestamps|&gt;, which whisper.cpp ALWAYS masks during
+    /// generation since it's only ever valid inside the initial prompt) can dominate greedy
+    /// argmax and collapse decoding into a special-token loop instead of real text -- this
+    /// was confirmed as the root cause of empty/garbage transcriptions from real weights,
+    /// see docs/audio-review-progress.md.
+    /// </summary>
+    /// <param name="logits">Next-token logits for the current step, mutated in place.</param>
+    /// <param name="isInitial">True only for the very first token generated after the prompt.</param>
+    /// <param name="lastGeneratedToken">The most recently generated token, if any.</param>
+    /// <param name="secondLastGeneratedToken">The token before that, if any.</param>
+    /// <param name="suppressBlank">Suppress EOT and a literal blank/space token on the initial step (matches whisper.cpp's default `suppress_blank=true`).</param>
+    public void ApplySamplingFilters(
+        Span<float> logits,
+        bool isInitial,
+        int? lastGeneratedToken,
+        int? secondLastGeneratedToken,
+        bool suppressBlank = true)
+    {
+        const float NegInf = float.NegativeInfinity;
+
+        // <|notimestamps|> is a prompt-only token -- whisper.cpp masks it unconditionally
+        // during generation, regardless of whether timestamps are enabled.
+        if (NoTimestampsToken < logits.Length) logits[NoTimestampsToken] = NegInf;
+
+        // Prompt-only structural tokens are never valid mid-generation targets.
+        if (StartOfTranscript < logits.Length) logits[StartOfTranscript] = NegInf;
+        if (NoSpeechToken < logits.Length) logits[NoSpeechToken] = NegInf;
+        if (TranslateToken < logits.Length) logits[TranslateToken] = NegInf;
+        if (TranscribeToken < logits.Length) logits[TranscribeToken] = NegInf;
+        if (StartOfPrevToken < logits.Length) logits[StartOfPrevToken] = NegInf;
+        foreach (int langId in _langTokenMap.Values)
+        {
+            if (langId < logits.Length) logits[langId] = NegInf;
+        }
+
+        if (isInitial && suppressBlank)
+        {
+            if (EndOfText < logits.Length) logits[EndOfText] = NegInf;
+            int spaceId = GetTokenId(" ");
+            if (spaceId >= 0 && spaceId < logits.Length) logits[spaceId] = NegInf;
+        }
+
+        // Timestamps must appear in pairs (open/close), except directly before EOT.
+        bool lastWasTimestamp = lastGeneratedToken is { } last && last >= TimestampBegin;
+        bool penultimateWasTimestamp = secondLastGeneratedToken is null || secondLastGeneratedToken.Value >= TimestampBegin;
+
+        if (lastWasTimestamp)
+        {
+            if (penultimateWasTimestamp)
+            {
+                // Two timestamps already appeared back-to-back -- next must be real content, not another timestamp.
+                for (int t = TimestampBegin; t <= TimestampEnd && t < logits.Length; t++) logits[t] = NegInf;
+            }
+            else
+            {
+                // A timestamp just closed a content span -- next must be EOT or a new (opening) timestamp, not raw content.
+                for (int t = 0; t < EndOfText && t < logits.Length; t++) logits[t] = NegInf;
+            }
+        }
+    }
+
+    /// <summary>
     /// Constructs initial decoder prompt tokens based on language, task, and timestamp options.
     /// Format: [&lt;|startoftranscript|&gt;, &lt;|lang|&gt;, &lt;|transcribe|translate|&gt;, (&lt;|notimestamps|&gt;)]
     /// </summary>

@@ -33,6 +33,58 @@ public sealed class WhisperRealWeightsTests
         return null;
     }
 
+    private static string? FindRepoFile(string relativePath)
+    {
+        var dir = Directory.GetCurrentDirectory();
+        for (int i = 0; i < 8; i++)
+        {
+            var p = Path.Combine(dir, relativePath);
+            if (File.Exists(p)) return p;
+            var parent = Directory.GetParent(dir);
+            if (parent is null) break;
+            dir = parent.FullName;
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Ground-truth regression test, added 2026-08-21 after finding and fixing two real bugs
+    /// (a mel filterbank constant typo -- log(6.4)/27 hardcoded as the wrong value 27/64 --
+    /// and missing decode-time special-token suppression) that together made every model size
+    /// hallucinate non-speech tags instead of transcribing real audio. Neither existing
+    /// "real weights" test above would have caught this: both use synthetic sine-wave audio
+    /// and only assert the output is finite/not-obviously-noise, never real transcription
+    /// content. This test uses the standard whisper.cpp smoke-test sample (a real, known,
+    /// stable reference) and asserts actual transcribed content, not just shape/finiteness.
+    /// See docs/audio-review-progress.md for the full investigation.
+    /// </summary>
+    [Theory]
+    [InlineData("ggml-tiny.bin")]
+    [InlineData("ggml-base.bin")]
+    public void WhisperPipeline_RealModel_TranscribesJfkSampleCorrectly(string modelFileName)
+    {
+        string? modelPath = FindModelPath(modelFileName);
+        string? wavPath = FindRepoFile("examples/whisper.cpp/samples/jfk.wav");
+        if (modelPath is null || wavPath is null) return;
+
+        using var pipeline = WhisperPipeline.Load(modelPath);
+        var (samples, sampleRate, _) = WavReader.ReadWav(wavPath);
+
+        var result = pipeline.Transcribe(new SpeechToTextRequest
+        {
+            AudioSamples = samples,
+            SampleRate = sampleRate,
+            Language = "en",
+            Task = SpeechTask.Transcribe,
+            EnableTimestamps = true
+        });
+
+        string text = result.Text.ToLowerInvariant();
+        Assert.Contains("fellow americans", text);
+        Assert.Contains("ask not what your country can do for you", text);
+        Assert.Contains("ask what you can do for your country", text);
+    }
+
     [Fact]
     public void WhisperPipeline_LoadRealGgmlTiny_TranscribesAudioEndToEnd()
     {

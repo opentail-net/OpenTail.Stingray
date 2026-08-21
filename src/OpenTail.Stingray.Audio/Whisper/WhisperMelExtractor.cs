@@ -41,24 +41,43 @@ public sealed class WhisperMelExtractor
     /// </summary>
     public float[] ExtractMel(ReadOnlySpan<float> pcm, bool padTo30Seconds = true)
     {
-        int stage1Pad = padTo30Seconds ? SampleRate * 30 : 0;
-        int stage2Pad = WinLength / 2; // 200 samples reflective padding
+        int stage2Pad = WinLength / 2; // 200 samples reflective padding, matches torch.stft(center=True)
 
+        // Whisper pads/trims audio to EXACTLY 30s (N_SAMPLES = SampleRate*30) before computing
+        // mel frames, not "real audio length + 30s of extra padding" -- getting this wrong
+        // inflates the frame count (e.g. 4100 instead of the correct 3000 for a 30s window) and,
+        // worse, corrupts the global-max normalization below since it's computed over the whole
+        // (wrongly oversized) buffer instead of the true 30s window. Confirmed against a numpy
+        // reference port of openai-whisper's log_mel_spectrogram; see docs/audio-review-progress.md.
         int nSamples = pcm.Length;
-        int paddedLength = nSamples + stage1Pad + stage2Pad * 2;
+        int innerLength = padTo30Seconds ? SampleRate * 30 : nSamples;
+        int paddedLength = innerLength + stage2Pad * 2;
         float[] padded = new float[paddedLength];
 
-        // 1. Copy original samples at stage2Pad offset
-        pcm.CopyTo(padded.AsSpan(stage2Pad, nSamples));
+        // 1. Copy original samples at stage2Pad offset (trimmed to innerLength if longer than 30s)
+        int copyLength = Math.Min(nSamples, innerLength);
+        pcm[..copyLength].CopyTo(padded.AsSpan(stage2Pad, copyLength));
 
-        // 2. Reflective pad start
-        int reflectCount = Math.Min(stage2Pad, Math.Max(0, nSamples - 1));
+        // 2. Reflective pad start (reflect off the real audio's own first samples)
+        int reflectCount = Math.Min(stage2Pad, Math.Max(0, copyLength - 1));
         for (int i = 0; i < reflectCount; i++)
         {
             padded[stage2Pad - 1 - i] = pcm[1 + i];
         }
 
-        // 3. Number of frames
+        // 3. Reflective pad end (reflect off the tail of the inner [0, innerLength) buffer --
+        // real audio's tail if trimmed/exact-length, otherwise the zero-padding, which reflects
+        // to more zeros and is a no-op).
+        int tailStart = stage2Pad + innerLength;
+        int reflectTailCount = Math.Min(stage2Pad, Math.Max(0, copyLength - 1));
+        for (int i = 0; i < reflectTailCount; i++)
+        {
+            padded[tailStart + i] = padded[tailStart - 2 - i];
+        }
+
+        // 4. Number of frames. torch.stft's raw frame count is 1 + (paddedLength-WinLength)/HopLength,
+        // and whisper drops the trailing frame (stft[..., :-1]) -- the two cancel out, so this
+        // integer-division form already equals the correct final frame count directly.
         int numFrames = (paddedLength - WinLength) / HopLength;
         if (numFrames <= 0) numFrames = 1;
 
@@ -130,7 +149,11 @@ public sealed class WhisperMelExtractor
         // Slaney mel scale: linear below 1000 Hz, logarithmic above
         const float minLogHz = 1000.0f;
         const float minLogMel = 15.0f; // 1000 / (200.0 / 3.0)
-        const float logStep = 27.0f / 64.0f; // log(6.4) / 27.0
+        // BUG FIX (2026-08-21): this was hardcoded to 27f/64f (0.4219), not log(6.4)/27 (0.0688)
+        // as the comment claimed -- a ~6x error that corrupted the mel scale above 1000Hz and
+        // zeroed out low-index filters entirely. Confirmed against a numpy reference port of
+        // librosa/whisper's mel filterbank; see docs/audio-review-progress.md.
+        float logStep = MathF.Log(6.4f) / 27.0f;
 
         float HzToMel(float hz)
         {

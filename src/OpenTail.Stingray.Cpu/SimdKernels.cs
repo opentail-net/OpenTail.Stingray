@@ -6183,10 +6183,15 @@ public static unsafe class SimdKernels
                 sumSq = Fma.MultiplyAdd(v, v, sumSq);
             }
 
-            float ss = HSum256(sumSq);
-            for (; i < size; i++) ss += input[i] * input[i];
+            // ggml's reference RMS-norm (ggml-cpu/ops.cpp's ggml_compute_forward_rms_norm_f32)
+            // accumulates the sum-of-squares in ggml_float (double), not float32 -- widen the
+            // final reduction to double to match. The SIMD partial sums above stay float32 (the
+            // dominant source of any remaining gap vs a scalar-double reference is elsewhere;
+            // this narrows one real, measurable discrepancy without a full kernel rewrite).
+            double ss = HSum256(sumSq);
+            for (; i < size; i++) ss += (double)input[i] * input[i];
 
-            float scale = 1.0f / MathF.Sqrt(ss / size + eps);
+            float scale = (float)(1.0 / Math.Sqrt(ss / size + eps));
             var scaleV = Vector256.Create(scale);
 
             // Pass 2: scale and weight
@@ -6221,9 +6226,9 @@ public static unsafe class SimdKernels
         }
         else
         {
-            float ss = 0;
-            for (int i = 0; i < size; i++) ss += input[i] * input[i];
-            float scale = 1.0f / MathF.Sqrt(ss / size + eps);
+            double ss = 0;
+            for (int i = 0; i < size; i++) ss += (double)input[i] * input[i];
+            float scale = (float)(1.0 / Math.Sqrt(ss / size + eps));
             for (int i = 0; i < size; i++)
                 output[i] = input[i] * scale * weight[i];
         }
@@ -6331,10 +6336,15 @@ public static unsafe class SimdKernels
                 sumSq = Fma.MultiplyAdd(v, v, sumSq);
             }
 
-            float ss = HSum256(sumSq);
-            for (; i < size; i++) ss += input[i] * input[i];
+            // ggml's reference RMS-norm (ggml-cpu/ops.cpp's ggml_compute_forward_rms_norm_f32)
+            // accumulates the sum-of-squares in ggml_float (double), not float32 -- widen the
+            // final reduction to double to match. The SIMD partial sums above stay float32 (the
+            // dominant source of any remaining gap vs a scalar-double reference is elsewhere;
+            // this narrows one real, measurable discrepancy without a full kernel rewrite).
+            double ss = HSum256(sumSq);
+            for (; i < size; i++) ss += (double)input[i] * input[i];
 
-            float scale = 1.0f / MathF.Sqrt(ss / size + eps);
+            float scale = (float)(1.0 / Math.Sqrt(ss / size + eps));
             var scaleV = Vector256.Create(scale);
 
             i = 0;

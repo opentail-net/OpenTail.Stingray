@@ -219,18 +219,20 @@ public sealed class WhisperPipeline : ISpeechToTextPipeline
         }
 
         int lastToken = initialPrompt[^1];
+        int? prevGenerated = null;
+        int? prevPrevGenerated = null;
 
         for (int step = 0; step < maxNewTokens; step++)
         {
             float[] logits = _decoder.ForwardStep(lastToken, currentPos++, kvCache, audioFeatures, audioFrames);
 
-            // Suppress non-speech / blank tokens if at beginning
-            if (step == 0 && _tokenizer.NoSpeechToken < logits.Length)
-            {
-                logits[_tokenizer.NoSpeechToken] = float.NegativeInfinity;
-            }
+            _tokenizer.ApplySamplingFilters(
+                logits,
+                isInitial: step == 0,
+                lastGeneratedToken: prevGenerated,
+                secondLastGeneratedToken: prevPrevGenerated);
 
-            // Suppress timestamps if timestamps disabled
+            // Suppress timestamps entirely if timestamps disabled
             if (!request.EnableTimestamps)
             {
                 for (int t = _tokenizer.TimestampBegin; t <= _tokenizer.TimestampEnd && t < logits.Length; t++)
@@ -241,6 +243,8 @@ public sealed class WhisperPipeline : ISpeechToTextPipeline
 
             int nextToken = SampleNextToken(logits, request.Temperature);
             generatedTokens.Add(nextToken);
+            prevPrevGenerated = prevGenerated;
+            prevGenerated = nextToken;
             lastToken = nextToken;
 
             if (nextToken == WhisperTokenizer.EndOfText || nextToken == 0)

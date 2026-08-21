@@ -1,3 +1,4 @@
+using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Runtime.Intrinsics;
@@ -80,6 +81,10 @@ public sealed unsafe partial class ForwardPass
         Span<float> expertWeights = stackalloc float[numActive];
         SelectTopK(_routerLogits, numExperts, numActive, selectedExperts, expertWeights,
             normalize: _hp.NormalizeMoeTopKWeights);
+
+        if (_hp.ExpertWeightsScale != 1f)
+            for (int k = 0; k < numActive; k++)
+                expertWeights[k] *= _hp.ExpertWeightsScale;
 
         if (_traceRouters && (_traceRouterPos < 0 || _traceRouterPos == _currentPos))
         {
@@ -322,10 +327,21 @@ public sealed unsafe partial class ForwardPass
             else
                 SimdKernels.SoftmaxInPlace(logits, numExperts);
 
+            var wts = new Span<float>(_moeBatchWts + (long)t * na, na);
             SelectTopK(logits, numExperts, na,
                 new Span<int>(_moeBatchSel + (long)t * na, na),
-                new Span<float>(_moeBatchWts + (long)t * na, na),
+                wts,
                 normalize: _hp.NormalizeMoeTopKWeights);
+
+            if (_hp.ExpertWeightsScale != 1f)
+                for (int k = 0; k < na; k++)
+                    wts[k] *= _hp.ExpertWeightsScale;
+
+            if (s_mlaTrace && t == 0)
+            {
+                var sel = new Span<int>(_moeBatchSel, na);
+                Console.Error.WriteLine($"[MLA-TRACE] L{layer} tok0 experts=[{string.Join(",", sel.ToArray())}] weights=[{string.Join(",", wts.ToArray().Select(w => w.ToString("F4")))}]");
+            }
         }
 
         // ── 2. Bucket the (token, slot) pairs by expert, CSR-style ─────────────────────────

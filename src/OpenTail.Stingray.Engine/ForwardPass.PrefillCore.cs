@@ -135,6 +135,19 @@ public sealed unsafe partial class ForwardPass
                         // MLA (DeepSeek-V2/V3): compressed-latent K/V, not a direct wk/wv
                         // projection — see MlaComputeQkvBatched's doc comment.
                         MlaComputeQkvBatched(layer, batchNorm, N, batchQ, batchK, batchV);
+
+                        if (s_mlaTrace)
+                        {
+                            double sAttnNorm = 0, sQ = 0;
+                            for (int n = 0; n < N; n++)
+                            {
+                                float* nb = batchNorm + (long)n * _embDim;
+                                for (int d = 0; d < _embDim; d++) sAttnNorm += nb[d];
+                                float* qb = batchQ + (long)n * qDim;
+                                for (int d = 0; d < qDim; d++) sQ += qb[d];
+                            }
+                            Console.Error.WriteLine($"[MLA-TRACE] L{layer} attn_norm sum={sAttnNorm:F6} q(pre-rope) sum={sQ:F6}");
+                        }
                     }
                     else
                     {
@@ -220,6 +233,25 @@ public sealed unsafe partial class ForwardPass
                     }
                     if (profPrefill) pRopeTicks = System.Diagnostics.Stopwatch.GetTimestamp() - pStage;
 
+                    if (s_mlaTrace && _isMla)
+                    {
+                        // This class's MLA layout is rope-FIRST per head ([rope(_ropeDim),
+                        // nope]) -- see MlaComputeQkv's doc comment -- so the post-RoPE q_pe/
+                        // k_pe equivalent is just the leading _ropeDim channels of each head.
+                        double sQpe = 0, sKpe = 0;
+                        for (int n = 0; n < N; n++)
+                        {
+                            float* qn = batchQ + (long)n * qDim;
+                            float* kn = batchK + (long)n * kvDim;
+                            for (int h = 0; h < _numHeads; h++)
+                                for (int d = 0; d < _ropeDim; d++)
+                                    sQpe += qn[h * _maxHeadDim + d];
+                            for (int d = 0; d < _ropeDim; d++)
+                                sKpe += kn[d]; // MQA: k_pe shared across heads, head 0 suffices
+                        }
+                        Console.Error.WriteLine($"[MLA-TRACE] L{layer} q_pe(post-rope) sum={sQpe:F6} k_pe(post-rope) sum={sKpe:F6}");
+                    }
+
                     pStage = profPrefill ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
                     PrefillCoreAttention(batchQ, cache, layer, N, startPos, batchAttnOut);
                     if (profPrefill) pAttnTicks = System.Diagnostics.Stopwatch.GetTimestamp() - pStage;
@@ -250,6 +282,17 @@ public sealed unsafe partial class ForwardPass
                         // MlaComputeQkvBatched); _wo's real GGUF shape expects
                         // numHeads*_mlaVDim, not numHeads*_maxHeadDim.
                         MlaCompactAttnOutBatched(batchAttnOut, batchMlaAttnOutCompact!, N);
+
+                        if (s_mlaTrace)
+                        {
+                            double s = 0;
+                            int compactDim = _numHeads * _mlaVDim;
+                            for (int n = 0; n < N; n++)
+                                for (int d = 0; d < compactDim; d++)
+                                    s += batchMlaAttnOutCompact![(long)n * compactDim + d];
+                            Console.Error.WriteLine($"[MLA-TRACE] L{layer} kqv_out(compact) sum={s:F6}");
+                        }
+
                         MatMulBatchedCached(batchNorm, in _wo[layer], batchMlaAttnOutCompact!, N, _embDim, _numHeads * _mlaVDim);
                     }
                     else
@@ -434,6 +477,15 @@ public sealed unsafe partial class ForwardPass
                                 SimdKernels.ScaleInPlace(h, _hp.ResidualScale, _embDim);
                             SimdKernels.AddInPlace(h, batchResidual + (long)n * _embDim, _embDim);
                         }
+                    }
+
+                    if (s_mlaTrace)
+                    {
+                        double s = 0;
+                        for (int n = 0; n < N; n++)
+                            for (int d = 0; d < _embDim; d++)
+                                s += batchHidden[(long)n * _embDim + d];
+                        Console.Error.WriteLine($"[MLA-TRACE] L{layer} l_out sum={s:F6}");
                     }
 
                     // Hidden-state taps: batchHidden rows are this layer's outputs.

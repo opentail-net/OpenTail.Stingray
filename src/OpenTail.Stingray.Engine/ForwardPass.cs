@@ -298,6 +298,12 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
         Environment.GetEnvironmentVariable("STINGRAY_TRACE_NORMS") == "1";
     private float[]? _normTraceAttn;   // [numLayers] post-attn-residual L2 norm
     private float[]? _normTraceFfn;    // [numLayers] post-ffn-residual L2 norm
+
+    // Diagnostic: MLA (deepseek2) layer-0 intermediate sums, to diff against llama.cpp's
+    // llama-eval-callback ground truth (env: STINGRAY_MLA_TRACE=1). Temporary, for the
+    // 2026-08-21 ground-truth-diffing session -- see docs/bugstofix.md.
+    private static readonly bool s_mlaTrace =
+        Environment.GetEnvironmentVariable("STINGRAY_MLA_TRACE") == "1";
     // Optional MoE router probe (env: STINGRAY_TRACE_ROUTERS=1 dumps top-k experts for every
     // MoE layer). To restrict to a single position (large MoE models), set STINGRAY_TRACE_POS=<n>.
     private static readonly bool _traceRouters =

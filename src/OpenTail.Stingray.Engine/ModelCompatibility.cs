@@ -477,6 +477,32 @@ public static class ModelCompatibility
     // hybrid variants) have no MLA support at all -- CPU-only was the deliberately agreed scope.
     // See docs/bugstofix.md for the full investigation record.
     //
+    // 2026-08-21 resumption: mapped every MLA/YaRN/kq_scale/RoPE-type code segment against
+    // examples/llama.cpp/llama.cpp's src/models/deepseek2.cpp line-by-line (attn_factor_org/
+    // mscale/kq_scale formula, rope_type dispatch [confirmed LLAMA_ROPE_TYPE_NORM, not NEOX --
+    // deepseek2 is grouped with LLAMA in llama-model.cpp's rope-type switch, matching this
+    // engine's isNeoxRope=false default for the arch], MlaComputeQkv's Q/K/V reorder and
+    // wkv_a_mqa/attn_kv_a_norm/wkv_b decompress sequence). Found one genuine, previously-
+    // unexamined gap: {arch}.expert_weights_norm and {arch}.expert_weights_scale (llama.cpp's
+    // LLM_KV_EXPERT_WEIGHTS_NORM/SCALE, applied post-top-k in build_moe_ffn) were never read from
+    // GGUF metadata anywhere in this codebase -- NormalizeMoeTopKWeights was a hardcoded
+    // olmoe-only heuristic instead of the GGUF's real value, and expert_weights_scale
+    // (routed_scaling_factor) wasn't applied at all. Fixed in ModelGraph.cs/ForwardPass.Moe.cs
+    // (real, worth keeping for other DeepSeek/GLM-MoE checkpoints). Re-tested against
+    // DeepSeek-V2-Lite-Chat.Q2_K: NO CHANGE -- this GGUF has no expert_weights_norm key at all
+    // (falls back to the same true default as before) and expert_weights_scale=1 (no-op), so
+    // this was not the bug for this checkpoint. Output remains numerically wrong ("The capital of
+    // France is duringermeconpolivari twin,alam" at temp 0). Root cause STILL not identified.
+    // Confirmed rope.scaling.type=yarn IS active for this GGUF (factor=40, log_multiplier=0.0707)
+    // -- contrary to an initial assumption this session that Lite skips YaRN, so the mscale/
+    // kq_scale formula chain is genuinely exercised and remains a live suspect despite three
+    // rounds of formula-level re-derivation finding no further error. Next step if resumed:
+    // the bugstofix.md entry's own suggestion stands -- get real ground-truth intermediate
+    // tensor values (llama.cpp eval-callback or manual instrumentation of the prebuilt
+    // llama-cli.exe's stdout) to diff per-layer against this engine's actual intermediates,
+    // since a fourth pass of pure formula/code-reading against the reference source (this
+    // session) again found nothing beyond the already-fixed MoE gap.
+    //
     // minicpm — NOT admitted. The forward-pass scale trio (reusing Granite's graph, see
     // GraniteGreedyParityTests) is implemented and presumed correct, but MiniCPM4-0.5B — the only
     // Apache-2.0 checkpoint tried (2026-08-08) — declares tokenizer.ggml.model=llama with a

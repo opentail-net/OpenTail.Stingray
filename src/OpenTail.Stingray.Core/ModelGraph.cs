@@ -225,6 +225,16 @@ public sealed record ModelHyperparams
     /// </summary>
     public bool NormalizeMoeTopKWeights { get; init; } = true;
 
+    /// <summary>
+    /// Multiplier applied to every routed expert's weight after top-k selection (and after
+    /// renormalization, if <see cref="NormalizeMoeTopKWeights"/> applies) — llama.cpp's
+    /// <c>{arch}.expert_weights_scale</c> ("routed_scaling_factor" in the source HF config).
+    /// 1 (no-op) for architectures that don't declare it. DeepSeek-V2/V3 declare a non-1 value
+    /// on the larger checkpoints; applying only <see cref="NormalizeMoeTopKWeights"/> without
+    /// this scale still produces a wrong overall MoE magnitude for those.
+    /// </summary>
+    public float ExpertWeightsScale { get; init; } = 1f;
+
     // ── NoPE (No Positional Encoding) ──
 
     /// <summary>
@@ -949,9 +959,26 @@ public sealed record ModelHyperparams
             // [TAG_DEEPSEEK2_YARN_LOG_MUL_FIX] see the matching comment above -- same /0.1f
             // correction llama.cpp applies at load time, not just in the local kq_scale calc.
             RopeYarnLogMul = GetFloat(metadata, $"{arch}.rope.scaling.yarn_log_multiplier", 0f) / 0.1f,
-            // OLMoE was trained without top-k renormalization. Other softmax-gated
-            // MoE architectures (Qwen3-MoE, Mixtral, qwen35moe) renormalize.
-            NormalizeMoeTopKWeights = !arch.Equals("olmoe", StringComparison.OrdinalIgnoreCase),
+            // llama.cpp's per-architecture MoE loaders diverge on where this comes from:
+            // qwen3moe.cpp and olmoe.cpp pass a LITERAL true/false to build_moe_ffn (never
+            // read any GGUF key), while every other MoE arch that supports it (deepseek2,
+            // bailingmoe, glm4-moe, cohere2moe, dots1, minimax-m3, nemotron-h, step35, ...)
+            // calls ml.get_key(LLM_KV_EXPERT_WEIGHTS_NORM, hparams.expert_weights_norm, false)
+            // -- an explicit FALSE default (see llama-hparams.h's own field default), not true.
+            // Ground-truth-verified 2026-08-21 via llama-eval-callback against
+            // DeepSeek-V2-Lite-Chat: the real graph has NO renormalization node between the
+            // top-k softmax probs and the weighted expert combine, confirming false is correct
+            // for this checkpoint (its GGUF has no expert_weights_norm key at all). The
+            // previous version of this line defaulted to TRUE for every non-olmoe architecture
+            // (including deepseek2) when the key was absent -- backwards from llama.cpp's own
+            // default, and the reason this fix didn't unblock deepseek2 on first attempt.
+            NormalizeMoeTopKWeights = arch.Equals("qwen3moe", StringComparison.OrdinalIgnoreCase) ? true
+                : arch.Equals("olmoe", StringComparison.OrdinalIgnoreCase) ? false
+                : GetBool(metadata, $"{arch}.expert_weights_norm", false),
+            // llama.cpp's LLM_KV_EXPERT_WEIGHTS_SCALE ("routed_scaling_factor" in DeepSeek-V2/V3's
+            // HF config) -- multiplies every routed expert's weight after top-k selection/
+            // renormalization. 1 (no-op) when the GGUF doesn't declare it.
+            ExpertWeightsScale = GetFloat(metadata, $"{arch}.expert_weights_scale", 1f),
             NoRopeLayerStep = noRopeStep,
             UseSigmoidGating = useSigmoidGating,
             UseL2QkNorm = useL2QkNorm,

@@ -26,6 +26,10 @@ public sealed class SttCommand : Command<SttCommand.Settings>
         [Description("Whisper model architecture preset: tiny (default), base, small, medium, large-v3, or turbo.")]
         public string Model { get; init; } = "tiny";
 
+        [CommandOption("--model-file <PATH>")]
+        [Description("Path to a whisper.cpp GGML .bin checkpoint with real weights. If omitted, a file matching --model's preset name is searched for under ./models (e.g. ggml-tiny.bin); if none is found, the pipeline runs with untrained placeholder weights and a warning is printed.")]
+        public string? ModelFile { get; init; }
+
         [CommandOption("--no-timestamps")]
         [Description("Disable timestamp-aligned subtitle segment generation.")]
         public bool NoTimestamps { get; init; }
@@ -61,7 +65,8 @@ public sealed class SttCommand : Command<SttCommand.Settings>
             ? SpeechTask.Translate
             : SpeechTask.Transcribe;
 
-        WhisperConfig config = s.Model.ToLowerInvariant() switch
+        string variant = s.Model.ToLowerInvariant();
+        WhisperConfig fallbackConfig = variant switch
         {
             "base" => WhisperConfig.Base,
             "small" => WhisperConfig.Small,
@@ -72,6 +77,27 @@ public sealed class SttCommand : Command<SttCommand.Settings>
             _ => WhisperConfig.Tiny
         };
 
+        string? modelFile = s.ModelFile ?? FindDefaultGgmlFile(variant);
+
+        WhisperPipeline pipeline;
+        WhisperConfig config;
+        if (modelFile is not null)
+        {
+            pipeline = WhisperPipeline.Load(modelFile);
+            config = pipeline.Config;
+        }
+        else
+        {
+            Console.Error.WriteLine(
+                $"Warning: no GGML weights file found for model '{s.Model}' (looked for ggml-{variant}.bin under ./models). " +
+                "Running with untrained placeholder weights -- output will not be meaningful transcription. " +
+                "Pass --model-file <path-to-ggml-*.bin> to use a real checkpoint.");
+            config = fallbackConfig;
+            pipeline = new WhisperPipeline(config);
+        }
+
+        using (pipeline)
+        {
         Console.WriteLine($"OpenAI Whisper Native Speech-to-Text ({config.AudioState}d / {config.AudioLayer}L)");
         Console.WriteLine($"Input Audio: {Path.GetFullPath(s.InputPath)}");
         Console.WriteLine($"Task:        {task}");
@@ -82,8 +108,6 @@ public sealed class SttCommand : Command<SttCommand.Settings>
         // Load WAV audio samples
         var (samples, sampleRate, channels) = WavReader.ReadWav(s.InputPath);
         Console.WriteLine($"Loaded {samples.Length:N0} audio samples ({channels} ch @ {sampleRate}Hz, {samples.Length / (double)sampleRate:F2}s)");
-
-        using var pipeline = new WhisperPipeline(config);
 
         var request = new SpeechToTextRequest
         {
@@ -133,5 +157,30 @@ public sealed class SttCommand : Command<SttCommand.Settings>
         }
 
         return 0;
+        }
+    }
+
+    private static string? FindDefaultGgmlFile(string variant)
+    {
+        string fileName = variant switch
+        {
+            "base" => "ggml-base.bin",
+            "small" => "ggml-small.bin",
+            "medium" => "ggml-medium.bin",
+            "large" or "large-v3" => "ggml-large-v3.bin",
+            "turbo" or "large-v3-turbo" => "ggml-large-v3-turbo.bin",
+            "distil" or "distil-large-v3" or "distil-whisper" => "ggml-distil-large-v3.bin",
+            _ => "ggml-tiny.bin"
+        };
+
+        var dir = new DirectoryInfo(Directory.GetCurrentDirectory());
+        for (int i = 0; i < 8 && dir is not null; i++)
+        {
+            string candidate = Path.Combine(dir.FullName, "models", fileName);
+            if (File.Exists(candidate)) return candidate;
+            dir = dir.Parent;
+        }
+
+        return null;
     }
 }
