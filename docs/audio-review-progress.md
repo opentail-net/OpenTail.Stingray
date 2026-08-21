@@ -777,3 +777,120 @@ only at the unit level.
 - `tests/OpenTail.Stingray.Tests.Audio/WhisperDiagnosticTests.cs`: new, passes normally;
   set `STINGRAY_AUDIO_DIAGNOSTIC_DUMP=1` or run the built .exe with `-verbose` for the
   full stats dump. Kept as a reusable tool for the next iteration, not just this one.
+
+## PERFORMANCE SWEEP (2026-08-21, same session as the Chatterbox T3/S3Gen rebuild) —
+## from unusably slow to real-time-adjacent, same root fix applied across 3 pipelines
+
+Context: Chatterbox T3 and S3Gen (see the T3/S3Gen sections above — encoder, CFM
+flow-matching decoder, HiFTGenerator vocoder) were built real and numerically/structurally
+verified, but the first end-to-end run against real weights took **5+ minutes and had not
+finished** — unusable. The user asked to fix this properly rather than accept it, which
+surfaced one recurring root cause across every pipeline touched this session: hand-written
+C# inference code kept doing scalar, per-element, strided-memory loops in the hottest
+paths (matmuls, attention, convolution), instead of the vectorized/parallelized primitives
+this codebase already has available (`SimdKernels.MatVecF32`, `System.Numerics.Tensors.
+TensorPrimitives`, `Parallel.For`). Every fix below is one of two mechanical patterns
+applied repeatedly, not pipeline-specific cleverness:
+
+1. **Matmul/Linear**: replace a hand-rolled `for outDim: for inDim: sum += ...` loop with
+   `SimdKernels.MatVecF32` (AVX2/AVX-512, auto-parallelized across output rows) — the same
+   kernel the main LLM inference engine already uses for GGUF forward passes.
+2. **Attention weighted-sum, and convolution**: reorder loops so the innermost operation
+   is a *contiguous, branch-free* scale-and-add over a whole row/span
+   (`TensorPrimitives.MultiplyAdd(x, scale, addend, destination)` computing
+   `destination = x*scale + addend`), instead of a *strided, per-element, bounds-checked*
+   scalar accumulation. For attention this means looping `j`-outer/`d`-inner over the
+   value cache instead of `d`-outer/`j`-inner. For convolution this means, for each fixed
+   `(outChannel, inChannel, kernelTap)`, computing `output[ti] += weight * input[ti+shift]`
+   across the *entire valid time range in one vectorized call*, instead of a per-timestep
+   loop that re-reads `input` at a strided offset and bounds-checks every single element.
+   Both reorderings were also paired with `Parallel.For` across independent output
+   channels/positions where that wasn't already happening.
+
+### Chatterbox T3 (GPT2-medium acoustic LM)
+- Matmul fix (pattern 1): **5+ min, not finished → 44s** for a real prefill+decode run.
+- Attention fix (pattern 2, applied to the Q·K/weighted-sum, not just matmul): 50s → 44s
+  on top of the matmul fix (~12% further).
+- Batching per-position `Linear()` calls into one `Parallel.For` dispatch per layer
+  instead of N (further ~12%, included in the 44s figure above).
+
+### Chatterbox S3Gen (Conformer flow encoder → CFM flow-matching UNet → HiFTGenerator vocoder)
+Measured on a real end-to-end `ChatterboxPipeline.Generate()` call (real sentence, real
+GGUF weights, ~750 mel frames / ~250 generated speech tokens — NOT the small 8-token
+structural-test scale used for fast iteration):
+
+| Stage          | Before   | After pattern-2 attention+softmax fix | After pattern-2 conv fix | Total speedup |
+|----------------|----------|----------------------------------------|---------------------------|----------------|
+| Flow encoder   | 7.9s     | 7.4-7.9s                                | (convs not the bottleneck here) | ~1.05x |
+| CFM decoder    | 66.8s    | 34.1s (attention+softmax)               | 25.1s (+ conv vectorization) | **2.7x** |
+| Vocoder        | 72.1s    | 58.3s (softmax fix only, no attention here) | **4.1s** (conv vectorization) | **17.6x** |
+| **Full pipeline (incl. T3)** | **~2m54s** | ~2m04s | **~1m01s** | **2.85x** |
+
+Two sub-fixes worth calling out specifically because they were found by asking "what looks
+suspicious", not by pre-existing suspicion of a specific line:
+- **`Math.Exp(double)` inside `SoftmaxInPlace`**: called ~T times per attention head, each
+  summing T scores — O(T²) `Math.Exp` calls per attention block. At T≈750-800 this is
+  hundreds of millions of double-precision transcendental calls with no numerical benefit
+  over `MathF.Exp` for float32 softmax (found across `ChatterboxCfmDecoder.cs`,
+  `ChatterboxFlowEncoder.cs`, and `ChatterboxAcousticLm.cs` — same copy-pasted pattern in
+  all three). Fixing this alone nearly halved the CFM decoder's time (66.8s → 34.1s).
+- **Vocoder convolution loop order**: the HiFiGAN resblock convolutions run at up to
+  ~35,000 positions in the later upsample stages (near-full 24kHz sample rate) — this was
+  the single biggest win in the whole sweep (17.6x on the vocoder alone). See pattern 2
+  above; `ChatterboxVocoder.AxpyShifted`/`ChatterboxCfmDecoder.AxpyShifted` are the shared
+  helper implementing it.
+
+A dedicated **vocoder-only perf hotloop** was added for fast iteration:
+`tests/OpenTail.Stingray.Tests.Audio/ChatterboxVocoderBenchmarkTests.cs` — real S3Gen
+weights, synthetic mel input at a realistic scale (250 frames, matching what a real few-
+second sentence produces), skips T3/encoder/CFM entirely. Cut the iteration loop from a
+~2-3 minute full-pipeline run down to ~5-60s depending on which fix was being tested.
+**Timings**: 59.8s (before conv fix) → **4.08s** (after) for 250 mel frames — this is the
+number that got reused as the isolated "did the conv fix work" signal throughout.
+
+**Permanent diagnostic logging added** (kept, not reverted — the user asked to keep it):
+set `STINGRAY_AUDIO_DIAGNOSTIC_DUMP=1` and `ChatterboxPipeline.Generate()`/
+`ChatterboxDecoder.DecodeReal()` will log a per-stage timing breakdown (T3 token count,
+S3Gen encoder/CFM/vocoder split, frame/sample counts) to both stderr and
+`%TEMP%\stingray-chatterbox-diag.log` — the file sink exists specifically because
+xUnit/Microsoft.Testing.Platform only surfaces captured console output for *failing*
+tests, so a passing diagnostic run would otherwise be invisible.
+
+### Kokoro decoder/vocoder (istftnet.py Decoder + Generator, i.e. `KokoroDecoder.cs` /
+### `KokoroAdainResBlk1d.cs`)
+Same pattern-2 convolution fix applied after finding the exact same unfixed, **not even
+parallelized** scalar/strided conv loops (`Conv1d`, `Conv1dK1`, `Conv1dDilated`,
+`ConvTranspose1d`) — expected given Chatterbox's HiFiGAN vocoder code was explicitly
+modeled on Kokoro's `AdaINResBlock1`/`AdainResBlk1d` earlier this session, so it's the
+same architecture family with the same inefficiency. `KokoroRealWeightsTests` (a real
+text→waveform synthesis, previously noted as a "182s test pass" in this doc's earlier
+Kokoro-completion section) plus `KokoroDecoderTests` (the cosine-similarity-vs-golden-
+waveform regression test) now both pass together in **13.7s total** — correctness
+reconfirmed via the golden-output check, not just "didn't crash."
+
+### Whisper (smaller win, lower priority, correctness-preserving)
+Whisper's attention weighted-sum (encoder self-attn + decoder self-attn/cross-attn/
+incremental-decode-step, 9 call sites total across `WhisperEncoder.cs`/
+`WhisperDecoder.cs`) got the pattern-2 fix. Whisper's mel→hidden convolution
+(`WhisperEncoder.ApplyConv1DReal`) is structurally different from Kokoro/Chatterbox's
+resblock convs: it's called only twice per transcription (not per-layer/per-resblock), and
+one of the two calls uses `stride=2` (mel downsampling), where output position `t` maps to
+input position `2t+k` — a *strided gather*, not a contiguous shift, so it doesn't reduce to
+the same `TensorPrimitives.MultiplyAdd` trick without more engineering. Fixed only the
+`stride=1` call (the cheaper of the two); left `stride=2` as the original scalar/parallel
+loop rather than risk a rewrite of the strided case under time pressure for a smaller
+expected win. Verified via the real word-for-word JFK transcription regression test
+(`WhisperPipeline_RealModel_TranscribesJfkSampleCorrectly`, tiny+base) — still passes,
+no correctness change.
+
+### Remaining known opportunity (not pursued, flagged for whoever picks this up next)
+Whisper's `stride=2` conv (`WhisperEncoder.ApplyConv1DReal`, the `else` branch) is the one
+conv loop across all four pipelines that was deliberately left unvectorized — it's the more
+expensive of Whisper's two conv calls at large model sizes (dModel² channel scaling vs.
+conv1's dModel×numMels), but the strided-gather access pattern needs a different technique
+(e.g. pre-extracting even/odd strided views into contiguous temp buffers before the
+vectorized MAC, or accepting the smaller win of vectorizing only within each stride class)
+than the simple contiguous-shift trick used everywhere else. Not attempted this session;
+Whisper's overall performance was already reasonable before this sweep (unlike Chatterbox/
+Kokoro, which were the actual motivating problem), so this is optional polish, not a
+known-broken gap.

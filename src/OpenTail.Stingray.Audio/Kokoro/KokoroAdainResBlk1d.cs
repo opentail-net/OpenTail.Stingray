@@ -1,4 +1,5 @@
 using System;
+using System.Numerics.Tensors;
 
 namespace OpenTail.Stingray.Audio.Kokoro;
 
@@ -93,55 +94,46 @@ public static class KokoroAdainResBlk1d
             if (x[i] < 0f) x[i] *= LeakyReluSlope;
     }
 
+    // Scale-and-shift-add vectorization -- see ChatterboxCfmDecoder.cs/ChatterboxVocoder.cs for
+    // the full rationale (14.7x win there): for a fixed (oc,ic,k), `output[ti] += w*input[ti+shift]`
+    // over the valid ti range is one TensorPrimitives.MultiplyAdd over a contiguous span, instead
+    // of a per-timestep strided scalar sum with a bounds check on every element.
     private static float[] Conv1d(float[] input, float[] weight, float[] bias, int inCh, int outCh, int t, int kernel, int padding)
     {
         var output = new float[outCh * t];
-        for (int oc = 0; oc < outCh; oc++)
+        System.Threading.Tasks.Parallel.For(0, outCh, oc =>
         {
+            var outRow = new float[t];
+            Array.Fill(outRow, bias[oc]);
             int wOcBase = oc * inCh * kernel;
-            for (int ti = 0; ti < t; ti++)
+            for (int ic = 0; ic < inCh; ic++)
             {
-                float sum = bias[oc];
-                for (int ic = 0; ic < inCh; ic++)
-                {
-                    int wBase = wOcBase + ic * kernel;
-                    int srcBase = ic * t;
-                    for (int k = 0; k < kernel; k++)
-                    {
-                        int srcT = ti + k - padding;
-                        if ((uint)srcT >= (uint)t) continue;
-                        sum += weight[wBase + k] * input[srcBase + srcT];
-                    }
-                }
-                output[oc * t + ti] = sum;
+                var inRow = input.AsSpan(ic * t, t);
+                int wBase = wOcBase + ic * kernel;
+                for (int k = 0; k < kernel; k++)
+                    AxpyShifted(inRow, weight[wBase + k], outRow, k - padding, t);
             }
-        }
+            Array.Copy(outRow, 0, output, oc * t, t);
+        });
         return output;
     }
 
     private static float[] Conv1dNoBias(float[] input, float[] weight, int inCh, int outCh, int t, int kernel, int padding)
     {
         var output = new float[outCh * t];
-        for (int oc = 0; oc < outCh; oc++)
+        System.Threading.Tasks.Parallel.For(0, outCh, oc =>
         {
+            var outRow = new float[t];
             int wOcBase = oc * inCh * kernel;
-            for (int ti = 0; ti < t; ti++)
+            for (int ic = 0; ic < inCh; ic++)
             {
-                float sum = 0f;
-                for (int ic = 0; ic < inCh; ic++)
-                {
-                    int wBase = wOcBase + ic * kernel;
-                    int srcBase = ic * t;
-                    for (int k = 0; k < kernel; k++)
-                    {
-                        int srcT = ti + k - padding;
-                        if ((uint)srcT >= (uint)t) continue;
-                        sum += weight[wBase + k] * input[srcBase + srcT];
-                    }
-                }
-                output[oc * t + ti] = sum;
+                var inRow = input.AsSpan(ic * t, t);
+                int wBase = wOcBase + ic * kernel;
+                for (int k = 0; k < kernel; k++)
+                    AxpyShifted(inRow, weight[wBase + k], outRow, k - padding, t);
             }
-        }
+            Array.Copy(outRow, 0, output, oc * t, t);
+        });
         return output;
     }
 
@@ -186,5 +178,17 @@ public static class KokoroAdainResBlk1d
             }
         }
         return output;
+    }
+
+    /// <summary>output[ti] += scale * input[ti + shift] for every ti where ti+shift is in [0,t).</summary>
+    private static void AxpyShifted(ReadOnlySpan<float> input, float scale, Span<float> output, int shift, int t)
+    {
+        int start = Math.Max(0, -shift);
+        int end = Math.Min(t, t - shift);
+        int len = end - start;
+        if (len <= 0) return;
+        var inSlice = input.Slice(start + shift, len);
+        var outSlice = output.Slice(start, len);
+        TensorPrimitives.MultiplyAdd(inSlice, scale, outSlice, outSlice);
     }
 }

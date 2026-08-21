@@ -413,18 +413,21 @@ public sealed class ChatterboxAcousticLm : IDisposable
         return output;
     }
 
+    /// <summary>float-only (no double promotion) -- Math.Exp(double) here was pure overhead
+    /// (float->double promotion, double transcendental, double->float demotion) with no
+    /// numerical benefit for float32 softmax, and this runs once per generated token per head.</summary>
     private static void SoftmaxInPlace(float[] scores)
     {
         float max = float.NegativeInfinity;
         for (int i = 0; i < scores.Length; i++) if (scores[i] > max) max = scores[i];
-        double sum = 0;
+        float sum = 0f;
         for (int i = 0; i < scores.Length; i++)
         {
-            double e = Math.Exp(scores[i] - max);
-            scores[i] = (float)e;
+            float e = MathF.Exp(scores[i] - max);
+            scores[i] = e;
             sum += e;
         }
-        float invSum = (float)(1.0 / sum);
+        float invSum = 1f / sum;
         for (int i = 0; i < scores.Length; i++) scores[i] *= invSum;
     }
 

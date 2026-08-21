@@ -53,8 +53,13 @@ public sealed class ChatterboxDecoder
         if (speechTokenList.Count == 0) return [];
         var speechTokenArray = speechTokenList.ToArray();
 
+        bool diag = Environment.GetEnvironmentVariable("STINGRAY_AUDIO_DIAGNOSTIC_DUMP") == "1";
+        var sw = diag ? System.Diagnostics.Stopwatch.StartNew() : null;
+
         var (mu, totalFrames) = ChatterboxFlowEncoder.Forward(w, promptTokens, speechTokenArray);
         var spkEmbed = ChatterboxFlowEncoder.ProjectSpeakerEmbedding(w, genEmbedding);
+        if (diag) ChatterboxPipeline.DiagLog($"  S3Gen flow encoder: {sw!.ElapsedMilliseconds}ms, {totalFrames} mel frames (prompt {promptTokens.Length} + speech {speechTokenArray.Length} tokens)");
+        sw?.Restart();
 
         int mel = w.MelChannels;
         int mel1 = promptFeat.Length / mel;
@@ -64,6 +69,8 @@ public sealed class ChatterboxDecoder
 
         var rng = Random.Shared;
         var melOut = ChatterboxCfmDecoder.Generate(w, mu, cond, spkEmbed, totalFrames, rng, nSteps: 2);
+        if (diag) ChatterboxPipeline.DiagLog($"  S3Gen CFM decoder: {sw!.ElapsedMilliseconds}ms");
+        sw?.Restart();
 
         int mel2 = totalFrames - mel1;
         if (mel2 <= 0) return [];
@@ -71,7 +78,9 @@ public sealed class ChatterboxDecoder
         for (int c = 0; c < mel; c++)
             Array.Copy(melOut, c * totalFrames + mel1, melTail, c * mel2, mel2);
 
-        return ChatterboxVocoder.Generate(w, melTail, mel2, rng);
+        var wav = ChatterboxVocoder.Generate(w, melTail, mel2, rng);
+        if (diag) ChatterboxPipeline.DiagLog($"  S3Gen vocoder: {sw!.ElapsedMilliseconds}ms, {mel2} generated mel frames, {wav.Length} samples");
+        return wav;
     }
 
     // -----------------------------------------------------------------------

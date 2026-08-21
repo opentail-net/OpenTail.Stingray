@@ -147,34 +147,76 @@ public sealed class WhisperEncoder
         float[] outCopy = new float[_dModel * outFrames];
         int inFrames = inChannels > 0 ? inCopy.Length / inChannels : outFrames;
 
-        Parallel.For(0, _dModel, oc =>
+        if (stride == 1)
         {
-            int outChannelOff = oc * outFrames;
-            int wOcOff = oc * inChannels * 3;
-            for (int t = 0; t < outFrames; t++)
+            // Scale-and-shift-add vectorization (same as ChatterboxCfmDecoder.cs/
+            // ChatterboxVocoder.cs/KokoroDecoder.cs -- see those for the full rationale): for a
+            // fixed (oc,ic,k), `out[t] += w*input[t+shift]` over the valid t range is a single
+            // TensorPrimitives.MultiplyAdd over a contiguous span. Only valid when stride==1
+            // (output position t maps directly to a shifted input position); the stride==2 conv
+            // below maps output t to input 2t+k, a strided gather that doesn't reduce to a
+            // contiguous-span op the same way, so it keeps the original per-element loop --
+            // called only once per transcription each, so this is a smaller win than Kokoro/
+            // Chatterbox's per-layer resblock convs, but still real for longer audio.
+            Parallel.For(0, _dModel, oc =>
             {
-                int inCenter = t * stride;
-                float sum = bias[oc];
-
+                var outRow = outCopy.AsSpan(oc * outFrames, outFrames);
+                outRow.Fill(bias[oc]);
+                int wOcOff = oc * inChannels * 3;
                 for (int ic = 0; ic < inChannels; ic++)
                 {
-                    int inChannelOff = ic * inFrames;
+                    var inRow = inCopy.AsSpan(ic * inFrames, inFrames);
                     int wIcOff = wOcOff + ic * 3;
                     for (int k = -1; k <= 1; k++)
+                        AxpyShifted(inRow, weight[wIcOff + (k + 1)], outRow, k, outFrames);
+                }
+                for (int t = 0; t < outFrames; t++) outRow[t] = Gelu(outRow[t]);
+            });
+        }
+        else
+        {
+            Parallel.For(0, _dModel, oc =>
+            {
+                int outChannelOff = oc * outFrames;
+                int wOcOff = oc * inChannels * 3;
+                for (int t = 0; t < outFrames; t++)
+                {
+                    int inCenter = t * stride;
+                    float sum = bias[oc];
+
+                    for (int ic = 0; ic < inChannels; ic++)
                     {
-                        int srcT = inCenter + k;
-                        if (srcT >= 0 && srcT < inFrames)
+                        int inChannelOff = ic * inFrames;
+                        int wIcOff = wOcOff + ic * 3;
+                        for (int k = -1; k <= 1; k++)
                         {
-                            sum += inCopy[inChannelOff + srcT] * weight[wIcOff + (k + 1)];
+                            int srcT = inCenter + k;
+                            if (srcT >= 0 && srcT < inFrames)
+                            {
+                                sum += inCopy[inChannelOff + srcT] * weight[wIcOff + (k + 1)];
+                            }
                         }
                     }
-                }
 
-                outCopy[outChannelOff + t] = Gelu(sum);
-            }
-        });
+                    outCopy[outChannelOff + t] = Gelu(sum);
+                }
+            });
+        }
 
         outCopy.CopyTo(output);
+    }
+
+    /// <summary>output[t] += scale * input[t + shift] for every t where t+shift is in [0, input.Length).</summary>
+    private static void AxpyShifted(ReadOnlySpan<float> input, float scale, Span<float> output, int shift, int outLen)
+    {
+        int inLen = input.Length;
+        int start = Math.Max(0, -shift);
+        int end = Math.Min(outLen, inLen - shift);
+        int len = end - start;
+        if (len <= 0) return;
+        var inSlice = input.Slice(start + shift, len);
+        var outSlice = output.Slice(start, len);
+        TensorPrimitives.MultiplyAdd(inSlice, scale, outSlice, outSlice);
     }
 
     /// <summary>Linear layer: output[seqLen, outDim] = input[seqLen, inDim] @ weight[outDim, inDim]^T + bias.</summary>

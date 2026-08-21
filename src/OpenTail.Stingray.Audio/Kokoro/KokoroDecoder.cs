@@ -1,4 +1,5 @@
 using System;
+using System.Numerics.Tensors;
 
 namespace OpenTail.Stingray.Audio.Kokoro;
 
@@ -500,21 +501,27 @@ public static class KokoroDecoder
         return output;
     }
 
-    // 1x1 conv
+    // 1x1 conv. Parallelized over output channels + vectorized: for a fixed (oc,ic) the whole
+    // output row is `output += weight[ic] * input[ic]`, a single TensorPrimitives.MultiplyAdd
+    // over a contiguous span instead of a per-timestep strided scalar sum -- this is the same
+    // reordering fix applied to ChatterboxCfmDecoder.cs/ChatterboxVocoder.cs (see those files'
+    // comments for the full rationale); Kokoro's Generator runs these at full 24kHz sample rate
+    // through several resblock stages, same as Chatterbox's vocoder was before that fix (14.7x
+    // there).
     private static float[] Conv1dK1(float[] input, float[] weight, float[] bias, int inCh, int outCh, int inT)
     {
         var output = new float[outCh * inT];
-        for (int oc = 0; oc < outCh; oc++)
+        System.Threading.Tasks.Parallel.For(0, outCh, oc =>
         {
-            float b = bias[oc];
+            var outRow = output.AsSpan(oc * inT, inT);
+            outRow.Fill(bias[oc]);
             int wBase = oc * inCh;
-            for (int ti = 0; ti < inT; ti++)
+            for (int ic = 0; ic < inCh; ic++)
             {
-                float sum = b;
-                for (int ic = 0; ic < inCh; ic++) sum += weight[wBase + ic] * input[ic * inT + ti];
-                output[oc * inT + ti] = sum;
+                var inRow = input.AsSpan(ic * inT, inT);
+                TensorPrimitives.MultiplyAdd(inRow, weight[wBase + ic], outRow, outRow);
             }
-        }
+        });
         return output;
     }
 
@@ -549,96 +556,102 @@ public static class KokoroDecoder
         return output;
     }
 
-    // Standard Conv1d stride=1
+    // Standard Conv1d stride=1. Same scale-and-shift-add vectorization as Conv1dK1 above.
     private static float[] Conv1d(float[] input, float[] weight, float[] bias,
                                    int inCh, int outCh, int inT, int kernel, int padding)
     {
         var output = new float[outCh * inT];
-        for (int oc = 0; oc < outCh; oc++)
+        System.Threading.Tasks.Parallel.For(0, outCh, oc =>
         {
-            float b = bias[oc];
+            var outRow = new float[inT];
+            Array.Fill(outRow, bias[oc]);
             int wOcBase = oc * inCh * kernel;
-            for (int ti = 0; ti < inT; ti++)
+            for (int ic = 0; ic < inCh; ic++)
             {
-                float sum = b;
-                for (int ic = 0; ic < inCh; ic++)
+                var inRow = input.AsSpan(ic * inT, inT);
+                int wBase = wOcBase + ic * kernel;
+                for (int k = 0; k < kernel; k++)
                 {
-                    int wBase = wOcBase + ic * kernel;
-                    int srcBase = ic * inT;
-                    for (int k = 0; k < kernel; k++)
-                    {
-                        int src = ti + k - padding;
-                        if ((uint)src < (uint)inT) sum += weight[wBase + k] * input[srcBase + src];
-                    }
+                    int shift = k - padding;
+                    AxpyShifted(inRow, weight[wBase + k], outRow, shift, inT);
                 }
-                output[oc * inT + ti] = sum;
             }
-        }
+            Array.Copy(outRow, 0, output, oc * inT, inT);
+        });
         return output;
     }
 
-    // Dilated Conv1d (AdaINResBlock1 convs)
+    // Dilated Conv1d (AdaINResBlock1 convs). Same vectorization.
     private static float[] Conv1dDilated(float[] input, float[] weight, float[] bias,
                                           int inCh, int outCh, int inT, int kernel, int dilation)
     {
         int padding = (kernel * dilation - dilation) / 2;
         var output = new float[outCh * inT];
-        for (int oc = 0; oc < outCh; oc++)
+        System.Threading.Tasks.Parallel.For(0, outCh, oc =>
         {
-            float b = bias[oc];
+            var outRow = new float[inT];
+            Array.Fill(outRow, bias[oc]);
             int wOcBase = oc * inCh * kernel;
-            for (int ti = 0; ti < inT; ti++)
+            for (int ic = 0; ic < inCh; ic++)
             {
-                float sum = b;
-                for (int ic = 0; ic < inCh; ic++)
+                var inRow = input.AsSpan(ic * inT, inT);
+                int wBase = wOcBase + ic * kernel;
+                for (int k = 0; k < kernel; k++)
                 {
-                    int wBase = wOcBase + ic * kernel;
-                    int srcBase = ic * inT;
-                    for (int k = 0; k < kernel; k++)
-                    {
-                        int src = ti - padding + k * dilation;
-                        if ((uint)src < (uint)inT) sum += weight[wBase + k] * input[srcBase + src];
-                    }
+                    int shift = k * dilation - padding;
+                    AxpyShifted(inRow, weight[wBase + k], outRow, shift, inT);
                 }
-                output[oc * inT + ti] = sum;
             }
-        }
+            Array.Copy(outRow, 0, output, oc * inT, inT);
+        });
         return output;
     }
 
+    /// <summary>output[ti] += scale * input[ti + shift] for every ti where ti+shift is in [0,t).</summary>
+    private static void AxpyShifted(ReadOnlySpan<float> input, float scale, Span<float> output, int shift, int t)
+    {
+        int start = Math.Max(0, -shift);
+        int end = Math.Min(t, t - shift);
+        int len = end - start;
+        if (len <= 0) return;
+        var inSlice = input.Slice(start + shift, len);
+        var outSlice = output.Slice(start, len);
+        TensorPrimitives.MultiplyAdd(inSlice, scale, outSlice, outSlice);
+    }
+
     // ConvTranspose1d for ups[i].
-    // PyTorch ConvTranspose1d weight layout: [inCh, outCh, kernel]
+    // PyTorch ConvTranspose1d weight layout: [inCh, outCh, kernel]. Loop order is oc-outer (each
+    // output channel reads from all input channels/positions) so this parallelizes the same way
+    // as the other conv helpers, unlike the original ic-outer scatter which would need per-output
+    // locking or atomics to run concurrently.
     private static float[] ConvTranspose1d(float[] input, float[] weight, float[] bias,
                                             int inCh, int outCh, int inT,
                                             int kernel, int stride, int padding)
     {
         int outT = (inT - 1) * stride - 2 * padding + kernel;
         var output = new float[outCh * outT];
-        for (int oc = 0; oc < outCh; oc++)
+        System.Threading.Tasks.Parallel.For(0, outCh, oc =>
         {
             float b = bias[oc];
-            int rowBase = oc * outT;
-            for (int ti = 0; ti < outT; ti++) output[rowBase + ti] = b;
-        }
-        for (int ic = 0; ic < inCh; ic++)
-        {
-            int srcBase = ic * inT;
-            for (int ti = 0; ti < inT; ti++)
+            int dstBase = oc * outT;
+            for (int ti = 0; ti < outT; ti++) output[dstBase + ti] = b;
+
+            for (int ic = 0; ic < inCh; ic++)
             {
-                float v = input[srcBase + ti];
-                int outStart = ti * stride - padding;
-                for (int oc = 0; oc < outCh; oc++)
+                int srcBase = ic * inT;
+                int wBase0 = (ic * outCh + oc) * kernel;
+                for (int ti = 0; ti < inT; ti++)
                 {
-                    int wBase = (ic * outCh + oc) * kernel;
-                    int dstBase = oc * outT;
+                    float v = input[srcBase + ti];
+                    int outStart = ti * stride - padding;
                     for (int k = 0; k < kernel; k++)
                     {
                         int to = outStart + k;
-                        if ((uint)to < (uint)outT) output[dstBase + to] += v * weight[wBase + k];
+                        if ((uint)to < (uint)outT) output[dstBase + to] += v * weight[wBase0 + k];
                     }
                 }
             }
-        }
+        });
         return output;
     }
 

@@ -279,32 +279,55 @@ public static class ChatterboxFlowEncoder
         var output = new float[t][];
         for (int i = 0; i < t; i++) output[i] = new float[dim];
 
+        // Per head: precompute q_with_bias_u/v once per position (the original loop recomputed
+        // them on every (i,j) pair -- O(t^2*headDim) redundant additions for a O(t*headDim)
+        // quantity), then score/weighted-sum with SIMD dot products, parallelized across query
+        // positions (each `i` only writes its own output[i] row, across all heads sequentially,
+        // so this is race-free without needing to parallelize the outer head loop too).
         for (int h = 0; h < heads; h++)
         {
             int hOff = h * headDim;
-            var scores = new float[t];
+            var qU = new float[t][];
+            var qV = new float[t][];
             for (int i = 0; i < t; i++)
             {
-                for (int j = 0; j < t; j++)
+                var u = new float[headDim];
+                var vv = new float[headDim];
+                for (int d = 0; d < headDim; d++)
                 {
-                    float ac = 0f, bd = 0f;
-                    for (int d = 0; d < headDim; d++)
+                    u[d] = q[i][hOff + d] + lw.PosBiasU[h * headDim + d];
+                    vv[d] = q[i][hOff + d] + lw.PosBiasV[h * headDim + d];
+                }
+                qU[i] = u;
+                qV[i] = vv;
+            }
+
+            System.Threading.Tasks.Parallel.For(0, t, i =>
+            {
+                var scores = new float[t];
+                unsafe
+                {
+                    fixed (float* up = qU[i], vp = qV[i])
                     {
-                        float qWithU = q[i][hOff + d] + lw.PosBiasU[h * headDim + d];
-                        float qWithV = q[i][hOff + d] + lw.PosBiasV[h * headDim + d];
-                        ac += qWithU * k[j][hOff + d];
-                        bd += qWithV * p[j][hOff + d];
+                        for (int j = 0; j < t; j++)
+                        {
+                            fixed (float* kp = k[j], pp = p[j])
+                            {
+                                float ac = SimdKernels.DotF32(up, kp + hOff, headDim);
+                                float bd = SimdKernels.DotF32(vp, pp + hOff, headDim);
+                                scores[j] = (ac + bd) * scale;
+                            }
+                        }
                     }
-                    scores[j] = (ac + bd) * scale;
                 }
                 SoftmaxInPlace(scores);
+                var outSpan = output[i].AsSpan(hOff, headDim);
                 for (int j = 0; j < t; j++)
                 {
-                    float wgt = scores[j];
-                    for (int d = 0; d < headDim; d++)
-                        output[i][hOff + d] += wgt * v[j][hOff + d];
+                    var vRow = v[j].AsSpan(hOff, headDim);
+                    System.Numerics.Tensors.TensorPrimitives.MultiplyAdd(vRow, scores[j], outSpan, outSpan);
                 }
-            }
+            });
         }
 
         var projected = new float[t][];
@@ -322,18 +345,19 @@ public static class ChatterboxFlowEncoder
         }
     }
 
+    /// <summary>float-only (no double promotion) -- see ChatterboxCfmDecoder.SoftmaxInPlace for why.</summary>
     private static void SoftmaxInPlace(float[] scores)
     {
         float max = float.NegativeInfinity;
         for (int i = 0; i < scores.Length; i++) if (scores[i] > max) max = scores[i];
-        double sum = 0;
+        float sum = 0f;
         for (int i = 0; i < scores.Length; i++)
         {
-            double e = Math.Exp(scores[i] - max);
-            scores[i] = (float)e;
+            float e = MathF.Exp(scores[i] - max);
+            scores[i] = e;
             sum += e;
         }
-        float invSum = (float)(1.0 / sum);
+        float invSum = 1f / sum;
         for (int i = 0; i < scores.Length; i++) scores[i] *= invSum;
     }
 

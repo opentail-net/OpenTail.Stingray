@@ -73,14 +73,22 @@ public sealed class ChatterboxPipeline : ITextToSpeechPipeline
         // directly and ignores this value, but the fake placeholder generator needs it).
         float[] speakerFeatures = _weights?.SpeakerEmbedding ?? ChatterboxVoices.GetSpeakerFeatures(request.Voice);
 
+        bool diag = Environment.GetEnvironmentVariable("STINGRAY_AUDIO_DIAGNOSTIC_DUMP") == "1";
+        var sw = diag ? System.Diagnostics.Stopwatch.StartNew() : null;
+
         // 3. Autoregressive Acoustic LM -> Speech Tokens
         var speechTokens = _acousticLm.GenerateSpeechTokens(
             textTokens: textTokens,
             speakerFeatures: speakerFeatures ?? [],
             temperature: 0.7f);
 
+        if (diag) DiagLog($"T3 speech-token generation: {sw!.ElapsedMilliseconds}ms, {speechTokens.Count} tokens");
+        sw?.Restart();
+
         // 4. Conditional Neural Decoder -> 24kHz PCM Audio
         float[] samples = _decoder.Decode(speechTokens, speakerFeatures ?? []);
+
+        if (diag) DiagLog($"S3Gen decode (encoder+CFM+vocoder): {sw!.ElapsedMilliseconds}ms, {samples.Length} samples");
 
         var result = new AudioGenerationResult(samples, DefaultSampleRate);
 
@@ -123,5 +131,25 @@ public sealed class ChatterboxPipeline : ITextToSpeechPipeline
         _weights?.Dispose();
         _s3GenWeights?.Dispose();
         _acousticLm.Dispose();
+    }
+
+    /// <summary>
+    /// Diagnostic logging for Generate() timing breakdowns (STINGRAY_AUDIO_DIAGNOSTIC_DUMP=1).
+    /// Written to both stderr and a file, since xUnit/Microsoft.Testing.Platform only surfaces
+    /// captured console output for failing tests -- a file is the only way to see this for a
+    /// passing run without deliberately breaking the test.
+    /// </summary>
+    internal static void DiagLog(string message)
+    {
+        string line = $"[ChatterboxDiag] {message}";
+        Console.Error.WriteLine(line);
+        try
+        {
+            File.AppendAllText(Path.Combine(Path.GetTempPath(), "stingray-chatterbox-diag.log"), line + Environment.NewLine);
+        }
+        catch
+        {
+            // Best-effort only -- never let diagnostic logging break real synthesis.
+        }
     }
 }

@@ -1,4 +1,5 @@
 using System;
+using System.Numerics.Tensors;
 using OpenTail.Stingray.Cpu;
 
 namespace OpenTail.Stingray.Audio.Chatterbox;
@@ -239,22 +240,28 @@ public static class ChatterboxCfmDecoder
         for (int h = 0; h < heads; h++)
         {
             int hOff = h * headDim;
-            var scores = new float[t];
-            for (int i = 0; i < t; i++)
+            System.Threading.Tasks.Parallel.For(0, t, i =>
             {
-                for (int j = 0; j < t; j++)
+                var scores = new float[t];
+                unsafe
                 {
-                    float dot = 0f;
-                    for (int d = 0; d < headDim; d++) dot += q[i][hOff + d] * k[j][hOff + d];
-                    scores[j] = dot * scale;
+                    fixed (float* qp = q[i])
+                    {
+                        for (int j = 0; j < t; j++)
+                        {
+                            fixed (float* kp = k[j])
+                                scores[j] = SimdKernels.DotF32(qp + hOff, kp + hOff, headDim) * scale;
+                        }
+                    }
                 }
                 SoftmaxInPlace(scores);
+                var ctxSpan = context[i].AsSpan(hOff, headDim);
                 for (int j = 0; j < t; j++)
                 {
-                    float wgt = scores[j];
-                    for (int d = 0; d < headDim; d++) context[i][hOff + d] += wgt * v[j][hOff + d];
+                    var vRow = v[j].AsSpan(hOff, headDim);
+                    System.Numerics.Tensors.TensorPrimitives.MultiplyAdd(vRow, scores[j], ctxSpan, ctxSpan);
                 }
-            }
+            });
         }
 
         var output = new float[t * dim];
@@ -271,49 +278,67 @@ public static class ChatterboxCfmDecoder
         Array.Copy(src, 0, dst, dstChannelOffset * t, channels * t);
     }
 
-    /// <summary>Causal (left-pad kernel-1, no right pad) stride-1 Conv1d. Channel-first [inCh, t] -> [outCh, t].</summary>
+    /// <summary>Causal (left-pad kernel-1, no right pad) stride-1 Conv1d. Channel-first [inCh, t] -> [outCh, t].
+    /// Parallelized over output channels -- these run 56 times (14 stages x 2 convs x 2 Euler
+    /// timesteps) at up to ~1000 positions in the real pipeline, same as ChatterboxVocoder.cs's
+    /// conv helpers.</summary>
+    /// <summary>
+    /// Scale-and-shift-add formulation, same as ChatterboxVocoder.cs's conv helpers: for a fixed
+    /// (oc,ic,k), `output[ti] += w*input[ti+shift]` over the valid ti range is a single
+    /// vectorizable TensorPrimitives.MultiplyAdd over a contiguous span (this is a causal conv, so
+    /// only the right/start boundary needs clamping -- there's no right padding to clip).
+    /// </summary>
     private static float[] CausalConv1d(float[] input, int inCh, int t, float[] weight, float[] bias, int outCh, int kernel)
     {
         int pad = kernel - 1;
         var output = new float[outCh * t];
-        for (int oc = 0; oc < outCh; oc++)
+        System.Threading.Tasks.Parallel.For(0, outCh, oc =>
         {
-            float b = bias[oc];
+            var outRow = new float[t];
+            Array.Fill(outRow, bias[oc]);
             int wOcBase = oc * inCh * kernel;
-            for (int ti = 0; ti < t; ti++)
+            for (int ic = 0; ic < inCh; ic++)
             {
-                float sum = b;
-                for (int ic = 0; ic < inCh; ic++)
+                var inRow = input.AsSpan(ic * t, t);
+                int wBase = wOcBase + ic * kernel;
+                for (int k = 0; k < kernel; k++)
                 {
-                    int wBase = wOcBase + ic * kernel;
-                    int srcBase = ic * t;
-                    for (int k = 0; k < kernel; k++)
-                    {
-                        int src = ti - pad + k;
-                        if (src >= 0) sum += weight[wBase + k] * input[srcBase + src];
-                    }
+                    int shift = k - pad;
+                    AxpyShifted(inRow, weight[wBase + k], outRow, shift, t);
                 }
-                output[oc * t + ti] = sum;
             }
-        }
+            Array.Copy(outRow, 0, output, oc * t, t);
+        });
         return output;
     }
 
     private static float[] Conv1dK1(float[] input, int inCh, int t, float[] weight, float[] bias, int outCh)
     {
         var output = new float[outCh * t];
-        for (int oc = 0; oc < outCh; oc++)
+        System.Threading.Tasks.Parallel.For(0, outCh, oc =>
         {
-            float b = bias[oc];
+            var outRow = output.AsSpan(oc * t, t);
+            outRow.Fill(bias[oc]);
             int wBase = oc * inCh;
-            for (int ti = 0; ti < t; ti++)
+            for (int ic = 0; ic < inCh; ic++)
             {
-                float sum = b;
-                for (int ic = 0; ic < inCh; ic++) sum += weight[wBase + ic] * input[ic * t + ti];
-                output[oc * t + ti] = sum;
+                var inRow = input.AsSpan(ic * t, t);
+                TensorPrimitives.MultiplyAdd(inRow, weight[wBase + ic], outRow, outRow);
             }
-        }
+        });
         return output;
+    }
+
+    /// <summary>output[ti] += scale * input[ti + shift] for every ti where ti+shift is in [0,t).</summary>
+    private static void AxpyShifted(ReadOnlySpan<float> input, float scale, Span<float> output, int shift, int t)
+    {
+        int start = Math.Max(0, -shift);
+        int end = Math.Min(t, t - shift);
+        int len = end - start;
+        if (len <= 0) return;
+        var inSlice = input.Slice(start + shift, len);
+        var outSlice = output.Slice(start, len);
+        TensorPrimitives.MultiplyAdd(inSlice, scale, outSlice, outSlice);
     }
 
     private static float[] LayerNormChannelFirst(float[] x, int ch, int t, float[] weight, float[] bias, float eps = 1e-5f)
@@ -376,18 +401,25 @@ public static class ChatterboxCfmDecoder
         }
     }
 
+    /// <summary>
+    /// float-only (no double promotion): this is called ~T times per attention head, each
+    /// summing T scores, so at real sequence lengths (T ~800+) it's O(T^2) MathF.Exp calls per
+    /// block across every layer/timestep -- easily the single hottest loop in the CFM decoder.
+    /// Math.Exp(double) here was pure overhead (float->double promotion, double transcendental,
+    /// double->float demotion) with no numerical benefit for float32 softmax.
+    /// </summary>
     private static void SoftmaxInPlace(float[] scores)
     {
         float max = float.NegativeInfinity;
         for (int i = 0; i < scores.Length; i++) if (scores[i] > max) max = scores[i];
-        double sum = 0;
+        float sum = 0f;
         for (int i = 0; i < scores.Length; i++)
         {
-            double e = Math.Exp(scores[i] - max);
-            scores[i] = (float)e;
+            float e = MathF.Exp(scores[i] - max);
+            scores[i] = e;
             sum += e;
         }
-        float invSum = (float)(1.0 / sum);
+        float invSum = 1f / sum;
         for (int i = 0; i < scores.Length; i++) scores[i] *= invSum;
     }
 

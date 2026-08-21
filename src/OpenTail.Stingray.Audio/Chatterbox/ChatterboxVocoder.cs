@@ -1,4 +1,5 @@
 using System;
+using System.Numerics.Tensors;
 using OpenTail.Stingray.Cpu;
 
 namespace OpenTail.Stingray.Audio.Chatterbox;
@@ -279,7 +280,10 @@ public static class ChatterboxVocoder
         var output = new float[outCh * frames];
 
         var window = HannWindow(nFft);
-        for (int f = 0; f < frames; f++)
+        // Each frame writes disjoint (k,f) columns -- safe to parallelize over frames. nFft is
+        // tiny (16) but `frames` scales with the full sample count (hop=4), so this is the right
+        // axis to parallelize.
+        System.Threading.Tasks.Parallel.For(0, frames, f =>
         {
             int start = f * hop;
             for (int k = 0; k < specBins; k++)
@@ -296,7 +300,7 @@ public static class ChatterboxVocoder
                 output[k * frames + f] = real;
                 output[(specBins + k) * frames + f] = imag;
             }
-        }
+        });
         return output;
     }
 
@@ -307,9 +311,16 @@ public static class ChatterboxVocoder
         var norm = new float[outputLen];
         var window = HannWindow(nFft);
 
-        for (int f = 0; f < frames; f++)
+        // Overlap-add accumulation can't be parallelized directly (adjacent frames' windows
+        // overlap since hop < nFft, so concurrent += would race). Instead, compute each frame's
+        // small (nFft-length) windowed contribution in parallel -- the actual expensive part,
+        // since it's an O(nFft*specBins) trig-heavy inner loop repeated over every frame, and
+        // `frames` scales with the full sample count -- then accumulate sequentially, which is
+        // cheap (O(frames*nFft) additions, no trig).
+        var frameContrib = new float[frames][];
+        System.Threading.Tasks.Parallel.For(0, frames, f =>
         {
-            int start = f * hop;
+            var local = new float[nFft];
             for (int n = 0; n < nFft; n++)
             {
                 float val = 0f;
@@ -324,11 +335,21 @@ public static class ChatterboxVocoder
                     if (k > 0 && k < specBins - 1)
                         val += rC * MathF.Cos(angle) + iC * MathF.Sin(angle);
                 }
-                val /= nFft;
+                local[n] = val / nFft * window[n];
+            }
+            frameContrib[f] = local;
+        });
+
+        for (int f = 0; f < frames; f++)
+        {
+            int start = f * hop;
+            var local = frameContrib[f];
+            for (int n = 0; n < nFft; n++)
+            {
                 int si = start + n;
                 if (si < outputLen)
                 {
-                    output[si] += val * window[n];
+                    output[si] += local[n];
                     norm[si] += window[n] * window[n];
                 }
             }
@@ -349,30 +370,42 @@ public static class ChatterboxVocoder
     // Conv / activation primitives
     // -----------------------------------------------------------------------
 
+    // NOTE: all conv helpers below parallelize over output channels (Parallel.For(0, outCh, ...))
+    // -- each output channel is computed independently, and by the later HiFTGenerator upsample
+    // stages `t` approaches the full 24kHz sample count, so these convs (particularly the
+    // dilated HiFiGAN resblock ones, kernel up to 11) are a real cost, not a rounding error.
+
+    /// <summary>
+    /// Scale-and-shift-add formulation: for a fixed (oc,ic,k), `output[ti] += w*input[ti+shift]`
+    /// over the valid ti range is a single vectorizable TensorPrimitives.MultiplyAdd over a
+    /// contiguous span, instead of the ti-outer/ic-middle/k-inner scalar loop's strided
+    /// per-element reads. Same reordering insight as the attention weighted-sum fix (see
+    /// WhisperEncoder.cs/ChatterboxCfmDecoder.cs's SelfAttention) applied to convolution --
+    /// this is the dominant remaining cost in the vocoder (dilated HiFiGAN resblock convs running
+    /// at up to ~35k positions in the later upsample stages), so it's worth the loop-order
+    /// restructuring rather than just parallelizing over channels.
+    /// </summary>
     private static float[] Conv1dSamePad(float[] input, int inCh, int t, float[] weight, float[] bias, int outCh, int kernel)
     {
         int pad = kernel / 2;
         var output = new float[outCh * t];
-        for (int oc = 0; oc < outCh; oc++)
+        System.Threading.Tasks.Parallel.For(0, outCh, oc =>
         {
-            float b = bias[oc];
+            var outRow = new float[t];
+            Array.Fill(outRow, bias[oc]);
             int wOcBase = oc * inCh * kernel;
-            for (int ti = 0; ti < t; ti++)
+            for (int ic = 0; ic < inCh; ic++)
             {
-                float sum = b;
-                for (int ic = 0; ic < inCh; ic++)
+                var inRow = input.AsSpan(ic * t, t);
+                int wBase = wOcBase + ic * kernel;
+                for (int k = 0; k < kernel; k++)
                 {
-                    int wBase = wOcBase + ic * kernel;
-                    int srcBase = ic * t;
-                    for (int k = 0; k < kernel; k++)
-                    {
-                        int src = ti - pad + k;
-                        if ((uint)src < (uint)t) sum += weight[wBase + k] * input[srcBase + src];
-                    }
+                    int shift = k - pad;
+                    AxpyShifted(inRow, weight[wBase + k], outRow, shift, t);
                 }
-                output[oc * t + ti] = sum;
             }
-        }
+            Array.Copy(outRow, 0, output, oc * t, t);
+        });
         return output;
     }
 
@@ -380,51 +413,62 @@ public static class ChatterboxVocoder
     {
         int pad = (kernel * dilation - dilation) / 2;
         var output = new float[outCh * t];
-        for (int oc = 0; oc < outCh; oc++)
+        System.Threading.Tasks.Parallel.For(0, outCh, oc =>
         {
-            float b = bias[oc];
+            var outRow = new float[t];
+            Array.Fill(outRow, bias[oc]);
             int wOcBase = oc * inCh * kernel;
-            for (int ti = 0; ti < t; ti++)
+            for (int ic = 0; ic < inCh; ic++)
             {
-                float sum = b;
-                for (int ic = 0; ic < inCh; ic++)
+                var inRow = input.AsSpan(ic * t, t);
+                int wBase = wOcBase + ic * kernel;
+                for (int k = 0; k < kernel; k++)
                 {
-                    int wBase = wOcBase + ic * kernel;
-                    int srcBase = ic * t;
-                    for (int k = 0; k < kernel; k++)
-                    {
-                        int src = ti - pad + k * dilation;
-                        if ((uint)src < (uint)t) sum += weight[wBase + k] * input[srcBase + src];
-                    }
+                    int shift = k * dilation - pad;
+                    AxpyShifted(inRow, weight[wBase + k], outRow, shift, t);
                 }
-                output[oc * t + ti] = sum;
             }
-        }
+            Array.Copy(outRow, 0, output, oc * t, t);
+        });
         return output;
     }
 
     private static float[] Conv1dK1(float[] input, int inCh, int t, float[] weight, float[] bias, int outCh)
     {
         var output = new float[outCh * t];
-        for (int oc = 0; oc < outCh; oc++)
+        System.Threading.Tasks.Parallel.For(0, outCh, oc =>
         {
-            float b = bias[oc];
+            var outRow = output.AsSpan(oc * t, t);
+            outRow.Fill(bias[oc]);
             int wBase = oc * inCh;
-            for (int ti = 0; ti < t; ti++)
+            for (int ic = 0; ic < inCh; ic++)
             {
-                float sum = b;
-                for (int ic = 0; ic < inCh; ic++) sum += weight[wBase + ic] * input[ic * t + ti];
-                output[oc * t + ti] = sum;
+                var inRow = input.AsSpan(ic * t, t);
+                TensorPrimitives.MultiplyAdd(inRow, weight[wBase + ic], outRow, outRow);
             }
-        }
+        });
         return output;
+    }
+
+    /// <summary>output[ti] += scale * input[ti + shift] for every ti where ti+shift is in range;
+    /// a single vectorized call over the valid contiguous overlap instead of a per-element
+    /// bounds-checked scalar loop.</summary>
+    private static void AxpyShifted(ReadOnlySpan<float> input, float scale, Span<float> output, int shift, int t)
+    {
+        int start = Math.Max(0, -shift);
+        int end = Math.Min(t, t - shift);
+        int len = end - start;
+        if (len <= 0) return;
+        var inSlice = input.Slice(start + shift, len);
+        var outSlice = output.Slice(start, len);
+        TensorPrimitives.MultiplyAdd(inSlice, scale, outSlice, outSlice);
     }
 
     private static float[] Conv1dStrided(float[] input, int inCh, int inT, float[] weight, float[] bias, int outCh, int kernel, int stride, int padding)
     {
         int outT = Math.Max(1, (inT + 2 * padding - kernel) / stride + 1);
         var output = new float[outCh * outT];
-        for (int oc = 0; oc < outCh; oc++)
+        System.Threading.Tasks.Parallel.For(0, outCh, oc =>
         {
             float b = bias[oc];
             int wOcBase = oc * inCh * kernel;
@@ -444,40 +488,40 @@ public static class ChatterboxVocoder
                 }
                 output[oc * outT + ot] = sum;
             }
-        }
+        });
         return output;
     }
 
-    // ConvTranspose1d weight layout: torch [inCh, outCh, kernel]
+    // ConvTranspose1d weight layout: torch [inCh, outCh, kernel]. Loop order is oc-outer (each
+    // output channel reads from all input channels/positions) so this parallelizes the same way
+    // as the other conv helpers, unlike a naive ic-outer scatter which would need per-output
+    // locking or atomics.
     private static float[] ConvTranspose1d(float[] input, float[] weight, float[] bias, int inCh, int outCh, int inT, int kernel, int stride, int padding)
     {
         int outT = (inT - 1) * stride - 2 * padding + kernel;
         var output = new float[outCh * outT];
-        for (int oc = 0; oc < outCh; oc++)
+        System.Threading.Tasks.Parallel.For(0, outCh, oc =>
         {
             float b = bias[oc];
-            int rowBase = oc * outT;
-            for (int ti = 0; ti < outT; ti++) output[rowBase + ti] = b;
-        }
-        for (int ic = 0; ic < inCh; ic++)
-        {
-            int srcBase = ic * inT;
-            for (int ti = 0; ti < inT; ti++)
+            int dstBase = oc * outT;
+            for (int ti = 0; ti < outT; ti++) output[dstBase + ti] = b;
+
+            for (int ic = 0; ic < inCh; ic++)
             {
-                float v = input[srcBase + ti];
-                int outStart = ti * stride - padding;
-                for (int oc = 0; oc < outCh; oc++)
+                int srcBase = ic * inT;
+                int wBase0 = (ic * outCh + oc) * kernel;
+                for (int ti = 0; ti < inT; ti++)
                 {
-                    int wBase = (ic * outCh + oc) * kernel;
-                    int dstBase = oc * outT;
+                    float v = input[srcBase + ti];
+                    int outStart = ti * stride - padding;
                     for (int k = 0; k < kernel; k++)
                     {
                         int to = outStart + k;
-                        if ((uint)to < (uint)outT) output[dstBase + to] += v * weight[wBase + k];
+                        if ((uint)to < (uint)outT) output[dstBase + to] += v * weight[wBase0 + k];
                     }
                 }
             }
-        }
+        });
         return output;
     }
 
