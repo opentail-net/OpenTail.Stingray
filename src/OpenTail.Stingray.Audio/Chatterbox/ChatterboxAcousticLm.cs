@@ -246,12 +246,10 @@ public sealed class ChatterboxAcousticLm : IDisposable
             int cacheBase = kCacheL.Count;
 
             // --- Self-attention block ---
-            var qkvAll = new float[n][];
+            var attnNormed = new float[n][];
             for (int i = 0; i < n; i++)
-            {
-                var normed = LayerNorm(hidden[i], layer.AttnNormWeight, layer.AttnNormBias);
-                qkvAll[i] = Linear(normed, layer.AttnQkvWeight, layer.AttnQkvBias, dim, 3 * dim);
-            }
+                attnNormed[i] = LayerNorm(hidden[i], layer.AttnNormWeight, layer.AttnNormBias);
+            var qkvAll = LinearBatched(attnNormed, layer.AttnQkvWeight, layer.AttnQkvBias, dim, 3 * dim);
 
             for (int i = 0; i < n; i++)
             {
@@ -311,22 +309,20 @@ public sealed class ChatterboxAcousticLm : IDisposable
                 contexts[i] = context;
             });
 
-            var attnOut = new float[n][];
-            for (int i = 0; i < n; i++)
-                attnOut[i] = Linear(contexts[i], layer.AttnOutputWeight, layer.AttnOutputBias, dim, dim);
+            var attnOut = LinearBatched(contexts, layer.AttnOutputWeight, layer.AttnOutputBias, dim, dim);
 
             for (int i = 0; i < n; i++)
                 for (int d = 0; d < dim; d++) hidden[i][d] += attnOut[i][d];
 
             // --- MLP block ---
+            var ffnNormed = new float[n][];
             for (int i = 0; i < n; i++)
-            {
-                var normed = LayerNorm(hidden[i], layer.FfnNormWeight, layer.FfnNormBias);
-                var fc = Linear(normed, layer.FfnFcWeight, layer.FfnFcBias, dim, w.IntermediateSize);
-                GeluNewInPlace(fc);
-                var proj = Linear(fc, layer.FfnProjWeight, layer.FfnProjBias, w.IntermediateSize, dim);
-                for (int d = 0; d < dim; d++) hidden[i][d] += proj[d];
-            }
+                ffnNormed[i] = LayerNorm(hidden[i], layer.FfnNormWeight, layer.FfnNormBias);
+            var fcAll = LinearBatched(ffnNormed, layer.FfnFcWeight, layer.FfnFcBias, dim, w.IntermediateSize);
+            for (int i = 0; i < n; i++) GeluNewInPlace(fcAll[i]);
+            var projAll = LinearBatched(fcAll, layer.FfnProjWeight, layer.FfnProjBias, w.IntermediateSize, dim);
+            for (int i = 0; i < n; i++)
+                for (int d = 0; d < dim; d++) hidden[i][d] += projAll[i][d];
         }
 
         // Final LayerNorm (ln_f / t3.output_norm).
@@ -360,6 +356,44 @@ public sealed class ChatterboxAcousticLm : IDisposable
         }
         for (int o = 0; o < outDim; o++) output[o] += bias[o];
         return output;
+    }
+
+    /// <summary>
+    /// Batched form of <see cref="Linear"/>: projects all N chunk positions against the same
+    /// weight matrix in a single Parallel.For dispatch over the full N*outDim work item space,
+    /// instead of N separate Linear() calls each launching (and tearing down) their own
+    /// SimdKernels.MatVecF32-internal Parallel.For. During T3's ~400-token conditioning+text
+    /// prefill this cuts the QKV/attn_output/FFN thread-pool dispatch count from N per layer down
+    /// to 1 per layer (4 total per layer instead of up to ~1600), which matters because dispatch
+    /// overhead was previously paid N times for work that's now scheduled once and load-balanced
+    /// across all positions and output rows together.
+    /// </summary>
+    private static unsafe float[][] LinearBatched(float[][] inputs, float[] weight, float[] bias, int inDim, int outDim)
+    {
+        int n = inputs.Length;
+        var flatIn = new float[n * inDim];
+        for (int i = 0; i < n; i++) Array.Copy(inputs[i], 0, flatIn, i * inDim, inDim);
+        var flatOut = new float[n * outDim];
+        int total = n * outDim;
+
+        fixed (float* w = weight, x = flatIn, y = flatOut, b = bias)
+        {
+            float* wp = w, xp = x, yp = y, bp = b;
+            System.Threading.Tasks.Parallel.For(0, total, idx =>
+            {
+                int i = idx / outDim;
+                int o = idx % outDim;
+                yp[idx] = SimdKernels.DotF32(wp + (long)o * inDim, xp + (long)i * inDim, inDim) + bp[o];
+            });
+        }
+
+        var outputs = new float[n][];
+        for (int i = 0; i < n; i++)
+        {
+            outputs[i] = new float[outDim];
+            Array.Copy(flatOut, i * outDim, outputs[i], 0, outDim);
+        }
+        return outputs;
     }
 
     private static float[] LayerNorm(float[] x, float[] weight, float[] bias, float eps = 1e-5f)
