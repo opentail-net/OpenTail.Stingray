@@ -4,9 +4,9 @@ using System.Text;
 using OpenTail.Stingray.Audio.Kokoro;
 using Xunit;
 
-namespace OpenTail.Stingray.Tests.Audio;
+namespace OpenTail.Stingray.Tests.Audio.Fast;
 
-public sealed class KokoroBertEncoderTests
+public sealed class KokoroBertEncoderTests : HeavyTestBase
 {
     private static string? FindRepoFile(string relativePath)
     {

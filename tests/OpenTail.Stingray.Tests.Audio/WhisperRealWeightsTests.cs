@@ -4,9 +4,9 @@ using OpenTail.Stingray.Audio;
 using OpenTail.Stingray.Audio.Whisper;
 using Xunit;
 
-namespace OpenTail.Stingray.Tests.Audio;
+namespace OpenTail.Stingray.Tests.Audio.Fast;
 
-public sealed class WhisperRealWeightsTests
+public sealed class WhisperRealWeightsTests : HeavyTestBase
 {
     private static string? FindModelPath(string fileName)
     {

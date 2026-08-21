@@ -4,9 +4,9 @@ using OpenTail.Stingray.Audio;
 using OpenTail.Stingray.Audio.Piper;
 using Xunit;
 
-namespace OpenTail.Stingray.Tests.Audio;
+namespace OpenTail.Stingray.Tests.Audio.Fast;
 
-public sealed class PiperRealWeightsTests
+public sealed class PiperRealWeightsTests : HeavyTestBase
 {
     private const string ConfigFileName = "en_US-lessac-medium.onnx.json";
 

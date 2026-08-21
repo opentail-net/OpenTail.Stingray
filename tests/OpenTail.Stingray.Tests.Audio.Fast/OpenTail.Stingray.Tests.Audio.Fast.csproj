@@ -13,10 +13,9 @@
   </ItemGroup>
 
   <ItemGroup>
-    <Content Include="xunit.runner.json" CopyToOutputDirectory="PreserveNewest" />
-  </ItemGroup>
-
-  <ItemGroup>
+    <!-- No real model files: these are pure logic / in-memory unit tests, so unlike
+         OpenTail.Stingray.Tests.Audio (which loads real GGUF audio models and must stay
+         serial), this project keeps xUnit's default parallel test execution. -->
     <Using Include="Xunit" />
   </ItemGroup>
 

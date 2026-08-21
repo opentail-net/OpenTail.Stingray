@@ -5,9 +5,9 @@ using OpenTail.Stingray.Audio.F5TTS;
 using OpenTail.Stingray.Core;
 using Xunit;
 
-namespace OpenTail.Stingray.Tests.Audio;
+namespace OpenTail.Stingray.Tests.Audio.Fast;
 
-public sealed class F5TtsRealWeightsTests
+public sealed class F5TtsRealWeightsTests : HeavyTestBase
 {
     private const string ModelFileName = "f5tts_base.safetensors";
 

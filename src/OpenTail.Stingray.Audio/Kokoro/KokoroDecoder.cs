@@ -168,8 +168,10 @@ public static class KokoroDecoder
                 xSourceT = stftFrames;
             }
 
-            // noise_res[i]: AdaINResBlock1 (Snake1D activated)
-            xSource  = AdaINResBlock1Forward(gw.NoiseRes[i], xSource, chOut, xSourceT, s, styleDim);
+            // noise_res[i]: AdaINResBlock1 (Snake1D activated). Reference (istftnet.py Generator.__init__):
+            // kernel_size=7 for every stage except the last, which uses kernel_size=11.
+            int noiseResKernel = (i + 1 < numUp) ? 7 : 11;
+            xSource  = AdaINResBlock1Forward(gw.NoiseRes[i], xSource, chOut, xSourceT, s, styleDim, noiseResKernel);
             xSourceT = xSource.Length / chOut;
 
             // ups[i]: ConvTranspose1d(chIn, chOut, k=upsampleKernels[i], stride=upsampleRates[i], pad=(k-u)/2)
@@ -205,8 +207,9 @@ public static class KokoroDecoder
             for (int j = 0; j < numKernels; j++)
             {
                 int rbIdx = i * numKernels + j;
-                // Dilations come from resblockDils for this kernel: dils[j*3 .. j*3+2]
-                var rbOut = AdaINResBlock1Forward(gw.ResBlocks[rbIdx], x, chOut, curT, s, styleDim);
+                // resblockKernelSizes (reference: [3, 7, 11]) selects j's kernel size; dilations
+                // are [1,3,5] for every (stage, kernel) pair per the reference's HiFi-GAN defaults.
+                var rbOut = AdaINResBlock1Forward(gw.ResBlocks[rbIdx], x, chOut, curT, s, styleDim, resblockKernels[j]);
                 if (xs == null) xs = rbOut;
                 else for (int k2 = 0; k2 < xs.Length; k2++) xs[k2] += rbOut[k2];
             }
@@ -243,12 +246,12 @@ public static class KokoroDecoder
     //                            xt=n2(xt,s); xt=Snake(xt,a2); xt=c2(xt); x=xt+x
     // -----------------------------------------------------------------------
 
-    private static float[] AdaINResBlock1Forward(ResBlockWeights w, float[] x, int ch, int t, float[] s, int styleDim)
+    // kernel is the resblock's kernel_size (istftnet.py AdainResBlock1: 3, 7, or 11 depending on
+    // which resblock/noise_res this is -- see Generator.__init__). Dilations are always [1,3,5]
+    // for convs1 (per the reference's HiFi-GAN defaults) and always 1 for convs2.
+    private static float[] AdaINResBlock1Forward(ResBlockWeights w, float[] x, int ch, int t, float[] s, int styleDim, int kernel)
     {
         var cur = (float[])x.Clone();
-        // Dilations: resblockDils indexed by position. The ResBlockWeights stores 3 pairs.
-        // We read dilation from the weight shape: for kernel=3, padding=(k*d-d)/2, so
-        // the actual dilation per conv is implied. We use the canonical [1,3,5] ordering.
         int[] dilatDilations = [1, 3, 5];
         for (int i = 0; i < 3; i++)
         {
@@ -256,11 +259,11 @@ public static class KokoroDecoder
 
             float[] xt = AdaIn1d(cur, s, w.Adain1Weight[i], w.Adain1Bias[i], ch, styleDim, t);
             Snake1DInPlace(xt, w.Alpha1[i], ch, t);
-            xt = Conv1dDilated(xt, w.Convs1Weight[i], w.Convs1Bias[i], ch, ch, t, kernel: 3, dilation: dil);
+            xt = Conv1dDilated(xt, w.Convs1Weight[i], w.Convs1Bias[i], ch, ch, t, kernel: kernel, dilation: dil);
 
             xt = AdaIn1d(xt, s, w.Adain2Weight[i], w.Adain2Bias[i], ch, styleDim, t);
             Snake1DInPlace(xt, w.Alpha2[i], ch, t);
-            xt = Conv1dDilated(xt, w.Convs2Weight[i], w.Convs2Bias[i], ch, ch, t, kernel: 3, dilation: 1);
+            xt = Conv1dDilated(xt, w.Convs2Weight[i], w.Convs2Bias[i], ch, ch, t, kernel: kernel, dilation: 1);
 
             for (int j = 0; j < cur.Length; j++) cur[j] += xt[j];
         }

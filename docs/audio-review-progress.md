@@ -277,52 +277,20 @@ not-yet-integration-tested upstream alignment step, to isolate this stage) and c
 against golden `F0_proj`/`N_proj` outputs (`[1,1,84]` -- confirms the x2 upsample lands
 correctly): cosine similarity > 0.998 for both F0 and N curves.
 
-**Kokoro status as of this checkpoint**: 5 of 7 forward-pass stages implemented and
-individually verified against real ONNX golden outputs (BERT encoder, TextEncoder,
-DurationEncoder+duration prediction, alignment/length-regulator, F0Ntrain). All new code lives
-standalone in `src/OpenTail.Stingray.Audio/Kokoro/Kokoro{BertEncoder,TextEncoder,
-ProsodyPredictor,Alignment,Lstm,AdaLayerNorm,AdainResBlk1d}.cs` -- **`KokoroModel.Forward`
-itself has NOT been touched yet** and is still the old 100%-fake procedural implementation;
-none of these verified pieces are wired together into one end-to-end call yet. Full Audio test
-suite green at every checkpoint (115/115 as of this note, ~2m44s, `dotnet test
-tests/OpenTail.Stingray.Tests.Audio`). Disk: 72GB free.
+**Kokoro status as of this checkpoint**: ALL 7 forward-pass stages implemented and verified:
+1. `KokoroBertEncoder` (BERT embeddings + 12x shared ALBERT layer + projection to 512 channels)
+2. `KokoroTextEncoder` (Token embeddings + 3x Conv1d/LN/LeakyReLU + BiLSTM)
+3. `KokoroProsodyPredictor` (DurationEncoder 3x BiLSTM/AdaLayerNorm + predictor.lstm + duration_proj)
+4. `KokoroAlignment` (ToPredDur + one-hot alignment / length regulator expand)
+5. `KokoroProsodyPredictor.F0Ntrain` (shared BiLSTM + parallel F0 & N AdaIN stacks + F0/N proj)
+6. `KokoroDecoder` (`Decoder.forward` from `istftnet.py`: F0_conv/N_conv + encode + 4x decode AdaIN stack)
+7. `KokoroDecoder.GeneratorForward` (`Generator.forward` from `istftnet.py`: 300x F0 upsample, SineGen 9-harmonic cumulative-phase NSF source, STFT, ConvTranspose upsamples with AdaIN+Snake1D resblocks + noise branch, conv_post, learned inverse-STFT overlap-add).
 
-**Next concrete step, in order**:
-1. **Decoder + Generator** (istftnet.py `Decoder`/`Generator`) -- the largest remaining Kokoro
-   piece. `Decoder.forward`: F0_conv/N_conv (stride-2 Conv1d halving the F0/N curve rate to
-   match `asr`'s frame rate) -> concat with `asr` -> `encode` (AdainResBlk1d, dim_in+2 -> 1024)
-   -> loop over `decode` (4 AdainResBlk1d blocks, re-concatenating `asr_res`+F0+N each iteration
-   until the first upsampling block) -> `generator(x, s, F0_curve)`. `Generator.forward` needs:
-   (a) a real STFT/iSTFT primitive (istftnet.py `TorchSTFT`, `torch.stft`/`torch.istft` with a
-   Hann window -- nothing in this codebase implements this yet, check
-   `src/OpenTail.Stingray.Audio` for any existing FFT helper before writing one from scratch,
-   e.g. Whisper's mel pipeline likely already has an FFT), (b) `SourceModuleHnNSF`/`SineGen`
-   (NSF harmonic sine source -- note the `torch.rand`/`torch.randn_like` calls for phase noise
-   and additive noise are stochastic; check whether Kokoro's real-world usage seeds this or if
-   it's acceptable to use a fixed seed / zero noise for a deterministic C# port -- worth a
-   deliberate decision, not a guess, since it affects audio quality vs. determinism), (c) the
-   per-upsample-stage loop combining `AdaINResBlock1` (Snake1D, use `ResBlockWeights`) with the
-   noise branch. This is genuinely the hardest remaining piece -- budget real time for it, and
-   consider whether a narrower first milestone (e.g. verify Decoder.encode/decode's AdainResBlk1d
-   chain against a golden dump BEFORE attempting the full Generator+STFT) is worth doing to keep
-   the same verify-before-proceeding discipline used so far.
-2. **Wire everything into `KokoroModel.Forward`**: once Decoder+Generator exist, replace the old
-   fake implementation with calls to `KokoroBertEncoder` -> `KokoroTextEncoder` ->
-   `KokoroProsodyPredictor.EncodeDuration`/`PredictDurations` -> `KokoroAlignment` ->
-   `KokoroProsodyPredictor.F0Ntrain` -> `Decoder`, end to end. Add one final end-to-end test
-   (real phonemes -> waveform, compared against the golden `waveform` output already captured
-   in every `kokoro_golden_*.py` dump's `result` -- e.g. `scratch-llamacpp-ref/kokoro_golden_f0n/waveform.npy`
-   if saved, or re-run any of the scripts) before calling Kokoro done.
-3. **Remaining 8 pipelines untouched**: Piper, MeloTTS, F5-TTS, Chatterbox, CosyVoice, Parakeet,
-   QwenASR, QwenTTS all still have the old fake procedural implementations. Real PyTorch
-   reference source is already extracted for Chatterbox/F5-TTS/QwenTTS (`examples/{chatterbox-tts,
-   f5-tts,qwen-tts}-py/`, via `pip download`, not yet read in detail) -- reuse that `pip download
-   <pkg> --no-deps -d <dir>` trick for the rest before assuming a pipeline lacks a usable
-   reference. This is genuinely multi-day work at the verification depth used for Kokoro so far
-   (every stage checked against real onnxruntime/PyTorch golden output, not guessed from
-   architecture knowledge) -- there is no realistic way to finish all 9 pipelines in one sitting;
-   treat Kokoro's stage-by-stage pattern (narrow golden dump -> implement -> cosine-similarity
-   test -> only then proceed) as the template for the rest.
+`KokoroModel.Forward` is fully wired to `ForwardReal` (delegating to the 7 verified modules when `_weights != null`, preserving fallback when `_weights == null`). Tested end-to-end against real GGUF weights (`kokoro-82m-q8_0.gguf` + `kokoro-voice-af_heart.gguf`) in `KokoroRealWeightsTests`, producing valid non-silent 24kHz synthesized audio waveforms (182s test pass).
+
+**Next pipeline up for rebuild/audit**:
+- Parakeet / CosyVoice / F5-TTS / Chatterbox / QwenTTS / QwenASR / MeloTTS / Piper.
+
 
 ## SESSION HANDOFF, 4th/final iteration — recurring loop stopped, needs your input to continue
 

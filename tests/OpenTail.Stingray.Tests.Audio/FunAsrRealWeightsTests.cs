@@ -4,9 +4,9 @@ using OpenTail.Stingray.Audio;
 using OpenTail.Stingray.Audio.FunASR;
 using Xunit;
 
-namespace OpenTail.Stingray.Tests.Audio;
+namespace OpenTail.Stingray.Tests.Audio.Fast;
 
-public sealed class FunAsrRealWeightsTests
+public sealed class FunAsrRealWeightsTests : HeavyTestBase
 {
     private static string? FindModelPath(string fileName)
     {

@@ -27,6 +27,8 @@
     <Project Path="src/OpenTail.Stingray.Vision/OpenTail.Stingray.Vision.csproj" />
   </Folder>
   <Folder Name="/tests/">
+    <Project Path="tests/OpenTail.Stingray.Tests.Audio/OpenTail.Stingray.Tests.Audio.csproj" />
+    <Project Path="tests/OpenTail.Stingray.Tests.Audio.Fast/OpenTail.Stingray.Tests.Audio.Fast.csproj" />
     <Project Path="tests/OpenTail.Stingray.Tests.Cli/OpenTail.Stingray.Tests.Cli.csproj" />
     <Project Path="tests/OpenTail.Stingray.Tests.Core/OpenTail.Stingray.Tests.Core.csproj" />
     <Project Path="tests/OpenTail.Stingray.Tests.Cuda/OpenTail.Stingray.Tests.Cuda.csproj" />

@@ -5,9 +5,9 @@ using OpenTail.Stingray.Audio.QwenASR;
 using OpenTail.Stingray.Core;
 using Xunit;
 
-namespace OpenTail.Stingray.Tests.Audio;
+namespace OpenTail.Stingray.Tests.Audio.Fast;
 
-public sealed class QwenForcedAlignerRealWeightsTests
+public sealed class QwenForcedAlignerRealWeightsTests : HeavyTestBase
 {
     private const string ModelFileName = "qwen3-forcedaligner-0.6b.safetensors";
 

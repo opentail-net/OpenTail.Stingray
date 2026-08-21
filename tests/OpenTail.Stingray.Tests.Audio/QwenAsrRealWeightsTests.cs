@@ -7,9 +7,9 @@ using OpenTail.Stingray.Audio.QwenASR;
 using OpenTail.Stingray.Core;
 using Xunit;
 
-namespace OpenTail.Stingray.Tests.Audio;
+namespace OpenTail.Stingray.Tests.Audio.Fast;
 
-public sealed class QwenAsrRealWeightsTests
+public sealed class QwenAsrRealWeightsTests : HeavyTestBase
 {
     private const string ModelFileName = "qwen3-asr-0.6b-q4_k.gguf";
 

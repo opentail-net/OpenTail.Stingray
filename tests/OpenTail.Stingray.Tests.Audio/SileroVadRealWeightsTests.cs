@@ -4,9 +4,9 @@ using OpenTail.Stingray.Audio.Vad;
 using OpenTail.Stingray.Core;
 using Xunit;
 
-namespace OpenTail.Stingray.Tests.Audio;
+namespace OpenTail.Stingray.Tests.Audio.Fast;
 
-public sealed class SileroVadRealWeightsTests
+public sealed class SileroVadRealWeightsTests : HeavyTestBase
 {
     private const string GgufFileName = "silero_vad.gguf";
 

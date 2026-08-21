@@ -5,9 +5,9 @@ using OpenTail.Stingray.Audio.Parakeet;
 using OpenTail.Stingray.Core;
 using Xunit;
 
-namespace OpenTail.Stingray.Tests.Audio;
+namespace OpenTail.Stingray.Tests.Audio.Fast;
 
-public sealed class ParakeetRealWeightsTests
+public sealed class ParakeetRealWeightsTests : HeavyTestBase
 {
     private const string ModelFileName = "parakeet-ctc-0.6b-q4_k.gguf";
 

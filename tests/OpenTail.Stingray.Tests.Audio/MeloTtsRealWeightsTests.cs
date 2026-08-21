@@ -4,9 +4,9 @@ using OpenTail.Stingray.Audio;
 using OpenTail.Stingray.Audio.MeloTTS;
 using Xunit;
 
-namespace OpenTail.Stingray.Tests.Audio;
+namespace OpenTail.Stingray.Tests.Audio.Fast;
 
-public sealed class MeloTtsRealWeightsTests
+public sealed class MeloTtsRealWeightsTests : HeavyTestBase
 {
     private const string ModelFileName = "melotts-zh_en.onnx";
 

@@ -4,9 +4,9 @@ using OpenTail.Stingray.Audio;
 using OpenTail.Stingray.Audio.Kokoro;
 using Xunit;
 
-namespace OpenTail.Stingray.Tests.Audio;
+namespace OpenTail.Stingray.Tests.Audio.Fast;
 
-public sealed class KokoroRealWeightsTests
+public sealed class KokoroRealWeightsTests : HeavyTestBase
 {
     private static string? FindModelPath(string fileName)
     {

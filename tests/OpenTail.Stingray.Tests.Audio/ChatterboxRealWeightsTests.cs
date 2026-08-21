@@ -5,9 +5,9 @@ using OpenTail.Stingray.Audio.Chatterbox;
 using OpenTail.Stingray.Core;
 using Xunit;
 
-namespace OpenTail.Stingray.Tests.Audio;
+namespace OpenTail.Stingray.Tests.Audio.Fast;
 
-public sealed class ChatterboxRealWeightsTests
+public sealed class ChatterboxRealWeightsTests : HeavyTestBase
 {
     private static string? FindModelPath(string fileName)
     {

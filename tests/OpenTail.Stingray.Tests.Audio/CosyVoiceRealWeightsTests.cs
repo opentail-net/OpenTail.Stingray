@@ -5,9 +5,9 @@ using OpenTail.Stingray.Audio.CosyVoice;
 using OpenTail.Stingray.Core;
 using Xunit;
 
-namespace OpenTail.Stingray.Tests.Audio;
+namespace OpenTail.Stingray.Tests.Audio.Fast;
 
-public sealed class CosyVoiceRealWeightsTests
+public sealed class CosyVoiceRealWeightsTests : HeavyTestBase
 {
     private const string ModelFileName = "cosyvoice2_0.5b.safetensors";
 

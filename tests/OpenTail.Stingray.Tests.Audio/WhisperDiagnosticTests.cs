@@ -6,7 +6,7 @@ using OpenTail.Stingray.Audio;
 using OpenTail.Stingray.Audio.Whisper;
 using Xunit;
 
-namespace OpenTail.Stingray.Tests.Audio;
+namespace OpenTail.Stingray.Tests.Audio.Fast;
 
 /// <summary>
 /// Throwaway diagnostic for the known bug (2026-08-21): "stingray stt" with real weights
@@ -15,7 +15,7 @@ namespace OpenTail.Stingray.Tests.Audio;
 /// whisper.cpp reference binary is available locally to diff against.
 /// See docs/audio-review-progress.md.
 /// </summary>
-public sealed class WhisperDiagnosticTests
+public sealed class WhisperDiagnosticTests : HeavyTestBase
 {
     private sealed class Output
     {
