@@ -72,7 +72,7 @@ public sealed class ChatterboxT3Tests : HeavyTestBase
 
         int[] textTokens = tokenizer.Encode("Testing real Chatterbox Turbo weights in OpenTail Stingray.");
 
-        var speechTokens = lm.GenerateSpeechTokens(textTokens, [], temperature: 0.8f, maxTokens: 8);
+        var speechTokens = lm.GenerateSpeechTokens(textTokens, [], temperature: 0.8f, maxTokens: 32);
 
         Assert.True(speechTokens.Count >= 2, "Must produce at least the start/stop sentinel tokens.");
         Assert.Equal(weights.StartSpeechToken, speechTokens[0]);

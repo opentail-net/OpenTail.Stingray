@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using OpenTail.Stingray.Cpu;
 
 namespace OpenTail.Stingray.Audio.Chatterbox;
 
@@ -264,37 +265,55 @@ public sealed class ChatterboxAcousticLm : IDisposable
                 vCacheL.Add(v);
             }
 
-            var attnOut = new float[n][];
+            // Per-position attention context: reads only the cache (already fully populated for
+            // this chunk by the append loop above), so it's safe to parallelize across positions
+            // -- during prefill this scans up to a few hundred cached K/V entries per position,
+            // and was previously a fully scalar, single-threaded O(n^2) scan. The Q.K dot product
+            // uses the same SIMD kernel as Linear() below. Deliberately NOT parallelized together
+            // with the attn_output Linear() calls (those already parallelize internally over 1024
+            // output rows in SimdKernels.MatVecF32; nesting Parallel.For inside this loop would
+            // oversubscribe the thread pool for no benefit), so contexts are computed here and
+            // projected in a separate, sequential loop below.
+            var contexts = new float[n][];
             float scale = 1f / MathF.Sqrt(HeadDim);
-            for (int i = 0; i < n; i++)
+            System.Threading.Tasks.Parallel.For(0, n, i =>
             {
                 var q = new float[dim];
                 Array.Copy(qkvAll[i], 0, q, 0, dim);
                 int selfCachePos = cacheBase + i;
+                int availableKeys = selfCachePos + 1;
 
                 var context = new float[dim];
-                for (int h = 0; h < NumHeads; h++)
+                var scores = new float[availableKeys];
+                unsafe
                 {
-                    int hOff = h * HeadDim;
-                    int availableKeys = selfCachePos + 1;
-                    var scores = new float[availableKeys];
-                    for (int t = 0; t < availableKeys; t++)
+                    fixed (float* qp = q)
                     {
-                        var kt = kCacheL[t];
-                        float dot = 0f;
-                        for (int d = 0; d < HeadDim; d++) dot += q[hOff + d] * kt[hOff + d];
-                        scores[t] = dot * scale;
-                    }
-                    SoftmaxInPlace(scores);
-                    for (int t = 0; t < availableKeys; t++)
-                    {
-                        var vt = vCacheL[t];
-                        float p = scores[t];
-                        for (int d = 0; d < HeadDim; d++) context[hOff + d] += p * vt[hOff + d];
+                        for (int h = 0; h < NumHeads; h++)
+                        {
+                            int hOff = h * HeadDim;
+                            for (int t = 0; t < availableKeys; t++)
+                            {
+                                var kt = kCacheL[t];
+                                fixed (float* ktp = kt)
+                                    scores[t] = SimdKernels.DotF32(qp + hOff, ktp + hOff, HeadDim) * scale;
+                            }
+                            SoftmaxInPlace(scores);
+                            for (int t = 0; t < availableKeys; t++)
+                            {
+                                var vt = vCacheL[t];
+                                float p = scores[t];
+                                for (int d = 0; d < HeadDim; d++) context[hOff + d] += p * vt[hOff + d];
+                            }
+                        }
                     }
                 }
-                attnOut[i] = Linear(context, layer.AttnOutputWeight, layer.AttnOutputBias, dim, dim);
-            }
+                contexts[i] = context;
+            });
+
+            var attnOut = new float[n][];
+            for (int i = 0; i < n; i++)
+                attnOut[i] = Linear(contexts[i], layer.AttnOutputWeight, layer.AttnOutputBias, dim, dim);
 
             for (int i = 0; i < n; i++)
                 for (int d = 0; d < dim; d++) hidden[i][d] += attnOut[i][d];
@@ -324,16 +343,22 @@ public sealed class ChatterboxAcousticLm : IDisposable
         return row;
     }
 
-    private static float[] Linear(float[] input, float[] weight, float[] bias, int inDim, int outDim)
+    /// <summary>
+    /// y = W @ x + b, W row-major [outDim, inDim]. Delegates the matvec itself to
+    /// SimdKernels.MatVecF32 (AVX2/AVX-512 dot products, auto-parallelized across output rows for
+    /// large row counts) -- a scalar per-element loop here made T3's ~400-token conditioning+text
+    /// prefill (24 layers x [1024-&gt;3072 QKV, 1024-&gt;1024 attn_out, 1024&lt;-&gt;4096 FFN] projections)
+    /// take several minutes; this is the same kernel the main LLM inference engine uses for GGUF
+    /// forward passes.
+    /// </summary>
+    private static unsafe float[] Linear(float[] input, float[] weight, float[] bias, int inDim, int outDim)
     {
         var output = new float[outDim];
-        for (int o = 0; o < outDim; o++)
+        fixed (float* w = weight, x = input, y = output)
         {
-            float sum = bias[o];
-            int wBase = o * inDim;
-            for (int i = 0; i < inDim; i++) sum += weight[wBase + i] * input[i];
-            output[o] = sum;
+            SimdKernels.MatVecF32(y, w, x, outDim, inDim);
         }
+        for (int o = 0; o < outDim; o++) output[o] += bias[o];
         return output;
     }
 
