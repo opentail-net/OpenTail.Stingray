@@ -760,6 +760,9 @@ public static unsafe class SimdKernels
             case DType.IQ4_NL:
                 MatVecIq4Nl(output, weights, input, rows, cols);
                 break;
+            case DType.Float16 when GgmlF16DotEnabled:
+                MatVecF16GgmlCompat(output, weights, input, rows, cols);
+                break;
             default:
                 MatVecDequantFallback(output, weights, input, rows, cols, dtype);
                 break;
@@ -1361,6 +1364,50 @@ public static unsafe class SimdKernels
     // ================================================================
     //  F32 MatVec
     // ================================================================
+
+    /// <summary>
+    /// Opt-in ggml-compatible dot for <see cref="DType.Float16"/> weights: rounds the F32
+    /// activation to fp16 (round-trip through <see cref="Half"/>) before multiplying against the
+    /// weight, matching ggml's <c>vec_dot_type=GGML_TYPE_F16</c> pairing (<c>ggml_vec_dot_f16</c>
+    /// quantizes/rounds the activation to half precision first, not a full-F32 dot). This engine's
+    /// default (see <see cref="MatVecDequantFallback"/>) keeps the activation at full F32
+    /// precision for strictly better accuracy; enable via <c>STINGRAY_GGML_F16_DOT=1</c> only when
+    /// bit-parity comparison against llama.cpp is specifically wanted — see docs/bugstofix.md.
+    /// </summary>
+    public static readonly bool GgmlF16DotEnabled =
+        Environment.GetEnvironmentVariable("STINGRAY_GGML_F16_DOT") == "1";
+
+    public static void MatVecF16GgmlCompat(float* output, byte* weights, float* input, int rows, int cols)
+    {
+        float* rounded = stackalloc float[cols];
+        for (int i = 0; i < cols; i++)
+            rounded[i] = (float)(Half)input[i];
+
+        Half* w = (Half*)weights;
+        if (rows >= MinRowsForParallel)
+        {
+            var outp = output; var inp = rounded; var ww = weights; int c = cols;
+            Parallel.For(0, rows, s_parallelOpts, r =>
+            {
+                Half* rw = (Half*)(ww + (long)r * c * sizeof(ushort));
+                float sum = 0f;
+                for (int i = 0; i < c; i++)
+                    sum += (float)rw[i] * inp[i];
+                outp[r] = sum;
+            });
+        }
+        else
+        {
+            for (int r = 0; r < rows; r++)
+            {
+                Half* rw = w + (long)r * cols;
+                float sum = 0f;
+                for (int i = 0; i < cols; i++)
+                    sum += (float)rw[i] * rounded[i];
+                output[r] = sum;
+            }
+        }
+    }
 
     public static void MatVecF32(float* output, float* matrix, float* input, int rows, int cols)
     {

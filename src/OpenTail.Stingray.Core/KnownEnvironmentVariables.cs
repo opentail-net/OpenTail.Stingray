@@ -89,6 +89,7 @@ public static class KnownEnvironmentVariables
         "STINGRAY_GEMM_PATH",
         "STINGRAY_GEMMA3_DEBUG",
         "STINGRAY_GEMMA4_PROBE",
+        "STINGRAY_GGML_F16_DOT",
         "STINGRAY_GPU_ARGMAX",
         "STINGRAY_HYBRID_BATCHED_MOE",
         "STINGRAY_HYBRID_PREFILL_COMPUTE",

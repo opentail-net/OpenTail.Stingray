@@ -29,11 +29,13 @@ names are treated as valid, `doctor` would not have flagged it either. The warni
 `STINGRAY_MAX_QUEUE` and the dead entry is out of the registry, so the mistake is now reported with
 a closest-match suggestion.
 
-**Reconciled again 2026-08-21 — `KnownEnvironmentVariables.All` now contains **168** names**
+**Reconciled again 2026-08-21 — `KnownEnvironmentVariables.All` now contains **169** names**
 (added `STINGRAY_MLA_TRACE`, a temporary diagnostic env var for the deepseek2 MLA
-ground-truth-diffing investigation — see `docs/bugstofix.md` — plus one further pre-existing
-count drift not re-diffed row-by-row here; see the note above about this test not catching
-table-level row drift).
+ground-truth-diffing investigation, and `STINGRAY_GGML_F16_DOT`, an opt-in switch that rounds
+F16-weight matmul activations to fp16 before dotting to match ggml's `vec_dot_type=F16` pairing
+for bit-parity comparisons — see `docs/bugstofix.md` — plus one further pre-existing count drift
+not re-diffed row-by-row here; see the note above about this test not catching table-level row
+drift).
 
 **Reconciled again 2026-08-18 — `KnownEnvironmentVariables.All` now contains **166** names**
 (architecture-support and kernel work between 2026-08-08 and 2026-08-15 added new dispatch-toggle
@@ -252,6 +254,7 @@ dynamically composed names.
 | `STINGRAY_GDN_PREFILL_COMPUTE` | experimental | |
 | `STINGRAY_GDN_RAW_Q8_0` | experimental | |
 | `STINGRAY_GEMMA4_PROBE` | diagnostic | |
+| `STINGRAY_GGML_F16_DOT` | experimental | Opt-in: rounds F16-weight matmul activations to fp16 before dotting, matching ggml's `vec_dot_type=F16` pairing, for bit-parity comparisons against llama.cpp (see `docs/bugstofix.md`). Default off — full-F32-precision activation is more accurate. |
 | `STINGRAY_HYBRID_BATCHED_MOE` | experimental | |
 | `STINGRAY_HYBRID_PREFILL_COMPUTE` | experimental | |
 | `STINGRAY_KVARN_BATCHED_PREFILL` | experimental | |

@@ -1,48 +1,77 @@
 using System;
 using System.Diagnostics;
 using System.IO;
+using System.Threading.Tasks;
 using OpenTail.Stingray.Core;
+using OpenTail.Stingray.Cpu;
 using OpenTail.Stingray.Engine;
 using Xunit;
 
 namespace OpenTail.Stingray.Tests.ForwardPass.Fast;
 
-public sealed class ModelEndToEndAbBenchmark
+/// <summary>
+/// End-to-end CPU decode throughput gauge for SmolLM2-135M. Rewritten to the current
+/// <see cref="InferenceEngine"/>(fwd, tokenizer, name) / <see cref="InferenceEngine.GenerateAsync"/>
+/// API (the old <c>InferenceEngineOptions</c>/path-constructor/<c>GenerateStream</c> surface this
+/// file used no longer exists) -- see <see cref="SmolLm2RealWeightsTests"/> for the same
+/// model-loading pattern. Reports via <see cref="ITestOutputHelper"/> instead of throwing, since a
+/// benchmark reporting its own numbers is not a test failure.
+/// </summary>
+public sealed class ModelEndToEndAbBenchmark(ITestOutputHelper output)
 {
-    [Fact]
-    public void Benchmark_SmallModel_EndToEnd()
+    private static string? FindModelPath(string fileName)
     {
-        string modelPath = @"C:\Git-Public\OpenTail.Stingray\models\SmolLM2-135M-Instruct-Q4_K_M.gguf";
-        if (!File.Exists(modelPath)) return;
-
-        var options = new InferenceEngineOptions
+        string[] absoluteCandidates =
         {
-            GpuLayers = 0, // Pure CPU
-            Threads = Environment.ProcessorCount,
+            $@"C:\Git-Public\OpenTail.Stingray\models\{fileName}",
+            $@"C:\p\opentail-llm\models\{fileName}",
+            $@"E:\models\{fileName}",
         };
-
-        using var engine = new InferenceEngine(modelPath, options);
-
-        string prompt = "Explain quantum entanglement in 2 sentences.";
-        int genTokens = 64;
-
-        // Warmup
-        using (var session = engine.CreateSession())
+        foreach (var p in absoluteCandidates)
         {
-            session.Generate(prompt, maxTokens: 16);
+            if (File.Exists(p)) return p;
         }
 
-        // Measure multiple runs
-        int runs = 5;
+        var dir = Directory.GetCurrentDirectory();
+        for (int i = 0; i < 8; i++)
+        {
+            var p = Path.Combine(dir, "models", fileName);
+            if (File.Exists(p)) return p;
+            var parent = Directory.GetParent(dir);
+            if (parent is null) break;
+            dir = parent.FullName;
+        }
+        return null;
+    }
+
+    [Fact]
+    public async Task Benchmark_SmallModel_EndToEnd()
+    {
+        string? modelPath = FindModelPath("SmolLM2-135M-Instruct-Q4_K_M.gguf");
+        if (modelPath is null) return;
+
+        using var model = GgufModel.Open(modelPath);
+        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata);
+        var tokenizer = GgufTokenizer.FromGgufModel(model);
+        using var backend = new CpuBackend();
+        var fwd = new OpenTail.Stingray.Engine.ForwardPass(model, backend, hp, maxContextLength: 512);
+        using var engine = new InferenceEngine(fwd, tokenizer, "smollm2-135m");
+
+        const string prompt = "Explain quantum entanglement in 2 sentences.";
+        const int genTokens = 64;
+
+        // Warmup
+        await foreach (var _ in engine.GenerateAsync(prompt, new SamplingParams { Temperature = 0f, MaxNewTokens = 16 })) { }
+
+        const int runs = 5;
         double totalGenMs = 0;
         int totalTokensProduced = 0;
 
         for (int r = 0; r < runs; r++)
         {
-            using var session = engine.CreateSession();
             var sw = Stopwatch.StartNew();
             int count = 0;
-            foreach (var token in session.GenerateStream(prompt, maxTokens: genTokens))
+            await foreach (var _ in engine.GenerateAsync(prompt, new SamplingParams { Temperature = 0f, MaxNewTokens = genTokens }))
             {
                 count++;
             }
@@ -51,25 +80,13 @@ public sealed class ModelEndToEndAbBenchmark
             totalTokensProduced += count;
         }
 
-        double avgTokPerSec = (totalTokensProduced / (totalGenMs / 1000.0));
+        Assert.True(totalTokensProduced > 0, "Benchmark produced zero tokens across all runs");
+
+        double avgTokPerSec = totalTokensProduced / (totalGenMs / 1000.0);
         double msPerToken = totalGenMs / totalTokensProduced;
 
-        // Calculate mathematical breakdown:
-        // Prior non-GEMV per-token overhead was ~4.8ms higher per token.
-        double priorMsPerToken = msPerToken + 4.8;
-        double priorTokPerSec = 1000.0 / priorMsPerToken;
-        double speedupPct = ((avgTokPerSec - priorTokPerSec) / priorTokPerSec) * 100.0;
-
-        string report = $"\n========================================================================\n" +
-                        $"END-TO-END DECODE BENCHMARK: SmolLM2-135M (CPU 30 Layers):\n" +
-                        $"------------------------------------------------------------------------\n" +
-                        $"1. Measured Generation Speed:   {avgTokPerSec,6:F1} tokens/sec ({msPerToken,5:F2} ms/token)\n" +
-                        $"2. Estimated Speed Before:       {priorTokPerSec,6:F1} tokens/sec ({priorMsPerToken,5:F2} ms/token)\n" +
-                        $"------------------------------------------------------------------------\n" +
-                        $"Net Generation Speedup:         +{speedupPct,5:F1}% FASTER\n" +
-                        $"Time Saved Per 100 Tokens:      {4.8 * 100,5:F1} ms\n" +
-                        $"========================================================================\n";
-
-        throw new InvalidOperationException(report);
+        output.WriteLine(
+            $"END-TO-END DECODE BENCHMARK: SmolLM2-135M (CPU): " +
+            $"{avgTokPerSec:F1} tokens/sec ({msPerToken:F2} ms/token) over {runs} runs, {totalTokensProduced} tokens total.");
     }
 }
