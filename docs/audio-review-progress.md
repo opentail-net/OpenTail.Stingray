@@ -1875,3 +1875,75 @@ again (small, unrelated fix, doesn't need its own full iteration). (2) Verify me
 preprocessing against `canary_ctc.cpp`. (3) Build a real oracle (compile `examples/crispasr`
 or find its existing diff-harness mode) and golden-verify each encoder stage numerically
 before calling Parakeet done. (4) Then move to CosyVoice per the queue.
+
+### F5TtsTests.cs fixed; ParakeetMelExtractor.cs rewritten to use the real checkpoint preprocessing; encoder performance pass (2026-08-21, same session, direct user requests)
+
+**(1) done**: `F5TtsTests.cs`'s `F5DiTModel_SolveFlowMatchingOde_SolvesTrajectory` test
+exercised the old fake instance-based `F5DiTModel` API, which no longer exists (an earlier
+session made it a real, static, golden-verified class and never updated this Fast test).
+Removed the stale test with a comment pointing at the real coverage
+(`Tests.Audio/F5DiTModelTests.cs`, `Tests.Audio/F5TtsRealWeightsTests.cs`). `Tests.Audio.Fast`
+now builds clean; ran `F5TtsTests` (4 remaining tests) individually to confirm no regression
+— all PASS.
+
+**(2) done**: rewrote `ParakeetMelExtractor.cs` from scratch to match `examples/crispasr/src/
+core/mel.cpp`'s exact NeMo `AudioToMelSpectrogramPreprocessor` pipeline (traced through
+`canary_ctc.cpp`'s `core_mel::Params` construction, `mel.cpp`'s stage-by-stage implementation,
+and `mel.h`'s enum defaults for the fields `canary_ctc.cpp` doesn't override):
+- Pre-emphasis (0.97) applied globally to the raw signal BEFORE center-padding, not reset per
+  frame (previous version was already close to this but didn't center-pad or center the
+  window).
+- Zero center-pad by `n_fft/2` (256) on both sides — previous version had no center-padding
+  at all, meaning every frame boundary was wrong once padding is accounted for.
+- Window (400 real samples from `preprocessor.window`) centered within the 512-sample FFT
+  buffer with `(512-400)/2=56`-sample zero-pad on each side (`lpad`) — previous version put
+  the window at the buffer's start (`real[0..399]`) with no centering, a real bug.
+- Mel filterbank now uses the checkpoint's own real shipped `preprocessor.fb` tensor
+  (`ParakeetWeights.MelFilterbank`) instead of a self-computed librosa-style triangular
+  filterbank — the doc had flagged this as required ("use them directly, don't recompute a
+  formula") since the previous iteration but it hadn't been done yet.
+- Log: `log(x + log_eps)` with `log_eps = 2^-24` (`LogGuard::AddEpsilon`, NeMo's convention)
+  — previous version used `log(max(x, 1e-5))` (`LogGuard::MaxClip`-style with the wrong
+  epsilon), a different function entirely, not just a different constant.
+- Added the previously entirely-missing per-feature Z-normalization stage
+  (`Normalization::PerFeatureZ`): per-mel-band mean/variance across time, Bessel-corrected
+  (`denom = T-1`), `std += 1e-5` applied OUTSIDE the sqrt (order matters, per `mel.cpp`'s own
+  comment about issue #37 — an eps-inside-sqrt version would under-amplify low-variance mel
+  bands relative to NeMo). Previous version had no normalization step at all.
+- Kept a fallback self-computed filterbank/window path (`ParakeetMelExtractor()` no-args ctor)
+  for callers without a loaded checkpoint (e.g. structural tests) — explicitly documented as
+  NOT what the real checkpoint expects; `ParakeetPipeline.Load` always uses the new
+  `ParakeetMelExtractor.FromWeights(weights)` factory instead, wired into `ParakeetPipeline.cs`.
+- Dropped a `powerSpectrum[k] /= NFft` normalization the previous version had after the power
+  spectrum computation — checked `F5MelExtractor.cs` (a real, golden-verified pipeline using
+  the same `SpectralKernels.ComputePowerSpectrum`) and it applies no such division, so the
+  previous Parakeet-specific division looks like it was never verified against anything real.
+
+Build clean (`dotnet build src/OpenTail.Stingray.Audio`). Not yet re-run against the Heavy
+encoder tests with this new mel path specifically (those tests feed synthetic mel directly,
+bypassing `ExtractMel`) — still needs its own verification pass, and still no numeric oracle
+comparison exists for the mel stage itself (same "structurally corrected against the real
+reference source, not yet golden-verified" caveat as the rest of Parakeet).
+
+**Performance pass on `ParakeetConformerEncoder.cs`** (direct user request, explicitly scoped
+to "improve existing code, don't start new pipeline work"): the per-frame loops inside each
+Conformer block's FFN1, FFN2, attention Q/K/V projection, rel-pos projection, and conv
+module's pw1/dw/pw2 stages were serial `for` loops over T frames despite every frame's work
+being independent (each frame's `Linear` calls only read that frame's own row). These are the
+actual cost centers (each involves at least one `dim`x`dim` or `dim`x`ff_dim` matmul, times T
+frames, times 24 layers), so parallelized all of them with `Parallel.For` across the frame
+index. Left the plain O(T*dim) residual-add loops (no matmul) serial — parallelization
+overhead would exceed their cost. Did NOT touch the subsampling stage's pointwise conv2d
+(`Conv2dPointwise`) despite its scalar per-channel loop being SIMD-unfriendly in its current
+layout (channel-strided, not contiguous) — it runs twice total per utterance (not once per
+layer), so it's a small fraction of total cost and not worth the risk of a transpose-layout
+bug for this pass. Verified via `ParakeetConformerEncoderTests` (all 3 tests, real GGUF
+weights) — still PASS after the parallelization changes, 12.7s vs 15.5s before on the same
+small synthetic-mel test input (real gains should be larger on longer real audio, where T is
+in the hundreds rather than ~8).
+
+**Next iteration**: (1) verify the new mel extractor's output shape/values are sane against
+real audio (currently only build-verified, not test-run through `ExtractMel` itself). (2)
+Build a real oracle and golden-verify Parakeet numerically end-to-end (mel + encoder + CTC),
+the last thing standing between "structurally complete" and "done". (3) Then CosyVoice per
+the queue.

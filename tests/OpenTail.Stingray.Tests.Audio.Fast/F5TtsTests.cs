@@ -48,32 +48,12 @@ public sealed class F5TtsTests
         }
     }
 
-    [Fact]
-    public void F5DiTModel_SolveFlowMatchingOde_SolvesTrajectory()
-    {
-        using var dit = new F5DiTModel();
-        int numFrames = 16;
-        var condMel = new float[numFrames * F5DiTModel.InChannels];
-        var textFeatures = new float[numFrames * F5DiTModel.TextDim];
-
-        float[] denoisedMel = dit.SolveFlowMatchingOde(
-            condMel: condMel,
-            textFeatures: textFeatures,
-            numFrames: numFrames,
-            odeSteps: 4,
-            cfgStrength: 2.0f,
-            swayCoef: -1.0f,
-            seed: 42);
-
-        Assert.NotNull(denoisedMel);
-        Assert.Equal(numFrames * F5DiTModel.InChannels, denoisedMel.Length);
-
-        for (int i = 0; i < denoisedMel.Length; i++)
-        {
-            Assert.False(float.IsNaN(denoisedMel[i]));
-            Assert.False(float.IsInfinity(denoisedMel[i]));
-        }
-    }
+    // F5DiTModel_SolveFlowMatchingOde_SolvesTrajectory removed: F5DiTModel was ported to a
+    // real, weight-driven static class (golden-verified against the real PyTorch reference --
+    // see docs/audio-review-progress.md's F5-TTS DiT section) and no longer has the fake
+    // instance-based procedural constructor/API this test exercised. Real coverage lives in
+    // Tests.Audio/F5DiTModelTests.cs and Tests.Audio/F5TtsRealWeightsTests.cs (HeavyTestBase,
+    // real GGUF/safetensors weights).
 
     [Fact]
     public void F5VocosVocoder_Synthesize_Produces24000HzAudio()

@@ -43,7 +43,7 @@ public sealed class ParakeetPipeline : ISpeechToTextPipeline
 
         var weights = new ParakeetWeights(ggufPath);
         var tokenizer = ParakeetTokenizer.FromGguf(weights.Model);
-        var melExtractor = new ParakeetMelExtractor();
+        var melExtractor = ParakeetMelExtractor.FromWeights(weights);
         var decoder = new ParakeetCtcDecoder(tokenizer, weights);
 
         return new ParakeetPipeline(melExtractor, tokenizer, decoder, weights);

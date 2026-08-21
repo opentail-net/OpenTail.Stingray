@@ -203,9 +203,11 @@ public static class ParakeetConformerEncoder
     {
         int dim = w.HiddenDim;
 
-        // FFN1 (macaron, half-step)
+        // FFN1 (macaron, half-step). Per-frame work is independent (dim<->ff matmuls dominate
+        // cost here: T frames x 24 layers x 2 matmuls of ~1024x4096), so parallelize across
+        // frames rather than leaving this as a serial loop.
         var afterFf1 = new float[t][];
-        for (int i = 0; i < t; i++)
+        System.Threading.Tasks.Parallel.For(0, t, i =>
         {
             var normed = LayerNorm(x[i], l.NormFf1Weight, l.NormFf1Bias);
             var h1 = Linear(normed, l.Ff1Linear1Weight, l.Ff1Linear1Bias, dim, w.FfDim);
@@ -214,7 +216,7 @@ public static class ParakeetConformerEncoder
             var row = new float[dim];
             for (int d = 0; d < dim; d++) row[d] = x[i][d] + 0.5f * h2[d];
             afterFf1[i] = row;
-        }
+        });
 
         // Self-attention (rel-pos, untied u/v, full Transformer-XL rel_shift)
         var attnOut = RelPosSelfAttention(w, l, afterFf1, posEnc, t);
@@ -236,9 +238,9 @@ public static class ParakeetConformerEncoder
             afterConv[i] = row;
         }
 
-        // FFN2 (macaron, half-step)
+        // FFN2 (macaron, half-step), same per-frame independence as FFN1 above.
         var output = new float[t][];
-        for (int i = 0; i < t; i++)
+        System.Threading.Tasks.Parallel.For(0, t, i =>
         {
             var normed = LayerNorm(afterConv[i], l.NormFf2Weight, l.NormFf2Bias);
             var h1 = Linear(normed, l.Ff2Linear1Weight, l.Ff2Linear1Bias, dim, w.FfDim);
@@ -247,7 +249,7 @@ public static class ParakeetConformerEncoder
             var row = new float[dim];
             for (int d = 0; d < dim; d++) row[d] = afterConv[i][d] + 0.5f * h2[d];
             output[i] = LayerNorm(row, l.NormOutWeight, l.NormOutBias);
-        }
+        });
 
         return output;
     }
@@ -259,22 +261,27 @@ public static class ParakeetConformerEncoder
         int headDim = w.HeadDim;
         float scale = 1f / MathF.Sqrt(headDim);
 
+        // Q/K/V projection: T independent dim x dim matmuls -- parallelize across frames.
         var q = new float[t][];
         var k = new float[t][];
         var v = new float[t][];
         var normed = new float[t][];
-        for (int i = 0; i < t; i++)
+        System.Threading.Tasks.Parallel.For(0, t, i =>
         {
             normed[i] = LayerNorm(x[i], l.NormAttnWeight, l.NormAttnBias);
             q[i] = Linear(normed[i], l.AttnQWeight, l.AttnQBias, dim, dim);
             k[i] = Linear(normed[i], l.AttnKWeight, l.AttnKBias, dim, dim);
             v[i] = Linear(normed[i], l.AttnVWeight, l.AttnVBias, dim, dim);
-        }
+        });
 
+        // Rel-pos projection: 2T-1 independent dim x dim matmuls, same per-layer cost class as
+        // Q/K/V above -- also worth parallelizing rather than leaving serial.
         int posLen = posEnc.Length; // 2T-1
         var r = new float[posLen][];
-        for (int p = 0; p < posLen; p++)
+        System.Threading.Tasks.Parallel.For(0, posLen, p =>
+        {
             r[p] = LinearNoBias(posEnc[p], l.AttnPosWeight, dim, dim);
+        });
 
         var output = new float[t][];
         for (int i = 0; i < t; i++) output[i] = new float[dim];
@@ -342,8 +349,9 @@ public static class ParakeetConformerEncoder
         int kernel = w.ConvKernel;
         int pad = (kernel - 1) / 2;
 
+        // pw1 (dim -> 2*dim matmul, T independent frames) dominates this stage's cost.
         var glu = new float[t][];
-        for (int i = 0; i < t; i++)
+        System.Threading.Tasks.Parallel.For(0, t, i =>
         {
             var normed = LayerNorm(x[i], l.NormConvWeight, l.NormConvBias);
             var pw1 = Linear(normed, l.ConvPw1Weight, l.ConvPw1Bias, dim, 2 * dim);
@@ -355,10 +363,12 @@ public static class ParakeetConformerEncoder
                 row[d] = a * (1f / (1f + MathF.Exp(-b)));
             }
             glu[i] = row;
-        }
+        });
 
+        // Depthwise conv1d: O(t*dim*kernel), no matmul -- cheap per frame, but still
+        // embarrassingly parallel across output frames.
         var dwOut = new float[t][];
-        for (int ti = 0; ti < t; ti++)
+        System.Threading.Tasks.Parallel.For(0, t, ti =>
         {
             var row = new float[dim];
             for (int d = 0; d < dim; d++)
@@ -373,14 +383,15 @@ public static class ParakeetConformerEncoder
                 row[d] = sum;
             }
             dwOut[ti] = row;
-        }
+        });
 
+        // pw2 (dim -> dim matmul, T independent frames).
         var output = new float[t][];
-        for (int i = 0; i < t; i++)
+        System.Threading.Tasks.Parallel.For(0, t, i =>
         {
             SiluInPlace(dwOut[i]);
             output[i] = Linear(dwOut[i], l.ConvPw2Weight, l.ConvPw2Bias, dim, dim);
-        }
+        });
         return output;
     }
 
