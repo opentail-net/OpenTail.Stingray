@@ -1,4 +1,5 @@
 using System;
+using OpenTail.Stingray.Audio.Primitives;
 using OpenTail.Stingray.Cpu;
 
 namespace OpenTail.Stingray.Audio.Parakeet;
@@ -395,66 +396,16 @@ public static class ParakeetConformerEncoder
         return output;
     }
 
-    private static void SiluInPlace(float[] x)
-    {
-        for (int i = 0; i < x.Length; i++)
-        {
-            float v = x[i];
-            x[i] = v / (1f + MathF.Exp(-v));
-        }
-    }
+    private static void SiluInPlace(float[] x) => DenseKernels.SiluInPlace(x);
 
-    private static void SoftmaxInPlace(float[] scores)
-    {
-        float max = float.NegativeInfinity;
-        for (int i = 0; i < scores.Length; i++) if (scores[i] > max) max = scores[i];
-        float sum = 0f;
-        for (int i = 0; i < scores.Length; i++)
-        {
-            float e = MathF.Exp(scores[i] - max);
-            scores[i] = e;
-            sum += e;
-        }
-        float invSum = 1f / sum;
-        for (int i = 0; i < scores.Length; i++) scores[i] *= invSum;
-    }
+    private static void SoftmaxInPlace(float[] scores) => DenseKernels.SoftmaxInPlace(scores);
 
-    private static unsafe float[] Linear(float[] input, float[] weight, float[]? bias, int inDim, int outDim)
-    {
-        var output = new float[outDim];
-        fixed (float* wp = weight, xp = input, yp = output)
-        {
-            SimdKernels.MatVecF32(yp, wp, xp, outDim, inDim);
-        }
-        if (bias != null)
-            for (int o = 0; o < outDim; o++) output[o] += bias[o];
-        return output;
-    }
+    private static float[] Linear(float[] input, float[] weight, float[]? bias, int inDim, int outDim) =>
+        DenseKernels.Linear(input, weight, bias, inDim, outDim);
 
-    private static unsafe float[] LinearNoBias(float[] input, float[] weight, int inDim, int outDim)
-    {
-        var output = new float[outDim];
-        fixed (float* wp = weight, xp = input, yp = output)
-        {
-            SimdKernels.MatVecF32(yp, wp, xp, outDim, inDim);
-        }
-        return output;
-    }
+    private static float[] LinearNoBias(float[] input, float[] weight, int inDim, int outDim) =>
+        DenseKernels.LinearNoBias(input, weight, inDim, outDim);
 
-    private static float[] LayerNorm(float[] x, float[] weight, float[] bias)
-    {
-        int n = x.Length;
-        double mean = 0;
-        for (int i = 0; i < n; i++) mean += x[i];
-        mean /= n;
-        double var = 0;
-        for (int i = 0; i < n; i++) { double d = x[i] - mean; var += d * d; }
-        var /= n;
-        float invStd = (float)(1.0 / Math.Sqrt(var + ParakeetWeights.LayerNormEps));
-
-        var output = new float[n];
-        for (int i = 0; i < n; i++)
-            output[i] = (float)((x[i] - mean) * invStd) * weight[i] + bias[i];
-        return output;
-    }
+    private static float[] LayerNorm(float[] x, float[] weight, float[] bias) =>
+        DenseKernels.LayerNorm(x, weight, bias, ParakeetWeights.LayerNormEps);
 }

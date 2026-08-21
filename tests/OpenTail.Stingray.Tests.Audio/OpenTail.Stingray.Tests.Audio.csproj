@@ -22,6 +22,11 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\OpenTail.Stingray.Audio\OpenTail.Stingray.Audio.csproj" />
+    <!-- Needed only for QwenAsrLlmTensorSourceTests's real ForwardPass integration test, which
+         verifies the qwen3asr to qwen3 IModelTensorSource adapter actually runs through the
+         real Engine forward pass. See docs/audio-review-progress.md's QwenASR section. -->
+    <ProjectReference Include="..\..\src\OpenTail.Stingray.Engine\OpenTail.Stingray.Engine.csproj" />
+    <ProjectReference Include="..\..\src\OpenTail.Stingray.Cpu\OpenTail.Stingray.Cpu.csproj" />
   </ItemGroup>
 
 </Project>

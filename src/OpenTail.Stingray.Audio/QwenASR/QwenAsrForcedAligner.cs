@@ -11,14 +11,22 @@ namespace OpenTail.Stingray.Audio.QwenASR;
 /// </summary>
 public sealed class QwenAsrForcedAligner : IDisposable
 {
-    private readonly QwenAsrTokenizer _tokenizer;
     private readonly QwenForcedAlignerWeights? _weights;
 
+    /// <summary>
+    /// The <paramref name="tokenizer"/> parameter is accepted for API/call-site compatibility
+    /// (this class is still entirely procedural pending real Qwen3-ForcedAligner-0.6B weights,
+    /// a separate model from qwen3-asr -- see this class's doc comment) but not currently used
+    /// internally; word-level token-count estimates use <see cref="EstimateTokenCount"/>
+    /// instead of real BPE encoding, see the comments at each call site in <see cref="Align"/>.
+    /// </summary>
     public QwenAsrForcedAligner(QwenAsrTokenizer? tokenizer = null, QwenForcedAlignerWeights? weights = null)
     {
-        _tokenizer = tokenizer ?? new QwenAsrTokenizer();
         _weights = weights;
     }
+
+    /// <summary>Rough average-BPE-length token-count estimate (English averages ~4 chars/token) -- not real tokenization, see <see cref="Align"/>'s call sites.</summary>
+    private static int EstimateTokenCount(string word) => Math.Max(1, (word.Length + 3) / 4);
 
     /// <summary>
     /// Loads a Qwen3-ForcedAligner from real Safetensors weights.
@@ -62,8 +70,14 @@ public sealed class QwenAsrForcedAligner : IDisposable
 
         for (int w = 0; w < numWords; w++)
         {
-            int[] wTokens = _tokenizer.Encode(words[w]);
-            int tokenSeed = (wTokens.Length > 0) ? wTokens[0] : w;
+            // Word-length token-count proxy, not real BPE ids -- this DTW alignment is itself
+            // still entirely procedural/fake pending real Qwen3-ForcedAligner-0.6B weights (a
+            // separate model from qwen3-asr, not bundled in our checkpoint), so calling into
+            // QwenAsrTokenizer.Encode here would either throw (no real weights available in
+            // this aligner's typical no-args construction) or, if it succeeded, lend unearned
+            // credibility to math that's synthetic regardless -- see docs/audio-review-
+            // progress.md's QwenASR section for why Encode/Decode now require real weights.
+            int tokenSeed = EstimateTokenCount(words[w]) > 0 ? words[w][0] : w;
 
             for (int t = 0; t < numAudioTokens; t++)
             {
@@ -158,7 +172,8 @@ public sealed class QwenAsrForcedAligner : IDisposable
             TimeSpan startTime = timeOffset + TimeSpan.FromSeconds(sFrame * tokenDurationSeconds);
             TimeSpan endTime = timeOffset + TimeSpan.FromSeconds(eFrame * tokenDurationSeconds);
 
-            int[] wordTokens = _tokenizer.Encode(words[i]);
+            // Same word-length proxy as above -- not real BPE ids, see the comment there.
+            var wordTokens = new int[EstimateTokenCount(words[i])];
 
             segments.Add(new SpeechSegment
             {

@@ -1,248 +1,126 @@
 using System.Text;
-using System.Text.RegularExpressions;
+using OpenTail.Stingray.Core;
 
 namespace OpenTail.Stingray.Audio.QwenASR;
 
 /// <summary>
-/// Qwen3 ChatML tokenizer with multimodal speech tokens, language routing, and timestamp decoding for Qwen3-ASR.
+/// Qwen3-ASR ChatML prompt formatting and text decoding, built on top of the real BPE
+/// tokenizer embedded in the checkpoint (<see cref="GgufTokenizer"/>, via
+/// <see cref="QwenAsrWeights.Tokenizer"/>). This class previously hand-rolled its own fake
+/// character-level vocabulary and a dedicated timestamp-token range that turned out not to
+/// exist anywhere in the real checkpoint's vocabulary (~1500 fictional
+/// <c>&lt;|timestamp_X.XX|&gt;</c> tokens) -- see docs/audio-review-progress.md's QwenASR
+/// section for how that was found and corrected. Real segment-level ASR timestamps are not
+/// confirmed to exist as a native model output for this checkpoint (the plan doc's own
+/// section 20 distinguishes "ASR timestamp output" from "Forced alignment" -- forced
+/// alignment is a genuinely separate model, <c>Qwen3-ForcedAligner-0.6B</c>, not bundled in
+/// this GGUF); until that's independently verified, this class produces a single best-effort
+/// segment spanning the whole decoded output rather than fabricating sub-segment timing.
 /// </summary>
-public sealed partial class QwenAsrTokenizer
+public sealed class QwenAsrTokenizer
 {
-    public const int ImStartTokenId = 151644;
-    public const int ImEndTokenId = 151645;
-    public const int AudioBosTokenId = 151646;
-    public const int AudioEosTokenId = 151647;
-    public const int AudioPadTokenId = 151648; // <|AUDIO|> soft token placeholder
-    public const int TimestampBegin = 151649;   // <|timestamp_0.00|>
-    public const int TimestampEnd = 153149;     // <|timestamp_30.00|>
+    private readonly GgufTokenizer? _real;
+    private readonly int _audioStartTokenId;
+    private readonly int _audioEndTokenId;
+    private readonly int _audioPadTokenId;
+    private readonly int _eosTokenId;
 
-    private readonly Dictionary<string, int> _vocab = new(StringComparer.Ordinal);
-    private readonly Dictionary<int, string> _idToToken = [];
+    /// <summary>Real special-token ids from the checkpoint, or the verified real defaults when constructed without weights (structural-only use).</summary>
+    public int AudioStartTokenId => _audioStartTokenId;
+    public int AudioEndTokenId => _audioEndTokenId;
+    public int AudioPadTokenId => _audioPadTokenId;
+    public int EosTokenId => _eosTokenId;
 
-    [GeneratedRegex(@"(<\|.*?\|>|[a-zA-Z]+|[\d]+|[^\s\w]|[\s]+)", RegexOptions.Compiled)]
-    private static partial Regex TokenRegex();
+    public int VocabSize => _real?.VocabSize ?? 151936;
 
-    public int VocabSize => 151936;
-
+    /// <summary>Structural-only constructor (no real tokenizer) -- Encode/Decode throw. Prefer <see cref="QwenAsrTokenizer(QwenAsrWeights)"/>.</summary>
     public QwenAsrTokenizer()
     {
-        InitializeVocab();
+        _audioStartTokenId = 151669;
+        _audioEndTokenId = 151670;
+        _audioPadTokenId = 151676;
+        _eosTokenId = 151645;
     }
 
-    private void InitializeVocab()
+    public QwenAsrTokenizer(QwenAsrWeights weights)
     {
-        _vocab["<|im_start|>"] = ImStartTokenId;
-        _vocab["<|im_end|>"] = ImEndTokenId;
-        _vocab["<|audio_bos|>"] = AudioBosTokenId;
-        _vocab["<|audio_eos|>"] = AudioEosTokenId;
-        _vocab["<|AUDIO|>"] = AudioPadTokenId;
-
-        // Timestamps <|timestamp_0.00|> .. <|timestamp_30.00|> in 20ms steps
-        for (int i = 0; i <= 1500; i++)
-        {
-            float sec = i * 0.02f;
-            string tag = $"<|timestamp_{sec:F2}|>";
-            int tsId = TimestampBegin + i;
-            _vocab[tag] = tsId;
-            _idToToken[tsId] = tag;
-        }
-
-        // Common subwords and ASCII alphabet
-        int id = 1000;
-        string chars = " abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~\n\t";
-        foreach (char c in chars)
-        {
-            string s = c.ToString();
-            if (!_vocab.ContainsKey(s))
-            {
-                _vocab[s] = id;
-                _idToToken[id] = s;
-                id++;
-            }
-        }
-
-        // Common words
-        string[] commonWords =
-        [
-            "the", "and", "to", "of", "a", "in", "is", "that", "for", "it", "as", "was",
-            "with", "be", "by", "on", "not", "he", "i", "this", "have", "from", "or", "one",
-            "speech", "recognition", "audio", "qwen", "transcribe", "language"
-        ];
-
-        foreach (string w in commonWords)
-        {
-            if (!_vocab.ContainsKey(w))
-            {
-                _vocab[w] = id;
-                _idToToken[id] = w;
-                id++;
-            }
-        }
-
-        foreach (var kvp in _vocab)
-        {
-            _idToToken[kvp.Value] = kvp.Key;
-        }
+        _real = weights.Tokenizer;
+        _audioStartTokenId = weights.AudioStartTokenId;
+        _audioEndTokenId = weights.AudioEndTokenId;
+        _audioPadTokenId = weights.AudioPadTokenId;
+        _eosTokenId = weights.EosTokenId;
     }
 
     /// <summary>
-    /// Formats the standard ChatML prompt containing audio tokens and instruction for Qwen3-ASR.
+    /// Formats the ChatML multimodal prompt: system + user turn with
+    /// <c>&lt;|audio_start|&gt;&lt;|audio_pad|&gt;...&lt;|audio_pad|&gt;&lt;|audio_end|&gt;</c>
+    /// (one <c>audio_pad</c> token per AuT-encoder output frame -- the LLM's embedding for each
+    /// of those positions gets replaced by the encoder's projected audio features before decode,
+    /// per the plan doc's "Phase 13: Multimodal Audio Injection", not yet wired up) + task text.
     /// </summary>
-    public string FormatPrompt(string? language = null, string? taskInstruction = null)
+    public string FormatPrompt(int numAudioTokens, string? language = null, string? taskInstruction = null)
     {
         var sb = new StringBuilder();
         sb.Append("<|im_start|>system\nYou are a helpful speech-to-text assistant.<|im_end|>\n");
-        sb.Append("<|im_start|>user\n<|audio_bos|><|AUDIO|><|audio_eos|>\n");
+        sb.Append("<|im_start|>user\n<|audio_start|>");
+        for (int i = 0; i < numAudioTokens; i++) sb.Append("<|audio_pad|>");
+        sb.Append("<|audio_end|>\n");
 
         if (!string.IsNullOrEmpty(language))
-        {
             sb.Append($"Language: {language}\n");
-        }
 
         sb.Append(taskInstruction ?? "Transcribe the audio speech into text.");
         sb.Append("<|im_end|>\n<|im_start|>assistant\n");
-
         return sb.ToString();
     }
 
-    /// <summary>
-    /// Encodes a formatted prompt string into token IDs.
-    /// </summary>
+    /// <summary>Encodes a formatted prompt string into real BPE token ids.</summary>
     public int[] Encode(string text)
     {
+        if (_real is null)
+            throw new InvalidOperationException("QwenAsrTokenizer constructed without real weights -- use the QwenAsrWeights constructor for real encoding.");
         if (string.IsNullOrEmpty(text)) return [];
+        return [.. _real.Encode(text)];
+    }
 
-        var tokens = new List<int>();
-        var matches = TokenRegex().Matches(text);
-
-        foreach (Match m in matches)
-        {
-            string piece = m.Value;
-            if (string.IsNullOrEmpty(piece)) continue;
-
-            if (_vocab.TryGetValue(piece, out int id))
-            {
-                tokens.Add(id);
-            }
-            else
-            {
-                foreach (char c in piece)
-                {
-                    string s = c.ToString();
-                    if (_vocab.TryGetValue(s, out int charId))
-                    {
-                        tokens.Add(charId);
-                    }
-                    else
-                    {
-                        tokens.Add(200 + ((int)c % 256));
-                    }
-                }
-            }
-        }
-
-        return tokens.ToArray();
+    /// <summary>Decodes generated token ids into text.</summary>
+    public string Decode(ReadOnlySpan<int> tokens)
+    {
+        if (_real is null)
+            throw new InvalidOperationException("QwenAsrTokenizer constructed without real weights -- use the QwenAsrWeights constructor for real decoding.");
+        return _real.Decode(tokens.ToArray());
     }
 
     /// <summary>
-    /// Decodes generated tokens into text and word/phrase segments with timestamps.
+    /// Decodes generated tokens into text, dropping control/audio special tokens, and returns
+    /// a single best-effort segment spanning the whole output (see this class's doc comment --
+    /// no verified native sub-segment timestamp mechanism exists for this checkpoint).
     /// </summary>
     public (string FullText, List<SpeechSegment> Segments) DecodeWithTimestamps(
-        ReadOnlySpan<int> tokens,
-        TimeSpan timeOffset)
+        ReadOnlySpan<int> tokens, TimeSpan timeOffset, TimeSpan duration)
     {
-        var fullText = new StringBuilder();
-        var segments = new List<SpeechSegment>();
-
-        var currentText = new StringBuilder();
-        var currentTokens = new List<int>();
-        float? segStart = null;
-        int segId = 0;
-
+        var filtered = new List<int>(tokens.Length);
         foreach (int tid in tokens)
         {
-            if (tid == ImEndTokenId || tid == ImStartTokenId || tid == AudioBosTokenId || tid == AudioEosTokenId || tid == AudioPadTokenId)
-            {
+            if (tid == _eosTokenId || tid == _audioStartTokenId || tid == _audioEndTokenId || tid == _audioPadTokenId)
                 continue;
-            }
-
-            if (tid >= TimestampBegin && tid <= TimestampEnd)
-            {
-                float sec = (tid - TimestampBegin) * 0.02f;
-
-                if (segStart == null)
-                {
-                    segStart = sec;
-                }
-                else
-                {
-                    float startSec = segStart.Value;
-                    float endSec = MathF.Max(sec, startSec + 0.1f);
-                    string str = currentText.ToString().Trim();
-
-                    if (str.Length > 0)
-                    {
-                        segments.Add(new SpeechSegment
-                        {
-                            Id = segId++,
-                            Start = timeOffset + TimeSpan.FromSeconds(startSec),
-                            End = timeOffset + TimeSpan.FromSeconds(endSec),
-                            Text = str,
-                            Tokens = currentTokens.ToArray(),
-                            Probability = 1.0f
-                        });
-
-                        if (fullText.Length > 0) fullText.Append(' ');
-                        fullText.Append(str);
-                    }
-
-                    currentText.Clear();
-                    currentTokens.Clear();
-                    segStart = null;
-                }
-            }
-            else
-            {
-                currentTokens.Add(tid);
-                if (_idToToken.TryGetValue(tid, out string? piece))
-                {
-                    if (!piece.StartsWith("<|") && !piece.EndsWith("|>"))
-                    {
-                        currentText.Append(piece);
-                    }
-                }
-                else if (tid >= 0 && tid < 256)
-                {
-                    currentText.Append((char)tid);
-                }
-            }
+            filtered.Add(tid);
         }
 
-        if (currentText.Length > 0)
+        string text = filtered.Count > 0 ? Decode(System.Runtime.InteropServices.CollectionsMarshal.AsSpan(filtered)).Trim() : string.Empty;
+        var segments = new List<SpeechSegment>();
+        if (text.Length > 0)
         {
-            string str = currentText.ToString().Trim();
-            if (str.Length > 0)
+            segments.Add(new SpeechSegment
             {
-                float startSec = segStart ?? 0.0f;
-                float endSec = startSec + 1.0f;
-
-                segments.Add(new SpeechSegment
-                {
-                    Id = segId++,
-                    Start = timeOffset + TimeSpan.FromSeconds(startSec),
-                    End = timeOffset + TimeSpan.FromSeconds(endSec),
-                    Text = str,
-                    Tokens = currentTokens.ToArray(),
-                    Probability = 1.0f
-                });
-
-                if (fullText.Length > 0) fullText.Append(' ');
-                fullText.Append(str);
-            }
+                Id = 0,
+                Start = timeOffset,
+                End = timeOffset + duration,
+                Text = text,
+                Tokens = filtered.ToArray(),
+                Probability = 1.0f,
+            });
         }
-
-        return (fullText.ToString(), segments);
+        return (text, segments);
     }
 }
-
-

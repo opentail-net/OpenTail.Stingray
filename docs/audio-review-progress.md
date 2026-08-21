@@ -1947,3 +1947,344 @@ real audio (currently only build-verified, not test-run through `ExtractMel` its
 Build a real oracle and golden-verify Parakeet numerically end-to-end (mel + encoder + CTC),
 the last thing standing between "structurally complete" and "done". (3) Then CosyVoice per
 the queue.
+
+## New planning docs added under `docs/audio/` (2026-08-22) — user-provided, treat as reference not gospel
+
+User added six external planning documents (`046-native-cosyvoice-tts-plan.md` [+ an `-old`
+superseded variant], `049-native-qwen3-asr-completion-plan.md`, `050-QwenTTS-...-plan.md`,
+`51fish.md`, `52parlertts.md`, `53orpheous.md`) — 3 pipelines already in this doc's queue
+(CosyVoice, QwenASR, QwenTTS) plus 3 new ones not previously tracked (Fish Speech, Parler-TTS,
+Orpheus TTS). Per explicit user instruction, these planners "do not know the code we have in
+front of us" — they're useful for architecture/ground-truth context (config values, recommended
+phase ordering, ground-truth source hierarchy) but every concrete claim about this repo's
+current state must be re-verified against the actual code/checkpoints directly, the same
+discipline already established for every other pipeline in this doc. Queue order updated:
+CosyVoice (in progress, see below) -> QwenASR -> QwenTTS -> FunASR -> Silero VAD -> Fish Speech
+-> Parler-TTS -> Orpheus TTS.
+
+### CosyVoice — Phase 0 audit: real checkpoint inventory, one concrete bug fixed, one real blocker found (2026-08-22)
+
+**Fixed a real bug**: `CosyVoiceWeights.cs`'s constants (`HiddenDim=1024, NumHeads=16,
+NumKvHeads=8, IntermediateDim=2816`) did not match the actual checkpoint at all — verified
+directly by reading `models/cosyvoice2_0.5b.safetensors`'s raw safetensors JSON header (`node`
+can read this directly: 8-byte LE length prefix + JSON header, no python needed) and
+`models/cosyvoice2_config.json`. Real values: `hidden_size=896, num_attention_heads=14,
+num_key_value_heads=2, intermediate_size=4864, vocab_size=151936, rope_theta=1e6,
+rms_norm_eps=1e-6, tie_word_embeddings=true, 24 layers` — a plain `Qwen2ForCausalLM` config.
+`CosyVoiceLlmConfig` (in `CosyVoiceLlm.cs`) already had these correct numbers; only
+`CosyVoiceWeights.cs` was stale (likely copy-pasted from a different model's constants).
+Fixed, builds clean.
+
+**Real finding, worth flagging clearly before more work goes into this pipeline**: inspected
+every local CosyVoice-related asset's actual tensor/string contents (via `node` reading raw
+safetensors JSON headers and grepping raw ONNX protobuf bytes for readable tensor-name
+strings — no python/onnx tooling needed for this level of inspection):
+- `models/cosyvoice2_0.5b.safetensors` (290 tensors: `model.embed_tokens.weight`
+  `[151936,896]`, `model.norm.weight`, 24x standard `model.layers.{i}.{self_attn,mlp}.*`) is
+  **only the vanilla Qwen2-0.5B text backbone** — `tie_word_embeddings=true` means there's no
+  separate output head, and the embedding table is exactly the base model's 151936-token TEXT
+  vocab. There is NO speech-token embedding table and NO speech-vocab output head anywhere in
+  this file. Real CosyVoice checkpoints extend the embedding/head for the FSQ speech codebook
+  (`SpeechTokenSize=6561` + special tokens, per `CosyVoiceLlmConfig`) — that extension is
+  simply not present in what we have locally.
+- `models/cosyvoice_speech_tokenizer.onnx` — confirmed via string grep (`encoders.
+  positional_embedding`) to be the audio->speech-token ENCODER (Whisper-style), not an LLM
+  decoder head. Doesn't fill the gap above.
+- `models/flow.decoder.estimator.fp32.onnx` (286MB) — grepped for `encoder|conformer|
+  upsample|input_embed` and found NONE of those strings anywhere in the file. This is only
+  the CFM/DiT *estimator* network (confirms its own tensor name `estimator_out`); the
+  token-conditioning encoder stage that real CosyVoice needs before the CFM decoder (the
+  Chatterbox-S3Gen-equivalent `UpsampleConformerEncoder` that turns speech tokens into the
+  DiT's `mu` conditioning tensor — see `Chatterbox/ChatterboxFlowEncoder.cs` for what that
+  looks like in this codebase for a different model) is NOT bundled in this file and no
+  separate weight file for it exists locally either.
+- **No HiFT vocoder weights exist anywhere under `models/`** (checked exhaustively: no
+  `*hift*`, `*vocoder*`, or other `*cosyvoice*`-named file beyond the three already listed).
+  `CosyVoiceHiFT.cs` currently has nothing real to load from at all.
+- `models/campplus.onnx` (speaker x-vector embedding) is present and its purpose is
+  unambiguous from the model name/format — likely fine as-is, not specifically re-verified
+  this pass.
+
+**Assessment**: CosyVoice is more blocked than Parakeet ever was (Parakeet's "blocked"
+conclusion was a false alarm from a bad tensor-listing script; this one is a real, confirmed
+absence of weights after direct inspection, matching this doc's QwenTTS precedent for a
+genuine blocker). Three of five stages (LLM speech-token head/embedding, flow's token->mu
+conditioning encoder, HiFT vocoder) have no real local weights to port against numerically.
+Two stages (LLM backbone itself, flow's CFM estimator) DO have real weights and could be
+ported/verified.
+
+**What IS still productively actionable without new weights**:
+1. The plan docs' section 13 ("Do Not Duplicate OpenTail's Model Runtime") is worth taking
+   seriously for the LLM backbone specifically: since `cosyvoice2_0.5b.safetensors` is a
+   *plain, standard* Qwen2ForCausalLM (not a custom architecture needing hand-rolled scalar
+   C# math the way Parakeet's FastConformer or Chatterbox's Conformer did), this codebase's
+   own existing text-LLM engine (`OpenTail.Stingray.Engine`'s `ForwardPass`, per CLAUDE.md)
+   should in principle be able to run this backbone directly once/if a real speech-vocab
+   checkpoint is sourced, rather than writing a second bespoke transformer implementation —
+   worth a follow-up architecture check (does `SafetensorsLlamaWeightLoader`/the Engine layer
+   support Qwen2's GQA+RoPE+SwiGLU shape already, given it clearly supports at least one
+   GQA/RoPE architecture already for the main LLM feature) before deciding to hand-write a
+   CosyVoice-specific forward pass. Not attempted this iteration — flagging as the single
+   highest-leverage next question for whoever continues this pipeline.
+2. The CFM/DiT estimator (`flow.decoder.estimator.fp32.onnx`) IS real and could be ported and
+   golden-verified in isolation (feeding it a synthetic/golden-dumped `mu` conditioning tensor
+   directly, the same input-bisection approach used for Vocos/F5-TTS's vocoder earlier in this
+   doc) even without the upstream conditioning encoder existing yet.
+
+**Decision**: rather than sinking further iterations into a pipeline where 3 of 5 stages have
+no real weights, moving to QwenASR next per the updated queue (has real local weights per the
+original queue table: `models/qwen3-asr-0.6b-q4_k.gguf` + `examples/qwen3-asr.cpp` reference).
+Revisit CosyVoice if/when a complete real checkpoint (with the speech-token head, flow
+encoder, and HiFT weights) is sourced, or to make partial progress on the two stages that do
+have real weights (LLM backbone via the Engine-reuse question above, and the CFM estimator in
+isolation).
+
+**Confirmed by independent outside opinion (2026-08-22, same session)**: user cross-checked
+this finding with another AI, which confirmed the diagnosis exactly — `models/
+cosyvoice2_0.5b.safetensors` being a stripped vanilla Qwen2-0.5B mirror (missing the speech-
+token embedding extension, custom output head, flow conditioning encoder, and HiFT vocoder)
+is a known failure mode of grabbing a base-model mirror instead of the official unified
+release. Suggested real sources: `FunAudioLLM/CosyVoice2-0.5B` (official, has the complete
+multi-component structure) or community GGUF ports (e.g. `cstr/cosyvoice3-0.5b-2512-GGUF`).
+User initially said they'd download it themselves, then corrected to have this session do it.
+Downloaded the official `FunAudioLLM/CosyVoice2-0.5B` repo's `llm.pt` (2.0GB), `flow.pt`
+(450MB), `hift.pt` (83MB), `speech_tokenizer_v2.onnx` (496MB), and configs via `curl -L -C -`
+(confirmed `campplus.onnx`/`flow.decoder.estimator.fp32.onnx` already on disk were byte-
+identical to the official copies, so those didn't need re-fetching). `python`/`pip` were
+already present (3.14.3) and **`torch` 2.11.0 + `safetensors` 0.7.0 were already installed**
+-- converted all three `.pt` checkpoints (PyTorch zip-pickle, `weights_only=True` load) to
+real safetensors files via `safetensors.torch.save_file`: `models/cosyvoice2_llm.safetensors`
+(295 tensors), `models/cosyvoice2_flow.safetensors` (1121 tensors),
+`models/cosyvoice2_hift.safetensors` (328 tensors). Verified all three parse as valid
+safetensors from C#'s side too (read via `node`, same raw-JSON-header technique as before).
+Renamed `speech_tokenizer_v2.onnx` -> `models/cosyvoice_speech_tokenizer_v2.onnx` (the real
+current-generation tokenizer; the old `cosyvoice_speech_tokenizer.onnx`, 522.6MB, is a
+different/older version -- left in place, not deleted, but prefer the `_v2` one going
+forward). Deleted the raw `.pt` files after conversion (2.5GB reclaimed); kept the old
+(wrong) `cosyvoice2_0.5b.safetensors` in place too, unused, in case it's needed for reference.
+
+**This resolves the "3 of 5 stages have no real weights" finding from the audit above —
+inspecting the real `llm.pt`/`flow.pt` contents directly (via `torch.load`, listing every
+tensor name/shape) found ALL of the previously-missing pieces actually exist**:
+- `llm.pt` has `speech_embedding.weight [6564,896]` (the missing FSQ speech-token embedding
+  table) and `llm_decoder.weight/bias [6564,896]` (the missing speech-vocab output head) --
+  exactly the two tensors the Phase-0 audit predicted were missing, confirmed present by name
+  and shape. Also has `llm_embedding.weight [2,896]` (small extra embedding, purpose TBD --
+  likely sos/task special tokens) and, notably, `llm.model.lm_head.weight [151936,896]`
+  SEPARATE from `llm.model.model.embed_tokens.weight` (untied) -- our old
+  `cosyvoice2_0.5b.safetensors` had `tie_word_embeddings=true` and no separate head at all,
+  confirming that file really was a different, stripped-down source, not just a renamed copy
+  of this one.
+- `flow.pt` has a full `encoder.*` section (`encoder.encoders.{i}.self_attn.{linear_q/k/v/
+  pos,pos_bias_u,pos_bias_v}`, `encoder.pre_lookahead_layer`, `encoder.up_layer`,
+  `encoder.up_encoders.*`, `spk_embed_affine_layer`, `input_embedding`, `encoder_proj`) --
+  **this is the token->mu conditioning encoder the audit found missing, and its tensor
+  naming is nearly identical to `Chatterbox/ChatterboxFlowEncoder.cs`'s already-implemented,
+  real, golden-verified `UpsampleConformerEncoder`** (same `pos_bias_u/v` untied rel-pos
+  attention, same `pre_lookahead_layer`/`up_layer` upsampling structure, same
+  `spk_embed_affine_layer` speaker conditioning) -- S3Gen-family lineage, CosyVoice's own
+  flow encoder and Chatterbox's S3Gen encoder are architecturally the same thing. This is a
+  major unlock: porting CosyVoice's flow encoder should be substantially a generalization of
+  existing, tested code rather than a from-scratch port. The `decoder.estimator.*` section
+  (1121 tensors total, most of them here) is the DiT/CFM decoder -- its tensor names
+  (`down_blocks`/`mid_blocks`/`up_blocks`, `attn1.to_q/k/v`, `time_mlp`) should correspond
+  directly to our existing `models/flow.decoder.estimator.fp32.onnx` (same "estimator"
+  naming), giving a second, independent cross-check source for that stage.
+- `hift.pt` (328 tensors: `conv_pre/post`, `resblocks.*`, `source_resblocks.*`,
+  `f0_predictor.*`, `m_source`, `ups.*`) is a real, complete HiFT vocoder checkpoint --
+  previously ZERO vocoder weights existed locally; this fully unblocks that stage. Note:
+  many conv weights use PyTorch's newer `parametrizations.weight.original0/1` weight-norm
+  encoding (`original0`=magnitude `g`, `original1`=direction `v`; actual weight =
+  `g * v/||v||`) -- will need a fold-at-load step analogous to Parakeet's BN-fold before the
+  plain conv weight is usable, don't assume `original0`/`original1` can be read as the weight
+  directly.
+
+**Not yet done** (real porting work, next iteration): none of `CosyVoiceWeights.cs`/
+`CosyVoiceLlm.cs`/`CosyVoiceFlowDiT.cs`/`CosyVoiceHiFT.cs` have been updated to load these new
+real tensors yet -- this iteration only got the correct checkpoint onto disk in a loadable
+format and confirmed via direct inspection that every stage now has real weights to port
+against. `CosyVoiceWeights.cs`'s `TryReadWeight` candidate-prefix guessing (`name`,
+`model.{name}`, `llm.{name}`) won't find the real names either (`llm.model.model.layers.
+{i}.self_attn.q_proj.weight`, not `model.layers.{i}...` -- note the doubled `model.model.`)
+so it needs updating regardless of the new checkpoint. CosyVoice moves from "genuinely
+blocked" back to "not started, but now has everything it needs" -- same status class as
+QwenASR/FunASR before this session touched them. Revisit per the queue once QwenASR's
+metadata-adapter question is resolved (see below).
+
+### QwenASR — Phase 0 audit: real GGUF metadata/tensor names verified, one major architectural finding (2026-08-22)
+
+Dumped the real checkpoint (`models/qwen3-asr-0.6b-q4_k.gguf`, 614 tensors, 36 metadata keys)
+via the CLI's `list-tensors`/`list-metadata` commands (same technique as Parakeet).
+**`QwenAsrWeights.cs`'s hardcoded defaults (`AudioLayers=18, AudioDim=896, AudioHeads=14,
+LlmLayers=28, LlmDim=1024, LlmHeads=16, LlmKvHeads=8, LlmVocabSize=151936`) all match the real
+checkpoint's metadata exactly** — no bug here, unlike CosyVoice/the earlier Parakeet BN-fold
+issue. However the loader still doesn't load any actual tensors (no `GetTensor` method, no
+per-layer weight structs) — same skeletal state Parakeet's `ParakeetWeights.cs` was in before
+last iteration's rewrite.
+
+**Major finding**: the checkpoint's LLM half (`blk.{i}.attn_q/k/v/output`,
+`attn_q_norm`/`attn_k_norm` [confirming real Qwen3 QK-norm, not Qwen2], `ffn_gate/up/down`,
+`token_embd.weight`/`output.weight` NOT tied, `output_norm.weight`) is byte-for-byte standard
+llama.cpp Qwen3 tensor naming — and `OpenTail.Stingray.Engine/ModelCompatibility.cs` confirms
+`"qwen3"` is already a fully-supported text-generation architecture in this engine's own
+`s_textGenerationArchitectures` whitelist (real GQA + QK-norm support, not a stub). This means
+the LLM decoder half of QwenASR is architecturally identical to something this codebase's own
+production LLM engine already runs correctly, in principle removing the need to hand-write a
+second scalar Qwen3 transformer forward pass the way Parakeet's Conformer or Chatterbox's T3
+needed custom math for a genuinely novel architecture.
+
+**The catch, and why this isn't a trivial "just point the Engine at it"**: this GGUF's
+`general.architecture` is the string `"qwen3asr"`, not `"qwen3"`, and its hyperparameter keys
+live under a custom `qwen3asr.llm.*`/`qwen3asr.audio.*` namespace (this file bundles the
+custom AuT audio encoder tensors AND the standard-shaped LLM tensors together in one
+multimodal container, which is why it needed a nonstandard KV namespace in the first place).
+`ModelCompatibility`'s architecture gate would reject `"qwen3asr"` outright, and even if
+admitted, the standard loader expects config keys like `qwen3.block_count`/`qwen3.attention.
+head_count` (llama.cpp convention), not `qwen3asr.llm.n_layers`/`qwen3asr.llm.n_heads`. Two
+viable unlock paths, neither attempted yet: **(a)** write a thin adapter/synthetic
+`GgufModel`-like view that remaps `qwen3asr.llm.*` metadata keys to their standard `qwen3.*`
+names and presents `general.architecture="qwen3"` to the Engine, letting the real
+`ForwardPass` run the `blk.*` tensors directly (uses this GGUF file as-is, no format
+conversion); **(b)** extract just the `blk.*`/`token_embd`/`output`/`output_norm` tensors
+into a second, minimal standard-metadata GGUF file at load/build time and hand that to the
+existing loader (touches disk, but keeps `ModelCompatibility`/the Engine completely
+unmodified). (a) is more elegant but touches shared Engine-facing code (higher blast radius,
+per this repo's own audio-vs-engine boundary conventions); (b) is more isolated to the Audio
+project. Whichever path is taken, the AuT audio encoder (`audio.conv.*` conv2d stem +
+`audio.blk.*` Whisper-style transformer blocks + `audio.proj1/proj2` projection into the
+LLM's embedding space + `audio.mel_filters`/`audio.mel_window`, all genuinely custom, no
+existing Engine support) still needs a hand-written port the same way Parakeet's Conformer
+encoder did — that part of the plan doc's "Phase 3/4: Real Conv2D + Real AuT Transformer" is
+unavoidable regardless of which LLM-reuse path is chosen.
+
+**Not attempted this iteration** (time/scope): extending `QwenAsrWeights.cs` with real tensor
+loading (mirroring `ParakeetWeights.cs`'s pattern), the AuT encoder port, and the LLM-reuse
+adapter are all left for a future iteration. This audit alone is a meaningful unlock though —
+whoever picks this up next should evaluate the Engine-reuse question BEFORE writing any
+decoder transformer code by hand, since getting that decision right could save an entire
+Chatterbox/Parakeet-sized porting effort.
+
+**Next iteration**: (1) decide between adapter-path (a) and split-GGUF-path (b) for LLM reuse
+— read `ModelCompatibility.cs` and `ForwardPass.cs`'s GGUF-loading entry points fully before
+deciding, this wasn't done this pass. (2) Extend `QwenAsrWeights.cs` with real tensor loading
+for the audio encoder half regardless of the LLM decision. (3) Port the AuT conv2d stem +
+transformer (`QwenAsrAudioEncoder.cs`, currently "mostly a placeholder" per the plan doc's own
+section 6 title — not independently re-verified this pass, but consistent with every other
+pipeline's starting state in this doc).
+
+### QwenASR — adapter path (a) implemented and structurally verified (2026-08-22, same session)
+
+User's direction: build the metadata-remapping adapter, not the split-GGUF-file path — "a
+base class we inherit from and split what we have." `GgufModel` is `sealed` with no public
+constructor, so a literal subclass isn't possible; found the actual intended seam instead:
+`OpenTail.Stingray.Core.IModelTensorSource` (`ForwardPass`'s constructor already takes this
+interface, not a concrete `GgufModel` — confirmed by reading `ForwardPass.cs` directly) whose
+own doc comment states its exact purpose: "lets another format feed the existing, unmodified
+transformer loop." `SafetensorsTensorSource.cs` is a real, in-tree example of exactly this
+pattern for a different format (HF safetensors instead of a differently-namespaced GGUF).
+
+Implemented `QwenAsrLlmTensorSource.cs`: wraps a real `GgufModel`, remaps the specific
+`qwen3asr.llm.*` metadata keys `ModelGraph.cs` actually reads (traced directly from its
+source rather than assumed: `embedding_length`, `attention.head_count`, `attention.
+head_count_kv`, `attention.key_length`/`value_length`, `block_count`, `feed_forward_length`,
+`attention.layer_norm_rms_epsilon`, `rope.freq_base`, `vocab_size`, `context_length`) into
+standard `qwen3.*` names, overrides `general.architecture` to `"qwen3"`, and filters
+`Tensors`/`FindTensor` down to only `blk.*`/`token_embd.weight`/`output.weight`/
+`output_norm.weight` (excluding the `audio.*`-prefixed AuT encoder tensors, irrelevant to the
+text-generation forward pass). Zero changes to `Engine`/`Core` — fully additive, lives
+entirely in the Audio project.
+
+Verified structurally (not yet a full generation-loop test) via
+`Tests.Audio/QwenAsrLlmTensorSourceTests.cs` (`HeavyTestBase`, real GGUF):
+`Adapter_RemapsMetadata_ToStandardQwen3Keys` (all 7 remapped keys match the real checkpoint's
+values: `embedding_length=1024, head_count=16, head_count_kv=8, key_length=128,
+block_count=28, feed_forward_length=3072, vocab_size=151936`) and
+`Adapter_ExposesOnlyLlmTensors_NotAudioTensors` (real `blk.0.attn_q.weight`/`token_embd.
+weight`/`output.weight`/`output_norm.weight` resolve; `audio.*` tensors correctly excluded
+from both `FindTensor` and the `Tensors` enumeration). Both PASS. Did NOT add a
+`Tests.Audio` -> `Engine` project reference to test `ModelCompatibility.
+IsTextGenerationArchitectureSupported` directly (that project boundary looks deliberate, not
+something to cross for one assertion) — independently confirmed by reading
+`ModelCompatibility.cs`'s architecture whitelist source directly instead.
+
+**Not yet done**: this only proves the Engine's `ForwardPass` COULD consume this checkpoint
+under its own architecture detection — it hasn't actually been run through a real
+`ForwardPass`/KV-cache/generation loop, and the multimodal audio-embedding injection point
+(replacing `audio_pad_token_id` embeddings with the AuT encoder's projected features before
+decode, per the plan doc's "Phase 13: Multimodal Audio Injection") isn't wired at all. The
+AuT audio encoder itself (`audio.conv.*` conv2d stem + `audio.blk.*` transformer +
+`audio.proj1/proj2`) is still 100% unstarted — that part was never going to be avoidable via
+Engine reuse, only the LLM decoder half benefits from this adapter.
+
+**Next iteration**: (1) actually construct a `ForwardPass` from this adapter and run a real
+forward step against known input token ids, comparing logits/next-token against something
+verifiable (even a simple "does it predict plausible next tokens for a text-only prompt,
+ignoring audio entirely" sanity check would validate the adapter end-to-end for the first
+time). (2) Port the AuT audio encoder (conv2d stem, Whisper-style transformer blocks,
+projection) — this is the genuinely novel, unavoidable hand-written part, comparable in scope
+to Parakeet's subsampling+Conformer work. (3) Wire the audio-embedding injection point once
+both halves work independently.
+
+### QwenASR — real ForwardPass integration test, adapter confirmed to actually work (2026-08-22, same session, direct user request: "wire up the ForwardPass test")
+
+Did next-iteration item (1) above immediately rather than deferring it. Added
+`OpenTail.Stingray.Engine`/`OpenTail.Stingray.Cpu` `ProjectReference`s to `Tests.Audio.csproj`
+(previously only referenced the Audio project — this is the first Audio test needing a real
+Engine forward pass; checked `Engine.csproj` doesn't reference `Audio` back, so no circular
+dependency introduced). Hit one unrelated snag: an XML comment containing `--` in the new
+`ProjectReference` block broke MSBuild's project-file XML parser entirely (`error MSB4025`,
+project fails to even load) — not a C#/XML-comment gotcha specific to this repo, just a
+real MSBuild XML-comment restriction (comments can't contain `--`); reworded the comment to
+avoid it.
+
+Added `Adapter_RunsRealForwardPass_ProducesFiniteNonDegenerateLogits` to
+`QwenAsrLlmTensorSourceTests.cs`: builds `ModelHyperparams.FromGgufMetadata(adapter.Metadata)`
++ `CpuBackend` + `new ForwardPass(adapter, backend, hp)` (the exact same construction pattern
+`Tests.ForwardPass/SafetensorsDifferentialFixtureTests.cs` uses for its GGUF-vs-safetensors
+differential tests — copied the real pattern rather than guessing at the API), runs
+`fwd.Prefill(prompt)` against 5 arbitrary in-vocab token ids, and checks the returned logits
+vector has the right length (`vocab_size=151936`), is entirely finite (no NaN/Inf anywhere),
+and is non-degenerate (`max-min > 1.0`, ruling out the failure mode where a broken adapter
+silently feeds garbage/zeroed tensors through and the engine produces a flat, meaningless
+distribution rather than crashing).
+
+**Result: PASS.** Ran individually (`STINGRAY_RUN_HEAVY_TESTS=1 dotnet test
+tests/OpenTail.Stingray.Tests.Audio -- --filter-class
+OpenTail.Stingray.Tests.Audio.QwenAsrLlmTensorSourceTests`, all 4 tests including this one,
+2.5s total). **This is a real, substantial confirmation, not just a structural check**: the
+Engine's actual production `ForwardPass` (real Qwen3 GQA + QK-norm + RoPE + SwiGLU, real
+Q4_K/Q8_0 dequantization, the same code path every text-generation GGUF in this repo runs
+through) executed a real forward step over this checkpoint's real quantized weights via the
+adapter and produced a sane, finite, non-degenerate logit distribution. The metadata-
+remapping-adapter architectural bet from earlier this session is now empirically validated,
+not just plausible-sounding.
+
+**Still not done** (unchanged from before, now on firmer footing): no tokenizer/prompt-
+formatting wired up (the 5 token ids in the test are arbitrary, not a real prompt), no KV
+cache reuse across a generation loop tested, no multimodal audio-embedding injection, and the
+AuT audio encoder itself is still 100% unstarted. But the single highest-risk unknown --
+"does the Engine-reuse idea actually work at all, or is `qwen3asr` secretly different enough
+from `qwen3` that this blows up at runtime" -- is now answered definitively: yes, it works.
+
+### DRY pass: extracted `Primitives/DenseKernels.cs` (2026-08-21, same session, direct user request)
+
+`ParakeetConformerEncoder.cs` and `Chatterbox/ChatterboxFlowEncoder.cs` (S3Gen's Conformer
+encoder, real and golden-verified) each hand-rolled near-identical private copies of five
+functions: SIMD `Linear`/`LinearNoBias` (fixed-pointer `SimdKernels.MatVecF32` calls),
+`LayerNorm`, `SoftmaxInPlace` (float-only accumulation), and SiLU/Swish activation --
+inevitable since Parakeet's port used Chatterbox's file as a structural template but copied
+the helpers instead of sharing them. Extracted all five into a new
+`Primitives/DenseKernels.cs`, following the same "single source of truth for a kernel family"
+pattern already established by `Primitives/VitsAttentionKernels.cs` for the VITS pipelines.
+Both call sites now delegate via one-line wrappers (kept as thin private aliases rather than
+replacing every call site, so neither file's diff is a mechanical rename storm and each
+still reads as "this is Chatterbox's Linear" / "this is Parakeet's Linear" locally).
+
+No behavior change intended (pure extraction, byte-identical math) -- verified by re-running
+both real-weights test suites individually after the refactor:
+`OpenTail.Stingray.Tests.Audio.ChatterboxFlowEncoderTests` (golden cosine-similarity check
+against real PyTorch output) and `OpenTail.Stingray.Tests.Audio.ParakeetConformerEncoderTests`
+(3 tests) -- both still PASS, confirming the extraction didn't silently change any numerics
+(e.g. an eps-default mismatch, a bias-null-check ordering difference). Any future Conformer-
+style port (QwenASR, FunASR's paraformer) should use `DenseKernels` from the start rather than
+copying a third private version.

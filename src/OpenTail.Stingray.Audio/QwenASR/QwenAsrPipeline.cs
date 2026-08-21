@@ -33,14 +33,17 @@ public sealed class QwenAsrPipeline : ISpeechToTextPipeline
     {
         _weights = weights;
         _melExtractor = melExtractor ?? new QwenAsrMelExtractor();
-        _tokenizer = tokenizer ?? new QwenAsrTokenizer();
+        _tokenizer = tokenizer ?? (weights != null ? new QwenAsrTokenizer(weights) : new QwenAsrTokenizer());
         _encoder = encoder ?? new QwenAsrAudioEncoder();
         _decoder = decoder ?? new QwenAsrDecoder();
         _aligner = aligner ?? new QwenAsrForcedAligner(_tokenizer);
     }
 
     /// <summary>
-    /// Loads a real Qwen3-ASR pipeline directly from a GGUF model file.
+    /// Loads a real Qwen3-ASR pipeline directly from a GGUF model file. Real BPE tokenizer
+    /// (via <see cref="QwenAsrWeights.Tokenizer"/>); the AuT audio encoder and LLM decoder
+    /// stages are still procedural pending their own real ports -- see
+    /// docs/audio-review-progress.md's QwenASR section.
     /// </summary>
     public static QwenAsrPipeline Load(string ggufPath)
     {
@@ -61,12 +64,13 @@ public sealed class QwenAsrPipeline : ISpeechToTextPipeline
             NumLayers = weights.LlmLayers,
             NumHeads = weights.LlmHeads,
             NumKvHeads = weights.LlmKvHeads,
-            VocabSize = weights.LlmVocabSize
+            VocabSize = weights.LlmVocabSize,
+            EosTokenId = weights.EosTokenId
         };
 
         var melExtractor = new QwenAsrMelExtractor();
-        var tokenizer = new QwenAsrTokenizer();
-        var encoder = new QwenAsrAudioEncoder(encoderConfig);
+        var tokenizer = new QwenAsrTokenizer(weights);
+        var encoder = new QwenAsrAudioEncoder(encoderConfig, weights);
         var decoder = new QwenAsrDecoder(decoderConfig);
         var aligner = new QwenAsrForcedAligner(tokenizer);
 
@@ -105,6 +109,7 @@ public sealed class QwenAsrPipeline : ISpeechToTextPipeline
 
         // 3. Format ChatML Multimodal Prompt
         string promptStr = _tokenizer.FormatPrompt(
+            numAudioTokens: numAudioTokens,
             language: request.Language,
             taskInstruction: (request.Task == SpeechTask.Translate) ? "Translate the speech into English." : "Transcribe the audio speech into text.");
         int[] promptTokens = _tokenizer.Encode(promptStr);
@@ -118,7 +123,7 @@ public sealed class QwenAsrPipeline : ISpeechToTextPipeline
             temperature: (float)request.Temperature);
 
         // 5. Decode Tokens to Text and Timestamps
-        var (text, segments) = _tokenizer.DecodeWithTimestamps(generatedTokens, TimeSpan.Zero);
+        var (text, segments) = _tokenizer.DecodeWithTimestamps(generatedTokens, TimeSpan.Zero, totalDuration);
 
         // If forced alignment was requested or output has segments
         if (segments.Count == 0 && !string.IsNullOrWhiteSpace(text))

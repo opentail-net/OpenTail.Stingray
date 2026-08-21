@@ -11,11 +11,16 @@ public sealed class CosyVoiceWeights : IDisposable
 {
     public SafetensorsLoader Loader { get; }
 
+    // Verified directly against models/cosyvoice2_0.5b.safetensors's real tensor shapes and
+    // models/cosyvoice2_config.json (a plain Qwen2ForCausalLM config, tie_word_embeddings=true)
+    // -- see docs/audio-review-progress.md's CosyVoice section. The previous values here
+    // (1024/16/8/2816) didn't match the actual checkpoint at all; CosyVoiceLlmConfig already
+    // had the correct numbers, only this file was stale.
     public int NumLayers { get; } = 24;
-    public int HiddenDim { get; } = 1024;
-    public int IntermediateDim { get; } = 2816;
-    public int NumHeads { get; } = 16;
-    public int NumKvHeads { get; } = 8;
+    public int HiddenDim { get; } = 896;
+    public int IntermediateDim { get; } = 4864;
+    public int NumHeads { get; } = 14;
+    public int NumKvHeads { get; } = 2;
     public int HeadDim => HiddenDim / NumHeads;
     public int VocabSize { get; } = 151936;
 

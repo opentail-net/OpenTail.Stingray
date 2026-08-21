@@ -36,49 +36,25 @@ public sealed class QwenAsrTests
     }
 
     [Fact]
-    public void QwenAsrTokenizer_FormatAndEncode_ProducesChatMlPromptWithSpecialAudioTokens()
+    public void QwenAsrTokenizer_FormatPrompt_ProducesChatMlPromptWithRealSpecialAudioTokens()
     {
+        // Structural-only: real BPE Encode()/Decode() need the checkpoint's real tokenizer
+        // (QwenAsrTokenizer(QwenAsrWeights)) -- see Tests.Audio/QwenAsrTokenizerTests.cs for
+        // real-weights encode/decode coverage. This only checks prompt string assembly, which
+        // doesn't need real weights.
         var tokenizer = new QwenAsrTokenizer();
-        string prompt = tokenizer.FormatPrompt(language: "en", taskInstruction: "Transcribe the audio speech.");
+        string prompt = tokenizer.FormatPrompt(numAudioTokens: 3, language: "en", taskInstruction: "Transcribe the audio speech.");
 
         Assert.Contains("<|im_start|>", prompt, StringComparison.Ordinal);
-        Assert.Contains("<|audio_bos|><|AUDIO|><|audio_eos|>", prompt, StringComparison.Ordinal);
+        Assert.Contains("<|audio_start|><|audio_pad|><|audio_pad|><|audio_pad|><|audio_end|>", prompt, StringComparison.Ordinal);
         Assert.Contains("Language: en", prompt, StringComparison.Ordinal);
-
-        int[] tokens = tokenizer.Encode(prompt);
-
-        Assert.NotNull(tokens);
-        Assert.NotEmpty(tokens);
-        Assert.Contains(QwenAsrTokenizer.ImStartTokenId, tokens);
-        Assert.Contains(QwenAsrTokenizer.AudioPadTokenId, tokens);
     }
 
-    [Fact]
-    public void QwenAsrAudioEncoder_Forward_AppliesConv2dStemAndWindowedAttention()
-    {
-        using var encoder = new QwenAsrAudioEncoder(new QwenAsrEncoderConfig
-        {
-            EncoderDim = 256,
-            NumLayers = 4,
-            QwenHiddenDim = 512
-        });
-
-        int numMelFrames = 64;
-        var mel = new float[128 * numMelFrames];
-        for (int i = 0; i < mel.Length; i++) mel[i] = 0.1f * MathF.Sin(i * 0.2f);
-
-        var (tokens, numTokens) = encoder.Forward(mel, numMelFrames);
-
-        Assert.NotNull(tokens);
-        Assert.Equal(numMelFrames / 8, numTokens);
-        Assert.Equal(numTokens * encoder.Config.QwenHiddenDim, tokens.Length);
-
-        for (int i = 0; i < tokens.Length; i++)
-        {
-            Assert.False(float.IsNaN(tokens[i]), $"NaN in audio token {i}");
-            Assert.False(float.IsInfinity(tokens[i]), $"Infinity in audio token {i}");
-        }
-    }
+    // QwenAsrAudioEncoder_Forward_AppliesConv2dStemAndWindowedAttention removed: the AuT
+    // encoder is now a real, weight-driven port (no procedural fast-path constructor exists
+    // anymore, same policy as Parakeet's encoder -- see docs/audio-review-progress.md's
+    // QwenASR section). Real coverage lives in Tests.Audio/QwenAsrAudioEncoderTests.cs
+    // (HeavyTestBase, real GGUF weights).
 
     [Fact]
     public void QwenAsrForcedAligner_Align_ProducesWordLevelTimestamps()
@@ -105,69 +81,10 @@ public sealed class QwenAsrTests
         }
     }
 
-    [Fact]
-    public void QwenAsrPipeline_Transcribe_EndToEndBatchTranscription()
-    {
-        using var pipeline = new QwenAsrPipeline();
-        int sampleRate = 16000;
-        int numSamples = sampleRate * 2; // 2 seconds of audio
-        var pcm = new float[numSamples];
-
-        for (int i = 0; i < numSamples; i++)
-        {
-            pcm[i] = 0.3f * MathF.Sin(2.0f * MathF.PI * 400.0f * i / sampleRate);
-        }
-
-        var request = new SpeechToTextRequest
-        {
-            AudioSamples = pcm,
-            SampleRate = sampleRate,
-            Language = "en"
-        };
-
-        var result = pipeline.Transcribe(request);
-
-        Assert.NotNull(result);
-        Assert.Equal("en", result.Language);
-        Assert.True(result.Duration.TotalSeconds >= 1.9);
-        Assert.NotNull(result.Segments);
-    }
-
-    [Fact]
-    public async Task QwenAsrPipeline_TranscribeStreamAsync_StreamsAlignedSpeechSegments()
-    {
-        using var pipeline = new QwenAsrPipeline();
-        int sampleRate = 16000;
-        int chunkSize = sampleRate; // 1-second chunks
-
-        async IAsyncEnumerable<ReadOnlyMemory<float>> GenerateStream()
-        {
-            for (int chunk = 0; chunk < 3; chunk++)
-            {
-                var pcm = new float[chunkSize];
-                for (int i = 0; i < chunkSize; i++)
-                {
-                    pcm[i] = 0.3f * MathF.Sin(2.0f * MathF.PI * (200.0f + chunk * 100.0f) * i / sampleRate);
-                }
-                yield return pcm;
-                await Task.Yield();
-            }
-        }
-
-        var request = new SpeechToTextRequest
-        {
-            AudioSamples = [],
-            SampleRate = sampleRate,
-            Language = "en"
-        };
-
-        var segments = new List<SpeechSegment>();
-        await foreach (var seg in pipeline.TranscribeStreamAsync(GenerateStream(), request))
-        {
-            Assert.NotNull(seg);
-            segments.Add(seg);
-        }
-
-        Assert.NotNull(segments);
-    }
+    // QwenAsrPipeline_Transcribe end-to-end coverage removed: QwenAsrTokenizer's real
+    // Encode/Decode now require the checkpoint's real BPE tokenizer (no fake fallback, same
+    // policy as Parakeet's pipeline -- see docs/audio-review-progress.md's QwenASR section),
+    // and QwenAsrAudioEncoder is still unported. Real end-to-end coverage will land once both
+    // the AuT encoder and the LLM decoder (via QwenAsrLlmTensorSource, see
+    // Tests.Audio/QwenAsrLlmTensorSourceTests.cs) are wired together in QwenAsrPipeline.
 }

@@ -12,6 +12,7 @@ public sealed record QwenAsrDecoderConfig
     public int HeadDim { get; init; } = 128;
     public int IntermediateDim { get; init; } = 3072; // 3072 for 0.6B, 6144 for 1.7B
     public int VocabSize { get; init; } = 151936;
+    public int EosTokenId { get; init; } = 151645; // real "<|im_end|>" id, see QwenAsrWeights.EosTokenId
 }
 
 /// <summary>
@@ -27,7 +28,16 @@ public sealed class QwenAsrDecoder : IDisposable
     }
 
     /// <summary>
-    /// Generates transcript token sequence conditioned on prompt tokens and encoded audio soft tokens.
+    /// Generates transcript token sequence conditioned on prompt tokens and encoded audio soft
+    /// tokens. STILL PROCEDURAL/FAKE -- see docs/audio-review-progress.md's QwenASR section:
+    /// the real decoder forward pass should go through <c>OpenTail.Stingray.Engine.
+    /// ForwardPass</c> via <see cref="QwenAsrLlmTensorSource"/> instead of this hand-rolled
+    /// loop (confirmed to work end-to-end against real weights, see
+    /// Tests.Audio/QwenAsrLlmTensorSourceTests.cs), plus real audio-embedding injection at the
+    /// <c>&lt;|audio_pad|&gt;</c> positions -- neither is wired up here yet. Kept compiling and
+    /// using this checkpoint's real EOS id (via <see cref="QwenAsrDecoderConfig.EosTokenId"/>,
+    /// not a hardcoded/fictional one) only so the rest of the pipeline still builds; do not
+    /// treat this method's output as meaningful.
     /// </summary>
     public int[] Generate(
         ReadOnlySpan<int> promptTokens,
@@ -51,23 +61,9 @@ public sealed class QwenAsrDecoder : IDisposable
             int bestToken;
             int candidateBase = 1000 + ((int)(audioEnergy * 17.0f) + step * 31) % 50;
 
-            if (step > 8 && step % 12 == 0)
-            {
-                // Emit timestamp token every phrase
-                int tsOffset = Math.Min(1500, step * 4);
-                bestToken = QwenAsrTokenizer.TimestampBegin + tsOffset;
-            }
-            else if (step < 20)
-            {
-                bestToken = candidateBase;
-            }
-            else
-            {
-                // End of sentence token
-                bestToken = QwenAsrTokenizer.ImEndTokenId;
-            }
+            bestToken = step < 20 ? candidateBase : Config.EosTokenId;
 
-            if (bestToken == QwenAsrTokenizer.ImEndTokenId && step > 5)
+            if (bestToken == Config.EosTokenId && step > 5)
             {
                 break;
             }
