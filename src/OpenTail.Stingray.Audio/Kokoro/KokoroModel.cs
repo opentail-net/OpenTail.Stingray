@@ -45,6 +45,73 @@ public sealed class KokoroModel : IDisposable
             styleVector = loadedStyle;
         }
 
+        if (_weights is not null)
+            return ForwardReal(_weights, tokens, styleVector, speed);
+
+        return ForwardFake(tokens, styleVector, speed);
+    }
+
+    /// <summary>
+    /// Real forward pass: calls verified sub-modules against loaded GGUF weights.
+    /// Implements model.py KModel.forward exactly.
+    /// ref_s = styleVector [256]: s_dec = ref_s[:128], s_pred = ref_s[128:].
+    /// </summary>
+    private static float[] ForwardReal(KokoroWeights w, ReadOnlySpan<int> tokens, ReadOnlySpan<float> refS, float speed)
+    {
+        int t = tokens.Length; // number of phoneme tokens (including BOS/EOS added by caller)
+
+        // Split style vector: s_dec = refS[:128], s_pred = refS[128:]
+        int styleDim = w.StyleDim; // 128
+        float[] sDec  = refS.Length >= styleDim     ? refS[..styleDim].ToArray()     : new float[styleDim];
+        float[] sPred = refS.Length >= styleDim * 2 ? refS[styleDim..].ToArray()     : new float[styleDim];
+
+        int[] inputIds = tokens.ToArray();
+
+        // 1. BERT: token embedding + 12x shared ALBERT layer -> [T, 768]
+        //    bert_proj -> transpose -> d_en [512, T]
+        float[] dEn = KokoroBertEncoder.Forward(w, inputIds);        // [T, 768] row-major
+        dEn = KokoroBertEncoder.ProjectToWorkingDim(w, dEn, t);      // [512, T] channel-first
+
+        // 2. Text encoder: embedding -> 3x(Conv1d+LN+LeakyReLU) -> BiLSTM -> [512, T]
+        float[] tEn = KokoroTextEncoder.Forward(w, inputIds);        // [512, T] channel-first
+
+        // 3. Duration encoder + pred.lstm + duration_proj -> duration sums [T]
+        float[] durEnc  = KokoroProsodyPredictor.EncodeDuration(w, dEn, sPred, t); // [T, 640]
+        float[] durSums = KokoroProsodyPredictor.PredictDurations(w, durEnc, t);   // [T]
+
+        // 4. Alignment / length regulator
+        int[] predDur = KokoroAlignment.ToPredDur(durSums, speed);
+        int[] f2tok   = KokoroAlignment.BuildFrameToTokenMap(predDur);
+        int   totalF  = f2tok.Length;
+
+        // en = d.T @ pred_aln_trg  (expand durEnc from token-rate to frame-rate)
+        // durEnc is [T, 640] row-major; Expand needs channel-first [640, T]
+        float[] dEncCF = TransposeToChannelFirst(durEnc, rows: t, cols: 640);
+        float[] en     = KokoroAlignment.Expand(dEncCF, 640, f2tok); // [640, F]
+
+        // asr = t_en @ pred_aln_trg
+        float[] asr = KokoroAlignment.Expand(tEn, 512, f2tok);       // [512, F]
+
+        // 5. F0Ntrain: predictor.shared BiLSTM -> F0/N AdainResBlk1d stacks -> [1, 2F]
+        var (f0Curve, nCurve) = KokoroProsodyPredictor.F0Ntrain(w, en, totalF, sPred);
+
+        // 6. Decoder: F0_conv/N_conv + encode/decode AdainResBlk1d + Generator -> waveform
+        return KokoroDecoder.Forward(w.Decoder, w, asr, f0Curve, nCurve, sDec, t: totalF);
+    }
+
+    /// <summary>Transpose [rows, cols] row-major to [cols, rows] channel-first.</summary>
+    private static float[] TransposeToChannelFirst(float[] input, int rows, int cols)
+    {
+        var output = new float[cols * rows];
+        for (int r = 0; r < rows; r++)
+            for (int c = 0; c < cols; c++)
+                output[c * rows + r] = input[r * cols + c];
+        return output;
+    }
+
+    private float[] ForwardFake(ReadOnlySpan<int> tokens, ReadOnlySpan<float> styleVector, float speed)
+    {
+        int numTokens = tokens.Length;
         // 1. PLBERT Phoneme Embedding & Transformer Encoder
         var encoded = new float[numTokens * HiddenDim];
         for (int i = 0; i < numTokens; i++)

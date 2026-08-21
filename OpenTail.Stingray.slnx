@@ -11,6 +11,7 @@
   </Folder>
   <Folder Name="/src/">
     <Project Path="src/OpenTail.Stingray/OpenTail.Stingray.csproj" />
+    <Project Path="src/OpenTail.Stingray.Audio/OpenTail.Stingray.Audio.csproj" />
     <Project Path="src/OpenTail.Stingray.Cli/OpenTail.Stingray.Cli.csproj" />
     <Project Path="src/OpenTail.Stingray.Core/OpenTail.Stingray.Core.csproj" />
     <Project Path="src/OpenTail.Stingray.Cuda/OpenTail.Stingray.Cuda.csproj" />
