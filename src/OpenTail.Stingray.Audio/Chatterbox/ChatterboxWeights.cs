@@ -40,6 +40,11 @@ public sealed class ChatterboxWeights : IDisposable
     public float[]? SpeakerEmbedding { get; }        // conds.t3.speaker_emb [256]
     public int[]? SpeechPromptTokens { get; }         // conds.t3.speech_prompt_tokens [375]
 
+    // --- S3Gen conditioning (ChatterboxTurboTTS.Conditionals.gen dict, baked-in default voice) ---
+    public float[]? GenEmbedding { get; }             // conds.gen.embedding [192] -- CAMPPlus x-vector
+    public float[]? GenPromptFeat { get; }            // conds.gen.prompt_feat [80, 500] -- reference mel
+    public int[]? GenPromptToken { get; }             // conds.gen.prompt_token [250] -- reference S3 tokens
+
     // --- Top-level ---
     public float[] TextEmbWeight { get; }             // [TextVocabSize, HiddenDim]
     public float[] SpeechEmbWeight { get; }            // [SpeechVocabSize, HiddenDim]
@@ -79,6 +84,10 @@ public sealed class ChatterboxWeights : IDisposable
 
         SpeakerEmbedding = TryGetTensor("conds.t3.speaker_emb");
         SpeechPromptTokens = TryGetIntTensor("conds.t3.speech_prompt_tokens");
+
+        GenEmbedding = TryGetTensor("conds.gen.embedding");
+        GenPromptFeat = TryGetTensor("conds.gen.prompt_feat");
+        GenPromptToken = TryGetIntTensor("conds.gen.prompt_token");
 
         TextEmbWeight = GetTensor("t3.text_emb.weight");
         SpeechEmbWeight = GetTensor("t3.speech_emb.weight");

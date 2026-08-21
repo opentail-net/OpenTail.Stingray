@@ -19,17 +19,20 @@ public sealed class ChatterboxPipeline : ITextToSpeechPipeline
     private readonly ChatterboxAcousticLm _acousticLm;
     private readonly ChatterboxDecoder _decoder;
     private readonly ChatterboxWeights? _weights;
+    private readonly ChatterboxS3GenWeights? _s3GenWeights;
 
     public ChatterboxPipeline(
         ChatterboxTokenizer? tokenizer = null,
         ChatterboxAcousticLm? acousticLm = null,
         ChatterboxDecoder? decoder = null,
-        ChatterboxWeights? weights = null)
+        ChatterboxWeights? weights = null,
+        ChatterboxS3GenWeights? s3GenWeights = null)
     {
         _weights = weights;
+        _s3GenWeights = s3GenWeights;
         _tokenizer = tokenizer ?? new ChatterboxTokenizer();
         _acousticLm = acousticLm ?? new ChatterboxAcousticLm(weights);
-        _decoder = decoder ?? new ChatterboxDecoder();
+        _decoder = decoder ?? new ChatterboxDecoder(s3GenWeights, weights);
     }
 
     /// <summary>
@@ -41,11 +44,14 @@ public sealed class ChatterboxPipeline : ITextToSpeechPipeline
             throw new FileNotFoundException($"Chatterbox T3 GGUF model not found: {t3GgufPath}");
 
         var weights = new ChatterboxWeights(t3GgufPath, s3GenGgufPath);
+        var s3GenWeights = (s3GenGgufPath != null && File.Exists(s3GenGgufPath))
+            ? new ChatterboxS3GenWeights(s3GenGgufPath)
+            : null;
         var tokenizer = new ChatterboxTokenizer(weights);
         var acousticLm = new ChatterboxAcousticLm(weights);
-        var decoder = new ChatterboxDecoder();
+        var decoder = new ChatterboxDecoder(s3GenWeights, weights);
 
-        return new ChatterboxPipeline(tokenizer, acousticLm, decoder, weights);
+        return new ChatterboxPipeline(tokenizer, acousticLm, decoder, weights, s3GenWeights);
     }
 
     /// <summary>
@@ -115,6 +121,7 @@ public sealed class ChatterboxPipeline : ITextToSpeechPipeline
     public void Dispose()
     {
         _weights?.Dispose();
+        _s3GenWeights?.Dispose();
         _acousticLm.Dispose();
     }
 }

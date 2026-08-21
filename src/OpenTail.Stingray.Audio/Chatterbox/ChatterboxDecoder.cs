@@ -1,8 +1,15 @@
+using System;
+using System.Collections.Generic;
+
 namespace OpenTail.Stingray.Audio.Chatterbox;
 
 /// <summary>
 /// Conditional neural audio decoder / vocoder for Chatterbox-Turbo TTS.
-/// Converts discrete speech tokens and speaker features into 24kHz PCM audio samples.
+/// Converts discrete speech tokens and speaker features into 24kHz PCM audio samples. When real
+/// S3Gen weights are supplied, runs the full real pipeline: ChatterboxFlowEncoder (tokens -> mel
+/// conditioning) -> ChatterboxCfmDecoder (conditioning + noise -> mel-spectrogram, meanflow 2-step
+/// Euler solve) -> ChatterboxVocoder (mel -> waveform, HiFTGenerator). Falls back to the original
+/// placeholder synthesizer when no weights are available (used only by the no-model test/demo path).
 /// </summary>
 public sealed class ChatterboxDecoder
 {
@@ -10,7 +17,14 @@ public sealed class ChatterboxDecoder
     public const int HopLength = 256;
     public const int HiddenDim = 512;
 
-    public ChatterboxDecoder() { }
+    private readonly ChatterboxS3GenWeights? _s3Weights;
+    private readonly ChatterboxWeights? _t3Weights; // holds the conds.gen.* default-voice conditioning
+
+    public ChatterboxDecoder(ChatterboxS3GenWeights? s3Weights = null, ChatterboxWeights? t3Weights = null)
+    {
+        _s3Weights = s3Weights;
+        _t3Weights = t3Weights;
+    }
 
     /// <summary>
     /// Synthesizes 24kHz audio waveform samples from discrete speech tokens and speaker conditioning.
@@ -19,7 +33,53 @@ public sealed class ChatterboxDecoder
     {
         if (speechTokens.Count <= 2) return [];
 
-        // Exclude START and STOP control tokens
+        if (_s3Weights is { } s3w && _t3Weights?.GenPromptToken is { } promptTokens
+            && _t3Weights.GenEmbedding is { } genEmbedding && _t3Weights.GenPromptFeat is { } promptFeat)
+        {
+            return DecodeReal(s3w, promptTokens, genEmbedding, promptFeat, speechTokens);
+        }
+
+        return DecodeFakePlaceholder(speechTokens, speakerFeatures);
+    }
+
+    private static float[] DecodeReal(ChatterboxS3GenWeights w, int[] promptTokens, float[] genEmbedding, float[] promptFeat, IReadOnlyList<int> speechTokens)
+    {
+        var speechTokenList = new List<int>(speechTokens.Count);
+        foreach (int t in speechTokens)
+        {
+            if (t != ChatterboxAcousticLm.StartSpeechToken && t != ChatterboxAcousticLm.StopSpeechToken && t < w.S3VocabSize)
+                speechTokenList.Add(t);
+        }
+        if (speechTokenList.Count == 0) return [];
+        var speechTokenArray = speechTokenList.ToArray();
+
+        var (mu, totalFrames) = ChatterboxFlowEncoder.Forward(w, promptTokens, speechTokenArray);
+        var spkEmbed = ChatterboxFlowEncoder.ProjectSpeakerEmbedding(w, genEmbedding);
+
+        int mel = w.MelChannels;
+        int mel1 = promptFeat.Length / mel;
+        var cond = new float[mel * totalFrames];
+        for (int c = 0; c < mel; c++)
+            Array.Copy(promptFeat, c * mel1, cond, c * totalFrames, mel1);
+
+        var rng = Random.Shared;
+        var melOut = ChatterboxCfmDecoder.Generate(w, mu, cond, spkEmbed, totalFrames, rng, nSteps: 2);
+
+        int mel2 = totalFrames - mel1;
+        if (mel2 <= 0) return [];
+        var melTail = new float[mel * mel2];
+        for (int c = 0; c < mel; c++)
+            Array.Copy(melOut, c * totalFrames + mel1, melTail, c * mel2, mel2);
+
+        return ChatterboxVocoder.Generate(w, melTail, mel2, rng);
+    }
+
+    // -----------------------------------------------------------------------
+    // Fallback placeholder (used only when no real S3Gen weights are available)
+    // -----------------------------------------------------------------------
+
+    private static float[] DecodeFakePlaceholder(IReadOnlyList<int> speechTokens, float[] speakerFeatures)
+    {
         var tokens = new List<int>();
         foreach (int t in speechTokens)
         {
