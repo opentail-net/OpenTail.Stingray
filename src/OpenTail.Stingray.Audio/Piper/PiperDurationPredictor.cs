@@ -1,4 +1,5 @@
 using System;
+using OpenTail.Stingray.Cpu;
 
 namespace OpenTail.Stingray.Audio.Piper;
 
@@ -277,20 +278,23 @@ public static class PiperDurationPredictor
         return sign * y;
     }
 
-    private static float[] Conv1x1(float[] input, int inCh, int t, float[] weight, float[] bias, int outCh)
+    /// <summary>Per-timestep 1x1 conv, channel-first -- gathers each timestep's channel column then
+    /// uses the real SIMD matvec kernel (same pattern as PiperTextEncoder.ConvOverTime1x1) instead
+    /// of a scalar strided dot product.</summary>
+    private static unsafe float[] Conv1x1(float[] input, int inCh, int t, float[] weight, float[] bias, int outCh)
     {
         var output = new float[outCh * t];
-        System.Threading.Tasks.Parallel.For(0, outCh, oc =>
+        var col = new float[inCh];
+        var outCol = new float[outCh];
+        for (int ti = 0; ti < t; ti++)
         {
-            float b = bias[oc];
-            int wBase = oc * inCh;
-            for (int ti = 0; ti < t; ti++)
+            for (int c = 0; c < inCh; c++) col[c] = input[c * t + ti];
+            fixed (float* w = weight, x = col, y = outCol)
             {
-                float sum = b;
-                for (int ic = 0; ic < inCh; ic++) sum += weight[wBase + ic] * input[ic * t + ti];
-                output[oc * t + ti] = sum;
+                SimdKernels.MatVecF32(y, w, x, outCh, inCh);
             }
-        });
+            for (int c = 0; c < outCh; c++) output[c * t + ti] = outCol[c] + bias[c];
+        }
         return output;
     }
 
