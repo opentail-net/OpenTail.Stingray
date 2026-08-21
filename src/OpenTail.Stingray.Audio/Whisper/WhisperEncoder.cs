@@ -175,31 +175,41 @@ public sealed class WhisperEncoder
         }
         else
         {
+            // Strided case (output t maps to input t*stride+k, a strided gather rather than a
+            // contiguous shift): the per-element branch is replaced by an analytically-computed
+            // valid-t range (same idea as AxpyShifted), then the strided read is gathered into a
+            // small contiguous scratch buffer so the actual weight-multiply-accumulate can still
+            // be a single vectorized TensorPrimitives.MultiplyAdd instead of one branchy multiply
+            // per element. The gather itself is still a scalar strided copy (no SIMD gather
+            // primitive available here), but it's now branch-free in the loop body.
             Parallel.For(0, _dModel, oc =>
             {
-                int outChannelOff = oc * outFrames;
+                var outRow = outCopy.AsSpan(oc * outFrames, outFrames);
+                outRow.Fill(bias[oc]);
                 int wOcOff = oc * inChannels * 3;
-                for (int t = 0; t < outFrames; t++)
+                var gathered = new float[outFrames];
+                for (int ic = 0; ic < inChannels; ic++)
                 {
-                    int inCenter = t * stride;
-                    float sum = bias[oc];
-
-                    for (int ic = 0; ic < inChannels; ic++)
+                    var inRow = inCopy.AsSpan(ic * inFrames, inFrames);
+                    int wIcOff = wOcOff + ic * 3;
+                    for (int k = -1; k <= 1; k++)
                     {
-                        int inChannelOff = ic * inFrames;
-                        int wIcOff = wOcOff + ic * 3;
-                        for (int k = -1; k <= 1; k++)
-                        {
-                            int srcT = inCenter + k;
-                            if (srcT >= 0 && srcT < inFrames)
-                            {
-                                sum += inCopy[inChannelOff + srcT] * weight[wIcOff + (k + 1)];
-                            }
-                        }
-                    }
+                        // Valid t range for src = t*stride+k in [0, inFrames):
+                        //   t >= ceil(-k/stride), t <= floor((inFrames-1-k)/stride)
+                        int tStart = Math.Max(0, (int)Math.Ceiling(-k / (double)stride));
+                        int tEndExclusive = Math.Min(outFrames, (int)Math.Floor((inFrames - 1 - k) / (double)stride) + 1);
+                        int count = tEndExclusive - tStart;
+                        if (count <= 0) continue;
 
-                    outCopy[outChannelOff + t] = Gelu(sum);
+                        for (int i = 0; i < count; i++)
+                            gathered[i] = inRow[(tStart + i) * stride + k];
+
+                        var gatheredSlice = gathered.AsSpan(0, count);
+                        var outSlice = outRow.Slice(tStart, count);
+                        TensorPrimitives.MultiplyAdd(gatheredSlice, weight[wIcOff + (k + 1)], outSlice, outSlice);
+                    }
                 }
+                for (int t = 0; t < outFrames; t++) outRow[t] = Gelu(outRow[t]);
             });
         }
 
