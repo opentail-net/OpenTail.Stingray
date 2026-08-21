@@ -4,9 +4,14 @@ using System.Collections.Generic;
 namespace OpenTail.Stingray.Audio.Chatterbox;
 
 /// <summary>
-/// Native C# 24-layer Autoregressive Acoustic Language Model for Chatterbox-Turbo TTS.
-/// Generates discrete speech tokens conditioned on text and speaker embeddings.
-/// Supports both algorithmic scaffolding and real GGUF weights via <see cref="ChatterboxWeights"/>.
+/// Native C# 24-layer GPT2-medium-architecture Autoregressive Acoustic Language Model ("T3") for
+/// Chatterbox-Turbo TTS, ported from examples/chatterbox-tts-py/chatterbox/models/t3/t3.py
+/// (T3.forward/prepare_input_embeds/inference_turbo) and llama_configs.py's GPT2_MEDIUM_CONFIG.
+/// Generates discrete speech tokens conditioned on a projected speaker embedding and a fixed-length
+/// bank of speech "prompt" tokens (both baked into the GGUF as the built-in default voice), using a
+/// standard pre-LN GPT2 transformer body with absolute (wpe) position embeddings, fused QKV, and
+/// gelu_new-activated MLP. When no real weights are supplied, falls back to the original
+/// placeholder/synthetic generator (kept for the parameterless/no-model test and demo path).
 /// </summary>
 public sealed class ChatterboxAcousticLm : IDisposable
 {
@@ -19,22 +24,372 @@ public sealed class ChatterboxAcousticLm : IDisposable
     public const int StopSpeechToken = 6562;
 
     public float RepetitionPenalty { get; set; } = 1.2f;
+    public int TopK { get; set; } = 1000;
+    public float TopP { get; set; } = 0.95f;
 
     private readonly ChatterboxWeights? _weights;
+    private readonly Random _rng;
 
-    public ChatterboxAcousticLm(ChatterboxWeights? weights = null)
+    public ChatterboxAcousticLm(ChatterboxWeights? weights = null, Random? rng = null)
     {
         _weights = weights;
+        _rng = rng ?? Random.Shared;
     }
 
     /// <summary>
-    /// Autoregressively synthesizes discrete speech tokens from text token sequence.
+    /// Autoregressively synthesizes discrete speech tokens from text token sequence. Uses the real
+    /// GPT2 T3 transformer when real weights were supplied at construction; otherwise falls back to
+    /// the original synthetic placeholder generator.
     /// </summary>
     public List<int> GenerateSpeechTokens(
         ReadOnlySpan<int> textTokens,
         float[] speakerFeatures,
         float temperature = 0.7f,
         int maxTokens = 512)
+    {
+        if (_weights is { } w)
+            return GenerateReal(w, textTokens, temperature, maxTokens);
+
+        return GenerateFakePlaceholder(textTokens, speakerFeatures, temperature, maxTokens);
+    }
+
+    // -----------------------------------------------------------------------
+    // Real T3 GPT2 inference (inference_turbo)
+    // -----------------------------------------------------------------------
+
+    private List<int> GenerateReal(ChatterboxWeights w, ReadOnlySpan<int> textTokens, float temperature, int maxTokens)
+    {
+        int startSpeech = w.StartSpeechToken;
+        int stopSpeech = w.StopSpeechToken;
+
+        // --- Assemble conditioning embeds: [spkr_proj(1), speech_emb(prompt_tokens)(SpeechCondPromptLen)] ---
+        var condEmbeds = new List<float[]>(1 + w.SpeechCondPromptLen);
+        float[] speakerEmb = w.SpeakerEmbedding ?? new float[w.SpeakerEmbedSize];
+        condEmbeds.Add(Linear(speakerEmb, w.SpkrEncWeight, w.SpkrEncBias, w.SpeakerEmbedSize, w.HiddenDim));
+
+        if (w.SpeechPromptTokens is { } promptTokens)
+        {
+            foreach (int tok in promptTokens)
+                condEmbeds.Add(EmbedRow(w.SpeechEmbWeight, tok, w.HiddenDim));
+        }
+
+        // --- Text embeds ---
+        var chunk = new List<float[]>(condEmbeds.Count + textTokens.Length + 1);
+        chunk.AddRange(condEmbeds);
+        foreach (int tok in textTokens)
+            chunk.Add(EmbedRow(w.TextEmbWeight, tok, w.HiddenDim));
+
+        // --- Initial speech token (BOS = start_speech_token) ---
+        chunk.Add(EmbedRow(w.SpeechEmbWeight, startSpeech, w.HiddenDim));
+
+        var kCache = new List<float[]>[w.NumLayers];
+        var vCache = new List<float[]>[w.NumLayers];
+        for (int l = 0; l < w.NumLayers; l++)
+        {
+            kCache[l] = new List<float[]>(chunk.Count + maxTokens);
+            vCache[l] = new List<float[]>(chunk.Count + maxTokens);
+        }
+
+        // Prefill: process the whole [cond, text, BOS] chunk at once.
+        float[][] hidden = ProcessChunk(w, chunk.ToArray(), startPos: 0, kCache, vCache);
+        int pos = chunk.Count;
+
+        var speechTokens = new List<int>();
+        float[] lastHidden = hidden[^1];
+        int nextToken = SampleNext(w, lastHidden, speechTokens, temperature);
+        speechTokens.Add(nextToken);
+
+        for (int step = 1; step < maxTokens; step++)
+        {
+            if (nextToken == stopSpeech) break;
+
+            var stepEmbed = EmbedRow(w.SpeechEmbWeight, nextToken, w.HiddenDim);
+            float[][] stepHidden = ProcessChunk(w, [stepEmbed], startPos: pos, kCache, vCache);
+            pos++;
+
+            nextToken = SampleNext(w, stepHidden[0], speechTokens, temperature);
+            speechTokens.Add(nextToken);
+        }
+
+        // Drop a trailing EOS if present (matches inference_turbo's post-processing).
+        if (speechTokens.Count > 0 && speechTokens[^1] == stopSpeech)
+            speechTokens.RemoveAt(speechTokens.Count - 1);
+
+        var result = new List<int>(speechTokens.Count + 2) { startSpeech };
+        result.AddRange(speechTokens);
+        result.Add(stopSpeech);
+        return result;
+    }
+
+    private int SampleNext(ChatterboxWeights w, float[] hidden, List<int> historySoFar, float temperature)
+    {
+        float[] logits = Linear(hidden, w.SpeechHeadWeight, w.SpeechHeadBias, w.HiddenDim, w.SpeechVocabSize);
+
+        // Temperature -> top-k -> top-p -> repetition penalty, the exact order inference_turbo's
+        // LogitsProcessorList applies them in (processors run in append order: temperature, top_k,
+        // top_p, then repetition_penalty).
+        ApplyTemperature(logits, temperature);
+        ApplyTopK(logits, TopK);
+        ApplyTopP(logits, TopP);
+        ApplyRepetitionPenalty(logits, historySoFar, RepetitionPenalty);
+
+        return SampleFromLogits(logits);
+    }
+
+    private static void ApplyTemperature(float[] logits, float temperature)
+    {
+        if (temperature is <= 0f or 1f) return;
+        for (int i = 0; i < logits.Length; i++) logits[i] /= temperature;
+    }
+
+    private static void ApplyTopK(float[] logits, int topK)
+    {
+        if (topK <= 0 || topK >= logits.Length) return;
+        var indexed = new (float val, int idx)[logits.Length];
+        for (int i = 0; i < logits.Length; i++) indexed[i] = (logits[i], i);
+        Array.Sort(indexed, (a, b) => b.val.CompareTo(a.val));
+        for (int i = topK; i < indexed.Length; i++) logits[indexed[i].idx] = float.NegativeInfinity;
+    }
+
+    private static void ApplyTopP(float[] logits, float topP)
+    {
+        if (topP >= 1f) return;
+        int n = logits.Length;
+        var indexed = new (float val, int idx)[n];
+        for (int i = 0; i < n; i++) indexed[i] = (logits[i], i);
+        Array.Sort(indexed, (a, b) => b.val.CompareTo(a.val));
+
+        float max = indexed[0].val;
+        if (float.IsNegativeInfinity(max)) return;
+        double sumExp = 0;
+        var expVals = new double[n];
+        for (int i = 0; i < n; i++)
+        {
+            expVals[i] = float.IsNegativeInfinity(indexed[i].val) ? 0.0 : Math.Exp(indexed[i].val - max);
+            sumExp += expVals[i];
+        }
+
+        double cumulative = 0;
+        for (int i = 0; i < n; i++)
+        {
+            double prob = expVals[i] / sumExp;
+            cumulative += prob;
+            // Keep the smallest prefix whose cumulative probability >= topP; always keep at least 1.
+            if (i > 0 && cumulative - prob >= topP)
+                logits[indexed[i].idx] = float.NegativeInfinity;
+        }
+    }
+
+    private static void ApplyRepetitionPenalty(float[] logits, List<int> history, float penalty)
+    {
+        if (penalty == 1f || history.Count == 0) return;
+        foreach (int tok in history)
+        {
+            if ((uint)tok >= (uint)logits.Length) continue;
+            float score = logits[tok];
+            if (float.IsNegativeInfinity(score)) continue;
+            logits[tok] = score > 0f ? score / penalty : score * penalty;
+        }
+    }
+
+    private int SampleFromLogits(float[] logits)
+    {
+        float max = float.NegativeInfinity;
+        for (int i = 0; i < logits.Length; i++) if (logits[i] > max) max = logits[i];
+        if (float.IsNegativeInfinity(max)) return 0;
+
+        double sum = 0;
+        var probs = new double[logits.Length];
+        for (int i = 0; i < logits.Length; i++)
+        {
+            double p = float.IsNegativeInfinity(logits[i]) ? 0.0 : Math.Exp(logits[i] - max);
+            probs[i] = p;
+            sum += p;
+        }
+
+        double r = _rng.NextDouble() * sum;
+        double acc = 0;
+        for (int i = 0; i < probs.Length; i++)
+        {
+            acc += probs[i];
+            if (acc >= r) return i;
+        }
+        return probs.Length - 1;
+    }
+
+    /// <summary>
+    /// Runs the GPT2 body over a chunk of already-embedded positions (prefill or a single decode
+    /// step), appending this chunk's K/V to the running per-layer cache and returning each
+    /// position's post-final-LayerNorm hidden state (t3.output_norm, i.e. GPT2Model's ln_f).
+    /// </summary>
+    private static float[][] ProcessChunk(ChatterboxWeights w, float[][] chunkEmbeds, int startPos, List<float[]>[] kCache, List<float[]>[] vCache)
+    {
+        int n = chunkEmbeds.Length;
+        int dim = w.HiddenDim;
+
+        // hidden_states = inputs_embeds + wpe[position]  (GPT2Model.forward)
+        var hidden = new float[n][];
+        for (int i = 0; i < n; i++)
+        {
+            var h = new float[dim];
+            int posRow = (startPos + i) * dim;
+            for (int d = 0; d < dim; d++) h[d] = chunkEmbeds[i][d] + w.WpeWeight[posRow + d];
+            hidden[i] = h;
+        }
+
+        for (int l = 0; l < w.NumLayers; l++)
+        {
+            var layer = w.Layers[l];
+            var kCacheL = kCache[l];
+            var vCacheL = vCache[l];
+            int cacheBase = kCacheL.Count;
+
+            // --- Self-attention block ---
+            var qkvAll = new float[n][];
+            for (int i = 0; i < n; i++)
+            {
+                var normed = LayerNorm(hidden[i], layer.AttnNormWeight, layer.AttnNormBias);
+                qkvAll[i] = Linear(normed, layer.AttnQkvWeight, layer.AttnQkvBias, dim, 3 * dim);
+            }
+
+            for (int i = 0; i < n; i++)
+            {
+                var q = new float[dim];
+                var k = new float[dim];
+                var v = new float[dim];
+                Array.Copy(qkvAll[i], 0, q, 0, dim);
+                Array.Copy(qkvAll[i], dim, k, 0, dim);
+                Array.Copy(qkvAll[i], 2 * dim, v, 0, dim);
+                kCacheL.Add(k);
+                vCacheL.Add(v);
+            }
+
+            var attnOut = new float[n][];
+            float scale = 1f / MathF.Sqrt(HeadDim);
+            for (int i = 0; i < n; i++)
+            {
+                var q = new float[dim];
+                Array.Copy(qkvAll[i], 0, q, 0, dim);
+                int selfCachePos = cacheBase + i;
+
+                var context = new float[dim];
+                for (int h = 0; h < NumHeads; h++)
+                {
+                    int hOff = h * HeadDim;
+                    int availableKeys = selfCachePos + 1;
+                    var scores = new float[availableKeys];
+                    for (int t = 0; t < availableKeys; t++)
+                    {
+                        var kt = kCacheL[t];
+                        float dot = 0f;
+                        for (int d = 0; d < HeadDim; d++) dot += q[hOff + d] * kt[hOff + d];
+                        scores[t] = dot * scale;
+                    }
+                    SoftmaxInPlace(scores);
+                    for (int t = 0; t < availableKeys; t++)
+                    {
+                        var vt = vCacheL[t];
+                        float p = scores[t];
+                        for (int d = 0; d < HeadDim; d++) context[hOff + d] += p * vt[hOff + d];
+                    }
+                }
+                attnOut[i] = Linear(context, layer.AttnOutputWeight, layer.AttnOutputBias, dim, dim);
+            }
+
+            for (int i = 0; i < n; i++)
+                for (int d = 0; d < dim; d++) hidden[i][d] += attnOut[i][d];
+
+            // --- MLP block ---
+            for (int i = 0; i < n; i++)
+            {
+                var normed = LayerNorm(hidden[i], layer.FfnNormWeight, layer.FfnNormBias);
+                var fc = Linear(normed, layer.FfnFcWeight, layer.FfnFcBias, dim, w.IntermediateSize);
+                GeluNewInPlace(fc);
+                var proj = Linear(fc, layer.FfnProjWeight, layer.FfnProjBias, w.IntermediateSize, dim);
+                for (int d = 0; d < dim; d++) hidden[i][d] += proj[d];
+            }
+        }
+
+        // Final LayerNorm (ln_f / t3.output_norm).
+        var result = new float[n][];
+        for (int i = 0; i < n; i++)
+            result[i] = LayerNorm(hidden[i], w.OutputNormWeight, w.OutputNormBias);
+        return result;
+    }
+
+    private static float[] EmbedRow(float[] table, int index, int dim)
+    {
+        var row = new float[dim];
+        Array.Copy(table, (long)index * dim, row, 0, dim);
+        return row;
+    }
+
+    private static float[] Linear(float[] input, float[] weight, float[] bias, int inDim, int outDim)
+    {
+        var output = new float[outDim];
+        for (int o = 0; o < outDim; o++)
+        {
+            float sum = bias[o];
+            int wBase = o * inDim;
+            for (int i = 0; i < inDim; i++) sum += weight[wBase + i] * input[i];
+            output[o] = sum;
+        }
+        return output;
+    }
+
+    private static float[] LayerNorm(float[] x, float[] weight, float[] bias, float eps = 1e-5f)
+    {
+        int n = x.Length;
+        double mean = 0;
+        for (int i = 0; i < n; i++) mean += x[i];
+        mean /= n;
+        double var = 0;
+        for (int i = 0; i < n; i++) { double d = x[i] - mean; var += d * d; }
+        var /= n;
+        float invStd = (float)(1.0 / Math.Sqrt(var + eps));
+
+        var output = new float[n];
+        for (int i = 0; i < n; i++)
+            output[i] = (float)((x[i] - mean) * invStd) * weight[i] + bias[i];
+        return output;
+    }
+
+    private static void SoftmaxInPlace(float[] scores)
+    {
+        float max = float.NegativeInfinity;
+        for (int i = 0; i < scores.Length; i++) if (scores[i] > max) max = scores[i];
+        double sum = 0;
+        for (int i = 0; i < scores.Length; i++)
+        {
+            double e = Math.Exp(scores[i] - max);
+            scores[i] = (float)e;
+            sum += e;
+        }
+        float invSum = (float)(1.0 / sum);
+        for (int i = 0; i < scores.Length; i++) scores[i] *= invSum;
+    }
+
+    private static void GeluNewInPlace(float[] x)
+    {
+        // gelu_new (GPT2's tanh-approximation GELU): 0.5*x*(1+tanh(sqrt(2/pi)*(x+0.044715*x^3)))
+        const float c = 0.7978845608028654f; // sqrt(2/pi)
+        for (int i = 0; i < x.Length; i++)
+        {
+            float v = x[i];
+            float inner = c * (v + 0.044715f * v * v * v);
+            x[i] = 0.5f * v * (1f + MathF.Tanh(inner));
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Fallback placeholder (used only when no real GGUF weights are available)
+    // -----------------------------------------------------------------------
+
+    private static List<int> GenerateFakePlaceholder(
+        ReadOnlySpan<int> textTokens,
+        float[] speakerFeatures,
+        float temperature,
+        int maxTokens)
     {
         var speechTokens = new List<int> { StartSpeechToken };
         var tokenCounts = new Dictionary<int, int>();
@@ -43,24 +398,15 @@ public sealed class ChatterboxAcousticLm : IDisposable
         int numText = textTokens.Length;
         int targetSpeechLength = Math.Clamp(numText * 6, 32, maxTokens);
 
-        // If speakerFeatures is empty and weights has a speaker embedding, use it
-        if ((speakerFeatures == null || speakerFeatures.Length == 0) && _weights?.SpeakerEmbedding is { } spk)
-        {
-            speakerFeatures = spk;
-        }
-
         for (int step = 0; step < targetSpeechLength; step++)
         {
-            int prevToken = speechTokens[^1];
             float textBias = (step / 6 < numText) ? textTokens[step / 6] * 0.05f : 0f;
             float spkBias = (speakerFeatures != null && speakerFeatures.Length > 0)
                 ? speakerFeatures[step % speakerFeatures.Length] * 0.1f
                 : 0f;
 
-            // Compute next acoustic token distribution
             int bestToken = 100 + Math.Abs((int)(step * 37 + textBias * 100 + spkBias * 50)) % 1024;
 
-            // Apply repetition penalty
             if (tokenCounts.TryGetValue(bestToken, out int count) && count > 0)
             {
                 bestToken = (bestToken + 17) % 2048 + 100;

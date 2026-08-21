@@ -41,7 +41,7 @@ public sealed class ChatterboxPipeline : ITextToSpeechPipeline
             throw new FileNotFoundException($"Chatterbox T3 GGUF model not found: {t3GgufPath}");
 
         var weights = new ChatterboxWeights(t3GgufPath, s3GenGgufPath);
-        var tokenizer = new ChatterboxTokenizer();
+        var tokenizer = new ChatterboxTokenizer(weights);
         var acousticLm = new ChatterboxAcousticLm(weights);
         var decoder = new ChatterboxDecoder();
 
@@ -61,12 +61,11 @@ public sealed class ChatterboxPipeline : ITextToSpeechPipeline
         // 1. Text Tokenization
         int[] textTokens = _tokenizer.Encode(request.Text);
 
-        // 2. Speaker Feature Bank
-        float[] speakerFeatures = ChatterboxVoices.GetSpeakerFeatures(request.Voice);
-        if ((speakerFeatures == null || speakerFeatures.Length == 0) && _weights?.SpeakerEmbedding is { } spk)
-        {
-            speakerFeatures = spk;
-        }
+        // 2. Speaker conditioning: real GGUF speaker embedding (the built-in default voice) takes
+        // priority when real weights are loaded; the synthetic voice bank is only a fallback for
+        // the no-model path (ChatterboxAcousticLm's real T3 inference reads the GGUF embedding
+        // directly and ignores this value, but the fake placeholder generator needs it).
+        float[] speakerFeatures = _weights?.SpeakerEmbedding ?? ChatterboxVoices.GetSpeakerFeatures(request.Voice);
 
         // 3. Autoregressive Acoustic LM -> Speech Tokens
         var speechTokens = _acousticLm.GenerateSpeechTokens(
