@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
+using OpenTail.Stingray.Audio.Primitives;
 using OpenTail.Stingray.Cpu;
 
 namespace OpenTail.Stingray.Audio.FishSpeech;
@@ -307,7 +308,7 @@ public static class FishSpeechFastAr
         return output;
     }
 
-    /// <summary>Real Q8_0 fused mat-vec (see FishSpeechQ8_0Weight's doc comment) -- this session's performance-pass fix for the fast-AR's dominant memory-bandwidth-bound cost.</summary>
+    /// <summary>Real Q8_0 fused mat-vec (see Q8_0WeightQuantizer's doc comment) -- this session's performance-pass fix for the fast-AR's dominant memory-bandwidth-bound cost.</summary>
     private static unsafe float[] LinearQ8_0(float[] input, byte[] weight, int inDim, int outDim)
     {
         var output = new float[outDim];

@@ -6171,3 +6171,59 @@ sweep (Fish Speech's other components, Parler-TTS) to a single pass once all per
 across pipelines is complete, but this one test was run now specifically because it was the
 highest-risk verification for today's specific change (weight storage/precision), not part of
 that general sweep. Not committed. No subagents used.
+
+## Q8_0 generalized to Parler-TTS's decoder -- DRY'd into shared Primitives, measured win, accuracy re-verified
+
+User asked to generalize the Q8_0 technique to other pipelines if Fish Speech's fix held up, and
+approved implementing directly given the fully-committed safety net ("swap to using it - if it's
+better and proved ok - we remove the existing code - and stick with the new"). Parler-TTS's
+decoder was the obvious next candidate: same profile as Fish Speech's fast-AR -- large float32
+weight matrices, autoregressive one-position-at-a-time decode that re-reads its full weight set
+every generated token.
+
+**DRY move (per CLAUDE.md rule 7)**: relocated the Q8_0 encoder from `FishSpeech/
+FishSpeechQ8_0Weight.cs` to `Primitives/Q8_0WeightQuantizer.cs` (renamed to match) the moment a
+second pipeline needed the identical technique -- follows this codebase's own established
+convention (see `Primitives/DenseKernels.cs`'s own doc comment, extracted after the same
+duplication pattern was found between two other pipelines). Both Fish Speech's and Parler's call
+sites updated to the shared class; verified zero stale references afterward.
+
+**Applied to `ParlerDecoderWeights.cs`**: the 8 big per-layer matrices (self-attn Q/K/V/O,
+cross-attn Q/K/V/O, fc1, fc2) are now Q8_0-quantized once at load time (small LayerNorm
+weight/bias vectors stay plain float32, matching Fish Speech's approach). `HiddenDim=1024` and
+`FfnDim=4096` are both cleanly divisible by 32, no partial-block handling needed. `LmHeads` (9
+separate output-vocab projections) deliberately left as plain float32 for now -- smaller matrices,
+lower priority, not touched this round. `ParlerDecoder.cs`: added `LinearQ8_0` (mirrors Fish
+Speech's helper) and swapped all 18 real call sites touching these 8 matrices, in BOTH the batch
+`Forward`/`DecoderLayer` path and the KV-cached `ForwardStep`/`DecoderLayerStep` path.
+
+**Measured performance** (same bench harness/workload, Release, before=round-2's parallelized-
+lm_head result):
+
+| | mean | median |
+|---|---|---|
+| Round 2 (lm_head parallelization only) | 5112.02ms | 5080.84ms |
+| + Q8_0 decoder weights | 4389.31ms | 4376.94ms |
+
+**~14.1% further improvement -- KEPT. Cumulative for Parler-TTS across both rounds: 5337.54ms
+-&gt; 4389.31ms, ~17.8% total speedup** (smaller than Fish Speech's ~2.86x, as expected: Parler's
+decoder runs its full weight set only ONCE per generated frame, not 9x like Fish Speech's fast-AR,
+so the same fix has proportionally less memory traffic to save).
+
+**Accuracy re-verified immediately** (higher-risk change than most this pass, since -- unlike
+Fish Speech's fast-AR -- Parler's decoder had NO prior existing proof that Q8_0 precision is safe
+for this specific sub-network):
+- `ParlerDecoderTests.Forward_RealWeights_MatchesGoldenOutput` (real oracle, cosine &gt; 0.99
+  threshold): **PASSED.**
+- `ParlerDecoderKvCacheTests.ForwardStep_RealWeights_MatchesBatchForwardAndCachesCorrectly` (step-
+  decode vs. batch-decode self-consistency, cosine &gt; 0.9999 threshold, plus the self-/cross-KV
+  cache bookkeeping assertions): **PASSED.**
+
+Both real, both run against real weights (`models/parler-tts-mini-v1.safetensors`), both green.
+Q8_0 is now confirmed safe for a SECOND, architecturally different sub-network (MusicGen-style
+decoder, not just Fish Speech's Qwen-shaped fast-AR) -- a real, useful data point if this technique
+gets applied further (e.g. Parler's `LmHeads`, or Orpheus's talker, though Orpheus already routes
+through this codebase's shared `ForwardPass`/GGUF-quantized-weights engine and may not have the
+same plain-float32-weight profile to begin with).
+
+Not committed (per standing instruction). No subagents used.

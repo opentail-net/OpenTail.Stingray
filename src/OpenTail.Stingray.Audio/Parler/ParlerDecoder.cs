@@ -102,9 +102,9 @@ public static class ParlerDecoder
         int dim = ParlerDecoderWeights.HiddenDim;
         int heads = ParlerDecoderWeights.NumHeads;
 
-        var qNew = LinearNoBias(xNormed, lw.SelfAttnQWeight, dim, dim);
-        var kNew = LinearNoBias(xNormed, lw.SelfAttnKWeight, dim, dim);
-        var vNew = LinearNoBias(xNormed, lw.SelfAttnVWeight, dim, dim);
+        var qNew = LinearQ8_0(xNormed, lw.SelfAttnQWeight, dim, dim);
+        var kNew = LinearQ8_0(xNormed, lw.SelfAttnKWeight, dim, dim);
+        var vNew = LinearQ8_0(xNormed, lw.SelfAttnVWeight, dim, dim);
 
         cache.SelfK[layerIdx].Add(kNew);
         cache.SelfV[layerIdx].Add(vNew);
@@ -126,7 +126,7 @@ public static class ParlerDecoder
                 for (int d = 0; d < HeadDim; d++) ctxSpan[d] += scores[j] * vCache[j][off + d];
         });
 
-        return LinearNoBias(context, lw.SelfAttnOutWeight, dim, dim);
+        return LinearQ8_0(context, lw.SelfAttnOutWeight, dim, dim);
     }
 
     /// <summary>Real cross-attention for one new position: project Q for this step; project encoder K/V into the cache ONLY the first time this layer sees a cache without them, otherwise reuse.</summary>
@@ -136,7 +136,7 @@ public static class ParlerDecoder
         int heads = ParlerDecoderWeights.NumHeads;
         int tk = encoderHidden.Length;
 
-        var q = LinearNoBias(xNormed, lw.CrossAttnQWeight, dim, dim);
+        var q = LinearQ8_0(xNormed, lw.CrossAttnQWeight, dim, dim);
 
         if (cache.CrossK[layerIdx] is null)
         {
@@ -144,8 +144,8 @@ public static class ParlerDecoder
             var vCross = new float[tk][];
             Parallel.For(0, tk, j =>
             {
-                kCross[j] = LinearNoBias(encoderHidden[j], lw.CrossAttnKWeight, dim, dim);
-                vCross[j] = LinearNoBias(encoderHidden[j], lw.CrossAttnVWeight, dim, dim);
+                kCross[j] = LinearQ8_0(encoderHidden[j], lw.CrossAttnKWeight, dim, dim);
+                vCross[j] = LinearQ8_0(encoderHidden[j], lw.CrossAttnVWeight, dim, dim);
             });
             cache.CrossK[layerIdx] = kCross;
             cache.CrossV[layerIdx] = vCross;
@@ -167,14 +167,14 @@ public static class ParlerDecoder
                 for (int d = 0; d < HeadDim; d++) ctxSpan[d] += scores[j] * v[j][off + d];
         });
 
-        return LinearNoBias(context, lw.CrossAttnOutWeight, dim, dim);
+        return LinearQ8_0(context, lw.CrossAttnOutWeight, dim, dim);
     }
 
     private static float[] FfnStep(float[] x, ParlerDecoderLayerWeights lw)
     {
-        var h = LinearNoBias(x, lw.Fc1Weight, ParlerDecoderWeights.HiddenDim, ParlerDecoderWeights.FfnDim);
+        var h = LinearQ8_0(x, lw.Fc1Weight, ParlerDecoderWeights.HiddenDim, ParlerDecoderWeights.FfnDim);
         for (int d = 0; d < h.Length; d++) h[d] = Gelu(h[d]);
-        return LinearNoBias(h, lw.Fc2Weight, ParlerDecoderWeights.FfnDim, ParlerDecoderWeights.HiddenDim);
+        return LinearQ8_0(h, lw.Fc2Weight, ParlerDecoderWeights.FfnDim, ParlerDecoderWeights.HiddenDim);
     }
 
     /// <summary>Projects the final hidden states through all 9 real, separate lm_heads. Returns [T][9][OutputVocabSize].</summary>
@@ -245,9 +245,9 @@ public static class ParlerDecoder
         var v = new float[t][];
         Parallel.For(0, t, i =>
         {
-            q[i] = LinearNoBias(x[i], lw.SelfAttnQWeight, dim, dim);
-            k[i] = LinearNoBias(x[i], lw.SelfAttnKWeight, dim, dim);
-            v[i] = LinearNoBias(x[i], lw.SelfAttnVWeight, dim, dim);
+            q[i] = LinearQ8_0(x[i], lw.SelfAttnQWeight, dim, dim);
+            k[i] = LinearQ8_0(x[i], lw.SelfAttnKWeight, dim, dim);
+            v[i] = LinearQ8_0(x[i], lw.SelfAttnVWeight, dim, dim);
         });
 
         var context = new float[t][];
@@ -271,7 +271,7 @@ public static class ParlerDecoder
         });
 
         var output = new float[t][];
-        Parallel.For(0, t, i => output[i] = LinearNoBias(context[i], lw.SelfAttnOutWeight, dim, dim));
+        Parallel.For(0, t, i => output[i] = LinearQ8_0(context[i], lw.SelfAttnOutWeight, dim, dim));
         return output;
     }
 
@@ -284,13 +284,13 @@ public static class ParlerDecoder
         int heads = ParlerDecoderWeights.NumHeads;
 
         var q = new float[tq][];
-        Parallel.For(0, tq, i => q[i] = LinearNoBias(x[i], lw.CrossAttnQWeight, dim, dim));
+        Parallel.For(0, tq, i => q[i] = LinearQ8_0(x[i], lw.CrossAttnQWeight, dim, dim));
         var k = new float[tk][];
         var v = new float[tk][];
         Parallel.For(0, tk, j =>
         {
-            k[j] = LinearNoBias(encoderHidden[j], lw.CrossAttnKWeight, dim, dim);
-            v[j] = LinearNoBias(encoderHidden[j], lw.CrossAttnVWeight, dim, dim);
+            k[j] = LinearQ8_0(encoderHidden[j], lw.CrossAttnKWeight, dim, dim);
+            v[j] = LinearQ8_0(encoderHidden[j], lw.CrossAttnVWeight, dim, dim);
         });
 
         var context = new float[tq][];
@@ -314,7 +314,7 @@ public static class ParlerDecoder
         });
 
         var output = new float[tq][];
-        Parallel.For(0, tq, i => output[i] = LinearNoBias(context[i], lw.CrossAttnOutWeight, dim, dim));
+        Parallel.For(0, tq, i => output[i] = LinearQ8_0(context[i], lw.CrossAttnOutWeight, dim, dim));
         return output;
     }
 
@@ -325,9 +325,9 @@ public static class ParlerDecoder
         var output = new float[t][];
         Parallel.For(0, t, i =>
         {
-            var h = LinearNoBias(x[i], lw.Fc1Weight, ParlerDecoderWeights.HiddenDim, ParlerDecoderWeights.FfnDim);
+            var h = LinearQ8_0(x[i], lw.Fc1Weight, ParlerDecoderWeights.HiddenDim, ParlerDecoderWeights.FfnDim);
             for (int d = 0; d < h.Length; d++) h[d] = Gelu(h[d]);
-            output[i] = LinearNoBias(h, lw.Fc2Weight, ParlerDecoderWeights.FfnDim, ParlerDecoderWeights.HiddenDim);
+            output[i] = LinearQ8_0(h, lw.Fc2Weight, ParlerDecoderWeights.FfnDim, ParlerDecoderWeights.HiddenDim);
         });
         return output;
     }
@@ -359,6 +359,18 @@ public static class ParlerDecoder
         fixed (float* wp = weight, xp = input, op = output)
         {
             SimdKernels.MatVecF32(op, wp, xp, outDim, inDim);
+        }
+        return output;
+    }
+
+    /// <summary>Real Q8_0 fused mat-vec (see Q8_0WeightQuantizer's doc comment) -- applied to the decoder's 8 big per-layer matrices, following the same memory-bandwidth win measured for Fish Speech's fast-AR this session's performance pass.</summary>
+    private static unsafe float[] LinearQ8_0(float[] input, byte[] weight, int inDim, int outDim)
+    {
+        var output = new float[outDim];
+        fixed (byte* wp = weight)
+        fixed (float* xp = input, op = output)
+        {
+            SimdKernels.MatVecQ8_0(op, wp, xp, outDim, inDim);
         }
         return output;
     }

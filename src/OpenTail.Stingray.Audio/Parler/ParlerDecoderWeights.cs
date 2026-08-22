@@ -1,3 +1,4 @@
+using OpenTail.Stingray.Audio.Primitives;
 using OpenTail.Stingray.Core;
 
 namespace OpenTail.Stingray.Audio.Parler;
@@ -58,25 +59,30 @@ public sealed class ParlerDecoderWeights
         FinalLayerNormWeight = loader.ReadF32("decoder.model.decoder.layer_norm.weight");
         FinalLayerNormBias = loader.ReadF32("decoder.model.decoder.layer_norm.bias");
 
+        // The 8 big matrices per layer are Q8_0-quantized at load time (once) -- same real
+        // technique and rationale as Fish Speech's fast-AR (see Q8_0WeightQuantizer's doc
+        // comment): this decoder's autoregressive per-step decode re-reads its full weight set
+        // every generated token, so the same memory-bandwidth argument applies. HiddenDim=1024
+        // and FfnDim=4096 are both cleanly divisible by 32 -- no partial-block handling needed.
         for (int i = 0; i < NumLayers; i++)
         {
             string p = $"decoder.model.decoder.layers.{i}";
             Layers[i] = new ParlerDecoderLayerWeights
             {
-                SelfAttnQWeight = loader.ReadF32($"{p}.self_attn.q_proj.weight"),
-                SelfAttnKWeight = loader.ReadF32($"{p}.self_attn.k_proj.weight"),
-                SelfAttnVWeight = loader.ReadF32($"{p}.self_attn.v_proj.weight"),
-                SelfAttnOutWeight = loader.ReadF32($"{p}.self_attn.out_proj.weight"),
+                SelfAttnQWeight = Q8_0WeightQuantizer.Quantize(loader.ReadF32($"{p}.self_attn.q_proj.weight"), HiddenDim, HiddenDim),
+                SelfAttnKWeight = Q8_0WeightQuantizer.Quantize(loader.ReadF32($"{p}.self_attn.k_proj.weight"), HiddenDim, HiddenDim),
+                SelfAttnVWeight = Q8_0WeightQuantizer.Quantize(loader.ReadF32($"{p}.self_attn.v_proj.weight"), HiddenDim, HiddenDim),
+                SelfAttnOutWeight = Q8_0WeightQuantizer.Quantize(loader.ReadF32($"{p}.self_attn.out_proj.weight"), HiddenDim, HiddenDim),
                 SelfAttnLayerNormWeight = loader.ReadF32($"{p}.self_attn_layer_norm.weight"),
                 SelfAttnLayerNormBias = loader.ReadF32($"{p}.self_attn_layer_norm.bias"),
-                CrossAttnQWeight = loader.ReadF32($"{p}.encoder_attn.q_proj.weight"),
-                CrossAttnKWeight = loader.ReadF32($"{p}.encoder_attn.k_proj.weight"),
-                CrossAttnVWeight = loader.ReadF32($"{p}.encoder_attn.v_proj.weight"),
-                CrossAttnOutWeight = loader.ReadF32($"{p}.encoder_attn.out_proj.weight"),
+                CrossAttnQWeight = Q8_0WeightQuantizer.Quantize(loader.ReadF32($"{p}.encoder_attn.q_proj.weight"), HiddenDim, HiddenDim),
+                CrossAttnKWeight = Q8_0WeightQuantizer.Quantize(loader.ReadF32($"{p}.encoder_attn.k_proj.weight"), HiddenDim, HiddenDim),
+                CrossAttnVWeight = Q8_0WeightQuantizer.Quantize(loader.ReadF32($"{p}.encoder_attn.v_proj.weight"), HiddenDim, HiddenDim),
+                CrossAttnOutWeight = Q8_0WeightQuantizer.Quantize(loader.ReadF32($"{p}.encoder_attn.out_proj.weight"), HiddenDim, HiddenDim),
                 CrossAttnLayerNormWeight = loader.ReadF32($"{p}.encoder_attn_layer_norm.weight"),
                 CrossAttnLayerNormBias = loader.ReadF32($"{p}.encoder_attn_layer_norm.bias"),
-                Fc1Weight = loader.ReadF32($"{p}.fc1.weight"),
-                Fc2Weight = loader.ReadF32($"{p}.fc2.weight"),
+                Fc1Weight = Q8_0WeightQuantizer.Quantize(loader.ReadF32($"{p}.fc1.weight"), FfnDim, HiddenDim),
+                Fc2Weight = Q8_0WeightQuantizer.Quantize(loader.ReadF32($"{p}.fc2.weight"), HiddenDim, FfnDim),
                 FinalLayerNormWeight = loader.ReadF32($"{p}.final_layer_norm.weight"),
                 FinalLayerNormBias = loader.ReadF32($"{p}.final_layer_norm.bias"),
             };
@@ -86,20 +92,20 @@ public sealed class ParlerDecoderWeights
 
 public sealed class ParlerDecoderLayerWeights
 {
-    public required float[] SelfAttnQWeight { get; init; }
-    public required float[] SelfAttnKWeight { get; init; }
-    public required float[] SelfAttnVWeight { get; init; }
-    public required float[] SelfAttnOutWeight { get; init; }
+    public required byte[] SelfAttnQWeight { get; init; }
+    public required byte[] SelfAttnKWeight { get; init; }
+    public required byte[] SelfAttnVWeight { get; init; }
+    public required byte[] SelfAttnOutWeight { get; init; }
     public required float[] SelfAttnLayerNormWeight { get; init; }
     public required float[] SelfAttnLayerNormBias { get; init; }
-    public required float[] CrossAttnQWeight { get; init; }
-    public required float[] CrossAttnKWeight { get; init; }
-    public required float[] CrossAttnVWeight { get; init; }
-    public required float[] CrossAttnOutWeight { get; init; }
+    public required byte[] CrossAttnQWeight { get; init; }
+    public required byte[] CrossAttnKWeight { get; init; }
+    public required byte[] CrossAttnVWeight { get; init; }
+    public required byte[] CrossAttnOutWeight { get; init; }
     public required float[] CrossAttnLayerNormWeight { get; init; }
     public required float[] CrossAttnLayerNormBias { get; init; }
-    public required float[] Fc1Weight { get; init; }
-    public required float[] Fc2Weight { get; init; }
+    public required byte[] Fc1Weight { get; init; }
+    public required byte[] Fc2Weight { get; init; }
     public required float[] FinalLayerNormWeight { get; init; }
     public required float[] FinalLayerNormBias { get; init; }
 }

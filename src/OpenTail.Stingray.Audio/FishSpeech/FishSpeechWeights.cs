@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using OpenTail.Stingray.Audio.Primitives;
 using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Cpu;
 
@@ -48,7 +49,7 @@ public sealed class FishSpeechWeights : IDisposable
     public float[] FastEmbeddings { get; }
     public FishSpeechFastLayerWeights[] FastLayers { get; }
     public float[] FastNormWeight { get; }
-    /// <summary>[CodebookSize, FastEmbeddingDim], real Q8_0 block format (see FishSpeechQ8_0Weight) -- separate, NOT tied to FastEmbeddings (fast_tie_word_embeddings=false).</summary>
+    /// <summary>[CodebookSize, FastEmbeddingDim], real Q8_0 block format (see Q8_0WeightQuantizer) -- separate, NOT tied to FastEmbeddings (fast_tie_word_embeddings=false).</summary>
     public byte[] FastOutputWeight { get; }
 
     public FishSpeechWeights(string ggufPath)
@@ -78,14 +79,14 @@ public sealed class FishSpeechWeights : IDisposable
 
         FastEmbeddings = GetTensor("fast_embeddings.weight");
         FastNormWeight = GetTensor("fast_norm.weight");
-        // Q8_0-quantized at load time (once) -- see FishSpeechQ8_0Weight's doc comment for why:
+        // Q8_0-quantized at load time (once) -- see Q8_0WeightQuantizer's doc comment for why:
         // this is the sub-network this session's performance pass measured as memory-bandwidth-
         // bound on plain float32 weight re-reads (~40ms/call, re-read 9x/frame), and the only
         // quantization level this sub-network was already proven numerically safe at (Q8_0
         // cosine ~0.9995 vs. Q4_K_M's ~0.489, measured earlier this project).
         int qSize = FastHeadCount * FastHeadDim;
         int kvSize = FastHeadCountKv * FastHeadDim;
-        FastOutputWeight = FishSpeechQ8_0Weight.Quantize(GetTensor("fast_output.weight"), CodebookSize, FastEmbeddingDim);
+        FastOutputWeight = Q8_0WeightQuantizer.Quantize(GetTensor("fast_output.weight"), CodebookSize, FastEmbeddingDim);
 
         FastLayers = new FishSpeechFastLayerWeights[FastBlockCount];
         for (int i = 0; i < FastBlockCount; i++)
@@ -95,12 +96,12 @@ public sealed class FishSpeechWeights : IDisposable
             FastLayers[i] = new FishSpeechFastLayerWeights
             {
                 AttentionNormWeight = GetTensor($"{p}.attention_norm.weight"),
-                WqkvWeight = FishSpeechQ8_0Weight.Quantize(GetTensor($"{p}.attention.wqkv.weight"), qSize + 2 * kvSize, FastEmbeddingDim),
-                WoWeight = FishSpeechQ8_0Weight.Quantize(GetTensor($"{p}.attention.wo.weight"), FastEmbeddingDim, qSize),
+                WqkvWeight = Q8_0WeightQuantizer.Quantize(GetTensor($"{p}.attention.wqkv.weight"), qSize + 2 * kvSize, FastEmbeddingDim),
+                WoWeight = Q8_0WeightQuantizer.Quantize(GetTensor($"{p}.attention.wo.weight"), FastEmbeddingDim, qSize),
                 FfnNormWeight = GetTensor($"{p}.ffn_norm.weight"),
-                W1Weight = FishSpeechQ8_0Weight.Quantize(GetTensor($"{p}.feed_forward.w1.weight"), ffnDim, FastEmbeddingDim),
-                W2Weight = FishSpeechQ8_0Weight.Quantize(GetTensor($"{p}.feed_forward.w2.weight"), FastEmbeddingDim, ffnDim),
-                W3Weight = FishSpeechQ8_0Weight.Quantize(GetTensor($"{p}.feed_forward.w3.weight"), ffnDim, FastEmbeddingDim),
+                W1Weight = Q8_0WeightQuantizer.Quantize(GetTensor($"{p}.feed_forward.w1.weight"), ffnDim, FastEmbeddingDim),
+                W2Weight = Q8_0WeightQuantizer.Quantize(GetTensor($"{p}.feed_forward.w2.weight"), FastEmbeddingDim, ffnDim),
+                W3Weight = Q8_0WeightQuantizer.Quantize(GetTensor($"{p}.feed_forward.w3.weight"), ffnDim, FastEmbeddingDim),
                 FfnDim = ffnDim,
             };
         }
@@ -122,7 +123,7 @@ public sealed class FishSpeechWeights : IDisposable
 }
 
 /// <summary>Real fast-AR per-layer weights. The 5 big matrices (Wqkv/Wo/W1/W2/W3) are stored in
-/// real Q8_0 block format (see <see cref="FishSpeechQ8_0Weight"/>) -- this session's performance
+/// real Q8_0 block format (see <see cref="Q8_0WeightQuantizer"/>) -- this session's performance
 /// pass measured them as the dominant, memory-bandwidth-bound cost at plain float32, and this
 /// sub-network was already separately proven numerically safe at Q8_0 precision (unlike Q4_K_M).
 /// The two small RMSNorm weight vectors stay plain float32 (negligible size, not worth

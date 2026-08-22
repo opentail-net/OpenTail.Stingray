@@ -1,6 +1,6 @@
 using System;
 
-namespace OpenTail.Stingray.Audio.FishSpeech;
+namespace OpenTail.Stingray.Audio.Primitives;
 
 /// <summary>
 /// Encodes a plain float32 weight matrix into the real Q8_0 block format this codebase's own
@@ -11,16 +11,17 @@ namespace OpenTail.Stingray.Audio.FishSpeech;
 /// an fp16 scale instead of that function's fp32 scratch scale, to match the ON-WEIGHT block
 /// format <see cref="OpenTail.Stingray.Cpu.SimdKernels.DotQ8_0"/> actually reads).
 ///
-/// <para><b>Why this exists</b>: this session's performance pass measured the Fish Speech fast-AR
-/// sub-network's dominant cost as memory-bandwidth-bound plain-float32 weight reads (~40ms/call,
-/// perfectly linear 1-&gt;9 call scaling, ~1.58GB of FP32 weight re-read 9x/frame -&gt; ~39GB/s
-/// effective bandwidth at the measured cost -- see docs/audio-review-progress.md's Fish Speech
-/// performance-pass entries for the full diagnosis). This exact sub-network was ALSO already
-/// measured to fail badly at Q4_K_M precision (cosine ~0.489 vs. a real oracle) but pass cleanly
-/// at Q8_0 (cosine ~0.9995) -- so Q8_0 is the only quantization level with an existing numerical
-/// safety proof for this specific sub-network, not a generic assumption.</para>
+/// <para><b>Why this exists</b>: Fish Speech's fast-AR sub-network (measured this session's
+/// performance pass) was found to be memory-bandwidth-bound on plain-float32 weight reads
+/// (~40ms/call, perfectly linear 1-&gt;9 call scaling, ~1.58GB of FP32 weight re-read 9x/frame
+/// -&gt; ~39GB/s effective bandwidth at the measured cost -- see docs/audio-review-progress.md's
+/// Fish Speech performance-pass entries for the full diagnosis) and was already separately proven
+/// numerically safe at Q8_0 precision (cosine ~0.9995 vs. Q4_K_M's ~0.489). Moved here (from its
+/// original home in the FishSpeech namespace) once Parler-TTS's decoder needed the exact same
+/// technique -- shared per this project's DRY convention (see e.g. `DenseKernels.cs`'s own doc
+/// comment for the same rationale after a near-identical duplication was found elsewhere).</para>
 /// </summary>
-public static class FishSpeechQ8_0Weight
+public static class Q8_0WeightQuantizer
 {
     /// <summary>Bytes needed to store a [rows, cols] matrix in Q8_0 block format. <paramref name="cols"/> must be a multiple of 32.</summary>
     public static long ByteSize(int rows, int cols)
