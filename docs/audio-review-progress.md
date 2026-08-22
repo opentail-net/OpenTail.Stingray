@@ -5624,3 +5624,169 @@ wiring was, and should be treated as its own item, not assumed to be "just wirin
 Speech's was.
 
 Not committed (per standing instruction). No subagents used.
+
+## Parler-TTS decoder self-/cross-attention KV cache -- IMPLEMENTED and conformance-verified. First real step toward the full generation loop
+
+User asked ChatGPT for guidance on the remaining Parler-TTS generation-loop gap; the reply
+confirmed (checking the real current `huggingface/parler-tts` `modeling_parler_tts.py` directly,
+not from generic knowledge) the architecture this doc's earlier entries already anticipated: self-
+attention K/V is recomputed and appended every decode step, while cross-attention K/V is projected
+from the T5 encoder's FIXED output exactly once per layer and reused unchanged for every
+subsequent step (own K/V per layer, since each layer has its own projection weights -- confirmed
+via the real `EncoderDecoderCache(self_attention_cache, cross_attention_cache)` construction and
+per-layer `key_cache[self.layer_idx]`/`value_cache[self.layer_idx]` indexing). Also confirmed:
+real MusicGen-style delayed multi-codebook pattern (codebook `c` shifted by `c` positions), a
+model-specific `ParlerTTSLogitsProcessor` for stopping (NOT a simple scalar EOS check -- flagged
+as needing direct verification against the real `logits_processors.py`, not guessed), and that
+sinusoidal position embeddings during cached decode must use `past_key_values_length` as the
+position offset (matches this codebase's existing causal-LM KV cache convention already).
+
+**Implemented as the first, most independently-verifiable piece of that architecture** (per the
+guidance's own recommended incremental pipeline: self-KV append/reuse and cross-KV first-build/
+reuse ARE separately testable before attempting the full delayed multi-codebook loop):
+
+- **New `ParlerDecoderKvCache.cs`**: `SelfK`/`SelfV` as growable `List&lt;float[]&gt;[NumLayers]`
+  (one list per layer, appended every step), `CrossK`/`CrossV` as nullable `float[][]?[NumLayers]`
+  (built lazily on first use per layer, never rebuilt).
+- **`ParlerDecoder.ForwardStep(weights, cache, inputEmbed, encoderHidden)`** (added to the
+  existing `ParlerDecoder.cs`, alongside the existing golden-verified batch `Forward`): real
+  single-position decode -- `SelfAttentionStep` projects Q/K/V for only the new position, appends
+  K/V to the cache, and attends over the FULL cached history (causal, but no re-masking needed
+  since only past+current positions exist in the cache); `CrossAttentionStep` projects Q for the
+  new position, and projects+caches K/V from `encoderHidden` ONLY when `cache.CrossK[layer]` is
+  still null, otherwise reuses the cached arrays untouched.
+
+**Conformance-verified** (not a fresh oracle -- the already golden-verified batch `Forward` IS the
+oracle here, since this is purely a cache-correctness claim, not new model math):
+`ParlerDecoderKvCacheTests.ForwardStep_RealWeights_MatchesBatchForwardAndCachesCorrectly`, reusing
+`ParlerDecoderTests`'s exact same real-weights fixture (`models/parler-tts-mini-v1.safetensors`,
+same deterministic codebook-id sequence, same stand-in encoder hidden state). Asserts, at every
+step: (1) step-by-step cached output matches the batch `Forward` output at that position, cosine
+&gt; 0.9999; (2) self-cache length is exactly `step+1` for every layer; (3) cross-cache is built
+(non-null) by the very first step and stays built. **PASSED**: all assertions held across all
+real fixture steps, run via `STINGRAY_RUN_HEAVY_TESTS=1 dotnet test
+tests/OpenTail.Stingray.Tests.Audio -- --filter-class "*ParlerDecoderKvCacheTests*"`, 1/1
+succeeded, 2s.
+
+**What remains for the full Parler-TTS generation loop** (unchanged scope from the previous
+entry, now with one fewer unknown): the real MusicGen-style delay-pattern build/unbuild
+(codebook-`c`-shifted-by-`c` staggering), the model-specific `ParlerTTSLogitsProcessor`
+EOS/stopping state machine (still needs direct source verification against
+`parler_tts/logits_processors.py`, not guessed), and the real checkpoint's actual
+`generation_config.json` sampling defaults (not assumed from documentation examples). This KV
+cache is the piece those all build on top of, now done and proven correct.
+
+Not committed (per standing instruction). No subagents used.
+
+## Parler-TTS delay pattern + EOS logits processor -- BOTH IMPLEMENTED and golden-verified against real PyTorch source runs. All three generation-loop primitives now done; only assembly + sampling-defaults verification remain
+
+Both real Python source files were already local this fire
+(`scratch-llamacpp-ref/parler-pkg/parler_tts-0.2.3/parler_tts/{modeling_parler_tts.py,
+logits_processors.py}`, downloaded earlier this session, no new download needed) -- read directly
+rather than re-derived from the earlier ChatGPT summary.
+
+**New `ParlerDelayPattern.cs`**: real `build_delay_pattern_mask`/`apply_delay_pattern_mask`,
+transcribed line-for-line from the real source (`torch.tril`/`torch.triu` region logic reproduced
+as plain index comparisons: BOS region is `pos &lt;= codebook`, PAD/EOS region is `pos - codebook
+&gt;= maxLength - numCodebooks + 1`, middle region carries the codebook-shifted prompt value or
+`-1` if not yet known). **Golden-verified** by running the REAL Python functions directly (copied
+verbatim out of `modeling_parler_tts.py` into a standalone script, avoiding that package's heavy
+`dac`-module import chain which isn't needed for these two pure-tensor functions) via the
+already-installed local PyTorch: `ParlerDelayPatternTests`, 3 cases -- (1) the real docstring's own
+4-codebook/max_length=8/no-prompt example, (2) the same config WITH a real non-empty 3-token
+prompt (exercises the codebook-shift-of-a-real-value path, not just the -1/BOS/PAD paths), (3) a
+full `apply_delay_pattern_mask` round trip filling every `-1` with a distinct dummy generated
+value and confirming the BOS/PAD positions get force-overridden while generated values pass
+through untouched. **All 3 PASSED, exact match against the real PyTorch output.**
+
+**New `ParlerLogitsProcessor.cs`**: real `ParlerTTSLogitsProcessor`'s cascading EOS-unlock state
+machine (single-batch/bsz=1 form, since this engine generates one sequence at a time -- the real
+class's per-batch-item vectorized `first_codebooks_unfinished` tensor collapses to one scalar
+pointer here). Real algorithm confirmed by reading `logits_processors.py` directly (this was
+explicitly flagged as NOT-yet-verified in the previous entry, now resolved): a single pointer
+starts at codebook 0; each step, if the codebook currently at the pointer has ALREADY emitted EOS
+somewhere in its own generated history (and isn't the last codebook), the pointer advances to the
+next codebook; every codebook's EOS logit is forced to `-infinity` unless its index is `&lt;=` the
+pointer -- implementing the real cascading contract that codebooks must reach their real
+end-of-audio position and be allowed to emit EOS in the SAME staggered order the delay pattern
+imposes, not independently. **Golden-verified**: ran the real
+`parler_tts.logits_processors.ParlerTTSLogitsProcessor` class directly via PyTorch (again copied
+standalone to dodge the same `dac`-import chain, using `torch.isin` in place of the
+version-mismatched `isin_mps_friendly` helper this environment's installed `transformers` version
+lacks -- confirmed algebraically identical for this non-MPS use) across an 8-step synthetic trace
+(4 codebooks, deliberately staggered EOS emission order matching the real cascading semantics) and
+captured the exact expected blocked/unblocked EOS-column pattern at every step.
+`ParlerLogitsProcessorTests.Apply_RealPyTorchTrace_MatchesGoldenEosBlockingSequence` reproduces
+that exact 8-step trace. **PASSED, exact match at every step.**
+
+**Status**: all three generation-loop primitives this doc's earlier entries flagged as needed --
+self-/cross-attention KV cache, delay pattern, EOS logits processor -- are now individually
+golden-verified. What remains before a real `ParlerFullPipeline.cs` exists: (1) assembling these
+pieces plus the already golden-verified T5 encoder/decoder-forward/DAC-decoder into one actual
+generation loop (build initial delayed BOS input -> loop: `ForwardStep` -> 9 real lm_head logits
+-> `ParlerLogitsProcessor.Apply` per active codebook -> greedy/sample -> append -> repeat until all
+9 codebook EOS-cascades complete or a max-length cap -> `ParlerDelayPattern.Apply` to un-delay ->
+DAC decode); (2) reading the real Parler-TTS checkpoint's actual `generation_config.json` for real
+sampling defaults rather than assuming greedy (this doc's other pipelines all use greedy as an
+explicit first-pass simplification, and the same approach is reasonable here as a documented
+starting point, but the real checkpoint defaults haven't been inspected yet).
+
+Not committed (per standing instruction). No subagents used.
+
+## Parler-TTS FULLY WIRED END-TO-END. All five queued audio pipelines now have real, golden-verified components with a working end-to-end call path
+
+Fetched Parler-TTS's real `generation_config.json`/`config.json` directly from
+`huggingface.co/parler-tts/parler-tts-mini-v1` (small JSON files, no weight download) rather than
+assuming values: real `bos_token_id=1025` (== `decoder_start_token_id`), real
+`eos_token_id=pad_token_id=1024` (same id serves both roles), real `num_codebooks=9`, real
+`min_new_tokens=10`, real default `do_sample=True` with no fixed temperature/top_k/top_p recorded
+in the checkpoint's own generation config -- this pipeline uses GREEDY decode as an explicit,
+documented first-pass simplification (consistent with every other pipeline in this codebase, not
+hidden).
+
+**New `ParlerFullPipeline.cs`** assembles every previously golden-verified/conformance-tested
+piece into one real generation loop: `UnigramTokenizer.Encode` (+ real T5 EOS id 1, appended to
+match the tokenizer's own post-processor, confirmed via `UnigramTokenizerTests`) -&gt;
+`T5Encoder.Forward` (run once) -&gt; `ParlerDelayPattern.Build` (real initial all-BOS delayed
+input across all 9 codebooks) -&gt; autoregressive loop: `ParlerDecoder.ForwardStep` (KV-cached)
+-&gt; all 9 real `lm_heads` -&gt; `ParlerLogitsProcessor.Apply` (cascading EOS unlock, gated
+behind `min_new_tokens`) -&gt; greedy argmax per codebook -&gt; `ParlerDelayPattern.Apply` (force
+the real known BOS/PAD value wherever the pattern already knows it, keep the model's prediction
+only where the pattern says `-1`) -&gt; append -&gt; repeat until every codebook has emitted EOS
+(past `min_new_tokens`) or `maxNewTokens` is hit -&gt; real un-delay (strip each codebook's own
+`cb+1`-length BOS prefix and any trailing EOS/PAD, then truncate every stream to the shortest
+resulting length so all 9 codebooks agree on frame count) -&gt; `DacDecoder.Decode` -&gt; PCM.
+
+**One real design decision made explicit, not separately oracle-verified but directly implied by
+the real `apply_delay_pattern_mask`'s own doc comment** ("only preserving predictions where the
+mask is set to -1, and otherwise setting to the value detailed in the mask"): since every BOS/PAD
+position is fully known before generation starts, this pipeline applies the mask PER STEP (forcing
+the known value into the very next model input immediately) rather than only as a post-hoc cleanup
+at the end -- mathematically identical either way, since a forced value never depends on anything
+the model predicts. Reuses the already golden-tested `ParlerDelayPattern.Apply` unchanged.
+
+**Verified**: `ParlerFullPipelineTests.Synthesize_RealWeights_ProducesFinitePcm` -- real
+`models/parler-tts-mini-v1.safetensors` + real `scratch-llamacpp-ref/parler-tokenizer/
+tokenizer.json`, text "Hello there.", `maxNewTokens=40, minNewTokens=10`. Same category of test as
+Fish Speech's end-to-end smoke test: finite + non-silent RMS check, not a fresh cosine-similarity
+oracle -- deliberately, since the numerical correctness claim rests on the many already
+independently golden-verified/conformance-tested stage-level tests (T5 encoder, decoder forward
+pass, KV cache conformance, delay pattern, EOS logits processor, DAC decoder), not a new
+end-to-end oracle that doesn't exist. **PASSED**: non-empty PCM, all samples finite, RMS above
+silence threshold. Ran via `STINGRAY_RUN_HEAVY_TESTS=1 dotnet test
+tests/OpenTail.Stingray.Tests.Audio -- --filter-class "*ParlerFullPipelineTests*"`, 1/1 succeeded,
+26s.
+
+**Known first-pass simplifications** (documented, matching this doc's convention for every other
+pipeline): greedy decode instead of the real checkpoint's `do_sample=True` default; no human
+listen-check on the resulting waveform yet; the `precompiled_charsmap` tokenizer sub-gap from the
+earlier entry remains open (plain NFKC stand-in, empirically validated on ASCII/Latin-accented
+text only).
+
+**QUEUE COMPLETE, at the "golden-verified components + working end-to-end call path" bar this doc
+has used throughout**: FunASR ✅, Silero VAD ✅, Orpheus TTS ✅, Fish Speech ✅ (slow-AR + fast-AR +
+codec, fully wired), Parler-TTS ✅ (T5 encoder + decoder + DAC codec + tokenizer + full generation
+loop, fully wired). Per CLAUDE.md rule 7, the next standing task once all model-porting work is
+this complete is a performance pass + DRY pass across the newly-ported model code -- not yet
+started, and a reasonable next fire's focus. Not committed (per standing instruction). No
+subagents used anywhere this fire.

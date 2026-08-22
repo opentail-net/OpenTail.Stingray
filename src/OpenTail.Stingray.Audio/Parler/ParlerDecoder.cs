@@ -55,6 +55,128 @@ public static class ParlerDecoder
         return output;
     }
 
+    /// <summary>
+    /// Real single-step decode with self-/cross-attention KV caching, equivalent to (but far
+    /// cheaper for autoregressive generation than) calling <see cref="Forward"/> on the whole
+    /// prefix each step. Self-attention K/V is recomputed for THIS position and appended to the
+    /// cache; cross-attention K/V is projected from <paramref name="encoderHidden"/> once per
+    /// layer (on the first call using this cache) and reused unchanged thereafter. Returns the
+    /// post-final-LayerNorm hidden state for this one position.
+    /// </summary>
+    public static float[] ForwardStep(ParlerDecoderWeights w, ParlerDecoderKvCache cache, float[] inputEmbed, float[][] encoderHidden)
+    {
+        var x = inputEmbed;
+        for (int layerIdx = 0; layerIdx < w.Layers.Length; layerIdx++)
+            x = DecoderLayerStep(x, encoderHidden, w.Layers[layerIdx], cache, layerIdx);
+
+        return LayerNorm(x, w.FinalLayerNormWeight, w.FinalLayerNormBias);
+    }
+
+    private static float[] DecoderLayerStep(float[] x, float[][] encoderHidden, ParlerDecoderLayerWeights lw, ParlerDecoderKvCache cache, int layerIdx)
+    {
+        int dim = ParlerDecoderWeights.HiddenDim;
+
+        var normed1 = LayerNorm(x, lw.SelfAttnLayerNormWeight, lw.SelfAttnLayerNormBias);
+        var selfAttnOut = SelfAttentionStep(normed1, lw, cache, layerIdx);
+
+        var afterSelf = new float[dim];
+        for (int d = 0; d < dim; d++) afterSelf[d] = x[d] + selfAttnOut[d];
+
+        var normed2 = LayerNorm(afterSelf, lw.CrossAttnLayerNormWeight, lw.CrossAttnLayerNormBias);
+        var crossAttnOut = CrossAttentionStep(normed2, encoderHidden, lw, cache, layerIdx);
+
+        var afterCross = new float[dim];
+        for (int d = 0; d < dim; d++) afterCross[d] = afterSelf[d] + crossAttnOut[d];
+
+        var normed3 = LayerNorm(afterCross, lw.FinalLayerNormWeight, lw.FinalLayerNormBias);
+        var ffnOut = FfnStep(normed3, lw);
+
+        var output = new float[dim];
+        for (int d = 0; d < dim; d++) output[d] = afterCross[d] + ffnOut[d];
+        return output;
+    }
+
+    /// <summary>Real causal self-attention for one new position: project this step's Q/K/V, append K/V to the cache, attend over every cached position including this one.</summary>
+    private static float[] SelfAttentionStep(float[] xNormed, ParlerDecoderLayerWeights lw, ParlerDecoderKvCache cache, int layerIdx)
+    {
+        int dim = ParlerDecoderWeights.HiddenDim;
+        int heads = ParlerDecoderWeights.NumHeads;
+
+        var qNew = LinearNoBias(xNormed, lw.SelfAttnQWeight, dim, dim);
+        var kNew = LinearNoBias(xNormed, lw.SelfAttnKWeight, dim, dim);
+        var vNew = LinearNoBias(xNormed, lw.SelfAttnVWeight, dim, dim);
+
+        cache.SelfK[layerIdx].Add(kNew);
+        cache.SelfV[layerIdx].Add(vNew);
+        var kCache = cache.SelfK[layerIdx];
+        var vCache = cache.SelfV[layerIdx];
+        int t = kCache.Count;
+
+        var context = new float[dim];
+        float scale = 1f / MathF.Sqrt(HeadDim);
+        Parallel.For(0, heads, h =>
+        {
+            int off = h * HeadDim;
+            var scores = new float[t];
+            for (int j = 0; j < t; j++) scores[j] = Dot(qNew, kCache[j], off, HeadDim) * scale;
+            SoftmaxInPlace(scores, t);
+
+            var ctxSpan = context.AsSpan(off, HeadDim);
+            for (int j = 0; j < t; j++)
+                for (int d = 0; d < HeadDim; d++) ctxSpan[d] += scores[j] * vCache[j][off + d];
+        });
+
+        return LinearNoBias(context, lw.SelfAttnOutWeight, dim, dim);
+    }
+
+    /// <summary>Real cross-attention for one new position: project Q for this step; project encoder K/V into the cache ONLY the first time this layer sees a cache without them, otherwise reuse.</summary>
+    private static float[] CrossAttentionStep(float[] xNormed, float[][] encoderHidden, ParlerDecoderLayerWeights lw, ParlerDecoderKvCache cache, int layerIdx)
+    {
+        int dim = ParlerDecoderWeights.HiddenDim;
+        int heads = ParlerDecoderWeights.NumHeads;
+        int tk = encoderHidden.Length;
+
+        var q = LinearNoBias(xNormed, lw.CrossAttnQWeight, dim, dim);
+
+        if (cache.CrossK[layerIdx] is null)
+        {
+            var kCross = new float[tk][];
+            var vCross = new float[tk][];
+            Parallel.For(0, tk, j =>
+            {
+                kCross[j] = LinearNoBias(encoderHidden[j], lw.CrossAttnKWeight, dim, dim);
+                vCross[j] = LinearNoBias(encoderHidden[j], lw.CrossAttnVWeight, dim, dim);
+            });
+            cache.CrossK[layerIdx] = kCross;
+            cache.CrossV[layerIdx] = vCross;
+        }
+        var k = cache.CrossK[layerIdx]!;
+        var v = cache.CrossV[layerIdx]!;
+
+        var context = new float[dim];
+        float scale = 1f / MathF.Sqrt(HeadDim);
+        Parallel.For(0, heads, h =>
+        {
+            int off = h * HeadDim;
+            var scores = new float[tk];
+            for (int j = 0; j < tk; j++) scores[j] = Dot(q, k[j], off, HeadDim) * scale;
+            SoftmaxInPlace(scores, tk);
+
+            var ctxSpan = context.AsSpan(off, HeadDim);
+            for (int j = 0; j < tk; j++)
+                for (int d = 0; d < HeadDim; d++) ctxSpan[d] += scores[j] * v[j][off + d];
+        });
+
+        return LinearNoBias(context, lw.CrossAttnOutWeight, dim, dim);
+    }
+
+    private static float[] FfnStep(float[] x, ParlerDecoderLayerWeights lw)
+    {
+        var h = LinearNoBias(x, lw.Fc1Weight, ParlerDecoderWeights.HiddenDim, ParlerDecoderWeights.FfnDim);
+        for (int d = 0; d < h.Length; d++) h[d] = Gelu(h[d]);
+        return LinearNoBias(h, lw.Fc2Weight, ParlerDecoderWeights.FfnDim, ParlerDecoderWeights.HiddenDim);
+    }
+
     /// <summary>Projects the final hidden states through all 9 real, separate lm_heads. Returns [T][9][OutputVocabSize].</summary>
     public static float[][][] ComputeLogits(ParlerDecoderWeights w, float[][] hidden)
     {
