@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Concurrent;
+using OpenTail.Stingray.Cpu;
 
 namespace OpenTail.Stingray.Audio.Primitives;
 
@@ -82,15 +83,12 @@ internal static unsafe class SpectralKernels
                 float* cosRow = pCos + (long)k * n;
                 float* sinRow = pSin + (long)k * n;
 
-                float real = 0f;
-                float imag = 0f;
-
-                for (int t = 0; t < n; t++)
-                {
-                    float s = pWin[t];
-                    real += s * cosRow[t];
-                    imag += s * sinRow[t];
-                }
+                // Was a scalar per-element accumulation; cosRow/sinRow/pWin are all contiguous,
+                // so this is a direct SimdKernels.DotF32 (AVX2/FMA) substitution -- shared by
+                // Whisper/Parakeet/F5-TTS/QwenASR's mel extractors, all naive O(n) per bin
+                // before this change.
+                float real = SimdKernels.DotF32(pWin, cosRow, n);
+                float imag = SimdKernels.DotF32(pWin, sinRow, n);
 
                 pOut[k] = real * real + imag * imag;
             }
