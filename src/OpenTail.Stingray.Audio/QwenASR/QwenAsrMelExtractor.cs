@@ -1,3 +1,6 @@
+using System;
+using System.Numerics.Tensors;
+using System.Threading.Tasks;
 using OpenTail.Stingray.Audio.Primitives;
 
 namespace OpenTail.Stingray.Audio.QwenASR;
@@ -33,52 +36,61 @@ public sealed class QwenAsrMelExtractor
 
         int numFrames = Math.Max(1, (pcm.Length - WindowSize) / HopLength + 1);
         var mel = new float[NumMels * numFrames];
-
-        var real = new float[NFft];
-        var powerSpectrum = new float[NFft / 2 + 1];
         var rawMel = new float[NumMels * numFrames];
+        var pcmArray = pcm.ToArray(); // captured by the per-frame parallel closure below
+        var frameMax = new float[numFrames];
+
+        // 1. STFT & Mel Filterbank Matrix Multiplication -- frames are fully independent (each
+        // writes disjoint columns of rawMel), so this parallelizes cleanly across cores; each
+        // task gets its own real/powerSpectrum scratch buffers (thread-local, via the
+        // Parallel.For localInit overload) since the original code reused one shared pair
+        // across all frames. The mel-filter energy dot product is now SIMD (TensorPrimitives.
+        // Dot over the already-contiguous powerSpectrum/filter arrays) instead of a scalar loop.
+        // maxLogMel's reduction is made race-safe by recording each frame's own max into
+        // frameMax[] and reducing that array (single-threaded, cheap) after the parallel loop,
+        // rather than one shared mutable float racing across threads.
+        Parallel.For(0, numFrames,
+            () => (new float[NFft], new float[NFft / 2 + 1]),
+            (f, _, buffers) =>
+            {
+                var (real, powerSpectrum) = buffers;
+                int startSample = f * HopLength;
+                Array.Clear(real, 0, NFft);
+
+                for (int i = 0; i < WindowSize; i++)
+                {
+                    int sIdx = startSample + i;
+                    float sample = (sIdx < pcmArray.Length) ? pcmArray[sIdx] : 0.0f;
+                    real[i] = sample * _hannWindow[i];
+                }
+
+                // Power Spectrum (modulus squared of DFT)
+                SpectralKernels.ComputePowerSpectrum(real, powerSpectrum);
+                for (int k = 0; k <= NFft / 2; k++)
+                {
+                    powerSpectrum[k] /= NFft;
+                }
+
+                float localMax = float.NegativeInfinity;
+                for (int m = 0; m < NumMels; m++)
+                {
+                    float energy = TensorPrimitives.Dot((ReadOnlySpan<float>)powerSpectrum, (ReadOnlySpan<float>)_melFilters[m]);
+
+                    // log10(clamp(mel, min=1e-10))
+                    float logVal = MathF.Log10(MathF.Max(energy, 1e-10f));
+                    rawMel[m * numFrames + f] = logVal;
+
+                    if (logVal > localMax) localMax = logVal;
+                }
+                frameMax[f] = localMax;
+
+                return buffers;
+            },
+            _ => { });
 
         float maxLogMel = float.NegativeInfinity;
-
-        // 1. STFT & Mel Filterbank Matrix Multiplication
         for (int f = 0; f < numFrames; f++)
-        {
-            int startSample = f * HopLength;
-            Array.Clear(real, 0, NFft);
-
-            for (int i = 0; i < WindowSize; i++)
-            {
-                int sIdx = startSample + i;
-                float sample = (sIdx < pcm.Length) ? pcm[sIdx] : 0.0f;
-                real[i] = sample * _hannWindow[i];
-            }
-
-            // Power Spectrum (modulus squared of DFT)
-            SpectralKernels.ComputePowerSpectrum(real, powerSpectrum);
-            for (int k = 0; k <= NFft / 2; k++)
-            {
-                powerSpectrum[k] /= NFft;
-            }
-
-            for (int m = 0; m < NumMels; m++)
-            {
-                float energy = 0.0f;
-                float[] filter = _melFilters[m];
-                for (int k = 0; k < powerSpectrum.Length; k++)
-                {
-                    energy += powerSpectrum[k] * filter[k];
-                }
-
-                // log10(clamp(mel, min=1e-10))
-                float logVal = MathF.Log10(MathF.Max(energy, 1e-10f));
-                rawMel[m * numFrames + f] = logVal;
-
-                if (logVal > maxLogMel)
-                {
-                    maxLogMel = logVal;
-                }
-            }
-        }
+            if (frameMax[f] > maxLogMel) maxLogMel = frameMax[f];
 
         // 2. Dynamic Range Clamping (max - 8.0) and Normalization ((log_spec + 4.0) / 4.0)
         float floorVal = maxLogMel - 8.0f;
