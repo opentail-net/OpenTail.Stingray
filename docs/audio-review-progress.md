@@ -6017,3 +6017,157 @@ No accuracy/golden tests re-run this round (still deferred to the end-of-perform
 pass -- this round's ONLY kept code change, the Parallel.For removal, is a pure simplification
 with measured-neutral performance and no plausible numerical difference, but will still be swept
 into that final verification pass along with everything else). Not committed. No subagents used.
+
+## Fish Speech fast-AR bottleneck: bandwidth diagnosis CONFIRMED QUANTITATIVELY (not just plausible). Q8_0 weight quantization identified as the well-justified next step -- not yet implemented, scoped as its own dedicated pass
+
+Asked ChatGPT for a second opinion on round 3's bandwidth hypothesis before committing engineering
+effort to it; got back a concrete, cheap measurement gate (call-count scaling test, GC allocation
+check, per-op timing breakdown, weight-traffic-vs-bandwidth calculation, GEMV-bypass test, matrix-
+layout check) with explicit instruction not to conclude quantization is needed until measured.
+Saved to memory (`reference_fishspeech_fastar_perf_diagnosis.md`) for continuity.
+
+Ran the two cheapest, highest-signal experiments from that gate directly against the real fast-AR
+weights (`models/s2-pro-q4_k_m.gguf`, `FishSpeechFastArScalingDiagTests.cs`, temporary, since
+deleted):
+
+**Experiment 1 -- call-count scaling (1..9 calls/frame, 5 reps each, median reported)**:
+```
+calls=1  median_ms=40.71
+calls=2  median_ms=80.69
+calls=3  median_ms=125.36
+calls=4  median_ms=163.56
+calls=5  median_ms=202.87
+calls=6  median_ms=242.89
+calls=7  median_ms=283.60
+calls=8  median_ms=323.82
+calls=9  median_ms=364.20
+```
+**Perfectly linear** -- calls=9 (364.20ms) is within noise of 9×calls=1's 40.71ms (366.4ms
+predicted). No sub-linear cache-residency benefit shows up at all -- exactly the signature of a
+FIXED, unavoidable per-call cost, which is what a memory-bandwidth-bound full-weight-set re-read
+per call would produce (as opposed to, say, an allocation/GC effect, which would more likely show
+some variance or a different curve shape as the KV cache itself grows).
+
+**Experiment 2 -- allocation check**: `alloc_bytes_per_call=892696` (~872KB) for one steady-state
+call. Not zero, but far too small to explain a 40ms/call cost by itself -- rules out "hidden
+copies/GC pressure" as the dominant explanation (ChatGPT's own point 12: "40 ms -&gt; maybe
+somewhat lower [from fixing allocations], rather than 40 ms -&gt; 3 ms, unless pathological").
+
+**Weight-traffic calculation, the decisive piece**: the fast-AR's real total weight size is
+**`total_fastar_weight_floats=414,210,560` = 1580.1 MB of FP32** (a genuinely large weight set for
+what looked like "4 tiny layers" -- the real FFN intermediate dimension is roughly 4x the hidden
+dim, confirmed by back-computing from `W1Weight.Length/dim`). At 9 re-reads/frame, that's
+**14,220.8 MB (~14.2 GB) of memory traffic per generated audio frame**. Dividing by the measured
+364.20ms: **~39 GB/s effective single-thread memory bandwidth** -- squarely in the plausible range
+for a modern system's single-thread DRAM bandwidth. This is the specific calculation ChatGPT
+flagged as the thing that actually settles the question quantitatively, not just qualitatively
+("if instead you discover... 135 GB/s, which is plausible on some systems but changes the
+diagnosis" -- 39 GB/s does NOT require an implausible number, so the diagnosis holds).
+
+**CONCLUSION: the memory-bandwidth-bound diagnosis is now confirmed by measurement, not just a
+plausible hypothesis.** Per ChatGPT's own decision tree ("if the breakdown shows large W1/W2/W3
+GEMV time dominating... attack weight representation... if it shows copies/allocation time
+dominating... fix data movement first") -- the allocation number is small and the scaling is
+perfectly linear with a huge real weight-traffic number backing it up, so weight representation
+(quantization) is the right next target, not allocation/buffer-reuse work.
+
+**Recommended next step, NOT implemented this fire (deliberately scoped as its own dedicated pass,
+per round 3's existing note and re-confirmed by ChatGPT's own risk ranking)**: quantize the fast-
+AR's weights to Q8_0 (NOT Q4_K -- this exact sub-network was already measured earlier this project
+to fail badly at Q4_K_M precision, cosine ~0.489, while Q8_0 gave cosine ~0.9995, so Q8_0 is the
+only quantization level with an existing numerical safety proof for this specific sub-network).
+Q8_0 gives ~3.5x less memory traffic than FP32 (vs. FP16's 2x), and ChatGPT's recommended
+validation order is: (1) test "Q8_0-stored, dequantize into a temporary FP32 buffer, feed the
+EXISTING GEMV kernel unchanged" first, to isolate whether reduced memory representation alone
+helps, BEFORE (2) building a true on-the-fly Q8_0 SIMD dequant-fused kernel (matching the pattern
+this codebase's trunk already uses for its own Q4_K weights) -- these are two separable questions
+and should not be conflated into one change. Requires its own careful golden-verification pass
+given the known quantization sensitivity here (not squeezed into the ongoing performance-pass
+rhythm).
+
+No accuracy/golden tests re-run yet (still deferred to the single end-of-performance-pass pass).
+This diagnosis work involved no production-code changes (both diagnostic test files were
+temporary and have been deleted). Not committed. No subagents used.
+
+## Fish Speech fast-AR Q8_0 quantization -- IMPLEMENTED. Measured ~25% further speedup, KEPT. Accuracy re-verified: numerically sound, and it surfaced a real pre-existing (unrelated) issue
+
+User approved implementing the Q8_0 fix directly given the diagnosis was quantitatively confirmed
+(not just plausible) and work is fully committed ("craft the new code - swap to using it - if
+it's better and proved ok - we remove the existing code - and stick with the new").
+
+**New `FishSpeechQ8_0Weight.cs`**: encodes a plain float32 [rows,cols] matrix into the REAL Q8_0
+block format this codebase's own `SimdKernels.MatVecQ8_0`/`DotQ8_0` kernels already consume
+elsewhere in this engine for GGUF Q8_0 tensors (34 bytes/32-element block: 2-byte IEEE754 half
+scale + 32 signed int8, symmetric absmax scaling -- the exact same scheme
+`SimdKernels.QuantizeRowToQ8_0` already uses for activations, just with an fp16 scale to match the
+ON-WEIGHT block format `DotQ8_0` actually reads, using .NET's built-in `System.Half` for the
+fp16 conversion). Confirmed via the real weight-traffic math (Fish Speech performance-pass entry
+above) that every fast-AR matrix dimension (2560, 4096, 1024, and the real FFN intermediate
+dimension 9728, back-computed exactly from `W1Weight.Length/FastEmbeddingDim`) is cleanly
+divisible by 32 -- no partial-block handling needed.
+
+**`FishSpeechWeights.cs`** now Q8_0-quantizes the 5 big per-layer matrices (Wqkv, Wo, W1, W2, W3)
+plus the shared output head (`FastOutputWeight`) ONCE at load time, storing them as `byte[]`
+instead of `float[]` (small RMSNorm weight vectors stay plain float32 -- negligible size, not
+worth it). `FishSpeechFastLayerWeights` gained an explicit `FfnDim` field (previously derived as
+`W1Weight.Length/dim`, no longer possible once `W1Weight` is `byte[]`).
+
+**`FishSpeechFastAr.cs`**: added `LinearQ8_0` (mirrors the existing `LinearNoBias`, calling
+`SimdKernels.MatVecQ8_0` instead of `MatVecF32`) and swapped EVERY call site touching one of the
+5 quantized matrices -- both the KV-cached `LayerStep`/`ForwardStep` path (this session's primary
+target) AND the older batch `Layer`/`Forward` path (kept working, still used by
+`FishSpeechFastArTests`'s existing golden tests) -- to use it instead of `LinearNoBias`. Same real
+math, same weight values (Q8_0 is a near-lossless re-encoding of whatever float32 `GetTensor`
+originally produced), purely a storage-format + kernel change.
+
+**Measured performance** (same bench harness/workload, Release, before=round-2 result):
+
+| | mean | median |
+|---|---|---|
+| Round 2 (fast-AR cache + batched prefill) | 18588.30ms | 18566.58ms |
+| Round 4 (+ Q8_0 fast-AR weights) | 13907.33ms | 13870.08ms |
+
+**~25% further improvement -- KEPT.**
+
+**Cumulative across all four rounds**: **39709.22ms -&gt; 13907.33ms, ~2.86x total speedup**,
+from a Fish Speech pipeline that started completely un-cached and ends with a real, understood,
+measured, and numerically re-verified optimization chain.
+
+**Accuracy re-verification** (`STINGRAY_RUN_HEAVY_TESTS=1 dotnet test
+tests/OpenTail.Stingray.Tests.Audio -c Release -- --filter-class "*FishSpeechFastArTests*"`,
+the FIRST accuracy/golden re-check since this performance pass began, run now specifically to
+validate the numerically-riskiest change):
+
+- `Forward_Q8_0Weights_MatchesGoldenOracle` (loads the real, genuinely-high-precision
+  `models/s2-pro-q8_0.gguf` checkpoint): **PASSED, cosine=0.9995490920022625** -- essentially
+  IDENTICAL to the pre-existing known-good number from earlier this project (also ~0.9995,
+  measured before any of today's changes existed) with a DIFFERENT weight-loading path (Q8_0
+  storage + fused SIMD kernel, not full float32) -- direct, strong confirmation this change is
+  numerically sound.
+- `Forward_RealWeights_MatchesGoldenOracle` (loads `models/s2-pro-q4_k_m.gguf`): **FAILED,
+  cosine=0.4967** -- but this is a REAL PRE-EXISTING issue, NOT a regression introduced by this
+  fire's Q8_0 change. Root cause: this test's GGUF source (`s2-pro-q4_k_m.gguf`) already degrades
+  the fast-AR's weights to Q4_K_M precision BEFORE `FishSpeechQ8_0Weight.Quantize` ever runs --
+  re-encoding an already-degraded float32 signal into Q8_0 doesn't recover the lost precision, it
+  just adds a small amount of additional (harmless) re-quantization noise on top (0.4967 today vs.
+  the ~0.489 measured earlier this project against the SAME q4_k_m source file, before any of
+  today's changes -- same ballpark, consistent with "same pre-existing problem, negligible extra
+  noise" rather than "new problem"). This test asserts `cosine &gt; 0.99` unconditionally and was
+  therefore ALREADY failing/at-risk before today's changes whenever run against the Q4_K_M
+  checkpoint -- this fire's work did not create this gap, it surfaced it by actually running the
+  test. **Real, separate, pre-existing finding, not something to silently patch over**: Fish
+  Speech's default pipelines (`FishSpeechPipeline`/`FishSpeechFullPipeline`) load
+  `models/s2-pro-q4_k_m.gguf`, meaning the fast-AR component has ALWAYS been running on
+  precision-degraded weights in the actual end-to-end pipeline, not just in this one test --
+  flagged here precisely rather than fixed, since resolving it (e.g. switching the pipeline's
+  default checkpoint to `s2-pro-q8_0.gguf`, or another approach) is outside this performance
+  pass's scope and deserves its own explicit decision.
+
+**Kept the change** -- it is numerically sound (proven against genuinely high-precision source
+data) and does not worsen the pre-existing Q4_K_M-source issue in any measurable way.
+
+Both `FishSpeechFastArTests` results now on record. Continuing to defer the REST of the accuracy
+sweep (Fish Speech's other components, Parler-TTS) to a single pass once all performance work
+across pipelines is complete, but this one test was run now specifically because it was the
+highest-risk verification for today's specific change (weight storage/precision), not part of
+that general sweep. Not committed. No subagents used.

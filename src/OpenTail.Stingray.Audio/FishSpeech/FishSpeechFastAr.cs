@@ -78,7 +78,7 @@ public static class FishSpeechFastAr
             x = Layer(x, layer, w);
 
         var normedLast = RmsNorm(x[t - 1], w.FastNormWeight, w.FastRmsNormEps);
-        return LinearNoBias(normedLast, w.FastOutputWeight, dim, w.CodebookSize);
+        return LinearQ8_0(normedLast, w.FastOutputWeight, dim, w.CodebookSize);
     }
 
     /// <summary>Real embedding lookup for a codebook value fed as the fast-AR's next input position (plain lookup, NOT offset by codebook index -- see <see cref="Forward"/>'s doc comment).</summary>
@@ -105,7 +105,7 @@ public static class FishSpeechFastAr
             x = LayerStep(x, w.FastLayers[i], w, cache, i);
 
         var normedLast = RmsNorm(x, w.FastNormWeight, w.FastRmsNormEps);
-        return LinearNoBias(normedLast, w.FastOutputWeight, w.FastEmbeddingDim, w.CodebookSize);
+        return LinearQ8_0(normedLast, w.FastOutputWeight, w.FastEmbeddingDim, w.CodebookSize);
     }
 
     private static float[] LayerStep(float[] x, FishSpeechFastLayerWeights lw, FishSpeechWeights w, FishSpeechFastArCache cache, int layerIdx)
@@ -118,7 +118,7 @@ public static class FishSpeechFastAr
         int kvSize = nHeadKv * headDim;
 
         var normed = RmsNorm(x, lw.AttentionNormWeight, w.FastRmsNormEps);
-        var qkv = LinearNoBias(normed, lw.WqkvWeight, dim, qSize + 2 * kvSize);
+        var qkv = LinearQ8_0(normed, lw.WqkvWeight, dim, qSize + 2 * kvSize);
         var q = qkv.AsSpan(0, qSize).ToArray();
         var k = qkv.AsSpan(qSize, kvSize).ToArray();
         var v = qkv.AsSpan(qSize + kvSize, kvSize).ToArray();
@@ -159,16 +159,16 @@ public static class FishSpeechFastAr
                 for (int d = 0; d < headDim; d++) ctxSpan[d] += scores[j] * vCache[j][kvOff + d];
         }
 
-        var attnOut = LinearNoBias(context, lw.WoWeight, qSize, dim);
+        var attnOut = LinearQ8_0(context, lw.WoWeight, qSize, dim);
         var h1 = new float[dim];
         for (int d = 0; d < dim; d++) h1[d] = x[d] + attnOut[d];
 
         var ffnNormed = RmsNorm(h1, lw.FfnNormWeight, w.FastRmsNormEps);
-        int ffnDim = lw.W1Weight.Length / dim;
-        var gate = LinearNoBias(ffnNormed, lw.W1Weight, dim, ffnDim);
-        var up = LinearNoBias(ffnNormed, lw.W3Weight, dim, ffnDim);
+        int ffnDim = lw.FfnDim;
+        var gate = LinearQ8_0(ffnNormed, lw.W1Weight, dim, ffnDim);
+        var up = LinearQ8_0(ffnNormed, lw.W3Weight, dim, ffnDim);
         for (int d = 0; d < ffnDim; d++) gate[d] = Silu(gate[d]) * up[d];
-        var ffnOut = LinearNoBias(gate, lw.W2Weight, ffnDim, dim);
+        var ffnOut = LinearQ8_0(gate, lw.W2Weight, ffnDim, dim);
 
         var output = new float[dim];
         for (int d = 0; d < dim; d++) output[d] = h1[d] + ffnOut[d];
@@ -193,7 +193,7 @@ public static class FishSpeechFastAr
         var v = new float[t][];
         for (int i = 0; i < t; i++)
         {
-            var qkv = LinearNoBias(normed[i], lw.WqkvWeight, dim, qSize + 2 * kvSize);
+            var qkv = LinearQ8_0(normed[i], lw.WqkvWeight, dim, qSize + 2 * kvSize);
             q[i] = qkv.AsSpan(0, qSize).ToArray();
             k[i] = qkv.AsSpan(qSize, kvSize).ToArray();
             v[i] = qkv.AsSpan(qSize + kvSize, kvSize).ToArray();
@@ -234,7 +234,7 @@ public static class FishSpeechFastAr
         });
 
         var attnOut = new float[t][];
-        for (int i = 0; i < t; i++) attnOut[i] = LinearNoBias(context[i], lw.WoWeight, qSize, dim);
+        for (int i = 0; i < t; i++) attnOut[i] = LinearQ8_0(context[i], lw.WoWeight, qSize, dim);
 
         var h1 = new float[t][];
         for (int i = 0; i < t; i++)
@@ -247,14 +247,14 @@ public static class FishSpeechFastAr
         var ffnNormed = new float[t][];
         for (int i = 0; i < t; i++) ffnNormed[i] = RmsNorm(h1[i], lw.FfnNormWeight, w.FastRmsNormEps);
 
-        int ffnDim = lw.W1Weight.Length / dim;
+        int ffnDim = lw.FfnDim;
         var output = new float[t][];
         for (int i = 0; i < t; i++)
         {
-            var gate = LinearNoBias(ffnNormed[i], lw.W1Weight, dim, ffnDim);
-            var up = LinearNoBias(ffnNormed[i], lw.W3Weight, dim, ffnDim);
+            var gate = LinearQ8_0(ffnNormed[i], lw.W1Weight, dim, ffnDim);
+            var up = LinearQ8_0(ffnNormed[i], lw.W3Weight, dim, ffnDim);
             for (int d = 0; d < ffnDim; d++) gate[d] = Silu(gate[d]) * up[d];
-            var ffnOut = LinearNoBias(gate, lw.W2Weight, ffnDim, dim);
+            var ffnOut = LinearQ8_0(gate, lw.W2Weight, ffnDim, dim);
 
             var row = new float[dim];
             for (int d = 0; d < dim; d++) row[d] = h1[i][d] + ffnOut[d];
@@ -303,6 +303,18 @@ public static class FishSpeechFastAr
         fixed (float* wp = weight, xp = input, op = output)
         {
             SimdKernels.MatVecF32(op, wp, xp, outDim, inDim);
+        }
+        return output;
+    }
+
+    /// <summary>Real Q8_0 fused mat-vec (see FishSpeechQ8_0Weight's doc comment) -- this session's performance-pass fix for the fast-AR's dominant memory-bandwidth-bound cost.</summary>
+    private static unsafe float[] LinearQ8_0(float[] input, byte[] weight, int inDim, int outDim)
+    {
+        var output = new float[outDim];
+        fixed (byte* wp = weight)
+        fixed (float* xp = input, op = output)
+        {
+            SimdKernels.MatVecQ8_0(op, wp, xp, outDim, inDim);
         }
         return output;
     }

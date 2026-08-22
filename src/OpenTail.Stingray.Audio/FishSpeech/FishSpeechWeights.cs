@@ -48,8 +48,8 @@ public sealed class FishSpeechWeights : IDisposable
     public float[] FastEmbeddings { get; }
     public FishSpeechFastLayerWeights[] FastLayers { get; }
     public float[] FastNormWeight { get; }
-    /// <summary>[CodebookSize, FastEmbeddingDim] -- separate, NOT tied to FastEmbeddings (fast_tie_word_embeddings=false).</summary>
-    public float[] FastOutputWeight { get; }
+    /// <summary>[CodebookSize, FastEmbeddingDim], real Q8_0 block format (see FishSpeechQ8_0Weight) -- separate, NOT tied to FastEmbeddings (fast_tie_word_embeddings=false).</summary>
+    public byte[] FastOutputWeight { get; }
 
     public FishSpeechWeights(string ggufPath)
     {
@@ -78,21 +78,30 @@ public sealed class FishSpeechWeights : IDisposable
 
         FastEmbeddings = GetTensor("fast_embeddings.weight");
         FastNormWeight = GetTensor("fast_norm.weight");
-        FastOutputWeight = GetTensor("fast_output.weight");
+        // Q8_0-quantized at load time (once) -- see FishSpeechQ8_0Weight's doc comment for why:
+        // this is the sub-network this session's performance pass measured as memory-bandwidth-
+        // bound on plain float32 weight re-reads (~40ms/call, re-read 9x/frame), and the only
+        // quantization level this sub-network was already proven numerically safe at (Q8_0
+        // cosine ~0.9995 vs. Q4_K_M's ~0.489, measured earlier this project).
+        int qSize = FastHeadCount * FastHeadDim;
+        int kvSize = FastHeadCountKv * FastHeadDim;
+        FastOutputWeight = FishSpeechQ8_0Weight.Quantize(GetTensor("fast_output.weight"), CodebookSize, FastEmbeddingDim);
 
         FastLayers = new FishSpeechFastLayerWeights[FastBlockCount];
         for (int i = 0; i < FastBlockCount; i++)
         {
             string p = $"fast_layers.{i}";
+            int ffnDim = GetTensor($"{p}.feed_forward.w1.weight").Length / FastEmbeddingDim;
             FastLayers[i] = new FishSpeechFastLayerWeights
             {
                 AttentionNormWeight = GetTensor($"{p}.attention_norm.weight"),
-                WqkvWeight = GetTensor($"{p}.attention.wqkv.weight"),
-                WoWeight = GetTensor($"{p}.attention.wo.weight"),
+                WqkvWeight = FishSpeechQ8_0Weight.Quantize(GetTensor($"{p}.attention.wqkv.weight"), qSize + 2 * kvSize, FastEmbeddingDim),
+                WoWeight = FishSpeechQ8_0Weight.Quantize(GetTensor($"{p}.attention.wo.weight"), FastEmbeddingDim, qSize),
                 FfnNormWeight = GetTensor($"{p}.ffn_norm.weight"),
-                W1Weight = GetTensor($"{p}.feed_forward.w1.weight"),
-                W2Weight = GetTensor($"{p}.feed_forward.w2.weight"),
-                W3Weight = GetTensor($"{p}.feed_forward.w3.weight"),
+                W1Weight = FishSpeechQ8_0Weight.Quantize(GetTensor($"{p}.feed_forward.w1.weight"), ffnDim, FastEmbeddingDim),
+                W2Weight = FishSpeechQ8_0Weight.Quantize(GetTensor($"{p}.feed_forward.w2.weight"), FastEmbeddingDim, ffnDim),
+                W3Weight = FishSpeechQ8_0Weight.Quantize(GetTensor($"{p}.feed_forward.w3.weight"), ffnDim, FastEmbeddingDim),
+                FfnDim = ffnDim,
             };
         }
     }
@@ -112,13 +121,20 @@ public sealed class FishSpeechWeights : IDisposable
     public void Dispose() => Model.Dispose();
 }
 
+/// <summary>Real fast-AR per-layer weights. The 5 big matrices (Wqkv/Wo/W1/W2/W3) are stored in
+/// real Q8_0 block format (see <see cref="FishSpeechQ8_0Weight"/>) -- this session's performance
+/// pass measured them as the dominant, memory-bandwidth-bound cost at plain float32, and this
+/// sub-network was already separately proven numerically safe at Q8_0 precision (unlike Q4_K_M).
+/// The two small RMSNorm weight vectors stay plain float32 (negligible size, not worth
+/// quantizing).</summary>
 public sealed class FishSpeechFastLayerWeights
 {
     public required float[] AttentionNormWeight { get; init; }
-    public required float[] WqkvWeight { get; init; }
-    public required float[] WoWeight { get; init; }
+    public required byte[] WqkvWeight { get; init; }
+    public required byte[] WoWeight { get; init; }
     public required float[] FfnNormWeight { get; init; }
-    public required float[] W1Weight { get; init; } // gate
-    public required float[] W2Weight { get; init; } // down
-    public required float[] W3Weight { get; init; } // up
+    public required byte[] W1Weight { get; init; } // gate
+    public required byte[] W2Weight { get; init; } // down
+    public required byte[] W3Weight { get; init; } // up
+    public required int FfnDim { get; init; }
 }
