@@ -1,6 +1,6 @@
 using System;
-using System.Numerics.Tensors;
-using OpenTail.Stingray.Cpu;
+using System.Threading.Tasks;
+using OpenTail.Stingray.Audio.Primitives;
 
 namespace OpenTail.Stingray.Audio.FunASR;
 
@@ -17,6 +17,13 @@ namespace OpenTail.Stingray.Audio.FunASR;
 /// (`att_outs + fsmn_memory`) -- `examples/paraformer.cpp` has this exact add commented out/
 /// disabled, confirmed a known-broken reference on this detail, do not port its encoder as-is.
 /// </para>
+///
+/// <para>Shared <c>Linear</c>/<c>LayerNorm</c>/<c>SoftmaxInPlace</c>/FSMN-conv/multi-head-
+/// attention math lives in <see cref="FunAsrKernels"/> (extracted alongside
+/// <c>FunAsrRealDecoder.cs</c> in this fire's DRY + performance pass -- see that class's doc
+/// comment for the parallelization rationale). Per-position LayerNorm/residual loops here are
+/// parallelized with <c>Parallel.For</c>, matching the convention already used by
+/// <c>WhisperEncoder.cs</c>.</para>
 /// </summary>
 public static class FunAsrEncoder
 {
@@ -24,36 +31,33 @@ public static class FunAsrEncoder
     public static float[][] Forward(FunAsrWeights w, float[][] input)
     {
         int t = input.Length;
-        var x = EncoderLayer(input, w.Encoders0Layer, w.EncoderHeads, inSize: 560, size: FunAsrWeights_HiddenDim(w));
+        var x = EncoderLayer(input, w.Encoders0Layer, w.EncoderHeads, inSize: 560, size: w.EncoderDim);
 
         foreach (var layer in w.EncoderLayerWeights)
-            x = EncoderLayer(x, layer, w.EncoderHeads, inSize: FunAsrWeights_HiddenDim(w), size: FunAsrWeights_HiddenDim(w));
+            x = EncoderLayer(x, layer, w.EncoderHeads, inSize: w.EncoderDim, size: w.EncoderDim);
 
         var output = new float[t][];
-        for (int i = 0; i < t; i++)
-            output[i] = LayerNorm(x[i], w.EncoderAfterNormWeight, w.EncoderAfterNormBias);
+        Parallel.For(0, t, i => output[i] = FunAsrKernels.LayerNorm(x[i], w.EncoderAfterNormWeight, w.EncoderAfterNormBias));
         return output;
     }
-
-    private static int FunAsrWeights_HiddenDim(FunAsrWeights w) => w.EncoderDim;
 
     private static float[][] EncoderLayer(float[][] x, FunAsrEncoderLayerWeights lw, int heads, int inSize, int size)
     {
         int t = x.Length;
         var normed1 = new float[t][];
-        for (int i = 0; i < t; i++) normed1[i] = LayerNorm(x[i], lw.Norm1Weight, lw.Norm1Bias);
+        Parallel.For(0, t, i => normed1[i] = FunAsrKernels.LayerNorm(x[i], lw.Norm1Weight, lw.Norm1Bias));
 
         var attnOut = SelfAttentionSanm(normed1, lw, heads);
 
         var afterAttn = new float[t][];
         if (inSize == size)
         {
-            for (int i = 0; i < t; i++)
+            Parallel.For(0, t, i =>
             {
                 var row = new float[size];
                 for (int d = 0; d < size; d++) row[d] = x[i][d] + attnOut[i][d];
                 afterAttn[i] = row;
-            }
+            });
         }
         else
         {
@@ -63,17 +67,17 @@ public static class FunAsrEncoder
         }
 
         var normed2 = new float[t][];
-        for (int i = 0; i < t; i++) normed2[i] = LayerNorm(afterAttn[i], lw.Norm2Weight, lw.Norm2Bias);
+        Parallel.For(0, t, i => normed2[i] = FunAsrKernels.LayerNorm(afterAttn[i], lw.Norm2Weight, lw.Norm2Bias));
 
         var ffnOut = FfnPlain(normed2, lw);
 
         var output = new float[t][];
-        for (int i = 0; i < t; i++)
+        Parallel.For(0, t, i =>
         {
             var row = new float[size];
             for (int d = 0; d < size; d++) row[d] = afterAttn[i][d] + ffnOut[i][d];
             output[i] = row;
-        }
+        });
         return output;
     }
 
@@ -82,81 +86,42 @@ public static class FunAsrEncoder
     {
         int t = x.Length;
         int nFeat = lw.AttnOutBias.Length; // 512
-        int dK = nFeat / heads;
 
+        // NOTE: measured this fire -- despite FunAsrKernels.Linear already parallelizing
+        // internally over output channels via SimdKernels.MatVecF32 (outDim >= 64 threshold),
+        // wrapping these per-position calls in an outer Parallel.For(0, t, ...) measured FASTER
+        // than a plain serial loop on a 12s-audio benchmark (median ~3.6s vs ~3.8s, 8 samples
+        // each, consistent direction across all samples -- not noise). The theoretical nested-
+        // parallelism-oversubscription concern doesn't hold up in practice here, likely because
+        // t (encoder frame count) is small enough per layer that the outer Parallel.For's task
+        // overhead is cheap relative to the work each task does. Do not "fix" this back to serial
+        // without re-measuring -- see docs/audio-review-progress.md's FunASR performance-pass
+        // entry for the full A/B.
         var q = new float[t][];
         var k = new float[t][];
         var v = new float[t][];
-        for (int i = 0; i < t; i++)
+        Parallel.For(0, t, i =>
         {
-            var qkv = Linear(x[i], lw.AttnQkvWeight, lw.AttnQkvBias, lw.InputDim, nFeat * 3);
+            var qkv = FunAsrKernels.Linear(x[i], lw.AttnQkvWeight, lw.AttnQkvBias, lw.InputDim, nFeat * 3);
             q[i] = qkv.AsSpan(0, nFeat).ToArray();
             k[i] = qkv.AsSpan(nFeat, nFeat).ToArray();
             v[i] = qkv.AsSpan(2 * nFeat, nFeat).ToArray();
-        }
+        });
 
-        var fsmnMemory = FsmnForward(v, lw.AttnFsmnWeight, kernel: 11);
-
-        float scale = MathF.Pow(dK, -0.5f);
-        var context = new float[t][];
-        for (int i = 0; i < t; i++) context[i] = new float[nFeat];
-
-        for (int h = 0; h < heads; h++)
-        {
-            int off = h * dK;
-            for (int i = 0; i < t; i++)
-            {
-                var scores = new float[t];
-                for (int j = 0; j < t; j++)
-                    scores[j] = TensorPrimitives.Dot(q[i].AsSpan(off, dK), k[j].AsSpan(off, dK)) * scale;
-                SoftmaxInPlace(scores);
-
-                var ctxSpan = context[i].AsSpan(off, dK);
-                for (int j = 0; j < t; j++)
-                    TensorPrimitives.MultiplyAdd(v[j].AsSpan(off, dK), scores[j], ctxSpan, ctxSpan);
-            }
-        }
+        var fsmnMemory = FunAsrKernels.FsmnDepthwiseConv(v, lw.AttnFsmnWeight, kernel: 11);
+        var context = FunAsrKernels.MultiHeadAttention(q, k, v, heads);
 
         var attOuts = new float[t][];
-        for (int i = 0; i < t; i++)
-            attOuts[i] = Linear(context[i], lw.AttnOutWeight, lw.AttnOutBias, nFeat, nFeat);
+        Parallel.For(0, t, i => attOuts[i] = FunAsrKernels.Linear(context[i], lw.AttnOutWeight, lw.AttnOutBias, nFeat, nFeat));
 
         var result = new float[t][];
-        for (int i = 0; i < t; i++)
+        Parallel.For(0, t, i =>
         {
             var row = new float[nFeat];
             for (int d = 0; d < nFeat; d++) row[d] = attOuts[i][d] + fsmnMemory[i][d];
             result[i] = row;
-        }
+        });
         return result;
-    }
-
-    /// <summary>Real `forward_fsmn`: depthwise (per-channel) Conv1d over v, symmetric pad, residual add of v itself (NOT the layer input).</summary>
-    private static float[][] FsmnForward(float[][] v, float[] fsmnWeight, int kernel)
-    {
-        int t = v.Length;
-        int c = v[0].Length;
-        int left = (kernel - 1) / 2;
-        int right = kernel - 1 - left;
-
-        var output = new float[t][];
-        for (int ti = 0; ti < t; ti++)
-        {
-            var row = new float[c];
-            for (int ch = 0; ch < c; ch++)
-            {
-                float sum = 0f;
-                int wBase = ch * kernel;
-                for (int kk = 0; kk < kernel; kk++)
-                {
-                    int srcT = ti - left + kk;
-                    if ((uint)srcT < (uint)t) sum += v[srcT][ch] * fsmnWeight[wBase + kk];
-                }
-                row[ch] = sum + v[ti][ch];
-            }
-            output[ti] = row;
-        }
-        return output;
     }
 
     /// <summary>Real plain `PositionwiseFeedForward`: w_2(ReLU(w_1(x))), no internal norm.</summary>
@@ -166,53 +131,12 @@ public static class FunAsrEncoder
         int size = lw.FfnW2Bias.Length;
         int ffnDim = lw.FfnW1Bias.Length;
         var output = new float[t][];
-        for (int i = 0; i < t; i++)
+        Parallel.For(0, t, i =>
         {
-            var h = Linear(x[i], lw.FfnW1Weight, lw.FfnW1Bias, size, ffnDim);
+            var h = FunAsrKernels.Linear(x[i], lw.FfnW1Weight, lw.FfnW1Bias, size, ffnDim);
             for (int d = 0; d < ffnDim; d++) h[d] = MathF.Max(0f, h[d]);
-            output[i] = Linear(h, lw.FfnW2Weight, lw.FfnW2Bias, ffnDim, size);
-        }
+            output[i] = FunAsrKernels.Linear(h, lw.FfnW2Weight, lw.FfnW2Bias, ffnDim, size);
+        });
         return output;
-    }
-
-    private static unsafe float[] Linear(float[] input, float[] weight, float[] bias, int inDim, int outDim)
-    {
-        var output = new float[outDim];
-        fixed (float* wp = weight, xp = input)
-        {
-            for (int o = 0; o < outDim; o++)
-                output[o] = bias[o] + SimdKernels.DotF32(wp + (long)o * inDim, xp, inDim);
-        }
-        return output;
-    }
-
-    private static float[] LayerNorm(float[] x, float[] weight, float[] bias, float eps = 1e-12f)
-    {
-        int n = x.Length;
-        float mean = TensorPrimitives.Sum((ReadOnlySpan<float>)x) / n;
-        float variance = 0f;
-        for (int i = 0; i < n; i++) { float d = x[i] - mean; variance += d * d; }
-        variance /= n;
-        float invStd = 1f / MathF.Sqrt(variance + eps);
-
-        var output = new float[n];
-        for (int i = 0; i < n; i++)
-            output[i] = (x[i] - mean) * invStd * weight[i] + bias[i];
-        return output;
-    }
-
-    private static void SoftmaxInPlace(float[] scores)
-    {
-        float max = float.NegativeInfinity;
-        for (int i = 0; i < scores.Length; i++) if (scores[i] > max) max = scores[i];
-        float sum = 0f;
-        for (int i = 0; i < scores.Length; i++)
-        {
-            float e = MathF.Exp(scores[i] - max);
-            scores[i] = e;
-            sum += e;
-        }
-        float invSum = 1f / sum;
-        for (int i = 0; i < scores.Length; i++) scores[i] *= invSum;
     }
 }

@@ -1,4 +1,5 @@
 using System;
+using System.Threading.Tasks;
 using OpenTail.Stingray.Cpu;
 
 namespace OpenTail.Stingray.Audio.FunASR;
@@ -28,7 +29,7 @@ public static class FunAsrPredictor
         // depthwise (confirmed from the real tensor shape, see class doc comment).
         var convOut = new float[t][];
         for (int ti = 0; ti < t; ti++) convOut[ti] = new float[c];
-        for (int oc = 0; oc < c; oc++)
+        Parallel.For(0, c, oc =>
         {
             int wOcBase = oc * c * 3;
             float bias = w.PredictorCifConv1dBias[oc];
@@ -46,7 +47,7 @@ public static class FunAsrPredictor
                 }
                 convOut[ti][oc] = MathF.Max(0f, sum);
             }
-        }
+        });
 
         // alphas = sigmoid(Linear(convOut, 512->1))
         var alphas = new float[t + 1]; // +1 for the synthetic tail frame appended below

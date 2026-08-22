@@ -3652,3 +3652,314 @@ above):
    worth a note if the golden comparison doesn't cleanly clear 0.99 and this is why).
 4. Then proceed with the previously-documented wiring steps (`FunAsrPipeline.Transcribe`
    end-to-end, delete the dead fake classes, re-verify the existing pipeline-level test).
+
+## FunASR — COMPLETE: real mel/LFR/CMVN DSP ported, golden-verified, wired end-to-end into `FunAsrPipeline.Transcribe` (2026-08-22, next cron fire, continued straight from the frontend spec above)
+
+Picked up exactly where the previous entry left off. All four steps of that entry's "concrete
+next steps" list are now done.
+
+**`FunAsrRealMelExtractor.cs` (new)** — real Kaldi-compatible fbank + LFR splice + CMVN, ported
+directly from the confirmed spec (no new research needed). Reused this codebase's existing
+`SpectralKernels.ComputePowerSpectrum` (internal, same assembly) for the FFT+power-spectrum
+step rather than writing a new FFT — the real Kaldi-specific parts (Hamming window with
+`periodic=False` convention, DC-mean removal before pre-emphasis, pre-emphasis with the `x[0]`
+edge-replication convention, the non-librosa triangular mel-filter construction evaluated
+directly in the mel domain against each FFT bin's mel frequency, the `apply_lfr` padding-count
+formula, and `apply_cmvn`'s add-then-multiply) were all transcribed verbatim from the real
+source, not reused from any other pipeline's mel extractor (confirmed the existing kernel was
+NOT close enough to reuse beyond the raw FFT/power-spectrum primitive, per the "do NOT assume
+reuse is safe" caution in the prior entry). `dither=0` kept as this port's own deterministic
+choice, matching the golden oracle script — documented as an open assumption, not re-litigated
+this fire since the golden comparison below cleared the bar cleanly.
+
+**Golden-verified**: `FunAsrRealMelExtractorTests.Extract_RealWeights_MatchesGoldenFrontendOutput`
+compares the C# port's `[T,560]` LFR+CMVN output against `scratch-llamacpp-ref/
+funasr_golden_frontend.py`'s real-`torchaudio.compliance.kaldi.fbank`-backed oracle via cosine
+similarity — **passes cleanly above the 0.99 bar** on the first attempt (no `dither` follow-up
+needed).
+
+**Wired end-to-end** — `FunAsrPipeline.cs`: added a cached `_realMelExtractor` field (constructed
+only when real GGUF weights are present) and split `Transcribe` into `TranscribeReal` (mel
+extract → `FunAsrEncoder.Forward` → `FunAsrPredictor.Predict` → `FunAsrRealDecoder.Forward` →
+per-frame argmax → `FunAsrTokenizer.Decode`) vs. the old fake inline path, which is now only a
+fallback for the (untested, no-weights) case. This is the first fire where the full FunASR
+neural pipeline runs on 100% real, golden-verified weights and math end-to-end — every stage
+(frontend, encoder, predictor, decoder, tokenizer) is independently cosine/exact-verified against
+a real oracle, per this doc's established discipline.
+
+**One pre-existing test assertion had to be corrected, not the model**: real-weight wiring caused
+`Paraformer_GgufRealModelFile_LoadsAndTranscribes` (`FunAsrRealWeightsTests.cs`) to fail on
+`Assert.False(string.IsNullOrWhiteSpace(res.Text))`. Diagnosed, not assumed: the test's input is
+a pure 440Hz sine tone, not real speech — the real Paraformer model can legitimately predict only
+special tokens (`<blank>`/`<s>`/`</s>`/`<unk>`, all stripped by `FunAsrTokenizer.Decode`) for
+non-speech audio, producing a real, structurally valid, empty-text result. This is correct
+real-model behavior, not a bug — the OLD fake pipeline guaranteed non-empty placeholder text
+regardless of input, which was itself the fake behavior being replaced. Removed the outdated
+assertion with an inline comment explaining why; kept `Assert.NotNull(res)` and
+`Assert.NotEmpty(res.Segments)`. This matches the established pattern from earlier fires
+(QwenASR, Silero VAD) of updating pre-existing tests when real-model wiring changes what's
+actually true, rather than forcing the model to match a fake assumption.
+
+**Full regression sweep, run one filter-class at a time per project discipline (all PASS, 9/9)**:
+- `FunAsrRealWeightsTests` — 3/3 (after the assertion fix above)
+- `FunAsrWeightsTests` — 3/3
+- `FunAsrEncoderTests` — 1/1
+- `FunAsrPredictorTests` — 1/1
+- `FunAsrRealDecoderTests` — 1/1
+- `FunAsrRealMelExtractorTests` — 1/1
+
+**FunASR is now DONE — queue item 1 of 5 complete.** No further work planned for this pipeline
+unless a future fire's real-audio (not synthetic sine-tone) testing surfaces a numerical issue.
+Not committed (per standing instruction — no commits made this fire).
+
+**Queue status after this fire**:
+1. ✅ FunASR — COMPLETE (this fire)
+2. ✅ Silero VAD — COMPLETE (resolved in an earlier fire this session)
+3. ⛔ Fish Speech — BLOCKED on weights only, see correction below (real reference source DOES
+   exist locally)
+4. ⛔ Parler-TTS — BLOCKED on weights only, see correction below (real reference source DOES
+   exist locally)
+5. ⛔ Orpheus TTS — BLOCKED on weights only, see correction below (real reference source DOES
+   exist locally)
+
+**Second correction, same fire, prompted by user pointing at `examples/s2.cpp` directly**:
+`examples/s2.cpp` is a real, substantial, self-contained C++/GGML inference engine for **Fish
+Audio's S2 Pro** (Dual-AR transformer TTS) — `s2_model.cpp`, `s2_generate.cpp` (Slow-AR
+transformer w/ KV cache -> Fast-AR codebook decoder), `s2_codec.cpp` (audio codec
+encode/decode), `s2_tokenizer.cpp` (Qwen3 BPE, `tokenizer.json` present in-repo), `s2_prompt.cpp`,
+`s2_sampler.cpp`, `s2_voice.cpp` (voice cloning), plus C#/Go/Python bindings under
+`examples/s2.cpp/examples/`. This is the modern Fish Audio product (not the older open-source
+"Fish Speech" repo the queue name was written against, but the same lineage/company and the
+directly relevant reference for this queue slot) — a real, non-trivial architecture to port from,
+not a stub. The earlier "no reference source" conclusion for Fish Speech was wrong for the same
+reason as items 4-5 above: insufficient `examples/` search depth.
+
+**Correction to the earlier "no reference source" claim for items 4–5**: re-checked this fire
+(broader glob than the earlier scope check used) and found `examples/CrispASR/src/orpheus.cpp` +
+`orpheus.h` + `orpheus_snac.h`, and `examples/CrispASR/src/parler_tts.cpp` + `parler_tts.h` —
+real, non-trivial ggml/GGUF C++ reference implementations for both, plus
+`examples/CrispASR/models/convert-orpheus-to-gguf.py` /
+`convert-parler-to-gguf.py` conversion scripts and `examples/CrispASR/hf_readmes/
+parler-tts-mini-v1.1-GGUF.md` / `orpheus-3b-*-GGUF.md` describing the real architectures
+(Parler-TTS: T5 encoder (flan-t5-large, 24 layers) conditioning a MusicGen-style causal decoder
+(24 layers, 9 codebooks) generating DAC tokens, then a DAC 44kHz codec decoder; Orpheus: a
+Llama-family causal LM emitting SNAC audio codes). The earlier fire's "no reference source"
+conclusion was simply wrong — it didn't check deep enough into `examples/CrispASR/`, same class
+of mistake as the Parakeet false-blocked finding earlier in this doc.
+
+**Still genuinely blocked, but now ONLY on weights, not reference material**: confirmed no
+`.gguf` (or any other) local weight file exists anywhere under `models/` or
+`examples/CrispASR/models/` for Parler-TTS or Orpheus TTS — only markdown READMEs describing
+HuggingFace-hosted GGUF quants that would need to be downloaded (multi-GB, per the readme's file
+listing). Per this project's "golden-verify against a real oracle... real weight-driven code"
+discipline, porting the C++ reference's math without real weights to load and run it against
+would produce code that compiles but can't be verified — not worth doing blind. Downloading
+multi-GB model files autonomously (network access, disk space, unknown provenance) is also the
+kind of action this session should not take without the user's explicit go-ahead, per this
+project's action-authorization norms. **Fish Speech (S2 Pro) is in the identical situation**:
+no `.gguf` anywhere under `models/` or `examples/s2.cpp/`, only the README pointing to
+`rodrigomt/s2-pro-gguf` on Hugging Face (7 quant variants, 2.6-9.9 GB) — same "reference ready,
+weights missing" blocker as items 4-5, not the "nothing to port from" situation the earlier
+scope-check entry wrongly claimed.
+
+**All actionable queue items are now complete for this fire.** FunASR and Silero VAD are fully
+done. Fish Speech, Parler-TTS, and Orpheus TTS are now all understood precisely and identically
+blocked — real, non-trivial C++/GGML reference source is in-repo and ready to port from for all
+three (`examples/s2.cpp`, `examples/CrispASR/src/parler_tts.*`,
+`examples/CrispASR/src/orpheus*`), but real progress on any of them needs the user to either drop
+the real GGUF weight files into `models/` (see each README's exact filenames/quants:
+`rodrigomt/s2-pro-gguf` for Fish Speech, the `examples/CrispASR/hf_readmes/*.md` files for
+Parler-TTS/Orpheus) or explicitly authorize downloading them. Next cron fire should re-check
+`models/` (and `examples/s2.cpp/`, `examples/CrispASR/models/`) for any newly-added weight files
+for all three before concluding there's nothing left to do.
+
+## Weights downloaded (user, live in this fire, not a cron fire) — all three of Fish Speech/Parler-TTS/Orpheus TTS now UNBLOCKED; more real reference source found; FunASR performance/DRY pass done
+
+User was present live for this fire's tail end (not AFK), directly authorized the multi-GB
+downloads flagged as blocking above, and pointed out additional local reference material the
+scope check above had missed.
+
+**Additional real reference source found (live user pointer, then verified)**:
+`examples/s2.cpp` — a real, substantial, self-contained C++/GGML inference engine for **Fish
+Audio's S2 Pro** (Dual-AR transformer TTS: `s2_model.cpp`, `s2_generate.cpp` (Slow-AR transformer
+w/ KV cache -> Fast-AR codebook decoder), `s2_codec.cpp`, `s2_tokenizer.cpp` (Qwen3 BPE,
+`tokenizer.json` in-repo), `s2_prompt.cpp`, `s2_sampler.cpp`, `s2_voice.cpp` (voice cloning), plus
+C#/Go/Python bindings). This is the modern Fish Audio product (base model `fishaudio/s2-pro`,
+GGUF `architecture` tag literally `fish-speech`, confirmed via the HF API) -- the "no reference
+source" conclusion in the original scope-check entry was wrong for the same class of reason as
+the Parakeet false-blocked finding earlier in this doc: insufficient `examples/` search depth.
+Also `examples/TTS.cpp` (same author, `mmwillet2`, as the Parler-TTS GGUF weights below) --
+confirmed via its README to be the ACTUAL source repo that produced those exact GGUF files, and
+it also supports Orpheus -- this supersedes CrispASR's Orpheus/Parler ports as the PRIMARY
+reference for those two (architecture is guaranteed to match the downloaded weights exactly,
+unlike a third-party port). `examples/Orpheus-TTS` (the original Python `canopyai/Orpheus-TTS`
+repo) is also present, useful for cross-checking prompt formatting/generation-config details the
+C++ ports might not document.
+
+**Real GGUF weights downloaded into `models/`, all verified against real HF repos before
+downloading (not blind URLs)**:
+- `models/s2-pro-q4_k_m.gguf` (~3.6 GB target) -- from `rodrigomt/s2-pro-gguf`
+  (`base_model: fishaudio/s2-pro`, `gguf.architecture: fish-speech`, 4.95B params, verified via
+  the HF API before download).
+- `models/orpheus-3b-0.1-ft.Q4_K_M.gguf` (~2.36 GB) -- from
+  `QuantFactory/orpheus-3b-0.1-ft-GGUF` (`base_model: canopylabs/orpheus-3b-0.1-pretrained`,
+  `gguf.architecture: llama` -- confirms the docs/audio/53orpheous.md planning note that Orpheus's
+  talker is a real Llama-3.2-3B-shape model, potentially reusable against this codebase's
+  existing Llama forward-pass infrastructure rather than needing an entirely new architecture).
+- `models/Parler_TTS_mini.gguf` (~1.2 GB) -- from `mmwillet2/Parler_TTS_GGUF`
+  (`base_model: parler-tts/parler-tts-mini-v1.1`, `gguf.architecture: parler-tts`).
+
+User also pointed at `docs/audio/51fish.md` / `52parlertts.md` / `53orpheous.md` -- pre-existing
+high-level planning docs for exactly these three pipelines (same family as the
+CosyVoice/QwenASR/QwenTTS planning docs noted earlier in this doc). Skimmed, not fully read yet:
+same caveat as those earlier planners applies -- **treat as directional reference, not gospel,
+since these planners don't know this codebase's actual existing infrastructure** (e.g.
+53orpheous.md's suggestion to reuse "Stingray's existing Llama implementation" needs verifying
+against what `OpenTail.Stingray.Engine`'s real Llama forward-pass path actually looks like before
+assuming it's a clean fit). **Read all three docs in full before starting the actual port work**
+-- not done yet this fire, next fire's first step.
+
+**Queue status, corrected**: all three of Fish Speech, Parler-TTS, and Orpheus TTS are now
+UNBLOCKED -- real reference source (both third-party C++ ports AND, for Parler/Orpheus, the
+actual source repo that produced the downloaded weights) plus real GGUF weights are both present
+locally. Next fire should start with Orpheus (per 53orpheous.md's own difficulty ranking and the
+`architecture: llama` confirmation above, likely the lowest-effort of the three), read
+`docs/audio/53orpheous.md` in full plus `examples/TTS.cpp`'s Orpheus support and
+`examples/Orpheus-TTS`'s real generation config, then follow this doc's standard discipline
+(real weight loader -> golden-verify each stage -> wire end-to-end) exactly as done for FunASR.
+
+**FunASR performance + DRY pass (same fire, direct user request "do a performance pass" then
+"also check DRY")**: `FunAsrEncoder.cs` and `FunAsrRealDecoder.cs` had copy-pasted identical
+`Linear`/`LinearNoBias`/`LayerNorm`/`SoftmaxInPlace` helpers, and the FSMN depthwise-conv memory
+term (encoder's self-attention branch, decoder's FSMN-only self-attention) was the same algorithm
+duplicated in both. Extracted to a new shared `Primitives/FunAsrKernels.cs`, following the same
+DRY-after-verification pattern established for `S3GenConformerKernels`/`DenseKernels` earlier in
+this doc. **Real perf win found in the extraction, not just cleanup**: the original per-pipeline
+`Linear` looped output channels with a scalar `SimdKernels.DotF32` call each, missing
+`SimdKernels.MatVecF32`'s own internal `Parallel.For` over output rows (triggers at outDim >= 64
+-- every Linear call in this pipeline hits that: QKV projections are 512->1536, FFN is
+512->2048, vocab projection is 512->8404). Routing through `MatVecF32` picks up that
+parallelization for free. Also parallelized multi-head attention over heads and the FSMN conv
+over channels (both via `Parallel.For`, matching the per-head/per-channel convention already used
+by `WhisperEncoder.cs`), and the encoder/decoder's per-position LayerNorm/residual loops (each
+position is independent, `Parallel.For(0, t, ...)`), and the predictor's Conv1d output-channel
+loop. No numerical behavior changed (all changes are either identical math reordered for
+parallel-independence, or literal reuse of a pre-existing, already-verified batched kernel) --
+re-ran all four FunASR-specific golden/structural test classes individually after the change and
+all still PASS: `FunAsrEncoderTests` 1/1, `FunAsrRealDecoderTests` 1/1, `FunAsrPredictorTests`
+1/1, `FunAsrRealWeightsTests` (full pipeline, end-to-end) 3/3. Did not re-run
+`FunAsrWeightsTests`/`FunAsrRealMelExtractorTests` this pass since neither file they cover was
+touched.
+
+**Actually measured, not assumed (user directly asked "is the performance measurably better? have
+you checked or are we assuming?" -- it was an assumption at that point, corrected here)**: added a
+throwaway benchmark (`tests/OpenTail.Stingray.Tests.Audio/FunAsrPerfBenchTests.cs`, marked
+TEMPORARY in its own doc comment, not part of the permanent suite -- writes results to a temp
+file since the MTP test runner doesn't surface `Console.WriteLine` in non-verbose mode) that
+transcribes 12s of synthetic audio 8 times (1 warmup + 8 timed) against the real
+`paraformer-q8.gguf` weights on a 12-core machine. Current pipeline (all `Parallel.For`, as
+landed): **median 3.49-3.61s per 12s-audio transcription across two separate 8-sample runs**
+(samples ranged 3.16-3.93s) -- no prior baseline exists to A/B against (the parallelization was
+added in the same fire the pipeline was first wired end-to-end, so there's no "before" to compare
+to), so this is a measured absolute number, not a measured delta, and should be read as "current
+real-weight throughput," not "N% faster."
+
+**Second performance pass, prompted directly by the user ("do a second performance pass")**:
+revisited the theoretical concern that wrapping `FunAsrKernels.Linear` calls (QKV/FFN/output
+projections) in an outer `Parallel.For(0, t, ...)` nests parallelism inside `Linear`'s own
+internal `Parallel.For` (via `SimdKernels.MatVecF32`, triggers at outDim >= 64) -- reasoned this
+could cause thread-pool oversubscription, converted those specific loops (not the pure
+LayerNorm/residual-add ones) to plain serial `for` loops, rebuilt, reran the golden tests (still
+PASS, correctness unaffected either way since parallelization doesn't change per-position math),
+then re-ran the SAME benchmark: **median rose to 3.78s (was 3.49s) -- the "fix" was a real,
+consistent regression, not noise** (all 8 samples in the serial-loop run were higher than the
+mean of the Parallel.For run). Reverted back to `Parallel.For` for all of these loops (encoder
+QKV/attn-out/FFN, decoder output-projection/FFN(x2)/cross-attention Q/KV/out) after confirming
+the revert brought the benchmark back to the original 3.4-3.6s range. **Lesson, matching this
+project's established "measure, don't assume" discipline from the earlier CosyVoice SIMD work**:
+the theoretically-sound nested-parallelism concern did not hold up under measurement here, likely
+because per-layer `t` (encoder frame count) is small enough that the outer `Parallel.For`'s task-
+scheduling overhead is cheap relative to the work each task does, and outer-loop parallelism
+gives the OS scheduler more independent units to spread across cores than relying solely on
+`MatVecF32`'s row-level parallelism inside a serial per-position loop. Do not attempt this
+"fix" again without re-measuring with an equivalent benchmark first.
+
+## Orpheus TTS — investigation started (cron fire, gate passed at 2026-08-22T07:58Z): major finding, the talker LM loads and runs through this codebase's EXISTING Llama forward pass completely unchanged; real generation-prompt spec found; SNAC decoder still needed
+
+Started per the queue (Orpheus next, per this doc's own prior recommendation: confirmed
+`architecture: llama`, likely lowest-effort of the three remaining pipelines).
+
+**Confirmed via real GGUF metadata dump (`dotnet run ... -- list-metadata -m
+models/orpheus-3b-0.1-ft.Q4_K_M.gguf`), not assumed**: `general.architecture=llama`,
+`general.base_model` chain explicitly names `meta-llama/Llama-3.2-3B-Instruct` ->
+`canopylabs/orpheus-3b-0.1-pretrained`, standard Llama hyperparameters (28 layers, 3072 hidden,
+24 attention heads / 8 KV heads (GQA), head_dim=128, RoPE freq_base=500000, RMSNorm eps=1e-5,
+ffn_dim=8192, context_length=131072), and `llama.vocab_size=156940` -- notably LARGER than stock
+Llama-3.2's 128256, confirming the base LM vocab was extended with audio-codec tokens (see the
+exact offset below).
+
+**Major finding, tested directly, not theoretical**: ran `dotnet run --project
+src/OpenTail.Stingray.Cli -c Release -- -m models/orpheus-3b-0.1-ft.Q4_K_M.gguf -p "hello" --temp
+0 -g 20` -- the model LOADED AND RAN with zero code changes, through this codebase's ordinary
+`HybridForwardPass` (Vulkan+CPU hybrid, same path any other GGUF Llama model uses), printing
+`Model loaded in 6.3s — 28L, 3072d, headDim=128, 156940 vocab, ctx=32768` and completing a normal
+prefill pass. This directly confirms `docs/audio/53orpheous.md`'s central planning question ("how
+much of Orpheus can literally run through Stingray's existing Llama implementation unchanged?
+Potentially: a lot.") -- the answer is: the ENTIRE talker transformer, unchanged, no new
+architecture code needed at all for that part.
+
+**Decode produced 0 tokens with a generic chat-template prompt -- expected, not a bug**: this
+checkpoint (`orpheus-3b-0.1-ft`, note the `-ft` = fine-tuned-for-TTS suffix) is not an instruct/
+chat model, so wrapping "hello" in this codebase's standard Llama chat template produces a prompt
+far outside its training distribution, and it immediately predicts EOS. This means the actual
+remaining Orpheus-specific work is NOT a new transformer -- it's (1) the real prompt-construction
+format (voice/speaker name + text, wrapped in Orpheus's own special tokens, not a chat template)
+and (2) parsing the generated token stream into SNAC codec frames, then (3) a real SNAC decoder
+to turn those into PCM. Exactly matches 53orpheous.md's predicted shape: "Llama-3.2-3B backbone
+(done, confirmed above) -> small Orpheus-specific generation layer -> SNAC decoder."
+
+**Real generation-prompt/token spec, read directly from `examples/CrispASR/src/orpheus.cpp`'s
+own header comment and hyperparameter struct (not guessed, not re-derived)**:
+- `<|audio_start|>` = token id `128259` -- prepended to start audio-token generation (after the
+  text/voice prompt, per that file's header comment sequence).
+- Generation continues, emitting a stream of `<custom_token_N>` ids, until either
+  `<|audio_end|>` = token id `128257` is emitted, or a max-audio-tokens cap is hit.
+- Other special tokens: `<|eot_id|>` = `128009` (standard Llama EOT, inherited from the base
+  model), `<|audio_eot|>` = `128260`, `<|audio_eom|>` = `128261`.
+- `custom_token_offset` = `128266` (real default, also readable from this specific checkpoint's
+  own `orpheus.custom_token_offset` GGUF metadata key per `orpheus.cpp` line 302 -- NOT yet
+  checked whether this exact checkpoint's GGUF carries that key or relies on the hardcoded
+  default; check this first before trusting the offset blindly).
+- `custom_token_count` = `7 * 4096` = `28672` -- 4096-entry codebook x 7 SNAC hierarchy levels.
+- Real detokenization: `text_n = lm_id - custom_token_offset` gives the raw SNAC codebook index
+  (0..28671); every 7 consecutive `<custom_token_N>` ids form one de-interleaved SNAC frame
+  (confirmed from `orpheus.cpp`'s own inline comment: "every 7 tokens form one SNAC [frame]").
+
+**NOT yet done, concrete next steps for whoever picks this up next**:
+1. Check whether `models/orpheus-3b-0.1-ft.Q4_K_M.gguf` actually carries the
+   `orpheus.custom_token_offset`/`orpheus.custom_token_count` GGUF metadata keys itself (grep the
+   full `list-metadata` dump, not yet done this fire) -- if present, use those real values
+   directly rather than the `orpheus.cpp` hardcoded defaults, per this doc's "read the real
+   checkpoint's own metadata, don't assume defaults transfer" discipline used everywhere else.
+2. Find or derive the REAL text-prompt wrapping format (what exactly precedes `<|audio_start|>` --
+   voice/speaker name syntax, any system-prompt-equivalent) -- check `examples/Orpheus-TTS`'s own
+   Python inference code (the original `canopyai/Orpheus-TTS` repo, present locally) for the
+   real prompt-construction function, and/or `examples/TTS.cpp`'s Orpheus support, before
+   guessing at a format.
+3. Once the real prompt format is confirmed, wire it into a small Orpheus-specific pipeline class
+   (analogous to `FunAsrPipeline`) that: builds the real prompt -> runs the EXISTING
+   `OpenTail.Stingray.Engine` Llama forward pass (confirmed working above, should need NO new
+   forward-pass code) -> greedy/sampled decode loop collecting `<custom_token_N>` ids until
+   `<|audio_end|>` or a cap -> de-interleave into 7-level SNAC frames.
+4. Port a real SNAC decoder (genuinely new component, not reusable from existing Llama infra) --
+   check `examples/CrispASR/src/orpheus_snac.h` first (real reference, same repo as the prompt
+   spec above) before looking elsewhere. Golden-verify against a real oracle per this doc's
+   standard discipline before calling it done.
+5. This is a genuinely promising, lower-effort port than FunASR/Silero VAD were, given the
+   talker transformer needs zero new forward-pass code -- prioritize finishing this one before
+   moving to Fish Speech/Parler-TTS if time allows, per 53orpheous.md's own difficulty ranking.
+
+Not committed (per standing instruction). No golden verification done yet for anything Orpheus-
+specific (the prompt/SNAC layer doesn't exist yet) -- the "load and run unchanged" finding above
+is a real, directly-observed result (not a golden-verified one), appropriate for confirming
+infrastructure compatibility, not for confirming correctness of Orpheus-specific behavior.
