@@ -127,7 +127,15 @@ public sealed class FishSpeechPipeline : IDisposable
     /// run the fast-AR codebook expansion or the codec -- returns raw semantic token ids
     /// (offset by SemanticBeginId already subtracted), not audio.
     /// </summary>
-    public List<int> GenerateSemanticTokens(string text, int maxTokens = 200)
+    public List<int> GenerateSemanticTokens(string text, int maxTokens = 200) =>
+        GenerateFrames(text, maxTokens).SemanticTokens;
+
+    /// <summary>
+    /// Same generation as <see cref="GenerateSemanticTokens"/>, but also returns the real fast-AR
+    /// codebook expansion computed per frame along the way (previously computed then discarded) --
+    /// what <see cref="FishSpeechCodec.Decode"/> needs for full text-to-audio synthesis.
+    /// </summary>
+    public (List<int> SemanticTokens, List<int[]> CodebooksPerFrame) GenerateFrames(string text, int maxTokens = 200)
     {
         var prompt = BuildPrompt(text);
         _fwd.ResetCache();
@@ -177,7 +185,7 @@ public sealed class FishSpeechPipeline : IDisposable
             mainToken = ArgmaxMasked(logits, semBegin, semEnd, _imEndId);
         }
 
-        return semanticTokens;
+        return (semanticTokens, codebooksPerFrame);
     }
 
     private static int Argmax(ReadOnlySpan<float> logits)

@@ -5508,3 +5508,53 @@ blocker** -- only end-to-end wiring remains, the single closest pipeline to full
 **Parler-TTS: T5 encoder ✅, decoder ✅, DAC codec ✅ -- ALL THREE golden-verified** -- blocked on
 SentencePiece Unigram tokenizer infrastructure. Not committed. No subagents used anywhere this
 fire.
+
+## Fish Speech end-to-end pipeline wiring -- DONE. FISH SPEECH TTS IS NOW A COMPLETE, WORKING, REAL-WEIGHT TEXT-TO-AUDIO PIPELINE
+
+At the user's direct request ("wire in fish next please, it feels so close!"), wired the three
+already golden-verified Fish Speech components (slow-AR, fast-AR, codec) into one callable
+end-to-end path -- pure plumbing, no new model math, since each stage was already independently
+proven numerically correct against a real oracle in earlier entries.
+
+**Real gap found while wiring, not a bug**: `FishSpeechPipeline.GenerateSemanticTokens`'s existing
+per-timestep loop ALREADY computed the real fast-AR codebook expansion (`codebookValues` per
+frame, via `FishSpeechFastAr.Forward`) -- but only used it to drive the next embedding lookup and
+then DISCARDED it, returning only the semantic token ids. Fixed by splitting into a new
+`GenerateFrames(text, maxTokens)` method returning `(List<int> SemanticTokens, List<int[]>
+CodebooksPerFrame)` (each frame's `int[]` is `[semanticCode, residual_0, .., residual_8]`, real
+`NumCodebooks=10` layout confirmed from `FishSpeechWeights.NumCodebooks`/the real
+`s2_generate.cpp` loop already documented in this doc); `GenerateSemanticTokens` is now a thin
+wrapper (`GenerateFrames(...).SemanticTokens`) kept for the existing
+`FishSpeechScratchTests.GenerateSemanticTokens_RealWeights_ProducesInRangeTokens` test, no
+behavior change there.
+
+**New `FishSpeechFullPipeline.cs`** (analogous to `OrpheusPipeline.Synthesize`): constructs a
+`FishSpeechPipeline` (talker) + `FishSpeechCodecWeights` (codec), and `Synthesize(text, maxTokens)`
+calls `GenerateFrames`, transposes `CodebooksPerFrame` from per-frame `[10]` rows into the codec's
+expected per-codebook `int[9][T]` residual layout (dropping column 0, the semantic code, which is
+passed to the codec separately as its own `int[T]` array), then calls
+`FishSpeechCodec.Decode(codecWeights, semanticCodes, residualCodes)` -> mono float32 PCM.
+
+**Verified**: `FishSpeechFullPipelineTests.Synthesize_RealWeights_ProducesFinitePcm` -- real
+`models/s2-pro-q4_k_m.gguf` (both talker and codec, same file) + real `examples/s2.cpp` tokenizer,
+text "Hello, this is a test.", `maxTokens=20`. This is a SMOKE/WIRING test (finite + non-silent
+RMS check), not a fresh cosine-similarity golden test -- deliberately, since there is no
+independent third-party "real Fish Speech end-to-end PCM for this exact text" oracle to compare
+against beyond the three per-stage oracles this doc already golden-verified against; the numerical
+correctness claim rests on those three stage-level golden tests plus this wiring/shape/finite
+check, not on a new end-to-end oracle. **PASSED**: non-empty PCM, all samples finite, RMS well
+above silence threshold. Ran via `STINGRAY_RUN_HEAVY_TESTS=1 dotnet test
+tests/OpenTail.Stingray.Tests.Audio -- --filter-class "*FishSpeechFullPipelineTests*"`, 1/1
+succeeded, duration 2m 32s.
+
+**Known first-pass simplifications, carried over from the existing per-stage pipelines
+unchanged** (already documented, not new): greedy decode throughout (no temperature/top_p/top_k/
+repetition-avoidance "RAS" sampling -- the real reference's own defaults use these); no human
+listen-check has been done on the resulting waveform yet (this doc's checks are all numerical:
+finite, non-silent, and per-stage cosine similarity against real oracles -- not a subjective
+audio-quality judgment).
+
+**FISH SPEECH IS NOW FULLY WIRED END-TO-END, matching the queue's completion bar (golden-verified
+stages + working end-to-end call path).** Parler-TTS remains the only pipeline still blocked
+(SentencePiece Unigram tokenizer gap, unresolved). Not committed (per standing instruction). No
+subagents used.
