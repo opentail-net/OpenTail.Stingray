@@ -57,9 +57,17 @@ public sealed class FunAsrRealWeightsTests : HeavyTestBase
             Language = "zh"
         });
 
+        // NOTE: this test's audio is a pure 440Hz sine tone, not real speech. The real
+        // Paraformer model (see docs/audio-review-progress.md's FunASR section -- all four
+        // stages now wired to real, golden-verified weights) can legitimately predict only
+        // special tokens (<blank>/<s>/</s>/<unk>, all stripped by FunAsrTokenizer.Decode) for
+        // non-speech audio, producing an empty transcript with a real (non-crashing, non-empty
+        // Segments) result -- this is plausible real-model behavior, not a bug, unlike the old
+        // fake pipeline which guaranteed non-empty placeholder text regardless of audio content.
+        // Only assert the pipeline runs end-to-end without crashing and returns a structurally
+        // valid result; do not assert non-empty text for non-speech input.
         Assert.NotNull(res);
         Assert.NotEmpty(res.Segments);
-        Assert.False(string.IsNullOrWhiteSpace(res.Text));
     }
 
     [Fact]

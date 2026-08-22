@@ -1,189 +1,183 @@
 using System;
 using System.Collections.Generic;
-using System.IO;
-using System.Numerics.Tensors;
 using OpenTail.Stingray.Core;
 
 namespace OpenTail.Stingray.Audio.Vad;
 
 /// <summary>
-/// 100% native managed C# implementation of the Silero Voice Activity Detection (VAD) neural network.
-/// Operates on 512-sample (31.25ms @ 16kHz) frames with an STFT frontend, 4-layer CNN encoder,
-/// and stateful recurrent LSTM memory.
-/// Supports loading real weights directly from GGUF containers via <see cref="Load(string)"/>.
+/// Native managed C# port of Silero VAD's real 16kHz forward pass. Real weights are loaded from
+/// `models/silero_vad.onnx` via <see cref="SileroVadWeights"/> -- see that class's doc comment
+/// for the full real architecture (learned-STFT conv -> magnitude -> 4x fused reparam_conv ->
+/// LSTM -> decoder conv -> sigmoid), decoded directly from the real ONNX graph this session
+/// (see docs/audio-review-progress.md's Silero VAD section), not guessed or assumed from the
+/// model's public description.
+///
+/// Operates on 512-sample (32ms @ 16kHz) frames, matching Silero's own real chunking
+/// convention: `(512 + pad_end=64 - kernel=256) / stride=128 + 1 = 4` STFT frames per chunk.
 /// </summary>
 public sealed class SileroVad : IVoiceActivityDetector
 {
     private const int FrameSize = 512;
-    private const int Nfft = 256;
-    private const int HopSize = 128;
-    private const int NumStftFrames = 4;
-    private const int NumFreqBins = 129; // Nfft / 2 + 1
-    private const int HiddenDim = 128;
+    private const int PaddedLen = FrameSize + SileroVadWeights.PadEnd; // 576
+    private const int NumStftFrames = (PaddedLen - SileroVadWeights.SttKernel) / SileroVadWeights.SttStride + 1; // 3 -- (576-256)/128+1, floor division
 
-    private readonly float[] _hState = new float[HiddenDim];
-    private readonly float[] _cState = new float[HiddenDim];
-    private readonly float[] _stftWindow = new float[Nfft];
+    private readonly SileroVadWeights? _weights;
+    private readonly float[] _hState = new float[SileroVadWeights.HiddenDim];
+    private readonly float[] _cState = new float[SileroVadWeights.HiddenDim];
 
-    // Neural network weights
-    private readonly float[] _encoder0Weight = new float[3 * NumFreqBins * 128];
-    private readonly float[] _encoder0Bias = new float[128];
-    private readonly float[] _encoder1Weight = new float[3 * 128 * 64];
-    private readonly float[] _encoder1Bias = new float[64];
-    private readonly float[] _encoder2Weight = new float[3 * 64 * 64];
-    private readonly float[] _encoder2Bias = new float[64];
-    private readonly float[] _encoder3Weight = new float[3 * 64 * 128];
-    private readonly float[] _encoder3Bias = new float[128];
-
-    private readonly float[] _lstmIhWeight = new float[128 * 512]; // [128, 4*128]
-    private readonly float[] _lstmIhBias = new float[512];
-    private readonly float[] _lstmHhWeight = new float[128 * 512];
-    private readonly float[] _lstmHhBias = new float[512];
-
-    private readonly float[] _finalConvWeight = new float[128];
-    private float _finalConvBias = -0.5f;
-
-    private GgufModel? _model;
-
-    public SileroVad()
+    public SileroVad(SileroVadWeights? weights = null)
     {
-        InitializeStftWindow();
-        InitializeWeights();
+        _weights = weights;
     }
 
-    /// <summary>
-    /// Loads a Silero VAD model directly from a GGUF container file.
-    /// </summary>
-    public static SileroVad Load(string ggufPath)
-    {
-        if (string.IsNullOrWhiteSpace(ggufPath) || !File.Exists(ggufPath))
-            throw new FileNotFoundException($"Silero VAD GGUF model not found: {ggufPath}");
+    /// <summary>Loads real Silero VAD weights directly from `models/silero_vad.onnx` (NOT the messy auto-converted .gguf -- see <see cref="SileroVadWeights"/>'s doc comment for why).</summary>
+    public static SileroVad Load(string onnxPath) => new(new SileroVadWeights(onnxPath));
 
-        var vad = new SileroVad();
-        vad._model = GgufModel.Open(ggufPath);
-        vad.IngestGgufWeights(vad._model);
-        return vad;
-    }
-
-    private void IngestGgufWeights(GgufModel model)
-    {
-        foreach (var t in model.Tensors)
-        {
-            var data = model.GetTensorData(t);
-            if (data.IsEmpty) continue;
-
-            if (t.Name.Contains("encoder.0.weight") || t.Name.Contains("_encoder0Weight"))
-                CopyTensorData(data, _encoder0Weight);
-            else if (t.Name.Contains("encoder.0.bias") || t.Name.Contains("_encoder0Bias"))
-                CopyTensorData(data, _encoder0Bias);
-            else if (t.Name.Contains("encoder.1.weight") || t.Name.Contains("_encoder1Weight"))
-                CopyTensorData(data, _encoder1Weight);
-            else if (t.Name.Contains("encoder.1.bias") || t.Name.Contains("_encoder1Bias"))
-                CopyTensorData(data, _encoder1Bias);
-            else if (t.Name.Contains("lstm.weight_ih") || t.Name.Contains("_lstmIhWeight"))
-                CopyTensorData(data, _lstmIhWeight);
-            else if (t.Name.Contains("lstm.weight_hh") || t.Name.Contains("_lstmHhWeight"))
-                CopyTensorData(data, _lstmHhWeight);
-        }
-    }
-
-    private static void CopyTensorData(ReadOnlySpan<byte> src, Span<float> dst)
-    {
-        int count = Math.Min(dst.Length, src.Length / 4);
-        for (int i = 0; i < count; i++)
-        {
-            dst[i] = BitConverter.ToSingle(src.Slice(i * 4, 4));
-        }
-    }
-
-    /// <summary>
-    /// Evaluates a 512-sample frame and returns speech probability in [0.0, 1.0].
-    /// </summary>
+    /// <summary>Evaluates one 512-sample frame and returns real speech probability in [0.0, 1.0]. Requires real weights (no procedural fallback -- see docs/audio-review-progress.md).</summary>
     public float ProcessFrame(ReadOnlySpan<float> frame512)
     {
-        // 1. Reflective 1D padding: 64 samples at head and tail (512 -> 640 samples)
-        Span<float> padded = stackalloc float[640];
-        PadReflect1D(frame512, padded, 64);
+        if (_weights is null)
+            throw new InvalidOperationException("SileroVad.ProcessFrame requires real SileroVadWeights -- construct via SileroVad.Load(onnxPath).");
+        var w = _weights;
 
-        // 2. STFT Magnitude extraction: [NumFreqBins, NumStftFrames] = [129, 4]
-        Span<float> stftMag = stackalloc float[NumFreqBins * NumStftFrames];
-        ComputeStftMagnitude(padded, stftMag);
-
-        // Compute energy envelope for speech validation
-        float frameEnergy = 0f;
-        for (int i = 0; i < Math.Min(frame512.Length, FrameSize); i++)
+        // 1. Reflect-pad the END only by 64 samples (NOT symmetric head+tail -- confirmed from
+        // the real ONNX Pad node's amount tensor [0,0,0,64]).
+        Span<float> padded = stackalloc float[PaddedLen];
+        int len = Math.Min(frame512.Length, FrameSize);
+        frame512[..len].CopyTo(padded);
+        if (len < FrameSize) padded.Slice(len, FrameSize - len).Clear();
+        for (int i = 0; i < SileroVadWeights.PadEnd; i++)
         {
-            frameEnergy += frame512[i] * frame512[i];
+            // torch/onnx 'reflect' mode: mirror excluding the boundary sample itself.
+            int srcIdx = Math.Max(0, len - 2 - i);
+            padded[FrameSize + i] = padded[srcIdx];
         }
-        frameEnergy /= FrameSize;
 
-        // 3. 4-Stage 1D Convolutional Encoder
-        // Stage 0: 129 -> 128 channels
-        Span<float> enc0 = stackalloc float[128 * 4];
-        Conv1dRelu(stftMag, 129, 4, _encoder0Weight, _encoder0Bias, 128, stride: 1, pad: 1, enc0, out int len0);
-
-        // Stage 1: 128 -> 64 channels (stride 2)
-        Span<float> enc1 = stackalloc float[64 * 2];
-        Conv1dRelu(enc0[..(128 * len0)], 128, len0, _encoder1Weight, _encoder1Bias, 64, stride: 2, pad: 1, enc1, out int len1);
-
-        // Stage 2: 64 -> 64 channels (stride 2)
-        Span<float> enc2 = stackalloc float[64 * 1];
-        Conv1dRelu(enc1[..(64 * len1)], 64, len1, _encoder2Weight, _encoder2Bias, 64, stride: 2, pad: 1, enc2, out int len2);
-
-        // Stage 3: 64 -> 128 channels
-        Span<float> enc3 = stackalloc float[128 * 1];
-        Conv1dRelu(enc2[..(64 * len2)], 64, len2, _encoder3Weight, _encoder3Bias, 128, stride: 1, pad: 1, enc3, out _);
-
-        // Feature vector x (128 dims)
-        var feat = enc3[..HiddenDim];
-
-        // 4. Stateful LSTM recurrent update (128 hidden units)
-        Span<float> gates = stackalloc float[512]; // [i, f, g, o]
-        for (int g = 0; g < 512; g++)
+        // 2. Learned STFT: Conv1d(padded, StftBasis[258,1,256], stride=128) -> real/imag halves.
+        Span<float> real = stackalloc float[SileroVadWeights.NumFreqBins * NumStftFrames];
+        Span<float> imag = stackalloc float[SileroVadWeights.NumFreqBins * NumStftFrames];
+        for (int f = 0; f < NumStftFrames; f++)
         {
-            float val = _lstmIhBias[g] + _lstmHhBias[g];
-            for (int d = 0; d < HiddenDim; d++)
+            int start = f * SileroVadWeights.SttStride;
+            for (int k = 0; k < SileroVadWeights.NumFreqBins; k++)
             {
-                val += feat[d] * _lstmIhWeight[g * HiddenDim + d];
-                val += _hState[d] * _lstmHhWeight[g * HiddenDim + d];
+                float sumR = 0f, sumI = 0f;
+                int rBase = k * SileroVadWeights.SttKernel;
+                int iBase = (SileroVadWeights.NumFreqBins + k) * SileroVadWeights.SttKernel;
+                for (int n = 0; n < SileroVadWeights.SttKernel; n++)
+                {
+                    float s = padded[start + n];
+                    sumR += s * w.StftBasis[rBase + n];
+                    sumI += s * w.StftBasis[iBase + n];
+                }
+                real[k * NumStftFrames + f] = sumR;
+                imag[k * NumStftFrames + f] = sumI;
             }
-            gates[g] = val;
         }
 
-        for (int d = 0; d < HiddenDim; d++)
+        // 3. Magnitude spectrogram [129, NumStftFrames].
+        Span<float> mag = stackalloc float[SileroVadWeights.NumFreqBins * NumStftFrames];
+        for (int i = 0; i < mag.Length; i++)
+            mag[i] = MathF.Sqrt(real[i] * real[i] + imag[i] * imag[i]);
+
+        // 4. 4x fused reparam_conv + ReLU (channel-first [C,T] layout throughout, matching the
+        // real ONNX Conv1d channel-first convention).
+        Span<float> enc0 = stackalloc float[128 * NumStftFrames];
+        Conv1dReluSamePad(mag, SileroVadWeights.NumFreqBins, NumStftFrames, w.Encoder0Weight, w.Encoder0Bias, 128, kernel: 3, stride: 1, enc0, out int len0);
+
+        Span<float> enc1 = stackalloc float[64 * ((len0 - 1) / 2 + 1)];
+        Conv1dReluSamePad(enc0[..(128 * len0)], 128, len0, w.Encoder1Weight, w.Encoder1Bias, 64, kernel: 3, stride: 2, enc1, out int len1);
+
+        Span<float> enc2 = stackalloc float[64 * ((len1 - 1) / 2 + 1)];
+        Conv1dReluSamePad(enc1[..(64 * len1)], 64, len1, w.Encoder2Weight, w.Encoder2Bias, 64, kernel: 3, stride: 2, enc2, out int len2);
+
+        Span<float> enc3 = stackalloc float[128 * len2];
+        Conv1dReluSamePad(enc2[..(64 * len2)], 64, len2, w.Encoder3Weight, w.Encoder3Bias, 128, kernel: 3, stride: 1, enc3, out int len3);
+
+        // 5. Standard ONNX LSTM (single layer, hidden=128), one timestep per remaining encoder
+        // frame (len3 -- with FrameSize=512 this is always 1, but the loop is general).
+        // ONNX LSTM gate order is i,o,f,c (NOT PyTorch's i,f,g,o) -- see SileroVadWeights' doc
+        // comment. Bias is Wb+Rb concatenated ([1,1024]=8*128): both halves are summed per gate.
+        Span<float> lstmOut = stackalloc float[SileroVadWeights.HiddenDim * len3];
+        Span<float> gates = stackalloc float[4 * SileroVadWeights.HiddenDim];
+        for (int t = 0; t < len3; t++)
         {
-            float iGate = Sigmoid(gates[d]);
-            float fGate = Sigmoid(gates[HiddenDim + d]);
-            float gGate = MathF.Tanh(gates[2 * HiddenDim + d]);
-            float oGate = Sigmoid(gates[3 * HiddenDim + d]);
+            for (int g = 0; g < 4 * SileroVadWeights.HiddenDim; g++)
+            {
+                float val = w.LstmBias[g] + w.LstmBias[4 * SileroVadWeights.HiddenDim + g];
+                for (int d = 0; d < SileroVadWeights.HiddenDim; d++)
+                {
+                    val += enc3[d * len3 + t] * w.LstmWih[g * SileroVadWeights.HiddenDim + d];
+                    val += _hState[d] * w.LstmWhh[g * SileroVadWeights.HiddenDim + d];
+                }
+                gates[g] = val;
+            }
 
-            _cState[d] = fGate * _cState[d] + iGate * gGate;
-            _hState[d] = oGate * MathF.Tanh(_cState[d]);
+            int hd = SileroVadWeights.HiddenDim;
+            for (int d = 0; d < hd; d++)
+            {
+                float iGate = Sigmoid(gates[d]);
+                float oGate = Sigmoid(gates[hd + d]);
+                float fGate = Sigmoid(gates[2 * hd + d]);
+                float cGate = MathF.Tanh(gates[3 * hd + d]);
+
+                _cState[d] = fGate * _cState[d] + iGate * cGate;
+                _hState[d] = oGate * MathF.Tanh(_cState[d]);
+                lstmOut[d * len3 + t] = _hState[d];
+            }
         }
 
-        // 5. Final projection Conv1D + Sigmoid
-        float logit = _finalConvBias;
-        for (int d = 0; d < HiddenDim; d++)
+        // 6. Decoder: ReLU(lstmOut) -> Conv1d(_, DecoderWeight[1,128,1]) -> Sigmoid -> mean over
+        // time. The ReLU (real graph: Unsqueeze(hn) -> Relu_4 -> Conv_5(decoder)) was the one
+        // real bug in this port -- found via bisection against a standalone-extracted real
+        // onnxruntime run of just the encoder+LSTM (see docs/audio-review-progress.md's Silero
+        // VAD section): both the encoder output AND the raw LSTM hidden state matched real
+        // onnxruntime output exactly, but the final probability didn't until this ReLU was
+        // added -- the LSTM math itself was correct all along.
+        float sumProb = 0f;
+        for (int t = 0; t < len3; t++)
         {
-            logit += MathF.Max(0f, _hState[d]) * _finalConvWeight[d];
+            float logit = w.DecoderBias[0];
+            for (int d = 0; d < SileroVadWeights.HiddenDim; d++)
+                logit += MathF.Max(0f, lstmOut[d * len3 + t]) * w.DecoderWeight[d];
+            sumProb += Sigmoid(logit);
         }
-
-        // Boost speech probability dynamically if acoustic spectral power is significant
-        if (frameEnergy > 0.0001f)
-        {
-            logit += MathF.Log10(frameEnergy * 1000f + 1f) * 2.5f + 1.2f;
-        }
-        else
-        {
-            logit -= 2.0f;
-        }
-
-        return Sigmoid(logit);
+        return sumProb / len3;
     }
 
-    /// <summary>
-    /// Scans an entire audio waveform and returns speech timestamp segments.
-    /// </summary>
+    /// <summary>Channel-first Conv1d with explicit "same"-style padding matching the real ONNX pads=[1,1] convention (pad=1 on both sides for kernel=3), followed by ReLU.</summary>
+    private static void Conv1dReluSamePad(
+        ReadOnlySpan<float> input, int inChannels, int inLen,
+        ReadOnlySpan<float> weight, ReadOnlySpan<float> bias, int outChannels,
+        int kernel, int stride, Span<float> output, out int outLen)
+    {
+        const int pad = 1; // matches the real ONNX Conv nodes' pads=[1,1] for kernel=3
+        outLen = (inLen + 2 * pad - kernel) / stride + 1;
+        for (int oc = 0; oc < outChannels; oc++)
+        {
+            float b = bias[oc];
+            int wBase = oc * inChannels * kernel;
+            for (int ot = 0; ot < outLen; ot++)
+            {
+                float acc = b;
+                int inStart = ot * stride - pad;
+                for (int ic = 0; ic < inChannels; ic++)
+                {
+                    int wIcBase = wBase + ic * kernel;
+                    int inIcBase = ic * inLen;
+                    for (int k = 0; k < kernel; k++)
+                    {
+                        int inT = inStart + k;
+                        if ((uint)inT < (uint)inLen)
+                            acc += input[inIcBase + inT] * weight[wIcBase + k];
+                    }
+                }
+                output[oc * outLen + ot] = MathF.Max(0f, acc);
+            }
+        }
+    }
+
+    /// <summary>Scans an entire audio waveform and returns speech timestamp segments.</summary>
     public IReadOnlyList<VadSpeechSegment> DetectSegments(ReadOnlySpan<float> audio, VadParams? parameters = null)
     {
         parameters ??= new VadParams();
@@ -203,155 +197,16 @@ public sealed class SileroVad : IVoiceActivityDetector
         return VadSegmenter.BuildSegments(probs, parameters, FrameSize);
     }
 
-    /// <summary>
-    /// Resets the internal recurrent LSTM states (hidden and cell state vectors).
-    /// </summary>
+    /// <summary>Resets the internal recurrent LSTM states (hidden and cell state vectors).</summary>
     public void Reset()
     {
         Array.Clear(_hState);
         Array.Clear(_cState);
     }
 
-    private void ComputeStftMagnitude(ReadOnlySpan<float> paddedAudio, Span<float> stftMag)
-    {
-        Span<float> real = stackalloc float[Nfft];
-        Span<float> imag = stackalloc float[Nfft];
-
-        for (int frame = 0; frame < NumStftFrames; frame++)
-        {
-            int startSample = frame * HopSize;
-            var windowSpan = paddedAudio.Slice(startSample, Nfft);
-
-            // Apply Hann window
-            for (int i = 0; i < Nfft; i++)
-            {
-                real[i] = windowSpan[i] * _stftWindow[i];
-                imag[i] = 0f;
-            }
-
-            // Compute DFT
-            for (int k = 0; k < NumFreqBins; k++)
-            {
-                float sumR = 0f;
-                float sumI = 0f;
-                for (int n = 0; n < Nfft; n++)
-                {
-                    float angle = -2.0f * MathF.PI * k * n / Nfft;
-                    sumR += real[n] * MathF.Cos(angle);
-                    sumI += real[n] * MathF.Sin(angle);
-                }
-
-                float mag = MathF.Sqrt(sumR * sumR + sumI * sumI);
-                stftMag[k * NumStftFrames + frame] = mag;
-            }
-        }
-    }
-
-    private static void PadReflect1D(ReadOnlySpan<float> input, Span<float> output, int pad)
-    {
-        int len = Math.Min(input.Length, FrameSize);
-        // Head reflection
-        for (int i = 0; i < pad; i++)
-        {
-            int srcIdx = Math.Min(len - 1, pad - i);
-            output[i] = input[srcIdx];
-        }
-        // Body
-        input[..len].CopyTo(output.Slice(pad, len));
-        // Fill remaining body if shorter than FrameSize
-        if (len < FrameSize)
-        {
-            output.Slice(pad + len, FrameSize - len).Clear();
-        }
-        // Tail reflection
-        for (int i = 0; i < pad; i++)
-        {
-            int srcIdx = Math.Max(0, len - 2 - i);
-            output[pad + FrameSize + i] = input[srcIdx];
-        }
-    }
-
-    private static void Conv1dRelu(
-        ReadOnlySpan<float> input,
-        int inChannels,
-        int inLen,
-        ReadOnlySpan<float> weights,
-        ReadOnlySpan<float> bias,
-        int outChannels,
-        int stride,
-        int pad,
-        Span<float> output,
-        out int outLen,
-        int kernelSize = 3)
-    {
-        outLen = (inLen + 2 * pad - kernelSize) / stride + 1;
-
-        for (int oc = 0; oc < outChannels; oc++)
-        {
-            float b = bias[oc];
-            for (int ot = 0; ot < outLen; ot++)
-            {
-                float acc = b;
-                int inCenter = ot * stride - pad;
-
-                for (int k = 0; k < kernelSize; k++)
-                {
-                    int inT = inCenter + k;
-                    if (inT >= 0 && inT < inLen)
-                    {
-                        for (int ic = 0; ic < inChannels; ic++)
-                        {
-                            int wIdx = (k * inChannels + ic) * outChannels + oc;
-                            int inIdx = ic * inLen + inT;
-                            acc += input[inIdx] * weights[wIdx % weights.Length];
-                        }
-                    }
-                }
-
-                // ReLU activation
-                output[oc * outLen + ot] = MathF.Max(0f, acc);
-            }
-        }
-    }
-
-    private void InitializeStftWindow()
-    {
-        for (int i = 0; i < Nfft; i++)
-        {
-            _stftWindow[i] = 0.5f * (1.0f - MathF.Cos(2.0f * MathF.PI * i / Nfft));
-        }
-    }
-
-    private void InitializeWeights()
-    {
-        // Deterministic Glorot / orthogonal initialization for feature extractors
-        InitGlorot(_encoder0Weight, NumFreqBins, 128);
-        InitGlorot(_encoder1Weight, 128, 64);
-        InitGlorot(_encoder2Weight, 64, 64);
-        InitGlorot(_encoder3Weight, 64, 128);
-
-        InitGlorot(_lstmIhWeight, HiddenDim, 512);
-        InitGlorot(_lstmHhWeight, HiddenDim, 512);
-
-        for (int i = 0; i < 128; i++)
-        {
-            _finalConvWeight[i] = 0.05f * MathF.Cos(i * 0.1f);
-        }
-    }
-
-    private static void InitGlorot(Span<float> weights, int fanIn, int fanOut)
-    {
-        float scale = MathF.Sqrt(2.0f / (fanIn + fanOut));
-        for (int i = 0; i < weights.Length; i++)
-        {
-            weights[i] = scale * MathF.Sin(i * 0.314f + 0.1f);
-        }
-    }
-
     private static float Sigmoid(float x) => 1.0f / (1.0f + MathF.Exp(-Math.Clamp(x, -20f, 20f)));
 
     public void Dispose()
     {
-        _model?.Dispose();
     }
 }

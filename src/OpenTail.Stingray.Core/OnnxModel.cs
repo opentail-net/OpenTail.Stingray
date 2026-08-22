@@ -149,7 +149,7 @@ public sealed class OnnxModel
         {
             if (f.Field == 1 && f.WireType == 2) // GraphProto.node
             {
-                var n = ParseNode(buf, f.Start, f.Length);
+                var n = ParseNode(buf, f.Start, f.Length, initializers, inputs, outputs, nodes);
                 if (n is { } node && node.Name.Length > 0) nodes[node.Name] = node;
             }
             else if (f.Field == 5 && f.WireType == 2) // GraphProto.initializer
@@ -168,7 +168,19 @@ public sealed class OnnxModel
         }
     }
 
-    private static OnnxNode? ParseNode(byte[] buf, int start, int len)
+    /// <summary>
+    /// Also recurses into node attributes of type GRAPH (AttributeProto.g, field 6) -- an `If`
+    /// node's then_branch/else_branch is a full nested GraphProto with its own nodes/
+    /// initializers, needed for e.g. Silero VAD's real weights, which live entirely inside an
+    /// `If(sr==16000)` subgraph rather than the top-level graph (see docs/audio-review-
+    /// progress.md's Silero VAD section). Folds the subgraph's nodes/initializers into the SAME
+    /// dictionaries the top-level graph uses -- safe because every name this codebase's real
+    /// models use inside a subgraph is already uniquely prefixed by the exporter (e.g.
+    /// `If_0_then_branch__Inline_0__stft.forward_basis_buffer`), so there is no collision risk
+    /// with top-level names, and flattening is strictly additive: existing callers that only
+    /// ever used single-branch models (Piper/MeloTTS, no `If` nodes) see zero behavior change.
+    /// </summary>
+    private static OnnxNode? ParseNode(byte[] buf, int start, int len, Dictionary<string, OnnxTensor> initializers, List<string> inputs, List<string> outputs, Dictionary<string, OnnxNode> nodes)
     {
         var nodeInputs = new List<string>();
         var nodeOutputs = new List<string>();
@@ -191,10 +203,23 @@ public sealed class OnnxModel
                 case 4 when f.WireType == 2: // op_type
                     opType = Encoding.UTF8.GetString(buf, f.Start, f.Length);
                     break;
+                case 5 when f.WireType == 2: // attribute (AttributeProto)
+                    ParseAttributeForSubgraph(buf, f.Start, f.Length, initializers, inputs, outputs, nodes);
+                    break;
             }
         }
         if (name.Length == 0) return null;
         return new OnnxNode(name, opType, nodeInputs, nodeOutputs);
+    }
+
+    /// <summary>Looks for AttributeProto.g (field 6, a single embedded GraphProto -- covers `If`'s then_branch/else_branch) and recurses ParseGraph on it if present. Other attribute kinds (ints, floats, tensors, repeated graphs) are irrelevant to weight loading and skipped.</summary>
+    private static void ParseAttributeForSubgraph(byte[] buf, int start, int len, Dictionary<string, OnnxTensor> initializers, List<string> inputs, List<string> outputs, Dictionary<string, OnnxNode> nodes)
+    {
+        foreach (var f in ReadFields(buf, start, start + len))
+        {
+            if (f.Field == 6 && f.WireType == 2) // AttributeProto.g
+                ParseGraph(buf, f.Start, f.Length, initializers, inputs, outputs, nodes);
+        }
     }
 
     private static string? ParseValueInfoName(byte[] buf, int start, int len)

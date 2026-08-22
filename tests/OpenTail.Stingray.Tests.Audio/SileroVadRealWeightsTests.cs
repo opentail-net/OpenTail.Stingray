@@ -9,6 +9,7 @@ namespace OpenTail.Stingray.Tests.Audio.Fast;
 public sealed class SileroVadRealWeightsTests : HeavyTestBase
 {
     private const string GgufFileName = "silero_vad.gguf";
+    private const string OnnxFileName = "silero_vad.onnx";
 
     private static string? FindModelPath(string fileName)
     {
@@ -47,10 +48,17 @@ public sealed class SileroVadRealWeightsTests : HeavyTestBase
         Assert.True(model.Metadata.Count > 0, "Silero VAD GGUF must have metadata");
     }
 
+    /// <summary>
+    /// Real weights are now loaded from `models/silero_vad.onnx` (NOT the messy auto-converted
+    /// `.gguf`) -- see <see cref="SileroVadWeights"/>'s doc comment and docs/audio-review-
+    /// progress.md's Silero VAD section for why: the real model's weights live inside an
+    /// `If(sr==16000)` subgraph with mostly auto-generated tensor names, decoded directly from
+    /// the ONNX graph this session.
+    /// </summary>
     [Fact]
-    public void SileroVad_RealGgufModel_DetectsSpeechAndSilence()
+    public void SileroVad_RealOnnxModel_DetectsSpeechAndSilence()
     {
-        string? modelPath = FindModelPath(GgufFileName);
+        string? modelPath = FindModelPath(OnnxFileName);
         if (modelPath is null) return;
 
         using var vad = SileroVad.Load(modelPath);

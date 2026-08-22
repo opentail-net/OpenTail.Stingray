@@ -3061,3 +3061,594 @@ against real PyTorch output) and `OpenTail.Stingray.Tests.Audio.ParakeetConforme
 (e.g. an eps-default mismatch, a bias-null-check ordering difference). Any future Conformer-
 style port (QwenASR, FunASR's paraformer) should use `DenseKernels` from the start rather than
 copying a third private version.
+
+## Autonomous cron-driven pass (2026-08-22): FunASR real weights + tokenizer, Silero VAD / Fish Speech / Parler-TTS / Orpheus TTS scoped
+
+User set a recurring local cron job (30-min cadence, time-gated to skip its first ~3 no-op
+fires) to work through a new queue while AFK: 1) FunASR, 2) Silero VAD, 3) Fish Speech,
+4) Parler-TTS, 5) Orpheus TTS -- same "no subagents, golden-verify, run heavy tests one
+filter-class at a time" discipline as everywhere else in this doc.
+
+**Scope check on items 3-5 (Fish Speech, Parler-TTS, Orpheus TTS) -- all three BLOCKED, not
+started, moving past them per the standing "genuinely blocked -> document and move on" rule**:
+checked `models/` and `examples/` directly -- zero weight files, zero reference source, and
+(unlike every other pipeline in this doc, including FunASR/Silero VAD) not even a fake stub
+pipeline class exists in `src/OpenTail.Stingray.Audio/` for any of the three. These aren't
+"port real math into an existing fake pipeline" tasks like the rest of this doc -- they'd be
+entirely new pipelines (new tokenizer, new weight format, new model download) with nothing
+local to build against. Correctly out of scope for this pass; would need the user to supply
+model weights and/or a reference implementation before any of the three can start.
+
+### FunASR (Paraformer) -- real GGUF weight loader + real tokenizer landed and verified; encoder/predictor/decoder forward pass NOT yet ported
+
+**Real architecture confirmed directly from `models/paraformer-q8.gguf`'s own metadata/tensor
+names** (`general.architecture = "paraformer"`, 957 tensors, 14 metadata keys -- dumped via
+`dotnet run --project src/OpenTail.Stingray.Cli -- list-metadata`/`list-tensors`, not guessed):
+a SAN-M (Self-Attention with Memory, i.e. multi-head self-attention + a depthwise FSMN conv
+memory term) encoder with one special first layer (`encoder.encoders0.0`, 560-dim input --
+CMVN'd 80-mel x 7-frame splice, `cmvn.scale`/`cmvn.shift` are real per-dim affine params, not
+computed) followed by a **49-layer** main stack (`encoder.encoders.{0..48}`, 512-dim,
+`pf.enc.num_blocks=50` metadata counts encoders0+main-stack COMBINED -- a real off-by-one trap,
+see the bug below); a CIF (Continuous Integrate-and-Fire) predictor (`predictor.cif_conv1d`
+kernel=3 conv + `predictor.cif_output` linear) that both counts and boundary-detects acoustic
+tokens from the encoder output; a non-autoregressive cross-attention decoder with 16 main
+layers (`decoder.decoders.{0..15}`, `self_attn` is FSMN-ONLY -- no Q/K/V at all, confirmed by
+direct tensor-name inspection, matching Paraformer's non-autoregressive design where the
+decoder never attends to its own un-emitted future tokens; `src_attn` is real cross-attention
+to the encoder output) plus one extra FFN-only layer (`decoder.decoders3.0`, no attention
+tensors at all) and a real vocab projection (`decoder.output_layer`, 512->8404) to a real,
+GGUF-embedded 8404-token vocabulary (`pf.vocab` metadata, a plain string array -- confirmed by
+directly dumping vocab entries via a throwaway console app, not assumed).
+
+**Critical finding, do not re-derive**: the only local C++ reference
+(`examples/paraformer.cpp/src/csrc/paraformer-offline.cpp`) has the encoder's FSMN memory-term
+ADD explicitly DISABLED in code (`// todo open when conv depth wise 1d with group implement
+finished`, ~line 1767: `// cur = ggml_add(ctx0, cur, fsmn_memory);` is commented out) -- i.e.
+that specific reference is a known-incomplete/broken implementation on exactly the SAN-M detail
+that matters most. Do NOT port its encoder forward pass as-is when this work continues. The
+real FSMN formula needs deriving from FunASR's actual Python source (the `funasr` package's
+`funasr/models/sanm/attention.py`/`encoder.py` -- NOT yet fetched this session, same
+"pip download the real package" technique used for Kokoro/Chatterbox/F5-TTS earlier in this
+doc) before writing `FunAsrEncoder.cs`'s forward pass.
+
+**Landed and verified this pass**:
+- `FunASR/FunAsrWeights.cs` (new): real GGUF loading for every one of the 957 real tensors --
+  cmvn, encoders0 (1 layer), encoders (49 layers), encoder.after_norm, predictor (CIF
+  conv1d+output), decoder.decoders (16 layers), decoders3 (1 FFN-only layer),
+  decoder.after_norm, decoder.output_layer, and the real 8404-entry vocab array. Per-layer
+  weight holder types (`FunAsrEncoderLayerWeights`/`FunAsrDecoderLayerWeights`/
+  `FunAsrDecoderFfnLayerWeights`) mirror the shape/field conventions already established by
+  `QwenAsrAudioLayerWeights` etc.
+- **Real bug found and fixed via actually running it, not just building it** (same discipline
+  every prior pipeline in this doc was held to): first version assumed `EncoderLayers=50` from
+  `pf.enc.num_blocks` directly and crashed (`InvalidDataException: ... missing required tensor
+  'encoder.encoders.49.norm1.weight'`) since the real main stack only goes to index 48 (49
+  layers) -- `num_blocks` counts `encoders0.0` + the 49-layer main stack combined. Fixed by
+  loading `EncoderLayers = num_blocks - 1`.
+- **`FunASR/FunAsrPipeline.cs`'s `FunAsrTokenizer`**: was 100% fake (`Decode` just printed
+  `[T123]`-style placeholders regardless of input). Now decodes against the real vocab with the
+  real convention confirmed by directly inspecting vocab strings (not guessed): a trailing `@@`
+  marks "glue to the next piece, no space" (ESPnet/subword-nmt BPE continuation, e.g.
+  `and@@`+`these` -> `andthese`); single CJK characters get no surrounding spaces (Chinese has
+  none); completed non-CJK words get a trailing space; `<blank>`/`<s>`/`</s>`/`<unk>` are
+  stripped, never emitted as text. `FunAsrPipeline.Load` now constructs `FunAsrWeights` (real)
+  instead of a bare `GgufModel` used only for `Dispose()`, and wires the real tokenizer through.
+- **Tests, all real-weights, all PASS**: `Tests.Audio/FunAsrWeightsTests.cs` (new, 3 tests) --
+  every real tensor's shape/finiteness spot-checked across encoders0/first+last main
+  encoder/predictor/first+last decoder/decoders3/output_layer/cmvn; the real vocab's first/last
+  known entries (`<blank>`, `<s>`, `</s>`, `and@@`, `<unk>`) match direct inspection exactly;
+  the tokenizer's CJK-no-space and `@@`-continuation-glue behavior verified against real vocab
+  ids. Pre-existing `Tests.Audio.Fast/FunAsrRealWeightsTests.cs` (3 tests, GGUF+2 ONNX model
+  paths) re-run individually after the fix -- still PASS (output text is still meaningless,
+  since the encoder/predictor are unported fakes feeding real-vocab strings for synthetic
+  token ids -- but the pipeline no longer crashes and the tokenizer itself is genuinely real).
+
+**NOT yet done, concrete next steps for whoever picks this up**:
+1. `pip download funasr --no-deps` (or find the specific `sanm` module source another way) to
+   get the REAL FSMN/SAN-M attention formula -- do not trust `examples/paraformer.cpp` for this
+   specific detail, see the critical finding above.
+2. Port `FunAsrEncoder.cs`: encoders0 (560-dim) -> 49x main SAN-M layer (LayerNorm -> QKV
+   self-attn + FSMN depthwise-conv-over-V memory term, added not skipped -> LayerNorm -> FFN)
+   -> after_norm. Build a golden-output oracle (same pip-source-run technique as every other
+   pipeline in this doc) before writing the forward pass, not after.
+3. Port `CifPredictor.cs`'s real forward: `cif_conv1d` (kernel=3) -> `cif_output` linear ->
+   sigmoid -> the real CIF integrate-and-fire accumulation/boundary-detection algorithm (read
+   the real predictor math from `funasr`'s Python source, NOT the current fake fixed-0.25-
+   alpha-per-frame heuristic).
+4. Port `FunAsrDecoder`: FSMN-only self-attn (no Q/K/V) -> real cross-attention to encoder
+   output -> FFN, x16 layers, + the `decoders3` FFN-only layer -> after_norm -> output_layer
+   (512->8404 logits) -> argmax/greedy token selection (non-autoregressive: all positions
+   decoded in one pass, no per-token loop needed, unlike QwenASR's LLM decoder).
+5. Golden-verify each stage numerically (cosine similarity, >0.99 bar, matching every other
+   pipeline's discipline) before calling any of the above done.
+
+**Fish Speech / Parler-TTS / Orpheus TTS**: blocked, see the scope-check note above -- no local
+weights, no reference source, not even a fake stub exists. Needs the user to supply model
+files and/or a reference implementation before this queue can reach them.
+
+**Silero VAD**: not reached this pass (ran out of fire-cycle time on FunASR's investigation +
+weight-loader work) -- still in the state described earlier in this doc (2 of 4 conv stages +
+LSTM genuinely real, 2 conv stages + final projection permanently fake, plus a hardcoded
+heuristic layered on top). Next in the queue for a future fire.
+
+### Silero VAD (next cron fire, 2026-08-22): real ONNX graph fully decoded, STFT+encoder verified bit-exact; LSTM/decoder stage numerically wrong, root cause not yet found
+
+**Real 16kHz forward pass fully decoded from `models/silero_vad.onnx` directly** (Python's
+`onnx` package walking the actual protobuf graph node-by-node -- not guessed, not inferred from
+Silero's public docs/old code comments, which described the WRONG architecture, see this doc's
+earlier "UPDATE 3rd iteration" entry). Confirmed the doc's earlier finding and went further:
+the top-level graph is just `Equal(sr,16000) -> If -> Identity`; the ENTIRE real model lives
+inside the `If` node's `then_branch` subgraph (54 nodes, `else_branch` is a separate unused
+8kHz path). Real pipeline, confirmed node-by-node including every Conv's exact
+stride/pad/kernel attribute and every Slice's exact start/end/axis (not assumed):
+1. `padded = ReflectPad(raw_512_samples, pad=[begin=0,end=64])` -- pads the END ONLY by 64
+   samples, reflect mode (the old fake code assumed symmetric 64+64 head+tail padding -- wrong).
+2. `stft = Conv1d(padded.unsqueeze(1), stft.forward_basis_buffer[258,1,256], stride=128,
+   pad=0)` -- learned STFT frontend, 258 output channels.
+3. `real = stft[0:129]`, `imag = stft[129:258]` (confirmed via the real Slice node ranges, NOT
+   interleaved per-bin as one might guess), `mag = sqrt(real^2+imag^2)`.
+4. `ReLU(Conv1d(mag, encoder.0, k=3,s=1,p=1))` (129->128) -> `ReLU(Conv1d(_, encoder.1,
+   k=3,s=2,p=1))` (128->64) -> `ReLU(Conv1d(_, encoder.2, k=3,s=2,p=1))` (64->64) ->
+   `ReLU(Conv1d(_, encoder.3, k=3,s=1,p=1))` (64->128) -- Silero's fused "reparam_conv"
+   architecture (one Conv+bias per stage, no separate norm/activation tensors), confirmed
+   real shapes match this checkpoint's actual initializers exactly.
+5. A standard ONNX `LSTM` op (hidden_size=128) whose W/R/B tensors are auto-generated-named
+   (`.../Unsqueeze_7/8/9_output_0...`, constant-folded by the exporter, not clean module-path
+   names) but resolve to real, correctly-shaped values ([1,512,128]/[1,512,128]/[1,1024]).
+6. `Sigmoid(Conv1d(lstm_out, decoder.decoder.2[1,128,1]))`, mean over time if >1 output frame.
+
+**Required extending `OnnxModel` (shared Core class, also used by Piper/MeloTTS) to recurse
+into `If` node subgraphs** -- it previously only walked the top-level `GraphProto`, so it saw
+Silero's real weights (all buried inside `then_branch`) as simply absent. Added recursive
+attribute parsing (`AttributeProto.g`, field 6) that folds a subgraph's nodes/initializers into
+the same dictionaries the top-level graph uses; purely additive (existing single-graph models
+have no `If` nodes, so see zero behavior change) -- verified by re-running
+`PiperTextEncoderTests` (golden cosine-similarity test) individually after the change, still
+PASS.
+
+**Landed this pass**:
+- `Vad/SileroVadWeights.cs` (new): real weight loading for all of the above via the extended
+  `OnnxModel`, with the exact real tensor names/shapes documented in its class doc comment so
+  the next person doesn't have to re-walk the graph.
+- `Vad/SileroVad.cs`: fully rewritten forward pass (was 100% Glorot/sin-initialized fake weights
+  + a hardcoded `frameEnergy`-based heuristic layered on top of whatever the fake network
+  computed) to the real pipeline above. `SileroVad.Load` now takes the `.onnx` path (was
+  `.gguf`) -- `SileroVadRealWeightsTests.cs` updated accordingly (real model file is
+  `models/silero_vad.onnx`, the `.gguf` conversion remains messy/unused per the doc's earlier
+  finding). Both structural tests (silence<0.2 probability, speech prob in [0,1]) still PASS.
+
+**Golden-verified via bisection against real onnxruntime output (single `sess.run()` call,
+`ORT_DISABLE_ALL`, matching this doc's established discipline) -- STFT and the 4-stage encoder
+are BIT-EXACT (float32 rounding only); the LSTM+decoder stage is NOT yet correct**:
+- Golden input: a seeded (`numpy default_rng(42)`) synthetic 512-sample frame, saved to
+  `scratch-llamacpp-ref/silero_golden_input.txt` (plain comma-separated floats, so the C# test
+  doesn't need to reproduce numpy's specific PRNG algorithm).
+- Real onnxruntime probability for this frame (fresh zero LSTM state): **0.025505661964416504**.
+- Bisected stage-by-stage with a from-scratch numpy re-implementation of each stage (walking
+  the real ONNX initializers directly via `onnx.numpy_helper`, independent of the C# code) AND
+  a throwaway C# console app computing the same intermediate values:
+  - STFT magnitude: numpy and C# match exactly (`mag[:3,:]` identical to 7 significant figures).
+  - 4-stage encoder output (`h3`/`enc3`): numpy and C# match exactly (`[0, 1.4528..., 9.3853...,
+    0, 0]` identical).
+  - LSTM+decoder: **both numpy's independent re-implementation AND the C# port produce the SAME
+    wrong value, 0.012973616 vs 0.012973609** (matching each other, NOT the real onnxruntime
+    output of 0.025505662) -- this proves the bug is in the ASSUMED LSTM formula/wiring itself
+    (gate order, or which tensor actually feeds the LSTM), not a C#-specific porting mistake,
+    since two independent implementations of the SAME assumption agree with each other and
+    disagree with ground truth together.
+- **Root cause NOT found this pass, flagged rather than guessed at further**: the real graph
+  has extra conditional nodes between the encoder output and the LSTM
+  (`If_0_then_branch__Inline_0__/If`, then `Shape_2`/`Size`/`Equal_1`/`Not`/`If_1`/`If_2`) that
+  reshape/select the LSTM's actual X/initial_h/initial_c inputs based on a shape check (likely
+  distinguishing a streaming single-chunk case from a batched-multi-chunk case) -- this
+  session's straightforward "unsqueeze the raw encoder output" assumption for the LSTM's X
+  input may be taking the WRONG branch of that conditioning for this checkpoint's actual
+  calling convention, or the real gate order/tensor orientation differs from the ONNX LSTM
+  spec's documented default (`iofc`) in a way not yet identified. `SileroVadWeightsTests.cs`
+  (new) encodes this exact golden comparison and is a KNOWN, EXPECTED FAILURE right now --
+  left failing/uncommitted rather than silently weakening the assertion, so the next fire (or
+  the user) sees red, not a false green.
+
+**Concrete next steps for whoever continues this** (superseded, see the RESOLVED entry
+immediately below -- kept for history, not because they're still open):
+1. ~~Trace the `If`/`If_1`/`If_2` subgraphs~~ -- done, see below: pure shape ops, not the bug.
+2. ~~Verify against `torch`'s installed Silero VAD reference~~ -- not needed, root cause found
+   via direct onnxruntime bisection instead.
+3. Once golden, consider a SIMD pass on the STFT's fully-unrolled O(kernel*freqBins*frames)
+   scalar loop (same anti-pattern already fixed in QwenASR/HiFT elsewhere in this doc) -- STILL
+   open, not attempted this session, correctness came first.
+
+### Silero VAD RESOLVED (same fire, continued): root cause found and fixed -- golden test now PASSES
+
+Continued directly from the "next steps" above. Traced `If`/`If_1`/`If_2`/`If_5` (one more
+level of `AttributeProto.g` recursion) node-by-node: every one of them is a pure SHAPE
+operation (`Squeeze(axis=-1)`/`Unsqueeze(axis=0)`/`Gather`) reshaping between `[128]`,
+`[1,128]`, and `[1,1,128]` depending on whether the encoder output's time dimension is 1 --
+confirmed these never change VALUES, only tensor rank/shape, so the original "feed the raw
+128-dim encoder output as a single LSTM timestep, gather state[0]/state[1] as h0/c0" assumption
+was already structurally correct. Also confirmed the decoder consumes the LSTM's `h_n` (final
+hidden state, via `Squeeze_2`), not the raw sequence output `LSTM_output_0` (which is provably
+unused anywhere downstream) -- matching what was already implemented.
+
+**A brute-force search over all 4! LSTM gate-order permutations x 4 bias variants (Wb+Rb, Wb
+only, Rb only, zero) against the real golden probability found ZERO matches** -- ruling out
+"just the wrong gate order" as the bug and raising a more fundamental question: was the
+`h3`/encoder-stage value itself actually right, or did the earlier "numpy vs C#" bisection just
+have both independently derived implementations sharing the SAME misreading of the graph
+(since both were coded from this session's own understanding, not cross-checked against a
+REAL onnxruntime run)?
+
+**Built a standalone extraction ONNX model to get real intermediate values directly** (the
+technique that actually cracked this): used `onnx.helper.make_graph` to construct a NEW,
+self-contained model reusing the `then_branch` subgraph's nodes+initializers verbatim, with
+explicit top-level inputs `input`/`state` (subgraph nodes reference these by outer-scope name,
+which works fine once they're real top-level graph inputs) and outputs set to whatever internal
+tensor names needed inspecting (`Relu_3_output_0` = encoder output, `Squeeze_2_output_0` = LSTM
+h_n, `outputs_0` = final probability) -- `onnx.checker.check_model` complains about missing
+output shape info for control-flow-derived tensors, so skip the checker (not needed to run) and
+feed the serialized bytes straight to a real `onnxruntime.InferenceSession`. This is a
+real, reusable technique for tapping ANY internal tensor inside an `If`/`Loop` subgraph that
+onnxruntime's normal `session.run()` can't expose directly -- worth remembering for future
+graph-structured-model debugging in this doc.
+
+**Result: both the real encoder output AND the real LSTM hidden state matched this session's
+manual re-implementations almost exactly** (`Relu_3` real=`[0, 1.4528553, 9.3853245, 0, 0]` vs.
+this session's `h3`=`[0, 1.4528542/1.4528533, 9.3853245, 0, 0]`; real `h_n`=
+`[0.00016919836, 0.76025409, -0.000040186413, ...]` vs. manual `h1`=`[0.00016920401,
+0.76025391, -0.000040220231, ...]`) -- i.e. the LSTM gate-order/bias assumption (i,o,f,c order,
+Wb+Rb summed) was RIGHT all along, and the earlier brute-force search finding no match was
+because it was searching the wrong stage entirely.
+
+**The actual bug: a missing ReLU between the LSTM and the decoder conv.** Re-reading the
+original 84-line node dump (`Unsqueeze_19(hn) -> Relu_4 -> Conv_5(decoder.decoder.2) ->
+Sigmoid`) shows a `Relu_4` node this session's C# port had simply never implemented -- the
+decoder's real input is `ReLU(h_n)`, not raw `h_n`. Confirmed the fix numerically: recomputing
+the decoder stage as `sigmoid(sum(relu(h_n) * decw) + decb)` gives `0.025505627` against the
+real golden `0.025505661964416504` -- matches to 6 significant figures.
+
+**Fixed in `Vad/SileroVad.cs`**: added `MathF.Max(0f, ...)` to the decoder's per-channel
+accumulation loop, with a doc comment explaining exactly what the bug was and how it was found
+(so nobody re-derives this investigation). `SileroVadWeightsTests.
+ProcessFrame_RealWeights_MatchesOnnxGoldenProbability` -- **PASSES**, tolerance tightened from
+the initial loose `0.01` to `0.0001` (still passes) once the fix was confirmed real, not a
+fluke. `SileroVadRealWeightsTests.cs` (2 structural tests: silence<0.2 probability, speech
+prob in [0,1]) also re-run individually -- still PASS. **Silero VAD's core neural forward pass
+is now genuinely, numerically real** -- the biggest concrete milestone from this whole
+autonomous cron session.
+
+**Still open / not done this pass**:
+- The STFT frontend's O(kernel*freqBins*frames) scalar loop is unvectorized (same anti-pattern
+  already fixed for QwenASR/HiFT elsewhere in this doc) -- correctness came first this pass,
+  a SIMD pass is a legitimate future perf target now that correctness is proven.
+- Only ONE golden input (a seeded-random synthetic frame) has been verified -- worth adding a
+  second golden sample (e.g. actual speech vs actual silence audio, if real WAV fixtures exist
+  anywhere in this repo) for broader confidence, though the bisection technique above makes
+  false-positive risk low (the bug was found and fixed via real intermediate-tensor comparison,
+  not just end-to-end probability matching).
+- `VadSegmenter`/`DetectSegments` (multi-frame segment-boundary logic) was NOT touched or
+  re-verified this pass -- only `ProcessFrame`'s single-frame math was fixed/verified. Worth a
+  follow-up check that segment boundaries still make sense with the real (now-correct) neural
+  output instead of whatever the old fake+heuristic hybrid produced.
+
+## FunASR (Paraformer) real algorithm, fully transcribed from the real `funasr` Python package (2026-08-22, next cron fire) -- READ THIS BEFORE WRITING ANY FORWARD-PASS CODE, do not re-derive
+
+Silero VAD queue item is DONE (see RESOLVED entry above); this fire went back to FunASR per the
+queue order. `pip download funasr --no-deps` (matching this doc's established "get the real
+source" technique) succeeded -- extracted to `examples/funasr-py/` (the whole real `funasr`
+package, NOT just a wrapper). This finally gives a TRUSTWORTHY reference, unlike
+`examples/paraformer.cpp` which was already confirmed broken/incomplete on the exact detail
+that matters most (see the earlier "Critical finding" entry: its FSMN memory-add is commented
+out). Read `funasr/models/sanm/{attention,encoder,decoder,positionwise_feed_forward}.py` and
+`funasr/models/paraformer/cif_predictor.py` in full this pass. This checkpoint
+(`paraformer-q8.gguf`) is confirmed to be the plain `paraformer` model (not `bicif_paraformer`/
+`e_paraformer`/`contextual_paraformer` variants) using `CifPredictorV2` (see below for how that
+was determined from the real tensor shape, not assumed).
+
+**Encoder layer (`EncoderLayerSANM.forward`, applies to BOTH `encoders0.0` and every
+`encoders.N`)** -- pre-LN structure:
+```
+residual = x
+x_normed = norm1(x)
+attn_out = self_attn(x_normed)              # see "encoder self-attn" below
+if in_size == size:  x = residual + attn_out
+else:                x = attn_out            # ENCODERS0.0 ONLY (in=560,out=512): NO residual!
+residual2 = x
+x_normed2 = norm2(x)
+x = residual2 + feed_forward(x_normed2)      # feed_forward = plain FFN, see below
+```
+**CRITICAL, easy to get wrong**: `encoders0.0` has `in_size=560 != size=512`, so its
+self-attention's residual connection is SKIPPED ENTIRELY (`x = attn_out`, not `residual+
+attn_out`) -- confirmed directly from `EncoderLayerSANM.forward`'s `if self.in_size ==
+self.size` branch, not assumed. Every main `encoders.N` layer (in=out=512) DOES get the normal
+residual add.
+
+**Encoder self-attention + FSMN (`MultiHeadedAttentionSANM.forward`)**:
+```
+q_h, k_h, v_h, v = forward_qkv(x)      # linear_q_k_v(x) split into 3; v is [B,T,512] (pre-head-split)
+fsmn_memory = forward_fsmn(v)          # NOT x -- the FSMN branch operates on v, not the layer input
+q_h *= d_k ** -0.5
+scores = q_h @ k_h^T
+att_outs = softmax(scores) @ v_h  ->  linear_out(...)   # standard scaled-dot-product attention
+return att_outs + fsmn_memory          # BOTH branches summed -- this is the add examples/
+                                        # paraformer.cpp has DISABLED/commented out, confirmed
+                                        # the real math does need it
+```
+`forward_fsmn(v)`: `x = pad(v.transpose(1,2), left=(kernel-1)//2, right=kernel-1-left)` (kernel=11
+-> left=5,right=5, symmetric, since `sanm_shfit=0` for the encoder) `-> depthwise_conv1d(x,
+groups=512, no bias) -> x.transpose back -> x + v` (residual is `v`, the SAME `v` fed in, NOT
+the original layer input `x`) `-> return x`. Matches the real `fsmn_block.weight` shape
+`[512,11]` flattened (GGUF) = PyTorch `[512,1,11]` depthwise-conv convention exactly.
+
+**Encoder FFN (plain `PositionwiseFeedForward`, NOT the decoder's SANM variant)**:
+`w_2(ReLU(w_1(x)))` -- no internal LayerNorm (confirmed: encoder's real tensors have no
+`feed_forward.norm.*`, only `w_1.{weight,bias}`/`w_2.{weight,bias}`, both WITH bias).
+
+**Decoder layer (`DecoderLayerSANM.forward`) -- GENUINELY SURPRISING ORDER, do not assume the
+"obvious" self-attn-then-FFN transformer order**:
+```
+residual = tgt                          # the ORIGINAL layer input, kept aside
+tgt_normed = norm1(tgt)
+tgt = feed_forward(tgt_normed)          # FFN runs FIRST, unconditionally
+x = tgt                                 # x currently = raw FFN output, no residual yet
+if self_attn:                           # true for decoders.0..15, FALSE for decoders3.0
+    tgt_normed2 = norm2(tgt)            # norm2 applied to the FFN's output, not the original input
+    x = self_attn(tgt_normed2)          # FSMN-only self-attn (no Q/K/V at all)
+    x = residual + x                    # residual is the ORIGINAL tgt from the top -- NOT tgt (FFN output)!
+if src_attn:                            # true for decoders.0..15, FALSE for decoders3.0
+    residual2 = x
+    x = norm3(x)
+    x = residual2 + src_attn(x, memory) # standard cross-attention to encoder output
+return x
+```
+For `decoders.0..15` (self_attn and src_attn both present): FFN -> FSMN(norm2(ffn_out)) with
+residual back to the ORIGINAL input -> cross-attn(norm3(...)) with residual to the FSMN output.
+For `decoders3.0` (self_attn=None, src_attn=None, confirmed: this layer's real tensors are only
+`norm1.*`+`feed_forward.*`, nothing else): the function reduces to just `x = feed_forward(norm1(
+tgt))` -- **no residual add at all** for this layer (the `residual + x` line only executes
+inside the `if self_attn:`/`if src_attn:` blocks, both skipped here).
+
+**Decoder FSMN self-attn (`MultiHeadedAttentionSANMDecoder.forward`)**: same depthwise-conv
+pattern as the encoder's FSMN branch, but applied directly to the LAYER INPUT (no Q/K/V split at
+all -- confirmed by the real tensor set: decoder layers have ONLY `self_attn.fsmn_block.weight`,
+no `linear_q_k_v`). For offline (non-streaming) inference, `cache=None` always, so: `x =
+depthwise_conv1d(pad(input.transpose(1,2), left=(11-1)//2, right=11-1-left)) .transpose_back
++ input` (residual = the FSMN's own input this time, straightforward).
+
+**Decoder cross-attention (`MultiHeadedAttentionCrossAtt.forward`)**: standard, no surprises --
+`q = linear_q(x)`, `k,v = split(linear_k_v(memory))`, scaled dot-product, `linear_out(...)`.
+
+**Decoder FFN (`PositionwiseFeedForwardDecoderSANM`, DIFFERENT from the encoder's)**:
+`w_2(norm(dropout(ReLU(w_1(x)))))` -- HAS an internal LayerNorm between activation and `w_2`
+(confirmed: `decoder.decoders.N.feed_forward.norm.{weight,bias}` real tensors exist), and `w_2`
+has NO bias (confirmed: no `feed_forward.w_2.bias` tensor anywhere in the decoder).
+
+**Decoder orchestration (`ParaformerSANMDecoder.forward`)**: `x = embed(tgt)` where `embed` is
+`nn.Identity()` for this checkpoint (confirmed: no `decoder.embed.*` tensor anywhere) -- i.e.
+**the decoder's input IS the CIF predictor's `acoustic_embeds` output directly**, no learned
+token embedding lookup at all (consistent with Paraformer being fully non-autoregressive: there
+is no autoregressive token loop to embed). Then `x = decoders(x, ...)` (16 main layers) ->
+`decoders2` (confirmed ABSENT for this checkpoint: `num_blocks(16) - att_layer_num(16) = 0`) ->
+`decoders3` (the 1 FFN-only layer) -> `after_norm(x)` -> `output_layer(x)` (512->8404 logits,
+straight argmax per position gives the token id, no further processing -- this is the final
+transcript token sequence, CTC-adjacent non-autoregressive decode, no beam search needed for a
+first correct port).
+
+**CIF predictor is `CifPredictorV2`, NOT the base `CifPredictor`** -- determined from the real
+tensor shape, not assumed: `predictor.cif_conv1d.weight`'s real GGUF shape is `[3,512,512]`
+(GGUF stores dims fastest-varying-first, i.e. PyTorch shape `[512,512,3]` = out,in,kernel) --
+a FULL, non-grouped Conv1d. The base `CifPredictor` class hardcodes `groups=idim` (depthwise,
+would need PyTorch shape `[512,1,3]`), which does NOT match; `CifPredictorV2` has no `groups`
+argument (defaults to a full conv), which DOES match.
+```
+context = hidden.transpose(1,2)                          # [B,512,T]
+queries = pad(context, left=1, right=1)                  # kernel=3 -> symmetric pad=1 (l_order=r_order=1)
+output = ReLU(cif_conv1d(queries))                        # FULL conv, NOT depthwise, NO v1's "+context" residual
+output = output.transpose(1,2)                            # back to [B,T,512]
+alphas = sigmoid(cif_output(output))                      # Linear(512,1) -> [B,T,1] -> squeeze -> [B,T]
+                                                           # (smooth_factor=1, noise_threshold=0 -- this
+                                                           # checkpoint's metadata shows no override, so
+                                                           # these ReLU(alphas*1-0) terms are no-ops)
+# tail_process_fn (tail_threshold=0.45 from real pf.predictor.tail_threshold metadata, tail_mask
+# irrelevant for a single non-padded utterance -- mask=None branch):
+alphas = concat([alphas, [tail_threshold]])               # append ONE extra synthetic alpha=0.45 at the end
+hidden = concat([hidden, zeros[1,512]])                   # append a matching ZERO acoustic frame
+token_num = floor(sum(alphas))                            # final predicted token count
+acoustic_embeds, cif_peak = cif_v1(hidden, alphas, threshold=1.0)
+acoustic_embeds = acoustic_embeds[:, :token_num, :]        # truncate to the predicted length
+```
+**The core CIF integrate-and-fire algorithm** (`cif_wo_hidden_v1` + `cif_v1`, confirmed exact
+formula from source, not guessed -- the real code is a vectorized cumsum/floor trick that is
+mathematically the SEQUENTIAL classic-CIF algorithm specialized to `threshold=1.0`; port the
+sequential form, it is equivalent and much simpler in C#):
+```
+accumulated_weight = 0; accumulated_state = zeros(512); tokens = []
+for t in 0..T-1 (T = original_time_len + 1, the +1 tail frame):
+    if accumulated_weight + alpha[t] >= threshold:        # threshold = 1.0 for this checkpoint
+        remaining = threshold - accumulated_weight        # portion of alpha[t] that completes THIS token
+        carry = alpha[t] - remaining                       # portion that starts the NEXT token
+        emitted = accumulated_state + remaining * hidden[t]
+        tokens.append(emitted)
+        accumulated_weight = carry
+        accumulated_state = carry * hidden[t]
+    else:
+        accumulated_weight += alpha[t]
+        accumulated_state += alpha[t] * hidden[t]
+# tokens now holds `round(sum(alphas))`-ish entries; the real code additionally truncates to
+# exactly token_num = floor(sum(alphas)) computed above -- keep only the first token_num entries.
+```
+This sequential form was NOT independently derived/guessed -- it is the well-known classic CIF
+formulation that the real vectorized `cif_wo_hidden_v1`/`cif_v1` source (prefix-sum + floor +
+remainder-carry logic, read in full this pass) is provably equivalent to for `threshold=1.0`;
+implement the sequential form directly in C#, it will match.
+
+**Concrete next steps for whoever picks up C# implementation** (research phase is DONE --
+everything above is real, sourced, ready to port; no more Python reading should be needed):
+1. Port `FunAsrEncoder.cs`: `encoders0.0` (560-dim, NO self-attn residual) -> 49x main
+   `encoders.N` (512-dim, WITH residual) -> `after_norm`. Reuse the shared attention/FFN math
+   where it overlaps with other Conformer-family pipelines in this codebase
+   (`Primitives/DenseKernels.cs` etc per the earlier "should use DenseKernels from the start"
+   note) but the FSMN depthwise-conv-with-asymmetric-shift and the encoders0-no-residual quirk
+   are FunASR-specific, don't expect to find them pre-built.
+2. Port `FunAsrPredictor.cs` (replacing the fake `CifPredictor` class in
+   `FunAsrPipeline.cs`): the `CifPredictorV2` forward above + the sequential CIF algorithm.
+3. Port `FunAsrDecoder.cs`: the surprising FFN-first layer order, FSMN-only self-attn, real
+   cross-attn, decoders3's no-residual FFN-only tail layer, `after_norm` ->
+   `output_layer` -> argmax per position for the final token ids.
+4. ~~Build a golden-output oracle~~ -- DONE, see the RESOLVED entry immediately below.
+5. ~~Wire `FunAsrPipeline.Transcribe`~~ -- NOT done yet, blocked on the real mel extractor, see
+   below.
+
+## FunASR RESOLVED (same fire, continued): encoder + predictor + decoder ALL ported and golden-verified -- end-to-end wiring blocked on the real mel extractor
+
+Continued directly from the research above. `pip download funasr --no-deps` was already
+extracted to `examples/funasr-py/` last fire; this fire actually READ the three module files in
+full (`sanm/attention.py`, `sanm/encoder.py`, `sanm/decoder.py`,
+`paraformer/cif_predictor.py`) and ported all three stages, each independently golden-verified.
+
+**Golden oracle technique used (no original .pt checkpoint available locally, only the GGUF
+conversion)**: the Python `gguf` package (`gguf.GGUFReader` + `gguf.dequantize`) reads and
+dequantizes `models/paraformer-q8.gguf`'s real tensors directly into numpy arrays, matching
+PyTorch's native `[out,in]` weight-row-major convention with zero manual reshaping needed
+(confirmed empirically: `gguf.dequantize`'s output shape for a Linear weight already comes out
+`[out,in]`). Three chained golden-dump scripts were written, each reusing the prior stage's
+verified output as its own input (so each test isolates exactly one stage's correctness):
+`scratch-llamacpp-ref/funasr_golden_{encoder,predictor,decoder}.py`. Fixed seeded-random
+560-dim x 10-frame synthetic input (content doesn't matter, only that C# and Python see the
+exact same numbers).
+
+**All three landed and PASSED their golden cosine-similarity test on the FIRST attempt** (no
+bugs found needing a fix this time, unlike Silero VAD's missing-ReLU -- likely because the
+formulas were transcribed directly from real source with zero guessing at any step, per the
+extensive derivation notes above):
+- `FunASR/FunAsrEncoder.cs` (new) + `Tests.Audio/FunAsrEncoderTests.cs` (new) -- the SAN-M
+  encoder (`encoders0.0` no-residual quirk, FSMN memory-add, plain FFN). Cosine >0.99 vs
+  `funasr_golden_encoder.py`. PASS.
+- `FunASR/FunAsrPredictor.cs` (new) + `Tests.Audio/FunAsrPredictorTests.cs` (new) -- real
+  `CifPredictorV2` (full non-grouped conv, confirmed from the real tensor shape, not the base
+  depthwise `CifPredictor`) + the sequential classic-CIF integrate-and-fire algorithm. Exact
+  token-count match AND cosine >0.99 vs `funasr_golden_predictor.py`'s acoustic_embeds. A quick
+  sanity check along the way: the golden test input's alphas[0] came out to EXACTLY 1.0 (an
+  immediate fire at t=0), so `acoustic_embeds[0]` should equal `encoder_output[0]` exactly --
+  confirmed it does, a nice internal-consistency check that the CIF math is doing the right
+  thing before even comparing cross-language.
+- `FunASR/FunAsrRealDecoder.cs` (new, named to avoid colliding with the pre-existing fake
+  `FunAsrDecoder` class in `FunAsrPipeline.cs` until that's rewired) + `Tests.Audio/
+  FunAsrRealDecoderTests.cs` (new) -- the surprising FFN-first layer order, FSMN-only self-attn
+  with residual back to the ORIGINAL layer input (not the FFN output), real cross-attention,
+  `decoders3.0`'s no-residual FFN-only tail layer. Exact argmax token-id match AND cosine >0.99
+  vs `funasr_golden_decoder.py`'s logits. For the degenerate single-random-noise-token golden
+  input, both C# and Python confidently predict token id 2 (`</s>`, real end-of-sequence) --
+  a sane, plausible result for a single essentially-noise acoustic embedding.
+
+**Full regression sweep this fire** (per user instruction, one filter-class at a time):
+`Fast.FunAsrRealWeightsTests` (3/3, unaffected by this fire's new standalone classes) and
+`FunAsrWeightsTests` (3/3) both still PASS -- nothing this fire's additions touched broke
+anything already landed.
+
+**Deliberately did NOT wire `FunAsrPipeline.Transcribe` to the real encoder/predictor/decoder
+this fire** -- this is a real, load-bearing blocker, not a missed step: the real encoder's
+`encoders0.0` layer expects 560-dim input (real `cmvn.scale`/`cmvn.shift` are both 560-dim =
+80 mel channels x 7-frame LFR splice, per this checkpoint's real CMVN tensors), but
+`FunAsrMelExtractor` (still 100% fake -- a log-energy heuristic, not a real mel filterbank) only
+produces raw 80-dim frames with NO splicing or CMVN normalization applied at all. Wiring the
+real encoder directly onto the fake mel extractor's output would either throw (dimension
+mismatch) or require inventing a splice/CMVN scheme without checking the real source first --
+exactly the kind of guess this whole doc's discipline exists to prevent. Did NOT attempt it
+under this fire's time pressure.
+
+**Concrete next steps for whoever continues this (encoder/predictor/decoder are DONE, this is
+the only remaining gap before a real end-to-end transcription)**:
+1. Find and read the real mel-feature-extraction + LFR-splice + CMVN code in `examples/
+   funasr-py` (likely `funasr/frontends/` or similar -- not yet located/read this fire) to get
+   the exact real formula: window/hop/n_mels for the mel filterbank, and the splice window
+   (left/right context frame counts, stride) that turns per-frame 80-dim mel into 560-dim
+   spliced-and-CMVN'd encoder input. Do NOT assume the common "3+1+3=7 frames, stride 1" Kaldi
+   LFR convention without checking -- this doc's own history (FSMN memory-add,
+   `encoders0.0`'s no-residual quirk, decoder's FFN-first order) has repeatedly shown FunASR
+   diverges from the "obvious"/textbook version in ways that would have been silently wrong if
+   guessed.
+2. Port `FunAsrMelExtractor` for real (real mel filterbank + splice + CMVN), golden-verify it
+   the same way (a 4th `funasr_golden_*.py` script), same >0.99 cosine bar.
+3. Wire `FunAsrPipeline.Transcribe`: real mel -> `FunAsrEncoder.Forward` -> `FunAsrPredictor.
+   Predict` -> `FunAsrRealDecoder.Forward` -> argmax per position -> `FunAsrTokenizer.Decode`
+   (already real). Delete the now-dead fake `SanmEncoder`/`CifPredictor`/`FunAsrDecoder`
+   classes in `FunAsrPipeline.cs` once the real path is wired and verified (don't delete before
+   -- `FunAsrPipeline`'s no-weights fallback constructor path still needs SOME implementation
+   to compile/run without real weights, matching every other pipeline's fake/real dual-path
+   convention).
+4. Once wired, re-run `Fast.FunAsrRealWeightsTests`'s existing `Paraformer_GgufRealModelFile_
+   LoadsAndTranscribes` test -- it should still pass structurally, but now the transcript text
+   will be genuinely meaningful for the first time (currently it's still fake/nonsense even
+   though the underlying neural math is now real, since the fake mel input feeds nothing
+   downstream of it correctly).
+
+## FunASR frontend (real mel + LFR + CMVN): exact spec CONFIRMED from the real published config, golden oracle built; C# DSP port NOT attempted this fire (documented, not guessed)
+
+Same fire, continued straight from item 1 of the next-steps list above. Found
+`funasr/frontends/wav_frontend.py`'s `WavFrontend` class (real mel filterbank +
+low-frame-rate splice + CMVN) -- but its constructor defaults alone don't reveal WHICH values
+this specific checkpoint actually used (`n_mels`/`lfr_m`/`lfr_n`/etc are all constructor
+parameters, not hardcoded). Rather than assume the common "7-frame splice, stride 6" LFR
+convention many Kaldi-family ASR stacks use, fetched the REAL published config directly:
+`https://huggingface.co/funasr/paraformer-zh/raw/main/config.yaml` (small, public, directly
+authoritative). **This independently CONFIRMS every encoder/decoder/predictor hyperparameter
+already derived from this checkpoint's real GGUF metadata in earlier fires** (encoder
+`num_blocks=50`, `kernel_size=11`, `sanm_shfit=0`; decoder `num_blocks=16`, `att_layer_num=16`,
+`kernel_size=11`; predictor `CifPredictorV2`, `l_order=1`, `r_order=1`, `threshold=1.0`,
+`tail_threshold=0.45` -- all exact matches, strong independent confirmation the whole port so
+far is on the right track) -- and gives the frontend spec that was still missing:
+```
+frontend: WavFrontend
+frontend_conf: {fs: 16000, window: hamming, n_mels: 80, frame_length: 25, frame_shift: 10,
+                 lfr_m: 7, lfr_n: 6}
+```
+Real forward pass (`WavFrontend.forward`, confirmed from source, not the config alone):
+`waveform *= 32768` (Kaldi expects int16-range values, not [-1,1] float) -> `torchaudio.
+compliance.kaldi.fbank(...)` (num_mel_bins=80, frame_length=25, frame_shift=10,
+window_type=hamming, sample_frequency=16000, energy_floor=0.0, snip_edges=True; **dither is
+this script's own deterministic choice of 0.0** -- `WavFrontend`'s own class default is
+`dither=1.0`, non-deterministic, unsuitable for a golden oracle, and the actual inference-time
+override couldn't be verified from the config alone, so this is flagged as a documented
+assumption, not a confirmed fact, unlike everything else in this entry) -> `apply_lfr(mat,
+lfr_m=7, lfr_n=6)` (real function, copy-pasted verbatim into the golden script, not
+re-derived) -> `apply_cmvn(mat, cmvn)` where `cmvn = [shift, scale]` and the real formula is
+`(mat + shift) * scale` (an ADD then MULTIPLY, matching this checkpoint's real GGUF tensor
+names `cmvn.shift`/`cmvn.scale` -- Kaldi's convention stores the NEGATED mean and the INVERTED
+std specifically so a plain add+multiply suffices at inference time, no subtract/divide).
+
+**Built and verified the golden oracle itself** (`scratch-llamacpp-ref/
+funasr_golden_frontend.py`): uses the REAL `torchaudio.compliance.kaldi.fbank` function
+directly (not a reimplementation -- zero risk of misreading Kaldi's DSP internals) plus the
+real `apply_lfr`/`apply_cmvn` functions copied verbatim from source. Ran successfully against
+this checkpoint's real `cmvn.shift`/`cmvn.scale` GGUF tensors and a 2-second synthetic PCM
+input: produced `[33, 560]` features (33 LFR-spliced frames from ~200 raw 10ms mel frames,
+consistent with `lfr_n=6` stride), confirming the whole real pipeline chain (fbank -> LFR ->
+CMVN) runs end-to-end against real weights without error.
+
+**Deliberately did NOT attempt the C# DSP port this fire** -- porting Kaldi's `fbank` exactly
+(specific mel-filter construction differing subtly from librosa/standard implementations,
+pre-emphasis coefficient application order, `round_to_power_of_two` FFT-size selection,
+`snip_edges` frame-count convention, hamming vs Kaldi's own "povey" window family) is a
+precision-sensitive DSP task on its own, comparable in scope/risk to Silero VAD's STFT
+frontend -- attempting it under this fire's remaining time budget risked exactly the kind of
+rushed, under-verified port this whole doc's discipline exists to prevent. The spec above is
+now fully confirmed and ready to port directly; no further research should be needed before
+writing `FunAsrMelExtractor`'s real forward pass.
+
+**Concrete next steps, refined** (supersedes the more vague "port the mel filterbank" item
+above):
+1. Port `FunAsrMelExtractor.ExtractMel` to real Kaldi-compatible fbank + LFR + CMVN using the
+   exact spec above. Consider whether any EXISTING mel-filterbank code in this codebase
+   (`Primitives/SpectralKernels.cs`, or Whisper/Parakeet/QwenASR's own mel extractors) is
+   close enough to Kaldi's convention to reuse/adapt vs. needing a genuinely new
+   implementation -- Kaldi's fbank has real, non-obvious differences from a "standard" librosa-
+   style mel filterbank (different mel-scale formula, different filter normalization, Kaldi-
+   specific windowing), so do NOT assume reuse is safe without checking the exact math first.
+2. Golden-verify against `scratch-llamacpp-ref/funasr_golden_frontend.py`'s output (already
+   built and confirmed working this fire) via cosine similarity, same >0.99 bar as every other
+   stage.
+3. Resolve the flagged `dither` uncertainty if it turns out to matter for the cosine-similarity
+   bar (unlikely to move the needle much given dither is meant to be a small perturbation, but
+   worth a note if the golden comparison doesn't cleanly clear 0.99 and this is why).
+4. Then proceed with the previously-documented wiring steps (`FunAsrPipeline.Transcribe`
+   end-to-end, delete the dead fake classes, re-verify the existing pipeline-level test).

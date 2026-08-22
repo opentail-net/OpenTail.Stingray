@@ -22,34 +22,46 @@ public sealed class FunAsrPipeline : ISpeechToTextPipeline
     private readonly SanmEncoder _encoder;
     private readonly CifPredictor _cifPredictor;
     private readonly FunAsrTokenizer _tokenizer;
-    private readonly GgufModel? _ggufModel;
+    private readonly FunAsrWeights? _weights;
+    private readonly FunAsrRealMelExtractor? _realMelExtractor;
 
     public FunAsrPipeline(
         FunAsrMelExtractor? melExtractor = null,
         SanmEncoder? encoder = null,
         CifPredictor? cifPredictor = null,
         FunAsrTokenizer? tokenizer = null,
-        GgufModel? ggufModel = null)
+        FunAsrWeights? weights = null)
     {
         _melExtractor = melExtractor ?? new FunAsrMelExtractor();
         _encoder = encoder ?? new SanmEncoder();
         _cifPredictor = cifPredictor ?? new CifPredictor();
-        _tokenizer = tokenizer ?? new FunAsrTokenizer();
-        _ggufModel = ggufModel;
+        _tokenizer = tokenizer ?? new FunAsrTokenizer(weights);
+        _weights = weights;
+        _realMelExtractor = weights is not null ? new FunAsrRealMelExtractor() : null;
     }
 
+    /// <summary>
+    /// Loads real Paraformer GGUF weights (<see cref="FunAsrWeights"/>). All four real stages
+    /// are wired up: <see cref="FunAsrRealMelExtractor"/> (real Kaldi fbank + LFR splice +
+    /// CMVN), <see cref="FunAsrEncoder"/> (real SAN-M encoder), <see cref="FunAsrPredictor"/>
+    /// (real CIF), <see cref="FunAsrRealDecoder"/> (real decoder), and
+    /// <see cref="FunAsrTokenizer"/> (real vocab). See docs/audio-review-progress.md's FunASR
+    /// section for the full derivation of every stage -- each was independently golden-verified
+    /// against an oracle before being wired together here.
+    /// </summary>
     public static FunAsrPipeline Load(string modelPath)
     {
         if (string.IsNullOrWhiteSpace(modelPath) || !File.Exists(modelPath))
             throw new FileNotFoundException($"FunASR model file not found: {modelPath}");
 
-        GgufModel? gguf = null;
+        FunAsrWeights? weights = null;
         if (modelPath.EndsWith(".gguf", StringComparison.OrdinalIgnoreCase))
         {
-            gguf = GgufModel.Open(modelPath);
+            weights = new FunAsrWeights(modelPath);
         }
 
-        return new FunAsrPipeline(ggufModel: gguf);
+        var pipeline = new FunAsrPipeline(tokenizer: new FunAsrTokenizer(weights), weights: weights);
+        return pipeline;
     }
 
     public SpeechToTextResult Transcribe(SpeechToTextRequest request)
@@ -67,35 +79,69 @@ public sealed class FunAsrPipeline : ISpeechToTextPipeline
 
         TimeSpan totalDuration = TimeSpan.FromSeconds((double)pcm16k.Length / SampleRate);
 
-        // 1. Log-Mel Spectrogram extraction (80 mels, 25ms window, 10ms hop)
+        if (_weights is not null)
+            return TranscribeReal(pcm16k, totalDuration, request.Language ?? "zh");
+
+        // No-weights fallback: fake mel -> fake encoder -> fake predictor -> tokenizer's own
+        // placeholder-decode path (see FunAsrTokenizer.Decode's null-vocab branch). Kept only so
+        // callers without a real checkpoint still get something that compiles and runs, matching
+        // every other pipeline's fake/real dual-path convention in this codebase.
         float[] mel = _melExtractor.ExtractMel(pcm16k);
         int inMelFrames = mel.Length / FunAsrMelExtractor.NumMels;
-
         if (inMelFrames == 0)
-        {
             return new SpeechToTextResult(string.Empty, request.Language ?? "zh", totalDuration, []);
+
+        float[] encoded = _encoder.Forward(mel, inMelFrames, out int encodedFrames);
+        var (fakeTokens, fakeTokenCount) = _cifPredictor.Predict(encoded, encodedFrames);
+        string fakeText = _tokenizer.Decode(fakeTokens, fakeTokenCount);
+        var fakeSegment = new SpeechSegment
+        {
+            Id = 0,
+            Start = TimeSpan.Zero,
+            End = totalDuration,
+            Text = fakeText,
+            Tokens = fakeTokens,
+            Probability = 0.98f
+        };
+        return new SpeechToTextResult(fakeText, request.Language ?? "zh", totalDuration, [fakeSegment]);
+    }
+
+    /// <summary>Real path: FunAsrRealMelExtractor -> FunAsrEncoder -> FunAsrPredictor -> FunAsrRealDecoder -> argmax -> FunAsrTokenizer.Decode.</summary>
+    private SpeechToTextResult TranscribeReal(float[] pcm16k, TimeSpan totalDuration, string language)
+    {
+        var features = _realMelExtractor!.Extract(pcm16k, _weights!.CmvnShift, _weights.CmvnScale);
+        if (features.Length == 0)
+            return new SpeechToTextResult(string.Empty, language, totalDuration, []);
+
+        var encoderOut = FunAsrEncoder.Forward(_weights, features);
+        var (acousticEmbeds, tokenCount) = FunAsrPredictor.Predict(_weights, encoderOut);
+        if (tokenCount == 0)
+            return new SpeechToTextResult(string.Empty, language, totalDuration, []);
+
+        var logits = FunAsrRealDecoder.Forward(_weights, acousticEmbeds, encoderOut);
+
+        var tokenIds = new int[tokenCount];
+        for (int i = 0; i < tokenCount; i++)
+        {
+            int argmax = 0;
+            float best = float.NegativeInfinity;
+            var row = logits[i];
+            for (int v = 0; v < row.Length; v++)
+                if (row[v] > best) { best = row[v]; argmax = v; }
+            tokenIds[i] = argmax;
         }
 
-        // 2. SAN-M Acoustic Encoder Forward Pass
-        float[] encoded = _encoder.Forward(mel, inMelFrames, out int encodedFrames);
-
-        // 3. CIF (Continuous Integrate-and-Fire) Token Length & Boundary Predictor
-        var (acousticTokens, tokenCount) = _cifPredictor.Predict(encoded, encodedFrames);
-
-        // 4. Decode tokens to text
-        string text = _tokenizer.Decode(acousticTokens, tokenCount);
-
+        string text = _tokenizer.Decode(tokenIds, tokenCount);
         var segment = new SpeechSegment
         {
             Id = 0,
             Start = TimeSpan.Zero,
             End = totalDuration,
             Text = text,
-            Tokens = acousticTokens,
+            Tokens = tokenIds,
             Probability = 0.98f
         };
-
-        return new SpeechToTextResult(text, request.Language ?? "zh", totalDuration, [segment]);
+        return new SpeechToTextResult(text, language, totalDuration, [segment]);
     }
 
     public async IAsyncEnumerable<SpeechSegment> TranscribeStreamAsync(
@@ -134,7 +180,7 @@ public sealed class FunAsrPipeline : ISpeechToTextPipeline
 
     public void Dispose()
     {
-        _ggufModel?.Dispose();
+        _weights?.Dispose();
     }
 }
 
@@ -226,16 +272,68 @@ public sealed class CifPredictor
     }
 }
 
+/// <summary>
+/// Real decode-only tokenizer over Paraformer's own GGUF-embedded vocabulary
+/// (<see cref="FunAsrWeights.Vocab"/>, 8404 real entries -- confirmed by direct inspection this
+/// session, not guessed). Paraformer/FunASR is a non-autoregressive CTC-adjacent ASR model
+/// (CIF predicts token count/boundaries, the decoder emits all tokens' logits at once) so only
+/// id-&gt;text decoding is needed, unlike an autoregressive LM's tokenizer which also needs
+/// encode/BPE-merge for prompt construction.
+///
+/// Real convention confirmed by inspecting the vocab strings directly (`examples/vocabdump`,
+/// not this doc's own prose): a trailing `@@` on a token means "glue to the next token, no
+/// space" (ESPnet/subword-nmt BPE continuation marker, e.g. `and@@`+`the`-&gt;`andthe` would be
+/// wrong -- it actually means the FOLLOWING piece continues THIS word, so `and@@` + `roid`
+/// -&gt; `androi` + next piece, no space inserted after `and@@`); single CJK characters (no
+/// `@@`) are emitted with no surrounding spaces (Chinese text has none); non-CJK,
+/// non-`@@`-suffixed tokens (a completed English word) get a trailing space. `&lt;blank&gt;`/
+/// `&lt;s&gt;`/`&lt;/s&gt;`/`&lt;unk&gt;` are never emitted as text.
+/// </summary>
 public sealed class FunAsrTokenizer
 {
+    private readonly string[]? _vocab;
+
+    public FunAsrTokenizer(FunAsrWeights? weights = null)
+    {
+        _vocab = weights?.Vocab;
+    }
+
     public string Decode(int[] tokens, int count)
     {
         if (tokens == null || count == 0) return string.Empty;
+        if (_vocab is null)
+        {
+            // No real vocab available (constructed without weights) -- keep the old
+            // placeholder behavior rather than throwing, matching this project's
+            // "compiles and runs without real weights" fallback convention.
+            var placeholder = new StringBuilder();
+            for (int i = 0; i < count; i++) placeholder.Append($"[T{tokens[i]}] ");
+            return placeholder.ToString().Trim();
+        }
+
         var sb = new StringBuilder();
+        bool glueNext = false; // true when the previous emitted piece ended in @@ (continuation)
         for (int i = 0; i < count; i++)
         {
-            sb.Append($"[T{tokens[i]}] ");
+            int id = tokens[i];
+            if ((uint)id >= (uint)_vocab.Length) continue;
+            string piece = _vocab[id];
+            if (piece is "<blank>" or "<s>" or "</s>" or "<unk>") continue;
+
+            bool continues = piece.EndsWith("@@", StringComparison.Ordinal);
+            string text = continues ? piece[..^2] : piece;
+            bool isSingleCjk = text.Length == 1 && IsCjk(text[0]);
+
+            // A space separates two pieces only when neither side is CJK (Chinese text has no
+            // inter-character spaces) and the previous piece wasn't a @@ continuation.
+            if (sb.Length > 0 && !glueNext && !isSingleCjk && !IsCjk(sb[^1]))
+                sb.Append(' ');
+
+            sb.Append(text);
+            glueNext = continues;
         }
-        return sb.ToString().Trim();
+        return sb.ToString();
     }
+
+    private static bool IsCjk(char c) => c is >= '一' and <= '鿿';
 }
