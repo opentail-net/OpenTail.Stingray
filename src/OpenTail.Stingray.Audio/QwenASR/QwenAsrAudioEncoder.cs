@@ -215,23 +215,48 @@ public sealed class QwenAsrAudioEncoder : IDisposable
     // weight order idx = kw+kh*K+cin*K*K+cout*K*K*Cin). All three AuT conv layers are FULL
     // (dense) convs, not depthwise, unlike Parakeet's stage-2/3.
     // -----------------------------------------------------------------
-    private static float[] Conv2dFull(float[] input, int cin, int hin, int win, float[] weight, float[] bias, int cout, int k, int stride, int pad, out int hout, out int wout)
+    /// <summary>
+    /// Channel-last (im2col-lite) formulation: cin (up to 480 for this checkpoint's stages 2/3)
+    /// was previously a scalar, non-contiguous innermost-but-one loop axis in both the weight
+    /// and channel-first input layouts -- effectively unvectorized despite being the dominant
+    /// cost dimension (measured ~70% of total AuT-encoder wall time on stage 2 alone before this
+    /// change). Repacks input to [hin, win, cin] and weight to [cout, kh, kw, cin] once per call
+    /// (O(cin*hin*win)/O(cout*cin*k*k), trivial next to the O(cout*hout*wout*cin*k*k) conv
+    /// itself) so cin becomes contiguous on both operands, then uses SimdKernels.DotF32 (AVX2/
+    /// FMA) for the per-(kh,kw) accumulation instead of a scalar inner loop.
+    /// </summary>
+    private static unsafe float[] Conv2dFull(float[] input, int cin, int hin, int win, float[] weight, float[] bias, int cout, int k, int stride, int pad, out int hout, out int wout)
     {
         int houtLocal = (hin + 2 * pad - k) / stride + 1;
         int woutLocal = (win + 2 * pad - k) / stride + 1;
         hout = houtLocal;
         wout = woutLocal;
+
+        var inputCL = new float[hin * win * cin];
+        for (int ci = 0; ci < cin; ci++)
+            for (int hi = 0; hi < hin; hi++)
+                for (int wi = 0; wi < win; wi++)
+                    inputCL[(hi * win + wi) * cin + ci] = input[ci * hin * win + hi * win + wi];
+
+        var weightCL = new float[cout * k * k * cin];
+        for (int co = 0; co < cout; co++)
+            for (int ci = 0; ci < cin; ci++)
+                for (int kh = 0; kh < k; kh++)
+                    for (int kw = 0; kw < k; kw++)
+                        weightCL[((co * k + kh) * k + kw) * cin + ci] = weight[kw + kh * k + ci * k * k + co * k * k * cin];
+
         var output = new float[cout * houtLocal * woutLocal];
-        System.Threading.Tasks.Parallel.For(0, cout, co =>
+        fixed (float* inCLp = inputCL, wCLp = weightCL, outp = output)
         {
-            int hout = houtLocal, wout = woutLocal;
-            for (int ho = 0; ho < hout; ho++)
+            float* inCL = inCLp; float* wCL = wCLp; float* outPtr = outp;
+            System.Threading.Tasks.Parallel.For(0, cout, co =>
             {
-                for (int wo = 0; wo < wout; wo++)
+                float* wBase = wCL + (long)co * k * k * cin;
+                for (int ho = 0; ho < houtLocal; ho++)
                 {
-                    float sum = bias[co];
-                    for (int ci = 0; ci < cin; ci++)
+                    for (int wo = 0; wo < woutLocal; wo++)
                     {
+                        float sum = bias[co];
                         for (int kh = 0; kh < k; kh++)
                         {
                             int hi = ho * stride - pad + kh;
@@ -240,15 +265,16 @@ public sealed class QwenAsrAudioEncoder : IDisposable
                             {
                                 int wi = wo * stride - pad + kw;
                                 if (wi < 0 || wi >= win) continue;
-                                float wt = weight[kw + kh * k + ci * k * k + co * k * k * cin];
-                                sum += wt * input[ci * hin * win + hi * win + wi];
+                                float* wSlice = wBase + (long)(kh * k + kw) * cin;
+                                float* inSlice = inCL + (long)(hi * win + wi) * cin;
+                                sum += OpenTail.Stingray.Cpu.SimdKernels.DotF32(wSlice, inSlice, cin);
                             }
                         }
+                        outPtr[(long)co * houtLocal * woutLocal + ho * woutLocal + wo] = sum;
                     }
-                    output[co * hout * wout + ho * wout + wo] = sum;
                 }
-            }
-        });
+            });
+        }
         return output;
     }
 
