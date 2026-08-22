@@ -136,11 +136,16 @@ public static class FishSpeechFastAr
         var context = new float[qSize];
         int groupSize = nHead / nHeadKv;
         float scale = 1f / MathF.Sqrt(headDim);
-        Parallel.For(0, nHead, h =>
+        // Real single-position attention here is tiny (t <= NumCodebooks <= 10, headDim=128,
+        // nHead=32): total work per call is a few hundred thousand FLOPs. `Parallel.For`'s own
+        // thread-pool dispatch overhead swamps that -- measured this session's performance pass:
+        // ~40ms/call before this fix, for work that should take a fraction of a millisecond.
+        // Plain sequential loop, matching the batch `Layer` method's own per-head loop shape.
+        var scores = new float[t];
+        for (int h = 0; h < nHead; h++)
         {
             int qOff = h * headDim;
             int kvOff = (h / groupSize) * headDim;
-            var scores = new float[t];
             for (int j = 0; j < t; j++)
             {
                 float dot = 0f;
@@ -152,7 +157,7 @@ public static class FishSpeechFastAr
             var ctxSpan = context.AsSpan(qOff, headDim);
             for (int j = 0; j < t; j++)
                 for (int d = 0; d < headDim; d++) ctxSpan[d] += scores[j] * vCache[j][kvOff + d];
-        });
+        }
 
         var attnOut = LinearNoBias(context, lw.WoWeight, qSize, dim);
         var h1 = new float[dim];

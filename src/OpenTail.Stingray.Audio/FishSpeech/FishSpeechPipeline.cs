@@ -36,14 +36,6 @@ namespace OpenTail.Stingray.Audio.FishSpeech;
 /// </summary>
 public sealed class FishSpeechPipeline : IDisposable
 {
-    // TEMPORARY diagnostic-only counters for this session's performance pass -- remove once the
-    // Fish Speech investigation concludes. Not thread-safe, single-sequence generation only.
-    public static double DiagTrunkMs;
-    public static double DiagFastArMs;
-    public static int DiagTrunkCalls;
-    public static int DiagFastArCalls;
-
-
     private readonly GgufModel _model;
     private readonly FishSpeechTensorSource _tensorSource;
     private readonly CpuBackend _backend;
@@ -185,29 +177,18 @@ public sealed class FishSpeechPipeline : IDisposable
             var codebookValues = new int[_weights.NumCodebooks];
             codebookValues[0] = semCode;
             _fastArCache.Reset();
-            var swFast = System.Diagnostics.Stopwatch.StartNew();
             var stepLogits = FishSpeechFastAr.ForwardStep(_weights, _fastArCache, hidden);
-            DiagFastArCalls++;
             for (int cb = 1; cb < _weights.NumCodebooks; cb++)
             {
                 int cbToken = Argmax(stepLogits);
                 codebookValues[cb] = cbToken;
                 if (cb < _weights.NumCodebooks - 1)
-                {
                     stepLogits = FishSpeechFastAr.ForwardStep(_weights, _fastArCache, FishSpeechFastAr.EmbedFastToken(_weights, cbToken));
-                    DiagFastArCalls++;
-                }
             }
-            swFast.Stop();
-            DiagFastArMs += swFast.Elapsed.TotalMilliseconds;
             codebooksPerFrame.Add(codebookValues);
 
             var emb = EmbedSemanticToken(mainToken, codebookValues);
-            var swTrunk = System.Diagnostics.Stopwatch.StartNew();
             logits = _fwd.ForwardEmbedding(emb, pos);
-            swTrunk.Stop();
-            DiagTrunkMs += swTrunk.Elapsed.TotalMilliseconds;
-            DiagTrunkCalls++;
             pos++;
             hidden = _fwd.HiddenTapsAt(pos - 1).ToArray();
 

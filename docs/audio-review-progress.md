@@ -5949,3 +5949,71 @@ confirmed wins this round should not be blocked on that further investigation.
 
 No accuracy/golden tests re-run this round (deferred to the end-of-performance-pass single pass).
 Not committed. No subagents used.
+
+## Performance pass, round 3: isolated the real remaining Fish Speech bottleneck. NOT the attention/Parallel.For -- real per-call weight-matrix bandwidth cost, a bigger fix than fits this pass
+
+User correctly pushed back that 18.6s for `maxTokens=15` was still huge relative to Orpheus/
+Parler, and asked why -- worth investigating further rather than accepting round 2's numbers as
+final. Added temporary instrumentation (static `Diag*` counters + per-call `Stopwatch`s in
+`FishSpeechPipeline.GenerateFrames`, since removed) to split cost between the slow-AR trunk call
+and the fast-AR sub-loop per generated token, using the existing `FishSpeechDiagBenchTests.cs`
+(since deleted) on a cheap `maxTokens=10` workload:
+
+```
+trunk_ms=783.9   trunk_calls=10  trunk_ms_per_call=78.39
+fastar_ms=3651.2 fastar_calls=90 fastar_ms_per_call=40.57
+```
+
+**The fast-AR is STILL the dominant cost even after round 1's KV-cache fix**: ~365ms/token
+(9 calls × ~40.57ms) vs. the 36-layer trunk's ~78ms/token. That ~40ms per fast-AR call was the
+real thing worth explaining -- a 4-layer, ≤10-position transformer call should be near-instant.
+
+**First hypothesis, tested and DISPROVEN**: suspected `Parallel.For`'s own thread-pool dispatch
+overhead (32 heads × trivial per-head attention work × 1152 dispatches/token) was the culprit.
+Replaced the per-head `Parallel.For` in `FishSpeechFastAr`'s attention with a plain sequential
+loop (same real math, just not parallelized) and re-measured: **`fastar_ms_per_call` was
+UNCHANGED (40.57ms -&gt; 40.58ms)** -- conclusively ruling this out. The attention computation
+itself really is negligible at this scale; something else dominates.
+
+**Real conclusion, from the actual numbers**: `LayerStep`'s cost is dominated by its LINEAR
+PROJECTIONS (QKV, attention output, and especially the FFN's wide `w1`/`w2`/`w3` matrices), not
+attention -- and unlike the trunk's weights (loaded through this codebase's standard GGUF/Q4_K
+quantized path, dequantized via memory-bandwidth-optimized fused SIMD kernels), the fast-AR's
+weights are loaded once via `FishSpeechWeights.GetTensor` as PLAIN FLOAT32 arrays (4x the memory
+footprint of Q4_K). Since the 9 fast-AR calls per token all read the exact SAME weight set (only
+the KV cache and current input token differ between calls), and Fish Speech's fast-AR weight set
+(dim=2560, wide FFN, 4 layers) likely doesn't fit comfortably in L2/L3 cache, this looks like a
+genuine memory-bandwidth-bound cost: reading a large float32 weight set from DRAM 9 times per
+generated token, where the trunk only pays a comparable weight-read cost ONCE per token (its own
+36 layers, but at 4x-smaller Q4_K memory footprint).
+
+**This is a real, plausible root cause, but NOT yet proven with a direct fix -- and the fix
+(quantizing the fast-AR's own weights to Q4_K/Q8_0, matching the trunk's approach, then
+dequantizing per-call through the same fused SIMD kernels) is a materially bigger, riskier change
+than anything else in this performance pass -- it touches `FishSpeechWeights`'s loading and
+`FishSpeechFastAr`'s per-call linear-projection code, not just a caching/batching swap, and would
+need its own careful golden-verification pass (quantization error was ALREADY shown to matter a
+lot for this exact fast-AR sub-network earlier this project -- see the Fish Speech fast-AR entry:
+"Q4_K_M compounds too much quantization error... genuinely needs Q8_0+ precision"). Deliberately
+NOT attempted this fire -- flagged as a real, scoped follow-up item for a dedicated pass, not
+squeezed in under the current performance-pass rhythm.**
+
+**Round 3 code changes actually kept**: the `Parallel.For` -&gt; sequential-loop swap in
+`FishSpeechFastAr`'s attention (harmless simplification, measured neutral, no regression risk --
+kept for code clarity since the parallel dispatch was pure overhead here). All temporary
+diagnostic instrumentation (the `Diag*` static counters/Stopwatches in `FishSpeechPipeline.cs`,
+and `FishSpeechDiagBenchTests.cs` itself) has been REMOVED/reverted now that its purpose (isolating
+the bottleneck) is served -- production code is back to clean.
+
+**Updated cumulative status**: Fish Speech is at ~18.6s for `maxTokens=15` (~2.14x faster than the
+pre-performance-pass baseline of 39.7s), with a real, understood, but NOT-yet-fixed remaining
+bottleneck (fast-AR weight-matrix memory bandwidth) clearly diagnosed and documented rather than
+either left mysterious or hastily "fixed" with an unverified change. Orpheus and Parler-TTS were
+scanned this round too and confirmed to already use proper batched-prefill + KV-cached decode
+patterns with no comparable low-hanging fruit remaining (matches the user's own expectation of
+"only very minor gains" there).
+
+No accuracy/golden tests re-run this round (still deferred to the end-of-performance-pass single
+pass -- this round's ONLY kept code change, the Parallel.For removal, is a pure simplification
+with measured-neutral performance and no plausible numerical difference, but will still be swept
+into that final verification pass along with everything else). Not committed. No subagents used.
