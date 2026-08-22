@@ -16,18 +16,22 @@ public static class F5Kernels
     public static float[] Linear(float[] x, int t, int inDim, float[] weight, float[]? bias, int outDim)
     {
         var y = new float[t * outDim];
-        Parallel.For(0, t, ti =>
+        unsafe
         {
-            int xBase = ti * inDim;
-            int yBase = ti * outDim;
-            for (int o = 0; o < outDim; o++)
+            fixed (float* xp = x, wp = weight, yp = y)
             {
-                float sum = bias is null ? 0f : bias[o];
-                int wBase = o * inDim;
-                for (int i = 0; i < inDim; i++) sum += weight[wBase + i] * x[xBase + i];
-                y[yBase + o] = sum;
+                float* xpLocal = xp;
+                float* wpLocal = wp;
+                float* ypLocal = yp;
+                Parallel.For(0, t, ti =>
+                {
+                    float* xRow = xpLocal + ti * inDim;
+                    float* yRow = ypLocal + ti * outDim;
+                    for (int o = 0; o < outDim; o++)
+                        yRow[o] = (bias is null ? 0f : bias[o]) + OpenTail.Stingray.Cpu.SimdKernels.DotF32(wpLocal + o * inDim, xRow, inDim);
+                });
             }
-        });
+        }
         return y;
     }
 

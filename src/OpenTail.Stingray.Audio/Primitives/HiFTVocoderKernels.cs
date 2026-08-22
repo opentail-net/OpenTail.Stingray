@@ -66,19 +66,22 @@ public static class HiFTVocoderKernels
         var phaseOffset = new float[dim];
         for (int h = 1; h < dim; h++) phaseOffset[h] = (float)((rng.NextDouble() * 2.0 - 1.0) * Math.PI);
 
-        var cumPhase = new double[dim];
-        for (int h = 0; h < dim; h++)
+        // Each harmonic's cumulative phase only depends on its own row of f0Up -- independent
+        // across h, and this loop touches no shared RNG state (phaseOffset is precomputed above),
+        // so parallelizing across harmonics is a pure speedup with no output/ordering change.
+        System.Threading.Tasks.Parallel.For(0, dim, h =>
         {
             double harmonicMul = h + 1;
             double freqScale = harmonicMul / sampleRate;
             int row = h * len;
+            double cumPhaseH = 0.0;
             for (int n = 0; n < len; n++)
             {
-                cumPhase[h] = (cumPhase[h] + f0Up[n] * freqScale) % 1.0;
-                double theta = 2.0 * Math.PI * cumPhase[h];
+                cumPhaseH = (cumPhaseH + f0Up[n] * freqScale) % 1.0;
+                double theta = 2.0 * Math.PI * cumPhaseH;
                 sineWaves[row + n] = sineAmp * MathF.Sin((float)theta + phaseOffset[h]);
             }
-        }
+        });
 
         for (int n = 0; n < len; n++)
         {
@@ -169,16 +172,27 @@ public static class HiFTVocoderKernels
             si = HifiResBlockForward(w.SourceResBlocks[i], si, curCh, curT, w.SourceResblockKernels[i]);
             for (int j = 0; j < x.Length; j++) x[j] += si[j];
 
-            float[]? xs = null;
-            for (int j = 0; j < numKernels; j++)
+            // The numKernels resblocks all consume the same x independently (different kernel
+            // sizes, disjoint weights/outputs) -- previously run sequentially even though each
+            // one's own Conv1dDilated calls already parallelize internally over channels. Running
+            // them concurrently stacks extra parallelism on top, which matters most at later
+            // stages where curCh has shrunk (fewer channels = less internal parallel width to
+            // fill available cores with on its own).
+            var rbResults = new float[numKernels][];
+            int stageIdx = i;
+            System.Threading.Tasks.Parallel.For(0, numKernels, j =>
             {
-                int rbIdx = i * numKernels + j;
-                var rbOut = HifiResBlockForward(w.ResBlocks[rbIdx], x, curCh, curT, w.ResblockKernels[j]);
-                if (xs == null) xs = rbOut;
-                else for (int k2 = 0; k2 < xs.Length; k2++) xs[k2] += rbOut[k2];
+                int rbIdx = stageIdx * numKernels + j;
+                rbResults[j] = HifiResBlockForward(w.ResBlocks[rbIdx], x, curCh, curT, w.ResblockKernels[j]);
+            });
+            var xs = rbResults[0];
+            for (int j = 1; j < numKernels; j++)
+            {
+                var rbOut = rbResults[j];
+                for (int k2 = 0; k2 < xs.Length; k2++) xs[k2] += rbOut[k2];
             }
             float invK = 1f / numKernels;
-            for (int j = 0; j < xs!.Length; j++) xs[j] *= invK;
+            for (int j = 0; j < xs.Length; j++) xs[j] *= invK;
             x = xs;
         }
 
