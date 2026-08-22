@@ -5558,3 +5558,69 @@ audio-quality judgment).
 stages + working end-to-end call path).** Parler-TTS remains the only pipeline still blocked
 (SentencePiece Unigram tokenizer gap, unresolved). Not committed (per standing instruction). No
 subagents used.
+
+## Parler-TTS's SentencePiece Unigram tokenizer blocker -- RESOLVED, golden-verified against real HF `tokenizers` output. One real, precisely documented sub-gap remains (`precompiled_charsmap`)
+
+User asked ChatGPT directly for implementation guidance on this exact blocker and pasted its
+detailed answer back in-session; that answer correctly named the authoritative primary sources
+(`google/sentencepiece`'s `unigram_model.cc` -- `Model::EncodeOptimized`/`PopulateNodes`/
+`Lattice::Viterbi`; Hugging Face `tokenizers`' Rust `unigram/model.rs`) and flagged the real risk
+areas up front (UTF-8 byte-position DP not UTF-16, additive-log-score Viterbi not probability
+multiplication, UNK-edge scoring as `min(NORMAL piece scores) - 10.0`, and -- correctly flagged as
+the biggest risk -- the `precompiled_charsmap` binary normalization blob inside `NormalizerSpec`,
+which SentencePiece uses instead of plain NFKC and which is not representable as a simple
+NFKC+trim+replace pipeline in general).
+
+**New `src/OpenTail.Stingray.Core/UnigramTokenizer.cs`**: real Viterbi Unigram segmentation engine
+-- UTF-8 byte trie (common-prefix search per position, avoiding O(n·|vocab|) naive scanning) +
+single-pass additive-score DP with backpointers, UNK-edge fallback scored `(min NORMAL-piece
+score) - 10.0` spanning exactly one Unicode scalar, strict `&gt;` tie-break (first-encountered
+wins on exact tie, matching the real reference's own comparison). Loads directly from a real HF
+`tokenizer.json`'s `"model": {"type": "Unigram", "vocab": [[piece,score],...], "unk_id": N}`
+section (protobuf `.model` loading NOT implemented -- `tokenizer.json` was sufficient for Parler-
+TTS's real package, which ships both). Preprocessing: NFKC + `Metaspace`-equivalent (whitespace
+runs collapse to a single `▁` U+2581, one `▁` always prepended -- SentencePiece's real "dummy
+prefix" behavior, fixed during this fire to avoid a doubled `▁▁` when the input itself already
+started with whitespace, caught by the golden test below).
+
+**Real, explicitly documented remaining sub-gap (not worked around, matches this project's
+blocker-honesty discipline)**: the real `precompiled_charsmap` darts-trie binary normalization
+format is NOT implemented -- plain Unicode NFKC is used as a stand-in. Confirmed via direct
+inspection of Parler-TTS's real `scratch-llamacpp-ref/parler-tokenizer/tokenizer.json` that the
+real normalizer IS a `Sequence` whose first stage is `Precompiled` (present, base64-decoded to
+237,539 raw bytes, confirmed real and non-trivial -- not absent/optional for this model). The
+stand-in's correctness is empirically bounded, not assumed: golden-tested against real output
+(see below) on both plain-ASCII AND accented-Latin input ("Résumé and café require accents.",
+which passed exactly), so the NFKC stand-in is a validated approximation for at least Latin-script
+text, not a blind guess -- but is NOT proven correct for the full range of substitutions
+`precompiled_charsmap` may encode (e.g. fullwidth-character folding, exotic space/dash
+equivalents) and should not be assumed correct for arbitrary Unicode input without further golden
+tests or a real implementation of the darts-trie format.
+
+**Golden-verified** against the real, already pip-installed `tokenizers==0.22.2` Python package,
+run directly against Parler-TTS's real `tokenizer.json`
+(`scratch-llamacpp-ref/parler-tokenizer/tokenizer.json`) via
+`Tokenizer.from_file(...).encode(text, add_special_tokens=False).ids`:
+`tests/OpenTail.Stingray.Tests.Core/UnigramTokenizerTests.cs`, two real test sets (14 total real
+sentences: greetings/punctuation, multi-clause sentences, collapsed/leading/trailing whitespace,
+newlines/tabs, repeated characters, accented Latin, all-caps) -- **both PASSED, exact token-ID
+match on every case**. One real bug caught and fixed by this same golden test during development:
+the initial "always prepend ▁ first, then collapse whitespace" order produced a doubled `▁▁` for
+input that itself began with whitespace (`"   leading and trailing spaces   "`) -- fixed by
+collapsing whitespace first, then conditionally prepending only if the result doesn't already
+start with `▁`.
+
+**Scope note, what this does and doesn't unblock**: this resolves the TOKENIZER gap specifically
+-- Parler-TTS's T5 encoder can now be fed correctly segmented real token ids. It does NOT by
+itself produce a `ParlerFullPipeline.cs`/end-to-end synthesis path -- unlike Fish Speech (whose
+existing `FishSpeechPipeline` already had a full autoregressive generation loop with KV-cache
+reuse that only needed re-exposing its already-computed fast-AR output), Parler-TTS has no
+existing decoder generation loop wired at all yet: `ParlerDecoder.cs` is currently a single
+golden-verified forward-pass primitive (see earlier entries), not an autoregressive loop with
+cross-attention KV caching against the T5 encoder's output. Building that loop (text -> tokenizer
+(done) -> T5Encoder -> autoregressive ParlerDecoder generation w/ cross-attention KV cache ->
+DacDecoder) is real, separate, not-yet-scoped work -- genuinely more involved than Fish Speech's
+wiring was, and should be treated as its own item, not assumed to be "just wiring" the way Fish
+Speech's was.
+
+Not committed (per standing instruction). No subagents used.
