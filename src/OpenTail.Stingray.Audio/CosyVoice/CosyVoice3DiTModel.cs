@@ -192,71 +192,21 @@ public static class CosyVoice3DiTModel
         return F5Kernels.Linear(h, t, ffn, bw.FfOutWeight, bw.FfOutBias, dim);
     }
 
+    /// <summary>See <see cref="F5Kernels.ApplyRotary"/>/<see cref="F5Kernels.MultiHeadSelfAttention"/> (shared with F5-TTS's tensor-for-tensor-identical DiT).</summary>
     private static float[] Attention(CosyVoice3DiTBlockWeights bw, float[] norm, int t, float[] rotaryCos, float[] rotarySin)
     {
         int dim = CosyVoice3DiTWeights.HiddenDim;
         int heads = CosyVoice3DiTWeights.NumHeads;
         int headDim = CosyVoice3DiTWeights.HeadDim;
-        float scale = 1f / MathF.Sqrt(headDim);
 
         var q = F5Kernels.Linear(norm, t, dim, bw.ToQWeight, bw.ToQBias, dim);
         var k = F5Kernels.Linear(norm, t, dim, bw.ToKWeight, bw.ToKBias, dim);
         var v = F5Kernels.Linear(norm, t, dim, bw.ToVWeight, bw.ToVBias, dim);
 
-        ApplyRotary(q, t, heads, headDim, rotaryCos, rotarySin);
-        ApplyRotary(k, t, heads, headDim, rotaryCos, rotarySin);
+        F5Kernels.ApplyRotary(q, t, heads, headDim, rotaryCos, rotarySin);
+        F5Kernels.ApplyRotary(k, t, heads, headDim, rotaryCos, rotarySin);
 
-        var context = new float[t * dim];
-        System.Threading.Tasks.Parallel.For(0, heads, h =>
-        {
-            int hOff = h * headDim;
-            var scores = new float[t];
-            for (int i = 0; i < t; i++)
-            {
-                int qOff = i * dim + hOff;
-                for (int j = 0; j < t; j++)
-                {
-                    int kOff = j * dim + hOff;
-                    float dot = 0f;
-                    for (int d = 0; d < headDim; d++) dot += q[qOff + d] * k[kOff + d];
-                    scores[j] = dot * scale;
-                }
-                F5Kernels.SoftmaxInPlace(scores, 0, t);
-
-                int cOff = i * dim + hOff;
-                for (int j = 0; j < t; j++)
-                {
-                    float p = scores[j];
-                    if (p == 0f) continue;
-                    int vOff = j * dim + hOff;
-                    for (int d = 0; d < headDim; d++) context[cOff + d] += p * v[vOff + d];
-                }
-            }
-        });
-
+        var context = F5Kernels.MultiHeadSelfAttention(q, k, v, t, heads, headDim);
         return F5Kernels.Linear(context, t, dim, bw.ToOutWeight, bw.ToOutBias, dim);
-    }
-
-    private static void ApplyRotary(float[] x, int t, int heads, int headDim, float[] rotaryCos, float[] rotarySin)
-    {
-        int dim = heads * headDim;
-        int halfHead = headDim / 2;
-        for (int ti = 0; ti < t; ti++)
-        {
-            int angleBase = ti * halfHead;
-            for (int h = 0; h < heads; h++)
-            {
-                int hOff = ti * dim + h * headDim;
-                for (int k = 0; k < halfHead; k++)
-                {
-                    float cos = rotaryCos[angleBase + k];
-                    float sin = rotarySin[angleBase + k];
-                    float x0 = x[hOff + 2 * k];
-                    float x1 = x[hOff + 2 * k + 1];
-                    x[hOff + 2 * k] = x0 * cos - x1 * sin;
-                    x[hOff + 2 * k + 1] = x1 * cos + x0 * sin;
-                }
-            }
-        }
     }
 }

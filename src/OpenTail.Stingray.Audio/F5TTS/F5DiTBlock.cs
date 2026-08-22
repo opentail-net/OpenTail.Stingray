@@ -1,5 +1,4 @@
 using System;
-using System.Threading.Tasks;
 
 namespace OpenTail.Stingray.Audio.F5TTS;
 
@@ -74,76 +73,21 @@ public static class F5DiTBlock
         return F5Kernels.Linear(h, t, ffn, bw.FfOutWeight, bw.FfOutBias, dim);
     }
 
+    /// <summary>Interleaved ("GPT-J style") RoPE q/k projection + multi-head self-attention -- see <see cref="F5Kernels.ApplyRotary"/>/<see cref="F5Kernels.MultiHeadSelfAttention"/> (shared with CosyVoice3's tensor-for-tensor-identical DiT).</summary>
     private static float[] Attention(F5TtsWeights w, F5DiTBlockWeights bw, float[] norm, int t, float[] rotaryCos, float[] rotarySin)
     {
         int dim = F5TtsWeights.HiddenDim;
         int heads = F5TtsWeights.NumHeads;
         int headDim = F5TtsWeights.HeadDim;
-        float scale = 1f / MathF.Sqrt(headDim);
 
         var q = F5Kernels.Linear(norm, t, dim, bw.ToQWeight, bw.ToQBias, dim);
         var k = F5Kernels.Linear(norm, t, dim, bw.ToKWeight, bw.ToKBias, dim);
         var v = F5Kernels.Linear(norm, t, dim, bw.ToVWeight, bw.ToVBias, dim);
 
-        ApplyRotary(q, t, heads, headDim, rotaryCos, rotarySin);
-        ApplyRotary(k, t, heads, headDim, rotaryCos, rotarySin);
+        F5Kernels.ApplyRotary(q, t, heads, headDim, rotaryCos, rotarySin);
+        F5Kernels.ApplyRotary(k, t, heads, headDim, rotaryCos, rotarySin);
 
-        var context = new float[t * dim];
-        Parallel.For(0, heads, h =>
-        {
-            int hOff = h * headDim;
-            var scores = new float[t];
-            for (int i = 0; i < t; i++)
-            {
-                int qOff = i * dim + hOff;
-                for (int j = 0; j < t; j++)
-                {
-                    int kOff = j * dim + hOff;
-                    float dot = 0f;
-                    for (int d = 0; d < headDim; d++) dot += q[qOff + d] * k[kOff + d];
-                    scores[j] = dot * scale;
-                }
-                F5Kernels.SoftmaxInPlace(scores, 0, t);
-
-                int cOff = i * dim + hOff;
-                for (int j = 0; j < t; j++)
-                {
-                    float p = scores[j];
-                    if (p == 0f) continue;
-                    int vOff = j * dim + hOff;
-                    for (int d = 0; d < headDim; d++) context[cOff + d] += p * v[vOff + d];
-                }
-            }
-        });
-
+        var context = F5Kernels.MultiHeadSelfAttention(q, k, v, t, heads, headDim);
         return F5Kernels.Linear(context, t, dim, bw.ToOutWeight, bw.ToOutBias, dim);
-    }
-
-    /// <summary>
-    /// Interleaved ("GPT-J style") RoPE, in place, identical across all heads: for each position
-    /// t and pair index k (0..headDim/2-1), rotates (x[2k], x[2k+1]) by angle = t * invFreq[k].
-    /// rotaryCos/rotarySin are precomputed [t * headDim/2] (see <see cref="F5RotaryEmbedding"/>).
-    /// </summary>
-    private static void ApplyRotary(float[] x, int t, int heads, int headDim, float[] rotaryCos, float[] rotarySin)
-    {
-        int dim = heads * headDim;
-        int halfHead = headDim / 2;
-        for (int ti = 0; ti < t; ti++)
-        {
-            int angleBase = ti * halfHead;
-            for (int h = 0; h < heads; h++)
-            {
-                int hOff = ti * dim + h * headDim;
-                for (int k = 0; k < halfHead; k++)
-                {
-                    float cos = rotaryCos[angleBase + k];
-                    float sin = rotarySin[angleBase + k];
-                    float x0 = x[hOff + 2 * k];
-                    float x1 = x[hOff + 2 * k + 1];
-                    x[hOff + 2 * k] = x0 * cos - x1 * sin;
-                    x[hOff + 2 * k + 1] = x1 * cos + x0 * sin;
-                }
-            }
-        }
     }
 }

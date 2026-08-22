@@ -18,17 +18,20 @@ public static class F5Kernels
         var y = new float[t * outDim];
         unsafe
         {
+            // Flattened over t*outDim (rather than parallelizing over t alone) so single-frame
+            // calls -- e.g. DiTBlock's t=1 modulation projections, called once per layer -- still
+            // get full parallel width across outDim instead of running fully sequentially.
             fixed (float* xp = x, wp = weight, yp = y)
             {
                 float* xpLocal = xp;
                 float* wpLocal = wp;
                 float* ypLocal = yp;
-                Parallel.For(0, t, ti =>
+                Parallel.For(0, t * outDim, idx =>
                 {
+                    int ti = idx / outDim;
+                    int o = idx - ti * outDim;
                     float* xRow = xpLocal + ti * inDim;
-                    float* yRow = ypLocal + ti * outDim;
-                    for (int o = 0; o < outDim; o++)
-                        yRow[o] = (bias is null ? 0f : bias[o]) + OpenTail.Stingray.Cpu.SimdKernels.DotF32(wpLocal + o * inDim, xRow, inDim);
+                    ypLocal[idx] = (bias is null ? 0f : bias[o]) + OpenTail.Stingray.Cpu.SimdKernels.DotF32(wpLocal + o * inDim, xRow, inDim);
                 });
             }
         }
@@ -39,7 +42,7 @@ public static class F5Kernels
     public static float[] LayerNorm(float[] x, int t, int dim, float[] gamma, float[] beta, float eps = 1e-6f)
     {
         var y = new float[t * dim];
-        for (int ti = 0; ti < t; ti++)
+        Parallel.For(0, t, ti =>
         {
             int off = ti * dim;
             double mean = 0;
@@ -51,7 +54,7 @@ public static class F5Kernels
             float invStd = (float)(1.0 / Math.Sqrt(var + eps));
             for (int d = 0; d < dim; d++)
                 y[off + d] = (float)((x[off + d] - mean) * invStd) * gamma[d] + beta[d];
-        }
+        });
         return y;
     }
 
@@ -59,7 +62,7 @@ public static class F5Kernels
     public static float[] LayerNormNoAffine(float[] x, int t, int dim, float eps = 1e-6f)
     {
         var y = new float[t * dim];
-        for (int ti = 0; ti < t; ti++)
+        Parallel.For(0, t, ti =>
         {
             int off = ti * dim;
             double mean = 0;
@@ -71,7 +74,7 @@ public static class F5Kernels
             float invStd = (float)(1.0 / Math.Sqrt(var + eps));
             for (int d = 0; d < dim; d++)
                 y[off + d] = (float)((x[off + d] - mean) * invStd);
-        }
+        });
         return y;
     }
 
@@ -222,5 +225,81 @@ public static class F5Kernels
         }
         float invSum = 1f / sum;
         for (int i = 0; i < length; i++) scores[offset + i] *= invSum;
+    }
+
+    /// <summary>x_transformers-convention RoPE, applied in place to a [t, heads*headDim] tensor. Shared by F5-TTS's DiT and CosyVoice3's DiT (tensor-for-tensor identical architecture, see CosyVoice3DiTModel's doc comment) -- was hand-duplicated in both files until extracted here.</summary>
+    public static void ApplyRotary(float[] x, int t, int heads, int headDim, float[] rotaryCos, float[] rotarySin)
+    {
+        int dim = heads * headDim;
+        int halfHead = headDim / 2;
+        for (int ti = 0; ti < t; ti++)
+        {
+            int angleBase = ti * halfHead;
+            for (int h = 0; h < heads; h++)
+            {
+                int hOff = ti * dim + h * headDim;
+                for (int k = 0; k < halfHead; k++)
+                {
+                    float cos = rotaryCos[angleBase + k];
+                    float sin = rotarySin[angleBase + k];
+                    float x0 = x[hOff + 2 * k];
+                    float x1 = x[hOff + 2 * k + 1];
+                    x[hOff + 2 * k] = x0 * cos - x1 * sin;
+                    x[hOff + 2 * k + 1] = x1 * cos + x0 * sin;
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Full non-causal multi-head self-attention given already-projected, already-rotary-applied
+    /// q/k/v [t, heads*headDim]. Returns context [t, heads*headDim] (pre output-projection).
+    /// Shared by F5-TTS's DiT and CosyVoice3's DiT -- was hand-duplicated in both files (including
+    /// a scalar, non-SIMD QK/AV inner loop parallelized only over `heads`) until extracted here.
+    /// Parallelizes over `t` instead of `heads`: heads is a small, fixed constant (e.g. 16) while
+    /// t (frame count) scales with utterance length and is usually far larger, so this gives much
+    /// more parallel width; the QK dot and the AV accumulation both use SIMD (DotF32/
+    /// TensorPrimitives.MultiplyAdd) instead of scalar loops, following the pattern already
+    /// verified in Primitives/CfmUNetKernels.cs.
+    /// </summary>
+    public static float[] MultiHeadSelfAttention(float[] q, float[] k, float[] v, int t, int heads, int headDim)
+    {
+        int dim = heads * headDim;
+        float scale = 1f / MathF.Sqrt(headDim);
+        var context = new float[t * dim];
+
+        for (int h = 0; h < heads; h++)
+        {
+            int hOff = h * headDim;
+            Parallel.For(0, t, i =>
+            {
+                var scores = new float[t];
+                int qOff = i * dim + hOff;
+                unsafe
+                {
+                    fixed (float* qp = q)
+                    {
+                        float* qRow = qp + qOff;
+                        for (int j = 0; j < t; j++)
+                        {
+                            fixed (float* kp = k)
+                                scores[j] = OpenTail.Stingray.Cpu.SimdKernels.DotF32(qRow, kp + j * dim + hOff, headDim) * scale;
+                        }
+                    }
+                }
+                SoftmaxInPlace(scores, 0, t);
+
+                var cSpan = context.AsSpan(i * dim + hOff, headDim);
+                for (int j = 0; j < t; j++)
+                {
+                    float p = scores[j];
+                    if (p == 0f) continue;
+                    var vSpan = v.AsSpan(j * dim + hOff, headDim);
+                    System.Numerics.Tensors.TensorPrimitives.MultiplyAdd(vSpan, p, cSpan, cSpan);
+                }
+            });
+        }
+
+        return context;
     }
 }
