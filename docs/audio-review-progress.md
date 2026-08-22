@@ -5790,3 +5790,60 @@ loop, fully wired). Per CLAUDE.md rule 7, the next standing task once all model-
 this complete is a performance pass + DRY pass across the newly-ported model code -- not yet
 started, and a reasonable next fire's focus. Not committed (per standing instruction). No
 subagents used anywhere this fire.
+
+## Performance pass, step 1: real baseline measurements for all 5 pipelines (CLAUDE.md rule 7)
+
+Per CLAUDE.md rule 7 ("measure, don't assume... a handful of runs each side, not one... write the
+measured numbers down"), added a throwaway `*PerfBenchTests.cs` per pipeline (matching this
+project's existing bench convention, e.g. `FunAsrPerfBenchTests.cs`) and ran each ALONE via
+`STINGRAY_RUN_HEAVY_TESTS=1 dotnet test tests/OpenTail.Stingray.Tests.Audio -c Release --
+filter-class "*&lt;Name&gt;*"` (Release, not Debug -- Debug numbers would be meaningless for a
+perf baseline). Each: one warmup call (JIT/thread-pool spin-up) + N measured calls on real weights
+with a real (not trivially short) input, sorted, mean+median reported. Results, deterministic
+CPU-only (`ProcessorCount=12`, no `STINGRAY_CPU_THREADS` override set):
+
+| Pipeline | Workload | N | mean | median | samples (ms) |
+|---|---|---|---|---|---|
+| FunASR | 12s synthetic audio, `Transcribe` | 8 | 856.29ms | 864.08ms | 841.6, 841.9, 843.9, 850.6, 864.1, 866.0, 867.5, 874.8 |
+| Silero VAD | 12s synthetic audio, `DetectSegments` | 8 | 125.96ms | 122.13ms | 120.3, 120.4, 121.4, 121.6, 122.1, 132.1, 134.4, 135.2 |
+| Fish Speech | `Synthesize("Hello there.", maxTokens=15)` | 3 | 39709.22ms | 39790.92ms | 39543.1, 39790.9, 39793.7 |
+| Parler-TTS | `Synthesize("Hello there.", maxNewTokens=30)` | 5 | 5337.54ms | 5329.62ms | 5286.8, 5308.3, 5329.6, 5376.8, 5386.2 |
+| Orpheus TTS | `Synthesize("Hello there.", maxTokens=140)` | 5 | 10421.01ms | 10401.08ms | 10264.2, 10366.1, 10401.1, 10482.0, 10591.7 |
+
+**Normalized per-generated-unit, the number that actually matters for comparing the three
+autoregressive TTS pipelines against each other** (FunASR/Silero VAD are single-shot
+encode-whole-clip workloads, not autoregressive, so per-token normalization doesn't apply to
+them -- their raw per-call numbers above are the right comparison point instead):
+
+- Fish Speech: **~2647 ms/token** (39709ms / 15 slow-AR tokens -- note EACH slow-AR token also
+  triggers 9 full fast-AR sub-calls internally, so this is really ~15 outer steps × 9 inner
+  fast-AR forward passes, ~294ms per fast-AR call)
+- Parler-TTS: **~178 ms/step** (5337ms / 30 decoder steps, each step already 9-codebook-wide via
+  the shared trunk + KV cache)
+- Orpheus TTS: **~74 ms/token** (10421ms / 140 raw talker tokens, SNAC decode only runs once at
+  the very end, not per-token)
+
+**Clear outlier, flagged for the next pass, not yet touched**: Fish Speech is roughly **15x
+slower per generated unit than Orpheus and ~15x slower than Parler-TTS**, despite comparable model
+scale. The most likely real cause, from re-reading `FishSpeechFastAr.cs`'s own doc comment
+("Re-run from scratch on every call (no persistent KV cache) -- cheap since the sequence is at
+most 1 + num_codebooks-1 = 10 tokens over 4 layers"): the fast-AR is called 9 TIMES per slow-AR
+step (once per residual codebook), and EACH of those 9 calls reruns the full 4-layer transformer
+from scratch over a growing prefix (`Forward` recomputes Q/K/V for ALL positions 0..prefix every
+single call, an O(prefix²) re-do each time rather than caching), so a full step does
+`9 × O(10²)`-ish attention work with zero reuse between the 9 calls despite 8 of every 9 calls'
+prefixes being a strict extension of the previous call's. This is the single most promising real
+optimization target identified so far -- NOT yet implemented, needs a measured before/after
+(per rule 7, only keep a change if it's measurably better) before being called done. The slow-AR
+trunk itself (`ForwardPass`, this codebase's existing shared engine) is a separate, likely
+lower-priority target since it's shared infrastructure already used and presumably already tuned
+elsewhere in this codebase.
+
+No changes have been made to any pipeline's implementation yet -- this entry is purely the
+baseline capture step. Next: scan each implementation for concrete improvement candidates (Fish
+Speech's fast-AR re-run cost above being the clearest one), reason about which are worth
+attempting, implement one at a time, and re-measure with the same bench harness before/after each
+change per rule 7's discipline. The throwaway `*PerfBenchTests.cs` files should be deleted once
+the performance pass is complete (per their own doc comments), not left in the permanent suite.
+
+Not committed (per standing instruction). No subagents used.
