@@ -29,11 +29,12 @@ public static class QwenTtsTalkerGeneration
     /// Generates the semantic codebook (codebook 0) token sequence for the given utterance
     /// text. Greedy decoding, stopping at the real codec EOS id or maxNewTokens.
     /// </summary>
-    public static int[] GenerateSemanticCodes(GgufModel rawModel, string utteranceText, int numLayers, int maxNewTokens = 200)
+    public static int[] GenerateSemanticCodes(GgufModel rawModel, string utteranceText, int numLayers, int maxNewTokens = 200, string? language = null)
     {
         var weights = QwenTtsTalkerPromptBuilder.Weights.Load(rawModel);
         var tokenizer = GgufTokenizer.FromGgufModel(rawModel);
-        var (promptEmbed, tRows) = QwenTtsTalkerPromptBuilder.BuildBasePrompt(weights, tokenizer, utteranceText);
+        var languageTable = QwenTtsTalkerPromptBuilder.ReadLanguageTable(rawModel);
+        var (promptEmbed, tRows) = QwenTtsTalkerPromptBuilder.BuildBasePrompt(weights, tokenizer, utteranceText, language, languageTable);
 
         using var source = new QwenTtsTalkerTensorSource(rawModel, numLayers);
         source.SetPromptEmbedding(promptEmbed, tRows);

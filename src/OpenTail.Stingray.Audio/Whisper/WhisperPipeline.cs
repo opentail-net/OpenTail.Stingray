@@ -80,6 +80,22 @@ public sealed class WhisperPipeline : ISpeechToTextPipeline
         return FromModel(ggml, vad);
     }
 
+    /// <summary>
+    /// Loads a real Whisper model from the canonical Hugging Face `openai/whisper-*`
+    /// Safetensors distribution (`config.json`/`model.safetensors`/`vocab.json` in
+    /// <paramref name="checkpointDir"/>) -- the actual format `transformers`' `
+    /// WhisperForConditionalGeneration.from_pretrained()` loads, confirmed against real HF repo
+    /// file listings before implementing (see <see cref="WhisperGgmlModel.LoadFromSafetensors"/>).
+    /// </summary>
+    public static WhisperPipeline LoadFromSafetensors(string checkpointDir, SileroVad? vad = null)
+    {
+        if (string.IsNullOrWhiteSpace(checkpointDir) || !Directory.Exists(checkpointDir))
+            throw new DirectoryNotFoundException($"Whisper Safetensors checkpoint directory not found: {checkpointDir}");
+
+        var ggml = WhisperGgmlModel.LoadFromSafetensors(checkpointDir);
+        return FromModel(ggml, vad);
+    }
+
     private static WhisperPipeline FromModel(WhisperGgmlModel ggml, SileroVad? vad)
     {
         var config = ggml.ToConfig();

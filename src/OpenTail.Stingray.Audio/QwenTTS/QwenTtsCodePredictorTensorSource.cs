@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Runtime.InteropServices;
 using OpenTail.Stingray.Core;
 
 namespace OpenTail.Stingray.Audio.QwenTTS;
@@ -22,13 +23,16 @@ namespace OpenTail.Stingray.Audio.QwenTTS;
 /// -- real per-codebook composition is separate, not-yet-built logic, not exposed generically
 /// here.</para>
 /// </summary>
-public sealed class QwenTtsCodePredictorTensorSource : IModelTensorSource
+public sealed unsafe class QwenTtsCodePredictorTensorSource : IModelTensorSource, IDisposable
 {
     private readonly GgufModel _inner;
     private readonly Dictionary<string, string> _rename;
     private readonly List<GgufTensorInfo> _tensors;
     private readonly Dictionary<string, GgufTensorInfo> _byCanonicalName;
     private readonly Dictionary<string, object> _metadata;
+    private readonly Dictionary<string, nint> _syntheticBuffers = new(StringComparer.Ordinal);
+    private readonly List<nint> _ownedPointers = [];
+    private readonly int _hiddenDim;
 
     public QwenTtsCodePredictorTensorSource(GgufModel inner, int numLayers)
     {
@@ -72,6 +76,8 @@ public sealed class QwenTtsCodePredictorTensorSource : IModelTensorSource
             _byCanonicalName[canonical] = info.Value;
             _tensors.Add(info.Value);
         }
+
+        _hiddenDim = _metadata.TryGetValue("qwen3-tts.embedding_length", out var hd) ? Convert.ToInt32(hd) : 1024;
     }
 
     public IReadOnlyList<GgufTensorInfo> Tensors => _tensors;
@@ -80,7 +86,71 @@ public sealed class QwenTtsCodePredictorTensorSource : IModelTensorSource
     public GgufTensorInfo? FindTensor(string name) =>
         _byCanonicalName.TryGetValue(name, out var info) ? info : null;
 
-    public ReadOnlySpan<byte> GetTensorData(GgufTensorInfo tensor) => _inner.GetTensorData(tensor);
+    public ReadOnlySpan<byte> GetTensorData(GgufTensorInfo tensor)
+    {
+        if (_syntheticBuffers.TryGetValue(tensor.Name, out nint syntheticPtr))
+            return new ReadOnlySpan<byte>((void*)syntheticPtr, checked((int)(tensor.ElementCount * sizeof(float))));
+        return _inner.GetTensorData(tensor);
+    }
 
-    public unsafe byte* GetTensorDataPtr(GgufTensorInfo tensor) => _inner.GetTensorDataPtr(tensor);
+    public byte* GetTensorDataPtr(GgufTensorInfo tensor)
+    {
+        if (_syntheticBuffers.TryGetValue(tensor.Name, out nint syntheticPtr))
+            return (byte*)syntheticPtr;
+        return _inner.GetTensorDataPtr(tensor);
+    }
+
+    /// <summary>
+    /// Swaps `token_embd.weight` to a synthetic buffer of caller-composed per-position
+    /// embeddings -- the exact same technique <see cref="QwenTtsTalkerTensorSource.SetPromptEmbedding"/>
+    /// uses, needed here because the real Code Predictor's first pass input is `[talker_hidden,
+    /// embed(c0)]` (a raw hidden-state bridge from the Talker plus a codec-table lookup), not a
+    /// plain token id. Caller feeds sequential dummy ids `0..numRows-1` into `Prefill`/`Forward`.
+    /// </summary>
+    public void SetPromptEmbedding(float[] rows, int numRows)
+    {
+        long elementCount = (long)numRows * _hiddenDim;
+        if (rows.Length != elementCount)
+            throw new ArgumentException($"SetPromptEmbedding: expected {elementCount} elements ({numRows}x{_hiddenDim}), got {rows.Length}.");
+
+        float* buffer = (float*)NativeMemory.Alloc((nuint)(elementCount * sizeof(float)));
+        fixed (float* src = rows)
+            Buffer.MemoryCopy(src, buffer, elementCount * sizeof(float), elementCount * sizeof(float));
+        _ownedPointers.Add((nint)buffer);
+        _syntheticBuffers["token_embd.weight"] = (nint)buffer;
+
+        _byCanonicalName["token_embd.weight"] = new GgufTensorInfo("token_embd.weight", 2, [_hiddenDim, numRows], DType.Float32, DataOffset: 0);
+        _tensors.Clear();
+        _tensors.AddRange(_byCanonicalName.Values);
+    }
+
+    /// <summary>
+    /// Swaps `output.weight` to a caller-supplied real per-codebook `code_pred.lm_head.{g}.weight`
+    /// buffer -- real autoregressive depth-expansion needs a DIFFERENT output head at each of the
+    /// 15 acoustic-codebook steps, all sharing the same real shape (vocab=2048, dim=1024), so no
+    /// metadata/shape change is needed, only the underlying data pointer.
+    /// </summary>
+    public void SetOutputHead(float[] lmHeadWeight, int vocabSize)
+    {
+        long elementCount = (long)vocabSize * _hiddenDim;
+        if (lmHeadWeight.Length != elementCount)
+            throw new ArgumentException($"SetOutputHead: expected {elementCount} elements ({vocabSize}x{_hiddenDim}), got {lmHeadWeight.Length}.");
+
+        float* buffer = (float*)NativeMemory.Alloc((nuint)(elementCount * sizeof(float)));
+        fixed (float* src = lmHeadWeight)
+            Buffer.MemoryCopy(src, buffer, elementCount * sizeof(float), elementCount * sizeof(float));
+        _ownedPointers.Add((nint)buffer);
+        _syntheticBuffers["output.weight"] = (nint)buffer;
+
+        _byCanonicalName["output.weight"] = new GgufTensorInfo("output.weight", 2, [_hiddenDim, vocabSize], DType.Float32, DataOffset: 0);
+        _tensors.Clear();
+        _tensors.AddRange(_byCanonicalName.Values);
+    }
+
+    public void Dispose()
+    {
+        foreach (var ptr in _ownedPointers)
+            NativeMemory.Free((void*)ptr);
+        _ownedPointers.Clear();
+    }
 }

@@ -54,6 +54,7 @@ public sealed class CosyVoiceHiftWeights : IDisposable, IHiFTVocoderWeights
 
     public CosyVoiceF0PredictorWeights F0Predictor { get; }
     IF0PredictorWeights IHiFTVocoderWeights.F0Predictor => F0Predictor;
+    bool IHiFTVocoderWeights.IsCausal => true;
     public float[] MSourceLinearWeight { get; }
     public float[] MSourceLinearBias { get; }
 

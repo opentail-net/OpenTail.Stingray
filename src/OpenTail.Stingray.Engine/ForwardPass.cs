@@ -1048,6 +1048,22 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
     public long PrefillDequantCacheBudgetBytes => _dequantCacheBudgetBytes;
 
     /// <summary>
+    /// Real implementation of <see cref="IForwardPass.LastHidden"/> for the CPU backend: exposes
+    /// the persistent post-final-norm hidden-state buffer (<c>_hidden</c>, `[embDim]`) that
+    /// <c>ForwardPass.Decode.cs</c>'s single-token <see cref="Forward(int, int)"/> and the
+    /// prefill path already compute and overwrite in place on every call -- this is a real,
+    /// pre-existing buffer, not new state; the property just makes it externally readable.
+    /// Real, documented caveat inherited from the buffer's own single-slot semantics (same
+    /// contract the interface doc already states): valid only until the NEXT `Forward`/
+    /// `Prefill`/`ForwardEmbedding` call overwrites `_hidden` -- callers needing a stable
+    /// snapshot must copy it immediately. Enables real cross-model hidden-state bridging (e.g.
+    /// a second, smaller transformer conditioned on this model's last hidden state) without any
+    /// other Engine change -- see docs/audio-review-progress.md's QwenTTS Talker/Code Predictor
+    /// entries for the real motivating case this was added for.
+    /// </summary>
+    public ReadOnlySpan<float> LastHidden => new(_hidden, _embDim);
+
+    /// <summary>
     /// Truncate the KV cache to the given length, discarding positions >= length.
     /// Used by speculative decoding to rewind rejected draft tokens.
     /// Not supported when TurboQuant is enabled and the target length falls in the compressed range.

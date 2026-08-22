@@ -148,7 +148,9 @@ public static class HiFTVocoderKernels
         for (int i = 0; i < numStages; i++) { acc *= downsampleRates[i]; cumRates[i] = acc; }
         Array.Reverse(cumRates);
 
-        float[] x = Conv1dSamePad(mel, melDim, t, w.ConvPreWeight, w.ConvPreBias, w.BaseChannels, kernel: w.ConvPreKernel);
+        float[] x = w.IsCausal
+            ? CausalConv1dRightPad(mel, melDim, t, w.ConvPreWeight, w.ConvPreBias, w.BaseChannels, kernel: w.ConvPreKernel)
+            : Conv1dSamePad(mel, melDim, t, w.ConvPreWeight, w.ConvPreBias, w.BaseChannels, kernel: w.ConvPreKernel);
         int curCh = w.BaseChannels;
         int curT = t;
 
@@ -185,7 +187,7 @@ public static class HiFTVocoderKernels
             int siT = si.Length / curCh;
             si = AlignTimeLength(si, curCh, siT, curT);
 
-            si = HifiResBlockForward(w.SourceResBlocks[i], si, curCh, curT, w.SourceResblockKernels[i]);
+            si = HifiResBlockForward(w.SourceResBlocks[i], si, curCh, curT, w.SourceResblockKernels[i], w.IsCausal);
             for (int j = 0; j < x.Length; j++) x[j] += si[j];
 
             // The numKernels resblocks all consume the same x independently (different kernel
@@ -199,7 +201,7 @@ public static class HiFTVocoderKernels
             System.Threading.Tasks.Parallel.For(0, numKernels, j =>
             {
                 int rbIdx = stageIdx * numKernels + j;
-                rbResults[j] = HifiResBlockForward(w.ResBlocks[rbIdx], x, curCh, curT, w.ResblockKernels[j]);
+                rbResults[j] = HifiResBlockForward(w.ResBlocks[rbIdx], x, curCh, curT, w.ResblockKernels[j], w.IsCausal);
             });
             var xs = rbResults[0];
             for (int j = 1; j < numKernels; j++)
@@ -213,7 +215,9 @@ public static class HiFTVocoderKernels
         }
 
         LeakyReluInPlace(x, 0.01f);
-        x = Conv1dSamePad(x, curCh, curT, w.ConvPostWeight, w.ConvPostBias, nFft + 2, kernel: w.ConvPostKernel);
+        x = w.IsCausal
+            ? CausalConv1dLeftPad(x, curCh, curT, w.ConvPostWeight, w.ConvPostBias, nFft + 2, kernel: w.ConvPostKernel)
+            : Conv1dSamePad(x, curCh, curT, w.ConvPostWeight, w.ConvPostBias, nFft + 2, kernel: w.ConvPostKernel);
         int outT = x.Length / (nFft + 2);
 
         int specCh = nFft / 2 + 1;
@@ -241,7 +245,7 @@ public static class HiFTVocoderKernels
         return output;
     }
 
-    private static float[] HifiResBlockForward(IHifiResBlockWeights rw, float[] x, int ch, int t, int kernel)
+    private static float[] HifiResBlockForward(IHifiResBlockWeights rw, float[] x, int ch, int t, int kernel, bool causal = false)
     {
         var cur = (float[])x.Clone();
         int[] dilations = [1, 3, 5];
@@ -249,10 +253,14 @@ public static class HiFTVocoderKernels
         {
             var xt = (float[])cur.Clone();
             SnakeInPlace(xt, rw.Alpha1[i], ch, t);
-            xt = Conv1dDilated(xt, rw.Convs1Weight[i], rw.Convs1Bias[i], ch, ch, t, kernel, dilations[i]);
+            xt = causal
+                ? CausalConv1dDilatedLeftPad(xt, rw.Convs1Weight[i], rw.Convs1Bias[i], ch, ch, t, kernel, dilations[i])
+                : Conv1dDilated(xt, rw.Convs1Weight[i], rw.Convs1Bias[i], ch, ch, t, kernel, dilations[i]);
 
             SnakeInPlace(xt, rw.Alpha2[i], ch, t);
-            xt = Conv1dDilated(xt, rw.Convs2Weight[i], rw.Convs2Bias[i], ch, ch, t, kernel, dilation: 1);
+            xt = causal
+                ? CausalConv1dDilatedLeftPad(xt, rw.Convs2Weight[i], rw.Convs2Bias[i], ch, ch, t, kernel, dilation: 1)
+                : Conv1dDilated(xt, rw.Convs2Weight[i], rw.Convs2Bias[i], ch, ch, t, kernel, dilation: 1);
 
             for (int j = 0; j < cur.Length; j++) cur[j] += xt[j];
         }
@@ -400,6 +408,31 @@ public static class HiFTVocoderKernels
                 for (int k = 0; k < kernel; k++)
                 {
                     int shift = k; // no left pad; taps k=0..kernel-1 read input[ti..ti+kernel-1], right edge implicitly zero via AxpyShifted's clamped range
+                    AxpyShifted(inRow, weight[wBase + k], outRow, shift, t);
+                }
+            }
+            Array.Copy(outRow, 0, output, oc * t, t);
+        });
+        return output;
+    }
+
+    /// <summary>Real causal dilated Conv1d, left-zero-pad by (kernel-1)*dilation then valid conv (output length == input length) -- CosyVoice's real `ResBlock` convention (confirmed `causal_type=left` for every dilation in `examples/cosyvoice.cpp`'s `ResBlock::OnLoad`), distinct from Chatterbox's real symmetric `get_padding` formula used by <see cref="Conv1dDilated"/>.</summary>
+    private static float[] CausalConv1dDilatedLeftPad(float[] input, float[] weight, float[] bias, int inCh, int outCh, int t, int kernel, int dilation)
+    {
+        int pad = (kernel - 1) * dilation;
+        var output = new float[outCh * t];
+        System.Threading.Tasks.Parallel.For(0, outCh, oc =>
+        {
+            var outRow = new float[t];
+            Array.Fill(outRow, bias[oc]);
+            int wOcBase = oc * inCh * kernel;
+            for (int ic = 0; ic < inCh; ic++)
+            {
+                var inRow = input.AsSpan(ic * t, t);
+                int wBase = wOcBase + ic * kernel;
+                for (int k = 0; k < kernel; k++)
+                {
+                    int shift = k * dilation - pad;
                     AxpyShifted(inRow, weight[wBase + k], outRow, shift, t);
                 }
             }
@@ -624,4 +657,17 @@ public interface IHiFTVocoderWeights
     IF0PredictorWeights F0Predictor { get; }
     float[] MSourceLinearWeight { get; }
     float[] MSourceLinearBias { get; }
+
+    /// <summary>
+    /// Whether `conv_pre`/`conv_post`/the resblock dilated convs use CosyVoice's real one-sided
+    /// causal padding (`conv_pre`=right-pad, `conv_post`=left-pad, resblock convs=left-pad --
+    /// confirmed via `examples/cosyvoice.cpp`'s `CausalHiFTGenerator::OnLoad`/`ResBlock::OnLoad`)
+    /// rather than Chatterbox's real plain symmetric "same" padding (confirmed via
+    /// `examples/chatterbox-tts-py/chatterbox/models/s3gen/hifigan.py`'s real `Conv1d(...,
+    /// padding=3)`/`get_padding` -- genuinely non-causal, a different real HiFiGAN variant
+    /// despite the shared lineage). Defaults to <c>false</c> (Chatterbox's real convention,
+    /// this shared kernel's original and still-correct target) so existing implementers don't
+    /// need to change; CosyVoice's real weight classes override this to <c>true</c>.
+    /// </summary>
+    bool IsCausal => false;
 }

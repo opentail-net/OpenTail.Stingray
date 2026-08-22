@@ -38,7 +38,7 @@ public static class QwenTtsTalkerPromptBuilder
 
     public sealed record SpecialTokenIds(
         int TtsBosId, int TtsEosId, int TtsPadId,
-        int CodecNothinkId, int CodecThinkBosId, int CodecThinkEosId, int CodecPadId, int CodecBosId, int CodecEosId);
+        int CodecNothinkId, int CodecThinkId, int CodecThinkBosId, int CodecThinkEosId, int CodecPadId, int CodecBosId, int CodecEosId);
 
     /// <summary>Real Talker weights needed for prompt composition, loaded once (the text embedding table alone is ~300M elements -- must not be re-dequantized per call).</summary>
     public sealed class Weights
@@ -68,6 +68,7 @@ public static class QwenTtsTalkerPromptBuilder
         TtsEosId: model.GetMetadata("qwen3-tts.text.tts_eos_id", 0),
         TtsPadId: model.GetMetadata("qwen3-tts.text.tts_pad_id", 0),
         CodecNothinkId: model.GetMetadata("qwen3-tts.codec.nothink_id", 0),
+        CodecThinkId: model.GetMetadata("qwen3-tts.codec.think_id", 0),
         CodecThinkBosId: model.GetMetadata("qwen3-tts.codec.think_bos_id", 0),
         CodecThinkEosId: model.GetMetadata("qwen3-tts.codec.think_eos_id", 0),
         CodecPadId: model.GetMetadata("qwen3-tts.codec.pad_id", 0),
@@ -112,10 +113,32 @@ public static class QwenTtsTalkerPromptBuilder
     }
 
     /// <summary>
-    /// Builds the full real prompt embedding matrix [T,1024] for the base/auto-language/
-    /// no-speaker/no-ICL case.
+    /// Real language table (`qwen3-tts.codec.language_ids`/`language_names`, real 10-language
+    /// GGUF metadata, e.g. "english"=id, "chinese"=id, ... -- lowercase-name keyed). Case-
+    /// insensitive lookup, matching the real `prompt_builder_build`'s own `tolower` handling.
     /// </summary>
-    public static (float[] Embedding, int NumRows) BuildBasePrompt(Weights w, GgufTokenizer tokenizer, string utteranceText)
+    public static IReadOnlyDictionary<string, int> ReadLanguageTable(GgufModel model)
+    {
+        var table = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        if (model.Metadata.TryGetValue("qwen3-tts.codec.language_ids", out var idsObj) && idsObj is object[] ids &&
+            model.Metadata.TryGetValue("qwen3-tts.codec.language_names", out var namesObj) && namesObj is object[] names &&
+            ids.Length == names.Length)
+        {
+            for (int i = 0; i < ids.Length; i++)
+                table[(string)names[i]] = Convert.ToInt32(ids[i]);
+        }
+        return table;
+    }
+
+    /// <summary>
+    /// Builds the full real prompt embedding matrix [T,1024] for the base case (no speaker, no
+    /// voice-design instruct, no ICL reference audio) -- with real language selection: `language`
+    /// null/"auto" uses the auto-language codec prefix (`[nothink,think_bos,think_eos]`);
+    /// otherwise `[think,think_bos,languageId,think_eos]` per the real prompt-builder.h sequence,
+    /// with `languageId` resolved from <paramref name="languageTable"/> (see
+    /// <see cref="ReadLanguageTable"/>).
+    /// </summary>
+    public static (float[] Embedding, int NumRows) BuildBasePrompt(Weights w, GgufTokenizer tokenizer, string utteranceText, string? language = null, IReadOnlyDictionary<string, int>? languageTable = null)
     {
         string fullText = "<|im_start|>assistant\n" + utteranceText + "<|im_end|>\n<|im_start|>assistant\n";
         var ids = tokenizer.Encode(fullText);
@@ -125,7 +148,17 @@ public static class QwenTtsTalkerPromptBuilder
             throw new InvalidOperationException($"QwenTTS prompt: tokenized prompt too short (N={n}) for any utterance text.");
 
         var specials = w.Specials;
-        var codecLeft = new[] { specials.CodecNothinkId, specials.CodecThinkBosId, specials.CodecThinkEosId, specials.CodecPadId };
+        int[] codecLeft;
+        if (string.IsNullOrEmpty(language) || string.Equals(language, "auto", StringComparison.OrdinalIgnoreCase))
+        {
+            codecLeft = [specials.CodecNothinkId, specials.CodecThinkBosId, specials.CodecThinkEosId, specials.CodecPadId];
+        }
+        else
+        {
+            if (languageTable is null || !languageTable.TryGetValue(language, out int languageId))
+                throw new ArgumentException($"QwenTTS prompt: unknown language '{language}' (not found in the real GGUF language table).", nameof(language));
+            codecLeft = [specials.CodecThinkId, specials.CodecThinkBosId, languageId, specials.CodecThinkEosId, specials.CodecPadId];
+        }
 
         int tCtx = 3 + codecLeft.Length + nText + 1 + 1;
         var embed = new float[tCtx * TalkerHiddenDim];

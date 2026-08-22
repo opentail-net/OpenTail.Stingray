@@ -1,3 +1,4 @@
+using System.Text.Json;
 using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Cpu;
 
@@ -182,6 +183,138 @@ public sealed class WhisperGgmlModel
             var shape = new int[info.NDimensions];
             for (int d = 0; d < info.NDimensions; d++) shape[d] = checked((int)info.Dimensions[d]);
             model._tensors[info.Name] = new WhisperGgmlTensor(shape, data);
+        }
+
+        return model;
+    }
+
+    /// <summary>
+    /// Loads from the real, canonical OpenAI Whisper Hugging Face distribution (`openai/
+    /// whisper-{tiny,base,small,medium,large-v3}`) -- a genuine `model.safetensors` +
+    /// `config.json` + `vocab.json` checkpoint, confirmed to be the actual format
+    /// `transformers`' `WhisperForConditionalGeneration.from_pretrained()` loads (not a
+    /// community conversion), verified directly against real HF repo file listings and the
+    /// real `model.safetensors.index.fp32.json` tensor-name index before writing this loader.
+    /// <c>dir</c> is the checkpoint directory containing `config.json`/`model.safetensors`/
+    /// `vocab.json`.
+    ///
+    /// <para>Real tensor namespace (top-level `model.encoder.*`/`model.decoder.*`, no extra
+    /// wrapper prefix): `model.encoder.conv1/conv2.{weight,bias}`, `model.encoder.
+    /// embed_positions.weight`, `model.encoder.layers.{i}.self_attn.{q,k,v}_proj.weight`
+    /// (`k_proj` has NO bias -- matches OpenAI's own weights exactly, same real fact
+    /// `WhisperEncoderWeights`'s doc comment already notes for the legacy ggml format),
+    /// `self_attn.out_proj`, `self_attn_layer_norm`, `fc1`/`fc2`, `final_layer_norm`,
+    /// `model.encoder.layer_norm` (final). Decoder mirrors this plus `encoder_attn.*`
+    /// (cross-attention) and `model.decoder.embed_tokens.weight`.</para>
+    /// </summary>
+    public static WhisperGgmlModel LoadFromSafetensors(string dir)
+    {
+        string configPath = Path.Combine(dir, "config.json");
+        using var configDoc = JsonDocument.Parse(File.ReadAllBytes(configPath));
+        var root = configDoc.RootElement;
+
+        var model = new WhisperGgmlModel();
+        model.VocabSize = root.GetProperty("vocab_size").GetInt32();
+        model.AudioCtx = root.GetProperty("max_source_positions").GetInt32();
+        model.AudioState = root.GetProperty("d_model").GetInt32();
+        model.AudioHead = root.GetProperty("encoder_attention_heads").GetInt32();
+        model.AudioLayer = root.GetProperty("encoder_layers").GetInt32();
+        model.TextCtx = root.GetProperty("max_target_positions").GetInt32();
+        model.TextState = root.GetProperty("d_model").GetInt32();
+        model.TextHead = root.GetProperty("decoder_attention_heads").GetInt32();
+        model.TextLayer = root.GetProperty("decoder_layers").GetInt32();
+        model.NumMels = root.GetProperty("num_mel_bins").GetInt32();
+        model.FType = 0;
+
+        string vocabPath = Path.Combine(dir, "vocab.json");
+        if (File.Exists(vocabPath))
+        {
+            using var vocabDoc = JsonDocument.Parse(File.ReadAllBytes(vocabPath));
+            var tokens = new string[model.VocabSize];
+            foreach (var prop in vocabDoc.RootElement.EnumerateObject())
+            {
+                int id = prop.Value.GetInt32();
+                if ((uint)id < (uint)tokens.Length) tokens[id] = prop.Name;
+            }
+            for (int i = 0; i < tokens.Length; i++) tokens[i] ??= string.Empty;
+            model.TokenById = tokens;
+        }
+
+        string safetensorsPath = Path.Combine(dir, "model.safetensors");
+        using var loader = File.Exists(Path.Combine(dir, "model.safetensors.index.json"))
+            ? SafetensorsLoader.OpenDirectory(dir)
+            : SafetensorsLoader.Open(safetensorsPath);
+
+        void MapTensor(string realName, string canonicalName)
+        {
+            if (!loader.Contains(realName)) return;
+            var data = loader.ReadF32(realName);
+            var shape = loader.GetShape(realName);
+            model._tensors[canonicalName] = new WhisperGgmlTensor(shape, data);
+        }
+
+        MapTensor("model.encoder.conv1.weight", "encoder.conv1.weight");
+        MapTensor("model.encoder.conv1.bias", "encoder.conv1.bias");
+        MapTensor("model.encoder.conv2.weight", "encoder.conv2.weight");
+        MapTensor("model.encoder.conv2.bias", "encoder.conv2.bias");
+        MapTensor("model.encoder.embed_positions.weight", "encoder.positional_embedding");
+        MapTensor("model.encoder.layer_norm.weight", "encoder.ln_post.weight");
+        MapTensor("model.encoder.layer_norm.bias", "encoder.ln_post.bias");
+
+        for (int i = 0; i < model.AudioLayer; i++)
+        {
+            string p = $"model.encoder.layers.{i}";
+            string b = $"encoder.blocks.{i}";
+            MapTensor($"{p}.self_attn_layer_norm.weight", $"{b}.attn_ln.weight");
+            MapTensor($"{p}.self_attn_layer_norm.bias", $"{b}.attn_ln.bias");
+            MapTensor($"{p}.self_attn.q_proj.weight", $"{b}.attn.query.weight");
+            MapTensor($"{p}.self_attn.q_proj.bias", $"{b}.attn.query.bias");
+            MapTensor($"{p}.self_attn.k_proj.weight", $"{b}.attn.key.weight"); // real: no bias
+            MapTensor($"{p}.self_attn.v_proj.weight", $"{b}.attn.value.weight");
+            MapTensor($"{p}.self_attn.v_proj.bias", $"{b}.attn.value.bias");
+            MapTensor($"{p}.self_attn.out_proj.weight", $"{b}.attn.out.weight");
+            MapTensor($"{p}.self_attn.out_proj.bias", $"{b}.attn.out.bias");
+            MapTensor($"{p}.final_layer_norm.weight", $"{b}.mlp_ln.weight");
+            MapTensor($"{p}.final_layer_norm.bias", $"{b}.mlp_ln.bias");
+            MapTensor($"{p}.fc1.weight", $"{b}.mlp.0.weight");
+            MapTensor($"{p}.fc1.bias", $"{b}.mlp.0.bias");
+            MapTensor($"{p}.fc2.weight", $"{b}.mlp.2.weight");
+            MapTensor($"{p}.fc2.bias", $"{b}.mlp.2.bias");
+        }
+
+        MapTensor("model.decoder.embed_tokens.weight", "decoder.token_embedding.weight");
+        MapTensor("model.decoder.embed_positions.weight", "decoder.positional_embedding");
+        MapTensor("model.decoder.layer_norm.weight", "decoder.ln.weight");
+        MapTensor("model.decoder.layer_norm.bias", "decoder.ln.bias");
+
+        for (int i = 0; i < model.TextLayer; i++)
+        {
+            string p = $"model.decoder.layers.{i}";
+            string b = $"decoder.blocks.{i}";
+            MapTensor($"{p}.self_attn_layer_norm.weight", $"{b}.attn_ln.weight");
+            MapTensor($"{p}.self_attn_layer_norm.bias", $"{b}.attn_ln.bias");
+            MapTensor($"{p}.self_attn.q_proj.weight", $"{b}.attn.query.weight");
+            MapTensor($"{p}.self_attn.q_proj.bias", $"{b}.attn.query.bias");
+            MapTensor($"{p}.self_attn.k_proj.weight", $"{b}.attn.key.weight");
+            MapTensor($"{p}.self_attn.v_proj.weight", $"{b}.attn.value.weight");
+            MapTensor($"{p}.self_attn.v_proj.bias", $"{b}.attn.value.bias");
+            MapTensor($"{p}.self_attn.out_proj.weight", $"{b}.attn.out.weight");
+            MapTensor($"{p}.self_attn.out_proj.bias", $"{b}.attn.out.bias");
+            MapTensor($"{p}.encoder_attn_layer_norm.weight", $"{b}.cross_attn_ln.weight");
+            MapTensor($"{p}.encoder_attn_layer_norm.bias", $"{b}.cross_attn_ln.bias");
+            MapTensor($"{p}.encoder_attn.q_proj.weight", $"{b}.cross_attn.query.weight");
+            MapTensor($"{p}.encoder_attn.q_proj.bias", $"{b}.cross_attn.query.bias");
+            MapTensor($"{p}.encoder_attn.k_proj.weight", $"{b}.cross_attn.key.weight");
+            MapTensor($"{p}.encoder_attn.v_proj.weight", $"{b}.cross_attn.value.weight");
+            MapTensor($"{p}.encoder_attn.v_proj.bias", $"{b}.cross_attn.value.bias");
+            MapTensor($"{p}.encoder_attn.out_proj.weight", $"{b}.cross_attn.out.weight");
+            MapTensor($"{p}.encoder_attn.out_proj.bias", $"{b}.cross_attn.out.bias");
+            MapTensor($"{p}.final_layer_norm.weight", $"{b}.mlp_ln.weight");
+            MapTensor($"{p}.final_layer_norm.bias", $"{b}.mlp_ln.bias");
+            MapTensor($"{p}.fc1.weight", $"{b}.mlp.0.weight");
+            MapTensor($"{p}.fc1.bias", $"{b}.mlp.0.bias");
+            MapTensor($"{p}.fc2.weight", $"{b}.mlp.2.weight");
+            MapTensor($"{p}.fc2.bias", $"{b}.mlp.2.bias");
         }
 
         return model;

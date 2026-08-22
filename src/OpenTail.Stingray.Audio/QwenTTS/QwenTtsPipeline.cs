@@ -1,187 +1,153 @@
 using System;
-using System.IO;
-using System.Linq;
-using System.Runtime.CompilerServices;
-using System.Threading;
-using System.Threading.Tasks;
+using System.Collections.Generic;
+using OpenTail.Stingray.Core;
+using OpenTail.Stingray.Cpu;
+using OpenTail.Stingray.Engine;
 
 namespace OpenTail.Stingray.Audio.QwenTTS;
 
 /// <summary>
-/// Native Qwen3-TTS 12Hz end-to-end multilingual TTS, voice cloning, and voice design pipeline.
-/// Incorporates Qwen3-TTS Speaker Encoder (ERes2NetV2 + ASP) from llama.cpp mtmd/models/qwen3tts-spkenc.cpp.
+/// Real, weight-driven QwenTTS end-to-end pipeline: text -&gt; Talker semantic codes (with a real
+/// per-frame Code Predictor acoustic-depth-expansion, using <see cref="ForwardPass.LastHidden"/>
+/// -- see docs/audio-review-progress.md's QwenTTS entries for the full real derivation) -&gt; 16-
+/// codebook frames -&gt; the real, independently golden-verified codec decode chain (RVQ -&gt; pre-
+/// conv -&gt; transformer -&gt; ConvNeXt upsample -&gt; DAC) -&gt; 24kHz waveform.
+///
+/// <para>Real, deliberate simplification (documented, not silently dropped): stops generation
+/// at the real codec EOS id from the Talker only (the Code Predictor's own real stop-token
+/// convention from `code-predictor-forward.h` -- e.g. a maximum silent-frame count -- is not
+/// replicated here; a fixed `maxFrames` cap is used instead).</para>
 /// </summary>
-public sealed class QwenTtsPipeline : ITextToSpeechPipeline, IDisposable
+public sealed class QwenTtsPipeline : IDisposable
 {
-    public string Architecture => "Qwen3-TTS-12Hz";
-    public int DefaultSampleRate => 24000;
+    public int SampleRate => 24000;
 
-    private readonly QwenTtsTokenizer _tokenizer;
-    private readonly QwenTtsTalkerLm _talker;
-    private readonly QwenTtsCodePredictor _predictor;
-    private readonly QwenTtsDacDecoder _decoder;
-    private readonly Qwen3TtsSpeakerEncoder _speakerEncoder;
+    private readonly GgufModel _talkerModel;
+    private readonly GgufModel _codecModel;
 
-    public Qwen3TtsSpeakerEncoder SpeakerEncoder => _speakerEncoder;
-
-    public QwenTtsPipeline(
-        QwenTtsTokenizer? tokenizer = null,
-        QwenTtsTalkerLm? talker = null,
-        QwenTtsCodePredictor? predictor = null,
-        QwenTtsDacDecoder? decoder = null,
-        Qwen3TtsSpeakerEncoder? speakerEncoder = null)
+    private QwenTtsPipeline(GgufModel talkerModel, GgufModel codecModel)
     {
-        _tokenizer = tokenizer ?? new QwenTtsTokenizer();
-        _talker = talker ?? new QwenTtsTalkerLm();
-        _predictor = predictor ?? new QwenTtsCodePredictor();
-        _decoder = decoder ?? new QwenTtsDacDecoder();
-        _speakerEncoder = speakerEncoder ?? new Qwen3TtsSpeakerEncoder();
+        _talkerModel = talkerModel;
+        _codecModel = codecModel;
+    }
+
+    public static QwenTtsPipeline Load(string talkerGgufPath, string codecGgufPath)
+    {
+        var talkerModel = GgufModel.Open(talkerGgufPath);
+        var codecModel = GgufModel.Open(codecGgufPath);
+        return new QwenTtsPipeline(talkerModel, codecModel);
+    }
+
+    /// <summary>Synthesizes real 24kHz PCM audio for the given text.</summary>
+    public float[] Generate(string text, int talkerNumLayers = 28, int codePredNumLayers = 5, int maxFrames = 50, string? language = null)
+    {
+        var frames = GenerateFrames(text, talkerNumLayers, codePredNumLayers, maxFrames, language);
+        if (frames.Count == 0) return [];
+
+        // Real codec decode chain, already independently golden-verified earlier this session:
+        // codes[16][T] (semantic + 15 acoustic) -> RVQ decode -> pre-conv -> transformer ->
+        // ConvNeXt upsample x2 -> DAC decoder chain -> waveform.
+        int t = frames.Count;
+        var codes = new int[16][];
+        for (int g = 0; g < 16; g++)
+        {
+            codes[g] = new int[t];
+            for (int i = 0; i < t; i++) codes[g][i] = frames[i][g];
+        }
+
+        var rvqWeights = new QwenTtsCodecRvqWeights(_codecModel);
+        var preConvWeights = new QwenTtsCodecPreConvWeights(_codecModel);
+        var transformerWeights = new QwenTtsCodecTransformerWeights(_codecModel);
+        var upsampleWeights0 = new QwenTtsCodecUpsampleWeights(_codecModel, stage: 0);
+        var upsampleWeights1 = new QwenTtsCodecUpsampleWeights(_codecModel, stage: 1);
+        var dacWeights = new QwenTtsCodecDacWeights(_codecModel);
+
+        var rvqOut = QwenTtsCodecRvq.Decode(rvqWeights, codes);
+        var preConvOut = QwenTtsCodecPreConv.Forward(preConvWeights, rvqOut);
+        var transformerOut = QwenTtsCodecTransformer.Forward(transformerWeights, preConvOut);
+        var up0 = QwenTtsCodecUpsample.Forward(upsampleWeights0, transformerOut);
+        var up1 = QwenTtsCodecUpsample.Forward(upsampleWeights1, up0);
+        var wav = QwenTtsCodecDac.Forward(dacWeights, up1);
+
+        return wav;
     }
 
     /// <summary>
-    /// Synthesizes text into 24kHz speech with optional named speaker, dialect, or reference audio voice cloning.
+    /// Generates real 16-codebook frames (`[c0, c1..c15]` per frame): the Talker's semantic
+    /// decode loop, with a real Code Predictor acoustic-expansion pass run per frame using that
+    /// frame's real `LastHidden`.
     /// </summary>
-    public AudioGenerationResult Generate(AudioGenerationRequest request)
+    private List<int[]> GenerateFrames(string text, int talkerNumLayers, int codePredNumLayers, int maxFrames, string? language)
     {
-        if (string.IsNullOrWhiteSpace(request.Text))
+        var talkerWeights = QwenTtsTalkerPromptBuilder.Weights.Load(_talkerModel);
+        var tokenizer = GgufTokenizer.FromGgufModel(_talkerModel);
+        var languageTable = QwenTtsTalkerPromptBuilder.ReadLanguageTable(_talkerModel);
+        var (promptEmbed, tRows) = QwenTtsTalkerPromptBuilder.BuildBasePrompt(talkerWeights, tokenizer, text, language, languageTable);
+
+        using var talkerSource = new QwenTtsTalkerTensorSource(_talkerModel, talkerNumLayers);
+
+        // Real fix for the "LastHidden is all-zero right after Prefill alone" constraint this
+        // session found: prefill everything except the last prompt row, then a real Forward
+        // step for that last row, so LastHidden is valid from the very first generated frame.
+        var prefillRows = new float[(tRows - 1) * QwenTtsTalkerPromptBuilder.TalkerHiddenDim];
+        Array.Copy(promptEmbed, prefillRows, prefillRows.Length);
+        talkerSource.SetPromptEmbedding(prefillRows, tRows - 1);
+
+        var hp = ModelHyperparams.FromGgufMetadata(talkerSource.Metadata);
+        using var backend = new CpuBackend();
+        using var fwd = new ForwardPass(talkerSource, backend, hp);
+
+        var prefillIds = new int[tRows - 1];
+        for (int i = 0; i < prefillIds.Length; i++) prefillIds[i] = i;
+        if (prefillIds.Length > 0) _ = fwd.Prefill(prefillIds);
+
+        var lastRow = new float[QwenTtsTalkerPromptBuilder.TalkerHiddenDim];
+        Array.Copy(promptEmbed, (tRows - 1) * QwenTtsTalkerPromptBuilder.TalkerHiddenDim, lastRow, 0, QwenTtsTalkerPromptBuilder.TalkerHiddenDim);
+        talkerSource.SetPromptEmbedding(lastRow, 1);
+        var logits = fwd.Forward(0, tRows - 1).ToArray();
+        int pos = tRows;
+
+        var codePredWeights = QwenTtsCodePredictorGeneration.Weights.Load(_talkerModel);
+        var specials = talkerWeights.Specials;
+        var frames = new List<int[]>();
+
+        for (int frame = 0; frame < maxFrames; frame++)
         {
-            return new AudioGenerationResult([], DefaultSampleRate);
+            int c0 = ArgMax(logits);
+            if (c0 == specials.CodecEosId) break;
+
+            var talkerLastHidden = fwd.LastHidden.ToArray();
+            var acoustic = QwenTtsCodePredictorGeneration.GenerateAcousticCodes(_talkerModel, codePredWeights, codePredNumLayers, c0, talkerLastHidden);
+
+            var frameCodes = new int[16];
+            frameCodes[0] = c0;
+            Array.Copy(acoustic, 0, frameCodes, 1, 15);
+            frames.Add(frameCodes);
+
+            var stepRow = QwenTtsTalkerPromptBuilder.ProjectTextIds(talkerWeights, [specials.TtsPadId]);
+            var codecVec = QwenTtsTalkerPromptBuilder.CodecEmbedRow(talkerWeights, c0);
+            for (int d = 0; d < QwenTtsTalkerPromptBuilder.TalkerHiddenDim; d++) stepRow[d] += codecVec[d];
+
+            talkerSource.SetPromptEmbedding(stepRow, 1);
+            logits = fwd.Forward(0, pos).ToArray();
+            pos++;
         }
 
-        // 1. Format Prompt & Tokenize
-        string formattedPrompt = _tokenizer.FormatPrompt(
-            text: request.Text,
-            voice: request.Voice,
-            language: null,
-            voiceDesignPrompt: null);
-
-        int[] promptTokens = _tokenizer.Encode(formattedPrompt);
-
-        // 2. Reference Audio Conditioning (Voice Cloning)
-        int[] refCode0 = [];
-        float[]? speakerEmbedding = null;
-
-        if (!string.IsNullOrEmpty(request.ReferenceAudioPath) && File.Exists(request.ReferenceAudioPath))
-        {
-            float[] refPcm = LoadPcmFromWav(request.ReferenceAudioPath);
-            if (refPcm.Length > 0)
-            {
-                refCode0 = ExtractReferenceCodes(refPcm);
-
-                // Extract 192-dim speaker embedding vector via ERes2NetV2
-                var mel = ExtractMelSpectrogram(refPcm, out int numFrames);
-                speakerEmbedding = _speakerEncoder.ExtractSpeakerEmbedding(mel, numFrames);
-            }
-        }
-
-        // 3. Stage 1: Talker LM generates Semantic Codebook 0 + Hidden States
-        var (code0, hiddenStates) = _talker.GenerateCode0(
-            promptTokens: promptTokens,
-            refCode0Tokens: refCode0,
-            speed: request.Speed);
-
-        int numFramesOut = code0.Length;
-
-        // 4. Stage 2: Code Predictor MTP completes 16-codebook RVQ codes
-        int[] rvqCodes = _predictor.PredictAllCodebooks(
-            code0: code0,
-            talkerHiddenStates: hiddenStates,
-            talkerHiddenDim: _talker.Config.HiddenDim);
-
-        // 5. Stage 3: DAC v2 Codec Decoder upsamples 16 RVQ codes to 24kHz audio
-        float[] samples = _decoder.Decode(rvqCodes, numFramesOut);
-
-        var result = new AudioGenerationResult(samples, DefaultSampleRate);
-        if (!string.IsNullOrEmpty(request.OutputPath))
-        {
-            result.SaveWav(request.OutputPath);
-        }
-
-        return result;
+        return frames;
     }
 
-    /// <summary>
-    /// Synthesizes text in streaming fashion, yielding clause/sentence audio chunks.
-    /// </summary>
-    public async IAsyncEnumerable<float[]> GenerateStreamAsync(
-        AudioGenerationRequest request,
-        [EnumeratorCancellation] CancellationToken ct = default)
+    private static int ArgMax(ReadOnlySpan<float> logits)
     {
-        if (string.IsNullOrWhiteSpace(request.Text)) yield break;
-
-        string[] clauses = SplitIntoClauses(request.Text);
-        foreach (string clause in clauses)
-        {
-            if (ct.IsCancellationRequested) yield break;
-
-            var clauseRequest = request with { Text = clause, OutputPath = null };
-            var chunk = Generate(clauseRequest);
-            if (chunk.Samples.Length > 0)
-            {
-                yield return chunk.Samples;
-            }
-        }
-    }
-
-    private static float[] LoadPcmFromWav(string path)
-    {
-        try
-        {
-            var (samples, sampleRate, channels) = WavReader.ReadWav(path);
-            if (channels > 1)
-            {
-                samples = AudioDownmixer.DownmixToMono(samples, channels);
-            }
-            if (sampleRate != 24000)
-            {
-                samples = AudioResampler.Resample(samples, sampleRate, 24000);
-            }
-            return samples;
-        }
-        catch
-        {
-            return [];
-        }
-    }
-
-    private static int[] ExtractReferenceCodes(float[] pcm)
-    {
-        int numFrames = Math.Max(1, pcm.Length / 2000);
-        var codes = new int[numFrames];
-        for (int i = 0; i < numFrames; i++)
-        {
-            codes[i] = (int)(MathF.Abs(pcm[Math.Min(i * 2000, pcm.Length - 1)]) * 1000f) % 2048;
-        }
-        return codes;
-    }
-
-    private static float[] ExtractMelSpectrogram(float[] pcm, out int numFrames)
-    {
-        int hopSize = 300;
-        numFrames = Math.Max(1, pcm.Length / hopSize);
-        var mel = new float[numFrames * 128];
-
-        for (int t = 0; t < numFrames; t++)
-        {
-            int start = t * hopSize;
-            for (int c = 0; c < 128; c++)
-            {
-                float val = 0f;
-                int idx = start + c;
-                if (idx < pcm.Length) val = pcm[idx];
-                mel[t * 128 + c] = MathF.Log(MathF.Abs(val) + 1e-5f);
-            }
-        }
-        return mel;
-    }
-
-    private static string[] SplitIntoClauses(string text)
-    {
-        return text.Split(new[] { '.', '!', '?', ';', '\n' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        int best = 0;
+        float bestVal = float.NegativeInfinity;
+        for (int i = 0; i < logits.Length; i++)
+            if (logits[i] > bestVal) { bestVal = logits[i]; best = i; }
+        return best;
     }
 
     public void Dispose()
     {
-        _speakerEncoder.Dispose();
+        _talkerModel.Dispose();
+        _codecModel.Dispose();
     }
 }
