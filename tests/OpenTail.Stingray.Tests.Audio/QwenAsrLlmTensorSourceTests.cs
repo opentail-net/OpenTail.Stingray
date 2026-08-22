@@ -126,4 +126,54 @@ public sealed class QwenAsrLlmTensorSourceTests : HeavyTestBase
         // tensors through and the engine silently produced a flat, meaningless distribution).
         Assert.True(max - min > 1.0f, $"logits look degenerate: min={min}, max={max}");
     }
+
+    /// <summary>
+    /// The real audio-conditioning claim, mirroring CosyVoiceLlmTensorSourceTests's
+    /// SpeechGenerationMode test: builds a synthetic combined embedding table (real dequantized
+    /// text rows + synthetic "audio frame" rows standing in for the AuT encoder's real output),
+    /// prefills a sequence mixing real text token ids with audio-frame ids offset via
+    /// AudioTokenIdOffset, and confirms the real Qwen3 forward pass runs end-to-end and produces
+    /// finite, non-degenerate logits over the real (unswapped) text vocabulary.
+    /// </summary>
+    [Fact]
+    public void AudioConditioning_RunsRealForwardPass_ProducesFiniteNonDegenerateLogits()
+    {
+        string? path = FindRepoFile("models/qwen3-asr-0.6b-q4_k.gguf");
+        Assert.SkipUnless(path != null, "models/qwen3-asr-0.6b-q4_k.gguf not found");
+
+        using var inner = GgufModel.Open(path!);
+        var adapter = new QwenAsrLlmTensorSource(inner);
+
+        int hiddenDim = System.Convert.ToInt32(adapter.Metadata["qwen3.embedding_length"]);
+        int textVocab = System.Convert.ToInt32(adapter.Metadata["qwen3.vocab_size"]);
+        const int numAudioTokens = 5;
+        var audioEmbeddings = new float[numAudioTokens * hiddenDim];
+        var rng = new System.Random(7);
+        for (int i = 0; i < audioEmbeddings.Length; i++) audioEmbeddings[i] = (float)(rng.NextDouble() * 0.1 - 0.05);
+
+        adapter.EnableAudioConditioning(audioEmbeddings, numAudioTokens);
+
+        Assert.Equal(textVocab, adapter.AudioTokenIdOffset);
+        var embedTensor = adapter.FindTensor("token_embd.weight");
+        Assert.NotNull(embedTensor);
+        Assert.Equal(textVocab + numAudioTokens, embedTensor!.Value.Dimensions[1]);
+
+        var hp = ModelHyperparams.FromGgufMetadata(adapter.Metadata);
+        using var backend = new CpuBackend();
+        using var fwd = new ForwardPass(adapter, backend, hp);
+
+        // Two real text tokens, then two "audio frame" ids offset into the synthetic table.
+        var prompt = new int[] { 785, 3974, adapter.AudioTokenIdOffset, adapter.AudioTokenIdOffset + 1 };
+        var logits = fwd.Prefill(prompt).ToArray();
+
+        Assert.Equal(textVocab, logits.Length);
+        float min = float.PositiveInfinity, max = float.NegativeInfinity;
+        foreach (var v in logits)
+        {
+            Assert.False(float.IsNaN(v) || float.IsInfinity(v), "logit is NaN/Inf");
+            if (v < min) min = v;
+            if (v > max) max = v;
+        }
+        Assert.True(max - min > 1.0f, $"logits look degenerate: min={min}, max={max}");
+    }
 }

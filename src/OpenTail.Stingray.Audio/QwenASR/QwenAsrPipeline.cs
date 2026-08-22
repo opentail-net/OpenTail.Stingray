@@ -40,10 +40,12 @@ public sealed class QwenAsrPipeline : ISpeechToTextPipeline
     }
 
     /// <summary>
-    /// Loads a real Qwen3-ASR pipeline directly from a GGUF model file. Real BPE tokenizer
-    /// (via <see cref="QwenAsrWeights.Tokenizer"/>); the AuT audio encoder and LLM decoder
-    /// stages are still procedural pending their own real ports -- see
-    /// docs/audio-review-progress.md's QwenASR section.
+    /// Loads a real Qwen3-ASR pipeline directly from a GGUF model file. Real BPE tokenizer (via
+    /// <see cref="QwenAsrWeights.Tokenizer"/>), real weight-driven AuT audio encoder, and a real
+    /// Qwen3 LLM decoder running through <c>OpenTail.Stingray.Engine.ForwardPass</c> with real
+    /// audio-embedding injection (see <see cref="QwenAsrDecoder"/>'s doc comment) -- see
+    /// docs/audio-review-progress.md's QwenASR section for the phonemizer-equivalent caveats
+    /// that still apply (mel extraction convention, tokenizer edge cases).
     /// </summary>
     public static QwenAsrPipeline Load(string ggufPath)
     {
@@ -71,7 +73,7 @@ public sealed class QwenAsrPipeline : ISpeechToTextPipeline
         var melExtractor = new QwenAsrMelExtractor();
         var tokenizer = new QwenAsrTokenizer(weights);
         var encoder = new QwenAsrAudioEncoder(encoderConfig, weights);
-        var decoder = new QwenAsrDecoder(decoderConfig);
+        var decoder = new QwenAsrDecoder(weights, decoderConfig);
         var aligner = new QwenAsrForcedAligner(tokenizer);
 
         return new QwenAsrPipeline(melExtractor, tokenizer, encoder, decoder, aligner, weights);

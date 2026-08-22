@@ -1,4 +1,6 @@
+using System.Runtime.InteropServices;
 using OpenTail.Stingray.Core;
+using OpenTail.Stingray.Cpu;
 
 namespace OpenTail.Stingray.Audio.QwenASR;
 
@@ -11,10 +13,10 @@ namespace OpenTail.Stingray.Audio.QwenASR;
 /// Parakeet's Conformer or Chatterbox's T3 needed for genuinely novel architectures.
 ///
 /// This is the metadata-remapping-adapter path chosen over splitting a second physical GGUF
-/// file to disk (see docs/audio-review-progress.md's QwenASR section for the two options this
-/// was weighed against): `OpenTail.Stingray.Core.IModelTensorSource` exists exactly for this
-/// purpose ("lets another format feed the existing, unmodified transformer loop" -- its own
-/// doc comment) and `ForwardPass`'s constructor already accepts the interface, not a concrete
+/// file to disk (see docs/audio-review-progress.md for the two options this was weighed
+/// against): `OpenTail.Stingray.Core.IModelTensorSource` exists exactly for this purpose
+/// ("lets another format feed the existing, unmodified transformer loop" -- its own doc
+/// comment) and `ForwardPass`'s constructor already accepts the interface, not a concrete
 /// `GgufModel`, so this adapter requires zero changes to Engine code.
 ///
 /// Two things this adapter does, both required because Qwen3-ASR bundles the audio encoder
@@ -36,17 +38,26 @@ namespace OpenTail.Stingray.Audio.QwenASR;
 ///    and would only confuse a strict weight-loading pass expecting a closed, known tensor
 ///    set for the architecture).
 ///
-/// NOT YET WIRED into an actual `ForwardPass`/generation loop, KV cache, or the multimodal
-/// audio-embedding injection point (replacing `audio_pad_token_id` embeddings with the AuT
-/// encoder's projected features before decode) -- this class only establishes that the
-/// Engine's real Qwen3 forward pass CAN consume this checkpoint's tensors under its own
-/// architecture-detection logic. Structural-only, not yet exercised end-to-end.
+/// <see cref="EnableAudioConditioning"/> adds the real multimodal audio-embedding injection:
+/// same composition-only technique CosyVoice's `CosyVoiceLlmTensorSource.
+/// EnableSpeechGenerationMode` uses (see docs/audio-review-progress.md) -- `ForwardPass.
+/// EmbedTokenInto` resolves an embedding row purely by looking up whatever tensor is bound to
+/// the canonical name `"token_embd.weight"` and indexing by token id, with no hardcoded
+/// vocabulary assumption, so a synthetic combined table (real text rows, dequantized, followed
+/// by the audio encoder's own per-frame continuous output rows) presented under that same name
+/// works transparently. Unlike CosyVoice's case, `output.weight`/vocab_size do NOT need
+/// swapping here -- QwenASR still predicts real text tokens, only the *input* embedding space
+/// grows for the duration of one utterance's audio positions.
 /// </summary>
-public sealed unsafe class QwenAsrLlmTensorSource : IModelTensorSource
+public sealed unsafe class QwenAsrLlmTensorSource : IModelTensorSource, IDisposable
 {
     private readonly GgufModel _inner;
-    private readonly IReadOnlyDictionary<string, object> _metadata;
-    private readonly IReadOnlyList<GgufTensorInfo> _tensors;
+    private readonly Dictionary<string, object> _metadata;
+    private readonly Dictionary<string, GgufTensorInfo> _byName = new(StringComparer.Ordinal);
+    private readonly List<nint> _ownedPointers = [];
+    private List<GgufTensorInfo> _tensors;
+    private bool _disposed;
+    private nint _combinedEmbeddingPtr;
 
     public QwenAsrLlmTensorSource(GgufModel inner)
     {
@@ -67,16 +78,15 @@ public sealed unsafe class QwenAsrLlmTensorSource : IModelTensorSource
         RemapIfPresent(metadata, "qwen3asr.llm.max_pos", "qwen3.context_length");
         _metadata = metadata;
 
-        var tensors = new List<GgufTensorInfo>();
         foreach (var t in inner.Tensors)
         {
             if (t.Name.StartsWith("blk.", StringComparison.Ordinal) ||
                 t.Name is "token_embd.weight" or "output.weight" or "output_norm.weight")
             {
-                tensors.Add(t);
+                _byName[t.Name] = t;
             }
         }
-        _tensors = tensors;
+        _tensors = [.. _byName.Values];
     }
 
     private static void RemapIfPresent(Dictionary<string, object> metadata, string sourceKey, string targetKey)
@@ -85,23 +95,91 @@ public sealed unsafe class QwenAsrLlmTensorSource : IModelTensorSource
             metadata[targetKey] = value;
     }
 
+    /// <summary>
+    /// The token id an audio frame position maps to once <see cref="EnableAudioConditioning"/>
+    /// has been called: audio frame `f` (0..numAudioTokens-1) becomes
+    /// <c>AudioTokenIdOffset + f</c> in the synthetic combined embedding space. Callers build
+    /// the prompt token sequence with these ids at the real checkpoint's `&lt;|audio_pad|&gt;`
+    /// positions before calling <c>ForwardPass.Prefill</c>. -1 until enabled.
+    /// </summary>
+    public int AudioTokenIdOffset { get; private set; } = -1;
+
+    /// <summary>
+    /// Builds a synthetic combined `token_embd.weight` (real text-vocab rows, dequantized to
+    /// F32, followed by <paramref name="numAudioTokens"/> rows taken directly from
+    /// <paramref name="audioEmbeddings"/> -- the AuT audio encoder's own projected output, see
+    /// <see cref="QwenAsrAudioEncoder.Forward"/>) and presents it under the same name, exactly
+    /// as <c>CosyVoiceLlmTensorSource.EnableSpeechGenerationMode</c> does for its speech-token
+    /// case. `audioEmbeddings` must be row-major [numAudioTokens, hiddenDim] where hiddenDim
+    /// matches `qwen3.embedding_length` (the AuT encoder's adapter already projects into this
+    /// exact space -- see `QwenAsrEncoderConfig.QwenHiddenDim`).
+    ///
+    /// Irreversible on this instance and only valid for the audio clip it was built from --
+    /// construct a fresh source (or call again to rebuild) per utterance, since the audio rows
+    /// are utterance-specific, unlike CosyVoice's small fixed speech vocabulary.
+    /// </summary>
+    public void EnableAudioConditioning(ReadOnlySpan<float> audioEmbeddings, int numAudioTokens)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        if (numAudioTokens <= 0) throw new ArgumentOutOfRangeException(nameof(numAudioTokens));
+
+        var textEmbedInfo = _byName["token_embd.weight"];
+        int hiddenDim = checked((int)textEmbedInfo.Dimensions[0]);
+        int textVocab = checked((int)textEmbedInfo.Dimensions[1]);
+        if (audioEmbeddings.Length != (long)numAudioTokens * hiddenDim)
+            throw new ArgumentException($"audioEmbeddings length {audioEmbeddings.Length} != numAudioTokens*hiddenDim ({numAudioTokens}*{hiddenDim}).", nameof(audioEmbeddings));
+
+        int combinedVocab = textVocab + numAudioTokens;
+        long combinedElementCount = (long)combinedVocab * hiddenDim;
+        float* combined = (float*)NativeMemory.Alloc((nuint)(combinedElementCount * sizeof(float)));
+
+        // Dequantize the real text rows in one pass (this checkpoint's token_embd.weight is
+        // Q4_K/Q8_0-quantized, not F32 -- Dequantize.ToFloat32 handles any DType uniformly, same
+        // helper KokoroWeights.cs already uses for its own tensor loading).
+        var rawText = _inner.GetTensorData(textEmbedInfo);
+        Dequantize.ToFloat32(rawText, new Span<float>(combined, checked((int)((long)textVocab * hiddenDim))), textEmbedInfo.DType, (long)textVocab * hiddenDim);
+
+        fixed (float* audioPtr = audioEmbeddings)
+        {
+            long audioElementCount = (long)numAudioTokens * hiddenDim;
+            Buffer.MemoryCopy(audioPtr, combined + (long)textVocab * hiddenDim,
+                audioElementCount * sizeof(float), audioElementCount * sizeof(float));
+        }
+
+        _ownedPointers.Add((nint)combined);
+        _combinedEmbeddingPtr = (nint)combined;
+        _byName["token_embd.weight"] = new GgufTensorInfo("token_embd.weight", 2, [hiddenDim, combinedVocab], DType.Float32, DataOffset: 0);
+        _tensors = [.. _byName.Values];
+
+        AudioTokenIdOffset = textVocab;
+    }
+
     public IReadOnlyList<GgufTensorInfo> Tensors => _tensors;
 
     public IReadOnlyDictionary<string, object> Metadata => _metadata;
 
-    public GgufTensorInfo? FindTensor(string name)
+    public GgufTensorInfo? FindTensor(string name) =>
+        _byName.TryGetValue(name, out var info) ? info : null;
+
+    public ReadOnlySpan<byte> GetTensorData(GgufTensorInfo tensor)
     {
-        // Only the filtered LLM-half tensor names are valid lookups through this source;
-        // delegate directly since the underlying GgufModel already indexes by exact name.
-        var found = _inner.FindTensor(name);
-        if (found is null) return null;
-        return found.Value.Name.StartsWith("blk.", StringComparison.Ordinal) ||
-               found.Value.Name is "token_embd.weight" or "output.weight" or "output_norm.weight"
-            ? found
-            : null;
+        if (_combinedEmbeddingPtr != 0 && tensor.Name == "token_embd.weight")
+            return new ReadOnlySpan<byte>((void*)_combinedEmbeddingPtr, checked((int)(tensor.ElementCount * sizeof(float))));
+        return _inner.GetTensorData(tensor);
     }
 
-    public ReadOnlySpan<byte> GetTensorData(GgufTensorInfo tensor) => _inner.GetTensorData(tensor);
+    public byte* GetTensorDataPtr(GgufTensorInfo tensor)
+    {
+        if (_combinedEmbeddingPtr != 0 && tensor.Name == "token_embd.weight")
+            return (byte*)_combinedEmbeddingPtr;
+        return _inner.GetTensorDataPtr(tensor);
+    }
 
-    public byte* GetTensorDataPtr(GgufTensorInfo tensor) => _inner.GetTensorDataPtr(tensor);
+    public void Dispose()
+    {
+        if (_disposed) return;
+        _disposed = true;
+        foreach (var p in _ownedPointers) NativeMemory.Free((void*)p);
+        _ownedPointers.Clear();
+    }
 }

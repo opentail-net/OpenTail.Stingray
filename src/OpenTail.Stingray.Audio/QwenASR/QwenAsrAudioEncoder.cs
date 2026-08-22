@@ -172,13 +172,17 @@ public sealed class QwenAsrAudioEncoder : IDisposable
         var attnRaw = new float[t][];
         for (int i = 0; i < t; i++) attnRaw[i] = new float[dim];
 
-        System.Threading.Tasks.Parallel.For(0, heads, h =>
+        // Parallelize over t (audio frame count -- scales with clip length, typically far larger
+        // than heads=14) rather than heads, matching the pattern in F5Kernels.
+        // MultiHeadSelfAttention: much more parallel width for longer clips, same SIMD dot/AV
+        // math either way (TensorPrimitives.Dot/MultiplyAdd), just a different loop nesting.
+        for (int h = 0; h < heads; h++)
         {
             int off = h * headDim;
-            var scores = new float[t];
-            var probs = new float[t];
-            for (int i = 0; i < t; i++)
+            System.Threading.Tasks.Parallel.For(0, t, i =>
             {
+                var scores = new float[t];
+                var probs = new float[t];
                 var qi = q[i].AsSpan(off, headDim);
                 for (int j = 0; j < t; j++)
                     scores[j] = TensorPrimitives.Dot(qi, k[j].AsSpan(off, headDim)) * scale;
@@ -197,8 +201,8 @@ public sealed class QwenAsrAudioEncoder : IDisposable
                 var weighted = attnRaw[i].AsSpan(off, headDim);
                 for (int j = 0; j < t; j++)
                     TensorPrimitives.MultiplyAdd(v[j].AsSpan(off, headDim), probs[j], weighted, weighted);
-            }
-        });
+            });
+        }
 
         var output = new float[t][];
         for (int i = 0; i < t; i++)

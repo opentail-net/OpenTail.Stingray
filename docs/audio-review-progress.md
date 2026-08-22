@@ -2331,9 +2331,79 @@ procedural fallback" pattern as Parakeet/CosyVoice's Fast-test cleanups earlier 
 filterbank rather than this checkpoint's real shipped `audio.mel_filters`/`audio.mel_window`
 tensors (same gap Parakeet had before its mel-extractor fix — not yet applied here due to
 time). No numeric golden verification against the real reference yet (structurally complete
-only, same caveat as every pipeline before its golden pass). The LLM decoder generation loop
-is still 100% procedural (`QwenAsrDecoder.Generate`) — wiring it to the real `ForwardPass` via
-`QwenAsrLlmTensorSource` plus the audio-embedding injection point is unstarted.
+only, same caveat as every pipeline before its golden pass).
+
+### QwenASR — LLM decoder generation loop wired to the real ForwardPass, plus a perf pass (2026-08-22 / 2026-08-23, direct user request "performance-enhance QwenASR" then "yes and yes" to both a perf fix and finishing the decoder)
+
+**Perf fix (verified via the CosyVoice/F5 benchmark sweep's established discipline, though no
+dedicated QwenASR benchmark test exists yet)**: `QwenAsrAudioEncoder.SelfAttention` had the
+same anti-pattern just fixed elsewhere in this doc for CosyVoice3/F5-TTS's DiT attention —
+`Parallel.For(0, heads, ...)` (heads=14, narrow) with the QK/AV math already using
+`TensorPrimitives.Dot`/`MultiplyAdd` (SIMD) internally. Restructured to loop `heads`
+sequentially and `Parallel.For(0, t, ...)` inside (t = audio frame count after 8x downsample,
+scales with clip length, typically far larger than 14) — same SIMD math, much wider
+parallelism for realistic clip lengths. `QwenAsrAudioEncoderTests` still passes (real weights,
+correct 8x-downsample shape, finite output) after the change.
+
+**Decoder wired to the real Engine forward pass — the embedding-injection blocker resolved
+the same way CosyVoice's was.** `QwenAsrLlmTensorSource` (previously "adapter only, not yet
+wired into a generation loop") gained `EnableAudioConditioning(audioEmbeddings,
+numAudioTokens)`: rebuilt the class around a mutable `Dictionary<string, GgufTensorInfo>`
+(was a fixed `List` built once at construction) and made it `IDisposable`, then applied the
+exact same composition-only trick `CosyVoiceLlmTensorSource.EnableSpeechGenerationMode` uses
+(`ForwardPass.EmbedTokenInto` resolves an embedding row purely by whatever tensor is bound to
+`"token_embd.weight"` + token id, no hardcoded vocab assumption — confirmed by re-reading
+`ForwardPass.Helpers.cs` directly, not re-guessing): dequantizes the real text-vocab rows in
+one pass via `Dequantize.ToFloat32` (this checkpoint's `token_embd.weight` is Q4_K/Q8_0, not
+F32, unlike CosyVoice's safetensors case) into a natively-allocated buffer, appends
+`numAudioTokens` rows taken directly from the AuT encoder's own real per-frame output, and
+presents the combined table under the same tensor name. Unlike CosyVoice's speech-generation
+case, `output.weight`/`qwen3.vocab_size` do NOT need swapping — QwenASR still predicts real
+text tokens, only the *input* embedding space grows for one utterance's audio positions.
+`AudioTokenIdOffset` (= real text vocab size) is exposed so a caller can map audio frame `f` to
+synthetic id `AudioTokenIdOffset + f`.
+
+**`QwenAsrDecoder.Generate`** (previously fully fake/procedural — see the old doc entry just
+above, now stale) gained a second constructor taking a real `QwenAsrWeights` (mirroring Piper/
+Melo's dual fake/real-constructor pattern); when constructed that way, `Generate`: builds a
+fresh `QwenAsrLlmTensorSource` from `weights.Model` per call (audio conditioning is
+utterance-specific, so a fresh source per utterance is correct, not a missed caching
+opportunity), calls `EnableAudioConditioning`, remaps the prompt's real `<|audio_pad|>`
+occurrences (one per AuT-encoder frame, from `QwenAsrTokenizer.FormatPrompt`) to the synthetic
+audio-frame ids in order, then runs a real `ForwardPass.Prefill` + autoregressive
+`Forward(token, position)` loop using `Sampler.Sample` (the same production sampler every other
+text-generation pipeline in this repo uses, not a hand-rolled argmax) until EOS or
+`maxNewTokens`. The old fully-fake loop is kept as `GenerateProcedural`, used only when no
+`QwenAsrWeights` was supplied (mirrors every other pipeline's fake/real dual-path discipline).
+`QwenAsrPipeline.Load` now constructs `QwenAsrDecoder(weights, decoderConfig)` instead of the
+config-only constructor.
+
+**Required adding an `OpenTail.Stingray.Engine` `ProjectReference` to `OpenTail.Stingray.Audio`
+itself** (previously only `Tests.Audio` had this, for CosyVoice's LLM tests) — checked
+`Engine.csproj`'s own references (Core, Cpu, Vision, Vulkan, Cuda, TurboQuant, Pipeline) and
+`Pipeline.csproj`'s (Core only) first to confirm no circular dependency before adding it.
+
+**Verified**: new test `QwenAsrLlmTensorSourceTests.AudioConditioning_RunsRealForwardPass_
+ProducesFiniteNonDegenerateLogits` (mirrors CosyVoice's `SpeechGenerationMode_...` test) —
+builds the combined embedding table, prefills a sequence mixing real text ids and synthetic
+audio-frame ids, confirms finite non-degenerate logits over the real (unswapped) text
+vocabulary — PASS, plus all 3 previously-passing tests in that file (5/5 total). The
+pre-existing end-to-end pipeline test `QwenAsrRealWeightsTests.
+QwenAsrPipeline_LoadRealGguf_TranscribesAudioEndToEnd` (synthetic tone audio through the full
+`Transcribe` call) now genuinely exercises this real decoder path end-to-end for the first
+time — still PASS (2/2 in that file), confirming the whole chain (mel → real AuT encoder → real
+audio-conditioned prompt → real Qwen3 `ForwardPass` generation loop → tokenizer decode) runs
+without crashing. `QwenAsrAudioEncoderTests` (1/1) and `QwenAsrTokenizerTests` (2/2) also still
+pass — 4 test classes, 10 tests total, zero regressions.
+
+**Not yet done / known caveats, same honesty bar as every other pipeline in this doc**: no
+numeric golden verification exists for either the AuT encoder or the decoder path (no
+real reference Python/C++ AuT+Qwen3-ASR implementation has been run this session to diff
+against) — "runs end-to-end without crashing and produces non-degenerate logits" is NOT the
+same claim as "produces a correct transcript," exactly the distinction this whole doc exists
+to keep honest. `QwenAsrMelExtractor`'s self-computed filterbank gap above still stands. No
+dedicated QwenASR perf benchmark test exists yet (unlike CosyVoice's `CosyVoiceBenchmarkTests`)
+if a future pass wants to measure the audio-encoder attention fix's actual wall-clock effect.
 
 ### CosyVoice — LLM backbone ported via the same Engine-reuse pattern as QwenASR (2026-08-22, same session, direct user request)
 
