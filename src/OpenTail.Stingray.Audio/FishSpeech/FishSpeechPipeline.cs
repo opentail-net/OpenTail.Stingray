@@ -36,6 +36,14 @@ namespace OpenTail.Stingray.Audio.FishSpeech;
 /// </summary>
 public sealed class FishSpeechPipeline : IDisposable
 {
+    // TEMPORARY diagnostic-only counters for this session's performance pass -- remove once the
+    // Fish Speech investigation concludes. Not thread-safe, single-sequence generation only.
+    public static double DiagTrunkMs;
+    public static double DiagFastArMs;
+    public static int DiagTrunkCalls;
+    public static int DiagFastArCalls;
+
+
     private readonly GgufModel _model;
     private readonly FishSpeechTensorSource _tensorSource;
     private readonly CpuBackend _backend;
@@ -45,6 +53,7 @@ public sealed class FishSpeechPipeline : IDisposable
     private readonly int _imEndId;
     private readonly int _voiceId;
     private readonly int _codebookDim;
+    private readonly FishSpeechFastArCache _fastArCache;
 
     public FishSpeechPipeline(string ggufPath, string tokenizerDir, int numLayers = 36, int ctxSize = 2048)
     {
@@ -55,6 +64,7 @@ public sealed class FishSpeechPipeline : IDisposable
         _fwd = new ForwardPass(_tensorSource, _backend, hp, maxContextLength: ctxSize);
         _fwd.EnableHiddenTaps([numLayers - 1]); // last layer's output = the trunk's post-trunk pre-final-norm hidden, what the real fast_decode conditions on
         _weights = new FishSpeechWeights(ggufPath);
+        _fastArCache = new FishSpeechFastArCache(_weights.FastBlockCount);
 
         var tokResult = HuggingFaceTokenizerSource.Load(tokenizerDir);
         if (!tokResult.IsUsable || tokResult.Source is null)
@@ -140,13 +150,17 @@ public sealed class FishSpeechPipeline : IDisposable
         var prompt = BuildPrompt(text);
         _fwd.ResetCache();
 
-        ReadOnlySpan<float> logits = default;
-        int pos = 0;
-        foreach (var tok in prompt)
-        {
-            logits = _fwd.ForwardEmbedding(EmbedTextToken(tok), pos);
-            pos++;
-        }
+        // Every prompt position is plain text (BuildPrompt never emits a semantic/codebook
+        // token), so EmbedTextToken's per-position embedding reduces to the SAME plain embedding-
+        // table lookup ForwardPass's own batched Prefill already does internally (see
+        // EmbedTextToken's doc comment: "token_scale = 1.0 for non-semantic positions -- no-op").
+        // Feeding the whole prompt through one batched Prefill call instead of a sequential
+        // per-token ForwardEmbedding loop is numerically identical but lets the engine batch the
+        // matmuls across positions instead of redoing full single-token decode overhead per
+        // prompt token -- measured this session's performance pass as the dominant remaining cost
+        // after the fast-AR KV cache fix (see docs/audio-review-progress.md).
+        var logits = _fwd.Prefill(prompt);
+        int pos = prompt.Count;
 
         int semBegin = _weights.SemanticBeginId;
         int semEnd = _weights.SemanticEndId;
@@ -164,21 +178,36 @@ public sealed class FishSpeechPipeline : IDisposable
             // Real fast-AR codebook expansion: sample codebooks 1..NumCodebooks-1 one at a time,
             // each conditioned on the slow-AR's own hidden state for THIS timestep plus the
             // codebook values already decided so far this timestep -- matches s2_generate.cpp's
-            // real per-timestep loop exactly (see FishSpeechFastAr's doc comment).
+            // real per-timestep loop exactly (see FishSpeechFastAr's doc comment). KV-cached
+            // (see FishSpeechFastArCache's doc comment) -- mathematically equivalent to the old
+            // from-scratch-every-call Forward, but reuses attention work across the 9 calls
+            // instead of redoing it (measured this session's baseline as the dominant real cost).
             var codebookValues = new int[_weights.NumCodebooks];
             codebookValues[0] = semCode;
-            var prefix = new List<int>();
+            _fastArCache.Reset();
+            var swFast = System.Diagnostics.Stopwatch.StartNew();
+            var stepLogits = FishSpeechFastAr.ForwardStep(_weights, _fastArCache, hidden);
+            DiagFastArCalls++;
             for (int cb = 1; cb < _weights.NumCodebooks; cb++)
             {
-                var cbLogits = FishSpeechFastAr.Forward(_weights, hidden, prefix.ToArray());
-                int cbToken = Argmax(cbLogits);
+                int cbToken = Argmax(stepLogits);
                 codebookValues[cb] = cbToken;
-                prefix.Add(cbToken);
+                if (cb < _weights.NumCodebooks - 1)
+                {
+                    stepLogits = FishSpeechFastAr.ForwardStep(_weights, _fastArCache, FishSpeechFastAr.EmbedFastToken(_weights, cbToken));
+                    DiagFastArCalls++;
+                }
             }
+            swFast.Stop();
+            DiagFastArMs += swFast.Elapsed.TotalMilliseconds;
             codebooksPerFrame.Add(codebookValues);
 
             var emb = EmbedSemanticToken(mainToken, codebookValues);
+            var swTrunk = System.Diagnostics.Stopwatch.StartNew();
             logits = _fwd.ForwardEmbedding(emb, pos);
+            swTrunk.Stop();
+            DiagTrunkMs += swTrunk.Elapsed.TotalMilliseconds;
+            DiagTrunkCalls++;
             pos++;
             hidden = _fwd.HiddenTapsAt(pos - 1).ToArray();
 

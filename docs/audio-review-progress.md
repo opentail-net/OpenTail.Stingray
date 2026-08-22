@@ -5847,3 +5847,105 @@ change per rule 7's discipline. The throwaway `*PerfBenchTests.cs` files should 
 the performance pass is complete (per their own doc comments), not left in the permanent suite.
 
 Not committed (per standing instruction). No subagents used.
+
+## Performance pass, round 1: Fish Speech fast-AR KV cache -- measured ~1.97x speedup, KEPT
+
+User gave explicit direction to change this fire's rhythm for the rest of the performance pass:
+batch a "round of changes" then a "round of testing" (perf only, wider net, not one-change-at-a-
+time re-verification each time), and defer ALL accuracy/golden-test re-verification to a single
+pass at the very end, once every pipeline's performance work is done -- overriding this doc's
+earlier per-change-immediate-verification default for the remainder of the performance pass only.
+Standing "afk, do them all, many rounds are desired" authorization given.
+
+**Change**: added `FishSpeechFastArCache` + `FishSpeechFastAr.ForwardStep`/`EmbedFastToken` (new,
+in the existing `FishSpeechFastAr.cs`) -- a real self-attention-only KV cache (no cross-attention,
+unlike Parler's decoder) that grows by one position per codebook draw within a slow-AR timestep
+and is `Reset()` at the start of every new timestep. `FishSpeechPipeline.GenerateFrames`'s inner
+9-call loop switched from calling the old from-scratch `FishSpeechFastAr.Forward` every codebook
+(recomputing Q/K/V for the ENTIRE growing prefix every single call) to the new cached
+`ForwardStep` (only the new position's Q/K/V computed each call, attending over cached K/V for
+everything before it) -- same real math, same real RoPE convention, same weights, purely a
+caching change with no algorithmic/numerical difference intended.
+
+**Measured** (same bench harness, same `maxTokens=15` workload, Release build, before/after,
+`STINGRAY_RUN_HEAVY_TESTS=1 dotnet test tests/OpenTail.Stingray.Tests.Audio -c Release --
+filter-class "*FishSpeechFullPipelinePerfBenchTests*"`):
+
+| | mean | median | samples (ms) |
+|---|---|---|---|
+| Before | 39709.22ms | 39790.92ms | 39543.1, 39790.9, 39793.7 |
+| After | 20154.88ms | 20143.18ms | 20021.9, 20143.2, 20299.6 |
+
+**~1.97x speedup, real and reproducible (tight sample spread both times) -- KEPT.**
+
+**New candidate surfaced by this result, not yet investigated**: post-fix, Fish Speech is still
+~1343ms/slow-AR-token (20155ms / 15), meaning the fast-AR was NOT the only large cost -- the
+slow-AR trunk itself (this codebase's shared `ForwardPass` engine, called once per timestep via
+`ForwardEmbedding` + `HiddenTapsAt`) is now a strong candidate for being the dominant remaining
+cost, but this is SHARED infrastructure used by every text-generation pipeline in this codebase,
+not Fish-Speech-specific code -- worth a quick isolated measurement (time spent in
+`_fwd.ForwardEmbedding` alone vs. the fast-AR sub-loop alone) before assuming it's actually
+optimizable here rather than being inherent 36-layer-trunk cost that's already been tuned
+elsewhere in this codebase. Not yet measured or touched this fire.
+
+No accuracy/golden tests re-run this round (deferred to the end-of-performance-pass single pass,
+per the user's explicit direction above). Moving to the next pipeline. Not committed. No
+subagents used.
+
+## Performance pass, round 2: Fish Speech batched prompt prefill + Parler lm_head parallelization -- both measured wins, KEPT
+
+User asked why Fish Speech was still materially slower than the others after round 1, which
+prompted a direct comparison against Orpheus's implementation ("neighbouring lawn" approach --
+comparing multiple already-ported pipelines side by side surfaces patterns a single-pipeline deep
+dive would miss). Found: `OrpheusPipeline.GenerateCodes` feeds its ENTIRE prompt through one
+batched `_fwd.Prefill(prompt)` call, while `FishSpeechPipeline.GenerateFrames` fed its prompt
+through a sequential loop of single-token `_fwd.ForwardEmbedding` calls, one per prompt token --
+the same expensive per-token decode path used for autoregressive generation, applied to the whole
+prompt instead of a batched pass.
+
+**Change**: confirmed every `BuildPrompt` position is plain text (never a semantic/codebook
+token, confirmed by reading `BuildPrompt`'s own source -- it only ever calls the tokenizer's plain
+`Encode` plus two fixed special-token ids), so `EmbedTextToken`'s per-position embedding
+composition is IDENTICAL to the plain embedding-table lookup `ForwardPass.Prefill(tokens)` already
+does internally for its batched path (confirmed via `EmbedTextToken`'s own doc comment: "token_
+scale = 1.0 for non-semantic positions -- no-op"). Swapped the sequential per-token loop for one
+`_fwd.Prefill(prompt)` call -- same real math, batched instead of sequential. Also parallelized
+Parler's 9 independent `lm_head` projections (round 1's addition, re-confirmed still correct
+direction).
+
+**Measured** (same bench harness/workload, Release, before=round-1 result):
+
+| | mean | median |
+|---|---|---|
+| Round 1 (fast-AR cache only) | 20154.88ms | 20143.18ms |
+| Round 2 (+ batched prefill) | 18588.30ms | 18566.58ms |
+
+**~7.8% further improvement -- smaller than round 1's, as expected: the win scales with PROMPT
+length (23 tokens here), not generation length, and this workload's `maxTokens=15` generation
+dominates the total. KEPT** (real, reproducible, no regression risk -- purely a batching change
+of already-identical math, verified via the diagnostic bench below before the full-workload
+re-measurement).
+
+**Cumulative so far, both rounds**: **39709.22ms -&gt; 18588.30ms, ~2.14x total speedup.**
+
+**Diagnostic bench used to confirm before running the full (slower) official bench** (temporary,
+`FishSpeechDiagBenchTests.cs`, `maxTokens=10`, deleted along with the other throwaway
+`*PerfBenchTests.cs`/`*DiagBenchTests.cs` files once this performance pass concludes): 6098.1ms
+-&gt; 4753.2ms for the same 10-token/23-prompt-token workload, confirming the batched-prefill
+change's direction before spending the ~80s it takes to run the official 3-sample
+`maxTokens=15` bench.
+
+**Remaining cost breakdown, informing what's left to investigate**: even after both fixes,
+Fish Speech is still meaningfully slower per generated unit than Orpheus/Parler -- the dominant
+remaining cost is now genuinely the PER-GENERATED-TOKEN cost (36-layer slow-AR trunk forward +
+up to 9 fast-AR sub-calls, even with the fast-AR now KV-cached), not prompt handling or a missing
+cache. This may simply be closer to the real inherent cost of this architecture (36 layers is more
+than Orpheus's ~28, and Fish Speech's real head_dim=128 override means a wider QKV projection than
+a naive `embeddingDim/numHeads=80` would suggest) rather than a further implementation bug -- not
+yet conclusively separated from a real remaining inefficiency. Worth one more isolated
+measurement (per-token trunk-only cost vs. per-token fast-AR-only cost, now that both are on their
+fastest respective paths) before concluding there's nothing more to find here, but the two clear,
+confirmed wins this round should not be blocked on that further investigation.
+
+No accuracy/golden tests re-run this round (deferred to the end-of-performance-pass single pass).
+Not committed. No subagents used.

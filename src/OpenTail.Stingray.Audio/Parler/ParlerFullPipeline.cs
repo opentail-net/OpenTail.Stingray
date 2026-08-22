@@ -1,3 +1,4 @@
+using System.Threading.Tasks;
 using OpenTail.Stingray.Core;
 
 namespace OpenTail.Stingray.Audio.Parler;
@@ -85,9 +86,13 @@ public sealed class ParlerFullPipeline : IDisposable
             int pos = t0 + step;
             if (pos >= maxLength) break;
 
+            // 9 independent lm_head projections off the same shared hidden state -- real
+            // architecture has no data dependency between them, so run them in parallel (measured
+            // this session's performance pass; each is a full HiddenDim(1024)->OutputVocabSize(1088)
+            // matvec, non-trivial work to leave serialized on a 12-core box).
             var logitsPerCodebook = new float[NumCodebooks][];
-            for (int cb = 0; cb < NumCodebooks; cb++)
-                logitsPerCodebook[cb] = LinearNoBias(hidden, _decoderWeights.LmHeads[cb], ParlerDecoderWeights.HiddenDim, ParlerDecoderWeights.OutputVocabSize);
+            Parallel.For(0, NumCodebooks, cb =>
+                logitsPerCodebook[cb] = LinearNoBias(hidden, _decoderWeights.LmHeads[cb], ParlerDecoderWeights.HiddenDim, ParlerDecoderWeights.OutputVocabSize));
 
             if (step >= minNewTokens)
             {
