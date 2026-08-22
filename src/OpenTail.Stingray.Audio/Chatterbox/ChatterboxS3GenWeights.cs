@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using OpenTail.Stingray.Audio.Primitives;
 using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Cpu;
 
@@ -14,8 +15,22 @@ namespace OpenTail.Stingray.Audio.Chatterbox;
 /// The CFM UNet (`s3.fd.*`) and HiFTGenerator vocoder (`s3.v.*`) are separate, not-yet-loaded
 /// stages -- see ChatterboxDecoder.cs for the overall status.
 /// </summary>
-public sealed class ChatterboxS3GenWeights : IDisposable
+public sealed class ChatterboxS3GenWeights : IDisposable, IS3GenFlowEncoderWeights
 {
+    // Explicit IS3GenFlowEncoderWeights implementation: aliases this class's existing public
+    // property names (EncHidden/EncHeads/EncHeadDim/EncFfn/SpkEncDim -- kept as-is, no public
+    // API to preserve here per se, but renaming would touch every other Chatterbox call site
+    // referencing these names, e.g. ChatterboxCfmDecoder.cs/ChatterboxVocoder.cs) onto the
+    // shared interface's generic names, added when `S3GenConformerKernels` was extracted so
+    // this class's Conformer-encoder logic could move there -- see docs/audio-review-
+    // progress.md's CosyVoice section for the extraction rationale.
+    int IS3GenFlowEncoderWeights.HiddenDim => EncHidden;
+    int IS3GenFlowEncoderWeights.NumHeads => EncHeads;
+    int IS3GenFlowEncoderWeights.HeadDim => EncHeadDim;
+    int IS3GenFlowEncoderWeights.FfnDim => EncFfn;
+    IS3GenConformerLayerWeights[] IS3GenFlowEncoderWeights.EncLayers => (IS3GenConformerLayerWeights[])EncLayers;
+    IS3GenConformerLayerWeights[] IS3GenFlowEncoderWeights.UpEncLayers => (IS3GenConformerLayerWeights[])UpEncLayers;
+
     public GgufModel Model { get; }
 
     public int EncHidden { get; }
@@ -246,7 +261,7 @@ public sealed class ChatterboxS3GenWeights : IDisposable
 /// UpsampleConformerEncoder's config in s3gen.py) -- so this is just rel-pos self-attention +
 /// FFN, both pre-LN, no macaron FFN and no depthwise conv branch.
 /// </summary>
-public sealed class ChatterboxS3GenConformerLayer
+public sealed class ChatterboxS3GenConformerLayer : IS3GenConformerLayerWeights
 {
     public float[] NormMhaWeight { get; }
     public float[] NormMhaBias { get; }

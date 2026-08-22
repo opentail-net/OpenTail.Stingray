@@ -2703,6 +2703,164 @@ against whatever CosyVoice2 lands on rather than assuming they're identical (sam
 as everywhere else in this doc — CosyVoice3's speech vocab already turned out to differ from
 CosyVoice2's, 6761 vs 6564, so don't assume the flow/HiFT dims carry over either).
 
+### DRY pass: extracted `Primitives/S3GenConformerKernels.cs`, verified against Chatterbox's real golden test (2026-08-22, same session, direct user request "do a DRY pass, make sure it works well, then do CosyVoice3")
+
+Did the deferred extraction flagged in the previous entry now that both `ChatterboxFlowEncoder.
+cs` (real, golden-verified) and `CosyVoiceFlowEncoder.cs` (real-weights structural tests
+passing) existed to check against each other. Wrote `Primitives/S3GenConformerKernels.cs`
+with two small interfaces (`IS3GenConformerLayerWeights` for one Conformer block's weights,
+`IS3GenFlowEncoderWeights` for the top-level encoder weights) and moved the actual math
+(`Forward`, `EmbedRow`, `ProjectSpeakerEmbedding`, `EmbedAndScale`, `PreLookahead`,
+`Upsample1D`, `Conv1dValid`, `ConformerLayer`, `RelPositionSelfAttention`) there verbatim from
+`ChatterboxFlowEncoder.cs` (the two files' logic was already identical after the CosyVoice
+port, confirmed during the earlier porting pass — this was a pure move, not a rewrite).
+
+**Chatterbox's `ChatterboxS3GenWeights.cs` implements the new interfaces via EXPLICIT
+interface implementation** (`int IS3GenFlowEncoderWeights.HiddenDim => EncHidden;` etc.)
+rather than renaming its existing `EncHidden`/`EncHeads`/`EncHeadDim`/`EncFfn`/`SpkEncDim`
+properties — user confirmed there's no real external API to preserve yet ("no real public API
+... noone uses this yet"), but explicit-interface-implementation was still the right call
+for a different reason: renaming would have meant touching every other Chatterbox file that
+already references those names (`ChatterboxCfmDecoder.cs`, `ChatterboxVocoder.cs`, etc.),
+which is unrelated churn and unnecessary risk for a same-session refactor. `CosyVoiceFlowWeights.
+cs` implements the interfaces directly (its property names already matched the interface,
+since the interface was designed to match what was already written for CosyVoice). Both
+per-layer weight classes (`ChatterboxS3GenConformerLayer`, `CosyVoiceFlowLayerWeights`)
+needed only `: IS3GenConformerLayerWeights` added — their fields already matched exactly,
+zero renaming.
+
+One real compile hiccup, not a logic bug: C# doesn't implicitly convert
+`ConcreteLayerType[]` to `IInterfaceType[]` for an explicit interface member the way it does
+for some other covariant contexts — needed an explicit `(IS3GenConformerLayerWeights[])`
+cast on both `EncLayers`/`UpEncLayers` explicit-interface accessors in both weight classes.
+
+Both `ChatterboxFlowEncoder.cs` and `CosyVoiceFlowEncoder.cs` are now thin wrappers
+(`EmbedRow` the tokens, call `S3GenConformerKernels.Forward`/`ProjectSpeakerEmbedding`) — no
+duplicated Conformer-block logic remains between the two pipelines.
+
+**Verified the extraction is behavior-preserving, not just "it compiles"**: re-ran
+`ChatterboxFlowEncoderTests` (the real golden cosine-similarity test against actual PyTorch
+reference output) — **PASS**, plus `ChatterboxCfmDecoderTests` and `ChatterboxVocoderTests`
+(downstream consumers of the flow encoder's `mu` output, to catch any subtle behavior change
+that wouldn't show up in the encoder's own test alone) — **both PASS**. Re-ran
+`CosyVoiceFlowEncoderTests` (all 3) — **PASS**. `Tests.Audio.Fast` still builds clean. This is
+the strongest verification bar available in this codebase (real numerical output vs a real
+external reference, not just shape/finiteness), and it confirms the refactor changed zero
+numerics on either pipeline.
+
+### CosyVoice3 flow/HiFT: real architecture inspected, genuinely NOT a drop-in reuse of CosyVoice2's (2026-08-22, same session, direct user request "then do CosyVoice3")
+
+Dumped CosyVoice3's real flow/HiFT tensor names from the bundled GGUF (same technique as
+throughout this doc) before writing any code, per this doc's own established discipline.
+**Two real, load-bearing findings, one confirming earlier suspicion and one new:**
+
+**Flow: CosyVoice3 has NO Conformer encoder stage at all — confirms `examples/cosyvoice.cpp`
+really is the right reference for THIS checkpoint.** There is no `encoder.encoders.*`/
+`pos_bias_u`/`self_attn.linear_q` anywhere in the GGUF. Instead: `input_embedding.weight`
+is `[vocab=6561, embed_dim=80]` (NOT CosyVoice2's `[6561,512]` — a much smaller, 80-dim token
+embedding, likely feeding directly toward mel-space rather than through a large Conformer
+hidden state) and the tensors go straight to `decoder.estimator.input_embed.{conv_pos_embed,
+proj}` / `decoder.estimator.time_embed.time_mlp` / `decoder.estimator.transformer_blocks.*`
+— a DiT-style flow whose naming (`conv_pos_embed`, `time_embed.time_mlp`) resembles F5-TTS's
+DiT more than CosyVoice2's Conformer encoder. This matches exactly what
+`CausalMaskedDiffWithDiT::build_cgraph_encode` in `examples/cosyvoice.cpp` showed earlier
+this session (token embed -> `PreLookaheadLayer` -> simple upsample -> straight into the DiT
+estimator, no attention stage) — confirming that C++ reference, dismissed for CosyVoice2, is
+the right oracle for CosyVoice3 specifically. **None of this session's `CosyVoiceFlowEncoder.
+cs`/`S3GenConformerKernels` work applies to CosyVoice3's flow at all** — it needs its own,
+separate port against the DiT architecture, closer in shape to this repo's existing
+`F5TTS/F5DiTModel.cs` (already real and golden-verified) than to Chatterbox/CosyVoice2's
+Conformer encoder. Worth checking whether `F5DiTModel.cs`'s block math is reusable as a
+template the same way Chatterbox's was for the Conformer encoders — not yet checked.
+
+**HiFT: architecturally close to CosyVoice2's (same stage shapes, same resblock/source-down
+structure) but with two real, confirmed differences, not a byte-identical match either.**
+`conv_pre.weight` is `[out=512,in=80,k=5]` — kernel **5**, not CosyVoice2's **7** (CosyVoice2:
+`[512,80,7]`). `ups.0`/`resblocks.0.convs1.0`/`source_downs.0`/`conv_post` shapes otherwise
+match CosyVoice2's HiFT almost exactly (512→256 first upsample stage, 256-channel resblocks
+with k=3, `conv_post` outputting 18=n_fft+2 channels). **Also confirmed: none of CosyVoice3's
+HiFT conv tensors carry a `parametrizations.weight.original0/1` split — they're already plain,
+pre-fused conv weights.** This means `CosyVoiceHiftWeights.GetFoldedConvWeight`'s weight-norm
+fold does NOT apply to this checkpoint at all; a CosyVoice3 HiFT loader needs to read these
+tensors directly, and should NOT assume the fold step is universal across CosyVoice versions
+just because CosyVoice2 needed it.
+
+**Decision: did not start either CosyVoice3 port this pass.** The flow stage needs a genuinely
+new DiT-family implementation (not a config-difference from CosyVoice2's, an architecturally
+different pipeline), and doing that justice — reading `examples/cosyvoice.cpp`'s DiT estimator
+code properly, checking `F5DiTModel.cs` for reuse potential, deriving the conv_pos_embed/
+time_embed specifics — is its own substantial task, not a quick follow-on to squeeze into an
+already very long session. Writing this up precisely now (exact tensor names/shapes,
+kernel-size difference, no-fold-needed finding) so the next iteration can start directly from
+real facts instead of re-deriving them, the same discipline every other entry in this doc
+follows.
+
+**Next iteration**: (1) Read `examples/cosyvoice.cpp`'s `CausalConditionalCFM`/DiT estimator
+build-graph code in full (partially read earlier this session — `build_cgraph_one_step`,
+`PreLookaheadLayer::build_cgraph`, `CausalMaskedDiffWithDiT::build_cgraph_encode` — but not
+the actual `transformer_blocks`/`conv_pos_embed`/`time_embed` internals). (2) Check whether
+`F5TTS/F5DiTModel.cs`'s block math (also a real, golden-verified DiT) is a usable template,
+the same way Chatterbox's Conformer encoder was for CosyVoice2's. (3) Write a CosyVoice3-
+specific HiFT loader WITHOUT the weight-norm fold (confirmed unnecessary for this checkpoint),
+reusing `CosyVoiceHifiResBlockWeights`'s shape/field conventions where they still apply,
+adjusting for the confirmed kernel-size-5 `conv_pre`. (4) Once CosyVoice2's own HiFT DSP pass
+lands (per the earlier entry's recommended approach: extract `Primitives/HiFTVocoderKernels.cs`
+from `ChatterboxVocoder.cs`, verify, then use it for CosyVoice2), reuse those same kernels for
+CosyVoice3's HiFT forward pass too — the resblock/source-down/upsample math itself should
+still be shared even though the flow stage isn't.
+
+### CosyVoice3 DiT backbone ported — turned out to be F5-TTS's DiT, tensor-for-tensor (2026-08-22, same session, direct user request "probably code CosyVoice3")
+
+Followed up on next-iteration item (2) above immediately: checked `F5TTS/F5DiTBlockWeights`'s
+real tensor names (`transformer_blocks.{i}.{attn_norm.linear, attn.to_q/k/v, attn.to_out.0,
+ff.ff.0.0, ff.ff.2}`) against CosyVoice3's real dump — **byte-for-byte identical suffixes**,
+just prefixed with `decoder.estimator.`. Cross-checked every hyperparameter against real
+tensor shapes/GGUF metadata rather than assuming: hidden=1024, heads=16 (`decoder.estimator.
+heads` metadata), head_dim=64, ffn=2048, depth=22 (`decoder.estimator.depth` metadata),
+`time_embed.time_mlp.0/2` matches F5's `TimeFreqDim=256` exactly, `norm_out.linear`/
+`proj_out` match F5's final-layer naming and AdaLN-Zero-final structure exactly (only
+`MelDim` differs: 80 here vs F5's 100 — an expected, non-architectural difference). This is
+CosyVoice3's DiT estimator running the literal same architecture as `F5TTS/F5DiTModel.cs`
+(itself real and golden-verified against actual PyTorch reference output).
+
+**Ported `CosyVoice3DiTWeights.cs`** (real GGUF tensor loading: `input_embed.proj`+
+`conv_pos_embed.conv1/conv2`, `time_embed.time_mlp.0/2`, `norm_out.linear`, `proj_out`, all 22
+`transformer_blocks`) and **`CosyVoice3DiTModel.cs`** (the block/backbone forward math),
+copying `F5DiTBlock.cs`/`F5DiTModel.cs`'s real, verified logic directly rather than
+re-deriving it, and reusing `F5TTS.F5Kernels`/`F5TTS.F5RotaryEmbedding` as-is (already
+pipeline-agnostic static utilities, zero duplication needed there).
+
+**Deliberately did NOT implement the `input_embed` concatenation step** (what real tensors
+combine into the 320-dim vector `input_embed.proj` consumes) — F5's analog is
+`concat(x, cond, text_embed)` at `melDim*2+textDim=320`, but CosyVoice3 has no text embedding
+in that sense, and guessing the composition (plausible candidates: `x`/flow-token-embedding/
+reference-mel/speaker-embedding, each 80-dim, summing to 320) without confirming against
+`examples/cosyvoice.cpp`'s real estimator-input construction would be exactly the failure
+mode this whole rebuild exists to avoid. Instead exposed `RunBackbone` (takes an
+already-embedded `[numFrames, 1024]` hidden state) and `InputEmbed` (takes an already-formed
+concatenated input of known width, runs the confirmed `proj`+`ConvPositionEmbedding`
+mechanics) as the two testable, real pieces, with the input-formula gap explicitly documented
+in `CosyVoice3DiTModel`'s doc comment rather than silently papered over.
+
+**Verified against real weights, passed on the first attempt** (a genuine contrast to
+QwenASR's `TensorPrimitives.SoftMax` NaN debugging saga earlier this session — makes sense in
+hindsight: this is a careful, direct port of already-golden-verified F5-TTS code, not a
+from-scratch derivation, so there was much less surface area for a transcription bug to hide
+in). `Tests.Audio/CosyVoice3DiTModelTests.cs`: real-shape weight loading (22 blocks, correct
+`input_embed.proj`/`proj_out` dims), `RunBackbone` on a synthetic embedded input (finite,
+non-degenerate 80-dim-per-frame output), `InputEmbed` on a synthetic 320-dim concatenated
+input (finite 1024-dim-per-frame output) — **all 3 PASS**.
+
+**Next iteration**: resolve the `input_embed` concatenation formula by reading `examples/
+cosyvoice.cpp`'s `CausalConditionalCFM::build_cgraph_one_step`/`CausalMaskedDiffWithDiT::
+build_cgraph_encode` in full (both partially read this session, not to completion) — once
+that's confirmed, wire `InputEmbed` + `RunBackbone` together into a real `ForwardVelocity`
+entry point (mirroring `F5DiTModel.ForwardVelocity`'s shape exactly) and the flow-matching ODE
+sampler loop (a real, existing template: `F5TTS/F5FlowMatchingOde.cs`, also likely reusable
+given how closely everything else has matched so far). Then CosyVoice3's HiFT (already-fused
+weights, no fold needed, kernel-5 `conv_pre` — see the earlier entry) is the last remaining
+stage.
+
 Did next-iteration item (1) above immediately rather than deferring it. Added
 `OpenTail.Stingray.Engine`/`OpenTail.Stingray.Cpu` `ProjectReference`s to `Tests.Audio.csproj`
 (previously only referenced the Audio project — this is the first Audio test needing a real

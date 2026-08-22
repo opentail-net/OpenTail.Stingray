@@ -1,4 +1,5 @@
 using System.IO;
+using OpenTail.Stingray.Audio.Primitives;
 using OpenTail.Stingray.Core;
 
 namespace OpenTail.Stingray.Audio.CosyVoice;
@@ -18,7 +19,7 @@ namespace OpenTail.Stingray.Audio.CosyVoice;
 /// `input_embedding` table is separate from the LLM's own `speech_embedding`), 6 `encoders` +
 /// 4 `up_encoders` blocks (both counts read from the file, not hardcoded).
 /// </summary>
-public sealed class CosyVoiceFlowWeights : IDisposable
+public sealed class CosyVoiceFlowWeights : IDisposable, IS3GenFlowEncoderWeights
 {
     public SafetensorsLoader Loader { get; }
 
@@ -60,6 +61,8 @@ public sealed class CosyVoiceFlowWeights : IDisposable
 
     public CosyVoiceFlowLayerWeights[] EncLayers { get; }
     public CosyVoiceFlowLayerWeights[] UpEncLayers { get; }
+    IS3GenConformerLayerWeights[] IS3GenFlowEncoderWeights.EncLayers => (IS3GenConformerLayerWeights[])EncLayers;
+    IS3GenConformerLayerWeights[] IS3GenFlowEncoderWeights.UpEncLayers => (IS3GenConformerLayerWeights[])UpEncLayers;
 
     public CosyVoiceFlowWeights(string safetensorsPath)
     {
@@ -134,7 +137,7 @@ public sealed class CosyVoiceFlowWeights : IDisposable
 }
 
 /// <summary>One S3Gen-family Conformer block: rel-pos self-attention (untied u/v biases) + Swish FFN, no macaron, no conv module -- see `Chatterbox/ChatterboxFlowEncoder.cs`'s block-math doc comment for the full derivation this mirrors.</summary>
-public sealed class CosyVoiceFlowLayerWeights
+public sealed class CosyVoiceFlowLayerWeights : IS3GenConformerLayerWeights
 {
     public float[] NormMhaWeight { get; }
     public float[] NormMhaBias { get; }
