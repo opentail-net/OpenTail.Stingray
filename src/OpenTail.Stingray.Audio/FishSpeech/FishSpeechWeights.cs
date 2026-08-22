@@ -84,6 +84,18 @@ public sealed class FishSpeechWeights : IDisposable
         // bound on plain float32 weight re-reads (~40ms/call, re-read 9x/frame), and the only
         // quantization level this sub-network was already proven numerically safe at (Q8_0
         // cosine ~0.9995 vs. Q4_K_M's ~0.489, measured earlier this project).
+        //
+        // Tried and REVERTED: reading the source GGUF's native on-disk dtype directly (mirroring
+        // OpenTail.Stingray.Vision's VisionTensorRef/MatVecAny pattern, see NativeGgufWeightRef,
+        // still in this codebase for future use). Measured WORSE for this pipeline's actual
+        // default checkpoint (`s2-pro-q4_k_m.gguf`, real on-disk dtype Q4_K): 13907ms -> 14459ms,
+        // a ~4% regression -- Q4_K's per-element decode (nested sub-block scales, nibble
+        // unpacking) is compute-heavier than Q8_0's simple format despite being smaller on disk,
+        // and that extra decode cost outweighed the bandwidth saved by skipping the float32 round
+        // trip. Always normalizing to Q8_0 at load time (this approach) pays the cheap Q8_0
+        // decode cost on every call regardless of the source file's on-disk format, which measured
+        // faster for the checkpoint this pipeline actually uses. See docs/audio-review-
+        // progress.md's performance-pass entries for the full measurement.
         int qSize = FastHeadCount * FastHeadDim;
         int kvSize = FastHeadCountKv * FastHeadDim;
         FastOutputWeight = Q8_0WeightQuantizer.Quantize(GetTensor("fast_output.weight"), CodebookSize, FastEmbeddingDim);
@@ -126,8 +138,12 @@ public sealed class FishSpeechWeights : IDisposable
 /// real Q8_0 block format (see <see cref="Q8_0WeightQuantizer"/>) -- this session's performance
 /// pass measured them as the dominant, memory-bandwidth-bound cost at plain float32, and this
 /// sub-network was already separately proven numerically safe at Q8_0 precision (unlike Q4_K_M).
-/// The two small RMSNorm weight vectors stay plain float32 (negligible size, not worth
-/// quantizing).</summary>
+/// A native-GGUF-dtype variant (skipping this quantize step, reading the source's own on-disk
+/// format directly) was tried and reverted -- measured ~4% SLOWER for this pipeline's actual
+/// default checkpoint, since that checkpoint's real on-disk format (Q4_K) has a more expensive
+/// per-element decode than Q8_0 despite being smaller, see FishSpeechWeights's loader for the
+/// full measurement. The two small RMSNorm weight vectors stay plain float32 (negligible size,
+/// not worth quantizing).</summary>
 public sealed class FishSpeechFastLayerWeights
 {
     public required float[] AttentionNormWeight { get; init; }

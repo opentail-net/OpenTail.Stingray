@@ -1,5 +1,6 @@
 using System;
 using System.Threading.Tasks;
+using OpenTail.Stingray.Audio.Primitives;
 using OpenTail.Stingray.Cpu;
 
 namespace OpenTail.Stingray.Audio.Parler;
@@ -363,17 +364,9 @@ public static class ParlerDecoder
         return output;
     }
 
-    /// <summary>Real Q8_0 fused mat-vec (see Q8_0WeightQuantizer's doc comment) -- applied to the decoder's 8 big per-layer matrices, following the same memory-bandwidth win measured for Fish Speech's fast-AR this session's performance pass.</summary>
-    private static unsafe float[] LinearQ8_0(float[] input, byte[] weight, int inDim, int outDim)
-    {
-        var output = new float[outDim];
-        fixed (byte* wp = weight)
-        fixed (float* xp = input, op = output)
-        {
-            SimdKernels.MatVecQ8_0(op, wp, xp, outDim, inDim);
-        }
-        return output;
-    }
+    /// <summary>Dtype-generic fused mat-vec (see IQuantWeightRef's doc comment) -- applied to the decoder's 8 big per-layer matrices. Works unchanged whether those matrices came from a Safetensors-sourced, re-quantized-to-Q8_0 loader or a GGUF-sourced loader reading its own real on-disk dtype directly.</summary>
+    private static float[] LinearQ8_0(float[] input, IQuantWeightRef weight, int inDim, int outDim) =>
+        weight.MatVec(input, inDim, outDim);
 
     /// <summary>Real `nn.LayerNorm`: mean-subtract, variance-normalize, scale + bias (NOT RMSNorm).</summary>
     private static float[] LayerNorm(float[] x, float[] weight, float[] bias, float eps = ParlerDecoderWeights.LayerNormEps)

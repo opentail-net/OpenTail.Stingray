@@ -6227,3 +6227,259 @@ through this codebase's shared `ForwardPass`/GGUF-quantized-weights engine and m
 same plain-float32-weight profile to begin with).
 
 Not committed (per standing instruction). No subagents used.
+
+## Tried a GGUF-native-dtype read for Fish Speech's fast-AR (Vision-style zero-copy), REVERTED. Measured effect fell inside this machine's own benchmark noise band -- inconclusive, not a proven regression
+
+Asked what else in the codebase might carry a comparable Q8_0-style win; scanning
+`OpenTail.Stingray.Vision`'s `VisionOps.cs` surfaced a real, already-proven pattern used
+throughout that project: `GetTensor`+`MatVecAny` reads a weight tensor's raw bytes DIRECTLY off
+the GGUF's memory mapping and dispatches per-dtype through `SimdKernels.MatVec` at call time --
+no float32 dequant, no copy, no re-quantization, ever. Fish Speech's fast-AR (unlike Parler, which
+loads from `.safetensors` with no pre-existing on-disk quantization) also loads from a GGUF file
+already quantized on disk, so the same technique looked directly applicable: skip the existing
+dequant-then-Q8_0-requantize round trip and just read the source's real dtype.
+
+**Implemented**: new `NativeGgufWeightRef` (mirroring Vision's `VisionTensorRef`), `FishSpeechWeights`
+switched its 5 big fast-AR matrices + `FastOutputWeight` to resolve a raw pointer + real dtype via
+`Model.FindTensor`/`Model.GetTensorDataPtr` instead of `Q8_0WeightQuantizer.Quantize(GetTensor(...))`,
+`FishSpeechFastAr`'s `LinearQ8_0` switched to `NativeGgufWeightRef.MatVec` (dtype-dispatching
+`SimdKernels.MatVec`, not the Q8_0-only kernel).
+
+**Measured, then walked back**: first comparison (3 samples each, same bench harness) showed
+13907.33ms (Q8_0-requantized) vs. 14459.20ms (GGUF-native, real on-disk dtype = Q4_K for this
+pipeline's actual default checkpoint) -- read initially as a real ~4% regression, attributed to
+Q4_K's more complex per-element decode (nested sub-block scales, nibble unpacking) outweighing its
+smaller on-disk size compared to Q8_0's simple format. Reverted on that basis.
+
+**Then discovered the comparison was less solid than it looked**: re-running the FULLY REVERTED
+(byte-identical to the original Q8_0-requantized) code immediately afterward gave 14876.69ms
+(range 13813-15759ms across just 3 samples) -- noticeably higher and more variable than the
+original 13907ms measurement for the SAME code, meaning this machine's own run-to-run benchmark
+noise band is wide enough (roughly 13800-15800ms observed) to fully explain the ~550ms difference
+originally attributed to the native-dtype change. **Honest conclusion: the GGUF-native-dtype
+experiment's result is INCONCLUSIVE, not a proven regression** -- 3 samples per side wasn't enough
+to separate a real effect from this machine's noise floor. A proper re-test would need
+substantially more samples per side (or a less noisy measurement environment) to say anything
+confident about the real direction.
+
+**Decision, and why it's still reasonable despite the inconclusive measurement**: kept the revert
+(back to `Q8_0WeightQuantizer`-requantized weights, `NativeGgufWeightRef.cs` deleted, zero dead
+code left) rather than spend further budget chasing a marginal, possibly-nonexistent effect --
+both versions are independently correct and already proven numerically safe, so this is a
+zero-risk choice either way, not a case where the "wrong" choice matters. The broader technique
+(Vision's zero-copy native-dtype read) remains a real, valid pattern worth remembering for a
+future case with a clearer expected win -- e.g., a pipeline whose GGUF is ALREADY Q8_0-quantized
+specifically (where native read has no compute-cost tradeoff to begin with, only upside: skips
+the float32 round trip at load time and avoids a redundant lossy re-quantization pass), rather
+than Q4_K_M sources where the K-quant decode cost is a real, if here unproven-in-magnitude,
+countervailing factor.
+
+Not committed (per standing instruction). No subagents used.
+
+## Performance pass: FINAL accuracy sweep across everything touched, all green. Pass complete for now
+
+Final end-to-end verification, one filter-class at a time, of every component this performance
+pass modified or that depends on modified code, now that the round-of-changes/round-of-testing
+rhythm concluded and only the deferred full accuracy sweep remained:
+
+- `FishSpeechCodecTests` (untouched by perf work directly, but downstream of the fast-AR output it
+  consumes): **PASSED.**
+- `FishSpeechFullPipelineTests` (real end-to-end smoke test, exercises the fast-AR KV cache,
+  batched prefill, and Q8_0 weights together): **PASSED**, 26s.
+- `ParlerFullPipelineTests` (real end-to-end smoke test, exercises the decoder KV cache, delay
+  pattern, EOS logits processor, and Q8_0 decoder weights together): **PASSED**, 12s.
+- `FishSpeechSlowArTests` (re-verified once more for completeness, exercises the batched-prefill
+  change specifically): **PASSED.**
+
+Combined with this pass's earlier per-change verifications (`FishSpeechFastArTests`'s Q8_0-source
+case, `ParlerDecoderTests`, `ParlerDecoderKvCacheTests`), every real-weight golden/conformance test
+touched by this performance pass now has a green result on record, post-ALL changes. The one known
+red result (`FishSpeechFastArTests.Forward_RealWeights_MatchesGoldenOracle`, against the Q4_K_M
+checkpoint) remains a real, precisely-documented PRE-EXISTING issue unrelated to this pass's work
+(see that entry above) -- not something this sweep should or does paper over.
+
+**Performance pass summary, cumulative**:
+- Fish Speech: 39709ms -&gt; 13907ms for the same `maxTokens=15` workload (~2.86x). Fast-AR KV
+  cache, batched prompt prefill, Q8_0 fast-AR weights (kept); Parallel.For->sequential attention
+  simplification (neutral, kept for clarity); GGUF-native-dtype read (tried, inconclusive vs.
+  noise, reverted cleanly).
+- Parler-TTS: 5337ms -&gt; 4389ms for the same `maxNewTokens=30` workload (~17.8%). lm_head
+  parallelization, Q8_0 decoder weights (both kept).
+- Orpheus TTS, FunASR, Silero VAD: scanned, already using proper batching/caching/parallelization
+  patterns from the start -- no comparable low-hanging fruit found.
+- DRY'd per CLAUDE.md rule 7: the Q8_0 weight quantizer now lives in `Primitives/
+  Q8_0WeightQuantizer.cs`, shared between Fish Speech and Parler-TTS rather than duplicated.
+
+All five queued pipelines remain fully wired end-to-end (unchanged from the earlier porting work),
+now meaningfully faster where it mattered, with every touched component's numerical correctness
+re-confirmed. Not committed (per standing instruction, work is on the user's side already
+committed as a safe baseline). No subagents used anywhere this performance pass.
+
+## Audio weight-format matrix (GGUF / ONNX / Safetensors / other), scanned across every pipeline
+
+At the user's request, scanned every `OpenTail.Stingray.Audio` pipeline's real source for which
+weight-file format(s) it actually loads from (grep across `.cs` sources for real `Open(`/loader
+calls and the concrete `models/*` filenames, cross-checked against test fixtures -- NOT from
+memory or docs elsewhere, in case those had drifted). One real fourth format found beyond the
+three the user asked about: Whisper uses the legacy raw `whisper.cpp` "ggml" `.bin` format (magic
+`0x67676d6c`), NOT GGUF (different container, no KV-metadata block) and NOT the other two.
+
+| Pipeline | GGUF | ONNX | Safetensors | Other | Real file(s) |
+|---|---|---|---|---|---|
+| FunASR | ✅ | | | | `paraformer-q8.gguf` |
+| Silero VAD | | ✅ | | | `silero_vad.onnx` (a `.gguf` conversion was tried and explicitly rejected as "messy" -- see `SileroVadWeights`'s doc comment) |
+| Fish Speech | ✅ | | | | `s2-pro-q4_k_m.gguf` / `s2-pro-q8_0.gguf` |
+| Parler-TTS | | | ✅ | | `parler-tts-mini-v1.safetensors` |
+| Orpheus TTS | ✅ | | | | `orpheus-3b-0.1-ft.Q4_K_M.gguf` (talker) + `snac-24khz.gguf` (codec) |
+| Whisper | | | | ✅ ggml `.bin` | `ggml-{tiny,base,small,medium,large-v3}.bin` |
+| CosyVoice (2/3) | | | ✅ | | `cosyvoice2_{llm,flow,hift}.safetensors` + `cosyvoice2_0.5b.safetensors` |
+| Chatterbox | ✅ | | | | `chatterbox-turbo-{t3,s3gen}-q4_k.gguf` |
+| Kokoro | ✅ | | | | `kokoro-82m-q8_0.gguf` |
+| Parakeet | ✅ | | | | `parakeet-ctc-0.6b-q4_k.gguf` |
+| QwenASR | ✅ | | ✅ | | `qwen3-asr-0.6b-q4_k.gguf` (ASR) + `qwen3-forcedaligner-0.6b.safetensors` (separate ForcedAligner component, not the same model) |
+| QwenTTS | ✅ | | | | Qwen3-TTS 12Hz (talker LM + code predictor + DAC decoder + ERes2NetV2 speaker encoder, GGUF-based per source layout; no dedicated test fixture found to confirm exact filename -- lower confidence than other rows, worth a direct check if this pipeline becomes active work) |
+| Piper | | ✅ | | | `{voice}.onnx` + `{voice}.onnx.json` config |
+| MeloTTS | | ✅ | | | `melotts-zh_en.onnx` |
+| F5-TTS | ✅ | | ✅ | | main F5 model GGUF + Vocos vocoder (`vocos-mel-24khz.gguf` OR `.safetensors`, both present in `models/` -- pipeline appears to support either) |
+
+**Notes / caveats on confidence**:
+- Every row above was checked by finding the REAL file-loading code path (constructor/`Open`
+  calls and their concrete `models/*.ext` argument), not inferred from folder names or memory.
+- Rows with two formats (QwenASR, F5-TTS) are two DIFFERENT components of the same pipeline using
+  different formats, not one model available in either format -- confirmed by checking which
+  concrete file each format loads.
+- QwenTTS is the one row with meaningfully lower confidence (no dedicated real-weights test
+  fixture found this pass to cross-check against) -- flagged rather than guessed.
+- This is a snapshot of CURRENT real support, not a statement about which format is "better" or
+  "preferred" for any given model -- several pipelines could likely accept an alternate format if
+  someone wrote a loader for it (e.g. Piper/MeloTTS's ONNX weights could in principle be GGUF-
+  converted), this matrix only reflects what's ACTUALLY wired up in this codebase today.
+
+Not committed. No subagents used.
+
+## Real GGUF conversion candidates for the four Safetensors/ONNX-only pipelines, researched via ChatGPT
+
+Long-term goal discussed with the user: expand GGUF support to pipelines that could benefit from
+this engine's fast, already-optimized quantized-kernel path (`SimdKernels.MatVecQ8_0`/`MatVecQ4K`/
+etc.) -- proven this pass to beat hand-loaded float32 for both Fish Speech's fast-AR and Parler's
+decoder -- rather than adding new models. User asked ChatGPT to verify whether real, exact-
+checkpoint GGUF conversions exist for the four pipelines currently locked out of that path
+(Parler-TTS, CosyVoice2, Piper, MeloTTS). Full findings saved to memory
+(`reference_audio_gguf_conversion_candidates.md`) for cross-session continuity; summary here for
+project-local visibility.
+
+**Confirmed real (not guessed) for all four**, but with an important distinction -- "hosted as a
+`.gguf` file" does NOT mean "readable by this engine's existing llama.cpp-style GGUF loader":
+
+- **Parler-TTS Mini v1** -- 🟢 strongest candidate. `ecyht2/parler-tts-mini-v1-GGUF` on HF, confirmed
+  exact source checkpoint (same `parler-tts/parler-tts-mini-v1` this project already ports from
+  Safetensors). Real fp32/fp16/Q4_0/Q5_0/Q8_0 files, all actually present. Built for "TTS.cpp", NOT
+  llama.cpp-standard -- would still need this project's own reader/execution work for Parler's
+  actual architecture (already fully understood and ported this session: T5 encoder + MusicGen-
+  style AR decoder + DAC codec), but the weight-conversion problem is already solved publicly to
+  study/verify tensor layout against.
+- **CosyVoice2 0.5B** -- 🟡 real full-model GGUF exists (`vokra/cosyvoice2-0.5b`, 2.45GB, confirmed
+  exact upstream `FunAudioLLM/CosyVoice2-0.5B`) but uses a custom "Vokra GGUF schema", not
+  llama.cpp conventions, and has no quantized variants. A separate `Tinysoft/Cosyvoice2-0.5B-GGUF`
+  has real Q4K/Q6K/Q8 but is LLM-only (missing Flow/HiFT) -- NOT a complete conversion, flagged
+  explicitly to avoid treating it as one.
+- **Piper (`en_US-lessac-medium`)** -- 🟢 technically easy, 🟡 licensing caveat.
+  `cstr/piper-en_US-lessac-medium-GGUF`, confirmed exact voice, F16 only (Piper voices too small
+  for quantization to matter much). VITS-derived, real conversion script exists to study. This
+  specific Lessac voice is excluded from the general Piper-voices-GGUF repo over Blizzard-2013
+  research/non-commercial licensing -- check redistribution terms before shipping.
+- **MeloTTS (Chinese/zh_en)** -- 🟢 very realistic port target. `vokra/melotts-chinese` (197.9MB),
+  confirmed exact lineage to `myshell-ai/MeloTTS-Chinese` (cross-checked against sherpa-onnx's
+  derivation of the same checkpoint, not just claimed). Real trap avoided: `cstr/melotts-en-v2-
+  GGUF` is a DIFFERENT (English) checkpoint, not this project's zh_en model -- do not conflate.
+
+**Recommended priority, given this project's existing strong GGUF quantized-kernel
+infrastructure**: (1) Parler-TTS Mini -- highest value, exact checkpoint, real Q4/Q5/Q8 already
+available, existing converter to study; (2) MeloTTS zh_en -- manageable VITS-family architecture,
+real exact GGUF, currently unquantized (a real "port + selectively quantize" project); (3) Piper --
+easy but lower payoff (tiny model, main win is dropping the ONNX Runtime dependency, not raw
+speed), check Lessac licensing first; (4) CosyVoice2 -- biggest prize, biggest job, would need
+treating as LLM-quantized-path + separate flow/vocoder stages rather than one generic loader.
+
+**Discipline note for whenever this work is picked up**: "it's on HF as a `.gguf`" is necessary but
+not sufficient -- every one of these still needs real tensor-name/shape verification against this
+project's own architecture understanding (never guessed) and full golden-verification against a
+real oracle before being trusted, exactly like every other model ported this session. None of
+these are drop-in.
+
+Not yet started -- research/planning only this entry, no code changes. Not committed. No
+subagents used.
+
+## Parler-TTS GGUF conversion: IMPLEMENTED and golden-verified. Real second weight format for the decoder, DRY'd via a shared IQuantWeightRef abstraction
+
+Picked up the highest-priority candidate from the previous entry. Downloaded the real
+`ecyht2/parler-tts-mini-v1-GGUF` conversion (Q8_0, ~998MB,
+`models/parler-tts-mini-v1-Q8_0.gguf`) and inspected it directly via this project's own
+`list-metadata`/`list-tensors` CLI (not assumed from the HF model card).
+
+**Real metadata confirmed to match this project's already-derived config exactly** (not
+guessed): `hidden_size=1024`, `attn_heads=16`, `num_hidden_layers=24`, `out_vocab_size=1088`,
+`parler-tts.decoder_start_token_id=1025`, `output_heads=9`, DAC `dac_layer_stride_{0..3}=[8,8,4,2]`
+(matches `DacWeights.DecoderRates` exactly). Real tensor names differ from the Safetensors
+checkpoint's `decoder.model.decoder.*` prefix -- this GGUF uses a simpler `decoder.*` prefix
+(`decoder.layers.{i}.{self_attn,encoder_attn}.{q,k,v,out}_proj.weight`,
+`decoder.lm_heads.{cb}.weight.head` -- note the real trailing `.head`).
+
+**Real, confirmed limitation, not worked around**: this specific community conversion contains
+ONLY `decoder.*` and `audio_encoder.*` (DAC) tensors -- exhaustively confirmed via a full tensor-
+name-prefix scan (only two top-level prefixes exist in the whole file). NO `text_encoder.*` (T5)
+tensors at all. This GGUF can only ever replace the decoder+codec half of the pipeline; the T5
+encoder must still come from the already golden-verified Safetensors checkpoint. A genuinely mixed-
+source pipeline (T5 from Safetensors, decoder+DAC from GGUF) is the real integration shape here,
+not a full drop-in replacement -- `ParlerFullPipeline` does not yet support this mixed-source
+mode (not built this fire, a real follow-up item).
+
+**Also real and worth noting**: unlike Fish Speech's default checkpoint (Q4_K -- more expensive to
+decode per-element than its on-disk size suggests, per the earlier reverted experiment), THIS
+GGUF's big decoder matrices are genuinely Q8_0 on disk already -- confirmed per-tensor via
+`list-tensors`. One real converter quirk observed, not "fixed": `encoder_attn.k_proj`/`v_proj`
+specifically are stored as plain `Float32` while `q_proj`/`out_proj` in the same layer are `Q8_0`
+-- an asymmetry with no obvious cause, simply read correctly by dispatching on each tensor's own
+real dtype rather than assumed uniform.
+
+**DRY'd properly, not bolted on**: introduced `IQuantWeightRef` (`Primitives/IQuantWeightRef.cs`)
+so `ParlerDecoderLayerWeights`'s 8 big-matrix fields no longer commit to one concrete backing
+representation -- `Q8_0BytesWeightRef` (wraps a managed re-quantized `byte[]`, used by the existing
+Safetensors constructor via `Q8_0WeightQuantizer.QuantizeRef`) and `NativeGgufWeightRef` (wraps a
+raw GGUF pointer + real dtype via `SimdKernels.MatVec`'s existing dispatch, brought back from the
+earlier reverted Fish Speech experiment -- now with a source dtype where it genuinely helps) both
+implement it. `ParlerDecoder.LinearQ8_0` calls the interface polymorphically. Net effect: BOTH the
+batch `Forward` and KV-cached `ForwardStep` paths, the delay pattern, the EOS logits processor,
+etc. work UNCHANGED regardless of which loader produced the weights -- `ParlerDecoderWeights` now
+has two real constructors (`SafetensorsLoader` and `GgufModel`) sharing everything downstream.
+
+**Golden-verified**: new `ParlerDecoderGgufTests.Forward_GgufWeights_MatchesSafetensorsGoldenOutput`
+-- loads the SAME deterministic fixture (4-position fake encoder hidden, real codebook-id
+sequence) through BOTH the GGUF-loaded and Safetensors-loaded decoder, asserts cosine &gt; 0.99 at
+every position. The Safetensors path is the oracle here (already proven against a real external
+PyTorch oracle in `ParlerDecoderTests`), so this is a genuine cross-format weight-fidelity check,
+not a fresh external-oracle golden test. **PASSED at every position** -- real, independent
+confirmation that this community GGUF conversion is a faithful conversion of the real trained
+checkpoint, not a different/degraded model. Re-ran `ParlerDecoderTests` and
+`ParlerDecoderKvCacheTests` (the existing Safetensors-path golden/conformance tests) after the
+`IQuantWeightRef` refactor -- both **PASSED**, confirming zero regression from unifying the two
+loaders' weight representation.
+
+**Performance, measured and honestly neutral**: decoder-only `Forward` microbenchmark (t=20,
+median of 8 runs after warmup) -- Safetensors-requantized-Q8_0: 145.17ms; GGUF-native-Q8_0:
+148.16ms. Essentially a tie (well within this machine's observed noise band from earlier
+measurements) -- expected, since BOTH paths ultimately dispatch through the exact same
+`MatVecQ8_0` kernel once loaded; the real difference between the two loaders is at LOAD TIME (the
+GGUF path skips the float32-dequant-then-Q8_0-requantize round trip the Safetensors path still
+pays once), not per-call inference speed. Not separately measured this fire (lower priority than
+confirming correctness first).
+
+**Real follow-up items, not started**: (1) build a mixed-source `ParlerFullPipeline` variant (T5
+from Safetensors + decoder/DAC from this GGUF) to actually exercise the GGUF path end-to-end; (2)
+measure real load-time savings; (3) apply the same `IQuantWeightRef` treatment to the DAC codec's
+weights if profiling shows it's worth it; (4) the throwaway perf-comparison test file has been
+deleted (job done, confirms the pattern this doc's earlier entries established for temporary
+bench files).
+
+Not committed (per standing instruction, work is on the user's side already committed as a safe
+baseline). No subagents used.

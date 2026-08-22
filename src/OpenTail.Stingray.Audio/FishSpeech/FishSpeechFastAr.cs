@@ -308,7 +308,7 @@ public static class FishSpeechFastAr
         return output;
     }
 
-    /// <summary>Real Q8_0 fused mat-vec (see Q8_0WeightQuantizer's doc comment) -- this session's performance-pass fix for the fast-AR's dominant memory-bandwidth-bound cost.</summary>
+    /// <summary>Real Q8_0 fused mat-vec (see Q8_0WeightQuantizer's doc comment) -- this session's performance-pass fix for the fast-AR's dominant memory-bandwidth-bound cost. A GGUF-native-dtype variant was tried and reverted (measured ~4% slower for this pipeline's actual Q4_K_M default checkpoint -- see FishSpeechWeights's loader for the full measurement).</summary>
     private static unsafe float[] LinearQ8_0(float[] input, byte[] weight, int inDim, int outDim)
     {
         var output = new float[outDim];

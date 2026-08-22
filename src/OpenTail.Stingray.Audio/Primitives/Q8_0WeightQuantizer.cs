@@ -74,4 +74,27 @@ public static class Q8_0WeightQuantizer
         }
         return dst;
     }
+
+    /// <summary>Quantizes a plain float32 matrix to Q8_0 and wraps it as an <see cref="IQuantWeightRef"/>, for callers that want the shared interface instead of a raw <c>byte[]</c>.</summary>
+    public static IQuantWeightRef QuantizeRef(float[] source, int rows, int cols) =>
+        new Q8_0BytesWeightRef(Quantize(source, rows, cols));
+}
+
+/// <summary>Wraps a managed Q8_0-quantized <c>byte[]</c> (from <see cref="Q8_0WeightQuantizer.Quantize"/>) as an <see cref="IQuantWeightRef"/>.</summary>
+public sealed class Q8_0BytesWeightRef : IQuantWeightRef
+{
+    private readonly byte[] _data;
+
+    public Q8_0BytesWeightRef(byte[] data) => _data = data;
+
+    public unsafe float[] MatVec(float[] input, int inDim, int outDim)
+    {
+        var output = new float[outDim];
+        fixed (byte* wp = _data)
+        fixed (float* xp = input, op = output)
+        {
+            OpenTail.Stingray.Cpu.SimdKernels.MatVecQ8_0(op, wp, xp, outDim, inDim);
+        }
+        return output;
+    }
 }

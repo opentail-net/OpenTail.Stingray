@@ -51,6 +51,25 @@ public sealed class ParlerFullPipeline : IDisposable
         _dacWeights = new DacWeights(loader);
     }
 
+    /// <summary>
+    /// Mixed-source constructor: T5 encoder and DAC codec still come from the real Safetensors
+    /// checkpoint (unchanged, already golden-verified), but the decoder loads from a real
+    /// community GGUF conversion instead (<see cref="ParlerDecoderWeights(Core.GgufModel)"/>) --
+    /// see that constructor's doc comment for the full derivation, including the real, confirmed
+    /// limitation that this specific GGUF conversion has NO T5 tensors at all (decoder+DAC only),
+    /// which is exactly why this constructor still needs the Safetensors `loader` for T5/DAC.
+    /// Golden-verified this session (`ParlerDecoderGgufTests`) that the GGUF-loaded decoder
+    /// matches the Safetensors-loaded decoder's real output at cosine &gt; 0.99 -- see
+    /// docs/audio-review-progress.md's GGUF-expansion entries.
+    /// </summary>
+    public ParlerFullPipeline(string tokenizerJsonPath, SafetensorsLoader loader, GgufModel decoderGguf)
+    {
+        _tokenizer = UnigramTokenizer.FromTokenizerJson(tokenizerJsonPath);
+        _t5Weights = new T5EncoderWeights(loader);
+        _decoderWeights = new ParlerDecoderWeights(decoderGguf);
+        _dacWeights = new DacWeights(loader);
+    }
+
     /// <summary>Full pipeline: text -&gt; mono float32 PCM. Real T5 EOS (id 1) appended to the tokenizer's segmentation-only output, matching the real T5 tokenizer's post-processor.</summary>
     public float[] Synthesize(string text, int maxNewTokens = 300, int minNewTokens = 10)
     {
