@@ -517,7 +517,7 @@ public sealed record ModelHyperparams
             "falcon" or "falcon-h1" or "grok" or "dbrx" or
             "bert" or "jina-bert-v3" or "modern-bert" or "nomic-bert" or "nomic-bert-moe" or "eurobert" or
             "stablelm" or "bitnet" or
-            "qwen" or "qwen2" or "dream" or "qwen2moe" or "qwen3" or "qwen3moe" or
+            "qwen" or "qwen2" or "dream" or "qwen2moe" or "qwen3" or "qwen3moe" or "qwen3-tts" or
             "llada-moe" or "rnd1" or
             "olmo2" or "olmoe" or
             "phi2" or "phi3" or "phimoe" or

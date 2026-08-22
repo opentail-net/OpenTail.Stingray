@@ -40,6 +40,51 @@ public static class CosyVoice3DiTModel
         return RunBackbone(w, h, timestep, numFrames);
     }
 
+    /// <summary>
+    /// Real Euler-integrated CFM ODE solve (`CausalConditionalCFM::build_cgraph_one_step`,
+    /// `get_t_and_dt` in `cosyvoice-graph.cpp`/`cosyvoice-loader.cpp`): starts from Gaussian
+    /// noise and integrates the DiT's predicted velocity field over the real 10-step cosine
+    /// schedule `t_span[i] = 1 - cos(0.05*pi*i)` for `i=0..10` (11 points, 10 real Euler steps --
+    /// matches the codebase's pre-existing `CosyVoiceFlowConfig.DefaultOdeSteps=10`).
+    ///
+    /// <para><b>Real, deliberate simplification flagged</b>: the real reference additionally
+    /// runs classifier-free guidance (a second unconditional forward pass per step, combined via
+    /// `dphi_dt*(1+cfg_rate) - cfg_dphi_dt*cfg_rate`, `cfg_rate=0.7`) -- omitted here for a first
+    /// working pass (doubles DiT compute per step for a refinement, not a correctness
+    /// requirement of the ODE solve itself). `cond`/`mu`/`spks` are otherwise the real
+    /// conditioning tensors this class's own doc comment already confirmed.</para>
+    /// </summary>
+    public static float[] SolveFlowMatchingOde(CosyVoice3DiTWeights w, float[] cond, float[] mu, float[] spks, int numFrames, int odeSteps, Random rng)
+    {
+        int melLen = numFrames * CosyVoice3DiTWeights.MelDim;
+        var tSpan = new float[odeSteps + 1];
+        for (int i = 0; i <= odeSteps; i++)
+            tSpan[i] = 1f - MathF.Cos(0.05f * MathF.PI * i * (10f / odeSteps));
+
+        var x = new float[melLen];
+        for (int i = 0; i < melLen; i++)
+            x[i] = (float)(NextGaussian(rng));
+
+        for (int step = 1; step <= odeSteps; step++)
+        {
+            float t = tSpan[step - 1];
+            float dt = tSpan[step] - tSpan[step - 1];
+
+            var dphiDt = ForwardVelocity(w, x, cond, mu, spks, t, numFrames);
+            for (int i = 0; i < melLen; i++)
+                x[i] += dt * dphiDt[i];
+        }
+
+        return x;
+    }
+
+    private static double NextGaussian(Random rng)
+    {
+        double u1 = 1.0 - rng.NextDouble();
+        double u2 = rng.NextDouble();
+        return Math.Sqrt(-2.0 * Math.Log(u1)) * Math.Sin(2.0 * Math.PI * u2);
+    }
+
     /// <summary>h is the already-embedded hidden state [numFrames, HiddenDim] (post input_embed -- see this class's doc comment for what's NOT yet implemented upstream of this call). Returns the predicted velocity in mel-space [numFrames, MelDim].</summary>
     public static float[] RunBackbone(CosyVoice3DiTWeights w, float[] h, float timestep, int numFrames)
     {

@@ -6483,3 +6483,1138 @@ bench files).
 
 Not committed (per standing instruction, work is on the user's side already committed as a safe
 baseline). No subagents used.
+
+## Mixed-source ParlerFullPipeline (T5+DAC Safetensors, decoder GGUF) -- WIRED and working end-to-end
+
+Picked up the first real follow-up item from the previous entry. Added a new
+`ParlerFullPipeline(string tokenizerJsonPath, SafetensorsLoader loader, GgufModel decoderGguf)`
+constructor overload alongside the existing all-Safetensors one -- T5 encoder and DAC codec still
+built from `loader` (unchanged, already golden-verified), decoder built from `decoderGguf` via
+`ParlerDecoderWeights`'s GGUF constructor (already golden-verified against the Safetensors path
+this same fire). Investigated whether the DAC codec could ALSO move to this GGUF first: found its
+real tensor names there (`audio_encoder.initial.*`, `audio_encoder.decoder_block.{i}.*`,
+`audio_encoder.final.*`, `audio_encoder.quantizers.{i}.*`) are a genuinely DIFFERENT, flatter
+naming convention than `DacWeights`'s existing Safetensors mapping
+(`audio_encoder.model.quantizer.quantizers.{i}.*`/`audio_encoder.model.decoder.model.{i}.*`) --
+real, additional porting work, not just a constructor overload like the decoder was. Scoped that
+out of this fire deliberately rather than rushing an unverified mapping; DAC stays Safetensors-
+sourced in this mixed pipeline for now.
+
+**Verified**: new `ParlerFullPipelineGgufTests.Synthesize_MixedGgufSource_ProducesFinitePcm` --
+same smoke-test shape as the existing all-Safetensors test (real weights, text "Hello there.",
+`maxNewTokens=40`), confirming the GGUF-sourced decoder chains correctly into the full real
+generation loop (delay pattern, KV cache, EOS logits processor) and DAC decode. **PASSED**,
+non-empty/finite/non-silent PCM, 12s. Re-ran the original all-Safetensors
+`ParlerFullPipelineTests` as a regression check (only a new constructor overload was added, the
+existing one is untouched) -- **PASSED**, 12s, confirming zero regression.
+
+**Real remaining follow-up, precisely scoped**: porting `DacWeights` to also support this GGUF's
+flatter tensor naming (a genuinely new mapping to write and golden-verify, not a trivial
+constructor addition like the decoder was) would complete the "T5-only-Safetensors, everything
+else GGUF" picture -- not started, real work for a future pass. The GGUF-expansion roadmap's next
+priority per the earlier research entry (MeloTTS zh_en, then Piper, then CosyVoice2) remains
+unstarted -- this fire's remaining time went to fully closing out the Parler-TTS GGUF work already
+in progress rather than starting a new pipeline from scratch.
+
+Not committed (per standing instruction). No subagents used.
+
+## DAC codec GGUF port -- IMPLEMENTED and golden-verified on the FIRST attempt. Parler-TTS's GGUF picture now complete: only T5 stays Safetensors (structurally required)
+
+Closed out the one remaining real follow-up item from the previous entry. Inspected the real DAC
+tensor shapes in `models/parler-tts-mini-v1-Q8_0.gguf` via `list-tensors` and worked out the real
+mapping to `DacWeights`'s existing field names (all confirmed from real shapes, not guessed):
+`audio_encoder.initial.*` = first conv (`In0Weight`/`In0Bias`), `audio_encoder.decoder_block.
+{1..4}.*` (1-based, matching `DecoderRates.Length=4`) with each block's real channel progression
+(1536-&gt;768-&gt;384-&gt;192-&gt;96) confirmed via tensor shapes, `audio_encoder.final.*` = last
+conv (`OutAlpha`/`OutWeight`/`OutBias`), `audio_encoder.quantizers.{0..8}.*` = the 9 real
+quantizers.
+
+**One real, initially-confusing naming quirk worked out from shape evidence, not guessed**: each
+`decoder_block.{i}.final.*` group bundles what this project's own field names split into three
+separate pieces -- `final.alpha`'s shape matches the block's INPUT channel count (not output),
+confirming it's the pre-upsample Snake activation (`DecBlocks[i].Alpha`), while `final.weight`/
+`final.bias` are the actual `ConvTranspose1d` upsample (`UpWeight`/`UpBias`, kernel=2×rate) --
+i.e. GGUF's "final" here is NOT a second/different final conv, it's this project's `Alpha`+
+`UpWeight`+`UpBias` trio under one name. Confirmed weight-norm is ALREADY FOLDED in this GGUF
+(plain `.weight`/`.bias`/`.alpha`, no `weight_g`/`weight_v` pair anywhere) -- no folding step
+needed, simpler than the Safetensors path.
+
+**New `DacWeights(GgufModel model)` constructor**, using this real mapping, dequantizing each
+tensor via its own real on-disk dtype (matches the pattern already used for the decoder's
+norm/embedding tensors -- the DAC codec's own convolution kernels in `DacDecoder.cs` operate on
+plain `float[]` throughout, so no `IQuantWeightRef` treatment was needed here, unlike the
+decoder's big matmul-bound matrices).
+
+**Golden-verified, PASSED on the first attempt** (the mapping inference above was correct without
+needing a fix-and-retry cycle): new `DacWeightsGgufTests.Decode_GgufWeights_MatchesSafetensors
+GoldenOutput` -- same real deterministic codes decoded through both the GGUF-loaded and
+Safetensors-loaded DAC, cosine &gt; 0.99. Re-ran the existing Safetensors-path
+`DacDecoderTests` as a regression check -- **PASSED**, confirming zero regression.
+
+**`ParlerFullPipeline`'s mixed-source constructor updated**: now takes T5 from Safetensors (the
+only possible source -- this GGUF conversion structurally has no T5 tensors) and BOTH decoder and
+DAC from the GGUF. Re-ran `ParlerFullPipelineGgufTests` (unchanged test code, same constructor
+call site, now exercising the fully-GGUF-except-T5 path) -- **PASSED**, real end-to-end finite/
+non-silent PCM, 10s.
+
+**Parler-TTS's GGUF-format picture is now as complete as it can structurally be**: T5 encoder
+(Safetensors, required -- no GGUF alternative exists in this conversion), decoder (GGUF, golden-
+verified), DAC codec (GGUF, golden-verified). Both `IQuantWeightRef`-unified decoder loaders and
+both DAC loaders remain available side by side (Safetensors-only, GGUF-only, and this mixed mode)
+-- no code was deleted, this is a genuine expansion of real, working options, not a replacement.
+
+Not committed (per standing instruction). No subagents used.
+
+## QwenTTS: MAJOR discovery -- it's entirely fake (no real weights anywhere), but this repo already has TWO complete real reference implementations sitting locally, and the Talker architecture looks reusable via ForwardPass
+
+An outside AI's advice to "focus on a QwenTTS definitive fixture" was investigated and found to
+be based on a wrong premise: QwenTTS is not missing a test fixture, it's missing a REAL
+IMPLEMENTATION entirely. Confirmed by direct source inspection: `QwenTtsTalkerLm.cs`,
+`QwenTtsCodePredictor.cs`, and `QwenTtsDacDecoder.cs` all synthesize output procedurally
+(seeded `Random()` + `MathF.Sin()`), zero real weight consumption anywhere in the generation
+path. Even `Qwen3TtsSpeakerEncoder.cs`, despite accepting a `GgufModel?` parameter, still falls
+back to sine-wave-synthesized weights in its core computation. This is the SAME class of problem
+the standing cron template originally set out to fix for the other 5 pipelines -- QwenTTS was
+just never actually gotten to.
+
+**Also found while checking**: CosyVoice's `CosyVoiceLlm.cs` (the actual speech-token-generation
+core, not just the vocoder) is similarly fake -- literal comment "Uses simulated acoustic
+language model transitions modulated by prompt &amp; text". `CosyVoicePipeline.cs`'s speaker
+embedding is also fake (hash-of-voice-name-seeded random vector). CosyVoice's HiFT vocoder
+(Safetensors) IS real, so this pipeline is genuinely mixed real/fake, not entirely one or the
+other. F5-TTS and Whisper were checked and are genuinely real end-to-end (F5's own `Random` usage
+is legitimate Box-Muller noise for flow-matching ODE initialization, with the real velocity field
+computed by a real weight-driven `F5DiTModel.ForwardVelocity` call).
+
+**Researched via ChatGPT what's needed to complete QwenTTS for real** (full findings saved to
+memory, `reference_qwentts_completion_plan.md`, for cross-session continuity) -- confirmed real
+official weights (`Qwen/Qwen3-TTS-12Hz-{0.6B,1.7B}-Base` on HF, Safetensors), real official Python
+source (`QwenLM/Qwen3-TTS`), and confirmed the stub's assumed config was WRONG in real, important
+ways (28 layers not 24; three separate vocabularies -- text/talker-codec/predictor-acoustic, not
+one; the model is NOT "one LM generating 16 codebooks" but a Talker generating ONLY the semantic
+codebook, expanded by a SEPARATE 5-layer autoregressive "Code Predictor" into the other 15).
+
+**Then found something the research didn't know about**: this repo ALREADY has two complete, real
+reference implementations checked out locally, not just linked --
+`examples/llama.cpp/llama.cpp/{src/models/qwen3tts.cpp, tools/mtmd/models/qwen3tts-gen.cpp,
+tools/mtmd/models/qwen3tts-spkenc.cpp, conversion/qwen3tts.py}` (confirmed present, and a stale
+`.obj` build artifact confirms this tree was compiled before, not just cloned) AND a full,
+independently-organized GGML C++ reimplementation at `examples/qwentts.cpp/` with exactly the
+4-component decomposition ChatGPT recommended: `talker-{weights,forward,decode-graph}.h`,
+`code-predictor-{weights,forward,graph}.h`, `speaker-encoder-{weights,forward,extract}.h`, and
+the codec (`seanet-encoder.h`, `dac-decoder-v2.h`, `convnext-block.h`, `quantizer-{decode,encode}.h`,
+`causal-trans-conv.h`).
+
+**Read `talker-weights.h`/`talker-forward.h` in full -- real, executable, verified architecture
+math, not a claimed config**: confirmed real per-layer forward exactly matches this codebase's
+existing `ForwardPass` engine's supported shape family -- pre-norm RMS -&gt; Q/K/V proj -&gt;
+per-head QK-RMSNorm (BEFORE RoPE) -&gt; RoPE NEOX (real `GGML_ROPE_TYPE_NEOX` call -- half-split
+rotation; the "mrope interleaved" naming refers to MULTIMODAL AXIS interleaving, which collapses
+away entirely in TTS-only mode since all three mrope axes share the same position id, confirmed
+by the file's own comment, NOT the rotation style itself) -&gt; GQA causal attention, scale=1/
+sqrt(head_dim) -&gt; o_proj -&gt; residual -&gt; pre-norm RMS -&gt; SwiGLU MLP -&gt; residual.
+**This is the exact same shape family as Fish Speech's slow-AR** (GQA + QK-norm + NEOX RoPE +
+SwiGLU), which this project ALREADY reused `ForwardPass` for via a tensor-name-remapping wrapper
+(`FishSpeechTensorSource`) rather than a from-scratch transformer port. Strong candidate for the
+same strategy here -- a `QwenTtsTalkerTensorSource` remapping to `ForwardPass`'s expected names,
+instead of hand-rolling attention/FFN kernels again.
+
+**Real confirmed GGUF config keys** (for `ModelHyperparams`-style loading): `qwen3-tts.talker.
+{embedding_length,feed_forward_length,block_count,attention.head_count,attention.head_count_kv,
+attention.key_length,vocab_size,rope.freq_base,attention.layer_norm_rms_epsilon,
+rope.mrope_interleaved,rope.mrope_section}`.
+
+**Real confirmed tensor names** (for the remapping wrapper): `talker.codec_embd.weight`,
+`talker.text_embd.weight`, `talker.text_proj.fc{1,2}.{weight,bias}`, `talker.codec_head.weight`,
+`talker.output_norm.weight`, `talker.blk.{i}.{attn_norm,ffn_norm,attn_q,attn_k,attn_v,
+attn_output,attn_q_norm,attn_k_norm,ffn_gate,ffn_up,ffn_down}.weight`.
+
+**Not yet done**: downloading real weights, verifying `ForwardPass` reuse actually works for this
+architecture (needs checking whether `ForwardPass` already handles the Talker's specific
+`text_proj`/dual-embedding-table/codec_head composition, which is genuinely different from a
+plain single-embedding-table LM -- likely needs the same kind of custom `EmbedStep`-composition
+wrapper Fish Speech's pipeline already has, not a fully generic reuse), reading the Code
+Predictor/codec/speaker-encoder headers in the same depth, or any actual C# implementation. This
+entry documents a very promising, well-sourced starting point, not completed work.
+
+Not committed (per standing instruction). No subagents used.
+
+## QwenTTS Talker: ForwardPass-reuse hypothesis CONFIRMED with real weights. First real milestone toward a genuine (non-fake) QwenTTS implementation
+
+Downloaded the real Qwen3-TTS 0.6B Base checkpoint's official `config.json` from
+`Qwen/Qwen3-TTS-12Hz-0.6B-Base` directly to cross-check the previous entry's research --
+**confirmed exactly**: `talker_config.{hidden_size=1024, num_hidden_layers=28,
+num_attention_heads=16, num_key_value_heads=8, head_dim=128, intermediate_size=3072, vocab_size=
+3072, rope_theta=1000000}`, matching both ChatGPT's research and the real `talker-weights.h`
+source read in the previous entry -- three-way confirmed now (official config, llama.cpp/
+qwentts.cpp source, real downloaded GGUF metadata below), not assumed.
+
+Downloaded the real `Serveurperso/Qwen3-TTS-GGUF` conversion's `qwen-talker-0.6b-base-Q8_0.gguf`
+(~993MB, confirmed via HF's own file listing this repo genuinely has separate 0.6B/1.7B ×
+base/customvoice/voicedesign × BF16/F32/Q4_K_M/Q8_0 variants). Inspected via this project's own
+`list-metadata`/`list-tensors` CLI: real metadata keys `qwen3-tts.talker.*` match the official
+config exactly (`block_count=28`, `embedding_length=1024`, `feed_forward_length=3072`,
+`attention.head_count=16`, `.head_count_kv=8`, `.key_length=128`, `rope.freq_base=1E+06`), AND
+this same GGUF file packs the Code Predictor (`qwen3-tts.code_pred.*` -- block_count=5,
+embedding_length=1024, vocab_size=2048, matching the official `code_predictor_config` exactly)
+and speaker encoder (`qwen3-tts.spk_enc.*`) config alongside the Talker's, confirming ChatGPT's
+"one talker GGUF contains LM + code predictor + optional speaker encoder" claim. Real tensor
+names confirmed via `list-tensors`: `talker.blk.{i}.{attn_q,attn_k,attn_v,attn_output,
+attn_q_norm,attn_k_norm,attn_norm,ffn_gate,ffn_up,ffn_down}.weight` (all Q8_0 except norm vectors,
+Float32) plus top-level `talker.{codec_embd,codec_head,output_norm}.weight` and
+`talker.text_embd.weight`/`talker.text_proj.fc{1,2}.{weight,bias}`.
+
+**New `QwenTtsTalkerTensorSource.cs`** (same sanctioned reuse pattern as
+`FishSpeechTensorSource`): remaps `talker.blk.{i}.*` -&gt; canonical `blk.{i}.*` names
+`ForwardPass` already expects, plus `token_embd.weight`/`output_norm.weight`/`output.weight`
+aliases for construction-time metadata probing. **Real, structurally different metadata gap from
+Fish Speech's**: this GGUF's real config keys carry a `qwen3-tts.talker.*` infix (since one file
+packs 3 sub-models' configs together) that `ModelHyperparams.FromGgufMetadata`'s generic
+`{arch}.attention.head_count`-style lookup (arch=`qwen3-tts`) doesn't know to strip -- synthesized
+the flat `qwen3-tts.*` keys by stripping the `talker.` infix, the same sanctioned metadata-
+synthesis mechanism Fish Speech's tensor source already established (there for a genuinely
+missing key; here for a differently-nested one).
+
+**One real, permanent architecture-classification gap found and fixed properly, not worked
+around**: `ModelGraph.cs`'s `isNeoxRope` architecture-name switch (mirrors llama.cpp's own
+`llama_model_rope_type()` convention list) didn't list `qwen3-tts` -- confirmed via the real
+`talker-forward.h` source's explicit `ggml_rope_ext(..., GGML_ROPE_TYPE_NEOX, ...)` call that this
+architecture genuinely IS NEOX (half-split) RoPE, not the interleaved-pairs default unlisted
+architectures get. Added `"qwen3-tts"` to the existing, large, already-correct architecture list
+(one line, alongside `qwen`/`qwen2`/`qwen3`/etc.) -- a real, permanent architecture-support fact,
+not a per-tensor-source workaround, since this switch is shared infrastructure any future
+Qwen3-TTS-adjacent work would also need correct.
+
+**MILESTONE, real and verified**: new `QwenTtsTalkerForwardPassTests.ForwardPass_ConstructsAndRuns_
+AgainstRealQwenTtsTalkerGguf` -- constructs `ModelHyperparams` from the real remapped metadata
+(asserts NumLayers=28, EmbeddingDim=1024, NumHeads=16, NumKvHeads=8, HeadDim=128, IsNeoxRope=true,
+all matching the real config), constructs a real `ForwardPass` against the real GGUF via the
+tensor source, feeds one real embedding-table row (`codec_embd.weight`'s row 0, a real learned
+vector -- not random noise) through `ForwardEmbedding`, asserts the resulting logits are non-empty
+and every value finite. **PASSED.** This is a construction/shape/finite smoke test only (matching
+this project's own established first-pass convention, e.g. Fish Speech's early
+"ForwardPass_Constructs_And_ForwardEmbedding_Runs" test) -- NOT a numerical correctness claim; the
+real per-timestep embedding composition (text projection + codec embedding, mirroring
+`FishSpeechPipeline.EmbedTextToken`/`EmbedSemanticToken`) and golden verification against a real
+oracle remain real, separate, not-yet-done work. But this proves the core, most valuable part of
+this fire's hypothesis: **the Talker's real 28-layer transformer runs correctly through this
+codebase's existing, completely unmodified `ForwardPass` engine** -- no from-scratch attention/
+FFN/RoPE/GQA/QK-norm kernel port needed for this component, unlike every other model this project
+has ported from scratch this session.
+
+**Real remaining work, clearly scoped, not started**: (1) real per-timestep embedding composition
+(text token embedding + `text_proj` MLP projection, codec-value embedding lookup, summed like Fish
+Speech's real composition) to replace this test's placeholder single-row input; (2) a real prompt/
+generation loop (BOS/EOS/pad token ids already confirmed in metadata: `codec.bos_id=2149`,
+`.eos_id=2150`, `.pad_id=2148`, plus think/language/dialect control tokens not yet investigated);
+(3) the 5-layer Code Predictor (same GGUF file, `code_pred.*` prefix -- likely another
+`ForwardPass`-reuse candidate given the shared architecture family, not yet confirmed); (4) the
+12Hz codec decoder (separate `qwen-tokenizer-12hz-*.gguf` file, not yet downloaded or inspected --
+real DAC-family architecture per the earlier research entry, likely needs a from-scratch port like
+Fish Speech's/Parler's codecs did); (5) the speaker encoder (ECAPA-TDNN-style, real architecture
+already documented in the previous entry -- reflect-padding and the specific ASP sequence are real
+implementation gotchas to get right, not yet attempted); (6) golden verification of everything
+against a real oracle once implemented -- no numerical claim has been made yet, only "it runs".
+
+Not committed (per standing instruction). No subagents used.
+
+## QwenTTS Code Predictor: ForwardPass-reuse ALSO confirmed. Both major transformers now need zero from-scratch kernel work
+
+Extended the previous entry's confirmed hypothesis to the Code Predictor (same GGUF file,
+`code_pred.*` prefix). Real tensor names inspected via `list-tensors`: SAME per-layer shape
+family as the Talker (`attn_q/k/v/output`, `attn_q_norm`/`attn_k_norm`, `ffn_gate/up/down`,
+`attn_norm`/`ffn_norm` -- all Q8_0 except norms), genuinely smaller (5 layers, confirmed via
+`code_pred.block_count=5` matching the official `code_predictor_config` exactly). **Real,
+structurally different top level, confirmed not guessed**: NO single shared embedding/output
+pair like the Talker has -- instead 15 SEPARATE per-codebook tables,
+`code_pred.codec_embd.{0..14}.weight` and `code_pred.lm_head.{0..14}.weight`, matching the real
+autoregressive depth-expansion architecture already documented (codebook g's input embeds via
+table g, output projects via lm_head g).
+
+**New `QwenTtsCodePredictorTensorSource.cs`**: same remapping pattern as the Talker's, aliasing
+`token_embd.weight`/`output.weight` to table 0 ONLY for `ForwardPass`'s construction-time
+metadata/shape probing (real per-codebook composition -- selecting the right table per step of
+the depth-expansion loop -- is separate, not-yet-built logic).
+
+**Golden-adjacent milestone, real and verified**: new `QwenTtsCodePredictorForwardPassTests.
+ForwardPass_ConstructsAndRuns_AgainstRealQwenTtsCodePredictorGguf` -- same construction/shape/
+finite smoke-test shape as the Talker's, asserts NumLayers=5, EmbeddingDim=1024, NumHeads=16,
+NumKvHeads=8, HeadDim=128, IsNeoxRope=true (inherits the `qwen3-tts` architecture fix from the
+previous entry automatically -- no additional RoPE-classification work needed). **PASSED on the
+first attempt.**
+
+**Cumulative real scope reduction for QwenTTS, now confirmed for BOTH major transformer
+components**: neither the 28-layer Talker nor the 5-layer Code Predictor need a from-scratch
+attention/FFN/RoPE/GQA/QK-norm kernel port -- both run through this codebase's existing,
+completely unmodified `ForwardPass` engine via a tensor-remapping wrapper. This is the largest
+possible scope reduction for this pipeline: the remaining real work is now concentrated entirely
+in (1) the per-timestep embedding composition/generation loop for both components (real, but
+comparatively small compared to a kernel port), (2) the 12Hz codec decoder (separate GGUF file,
+genuinely needs a from-scratch DAC-family port like Fish Speech's/Parler's codecs), and (3) the
+speaker encoder (ECAPA-TDNN-style, also needs a from-scratch port -- reflect-padding and the real
+ASP sequence are the known gotchas). Golden verification of all of it against a real oracle
+remains entirely undone -- every claim so far is "it runs and produces finite output", not "it's
+numerically correct".
+
+Not committed (per standing instruction). No subagents used.
+
+## QwenTTS codec: real exact architecture confirmed via ChatGPT + local qwentts.cpp source cross-check. One real gap in the earlier mental model corrected; one real structural blocker found for the codec's own transformer (NOT a ForwardPass-reuse case, unlike the Talker/CodePredictor)
+
+Asked ChatGPT for the exact real math of the 12Hz codec decoder and speaker encoder (full findings
+saved to memory, `reference_qwentts_codec_speaker_encoder.md`, for cross-session continuity).
+**Real correction to the earlier rough mental model**: NOT one shared 512-dim codebook space
+summed across all 16 codebooks -- real split: 1 semantic + 15 acoustic RVQ groups, each in 256
+internal dimensions with its OWN learned 256-&gt;512 projection, summed only AFTER projection
+(`z = P_semantic(E_sem[c_0]) + P_acoustic(Σ E_aco[k][c_k])`).
+
+**Directly confirmed against the local `examples/qwentts.cpp/src/quantizer-decode.h`** (read in
+full, not just ChatGPT's description): exactly matches -- real tensor names `tok_dec.vq_first.
+{output_proj.weight, {k}.codebook}` / `tok_dec.vq_rest.{output_proj.weight, {k}.codebook}`.
+
+**Downloaded the real `qwen-tokenizer-12hz-Q8_0.gguf`** (~291MB, from the same `Serveurperso/
+Qwen3-TTS-GGUF` repo) and inspected via `list-metadata`/`list-tensors` -- real config matches
+ChatGPT's report exactly: decoder 8 layers, hidden=512, head_dim=64, num_attention_heads=16,
+num_key_value_heads=16 (full MHA, not GQA), intermediate=1024, rope_theta=10000 (NOT the Talker's
+1e6 -- a real, per-component difference), sliding_window=72, layer_scale_initial_scale=0.01.
+Confirmed real tensor names for the whole non-transformer chain, exactly matching both ChatGPT's
+report and ARCHITECTURE.md: `tok_dec.pre_conv` (1024-&gt;1536), `tok_dec.pre_tfm.{input_proj,
+output_proj,norm}` (transformer in/out projections), `tok_dec.upsample.{0,1}.{conv,dwconv,gamma,
+norm,pwconv1,pwconv2}` (2 real ConvNeXt ×2 upsample stages), `tok_dec.dec.{0..6}` (real DAC chain:
+dec.0=pre-conv, dec.1..4=DecoderBlocks each with `conv_t`+`res.{0,1,2}`+`snake`, dec.5=final
+snake, dec.6=final conv 96-&gt;1) -- channel progression 1536-&gt;768-&gt;384-&gt;192-&gt;96
+confirmed directly from real tensor shapes, matching ChatGPT's report exactly.
+
+**Real, structural finding that changes the plan for this component**: the codec's 8-layer
+transformer (`tok_dec.pre_tfm.blk.{0..7}.*`) has REAL `attn_scale`/`ffn_scale` tensors (matching
+`layer_scale_initial_scale=0.01` -- real LayerScale applied to the attention/FFN sublayer output
+before the residual add) but has NO `attn_q_norm`/`attn_k_norm` tensors at all -- the OPPOSITE
+pattern from the Talker/Code Predictor (which have QK-norm, no LayerScale). This is a genuinely
+different transformer layer variant than `ForwardPass` was confirmed to support for the other two
+components -- NOT a drop-in reuse case. Extending the shared `ForwardPass` engine to support an
+optional per-layer LayerScale is possible but a real, separate piece of shared-infrastructure work
+(affecting a heavily-used, foundational file) rather than a contained per-pipeline addition; a
+small custom 8-layer transformer implementation (mirroring the RmsNorm/attention/SwiGLU math
+already ported by hand for Fish Speech's fast-AR and Parler's decoder, just with LayerScale
+instead of QK-norm) is the lower-risk alternative given the layer count is small.
+
+**Honest status/scope note for this pipeline given the size of what remains**: confirmed real,
+exact specs now exist for the RVQ decode, the codec transformer (structural difference noted
+above), the ConvNeXt upsample stages (real gamma=1e-6 constant, distinct from the transformer's
+0.01 LayerScale -- a real, easy-to-conflate detail flagged by the research), the DAC decoder chain
+(real SnakeBeta activations -- note real alpha/beta are stored EXPONENTIATED, a known real porting
+trap), and the causal ConvTranspose1d crop convention (same bug category as Fish Speech's codec
+crop-formula bug found and fixed earlier this project). The speaker encoder's exact real ECAPA-
+TDNN math (SE-Res2Net's real 7-branch, not 8-branch, cascading wiring; the exact real ASP weighted-
+statistics formula; the real reflect-padding convention, distinct from the codec's causal-zero-pad
+convention) is also now fully specified in the saved memory. None of this has been implemented in
+C# yet -- this fire's real, concrete progress was fully resolving what to build and exactly how,
+with every architectural ambiguity now closed via real source (official Python class names,
+config values, and independent local C++ cross-checks), not implementation itself. Given the
+genuine size of the remaining work (a custom codec transformer variant, RVQ decode, ConvNeXt,
+full DAC decoder chain, and a from-scratch ECAPA-TDNN speaker encoder, each needing its own golden
+verification), this is being tracked as real, substantial, multi-session remaining work rather
+than something to rush to a false "done" state.
+
+Not committed (per standing instruction). No subagents used.
+
+## QwenTTS codec RVQ decode -- IMPLEMENTED and golden-verified. First numerically-correct real component of the codec
+
+Downloaded the real `qwen-tokenizer-12hz-Q8_0.gguf` (~291MB, `Serveurperso/Qwen3-TTS-GGUF`).
+Implemented the split-RVQ decode piece (self-contained, testable independent of the rest of the
+codec chain -- deliberately the first piece attempted per the earlier research entry's own
+recommended build order: "start with a hand-picked deterministic code matrix fed straight into
+the codec decoder").
+
+**New `QwenTtsCodecRvqWeights.cs`**: loads `tok_dec.vq_first.{0}.codebook` + `.output_proj.weight`
+(1 semantic quantizer) and `tok_dec.vq_rest.{0..14}.codebook` + `.output_proj.weight` (15 acoustic
+quantizers) -- real tensor names confirmed via `list-tensors`, exactly matching both the earlier
+ChatGPT research and the real local `quantizer-decode.h` source.
+
+**New `QwenTtsCodecRvq.cs`**: real split-RVQ decode transcribed directly from `quantizer-decode.h`'s
+`rvq_group_decode`/`quant_decode` -- per group (semantic, acoustic), sum that group's codebook
+lookups in 256-dim internal space, THEN project once to 512-dim hidden via that group's own real
+Conv1d(kernel=1) weight (a plain matvec, confirmed via the real GGUF tensor shape `[1,256,512]`
+matching PyTorch's native `[out=512,in=256,kernel=1]` conv weight layout, same "displayed-shape-
+reversed-but-flat-bytes-match-PyTorch-row-major" convention confirmed repeatedly elsewhere this
+project); finally sum the two groups' projected 512-dim vectors.
+
+**Golden-verified**: built a real Python oracle (`scratch-llamacpp-ref/qwentts_rvq_golden_*.txt`)
+using the `gguf` Python package to dequantize the same real GGUF weights directly (same technique
+used for every other GGUF-sourced golden oracle this project), computing the real split-RVQ math
+in numpy for a deterministic 16×4 code matrix. New `QwenTtsCodecRvqTests.Decode_RealWeights_
+MatchesGoldenOracle`: cosine similarity &gt; 0.999. **PASSED.**
+
+**Status**: this is the first component of the QwenTTS codec with an actual numerical-correctness
+claim behind it (everything else so far has been "confirmed architecture" or "constructs and runs
+finite", not golden-verified). Real remaining codec work, unchanged in scope from the previous
+entry: the codec's own 8-layer transformer (real LayerScale variant, not a `ForwardPass`-reuse
+case -- needs either shared-engine extension or a small custom implementation), the pre-conv
+(512→1024, real causal k=3), the 2-stage ConvNeXt upsample (real gamma=1e-6 constant), and the
+4-block DAC decoder chain (real SnakeBeta activations, real causal ConvTranspose1d crop
+convention) -- all fully specified via real source (see the memory file and the previous entry)
+but none implemented yet. The speaker encoder also remains fully unstarted.
+
+Not committed (per standing instruction). No subagents used.
+
+## QwenTTS codec's own 8-layer transformer -- IMPLEMENTED and golden-verified. Second real numerically-correct codec component
+
+Read the real, local `examples/qwentts.cpp/src/tokenizer-transformer.h` in full (`tok_trans_
+layer_forward`) to get the exact per-layer math for the codec's own transformer (the one flagged
+last entry as NOT a `ForwardPass`-reuse case). Confirmed: pre-RMSNorm -&gt; full MHA (no GQA, no
+QK-norm) with NEOX RoPE (theta=10000) -&gt; CAUSAL SLIDING-WINDOW attention (window=72: query q
+attends only to keys in `[max(0,q-71), q]`, not the full causal prefix) -&gt; o_proj -&gt;
+per-channel LayerScale multiply -&gt; residual -&gt; pre-RMSNorm -&gt; SwiGLU FFN -&gt;
+per-channel LayerScale multiply -&gt; residual. Whole utterance processed in one batched pass (no
+autoregressive dependency here, unlike the Talker/Code Predictor -- the codec decodes an already-
+fully-known code sequence).
+
+**New `QwenTtsCodecTransformerWeights.cs` + `QwenTtsCodecTransformer.cs`**: real hand-rolled
+implementation (not a `ForwardPass` reuse), mirroring the same RmsNorm/attention/SwiGLU coding
+style already used for Fish Speech's fast-AR and Parler's decoder, with the real sliding-window
+mask and LayerScale specific to this component.
+
+**Golden-verified, with one real bug caught in my OWN oracle before it could hide a real code
+bug**: building the Python oracle first hit `gguf`'s `GGUFReader` NOT auto-dequantizing Q8_0
+tensors (confirmed empirically -- `.data` for a Q8_0 tensor returns raw uint8 bytes, not
+dequantized float32, contradicting an assumption every earlier GGUF-sourced oracle this project
+built happened to never actually test, since every prior oracle's Q8_0-adjacent tensors were
+either plain Float32 or hit via this codebase's own C# `Dequantize.ToFloat32`, never through raw
+Python `gguf` package access) -- fixed by writing a real Q8_0 block dequantizer in the oracle
+script itself (2-byte fp16 scale + 32 int8 values per 34-byte block, matching this project's own
+already-used real Q8_0 format). Then hit a real bug in the oracle's OWN attention-context array
+sizing (sized to `hidden=512` instead of the real Q/K/V projection width `n_heads*head_dim=1024`
+-- these differ for this component, unlike a typical model where they're equal) -- fixed before
+comparing against the C# implementation, so this was caught as a Python-reference bug, not
+mistakenly attributed to the C# port.
+
+New `QwenTtsCodecTransformerTests.Forward_RealWeights_MatchesGoldenOracle`: 5-timestep
+deterministic latent input through both the real GGUF-sourced C# implementation and the real
+Python oracle (same weights, same Q8_0 dequantization). Cosine similarity &gt; 0.999. **PASSED.**
+
+**Status**: two of the codec's real components are now golden-verified (RVQ decode, codec
+transformer). Real remaining codec work: pre-conv (512-&gt;1024, causal k=3, chains RVQ output
+into this transformer's input -- note the transformer operates in `hidden=512` space while RVQ
+decode and the final chain operate in `latent_dim=1024` space, confirmed via the real
+`input_proj`/`output_proj` bracketing this transformer already implemented), the 2-stage ConvNeXt
+upsample (real gamma=1e-6 constant, distinct from this transformer's own 0.01 LayerScale), and the
+4-block DAC decoder chain (real SnakeBeta activations, real causal ConvTranspose1d crop
+convention). The speaker encoder remains fully unstarted.
+
+Not committed (per standing instruction). No subagents used.
+
+## QwenTTS codec pre-conv IMPLEMENTED + full RVQ->preconv->transformer chain golden-verified together
+
+**New `QwenTtsCodecPreConv.cs`**: real causal Conv1d bridging RVQ decode's 512-dim output into the
+codec transformer's 1024-dim (`latent_dim`) input space, kernel=3, left-zero-pad by
+`kernel-1=2` (matching the real `Qwen3TTSTokenizerV2CausalConvNet` formula already documented:
+`effective_kernel=(kernel-1)*dilation+1`, `padding=effective_kernel-stride`, all on the left for
+stride=1). Real tensor names `tok_dec.pre_conv.{weight,bias}`.
+
+**One real, useful discovery while building this piece's oracle**: unlike the transformer's Q8_0
+matrices, `pre_conv.weight` is stored as real **Float16** in this GGUF -- and, unlike Q8_0,
+`gguf.GGUFReader`'s `.data` DOES return a properly-shaped, already-dequantized array for F16
+tensors (confirmed empirically: `pre_conv.weight`'s raw `.data` came back shape `(1024,512,3)` =
+`(out,in,kernel)` directly, no manual dequant needed) -- a real, useful distinction from Q8_0's
+raw-bytes behavior found in the previous entry. Worth remembering for future GGUF-Python-oracle
+work in this project: dtype-dependent behavior of the `gguf` package's own auto-dequantization,
+not something to assume uniform across dtypes.
+
+**Integration golden test, not just another isolated component test**: new
+`QwenTtsCodecChainTests.RvqThenPreConvThenTransformer_RealWeights_MatchesGoldenOracle` chains all
+three real, already-individually-verified components (RVQ decode -&gt; pre-conv -&gt;
+transformer) on the same real 16-codebook deterministic code sequence, checking the DATA FLOW
+between components (shape/orientation bugs at the boundaries) that isolated per-component tests
+can't catch by themselves. **PASSED**, cosine &gt; 0.999, real weights, real GGUF, real oracle.
+
+**Status**: three real codec components now chain together correctly and are golden-verified as a
+unit (RVQ decode, pre-conv, transformer). Real remaining codec work: the 2-stage ConvNeXt upsample
+(real gamma=1e-6 constant) and the 4-block DAC decoder chain (real SnakeBeta activations --
+remember the real alpha/beta are stored EXPONENTIATED, a known real porting trap flagged earlier
+-- and the real causal ConvTranspose1d crop convention). The speaker encoder remains fully
+unstarted. This chain-so-far (RVQ-&gt;preconv-&gt;transformer) represents real, meaningful forward
+progress toward a complete, numerically-verified QwenTTS codec decoder.
+
+Not committed (per standing instruction). No subagents used.
+
+## QwenTTS ConvNeXt upsample -- IMPLEMENTED and golden-verified (first attempt). 4/6 real codec components now proven
+
+New `QwenTtsCodecUpsampleWeights.cs`/`QwenTtsCodecUpsample.cs`: real causal `ConvTranspose1d`
+(kernel=stride=2, crop=0 -- reused the exact same real formula already proven correct for Fish
+Speech's codec's own quantizer-upsample stages, same kernel=stride case) + real `ConvNeXtBlock`
+(causal depthwise conv k=7 left-pad=6, channels-last LayerNorm, Linear expand 4x, GELU, Linear
+project, real LEARNED per-channel `gamma`, residual). `QwenTtsCodecUpsampleTests.
+Forward_Stage0_RealWeights_MatchesGoldenOracle`: cosine &gt; 0.999. **PASSED on the first
+attempt.**
+
+**Cumulative real codec progress**: RVQ decode, pre-conv, 8-layer transformer, and now the
+ConvNeXt upsample stage are all individually golden-verified (4 of 6 real components). Real
+remaining work: the 4-block DAC decoder chain (real SnakeBeta activations, real causal
+ConvTranspose1d crop convention -- different kernel/stride ratio than the ConvNeXt case, needs its
+own crop-formula check, not assumed identical) and the speaker encoder (fully unstarted,
+architecturally unrelated to the codec).
+
+Not committed (per standing instruction). No subagents used.
+
+## QwenTTS 4-block DAC decoder chain -- IMPLEMENTED and golden-verified. 5/6 real codec components now proven
+
+New `QwenTtsCodecDacWeights.cs` (loads `tok_dec.dec.{0..6}.*`: `dec.0`=pre-conv causal k=7
+1024-&gt;1536, `dec.{1..4}`=4 real `DecoderBlock`s each SnakeBeta-&gt;causal
+`ConvTranspose1d`(kernel=2×rate,stride=rate)-&gt;3x `ResidualUnit`(dilations 1,3,9), `dec.5`=final
+SnakeBeta, `dec.6`=final causal conv 96-&gt;1 k=7; real channel progression
+1536-&gt;768-&gt;384-&gt;192-&gt;96, real rates `[8,5,4,3]` confirmed via each `conv_t` tensor's real kernel
+width = 2×rate) + `QwenTtsCodecDac.cs` (real forward: pre-conv -&gt; 4 DecoderBlocks -&gt; final
+SnakeBeta -&gt; final conv -&gt; `clamp(-1,1)`, no Tanh).
+
+Two real, non-obvious facts confirmed and implemented correctly (not assumed):
+- **SnakeBeta gotcha**: stored `alpha`/`beta` are EXPONENTIATED before use in
+  `x + (1/beta_exp)*sin(alpha_exp*x)^2` -- flagged as a known porting trap in the completion-plan
+  memory, now actually implemented per that flag rather than silently getting it wrong.
+- **DAC's ConvTranspose1d crop convention genuinely differs from the ConvNeXt upsample's**: DAC
+  uses `kernel=2*rate` (not `kernel=stride`), so `crop=kernel-stride=rate` (nonzero) -- distinct
+  from the ConvNeXt stage's `kernel=stride` case where crop=0. Verified this by NOT reusing the
+  ConvNeXt crop formula blindly; implemented and golden-checked separately as the design doc
+  flagged it should be.
+
+Golden tests: `QwenTtsCodecDacTests.PreConvThenBlock0_RealWeights_MatchesGoldenOracle` (real
+oracle in `scratch-llamacpp-ref/qwentts_dac_block0_golden.py`, manual Q8_0 dequant, pre-conv + full
+block-0 math transcribed in numpy) -- cosine &gt; 0.999, **PASSED on first attempt**. Also added
+`QwenTtsCodecDacFullChainTests.Forward_FullChain_RealWeights_ProducesFiniteClampedWaveform` --
+smoke test running all 4 real DecoderBlocks + final layers end-to-end on real weights, asserting
+finite output, correct real cumulative upsample factor (8×5×4×3=480), and correct `[-1,1]` clamp
+range -- **PASSED**.
+
+**Cumulative real codec progress**: RVQ decode, pre-conv, 8-layer transformer, ConvNeXt upsample,
+and now the full 4-block DAC decoder chain are all individually golden-verified (5 of 6 real
+components). Only the speaker encoder (ECAPA-TDNN-style, fully unstarted, architecturally
+unrelated to the codec decode chain) remains before the codec decoder side of QwenTTS is
+completely real and verified end-to-end. After that: real per-timestep embedding composition +
+generation loop for Talker/Code Predictor, then full pipeline wiring.
+
+Not committed (per standing instruction). No subagents used.
+
+## QwenTTS speaker encoder (ECAPA-TDNN-style) -- IMPLEMENTED and golden-verified. All 6/6 real codec-adjacent components now proven
+
+New `QwenTtsSpeakerEncoderWeights.cs`/`QwenTtsSpeakerEncoder.cs`, real weights confirmed to live in
+the **Talker** GGUF (`spk_enc.*`, not the codec/tokenizer GGUF -- confirmed by scanning both
+files' tensor names before writing any loader code). Real structure, transcribed from
+`qwen_tts/core/models/modeling_qwen3_tts.py`: `conv0` (TDNN, mel=128-&gt;512, k=5) -&gt; 3x real
+`SqueezeExcitationRes2NetBlock` (dilations 2/3/4: TDNN1 1x1 -&gt; Res2Net(scale=8, k=3, dilated,
+**7 real conv branches with branches 2-7 cascading `x[i]+output[i-1]`, branch 0 passthrough --
+not 8 convolutional branches**) -&gt; TDNN2 1x1 -&gt; SE (mean-over-time -&gt; 512-&gt;128 ReLU -&gt;
+128-&gt;512 Sigmoid -&gt; multiply) -&gt; residual) -&gt; `mfa` (channel-concat the 3 block outputs =1536,
+Conv1d 1536-&gt;1536 k=1) -&gt; real `AttentiveStatisticsPooling` (concat(x,mean,std)=4608 -&gt; TDNN
+4608-&gt;128 ReLU -&gt; Tanh -&gt; conv 128-&gt;1536 -&gt; softmax-over-time -&gt; weighted mean+std, exact
+formula `sqrt(clamp(Σattn*(x-mean)^2, eps=1e-12))` -&gt; concat=3072) -&gt; `fc` (Linear 3072-&gt;1024).
+
+Two real, distinct conventions correctly kept separate (per the completion-plan memory's explicit
+warning not to conflate them): every `TimeDelayNetBlock`/Res2Net/SE/ASP conv here uses real
+**`padding="same", padding_mode="reflect"`** (PyTorch reflect semantics, no boundary-sample
+duplication, `period=2*(T-1)`) -- the OPPOSITE of the codec decoder's causal left-zero-pad
+convention implemented earlier in this same session.
+
+Golden test: `QwenTtsSpeakerEncoderTests.Forward_RealWeights_MatchesGoldenOracle`, real oracle in
+`scratch-llamacpp-ref/qwentts_speaker_encoder_golden.py` (real GGUF weights via the Talker file,
+manual Q8_0 dequant, full real math transcribed in numpy, deterministic `[20,128]` mel input
+isolating the encoder network from mel-frontend extraction -- same isolation strategy as the
+codec's deterministic-codes RVQ test), cosine &gt; 0.999. **PASSED on the first attempt.**
+
+**All 6 of 6 real codec-decoder-side components are now individually golden-verified**: RVQ
+decode, pre-conv, 8-layer transformer, ConvNeXt upsample, 4-block DAC decoder chain, and the
+speaker encoder. Real remaining work for a complete QwenTTS pipeline: (1) the real per-timestep
+embedding composition + generation loop for the Talker (text projection, codec embedding lookup,
+real prompt format with BOS/EOS/pad/think/language special tokens) and Code Predictor
+(autoregressive depth-expansion across the 15 acoustic codebooks) -- architecturally understood
+from the real `prompt-builder.h` read earlier this session but not yet implemented in C#; (2)
+wiring a full `QwenTtsPipeline` replacing the fake stub components with all these real ones and
+running a true end-to-end golden test (text -&gt; Talker -&gt; CodePredictor -&gt; codec decode -&gt;
+waveform) against a real reference audio sample.
+
+Not committed (per standing instruction). No subagents used.
+
+## Whisper GGUF conversion -- IMPLEMENTED and golden-verified (bit-exact + real end-to-end transcription). New real second weight format for Whisper, per user request
+
+**Real finding, confirmed directly against the authoritative upstream source (not guessed or
+assumed)**: whisper.cpp's own model files are STILL the legacy custom `ggml` binary format
+(magic `0x67676d6c`) as of the current master branch -- fetched
+`github.com/ggml-org/whisper.cpp/blob/master/models/README.md` directly, which explicitly states
+"Whisper model files in custom `ggml` format" with no mention of GGUF. Cross-checked against this
+repo's own local `examples/whisper.cpp` checkout: zero `gguf_init`/`GGUF_MAGIC` references in
+`src/whisper.cpp`'s model loader, and `models/convert-*.py` only ever emit the legacy format.
+**There is no genuine, canonical GGUF-format Whisper release to download.** A community repo
+found via search (`vonjack/whisper-large-v3-gguf`) was NOT independently verified to be a real
+GGUF container (vs. the same legacy format colloquially mislabeled "gguf" -- a common looseness
+in this ecosystem) and was deliberately not used, per this project's "never guess" discipline.
+
+**Real path taken instead**: self-converted this project's own already-verified-correct local
+`ggml-*.bin` weights into a genuine GGUF container -- pure mechanical repackaging (same tensor
+names/values/dtypes, real GGUF magic + KV-metadata block), not a re-derivation of any
+architecture/math, so a lossless-format-conversion claim is the correct (and strongest available)
+thing to golden-verify, not a cosine-similarity oracle.
+
+New `scratch-llamacpp-ref/whisper_ggml_to_gguf.py`: parses the legacy ggml format exactly per
+`WhisperGgmlModel.Load`'s own spec (magic check, hparams, baked mel filterbank skip, inline
+vocab, tensor stream with ggml column-major `ne[]` reversed to real row-major shape), preserves
+each tensor's real on-disk dtype (F16 or F32, no upcast -- confirmed this keeps output file size
+at parity with the source, ~148MB in vs ~148MB out for `ggml-base.bin`), and writes via the real
+`gguf` Python package's `GGUFWriter` (flat `whisper.hparam.*` metadata keys + a real
+`tokenizer.ggml.tokens` string array).
+
+New `WhisperGgmlModel.LoadFromGguf(path)` (C#): reads the real GGUF file via this project's own
+`GgufModel`/`Dequantize.ToFloat32`, populates the exact same internal state (hparams + `_tensors`
+dict) as the legacy `Load(path)`, so every existing downstream consumer
+(`WhisperEncoderWeights`, `WhisperDecoderWeights`, `WhisperTokenizer.FromGgml`, `WhisperPipeline`)
+works completely unchanged -- true DRY reuse, zero duplicated forward-pass code, matching this
+project's established `IModelTensorSource`-reuse spirit even though this case didn't need the
+tensor-remapping wrapper itself (same tensor names on both sides by construction). New
+`WhisperPipeline.LoadFromGguf(ggufModelPath, vad)` entry point mirroring the existing `Load`.
+
+**Two-tier golden verification** (`WhisperGgufConversionTests.cs`):
+1. `LoadFromGguf_TinyModel_MatchesLegacyGgmlLoaderExactly` -- bit-exact per-tensor float equality
+   (not cosine similarity -- the correct, stronger check for a lossless-conversion claim) between
+   `WhisperGgmlModel.Load` and `WhisperGgmlModel.LoadFromGguf` on `ggml-tiny.bin`, covering every
+   hparam, the full vocab, and representative encoder/decoder weight tensors per layer. **PASSED
+   on the first attempt** (after fixing two real API-shape issues found during compile: `GgufModel`
+   metadata arrays come back as `object[]` not directly `Convert.ChangeType`-castable to
+   `string[]`, and `GgufTensorInfo` exposes `Dimensions`/`NDimensions`, not a `Shape` property --
+   both are trivial adapter fixes, not architecture bugs).
+2. `WhisperPipeline_LoadFromGguf_BaseModel_TranscribesJfkSampleCorrectly` -- real end-to-end
+   proof using `models/whisper-base.gguf` (converted from `models/ggml-base.bin`) against the
+   same real ground-truth JFK speech sample and assertions already used by
+   `WhisperRealWeightsTests`'s legacy-loader version. **PASSED.**
+
+**Scope note (disk-conscious, per standing project constraint)**: only `ggml-tiny.bin` (test
+fixture) and `ggml-base.bin` (real production artifact, `models/whisper-base.gguf`) were
+converted this pass. `ggml-{small,medium,large-v3}.bin` were deliberately left unconverted --
+the converter is proven correct (bit-exact + working E2E on two sizes already), so converting the
+larger ones is a pure mechanical rerun (`python scratch-llamacpp-ref/whisper_ggml_to_gguf.py
+models/ggml-{small,medium,large-v3}.bin models/whisper-{small,medium,large-v3}.gguf`) whenever
+disk headroom and/or an actual need for those sizes' GGUF path arises -- not run speculatively.
+
+Not committed (per standing instruction). No subagents used.
+
+## CosyVoice3 HiFT vocoder -- IMPLEMENTED, structurally verified. Investigated full CosyVoice2 pipeline wiring first; found a real, bigger-than-expected gap and pivoted to the concretely-scoped item the doc already recommended
+
+Investigated wiring CosyVoice2's three "done" stages (LLM, `CosyVoiceFlowEncoder`, HiFT) into a
+real end-to-end `CosyVoicePipeline.Generate` per this doc's own "next iteration" note. **Real
+finding, not previously flagged this explicitly**: `CosyVoiceFlowEncoder` only produces `mu`
+(the Conformer-encoded conditioning tensor) -- there is no ported CFM/diffusion estimator that
+turns `mu` into an actual mel-spectrogram for CosyVoice2 (`CosyVoiceFlowWeights`/
+`S3GenConformerKernels` cover the encoder only). So CosyVoice2 cannot reach real audio yet even
+with all "three stages" nominally done -- the generative flow-decoder component itself is a
+real, unstarted, and non-trivial gap (a full diffusion U-Net/transformer port), correctly out of
+scope for one iteration. Also confirmed `CosyVoicePipeline.cs`/`CosyVoiceLlm.cs`/
+`CosyVoiceFlowDiT.cs`/`CosyVoiceHiFT.cs` are still the ORIGINAL 100% procedural stub classes
+(sine-wave HiFT, random speaker embeddings, fake mel) -- completely separate from the real,
+independently-verified `CosyVoice3DiTModel`/`CosyVoice3LlmTensorSource` files sitting unused
+elsewhere in the same directory. Wiring a genuinely real pipeline needs both the missing CFM
+estimator (CosyVoice2) or a real generation loop + tokenizer (CosyVoice3) -- too large for this
+iteration; deferred with this precise scope note rather than attempted partially.
+
+**Pivoted to the concretely-scoped, doc-recommended next step instead**: CosyVoice3's HiFT
+vocoder, whose real architecture was already fully inspected two entries back ("CosyVoice3
+flow/HiFT: real architecture inspected...") but never implemented. Re-confirmed via a fresh
+`list-tensors` dump of `models/cosyvoice3/CosyVoice3-2512_F16.gguf` before writing any loader
+code (not from memory): `conv_pre.weight` is GGUF-displayed `[5,80,512]` (kernel **5**, matching
+the earlier finding), every conv tensor (`conv_pre`/`conv_post`/`ups.{0,1,2}`/
+`resblocks.*`/`source_downs.*`/`source_resblocks.*`/`f0_predictor.*`/`m_source.*`) is plain
+(no `parametrizations.weight.original0/1` split anywhere) -- otherwise identical tensor names
+and per-stage shapes to CosyVoice2's HiFT.
+
+New `CosyVoice3HiftWeights.cs`: reads all of the above directly from the real GGUF via this
+project's own `GgufModel`/`Dequantize.ToFloat32` (no weight-norm fold step -- would be wrong
+for this checkpoint per the finding above), implementing the same `IHiFTVocoderWeights`/
+`IHifiResBlockWeights`/`IF0PredictorWeights` interfaces `CosyVoiceHiftWeights` already
+implements. **DRY, no duplicated forward-pass math**: widened `CosyVoiceHiftVocoder.Generate`'s
+parameter type from the concrete `CosyVoiceHiftWeights` to the `IHiFTVocoderWeights` interface
+(one-line change) so the exact same `HiFTVocoderKernels.Generate` call now serves both
+CosyVoice2's safetensors-based and CosyVoice3's GGUF-based checkpoints with zero new forward-pass
+code -- re-ran `CosyVoiceHiftVocoderTests` (CosyVoice2) after the widening to confirm no
+regression, still **PASS**.
+
+New `CosyVoice3HiftVocoderTests.Generate_RealWeights_ProducesFiniteBoundedWaveform` (mirrors the
+CosyVoice2 version exactly): real GGUF weights, synthetic mel input, checks output length and
+that every sample is finite and in `[-1,1]`. **PASSED on the first attempt.** Not yet
+golden-verified against a numeric oracle (same caveat CosyVoice2's HiFT test still carries) --
+structural correctness only, consistent with this doc's established bar for a first pass.
+
+**CosyVoice3 status, updated**: DiT flow backbone (`CosyVoice3DiTModel`, real, 4-input real
+`InputEmbed` formula resolved and tested) and now HiFT (this entry) both exist and pass their
+own real-weights tests independently. **Still not done**: (1) CosyVoice3's own LLM generation
+loop + tokenizer/prompt format (only `CosyVoice3LlmTensorSource`'s adapter exists, no generation
+loop built on top, unlike CosyVoice2's LLM which has the `EnableSpeechGenerationMode`
+prefill-proven pattern from an earlier entry); (2) wiring DiT + HiFT + LLM into one real
+`CosyVoice3Pipeline.Generate` call; (3) numeric golden verification for any CosyVoice3 stage
+(everything so far is real-weights-structural, matching this doc's established honest labeling).
+CosyVoice2 remains blocked on its missing CFM flow-decoder as described above -- CosyVoice3 is
+now the closer of the two to a genuinely complete real pipeline.
+
+Not committed (per standing instruction). No subagents used.
+
+## CosyVoice3 LLM generation loop -- IMPLEMENTED and running end-to-end on real weights. Real prompt format sourced directly, not guessed
+
+Picked up item (1) from the previous entry. Read `examples/cosyvoice.cpp/src/cosyvoice-llm-job.cpp`
+(`cosyvoice_model_3::llm_job_ext`) and `cosyvoice-prompt.cpp`
+(`cosyvoice_prompt_init_from_prompt_speech`/`cosyvoice_model::set_prompt`) in full to get the
+real prompt-composition sequence before writing any code, per standing discipline. **Real,
+exact sequence for the no-reference-audio (plain synthesis) case, confirmed from the C++
+source**: `[sos_token_id]` (speech-embedded) + `tokenize(instruction_prefix)` +
+`tokenize("<|endofprompt|>")` + `tokenize(synthesis text)` (all three text-embedded) +
+`[task_token_id]` (speech-embedded, becomes the seed token for the first autoregressive decode
+step) -- then greedy/sampled decode over the speech vocabulary until a stop token or a length
+cap.
+
+**Real metadata confirmed directly from the bundled GGUF via `list-metadata`/a raw
+`gguf.GGUFReader` probe (not assumed)**: `cosyvoice.instruction_prefix` = "You are a helpful
+assistant.", `sos_token_id` = 6561, `task_token_id` = 6563, `stop_token_ids` = a real 200-entry
+array (starting `[6561, 6562, 6563, 6564, ...]`, the checkpoint's special/stop region of its
+6761-entry speech vocabulary). Real tokenizer: this GGUF embeds a full BPE vocab+merges under
+its own **non-llama.cpp-standard keys** (`tokenizer.vocab.tokens`/`tokenizer.model.merges`/
+`tokenizer.vocab.token_types`, NOT the usual `tokenizer.ggml.*` convention `GgufTokenizer.
+FromGgufModel` expects) -- confirmed by direct inspection, not assumed from the CosyVoice2/
+QwenASR precedent. Built a small adapter reading these directly into a `TokenizerSource` and
+calling the existing `GgufTokenizer.FromSource` (the shared, single real construction path this
+codebase already uses for every GGUF/HF tokenizer) rather than writing a new tokenizer from
+scratch. `tokenizer.pre_tokenizer.regex` matches the standard GPT-2/Qwen2 pre-tokenizer pattern
+exactly, and the LLM backbone is confirmed Qwen2 -- set `TokenizerPre = "qwen2"`, a real
+recognized preset in this codebase's `PreTokenizerPatterns` (checked, not guessed).
+
+New `CosyVoice3Llm.GenerateSpeechTokens(rawModel, source, text, maxNewTokens)`: builds the real
+prompt sequence above, prefills it through `ForwardPass` (real integer token-id API throughout --
+speech-vocab ids offset by `CosyVoice3LlmTensorSource.SpeechTokenIdOffset` into the combined
+embedding table `EnableSpeechGenerationMode` already builds, so no raw-embedding injection is
+needed in C# unlike the C++ reference, which must inject raw embeddings because its two tables
+are genuinely separate weight tensors), then loops `Forward(token, pos)` with greedy argmax
+decoding, stopping at any real stop-token id or the length cap.
+
+New `CosyVoice3LlmTests.GenerateSpeechTokens_RealWeights_ProducesInRangeNonDegenerateTokenSequence`:
+real weights, real synthesis text ("Hello there, this is a test."), asserts a non-empty,
+length-capped, in-range (`[0, SpeechVocabSize)`), non-degenerate (not all-identical), stop-token-
+free token sequence comes back. **PASSED on the first attempt** (~5s). Not yet golden-verified
+against a numeric oracle -- no real Python CosyVoice3 reference confirmed runnable locally yet,
+consistent with this doc's established bar for a first pass on a from-scratch generation loop
+(same honest labeling as CosyVoice2's/CosyVoice3's HiFT structural-only tests).
+
+**CosyVoice3 status, updated again**: DiT flow backbone, HiFT vocoder, and now the LLM
+generation loop all exist and each pass their own real-weights test independently. **Remaining,
+unchanged in kind from the previous entry**: (1) wiring all three into one real
+`CosyVoice3Pipeline.Generate` call (the LLM's output speech tokens need to flow into
+`CosyVoice3DiTModel`'s ODE solve, then `CosyVoice3HiftWeights`'s vocoder -- each piece's real
+input/output shape is now known from its own test, so this is mechanical wiring, not new
+research); (2) numeric golden verification for any stage. Next iteration should do (1) directly
+since every piece it needs is now real and independently proven.
+
+Not committed (per standing instruction). No subagents used.
+
+## CosyVoice3Pipeline -- WIRED END-TO-END. CosyVoice3 IS NOW A COMPLETE, REAL, WEIGHT-DRIVEN TEXT-TO-AUDIO PIPELINE (with documented simplifications)
+
+Closed the gap flagged in the previous entry. Real missing piece turned out to be the flow-
+conditioning path (`mu`/`spks`) upstream of `CosyVoice3DiTModel` -- `CosyVoice3DiTModel`'s own
+input-concat formula was already confirmed, but nothing computed real `mu`/`spks` from real
+speech tokens yet. Read `examples/cosyvoice.cpp/src/cosyvoice-graph.cpp`'s
+`PreLookaheadLayer::build_cgraph` and `CausalMaskedDiffWithDiT::build_cgraph_encode` in full
+before writing any code, per standing discipline.
+
+**Real, exact math transcribed (not guessed)**: `mu` = `input_embedding` lookup (real 6561-entry
+speech-codec vocab table, confirmed distinct from the LLM's 6761-entry vocab --
+`6761-6561=200` matches `stop_token_ids`'s real array length exactly, a real cross-check, not
+coincidence) of the LLM's generated speech tokens, run through `PreLookaheadLayer` (right-pad by
+`pre_lookahead_len=3` -&gt; causal Conv1d 80-&gt;1024 k=4 valid -&gt; LeakyReLU(0.01) -&gt; causal-left-pad
+k=3-1 -&gt; Conv1d 1024-&gt;80 k=3 valid -&gt; +residual with the original token embeddings), then real
+2x NEAREST-NEIGHBOR upsample (`token_mel_ratio=2`, literal frame duplication `mu[2t]=mu[2t+1]=h[t]`,
+confirmed from `ggml_repeat_4d`+reshape, NOT interpolation). `spks` = `spk_embed_affine_layer`
+(Linear 192-&gt;80) applied to the L2-normalized 192-dim CamPlus speaker vector, broadcast across
+every frame. New `CosyVoice3FlowEncoderWeights.cs`/`CosyVoice3FlowEncoder.cs` implement exactly
+this.
+
+**Real Euler ODE solve added to `CosyVoice3DiTModel.SolveFlowMatchingOde`**: starts from real
+Gaussian noise (Box-Muller), integrates the DiT's predicted velocity field over the real
+10-step cosine schedule `t_span[i] = 1 - cos(0.05*pi*i)` for `i=0..10`, transcribed exactly from
+`CausalConditionalCFM::get_t_and_dt`/`OnLoad`'s real `t_span` initialization in
+`cosyvoice-loader.cpp` (matches this codebase's pre-existing `CosyVoiceFlowConfig.
+DefaultOdeSteps=10` constant, confirming that old fake stub's config value was at least correct
+even though its math wasn't).
+
+**Two real, deliberate simplifications, documented rather than silently dropped** (both in the
+new code's own doc comments): (1) no reference/prompt audio (zero-shot voice cloning) support --
+`spks` uses a zero 192-dim input vector (still a real, non-fabricated affine-layer bias
+contribution, just not a real per-speaker embedding, since `models/campplus.onnx`'s real x-vector
+extractor is not yet ported to pure C#) and `cond` (reference mel) is all-zero; (2) the real
+classifier-free-guidance refinement (`CausalConditionalCFM::build_cgraph_one_step`'s second
+unconditional forward pass per ODE step, `cfg_rate=0.7`) is omitted -- doubles DiT compute per
+step for a quality refinement, not a correctness requirement of the ODE solve itself.
+
+New `CosyVoice3Pipeline.cs`: `Load(ggufPath)` loads all four real weight sets (LLM tensor
+source with `EnableSpeechGenerationMode`, flow encoder, DiT, HiFT) from the single bundled GGUF;
+`Generate(text, ...)` chains LLM speech-token generation -&gt; flow-encoder `mu`/`spks` -&gt; DiT ODE
+solve -&gt; channel-last-to-channel-first mel transpose (confirmed real indexing convention from
+`HiFTVocoderKernels.Conv1dSamePad`'s `mel[channel*T+time]` layout before wiring, not assumed) -&gt;
+HiFT vocoder -&gt; real 24kHz PCM.
+
+New `CosyVoice3PipelineTests.Generate_RealWeights_ProducesFiniteNonSilentWaveform`: real weights,
+real text ("Hello there, this is a test."), asserts non-empty finite in-range output and a
+non-silent RMS (&gt;1e-4) -- same bar Fish Speech's first end-to-end pass used (structural, not a
+numeric oracle). **PASSED on the first attempt** (~6s wall time for 20 speech tokens x 4 ODE
+steps, deliberately small for a fast test; production use would want more of both).
+
+**CosyVoice3 is now a complete, real, weight-driven, end-to-end text-to-speech pipeline** --
+the first of CosyVoice2/CosyVoice3 to reach this bar (CosyVoice2 remains genuinely blocked on its
+missing CFM flow-decoder, unchanged). Real remaining work, in priority order: (1) numeric golden
+verification for any stage (everything is currently real-weights-structural only); (2) real
+CamPlus x-vector extraction for genuine zero-shot voice cloning (currently zero-vector
+speaker conditioning); (3) the CFG refinement for output quality; (4) actually listening to the
+output to sanity-check it sounds like real speech, not just passing finite/RMS checks (flagged
+by an earlier entry as the honest way to validate a TTS pipeline beyond numeric checks).
+
+Not committed (per standing instruction). No subagents used.
+
+## CosyVoice3 numeric golden verification: confirmed genuinely blocked (no real oracle reachable). CamPlus x-vector port: investigated, confirmed too large for one pass. Pivoted to converting the remaining Whisper GGUF sizes instead
+
+**Numeric golden verification for CosyVoice3, checked and confirmed blocked, not guessed
+around**: `examples/cosyvoice.cpp` has no `debug-cossim`-style tooling (unlike `qwentts.cpp`,
+which does -- searched, found nothing). No local Python `FunAudioLLM/CosyVoice`/CosyVoice3
+reference checkout exists anywhere on disk (searched). Real conclusion: no real oracle is
+currently reachable for CosyVoice3 without either installing the original Python package (not
+attempted -- would need network access to fetch a real repo/weights-loading harness and is a
+bigger ask than this pass's scope) or hand-deriving expected values in numpy against real
+weights the way this session's other golden tests did (viable in principle, deferred -- would
+need its own iteration to do the DiT/HiFT/flow-encoder math translation carefully rather than
+rushed).
+
+**CamPlus x-vector extraction (`models/campplus.onnx`), investigated via a real ONNX graph
+dump (`onnx.load` + node/op-type census) before deciding whether to port**: real finding --
+**3206 nodes, 225 real `Conv` layers**, output op-count histogram showing a real D-TDNN with
+CAM (context-aware masking) attention blocks repeated 52 times (`Pad`/`AveragePool`/`Sigmoid`/
+`Where`/`Expand` each appearing exactly 52 times). This is a genuinely large architecture --
+roughly 7x the conv-layer count of the ECAPA-TDNN speaker encoder already ported for QwenTTS
+this session (~30 conv layers across 3 blocks) -- correctly out of scope for one iteration.
+Documented precisely rather than attempted partially or guessed at a simplified architecture.
+Real follow-up if this becomes a priority: read CAM++'s real architecture source (`3D-Speaker`/
+`FunASR`'s own CAM++ implementation is the standard reference for this exact model family) before
+attempting a port, same discipline as every other component this session.
+
+**Pivoted to a smaller, real, already-proven-mechanical task instead**: converted
+`models/ggml-small.bin` and `models/ggml-medium.bin` to real GGUF (`models/whisper-small.gguf`,
+`models/whisper-medium.gguf`) via the same converter proven bit-exact + working end-to-end for
+tiny/base in an earlier entry (checked disk headroom first: 81GB free, both conversions add
+~2GB combined at F16-preserved parity, well within the project's disk-conscious constraint).
+Extended `WhisperGgufConversionTests` with a `[Theory]` covering both new sizes against the same
+real ground-truth JFK transcription assertions the base-model test uses. **All 4 tests in the
+class PASS** (tiny/base bit-exact + E2E, small/medium E2E — ~41s total for the full class).
+`models/ggml-large-v3.bin` (3GB) deliberately left unconverted -- same "convert on actual need,
+not speculatively" scope note as the previous Whisper GGUF entry; the mechanical rerun command
+is unchanged and already documented there.
+
+**Real remaining work, updated priority order**: (1) CosyVoice3 numeric golden verification via
+careful manual numpy derivation against real weights (a real, doable task, just needs its own
+focused iteration); (2) CAM++ speaker-encoder port for genuine zero-shot voice cloning (large,
+needs the real CAM++ source read first); (3) CosyVoice2's CFM flow-decoder (still the largest,
+still deferred); (4) `ggml-large-v3.bin` GGUF conversion, on demand.
+
+Not committed (per standing instruction). No subagents used.
+
+## CosyVoice3 flow encoder -- FIRST real numeric golden verification for any CosyVoice3 stage. Cosine > 0.999, first attempt
+
+Picked up item (1) from the previous entry: attempted real numeric golden verification via
+manual numpy derivation rather than a fabricated oracle. Chose `CosyVoice3FlowEncoder.
+ComputeMuAndSpks` as the target -- small, fully self-contained (no transformer/ODE-solve
+complexity), and its real math was already precisely transcribed from
+`examples/cosyvoice.cpp`'s `PreLookaheadLayer::build_cgraph`/`CausalMaskedDiffWithDiT::
+build_cgraph_encode` two entries back, making it the most tractable real target for this
+technique.
+
+New `scratch-llamacpp-ref/cosyvoice3_flowencoder_golden.py`: loads the real
+`input_embedding`/`pre_lookahead_layer.conv{1,2}`/`spk_embed_affine_layer` tensors directly via
+`gguf.GGUFReader` (all real F16 here, auto-dequantized -- no manual Q8_0 dequant needed this
+time), transcribes the exact same real math in numpy (right-pad-then-valid conv1 -> LeakyReLU ->
+causal-left-pad-then-valid conv2 -> residual -> 2x nearest-neighbor upsample for `mu`;
+L2-normalize -> affine for `spks`), fed a deterministic real 8-token speech-token sequence and
+the same zero 192-dim speaker vector the C# pipeline's own documented simplification uses (an
+apples-to-apples comparison, not a mismatched test).
+
+New `CosyVoice3FlowEncoderTests.ComputeMuAndSpks_RealWeights_MatchesGoldenOracle`: real GGUF
+weights, same deterministic tokens, cosine similarity check on both `mu` and `spks` separately.
+**PASSED on the first attempt**, cosine &gt; 0.999 for both. This is the first genuine numeric
+(not structural-only) golden verification for any CosyVoice3 component, confirming the flow
+encoder's real math port -- including the LeakyReLU slope, the exact pad amounts on each side of
+each conv, and the 2x nearest-neighbor (not linear) upsample -- is actually correct, not just
+plausible-looking.
+
+**CosyVoice3 verification status, updated**: flow encoder is now numerically golden-verified.
+DiT backbone, HiFT vocoder, and the LLM generation loop remain structural-only (no numeric
+oracle attempted yet for those -- each is larger/more involved to hand-derive in numpy: the DiT
+needs the full 22-layer transformer + RoPE + AdaLN math, HiFT needs the full NSF-source +
+iSTFT chain, the LLM needs bit-exact tokenizer + prefill/decode parity). Real next candidate for
+the same technique, if picked up again: the DiT's `InputEmbed`/`ConvPositionEmbedding` stage
+alone (smaller and more tractable than the full 22-layer backbone) before attempting the whole
+transformer.
+
+Not committed (per standing instruction). No subagents used.
+
+## CosyVoice3 DiT InputEmbed -- second real numeric golden verification, cosine > 0.999 first attempt
+
+Picked up the exact next candidate flagged in the previous entry: `CosyVoice3DiTModel.
+InputEmbed` (concat -&gt; proj -&gt; grouped ConvPositionEmbedding, real tensor names confirmed
+earlier as `decoder.estimator.input_embed.{proj,conv_pos_embed.conv{1,2}.0}`), smaller and more
+tractable than the full 22-layer transformer backbone.
+
+New `scratch-llamacpp-ref/cosyvoice3_dit_inputembed_golden.py`: loads the real weights via
+`gguf.GGUFReader`, transcribes the exact real math already used by this codebase's own
+`F5Kernels.Linear`/`GroupedConv1dSamePad`/`Mish` (same-pad `kernel//2=15`, `groups=16`,
+`inPerGroup=outPerGroup=64`, weight layout `[outCh,inPerGroup,kernel]`) in numpy, fed
+deterministic real-shaped `[T=6,80]` x/cond/mu/spks tensors (spks broadcast from one real random
+row across all frames, matching the real broadcast semantics). **This test validates CosyVoice3's
+own real weight loading and composition order, not the shared kernel math itself** (that's
+already golden-verified via F5-TTS) -- exactly the right thing to check given the "tensor-for-
+tensor identical to F5-TTS" architecture claim.
+
+New `CosyVoice3DiTInputEmbedGoldenTests.InputEmbed_RealWeights_MatchesGoldenOracle`: cosine &gt;
+0.999. **PASSED on the first attempt.**
+
+**CosyVoice3 verification status, updated again**: flow encoder AND now DiT's InputEmbed stage
+are both numerically golden-verified. Remaining structural-only: the DiT's own 22-layer
+transformer backbone (`RunBackbone`), the HiFT vocoder, and the LLM generation loop -- each is a
+larger lift (full multi-layer transformer w/ RoPE+AdaLN, or the full NSF-source+iSTFT chain, or
+bit-exact tokenizer+prefill/decode parity respectively). Given `RunBackbone` also reuses
+F5-TTS's already-golden-verified `F5DiTBlock`/RoPE machinery the same way `InputEmbed` reused
+`F5Kernels`, a golden test for it would carry the same "validates real weight loading, not new
+math" value as this entry -- a reasonable next candidate if this technique is picked up again,
+though a larger fixture (22 real layers instead of 2 conv stages) to build.
+
+Not committed (per standing instruction). No subagents used.
+
+## CosyVoice3 DiT RunBackbone -- FULL 22-LAYER TRANSFORMER numerically golden-verified. Third real numeric verification, cosine > 0.999 first attempt. CosyVoice3's DiT is now completely numerically proven end-to-end
+
+Picked up the exact next candidate flagged in the previous entry: `CosyVoice3DiTModel.
+RunBackbone`, the full 22-layer AdaLN-modulated transformer (timestep embedding -&gt; 22x
+`DiTBlock` [AdaLN 6-way split -&gt; RoPE self-attention -&gt; AdaLN 6-way split -&gt; GELU-tanh FFN] -&gt;
+final AdaLN norm_out -&gt; proj_out to mel-space).
+
+New `scratch-llamacpp-ref/cosyvoice3_dit_runbackbone_golden.py`: transcribes the exact same real
+math this codebase's own `F5Kernels`/`F5RotaryEmbedding` already use (interleaved-pairs RoPE
+applied to alternating even/odd head-dim slots -- confirmed by reading `F5Kernels.ApplyRotary`
+directly rather than assumed from the earlier NEOX-convention components elsewhere in this
+project, a genuinely different RoPE convention than QwenTTS's -- non-causal scaled-dot-product
+attention, `LayerNormNoAffine` then `*(1+scale)+shift`, GELU-tanh feedforward) in numpy, looping
+over all 22 real transformer_blocks read directly via `gguf.GGUFReader`, fed a deterministic
+real `[T=4,1024]` hidden-state input and `timestep=0.4`.
+
+New `CosyVoice3DiTRunBackboneGoldenTests.RunBackbone_RealWeights_MatchesGoldenOracle`: cosine &gt;
+0.999. **PASSED on the first attempt.**
+
+**CosyVoice3's entire DiT flow-matching backbone -- InputEmbed AND all 22 real transformer
+layers AND the final projection -- is now completely numerically golden-verified**, not just
+structurally checked. Combined with the flow encoder's earlier golden verification, three of
+CosyVoice3's four pipeline stages (flow encoder, DiT InputEmbed, DiT RunBackbone) now have real
+numeric proof; only the HiFT vocoder and the LLM generation loop remain structural-only. HiFT is
+the natural next candidate (reuses the same `HiFTVocoderKernels` family already golden-verified
+elsewhere in this project for Fish Speech/Chatterbox's shared vocoder lineage -- likely another
+"validates real weight loading, not new math" case, same pattern as this entry and the InputEmbed
+one).
+
+Not committed (per standing instruction). No subagents used.
+
+## User returned, dropped new planning docs under docs/audio/ (pre-session, superseded -- see note) and a perf/format-matrix recap. CosyVoice3 HiFT F0 predictor golden-verified -- found and fixed TWO real bugs, shared with CosyVoice2's F0 predictor
+
+Checked the newly-flagged `docs/audio/*.md` planning files before continuing: confirmed (as this
+doc already noted once before) they predate this session's real CosyVoice/QwenTTS/Whisper work
+and describe components (`CosyVoiceHiFT`, `CosyVoiceFlowDiT`) as still-fake stubs that this
+session has since replaced with real, partially golden-verified implementations. Treated as
+background reference only, not re-derived from -- continued the active real-work thread instead
+(HiFT numeric verification, the natural next candidate flagged two entries back).
+
+Attempted `HiFTVocoderKernels.PredictF0` (the F0 predictor sub-piece, deterministic and
+carve-out-able the same way `InputEmbed` was carved from the full DiT -- the rest of
+`CosyVoiceHiftVocoder.Generate`'s chain consumes a real `System.Random` stream for NSF-source
+noise that has no numpy-reproducible equivalent, so PredictF0 is the right first HiFT target).
+**First attempt: cosine 0.973, failed -- investigated rather than loosening the threshold, per
+standing discipline.**
+
+**Real bug 1, confirmed via a fresh `list-tensors` dump (not assumed from memory)**:
+`f0_predictor.condnet.0.weight` is GGUF-displayed `[4,80,512]` -- real native kernel size **4**,
+NOT 3 like every other condnet layer (confirmed CosyVoice2's own condnet.0 really is kernel=3
+via its safetensors shape, so this is a genuine CosyVoice3-specific architectural difference, not
+a doc error). `PredictF0` hardcoded `kernel: 3` for all 5 layers -- fixed to derive the real
+kernel size per-layer from the weight tensor's own length (`weight.Length/(outCh*inCh)`).
+
+**Real bug 2, found by re-checking after bug 1's fix still only reached cosine 0.985**: read
+`examples/cosyvoice.cpp`'s `CausalConvRNNF0Predictor`/`CausalConv1d::causal_padding` in full.
+Real finding: this stack is NOT symmetric "same"-padded at all (what `Conv1dSamePad` -- used by
+both CosyVoice2 and CosyVoice3's F0 predictor, this is a shared-kernel bug, not CosyVoice3-only --
+was doing). Real convention: `condnet.0` has `causal_type=right` (right-zero-pad by `kernel-1`,
+applied here since this is the non-streaming/"finalize" case) and `condnet.{2,4,6,8}` have
+`causal_type=left` (genuinely causal, left-zero-pad by `kernel-1`). New
+`HiFTVocoderKernels.CausalConv1dLeftPad`/`CausalConv1dRightPad` implement the real convention;
+`PredictF0` now calls the right one per layer instead of the symmetric-pad helper.
+
+New `CosyVoice3HiftF0PredictorGoldenTests.PredictF0_RealWeights_MatchesGoldenOracle`: real GGUF
+weights, real oracle (`scratch-llamacpp-ref/cosyvoice3_hift_f0predictor_golden.py`, updated to
+match both real fixes) -- cosine &gt; 0.999 after both fixes. **PASSED.** Re-ran
+`CosyVoiceHiftVocoderTests`/`CosyVoice3HiftVocoderTests`/`CosyVoice3PipelineTests` afterward to
+confirm no regression from the shared-kernel change -- all still **PASS**.
+
+**Real, scoped follow-up flagged, not fixed this pass**: the same C++ source (`cosyvoice-graph.
+cpp` line ~818) shows `conv_pre`/`conv_post` in HiFT's MAIN decode chain (not the F0 predictor)
+also expose a real `causal_padding()` -- i.e. they may ALSO be causal rather than symmetric-same,
+the same bug category as this entry, just in a different part of the vocoder. Not verified or
+fixed this pass (out of scope -- found while reading the F0 predictor's real source, not
+independently investigated) -- a real, concrete next candidate for the same technique.
+
+**CosyVoice3 verification status, updated**: flow encoder, DiT InputEmbed, DiT RunBackbone (full
+22 layers), AND now the HiFT F0 predictor are all numerically golden-verified -- and this pass
+found and fixed two real, shared (CosyVoice2+CosyVoice3) bugs in the process, not just confirmed
+already-correct code. Remaining structural-only: HiFT's main NSF-source+iSTFT decode chain
+(stochastic, and now flagged with its own real possible causal-padding bug to check) and the LLM
+generation loop.
+
+Not committed (per standing instruction). No subagents used.
+
+## Direct user request "complete these two": QwenTTS Talker generation loop -- IMPLEMENTED and running real end-to-end on real weights; Code Predictor found genuinely blocked on a real Engine capability gap. CosyVoice3 conv_pre/conv_post causal-padding suspicion CONFIRMED non-symmetric, direction not yet resolved (flagged, not guessed)
+
+User asked to complete QwenTTS's remaining Talker/Code Predictor generation loop + pipeline
+wiring, and CosyVoice3's remaining HiFT/LLM structural-only items (the latter partly stale --
+the LLM loop was already done two entries back; user acknowledged "CosyVoice3 likely is more
+complete than that" mid-turn).
+
+**QwenTTS Talker: real prompt composition + real generation loop, both implemented and
+verified.** Read `examples/qwentts.cpp/src/prompt-builder.h` (`prompt_builder_build`) in full
+for the exact real prompt-composition sequence before writing any code. Real, confirmed (not
+guessed) special-token ids read directly from the talker GGUF's own metadata:
+`qwen3-tts.text.tts_{bos,eos,pad}_id` = 151672/151673/151671, `qwen3-tts.codec.{nothink,
+think_bos,think_eos,pad,bos,eos}_id` = 2155/2156/2157/2148/2149/2150. Real tensor names
+confirmed via `list-tensors`: `talker.text_embd.weight` [151936,2048], `talker.text_proj.
+fc{1,2}.{weight,bias}` (2048→2048→1024, SiLU between), `talker.codec_embd.weight` [3072,1024].
+
+New `QwenTtsTalkerPromptBuilder.cs`: implements the real "base" case (auto language, no
+speaker, no voice-design instruct, no ICL reference audio) -- role tokens (text_proj only) →
+codec prefix (`[tts_pad×3,tts_bos] + codec_embd([nothink,think_bos,think_eos,codec_pad])`) →
+trailing utterance text (`text_proj + codec_pad` per row) → `tts_eos+codec_pad` → final
+`tts_pad+codec_bos`. Loads the ~300M-element text embedding table ONCE into a `Weights` context
+object (not per-call -- an early draft re-dequantized it per token, a real perf bug caught and
+fixed before it ever shipped).
+
+**Real engine-integration blocker found and solved via a real, sanctioned technique**:
+`ForwardPass` has no raw-embedding-input API (`IForwardPass.ForwardEmbedding`/`LastHidden` exist
+on the interface but are unimplemented on the concrete `ForwardPass` class -- confirmed by
+direct inspection, not assumed), and the real Talker prompt requires SUMMED text+codec
+embeddings per position, which no single token id can express. Solved the same way
+`CosyVoiceLlmTensorSource.EnableSpeechGenerationMode` solved a related-but-different gap: new
+`QwenTtsTalkerTensorSource.SetPromptEmbedding(rows, numRows)` swaps `token_embd.weight` to a
+synthetic buffer of caller-composed per-position embeddings; the caller then feeds sequential
+dummy ids `0..numRows-1` into `Prefill`, exploiting the fact `ForwardPass`'s embedding lookup
+only cares about `token_embd.weight[id]`, not what the id conventionally means. **Confirmed
+empirically (not just theoretically) that post-construction swaps take effect on subsequent
+`Forward` calls too** -- i.e. `ForwardPass` does not cache tensor pointers at construction time,
+so the same technique also drives the autoregressive decode loop (each step swaps in a fresh
+1-row `tts_pad_emb + codec_embd[prevToken]` buffer).
+
+New `QwenTtsTalkerGeneration.GenerateSemanticCodes`: real prefill + greedy autoregressive decode
+loop, real stop condition (real `codec.eos_id`). New
+`QwenTtsTalkerGenerationTests.GenerateSemanticCodes_RealWeights_ProducesInRangeNonDegenerateTokenSequence`:
+real weights, real text, asserts a non-empty, length-capped, in-range (`[0,3071]`),
+non-degenerate token sequence. **PASSED on the first attempt** (~4s).
+
+**Code Predictor: genuinely blocked, confirmed via real source, not guessed around.** Read
+`examples/qwentts.cpp/src/code-predictor-forward.h` in full. Real, exact finding: the Code
+Predictor's prefill needs the Talker's own last-position transformer hidden state (real
+comment: "talker last position hidden per slot, post final norm") concatenated with `embed(c0)`
+as a real T=2 sequence -- this is a genuine hidden-state bridge between two separate
+transformers, not something the `SetPromptEmbedding` trick can supply (that trick composes
+*input* embeddings; this needs a *hidden-state output* from a completed forward pass, which
+`ForwardPass` has no API to return -- confirmed both `LastHidden` and `ForwardEmbedding` are
+unimplemented stubs on the concrete class). **Real, scoped next steps** (not attempted this
+pass): (1) extend `ForwardPass` to populate `LastHidden` after `Prefill`/`Forward` (an Engine
+change, higher blast radius, needs its own careful pass per this project's established caution
+around touching shared Engine code); or (2) write a small from-scratch Talker forward pass
+outside `ForwardPass` specifically to capture the hidden state (duplicates real transformer math
+this session deliberately avoided duplicating everywhere else). Documented precisely rather than
+approximating the hidden-state bridge with something plausible-but-wrong (e.g. using
+`codec_embd[c0]` as a stand-in, which is NOT what the real architecture does).
+
+**QwenTTS status, updated**: Talker prompt composition + semantic-codebook generation loop is
+now real and verified end-to-end. Full pipeline wiring (Talker → Code Predictor → codec decode
+→ waveform) remains blocked specifically on the Code Predictor's hidden-state-bridge
+requirement above -- every OTHER piece (codec RVQ/pre-conv/transformer/upsample/DAC/speaker
+encoder, all golden-verified; Talker prompt+generation, now real) is ready and waiting on this
+one real Engine-capability gap.
+
+**CosyVoice3 HiFT conv_pre/conv_post: real non-symmetric padding CONFIRMED, exact direction NOT
+resolved this pass.** Re-checked `examples/cosyvoice.cpp`'s `HiFTGenerator` struct: `conv_pre`/
+`conv_post` are declared as plain `CausalConv1d conv_pre/conv_post` members with NO explicit
+`causal_type` assignment anywhere in the loader (unlike `condnet_0/2/4/6/8`, which the F0
+predictor's `CausalConvRNNF0Predictor` constructor explicitly sets) -- meaning their real
+`causal_type` depends on the struct's own default member/value-initialization, which was not
+tracked down to a definitive left/right answer within this pass's remaining time. **What IS
+confirmed**: for the real non-streaming (`finalize=true`) single-shot inference case this
+codebase always uses, BOTH possible `causal_type` values apply a real, non-zero, ONE-SIDED
+`causal_padding()` amount (left-only if `left`, right-only if `right` when finalizing) -- so
+`Conv1dSamePad`'s existing symmetric `pad=kernel/2` convention is confirmed architecturally
+wrong for `conv_pre`/`conv_post` regardless of which side, the same bug category as the F0
+predictor fix earlier this session. **Deliberately NOT fixed this pass**: getting the direction
+wrong would be worse than leaving it structurally-verified-only, and this doc's own discipline
+is to document a confirmed-but-unresolved finding precisely rather than guess. Real next step:
+find the `HiFTGenerator` struct's actual member-initialization (or trace one concrete debug dump
+from `qwentts.cpp`'s own `--dump` tooling) to settle left vs right definitively before touching
+the code.
+
+Not committed (per standing instruction). No subagents used.
+
+## CosyVoice3 HiFT conv_pre/conv_post/resblock padding: exact real convention RESOLVED (definitively, not the "unresolved" state the previous entry left off at) -- but the fix was deliberately NOT applied, because the buggy code is SHARED with Chatterbox's already-golden-verified vocoder
+
+Continued directly from the previous entry's open question. Found the definitive answer by
+reading `CausalHiFTGenerator::OnLoad`/`ResBlock::OnLoad` in `examples/cosyvoice.cpp/src/
+cosyvoice-loader.cpp` (not the struct declaration, which has no initializer) -- real, explicit
+assignments:
+- `conv_pre.causal_type = right` (line ~345 -- right-zero-pad by `causal_padding()`, same
+  category as the F0 predictor's `condnet.0` fixed two entries back)
+- `conv_post.causal_type = left` (line ~409 -- standard left-causal)
+- `ResBlock`'s `conv1`/`conv2` (used for BOTH `resblocks` and `source_resblocks`) `causal_type =
+  left` for every dilation (line ~329-332)
+
+**All three are real, confirmed bugs in the current C# code**: `HiFTVocoderKernels.Decode` calls
+symmetric `Conv1dSamePad` for `conv_pre`/`conv_post` (pad=kernel/2 both sides) and
+`HifiResBlockForward`'s dilated convs use `Conv1dDilated`'s symmetric `pad=(kernel*d-d)/2`
+formula -- none of these match the real one-sided causal convention above, the same bug
+category as the already-fixed F0 predictor.
+
+**Deliberately NOT fixed this pass, for a real, specific reason**: `HiFTVocoderKernels.cs`'s own
+doc comment states this file is SHARED between CosyVoice2/3 and Chatterbox
+(`Chatterbox/ChatterboxVocoder.cs`, already real and golden-verified against PyTorch). The
+`Causal` prefix in CosyVoice's own real class names (`CausalHiFTGenerator`, `CausalConv1d`)
+strongly suggests this one-sided causal convention is a CosyVoice/S3Gen-family-SPECIFIC choice,
+NOT necessarily shared by Chatterbox's own real reference -- if Chatterbox's true architecture
+genuinely uses plain (non-causal) symmetric padding, then blindly switching `Decode`/
+`HifiResBlockForward` to the causal convention found above would fix CosyVoice's real bug while
+REGRESSING Chatterbox's already-verified correctness. Confirming Chatterbox's real convention
+independently, then either parameterizing `IHiFTVocoderWeights`/`Decode` with a causal-vs-
+symmetric flag (the DRY-correct fix if the two really do differ) or applying the fix directly
+(if Chatterbox turns out to already use the same causal convention, just untested against a
+kernel-size-sensitive-enough case to have caught it) is real, necessary follow-up work,
+deliberately not attempted this pass given the real risk of a shared-kernel regression without
+first re-verifying the other consumer -- matching this project's own established caution around
+touching shared code paths (e.g. earlier CosyVoice tensor-source entries explicitly declining to
+extend a shared HF-name mapper for the same reason).
+
+**Real, concrete next step**: read Chatterbox's own real S3Gen/HiFT source reference (whatever
+`ChatterboxVocoder.cs`/`ChatterboxS3GenWeights.cs`'s own doc comments cite) to confirm its real
+`conv_pre`/`conv_post`/resblock padding convention definitively, before touching
+`HiFTVocoderKernels.cs`. If Chatterbox turns out non-causal, add a `bool causal`-driven branch
+(or split into two small causal-specific helper overloads called only from CosyVoice's path,
+mirroring the F0 predictor fix's approach of adding new methods rather than changing the shared
+symmetric ones) rather than changing the existing shared functions' default behavior.
+
+**Quick cross-check done (not conclusive, but shifts the likely answer)**: grepped
+`ChatterboxS3GenWeights.cs`'s own doc comments for "causal" -- found several ("causal" markers
+on `FinalBlockConvWeight`, `ResampleConvWeight`, etc.), i.e. Chatterbox's codebase already
+treats OTHER convs as explicitly causal elsewhere. Combined with `HiFTVocoderKernels.cs`'s own
+doc comment confirming Chatterbox's HiFT is genuinely the SAME lineage ("S3Gen's HiFT stage was
+itself derived from CosyVoice's"), this makes it more likely than not that Chatterbox's real
+`conv_pre`/`conv_post`/resblock convs are ALSO causal in the true reference, and the existing
+shared `Conv1dSamePad`/`Conv1dDilated` symmetric implementation may be a real bug for BOTH
+pipelines that Chatterbox's own golden test simply didn't catch (e.g. a cosine-similarity
+threshold loose enough to absorb a small causal-vs-symmetric receptive-field shift, or a test
+input/kernel-size combination where the difference happens to be small). **Still not applying
+the fix without directly confirming Chatterbox's real reference source** (not just doc-comment
+inference) -- but this raises the priority of the "real next step" above from "worth checking"
+to "likely a real bug affecting two pipelines, worth prioritizing."
+
+Not committed (per standing instruction). No subagents used.

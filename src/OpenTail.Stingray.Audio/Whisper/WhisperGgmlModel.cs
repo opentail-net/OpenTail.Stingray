@@ -1,3 +1,6 @@
+using OpenTail.Stingray.Core;
+using OpenTail.Stingray.Cpu;
+
 namespace OpenTail.Stingray.Audio.Whisper;
 
 /// <summary>
@@ -130,6 +133,55 @@ public sealed class WhisperGgmlModel
 
             float[] data = ReadTensorData(br, ggmlType, nElements);
             model._tensors[name] = new WhisperGgmlTensor(ne[..nDims], data);
+        }
+
+        return model;
+    }
+
+    /// <summary>
+    /// Loads from a real GGUF file produced by <c>scratch-llamacpp-ref/whisper_ggml_to_gguf.py</c>
+    /// (a genuine GGUF container -- magic "GGUF", real KV-metadata block -- repackaging the same
+    /// tensor values as the legacy ggml file, bit-exact). Real finding, confirmed directly against
+    /// the upstream ggml-org/whisper.cpp README rather than assumed: whisper.cpp's own model files
+    /// are still the legacy custom ggml format as of the current master branch, so there is no
+    /// canonical/official GGUF-format Whisper release to download -- this loader consumes our own
+    /// self-converted GGUF file instead of a third-party one. Populates the exact same
+    /// hparams/tensor state as <see cref="Load"/> so every downstream consumer
+    /// (<see cref="WhisperEncoderWeights"/>, <see cref="WhisperDecoderWeights"/>, etc.) works
+    /// unchanged regardless of which loader was used.
+    /// </summary>
+    public static WhisperGgmlModel LoadFromGguf(string path)
+    {
+        using var gguf = GgufModel.Open(path);
+        var model = new WhisperGgmlModel();
+
+        model.VocabSize = gguf.GetMetadata("whisper.hparam.n_vocab", 0);
+        model.AudioCtx = gguf.GetMetadata("whisper.hparam.n_audio_ctx", 0);
+        model.AudioState = gguf.GetMetadata("whisper.hparam.n_audio_state", 0);
+        model.AudioHead = gguf.GetMetadata("whisper.hparam.n_audio_head", 0);
+        model.AudioLayer = gguf.GetMetadata("whisper.hparam.n_audio_layer", 0);
+        model.TextCtx = gguf.GetMetadata("whisper.hparam.n_text_ctx", 0);
+        model.TextState = gguf.GetMetadata("whisper.hparam.n_text_state", 0);
+        model.TextHead = gguf.GetMetadata("whisper.hparam.n_text_head", 0);
+        model.TextLayer = gguf.GetMetadata("whisper.hparam.n_text_layer", 0);
+        model.NumMels = gguf.GetMetadata("whisper.hparam.n_mels", 0);
+        model.FType = gguf.GetMetadata("whisper.hparam.ftype", 0);
+
+        if (gguf.Metadata.TryGetValue("tokenizer.ggml.tokens", out var tokensRaw) && tokensRaw is object[] tokensArr)
+            model.TokenById = Array.ConvertAll(tokensArr, o => (string)o);
+
+        foreach (var info in gguf.Tensors)
+        {
+            var bytes = gguf.GetTensorData(info);
+            var data = new float[info.ElementCount];
+            Dequantize.ToFloat32(bytes, data, info.DType, info.ElementCount);
+            // GgufModel reports shape in reversed/displayed (GGUF) order; WhisperGgmlTensor's
+            // Shape field is only used for byte-layout bookkeeping elsewhere, not indexed by
+            // dimension order, so storing it as-is here is consistent with WhisperGgmlModel's
+            // other real usages (all downstream consumers only call GetTensor by name).
+            var shape = new int[info.NDimensions];
+            for (int d = 0; d < info.NDimensions; d++) shape[d] = checked((int)info.Dimensions[d]);
+            model._tensors[info.Name] = new WhisperGgmlTensor(shape, data);
         }
 
         return model;

@@ -1,5 +1,6 @@
 using System;
 using OpenTail.Stingray.Core;
+using OpenTail.Stingray.Cpu;
 
 namespace OpenTail.Stingray.Audio.Parler;
 
@@ -97,6 +98,79 @@ public sealed class DacWeights
                 OutProjBias = loader.ReadF32($"audio_encoder.model.quantizer.quantizers.{i}.out_proj.bias"),
             };
         }
+    }
+
+    /// <summary>
+    /// Real GGUF loader, for the same `ecyht2/parler-tts-mini-v1-GGUF` conversion
+    /// <see cref="Parler.ParlerDecoderWeights(Core.GgufModel)"/> loads its decoder from. Real
+    /// tensor names here are a GENUINELY DIFFERENT, flatter convention than the Safetensors
+    /// checkpoint's (confirmed via `list-tensors`, not assumed): `audio_encoder.initial.*` (first
+    /// conv), `audio_encoder.decoder_block.{1..4}.*` (1-based, matching `DecoderRates.Length=4`),
+    /// `audio_encoder.final.*` (last conv), `audio_encoder.quantizers.{0..8}.*`. One real, initially
+    /// confusing naming choice, confirmed by cross-checking real tensor SHAPES against this
+    /// checkpoint's known channel progression (1536-&gt;768-&gt;384-&gt;192-&gt;96): each
+    /// `decoder_block.{i}.final.*` group bundles what this project's Safetensors-derived field
+    /// names split into three separate pieces -- `final.alpha` is the pre-upsample Snake
+    /// activation (shape `[1, prevChannels]`, confirmed via its shape matching the INPUT channel
+    /// count, not the output), `final.weight`/`final.bias` are the actual `ConvTranspose1d`
+    /// upsample (kernel=2*rate) -- i.e. GGUF's `decoder_block.{i}.final` == this class's own
+    /// `DecBlocks[i-1].{Alpha,UpWeight,UpBias}`, NOT a second/different "final" conv. Weight-norm
+    /// is ALREADY FOLDED in this GGUF (plain `.weight`/`.bias`/`.alpha`, no `weight_g`/`weight_v`
+    /// pair anywhere) -- no <see cref="FoldConvWeight"/> step needed, unlike the Safetensors path.
+    /// </summary>
+    public DacWeights(GgufModel model)
+    {
+        In0Weight = GetF32(model, "audio_encoder.initial.weight");
+        In0Bias = GetF32(model, "audio_encoder.initial.bias");
+
+        for (int i = 0; i < DecoderRates.Length; i++)
+        {
+            string p = $"audio_encoder.decoder_block.{i + 1}";
+            var res = new DacResidualUnitWeights[3];
+            for (int r = 0; r < 3; r++)
+            {
+                string rp = $"{p}.residual_unit.{r}.res";
+                res[r] = new DacResidualUnitWeights
+                {
+                    Alpha0 = GetF32(model, $"{rp}.initial.alpha"),
+                    Conv0Weight = GetF32(model, $"{rp}.initial.weight"),
+                    Conv0Bias = GetF32(model, $"{rp}.initial.bias"),
+                    Alpha1 = GetF32(model, $"{rp}.final.alpha"),
+                    Conv1Weight = GetF32(model, $"{rp}.final.weight"),
+                    Conv1Bias = GetF32(model, $"{rp}.final.bias"),
+                };
+            }
+            DecBlocks[i] = new DacDecoderBlockWeights
+            {
+                Alpha = GetF32(model, $"{p}.final.alpha"),
+                UpWeight = GetF32(model, $"{p}.final.weight"),
+                UpBias = GetF32(model, $"{p}.final.bias"),
+                Res = res,
+            };
+        }
+
+        OutAlpha = GetF32(model, "audio_encoder.final.alpha");
+        OutWeight = GetF32(model, "audio_encoder.final.weight");
+        OutBias = GetF32(model, "audio_encoder.final.bias");
+
+        for (int i = 0; i < NumCodebooks; i++)
+        {
+            Quantizers[i] = new DacQuantizerWeights
+            {
+                Codebook = GetF32(model, $"audio_encoder.quantizers.{i}.codebook.weight"),
+                OutProjWeight = GetF32(model, $"audio_encoder.quantizers.{i}.out_proj.weight"),
+                OutProjBias = GetF32(model, $"audio_encoder.quantizers.{i}.out_proj.bias"),
+            };
+        }
+    }
+
+    private static float[] GetF32(GgufModel model, string name)
+    {
+        var info = model.FindTensor(name) ?? throw new System.IO.InvalidDataException($"Parler DAC GGUF missing required tensor '{name}'.");
+        var bytes = model.GetTensorData(info);
+        var dst = new float[info.ElementCount];
+        Dequantize.ToFloat32(bytes, dst, info.DType, info.ElementCount);
+        return dst;
     }
 
     /// <summary>Folds `weight_g` (magnitude, `[outCh,1,1]`) * `weight_v` (direction, `[outCh,inCh,K]`) / ||v[outCh,:,:]||_2 into a plain conv weight -- PyTorch's older `nn.utils.weight_norm` convention (dim=0, norm over all other dims per output channel).</summary>

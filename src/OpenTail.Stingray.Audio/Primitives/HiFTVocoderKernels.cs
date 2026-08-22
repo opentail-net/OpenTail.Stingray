@@ -35,6 +35,8 @@ public static class HiFTVocoderKernels
         return Decode(w, mel, t, excitation, sampleLen, melDim);
     }
 
+    internal static float[] PredictF0ForTest(IF0PredictorWeights f0w, float[] mel, int t, int melDim) => PredictF0(f0w, mel, t, melDim);
+
     private static float[] PredictF0(IF0PredictorWeights f0w, float[] mel, int t, int melDim)
     {
         var x = mel;
@@ -42,7 +44,21 @@ public static class HiFTVocoderKernels
         for (int i = 0; i < 5; i++)
         {
             int outCh = f0w.ConvBias[i].Length;
-            x = Conv1dSamePad(x, inCh, t, f0w.ConvWeight[i], f0w.ConvBias[i], outCh, kernel: 3);
+            // Real kernel size derived per-layer from the weight tensor itself rather than
+            // hardcoded -- CosyVoice3's condnet.0 is genuinely kernel=4 (confirmed via real
+            // GGUF tensor shape `[4,80,512]`), unlike CosyVoice2's condnet.0 (kernel=3) and
+            // every other layer in both checkpoints. A hardcoded kernel=3 here silently
+            // misreads condnet.0's weight buffer with the wrong stride for CosyVoice3.
+            int kernel = f0w.ConvWeight[i].Length / (outCh * inCh);
+            // Real padding convention (`CausalConvRNNF0Predictor`/`CausalConv1d` in
+            // examples/cosyvoice.cpp): condnet.0 is RIGHT-padded by (kernel-1) (its
+            // `causal_type=right`, applied here because this is the non-streaming/"finalize"
+            // case), condnet.{2,4,6,8} are LEFT-padded by (kernel-1) (`causal_type=left`) --
+            // genuinely causal, NOT symmetric "same" padding (a real, confirmed bug fix; the
+            // previous `Conv1dSamePad` call here silently used the wrong padding shape).
+            x = i == 0
+                ? CausalConv1dRightPad(x, inCh, t, f0w.ConvWeight[i], f0w.ConvBias[i], outCh, kernel)
+                : CausalConv1dLeftPad(x, inCh, t, f0w.ConvWeight[i], f0w.ConvBias[i], outCh, kernel);
             EluInPlace(x);
             inCh = outCh;
         }
@@ -341,6 +357,55 @@ public static class HiFTVocoderKernels
         var w = new float[n];
         for (int i = 0; i < n; i++) w[i] = 0.5f * (1f - MathF.Cos(2f * MathF.PI * i / n));
         return w;
+    }
+
+    /// <summary>Real causal Conv1d, left-zero-pad by (kernel-1) then valid conv (output length == input length). Channel-first [inCh,T] flat layout, weight [outCh,inCh,kernel].</summary>
+    private static float[] CausalConv1dLeftPad(float[] input, int inCh, int t, float[] weight, float[] bias, int outCh, int kernel)
+    {
+        int pad = kernel - 1;
+        var output = new float[outCh * t];
+        System.Threading.Tasks.Parallel.For(0, outCh, oc =>
+        {
+            var outRow = new float[t];
+            Array.Fill(outRow, bias[oc]);
+            int wOcBase = oc * inCh * kernel;
+            for (int ic = 0; ic < inCh; ic++)
+            {
+                var inRow = input.AsSpan(ic * t, t);
+                int wBase = wOcBase + ic * kernel;
+                for (int k = 0; k < kernel; k++)
+                {
+                    int shift = k - pad;
+                    AxpyShifted(inRow, weight[wBase + k], outRow, shift, t);
+                }
+            }
+            Array.Copy(outRow, 0, output, oc * t, t);
+        });
+        return output;
+    }
+
+    /// <summary>Real causal Conv1d, right-zero-pad by (kernel-1) then valid conv (output length == input length). Same layout as <see cref="CausalConv1dLeftPad"/>.</summary>
+    private static float[] CausalConv1dRightPad(float[] input, int inCh, int t, float[] weight, float[] bias, int outCh, int kernel)
+    {
+        var output = new float[outCh * t];
+        System.Threading.Tasks.Parallel.For(0, outCh, oc =>
+        {
+            var outRow = new float[t];
+            Array.Fill(outRow, bias[oc]);
+            int wOcBase = oc * inCh * kernel;
+            for (int ic = 0; ic < inCh; ic++)
+            {
+                var inRow = input.AsSpan(ic * t, t);
+                int wBase = wOcBase + ic * kernel;
+                for (int k = 0; k < kernel; k++)
+                {
+                    int shift = k; // no left pad; taps k=0..kernel-1 read input[ti..ti+kernel-1], right edge implicitly zero via AxpyShifted's clamped range
+                    AxpyShifted(inRow, weight[wBase + k], outRow, shift, t);
+                }
+            }
+            Array.Copy(outRow, 0, output, oc * t, t);
+        });
+        return output;
     }
 
     private static float[] Conv1dSamePad(float[] input, int inCh, int t, float[] weight, float[] bias, int outCh, int kernel)

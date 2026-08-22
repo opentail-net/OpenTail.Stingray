@@ -52,22 +52,22 @@ public sealed class ParlerFullPipeline : IDisposable
     }
 
     /// <summary>
-    /// Mixed-source constructor: T5 encoder and DAC codec still come from the real Safetensors
-    /// checkpoint (unchanged, already golden-verified), but the decoder loads from a real
-    /// community GGUF conversion instead (<see cref="ParlerDecoderWeights(Core.GgufModel)"/>) --
-    /// see that constructor's doc comment for the full derivation, including the real, confirmed
-    /// limitation that this specific GGUF conversion has NO T5 tensors at all (decoder+DAC only),
-    /// which is exactly why this constructor still needs the Safetensors `loader` for T5/DAC.
-    /// Golden-verified this session (`ParlerDecoderGgufTests`) that the GGUF-loaded decoder
-    /// matches the Safetensors-loaded decoder's real output at cosine &gt; 0.99 -- see
-    /// docs/audio-review-progress.md's GGUF-expansion entries.
+    /// Mixed-source constructor: T5 encoder still comes from the real Safetensors checkpoint
+    /// (unchanged, already golden-verified) -- the real community GGUF conversion has NO T5
+    /// tensors at all, confirmed via an exhaustive tensor-name-prefix scan, so this is the only
+    /// possible source for T5. The decoder and DAC codec both load from the GGUF instead
+    /// (<see cref="ParlerDecoderWeights(Core.GgufModel)"/>/<see cref="DacWeights(Core.GgufModel)"/>)
+    /// -- both golden-verified this session (`ParlerDecoderGgufTests`/`DacWeightsGgufTests`)
+    /// against the Safetensors path's real output at cosine &gt; 0.99 -- see docs/audio-review-
+    /// progress.md's GGUF-expansion entries for the full derivation of both real tensor-naming
+    /// conventions.
     /// </summary>
-    public ParlerFullPipeline(string tokenizerJsonPath, SafetensorsLoader loader, GgufModel decoderGguf)
+    public ParlerFullPipeline(string tokenizerJsonPath, SafetensorsLoader loader, GgufModel decoderAndDacGguf)
     {
         _tokenizer = UnigramTokenizer.FromTokenizerJson(tokenizerJsonPath);
         _t5Weights = new T5EncoderWeights(loader);
-        _decoderWeights = new ParlerDecoderWeights(decoderGguf);
-        _dacWeights = new DacWeights(loader);
+        _decoderWeights = new ParlerDecoderWeights(decoderAndDacGguf);
+        _dacWeights = new DacWeights(decoderAndDacGguf);
     }
 
     /// <summary>Full pipeline: text -&gt; mono float32 PCM. Real T5 EOS (id 1) appended to the tokenizer's segmentation-only output, matching the real T5 tokenizer's post-processor.</summary>

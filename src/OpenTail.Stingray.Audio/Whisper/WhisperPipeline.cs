@@ -61,6 +61,27 @@ public sealed class WhisperPipeline : ISpeechToTextPipeline
             throw new FileNotFoundException($"Whisper GGML model not found: {ggmlModelPath}");
 
         var ggml = WhisperGgmlModel.Load(ggmlModelPath);
+        return FromModel(ggml, vad);
+    }
+
+    /// <summary>
+    /// Loads a real Whisper model from a real GGUF file (produced by
+    /// <c>scratch-llamacpp-ref/whisper_ggml_to_gguf.py</c>, a lossless repackaging of the same
+    /// whisper.cpp ggml weights into a genuine GGUF container -- see
+    /// <see cref="WhisperGgmlModel.LoadFromGguf"/> for why this project self-converts rather than
+    /// consuming a third-party "whisper gguf" release).
+    /// </summary>
+    public static WhisperPipeline LoadFromGguf(string ggufModelPath, SileroVad? vad = null)
+    {
+        if (string.IsNullOrWhiteSpace(ggufModelPath) || !File.Exists(ggufModelPath))
+            throw new FileNotFoundException($"Whisper GGUF model not found: {ggufModelPath}");
+
+        var ggml = WhisperGgmlModel.LoadFromGguf(ggufModelPath);
+        return FromModel(ggml, vad);
+    }
+
+    private static WhisperPipeline FromModel(WhisperGgmlModel ggml, SileroVad? vad)
+    {
         var config = ggml.ToConfig();
         var melExtractor = new WhisperMelExtractor(config.NumMels);
         var tokenizer = WhisperTokenizer.FromGgml(ggml);
