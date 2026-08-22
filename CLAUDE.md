@@ -27,6 +27,10 @@ OpenTail.Stingray is a high-performance LLM inference engine, image/video diffus
    * Shaders are defined in `src/OpenTail.Stingray.Vulkan/Shaders.cs` and precompiled into `Shaders.Precompiled.g.cs`. If GLSL shader constants change, run `scripts/gen-spirv.ps1` (requires Vulkan SDK) or tests will fail on table drift.
 6. **Do not use subagents in this project**:
    * Do all work directly in the main session — no `Agent`/subagent delegation. The user has explicitly opted out of subagent use here (they add overhead and drain tokens without the coordinating session retaining useful context). This applies project-wide, not just to the Audio rebuild work.
+7. **Performance pass + DRY pass once a model's port is complete**:
+   * When all porting/wiring work on a given model/pipeline is done (every stage golden-verified, wired end-to-end, tests passing), do a performance pass and a DRY pass on it before considering it finished.
+   * Performance pass: measure, don't assume. Use real weights and a realistic (not trivially short) input, take enough samples to trust the result (a handful of runs each side, not one), and only keep a change if it's measurably better — a plausible-sounding optimization that isn't actually faster gets reverted, even if the reasoning behind it seemed sound. Write the measured numbers down (e.g. in the relevant progress doc), not just "should be faster."
+   * DRY pass: check for logic duplicated across files for the same model/pipeline (e.g. an encoder and decoder that copy-pasted the same `Linear`/`LayerNorm`/attention helpers) and extract shared code, following the existing `Primitives/*Kernels.cs` convention. Re-run the affected golden/structural tests after extracting to confirm no numerical regression.
 
 ---
 

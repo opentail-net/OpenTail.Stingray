@@ -3963,3 +3963,250 @@ Not committed (per standing instruction). No golden verification done yet for an
 specific (the prompt/SNAC layer doesn't exist yet) -- the "load and run unchanged" finding above
 is a real, directly-observed result (not a golden-verified one), appropriate for confirming
 infrastructure compatibility, not for confirming correctness of Orpheus-specific behavior.
+
+## Orpheus TTS -- continued same fire: real Python source found and read in full, CORRECTS several details assumed from the C++ port; real SNAC codec architecture + weights now also in place
+
+Read `examples/Orpheus-TTS/orpheus_tts_pypi/orpheus_tts/engine_class.py` and `decoder.py` in
+full -- the actual `canopyai/Orpheus-TTS` reference implementation, strictly more authoritative
+than `examples/CrispASR/src/orpheus.cpp`'s comments (a third-party port). **Three real
+corrections to what the earlier entry inferred from the C++ port, do not use the C++ port's
+version of these details**:
+
+1. **Real prompt format** (`_format_prompt`, "larger"/`medium-3b` model type -- matches our
+   checkpoint, the pretrained/`-ft` 3B model, not the smaller nano/micro variants):
+   `[128259] + tokenize(f"{voice}: {prompt}") + [128009, 128260, 128261, 128257]`. All four
+   "end tokens" (`128009`=eot_id, `128260`=audio_eot, `128261`=audio_eom, `128257`=audio_end) are
+   appended to the PROMPT, priming the model to start emitting audio codec tokens -- `128257` is
+   NOT a generation stop signal as the C++ port's comment implied.
+2. **Real generation stop condition**: `stop_token_ids=[49158]` (a literal vLLM
+   `SamplingParams` argument in `generate_tokens_sync`) -- a single specific token id, not
+   `<|audio_end|>=128257`. Available voices per this real source:
+   `["zoe","zac","jess","leo","mia","julia","leah"]` (though the function's own default
+   `voice="tara"` isn't in that list -- a real inconsistency in the upstream source itself, not
+   something to "fix", just replicate/pick a real listed voice).
+3. **Real detokenization formula is NOT a flat offset subtraction**: `turn_token_into_id` computes
+   `code = int(N) - 10 - ((index % 7) * 4096)`, where `N` is the literal integer parsed out of
+   the decoded `"<custom_token_N>"` string and `index` is the running count of emitted audio
+   tokens (0-based). This means each of the 7 per-superframe slot positions has its own effective
+   subtracted stride (slot 0: `-10`; slot 1: `-10-4096`; ... slot 6: `-10-6*4096`), NOT a single
+   flat `id - custom_token_offset` as the earlier entry (extrapolating from the C++ port) assumed.
+   Must port this exact formula, indexed by position-within-superframe, not a constant offset.
+
+**Real SNAC de-interleaving structure, confirmed from `decoder.py`'s `convert_to_audio`**: SNAC
+is NOT a flat 7-codebook scheme -- it's a genuine 3-level hierarchical/multi-rate residual VQ
+codec. Per 7-token superframe (tokens at local offsets `i..i+6`): `codes_0` gets 1 entry (`i`),
+`codes_1` gets 2 entries (`i+1`, `i+4`), `codes_2` gets 4 entries (`i+2`, `i+3`, `i+5`, `i+6`).
+After accumulating >=4 superframes (28 tokens), decode the most recent 4-superframe window
+through the real SNAC model, taking only the middle `[2048:4096]` sample slice of the decoded
+output per window (streaming/overlap convention, real detail from the Python reference, not
+guessed). `torch.any(codes < 0 or > 4096)` is a real sanity/safety check before decoding -- worth
+replicating.
+
+**Real SNAC decoder architecture + weights now both in place, confirmed from
+`examples/CrispASR/src/orpheus_snac.h`'s own header comment (very detailed, effectively a spec)
+plus a real, verified HF GGUF repo**: SNAC 24kHz (`hubertsiuzdak/snac_24khz`, MIT license) is a
+small (~25MB F32) residual-VQ codec: `quantizer.from_codes` (3 codebook streams -> 768-dim latent)
+-> `decoder.model[0..1]` in-convs -> 4x `DecoderBlock` with strides `[8, 8, 4, 2]` (channel
+progression 1024->512->256->128->64) -> final tanh head -> 24kHz mono PCM. Per-codebook VQ
+strides are `[4, 2, 1]` (matching `codes_0`/`codes_1`/`codes_2`'s 1:2:4 token-rate ratio above),
+hop_length=512, output length = `n2 * 512` samples where `n2` = the `codes_2` (finest level)
+token count. **Downloaded the real weights this fire**: `models/snac-24khz.gguf` (26MB, verified
+via HF API before download: `base_model: hubertsiuzdak/snac_24khz`, `gguf.architecture: snac`,
+from `cstr/snac-24khz-GGUF`, the same author/repo family as the Orpheus GGUF conversions).
+
+**Orpheus is now fully unblocked on both weights AND a complete, real, precisely-specified
+architecture** (talker: existing Llama infra, confirmed working unchanged; codec: real SNAC
+architecture spec + real weights, both in place). Concrete next steps, refined from the earlier
+entry:
+1. Build `OrpheusWeights.cs`-equivalent loaders for BOTH GGUF files (talker uses existing
+   Llama-loading infra -- check whether `OpenTail.Stingray.Engine`'s standard model loader can be
+   reused as-is or needs a thin Orpheus-specific wrapper; codec needs a new loader matching the
+   real tensor names in `models/snac-24khz.gguf`, dump via `list-tensors` first, don't guess
+   names).
+2. Build the real prompt-construction function (voice + text -> token ids, per the exact spec
+   above) and a decode loop wired to the existing Engine (collect `<custom_token_N>` ids until
+   `stop_token_ids=49158` or a max-tokens cap).
+3. Port `SnacDecoder.cs`: quantizer.from_codes -> in-convs -> 4x DecoderBlock (strides
+   8/8/4/2) -> tanh head, per the exact spec in `orpheus_snac.h`'s header comment. Note
+   `orpheus_snac.h` itself documents named intermediate stages
+   (`snac_quant_out`/`snac_dec_pre`/`snac_dec_blk{0-3}`/`snac_pcm`) intended for exactly this
+   kind of golden-verification bisection -- very likely a real, ready-made oracle-comparison
+   harness (`crispasr-diff orpheus` / `tools/reference_backends/orpheus_snac.py`, referenced in
+   the header, not yet located/read) exists somewhere under `examples/CrispASR/` -- check for it
+   before building a golden oracle from scratch, it may already exist.
+4. Wire the real 7-token-superframe de-interleaving (1/2/4 split, exact slot-to-codebook mapping
+   above) and the `code = N - 10 - (slot*4096)` detokenization formula between the talker's
+   output and the SNAC decoder's input.
+5. Golden-verify the SNAC decoder against a real oracle (ideally the ready-made one noted in
+   step 3) before calling any of this done, per standard discipline.
+
+**Reference note for a LATER pipeline, not Orpheus**: user pointed at
+`https://huggingface.co/parler-tts/parler-tts-mini-v1` (the base, non-quantized Parler-TTS model
+card) noting it has real audio samples -- flagged here for when Parler-TTS's turn in the queue
+comes, as a candidate source for real reference audio to golden-verify that pipeline's output
+against (FunASR/Silero VAD were verified via cosine similarity against numeric oracles; having
+real reference AUDIO available for a TTS pipeline is a different and valuable kind of check --
+listen-and-compare, not just numeric). Not used yet, not relevant to Orpheus's own DAC/SNAC
+verification.
+
+**Found the ready-made golden oracle predicted above -- confirmed real, not yet run**:
+`examples/CrispASR/tools/reference_backends/orpheus_snac.py`, a real dump script against the
+official PyTorch `hubertsiuzdak/snac_24khz` model. Its own header comment independently
+CORROBORATES every detail in this entry (the 1/2/4 codes_0/1/2 split, the `[2048:4096]`
+streaming-window slice, the 7-token superframe grouping) -- strong cross-confirmation the
+detokenization/de-interleaving understanding above is correct, since this script derives from
+the same real Python source (`canopyai/Orpheus-TTS:decoder.py`) independently of the C++ port.
+Dumps 10 named stages (`snac_codes_{0,1,2}` -> `snac_quant_out` -> `snac_dec_pre` ->
+`snac_dec_blk{0-3}` -> `snac_pcm` -> `snac_pcm_emit`), driven by `ORPHEUS_SNAC_T_SUPER`/
+`ORPHEUS_SNAC_CODE` env vars for deterministic constant-fill test codes -- exactly the kind of
+oracle needed for a real cosine-similarity golden verification of a from-scratch `SnacDecoder.cs`
+port, staged the same way this doc's other pipelines were (FunASR's encoder/predictor/decoder
+each independently verified stage-by-stage, not just end-to-end). **Next fire: run this script
+first** (needs the real `snac` pip package + torch, same `pip download --no-deps` technique used
+throughout this doc) to produce real oracle dumps BEFORE writing `SnacDecoder.cs`'s forward pass,
+not after -- this is now the single most valuable next action for finishing Orpheus.
+
+## Orpheus TTS -- COMPLETE end-to-end (same fire, continued, direct user instruction "don't stop till you are done"): SnacDecoder ported + golden-verified, real prompt/detokenization corrected via direct tokenizer inspection, full pipeline wired and producing real audio
+
+**Ran the real oracle** (`pip download snac --no-deps`, then a self-contained adaptation of
+`orpheus_snac.py`'s real logic since that file depends on a private `_hooks` harness module not
+present standalone -- new `scratch-llamacpp-ref/snac_golden.py`, same NoiseBlock-no-op patch,
+same deterministic-codes construction). Also fetched the real `hubertsiuzdak/snac_24khz`
+`config.json` directly from HF to nail down the exact decoder config rather than trust the
+`snac` package's class defaults (which are for an unrelated 44.1kHz variant): `decoder_dim=1024`,
+`decoder_rates=[8,8,4,2]`, `encoder_dim=48`+`encoder_rates=[2,4,8,8]` (latent_dim = 48*16=768,
+confirmed matches `orpheus_snac.h`'s stated 768), `vq_strides=[4,2,1]`, `codebook_size=4096`,
+`codebook_dim=8`, `attn_window_size=null` (confirmed: no LocalMHA layer anywhere in this
+variant's decoder, matching the real GGUF's tensor set having zero attention tensors), `noise=true`
+(present in weights, made a no-op at inference, see below), `depthwise=true`.
+
+**Real per-module math confirmed by reading `snac/layers.py`, `snac/vq.py`, `snac/snac.py`
+directly** (not guessed, not inferred from `orpheus_snac.h`'s header comment alone, though that
+comment's spec matched exactly once cross-checked): `ResidualVectorQuantize.from_codes` (per
+quantizer: embedding lookup by codebook index -> `out_proj` pointwise conv (8->768) ->
+`repeat_interleave` nearest-neighbor time-upsample by that quantizer's own stride -> sum across
+the 3 quantizers) -> `Decoder.forward` (depthwise conv in0 (768ch, k=7) -> pointwise conv in1
+(768->1024, k=1) -> 4x `DecoderBlock` (`Snake1d` -> `ConvTranspose1d` upsample (strides 8/8/4/2)
+-> [`NoiseBlock`, no-op'd] -> 3x `ResidualUnit` dilations 1/3/9) -> final `Snake1d` -> full
+(non-grouped) conv (64->1, k=7) -> `Tanh`). `ResidualUnit`: `Snake1d` -> depthwise dilated conv
+(k=7, `pad=(kernel-1)*dilation/2`) -> `Snake1d` -> pointwise conv (k=1) -> residual add. `Snake1d`:
+`x + (1/(alpha+1e-9)) * sin(alpha*x)^2`, per-channel alpha.
+
+**`NoiseBlock` is a documented no-op, not this port's own shortcut**: the real
+`NoiseBlock.forward` injects `torch.randn(...)` every call, making the real PyTorch decoder
+itself non-deterministic at inference. `orpheus_snac.py`'s own comment explicitly patches
+`NoiseBlock.forward = lambda self, x: x` for exactly this reason ("the noise contribution is
+~1e-2 of the signal RMS at 24kHz"). This port follows the same documented convention -- loads
+`noise.weight` from the GGUF but never uses it.
+
+**Real GGUF tensor layout confirmed via `list-tensors` on `models/snac-24khz.gguf`** (110
+tensors, 25.1MiB total): `snac.dec.in0`/`in1`, `snac.dec.{0..3}.{alpha,up.weight/bias,
+res.{0,1,2}.{alpha0,conv0.weight/bias,alpha1,conv1.weight/bias}}`, `snac.dec.out.{alpha,weight,
+bias}`, `snac.q.{0..2}.{codebook,in_proj.weight/bias,out_proj.weight/bias}`. Weight-norm is
+already folded into a single plain weight tensor per conv (no separate `.original0`/`.original1`
+g/v pair anywhere, unlike CosyVoice HiFT's checkpoint) -- no folding step needed.
+
+**Dimension-order convention cross-verified against multiple real tensor shapes before writing
+any indexing code** (not assumed from one example): GGUF's displayed shape is the REVERSE of
+PyTorch's native dim order, but the underlying FLAT BYTE LAYOUT is identical to PyTorch's native
+row-major layout -- e.g. `snac.q.0.out_proj.weight` displayed `[1,8,768]` (kernel,in,out reversed)
+matches PyTorch `Conv1d(in=8,out=768,kernel=1)`'s native `[out,in,kernel]` shape exactly when
+un-reversed. This let every kernel below reuse the exact same indexing formulas as this
+codebase's existing `HiFTVocoderKernels.ConvTranspose1d` (`weight[(ic*outCh+oc)*kernel+k]`),
+confirmed correct via the golden test, not just assumed to generalize.
+
+**`src/OpenTail.Stingray.Audio/Orpheus/SnacWeights.cs`** (new): real GGUF loader, all tensor
+names above, config constants (`DecoderDim=1024`, `LatentDim=768`, `CodebookSize=4096`,
+`CodebookDim=8`, `DecoderRates=[8,8,4,2]`, `VqStrides=[4,2,1]`).
+
+**`src/OpenTail.Stingray.Audio/Orpheus/SnacDecoder.cs`** (new): real forward pass --
+`Snake1d`/`DepthwiseConv1d`/`PointwiseConv1d`/`ConvTranspose1d`/`ResidualUnit`/`DecoderBlock`/
+`QuantizerFromCodes`/`Decode`, matching the exact real math above.
+
+**Golden-verified**: `scratch-llamacpp-ref/snac_golden.py` runs the REAL PyTorch `snac` package
+against the REAL pretrained `hubertsiuzdak/snac_24khz` weights (auto-downloaded from HF, not a
+from-scratch reimplementation) with 4 deterministic superframes (every slot = code 17). C#
+`SnacDecoder.Decode` against the SAME real `models/snac-24khz.gguf` weights and same codes
+produces PCM matching the oracle at **cosine similarity > 0.99, PASSED on the first attempt** (no
+bugs needed fixing) -- `tests/OpenTail.Stingray.Tests.Audio/SnacDecoderTests.cs`.
+
+### Real prompt/detokenization spec: ONE MORE correction found, via direct tokenizer-vocab inspection (not guessing, not trusting either prior source blindly)
+
+Before wiring the full pipeline, verified the exact numeric relationship between raw GGUF vocab
+ids and the `<custom_token_N>` string ids `turn_token_into_id` parses, by directly dumping
+specific vocab entries from `models/orpheus-3b-0.1-ft.Q4_K_M.gguf`'s own
+`tokenizer.ggml.tokens` array (via the real `gguf` Python package, not assumed):
+`id 128256 = "<custom_token_0>"`, `128257 = "<custom_token_1>"`, `128259 = "<custom_token_3>"`,
+`128260 = "<custom_token_4>"`, `128261 = "<custom_token_5>"`, `128266 = "<custom_token_10>"`.
+
+**This resolves an apparent contradiction, not a real one**: `orpheus.cpp`'s comment labels
+`custom_token_offset=128266` as "`<custom_token_0>` id", which is factually wrong for this
+checkpoint's real vocab (`<custom_token_0>` is actually id 128256) -- but its formula
+`code = raw_id - custom_token_offset - slot*4096` is still numerically IDENTICAL to the real
+Python `turn_token_into_id`'s `code = N - 10 - slot*4096` once `N = raw_id - 128256` is
+substituted (`128256 + 10 = 128266`), because the real Python formula's constant `-10` and the
+base offset are simply combined differently. **Confirmed real, final formula for this specific
+checkpoint**: `code = raw_id - 128266 - (index % 7) * 4096`. Also confirmed: token id 49158 (the
+real `stop_token_ids` default from `engine_class.py`) decodes to the ORDINARY BPE text token
+`"Ġrez"` -- not a reserved/special token at all, just something this fine-tune apparently learned
+to emit as an end-of-audio marker. Real, if slightly unusual; replicated as-is, not "fixed".
+
+### `src/OpenTail.Stingray.Audio/Orpheus/OrpheusPipeline.cs` (new): full text+voice -> PCM pipeline, wired and RUNNING
+
+Talker: loads `models/orpheus-3b-0.1-ft.Q4_K_M.gguf` through this codebase's completely
+UNMODIFIED `GgufModel`/`ModelHyperparams`/`ForwardPass`/`GgufTokenizer`/`CpuBackend` --
+confirmed, per the earlier entry in this section, that Orpheus's talker needs zero new
+forward-pass code. `BuildPrompt`: raw `Encode("{voice}: {text}")` (NOT a chat template) wrapped
+in the real special tokens (`[128259] + ... + [128009,128260,128261,128257]`).
+`GenerateCodes`: greedy autoregressive decode (temperature=0 -- a deliberate first-pass choice
+for determinism; the real reference's own defaults are temp=0.6/top_p=0.8/repetition_penalty=1.3,
+NOT yet wired) via `ForwardPass.Prefill`/`Forward`, stopping at token 49158 or a max-tokens cap,
+de-interleaving valid in-range generated tokens into 3 codebook streams via the real formula
+above (out-of-range tokens, e.g. the model emitting ordinary text instead of a codec code, are
+skipped rather than fed to the codec -- matches the real `decoder.py`'s own `if token > 0` /
+range guard), truncated to a whole number of complete 7-token superframes. `Synthesize`: codes ->
+`SnacDecoder.Decode` -> 24kHz mono PCM.
+
+**End-to-end structural test, real weights throughout, PASSED**:
+`tests/OpenTail.Stingray.Tests.Audio.Fast/OrpheusPipelineTests.cs` --
+`Synthesize("Hello, this is a test.", voice: "tara", maxTokens: 140)` against the real
+talker + real SNAC weights ran in ~2m19s (CPU, greedy, ~3B model -- unoptimized, no perf pass
+attempted yet for this pipeline) and produced **1.37s of real, non-silent, valid-range
+([-1,1] post-Tanh) 24kHz PCM** (65580-byte WAV, saved to
+`scratch-llamacpp-ref/orpheus_test_output.wav` for the user to listen to). This is NOT a
+golden-cosine-verified result end-to-end (no independent oracle runs the FULL talker->codec
+chain for comparison -- the talker LM's forward-pass correctness rests on this codebase's
+existing, separately-validated Llama support, and the codec stage is independently golden-
+verified above) -- it confirms the pipeline is real, wired, and produces plausible audio, not
+that the specific words/voice are correct. **Whether the audio is actually intelligible speech
+saying the right words has NOT been verified by a human listener yet** -- flagging this
+explicitly rather than claiming more than was checked.
+
+**Orpheus TTS is now functionally COMPLETE for a first pass**: real talker (existing infra,
+zero new code), real prompt construction, real detokenization (corrected via direct evidence,
+not trusted blindly from either reference source), real golden-verified SNAC codec, wired
+end-to-end, producing real audio. Not committed (per standing instruction). **Concrete follow-up
+items, not blocking, lower priority than moving to the next queue pipeline**:
+1. Listen to `scratch-llamacpp-ref/orpheus_test_output.wav` and confirm it's actually
+   intelligible/correct speech, not just "real-looking PCM."
+2. Wire real sampling (temp=0.6, top_p=0.8, repetition_penalty=1.3) instead of greedy --
+   greedy was a deliberate first-correctness-pass simplification, not a final choice; may also
+   affect audio quality/naturalness meaningfully for an AR TTS model.
+3. Performance pass (per the new CLAUDE.md rule 7, added this session): 2m19s for ~1.4s of audio
+   is far from real-time -- likely dominated by the talker's per-token `ForwardPass.Forward`
+   calls on a 3B model on CPU; check GPU offload (`-g`/`--ngl` equivalent) wiring for
+   `OrpheusPipeline`, not yet attempted.
+4. DRY pass (per the same new rule): not yet needed (no duplicated logic across Orpheus and
+   another pipeline yet), but check once Parler-TTS is also done, since both may share codec-
+   adjacent patterns.
+5. `scratch-llamacpp-ref/snac-pkg/` (extracted real `snac` package) can be deleted once this
+   work is confirmed stable, per this doc's usual "scratch is gitignored, not permanent"
+   convention.
+
+**Queue status**: FunASR ✅, Silero VAD ✅, Orpheus TTS ✅ (first pass, follow-ups noted above).
+Fish Speech and Parler-TTS remain: both have real weights (`models/s2-pro-q4_k_m.gguf`,
+`models/Parler_TTS_mini.gguf`) and real reference source (`examples/s2.cpp`,
+`examples/CrispASR/src/parler_tts.*` / `examples/TTS.cpp`) already in place from earlier this
+fire -- next fire should start Parler-TTS or Fish Speech following the exact same discipline
+demonstrated end-to-end here for Orpheus (real weight loader -> real per-module math from the
+real source -> golden-verify each new component -> wire end-to-end -> test).
