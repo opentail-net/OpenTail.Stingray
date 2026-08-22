@@ -2861,6 +2861,75 @@ given how closely everything else has matched so far). Then CosyVoice3's HiFT (a
 weights, no fold needed, kernel-5 `conv_pre` — see the earlier entry) is the last remaining
 stage.
 
+### CosyVoice3's input_embed formula resolved (confirmed, not guessed); CosyVoice2's HiFT DRY pass + real DSP forward pass, both verified (2026-08-22, same session, direct user request "find the best answers for each")
+
+**CosyVoice3 input_embed: resolved by reading the real source, not guessed.** Found
+`InputEmbedding::build_cgraph` (`cosyvoice-graph.cpp` line 278) and its caller `DiT::
+build_cgraph` (line 443) in `examples/cosyvoice.cpp`. Confirmed exactly:
+`concat(x, cond, text_embed, spks)` in that literal order, where the "text_embed" parameter
+slot (inherited from what's structurally a text-conditioned DiT template) is actually fed
+`mu` — CosyVoice3's own upsampled 80-dim speech-token embedding from `CausalMaskedDiffWithDiT::
+build_cgraph_encode`'s `pre_lookahead_layer` + 2x upsample (confirmed earlier this session:
+CosyVoice3 has no Conformer flow encoder at all, so there's no other candidate for what feeds
+this slot). `cond` is the padded reference/prompt mel; `spks` is `spk_embed_affine_layer(l2_norm(
+campplus_embedding))`, `ggml_repeat`-broadcast across every frame before concatenation (not
+real per-frame data). This confirmed order differs from my own pre-confirmation guess (I'd
+guessed x+mu+cond+spks; the real order is x+cond+mu+spks) — a concrete demonstration of why
+this doc's "never guess architecture" discipline matters even when confident.
+
+Updated `CosyVoice3DiTModel.cs`: `InputEmbed` now takes the four real named `[numFrames,
+MelDim]` inputs (`x, cond, mu, spks`) and concatenates them in the confirmed order internally,
+rather than an opaque pre-concatenated blob; added `ForwardVelocity(w, x, cond, mu, spks,
+timestep, numFrames)` wiring `InputEmbed` + `RunBackbone` together end-to-end (mirroring
+`F5DiTModel.ForwardVelocity`'s shape). `Tests.Audio/CosyVoice3DiTModelTests.cs` grew to 4
+tests (added a real `ForwardVelocity` end-to-end check) — **all PASS**, first attempt again.
+CosyVoice3's DiT is now a complete, real, tested single-step forward pass; only the
+flow-matching ODE sampler loop (wrapping repeated `ForwardVelocity` calls, e.g. via `F5TTS/
+F5FlowMatchingOde.cs` as a template) and HiFT remain for that pipeline.
+
+**CosyVoice2 HiFT: did the DRY extraction recommended two entries back, then the real DSP
+port, both verified.** Extracted `Primitives/HiFTVocoderKernels.cs` from `ChatterboxVocoder.
+cs` (~400 lines: `Generate`/`Decode`/`SineGen`/`LinearTanhMerge`/`PredictF0`/
+`HifiResBlockForward`/`SnakeInPlace`/STFT+iSTFT/all conv primitives), following the exact same
+interface-based pattern as `S3GenConformerKernels` (`IHiFTVocoderWeights`/
+`IHifiResBlockWeights`/`IF0PredictorWeights`, `ChatterboxS3GenWeights` implementing them via
+explicit interface members to avoid renaming its existing `Voc*`/`Vocoder.*` properties).
+One real, non-cosmetic generalization needed during the extraction: the original code
+hardcoded `kernel: 7` for both `conv_pre` and `conv_post` (true for Chatterbox's and
+CosyVoice2's checkpoints, but NOT for CosyVoice3's, which this session already confirmed uses
+`conv_pre` kernel 5) — added `ConvPreKernel`/`ConvPostKernel` to the shared interface instead
+of leaving the old hardcoded literals, so the kernel is now a per-checkpoint fact rather than
+an assumption silently baked into shared code.
+
+**Verified the extraction first, before building on top of it**: re-ran `ChatterboxVocoderTests`
+(the real golden test, cosine-similarity vs actual PyTorch reference waveform output) —
+**PASS** — plus `ChatterboxCfmDecoderTests` (a pipeline neighbor, not a direct consumer, run
+as an extra check) and the Fast suite build. Zero numeric drift from a ~400-line extraction,
+the same clean result as the smaller Conformer-encoder DRY pass earlier.
+
+**Then wrote `CosyVoiceHiftVocoder.cs`** (thin wrapper, mirroring `ChatterboxVocoder.cs`'s new
+shape exactly) and verified it against CosyVoice2's real, weight-norm-folded weights:
+`Tests.Audio/CosyVoiceHiftVocoderTests.cs` — real forward pass on synthetic mel input, checks
+output length is roughly the expected upsampled sample count and every sample is finite and
+in the valid `[-1,1]` waveform range — **PASS**.
+
+**CosyVoice2 status**: all three real stages (LLM speech-token generation via
+`CosyVoiceLlmTensorSource`, flow encoder via `CosyVoiceFlowEncoder`/`S3GenConformerKernels`,
+HiFT vocoder via `CosyVoiceHiftVocoder`/`HiFTVocoderKernels`) now exist, build, and pass
+their own real-weights tests. **Not yet done**: nothing wires these three stages together
+into one `CosyVoicePipeline.Generate` call — `CosyVoicePipeline.cs`/`CosyVoiceLlm.cs` still
+run the original 100%-procedural code path. No numeric golden verification exists yet for any
+CosyVoice2 stage (all real-weights tests so far check shape/finiteness, not correctness
+against a real oracle) — `examples/cosyvoice.cpp` remains the wrong reference for CosyVoice2
+specifically (confirmed CosyVoice3-only earlier this session), so a genuine CosyVoice2 oracle
+would need either the original Python `cosyvoice` package or very careful manual derivation.
+
+**Next iteration**: (1) wire CosyVoice2's three real stages into an actual end-to-end
+`CosyVoicePipeline.Generate`. (2) Same for CosyVoice3 once its HiFT (already-fused weights,
+kernel-5 `conv_pre` — a `CosyVoice3HiftWeights`/loader following `CosyVoiceHiftWeights`'s
+pattern minus the weight-norm fold step) and ODE sampler land. (3) Pursue real numeric golden
+verification for both — the biggest remaining gap now that every stage runs structurally.
+
 Did next-iteration item (1) above immediately rather than deferring it. Added
 `OpenTail.Stingray.Engine`/`OpenTail.Stingray.Cpu` `ProjectReference`s to `Tests.Audio.csproj`
 (previously only referenced the Audio project — this is the first Audio test needing a real

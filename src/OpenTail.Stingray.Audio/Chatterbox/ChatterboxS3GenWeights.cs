@@ -15,7 +15,7 @@ namespace OpenTail.Stingray.Audio.Chatterbox;
 /// The CFM UNet (`s3.fd.*`) and HiFTGenerator vocoder (`s3.v.*`) are separate, not-yet-loaded
 /// stages -- see ChatterboxDecoder.cs for the overall status.
 /// </summary>
-public sealed class ChatterboxS3GenWeights : IDisposable, IS3GenFlowEncoderWeights
+public sealed class ChatterboxS3GenWeights : IDisposable, IS3GenFlowEncoderWeights, IHiFTVocoderWeights
 {
     // Explicit IS3GenFlowEncoderWeights implementation: aliases this class's existing public
     // property names (EncHidden/EncHeads/EncHeadDim/EncFfn/SpkEncDim -- kept as-is, no public
@@ -30,6 +30,37 @@ public sealed class ChatterboxS3GenWeights : IDisposable, IS3GenFlowEncoderWeigh
     int IS3GenFlowEncoderWeights.FfnDim => EncFfn;
     IS3GenConformerLayerWeights[] IS3GenFlowEncoderWeights.EncLayers => (IS3GenConformerLayerWeights[])EncLayers;
     IS3GenConformerLayerWeights[] IS3GenFlowEncoderWeights.UpEncLayers => (IS3GenConformerLayerWeights[])UpEncLayers;
+
+    // Explicit IHiFTVocoderWeights implementation: aliases this class's existing Voc*/Vocoder.*
+    // names (added when `HiFTVocoderKernels` was extracted so this class's vocoder DSP logic
+    // could move there) -- same rationale as the IS3GenFlowEncoderWeights block above. Both
+    // conv_pre/conv_post kernels are hardcoded 7 for this checkpoint (verified from the
+    // original ChatterboxVocoder.cs `Decode`'s literal `kernel: 7` arguments before this
+    // extraction, not re-derived).
+    int[] IHiFTVocoderWeights.UpsampleRates => VocUpsampleRates;
+    int[] IHiFTVocoderWeights.UpsampleKernels => VocUpsampleKernels;
+    int[] IHiFTVocoderWeights.ResblockKernels => VocResblockKernels;
+    int[] IHiFTVocoderWeights.SourceResblockKernels => VocSourceResblockKernels;
+    int IHiFTVocoderWeights.BaseChannels => VocBaseChannels;
+    int IHiFTVocoderWeights.NbHarmonics => VocNbHarmonics;
+    int IHiFTVocoderWeights.IstftNFft => VocIstftNFft;
+    int IHiFTVocoderWeights.IstftHopLen => VocIstftHopLen;
+    int IHiFTVocoderWeights.SampleRate => SampleRate;
+    int IHiFTVocoderWeights.ConvPreKernel => 7;
+    int IHiFTVocoderWeights.ConvPostKernel => 7;
+    float[] IHiFTVocoderWeights.ConvPreWeight => Vocoder.ConvPreWeight;
+    float[] IHiFTVocoderWeights.ConvPreBias => Vocoder.ConvPreBias;
+    float[] IHiFTVocoderWeights.ConvPostWeight => Vocoder.ConvPostWeight;
+    float[] IHiFTVocoderWeights.ConvPostBias => Vocoder.ConvPostBias;
+    float[][] IHiFTVocoderWeights.UpWeight => Vocoder.UpWeight;
+    float[][] IHiFTVocoderWeights.UpBias => Vocoder.UpBias;
+    float[][] IHiFTVocoderWeights.SourceDownWeight => Vocoder.SourceDownWeight;
+    float[][] IHiFTVocoderWeights.SourceDownBias => Vocoder.SourceDownBias;
+    IHifiResBlockWeights[] IHiFTVocoderWeights.SourceResBlocks => (IHifiResBlockWeights[])Vocoder.SourceResBlocks;
+    IHifiResBlockWeights[] IHiFTVocoderWeights.ResBlocks => (IHifiResBlockWeights[])Vocoder.ResBlocks;
+    IF0PredictorWeights IHiFTVocoderWeights.F0Predictor => F0Predictor;
+    float[] IHiFTVocoderWeights.MSourceLinearWeight => Vocoder.MSourceLinearWeight;
+    float[] IHiFTVocoderWeights.MSourceLinearBias => Vocoder.MSourceLinearBias;
 
     public GgufModel Model { get; }
 
@@ -427,7 +458,7 @@ public sealed class ChatterboxCfmTransformerBlockWeights
 }
 
 /// <summary>ConvRNNF0Predictor (f0_predictor.py): 5x (Conv1d k=3 pad=1 + ELU), then Linear(512,1) + abs().</summary>
-public sealed class ChatterboxF0PredictorWeights
+public sealed class ChatterboxF0PredictorWeights : IF0PredictorWeights
 {
     public float[][] ConvWeight { get; } = new float[5][];  // conv 0: [512,80,3]; convs 1-4: [512,512,3]
     public float[][] ConvBias { get; } = new float[5][];
@@ -511,7 +542,7 @@ public sealed class ChatterboxVocoderWeights
 /// shape as Kokoro's AdaINResBlock1 (see KokoroDecoder.cs), but WITHOUT AdaIN style-conditioning
 /// (Snake only, no per-block speaker modulation).
 /// </summary>
-public sealed class ChatterboxHifiResBlockWeights
+public sealed class ChatterboxHifiResBlockWeights : IHifiResBlockWeights
 {
     public float[][] Convs1Weight { get; } = new float[3][];
     public float[][] Convs1Bias { get; } = new float[3][];

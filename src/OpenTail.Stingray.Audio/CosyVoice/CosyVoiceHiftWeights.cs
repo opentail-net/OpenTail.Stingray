@@ -1,4 +1,5 @@
 using System.IO;
+using OpenTail.Stingray.Audio.Primitives;
 using OpenTail.Stingray.Core;
 
 namespace OpenTail.Stingray.Audio.CosyVoice;
@@ -21,7 +22,7 @@ namespace OpenTail.Stingray.Audio.CosyVoice;
 /// `f0_predictor.classifier.*` are plain (unparametrized) convs/linears, confirmed by their
 /// absence of a `parametrizations.` prefix.
 /// </summary>
-public sealed class CosyVoiceHiftWeights : IDisposable
+public sealed class CosyVoiceHiftWeights : IDisposable, IHiFTVocoderWeights
 {
     public SafetensorsLoader Loader { get; }
 
@@ -34,6 +35,8 @@ public sealed class CosyVoiceHiftWeights : IDisposable
     public int IstftNFft { get; } = 16;
     public int IstftHopLen { get; } = 4;
     public int SampleRate { get; } = 24000;
+    public int ConvPreKernel { get; } = 7;
+    public int ConvPostKernel { get; } = 7;
 
     public float[] ConvPreWeight { get; }
     public float[] ConvPreBias { get; }
@@ -46,8 +49,11 @@ public sealed class CosyVoiceHiftWeights : IDisposable
     public float[][] SourceDownBias { get; }
     public CosyVoiceHifiResBlockWeights[] SourceResBlocks { get; }
     public CosyVoiceHifiResBlockWeights[] ResBlocks { get; } // numStages * numKernels
+    IHifiResBlockWeights[] IHiFTVocoderWeights.SourceResBlocks => (IHifiResBlockWeights[])SourceResBlocks;
+    IHifiResBlockWeights[] IHiFTVocoderWeights.ResBlocks => (IHifiResBlockWeights[])ResBlocks;
 
     public CosyVoiceF0PredictorWeights F0Predictor { get; }
+    IF0PredictorWeights IHiFTVocoderWeights.F0Predictor => F0Predictor;
     public float[] MSourceLinearWeight { get; }
     public float[] MSourceLinearBias { get; }
 
@@ -116,7 +122,7 @@ public sealed class CosyVoiceHiftWeights : IDisposable
 }
 
 /// <summary>Snake-activated HiFiGAN resblock, 3 dilated conv pairs (dilations [1,3,5]) -- same structure as `Chatterbox/ChatterboxS3GenWeights.cs`'s `ChatterboxHifiResBlockWeights`.</summary>
-public sealed class CosyVoiceHifiResBlockWeights
+public sealed class CosyVoiceHifiResBlockWeights : IHifiResBlockWeights
 {
     public float[][] Convs1Weight { get; } = new float[3][];
     public float[][] Convs1Bias { get; } = new float[3][];
@@ -140,7 +146,7 @@ public sealed class CosyVoiceHifiResBlockWeights
 }
 
 /// <summary>ConvRNNF0Predictor: 5 causal-ish Conv1d(k=3)+ELU stages (condnet indices 0,2,4,6,8 -- odd indices are the ELU activations, no weights) + a final linear classifier.</summary>
-public sealed class CosyVoiceF0PredictorWeights
+public sealed class CosyVoiceF0PredictorWeights : IF0PredictorWeights
 {
     public float[][] ConvWeight { get; } = new float[5][];
     public float[][] ConvBias { get; } = new float[5][];

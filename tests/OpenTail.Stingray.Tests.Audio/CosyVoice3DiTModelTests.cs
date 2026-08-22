@@ -84,13 +84,52 @@ public sealed class CosyVoice3DiTModelTests : HeavyTestBase
         var w = new CosyVoice3DiTWeights(model);
 
         int numFrames = 8;
-        int concatDim = 320; // real input_embed.proj input width, confirmed from the real tensor shape
-        var concat = new float[numFrames * concatDim];
-        for (int i = 0; i < concat.Length; i++) concat[i] = 0.02f * MathF.Sin(i * 0.03f);
+        int melDim = CosyVoice3DiTWeights.MelDim;
+        var (x, cond, mu, spks) = (new float[numFrames * melDim], new float[numFrames * melDim], new float[numFrames * melDim], new float[numFrames * melDim]);
+        for (int i = 0; i < x.Length; i++)
+        {
+            x[i] = 0.02f * MathF.Sin(i * 0.03f);
+            cond[i] = 0.01f * MathF.Cos(i * 0.04f);
+            mu[i] = 0.015f * MathF.Sin(i * 0.02f + 1f);
+            spks[i] = 0.005f * MathF.Cos(i * 0.01f + 2f);
+        }
 
-        var h = CosyVoice3DiTModel.InputEmbed(w, concat, concatDim, numFrames);
+        var h = CosyVoice3DiTModel.InputEmbed(w, x, cond, mu, spks, numFrames);
 
         Assert.Equal(numFrames * CosyVoice3DiTWeights.HiddenDim, h.Length);
         foreach (var v in h) Assert.False(float.IsNaN(v) || float.IsInfinity(v));
+    }
+
+    [Fact]
+    public void ForwardVelocity_RealWeights_ProducesFiniteMelDimVelocity()
+    {
+        string? path = FindRepoFile("models/cosyvoice3/CosyVoice3-2512_F16.gguf");
+        Assert.SkipUnless(path != null, "models/cosyvoice3/CosyVoice3-2512_F16.gguf not found");
+
+        using var model = GgufModel.Open(path!);
+        var w = new CosyVoice3DiTWeights(model);
+
+        int numFrames = 8;
+        int melDim = CosyVoice3DiTWeights.MelDim;
+        var (x, cond, mu, spks) = (new float[numFrames * melDim], new float[numFrames * melDim], new float[numFrames * melDim], new float[numFrames * melDim]);
+        for (int i = 0; i < x.Length; i++)
+        {
+            x[i] = 0.02f * MathF.Sin(i * 0.03f);
+            cond[i] = 0.01f * MathF.Cos(i * 0.04f);
+            mu[i] = 0.015f * MathF.Sin(i * 0.02f + 1f);
+            spks[i] = 0.005f * MathF.Cos(i * 0.01f + 2f);
+        }
+
+        var velocity = CosyVoice3DiTModel.ForwardVelocity(w, x, cond, mu, spks, timestep: 0.3f, numFrames);
+
+        Assert.Equal(numFrames * melDim, velocity.Length);
+        float min = float.PositiveInfinity, max = float.NegativeInfinity;
+        foreach (var v in velocity)
+        {
+            Assert.False(float.IsNaN(v) || float.IsInfinity(v));
+            if (v < min) min = v;
+            if (v > max) max = v;
+        }
+        Assert.True(max - min > 1e-6f, $"velocity output looks degenerate: min={min}, max={max}");
     }
 }

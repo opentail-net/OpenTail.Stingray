@@ -11,24 +11,35 @@ namespace OpenTail.Stingray.Audio.CosyVoice;
 /// `F5TTS.F5Kernels`/`F5TTS.F5RotaryEmbedding` directly (already pipeline-agnostic static
 /// utilities) rather than re-deriving the same Linear/SiLU/LayerNorm/RoPE math a third time.
 ///
-/// <para><b>NOT a complete pipeline yet.</b> Only the confirmed-identical pieces are
-/// implemented: <see cref="RunBackbone"/> takes an ALREADY-embedded hidden state (post
-/// `input_embed.proj` + `ConvPositionEmbedding`, i.e. what F5-TTS's `InputEmbedding.Forward`
-/// would have produced) and runs the 22-block transformer + final `norm_out`/`proj_out`,
-/// returning the predicted velocity in mel-space. The `input_embed` stage itself (concatenate
-/// which real tensors into the 320-dim vector `proj` expects: F5's analog is
-/// `[x, cond, text_embed]`, but CosyVoice3 has no text embedding in the same sense -- likely
-/// some combination of the noisy mel `x`, the flow's own upsampled token embedding, the
-/// reference `conds` mel, and the speaker embedding, each contributing 80 dims to reach 320,
-/// but this is NOT yet confirmed against `examples/cosyvoice.cpp`'s real estimator-input
-/// construction code) is deliberately NOT implemented -- writing it from a plausible-sounding
-/// guess would be exactly the failure mode this whole rebuild exists to avoid. See
-/// docs/audio-review-progress.md's CosyVoice3 section for the concrete next step (read
-/// `examples/cosyvoice.cpp`'s `CausalConditionalCFM`/`build_cgraph_one_step` and
-/// `CausalMaskedDiffWithDiT::build_cgraph_encode` in full) before completing this.</para>
+/// <para><b>Input composition confirmed directly from `examples/cosyvoice.cpp`</b>
+/// (`InputEmbedding::build_cgraph`, `cosyvoice-graph.cpp` line ~278, and its caller
+/// `DiT::build_cgraph` line ~446): `x = concat(x, cond, text_embed, spks)` in exactly that
+/// order, where `text_embed` is CosyVoice's own repurposing of a parameter slot inherited
+/// from a text-conditioned DiT template -- it actually receives `mu` (the flow's own
+/// upsampled 80-dim speech-token embedding from `CausalMaskedDiffWithDiT::
+/// build_cgraph_encode`'s `pre_lookahead_layer` + 2x upsample, NOT a text embedding at all;
+/// CosyVoice3 has no Conformer flow encoder, see this class's earlier doc history in
+/// docs/audio-review-progress.md). `cond` is the padded reference/prompt mel (`conds` in that
+/// same function). `spks` is `spk_embed_affine_layer(l2_norm(campplus_embedding))`,
+/// broadcast (`ggml_repeat`) across every frame before concatenation, not per-frame data.
+/// All four are `MelDim` (80) wide, concatenating to the confirmed 320-wide `input_embed.
+/// proj` input.</para>
 /// </summary>
 public static class CosyVoice3DiTModel
 {
+    /// <summary>
+    /// Full DiT forward pass. x/cond/mu/spks are channel-last [numFrames, MelDim] (spks is
+    /// logically per-utterance but passed pre-broadcast to every frame here, matching
+    /// `ggml_repeat`'s effect in the real graph -- callers should broadcast a single [MelDim]
+    /// speaker vector across all frames before calling). Returns predicted velocity,
+    /// [numFrames, MelDim].
+    /// </summary>
+    public static float[] ForwardVelocity(CosyVoice3DiTWeights w, float[] x, float[] cond, float[] mu, float[] spks, float timestep, int numFrames)
+    {
+        var h = InputEmbed(w, x, cond, mu, spks, numFrames);
+        return RunBackbone(w, h, timestep, numFrames);
+    }
+
     /// <summary>h is the already-embedded hidden state [numFrames, HiddenDim] (post input_embed -- see this class's doc comment for what's NOT yet implemented upstream of this call). Returns the predicted velocity in mel-space [numFrames, MelDim].</summary>
     public static float[] RunBackbone(CosyVoice3DiTWeights w, float[] h, float timestep, int numFrames)
     {
@@ -58,9 +69,26 @@ public static class CosyVoice3DiTModel
         return F5Kernels.Linear(normOut, numFrames, dim, w.ProjOutWeight, w.ProjOutBias, CosyVoice3DiTWeights.MelDim);
     }
 
-    /// <summary>proj(concat) + ConvPositionEmbedding(kernel=31, groups=16) -- the mechanical part of F5's InputEmbedding that IS confirmed (kernel/groups/dims match exactly), given an already-formed concatenated input of the right width.</summary>
-    public static float[] InputEmbed(CosyVoice3DiTWeights w, float[] concatInput, int concatDim, int numFrames)
+    /// <summary>
+    /// concat(x, cond, mu, spks) [confirmed order/composition, see this class's doc comment]
+    /// -> proj -> + ConvPositionEmbedding(kernel=31, groups=16). x/cond/mu/spks are each
+    /// channel-last [numFrames, MelDim]; spks is expected already broadcast to every frame.
+    /// </summary>
+    public static float[] InputEmbed(CosyVoice3DiTWeights w, float[] x, float[] cond, float[] mu, float[] spks, int numFrames)
     {
+        int melDim = CosyVoice3DiTWeights.MelDim;
+        int concatDim = melDim * 4;
+        var concatInput = new float[numFrames * concatDim];
+        for (int ti = 0; ti < numFrames; ti++)
+        {
+            int outOff = ti * concatDim;
+            int melOff = ti * melDim;
+            Array.Copy(x, melOff, concatInput, outOff, melDim);
+            Array.Copy(cond, melOff, concatInput, outOff + melDim, melDim);
+            Array.Copy(mu, melOff, concatInput, outOff + 2 * melDim, melDim);
+            Array.Copy(spks, melOff, concatInput, outOff + 3 * melDim, melDim);
+        }
+
         int hidden = CosyVoice3DiTWeights.HiddenDim;
         var h = F5Kernels.Linear(concatInput, numFrames, concatDim, w.InputProjWeight, w.InputProjBias, hidden);
 
