@@ -349,10 +349,12 @@ public sealed class ChatterboxS3GenConformerLayer : IS3GenConformerLayerWeights
 /// "up" resample convs are the is_last case, i.e. plain CausalConv1d(k=3) with no real
 /// upsampling/downsampling -- see decoder.py's down_blocks/up_blocks construction.
 /// </summary>
-public sealed class ChatterboxCfmStageWeights
+public sealed class ChatterboxCfmStageWeights : IUnetStageWeights
 {
     public ChatterboxCfmResnetWeights Resnet { get; }
+    IResnetBlockWeights IUnetStageWeights.Resnet => Resnet;
     public ChatterboxCfmTransformerBlockWeights[] TransformerBlocks { get; }
+    IUnetTransformerBlockWeights[] IUnetStageWeights.TransformerBlocks => (IUnetTransformerBlockWeights[])TransformerBlocks;
 
     /// <summary>
     /// Resample conv, present only for the down/up stages (decoder.py's down_blocks/up_blocks
@@ -381,7 +383,7 @@ public sealed class ChatterboxCfmStageWeights
 /// += mlp(time_emb) broadcast over time -> block2 (same as block1) -> + res_conv(x) (1x1 conv,
 /// always applied, even when dim==dim_out).
 /// </summary>
-public sealed class ChatterboxCfmResnetWeights
+public sealed class ChatterboxCfmResnetWeights : IResnetBlockWeights
 {
     public float[] Block1ConvWeight { get; }  // [dimOut, dimIn, 3]
     public float[] Block1ConvBias { get; }
@@ -421,7 +423,7 @@ public sealed class ChatterboxCfmResnetWeights
 /// Linear-GELU-Linear MLP, not the diffusers-default GEGLU (confirmed by a single up/down weight
 /// pair per block, not the two up-projections GEGLU would need).
 /// </summary>
-public sealed class ChatterboxCfmTransformerBlockWeights
+public sealed class ChatterboxCfmTransformerBlockWeights : IUnetTransformerBlockWeights
 {
     public float[] Norm1Weight { get; }
     public float[] Norm1Bias { get; }
