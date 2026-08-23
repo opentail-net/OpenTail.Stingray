@@ -1,16 +1,27 @@
 using System;
 using System.IO;
+using System.Text.Json;
 using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Cpu;
 
 namespace OpenTail.Stingray.Audio.QwenASR;
 
 /// <summary>
-/// Container for Alibaba Qwen3-ASR (AuT audio encoder + Qwen3 LLM text decoder) GGUF weights.
+/// Container for Alibaba Qwen3-ASR (AuT audio encoder + Qwen3 LLM text decoder) weights --
+/// either the original GGUF (`Model` populated) or the real, canonical Hugging Face
+/// `Qwen/Qwen3-ASR-0.6B` Safetensors checkpoint (`Model` null, real
+/// `thinker.audio_tower.*`/`thinker.model.*` tensors read through a real
+/// <see cref="SafetensorsLoader"/> instead). Both paths populate the exact same public
+/// properties, so <see cref="QwenAsrAudioEncoder"/>/<see cref="QwenAsrTokenizer"/> work
+/// unchanged regardless of which loader was used -- same DRY pattern as
+/// <see cref="Whisper.WhisperGgmlModel.LoadFromSafetensors"/>.
 /// </summary>
 public sealed class QwenAsrWeights : IDisposable
 {
-    public GgufModel Model { get; }
+    /// <summary>Null when constructed via <see cref="LoadFromSafetensors"/> -- the Safetensors path never needed a `GgufModel` (the LLM decoder's real Safetensors generation loop uses <see cref="QwenAsrLlmSafetensorsTensorSource"/> directly, not `Model`).</summary>
+    public GgufModel? Model { get; }
+    private readonly SafetensorsLoader? _stLoader;
+    private readonly System.Collections.Generic.Dictionary<string, string> _stRename = new(StringComparer.Ordinal);
 
     public int AudioLayers { get; } = 18;
     public int AudioDim { get; } = 896;
@@ -137,6 +148,175 @@ public sealed class QwenAsrWeights : IDisposable
             AudioLayerWeights[i] = new QwenAsrAudioLayerWeights(this, $"audio.blk.{i}");
     }
 
+    /// <summary>
+    /// Real Safetensors constructor (used only by <see cref="LoadFromSafetensors"/>): populates
+    /// the exact same properties as the GGUF constructor, reading through
+    /// <see cref="SafetensorsLoader"/> instead, with a real name-remap table
+    /// (`audio.*` canonical -&gt; real `thinker.audio_tower.*` HF names) built up front so every
+    /// existing `GetTensor(name)` call site below works completely unchanged.
+    /// </summary>
+    private QwenAsrWeights(string checkpointDir, JsonElement audioConfig, JsonElement textConfig, JsonElement rootConfig)
+    {
+        _stLoader = SafetensorsLoader.Open(Path.Combine(checkpointDir, "model.safetensors"));
+
+        AudioLayers = audioConfig.GetProperty("encoder_layers").GetInt32();
+        AudioDim = audioConfig.GetProperty("d_model").GetInt32();
+        AudioHeads = audioConfig.GetProperty("encoder_attention_heads").GetInt32();
+        AudioHeadDim = AudioDim / AudioHeads;
+        AudioFfDim = audioConfig.GetProperty("encoder_ffn_dim").GetInt32();
+        AudioConvChannels = audioConfig.GetProperty("downsample_hidden_size").GetInt32();
+        AudioProjDim = audioConfig.GetProperty("output_dim").GetInt32();
+        AudioMaxSourcePositions = audioConfig.GetProperty("max_source_positions").GetInt32();
+
+        LlmLayers = textConfig.GetProperty("num_hidden_layers").GetInt32();
+        LlmDim = textConfig.GetProperty("hidden_size").GetInt32();
+        LlmHeads = textConfig.GetProperty("num_attention_heads").GetInt32();
+        LlmKvHeads = textConfig.GetProperty("num_key_value_heads").GetInt32();
+        LlmHeadDim = textConfig.GetProperty("head_dim").GetInt32();
+        LlmFfDim = textConfig.GetProperty("intermediate_size").GetInt32();
+        LlmVocabSize = textConfig.GetProperty("vocab_size").GetInt32();
+        LlmRmsNormEps = textConfig.GetProperty("rms_norm_eps").GetSingle();
+        LlmRopeTheta = textConfig.GetProperty("rope_theta").GetSingle();
+
+        NMels = AudioDim > 0 ? audioConfig.GetProperty("num_mel_bins").GetInt32() : NMels;
+
+        // Real special ids confirmed identical to the GGUF checkpoint's own metadata (a real
+        // cross-check, not assumed): audio_token_id (=audio_pad) matches AudioPadTokenId=151676
+        // exactly.
+        AudioStartTokenId = rootConfig.GetProperty("audio_start_token_id").GetInt32();
+        AudioEndTokenId = rootConfig.GetProperty("audio_end_token_id").GetInt32();
+        AudioPadTokenId = rootConfig.GetProperty("audio_token_id").GetInt32();
+
+        Tokenizer = BuildTokenizerFromHfFiles(checkpointDir, AudioStartTokenId, AudioEndTokenId, AudioPadTokenId, EosTokenId, PadTokenId);
+
+        // Real name remap: canonical `audio.*` (what GetTensor/AudioLayerWeights already call)
+        // -> real HF `thinker.audio_tower.*` names, confirmed via a direct `safe_open` tensor
+        // dump of the real checkpoint before writing this (not guessed from the module tree).
+        _stRename["audio.conv.1.weight"] = "thinker.audio_tower.conv2d1.weight";
+        _stRename["audio.conv.1.bias"] = "thinker.audio_tower.conv2d1.bias";
+        _stRename["audio.conv.2.weight"] = "thinker.audio_tower.conv2d2.weight";
+        _stRename["audio.conv.2.bias"] = "thinker.audio_tower.conv2d2.bias";
+        _stRename["audio.conv.3.weight"] = "thinker.audio_tower.conv2d3.weight";
+        _stRename["audio.conv.3.bias"] = "thinker.audio_tower.conv2d3.bias";
+        _stRename["audio.conv_out.weight"] = "thinker.audio_tower.conv_out.weight";
+        _stRename["audio.ln_post.weight"] = "thinker.audio_tower.ln_post.weight";
+        _stRename["audio.ln_post.bias"] = "thinker.audio_tower.ln_post.bias";
+        _stRename["audio.proj1.weight"] = "thinker.audio_tower.proj1.weight";
+        _stRename["audio.proj1.bias"] = "thinker.audio_tower.proj1.bias";
+        _stRename["audio.proj2.weight"] = "thinker.audio_tower.proj2.weight";
+        _stRename["audio.proj2.bias"] = "thinker.audio_tower.proj2.bias";
+        for (int i = 0; i < AudioLayers; i++)
+        {
+            string canon = $"audio.blk.{i}";
+            string real = $"thinker.audio_tower.layers.{i}";
+            _stRename[$"{canon}.attn_norm.weight"] = $"{real}.self_attn_layer_norm.weight";
+            _stRename[$"{canon}.attn_norm.bias"] = $"{real}.self_attn_layer_norm.bias";
+            _stRename[$"{canon}.attn_q.weight"] = $"{real}.self_attn.q_proj.weight";
+            _stRename[$"{canon}.attn_q.bias"] = $"{real}.self_attn.q_proj.bias";
+            _stRename[$"{canon}.attn_k.weight"] = $"{real}.self_attn.k_proj.weight";
+            _stRename[$"{canon}.attn_k.bias"] = $"{real}.self_attn.k_proj.bias";
+            _stRename[$"{canon}.attn_v.weight"] = $"{real}.self_attn.v_proj.weight";
+            _stRename[$"{canon}.attn_v.bias"] = $"{real}.self_attn.v_proj.bias";
+            _stRename[$"{canon}.attn_out.weight"] = $"{real}.self_attn.out_proj.weight";
+            _stRename[$"{canon}.attn_out.bias"] = $"{real}.self_attn.out_proj.bias";
+            _stRename[$"{canon}.ffn_norm.weight"] = $"{real}.final_layer_norm.weight";
+            _stRename[$"{canon}.ffn_norm.bias"] = $"{real}.final_layer_norm.bias";
+            _stRename[$"{canon}.ffn_up.weight"] = $"{real}.fc1.weight";
+            _stRename[$"{canon}.ffn_up.bias"] = $"{real}.fc1.bias";
+            _stRename[$"{canon}.ffn_down.weight"] = $"{real}.fc2.weight";
+            _stRename[$"{canon}.ffn_down.bias"] = $"{real}.fc2.bias";
+        }
+
+        Conv1Weight = GetTensor("audio.conv.1.weight");
+        Conv1Bias = GetTensor("audio.conv.1.bias");
+        Conv2Weight = GetTensor("audio.conv.2.weight");
+        Conv2Bias = GetTensor("audio.conv.2.bias");
+        Conv3Weight = GetTensor("audio.conv.3.weight");
+        Conv3Bias = GetTensor("audio.conv.3.bias");
+        ConvOutWeight = GetTensor("audio.conv_out.weight");
+        LnPostWeight = GetTensor("audio.ln_post.weight");
+        LnPostBias = GetTensor("audio.ln_post.bias");
+        MelFilters = []; // real HF checkpoint doesn't ship these -- confirmed unused anywhere in this codebase's own mel extraction (QwenAsrMelExtractor computes its own filterbank independently)
+        MelWindow = [];
+        Proj1Weight = GetTensor("audio.proj1.weight");
+        Proj1Bias = GetTensor("audio.proj1.bias");
+        Proj2Weight = GetTensor("audio.proj2.weight");
+        Proj2Bias = GetTensor("audio.proj2.bias");
+
+        AudioLayerWeights = new QwenAsrAudioLayerWeights[AudioLayers];
+        for (int i = 0; i < AudioLayers; i++)
+            AudioLayerWeights[i] = new QwenAsrAudioLayerWeights(this, $"audio.blk.{i}");
+    }
+
+    /// <summary>
+    /// Loads a real Qwen3-ASR pipeline directly from the canonical Hugging Face
+    /// `Qwen/Qwen3-ASR-0.6B` Safetensors checkpoint directory (`config.json`/`model.safetensors`/
+    /// `vocab.json`/`merges.txt`).
+    /// </summary>
+    public static QwenAsrWeights LoadFromSafetensors(string checkpointDir)
+    {
+        if (!Directory.Exists(checkpointDir))
+            throw new DirectoryNotFoundException($"Qwen3-ASR Safetensors checkpoint directory not found: {checkpointDir}");
+
+        using var configDoc = JsonDocument.Parse(File.ReadAllBytes(Path.Combine(checkpointDir, "config.json")));
+        var root = configDoc.RootElement;
+        var thinker = root.GetProperty("thinker_config");
+        var audioConfig = thinker.GetProperty("audio_config");
+        var textConfig = thinker.GetProperty("text_config");
+
+        return new QwenAsrWeights(checkpointDir, audioConfig, textConfig, thinker);
+    }
+
+    /// <summary>
+    /// Real HF tokenizer construction from `vocab.json`/`merges.txt` (byte-level BPE, GPT-2
+    /// family -- same real convention as this codebase's other GGUF/HF-tokenizer loaders).
+    /// Mirrors <see cref="BuildTokenizer"/>'s real special-token handling (audio start/end/pad
+    /// ids must be explicit, or they'd get silently BPE-merged character-by-character).
+    /// </summary>
+    /// <summary>
+    /// Real HF convention (confirmed directly against this checkpoint's own
+    /// tokenizer_config.json, not assumed): `vocab.json` only holds the BASE byte-level BPE
+    /// vocab (~151643 entries) -- every special/"added" token (audio_start/end/pad,
+    /// im_start/im_end, etc., 62 real entries here) lives separately in
+    /// `tokenizer_config.json`'s `added_tokens_decoder` (id -> {content, ...}). Treating
+    /// vocab.json as the complete vocab left `tokens[audioPad]` etc. as an empty string,
+    /// which made `AdditionalSpecialTokens` map the EMPTY string to a real id -- a real bug
+    /// this pass found (via an OutOfMemoryException in the real end-to-end pipeline test,
+    /// not by inspection) that made every encode call match a zero-length "special token"
+    /// pathologically. Real fix, now shared with CosyVoice2's tokenizer builder (DRY pass) via
+    /// <see cref="Primitives.HfBpeTokenizerLoader"/>: read `added_tokens_decoder` too and let it
+    /// fill in exactly the ids `vocab.json` doesn't cover.
+    /// </summary>
+    private static GgufTokenizer BuildTokenizerFromHfFiles(string checkpointDir, int audioStart, int audioEnd, int audioPad, int eos, int pad)
+    {
+        var (loadedTokens, merges, _) = Primitives.HfBpeTokenizerLoader.Load(checkpointDir);
+        var tokens = Primitives.HfBpeTokenizerLoader.EnsureCovers(loadedTokens, audioStart, audioEnd, audioPad, pad);
+
+        var additionalSpecial = new System.Collections.Generic.Dictionary<string, int>(StringComparer.Ordinal)
+        {
+            ["<|im_start|>"] = 151644,
+            ["<|im_end|>"] = eos,
+            [tokens[audioStart]] = audioStart,
+            [tokens[audioEnd]] = audioEnd,
+            [tokens[audioPad]] = audioPad,
+            [tokens[pad]] = pad,
+        };
+
+        var source = new TokenizerSource
+        {
+            Tokens = tokens,
+            Merges = merges,
+            AdditionalSpecialTokens = additionalSpecial,
+            BosTokenId = pad,
+            EosTokenId = eos,
+            UnknownTokenId = pad,
+            PadTokenId = pad,
+            AddBosToken = false,
+            ModelFamily = "gpt2",
+        };
+        return GgufTokenizer.FromSource(source);
+    }
+
     // --- AuT audio encoder weights (Whisper-style: conv2d stem + absolute-pos transformer) ---
     public float[] Conv1Weight { get; }
     public float[] Conv1Bias { get; }
@@ -155,14 +335,20 @@ public sealed class QwenAsrWeights : IDisposable
     public float[] Proj2Bias { get; }
     public QwenAsrAudioLayerWeights[] AudioLayerWeights { get; }
 
-    /// <summary>Loads and dequantizes a required tensor by exact GGUF name to a flat float[] in file storage order.</summary>
+    /// <summary>Loads and dequantizes a required tensor by exact canonical (`audio.*`) name to a flat float[] in file storage order -- transparently reads through whichever real backing store (GGUF or Safetensors) this instance was constructed from.</summary>
     public float[] GetTensor(string name)
     {
-        var info = Model.FindTensor(name) ?? throw new InvalidDataException($"Qwen3-ASR GGUF missing required tensor '{name}'.");
-        var bytes = Model.GetTensorData(info);
-        var dst = new float[info.ElementCount];
-        Dequantize.ToFloat32(bytes, dst, info.DType, info.ElementCount);
-        return dst;
+        if (Model is not null)
+        {
+            var info = Model.FindTensor(name) ?? throw new InvalidDataException($"Qwen3-ASR GGUF missing required tensor '{name}'.");
+            var bytes = Model.GetTensorData(info);
+            var dst = new float[info.ElementCount];
+            Dequantize.ToFloat32(bytes, dst, info.DType, info.ElementCount);
+            return dst;
+        }
+
+        string realName = _stRename.TryGetValue(name, out var mapped) ? mapped : name;
+        return _stLoader!.ReadF32(realName);
     }
 
     /// <summary>
@@ -212,7 +398,8 @@ public sealed class QwenAsrWeights : IDisposable
 
     public void Dispose()
     {
-        Model.Dispose();
+        Model?.Dispose();
+        _stLoader?.Dispose();
     }
 }
 

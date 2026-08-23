@@ -80,15 +80,54 @@ public sealed class QwenAsrDecoder : IDisposable
     {
         if (_weights is null)
             return GenerateProcedural(promptTokens, audioSoftTokens, maxNewTokens);
+        if (_weights.Model is null)
+            throw new InvalidOperationException("QwenAsrDecoder.Generate (GGUF overload) requires weights constructed from a GGUF file -- use GenerateFromSafetensorsSource for a Safetensors-constructed QwenAsrWeights.");
 
         using var source = new QwenAsrLlmTensorSource(_weights.Model);
+        return GenerateFromSource(source, promptTokens, audioSoftTokens, numAudioTokens, _weights.AudioPadTokenId, maxNewTokens, temperature);
+    }
+
+    /// <summary>
+    /// Real Safetensors counterpart of the GGUF <see cref="Generate"/> overload -- same
+    /// generation loop, driven by a real, already-constructed
+    /// <see cref="QwenAsrLlmSafetensorsTensorSource"/> instead of the GGUF-backed one. Caller
+    /// owns the source's lifetime (construct it, pass it here, dispose it afterward) since real
+    /// per-utterance <c>EnableAudioConditioning</c> state lives on the source, not this decoder.
+    /// </summary>
+    public int[] GenerateFromSafetensorsSource(
+        QwenAsrLlmSafetensorsTensorSource source,
+        ReadOnlySpan<int> promptTokens,
+        ReadOnlySpan<float> audioSoftTokens,
+        int numAudioTokens,
+        int audioPadTokenId,
+        int maxNewTokens = 256,
+        float temperature = 0.0f) =>
+        GenerateFromSource(source, promptTokens, audioSoftTokens, numAudioTokens, audioPadTokenId, maxNewTokens, temperature);
+
+    /// <summary>
+    /// Shared real generation loop for both weight formats: builds the real audio-conditioned
+    /// embedding table via <see cref="IQwenAsrAudioConditionableSource.EnableAudioConditioning"/>,
+    /// remaps the prompt's real <c>&lt;|audio_pad|&gt;</c> placeholder ids to the synthetic
+    /// audio-frame ids that created, then runs the real Qwen3 `ForwardPass` decode loop with the
+    /// production <see cref="Sampler"/>. Identical logic to what the GGUF-only path used to
+    /// inline directly -- extracted here once a second real source format needed the same loop,
+    /// per this project's DRY convention.
+    /// </summary>
+    private int[] GenerateFromSource(
+        IQwenAsrAudioConditionableSource source,
+        ReadOnlySpan<int> promptTokens,
+        ReadOnlySpan<float> audioSoftTokens,
+        int numAudioTokens,
+        int audioPadTokenId,
+        int maxNewTokens,
+        float temperature)
+    {
         source.EnableAudioConditioning(audioSoftTokens, numAudioTokens);
 
         // Remap the prompt's <|audio_pad|> placeholder ids, in order, to the synthetic
         // audio-frame ids EnableAudioConditioning just created -- one real AuT-encoder frame's
         // embedding per pad position, not a repeated/learned placeholder embedding.
         var prompt = promptTokens.ToArray();
-        int audioPadTokenId = _weights.AudioPadTokenId;
         int frame = 0;
         for (int i = 0; i < prompt.Length; i++)
         {

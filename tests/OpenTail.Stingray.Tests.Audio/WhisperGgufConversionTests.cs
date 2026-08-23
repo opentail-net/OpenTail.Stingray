@@ -121,6 +121,7 @@ public sealed class WhisperGgufConversionTests : HeavyTestBase
     [Theory]
     [InlineData("models/whisper-small.gguf")]
     [InlineData("models/whisper-medium.gguf")]
+    [InlineData("models/whisper-large-v3.gguf")]
     public void WhisperPipeline_LoadFromGguf_OtherSizes_TranscribesJfkSampleCorrectly(string relativeModelPath)
     {
         string? modelPath = FindRepoFile(relativeModelPath);

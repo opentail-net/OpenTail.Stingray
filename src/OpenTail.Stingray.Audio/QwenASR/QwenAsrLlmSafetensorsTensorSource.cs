@@ -22,20 +22,23 @@ namespace OpenTail.Stingray.Audio.QwenASR;
 /// `tie_word_embeddings=true` in `config.json` -- do not assume tying eliminates one physical
 /// tensor.</para>
 /// </summary>
-public sealed unsafe class QwenAsrLlmSafetensorsTensorSource : IModelTensorSource, IDisposable
+public sealed unsafe class QwenAsrLlmSafetensorsTensorSource : IModelTensorSource, IDisposable, IQwenAsrAudioConditionableSource
 {
     private readonly SafetensorsLoader _loader;
     private readonly Dictionary<string, GgufTensorInfo> _byName = new(StringComparer.Ordinal);
     private readonly Dictionary<string, string> _sourceNameByCanonical = new(StringComparer.Ordinal);
     private readonly List<nint> _ownedPointers = [];
     private readonly Dictionary<string, nint> _resolvedPointers = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, nint> _syntheticBuffers = new(StringComparer.Ordinal);
     private readonly List<GgufTensorInfo> _tensors;
     private readonly Dictionary<string, object> _metadata;
+    private readonly int _hiddenDim;
     private bool _disposed;
 
     public QwenAsrLlmSafetensorsTensorSource(string safetensorsPath, int numLayers, int hiddenDim, int numHeads, int numKvHeads, int headDim, int ffDim, int vocabSize, float ropeTheta, float rmsNormEps)
     {
         _loader = SafetensorsLoader.Open(safetensorsPath);
+        _hiddenDim = hiddenDim;
 
         MapIfPresent("thinker.model.embed_tokens.weight", "token_embd.weight");
         MapIfPresent("thinker.model.norm.weight", "output_norm.weight");
@@ -109,6 +112,8 @@ public sealed unsafe class QwenAsrLlmSafetensorsTensorSource : IModelTensorSourc
     public byte* GetTensorDataPtr(GgufTensorInfo tensor)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
+        if (_syntheticBuffers.TryGetValue(tensor.Name, out nint syntheticPtr))
+            return (byte*)syntheticPtr;
         if (_resolvedPointers.TryGetValue(tensor.Name, out nint cached))
             return (byte*)cached;
 
@@ -122,6 +127,52 @@ public sealed unsafe class QwenAsrLlmSafetensorsTensorSource : IModelTensorSourc
         _ownedPointers.Add((nint)buffer);
         _resolvedPointers[tensor.Name] = (nint)buffer;
         return (byte*)buffer;
+    }
+
+    /// <summary>
+    /// The Safetensors counterpart of <see cref="QwenAsrLlmTensorSource.AudioTokenIdOffset"/> --
+    /// -1 until <see cref="EnableAudioConditioning"/> has been called.
+    /// </summary>
+    public int AudioTokenIdOffset { get; private set; } = -1;
+
+    /// <summary>
+    /// The Safetensors counterpart of <see cref="QwenAsrLlmTensorSource.EnableAudioConditioning"/>
+    /// -- identical real technique (synthetic combined `token_embd.weight`: real text rows,
+    /// already resolved to F32 via <see cref="GetTensorDataPtr"/>'s BF16 conversion, followed by
+    /// the AuT encoder's own per-frame projected output rows), just reading the text embedding
+    /// through this class's own resolution path instead of `Dequantize.ToFloat32` directly.
+    /// </summary>
+    public void EnableAudioConditioning(ReadOnlySpan<float> audioEmbeddings, int numAudioTokens)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        if (numAudioTokens <= 0) throw new ArgumentOutOfRangeException(nameof(numAudioTokens));
+
+        var textEmbedInfo = _byName["token_embd.weight"];
+        int hiddenDim = checked((int)textEmbedInfo.Dimensions[0]);
+        int textVocab = checked((int)textEmbedInfo.Dimensions[1]);
+        if (audioEmbeddings.Length != (long)numAudioTokens * hiddenDim)
+            throw new ArgumentException($"audioEmbeddings length {audioEmbeddings.Length} != numAudioTokens*hiddenDim ({numAudioTokens}*{hiddenDim}).", nameof(audioEmbeddings));
+
+        byte* textEmbedPtr = GetTensorDataPtr(textEmbedInfo);
+
+        int combinedVocab = textVocab + numAudioTokens;
+        long combinedElementCount = (long)combinedVocab * hiddenDim;
+        float* combined = (float*)NativeMemory.Alloc((nuint)(combinedElementCount * sizeof(float)));
+        Buffer.MemoryCopy(textEmbedPtr, combined, combinedElementCount * sizeof(float), (long)textVocab * hiddenDim * sizeof(float));
+        fixed (float* audioPtr = audioEmbeddings)
+        {
+            long audioElementCount = (long)numAudioTokens * hiddenDim;
+            Buffer.MemoryCopy(audioPtr, combined + (long)textVocab * hiddenDim,
+                audioElementCount * sizeof(float), audioElementCount * sizeof(float));
+        }
+
+        _ownedPointers.Add((nint)combined);
+        _syntheticBuffers["token_embd.weight"] = (nint)combined;
+        _byName["token_embd.weight"] = new GgufTensorInfo("token_embd.weight", 2, [hiddenDim, combinedVocab], DType.Float32, DataOffset: 0);
+        _tensors.Clear();
+        _tensors.AddRange(_byName.Values);
+
+        AudioTokenIdOffset = textVocab;
     }
 
     public void Dispose()

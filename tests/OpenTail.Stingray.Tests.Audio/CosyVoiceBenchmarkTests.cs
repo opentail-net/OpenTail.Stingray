@@ -143,4 +143,51 @@ public sealed class CosyVoiceBenchmarkTests : HeavyTestBase
         LogTiming($"CosyVoice3DiTModel.RunBackbone {numFrames} frames, {w.NumLayers} layers -> {velocity.Length} vals", sw);
         Assert.NotEmpty(velocity);
     }
+
+    /// <summary>
+    /// Real perf pass (CLAUDE.md rule 7) on this session's new CosyVoice2 CFM decoder: measures
+    /// the full real 10-step Euler ODE solve at a realistic frame count (~128 frames, matching
+    /// a real few-second sentence's generated speech-token count after the flow encoder's 2x
+    /// upsample). A handful of runs, not one, per rule 7's own methodology.
+    /// </summary>
+    [Fact]
+    public void CosyVoiceCfmDecoder_Benchmark_RealisticFrameCount()
+    {
+        string? path = FindRepoFile("models/cosyvoice2_flow.safetensors");
+        if (path is null) return;
+
+        using var flow = new CosyVoiceFlowWeights(path);
+        var w = new CosyVoiceCfmDecoderWeights(flow);
+
+        const int totalFrames = 128;
+        var rng = new Random(13);
+        var mu = new float[80 * totalFrames];
+        for (int i = 0; i < mu.Length; i++) mu[i] = (float)(rng.NextDouble() * 0.2 - 0.1);
+        var spkEmbed = new float[80];
+        for (int i = 0; i < spkEmbed.Length; i++) spkEmbed[i] = (float)(rng.NextDouble() * 0.2 - 0.1);
+
+        const int runs = 3;
+        var times = new long[runs];
+        for (int r = 0; r < runs; r++)
+        {
+            var runRng = new Random(100 + r);
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            var mel = CosyVoiceCfmDecoder.Generate(w, mu, spkEmbed, totalFrames, runRng, nSteps: 10);
+            sw.Stop();
+            times[r] = sw.ElapsedMilliseconds;
+            Assert.NotEmpty(mel);
+        }
+
+        double avg = 0;
+        foreach (var t in times) avg += t;
+        avg /= runs;
+        Console.Error.WriteLine($"[CosyVoiceBenchmark] CosyVoiceCfmDecoder.Generate {totalFrames} frames, 10 Euler steps -> runs: [{string.Join(", ", times)}]ms, avg {avg:F0}ms");
+        try
+        {
+            File.AppendAllText(
+                Path.Combine(Path.GetTempPath(), "stingray-cosyvoice-diag.log"),
+                $"[CosyVoiceBenchmark] CosyVoiceCfmDecoder.Generate {totalFrames} frames, 10 Euler steps -> runs: [{string.Join(", ", times)}]ms, avg {avg:F0}ms{Environment.NewLine}");
+        }
+        catch { /* best-effort */ }
+    }
 }

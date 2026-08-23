@@ -22,6 +22,7 @@ public sealed class QwenAsrPipeline : ISpeechToTextPipeline
     private readonly QwenAsrDecoder _decoder;
     private readonly QwenAsrForcedAligner _aligner;
     private readonly QwenAsrWeights? _weights;
+    private readonly string? _safetensorsPath;
 
     public QwenAsrPipeline(
         QwenAsrMelExtractor? melExtractor = null,
@@ -29,9 +30,11 @@ public sealed class QwenAsrPipeline : ISpeechToTextPipeline
         QwenAsrAudioEncoder? encoder = null,
         QwenAsrDecoder? decoder = null,
         QwenAsrForcedAligner? aligner = null,
-        QwenAsrWeights? weights = null)
+        QwenAsrWeights? weights = null,
+        string? safetensorsPath = null)
     {
         _weights = weights;
+        _safetensorsPath = safetensorsPath;
         _melExtractor = melExtractor ?? new QwenAsrMelExtractor();
         _tokenizer = tokenizer ?? (weights != null ? new QwenAsrTokenizer(weights) : new QwenAsrTokenizer());
         _encoder = encoder ?? new QwenAsrAudioEncoder();
@@ -80,6 +83,42 @@ public sealed class QwenAsrPipeline : ISpeechToTextPipeline
     }
 
     /// <summary>
+    /// Loads a real Qwen3-ASR pipeline from the canonical Hugging Face `Qwen/Qwen3-ASR-0.6B`
+    /// Safetensors checkpoint directory -- the Safetensors counterpart of <see cref="Load"/>,
+    /// same real components (mel extraction, AuT audio encoder, Qwen3 LLM decoder with real
+    /// audio-embedding injection), driven by <see cref="QwenAsrWeights.LoadFromSafetensors"/>
+    /// and <see cref="QwenAsrLlmSafetensorsTensorSource"/> instead of the GGUF equivalents.
+    /// </summary>
+    public static QwenAsrPipeline LoadFromSafetensors(string checkpointDir)
+    {
+        var weights = QwenAsrWeights.LoadFromSafetensors(checkpointDir);
+        var encoderConfig = new QwenAsrEncoderConfig
+        {
+            EncoderDim = weights.AudioDim,
+            NumLayers = weights.AudioLayers,
+            NumHeads = weights.AudioHeads,
+            QwenHiddenDim = weights.LlmDim
+        };
+        var decoderConfig = new QwenAsrDecoderConfig
+        {
+            HiddenDim = weights.LlmDim,
+            NumLayers = weights.LlmLayers,
+            NumHeads = weights.LlmHeads,
+            NumKvHeads = weights.LlmKvHeads,
+            VocabSize = weights.LlmVocabSize,
+            EosTokenId = weights.EosTokenId
+        };
+
+        var melExtractor = new QwenAsrMelExtractor();
+        var tokenizer = new QwenAsrTokenizer(weights);
+        var encoder = new QwenAsrAudioEncoder(encoderConfig, weights);
+        var decoder = new QwenAsrDecoder(weights, decoderConfig);
+        var aligner = new QwenAsrForcedAligner(tokenizer);
+
+        return new QwenAsrPipeline(melExtractor, tokenizer, encoder, decoder, aligner, weights, Path.Combine(checkpointDir, "model.safetensors"));
+    }
+
+    /// <summary>
     /// Transcribes audio speech into text with timestamps and segment breakdowns.
     /// </summary>
     public SpeechToTextResult Transcribe(SpeechToTextRequest request)
@@ -117,12 +156,27 @@ public sealed class QwenAsrPipeline : ISpeechToTextPipeline
         int[] promptTokens = _tokenizer.Encode(promptStr);
 
         // 4. Qwen3 LLM Transformer Decoder Forward Pass
-        int[] generatedTokens = _decoder.Generate(
-            promptTokens: promptTokens,
-            audioSoftTokens: audioSoftTokens,
-            numAudioTokens: numAudioTokens,
-            maxNewTokens: 256,
-            temperature: (float)request.Temperature);
+        int[] generatedTokens;
+        if (_safetensorsPath != null && _weights != null)
+        {
+            using var stSource = new QwenAsrLlmSafetensorsTensorSource(
+                _safetensorsPath,
+                numLayers: _weights.LlmLayers, hiddenDim: _weights.LlmDim, numHeads: _weights.LlmHeads,
+                numKvHeads: _weights.LlmKvHeads, headDim: _weights.LlmHeadDim, ffDim: _weights.LlmFfDim,
+                vocabSize: _weights.LlmVocabSize, ropeTheta: _weights.LlmRopeTheta, rmsNormEps: _weights.LlmRmsNormEps);
+            generatedTokens = _decoder.GenerateFromSafetensorsSource(
+                stSource, promptTokens, audioSoftTokens, numAudioTokens, _weights.AudioPadTokenId,
+                maxNewTokens: 256, temperature: (float)request.Temperature);
+        }
+        else
+        {
+            generatedTokens = _decoder.Generate(
+                promptTokens: promptTokens,
+                audioSoftTokens: audioSoftTokens,
+                numAudioTokens: numAudioTokens,
+                maxNewTokens: 256,
+                temperature: (float)request.Temperature);
+        }
 
         // 5. Decode Tokens to Text and Timestamps
         var (text, segments) = _tokenizer.DecodeWithTimestamps(generatedTokens, TimeSpan.Zero, totalDuration);

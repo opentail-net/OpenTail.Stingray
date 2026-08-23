@@ -337,9 +337,14 @@ public sealed class WhisperDecoder
     /// <summary>Linear layer: output[seqLen, outDim] = input[seqLen, inDim] @ weight[outDim, inDim]^T + bias.</summary>
     private static unsafe void LinearReal(ReadOnlySpan<float> input, int seqLen, int inDim, float[] weight, float[]? bias, int outDim, Span<float> output)
     {
+        // See WhisperEncoder.LinearReal's comment: MicroGemmKernel's core batches the weight
+        // matrix's memory traffic across rows instead of re-streaming it once per row like
+        // SimdKernels.MatMulBatchedF32 does. Matters here for PrimeCrossAttention (seqLen up to
+        // 1500 audio frames) and ForwardNextTokenReal (seqLen == prompt length); ForwardStepReal's
+        // seqLen==1 incremental decode calls are unaffected either way.
         fixed (float* pIn = input, pW = weight, pOut = output)
         {
-            SimdKernels.MatMulBatchedF32(pOut, pW, pIn, seqLen, outDim, inDim);
+            MicroGemmKernel.MatMulF32CoreOrFallback(pIn, pW, pOut, seqLen, inDim, outDim);
         }
 
         if (bias != null)

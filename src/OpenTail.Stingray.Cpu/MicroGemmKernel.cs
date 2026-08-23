@@ -67,6 +67,39 @@ public static unsafe class MicroGemmKernel
         if (!Avx2.IsSupported)
             return false;
 
+        MatMulF32Core(a, b, c, m, k, n);
+        return true;
+    }
+
+    /// <summary>
+    /// Unconditional core of <see cref="TryMatMulF32"/> -- same 4-row-unrolled AVX2 GEMM, without
+    /// the <see cref="MicroGemmConfig.IsEnabled"/>/<see cref="MicroGemmConfig.MaxMicroBatchSize"/>
+    /// gate. For callers (e.g. CosyVoice/Chatterbox's shared CFM UNet estimator, see
+    /// CfmUNetKernels) that know their own shapes are always a good fit for this kernel and want
+    /// it unconditionally, independent of the global small-prompt-batch feature flag this class
+    /// otherwise gates on. Falls back to per-row <see cref="SimdKernels.MatVecF32"/> when AVX2
+    /// isn't available (this kernel has no scalar path of its own).
+    /// </summary>
+    public static void MatMulF32CoreOrFallback(float* a, float* b, float* c, int m, int k, int n)
+    {
+        if (Avx2.IsSupported)
+        {
+            MatMulF32Core(a, b, c, m, k, n);
+            return;
+        }
+
+        for (int i = 0; i < m; i++)
+            SimdKernels.MatVecF32(c + (nuint)i * (nuint)n, b, a + (nuint)i * (nuint)k, n, k);
+    }
+
+    private static void MatMulF32Core(
+        float* a,
+        float* b,
+        float* c,
+        int m,
+        int k,
+        int n)
+    {
         // Process N columns in steps of 1 (outer col loop) and M rows in unrolled blocks of up to 4
         int mBlocks = m / 4;
 
@@ -142,8 +175,6 @@ public static unsafe class MicroGemmKernel
                 c[i * n + j] = sum;
             }
         }
-
-        return true;
     }
 
     private static float HorizontalSum256(Vector256<float> v)

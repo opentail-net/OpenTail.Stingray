@@ -49,7 +49,7 @@ namespace OpenTail.Stingray.Audio.QwenASR;
 /// swapping here -- QwenASR still predicts real text tokens, only the *input* embedding space
 /// grows for the duration of one utterance's audio positions.
 /// </summary>
-public sealed unsafe class QwenAsrLlmTensorSource : IModelTensorSource, IDisposable
+public sealed unsafe class QwenAsrLlmTensorSource : IModelTensorSource, IDisposable, IQwenAsrAudioConditionableSource
 {
     private readonly GgufModel _inner;
     private readonly Dictionary<string, object> _metadata;

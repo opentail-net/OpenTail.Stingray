@@ -232,9 +232,16 @@ public sealed class WhisperEncoder
     /// <summary>Linear layer: output[seqLen, outDim] = input[seqLen, inDim] @ weight[outDim, inDim]^T + bias.</summary>
     private static unsafe void LinearReal(ReadOnlySpan<float> input, int seqLen, int inDim, float[] weight, float[]? bias, int outDim, Span<float> output)
     {
+        // MicroGemmKernel's core (not SimdKernels.MatMulBatchedF32, which degenerates to one
+        // MatVecF32 call per row -- re-streaming the whole weight matrix from RAM once per row
+        // instead of once total) so a seqLen-row batch amortizes each weight matrix's memory
+        // traffic across 4 rows at a time instead of paying it per row. Real perf win for the
+        // encoder (seqLen up to 1500 frames for Large-v3) and any decoder call with seqLen>1
+        // (PrimeCrossAttention, ForwardNextTokenReal); the seqLen==1 incremental-decode path
+        // degrades to the same single MatVecF32 call either way.
         fixed (float* pIn = input, pW = weight, pOut = output)
         {
-            SimdKernels.MatMulBatchedF32(pOut, pW, pIn, seqLen, outDim, inDim);
+            MicroGemmKernel.MatMulF32CoreOrFallback(pIn, pW, pOut, seqLen, inDim, outDim);
         }
 
         if (bias != null)

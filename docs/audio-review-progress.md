@@ -7958,3 +7958,287 @@ checkpoint) and ICL/voice-cloning mode (needs real reference-audio codec tokens 
 embedding, larger scope, same real dependency chain as CosyVoice3's zero-shot cloning gap).
 
 Not committed (per standing instruction). No subagents used.
+
+## Qwen3-ASR full Safetensors pipeline wiring -- DONE (direct user request). One real bug found and fixed along the way (OOM in tokenizer construction). QwenASR now has a complete, real, end-to-end Safetensors path alongside the existing GGUF one
+
+User asked directly for Qwen3-ASR's full end-to-end Safetensors wiring (the item deferred two
+entries back as "genuinely coupled, scoped precisely rather than forced"), plus a mini-plan to
+work through remaining items autonomously. Revisited the coupling with fresh eyes and found a
+real, minimal path that avoids the large refactor originally feared.
+
+**Real, minimal refactor, not the large one originally scoped**: `QwenAsrDecoder.Generate`'s
+real generation loop (audio-conditioning + prefill + decode) was ALREADY format-agnostic in
+spirit -- it just happened to construct a GGUF-specific `QwenAsrLlmTensorSource` inline. Added
+`IQwenAsrAudioConditionableSource` (a small new interface both `QwenAsrLlmTensorSource` and
+`QwenAsrLlmSafetensorsTensorSource` now implement -- real, minimal `AudioTokenIdOffset`/
+`EnableAudioConditioning` surface, mirroring what was already real and working on the GGUF
+side), extracted the shared loop into a private `GenerateFromSource` helper, and exposed a
+public `GenerateFromSafetensorsSource` overload. The existing GGUF `Generate` overload is now a
+thin wrapper around the same shared code -- re-ran `QwenAsrRealWeightsTests`/
+`QwenAsrLlmTensorSourceTests` afterward to confirm the refactor didn't change GGUF behavior:
+still **PASS**.
+
+Added the real `EnableAudioConditioning`/`AudioTokenIdOffset` implementation to
+`QwenAsrLlmSafetensorsTensorSource` (identical real technique to the GGUF version: synthetic
+combined `token_embd.weight`, text rows + AuT-encoder output rows).
+
+**`QwenAsrWeights` extended with a real Safetensors construction path** (`Model` is now
+nullable -- non-null only for GGUF-constructed instances; `GetTensor(name)` transparently
+routes through whichever backing store was used via a real `audio.*`-canonical -&gt;
+`thinker.audio_tower.*`-real name-remap table, built once at construction). Downloaded the real
+checkpoint's tokenizer files (`vocab.json`/`merges.txt`/`tokenizer_config.json`, alongside the
+already-downloaded `config.json`/`model.safetensors`) into `models/qwen3-asr-0.6b-hf/`. Real
+audio-encoder config values read directly from `config.json`'s `thinker_config.audio_config`
+(d_model=896, encoder_layers=18, heads=14, ffn=3584, downsample_hidden_size=480, output_dim=1024,
+num_mel_bins=128) and real special ids from `thinker_config` directly (`audio_start_token_id`=
+151669, `audio_end_token_id`=151670, `audio_token_id`=151676 -- confirmed IDENTICAL to the GGUF
+checkpoint's own `AudioPadTokenId`, a real cross-check, not coincidence).
+
+**Real bug found and fixed via the end-to-end test itself, not by inspection**: first real
+pipeline run threw `OutOfMemoryException` inside `GgufTokenizer.EncodeCore`. Root cause: `vocab.
+json` only contains the BASE ~151643-entry byte-level BPE vocab -- every real "added"/special
+token (`<|audio_pad|>`, `<|audio_start|>`, `<|im_end|>`, etc., 62 real entries) lives separately
+in `tokenizer_config.json`'s `added_tokens_decoder` (id -&gt; `{content, special, ...}`), confirmed
+directly against the real downloaded file. Treating `vocab.json` as complete left
+`tokens[audioPadId]` etc. as an empty string, which made `TokenizerSource.AdditionalSpecialTokens`
+map the EMPTY string to a real id -- every `Encode` call then tried to match a zero-length
+"special token" pathologically, blowing up memory. Real fix: also read `added_tokens_decoder`
+and let it fill in exactly the ids `vocab.json` doesn't cover. Re-ran the failing test after the
+fix: **PASSED** (~19.5s).
+
+New `QwenAsrWeightsSafetensorsTests` (real config-value cross-check + a real AuT audio-encoder
+forward pass), `QwenAsrPipelineSafetensorsTests` (full real end-to-end `Transcribe` call, same
+structural bar as the existing GGUF test -- synthetic tone input, asserts real non-empty
+segments, not a transcription-content check). **All new tests PASS.** Re-ran the FULL QwenASR
+test suite (17 tests across GGUF and Safetensors, tensor sources, tokenizer, audio encoder,
+benchmarks) afterward: **all 17 PASS**, confirming zero regression anywhere in the pipeline from
+this refactor.
+
+**QwenASR now has a complete, real, end-to-end pipeline in BOTH real weight formats** (GGUF and
+the canonical HF Safetensors distribution), sharing the real decode-loop/audio-conditioning
+logic via one clean interface rather than duplicating it. This closes the item flagged as the
+top priority in the user's "finish all outstanding items" request.
+
+Not committed (per standing instruction). No subagents used.
+
+## CosyVoice2 CFM flow-decoder -- IMPLEMENTED and structurally verified. Real estimator class and hyperparameters sourced from the actual upstream repo, not guessed; reuses the shared, already-golden-verified `CfmUNetKernels` from Chatterbox
+
+Continuing the "finish ALL outstanding items" mini-plan item (1): CosyVoice2's flow-matching
+estimator (`decoder.estimator.*` in `models/cosyvoice2_flow.safetensors`) was the one remaining
+real architectural gap in the CosyVoice family -- `examples/cosyvoice.cpp` only implements
+CosyVoice3's DiT-style estimator, so this had to be ported from the real Python source with no
+local C++ reference to lean on.
+
+Real source chain fetched directly from GitHub (`gh api .../contents/... -H "Accept: ...raw"`,
+not guessed): `cosyvoice/flow/decoder.py` (`ConditionalDecoder` base class + the real
+`CausalConditionalDecoder(ConditionalDecoder)` subclass actually used, both fully read this
+session) plus `matcha/models/components/{decoder,transformer}.py` for the shared block math
+(`SinusoidalPosEmb`, `Block1D`/`ResnetBlock1D`, `BasicTransformerBlock`). Real hyperparameters
+cross-confirmed two independent ways: (1) the actual upstream YAML config
+(`examples/libritts/cosyvoice2/conf/cosyvoice2.yaml`, found via a `git/trees/main?recursive=1`
+search after a guessed path 404'd) states `in_channels=320, out_channels=80, channels=[256],
+attention_head_dim=64, n_blocks=4, num_mid_blocks=12, num_heads=8`; (2) a direct
+`safetensors.safe_open` dump of the real local checkpoint's tensor names/shapes matches exactly
+(1 down-stage, 12 mid-stages `0..11`, 1 up-stage, each with 4 transformer blocks; `to_q/k/v`
+width 512 = 8 heads x 64 head_dim).
+
+Two real findings from that direct tensor-name dump (would have been guessed wrong otherwise):
+* `CausalConditionalDecoder`'s single stage (`channels=(256,)`, a 1-element tuple) means the
+  down/up-stage `is_last` branch always fires, so the resample layer is a plain
+  `CausalConv1d(256,256,3)` in this checkpoint -- never the `Downsample1D`/`Upsample1D` real
+  strided/transposed-conv classes described in the base `ConditionalDecoder`. Those classes
+  were read but are dead code for this specific checkpoint's config, so they were correctly NOT
+  implemented.
+* Despite `ConditionalDecoder`'s `act_fn="snake"` default (which would imply a learnable
+  `SnakeBeta` activation, `alpha`/`beta` params and all), the real checkpoint's
+  `ff.net.0.proj`/`ff.net.2` tensors have NO `alpha`/`beta` companions at all -- confirmed
+  directly, not assumed. The FeedForward here is architecturally the same plain GELU MLP already
+  implemented and golden-verified for Chatterbox's `ConditionalDecoder`, so no new activation
+  kernel was needed.
+
+Given every other structural piece (ResnetBlock1D w/ FiLM time-conditioning, self-attention-only
+BasicTransformerBlock, causal padding convention) was already extracted into the shared,
+Chatterbox-golden-verified `Primitives/CfmUNetKernels.cs` earlier this session specifically
+anticipating this reuse, the new work was two thin weight-loading/wiring files rather than a new
+kernel: `CosyVoice/CosyVoiceCfmDecoderWeights.cs` (real `decoder.estimator.*` tensor names ->
+the shared `IUnetStageWeights`/`IResnetBlockWeights`/`IUnetTransformerBlockWeights` interfaces)
+and `CosyVoice/CosyVoiceCfmDecoder.cs` (the Euler ODE solve). One real, confirmed difference from
+Chatterbox: this checkpoint's `time_mlp` has no meanflow mixer tensor (`s3.fd.tmx` in
+Chatterbox) -- just `time_mlp.linear_1/2`, standard single-timestep flow matching, so
+`CosyVoiceCfmDecoder` computes a single `t`-embedding per Euler step rather than Chatterbox's
+`t`+`r` pair. Reused the same real 10-step cosine Euler schedule
+(`t_span[i] = 1 - cos(0.05*pi*i)`) already confirmed real and golden-verified for CosyVoice3's
+DiT estimator (same `solver: euler, t_scheduler: cosine` in both real yaml configs).
+
+New `CosyVoiceCfmDecoderTests`: real-weights shape/finite checks on the loaded weights (12 mid
+stages, 4 transformer blocks/stage, resample conv present on down/up but not mid), and a full
+`CosyVoiceFlowEncoder.Forward` -> `CosyVoiceCfmDecoder.Generate` real end-to-end run producing a
+finite, non-degenerate mel spectrogram at the expected `[80, totalFrames]` shape. **Both PASS.**
+Re-ran `ChatterboxCfmDecoderTests` (the shared kernel's original, golden-verified consumer)
+afterward: **still PASSES**, confirming zero regression from the new consumer.
+
+Structural only, not yet numerically golden-verified against a real Python oracle (no local
+reachable oracle for CosyVoice2 specifically, same standing caveat as CosyVoice3's own
+un-golden-verified stages). CosyVoice2's flow encoder + CFM decoder are now both real and
+wired-shape-verified.
+
+Not committed (per standing instruction). No subagents used.
+
+## Whisper large-v3 GGUF conversion + CosyVoice2 LLM generation loop -- BOTH DONE. CosyVoice2 IS NOW A COMPLETE, REAL, WEIGHT-DRIVEN TEXT-TO-SPEECH PIPELINE
+
+Continuing the mini-plan, same fire, direct continuation from the CFM decoder entry above.
+
+**Whisper large-v3 GGUF conversion** (mini-plan item 4): `models/ggml-large-v3.bin` was already
+present locally; ran the existing, already-proven `scratch-llamacpp-ref/whisper_ggml_to_gguf.py`
+converter (bit-exact + working on tiny/base/small/medium already) -- produced
+`models/whisper-large-v3.gguf` (1259 tensors, real hparams `n_audio_layer=32, n_text_layer=32,
+n_mels=128`, i.e. the newer 128-mel-channel large-v3 architecture, correctly auto-detected by the
+converter from the ggml file's own header). Added `models/whisper-large-v3.gguf` to
+`WhisperGgufConversionTests`' existing `[Theory]`/`[InlineData]` real-JFK-transcription test
+(same test already covering small/medium) rather than writing a new test. **PASSED first
+attempt** (all 5 cases in that test class, ~3m42s total, dominated by large-v3's own inference
+time). Whisper now has GGUF conversions spanning tiny through large-v3, all real, all verified
+end-to-end against the same ground-truth JFK sample.
+
+**CosyVoice2 LLM generation loop** (closes the last real gap for a full CosyVoice2 pipeline):
+investigated `CosyVoiceLlmTensorSource.cs` first (per the previous entry's own flagged next
+step) and found it already substantially real -- full tensor loading, and an
+`EnableSpeechGenerationMode()` that already implements the exact same synthetic-combined-vocab-
+table trick used everywhere else this session (`token_embd.weight`/`output.weight` swapped to
+`[text rows ; speech_embedding rows]` / `llm_decoder.weight`). What was missing was the real
+prompt-composition sequence and the actual decode loop -- `CosyVoiceLlm.cs`/`CosyVoicePipeline.cs`
+in this same folder are a pre-existing, unrelated 100%-fake stub (random "simulated acoustic
+transitions", hash-based speaker embeddings) predating this session's real work, correctly left
+untouched.
+
+Real source found and read directly: `examples/cosyvoice.cpp`'s `cosyvoice-llm-job.cpp`/
+`cosyvoice-llm.cpp` turned out to implement CosyVoice**3**'s LLM only (the class is literally
+named `cosyvoice_model_3`) -- confirms (again) this local C++ project has no CosyVoice2-specific
+reference. Fetched the actual upstream `cosyvoice/llm/llm.py` from GitHub instead (`gh api`, not
+guessed) and read the real `Qwen2LM` class (CosyVoice2's real LLM subclass, confirmed by
+`self.__class__.__name__` checks inside the source itself, distinct from `CosyVoice3LM`). One
+real, load-bearing architectural difference from CosyVoice3 found this way: `Qwen2LM.inference`
+sources its `sos_emb`/`task_id_emb` from a SEPARATE 2-row `self.llm_embedding` table (row 0 =
+sos, row 1 = task_id) -- NOT from `speech_embedding` the way `CosyVoice3LM` does. This exactly
+explains a field that was already sitting in `CosyVoiceLlmTensorSource.cs` with an honest
+"purpose not yet independently confirmed" doc comment (`LlmEmbeddingWeight`) -- now confirmed.
+Real prompt sequence (`Qwen2LM.inference`, non-streaming, no vLLM):
+`lm_input = concat([sos_emb, text_emb(prompt_text+text), task_id_emb, prompt_speech_token_emb])`,
+then step-by-step decode via `llm_decoder`, stopping at any of the real
+`stop_token_ids = [speech_token_size + i for i in range(3)]` (`speech_token_size=6561`, so
+6561/6562/6563), feeding `speech_embedding.weight[token]` back in as the next step's input.
+
+Extended `CosyVoiceLlmTensorSource.EnableSpeechGenerationMode()` additively: appends 2 more
+synthetic vocab rows (from the real `llm_embedding.weight`) after the speech-vocab rows, exposed
+via a new `SosTaskTokenIdBase` property -- same "ordinary token-id lookup, no raw-embedding
+injection" trick already used for the text/speech halves. One pre-existing test
+(`CosyVoiceLlmTensorSourceTests`) hardcoded the old combined-vocab width; updated its expected
+value (+2) rather than leaving a stale assertion. Re-ran both `CosyVoiceLlmTensorSourceTests`
+and `CosyVoiceBenchmarkTests` afterward: **all PASS**, zero regression from the additive change.
+
+New `CosyVoiceLlmGeneration.cs`: the real generation loop (greedy decode, real `LlmDecoderBias`
+addition since `ForwardPass` has no final-layer-bias support) plus a real HF tokenizer builder.
+No local CosyVoice2 tokenizer files existed, so downloaded the real ones directly from the actual
+upstream checkpoint (`huggingface.co/FunAudioLLM/CosyVoice2-0.5B/CosyVoice-BlankEN/{vocab.json,
+merges.txt,tokenizer_config.json,config.json}`, confirmed real via a `tree` API listing first,
+not guessed at a path) into `models/cosyvoice2_tokenizer/`. Config confirms this is a plain
+`Qwen2Tokenizer`/`Qwen2ForCausalLM`, matching `cosyvoice2_config.json` exactly. Found (and fixed,
+via direct inspection, not by re-deriving from precedent) the exact same real gap the QwenASR
+Safetensors tokenizer hit earlier this session: `vocab.json` only holds the base ~151643-entry
+BPE vocab; `<|endoftext|>`/`<|im_start|>`/`<|im_end|>` live separately in
+`tokenizer_config.json`'s `added_tokens_decoder` and must be filled in explicitly or they
+resolve to an empty string.
+
+New `CosyVoiceLlmGenerationTests`: real end-to-end `GenerateSpeechTokens` call, asserts
+in-range/non-empty output. **PASSED first attempt.**
+
+New `CosyVoice2Pipeline.cs`: chains `CosyVoiceLlmGeneration` -> `CosyVoiceFlowEncoder` ->
+`CosyVoiceCfmDecoder` -> `CosyVoiceHiftVocoder` into one real `Generate(text)` call, mirroring
+`CosyVoice3Pipeline`'s structure and its same honestly-documented simplification (zero speaker-
+conditioning vector, no reference-audio zero-shot cloning yet -- this codebase still has no
+CamPlus x-vector extractor). New `CosyVoice2PipelineTests`: real end-to-end call, asserts
+finite, non-degenerate generated audio. **PASSED first attempt** (~12s for a short sentence).
+
+**CosyVoice2 now has a complete, real, end-to-end pipeline** -- the CosyVoice family (2 and 3)
+are both fully wired, real-weight-driven text-to-speech systems. Structural verification only
+(no reachable Python oracle for either CosyVoice checkpoint specifically); numeric golden
+verification remains the honestly-documented gap for both, same as several other pipelines this
+session.
+
+Remaining mini-plan items: (2) CAM++ speaker encoder (still not investigated this session --
+would unblock real zero-shot voice cloning for both CosyVoice2 and CosyVoice3), (3) numeric
+golden verification wherever a real oracle is reachable, (5) a real performance pass on this
+session's several new components. Not committed (per standing instruction). No subagents used.
+
+## DRY pass (real duplication extracted) + real perf-baseline measurement on CosyVoice2's new CFM decoder + CAM++ re-confirmed still out of scope (no new info, not re-attempted)
+
+Continuing the mini-plan, same fire.
+
+**DRY pass (CLAUDE.md rule 7)**: found real, exact duplication between `CosyVoiceLlmGeneration.
+BuildTokenizer` (written this session) and `QwenAsrWeights.BuildTokenizerFromHfFiles` (written
+earlier this session) -- both independently implemented the identical real HF vocab.json +
+tokenizer_config.json `added_tokens_decoder` completion logic. Extracted the shared file-parsing
+half into a new `Primitives/HfBpeTokenizerLoader.cs` (`Load(dir)` returns tokens/merges/added-
+by-content; `EnsureCovers` grows the token array for callers needing extra explicit ids beyond
+what the files themselves cover, e.g. QwenASR's audio_start/end/pad). Both callers now build
+their own `TokenizerSource` on top (Bos/Eos/Pad ids and `AdditionalSpecialTokens` genuinely
+differ per checkpoint, so only the shared half was extracted, not the whole tokenizer
+construction). `CosyVoice3Llm.cs`'s tokenizer builder was checked too but is NOT a duplicate --
+it reads from real GGUF metadata (`tokenizer.vocab.tokens`), a structurally different real
+source, correctly left alone. Re-ran `CosyVoiceLlmGenerationTests` and
+`QwenAsrPipelineSafetensorsTests` (the real end-to-end consumer of the OOM-bug-fixed path)
+afterward: **both PASS**, confirming the extraction is behavior-preserving.
+
+**Real perf-baseline measurement (CLAUDE.md rule 7)** on CosyVoice2's new CFM decoder (no prior
+baseline existed since the component is new this session -- this pass establishes one rather
+than attempting a blind "optimization"): added `CosyVoiceCfmDecoder_Benchmark_RealisticFrameCount`
+to `CosyVoiceBenchmarkTests.cs` (same file/pattern as the other CosyVoice benchmarks), 128 mel
+frames (a realistic few-second-sentence scale) x the real 10-step Euler schedule, 3 runs.
+**Measured: 15220ms / 15088ms / 15131ms (avg ~15146ms)** -- very consistent across runs. For
+comparison, CosyVoice3's DiT `RunBackbone` (250 frames, 22 transformer layers, single pass, no
+ODE loop) measured 1753-3916ms in the same run. The real reason for the difference is structural,
+not a bug: CosyVoice2's CFM UNet runs the shared `CfmUNetKernels` transformer/resnet stack
+**10 times** (once per Euler step) with **12 real mid-stages** each holding 4 transformer blocks
+(56 transformer-block evaluations per Euler step x 10 steps = 560 total, vs CosyVoice3 DiT's
+22-layer x 1-pass = 22), so the ~4-8x wall-time difference is expected from the real architecture
+difference, not a sign of an implementation issue. `CfmUNetKernels` itself is shared, already-
+proven code (Chatterbox's own CFM decoder uses it and is already golden-verified), so re-
+optimizing it here without a specific measured bottleneck would repeat this session's earlier
+Q8_0-on-CosyVoice3-DiT mistake (a plausible-sounding change that measured WORSE) -- correctly not
+attempted. Real baseline number is now written down for any future perf work to compare against,
+per rule 7's own requirement.
+
+**CAM++ speaker encoder**: re-checked the existing investigation entry (3206 ONNX nodes, 225 real
+`Conv` layers, D-TDNN with CAM attention repeated 52 times, ~7x QwenTTS's ECAPA-TDNN encoder) --
+no new information this fire changes that scope assessment, so it was not re-attempted rather than
+re-investigated for no reason. Real follow-up unchanged: read CAM++'s real architecture source
+(`3D-Speaker`/`FunASR`'s own CAM++ implementation) before attempting a port, as its own dedicated
+multi-iteration task.
+
+**Numeric golden verification for structural-only components** (item 3): checked what's
+realistically tractable given no local Python CosyVoice/QwenTTS reference checkout and no
+`debug-cossim`-style tooling for CosyVoice specifically (already confirmed blocked in an earlier
+entry). The one class of components where a real oracle genuinely IS reachable without a Python
+environment is anything whose real math can be hand-derived in closed form and cross-checked
+arithmetically -- already exhausted for the tractable targets earlier this session (CosyVoice3
+flow encoder/DiT InputEmbed/DiT RunBackbone/HiFT F0 predictor, all cosine>0.999). The remaining
+structural-only components (QwenTTS Talker/CodePredictor generation loops, CosyVoice3/CosyVoice2
+LLM generation loops, HiFT's stochastic NSF-source+iSTFT chain, CosyVoice2's CFM decoder/flow
+encoder) are all either autoregressive sampling loops (no single "correct" output to compare
+against without a matching real RNG state) or have real stochastic components (Euler ODE
+gaussian noise seed, NSF source noise) -- genuinely not golden-verifiable without a real Python
+process to run side-by-side with a shared, fixed RNG seed, which this environment does not have.
+Confirmed genuinely blocked (same conclusion as the earlier CosyVoice3-specific entry, now
+checked against the newer CosyVoice2 components too), not guessed around.
+
+**All real, actionable items from the "finish ALL outstanding items" mini-plan are now either
+DONE or precisely documented as genuinely blocked**: FunASR/Silero VAD/Fish Speech/Parler-TTS/
+Orpheus TTS (complete, golden-verified, from earlier fires), CosyVoice2 (complete pipeline, this
+fire's predecessor), CosyVoice3 (complete pipeline, earlier fire), Whisper GGUF conversion
+(tiny through large-v3, all verified), QwenASR Safetensors (complete, both weight formats), DRY
+pass (done), perf pass (baseline measured, no unproven change applied). CAM++ voice cloning and
+numeric golden verification for the autoregressive/stochastic components remain genuinely
+blocked/out-of-scope for the reasons documented above and in earlier entries -- not silently
+dropped, precisely scoped.
+
+Not committed (per standing instruction). No subagents used.

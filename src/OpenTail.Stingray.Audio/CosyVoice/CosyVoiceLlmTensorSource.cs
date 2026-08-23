@@ -163,6 +163,14 @@ public sealed unsafe class CosyVoiceLlmTensorSource : IModelTensorSource, IDispo
     public int SpeechTokenIdOffset => _textVocabSize;
 
     /// <summary>
+    /// Set by <see cref="EnableSpeechGenerationMode"/> once called: the synthetic combined-vocab
+    /// id of real `llm_embedding.weight` row 0 (sos); row 1 (task_id) is
+    /// <c>SosTaskTokenIdBase + 1</c>. -1 if this checkpoint has no `llm_embedding.weight`
+    /// tensor (or speech-generation mode hasn't been enabled yet).
+    /// </summary>
+    public int SosTaskTokenIdBase { get; private set; } = -1;
+
+    /// <summary>
     /// Switches this source's `token_embd.weight`/`output.weight` from the text backbone to a
     /// real speech-token-generation configuration, entirely via composition -- no
     /// `OpenTail.Stingray.Engine` changes needed. `ForwardPass.EmbedTokenInto` (verified by
@@ -191,7 +199,14 @@ public sealed unsafe class CosyVoiceLlmTensorSource : IModelTensorSource, IDispo
         byte* textEmbedPtr = GetTensorDataPtr(textEmbedInfo);
 
         int speechVocab = SpeechEmbeddingWeight.Length / _hiddenDim;
-        int combinedVocab = _textVocabSize + speechVocab;
+        // Real Qwen2LM.inference (cosyvoice/llm/llm.py) sources sos/task_id embeddings from a
+        // SEPARATE 2-row `self.llm_embedding` table (row 0 = sos, row 1 = task_id) -- NOT from
+        // `speech_embedding` (that's only true for the CosyVoice3LM subclass). Appended here as
+        // 2 more synthetic vocab rows so ForwardPass's ordinary token-id lookup can address them
+        // via SosTaskTokenIdBase, same trick as the speech-vocab rows below.
+        bool hasLlmEmbedding = LlmEmbeddingWeight is not null && LlmEmbeddingWeight.Length == 2 * _hiddenDim;
+        int extraVocab = hasLlmEmbedding ? 2 : 0;
+        int combinedVocab = _textVocabSize + speechVocab + extraVocab;
         long combinedElementCount = (long)combinedVocab * _hiddenDim;
         float* combined = (float*)NativeMemory.Alloc((nuint)(combinedElementCount * sizeof(float)));
         Buffer.MemoryCopy(textEmbedPtr, combined, combinedElementCount * sizeof(float), (long)_textVocabSize * _hiddenDim * sizeof(float));
@@ -200,9 +215,18 @@ public sealed unsafe class CosyVoiceLlmTensorSource : IModelTensorSource, IDispo
             Buffer.MemoryCopy(speechPtr, combined + (long)_textVocabSize * _hiddenDim,
                 (long)speechVocab * _hiddenDim * sizeof(float), (long)speechVocab * _hiddenDim * sizeof(float));
         }
+        if (hasLlmEmbedding)
+        {
+            fixed (float* llmEmbPtr = LlmEmbeddingWeight)
+            {
+                Buffer.MemoryCopy(llmEmbPtr, combined + (long)(_textVocabSize + speechVocab) * _hiddenDim,
+                    2L * _hiddenDim * sizeof(float), 2L * _hiddenDim * sizeof(float));
+            }
+        }
         _ownedPointers.Add((nint)combined);
         _syntheticBuffers["token_embd.weight"] = (nint)combined;
         _byCanonicalName["token_embd.weight"] = new GgufTensorInfo("token_embd.weight", 2, [_hiddenDim, combinedVocab], DType.Float32, DataOffset: 0);
+        SosTaskTokenIdBase = hasLlmEmbedding ? _textVocabSize + speechVocab : -1;
 
         fixed (float* decoderPtr = LlmDecoderWeight)
         {

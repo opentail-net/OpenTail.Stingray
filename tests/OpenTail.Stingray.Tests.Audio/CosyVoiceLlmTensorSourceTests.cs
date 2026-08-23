@@ -93,7 +93,9 @@ public sealed class CosyVoiceLlmTensorSourceTests : HeavyTestBase
         source.EnableSpeechGenerationMode();
 
         Assert.NotNull(source.FindTensor("token_embd.weight"));
-        Assert.Equal(151936 + 6564, source.FindTensor("token_embd.weight")!.Value.Dimensions[1]);
+        // +2 for the real `llm_embedding.weight` sos/task_id rows, appended as synthetic vocab
+        // entries this session (see CosyVoiceLlmTensorSource.SosTaskTokenIdBase).
+        Assert.Equal(151936 + 6564 + 2, source.FindTensor("token_embd.weight")!.Value.Dimensions[1]);
         Assert.Equal(6564, source.FindTensor("output.weight")!.Value.Dimensions[1]);
 
         var hp = ModelHyperparams.FromGgufMetadata(source.Metadata);

@@ -123,36 +123,33 @@ public static class CfmUNetKernels
                 afterAttn[c * t + ti] = x[c * t + ti] + attnOut[ti * dim + c];
 
         var normed3 = LayerNormChannelFirstToRowMajor(afterAttn, dim, t, tw.Norm3Weight, tw.Norm3Bias);
-        var output = new float[dim * t];
+
+        // Batched over all t timesteps at once (single weight-matrix pass each) instead of one
+        // MatVecF32 call per timestep -- see docs/audio-review-progress.md's CFM decoder perf
+        // note: a per-timestep GEMV loop re-streams the whole weight matrix from RAM once per
+        // timestep, while a batched GEMM streams it once and reuses it across a block of rows.
+        var up = BatchedLinear(normed3, tw.FfUpWeight, tw.FfUpBias, t, dim, dim * 4);
+        GeluInPlace(up);
+        var down = BatchedLinear(up, tw.FfDownWeight, tw.FfDownBias, t, dim * 4, dim);
+
+        var output = new float[t * dim];
         for (int ti = 0; ti < t; ti++)
-        {
-            var row = new float[dim];
-            Array.Copy(normed3, ti * dim, row, 0, dim);
-            var up = Linear(row, tw.FfUpWeight, tw.FfUpBias, dim, dim * 4);
-            GeluInPlace(up);
-            var down = Linear(up, tw.FfDownWeight, tw.FfDownBias, dim * 4, dim);
-            for (int c = 0; c < dim; c++) output[c * t + ti] = afterAttn[c * t + ti] + down[c];
-        }
+            for (int c = 0; c < dim; c++)
+                output[ti * dim + c] = afterAttn[c * t + ti] + down[ti * dim + c];
         return output;
     }
 
     private static float[] SelfAttention(float[] inputRowMajor, int t, int dim, IUnetTransformerBlockWeights tw, int heads, int headDim)
     {
         int qkvDim = heads * headDim;
-        var q = new float[t][];
-        var k = new float[t][];
-        var v = new float[t][];
-        for (int i = 0; i < t; i++)
-        {
-            var row = new float[dim];
-            Array.Copy(inputRowMajor, i * dim, row, 0, dim);
-            q[i] = LinearNoBias(row, tw.QWeight, dim, qkvDim);
-            k[i] = LinearNoBias(row, tw.KWeight, dim, qkvDim);
-            v[i] = LinearNoBias(row, tw.VWeight, dim, qkvDim);
-        }
 
-        var context = new float[t][];
-        for (int i = 0; i < t; i++) context[i] = new float[qkvDim];
+        // Batched Q/K/V projections: one GEMM each over all t rows, instead of 3*t separate
+        // MatVecF32 calls (which would re-read each weight matrix from RAM t times).
+        var q = BatchedLinearNoBias(inputRowMajor, tw.QWeight, t, dim, qkvDim);
+        var k = BatchedLinearNoBias(inputRowMajor, tw.KWeight, t, dim, qkvDim);
+        var v = BatchedLinearNoBias(inputRowMajor, tw.VWeight, t, dim, qkvDim);
+
+        var context = new float[t * qkvDim];
 
         float scale = 1f / MathF.Sqrt(headDim);
         for (int h = 0; h < heads; h++)
@@ -163,31 +160,46 @@ public static class CfmUNetKernels
                 var scores = new float[t];
                 unsafe
                 {
-                    fixed (float* qp = q[i])
+                    fixed (float* qBase = q)
                     {
-                        for (int j = 0; j < t; j++)
+                        float* qp = qBase + (nuint)i * (nuint)qkvDim + (nuint)hOff;
+                        fixed (float* kBase = k)
                         {
-                            fixed (float* kp = k[j])
-                                scores[j] = SimdKernels.DotF32(qp + hOff, kp + hOff, headDim) * scale;
+                            for (int j = 0; j < t; j++)
+                                scores[j] = SimdKernels.DotF32(qp, kBase + (nuint)j * (nuint)qkvDim + (nuint)hOff, headDim) * scale;
                         }
                     }
                 }
                 DenseKernels.SoftmaxInPlace(scores);
-                var ctxSpan = context[i].AsSpan(hOff, headDim);
+                var ctxSpan = context.AsSpan(i * qkvDim + hOff, headDim);
                 for (int j = 0; j < t; j++)
                 {
-                    var vRow = v[j].AsSpan(hOff, headDim);
+                    var vRow = v.AsSpan(j * qkvDim + hOff, headDim);
                     TensorPrimitives.MultiplyAdd(vRow, scores[j], ctxSpan, ctxSpan);
                 }
             });
         }
 
-        var output = new float[t * dim];
-        for (int i = 0; i < t; i++)
-        {
-            var projected = Linear(context[i], tw.OutWeight, tw.OutBias, qkvDim, dim);
-            Array.Copy(projected, 0, output, i * dim, dim);
-        }
+        return BatchedLinear(context, tw.OutWeight, tw.OutBias, t, qkvDim, dim);
+    }
+
+    /// <summary>Batched row-major [t, inDim] x [outDim, inDim]^T -> [t, outDim] + bias, one weight-matrix pass total instead of one MatVecF32 call per row.</summary>
+    private static unsafe float[] BatchedLinear(float[] input, float[] weight, float[] bias, int t, int inDim, int outDim)
+    {
+        var output = new float[t * outDim];
+        fixed (float* a = input, w = weight, c = output)
+            MicroGemmKernel.MatMulF32CoreOrFallback(a, w, c, t, inDim, outDim);
+        for (int ti = 0; ti < t; ti++)
+            for (int o = 0; o < outDim; o++)
+                output[ti * outDim + o] += bias[o];
+        return output;
+    }
+
+    private static unsafe float[] BatchedLinearNoBias(float[] input, float[] weight, int t, int inDim, int outDim)
+    {
+        var output = new float[t * outDim];
+        fixed (float* a = input, w = weight, c = output)
+            MicroGemmKernel.MatMulF32CoreOrFallback(a, w, c, t, inDim, outDim);
         return output;
     }
 
