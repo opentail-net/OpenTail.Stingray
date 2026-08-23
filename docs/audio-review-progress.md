@@ -8484,3 +8484,85 @@ measure-after-the-fact kernel rewrite. Neither was attempted this session (out o
 time remaining); flagging as the concrete, well-evidenced next step for a dedicated follow-up.
 `WhisperPhaseTimingBenchTests.cs` was left in the tree (not deleted) so this measurement can be
 re-run cheaply once a candidate encoder-specific change exists to evaluate. No subagents used.
+
+## Whisper encoder operator breakdown + attention parallelization granularity fix (KEPT, real measured win) + attention cache-blocking/streaming-softmax attempt (measured regression, not applied)
+
+Followed the phase-timing entry's own prescribed next step: broke the encoder's 87-88% down by
+operator (throwaway `WhisperEncoderOperatorTimingBenchTests`, real weights, driving the exact same
+`SimdKernels.MatVecF32` dispatch WhisperEncoder's real `LinearReal` uses, not a reflection hack --
+`LinearReal` etc. are `private static` with `Span<float>` parameters, which reflection cannot
+invoke since ref structs can't be boxed for `MethodInfo.Invoke`). Result, 3 model sizes:
+
+| Model | FFN (up+down) | Attention math (scores+softmax+weighted-sum) | Q/K/V/Out projections | Norm/residual |
+|---|---:|---:|---:|---:|
+| Small (768x12) | 45.8% | 28.8% | 23.8% | 0.5% |
+| Medium (1024x24) | 43.6% | 32.4% | 22.4% | 0.4% |
+| Large-v3 (1280x32) | 50.9% | 22.5% | 25.2% | 0.3% |
+
+FFN+QKV+Out (~70-76%) are all the same GEMV kernel already proven (this session's earlier
+microbenchmark, at these exact 1500-row shapes) to beat every batched-GEMM alternative tried --
+not revisited. Attention math itself (22-32%, separate from the linear projections) was untested
+territory: currently parallelized via `Parallel.For(0, numHeads)`, one work item per head.
+
+**Attention-chunking A/B (query-position sub-chunking within each head, same math, finer TPL
+granularity)**, throwaway `WhisperAttentionChunkingBenchTests`, correctness-verified against the
+head-only baseline (bit-tolerance match) before trusting any of the numbers:
+
+| Shape | Baseline | 4 chunks/head | 8 chunks/head | 16 chunks/head |
+|---|---:|---:|---:|---:|
+| Small (12 heads) | 210.8ms | 1.05x (worse) | 1.03x | 1.09x |
+| Medium (16 heads) | 401.5ms | **0.76x (24% faster)** | 0.78x | 0.77x |
+| Large-v3 (20 heads) | 384.1ms | 0.99x (flat) | 1.02x | 1.03x |
+
+Mixed, not a clean universal win -- Medium genuinely benefits, Large-v3 (the model that actually
+matters for the RTF problem) doesn't respond at all despite the same theoretical head/thread-count
+mismatch as Medium, and Small regresses slightly. Per explicit user direction ("I would have
+preferred 24% faster on Medium"), applied 4-chunks/head as the new default anyway since no case is
+meaningfully harmed (Small's regression is on the fastest, least-relevant model; Large-v3 is flat,
+not worse) and Medium gets a real win. **Wired into `WhisperEncoder.ComputeMultiHeadSelfAttentionReal`
+for real** (partition over flattened `(head, query-chunk)` instead of `(head)` alone, each work
+item owns a contiguous, independent range of query rows -- no reduction/synchronization needed
+across chunks). All 6 correctness tests re-passed clean. **Real end-to-end re-measurement, full
+pipeline, all 5 sizes:**
+
+| Model | Before | After | Delta |
+|---|---:|---:|---:|
+| Tiny | 2.31s (RTF 0.193) | 1.95s (RTF 0.162) | -15.6% |
+| Base | 4.87s (RTF 0.406) | 4.20s (RTF 0.350) | -13.8% |
+| Small | 15.08s (RTF 1.257) | 14.24s (RTF 1.187) | -5.6% |
+| Medium | 47.72s (RTF 3.976) | 44.64s (RTF 3.720) | -6.4% |
+| Large-v3 | 87.43s (RTF 7.286) | 87.69s (RTF 7.307) | +0.3% (flat/noise) |
+
+Real, kept win on 4 of 5 sizes (even Small improved end-to-end despite its isolated attention-only
+regression -- other factors/noise dominate at that scale); genuinely flat on Large-v3, the model
+that most needed a win, consistent with the isolated attention-only benchmark's finding that no
+chunk granularity (4/8/16 per head) moved Large-v3 at all.
+
+**Cache-blocking / streaming-softmax attention tiling attempt (measured regression, NOT applied,
+per explicit "measure performance before correctness" instruction).** Hypothesis (following up on
+external advice): each head's full K/V (768KB at headDim=64) gets re-scanned once per query row
+(1500x per head), and since Large-v3 didn't respond to finer chunking at all, maybe the real
+bottleneck there is memory traffic/cache pressure from that repeated re-scan rather than thread
+scheduling -- worth trying a blocked/tiled attention with online (streaming, numerically-stable)
+softmax (FlashAttention-style: process K/V in blocks, maintain a running max/sum/weighted-output
+accumulator per query, never materialize more than one block's score tile) to see if it reduces
+that traffic. Implemented as a throwaway perf-only comparison (deliberately no correctness check
+first, per instruction: "if performance is bad, correctness does not matter at all") against the
+already-kept 4-chunks/head baseline, Large-v3 shape, three K-block sizes:
+
+| Variant | Time | vs. chunked baseline |
+|---|---:|---:|
+| Chunked baseline (4/head) | 402-414ms | 1.00x |
+| Tiled streaming softmax, kBlock=64 | 445-474ms | 1.11-1.14x slower |
+| Tiled streaming softmax, kBlock=128 | 469ms | 1.17x slower |
+| Tiled streaming softmax, kBlock=256 | 434ms | 1.08x slower |
+
+All three block sizes regressed, none tried further, no correctness verification attempted (per
+instruction, moot once perf failed). This is the THIRD confirmed instance this session of a
+"should obviously help via memory locality/bandwidth" idea losing to the existing straightforward
+implementation on this exact codebase/hardware (after CFM's batched-GEMM and Whisper's Q8_0
+quantization) -- a strong, now well-replicated pattern: assume nothing about cache residency or
+memory-bandwidth-boundedness on this hardware without measuring, even when the theoretical
+argument (large working set, repeated re-scan) sounds compelling. `WhisperAttentionChunkingBenchTests.cs`
+(both the chunking A/B and the tiling perf-only comparison) left in the tree for reuse. No
+subagents used.
