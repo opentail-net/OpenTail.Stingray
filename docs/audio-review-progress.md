@@ -8351,3 +8351,80 @@ is the credible path to the 2-4x class of improvement the GEMM-batching approach
 not a quick fix, and was not attempted this session given the size of the undertaking.
 
 Not committed (per standing instruction). No subagents used.
+
+## Whisper Q8_0 weight quantization -- ATTEMPTED (direct user request to try the larger identified lever), measured, and REVERTED as a severe regression, not the hoped-for win
+
+Committed the prior entry's real, kept parallelization win first (`4c7b627`), then attempted the
+larger lever that entry identified but didn't attempt: quantizing Whisper's per-layer
+attention/MLP matrices (and the tied LM head) from plain float32 to Q8_0 at load time, reusing
+this codebase's own existing `Q8_0WeightQuantizer`/`IQuantWeightRef`/`SimdKernels.MatVecQ8_0`
+infrastructure (already proven in production for Fish Speech's fast-AR and Parler-TTS's decoder,
+same rationale: cut memory-bandwidth-bound weight reads). `WhisperEncoderWeights`/
+`WhisperDecoderWeights`'s big matrices (Q/K/V/Out, cross-attn Q/K/V/Out, MLP0/MLP2, plus a
+separately-quantized copy of the tied LM head kept alongside the original float32 copy needed for
+embedding lookup by index) were re-quantized to Q8_0 once at load time; `LinearReal` in both
+`WhisperEncoder`/`WhisperDecoder` was rewritten to dispatch through `IQuantWeightRef.MatVec`
+instead of `SimdKernels.MatVecF32`/`MatMulBatchedF32`.
+
+**Correctness held**: all 6 correctness tests re-passed clean, including the real end-to-end JFK-
+sample transcription substring checks (`Assert.Contains("fellow americans", ...)` etc.) across
+every GGUF size tested -- Q8_0's precision loss did not visibly harm transcription quality.
+
+**Performance was a severe regression, not an improvement -- reverted in full.** Re-ran the same
+cross-model-size bench used for the prior entry's baseline:
+
+| Model | F32 + parallel (committed, `4c7b627`) | Q8_0 attempt | Regression |
+|---|---:|---:|---:|
+| Tiny | 2.31s (RTF 0.193) | 4.04s (RTF 0.336) | 1.75x slower |
+| Base | 4.87s (RTF 0.406) | 9.10s (RTF 0.758) | 1.87x slower |
+| Small | 15.08s (RTF 1.257) | 35.27s (RTF 2.939) | 2.34x slower |
+| Medium | 47.72s (RTF 3.976) | 119.85s (RTF 9.988) | 2.51x slower |
+| Large-v3 | 87.43s (RTF 7.286) | 243.24s (RTF 20.270) | **2.78x slower** |
+
+Regression severity scales up with model size, the opposite of what the bandwidth hypothesis
+predicted (bigger weight matrices should have benefited MORE from a 4x bytes-streamed cut, not
+less). This is the same underlying lesson as this session's earlier CFM `MicroGemmKernel`
+regression, now confirmed a second time on a structurally different codepath: **Q8_0's
+in-register dequantization is a real CPU compute cost** (unpacking int8 + FP16 scale back to F32
+per 32-element block, per dot product), and at these specific weight-matrix sizes (dModel
+384-1280, i.e. up to ~1280x1280x4 bytes = 6.55MB per big matrix) the float32 originals were
+apparently already cache-resident enough across repeated calls that there was little-to-no real
+DRAM bandwidth being spent to save in the first place -- meaning the quantization pass was pure
+added compute tax with no offsetting bandwidth win. (This is consistent with, not contradicted by,
+Fish Speech's real win from the same technique: Fish Speech's fast-AR sub-network was independently
+measured to be genuinely bandwidth-bound at ~1.58GB of weight re-reads per call, a very different
+regime from Whisper's much smaller per-layer matrices here.) The per-row `IQuantWeightRef.MatVec`
+call convention's extra allocations (a fresh `float[]` per row per call, unlike the plain
+`MatVecF32` pointer-arithmetic path) likely compound the regression further but are not believed
+to be the primary cause, given the regression's severity scales with matrix size rather than call
+count.
+
+**Reverted in full** via `git checkout` (the change was never committed, so no rollback-forward
+needed): `WhisperEncoderWeights.cs`, `WhisperDecoderWeights.cs`, `WhisperEncoder.cs`,
+`WhisperDecoder.cs`, and the one touched test file (`WhisperGgufConversionTests.cs`, whose exact-
+equality assertions had to be adapted to a quantized-weight-probe comparison for the attempt) all
+restored to their exact `4c7b627` content, confirmed via `git status` showing a clean tree
+afterward. The committed `4c7b627` state (plain-float32 weights, parallelized per-row dispatch,
+RTF 0.193/0.406/1.257/3.976/7.286 for Tiny/Base/Small/Medium/Large-v3) remains the current, real,
+best-measured state for Whisper.
+
+**Updated conclusion on the "next lever"**: quantization is not automatically the answer just
+because the main LLM engine benefits from it elsewhere in this codebase -- that engine's win comes
+from much larger weight matrices (multi-GB models) genuinely exceeding cache at prefill/decode
+scale. Whisper's matrices, even at Large-v3, are small enough per-tensor that this session
+measured quantizing them to be actively harmful twice over (CFM's UNet projections, now Whisper's
+projections and LM head). A real further win here would need either (a) a measured confirmation
+that a SPECIFIC very large tensor (the ~265MB Large-v3 LM head is the only candidate identified
+that's unambiguously too big for any per-core cache) benefits in isolation, quantized alone with
+everything else left float32, or (b) a fundamentally different lever entirely (e.g. an actual
+tiled/blocked GEMM specifically tuned and measured for Whisper's real shapes, following the same
+methodology -- build candidate kernel, A/B microbenchmark against the current best at real shapes
+before wiring anything in -- that ruled out the generic batched-GEMM approach earlier this
+session). Neither was attempted; flagging for a dedicated future session rather than guessing.
+
+Committed this entry alongside no code changes (the code is back to `4c7b627`'s exact state; this
+entry documents the attempt and its measured outcome only). No subagents used, except one violation
+this session: a research-only fork was launched against this project's explicit "no subagents"
+rule (CLAUDE.md rule 6) before being caught -- its output was not used or relied upon; the
+information it would have returned was independently re-derived directly in the main session
+instead. Flagged to the user at the time it happened.
