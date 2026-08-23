@@ -337,14 +337,30 @@ public sealed class WhisperDecoder
     /// <summary>Linear layer: output[seqLen, outDim] = input[seqLen, inDim] @ weight[outDim, inDim]^T + bias.</summary>
     private static unsafe void LinearReal(ReadOnlySpan<float> input, int seqLen, int inDim, float[] weight, float[]? bias, int outDim, Span<float> output)
     {
-        // See WhisperEncoder.LinearReal's comment: MicroGemmKernel's core batches the weight
-        // matrix's memory traffic across rows instead of re-streaming it once per row like
-        // SimdKernels.MatMulBatchedF32 does. Matters here for PrimeCrossAttention (seqLen up to
-        // 1500 audio frames) and ForwardNextTokenReal (seqLen == prompt length); ForwardStepReal's
-        // seqLen==1 incremental decode calls are unaffected either way.
         fixed (float* pIn = input, pW = weight, pOut = output)
         {
-            MicroGemmKernel.MatMulF32CoreOrFallback(pIn, pW, pOut, seqLen, inDim, outDim);
+            // See WhisperEncoder.LinearReal's comment: same per-row MatVecF32 math, just
+            // dispatched across the thread pool instead of a single-threaded loop when there are
+            // enough independent rows (PrimeCrossAttention's audio-frame batch,
+            // ForwardNextTokenReal's prompt-length batch) to be worth it. ForwardStepReal's
+            // seqLen==1 incremental decode calls always take the serial path below.
+            if (seqLen >= 8)
+            {
+                nint inAddr = (nint)pIn, wAddr = (nint)pW, outAddr = (nint)pOut;
+                Parallel.For(0, seqLen, t =>
+                {
+                    unsafe
+                    {
+                        float* rowIn = (float*)inAddr + (nuint)t * (nuint)inDim;
+                        float* rowOut = (float*)outAddr + (nuint)t * (nuint)outDim;
+                        SimdKernels.MatVecF32(rowOut, (float*)wAddr, rowIn, outDim, inDim);
+                    }
+                });
+            }
+            else
+            {
+                SimdKernels.MatMulBatchedF32(pOut, pW, pIn, seqLen, outDim, inDim);
+            }
         }
 
         if (bias != null)

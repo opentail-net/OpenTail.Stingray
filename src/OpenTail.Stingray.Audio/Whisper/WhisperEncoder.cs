@@ -232,16 +232,31 @@ public sealed class WhisperEncoder
     /// <summary>Linear layer: output[seqLen, outDim] = input[seqLen, inDim] @ weight[outDim, inDim]^T + bias.</summary>
     private static unsafe void LinearReal(ReadOnlySpan<float> input, int seqLen, int inDim, float[] weight, float[]? bias, int outDim, Span<float> output)
     {
-        // MicroGemmKernel's core (not SimdKernels.MatMulBatchedF32, which degenerates to one
-        // MatVecF32 call per row -- re-streaming the whole weight matrix from RAM once per row
-        // instead of once total) so a seqLen-row batch amortizes each weight matrix's memory
-        // traffic across 4 rows at a time instead of paying it per row. Real perf win for the
-        // encoder (seqLen up to 1500 frames for Large-v3) and any decoder call with seqLen>1
-        // (PrimeCrossAttention, ForwardNextTokenReal); the seqLen==1 incremental-decode path
-        // degrades to the same single MatVecF32 call either way.
         fixed (float* pIn = input, pW = weight, pOut = output)
         {
-            MicroGemmKernel.MatMulF32CoreOrFallback(pIn, pW, pOut, seqLen, inDim, outDim);
+            // SimdKernels.MatMulBatchedF32 loops MatVecF32 over seqLen rows on a single thread --
+            // each row is independent, so for seqLen large enough to be worth the dispatch
+            // overhead, run the exact same per-row MatVecF32 calls across the thread pool instead.
+            // Same arithmetic, same kernel, no batching/blocking changes (that approach was
+            // measured to regress -- see docs/audio-review-progress.md); this only uses idle
+            // cores for work that was already embarrassingly parallel.
+            if (seqLen >= 8)
+            {
+                nint inAddr = (nint)pIn, wAddr = (nint)pW, outAddr = (nint)pOut;
+                Parallel.For(0, seqLen, t =>
+                {
+                    unsafe
+                    {
+                        float* rowIn = (float*)inAddr + (nuint)t * (nuint)inDim;
+                        float* rowOut = (float*)outAddr + (nuint)t * (nuint)outDim;
+                        SimdKernels.MatVecF32(rowOut, (float*)wAddr, rowIn, outDim, inDim);
+                    }
+                });
+            }
+            else
+            {
+                SimdKernels.MatMulBatchedF32(pOut, pW, pIn, seqLen, outDim, inDim);
+            }
         }
 
         if (bias != null)

@@ -8242,3 +8242,112 @@ blocked/out-of-scope for the reasons documented above and in earlier entries -- 
 dropped, precisely scoped.
 
 Not committed (per standing instruction). No subagents used.
+
+## Cross-pipeline audio perf survey (direct user request) + real Whisper CFM/GEMM investigation -- one measured regression found and fully reverted, one real modest win kept, quantization identified as the actual next lever
+
+**Perf survey across every audio pipeline** (direct user request: "check every single model's
+performance in tokens per second... state the size of the model being tested"). Ran every existing
+`*PerfBenchTests`/`*BenchmarkTests` class under `STINGRAY_RUN_HEAVY_TESTS=1`, one model at a time,
+cross-referenced against real on-disk model sizes. Outliers found: **Fish Speech at 0.20 tok/s**
+(15/76.9s -- its own doc comment already explains why: no KV-cache reuse, full fast-AR re-run per
+token) and **Orpheus at 1.14 tok/s** (140/123.3s) both stand out badly relative to Parler's
+1.67 tok/s on a similarly-sized model. CosyVoice2's CFM decoder (10-step Euler solve, 128 frames)
+measured ~15.7s per synthesis -- the single largest per-stage cost in that pipeline, larger than
+its LLM prefill (650ms), flow encoder (2.5s), and HiFT vocoder (3.6s) combined.
+
+**CFM decoder "fix" attempted, measured, and REVERTED (real regression, not kept).** Hypothesis
+(mine + ChatGPT, two rounds): `CfmUNetKernels`'s per-timestep `Linear`/`LinearNoBias` calls inside
+`TransformerBlock`/`SelfAttention` do one `MatVecF32` GEMV call per of the 128 timesteps instead of
+a single batched GEMM, re-reading each weight matrix from memory once per row instead of once
+total. Routed the Q/K/V/out/FFN-up/FFN-down projections through the codebase's existing
+`MicroGemmKernel` (previously gated behind `STINGRAY_CPU_MICRO_GEMM`, unused for this call site).
+**Measured result: the CFM decoder got SLOWER, not faster -- 15220-15994ms (avg ~15.1-15.8s)
+baseline vs 24914-28244ms (avg ~26.05s) after the change.** ChatGPT's own diagnosis of the
+regression (asked with the actual kernel code and shapes): the kernel's output write pattern
+(`c[(i+k)*n+j]` for varying `i` inside a `j`-outer loop) is a large-stride, cache-hostile write
+that touches the entire output matrix once per output column -- actively worse than the "naive"
+per-row GEMV loop's contiguous per-row writes. A follow-up hand-tuned 4x2 register-blocked AVX2
+microkernel (`MatMulF32Tiled4x2`, contiguous row writes, dual reuse of both A and B) was
+implemented and A/B microbenchmarked against the plain per-row `MatVecF32` loop and the original
+flawed kernel at 6 real shapes spanning both CFM's (t=128, dim 256-1024) and Whisper's
+(seq=1500, dim 512-1280, mlp up to 5120) actual call-site sizes. **Result: the plain per-row GEMV
+loop won at every single shape tested** -- e.g. Whisper-large-v3 shape (1500,1280,1280): gemvLoop
+174.68ms vs core 577.35ms (3.31x slower) vs tiled4x2 488.72ms (2.80x slower); CFM-FF-up shape
+(128,256,1024): gemvLoop 3.99ms vs core 9.63ms (2.42x slower) vs tiled4x2 8.46ms (2.12x slower).
+Conclusion: for this codebase's `SimdKernels.MatVecF32` implementation and these model scales
+(weight matrices small enough to be cache-resident across repeat calls, unlike a big LLM's hidden
+dim), "batch the sequence dimension into a GEMM" is simply the wrong lever -- both the reused
+kernel AND a purpose-built replacement lost to the existing per-row loop. All three touched files
+(`CfmUNetKernels.cs`, `MicroGemmKernel.cs`, plus a speculative unmeasured copy of the same change
+applied to `WhisperEncoder.cs`/`WhisperDecoder.cs`'s `LinearReal`) were manually restored to their
+exact pre-change byte content (diffed against the pre-session commit to confirm), since a
+regressed commit had already landed on `main` before this was caught -- rolled forward by hand
+per explicit instruction, not via `git revert`/`reset`. 9 correctness tests (Chatterbox/CosyVoice
+CFM decoder tests, Whisper GGUF/Safetensors/RealWeights/Diagnostic tests) re-passed clean
+afterward. The throwaway microbenchmark test and both unused kernel additions were deleted/
+reverted rather than left as dead code.
+
+**Real Whisper cross-model-size baseline established** (direct, repeated user request --
+explicitly called out as high-priority given Whisper's real-world usage volume): added a
+throwaway `WhisperFullPipelinePerfBenchTests` bench, 12s synthetic audio, greedy decode, VAD off,
+3 runs per model, across every locally-available ggml checkpoint. **Measured (RTF = wall seconds
+per audio second; RTF&lt;1 is faster than real time):**
+
+| Model | Params scale | Mean wall (12s audio) | RTF |
+|---|---|---:|---:|
+| Tiny | 384 dim x 4 layers | 2.60s | 0.217 |
+| Base | 512 dim x 6 layers | 4.93s | 0.411 |
+| Small | 768 dim x 12 layers | 16.29s | 1.358 |
+| Medium | 1024 dim x 24 layers | 51.60s | 4.300 |
+| Large-v3 | 1280 dim x 32 layers | 95.65s | 7.971 |
+
+RTF scaling between sizes (1.89x, 3.30x, 3.17x, 1.85x) tracks reasonably close to naive
+dim^2 x layers FLOPs scaling (2.67x, 4.50x, 3.56x, 2.08x) -- consistently a bit *below* the FLOPs
+prediction, meaning larger models are relatively more efficient per FLOP than smaller ones (fixed
+per-call/per-layer overhead amortizes better at scale), not a specific big-O bug at any one size.
+Medium and Large-v3 are unambiguously too slow for practical real-time-adjacent use as shipped
+(4.3x and 8.0x slower than real time respectively).
+
+**One real, measured, kept improvement**: found that `WhisperEncoder.LinearReal`/
+`WhisperDecoder.LinearReal` route every batched (seqLen&gt;1) projection through
+`SimdKernels.MatMulBatchedF32`, which loops `MatVecF32` over all rows **on a single thread** --
+true for the encoder's full 1500-frame forward pass and `PrimeCrossAttention`'s audio K/V
+projection, both called on a 12-core machine. Since each row is independent (no batching/blocking
+math changed -- same exact `MatVecF32` calls, same arithmetic, avoiding the exact regression
+above), added a `Parallel.For` over rows when `seqLen >= 8`, falling back to the identical serial
+path otherwise (covers the seqLen==1 incremental-decode-step calls, which are correctly left
+alone). All 6 Whisper correctness tests re-passed clean (bit-for-bit unaffected numerics, as
+expected for a pure dispatch change). **Re-measured all 5 model sizes after the change:**
+
+| Model | Before | After | Delta |
+|---|---:|---:|---:|
+| Tiny | 2.60s (RTF 0.217) | 2.31s (RTF 0.193) | -11.1% |
+| Base | 4.93s (RTF 0.411) | 4.87s (RTF 0.406) | -1.2% |
+| Small | 16.29s (RTF 1.358) | 15.08s (RTF 1.257) | -7.5% |
+| Medium | 51.60s (RTF 4.300) | 47.72s (RTF 3.976) | -7.5% |
+| Large-v3 | 95.65s (RTF 7.971) | 87.43s (RTF 7.286) | -8.6% |
+
+Consistent, real, modest (~7-11%) improvement across every size, kept. Note this nests on top of
+`SimdKernels.MatVecF32`'s own internal `Parallel.For` (triggers whenever `rows >= 64`, true for
+virtually every Whisper projection including the ~51864-row tied LM head), so the net effect is
+double-parallelized dispatch, not single-level; the .NET thread pool appears to absorb the
+redundant nesting without a measured regression at any size, and further hand-tuning to eliminate
+the nesting explicitly was judged not worth the additional risk given this session's CFM lesson
+(measure, don't assume -- a further "improvement" here could just as easily regress without being
+re-measured at all 5 sizes again).
+
+**Real next lever identified, not attempted this session (too large a change to land safely
+without dedicated time)**: Whisper's weights are loaded via `WhisperGgmlModel`/
+`WhisperDecoderWeights`/`WhisperEncoderWeights` as fully-dequantized `float[]` (F32) with no
+quantized-dtype path at all -- unlike the main LLM engine's `SimdKernels.MatVec` dispatcher, which
+supports in-register-dequantized Q4_K/Q6_K/Q8_0 specifically to cut memory bandwidth (this is the
+same lever that gives the main engine's decode path most of its throughput). Whisper's decode loop
+is single-token (seqLen=1) per step, autoregressive, and inherently bandwidth-bound -- e.g.
+Large-v3's tied LM head alone is a `[51866, 1280]` F32 matrix (~265MB) read in full on every single
+generated token. Quantizing Whisper's weight storage + adding a dequant-in-register GEMV kernel
+(mirroring the main engine's existing Q4_K/Q8_0 kernels) would directly cut that bandwidth 2-8x and
+is the credible path to the 2-4x class of improvement the GEMM-batching approach failed to deliver
+-- but it's a real feature (new weight-loading format, new kernel, full golden-verification pass),
+not a quick fix, and was not attempted this session given the size of the undertaking.
+
+Not committed (per standing instruction). No subagents used.
