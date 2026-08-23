@@ -283,12 +283,30 @@ public sealed class WhisperEncoder
 
         float[] attnRaw = new float[seqLen * dModel];
 
-        Parallel.For(0, nHeads, h =>
+        // Parallelized over (head, contiguous query-chunk) instead of head alone: each work item
+        // still owns a contiguous range of query rows within one head (independent output, no
+        // cross-chunk reduction needed), just at finer scheduling granularity than one giant
+        // seqLen x seqLen-per-head task. Measured (see docs/audio-review-progress.md's attention-
+        // chunking bench): 4 chunks/head is a real ~24% win on Medium (16 heads), roughly flat on
+        // Large-v3 (20 heads) and Tiny/Base, and only a ~5% regression on Small (12 heads, which
+        // already divides the thread count evenly) -- net positive with no case meaningfully
+        // harmed, so kept as the new default rather than conditioned on head count.
+        int chunksPerHead = 4;
+        int chunkSize = (seqLen + chunksPerHead - 1) / chunksPerHead;
+        int actualChunksPerHead = (seqLen + chunkSize - 1) / chunkSize;
+        int totalWorkItems = nHeads * actualChunksPerHead;
+
+        Parallel.For(0, totalWorkItems, w =>
         {
+            int h = w / actualChunksPerHead;
+            int chunk = w % actualChunksPerHead;
             int headOff = h * headDim;
+            int qStart = chunk * chunkSize;
+            int qEnd = Math.Min(qStart + chunkSize, seqLen);
+
             float[] scores = new float[seqLen];
 
-            for (int i = 0; i < seqLen; i++)
+            for (int i = qStart; i < qEnd; i++)
             {
                 var querySpan = q.AsSpan(i * dModel + headOff, headDim);
 
