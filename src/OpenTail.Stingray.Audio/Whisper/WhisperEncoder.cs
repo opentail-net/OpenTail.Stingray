@@ -1,4 +1,5 @@
 using System.Numerics.Tensors;
+using OpenTail.Stingray.Audio.Primitives;
 using OpenTail.Stingray.Cpu;
 
 namespace OpenTail.Stingray.Audio.Whisper;
@@ -229,35 +230,15 @@ public sealed class WhisperEncoder
         TensorPrimitives.MultiplyAdd(inSlice, scale, outSlice, outSlice);
     }
 
-    /// <summary>Linear layer: output[seqLen, outDim] = input[seqLen, inDim] @ weight[outDim, inDim]^T + bias.</summary>
-    private static unsafe void LinearReal(ReadOnlySpan<float> input, int seqLen, int inDim, float[] weight, float[]? bias, int outDim, Span<float> output)
+    /// <summary>
+    /// Linear layer: output[seqLen, outDim] = input[seqLen, inDim] @ weight[outDim, inDim]^T + bias.
+    /// <paramref name="weight"/> dispatches to a real hardware F16C kernel when available (see
+    /// <see cref="WhisperLinearWeight"/>'s doc comment and docs/audio-review-progress.md's ggml/F16C
+    /// investigation), falling back to the parallel-per-row F32 path otherwise.
+    /// </summary>
+    private static void LinearReal(ReadOnlySpan<float> input, int seqLen, WhisperLinearWeight weight, float[]? bias, int outDim, Span<float> output)
     {
-        fixed (float* pIn = input, pW = weight, pOut = output)
-        {
-            // SimdKernels.MatMulBatchedF32 loops MatVecF32 over seqLen rows on a single thread --
-            // each row is independent, so for seqLen large enough to be worth the dispatch
-            // overhead, run the exact same per-row MatVecF32 calls across the thread pool instead.
-            // Same arithmetic, same kernel, no batching/blocking changes (that approach was
-            // measured to regress -- see docs/audio-review-progress.md); this only uses idle
-            // cores for work that was already embarrassingly parallel.
-            if (seqLen >= 8)
-            {
-                nint inAddr = (nint)pIn, wAddr = (nint)pW, outAddr = (nint)pOut;
-                Parallel.For(0, seqLen, t =>
-                {
-                    unsafe
-                    {
-                        float* rowIn = (float*)inAddr + (nuint)t * (nuint)inDim;
-                        float* rowOut = (float*)outAddr + (nuint)t * (nuint)outDim;
-                        SimdKernels.MatVecF32(rowOut, (float*)wAddr, rowIn, outDim, inDim);
-                    }
-                });
-            }
-            else
-            {
-                SimdKernels.MatMulBatchedF32(pOut, pW, pIn, seqLen, outDim, inDim);
-            }
-        }
+        weight.MatVecBatched(input, seqLen, output);
 
         if (bias != null)
         {
@@ -277,9 +258,9 @@ public sealed class WhisperEncoder
         float[] q = new float[seqLen * dModel];
         float[] k = new float[seqLen * dModel];
         float[] v = new float[seqLen * dModel];
-        LinearReal(input, seqLen, dModel, lw.QueryWeight, lw.QueryBias, dModel, q);
-        LinearReal(input, seqLen, dModel, lw.KeyWeight, null, dModel, k);
-        LinearReal(input, seqLen, dModel, lw.ValueWeight, lw.ValueBias, dModel, v);
+        LinearReal(input, seqLen, lw.QueryWeight, lw.QueryBias, dModel, q);
+        LinearReal(input, seqLen, lw.KeyWeight, null, dModel, k);
+        LinearReal(input, seqLen, lw.ValueWeight, lw.ValueBias, dModel, v);
 
         float[] attnRaw = new float[seqLen * dModel];
 
@@ -332,18 +313,18 @@ public sealed class WhisperEncoder
             }
         });
 
-        LinearReal(attnRaw, seqLen, dModel, lw.OutWeight, lw.OutBias, dModel, output);
+        LinearReal(attnRaw, seqLen, lw.OutWeight, lw.OutBias, dModel, output);
     }
 
     private static void ComputeMlpReal(float[] input, int seqLen, int dModel, WhisperEncoderLayerWeights lw, Span<float> output)
     {
         int hiddenDim = dModel * 4;
         float[] hidden = new float[seqLen * hiddenDim];
-        LinearReal(input, seqLen, dModel, lw.Mlp0Weight, lw.Mlp0Bias, hiddenDim, hidden);
+        LinearReal(input, seqLen, lw.Mlp0Weight, lw.Mlp0Bias, hiddenDim, hidden);
 
         Parallel.For(0, hidden.Length, i => hidden[i] = Gelu(hidden[i]));
 
-        LinearReal(hidden, seqLen, hiddenDim, lw.Mlp2Weight, lw.Mlp2Bias, dModel, output);
+        LinearReal(hidden, seqLen, lw.Mlp2Weight, lw.Mlp2Bias, dModel, output);
     }
 
     private static void LayerNormAffine(ReadOnlySpan<float> input, float[] weight, float[] bias, Span<float> output, float eps)

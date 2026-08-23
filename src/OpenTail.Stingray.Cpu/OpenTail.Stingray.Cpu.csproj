@@ -9,6 +9,19 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- Prebuilt native AVX2/F16C shim (native/f16c_shim.c, rebuild via native/build.bat):
+         real hardware F16 weight decode for Whisper, see native/f16c_shim.c's doc comment and
+         docs/audio-review-progress.md. Windows x64 only for now; F16CNative probes availability
+         at runtime and callers fall back to the managed F32 path when it's missing or fails to
+         load (non-Windows, non-x64, or a machine without AVX2/F16C). -->
+    <None Include="native\f16c_shim.dll" Condition="Exists('native\f16c_shim.dll')">
+      <Link>f16c_shim.dll</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </None>
+  </ItemGroup>
+
+  <ItemGroup>
     <InternalsVisibleTo Include="OpenTail.Stingray.Tests.ForwardPass" />
     <InternalsVisibleTo Include="OpenTail.Stingray.Tests.ForwardPass.Fast" />
     <InternalsVisibleTo Include="OpenTail.Stingray.Tests.Cuda" />

@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using System.Text.Json;
 using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Cpu;
@@ -71,6 +72,28 @@ public sealed class WhisperGgmlModel
         return data;
     }
 
+    /// <summary>
+    /// Raw F16 bit patterns for a tensor whose on-disk dtype was actually F16 (true for every big
+    /// matrix in the legacy ggml/.bin format and its GGUF repackaging -- Whisper releases only ever
+    /// use F16 or F32; false for the Safetensors loader, which always supplies plain F32 from HF).
+    /// Lets a caller use a real hardware F16C-based kernel directly against the on-disk bytes
+    /// instead of the eagerly-expanded <see cref="GetTensor"/> float32 copy -- see
+    /// docs/audio-review-progress.md's ggml/F16C investigation for why this matters (ggml's own
+    /// F16 dot-product kernel never expands weights to F32 at all, for exactly this bandwidth
+    /// reason). Returns false (not an exception) when the tensor's real dtype wasn't F16, so
+    /// callers can fall back to <see cref="GetTensor"/> uniformly.
+    /// </summary>
+    public bool TryGetTensorRawF16(string name, out short[] f16Bits)
+    {
+        if (_tensors.TryGetValue(name, out var t) && t.RawF16Bits is { } bits)
+        {
+            f16Bits = bits;
+            return true;
+        }
+        f16Bits = [];
+        return false;
+    }
+
     public static WhisperGgmlModel Load(string path)
     {
         using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, bufferSize: 1 << 20);
@@ -132,8 +155,8 @@ public sealed class WhisperGgmlModel
 
             string name = System.Text.Encoding.UTF8.GetString(br.ReadBytes(nameLen));
 
-            float[] data = ReadTensorData(br, ggmlType, nElements);
-            model._tensors[name] = new WhisperGgmlTensor(ne[..nDims], data);
+            float[] data = ReadTensorData(br, ggmlType, nElements, out short[]? rawF16);
+            model._tensors[name] = new WhisperGgmlTensor(ne[..nDims], data, rawF16);
         }
 
         return model;
@@ -176,13 +199,22 @@ public sealed class WhisperGgmlModel
             var bytes = gguf.GetTensorData(info);
             var data = new float[info.ElementCount];
             Dequantize.ToFloat32(bytes, data, info.DType, info.ElementCount);
+
+            // Preserve raw F16 bits too when the on-disk dtype really is F16 (see
+            // TryGetTensorRawF16's doc comment) -- GGUF F16 storage is bit-identical IEEE754
+            // half-floats, so the tensor's raw byte span can be reinterpreted directly, no
+            // reconversion needed.
+            short[]? rawF16 = info.DType == DType.Float16
+                ? MemoryMarshal.Cast<byte, short>(bytes[..checked((int)(info.ElementCount * 2))]).ToArray()
+                : null;
+
             // GgufModel reports shape in reversed/displayed (GGUF) order; WhisperGgmlTensor's
             // Shape field is only used for byte-layout bookkeeping elsewhere, not indexed by
             // dimension order, so storing it as-is here is consistent with WhisperGgmlModel's
             // other real usages (all downstream consumers only call GetTensor by name).
             var shape = new int[info.NDimensions];
             for (int d = 0; d < info.NDimensions; d++) shape[d] = checked((int)info.Dimensions[d]);
-            model._tensors[info.Name] = new WhisperGgmlTensor(shape, data);
+            model._tensors[info.Name] = new WhisperGgmlTensor(shape, data, rawF16);
         }
 
         return model;
@@ -320,7 +352,7 @@ public sealed class WhisperGgmlModel
         return model;
     }
 
-    private static float[] ReadTensorData(BinaryReader br, int ggmlType, long nElements)
+    private static float[] ReadTensorData(BinaryReader br, int ggmlType, long nElements, out short[]? rawF16)
     {
         // ggml_type enum: 0=F32, 1=F16, 6=Q5_0, 7=Q5_1, 8=Q8_0, ... (Whisper ggml releases use F16 or F32 only).
         switch (ggmlType)
@@ -330,6 +362,7 @@ public sealed class WhisperGgmlModel
                 var raw = br.ReadBytes(checked((int)(nElements * sizeof(float))));
                 var f32 = new float[nElements];
                 Buffer.BlockCopy(raw, 0, f32, 0, raw.Length);
+                rawF16 = null;
                 return f32;
             }
             case 1: // F16
@@ -338,6 +371,8 @@ public sealed class WhisperGgmlModel
                 var f32 = new float[nElements];
                 var halves = System.Runtime.InteropServices.MemoryMarshal.Cast<byte, Half>(raw);
                 for (int i = 0; i < f32.Length; i++) f32[i] = (float)halves[i];
+                rawF16 = new short[nElements];
+                Buffer.BlockCopy(raw, 0, rawF16, 0, raw.Length);
                 return f32;
             }
             default:
@@ -347,5 +382,5 @@ public sealed class WhisperGgmlModel
         }
     }
 
-    private sealed record WhisperGgmlTensor(int[] Shape, float[] Data);
+    private sealed record WhisperGgmlTensor(int[] Shape, float[] Data, short[]? RawF16Bits = null);
 }

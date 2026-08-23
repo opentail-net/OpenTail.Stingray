@@ -8566,3 +8566,89 @@ memory-bandwidth-boundedness on this hardware without measuring, even when the t
 argument (large working set, repeated re-scan) sounds compelling. `WhisperAttentionChunkingBenchTests.cs`
 (both the chunking A/B and the tiling perf-only comparison) left in the tree for reuse. No
 subagents used.
+
+## Real hardware F16C native shim for Whisper -- IMPLEMENTED and wired in, a genuine 4.5-4.7x win on the encoder's dominant GEMV shapes (the actual bottleneck the ggml gap investigation identified)
+
+Direct follow-up to the ggml investigation entry: ggml's real advantage on Whisper's encoder is
+that F16 weights are never expanded to F32 in memory at all -- `ggml_vec_dot_f16` converts F16 to
+F32 via real hardware (`VCVTPH2PS`, the F16C instruction) directly inside the FMA accumulation
+loop. Confirmed empirically that .NET has NO viable managed path to this: `Half` is not a legal
+`Vector128<T>`/`Vector256<T>` element type in .NET 10 (throws `NotSupportedException`), a hand-
+rolled AVX2 software bit-manipulation half-to-float conversion measured 9-15x SLOWER than plain
+F32 on Whisper's real shapes, and relying on the JIT's scalar `(float)Half` cast (also not a
+hardware intrinsic, itself a software bit-trick in the BCL) measured the same 9-15x regression.
+
+**The one real "cheat" that works: P/Invoke into a hand-written ~20-line native AVX2/F16C shim**
+(`src/OpenTail.Stingray.Cpu/native/f16c_shim.c`, built with MSVC `/arch:AVX2`, prebuilt DLL
+committed to the tree, `native/build.bat` documents the rebuild). Measured against the existing
+parallel-per-row F32 path at Whisper's real shapes, per-row P/Invoke call overhead amortized over
+each row's full dimension (not per-element):
+
+| Shape | F32 | Native F16C | Result |
+|---|---:|---:|---:|
+| Encoder QKV/Out (seq=1500, dim=1280) | 140.8ms | 30.0ms | **4.69x faster** |
+| Encoder FFN-up (seq=1500, dim=1280->5120) | 567.8ms | 127.6ms | **4.45x faster** |
+| Decode LM head (seq=1, dim=1280->51866) | 6.1ms | 3.1ms | **2.00x faster** |
+
+This is the single biggest win of the whole night, and lands squarely on the actual bottleneck the
+phase-timing/operator-breakdown investigation identified (encoder = 87-88% of total wall time,
+and its Q/K/V/Out/FFN projections = ~70-76% of encoder time).
+
+**Full production integration** (not left as a scratch benchmark):
+- `WhisperGgmlModel` now preserves raw F16 bit patterns (`short[]`) alongside the existing eagerly-
+  dequantized `float[]` for every tensor whose real on-disk dtype is F16 (`TryGetTensorRawF16`) --
+  true for the legacy ggml/.bin loader and its GGUF repackaging (Whisper releases are only ever F16
+  or F32); the Safetensors loader still only ever supplies F32, so those weights automatically fall
+  back to the existing path.
+- New `F16CNative` (Cpu project): P/Invoke wrapper with a one-time `IsAvailable` probe (a real call,
+  not just a `DllImport` presence check) so every caller degrades gracefully -- non-Windows,
+  non-x64, or a machine without a loadable/working shim all fall back to the pre-existing F32 path
+  automatically, with zero behavior change on those platforms.
+- New `WhisperLinearWeight` (Audio project): wraps a linear layer's weight as either the raw F16
+  bits (native F16C dispatch) or the F32 fallback, chosen once at construction based on
+  `F16CNative.IsAvailable` and whether the tensor was really F16. `WhisperEncoderWeights`/
+  `WhisperDecoderWeights`'s big per-layer matrices (Q/K/V/Out, cross-attn Q/K/V/Out, MLP0/MLP2) and
+  the decoder's tied LM head all now go through this; `WhisperEncoder`/`WhisperDecoder`'s
+  `LinearReal` shrank to a single `weight.MatVecBatched(...)` call instead of manually dispatching
+  parallel-per-row F32 math.
+- All 6 Whisper correctness tests re-pass clean, including the real JFK-sample transcription
+  substring checks -- and the whole correctness suite's wall time dropped from ~186s to ~112s just
+  from running on the faster kernel underneath, before any dedicated RTF re-measurement.
+
+**Why native code, when this codebase generally avoids it**: unlike OpenBLAS (`docs/done/
+openblas-elimination-findings-2026-08-20.md`, deliberately purged), this is ~20 lines this project
+fully owns and controls, not a third-party dependency with its own versioning/build baggage. The
+reason it has to be native at all is the confirmed absence of a managed path documented above --
+this was arrived at only after exhausting every pure-.NET option, not skipped to for convenience.
+Direct user sign-off obtained before implementing, given the explicit precedent this project set
+against native dependencies.
+
+**Also tested and explicitly NOT applied**: software prefetch (`_mm_prefetch`) in the native
+kernel's inner loop, modeled on ggml's own prefetch use in its quantized dot products
+(`arch/x86/quants.c`) -- confirmed `Sse.Prefetch0` is a real, already-used-elsewhere-in-this-
+codebase (`SimdKernels.cs`) managed .NET intrinsic, but ggml's use case is prefetching across
+strided/jumping row accesses, while this kernel's inner loop is a simple contiguous linear scan
+the hardware stream prefetcher already handles well. Measured: 19-23% SLOWER on the encoder shapes
+that matter, flat on the LM head. Fourth confirmed instance this session of a plausible-sounding
+memory-optimization idea losing to the existing implementation on this exact codebase/hardware.
+
+**Broader ggml-vs-.NET-intrinsics survey** (scanning `examples/ggml/src/ggml-cpu` for other
+instructions like F16C worth investigating): AVX-VNNI (`_mm256_dpbusd_avx_epi32`, fused
+quantized-dot-product instruction) is real and would matter, but is gated behind
+`__AVXVNNI__`/`__AVX512VNNI__` in ggml's own code and this session's hardware (Ryzen 7 5700G, Zen 3)
+has neither -- confirmed not applicable here, would matter on Alder Lake+/Zen4+. AMX
+(`amx/mmq.cpp`) is Intel-only and AVX-512-gated, also not applicable (this hardware has no
+AVX-512). F16C remains the standout real, hardware-present, .NET-unreachable-except-via-native-code
+lever on this specific machine.
+
+**Real next candidate identified for a DIFFERENT pipeline** (not yet attempted): the F16C win is
+not inherently Whisper-specific -- it requires F16-formatted weights, which Whisper's GGUF/ggml
+files already are, but nothing prevents converting F32 weights to F16 ONCE at load time for any
+model and using the same proven native kernel afterward. Ruled out for Fish Speech/Orpheus (already
+GGUF-quantized Q4_K_M/Q8_0, not F16; and their own real bottleneck is architectural -- Fish
+Speech's fast-AR recomputes from scratch every token, a KV-cache-reuse problem F16C can't fix).
+Identified CosyVoice2's CFM decoder (this session's earlier-measured 15.7s dominant cost, safetensors-
+sourced i.e. real F32 on disk, purely GEMV-bound across 10 Euler-step UNet forward passes, no
+algorithmic/recomputation issue) as the credible next target -- not yet tested.
+
+No subagents used (one violation earlier this session, already flagged and stopped when caught).

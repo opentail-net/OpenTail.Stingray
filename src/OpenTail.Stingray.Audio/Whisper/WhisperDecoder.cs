@@ -1,4 +1,5 @@
 using System.Numerics.Tensors;
+using OpenTail.Stingray.Audio.Primitives;
 using OpenTail.Stingray.Cpu;
 
 namespace OpenTail.Stingray.Audio.Whisper;
@@ -52,8 +53,8 @@ public sealed class WhisperDecoder
             var lw = _weights.Layers[l];
             crossKeys[l] = new float[frames * _dModel];
             crossValues[l] = new float[frames * _dModel];
-            LinearReal(encoderOutput[..(frames * _dModel)], frames, _dModel, lw.CrossKeyWeight, null, _dModel, crossKeys[l]);
-            LinearReal(encoderOutput[..(frames * _dModel)], frames, _dModel, lw.CrossValueWeight, lw.CrossValueBias, _dModel, crossValues[l]);
+            LinearReal(encoderOutput[..(frames * _dModel)], frames, lw.CrossKeyWeight, null, _dModel, crossKeys[l]);
+            LinearReal(encoderOutput[..(frames * _dModel)], frames, lw.CrossValueWeight, lw.CrossValueBias, _dModel, crossValues[l]);
         }
 
         cache.SetCrossAttentionCache(crossKeys, crossValues, frames);
@@ -153,19 +154,19 @@ public sealed class WhisperDecoder
 
             // A. Self-Attention with KV Cache (project Q/K/V, store K/V into cache at this position)
             LayerNormAffine(x, lw.AttnLnWeight, lw.AttnLnBias, normTemp, _config.LayerNormEps);
-            LinearReal(normTemp, 1, _dModel, lw.QueryWeight, lw.QueryBias, _dModel, q);
-            LinearReal(normTemp, 1, _dModel, lw.KeyWeight, null, _dModel, cache.Keys[l].AsSpan(position * _dModel, _dModel));
-            LinearReal(normTemp, 1, _dModel, lw.ValueWeight, lw.ValueBias, _dModel, cache.Values[l].AsSpan(position * _dModel, _dModel));
+            LinearReal(normTemp, 1, lw.QueryWeight, lw.QueryBias, _dModel, q);
+            LinearReal(normTemp, 1, lw.KeyWeight, null, _dModel, cache.Keys[l].AsSpan(position * _dModel, _dModel));
+            LinearReal(normTemp, 1, lw.ValueWeight, lw.ValueBias, _dModel, cache.Values[l].AsSpan(position * _dModel, _dModel));
 
             ComputeAttentionStepFromProjected(q, position + 1, cache.Keys[l], cache.Values[l], _dModel, _nHeads, attnRaw);
-            LinearReal(attnRaw, 1, _dModel, lw.OutWeight, lw.OutBias, _dModel, attnOut);
+            LinearReal(attnRaw, 1, lw.OutWeight, lw.OutBias, _dModel, attnOut);
             TensorPrimitives.Add(x, attnOut, x);
 
             // B. Cross-Attention over precomputed audio Keys/Values
             LayerNormAffine(x, lw.CrossAttnLnWeight, lw.CrossAttnLnBias, normTemp, _config.LayerNormEps);
-            LinearReal(normTemp, 1, _dModel, lw.CrossQueryWeight, lw.CrossQueryBias, _dModel, q);
+            LinearReal(normTemp, 1, lw.CrossQueryWeight, lw.CrossQueryBias, _dModel, q);
             ComputeAttentionStepFromProjected(q, cache.CrossFrames, cache.CrossKeys![l], cache.CrossValues![l], _dModel, _nHeads, attnRaw);
-            LinearReal(attnRaw, 1, _dModel, lw.CrossOutWeight, lw.CrossOutBias, _dModel, attnOut);
+            LinearReal(attnRaw, 1, lw.CrossOutWeight, lw.CrossOutBias, _dModel, attnOut);
             TensorPrimitives.Add(x, attnOut, x);
 
             // C. MLP
@@ -181,7 +182,7 @@ public sealed class WhisperDecoder
 
         // Tied LM head: logits = lastHidden @ TokenEmbeddingWeight^T (no bias).
         float[] logits = new float[_vocabSize];
-        LinearReal(lastHidden, 1, _dModel, w.TokenEmbeddingWeight, null, _vocabSize, logits);
+        LinearReal(lastHidden, 1, w.TokenEmbeddingWeightLinear, null, _vocabSize, logits);
         return logits;
     }
 
@@ -303,20 +304,20 @@ public sealed class WhisperDecoder
 
             // A. Causal Self-Attention
             Parallel.For(0, seqLen, t => LayerNormAffine(x.AsSpan(t * _dModel, _dModel), lw.AttnLnWeight, lw.AttnLnBias, normed.AsSpan(t * _dModel, _dModel), _config.LayerNormEps));
-            LinearReal(normed, seqLen, _dModel, lw.QueryWeight, lw.QueryBias, _dModel, q);
-            LinearReal(normed, seqLen, _dModel, lw.KeyWeight, null, _dModel, k);
-            LinearReal(normed, seqLen, _dModel, lw.ValueWeight, lw.ValueBias, _dModel, v);
+            LinearReal(normed, seqLen, lw.QueryWeight, lw.QueryBias, _dModel, q);
+            LinearReal(normed, seqLen, lw.KeyWeight, null, _dModel, k);
+            LinearReal(normed, seqLen, lw.ValueWeight, lw.ValueBias, _dModel, v);
             ComputeCausalSelfAttentionFromProjected(q, k, v, seqLen, _dModel, _nHeads, attnRaw);
-            LinearReal(attnRaw, seqLen, _dModel, lw.OutWeight, lw.OutBias, _dModel, attnOut);
+            LinearReal(attnRaw, seqLen, lw.OutWeight, lw.OutBias, _dModel, attnOut);
             TensorPrimitives.Add(x, attnOut, x);
 
             // B. Cross-Attention (project audio K/V fresh for this layer, shared across all seqLen queries)
             Parallel.For(0, seqLen, t => LayerNormAffine(x.AsSpan(t * _dModel, _dModel), lw.CrossAttnLnWeight, lw.CrossAttnLnBias, normed.AsSpan(t * _dModel, _dModel), _config.LayerNormEps));
-            LinearReal(normed, seqLen, _dModel, lw.CrossQueryWeight, lw.CrossQueryBias, _dModel, q);
-            LinearReal(audioEncoderOutput[..(audioLen * _dModel)], audioLen, _dModel, lw.CrossKeyWeight, null, _dModel, crossK);
-            LinearReal(audioEncoderOutput[..(audioLen * _dModel)], audioLen, _dModel, lw.CrossValueWeight, lw.CrossValueBias, _dModel, crossV);
+            LinearReal(normed, seqLen, lw.CrossQueryWeight, lw.CrossQueryBias, _dModel, q);
+            LinearReal(audioEncoderOutput[..(audioLen * _dModel)], audioLen, lw.CrossKeyWeight, null, _dModel, crossK);
+            LinearReal(audioEncoderOutput[..(audioLen * _dModel)], audioLen, lw.CrossValueWeight, lw.CrossValueBias, _dModel, crossV);
             ComputeCrossAttentionFromProjected(q, crossK, crossV, seqLen, audioLen, _dModel, _nHeads, attnRaw);
-            LinearReal(attnRaw, seqLen, _dModel, lw.CrossOutWeight, lw.CrossOutBias, _dModel, attnOut);
+            LinearReal(attnRaw, seqLen, lw.CrossOutWeight, lw.CrossOutBias, _dModel, attnOut);
             TensorPrimitives.Add(x, attnOut, x);
 
             // C. MLP
@@ -330,38 +331,19 @@ public sealed class WhisperDecoder
         LayerNormAffine(x.AsSpan(lastOff, _dModel), w.LnWeight, w.LnBias, lastHidden, _config.LayerNormEps);
 
         float[] logits = new float[_vocabSize];
-        LinearReal(lastHidden, 1, _dModel, w.TokenEmbeddingWeight, null, _vocabSize, logits);
+        LinearReal(lastHidden, 1, w.TokenEmbeddingWeightLinear, null, _vocabSize, logits);
         return logits;
     }
 
-    /// <summary>Linear layer: output[seqLen, outDim] = input[seqLen, inDim] @ weight[outDim, inDim]^T + bias.</summary>
-    private static unsafe void LinearReal(ReadOnlySpan<float> input, int seqLen, int inDim, float[] weight, float[]? bias, int outDim, Span<float> output)
+    /// <summary>
+    /// Linear layer: output[seqLen, outDim] = input[seqLen, inDim] @ weight[outDim, inDim]^T + bias.
+    /// <paramref name="weight"/> dispatches to a real hardware F16C kernel when available (see
+    /// <see cref="WhisperLinearWeight"/>'s doc comment and docs/audio-review-progress.md's ggml/F16C
+    /// investigation), falling back to the parallel-per-row F32 path otherwise.
+    /// </summary>
+    private static void LinearReal(ReadOnlySpan<float> input, int seqLen, WhisperLinearWeight weight, float[]? bias, int outDim, Span<float> output)
     {
-        fixed (float* pIn = input, pW = weight, pOut = output)
-        {
-            // See WhisperEncoder.LinearReal's comment: same per-row MatVecF32 math, just
-            // dispatched across the thread pool instead of a single-threaded loop when there are
-            // enough independent rows (PrimeCrossAttention's audio-frame batch,
-            // ForwardNextTokenReal's prompt-length batch) to be worth it. ForwardStepReal's
-            // seqLen==1 incremental decode calls always take the serial path below.
-            if (seqLen >= 8)
-            {
-                nint inAddr = (nint)pIn, wAddr = (nint)pW, outAddr = (nint)pOut;
-                Parallel.For(0, seqLen, t =>
-                {
-                    unsafe
-                    {
-                        float* rowIn = (float*)inAddr + (nuint)t * (nuint)inDim;
-                        float* rowOut = (float*)outAddr + (nuint)t * (nuint)outDim;
-                        SimdKernels.MatVecF32(rowOut, (float*)wAddr, rowIn, outDim, inDim);
-                    }
-                });
-            }
-            else
-            {
-                SimdKernels.MatMulBatchedF32(pOut, pW, pIn, seqLen, outDim, inDim);
-            }
-        }
+        weight.MatVecBatched(input, seqLen, output);
 
         if (bias != null)
         {
@@ -477,18 +459,18 @@ public sealed class WhisperDecoder
         int dModel = input.Length;
         int hiddenDim = dModel * 4;
         float[] hidden = new float[hiddenDim];
-        LinearReal(input, 1, dModel, lw.Mlp0Weight, lw.Mlp0Bias, hiddenDim, hidden);
+        LinearReal(input, 1, lw.Mlp0Weight, lw.Mlp0Bias, hiddenDim, hidden);
         for (int i = 0; i < hidden.Length; i++) hidden[i] = Gelu(hidden[i]);
-        LinearReal(hidden, 1, hiddenDim, lw.Mlp2Weight, lw.Mlp2Bias, dModel, output);
+        LinearReal(hidden, 1, lw.Mlp2Weight, lw.Mlp2Bias, dModel, output);
     }
 
     private void ComputeMlpRealBatched(float[] input, int seqLen, WhisperDecoderLayerWeights lw, float[] output)
     {
         int hiddenDim = _dModel * 4;
         float[] hidden = new float[seqLen * hiddenDim];
-        LinearReal(input, seqLen, _dModel, lw.Mlp0Weight, lw.Mlp0Bias, hiddenDim, hidden);
+        LinearReal(input, seqLen, lw.Mlp0Weight, lw.Mlp0Bias, hiddenDim, hidden);
         Parallel.For(0, hidden.Length, i => hidden[i] = Gelu(hidden[i]));
-        LinearReal(hidden, seqLen, hiddenDim, lw.Mlp2Weight, lw.Mlp2Bias, _dModel, output);
+        LinearReal(hidden, seqLen, lw.Mlp2Weight, lw.Mlp2Bias, _dModel, output);
     }
 
     private static void LayerNormAffine(ReadOnlySpan<float> input, float[] weight, float[] bias, Span<float> output, float eps)

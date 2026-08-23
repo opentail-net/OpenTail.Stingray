@@ -61,8 +61,8 @@ public sealed class WhisperGgufConversionTests : HeavyTestBase
         AssertExactEqual(encoderLegacy.LnPostWeight, encoderGguf.LnPostWeight);
         for (int i = 0; i < encoderLegacy.Layers.Length; i++)
         {
-            AssertExactEqual(encoderLegacy.Layers[i].QueryWeight, encoderGguf.Layers[i].QueryWeight);
-            AssertExactEqual(encoderLegacy.Layers[i].Mlp0Weight, encoderGguf.Layers[i].Mlp0Weight);
+            AssertExactEqualLinear(encoderLegacy.Layers[i].QueryWeight, encoderGguf.Layers[i].QueryWeight);
+            AssertExactEqualLinear(encoderLegacy.Layers[i].Mlp0Weight, encoderGguf.Layers[i].Mlp0Weight);
             AssertExactEqual(encoderLegacy.Layers[i].Mlp2Bias, encoderGguf.Layers[i].Mlp2Bias);
         }
 
@@ -72,7 +72,7 @@ public sealed class WhisperGgufConversionTests : HeavyTestBase
         AssertExactEqual(decoderLegacy.PositionalEmbedding, decoderGguf.PositionalEmbedding);
         for (int i = 0; i < decoderLegacy.Layers.Length; i++)
         {
-            AssertExactEqual(decoderLegacy.Layers[i].QueryWeight, decoderGguf.Layers[i].QueryWeight);
+            AssertExactEqualLinear(decoderLegacy.Layers[i].QueryWeight, decoderGguf.Layers[i].QueryWeight);
             AssertExactEqual(decoderLegacy.Layers[i].CrossAttnLnWeight, decoderGguf.Layers[i].CrossAttnLnWeight);
         }
     }
@@ -82,6 +82,34 @@ public sealed class WhisperGgufConversionTests : HeavyTestBase
         Assert.Equal(a.Length, b.Length);
         for (int i = 0; i < a.Length; i++)
             Assert.Equal(a[i], b[i]);
+    }
+
+    /// <summary>
+    /// <see cref="WhisperEncoderWeights"/>/<see cref="WhisperDecoderWeights"/>'s big matrices are
+    /// wrapped as <see cref="OpenTail.Stingray.Audio.Primitives.WhisperLinearWeight"/> (real F16C
+    /// kernel or F32 fallback, see its own doc comment), so the underlying bytes aren't directly
+    /// comparable as floats any more. Both dispatch paths are deterministic pure functions of the
+    /// source data, so if both loaders produced identical source floats (the property this test
+    /// actually verifies), their `MatVecBatched` outputs against the SAME fixed probe vector will
+    /// be bit-identical too -- a real equality check, not a numeric-similarity approximation.
+    /// </summary>
+    private static void AssertExactEqualLinear(OpenTail.Stingray.Audio.Primitives.WhisperLinearWeight a, OpenTail.Stingray.Audio.Primitives.WhisperLinearWeight b)
+    {
+        Assert.Equal(a.InDim, b.InDim);
+        Assert.Equal(a.OutDim, b.OutDim);
+        var rng = new System.Random(1234);
+        for (int probe = 0; probe < 3; probe++)
+        {
+            var input = new float[a.InDim];
+            for (int i = 0; i < input.Length; i++) input[i] = (float)(rng.NextDouble() * 2 - 1);
+
+            var ra = new float[a.OutDim];
+            var rb = new float[b.OutDim];
+            a.MatVecBatched(input, 1, ra);
+            b.MatVecBatched(input, 1, rb);
+            for (int i = 0; i < ra.Length; i++)
+                Assert.Equal(ra[i], rb[i]);
+        }
     }
 
     /// <summary>
