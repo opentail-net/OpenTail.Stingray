@@ -8428,3 +8428,59 @@ this session: a research-only fork was launched against this project's explicit 
 rule (CLAUDE.md rule 6) before being caught -- its output was not used or relied upon; the
 information it would have returned was independently re-derived directly in the main session
 instead. Flagged to the user at the time it happened.
+
+## Whisper phase-level timing breakdown -- the encoder dominates (87-88% of wall time at every model size), decode+LM head is only 1-3%. Overturns the premise of both prior kernel-level experiments this session
+
+After two failed kernel-level experiments (batched GEMM, Q8_0 weight quantization -- both prior
+entries), pivoted to phase-level measurement before attempting anything else, per external
+(ChatGPT) advice: "don't optimise Whisper, optimise the dominant phase" -- classify the bottleneck
+before touching another kernel. Added a throwaway `WhisperPhaseTimingBenchTests` bench that
+manually drives the same stage sequence `WhisperPipeline.ProcessAudioChunk` uses (mel extraction
+-> encoder forward -> cross-attention K/V priming -> decoder prompt prefill -> autoregressive
+decode loop with tied LM head), with a `Stopwatch` around each stage. No production code was
+touched -- `WhisperEncoderWeights`/`WhisperDecoderWeights`/`WhisperGgmlModel` are all already
+public, so the bench just reconstructs the same pipeline internals directly rather than needing
+reflection into private fields. 12s synthetic audio, 3 measured repetitions (1 warmup excluded),
+across all 5 real model sizes.
+
+**Result, unambiguous and consistent across every size:**
+
+| Model | Encoder | Cross-attn prime | Prompt prefill | Decode + LM head | Mel |
+|---|---:|---:|---:|---:|---:|
+| Tiny | 88% | 6% | 1% | 2% | 3% |
+| Base | 87% | 7% | 1% | 3% | 1% |
+| Small | 87% | 9% | 1% | 2% | 0% |
+| Medium | 87% | 10% | 1% | 2% | 0% |
+| Large-v3 | 87% | 11% | 1% | 1% | 0% |
+
+The audio encoder's single forward pass over up to 1500 mel frames is 87-88% of total wall time at
+every model size, full stop. Cross-attention K/V priming -- architecturally the same kind of
+workload (a batched linear projection over the same up-to-1500-frame encoder output, once per
+decoder layer) -- is another 6-11% and grows with model size (9.3s alone for Large-v3). The
+autoregressive decode loop, INCLUDING the tied LM head projection (`ForwardStepReal` computes both
+in the same call, so this bench correctly does not claim to separate them), is only 1-3% of total
+time regardless of model size, and actually SHRINKS as a percentage on bigger models (Tiny 2% vs.
+Large-v3 1%) because this bench's synthetic 12s clip only generates 3-8 tokens per run -- nowhere
+near enough decode steps for the decoder to matter even if it were made instantaneous.
+
+**This overturns the premise of every decoder/LM-head-focused idea considered so far this
+session**, including the "quantize only the 265MB Large-v3 LM head in isolation" idea from the
+prior entry's list of untested options -- even a 10x LM-head speedup could only ever recover 1-3%
+of total wall time, not the 2-4x class of improvement being sought. It also plausibly explains WHY
+the Q8_0 quantization attempt regressed worse on bigger models: that attempt quantized the
+encoder's per-layer matrices too (dModel/MLP projections), which is the dominant 87%+ of runtime,
+so any per-call dequantization overhead added there was applied to the phase that matters most,
+and scaled with it.
+
+**Real next target, now unambiguous**: the encoder's transformer forward pass (and structurally-
+identical cross-attention priming) -- NOT the decoder, NOT the LM head. Per the same external
+advice that prompted this measurement, the next step before trying a fourth kernel change should
+be thread-scaling curves (1/2/4/6/8/12 threads) specifically on the encoder's dominant kernels
+(the Q/K/V/Out projections and the 4x-expansion MLP, both already using the committed
+`4c7b627` parallel-per-row dispatch) to classify compute-bound vs. bandwidth-bound vs.
+thread-overhead-bound before choosing what to change, plus ideally a real hardware-counter profile
+(AMD uProf, since this session's benchmark hardware is a Ryzen 7 5700G) rather than another
+measure-after-the-fact kernel rewrite. Neither was attempted this session (out of scope for the
+time remaining); flagging as the concrete, well-evidenced next step for a dedicated follow-up.
+`WhisperPhaseTimingBenchTests.cs` was left in the tree (not deleted) so this measurement can be
+re-run cheaply once a candidate encoder-specific change exists to evaluate. No subagents used.
