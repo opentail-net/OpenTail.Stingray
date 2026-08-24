@@ -16,7 +16,30 @@ public sealed class KokoroWeights : IDisposable
 {
     public GgufModel Model { get; }
     public GgufModel? VoiceModel { get; }
-    public float[]? StyleVector { get; }
+
+    /// <summary>
+    /// Real Kokoro voice packs are a per-phoneme-length lookup table, NOT one fixed style vector
+    /// -- confirmed against the real <c>hexgrad/kokoro</c> package's own
+    /// <c>KPipeline.infer</c> (<c>kokoro/pipeline.py</c>: <c>model(ps, pack[len(ps)-1], speed,
+    /// ...)</c>) and this GGUF voice file's own real tensor dims (<c>[256,1,510]</c> GGUF-order =
+    /// PyTorch <c>[510,1,256]</c>: 510 rows, one per phoneme-string length 1..510, each a 256-dim
+    /// style vector). <see cref="GetStyleVector"/> is the real accessor -- do not read row 0
+    /// (length-1's vector) for every input regardless of its real length, which is what this
+    /// property held before this fix and is calibrated for extremely short utterances only.
+    /// </summary>
+    public float[]? VoiceTable { get; }
+    private const int VoiceRowDim = 256;
+
+    /// <summary>Real per-length style vector: <c>pack[phonemeLength-1]</c>, clamped to the table's real row range (510 rows) the same way a phoneme string longer than the table would need to be in the real Python reference.</summary>
+    public float[]? GetStyleVector(int phonemeLength)
+    {
+        if (VoiceTable is null) return null;
+        int rows = VoiceTable.Length / VoiceRowDim;
+        int row = Math.Clamp(phonemeLength - 1, 0, rows - 1);
+        var result = new float[VoiceRowDim];
+        Array.Copy(VoiceTable, row * VoiceRowDim, result, 0, VoiceRowDim);
+        return result;
+    }
 
     // --- Architecture hyperparameters (kokoro.* KV keys) ---
     public int HiddenDim { get; }          // kokoro.hidden_dim (decoder/predictor working dim), 512
@@ -102,7 +125,7 @@ public sealed class KokoroWeights : IDisposable
             if (VoiceModel.Tensors.Count > 0)
             {
                 var t = VoiceModel.Tensors[0];
-                StyleVector = DequantTensor(VoiceModel, t);
+                VoiceTable = DequantTensor(VoiceModel, t);
             }
         }
     }

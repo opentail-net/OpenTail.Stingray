@@ -18,8 +18,8 @@ public sealed class KokoroModel : IDisposable
 
     private readonly KokoroWeights? _weights;
 
-    /// <summary>True when a real trained speaker style vector was loaded from a voice GGUF (see <see cref="Load"/>'s <c>voicePath</c>), as opposed to the procedural placeholder presets in <see cref="KokoroVoices"/>.</summary>
-    public bool HasRealVoiceStyle => _weights?.StyleVector is not null;
+    /// <summary>True when a real trained speaker voice table was loaded from a voice GGUF (see <see cref="Load"/>'s <c>voicePath</c>), as opposed to the procedural placeholder presets in <see cref="KokoroVoices"/>.</summary>
+    public bool HasRealVoiceStyle => _weights?.VoiceTable is not null;
 
     public KokoroModel(int hiddenDim = 512, int numLayers = 3, KokoroWeights? weights = null)
     {
@@ -42,10 +42,17 @@ public sealed class KokoroModel : IDisposable
         int numTokens = tokens.Length;
         if (numTokens == 0) return [];
 
-        // If styleVector is empty and we have a loaded voice vector in weights, use it
-        if (styleVector.IsEmpty && _weights?.StyleVector is { } loadedStyle)
+        // If styleVector is empty and we have a loaded voice table, use the REAL per-length row
+        // -- real Kokoro voice packs are indexed by phoneme-string length (pack[len(ps)-1] in the
+        // real kokoro/pipeline.py), not one fixed vector for every input (see KokoroWeights.
+        // GetStyleVector's doc comment). `tokens` includes the BOS/EOS pad (id 0) KokoroPhonemizer.
+        // Tokenize() always adds around the real phoneme characters, so the real phoneme length is
+        // numTokens-2 (clamped, in case a caller ever passes tokens without that padding).
+        if (styleVector.IsEmpty && _weights is not null)
         {
-            styleVector = loadedStyle;
+            int phonemeLength = Math.Max(1, numTokens - 2);
+            if (_weights.GetStyleVector(phonemeLength) is { } loadedStyle)
+                styleVector = loadedStyle;
         }
 
         if (_weights is not null)

@@ -16,10 +16,12 @@ public sealed class KokoroStyleVectorDumpTests
         if (!File.Exists(modelPath) || !File.Exists(voicePath)) return;
 
         using var weights = new KokoroWeights(modelPath, voicePath);
-        Assert.NotNull(weights.StyleVector);
+        Assert.NotNull(weights.VoiceTable);
 
-        var bytes = new byte[weights.StyleVector!.Length * 4];
-        Buffer.BlockCopy(weights.StyleVector, 0, bytes, 0, bytes.Length);
+        // "hello" -> 6 real phoneme characters (h,ə,l,ˈ,o,ʊ) -> real row index 6-1=5 (pack[len(ps)-1]).
+        var row = weights.GetStyleVector(phonemeLength: 6)!;
+        var bytes = new byte[row.Length * 4];
+        Buffer.BlockCopy(row, 0, bytes, 0, bytes.Length);
         File.WriteAllBytes(@"C:\Git-Public\OpenTail.Stingray\scratch-llamacpp-ref\af_heart_style_real.f32", bytes);
     }
 }
