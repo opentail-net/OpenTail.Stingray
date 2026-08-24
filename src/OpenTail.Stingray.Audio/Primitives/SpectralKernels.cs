@@ -103,7 +103,7 @@ internal static unsafe class SpectralKernels
     /// -- so only the n/2+1 non-redundant bins are needed). Reuses <see cref="GetTwiddleTables"/>'s
     /// forward-DFT cos/sin tables: cosTab[k*n+t] = cos(2*pi*k*t/n) (cosine is even), sinTab[k*n+t]
     /// = -sin(2*pi*k*t/n) (forward DFT uses the negative-angle convention), so the inverse formula
-    /// above needs `+Im(X[k])*sinTab[...]` rather than `-Im(X[k])*sin(...)`, matching the sign flip.
+    /// above needs `-Im(X[k])*sinTab[...]` to recover `+Im(X[k])*sin(2*pi*k*t/n)`.
     /// </summary>
     public static void InverseRealFft(ReadOnlySpan<float> real, ReadOnlySpan<float> imag, Span<float> output)
     {
@@ -118,7 +118,7 @@ internal static unsafe class SpectralKernels
             for (int k = 1; k < half - 1; k++)
             {
                 int idx = k * n + t;
-                sum += 2f * (real[k] * cosTable[idx] + imag[k] * sinTable[idx]);
+                sum += 2f * (real[k] * cosTable[idx] - imag[k] * sinTable[idx]);
             }
             output[t] = sum * invN;
         }
