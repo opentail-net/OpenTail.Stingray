@@ -485,4 +485,4 @@ examples/
 # Scratch working directories — throwaway per-session output, not project content.
 /scratch/
 /scratch2/
-/scratch-llamacpp-ref/
+/scratch-llamacpp-ref/speech.wav
