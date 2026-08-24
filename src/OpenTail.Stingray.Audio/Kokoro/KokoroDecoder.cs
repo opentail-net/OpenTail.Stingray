@@ -437,7 +437,7 @@ public static class KokoroDecoder
                     float angle = 2f * MathF.PI * k * n / nFft;
                     val += rC * MathF.Cos(angle) - iC * MathF.Sin(angle);
                     if (k > 0 && k < specBins - 1) // conjugate mirror bins
-                        val += rC * MathF.Cos(angle) + iC * MathF.Sin(angle);
+                        val += rC * MathF.Cos(angle) - iC * MathF.Sin(angle);
                 }
                 val /= nFft;
                 int si = start + n;
