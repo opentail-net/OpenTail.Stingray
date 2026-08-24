@@ -29,6 +29,11 @@ names are treated as valid, `doctor` would not have flagged it either. The warni
 `STINGRAY_MAX_QUEUE` and the dead entry is out of the registry, so the mistake is now reported with
 a closest-match suggestion.
 
+**Reconciled again 2026-08-24 — `KnownEnvironmentVariables.All` now contains **170** names**
+(added `STINGRAY_AUDIO_DIAGNOSTIC_DUMP`: a pre-existing `Environment.GetEnvironmentVariable` read in
+`ChatterboxPipeline`/`ChatterboxDecoder` that was never registered, caught by CI failing
+`KnownEnvironmentVariablesTests.ListMatchesSource`.)
+
 **Reconciled again 2026-08-21 — `KnownEnvironmentVariables.All` now contains **169** names**
 (added `STINGRAY_MLA_TRACE`, a temporary diagnostic env var for the deepseek2 MLA
 ground-truth-diffing investigation, and `STINGRAY_GGML_F16_DOT`, an opt-in switch that rounds
@@ -94,6 +99,12 @@ already removed several exactly that way (`STINGRAY_VABL`, `STINGRAY_WABL`, `STI
 **Counting note:** this counts distinct string literals, so a variable read in two projects appears
 once, grouped under both (the project-group headers below reflect that). It does not detect
 dynamically composed names.
+
+## OpenTail.Stingray.Audio
+
+| Variable | Class | Notes |
+|---|---|---|
+| `STINGRAY_AUDIO_DIAGNOSTIC_DUMP` | expert | Enables `Generate()` timing-breakdown diagnostic logging in `ChatterboxPipeline`/`ChatterboxDecoder` (`=1`). |
 
 ## OpenTail.Stingray.Cli
 

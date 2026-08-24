@@ -34,6 +34,7 @@ public static class KnownEnvironmentVariables
         "STINGRAY_ACT_SOA",
         "STINGRAY_ACT_SOA_CPA",
         "STINGRAY_ATTN_WAVE_BUDGET_MB",
+        "STINGRAY_AUDIO_DIAGNOSTIC_DUMP",
         "STINGRAY_BACKEND",
         "STINGRAY_BATCHED_ATTN",
         "STINGRAY_BATCHED_CPU_FFN",
