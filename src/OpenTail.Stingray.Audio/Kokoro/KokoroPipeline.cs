@@ -33,8 +33,12 @@ public sealed class KokoroPipeline : ITextToSpeechPipeline
         // 2. Phonemes to Token IDs
         int[] tokens = _phonemizer.Tokenize(phonemes);
 
-        // 3. Get Speaker Style Vector
-        float[] style = KokoroVoices.GetVoiceStyle(request.Voice);
+        // 3. Get Speaker Style Vector. A real trained style vector loaded from a voice GGUF
+        // (KokoroModel.Load(modelPath, voicePath)) always wins over KokoroVoices' procedural
+        // placeholder presets -- those are seeded-random "calibrated initial style vectors", not
+        // real speaker embeddings, and produce garbled/unintelligible speech if ever synthesized
+        // against real model weights (the model itself was never trained against them).
+        float[] style = _model.HasRealVoiceStyle ? [] : KokoroVoices.GetVoiceStyle(request.Voice);
 
         // 4. Model Forward Pass
         float[] samples = _model.Forward(tokens, style, request.Speed);

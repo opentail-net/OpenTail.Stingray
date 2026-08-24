@@ -83,7 +83,7 @@ public sealed class TtsCommand : Command<TtsCommand.Settings>
             {
                 "kokoro" => new KokoroPipeline(KokoroModel.Load(
                     ResolveKokoroModelPath(s.ModelPath),
-                    s.VoicesDir ?? ResolveKokoroVoicesDir(s.ModelPath))),
+                    ResolveKokoroVoiceFile(s.VoicesDir ?? ResolveKokoroVoicesDir(s.ModelPath), s.Voice))),
                 "piper" => s.ModelPath is not null
                     ? PiperPipeline.FromConfigFile(s.ModelPath)
                     : throw new ArgumentException("--model (-m) is required for the piper engine (path to .onnx.json config)."),
@@ -167,5 +167,26 @@ public sealed class TtsCommand : Command<TtsCommand.Settings>
     {
         string dir = modelPath is not null ? Path.GetDirectoryName(modelPath) ?? "models" : "models";
         return Directory.Exists(dir) ? dir : null;
+    }
+
+    /// <summary>
+    /// <c>KokoroWeights</c> takes a specific voice FILE path, not a directory -- passing a
+    /// directory silently fails its own `File.Exists` check, so no real trained style vector ever
+    /// loads and every synthesis falls back to <c>KokoroVoices</c>' procedural placeholder presets
+    /// (seeded-random "calibrated initial style vectors", never trained against the real model,
+    /// which produces garbled/unintelligible speech). Builds the real `kokoro-voice-{voice}.gguf`
+    /// filename and warns (does not fail the whole command) if it's missing, since synthesis still
+    /// works with the placeholder preset -- just not with that voice's real trained identity.
+    /// </summary>
+    private static string? ResolveKokoroVoiceFile(string? voicesDir, string voice)
+    {
+        if (voicesDir is null) return null;
+        string candidate = Path.Combine(voicesDir, $"kokoro-voice-{voice}.gguf");
+        if (File.Exists(candidate)) return candidate;
+
+        Console.Error.WriteLine(
+            $"Warning: no real voice file for '{voice}' at '{candidate}' -- using a procedural " +
+            "placeholder style vector instead of that voice's real trained identity.");
+        return null;
     }
 }

@@ -18,6 +18,9 @@ public sealed class KokoroModel : IDisposable
 
     private readonly KokoroWeights? _weights;
 
+    /// <summary>True when a real trained speaker style vector was loaded from a voice GGUF (see <see cref="Load"/>'s <c>voicePath</c>), as opposed to the procedural placeholder presets in <see cref="KokoroVoices"/>.</summary>
+    public bool HasRealVoiceStyle => _weights?.StyleVector is not null;
+
     public KokoroModel(int hiddenDim = 512, int numLayers = 3, KokoroWeights? weights = null)
     {
         HiddenDim = hiddenDim;
