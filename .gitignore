@@ -457,6 +457,9 @@ prof/
 **/appsettings.Local.json
 
 # Gemma 4 vision parity golden — large binary, regenerable via scripts/gemma4uv_ref.py (issue #250).
+scripts/gemma4uv_ref.py
+scripts/compare_tokens.py
+scripts/extract_reference.py
 # meta.json (the spec) stays tracked.
 tests/fixtures/gemma4uv/*.f32
 
