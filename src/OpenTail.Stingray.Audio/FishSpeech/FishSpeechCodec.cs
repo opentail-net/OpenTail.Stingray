@@ -1,5 +1,6 @@
 using System;
 using System.Threading.Tasks;
+using OpenTail.Stingray.Cpu;
 
 namespace OpenTail.Stingray.Audio.FishSpeech;
 
@@ -65,31 +66,51 @@ public static class FishSpeechCodec
         return output;
     }
 
-    /// <summary>Real causal FULL Conv1d: left-pad only by `(kernel-1)*dilation` (equivalently `causalPadLeft`), zero right-pad. Weight layout [out, in, kernel] flat row-major.</summary>
-    private static float[] FullConv1d(float[] x, int inCh, int outCh, int t, float[] weight, float[] bias, int kernel, int dilation, int causalPadLeft)
+    /// <summary>
+    /// Real causal FULL Conv1d: left-pad only by `(kernel-1)*dilation` (equivalently `causalPadLeft`), zero right-pad. Weight layout [out, in, kernel] flat row-major.
+    ///
+    /// <para>Implemented as im2col + GEMM (mirrors the real `ggml_conv_1d`'s own im2col+mul_mat
+    /// lowering, see `examples/s2.cpp`'s `s2_codec.cpp`): the gather (im2col) is independent of
+    /// `oc`, so it is hoisted out of the per-output-channel loop and done once; each output
+    /// channel then reduces to one contiguous AVX2/FMA dot product per timestep via
+    /// <see cref="SimdKernels.DotF32"/>, instead of a scalar `inCh*kernel` loop. Measured ~9x
+    /// faster in the full codec decode (see docs/audio-review-progress.md's Fish Speech codec
+    /// SIMD section) -- the previous scalar-loop version was the dominant remaining bottleneck.</para>
+    /// </summary>
+    private static unsafe float[] FullConv1d(float[] x, int inCh, int outCh, int t, float[] weight, float[] bias, int kernel, int dilation, int causalPadLeft)
     {
-        var output = new float[outCh * t];
-        Parallel.For(0, outCh, oc =>
+        int rowLen = inCh * kernel;
+        var col = new float[t * rowLen]; // [ti][ic*kernel+k], matches weight's [oc][ic*kernel+k] layout
+        Parallel.For(0, t, ti =>
         {
-            float b = bias[oc];
-            int wOcBase = oc * inCh * kernel;
-            int outBase = oc * t;
-            for (int ti = 0; ti < t; ti++)
+            int rowBase = ti * rowLen;
+            for (int ic = 0; ic < inCh; ic++)
             {
-                float sum = b;
-                for (int ic = 0; ic < inCh; ic++)
+                int xBase = ic * t;
+                int rBase = rowBase + ic * kernel;
+                for (int k = 0; k < kernel; k++)
                 {
-                    int xBase = ic * t;
-                    int wBase = wOcBase + ic * kernel;
-                    for (int k = 0; k < kernel; k++)
-                    {
-                        int src = ti - causalPadLeft + k * dilation;
-                        if ((uint)src < (uint)t) sum += x[xBase + src] * weight[wBase + k];
-                    }
+                    int src = ti - causalPadLeft + k * dilation;
+                    col[rBase + k] = (uint)src < (uint)t ? x[xBase + src] : 0f;
                 }
-                output[outBase + ti] = sum;
             }
         });
+
+        var output = new float[outCh * t];
+        fixed (float* colPtr = col, weightPtr = weight, outputPtr = output)
+        {
+            var colPtrLocal = colPtr;
+            var weightPtrLocal = weightPtr;
+            var outputPtrLocal = outputPtr;
+            Parallel.For(0, outCh, oc =>
+            {
+                float b = bias[oc];
+                float* wOc = weightPtrLocal + oc * rowLen;
+                float* outBase = outputPtrLocal + oc * t;
+                for (int ti = 0; ti < t; ti++)
+                    outBase[ti] = b + SimdKernels.DotF32(wOc, colPtrLocal + ti * rowLen, rowLen);
+            });
+        }
         return output;
     }
 
@@ -183,44 +204,46 @@ public static class FishSpeechCodec
     }
 
     /// <summary>Real `ConvNeXtBlock`: causal depthwise conv (k=7) -> per-position (channels-last) LayerNorm -> Linear expand (4x) -> GELU -> Linear project -> per-channel LayerScale (`gamma`) -> residual.</summary>
-    private static float[] ConvNeXtBlock(float[] x, int channels, int t, FishSpeechConvNeXtBlockWeights w)
+    private static unsafe float[] ConvNeXtBlock(float[] x, int channels, int t, FishSpeechConvNeXtBlockWeights w)
     {
         var y = DepthwiseConv1d(x, channels, t, w.DwConvWeight, w.DwConvBias, kernel: 7, causalPadLeft: 6);
 
         int hidden = channels * 4;
         var output = new float[x.Length];
-        Parallel.For(0, t, ti =>
+        fixed (float* pw1 = w.PwConv1Weight, pw2 = w.PwConv2Weight)
         {
-            // Gather this position's channel vector (channels-last for LayerNorm/Linear).
-            var row = new float[channels];
-            for (int c = 0; c < channels; c++) row[c] = y[c * t + ti];
-
-            float mean = 0f;
-            for (int c = 0; c < channels; c++) mean += row[c];
-            mean /= channels;
-            float variance = 0f;
-            for (int c = 0; c < channels; c++) { float d = row[c] - mean; variance += d * d; }
-            variance /= channels;
-            float invStd = 1f / MathF.Sqrt(variance + 1e-6f);
-            for (int c = 0; c < channels; c++) row[c] = (row[c] - mean) * invStd * w.NormWeight[c] + w.NormBias[c];
-
-            var h = new float[hidden];
-            for (int o = 0; o < hidden; o++)
+            var pw1Local = pw1;
+            var pw2Local = pw2;
+            Parallel.For(0, t, ti =>
             {
-                float sum = w.PwConv1Bias[o];
-                int wBase = o * channels;
-                for (int c = 0; c < channels; c++) sum += row[c] * w.PwConv1Weight[wBase + c];
-                h[o] = Gelu(sum);
-            }
+                // Gather this position's channel vector (channels-last for LayerNorm/Linear;
+                // contiguous so the two Linear layers below can use a straight AVX2 dot product).
+                var row = new float[channels];
+                for (int c = 0; c < channels; c++) row[c] = y[c * t + ti];
 
-            for (int c = 0; c < channels; c++)
-            {
-                float sum = w.PwConv2Bias[c];
-                int wBase = c * hidden;
-                for (int o = 0; o < hidden; o++) sum += h[o] * w.PwConv2Weight[wBase + o];
-                output[c * t + ti] = x[c * t + ti] + sum * w.Gamma[c];
-            }
-        });
+                float mean = 0f;
+                for (int c = 0; c < channels; c++) mean += row[c];
+                mean /= channels;
+                float variance = 0f;
+                for (int c = 0; c < channels; c++) { float d = row[c] - mean; variance += d * d; }
+                variance /= channels;
+                float invStd = 1f / MathF.Sqrt(variance + 1e-6f);
+                for (int c = 0; c < channels; c++) row[c] = (row[c] - mean) * invStd * w.NormWeight[c] + w.NormBias[c];
+
+                var h = new float[hidden];
+                fixed (float* rowPtr = row, hPtr = h)
+                {
+                    for (int o = 0; o < hidden; o++)
+                        hPtr[o] = Gelu(w.PwConv1Bias[o] + SimdKernels.DotF32(rowPtr, pw1Local + o * channels, channels));
+
+                    for (int c = 0; c < channels; c++)
+                    {
+                        float sum = w.PwConv2Bias[c] + SimdKernels.DotF32(hPtr, pw2Local + c * hidden, hidden);
+                        output[c * t + ti] = x[c * t + ti] + sum * w.Gamma[c];
+                    }
+                }
+            });
+        }
         return output;
     }
 
