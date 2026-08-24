@@ -8789,3 +8789,77 @@ significant fraction of total wall time. No further F32-GEMV candidates identifi
 this session's survey (FunASR/Kokoro/Chatterbox-T3/Piper confirmed not applicable, prior entry).
 
 No subagents used.
+
+## Fish Speech 0.20 tok/s root cause + im2col/AVX2 Conv1d vectorization sweep (2026-08-24)
+
+User question: "what exactly is the problem with 'fish'? can we compare performance to cpp?"
+Both previously-suspected causes (uncached fast-AR, sequential prompt prefill) were already fixed
+in the codebase predating this session. Root-caused the real bottleneck by isolating
+`FishSpeechCodec.Decode` (the DAC-style vocoder) with a dedicated benchmark: **11.2s median for
+just 15 frames (~0.7s of audio)**, dwarfing the slow-AR/fast-AR generation loop. `FullConv1d` and
+`ConvNeXtBlock`'s dense layers were plain scalar triple-nested loops -- unlike the F16C GEMV work
+earlier this session, nobody had vectorized the codec/vocoder *convolution* primitives.
+
+**Built the real C++ reference for comparison**: `examples/s2.cpp` (ggml-based Fish Speech S2 Pro
+port) configured and built clean with MSVC (`vcvarsall.bat x64` + Ninja; the correct
+`BuildTools\...\vcvarsall.bat` path has the full toolchain -- a separate `Program Files
+(x86)\...\BuildTools\VC\Tools\MSVC` install on this machine is missing its `include/` dir entirely
+and must not be used). Confirmed AVX2/FMA/F16C detected via ggml's own CMake checks. Ran
+`s2.exe -text "Hello there." -max-tokens 15 --codec-cpu`: **total 4967ms** (prefill 446ms + decode
+loop 3292ms + codec decode 1224ms) -- confirms `s2_codec.cpp`'s `ggml_conv_1d` (im2col + `ggml`'s
+own AVX2/AVX-512 GEMM, OpenMP-threaded) is the architecture our scalar C# loops needed to match,
+not a fundamentally different algorithm.
+
+**Fix**: im2col + `SimdKernels.DotF32` (AVX2/FMA) -- hoist the gather (independent of output
+channel) out of the per-oc loop, reducing each output channel's per-timestep reduction to one
+contiguous AVX2 dot product instead of a scalar `inCh*kernel` loop. Applied first to
+`FishSpeechCodec.FullConv1d`/`ConvNeXtBlock`, verified real numbers, then **audited every other
+Audio decoder for the same naive-scalar-Conv1d pattern** rather than stopping at one pipeline
+(explicit user ask: "do ALL the changes for ALL models, then correctness+performance for ALL").
+
+Audit result: `Primitives/HiFTVocoderKernels.cs` (CosyVoice/Chatterbox), `Kokoro/KokoroDecoder.cs`,
+and the shared `Primitives/HifiGanKernels.cs` (MeloTTS + Piper's HiFi-GAN vocoder) were **already**
+vectorized via `TensorPrimitives.MultiplyAdd`-based output-stationary AXPY (a different valid SIMD
+strategy, presumably from an earlier pass) -- left untouched. `F5TTS/F5Kernels.cs`'s `Linear` was
+already `DotF32`-based; its one `Conv1dSamePad`/`DepthwiseConv1dSamePad` calls are one-shot (not
+looped per decoder block) so left as low-value. Four genuinely naive files found and fixed:
+`Parler/DacDecoder.cs` (`FullConv1d`, channel-major, symmetric padding), `Orpheus/SnacDecoder.cs`
+(`PointwiseConv1d`/`FullConv1dToMono` -- transposed once since `x` is channel-major but weight
+access wants contiguous `ic`), `QwenTTS/QwenTtsCodecDac.cs` (`CausalConv1d` -- time-major `[T][C]`
+layout, so the WEIGHT was transposed once per call from `[oc,ic,k]` to `[oc,k,ic]` to let the
+im2col gather use `Array.Copy` per `(ti,k)` slice against contiguous input rows, instead of
+transposing input), `Piper/PiperFlow.cs` (`DilatedConv` in the WN/flow stack -- `Conv1x1` in the
+same file was already `MatVecF32`-based, only the kernel>1 dilated conv was missed).
+
+**Real measured before/after** (median of 5 runs, real weights, 15-frame/token benchmarks added
+next to each pipeline's existing golden test; "before" numbers captured via `git stash` of just the
+4 non-Fish-Speech source files so the exact same benchmark/build ran the old scalar code):
+
+| Pipeline | Before | After | Speedup |
+|---|---:|---:|---:|
+| Fish Speech codec (`FishSpeechCodec.Decode`) | 11198ms | 2629-3307ms (run-to-run variance) | ~3.4-4.3x |
+| Fish Speech full pipeline (`FishSpeechFullPipelinePerfBenchTests`, 15 tok) | ~76.9s (prior session baseline) | 5.72s | ~13.4x (0.20 -> ~2.6 tok/s) |
+| Parler DAC decoder (`DacDecoder.Decode`) | 2639ms | 579ms | 4.6x |
+| Orpheus SNAC decoder (`SnacDecoder.Decode`) | 1274ms | 795ms | 1.6x |
+| Qwen-TTS DAC codec (`QwenTtsCodecDac.Forward`) | 6691ms | 1272ms | 5.3x |
+| Piper flow (`PiperFlow.Reverse`, WN dilated conv) | 102ms | 41ms | 2.5x |
+
+Fish Speech's full-pipeline 5.72s is now within ~15% of the real `s2.exe`/ggml C++ reference's
+4967ms for the identical `-max-tokens 15` run -- close enough that chasing the remaining gap would
+mean building actual tiled/blocked GEMM for the conv (ggml's `ggml_compute_forward_mul_mat`) rather
+than a per-(oc,ti) dot product loop, a real but much smaller remaining lever. Considering this
+closed unless asked to push further.
+
+All correctness/golden tests re-verified against real weights after each change and pass:
+`FishSpeechCodecTests`, `DacDecoderTests`, `SnacDecoderTests`, `QwenTtsCodecDacTests`,
+`QwenTtsCodecDacFullChainTests`, `PiperFlowTests` (10/10, `skipped: 0`).
+
+**Process note, not a code finding**: mid-way through capturing a baseline, ran a full
+`dotnet build src/OpenTail.Stingray.Audio` while a separate `dotnet test` process for the same
+assembly was still running in the background -- this produced one spurious failure
+(`FishSpeechFastArTests.Forward_RealWeights_MatchesGoldenOracle`, cosine 0.497) in a file untouched
+this session. Killed the stray processes and reran clean; treating this as a rebuild/file-lock race
+on the shared `OpenTail.Stingray.Audio.dll`, not a real regression -- don't rebuild `src/*` while a
+`dotnet test` run against the same output is in flight.
+
+No subagents used.
