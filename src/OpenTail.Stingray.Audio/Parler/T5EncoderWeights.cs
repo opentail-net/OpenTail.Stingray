@@ -1,4 +1,5 @@
 using System;
+using OpenTail.Stingray.Audio.Primitives;
 using OpenTail.Stingray.Core;
 
 namespace OpenTail.Stingray.Audio.Parler;
@@ -49,19 +50,21 @@ public sealed class T5EncoderWeights
         FinalLayerNormWeight = loader.ReadF32("text_encoder.encoder.final_layer_norm.weight");
         RelativeAttentionBias = loader.ReadF32("text_encoder.encoder.block.0.layer.0.SelfAttention.relative_attention_bias.weight");
 
+        int qkvDim = NumHeads * DKv; // 1024, equals DModel for this config
+
         for (int i = 0; i < NumLayers; i++)
         {
             string p = $"text_encoder.encoder.block.{i}";
             Layers[i] = new T5LayerWeights
             {
-                SelfAttnQWeight = loader.ReadF32($"{p}.layer.0.SelfAttention.q.weight"),
-                SelfAttnKWeight = loader.ReadF32($"{p}.layer.0.SelfAttention.k.weight"),
-                SelfAttnVWeight = loader.ReadF32($"{p}.layer.0.SelfAttention.v.weight"),
-                SelfAttnOWeight = loader.ReadF32($"{p}.layer.0.SelfAttention.o.weight"),
+                SelfAttnQWeight = CfmLinearWeight.FromF32(loader.ReadF32($"{p}.layer.0.SelfAttention.q.weight"), outDim: qkvDim, inDim: DModel),
+                SelfAttnKWeight = CfmLinearWeight.FromF32(loader.ReadF32($"{p}.layer.0.SelfAttention.k.weight"), outDim: qkvDim, inDim: DModel),
+                SelfAttnVWeight = CfmLinearWeight.FromF32(loader.ReadF32($"{p}.layer.0.SelfAttention.v.weight"), outDim: qkvDim, inDim: DModel),
+                SelfAttnOWeight = CfmLinearWeight.FromF32(loader.ReadF32($"{p}.layer.0.SelfAttention.o.weight"), outDim: DModel, inDim: qkvDim),
                 SelfAttnLayerNormWeight = loader.ReadF32($"{p}.layer.0.layer_norm.weight"),
-                FfnWi0Weight = loader.ReadF32($"{p}.layer.1.DenseReluDense.wi_0.weight"),
-                FfnWi1Weight = loader.ReadF32($"{p}.layer.1.DenseReluDense.wi_1.weight"),
-                FfnWoWeight = loader.ReadF32($"{p}.layer.1.DenseReluDense.wo.weight"),
+                FfnWi0Weight = CfmLinearWeight.FromF32(loader.ReadF32($"{p}.layer.1.DenseReluDense.wi_0.weight"), outDim: DFf, inDim: DModel),
+                FfnWi1Weight = CfmLinearWeight.FromF32(loader.ReadF32($"{p}.layer.1.DenseReluDense.wi_1.weight"), outDim: DFf, inDim: DModel),
+                FfnWoWeight = CfmLinearWeight.FromF32(loader.ReadF32($"{p}.layer.1.DenseReluDense.wo.weight"), outDim: DModel, inDim: DFf),
                 FfnLayerNormWeight = loader.ReadF32($"{p}.layer.1.layer_norm.weight"),
             };
         }
@@ -70,13 +73,13 @@ public sealed class T5EncoderWeights
 
 public sealed class T5LayerWeights
 {
-    public required float[] SelfAttnQWeight { get; init; }
-    public required float[] SelfAttnKWeight { get; init; }
-    public required float[] SelfAttnVWeight { get; init; }
-    public required float[] SelfAttnOWeight { get; init; }
+    public required CfmLinearWeight SelfAttnQWeight { get; init; }
+    public required CfmLinearWeight SelfAttnKWeight { get; init; }
+    public required CfmLinearWeight SelfAttnVWeight { get; init; }
+    public required CfmLinearWeight SelfAttnOWeight { get; init; }
     public required float[] SelfAttnLayerNormWeight { get; init; }
-    public required float[] FfnWi0Weight { get; init; }
-    public required float[] FfnWi1Weight { get; init; }
-    public required float[] FfnWoWeight { get; init; }
+    public required CfmLinearWeight FfnWi0Weight { get; init; }
+    public required CfmLinearWeight FfnWi1Weight { get; init; }
+    public required CfmLinearWeight FfnWoWeight { get; init; }
     public required float[] FfnLayerNormWeight { get; init; }
 }

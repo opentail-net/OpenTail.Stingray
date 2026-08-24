@@ -8749,3 +8749,43 @@ math (untouched) are a larger fraction of this encoder's total cost than in Whis
 TTS's T5 encoder remains the one identified-but-not-yet-wired candidate for a future session.
 
 No subagents used.
+
+## Native F16C wired into Parler-TTS's T5 text encoder -- fourth pipeline, correctness clean, small full-pipeline delta by design (encoder isn't the bottleneck here)
+
+Direct follow-up to the prior entry's identified-but-unwired candidate. Reused `CfmLinearWeight`
+as-is (T5's `SelfAttention`/`GatedFfn` were already single-row, no-bias `LinearNoBias` calls, the
+same direct fit as QwenASR's encoder). Converted `T5LayerWeights`' `SelfAttnQWeight/KWeight/
+VWeight/OWeight` and `FfnWi0Weight/FfnWi1Weight/FfnWoWeight` (real T5 gated-GELU FFN: `wi_0`/`wi_1`
+are the gate/up pair, `wo` the down projection) to `CfmLinearWeight`, dims passed as compile-time
+constants (`DModel`/`DFf`/`qkvDim`) since none of these tensors have a bias to infer shape from
+(real T5 convention: no bias anywhere in `SelfAttention`/`DenseGatedActDense`). `T5Encoder.cs`'s
+`LinearNoBias` helper removed entirely -- every call site now just calls `weight.MatVec(input)`
+directly.
+
+All 3 correctness tests re-pass clean (`T5EncoderTests`, `ParlerFullPipelineTests`,
+`ParlerFullPipelineGgufTests`). **Real end-to-end re-measurement**
+(`ParlerFullPipelinePerfBenchTests`, 30 generated tokens, 5 runs):
+
+| | Before (F32) | After (native F16C) | Delta |
+|---|---:|---:|---:|
+| Full synthesis (encode once + 30 decode steps) | 17992ms mean | 17378ms mean | ~3.4% faster |
+
+**This small full-pipeline delta is the expected, correct result, not a disappointing one**: the T5
+encoder runs exactly ONCE per synthesis call (encoding the input text), while the autoregressive
+decoder runs once per generated token (30x here) and dominates total wall time -- and the decoder
+was already Q8_0-quantized in an earlier, separate fix, untouched by this change. Unlike Whisper
+(encoder = 87% of total time) or CosyVoice's CFM decoder (the single largest per-stage cost in its
+pipeline), Parler's encoder was never the bottleneck to begin with, so even a substantial win on
+its own isolated cost has limited room to move the full-pipeline number. The fix is real and
+correctness-verified regardless; it simply isn't addressing this pipeline's actual bottleneck
+(the decoder's autoregressive loop, per the very first cross-pipeline perf survey this session:
+Parler measured 1.67 tok/s, the best of Fish Speech/Orpheus/Parler but still not fast).
+
+Fourth pipeline this session where the same lever produced a correctness-clean, measured result
+(Whisper 4.5-4.7x, CosyVoice/Chatterbox CFM 1.5x, QwenASR encoder 1.36x, Parler T5 encoder ~3.4%
+full-pipeline / real-but-unmeasured-in-isolation win) -- and the first case demonstrating the
+lever's limits: it only moves the needle on pipelines where the converted component is actually a
+significant fraction of total wall time. No further F32-GEMV candidates identified in Audio after
+this session's survey (FunASR/Kokoro/Chatterbox-T3/Piper confirmed not applicable, prior entry).
+
+No subagents used.

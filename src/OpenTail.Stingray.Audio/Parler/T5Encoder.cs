@@ -93,9 +93,9 @@ public static class T5Encoder
         var v = new float[t][];
         Parallel.For(0, t, i =>
         {
-            q[i] = LinearNoBias(x[i], lw.SelfAttnQWeight, T5EncoderWeights.DModel, qkvDim);
-            k[i] = LinearNoBias(x[i], lw.SelfAttnKWeight, T5EncoderWeights.DModel, qkvDim);
-            v[i] = LinearNoBias(x[i], lw.SelfAttnVWeight, T5EncoderWeights.DModel, qkvDim);
+            q[i] = lw.SelfAttnQWeight.MatVec(x[i]);
+            k[i] = lw.SelfAttnKWeight.MatVec(x[i]);
+            v[i] = lw.SelfAttnVWeight.MatVec(x[i]);
         });
 
         var context = new float[t][];
@@ -122,7 +122,7 @@ public static class T5Encoder
         });
 
         var output = new float[t][];
-        Parallel.For(0, t, i => output[i] = LinearNoBias(context[i], lw.SelfAttnOWeight, qkvDim, T5EncoderWeights.DModel));
+        Parallel.For(0, t, i => output[i] = lw.SelfAttnOWeight.MatVec(context[i]));
         return output;
     }
 
@@ -133,10 +133,10 @@ public static class T5Encoder
         var output = new float[t][];
         Parallel.For(0, t, i =>
         {
-            var gate = LinearNoBias(x[i], lw.FfnWi0Weight, T5EncoderWeights.DModel, T5EncoderWeights.DFf);
-            var up = LinearNoBias(x[i], lw.FfnWi1Weight, T5EncoderWeights.DModel, T5EncoderWeights.DFf);
+            var gate = lw.FfnWi0Weight.MatVec(x[i]);
+            var up = lw.FfnWi1Weight.MatVec(x[i]);
             for (int d = 0; d < T5EncoderWeights.DFf; d++) gate[d] = GeluNew(gate[d]) * up[d];
-            output[i] = LinearNoBias(gate, lw.FfnWoWeight, T5EncoderWeights.DFf, T5EncoderWeights.DModel);
+            output[i] = lw.FfnWoWeight.MatVec(gate);
         });
         return output;
     }
@@ -191,16 +191,6 @@ public static class T5Encoder
 
         relativeBuckets += isSmall ? relativePosition : relativePositionIfLarge;
         return relativeBuckets;
-    }
-
-    private static unsafe float[] LinearNoBias(float[] input, float[] weight, int inDim, int outDim)
-    {
-        var output = new float[outDim];
-        fixed (float* wp = weight, xp = input, op = output)
-        {
-            SimdKernels.MatVecF32(op, wp, xp, outDim, inDim);
-        }
-        return output;
     }
 
     /// <summary>Real T5LayerNorm: pure RMSNorm, NO bias, NO mean-subtraction.</summary>
