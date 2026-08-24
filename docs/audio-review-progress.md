@@ -8652,3 +8652,50 @@ sourced i.e. real F32 on disk, purely GEMV-bound across 10 Euler-step UNet forwa
 algorithmic/recomputation issue) as the credible next target -- not yet tested.
 
 No subagents used (one violation earlier this session, already flagged and stopped when caught).
+
+## Native F16C wired into CosyVoice2/Chatterbox's shared CFM decoder -- confirms the technique generalizes beyond Whisper, real 1.5x win on the actual bottleneck
+
+Direct follow-up to the isolated CFM-shape microbenchmark (t=128, dim 256-1024, measured 2.6-3.1x
+faster than F32 in isolation) -- also tried a software-prefetch variant of the native F16C kernel
+first (modeled on ggml's own prefetch use in strided quantized-dot-product loops), which measured
+19-23% SLOWER on the encoder shapes that matter (the kernel's inner loop is a simple contiguous
+scan the hardware prefetcher already handles well) and was NOT applied -- fourth confirmed
+instance this session of a plausible memory-optimization idea losing to the existing
+implementation.
+
+**Wired the proven native F16C kernel into `CfmUNetKernels`** (shared by CosyVoice2's and
+Chatterbox's CFM decoders): new `CfmLinearWeight` (Primitives) converts a plain F32 weight matrix
+to F16 ONCE at construction time (unlike `WhisperLinearWeight`, which reuses raw F16 bits already
+present in Whisper's ggml files at zero conversion cost -- CosyVoice/Chatterbox's weights are
+Safetensors-sourced, real F32 on disk, so this is a genuine one-time conversion cost amortized over
+the pipeline's lifetime) and dispatches every subsequent `MatVec` call through `F16CNative`,
+falling back to the existing F32 path when the native shim isn't available. `IResnetBlockWeights.
+MlpWeight` and `IUnetTransformerBlockWeights.{QWeight,KWeight,VWeight,OutWeight,FfUpWeight,
+FfDownWeight}` (both interfaces, both concrete implementers -- `CosyVoiceCfm*Weights` and
+`ChatterboxCfm*Weights`) now hold `CfmLinearWeight` instead of raw `float[]`; `CfmUNetKernels`'s
+`Linear`/`LinearNoBias` helpers collapsed into a single `Linear(input, CfmLinearWeight, bias)` that
+just calls `weight.MatVec(input)`. Convolutions (`CausalConv1d`/`Conv1dK1`) are untouched -- a
+structurally different operation this change doesn't address.
+
+All 4 correctness tests re-pass clean (`ChatterboxCfmDecoderTests`, `CosyVoiceCfmDecoderTests`,
+`ChatterboxVocoderTests` -- the vocoder test exercises `ChatterboxS3GenWeights`' shared loading
+path too, confirmed unaffected). **Real end-to-end re-measurement of the actual bottleneck**
+(`CosyVoiceCfmDecoder_Benchmark_RealisticFrameCount`, 128 frames, real 10-step Euler solve, 3 runs):
+
+| | Before (F32) | After (native F16C) | Delta |
+|---|---:|---:|---:|
+| CFM decoder full solve | ~15.1-15.8s avg | **10.5s avg** (11157/10189/10204ms) | **~1.5x faster** |
+
+Smaller than the isolated GEMV-only microbenchmark's 2.6-3.1x, as expected -- the full decoder's
+cost also includes attention math, causal convolutions, and layer norms, none of which this change
+touches. Still a real, substantial cut to the single largest per-stage cost in the whole CosyVoice2
+pipeline (was larger than LLM prefill + flow encoder + HiFT vocoder combined).
+
+Confirms the broader claim from the Whisper entry: this technique is not inherently
+Whisper/GGUF-specific -- "convert F32 weights to F16 once at load time, dispatch through the same
+proven native kernel forever after" is a real, generalizable lever for any GEMV-bound safetensors-
+sourced model, not just ones that already ship F16 on disk. Ruled out for Fish Speech/Orpheus (see
+prior entry: already GGUF-quantized, and their real bottleneck is architectural/recomputation, not
+GEMV throughput).
+
+No subagents used.

@@ -393,7 +393,7 @@ public sealed class ChatterboxCfmResnetWeights : IResnetBlockWeights
     public float[] Block2ConvBias { get; }
     public float[] Block2LnWeight { get; }
     public float[] Block2LnBias { get; }
-    public float[] MlpWeight { get; }         // [dimOut, timeEmbedDim]
+    public CfmLinearWeight MlpWeight { get; }         // [dimOut, timeEmbedDim]
     public float[] MlpBias { get; }
     public float[] ResConvWeight { get; }     // [dimOut, dimIn, 1]
     public float[] ResConvBias { get; }
@@ -408,8 +408,9 @@ public sealed class ChatterboxCfmResnetWeights : IResnetBlockWeights
         Block2ConvBias = w.GetTensor($"{prefix}.b2.0.bias");
         Block2LnWeight = w.GetTensor($"{prefix}.b2.2.weight");
         Block2LnBias = w.GetTensor($"{prefix}.b2.2.bias");
-        MlpWeight = w.GetTensor($"{prefix}.mlp.1.weight");
+        var mlpWeightF32 = w.GetTensor($"{prefix}.mlp.1.weight");
         MlpBias = w.GetTensor($"{prefix}.mlp.1.bias");
+        MlpWeight = CfmLinearWeight.FromF32(mlpWeightF32, outDim: MlpBias.Length, inDim: mlpWeightF32.Length / MlpBias.Length);
         ResConvWeight = w.GetTensor($"{prefix}.rc.weight");
         ResConvBias = w.GetTensor($"{prefix}.rc.bias");
     }
@@ -427,35 +428,42 @@ public sealed class ChatterboxCfmTransformerBlockWeights : IUnetTransformerBlock
 {
     public float[] Norm1Weight { get; }
     public float[] Norm1Bias { get; }
-    public float[] QWeight { get; }    // attn1.q [dim, heads*headDim], no bias
-    public float[] KWeight { get; }    // attn1.k, no bias
-    public float[] VWeight { get; }    // attn1.v, no bias
-    public float[] OutWeight { get; }  // attn1.o [heads*headDim, dim]
+    public CfmLinearWeight QWeight { get; }    // attn1.q [dim, heads*headDim], no bias
+    public CfmLinearWeight KWeight { get; }    // attn1.k, no bias
+    public CfmLinearWeight VWeight { get; }    // attn1.v, no bias
+    public CfmLinearWeight OutWeight { get; }  // attn1.o [heads*headDim, dim]
     public float[] OutBias { get; }
 
     public float[] Norm3Weight { get; }
     public float[] Norm3Bias { get; }
-    public float[] FfUpWeight { get; }    // [dim*4, dim]
+    public CfmLinearWeight FfUpWeight { get; }    // [dim*4, dim]
     public float[] FfUpBias { get; }
-    public float[] FfDownWeight { get; }  // [dim, dim*4]
+    public CfmLinearWeight FfDownWeight { get; }  // [dim, dim*4]
     public float[] FfDownBias { get; }
 
     public ChatterboxCfmTransformerBlockWeights(ChatterboxS3GenWeights w, string prefix)
     {
         Norm1Weight = w.GetTensor($"{prefix}.norm1.weight");
         Norm1Bias = w.GetTensor($"{prefix}.norm1.bias");
-        QWeight = w.GetTensor($"{prefix}.attn1.q.weight");
-        KWeight = w.GetTensor($"{prefix}.attn1.k.weight");
-        VWeight = w.GetTensor($"{prefix}.attn1.v.weight");
-        OutWeight = w.GetTensor($"{prefix}.attn1.o.weight");
+        var qF32 = w.GetTensor($"{prefix}.attn1.q.weight");
+        var kF32 = w.GetTensor($"{prefix}.attn1.k.weight");
+        var vF32 = w.GetTensor($"{prefix}.attn1.v.weight");
+        var outF32 = w.GetTensor($"{prefix}.attn1.o.weight");
         OutBias = w.GetTensor($"{prefix}.attn1.o.bias");
+        int dim = OutBias.Length;
+        QWeight = CfmLinearWeight.FromF32(qF32, outDim: qF32.Length / dim, inDim: dim);
+        KWeight = CfmLinearWeight.FromF32(kF32, outDim: kF32.Length / dim, inDim: dim);
+        VWeight = CfmLinearWeight.FromF32(vF32, outDim: vF32.Length / dim, inDim: dim);
+        OutWeight = CfmLinearWeight.FromF32(outF32, outDim: dim, inDim: outF32.Length / dim);
 
         Norm3Weight = w.GetTensor($"{prefix}.norm3.weight");
         Norm3Bias = w.GetTensor($"{prefix}.norm3.bias");
-        FfUpWeight = w.GetTensor($"{prefix}.ff.up.weight");
+        var ffUpF32 = w.GetTensor($"{prefix}.ff.up.weight");
         FfUpBias = w.GetTensor($"{prefix}.ff.up.bias");
-        FfDownWeight = w.GetTensor($"{prefix}.ff.down.weight");
+        FfUpWeight = CfmLinearWeight.FromF32(ffUpF32, outDim: FfUpBias.Length, inDim: ffUpF32.Length / FfUpBias.Length);
+        var ffDownF32 = w.GetTensor($"{prefix}.ff.down.weight");
         FfDownBias = w.GetTensor($"{prefix}.ff.down.bias");
+        FfDownWeight = CfmLinearWeight.FromF32(ffDownF32, outDim: FfDownBias.Length, inDim: ffDownF32.Length / FfDownBias.Length);
     }
 }
 

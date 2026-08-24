@@ -95,7 +95,7 @@ public static class CfmUNetKernels
 
         var mishTime = new float[timeEmb.Length];
         for (int i = 0; i < mishTime.Length; i++) mishTime[i] = Mish(timeEmb[i]);
-        var timeProj = Linear(mishTime, rw.MlpWeight, rw.MlpBias, timeEmb.Length, dimOut);
+        var timeProj = Linear(mishTime, rw.MlpWeight, rw.MlpBias);
         for (int c = 0; c < dimOut; c++)
         {
             float bias = timeProj[c];
@@ -128,9 +128,9 @@ public static class CfmUNetKernels
         {
             var row = new float[dim];
             Array.Copy(normed3, ti * dim, row, 0, dim);
-            var up = Linear(row, tw.FfUpWeight, tw.FfUpBias, dim, dim * 4);
+            var up = Linear(row, tw.FfUpWeight, tw.FfUpBias);
             GeluInPlace(up);
-            var down = Linear(up, tw.FfDownWeight, tw.FfDownBias, dim * 4, dim);
+            var down = Linear(up, tw.FfDownWeight, tw.FfDownBias);
             for (int c = 0; c < dim; c++) output[c * t + ti] = afterAttn[c * t + ti] + down[c];
         }
         return output;
@@ -146,9 +146,9 @@ public static class CfmUNetKernels
         {
             var row = new float[dim];
             Array.Copy(inputRowMajor, i * dim, row, 0, dim);
-            q[i] = LinearNoBias(row, tw.QWeight, dim, qkvDim);
-            k[i] = LinearNoBias(row, tw.KWeight, dim, qkvDim);
-            v[i] = LinearNoBias(row, tw.VWeight, dim, qkvDim);
+            q[i] = tw.QWeight.MatVec(row);
+            k[i] = tw.KWeight.MatVec(row);
+            v[i] = tw.VWeight.MatVec(row);
         }
 
         var context = new float[t][];
@@ -185,7 +185,7 @@ public static class CfmUNetKernels
         var output = new float[t * dim];
         for (int i = 0; i < t; i++)
         {
-            var projected = Linear(context[i], tw.OutWeight, tw.OutBias, qkvDim, dim);
+            var projected = Linear(context[i], tw.OutWeight, tw.OutBias);
             Array.Copy(projected, 0, output, i * dim, dim);
         }
         return output;
@@ -300,24 +300,11 @@ public static class CfmUNetKernels
         }
     }
 
-    private static unsafe float[] Linear(float[] input, float[] weight, float[] bias, int inDim, int outDim)
+    /// <summary>Linear layer via a <see cref="CfmLinearWeight"/> (real hardware F16C when available, F32 fallback otherwise) plus bias.</summary>
+    private static float[] Linear(float[] input, CfmLinearWeight weight, float[] bias)
     {
-        var output = new float[outDim];
-        fixed (float* w = weight, x = input, y = output)
-        {
-            SimdKernels.MatVecF32(y, w, x, outDim, inDim);
-        }
-        for (int o = 0; o < outDim; o++) output[o] += bias[o];
-        return output;
-    }
-
-    private static unsafe float[] LinearNoBias(float[] input, float[] weight, int inDim, int outDim)
-    {
-        var output = new float[outDim];
-        fixed (float* w = weight, x = input, y = output)
-        {
-            SimdKernels.MatVecF32(y, w, x, outDim, inDim);
-        }
+        var output = weight.MatVec(input);
+        for (int o = 0; o < output.Length; o++) output[o] += bias[o];
         return output;
     }
 }
@@ -328,7 +315,7 @@ public interface IResnetBlockWeights
     float[] Block1ConvBias { get; }
     float[] Block1LnWeight { get; }
     float[] Block1LnBias { get; }
-    float[] MlpWeight { get; }
+    CfmLinearWeight MlpWeight { get; }
     float[] MlpBias { get; }
     float[] Block2ConvWeight { get; }
     float[] Block2ConvBias { get; }
@@ -342,16 +329,16 @@ public interface IUnetTransformerBlockWeights
 {
     float[] Norm1Weight { get; }
     float[] Norm1Bias { get; }
-    float[] QWeight { get; }
-    float[] KWeight { get; }
-    float[] VWeight { get; }
-    float[] OutWeight { get; }
+    CfmLinearWeight QWeight { get; }
+    CfmLinearWeight KWeight { get; }
+    CfmLinearWeight VWeight { get; }
+    CfmLinearWeight OutWeight { get; }
     float[] OutBias { get; }
     float[] Norm3Weight { get; }
     float[] Norm3Bias { get; }
-    float[] FfUpWeight { get; }
+    CfmLinearWeight FfUpWeight { get; }
     float[] FfUpBias { get; }
-    float[] FfDownWeight { get; }
+    CfmLinearWeight FfDownWeight { get; }
     float[] FfDownBias { get; }
 }
 
