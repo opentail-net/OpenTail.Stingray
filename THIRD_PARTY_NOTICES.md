@@ -383,6 +383,16 @@ The native C# Text-to-Speech (TTS) architecture, G2P phonemizer frontend, and PL
   - Copyright (c) 2026 Contributors
   - License: MIT
 
+`src/OpenTail.Stingray.Audio/Kokoro/KokoroPhonemizer.cs`'s `RealKokoroVocab` table is transcribed
+verbatim from the real `hexgrad/Kokoro-82M` model's own published `config.json` ("vocab" key) --
+the actual phoneme-character-to-token-id mapping the model was trained with, not a derived or
+independently-authored artifact:
+
+- **Kokoro-82M**: <https://huggingface.co/hexgrad/Kokoro-82M>
+- Copyright (c) hexgrad
+- License: Apache License, Version 2.0 (same license as the model weights this port already loads;
+  full license text reproduced once under the vLLM entry below rather than duplicated here)
+
 ## Piper (VITS) TTS — MIT
 
 The native C# Piper VITS Text-to-Speech (TTS) architecture, character/IPA token intersperser, normalizing flow, and HiFi-GAN MRF neural vocoder in src/OpenTail.Stingray.Audio/Piper reference the Piper TTS project:
