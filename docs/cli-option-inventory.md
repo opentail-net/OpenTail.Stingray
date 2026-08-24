@@ -1,9 +1,11 @@
 # CLI option inventory — generated from source, classification complete
 
 **Generated:** by `scripts/gen-cli-option-inventory.ps1`, which scans `[CommandOption]` /
-`[Description]` pairs under `src/OpenTail.Stingray.Cli`. Last regenerated **2026-08-18**, recording
-**194 option declarations** across 16 command files — the same count the
-`StaticPlanConfigurationTests` guard enforces against source.
+`[Description]` pairs under `src/OpenTail.Stingray.Cli`. Last regenerated **2026-08-24**, recording
+**195 option declarations** across 16 command files — the same count the
+`StaticPlanConfigurationTests` guard enforces against source. (Reconciled one row of drift:
+`SttCommand`'s `--model-file` existed in source but had no row here — caught by CI failing
+`CliOptionInventory_DeclaredCountMatchesSource`.)
 
 The tables below are no longer hand-maintained. Regenerate with the script rather than editing rows
 by hand; `-Check` exits non-zero when they are stale.
@@ -314,6 +316,7 @@ hoc at each read site rather than in one place.
 | `--input <PATH>` | stable | Input 16kHz WAV audio file path for Speech-to-Text transcription or translation. |
 | `--language <LANG>` | stable | Spoken language code (e.g. en, es, fr, de, zh, ja). Default: auto/en. |
 | `--model <VARIANT>` | stable | Whisper model architecture preset: tiny (default), base, small, medium, large-v3, or turbo. |
+| `--model-file <PATH>` | stable | Path to a whisper.cpp GGML .bin checkpoint with real weights. If omitted, a file matching --model's preset name is searched for under ./models (e.g. ggml-tiny.bin); if none is found, the pipeline runs with untrained placeholder weights and a warning is printed. |
 | `--no-timestamps` | stable | Disable timestamp-aligned subtitle segment generation. |
 | `--output <PATH>` | stable | Optional output file path to write the transcribed text or subtitle segments. |
 | `--task <TASK>` | stable | ASR task: 'transcribe' (default) or 'translate' (translate to English). |

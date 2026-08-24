@@ -81,9 +81,9 @@ public sealed class TtsCommand : Command<TtsCommand.Settings>
         {
             pipeline = engine switch
             {
-                "kokoro" => s.ModelPath is not null
-                    ? new KokoroPipeline(KokoroModel.Load(s.ModelPath, s.VoicesDir))
-                    : new KokoroPipeline(),
+                "kokoro" => new KokoroPipeline(KokoroModel.Load(
+                    ResolveKokoroModelPath(s.ModelPath),
+                    s.VoicesDir ?? ResolveKokoroVoicesDir(s.ModelPath))),
                 "piper" => s.ModelPath is not null
                     ? PiperPipeline.FromConfigFile(s.ModelPath)
                     : throw new ArgumentException("--model (-m) is required for the piper engine (path to .onnx.json config)."),
@@ -137,5 +137,35 @@ public sealed class TtsCommand : Command<TtsCommand.Settings>
             Console.WriteLine($"Generated {audioDuration:F2}s audio in {sw.Elapsed.TotalSeconds:F2}s ({rtf:F2}x RTF) -> {s.OutputPath}");
             return 0;
         }
+    }
+
+    /// <summary>
+    /// Real GGUF weights only -- <c>KokoroModel</c>'s parameterless/weights-null constructor is a
+    /// pure procedural placeholder synth (see its own doc comment: "Supports both pure simulated/
+    /// procedural evaluation and real GGUF weights"), NOT real Kokoro-82M inference. Silently
+    /// falling back to it from a bare `stingray tts` invocation with no `-m` produced audible
+    /// garbage noise with no error -- always require a real model path, explicit or auto-resolved.
+    /// </summary>
+    private static string ResolveKokoroModelPath(string? given)
+    {
+        if (given is not null)
+        {
+            if (!File.Exists(given))
+                throw new ArgumentException($"Kokoro model file not found: '{given}'.");
+            return given;
+        }
+
+        foreach (var c in new[] { "models/kokoro-82m-q8_0.gguf", "models/kokoro-82m.gguf" })
+            if (File.Exists(c)) return c;
+
+        throw new ArgumentException(
+            "No Kokoro model found. Pass --model (-m) with a path to a Kokoro .gguf checkpoint " +
+            "(e.g. models/kokoro-82m-q8_0.gguf), or place one at that default path.");
+    }
+
+    private static string? ResolveKokoroVoicesDir(string? modelPath)
+    {
+        string dir = modelPath is not null ? Path.GetDirectoryName(modelPath) ?? "models" : "models";
+        return Directory.Exists(dir) ? dir : null;
     }
 }
