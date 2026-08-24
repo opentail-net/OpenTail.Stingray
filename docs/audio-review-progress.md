@@ -8863,3 +8863,70 @@ on the shared `OpenTail.Stingray.Audio.dll`, not a real regression -- don't rebu
 `dotnet test` run against the same output is in flight.
 
 No subagents used.
+
+## Vision patch-embedding im2col/AVX2 sweep -- measured and rejected (2026-08-24)
+
+User asked whether the Audio codec-decoder im2col+`SimdKernels.DotF32` vectorization technique
+translates to `src/OpenTail.Stingray.Vision/`. Audited every vision encoder for the same shape of
+naive-scalar patch-embedding conv found in Audio's DAC-style decoders (a strided, non-overlapping
+Conv2d with a contiguous per-output-channel weight row but a scattered channel-planar pixel gather
+redone once per output channel): found the identical pattern, largely copy-pasted per model, in 14
+files -- `CogVlmVisionEncoder`, `DeepSeekOcrVisionEncoder`, `DotsOcrVisionEncoder`,
+`Glm4VisionEncoder`, `Granite4VisionEncoder`, `InternVlVisionEncoder`, `KimiVisionEncoder`,
+`LlavaVisionEncoder`, `MiniCpmVisionEncoder`, `MobileNetV5VisionEncoder`, `NemotronVisionEncoder`,
+`PaddleOcrVisionEncoder`, `PixtralVisionEncoder`, `QwenVlVisionEncoder`.
+
+Applied the same fix to all 14 (hoist the pixel gather out of the per-output-channel loop into a
+contiguous `[c,dy,dx]` im2col buffer, independent of `d`; reduce each output channel to one AVX2/FMA
+`SimdKernels.DotF32` call). Build clean, and correctness held: 126/131 `Tests.Vision` tests passed,
+with all 4 failures independently confirmed pre-existing and unrelated (`Gemma3VisionEncoderTests`
+10-minute timeout and `MultimodalRealWeightsTests`' `YoutuVl_RealWeights_LoadsAndEmbedsImage` /
+`HunyuanVl_RealWeights_LoadsAndEmbedsImage` are in files never touched this pass;
+`MiniCpmV_RealWeights_LoadsAndEmbedsImage`'s "embeddings identical for distinct images" failure was
+reproduced identically against the original, unmodified `MiniCpmVisionEncoder.cs` via `git stash`,
+proving it predates this session's edits entirely).
+
+**But real before/after measurement (median of 5, real weights, via isolated
+`RealModel_PerfBenchmark` xUnit facts added next to `MobileNetV5VisionTests` and
+`QwenVlVisionRealWeightsTests`, "before" numbers captured the same way as the Audio sweep -- `git
+stash` of just the source fix, rebuild, rerun) told a different story than Audio's codec sweep**:
+
+| Encoder | Before | After | Result |
+|---|---:|---:|---:|
+| MobileNetV5 (gemma4uv stem conv, 896x896 image) | 1213ms | 6763ms | **5.5x SLOWER** |
+| QwenVl (2.5-VL ViT, 224x224 image, 256 patches) | 42399ms | 41695ms | 1.7% faster (noise-level) |
+
+Both results reject the change. **Why this differs from Audio's clear win**: in the Audio DAC-style
+codecs, the vectorized conv *was* the dominant cost of the whole decode (11.2s of an ~77s pipeline
+for Fish Speech, for example) -- shrinking it moved the total substantially. In Vision, the patch
+embedding is a single one-time step before dozens of full transformer blocks (attention + FFN, both
+already running through `VisionOps.MatVecAny`'s existing optimized path); even where the technique
+worked exactly as designed, the fraction of total wall time it touches is too small to matter
+(QwenVl's ~1.7% here rhymes with this session's Parler-TTS T5-encoder finding: a real, correctness-
+verified isolated win that "isn't addressing this pipeline's actual bottleneck"). MobileNetV5's
+outright regression has a distinct, additional cause: it's a CNN backbone's stem conv, not a ViT
+patch embedding, so its output channel count (`_embd`) is almost certainly small (tens, not
+thousands) -- for small `_embd` the original code's redundant per-output-channel pixel gather was
+already cheap (repeated only a few dozen times), while the rewrite's added per-patch heap allocation,
+pointer-pinning (`fixed`), and per-call `SimdKernels.DotF32` overhead (branch checks, horizontal sum)
+has no large redundant-work savings left to amortize against, so the added overhead shows up as a
+pure loss.
+
+**Action taken**: reverted all 14 source files (`git checkout --`, confirmed working tree byte-
+identical to HEAD) and both new benchmark test additions -- nothing from this investigation is kept
+in `src/`. This is a "measured and rejected" result, not a wasted session: it confirms the lever from
+the Audio sweep is real but architecture-dependent (big-conv-is-the-bottleneck decoders benefit;
+ViT patch embeddings and small-channel CNN stems do not), and the two `RealModel_PerfBenchmark`-style
+xUnit facts (deleted here, but the pattern is proven out and cheap to re-add) are the right template
+if a future change ever makes Vision's patch embedding a real bottleneck (e.g. a from-scratch CNN
+vision backbone with large channel counts, unlike anything currently in this codebase).
+
+**Process note**: `dotnet test` hung with near-zero CPU usage (only ~4s of actual CPU time over 10+
+minutes) against `Tests.Vision` on this machine, twice, for reasons not fully diagnosed (possibly an
+MSBuild node-reuse/lock interaction with the many idle persistent build-server processes already
+running) -- invoking the built `.exe` directly (`bin/Release/net10.0/OpenTail.Stingray.Tests.Vision.exe
+-method "<pattern>"`, per CLAUDE.md's documented single-dash flag convention for direct-exe
+invocation) worked reliably every time and should be preferred over `dotnet test` for this project
+going forward when a run seems stuck.
+
+No subagents used.
