@@ -485,4 +485,7 @@ examples/
 # Scratch working directories — throwaway per-session output, not project content.
 /scratch/
 /scratch2/
-/scratch-llamacpp-ref/speech.wav
+/scratch-llamacpp-ref/
+
+# CLI demo output (e.g. `stingray tts ... -o speech.wav` run from the repo root).
+/speech.wav
