@@ -51,8 +51,17 @@ public sealed class QwenAsrWeightsSafetensorsTests : HeavyTestBase
         Assert.Equal(151676, weights.AudioPadTokenId); // real cross-check: matches the GGUF checkpoint's own AudioPadTokenId exactly
 
         foreach (var v in weights.Conv1Weight) Assert.False(float.IsNaN(v) || float.IsInfinity(v));
-        foreach (var v in weights.AudioLayerWeights[0].AttnQWeight) Assert.False(float.IsNaN(v) || float.IsInfinity(v));
-        foreach (var v in weights.AudioLayerWeights[17].FfnDownWeight) Assert.False(float.IsNaN(v) || float.IsInfinity(v));
+        AssertFiniteOutput(weights.AudioLayerWeights[0].AttnQWeight);
+        AssertFiniteOutput(weights.AudioLayerWeights[17].FfnDownWeight);
+    }
+
+    /// <summary>Probes a CfmLinearWeight (real F16C or F32 fallback -- see its own doc comment) with an all-ones input and checks the output has no NaN/Infinity, since it no longer exposes its underlying bytes directly as a float[].</summary>
+    private static void AssertFiniteOutput(OpenTail.Stingray.Audio.Primitives.CfmLinearWeight weight)
+    {
+        var input = new float[weight.InDim];
+        Array.Fill(input, 1f);
+        var output = weight.MatVec(input);
+        foreach (var v in output) Assert.False(float.IsNaN(v) || float.IsInfinity(v));
     }
 
     [Fact]

@@ -30,6 +30,9 @@ public sealed class CfmLinearWeight
     private readonly int _outDim;
     private readonly int _inDim;
 
+    public int OutDim => _outDim;
+    public int InDim => _inDim;
+
     private CfmLinearWeight(short[]? f16Bits, float[]? f32, int outDim, int inDim)
     {
         _f16Bits = f16Bits;

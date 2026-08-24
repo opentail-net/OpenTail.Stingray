@@ -8699,3 +8699,53 @@ prior entry: already GGUF-quantized, and their real bottleneck is architectural/
 GEMV throughput).
 
 No subagents used.
+
+## Native F16C wired into QwenASR's AuT audio encoder -- third pipeline, real 26% win, survey of remaining F32-GEMV candidates in Audio
+
+**Survey of remaining raw-`SimdKernels.MatVecF32`-bound weight matrices across the Audio project**
+(direct user request: "any other F32 to F16 conversion opportunities in audio?"), grep-based, cross-
+checked against each pipeline's real weight-loading code (not assumed from the pipeline-format
+table alone):
+
+- **QwenASR's AuT audio encoder** (`QwenAsrAudioLayerWeights`) -- own doc comment says
+  "architecturally... close to `Whisper/WhisperEncoderLayerWeights`"; same Q/K/V/Out + FFN-up/down
+  shape, `GetTensor` always dequantizes to F32 regardless of real on-disk dtype. Real candidate,
+  wired in this entry.
+- **Parler-TTS's T5 text encoder** (`T5EncoderWeights`) -- real F32 on disk (`SafetensorsLoader.
+  ReadF32`), Q/K/V/O + gated FFN, currently plain F32 GEMV. Parler's *decoder* already got Q8_0-
+  quantized in an earlier fire for the same bandwidth reason; the encoder was apparently never
+  converted. Not yet wired -- next candidate.
+- **Confirmed NOT applicable**: FunASR's encoder/decoder, Kokoro's BERT encoder, Chatterbox's
+  acoustic LM (T3) -- none call `GetTensor`/raw dequant directly; they route through the main
+  engine's `ForwardPass`/quantized-dispatch machinery (its own separate Q4_K/Q8_0 kernel family,
+  not the hand-rolled Audio-specific GEMV kernels this session has been fixing). Piper is ONNX-
+  executed, not our own kernel. Fish Speech and Chatterbox's CFM decoder are already Q8_0-quantized
+  (Fish Speech: real prior bandwidth fix; Chatterbox CFM: fixed via `CfmLinearWeight`, prior entry).
+
+**Wired QwenASR's AuT encoder** using the exact same `CfmLinearWeight` (F32-&gt;F16-once-at-load,
+reused as-is, no new class needed -- `QwenAsrAudioEncoder`'s `Linear`/`LinearNoBias` were already
+single-row calls, an even more direct fit than CFM's usage). Converted: `QwenAsrAudioLayerWeights`'
+`AttnQWeight/AttnKWeight/AttnVWeight/AttnOutWeight/FfnUpWeight/FfnDownWeight`, plus
+`QwenAsrWeights`' `ConvOutWeight` (the conv-stem-to-encoder-dim projection, `[7680,896]`, the
+largest single matrix in this encoder) and the adapter `Proj1Weight`/`Proj2Weight`. Both the GGUF
+and Safetensors constructors updated in lockstep (both call the same underlying `GetTensor`, so
+both benefit identically). Conv2D stem convolutions and attention math untouched (same caveat as
+every prior entry -- this only addresses the linear-projection GEMVs, not the whole pipeline).
+
+All 5 correctness tests re-pass clean (`QwenAsrAudioEncoderTests`, `QwenAsrRealWeightsTests`,
+`QwenAsrWeightsSafetensorsTests` -- updated to probe-test `CfmLinearWeight` outputs for
+finiteness instead of iterating a raw `float[]`, `QwenAsrPipelineSafetensorsTests`,
+`QwenAsrBenchmarkTests`). **Real measured win** (`QwenAsrBenchmarkTests`, 1000 mel frames -> 125
+audio tokens, the same shape benchmarked in this session's original cross-pipeline perf survey):
+
+| | Before (F32) | After (native F16C) | Delta |
+|---|---:|---:|---:|
+| AuT encoder forward | 4031ms | 2974ms | **~26% faster (1.36x)** |
+
+Third pipeline this session where the same "convert F32 weights to F16 once, dispatch through the
+proven native kernel" lever produced a real, measured win (after Whisper's 4.5-4.7x and CosyVoice/
+Chatterbox's CFM decoder's 1.5x) -- smaller multiplier here since the Conv2D stem and attention
+math (untouched) are a larger fraction of this encoder's total cost than in Whisper's case. Parler-
+TTS's T5 encoder remains the one identified-but-not-yet-wired candidate for a future session.
+
+No subagents used.

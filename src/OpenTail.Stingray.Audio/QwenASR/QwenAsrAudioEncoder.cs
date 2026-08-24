@@ -1,4 +1,5 @@
 using System.Numerics.Tensors;
+using OpenTail.Stingray.Audio.Primitives;
 using OpenTail.Stingray.Cpu;
 
 namespace OpenTail.Stingray.Audio.QwenASR;
@@ -92,7 +93,7 @@ public sealed class QwenAsrAudioEncoder : IDisposable
         int encDim = Config.EncoderDim;
         var x = new float[t][];
         for (int ti = 0; ti < t; ti++)
-            x[ti] = LinearNoBias(flat[ti], w.ConvOutWeight, flatDim, encDim);
+            x[ti] = w.ConvOutWeight.MatVec(flat[ti]);
 
         // Whisper-convention sinusoidal absolute positional embedding (fixed, not learned --
         // no positional-embedding tensor exists in this checkpoint).
@@ -112,9 +113,9 @@ public sealed class QwenAsrAudioEncoder : IDisposable
         var projected = new float[t * qwenDim];
         for (int ti = 0; ti < t; ti++)
         {
-            var p1 = Linear(x[ti], w.Proj1Weight, w.Proj1Bias, encDim, encDim);
+            var p1 = LinearBias(x[ti], w.Proj1Weight, w.Proj1Bias);
             GeluInPlace(p1);
-            var p2 = Linear(p1, w.Proj2Weight, w.Proj2Bias, encDim, qwenDim);
+            var p2 = LinearBias(p1, w.Proj2Weight, w.Proj2Bias);
             p2.CopyTo(projected.AsSpan(ti * qwenDim, qwenDim));
         }
 
@@ -143,9 +144,9 @@ public sealed class QwenAsrAudioEncoder : IDisposable
         System.Threading.Tasks.Parallel.For(0, t, i =>
         {
             var normed = LayerNorm(afterResidual1[i], l.FfnNormWeight, l.FfnNormBias);
-            var h = Linear(normed, l.FfnUpWeight, l.FfnUpBias, dim, l.FfnUpBias.Length);
+            var h = LinearBias(normed, l.FfnUpWeight, l.FfnUpBias);
             GeluInPlace(h);
-            var down = Linear(h, l.FfnDownWeight, l.FfnDownBias, l.FfnUpBias.Length, dim);
+            var down = LinearBias(h, l.FfnDownWeight, l.FfnDownBias);
             var row = new float[dim];
             for (int d = 0; d < dim; d++) row[d] = afterResidual1[i][d] + down[d];
             output[i] = row;
@@ -164,9 +165,9 @@ public sealed class QwenAsrAudioEncoder : IDisposable
         var v = new float[t][];
         System.Threading.Tasks.Parallel.For(0, t, i =>
         {
-            q[i] = Linear(normed[i], l.AttnQWeight, l.AttnQBias, dim, dim);
-            k[i] = Linear(normed[i], l.AttnKWeight, l.AttnKBias, dim, dim);
-            v[i] = Linear(normed[i], l.AttnVWeight, l.AttnVBias, dim, dim);
+            q[i] = LinearBias(normed[i], l.AttnQWeight, l.AttnQBias);
+            k[i] = LinearBias(normed[i], l.AttnKWeight, l.AttnKBias);
+            v[i] = LinearBias(normed[i], l.AttnVWeight, l.AttnVBias);
         });
 
         var attnRaw = new float[t][];
@@ -206,7 +207,7 @@ public sealed class QwenAsrAudioEncoder : IDisposable
 
         var output = new float[t][];
         for (int i = 0; i < t; i++)
-            output[i] = Linear(attnRaw[i], l.AttnOutWeight, l.AttnOutBias, dim, dim);
+            output[i] = LinearBias(attnRaw[i], l.AttnOutWeight, l.AttnOutBias);
         return output;
     }
 
@@ -308,24 +309,11 @@ public sealed class QwenAsrAudioEncoder : IDisposable
         return pe;
     }
 
-    private static unsafe float[] Linear(float[] input, float[] weight, float[] bias, int inDim, int outDim)
+    /// <summary>Linear layer via a <see cref="CfmLinearWeight"/> (real hardware F16C when available, F32 fallback otherwise) plus bias.</summary>
+    private static float[] LinearBias(float[] input, CfmLinearWeight weight, float[] bias)
     {
-        var output = new float[outDim];
-        fixed (float* wp = weight, xp = input, yp = output)
-        {
-            SimdKernels.MatVecF32(yp, wp, xp, outDim, inDim);
-        }
-        for (int o = 0; o < outDim; o++) output[o] += bias[o];
-        return output;
-    }
-
-    private static unsafe float[] LinearNoBias(float[] input, float[] weight, int inDim, int outDim)
-    {
-        var output = new float[outDim];
-        fixed (float* wp = weight, xp = input, yp = output)
-        {
-            SimdKernels.MatVecF32(yp, wp, xp, outDim, inDim);
-        }
+        var output = weight.MatVec(input);
+        for (int o = 0; o < output.Length; o++) output[o] += bias[o];
         return output;
     }
 
