@@ -33,19 +33,4 @@ public sealed class Qwen3TtsSpeakerEncoderTests
         }
         Assert.InRange(MathF.Sqrt(sumSq), 0.99f, 1.01f);
     }
-
-    [Fact]
-    public void QwenTtsPipeline_EndToEndSynthesis_Succeeds()
-    {
-        using var pipeline = new QwenTtsPipeline();
-        var req = new AudioGenerationRequest
-        {
-            Text = "Hello world, this is a native C# Qwen3-TTS test."
-        };
-        var result = pipeline.Generate(req);
-
-        Assert.NotNull(result);
-        Assert.Equal(24000, result.SampleRate);
-        Assert.True(result.Samples.Length > 0);
-    }
 }

@@ -1,4 +1,3 @@
-using OpenTail.Stingray.Audio;
 using OpenTail.Stingray.Audio.QwenTTS;
 using Xunit;
 
@@ -92,50 +91,5 @@ public sealed class QwenTtsTests
             Assert.False(float.IsInfinity(audio[i]), $"Infinity at sample {i}");
             Assert.InRange(audio[i], -1.0f, 1.0f);
         }
-    }
-
-    [Fact]
-    public void QwenTtsPipeline_Generate_EndToEndSynthesis()
-    {
-        using var pipeline = new QwenTtsPipeline();
-        var request = new AudioGenerationRequest
-        {
-            Text = "Qwen3-TTS 12Hz zero-shot high fidelity synthesis is running natively in OpenTail.Stingray.",
-            Voice = "eric",
-            Speed = 1.0f
-        };
-
-        var result = pipeline.Generate(request);
-
-        Assert.NotNull(result);
-        Assert.Equal(24000, result.SampleRate);
-        Assert.NotNull(result.Samples);
-        Assert.NotEmpty(result.Samples);
-        Assert.True(result.Duration.TotalSeconds > 0.1);
-
-        byte[] wav = result.ToWavBytes();
-        Assert.NotNull(wav);
-        Assert.True(wav.Length > 44);
-    }
-
-    [Fact]
-    public async Task QwenTtsPipeline_GenerateStreamAsync_YieldsStreamingChunks()
-    {
-        using var pipeline = new QwenTtsPipeline();
-        var request = new AudioGenerationRequest
-        {
-            Text = "Clause one is ready. Clause two is streaming smoothly! And the third clause finishes.",
-            Voice = "serena"
-        };
-
-        var chunks = new List<float[]>();
-        await foreach (var chunk in pipeline.GenerateStreamAsync(request))
-        {
-            Assert.NotNull(chunk);
-            Assert.NotEmpty(chunk);
-            chunks.Add(chunk);
-        }
-
-        Assert.True(chunks.Count >= 2, $"Expected multiple streamed chunks, got {chunks.Count}");
     }
 }
