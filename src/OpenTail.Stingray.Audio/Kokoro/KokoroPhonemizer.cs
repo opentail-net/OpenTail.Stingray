@@ -1,36 +1,20 @@
 using System.Text;
 using System.Text.RegularExpressions;
+using OpenTail.Stingray.Audio.Primitives;
 
 namespace OpenTail.Stingray.Audio.Kokoro;
 
 /// <summary>
-/// Native C# Grapheme-to-Phoneme (G2P) and vocabulary tokenizer for Kokoro-82M TTS.
+/// Native C# Grapheme-to-Phoneme (G2P) and vocabulary tokenizer for Kokoro-82M TTS. Real
+/// pronunciation lookup is <see cref="CmuDictG2P"/> (the real ~135k-word CMU Pronouncing
+/// Dictionary); <see cref="G2PFallback"/> only ever runs for words outside that dictionary
+/// (names, neologisms, typos) -- see CmuDictG2P's own doc comment for why a closed dictionary is
+/// the real, standard approach here rather than a hand-written word list.
 /// </summary>
 public sealed class KokoroPhonemizer
 {
     private readonly Dictionary<string, int> _vocab = new(StringComparer.Ordinal);
     private readonly Dictionary<char, int> _charVocab = [];
-
-    // Common G2P pronunciation rules for English words
-    private static readonly Dictionary<string, string> CommonPronunciations = new(StringComparer.OrdinalIgnoreCase)
-    {
-        ["hello"] = "həlˈoʊ",
-        ["world"] = "wˈɜːld",
-        ["opentail"] = "oʊpənteɪl",
-        ["stingray"] = "stɪŋreɪ",
-        ["fast"] = "fˈæst",
-        ["voice"] = "vˈɔɪs",
-        ["model"] = "mˈɑːdəl",
-        ["neural"] = "njˈʊəɹəl",
-        ["speech"] = "spˈiːtʃ",
-        ["audio"] = "ˈɔːdioʊ",
-        ["text"] = "tˈɛkst",
-        ["deep"] = "dˈiːp",
-        ["learning"] = "lˈɜːnɪŋ",
-        ["engine"] = "ˈɛndʒɪn",
-        ["native"] = "nˈeɪtɪv",
-        ["inference"] = "ˈɪnfəɹəns"
-    };
 
     public KokoroPhonemizer(Dictionary<string, int>? customVocab = null)
     {
@@ -95,13 +79,15 @@ public sealed class KokoroPhonemizer
                 continue;
             }
 
-            if (CommonPronunciations.TryGetValue(word, out var ipa))
+            if (CmuDictG2P.TryLookup(word, out var ipa))
             {
                 sb.Append(ipa);
             }
             else
             {
-                // Fallback G2P rule
+                // Word not in the real cmudict dictionary (name, neologism, typo) -- letter-to-
+                // sound approximation is the real fallback here, not a substitute for the
+                // dictionary lookup above.
                 sb.Append(G2PFallback(word));
             }
         }

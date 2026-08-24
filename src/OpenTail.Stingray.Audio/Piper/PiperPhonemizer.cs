@@ -1,10 +1,15 @@
 using System.Text;
 using System.Text.RegularExpressions;
+using OpenTail.Stingray.Audio.Primitives;
 
 namespace OpenTail.Stingray.Audio.Piper;
 
 /// <summary>
-/// Native C# G2P phonemizer and pad token intersperser for Piper (VITS) TTS.
+/// Native C# G2P phonemizer and pad token intersperser for Piper (VITS) TTS. Real word
+/// pronunciation comes from <see cref="CmuDictG2P"/> (the real ~135k-word CMU Pronouncing
+/// Dictionary); words outside it fall back to passing the raw letters through as before -- Piper's
+/// real reference implementation phonemizes via espeak-ng, which this port does not (yet) call
+/// natively, so out-of-dictionary words remain approximate here, same caveat as Kokoro's G2P.
 /// </summary>
 public sealed class PiperPhonemizer
 {
@@ -67,19 +72,25 @@ public sealed class PiperPhonemizer
     }
 
     /// <summary>
-    /// Converts text into a sequence of phoneme character representations.
+    /// Converts text into a sequence of phoneme character representations: a real cmudict lookup
+    /// per word, falling back to passing the word's raw letters through for anything outside the
+    /// dictionary (names, neologisms, typos -- see class doc comment).
     /// </summary>
     public string TextToPhonemes(string text)
     {
         if (string.IsNullOrWhiteSpace(text)) return "";
 
         var sb = new StringBuilder();
-        string clean = text.Trim();
+        var words = Regex.Split(text.Trim(), @"(\s+|[.,!?;:])");
 
-        for (int i = 0; i < clean.Length; i++)
+        foreach (var word in words)
         {
-            char c = clean[i];
-            sb.Append(c);
+            if (word.Length == 0) continue;
+
+            if (CmuDictG2P.TryLookup(word, out var ipa))
+                sb.Append(ipa);
+            else
+                sb.Append(word);
         }
 
         return sb.ToString();

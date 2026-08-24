@@ -15,6 +15,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <EmbeddedResource Include="Primitives\cmudict.dict.gz" LogicalName="OpenTail.Stingray.Audio.Primitives.cmudict.dict.gz" />
+  </ItemGroup>
+
+  <ItemGroup>
     <InternalsVisibleTo Include="OpenTail.Stingray.Tests.Audio" />
   </ItemGroup>
 
