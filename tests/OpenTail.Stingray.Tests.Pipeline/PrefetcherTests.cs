@@ -27,12 +27,29 @@ public sealed class PrefetcherTests
     public async System.Threading.Tasks.Task EnqueueAsync_WithinQueueDepth_CompletesSynchronously()
     {
         // Nothing has been enqueued yet so the background worker is idle waiting on the
-        // channel; a write within the bounded capacity must not block.
+        // channel; a write within the bounded capacity must not block. This test only asserts
+        // that -- it does not care what Dispose() does with the item afterwards.
+        //
+        // Dispose() itself races the background worker: MemoryHierarchy.PromoteToGpuAsync is
+        // deliberately unimplemented scaffolding (see MemoryHierarchy's own doc comment), and
+        // whether the worker manages to dequeue-and-fault on "w" before Dispose()'s
+        // cts.Cancel() lands is non-deterministic (Dispose_AfterProcessingRequest_
+        // SurfacesUnderlyingFault below documents and relies on exactly that fault when the
+        // worker DOES win; Dispose_WhenWorkerIdle_CompletesWithoutThrowing documents the clean
+        // shutdown when it doesn't). Tolerate either outcome here rather than assert one.
         await using var memory = MakeHierarchy();
         var prefetcher = new OpenTail.Stingray.Pipeline.Prefetcher(memory, queueDepth: 4);
         var task = prefetcher.EnqueueAsync(new OpenTail.Stingray.Pipeline.PrefetchRequest("w"));
         Assert.True(task.IsCompletedSuccessfully);
-        prefetcher.Dispose();
+        try
+        {
+            prefetcher.Dispose();
+        }
+        catch (System.NotImplementedException)
+        {
+            // Expected when the background worker wins the race and reaches the
+            // deliberately-unimplemented PromoteToGpuAsync before cancellation takes effect.
+        }
     }
 
     // ── Dispose is clean on the expected shutdown path ──────────────────────
