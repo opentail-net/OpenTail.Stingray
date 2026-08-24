@@ -79,4 +79,42 @@ public sealed class SnacDecoderTests : HeavyTestBase
         double cosine = dot / (Math.Sqrt(normA) * Math.Sqrt(normB));
         Assert.True(cosine > 0.99, $"cosine similarity {cosine} too low vs golden SNAC PCM output");
     }
+
+    /// <summary>Isolated wall-clock benchmark for <see cref="SnacDecoder.Decode"/> alone, 15 super-frames (matches the Fish Speech codec benchmark's convention). Random codes exercise the identical compute shape as real codes.</summary>
+    [Fact]
+    public void Decode_RealWeights_PerfBenchmark()
+    {
+        string? modelPath = FindRepoFile("models/snac-24khz.gguf");
+        Assert.SkipUnless(modelPath != null, "models/snac-24khz.gguf not found");
+
+        using var w = new SnacWeights(modelPath!);
+
+        const int numSuperFrames = 15;
+        var rnd = new Random(42);
+        var codes = new int[3][]
+        {
+            new int[numSuperFrames * 1],
+            new int[numSuperFrames * 2],
+            new int[numSuperFrames * 4],
+        };
+        for (int q = 0; q < 3; q++)
+            for (int i = 0; i < codes[q].Length; i++) codes[q][i] = rnd.Next(0, SnacWeights.CodebookSize);
+
+        SnacDecoder.Decode(w, codes); // warmup
+
+        const int samples = 5;
+        var msSamples = new double[samples];
+        for (int s = 0; s < samples; s++)
+        {
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            SnacDecoder.Decode(w, codes);
+            sw.Stop();
+            msSamples[s] = sw.Elapsed.TotalMilliseconds;
+        }
+        Array.Sort(msSamples);
+        double median = msSamples[samples / 2];
+        double mean = 0; foreach (var v in msSamples) mean += v; mean /= samples;
+        string resultLine = $"samples_ms=[{string.Join(", ", Array.ConvertAll(msSamples, v => v.ToString("F1")))}] mean_ms={mean:F2} median_ms={median:F2}";
+        File.WriteAllText(Path.Combine(Path.GetTempPath(), "orpheus_snac_decoder_bench_result.txt"), resultLine + Environment.NewLine);
+    }
 }

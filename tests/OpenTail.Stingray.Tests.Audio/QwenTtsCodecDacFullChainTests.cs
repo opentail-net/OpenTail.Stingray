@@ -59,4 +59,42 @@ public sealed class QwenTtsCodecDacFullChainTests : HeavyTestBase
             Assert.InRange(s, -1f, 1f);
         }
     }
+
+    /// <summary>Isolated wall-clock benchmark for <see cref="QwenTtsCodecDac.Forward"/> alone, 15 frames (matches the Fish Speech codec benchmark's convention).</summary>
+    [Fact]
+    public void Forward_RealWeights_PerfBenchmark()
+    {
+        string? modelPath = FindModelPath("qwen-tokenizer-12hz-Q8_0.gguf");
+        Assert.SkipUnless(modelPath != null, "models/qwen-tokenizer-12hz-Q8_0.gguf not found");
+
+        using var model = GgufModel.Open(modelPath!);
+        var weights = new QwenTtsCodecDacWeights(model);
+
+        var rnd = new Random(7);
+        const int t = 15;
+        var input = new float[t][];
+        for (int i = 0; i < t; i++)
+        {
+            var row = new float[1024];
+            for (int d = 0; d < 1024; d++) row[d] = (float)(rnd.NextDouble() * 0.6 - 0.3);
+            input[i] = row;
+        }
+
+        QwenTtsCodecDac.Forward(weights, input); // warmup
+
+        const int samples = 5;
+        var msSamples = new double[samples];
+        for (int s = 0; s < samples; s++)
+        {
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            QwenTtsCodecDac.Forward(weights, input);
+            sw.Stop();
+            msSamples[s] = sw.Elapsed.TotalMilliseconds;
+        }
+        Array.Sort(msSamples);
+        double median = msSamples[samples / 2];
+        double mean = 0; foreach (var v in msSamples) mean += v; mean /= samples;
+        string resultLine = $"samples_ms=[{string.Join(", ", Array.ConvertAll(msSamples, v => v.ToString("F1")))}] mean_ms={mean:F2} median_ms={median:F2}";
+        File.WriteAllText(Path.Combine(Path.GetTempPath(), "qwentts_dac_codec_bench_result.txt"), resultLine + Environment.NewLine);
+    }
 }

@@ -1,5 +1,6 @@
 using System;
 using System.Threading.Tasks;
+using OpenTail.Stingray.Cpu;
 
 namespace OpenTail.Stingray.Audio.Parler;
 
@@ -44,31 +45,48 @@ public static class DacDecoder
         return output;
     }
 
-    /// <summary>Real FULL (non-depthwise) Conv1d, same-padding, optionally dilated. Weight layout [out, in, kernel] flat row-major.</summary>
-    private static float[] FullConv1d(float[] x, int inCh, int outCh, int t, float[] weight, float[] bias, int kernel, int dilation, int padding)
+    /// <summary>
+    /// Real FULL (non-depthwise) Conv1d, same-padding, optionally dilated. Weight layout [out, in, kernel] flat row-major.
+    ///
+    /// <para>im2col + GEMM (see <c>FishSpeechCodec.FullConv1d</c>'s doc comment for the full
+    /// rationale/measurement -- identical technique, this is the non-causal (symmetric-padding)
+    /// sibling): the gather doesn't depend on `oc`, so it's hoisted out and each output channel
+    /// reduces to one AVX2/FMA <see cref="SimdKernels.DotF32"/> call per timestep.</para>
+    /// </summary>
+    private static unsafe float[] FullConv1d(float[] x, int inCh, int outCh, int t, float[] weight, float[] bias, int kernel, int dilation, int padding)
     {
-        var output = new float[outCh * t];
-        Parallel.For(0, outCh, oc =>
+        int rowLen = inCh * kernel;
+        var col = new float[t * rowLen];
+        Parallel.For(0, t, ti =>
         {
-            float b = bias[oc];
-            int wOcBase = oc * inCh * kernel;
-            int outBase = oc * t;
-            for (int ti = 0; ti < t; ti++)
+            int rowBase = ti * rowLen;
+            for (int ic = 0; ic < inCh; ic++)
             {
-                float sum = b;
-                for (int ic = 0; ic < inCh; ic++)
+                int xBase = ic * t;
+                int rBase = rowBase + ic * kernel;
+                for (int k = 0; k < kernel; k++)
                 {
-                    int xBase = ic * t;
-                    int wBase = wOcBase + ic * kernel;
-                    for (int k = 0; k < kernel; k++)
-                    {
-                        int src = ti - padding + k * dilation;
-                        if ((uint)src < (uint)t) sum += x[xBase + src] * weight[wBase + k];
-                    }
+                    int src = ti - padding + k * dilation;
+                    col[rBase + k] = (uint)src < (uint)t ? x[xBase + src] : 0f;
                 }
-                output[outBase + ti] = sum;
             }
         });
+
+        var output = new float[outCh * t];
+        fixed (float* colPtr = col, weightPtr = weight, outputPtr = output)
+        {
+            var colPtrLocal = colPtr;
+            var weightPtrLocal = weightPtr;
+            var outputPtrLocal = outputPtr;
+            Parallel.For(0, outCh, oc =>
+            {
+                float b = bias[oc];
+                float* wOc = weightPtrLocal + oc * rowLen;
+                float* outBase = outputPtrLocal + oc * t;
+                for (int ti = 0; ti < t; ti++)
+                    outBase[ti] = b + SimdKernels.DotF32(wOc, colPtrLocal + ti * rowLen, rowLen);
+            });
+        }
         return output;
     }
 

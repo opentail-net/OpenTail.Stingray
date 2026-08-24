@@ -132,29 +132,41 @@ public static class PiperFlow
         return output;
     }
 
-    private static float[] DilatedConv(float[] input, int inCh, int t, float[] weight, float[] bias, int outCh, int kernel, int dilation, int pad)
+    /// <summary>im2col + GEMM (see <c>FishSpeechCodec.FullConv1d</c>'s doc comment for the technique): the gather is independent of `oc`, hoisted out, and each output channel reduces to one AVX2/FMA <see cref="SimdKernels.DotF32"/> call per timestep.</summary>
+    private static unsafe float[] DilatedConv(float[] input, int inCh, int t, float[] weight, float[] bias, int outCh, int kernel, int dilation, int pad)
     {
-        var output = new float[outCh * t];
-        System.Threading.Tasks.Parallel.For(0, outCh, oc =>
+        int rowLen = inCh * kernel;
+        var col = new float[t * rowLen];
+        System.Threading.Tasks.Parallel.For(0, t, ti =>
         {
-            float b = bias[oc];
-            int wBase = oc * inCh * kernel;
-            for (int ti = 0; ti < t; ti++)
+            int rowBase = ti * rowLen;
+            for (int ic = 0; ic < inCh; ic++)
             {
-                float sum = b;
-                for (int ic = 0; ic < inCh; ic++)
+                int xBase = ic * t;
+                int rBase = rowBase + ic * kernel;
+                for (int k = 0; k < kernel; k++)
                 {
-                    int wcBase = wBase + ic * kernel;
-                    int srcBase = ic * t;
-                    for (int k = 0; k < kernel; k++)
-                    {
-                        int src = ti - pad + k * dilation;
-                        if ((uint)src < (uint)t) sum += weight[wcBase + k] * input[srcBase + src];
-                    }
+                    int src = ti - pad + k * dilation;
+                    col[rBase + k] = (uint)src < (uint)t ? input[xBase + src] : 0f;
                 }
-                output[oc * t + ti] = sum;
             }
         });
+
+        var output = new float[outCh * t];
+        fixed (float* colPtr = col, weightPtr = weight, outputPtr = output)
+        {
+            var colLocal = colPtr;
+            var weightLocal = weightPtr;
+            var outputLocal = outputPtr;
+            System.Threading.Tasks.Parallel.For(0, outCh, oc =>
+            {
+                float b = bias[oc];
+                float* wOc = weightLocal + oc * rowLen;
+                float* outBase = outputLocal + oc * t;
+                for (int ti = 0; ti < t; ti++)
+                    outBase[ti] = b + SimdKernels.DotF32(wOc, colLocal + ti * rowLen, rowLen);
+            });
+        }
         return output;
     }
 

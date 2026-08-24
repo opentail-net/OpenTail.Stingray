@@ -1,5 +1,6 @@
 using System;
 using System.Threading.Tasks;
+using OpenTail.Stingray.Cpu;
 
 namespace OpenTail.Stingray.Audio.Orpheus;
 
@@ -74,23 +75,39 @@ public static class SnacDecoder
         return output;
     }
 
-    /// <summary>Real pointwise (kernel=1) Conv1d: weight layout [out, in, 1] flat row-major -> effectively a per-position Linear across channels.</summary>
-    private static float[] PointwiseConv1d(float[] x, int inCh, int outCh, int t, float[] weight, float[] bias)
+    /// <summary>
+    /// Real pointwise (kernel=1) Conv1d: weight layout [out, in, 1] flat row-major -> effectively a per-position Linear across channels.
+    ///
+    /// <para>`x` is channel-major ([ch, t]), so for fixed `ti` the `ic` values are strided `t`
+    /// apart -- not vectorizable directly. Transpose once into a contiguous [t, inCh] buffer (a
+    /// cheap gather, independent of `oc`), then each output channel reduces to one AVX2/FMA
+    /// <see cref="SimdKernels.DotF32"/> call per timestep -- same im2col-style technique as
+    /// <c>FishSpeechCodec.FullConv1d</c>/<c>DacDecoder.FullConv1d</c>, kernel=1 special case.</para>
+    /// </summary>
+    private static unsafe float[] PointwiseConv1d(float[] x, int inCh, int outCh, int t, float[] weight, float[] bias)
     {
-        var output = new float[outCh * t];
-        Parallel.For(0, outCh, oc =>
+        var xT = new float[t * inCh]; // [ti][ic]
+        Parallel.For(0, t, ti =>
         {
-            float b = bias[oc];
-            int wBase = oc * inCh;
-            int outBase = oc * t;
-            for (int ti = 0; ti < t; ti++)
-            {
-                float sum = b;
-                for (int ic = 0; ic < inCh; ic++)
-                    sum += x[ic * t + ti] * weight[wBase + ic];
-                output[outBase + ti] = sum;
-            }
+            int rowBase = ti * inCh;
+            for (int ic = 0; ic < inCh; ic++) xT[rowBase + ic] = x[ic * t + ti];
         });
+
+        var output = new float[outCh * t];
+        fixed (float* xtPtr = xT, weightPtr = weight, outputPtr = output)
+        {
+            var xtLocal = xtPtr;
+            var weightLocal = weightPtr;
+            var outputLocal = outputPtr;
+            Parallel.For(0, outCh, oc =>
+            {
+                float b = bias[oc];
+                float* wOc = weightLocal + oc * inCh;
+                float* outBase = outputLocal + oc * t;
+                for (int ti = 0; ti < t; ti++)
+                    outBase[ti] = b + SimdKernels.DotF32(wOc, xtLocal + ti * inCh, inCh);
+            });
+        }
         return output;
     }
 
@@ -224,27 +241,35 @@ public static class SnacDecoder
     }
 
     /// <summary>Real final conv: FULL (non-grouped, `groups=1`, unlike the depthwise `ResidualUnit`/`in0` convs above) Conv1d, `channels -> 1`, kernel=7, same-padding. Weight layout [out=1, in=channels, kernel] flat row-major.</summary>
-    private static float[] FullConv1dToMono(float[] x, int channels, int t, float[] weight, float[] bias)
+    private static unsafe float[] FullConv1dToMono(float[] x, int channels, int t, float[] weight, float[] bias)
     {
         const int kernel = 7;
         const int pad = 3;
-        var output = new float[t];
-        float b = bias[0];
+        int rowLen = channels * kernel;
+        var col = new float[t * rowLen];
         Parallel.For(0, t, ti =>
         {
-            float sum = b;
+            int rowBase = ti * rowLen;
             for (int c = 0; c < channels; c++)
             {
-                int wBase = c * kernel;
                 int xBase = c * t;
+                int rBase = rowBase + c * kernel;
                 for (int k = 0; k < kernel; k++)
                 {
                     int src = ti - pad + k;
-                    if ((uint)src < (uint)t) sum += x[xBase + src] * weight[wBase + k];
+                    col[rBase + k] = (uint)src < (uint)t ? x[xBase + src] : 0f;
                 }
             }
-            output[ti] = sum;
         });
+
+        var output = new float[t];
+        float b = bias[0];
+        fixed (float* colPtr = col, weightPtr = weight)
+        {
+            var colLocal = colPtr;
+            var weightLocal = weightPtr;
+            Parallel.For(0, t, ti => output[ti] = b + SimdKernels.DotF32(weightLocal, colLocal + ti * rowLen, rowLen));
+        }
         return output;
     }
 }

@@ -66,4 +66,41 @@ public sealed class DacDecoderTests : HeavyTestBase
         double cosine = dot / (Math.Sqrt(normA) * Math.Sqrt(normB));
         Assert.True(cosine > 0.99, $"cosine similarity {cosine} too low vs golden DAC PCM output");
     }
+
+    /// <summary>Isolated wall-clock benchmark for <see cref="DacDecoder.Decode"/> alone, 15 frames (matches the Fish Speech codec benchmark's convention). Random codes exercise the identical compute shape as real codes.</summary>
+    [Fact]
+    public void Decode_RealWeights_PerfBenchmark()
+    {
+        string? modelPath = FindRepoFile("models/parler-tts-mini-v1.safetensors");
+        Assert.SkipUnless(modelPath != null, "models/parler-tts-mini-v1.safetensors not found");
+
+        using var loader = SafetensorsLoader.Open(modelPath!);
+        var weights = new DacWeights(loader);
+
+        const int t = 15;
+        var rnd = new Random(42);
+        var codes = new int[DacWeights.NumCodebooks][];
+        for (int cb = 0; cb < DacWeights.NumCodebooks; cb++)
+        {
+            codes[cb] = new int[t];
+            for (int i = 0; i < t; i++) codes[cb][i] = rnd.Next(0, DacWeights.CodebookSize);
+        }
+
+        DacDecoder.Decode(weights, codes); // warmup
+
+        const int samples = 5;
+        var msSamples = new double[samples];
+        for (int s = 0; s < samples; s++)
+        {
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            DacDecoder.Decode(weights, codes);
+            sw.Stop();
+            msSamples[s] = sw.Elapsed.TotalMilliseconds;
+        }
+        Array.Sort(msSamples);
+        double median = msSamples[samples / 2];
+        double mean = 0; foreach (var v in msSamples) mean += v; mean /= samples;
+        string resultLine = $"samples_ms=[{string.Join(", ", Array.ConvertAll(msSamples, v => v.ToString("F1")))}] mean_ms={mean:F2} median_ms={median:F2}";
+        File.WriteAllText(Path.Combine(Path.GetTempPath(), "parler_dac_decoder_bench_result.txt"), resultLine + Environment.NewLine);
+    }
 }

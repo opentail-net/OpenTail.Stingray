@@ -1,4 +1,6 @@
 using System;
+using System.Threading.Tasks;
+using OpenTail.Stingray.Cpu;
 
 namespace OpenTail.Stingray.Audio.QwenTTS;
 
@@ -88,31 +90,57 @@ public static class QwenTtsCodecDac
         return output;
     }
 
-    /// <summary>Real causal Conv1d: left-zero-pad by (kernel-1)*dilation. Weight layout [out,in,kernel] flat row-major.</summary>
-    private static float[][] CausalConv1d(float[][] input, float[] weight, float[] bias, int inCh, int outCh, int kernel, int dilation)
+    /// <summary>
+    /// Real causal Conv1d: left-zero-pad by (kernel-1)*dilation. Weight layout [out,in,kernel] flat row-major.
+    ///
+    /// <para>im2col + GEMM (see <c>FishSpeechCodec.FullConv1d</c>'s doc comment for the technique):
+    /// `input[srcT]` rows are already contiguous per timestep (time-major [T][C] layout here,
+    /// unlike the channel-major [C,T] layout in the other codecs), so the weight is transposed
+    /// once per call from [oc,ic,k] to [oc,k,ic] to match, letting the gather use plain
+    /// `Array.Copy` per (ti,k) slice instead of a scattered per-element loop. Each output channel
+    /// then reduces to one AVX2/FMA <see cref="SimdKernels.DotF32"/> call per timestep.</para>
+    /// </summary>
+    private static unsafe float[][] CausalConv1d(float[][] input, float[] weight, float[] bias, int inCh, int outCh, int kernel, int dilation)
     {
         int t = input.Length;
         int padLeft = (kernel - 1) * dilation;
-        var output = new float[t][];
-        for (int ti = 0; ti < t; ti++)
+        int rowLen = kernel * inCh;
+
+        var weightT = new float[outCh * rowLen]; // [oc][k][ic]
+        Parallel.For(0, outCh, oc =>
         {
-            var row = new float[outCh];
-            for (int oc = 0; oc < outCh; oc++)
-            {
-                float sum = bias[oc];
-                int wOcBase = oc * inCh * kernel;
+            int wOcBase = oc * inCh * kernel;
+            int wtOcBase = oc * rowLen;
+            for (int ic = 0; ic < inCh; ic++)
                 for (int k = 0; k < kernel; k++)
-                {
-                    int srcT = ti - padLeft + k * dilation;
-                    if (srcT < 0) continue;
-                    var srcRow = input[srcT];
-                    int wBase = wOcBase + k;
-                    for (int ic = 0; ic < inCh; ic++)
-                        sum += srcRow[ic] * weight[wBase + ic * kernel];
-                }
-                row[oc] = sum;
+                    weightT[wtOcBase + k * inCh + ic] = weight[wOcBase + ic * kernel + k];
+        });
+
+        var col = new float[t * rowLen]; // [ti][k][ic]
+        Parallel.For(0, t, ti =>
+        {
+            int rowBase = ti * rowLen;
+            for (int k = 0; k < kernel; k++)
+            {
+                int srcT = ti - padLeft + k * dilation;
+                if (srcT < 0) continue;
+                Array.Copy(input[srcT], 0, col, rowBase + k * inCh, inCh);
             }
-            output[ti] = row;
+        });
+
+        var output = new float[t][];
+        for (int ti = 0; ti < t; ti++) output[ti] = new float[outCh];
+        fixed (float* colPtr = col, weightPtr = weightT)
+        {
+            var colLocal = colPtr;
+            var weightLocal = weightPtr;
+            Parallel.For(0, outCh, oc =>
+            {
+                float b = bias[oc];
+                float* wOc = weightLocal + oc * rowLen;
+                for (int ti = 0; ti < t; ti++)
+                    output[ti][oc] = b + SimdKernels.DotF32(wOc, colLocal + ti * rowLen, rowLen);
+            });
         }
         return output;
     }

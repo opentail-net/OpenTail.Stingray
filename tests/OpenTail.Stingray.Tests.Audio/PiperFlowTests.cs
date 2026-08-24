@@ -118,4 +118,48 @@ public sealed class PiperFlowTests : HeavyTestBase
         double cosine = CosineSimilarity(flowOut, goldenFlowOut);
         Assert.True(cosine > 0.99, $"ResidualCouplingBlock reverse output cosine similarity {cosine} too low vs golden ONNX output.");
     }
+
+    /// <summary>Isolated wall-clock benchmark for <see cref="PiperFlow.Reverse"/> alone, reusing the same golden z_p/tFrames input as the correctness test above.</summary>
+    [Fact]
+    public void PiperFlow_RealOnnxWeights_PerfBenchmark()
+    {
+        string? modelPath = FindRepoFile("models/en_US-lessac-medium.onnx");
+        string? ceilPath = FindRepoFile("scratch-llamacpp-ref/piper_golden_flow/Ceil_output_0.npy");
+        string? flowNoisePath = FindRepoFile("scratch-llamacpp-ref/piper_golden_flow/RandomNormalLike_output_0.npy");
+        Assert.SkipUnless(modelPath != null && ceilPath != null && flowNoisePath != null,
+            "Piper ONNX model or golden flow input files not found");
+
+        var weights = new PiperOnnxWeights(modelPath!);
+
+        int[] tokens = [1, 0, 25, 0, 32, 0, 41, 0, 38, 0, 2];
+        int tTokens = tokens.Length;
+        int dim = weights.HiddenDim;
+
+        var (_, mu, logs) = PiperTextEncoder.Forward(weights, tokens);
+
+        float[] goldenCeil = ReadNpyFloat32(ceilPath!);
+        var durations = new int[tTokens];
+        for (int i = 0; i < tTokens; i++) durations[i] = (int)goldenCeil[i];
+
+        float noiseScale = 0.667f;
+        float[] flowNoise = ReadNpyFloat32(flowNoisePath!);
+        var (zp, tFrames, _) = VitsLengthRegulator.ExpandWithDurations(mu, logs, dim, tTokens, durations, flowNoise, noiseScale);
+
+        PiperFlow.Reverse(weights, zp, tFrames); // warmup
+
+        const int samples = 5;
+        var msSamples = new double[samples];
+        for (int s = 0; s < samples; s++)
+        {
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            PiperFlow.Reverse(weights, zp, tFrames);
+            sw.Stop();
+            msSamples[s] = sw.Elapsed.TotalMilliseconds;
+        }
+        Array.Sort(msSamples);
+        double median = msSamples[samples / 2];
+        double mean = 0; foreach (var v in msSamples) mean += v; mean /= samples;
+        string resultLine = $"samples_ms=[{string.Join(", ", Array.ConvertAll(msSamples, v => v.ToString("F1")))}] mean_ms={mean:F2} median_ms={median:F2}";
+        File.WriteAllText(Path.Combine(Path.GetTempPath(), "piper_flow_bench_result.txt"), resultLine + Environment.NewLine);
+    }
 }
