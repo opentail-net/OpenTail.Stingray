@@ -23,17 +23,9 @@ public static class MeloVoices
     {
         return voice.ToUpperInvariant() switch
         {
-            "EN-US" => 0,
-            "EN-BR" => 1,
-            "EN-INDIA" => 2,
-            "EN-AU" => 3,
-            "EN-DEFAULT" => 4,
-            "ZH" => 10,
-            "ES" => 20,
-            "FR" => 30,
-            "JP" => 40,
-            "KR" => 50,
-            _ => 0
+            "EN-US" or "EN" or "EN-DEFAULT" => 1,
+            "ZH" => 0,
+            _ => 1 // Default to active speaker in melotts-zh_en
         };
     }
 }

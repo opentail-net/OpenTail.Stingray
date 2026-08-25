@@ -88,9 +88,18 @@ public sealed class PiperPhonemizer
             if (word.Length == 0) continue;
 
             if (CmuDictG2P.TryLookup(word, out var ipa))
+            {
+                // Decompose affricate ligatures (ʧ -> tʃ, ʤ -> dʒ) for models using espeak IPA representation
+                if (!_charVocab.ContainsKey('ʧ') && ipa.Contains('ʧ'))
+                    ipa = ipa.Replace("ʧ", "tʃ");
+                if (!_charVocab.ContainsKey('ʤ') && ipa.Contains('ʤ'))
+                    ipa = ipa.Replace("ʤ", "dʒ");
                 sb.Append(ipa);
+            }
             else
+            {
                 sb.Append(word);
+            }
         }
 
         return sb.ToString();

@@ -1,36 +1,36 @@
+using System.Text.RegularExpressions;
+using OpenTail.Stingray.Audio.Primitives;
+
 namespace OpenTail.Stingray.Audio.MeloTTS;
 
 /// <summary>
-/// Multilingual phonemizer for MeloTTS: extracts phone IDs, tone IDs (0..4), and language IDs.
+/// Multilingual G2P phonemizer for MeloTTS (ZH/EN checkpoint): maps English text to ARPAbet
+/// phoneme tokens via <see cref="CmuDictG2P"/> and punctuation to their exact token IDs in
+/// <c>melotts-zh_en-tokens.txt</c>, with VITS pad token interspersing.
 /// </summary>
 public sealed class MeloPhonemizer
 {
-    private readonly Dictionary<char, int> _phoneMap = [];
-
-    public MeloPhonemizer()
+    private static readonly Dictionary<string, int> TokenMap = new(StringComparer.OrdinalIgnoreCase)
     {
-        InitializePhoneMap();
-    }
-
-    private void InitializePhoneMap()
-    {
-        _phoneMap['_'] = 0; // Pad
-        _phoneMap['^'] = 1; // BOS
-        _phoneMap['$'] = 2; // EOS
-        _phoneMap[' '] = 3;
-
-        string symbols = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~" +
-                         "áàâäãåçéèêëíìîïñóòôöõúùûüýÿæœøɑæɐɒɔɕçɗɖðʤəɚɛɜɝɟɡɦɨɪʝɭɬɫɮɱɯŋɳɲɴøɵɸθɹɾɻʁʂʃʈʧʉʊʌʍʎʐʒʔˈˌːˑ";
-
-        int id = 4;
-        foreach (char c in symbols)
-        {
-            if (!_phoneMap.ContainsKey(c))
-            {
-                _phoneMap[c] = id++;
-            }
-        }
-    }
+        ["_"] = 0,
+        ["AA"] = 1, ["E"] = 2, ["EE"] = 3, ["En"] = 4, ["N"] = 5, ["OO"] = 6, ["V"] = 7,
+        ["a"] = 8, ["a:"] = 9, ["aa"] = 10, ["ae"] = 11, ["ah"] = 12, ["ai"] = 13, ["an"] = 14,
+        ["ang"] = 15, ["ao"] = 16, ["aw"] = 17, ["ay"] = 18, ["b"] = 19, ["by"] = 20, ["c"] = 21,
+        ["ch"] = 22, ["d"] = 23, ["dh"] = 24, ["dy"] = 25, ["e"] = 26, ["e:"] = 27, ["eh"] = 28,
+        ["ei"] = 29, ["en"] = 30, ["eng"] = 31, ["er"] = 32, ["ey"] = 33, ["f"] = 34, ["g"] = 35,
+        ["gy"] = 36, ["h"] = 37, ["hh"] = 38, ["hy"] = 39, ["i"] = 40, ["i0"] = 41, ["i:"] = 42,
+        ["ia"] = 43, ["ian"] = 44, ["iang"] = 45, ["iao"] = 46, ["ie"] = 47, ["ih"] = 48, ["in"] = 49,
+        ["ing"] = 50, ["iong"] = 51, ["ir"] = 52, ["iu"] = 53, ["iy"] = 54, ["j"] = 55, ["jh"] = 56,
+        ["k"] = 57, ["ky"] = 58, ["l"] = 59, ["m"] = 60, ["my"] = 61, ["n"] = 62, ["ng"] = 63,
+        ["ny"] = 64, ["o"] = 65, ["o:"] = 66, ["ong"] = 67, ["ou"] = 68, ["ow"] = 69, ["oy"] = 70,
+        ["p"] = 71, ["py"] = 72, ["q"] = 73, ["r"] = 74, ["ry"] = 75, ["s"] = 76, ["sh"] = 77,
+        ["t"] = 78, ["th"] = 79, ["ts"] = 80, ["ty"] = 81, ["u"] = 82, ["u:"] = 83, ["ua"] = 84,
+        ["uai"] = 85, ["uan"] = 86, ["uang"] = 87, ["uh"] = 88, ["ui"] = 89, ["un"] = 90, ["uo"] = 91,
+        ["uw"] = 92, ["v"] = 93, ["van"] = 94, ["ve"] = 95, ["vn"] = 96, ["w"] = 97, ["x"] = 98,
+        ["y"] = 99, ["z"] = 100, ["zh"] = 101, ["zy"] = 102,
+        ["!"] = 103, ["?"] = 104, ["…"] = 105, [","] = 106, ["."] = 107, ["'"] = 108, ["-"] = 109,
+        ["SP"] = 110, ["UNK"] = 111
+    };
 
     /// <summary>
     /// Phonemizes input text and returns phone IDs, tone IDs, and language IDs.
@@ -49,48 +49,81 @@ public sealed class MeloPhonemizer
 
         if (string.IsNullOrWhiteSpace(text))
         {
-            return new MeloPhonemeResult([0, 1, 0, 2, 0], [0, 0, 0, 0, 0], [langId, langId, langId, langId, langId]);
+            return new MeloPhonemeResult([0, 110, 0], [0, 0, 0], [langId, langId, langId]);
         }
 
-        var rawPhones = new List<int> { 1 }; // BOS
-        var rawTones = new List<int> { 0 };
+        var rawPhones = new List<int>();
+        var tokens = Regex.Split(text.Trim(), @"(\s+|[.,!?;:\-'])");
 
-        for (int i = 0; i < text.Length; i++)
+        foreach (var tok in tokens)
         {
-            char c = text[i];
-            int pid = _phoneMap.TryGetValue(c, out int id) ? id : 3;
-            rawPhones.Add(pid);
+            if (string.IsNullOrEmpty(tok)) continue;
 
-            // Estimate tone (for tonal languages, numbers 1-4 or vowel position)
-            int tone = (char.IsDigit(c) && c >= '1' && c <= '4') ? (c - '0') : 0;
-            rawTones.Add(tone);
+            if (char.IsWhiteSpace(tok[0]))
+            {
+                rawPhones.Add(110); // SP (space pause)
+            }
+            else if (tok is "." or "," or "!" or "?" or "-" or "'" or ";" or ":")
+            {
+                string puncKey = tok switch
+                {
+                    ";" or ":" => ",",
+                    _ => tok
+                };
+                if (TokenMap.TryGetValue(puncKey, out int puncId))
+                    rawPhones.Add(puncId);
+                else
+                    rawPhones.Add(110); // fallback to space pause
+            }
+            else if (CmuDictG2P.TryLookupArpabet(tok, out var phones))
+            {
+                foreach (var p in phones)
+                {
+                    if (TokenMap.TryGetValue(p, out int pid))
+                        rawPhones.Add(pid);
+                }
+            }
+            else
+            {
+                // Fallback: character by character
+                foreach (char c in tok)
+                {
+                    string chStr = c.ToString();
+                    if (TokenMap.TryGetValue(chStr, out int cid))
+                        rawPhones.Add(cid);
+                }
+            }
         }
 
-        rawPhones.Add(2); // EOS
-        rawTones.Add(0);
+        if (rawPhones.Count == 0)
+        {
+            rawPhones.Add(110);
+        }
 
-        // Intersperse pad token (0)
+        // Intersperse pad token (0) between every token (VITS commons.intersperse)
         int total = rawPhones.Count * 2 + 1;
-        var phones = new int[total];
-        var tones = new int[total];
-        var langIds = new int[total];
+        var outPhones = new int[total];
+        var outTones = new int[total];
+        var outLangIds = new int[total];
 
         for (int i = 0; i < rawPhones.Count; i++)
         {
-            phones[i * 2] = 0;
-            tones[i * 2] = 0;
-            langIds[i * 2] = langId;
+            int p = rawPhones[i];
+            outPhones[i * 2] = 0;
+            outTones[i * 2] = 0;
+            outLangIds[i * 2] = langId;
 
-            phones[i * 2 + 1] = rawPhones[i];
-            tones[i * 2 + 1] = rawTones[i];
-            langIds[i * 2 + 1] = langId;
+            outPhones[i * 2 + 1] = p;
+            // Tone 7 is General American English in MeloTTS tone embedding (tones 0..6 are Chinese)
+            outTones[i * 2 + 1] = (p == 110 || (p >= 103 && p <= 109)) ? 0 : 7;
+            outLangIds[i * 2 + 1] = langId;
         }
 
-        phones[^1] = 0;
-        tones[^1] = 0;
-        langIds[^1] = langId;
+        outPhones[^1] = 0;
+        outTones[^1] = 0;
+        outLangIds[^1] = langId;
 
-        return new MeloPhonemeResult(phones, tones, langIds);
+        return new MeloPhonemeResult(outPhones, outTones, outLangIds);
     }
 }
 

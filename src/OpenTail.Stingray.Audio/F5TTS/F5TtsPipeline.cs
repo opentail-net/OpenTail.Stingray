@@ -86,43 +86,73 @@ public sealed class F5TtsPipeline : ITextToSpeechPipeline
             return new AudioGenerationResult([], DefaultSampleRate);
         }
 
-        // Estimate target duration (roughly 12-16 characters per second, ~93.75 frames per second at hop=256, 24kHz)
-        int charCount = request.Text.Length;
-        float baseSeconds = Math.Max(1.0f, (float)charCount / 14.0f) / Math.Max(0.2f, request.Speed);
-        int numFrames = (int)(baseSeconds * (DefaultSampleRate / 256.0f));
-        numFrames = Math.Clamp(numFrames, 32, 2048);
+        // 1. Reference Audio Conditioning (Voice Cloning)
+        int refFrames = 0;
+        float[]? refMel = null;
+        string fullText = request.Text;
 
-        // Reference Audio Conditioning (Voice Cloning): real for both paths, F5MelExtractor is
-        // already a real STFT+mel-filterbank implementation with no learned weights of its own.
-        float[] condMel = new float[numFrames * F5MelExtractor.NumMels];
         if (!string.IsNullOrEmpty(request.ReferenceAudioPath) && File.Exists(request.ReferenceAudioPath))
         {
             float[] refPcm = LoadPcmFromWav(request.ReferenceAudioPath);
-            float[] refMel = _melExtractor.ExtractMel(refPcm);
-            int refFrames = refMel.Length / F5MelExtractor.NumMels;
+            refMel = _melExtractor.ExtractMel(refPcm);
+            refFrames = refMel.Length / F5MelExtractor.NumMels;
 
-            int copyFrames = Math.Min(refFrames, numFrames / 2);
+            string refText = request.ReferenceText ?? "";
+            if (!string.IsNullOrEmpty(refText))
+            {
+                if (!refText.EndsWith(' ')) refText += " ";
+                fullText = refText + request.Text;
+            }
+        }
+
+        // 2. Target duration estimation
+        int charCount = request.Text.Length;
+        float genSeconds = Math.Max(1.0f, (float)charCount / 14.0f) / Math.Max(0.2f, request.Speed);
+        int genFrames = (int)(genSeconds * (DefaultSampleRate / 256.0f));
+        genFrames = Math.Clamp(genFrames, 32, 2048);
+
+        int totalFrames = refFrames + genFrames;
+        totalFrames = Math.Clamp(totalFrames, 32, 2048);
+
+        float[] condMel = new float[totalFrames * F5MelExtractor.NumMels];
+        if (refMel is not null && refFrames > 0)
+        {
+            int copyFrames = Math.Min(refFrames, totalFrames);
             Array.Copy(refMel, 0, condMel, 0, copyFrames * F5MelExtractor.NumMels);
         }
 
         float[] generatedMel;
         if (_weights is not null && _tokenizer is not null)
         {
-            int[] tokens = _tokenizer.Encode(request.Text);
-            generatedMel = F5FlowMatchingOde.Solve(_weights, condMel, tokens, numFrames, steps: 32, cfgStrength: 2.0f, swaySamplingCoef: -1.0f);
+            int[] tokens = _tokenizer.Encode(fullText);
+            generatedMel = F5FlowMatchingOde.Solve(_weights, condMel, tokens, totalFrames, steps: 32, cfgStrength: 2.0f, swaySamplingCoef: -1.0f);
         }
         else
         {
             // Fake/placeholder path (no real weights or vocab file) -- old procedural DiT stand-in.
-            float[] textFeatures = _textEncoder.Encode(request.Text, numFrames);
-            generatedMel = FakeSolveFlowMatchingOde(condMel, textFeatures, numFrames);
+            float[] textFeatures = _textEncoder.Encode(fullText, totalFrames);
+            generatedMel = FakeSolveFlowMatchingOde(condMel, textFeatures, totalFrames);
         }
 
-        // Vocos Waveform Synthesis (Mel -> 24kHz Audio): real when a Vocos weights file was
-        // found at construction time, otherwise the original procedural placeholder.
+        // 3. Slice out the generated mel frames (omitting the reference audio prompt if present)
+        float[] targetMel;
+        int targetFrames;
+        if (refFrames > 0 && totalFrames > refFrames)
+        {
+            targetFrames = totalFrames - refFrames;
+            targetMel = new float[targetFrames * F5MelExtractor.NumMels];
+            Array.Copy(generatedMel, refFrames * F5MelExtractor.NumMels, targetMel, 0, targetMel.Length);
+        }
+        else
+        {
+            targetFrames = totalFrames;
+            targetMel = generatedMel;
+        }
+
+        // 4. Vocos Waveform Synthesis (Mel -> 24kHz Audio)
         float[] audio = _vocosWeights is not null
-            ? VocosVocoder.Decode(_vocosWeights, generatedMel, numFrames)
-            : _vocoder.Synthesize(generatedMel, numFrames);
+            ? VocosVocoder.Decode(_vocosWeights, targetMel, targetFrames)
+            : _vocoder.Synthesize(targetMel, targetFrames);
 
         var result = new AudioGenerationResult(audio, DefaultSampleRate);
 

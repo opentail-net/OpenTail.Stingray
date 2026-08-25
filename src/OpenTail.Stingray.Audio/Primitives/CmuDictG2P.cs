@@ -35,20 +35,24 @@ public static class CmuDictG2P
     // a plain `= Load()` here (declared first) would run before those tables' own initializers,
     // reading them as null. Lazy<T> defers Load() until first real use, after the whole type (and
     // therefore every field) has finished initializing.
-    private static readonly Lazy<Dictionary<string, string>> WordToArpabetLazy = new(Load);
+    private static readonly Lazy<(Dictionary<string, string> Ipa, Dictionary<string, string[]> Arpabet)> DictLazy = new(Load);
 
     /// <summary>Real IPA lookup: dictionary word -> already-stress-marked IPA string (e.g. "hello" -> "h AH0 L OW1" -> "həlˈoʊ"). Returns false for words not in cmudict.</summary>
     public static bool TryLookup(string word, out string ipa)
     {
-        // cmudict's own convention for alternate pronunciations is a "(2)"/"(3)" suffix on the
-        // word column (e.g. "read(2)"); this dictionary keeps only the first (primary) entry per
-        // base word, which is what Load() populates -- callers never see the "(n)" suffix form.
-        return WordToArpabetLazy.Value.TryGetValue(word.ToLowerInvariant(), out ipa!);
+        return DictLazy.Value.Ipa.TryGetValue(word.ToLowerInvariant(), out ipa!);
     }
 
-    private static Dictionary<string, string> Load()
+    /// <summary>Real ARPABET lookup: dictionary word -> array of lowercased ARPAbet phonemes without stress digits (e.g. "hello" -> ["hh", "ah", "l", "ow"]). Returns false for words not in cmudict.</summary>
+    public static bool TryLookupArpabet(string word, out string[] phones)
     {
-        var result = new Dictionary<string, string>(140_000, StringComparer.Ordinal);
+        return DictLazy.Value.Arpabet.TryGetValue(word.ToLowerInvariant(), out phones!);
+    }
+
+    private static (Dictionary<string, string> Ipa, Dictionary<string, string[]> Arpabet) Load()
+    {
+        var ipaDict = new Dictionary<string, string>(140_000, StringComparer.Ordinal);
+        var arpabetDict = new Dictionary<string, string[]>(140_000, StringComparer.Ordinal);
 
         var asm = typeof(CmuDictG2P).Assembly;
         using var raw = asm.GetManifestResourceStream("OpenTail.Stingray.Audio.Primitives.cmudict.dict.gz")
@@ -71,10 +75,20 @@ public static class CmuDictG2P
             if (paren >= 0) continue;
 
             string arpabet = line[(sp + 1)..];
-            result[word] = ArpabetToIpa(arpabet);
+            ipaDict[word] = ArpabetToIpa(arpabet);
+
+            var rawTokens = arpabet.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            var cleanTokens = new string[rawTokens.Length];
+            for (int i = 0; i < rawTokens.Length; i++)
+            {
+                string p = rawTokens[i];
+                if (p.Length > 0 && char.IsDigit(p[^1])) p = p[..^1];
+                cleanTokens[i] = p.ToLowerInvariant();
+            }
+            arpabetDict[word] = cleanTokens;
         }
 
-        return result;
+        return (ipaDict, arpabetDict);
     }
 
     /// <summary>
