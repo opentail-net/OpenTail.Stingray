@@ -103,12 +103,10 @@ public sealed class OrpheusPipeline : ITextToSpeechPipeline
     }
 
     /// <summary>
-    /// Runs the talker autoregressively (greedy decode -- a deterministic first correctness
-    /// pass; the real reference's own defaults are temp=0.6/top_p=0.8/repetition_penalty=1.3,
-    /// not yet wired here) until <see cref="StopToken"/> or <paramref name="maxTokens"/>, then
-    /// de-interleaves the raw generated token ids into 3 real SNAC codebook streams.
+    /// Runs the talker autoregressively using the official Orpheus reference sampling configuration
+    /// (temp=0.6, top_p=0.8, repetition_penalty=1.3, stop_token_ids=[49158]).
     /// </summary>
-    public int[][] GenerateCodes(string text, string voice = "tara", int maxTokens = 1200)
+    public int[][] GenerateCodes(string text, string voice = "tara", int maxTokens = 1200, float temperature = 0.6f, float topP = 0.8f, float repetitionPenalty = 1.3f)
     {
         var prompt = BuildPrompt(text, voice);
         _fwd.ResetCache();
@@ -120,31 +118,30 @@ public sealed class OrpheusPipeline : ITextToSpeechPipeline
         var codes1 = new List<int>();
         var codes2 = new List<int>();
         int audioTokenIndex = 0;
+        var rng = new Random(42);
 
-        int nextToken = Argmax(logits);
+        int minTokens = Math.Max(70, prompt.Count * 5);
+        int nextToken = SampleToken(logits, generated, temperature, topP, repetitionPenalty, rng);
         for (int step = 0; step < maxTokens; step++)
         {
-            if (nextToken == StopToken) break;
+            if (step > minTokens && nextToken == StopToken) break;
 
-            int code = nextToken - CustomTokenBaseOffset - (audioTokenIndex % 7) * 4096;
+            int slot = audioTokenIndex % 7;
+            int code = nextToken - CustomTokenBaseOffset - slot * 4096;
             if (code >= 0 && code < SnacWeights.CodebookSize)
             {
-                int cb = SlotToCodebook[audioTokenIndex % 7];
+                int cb = SlotToCodebook[slot];
                 (cb == 0 ? codes0 : cb == 1 ? codes1 : codes2).Add(code);
-                generated.Add(nextToken);
                 audioTokenIndex++;
             }
-            // Out-of-range tokens (e.g. the model emitting ordinary text/special tokens instead
-            // of a valid codec code) are skipped rather than fed to the codec, matching
-            // decoder.py's own real `if token > 0` / codebook-range guard.
 
+            generated.Add(nextToken);
             var stepLogits = _fwd.Forward(nextToken, pos);
             pos++;
-            nextToken = Argmax(stepLogits);
+            nextToken = SampleToken(stepLogits, generated, temperature, topP, repetitionPenalty, rng);
         }
 
-        // Truncate to a whole number of complete superframes (7 audio tokens each) -- a partial
-        // trailing superframe has no complete codes_0/1/2 triple and can't be decoded.
+        // Truncate to a whole number of complete superframes (7 audio tokens each)
         int completeSuperframes = audioTokenIndex / 7;
         return
         [
@@ -154,6 +151,7 @@ public sealed class OrpheusPipeline : ITextToSpeechPipeline
         ];
     }
 
+    /// <summary>Full pipeline: text + voice -> 24kHz mono PCM.</summary>
     public float[] Synthesize(string text, string voice = "tara", int maxTokens = 1200)
     {
         var codes = GenerateCodes(text, voice, maxTokens);
@@ -174,6 +172,70 @@ public sealed class OrpheusPipeline : ITextToSpeechPipeline
         }
 
         return pcm;
+    }
+
+    private static int SampleToken(ReadOnlySpan<float> logits, List<int> pastTokens, float temperature, float topP, float repetitionPenalty, Random rng)
+    {
+        var scaled = new float[logits.Length];
+        logits.CopyTo(scaled);
+
+        // Apply repetition penalty to recent tokens
+        if (repetitionPenalty > 1.0f && pastTokens.Count > 0)
+        {
+            int start = Math.Max(0, pastTokens.Count - 64);
+            for (int i = start; i < pastTokens.Count; i++)
+            {
+                int tok = pastTokens[i];
+                if (tok >= 0 && tok < scaled.Length)
+                {
+                    if (scaled[tok] > 0) scaled[tok] /= repetitionPenalty;
+                    else scaled[tok] *= repetitionPenalty;
+                }
+            }
+        }
+
+        // Temperature scaling
+        if (temperature > 0.01f)
+        {
+            for (int i = 0; i < scaled.Length; i++) scaled[i] /= temperature;
+        }
+
+        // Softmax & Top-P Nucleus Sampling
+        float maxLogit = float.NegativeInfinity;
+        for (int i = 0; i < scaled.Length; i++)
+            if (scaled[i] > maxLogit) maxLogit = scaled[i];
+
+        double sumExp = 0.0;
+        for (int i = 0; i < scaled.Length; i++)
+        {
+            scaled[i] = MathF.Exp(scaled[i] - maxLogit);
+            sumExp += scaled[i];
+        }
+
+        var indexed = new (int Id, float Prob)[scaled.Length];
+        for (int i = 0; i < scaled.Length; i++)
+            indexed[i] = (i, (float)(scaled[i] / sumExp));
+
+        Array.Sort(indexed, (a, b) => b.Prob.CompareTo(a.Prob));
+
+        float cumProb = 0f;
+        int cutoff = 0;
+        for (int i = 0; i < indexed.Length; i++)
+        {
+            cumProb += indexed[i].Prob;
+            cutoff = i;
+            if (cumProb >= topP) break;
+        }
+
+        float r = (float)rng.NextDouble() * cumProb;
+        float running = 0f;
+        for (int i = 0; i <= cutoff; i++)
+        {
+            running += indexed[i].Prob;
+            if (running >= r) return indexed[i].Id;
+        }
+
+        return indexed[0].Id;
     }
 
     private static int Argmax(ReadOnlySpan<float> logits)
