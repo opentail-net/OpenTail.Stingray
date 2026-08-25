@@ -78,8 +78,23 @@ public sealed class OrpheusPipeline : ITextToSpeechPipeline
 
     public async IAsyncEnumerable<float[]> GenerateStreamAsync(AudioGenerationRequest request, [System.Runtime.CompilerServices.EnumeratorCancellation] System.Threading.CancellationToken ct = default)
     {
-        var res = Generate(request);
-        yield return res.Samples;
+        if (string.IsNullOrWhiteSpace(request.Text)) yield break;
+
+        var sentences = System.Text.RegularExpressions.Regex.Split(request.Text, @"(?<=[.!?\n])\s+");
+        foreach (var s in sentences)
+        {
+            var trimmed = s.Trim();
+            if (string.IsNullOrEmpty(trimmed)) continue;
+            ct.ThrowIfCancellationRequested();
+
+            var req = request with { Text = trimmed, OutputPath = null };
+            var res = Generate(req);
+            if (res.Samples.Length > 0)
+            {
+                yield return res.Samples;
+            }
+            await Task.Yield();
+        }
     }
 
     public OrpheusPipeline(string talkerGgufPath, string snacGgufPath, int ctxSize = 8192)
@@ -232,12 +247,23 @@ public sealed class OrpheusPipeline : ITextToSpeechPipeline
         return indexed[0].Id;
     }
 
-    /// <summary>Full pipeline: text + voice -> 24kHz mono PCM.</summary>
     public float[] Synthesize(string text, string voice = "tara", int maxTokens = 1200, float temperature = 0.6f, float topP = 0.8f, float repetitionPenalty = 1.1f)
     {
+        var swTotal = System.Diagnostics.Stopwatch.StartNew();
+        var swGen = System.Diagnostics.Stopwatch.StartNew();
         var codes = GenerateCodes(text, voice, maxTokens, temperature, topP, repetitionPenalty);
+        swGen.Stop();
         if (codes[0].Length == 0) return [];
-        return SnacDecoder.Decode(_snacWeights, codes);
+
+        var swVocoder = System.Diagnostics.Stopwatch.StartNew();
+        var pcm = SnacDecoder.Decode(_snacWeights, codes);
+        swVocoder.Stop();
+        swTotal.Stop();
+
+        double audioSec = pcm.Length / (double)SampleRate;
+        int totalCodes = codes[0].Length * 7;
+        Console.WriteLine($"[Orpheus Benchmark] Transformer: {swGen.Elapsed.TotalMilliseconds:F1}ms ({totalCodes / swGen.Elapsed.TotalSeconds:F1} tok/s) | SNAC Vocoder: {swVocoder.Elapsed.TotalMilliseconds:F1}ms ({audioSec / swVocoder.Elapsed.TotalSeconds:F1}x RTF) | Total: {swTotal.Elapsed.TotalMilliseconds:F1}ms");
+        return pcm;
     }
 
     private static int Argmax(ReadOnlySpan<float> logits)
