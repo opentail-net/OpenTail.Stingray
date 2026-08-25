@@ -103,12 +103,10 @@ public sealed class OrpheusPipeline : ITextToSpeechPipeline
     }
 
     /// <summary>
-    /// Runs the talker autoregressively (greedy decode -- a deterministic first correctness
-    /// pass; the real reference's own defaults are temp=0.6/top_p=0.8/repetition_penalty=1.3,
-    /// not yet wired here) until <see cref="StopToken"/> or <paramref name="maxTokens"/>, then
-    /// de-interleaves the raw generated token ids into 3 real SNAC codebook streams.
+    /// Runs the talker autoregressively (reference defaults: temp=0.6, top_p=0.8, repetition_penalty=1.1, stop=128258),
+    /// then de-interleaves the generated token ids into 3 SNAC codebook streams.
     /// </summary>
-    public int[][] GenerateCodes(string text, string voice = "tara", int maxTokens = 1200, float temperature = 0.6f, float topP = 0.8f, float repetitionPenalty = 1.3f)
+    public int[][] GenerateCodes(string text, string voice = "tara", int maxTokens = 1200, float temperature = 0.6f, float topP = 0.8f, float repetitionPenalty = 1.1f)
     {
         var prompt = BuildPrompt(text, voice);
         Console.WriteLine($"[OrpheusDiag] Prompt ({prompt.Count} tokens): [" + string.Join(", ", prompt) + "]");
@@ -127,12 +125,13 @@ public sealed class OrpheusPipeline : ITextToSpeechPipeline
         int audioTokenIndex = 0;
         var rng = new Random(42);
 
+        int effectiveMaxTokens = Math.Min(maxTokens, Math.Max(140, prompt.Count * 22));
         int minTokens = 42; // at least 6 superframes (~0.25s) before allowing EOS
         int nextToken = SampleToken(logits, generated, temperature, topP, repetitionPenalty, allowStop: false, rng);
-        for (int step = 0; step < maxTokens; step++)
+        for (int step = 0; step < effectiveMaxTokens; step++)
         {
-            // 128258 is <custom_token_0> (the official Orpheus end-of-audio sentinel)
-            if (step >= minTokens && (nextToken == 128258 || nextToken == StopToken || nextToken == 128256))
+            // 128258 is <custom_token_0> (official End-Of-Speech), 128262 is <custom_token_4> (End-Of-AI)
+            if (step >= minTokens && (nextToken == 128258 || nextToken == 128262 || nextToken == 128009 || nextToken == 128001 || nextToken == 128256))
             {
                 Console.WriteLine($"[OrpheusDiag] Hit End-Of-Audio token {nextToken} at step {step} ({audioTokenIndex} audio tokens).");
                 break;
