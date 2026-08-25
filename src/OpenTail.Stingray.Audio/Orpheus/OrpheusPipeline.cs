@@ -34,8 +34,12 @@ namespace OpenTail.Stingray.Audio.Orpheus;
 /// slots 1&amp;4 -&gt; codes_1 (mid), slots 2/3/5/6 -&gt; codes_2 (fine).</item>
 /// </list>
 /// </summary>
-public sealed class OrpheusPipeline : IDisposable
+public sealed class OrpheusPipeline : ITextToSpeechPipeline
 {
+    public string Architecture => "Orpheus-TTS";
+    public int SampleRate => 24000;
+    public int DefaultSampleRate => 24000;
+
     private readonly GgufModel _model;
     private readonly CpuBackend _backend;
     private readonly ForwardPass _fwd;
@@ -48,6 +52,35 @@ public sealed class OrpheusPipeline : IDisposable
     private const int CustomTokenBaseOffset = 128266; // = <custom_token_0> id (128256) + the real formula's constant 10
 
     private static readonly int[] SlotToCodebook = [0, 1, 2, 2, 1, 2, 2];
+
+    public static OrpheusPipeline Load(string modelPath, string? snacGgufPath = null)
+    {
+        string dir = Path.GetDirectoryName(modelPath) ?? "models";
+        snacGgufPath ??= Path.Combine(dir, "snac-24khz.gguf");
+        if (!File.Exists(snacGgufPath))
+        {
+            snacGgufPath = Path.Combine(dir, "snac_24khz.gguf");
+        }
+        return new OrpheusPipeline(modelPath, snacGgufPath);
+    }
+
+    public AudioGenerationResult Generate(AudioGenerationRequest request)
+    {
+        string voice = string.IsNullOrWhiteSpace(request.Voice) || request.Voice == "af_heart" ? "tara" : request.Voice;
+        var pcm = Synthesize(request.Text, voice);
+        var result = new AudioGenerationResult(pcm, DefaultSampleRate);
+        if (!string.IsNullOrEmpty(request.OutputPath))
+        {
+            result.SaveWav(request.OutputPath);
+        }
+        return result;
+    }
+
+    public async IAsyncEnumerable<float[]> GenerateStreamAsync(AudioGenerationRequest request, [System.Runtime.CompilerServices.EnumeratorCancellation] System.Threading.CancellationToken ct = default)
+    {
+        var res = Generate(request);
+        yield return res.Samples;
+    }
 
     public OrpheusPipeline(string talkerGgufPath, string snacGgufPath, int ctxSize = 8192)
     {
@@ -121,12 +154,26 @@ public sealed class OrpheusPipeline : IDisposable
         ];
     }
 
-    /// <summary>Full pipeline: text + voice -> 24kHz mono PCM.</summary>
     public float[] Synthesize(string text, string voice = "tara", int maxTokens = 1200)
     {
         var codes = GenerateCodes(text, voice, maxTokens);
         if (codes[0].Length == 0) return [];
-        return SnacDecoder.Decode(_snacWeights, codes);
+        var pcm = SnacDecoder.Decode(_snacWeights, codes);
+
+        // Peak normalize to 0.85 full scale
+        float peak = 0f;
+        for (int i = 0; i < pcm.Length; i++)
+        {
+            float a = MathF.Abs(pcm[i]);
+            if (a > peak) peak = a;
+        }
+        if (peak > 1e-4f && peak < 0.8f)
+        {
+            float gain = 0.85f / peak;
+            for (int i = 0; i < pcm.Length; i++) pcm[i] *= gain;
+        }
+
+        return pcm;
     }
 
     private static int Argmax(ReadOnlySpan<float> logits)

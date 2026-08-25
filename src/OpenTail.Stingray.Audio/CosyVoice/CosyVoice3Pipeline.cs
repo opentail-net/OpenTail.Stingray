@@ -17,9 +17,28 @@ namespace OpenTail.Stingray.Audio.CosyVoice;
 /// `cond` (the reference mel) is all-zero. The DiT's CFG refinement is also omitted (see
 /// <see cref="CosyVoice3DiTModel.SolveFlowMatchingOde"/>'s doc comment).</para>
 /// </summary>
-public sealed class CosyVoice3Pipeline : IDisposable
+public sealed class CosyVoice3Pipeline : ITextToSpeechPipeline
 {
+    public string Architecture => "CosyVoice3";
     public int SampleRate => 24000;
+    public int DefaultSampleRate => 24000;
+
+    public AudioGenerationResult Generate(AudioGenerationRequest request)
+    {
+        var pcm = Generate(request.Text);
+        var result = new AudioGenerationResult(pcm, DefaultSampleRate);
+        if (!string.IsNullOrEmpty(request.OutputPath))
+        {
+            result.SaveWav(request.OutputPath);
+        }
+        return result;
+    }
+
+    public async IAsyncEnumerable<float[]> GenerateStreamAsync(AudioGenerationRequest request, [System.Runtime.CompilerServices.EnumeratorCancellation] System.Threading.CancellationToken ct = default)
+    {
+        var res = Generate(request);
+        yield return res.Samples;
+    }
 
     private readonly GgufModel _rawModel;
     private readonly CosyVoice3LlmTensorSource _llmSource;
@@ -76,7 +95,22 @@ public sealed class CosyVoice3Pipeline : IDisposable
             for (int c = 0; c < CosyVoice3DiTWeights.MelDim; c++)
                 melChannelFirst[c * numFrames + f] = mel[f * CosyVoice3DiTWeights.MelDim + c];
 
-        return CosyVoiceHiftVocoder.Generate(_hiftWeights, melChannelFirst, numFrames, rng);
+        var wav = CosyVoiceHiftVocoder.Generate(_hiftWeights, melChannelFirst, numFrames, rng);
+
+        // Peak normalize to 0.85 full scale
+        float peak = 0f;
+        for (int i = 0; i < wav.Length; i++)
+        {
+            float a = MathF.Abs(wav[i]);
+            if (a > peak) peak = a;
+        }
+        if (peak > 1e-4f && peak < 0.8f)
+        {
+            float gain = 0.85f / peak;
+            for (int i = 0; i < wav.Length; i++) wav[i] *= gain;
+        }
+
+        return wav;
     }
 
     public void Dispose()

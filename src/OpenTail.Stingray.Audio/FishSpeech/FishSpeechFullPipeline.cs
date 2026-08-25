@@ -14,15 +14,54 @@ namespace OpenTail.Stingray.Audio.FishSpeech;
 /// real oracles, see docs/audio-review-progress.md's Fish Speech section) into one callable
 /// end-to-end path. No new model math here -- purely plumbing.</para>
 /// </summary>
-public sealed class FishSpeechFullPipeline : IDisposable
+public sealed class FishSpeechFullPipeline : ITextToSpeechPipeline
 {
+    public string Architecture => "FishSpeech";
+    public int SampleRate => 44100;
+    public int DefaultSampleRate => 44100;
+
     private readonly FishSpeechPipeline _talker;
     private readonly FishSpeechCodecWeights _codecWeights;
+
+    public static FishSpeechFullPipeline Load(string modelPath, string? tokDir = null, string? codecGgufPath = null)
+    {
+        tokDir ??= ResolveTokenizerDir(modelPath);
+        codecGgufPath ??= modelPath; // s2-pro checkpoint contains the embedded codec weights
+        return new FishSpeechFullPipeline(modelPath, tokDir, codecGgufPath);
+    }
+
+    private static string ResolveTokenizerDir(string modelPath)
+    {
+        string[] candidates = ["examples/s2.cpp", "models/s2.cpp", "models"];
+        foreach (var c in candidates)
+        {
+            if (Directory.Exists(c) && (File.Exists(Path.Combine(c, "tokenizer.json")) || File.Exists(Path.Combine(c, "vocab.json"))))
+                return c;
+        }
+        return "examples/s2.cpp";
+    }
 
     public FishSpeechFullPipeline(string talkerGgufPath, string tokenizerDir, string codecGgufPath, int numLayers = 36, int ctxSize = 2048)
     {
         _talker = new FishSpeechPipeline(talkerGgufPath, tokenizerDir, numLayers, ctxSize);
         _codecWeights = new FishSpeechCodecWeights(codecGgufPath);
+    }
+
+    public AudioGenerationResult Generate(AudioGenerationRequest request)
+    {
+        var pcm = Synthesize(request.Text);
+        var result = new AudioGenerationResult(pcm, DefaultSampleRate);
+        if (!string.IsNullOrEmpty(request.OutputPath))
+        {
+            result.SaveWav(request.OutputPath);
+        }
+        return result;
+    }
+
+    public async IAsyncEnumerable<float[]> GenerateStreamAsync(AudioGenerationRequest request, [System.Runtime.CompilerServices.EnumeratorCancellation] System.Threading.CancellationToken ct = default)
+    {
+        var res = Generate(request);
+        yield return res.Samples;
     }
 
     /// <summary>Full pipeline: text -&gt; mono float32 PCM (44.1kHz, matching the real codec's native rate).</summary>
@@ -45,7 +84,22 @@ public sealed class FishSpeechFullPipeline : IDisposable
                 residualCodes[cb][ti] = codebooksPerFrame[ti][cb + 1];
         }
 
-        return FishSpeechCodec.Decode(_codecWeights, semanticCodes, residualCodes);
+        var pcm = FishSpeechCodec.Decode(_codecWeights, semanticCodes, residualCodes);
+
+        // Peak normalize to 0.85 full scale
+        float peak = 0f;
+        for (int i = 0; i < pcm.Length; i++)
+        {
+            float a = MathF.Abs(pcm[i]);
+            if (a > peak) peak = a;
+        }
+        if (peak > 1e-4f && peak < 0.8f)
+        {
+            float gain = 0.85f / peak;
+            for (int i = 0; i < pcm.Length; i++) pcm[i] *= gain;
+        }
+
+        return pcm;
     }
 
     public void Dispose()

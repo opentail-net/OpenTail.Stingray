@@ -31,8 +31,12 @@ namespace OpenTail.Stingray.Audio.Parler;
 /// identical, since a forced value never depends on anything the model predicts, just applied
 /// earlier. Reuses the already golden-tested <see cref="ParlerDelayPattern.Apply"/> exactly.</para>
 /// </summary>
-public sealed class ParlerFullPipeline : IDisposable
+public sealed class ParlerFullPipeline : ITextToSpeechPipeline
 {
+    public string Architecture => "Parler-TTS";
+    public int SampleRate => 44100;
+    public int DefaultSampleRate => 44100;
+
     private const int BosTokenId = 1025;
     private const int EosTokenId = 1024;
     private const int PadTokenId = 1024;
@@ -42,13 +46,77 @@ public sealed class ParlerFullPipeline : IDisposable
     private readonly T5EncoderWeights _t5Weights;
     private readonly ParlerDecoderWeights _decoderWeights;
     private readonly DacWeights _dacWeights;
+    private readonly IDisposable? _ownedLoader;
 
-    public ParlerFullPipeline(string tokenizerJsonPath, SafetensorsLoader loader)
+    public static ParlerFullPipeline Load(string modelPath, string? tokenizerPath = null)
+    {
+        tokenizerPath ??= ResolveTokenizerPath(modelPath);
+        if (modelPath.EndsWith(".gguf", StringComparison.OrdinalIgnoreCase))
+        {
+            string safetensorsCandidate = Path.ChangeExtension(modelPath, ".safetensors");
+            if (!File.Exists(safetensorsCandidate))
+            {
+                safetensorsCandidate = Path.Combine(Path.GetDirectoryName(modelPath) ?? "models", "parler-tts-mini-v1.safetensors");
+            }
+            if (File.Exists(safetensorsCandidate))
+            {
+                var loader = SafetensorsLoader.Open(safetensorsCandidate);
+                var gguf = GgufModel.Open(modelPath);
+                return new ParlerFullPipeline(tokenizerPath, loader, gguf, loader);
+            }
+        }
+
+        var directLoader = SafetensorsLoader.Open(modelPath);
+        return new ParlerFullPipeline(tokenizerPath, directLoader, directLoader);
+    }
+
+    private static string ResolveTokenizerPath(string modelPath)
+    {
+        string dir = Path.GetDirectoryName(modelPath) ?? "models";
+        string[] candidates =
+        [
+            Path.Combine(dir, "parler-tokenizer.json"),
+            Path.Combine(dir, "tokenizer.json"),
+            "scratch-llamacpp-ref/parler-tokenizer/tokenizer.json",
+            "models/parler-tokenizer.json"
+        ];
+        foreach (var c in candidates) if (File.Exists(c)) return c;
+        throw new FileNotFoundException("Parler tokenizer.json not found in models/ or scratch-llamacpp-ref/.");
+    }
+
+    public AudioGenerationResult Generate(AudioGenerationRequest request)
+    {
+        var pcm = Synthesize(request.Text);
+        var result = new AudioGenerationResult(pcm, DefaultSampleRate);
+        if (!string.IsNullOrEmpty(request.OutputPath))
+        {
+            result.SaveWav(request.OutputPath);
+        }
+        return result;
+    }
+
+    public async IAsyncEnumerable<float[]> GenerateStreamAsync(AudioGenerationRequest request, [System.Runtime.CompilerServices.EnumeratorCancellation] System.Threading.CancellationToken ct = default)
+    {
+        var res = Generate(request);
+        yield return res.Samples;
+    }
+
+    public ParlerFullPipeline(string tokenizerJsonPath, SafetensorsLoader loader, IDisposable? ownedLoader = null)
     {
         _tokenizer = UnigramTokenizer.FromTokenizerJson(tokenizerJsonPath);
         _t5Weights = new T5EncoderWeights(loader);
         _decoderWeights = new ParlerDecoderWeights(loader);
         _dacWeights = new DacWeights(loader);
+        _ownedLoader = ownedLoader;
+    }
+
+    public ParlerFullPipeline(string tokenizerJsonPath, SafetensorsLoader loader, GgufModel decoderAndDacGguf, IDisposable? ownedLoader = null)
+    {
+        _tokenizer = UnigramTokenizer.FromTokenizerJson(tokenizerJsonPath);
+        _t5Weights = new T5EncoderWeights(loader);
+        _decoderWeights = new ParlerDecoderWeights(decoderAndDacGguf);
+        _dacWeights = new DacWeights(decoderAndDacGguf);
+        _ownedLoader = ownedLoader;
     }
 
     /// <summary>
@@ -144,7 +212,22 @@ public sealed class ParlerFullPipeline : IDisposable
         // Real un-delay: drop BOS/PAD-only tail/head per codebook offset, keep only genuinely generated audio codes.
         var unDelayed = UnDelay(sequence);
         if (unDelayed[0].Length == 0) return [];
-        return DacDecoder.Decode(_dacWeights, unDelayed);
+        var pcm = DacDecoder.Decode(_dacWeights, unDelayed);
+
+        // Peak normalize to 0.85 full scale
+        float peak = 0f;
+        for (int i = 0; i < pcm.Length; i++)
+        {
+            float a = MathF.Abs(pcm[i]);
+            if (a > peak) peak = a;
+        }
+        if (peak > 1e-4f && peak < 0.8f)
+        {
+            float gain = 0.85f / peak;
+            for (int i = 0; i < pcm.Length; i++) pcm[i] *= gain;
+        }
+
+        return pcm;
     }
 
     /// <summary>Strips each codebook's real BOS-offset prefix and any trailing EOS/PAD, then truncates every stream to the shortest resulting length (the real frame count all 9 codebooks agree on).</summary>
@@ -190,7 +273,6 @@ public sealed class ParlerFullPipeline : IDisposable
 
     public void Dispose()
     {
-        // Weight loaders here own no unmanaged resources of their own beyond the shared SafetensorsLoader,
-        // which the caller owns and disposes (see ParlerFullPipelineTests for the real usage pattern).
+        _ownedLoader?.Dispose();
     }
 }

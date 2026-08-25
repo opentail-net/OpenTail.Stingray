@@ -5,10 +5,15 @@ using System.IO;
 using System.Threading;
 using OpenTail.Stingray.Audio;
 using OpenTail.Stingray.Audio.Chatterbox;
+using OpenTail.Stingray.Audio.CosyVoice;
 using OpenTail.Stingray.Audio.F5TTS;
+using OpenTail.Stingray.Audio.FishSpeech;
 using OpenTail.Stingray.Audio.Kokoro;
 using OpenTail.Stingray.Audio.MeloTTS;
+using OpenTail.Stingray.Audio.Orpheus;
+using OpenTail.Stingray.Audio.Parler;
 using OpenTail.Stingray.Audio.Piper;
+using OpenTail.Stingray.Audio.QwenTTS;
 using OpenTail.Stingray.Cli.CommandLine;
 
 namespace OpenTail.Stingray.Cli;
@@ -96,7 +101,17 @@ public sealed class TtsCommand : Command<TtsCommand.Settings>
                 "melo" or "melotts" => s.ModelPath is not null
                     ? MeloPipeline.Load(s.ModelPath)
                     : throw new ArgumentException("--model (-m) is required for the melo engine (path to model file)."),
-                _ => throw new ArgumentException($"Unknown TTS engine: '{s.Engine}'. Supported: kokoro, piper, f5tts, chatterbox, melo.")
+                "cosyvoice" or "cosyvoice3" or "cosyvoice2" =>
+                    CosyVoice3Pipeline.Load(s.ModelPath ?? ResolveCosyVoiceModelPath()),
+                "parler" or "parler-tts" or "parlertts" =>
+                    ParlerFullPipeline.Load(s.ModelPath ?? ResolveParlerModelPath()),
+                "qwen" or "qwentts" or "qwen-tts" or "qwen-talker" =>
+                    QwenTtsPipeline.Load(s.ModelPath ?? ResolveQwenTtsModelPath()),
+                "fish" or "fishspeech" or "fish-speech" or "s2" or "s2-pro" =>
+                    FishSpeechFullPipeline.Load(s.ModelPath ?? ResolveFishSpeechModelPath()),
+                "orpheus" or "orpheus-tts" or "orpheustts" =>
+                    OrpheusPipeline.Load(s.ModelPath ?? ResolveOrpheusModelPath()),
+                _ => throw new ArgumentException($"Unknown TTS engine: '{s.Engine}'. Supported: kokoro, piper, f5tts, chatterbox, melo, cosyvoice, parler, qwentts, fishspeech, orpheus.")
             };
         }
         catch (Exception ex)
@@ -188,5 +203,55 @@ public sealed class TtsCommand : Command<TtsCommand.Settings>
             $"Warning: no real voice file for '{voice}' at '{candidate}' -- using a procedural " +
             "placeholder style vector instead of that voice's real trained identity.");
         return null;
+    }
+
+    private static string ResolveCosyVoiceModelPath()
+    {
+        foreach (var c in new[] { "models/cosyvoice3/CosyVoice3-2512_F16.gguf", "models/cosyvoice3/CosyVoice3-2512.gguf" })
+            if (File.Exists(c)) return c;
+
+        throw new ArgumentException(
+            "No CosyVoice3 model found. Pass --model (-m) with a path to a CosyVoice .gguf checkpoint " +
+            "(e.g. models/cosyvoice3/CosyVoice3-2512_F16.gguf), or place one at that default path.");
+    }
+
+    private static string ResolveParlerModelPath()
+    {
+        foreach (var c in new[] { "models/parler-tts-mini-v1.safetensors", "models/parler-tts-mini-v1-Q8_0.gguf", "models/Parler_TTS_mini.gguf" })
+            if (File.Exists(c)) return c;
+
+        throw new ArgumentException(
+            "No Parler-TTS model found. Pass --model (-m) with a path to a Parler .safetensors or .gguf checkpoint " +
+            "(e.g. models/parler-tts-mini-v1.safetensors), or place one at that default path.");
+    }
+
+    private static string ResolveQwenTtsModelPath()
+    {
+        foreach (var c in new[] { "models/qwen-talker-0.6b-base-Q8_0.gguf", "models/qwen-talker-0.6b.gguf" })
+            if (File.Exists(c)) return c;
+
+        throw new ArgumentException(
+            "No Qwen-Talker model found. Pass --model (-m) with a path to a QwenTalker .gguf checkpoint " +
+            "(e.g. models/qwen-talker-0.6b-base-Q8_0.gguf), or place one at that default path.");
+    }
+
+    private static string ResolveFishSpeechModelPath()
+    {
+        foreach (var c in new[] { "models/s2-pro-q4_k_m.gguf", "models/s2-pro-q8_0.gguf" })
+            if (File.Exists(c)) return c;
+
+        throw new ArgumentException(
+            "No Fish-Speech (S2-Pro) model found. Pass --model (-m) with a path to an s2-pro .gguf checkpoint " +
+            "(e.g. models/s2-pro-q4_k_m.gguf), or place one at that default path.");
+    }
+
+    private static string ResolveOrpheusModelPath()
+    {
+        foreach (var c in new[] { "models/orpheus-3b-0.1-ft.Q4_K_M.gguf", "models/orpheus-3b.gguf" })
+            if (File.Exists(c)) return c;
+
+        throw new ArgumentException(
+            "No Orpheus model found. Pass --model (-m) with a path to an Orpheus .gguf checkpoint " +
+            "(e.g. models/orpheus-3b-0.1-ft.Q4_K_M.gguf), or place one at that default path.");
     }
 }

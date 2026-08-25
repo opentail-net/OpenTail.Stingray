@@ -18,9 +18,11 @@ namespace OpenTail.Stingray.Audio.QwenTTS;
 /// convention from `code-predictor-forward.h` -- e.g. a maximum silent-frame count -- is not
 /// replicated here; a fixed `maxFrames` cap is used instead).</para>
 /// </summary>
-public sealed class QwenTtsPipeline : IDisposable
+public sealed class QwenTtsPipeline : ITextToSpeechPipeline
 {
+    public string Architecture => "QwenTTS";
     public int SampleRate => 24000;
+    public int DefaultSampleRate => 24000;
 
     private readonly GgufModel _talkerModel;
     private readonly GgufModel _codecModel;
@@ -31,11 +33,34 @@ public sealed class QwenTtsPipeline : IDisposable
         _codecModel = codecModel;
     }
 
-    public static QwenTtsPipeline Load(string talkerGgufPath, string codecGgufPath)
+    public static QwenTtsPipeline Load(string modelPath, string? codecGgufPath = null)
     {
-        var talkerModel = GgufModel.Open(talkerGgufPath);
+        string dir = Path.GetDirectoryName(modelPath) ?? "models";
+        codecGgufPath ??= Path.Combine(dir, "qwen-tokenizer-12hz-Q8_0.gguf");
+        if (!File.Exists(codecGgufPath))
+        {
+            codecGgufPath = Path.Combine(dir, "qwen-tokenizer-12hz.gguf");
+        }
+        var talkerModel = GgufModel.Open(modelPath);
         var codecModel = GgufModel.Open(codecGgufPath);
         return new QwenTtsPipeline(talkerModel, codecModel);
+    }
+
+    public AudioGenerationResult Generate(AudioGenerationRequest request)
+    {
+        var pcm = Generate(request.Text);
+        var result = new AudioGenerationResult(pcm, DefaultSampleRate);
+        if (!string.IsNullOrEmpty(request.OutputPath))
+        {
+            result.SaveWav(request.OutputPath);
+        }
+        return result;
+    }
+
+    public async IAsyncEnumerable<float[]> GenerateStreamAsync(AudioGenerationRequest request, [System.Runtime.CompilerServices.EnumeratorCancellation] System.Threading.CancellationToken ct = default)
+    {
+        var res = Generate(request);
+        yield return res.Samples;
     }
 
     /// <summary>Synthesizes real 24kHz PCM audio for the given text.</summary>

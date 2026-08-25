@@ -41,15 +41,9 @@ public static class CosyVoice3Llm
     public static int[] GenerateSpeechTokens(GgufModel rawModel, CosyVoice3LlmTensorSource source, string text, int maxNewTokens = 200)
     {
         var tokenizer = BuildTokenizer(rawModel);
-
-        string instructionPrefix = rawModel.Metadata.TryGetValue("cosyvoice.instruction_prefix", out var ip) ? (string)ip : "You are a helpful assistant.";
         int sosTokenId = rawModel.GetMetadata("sos_token_id", 0);
         int taskTokenId = rawModel.GetMetadata("task_token_id", 0);
-        var stopTokenIds = ReadIntArray(rawModel, "stop_token_ids");
-
-        var promptTextTokens = new List<int>(tokenizer.Encode(instructionPrefix));
-        promptTextTokens.AddRange(tokenizer.Encode("<|endofprompt|>"));
-        promptTextTokens.AddRange(tokenizer.Encode(text));
+        var promptTextTokens = new List<int>(tokenizer.Encode(text));
 
         var hp = ModelHyperparams.FromGgufMetadata(source.Metadata);
         using var backend = new CpuBackend();
@@ -63,14 +57,53 @@ public static class CosyVoice3Llm
 
         var generated = new List<int>();
         int pos = prefillIds.Count;
+        int minTokens = Math.Max(30, promptTextTokens.Count * 4);
         for (int step = 0; step < maxNewTokens; step++)
         {
+            // Apply repetition penalty to recently generated speech tokens
+            for (int i = Math.Max(0, generated.Count - 15); i < generated.Count; i++)
+            {
+                int past = generated[i];
+                if (logits[past] > 0) logits[past] /= 1.2f;
+                else logits[past] *= 1.2f;
+            }
+
+            // Prevent premature EOS before the text duration is vocalized
+            if (step < minTokens)
+            {
+                logits[6562] = float.NegativeInfinity;
+            }
+
+            if (Environment.GetEnvironmentVariable("STINGRAY_AUDIO_DIAGNOSTIC_DUMP") == "1" && step < 5)
+            {
+                var topIndices = Enumerable.Range(0, Math.Min(6561, logits.Length)).OrderByDescending(i => logits[i]).Take(5).ToArray();
+                Console.WriteLine($"[CosyVoiceDiag] Step {step}: top5=" + string.Join(", ", topIndices.Select(i => $"{i}:{logits[i]:F2}")));
+            }
+
             int localId = ArgMax(logits);
-            if (stopTokenIds.Contains(localId)) break;
+
+            // Real stop token for CosyVoice speech generation is 6562 (EOS)
+            if (localId == 6562)
+            {
+                break;
+            }
+
+            // Suppress non-speech control tokens (>= 6561)
+            if (localId >= 6561)
+            {
+                for (int c = 6561; c < logits.Length; c++) logits[c] = float.NegativeInfinity;
+                localId = ArgMax(logits);
+                if (localId >= 6561) break;
+            }
 
             generated.Add(localId);
             logits = fwd.Forward(source.SpeechTokenIdOffset + localId, pos).ToArray();
             pos++;
+        }
+
+        if (Environment.GetEnvironmentVariable("STINGRAY_AUDIO_DIAGNOSTIC_DUMP") == "1")
+        {
+            Console.WriteLine($"[CosyVoiceDiag] Generated {generated.Count} speech tokens for text '{text}'");
         }
 
         return [.. generated];
