@@ -90,19 +90,18 @@ public sealed class ChatterboxDecoder
         var wav = ChatterboxVocoder.Generate(w, melTail, mel2, rng);
         if (diag) ChatterboxPipeline.DiagLog($"  S3Gen vocoder: {sw!.ElapsedMilliseconds}ms, {mel2} generated mel frames, {wav.Length} samples");
 
-        // Discard the initial 20ms (480 samples) reference prompt boundary transition and apply a smooth 20ms cosine fade-in
+        // Official 40ms initial trim fade (20ms silence + 20ms cosine fade) to remove prompt spillover
         int nTrim = 24000 / 50; // 480 samples = 20ms
-        if (wav.Length > nTrim * 2)
+        int fadeLen = 2 * nTrim; // 960 samples = 40ms
+        if (wav.Length >= fadeLen)
         {
-            var trimmed = new float[wav.Length - nTrim];
-            Array.Copy(wav, nTrim, trimmed, 0, trimmed.Length);
+            for (int i = 0; i < nTrim; i++) wav[i] = 0f;
             for (int i = 0; i < nTrim; i++)
             {
                 float angle = MathF.PI * (1f - (float)i / nTrim);
                 float factor = (MathF.Cos(angle) + 1f) * 0.5f;
-                trimmed[i] *= factor;
+                wav[nTrim + i] *= factor;
             }
-            wav = trimmed;
         }
 
         return wav;
