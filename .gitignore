@@ -492,3 +492,11 @@ examples/
 
 # CLI demo output (e.g. `stingray tts ... -o speech.wav` run from the repo root).
 /speech.wav
+/speech_chatterbox.wav
+/speech_f5.wav
+/speech_kokoro.wav
+/speech_kokoro_alice.wav
+/speech_melo.wav
+/speech_melo_test.wav
+/speech_piper.wav
+/speech_piper_pause.wav
