@@ -33,67 +33,45 @@ namespace OpenTail.Stingray.Audio.CosyVoice;
 public static class CosyVoice3Llm
 {
     /// <summary>
-    /// Generates real speech token ids (0-based within the speech vocabulary, i.e. already
-    /// stripped of <see cref="CosyVoice3LlmTensorSource.SpeechTokenIdOffset"/> -- ready to feed
-    /// straight into the flow/DiT stage) for the given synthesis text. Greedy decoding (argmax),
-    /// stopping at any real stop-token id (GGUF metadata "stop_token_ids") or maxNewTokens.
+    /// Generates real speech token ids for the given synthesis text using the reference sampling
+    /// pipeline from examples/cosyvoice.cpp (top_k=25, top_p=0.8, win_size=10, min_len=text_len*2).
     /// </summary>
-    public static int[] GenerateSpeechTokens(GgufModel rawModel, CosyVoice3LlmTensorSource source, string text, int maxNewTokens = 200)
+    public static int[] GenerateSpeechTokens(GgufModel rawModel, CosyVoice3LlmTensorSource source, string text, int maxNewTokens = 300)
     {
         var tokenizer = BuildTokenizer(rawModel);
         int sosTokenId = rawModel.GetMetadata("sos_token_id", 0);
         int taskTokenId = rawModel.GetMetadata("task_token_id", 0);
-        var promptTextTokens = new List<int>(tokenizer.Encode(text));
+
+        string instructionPrefix = rawModel.GetMetadata("cosyvoice.instruction_prefix", "You are a helpful assistant.");
+        var prefixTokens = tokenizer.Encode(instructionPrefix);
+        var textTokens = tokenizer.Encode(text);
 
         var hp = ModelHyperparams.FromGgufMetadata(source.Metadata);
         using var backend = new CpuBackend();
         using var fwd = new ForwardPass(source, backend, hp);
 
-        var prefillIds = new List<int>(promptTextTokens.Count + 2) { source.SpeechTokenIdOffset + sosTokenId };
-        prefillIds.AddRange(promptTextTokens);
+        var prefillIds = new List<int>(prefixTokens.Count + textTokens.Count + 2)
+        {
+            source.SpeechTokenIdOffset + sosTokenId
+        };
+        prefillIds.AddRange(prefixTokens);
+        prefillIds.AddRange(textTokens);
         prefillIds.Add(source.SpeechTokenIdOffset + taskTokenId);
 
         var logits = fwd.Prefill(prefillIds).ToArray();
 
         var generated = new List<int>();
         int pos = prefillIds.Count;
-        int minTokens = Math.Max(30, promptTextTokens.Count * 4);
+        int minLen = Math.Max(60, textTokens.Count * 6);
+        var rng = new Random(42);
+
         for (int step = 0; step < maxNewTokens; step++)
         {
-            // Apply repetition penalty to recently generated speech tokens
-            for (int i = Math.Max(0, generated.Count - 15); i < generated.Count; i++)
-            {
-                int past = generated[i];
-                if (logits[past] > 0) logits[past] /= 1.2f;
-                else logits[past] *= 1.2f;
-            }
+            int localId = SampleSpeechToken(logits, generated, allowStop: step >= minLen, rng);
 
-            // Prevent premature EOS before the text duration is vocalized
-            if (step < minTokens)
-            {
-                logits[6562] = float.NegativeInfinity;
-            }
-
-            if (Environment.GetEnvironmentVariable("STINGRAY_AUDIO_DIAGNOSTIC_DUMP") == "1" && step < 5)
-            {
-                var topIndices = Enumerable.Range(0, Math.Min(6561, logits.Length)).OrderByDescending(i => logits[i]).Take(5).ToArray();
-                Console.WriteLine($"[CosyVoiceDiag] Step {step}: top5=" + string.Join(", ", topIndices.Select(i => $"{i}:{logits[i]:F2}")));
-            }
-
-            int localId = ArgMax(logits);
-
-            // Real stop token for CosyVoice speech generation is 6562 (EOS)
-            if (localId == 6562)
+            if (localId >= 6561) // Stop token range
             {
                 break;
-            }
-
-            // Suppress non-speech control tokens (>= 6561)
-            if (localId >= 6561)
-            {
-                for (int c = 6561; c < logits.Length; c++) logits[c] = float.NegativeInfinity;
-                localId = ArgMax(logits);
-                if (localId >= 6561) break;
             }
 
             generated.Add(localId);
@@ -101,12 +79,73 @@ public static class CosyVoice3Llm
             pos++;
         }
 
-        if (Environment.GetEnvironmentVariable("STINGRAY_AUDIO_DIAGNOSTIC_DUMP") == "1")
+        return [.. generated];
+    }
+
+    private static int SampleSpeechToken(float[] logits, List<int> pastTokens, bool allowStop, Random rng, int topK = 25, float topP = 0.8f, int winSize = 10)
+    {
+        int totalVocab = logits.Length;
+
+        // If stop tokens are not allowed, mask them out
+        if (!allowStop)
         {
-            Console.WriteLine($"[CosyVoiceDiag] Generated {generated.Count} speech tokens for text '{text}'");
+            for (int i = 6561; i < totalVocab; i++)
+                logits[i] = float.NegativeInfinity;
         }
 
-        return [.. generated];
+        // Repetition penalty over recent window (win_size)
+        if (pastTokens.Count > 0)
+        {
+            int start = Math.Max(0, pastTokens.Count - winSize);
+            for (int i = start; i < pastTokens.Count; i++)
+            {
+                int tok = pastTokens[i];
+                if (tok >= 0 && tok < totalVocab)
+                {
+                    if (logits[tok] > 0) logits[tok] /= 1.2f;
+                    else logits[tok] *= 1.2f;
+                }
+            }
+        }
+
+        // Softmax & Nucleus Top-P / Top-K
+        float maxLogit = float.NegativeInfinity;
+        for (int i = 0; i < totalVocab; i++)
+            if (logits[i] > maxLogit) maxLogit = logits[i];
+
+        double sumExp = 0.0;
+        var expLogits = new float[totalVocab];
+        for (int i = 0; i < totalVocab; i++)
+        {
+            expLogits[i] = MathF.Exp(logits[i] - maxLogit);
+            sumExp += expLogits[i];
+        }
+
+        var candidates = new (int Id, float Prob)[totalVocab];
+        for (int i = 0; i < totalVocab; i++)
+            candidates[i] = (i, (float)(expLogits[i] / sumExp));
+
+        Array.Sort(candidates, (a, b) => b.Prob.CompareTo(a.Prob));
+
+        int k = Math.Min(topK, candidates.Length);
+        float cumProb = 0f;
+        int cutoff = 0;
+        for (int i = 0; i < k; i++)
+        {
+            cumProb += candidates[i].Prob;
+            cutoff = i;
+            if (cumProb >= topP) break;
+        }
+
+        float r = (float)rng.NextDouble() * cumProb;
+        float running = 0f;
+        for (int i = 0; i <= cutoff; i++)
+        {
+            running += candidates[i].Prob;
+            if (running >= r) return candidates[i].Id;
+        }
+
+        return candidates[0].Id;
     }
 
     private static GgufTokenizer BuildTokenizer(GgufModel model)

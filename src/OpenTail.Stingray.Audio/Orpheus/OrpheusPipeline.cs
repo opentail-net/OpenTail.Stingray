@@ -49,7 +49,7 @@ public sealed class OrpheusPipeline : ITextToSpeechPipeline
     private const int PromptStartToken = 128259;
     private static readonly int[] PromptEndTokens = [128009, 128260, 128261, 128257];
     private const int StopToken = 49158;
-    private const int CustomTokenBaseOffset = 128266; // = <custom_token_0> id (128256) + the real formula's constant 10
+    private const int CustomTokenBaseOffset = 128266;
 
     private static readonly int[] SlotToCodebook = [0, 1, 2, 2, 1, 2, 2];
 
@@ -96,21 +96,28 @@ public sealed class OrpheusPipeline : ITextToSpeechPipeline
     public List<int> BuildPrompt(string text, string voice)
     {
         var encoded = _tokenizer.Encode($"{voice}: {text}");
-        var prompt = new List<int>(encoded.Count + 5) { PromptStartToken };
+        var prompt = new List<int>(encoded.Count + 2) { 128261 };
         prompt.AddRange(encoded);
-        prompt.AddRange(PromptEndTokens);
+        prompt.Add(128257);
         return prompt;
     }
 
     /// <summary>
-    /// Runs the talker autoregressively using the official Orpheus reference sampling configuration
-    /// (temp=0.6, top_p=0.8, repetition_penalty=1.3, stop_token_ids=[49158]).
+    /// Runs the talker autoregressively (greedy decode -- a deterministic first correctness
+    /// pass; the real reference's own defaults are temp=0.6/top_p=0.8/repetition_penalty=1.3,
+    /// not yet wired here) until <see cref="StopToken"/> or <paramref name="maxTokens"/>, then
+    /// de-interleaves the raw generated token ids into 3 real SNAC codebook streams.
     /// </summary>
     public int[][] GenerateCodes(string text, string voice = "tara", int maxTokens = 1200, float temperature = 0.6f, float topP = 0.8f, float repetitionPenalty = 1.3f)
     {
         var prompt = BuildPrompt(text, voice);
+        Console.WriteLine($"[OrpheusDiag] Prompt ({prompt.Count} tokens): [" + string.Join(", ", prompt) + "]");
         _fwd.ResetCache();
         var logits = _fwd.Prefill(prompt);
+
+        var logitsArr = logits.ToArray();
+        var top5Indices = Enumerable.Range(0, logitsArr.Length).OrderByDescending(i => logitsArr[i]).Take(5).ToArray();
+        Console.WriteLine("[OrpheusDiag] Step 0 Top-5 Logits: " + string.Join(", ", top5Indices.Select(i => $"{i} (val={logitsArr[i]:F2})")));
 
         int pos = prompt.Count;
         var generated = new List<int>();
@@ -120,25 +127,45 @@ public sealed class OrpheusPipeline : ITextToSpeechPipeline
         int audioTokenIndex = 0;
         var rng = new Random(42);
 
-        int minTokens = Math.Max(70, prompt.Count * 5);
-        int nextToken = SampleToken(logits, generated, temperature, topP, repetitionPenalty, rng);
+        int minTokens = 42; // at least 6 superframes (~0.25s) before allowing EOS
+        int nextToken = SampleToken(logits, generated, temperature, topP, repetitionPenalty, allowStop: false, rng);
         for (int step = 0; step < maxTokens; step++)
         {
-            if (step > minTokens && nextToken == StopToken) break;
-
-            int slot = audioTokenIndex % 7;
-            int code = nextToken - CustomTokenBaseOffset - slot * 4096;
-            if (code >= 0 && code < SnacWeights.CodebookSize)
+            // 128258 is <custom_token_0> (the official Orpheus end-of-audio sentinel)
+            if (step >= minTokens && (nextToken == 128258 || nextToken == StopToken || nextToken == 128256))
             {
-                int cb = SlotToCodebook[slot];
-                (cb == 0 ? codes0 : cb == 1 ? codes1 : codes2).Add(code);
-                audioTokenIndex++;
+                Console.WriteLine($"[OrpheusDiag] Hit End-Of-Audio token {nextToken} at step {step} ({audioTokenIndex} audio tokens).");
+                break;
             }
 
-            generated.Add(nextToken);
+            int s = audioTokenIndex % 7;
+            int c = nextToken - CustomTokenBaseOffset - s * 4096;
+            if (c >= 0 && c < SnacWeights.CodebookSize)
+            {
+                int cb = SlotToCodebook[s];
+                (cb == 0 ? codes0 : cb == 1 ? codes1 : codes2).Add(c);
+                generated.Add(nextToken);
+                audioTokenIndex++;
+            }
+            else
+            {
+                generated.Add(nextToken);
+            }
+
             var stepLogits = _fwd.Forward(nextToken, pos);
             pos++;
-            nextToken = SampleToken(stepLogits, generated, temperature, topP, repetitionPenalty, rng);
+            nextToken = SampleToken(stepLogits, generated, temperature, topP, repetitionPenalty, allowStop: step >= minTokens, rng);
+        }
+
+        Console.WriteLine($"[OrpheusDiag] Total generated tokens: {generated.Count}");
+        Console.WriteLine("[OrpheusDiag] First 70 Raw Tokens: [" + string.Join(", ", generated.Take(70)) + "]");
+        Console.WriteLine("[OrpheusDiag] Breakdown of first 28 tokens (4 superframes):");
+        for (int i = 0; i < Math.Min(28, generated.Count); i++)
+        {
+            int rawId = generated[i];
+            int slot = i % 7;
+            int code = rawId - CustomTokenBaseOffset - slot * 4096;
+            Console.WriteLine($"  Pos {i,2} (Slot {slot}): Raw ID {rawId,6} | Offset-128266: {rawId - 128266,5} | Code: {code,4} (cb={SlotToCodebook[slot]})");
         }
 
         // Truncate to a whole number of complete superframes (7 audio tokens each)
@@ -151,33 +178,17 @@ public sealed class OrpheusPipeline : ITextToSpeechPipeline
         ];
     }
 
-    /// <summary>Full pipeline: text + voice -> 24kHz mono PCM.</summary>
-    public float[] Synthesize(string text, string voice = "tara", int maxTokens = 1200)
-    {
-        var codes = GenerateCodes(text, voice, maxTokens);
-        if (codes[0].Length == 0) return [];
-        var pcm = SnacDecoder.Decode(_snacWeights, codes);
-
-        // Peak normalize to 0.85 full scale
-        float peak = 0f;
-        for (int i = 0; i < pcm.Length; i++)
-        {
-            float a = MathF.Abs(pcm[i]);
-            if (a > peak) peak = a;
-        }
-        if (peak > 1e-4f && peak < 0.8f)
-        {
-            float gain = 0.85f / peak;
-            for (int i = 0; i < pcm.Length; i++) pcm[i] *= gain;
-        }
-
-        return pcm;
-    }
-
-    private static int SampleToken(ReadOnlySpan<float> logits, List<int> pastTokens, float temperature, float topP, float repetitionPenalty, Random rng)
+    private static int SampleToken(ReadOnlySpan<float> logits, List<int> pastTokens, float temperature, float topP, float repetitionPenalty, bool allowStop, Random rng)
     {
         var scaled = new float[logits.Length];
         logits.CopyTo(scaled);
+
+        if (!allowStop)
+        {
+            if (128258 < scaled.Length) scaled[128258] = float.NegativeInfinity;
+            if (128256 < scaled.Length) scaled[128256] = float.NegativeInfinity;
+            if (49158 < scaled.Length) scaled[49158] = float.NegativeInfinity;
+        }
 
         // Apply repetition penalty to recent tokens
         if (repetitionPenalty > 1.0f && pastTokens.Count > 0)
@@ -194,11 +205,13 @@ public sealed class OrpheusPipeline : ITextToSpeechPipeline
             }
         }
 
-        // Temperature scaling
-        if (temperature > 0.01f)
+        if (temperature < 0.01f)
         {
-            for (int i = 0; i < scaled.Length; i++) scaled[i] /= temperature;
+            return Argmax(scaled);
         }
+
+        // Temperature scaling
+        for (int i = 0; i < scaled.Length; i++) scaled[i] /= temperature;
 
         // Softmax & Top-P Nucleus Sampling
         float maxLogit = float.NegativeInfinity;
@@ -236,6 +249,14 @@ public sealed class OrpheusPipeline : ITextToSpeechPipeline
         }
 
         return indexed[0].Id;
+    }
+
+    /// <summary>Full pipeline: text + voice -> 24kHz mono PCM.</summary>
+    public float[] Synthesize(string text, string voice = "tara", int maxTokens = 1200, float temperature = 0.6f, float topP = 0.8f, float repetitionPenalty = 1.1f)
+    {
+        var codes = GenerateCodes(text, voice, maxTokens, temperature, topP, repetitionPenalty);
+        if (codes[0].Length == 0) return [];
+        return SnacDecoder.Decode(_snacWeights, codes);
     }
 
     private static int Argmax(ReadOnlySpan<float> logits)
