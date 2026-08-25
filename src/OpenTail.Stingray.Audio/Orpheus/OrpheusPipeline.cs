@@ -96,9 +96,9 @@ public sealed class OrpheusPipeline : ITextToSpeechPipeline
     public List<int> BuildPrompt(string text, string voice)
     {
         var encoded = _tokenizer.Encode($"{voice}: {text}");
-        var prompt = new List<int>(encoded.Count + 2) { 128261 };
+        var prompt = new List<int>(encoded.Count + 6) { 128259, 128000 };
         prompt.AddRange(encoded);
-        prompt.Add(128257);
+        prompt.AddRange([128009, 128260, 128261, 128257]);
         return prompt;
     }
 
@@ -109,13 +109,8 @@ public sealed class OrpheusPipeline : ITextToSpeechPipeline
     public int[][] GenerateCodes(string text, string voice = "tara", int maxTokens = 1200, float temperature = 0.6f, float topP = 0.8f, float repetitionPenalty = 1.1f)
     {
         var prompt = BuildPrompt(text, voice);
-        Console.WriteLine($"[OrpheusDiag] Prompt ({prompt.Count} tokens): [" + string.Join(", ", prompt) + "]");
         _fwd.ResetCache();
         var logits = _fwd.Prefill(prompt);
-
-        var logitsArr = logits.ToArray();
-        var top5Indices = Enumerable.Range(0, logitsArr.Length).OrderByDescending(i => logitsArr[i]).Take(5).ToArray();
-        Console.WriteLine("[OrpheusDiag] Step 0 Top-5 Logits: " + string.Join(", ", top5Indices.Select(i => $"{i} (val={logitsArr[i]:F2})")));
 
         int pos = prompt.Count;
         var generated = new List<int>();
@@ -125,15 +120,13 @@ public sealed class OrpheusPipeline : ITextToSpeechPipeline
         int audioTokenIndex = 0;
         var rng = new Random(42);
 
-        int effectiveMaxTokens = Math.Min(maxTokens, Math.Max(140, prompt.Count * 22));
         int minTokens = 42; // at least 6 superframes (~0.25s) before allowing EOS
         int nextToken = SampleToken(logits, generated, temperature, topP, repetitionPenalty, allowStop: false, rng);
-        for (int step = 0; step < effectiveMaxTokens; step++)
+        for (int step = 0; step < maxTokens; step++)
         {
-            // 128258 is <custom_token_0> (official End-Of-Speech), 128262 is <custom_token_4> (End-Of-AI)
+            // 128258 is official End-Of-Speech (<EOS>)
             if (step >= minTokens && (nextToken == 128258 || nextToken == 128262 || nextToken == 128009 || nextToken == 128001 || nextToken == 128256))
             {
-                Console.WriteLine($"[OrpheusDiag] Hit End-Of-Audio token {nextToken} at step {step} ({audioTokenIndex} audio tokens).");
                 break;
             }
 
@@ -154,17 +147,6 @@ public sealed class OrpheusPipeline : ITextToSpeechPipeline
             var stepLogits = _fwd.Forward(nextToken, pos);
             pos++;
             nextToken = SampleToken(stepLogits, generated, temperature, topP, repetitionPenalty, allowStop: step >= minTokens, rng);
-        }
-
-        Console.WriteLine($"[OrpheusDiag] Total generated tokens: {generated.Count}");
-        Console.WriteLine("[OrpheusDiag] First 70 Raw Tokens: [" + string.Join(", ", generated.Take(70)) + "]");
-        Console.WriteLine("[OrpheusDiag] Breakdown of first 28 tokens (4 superframes):");
-        for (int i = 0; i < Math.Min(28, generated.Count); i++)
-        {
-            int rawId = generated[i];
-            int slot = i % 7;
-            int code = rawId - CustomTokenBaseOffset - slot * 4096;
-            Console.WriteLine($"  Pos {i,2} (Slot {slot}): Raw ID {rawId,6} | Offset-128266: {rawId - 128266,5} | Code: {code,4} (cb={SlotToCodebook[slot]})");
         }
 
         // Truncate to a whole number of complete superframes (7 audio tokens each)
