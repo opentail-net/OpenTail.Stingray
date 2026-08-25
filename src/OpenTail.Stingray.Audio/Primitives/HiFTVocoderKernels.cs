@@ -21,7 +21,7 @@ public static class HiFTVocoderKernels
     /// <summary>mel is channel-first [MelDim, T]. Returns the waveform samples.</summary>
     public static float[] Generate(IHiFTVocoderWeights w, float[] mel, int t, Random rng, int melDim = 80)
     {
-        float[] f0 = PredictF0(w.F0Predictor, mel, t, melDim);
+        float[] f0 = PredictF0(w.F0Predictor, mel, t, melDim, w.IsCausal);
 
         int totalUp = w.IstftHopLen;
         foreach (int r in w.UpsampleRates) totalUp *= r;
@@ -35,30 +35,26 @@ public static class HiFTVocoderKernels
         return Decode(w, mel, t, excitation, sampleLen, melDim);
     }
 
-    internal static float[] PredictF0ForTest(IF0PredictorWeights f0w, float[] mel, int t, int melDim) => PredictF0(f0w, mel, t, melDim);
+    internal static float[] PredictF0ForTest(IF0PredictorWeights f0w, float[] mel, int t, int melDim) => PredictF0(f0w, mel, t, melDim, isCausal: false);
 
-    private static float[] PredictF0(IF0PredictorWeights f0w, float[] mel, int t, int melDim)
+    private static float[] PredictF0(IF0PredictorWeights f0w, float[] mel, int t, int melDim, bool isCausal)
     {
         var x = mel;
         int inCh = melDim;
         for (int i = 0; i < 5; i++)
         {
             int outCh = f0w.ConvBias[i].Length;
-            // Real kernel size derived per-layer from the weight tensor itself rather than
-            // hardcoded -- CosyVoice3's condnet.0 is genuinely kernel=4 (confirmed via real
-            // GGUF tensor shape `[4,80,512]`), unlike CosyVoice2's condnet.0 (kernel=3) and
-            // every other layer in both checkpoints. A hardcoded kernel=3 here silently
-            // misreads condnet.0's weight buffer with the wrong stride for CosyVoice3.
             int kernel = f0w.ConvWeight[i].Length / (outCh * inCh);
-            // Real padding convention (`CausalConvRNNF0Predictor`/`CausalConv1d` in
-            // examples/cosyvoice.cpp): condnet.0 is RIGHT-padded by (kernel-1) (its
-            // `causal_type=right`, applied here because this is the non-streaming/"finalize"
-            // case), condnet.{2,4,6,8} are LEFT-padded by (kernel-1) (`causal_type=left`) --
-            // genuinely causal, NOT symmetric "same" padding (a real, confirmed bug fix; the
-            // previous `Conv1dSamePad` call here silently used the wrong padding shape).
-            x = i == 0
-                ? CausalConv1dRightPad(x, inCh, t, f0w.ConvWeight[i], f0w.ConvBias[i], outCh, kernel)
-                : CausalConv1dLeftPad(x, inCh, t, f0w.ConvWeight[i], f0w.ConvBias[i], outCh, kernel);
+            if (isCausal)
+            {
+                x = i == 0
+                    ? CausalConv1dRightPad(x, inCh, t, f0w.ConvWeight[i], f0w.ConvBias[i], outCh, kernel)
+                    : CausalConv1dLeftPad(x, inCh, t, f0w.ConvWeight[i], f0w.ConvBias[i], outCh, kernel);
+            }
+            else
+            {
+                x = Conv1dSamePad(x, inCh, t, f0w.ConvWeight[i], f0w.ConvBias[i], outCh, kernel);
+            }
             EluInPlace(x);
             inCh = outCh;
         }
@@ -332,9 +328,8 @@ public static class HiFTVocoderKernels
                     float rC = mag * MathF.Cos(ph);
                     float iC = mag * MathF.Sin(ph);
                     float angle = 2f * MathF.PI * k * n / nFft;
-                    val += rC * MathF.Cos(angle) - iC * MathF.Sin(angle);
-                    if (k > 0 && k < specBins - 1)
-                        val += rC * MathF.Cos(angle) + iC * MathF.Sin(angle);
+                    float term = rC * MathF.Cos(angle) - iC * MathF.Sin(angle);
+                    val += (k > 0 && k < specBins - 1) ? 2f * term : term;
                 }
                 local[n] = val / nFft * window[n];
             }

@@ -43,6 +43,20 @@ public sealed class ChatterboxPipeline : ITextToSpeechPipeline
         if (string.IsNullOrWhiteSpace(t3GgufPath) || !File.Exists(t3GgufPath))
             throw new FileNotFoundException($"Chatterbox T3 GGUF model not found: {t3GgufPath}");
 
+        if (string.IsNullOrEmpty(s3GenGgufPath))
+        {
+            var dir = Path.GetDirectoryName(t3GgufPath);
+            if (!string.IsNullOrEmpty(dir))
+            {
+                var candidate = Path.Combine(dir, "chatterbox-turbo-s3gen-q4_k.gguf");
+                if (File.Exists(candidate)) s3GenGgufPath = candidate;
+            }
+            if (string.IsNullOrEmpty(s3GenGgufPath) && File.Exists("models/chatterbox-turbo-s3gen-q4_k.gguf"))
+            {
+                s3GenGgufPath = "models/chatterbox-turbo-s3gen-q4_k.gguf";
+            }
+        }
+
         var weights = new ChatterboxWeights(t3GgufPath, s3GenGgufPath);
         var s3GenWeights = (s3GenGgufPath != null && File.Exists(s3GenGgufPath))
             ? new ChatterboxS3GenWeights(s3GenGgufPath)
@@ -89,6 +103,23 @@ public sealed class ChatterboxPipeline : ITextToSpeechPipeline
         float[] samples = _decoder.Decode(speechTokens, speakerFeatures ?? []);
 
         if (diag) DiagLog($"S3Gen decode (encoder+CFM+vocoder): {sw!.ElapsedMilliseconds}ms, {samples.Length} samples");
+
+        // 5. Volume / Peak Normalization
+        if (samples.Length > 0)
+        {
+            float maxVal = 0f;
+            for (int i = 0; i < samples.Length; i++)
+            {
+                float a = MathF.Abs(samples[i]);
+                if (a > maxVal) maxVal = a;
+            }
+            if (maxVal > 1e-4f)
+            {
+                float targetPeak = 0.85f;
+                float gain = MathF.Min(targetPeak / maxVal, 5.0f);
+                for (int i = 0; i < samples.Length; i++) samples[i] *= gain;
+            }
+        }
 
         var result = new AudioGenerationResult(samples, DefaultSampleRate);
 

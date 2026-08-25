@@ -126,13 +126,11 @@ public sealed class ChatterboxAcousticLm : IDisposable
     {
         float[] logits = Linear(hidden, w.SpeechHeadWeight, w.SpeechHeadBias, w.HiddenDim, w.SpeechVocabSize);
 
-        // Temperature -> top-k -> top-p -> repetition penalty, the exact order inference_turbo's
-        // LogitsProcessorList applies them in (processors run in append order: temperature, top_k,
-        // top_p, then repetition_penalty).
+        // Repetition penalty -> Temperature -> top-k -> top-p
+        ApplyRepetitionPenalty(logits, historySoFar, RepetitionPenalty);
         ApplyTemperature(logits, temperature);
         ApplyTopK(logits, TopK);
         ApplyTopP(logits, TopP);
-        ApplyRepetitionPenalty(logits, historySoFar, RepetitionPenalty);
 
         return SampleFromLogits(logits);
     }
