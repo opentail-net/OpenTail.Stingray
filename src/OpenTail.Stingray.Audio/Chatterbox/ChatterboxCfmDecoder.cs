@@ -48,19 +48,36 @@ public static class ChatterboxCfmDecoder
         var tSpan = new float[nSteps + 1];
         for (int i = 0; i <= nSteps; i++) tSpan[i] = (float)i / nSteps;
 
+        var muZeros = new float[mu.Length];
+        var condZeros = new float[cond.Length];
+        var spkZeros = new float[spkEmbed.Length];
+        const float cfgRate = 0.7f;
+
         for (int step = 0; step < nSteps; step++)
         {
             float tCur = tSpan[step];
             float tNext = tSpan[step + 1];
             var timeEmb = MeanflowTimeEmbed(w, tCur, tNext);
-            var dxdt = CfmUNetKernels.RunEstimator(
+            var dxdtCond = CfmUNetKernels.RunEstimator(
                 w.DownStage, (IUnetStageWeights[])w.MidStages, w.UpStage,
                 w.FinalBlockConvWeight, w.FinalBlockConvBias, w.FinalBlockLnWeight, w.FinalBlockLnBias,
                 w.FinalProjWeight, w.FinalProjBias,
                 x, mu, cond, spkEmbed, timeEmb,
                 t, mel, w.DecChannels, w.DecNumHeads, w.DecHeadDim);
+
+            var dxdtUncond = CfmUNetKernels.RunEstimator(
+                w.DownStage, (IUnetStageWeights[])w.MidStages, w.UpStage,
+                w.FinalBlockConvWeight, w.FinalBlockConvBias, w.FinalBlockLnWeight, w.FinalBlockLnBias,
+                w.FinalProjWeight, w.FinalProjBias,
+                x, muZeros, condZeros, spkZeros, timeEmb,
+                t, mel, w.DecChannels, w.DecNumHeads, w.DecHeadDim);
+
             float dt = tNext - tCur;
-            for (int i = 0; i < x.Length; i++) x[i] += dt * dxdt[i];
+            for (int i = 0; i < x.Length; i++)
+            {
+                float dxdt = (1f + cfgRate) * dxdtCond[i] - cfgRate * dxdtUncond[i];
+                x[i] += dt * dxdt;
+            }
         }
 
         return x;

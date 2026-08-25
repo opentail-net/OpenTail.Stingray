@@ -44,13 +44,17 @@ public sealed class ChatterboxDecoder
 
     private static float[] DecodeReal(ChatterboxS3GenWeights w, int[] promptTokens, float[] genEmbedding, float[] promptFeat, IReadOnlyList<int> speechTokens)
     {
-        var speechTokenList = new List<int>(speechTokens.Count);
+        var speechTokenList = new List<int>(speechTokens.Count + 3);
         foreach (int t in speechTokens)
         {
-            if (t != ChatterboxAcousticLm.StartSpeechToken && t != ChatterboxAcousticLm.StopSpeechToken && t < w.S3VocabSize)
+            if (t != ChatterboxAcousticLm.StartSpeechToken && t != ChatterboxAcousticLm.StopSpeechToken && t < 6561)
                 speechTokenList.Add(t);
         }
         if (speechTokenList.Count == 0) return [];
+        // Turbo official inference: append 3 silence tokens (S3GEN_SIL = 4299)
+        speechTokenList.Add(4299);
+        speechTokenList.Add(4299);
+        speechTokenList.Add(4299);
         var speechTokenArray = speechTokenList.ToArray();
 
         bool diag = Environment.GetEnvironmentVariable("STINGRAY_AUDIO_DIAGNOSTIC_DUMP") == "1";
@@ -65,7 +69,12 @@ public sealed class ChatterboxDecoder
         int mel1 = promptFeat.Length / mel;
         var cond = new float[mel * totalFrames];
         for (int c = 0; c < mel; c++)
-            Array.Copy(promptFeat, c * mel1, cond, c * totalFrames, mel1);
+        {
+            for (int ti = 0; ti < mel1; ti++)
+            {
+                cond[c * totalFrames + ti] = promptFeat[ti * mel + c];
+            }
+        }
 
         var rng = Random.Shared;
         var melOut = ChatterboxCfmDecoder.Generate(w, mu, cond, spkEmbed, totalFrames, rng, nSteps: 2);
@@ -80,6 +89,22 @@ public sealed class ChatterboxDecoder
 
         var wav = ChatterboxVocoder.Generate(w, melTail, mel2, rng);
         if (diag) ChatterboxPipeline.DiagLog($"  S3Gen vocoder: {sw!.ElapsedMilliseconds}ms, {mel2} generated mel frames, {wav.Length} samples");
+
+        // Discard the initial 20ms (480 samples) reference prompt boundary transition and apply a smooth 20ms cosine fade-in
+        int nTrim = 24000 / 50; // 480 samples = 20ms
+        if (wav.Length > nTrim * 2)
+        {
+            var trimmed = new float[wav.Length - nTrim];
+            Array.Copy(wav, nTrim, trimmed, 0, trimmed.Length);
+            for (int i = 0; i < nTrim; i++)
+            {
+                float angle = MathF.PI * (1f - (float)i / nTrim);
+                float factor = (MathF.Cos(angle) + 1f) * 0.5f;
+                trimmed[i] *= factor;
+            }
+            wav = trimmed;
+        }
+
         return wav;
     }
 

@@ -60,11 +60,32 @@ public static class HiFTVocoderKernels
         }
 
         var f0 = new float[t];
+        float f0Min = float.MaxValue, f0Max = float.MinValue, f0Sum = 0f;
         for (int ti = 0; ti < t; ti++)
         {
             float sum = f0w.ClassifierBias[0];
             for (int c = 0; c < inCh; c++) sum += f0w.ClassifierWeight[c] * x[c * t + ti];
-            f0[ti] = MathF.Abs(sum);
+            float v = MathF.Abs(sum);
+            f0[ti] = v;
+            if (v < f0Min) f0Min = v;
+            if (v > f0Max) f0Max = v;
+            f0Sum += v;
+        }
+
+        // When the checkpoint's F0 classifier predicts normalized pitch in [0, 1] rather than raw Hz,
+        // scale by 500Hz to restore the physical fundamental frequency (Hz).
+        if (f0Max < 5.0f && f0Max > 0.05f)
+        {
+            const float f0Scale = 500.0f;
+            for (int ti = 0; ti < t; ti++) f0[ti] *= f0Scale;
+            f0Min *= f0Scale;
+            f0Max *= f0Scale;
+            f0Sum *= f0Scale;
+        }
+
+        if (Environment.GetEnvironmentVariable("STINGRAY_AUDIO_DIAGNOSTIC_DUMP") == "1")
+        {
+            Console.WriteLine($"[F0Diag] F0 frames: {t}, min={f0Min:F2}Hz, max={f0Max:F2}Hz, mean={f0Sum / t:F2}Hz");
         }
         return f0;
     }
@@ -132,7 +153,7 @@ public static class HiFTVocoderKernels
         int numStages = w.UpsampleRates.Length;
         int numKernels = w.ResblockKernels.Length;
 
-        int stftFrames = Math.Max(1, (sampleLen - nFft) / hop + 1);
+        int stftFrames = sampleLen / hop + 1;
         float[] sStft = RealStft(excitation, sampleLen, nFft, hop, stftFrames);
         int stftCh = (nFft / 2 + 1) * 2;
 
@@ -226,7 +247,7 @@ public static class HiFTVocoderKernels
             for (int ti = 0; ti < outT; ti++)
                 phase[c * outT + ti] = MathF.Sin(x[(specCh + c) * outT + ti]);
 
-        var wav = InverseStft(spec, phase, specCh, outT, nFft, hop);
+        var wav = InverseStft(spec, phase, specCh, outT, nFft, hop, sampleLen);
         for (int i = 0; i < wav.Length; i++) wav[i] = Math.Clamp(wav[i], -0.99f, 0.99f);
         return wav;
     }
@@ -284,18 +305,24 @@ public static class HiFTVocoderKernels
         int specBins = nFft / 2 + 1;
         int outCh = specBins * 2;
         var output = new float[outCh * frames];
+        int pad = nFft / 2;
 
         var window = HannWindow(nFft);
         System.Threading.Tasks.Parallel.For(0, frames, f =>
         {
-            int start = f * hop;
+            int start = f * hop - pad;
             for (int k = 0; k < specBins; k++)
             {
                 float real = 0f, imag = 0f;
                 float step = -2f * MathF.PI * k / nFft;
                 for (int n = 0; n < nFft; n++)
                 {
-                    float s = (start + n < sigLen ? signal[start + n] : 0f) * window[n];
+                    int idx = start + n;
+                    float s;
+                    if (idx < 0) s = signal[Math.Min(-idx, sigLen - 1)];
+                    else if (idx >= sigLen) s = signal[Math.Max(0, 2 * sigLen - 2 - idx)];
+                    else s = signal[idx];
+                    s *= window[n];
                     float angle = step * n;
                     real += s * MathF.Cos(angle);
                     imag += s * MathF.Sin(angle);
@@ -307,11 +334,11 @@ public static class HiFTVocoderKernels
         return output;
     }
 
-    private static float[] InverseStft(float[] spec, float[] phase, int specBins, int frames, int nFft, int hop)
+    private static float[] InverseStft(float[] spec, float[] phase, int specBins, int frames, int nFft, int hop, int targetLen)
     {
-        int outputLen = (frames - 1) * hop + nFft;
-        var output = new float[outputLen];
-        var norm = new float[outputLen];
+        int rawLen = (frames - 1) * hop + nFft;
+        var full = new float[rawLen];
+        var norm = new float[rawLen];
         var window = HannWindow(nFft);
 
         var frameContrib = new float[frames][];
@@ -343,15 +370,23 @@ public static class HiFTVocoderKernels
             for (int n = 0; n < nFft; n++)
             {
                 int si = start + n;
-                if (si < outputLen)
+                if (si < rawLen)
                 {
-                    output[si] += local[n];
+                    full[si] += local[n];
                     norm[si] += window[n] * window[n];
                 }
             }
         }
-        for (int i = 0; i < outputLen; i++)
-            if (norm[i] > 1e-8f) output[i] /= norm[i];
+        for (int i = 0; i < rawLen; i++)
+            if (norm[i] > 1e-8f) full[i] /= norm[i];
+
+        int pad = nFft / 2;
+        var output = new float[targetLen];
+        for (int i = 0; i < targetLen; i++)
+        {
+            int src = pad + i;
+            output[i] = (src < rawLen) ? full[src] : 0f;
+        }
         return output;
     }
 
