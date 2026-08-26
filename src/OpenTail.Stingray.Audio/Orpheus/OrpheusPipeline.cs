@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Cpu;
+using OpenTail.Stingray.Cuda;
 using OpenTail.Stingray.Engine;
 
 namespace OpenTail.Stingray.Audio.Orpheus;
@@ -107,19 +108,42 @@ public sealed class OrpheusPipeline : ITextToSpeechPipeline
 
         if (allowGpu)
         {
+            // 1. Try CUDA first (highest throughput on NVIDIA hardware)
             try
             {
-                var vulkan = new OpenTail.Stingray.Vulkan.VulkanBackend();
-                backend = vulkan;
-                fwd = new OpenTail.Stingray.Engine.GpuForwardPass(_model, vulkan, hp, maxContextLength: ctxSize);
-                Console.WriteLine($"[Orpheus] GPU Acceleration Enabled: Vulkan ({vulkan.Name}).");
+                if (CudaBackend.IsAvailable())
+                {
+                    var cuda = CudaBackend.Create();
+                    backend = cuda;
+                    fwd = new CudaForwardPass(_model, cuda, hp, maxContextLength: ctxSize);
+                    Console.WriteLine($"[Orpheus] GPU Acceleration Enabled: CUDA ({cuda.Name}).");
+                }
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[Orpheus] Vulkan GPU unavailable ({ex.Message}), using CPU backend.");
+                Console.WriteLine($"[Orpheus] CUDA initialization failed ({ex.Message}), trying Vulkan.");
                 backend?.Dispose();
                 backend = null;
                 fwd = null;
+            }
+
+            // 2. Fall back to Vulkan
+            if (fwd == null)
+            {
+                try
+                {
+                    var vulkan = new OpenTail.Stingray.Vulkan.VulkanBackend();
+                    backend = vulkan;
+                    fwd = new OpenTail.Stingray.Engine.GpuForwardPass(_model, vulkan, hp, maxContextLength: ctxSize);
+                    Console.WriteLine($"[Orpheus] GPU Acceleration Enabled: Vulkan ({vulkan.Name}).");
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[Orpheus] Vulkan GPU unavailable ({ex.Message}), using CPU backend.");
+                    backend?.Dispose();
+                    backend = null;
+                    fwd = null;
+                }
             }
         }
 

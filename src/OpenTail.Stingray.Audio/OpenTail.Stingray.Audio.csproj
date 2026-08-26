@@ -7,6 +7,7 @@
   <ItemGroup>
     <ProjectReference Include="..\OpenTail.Stingray.Core\OpenTail.Stingray.Core.csproj" />
     <ProjectReference Include="..\OpenTail.Stingray.Cpu\OpenTail.Stingray.Cpu.csproj" />
+    <ProjectReference Include="..\OpenTail.Stingray.Cuda\OpenTail.Stingray.Cuda.csproj" />
     <ProjectReference Include="..\OpenTail.Stingray.Engine\OpenTail.Stingray.Engine.csproj" />
     <ProjectReference Include="..\OpenTail.Stingray.Vulkan\OpenTail.Stingray.Vulkan.csproj" />
   </ItemGroup>

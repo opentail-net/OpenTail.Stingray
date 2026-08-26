@@ -96,9 +96,8 @@ public sealed class TtsCommand : Command<TtsCommand.Settings>
                 "f5" or "f5tts" or "f5-tts" => s.ModelPath is not null
                     ? F5TtsPipeline.Load(s.ModelPath)
                     : throw new ArgumentException("--model (-m) is required for the f5tts engine (path to .safetensors model file)."),
-                "chatterbox" or "chatterbox-turbo" => s.ModelPath is not null
-                    ? ChatterboxPipeline.Load(s.ModelPath)
-                    : throw new ArgumentException("--model (-m) is required for the chatterbox engine (path to T3 .gguf model file)."),
+                "chatterbox" or "chatterbox-turbo" =>
+                    ChatterboxPipeline.Load(s.ModelPath ?? ResolveChatterboxModelPath()),
                 "melo" or "melotts" => s.ModelPath is not null
                     ? MeloPipeline.Load(s.ModelPath)
                     : throw new ArgumentException("--model (-m) is required for the melo engine (path to model file)."),
@@ -244,6 +243,16 @@ public sealed class TtsCommand : Command<TtsCommand.Settings>
         throw new ArgumentException(
             "No Fish-Speech (S2-Pro) model found. Pass --model (-m) with a path to an s2-pro .gguf checkpoint " +
             "(e.g. models/s2-pro-q4_k_m.gguf), or place one at that default path.");
+    }
+
+    private static string ResolveChatterboxModelPath()
+    {
+        foreach (var c in new[] { "models/chatterbox-turbo-t3-q4_k.gguf", "models/chatterbox-turbo-t3.gguf", "models/chatterbox_t3.gguf" })
+            if (File.Exists(c)) return c;
+
+        throw new ArgumentException(
+            "No Chatterbox model found. Pass --model (-m) with a path to a Chatterbox T3 .gguf checkpoint " +
+            "(e.g. models/chatterbox-turbo-t3-q4_k.gguf), or place one at that default path.");
     }
 
     private static string ResolveOrpheusModelPath()
