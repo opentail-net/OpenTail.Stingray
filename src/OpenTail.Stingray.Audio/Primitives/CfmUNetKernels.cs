@@ -46,6 +46,8 @@ public static class CfmUNetKernels
                 input[(2 * melDim + c) * t + ti] = spkEmbed[c];
         CopyChannels(cond, input, 3 * melDim, melDim, t);
 
+        using var scratch = new UnetScratchBuffers(t, channels, 1024, heads * headDim);
+
         var downOut = ResnetBlock(input, inCh, t, timeEmb, down.Resnet, channels);
         int chT = channels * t;
         var tbBufA = ArrayPool<float>.Shared.Rent(chT);
@@ -56,7 +58,7 @@ public static class CfmUNetKernels
             float[] curIn = tbBufA, curOut = tbBufB;
             foreach (var tb in down.TransformerBlocks)
             {
-                TransformerBlock(curIn, curOut, channels, t, tb, heads, headDim);
+                TransformerBlock(curIn, curOut, channels, t, tb, heads, headDim, scratch);
                 (curIn, curOut) = (curOut, curIn);
             }
             Array.Copy(curIn, downOut, chT);
@@ -81,7 +83,7 @@ public static class CfmUNetKernels
                 float[] curIn = midBufA, curOut = midBufB;
                 foreach (var tb in stage.TransformerBlocks)
                 {
-                    TransformerBlock(curIn, curOut, channels, t, tb, heads, headDim);
+                    TransformerBlock(curIn, curOut, channels, t, tb, heads, headDim, scratch);
                     (curIn, curOut) = (curOut, curIn);
                 }
                 Array.Copy(curIn, midOut, chT);
@@ -105,7 +107,7 @@ public static class CfmUNetKernels
             float[] curIn = upBufA, curOut = upBufB;
             foreach (var tb in up.TransformerBlocks)
             {
-                TransformerBlock(curIn, curOut, channels, t, tb, heads, headDim);
+                TransformerBlock(curIn, curOut, channels, t, tb, heads, headDim, scratch);
                 (curIn, curOut) = (curOut, curIn);
             }
             Array.Copy(curIn, upOut, chT);
@@ -183,196 +185,215 @@ public static class CfmUNetKernels
         return h2;
     }
 
-    private static unsafe void TransformerBlock(float[] x, float[] output, int dim, int t, IUnetTransformerBlockWeights tw, int heads, int headDim)
+    private sealed class UnetScratchBuffers : IDisposable
     {
-        int tDim = t * dim;
-        int ffDim = tw.FfUpWeight.OutDim;
-        int tFf = t * ffDim;
+        public readonly float[] Normed;
+        public readonly float[] AttnOut;
+        public readonly float[] AfterAttn;
+        public readonly float[] Normed3;
+        public readonly float[] FfUp;
+        public readonly float[] FfDown;
+        public readonly float[] QBuf;
+        public readonly float[] KBuf;
+        public readonly float[] VBuf;
+        public readonly float[] ContextBuf;
 
-        var normed = ArrayPool<float>.Shared.Rent(tDim);
-        var attnOut = ArrayPool<float>.Shared.Rent(tDim);
-        var afterAttn = ArrayPool<float>.Shared.Rent(tDim);
-        var normed3 = ArrayPool<float>.Shared.Rent(tDim);
-        var ffUp = ArrayPool<float>.Shared.Rent(tFf);
-        var ffDown = ArrayPool<float>.Shared.Rent(tDim);
-
-        try
+        public UnetScratchBuffers(int t, int dim, int maxFfDim, int qkvDim)
         {
-            LayerNormChannelFirstToRowMajor(x, normed, dim, t, tw.Norm1Weight, tw.Norm1Bias);
-            SelfAttention(normed, attnOut, t, dim, tw, heads, headDim);
+            int tDim = t * dim;
+            int tFf = t * maxFfDim;
+            int tQkv = t * qkvDim;
 
-            System.Threading.Tasks.Parallel.For(0, dim, c =>
-            {
-                int cOff = c * t;
-                for (int ti = 0; ti < t; ti++)
-                    afterAttn[cOff + ti] = x[cOff + ti] + attnOut[ti * dim + c];
-            });
-
-            LayerNormChannelFirstToRowMajor(afterAttn, normed3, dim, t, tw.Norm3Weight, tw.Norm3Bias);
-
-            fixed (float* n3Ptr = normed3, ffUpPtr = ffUp, ffUpBiasPtr = tw.FfUpBias,
-                          ffDownPtr = ffDown, ffDownBiasPtr = tw.FfDownBias)
-            {
-                tw.FfUpWeight.MatMul(n3Ptr, t, ffUpPtr, ffUpBiasPtr);
-                GeluInPlace(ffUp, tFf);
-                tw.FfDownWeight.MatMul(ffUpPtr, t, ffDownPtr, ffDownBiasPtr);
-            }
-
-            System.Threading.Tasks.Parallel.For(0, dim, c =>
-            {
-                int cOff = c * t;
-                for (int ti = 0; ti < t; ti++)
-                    output[cOff + ti] = afterAttn[cOff + ti] + ffDown[ti * dim + c];
-            });
+            Normed = ArrayPool<float>.Shared.Rent(tDim);
+            AttnOut = ArrayPool<float>.Shared.Rent(tDim);
+            AfterAttn = ArrayPool<float>.Shared.Rent(tDim);
+            Normed3 = ArrayPool<float>.Shared.Rent(tDim);
+            FfUp = ArrayPool<float>.Shared.Rent(tFf);
+            FfDown = ArrayPool<float>.Shared.Rent(tDim);
+            QBuf = ArrayPool<float>.Shared.Rent(tQkv);
+            KBuf = ArrayPool<float>.Shared.Rent(tQkv);
+            VBuf = ArrayPool<float>.Shared.Rent(tQkv);
+            ContextBuf = ArrayPool<float>.Shared.Rent(tQkv);
         }
-        finally
+
+        public void Dispose()
         {
-            ArrayPool<float>.Shared.Return(normed);
-            ArrayPool<float>.Shared.Return(attnOut);
-            ArrayPool<float>.Shared.Return(afterAttn);
-            ArrayPool<float>.Shared.Return(normed3);
-            ArrayPool<float>.Shared.Return(ffUp);
-            ArrayPool<float>.Shared.Return(ffDown);
+            ArrayPool<float>.Shared.Return(Normed);
+            ArrayPool<float>.Shared.Return(AttnOut);
+            ArrayPool<float>.Shared.Return(AfterAttn);
+            ArrayPool<float>.Shared.Return(Normed3);
+            ArrayPool<float>.Shared.Return(FfUp);
+            ArrayPool<float>.Shared.Return(FfDown);
+            ArrayPool<float>.Shared.Return(QBuf);
+            ArrayPool<float>.Shared.Return(KBuf);
+            ArrayPool<float>.Shared.Return(VBuf);
+            ArrayPool<float>.Shared.Return(ContextBuf);
         }
     }
 
-    private static unsafe void SelfAttention(float[] inputRowMajor, float[] output, int t, int dim, IUnetTransformerBlockWeights tw, int heads, int headDim)
+    private static unsafe void TransformerBlock(float[] x, float[] output, int dim, int t, IUnetTransformerBlockWeights tw, int heads, int headDim, UnetScratchBuffers scratch)
+    {
+        int ffDim = tw.FfUpWeight.OutDim;
+        int tFf = t * ffDim;
+
+        var normed = scratch.Normed;
+        var attnOut = scratch.AttnOut;
+        var afterAttn = scratch.AfterAttn;
+        var normed3 = scratch.Normed3;
+        var ffUp = scratch.FfUp;
+        var ffDown = scratch.FfDown;
+
+        LayerNormChannelFirstToRowMajor(x, normed, dim, t, tw.Norm1Weight, tw.Norm1Bias);
+        SelfAttention(normed, attnOut, t, dim, tw, heads, headDim, scratch);
+
+        System.Threading.Tasks.Parallel.For(0, dim, c =>
+        {
+            int cOff = c * t;
+            for (int ti = 0; ti < t; ti++)
+                afterAttn[cOff + ti] = x[cOff + ti] + attnOut[ti * dim + c];
+        });
+
+        LayerNormChannelFirstToRowMajor(afterAttn, normed3, dim, t, tw.Norm3Weight, tw.Norm3Bias);
+
+        fixed (float* n3Ptr = normed3, ffUpPtr = ffUp, ffUpBiasPtr = tw.FfUpBias,
+                      ffDownPtr = ffDown, ffDownBiasPtr = tw.FfDownBias)
+        {
+            tw.FfUpWeight.MatMul(n3Ptr, t, ffUpPtr, ffUpBiasPtr);
+            GeluInPlace(ffUp, tFf);
+            tw.FfDownWeight.MatMul(ffUpPtr, t, ffDownPtr, ffDownBiasPtr);
+        }
+
+        System.Threading.Tasks.Parallel.For(0, dim, c =>
+        {
+            int cOff = c * t;
+            for (int ti = 0; ti < t; ti++)
+                output[cOff + ti] = afterAttn[cOff + ti] + ffDown[ti * dim + c];
+        });
+    }
+
+    private static unsafe void SelfAttention(float[] inputRowMajor, float[] output, int t, int dim, IUnetTransformerBlockWeights tw, int heads, int headDim, UnetScratchBuffers scratch)
     {
         int qkvDim = heads * headDim;
-        int tQkv = t * qkvDim;
 
-        var qBuf = ArrayPool<float>.Shared.Rent(tQkv);
-        var kBuf = ArrayPool<float>.Shared.Rent(tQkv);
-        var vBuf = ArrayPool<float>.Shared.Rent(tQkv);
-        var contextBuf = ArrayPool<float>.Shared.Rent(tQkv);
+        var qBuf = scratch.QBuf;
+        var kBuf = scratch.KBuf;
+        var vBuf = scratch.VBuf;
+        var contextBuf = scratch.ContextBuf;
 
-        try
+        fixed (float* inPtr = inputRowMajor, qPtr = qBuf, kPtr = kBuf, vPtr = vBuf, ctxPtr = contextBuf, outPtr = output, outBiasPtr = tw.OutBias)
         {
-            fixed (float* inPtr = inputRowMajor, qPtr = qBuf, kPtr = kBuf, vPtr = vBuf, ctxPtr = contextBuf, outPtr = output, outBiasPtr = tw.OutBias)
+            tw.QWeight.MatMul(inPtr, t, qPtr);
+            tw.KWeight.MatMul(inPtr, t, kPtr);
+            tw.VWeight.MatMul(inPtr, t, vPtr);
+
+            float scale = 1f / MathF.Sqrt(headDim);
+
+            nint qAddr = (nint)qPtr;
+            nint kAddr = (nint)kPtr;
+            nint vAddr = (nint)vPtr;
+            nint ctxAddr = (nint)ctxPtr;
+
+            bool useAvx64 = headDim == 64 && Avx.IsSupported && Fma.IsSupported;
+
+            System.Threading.Tasks.Parallel.For(0, heads * t, ht =>
             {
-                tw.QWeight.MatMul(inPtr, t, qPtr);
-                tw.KWeight.MatMul(inPtr, t, kPtr);
-                tw.VWeight.MatMul(inPtr, t, vPtr);
+                int h = ht / t;
+                int i = ht % t;
+                int hOff = h * headDim;
 
-                float scale = 1f / MathF.Sqrt(headDim);
+                var scores = stackalloc float[t];
+                float* qHead = (float*)qAddr;
+                float* kHead = (float*)kAddr;
+                float* vHead = (float*)vAddr;
+                float* ctxHeadBase = (float*)ctxAddr;
+                float* qRow = qHead + (nuint)i * (nuint)qkvDim + (nuint)hOff;
+                float* ctxHead = ctxHeadBase + (nuint)i * (nuint)qkvDim + (nuint)hOff;
 
-                nint qAddr = (nint)qPtr;
-                nint kAddr = (nint)kPtr;
-                nint vAddr = (nint)vPtr;
-                nint ctxAddr = (nint)ctxPtr;
-
-                bool useAvx64 = headDim == 64 && Avx.IsSupported && Fma.IsSupported;
-
-                System.Threading.Tasks.Parallel.For(0, heads * t, ht =>
+                if (useAvx64)
                 {
-                    int h = ht / t;
-                    int i = ht % t;
-                    int hOff = h * headDim;
+                    var q0 = Avx.LoadVector256(qRow);
+                    var q1 = Avx.LoadVector256(qRow + 8);
+                    var q2 = Avx.LoadVector256(qRow + 16);
+                    var q3 = Avx.LoadVector256(qRow + 24);
+                    var q4 = Avx.LoadVector256(qRow + 32);
+                    var q5 = Avx.LoadVector256(qRow + 40);
+                    var q6 = Avx.LoadVector256(qRow + 48);
+                    var q7 = Avx.LoadVector256(qRow + 56);
 
-                    var scores = new float[t];
-                    fixed (float* scoresPtr = scores)
+                    for (int j = 0; j < t; j++)
                     {
-                        float* qHead = (float*)qAddr;
-                        float* kHead = (float*)kAddr;
-                        float* vHead = (float*)vAddr;
-                        float* ctxHeadBase = (float*)ctxAddr;
-                        float* qRow = qHead + (nuint)i * (nuint)qkvDim + (nuint)hOff;
-                        float* ctxHead = ctxHeadBase + (nuint)i * (nuint)qkvDim + (nuint)hOff;
-
-                        if (useAvx64)
-                        {
-                            var q0 = Avx.LoadVector256(qRow);
-                            var q1 = Avx.LoadVector256(qRow + 8);
-                            var q2 = Avx.LoadVector256(qRow + 16);
-                            var q3 = Avx.LoadVector256(qRow + 24);
-                            var q4 = Avx.LoadVector256(qRow + 32);
-                            var q5 = Avx.LoadVector256(qRow + 40);
-                            var q6 = Avx.LoadVector256(qRow + 48);
-                            var q7 = Avx.LoadVector256(qRow + 56);
-
-                            for (int j = 0; j < t; j++)
-                            {
-                                float* kRow = kHead + (nuint)j * (nuint)qkvDim + (nuint)hOff;
-                                var acc = Fma.MultiplyAdd(q0, Avx.LoadVector256(kRow), Vector256<float>.Zero);
-                                acc = Fma.MultiplyAdd(q1, Avx.LoadVector256(kRow + 8), acc);
-                                acc = Fma.MultiplyAdd(q2, Avx.LoadVector256(kRow + 16), acc);
-                                acc = Fma.MultiplyAdd(q3, Avx.LoadVector256(kRow + 24), acc);
-                                acc = Fma.MultiplyAdd(q4, Avx.LoadVector256(kRow + 32), acc);
-                                acc = Fma.MultiplyAdd(q5, Avx.LoadVector256(kRow + 40), acc);
-                                acc = Fma.MultiplyAdd(q6, Avx.LoadVector256(kRow + 48), acc);
-                                acc = Fma.MultiplyAdd(q7, Avx.LoadVector256(kRow + 56), acc);
-                                scoresPtr[j] = Vector256.Sum(acc) * scale;
-                            }
-
-                            DenseKernels.SoftmaxInPlace(scores);
-
-                            var c0 = Vector256<float>.Zero;
-                            var c1 = Vector256<float>.Zero;
-                            var c2 = Vector256<float>.Zero;
-                            var c3 = Vector256<float>.Zero;
-                            var c4 = Vector256<float>.Zero;
-                            var c5 = Vector256<float>.Zero;
-                            var c6 = Vector256<float>.Zero;
-                            var c7 = Vector256<float>.Zero;
-
-                            for (int j = 0; j < t; j++)
-                            {
-                                float s = scoresPtr[j];
-                                if (s == 0f) continue;
-                                var sVec = Vector256.Create(s);
-                                float* vRow = vHead + (nuint)j * (nuint)qkvDim + (nuint)hOff;
-                                c0 = Fma.MultiplyAdd(sVec, Avx.LoadVector256(vRow), c0);
-                                c1 = Fma.MultiplyAdd(sVec, Avx.LoadVector256(vRow + 8), c1);
-                                c2 = Fma.MultiplyAdd(sVec, Avx.LoadVector256(vRow + 16), c2);
-                                c3 = Fma.MultiplyAdd(sVec, Avx.LoadVector256(vRow + 24), c3);
-                                c4 = Fma.MultiplyAdd(sVec, Avx.LoadVector256(vRow + 32), c4);
-                                c5 = Fma.MultiplyAdd(sVec, Avx.LoadVector256(vRow + 40), c5);
-                                c6 = Fma.MultiplyAdd(sVec, Avx.LoadVector256(vRow + 48), c6);
-                                c7 = Fma.MultiplyAdd(sVec, Avx.LoadVector256(vRow + 56), c7);
-                            }
-
-                            Avx.Store(ctxHead, c0);
-                            Avx.Store(ctxHead + 8, c1);
-                            Avx.Store(ctxHead + 16, c2);
-                            Avx.Store(ctxHead + 24, c3);
-                            Avx.Store(ctxHead + 32, c4);
-                            Avx.Store(ctxHead + 40, c5);
-                            Avx.Store(ctxHead + 48, c6);
-                            Avx.Store(ctxHead + 56, c7);
-                        }
-                        else
-                        {
-                            for (int j = 0; j < t; j++)
-                            {
-                                float* kRow = kHead + (nuint)j * (nuint)qkvDim + (nuint)hOff;
-                                scoresPtr[j] = SimdKernels.DotF32(qRow, kRow, headDim) * scale;
-                            }
-
-                            DenseKernels.SoftmaxInPlace(scores);
-
-                            for (int d = 0; d < headDim; d++) ctxHead[d] = 0f;
-
-                            for (int j = 0; j < t; j++)
-                            {
-                                float s = scoresPtr[j];
-                                if (s == 0f) continue;
-                                float* vRow = vHead + (nuint)j * (nuint)qkvDim + (nuint)hOff;
-                                for (int d = 0; d < headDim; d++)
-                                    ctxHead[d] += s * vRow[d];
-                            }
-                        }
+                        float* kRow = kHead + (nuint)j * (nuint)qkvDim + (nuint)hOff;
+                        var acc = Fma.MultiplyAdd(q0, Avx.LoadVector256(kRow), Vector256<float>.Zero);
+                        acc = Fma.MultiplyAdd(q1, Avx.LoadVector256(kRow + 8), acc);
+                        acc = Fma.MultiplyAdd(q2, Avx.LoadVector256(kRow + 16), acc);
+                        acc = Fma.MultiplyAdd(q3, Avx.LoadVector256(kRow + 24), acc);
+                        acc = Fma.MultiplyAdd(q4, Avx.LoadVector256(kRow + 32), acc);
+                        acc = Fma.MultiplyAdd(q5, Avx.LoadVector256(kRow + 40), acc);
+                        acc = Fma.MultiplyAdd(q6, Avx.LoadVector256(kRow + 48), acc);
+                        acc = Fma.MultiplyAdd(q7, Avx.LoadVector256(kRow + 56), acc);
+                        scores[j] = Vector256.Sum(acc) * scale;
                     }
-                });
 
-                tw.OutWeight.MatMul(ctxPtr, t, outPtr, outBiasPtr);
-            }
-        }
-        finally
-        {
-            ArrayPool<float>.Shared.Return(qBuf);
-            ArrayPool<float>.Shared.Return(kBuf);
-            ArrayPool<float>.Shared.Return(vBuf);
-            ArrayPool<float>.Shared.Return(contextBuf);
+                    DenseKernels.SoftmaxInPlace(new Span<float>(scores, t));
+
+                    var c0 = Vector256<float>.Zero;
+                    var c1 = Vector256<float>.Zero;
+                    var c2 = Vector256<float>.Zero;
+                    var c3 = Vector256<float>.Zero;
+                    var c4 = Vector256<float>.Zero;
+                    var c5 = Vector256<float>.Zero;
+                    var c6 = Vector256<float>.Zero;
+                    var c7 = Vector256<float>.Zero;
+
+                    for (int j = 0; j < t; j++)
+                    {
+                        float s = scores[j];
+                        if (s == 0f) continue;
+                        var sVec = Vector256.Create(s);
+                        float* vRow = vHead + (nuint)j * (nuint)qkvDim + (nuint)hOff;
+                        c0 = Fma.MultiplyAdd(sVec, Avx.LoadVector256(vRow), c0);
+                        c1 = Fma.MultiplyAdd(sVec, Avx.LoadVector256(vRow + 8), c1);
+                        c2 = Fma.MultiplyAdd(sVec, Avx.LoadVector256(vRow + 16), c2);
+                        c3 = Fma.MultiplyAdd(sVec, Avx.LoadVector256(vRow + 24), c3);
+                        c4 = Fma.MultiplyAdd(sVec, Avx.LoadVector256(vRow + 32), c4);
+                        c5 = Fma.MultiplyAdd(sVec, Avx.LoadVector256(vRow + 40), c5);
+                        c6 = Fma.MultiplyAdd(sVec, Avx.LoadVector256(vRow + 48), c6);
+                        c7 = Fma.MultiplyAdd(sVec, Avx.LoadVector256(vRow + 56), c7);
+                    }
+
+                    Avx.Store(ctxHead, c0);
+                    Avx.Store(ctxHead + 8, c1);
+                    Avx.Store(ctxHead + 16, c2);
+                    Avx.Store(ctxHead + 24, c3);
+                    Avx.Store(ctxHead + 32, c4);
+                    Avx.Store(ctxHead + 40, c5);
+                    Avx.Store(ctxHead + 48, c6);
+                    Avx.Store(ctxHead + 56, c7);
+                }
+                else
+                {
+                    for (int j = 0; j < t; j++)
+                    {
+                        float* kRow = kHead + (nuint)j * (nuint)qkvDim + (nuint)hOff;
+                        scores[j] = SimdKernels.DotF32(qRow, kRow, headDim) * scale;
+                    }
+
+                    DenseKernels.SoftmaxInPlace(new Span<float>(scores, t));
+
+                    for (int d = 0; d < headDim; d++) ctxHead[d] = 0f;
+
+                    for (int j = 0; j < t; j++)
+                    {
+                        float s = scores[j];
+                        if (s == 0f) continue;
+                        float* vRow = vHead + (nuint)j * (nuint)qkvDim + (nuint)hOff;
+                        for (int d = 0; d < headDim; d++)
+                            ctxHead[d] += s * vRow[d];
+                    }
+                }
+            });
+
+            tw.OutWeight.MatMul(ctxPtr, t, outPtr, outBiasPtr);
         }
     }
 

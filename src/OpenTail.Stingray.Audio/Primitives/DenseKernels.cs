@@ -65,8 +65,8 @@ public static class DenseKernels
         }
     }
 
-    /// <summary>In-place softmax, float-accumulated (no double promotion -- matches the numerical path every other softmax in this codebase uses).</summary>
-    public static void SoftmaxInPlace(float[] scores)
+    /// <summary>In-place softmax on Span, float-accumulated.</summary>
+    public static void SoftmaxInPlace(Span<float> scores)
     {
         float max = float.NegativeInfinity;
         for (int i = 0; i < scores.Length; i++) if (scores[i] > max) max = scores[i];
@@ -80,4 +80,7 @@ public static class DenseKernels
         float invSum = 1f / sum;
         for (int i = 0; i < scores.Length; i++) scores[i] *= invSum;
     }
+
+    /// <summary>In-place softmax, float-accumulated (no double promotion -- matches the numerical path every other softmax in this codebase uses).</summary>
+    public static void SoftmaxInPlace(float[] scores) => SoftmaxInPlace(scores.AsSpan());
 }
