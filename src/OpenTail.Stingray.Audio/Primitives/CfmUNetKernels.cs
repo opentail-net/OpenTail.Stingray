@@ -46,84 +46,68 @@ public static class CfmUNetKernels
                 input[(2 * melDim + c) * t + ti] = spkEmbed[c];
         CopyChannels(cond, input, 3 * melDim, melDim, t);
 
-        using var scratch = new UnetScratchBuffers(t, channels, 1024, heads * headDim);
+        using var scratch = new UnetScratchBuffers(t, channels, 1024, heads * headDim, Math.Max(inCh, 2 * channels), timeEmb.Length);
 
-        var downOut = ResnetBlock(input, inCh, t, timeEmb, down.Resnet, channels);
+        var downOut = ResnetBlock(input, inCh, t, timeEmb, down.Resnet, channels, scratch);
         int chT = channels * t;
-        var tbBufA = ArrayPool<float>.Shared.Rent(chT);
-        var tbBufB = ArrayPool<float>.Shared.Rent(chT);
-        try
+        var tbBufA = scratch.TbBufA;
+        var tbBufB = scratch.TbBufB;
+
+        Array.Copy(downOut, tbBufA, chT);
+        float[] curIn = tbBufA, curOut = tbBufB;
+        foreach (var tb in down.TransformerBlocks)
         {
-            Array.Copy(downOut, tbBufA, chT);
-            float[] curIn = tbBufA, curOut = tbBufB;
-            foreach (var tb in down.TransformerBlocks)
-            {
-                TransformerBlock(curIn, curOut, channels, t, tb, heads, headDim, scratch);
-                (curIn, curOut) = (curOut, curIn);
-            }
-            Array.Copy(curIn, downOut, chT);
+            TransformerBlock(curIn, curOut, channels, t, tb, heads, headDim, scratch);
+            (curIn, curOut) = (curOut, curIn);
         }
-        finally
-        {
-            ArrayPool<float>.Shared.Return(tbBufA);
-            ArrayPool<float>.Shared.Return(tbBufB);
-        }
+        Array.Copy(curIn, downOut, chT);
+
         var skip = downOut;
-        downOut = CausalConv1d(downOut, channels, t, down.ResampleConvWeight!, down.ResampleConvBias!, channels, kernel: 3);
+        var downResample = new float[channels * t];
+        CausalConv1d(downOut, channels, t, down.ResampleConvWeight!, down.ResampleConvBias!, channels, 3, downResample);
+        downOut = downResample;
 
         var midOut = downOut;
         foreach (var stage in mid)
         {
-            midOut = ResnetBlock(midOut, channels, t, timeEmb, stage.Resnet, channels);
-            var midBufA = ArrayPool<float>.Shared.Rent(chT);
-            var midBufB = ArrayPool<float>.Shared.Rent(chT);
-            try
-            {
-                Array.Copy(midOut, midBufA, chT);
-                float[] curIn = midBufA, curOut = midBufB;
-                foreach (var tb in stage.TransformerBlocks)
-                {
-                    TransformerBlock(curIn, curOut, channels, t, tb, heads, headDim, scratch);
-                    (curIn, curOut) = (curOut, curIn);
-                }
-                Array.Copy(curIn, midOut, chT);
-            }
-            finally
-            {
-                ArrayPool<float>.Shared.Return(midBufA);
-                ArrayPool<float>.Shared.Return(midBufB);
-            }
-        }
-
-        var upIn = new float[2 * channels * t];
-        CopyChannels(midOut, upIn, 0, channels, t);
-        CopyChannels(skip, upIn, channels, channels, t);
-        var upOut = ResnetBlock(upIn, 2 * channels, t, timeEmb, up.Resnet, channels);
-        var upBufA = ArrayPool<float>.Shared.Rent(chT);
-        var upBufB = ArrayPool<float>.Shared.Rent(chT);
-        try
-        {
-            Array.Copy(upOut, upBufA, chT);
-            float[] curIn = upBufA, curOut = upBufB;
-            foreach (var tb in up.TransformerBlocks)
+            midOut = ResnetBlock(midOut, channels, t, timeEmb, stage.Resnet, channels, scratch);
+            Array.Copy(midOut, tbBufA, chT);
+            curIn = tbBufA; curOut = tbBufB;
+            foreach (var tb in stage.TransformerBlocks)
             {
                 TransformerBlock(curIn, curOut, channels, t, tb, heads, headDim, scratch);
                 (curIn, curOut) = (curOut, curIn);
             }
-            Array.Copy(curIn, upOut, chT);
+            Array.Copy(curIn, midOut, chT);
         }
-        finally
+
+        var upIn = scratch.UpIn;
+        CopyChannels(midOut, upIn, 0, channels, t);
+        CopyChannels(skip, upIn, channels, channels, t);
+        var upOut = ResnetBlock(upIn, 2 * channels, t, timeEmb, up.Resnet, channels, scratch);
+
+        Array.Copy(upOut, tbBufA, chT);
+        curIn = tbBufA; curOut = tbBufB;
+        foreach (var tb in up.TransformerBlocks)
         {
-            ArrayPool<float>.Shared.Return(upBufA);
-            ArrayPool<float>.Shared.Return(upBufB);
+            TransformerBlock(curIn, curOut, channels, t, tb, heads, headDim, scratch);
+            (curIn, curOut) = (curOut, curIn);
         }
-        upOut = CausalConv1d(upOut, channels, t, up.ResampleConvWeight!, up.ResampleConvBias!, channels, kernel: 3);
+        Array.Copy(curIn, upOut, chT);
 
-        var finalConv = CausalConv1d(upOut, channels, t, finalBlockConvWeight, finalBlockConvBias, channels, kernel: 3);
-        var finalNormed = LayerNormChannelFirst(finalConv, channels, t, finalBlockLnWeight, finalBlockLnBias);
-        MishInPlace(finalNormed);
+        var upResample = new float[channels * t];
+        CausalConv1d(upOut, channels, t, up.ResampleConvWeight!, up.ResampleConvBias!, channels, 3, upResample);
+        upOut = upResample;
 
-        return Conv1dK1(finalNormed, channels, t, finalProjWeight, finalProjBias, melDim);
+        var finalConv = scratch.FinalConv;
+        CausalConv1d(upOut, channels, t, finalBlockConvWeight, finalBlockConvBias, channels, 3, finalConv);
+        var finalNormed = scratch.FinalNormed;
+        LayerNormChannelFirst(finalConv, finalNormed, channels, t, finalBlockLnWeight, finalBlockLnBias);
+        MishInPlace(finalNormed, channels * t);
+
+        var finalOutput = new float[melDim * t];
+        Conv1dK1(finalNormed, channels, t, finalProjWeight, finalProjBias, melDim, finalOutput);
+        return finalOutput;
     }
 
     /// <summary>SinusoidalPosEmb(dim), matcha/decoder.py convention: scale=1000.</summary>
@@ -142,47 +126,46 @@ public static class CfmUNetKernels
         return emb;
     }
 
-    private static float[] ResnetBlock(float[] x, int dimIn, int t, float[] timeEmb, IResnetBlockWeights rw, int dimOut)
+    private static float[] ResnetBlock(float[] x, int dimIn, int t, float[] timeEmb, IResnetBlockWeights rw, int dimOut, UnetScratchBuffers scratch)
     {
-        var h = CausalConv1d(x, dimIn, t, rw.Block1ConvWeight, rw.Block1ConvBias, dimOut, kernel: 3);
+        var h = scratch.ConvH;
+        var h2 = scratch.ConvH2;
+        var resConv = scratch.ResConv;
+        var mishTime = scratch.MishTime;
+
+        CausalConv1d(x, dimIn, t, rw.Block1ConvWeight, rw.Block1ConvBias, dimOut, 3, h);
         LayerNormChannelFirstInPlace(h, dimOut, t, rw.Block1LnWeight, rw.Block1LnBias);
-        MishInPlace(h);
+        MishInPlace(h, dimOut * t);
 
-        var mishTime = ArrayPool<float>.Shared.Rent(timeEmb.Length);
-        try
+        for (int i = 0; i < timeEmb.Length; i++) mishTime[i] = Mish(timeEmb[i]);
+        var timeProj = Linear(mishTime, rw.MlpWeight, rw.MlpBias);
+        for (int c = 0; c < dimOut; c++)
         {
-            for (int i = 0; i < timeEmb.Length; i++) mishTime[i] = Mish(timeEmb[i]);
-            var timeProj = Linear(mishTime, rw.MlpWeight, rw.MlpBias);
-            for (int c = 0; c < dimOut; c++)
-            {
-                float bias = timeProj[c];
-                int rowBase = c * t;
-                for (int ti = 0; ti < t; ti++) h[rowBase + ti] += bias;
-            }
-        }
-        finally
-        {
-            ArrayPool<float>.Shared.Return(mishTime);
+            float bias = timeProj[c];
+            int rowBase = c * t;
+            for (int ti = 0; ti < t; ti++) h[rowBase + ti] += bias;
         }
 
-        var h2 = CausalConv1d(h, dimOut, t, rw.Block2ConvWeight, rw.Block2ConvBias, dimOut, kernel: 3);
+        CausalConv1d(h, dimOut, t, rw.Block2ConvWeight, rw.Block2ConvBias, dimOut, 3, h2);
         LayerNormChannelFirstInPlace(h2, dimOut, t, rw.Block2LnWeight, rw.Block2LnBias);
-        MishInPlace(h2);
+        MishInPlace(h2, dimOut * t);
 
-        var resConv = Conv1dK1(x, dimIn, t, rw.ResConvWeight, rw.ResConvBias, dimOut);
+        Conv1dK1(x, dimIn, t, rw.ResConvWeight, rw.ResConvBias, dimOut, resConv);
 
+        int len = dimOut * t;
+        var res = new float[len];
         int vLen = Vector<float>.Count;
-        int limit = h2.Length - (h2.Length % vLen);
+        int limit = len - (len % vLen);
         for (int i = 0; i < limit; i += vLen)
         {
             var vh = new Vector<float>(h2, i);
             var vr = new Vector<float>(resConv, i);
-            (vh + vr).CopyTo(h2, i);
+            (vh + vr).CopyTo(res, i);
         }
-        for (int i = limit; i < h2.Length; i++)
-            h2[i] += resConv[i];
+        for (int i = limit; i < len; i++)
+            res[i] = h2[i] + resConv[i];
 
-        return h2;
+        return res;
     }
 
     private sealed class UnetScratchBuffers : IDisposable
@@ -198,11 +181,22 @@ public static class CfmUNetKernels
         public readonly float[] VBuf;
         public readonly float[] ContextBuf;
 
-        public UnetScratchBuffers(int t, int dim, int maxFfDim, int qkvDim)
+        public readonly float[] ConvH;
+        public readonly float[] ConvH2;
+        public readonly float[] ResConv;
+        public readonly float[] MishTime;
+        public readonly float[] TbBufA;
+        public readonly float[] TbBufB;
+        public readonly float[] UpIn;
+        public readonly float[] FinalConv;
+        public readonly float[] FinalNormed;
+
+        public UnetScratchBuffers(int t, int dim, int maxFfDim, int qkvDim, int maxDimIn, int timeEmbLen)
         {
             int tDim = t * dim;
             int tFf = t * maxFfDim;
             int tQkv = t * qkvDim;
+            int maxConvT = t * Math.Max(dim, maxDimIn);
 
             Normed = ArrayPool<float>.Shared.Rent(tDim);
             AttnOut = ArrayPool<float>.Shared.Rent(tDim);
@@ -214,6 +208,16 @@ public static class CfmUNetKernels
             KBuf = ArrayPool<float>.Shared.Rent(tQkv);
             VBuf = ArrayPool<float>.Shared.Rent(tQkv);
             ContextBuf = ArrayPool<float>.Shared.Rent(tQkv);
+
+            ConvH = ArrayPool<float>.Shared.Rent(maxConvT);
+            ConvH2 = ArrayPool<float>.Shared.Rent(maxConvT);
+            ResConv = ArrayPool<float>.Shared.Rent(maxConvT);
+            MishTime = ArrayPool<float>.Shared.Rent(timeEmbLen);
+            TbBufA = ArrayPool<float>.Shared.Rent(tDim);
+            TbBufB = ArrayPool<float>.Shared.Rent(tDim);
+            UpIn = ArrayPool<float>.Shared.Rent(2 * tDim);
+            FinalConv = ArrayPool<float>.Shared.Rent(tDim);
+            FinalNormed = ArrayPool<float>.Shared.Rent(tDim);
         }
 
         public void Dispose()
@@ -228,6 +232,16 @@ public static class CfmUNetKernels
             ArrayPool<float>.Shared.Return(KBuf);
             ArrayPool<float>.Shared.Return(VBuf);
             ArrayPool<float>.Shared.Return(ContextBuf);
+
+            ArrayPool<float>.Shared.Return(ConvH);
+            ArrayPool<float>.Shared.Return(ConvH2);
+            ArrayPool<float>.Shared.Return(ResConv);
+            ArrayPool<float>.Shared.Return(MishTime);
+            ArrayPool<float>.Shared.Return(TbBufA);
+            ArrayPool<float>.Shared.Return(TbBufB);
+            ArrayPool<float>.Shared.Return(UpIn);
+            ArrayPool<float>.Shared.Return(FinalConv);
+            ArrayPool<float>.Shared.Return(FinalNormed);
         }
     }
 
@@ -400,14 +414,13 @@ public static class CfmUNetKernels
     private static void CopyChannels(float[] src, float[] dst, int dstChannelOffset, int channels, int t) =>
         Array.Copy(src, 0, dst, dstChannelOffset * t, channels * t);
 
-    private static float[] CausalConv1d(float[] input, int inCh, int t, float[] weight, float[] bias, int outCh, int kernel)
+    private static void CausalConv1d(float[] input, int inCh, int t, float[] weight, float[] bias, int outCh, int kernel, float[] output)
     {
         int pad = kernel - 1;
-        var output = new float[outCh * t];
         System.Threading.Tasks.Parallel.For(0, outCh, oc =>
         {
-            var outRow = new float[t];
-            Array.Fill(outRow, bias[oc]);
+            var outRow = output.AsSpan(oc * t, t);
+            outRow.Fill(bias[oc]);
             int wOcBase = oc * inCh * kernel;
             for (int ic = 0; ic < inCh; ic++)
             {
@@ -419,14 +432,11 @@ public static class CfmUNetKernels
                     AxpyShifted(inRow, weight[wBase + k], outRow, shift, t);
                 }
             }
-            Array.Copy(outRow, 0, output, oc * t, t);
         });
-        return output;
     }
 
-    private static float[] Conv1dK1(float[] input, int inCh, int t, float[] weight, float[] bias, int outCh)
+    private static void Conv1dK1(float[] input, int inCh, int t, float[] weight, float[] bias, int outCh, float[] output)
     {
-        var output = new float[outCh * t];
         System.Threading.Tasks.Parallel.For(0, outCh, oc =>
         {
             var outRow = output.AsSpan(oc * t, t);
@@ -438,7 +448,6 @@ public static class CfmUNetKernels
                 TensorPrimitives.MultiplyAdd(inRow, weight[wBase + ic], outRow, outRow);
             }
         });
-        return output;
     }
 
     private static void AxpyShifted(ReadOnlySpan<float> input, float scale, Span<float> output, int shift, int t)
@@ -468,12 +477,10 @@ public static class CfmUNetKernels
         }
     }
 
-    private static float[] LayerNormChannelFirst(float[] x, int ch, int t, float[] weight, float[] bias, float eps = 1e-5f)
+    private static void LayerNormChannelFirst(float[] x, float[] output, int ch, int t, float[] weight, float[] bias, float eps = 1e-5f)
     {
-        var output = new float[ch * t];
         Array.Copy(x, output, ch * t);
         LayerNormChannelFirstInPlace(output, ch, t, weight, bias, eps);
-        return output;
     }
 
     private static void LayerNormChannelFirstToRowMajor(float[] x, float[] output, int ch, int t, float[] weight, float[] bias, float eps = 1e-5f)
@@ -492,19 +499,14 @@ public static class CfmUNetKernels
         }
     }
 
-    private static float[] LayerNormChannelFirstToRowMajor(float[] x, int ch, int t, float[] weight, float[] bias, float eps = 1e-5f)
-    {
-        var output = new float[t * ch];
-        LayerNormChannelFirstToRowMajor(x, output, ch, t, weight, bias, eps);
-        return output;
-    }
-
     private static float Mish(float x) => x * MathF.Tanh(MathF.Log(1f + MathF.Exp(x)));
 
-    private static void MishInPlace(float[] x)
+    private static void MishInPlace(float[] x, int len)
     {
-        for (int i = 0; i < x.Length; i++) x[i] = Mish(x[i]);
+        for (int i = 0; i < len; i++) x[i] = Mish(x[i]);
     }
+
+    private static void MishInPlace(float[] x) => MishInPlace(x, x.Length);
 
     private static void GeluInPlace(float[] x, int len)
     {
