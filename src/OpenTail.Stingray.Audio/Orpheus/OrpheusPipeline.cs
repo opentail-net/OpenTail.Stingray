@@ -205,75 +205,149 @@ public sealed class OrpheusPipeline : ITextToSpeechPipeline
 
     private static int SampleToken(ReadOnlySpan<float> logits, List<int> pastTokens, float temperature, float topP, float repetitionPenalty, bool allowStop, Random rng)
     {
-        var scaled = new float[logits.Length];
-        logits.CopyTo(scaled);
-
-        if (!allowStop)
+        if (temperature < 0.01f)
         {
-            if (128258 < scaled.Length) scaled[128258] = float.NegativeInfinity;
-            if (128256 < scaled.Length) scaled[128256] = float.NegativeInfinity;
-            if (49158 < scaled.Length) scaled[49158] = float.NegativeInfinity;
+            float max = float.NegativeInfinity;
+            int maxIdx = 0;
+            for (int i = 0; i < logits.Length; i++)
+            {
+                if (!allowStop && (i == 128258 || i == 128256 || i == 49158)) continue;
+                float v = logits[i];
+                if (repetitionPenalty > 1.0f && pastTokens.Count > 0)
+                {
+                    int start = Math.Max(0, pastTokens.Count - 64);
+                    for (int h = start; h < pastTokens.Count; h++)
+                    {
+                        if (pastTokens[h] == i)
+                        {
+                            v = v > 0 ? v / repetitionPenalty : v * repetitionPenalty;
+                            break;
+                        }
+                    }
+                }
+                if (v > max) { max = v; maxIdx = i; }
+            }
+            return maxIdx;
         }
 
-        // Apply repetition penalty to recent tokens
-        if (repetitionPenalty > 1.0f && pastTokens.Count > 0)
+        // Bounded candidate fast path: select top (K + penaltyHistory) logits in a single O(N) pass,
+        // avoiding full-vocabulary 128k array allocations and 128k Array.Sort on every generated token.
+        const int K = 64;
+        int penaltyCount = (repetitionPenalty > 1.0f && pastTokens.Count > 0) ? Math.Min(64, pastTokens.Count) : 0;
+        int sel = Math.Min(logits.Length, K + penaltyCount);
+
+        Span<int> candIdx = stackalloc int[sel];
+        Span<float> candVal = stackalloc float[sel];
+        candVal.Fill(float.NegativeInfinity);
+        candIdx.Fill(-1);
+
+        for (int i = 0; i < logits.Length; i++)
+        {
+            if (!allowStop && (i == 128258 || i == 128256 || i == 49158))
+                continue;
+
+            float v = logits[i];
+            if (v <= candVal[sel - 1]) continue;
+
+            int j = sel - 1;
+            while (j > 0 && candVal[j - 1] < v)
+            {
+                candVal[j] = candVal[j - 1];
+                candIdx[j] = candIdx[j - 1];
+                j--;
+            }
+            candVal[j] = v;
+            candIdx[j] = i;
+        }
+
+        if (candIdx[0] < 0 || float.IsNegativeInfinity(candVal[0]))
+            return Argmax(logits);
+
+        // Apply repetition penalty to selected candidates, then insertion re-sort
+        if (penaltyCount > 0)
         {
             int start = Math.Max(0, pastTokens.Count - 64);
-            for (int i = start; i < pastTokens.Count; i++)
+            for (int t = 0; t < sel; t++)
             {
-                int tok = pastTokens[i];
-                if (tok >= 0 && tok < scaled.Length)
+                int id = candIdx[t];
+                if (id < 0) continue;
+                for (int h = start; h < pastTokens.Count; h++)
                 {
-                    if (scaled[tok] > 0) scaled[tok] /= repetitionPenalty;
-                    else scaled[tok] *= repetitionPenalty;
+                    if (pastTokens[h] == id)
+                    {
+                        candVal[t] = candVal[t] > 0 ? candVal[t] / repetitionPenalty : candVal[t] * repetitionPenalty;
+                        break;
+                    }
+                }
+            }
+
+            for (int a = 1; a < sel; a++)
+            {
+                float v = candVal[a]; int id = candIdx[a]; int b = a - 1;
+                while (b >= 0 && candVal[b] < v)
+                {
+                    candVal[b + 1] = candVal[b];
+                    candIdx[b + 1] = candIdx[b];
+                    b--;
+                }
+                candVal[b + 1] = v;
+                candIdx[b + 1] = id;
+            }
+        }
+
+        int count = Math.Min(K, sel);
+        float invTemp = 1.0f / temperature;
+        float maxLogit = candVal[0] * invTemp;
+        Span<float> probs = stackalloc float[count];
+        float sumExp = 0f;
+        for (int t = 0; t < count; t++)
+        {
+            if (candIdx[t] < 0 || float.IsNegativeInfinity(candVal[t]))
+            {
+                probs[t] = 0f;
+            }
+            else
+            {
+                float e = MathF.Exp(candVal[t] * invTemp - maxLogit);
+                probs[t] = e;
+                sumExp += e;
+            }
+        }
+
+        if (sumExp <= 0f) return candIdx[0] >= 0 ? candIdx[0] : 0;
+
+        float invSum = 1.0f / sumExp;
+        for (int t = 0; t < count; t++)
+            probs[t] *= invSum;
+
+        // Top-P Nucleus cutoff
+        if (topP < 1.0f && topP > 0f)
+        {
+            float cum = 0f;
+            for (int t = 0; t < count; t++)
+            {
+                cum += probs[t];
+                if (cum >= topP)
+                {
+                    count = t + 1;
+                    break;
                 }
             }
         }
 
-        if (temperature < 0.01f)
-        {
-            return Argmax(scaled);
-        }
-
-        // Temperature scaling
-        for (int i = 0; i < scaled.Length; i++) scaled[i] /= temperature;
-
-        // Softmax & Top-P Nucleus Sampling
-        float maxLogit = float.NegativeInfinity;
-        for (int i = 0; i < scaled.Length; i++)
-            if (scaled[i] > maxLogit) maxLogit = scaled[i];
-
-        double sumExp = 0.0;
-        for (int i = 0; i < scaled.Length; i++)
-        {
-            scaled[i] = MathF.Exp(scaled[i] - maxLogit);
-            sumExp += scaled[i];
-        }
-
-        var indexed = new (int Id, float Prob)[scaled.Length];
-        for (int i = 0; i < scaled.Length; i++)
-            indexed[i] = (i, (float)(scaled[i] / sumExp));
-
-        Array.Sort(indexed, (a, b) => b.Prob.CompareTo(a.Prob));
-
         float cumProb = 0f;
-        int cutoff = 0;
-        for (int i = 0; i < indexed.Length; i++)
-        {
-            cumProb += indexed[i].Prob;
-            cutoff = i;
-            if (cumProb >= topP) break;
-        }
+        for (int t = 0; t < count; t++) cumProb += probs[t];
 
         float r = (float)rng.NextDouble() * cumProb;
         float running = 0f;
-        for (int i = 0; i <= cutoff; i++)
+        for (int t = 0; t < count; t++)
         {
-            running += indexed[i].Prob;
-            if (running >= r) return indexed[i].Id;
+            running += probs[t];
+            if (running >= r && candIdx[t] >= 0)
+                return candIdx[t];
         }
 
-        return indexed[0].Id;
+        return candIdx[0] >= 0 ? candIdx[0] : 0;
     }
 
     public float[] Synthesize(string text, string voice = "tara", int maxTokens = 1200, float temperature = 0.6f, float topP = 0.8f, float repetitionPenalty = 1.1f)
