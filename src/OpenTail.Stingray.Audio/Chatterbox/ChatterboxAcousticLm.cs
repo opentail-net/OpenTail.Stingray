@@ -369,6 +369,36 @@ public sealed class ChatterboxAcousticLm : IDisposable
     private static unsafe float[][] LinearBatched(float[][] inputs, float[] weight, float[] bias, int inDim, int outDim)
     {
         int n = inputs.Length;
+        if (n == 1)
+        {
+            var singleOut = new float[outDim];
+            fixed (float* w = weight, x = inputs[0], y = singleOut, b = bias)
+            {
+                nint wAddr = (nint)w;
+                nint xAddr = (nint)x;
+                nint yAddr = (nint)y;
+                nint bAddr = (nint)b;
+
+                int numChunks = Math.Min(4, Environment.ProcessorCount);
+                int chunkSize = (outDim + numChunks - 1) / numChunks;
+                System.Threading.Tasks.Parallel.For(0, numChunks, c =>
+                {
+                    float* wp = (float*)wAddr;
+                    float* xp = (float*)xAddr;
+                    float* yp = (float*)yAddr;
+                    float* bp = (float*)bAddr;
+
+                    int start = c * chunkSize;
+                    int end = Math.Min(outDim, start + chunkSize);
+                    for (int o = start; o < end; o++)
+                    {
+                        yp[o] = SimdKernels.DotF32(wp + (long)o * inDim, xp, inDim) + bp[o];
+                    }
+                });
+            }
+            return [singleOut];
+        }
+
         var flatIn = new float[n * inDim];
         for (int i = 0; i < n; i++) Array.Copy(inputs[i], 0, flatIn, i * inDim, inDim);
         var flatOut = new float[n * outDim];
@@ -376,12 +406,28 @@ public sealed class ChatterboxAcousticLm : IDisposable
 
         fixed (float* w = weight, x = flatIn, y = flatOut, b = bias)
         {
-            float* wp = w, xp = x, yp = y, bp = b;
-            System.Threading.Tasks.Parallel.For(0, total, idx =>
+            nint wAddr = (nint)w;
+            nint xAddr = (nint)x;
+            nint yAddr = (nint)y;
+            nint bAddr = (nint)b;
+
+            int numChunks = Math.Min(Environment.ProcessorCount, 16);
+            int chunkSize = (total + numChunks - 1) / numChunks;
+            System.Threading.Tasks.Parallel.For(0, numChunks, c =>
             {
-                int i = idx / outDim;
-                int o = idx % outDim;
-                yp[idx] = SimdKernels.DotF32(wp + (long)o * inDim, xp + (long)i * inDim, inDim) + bp[o];
+                float* wp = (float*)wAddr;
+                float* xp = (float*)xAddr;
+                float* yp = (float*)yAddr;
+                float* bp = (float*)bAddr;
+
+                int start = c * chunkSize;
+                int end = Math.Min(total, start + chunkSize);
+                for (int idx = start; idx < end; idx++)
+                {
+                    int i = idx / outDim;
+                    int o = idx % outDim;
+                    yp[idx] = SimdKernels.DotF32(wp + (long)o * inDim, xp + (long)i * inDim, inDim) + bp[o];
+                }
             });
         }
 

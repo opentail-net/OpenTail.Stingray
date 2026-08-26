@@ -300,6 +300,39 @@ public static class HiFTVocoderKernels
         }
     }
 
+    private sealed class DftBasis
+    {
+        public readonly int NFft;
+        public readonly int SpecBins;
+        public readonly float[] Window;
+        public readonly float[] CosBasis; // [NFft, SpecBins]
+        public readonly float[] SinBasis; // [NFft, SpecBins]
+
+        public DftBasis(int nFft)
+        {
+            NFft = nFft;
+            SpecBins = nFft / 2 + 1;
+            Window = HannWindow(nFft);
+            CosBasis = new float[nFft * SpecBins];
+            SinBasis = new float[nFft * SpecBins];
+
+            for (int n = 0; n < nFft; n++)
+            {
+                int row = n * SpecBins;
+                for (int k = 0; k < SpecBins; k++)
+                {
+                    double angle = 2.0 * Math.PI * k * n / nFft;
+                    float weight = (k > 0 && k < SpecBins - 1) ? 2f : 1f;
+                    CosBasis[row + k] = (float)Math.Cos(angle) * weight;
+                    SinBasis[row + k] = (float)Math.Sin(angle) * weight;
+                }
+            }
+        }
+    }
+
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<int, DftBasis> s_basisCache = new();
+    private static DftBasis GetBasis(int nFft) => s_basisCache.GetOrAdd(nFft, static n => new DftBasis(n));
+
     private static float[] RealStft(float[] signal, int sigLen, int nFft, int hop, int frames)
     {
         int specBins = nFft / 2 + 1;
@@ -334,34 +367,49 @@ public static class HiFTVocoderKernels
         return output;
     }
 
-    private static float[] InverseStft(float[] spec, float[] phase, int specBins, int frames, int nFft, int hop, int targetLen)
+    private static unsafe float[] InverseStft(float[] spec, float[] phase, int specBins, int frames, int nFft, int hop, int targetLen)
     {
         int rawLen = (frames - 1) * hop + nFft;
         var full = new float[rawLen];
         var norm = new float[rawLen];
-        var window = HannWindow(nFft);
+        var basis = GetBasis(nFft);
+        var window = basis.Window;
+        float invNFft = 1f / nFft;
 
         var frameContrib = new float[frames][];
-        System.Threading.Tasks.Parallel.For(0, frames, f =>
+        fixed (float* cosPtr = basis.CosBasis, sinPtr = basis.SinBasis)
         {
-            var local = new float[nFft];
-            for (int n = 0; n < nFft; n++)
+            nint cosAddr = (nint)cosPtr;
+            nint sinAddr = (nint)sinPtr;
+
+            System.Threading.Tasks.Parallel.For(0, frames, f =>
             {
-                float val = 0f;
+                var rC = stackalloc float[specBins];
+                var iC = stackalloc float[specBins];
+
                 for (int k = 0; k < specBins; k++)
                 {
                     float mag = spec[k * frames + f];
                     float ph = phase[k * frames + f];
-                    float rC = mag * MathF.Cos(ph);
-                    float iC = mag * MathF.Sin(ph);
-                    float angle = 2f * MathF.PI * k * n / nFft;
-                    float term = rC * MathF.Cos(angle) - iC * MathF.Sin(angle);
-                    val += (k > 0 && k < specBins - 1) ? 2f * term : term;
+                    rC[k] = mag * MathF.Cos(ph);
+                    iC[k] = mag * MathF.Sin(ph);
                 }
-                local[n] = val / nFft * window[n];
-            }
-            frameContrib[f] = local;
-        });
+
+                var local = new float[nFft];
+                float* cTable = (float*)cosAddr;
+                float* sTable = (float*)sinAddr;
+
+                for (int n = 0; n < nFft; n++)
+                {
+                    float* cRow = cTable + (nuint)n * (nuint)specBins;
+                    float* sRow = sTable + (nuint)n * (nuint)specBins;
+                    float realTerm = SimdKernels.DotF32(rC, cRow, specBins);
+                    float imagTerm = SimdKernels.DotF32(iC, sRow, specBins);
+                    local[n] = (realTerm - imagTerm) * invNFft * window[n];
+                }
+                frameContrib[f] = local;
+            });
+        }
 
         for (int f = 0; f < frames; f++)
         {

@@ -1,3 +1,6 @@
+using System;
+using System.Buffers;
+using System.Numerics.Tensors;
 using OpenTail.Stingray.Cpu;
 
 namespace OpenTail.Stingray.Audio.Primitives;
@@ -160,27 +163,55 @@ public static class S3GenConformerKernels
         return output;
     }
 
-    private static float[] Conv1dValid(float[] input, int inCh, int inT, float[] weight, float[] bias, int outCh, int kernel)
+    private static unsafe float[] Conv1dValid(float[] input, int inCh, int inT, float[] weight, float[] bias, int outCh, int kernel)
     {
         int outT = inT - kernel + 1;
+        int rowLen = inCh * kernel;
+        var col = ArrayPool<float>.Shared.Rent(outT * rowLen);
         var output = new float[outCh * outT];
-        for (int oc = 0; oc < outCh; oc++)
+
+        try
         {
-            float b = bias[oc];
-            int wOcBase = oc * inCh * kernel;
-            for (int ot = 0; ot < outT; ot++)
+            // Build im2col buffer in parallel across output time frames
+            System.Threading.Tasks.Parallel.For(0, outT, ot =>
             {
-                float sum = b;
+                int rowBase = ot * rowLen;
                 for (int ic = 0; ic < inCh; ic++)
                 {
-                    int wBase = wOcBase + ic * kernel;
                     int srcBase = ic * inT + ot;
+                    int dstBase = rowBase + ic * kernel;
                     for (int k = 0; k < kernel; k++)
-                        sum += weight[wBase + k] * input[srcBase + k];
+                        col[dstBase + k] = input[srcBase + k];
                 }
-                output[oc * outT + ot] = sum;
+            });
+
+            // Parallel GEMM with AVX2 SIMD dot products: out[oc, ot] = bias[oc] + Dot(weight[oc], col[ot])
+            fixed (float* colPtr = col, weightPtr = weight, outPtr = output, biasPtr = bias)
+            {
+                nint colAddr = (nint)colPtr;
+                nint wAddr = (nint)weightPtr;
+                nint outAddr = (nint)outPtr;
+                nint bAddr = (nint)biasPtr;
+
+                System.Threading.Tasks.Parallel.For(0, outCh, oc =>
+                {
+                    float b = ((float*)bAddr)[oc];
+                    float* wRow = (float*)wAddr + (nuint)oc * (nuint)rowLen;
+                    float* outRow = (float*)outAddr + (nuint)oc * (nuint)outT;
+
+                    for (int ot = 0; ot < outT; ot++)
+                    {
+                        float* colRow = (float*)colAddr + (nuint)ot * (nuint)rowLen;
+                        outRow[ot] = b + SimdKernels.DotF32(wRow, colRow, rowLen);
+                    }
+                });
             }
         }
+        finally
+        {
+            ArrayPool<float>.Shared.Return(col);
+        }
+
         return output;
     }
 
@@ -190,7 +221,10 @@ public static class S3GenConformerKernels
         int dim = heads * headDim;
 
         var normed = new float[t][];
-        for (int i = 0; i < t; i++) normed[i] = DenseKernels.LayerNorm(x[i], lw.NormMhaWeight, lw.NormMhaBias);
+        System.Threading.Tasks.Parallel.For(0, t, i =>
+        {
+            normed[i] = DenseKernels.LayerNorm(x[i], lw.NormMhaWeight, lw.NormMhaBias);
+        });
 
         var attnOut = RelPositionSelfAttention(normed, posEmb, lw, heads, headDim);
 
@@ -203,7 +237,7 @@ public static class S3GenConformerKernels
         }
 
         var output = new float[t][];
-        for (int i = 0; i < t; i++)
+        System.Threading.Tasks.Parallel.For(0, t, i =>
         {
             var ffnNormed = DenseKernels.LayerNorm(afterAttn[i], lw.NormFfWeight, lw.NormFfBias);
             var h1 = DenseKernels.Linear(ffnNormed, lw.Ff1Weight, lw.Ff1Bias, dim, ffnDim);
@@ -212,12 +246,12 @@ public static class S3GenConformerKernels
             var row = new float[dim];
             for (int d = 0; d < dim; d++) row[d] = afterAttn[i][d] + h2[d];
             output[i] = row;
-        }
+        });
         return output;
     }
 
     /// <summary>RelPositionMultiHeadedAttention, specialized for pos_emb length == key length (the case this encoder always hits, in both pipelines), so `rel_shift` is skipped.</summary>
-    private static float[][] RelPositionSelfAttention(float[][] x, float[][] posEmb, IS3GenConformerLayerWeights lw, int heads, int headDim)
+    private static unsafe float[][] RelPositionSelfAttention(float[][] x, float[][] posEmb, IS3GenConformerLayerWeights lw, int heads, int headDim)
     {
         int t = x.Length;
         int dim = heads * headDim;
@@ -227,66 +261,57 @@ public static class S3GenConformerKernels
         var k = new float[t][];
         var v = new float[t][];
         var p = new float[t][];
-        for (int i = 0; i < t; i++)
+
+        System.Threading.Tasks.Parallel.For(0, t, i =>
         {
             q[i] = DenseKernels.Linear(x[i], lw.QWeight, lw.QBias, dim, dim);
             k[i] = DenseKernels.Linear(x[i], lw.KWeight, lw.KBias, dim, dim);
             v[i] = DenseKernels.Linear(x[i], lw.VWeight, lw.VBias, dim, dim);
             p[i] = DenseKernels.LinearNoBias(posEmb[i], lw.PosWeight, dim, dim);
-        }
+        });
 
         var output = new float[t][];
         for (int i = 0; i < t; i++) output[i] = new float[dim];
 
-        for (int h = 0; h < heads; h++)
+        System.Threading.Tasks.Parallel.For(0, heads * t, ht =>
         {
+            int h = ht / t;
+            int i = ht % t;
             int hOff = h * headDim;
-            var qU = new float[t][];
-            var qV = new float[t][];
-            for (int i = 0; i < t; i++)
+
+            var u = stackalloc float[headDim];
+            var vv = stackalloc float[headDim];
+            for (int d = 0; d < headDim; d++)
             {
-                var u = new float[headDim];
-                var vv = new float[headDim];
-                for (int d = 0; d < headDim; d++)
-                {
-                    u[d] = q[i][hOff + d] + lw.PosBiasU[h * headDim + d];
-                    vv[d] = q[i][hOff + d] + lw.PosBiasV[h * headDim + d];
-                }
-                qU[i] = u;
-                qV[i] = vv;
+                u[d] = q[i][hOff + d] + lw.PosBiasU[hOff + d];
+                vv[d] = q[i][hOff + d] + lw.PosBiasV[hOff + d];
             }
 
-            System.Threading.Tasks.Parallel.For(0, t, i =>
+            var scores = new float[t];
+            for (int j = 0; j < t; j++)
             {
-                var scores = new float[t];
-                unsafe
+                fixed (float* kp = k[j], pp = p[j])
                 {
-                    fixed (float* up = qU[i], vp = qV[i])
-                    {
-                        for (int j = 0; j < t; j++)
-                        {
-                            fixed (float* kp = k[j], pp = p[j])
-                            {
-                                float ac = SimdKernels.DotF32(up, kp + hOff, headDim);
-                                float bd = SimdKernels.DotF32(vp, pp + hOff, headDim);
-                                scores[j] = (ac + bd) * scale;
-                            }
-                        }
-                    }
+                    float ac = SimdKernels.DotF32(u, kp + hOff, headDim);
+                    float bd = SimdKernels.DotF32(vv, pp + hOff, headDim);
+                    scores[j] = (ac + bd) * scale;
                 }
-                DenseKernels.SoftmaxInPlace(scores);
-                var outSpan = output[i].AsSpan(hOff, headDim);
-                for (int j = 0; j < t; j++)
-                {
-                    var vRow = v[j].AsSpan(hOff, headDim);
-                    System.Numerics.Tensors.TensorPrimitives.MultiplyAdd(vRow, scores[j], outSpan, outSpan);
-                }
-            });
-        }
+            }
+
+            DenseKernels.SoftmaxInPlace(scores);
+            var outSpan = output[i].AsSpan(hOff, headDim);
+            for (int j = 0; j < t; j++)
+            {
+                var vRow = v[j].AsSpan(hOff, headDim);
+                TensorPrimitives.MultiplyAdd(vRow, scores[j], outSpan, outSpan);
+            }
+        });
 
         var projected = new float[t][];
-        for (int i = 0; i < t; i++)
+        System.Threading.Tasks.Parallel.For(0, t, i =>
+        {
             projected[i] = DenseKernels.Linear(output[i], lw.OutWeight, lw.OutBias, dim, dim);
+        });
         return projected;
     }
 }
