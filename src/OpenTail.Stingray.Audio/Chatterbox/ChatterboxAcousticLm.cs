@@ -374,69 +374,24 @@ public sealed class ChatterboxAcousticLm : IDisposable
             var singleOut = new float[outDim];
             fixed (float* w = weight, x = inputs[0], y = singleOut, b = bias)
             {
-                nint wAddr = (nint)w;
-                nint xAddr = (nint)x;
-                nint yAddr = (nint)y;
-                nint bAddr = (nint)b;
-
-                int numChunks = Math.Min(4, Environment.ProcessorCount);
-                int chunkSize = (outDim + numChunks - 1) / numChunks;
-                System.Threading.Tasks.Parallel.For(0, numChunks, c =>
-                {
-                    float* wp = (float*)wAddr;
-                    float* xp = (float*)xAddr;
-                    float* yp = (float*)yAddr;
-                    float* bp = (float*)bAddr;
-
-                    int start = c * chunkSize;
-                    int end = Math.Min(outDim, start + chunkSize);
-                    for (int o = start; o < end; o++)
-                    {
-                        yp[o] = SimdKernels.DotF32(wp + (long)o * inDim, xp, inDim) + bp[o];
-                    }
-                });
+                SimdKernels.MatVecF32(y, w, x, outDim, inDim);
+                for (int o = 0; o < outDim; o++) y[o] += b[o];
             }
             return [singleOut];
         }
 
-        var flatIn = new float[n * inDim];
-        for (int i = 0; i < n; i++) Array.Copy(inputs[i], 0, flatIn, i * inDim, inDim);
-        var flatOut = new float[n * outDim];
-        int total = n * outDim;
-
-        fixed (float* w = weight, x = flatIn, y = flatOut, b = bias)
-        {
-            nint wAddr = (nint)w;
-            nint xAddr = (nint)x;
-            nint yAddr = (nint)y;
-            nint bAddr = (nint)b;
-
-            int numChunks = Math.Min(Environment.ProcessorCount, 16);
-            int chunkSize = (total + numChunks - 1) / numChunks;
-            System.Threading.Tasks.Parallel.For(0, numChunks, c =>
-            {
-                float* wp = (float*)wAddr;
-                float* xp = (float*)xAddr;
-                float* yp = (float*)yAddr;
-                float* bp = (float*)bAddr;
-
-                int start = c * chunkSize;
-                int end = Math.Min(total, start + chunkSize);
-                for (int idx = start; idx < end; idx++)
-                {
-                    int i = idx / outDim;
-                    int o = idx % outDim;
-                    yp[idx] = SimdKernels.DotF32(wp + (long)o * inDim, xp + (long)i * inDim, inDim) + bp[o];
-                }
-            });
-        }
-
         var outputs = new float[n][];
-        for (int i = 0; i < n; i++)
+        for (int i = 0; i < n; i++) outputs[i] = new float[outDim];
+
+        System.Threading.Tasks.Parallel.For(0, n, i =>
         {
-            outputs[i] = new float[outDim];
-            Array.Copy(flatOut, i * outDim, outputs[i], 0, outDim);
-        }
+            fixed (float* w = weight, x = inputs[i], y = outputs[i], b = bias)
+            {
+                SimdKernels.MatVecF32(y, w, x, outDim, inDim);
+                for (int o = 0; o < outDim; o++) y[o] += b[o];
+            }
+        });
+
         return outputs;
     }
 

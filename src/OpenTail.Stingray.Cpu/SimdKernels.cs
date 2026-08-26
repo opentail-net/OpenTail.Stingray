@@ -1409,8 +1409,85 @@ public static unsafe class SimdKernels
         }
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static void MatVecF32_4Row(float* m0, float* m1, float* m2, float* m3, float* x, int cols, out float r0, out float r1, out float r2, out float r3)
+    {
+        var acc0 = Vector256<float>.Zero;
+        var acc1 = Vector256<float>.Zero;
+        var acc2 = Vector256<float>.Zero;
+        var acc3 = Vector256<float>.Zero;
+
+        int i = 0;
+        for (; i + 8 <= cols; i += 8)
+        {
+            var vx = Avx.LoadVector256(x + i);
+            acc0 = Fma.MultiplyAdd(Avx.LoadVector256(m0 + i), vx, acc0);
+            acc1 = Fma.MultiplyAdd(Avx.LoadVector256(m1 + i), vx, acc1);
+            acc2 = Fma.MultiplyAdd(Avx.LoadVector256(m2 + i), vx, acc2);
+            acc3 = Fma.MultiplyAdd(Avx.LoadVector256(m3 + i), vx, acc3);
+        }
+
+        r0 = HSum256(acc0);
+        r1 = HSum256(acc1);
+        r2 = HSum256(acc2);
+        r3 = HSum256(acc3);
+
+        for (; i < cols; i++)
+        {
+            float xi = x[i];
+            r0 += m0[i] * xi;
+            r1 += m1[i] * xi;
+            r2 += m2[i] * xi;
+            r3 += m3[i] * xi;
+        }
+    }
+
     public static void MatVecF32(float* output, float* matrix, float* input, int rows, int cols)
     {
+        if (Fma.IsSupported && cols >= 32)
+        {
+            int numThreads = Math.Min(s_parallelOpts.MaxDegreeOfParallelism, (rows + 63) / 64);
+            if (numThreads > 1)
+            {
+                int chunkSize = (rows + numThreads - 1) / numThreads;
+                Parallel.For(0, numThreads, s_parallelOpts, t =>
+                {
+                    int start = t * chunkSize;
+                    int end = Math.Min(rows, start + chunkSize);
+                    int r = start;
+                    for (; r + 4 <= end; r += 4)
+                    {
+                        float* m0 = matrix + (long)r * cols;
+                        float* m1 = matrix + (long)(r + 1) * cols;
+                        float* m2 = matrix + (long)(r + 2) * cols;
+                        float* m3 = matrix + (long)(r + 3) * cols;
+                        MatVecF32_4Row(m0, m1, m2, m3, input, cols, out output[r], out output[r + 1], out output[r + 2], out output[r + 3]);
+                    }
+                    for (; r < end; r++)
+                    {
+                        output[r] = DotF32(matrix + (long)r * cols, input, cols);
+                    }
+                });
+            }
+            else
+            {
+                int r = 0;
+                for (; r + 4 <= rows; r += 4)
+                {
+                    float* m0 = matrix + (long)r * cols;
+                    float* m1 = matrix + (long)(r + 1) * cols;
+                    float* m2 = matrix + (long)(r + 2) * cols;
+                    float* m3 = matrix + (long)(r + 3) * cols;
+                    MatVecF32_4Row(m0, m1, m2, m3, input, cols, out output[r], out output[r + 1], out output[r + 2], out output[r + 3]);
+                }
+                for (; r < rows; r++)
+                {
+                    output[r] = DotF32(matrix + (long)r * cols, input, cols);
+                }
+            }
+            return;
+        }
+
         if (rows >= MinRowsForParallel)
         {
             var m = matrix; var inp = input; var outp = output;
