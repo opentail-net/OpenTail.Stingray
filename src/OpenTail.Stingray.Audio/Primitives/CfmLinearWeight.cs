@@ -53,6 +53,60 @@ public sealed class CfmLinearWeight
         return new CfmLinearWeight(f16Bits, null, outDim, inDim);
     }
 
+    /// <summary>Batch linear layer across T rows: outputMatrix[T, outDim] = inputMatrix[T, inDim] * weight^T + bias.</summary>
+    public unsafe void MatMul(float* inputMatrix, int t, float* outputMatrix, float* bias = null)
+    {
+        int inDim = _inDim, outDim = _outDim;
+        if (_f16Bits is { } f16)
+        {
+            fixed (short* pW = f16)
+            {
+                nint inAddr = (nint)inputMatrix;
+                nint outAddr = (nint)outputMatrix;
+                nint wAddr = (nint)pW;
+                nint bAddr = (nint)bias;
+
+                System.Threading.Tasks.Parallel.For(0, t, ti =>
+                {
+                    float* inRow = (float*)inAddr + (nuint)ti * (nuint)inDim;
+                    float* outRow = (float*)outAddr + (nuint)ti * (nuint)outDim;
+                    ushort* wBase = (ushort*)wAddr;
+                    float* b = (float*)bAddr;
+
+                    for (int o = 0; o < outDim; o++)
+                    {
+                        float val = F16CNative.Dot(inRow, wBase + (nuint)o * (nuint)inDim, inDim);
+                        if (b != null) val += b[o];
+                        outRow[o] = val;
+                    }
+                });
+            }
+            return;
+        }
+
+        fixed (float* w = _f32)
+        {
+            nint inAddr = (nint)inputMatrix;
+            nint outAddr = (nint)outputMatrix;
+            nint wAddr = (nint)w;
+            nint bAddr = (nint)bias;
+
+            System.Threading.Tasks.Parallel.For(0, t, ti =>
+            {
+                float* inRow = (float*)inAddr + (nuint)ti * (nuint)inDim;
+                float* outRow = (float*)outAddr + (nuint)ti * (nuint)outDim;
+                float* wPtr = (float*)wAddr;
+                float* b = (float*)bAddr;
+
+                SimdKernels.MatVecF32(outRow, wPtr, inRow, outDim, inDim);
+                if (b != null)
+                {
+                    for (int o = 0; o < outDim; o++) outRow[o] += b[o];
+                }
+            });
+        }
+    }
+
     /// <summary>Single-row linear layer: output[outDim] = weight[outDim, inDim] . input[inDim] (no bias -- callers add bias separately, matching CfmUNetKernels' existing convention).</summary>
     public unsafe float[] MatVec(float[] input)
     {
