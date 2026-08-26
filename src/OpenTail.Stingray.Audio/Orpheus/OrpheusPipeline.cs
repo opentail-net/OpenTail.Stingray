@@ -53,7 +53,7 @@ public sealed class OrpheusPipeline : ITextToSpeechPipeline
 
     private static readonly int[] SlotToCodebook = [0, 1, 2, 2, 1, 2, 2];
 
-    public static OrpheusPipeline Load(string modelPath, string? snacGgufPath = null, bool allowGpu = true)
+    public static OrpheusPipeline Load(string modelPath, string? snacGgufPath = null, int ctxSize = 2048, bool allowGpu = true)
     {
         string dir = Path.GetDirectoryName(modelPath) ?? "models";
         snacGgufPath ??= Path.Combine(dir, "snac-24khz.gguf");
@@ -61,7 +61,7 @@ public sealed class OrpheusPipeline : ITextToSpeechPipeline
         {
             snacGgufPath = Path.Combine(dir, "snac_24khz.gguf");
         }
-        return new OrpheusPipeline(modelPath, snacGgufPath, allowGpu: allowGpu);
+        return new OrpheusPipeline(modelPath, snacGgufPath, ctxSize: ctxSize, allowGpu: allowGpu);
     }
 
     public AudioGenerationResult Generate(AudioGenerationRequest request)
@@ -97,7 +97,7 @@ public sealed class OrpheusPipeline : ITextToSpeechPipeline
         }
     }
 
-    public OrpheusPipeline(string talkerGgufPath, string snacGgufPath, int ctxSize = 8192, bool allowGpu = true)
+    public OrpheusPipeline(string talkerGgufPath, string snacGgufPath, int ctxSize = 2048, bool allowGpu = true)
     {
         _model = GgufModel.Open(talkerGgufPath);
         var hp = ModelHyperparams.FromGgufMetadata(_model.Metadata, _model);
