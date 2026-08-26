@@ -59,8 +59,23 @@ public sealed class QwenTtsPipeline : ITextToSpeechPipeline
 
     public async IAsyncEnumerable<float[]> GenerateStreamAsync(AudioGenerationRequest request, [System.Runtime.CompilerServices.EnumeratorCancellation] System.Threading.CancellationToken ct = default)
     {
-        var res = Generate(request);
-        yield return res.Samples;
+        if (string.IsNullOrWhiteSpace(request.Text)) yield break;
+
+        var sentences = System.Text.RegularExpressions.Regex.Split(request.Text, @"(?<=[.!?\n])\s+");
+        foreach (var s in sentences)
+        {
+            var trimmed = s.Trim();
+            if (string.IsNullOrEmpty(trimmed)) continue;
+            ct.ThrowIfCancellationRequested();
+
+            var req = request with { Text = trimmed, OutputPath = null };
+            var res = Generate(req);
+            if (res.Samples.Length > 0)
+            {
+                yield return res.Samples;
+            }
+            await System.Threading.Tasks.Task.Yield();
+        }
     }
 
     /// <summary>Synthesizes real 24kHz PCM audio for the given text.</summary>
