@@ -19,11 +19,13 @@ public sealed class ChatterboxDecoder
 
     private readonly ChatterboxS3GenWeights? _s3Weights;
     private readonly ChatterboxWeights? _t3Weights; // holds the conds.gen.* default-voice conditioning
+    private readonly ChatterboxOnnxDecoder? _onnxDecoder;
 
-    public ChatterboxDecoder(ChatterboxS3GenWeights? s3Weights = null, ChatterboxWeights? t3Weights = null)
+    public ChatterboxDecoder(ChatterboxS3GenWeights? s3Weights = null, ChatterboxWeights? t3Weights = null, ChatterboxOnnxDecoder? onnxDecoder = null)
     {
         _s3Weights = s3Weights;
         _t3Weights = t3Weights;
+        _onnxDecoder = onnxDecoder ?? new ChatterboxOnnxDecoder();
     }
 
     /// <summary>
@@ -33,10 +35,27 @@ public sealed class ChatterboxDecoder
     {
         if (speechTokens.Count <= 2) return [];
 
-        if (_s3Weights is { } s3w && _t3Weights?.GenPromptToken is { } promptTokens
+        if (_t3Weights?.GenPromptToken is { } promptTokens
             && _t3Weights.GenEmbedding is { } genEmbedding && _t3Weights.GenPromptFeat is { } promptFeat)
         {
-            return DecodeReal(s3w, promptTokens, genEmbedding, promptFeat, speechTokens);
+            // 1. Try Native C++ ONNX Accelerator first if available
+            if (_onnxDecoder != null && _onnxDecoder.IsAvailable)
+            {
+                bool diag = Environment.GetEnvironmentVariable("STINGRAY_AUDIO_DIAGNOSTIC_DUMP") == "1";
+                var sw = diag ? System.Diagnostics.Stopwatch.StartNew() : null;
+                var onnxAudio = _onnxDecoder.Decode(promptTokens, speechTokens, genEmbedding, promptFeat);
+                if (onnxAudio != null && onnxAudio.Length > 0)
+                {
+                    if (diag) ChatterboxPipeline.DiagLog($"  S3Gen ONNX Native decoder: {sw!.ElapsedMilliseconds}ms, {onnxAudio.Length} samples");
+                    return onnxAudio;
+                }
+            }
+
+            // 2. Pure C# AVX2 S3Gen Neural Decoder fallback
+            if (_s3Weights is { } s3w)
+            {
+                return DecodeReal(s3w, promptTokens, genEmbedding, promptFeat, speechTokens);
+            }
         }
 
         return DecodeFakePlaceholder(speechTokens, speakerFeatures);
