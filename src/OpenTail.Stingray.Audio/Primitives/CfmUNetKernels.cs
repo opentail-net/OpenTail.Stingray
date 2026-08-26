@@ -1,6 +1,8 @@
 using System;
 using System.Buffers;
 using System.Numerics.Tensors;
+using System.Runtime.Intrinsics;
+using System.Runtime.Intrinsics.X86;
 using OpenTail.Stingray.Cpu;
 
 namespace OpenTail.Stingray.Audio.Primitives;
@@ -234,9 +236,14 @@ public static class CfmUNetKernels
                 nint vAddr = (nint)vPtr;
                 nint ctxAddr = (nint)ctxPtr;
 
-                System.Threading.Tasks.Parallel.For(0, heads, h =>
+                bool useAvx64 = headDim == 64 && Avx.IsSupported && Fma.IsSupported;
+
+                System.Threading.Tasks.Parallel.For(0, heads * t, ht =>
                 {
+                    int h = ht / t;
+                    int i = ht % t;
                     int hOff = h * headDim;
+
                     var scores = new float[t];
                     fixed (float* scoresPtr = scores)
                     {
@@ -244,10 +251,72 @@ public static class CfmUNetKernels
                         float* kHead = (float*)kAddr;
                         float* vHead = (float*)vAddr;
                         float* ctxHeadBase = (float*)ctxAddr;
+                        float* qRow = qHead + (nuint)i * (nuint)qkvDim + (nuint)hOff;
+                        float* ctxHead = ctxHeadBase + (nuint)i * (nuint)qkvDim + (nuint)hOff;
 
-                        for (int i = 0; i < t; i++)
+                        if (useAvx64)
                         {
-                            float* qRow = qHead + (nuint)i * (nuint)qkvDim + (nuint)hOff;
+                            var q0 = Avx.LoadVector256(qRow);
+                            var q1 = Avx.LoadVector256(qRow + 8);
+                            var q2 = Avx.LoadVector256(qRow + 16);
+                            var q3 = Avx.LoadVector256(qRow + 24);
+                            var q4 = Avx.LoadVector256(qRow + 32);
+                            var q5 = Avx.LoadVector256(qRow + 40);
+                            var q6 = Avx.LoadVector256(qRow + 48);
+                            var q7 = Avx.LoadVector256(qRow + 56);
+
+                            for (int j = 0; j < t; j++)
+                            {
+                                float* kRow = kHead + (nuint)j * (nuint)qkvDim + (nuint)hOff;
+                                var acc = Fma.MultiplyAdd(q0, Avx.LoadVector256(kRow), Vector256<float>.Zero);
+                                acc = Fma.MultiplyAdd(q1, Avx.LoadVector256(kRow + 8), acc);
+                                acc = Fma.MultiplyAdd(q2, Avx.LoadVector256(kRow + 16), acc);
+                                acc = Fma.MultiplyAdd(q3, Avx.LoadVector256(kRow + 24), acc);
+                                acc = Fma.MultiplyAdd(q4, Avx.LoadVector256(kRow + 32), acc);
+                                acc = Fma.MultiplyAdd(q5, Avx.LoadVector256(kRow + 40), acc);
+                                acc = Fma.MultiplyAdd(q6, Avx.LoadVector256(kRow + 48), acc);
+                                acc = Fma.MultiplyAdd(q7, Avx.LoadVector256(kRow + 56), acc);
+                                scoresPtr[j] = Vector256.Sum(acc) * scale;
+                            }
+
+                            DenseKernels.SoftmaxInPlace(scores);
+
+                            var c0 = Vector256<float>.Zero;
+                            var c1 = Vector256<float>.Zero;
+                            var c2 = Vector256<float>.Zero;
+                            var c3 = Vector256<float>.Zero;
+                            var c4 = Vector256<float>.Zero;
+                            var c5 = Vector256<float>.Zero;
+                            var c6 = Vector256<float>.Zero;
+                            var c7 = Vector256<float>.Zero;
+
+                            for (int j = 0; j < t; j++)
+                            {
+                                float s = scoresPtr[j];
+                                if (s == 0f) continue;
+                                var sVec = Vector256.Create(s);
+                                float* vRow = vHead + (nuint)j * (nuint)qkvDim + (nuint)hOff;
+                                c0 = Fma.MultiplyAdd(sVec, Avx.LoadVector256(vRow), c0);
+                                c1 = Fma.MultiplyAdd(sVec, Avx.LoadVector256(vRow + 8), c1);
+                                c2 = Fma.MultiplyAdd(sVec, Avx.LoadVector256(vRow + 16), c2);
+                                c3 = Fma.MultiplyAdd(sVec, Avx.LoadVector256(vRow + 24), c3);
+                                c4 = Fma.MultiplyAdd(sVec, Avx.LoadVector256(vRow + 32), c4);
+                                c5 = Fma.MultiplyAdd(sVec, Avx.LoadVector256(vRow + 40), c5);
+                                c6 = Fma.MultiplyAdd(sVec, Avx.LoadVector256(vRow + 48), c6);
+                                c7 = Fma.MultiplyAdd(sVec, Avx.LoadVector256(vRow + 56), c7);
+                            }
+
+                            Avx.Store(ctxHead, c0);
+                            Avx.Store(ctxHead + 8, c1);
+                            Avx.Store(ctxHead + 16, c2);
+                            Avx.Store(ctxHead + 24, c3);
+                            Avx.Store(ctxHead + 32, c4);
+                            Avx.Store(ctxHead + 40, c5);
+                            Avx.Store(ctxHead + 48, c6);
+                            Avx.Store(ctxHead + 56, c7);
+                        }
+                        else
+                        {
                             for (int j = 0; j < t; j++)
                             {
                                 float* kRow = kHead + (nuint)j * (nuint)qkvDim + (nuint)hOff;
@@ -256,7 +325,6 @@ public static class CfmUNetKernels
 
                             DenseKernels.SoftmaxInPlace(scores);
 
-                            float* ctxHead = ctxHeadBase + (nuint)i * (nuint)qkvDim + (nuint)hOff;
                             for (int d = 0; d < headDim; d++) ctxHead[d] = 0f;
 
                             for (int j = 0; j < t; j++)
