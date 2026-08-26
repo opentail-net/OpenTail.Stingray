@@ -60,19 +60,28 @@ public static class ChatterboxCfmDecoder
             float tCur = tSpan[step];
             float tNext = tSpan[step + 1];
             var timeEmb = MeanflowTimeEmbed(w, tCur, tNext);
-            var dxdtCond = CfmUNetKernels.RunEstimator(
-                w.DownStage, (IUnetStageWeights[])w.MidStages, w.UpStage,
-                w.FinalBlockConvWeight, w.FinalBlockConvBias, w.FinalBlockLnWeight, w.FinalBlockLnBias,
-                w.FinalProjWeight, w.FinalProjBias,
-                x, mu, cond, spkEmbed, timeEmb,
-                t, mel, w.DecChannels, w.DecNumHeads, w.DecHeadDim);
+            float[] dxdtCond = null!;
+            float[] dxdtUncond = null!;
 
-            var dxdtUncond = CfmUNetKernels.RunEstimator(
-                w.DownStage, (IUnetStageWeights[])w.MidStages, w.UpStage,
-                w.FinalBlockConvWeight, w.FinalBlockConvBias, w.FinalBlockLnWeight, w.FinalBlockLnBias,
-                w.FinalProjWeight, w.FinalProjBias,
-                x, muZeros, condZeros, spkZeros, timeEmb,
-                t, mel, w.DecChannels, w.DecNumHeads, w.DecHeadDim);
+            System.Threading.Tasks.Parallel.Invoke(
+                () =>
+                {
+                    dxdtCond = CfmUNetKernels.RunEstimator(
+                        w.DownStage, (IUnetStageWeights[])w.MidStages, w.UpStage,
+                        w.FinalBlockConvWeight, w.FinalBlockConvBias, w.FinalBlockLnWeight, w.FinalBlockLnBias,
+                        w.FinalProjWeight, w.FinalProjBias,
+                        x, mu, cond, spkEmbed, timeEmb,
+                        t, mel, w.DecChannels, w.DecNumHeads, w.DecHeadDim);
+                },
+                () =>
+                {
+                    dxdtUncond = CfmUNetKernels.RunEstimator(
+                        w.DownStage, (IUnetStageWeights[])w.MidStages, w.UpStage,
+                        w.FinalBlockConvWeight, w.FinalBlockConvBias, w.FinalBlockLnWeight, w.FinalBlockLnBias,
+                        w.FinalProjWeight, w.FinalProjBias,
+                        x, muZeros, condZeros, spkZeros, timeEmb,
+                        t, mel, w.DecChannels, w.DecNumHeads, w.DecHeadDim);
+                });
 
             float dt = tNext - tCur;
             float factorCond = (1f + cfgRate) * dt;

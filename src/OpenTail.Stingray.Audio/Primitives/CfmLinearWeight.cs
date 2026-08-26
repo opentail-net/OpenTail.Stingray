@@ -41,16 +41,10 @@ public sealed class CfmLinearWeight
         _inDim = inDim;
     }
 
-    /// <summary>Converts a plain F32 weight matrix (row-major [outDim, inDim]) to F16 once if the native shim is available, otherwise keeps the F32 original.</summary>
+    /// <summary>Creates a CFM UNet linear-layer weight preserving full Float32 precision.</summary>
     public static CfmLinearWeight FromF32(float[] weightF32, int outDim, int inDim)
     {
-        if (!F16CNative.IsAvailable)
-            return new CfmLinearWeight(null, weightF32, outDim, inDim);
-
-        var f16Bits = new short[weightF32.Length];
-        for (int i = 0; i < weightF32.Length; i++)
-            f16Bits[i] = unchecked((short)BitConverter.HalfToUInt16Bits((Half)weightF32[i]));
-        return new CfmLinearWeight(f16Bits, null, outDim, inDim);
+        return new CfmLinearWeight(null, weightF32, outDim, inDim);
     }
 
     /// <summary>Batch linear layer across T rows: outputMatrix[T, outDim] = inputMatrix[T, inDim] * weight^T + bias.</summary>
