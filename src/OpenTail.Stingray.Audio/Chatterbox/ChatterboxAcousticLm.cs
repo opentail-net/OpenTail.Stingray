@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using System.Runtime.Intrinsics;
+using System.Runtime.Intrinsics.X86;
 using OpenTail.Stingray.Cpu;
 
 namespace OpenTail.Stingray.Audio.Chatterbox;
@@ -272,40 +274,136 @@ public sealed class ChatterboxAcousticLm : IDisposable
             // projected in a separate, sequential loop below.
             var contexts = new float[n][];
             float scale = 1f / MathF.Sqrt(HeadDim);
-            System.Threading.Tasks.Parallel.For(0, n, i =>
-            {
-                var q = new float[dim];
-                Array.Copy(qkvAll[i], 0, q, 0, dim);
-                int selfCachePos = cacheBase + i;
-                int availableKeys = selfCachePos + 1;
 
+            if (n == 1)
+            {
+                var q = qkvAll[0];
+                int availableKeys = cacheBase + 1;
                 var context = new float[dim];
-                var scores = new float[availableKeys];
+
                 unsafe
                 {
-                    fixed (float* qp = q)
+                    fixed (float* qp = q, ctxBase = context)
                     {
-                        for (int h = 0; h < NumHeads; h++)
+                        nint qAddr = (nint)qp;
+                        nint ctxAddr = (nint)ctxBase;
+
+                        System.Threading.Tasks.Parallel.For(0, NumHeads, h =>
                         {
+                            float* qHead = (float*)qAddr;
+                            float* ctxHead = (float*)ctxAddr;
                             int hOff = h * HeadDim;
+                            float* qPtr = qHead + hOff;
+                            float* cPtr = ctxHead + hOff;
+
+                            var scores = stackalloc float[availableKeys];
+
                             for (int t = 0; t < availableKeys; t++)
                             {
                                 var kt = kCacheL[t];
                                 fixed (float* ktp = kt)
-                                    scores[t] = SimdKernels.DotF32(qp + hOff, ktp + hOff, HeadDim) * scale;
+                                    scores[t] = SimdKernels.DotF32(qPtr, ktp + hOff, HeadDim) * scale;
                             }
-                            SoftmaxInPlace(scores);
-                            for (int t = 0; t < availableKeys; t++)
+
+                            SoftmaxInPlace(new Span<float>(scores, availableKeys));
+
+                            if (HeadDim == 64 && Avx.IsSupported && Fma.IsSupported)
                             {
-                                var vt = vCacheL[t];
-                                float p = scores[t];
-                                for (int d = 0; d < HeadDim; d++) context[hOff + d] += p * vt[hOff + d];
+                                var c0 = Vector256<float>.Zero;
+                                var c1 = Vector256<float>.Zero;
+                                var c2 = Vector256<float>.Zero;
+                                var c3 = Vector256<float>.Zero;
+                                var c4 = Vector256<float>.Zero;
+                                var c5 = Vector256<float>.Zero;
+                                var c6 = Vector256<float>.Zero;
+                                var c7 = Vector256<float>.Zero;
+
+                                for (int t = 0; t < availableKeys; t++)
+                                {
+                                    float p = scores[t];
+                                    if (p == 0f) continue;
+                                    var pVec = Vector256.Create(p);
+                                    var vt = vCacheL[t];
+                                    fixed (float* vtp = vt)
+                                    {
+                                        float* vRow = vtp + hOff;
+                                        c0 = Fma.MultiplyAdd(pVec, Avx.LoadVector256(vRow), c0);
+                                        c1 = Fma.MultiplyAdd(pVec, Avx.LoadVector256(vRow + 8), c1);
+                                        c2 = Fma.MultiplyAdd(pVec, Avx.LoadVector256(vRow + 16), c2);
+                                        c3 = Fma.MultiplyAdd(pVec, Avx.LoadVector256(vRow + 24), c3);
+                                        c4 = Fma.MultiplyAdd(pVec, Avx.LoadVector256(vRow + 32), c4);
+                                        c5 = Fma.MultiplyAdd(pVec, Avx.LoadVector256(vRow + 40), c5);
+                                        c6 = Fma.MultiplyAdd(pVec, Avx.LoadVector256(vRow + 48), c6);
+                                        c7 = Fma.MultiplyAdd(pVec, Avx.LoadVector256(vRow + 56), c7);
+                                    }
+                                }
+
+                                Avx.Store(cPtr, c0);
+                                Avx.Store(cPtr + 8, c1);
+                                Avx.Store(cPtr + 16, c2);
+                                Avx.Store(cPtr + 24, c3);
+                                Avx.Store(cPtr + 32, c4);
+                                Avx.Store(cPtr + 40, c5);
+                                Avx.Store(cPtr + 48, c6);
+                                Avx.Store(cPtr + 56, c7);
+                            }
+                            else
+                            {
+                                for (int d = 0; d < HeadDim; d++) cPtr[d] = 0f;
+                                for (int t = 0; t < availableKeys; t++)
+                                {
+                                    var vt = vCacheL[t];
+                                    float p = scores[t];
+                                    if (p == 0f) continue;
+                                    fixed (float* vtp = vt)
+                                    {
+                                        float* vRow = vtp + hOff;
+                                        for (int d = 0; d < HeadDim; d++) cPtr[d] += p * vRow[d];
+                                    }
+                                }
+                            }
+                        });
+                    }
+                }
+                contexts = [context];
+            }
+            else
+            {
+                System.Threading.Tasks.Parallel.For(0, n, i =>
+                {
+                    var q = new float[dim];
+                    Array.Copy(qkvAll[i], 0, q, 0, dim);
+                    int selfCachePos = cacheBase + i;
+                    int availableKeys = selfCachePos + 1;
+
+                    var context = new float[dim];
+                    var scores = new float[availableKeys];
+                    unsafe
+                    {
+                        fixed (float* qp = q)
+                        {
+                            for (int h = 0; h < NumHeads; h++)
+                            {
+                                int hOff = h * HeadDim;
+                                for (int t = 0; t < availableKeys; t++)
+                                {
+                                    var kt = kCacheL[t];
+                                    fixed (float* ktp = kt)
+                                        scores[t] = SimdKernels.DotF32(qp + hOff, ktp + hOff, HeadDim) * scale;
+                                }
+                                SoftmaxInPlace(scores);
+                                for (int t = 0; t < availableKeys; t++)
+                                {
+                                    var vt = vCacheL[t];
+                                    float p = scores[t];
+                                    for (int d = 0; d < HeadDim; d++) context[hOff + d] += p * vt[hOff + d];
+                                }
                             }
                         }
                     }
-                }
-                contexts[i] = context;
-            });
+                    contexts[i] = context;
+                });
+            }
 
             var attnOut = LinearBatched(contexts, layer.AttnOutputWeight, layer.AttnOutputBias, dim, dim);
 
@@ -412,10 +510,8 @@ public sealed class ChatterboxAcousticLm : IDisposable
         return output;
     }
 
-    /// <summary>float-only (no double promotion) -- Math.Exp(double) here was pure overhead
-    /// (float->double promotion, double transcendental, double->float demotion) with no
-    /// numerical benefit for float32 softmax, and this runs once per generated token per head.</summary>
-    private static void SoftmaxInPlace(float[] scores)
+    /// <summary>float-only (no double promotion) in-place softmax over Span.</summary>
+    private static void SoftmaxInPlace(Span<float> scores)
     {
         float max = float.NegativeInfinity;
         for (int i = 0; i < scores.Length; i++) if (scores[i] > max) max = scores[i];
@@ -429,6 +525,8 @@ public sealed class ChatterboxAcousticLm : IDisposable
         float invSum = 1f / sum;
         for (int i = 0; i < scores.Length; i++) scores[i] *= invSum;
     }
+
+    private static void SoftmaxInPlace(float[] scores) => SoftmaxInPlace(scores.AsSpan());
 
     private static void GeluNewInPlace(float[] x)
     {
