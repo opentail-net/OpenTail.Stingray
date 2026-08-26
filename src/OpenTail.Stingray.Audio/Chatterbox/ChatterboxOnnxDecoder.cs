@@ -1,28 +1,26 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
-using Microsoft.ML.OnnxRuntime;
-using Microsoft.ML.OnnxRuntime.Tensors;
+using OpenTail.Stingray.Core;
 
 namespace OpenTail.Stingray.Audio.Chatterbox;
 
 /// <summary>
 /// Native C++ ONNX Runtime accelerator for Chatterbox-Turbo's conditional audio decoder.
-/// When conditional_decoder.onnx is present, executes the entire Flow Encoder + UNet + Euler solve + Vocoder
-/// in a single fused C++ graph execution, matching the C++ benchmark 1:1.
+/// Delegates execution to <see cref="OnnxModelSession"/> when conditional_decoder.onnx is present.
 /// </summary>
-public sealed class ChatterboxOnnxDecoder : IDisposable
+public sealed class ChatterboxOnnxDecoder : IChatterboxDecoder, IDisposable
 {
-    private readonly InferenceSession? _session;
-    private readonly string? _modelPath;
+    private readonly OnnxModelSession? _session;
+    private readonly ChatterboxWeights? _t3Weights;
 
-    public bool IsAvailable => _session != null;
+    public bool IsAvailable => _session?.IsAvailable ?? false;
 
-    public ChatterboxOnnxDecoder(string? modelPath = null)
+    public ChatterboxOnnxDecoder(string? modelPath = null, ChatterboxWeights? t3Weights = null)
     {
+        _t3Weights = t3Weights;
         if (string.IsNullOrEmpty(modelPath))
         {
-            // Auto-detect conditional_decoder.onnx in standard locations
             string[] candidates = [
                 "examples/Chatterbox-turbo-cpp/models/conditional_decoder.onnx",
                 "models/conditional_decoder.onnx",
@@ -38,27 +36,35 @@ public sealed class ChatterboxOnnxDecoder : IDisposable
             }
         }
 
-        if (!string.IsNullOrEmpty(modelPath) && File.Exists(modelPath))
+        _session = OnnxModelSession.TryLoad(modelPath);
+    }
+
+    /// <summary>
+    /// Implements IChatterboxDecoder: executes the ONNX graph using default prompt tokens and speaker features.
+    /// </summary>
+    public float[] Decode(IReadOnlyList<int> speechTokens, float[] speakerFeatures)
+    {
+        if (_session == null || !_session.IsAvailable) return [];
+
+        if (_t3Weights?.GenPromptToken is { } promptTokens
+            && _t3Weights.GenEmbedding is { } genEmbedding && _t3Weights.GenPromptFeat is { } promptFeat)
         {
-            try
+            bool diag = Environment.GetEnvironmentVariable("STINGRAY_AUDIO_DIAGNOSTIC_DUMP") == "1";
+            var sw = diag ? System.Diagnostics.Stopwatch.StartNew() : null;
+            var onnxAudio = Decode(promptTokens, speechTokens, genEmbedding, promptFeat);
+            if (onnxAudio != null && onnxAudio.Length > 0)
             {
-                var options = new SessionOptions();
-                options.IntraOpNumThreads = Environment.ProcessorCount;
-                options.GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_ALL;
-                _session = new InferenceSession(modelPath, options);
-                _modelPath = modelPath;
-            }
-            catch (Exception ex)
-            {
-                Console.Error.WriteLine($"[ChatterboxOnnxDecoder] Could not load ONNX model '{modelPath}': {ex.Message}");
-                _session = null;
+                if (diag) ChatterboxPipeline.DiagLog($"  S3Gen ONNX Native decoder: {sw!.ElapsedMilliseconds}ms, {onnxAudio.Length} samples");
+                return onnxAudio;
             }
         }
+
+        return [];
     }
 
     public float[]? Decode(int[] promptTokens, IReadOnlyList<int> speechTokens, float[] genEmbedding, float[] promptFeat)
     {
-        if (_session == null) return null;
+        if (_session == null || !_session.IsAvailable) return null;
 
         var fullTokens = new List<long>(promptTokens.Length + speechTokens.Count + 3);
         foreach (int t in promptTokens) fullTokens.Add(t);
@@ -72,53 +78,24 @@ public sealed class ChatterboxOnnxDecoder : IDisposable
         fullTokens.Add(4299);
         fullTokens.Add(4299);
 
-        // 1. speech_tokens: [1, seq_len]
-        var speechTokensTensor = new DenseTensor<long>(fullTokens.ToArray(), [1, fullTokens.Count]);
-
-        // 2. speaker_embeddings: [1, 192]
-        var spkEmbedTensor = new DenseTensor<float>(genEmbedding, [1, genEmbedding.Length]);
-
-        // 3. speaker_features: [1, 500, 80]
         int mel = 80;
         int frames = promptFeat.Length / mel;
-        var spkFeatTensor = new DenseTensor<float>(promptFeat, [1, frames, mel]);
 
-        var inputs = new List<NamedOnnxValue>
-        {
-            NamedOnnxValue.CreateFromTensor("speech_tokens", speechTokensTensor),
-            NamedOnnxValue.CreateFromTensor("speaker_embeddings", spkEmbedTensor),
-            NamedOnnxValue.CreateFromTensor("speaker_features", spkFeatTensor)
-        };
+        var rawAudio = _session.RunToFloatArray(
+            ("speech_tokens", fullTokens.ToArray(), [1, fullTokens.Count]),
+            ("speaker_embeddings", genEmbedding, [1, genEmbedding.Length]),
+            ("speaker_features", promptFeat, [1, frames, mel])
+        );
 
-        using var results = _session.Run(inputs);
-        foreach (var r in results)
+        if (rawAudio == null || rawAudio.Length == 0) return null;
+
+        float[] audio = new float[rawAudio.Length];
+        for (int i = 0; i < rawAudio.Length; i++)
         {
-            if (r.Value is DenseTensor<float> dt)
-            {
-                float[] raw = dt.Buffer.ToArray();
-                return ApplyPostProcessTrim(raw);
-            }
+            audio[i] = Math.Clamp(rawAudio[i], -1.0f, 1.0f);
         }
 
-        return null;
-    }
-
-    private static float[] ApplyPostProcessTrim(float[] wav)
-    {
-        // 40ms trim fade matching official inference
-        int nTrim = 24000 / 50; // 480 samples = 20ms
-        int fadeLen = 2 * nTrim; // 960 samples = 40ms
-        if (wav.Length >= fadeLen)
-        {
-            for (int i = 0; i < nTrim; i++) wav[i] = 0f;
-            for (int i = 0; i < nTrim; i++)
-            {
-                float progress = (float)i / nTrim;
-                float w = 0.5f * (1f - MathF.Cos(progress * MathF.PI));
-                wav[nTrim + i] *= w;
-            }
-        }
-        return wav;
+        return audio;
     }
 
     public void Dispose()

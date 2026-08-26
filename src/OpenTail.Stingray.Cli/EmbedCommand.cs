@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.Text.Json;
 using OpenTail.Stingray.Cli.CommandLine;
+using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Core.Embeddings;
 using OpenTail.Stingray.Engine;
 
@@ -67,6 +68,72 @@ public sealed class EmbedCommand : Command<EmbedCommand.Settings>
             "last" or "lasttoken" => PoolingType.LastToken,
             _ => PoolingType.Mean
         };
+
+        if (s.Model.EndsWith(".onnx", StringComparison.OrdinalIgnoreCase) && File.Exists(s.Model))
+        {
+            using var onnxSession = OnnxModelSession.TryLoad(s.Model);
+            if (onnxSession == null)
+            {
+                Console.Error.WriteLine("Error: Could not load ONNX model file. Ensure onnxruntime.dll is available.");
+                return 1;
+            }
+
+            Console.WriteLine($"Dense Text Embedding Generation ({Path.GetFileName(s.Model)})");
+            Console.WriteLine($"Input Count:  {texts.Count}");
+            Console.WriteLine($"Pooling Mode: {pooling}");
+            Console.WriteLine($"L2 Normalize: {!s.NoNorm}");
+            Console.WriteLine();
+
+            var swOnnx = Stopwatch.StartNew();
+            var vectors = new List<float[]>(texts.Count);
+            int totalTokens = 0;
+
+            foreach (var text in texts)
+            {
+                long[] inputIds = text.Select(c => (long)c).ToArray();
+                if (inputIds.Length == 0) inputIds = [0];
+                totalTokens += inputIds.Length;
+                long[] attentionMask = new long[inputIds.Length];
+                Array.Fill(attentionMask, 1L);
+
+                var outputs = onnxSession.Run(
+                    ("input_ids", inputIds, [1, inputIds.Length]),
+                    ("attention_mask", attentionMask, [1, inputIds.Length])
+                );
+
+                if (outputs.Values.FirstOrDefault() is { } outTensor && outTensor.Length > 0)
+                {
+                    int outDim = outTensor.Length / inputIds.Length;
+                    float[] pooled = outDim > 0
+                        ? EmbeddingNormalizer.ApplyPooling(outTensor, inputIds.Length, outDim, pooling)
+                        : outTensor;
+
+                    if (s.Dimensions.HasValue && s.Dimensions.Value > 0 && s.Dimensions.Value < pooled.Length)
+                        pooled = EmbeddingNormalizer.TruncateAndNormalize(pooled, s.Dimensions.Value);
+                    else if (!s.NoNorm)
+                        EmbeddingNormalizer.NormalizeL2(pooled);
+
+                    vectors.Add(pooled);
+                }
+            }
+            swOnnx.Stop();
+
+            for (int i = 0; i < vectors.Count; i++)
+            {
+                var vec = vectors[i];
+                Console.WriteLine($"Vector [{i}] (dim={vec.Length}): [{vec[0]:F4}, {vec[1]:F4}, {vec[2]:F4}, ... {vec[^1]:F4}]");
+            }
+
+            Console.WriteLine();
+            Console.WriteLine($"Processed {texts.Count} text(s) in {swOnnx.ElapsedMilliseconds}ms ({totalTokens} tokens)");
+
+            if (!string.IsNullOrEmpty(s.OutputPath))
+            {
+                File.WriteAllText(s.OutputPath, JsonSerializer.Serialize(vectors));
+                Console.WriteLine($"Saved embeddings to: {Path.GetFullPath(s.OutputPath)}");
+            }
+            return 0;
+        }
 
         using var engine = new EmbeddingEngine(
             modelName: s.Model,

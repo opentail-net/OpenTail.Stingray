@@ -743,6 +743,56 @@ public sealed class RunCommand : Command<RunCommand.Settings>
         Func<IReadOnlyList<int>, ReadOnlySpan<float>> prefill;
         Action resetCache;
 
+        // ── ONNX model branch ────────────────────────────────────────────────
+        if (modelPath.EndsWith(".onnx", StringComparison.OrdinalIgnoreCase))
+        {
+            using var onnxSession = OnnxModelSession.TryLoad(modelPath);
+            if (onnxSession == null)
+            {
+                AnsiConsole.MarkupLine("[red]Error:[/] Could not load ONNX model file. Ensure onnxruntime.dll is available.");
+                return 1;
+            }
+
+            AnsiConsole.MarkupLine($"[bold]{Markup.Escape(Path.GetFileName(modelPath))}[/] (ONNX Graph)");
+            AnsiConsole.MarkupLine($"  [cyan]Inputs ({onnxSession.InputNames.Count}):[/] {string.Join(", ", onnxSession.InputNames)}");
+            AnsiConsole.MarkupLine($"  [cyan]Outputs ({onnxSession.OutputNames.Count}):[/] {string.Join(", ", onnxSession.OutputNames)}");
+
+            string prompt = settings.Prompt ?? "Hello world";
+            AnsiConsole.MarkupLine($"\n[dim]Executing ONNX Graph with prompt:[/] {Markup.Escape(prompt)}");
+
+            long[] inputIds = prompt.Select(c => (long)c).ToArray();
+            long[] mask = new long[inputIds.Length];
+            Array.Fill(mask, 1L);
+            long[] posIds = Enumerable.Range(0, inputIds.Length).Select(i => (long)i).ToArray();
+
+            var inputList = new List<(string Name, Array Data, int[] Shape)>
+            {
+                ("input_ids", inputIds, [1, inputIds.Length]),
+                ("inputs_embeds", new float[inputIds.Length * 1024], [1, inputIds.Length, 1024]),
+                ("attention_mask", mask, [1, inputIds.Length]),
+                ("position_ids", posIds, [1, inputIds.Length])
+            };
+
+            foreach (var inName in onnxSession.InputNames)
+            {
+                if (inName.StartsWith("past_key_values"))
+                {
+                    inputList.Add((inName, Array.Empty<float>(), [1, 16, 0, 64]));
+                }
+            }
+
+            var swOnnx = Stopwatch.StartNew();
+            var outputs = onnxSession.Run(inputList.ToArray());
+            swOnnx.Stop();
+
+            AnsiConsole.MarkupLine($"\n[green]ONNX Graph Executed in {swOnnx.ElapsedMilliseconds}ms[/]");
+            foreach (var kv in outputs)
+            {
+                AnsiConsole.MarkupLine($"  Output [bold]{kv.Key}[/]: {kv.Value.Length} elements");
+            }
+            return 0;
+        }
+
         // ── SafeTensors package branch ────────────────────────────────────────
         // A directory path or bare .safetensors file routes here; GGUF falls
         // through to the GgufModel.Open path below, unchanged.

@@ -32,6 +32,33 @@ public sealed class ListMetadataCommand : Command<ListMetadataCommand.Settings>
             return 1;
         }
 
+        if (modelPath.EndsWith(".onnx", StringComparison.OrdinalIgnoreCase))
+        {
+            using var onnx = OnnxModelSession.TryLoad(modelPath);
+            if (onnx == null)
+            {
+                AnsiConsole.MarkupLine("[red]Error:[/] Could not load ONNX model file. Ensure onnxruntime.dll is available.");
+                return 1;
+            }
+
+            AnsiConsole.MarkupLine($"[bold]{Markup.Escape(Path.GetFileName(modelPath))}[/]  " +
+                $"ONNX Graph  |  " +
+                $"[cyan]{onnx.InputNames.Count}[/] inputs  |  " +
+                $"[cyan]{onnx.OutputNames.Count}[/] outputs");
+            AnsiConsole.WriteLine();
+
+            var onnxTable = new Table()
+                .Border(TableBorder.Simple)
+                .AddColumn(new TableColumn("[bold]Section[/]").NoWrap())
+                .AddColumn(new TableColumn("[bold]Name[/]"));
+
+            foreach (var inName in onnx.InputNames) onnxTable.AddRow("Input", Markup.Escape(inName));
+            foreach (var outName in onnx.OutputNames) onnxTable.AddRow("Output", Markup.Escape(outName));
+
+            AnsiConsole.Write(onnxTable);
+            return 0;
+        }
+
         using var model = GgufModel.Open(modelPath);
 
         AnsiConsole.MarkupLine($"[bold]{Markup.Escape(Path.GetFileName(modelPath))}[/]  " +
