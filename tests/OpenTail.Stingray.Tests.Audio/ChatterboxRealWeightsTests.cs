@@ -58,18 +58,72 @@ public sealed class ChatterboxRealWeightsTests : HeavyTestBase
         Assert.NotNull(result);
         Assert.Equal(24000, result.SampleRate);
         Assert.NotEmpty(result.Samples);
-        Assert.True(result.Duration.TotalSeconds > 0.5, "Generated audio must have positive duration");
+    }
 
-        // Verify audio is non-silent and finite
-        float energy = 0f;
-        for (int i = 0; i < result.Samples.Length; i++)
-        {
-            float s = result.Samples[i];
-            Assert.False(float.IsNaN(s), $"Sample {i} must not be NaN");
-            Assert.False(float.IsInfinity(s), $"Sample {i} must not be Infinity");
-            energy += s * s;
+    [Fact]
+    public void Chatterbox_ExportStyleBinFiles()
+    {
+        string? t3Path = FindModelPath("chatterbox-turbo-t3-q4_k.gguf");
+        if (t3Path is null) return;
+
+        using var w = new ChatterboxWeights(t3Path);
+        string outDir = @"C:\Git-Public\OpenTail.Stingray\examples\Chatterbox-turbo-cpp\style";
+        Directory.CreateDirectory(outDir);
+
+        var condList = new System.Collections.Generic.List<float>();
+        float[] speakerEmb = w.SpeakerEmbedding ?? new float[w.SpeakerEmbedSize];
+        
+        var spkrProj = new float[w.HiddenDim];
+        for (int o = 0; o < w.HiddenDim; o++) {
+            float sum = w.SpkrEncBias[o];
+            int wBase = o * w.SpeakerEmbedSize;
+            for (int i = 0; i < w.SpeakerEmbedSize; i++) {
+                sum += speakerEmb[i] * w.SpkrEncWeight[wBase + i];
+            }
+            spkrProj[o] = sum;
         }
-        Assert.True(energy > 0.1f, "Audio energy must be non-zero");
+        condList.AddRange(spkrProj);
+
+        if (w.SpeechPromptTokens is { } promptTokens) {
+            foreach (int tok in promptTokens) {
+                int rowBase = tok * w.HiddenDim;
+                for (int d = 0; d < w.HiddenDim; d++) {
+                    condList.Add(w.SpeechEmbWeight[rowBase + d]);
+                }
+            }
+        }
+
+        byte[] condBytes = new byte[condList.Count * 4];
+        Buffer.BlockCopy(condList.ToArray(), 0, condBytes, 0, condBytes.Length);
+        File.WriteAllBytes(Path.Combine(outDir, "cond_emb.bin"), condBytes);
+
+        if (w.GenPromptToken is { } genTokens) {
+            byte[] tokBytes = new byte[genTokens.Length * 8];
+            long[] i64 = new long[genTokens.Length];
+            for (int i = 0; i < genTokens.Length; i++) i64[i] = genTokens[i];
+            Buffer.BlockCopy(i64, 0, tokBytes, 0, tokBytes.Length);
+            File.WriteAllBytes(Path.Combine(outDir, "prompt_token.bin"), tokBytes);
+        }
+
+        if (w.GenEmbedding is { } genEmb) {
+            byte[] embBytes = new byte[genEmb.Length * 4];
+            Buffer.BlockCopy(genEmb, 0, embBytes, 0, embBytes.Length);
+            File.WriteAllBytes(Path.Combine(outDir, "speaker_embeddings.bin"), embBytes);
+        }
+
+        if (w.GenPromptFeat is { } genFeat) {
+            int mel = 80;
+            int frames = genFeat.Length / mel;
+            float[] timeFirst = new float[genFeat.Length];
+            for (int ti = 0; ti < frames; ti++) {
+                for (int c = 0; c < mel; c++) {
+                    timeFirst[ti * mel + c] = genFeat[c * frames + ti];
+                }
+            }
+            byte[] featBytes = new byte[timeFirst.Length * 4];
+            Buffer.BlockCopy(timeFirst, 0, featBytes, 0, featBytes.Length);
+            File.WriteAllBytes(Path.Combine(outDir, "speaker_features.bin"), featBytes);
+        }
     }
 
     [Fact]

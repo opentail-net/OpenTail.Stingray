@@ -1,5 +1,6 @@
 using System;
 using System.Buffers;
+using System.Numerics;
 using System.Numerics.Tensors;
 using System.Runtime.Intrinsics;
 using System.Runtime.Intrinsics.X86;
@@ -142,26 +143,44 @@ public static class CfmUNetKernels
     private static float[] ResnetBlock(float[] x, int dimIn, int t, float[] timeEmb, IResnetBlockWeights rw, int dimOut)
     {
         var h = CausalConv1d(x, dimIn, t, rw.Block1ConvWeight, rw.Block1ConvBias, dimOut, kernel: 3);
-        h = LayerNormChannelFirst(h, dimOut, t, rw.Block1LnWeight, rw.Block1LnBias);
+        LayerNormChannelFirstInPlace(h, dimOut, t, rw.Block1LnWeight, rw.Block1LnBias);
         MishInPlace(h);
 
-        var mishTime = new float[timeEmb.Length];
-        for (int i = 0; i < mishTime.Length; i++) mishTime[i] = Mish(timeEmb[i]);
-        var timeProj = Linear(mishTime, rw.MlpWeight, rw.MlpBias);
-        for (int c = 0; c < dimOut; c++)
+        var mishTime = ArrayPool<float>.Shared.Rent(timeEmb.Length);
+        try
         {
-            float bias = timeProj[c];
-            int rowBase = c * t;
-            for (int ti = 0; ti < t; ti++) h[rowBase + ti] += bias;
+            for (int i = 0; i < timeEmb.Length; i++) mishTime[i] = Mish(timeEmb[i]);
+            var timeProj = Linear(mishTime, rw.MlpWeight, rw.MlpBias);
+            for (int c = 0; c < dimOut; c++)
+            {
+                float bias = timeProj[c];
+                int rowBase = c * t;
+                for (int ti = 0; ti < t; ti++) h[rowBase + ti] += bias;
+            }
+        }
+        finally
+        {
+            ArrayPool<float>.Shared.Return(mishTime);
         }
 
-        h = CausalConv1d(h, dimOut, t, rw.Block2ConvWeight, rw.Block2ConvBias, dimOut, kernel: 3);
-        h = LayerNormChannelFirst(h, dimOut, t, rw.Block2LnWeight, rw.Block2LnBias);
-        MishInPlace(h);
+        var h2 = CausalConv1d(h, dimOut, t, rw.Block2ConvWeight, rw.Block2ConvBias, dimOut, kernel: 3);
+        LayerNormChannelFirstInPlace(h2, dimOut, t, rw.Block2LnWeight, rw.Block2LnBias);
+        MishInPlace(h2);
 
         var resConv = Conv1dK1(x, dimIn, t, rw.ResConvWeight, rw.ResConvBias, dimOut);
-        for (int i = 0; i < h.Length; i++) h[i] += resConv[i];
-        return h;
+
+        int vLen = Vector<float>.Count;
+        int limit = h2.Length - (h2.Length % vLen);
+        for (int i = 0; i < limit; i += vLen)
+        {
+            var vh = new Vector<float>(h2, i);
+            var vr = new Vector<float>(resConv, i);
+            (vh + vr).CopyTo(h2, i);
+        }
+        for (int i = limit; i < h2.Length; i++)
+            h2[i] += resConv[i];
+
+        return h2;
     }
 
     private static unsafe void TransformerBlock(float[] x, float[] output, int dim, int t, IUnetTransformerBlockWeights tw, int heads, int headDim)
@@ -182,9 +201,12 @@ public static class CfmUNetKernels
             LayerNormChannelFirstToRowMajor(x, normed, dim, t, tw.Norm1Weight, tw.Norm1Bias);
             SelfAttention(normed, attnOut, t, dim, tw, heads, headDim);
 
-            for (int c = 0; c < dim; c++)
+            System.Threading.Tasks.Parallel.For(0, dim, c =>
+            {
+                int cOff = c * t;
                 for (int ti = 0; ti < t; ti++)
-                    afterAttn[c * t + ti] = x[c * t + ti] + attnOut[ti * dim + c];
+                    afterAttn[cOff + ti] = x[cOff + ti] + attnOut[ti * dim + c];
+            });
 
             LayerNormChannelFirstToRowMajor(afterAttn, normed3, dim, t, tw.Norm3Weight, tw.Norm3Bias);
 
@@ -196,9 +218,12 @@ public static class CfmUNetKernels
                 tw.FfDownWeight.MatMul(ffUpPtr, t, ffDownPtr, ffDownBiasPtr);
             }
 
-            for (int c = 0; c < dim; c++)
+            System.Threading.Tasks.Parallel.For(0, dim, c =>
+            {
+                int cOff = c * t;
                 for (int ti = 0; ti < t; ti++)
-                    output[c * t + ti] = afterAttn[c * t + ti] + ffDown[ti * dim + c];
+                    output[cOff + ti] = afterAttn[cOff + ti] + ffDown[ti * dim + c];
+            });
         }
         finally
         {
@@ -406,9 +431,8 @@ public static class CfmUNetKernels
         TensorPrimitives.MultiplyAdd(inSlice, scale, outSlice, outSlice);
     }
 
-    private static float[] LayerNormChannelFirst(float[] x, int ch, int t, float[] weight, float[] bias, float eps = 1e-5f)
+    private static void LayerNormChannelFirstInPlace(float[] x, int ch, int t, float[] weight, float[] bias, float eps = 1e-5f)
     {
-        var output = new float[ch * t];
         for (int ti = 0; ti < t; ti++)
         {
             double mean = 0;
@@ -419,8 +443,15 @@ public static class CfmUNetKernels
             var /= ch;
             float invStd = (float)(1.0 / Math.Sqrt(var + eps));
             for (int c = 0; c < ch; c++)
-                output[c * t + ti] = (float)((x[c * t + ti] - mean) * invStd) * weight[c] + bias[c];
+                x[c * t + ti] = (float)((x[c * t + ti] - mean) * invStd) * weight[c] + bias[c];
         }
+    }
+
+    private static float[] LayerNormChannelFirst(float[] x, int ch, int t, float[] weight, float[] bias, float eps = 1e-5f)
+    {
+        var output = new float[ch * t];
+        Array.Copy(x, output, ch * t);
+        LayerNormChannelFirstInPlace(output, ch, t, weight, bias, eps);
         return output;
     }
 

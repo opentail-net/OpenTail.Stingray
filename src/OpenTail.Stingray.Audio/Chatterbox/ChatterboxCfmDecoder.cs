@@ -1,4 +1,6 @@
 using System;
+using System.Buffers;
+using System.Numerics;
 using OpenTail.Stingray.Audio.Primitives;
 
 namespace OpenTail.Stingray.Audio.Chatterbox;
@@ -73,10 +75,25 @@ public static class ChatterboxCfmDecoder
                 t, mel, w.DecChannels, w.DecNumHeads, w.DecHeadDim);
 
             float dt = tNext - tCur;
-            for (int i = 0; i < x.Length; i++)
+            float factorCond = (1f + cfgRate) * dt;
+            float factorUncond = -cfgRate * dt;
+
+            int vLen = Vector<float>.Count;
+            int limit = x.Length - (x.Length % vLen);
+            var vFactorCond = new Vector<float>(factorCond);
+            var vFactorUncond = new Vector<float>(factorUncond);
+
+            for (int i = 0; i < limit; i += vLen)
             {
-                float dxdt = (1f + cfgRate) * dxdtCond[i] - cfgRate * dxdtUncond[i];
-                x[i] += dt * dxdt;
+                var vx = new Vector<float>(x, i);
+                var vc = new Vector<float>(dxdtCond, i);
+                var vu = new Vector<float>(dxdtUncond, i);
+                var vRes = vx + vc * vFactorCond + vu * vFactorUncond;
+                vRes.CopyTo(x, i);
+            }
+            for (int i = limit; i < x.Length; i++)
+            {
+                x[i] += factorCond * dxdtCond[i] + factorUncond * dxdtUncond[i];
             }
         }
 
