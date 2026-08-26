@@ -66,9 +66,9 @@ public sealed class TtsCommand : Command<TtsCommand.Settings>
         [Description("Number of Function Evaluations / ODE solver steps for Flow-Matching DiT (default: 32).")]
         public int Nfe { get; init; } = 32;
 
-        [CommandOption("--cfg <CFG>")]
-        [Description("Classifier-Free Guidance strength for Flow-Matching DiT (default: 2.0).")]
-        public float CfgStrength { get; init; } = 2.0f;
+        [CommandOption("-g|--gpu|--backend <BACKEND>")]
+        [Description("Compute backend: auto (default), vulkan, or cpu.")]
+        public string Backend { get; init; } = "auto";
     }
 
     protected override int Execute(Settings s, CancellationToken cancellation)
@@ -81,6 +81,7 @@ public sealed class TtsCommand : Command<TtsCommand.Settings>
 
         ITextToSpeechPipeline pipeline;
         string engine = s.Engine.ToLowerInvariant();
+        bool allowGpu = s.Backend.ToLowerInvariant() is not ("cpu" or "0");
 
         try
         {
@@ -101,7 +102,7 @@ public sealed class TtsCommand : Command<TtsCommand.Settings>
                 "melo" or "melotts" => s.ModelPath is not null
                     ? MeloPipeline.Load(s.ModelPath)
                     : throw new ArgumentException("--model (-m) is required for the melo engine (path to model file)."),
-                "cosyvoice" or "cosyvoice3" or "cosyvoice2" =>
+                "cosyvoice" or "cosyvoice3" or "cosy" =>
                     CosyVoice3Pipeline.Load(s.ModelPath ?? ResolveCosyVoiceModelPath()),
                 "parler" or "parler-tts" or "parlertts" =>
                     ParlerFullPipeline.Load(s.ModelPath ?? ResolveParlerModelPath()),
@@ -110,7 +111,7 @@ public sealed class TtsCommand : Command<TtsCommand.Settings>
                 "fish" or "fishspeech" or "fish-speech" or "s2" or "s2-pro" =>
                     FishSpeechFullPipeline.Load(s.ModelPath ?? ResolveFishSpeechModelPath()),
                 "orpheus" or "orpheus-tts" or "orpheustts" =>
-                    OrpheusPipeline.Load(s.ModelPath ?? ResolveOrpheusModelPath()),
+                    OrpheusPipeline.Load(s.ModelPath ?? ResolveOrpheusModelPath(), allowGpu: allowGpu),
                 _ => throw new ArgumentException($"Unknown TTS engine: '{s.Engine}'. Supported: kokoro, piper, f5tts, chatterbox, melo, cosyvoice, parler, qwentts, fishspeech, orpheus.")
             };
         }

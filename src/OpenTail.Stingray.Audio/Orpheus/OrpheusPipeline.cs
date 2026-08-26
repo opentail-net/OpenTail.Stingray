@@ -41,8 +41,8 @@ public sealed class OrpheusPipeline : ITextToSpeechPipeline
     public int DefaultSampleRate => 24000;
 
     private readonly GgufModel _model;
-    private readonly CpuBackend _backend;
-    private readonly ForwardPass _fwd;
+    private readonly IDisposable? _backend;
+    private readonly IForwardPass _fwd;
     private readonly GgufTokenizer _tokenizer;
     private readonly SnacWeights _snacWeights;
 
@@ -53,7 +53,7 @@ public sealed class OrpheusPipeline : ITextToSpeechPipeline
 
     private static readonly int[] SlotToCodebook = [0, 1, 2, 2, 1, 2, 2];
 
-    public static OrpheusPipeline Load(string modelPath, string? snacGgufPath = null)
+    public static OrpheusPipeline Load(string modelPath, string? snacGgufPath = null, bool allowGpu = true)
     {
         string dir = Path.GetDirectoryName(modelPath) ?? "models";
         snacGgufPath ??= Path.Combine(dir, "snac-24khz.gguf");
@@ -61,7 +61,7 @@ public sealed class OrpheusPipeline : ITextToSpeechPipeline
         {
             snacGgufPath = Path.Combine(dir, "snac_24khz.gguf");
         }
-        return new OrpheusPipeline(modelPath, snacGgufPath);
+        return new OrpheusPipeline(modelPath, snacGgufPath, allowGpu: allowGpu);
     }
 
     public AudioGenerationResult Generate(AudioGenerationRequest request)
@@ -97,12 +97,41 @@ public sealed class OrpheusPipeline : ITextToSpeechPipeline
         }
     }
 
-    public OrpheusPipeline(string talkerGgufPath, string snacGgufPath, int ctxSize = 8192)
+    public OrpheusPipeline(string talkerGgufPath, string snacGgufPath, int ctxSize = 8192, bool allowGpu = true)
     {
         _model = GgufModel.Open(talkerGgufPath);
         var hp = ModelHyperparams.FromGgufMetadata(_model.Metadata, _model);
-        _backend = new CpuBackend();
-        _fwd = new ForwardPass(_model, _backend, hp, maxContextLength: ctxSize);
+
+        IForwardPass? fwd = null;
+        IDisposable? backend = null;
+
+        if (allowGpu)
+        {
+            try
+            {
+                var vulkan = new OpenTail.Stingray.Vulkan.VulkanBackend();
+                backend = vulkan;
+                fwd = new OpenTail.Stingray.Engine.GpuForwardPass(_model, vulkan, hp, maxContextLength: ctxSize);
+                Console.WriteLine($"[Orpheus] GPU Acceleration Enabled: Vulkan ({vulkan.Name}).");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[Orpheus] Vulkan GPU unavailable ({ex.Message}), using CPU backend.");
+                backend?.Dispose();
+                backend = null;
+                fwd = null;
+            }
+        }
+
+        if (fwd == null)
+        {
+            var cpu = new CpuBackend();
+            backend = cpu;
+            fwd = new ForwardPass(_model, cpu, hp, maxContextLength: ctxSize);
+        }
+
+        _backend = backend;
+        _fwd = fwd;
         _tokenizer = GgufTokenizer.FromGgufModel(_model);
         _snacWeights = new SnacWeights(snacGgufPath);
     }
@@ -278,7 +307,7 @@ public sealed class OrpheusPipeline : ITextToSpeechPipeline
     public void Dispose()
     {
         _fwd.Dispose();
-        _backend.Dispose();
+        _backend?.Dispose();
         _model.Dispose();
         _snacWeights.Dispose();
     }
