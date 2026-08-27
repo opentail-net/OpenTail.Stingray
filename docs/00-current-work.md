@@ -42,22 +42,24 @@ is fully done: Phases 1 (KV memory governance), 2 (cross-session prefix sharing)
 (fork/branching) are all implemented and verified against real models, each with its own
 `HotSession`-native test.
 
-**Remaining**: [030 — delete InferenceSession/InferenceRuntime](030-delete-inferencesession-todo.md).
-The plan's own stated end state — once all three phases are done, the superseded
-`InferenceSession`/`InferenceRuntime` architecture and its ~20+ tests get deleted, not archived —
-has not been executed yet. Doc 030's two gating decisions are now both resolved (2026-08-27, ported
-both):
-`ISessionMetadata`/`ISessionMetrics` are ported onto `HotSession` (`HotSession.Metadata`/`.Metrics`,
-covered by `HotSessionMetricsMetadataTests.cs`), and `HotSessionTurnResult` now carries
-`FinishReason`/`ToolCalls` derived from its chunk stream the way `GenerationResult` used to.
-Re-verifying the deletion's premise then found 7 more `IInferenceSession` members doc 028's audit
-table never covered (LoRA, tool/skill validation, `OnTokenGenerated`, checkpoint/rollback, session
-tree, suspend/resume) — none used outside `InferenceSession` itself, but all ported onto
-`HotSession` too rather than dropped (`HotSessionCapabilityPortTests.cs`); see
+**Done (2026-08-27)**: [030 — delete InferenceSession/InferenceRuntime](030-delete-inferencesession-todo.md)
+has been executed. `InferenceSession`/`InferenceRuntime` and the superseded files/tests around them
+(~45 files total, including `KvMemoryGovernor` — Phase 1's predecessor, missed by the original file
+list — and `SessionTree`/`BranchVoteResult`/`InferenceSessionConsensusExtensions`) are deleted. All
+ten genuinely novel capabilities the two audit passes found are ported onto `HotSession`/the engine
+rather than dropped: `ISessionMetadata`/`ISessionMetrics` (`HotSession.Metadata`/`.Metrics`,
+`HotSessionMetricsMetadataTests.cs`); `FinishReason`/`ToolCalls` bundling on
+`HotSessionTurnResult`; LoRA, tool/skill validation, `OnTokenGenerated`, checkpoint/rollback,
+session tree, suspend/resume (`HotSessionCapabilityPortTests.cs` — see
 [051 — HotSession capability wiring plan](051-hotsession-capability-wiring-plan.md) for what's
-ported vs. still just stored-but-unused, and the plan for wiring each into the live Server path.
-The actual `InferenceSession` deletion pass (doc 030's "How to execute" steps 1–5) has not been run
-yet.
+still just stored-but-unused and the plan for wiring each into the live Server path); and
+`SamplingParams.AllowedChoices` constrained-choice sampling, which the deletion re-check found was
+implemented *only* inside `InferenceSession` — ported into `ContinuousBatchingEngine`'s batched
+decode loop (`HotSessionChoiceConstraintTests.cs`) rather than silently lost. Full solution builds
+clean; `Tests.Sessions.Fast` (126), `Tests.Core` (576), `Tests.Server.Fast` (338), and `Tests.Cli`
+(367) all pass. (`Tests.ForwardPass.Fast` has 7 pre-existing, unrelated SIMD-tiering
+bit-equivalence failures on this machine — confirmed present on the pre-deletion baseline too,
+environment-specific: `OpenBLAS: not found`.)
 
 **Also found (and fixed) while stress-testing this path**: a severe, unrelated prefill-packing
 defect affecting real concurrent `HotSession` traffic at 5–15 simultaneous requests, since

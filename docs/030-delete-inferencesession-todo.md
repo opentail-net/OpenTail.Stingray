@@ -1,9 +1,11 @@
 # TODO: delete `InferenceSession`/`InferenceRuntime` and whatever Phase 0 marked redundant
 
-**Status: not started. This is a TODO, not a plan — the plan is already written, in
-`docs/028-inference-session-to-hotsession-migration-plan.md`'s "End state" section. This doc exists
-so the pending deletion has its own trackable home instead of being buried at the bottom of a
-migration plan whose own header now says "done, verified" for all three phases.**
+**Status: done (2026-08-27).** The plan was in
+`docs/028-inference-session-to-hotsession-migration-plan.md`'s "End state" section; this doc was
+its trackable home. See that doc's 2026-08-27 addendum for the summary, including the one real gap
+the deletion re-check found (`SamplingParams.AllowedChoices`, ported onto
+`ContinuousBatchingEngine` rather than dropped) and `docs/051-hotsession-capability-wiring-plan.md`
+for what's ported-but-not-yet-wired-into-Server.
 
 ## Why this is safe to do now
 

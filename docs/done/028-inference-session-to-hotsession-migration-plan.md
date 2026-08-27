@@ -300,6 +300,17 @@ a parallel, unintegrated system around after its useful parts have been ported i
 carcass around invites a third AI session to find it, assume it's real, and write another
 `perspective-no-future.txt`.
 
+**2026-08-27: done.** `docs/030`'s deletion executed — `InferenceSession`/`InferenceRuntime` and
+the ~20 files Phase 0 marked redundant (plus `KvMemoryGovernor` and friends, its Phase-1
+predecessor, and `SessionTree`/`BranchVoteResult`/`InferenceSessionConsensusExtensions`, missed by
+the original file list but part of the same island) are gone. One real gap surfaced during the
+deletion re-check: `SamplingParams.AllowedChoices` (constrained-choice sampling) was implemented
+only inside `InferenceSession` — `HotSession`'s batched path never applied it. Rather than drop the
+capability, it was ported into `ContinuousBatchingEngine`'s batched decode loop (per-sequence
+`TokenChoiceTrie.ChoiceState`, mirroring the existing grammar-`Constraint` masking pattern) before
+the deletion proceeded; see `HotSessionChoiceConstraintTests.cs` for the regression coverage this
+replaces from `ConstrainedChoiceSamplingTests.cs`.
+
 ## Pacing
 
 Each phase is its own session, not a checklist to run through in one sitting — same reasoning as

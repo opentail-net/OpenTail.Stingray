@@ -152,6 +152,21 @@ public sealed class ContinuousBatchingEngine : IInferenceEngine, IContinuousBatc
         // Filter before sampling — forcing tool-call arguments to satisfy the schema. The instance is
         // built per request (ChatTemplateRenderer.BuildToolArgumentConstraint) and is single-request.
         public ITokenConstraint? Constraint;
+        // Per-sequence constrained-choice state (SamplingParams.AllowedChoices). Null = no choice
+        // constraint (the common case). When non-null the batcher masks this sequence's logits row
+        // to the trie's currently-allowed continuation tokens before sampling, advances it with the
+        // chosen token via Advance, and stops the sequence the moment IsComplete is true — mirrors
+        // the choice-constraint semantics the now-deleted InferenceSession implemented directly.
+        public TokenChoiceTrie.ChoiceState? ChoiceState;
+        /// <summary>
+        /// Set when the choice constraint was already complete after the very first sampled token
+        /// (e.g. "YES" is itself an allowed choice). That token's KV row is not yet materialised —
+        /// materialising it still requires one more decode step, like the rolling-reservation
+        /// off-by-one below — so this behaves like <see cref="StopAfterStep"/>: the step runs, the
+        /// token it produces is discarded unlogged/unemitted, and the sequence retires as a natural
+        /// completion (no truncation flag), not a stop token or a budget cutoff.
+        /// </summary>
+        public bool ChoiceAlreadyComplete;
         public int TokenCount;
         // Per-sequence stateful UTF-8 decoders: reassembles multi-byte characters
         // split across tokens (CJK, emoji, smart quotes). Independent decoders for
@@ -586,7 +601,8 @@ public sealed class ContinuousBatchingEngine : IInferenceEngine, IContinuousBatc
                 // The raw GPU argmax has no visibility of per-sequence token history.
                 // Presence/frequency/repetition penalties can therefore change even a
                 // temperature-zero choice, so those requests must use full logits.
-                if (s.Sp.Temperature > 0f || s.Sp.HasHistoryPenalty || forcedClose || s.Constraint is { IsConstraining: true })
+                if (s.Sp.Temperature > 0f || s.Sp.HasHistoryPenalty || forcedClose || s.Constraint is { IsConstraining: true }
+                    || s.ChoiceState is not null)
                     allGreedy = false;
             }
 
@@ -632,9 +648,15 @@ public sealed class ContinuousBatchingEngine : IInferenceEngine, IContinuousBatc
                     // masked logits (grammar-forbidden tokens set to -inf); otherwise sample the raw
                     // logits exactly as the unconstrained path would (issue #377). The gate above kept
                     // a constraining seq off the argmax fast path, so logitsBatch is populated here.
+                    // A choice constraint masks first (in place — the row is this step's own fresh
+                    // array), then the grammar constraint's own filter applies on top, matching the
+                    // order ActivateSeq uses for the first token.
+                    var row = logitsBatch![i];
+                    if (seq.ChoiceState is not null)
+                        seq.ChoiceState.MaskLogits(row);
                     var rowLogits = seq.Constraint is { IsConstraining: true } ctr
-                        ? ctr.Filter(logitsBatch![i])
-                        : (ReadOnlySpan<float>)logitsBatch![i];
+                        ? ctr.Filter(row)
+                        : (ReadOnlySpan<float>)row;
                     var spWithHistory = seq.RecentTokens is { Count: > 0 }
                         ? seq.Sp with { PreviousTokens = seq.RecentTokens }
                         : seq.Sp;
@@ -647,14 +669,27 @@ public sealed class ContinuousBatchingEngine : IInferenceEngine, IContinuousBatc
                 // argmax-tail and force-close paths, so it can detect a tool-call boundary and
                 // begin/end constraining). No-op when this sequence has no constraint.
                 seq.Constraint?.Accept(next);
+                bool isChoiceDone = false;
+                if (seq.ChoiceState is not null)
+                {
+                    if (!seq.ChoiceState.Advance(next))
+                        throw new InvalidOperationException($"Sampled token {next} is not permitted by choice constraint.");
+                    isChoiceDone = seq.ChoiceState.IsComplete;
+                }
                 seq.RecentTokens?.Add(next);
 
                 bool stoppedByStopToken = seq.StopIds.Contains(next);
                 bool cancelled = seq.Ct.IsCancellationRequested;
+                // isChoiceDone does NOT end the turn on this same iteration: `next` was chosen but
+                // its own KV row is not yet materialised (off-by-one, see the reservation-renewal
+                // comment above), so it still needs to flow through the normal emit-and-advance path
+                // below before the sequence can retire. Marking StopAfterStep there defers the
+                // actual stop to the following step, exactly like a reservation running out.
                 bool done = stoppedByStopToken
                     || seq.TokenCount >= seq.Sp.MaxNewTokens
                     || seq.StopAfterStep
-                    || cancelled;
+                    || cancelled
+                    || seq.ChoiceAlreadyComplete;
 
                 if (done)
                 {
@@ -676,15 +711,24 @@ public sealed class ContinuousBatchingEngine : IInferenceEngine, IContinuousBatc
                     // Budget exhaustion is reported on its own flag. It used to fall into the
                     // max-tokens disjunct, telling the caller "you hit your token limit" when the
                     // truth was "the server could not fund another token" — opposite remedies.
-                    bool byBudget = seq.StopAfterStep && !stoppedByStopToken && !cancelled;
+                    bool byBudget = seq.StopAfterStep && !stoppedByStopToken && !cancelled && !seq.ChoiceAlreadyComplete;
                     FlushAndComplete(seq,
-                        truncatedByMaxTokens: !stoppedByStopToken && !cancelled && !byBudget,
+                        truncatedByMaxTokens: !stoppedByStopToken && !cancelled && !byBudget && !seq.ChoiceAlreadyComplete,
                         truncatedByResourceBudget: byBudget);
                     active.RemoveAt(i);
                 }
                 else
                 {
                     seq.GeneratedTokenIds?.Add(next);
+                    if (isChoiceDone)
+                    {
+                        // `next` completes the allowed choice and is emitted normally below; there
+                        // is nothing left to mask/advance, and one more decode step is still needed
+                        // to materialise `next`'s own KV row before the sequence can retire (see the
+                        // `done` comment above).
+                        seq.ChoiceState = null;
+                        seq.ChoiceAlreadyComplete = true;
+                    }
                     // Counter update mirrors RunCommand.DecodeLoop: reset on each <think>
                     // open, otherwise increment whenever seq.InThinking was true on entry to
                     // this step. That includes the </think> boundary token — so N reasoning
@@ -1210,17 +1254,35 @@ public sealed class ContinuousBatchingEngine : IInferenceEngine, IContinuousBatc
         var constraint = req.Sp.Constraint;
         constraint?.Reset();
 
-        var firstLogits = constraint is { IsConstraining: true } ctr
-            ? ctr.Filter(logits)
-            : (ReadOnlySpan<float>)logits;
+        // Per-request constrained-choice state (SamplingParams.AllowedChoices). Built fresh per
+        // request from the trie (cheap: a handful of short strings), masked into firstLogits before
+        // the grammar constraint's own filter so a choice-constrained request also respects a
+        // grammar if both are set — matches the order the InferenceSession implementation used.
+        var choiceState = req.Sp.AllowedChoices is { Count: > 0 } allowedChoices
+            ? TokenChoiceTrie.Build(allowedChoices, _tokenizer).CreateState()
+            : null;
+
+        var firstLogits = logits;
+        if (choiceState is not null)
+            choiceState.MaskLogits(firstLogits);
+        ReadOnlySpan<float> firstLogitsSpan = constraint is { IsConstraining: true } ctr
+            ? ctr.Filter(firstLogits)
+            : (ReadOnlySpan<float>)firstLogits;
         // Mirror the decode loop's guard. RecentTokens is seeded from this token, so the history is
         // normally empty here and Greedy is what Sample would do anyway — but a caller that supplied
         // PreviousTokens itself must not have those penalties honoured at temperature > 0 and
         // silently dropped at 0.
         int firstToken = req.Sp.Temperature <= 0f && !req.Sp.HasHistoryPenalty
-            ? Sampler.Greedy(firstLogits)
-            : Sampler.Sample(firstLogits, req.Sp, rng);
+            ? Sampler.Greedy(firstLogitsSpan)
+            : Sampler.Sample(firstLogitsSpan, req.Sp, rng);
         constraint?.Accept(firstToken);
+        bool choiceCompletedOnFirstToken = false;
+        if (choiceState is not null)
+        {
+            if (!choiceState.Advance(firstToken))
+                throw new InvalidOperationException($"Sampled token {firstToken} is not permitted by choice constraint.");
+            choiceCompletedOnFirstToken = choiceState.IsComplete;
+        }
 
         if (stopIds.Contains(firstToken))
         {
@@ -1274,6 +1336,7 @@ public sealed class ContinuousBatchingEngine : IInferenceEngine, IContinuousBatc
             TurnStartPosition = p.TurnStartPosition,
             GeneratedTokenIds = p.RetainedState is null ? null : [firstToken],
             Constraint = constraint,
+            ChoiceState = choiceState,
             TokenCount = 1,
             InThinking = promptInThinking,
             ReservationRenewer = p.ReservationRenewer,
@@ -1307,6 +1370,18 @@ public sealed class ContinuousBatchingEngine : IInferenceEngine, IContinuousBatc
                 if (firstChunk.Length > 0)
                     req.Output.Writer.TryWrite(new GenerateChunk(GenerateChunkKind.Text, firstChunk));
             }
+        }
+
+        // A choice constraint that is already complete after just the first sampled token (e.g.
+        // "YES" is itself an allowed choice): unlike the stop-token branch above, the token IS
+        // real content (already emitted above), but its own KV row is not yet materialised — that
+        // still needs one more decode step. Clear ChoiceState (nothing left to mask/advance) and
+        // let the ordinary StopAfterStep-style discard in the main loop retire it as a natural
+        // completion once that step runs.
+        if (choiceCompletedOnFirstToken)
+        {
+            seq.ChoiceState = null;
+            seq.ChoiceAlreadyComplete = true;
         }
 
         active.Add(seq);
