@@ -2889,6 +2889,15 @@ public sealed class RunCommand : Command<RunCommand.Settings>
             {
                 Console.Error.WriteLine($"[DBG] tok={i} next={next}('{tok.Decode([next])}') stop={sp.StopTokenIds.Contains(next)} top5:{FormatTopLogits(logits, 5)}");
             }
+            if (i == 0 && Environment.GetEnvironmentVariable("STINGRAY_DBG_TOKEN_RANK") is { } watchTokStr
+                && int.TryParse(watchTokStr, out int watchTok) && watchTok < logits.Length)
+            {
+                float watchLogit = logits[watchTok];
+                int rank = 1;
+                for (int j = 0; j < logits.Length; j++)
+                    if (logits[j] > watchLogit) rank++;
+                Console.Error.WriteLine($"[DBG-RANK] token={watchTok} logit={watchLogit:F4} rank={rank}/{logits.Length}");
+            }
             if (sp.StopTokenIds.Contains(next)) break;
             // Advance the constraint by every emitted token (so it can detect a tool call beginning
             // and ending) and capture the raw stream for post-generation tool-call parsing.
