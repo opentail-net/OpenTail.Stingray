@@ -10,6 +10,7 @@ using Microsoft.Extensions.Options;
 using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Core.Grammar;
 using OpenTail.Stingray.Engine;
+using OpenTail.Stingray.Server;
 
 namespace OpenTail.Stingray.Server.Endpoints;
 
@@ -62,6 +63,7 @@ public static class OpenAiEndpoints
                     OpenTailStingrayJsonContext.Default.ErrorResponse), ctx.RequestAborted);
             return;
         }
+        req = ApplySkills(req);
 
         // docs/032 Phase 7: resolve + acquire the requested model — but ONLY in multi-model mode.
         // Single-model mode keeps resolving IInferenceEngine/ChatTemplateRenderer directly from DI,
@@ -164,7 +166,7 @@ public static class OpenAiEndpoints
             }
             else
             {
-                var messages = BuildMessageList(req.Messages, req.ResponseFormat?.Type, images, preserveThinking);
+                var messages = BuildMessageList(req.Messages!, req.ResponseFormat?.Type, images, preserveThinking);
                 prompt = chatTemplate.Format(messages, enableThinking);
                 canonicalHistoryPrefix = chatTemplate.Format(messages, enableThinking, addGenerationPrompt: false);
             }
@@ -755,6 +757,33 @@ public static class OpenAiEndpoints
             ctx.RequestAborted);
     }
 
+    /// <summary>
+    /// Folds <see cref="ChatCompletionRequest.Skills"/> into <c>Messages</c>/<c>Tools</c> before
+    /// anything else in the handler runs, so the rest of the pipeline (both
+    /// <see cref="BuildMessageList"/> and <see cref="BuildRichMessageList"/>) needs no skill-aware
+    /// branch of its own. A no-op when no skill is present.
+    /// </summary>
+    private static ChatCompletionRequest ApplySkills(ChatCompletionRequest req)
+    {
+        if (req.Skills is not { Length: > 0 } skills) return req;
+
+        string instructionText = skills.JoinInstructionText();
+        OaiMessage[] messages = req.Messages!;
+        if (!string.IsNullOrEmpty(instructionText))
+        {
+            var preamble = new OaiMessage("system", JsonSerializer.SerializeToElement(instructionText));
+            messages = [preamble, .. req.Messages!];
+        }
+
+        var skillTools = skills
+            .SelectMany(s => s.Tools ?? [])
+            .Select(t => new OaiTool("function", new OaiToolFunction(t.Name, t.Description, null)))
+            .ToArray();
+        OaiTool[]? tools = skillTools.Length == 0 ? req.Tools : [.. req.Tools ?? [], .. skillTools];
+
+        return req with { Messages = messages, Tools = tools };
+    }
+
     private static List<(string role, string content)> BuildMessageList(
         OaiMessage[] messages, string? responseFormatType, List<byte[]> images, bool preserveThinking)
     {
@@ -985,7 +1014,12 @@ public sealed record ChatCompletionRequest(
     // for now; a streaming request setting this flag gets no extension chunk.
     [property: JsonPropertyName("opentail_timing")] bool? OpentailTiming = null,
     [property: JsonPropertyName("presence_penalty")] float? PresencePenalty = null,
-    [property: JsonPropertyName("frequency_penalty")] float? FrequencyPenalty = null);
+    [property: JsonPropertyName("frequency_penalty")] float? FrequencyPenalty = null,
+    // Skills (e.g. fetched client-side from a registry such as skills.sh) folded into this
+    // request before rendering: each skill's Instructions become a prepended system-message
+    // segment, and its Tools merge into the effective declared tools alongside `tools` — see
+    // ApplySkills. docs/051.
+    [property: JsonPropertyName("skills")] WireSkill[]? Skills = null);
 
 /// <summary>
 /// Message in an OpenAI <c>/v1/chat/completions</c> request. Both single-string

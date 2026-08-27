@@ -49,6 +49,36 @@ public sealed class HotSessionCapabilityPortTests
         Assert.False(session.ValidateToolCall(disallowed));
     }
 
+    /// <summary>
+    /// docs/051: a skill's <c>Instructions</c> prepend to the NEXT <see cref="HotSession.RunTurnAsync"/>
+    /// call's append-prompt text only, then clear — never retroactively, and never repeated on a
+    /// later turn that didn't have a fresh attach since.
+    /// </summary>
+    [Fact]
+    public async Task HotSession_AttachSkillInstructions_PrependToNextTurnOnly()
+    {
+        var fwd = new FakeForwardPass { EmitNonStopOnPrefill = true };
+        var tokenizer = new SpyTokenizer();
+        using var engine = new ContinuousBatchingEngine(fwd, tokenizer, "test", maxBatchSize: 1);
+        var runtime = new HotSessionRuntime(engine, tokenizer);
+        using var session = runtime.Create();
+        var sampling = new SamplingParams { Temperature = 0f, MaxNewTokens = 1 };
+
+        await session.RunTurnAsync("hello", sampling, SessionRevision.Initial, SessionOperationId.New(), Digest("t1"));
+        Assert.Contains("hello", tokenizer.EncodedTexts);
+        Assert.DoesNotContain(tokenizer.EncodedTexts, t => t.Contains("Be nice."));
+
+        session.AttachSkill(new FakeInstructionSkill("politeness", "Be nice."));
+        tokenizer.EncodedTexts.Clear();
+        await session.RunTurnAsync("world", sampling, new SessionRevision(1), SessionOperationId.New(), Digest("t2"));
+        Assert.Contains("Be nice.\n\nworld", tokenizer.EncodedTexts);
+
+        tokenizer.EncodedTexts.Clear();
+        await session.RunTurnAsync("again", sampling, new SessionRevision(2), SessionOperationId.New(), Digest("t3"));
+        Assert.Contains("again", tokenizer.EncodedTexts);
+        Assert.DoesNotContain(tokenizer.EncodedTexts, t => t.Contains("Be nice."));
+    }
+
     [Fact]
     public async Task HotSession_OnTokenGenerated_FiresOncePerCommittedToken()
     {
@@ -152,6 +182,42 @@ public sealed class HotSessionCapabilityPortTests
             public string Name { get; } = name;
             public string? Description => null;
         }
+    }
+
+    private sealed class FakeInstructionSkill(string name, params string[] instructionTexts) : ISkill
+    {
+        public string Name { get; } = name;
+        public string? Description => null;
+        public IReadOnlyList<IInstruction> Instructions { get; } =
+            [.. instructionTexts.Select(c => (IInstruction)new FakeInstruction(c))];
+        public IReadOnlyList<ITool> Tools => [];
+        public IReadOnlyList<IResource> Resources => [];
+
+        private sealed class FakeInstruction(string content) : IInstruction
+        {
+            public string Content { get; } = content;
+            public string? Name => null;
+        }
+    }
+
+    /// <summary>Records every string it is asked to encode, and tokenizes any text as one token.</summary>
+    private sealed class SpyTokenizer : ITokenizer
+    {
+        public List<string> EncodedTexts { get; } = [];
+        public int VocabSize => 64;
+        public int BosTokenId => 0;
+        public int EosTokenId => Eos;
+        public int UnknownTokenId => 0;
+        public int PadTokenId => Eos;
+        public bool AddBosToken => false;
+        public IReadOnlyCollection<int> EogTokenIds => [Eos];
+        public IReadOnlyList<int> Encode(string text)
+        {
+            EncodedTexts.Add(text);
+            return [1];
+        }
+        public string Decode(IEnumerable<int> tokens) => string.Empty;
+        public byte[] DecodeBytes(int token) => [];
     }
 
     private sealed class Tokenizer : ITokenizer

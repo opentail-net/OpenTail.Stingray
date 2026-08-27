@@ -9,6 +9,7 @@ using Microsoft.Extensions.Options;
 using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Core.Grammar;
 using OpenTail.Stingray.Engine;
+using OpenTail.Stingray.Server;
 
 namespace OpenTail.Stingray.Server.Endpoints;
 
@@ -60,6 +61,7 @@ public static class AnthropicEndpoints
                     OpenTailStingrayJsonContext.Default.AErrorResponse), ctx.RequestAborted);
             return;
         }
+        req = ApplySkills(req);
 
         // docs/032 Phase 7: resolve + acquire the requested model — but ONLY in multi-model mode.
         // Single-model mode keeps resolving IInferenceEngine/ChatTemplateRenderer directly from DI,
@@ -712,6 +714,33 @@ public static class AnthropicEndpoints
     }
 
     /// <summary>
+    /// Folds <see cref="AnthropicMessageRequest.Skills"/> into <c>System</c>/<c>Tools</c> before
+    /// anything else in the handler runs — mirrors <c>OpenAiEndpoints.ApplySkills</c>. A no-op when
+    /// no skill is present.
+    /// </summary>
+    private static AnthropicMessageRequest ApplySkills(AnthropicMessageRequest req)
+    {
+        if (req.Skills is not { Length: > 0 } skills) return req;
+
+        string instructionText = skills.JoinInstructionText();
+        JsonElement? system = req.System;
+        if (!string.IsNullOrEmpty(instructionText))
+        {
+            string existing = ExtractTextContent(req.System) ?? "";
+            string merged = existing.Length == 0 ? instructionText : $"{instructionText}\n\n{existing}";
+            system = JsonSerializer.SerializeToElement(merged);
+        }
+
+        var skillTools = skills
+            .SelectMany(s => s.Tools ?? [])
+            .Select(t => new AnthropicTool(t.Name, t.Description, null))
+            .ToArray();
+        AnthropicTool[]? tools = skillTools.Length == 0 ? req.Tools : [.. req.Tools ?? [], .. skillTools];
+
+        return req with { System = system, Tools = tools };
+    }
+
+    /// <summary>
     /// Builds the simple (string-content) message list used when no tools are present.
     /// Handles both plain-string and array-of-content-blocks message formats.
     /// </summary>
@@ -1032,7 +1061,11 @@ public sealed record AnthropicMessageRequest(
     // Opt-in per-response timing detail (§8 Phase 2 item 3 of the QoL plan). See
     // ResponseTimingExtension.cs for why this is opt-in rather than always-on. Non-streaming only
     // for now; a streaming request setting this flag gets no extension chunk.
-    bool? OpentailTiming = null);
+    bool? OpentailTiming = null,
+    // Skills (e.g. fetched client-side from a registry such as skills.sh) folded into this
+    // request before rendering: each skill's Instructions prepend to `system`, and its Tools
+    // merge into the effective declared tools alongside `tools` — see ApplySkills. docs/051.
+    WireSkill[]? Skills = null);
 
 public sealed record AnthropicThinking(string? Type, int? BudgetTokens);
 

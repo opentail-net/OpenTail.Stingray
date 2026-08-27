@@ -237,6 +237,10 @@ public sealed class SessionEndpointTests : IDisposable
             await client.GetAsync($"/v1/sessions/{id}"),
             await client.GetAsync($"/v1/sessions/{id}/operations/{Guid.NewGuid()}"),
             await client.PostAsJsonAsync($"/v1/sessions/{id}/turns", TurnBody("hi", 0)),
+            await client.PostAsJsonAsync($"/v1/sessions/{id}/skills", new { name = "s" }),
+            await client.GetAsync($"/v1/sessions/{id}/skills"),
+            await client.DeleteAsync($"/v1/sessions/{id}/skills/s"),
+            await client.PostAsJsonAsync($"/v1/sessions/{id}/tool-calls/validate", new { name = "t" }),
             await client.DeleteAsync($"/v1/sessions/{id}"),
         };
 
@@ -363,6 +367,84 @@ public sealed class SessionEndpointTests : IDisposable
             (await client.GetAsync($"/v1/sessions/{id}/operations/{Guid.NewGuid()}")).StatusCode);
         Assert.Equal(HttpStatusCode.NotFound,
             (await client.GetAsync($"/v1/sessions/{Guid.NewGuid()}/operations/{Guid.NewGuid()}")).StatusCode);
+    }
+
+    // ── Skills & tool-call validation ─────────────────────────────────────
+
+    [Fact]
+    public async Task Skills_AttachListDetach_RoundTrips()
+    {
+        using var sessions = new EnabledSessions();
+        var client = CreateClient(sessions);
+        Guid id = await CreateSessionAsync(client);
+
+        var attach = await client.PostAsJsonAsync($"/v1/sessions/{id}/skills", new
+        {
+            name = "weather",
+            description = "Weather lookups",
+            tools = new[] { new { name = "get_forecast", description = "Fetches a forecast" } },
+        });
+        Assert.Equal(HttpStatusCode.Created, attach.StatusCode);
+        using (var attached = JsonDocument.Parse(await attach.Content.ReadAsStringAsync()))
+        {
+            Assert.Equal("weather", attached.RootElement.GetProperty("name").GetString());
+            Assert.Equal("get_forecast", attached.RootElement.GetProperty("tools")[0].GetString());
+        }
+
+        var list = await client.GetAsync($"/v1/sessions/{id}/skills");
+        Assert.Equal(HttpStatusCode.OK, list.StatusCode);
+        using (var listed = JsonDocument.Parse(await list.Content.ReadAsStringAsync()))
+        {
+            var skills = listed.RootElement.GetProperty("skills");
+            Assert.Equal(1, skills.GetArrayLength());
+            Assert.Equal("weather", skills[0].GetProperty("name").GetString());
+        }
+
+        Assert.Equal(HttpStatusCode.NoContent, (await client.DeleteAsync($"/v1/sessions/{id}/skills/weather")).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await client.DeleteAsync($"/v1/sessions/{id}/skills/weather")).StatusCode);
+
+        using var afterDetach = JsonDocument.Parse(
+            await (await client.GetAsync($"/v1/sessions/{id}/skills")).Content.ReadAsStringAsync());
+        Assert.Equal(0, afterDetach.RootElement.GetProperty("skills").GetArrayLength());
+    }
+
+    [Fact]
+    public async Task ValidateToolCall_AuthorizesOnlyToolsFromAttachedSkills()
+    {
+        using var sessions = new EnabledSessions();
+        var client = CreateClient(sessions);
+        Guid id = await CreateSessionAsync(client);
+
+        await client.PostAsJsonAsync($"/v1/sessions/{id}/skills", new
+        {
+            name = "weather",
+            tools = new[] { new { name = "get_forecast" } },
+        });
+
+        var authorized = await client.PostAsJsonAsync(
+            $"/v1/sessions/{id}/tool-calls/validate", new { name = "get_forecast", arguments = new { city = "SF" } });
+        using (var doc = JsonDocument.Parse(await authorized.Content.ReadAsStringAsync()))
+            Assert.True(doc.RootElement.GetProperty("authorized").GetBoolean());
+
+        var unauthorized = await client.PostAsJsonAsync(
+            $"/v1/sessions/{id}/tool-calls/validate", new { name = "delete_everything" });
+        using (var doc = JsonDocument.Parse(await unauthorized.Content.ReadAsStringAsync()))
+            Assert.False(doc.RootElement.GetProperty("authorized").GetBoolean());
+    }
+
+    [Fact]
+    public async Task Skills_UnknownSession_Returns404()
+    {
+        using var sessions = new EnabledSessions();
+        var client = CreateClient(sessions);
+        var id = Guid.NewGuid();
+
+        Assert.Equal(HttpStatusCode.NotFound,
+            (await client.PostAsJsonAsync($"/v1/sessions/{id}/skills", new { name = "s" })).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await client.GetAsync($"/v1/sessions/{id}/skills")).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await client.DeleteAsync($"/v1/sessions/{id}/skills/s")).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound,
+            (await client.PostAsJsonAsync($"/v1/sessions/{id}/tool-calls/validate", new { name = "t" })).StatusCode);
     }
 
     // ── Request validation ────────────────────────────────────────────────

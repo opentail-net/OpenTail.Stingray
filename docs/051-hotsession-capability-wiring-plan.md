@@ -1,6 +1,7 @@
 # 051 — Wiring HotSession's newly-ported capabilities into the live Server path
 
-## Status: capabilities ported and tested on `HotSession`; NOT yet wired into `Server`/`Server.Host`.
+## Status: skills / tool validation (item #1) wired, 2026-08-27. Checkpoint/rollback, session-tree
+## endpoint, suspend/resume, LoRA remain unwired — see their sections below.
 
 ## Background
 
@@ -51,14 +52,63 @@ None of this is required before the `InferenceSession` deletion can proceed — 
 preserved on `HotSession` either way. This section is the follow-up plan for making each one
 *reachable* from a real request, in priority order.
 
-### 1. Skills / tool validation — low effort, real value
-`OpenAiEndpoints.cs`/`AnthropicEndpoints.cs` already do their own tool-call parsing per request but
-have no session-scoped allow-list concept today (every tool the client declares is implicitly
-trusted). Wiring: resolve a `HotSession` for the request (already happens for the Sessions API),
-call `session.ValidateToolCall(call)` before executing a tool the model requested, reject
-unauthorized ones the way `InferenceSession`'s own `GenerateAsync` loop used to. Needs: a
-per-request or per-session way to set `ToolProvider`/`AttachSkill`, likely from
-`OpenTailStingrayServerOptions` or a request header/field — not designed yet.
+### 1. Skills / tool validation — DONE (2026-08-27)
+Wired onto the raw Sessions API, not the OpenAI/Anthropic-compat chat endpoints — those already do
+their own per-request tool-call parsing (`req.Tools`, redeclared every call) and duplicating that
+with a session-scoped allow-list would just be two competing authorization models on one route.
+`/v1/sessions/*` had zero tool-calling concept of any kind, so this is net-new surface, not
+reconnecting something already expected to work:
+
+- `POST /v1/sessions/{id}/skills` — attaches a `Skill` (name/description/tool names) via
+  `HotSession.AttachSkill`.
+- `GET /v1/sessions/{id}/skills` — lists `HotSession.AttachedSkills`.
+- `DELETE /v1/sessions/{id}/skills/{name}` — `HotSession.DetachSkill`.
+- `POST /v1/sessions/{id}/tool-calls/validate` — `{name, arguments}` → `HotSession.ValidateToolCall`.
+
+**Deliberately scoped down, twice:**
+- Only the `Tools` half of `ISkill` does anything here — `Instructions`/`Resources` are accepted
+  and stored but never injected into a prompt, because the raw append-prompt turn API has no
+  chat-template/prompt-composition step for them to land in. A skill attached this way is a pure
+  tool allow-list, not a "prompt+" in the fuller sense `ISkill` supports elsewhere.
+- No propagation through `Fork()`: attaching a skill to a parent session does **not** carry it to
+  forked children (unlike `Metadata`, which `Fork` already copies). Deliberate choice — the
+  inheritance semantics (copy-at-fork vs. live lookup via `Tree.RootId`, override vs. extend) are a
+  real design question, not just a wiring detail, and nothing needed it yet. If a fork/consensus
+  caller needs shared tool authorization across a tree, that decision has to be made explicitly
+  first, not backed into silently.
+- `ToolProvider`/`ToolCallParser` remain unwired, as this doc already recommended (see #5 below) —
+  the validate endpoint only ever calls `ValidateToolCall` against whatever the caller supplies.
+
+Tests: `SessionEndpointTests.cs` (`Skills_AttachListDetach_RoundTrips`,
+`ValidateToolCall_AuthorizesOnlyToolsFromAttachedSkills`, `Skills_UnknownSession_Returns404`, and
+the unavailable-lane route list).
+
+**2026-08-27 follow-up — the "skill becomes a prompt" facility.** The scoping note above ("not a
+'prompt+' in the fuller sense") turned out to matter: the actual goal is a UI letting someone pick
+a skill from a registry (e.g. skills.sh) and have its instructions genuinely shape the model's
+output, not just gate tool names. That facility now exists, split by API surface:
+
+- **Chat-compat (`/v1/chat/completions`, `/v1/messages`) — the natural home, done.** Both requests
+  gained a `skills: WireSkill[]` field (`SkillWireModels.cs` — `WireSkill`/`WireSkillTool`/
+  `WireSkillInstruction`, shared with the Sessions endpoints below). `OpenAiEndpoints.ApplySkills`/
+  `AnthropicEndpoints.ApplySkills` run first in each handler: every skill's `Instructions` fold into
+  one system-message segment prepended ahead of the caller's own messages (Anthropic: prepended
+  into `system`, ahead of whatever the caller already sent there), and every skill's `Tools` merge
+  into the request's effective declared tools — reusing the existing `req.Tools`
+  parse/authorize/render pipeline entirely unchanged. Zero new prompt-composition machinery; this
+  is purely new input feeding the pipeline that already existed. Tests:
+  `SkillPromptInjectionTests.cs`.
+- **Sessions API (`/v1/sessions/*`) — real gap, now closed, deliberately narrower.**
+  `SessionAttachSkillRequest` now also accepts `instructions`. `HotSession.AttachSkill` queues any
+  instruction text onto `_pendingInstructionPreamble`; the *next* `RunTurnAsync` call prepends it to
+  that turn's append-prompt text (both for KV-budget accounting and for what the engine actually
+  generates from), then clears the queue — never repeated on a later turn, and never retroactive
+  (a turn already committed to the KV cache cannot be rewritten to have "seen" a skill attached
+  afterward; see the confirmed decision in the git history for why late-attach affects only future
+  turns rather than being rejected). Test: `HotSessionCapabilityPortTests.HotSession_AttachSkillInstructions_PrependToNextTurnOnly`.
+
+Still not done, deliberately: `Fork()` propagation (unchanged from the original scoping note above)
+and `ToolProvider`/`ToolCallParser` wiring (see #5).
 
 ### 2. Checkpoint/rollback — medium effort, real value for the Sessions API
 `SessionEndpoints.cs` has no checkpoint/rollback endpoints today. A natural fit:

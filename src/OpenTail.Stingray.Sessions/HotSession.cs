@@ -93,6 +93,7 @@ public sealed class HotSession : IDisposable
     private readonly SessionMetrics _metrics;
     private readonly SessionMetadata _metadata = new();
     private readonly List<OpenTail.Stingray.Core.ISkill> _attachedSkills = [];
+    private readonly List<string> _pendingInstructionPreamble = [];
     private readonly HotSessionRuntime? _runtime;
     private SessionCursor _cursor = new([], 0, 0, 0, 0, StateCoverage.Full);
     private bool _disposed;
@@ -172,11 +173,23 @@ public sealed class HotSession : IDisposable
     /// <summary>Read-only list of skills currently attached to the session.</summary>
     public IReadOnlyList<OpenTail.Stingray.Core.ISkill> AttachedSkills => _attachedSkills;
 
-    /// <summary>Attaches a native declarative skill package to the session.</summary>
+    /// <summary>
+    /// Attaches a native declarative skill package to the session. A skill's <c>Tools</c> are
+    /// authorized immediately (<see cref="ValidateToolCall"/>). A skill's <c>Instructions</c> are
+    /// queued and prepended to the append-prompt text of the NEXT <see cref="RunTurnAsync"/> call
+    /// only, then cleared — deliberately not retroactive: a turn already committed to the KV cache
+    /// cannot be rewritten to have "seen" a skill attached afterward, so this only ever affects
+    /// what the session generates going forward, never its existing history.
+    /// </summary>
     public void AttachSkill(OpenTail.Stingray.Core.ISkill skill)
     {
         ArgumentNullException.ThrowIfNull(skill);
         _attachedSkills.Add(skill);
+        foreach (var instruction in skill.Instructions)
+        {
+            if (!string.IsNullOrEmpty(instruction.Content))
+                _pendingInstructionPreamble.Add(instruction.Content);
+        }
     }
 
     /// <summary>Detaches a skill from the session by name. Returns true if a matching skill was found and removed.</summary>
@@ -415,7 +428,16 @@ public sealed class HotSession : IDisposable
     {
         ArgumentNullException.ThrowIfNull(appendPrompt);
         ThrowIfDisposed();
-        var appendTokens = _tokenizer.Encode(appendPrompt).ToImmutableArray();
+        // Any skill instructions queued since the last turn (see AttachSkill) prepend to exactly
+        // this call's text, once, then clear — a raw append-only session has no separate "system"
+        // slot, so this is the only place instruction text can enter the model's input at all.
+        string effectivePrompt = appendPrompt;
+        if (_pendingInstructionPreamble.Count > 0)
+        {
+            effectivePrompt = string.Join("\n\n", _pendingInstructionPreamble) + "\n\n" + appendPrompt;
+            _pendingInstructionPreamble.Clear();
+        }
+        var appendTokens = _tokenizer.Encode(effectivePrompt).ToImmutableArray();
         if (appendTokens.IsDefaultOrEmpty)
             throw new ArgumentException("An append-only session turn requires at least one input token.", nameof(appendPrompt));
 
@@ -497,7 +519,7 @@ public sealed class HotSession : IDisposable
                     TimeSpan prefillElapsed = TimeSpan.Zero;
                     bool firstChunkSeen = false;
                     await foreach (var chunk in _engine.GenerateRetainedChunksAsync(
-                        appendPrompt, sampling, _state, cancellationToken,
+                        effectivePrompt, sampling, _state, cancellationToken,
                         targetPositions => reservation.TryRenew(checked((long)targetPositions * _kvBytesPerToken))).ConfigureAwait(false))
                     {
                         if (!firstChunkSeen)

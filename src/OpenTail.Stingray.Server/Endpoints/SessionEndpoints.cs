@@ -3,10 +3,12 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
+using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Engine;
 using OpenTail.Stingray.Sessions;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 
@@ -49,6 +51,17 @@ public static partial class SessionEndpoints
         // parallel — the queue limit was route-shaped rather than engine-shaped.
         app.MapPost("/v1/sessions/{sessionId:guid}/turns", RunTurn).WithConcurrencyLimit();
         app.MapDelete("/v1/sessions/{sessionId:guid}", Delete);
+        // Session-scoped tool authorization (docs/051 item #1): attach/detach/list the skills
+        // this session's tool calls are checked against, and validate a candidate call. This
+        // endpoint does not parse tool calls out of generated text itself -- the raw append-prompt
+        // turn API has no chat template/adapter to do that with (unlike the OpenAI/Anthropic-compat
+        // routes, which already detect calls from their own chunk stream). A caller that has its
+        // own way of recognising a candidate call in this session's output asks here whether it's
+        // authorized, instead of Stingray inventing a new tool-call wire syntax for raw sessions.
+        app.MapPost("/v1/sessions/{sessionId:guid}/skills", AttachSkill);
+        app.MapGet("/v1/sessions/{sessionId:guid}/skills", ListSkills);
+        app.MapDelete("/v1/sessions/{sessionId:guid}/skills/{skillName}", DetachSkill);
+        app.MapPost("/v1/sessions/{sessionId:guid}/tool-calls/validate", ValidateToolCall);
         return app;
     }
 
@@ -185,6 +198,91 @@ public static partial class SessionEndpoints
             ctx.RequestServices.GetRequiredService<SessionModelRegistry>().Release(id);
         return deleted ? Results.NoContent() : Results.NotFound();
     }
+
+    private static IResult AttachSkill(
+        Guid sessionId, SessionAttachSkillRequest request, HttpContext ctx, IInferenceService inferenceService)
+    {
+        if (TryResolveExistingSession(ctx, sessionId, inferenceService, out var route) is { } error)
+            return error;
+        if (string.IsNullOrEmpty(request.Name))
+            return Results.BadRequest(new ErrorResponse("invalid_request_error", "name must not be empty."));
+
+        try
+        {
+            var id = new SessionId(sessionId);
+            var session = route.ColdRuntime?.Open(id) ?? route.Runtime.Open(id);
+            var wireSkill = new WireSkill(request.Name, request.Description, request.Instructions, request.Tools);
+            session.AttachSkill(wireSkill.ToCoreSkill());
+            return Results.Json(ToSkillResponse(session.AttachedSkills.Last(s => s.Name == request.Name)),
+                OpenTailStingrayJsonContext.Default.SessionSkillResponse, statusCode: StatusCodes.Status201Created);
+        }
+        catch (SessionNotFoundException)
+        {
+            return Results.NotFound();
+        }
+    }
+
+    private static IResult ListSkills(Guid sessionId, HttpContext ctx, IInferenceService inferenceService)
+    {
+        if (TryResolveExistingSession(ctx, sessionId, inferenceService, out var route) is { } error)
+            return error;
+
+        try
+        {
+            var id = new SessionId(sessionId);
+            var session = route.ColdRuntime?.Open(id) ?? route.Runtime.Open(id);
+            return Results.Json(
+                new SessionSkillsResponse(session.AttachedSkills.Select(ToSkillResponse).ToArray()),
+                OpenTailStingrayJsonContext.Default.SessionSkillsResponse);
+        }
+        catch (SessionNotFoundException)
+        {
+            return Results.NotFound();
+        }
+    }
+
+    private static IResult DetachSkill(
+        Guid sessionId, string skillName, HttpContext ctx, IInferenceService inferenceService)
+    {
+        if (TryResolveExistingSession(ctx, sessionId, inferenceService, out var route) is { } error)
+            return error;
+
+        try
+        {
+            var id = new SessionId(sessionId);
+            var session = route.ColdRuntime?.Open(id) ?? route.Runtime.Open(id);
+            return session.DetachSkill(skillName) ? Results.NoContent() : Results.NotFound();
+        }
+        catch (SessionNotFoundException)
+        {
+            return Results.NotFound();
+        }
+    }
+
+    private static IResult ValidateToolCall(
+        Guid sessionId, SessionValidateToolCallRequest request, HttpContext ctx, IInferenceService inferenceService)
+    {
+        if (TryResolveExistingSession(ctx, sessionId, inferenceService, out var route) is { } error)
+            return error;
+        if (string.IsNullOrEmpty(request.Name))
+            return Results.BadRequest(new ErrorResponse("invalid_request_error", "name must not be empty."));
+
+        try
+        {
+            var id = new SessionId(sessionId);
+            var session = route.ColdRuntime?.Open(id) ?? route.Runtime.Open(id);
+            var call = new OpenTail.Stingray.Core.Tools.ToolCall(Guid.NewGuid().ToString(), request.Name, request.Arguments);
+            return Results.Json(new SessionValidateToolCallResponse(session.ValidateToolCall(call)),
+                OpenTailStingrayJsonContext.Default.SessionValidateToolCallResponse);
+        }
+        catch (SessionNotFoundException)
+        {
+            return Results.NotFound();
+        }
+    }
+
+    private static SessionSkillResponse ToSkillResponse(ISkill skill) =>
+        new(skill.Name, skill.Description, skill.Tools.Select(t => t.Name).ToArray());
 
     /// <summary>
     /// Returns the result retained for a completed or in-flight operation. This is the reconnect
@@ -405,3 +503,42 @@ public sealed record SessionOperationResponse(
     [property: JsonPropertyName("failure_reason")] string? FailureReason,
     [property: JsonPropertyName("text")] string Text,
     [property: JsonPropertyName("thinking")] string Thinking);
+
+/// <summary>
+/// Attaches a native <see cref="OpenTail.Stingray.Core.Skill"/> to the session. <c>Tools</c> are
+/// authorized immediately (<see cref="OpenTail.Stingray.Sessions.HotSession.ValidateToolCall"/>) —
+/// Stingray does not execute them itself. <c>Instructions</c>, if any, are queued and prepended to
+/// the append-prompt text of the session's NEXT turn only (see
+/// <see cref="OpenTail.Stingray.Sessions.HotSession.AttachSkill"/>) — a turn already committed to
+/// the KV cache cannot be retroactively rewritten to have "seen" a skill attached afterward.
+/// </summary>
+public sealed record SessionAttachSkillRequest(
+    [property: JsonPropertyName("name")] string Name,
+    [property: JsonPropertyName("description")] string? Description = null,
+    [property: JsonPropertyName("instructions")] WireSkillInstruction[]? Instructions = null,
+    [property: JsonPropertyName("tools")] WireSkillTool[]? Tools = null);
+
+/// <summary>One skill currently attached to the session.</summary>
+public sealed record SessionSkillResponse(
+    [property: JsonPropertyName("name")] string Name,
+    [property: JsonPropertyName("description")] string? Description,
+    [property: JsonPropertyName("tools")] string[] Tools);
+
+/// <summary>Every skill currently attached to the session.</summary>
+public sealed record SessionSkillsResponse(
+    [property: JsonPropertyName("skills")] SessionSkillResponse[] Skills);
+
+/// <summary>
+/// A candidate tool call to check against the session's attached skills (and
+/// <see cref="OpenTail.Stingray.Sessions.HotSession.ToolProvider"/>, if set). The raw append-prompt
+/// turn API has no chat-template adapter to detect calls in generated text itself, so the caller —
+/// which does its own detection against this session's output — asks here whether a given call is
+/// authorized before acting on it.
+/// </summary>
+public sealed record SessionValidateToolCallRequest(
+    [property: JsonPropertyName("name")] string Name,
+    [property: JsonPropertyName("arguments")] JsonElement Arguments = default);
+
+/// <summary>Whether a candidate tool call names a tool this session currently authorizes.</summary>
+public sealed record SessionValidateToolCallResponse(
+    [property: JsonPropertyName("authorized")] bool Authorized);
