@@ -7052,16 +7052,31 @@ public static unsafe class SimdKernels
     /// This is the online-softmax building block: unlike <see cref="SoftmaxInPlace"/>, it does
     /// not divide by the sum because the caller still has to merge it with earlier tiles.
     /// </summary>
+    /// <summary>
+    /// docs/bugstofix.md (ModelCompatibility.cs:461, deepseek2 investigation): this is the
+    /// Flash-64 online-softmax building block for tiled attention, a different accumulation
+    /// STRATEGY from <see cref="SoftmaxInPlace"/> (per-tile sum merged into a running float
+    /// accumulator via `runningSum*rescale + tileSum` in ForwardPass.Attention.cs, not one single
+    /// double sum over the whole row) -- that tiling/merge design is this codebase's own, not a
+    /// port of ggml's flash-attention, so full order-matching isn't achievable here without a
+    /// larger redesign of the merge itself (tracked as a known, separate, NOT-yet-done gap; the
+    /// caller's <c>RunningSum</c> stays float32). What IS fixed here, narrowly and safely: the exp
+    /// approximation now matches ggml's real <c>ggml_v_expf</c> (<see cref="GgmlExpf256"/>) instead
+    /// of the independently-derived <see cref="ExpApprox256"/>, for the same reason as
+    /// <see cref="SoftmaxInPlace"/> -- consistency with the rest of the audit, at no extra
+    /// precision cost (per-tile sum is still returned as float32, matching this function's
+    /// pre-existing contract with its caller).
+    /// </summary>
     public static float ExpMinusMaxSumInPlace(float* x, int size, float max)
     {
-        if (Avx.IsSupported && size >= 8)
+        if (Avx2.IsSupported && Fma.IsSupported && size >= 8)
         {
             var maxV = Vector256.Create(max);
             var sumV = Vector256<float>.Zero;
             int i = 0;
             for (; i + 8 <= size; i += 8)
             {
-                var e = ExpApprox256(Avx.Subtract(Avx.LoadVector256(x + i), maxV));
+                var e = GgmlExpf256(Avx.Subtract(Avx.LoadVector256(x + i), maxV));
                 Avx.Store(x + i, e);
                 sumV = Avx.Add(sumV, e);
             }
@@ -7149,9 +7164,18 @@ public static unsafe class SimdKernels
     //  Fused SiLU(gate) * up  (AVX2)
     // ================================================================
 
+    /// <summary>
+    /// docs/bugstofix.md (ModelCompatibility.cs:461, deepseek2 investigation): ggml's real SiLU
+    /// (<c>ggml_v_silu</c>, examples/ggml/src/ggml-cpu/vec.h) is <c>x / (1 + ggml_v_expf(-x))</c> --
+    /// a single divide of the ORIGINAL x by the sum, not a reciprocal-then-multiply -- and runs on
+    /// every token of every layer's FFN (dense and MoE experts alike), a much wider tensor than
+    /// the router's logits. Switched to <see cref="GgmlExpf256"/> (matching <see cref="SoftmaxInPlace"/>'s
+    /// reasoning) and to a direct divide, matching ggml's exact expression shape instead of the
+    /// mathematically-equivalent-but-not-identically-rounding reciprocal-multiply this used before.
+    /// </summary>
     public static void SiLuMul(float* gate, float* up, int size)
     {
-        if (Fma.IsSupported && size >= 8)
+        if (Avx2.IsSupported && Fma.IsSupported && size >= 8)
         {
             var one = Vector256.Create(1.0f);
             int i = 0;
@@ -7159,12 +7183,11 @@ public static unsafe class SimdKernels
             {
                 var g = Avx.LoadVector256(gate + i);
                 var u = Avx.LoadVector256(up + i);
-                // sigmoid(g) = 1 / (1 + exp(-g))
+                // silu(g) = g / (1 + exp(-g))
                 var negG = Avx.Subtract(Vector256<float>.Zero, g);
-                var expNg = ExpApprox256(negG);
-                var sigmoid = Avx.Divide(one, Avx.Add(one, expNg));
-                // SiLU = g * sigmoid(g) * up
-                Avx.Store(gate + i, Avx.Multiply(Avx.Multiply(g, sigmoid), u));
+                var expNg = GgmlExpf256(negG);
+                var silu = Avx.Divide(g, Avx.Add(one, expNg));
+                Avx.Store(gate + i, Avx.Multiply(silu, u));
             }
             for (; i < size; i++)
             {
