@@ -926,22 +926,26 @@ public static unsafe class SimdKernels
             case DType.Q8_0:
             {
                 int bpr = (cols / 32) * 34;
+                int scratchBytes = Q8_0ScratchBytes(cols);
+                byte* scratch = stackalloc byte[scratchBytes];
+                QuantizeRowToQ8_0(input, cols, scratch);
+
                 if (rows >= MinRowsForParallel)
                 {
-                    var w1 = weights1; var w2 = weights2; var inp = input;
+                    var w1 = weights1; var w2 = weights2; var s = scratch;
                     var o1 = output1; var o2 = output2; int c = cols;
                     Parallel.For(0, rows, s_parallelOpts, r =>
                     {
-                        o1[r] = DotQ8_0(w1 + (long)r * bpr, inp, c);
-                        o2[r] = DotQ8_0(w2 + (long)r * bpr, inp, c);
+                        o1[r] = DotQ8_0_Q8_0(w1 + (long)r * bpr, s, c);
+                        o2[r] = DotQ8_0_Q8_0(w2 + (long)r * bpr, s, c);
                     });
                 }
                 else
                 {
                     for (int r = 0; r < rows; r++)
                     {
-                        output1[r] = DotQ8_0(weights1 + (long)r * bpr, input, cols);
-                        output2[r] = DotQ8_0(weights2 + (long)r * bpr, input, cols);
+                        output1[r] = DotQ8_0_Q8_0(weights1 + (long)r * bpr, scratch, cols);
+                        output2[r] = DotQ8_0_Q8_0(weights2 + (long)r * bpr, scratch, cols);
                     }
                 }
                 break;
@@ -1080,19 +1084,26 @@ public static unsafe class SimdKernels
             case DType.Q8_0:
             {
                 // No fused 2In kernel: Q8_0 has no expensive nibble unpack to amortize,
-                // so two sequential DotQ8_0 per row keep the weight-row-in-L1 reuse and
-                // stay bit-identical to single MatVec calls (and to the batched paths'
-                // DispatchDot2In, whose Q8_0 case is the same two-single-dots fallback).
+                // so two sequential DotQ8_0_Q8_0 per row (each input quantized once up
+                // front) keep the weight-row-in-L1 reuse and stay bit-identical to single
+                // MatVec calls (and to the batched paths' DispatchDot2In, whose Q8_0 case
+                // is the same two-single-dots fallback).
                 int bpr = (cols / 32) * 34;
+                int scratchBytes = Q8_0ScratchBytes(cols);
+                byte* scratch1 = stackalloc byte[scratchBytes];
+                byte* scratch2 = stackalloc byte[scratchBytes];
+                QuantizeRowToQ8_0(input1, cols, scratch1);
+                QuantizeRowToQ8_0(input2, cols, scratch2);
+
                 if (rows >= MinRowsForParallel)
                 {
-                    var w = weights; var i1 = input1; var i2 = input2;
+                    var w = weights; var s1 = scratch1; var s2 = scratch2;
                     var o1 = output1; var o2 = output2; int c = cols;
                     Parallel.For(0, rows, s_parallelOpts, r =>
                     {
                         byte* row = w + (long)r * bpr;
-                        o1[r] = DotQ8_0(row, i1, c);
-                        o2[r] = DotQ8_0(row, i2, c);
+                        o1[r] = DotQ8_0_Q8_0(row, s1, c);
+                        o2[r] = DotQ8_0_Q8_0(row, s2, c);
                     });
                 }
                 else
@@ -1100,8 +1111,8 @@ public static unsafe class SimdKernels
                     for (int r = 0; r < rows; r++)
                     {
                         byte* row = weights + (long)r * bpr;
-                        output1[r] = DotQ8_0(row, input1, cols);
-                        output2[r] = DotQ8_0(row, input2, cols);
+                        output1[r] = DotQ8_0_Q8_0(row, scratch1, cols);
+                        output2[r] = DotQ8_0_Q8_0(row, scratch2, cols);
                     }
                 }
                 break;
@@ -1248,22 +1259,33 @@ public static unsafe class SimdKernels
             }
             case DType.Q8_0:
             {
-                // Same rationale as the MatVec2In Q8_0 case (issue #417): no expensive
-                // unpack to amortize, so four sequential DotQ8_0 per row — one weight-row
-                // read per four tokens, bit-identical to four single MatVec calls and to
-                // DispatchDot4In's Q8_0 fallback (two 2In pairs → four single dots).
+                // Same rationale as the MatVec2In Q8_0 case: no expensive unpack to
+                // amortize, so four sequential DotQ8_0_Q8_0 per row (each input quantized
+                // once up front) -- one weight-row read per four tokens, bit-identical to
+                // four single MatVec calls and to DispatchDot4In's Q8_0 fallback (two 2In
+                // pairs -> four single dots).
                 int bpr = (cols / 32) * 34;
+                int scratchBytes = Q8_0ScratchBytes(cols);
+                byte* sc0 = stackalloc byte[scratchBytes];
+                byte* sc1 = stackalloc byte[scratchBytes];
+                byte* sc2 = stackalloc byte[scratchBytes];
+                byte* sc3 = stackalloc byte[scratchBytes];
+                QuantizeRowToQ8_0(input0, cols, sc0);
+                QuantizeRowToQ8_0(input1, cols, sc1);
+                QuantizeRowToQ8_0(input2, cols, sc2);
+                QuantizeRowToQ8_0(input3, cols, sc3);
+
                 if (rows >= MinRowsForParallel)
                 {
-                    var w = weights; var i0 = input0; var i1 = input1; var i2 = input2; var i3 = input3;
+                    var w = weights; var s0 = sc0; var s1 = sc1; var s2 = sc2; var s3 = sc3;
                     var o0 = output0; var o1 = output1; var o2 = output2; var o3 = output3; int c = cols;
                     Parallel.For(0, rows, s_parallelOpts, r =>
                     {
                         byte* row = w + (long)r * bpr;
-                        o0[r] = DotQ8_0(row, i0, c);
-                        o1[r] = DotQ8_0(row, i1, c);
-                        o2[r] = DotQ8_0(row, i2, c);
-                        o3[r] = DotQ8_0(row, i3, c);
+                        o0[r] = DotQ8_0_Q8_0(row, s0, c);
+                        o1[r] = DotQ8_0_Q8_0(row, s1, c);
+                        o2[r] = DotQ8_0_Q8_0(row, s2, c);
+                        o3[r] = DotQ8_0_Q8_0(row, s3, c);
                     });
                 }
                 else
@@ -1271,10 +1293,10 @@ public static unsafe class SimdKernels
                     for (int r = 0; r < rows; r++)
                     {
                         byte* row = weights + (long)r * bpr;
-                        output0[r] = DotQ8_0(row, input0, cols);
-                        output1[r] = DotQ8_0(row, input1, cols);
-                        output2[r] = DotQ8_0(row, input2, cols);
-                        output3[r] = DotQ8_0(row, input3, cols);
+                        output0[r] = DotQ8_0_Q8_0(row, sc0, cols);
+                        output1[r] = DotQ8_0_Q8_0(row, sc1, cols);
+                        output2[r] = DotQ8_0_Q8_0(row, sc2, cols);
+                        output3[r] = DotQ8_0_Q8_0(row, sc3, cols);
                     }
                 }
                 break;
@@ -2856,22 +2878,41 @@ public static unsafe class SimdKernels
         }
     }
 
+    /// <summary>
+    /// docs/bugstofix.md (ModelCompatibility.cs:461, deepseek2 investigation): unlike every other
+    /// quantized dtype's primary MatVec (Q2_K/Q3_K/IQ4_NL all quantize the activation and dot in
+    /// the integer domain, matching ggml's real dispatch -- see <see cref="MatVecQ2K"/> for the
+    /// pattern), this used to call <see cref="DotQ8_0"/>, which dequantizes the weight to F32 and
+    /// dots directly against the raw F32 activation -- never quantizing the activation at all.
+    /// ggml's real vec_dot for Q8_0 weights (ggml_vec_dot_q8_0_q8_0,
+    /// examples/ggml/src/ggml-cpu/arch/x86/quants.c) ALWAYS pairs Q8_0 weights with a Q8_0-quantized
+    /// activation -- there was no ggml-matching path for this dtype anywhere in this codebase before
+    /// this fix (the existing DotQ8_0_Q8K pairs Q8_0 weight sub-blocks against a Q8_K-quantized
+    /// activation instead, a different, coarser-grained activation scheme built for other dtypes'
+    /// shared infrastructure, not a port of ggml's real Q8_0 kernel). Since a native Q8_0 GGUF is
+    /// close to 100% Q8_0 tensors, this affected nearly the entire forward pass, not one kernel
+    /// among several. Fixed via the same QuantizeRowToQ8_0 + DotQ8_0_Q8_0 pairing
+    /// <see cref="MatVecIq4Nl"/> already established for IQ4_NL.
+    /// </summary>
     public static void MatVecQ8_0(float* output, byte* weights, float* input, int rows, int cols)
     {
         int bytesPerRow = (cols / 32) * 34;
+        int scratchBytes = Q8_0ScratchBytes(cols);
+        byte* scratch = stackalloc byte[scratchBytes];
+        QuantizeRowToQ8_0(input, cols, scratch);
 
         if (rows >= MinRowsForParallel)
         {
-            var w = weights; var inp = input; var outp = output;
+            var w = weights; var s = scratch; var outp = output; int c = cols;
             Parallel.For(0, rows, s_parallelOpts, i =>
             {
-                outp[i] = DotQ8_0(w + (long)i * bytesPerRow, inp, cols);
+                outp[i] = DotQ8_0_Q8_0(w + (long)i * bytesPerRow, s, c);
             });
         }
         else
         {
             for (int i = 0; i < rows; i++)
-                output[i] = DotQ8_0(weights + (long)i * bytesPerRow, input, cols);
+                output[i] = DotQ8_0_Q8_0(weights + (long)i * bytesPerRow, scratch, cols);
         }
     }
 
@@ -3244,6 +3285,79 @@ public static unsafe class SimdKernels
             acc += d * blockSum;
         }
         return (float)acc;
+    }
+
+    // ================================================================
+    //  Q8_0 x Q8_0 integer dot -- ggml_vec_dot_q8_0_q8_0 parity
+    // ================================================================
+    // docs/bugstofix.md (ModelCompatibility.cs:461): the ONLY ggml-matching Q8_0-weight dot in
+    // this codebase -- see MatVecQ8_0's doc comment for why DotQ8_0/DotQ8_0_Q8K were NOT this.
+
+    public static float DotQ8_0_Q8_0(byte* row, byte* scratch, int cols)
+    {
+        int numBlocks = cols / 32;
+        if (Avx2.IsSupported && Fma.IsSupported)
+            return DotQ8_0_Q8_0_Avx2(row, scratch, numBlocks);
+        return DotQ8_0_Q8_0_Scalar(row, scratch, numBlocks);
+    }
+
+    public static float DotQ8_0_Q8_0(byte* row, float* input, int cols)
+    {
+        int scratchBytes = Q8_0ScratchBytes(cols);
+        byte* scratch = stackalloc byte[scratchBytes];
+        QuantizeRowToQ8_0(input, cols, scratch);
+        return DotQ8_0_Q8_0(row, scratch, cols);
+    }
+
+    internal static float DotQ8_0_Q8_0_Scalar(byte* row, byte* scratch, int numBlocks)
+    {
+        const int bytesPerBlock = 34; // on-disk weight block: fp16 d[2] + qs[32]
+        float sumf = 0f;
+        for (int b = 0; b < numBlocks; b++)
+        {
+            byte* wb = row + b * bytesPerBlock;
+            byte* sb = scratch + b * 36; // scratch activation block: fp32 d[4] + qs[32]
+            float d = HalfToFloat(wb[0], wb[1]) * *(float*)sb;
+            sbyte* qw = (sbyte*)(wb + 2);
+            sbyte* qa = (sbyte*)(sb + 4);
+            int isum = 0;
+            for (int i = 0; i < 32; i++) isum += qw[i] * qa[i];
+            sumf += d * isum;
+        }
+        return sumf;
+    }
+
+    /// <summary>
+    /// Instruction-for-instruction port of ggml's real AVX2 <c>ggml_vec_dot_q8_0_q8_0</c> --
+    /// per-block scale FMA'd into one running Vector256&lt;float&gt; accumulator across the WHOLE
+    /// row, one hsum at the very end (not a per-block scalar sum), matching
+    /// <c>mul_sum_i8_pairs_float</c>'s sign/abs-based unsigned-times-signed maddubs trick exactly.
+    /// </summary>
+    internal static float DotQ8_0_Q8_0_Avx2(byte* row, byte* scratch, int numBlocks)
+    {
+        const int bytesPerBlock = 34;
+        var acc = Vector256<float>.Zero;
+        var ones16 = Vector256.Create((short)1);
+
+        for (int b = 0; b < numBlocks; b++)
+        {
+            byte* wb = row + b * bytesPerBlock;
+            byte* sb = scratch + b * 36;
+            float d = HalfToFloat(wb[0], wb[1]) * *(float*)sb;
+
+            var qw = Vector256.LoadUnsafe(ref *(wb + 2)).AsSByte();
+            var qa = Vector256.LoadUnsafe(ref *(sb + 4)).AsSByte();
+
+            // mul_sum_i8_pairs_float(qw, qa): ax = |qw|, sy = sign(qa, qw) -- converts a
+            // signed*signed dot into the unsigned*signed shape maddubs (VPMADDUBSW) requires.
+            var ax = Avx2.Abs(qw);
+            var sy = Avx2.Sign(qa, qw);
+            var dot16 = Avx2.MultiplyAddAdjacent(ax, sy);
+            var dot32 = Avx2.MultiplyAddAdjacent(dot16, ones16);
+            var q = Avx.ConvertToVector256Single(dot32);
+            acc = Fma.MultiplyAdd(Vector256.Create(d), q, acc);
+        }
+        return HSum256(acc);
     }
 
     // ================================================================

@@ -418,9 +418,11 @@ public sealed unsafe class SimdKernelsQ8KSTests
     /// a token's logits must not depend on whether it shared a weight read with one
     /// other token (the old MatVec2In pairing) or three (MatVec4In). Covers every
     /// dense-FFN dtype: Q4_K/Q5_K/Q6_K (register-tiled quad kernels), F32, and Q8_0
-    /// (which deliberately routes through the dequant fallback to stay identical to
-    /// single-token decode). Includes a rows ≥ 64 case to exercise the Parallel.For
-    /// path, and a deliberately mis-mappable token order so a swapped slot is caught.
+    /// (each input independently quantized to Q8_0 then dotted via DotQ8_0_Q8_0,
+    /// matching single-token MatVecQ8_0 decode as of the 2026-08-27 activation-
+    /// quantization fix — see docs/bugstofix.md). Includes a rows ≥ 64 case to
+    /// exercise the Parallel.For path, and a deliberately mis-mappable token order
+    /// so a swapped slot is caught.
     /// </summary>
     [Fact]
     public void MatVec4In_BitwiseMatchesSingleMatVec()
@@ -469,10 +471,14 @@ public sealed unsafe class SimdKernelsQ8KSTests
 
                 for (int r = 0; r < rows; r++)
                 {
-                    Assert.Equal(BitConverter.SingleToInt32Bits(refOut[0][r]), BitConverter.SingleToInt32Bits(o0[r]));
-                    Assert.Equal(BitConverter.SingleToInt32Bits(refOut[1][r]), BitConverter.SingleToInt32Bits(o1[r]));
-                    Assert.Equal(BitConverter.SingleToInt32Bits(refOut[2][r]), BitConverter.SingleToInt32Bits(o2[r]));
-                    Assert.Equal(BitConverter.SingleToInt32Bits(refOut[3][r]), BitConverter.SingleToInt32Bits(o3[r]));
+                    Assert.True(BitConverter.SingleToInt32Bits(refOut[0][r]) == BitConverter.SingleToInt32Bits(o0[r]),
+                        $"dt={dt} rows={rows} cols={cols} r={r} slot=0: ref={refOut[0][r]:R} got={o0[r]:R}");
+                    Assert.True(BitConverter.SingleToInt32Bits(refOut[1][r]) == BitConverter.SingleToInt32Bits(o1[r]),
+                        $"dt={dt} rows={rows} cols={cols} r={r} slot=1: ref={refOut[1][r]:R} got={o1[r]:R}");
+                    Assert.True(BitConverter.SingleToInt32Bits(refOut[2][r]) == BitConverter.SingleToInt32Bits(o2[r]),
+                        $"dt={dt} rows={rows} cols={cols} r={r} slot=2: ref={refOut[2][r]:R} got={o2[r]:R}");
+                    Assert.True(BitConverter.SingleToInt32Bits(refOut[3][r]) == BitConverter.SingleToInt32Bits(o3[r]),
+                        $"dt={dt} rows={rows} cols={cols} r={r} slot=3: ref={refOut[3][r]:R} got={o3[r]:R}");
                 }
             }
         }
