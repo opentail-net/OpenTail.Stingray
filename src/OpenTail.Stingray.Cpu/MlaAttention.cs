@@ -32,14 +32,16 @@ public static unsafe class MlaAttention
             float* inRow = input + (nuint)m * (nuint)embDim;
             float* outRow = outputCompressed + (nuint)m * (nuint)totalKvDim;
 
-            // 1. Matrix multiply input against W_kv_a_mqa [embDim x 576]
+            // 1. Matrix multiply input against W_kv_a_mqa, stored row-major [576, embDim] (the
+            // standard GGUF Linear-weight [out_features, in_features] layout every other MatVec
+            // in this codebase assumes -- row j starts at j*embDim, not an embDim-strided column).
             for (int j = 0; j < totalKvDim; j++)
             {
                 float sum = 0f;
-                float* wCol = wKvAMqa + j;
+                float* wRow = wKvAMqa + (long)j * embDim;
                 for (int k = 0; k < embDim; k++)
                 {
-                    sum += inRow[k] * wCol[k * totalKvDim];
+                    sum += inRow[k] * wRow[k];
                 }
                 outRow[j] = sum;
             }
@@ -73,8 +75,11 @@ public static unsafe class MlaAttention
         int kNoopDim,
         int vDim)
     {
-        int totalOutDim = numHeads * (kNoopDim + vDim); // 16 * (64 + 128) = 3072
-
+        // wKvB is stored row-major [totalOutDim, kvLoraRank] (same [out_features, in_features]
+        // convention as every other Linear weight -- see ForwardPass.Decode.cs's own FusedMatVec
+        // call for this exact tensor, which passes rows=totalOutDim, cols=kvLoraRank). Row `col`
+        // starts at col*kvLoraRank, not a totalOutDim-strided column -- the prior code read it
+        // transposed.
         for (int h = 0; h < numHeads; h++)
         {
             float* kHead = outKNoop + h * kNoopDim;
@@ -84,10 +89,11 @@ public static unsafe class MlaAttention
             for (int i = 0; i < kNoopDim; i++)
             {
                 int col = h * (kNoopDim + vDim) + i;
+                float* wRow = wKvB + (long)col * kvLoraRank;
                 float sum = 0f;
                 for (int k = 0; k < kvLoraRank; k++)
                 {
-                    sum += kvLatentNormed[k] * wKvB[k * totalOutDim + col];
+                    sum += kvLatentNormed[k] * wRow[k];
                 }
                 kHead[i] = sum;
             }
@@ -96,10 +102,11 @@ public static unsafe class MlaAttention
             for (int i = 0; i < vDim; i++)
             {
                 int col = h * (kNoopDim + vDim) + kNoopDim + i;
+                float* wRow = wKvB + (long)col * kvLoraRank;
                 float sum = 0f;
                 for (int k = 0; k < kvLoraRank; k++)
                 {
-                    sum += kvLatentNormed[k] * wKvB[k * totalOutDim + col];
+                    sum += kvLatentNormed[k] * wRow[k];
                 }
                 vHead[i] = sum;
             }

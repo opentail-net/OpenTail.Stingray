@@ -20,6 +20,17 @@ public sealed class MoEWorkspace
 {
     public int MaxTokens { get; private set; }
     public int MaxExperts { get; private set; }
+
+    /// <summary>
+    /// The actual expert count <see cref="DeepSeekMoeGraph.BatchRouteTokens"/> routed against on
+    /// its most recent call -- distinct from <see cref="MaxExperts"/>, which only ever grows
+    /// (<see cref="EnsureCapacity"/> never shrinks it) and can exceed this call's real expert
+    /// count once the workspace has been reused after a larger call. Reading
+    /// <c>ExpertOffsets[MaxExperts]</c> instead of <c>ExpertOffsets[LastNumExperts]</c> for the
+    /// gather/scatter total silently read a stale-or-zeroed slot in that case, dropping every
+    /// expert's gather/scatter work with no error.
+    /// </summary>
+    public int LastNumExperts { get; internal set; }
     public int TopK { get; private set; }
     public int EmbDim { get; private set; }
     public int ExpertIntermediateDim { get; private set; }

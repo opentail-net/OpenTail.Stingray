@@ -49,11 +49,14 @@ public unsafe class DeepSeek2Tests
         const int topK = 2;
 
         float[] input = [1.0f, 0.5f, -0.2f, 0.8f];
-        float[] wGate = new float[embDim * numExperts];
+        // Row-major [numExperts, embDim] -- the standard GGUF Linear-weight [out_features,
+        // in_features] layout every MatVec in this codebase assumes; row e occupies
+        // [e*embDim, (e+1)*embDim).
+        float[] wGate = new float[numExperts * embDim];
 
-        // Favor expert 3 and expert 5
-        wGate[0 * numExperts + 3] = 2.0f;
-        wGate[0 * numExperts + 5] = 1.5f;
+        // Favor expert 3 and expert 5 by weighting their (row's) input-dim-0 coefficient.
+        wGate[3 * embDim + 0] = 2.0f;
+        wGate[5 * embDim + 0] = 1.5f;
 
         int[] indices = new int[topK];
         float[] weights = new float[topK];

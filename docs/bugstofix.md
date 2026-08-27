@@ -1,27 +1,11 @@
 Resolved entries split out to
-[done/bugstofix-resolved-2026-08.md](done/bugstofix-resolved-2026-08.md), 2026-08-15. This file
-keeps only what's still open.
+[done/bugstofix-resolved-2026-08.md](done/bugstofix-resolved-2026-08.md), 2026-08-15 (most recently
+updated 2026-08-27 with the `DeepSeekMoeGraph.cs`/`MlaAttention.cs` column-major layout fixes and
+the `IqCodebooks.cs` entry, which had already been marked FIXED but was left here by mistake). This
+file keeps only what's still open.
 
 ```json
 [
-  {
-    "file": "src/OpenTail.Stingray.Cpu/DeepSeekMoeGraph.cs",
-    "line": 36,
-    "summary": "STILL UNFIXED, but no longer on the exercised code path. This standalone file's column-major router bug was never touched this session -- the new CPU MLA work (ForwardPass.cs) reuses the codebase's existing, generic MoE routing (MoeFfn/MoeFfnBatched, already used correctly by Qwen3-MoE/OLMoE/qwen35moe) rather than this file's helpers, gated per-layer on the new IsMoeLayer(layer) so deepseek2's leading_dense_block_count is respected. Whether that generic path is itself fully correct for deepseek2's routing wasn't specifically re-verified as part of the numerical-bug hunt below.",
-    "failure_scenario": "Unchanged from before: any caller that DOES route through this file's SelectTopKExperts would still get random expert selection. Not currently reachable from CPU deepseek2 inference, but the file itself remains broken and undeleted -- worth removing or fixing if anything ever calls it."
-  },
-  {
-    "file": "src/OpenTail.Stingray.Cpu/MlaAttention.cs",
-    "line": 42,
-    "summary": "STILL UNFIXED, but no longer on the exercised code path. The new CPU MLA work (ForwardPass.cs: MlaComputeQkv/MlaComputeQkvBatched) is freshly written, quantization-aware code that does NOT call this file's CompressKvLatent/UncompressKv helpers at all -- their column-major transpose bug was never exercised or fixed.",
-    "failure_scenario": "Unchanged from before for any caller of this standalone helper class. Not currently reachable from CPU deepseek2 inference (see ModelCompatibility.cs:460 entry below for what IS reachable, and its own unresolved numerical bug) -- worth removing or fixing if anything ever calls it."
-  },
-  {
-    "file": "src/OpenTail.Stingray.Cpu/IqCodebooks.cs",
-    "line": 33,
-    "summary": "FIXED 2026-08-21. Was: IQ2_XXS/IQ3_XXS/IQ3_S/IQ4_XS grid tables were procedurally fabricated from a bit-pattern formula rather than the real calibrated GGML codebook constants, and the matching decoders skipped the real format's 9-bit index/7-bit sign-mask/per-group scale. Fixed by copying the real tables verbatim from examples/ggml/src/ggml-common.h (iq2xxs_grid: 256 x uint64, iq3xxs_grid: 256 x uint32, iq3s_grid: 512 x uint32, ksigns_iq2xs: 128-entry sign-mask lookup, kmask_iq2xs: 8-entry bit mask) and rewriting all four Dequantize.cs decoders (DequantIq2Xxs/DequantIq3Xxs/DequantIq3S/DequantIq4Xs) to match ggml's real dequantize_row_iq2_xxs/iq3_xxs/iq3_s/iq4_xs algorithms exactly -- per-32-element packed scale/sign words for the XXS variants (0.5-offset quarter-scale, 7-bit sign field selecting per-element negation via ksigns_iq2xs), explicit per-element sign bytes and a 9th grid-index bit from a qh side-channel for IQ3_S, and (for IQ4_XS specifically) discovering it is NOT a grid-vector format at all -- it reuses IQ4_NL's 16-entry non-linear codebook per-nibble with eight 32-element sub-groups each carrying its own 6-bit scale (4 bits from scales_l, 2 from scales_h), not the fabricated 256-entry grid the old code used. Also updated tests/OpenTail.Stingray.Tests.Core/IqQuantTests.cs's IqCodebooks_GridSizesAndValuesAreValid (the old test asserted the fabricated jagged-array shape; now asserts the real flat-integer-array sizes and spot-checks specific values against ggml's own table literals) -- all 570 OpenTail.Stingray.Tests.Core tests and 626 OpenTail.Stingray.Tests.ForwardPass.Fast tests pass.",
-    "failure_scenario": "RESOLVED for the dequantization path itself. NOTE: none of these four dtypes are currently in ModelCompatibility.cs's IsSupportedWeightDType allowlist, so no admitted architecture can load a GGUF using them yet regardless of this fix -- this is a real, dormant correctness improvement ready for whenever someone admits an architecture/checkpoint that uses one of these formats (deliberately NOT force-added to the allowlist here, since admission in this codebase requires its own real-GGUF greedy-parity verification, not just a decoder fix). Before that admission: verify DequantIq2Xxs/DequantIq3Xxs/DequantIq3S/DequantIq4Xs against a REAL small IQ-quantized GGUF and llama.cpp reference output, the same way every other admitted architecture in this file has been -- the current test suite only checks structural correctness (grid table values, NaN/Infinity absence on synthetic input) via bit-manipulation of the reference algorithm, not an actual model's real quantized weights."
-  },
   {
     "file": "src/OpenTail.Stingray.Engine/ModelCompatibility.cs",
     "line": 460,
@@ -82,4 +66,8 @@ keeps only what's still open.
 ]
 ```
 
-**Cut for the cap but still real and worth a look**, roughly in priority order: `DeepSeekMoeGraph.cs:172` (MoE `ExpertOffsets[MaxExperts]` off-by-index — silently drops expert gather/scatter on workspace reuse). Two candidates were explicitly REFUTED by verification: the `KvMemoryGovernor` TOCTOU race (safe — serialized through the session's own mutex with re-validation) and the `InferenceSession` double-release (safe — `Dispose()` is idempotency-guarded). Two more (`SpeculativeDecoder.cs` StepSampled/PLD bugs, `InferenceSession.cs` unguarded `Fork()` on CUDA) were confirmed as real defects but currently unreachable/latent — no wired call path exercises them yet.
+**Cut for the cap but still real and worth a look**: `SpeculativeDecoder.cs` StepSampled/PLD bugs — confirmed as a real defect but currently unreachable/latent, no wired call path exercises it yet.
+
+**Historical, now moot** (both files were deleted 2026-08-27 when `InferenceSession`/`InferenceRuntime` and their superseded predecessors were removed — see `docs/030-delete-inferencesession-todo.md`): the `KvMemoryGovernor` TOCTOU race and the `InferenceSession` double-release/unguarded-`Fork()`-on-CUDA findings no longer apply to anything in the codebase.
+
+**Resolved 2026-08-27** (moved to `docs/done/bugstofix-resolved-2026-08.md`): the `DeepSeekMoeGraph.cs:172` `ExpertOffsets[MaxExperts]` off-by-index this note used to flag.

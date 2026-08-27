@@ -30,10 +30,13 @@ public static unsafe class DeepSeekMoeGraph
         for (int e = 0; e < numExperts; e++)
         {
             float sum = 0f;
-            float* col = wGateInp + e;
+            // wGateInp is row-major [numExperts, embDim] (the standard GGUF Linear-weight layout
+            // every other MatVec in this codebase assumes, e.g. SimdKernels.MatVecF32's own
+            // contiguous-row reads) -- row e starts at e*embDim, not a numExperts-strided column.
+            float* row = wGateInp + (long)e * embDim;
             for (int k = 0; k < embDim; k++)
             {
-                sum += inputToken[k] * col[k * numExperts];
+                sum += inputToken[k] * row[k];
             }
             logits[e] = sum;
             if (sum > maxLogit) maxLogit = sum;
@@ -106,6 +109,7 @@ public static unsafe class DeepSeekMoeGraph
     {
         workspace.EnsureCapacity(numTokens, numExperts, topK, embDim, workspace.ExpertIntermediateDim);
         workspace.Reset();
+        workspace.LastNumExperts = numExperts;
 
         // 1. Route each token and populate expert counts
         for (int t = 0; t < numTokens; t++)
@@ -169,7 +173,7 @@ public static unsafe class DeepSeekMoeGraph
         int embDim,
         MoEWorkspace workspace)
     {
-        int totalAssignments = workspace.ExpertOffsets[workspace.MaxExperts];
+        int totalAssignments = workspace.ExpertOffsets[workspace.LastNumExperts];
         for (int i = 0; i < totalAssignments; i++)
         {
             ref readonly var assignment = ref workspace.Assignments[i];
@@ -192,7 +196,7 @@ public static unsafe class DeepSeekMoeGraph
         int embDim,
         MoEWorkspace workspace)
     {
-        int totalAssignments = workspace.ExpertOffsets[workspace.MaxExperts];
+        int totalAssignments = workspace.ExpertOffsets[workspace.LastNumExperts];
         for (int i = 0; i < totalAssignments; i++)
         {
             ref readonly var assignment = ref workspace.Assignments[i];
