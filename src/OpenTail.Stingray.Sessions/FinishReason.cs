@@ -18,5 +18,8 @@ public enum FinishReason
     ContextLimit,
 
     /// <summary>Generation was prematurely cancelled via a <see cref="System.Threading.CancellationToken"/>.</summary>
-    Cancelled
+    Cancelled,
+
+    /// <summary>The turn raised an exception before it could commit (see <c>HotSession.RunTurnAsync</c>'s fail path).</summary>
+    Failed
 }

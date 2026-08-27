@@ -45,11 +45,12 @@ is fully done: Phases 1 (KV memory governance), 2 (cross-session prefix sharing)
 **Remaining**: [030 — delete InferenceSession/InferenceRuntime](030-delete-inferencesession-todo.md).
 The plan's own stated end state — once all three phases are done, the superseded
 `InferenceSession`/`InferenceRuntime` architecture and its ~20+ tests get deleted, not archived —
-has not been executed yet. Two items need an explicit decision (port or deliberately drop) before
-that deletion, rather than deleting by default: `ISessionMetadata`/`SessionMetrics` (confirmed
-novel, no `HotSession` equivalent) and the `GenerationResult`/`GenerationStream`/`FinishReason`
-bundling shape (partial — `HotSessionTurnResult` doesn't carry the same fields). See doc 030 for
-the full breakdown.
+has not been executed yet. Doc 030's two gating decisions are now both resolved (2026-08-27, ported
+both):
+`ISessionMetadata`/`ISessionMetrics` are ported onto `HotSession` (`HotSession.Metadata`/`.Metrics`,
+covered by `HotSessionMetricsMetadataTests.cs`), and `HotSessionTurnResult` now carries
+`FinishReason`/`ToolCalls` derived from its chunk stream the way `GenerationResult` used to. The
+actual deletion pass (doc 030's "How to execute" steps 1–5) has not been run yet.
 
 **Also found (and fixed) while stress-testing this path**: a severe, unrelated prefill-packing
 defect affecting real concurrent `HotSession` traffic at 5–15 simultaneous requests, since

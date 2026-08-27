@@ -48,6 +48,12 @@ confirmed novel (now ported), 3 confirmed redundant or alternate-design, 1 parti
   not something to fix first.
 - **`SessionBranchingExtensions.cs`** and any other `InferenceSession`-only branching code —
   superseded by Phase 3's `HotSessionRuntime.Fork`.
+- **`GenerationResult.cs`, `GenerationStream.cs`** — moved here from "What NOT to delete" now that
+  their bundling shape is ported onto `HotSessionTurnResult` (see that section for detail).
+  **`FinishReason.cs` is NOT part of this deletion** — `HotSessionTurnResult` now depends on that
+  same enum (it gained a `Failed` case for `HotSession`'s fail path, which `GenerationStream` never
+  needed), so it stays as a shared type used by both architectures until this deletion pass, and
+  keeps being used afterward.
 - **~20+ test files** exercising the above (`KvMemoryGovernorTests.cs`, `SessionBranchingTests.cs`,
   `ForkAndVoteTests.cs`, and others per Phase 0's original enumeration) — these were real, valuable
   oracles *during* migration (see `docs/028`'s "silver lining" section); once each phase's
@@ -55,16 +61,35 @@ confirmed novel (now ported), 3 confirmed redundant or alternate-design, 1 parti
 
 ## What NOT to delete without a separate decision
 
+**Both items below were resolved 2026-08-27: ported, not dropped.** Neither blocks deletion anymore
+— they're recorded here for history, not as an open gate.
+
 - **`GenerationResult.cs`, `GenerationStream.cs`, `FinishReason.cs`** — Phase 0 marked these
   "partial": `HotSessionTurnResult` exists but doesn't bundle `FinishReason`/`ToolCalls`/
-  `ContinuationToken`/`Metrics` into one record the way `GenerationResult` does. Check whether
-  anything ported during Phases 1-3 ended up depending on this shape before deleting it — if
-  nothing does, it's likely safe, but this wasn't explicitly re-verified when Phase 0 was closed.
+  `ContinuationToken`/`Metrics` into one record the way `GenerationResult` does.
+  **Resolved**: `HotSessionTurnResult` now carries `FinishReason` and `ToolCalls` directly, derived
+  from its own `Chunks` via `HotSessionTurnResult.DescribeOutcome` (mirrors
+  `GenerationStream.Enumerator`'s derivation logic). `Cursor`/`Operation` already expose the
+  cursor and revision/commit state `ContinuationToken` described; `Metrics` is available via
+  `HotSession.Metrics` directly rather than bundled into the turn result, since it's a per-session
+  read, not a per-turn one. Added `FinishReason.Failed` for `HotSession`'s fail path, which
+  `GenerationStream` never modeled (it rethrew instead of returning a result on generic failure).
+  Only `GenerationResult.cs`/`GenerationStream.cs` are safe to delete — `FinishReason.cs` is now a
+  dependency of `HotSessionTurnResult` and must stay; see "What to delete" above for the corrected
+  split.
 - **`ISessionMetadata.cs`, `SessionMetadata.cs`, `ISessionMetrics.cs`, `SessionMetrics.cs`,
   `SessionMetricsSnapshot.cs`** — Phase 0 confirmed these **novel** (no `HotSession` equivalent
-  exists). Deleting `InferenceSession` without first deciding whether `HotSession` needs
-  session-scoped metadata/metrics would silently drop a capability, not just remove dead code. Port
-  first, or explicitly decide the capability isn't needed, before deleting.
+  exists).
+  **Resolved**: `HotSession` now exposes `Metadata` (`ISessionMetadata`, one instance per session,
+  copied into each branch on `HotSessionRuntime.Fork`) and `Metrics` (`ISessionMetrics`, backed by
+  the pre-existing `SessionMetrics` class — prompt/generated token counts and prefill/generation
+  timing recorded only on a turn that actually commits, `KvPagesHeld` derived from
+  `RetainedSequenceState.MaterializedPosition` against the repo-wide `KvPageSize.Default` (32
+  tokens/page) constant, since the retained cache handle doesn't expose real backend page counts).
+  Covered by `HotSessionMetricsMetadataTests.cs`. These five files (`ISessionMetadata.cs`,
+  `SessionMetadata.cs`, `ISessionMetrics.cs`, `SessionMetrics.cs`, `SessionMetricsSnapshot.cs`) are
+  now shared by both architectures — keep them; only `InferenceSession.cs`'s own usage goes away
+  with the deletion, not these types.
 
 ## How to execute this when picked up
 

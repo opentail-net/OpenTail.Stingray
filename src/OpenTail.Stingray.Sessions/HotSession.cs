@@ -6,12 +6,59 @@ using OpenTail.Stingray.Engine;
 
 namespace OpenTail.Stingray.Sessions;
 
-/// <summary>Outcome of one in-memory hot session turn.</summary>
+/// <summary>
+/// Outcome of one in-memory hot session turn. <see cref="FinishReason"/> and <see cref="ToolCalls"/>
+/// are derived from <see cref="Chunks"/> the same way <c>GenerationStream</c> used to derive
+/// <c>GenerationResult</c> from an <see cref="IInferenceSession"/>'s chunk stream.
+/// </summary>
 public sealed record HotSessionTurnResult(
     SessionOperationSnapshot Operation,
     SessionCursor Cursor,
     ImmutableArray<GenerateChunk> Chunks,
-    bool IsIdempotentReplay);
+    bool IsIdempotentReplay,
+    FinishReason FinishReason,
+    IReadOnlyList<OpenTail.Stingray.Core.Tools.ToolCall> ToolCalls)
+{
+    /// <summary>
+    /// Derives <see cref="FinishReason"/> and <see cref="ToolCalls"/> from a completed chunk
+    /// sequence. <paramref name="cancelled"/>/<paramref name="failed"/> take priority over whatever
+    /// the chunks themselves indicate, since a turn that didn't reach its own <c>Stop</c>/<c>ToolCall</c>
+    /// chunk was interrupted before the engine could report why.
+    /// </summary>
+    internal static (FinishReason Reason, IReadOnlyList<OpenTail.Stingray.Core.Tools.ToolCall> ToolCalls) DescribeOutcome(
+        ImmutableArray<GenerateChunk> chunks, bool cancelled, bool failed)
+    {
+        var toolCalls = new List<OpenTail.Stingray.Core.Tools.ToolCall>();
+        FinishReason? reason = null;
+        foreach (var chunk in chunks)
+        {
+            if (chunk.Kind == GenerateChunkKind.ToolCall)
+            {
+                reason = OpenTail.Stingray.Sessions.FinishReason.ToolCall;
+                if (chunk.ToolCalls is not null) toolCalls.AddRange(chunk.ToolCalls);
+            }
+            else if (chunk.Kind == GenerateChunkKind.Stop)
+            {
+                if (chunk.TruncatedByResourceBudget)
+                    reason = OpenTail.Stingray.Sessions.FinishReason.ContextLimit;
+                else if (chunk.TruncatedByMaxTokens)
+                    reason = OpenTail.Stingray.Sessions.FinishReason.MaxTokens;
+                else
+                    reason ??= OpenTail.Stingray.Sessions.FinishReason.Completed;
+
+                if (chunk.ToolCalls is not null) toolCalls.AddRange(chunk.ToolCalls);
+            }
+            else if (chunk.ToolCalls is not null)
+            {
+                toolCalls.AddRange(chunk.ToolCalls);
+            }
+        }
+
+        if (cancelled) return (OpenTail.Stingray.Sessions.FinishReason.Cancelled, toolCalls);
+        if (failed) return (OpenTail.Stingray.Sessions.FinishReason.Failed, toolCalls);
+        return (reason ?? OpenTail.Stingray.Sessions.FinishReason.Completed, toolCalls);
+    }
+}
 
 /// <summary>
 /// Couples one retained CPU sequence state to the in-memory revision/lease ledger. This is the
@@ -35,6 +82,8 @@ public sealed class HotSession : IDisposable
     private readonly Func<SessionId, long, long>? _reclaimIdleBytes;
     private readonly RetainedSequenceState _state = new();
     private readonly object _lifecycleGate = new();
+    private readonly SessionMetrics _metrics;
+    private readonly SessionMetadata _metadata = new();
     private SessionCursor _cursor = new([], 0, 0, 0, 0, StateCoverage.Full);
     private bool _disposed;
 
@@ -62,7 +111,18 @@ public sealed class HotSession : IDisposable
         _onDisposed = onDisposed;
         _modelKey = modelKey ?? engine.ModelId;
         _reclaimIdleBytes = reclaimIdleBytes;
+        // Page granularity is not queryable from RetainedSequenceState's backend-opaque cache handle
+        // (see its own doc comment); KvPageSize.Default (32 tokens/page) is the same fixed constant
+        // every concrete backend (CpuKvCache, CudaSequenceKvCache) already uses, so this reports the
+        // same page count a real backend query would.
+        _metrics = new SessionMetrics(() => KvPageMath.GetRequiredPageCount(_state.MaterializedPosition, KvPageSize.Default.Tokens));
     }
+
+    /// <summary>Read-only metrics surface exposing per-session inference and physical KV page usage statistics.</summary>
+    public ISessionMetrics Metrics => _metrics;
+
+    /// <summary>Application-level metadata bag associated with this session (see <see cref="ISessionMetadata"/>).</summary>
+    public ISessionMetadata Metadata => _metadata;
 
     /// <summary>Whether this session holds a retained cache and has no turn queued or active —
     /// i.e. whether <see cref="EvictRetainedCacheIfIdle"/> could free anything right now. Racy by
@@ -172,8 +232,13 @@ public sealed class HotSession : IDisposable
             var lease = _store.AcquireLease(SessionId);
             var operation = _store.Begin(lease, expectedRevision, operationId, requestDigest);
             if (operation.State != SessionOperationState.Accepted)
-                return new HotSessionTurnResult(operation, Cursor,
-                    operation.ResultChunks?.ToImmutableArray() ?? [], IsIdempotentReplay: true);
+            {
+                var replayedChunks = operation.ResultChunks?.ToImmutableArray() ?? [];
+                var (replayReason, replayToolCalls) = HotSessionTurnResult.DescribeOutcome(
+                    replayedChunks, cancelled: false, failed: operation.State == SessionOperationState.Failed);
+                return new HotSessionTurnResult(operation, Cursor, replayedChunks, IsIdempotentReplay: true,
+                    replayReason, replayToolCalls);
+            }
 
             var priorCursor = Cursor;
             int projectedPositions = checked(priorCursor.MaterializedPositionCount + appendTokens.Length
@@ -234,14 +299,33 @@ public sealed class HotSession : IDisposable
                 bool operationCommitted = false;
                 try
                 {
+                    var turnClock = System.Diagnostics.Stopwatch.StartNew();
+                    TimeSpan prefillElapsed = TimeSpan.Zero;
+                    bool firstChunkSeen = false;
                     await foreach (var chunk in _engine.GenerateRetainedChunksAsync(
                         appendPrompt, sampling, _state, cancellationToken,
                         targetPositions => reservation.TryRenew(checked((long)targetPositions * _kvBytesPerToken))).ConfigureAwait(false))
+                    {
+                        if (!firstChunkSeen)
+                        {
+                            // The engine performs prefill before emitting its first chunk, so time to
+                            // first chunk is the closest approximation to prefill latency available
+                            // from this call site without deeper engine instrumentation.
+                            prefillElapsed = turnClock.Elapsed;
+                            firstChunkSeen = true;
+                        }
                         chunks.Add(chunk);
+                    }
                     generationCompleted = true;
+                    TimeSpan generationElapsed = turnClock.Elapsed - prefillElapsed;
 
                     var outcome = _state.LastTurn
                         ?? throw new InvalidOperationException("The retained engine completed without a retained turn outcome.");
+                    // Only successfully committed turns count toward ISessionMetrics (its own doc
+                    // says "successfully committed") -- the cancel/fail branches below deliberately
+                    // do not record partial metrics.
+                    _metrics.AddPromptTokens(appendTokens.Length, prefillElapsed);
+                    _metrics.AddGeneratedTokens(outcome.GeneratedTokenIds.Length, generationElapsed);
                     var nextCursor = BuildNextCursor(appendTokens, outcome);
                     _store.Transition(lease, operationId, SessionOperationState.Generating, SessionOperationState.CommitPrepared);
                     var resultChunks = chunks.ToImmutable();
@@ -266,7 +350,8 @@ public sealed class HotSession : IDisposable
                     // faults, the catch path can still restore cache, cursor and accounting.
                     var completed = _store.Complete(lease, operationId, resultChunks);
                     operationCommitted = true;
-                    return new HotSessionTurnResult(completed, nextCursor, resultChunks, IsIdempotentReplay: false);
+                    var (reason, toolCalls) = HotSessionTurnResult.DescribeOutcome(resultChunks, cancelled: false, failed: false);
+                    return new HotSessionTurnResult(completed, nextCursor, resultChunks, IsIdempotentReplay: false, reason, toolCalls);
                 }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                 {
@@ -274,7 +359,9 @@ public sealed class HotSession : IDisposable
                     if (operationCommitted) throw;
                     CompensateUncommittedTurn(generationCompleted, cursorPublished, priorCursor, resourcesFinalized);
                     var cancelled = _store.Cancel(lease, operationId);
-                    return new HotSessionTurnResult(cancelled, Cursor, chunks.ToImmutable(), IsIdempotentReplay: false);
+                    var cancelledChunks = chunks.ToImmutable();
+                    var (cancelReason, cancelToolCalls) = HotSessionTurnResult.DescribeOutcome(cancelledChunks, cancelled: true, failed: false);
+                    return new HotSessionTurnResult(cancelled, Cursor, cancelledChunks, IsIdempotentReplay: false, cancelReason, cancelToolCalls);
                 }
                 catch (Exception ex)
                 {
@@ -282,7 +369,9 @@ public sealed class HotSession : IDisposable
                     if (operationCommitted) throw;
                     CompensateUncommittedTurn(generationCompleted, cursorPublished, priorCursor, resourcesFinalized);
                     var failed = _store.Fail(lease, operationId, ex.Message);
-                    return new HotSessionTurnResult(failed, Cursor, chunks.ToImmutable(), IsIdempotentReplay: false);
+                    var failedChunks = chunks.ToImmutable();
+                    var (failReason, failToolCalls) = HotSessionTurnResult.DescribeOutcome(failedChunks, cancelled: false, failed: true);
+                    return new HotSessionTurnResult(failed, Cursor, failedChunks, IsIdempotentReplay: false, failReason, failToolCalls);
                 }
             }
         }
@@ -605,6 +694,7 @@ public sealed class HotSessionRuntime
             {
                 var branch = Create();
                 branches.Add(branch);
+                foreach (var kv in parent.Metadata.GetEntries()) branch.Metadata.Set(kv.Key, kv.Value);
                 if (tokenOnlyLength == 0) continue;
 
                 var forked = parent.TryForkSharedPrefixCache(tokenOnlyLength)
