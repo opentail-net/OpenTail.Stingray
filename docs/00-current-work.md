@@ -49,8 +49,15 @@ has not been executed yet. Doc 030's two gating decisions are now both resolved 
 both):
 `ISessionMetadata`/`ISessionMetrics` are ported onto `HotSession` (`HotSession.Metadata`/`.Metrics`,
 covered by `HotSessionMetricsMetadataTests.cs`), and `HotSessionTurnResult` now carries
-`FinishReason`/`ToolCalls` derived from its chunk stream the way `GenerationResult` used to. The
-actual deletion pass (doc 030's "How to execute" steps 1–5) has not been run yet.
+`FinishReason`/`ToolCalls` derived from its chunk stream the way `GenerationResult` used to.
+Re-verifying the deletion's premise then found 7 more `IInferenceSession` members doc 028's audit
+table never covered (LoRA, tool/skill validation, `OnTokenGenerated`, checkpoint/rollback, session
+tree, suspend/resume) — none used outside `InferenceSession` itself, but all ported onto
+`HotSession` too rather than dropped (`HotSessionCapabilityPortTests.cs`); see
+[051 — HotSession capability wiring plan](051-hotsession-capability-wiring-plan.md) for what's
+ported vs. still just stored-but-unused, and the plan for wiring each into the live Server path.
+The actual `InferenceSession` deletion pass (doc 030's "How to execute" steps 1–5) has not been run
+yet.
 
 **Also found (and fixed) while stress-testing this path**: a severe, unrelated prefill-packing
 defect affecting real concurrent `HotSession` traffic at 5–15 simultaneous requests, since

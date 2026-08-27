@@ -61,6 +61,14 @@ public sealed record HotSessionTurnResult(
 }
 
 /// <summary>
+/// Point-in-time snapshot of a <see cref="HotSession"/>'s cursor and committed revision, captured
+/// by <see cref="HotSession.CreateCheckpoint"/> and restored by <see cref="HotSession.RollbackAsync"/>.
+/// In-memory only, like every other <see cref="HotSession"/> capability — it does not survive the
+/// session's retained cache being evicted or the process restarting.
+/// </summary>
+public sealed record HotSessionCheckpoint(SessionId SessionId, SessionCursor Cursor, SessionRevision CommittedRevision);
+
+/// <summary>
 /// Couples one retained CPU sequence state to the in-memory revision/lease ledger. This is the
 /// Milestone 1 hot path: it has no durability or cross-process recovery guarantee. Callers submit
 /// append-only prompt suffixes; the authoritative execution cursor is updated only after the
@@ -84,8 +92,16 @@ public sealed class HotSession : IDisposable
     private readonly object _lifecycleGate = new();
     private readonly SessionMetrics _metrics;
     private readonly SessionMetadata _metadata = new();
+    private readonly List<OpenTail.Stingray.Core.ISkill> _attachedSkills = [];
+    private readonly HotSessionRuntime? _runtime;
     private SessionCursor _cursor = new([], 0, 0, 0, 0, StateCoverage.Full);
     private bool _disposed;
+
+    /// <summary>Direct parent this session was forked from (see <see cref="HotSessionRuntime.Fork"/>), or null if it is a root session.</summary>
+    public SessionId? ParentSessionId { get; init; }
+
+    /// <summary>Read-only topology surface exposing this session's lineage and aggregated subtree metrics.</summary>
+    public ISessionTree Tree => new HotSessionTree(this, _runtime);
 
     internal HotSession(
         ContinuousBatchingEngine engine,
@@ -98,8 +114,10 @@ public sealed class HotSession : IDisposable
         SessionId sessionId,
         Action<SessionId, HotSession>? onDisposed = null,
         string? modelKey = null,
-        Func<SessionId, long, long>? reclaimIdleBytes = null)
+        Func<SessionId, long, long>? reclaimIdleBytes = null,
+        HotSessionRuntime? runtime = null)
     {
+        _runtime = runtime;
         _engine = engine;
         _tokenizer = tokenizer;
         _store = store;
@@ -124,11 +142,139 @@ public sealed class HotSession : IDisposable
     /// <summary>Application-level metadata bag associated with this session (see <see cref="ISessionMetadata"/>).</summary>
     public ISessionMetadata Metadata => _metadata;
 
+    /// <summary>
+    /// Fine-tuned LoRA adapter intended to apply during this session's generation.
+    /// <para><b>Not yet wired to inference.</b> <see cref="ContinuousBatchingEngine"/>'s batched
+    /// forward pass (<see cref="IBatchedForwardPass.BatchForwardMulti"/>/<c>PrefillPackedMulti</c>)
+    /// amortizes one shared set of model weights across every sequence in a batch in a single
+    /// matmul; applying a different LoRA delta per row needs new batched-kernel support that does
+    /// not exist yet (tracked separately — see docs/032). This property exists so the setting has
+    /// somewhere to live and survives the port; setting it currently has no effect on generation,
+    /// matching <c>InferenceSession.ActiveLora</c>'s own behavior before this port (it was never
+    /// wired to its forward pass there either).</para>
+    /// </summary>
+    public OpenTail.Stingray.Core.Lora.LoraAdapter? ActiveLora { get; set; }
+
+    /// <summary>Tool catalog consulted by <see cref="ValidateToolCall"/> alongside <see cref="AttachedSkills"/>.</summary>
+    public OpenTail.Stingray.Core.Tools.IToolProvider? ToolProvider { get; set; }
+
+    /// <summary>Context passed to <see cref="ToolProvider"/> when listing permitted tools.</summary>
+    public OpenTail.Stingray.Core.Tools.InferenceToolContext? ToolContext { get; set; }
+
+    /// <summary>
+    /// Optional tool-call detector run by a caller against this session's generated tokens.
+    /// <see cref="HotSession"/> does not invoke this itself — chunk-based tool-call detection
+    /// already happens independently at the Server layer (see docs/032) — this exists so callers
+    /// that still want session-scoped detection have somewhere to store the delegate.
+    /// </summary>
+    public Func<IReadOnlyList<int>, IReadOnlyList<OpenTail.Stingray.Core.Tools.ToolCall>?>? ToolCallParser { get; set; }
+
+    /// <summary>Read-only list of skills currently attached to the session.</summary>
+    public IReadOnlyList<OpenTail.Stingray.Core.ISkill> AttachedSkills => _attachedSkills;
+
+    /// <summary>Attaches a native declarative skill package to the session.</summary>
+    public void AttachSkill(OpenTail.Stingray.Core.ISkill skill)
+    {
+        ArgumentNullException.ThrowIfNull(skill);
+        _attachedSkills.Add(skill);
+    }
+
+    /// <summary>Detaches a skill from the session by name. Returns true if a matching skill was found and removed.</summary>
+    public bool DetachSkill(string skillName)
+    {
+        ArgumentNullException.ThrowIfNull(skillName);
+        for (int i = 0; i < _attachedSkills.Count; i++)
+        {
+            if (string.Equals(_attachedSkills[i].Name, skillName, StringComparison.OrdinalIgnoreCase))
+            {
+                _attachedSkills.RemoveAt(i);
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Whether <paramref name="call"/> names a tool exposed by an attached skill or by
+    /// <see cref="ToolProvider"/> — the same two-source check <c>InferenceSession.ValidateToolCall</c>
+    /// used to perform.
+    /// </summary>
+    public bool ValidateToolCall(OpenTail.Stingray.Core.Tools.ToolCall call)
+    {
+        ArgumentNullException.ThrowIfNull(call);
+        foreach (var skill in _attachedSkills)
+        {
+            foreach (var tool in skill.Tools)
+            {
+                if (string.Equals(tool.Name, call.Name, StringComparison.OrdinalIgnoreCase))
+                    return true;
+            }
+        }
+
+        if (ToolProvider is null) return false;
+
+        foreach (var t in ToolProvider.GetTools(ToolContext))
+        {
+            if (string.Equals(t.Name, call.Name, StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Fires once per generated token after a turn commits, mirroring
+    /// <c>IInferenceSession.OnTokenGenerated</c>'s per-token notification — but after the whole
+    /// turn rather than mid-stream, since <see cref="RunTurnAsync"/> only publishes tokens once
+    /// they're part of a committed <see cref="HotSessionTurnResult"/>. A caller that needs true
+    /// mid-generation notification should consume the chunk stream the Server layer already
+    /// exposes instead (see docs/032). Exceptions thrown by a listener are isolated exactly like
+    /// the old event did — one bad listener must never break the turn that already committed.
+    /// </summary>
+    public event Action<int, string>? OnTokenGenerated;
+
     /// <summary>Whether this session holds a retained cache and has no turn queued or active —
     /// i.e. whether <see cref="EvictRetainedCacheIfIdle"/> could free anything right now. Racy by
     /// nature (see <see cref="RetainedSequenceState.IsReclaimable"/>); a caller iterating
     /// candidates should call the evict method directly rather than branching on this first.</summary>
     internal bool IsIdle => _state.IsReclaimable;
+
+    /// <summary>Whether this session currently holds no retained cache — either never prefilled, or
+    /// evicted by <see cref="SuspendAsync"/>/<see cref="HotSessionRuntime"/>'s own idle reclaim.</summary>
+    public bool IsSuspended => !_state.HasRetainedState;
+
+    /// <summary>
+    /// Explicit counterpart to <c>InferenceSession.SuspendAsync</c>: releases this session's
+    /// retained KV cache now rather than waiting for <see cref="HotSessionRuntime"/>'s own
+    /// pressure-driven idle reclaim (docs/028 Phase 1) to get to it. The cursor is unaffected —
+    /// this only frees the physical cache, exactly like <see cref="EvictRetainedCacheIfIdle"/>,
+    /// which this wraps. Throws if a turn is currently queued or active on this session (unlike the
+    /// internal reclaim path, which silently no-ops instead, since an explicit caller-requested
+    /// suspend should surface that it didn't happen rather than pretend it did).
+    /// </summary>
+    public Task SuspendAsync(CancellationToken cancellationToken = default)
+    {
+        ThrowIfDisposed();
+        cancellationToken.ThrowIfCancellationRequested();
+        if (_state.IsInUse)
+            throw new InvalidOperationException("Cannot suspend a session with a turn currently queued or active.");
+        EvictRetainedCacheIfIdle();
+        return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// Explicit counterpart to <c>InferenceSession.ResumeAsync</c>. Unlike the old architecture,
+    /// <see cref="HotSession"/> has no separate "resumed" state to transition into — a suspended
+    /// session's next <see cref="RunTurnAsync"/> call re-prefills from <see cref="Cursor"/>
+    /// automatically, exactly like a session that was never prefilled in the first place. This
+    /// method exists purely for API symmetry with the old explicit suspend/resume pair; it performs
+    /// no work.
+    /// </summary>
+    public Task ResumeAsync(CancellationToken cancellationToken = default)
+    {
+        ThrowIfDisposed();
+        cancellationToken.ThrowIfCancellationRequested();
+        return Task.CompletedTask;
+    }
 
     /// <summary>
     /// Drops this session's retained cache if it is currently idle, reconciling
@@ -210,6 +356,54 @@ public sealed class HotSession : IDisposable
     /// </summary>
     public SessionContinuationDiagnostic DiagnoseContinuation(ImmutableArray<ExecutionSegment> target) =>
         ExecutionReconciler.Diagnose(Cursor, target);
+
+    /// <summary>
+    /// Captures the session's current cursor and committed revision so a later
+    /// <see cref="RollbackAsync"/> can restore exactly this point — the <see cref="HotSession"/>
+    /// counterpart to <c>InferenceSession.CreateCheckpoint</c>/<c>.Rollback</c>. Unlike the internal
+    /// single-turn undo <see cref="RunTurnAsync"/> uses on its own failure paths, this can restore
+    /// to ANY earlier checkpoint, not just the immediately preceding turn, the same way the old
+    /// capability did. Must be called between turns (no active <see cref="RunTurnAsync"/> call on
+    /// this session).
+    /// </summary>
+    public HotSessionCheckpoint CreateCheckpoint()
+    {
+        ThrowIfDisposed();
+        var cursor = Cursor;
+        var revision = _store.Open(SessionId).CommittedRevision;
+        return new HotSessionCheckpoint(SessionId, cursor, revision);
+    }
+
+    /// <summary>
+    /// Restores this session to a previously captured <see cref="HotSessionCheckpoint"/>: rewinds
+    /// the retained KV cache to the checkpoint's materialized position, resets the cursor, and
+    /// resets the store's revision counter so a subsequent <see cref="RunTurnAsync"/> call can
+    /// supply the checkpoint's revision as <c>expectedRevision</c>. Throws if the checkpoint belongs
+    /// to a different session, a turn is currently active, or the retained cache cannot rewind that
+    /// far (e.g. it was evicted since the checkpoint was taken — the same "best-effort, not durable"
+    /// character every other in-memory-only HotSession capability has).
+    /// </summary>
+    public async Task RollbackAsync(HotSessionCheckpoint checkpoint)
+    {
+        ArgumentNullException.ThrowIfNull(checkpoint);
+        if (checkpoint.SessionId != SessionId)
+            throw new ArgumentException(
+                $"Checkpoint belongs to session '{checkpoint.SessionId}', not '{SessionId}'.", nameof(checkpoint));
+
+        await _turnGate.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            ThrowIfDisposed();
+            _state.RollbackTo(checkpoint.Cursor.MaterializedPositionCount);
+            lock (_cursorGate) _cursor = checkpoint.Cursor;
+            _resources.SetResidentBytes(SessionId, CurrentResidentBytes());
+            _store.SetRevision(SessionId, checkpoint.CommittedRevision);
+        }
+        finally
+        {
+            _turnGate.Release();
+        }
+    }
 
     public async Task<HotSessionTurnResult> RunTurnAsync(
         string appendPrompt,
@@ -351,6 +545,7 @@ public sealed class HotSession : IDisposable
                     var completed = _store.Complete(lease, operationId, resultChunks);
                     operationCommitted = true;
                     var (reason, toolCalls) = HotSessionTurnResult.DescribeOutcome(resultChunks, cancelled: false, failed: false);
+                    NotifyTokenListeners(outcome.GeneratedTokenIds);
                     return new HotSessionTurnResult(completed, nextCursor, resultChunks, IsIdempotentReplay: false, reason, toolCalls);
                 }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -396,6 +591,17 @@ public sealed class HotSession : IDisposable
             throw new InvalidOperationException(
                 "Retained cache materialized position does not match the exact accepted execution log.");
         return new SessionCursor(log, accepted, accepted, accepted, accepted, StateCoverage.Full);
+    }
+
+    private void NotifyTokenListeners(ImmutableArray<int> generatedTokenIds)
+    {
+        var handler = OnTokenGenerated;
+        if (handler is null || generatedTokenIds.IsDefaultOrEmpty) return;
+        foreach (int tokenId in generatedTokenIds)
+        {
+            try { handler(tokenId, _tokenizer.Decode([tokenId])); }
+            catch { /* Isolate host listener exceptions, matching InferenceSession's own behavior. */ }
+        }
     }
 
     private async Task WaitForStateReleaseAsync()
@@ -547,13 +753,17 @@ public sealed class HotSessionRuntime
 
     public long GetModelResidentBytes(string modelKey) => _resources.GetModelResidentBytes(modelKey);
 
-    public HotSession Create(SessionId? sessionId = null, string? modelKey = null)
+    public HotSession Create(SessionId? sessionId = null, string? modelKey = null) =>
+        Create(sessionId, modelKey, parentSessionId: null);
+
+    private HotSession Create(SessionId? sessionId, string? modelKey, SessionId? parentSessionId)
     {
         var snapshot = _store.Create(sessionId);
         var session = new HotSession(_engine, _tokenizer, _store, _resources,
             _engine.KvBytesPerToken, _engine.MaxSequenceLength,
             _options.MaxCapturedOutputChunks, snapshot.SessionId, RemoveDisposedSession, modelKey,
-            ReclaimIdleBytes);
+            ReclaimIdleBytes, runtime: this)
+        { ParentSessionId = parentSessionId };
         if (!_sessions.TryAdd(snapshot.SessionId, session))
         {
             session.Dispose();
@@ -563,6 +773,52 @@ public sealed class HotSessionRuntime
     }
 
     public HotSession Create(SessionAddress address) => Create(address.ToSessionId(), address.ModelFingerprint);
+
+    /// <summary>Looks up an active session without throwing, for internal topology queries (<see cref="HotSessionTree"/>).</summary>
+    internal bool TryGetSession(SessionId sessionId, out HotSession session) => _sessions.TryGetValue(sessionId, out session!);
+
+    /// <summary>Active child session IDs whose <see cref="HotSession.ParentSessionId"/> is <paramref name="parentId"/>.</summary>
+    internal IReadOnlyList<SessionId> GetChildSessionIds(SessionId parentId)
+    {
+        List<SessionId>? children = null;
+        foreach (var (id, session) in _sessions)
+        {
+            if (session.ParentSessionId == parentId)
+                (children ??= []).Add(id);
+        }
+        return (IReadOnlyList<SessionId>?)children ?? [];
+    }
+
+    /// <summary>
+    /// Aggregates <see cref="ISessionMetrics"/> across <paramref name="rootId"/> and every currently
+    /// active descendant in its fork subtree — a point-in-time computation over <see cref="_sessions"/>,
+    /// not a live-tracked total, matching <see cref="ISessionTree.CumulativeTreeMetrics"/>'s own
+    /// "snapshot" wording.
+    /// </summary>
+    internal SessionMetricsSnapshot AggregateTreeMetrics(SessionId rootId)
+    {
+        long promptTokens = 0, generatedTokens = 0, prefillTicks = 0, generationTicks = 0;
+        int kvPagesHeld = 0;
+
+        void Accumulate(SessionId id)
+        {
+            if (!_sessions.TryGetValue(id, out var session)) return;
+            var m = session.Metrics;
+            promptTokens += m.PromptTokens;
+            generatedTokens += m.GeneratedTokens;
+            prefillTicks += m.TotalPrefillTime.Ticks;
+            generationTicks += m.TotalGenerationTime.Ticks;
+            kvPagesHeld += m.KvPagesHeld;
+            foreach (var childId in GetChildSessionIds(id)) Accumulate(childId);
+        }
+        Accumulate(rootId);
+
+        var generationTime = TimeSpan.FromTicks(generationTicks);
+        double tokensPerSecond = generatedTokens > 0 && generationTime.TotalSeconds > 0
+            ? generatedTokens / generationTime.TotalSeconds : 0.0;
+        return new SessionMetricsSnapshot(promptTokens, generatedTokens,
+            TimeSpan.FromTicks(prefillTicks), generationTime, tokensPerSecond, kvPagesHeld);
+    }
 
     /// <summary>
     /// docs/028 Phase 2: creates a new session pre-seeded from the longest matching prefix among
@@ -692,7 +948,7 @@ public sealed class HotSessionRuntime
             ImmutableArray<int>? sharedTokens = null;
             for (int i = 0; i < count; i++)
             {
-                var branch = Create();
+                var branch = Create(sessionId: null, modelKey: null, parentSessionId: parent.SessionId);
                 branches.Add(branch);
                 foreach (var kv in parent.Metadata.GetEntries()) branch.Metadata.Set(kv.Key, kv.Value);
                 if (tokenOnlyLength == 0) continue;
@@ -852,5 +1108,45 @@ public sealed class HotSessionRuntime
     {
         if (_sessions.TryGetValue(sessionId, out var current) && ReferenceEquals(current, disposed))
             _sessions.TryRemove(sessionId, out _);
+    }
+}
+
+/// <summary>
+/// <see cref="ISessionTree"/> for a <see cref="HotSession"/>, backed by its owning
+/// <see cref="HotSessionRuntime"/>'s <c>_sessions</c> table. Computed on demand from each
+/// property access rather than tracked incrementally — cheap given fork trees are small and
+/// short-lived, and it means a session leaving the runtime is reflected immediately with no
+/// separate teardown bookkeeping to keep in sync.
+/// </summary>
+internal sealed class HotSessionTree(HotSession self, HotSessionRuntime? runtime) : ISessionTree
+{
+    public SessionId RootId
+    {
+        get
+        {
+            if (runtime is null) return self.SessionId;
+            var current = self;
+            while (current.ParentSessionId is { } parentId && runtime.TryGetSession(parentId, out var parent))
+                current = parent;
+            return current.SessionId;
+        }
+    }
+
+    public SessionId? ParentId => self.ParentSessionId;
+
+    public IReadOnlyList<SessionId> Children => runtime?.GetChildSessionIds(self.SessionId) ?? [];
+
+    public ISessionMetrics CumulativeTreeMetrics =>
+        runtime is null ? self.Metrics : new SessionMetricsView(runtime.AggregateTreeMetrics(self.SessionId));
+
+    /// <summary>Adapts an immutable <see cref="SessionMetricsSnapshot"/> to the live <see cref="ISessionMetrics"/> read surface.</summary>
+    private sealed class SessionMetricsView(SessionMetricsSnapshot snapshot) : ISessionMetrics
+    {
+        public long PromptTokens => snapshot.PromptTokens;
+        public long GeneratedTokens => snapshot.GeneratedTokens;
+        public TimeSpan TotalPrefillTime => snapshot.TotalPrefillTime;
+        public TimeSpan TotalGenerationTime => snapshot.TotalGenerationTime;
+        public double TokensPerSecond => snapshot.TokensPerSecond;
+        public int KvPagesHeld => snapshot.KvPagesHeld;
     }
 }

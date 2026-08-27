@@ -269,6 +269,28 @@ public sealed class RetainedSequenceState : IDisposable
         }
     }
 
+    /// <summary>
+    /// Restores the retained cache to an arbitrary earlier materialized position (a checkpoint),
+    /// not just the last turn's own start boundary (contrast <see cref="RollbackLastTurn"/>).
+    /// Requires the handle to be idle and hold a rewindable retained cache; throws otherwise.
+    /// </summary>
+    internal void RollbackTo(int position)
+    {
+        lock (_gate)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            if (_inUse)
+                throw new InvalidOperationException("Cannot roll back retained state while a turn is active.");
+            if (_cache is not IRewindableSequenceKvCache rewindable || !rewindable.CanRewindTo(position))
+                throw new NotSupportedException(
+                    $"The retained cache cannot be restored to position {position}.");
+
+            rewindable.RewindTo(position);
+            _materializedPosition = position;
+            _lastTurn = null;
+        }
+    }
+
     /// <summary>Restores the last completed turn's cache to its pre-turn boundary.</summary>
     internal void RollbackLastTurn()
     {

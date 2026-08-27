@@ -20,6 +20,15 @@ Every genuinely novel capability `InferenceSession`/`InferenceRuntime` had has b
 (Phase 1), `CrossSessionPrefixForkingTests.cs` + `CrossSessionPrefixSharingRealModelTests.cs`
 (Phase 2), `HotSessionForkTests.cs` + `HotSessionForkRealModelTests.cs` (Phase 3).
 
+**2026-08-27 addendum**: re-verifying this premise before executing the deletion turned up seven
+more `IInferenceSession` members Phase 0's table never audited (`ActiveLora`, tool/skill
+validation, `OnTokenGenerated`, checkpoint/rollback, session tree, suspend/resume) — none used
+outside `InferenceSession`'s own island, but real enough that they're now ported too rather than
+dropped. See `docs/051-hotsession-capability-wiring-plan.md` for the full finding and the plan for
+making each one reachable from the live Server path. This section's "every genuinely novel
+capability has been ported" now covers all ten items (the original three plus these seven), not
+just the three doc 028's table listed.
+
 ## What to delete
 
 From Phase 0's audit (`docs/028`, "Phase 0 — Redundancy audit" section) — final tally was 2
