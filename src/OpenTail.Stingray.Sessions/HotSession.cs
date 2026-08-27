@@ -25,7 +25,7 @@ public sealed record HotSessionTurnResult(
     /// the chunks themselves indicate, since a turn that didn't reach its own <c>Stop</c>/<c>ToolCall</c>
     /// chunk was interrupted before the engine could report why.
     /// </summary>
-    internal static (FinishReason Reason, IReadOnlyList<OpenTail.Stingray.Core.Tools.ToolCall> ToolCalls) DescribeOutcome(
+    public static (FinishReason Reason, IReadOnlyList<OpenTail.Stingray.Core.Tools.ToolCall> ToolCalls) DescribeOutcome(
         ImmutableArray<GenerateChunk> chunks, bool cancelled, bool failed)
     {
         var toolCalls = new List<OpenTail.Stingray.Core.Tools.ToolCall>();

@@ -6,6 +6,7 @@ using Microsoft.Extensions.Options;
 using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Engine;
 using OpenTail.Stingray.Sessions;
+using System.Collections.Immutable;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -62,6 +63,20 @@ public static partial class SessionEndpoints
         app.MapGet("/v1/sessions/{sessionId:guid}/skills", ListSkills);
         app.MapDelete("/v1/sessions/{sessionId:guid}/skills/{skillName}", DetachSkill);
         app.MapPost("/v1/sessions/{sessionId:guid}/tool-calls/validate", ValidateToolCall);
+        // docs/051 item #2: checkpoint/rollback to any earlier point, not just the last turn (that
+        // undo already happens internally on RunTurnAsync's own failure paths). In-memory only,
+        // like every other HotSession capability — a checkpoint token is opaque and valid only
+        // while the same HotSession instance still holds the retained cache it was taken from.
+        app.MapPost("/v1/sessions/{sessionId:guid}/checkpoints", CreateCheckpoint);
+        app.MapPost("/v1/sessions/{sessionId:guid}/rollback", Rollback);
+        // docs/051 item #3: fork lineage/aggregate-metrics observability for HotSessionRuntime.Fork.
+        app.MapGet("/v1/sessions/{sessionId:guid}/tree", GetTree);
+        // docs/051 item #4: explicit proactive suspend, for a caller that knows a session is going
+        // idle for a while and wants to free its cache now rather than wait for HotSessionRuntime's
+        // own pressure-driven idle reclaim to get to it. Resume is a no-op endpoint offered purely
+        // for symmetry — HotSession has no separate "resumed" state; the next turn just re-prefills.
+        app.MapPost("/v1/sessions/{sessionId:guid}/suspend", Suspend);
+        app.MapPost("/v1/sessions/{sessionId:guid}/resume", Resume);
         return app;
     }
 
@@ -151,7 +166,7 @@ public static partial class SessionEndpoints
             // The handle is now owned by the registry for this session's whole lifetime — not
             // disposed here (docs/032 Phase 4 gap fix: this is what keeps the model resident).
             ctx.RequestServices.GetRequiredService<SessionModelRegistry>().Bind(session.SessionId, handle);
-            return Results.Json(ToResponse(runtime.GetSessionSnapshot(session.SessionId)),
+            return Results.Json(ToResponse(runtime.GetSessionSnapshot(session.SessionId), session),
                 OpenTailStingrayJsonContext.Default.SessionResponse, statusCode: StatusCodes.Status201Created);
         }
 
@@ -162,7 +177,7 @@ public static partial class SessionEndpoints
             return Unavailable(sessions);
 
         var singleSession = sessions.ColdRuntime?.Create() ?? singleRuntime.Create();
-        return Results.Json(ToResponse(singleRuntime.GetSessionSnapshot(singleSession.SessionId)),
+        return Results.Json(ToResponse(singleRuntime.GetSessionSnapshot(singleSession.SessionId), singleSession),
             OpenTailStingrayJsonContext.Default.SessionResponse, statusCode: StatusCodes.Status201Created);
     }
 
@@ -174,8 +189,8 @@ public static partial class SessionEndpoints
         try
         {
             var id = new SessionId(sessionId);
-            _ = route.ColdRuntime?.Open(id) ?? route.Runtime.Open(id);
-            return Results.Json(ToResponse(route.Runtime.GetSessionSnapshot(id)),
+            var session = route.ColdRuntime?.Open(id) ?? route.Runtime.Open(id);
+            return Results.Json(ToResponse(route.Runtime.GetSessionSnapshot(id), session),
                 OpenTailStingrayJsonContext.Default.SessionResponse);
         }
         catch (SessionNotFoundException)
@@ -284,6 +299,133 @@ public static partial class SessionEndpoints
     private static SessionSkillResponse ToSkillResponse(ISkill skill) =>
         new(skill.Name, skill.Description, skill.Tools.Select(t => t.Name).ToArray());
 
+    private static IResult CreateCheckpoint(Guid sessionId, HttpContext ctx, IInferenceService inferenceService)
+    {
+        if (TryResolveExistingSession(ctx, sessionId, inferenceService, out var route) is { } error)
+            return error;
+
+        try
+        {
+            var id = new SessionId(sessionId);
+            var session = route.ColdRuntime?.Open(id) ?? route.Runtime.Open(id);
+            var checkpoint = session.CreateCheckpoint();
+            string token = Convert.ToBase64String(SessionCursorCodec.Encode(checkpoint.Cursor));
+            return Results.Json(new SessionCheckpointResponse(token, checkpoint.CommittedRevision.Value),
+                OpenTailStingrayJsonContext.Default.SessionCheckpointResponse, statusCode: StatusCodes.Status201Created);
+        }
+        catch (SessionNotFoundException)
+        {
+            return Results.NotFound();
+        }
+    }
+
+    private static async Task<IResult> Rollback(
+        Guid sessionId, SessionRollbackRequest request, HttpContext ctx, IInferenceService inferenceService)
+    {
+        if (TryResolveExistingSession(ctx, sessionId, inferenceService, out var route) is { } error)
+            return error;
+        if (string.IsNullOrEmpty(request.CheckpointToken))
+            return Results.BadRequest(new ErrorResponse("invalid_request_error", "checkpoint_token must not be empty."));
+
+        SessionCursor cursor;
+        try
+        {
+            cursor = SessionCursorCodec.Decode(Convert.FromBase64String(request.CheckpointToken));
+        }
+        catch (Exception ex) when (ex is FormatException or SessionCursorFormatException)
+        {
+            return Results.BadRequest(new ErrorResponse("invalid_request_error",
+                $"checkpoint_token is not a valid checkpoint: {ex.Message}"));
+        }
+
+        try
+        {
+            var id = new SessionId(sessionId);
+            var session = route.ColdRuntime?.Open(id) ?? route.Runtime.Open(id);
+            var checkpoint = new HotSessionCheckpoint(id, cursor, new SessionRevision(request.CommittedRevision));
+            await session.RollbackAsync(checkpoint);
+            return Results.Json(ToResponse(route.Runtime.GetSessionSnapshot(id), session),
+                OpenTailStingrayJsonContext.Default.SessionResponse);
+        }
+        catch (SessionNotFoundException)
+        {
+            return Results.NotFound();
+        }
+        // Turn in progress, or the retained cache can no longer rewind that far (e.g. evicted
+        // since the checkpoint was taken) — both are "this rollback cannot happen right now",
+        // not a malformed request.
+        catch (Exception ex) when (ex is InvalidOperationException or NotSupportedException)
+        {
+            return Results.Json(new ErrorResponse("session_rollback_conflict", ex.Message),
+                OpenTailStingrayJsonContext.Default.ErrorResponse, statusCode: StatusCodes.Status409Conflict);
+        }
+    }
+
+    private static IResult GetTree(Guid sessionId, HttpContext ctx, IInferenceService inferenceService)
+    {
+        if (TryResolveExistingSession(ctx, sessionId, inferenceService, out var route) is { } error)
+            return error;
+
+        try
+        {
+            var id = new SessionId(sessionId);
+            var session = route.ColdRuntime?.Open(id) ?? route.Runtime.Open(id);
+            var tree = session.Tree;
+            return Results.Json(new SessionTreeResponse(
+                    tree.RootId.ToString(), tree.ParentId?.ToString(),
+                    tree.Children.Select(c => c.ToString()).ToArray(),
+                    ToMetricsResponse(tree.CumulativeTreeMetrics)),
+                OpenTailStingrayJsonContext.Default.SessionTreeResponse);
+        }
+        catch (SessionNotFoundException)
+        {
+            return Results.NotFound();
+        }
+    }
+
+    private static async Task<IResult> Suspend(Guid sessionId, HttpContext ctx, IInferenceService inferenceService)
+    {
+        if (TryResolveExistingSession(ctx, sessionId, inferenceService, out var route) is { } error)
+            return error;
+
+        try
+        {
+            var id = new SessionId(sessionId);
+            var session = route.ColdRuntime?.Open(id) ?? route.Runtime.Open(id);
+            await session.SuspendAsync(ctx.RequestAborted);
+            return Results.Json(ToResponse(route.Runtime.GetSessionSnapshot(id), session),
+                OpenTailStingrayJsonContext.Default.SessionResponse);
+        }
+        catch (SessionNotFoundException)
+        {
+            return Results.NotFound();
+        }
+        catch (InvalidOperationException ex)
+        {
+            return Results.Json(new ErrorResponse("session_suspend_conflict", ex.Message),
+                OpenTailStingrayJsonContext.Default.ErrorResponse, statusCode: StatusCodes.Status409Conflict);
+        }
+    }
+
+    private static async Task<IResult> Resume(Guid sessionId, HttpContext ctx, IInferenceService inferenceService)
+    {
+        if (TryResolveExistingSession(ctx, sessionId, inferenceService, out var route) is { } error)
+            return error;
+
+        try
+        {
+            var id = new SessionId(sessionId);
+            var session = route.ColdRuntime?.Open(id) ?? route.Runtime.Open(id);
+            await session.ResumeAsync(ctx.RequestAborted);
+            return Results.Json(ToResponse(route.Runtime.GetSessionSnapshot(id), session),
+                OpenTailStingrayJsonContext.Default.SessionResponse);
+        }
+        catch (SessionNotFoundException)
+        {
+            return Results.NotFound();
+        }
+    }
+
     /// <summary>
     /// Returns the result retained for a completed or in-flight operation. This is the reconnect
     /// path for a client which lost the response to a turn. With configured durable CPU-dense
@@ -301,15 +443,19 @@ public static partial class SessionEndpoints
         try
         {
             var id = new SessionId(sessionId);
-            _ = route.ColdRuntime?.Open(id) ?? route.Runtime.Open(id);
+            var session = route.ColdRuntime?.Open(id) ?? route.Runtime.Open(id);
             var operation = route.Runtime.GetOperation(id, new SessionOperationId(operationId));
-            string text = string.Concat((operation.ResultChunks ?? []).Where(c => c.Kind == GenerateChunkKind.Text).Select(c => c.Text));
-            string thinking = string.Concat((operation.ResultChunks ?? []).Where(c => c.Kind == GenerateChunkKind.Thinking).Select(c => c.Text));
+            var resultChunks = (operation.ResultChunks ?? []).ToImmutableArray();
+            string text = string.Concat(resultChunks.Where(c => c.Kind == GenerateChunkKind.Text).Select(c => c.Text));
+            string thinking = string.Concat(resultChunks.Where(c => c.Kind == GenerateChunkKind.Thinking).Select(c => c.Text));
+            var (finishReason, toolCalls) = HotSessionTurnResult.DescribeOutcome(
+                resultChunks, cancelled: false, failed: operation.State == SessionOperationState.Failed);
             return Results.Json(new SessionOperationResponse(
-                    ToResponse(route.Runtime.GetSessionSnapshot(id)),
+                    ToResponse(route.Runtime.GetSessionSnapshot(id), session),
                     operation.OperationId.ToString(), operation.State.ToString().ToLowerInvariant(),
                     operation.CommittedRevision?.Value, operation.CreatedAt, operation.CompletedAt,
-                    RedactFilesystemPaths(operation.FailureReason), text, thinking),
+                    RedactFilesystemPaths(operation.FailureReason), text, thinking,
+                    finishReason.ToString().ToLowerInvariant(), ToToolCallResponses(toolCalls)),
                 OpenTailStingrayJsonContext.Default.SessionOperationResponse);
         }
         catch (SessionNotFoundException)
@@ -349,7 +495,8 @@ public static partial class SessionEndpoints
             presencePenalty: null,
             frequencyPenalty: null,
             logitBias: null,
-            thinkingDisabled: options.Value.DisableThinking);
+            thinkingDisabled: options.Value.DisableThinking,
+            allowedChoices: request.AllowedChoices);
         // Hash what will actually be EXECUTED, not what was requested: sampling defaults come from
         // server options, so digesting the raw request values would give two turns the same digest
         // while they ran with different parameters. Length-prefix the prompt so it cannot be
@@ -384,9 +531,10 @@ public static partial class SessionEndpoints
             string text = string.Concat(outcome.Chunks.Where(c => c.Kind == GenerateChunkKind.Text).Select(c => c.Text));
             string thinking = string.Concat(outcome.Chunks.Where(c => c.Kind == GenerateChunkKind.Thinking).Select(c => c.Text));
             return Results.Json(new SessionTurnResponse(
-                    ToResponse(snapshot), operationId.ToString(),
+                    ToResponse(snapshot, session), operationId.ToString(),
                     outcome.Operation.State.ToString().ToLowerInvariant(), text, thinking,
-                    outcome.IsIdempotentReplay),
+                    outcome.IsIdempotentReplay,
+                    outcome.FinishReason.ToString().ToLowerInvariant(), ToToolCallResponses(outcome.ToolCalls)),
                 OpenTailStingrayJsonContext.Default.SessionTurnResponse);
         }
         catch (SessionNotFoundException)
@@ -444,10 +592,32 @@ public static partial class SessionEndpoints
     /// durable manifest records the store's counter too (manifest v3), so the live and restored
     /// lanes finally agree by construction rather than by coincidence.</para>
     /// </summary>
-    private static SessionResponse ToResponse(SessionSnapshot snapshot) => new(
+    private static SessionResponse ToResponse(SessionSnapshot snapshot, HotSession session) => new(
         snapshot.SessionId.ToString(), snapshot.CommittedRevision.Value,
         snapshot.DurableRevision?.Value, snapshot.CurrentFencingEpoch,
-        snapshot.Operations.Count);
+        snapshot.Operations.Count, ToMetricsResponse(session.Metrics), session.IsSuspended,
+        ToMetadataResponse(session.Metadata));
+
+    private static SessionMetricsResponse ToMetricsResponse(ISessionMetrics m) => new(
+        m.PromptTokens, m.GeneratedTokens, m.TotalPrefillTime.TotalSeconds,
+        m.TotalGenerationTime.TotalSeconds, m.TokensPerSecond, m.KvPagesHeld);
+
+    // Metadata values are arbitrary host-supplied objects (ISessionMetadata.Set(string, object?))
+    // with no NativeAOT-safe general serialization — stringified for the wire rather than
+    // reflection-serialized. A caller that needs a structured value back should store it as a
+    // pre-serialized JSON string and parse it client-side.
+    private static Dictionary<string, string?>? ToMetadataResponse(ISessionMetadata metadata)
+    {
+        var entries = metadata.GetEntries();
+        if (entries.Count == 0) return null;
+        var result = new Dictionary<string, string?>(entries.Count, StringComparer.Ordinal);
+        foreach (var (key, value) in entries) result[key] = value?.ToString();
+        return result;
+    }
+
+    private static SessionToolCallResponse[]? ToToolCallResponses(
+        IReadOnlyList<OpenTail.Stingray.Core.Tools.ToolCall> calls) =>
+        calls.Count == 0 ? null : [.. calls.Select(c => new SessionToolCallResponse(c.Id, c.Name, c.Arguments))];
 }
 
 /// <summary>Optional session-creation body. <c>model</c> is meaningful only in multi-model mode
@@ -464,7 +634,29 @@ public sealed record SessionResponse(
     [property: JsonPropertyName("committed_revision")] long CommittedRevision,
     [property: JsonPropertyName("durable_revision")] long? DurableRevision,
     [property: JsonPropertyName("fencing_epoch")] long FencingEpoch,
-    [property: JsonPropertyName("operation_count")] int OperationCount);
+    [property: JsonPropertyName("operation_count")] int OperationCount,
+    [property: JsonPropertyName("metrics")] SessionMetricsResponse Metrics,
+    // True when the session currently holds no retained KV cache — never prefilled, evicted by
+    // an explicit POST .../suspend, or reclaimed by HotSessionRuntime's own idle pressure.
+    [property: JsonPropertyName("is_suspended")] bool IsSuspended = false,
+    // Arbitrary host-supplied ISessionMetadata entries, stringified — see ToMetadataResponse.
+    // Null (omitted) rather than an empty object when nothing has been set.
+    [property: JsonPropertyName("metadata")] Dictionary<string, string?>? Metadata = null);
+
+/// <summary>Per-session inference/KV usage statistics — <see cref="OpenTail.Stingray.Sessions.ISessionMetrics"/>.</summary>
+public sealed record SessionMetricsResponse(
+    [property: JsonPropertyName("prompt_tokens")] long PromptTokens,
+    [property: JsonPropertyName("generated_tokens")] long GeneratedTokens,
+    [property: JsonPropertyName("total_prefill_seconds")] double TotalPrefillSeconds,
+    [property: JsonPropertyName("total_generation_seconds")] double TotalGenerationSeconds,
+    [property: JsonPropertyName("tokens_per_second")] double TokensPerSecond,
+    [property: JsonPropertyName("kv_pages_held")] int KvPagesHeld);
+
+/// <summary>One structured tool call the model emitted during a turn.</summary>
+public sealed record SessionToolCallResponse(
+    [property: JsonPropertyName("id")] string Id,
+    [property: JsonPropertyName("name")] string Name,
+    [property: JsonPropertyName("arguments")] JsonElement Arguments);
 
 /// <summary>Append-only turn input. Reusing an operation id requires exactly the same request.</summary>
 // Wire names are stated EXPLICITLY, as on every other request DTO in this server, and not left
@@ -479,7 +671,10 @@ public sealed record SessionTurnRequest(
     [property: JsonPropertyName("operation_id")] Guid? OperationId = null,
     [property: JsonPropertyName("max_tokens")] int? MaxTokens = null,
     [property: JsonPropertyName("temperature")] float? Temperature = null,
-    [property: JsonPropertyName("top_p")] float? TopP = null);
+    [property: JsonPropertyName("top_p")] float? TopP = null,
+    // Constrains generation to one of these literal strings (SamplingParams.AllowedChoices),
+    // e.g. ["yes", "no"] for a forced classification turn. Absent/empty means unconstrained.
+    [property: JsonPropertyName("allowed_choices")] string[]? AllowedChoices = null);
 
 /// <summary>Completed or cancelled hot-session turn result.</summary>
 public sealed record SessionTurnResponse(
@@ -488,7 +683,11 @@ public sealed record SessionTurnResponse(
     [property: JsonPropertyName("state")] string State,
     [property: JsonPropertyName("text")] string Text,
     [property: JsonPropertyName("thinking")] string Thinking,
-    [property: JsonPropertyName("idempotent_replay")] bool IdempotentReplay);
+    [property: JsonPropertyName("idempotent_replay")] bool IdempotentReplay,
+    // Why generation stopped (HotSessionTurnResult.FinishReason) — "completed", "max_tokens",
+    // "tool_call", "context_limit", "cancelled", or "failed".
+    [property: JsonPropertyName("finish_reason")] string FinishReason,
+    [property: JsonPropertyName("tool_calls")] SessionToolCallResponse[]? ToolCalls = null);
 
 /// <summary>Hot-runtime operation state and the retained generated result, when available.</summary>
 public sealed record SessionOperationResponse(
@@ -502,7 +701,9 @@ public sealed record SessionOperationResponse(
     [property: JsonPropertyName("completed_at")] DateTimeOffset? CompletedAt,
     [property: JsonPropertyName("failure_reason")] string? FailureReason,
     [property: JsonPropertyName("text")] string Text,
-    [property: JsonPropertyName("thinking")] string Thinking);
+    [property: JsonPropertyName("thinking")] string Thinking,
+    [property: JsonPropertyName("finish_reason")] string FinishReason,
+    [property: JsonPropertyName("tool_calls")] SessionToolCallResponse[]? ToolCalls = null);
 
 /// <summary>
 /// Attaches a native <see cref="OpenTail.Stingray.Core.Skill"/> to the session. <c>Tools</c> are
@@ -542,3 +743,25 @@ public sealed record SessionValidateToolCallRequest(
 /// <summary>Whether a candidate tool call names a tool this session currently authorizes.</summary>
 public sealed record SessionValidateToolCallResponse(
     [property: JsonPropertyName("authorized")] bool Authorized);
+
+/// <summary>
+/// An opaque checkpoint a later <c>POST /v1/sessions/{id}/rollback</c> can restore. In-memory
+/// only, like every other HotSession capability — valid only while the same <c>HotSession</c>
+/// instance still holds the retained cache it was taken from (echoed back to the SAME session,
+/// after which it may fail with 409 if the cache has since been evicted).
+/// </summary>
+public sealed record SessionCheckpointResponse(
+    [property: JsonPropertyName("checkpoint_token")] string CheckpointToken,
+    [property: JsonPropertyName("committed_revision")] long CommittedRevision);
+
+/// <summary>Both fields from a <see cref="SessionCheckpointResponse"/>, echoed back verbatim.</summary>
+public sealed record SessionRollbackRequest(
+    [property: JsonPropertyName("checkpoint_token")] string CheckpointToken,
+    [property: JsonPropertyName("committed_revision")] long CommittedRevision);
+
+/// <summary>Fork lineage and aggregated subtree metrics — <see cref="OpenTail.Stingray.Sessions.ISessionTree"/>.</summary>
+public sealed record SessionTreeResponse(
+    [property: JsonPropertyName("root_id")] string RootId,
+    [property: JsonPropertyName("parent_id")] string? ParentId,
+    [property: JsonPropertyName("children")] string[] Children,
+    [property: JsonPropertyName("cumulative_metrics")] SessionMetricsResponse CumulativeMetrics);

@@ -1,7 +1,14 @@
 # 051 — Wiring HotSession's newly-ported capabilities into the live Server path
 
-## Status: skills / tool validation (item #1) wired, 2026-08-27. Checkpoint/rollback, session-tree
-## endpoint, suspend/resume, LoRA remain unwired — see their sections below.
+## Status (2026-08-27): DONE except LoRA (#6, real new engine work, tracked separately — see its
+## section) and `OnTokenGenerated`/`ToolCallParser` (#5, deliberately not wired — the Server layer
+## already does this independently and better). Everything else on this document's original list —
+## skills/tool validation (#1), Metrics/Metadata/FinishReason/ToolCalls/AllowedChoices (found by a
+## follow-up "is this actually reachable over HTTP, not just ported?" audit — see 1b), checkpoint/
+## rollback (#2), session tree (#3), and suspend/resume (#4, reclassified from "not scheduled" once
+## its real effort turned out to be trivial) — is wired into `/v1/sessions/*`. `Fork()` propagation
+## of skills/metadata (an open design question, not a missing wiring step — see #1's scoping note)
+## remains the one deliberately deferred item within what was otherwise closed.
 
 ## Background
 
@@ -110,25 +117,63 @@ output, not just gate tool names. That facility now exists, split by API surface
 Still not done, deliberately: `Fork()` propagation (unchanged from the original scoping note above)
 and `ToolProvider`/`ToolCallParser` wiring (see #5).
 
-### 2. Checkpoint/rollback — medium effort, real value for the Sessions API
-`SessionEndpoints.cs` has no checkpoint/rollback endpoints today. A natural fit:
-`POST /sessions/{id}/checkpoints` → `HotSession.CreateCheckpoint()`,
-`POST /sessions/{id}/rollback` → `HotSession.RollbackAsync`. Needs: a way to serialize
-`HotSessionCheckpoint` across a request/response boundary (it's in-memory-only today, valid only
-for the lifetime of the same `HotSession` instance — fine for same-process same-session use, not
-for durable/cross-process checkpoint references without further work).
+### 1b. Closed in the follow-up audit — Metrics/Metadata, FinishReason/ToolCalls, AllowedChoices (2026-08-27)
+Prompted by "is everything ported onto HotSession actually wired in?" — the answer was no for three
+capabilities that were fully functional on `HotSession` but invisible over `/v1/sessions` HTTP:
 
-### 3. Session tree / lineage — low effort, observability value
-`SessionEndpoints.cs` could expose `GET /sessions/{id}/tree` returning `RootId`/`ParentId`/
-`Children`/`CumulativeTreeMetrics` — useful for anyone using `HotSessionRuntime.Fork` (e.g. the
-consensus/voting pattern `ForkAndVoteTests.cs` exercised on the old architecture) to inspect a fork
-tree's aggregate cost. No blocking dependency; smallest of the four real items.
+- **`ISessionMetrics`/`ISessionMetadata`.** `SessionResponse` (embedded in every session/turn/
+  operation response) gained `metrics` (always present — prompt/generated tokens, prefill/
+  generation seconds, tokens/sec, KV pages held) and `metadata` (omitted when empty, present when
+  the host has called `HotSession.Metadata.Set` — there is no HTTP setter; `ISessionMetadata` is
+  host-application state by design, not a client-facing concept, so this is read-only observability
+  for an embedding host, not a new client feature). Metadata values are arbitrary
+  `object?` (`ISessionMetadata.Set(string, object?)`) with no NativeAOT-safe general
+  serialization, so they're stringified (`.ToString()`) for the wire rather than reflection-
+  serialized — a caller that needs a structured value back should store a pre-serialized JSON
+  string and parse it client-side.
+- **`FinishReason`/`ToolCalls`.** `SessionTurnResponse` and `SessionOperationResponse` both gained
+  `finish_reason` (`"completed"`/`"max_tokens"`/`"tool_call"`/`"context_limit"`/`"cancelled"`/
+  `"failed"`) and `tool_calls` (omitted when empty). `GetOperation`'s replay path had no
+  `HotSessionTurnResult` to read this from (it only has the stored `ResultChunks`), so
+  `HotSessionTurnResult.DescribeOutcome` — previously `internal`, used only inside `RunTurnAsync`'s
+  own replay branch — is now `public` so the endpoint layer can re-derive the same values from
+  stored chunks the way the live-turn path already did.
+- **`SamplingParams.AllowedChoices`.** `SessionTurnRequest` gained `allowed_choices: string[]?`,
+  threaded through `SamplingParamsBuilder.Build`'s new `allowedChoices` parameter. Sessions-only —
+  the chat-compat routes have no equivalent field and weren't asked for one; OpenAI/Anthropic's own
+  wire protocols have no constrained-choice concept to map onto.
 
-### 4. Suspend/resume — low effort, mostly already covered
-`HotSessionRuntime`'s own idle-pressure reclaim (docs/028 Phase 1) already does this automatically
-under memory pressure. Explicit `SuspendAsync`/`ResumeAsync` would only matter for a caller that
-wants to force-free a session's cache proactively (e.g. a client going idle for a known-long period)
-— worth exposing as `POST /sessions/{id}/suspend` only if a real caller asks for it. Not scheduled.
+Tests: `SessionEndpointTests.cs` (`Session_ExposesMetricsAndFinishReason`,
+`Session_ExposesMetadataSetInProcess`, `Turn_AllowedChoices_ConstrainsGeneration`).
+
+### 2. Checkpoint/rollback — DONE (2026-08-27)
+`POST /v1/sessions/{id}/checkpoints` → `HotSession.CreateCheckpoint()`, returning an opaque
+`checkpoint_token` (the checkpoint's `SessionCursor`, encoded via the pre-existing
+`SessionCursorCodec` — the same versioned binary envelope already used for durable cursor
+persistence, so no new serialization format was needed) plus `committed_revision`.
+`POST /v1/sessions/{id}/rollback` takes both fields back verbatim and calls
+`HotSession.RollbackAsync`. In-memory only, as scoped originally — a token is valid only while the
+same `HotSession` instance still holds the retained cache it was taken from; rolling back after
+that cache has been evicted, or while a turn is active, is a 409
+(`InvalidOperationException`/`NotSupportedException` from `RetainedSequenceState.RollbackTo`), and
+a malformed/corrupt token is a 400. Tests: `Checkpoint_ThenRollback_RestoresTheEarlierRevision`,
+`Rollback_MalformedToken_Returns400`.
+
+### 3. Session tree / lineage — DONE (2026-08-27)
+`GET /v1/sessions/{id}/tree` returns `root_id`/`parent_id`/`children`/`cumulative_metrics` straight
+from `HotSession.Tree` (`ISessionTree`) — no new logic, `Tree` already computed all of this on
+demand. Test: `Tree_RootSession_ReportsNoParentAndOwnMetrics`.
+
+### 4. Suspend/resume — DONE (2026-08-27), reclassified
+Originally scoped as "not scheduled" for lack of a concrete caller — but on reflection the actual
+implementation is trivial (`SuspendAsync` is a one-line wrap around the pre-existing
+`EvictRetainedCacheIfIdle`; `ResumeAsync` does no work at all), cheaper than #2 or #3, so it went in
+too rather than waiting for demand that may never materialize just to save two thin endpoints.
+`POST /v1/sessions/{id}/suspend` / `POST /v1/sessions/{id}/resume`; `SessionResponse` gained
+`is_suspended`. Suspending mid-turn is a 409. Resume is honestly a no-op wire-for-wire with
+`HotSession.ResumeAsync` — the response's `is_suspended` stays `true` until the session's next turn
+actually re-prefills, which the test asserts explicitly rather than leaving implicit. Test:
+`Suspend_ReleasesTheCache_AndResumeIsANoOpUntilTheNextTurn`.
 
 ### 5. `OnTokenGenerated` / `ToolCallParser` — likely NOT worth wiring
 Both duplicate something the Server layer already does independently and better: real per-token

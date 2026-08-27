@@ -104,4 +104,11 @@ namespace OpenTail.Stingray.Server;
 [JsonSerializable(typeof(SessionSkillsResponse))]
 [JsonSerializable(typeof(SessionValidateToolCallRequest))]
 [JsonSerializable(typeof(SessionValidateToolCallResponse))]
+[JsonSerializable(typeof(SessionMetricsResponse))]
+[JsonSerializable(typeof(Dictionary<string, string?>))]
+[JsonSerializable(typeof(SessionToolCallResponse))]
+[JsonSerializable(typeof(SessionToolCallResponse[]))]
+[JsonSerializable(typeof(SessionCheckpointResponse))]
+[JsonSerializable(typeof(SessionRollbackRequest))]
+[JsonSerializable(typeof(SessionTreeResponse))]
 public partial class OpenTailStingrayJsonContext : JsonSerializerContext { }

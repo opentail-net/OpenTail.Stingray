@@ -50,16 +50,22 @@ ten genuinely novel capabilities the two audit passes found are ported onto `Hot
 rather than dropped: `ISessionMetadata`/`ISessionMetrics` (`HotSession.Metadata`/`.Metrics`,
 `HotSessionMetricsMetadataTests.cs`); `FinishReason`/`ToolCalls` bundling on
 `HotSessionTurnResult`; LoRA, tool/skill validation, `OnTokenGenerated`, checkpoint/rollback,
-session tree, suspend/resume (`HotSessionCapabilityPortTests.cs` — see
-[051 — HotSession capability wiring plan](051-hotsession-capability-wiring-plan.md) for what's
-still just stored-but-unused and the plan for wiring each into the live Server path); and
-`SamplingParams.AllowedChoices` constrained-choice sampling, which the deletion re-check found was
-implemented *only* inside `InferenceSession` — ported into `ContinuousBatchingEngine`'s batched
-decode loop (`HotSessionChoiceConstraintTests.cs`) rather than silently lost. Full solution builds
-clean; `Tests.Sessions.Fast` (126), `Tests.Core` (576), `Tests.Server.Fast` (338), and `Tests.Cli`
-(367) all pass. (`Tests.ForwardPass.Fast` has 7 pre-existing, unrelated SIMD-tiering
-bit-equivalence failures on this machine — confirmed present on the pre-deletion baseline too,
-environment-specific: `OpenBLAS: not found`.)
+session tree, suspend/resume (`HotSessionCapabilityPortTests.cs`); and `SamplingParams.AllowedChoices`
+constrained-choice sampling, which the deletion re-check found was implemented *only* inside
+`InferenceSession` — ported into `ContinuousBatchingEngine`'s batched decode loop
+(`HotSessionChoiceConstraintTests.cs`) rather than silently lost.
+
+**Done (2026-08-27), follow-up**: [051 — HotSession capability wiring plan](051-hotsession-capability-wiring-plan.md)
+is now closed except LoRA (real new engine work, tracked separately) and `OnTokenGenerated`/
+`ToolCallParser` (deliberately not wired — the Server layer already does this independently).
+`/v1/sessions/*` gained skills/tool-call validation (`POST .../skills`, `.../tool-calls/validate`),
+skill instructions that actually shape the next turn's prompt (also added to `/v1/chat/completions`
+and `/v1/messages` via a new `skills` request field — `SkillWireModels.cs`), previously-invisible
+`metrics`/`metadata`/`finish_reason`/`tool_calls`/`allowed_choices` fields, checkpoint/rollback,
+fork-tree observability, and suspend/resume. Full solution builds clean; `Tests.Sessions.Fast`
+(127), `Tests.Server.Fast` (352), and `Tests.Core` (576) all pass. (`Tests.ForwardPass.Fast` has 7
+pre-existing, unrelated SIMD-tiering bit-equivalence failures on this machine, confirmed present on
+the pre-deletion baseline too — environment-specific: `OpenBLAS: not found`.)
 
 **Also found (and fixed) while stress-testing this path**: a severe, unrelated prefill-packing
 defect affecting real concurrent `HotSession` traffic at 5–15 simultaneous requests, since

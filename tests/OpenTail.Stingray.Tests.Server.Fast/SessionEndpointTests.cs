@@ -194,6 +194,85 @@ public sealed class SessionEndpointTests : IDisposable
         public void Dispose() => _engine.Dispose();
     }
 
+    private const int Yes = 10;
+
+    private sealed class ChoiceTokenizer : ITokenizer
+    {
+        public int VocabSize => 32;
+        public int BosTokenId => 0;
+        public int EosTokenId => Eos;
+        public int UnknownTokenId => 0;
+        public int PadTokenId => Eos;
+        public bool AddBosToken => false;
+        public IReadOnlyCollection<int> EogTokenIds => [Eos];
+        public IReadOnlyList<int> Encode(string text) => text switch
+        {
+            "start" => [1],
+            "YES" => [Yes],
+            _ => throw new ArgumentOutOfRangeException(nameof(text)),
+        };
+        public string Decode(IEnumerable<int> tokens) => "tok";
+        public byte[] DecodeBytes(int token) => token == Yes ? "YES"u8.ToArray() : [];
+    }
+
+    // Uniform logits: with AllowedChoices active every non-allowed token is masked to -inf, so
+    // the single-token-wide allowed set is picked regardless of these raw values.
+    private sealed class ChoiceForwardPass : IBatchedForwardPass
+    {
+        public bool SnapKvEnabled => false;
+        public long KvBytesPerToken => 1;
+        public int MaxSeqLen => 64;
+        public bool PrefillDequantCacheActive => false;
+        public ISequenceKvCache CreateCache() => new FakeCache();
+        public ReadOnlySpan<float> PrefillWithCache(IReadOnlyList<int> tokens, ISequenceKvCache cache, int startPos = 0)
+        {
+            Assert.IsType<FakeCache>(cache).LogicalPosition = startPos + tokens.Count;
+            return new float[32];
+        }
+        public float[]?[] PrefillPackedMulti(ReadOnlyMemory<int>[] chunks, int[] startPos, ISequenceKvCache[] caches, bool[] wantLogits) =>
+            throw new NotSupportedException();
+        public float[][] BatchForwardMulti(int[] tokens, int[] positions, ISequenceKvCache[] caches)
+        {
+            for (int i = 0; i < caches.Length; i++)
+                Assert.IsType<FakeCache>(caches[i]).LogicalPosition = positions[i] + 1;
+            return Enumerable.Repeat(new float[32], tokens.Length).ToArray();
+        }
+    }
+
+    private sealed class ChoiceSessions : IServerSessionRuntime, IDisposable
+    {
+        private readonly ContinuousBatchingEngine _engine =
+            new(new ChoiceForwardPass(), new ChoiceTokenizer(), "test", maxBatchSize: 1);
+        public ChoiceSessions() => Runtime = new HotSessionRuntime(_engine, new ChoiceTokenizer());
+        public HotSessionRuntime? Runtime { get; }
+        public ColdSessionRuntime? ColdRuntime => null;
+        public string? UnavailabilityReason => null;
+        public void Dispose() => _engine.Dispose();
+    }
+
+    /// <summary>docs/051: `allowed_choices` on the turn request reaches SamplingParams.AllowedChoices.</summary>
+    [Fact]
+    public async Task Turn_AllowedChoices_ConstrainsGeneration()
+    {
+        using var sessions = new ChoiceSessions();
+        var client = CreateClient(sessions);
+        Guid id = await CreateSessionAsync(client);
+
+        var resp = await client.PostAsJsonAsync($"/v1/sessions/{id}/turns", new
+        {
+            append_prompt = "start",
+            expected_revision = 0L,
+            max_tokens = 10,
+            temperature = 0f,
+            allowed_choices = new[] { "YES" },
+        });
+
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+        Assert.Equal("YES", doc.RootElement.GetProperty("text").GetString());
+        Assert.Equal("completed", doc.RootElement.GetProperty("finish_reason").GetString());
+    }
+
     private HttpClient CreateClient(IServerSessionRuntime sessions)
     {
         var factory = new WebApplicationFactory<Program>()
@@ -241,6 +320,11 @@ public sealed class SessionEndpointTests : IDisposable
             await client.GetAsync($"/v1/sessions/{id}/skills"),
             await client.DeleteAsync($"/v1/sessions/{id}/skills/s"),
             await client.PostAsJsonAsync($"/v1/sessions/{id}/tool-calls/validate", new { name = "t" }),
+            await client.PostAsync($"/v1/sessions/{id}/checkpoints", content: null),
+            await client.PostAsJsonAsync($"/v1/sessions/{id}/rollback", new { checkpoint_token = "x", committed_revision = 0L }),
+            await client.GetAsync($"/v1/sessions/{id}/tree"),
+            await client.PostAsync($"/v1/sessions/{id}/suspend", content: null),
+            await client.PostAsync($"/v1/sessions/{id}/resume", content: null),
             await client.DeleteAsync($"/v1/sessions/{id}"),
         };
 
@@ -268,6 +352,62 @@ public sealed class SessionEndpointTests : IDisposable
         // Gone afterwards, and deleting twice is a 404 rather than a second success.
         Assert.Equal(HttpStatusCode.NotFound, (await client.GetAsync($"/v1/sessions/{id}")).StatusCode);
         Assert.Equal(HttpStatusCode.NotFound, (await client.DeleteAsync($"/v1/sessions/{id}")).StatusCode);
+    }
+
+    /// <summary>
+    /// docs/051: `metrics` (HotSession.Metrics) and `finish_reason`/`tool_calls`
+    /// (HotSessionTurnResult) exist on HotSession but were invisible over HTTP until this — a
+    /// caller could not previously see why a turn stopped or read its token/timing counters at
+    /// all through this endpoint.
+    /// </summary>
+    [Fact]
+    public async Task Session_ExposesMetricsAndFinishReason()
+    {
+        using var sessions = new EnabledSessions();
+        var client = CreateClient(sessions);
+        Guid id = await CreateSessionAsync(client);
+
+        // temperature: 0 forces greedy sampling — the fake always puts all its logit mass on
+        // EOS, but at the server default temperature (1.0) that is still only the MOST likely
+        // token, not a certainty, so leaving it unset made this test genuinely flaky.
+        var turnResp = await client.PostAsJsonAsync($"/v1/sessions/{id}/turns",
+            new { append_prompt = "hi", expected_revision = 0L, max_tokens = 4, temperature = 0f });
+        Assert.Equal(HttpStatusCode.OK, turnResp.StatusCode);
+        using var turn = JsonDocument.Parse(await turnResp.Content.ReadAsStringAsync());
+        // The fake forward pass emits EOS immediately, so this is a natural stop, not a truncation.
+        Assert.Equal("completed", turn.RootElement.GetProperty("finish_reason").GetString());
+        Assert.False(turn.RootElement.TryGetProperty("tool_calls", out _));
+
+        // The fake's first sampled token is EOS itself (all logit mass on it), so the turn stops
+        // before any token is ever committed as generated content — zero is the correct value
+        // here, not a placeholder. Prompt tokens were still genuinely prefilled.
+        var metrics = turn.RootElement.GetProperty("session").GetProperty("metrics");
+        Assert.True(metrics.GetProperty("prompt_tokens").GetInt64() > 0);
+        Assert.Equal(0, metrics.GetProperty("generated_tokens").GetInt64());
+
+        var getResp = await client.GetAsync($"/v1/sessions/{id}");
+        using var get = JsonDocument.Parse(await getResp.Content.ReadAsStringAsync());
+        Assert.Equal(0, get.RootElement.GetProperty("metrics").GetProperty("generated_tokens").GetInt64());
+        // No metadata was ever set on this session — omitted, not an empty object.
+        Assert.False(get.RootElement.TryGetProperty("metadata", out _));
+    }
+
+    /// <summary>
+    /// ISessionMetadata has no HTTP setter (it's host-application state, not a client-facing
+    /// concept — see its own doc comment) — only that it round-trips once set in-process, as an
+    /// embedding host would.
+    /// </summary>
+    [Fact]
+    public async Task Session_ExposesMetadataSetInProcess()
+    {
+        using var sessions = new EnabledSessions();
+        var client = CreateClient(sessions);
+        Guid id = await CreateSessionAsync(client);
+
+        sessions.Runtime!.Open(new OpenTail.Stingray.Sessions.SessionId(id)).Metadata.Set("workflow", "review");
+
+        using var get = JsonDocument.Parse(await (await client.GetAsync($"/v1/sessions/{id}")).Content.ReadAsStringAsync());
+        Assert.Equal("review", get.RootElement.GetProperty("metadata").GetProperty("workflow").GetString());
     }
 
     /// <summary>
@@ -445,6 +585,96 @@ public sealed class SessionEndpointTests : IDisposable
         Assert.Equal(HttpStatusCode.NotFound, (await client.DeleteAsync($"/v1/sessions/{id}/skills/s")).StatusCode);
         Assert.Equal(HttpStatusCode.NotFound,
             (await client.PostAsJsonAsync($"/v1/sessions/{id}/tool-calls/validate", new { name = "t" })).StatusCode);
+    }
+
+    // ── Checkpoint / rollback / tree / suspend (docs/051 items #2-#4) ───────
+
+    [Fact]
+    public async Task Checkpoint_ThenRollback_RestoresTheEarlierRevision()
+    {
+        using var sessions = new EnabledSessions();
+        var client = CreateClient(sessions);
+        Guid id = await CreateSessionAsync(client);
+
+        await client.PostAsJsonAsync($"/v1/sessions/{id}/turns", TurnBody("one", 0));
+
+        var checkpointResp = await client.PostAsync($"/v1/sessions/{id}/checkpoints", content: null);
+        Assert.Equal(HttpStatusCode.Created, checkpointResp.StatusCode);
+        using var checkpoint = JsonDocument.Parse(await checkpointResp.Content.ReadAsStringAsync());
+        string token = checkpoint.RootElement.GetProperty("checkpoint_token").GetString()!;
+        long checkpointRevision = checkpoint.RootElement.GetProperty("committed_revision").GetInt64();
+
+        await client.PostAsJsonAsync($"/v1/sessions/{id}/turns", TurnBody("two", checkpointRevision));
+        using var beforeRollback = JsonDocument.Parse(await (await client.GetAsync($"/v1/sessions/{id}")).Content.ReadAsStringAsync());
+        Assert.True(beforeRollback.RootElement.GetProperty("committed_revision").GetInt64() > checkpointRevision);
+
+        var rollbackResp = await client.PostAsJsonAsync($"/v1/sessions/{id}/rollback",
+            new { checkpoint_token = token, committed_revision = checkpointRevision });
+        Assert.Equal(HttpStatusCode.OK, rollbackResp.StatusCode);
+        using var afterRollback = JsonDocument.Parse(await rollbackResp.Content.ReadAsStringAsync());
+        Assert.Equal(checkpointRevision, afterRollback.RootElement.GetProperty("committed_revision").GetInt64());
+
+        // The rolled-back revision is accepted as expected_revision again — proof the store's
+        // counter, not just the reported number, actually moved back.
+        var replayTurn = await client.PostAsJsonAsync($"/v1/sessions/{id}/turns", TurnBody("two", checkpointRevision));
+        Assert.Equal(HttpStatusCode.OK, replayTurn.StatusCode);
+    }
+
+    [Fact]
+    public async Task Rollback_MalformedToken_Returns400()
+    {
+        using var sessions = new EnabledSessions();
+        var client = CreateClient(sessions);
+        Guid id = await CreateSessionAsync(client);
+
+        var resp = await client.PostAsJsonAsync($"/v1/sessions/{id}/rollback",
+            new { checkpoint_token = "not-valid-base64!!", committed_revision = 0L });
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+    }
+
+    [Fact]
+    public async Task Tree_RootSession_ReportsNoParentAndOwnMetrics()
+    {
+        using var sessions = new EnabledSessions();
+        var client = CreateClient(sessions);
+        Guid id = await CreateSessionAsync(client);
+        await client.PostAsJsonAsync($"/v1/sessions/{id}/turns", TurnBody("one", 0));
+
+        var resp = await client.GetAsync($"/v1/sessions/{id}/tree");
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        using var tree = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+        Assert.Equal(id, Guid.Parse(tree.RootElement.GetProperty("root_id").GetString()!));
+        Assert.False(tree.RootElement.TryGetProperty("parent_id", out var parentId) && parentId.ValueKind != JsonValueKind.Null);
+        Assert.Equal(0, tree.RootElement.GetProperty("children").GetArrayLength());
+        Assert.True(tree.RootElement.GetProperty("cumulative_metrics").GetProperty("prompt_tokens").GetInt64() > 0);
+    }
+
+    [Fact]
+    public async Task Suspend_ReleasesTheCache_AndResumeIsANoOpUntilTheNextTurn()
+    {
+        using var sessions = new EnabledSessions();
+        var client = CreateClient(sessions);
+        Guid id = await CreateSessionAsync(client);
+        await client.PostAsJsonAsync($"/v1/sessions/{id}/turns", TurnBody("one", 0));
+
+        using var before = JsonDocument.Parse(await (await client.GetAsync($"/v1/sessions/{id}")).Content.ReadAsStringAsync());
+        Assert.False(before.RootElement.GetProperty("is_suspended").GetBoolean());
+
+        var suspendResp = await client.PostAsync($"/v1/sessions/{id}/suspend", content: null);
+        Assert.Equal(HttpStatusCode.OK, suspendResp.StatusCode);
+        using var suspended = JsonDocument.Parse(await suspendResp.Content.ReadAsStringAsync());
+        Assert.True(suspended.RootElement.GetProperty("is_suspended").GetBoolean());
+
+        // Resume performs no work — HotSession has no separate "resumed" state (see its own doc
+        // comment) — so is_suspended stays true until the next turn actually re-prefills.
+        var resumeResp = await client.PostAsync($"/v1/sessions/{id}/resume", content: null);
+        Assert.Equal(HttpStatusCode.OK, resumeResp.StatusCode);
+        using var resumed = JsonDocument.Parse(await resumeResp.Content.ReadAsStringAsync());
+        Assert.True(resumed.RootElement.GetProperty("is_suspended").GetBoolean());
+
+        await client.PostAsJsonAsync($"/v1/sessions/{id}/turns", TurnBody("two", 1));
+        using var afterNextTurn = JsonDocument.Parse(await (await client.GetAsync($"/v1/sessions/{id}")).Content.ReadAsStringAsync());
+        Assert.False(afterNextTurn.RootElement.GetProperty("is_suspended").GetBoolean());
     }
 
     // ── Request validation ────────────────────────────────────────────────
