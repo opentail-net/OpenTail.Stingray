@@ -1,3 +1,6 @@
+using System.Runtime.CompilerServices;
+using System.Text.RegularExpressions;
+
 namespace OpenTail.Stingray.Audio;
 
 /// <summary>
@@ -28,6 +31,40 @@ public record AudioGenerationRequest
     public string? ReferenceAudioPath { get; init; }
     public string? ReferenceText { get; init; }
     public Action<int, int>? Progress { get; init; }
+}
+
+/// <summary>
+/// Shared sentence-splitting logic for <see cref="ITextToSpeechPipeline.GenerateStreamAsync"/>
+/// implementations that don't have a native token/frame streaming path: splits the request text
+/// into clauses/sentences and calls the pipeline's synchronous <c>Generate</c> once per clause.
+/// </summary>
+public static class TtsStreamingHelper
+{
+    private static readonly Regex SentenceSplit = new(@"(?<=[.!?,;\n])\s+", RegexOptions.Compiled);
+
+    public static async IAsyncEnumerable<float[]> SplitAndGenerateAsync(
+        AudioGenerationRequest request,
+        Func<AudioGenerationRequest, AudioGenerationResult> generate,
+        [EnumeratorCancellation] CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(request.Text)) yield break;
+
+        var sentences = SentenceSplit.Split(request.Text);
+        foreach (var s in sentences)
+        {
+            var trimmed = s.Trim();
+            if (string.IsNullOrEmpty(trimmed)) continue;
+            ct.ThrowIfCancellationRequested();
+
+            var req = request with { Text = trimmed, OutputPath = null };
+            var res = generate(req);
+            if (res.Samples.Length > 0)
+            {
+                yield return res.Samples;
+            }
+            await Task.Yield();
+        }
+    }
 }
 
 public sealed class AudioGenerationResult

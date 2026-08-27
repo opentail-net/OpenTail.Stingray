@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
-using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -134,28 +133,8 @@ public sealed class ChatterboxPipeline : ITextToSpeechPipeline
     /// <summary>
     /// Synthesizes text in streaming fashion, yielding clause/sentence audio waveforms as they are generated.
     /// </summary>
-    public async IAsyncEnumerable<float[]> GenerateStreamAsync(
-        AudioGenerationRequest request,
-        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct = default)
-    {
-        if (string.IsNullOrWhiteSpace(request.Text)) yield break;
-
-        var sentences = Regex.Split(request.Text, @"(?<=[.!?,;\n])\s+");
-        foreach (var s in sentences)
-        {
-            var trimmed = s.Trim();
-            if (string.IsNullOrEmpty(trimmed)) continue;
-            ct.ThrowIfCancellationRequested();
-
-            var req = request with { Text = trimmed, OutputPath = null };
-            var res = Generate(req);
-            if (res.Samples.Length > 0)
-            {
-                yield return res.Samples;
-            }
-            await Task.Yield();
-        }
-    }
+    public IAsyncEnumerable<float[]> GenerateStreamAsync(AudioGenerationRequest request, CancellationToken ct = default)
+        => TtsStreamingHelper.SplitAndGenerateAsync(request, Generate, ct);
 
     public void Dispose()
     {

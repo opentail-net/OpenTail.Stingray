@@ -167,29 +167,8 @@ public sealed class F5TtsPipeline : ITextToSpeechPipeline
     /// <summary>
     /// Synthesizes text in streaming fashion, yielding clause/sentence audio waveforms as they are generated.
     /// </summary>
-    public async IAsyncEnumerable<float[]> GenerateStreamAsync(
-        AudioGenerationRequest request,
-        [EnumeratorCancellation] CancellationToken ct = default)
-    {
-        if (string.IsNullOrWhiteSpace(request.Text)) yield break;
-
-        var sentences = Regex.Split(request.Text, @"(?<=[.!?,
-])\s+");
-        foreach (var s in sentences)
-        {
-            var trimmed = s.Trim();
-            if (string.IsNullOrEmpty(trimmed)) continue;
-            ct.ThrowIfCancellationRequested();
-
-            var req = request with { Text = trimmed, OutputPath = null };
-            var res = Generate(req);
-            if (res.Samples.Length > 0)
-            {
-                yield return res.Samples;
-            }
-            await Task.Yield();
-        }
-    }
+    public IAsyncEnumerable<float[]> GenerateStreamAsync(AudioGenerationRequest request, CancellationToken ct = default)
+        => TtsStreamingHelper.SplitAndGenerateAsync(request, Generate, ct);
 
     /// <summary>
     /// Fake/placeholder flow-matching ODE + DiT stand-in (no real weights) -- kept so parameterless
