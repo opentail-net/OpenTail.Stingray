@@ -70,6 +70,11 @@ public static class KnownEnvironmentVariables
         "STINGRAY_DECODE_PROFILE",
         "STINGRAY_DECODE_REGIONS",
         "STINGRAY_DENSE_FFN_GPU_MARGIN_MB",
+        // Diagnostic-only escape hatch (ModelCompatibility.ValidateForTextGeneration): bypasses
+        // the text-generation architecture allowlist for local investigation of an un-admitted
+        // architecture (e.g. deepseek2 -- see docs/bugstofix.md), without actually admitting it.
+        // Never set this in a served/production context.
+        "STINGRAY_DIAGNOSTIC_ALLOW_UNSUPPORTED_ARCH",
         "STINGRAY_DISABLE_BATCH_VERIFY",
         "STINGRAY_DISABLE_DUAL_Q8",
         "STINGRAY_DISABLE_MTP",

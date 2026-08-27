@@ -539,7 +539,8 @@ public static class ModelCompatibility
             ? Convert.ToString(value) ?? ""
             : "llama";
 
-        if (!IsTextGenerationArchitectureSupported(architecture))
+        if (!IsTextGenerationArchitectureSupported(architecture)
+            && Environment.GetEnvironmentVariable("STINGRAY_DIAGNOSTIC_ALLOW_UNSUPPORTED_ARCH") != "1")
         {
             throw new NotSupportedException(
                 $"GGUF architecture '{architecture}' is not supported for text generation by OpenTail.Stingray. " +

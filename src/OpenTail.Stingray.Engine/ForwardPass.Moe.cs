@@ -99,6 +99,27 @@ public sealed unsafe partial class ForwardPass
                 wsum += expertWeights[i];
             }
             sb.Append(" sum=").Append(wsum.ToString("F4", inv));
+
+            // docs/bugstofix.md (ModelCompatibility.cs:461 entry, external-consultation follow-up):
+            // top-k boundary margin -- the gap between the LEAST-confident SELECTED expert and the
+            // MOST-confident NOT-selected one. _routerLogits holds post-softmax probabilities at
+            // this point (softmax applied above, before SelectTopK). A tiny margin here is exactly
+            // the condition under which a small upstream numerical difference can flip which expert
+            // set gets selected -- the mechanism the external consultation's route-replay experiment
+            // was designed to test.
+            float minSelected = float.MaxValue;
+            for (int i = 0; i < numActive; i++)
+                if (_routerLogits[selectedExperts[i]] < minSelected) minSelected = _routerLogits[selectedExperts[i]];
+            float maxUnselected = float.MinValue;
+            for (int e = 0; e < numExperts; e++)
+            {
+                bool selected = false;
+                for (int i = 0; i < numActive; i++)
+                    if (selectedExperts[i] == e) { selected = true; break; }
+                if (!selected && _routerLogits[e] > maxUnselected) maxUnselected = _routerLogits[e];
+            }
+            sb.Append(" margin=").Append((minSelected - maxUnselected).ToString("F6", inv));
+
             Console.Error.WriteLine(sb.ToString());
         }
 

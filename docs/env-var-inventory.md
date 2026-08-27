@@ -29,6 +29,12 @@ names are treated as valid, `doctor` would not have flagged it either. The warni
 `STINGRAY_MAX_QUEUE` and the dead entry is out of the registry, so the mistake is now reported with
 a closest-match suggestion.
 
+**Reconciled again 2026-08-27 — `KnownEnvironmentVariables.All` now contains **171** names**
+(added `STINGRAY_DIAGNOSTIC_ALLOW_UNSUPPORTED_ARCH`, a diagnostic-only escape hatch in
+`ModelCompatibility.ValidateForTextGeneration` that bypasses the text-generation architecture
+allowlist for local investigation of an un-admitted architecture, e.g. deepseek2, without actually
+admitting it -- see `docs/bugstofix.md`.)
+
 **Reconciled again 2026-08-24 — `KnownEnvironmentVariables.All` now contains **170** names**
 (added `STINGRAY_AUDIO_DIAGNOSTIC_DUMP`: a pre-existing `Environment.GetEnvironmentVariable` read in
 `ChatterboxPipeline`/`ChatterboxDecoder` that was never registered, caught by CI failing

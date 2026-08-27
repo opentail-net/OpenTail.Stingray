@@ -30,10 +30,13 @@ public static unsafe class DeepSeekMoeGraph
         for (int e = 0; e < numExperts; e++)
         {
             float sum = 0f;
-            float* col = wGateInp + e;
+            // wGateInp is row-major [numExperts, embDim] (the standard GGUF Linear-weight layout
+            // -- see the identical fix and rationale on OpenTail.Stingray.Cpu.DeepSeekMoeGraph,
+            // this class's twin; this one is also unreachable dead code, kept consistent anyway).
+            float* row = wGateInp + (long)e * embDim;
             for (int k = 0; k < embDim; k++)
             {
-                sum += inputToken[k] * col[k * numExperts];
+                sum += inputToken[k] * row[k];
             }
             logits[e] = sum;
             if (sum > maxLogit) maxLogit = sum;
