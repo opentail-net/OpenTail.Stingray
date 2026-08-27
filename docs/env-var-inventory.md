@@ -29,6 +29,11 @@ names are treated as valid, `doctor` would not have flagged it either. The warni
 `STINGRAY_MAX_QUEUE` and the dead entry is out of the registry, so the mistake is now reported with
 a closest-match suggestion.
 
+**Reconciled again 2026-08-28 — `KnownEnvironmentVariables.All` now contains **172** names**
+(added `STINGRAY_DBG_TOKEN_RANK`: a `--verbose-prompt` diagnostic added to `RunCommand.cs` that
+prints a specific token's logit value and rank in the final logits, used while investigating
+DeepSeek-V2-Lite's non-"Paris" output — see `docs/done/032-deepseek2-mla-yarn-moe-routing-investigation.md`.)
+
 **Reconciled again 2026-08-27 — `KnownEnvironmentVariables.All` now contains **171** names**
 (added `STINGRAY_DIAGNOSTIC_ALLOW_UNSUPPORTED_ARCH`, a diagnostic-only escape hatch in
 `ModelCompatibility.ValidateForTextGeneration` that bypasses the text-generation architecture

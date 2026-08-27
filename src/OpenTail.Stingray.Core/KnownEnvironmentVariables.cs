@@ -65,6 +65,7 @@ public static class KnownEnvironmentVariables
         "STINGRAY_CUDA_MATVEC_BENCH",
         "STINGRAY_CUDA_PRECISION",
         "STINGRAY_CUDA_PROFILE",
+        "STINGRAY_DBG_TOKEN_RANK",
         "STINGRAY_DECODE_CUDA_GRAPH",
         "STINGRAY_DECODE_MMQ_BM32",
         "STINGRAY_DECODE_PROFILE",
