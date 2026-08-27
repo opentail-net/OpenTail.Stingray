@@ -6976,7 +6976,7 @@ public static unsafe class SimdKernels
 
     public static void SoftmaxInPlace(float* x, int size)
     {
-        if (Avx.IsSupported && size >= 8)
+        if (Avx2.IsSupported && Fma.IsSupported && size >= 8)
         {
             // Pass 1: find max
             var maxV = Vector256.Create(float.NegativeInfinity);
@@ -6987,30 +6987,47 @@ public static unsafe class SimdKernels
             for (; i < size; i++)
                 if (x[i] > max) max = x[i];
 
-            // Pass 2: exp(x - max) and sum
+            // Pass 2: exp(x - max) and sum.
+            // docs/bugstofix.md (ModelCompatibility.cs:461, deepseek2 investigation): two real,
+            // previously-unaudited discrepancies vs ggml's actual softmax
+            // (ggml_vec_soft_max_f32, ggml-cpu/vec.cpp) fixed together here -- both matter because
+            // this exact function computes the MoE router's probabilities, the operation the
+            // router-margin diagnostic (see the entry above) showed is chronically near-tied.
+            // (1) ggml accumulates `sum` in double (ggml_float), one 8-wide chunk's horizontal sum
+            // added into the running double at a time -- this engine's `sumV` stayed float32,
+            // lane-parallel across the whole vector with one final hsum (the same class of gap
+            // already fixed for RMSNorm and the Q2_K dot product). (2) ggml's vectorized exp
+            // (ggml_v_expf) is its own specific range-reduction/polynomial implementation --
+            // bit-manipulation exponent trick, Cody-Waite two-constant reduction, a 5-term
+            // polynomial with ggml's own literal coefficients -- not a generic exp approximation,
+            // and this engine's ExpApprox256 was an independently-derived 7-term Taylor-style
+            // polynomial with different coefficients. Two different (both individually reasonable)
+            // exp approximations do not round identically per element. GgmlExpf256 below is a
+            // faithful port of ggml_v_expf's AVX2 fast path (the only path realistic softmax
+            // inputs reach: x <= 0 always here, since x-max is subtracted first) -- see its own
+            // doc comment for the ultra-rare-input caveat this specifically does not handle.
             var maxBcast = Vector256.Create(max);
-            var sumV = Vector256<float>.Zero;
+            double sum = 0;
             i = 0;
             for (; i + 8 <= size; i += 8)
             {
                 var v = Avx.Subtract(Avx.LoadVector256(x + i), maxBcast);
-                var e = ExpApprox256(v);
+                var e = GgmlExpf256(v);
                 Avx.Store(x + i, e);
-                sumV = Avx.Add(sumV, e);
+                sum += (double)HSum256(e);
             }
-            float sum = HSum256(sumV);
             for (; i < size; i++)
             {
                 x[i] = MathF.Exp(x[i] - max);
-                sum += x[i];
+                sum += (double)x[i];
             }
 
             // Pass 3: normalize
-            var invSum = Vector256.Create(1.0f / sum);
+            var invSum = Vector256.Create((float)(1.0 / sum));
             i = 0;
             for (; i + 8 <= size; i += 8)
                 Avx.Store(x + i, Avx.Multiply(Avx.LoadVector256(x + i), invSum));
-            float invSumS = 1.0f / sum;
+            float invSumS = (float)(1.0 / sum);
             for (; i < size; i++)
                 x[i] *= invSumS;
         }
@@ -8369,6 +8386,58 @@ public static unsafe class SimdKernels
     private static Vector128<byte> LoadBytes8(byte* ptr)
     {
         return Vector128.CreateScalar(Unsafe.ReadUnaligned<long>(ptr)).AsByte();
+    }
+
+    /// <summary>
+    /// Faithful port of ggml's actual vectorized exp (<c>ggml_v_expf</c>,
+    /// examples/ggml/src/ggml-cpu/vec.h, AVX2 branch) -- the "round via magic-constant add" bit
+    /// trick for the integer exponent, a two-constant Cody-Waite range reduction, and ggml's own
+    /// 5-term minimax polynomial with its own literal coefficients. Deliberately NOT the same
+    /// algorithm as <see cref="ExpApprox256"/> (independently-derived Taylor-style polynomial) --
+    /// two different, individually-accurate exp approximations do not round identically per
+    /// element, which matters here because this feeds softmax (see <see cref="SoftmaxInPlace"/>'s
+    /// doc comment).
+    ///
+    /// <para><b>Deliberately only the fast/common path.</b> ggml's real implementation also
+    /// handles an extreme input range (roughly |x| beyond ~87) with a separate denormal/overflow
+    /// correction branch this port omits. Every caller of this method feeds it <c>x - max</c>
+    /// (softmax's own max-subtraction), which is always <c>&lt;= 0</c> and in practice never
+    /// remotely close to that threshold for real model activations (a value that far out has
+    /// exp() underflowing to 0 either way) -- so the omitted branch is not expected to be
+    /// reachable from this codebase's actual call sites, but is a known, explicit gap if this is
+    /// ever reused for a caller that does not first subtract a row max.</para>
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static Vector256<float> GgmlExpf256(Vector256<float> x)
+    {
+        var r = Vector256.Create(12582912.0f);              // 0x1.8p23f
+        var log2e = Vector256.Create(1.4426950216293335f);  // 0x1.715476p+0f
+        var z = Fma.MultiplyAdd(x, log2e, r);
+        var n = Avx.Subtract(z, r);
+
+        var ln2Hi = Vector256.Create(0.693145751953125f);        // 0x1.62e4p-1f
+        var ln2Lo = Vector256.Create(0.000001428606765330187f);  // 0x1.7f7d1cp-20f
+        var inner = Fma.MultiplyAddNegated(n, ln2Hi, x);
+        var b = Fma.MultiplyAddNegated(n, ln2Lo, inner);
+
+        // 2^n via the classic "shift the rounded integer into the exponent field" trick: z's raw
+        // bits already encode n in its low mantissa bits (guaranteed by the magic-constant-add
+        // round), so shifting left 23 repositions it as an IEEE-754 exponent.
+        var e = Avx2.ShiftLeftLogical(z.AsInt32(), 23);
+        var k = Avx2.Add(e, Vector256.Create(0x3F800000)).AsSingle(); // + bits of 1.0f
+
+        var u = Avx.Multiply(b, b);
+        var c1 = Vector256.Create(0.008247390389442444f);
+        var c2 = Vector256.Create(0.04189976677298546f);
+        var c3 = Vector256.Create(0.16668395698070526f);
+        var c4 = Vector256.Create(0.4999912679195404f);
+        var c5 = Vector256.Create(0.9999994039535522f);
+        var j = Fma.MultiplyAdd(
+            Fma.MultiplyAdd(Fma.MultiplyAdd(c1, b, c2), u, Fma.MultiplyAdd(c3, b, c4)),
+            u,
+            Avx.Multiply(c5, b));
+
+        return Fma.MultiplyAdd(j, k, k); // k * (j + 1) = 2^n * exp(b) = exp(x)
     }
 
     /// <summary>
