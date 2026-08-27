@@ -3608,6 +3608,28 @@ public static unsafe class SimdKernels
     public static float DotQ2K_Q8K(byte* row, byte* scratch, int cols)
     {
         int numBlocks = cols / 256;
+        if (Avx2.IsSupported && Fma.IsSupported && Ssse3.IsSupported)
+            return DotQ2K_Q8K_Avx2(row, scratch, numBlocks);
+        return DotQ2K_Q8K_Scalar(row, scratch, numBlocks);
+    }
+
+    /// <summary>
+    /// docs/bugstofix.md (ModelCompatibility.cs:461, deepseek2 investigation): this scalar loop
+    /// mirrors ggml's <c>ggml_vec_dot_q2_K_q8_K_generic</c> exactly — correct in isolation, but NOT
+    /// what a real x86 llama.cpp build actually executes. ggml dispatches to a hand-written AVX2
+    /// kernel (examples/ggml/src/ggml-cpu/arch/x86/quants.c) that sums in a fundamentally different
+    /// order: 8 parallel float32 SIMD lanes accumulated across ALL super-blocks with ONE horizontal
+    /// reduction at the very end, versus this loop's per-block sequential scalar
+    /// <c>sumf += dall*isum - dmin*summs</c>. Floating-point addition is not associative, so the two
+    /// orders round differently at the ULP level — exactly the kind of "SIMD reduction order"
+    /// residual the activation-precision-matching fix (see the bugstofix entry above) could not
+    /// close on its own. <see cref="DotQ2K_Q8K_Avx2"/> replicates ggml's real AVX2 kernel
+    /// instruction-for-instruction (same lane accumulation, same single end-of-loop horizontal sum)
+    /// for exactly this reason. This scalar version remains the correct, portable fallback for
+    /// non-AVX2 hardware — it is not being deleted, just no longer the path a real x86 build takes.
+    /// </summary>
+    internal static float DotQ2K_Q8K_Scalar(byte* row, byte* scratch, int numBlocks)
+    {
         float* dArr = (float*)scratch;
         sbyte* qsArr = (sbyte*)(scratch + numBlocks * 4);
         short* bsumsArr = (short*)(scratch + numBlocks * 4 + numBlocks * 256);
@@ -3659,6 +3681,106 @@ public static unsafe class SimdKernels
             sumf += dall * isum - dmin * summs;
         }
         return sumf;
+    }
+
+    // Byte-shuffle tables replicating one 16-bit scale lane across 8 output lanes each, matching
+    // ggml's get_scale_shuffle_q3k(0..3) exactly (examples/ggml/src/ggml-cpu/arch/x86/quants.c).
+    // scales[j] (see DotQ2K_Q8K_Avx2) holds 8 real int16 scale values duplicated into both 128-bit
+    // halves; shuffle i selects the byte-pair for scale index 2*i (low 8 lanes) and 2*i+1 (high 8
+    // lanes) and broadcasts each across 8 lanes so it lines up with MultiplyAddAdjacent's pairing.
+    private static readonly Vector256<byte> s_q2kScaleShuffle0 = Vector256.Create(
+        (byte)0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1,
+        2, 3, 2, 3, 2, 3, 2, 3, 2, 3, 2, 3, 2, 3, 2, 3);
+    private static readonly Vector256<byte> s_q2kScaleShuffle1 = Vector256.Create(
+        (byte)4, 5, 4, 5, 4, 5, 4, 5, 4, 5, 4, 5, 4, 5, 4, 5,
+        6, 7, 6, 7, 6, 7, 6, 7, 6, 7, 6, 7, 6, 7, 6, 7);
+    private static readonly Vector256<byte> s_q2kScaleShuffle2 = Vector256.Create(
+        (byte)8, 9, 8, 9, 8, 9, 8, 9, 8, 9, 8, 9, 8, 9, 8, 9,
+        10, 11, 10, 11, 10, 11, 10, 11, 10, 11, 10, 11, 10, 11, 10, 11);
+    private static readonly Vector256<byte> s_q2kScaleShuffle3 = Vector256.Create(
+        (byte)12, 13, 12, 13, 12, 13, 12, 13, 12, 13, 12, 13, 12, 13, 12, 13,
+        14, 15, 14, 15, 14, 15, 14, 15, 14, 15, 14, 15, 14, 15, 14, 15);
+
+    /// <summary>
+    /// Instruction-for-instruction port of ggml's real AVX2 <c>ggml_vec_dot_q2_K_q8_K</c> — same
+    /// operation order and lane-parallel accumulation, not just the same formula. See the doc
+    /// comment on <see cref="DotQ2K_Q8K_Scalar"/> for why order (not just correctness) matters here.
+    /// </summary>
+    internal static float DotQ2K_Q8K_Avx2(byte* row, byte* scratch, int numBlocks)
+    {
+        float* dArr = (float*)scratch;
+        sbyte* qsArr = (sbyte*)(scratch + numBlocks * 4);
+        short* bsumsArr = (short*)(scratch + numBlocks * 4 + numBlocks * 256);
+
+        var m3 = Vector256.Create((byte)3);
+        var m4 = Vector128.Create((byte)0xF);
+        var acc = Vector256<float>.Zero;
+
+        for (int i = 0; i < numBlocks; i++)
+        {
+            byte* x = row + i * 84;
+            byte* sc = x;       // scales[16]: low nibble = scale, high nibble = min
+            byte* q2 = x + 16;  // qs[64]
+            float d = dArr[i] * HalfToFloat(x[80], x[81]);
+            float dmin = -dArr[i] * HalfToFloat(x[82], x[83]);
+
+            sbyte* q8 = qsArr + i * 256;
+            short* bsums = bsumsArr + i * 16;
+
+            var minsAndScales = Vector128.LoadUnsafe(ref *sc);
+            var scales8 = Sse2.And(minsAndScales, m4);
+            var mins8 = Sse2.And(Sse2.ShiftRightLogical(minsAndScales.AsUInt16(), 4).AsByte(), m4);
+            var mins = Avx2.ConvertToVector256Int16(mins8.AsSByte());
+            var prod = Avx2.MultiplyAddAdjacent(mins, Vector256.LoadUnsafe(ref *bsums));
+            acc = Fma.MultiplyAdd(Vector256.Create(dmin), Avx.ConvertToVector256Single(prod), acc);
+
+            var allScales = Avx2.ConvertToVector256Int16(scales8.AsSByte());
+            var lScales = allScales.GetLower();
+            var hScales = allScales.GetUpper();
+            var scales0 = Vector256.Create(lScales, lScales).AsByte();
+            var scales1 = Vector256.Create(hScales, hScales).AsByte();
+
+            var sumi = Vector256<int>.Zero;
+            byte* q2p = q2;
+            sbyte* q8p = q8;
+
+            for (int j = 0; j < 2; j++)
+            {
+                var q2bits = Vector256.LoadUnsafe(ref *q2p); q2p += 32;
+
+                var q8_0 = Vector256.LoadUnsafe(ref *(byte*)q8p).AsSByte(); q8p += 32;
+                var q8_1 = Vector256.LoadUnsafe(ref *(byte*)q8p).AsSByte(); q8p += 32;
+                var q8_2 = Vector256.LoadUnsafe(ref *(byte*)q8p).AsSByte(); q8p += 32;
+                var q8_3 = Vector256.LoadUnsafe(ref *(byte*)q8p).AsSByte(); q8p += 32;
+
+                var q2_0 = Avx2.And(q2bits, m3);
+                var q2_1 = Avx2.And(Avx2.ShiftRightLogical(q2bits.AsUInt16(), 2).AsByte(), m3);
+                var q2_2 = Avx2.And(Avx2.ShiftRightLogical(q2bits.AsUInt16(), 4).AsByte(), m3);
+                var q2_3 = Avx2.And(Avx2.ShiftRightLogical(q2bits.AsUInt16(), 6).AsByte(), m3);
+
+                var pw0 = Avx2.MultiplyAddAdjacent(q2_0, q8_0);
+                var pw1 = Avx2.MultiplyAddAdjacent(q2_1, q8_1);
+                var pw2 = Avx2.MultiplyAddAdjacent(q2_2, q8_2);
+                var pw3 = Avx2.MultiplyAddAdjacent(q2_3, q8_3);
+
+                // scales[j] (j = this loop's outer index, 0 or 1) supplies all 8 real scale values
+                // for this half of the super-block; shuffle indices 0..3 pick which pair of those 8
+                // goes with p0/p1/p2/p3 respectively -- independent of j, matching
+                // ggml_vec_dot_q2_K_q8_K's `_mm256_shuffle_epi8(scales[j], get_scale_shuffle_q3k(0..3))`.
+                var scaleV = j == 0 ? scales0 : scales1;
+                var p0 = Avx2.MultiplyAddAdjacent(Avx2.Shuffle(scaleV, s_q2kScaleShuffle0).AsInt16(), pw0);
+                var p1 = Avx2.MultiplyAddAdjacent(Avx2.Shuffle(scaleV, s_q2kScaleShuffle1).AsInt16(), pw1);
+                var p2 = Avx2.MultiplyAddAdjacent(Avx2.Shuffle(scaleV, s_q2kScaleShuffle2).AsInt16(), pw2);
+                var p3 = Avx2.MultiplyAddAdjacent(Avx2.Shuffle(scaleV, s_q2kScaleShuffle3).AsInt16(), pw3);
+
+                p0 = Avx2.Add(p0, p1);
+                p2 = Avx2.Add(p2, p3);
+                sumi = Avx2.Add(sumi, Avx2.Add(p0, p2));
+            }
+
+            acc = Fma.MultiplyAdd(Vector256.Create(d), Avx.ConvertToVector256Single(sumi), acc);
+        }
+        return HSum256(acc);
     }
 
     // ================================================================
