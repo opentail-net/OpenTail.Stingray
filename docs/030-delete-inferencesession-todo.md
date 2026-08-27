@@ -4,8 +4,9 @@
 `docs/028-inference-session-to-hotsession-migration-plan.md`'s "End state" section; this doc was
 its trackable home. See that doc's 2026-08-27 addendum for the summary, including the one real gap
 the deletion re-check found (`SamplingParams.AllowedChoices`, ported onto
-`ContinuousBatchingEngine` rather than dropped) and `docs/051-hotsession-capability-wiring-plan.md`
-for what's ported-but-not-yet-wired-into-Server.
+`ContinuousBatchingEngine` rather than dropped) and
+`docs/done/051-hotsession-capability-wiring-plan.md` for how each ported capability was wired into
+the live Server path (remaining TODOs in `docs/051-hotsession-capability-wiring-plan.md`).
 
 ## Why this is safe to do now
 
@@ -26,8 +27,8 @@ Every genuinely novel capability `InferenceSession`/`InferenceRuntime` had has b
 more `IInferenceSession` members Phase 0's table never audited (`ActiveLora`, tool/skill
 validation, `OnTokenGenerated`, checkpoint/rollback, session tree, suspend/resume) — none used
 outside `InferenceSession`'s own island, but real enough that they're now ported too rather than
-dropped. See `docs/051-hotsession-capability-wiring-plan.md` for the full finding and the plan for
-making each one reachable from the live Server path. This section's "every genuinely novel
+dropped. See `docs/done/051-hotsession-capability-wiring-plan.md` for the full finding and how each
+one was made reachable from the live Server path. This section's "every genuinely novel
 capability has been ported" now covers all ten items (the original three plus these seven), not
 just the three doc 028's table listed.
 

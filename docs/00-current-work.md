@@ -55,17 +55,19 @@ constrained-choice sampling, which the deletion re-check found was implemented *
 `InferenceSession` — ported into `ContinuousBatchingEngine`'s batched decode loop
 (`HotSessionChoiceConstraintTests.cs`) rather than silently lost.
 
-**Done (2026-08-27), follow-up**: [051 — HotSession capability wiring plan](051-hotsession-capability-wiring-plan.md)
-is now closed except LoRA (real new engine work, tracked separately) and `OnTokenGenerated`/
-`ToolCallParser` (deliberately not wired — the Server layer already does this independently).
-`/v1/sessions/*` gained skills/tool-call validation (`POST .../skills`, `.../tool-calls/validate`),
-skill instructions that actually shape the next turn's prompt (also added to `/v1/chat/completions`
-and `/v1/messages` via a new `skills` request field — `SkillWireModels.cs`), previously-invisible
-`metrics`/`metadata`/`finish_reason`/`tool_calls`/`allowed_choices` fields, checkpoint/rollback,
-fork-tree observability, and suspend/resume. Full solution builds clean; `Tests.Sessions.Fast`
-(127), `Tests.Server.Fast` (352), and `Tests.Core` (576) all pass. (`Tests.ForwardPass.Fast` has 7
-pre-existing, unrelated SIMD-tiering bit-equivalence failures on this machine, confirmed present on
-the pre-deletion baseline too — environment-specific: `OpenBLAS: not found`.)
+**Done (2026-08-27), follow-up**: [051 — HotSession capability wiring plan](done/051-hotsession-capability-wiring-plan.md)
+(now in `docs/done/`; the live `docs/051-hotsession-capability-wiring-plan.md` holds only the
+remaining TODOs — LoRA, real new engine work; `OnTokenGenerated`/`ToolCallParser`, deliberately not
+wired since the Server layer already does this independently; and `Fork()` skill/instruction
+propagation, an open design question). `/v1/sessions/*` gained skills/tool-call validation
+(`POST .../skills`, `.../tool-calls/validate`), skill instructions that actually shape the next
+turn's prompt (also added to `/v1/chat/completions` and `/v1/messages` via a new `skills` request
+field — `SkillWireModels.cs`), previously-invisible `metrics`/`metadata`/`finish_reason`/
+`tool_calls`/`allowed_choices` fields, checkpoint/rollback, fork-tree observability, and
+suspend/resume. Full solution builds clean; `Tests.Sessions.Fast` (127), `Tests.Server.Fast` (352),
+and `Tests.Core` (576) all pass. (`Tests.ForwardPass.Fast` has 7 pre-existing, unrelated
+SIMD-tiering bit-equivalence failures on this machine, confirmed present on the pre-deletion
+baseline too — environment-specific: `OpenBLAS: not found`.)
 
 **Also found (and fixed) while stress-testing this path**: a severe, unrelated prefill-packing
 defect affecting real concurrent `HotSession` traffic at 5–15 simultaneous requests, since
