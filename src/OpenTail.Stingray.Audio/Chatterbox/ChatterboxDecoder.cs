@@ -11,7 +11,7 @@ namespace OpenTail.Stingray.Audio.Chatterbox;
 /// Euler solve) -> ChatterboxVocoder (mel -> waveform, HiFTGenerator). Falls back to the original
 /// placeholder synthesizer when no weights are available (used only by the no-model test/demo path).
 /// </summary>
-public sealed class ChatterboxDecoder
+public sealed class ChatterboxDecoder : IDisposable
 {
     public const int SampleRate = 24000;
     public const int HopLength = 256;
@@ -61,19 +61,35 @@ public sealed class ChatterboxDecoder
         return DecodeFakePlaceholder(speechTokens, speakerFeatures);
     }
 
-    private static float[] DecodeReal(ChatterboxS3GenWeights w, int[] promptTokens, float[] genEmbedding, float[] promptFeat, IReadOnlyList<int> speechTokens)
+    public void Dispose()
     {
-        var speechTokenList = new List<int>(speechTokens.Count + 3);
+        _onnxDecoder?.Dispose();
+    }
+
+    /// <summary>
+    /// Turbo official inference: drops start/stop/OOV speech tokens (id &gt;= 6561) and appends 3
+    /// silence tokens (S3GEN_SIL = 4299). Shared between the pure C# and ONNX decode paths, which
+    /// must feed the S3Gen decoder identical token sequences.
+    /// </summary>
+    internal static List<int> FilterAndPadSpeechTokens(IReadOnlyList<int> speechTokens)
+    {
+        var filtered = new List<int>(speechTokens.Count + 3);
         foreach (int t in speechTokens)
         {
             if (t != ChatterboxAcousticLm.StartSpeechToken && t != ChatterboxAcousticLm.StopSpeechToken && t < 6561)
-                speechTokenList.Add(t);
+                filtered.Add(t);
         }
+        if (filtered.Count == 0) return filtered;
+        filtered.Add(4299);
+        filtered.Add(4299);
+        filtered.Add(4299);
+        return filtered;
+    }
+
+    private static float[] DecodeReal(ChatterboxS3GenWeights w, int[] promptTokens, float[] genEmbedding, float[] promptFeat, IReadOnlyList<int> speechTokens)
+    {
+        var speechTokenList = FilterAndPadSpeechTokens(speechTokens);
         if (speechTokenList.Count == 0) return [];
-        // Turbo official inference: append 3 silence tokens (S3GEN_SIL = 4299)
-        speechTokenList.Add(4299);
-        speechTokenList.Add(4299);
-        speechTokenList.Add(4299);
         var speechTokenArray = speechTokenList.ToArray();
 
         bool diag = Environment.GetEnvironmentVariable("STINGRAY_AUDIO_DIAGNOSTIC_DUMP") == "1";

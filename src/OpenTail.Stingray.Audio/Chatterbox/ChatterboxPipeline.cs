@@ -162,6 +162,7 @@ public sealed class ChatterboxPipeline : ITextToSpeechPipeline
         _weights?.Dispose();
         _s3GenWeights?.Dispose();
         _acousticLm.Dispose();
+        _decoder.Dispose();
     }
 
     /// <summary>

@@ -9,7 +9,7 @@ namespace OpenTail.Stingray.Audio.Chatterbox;
 /// Native C++ ONNX Runtime accelerator for Chatterbox-Turbo's conditional audio decoder.
 /// Delegates execution to <see cref="OnnxModelSession"/> when conditional_decoder.onnx is present.
 /// </summary>
-public sealed class ChatterboxOnnxDecoder : IChatterboxDecoder, IDisposable
+public sealed class ChatterboxOnnxDecoder : IDisposable
 {
     private readonly OnnxModelSession? _session;
     private readonly ChatterboxWeights? _t3Weights;
@@ -40,7 +40,7 @@ public sealed class ChatterboxOnnxDecoder : IChatterboxDecoder, IDisposable
     }
 
     /// <summary>
-    /// Implements IChatterboxDecoder: executes the ONNX graph using default prompt tokens and speaker features.
+    /// Executes the ONNX graph using default prompt tokens and speaker features.
     /// </summary>
     public float[] Decode(IReadOnlyList<int> speechTokens, float[] speakerFeatures)
     {
@@ -66,17 +66,10 @@ public sealed class ChatterboxOnnxDecoder : IChatterboxDecoder, IDisposable
     {
         if (_session == null || !_session.IsAvailable) return null;
 
-        var fullTokens = new List<long>(promptTokens.Length + speechTokens.Count + 3);
+        var speechTokenList = ChatterboxDecoder.FilterAndPadSpeechTokens(speechTokens);
+        var fullTokens = new List<long>(promptTokens.Length + speechTokenList.Count);
         foreach (int t in promptTokens) fullTokens.Add(t);
-        foreach (int t in speechTokens)
-        {
-            if (t != ChatterboxAcousticLm.StartSpeechToken && t != ChatterboxAcousticLm.StopSpeechToken && t < 6561)
-                fullTokens.Add(t);
-        }
-        // Silence tokens (S3GEN_SIL = 4299)
-        fullTokens.Add(4299);
-        fullTokens.Add(4299);
-        fullTokens.Add(4299);
+        foreach (int t in speechTokenList) fullTokens.Add(t);
 
         int mel = 80;
         int frames = promptFeat.Length / mel;
