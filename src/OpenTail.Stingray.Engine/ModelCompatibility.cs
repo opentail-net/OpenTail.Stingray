@@ -458,50 +458,27 @@ public static class ModelCompatibility
         "mistral3",
         "ministral",
     };
-    // deepseek2 — NOT admitted. Was previously listed here with zero verification evidence (the
-    // architecture string was admitted before any of the six IForwardPass implementations loaded
-    // its MLA-specific tensors at all -- see docs/bugstofix.md's ModelCompatibility.cs entry for
-    // the original finding). A CPU-only MLA implementation was since built in ForwardPass.cs
-    // (compressed-latent K/V via attn_kv_a_mqa/attn_kv_a_norm/attn_kv_b, a YaRN-scaled RoPE table,
-    // the deepseek2-specific kq_scale/mscale correction, per-layer dense/MoE dispatch for
-    // leading_dense_block_count) and verified end-to-end against a real GGUF
-    // (DeepSeek-V2-Lite-Chat.Q2_K): the model loads and generates with zero crashes, but produces
-    // NUMERICALLY WRONG output ("The capital of France is" does not continue with "Paris", while
-    // the same GGUF via a reference llama.cpp build does) -- three real bugs were found and fixed
-    // in the YaRN/kq_scale formula chain along the way, but the remaining defect was not
-    // identified despite exhausting formula-level re-derivation against the reference source
-    // (examples/llama.cpp/llama.cpp's src/models/deepseek2.cpp, src/llama-context.cpp) and
-    // verifying the Q2_K quantization kernels bit-for-bit. Do not re-admit this architecture
-    // without either a passing greedy-parity receipt or an explicit decision to ship it
-    // known-wrong behind --allow-unverified-arch. GPU backends (GpuForwardPass/CudaForwardPass/
-    // hybrid variants) have no MLA support at all -- CPU-only was the deliberately agreed scope.
-    // See docs/bugstofix.md for the full investigation record.
-    //
-    // 2026-08-21 resumption: mapped every MLA/YaRN/kq_scale/RoPE-type code segment against
-    // examples/llama.cpp/llama.cpp's src/models/deepseek2.cpp line-by-line (attn_factor_org/
-    // mscale/kq_scale formula, rope_type dispatch [confirmed LLAMA_ROPE_TYPE_NORM, not NEOX --
-    // deepseek2 is grouped with LLAMA in llama-model.cpp's rope-type switch, matching this
-    // engine's isNeoxRope=false default for the arch], MlaComputeQkv's Q/K/V reorder and
-    // wkv_a_mqa/attn_kv_a_norm/wkv_b decompress sequence). Found one genuine, previously-
-    // unexamined gap: {arch}.expert_weights_norm and {arch}.expert_weights_scale (llama.cpp's
-    // LLM_KV_EXPERT_WEIGHTS_NORM/SCALE, applied post-top-k in build_moe_ffn) were never read from
-    // GGUF metadata anywhere in this codebase -- NormalizeMoeTopKWeights was a hardcoded
-    // olmoe-only heuristic instead of the GGUF's real value, and expert_weights_scale
-    // (routed_scaling_factor) wasn't applied at all. Fixed in ModelGraph.cs/ForwardPass.Moe.cs
-    // (real, worth keeping for other DeepSeek/GLM-MoE checkpoints). Re-tested against
-    // DeepSeek-V2-Lite-Chat.Q2_K: NO CHANGE -- this GGUF has no expert_weights_norm key at all
-    // (falls back to the same true default as before) and expert_weights_scale=1 (no-op), so
-    // this was not the bug for this checkpoint. Output remains numerically wrong ("The capital of
-    // France is duringermeconpolivari twin,alam" at temp 0). Root cause STILL not identified.
-    // Confirmed rope.scaling.type=yarn IS active for this GGUF (factor=40, log_multiplier=0.0707)
-    // -- contrary to an initial assumption this session that Lite skips YaRN, so the mscale/
-    // kq_scale formula chain is genuinely exercised and remains a live suspect despite three
-    // rounds of formula-level re-derivation finding no further error. Next step if resumed:
-    // the bugstofix.md entry's own suggestion stands -- get real ground-truth intermediate
-    // tensor values (llama.cpp eval-callback or manual instrumentation of the prebuilt
-    // llama-cli.exe's stdout) to diff per-layer against this engine's actual intermediates,
-    // since a fourth pass of pure formula/code-reading against the reference source (this
-    // session) again found nothing beyond the already-fixed MoE gap.
+    // deepseek2 — NOT admitted, closed for now. A CPU-only MLA implementation exists in
+    // ForwardPass.cs (compressed-latent K/V, YaRN RoPE, kq_scale/mscale correction, per-layer
+    // dense/MoE dispatch) and loads/generates with zero crashes against real GGUFs
+    // (DeepSeek-V2-Lite-Chat, Q2_K and native Q8_0), but produces numerically wrong output
+    // ("The capital of France is" does not continue with "Paris", while the same GGUFs via a
+    // reference llama.cpp build do). Four investigation rounds found and fixed several real,
+    // independently-useful bugs along the way (YaRN/kq_scale formula, expert_weights_norm/scale
+    // GGUF handling, RMSNorm/softmax/SiLU ggml-fidelity fixes, and a genuine Q8_0
+    // activation-quantization gap in MatVecQ8_0) but did not find a discrete root cause. The
+    // decisive, twice-replicated finding (Q2_K and native Q8_0, both measured through
+    // numerically-sound kernels) is that this checkpoint's MoE router has chronically near-tied
+    // top-6-of-64 routing decisions (median boundary margin ~0.002), a property of its trained
+    // weights that any tiny remaining numerical difference from ggml can flip, compounding
+    // through 27 layers into a fully sign-flipped residual stream by ~layer 22. Decision
+    // (2026-08-28): stop chasing this checkpoint further. Full writeup, including what was
+    // ruled out and what's left untried (a larger DeepSeek-V2/V3 checkpoint, full graph-wide
+    // SIMD reduction-order matching), is in
+    // docs/done/032-deepseek2-mla-yarn-moe-routing-investigation.md. Do not re-admit without
+    // either a passing greedy-parity receipt or an explicit decision to ship known-wrong behind
+    // --allow-unverified-arch. GPU backends have no MLA support at all — CPU-only was the
+    // deliberately agreed scope.
     //
     // minicpm — NOT admitted. The forward-pass scale trio (reusing Granite's graph, see
     // GraniteGreedyParityTests) is implemented and presumed correct, but MiniCPM4-0.5B — the only

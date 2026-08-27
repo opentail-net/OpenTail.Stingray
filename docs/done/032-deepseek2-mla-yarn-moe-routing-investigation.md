@@ -24,8 +24,19 @@ restart a fourth round of kernel-level chasing on this checkpoint without new ev
 through a genuinely broken `MatVecQ8_0` (it never quantized the activation at all — every other
 quantized dtype's MatVec did, Q8_0 didn't). Fixed (`DotQ8_0_Q8_0`, a faithful port of ggml's real
 kernel), re-measured: the conclusion survives — still not "Paris", margins still chronically
-near-tied — but now on sound footing rather than an accidentally-still-F32-activation path. See
-the final entry in the JSON below.
+near-tied — but now on sound footing rather than an accidentally-still-F32-activation path.
+
+**Fourth round, same day**: verified the Q8_0 fix reaches every consumer (routed experts, LM
+head, batched prefill — not partial), re-audited RoPE table/kernel fidelity against ggml (no
+bug found), and checked where "Paris" actually ranks in the final logits (6,546th of 102,400 —
+consistent with, not contradicting, the earlier finding that the residual stream fully
+sign-flips by layer ~22 of 27). No new fixable bug found.
+
+**Final decision, 2026-08-28**: stop trying to admit this checkpoint/architecture for now.
+deepseek2 stays un-admitted in `ModelCompatibility.cs`. Revisit only with new evidence — a
+larger DeepSeek-V2/V3 checkpoint showing different behavior, or a decision to commit to the
+full graph-wide SIMD reduction-order matching effort scoped (never attempted) in the final
+JSON entry below.
 
 ```json
 [
