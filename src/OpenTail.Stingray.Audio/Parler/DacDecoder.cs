@@ -1,4 +1,5 @@
 using System;
+using System.Numerics.Tensors;
 using System.Threading.Tasks;
 using OpenTail.Stingray.Cpu;
 
@@ -90,7 +91,21 @@ public static class DacDecoder
         return output;
     }
 
-    /// <summary>Real ConvTranspose1d, weight layout [in, out, kernel] flat row-major (same convention as SnacDecoder/HiFTVocoderKernels).</summary>
+    /// <summary>
+    /// Real ConvTranspose1d, weight layout [in, out, kernel] flat row-major (same convention as
+    /// SnacDecoder/HiFTVocoderKernels).
+    ///
+    /// <para>Vectorized 2026-08-28 (measured as ~36.5% of total DAC decode time, fully scalar
+    /// before this -- the one big op in this file that never got the im2col+GEMM treatment
+    /// <see cref="FullConv1d"/> already has): for a fixed <c>(oc, ic, ti)</c>, the scatter target
+    /// <c>to = outStart + k</c> for <c>k in [0, kernel)</c> is a CONTIGUOUS run of output
+    /// positions, so `output[dstBase+outStart .. +kernel] += v * weight[wBase .. +kernel]` is
+    /// exactly <see cref="TensorPrimitives.MultiplyAdd"/>'s shape -- same technique as
+    /// <c>ParlerDecoder.cs</c>'s attention weighted-sum fix, just on a span that needs edge
+    /// clamping instead of always being in-bounds. Away from the first/last few `ti` (the common
+    /// case), the whole kernel-width span is already in range, so the clamp is two comparisons per
+    /// `ti`, not a per-tap bounds check.</para>
+    /// </summary>
     private static float[] ConvTranspose1d(float[] x, int inCh, int outCh, int t, float[] weight, float[] bias, int kernel, int stride, int padding)
     {
         int outT = (t - 1) * stride - 2 * padding + kernel;
@@ -109,11 +124,14 @@ public static class DacDecoder
                 {
                     float v = x[srcBase + ti];
                     int outStart = ti * stride - padding;
-                    for (int k = 0; k < kernel; k++)
-                    {
-                        int to = outStart + k;
-                        if ((uint)to < (uint)outT) output[dstBase + to] += v * weight[wBase + k];
-                    }
+
+                    int kStart = outStart < 0 ? -outStart : 0;
+                    int kEnd = outStart + kernel > outT ? outT - outStart : kernel;
+                    if (kStart >= kEnd) continue;
+
+                    var wSpan = weight.AsSpan(wBase + kStart, kEnd - kStart);
+                    var dstSpan = output.AsSpan(dstBase + outStart + kStart, kEnd - kStart);
+                    TensorPrimitives.MultiplyAdd(wSpan, v, dstSpan, dstSpan);
                 }
             }
         });
