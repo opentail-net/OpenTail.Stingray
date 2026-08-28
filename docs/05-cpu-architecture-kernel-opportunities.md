@@ -8,17 +8,22 @@
 
 # CPU architecture coverage programme
 
-**Status:** active backlog; the Q4_K repacked-GEMM investigation, Flash64 reference case, and
-the missing Flash 128/256 correctness route are closed. Performance acceptance for the new head
-widths remains open.
+**Status:** active backlog; the Q4_K repacked-GEMM investigation, Flash64 reference case, the
+missing Flash 128/256 correctness route, and Flash 128/256 performance acceptance are all closed
+(see Backlog D — the acceptance decision predates this session and was just cross-referenced, not
+redone: correct, +14% throughput, +0.5% perplexity cost, stays opt-in). The one open Flash-64
+question — whether the default-on hd64 path is a measurable win over the materialised fallback —
+is optional/deferred, not blocking: wiring is confirmed correct, one real-model measurement came
+back inconclusive (identical throughput, FFN-dominated at that model's scale), and further chasing
+was explicitly deferred rather than continued.
 
 ## Ordered work
 
-1. Measure Flash attention at 128/256 head widths against the materialised fallback, with
-   interleaved isolated and real-model samples. The generic 64-query/KV tile now dispatches for
-   dense 64/128/256 heads; the 64-wide special case remains on the hardcoded GEMM and 128/256 use
-   the strided AVX2 microkernel. Qwen3-8B (headDim 128) Flash-vs-fallback parity passes; the 256
-   GEMM shapes have an independent oracle, but no local dense hd256 model receipt exists yet.
+1. ~~Measure Flash attention at 128/256 head widths against the materialised fallback~~ — **done,
+   see Backlog D.** Qwen3-8B (headDim 128) Flash-vs-fallback parity passes and performance was
+   already measured (+14% throughput, +0.5% perplexity cost) before this session; decision made
+   and shipped (opt-in, not default). The hd64 default-on path's own performance question is
+   separate and left optional/deferred (Backlog D).
 2. Q6_K AVX2 performance-only investigation. Dispatch is complete: Q8-prefill resolves Q6_K to
    Q8_K activation plus 8/4/1-input dots, and F32 multi-input batching uses the 4/2-input paths.
    Focused equivalence coverage passes; any change needs an interleaved end-to-end win.
@@ -245,33 +250,45 @@ both — QK_K-style, matching the rest of the `Q8_K` family): `TQ2_0` 66 bytes, 
         correctness-verified infrastructure, callable directly if a future measurement changes the
         picture. Falls through to `MatVecDequantFallback` via `default`, same as `TQ2_0`.
 
-## Backlog D — Flash Attention 128/256 head-width performance acceptance (2026-08-28, not started)
+## Backlog D — Flash Attention 128/256 head-width performance acceptance (2026-08-28, closed — see below)
 
 Not a coverage gap — `STINGRAY_PREFILL_ATTN_FLASH64` is already default-on, and per item 1 of
 "Ordered work" above, the correctness route already dispatches for dense 64/128/256 heads (the
 64-wide case on a hardcoded GEMM, 128/256 on a strided AVX2 microkernel) with the hd128 case
-already parity-tested against Qwen3-8B. What's missing is *performance acceptance* — never
-measured whether the 128/256 dispatch is actually faster than the materialized-score fallback it
-replaces, the same "don't claim a win without measuring it" discipline every kernel in backlogs A-C
-was held to. `examples/ggml/src/ggml-cpu/ops.cpp` has both a `ggml_compute_forward_flash_attn_ext_
-f16_one_chunk` and a `_tiled` variant, useful reference if the current AVX2 microkernel shape ever
-needs revisiting, but this backlog is about measuring what we already built, not porting more code.
+already parity-tested against Qwen3-8B.
 
-- [ ] Find or confirm a real dense hd256 model locally (`docs/05`'s Status line already notes "the
-      256 GEMM shapes have an independent oracle, but no local dense hd256 model receipt exists
-      yet") — needed for the real-model half of the measurement, not just isolated microbenchmarks.
-- [ ] Isolated microbenchmark: Flash-attention kernel vs. materialized-score fallback, at hd128 and
-      hd256 separately, real prompt-length-scale KV cache sizes (not a toy 32-token context) —
-      min-of-N-trials per backlog B's robustness note.
-- [ ] Real-model end-to-end measurement on whatever hd128 (Qwen3-8B, already used for the parity
-      check) and hd256 checkpoints are available, `STINGRAY_PROFILE_DECODE=1`-style before/after.
-- [ ] Numerical validation alongside the timing — the correctness route already passes parity, but
-      re-confirm on whatever checkpoint the performance measurement uses, not just Qwen3-8B, in
-      case a different model's KV/head shape exercises a path the existing parity check didn't.
-- [ ] Decide, on the measured evidence: keep `STINGRAY_PREFILL_ATTN_FLASH64` default-on for
-      128/256 as it already is for 64, or gate the wider head-dims off by default if they don't
-      show a real win — mirroring backlog B's `Q5_0`/`Q5_1` treatment (ship correct code, don't
-      default-enable a path that doesn't measurably help).
+**128/256 head widths: this backlog's premise was stale — the acceptance decision this item asked
+for was already made on 2026-08-07, before this session, and is fully documented.** Written up in
+detail in
+[docs/reference/forwardpass-investigation-log.md](reference/forwardpass-investigation-log.md)
+("Flash-128/256 wide attention heads — perplexity investigation"): correctness is resolved
+(cosine 0.999345 vs. the shipped Q8-activation-prefill baseline's 0.999504, identical greedy
+token), and performance IS measured — +14% prefill throughput (25.52 vs 22.35 tok/s, Qwen3-8B,
+wikitext-2 subset) — but it also costs +0.52%/+0.47% perplexity, worse than even the exact
+sequential path, two orders of magnitude past this project's ~0% precedent for a default-on
+numerics change. Decision already made and shipped: **stays opt-in**
+(`STINGRAY_PREFILL_ATTN_WIDE_HEADS=1`), not default-on. Nothing here needs redoing; a hd256
+model receipt would only matter if this were being reopened, which the evidence doesn't support.
+
+**headDim=64 (the path that IS default-on): wiring confirmed correct, real-model performance
+check inconclusive and deliberately not chased further.** Toggling `STINGRAY_PREFILL_ATTN_FLASH64`
+does route through a different code path (confirmed via the dispatch condition at
+`ForwardPass.Attention.cs:166-168` and by observing `PrefillProfileTimers`'s Attention category
+go to 0/0% under Flash-64, since that profiler only instruments the materialized-fallback trunk).
+One real end-to-end measurement (SmolLM2-1.7B, headDim 64, 1504-token prompt from repo docs, 3
+runs each side, `--temp 0 -n 8`): **68.3-68.5 t/s prefill, statistically identical on vs. off.**
+At this model's scale (2048 hidden, 24 layers) FFN/QKV/output-projection GEMM dominates prefill
+cost enough that any attention-kernel difference doesn't surface at the token/s level. A longer
+prompt (~6K tokens, to shift more compute into the O(N²) attention term) was started to check
+whether a bigger context reveals a real difference, but the run stalled and, per direction, this
+is being left here rather than chased further right now.
+
+**Status: optional / deferred, not blocking.** Flash-64 is correct and already shipping by
+default; whether it's a measurable win at hd64 specifically remains unconfirmed either way (no
+evidence of a regression, no confirmed win). If this is picked back up: finish the longer-prompt
+real-model comparison first (cheapest next step, already set up), and only reach for an isolated
+microbenchmark against `PrefillCoreAttention`/`PrefillFlashAttention64` directly (both `private`,
+would need an internals-visible test harness) if the real-model number stays inconclusive.
 
 ## Measurements — Ministral-8B-Instruct-2410 vs. llama.cpp (2026-08-28)
 
