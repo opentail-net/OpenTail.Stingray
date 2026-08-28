@@ -123,14 +123,13 @@ public sealed class FishSpeechPipeline : IDisposable
     }
 
     /// <summary>
-    /// Generates a sequence of real semantic tokens for the given text (greedy decode -- a
-    /// deliberate first-pass simplification; the real reference's own sampler uses temperature/
-    /// top_p/top_k plus a repetition-avoidance ("RAS") heuristic, not yet wired here). Does NOT
-    /// run the fast-AR codebook expansion or the codec -- returns raw semantic token ids
-    /// (offset by SemanticBeginId already subtracted), not audio.
+    /// Generates a sequence of real semantic tokens for the given text (greedy decode, with a
+    /// real RAS repetition-avoidance escape hatch -- see <see cref="GenerateFrames"/>'s doc
+    /// comment). Does NOT run the fast-AR codebook expansion or the codec -- returns raw semantic
+    /// token ids (offset by SemanticBeginId already subtracted), not audio.
     /// </summary>
-    public List<int> GenerateSemanticTokens(string text, int maxTokens = 200) =>
-        GenerateFrames(text, maxTokens).SemanticTokens;
+    public List<int> GenerateSemanticTokens(string text, int maxTokens = 200, int? seed = null) =>
+        GenerateFrames(text, maxTokens, seed).SemanticTokens;
 
     /// <summary>TEMP bisection hook (docs/audio-review-progress.md's Fish Speech NaN investigation): runs just the real prompt prefill and returns the raw logits, for a caller to check for NaN. TODO remove once the bug is found.</summary>
     public float[] PrefillForBisection(List<int> prompt)
@@ -152,9 +151,29 @@ public sealed class FishSpeechPipeline : IDisposable
     /// Same generation as <see cref="GenerateSemanticTokens"/>, but also returns the real fast-AR
     /// codebook expansion computed per frame along the way (previously computed then discarded) --
     /// what <see cref="FishSpeechCodec.Decode"/> needs for full text-to-audio synthesis.
+    ///
+    /// <para><b>Confirmed, listen- and token-dump-verified bug fix (2026-08-28)</b>: plain greedy
+    /// `ArgmaxMasked` gets stuck in a hard repetition loop -- direct evidence from dumping the
+    /// generated semantic tokens for a real short prompt showed real, varied content for the
+    /// first ~45 frames, then the SAME token repeated for the remaining 125+ frames straight
+    /// through to `maxTokens`, `im_end` never reached (the residual codebook degenerated the same
+    /// way, presumably as a downstream consequence of the now-constant hidden state). Decoded
+    /// through the codec, a long run of a near-constant frame produces a sustained near-periodic
+    /// tone -- exactly the reported "underwater" symptom -- while the real spoken content ends
+    /// after only ~2s, matching "cuts out too soon". Fixed narrowly: greedy `ArgmaxMasked` stays
+    /// the default main-token choice (an EARLIER attempt at replacing it entirely with the real
+    /// reference's baseline temperature/top_p/top_k sampling made output WORSE, listen-confirmed
+    /// -- reverted, see docs/audio-review-progress.md), but a real port of the reference's own
+    /// "RAS" (repetition-avoidance sampling, `s2_generate.cpp`) escape hatch is added: if the
+    /// greedy choice repeats a semantic token already seen in the last 10 steps, it is discarded
+    /// and re-sampled ONCE at a higher temperature/top_p (1.0/0.9, the real `ras_high_temp`/
+    /// `ras_high_top_p`) via <see cref="SampleToken"/>, then generation returns to plain greedy
+    /// for subsequent steps -- only intervening exactly when the confirmed failure mode is about
+    /// to occur, not changing behavior otherwise.</para>
     /// </summary>
-    public (List<int> SemanticTokens, List<int[]> CodebooksPerFrame) GenerateFrames(string text, int maxTokens = 200)
+    public (List<int> SemanticTokens, List<int[]> CodebooksPerFrame) GenerateFrames(string text, int maxTokens = 200, int? seed = null)
     {
+        var rng = new Random(seed ?? 42);
         var prompt = BuildPrompt(text);
         _fwd.ResetCache();
 
@@ -175,11 +194,24 @@ public sealed class FishSpeechPipeline : IDisposable
         var semanticTokens = new List<int>();
         var codebooksPerFrame = new List<int[]>();
 
+        const int rasWindowSize = 10;
+        const float rasHighTemp = 1.0f, rasHighTopP = 0.9f;
+        const int rasTopK = 30;
+        var rasWindow = new Queue<int>(rasWindowSize);
+
         int mainToken = ArgmaxMasked(logits, semBegin, semEnd, _imEndId);
         float[] hidden = _fwd.HiddenTapsAt(pos - 1).ToArray();
 
         for (int step = 0; step < maxTokens && mainToken != _imEndId; step++)
         {
+            // Real "RAS" repetition-avoidance escape hatch (see this method's doc comment): only
+            // fires when the greedy choice is about to repeat -- otherwise greedy is unchanged.
+            if (rasWindow.Contains(mainToken) && mainToken >= semBegin && mainToken <= semEnd)
+                mainToken = SampleMasked(logits, semBegin, semEnd, _imEndId, rasHighTemp, rasHighTopP, rasTopK, rng);
+
+            rasWindow.Enqueue(mainToken);
+            if (rasWindow.Count > rasWindowSize) rasWindow.Dequeue();
+
             int semCode = Math.Clamp(mainToken - semBegin, 0, _weights.CodebookSize - 1);
             semanticTokens.Add(semCode);
 
@@ -233,6 +265,74 @@ public sealed class FishSpeechPipeline : IDisposable
         }
         if (imEndId < logits.Length && logits[imEndId] > bestVal) { best = imEndId; }
         return best;
+    }
+
+    /// <summary>RAS escape-hatch only: applies the real `-inf`-outside-`[semBegin,semEnd]` (plus `im_end`) mask, then <see cref="SampleToken"/>.</summary>
+    private static int SampleMasked(ReadOnlySpan<float> logits, int semBegin, int semEnd, int imEndId, float temperature, float topP, int topK, Random rng)
+    {
+        var biased = new float[logits.Length];
+        Array.Fill(biased, float.NegativeInfinity);
+        for (int i = semBegin; i <= semEnd && i < logits.Length; i++) biased[i] = logits[i];
+        if (imEndId < logits.Length) biased[imEndId] = logits[imEndId];
+        return SampleToken(biased, temperature, topP, topK, rng);
+    }
+
+    /// <summary>
+    /// Real port of `examples/s2.cpp/src/s2_sampler.cpp`'s `sample_token`: sort logits
+    /// descending, compute the UN-tempered softmax over the full sorted list (used only for the
+    /// top-p cumulative-mass threshold), keep the intersection of the top-k highest and the
+    /// smallest prefix whose cumulative un-tempered probability exceeds top_p (always keeping at
+    /// least the top-1), then re-softmax just the kept logits WITH temperature and sample
+    /// categorically. Only used by the RAS escape hatch in <see cref="GenerateFrames"/> -- normal
+    /// decoding stays plain greedy (see that method's doc comment for why).
+    /// </summary>
+    private static int SampleToken(ReadOnlySpan<float> logits, float temperature, float topP, int topK, Random rng)
+    {
+        int n = logits.Length;
+        var logitsArr = logits.ToArray();
+        var order = new int[n];
+        for (int i = 0; i < n; i++) order[i] = i;
+        Array.Sort(order, (a, b) => logitsArr[b].CompareTo(logitsArr[a]));
+
+        float max = logitsArr[order[0]];
+        var sortedProbs = new float[n];
+        float sum = 0f;
+        for (int i = 0; i < n; i++) { sortedProbs[i] = MathF.Exp(logitsArr[order[i]] - max); sum += sortedProbs[i]; }
+        if (sum > 0f) for (int i = 0; i < n; i++) sortedProbs[i] /= sum;
+
+        int k = topK > 0 ? Math.Min(topK, n) : n;
+        float p = Math.Clamp(topP, 0f, 1f);
+
+        var kept = new List<int>();
+        float cumsum = 0f;
+        for (int i = 0; i < n; i++)
+        {
+            cumsum += sortedProbs[i];
+            bool removeForTopK = i >= k;
+            bool removeForTopP = i > 0 && cumsum > p;
+            if (removeForTopK || removeForTopP) continue;
+            kept.Add(order[i]);
+        }
+        if (kept.Count == 0) kept.Add(order[0]);
+
+        if (temperature <= 0f) return kept[0];
+
+        var probs = new float[kept.Count];
+        float keptMax = float.NegativeInfinity;
+        for (int i = 0; i < kept.Count; i++) if (logitsArr[kept[i]] > keptMax) keptMax = logitsArr[kept[i]];
+        float keptSum = 0f;
+        for (int i = 0; i < kept.Count; i++) { probs[i] = MathF.Exp((logitsArr[kept[i]] - keptMax) / temperature); keptSum += probs[i]; }
+        if (keptSum <= 0f) return kept[0];
+        for (int i = 0; i < probs.Length; i++) probs[i] /= keptSum;
+
+        double r = rng.NextDouble();
+        double acc = 0;
+        for (int i = 0; i < probs.Length; i++)
+        {
+            acc += probs[i];
+            if (r < acc) return kept[i];
+        }
+        return kept[^1];
     }
 
     public void Dispose()

@@ -62,9 +62,9 @@ public sealed class FishSpeechFullPipeline : ITextToSpeechPipeline
         => TtsStreamingHelper.SplitAndGenerateAsync(request, Generate, ct);
 
     /// <summary>Full pipeline: text -&gt; mono float32 PCM (44.1kHz, matching the real codec's native rate).</summary>
-    public float[] Synthesize(string text, int maxTokens = 200)
+    public float[] Synthesize(string text, int maxTokens = 200, int? seed = null)
     {
-        var (semanticTokens, codebooksPerFrame) = _talker.GenerateFrames(text, maxTokens);
+        var (semanticTokens, codebooksPerFrame) = _talker.GenerateFrames(text, maxTokens, seed);
         if (semanticTokens.Count == 0) return [];
 
         int t = semanticTokens.Count;

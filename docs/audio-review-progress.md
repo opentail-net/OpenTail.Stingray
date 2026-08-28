@@ -9489,3 +9489,61 @@ missing-stop-condition bug -- more likely `im_end` is just genuinely rare/late u
 sampling settings for short prompts. Worth listening to `fishspeech-lunch.wav` for whether the
 requested sentence is followed by extra generated content, and revisiting stop-token behavior if
 so -- not chased further this pass since it wasn't the ask.
+
+## Fish Speech S2 Pro: "underwater" + "cuts out too soon" ROOT-CAUSED with hard evidence and fixed -- greedy decode gets stuck in a hard repetition loop, real RAS escape hatch added (2026-08-28, user listening feedback)
+
+User reported `fishspeech-lunch.wav` (Q4_K_M, greedy decode, the state from the previous entry)
+had distinguishable words but sounded "underwater" and "cuts out too soon." Two earlier guesses
+this same session -- switching the default checkpoint to Q8_0, and replacing greedy decode
+entirely with the reference's baseline temperature/top_p/top_k sampling -- were BOTH tried and
+BOTH made it worse per direct listening feedback ("trash"), and were fully reverted rather than
+layering more guesses on top (see the git history / this doc's prior entry). Took a different
+approach this time: gathered hard evidence before touching any code again.
+
+**Evidence gathered**: added a temporary debug test dumping the actual generated semantic tokens
+and residual-codebook-1 values for the exact prompt/model/settings that produced the reported
+`fishspeech-lunch.wav`. Result: real, varied semantic tokens for the first ~45 frames, then the
+SAME token (1215, then 1484) repeated for the remaining 125+ frames straight through to
+`maxTokens=200` -- `im_end` never reached. Residual codebook 1 showed the same pattern (929
+repeated 190+/200 times). **This precisely explains both symptoms**: ~45 frames * 2048 samples/
+frame / 44100 Hz ≈ 2.1s of real spoken content, followed by ~7s of a near-constant repeated frame
+decoded through the codec -- which produces a sustained, near-periodic droning tone (the
+"underwater" sound) -- while the actual sentence content ends after only ~2s ("cuts out too
+soon", i.e. the real words stop early and the rest is stuck garbage, not silence).
+
+**Root cause**: plain greedy `ArgmaxMasked` for the slow-AR main-token loop has no mechanism to
+escape a self-reinforcing repetition loop -- exactly the failure mode the real reference's own
+"RAS" (repetition-avoidance sampling) heuristic exists to prevent (`s2_generate.cpp`'s `generate()`,
+already read in full this fire, see the previous entry).
+
+**Fix, narrower and more conservative than the earlier (worse) full-sampling attempt**: greedy
+`ArgmaxMasked` STAYS the default choice for every step (since full sampling was listen-confirmed
+worse, likely because this codebase's fast-AR/codec numerics aren't clean enough yet for random
+sampling to stay coherent) -- but a real port of the reference's RAS escape hatch is added: a
+10-token sliding window of recent main tokens; if the greedy choice repeats one already in that
+window, it is discarded and re-sampled ONCE at a higher temperature/top_p (1.0/0.9, the real
+`ras_high_temp`/`ras_high_top_p`, top_k=30) via a new `SampleToken` (real port of
+`s2_sampler.cpp`'s `sample_token`: sort descending, un-tempered softmax for the top-p cumulative
+threshold, keep the intersection of top-k and top-p, re-softmax the kept set WITH temperature,
+sample categorically) -- then generation returns to plain greedy for subsequent steps. Only
+intervenes exactly when the confirmed failure mode is about to occur.
+
+**Verified with the same token-dump harness BEFORE generating audio again** (learned from the
+earlier "trash" surprise -- verify analytically first, don't just listen and hope):
+`semanticTokens.Count` dropped from 200 (hit the cap) to 98 (`im_end` reached naturally); longest
+immediate-repeat run dropped from 125 to 6; distinct semantic token values went from 39/200 to
+81/98. Residual codebook 1 is still fairly narrow (4 distinct values, ~90/98 one value) --
+not fixed by this change, flagged as a possible remaining gap, not chased further this pass since
+the primary confirmed bug (getting stuck, never terminating) is resolved and the fast-AR was
+never itself shown to loop the way the slow-AR did.
+
+Regenerated `docs/audio-samples/fishspeech-lunch.wav` in place (replacing the old, stuck-loop
+version) -- new duration 4.55s (down from 9.29s, reflecting the shorter, properly-terminated
+token sequence), RMS 3988/peak 31098 of 32768 (non-silent, no clipping). Awaiting the user's
+listen-confirmation before considering this fully resolved -- per this session's own repeated
+lesson, a numerical/duration improvement is not the same as confirmed-good audio.
+
+**Discipline note for future work on this pipeline**: this investigation's real lesson is
+"measure before and after, don't just guess-and-listen" -- the two earlier failed attempts each
+skipped straight to listening; this one dumped actual generated tokens first, which is what
+actually found the real bug instead of another guess.
