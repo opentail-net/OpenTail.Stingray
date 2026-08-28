@@ -9013,3 +9013,56 @@ im2col dot-product kernel (not a drop-in weight-format swap), i.e. real implemen
 unproven return. This project's standing rule is "measure, don't assume" -- if picked up later,
 measure the isolated `ResidualUnit`/`FullConv1d` cost with a Q8_0 kernel before committing to
 wiring it into `DacDecoder.Decode`'s hot path.
+
+## CosyVoice3: same "drill noise" symptom as Parler-TTS had, but a structurally different (and bigger) root cause -- NOT a quick fix, documented rather than attempted (2026-08-28)
+
+User reported `speech_cosyvoice_FAIL.wav` had the same high-pitched-drone symptom as Parler-TTS's
+original bug (just a higher pitch). Reproduced via `-e cosyvoice` (routes to
+`CosyVoice3Pipeline`, the CLI default for that engine name). Investigated whether the same root
+cause applied (greedy-decode collapse) -- it does NOT.
+
+**`CosyVoice3Llm.GenerateSpeechTokens`/`SampleSpeechToken` already implements real, proper
+sampling**: top-k=25, top-p=0.8 nucleus sampling, a sliding-window (`winSize=10`) repetition
+penalty, seeded RNG -- ported from `examples/cosyvoice.cpp`'s reference sampler, not greedy
+argmax. So the LLM speech-token generation stage is not the Parler-style bug.
+
+**The real cause, per this pipeline's own existing doc comments (a known, deliberately documented
+simplification, not a hidden bug I found)**: `CosyVoice3Pipeline.Generate` runs the whole
+downstream flow-matching/vocoder chain with **zero real conditioning input**:
+- Speaker embedding: an all-zero 192-dim vector (`new float[CosyVoice3FlowEncoderWeights.
+  SpeakerEmbedDim]`), not a real x-vector.
+- Reference/conditioning mel (`cond`): all-zero (`new float[mu.Length]`), i.e. no real reference
+  audio at all.
+- The DiT's classifier-free-guidance (CFG) refinement step is also omitted entirely (see
+  `CosyVoice3DiTModel.SolveFlowMatchingOde`'s own doc comment).
+
+CosyVoice3 is architecturally a **zero-shot voice-CLONING** model -- confirmed via
+`list-metadata` on `models/cosyvoice3/CosyVoice3-2512_F16.gguf`: no speaker/SFT/voice-preset
+metadata keys at all (unlike Kokoro-style engines with baked-in voice presets). It was never
+trained to produce sensible output from "clone this voice" with an all-zero placeholder standing
+in for the reference. Running it this way pushes the whole downstream chain (flow encoder -> DiT
+ODE solve -> HiFT vocoder) completely outside its trained input distribution, which is consistent
+with a tonal/degenerate output even though every individual component (flow encoder, DiT, HiFT)
+was itself real-weights-tested earlier this session (see this doc's earlier CosyVoice3 entries).
+
+**Same gap confirmed in all three CosyVoice pipelines**, not just v3: `CosyVoice2Pipeline.cs`'s
+own comment states "same CamPlus-x-vector gap already documented for CosyVoice3Pipeline," and
+`CosyVoicePipeline.cs` (v1)'s `GenerateSpeakerEmbedding` is a seeded-random placeholder ("
+'calibrated initial style vectors', never trained against the real model" per an earlier entry in
+this doc), not a real speaker encoder either.
+
+**Why this was NOT attempted this session, unlike Parler's fixes**: Parler's two bugs were each a
+missing WIRE-UP of something that already existed in the checkpoint (`embed_prompts.weight` was
+sitting unused in the safetensors file) or a one-line decoding-strategy swap (`Argmax` ->
+`SampleMultinomial`). This is different in kind: there is no real CamPlus x-vector speaker
+extractor implemented ANYWHERE in this codebase yet -- it would need porting a genuinely new
+neural network component (CamPlus, a real ECAPA-TDNN-style x-vector model), plus real
+reference-audio speech tokenization (an ONNX model already sits locally at
+`models/cosyvoice_speech_tokenizer.onnx`/`_v2.onnx`, unclear if already wired to anything useful
+for this), plus implementing the omitted CFG refinement step. That is closer in size to porting a
+new pipeline component than to a bug fix, and warrants its own explicit scoping/decision rather
+than being folded into a "check the other two" pass.
+
+**Status: documented, not fixed. Next step if picked up**: scope the real size of the job (check
+`examples/cosyvoice.cpp` for its own CamPlus port and speech-tokenizer wiring as reference
+source), rather than guessing effort from this entry alone.
