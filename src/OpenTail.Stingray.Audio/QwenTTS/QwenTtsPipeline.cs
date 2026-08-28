@@ -122,6 +122,9 @@ public sealed class QwenTtsPipeline : ITextToSpeechPipeline
         talkerSource.SetPromptEmbedding(prefillRows, tRows - 1);
 
         var hp = ModelHyperparams.FromGgufMetadata(talkerSource.Metadata);
+        if (Environment.GetEnvironmentVariable("STINGRAY_QWENTTS_GOLDEN_DUMP") is not null)
+            Console.Error.WriteLine($"hp: HeadDim={hp.HeadDim} NumHeads={hp.NumHeads} NumKvHeads={hp.NumKvHeads} " +
+                $"EmbeddingDim={hp.EmbeddingDim} RopeTheta={hp.RopeTheta} RmsNormEps={hp.RmsNormEps} NumLayers={hp.NumLayers}");
         using var backend = new CpuBackend();
         using var fwd = new ForwardPass(talkerSource, backend, hp);
 
@@ -134,6 +137,18 @@ public sealed class QwenTtsPipeline : ITextToSpeechPipeline
         talkerSource.SetPromptEmbedding(lastRow, 1);
         var logits = fwd.Forward(0, tRows - 1).ToArray();
         int pos = tRows;
+
+        if (Environment.GetEnvironmentVariable("STINGRAY_QWENTTS_GOLDEN_DUMP") is { } dumpDir)
+        {
+            System.IO.Directory.CreateDirectory(dumpDir);
+            System.IO.File.WriteAllText(System.IO.Path.Combine(dumpDir, "prompt_embed.csv"),
+                $"{tRows},{QwenTtsTalkerPromptBuilder.TalkerHiddenDim}\n" + string.Join(",", promptEmbed));
+            var lastHidden = fwd.LastHidden.ToArray();
+            System.IO.File.WriteAllText(System.IO.Path.Combine(dumpDir, "last_hidden.csv"),
+                $"1,{lastHidden.Length}\n" + string.Join(",", lastHidden));
+            System.IO.File.WriteAllText(System.IO.Path.Combine(dumpDir, "logits.csv"),
+                $"1,{logits.Length}\n" + string.Join(",", logits));
+        }
 
         var codePredWeights = QwenTtsCodePredictorGeneration.Weights.Load(_talkerModel);
         var specials = talkerWeights.Specials;

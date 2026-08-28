@@ -57,7 +57,7 @@ public sealed class QwenTtsCodePredictorGenerationTests : HeavyTestBase
         Assert.InRange(c0, 0, 3071); // real codec vocab size
 
         var codePredWeights = QwenTtsCodePredictorGeneration.Weights.Load(rawModel);
-        var codes = QwenTtsCodePredictorGeneration.GenerateAcousticCodes(rawModel, codePredWeights, numLayers: 5, c0, talkerLastHidden);
+        var codes = QwenTtsCodePredictorGeneration.GenerateAcousticCodes(rawModel, codePredWeights, numLayers: 5, c0, talkerLastHidden, new System.Random(42));
 
         Assert.Equal(QwenTtsCodePredictorGeneration.NumAcousticCodebooks, codes.Length);
         foreach (var c in codes)

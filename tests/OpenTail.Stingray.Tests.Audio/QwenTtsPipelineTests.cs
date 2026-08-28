@@ -53,4 +53,23 @@ public sealed class QwenTtsPipelineTests : HeavyTestBase
         double rms = System.Math.Sqrt(sumSq / wav.Length);
         Assert.True(rms > 1e-6, $"waveform looks silent/degenerate: rms={rms}");
     }
+
+    // TEMP bisection harness for the golden-verification investigation (docs/audio-review-
+    // progress.md's QwenTTS entries) -- set STINGRAY_QWENTTS_GOLDEN_DUMP and STINGRAY_QWENTTS_BISECT_LAYERS
+    // to dump the N-layer talker trunk's hidden state for comparison against the real PyTorch
+    // reference. Not a real correctness assertion; TODO revert/remove once the bug is found.
+    [Fact]
+    public void Bisect_TalkerLayers()
+    {
+        string? talkerPath = FindRepoFile("models/qwen-talker-0.6b-base-Q8_0.gguf");
+        string? codecPath = FindRepoFile("models/qwen-tokenizer-12hz-Q8_0.gguf");
+        Assert.SkipUnless(talkerPath != null, "models/qwen-talker-0.6b-base-Q8_0.gguf not found");
+        Assert.SkipUnless(codecPath != null, "models/qwen-tokenizer-12hz-Q8_0.gguf not found");
+        string? nLayersEnv = System.Environment.GetEnvironmentVariable("STINGRAY_QWENTTS_BISECT_LAYERS");
+        Assert.SkipUnless(nLayersEnv != null, "STINGRAY_QWENTTS_BISECT_LAYERS not set");
+        int nLayers = int.Parse(nLayersEnv!);
+
+        using var pipeline = QwenTtsPipeline.Load(talkerPath!, codecPath!);
+        _ = pipeline.Generate("Hello there", talkerNumLayers: nLayers, maxFrames: 1);
+    }
 }

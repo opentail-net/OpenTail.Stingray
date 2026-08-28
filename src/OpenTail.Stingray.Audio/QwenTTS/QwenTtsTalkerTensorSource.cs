@@ -76,6 +76,12 @@ public sealed unsafe class QwenTtsTalkerTensorSource : IModelTensorSource, IDisp
             if (key.StartsWith(prefix, StringComparison.Ordinal))
                 _metadata[$"qwen3-tts.{key[prefix.Length..]}"] = value;
         }
+        // Keep block_count consistent with numLayers: this source only ever aliases
+        // blk.0..numLayers-1 below, so ForwardPass must not believe there are more (it would
+        // throw "Missing tensor: blk.N.*" for anything beyond what's actually exposed). Also
+        // doubles as a real bisection knob for numeric golden-verification against the real
+        // PyTorch reference: constructing with numLayers=1 gives a genuine 1-layer trunk.
+        _metadata["qwen3-tts.block_count"] = numLayers;
 
         _rename = new Dictionary<string, string>
         {
