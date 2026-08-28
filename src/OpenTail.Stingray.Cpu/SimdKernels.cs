@@ -778,6 +778,24 @@ public static unsafe class SimdKernels
             case DType.IQ3_S:
                 MatVecIq3S(output, weights, input, rows, cols);
                 break;
+            // DType.Q5_0 deliberately NOT wired here: measured ~0.94-0.97x vs
+            // MatVecDequantFallback (median of 7 trials, rows=17408/cols=5120) — a real, stable
+            // negative result, not noise (re-measured after fixing the Q1_0/Q2_0 kernels' similar
+            // redundant-scalar-read issue, no improvement). The kernel (MatVecQ5_0/DotQ5_0_Q8_0)
+            // is correct and equivalence-tested but not dispatched to; see docs/05's Backlog B for
+            // the honest numbers and what a real fix would need (Q5_0's per-element unpack does
+            // more scalar work per element than the three formats that DID win — likely needs a
+            // vectorized bit-extraction, not just the "batch the scalar reads" fix that worked for
+            // Q1_0/Q2_0). Falls through to MatVecDequantFallback via `default`.
+            case DType.Q1_0:
+                MatVecQ1_0(output, weights, input, rows, cols);
+                break;
+            case DType.Q2_0:
+                MatVecQ2_0(output, weights, input, rows, cols);
+                break;
+            case DType.MXFP4:
+                MatVecMxfp4(output, weights, input, rows, cols);
+                break;
             case DType.Float16 when GgmlF16DotEnabled:
                 MatVecF16GgmlCompat(output, weights, input, rows, cols);
                 break;
@@ -1357,7 +1375,7 @@ public static unsafe class SimdKernels
         }
     }
 
-    private static void MatVecDequantFallback(float* output, byte* weights, float* input,
+    internal static void MatVecDequantFallback(float* output, byte* weights, float* input,
         int rows, int cols, DType dtype)
     {
         int blockSize = DTypeInfo.BlockSize(dtype);
@@ -4001,6 +4019,425 @@ public static unsafe class SimdKernels
             sumf += d * bsum;
         }
         return 0.25f * sumf;
+    }
+
+    // ================================================================
+    //  Backlog B (docs/05-cpu-architecture-kernel-opportunities.md): Q5_0, Q1_0, Q2_0, MXFP4 ·
+    //  Q8_0 Dot Products. All four were admitted (working dequantizers) but fell through
+    //  MatVecDequantFallback with no dedicated kernel. All four pair with Q8_0 in ggml's own
+    //  dispatch table (ggml_vec_dot_{q5_0,q1_0,q2_0,mxfp4}_q8_0), reusing this file's existing
+    //  QuantizeRowToQ8_0/Q8_0ScratchBytes — no new activation-quant infra needed. Uses the same
+    //  general technique as the Q8_K-paired IQ kernels: unpack the (small, signed-range) weight
+    //  values for one 32-element chunk into a scratch sbyte buffer via the exact formula each
+    //  format's Dequantize.cs decoder already uses (just without the final float multiply), then
+    //  reduce with the abs/sign maddubs trick this file already established (DotQ8_0_Q8_0_Avx2,
+    //  the Q8_K-paired kernels above). Q1_0 (128 elem) and Q2_0 (64 elem) span multiple Q8_0
+    //  activation sub-blocks per weight block, each with its own scale, so their FP accumulation
+    //  is per-chunk rather than deferred to one multiply at the end — see each kernel's remarks.
+    // ================================================================
+
+    /// <summary>
+    /// One 32-element chunk's signed weight buffer (magnitudes proportional to the true weight
+    /// value, NOT yet scaled by any per-block d) dotted against a Q8_0 activation chunk via the
+    /// abs/sign maddubs trick, reduced to 8 int32 lanes. Caller applies the FP scale(s).
+    /// <paramref name="q8Chunk"/> is one <see cref="Q8_0ScratchBytes"/> entry: 4 bytes F32 scale
+    /// then 32 signed int8 activations.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static Vector256<int> DotSignedBytesVsQ8_0Chunk(sbyte* wbuf, byte* q8Chunk)
+    {
+        var wVec = Avx.LoadVector256(wbuf);
+        var qVec = Avx.LoadVector256((sbyte*)(q8Chunk + 4));
+        var ax = Avx2.Abs(wVec);
+        var sy = Avx2.Sign(qVec, wVec);
+        var p16 = Avx2.MultiplyAddAdjacent(ax, sy);
+        return Avx2.MultiplyAddAdjacent(p16, Vector256.Create((short)1));
+    }
+
+    public static void MatVecQ5_0(float* output, byte* weights, float* input, int rows, int cols)
+    {
+        int bytesPerRow = (cols / 32) * 22;
+        int scratchBytes = Q8_0ScratchBytes(cols);
+        byte* scratch = stackalloc byte[scratchBytes];
+        QuantizeRowToQ8_0(input, cols, scratch);
+
+        if (rows >= MinRowsForParallel)
+        {
+            var w = weights; var s = scratch; var outp = output; int c = cols;
+            Parallel.For(0, rows, s_parallelOpts, i =>
+            {
+                outp[i] = DotQ5_0_Q8_0(w + (long)i * bytesPerRow, s, c);
+            });
+        }
+        else
+        {
+            for (int i = 0; i < rows; i++)
+                output[i] = DotQ5_0_Q8_0(weights + (long)i * bytesPerRow, scratch, cols);
+        }
+    }
+
+    public static float DotQ5_0_Q8_0(byte* row, byte* scratch, int cols)
+    {
+        if (Avx2.IsSupported && Avx.IsSupported)
+            return DotQ5_0_Q8_0_Avx2(row, scratch, cols);
+        return DotQ5_0_Q8_0_Scalar(row, scratch, cols);
+    }
+
+    private static float DotQ5_0_Q8_0_Avx2(byte* row, byte* scratch, int cols)
+    {
+        int numBlocks = cols / 32;
+        float accum = 0f;
+        sbyte* wbuf = stackalloc sbyte[32];
+
+        for (int b = 0; b < numBlocks; b++)
+        {
+            byte* blk = row + b * 22;
+            float dW = HalfToFloat(blk[0], blk[1]);
+            uint qh = (uint)(blk[2] | (blk[3] << 8) | (blk[4] << 16) | (blk[5] << 24));
+            byte* qs = blk + 6;
+            for (int j = 0; j < 16; j++)
+            {
+                int xh0 = (int)((qh >> j) & 1) << 4;
+                int xh1 = (int)((qh >> (j + 16)) & 1) << 4;
+                wbuf[j] = (sbyte)(((qs[j] & 0xF) | xh0) - 16);
+                wbuf[j + 16] = (sbyte)(((qs[j] >> 4) | xh1) - 16);
+            }
+
+            byte* q8Chunk = scratch + b * 36;
+            float dA = *(float*)q8Chunk;
+            var sumVec = DotSignedBytesVsQ8_0Chunk(wbuf, q8Chunk);
+            accum += dW * dA * HSumI32_256(sumVec);
+        }
+        return accum;
+    }
+
+    /// <summary>Scalar reference for <see cref="DotQ5_0_Q8_0_Avx2"/>; also the non-AVX2 fallback.</summary>
+    internal static float DotQ5_0_Q8_0_Scalar(byte* row, byte* scratch, int cols)
+    {
+        int numBlocks = cols / 32;
+        float accum = 0f;
+
+        for (int b = 0; b < numBlocks; b++)
+        {
+            byte* blk = row + b * 22;
+            float dW = HalfToFloat(blk[0], blk[1]);
+            uint qh = (uint)(blk[2] | (blk[3] << 8) | (blk[4] << 16) | (blk[5] << 24));
+            byte* qs = blk + 6;
+            byte* q8Chunk = scratch + b * 36;
+            float dA = *(float*)q8Chunk;
+            sbyte* q8 = (sbyte*)(q8Chunk + 4);
+
+            int sumi = 0;
+            for (int j = 0; j < 16; j++)
+            {
+                int xh0 = (int)((qh >> j) & 1) << 4;
+                int xh1 = (int)((qh >> (j + 16)) & 1) << 4;
+                int x0 = ((qs[j] & 0xF) | xh0) - 16;
+                int x1 = ((qs[j] >> 4) | xh1) - 16;
+                sumi += x0 * q8[j] + x1 * q8[j + 16];
+            }
+            accum += dW * dA * sumi;
+        }
+        return accum;
+    }
+
+    public static void MatVecQ1_0(float* output, byte* weights, float* input, int rows, int cols)
+    {
+        int bytesPerRow = (cols / 128) * 18;
+        int scratchBytes = Q8_0ScratchBytes(cols);
+        byte* scratch = stackalloc byte[scratchBytes];
+        QuantizeRowToQ8_0(input, cols, scratch);
+
+        if (rows >= MinRowsForParallel)
+        {
+            var w = weights; var s = scratch; var outp = output; int c = cols;
+            Parallel.For(0, rows, s_parallelOpts, i =>
+            {
+                outp[i] = DotQ1_0_Q8_0(w + (long)i * bytesPerRow, s, c);
+            });
+        }
+        else
+        {
+            for (int i = 0; i < rows; i++)
+                output[i] = DotQ1_0_Q8_0(weights + (long)i * bytesPerRow, scratch, cols);
+        }
+    }
+
+    /// <summary>
+    /// Q1_0's 128-element block spans 4 Q8_0 activation sub-blocks, each with its own scale — the
+    /// weight has ONE scale for the whole 128 elements, so FP accumulation happens per 32-element
+    /// chunk (dW is hoisted, dA varies per chunk), not deferred to a single multiply at the end.
+    /// </summary>
+    public static float DotQ1_0_Q8_0(byte* row, byte* scratch, int cols)
+    {
+        if (Avx2.IsSupported && Avx.IsSupported)
+            return DotQ1_0_Q8_0_Avx2(row, scratch, cols);
+        return DotQ1_0_Q8_0_Scalar(row, scratch, cols);
+    }
+
+    private static float DotQ1_0_Q8_0_Avx2(byte* row, byte* scratch, int cols)
+    {
+        int numBlocks = cols / 128;
+        float accum = 0f;
+        sbyte* wbuf = stackalloc sbyte[32];
+
+        for (int b = 0; b < numBlocks; b++)
+        {
+            byte* blk = row + b * 18;
+            float dW = HalfToFloat(blk[0], blk[1]);
+            byte* mask = blk + 2;
+
+            for (int c = 0; c < 4; c++)
+            {
+                // Read each mask byte once and emit all 8 bits from it, instead of re-reading
+                // mask[bitIdx/8] (with a division) 8 times per byte — the repeated-read version
+                // measured a net wash / slightly slower vs MatVecDequantFallback (~0.92-0.98x
+                // across 3 runs) on a real rows=17408/cols=5120 microbenchmark, the same class of
+                // regression the Q2_0 kernel had for the same reason; this is the same fix,
+                // re-measured before being trusted (see SimdKernelsLegacyQ8_0Tests.cs).
+                byte* maskChunk = mask + c * 4;
+                for (int byteIdx = 0; byteIdx < 4; byteIdx++)
+                {
+                    byte bits = maskChunk[byteIdx];
+                    int i0 = byteIdx * 8;
+                    for (int bit = 0; bit < 8; bit++)
+                        wbuf[i0 + bit] = (sbyte)((bits & (1 << bit)) != 0 ? 1 : -1);
+                }
+                byte* q8Chunk = scratch + (long)(b * 4 + c) * 36;
+                float dA = *(float*)q8Chunk;
+                var sumVec = DotSignedBytesVsQ8_0Chunk(wbuf, q8Chunk);
+                accum += dW * dA * HSumI32_256(sumVec);
+            }
+        }
+        return accum;
+    }
+
+    /// <summary>Scalar reference for <see cref="DotQ1_0_Q8_0_Avx2"/>; also the non-AVX2 fallback.</summary>
+    internal static float DotQ1_0_Q8_0_Scalar(byte* row, byte* scratch, int cols)
+    {
+        int numBlocks = cols / 128;
+        float accum = 0f;
+
+        for (int b = 0; b < numBlocks; b++)
+        {
+            byte* blk = row + b * 18;
+            float dW = HalfToFloat(blk[0], blk[1]);
+            byte* mask = blk + 2;
+
+            for (int c = 0; c < 4; c++)
+            {
+                byte* q8Chunk = scratch + (long)(b * 4 + c) * 36;
+                float dA = *(float*)q8Chunk;
+                sbyte* q8 = (sbyte*)(q8Chunk + 4);
+                int sumi = 0;
+                for (int i = 0; i < 32; i++)
+                {
+                    int bitIdx = c * 32 + i;
+                    int w = (mask[bitIdx / 8] & (1 << (bitIdx % 8))) != 0 ? 1 : -1;
+                    sumi += w * q8[i];
+                }
+                accum += dW * dA * sumi;
+            }
+        }
+        return accum;
+    }
+
+    public static void MatVecQ2_0(float* output, byte* weights, float* input, int rows, int cols)
+    {
+        int bytesPerRow = (cols / 64) * 18;
+        int scratchBytes = Q8_0ScratchBytes(cols);
+        byte* scratch = stackalloc byte[scratchBytes];
+        QuantizeRowToQ8_0(input, cols, scratch);
+
+        if (rows >= MinRowsForParallel)
+        {
+            var w = weights; var s = scratch; var outp = output; int c = cols;
+            Parallel.For(0, rows, s_parallelOpts, i =>
+            {
+                outp[i] = DotQ2_0_Q8_0(w + (long)i * bytesPerRow, s, c);
+            });
+        }
+        else
+        {
+            for (int i = 0; i < rows; i++)
+                output[i] = DotQ2_0_Q8_0(weights + (long)i * bytesPerRow, scratch, cols);
+        }
+    }
+
+    /// <summary>Q2_0's 64-element block spans 2 Q8_0 activation sub-blocks — same per-chunk FP
+    /// accumulation reasoning as <see cref="DotQ1_0_Q8_0"/>.</summary>
+    public static float DotQ2_0_Q8_0(byte* row, byte* scratch, int cols)
+    {
+        if (Avx2.IsSupported && Avx.IsSupported)
+            return DotQ2_0_Q8_0_Avx2(row, scratch, cols);
+        return DotQ2_0_Q8_0_Scalar(row, scratch, cols);
+    }
+
+    private static float DotQ2_0_Q8_0_Avx2(byte* row, byte* scratch, int cols)
+    {
+        int numBlocks = cols / 64;
+        float accum = 0f;
+        sbyte* wbuf = stackalloc sbyte[32];
+
+        for (int b = 0; b < numBlocks; b++)
+        {
+            byte* blk = row + b * 18;
+            float dW = HalfToFloat(blk[0], blk[1]);
+            byte* qs = blk + 2;
+
+            for (int c = 0; c < 2; c++)
+            {
+                // Read each source byte once and emit all 4 packed 2-bit values from it,
+                // instead of re-reading qs[idx/4] (with a division) up to 4 times per byte —
+                // that repeated-read version measured SLOWER than MatVecDequantFallback
+                // (0.92x) on a real rows=17408/cols=5120 microbenchmark; this version is the
+                // fix, re-measured before being trusted (see SimdKernelsLegacyQ8_0Tests.cs).
+                byte* qsChunk = qs + c * 8;
+                for (int byteIdx = 0; byteIdx < 8; byteIdx++)
+                {
+                    byte packed = qsChunk[byteIdx];
+                    int i0 = byteIdx * 4;
+                    wbuf[i0]     = (sbyte)((packed & 3) - 1);
+                    wbuf[i0 + 1] = (sbyte)(((packed >> 2) & 3) - 1);
+                    wbuf[i0 + 2] = (sbyte)(((packed >> 4) & 3) - 1);
+                    wbuf[i0 + 3] = (sbyte)(((packed >> 6) & 3) - 1);
+                }
+                byte* q8Chunk = scratch + (long)(b * 2 + c) * 36;
+                float dA = *(float*)q8Chunk;
+                var sumVec = DotSignedBytesVsQ8_0Chunk(wbuf, q8Chunk);
+                accum += dW * dA * HSumI32_256(sumVec);
+            }
+        }
+        return accum;
+    }
+
+    /// <summary>Scalar reference for <see cref="DotQ2_0_Q8_0_Avx2"/>; also the non-AVX2 fallback.</summary>
+    internal static float DotQ2_0_Q8_0_Scalar(byte* row, byte* scratch, int cols)
+    {
+        int numBlocks = cols / 64;
+        float accum = 0f;
+
+        for (int b = 0; b < numBlocks; b++)
+        {
+            byte* blk = row + b * 18;
+            float dW = HalfToFloat(blk[0], blk[1]);
+            byte* qs = blk + 2;
+
+            for (int c = 0; c < 2; c++)
+            {
+                byte* q8Chunk = scratch + (long)(b * 2 + c) * 36;
+                float dA = *(float*)q8Chunk;
+                sbyte* q8 = (sbyte*)(q8Chunk + 4);
+                int sumi = 0;
+                for (int i = 0; i < 32; i++)
+                {
+                    int idx = c * 32 + i;
+                    byte packed = qs[idx / 4];
+                    int w = ((packed >> ((idx % 4) * 2)) & 3) - 1;
+                    sumi += w * q8[i];
+                }
+                accum += dW * dA * sumi;
+            }
+        }
+        return accum;
+    }
+
+    public static void MatVecMxfp4(float* output, byte* weights, float* input, int rows, int cols)
+    {
+        int bytesPerRow = (cols / 32) * 17;
+        int scratchBytes = Q8_0ScratchBytes(cols);
+        byte* scratch = stackalloc byte[scratchBytes];
+        QuantizeRowToQ8_0(input, cols, scratch);
+
+        if (rows >= MinRowsForParallel)
+        {
+            var w = weights; var s = scratch; var outp = output; int c = cols;
+            Parallel.For(0, rows, s_parallelOpts, i =>
+            {
+                outp[i] = DotMxfp4_Q8_0(w + (long)i * bytesPerRow, s, c);
+            });
+        }
+        else
+        {
+            for (int i = 0; i < rows; i++)
+                output[i] = DotMxfp4_Q8_0(weights + (long)i * bytesPerRow, scratch, cols);
+        }
+    }
+
+    private static readonly sbyte[] s_mxfp4Codebook =
+        [0, 1, 2, 3, 4, 6, 8, 12, 0, -1, -2, -3, -4, -6, -8, -12];
+
+    public static float DotMxfp4_Q8_0(byte* row, byte* scratch, int cols)
+    {
+        if (Avx2.IsSupported && Avx.IsSupported)
+            return DotMxfp4_Q8_0_Avx2(row, scratch, cols);
+        return DotMxfp4_Q8_0_Scalar(row, scratch, cols);
+    }
+
+    private static float DotMxfp4_Q8_0_Avx2(byte* row, byte* scratch, int cols)
+    {
+        int numBlocks = cols / 32;
+        float accum = 0f;
+        sbyte* wbuf = stackalloc sbyte[32];
+
+        fixed (sbyte* cb = s_mxfp4Codebook)
+        {
+            for (int b = 0; b < numBlocks; b++)
+            {
+                byte* blk = row + b * 17;
+                float dW = E8M0ToSingle(blk[0]);
+                byte* qs = blk + 1;
+                for (int j = 0; j < 16; j++)
+                {
+                    wbuf[j] = cb[qs[j] & 0xF];
+                    wbuf[j + 16] = cb[qs[j] >> 4];
+                }
+
+                byte* q8Chunk = scratch + b * 36;
+                float dA = *(float*)q8Chunk;
+                var sumVec = DotSignedBytesVsQ8_0Chunk(wbuf, q8Chunk);
+                accum += dW * dA * HSumI32_256(sumVec);
+            }
+        }
+        return accum;
+    }
+
+    /// <summary>Scalar reference for <see cref="DotMxfp4_Q8_0_Avx2"/>; also the non-AVX2 fallback.</summary>
+    internal static float DotMxfp4_Q8_0_Scalar(byte* row, byte* scratch, int cols)
+    {
+        int numBlocks = cols / 32;
+        float accum = 0f;
+
+        fixed (sbyte* cb = s_mxfp4Codebook)
+        {
+            for (int b = 0; b < numBlocks; b++)
+            {
+                byte* blk = row + b * 17;
+                float dW = E8M0ToSingle(blk[0]);
+                byte* qs = blk + 1;
+                byte* q8Chunk = scratch + b * 36;
+                float dA = *(float*)q8Chunk;
+                sbyte* q8 = (sbyte*)(q8Chunk + 4);
+
+                int sumi = 0;
+                for (int j = 0; j < 16; j++)
+                    sumi += cb[qs[j] & 0xF] * q8[j] + cb[qs[j] >> 4] * q8[j + 16];
+                accum += dW * dA * sumi;
+            }
+        }
+        return accum;
+    }
+
+    /// <summary>
+    /// Unsigned E4M3 scale with ggml's required half-scale convention (0x7f is reserved NaN).
+    /// Mirrors <see cref="Dequantize"/>'s private copy exactly — duplicated here (not shared)
+    /// because Dequantize.cs's version is private and this is a different assembly-internal
+    /// surface; keep both in sync if either changes.
+    /// </summary>
+    private static float E8M0ToSingle(byte value)
+    {
+        uint bits = value < 2 ? 0x00200000u << value : ((uint)value - 1u) << 23;
+        return BitConverter.Int32BitsToSingle((int)bits);
     }
 
     /// <summary>

@@ -83,11 +83,33 @@ themselves in ggml, not `Q8_K`, so this is a related but structurally different 
 
 **`Q8_0`-paired** (`ggml_vec_dot_{name}_q8_0`) — reuses this file's existing
 `QuantizeRowToQ8_0`/`Q8_0ScratchBytes`, no new activation-quant infra needed:
-- [ ] `Q5_0` (32 elem/22 bytes)
-- [ ] `Q1_0` (128 elem/18 bytes)
-- [ ] `Q2_0` (64 elem/18 bytes)
-- [ ] `MXFP4` (32 elem/17 bytes) — the doc correction above: this was wrongly believed already done.
-- [ ] `NVFP4` (64 elem/36 bytes)
+- [x] `Q5_0` (32 elem/22 bytes) — **kernel written, correctness verified, but NOT wired into
+      `MatVec`'s dispatch.** Real, repeated median-of-7-trials measurement (rows=17408/cols=5120,
+      `SimdKernelsLegacyQ8_0Tests.cs`): ~0.94-0.97x vs `MatVecDequantFallback` — consistently NOT
+      faster across multiple runs, not noise. Left un-dispatched per `CLAUDE.md`'s "only keep a
+      change if it's measurably better" rule; `DType.Q5_0` still routes to the (correct, just
+      unoptimized) fallback. Root cause not fully chased: per-element unpack does more scalar work
+      than the three formats below (two bit-shifts + OR + subtract per element, vs a straight
+      codebook lookup or bitmask test), and its `MatVecDequantFallback` baseline also happens to be
+      unusually fast relative to the others, tightening the bar. A real fix likely needs a
+      vectorized bit-extraction rather than a per-element scalar unpack — left for whoever revisits
+      this, not chased further here.
+- [x] `Q1_0` (128 elem/18 bytes) — done. First attempt (per-bit unpack re-reading the same mask
+      byte via `mask[bitIdx/8]` up to 8 times) measured a wash (~0.92-0.98x); fixed by reading each
+      mask byte once and emitting all 8 bits (same fix shape as `Q2_0` below). **Verified: median
+      speedup ~1.24-1.26x** (2 stable repeated runs) vs `MatVecDequantFallback`, rows=17408/cols=5120.
+- [x] `Q2_0` (64 elem/18 bytes) — done. Same redundant-read bug as `Q1_0`'s first attempt (re-read
+      `qs[idx/4]` up to 4 times per byte); fixed the same way. **Verified: median speedup ~2.05-2.10x.**
+- [x] `MXFP4` (32 elem/17 bytes) — done, no redundant-read bug from the start (straight per-nibble
+      codebook lookup). **Verified: median speedup ~6.9-7.2x** — the standout of this batch, likely
+      because `Dequantize.DequantMxfp4`'s fallback path (scalar `Mxfp4Value` switch-statement
+      lookup per nibble) is unusually slow relative to the other formats' dequantizers, making the
+      fallback baseline itself the outlier here rather than the fast kernel being unusually good.
+- [ ] `NVFP4` (64 elem/36 bytes) — not started. Structurally the trickiest of this group: 4
+      sub-blocks of 16 elements each with its own `UE4M3` scale, spanning 2 `Q8_0` activation
+      blocks — needs the "two sub-scales packed into one 256-bit reduce via low/high-128-lane
+      split" trick already proven for `IQ2_XS`/`IQ2_S`/`IQ3_S` in backlog A's kernels, adapted to a
+      16-element (not 32-element) sub-block granularity.
 
 **`Q8_1`-paired** (`ggml_vec_dot_{name}_q8_1`) — **no `Q8_1` activation-quant scratch exists in
 this codebase yet** (`QuantizeRowToQ8_1`, unlike `QuantizeRowToQ8_0`/`QuantizeRowToQ8K`, doesn't
