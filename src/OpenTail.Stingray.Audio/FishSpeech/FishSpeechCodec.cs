@@ -343,19 +343,24 @@ public static class FishSpeechCodec
     {
         int qkvSize = nHead * headDim; // == dim, full MHA (n_local_heads == n_head for this checkpoint)
 
+        // Real perf fix (2026-08-29): each position's RMSNorm/QKV projection is independent of
+        // every other position (only the attention step itself, already parallelized over heads
+        // below, mixes across positions) -- was a plain sequential loop over t, single-threaded,
+        // for what's actually an embarrassingly parallel per-position workload. Measured as the
+        // dominant cost in the codec's newly-added quantizer transformer (see this file's Decode
+        // doc comment) -- 15-frame codec decode alone took ~2.6s before this fix.
         var normed = new float[t][];
-        for (int i = 0; i < t; i++) normed[i] = FishSpeechFastAr.RmsNorm(x[i], lw.AttentionNormWeight, eps);
-
         var q = new float[t][];
         var k = new float[t][];
         var v = new float[t][];
-        for (int i = 0; i < t; i++)
+        Parallel.For(0, t, i =>
         {
+            normed[i] = FishSpeechFastAr.RmsNorm(x[i], lw.AttentionNormWeight, eps);
             var qkv = FishSpeechFastAr.LinearNoBias(normed[i], lw.WqkvWeight, dim, 3 * qkvSize);
             q[i] = qkv.AsSpan(0, qkvSize).ToArray();
             k[i] = qkv.AsSpan(qkvSize, qkvSize).ToArray();
             v[i] = qkv.AsSpan(2 * qkvSize, qkvSize).ToArray();
-        }
+        });
 
         for (int i = 0; i < t; i++)
         {
@@ -397,25 +402,18 @@ public static class FishSpeechCodec
             }
         });
 
-        var attnOut = new float[t][];
-        for (int i = 0; i < t; i++)
+        var h1 = new float[t][];
+        Parallel.For(0, t, i =>
         {
             var o = FishSpeechFastAr.LinearNoBias(context[i], lw.WoWeight, qkvSize, dim);
-            for (int d = 0; d < dim; d++) o[d] *= lw.AttentionGamma[d];
-            attnOut[i] = o;
-        }
-
-        var h1 = new float[t][];
-        for (int i = 0; i < t; i++)
-        {
             var row = new float[dim];
-            for (int d = 0; d < dim; d++) row[d] = x[i][d] + attnOut[i][d];
+            for (int d = 0; d < dim; d++) row[d] = x[i][d] + o[d] * lw.AttentionGamma[d];
             h1[i] = row;
-        }
+        });
 
         int ffnDim = lw.W1Weight.Length / dim;
         var output = new float[t][];
-        for (int i = 0; i < t; i++)
+        Parallel.For(0, t, i =>
         {
             var ffnNormed = FishSpeechFastAr.RmsNorm(h1[i], lw.FfnNormWeight, eps);
             var gate = FishSpeechFastAr.LinearNoBias(ffnNormed, lw.W1Weight, dim, ffnDim);
@@ -426,7 +424,7 @@ public static class FishSpeechCodec
             var row = new float[dim];
             for (int d = 0; d < dim; d++) row[d] = h1[i][d] + ffnOut[d] * lw.FfnGamma[d];
             output[i] = row;
-        }
+        });
         return output;
     }
 
