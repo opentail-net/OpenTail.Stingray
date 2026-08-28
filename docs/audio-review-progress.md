@@ -9547,3 +9547,54 @@ lesson, a numerical/duration improvement is not the same as confirmed-good audio
 "measure before and after, don't just guess-and-listen" -- the two earlier failed attempts each
 skipped straight to listening; this one dumped actual generated tokens first, which is what
 actually found the real bug instead of another guess.
+
+## Fish Speech S2 Pro: "Dalek"/metallic-timbre root-caused and fixed -- codebook 1 was a near-tie resolved identically every time by greedy, not a confident model choice; fast-AR now samples per the real reference spec (2026-08-28, following up on the just-fixed repetition-loop bug, same fire)
+
+User listen-confirmed the repetition-loop fix (previous entry) as real progress -- "words are
+distinguishable, the stutter is gone, closer than before... 90% there" -- but described the
+remaining character as "sinister... a bit like Doctor Who's Dalek, very unnerving." Investigated
+with the same "measure before touching code" discipline as the previous fix.
+
+**Evidence gathered**: dumped all 9 residual codebooks' value distributions for the same prompt.
+Codebook 1 was uniquely, severely collapsed (4 distinct values out of 98 frames, one value 89-91%
+of the time) while codebooks 2-9 all showed healthy variety (14-68 distinct values, no single
+value above ~38%) -- ruling out systemic codec collapse and pointing at something specific to
+codebook 1's prediction. Re-tested with the Q8_0 checkpoint (independently proven elsewhere to
+fix fast-AR precision issues, cosine 0.9995 vs Q4_K_M's 0.44) -- codebook 1 was NOT fixed (still
+4 distinct values, actually slightly worse: 96% one value vs Q4_K_M's 91%), ruling out
+quantization precision as the cause here.
+
+**Decisive check**: added a debug hook dumping codebook 1's top-1/top-2 logit margin at every
+frame. Result: margins were consistently tiny (0.006-0.68 in raw logit space, i.e. the runner-up
+candidate was often within 1.01x-1.8x the probability of the top pick) -- this is a genuine
+near-tie among a small rotating set of candidates (929, 752, 290, 777, 636...), NOT a confident,
+correct model decision. Greedy `Argmax` resolves that near-tie identically every time (929 wins
+the tiny numerical edge in the vast majority of frames), producing near-constant codebook-1
+acoustic detail across the whole utterance -- consistent with the reported metallic/robotic
+timbre (a real, texture-defining codebook staying almost frozen while the words themselves,
+carried by the semantic codebook and codebooks 2-9, still come through).
+
+**Fix, isolated and independently tested this time** (contrast with the earlier failed attempt
+that changed slow-AR AND fast-AR sampling simultaneously and was listen-confirmed worse): the
+real reference (`s2_generate.cpp`) samples the fast-AR codebook expansion UNCONDITIONALLY on
+every call (temperature=0.8, top_p=0.8, top_k=30, no RAS -- RAS is slow-AR-only in the real
+spec) -- this codebase's fast-AR loop was still plain greedy `Argmax`. Switched it to the same
+`SampleToken` port already added for the slow-AR's RAS escape hatch, with the slow-AR's own
+generation left completely unchanged (still greedy + RAS, the already-proven-good fix from the
+previous entry).
+
+**Verified with the same token-dump-before-listening discipline**: codebook 1 diversity went from
+4/98 distinct values (4%) to 19/56 distinct values (34%); all other codebooks stayed healthy
+(42-54/56 distinct). `FishSpeechFullPipelineTests.Synthesize_RealWeights_ProducesFinitePcm`:
+PASSED. Regenerated `docs/audio-samples/fishspeech-lunch.wav` in place -- 2.60s (down from 4.55s;
+plausible for an 8-word sentence, RMS 8936/peak 31913 of 32768, non-silent, no clipping).
+
+**Status**: user has not yet listened to this iteration -- taken as the next checkpoint per their
+own framing of the previous fix ("worth committing and taking as the new starting point to
+improve upon"), not claimed as fully resolved. If the Dalek quality persists, the next concrete,
+evidence-backed lead (not yet chased) would be checking whether codebook 1 specifically has a
+real conditioning gap in `FishSpeechFastAr.ForwardStep`'s very first call each timestep (position
+0, fed only the slow-AR hidden state with no prior codebook context) versus codebooks 2-9 (which
+additionally see codebook 1's own embedding as context) -- codebook 1 is structurally the ONLY
+codebook predicted from hidden state alone, which could still leave it more prone to a persistent
+bias even with proper sampling.

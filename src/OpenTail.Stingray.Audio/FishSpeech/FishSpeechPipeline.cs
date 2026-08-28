@@ -228,7 +228,19 @@ public sealed class FishSpeechPipeline : IDisposable
             var stepLogits = FishSpeechFastAr.ForwardStep(_weights, _fastArCache, hidden);
             for (int cb = 1; cb < _weights.NumCodebooks; cb++)
             {
-                int cbToken = Argmax(stepLogits);
+                // Real reference sampling (temp=0.8, top_p=0.8, top_k=30 -- same defaults as the
+                // slow-AR's RAS escape, no masking needed here since fast_logits is already
+                // exactly CodebookSize wide). Was plain Argmax: a direct logit-margin dump proved
+                // codebook 1's "always picks the same value" behavior was a near-tie (margins as
+                // small as 0.006-0.68 in raw logit space, i.e. the runner-up was often within
+                // 1.01x-1.8x probability of the top pick) resolved identically every time by
+                // greedy tie-breaking, not a confident model decision -- consistent with the
+                // "Dalek"/metallic-timbre symptom (near-constant codebook-1 acoustic detail).
+                // Unlike the slow-AR's main-token loop (where full sampling was tried and made
+                // things WORSE, see this file's other doc comments), the reference's own spec
+                // samples the fast-AR unconditionally every call, never greedily -- this is that,
+                // isolated and tested independently rather than combined with the slow-AR change.
+                int cbToken = SampleToken(stepLogits, 0.8f, 0.8f, 30, rng);
                 codebookValues[cb] = cbToken;
                 if (cb < _weights.NumCodebooks - 1)
                     stepLogits = FishSpeechFastAr.ForwardStep(_weights, _fastArCache, FishSpeechFastAr.EmbedFastToken(_weights, cbToken));
@@ -244,15 +256,6 @@ public sealed class FishSpeechPipeline : IDisposable
         }
 
         return (semanticTokens, codebooksPerFrame);
-    }
-
-    private static int Argmax(ReadOnlySpan<float> logits)
-    {
-        int idx = 0;
-        float max = logits[0];
-        for (int i = 1; i < logits.Length; i++)
-            if (logits[i] > max) { max = logits[i]; idx = i; }
-        return idx;
     }
 
     private static int ArgmaxMasked(ReadOnlySpan<float> logits, int semBegin, int semEnd, int imEndId)
