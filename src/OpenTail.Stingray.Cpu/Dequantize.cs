@@ -73,6 +73,12 @@ public static class Dequantize
             case DType.IQ4_NL:
                 DequantIq4Nl(src, dst, elementCount);
                 break;
+            case DType.IQ2_S:
+                DequantIq2S(src, dst, elementCount);
+                break;
+            case DType.IQ2_XS:
+                DequantIq2Xs(src, dst, elementCount);
+                break;
             case DType.IQ2_XXS:
                 DequantIq2Xxs(src, dst, elementCount);
                 break;
@@ -688,6 +694,96 @@ public static class Dequantize
         {
             ushort bits = (ushort)(src[i * 2] | (src[i * 2 + 1] << 8));
             dst[i] = BitConverter.Int32BitsToSingle(bits << 16);
+        }
+    }
+
+    /// <summary>
+    /// IQ2_S scalar dequantization decoder (256 elements / 82 bytes per block), matching ggml's
+    /// dequantize_row_iq2_s: 8 groups of 32 elements, each sharing one nibble-split scale byte
+    /// (same layout as IQ2_XS) and one qh byte contributing 2 extra high bits per grid index
+    /// (index = qs-byte | ((qh &lt;&lt; (8-2*l)) &amp; 0x300), a 10-bit index into the 1024-entry
+    /// <see cref="IqCodebooks.Iq2SGrid"/>). Unlike IQ2_XS/IQ2_XXS, the sign byte is used
+    /// directly as an 8-bit mask (no <see cref="IqCodebooks.KSignsIq2Xs"/> indirection) --
+    /// ggml stores the 32 grid-index bytes and 32 sign bytes back-to-back in the same field.
+    /// </summary>
+    private static void DequantIq2S(ReadOnlySpan<byte> src, Span<float> dst, long elementCount)
+    {
+        const int kK = 256;
+        const int bytesPerBlock = 82;
+        int numBlocks = (int)(elementCount / kK);
+        var grid = IqCodebooks.Iq2SGrid;
+        var kmask = IqCodebooks.KMaskIq2Xs;
+
+        for (int b = 0; b < numBlocks; b++)
+        {
+            var block = src.Slice(b * bytesPerBlock, bytesPerBlock);
+            float d = HalfToFloat(block[0], block[1]);
+            var qsLow = block.Slice(2, 32);
+            var signs = block.Slice(34, 32);
+            var qh = block.Slice(66, 8);
+            var scales = block.Slice(74, 8);
+            int y = b * kK;
+
+            for (int ib32 = 0; ib32 < 8; ib32++)
+            {
+                float db0 = d * (0.5f + (scales[ib32] & 0xF)) * 0.25f;
+                float db1 = d * (0.5f + (scales[ib32] >> 4)) * 0.25f;
+                int baseOff = ib32 * 4;
+                for (int l = 0; l < 4; l++)
+                {
+                    float dl = l < 2 ? db0 : db1;
+                    int idx = qsLow[baseOff + l] | ((qh[ib32] << (8 - 2 * l)) & 0x300);
+                    ulong gridVal = grid[idx];
+                    byte sgn = signs[baseOff + l];
+                    for (int j = 0; j < 8; j++)
+                        dst[y + j] = dl * (byte)(gridVal >> (8 * j)) * ((sgn & kmask[j]) != 0 ? -1f : 1f);
+                    y += 8;
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// IQ2_XS scalar dequantization decoder (256 elements / 74 bytes per block), matching
+    /// ggml's dequantize_row_iq2_xs: 8 groups of 32 elements, each group sharing one scale byte
+    /// (low nibble scales the group's first two 8-element sub-groups, high nibble the last two)
+    /// and four 16-bit qs words, each packing a 9-bit grid index (low 9 bits) plus a 7-bit
+    /// sign-select field (top 7 bits) resolved through <see cref="IqCodebooks.KSignsIq2Xs"/>.
+    /// Same real-table provenance as <see cref="DequantIq2Xxs"/>; see its remarks.
+    /// </summary>
+    private static void DequantIq2Xs(ReadOnlySpan<byte> src, Span<float> dst, long elementCount)
+    {
+        const int kK = 256;
+        const int bytesPerBlock = 74;
+        int numBlocks = (int)(elementCount / kK);
+        var grid = IqCodebooks.Iq2XsGrid;
+        var ksigns = IqCodebooks.KSignsIq2Xs;
+        var kmask = IqCodebooks.KMaskIq2Xs;
+
+        for (int b = 0; b < numBlocks; b++)
+        {
+            var block = src.Slice(b * bytesPerBlock, bytesPerBlock);
+            float d = HalfToFloat(block[0], block[1]);
+            var qs = block.Slice(2, 64);
+            var scales = block.Slice(66, 8);
+            int y = b * kK;
+
+            for (int ib32 = 0; ib32 < 8; ib32++)
+            {
+                float db0 = d * (0.5f + (scales[ib32] & 0xF)) * 0.25f;
+                float db1 = d * (0.5f + (scales[ib32] >> 4)) * 0.25f;
+                for (int l = 0; l < 4; l++)
+                {
+                    int qsOff = (4 * ib32 + l) * 2;
+                    int qval = qs[qsOff] | (qs[qsOff + 1] << 8);
+                    ulong gridVal = grid[qval & 511];
+                    byte signs = ksigns[qval >> 9];
+                    float dl = l < 2 ? db0 : db1;
+                    for (int j = 0; j < 8; j++)
+                        dst[y + j] = dl * (byte)(gridVal >> (8 * j)) * ((signs & kmask[j]) != 0 ? -1f : 1f);
+                    y += 8;
+                }
+            }
         }
     }
 

@@ -58,7 +58,7 @@ Stingray is the first inference engine to elevate **Skills, Instructions, and To
 Stingray natively supports leading open-weights models across GGUF quantization formats (Q4_K, Q8_0, Q2_K, FP16):
 - **DeepSeek**: DeepSeek-V2-Lite (`deepseek2` with MLA + DeepSeekMoE)
 - **Qwen**: Qwen 2.5, Qwen 3, Qwen 3.5 MoE
-- **Mistral / Llama**: Mistral 3, Ministral, Llama 3, SmolLM2
+- **Mistral / Llama**: Mistral 7B, Mixtral MoE, Ministral 8B, Llama 3, SmolLM2
 - **Google Gemma**: Gemma 2, Gemma 4
 - **Enterprise**: Command-R, Granite, OLMoE
 

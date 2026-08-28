@@ -14,7 +14,21 @@ public static class ModelCompatibility
     {
         // Decoder-only transformer profiles exercised by OpenTail's forward passes.
         "llama", "llama4",
-        "qwen", "qwen2", "qwen2moe", "qwen3", "qwen3moe", "qwen35", "qwen35moe",
+        "qwen", "qwen2", "qwen2moe", "qwen3", "qwen3moe",
+        // qwen35 — hybrid Gated-DeltaNet MoE + MTP path (docs/02-qwen35moe-plan.md). Ornith-1.0
+        // 9B (dense-ish, no MoE) was the original end-to-end validation. Extended 2026-08-28 with
+        // a FULL 24-of-24-token exact greedy match on Qwen3.8-27B UD-Q3_K_XL (Unsloth Dynamic
+        // quant, Apache-2.0, obtained via local Ollama cache) against llama.cpp b10532-70aff2525:
+        // prompt "The capital of France is" (raw completion, no chat template, temp 0,
+        // repeat_penalty 1.0) -> "Paris.\nThe capital of Germany is Berlin.\nThe capital of Italy
+        // is Rome.\nThe capital of Spain is", byte-identical on both sides including the 5-token
+        // prompt tokenization. This checkpoint also exercises IQ2_S/IQ2_XS/IQ3_XXS/IQ4_XS
+        // per-tensor (see IsSupportedWeightDType's IQ2_XS/IQ2_S entries and
+        // docs/01-gguf-model-coverage-plan.md §2), so the receipt covers both the forward-pass
+        // architecture and the newly-admitted dequant formats in one shot. 64 layers, 5120d,
+        // headDim=256, 248320 vocab, full_attention_interval=4, block 64 is an unused MTP
+        // next-token-prediction head (correctly ignored by both engines in non-speculative mode).
+        "qwen35", "qwen35moe",
         "mimo", "mimo2",
         "gemma", "gemma2", "gemma3", "gemma3n", "gemma4",
         "phi2", "phi3", "phimoe",
@@ -502,7 +516,8 @@ public static class ModelCompatibility
         DType.Float32 or DType.Float16 or DType.BFloat16 or
         DType.Q4_0 or DType.Q4_1 or DType.Q5_0 or DType.Q5_1 or DType.Q8_0 or DType.Q8_1 or
         DType.Q2_K or DType.Q3_K or DType.Q4_K or DType.Q5_K or DType.Q6_K or
-        DType.IQ4_NL or DType.MXFP4 or DType.NVFP4 or DType.Q1_0 or DType.Q2_0;
+        DType.IQ4_NL or DType.IQ2_S or DType.IQ2_XS or DType.IQ2_XXS or DType.IQ3_XXS or DType.IQ3_S or DType.IQ4_XS or
+        DType.MXFP4 or DType.NVFP4 or DType.Q1_0 or DType.Q2_0;
 
     /// <summary>
     /// Validates that a GGUF can be served by OpenTail's text-generation engine. Call this
@@ -537,7 +552,7 @@ public static class ModelCompatibility
                 "This GGUF uses tensor storage formats that OpenTail.Stingray cannot execute on its portable " +
                 "text-generation path: " + string.Join(", ", unsupported) + ". " +
                 "Use a model quantized as Q4_0/Q4_1/Q5_0/Q5_1/Q8_0/Q8_1, Q2_K–Q6_K, IQ4_NL, " +
-                "MXFP4, NVFP4, Q1_0, Q2_0, F16, BF16, or F32.");
+                "IQ2_S, IQ2_XS, IQ2_XXS, IQ3_XXS, IQ3_S, IQ4_XS, MXFP4, NVFP4, Q1_0, Q2_0, F16, BF16, or F32.");
         }
     }
 }

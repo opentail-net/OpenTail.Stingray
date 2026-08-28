@@ -23,7 +23,7 @@ In Python and C++, running modern local AI requires juggling 4–5 fragmented, h
 
 ## Superpowers at a Glance
 
-* 💬 **Text LLMs & Sparse MoE:** Llama 3 / 3.1 / 3.2 / 3.3 / 4, Qwen 2.5 / Qwen 3.5 MoE, DeepSeek-V3 / R1, Gemma 3 / 4, SmolLM2. Full tool calling, JSON schema constrained decoding, and grammar masks.
+* 💬 **Text LLMs & Sparse MoE:** Llama 3 / 3.1 / 3.2 / 3.3 / 4, Mistral 7B / Mixtral MoE / Ministral, Qwen 2.5 / Qwen 3.5 MoE, DeepSeek-V3 / R1, Gemma 3 / 4, SmolLM2. Full tool calling, JSON schema constrained decoding, and grammar masks.
 * 👁️ **Multimodal Vision (11+ Architectures):**
   * **Alibaba:** Qwen2.5-VL, Qwen3-VL (3D Conv stem, M-RoPE, $2\times 2$ spatial merge).
   * **DeepSeek:** DeepSeek-OCR & DeepSeek-OCR2 (Dual SAM + CLIP ViT fusion, $1024\times 1024$ grid).

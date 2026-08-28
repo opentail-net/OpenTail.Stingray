@@ -1839,29 +1839,53 @@ reference).
 
 ## 2. Tensor storage formats — the IQ family is the largest single gap
 
+**Status (2026-08-28): six of eight declared IQ formats now implemented and gate-admitted.**
 `DType` (`Core/Tensor.cs`) declares `IQ1_S`, `IQ1_M`, `IQ2_XXS`, `IQ2_XS`, `IQ2_S`, `IQ3_XXS`,
-`IQ3_S`, `IQ4_XS`. `Dequantize.ToFloat32` (`Cpu/Dequantize.cs`) implements **none** of them; only
-`IQ4_NL` exists. `IsSupportedWeightDType` correctly excludes them, so this is an honest refusal
-rather than a silent failure — but it refuses a large share of Hugging Face.
+`IQ3_S`, `IQ4_XS`. `Dequantize.ToFloat32` (`Cpu/Dequantize.cs`) now implements `IQ2_XXS`, `IQ2_XS`,
+`IQ2_S`, `IQ3_XXS`, `IQ3_S`, `IQ4_XS` (plus `IQ4_NL`, which predates this list), all copied
+verbatim from `ggml-quants.c`/`ggml-common.h`'s real tables (`IqCodebooks.cs`) rather than
+reconstructed from a formula. Only `IQ1_S`/`IQ1_M` remain unported.
 
-This matters more than architecture count for one reason: **IQ quants are how large models are
-distributed.** A 70B or 235B model on HF is very often IQ2_XXS/IQ3_XXS/IQ4_XS, because K-quants at
-that size do not fit consumer hardware. Every one of those repos is currently unreachable.
+Two separate defects were found and fixed getting here, not one linear build-out:
 
-**Work, in order:**
+- `IQ3_XXS`, `IQ3_S`, and `IQ4_XS` were **already correctly implemented** (from the
+  `IqCodebooks.cs` real-table fix referenced in `docs/bugstofix.md`) but `ModelCompatibility.
+  IsSupportedWeightDType` — the load-time gate — had never been updated to admit them. A model
+  using any of the three was rejected at the door despite the engine being able to dequantize it
+  correctly. One-line gate fix, no new kernel code.
+- `IQ2_XS` and `IQ2_S` were genuine, never-ported gaps (no decoder, no case in the dispatch
+  switch) — found because a real checkpoint needed them (see the receipt below). Both added:
+  `IqCodebooks.Iq2XsGrid` (512×u64) / `Iq2SGrid` (1024×u64), transcribed verbatim from
+  `ggml-common.h`, plus `Dequantize.DequantIq2Xs`/`DequantIq2S` matching `dequantize_row_iq2_xs`/
+  `dequantize_row_iq2_s` exactly. `IQ2_S` is structurally distinct from `IQ2_XS`/`IQ2_XXS`: its
+  10-bit grid index splits across a `qs` byte plus 2 bits from a separate `qh` field, and its sign
+  byte is used directly as an 8-bit mask rather than going through the `ksigns_iq2xs` 7-bit
+  indirection the other two formats use.
 
-1. `IQ4_XS` — by far the most common IQ format, and structurally closest to the existing `IQ4_NL`
-   (same non-linear codebook, different block/scale layout). Highest ratio of repos unlocked to
-   effort.
-2. `IQ3_S` and `IQ3_XXS`, then `IQ2_S`/`IQ2_XS`/`IQ2_XXS` — these use the `iq2xxs_grid`-style
-   lookup grids from `ggml-quants.c`; the grids are data, and porting them is mechanical but bulky.
-3. `IQ1_S`/`IQ1_M` — lowest value, worst quality; do last or not at all.
-4. `TQ1_0`/`TQ2_0` ternary — only if a target model needs them.
+**Verification receipt — Qwen3.8-27B, UD-Q3_K_XL (Unsloth Dynamic quant), `qwen35` architecture,
+2026-08-28.** Checkpoint obtained from a local Ollama cache (`unsloth`-quantized, Apache-2.0),
+`general.architecture: qwen35` (hybrid Gated-DeltaNet MoE + MTP, 64 layers, 5120d, headDim=256,
+248320 vocab, `full_attention_interval=4`). Its tensors mix `IQ2_S`, `IQ2_XS`, `IQ3_XXS`, and
+`IQ4_XS` per-layer (Unsloth's per-tensor dynamic scheme) — exercising all four newly-admitted
+formats in one load. Prompt `"The capital of France is"`, raw completion (no chat template,
+`STINGRAY_RAW_PROMPT=1`), `--temp 0 --repeat-penalty 1.0`, `-n 24`, against a local llama.cpp
+reference build (`b10532-70aff2525`, CPU-only). **Exact match, full 24-token greedy continuation**:
+`"Paris.\nThe capital of Germany is Berlin.\nThe capital of Italy is Rome.\nThe capital of Spain
+is"` — identical on both sides, including the 5-token prompt tokenization. This is also the first
+concrete parity evidence for the `qwen35` hybrid GDN architecture on a large (27B) MoE-adjacent
+checkpoint — `qwen35moe-plan.md`'s existing Ornith-1.0 9B validation was a smaller, non-MoE `qwen35`
+model.
 
-Each format needs: a scalar dequantizer matching `ggml-quants.c` exactly, a round-trip test against
-reference bytes, and a real-model load. A SIMD matvec is a **follow-up**, not part of admission —
+Remaining work:
+
+1. `IQ1_S`/`IQ1_M` — lowest value, worst quality; do last or not at all. Needs `iq1s_grid`
+   (`NGRID_IQ1S=2048` entries) plus `IQ1S_DELTA=0.125f` and a sign/shift scheme distinct from the
+   IQ2/IQ3 family (see `dequantize_row_iq1_s`/`dequantize_row_iq1_m` in `ggml-quants.c`).
+2. `TQ1_0`/`TQ2_0` ternary — only if a target model needs them.
+
+A SIMD matvec for the six now-implemented formats is a **follow-up**, not part of admission —
 scalar dequant plus the existing F32 path is enough to make the model *run*, which is the goal.
-Note the ordering consequence: this makes item 3 of
+This keeps item 3 of
 [05-cpu-architecture-kernel-opportunities.md](05-cpu-architecture-kernel-opportunities.md)
 (native IQ4_NL/MXFP4 kernels) a performance follow-up to this correctness work, not a prerequisite.
 
@@ -1996,10 +2020,11 @@ wrong output on models we claim to support. Suggested order:
 1. **Tokenizer pre-type audit** (§3 item 1) — cheap, and may find a live defect.
 2. **Architecture gate consistency** (§1a) — small change, removes a real contradiction between CLI
    and server.
-3. **`IQ4_XS`** (§2 item 1) — the single highest-value format.
+3. ~~**`IQ4_XS`** (§2 item 1) — the single highest-value format.~~ Done 2026-08-28, along with
+   `IQ2_XS`/`IQ2_S`/`IQ3_XXS`/`IQ3_S` — see §2's verification receipt.
 4. **Chat-template corpus** (§4).
 5. **`olmoe`/`olmo2`/`deepseek2` admission with receipts** (§1b).
-6. Remaining IQ formats, then further architectures.
+6. Remaining IQ formats (`IQ1_S`/`IQ1_M`, §2), then further architectures.
 
 ## Standing evidence rule
 

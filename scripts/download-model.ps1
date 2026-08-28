@@ -40,7 +40,7 @@
     .\download-model.ps1 -Model realesrgan-x4           # Real-ESRGAN x4plus upscaler (67 MB)
 #>
 param(
-    [ValidateSet("smollm2", "smollm3", "vibethinker", "vibethinker-q4", "qwen3-8b", "qwen3-0.6b", "qwen3-4b", "dspark-qwen3-4b", "dspark-qwen3-8b", "olmoe-1b-7b", "llama31-70b", "qwen3-coder-30b-a3b", "qwen36-35b-a3b",
+    [ValidateSet("smollm2", "smollm3", "vibethinker", "vibethinker-q4", "mistral-7b", "qwen3-8b", "qwen3-0.6b", "qwen3-4b", "dspark-qwen3-4b", "dspark-qwen3-8b", "olmoe-1b-7b", "llama31-70b", "qwen3-coder-30b-a3b", "qwen36-35b-a3b",
                  "qwen36-27b-mtp", "qwen36-27b-mtp-q5", "qwen36-35b-a3b-mtp", "carnice-35b-a3b-mtp",
                  "ornith-9b", "ornith-35b",
                  "gemma4-12b-qat", "gemma4-12b-q4km", "gemma4-e4b-qat", "gemma4-12b-agentic",
@@ -93,6 +93,18 @@ $Models = @{
         Size  = "1.1 GB"
         SizeGB = 1.1
         Phase = "issue #282 (Qwen2 math/reasoning — smaller Q4_K_M)"
+    }
+    # Mistral-7B-Instruct-v0.3 (Mistral AI, Apache-2.0) — architecture-coverage target
+    # (`mistral` GGUF arch: dense, GQA 32/8 heads, SwiGLU FFN, NORM/interleaved RoPE, no
+    # partial-RoPE quirks). Sliding-window attention is off by default in v0.3 (unlike
+    # v0.1/v0.2's 4096-token SWA), so this exercises the plain causal dense path, not the
+    # SWA machinery. bartowski's Q4_K_M republish.
+    "mistral-7b" = @{
+        Files = @("Mistral-7B-Instruct-v0.3-Q4_K_M.gguf")
+        Urls  = @("https://huggingface.co/bartowski/Mistral-7B-Instruct-v0.3-GGUF/resolve/main/Mistral-7B-Instruct-v0.3-Q4_K_M.gguf")
+        Size  = "~4.4 GB"
+        SizeGB = 4.4
+        Phase = "coverage (dense mistral arch)"
     }
     "qwen3-8b" = @{
         Files = @("Qwen3-8B-Q4_K_M.gguf")
