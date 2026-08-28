@@ -778,6 +778,15 @@ public static unsafe class SimdKernels
             case DType.IQ3_S:
                 MatVecIq3S(output, weights, input, rows, cols);
                 break;
+            // DType.TQ2_0 deliberately NOT wired: measured ~0.89-1.19x vs MatVecDequantFallback
+            // (min of 7 trials, rows=17408/cols=5120) — one favorable isolated run, but 3/4 runs
+            // embedded in the full test suite came back <1.0x under realistic system-load noise.
+            // Not a stable, repeatable win, so it's not claimed as one — see docs/05's Backlog C.
+            // The kernel is correct (AVX2-vs-scalar and dequant-cross-check tests both pass) and
+            // MatVecTq2_0 stays callable for future re-measurement, just not dispatched to.
+            // DType.TQ1_0 deliberately not wired either: scalar-only kernel exists as a dequant
+            // cross-check oracle, no AVX2 written (was gated on TQ2_0's result, which didn't pan
+            // out). Both fall through to MatVecDequantFallback via `default`.
             // DType.IQ1_S deliberately NOT wired here: measured ~0.80-0.86x vs
             // MatVecDequantFallback (min of 7 trials, rows=17408/cols=5120, 3 stable repeated
             // runs) — consistently slower, not noise. The dequantizer/allowlist admission is the
@@ -4597,6 +4606,190 @@ public static unsafe class SimdKernels
                 qhOff += 2;
             }
             accum += dW * dA * (sumi1 + IqCodebooks.Iq1sDelta * sumi2);
+        }
+        return accum;
+    }
+
+    // ================================================================
+    //  TQ2_0 / TQ1_0 · Q8_K Dot Products (Backlog C, docs/05-cpu-architecture-kernel-opportunities.md)
+    // ================================================================
+    // Neither format had ANY implementation before this session. Both pair with Q8_K
+    // (ggml_vec_dot_tq{1,2}_0_q8_K), reusing QuantizeRowToQ8K/Q8KScratchBytes — no new
+    // activation-quant infra. Both have exactly ONE scale for the whole 256-element superblock
+    // (no bsums correction, no sub-block scale variation) — simpler than every IQ1 kernel, and
+    // TQ2_0 specifically mirrors Q2_0's already-shipped (~2.1x) 2-bit unpack shape almost exactly.
+
+    public static void MatVecTq2_0(float* output, byte* weights, float* input, int rows, int cols)
+    {
+        int bytesPerRow = (cols / 256) * 66;
+        int scratchBytes = Q8KScratchBytes(cols);
+        byte* scratch = stackalloc byte[scratchBytes];
+        QuantizeRowToQ8K(input, cols, scratch);
+
+        if (rows >= MinRowsForParallel)
+        {
+            var w = weights; var s = scratch; var outp = output; int c = cols;
+            Parallel.For(0, rows, s_parallelOpts, i =>
+            {
+                outp[i] = DotTq2_0_Q8K(w + (long)i * bytesPerRow, s, c);
+            });
+        }
+        else
+        {
+            for (int i = 0; i < rows; i++)
+                output[i] = DotTq2_0_Q8K(weights + (long)i * bytesPerRow, scratch, cols);
+        }
+    }
+
+    public static float DotTq2_0_Q8K(byte* row, byte* scratch, int cols)
+    {
+        if (Avx2.IsSupported && Avx.IsSupported)
+            return DotTq2_0_Q8K_Avx2(row, scratch, cols);
+        return DotTq2_0_Q8K_Scalar(row, scratch, cols);
+    }
+
+    /// <summary>
+    /// Note the byte-index mapping: for a fixed bit-position `l`, this reads 32 DIFFERENT `qs`
+    /// bytes (one per output element, extracting the same 2-bit field from each) — unlike Q2_0,
+    /// where 4 CONSECUTIVE output elements share one byte. So unlike Q1_0/Q2_0's fix, there is no
+    /// "read each byte once, emit N values" batching available here: each of the 64 `qs` bytes
+    /// legitimately gets read once per each of the 4 chunks it contributes a bit-pair to. Measure
+    /// before assuming this costs anything — Q1_0/Q2_0's redundant-read bug was reading the SAME
+    /// byte 4-8x for ONE chunk; this reads each byte once per chunk, 4 chunks total, which is not
+    /// the same shape of waste.
+    /// </summary>
+    private static float DotTq2_0_Q8K_Avx2(byte* row, byte* scratch, int cols)
+    {
+        int nb = cols / 256;
+        float* dArr = (float*)scratch;
+        sbyte* qsArr = (sbyte*)(scratch + nb * 4);
+        var accum = Vector256<float>.Zero;
+        sbyte* wbuf = stackalloc sbyte[32];
+
+        for (int i = 0; i < nb; i++)
+        {
+            byte* blk = row + i * 66;
+            byte* qs = blk;
+            float dW = HalfToFloat(blk[64], blk[65]) * dArr[i];
+            sbyte* q8 = qsArr + i * 256;
+
+            var sumiVec = Vector256<int>.Zero;
+            int chunkIdx = 0;
+            for (int j = 0; j < 64; j += 32)
+            {
+                for (int l = 0; l < 4; l++)
+                {
+                    for (int k = 0; k < 32; k++)
+                        wbuf[k] = (sbyte)(((qs[j + k] >> (l * 2)) & 3) - 1);
+
+                    var wVec = Avx.LoadVector256(wbuf);
+                    var qVec = Avx.LoadVector256((sbyte*)(q8 + chunkIdx * 32));
+                    var ax = Avx2.Abs(wVec);
+                    var sy = Avx2.Sign(qVec, wVec);
+                    var p16 = Avx2.MultiplyAddAdjacent(ax, sy);
+                    sumiVec = Avx2.Add(sumiVec, Avx2.MultiplyAddAdjacent(p16, Vector256.Create((short)1)));
+                    chunkIdx++;
+                }
+            }
+
+            var sumF = Avx.ConvertToVector256Single(sumiVec);
+            accum = Fma.MultiplyAdd(Vector256.Create(dW), sumF, accum);
+        }
+        return HSum256(accum);
+    }
+
+    /// <summary>Scalar reference for <see cref="DotTq2_0_Q8K_Avx2"/>; also the non-AVX2 fallback.</summary>
+    internal static float DotTq2_0_Q8K_Scalar(byte* row, byte* scratch, int cols)
+    {
+        int nb = cols / 256;
+        float* dArr = (float*)scratch;
+        sbyte* qsArr = (sbyte*)(scratch + nb * 4);
+        float accum = 0f;
+
+        for (int i = 0; i < nb; i++)
+        {
+            byte* blk = row + i * 66;
+            byte* qs = blk;
+            float dW = HalfToFloat(blk[64], blk[65]);
+            sbyte* q8 = qsArr + i * 256;
+            float dA = dArr[i];
+
+            int sumi = 0;
+            int qIdx = 0;
+            for (int j = 0; j < 64; j += 32)
+            {
+                for (int l = 0; l < 4; l++)
+                {
+                    for (int k = 0; k < 32; k++)
+                    {
+                        int val = ((qs[j + k] >> (l * 2)) & 3) - 1;
+                        sumi += q8[qIdx] * val;
+                        qIdx++;
+                    }
+                }
+            }
+            accum += dW * dA * sumi;
+        }
+        return accum;
+    }
+
+    /// <summary>
+    /// TQ1_0's dot kernel: SCALAR ONLY, deliberately — see docs/05's Backlog C. AVX2 for this
+    /// format is gated on TQ2_0's real measured result (same "don't build ahead of the evidence"
+    /// call as IQ1_M's). Mirrors ggml_vec_dot_tq1_0_q8_K's base-3 digit-extraction trick exactly
+    /// (see Dequantize.DequantTq1_0's remarks for how <c>(qs[m]*pow3[l]*3)&gt;&gt;8</c> pulls out
+    /// one ternary digit without a division) — used here purely as the dequant's independent
+    /// cross-check oracle, matching the IQ1_M pattern, plus as a documented, correct (if
+    /// unoptimized) fallback-quality reference if this format is ever admitted for real use.
+    /// </summary>
+    internal static float DotTq1_0_Q8K_Scalar(byte* row, byte* scratch, int cols)
+    {
+        int nb = cols / 256;
+        float* dArr = (float*)scratch;
+        sbyte* qsArr = (sbyte*)(scratch + nb * 4);
+        ReadOnlySpan<byte> pow3 = [1, 3, 9, 27, 81, 243];
+        float accum = 0f;
+
+        for (int i = 0; i < nb; i++)
+        {
+            byte* blk = row + i * 54;
+            byte* qs = blk;
+            byte* qh = blk + 48;
+            float dW = HalfToFloat(blk[52], blk[53]);
+            sbyte* q8 = qsArr + i * 256;
+            float dA = dArr[i];
+
+            int sum = 0;
+            for (int n = 0; n < 5; n++)
+            {
+                for (int m = 0; m < 32; m++)
+                {
+                    byte q = (byte)(qs[m] * pow3[n]);
+                    int xi = (q * 3) >> 8;
+                    sum += (xi - 1) * q8[n * 32 + m];
+                }
+            }
+            int tailBase = 32 * 5;
+            for (int n = 0; n < 5; n++)
+            {
+                for (int m = 0; m < 16; m++)
+                {
+                    byte q = (byte)(qs[32 + m] * pow3[n]);
+                    int xi = (q * 3) >> 8;
+                    sum += (xi - 1) * q8[tailBase + n * 16 + m];
+                }
+            }
+            int qhBase = tailBase + 16 * 5;
+            for (int n = 0; n < 4; n++)
+            {
+                for (int m = 0; m < 4; m++)
+                {
+                    byte q = (byte)(qh[m] * pow3[n]);
+                    int xi = (q * 3) >> 8;
+                    sum += (xi - 1) * q8[qhBase + n * 4 + m];
+                }
+            }
+            accum += dW * dA * sum;
         }
         return accum;
     }

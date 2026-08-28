@@ -97,6 +97,12 @@ public static class Dequantize
             case DType.IQ1_M:
                 DequantIq1M(src, dst, elementCount);
                 break;
+            case DType.TQ2_0:
+                DequantTq2_0(src, dst, elementCount);
+                break;
+            case DType.TQ1_0:
+                DequantTq1_0(src, dst, elementCount);
+                break;
             default:
                 throw new NotSupportedException($"Dequantization not implemented for {dtype}");
         }
@@ -1087,6 +1093,102 @@ public static class Dequantize
 
                 qsOff += 4;
                 qhOff += 2;
+            }
+        }
+    }
+
+    /// <summary>
+    /// TQ2_0 scalar dequantization decoder (256 elements / 66 bytes per block), matching ggml's
+    /// dequantize_row_tq2_0. Unlike every other format in this file, `d` sits AFTER `qs`, not
+    /// before it (block_tq2_0: <c>uint8_t qs[64]; ggml_half d;</c>). Same 2-bit-per-element
+    /// mapping as Q2_0 (<c>value = (bits - 1) * d</c>), just at 256-element/one-global-scale
+    /// granularity instead of Q2_0's 64-element blocks with their own scale each.
+    /// </summary>
+    private static void DequantTq2_0(ReadOnlySpan<byte> src, Span<float> dst, long elementCount)
+    {
+        const int kK = 256;
+        const int bytesPerBlock = 66;
+        int numBlocks = (int)(elementCount / kK);
+
+        for (int b = 0; b < numBlocks; b++)
+        {
+            var block = src.Slice(b * bytesPerBlock, bytesPerBlock);
+            var qs = block.Slice(0, 64);
+            float d = HalfToFloat(block[64], block[65]);
+            int y = b * kK;
+
+            for (int j = 0; j < 64; j += 32)
+            {
+                for (int l = 0; l < 4; l++)
+                {
+                    for (int m = 0; m < 32; m++)
+                    {
+                        int q = (qs[j + m] >> (l * 2)) & 3;
+                        dst[y++] = (q - 1) * d;
+                    }
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// TQ1_0 scalar dequantization decoder (256 elements / 54 bytes per block), matching ggml's
+    /// dequantize_row_tq1_0. Packs 5 ternary digits per byte via a base-3 fixed-point trick:
+    /// multiplying the byte by <c>pow3[l] = 3^l</c> then taking the top byte of the ×3 result
+    /// (<c>(q * 3) &gt;&gt; 8</c>) extracts the l-th base-3 digit (0, 1, or 2) without a division.
+    /// The main `qs` field (48 bytes) covers 240 elements this way (5 digits/byte); the remaining
+    /// 16 elements come from a separate 4-byte `qh` field using only <c>pow3[0..3]</c> (4
+    /// digits/byte, not 5 — `qh` is too small for a 5th digit per byte). Block layout:
+    /// <c>uint8_t qs[48]; uint8_t qh[4]; ggml_half d;</c> — `d` last, same as TQ2_0.
+    /// </summary>
+    private static void DequantTq1_0(ReadOnlySpan<byte> src, Span<float> dst, long elementCount)
+    {
+        const int kK = 256;
+        const int bytesPerBlock = 54;
+        int numBlocks = (int)(elementCount / kK);
+        ReadOnlySpan<byte> pow3 = [1, 3, 9, 27, 81, 243];
+
+        for (int b = 0; b < numBlocks; b++)
+        {
+            var block = src.Slice(b * bytesPerBlock, bytesPerBlock);
+            var qs = block.Slice(0, 48);
+            var qh = block.Slice(48, 4);
+            float d = HalfToFloat(block[52], block[53]);
+            int baseY = b * kK;
+
+            // 48 bytes = 32 (5-digit chunk) + 16 (5-digit chunk), matching ggml's split loop
+            // exactly (it exists because 48 isn't a multiple of 32, not for any numerical reason).
+            // Output index = (chunk's own base offset) + n*chunkWidth + m, matching ggml's
+            // sequential `*y++` write order exactly (outer loop n, inner loop m over the byte
+            // range) even though this version indexes explicitly instead of walking a pointer.
+            for (int n = 0; n < 5; n++)
+            {
+                for (int m = 0; m < 32; m++)
+                {
+                    byte q = (byte)(qs[m] * pow3[n]);
+                    int xi = (q * 3) >> 8;
+                    dst[baseY + n * 32 + m] = (xi - 1) * d;
+                }
+            }
+            int tailBase = baseY + 32 * 5; // 160
+            for (int n = 0; n < 5; n++)
+            {
+                for (int m = 0; m < 16; m++)
+                {
+                    byte q = (byte)(qs[32 + m] * pow3[n]);
+                    int xi = (q * 3) >> 8;
+                    dst[tailBase + n * 16 + m] = (xi - 1) * d;
+                }
+            }
+            int qhBase = tailBase + 16 * 5; // 240
+            for (int n = 0; n < 4; n++)
+            {
+                for (int m = 0; m < 4; m++)
+                {
+                    byte q = (byte)(qh[m] * pow3[n]);
+                    int xi = (q * 3) >> 8;
+                    dst[qhBase + n * 4 + m] = (xi - 1) * d;
+                }
             }
         }
     }

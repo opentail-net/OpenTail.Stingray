@@ -27,8 +27,9 @@ widths remains open.
    got AVX2 or scalar `Q8_K` kernels 2026-08-28 (backlog A, done); Q1_0/Q2_0/MXFP4/Q4_1/BFloat16
    got real fused kernels the same day (backlog B, done — Q5_0/Q5_1 correctly declined, measured
    flat). `IQ1_M` shipped correctness-only (scalar cross-check kernel, no AVX2, no dispatch — see
-   backlog A). `TQ1_0`/`TQ2_0` are the one format pair from this item still not even dequantized —
-   see backlog C, added 2026-08-28 after surveying `examples/ggml/` for further coverage.
+   backlog A). `TQ1_0`/`TQ2_0` are dequantized/admitted now too (backlog C, done 2026-08-28 — both
+   correctness-only: `TQ2_0`'s AVX2 kernel measured a non-repeatable ~0.89-1.19x, so it stays
+   unwired same as `IQ1_S`/`Q5_0`/`Q5_1`; `TQ1_0` never got an AVX2 kernel as a result).
 4. Batched prefill for per-layer head dimensions and CPU MoE.
 5. ARM64 NEON, dot-product, and i8mm coverage (external hardware required).
 
@@ -182,7 +183,7 @@ trial slower, never artificially faster, so the minimum is the standard noise-re
 trials can drag it upward. 4/4 clean full-suite runs after the fix, versus roughly 1-in-3 to 1-in-2
 flaky before it. Apply the same convention to any future perf test added to this backlog.
 
-## Backlog C — TQ1_0/TQ2_0 ternary formats (2026-08-28, not started)
+## Backlog C — TQ1_0/TQ2_0 ternary formats (2026-08-28, done)
 
 Found by surveying `examples/ggml/` for further coverage after backlogs A/B closed. Neither format
 has *any* implementation in this codebase — no dequantizer, no admission, nothing — unlike the
@@ -194,7 +195,7 @@ both — QK_K-style, matching the rest of the `Q8_K` family): `TQ2_0` 66 bytes, 
 
 **Risk/effort is asymmetric between the two — sequence accordingly:**
 
-- [ ] **`TQ2_0` first — low risk, good odds of a real win.** Structurally near-identical to `Q2_0`
+- [x] **`TQ2_0` first — low risk, good odds of a real win.** Structurally near-identical to `Q2_0`
       (already shipped, ~2.1x): 2-bit-per-element, `value = (bits - 1) * d`, the exact same mapping
       `Q2_0` uses, just at 256-element/8-chunk granularity with one global scale for the whole
       superblock (`ggml_vec_dot_tq2_0_q8_K` has no sub-block scale variation or `bsums`-style
@@ -202,14 +203,27 @@ both — QK_K-style, matching the rest of the `Q8_K` family): `TQ2_0` 66 bytes, 
       needed 2 activation sub-blocks per weight block). The existing `Q2_0` scalar-unpack-then-
       abs/sign/`maddubs` kernel is a near-direct template; the main change is the chunk count (8
       instead of 2) and swapping `QuantizeRowToQ8_0` for `QuantizeRowToQ8K`.
-  - [ ] Port `Dequantize.DequantTq2_0` (`dequantize_row_tq2_0`, `ggml-quants.c`).
-  - [ ] Admit `TQ2_0` in `ModelCompatibility.IsSupportedWeightDType`.
-  - [ ] Scalar + AVX2 `Q8_K`-paired dot kernel, wired into `MatVec`'s dispatch.
-  - [ ] AVX2-vs-scalar equivalence test.
-  - [ ] **Real before/after timing measurement** (min-of-7-trials, rows=17408/cols=5120 or similar
-        — see backlog B's benchmark-robustness note) before claiming a win. `Q2_0`'s result is a
-        good prior, not a substitute for measuring this format specifically.
-- [ ] **`TQ1_0` second — genuinely novel, higher risk.** Packs 5 ternary digits per byte via a
+  - [x] Port `Dequantize.DequantTq2_0` (`dequantize_row_tq2_0`, `ggml-quants.c`).
+  - [x] Admit `TQ2_0` in `ModelCompatibility.IsSupportedWeightDType`.
+  - [x] Scalar + AVX2 `Q8_K`-paired dot kernel (`DotTq2_0_Q8K`/`_Scalar`/`_Avx2`, `MatVecTq2_0`).
+  - [x] AVX2-vs-scalar equivalence test, plus a dequant-vs-dot-kernel cross-check (both novel
+        formulas — see `SimdKernelsTqTests.cs`), all passing (0 mismatches across cols=256..4096).
+  - [x] **Real before/after timing measurement** (min-of-7-trials, rows=17408/cols=5120). Result:
+        **NOT a stable win, so NOT wired into `MatVec`'s dispatch switch.** One isolated run
+        (nothing else running) measured 1.19x (fallback=61.1ms, fast=51.2ms) — the `Q2_0`-shaped
+        prior looked right at first. But 3 repeats of the same benchmark embedded in the full
+        `Tests.ForwardPass.Fast` suite (realistic system-load noise, matching how every other
+        kernel in backlogs A/B was actually measured) came back 0.89x, 0.98x, 0.97x — i.e. a coin
+        flip around break-even, not a repeatable speedup. Kept the code (kernel + both test
+        classes) exactly like the `Q5_0`/`Q5_1`/`IQ1_S` precedent: correct and tested, not
+        dispatched to, comment left at the dispatch site explaining why. This is a useful negative
+        result on top of the existing pattern from Backlog B: `TQ2_0`'s single-global-scale, no
+        `bsums`-correction shape is *simpler* per-block than `Q2_0` (which needed 2 activation
+        sub-blocks per weight block), but it operates over 8 chunks of 32 per superblock instead of
+        `Q2_0`'s leaner per-row layout — the larger per-call scalar-unpack surface area apparently
+        eats the savings from the simpler scale handling. Confirms min-of-trials inside a busy
+        suite, not an isolated best-case run, is the number worth trusting.
+- [x] **`TQ1_0` second — genuinely novel, higher risk.** Packs 5 ternary digits per byte via a
       base-3 fixed-point trick (`q = qs[m] * pow3[l]; digit = (q * 3) >> 8`, `pow3 =
       {1,3,9,27,81,243}` — extracting the `l`-th base-3 digit of an 8-bit-encoded 5-digit number by
       scaled multiply-and-shift) — nothing else in this codebase's IQ/Q family does this, and nothing
@@ -218,18 +232,18 @@ both — QK_K-style, matching the rest of the `Q8_K` family): `TQ2_0` 66 bytes, 
       the 256 elements this way; a separate 4-byte `qh` field covers the remaining 16 using only
       `pow3[0..3]` (4 digits/byte, not 5). One global scale per 256-element superblock, same as
       `TQ2_0` — no `bsums` correction needed here either.
-  - [ ] Port `Dequantize.DequantTq1_0` (`dequantize_row_tq1_0`) — **round-trip-test this one
-        specifically before trusting it**, per the same caution `IQ1_S`/`IQ1_M` needed: the base-3
-        digit-extraction trick is easy to get subtly wrong (off-by-one in `pow3` indexing, wrong
-        digit-to-value mapping) and, like `IQ1_M`, there is no local checkpoint to catch a wrong
-        formula via an end-to-end receipt — an independent dequant-vs-dot-kernel cross-check
-        (`SimdKernelsIq1MTests.cs`'s pattern) is the strongest correctness evidence available.
-  - [ ] Admit in `ModelCompatibility.IsSupportedWeightDType`.
-  - [ ] Scalar `Q8_K`-paired dot kernel, as a cross-check oracle at minimum.
-  - [ ] **Decide on AVX2 only after `TQ2_0`'s result is in hand** — if `TQ2_0` (simpler, same
-        `Q8_K`-single-scale shape) doesn't clear a real win, `TQ1_0`'s extra base-3 unpack cost
-        makes a loss even more likely, and the `IQ1_M` precedent (skip AVX2 on adjacent evidence,
-        ship correctness-only) applies directly.
+  - [x] Port `Dequantize.DequantTq1_0` (`dequantize_row_tq1_0`) — round-trip-verified via
+        `DequantTq1_0_ProducesFiniteValues` (20 random trials, no NaN/Inf) and an independent
+        dequant-vs-dot-kernel cross-check (`DotTq1_0_Q8K_AgreesWithDequantThenF32Dot`, 8 trials,
+        `SimdKernelsIq1MTests.cs`'s pattern), both passing.
+  - [x] Admit in `ModelCompatibility.IsSupportedWeightDType`.
+  - [x] Scalar `Q8_K`-paired dot kernel (`DotTq1_0_Q8K_Scalar`), as a cross-check oracle only.
+  - [x] **AVX2 declined, as anticipated.** `TQ2_0` — simpler, same single-global-scale shape —
+        did not clear a real win (see above), so per the plan `TQ1_0`'s extra base-3 unpack cost
+        was judged even less likely to pay off and no AVX2 kernel was written for it. No `MatVec`
+        wrapper either (no dispatch path needs one): the scalar kernel exists purely as tested,
+        correctness-verified infrastructure, callable directly if a future measurement changes the
+        picture. Falls through to `MatVecDequantFallback` via `default`, same as `TQ2_0`.
 
 ## Backlog D — Flash Attention 128/256 head-width performance acceptance (2026-08-28, not started)
 
