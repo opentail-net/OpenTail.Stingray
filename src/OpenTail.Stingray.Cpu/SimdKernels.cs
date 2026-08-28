@@ -796,6 +796,14 @@ public static unsafe class SimdKernels
             case DType.MXFP4:
                 MatVecMxfp4(output, weights, input, rows, cols);
                 break;
+            case DType.Q4_1:
+                MatVecQ4_1(output, weights, input, rows, cols);
+                break;
+            // DType.Q5_1 deliberately NOT wired here: same honest negative result as Q5_0 above
+            // (~0.84-1.03x vs MatVecDequantFallback across 4 runs, essentially a wash — both are
+            // 5-bit-split formats needing a qh side-channel bit per element). The kernel
+            // (MatVecQ5_1/DotQ5_1_Q8_1) is correct and equivalence-tested but not dispatched to.
+            // Falls through to MatVecDequantFallback via `default`.
             case DType.Float16 when GgmlF16DotEnabled:
                 MatVecF16GgmlCompat(output, weights, input, rows, cols);
                 break;
@@ -2994,6 +3002,264 @@ public static unsafe class SimdKernels
             for (int i = 0; i < 32; i++)
                 qs[i] = (sbyte)MathF.Round(x[i] * id);
         }
+    }
+
+    /// <summary>
+    /// Bytes of scratch one token's Q8_1-quantized activation row needs. Layout is 40 bytes per
+    /// 32-element block: <c>[d:float32][s:float32][qs:32 x int8]</c> — same fp32-scale convention
+    /// as <see cref="Q8_0ScratchBytes"/>, plus <c>s</c> (ggml's precomputed <c>d * sum(qs)</c>,
+    /// matching <c>quantize_row_q8_1_ref</c>) needed by the min-carrying formats (<c>Q4_1</c>/
+    /// <c>Q5_1</c>) whose dot formula is <c>(dW*dA)*sumi + mW*s</c>, not just a plain scaled dot.
+    /// </summary>
+    public static int Q8_1ScratchBytes(int cols) => (cols / 32) * 40;
+
+    /// <summary>
+    /// Quantize one fp32 activation row to the 32-element Q8_1 blocks that <c>Q4_1</c>/<c>Q5_1</c>'s
+    /// fast kernels consume. Mirrors <c>quantize_row_q8_1_ref</c> exactly, including the
+    /// precomputed <c>sum*d</c> field.
+    /// </summary>
+    public static void QuantizeRowToQ8_1(float* input, int cols, byte* scratch)
+    {
+        int numBlocks = cols / 32;
+        for (int b = 0; b < numBlocks; b++)
+        {
+            float* x = input + b * 32;
+            byte* dst = scratch + b * 40;
+
+            float amax = 0f;
+            for (int i = 0; i < 32; i++)
+            {
+                float a = MathF.Abs(x[i]);
+                if (a > amax) amax = a;
+            }
+
+            float d = amax / 127f;
+            float id = d != 0f ? 1f / d : 0f;
+            *(float*)dst = d;
+
+            sbyte* qs = (sbyte*)(dst + 8);
+            int sum = 0;
+            for (int i = 0; i < 32; i++)
+            {
+                int v = (int)MathF.Round(x[i] * id);
+                qs[i] = (sbyte)v;
+                sum += v;
+            }
+            *(float*)(dst + 4) = sum * d;
+        }
+    }
+
+    // ================================================================
+    //  Q4_1 / Q5_1 · Q8_1 Dot Products (Backlog B)
+    // ================================================================
+    // Both admitted with working dequantizers but on MatVecDequantFallback. Both pair with Q8_1
+    // in ggml's own dispatch table (ggml_vec_dot_{q4_1,q5_1}_q8_1). Unlike the Q8_0-paired formats
+    // above, the weight nibbles here are UNSIGNED (Q4_1/Q5_1 store raw 0..15/0..31, not a biased
+    // range) so the dot's int part is a plain unsigned*signed maddubs — no abs/sign trick needed,
+    // same as this file's existing DotQ4_0_Q8_0_Avx2 nibble-unpack pattern, just without its -8
+    // bias correction term. The extra min term (mW * s, s precomputed in the Q8_1 scratch) is one
+    // FP add per block, not part of the int-domain reduction.
+
+    public static void MatVecQ4_1(float* output, byte* weights, float* input, int rows, int cols)
+    {
+        int bytesPerRow = (cols / 32) * 20;
+        int scratchBytes = Q8_1ScratchBytes(cols);
+        byte* scratch = stackalloc byte[scratchBytes];
+        QuantizeRowToQ8_1(input, cols, scratch);
+
+        if (rows >= MinRowsForParallel)
+        {
+            var w = weights; var s = scratch; var outp = output; int c = cols;
+            Parallel.For(0, rows, s_parallelOpts, i =>
+            {
+                outp[i] = DotQ4_1_Q8_1(w + (long)i * bytesPerRow, s, c);
+            });
+        }
+        else
+        {
+            for (int i = 0; i < rows; i++)
+                output[i] = DotQ4_1_Q8_1(weights + (long)i * bytesPerRow, scratch, cols);
+        }
+    }
+
+    public static float DotQ4_1_Q8_1(byte* row, byte* scratch, int cols)
+    {
+        if (Avx2.IsSupported && Ssse3.IsSupported)
+            return DotQ4_1_Q8_1_Avx2(row, scratch, cols);
+        return DotQ4_1_Q8_1_Scalar(row, scratch, cols);
+    }
+
+    private static float DotQ4_1_Q8_1_Avx2(byte* row, byte* scratch, int cols)
+    {
+        int numBlocks = cols / 32;
+        var nibbleMask = Vector128.Create((byte)0x0F);
+        float accum = 0f;
+
+        for (int b = 0; b < numBlocks; b++)
+        {
+            byte* blk = row + b * 20;
+            float dW = HalfToFloat(blk[0], blk[1]);
+            float mW = HalfToFloat(blk[2], blk[3]);
+            byte* qsPacked = blk + 4;
+
+            byte* q8Chunk = scratch + b * 40;
+            float dA = *(float*)q8Chunk;
+            float sA = *(float*)(q8Chunk + 4);
+            sbyte* q8 = (sbyte*)(q8Chunk + 8);
+
+            var packed = Sse2.LoadVector128(qsPacked);
+            var lowNib = Sse2.And(packed, nibbleMask);
+            var highNib = Sse2.And(Avx2.ShiftRightLogical(packed.AsUInt16(), 4).AsByte(), nibbleMask);
+            var q8lo = Sse2.LoadVector128(q8);
+            var q8hi = Sse2.LoadVector128(q8 + 16);
+
+            var p = Ssse3.MultiplyAddAdjacent(lowNib, q8lo);
+            p = Sse2.Add(p, Ssse3.MultiplyAddAdjacent(highNib, q8hi));
+            int sumi = HSumInt16To32(p);
+
+            accum += dW * dA * sumi + mW * sA;
+        }
+        return accum;
+    }
+
+    /// <summary>Scalar reference for <see cref="DotQ4_1_Q8_1_Avx2"/>; also the non-AVX2 fallback.</summary>
+    internal static float DotQ4_1_Q8_1_Scalar(byte* row, byte* scratch, int cols)
+    {
+        int numBlocks = cols / 32;
+        float accum = 0f;
+
+        for (int b = 0; b < numBlocks; b++)
+        {
+            byte* blk = row + b * 20;
+            float dW = HalfToFloat(blk[0], blk[1]);
+            float mW = HalfToFloat(blk[2], blk[3]);
+            byte* qs = blk + 4;
+
+            byte* q8Chunk = scratch + b * 40;
+            float dA = *(float*)q8Chunk;
+            float sA = *(float*)(q8Chunk + 4);
+            sbyte* q8 = (sbyte*)(q8Chunk + 8);
+
+            int sumi = 0;
+            for (int j = 0; j < 16; j++)
+            {
+                sumi += (qs[j] & 0xF) * q8[j];
+                sumi += (qs[j] >> 4) * q8[j + 16];
+            }
+            accum += dW * dA * sumi + mW * sA;
+        }
+        return accum;
+    }
+
+    public static void MatVecQ5_1(float* output, byte* weights, float* input, int rows, int cols)
+    {
+        int bytesPerRow = (cols / 32) * 24;
+        int scratchBytes = Q8_1ScratchBytes(cols);
+        byte* scratch = stackalloc byte[scratchBytes];
+        QuantizeRowToQ8_1(input, cols, scratch);
+
+        if (rows >= MinRowsForParallel)
+        {
+            var w = weights; var s = scratch; var outp = output; int c = cols;
+            Parallel.For(0, rows, s_parallelOpts, i =>
+            {
+                outp[i] = DotQ5_1_Q8_1(w + (long)i * bytesPerRow, s, c);
+            });
+        }
+        else
+        {
+            for (int i = 0; i < rows; i++)
+                output[i] = DotQ5_1_Q8_1(weights + (long)i * bytesPerRow, scratch, cols);
+        }
+    }
+
+    /// <summary>
+    /// Same unsigned-nibble-maddubs shape as <see cref="DotQ4_1_Q8_1"/>, plus Q5_1's extra high
+    /// bit (from a 32-bit <c>qh</c> mask, same source as <see cref="DotQ5_0_Q8_0_Avx2"/>'s, just
+    /// unsigned/no -16 bias here) folded into the nibble before the maddubs — done as a scalar
+    /// unpack into a stackalloc buffer (5-bit reconstruction isn't a cheap SIMD shuffle the way a
+    /// plain 4-bit split is), matching this file's established fallback-for-irregular-bit-layouts
+    /// pattern (<see cref="DotSignedBytesVsQ8_0Chunk"/>'s sibling, but with UNSIGNED values here so
+    /// maddubs applies directly with no abs/sign step).
+    /// </summary>
+    public static float DotQ5_1_Q8_1(byte* row, byte* scratch, int cols)
+    {
+        if (Avx2.IsSupported && Ssse3.IsSupported)
+            return DotQ5_1_Q8_1_Avx2(row, scratch, cols);
+        return DotQ5_1_Q8_1_Scalar(row, scratch, cols);
+    }
+
+    private static float DotQ5_1_Q8_1_Avx2(byte* row, byte* scratch, int cols)
+    {
+        int numBlocks = cols / 32;
+        byte* wbuf = stackalloc byte[32];
+        float accum = 0f;
+
+        for (int b = 0; b < numBlocks; b++)
+        {
+            byte* blk = row + b * 24;
+            float dW = HalfToFloat(blk[0], blk[1]);
+            float mW = HalfToFloat(blk[2], blk[3]);
+            uint qh = (uint)(blk[4] | (blk[5] << 8) | (blk[6] << 16) | (blk[7] << 24));
+            byte* qs = blk + 8;
+
+            for (int i = 0; i < 16; i++)
+            {
+                int xh0 = (int)((qh >> i) & 1) << 4;
+                int xh1 = (int)((qh >> (i + 16)) & 1) << 4;
+                wbuf[i] = (byte)((qs[i] & 0xF) | xh0);
+                wbuf[i + 16] = (byte)((qs[i] >> 4) | xh1);
+            }
+
+            byte* q8Chunk = scratch + b * 40;
+            float dA = *(float*)q8Chunk;
+            float sA = *(float*)(q8Chunk + 4);
+            sbyte* q8 = (sbyte*)(q8Chunk + 8);
+
+            var wLo = Sse2.LoadVector128(wbuf);
+            var wHi = Sse2.LoadVector128(wbuf + 16);
+            var q8Lo = Sse2.LoadVector128(q8);
+            var q8Hi = Sse2.LoadVector128(q8 + 16);
+            var p = Ssse3.MultiplyAddAdjacent(wLo, q8Lo);
+            p = Sse2.Add(p, Ssse3.MultiplyAddAdjacent(wHi, q8Hi));
+            int sumi = HSumInt16To32(p);
+
+            accum += dW * dA * sumi + mW * sA;
+        }
+        return accum;
+    }
+
+    /// <summary>Scalar reference for <see cref="DotQ5_1_Q8_1_Avx2"/>; also the non-AVX2 fallback.</summary>
+    internal static float DotQ5_1_Q8_1_Scalar(byte* row, byte* scratch, int cols)
+    {
+        int numBlocks = cols / 32;
+        float accum = 0f;
+
+        for (int b = 0; b < numBlocks; b++)
+        {
+            byte* blk = row + b * 24;
+            float dW = HalfToFloat(blk[0], blk[1]);
+            float mW = HalfToFloat(blk[2], blk[3]);
+            uint qh = (uint)(blk[4] | (blk[5] << 8) | (blk[6] << 16) | (blk[7] << 24));
+            byte* qs = blk + 8;
+
+            byte* q8Chunk = scratch + b * 40;
+            float dA = *(float*)q8Chunk;
+            float sA = *(float*)(q8Chunk + 4);
+            sbyte* q8 = (sbyte*)(q8Chunk + 8);
+
+            int sumi = 0;
+            for (int i = 0; i < 16; i++)
+            {
+                int xh0 = (int)((qh >> i) & 1) << 4;
+                int xh1 = (int)((qh >> (i + 16)) & 1) << 4;
+                int low = (qs[i] & 0xF) | xh0;
+                int high = (qs[i] >> 4) | xh1;
+                sumi += low * q8[i] + high * q8[i + 16];
+            }
+            accum += dW * dA * sumi + mW * sA;
+        }
+        return accum;
     }
 
     /// <summary>

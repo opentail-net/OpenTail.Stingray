@@ -111,25 +111,42 @@ themselves in ggml, not `Q8_K`, so this is a related but structurally different 
       split" trick already proven for `IQ2_XS`/`IQ2_S`/`IQ3_S` in backlog A's kernels, adapted to a
       16-element (not 32-element) sub-block granularity.
 
-**`Q8_1`-paired** (`ggml_vec_dot_{name}_q8_1`) — **no `Q8_1` activation-quant scratch exists in
-this codebase yet** (`QuantizeRowToQ8_1`, unlike `QuantizeRowToQ8_0`/`QuantizeRowToQ8K`, doesn't
-exist); building it is a prerequisite for all three below, not per-format work:
-- [ ] Build `QuantizeRowToQ8_1`/`Q8_1ScratchBytes` (`Q8_1` block = scale + **quantized sum** + 32
-      values, per `Tensor.cs`'s 36-byte block size — the extra sum field is what distinguishes it
-      from `Q8_0` and is presumably there to support these min/offset-carrying formats' dot
-      formula; check `ggml_vec_dot_q4_1_q8_1`'s reference before assuming the shape).
-- [ ] `Q4_1` (32 elem/20 bytes)
-- [ ] `Q5_1` (32 elem/24 bytes)
-- [ ] `Q8_1` as a weight format itself (32 elem/36 bytes) — dotted against its own activation
-      quant; check whether this is even a real on-disk weight format in practice or just an
-      internal ggml activation type that happens to share the `DType` enum slot before spending
-      time on it.
+**`Q8_1`-paired** (`ggml_vec_dot_{name}_q8_1`):
+- [x] Build `QuantizeRowToQ8_1`/`Q8_1ScratchBytes` — done. 40-byte internal scratch block
+      (`[d:f32][s:f32][qs:32×i8]`, `s = d * sum(qs)` precomputed as `quantize_row_q8_1_ref` does),
+      mirroring `Q8_0ScratchBytes`'s fp32-not-fp16-scale convention.
+- [x] `Q4_1` (32 elem/20 bytes) — done. Unsigned nibbles (unlike `Q4_0`'s biased range), so the
+      int-domain reduction is a plain `maddubs` with no abs/sign step — reuses this file's existing
+      `DotQ4_0_Q8_0_Avx2` nibble-unpack shape almost verbatim, just without its `-8` bias
+      correction and with an added `mW * s` term. **Verified: median speedup ~1.90x** (real,
+      repeated), rows=17408/cols=5120.
+- [x] `Q5_1` (32 elem/24 bytes) — kernel written, correctness verified, **NOT wired into
+      dispatch.** Same honest negative result as `Q5_0`: measured ~0.84-1.03x across 4 runs — a
+      wash, not a win. Both `Q5_x` formats need a `qh` side-channel bit spliced into each element
+      (5-bit reconstruction), and that per-element scalar cost is apparently what this
+      "scalar-unpack-then-vectorize" technique doesn't amortize well. A real pattern now, not
+      per-format noise — see the note at the end of this backlog.
+- [ ] `Q8_1` as a weight format itself (32 elem/36 bytes) — still not investigated whether this is
+      a real on-disk weight format or just an internal ggml activation type sharing the `DType`
+      enum slot; lowest priority in this group, unstarted.
 
 **Self-paired**:
 - [ ] `BFloat16` (`ggml_vec_dot_bf16`, weight and activation both bf16) — likely the cheapest item
       in this whole backlog: no activation requantization needed, no per-block scale to unpack,
       just a widen-and-FMA loop. Worth doing first as a confidence-builder before the `Q8_1` infra
       work.
+
+**Pattern observed 2026-08-28: 5-bit-split formats (`Q5_0`, `Q5_1`) don't win with this technique,
+plain-nibble/bitmask/codebook formats (`Q1_0`, `Q2_0`, `MXFP4`, `Q4_1`) all do**, by a wide margin
+(1.25x-7x). Both `Q5_x` kernels were correctly implemented, correctly parallelized, and measured
+consistently at or below 1.0x across 4+ repeated runs each — not a bug, a real property of the
+approach. The likely reason: unpacking a `qh`-side-channel 5th bit per element needs 2 shift+mask
+ops plus an OR before the value is ready, vs. 1 mask (nibble formats), 1 bit test (`Q1_0`), 1
+shift+mask (`Q2_0`), or 1 array lookup (`MXFP4`, codebook) — enough extra scalar work per element
+to erase the win from switching to int-domain SIMD reduction. Closing this specific gap (if ever
+worth it — item 3 of the top-level "Ordered work" list is already deprioritized below everything
+else) likely needs the unpack itself vectorized (e.g. a `pext`/`pdep`-style bit-scatter, or
+`Ssse3.Shuffle`-based bit-plane extraction), not more of this session's scalar-buffer approach.
 
 For every item in both backlogs: **write the equivalence test before or alongside the kernel** (not
 after, as an afterthought), and **get a real before/after timing number on an actual checkpoint
