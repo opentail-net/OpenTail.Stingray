@@ -9124,3 +9124,43 @@ correctness-focused pass -- flagged for whoever next does a QwenTTS performance 
 **Status: documented, not fixed. Planned order (per direct instruction): QwenTTS sampling fix
 first (same technique as Parler's `SampleMultinomial`, no known blocking issue), then Fish Speech
 (sampling fix AND the separate crash root-cause, in that pipeline's own follow-up entry).**
+
+## QwenTTS sampling fixed (real progress, tone collapse -> garbled speech), but a SEPARATE, deeper, unverified-forward-pass issue remains -- listen-confirmed, not chased further this pass (2026-08-28)
+
+**Fixed**: replaced plain `ArgMax` with real Qwen3-TTS sampling in both stages, sourced from the
+local reference (`examples/qwen-tts-py/qwen_tts/core/models/modeling_qwen3_tts.py`'s real
+defaults, not guessed): `QwenTtsPipeline.cs`'s talker loop now uses temperature=0.9, top-k=50,
+repetition_penalty=1.05 (standard HF `RepetitionPenaltyLogitsProcessor` convention -- applied
+over the FULL generated `c0` history, not a small window, confirmed the real source just forwards
+the kwarg into HF's standard `generate()`, unlike CosyVoice3's bespoke windowed penalty).
+`QwenTtsCodePredictorGeneration.cs`'s subtalker/acoustic-codebook-expansion loop uses
+temperature=0.9, top-k=50, no repetition penalty (confirmed the real subtalker generation kwargs
+never pass one). `top_p=1.0` in both real configs makes nucleus filtering a no-op, so it was not
+implemented. Both `Generate()` calls now thread a shared seeded `Random` through the whole
+generation (`seed` parameter, default 42, matching this pipeline's pre-existing convention).
+
+**Listen-confirmed real progress**: no longer the tonal "drill noise" collapse -- the greedy-decode
+fix worked, same as it did for Parler. **But the result is "garbled," not clean speech** -- a
+different, SEPARATE problem from Parler's Bug 2 (missing transcript conditioning): checked
+`QwenTtsTalkerPromptBuilder.BuildBasePrompt` and confirmed the actual utterance text genuinely IS
+tokenized and embedded into the prompt via `ProjectTextIds` (unlike Parler's original bug, where
+the transcript was never given to the decoder at all) -- so this is not a missing-conditioning bug.
+
+**Real, honest explanation, found by checking this project's own history rather than guessing**:
+unlike every Parler-TTS component (each independently golden-verified against a real PyTorch
+oracle before this session even started), the QwenTTS Talker LM and Code Predictor's forward-pass
+MATH has never been numerically golden-verified -- only "structurally" verified (runs without
+crashing, produces finite numbers, shapes match expectations). Confirmed via this doc's own
+earlier entries: "no independent oracle runs the FULL talker->codec [chain]" and "structural-only
+components (QwenTTS Talker/CodePredictor generation loops...)" are explicitly listed as known,
+lower-priority remaining work ("numeric golden verification for the Talker/Code Predictor"). This
+session's listen test is very likely the FIRST time anyone has actually listened to this path's
+real output -- "garbled" is consistent with a genuine, subtle, still-undiscovered numerical bug
+somewhere in the Talker/CodePredictor forward pass (attention, RoPE, the `ProjectTextIds`
+fc1/SiLU/fc2 order, or the prompt row layout), not something a decode-strategy fix can address.
+
+**Status: sampling fix committed and kept (real, verified improvement). The "garbled" residual is
+a separate, bigger job than this pass's scope -- full golden verification of the Talker/
+CodePredictor forward pass against a real PyTorch oracle (`examples/qwen-tts-py`'s own reference
+source is available locally) is the real next step, not a quick follow-up fix. Not attempted this
+session; moving on to Fish Speech per direct instruction.**

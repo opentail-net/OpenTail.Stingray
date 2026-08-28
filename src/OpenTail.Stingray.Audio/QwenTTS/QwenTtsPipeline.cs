@@ -61,9 +61,15 @@ public sealed class QwenTtsPipeline : ITextToSpeechPipeline
         => TtsStreamingHelper.SplitAndGenerateAsync(request, Generate, ct);
 
     /// <summary>Synthesizes real 24kHz PCM audio for the given text.</summary>
-    public float[] Generate(string text, int talkerNumLayers = 28, int codePredNumLayers = 5, int maxFrames = 50, string? language = null)
+    /// <param name="seed">RNG seed for the talker/code-predictor sampling (real Qwen3-TTS defaults
+    /// to <c>do_sample=True, temperature=0.9, top_k=50, top_p=1.0, repetition_penalty=1.05</c> --
+    /// confirmed from the local reference source, `examples/qwen-tts-py/qwen_tts/core/models/
+    /// modeling_qwen3_tts.py`. Greedy argmax was this pipeline's original decode strategy, same
+    /// class of bug as Parler-TTS's "drill noise" collapse -- fixed 2026-08-28, see
+    /// docs/audio-review-progress.md.</param>
+    public float[] Generate(string text, int talkerNumLayers = 28, int codePredNumLayers = 5, int maxFrames = 50, string? language = null, int seed = 42)
     {
-        var frames = GenerateFrames(text, talkerNumLayers, codePredNumLayers, maxFrames, language);
+        var frames = GenerateFrames(text, talkerNumLayers, codePredNumLayers, maxFrames, language, seed);
         if (frames.Count == 0) return [];
 
         // Real codec decode chain, already independently golden-verified earlier this session:
@@ -99,7 +105,7 @@ public sealed class QwenTtsPipeline : ITextToSpeechPipeline
     /// decode loop, with a real Code Predictor acoustic-expansion pass run per frame using that
     /// frame's real `LastHidden`.
     /// </summary>
-    private List<int[]> GenerateFrames(string text, int talkerNumLayers, int codePredNumLayers, int maxFrames, string? language)
+    private List<int[]> GenerateFrames(string text, int talkerNumLayers, int codePredNumLayers, int maxFrames, string? language, int seed)
     {
         var talkerWeights = QwenTtsTalkerPromptBuilder.Weights.Load(_talkerModel);
         var tokenizer = GgufTokenizer.FromGgufModel(_talkerModel);
@@ -132,14 +138,17 @@ public sealed class QwenTtsPipeline : ITextToSpeechPipeline
         var codePredWeights = QwenTtsCodePredictorGeneration.Weights.Load(_talkerModel);
         var specials = talkerWeights.Specials;
         var frames = new List<int[]>();
+        var c0History = new List<int>();
+        var rng = new Random(seed);
 
         for (int frame = 0; frame < maxFrames; frame++)
         {
-            int c0 = ArgMax(logits);
+            int c0 = SampleTopK(logits, c0History, temperature: 0.9f, topK: 50, repetitionPenalty: 1.05f, rng);
             if (c0 == specials.CodecEosId) break;
+            c0History.Add(c0);
 
             var talkerLastHidden = fwd.LastHidden.ToArray();
-            var acoustic = QwenTtsCodePredictorGeneration.GenerateAcousticCodes(_talkerModel, codePredWeights, codePredNumLayers, c0, talkerLastHidden);
+            var acoustic = QwenTtsCodePredictorGeneration.GenerateAcousticCodes(_talkerModel, codePredWeights, codePredNumLayers, c0, talkerLastHidden, rng);
 
             var frameCodes = new int[16];
             frameCodes[0] = c0;
@@ -158,13 +167,61 @@ public sealed class QwenTtsPipeline : ITextToSpeechPipeline
         return frames;
     }
 
-    private static int ArgMax(ReadOnlySpan<float> logits)
+    /// <summary>
+    /// Real Qwen3-TTS talker sampling: repetition penalty (standard HF
+    /// <c>RepetitionPenaltyLogitsProcessor</c> convention -- for every token id that appears
+    /// ANYWHERE in <paramref name="history"/>, divide its logit by the penalty if positive, else
+    /// multiply) over the FULL generated history (not a small window -- confirmed the real source
+    /// just forwards <c>repetition_penalty</c> straight into HF's standard `generate()`, so it's
+    /// the standard processor, not a bespoke windowed one like CosyVoice3's), then
+    /// temperature-scaled top-k softmax sampling. <c>top_p=1.0</c> in the real default config makes
+    /// nucleus filtering a no-op (keeps the whole top-k set), so it is not implemented here --
+    /// would need adding if a caller ever wants a real <c>top_p &lt; 1.0</c>.
+    /// </summary>
+    private static int SampleTopK(float[] logits, List<int> history, float temperature, int topK, float repetitionPenalty, Random rng)
     {
-        int best = 0;
-        float bestVal = float.NegativeInfinity;
+        if (repetitionPenalty != 1.0f)
+        {
+            foreach (int tok in history)
+            {
+                if ((uint)tok >= (uint)logits.Length) continue;
+                logits[tok] = logits[tok] > 0 ? logits[tok] / repetitionPenalty : logits[tok] * repetitionPenalty;
+            }
+        }
+
+        int k = Math.Min(topK, logits.Length);
+        Span<int> topIdx = stackalloc int[k];
+        Span<float> topVal = stackalloc float[k];
+        int filled = 0;
         for (int i = 0; i < logits.Length; i++)
-            if (logits[i] > bestVal) { bestVal = logits[i]; best = i; }
-        return best;
+        {
+            float v = logits[i] / temperature;
+            if (filled < k)
+            {
+                int pos = filled++;
+                while (pos > 0 && topVal[pos - 1] > v) { topVal[pos] = topVal[pos - 1]; topIdx[pos] = topIdx[pos - 1]; pos--; }
+                topVal[pos] = v; topIdx[pos] = i;
+            }
+            else if (v > topVal[0])
+            {
+                int pos = 0;
+                while (pos < k - 1 && topVal[pos + 1] < v) { topVal[pos] = topVal[pos + 1]; topIdx[pos] = topIdx[pos + 1]; pos++; }
+                topVal[pos] = v; topIdx[pos] = i;
+            }
+        }
+
+        float max = topVal[k - 1];
+        double sum = 0.0;
+        for (int i = 0; i < k; i++) sum += Math.Exp(topVal[i] - max);
+
+        double r = rng.NextDouble() * sum;
+        double cumulative = 0.0;
+        for (int i = 0; i < k; i++)
+        {
+            cumulative += Math.Exp(topVal[i] - max);
+            if (r < cumulative) return topIdx[i];
+        }
+        return topIdx[k - 1];
     }
 
     public void Dispose()

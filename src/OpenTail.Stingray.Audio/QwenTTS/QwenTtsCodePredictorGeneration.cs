@@ -68,7 +68,7 @@ public static class QwenTtsCodePredictorGeneration
     /// immediately after the `Forward` call that produced `c0` (before any subsequent Talker
     /// step overwrites the shared buffer).
     /// </summary>
-    public static int[] GenerateAcousticCodes(GgufModel rawModel, Weights weights, int numLayers, int c0, ReadOnlySpan<float> talkerLastHidden)
+    public static int[] GenerateAcousticCodes(GgufModel rawModel, Weights weights, int numLayers, int c0, ReadOnlySpan<float> talkerLastHidden, Random rng)
     {
         using var source = new QwenTtsCodePredictorTensorSource(rawModel, numLayers);
 
@@ -85,7 +85,7 @@ public static class QwenTtsCodePredictorGeneration
         var logits = fwd.Prefill([0, 1]).ToArray();
 
         var codes = new int[NumAcousticCodebooks];
-        codes[0] = ArgMax(logits); // c1, from lm_head.0
+        codes[0] = SampleTopK(logits, temperature: 0.9f, topK: 50, rng); // c1, from lm_head.0
 
         int pos = 2;
         for (int g = 1; g < NumAcousticCodebooks; g++)
@@ -100,18 +100,56 @@ public static class QwenTtsCodePredictorGeneration
             logits = fwd.Forward(0, pos).ToArray();
             pos++;
 
-            codes[g] = ArgMax(logits); // c_{g+1}
+            codes[g] = SampleTopK(logits, temperature: 0.9f, topK: 50, rng); // c_{g+1}
         }
 
         return codes;
     }
 
-    private static int ArgMax(ReadOnlySpan<float> logits)
+    /// <summary>
+    /// Real Qwen3-TTS subtalker sampling: <c>do_sample=True, top_k=50, top_p=1.0,
+    /// temperature=0.9</c>, no repetition penalty (confirmed from the local reference source,
+    /// `examples/qwen-tts-py/qwen_tts/core/models/modeling_qwen3_tts.py` -- the subtalker/code-
+    /// predictor generation kwargs never pass a `subtalker_repetition_penalty`, unlike the main
+    /// talker's `repetition_penalty=1.05`). Was plain greedy <c>Argmax</c> before this fix -- same
+    /// class of bug as Parler-TTS's "drill noise" collapse, see
+    /// docs/audio-review-progress.md. <c>top_p=1.0</c> makes nucleus filtering a no-op, so it is
+    /// not implemented here.
+    /// </summary>
+    private static int SampleTopK(float[] logits, float temperature, int topK, Random rng)
     {
-        int best = 0;
-        float bestVal = float.NegativeInfinity;
+        int k = Math.Min(topK, logits.Length);
+        Span<int> topIdx = stackalloc int[k];
+        Span<float> topVal = stackalloc float[k];
+        int filled = 0;
         for (int i = 0; i < logits.Length; i++)
-            if (logits[i] > bestVal) { bestVal = logits[i]; best = i; }
-        return best;
+        {
+            float v = logits[i] / temperature;
+            if (filled < k)
+            {
+                int pos = filled++;
+                while (pos > 0 && topVal[pos - 1] > v) { topVal[pos] = topVal[pos - 1]; topIdx[pos] = topIdx[pos - 1]; pos--; }
+                topVal[pos] = v; topIdx[pos] = i;
+            }
+            else if (v > topVal[0])
+            {
+                int pos = 0;
+                while (pos < k - 1 && topVal[pos + 1] < v) { topVal[pos] = topVal[pos + 1]; topIdx[pos] = topIdx[pos + 1]; pos++; }
+                topVal[pos] = v; topIdx[pos] = i;
+            }
+        }
+
+        float max = topVal[k - 1];
+        double sum = 0.0;
+        for (int i = 0; i < k; i++) sum += Math.Exp(topVal[i] - max);
+
+        double r = rng.NextDouble() * sum;
+        double cumulative = 0.0;
+        for (int i = 0; i < k; i++)
+        {
+            cumulative += Math.Exp(topVal[i] - max);
+            if (r < cumulative) return topIdx[i];
+        }
+        return topIdx[k - 1];
     }
 }
