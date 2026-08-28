@@ -22,15 +22,13 @@ widths remains open.
 2. Q6_K AVX2 performance-only investigation. Dispatch is complete: Q8-prefill resolves Q6_K to
    Q8_K activation plus 8/4/1-input dots, and F32 multi-input batching uses the 4/2-input paths.
    Focused equivalence coverage passes; any change needs an interleaved end-to-end win.
-3. Native kernels for scalar-fallback formats — **partially done, two backlogs remain (checkboxed
-   plans below)**. IQ4_NL/Q4_0 already had fused routes; IQ4_XS/IQ2_XS/IQ2_S/IQ3_XXS/IQ2_XXS/IQ3_S
-   got AVX2 kernels 2026-08-28 (~18% overall win on the Qwen3.8-27B receipt below). **Correction**:
-   this item previously claimed MXFP4 "already had a fused route" too — false, verified 2026-08-28
-   by grep (zero references to `MXFP4` anywhere in `SimdKernels.cs`); it's on
-   `MatVecDequantFallback` like the rest of backlog B below. IQ1_S/IQ1_M/TQ1_0/TQ2_0 remain
-   unimplemented at any level (see [01-gguf-model-coverage-plan.md](01-gguf-model-coverage-plan.md)
-   §2) — IQ1_S/IQ1_M's fast-kernel plan is backlog A below; TQ1_0/TQ2_0 aren't even dequantized yet
-   so aren't in either backlog.
+3. Native kernels for scalar-fallback formats — **mostly done, backlog C remains (checkboxed plan
+   below)**. IQ4_NL/Q4_0 already had fused routes; IQ4_XS/IQ2_XS/IQ2_S/IQ3_XXS/IQ2_XXS/IQ3_S/IQ1_S
+   got AVX2 or scalar `Q8_K` kernels 2026-08-28 (backlog A, done); Q1_0/Q2_0/MXFP4/Q4_1/BFloat16
+   got real fused kernels the same day (backlog B, done — Q5_0/Q5_1 correctly declined, measured
+   flat). `IQ1_M` shipped correctness-only (scalar cross-check kernel, no AVX2, no dispatch — see
+   backlog A). `TQ1_0`/`TQ2_0` are the one format pair from this item still not even dequantized —
+   see backlog C, added 2026-08-28 after surveying `examples/ggml/` for further coverage.
 4. Batched prefill for per-layer head dimensions and CPU MoE.
 5. ARM64 NEON, dot-product, and i8mm coverage (external hardware required).
 
@@ -85,7 +83,7 @@ just the fast kernel. Block sizes: `IQ1_S` 50 bytes/256 elements, `IQ1_M` 56 byt
       remaining work if a real checkpoint ever surfaces; the cross-check tests are the strongest
       correctness evidence available without one.
 
-## Backlog B — legacy Q-format fast kernels (2026-08-28, not started)
+## Backlog B — legacy Q-format fast kernels (2026-08-28, done)
 
 `Q4_1`, `Q5_0`, `Q5_1`, `Q8_1`, `Q1_0`, `Q2_0`, `MXFP4`, `NVFP4`, `BFloat16` are all admitted
 (`IsSupportedWeightDType`) with working dequantizers, but every one still falls through
@@ -183,6 +181,83 @@ trial slower, never artificially faster, so the minimum is the standard noise-re
 (what tools like BenchmarkDotNet/criterion report by default) — median is not, since enough noisy
 trials can drag it upward. 4/4 clean full-suite runs after the fix, versus roughly 1-in-3 to 1-in-2
 flaky before it. Apply the same convention to any future perf test added to this backlog.
+
+## Backlog C — TQ1_0/TQ2_0 ternary formats (2026-08-28, not started)
+
+Found by surveying `examples/ggml/` for further coverage after backlogs A/B closed. Neither format
+has *any* implementation in this codebase — no dequantizer, no admission, nothing — unlike the
+Q8_K-paired IQ family, which at least had some formats partially done before this session. Both
+pair with `Q8_K` (`ggml_vec_dot_tq1_0_q8_K`/`ggml_vec_dot_tq2_0_q8_K`, confirmed in
+`ggml-cpu/ggml-cpu.c`'s dispatch table), so this reuses `QuantizeRowToQ8K`/`Q8KScratchBytes` again
+— no new activation-quant infra. Block sizes (256 elements/superblock, `Tensor.cs` block-size 1 for
+both — QK_K-style, matching the rest of the `Q8_K` family): `TQ2_0` 66 bytes, `TQ1_0` 54 bytes.
+
+**Risk/effort is asymmetric between the two — sequence accordingly:**
+
+- [ ] **`TQ2_0` first — low risk, good odds of a real win.** Structurally near-identical to `Q2_0`
+      (already shipped, ~2.1x): 2-bit-per-element, `value = (bits - 1) * d`, the exact same mapping
+      `Q2_0` uses, just at 256-element/8-chunk granularity with one global scale for the whole
+      superblock (`ggml_vec_dot_tq2_0_q8_K` has no sub-block scale variation or `bsums`-style
+      correction term at all — simpler than every IQ1 kernel, and simpler than `Q2_0` itself, which
+      needed 2 activation sub-blocks per weight block). The existing `Q2_0` scalar-unpack-then-
+      abs/sign/`maddubs` kernel is a near-direct template; the main change is the chunk count (8
+      instead of 2) and swapping `QuantizeRowToQ8_0` for `QuantizeRowToQ8K`.
+  - [ ] Port `Dequantize.DequantTq2_0` (`dequantize_row_tq2_0`, `ggml-quants.c`).
+  - [ ] Admit `TQ2_0` in `ModelCompatibility.IsSupportedWeightDType`.
+  - [ ] Scalar + AVX2 `Q8_K`-paired dot kernel, wired into `MatVec`'s dispatch.
+  - [ ] AVX2-vs-scalar equivalence test.
+  - [ ] **Real before/after timing measurement** (min-of-7-trials, rows=17408/cols=5120 or similar
+        — see backlog B's benchmark-robustness note) before claiming a win. `Q2_0`'s result is a
+        good prior, not a substitute for measuring this format specifically.
+- [ ] **`TQ1_0` second — genuinely novel, higher risk.** Packs 5 ternary digits per byte via a
+      base-3 fixed-point trick (`q = qs[m] * pow3[l]; digit = (q * 3) >> 8`, `pow3 =
+      {1,3,9,27,81,243}` — extracting the `l`-th base-3 digit of an 8-bit-encoded 5-digit number by
+      scaled multiply-and-shift) — nothing else in this codebase's IQ/Q family does this, and nothing
+      in `ggml`'s own AVX2 path vectorizes it either (worth checking `arch/x86/quants.c`'s TQ1_0
+      kernel before assuming a SIMD-friendly shape exists). Main `qs` field (48 bytes) covers 240 of
+      the 256 elements this way; a separate 4-byte `qh` field covers the remaining 16 using only
+      `pow3[0..3]` (4 digits/byte, not 5). One global scale per 256-element superblock, same as
+      `TQ2_0` — no `bsums` correction needed here either.
+  - [ ] Port `Dequantize.DequantTq1_0` (`dequantize_row_tq1_0`) — **round-trip-test this one
+        specifically before trusting it**, per the same caution `IQ1_S`/`IQ1_M` needed: the base-3
+        digit-extraction trick is easy to get subtly wrong (off-by-one in `pow3` indexing, wrong
+        digit-to-value mapping) and, like `IQ1_M`, there is no local checkpoint to catch a wrong
+        formula via an end-to-end receipt — an independent dequant-vs-dot-kernel cross-check
+        (`SimdKernelsIq1MTests.cs`'s pattern) is the strongest correctness evidence available.
+  - [ ] Admit in `ModelCompatibility.IsSupportedWeightDType`.
+  - [ ] Scalar `Q8_K`-paired dot kernel, as a cross-check oracle at minimum.
+  - [ ] **Decide on AVX2 only after `TQ2_0`'s result is in hand** — if `TQ2_0` (simpler, same
+        `Q8_K`-single-scale shape) doesn't clear a real win, `TQ1_0`'s extra base-3 unpack cost
+        makes a loss even more likely, and the `IQ1_M` precedent (skip AVX2 on adjacent evidence,
+        ship correctness-only) applies directly.
+
+## Backlog D — Flash Attention 128/256 head-width performance acceptance (2026-08-28, not started)
+
+Not a coverage gap — `STINGRAY_PREFILL_ATTN_FLASH64` is already default-on, and per item 1 of
+"Ordered work" above, the correctness route already dispatches for dense 64/128/256 heads (the
+64-wide case on a hardcoded GEMM, 128/256 on a strided AVX2 microkernel) with the hd128 case
+already parity-tested against Qwen3-8B. What's missing is *performance acceptance* — never
+measured whether the 128/256 dispatch is actually faster than the materialized-score fallback it
+replaces, the same "don't claim a win without measuring it" discipline every kernel in backlogs A-C
+was held to. `examples/ggml/src/ggml-cpu/ops.cpp` has both a `ggml_compute_forward_flash_attn_ext_
+f16_one_chunk` and a `_tiled` variant, useful reference if the current AVX2 microkernel shape ever
+needs revisiting, but this backlog is about measuring what we already built, not porting more code.
+
+- [ ] Find or confirm a real dense hd256 model locally (`docs/05`'s Status line already notes "the
+      256 GEMM shapes have an independent oracle, but no local dense hd256 model receipt exists
+      yet") — needed for the real-model half of the measurement, not just isolated microbenchmarks.
+- [ ] Isolated microbenchmark: Flash-attention kernel vs. materialized-score fallback, at hd128 and
+      hd256 separately, real prompt-length-scale KV cache sizes (not a toy 32-token context) —
+      min-of-N-trials per backlog B's robustness note.
+- [ ] Real-model end-to-end measurement on whatever hd128 (Qwen3-8B, already used for the parity
+      check) and hd256 checkpoints are available, `STINGRAY_PROFILE_DECODE=1`-style before/after.
+- [ ] Numerical validation alongside the timing — the correctness route already passes parity, but
+      re-confirm on whatever checkpoint the performance measurement uses, not just Qwen3-8B, in
+      case a different model's KV/head shape exercises a path the existing parity check didn't.
+- [ ] Decide, on the measured evidence: keep `STINGRAY_PREFILL_ATTN_FLASH64` default-on for
+      128/256 as it already is for 64, or gate the wider head-dims off by default if they don't
+      show a real win — mirroring backlog B's `Q5_0`/`Q5_1` treatment (ship correct code, don't
+      default-enable a path that doesn't measurably help).
 
 ## Measurements — Ministral-8B-Instruct-2410 vs. llama.cpp (2026-08-28)
 
