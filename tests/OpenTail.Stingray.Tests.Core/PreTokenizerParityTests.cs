@@ -40,6 +40,15 @@ public sealed class PreTokenizerParityTests
         // control: it is expected to pass both before and after the pre-type table lands, and it
         // fails only if a change breaks the GPT-2 default that most models rely on.
         { "olmo", 50304, new[] { 11808, 1249, 16767, 25025, 2270, 285, 5976, 15 } },
+        // Llama-3 family (orpheus-3b-0.1-ft, a Llama-3-tokenizer TTS checkpoint). llama.cpp:
+        // LLAMA_VOCAB_PRE_TYPE_LLAMA3. Was unverified against a real model until this row — see
+        // docs/01-gguf-model-coverage-plan.md §3 remaining-work item 2. Reference captured with
+        // tools/llama.cpp/llama-tokenize.exe build b8585-cpu.
+        { "llama-bpe", 156940, new[] { 9370, 220, 4513, 10961, 16474, 15, 323, 220, 2983, 13 } },
+        // Qwen-3.5 family (Qwen3.8-27B-UD-Q3_K_XL). llama.cpp: LLAMA_VOCAB_PRE_TYPE_QWEN2 variant
+        // with combining-mark handling. Was unverified against a real model until this row — same
+        // gap as llama-bpe above.
+        { "qwen35", 248320, new[] { 8917, 220, 16, 17, 18, 19, 20, 21, 22, 23, 24, 15, 321, 220, 19, 17, 13 } },
     };
 
     [Theory]
@@ -82,6 +91,27 @@ public sealed class PreTokenizerParityTests
         // yield two, so that assertion described the old CodeGenTokenizer path rather than SmolLM2.
         { "smollm", 49152, "    X",     new[] { 333, 2273 } },
         { "smollm", 49152, "        X", new[] { 415, 2273 } },
+
+        // Llama-3 (orpheus-3b-0.1-ft). Same case-insensitive-contraction and
+        // punctuation-attachment axes as qwen2, plus one llama3-specific axis: digit runs are
+        // capped at 3 characters (\p{N}{1,3}) instead of qwen2's single-digit \p{N} or GPT-2's
+        // ungrouped \p{N}+ — "12345" must split as "123"+"45", not one token or five.
+        { "llama-bpe", 156940, "IT'S",    new[] { 964, 13575 } },
+        { "llama-bpe", 156940, "(hello)", new[] { 3283, 4896, 8 } },
+        { "llama-bpe", 156940, "a  b",    new[] { 64, 220, 293 } },
+        { "llama-bpe", 156940, "12345",   new[] { 4513, 1774 } },
+
+        // Qwen-3.5 (Qwen3.8-27B-UD-Q3_K_XL). Same probes as qwen2 (regex is identical apart from
+        // combining-mark handling), plus a probe on the axis that IS qwen35-specific: qwen2's
+        // letter class excludes \p{M}, so a base letter followed by a combining mark splits into
+        // two pieces; qwen35's [\p{L}\p{M}]+ keeps them joined. "cafe\u0301(x)" with a DECOMPOSED
+        // e + COMBINING ACUTE ACCENT (U+0301, not the precomposed "é" codepoint) is the probe.
+        { "qwen35", 248320, "IT'S",    new[] { 922, 12887 } },
+        { "qwen35", 248320, "(hello)", new[] { 3101, 4638, 8 } },
+        { "qwen35", 248320, "«mot",    new[] { 22961, 45263 } },
+        { "qwen35", 248320, "12",      new[] { 16, 17 } },
+        { "qwen35", 248320, "a  b",    new[] { 64, 220, 292 } },
+        { "qwen35", 248320, "café(x)", new[] { 895, 1795, 52033, 2007, 8 } },
     };
 
     [Theory]

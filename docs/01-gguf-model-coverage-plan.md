@@ -1990,10 +1990,24 @@ into `PreTokenizerParityTests` where the reference values are recorded.
    `falcon`, `jais2`, `youtu`, `poro`, `gpt-oss`, `bailingmoe2`, `seed-coder` and the rest of
    llama.cpp's table. Each is mechanical; the mechanism now exists. (`deepseek3-llm` — done, see
    §1p: `hunyuan-dense`'s admission needed it too, ported together with `joyai-llm` since llama.cpp
-   folds all three onto the same regex cascade.)
-2. Acquire fixtures for pre-types with no local model, so parity is measured rather than assumed.
-   Currently only `qwen2`, `smollm` and `olmo` have one; the ported `llama3` and `qwen35` groups are
-   **unverified against a real model** and should be treated as such until a fixture lands.
+   folds all three onto the same regex cascade.) **Deliberately deferred, 2026-08-28** — real gap,
+   but scoped as a maze of per-family regex ports better tackled as its own pass, not folded into
+   the audit below.
+2. **DONE 2026-08-28.** Acquired real fixtures for both previously-unverified groups and added
+   parity rows to `PreTokenizerParityTests.cs`: `llama-bpe` (`orpheus-3b-0.1-ft.Q4_K_M.gguf`, a
+   local Llama-3-tokenizer checkpoint, vocab 156,940) and `qwen35`
+   (`Qwen3.8-27B-UD-Q3_K_XL.gguf`, vocab 248,320). Reference IDs captured the same way as the
+   original defect (`tools/llama.cpp/llama-tokenize.exe` build `b8585-cpu`). Digit probe plus the
+   qwen2-style divergence probes (case-insensitive contraction, punctuation attachment, multi-space
+   run) all pass for both. Two family-specific probes added: `llama-bpe`'s digit-run cap at 3
+   characters (`\p{N}{1,3}`, distinct from qwen2's single-digit `\p{N}`) via `"12345"` splitting as
+   `"123"+"45"`; `qwen35`'s combining-mark handling (`[\p{L}\p{M}]+` joins a base letter and a
+   combining mark that qwen2's `\p{L}`-only class would split) via a DECOMPOSED
+   `"cafe" + U+0301 + "(x)"` probe (the precomposed "é" codepoint would not exercise this path —
+   had to fix the test source to use the literal decomposed byte sequence, not the visually
+   identical precomposed one, since only the decomposed form actually contains a combining mark for
+   the regex to join). **Result: no defect found — both groups tokenize correctly.** 14 new rows,
+   all pass; `Tests.Core` 589 total, 0 failed, 2 clean repeated runs.
 3. Surface `PreTokenizerIsKnown == false` in `doctor` / startup diagnostics, so an unimplemented
    pre-type is visible to an operator rather than only to a caller who inspects the property.
 4. Astral-plane caveat: .NET regex works over UTF-16 code units where llama.cpp uses codepoints, so
