@@ -2028,6 +2028,42 @@ What is not established is *coverage*: how many real Hugging Face templates rend
 fixed multi-turn conversation (with and without tools), and record pass / raised / wrong-output.
 This is a corpus test and needs no inference, so it is cheap relative to its value.
 
+**DONE 2026-08-28.** `ChatTemplateCorpusTests.cs` renders every local GGUF that declares a chat
+template (14 found: mistral/llama, qwen3 x2, qwen35, smollm2 x3, qwen2, granite x2, qwen2vl,
+llama-bpe, paddleocr) against three scenarios — single-turn, multi-turn (system + 2 user + 1
+assistant), and single-turn with an OpenAI-shaped tool schema — and checks for the two failure
+classes a Jinja bug actually produces: raising, and silently dropping/reordering message content.
+`ChatTemplateException` (the template's own `raise_exception()` firing — its author's deliberate
+input validation working correctly) is treated as "this scenario doesn't apply to this template,"
+not a failure; any other exception, or missing/reordered content, is.
+
+**One real defect found and fixed:** `granite-vision-3.2-2b`'s template uses Jinja's
+`{% for %}...{% else %}...{% endfor %}` (else fires when the loop ran zero iterations — here, "no
+system message present"). The engine's parser didn't support `else` inside a `for` at all: it hit
+the orphaned `else` tag and aborted the ENTIRE remaining template parse silently, rendering to
+**0 characters** for every prompt this model would ever receive — not a crash, silently empty
+output. Fixed in `JinjaChatTemplate.cs` (`ForNode` gained an `ElseBody`; `ParseFor` now consumes an
+optional `else` block before `endfor`; the `for` evaluator renders `ElseBody` when zero items
+survive the loop, including when an `if` filter excludes everything, matching real Jinja
+semantics). Verified via `show-template`: now renders the expected `<|system|>...<|user|>...`
+prompt instead of nothing. `Tests.Core` 655 total, 0 failed, 3 clean repeated runs;
+`Tests.Server.Fast`/`Tests.ForwardPass.Fast`/`Tests.Sessions.Fast` regression-clean too (shared
+Jinja engine).
+
+**Two false positives ruled out along the way** (test fixture was too rigid, not engine bugs —
+kept as a documented non-invariant in the test's comments so they don't get "fixed" back in):
+Ministral-8B's real Mistral template deliberately attaches the system message to the LAST user
+turn, not the first; Mistral-7B v0.3's real template doesn't support a system role at all and
+correctly rejects one via its own `raise_exception()`.
+
+**Also logged, not yet fixed (real but lower-severity gaps, didn't break this test's assertions):**
+an unsupported `tojson` filter, and three unsupported expression forms (a `not in (tuple)`
+membership check, a parenthesized-ternary string concatenation, and a similar multi-term
+concatenation) — surfaced by other templates in the corpus (dots.ocr/granite/Qwen3.8-27B-shaped
+reasoning templates). The engine passes these through unchanged with a console warning rather than
+crashing, so no model's render broke, but the computed value is wrong wherever that expression's
+result actually matters. Left as a known gap, not chased further this pass.
+
 ---
 
 ## Sequencing

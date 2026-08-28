@@ -81,7 +81,8 @@ public sealed class JinjaChatTemplate
     private sealed record OutputNode(IExpr Expr) : INode;
     private sealed record IfNode(IExpr Cond, List<INode> Then,
         List<(IExpr Cond, List<INode> Body)> ElseIfs, List<INode>? Else) : INode;
-    private sealed record ForNode(string Var, IExpr Iter, List<INode> Body, IExpr? Filter = null) : INode;
+    private sealed record ForNode(
+        string Var, IExpr Iter, List<INode> Body, IExpr? Filter = null, List<INode>? ElseBody = null) : INode;
     private sealed record SetNode(string[] Path, IExpr Value) : INode;
     private sealed record BlockSetNode(string[] Path, List<INode> Body) : INode;
     private sealed record MacroNode(string Name, MacroDef Def) : INode;
@@ -447,9 +448,23 @@ public sealed class JinjaChatTemplate
 
         var iter = ParseExpr(iterSpec);
         var body = ParseNodes(tokens, ref pos);
+
+        // `{% for x in xs %}...{% else %}...{% endfor %}`: the else branch renders when the loop
+        // ran zero times (including "ran zero times because the `if` filter excluded everything").
+        // ParseNodes returns early at an unconsumed `else` tag (it treats `if`/`for` uniformly and
+        // leaves disambiguation to the caller) — without this check that `else` was left dangling
+        // for the ENCLOSING ParseNodes call to trip over, which aborted the whole remaining parse
+        // rather than just this loop (see docs/01-gguf-model-coverage-plan.md §4, granite-vision).
+        List<INode>? elseBody = null;
+        if (pos < tokens.Count && tokens[pos].Kind == TokenKind.Block && tokens[pos].Content == "else")
+        {
+            pos++;
+            elseBody = ParseNodes(tokens, ref pos);
+        }
+
         if (pos < tokens.Count && tokens[pos].Kind == TokenKind.Block && tokens[pos].Content == "endfor")
             pos++;
-        return new ForNode(varName, iter, body, filter);
+        return new ForNode(varName, iter, body, filter, elseBody);
     }
 
     private static void AssignSet(string[] path, object? val, Dictionary<string, object?> ctx)
@@ -1034,6 +1049,11 @@ public sealed class JinjaChatTemplate
                         foreach (var kv in loopCtx)
                             if (ctx.ContainsKey(kv.Key) && kv.Value is NamespaceObj) ctx[kv.Key] = kv.Value;
                     }
+                    // Jinja for-else: fires when the loop body ran zero times, including when the
+                    // `if` filter excluded every item — not only when the source sequence itself
+                    // was empty.
+                    if (items.Count == 0 && fn.ElseBody is not null)
+                        EvalNodes(fn.ElseBody, ctx, sb);
                     break;
 
                 case MacroNode mn:
