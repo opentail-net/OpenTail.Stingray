@@ -276,7 +276,8 @@ public static class FishSpeechFastAr
     /// meaning the slow-AR's `ForwardPass` reuse was ALREADY correct here without any fix
     /// needed; this fast-AR module had the wrong convention and is fixed here to match).
     /// </summary>
-    private static void ApplyRope(float[] vec, int nHeads, int headDim, int position, float freqBase)
+    /// <summary>Shared with <see cref="FishSpeechCodec"/>'s quantizer post_module transformer, same interleaved RoPE convention.</summary>
+    internal static void ApplyRope(float[] vec, int nHeads, int headDim, int position, float freqBase)
     {
         int half = headDim / 2;
         for (int h = 0; h < nHeads; h++)
@@ -296,9 +297,9 @@ public static class FishSpeechFastAr
         }
     }
 
-    private static float Silu(float x) => x / (1f + MathF.Exp(-x));
+    internal static float Silu(float x) => x / (1f + MathF.Exp(-x));
 
-    private static unsafe float[] LinearNoBias(float[] input, float[] weight, int inDim, int outDim)
+    internal static unsafe float[] LinearNoBias(float[] input, float[] weight, int inDim, int outDim)
     {
         var output = new float[outDim];
         fixed (float* wp = weight, xp = input, op = output)
@@ -320,7 +321,7 @@ public static class FishSpeechFastAr
         return output;
     }
 
-    private static float[] RmsNorm(float[] x, float[] weight, float eps)
+    internal static float[] RmsNorm(float[] x, float[] weight, float eps)
     {
         int n = x.Length;
         float sumSq = 0f;

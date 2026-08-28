@@ -71,20 +71,6 @@ public static class FishSpeechCodec
         return zq;
     }
 
-    /// <summary>Real `nn.RMSNorm`-equivalent used for `post_module`: per-position RMS over the channel dim, weight only (no bias, matching the real bare `RMSNorm` module).</summary>
-    private static float[] RmsNormChannels(float[] x, int channels, int t, float[] weight, float eps = 1e-5f)
-    {
-        var output = new float[x.Length];
-        Parallel.For(0, t, ti =>
-        {
-            float sumSq = 0f;
-            for (int c = 0; c < channels; c++) { float v = x[c * t + ti]; sumSq += v * v; }
-            float invRms = 1f / MathF.Sqrt(sumSq / channels + eps);
-            for (int c = 0; c < channels; c++) output[c * t + ti] = x[c * t + ti] * invRms * weight[c];
-        });
-        return output;
-    }
-
     /// <summary>
     /// Real causal FULL Conv1d: left-pad only by `(kernel-1)*dilation` (equivalently `causalPadLeft`), zero right-pad. Weight layout [out, in, kernel] flat row-major.
     ///
@@ -204,13 +190,20 @@ public static class FishSpeechCodec
         return output;
     }
 
+    /// <summary>
+    /// Real Snake activation, ported verbatim from `examples/s2.cpp/src/s2_codec.cpp`'s
+    /// `snake_activation`: `x + sin(alpha*x)^2 / alpha` -- confirmed via direct source
+    /// comparison this has NO epsilon anywhere (this port previously added `1e-9` to the
+    /// denominator, `1/(alpha+1e-9)`, a real discrepancy from the reference, found while
+    /// investigating a "gargly" audio-quality report -- see docs/audio-review-progress.md).
+    /// </summary>
     private static float[] Snake1d(float[] x, int channels, int t, float[] alpha)
     {
         var output = new float[x.Length];
         Parallel.For(0, channels, c =>
         {
             float a = alpha[c];
-            float invA = 1f / (a + 1e-9f);
+            float invA = 1f / a;
             int baseIdx = c * t;
             for (int i = 0; i < t; i++)
             {
@@ -305,6 +298,138 @@ public static class FishSpeechCodec
         return (cur, outT);
     }
 
+    /// <summary>
+    /// Real `quantizer.post_module` transformer, ported directly from `examples/s2.cpp/src/
+    /// s2_codec.cpp`'s `build_transformer` (see `FishSpeechCodecWeights`'s doc comment for full
+    /// derivation and why an earlier pass wrongly skipped this entirely): N pre-norm layers, each
+    /// RMSNorm -&gt; fused-QKV self-attention (full MHA, no GQA, real interleaved RoPE, a sliding
+    /// causal window that's a no-op for any `t` shorter than the window) -&gt; per-channel
+    /// multiplicative LayerScale -&gt; residual -&gt; RMSNorm -&gt; SwiGLU FFN -&gt; per-channel
+    /// LayerScale -&gt; residual, followed by one final RMSNorm (`PostModuleNormWeight` -- the
+    /// tensor the earlier, incorrect pass found and mistook for the entire module).
+    /// </summary>
+    private static float[] ApplyQuantizerTransformer(float[] zq, int t, FishSpeechCodecWeights w)
+    {
+        int dim = FishSpeechCodecWeights.LatentDim;
+        int nHead = w.QuantizerTransformerNumHeads;
+        int headDim = w.QuantizerTransformerHeadDim;
+        float ropeBase = w.QuantizerTransformerRopeBase;
+        float eps = w.QuantizerTransformerNormEps;
+        int windowSize = w.QuantizerTransformerWindowSize;
+
+        // zq is channel-first [dim, t]; transformer math is naturally per-position -- convert to x[t][dim].
+        var x = new float[t][];
+        for (int ti = 0; ti < t; ti++)
+        {
+            var row = new float[dim];
+            for (int d = 0; d < dim; d++) row[d] = zq[d * t + ti];
+            x[ti] = row;
+        }
+
+        foreach (var lw in w.PostModuleTransformerLayers)
+            x = QuantizerTransformerLayer(x, lw, t, dim, nHead, headDim, ropeBase, eps, windowSize);
+
+        for (int ti = 0; ti < t; ti++)
+            x[ti] = FishSpeechFastAr.RmsNorm(x[ti], w.PostModuleNormWeight, eps);
+
+        var output = new float[dim * t];
+        for (int ti = 0; ti < t; ti++)
+            for (int d = 0; d < dim; d++)
+                output[d * t + ti] = x[ti][d];
+        return output;
+    }
+
+    private static float[][] QuantizerTransformerLayer(float[][] x, FishSpeechCodecTransformerLayerWeights lw, int t, int dim, int nHead, int headDim, float ropeBase, float eps, int windowSize)
+    {
+        int qkvSize = nHead * headDim; // == dim, full MHA (n_local_heads == n_head for this checkpoint)
+
+        var normed = new float[t][];
+        for (int i = 0; i < t; i++) normed[i] = FishSpeechFastAr.RmsNorm(x[i], lw.AttentionNormWeight, eps);
+
+        var q = new float[t][];
+        var k = new float[t][];
+        var v = new float[t][];
+        for (int i = 0; i < t; i++)
+        {
+            var qkv = FishSpeechFastAr.LinearNoBias(normed[i], lw.WqkvWeight, dim, 3 * qkvSize);
+            q[i] = qkv.AsSpan(0, qkvSize).ToArray();
+            k[i] = qkv.AsSpan(qkvSize, qkvSize).ToArray();
+            v[i] = qkv.AsSpan(2 * qkvSize, qkvSize).ToArray();
+        }
+
+        for (int i = 0; i < t; i++)
+        {
+            FishSpeechFastAr.ApplyRope(q[i], nHead, headDim, i, ropeBase);
+            FishSpeechFastAr.ApplyRope(k[i], nHead, headDim, i, ropeBase);
+        }
+
+        var context = new float[t][];
+        for (int i = 0; i < t; i++) context[i] = new float[qkvSize];
+
+        bool useWindow = windowSize > 0 && windowSize < t;
+        float scale = 1f / MathF.Sqrt(headDim);
+        Parallel.For(0, nHead, h =>
+        {
+            int off = h * headDim;
+            var scores = new float[t];
+            for (int i = 0; i < t; i++)
+            {
+                int minK = useWindow ? Math.Max(0, i - windowSize + 1) : 0;
+                for (int j = minK; j <= i; j++)
+                {
+                    float dot = 0f;
+                    for (int d = 0; d < headDim; d++) dot += q[i][off + d] * k[j][off + d];
+                    scores[j] = dot * scale;
+                }
+
+                float max = float.NegativeInfinity;
+                for (int j = minK; j <= i; j++) if (scores[j] > max) max = scores[j];
+                float sum = 0f;
+                for (int j = minK; j <= i; j++) { scores[j] = MathF.Exp(scores[j] - max); sum += scores[j]; }
+                float inv = 1f / sum;
+
+                var ctxSpan = context[i].AsSpan(off, headDim);
+                for (int j = minK; j <= i; j++)
+                {
+                    float p = scores[j] * inv;
+                    for (int d = 0; d < headDim; d++) ctxSpan[d] += p * v[j][off + d];
+                }
+            }
+        });
+
+        var attnOut = new float[t][];
+        for (int i = 0; i < t; i++)
+        {
+            var o = FishSpeechFastAr.LinearNoBias(context[i], lw.WoWeight, qkvSize, dim);
+            for (int d = 0; d < dim; d++) o[d] *= lw.AttentionGamma[d];
+            attnOut[i] = o;
+        }
+
+        var h1 = new float[t][];
+        for (int i = 0; i < t; i++)
+        {
+            var row = new float[dim];
+            for (int d = 0; d < dim; d++) row[d] = x[i][d] + attnOut[i][d];
+            h1[i] = row;
+        }
+
+        int ffnDim = lw.W1Weight.Length / dim;
+        var output = new float[t][];
+        for (int i = 0; i < t; i++)
+        {
+            var ffnNormed = FishSpeechFastAr.RmsNorm(h1[i], lw.FfnNormWeight, eps);
+            var gate = FishSpeechFastAr.LinearNoBias(ffnNormed, lw.W1Weight, dim, ffnDim);
+            var up = FishSpeechFastAr.LinearNoBias(ffnNormed, lw.W3Weight, dim, ffnDim);
+            for (int d = 0; d < ffnDim; d++) gate[d] = FishSpeechFastAr.Silu(gate[d]) * up[d];
+            var ffnOut = FishSpeechFastAr.LinearNoBias(gate, lw.W2Weight, ffnDim, dim);
+
+            var row = new float[dim];
+            for (int d = 0; d < dim; d++) row[d] = h1[i][d] + ffnOut[d] * lw.FfnGamma[d];
+            output[i] = row;
+        }
+        return output;
+    }
+
     /// <summary>Full real decode: 10 codebook streams (1 semantic + 9 residual, same time resolution) -> mono float32 PCM at 44.1kHz, range [-1, 1] (post-Tanh).</summary>
     public static float[] Decode(FishSpeechCodecWeights w, int[] semanticCodes, int[][] residualCodes)
     {
@@ -315,7 +440,11 @@ public static class FishSpeechCodec
         var zq = new float[zqSemantic.Length];
         for (int i = 0; i < zq.Length; i++) zq[i] = zqSemantic[i] + zqResidual[i];
 
-        zq = RmsNormChannels(zq, FishSpeechCodecWeights.LatentDim, t, w.PostModuleNormWeight);
+        // Real `quantizer.post_module`: a full 8-layer transformer (see FishSpeechCodecWeights's
+        // doc comment) -- NOT just the final RMSNorm this port previously stopped at. That earlier
+        // scoping mistake silently skipped the entire transformer while investigating a "gargly"
+        // audio-quality report; fixed by porting `build_transformer` faithfully (below).
+        zq = ApplyQuantizerTransformer(zq, t, w);
 
         var x = zq;
         int curT = t;

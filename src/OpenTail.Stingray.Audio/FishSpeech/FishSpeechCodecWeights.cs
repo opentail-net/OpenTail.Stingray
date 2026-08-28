@@ -11,16 +11,25 @@ namespace OpenTail.Stingray.Audio.FishSpeech;
 /// GitHub repo's `fish_speech/models/dac/{modded_dac.py,rvq.py}` -- see docs/audio-review-
 /// progress.md's Fish Speech codec section for the full derivation).
 ///
-/// <para><b>Critical correction to an earlier scoping pass, confirmed from real tensor names,
-/// not guessed</b>: the real `DownsampleResidualVectorQuantize` module has BOTH a `pre_module`
-/// (the real 8-layer transformer, confirmed via `c.quantizer.pre_module.layers.{0..7}.*` real
-/// tensors) AND a `post_module` (confirmed via real tensors to be just a SINGLE bare
-/// `RMSNorm` -- `c.quantizer.post_module.norm.weight`, no transformer layers at all). The real
-/// `decode()` method ONLY calls `post_module` (the bare norm) -- `pre_module` (the real 8-layer
-/// transformer) is applied to the CONTINUOUS latent during ENCODING only, never during decode.
-/// This means decode-only inference (all this codebase's TTS pipelines ever need) does NOT
-/// require porting the 8-layer transformer at all -- a significant, real scope reduction from
-/// an earlier entry's assumption.</para>
+/// <para><b>CORRECTION (2026-08-28, found while investigating a "gargly" audio-quality report,
+/// cross-checked directly against `examples/s2.cpp/src/s2_codec.cpp`'s real
+/// `build_quantizer_decode_stage`/`build_transformer`): an earlier scoping pass's claim that
+/// `post_module` is "just a bare RMSNorm, no transformer layers at all" was WRONG.</b> The real
+/// decode path calls `build_transformer(ctx, ..., "quantizer.post_module", z, ...)` -- a real
+/// 8-layer transformer (RMSNorm -&gt; fused-QKV self-attention with RoPE and a sliding causal
+/// window -&gt; per-channel LayerScale -&gt; residual -&gt; RMSNorm -&gt; SwiGLU FFN -&gt;
+/// LayerScale -&gt; residual, x8) applied to the SUMMED RVQ embedding `z` BEFORE the upsample
+/// stages, with `post_module.norm.weight` (the tensor the earlier pass found) being that
+/// transformer's OWN final output norm, not a standalone replacement for the whole thing. Real
+/// tensors confirmed via `list-tensors`: `c.quantizer.post_module.layers.{0..7}.*`
+/// (`attention.{wqkv,wo}.weight`, `attention_layer_scale.gamma`, `attention_norm.weight`,
+/// `feed_forward.{w1,w2,w3}.weight`, `ffn_layer_scale.gamma`, `ffn_norm.weight`) were present all
+/// along -- the earlier pass's `list-tensors` check apparently only matched
+/// `post_module.norm.weight` and stopped looking. Real hyperparameters read from GGUF metadata
+/// (`fish_speech.codec.rvq_transformer.*`): 8 layers, dim=1024, 16 heads, head_dim=64 (full MHA,
+/// `n_local_heads=-1` means no GQA reduction), ffn_dim=3072, rope_freq_base=10000 (NOT the main
+/// transformer's 1e6), rms_norm_eps=1e-5, sliding window=128 (a no-op for any utterance shorter
+/// than 128 frames, i.e. plain full causal attention for typical short synthesis).</para>
 ///
 /// <para>Weight-norm is ALREADY FOLDED in this GGUF (plain `.conv.weight`/`.conv.bias` tensor
 /// names throughout, confirmed via `list-tensors` -- unlike Parler-TTS's DAC safetensors, which
@@ -52,6 +61,12 @@ public sealed class FishSpeechCodecWeights : IDisposable
     public FishSpeechCodecQuantizerWeights SemanticQuantizer { get; }
     public FishSpeechCodecQuantizerWeights[] ResidualQuantizers { get; } = new FishSpeechCodecQuantizerWeights[NumResidualCodebooks];
     public float[] PostModuleNormWeight { get; }
+    public FishSpeechCodecTransformerLayerWeights[] PostModuleTransformerLayers { get; }
+    public int QuantizerTransformerNumHeads { get; }
+    public int QuantizerTransformerHeadDim { get; }
+    public float QuantizerTransformerRopeBase { get; }
+    public float QuantizerTransformerNormEps { get; }
+    public int QuantizerTransformerWindowSize { get; }
     public FishSpeechCodecUpsampleStageWeights[] UpsampleStages { get; } = new FishSpeechCodecUpsampleStageWeights[2];
 
     public float[] DecIn0Weight { get; }
@@ -70,6 +85,32 @@ public sealed class FishSpeechCodecWeights : IDisposable
             ResidualQuantizers[i] = LoadQuantizer($"c.quantizer.quantizer.quantizers.{i}");
 
         PostModuleNormWeight = GetTensor("c.quantizer.post_module.norm.weight");
+
+        QuantizerTransformerNumHeads = GetU32("fish_speech.codec.rvq_transformer.n_head", 16);
+        QuantizerTransformerHeadDim = GetU32("fish_speech.codec.rvq_transformer.head_dim", 64);
+        QuantizerTransformerRopeBase = GetF32("fish_speech.codec.rvq_transformer.rope_freq_base", 10000f);
+        QuantizerTransformerNormEps = GetF32("fish_speech.codec.rvq_transformer.layer_norm_rms_eps", 1e-5f);
+        QuantizerTransformerWindowSize = GetU32("fish_speech.codec.rvq_transformer.window_size", 128);
+
+        var layers = new System.Collections.Generic.List<FishSpeechCodecTransformerLayerWeights>();
+        for (int i = 0; ; i++)
+        {
+            string lp = $"c.quantizer.post_module.layers.{i}";
+            if (Model.FindTensor($"{lp}.attention.wqkv.weight") is null) break;
+            layers.Add(new FishSpeechCodecTransformerLayerWeights
+            {
+                AttentionNormWeight = GetTensor($"{lp}.attention_norm.weight"),
+                WqkvWeight = GetTensor($"{lp}.attention.wqkv.weight"),
+                WoWeight = GetTensor($"{lp}.attention.wo.weight"),
+                AttentionGamma = GetTensor($"{lp}.attention_layer_scale.gamma"),
+                FfnNormWeight = GetTensor($"{lp}.ffn_norm.weight"),
+                W1Weight = GetTensor($"{lp}.feed_forward.w1.weight"),
+                W2Weight = GetTensor($"{lp}.feed_forward.w2.weight"),
+                W3Weight = GetTensor($"{lp}.feed_forward.w3.weight"),
+                FfnGamma = GetTensor($"{lp}.ffn_layer_scale.gamma"),
+            });
+        }
+        PostModuleTransformerLayers = layers.ToArray();
 
         for (int i = 0; i < 2; i++)
         {
@@ -143,7 +184,27 @@ public sealed class FishSpeechCodecWeights : IDisposable
         return dst;
     }
 
+    private int GetU32(string key, int fallback) =>
+        Model.Metadata.TryGetValue(key, out var v) ? Convert.ToInt32(v) : fallback;
+
+    private float GetF32(string key, float fallback) =>
+        Model.Metadata.TryGetValue(key, out var v) ? Convert.ToSingle(v) : fallback;
+
     public void Dispose() => Model.Dispose();
+}
+
+/// <summary>One layer of the real `quantizer.post_module` transformer (see this file's class doc comment).</summary>
+public sealed class FishSpeechCodecTransformerLayerWeights
+{
+    public required float[] AttentionNormWeight { get; init; }
+    public required float[] WqkvWeight { get; init; } // fused Q+K+V, [dim, 3*dim] (full MHA, no GQA reduction)
+    public required float[] WoWeight { get; init; }
+    public required float[] AttentionGamma { get; init; } // per-channel LayerScale, multiplicative
+    public required float[] FfnNormWeight { get; init; }
+    public required float[] W1Weight { get; init; } // gate
+    public required float[] W2Weight { get; init; } // down
+    public required float[] W3Weight { get; init; } // up
+    public required float[] FfnGamma { get; init; } // per-channel LayerScale, multiplicative
 }
 
 public sealed class FishSpeechCodecQuantizerWeights
