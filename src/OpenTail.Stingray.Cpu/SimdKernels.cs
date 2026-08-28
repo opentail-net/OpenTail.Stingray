@@ -3491,27 +3491,38 @@ public static unsafe class SimdKernels
     // verified scale bit-layout (see that method's remarks) -- confirmed identical to this
     // kernel's ls1/ls2 derivation before writing it, not independently re-derived.
 
-    public static void MatVecIq4Xs(float* output, byte* weights, float* input, int rows, int cols)
+    /// <summary>
+    /// Shared scratch-alloc/quantize/parallel-vs-serial dispatch body for every Q8_K-paired
+    /// MatVec wrapper below (IQ4_XS, IQ2_XS, IQ2_S, IQ3_XXS, IQ2_XXS, IQ3_S, IQ1_S, TQ2_0 — all
+    /// previously hand-copied this identically; DRY pass, 2026-08-28). `dot` is an unmanaged
+    /// function pointer, not a delegate, so this adds no per-row allocation and only one extra
+    /// indirect call per ROW (not per element) versus the previous inlined-call-site copies —
+    /// verified with a before/after timing check, not just assumed safe.
+    /// </summary>
+    private static void MatVecQ8KDispatch(float* output, byte* weights, float* input, int rows, int cols,
+        int bytesPerRow, delegate*<byte*, byte*, int, float> dot)
     {
-        int bytesPerRow = (cols / 256) * 136;
         int scratchBytes = Q8KScratchBytes(cols);
         byte* scratch = stackalloc byte[scratchBytes];
         QuantizeRowToQ8K(input, cols, scratch);
 
         if (rows >= MinRowsForParallel)
         {
-            var w = weights; var s = scratch; var outp = output; int c = cols;
+            var w = weights; var s = scratch; var outp = output; int c = cols; var d = dot;
             Parallel.For(0, rows, s_parallelOpts, i =>
             {
-                outp[i] = DotIq4Xs_Q8K(w + (long)i * bytesPerRow, s, c);
+                outp[i] = d(w + (long)i * bytesPerRow, s, c);
             });
         }
         else
         {
             for (int i = 0; i < rows; i++)
-                output[i] = DotIq4Xs_Q8K(weights + (long)i * bytesPerRow, scratch, cols);
+                output[i] = dot(weights + (long)i * bytesPerRow, scratch, cols);
         }
     }
+
+    public static void MatVecIq4Xs(float* output, byte* weights, float* input, int rows, int cols) =>
+        MatVecQ8KDispatch(output, weights, input, rows, cols, (cols / 256) * 136, &DotIq4Xs_Q8K);
 
     public static float DotIq4Xs_Q8K(byte* row, byte* scratch, int cols)
     {
@@ -3663,27 +3674,8 @@ public static unsafe class SimdKernels
     // and is what makes the int-domain accumulation possible in the first place.
     // Replaces the MatVecDequantFallback route these formats previously took.
 
-    public static void MatVecIq2Xs(float* output, byte* weights, float* input, int rows, int cols)
-    {
-        int bytesPerRow = (cols / 256) * 74;
-        int scratchBytes = Q8KScratchBytes(cols);
-        byte* scratch = stackalloc byte[scratchBytes];
-        QuantizeRowToQ8K(input, cols, scratch);
-
-        if (rows >= MinRowsForParallel)
-        {
-            var w = weights; var s = scratch; var outp = output; int c = cols;
-            Parallel.For(0, rows, s_parallelOpts, i =>
-            {
-                outp[i] = DotIq2Xs_Q8K(w + (long)i * bytesPerRow, s, c);
-            });
-        }
-        else
-        {
-            for (int i = 0; i < rows; i++)
-                output[i] = DotIq2Xs_Q8K(weights + (long)i * bytesPerRow, scratch, cols);
-        }
-    }
+    public static void MatVecIq2Xs(float* output, byte* weights, float* input, int rows, int cols) =>
+        MatVecQ8KDispatch(output, weights, input, rows, cols, (cols / 256) * 74, &DotIq2Xs_Q8K);
 
     public static float DotIq2Xs_Q8K(byte* row, byte* scratch, int cols)
     {
@@ -3814,27 +3806,8 @@ public static unsafe class SimdKernels
         return 0.125f * sumf;
     }
 
-    public static void MatVecIq2S(float* output, byte* weights, float* input, int rows, int cols)
-    {
-        int bytesPerRow = (cols / 256) * 82;
-        int scratchBytes = Q8KScratchBytes(cols);
-        byte* scratch = stackalloc byte[scratchBytes];
-        QuantizeRowToQ8K(input, cols, scratch);
-
-        if (rows >= MinRowsForParallel)
-        {
-            var w = weights; var s = scratch; var outp = output; int c = cols;
-            Parallel.For(0, rows, s_parallelOpts, i =>
-            {
-                outp[i] = DotIq2S_Q8K(w + (long)i * bytesPerRow, s, c);
-            });
-        }
-        else
-        {
-            for (int i = 0; i < rows; i++)
-                output[i] = DotIq2S_Q8K(weights + (long)i * bytesPerRow, scratch, cols);
-        }
-    }
+    public static void MatVecIq2S(float* output, byte* weights, float* input, int rows, int cols) =>
+        MatVecQ8KDispatch(output, weights, input, rows, cols, (cols / 256) * 82, &DotIq2S_Q8K);
 
     public static float DotIq2S_Q8K(byte* row, byte* scratch, int cols)
     {
@@ -3955,27 +3928,8 @@ public static unsafe class SimdKernels
         return 0.125f * sumf;
     }
 
-    public static void MatVecIq3Xxs(float* output, byte* weights, float* input, int rows, int cols)
-    {
-        int bytesPerRow = (cols / 256) * 98;
-        int scratchBytes = Q8KScratchBytes(cols);
-        byte* scratch = stackalloc byte[scratchBytes];
-        QuantizeRowToQ8K(input, cols, scratch);
-
-        if (rows >= MinRowsForParallel)
-        {
-            var w = weights; var s = scratch; var outp = output; int c = cols;
-            Parallel.For(0, rows, s_parallelOpts, i =>
-            {
-                outp[i] = DotIq3Xxs_Q8K(w + (long)i * bytesPerRow, s, c);
-            });
-        }
-        else
-        {
-            for (int i = 0; i < rows; i++)
-                output[i] = DotIq3Xxs_Q8K(weights + (long)i * bytesPerRow, scratch, cols);
-        }
-    }
+    public static void MatVecIq3Xxs(float* output, byte* weights, float* input, int rows, int cols) =>
+        MatVecQ8KDispatch(output, weights, input, rows, cols, (cols / 256) * 98, &DotIq3Xxs_Q8K);
 
     public static float DotIq3Xxs_Q8K(byte* row, byte* scratch, int cols)
     {
@@ -4102,27 +4056,8 @@ public static unsafe class SimdKernels
     // 32-element group (like IQ2_XS/IQ2_S) plus a qh side-channel bit and RAW (non-ksigns-indexed)
     // sign bytes, structurally IQ3_XXS's grid-lookup shape combined with IQ2_S's qh/sign handling.
 
-    public static void MatVecIq2Xxs(float* output, byte* weights, float* input, int rows, int cols)
-    {
-        int bytesPerRow = (cols / 256) * 66;
-        int scratchBytes = Q8KScratchBytes(cols);
-        byte* scratch = stackalloc byte[scratchBytes];
-        QuantizeRowToQ8K(input, cols, scratch);
-
-        if (rows >= MinRowsForParallel)
-        {
-            var w = weights; var s = scratch; var outp = output; int c = cols;
-            Parallel.For(0, rows, s_parallelOpts, i =>
-            {
-                outp[i] = DotIq2Xxs_Q8K(w + (long)i * bytesPerRow, s, c);
-            });
-        }
-        else
-        {
-            for (int i = 0; i < rows; i++)
-                output[i] = DotIq2Xxs_Q8K(weights + (long)i * bytesPerRow, scratch, cols);
-        }
-    }
+    public static void MatVecIq2Xxs(float* output, byte* weights, float* input, int rows, int cols) =>
+        MatVecQ8KDispatch(output, weights, input, rows, cols, (cols / 256) * 66, &DotIq2Xxs_Q8K);
 
     public static float DotIq2Xxs_Q8K(byte* row, byte* scratch, int cols)
     {
@@ -4225,27 +4160,8 @@ public static unsafe class SimdKernels
         return 0.125f * sumf;
     }
 
-    public static void MatVecIq3S(float* output, byte* weights, float* input, int rows, int cols)
-    {
-        int bytesPerRow = (cols / 256) * 110;
-        int scratchBytes = Q8KScratchBytes(cols);
-        byte* scratch = stackalloc byte[scratchBytes];
-        QuantizeRowToQ8K(input, cols, scratch);
-
-        if (rows >= MinRowsForParallel)
-        {
-            var w = weights; var s = scratch; var outp = output; int c = cols;
-            Parallel.For(0, rows, s_parallelOpts, i =>
-            {
-                outp[i] = DotIq3S_Q8K(w + (long)i * bytesPerRow, s, c);
-            });
-        }
-        else
-        {
-            for (int i = 0; i < rows; i++)
-                output[i] = DotIq3S_Q8K(weights + (long)i * bytesPerRow, scratch, cols);
-        }
-    }
+    public static void MatVecIq3S(float* output, byte* weights, float* input, int rows, int cols) =>
+        MatVecQ8KDispatch(output, weights, input, rows, cols, (cols / 256) * 110, &DotIq3S_Q8K);
 
     public static float DotIq3S_Q8K(byte* row, byte* scratch, int cols)
     {
@@ -4389,27 +4305,8 @@ public static unsafe class SimdKernels
     // per-group scalar correction, not a per-element one, so it's computed alongside the
     // vectorized main term rather than needing its own reduction.
 
-    public static void MatVecIq1S(float* output, byte* weights, float* input, int rows, int cols)
-    {
-        int bytesPerRow = (cols / 256) * 50;
-        int scratchBytes = Q8KScratchBytes(cols);
-        byte* scratch = stackalloc byte[scratchBytes];
-        QuantizeRowToQ8K(input, cols, scratch);
-
-        if (rows >= MinRowsForParallel)
-        {
-            var w = weights; var s = scratch; var outp = output; int c = cols;
-            Parallel.For(0, rows, s_parallelOpts, i =>
-            {
-                outp[i] = DotIq1S_Q8K(w + (long)i * bytesPerRow, s, c);
-            });
-        }
-        else
-        {
-            for (int i = 0; i < rows; i++)
-                output[i] = DotIq1S_Q8K(weights + (long)i * bytesPerRow, scratch, cols);
-        }
-    }
+    public static void MatVecIq1S(float* output, byte* weights, float* input, int rows, int cols) =>
+        MatVecQ8KDispatch(output, weights, input, rows, cols, (cols / 256) * 50, &DotIq1S_Q8K);
 
     public static float DotIq1S_Q8K(byte* row, byte* scratch, int cols)
     {
@@ -4619,27 +4516,8 @@ public static unsafe class SimdKernels
     // (no bsums correction, no sub-block scale variation) — simpler than every IQ1 kernel, and
     // TQ2_0 specifically mirrors Q2_0's already-shipped (~2.1x) 2-bit unpack shape almost exactly.
 
-    public static void MatVecTq2_0(float* output, byte* weights, float* input, int rows, int cols)
-    {
-        int bytesPerRow = (cols / 256) * 66;
-        int scratchBytes = Q8KScratchBytes(cols);
-        byte* scratch = stackalloc byte[scratchBytes];
-        QuantizeRowToQ8K(input, cols, scratch);
-
-        if (rows >= MinRowsForParallel)
-        {
-            var w = weights; var s = scratch; var outp = output; int c = cols;
-            Parallel.For(0, rows, s_parallelOpts, i =>
-            {
-                outp[i] = DotTq2_0_Q8K(w + (long)i * bytesPerRow, s, c);
-            });
-        }
-        else
-        {
-            for (int i = 0; i < rows; i++)
-                output[i] = DotTq2_0_Q8K(weights + (long)i * bytesPerRow, scratch, cols);
-        }
-    }
+    public static void MatVecTq2_0(float* output, byte* weights, float* input, int rows, int cols) =>
+        MatVecQ8KDispatch(output, weights, input, rows, cols, (cols / 256) * 66, &DotTq2_0_Q8K);
 
     public static float DotTq2_0_Q8K(byte* row, byte* scratch, int cols)
     {
