@@ -9398,3 +9398,71 @@ treatment as the QwenTTS bisection tests) rather than reverted immediately.
 Next: CosyVoice3, per the same AFK instruction (real conditioning gap identified in an earlier
 session -- needs a CamPlus x-vector speaker encoder, real reference-audio speech tokenization, and
 CFG; a bigger port than a bug fix, not yet started this pass).
+
+## CosyVoice3: real CamPlus x-vector speaker embedding wired in (real progress, not the full fix). `cond`/CFG still open (2026-08-28, same AFK fire as the Fish Speech fix)
+
+Re-scoped the earlier "needs a CamPlus x-vector speaker encoder... a much bigger port" assessment
+after actually reading the real reference (`examples/cosyvoice.cpp/src/cosyvoice-frontend.cpp`)
+instead of assuming from the component's name: **the reference does NOT reimplement CAM++ as a
+native neural net either** -- it just runs a pre-exported ONNX graph via ONNX Runtime. This
+codebase already has both prerequisites sitting unused: a generic ONNX host
+(`OpenTail.Stingray.Core.OnnxModelSession`, already used for other pipelines) and the real weight
+file itself, already downloaded locally at `models/campplus.onnx` (also duplicated at
+`models/cosyvoice3/frontend-onnx/campplus.onnx`) -- no new download needed, contrary to the
+earlier entry's assumption.
+
+**New: `CamPlusSpeakerEncoder.cs`** (`src/OpenTail.Stingray.Audio/CosyVoice/`). Two pieces:
+1. A real Kaldi-compatible 80-bin log-mel fbank feature extractor, ported tensor-for-tensor from
+   `extract_spk_embedding`'s real SIMD implementation (not a generic librosa-style recipe): 16kHz
+   mono, 25ms/10ms Povey-windowed frames (`(0.5-0.5cos(2*pi*n/(N-1)))^0.85`, confirmed via the
+   reference's own `povey_window` construction), per-frame DC removal before pre-emphasis
+   (0.97), 512-point FFT (reusing this codebase's existing `SpectralKernels.ComputePowerSpectrum`,
+   already used by Parakeet's mel extractor -- no new FFT code needed), an 80-bin mel filterbank
+   with low_freq=20Hz/high_freq=8000Hz and the Nyquist bin forced to 0 (confirmed exact via the
+   reference's own filter-construction code, not a generic recipe), log energy (floor 1e-10), and
+   per-utterance per-mel-bin mean subtraction (cepstral mean normalization).
+2. `Extract(onnxPath, pcm16k)`: runs that feature tensor `[1, T, 80]` through `campplus.onnx` via
+   `OnnxModelSession`, confirmed via a direct ONNX Runtime shape probe (`onnxruntime`'s Python API,
+   since this codebase had no C# tool handy for it) that the model's real declared shapes are
+   `input: [batch, sequence_length, 80]` -> `output: [batch, 192]`, exactly matching what was
+   ported without guessing.
+
+**Wired into `CosyVoice3Pipeline`**: `Generate` now takes an optional `referenceAudioPath`
+(threaded from `AudioGenerationRequest.ReferenceAudioPath`, i.e. the CLI's existing `--ref-audio`
+flag -- no new CLI surface needed, it was already plumbed for F5-TTS). `Load` resolves
+`campplus.onnx` next to the GGUF file first, then the shared default path. `ExtractSpeakerEmbedding`
+loads the reference WAV (existing `WavReader`), resamples to 16kHz (existing `AudioResampler`),
+runs the new extractor, and falls back to the pre-existing all-zero vector on any failure (missing
+file, missing ONNX, extraction error) -- never throws, a degraded embedding is strictly better
+than crashing synthesis entirely.
+
+**Verified real, not just "runs without throwing"**: new `CamPlusSpeakerEncoderTests.cs` --
+`Extract_RealAudio_ProducesNonDegenerateEmbedding` confirms a real reference WAV
+(`docs/audio-samples/fishspeech-s2pro-fixed.wav`, this fire's own Fish Speech output, reused as a
+convenient real-speech sample) produces a finite, non-near-zero 192-dim vector (not silently
+falling back to zero); `ExtractFbank_RealAudio_MatchesCamPlusInputShape` confirms the feature
+tensor's shape/finiteness. Both pass. Also ran the full CLI path end-to-end
+(`stingray tts -e cosyvoice --ref-audio ... -o docs/audio-samples/cosyvoice3-with-real-spk.wav`)
+-- completes without error/fallback-warning, confirming the real ONNX path actually executes in
+the real pipeline, not just in isolation.
+
+**Honest scope of what this does and doesn't fix**: this replaces one of the THREE pieces of
+missing conditioning `CosyVoice3Pipeline`'s own doc comment already listed (see the prior
+"CosyVoice3: same 'drill noise' symptom..." entry) -- the speaker embedding is now a real,
+per-reference x-vector instead of a literal zero vector. The other two are still open and NOT
+attempted this pass: `cond` (the reference mel prepended to the DiT's input, still all-zero) and
+the DiT's CFG refinement step (still omitted). A real speaker embedding alone is a genuine,
+verified improvement in kind (the model now receives an actual identity signal instead of no
+signal at all), but is not expected to fully resolve the reported "drill noise"/degenerate-output
+symptom by itself, since the model was trained expecting all three conditioning signals together
+-- listening comparison between the zero-conditioning and real-embedding outputs
+(`cosyvoice3-zero-spk.wav` vs `cosyvoice3-with-real-spk.wav`, both in `docs/audio-samples/`) is
+left for the user to judge remotely, per their own AFK instruction, rather than guessed at here.
+
+**If resumed next**: `cond` needs a real reference-audio mel-spectrogram (CosyVoice3's OWN mel
+filterbank, `mel_basis`/`hann_window` in the same reference file -- 24kHz, 80-bin, distinct
+params from CamPlus's own fbank above, already spec'd in the same reference source read this
+pass) prepended/masked into the DiT input the way the reference's `frontend_zero_shot` does; then
+CFG. Scoping those two is now much cheaper since the exact reference mel-filterbank construction
+was already read in full this pass (`build_mel_basis(24000, 1920, 80, 0, 12000)` for CosyVoice3
+specifically) -- just not yet ported.
