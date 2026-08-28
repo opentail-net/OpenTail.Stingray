@@ -132,6 +132,22 @@ public sealed class FishSpeechPipeline : IDisposable
     public List<int> GenerateSemanticTokens(string text, int maxTokens = 200) =>
         GenerateFrames(text, maxTokens).SemanticTokens;
 
+    /// <summary>TEMP bisection hook (docs/audio-review-progress.md's Fish Speech NaN investigation): runs just the real prompt prefill and returns the raw logits, for a caller to check for NaN. TODO remove once the bug is found.</summary>
+    public float[] PrefillForBisection(List<int> prompt)
+    {
+        _fwd.ResetCache();
+        return _fwd.Prefill(prompt).ToArray();
+    }
+
+    /// <summary>TEMP bisection hook: taps a specific layer's hidden state after prefill, to trace activation magnitude growth across layers. TODO remove once the bug is found.</summary>
+    public float[] PrefillHiddenTapForBisection(List<int> prompt, int tapLayer)
+    {
+        _fwd.ResetCache();
+        _fwd.EnableHiddenTaps([tapLayer]);
+        _ = _fwd.Prefill(prompt);
+        return _fwd.HiddenTapsAt(prompt.Count - 1).ToArray();
+    }
+
     /// <summary>
     /// Same generation as <see cref="GenerateSemanticTokens"/>, but also returns the real fast-AR
     /// codebook expansion computed per frame along the way (previously computed then discarded) --

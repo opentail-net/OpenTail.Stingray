@@ -10538,18 +10538,26 @@ public static unsafe class SimdKernels
     /// element, which matters here because this feeds softmax (see <see cref="SoftmaxInPlace"/>'s
     /// doc comment).
     ///
-    /// <para><b>Deliberately only the fast/common path.</b> ggml's real implementation also
+    /// <para><b>Extreme-input clamp (FIXED, see docs/audio-review-progress.md's Fish Speech S2
+    /// Pro entry).</b> This was previously undocumented as a gap: ggml's real implementation
     /// handles an extreme input range (roughly |x| beyond ~87) with a separate denormal/overflow
-    /// correction branch this port omits. Every caller of this method feeds it <c>x - max</c>
-    /// (softmax's own max-subtraction), which is always <c>&lt;= 0</c> and in practice never
-    /// remotely close to that threshold for real model activations (a value that far out has
-    /// exp() underflowing to 0 either way) -- so the omitted branch is not expected to be
-    /// reachable from this codebase's actual call sites, but is a known, explicit gap if this is
-    /// ever reused for a caller that does not first subtract a row max.</para>
+    /// correction branch this port omitted, on the assumption that every caller feeds it
+    /// <c>x - max</c> (softmax's own max-subtraction, always <c>&lt;= 0</c>) and real model
+    /// activations never get remotely close to that threshold. That assumption was FALSE for
+    /// Fish Speech S2 Pro: legitimate hidden-state magnitudes reach the thousands by its deep
+    /// layers (~1538 by layer 33), and the resulting attention-score spread at layer 34 pushed
+    /// some <c>x - max</c> values well past -87. Without a clamp, the magic-constant-add trick
+    /// below produces a rounded integer <c>n</c> outside the valid IEEE-754 exponent range
+    /// (roughly [-126, 127]); shifting that out-of-range value into the exponent field via
+    /// <c>ShiftLeftLogical(..., 23)</c> does not degrade gracefully -- it produces a garbage bit
+    /// pattern that reinterprets as NaN or Inf, not the mathematically-correct underflow to 0.
+    /// Fixed the same way <see cref="ExpApprox256"/> already does it: clamp <c>x</c> before the
+    /// range reduction so <c>n</c> always stays in a range the exponent-shift trick can encode.</para>
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static Vector256<float> GgmlExpf256(Vector256<float> x)
     {
+        x = Avx.Max(x, Vector256.Create(-87.0f));
         var r = Vector256.Create(12582912.0f);              // 0x1.8p23f
         var log2e = Vector256.Create(1.4426950216293335f);  // 0x1.715476p+0f
         var z = Fma.MultiplyAdd(x, log2e, r);

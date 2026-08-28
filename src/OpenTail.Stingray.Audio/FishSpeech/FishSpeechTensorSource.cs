@@ -68,6 +68,11 @@ public sealed unsafe class FishSpeechTensorSource : IModelTensorSource
         _metadata = new Dictionary<string, object>(inner.Metadata)
         {
             ["fish-speech.attention.key_length"] = 128,
+            // Keep block_count consistent with numLayers, same fix as QwenTtsTalkerTensorSource:
+            // this source only ever aliases blk.0..numLayers-1 below, so ForwardPass must not
+            // believe there are more (throws "Missing tensor: blk.N.*" otherwise). Also a real
+            // bisection knob for the NaN investigation (docs/audio-review-progress.md).
+            ["fish-speech.block_count"] = numLayers,
         };
         for (int i = 0; i < numLayers; i++)
         {

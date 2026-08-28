@@ -9315,3 +9315,86 @@ still broken.
 the three broken engines) -- this is why it got the deepest investigation of the three. Fish Speech
 is lukewarm priority; CosyVoice is not currently a priority. If resumed, QwenTTS should stay first
 in line among the three.
+
+## Fish Speech S2 Pro -- RESOLVED: prefill NaN crash root-caused and fixed (`GgmlExpf256` extreme-input gap), user AFK instruction "address CosyVoice3 / Fish Speech S2 Pro -- you can download and use what you need for it"
+
+Picked Fish Speech first (per its own binary NaN/not-NaN failure signature, no fragile Python
+reference environment needed, unlike QwenTTS). Bisection method: constructed `FishSpeechPipeline`
+with varying `numLayers` (via the same `{arch}.block_count` metadata-override trick already used
+for QwenTTS) and ran a real ~30-token prompt prefill (`FishSpeechBisectTests.
+Bisect_PrefillNaN_ByLayerCount`), checking the raw logits for NaN at each layer count.
+
+**Localized cleanly**: 34 layers -> 0% NaN, 35 layers -> 100% NaN. The bug is in layer index 34's
+computation (0-indexed, of 36 total).
+
+**Ruled out, in order**:
+- Corrupted static weights: dequantized all 9 real layer-34 tensors directly
+  (`CheckLayer34WeightsForCorruption`) -- zero NaN/Inf, all values in a plausible range
+  (`attention_norm.weight` max=25.0, a legitimate outlier scale, not corruption).
+- Simple fp32 overflow: tapped the post-layer hidden state at layers 30-35
+  (`Bisect_HiddenMagnitudeGrowth`) and found a steady, legitimate magnitude climb (966 -> 1113 ->
+  1294 -> 1538 across layers 30-33, all finite) followed by a SUDDEN complete jump to 100% NaN at
+  layer 34's output -- not a gradual approach to fp32's ~3e38 ceiling, which pointed at a specific
+  numerically-unstable OPERATION rather than raw magnitude growth.
+
+**Root cause found**: `SimdKernels.SoftmaxInPlace`'s AVX2 path performs standard, correct
+two-pass numerically-stable softmax (max-find, then `exp(x - max)`, max-subtraction is always
+correct) -- but its `exp()` approximation, `GgmlExpf256` ("faithful port of ggml's actual
+vectorized exp"), had its own doc comment admitting a known, deliberately-unhandled gap: ggml's
+real implementation clamps/handles an extreme input range (`|x|` beyond ~87) with a separate
+denormal/overflow correction branch this port omitted, on the stated assumption that real model
+activations never get remotely close to that threshold after max-subtraction. That assumption was
+FALSE for Fish Speech S2 Pro specifically: its legitimate hidden-state magnitudes reach the
+thousands by its deep layers (1538 by layer 33, confirmed above), and the resulting attention-
+score spread at layer 34 pushed some `x - max` values well past -87.
+
+Mechanically: `GgmlExpf256`'s "round via magic-constant add" trick computes an integer exponent
+`n` and repositions it into the IEEE-754 exponent field via `Avx2.ShiftLeftLogical(z.AsInt32(),
+23)`. For `x - max` values past roughly -87, the resulting `n` falls outside the valid float32
+exponent range (roughly [-126, 127]) -- shifting an out-of-range integer into the exponent field
+does not degrade gracefully to the mathematically-correct answer (underflow to 0); it produces a
+garbage bit pattern that reinterprets as NaN or Inf. Confirmed this was a real, not just
+theoretical, gap by comparing against the OTHER exp helper in the same file, `ExpApprox256`
+(an independently-derived Cephes-style implementation used elsewhere), which already clamps its
+input to `[-87.3365, 88.7228]` before its own range reduction for exactly this reason --
+`GgmlExpf256` was simply missing the equivalent clamp.
+
+**Fix** (`src/OpenTail.Stingray.Cpu/SimdKernels.cs`, `GgmlExpf256`): added
+`x = Avx.Max(x, Vector256.Create(-87.0f));` as the very first line, before the magic-constant-add
+trick runs, matching `ExpApprox256`'s existing pattern. One line, no other changes -- the doc
+comment above the function was also rewritten to describe the fix instead of the (now-closed) gap.
+
+**Verified**:
+- `Bisect_PrefillNaN_ByLayerCount` re-run at 16/20/24/28/32/34/35/36 layers: 0% NaN at every layer
+  count including the full 36, where it was previously 100% NaN at 35+.
+- `FishSpeechFullPipelineTests.Synthesize_RealWeights_ProducesFinitePcm` (full slow-AR + fast-AR +
+  codec end-to-end wiring test): PASSED -- finite, non-silent PCM.
+- Generated a real WAV via the CLI (`stingray tts -e fish -t "..." -o
+  docs/audio-samples/fishspeech-s2pro-fixed.wav`, 9.29s audio, 11.10x RTF on CPU without OpenBLAS)
+  for the user to listen to remotely per their AFK instruction ("do make wav files as you
+  progress, I may be able to listen in for you").
+- Full `*FishSpeech*` test pass with `STINGRAY_RUN_HEAVY_TESTS=1`: 25/26 passed. The one failure
+  (`FishSpeechFastArTests.Forward_RealWeights_MatchesGoldenOracle`, cosine 0.440) is a PRE-EXISTING,
+  already-documented, already-closed issue from an earlier session (see this doc's "Fish Speech
+  fast-AR -- CONCLUSIVELY RESOLVED" entry above) -- a real Q4_K_M quantization-precision limitation
+  specific to the small 4-layer fast-AR sub-network, not a code bug and not a regression from this
+  fix (the sibling `Forward_Q8_0Weights_MatchesGoldenOracle` test, same golden oracle, Q8_0 weights,
+  passes at cosine 0.9995). Not touched this pass.
+
+This is the SAME class of bug shape as two earlier fixes this session (stale tensor-data pointers,
+`block_count` metadata mismatch): a documented, deliberate simplifying assumption in shared engine
+code ("this input range is never reachable in practice") that held for every other model ported
+so far but was silently violated by this specific model's real activation statistics. Consistent
+with this project's "measure, don't assume" discipline -- the fix followed directly from tracing
+actual hidden-state/attention magnitudes rather than guessing.
+
+**Fish Speech S2 Pro slow-AR + fast-AR + codec pipeline is now fully working end-to-end** (all
+three stages independently golden-verified earlier, and this NaN crash was the last blocker for
+real generation). The 3 TEMP bisection test methods added this pass
+(`FishSpeechBisectTests.cs`, `PrefillForBisection`/`PrefillHiddenTapForBisection` on
+`FishSpeechPipeline`) are being kept as-is for now (same "documented reusable infrastructure"
+treatment as the QwenTTS bisection tests) rather than reverted immediately.
+
+Next: CosyVoice3, per the same AFK instruction (real conditioning gap identified in an earlier
+session -- needs a CamPlus x-vector speaker encoder, real reference-audio speech tokenization, and
+CFG; a bigger port than a bug fix, not yet started this pass).
