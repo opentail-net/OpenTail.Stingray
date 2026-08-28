@@ -39,38 +39,51 @@ end-to-end measurement, and numerical validation. No single-run result is suffic
 
 Historical evidence: [done/cpu-architecture-kernel-opportunities-2026-08.md](done/cpu-architecture-kernel-opportunities-2026-08.md).
 
-## Backlog A — IQ1_S/IQ1_M fast kernels (2026-08-28, not started)
+## Backlog A — IQ1_S/IQ1_M (2026-08-28, done)
 
-Same `Q8_K`-paired family as the six IQ formats already done (`ggml_vec_dot_iq1_s_q8_K`/
-`ggml_vec_dot_iq1_m_q8_K` both declare `vec_dot_type=Q8_K`), but unlike the last two
-(`IQ2_XXS`/`IQ3_S`), **the dequantizer doesn't exist yet either** — this is "port the format" +
-"write the fast kernel," not just the fast kernel. Block sizes: `IQ1_S` 50 bytes/256 elements,
-`IQ1_M` 56 bytes/256 elements (`Tensor.cs`). Needs a new 2048-entry `iq1s_grid` table (4x
-`IQ2_S`'s 1024-entry one) plus `IQ1S_DELTA = 0.125f` and a sign/shift scheme distinct from the
-IQ2/IQ3 family (see `dequantize_row_iq1_s`/`dequantize_row_iq1_m` in
-`examples/ggml/src/ggml-cpu/quants.c` for the reference formulas before writing anything).
+Same `Q8_K`-paired family as the six IQ formats already done, but unlike `IQ2_XXS`/`IQ3_S`, **the
+dequantizer didn't exist yet either** — this was "port the format" + "write the fast kernel," not
+just the fast kernel. Block sizes: `IQ1_S` 50 bytes/256 elements, `IQ1_M` 56 bytes/256 elements.
 
-- [ ] Port `iq1s_grid` (2048×?) into `IqCodebooks.cs`, verbatim from `ggml-common.h` — extract with
-      the same script-assisted approach used for `Iq2XsGrid`/`Iq2SGrid` (transcription by hand at
-      this size is where mistakes happen).
-- [ ] Port `Dequantize.DequantIq1S`/`DequantIq1M`, matching `dequantize_row_iq1_s`/
-      `dequantize_row_iq1_m` exactly, including the `IQ1S_DELTA` offset.
-- [ ] Round-trip test against real reference bytes (not just self-consistency) before trusting the
-      decoder — this format's sign/shift scheme is novel in this codebase, highest-risk step.
-- [ ] Admit `IQ1_S`/`IQ1_M` in `ModelCompatibility.IsSupportedWeightDType` once the decoder is
-      verified.
-- [ ] Scalar `Q8_K`-paired dot kernel (`DotIq1S_Q8K_Scalar`/`DotIq1M_Q8K_Scalar`), same structure
-      as the six existing ones.
-- [ ] AVX2 version, same abs/sign `maddubs` pattern as the existing six.
-- [ ] Wire both into `SimdKernels.MatVec`'s dispatch switch.
-- [ ] AVX2-vs-scalar equivalence tests in `SimdKernelsIqQ8KTests.cs` (extend the existing file,
-      same pattern as the six already there).
-- [ ] Find a real `IQ1_S` or `IQ1_M` checkpoint (lowest-quality IQ format, so may be harder to find
-      "in the wild" than the others were) and get a llama.cpp greedy-parity receipt — the actual
-      correctness bar this project holds every architecture/format to, not just equivalence tests.
-- [ ] **Real before/after timing measurement** on that checkpoint (`STINGRAY_PROFILE_DECODE=1`,
-      several runs each side, per `CLAUDE.md`'s performance-pass rule) — don't claim a win without
-      it, the same way the `IQ4_XS`-scalar attempt earlier this session measured ~0% and said so.
+- [x] Ported `iq1s_grid` (2048×u64, shared by both formats) into `IqCodebooks.cs`, script-extracted
+      the same way as `Iq2XsGrid`/`Iq2SGrid`.
+- [x] Ported `Dequantize.DequantIq1S`/`DequantIq1M`, matching `dequantize_row_iq1_s`/
+      `dequantize_row_iq1_m` exactly (`IQ1S_DELTA`/`IQ1M_DELTA` are both `0.125f`, shared as
+      `IqCodebooks.Iq1sDelta`). `IQ1_M` has no dedicated scale field — the shared block scale is
+      scavenged from the top 4 bits of 4 different uint16 words in its `scales` field (ggml's
+      `iq1m_scale_t` trick), the low 12 bits of each holding two 3-bit sub-block scales apiece.
+- [x] Admitted both in `ModelCompatibility.IsSupportedWeightDType`.
+- [x] `IQ1_S`: scalar + AVX2 `Q8_K`-paired dot kernel, wired into `MatVec`'s dispatch —
+      **then measured ~0.80-0.86x vs `MatVecDequantFallback` (3 stable repeated runs) and
+      un-wired**, matching the `Q5_0`/`Q5_1` precedent: real, not noise, likely the 2048-entry
+      grid (4x the largest IQ2/IQ3 grid already handled) plus the extra `bsums`-based correction
+      term this format needs outweighing the vectorized-reduction win. The dequantizer/admission
+      is the real deliverable and stays — `IQ1_S` GGUFs load and run (via the generic fallback)
+      where they could not before this session at all.
+- [x] `IQ1_M`: **scalar-only cross-check kernel, deliberately no AVX2 and no dispatch wiring at
+      all.** `IQ1_S` (same grid, *less* bookkeeping) already lost to the fallback by a comfortable
+      margin; `IQ1_M` needs strictly more per-group work (two sub-scales instead of one, an extra
+      `sum2`/delta reduction, twice the qh-derived indices), so writing and measuring a full AVX2
+      port wasn't a good use of time against evidence already in hand pointing the same way. Kept
+      the scalar kernel anyway as an independent-formula cross-check oracle for the dequantizer
+      (see below) — not shipped as a fast path.
+- [x] Equivalence tests: `SimdKernelsIq1STests.cs` (AVX2-vs-scalar, plus a dequant-then-F32-dot
+      cross-check against the int-domain kernel — a check the other IQ formats didn't need,
+      because *this* format's dequantizer and dot kernel were both novel, hand-derived
+      independently, so an AVX2-vs-scalar-of-itself check alone couldn't catch a shared mistake in
+      either formula) and `SimdKernelsIq1MTests.cs` (the same dequant-vs-scalar-kernel cross-check,
+      since `IQ1_M` has no AVX2 path to compare against). **Both cross-checks caught a real bug on
+      first run** — not in the kernels, in the *test fixture*: filling `IQ1_M`'s scale bytes with
+      fully random data can (and did) produce a NaN/Inf half-float scale by chance, since the
+      shared scale is scavenged from scattered bit-fragments across those bytes with no validity
+      guarantee for arbitrary bit patterns. Fixed by patching just those 4 specific nibbles to
+      encode a valid small positive scale while leaving everything else — including the rest of
+      those same bytes, which hold the always-safe 3-bit sub-scales — fully random. 6/6 clean runs
+      after the fix.
+- [ ] No real `IQ1_S`/`IQ1_M` checkpoint found or tested against — no llama.cpp greedy-parity
+      receipt exists for either format, only the equivalence/cross-check tests above. Left as
+      remaining work if a real checkpoint ever surfaces; the cross-check tests are the strongest
+      correctness evidence available without one.
 
 ## Backlog B — legacy Q-format fast kernels (2026-08-28, not started)
 

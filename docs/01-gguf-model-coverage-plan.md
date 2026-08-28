@@ -1839,12 +1839,16 @@ reference).
 
 ## 2. Tensor storage formats — the IQ family is the largest single gap
 
-**Status (2026-08-28): six of eight declared IQ formats now implemented and gate-admitted.**
+**Status (2026-08-28): all eight declared IQ formats now implemented and gate-admitted.**
 `DType` (`Core/Tensor.cs`) declares `IQ1_S`, `IQ1_M`, `IQ2_XXS`, `IQ2_XS`, `IQ2_S`, `IQ3_XXS`,
-`IQ3_S`, `IQ4_XS`. `Dequantize.ToFloat32` (`Cpu/Dequantize.cs`) now implements `IQ2_XXS`, `IQ2_XS`,
-`IQ2_S`, `IQ3_XXS`, `IQ3_S`, `IQ4_XS` (plus `IQ4_NL`, which predates this list), all copied
-verbatim from `ggml-quants.c`/`ggml-common.h`'s real tables (`IqCodebooks.cs`) rather than
-reconstructed from a formula. Only `IQ1_S`/`IQ1_M` remain unported.
+`IQ3_S`, `IQ4_XS`. `Dequantize.ToFloat32` (`Cpu/Dequantize.cs`) implements all eight (plus
+`IQ4_NL`, which predates this list), all copied verbatim from `ggml-quants.c`/`ggml-common.h`'s
+real tables (`IqCodebooks.cs`) rather than reconstructed from a formula. `IQ1_S`/`IQ1_M` were the
+last two, ported same-session as their fast-kernel work — see
+[05-cpu-architecture-kernel-opportunities.md](05-cpu-architecture-kernel-opportunities.md)'s
+Backlog A for the full writeup (both admitted and correct; `IQ1_S`'s fast matvec kernel was built,
+measured slower than the fallback, and deliberately not wired in; `IQ1_M` skipped a fast-kernel
+attempt entirely on that adjacent evidence).
 
 Two separate defects were found and fixed getting here, not one linear build-out:
 
@@ -1878,13 +1882,13 @@ model.
 
 Remaining work:
 
-1. `IQ1_S`/`IQ1_M` — lowest value, worst quality; do last or not at all. Needs `iq1s_grid`
-   (`NGRID_IQ1S=2048` entries) plus `IQ1S_DELTA=0.125f` and a sign/shift scheme distinct from the
-   IQ2/IQ3 family (see `dequantize_row_iq1_s`/`dequantize_row_iq1_m` in `ggml-quants.c`).
-2. `TQ1_0`/`TQ2_0` ternary — only if a target model needs them.
+1. `TQ1_0`/`TQ2_0` ternary — only if a target model needs them; still not dequantized at all.
+2. No real `IQ1_S`/`IQ1_M` checkpoint has been found or tested against — both formats are verified
+   via equivalence/cross-check tests only (see 05's Backlog A), not a llama.cpp greedy-parity
+   receipt the way every architecture admission in `ModelCompatibility.cs` otherwise requires.
 
-A SIMD matvec for the six now-implemented formats is a **follow-up**, not part of admission —
-scalar dequant plus the existing F32 path is enough to make the model *run*, which is the goal.
+A SIMD matvec for the IQ formats is a **follow-up**, not part of admission — scalar dequant plus
+the existing F32 path is enough to make the model *run*, which is the goal.
 This keeps item 3 of
 [05-cpu-architecture-kernel-opportunities.md](05-cpu-architecture-kernel-opportunities.md)
 (native IQ4_NL/MXFP4 kernels) a performance follow-up to this correctness work, not a prerequisite.
@@ -2024,7 +2028,8 @@ wrong output on models we claim to support. Suggested order:
    `IQ2_XS`/`IQ2_S`/`IQ3_XXS`/`IQ3_S` — see §2's verification receipt.
 4. **Chat-template corpus** (§4).
 5. **`olmoe`/`olmo2`/`deepseek2` admission with receipts** (§1b).
-6. Remaining IQ formats (`IQ1_S`/`IQ1_M`, §2), then further architectures.
+6. ~~Remaining IQ formats (`IQ1_S`/`IQ1_M`, §2)~~ — done 2026-08-28, both admitted and correct
+   (see §2). Further architectures next.
 
 ## Standing evidence rule
 

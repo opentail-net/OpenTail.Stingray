@@ -517,6 +517,7 @@ public static class ModelCompatibility
         DType.Q4_0 or DType.Q4_1 or DType.Q5_0 or DType.Q5_1 or DType.Q8_0 or DType.Q8_1 or
         DType.Q2_K or DType.Q3_K or DType.Q4_K or DType.Q5_K or DType.Q6_K or
         DType.IQ4_NL or DType.IQ2_S or DType.IQ2_XS or DType.IQ2_XXS or DType.IQ3_XXS or DType.IQ3_S or DType.IQ4_XS or
+        DType.IQ1_S or DType.IQ1_M or
         DType.MXFP4 or DType.NVFP4 or DType.Q1_0 or DType.Q2_0;
 
     /// <summary>
@@ -552,7 +553,7 @@ public static class ModelCompatibility
                 "This GGUF uses tensor storage formats that OpenTail.Stingray cannot execute on its portable " +
                 "text-generation path: " + string.Join(", ", unsupported) + ". " +
                 "Use a model quantized as Q4_0/Q4_1/Q5_0/Q5_1/Q8_0/Q8_1, Q2_K–Q6_K, IQ4_NL, " +
-                "IQ2_S, IQ2_XS, IQ2_XXS, IQ3_XXS, IQ3_S, IQ4_XS, MXFP4, NVFP4, Q1_0, Q2_0, F16, BF16, or F32.");
+                "IQ2_S, IQ2_XS, IQ2_XXS, IQ3_XXS, IQ3_S, IQ4_XS, IQ1_S, IQ1_M, MXFP4, NVFP4, Q1_0, Q2_0, F16, BF16, or F32.");
         }
     }
 }

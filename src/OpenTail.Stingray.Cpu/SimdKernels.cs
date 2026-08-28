@@ -778,6 +778,17 @@ public static unsafe class SimdKernels
             case DType.IQ3_S:
                 MatVecIq3S(output, weights, input, rows, cols);
                 break;
+            // DType.IQ1_S deliberately NOT wired here: measured ~0.80-0.86x vs
+            // MatVecDequantFallback (min of 7 trials, rows=17408/cols=5120, 3 stable repeated
+            // runs) — consistently slower, not noise. The dequantizer/allowlist admission is the
+            // real deliverable (IQ1_S GGUFs can now load and run at all, which they could not
+            // before this session), and that stays; only the dedicated fast matvec path isn't
+            // dispatched to. Likely cause: the 2048-entry grid (16KB, 4x the largest IQ2/IQ3 grid
+            // already handled) plus the extra scalar gbuf write-then-read round trip and the
+            // bsums/delta bookkeeping this format needs (see MatVecIq1S/DotIq1S_Q8K's remarks)
+            // add more per-element overhead than the vectorized reduction recovers — the same
+            // class of result as Q5_0/Q5_1 below, not chased further here. Falls through to
+            // MatVecDequantFallback via `default`.
             // DType.Q5_0 deliberately NOT wired here: measured ~0.94-0.97x vs
             // MatVecDequantFallback (median of 7 trials, rows=17408/cols=5120) — a real, stable
             // negative result, not noise (re-measured after fixing the Q1_0/Q2_0 kernels' similar
@@ -4353,6 +4364,241 @@ public static unsafe class SimdKernels
             sumf += d * bsum;
         }
         return 0.25f * sumf;
+    }
+
+    // ================================================================
+    //  IQ1_S · Q8_K Dot Product (Backlog A, docs/05-cpu-architecture-kernel-opportunities.md)
+    // ================================================================
+    // Mirrors ggml_vec_dot_iq1_s_q8_K (examples/ggml/src/ggml-cpu/quants.c). Same Q8_K family as
+    // the six kernels above, and reuses their QuantizeRowToQ8K/Q8KScratchBytes scratch directly --
+    // no new activation-quant infra needed, unlike IQ1_S's dequant/grid work (IqCodebooks.Iq1sGrid,
+    // Dequantize.DequantIq1S). Two things distinguish this format from the IQ2/IQ3 family it
+    // otherwise resembles: (1) grid entries are already-signed int8 values, so the AVX2 gather
+    // step is a plain copy, no per-element sign lookup/negate; (2) the dot has a second summand
+    // (`sumi1`) built from the Q8_K activation's precomputed `bsums` field (one 16-bit sum per
+    // 16-element sub-group) and a single global-sign `delta` per 32-element group -- this is a
+    // per-group scalar correction, not a per-element one, so it's computed alongside the
+    // vectorized main term rather than needing its own reduction.
+
+    public static void MatVecIq1S(float* output, byte* weights, float* input, int rows, int cols)
+    {
+        int bytesPerRow = (cols / 256) * 50;
+        int scratchBytes = Q8KScratchBytes(cols);
+        byte* scratch = stackalloc byte[scratchBytes];
+        QuantizeRowToQ8K(input, cols, scratch);
+
+        if (rows >= MinRowsForParallel)
+        {
+            var w = weights; var s = scratch; var outp = output; int c = cols;
+            Parallel.For(0, rows, s_parallelOpts, i =>
+            {
+                outp[i] = DotIq1S_Q8K(w + (long)i * bytesPerRow, s, c);
+            });
+        }
+        else
+        {
+            for (int i = 0; i < rows; i++)
+                output[i] = DotIq1S_Q8K(weights + (long)i * bytesPerRow, scratch, cols);
+        }
+    }
+
+    public static float DotIq1S_Q8K(byte* row, byte* scratch, int cols)
+    {
+        if (Avx2.IsSupported && Avx.IsSupported)
+            return DotIq1S_Q8K_Avx2(row, scratch, cols);
+        return DotIq1S_Q8K_Scalar(row, scratch, cols);
+    }
+
+    private static float DotIq1S_Q8K_Avx2(byte* row, byte* scratch, int cols)
+    {
+        int nb = cols / 256;
+        float* dArr = (float*)scratch;
+        sbyte* qsArr = (sbyte*)(scratch + nb * 4);
+        short* bsumsArr = (short*)(scratch + nb * 4 + nb * 256);
+        var grid = IqCodebooks.Iq1sGrid;
+        float accum = 0f;
+        sbyte* gbuf = stackalloc sbyte[32];
+
+        for (int i = 0; i < nb; i++)
+        {
+            byte* blk = row + i * 50;
+            float dW = HalfToFloat(blk[0], blk[1]);
+            byte* qs = blk + 2;
+            byte* qh = blk + 34;
+            sbyte* q8 = qsArr + i * 256;
+            short* bsums = bsumsArr + i * 16;
+            float dA = dArr[i];
+
+            var sumiVec = Vector256<int>.Zero;
+            int sumi1 = 0;
+            int qsOff = 0;
+
+            for (int ib = 0; ib < 8; ib++)
+            {
+                int qhVal = qh[ib * 2] | (qh[ib * 2 + 1] << 8);
+                int ls = 2 * ((qhVal >> 12) & 7) + 1;
+                int delta = (qhVal & 0x8000) != 0 ? -1 : 1;
+
+                for (int l = 0; l < 4; l++)
+                {
+                    int idx = qs[qsOff + l] | (((qhVal >> (3 * l)) & 7) << 8);
+                    ulong gridVal = grid[idx];
+                    for (int j = 0; j < 8; j++)
+                        gbuf[l * 8 + j] = (sbyte)(byte)(gridVal >> (8 * j));
+                }
+
+                var gridVec = Avx.LoadVector256(gbuf);
+                var q8Vec = Avx.LoadVector256((sbyte*)(q8 + ib * 32));
+                var ax = Avx2.Abs(gridVec);
+                var sy = Avx2.Sign(q8Vec, gridVec);
+                var p16 = Avx2.MultiplyAddAdjacent(ax, sy);
+                sumiVec = Avx2.Add(sumiVec, Avx2.MultiplyAddAdjacent(p16, Vector256.Create((short)ls)));
+
+                sumi1 += ls * delta * (bsums[2 * ib] + bsums[2 * ib + 1]);
+                qsOff += 4;
+            }
+
+            int sumi = HSumI32_256(sumiVec);
+            accum += dW * dA * (sumi + IqCodebooks.Iq1sDelta * sumi1);
+        }
+        return accum;
+    }
+
+    /// <summary>Scalar reference for <see cref="DotIq1S_Q8K_Avx2"/>; also the non-AVX2 fallback.</summary>
+    internal static float DotIq1S_Q8K_Scalar(byte* row, byte* scratch, int cols)
+    {
+        int nb = cols / 256;
+        float* dArr = (float*)scratch;
+        sbyte* qsArr = (sbyte*)(scratch + nb * 4);
+        short* bsumsArr = (short*)(scratch + nb * 4 + nb * 256);
+        var grid = IqCodebooks.Iq1sGrid;
+        float accum = 0f;
+
+        for (int i = 0; i < nb; i++)
+        {
+            byte* blk = row + i * 50;
+            float dW = HalfToFloat(blk[0], blk[1]);
+            byte* qs = blk + 2;
+            byte* qh = blk + 34;
+            sbyte* q8 = qsArr + i * 256;
+            short* bsums = bsumsArr + i * 16;
+            float dA = dArr[i];
+
+            int sumi = 0, sumi1 = 0;
+            int qsOff = 0, q8Off = 0;
+            for (int ib = 0; ib < 8; ib++)
+            {
+                int qhVal = qh[ib * 2] | (qh[ib * 2 + 1] << 8);
+                int ls = 2 * ((qhVal >> 12) & 7) + 1;
+                int delta = (qhVal & 0x8000) != 0 ? -1 : 1;
+                int lsum = 0;
+                for (int l = 0; l < 4; l++)
+                {
+                    int idx = qs[qsOff + l] | (((qhVal >> (3 * l)) & 7) << 8);
+                    ulong gridVal = grid[idx];
+                    for (int j = 0; j < 8; j++)
+                        lsum += q8[q8Off + j] * (sbyte)(byte)(gridVal >> (8 * j));
+                    q8Off += 8;
+                }
+                sumi += ls * lsum;
+                sumi1 += ls * delta * (bsums[2 * ib] + bsums[2 * ib + 1]);
+                qsOff += 4;
+            }
+            accum += dW * dA * (sumi + IqCodebooks.Iq1sDelta * sumi1);
+        }
+        return accum;
+    }
+
+    // ================================================================
+    //  IQ1_M · Q8_K Dot Product (Backlog A) — SCALAR-ONLY, deliberately.
+    // ================================================================
+    // Mirrors ggml_vec_dot_iq1_m_q8_K exactly, used ONLY as the independent cross-check oracle
+    // for Dequantize.DequantIq1M (see SimdKernelsIq1MTests.cs) — NOT wired into
+    // SimdKernels.MatVec's dispatch, and no AVX2 version was written. This is a deliberate
+    // efficiency call, not an oversight: IQ1_S (same 2048-entry grid, same per-element gather
+    // shape, LESS bookkeeping than IQ1_M needs) measured a real, repeated ~0.80-0.86x vs
+    // MatVecDequantFallback and was declined for the same reason (see IQ1_S's dispatch-switch
+    // comment). IQ1_M needs strictly more per-group work than IQ1_S (two sub-scales instead of
+    // one, an extra `sum2`/delta reduction alongside the grid dot, twice as many qh-derived grid
+    // indices to compute), so it would need to overcome a bigger overhead gap to win where IQ1_S
+    // already lost by a comfortable margin -- not impossible, but unlikely enough that writing
+    // and measuring a full AVX2 port isn't a good use of time on the evidence already in hand.
+    // Unlike IQ1_S, IQ1_M's dequantizer never gets a fast-matvec companion at all here; the
+    // correctness deliverable (the format loads and runs via MatVecDequantFallback) stands on its
+    // own. Revisit if a real IQ1_M checkpoint's profile ever shows this mattering.
+    internal static float DotIq1M_Q8K_Scalar(byte* row, byte* scratch, int cols)
+    {
+        int nb = cols / 256;
+        float* dArr = (float*)scratch;
+        sbyte* qsArr = (sbyte*)(scratch + nb * 4);
+        var grid = IqCodebooks.Iq1sGrid;
+        float accum = 0f;
+
+        int* idx = stackalloc int[4];
+        int* delta = stackalloc int[4];
+
+        for (int i = 0; i < nb; i++)
+        {
+            byte* blk = row + i * 56;
+            byte* qs = blk;
+            byte* qh = blk + 32;
+            byte* scalesBytes = blk + 48;
+            sbyte* q8 = qsArr + i * 256;
+            float dA = dArr[i];
+
+            int sc0 = scalesBytes[0] | (scalesBytes[1] << 8);
+            int sc1 = scalesBytes[2] | (scalesBytes[3] << 8);
+            int sc2 = scalesBytes[4] | (scalesBytes[5] << 8);
+            int sc3 = scalesBytes[6] | (scalesBytes[7] << 8);
+            int scaleBits = (sc0 >> 12) | ((sc1 >> 8) & 0x00f0) | ((sc2 >> 4) & 0x0f00) | (sc3 & 0xf000);
+            float dW = HalfToFloat((byte)(scaleBits & 0xFF), (byte)((scaleBits >> 8) & 0xFF));
+
+            int sumi1 = 0, sumi2 = 0;
+            int qsOff = 0, qhOff = 0, q8Off = 0;
+
+            for (int ib = 0; ib < 8; ib++)
+            {
+                byte qh0 = qh[qhOff];
+                byte qh1 = qh[qhOff + 1];
+                idx[0] = qs[qsOff] | ((qh0 << 8) & 0x700);
+                idx[1] = qs[qsOff + 1] | ((qh0 << 4) & 0x700);
+                idx[2] = qs[qsOff + 2] | ((qh1 << 8) & 0x700);
+                idx[3] = qs[qsOff + 3] | ((qh1 << 4) & 0x700);
+                delta[0] = (qh0 & 0x08) != 0 ? -1 : 1;
+                delta[1] = (qh0 & 0x80) != 0 ? -1 : 1;
+                delta[2] = (qh1 & 0x08) != 0 ? -1 : 1;
+                delta[3] = (qh1 & 0x80) != 0 ? -1 : 1;
+
+                int sum1_0 = 0, sum1_1 = 0, sum2_0 = 0, sum2_1 = 0;
+                for (int l = 0; l < 4; l++)
+                {
+                    ulong gv = grid[idx[l]];
+                    int lsum1 = 0, lsum2 = 0;
+                    for (int j = 0; j < 8; j++)
+                    {
+                        sbyte gvj = (sbyte)(byte)(gv >> (8 * j));
+                        lsum1 += q8[q8Off + j] * gvj;
+                        lsum2 += q8[q8Off + j];
+                    }
+                    q8Off += 8;
+                    if (l < 2) { sum1_0 += lsum1; sum2_0 += lsum2 * delta[l]; }
+                    else { sum1_1 += lsum1; sum2_1 += lsum2 * delta[l]; }
+                }
+
+                int scWord = (ib / 2) switch { 0 => sc0, 1 => sc1, 2 => sc2, _ => sc3 };
+                int shift = 6 * (ib % 2);
+                int ls1 = 2 * ((scWord >> (shift + 0)) & 7) + 1;
+                int ls2 = 2 * ((scWord >> (shift + 3)) & 7) + 1;
+
+                sumi1 += sum1_0 * ls1 + sum1_1 * ls2;
+                sumi2 += sum2_0 * ls1 + sum2_1 * ls2;
+
+                qsOff += 4;
+                qhOff += 2;
+            }
+            accum += dW * dA * (sumi1 + IqCodebooks.Iq1sDelta * sumi2);
+        }
+        return accum;
     }
 
     // ================================================================

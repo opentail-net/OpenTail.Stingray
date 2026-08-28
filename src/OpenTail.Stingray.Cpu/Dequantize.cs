@@ -91,6 +91,12 @@ public static class Dequantize
             case DType.IQ4_XS:
                 DequantIq4Xs(src, dst, elementCount);
                 break;
+            case DType.IQ1_S:
+                DequantIq1S(src, dst, elementCount);
+                break;
+            case DType.IQ1_M:
+                DequantIq1M(src, dst, elementCount);
+                break;
             default:
                 throw new NotSupportedException($"Dequantization not implemented for {dtype}");
         }
@@ -968,6 +974,119 @@ public static class Dequantize
                 }
                 y += 32;
                 qsOff += 16;
+            }
+        }
+    }
+
+    /// <summary>
+    /// IQ1_S scalar dequantization decoder (256 elements / 50 bytes per block), matching ggml's
+    /// dequantize_row_iq1_s: 8 groups of 32 elements, each carrying a 16-bit qh word packing a
+    /// 3-bit scale (bits 12-14), a global-sign bit (bit 15) applied as a ±<see
+    /// cref="IqCodebooks.Iq1sDelta"/> offset added to every grid value before scaling (not a
+    /// per-element sign flip the way the IQ2/IQ3 formats work), and 3 extra high bits per
+    /// 4-element sub-group (bits 0-2, 3-5, 6-8, 9-11) that combine with a qs byte to form a
+    /// grid index. Grid entries are already-signed int8 values (see <see
+    /// cref="IqCodebooks.Iq1sGrid"/>'s remarks) -- no separate sign table needed.
+    /// </summary>
+    private static void DequantIq1S(ReadOnlySpan<byte> src, Span<float> dst, long elementCount)
+    {
+        const int kK = 256;
+        const int bytesPerBlock = 50;
+        int numBlocks = (int)(elementCount / kK);
+        var grid = IqCodebooks.Iq1sGrid;
+
+        for (int b = 0; b < numBlocks; b++)
+        {
+            var block = src.Slice(b * bytesPerBlock, bytesPerBlock);
+            float d = HalfToFloat(block[0], block[1]);
+            var qs = block.Slice(2, 32);
+            var qhBytes = block.Slice(34, 16);
+            int y = b * kK;
+            int qsOff = 0;
+
+            for (int ib = 0; ib < 8; ib++)
+            {
+                int qh = qhBytes[ib * 2] | (qhBytes[ib * 2 + 1] << 8);
+                float dl = d * (2 * ((qh >> 12) & 7) + 1);
+                float delta = (qh & 0x8000) != 0 ? -IqCodebooks.Iq1sDelta : IqCodebooks.Iq1sDelta;
+                for (int l = 0; l < 4; l++)
+                {
+                    int idx = qs[qsOff + l] | (((qh >> (3 * l)) & 7) << 8);
+                    ulong gridVal = grid[idx];
+                    for (int j = 0; j < 8; j++)
+                        dst[y + j] = dl * ((sbyte)(byte)(gridVal >> (8 * j)) + delta);
+                    y += 8;
+                }
+                qsOff += 4;
+            }
+        }
+    }
+
+    /// <summary>
+    /// IQ1_M scalar dequantization decoder (256 elements / 56 bytes per block), matching ggml's
+    /// dequantize_row_iq1_m. Shares IQ1_S's grid table and delta scheme, but has no dedicated
+    /// scale field: the shared block scale is scavenged from the TOP 4 bits of each of the 4
+    /// uint16 words the 8-byte `scales` field reinterprets to (ggml's `iq1m_scale_t` union
+    /// trick), leaving the LOW 12 bits of each word to hold two 3-bit sub-scales apiece (one
+    /// scales word covers 2 consecutive 32-element groups). Each 32-element group also has TWO
+    /// grid+delta pairs (not one) -- l=0,1 share `dl1`, l=2,3 share `dl2` -- and each of the 4
+    /// grid lookups needs both `qs` and `qh` bytes (2 qh bytes per group, 1 shared between the
+    /// first/second and third/fourth lookups' high-bit contribution).
+    /// </summary>
+    private static void DequantIq1M(ReadOnlySpan<byte> src, Span<float> dst, long elementCount)
+    {
+        const int kK = 256;
+        const int bytesPerBlock = 56;
+        int numBlocks = (int)(elementCount / kK);
+        var grid = IqCodebooks.Iq1sGrid;
+
+        for (int b = 0; b < numBlocks; b++)
+        {
+            var block = src.Slice(b * bytesPerBlock, bytesPerBlock);
+            var qs = block.Slice(0, 32);
+            var qh = block.Slice(32, 16);
+            var scalesBytes = block.Slice(48, 8);
+
+            int sc0 = scalesBytes[0] | (scalesBytes[1] << 8);
+            int sc1 = scalesBytes[2] | (scalesBytes[3] << 8);
+            int sc2 = scalesBytes[4] | (scalesBytes[5] << 8);
+            int sc3 = scalesBytes[6] | (scalesBytes[7] << 8);
+            int scaleBits = (sc0 >> 12) | ((sc1 >> 8) & 0x00f0) | ((sc2 >> 4) & 0x0f00) | (sc3 & 0xf000);
+            float d = HalfToFloat((byte)(scaleBits & 0xFF), (byte)((scaleBits >> 8) & 0xFF));
+
+            int y = b * kK;
+            int qsOff = 0, qhOff = 0;
+
+            for (int ib = 0; ib < 8; ib++)
+            {
+                int scWord = (ib / 2) switch { 0 => sc0, 1 => sc1, 2 => sc2, _ => sc3 };
+                int shift = 6 * (ib % 2);
+                float dl1 = d * (2 * ((scWord >> (shift + 0)) & 7) + 1);
+                float dl2 = d * (2 * ((scWord >> (shift + 3)) & 7) + 1);
+
+                byte qh0 = qh[qhOff];
+                byte qh1 = qh[qhOff + 1];
+                int idx0 = qs[qsOff] | ((qh0 << 8) & 0x700);
+                int idx1 = qs[qsOff + 1] | ((qh0 << 4) & 0x700);
+                int idx2 = qs[qsOff + 2] | ((qh1 << 8) & 0x700);
+                int idx3 = qs[qsOff + 3] | ((qh1 << 4) & 0x700);
+                float delta0 = (qh0 & 0x08) != 0 ? -IqCodebooks.Iq1sDelta : IqCodebooks.Iq1sDelta;
+                float delta1 = (qh0 & 0x80) != 0 ? -IqCodebooks.Iq1sDelta : IqCodebooks.Iq1sDelta;
+                float delta2 = (qh1 & 0x08) != 0 ? -IqCodebooks.Iq1sDelta : IqCodebooks.Iq1sDelta;
+                float delta3 = (qh1 & 0x80) != 0 ? -IqCodebooks.Iq1sDelta : IqCodebooks.Iq1sDelta;
+
+                ulong g0 = grid[idx0], g1 = grid[idx1], g2 = grid[idx2], g3 = grid[idx3];
+                for (int j = 0; j < 8; j++) dst[y + j] = dl1 * ((sbyte)(byte)(g0 >> (8 * j)) + delta0);
+                y += 8;
+                for (int j = 0; j < 8; j++) dst[y + j] = dl1 * ((sbyte)(byte)(g1 >> (8 * j)) + delta1);
+                y += 8;
+                for (int j = 0; j < 8; j++) dst[y + j] = dl2 * ((sbyte)(byte)(g2 >> (8 * j)) + delta2);
+                y += 8;
+                for (int j = 0; j < 8; j++) dst[y + j] = dl2 * ((sbyte)(byte)(g3 >> (8 * j)) + delta3);
+                y += 8;
+
+                qsOff += 4;
+                qhOff += 2;
             }
         }
     }
