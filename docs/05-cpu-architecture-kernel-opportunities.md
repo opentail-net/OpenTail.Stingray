@@ -22,12 +22,15 @@ widths remains open.
 2. Q6_K AVX2 performance-only investigation. Dispatch is complete: Q8-prefill resolves Q6_K to
    Q8_K activation plus 8/4/1-input dots, and F32 multi-input batching uses the 4/2-input paths.
    Focused equivalence coverage passes; any change needs an interleaved end-to-end win.
-3. ~~Native kernels for IQ4_NL, MXFP4, and other genuinely scalar-fallback formats.~~ IQ4_NL/MXFP4
-   already had fused routes; IQ4_XS/IQ2_XS/IQ2_S/IQ3_XXS got AVX2 kernels 2026-08-28 (~18% overall
-   win on the Qwen3.8-27B receipt below — see that section for what's still open: GDN
-   parallelization looks like the bigger remaining lever). Q4_0 already has a fused CPU route, so
-   it was never an implementation gap. IQ1_S/IQ1_M/TQ1_0/TQ2_0 remain unimplemented at any level
-   (see [01-gguf-model-coverage-plan.md](01-gguf-model-coverage-plan.md) §2).
+3. Native kernels for scalar-fallback formats — **partially done, two backlogs remain (checkboxed
+   plans below)**. IQ4_NL/Q4_0 already had fused routes; IQ4_XS/IQ2_XS/IQ2_S/IQ3_XXS/IQ2_XXS/IQ3_S
+   got AVX2 kernels 2026-08-28 (~18% overall win on the Qwen3.8-27B receipt below). **Correction**:
+   this item previously claimed MXFP4 "already had a fused route" too — false, verified 2026-08-28
+   by grep (zero references to `MXFP4` anywhere in `SimdKernels.cs`); it's on
+   `MatVecDequantFallback` like the rest of backlog B below. IQ1_S/IQ1_M/TQ1_0/TQ2_0 remain
+   unimplemented at any level (see [01-gguf-model-coverage-plan.md](01-gguf-model-coverage-plan.md)
+   §2) — IQ1_S/IQ1_M's fast-kernel plan is backlog A below; TQ1_0/TQ2_0 aren't even dequantized yet
+   so aren't in either backlog.
 4. Batched prefill for per-layer head dimensions and CPU MoE.
 5. ARM64 NEON, dot-product, and i8mm coverage (external hardware required).
 
@@ -35,6 +38,83 @@ Every performance item requires dispatch proof, isolated control/candidate sampl
 end-to-end measurement, and numerical validation. No single-run result is sufficient.
 
 Historical evidence: [done/cpu-architecture-kernel-opportunities-2026-08.md](done/cpu-architecture-kernel-opportunities-2026-08.md).
+
+## Backlog A — IQ1_S/IQ1_M fast kernels (2026-08-28, not started)
+
+Same `Q8_K`-paired family as the six IQ formats already done (`ggml_vec_dot_iq1_s_q8_K`/
+`ggml_vec_dot_iq1_m_q8_K` both declare `vec_dot_type=Q8_K`), but unlike the last two
+(`IQ2_XXS`/`IQ3_S`), **the dequantizer doesn't exist yet either** — this is "port the format" +
+"write the fast kernel," not just the fast kernel. Block sizes: `IQ1_S` 50 bytes/256 elements,
+`IQ1_M` 56 bytes/256 elements (`Tensor.cs`). Needs a new 2048-entry `iq1s_grid` table (4x
+`IQ2_S`'s 1024-entry one) plus `IQ1S_DELTA = 0.125f` and a sign/shift scheme distinct from the
+IQ2/IQ3 family (see `dequantize_row_iq1_s`/`dequantize_row_iq1_m` in
+`examples/ggml/src/ggml-cpu/quants.c` for the reference formulas before writing anything).
+
+- [ ] Port `iq1s_grid` (2048×?) into `IqCodebooks.cs`, verbatim from `ggml-common.h` — extract with
+      the same script-assisted approach used for `Iq2XsGrid`/`Iq2SGrid` (transcription by hand at
+      this size is where mistakes happen).
+- [ ] Port `Dequantize.DequantIq1S`/`DequantIq1M`, matching `dequantize_row_iq1_s`/
+      `dequantize_row_iq1_m` exactly, including the `IQ1S_DELTA` offset.
+- [ ] Round-trip test against real reference bytes (not just self-consistency) before trusting the
+      decoder — this format's sign/shift scheme is novel in this codebase, highest-risk step.
+- [ ] Admit `IQ1_S`/`IQ1_M` in `ModelCompatibility.IsSupportedWeightDType` once the decoder is
+      verified.
+- [ ] Scalar `Q8_K`-paired dot kernel (`DotIq1S_Q8K_Scalar`/`DotIq1M_Q8K_Scalar`), same structure
+      as the six existing ones.
+- [ ] AVX2 version, same abs/sign `maddubs` pattern as the existing six.
+- [ ] Wire both into `SimdKernels.MatVec`'s dispatch switch.
+- [ ] AVX2-vs-scalar equivalence tests in `SimdKernelsIqQ8KTests.cs` (extend the existing file,
+      same pattern as the six already there).
+- [ ] Find a real `IQ1_S` or `IQ1_M` checkpoint (lowest-quality IQ format, so may be harder to find
+      "in the wild" than the others were) and get a llama.cpp greedy-parity receipt — the actual
+      correctness bar this project holds every architecture/format to, not just equivalence tests.
+- [ ] **Real before/after timing measurement** on that checkpoint (`STINGRAY_PROFILE_DECODE=1`,
+      several runs each side, per `CLAUDE.md`'s performance-pass rule) — don't claim a win without
+      it, the same way the `IQ4_XS`-scalar attempt earlier this session measured ~0% and said so.
+
+## Backlog B — legacy Q-format fast kernels (2026-08-28, not started)
+
+`Q4_1`, `Q5_0`, `Q5_1`, `Q8_1`, `Q1_0`, `Q2_0`, `MXFP4`, `NVFP4`, `BFloat16` are all admitted
+(`IsSupportedWeightDType`) with working dequantizers, but every one still falls through
+`SimdKernels.MatVec`'s `default:` case to `MatVecDequantFallback` — confirmed by grep, zero fast-
+path cases for any of them. Different family from backlog A: these pair with `Q8_0`, `Q8_1`, or
+themselves in ggml, not `Q8_K`, so this is a related but structurally different kernel shape
+(closer to the existing `IQ4_NL`/`Q8_0` kernel than the `Q8_K` ones). Grouped by pairing:
+
+**`Q8_0`-paired** (`ggml_vec_dot_{name}_q8_0`) — reuses this file's existing
+`QuantizeRowToQ8_0`/`Q8_0ScratchBytes`, no new activation-quant infra needed:
+- [ ] `Q5_0` (32 elem/22 bytes)
+- [ ] `Q1_0` (128 elem/18 bytes)
+- [ ] `Q2_0` (64 elem/18 bytes)
+- [ ] `MXFP4` (32 elem/17 bytes) — the doc correction above: this was wrongly believed already done.
+- [ ] `NVFP4` (64 elem/36 bytes)
+
+**`Q8_1`-paired** (`ggml_vec_dot_{name}_q8_1`) — **no `Q8_1` activation-quant scratch exists in
+this codebase yet** (`QuantizeRowToQ8_1`, unlike `QuantizeRowToQ8_0`/`QuantizeRowToQ8K`, doesn't
+exist); building it is a prerequisite for all three below, not per-format work:
+- [ ] Build `QuantizeRowToQ8_1`/`Q8_1ScratchBytes` (`Q8_1` block = scale + **quantized sum** + 32
+      values, per `Tensor.cs`'s 36-byte block size — the extra sum field is what distinguishes it
+      from `Q8_0` and is presumably there to support these min/offset-carrying formats' dot
+      formula; check `ggml_vec_dot_q4_1_q8_1`'s reference before assuming the shape).
+- [ ] `Q4_1` (32 elem/20 bytes)
+- [ ] `Q5_1` (32 elem/24 bytes)
+- [ ] `Q8_1` as a weight format itself (32 elem/36 bytes) — dotted against its own activation
+      quant; check whether this is even a real on-disk weight format in practice or just an
+      internal ggml activation type that happens to share the `DType` enum slot before spending
+      time on it.
+
+**Self-paired**:
+- [ ] `BFloat16` (`ggml_vec_dot_bf16`, weight and activation both bf16) — likely the cheapest item
+      in this whole backlog: no activation requantization needed, no per-block scale to unpack,
+      just a widen-and-FMA loop. Worth doing first as a confidence-builder before the `Q8_1` infra
+      work.
+
+For every item in both backlogs: **write the equivalence test before or alongside the kernel** (not
+after, as an afterthought), and **get a real before/after timing number on an actual checkpoint
+using that format** before calling it done — an equivalence test proves correctness, not speed, and
+this session already hit two cases (`IQ4_XS` scalar-only, then GDN parallelization) where a
+plausible-sounding change measured ~0%. Report the honest number either way, per `CLAUDE.md`'s
+performance-pass rule.
 
 ## Measurements — Ministral-8B-Instruct-2410 vs. llama.cpp (2026-08-28)
 
