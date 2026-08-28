@@ -100,12 +100,27 @@ public sealed unsafe class QwenTtsCodePredictorTensorSource : IModelTensorSource
         return _inner.GetTensorDataPtr(tensor);
     }
 
+    private nint _embedBuffer;
+    private long _embedBufferCapacityElements;
+    private nint _outputBuffer;
+    private long _outputBufferCapacityElements;
+
     /// <summary>
-    /// Swaps `token_embd.weight` to a synthetic buffer of caller-composed per-position
+    /// Writes `token_embd.weight` with a synthetic buffer of caller-composed per-position
     /// embeddings -- the exact same technique <see cref="QwenTtsTalkerTensorSource.SetPromptEmbedding"/>
     /// uses, needed here because the real Code Predictor's first pass input is `[talker_hidden,
     /// embed(c0)]` (a raw hidden-state bridge from the Talker plus a codec-table lookup), not a
     /// plain token id. Caller feeds sequential dummy ids `0..numRows-1` into `Prefill`/`Forward`.
+    ///
+    /// <para><b>REAL BUG FOUND AND FIXED (2026-08-28), same class as
+    /// <see cref="QwenTtsTalkerTensorSource.SetPromptEmbedding"/>'s fix</b>: this allocated a NEW
+    /// buffer at a NEW address every call, invisible to the `ForwardPass` already constructed
+    /// against this source (its `_embTensor`/`_outputWeight` are captured ONCE, in the
+    /// constructor). Every codebook step g=1..14 in `QwenTtsCodePredictorGeneration.
+    /// GenerateAcousticCodes` calls this once per step on the SAME `ForwardPass` instance -- so
+    /// every step after the first was reading the STALE first-call buffer's row 0 (always the
+    /// prefill's `talkerLastHidden`, never the actual previous codebook's embedding). Fixed the
+    /// same way: one persistent buffer, written in place.</para>
     /// </summary>
     public void SetPromptEmbedding(float[] rows, int numRows)
     {
@@ -113,11 +128,23 @@ public sealed unsafe class QwenTtsCodePredictorTensorSource : IModelTensorSource
         if (rows.Length != elementCount)
             throw new ArgumentException($"SetPromptEmbedding: expected {elementCount} elements ({numRows}x{_hiddenDim}), got {rows.Length}.");
 
-        float* buffer = (float*)NativeMemory.Alloc((nuint)(elementCount * sizeof(float)));
+        if (_embedBuffer == 0)
+        {
+            _embedBuffer = (nint)NativeMemory.Alloc((nuint)(elementCount * sizeof(float)));
+            _embedBufferCapacityElements = elementCount;
+            _ownedPointers.Add(_embedBuffer);
+        }
+        else if (elementCount > _embedBufferCapacityElements)
+        {
+            throw new InvalidOperationException(
+                $"SetPromptEmbedding: requested {numRows} rows ({elementCount} elements) exceeds the " +
+                $"{_embedBufferCapacityElements}-element buffer already allocated for a live ForwardPass. " +
+                "Call this with the largest row count first, then only equal-or-smaller row counts.");
+        }
+
         fixed (float* src = rows)
-            Buffer.MemoryCopy(src, buffer, elementCount * sizeof(float), elementCount * sizeof(float));
-        _ownedPointers.Add((nint)buffer);
-        _syntheticBuffers["token_embd.weight"] = (nint)buffer;
+            Buffer.MemoryCopy(src, (void*)_embedBuffer, _embedBufferCapacityElements * sizeof(float), elementCount * sizeof(float));
+        _syntheticBuffers["token_embd.weight"] = _embedBuffer;
 
         _byCanonicalName["token_embd.weight"] = new GgufTensorInfo("token_embd.weight", 2, [_hiddenDim, numRows], DType.Float32, DataOffset: 0);
         _tensors.Clear();
@@ -125,10 +152,20 @@ public sealed unsafe class QwenTtsCodePredictorTensorSource : IModelTensorSource
     }
 
     /// <summary>
-    /// Swaps `output.weight` to a caller-supplied real per-codebook `code_pred.lm_head.{g}.weight`
+    /// Writes `output.weight` with a caller-supplied real per-codebook `code_pred.lm_head.{g}.weight`
     /// buffer -- real autoregressive depth-expansion needs a DIFFERENT output head at each of the
     /// 15 acoustic-codebook steps, all sharing the same real shape (vocab=2048, dim=1024), so no
     /// metadata/shape change is needed, only the underlying data pointer.
+    ///
+    /// <para><b>REAL BUG FOUND AND FIXED (2026-08-28)</b>: same stale-pointer class of bug as
+    /// <see cref="SetPromptEmbedding"/> above, and arguably the more damaging half of it --
+    /// `ForwardPass`'s output-projection tensor is ALSO captured once at construction, so every
+    /// codebook step g=1..14 was silently scored through `lm_head[0]` (codebook 1's head) instead
+    /// of its own `lm_head[g]`. Combined with the input-side bug, codebooks c2..c15 were each
+    /// sampled from the SAME (c1-conditioned, lm_head[0]) distribution every frame -- not 15
+    /// independently meaningful predictions, just repeated noisy draws from one. Fixed the same
+    /// way: since every call here uses the identical fixed shape (vocab=2048, dim=1024), the
+    /// buffer is allocated once and every call just overwrites it in place.</para>
     /// </summary>
     public void SetOutputHead(float[] lmHeadWeight, int vocabSize)
     {
@@ -136,11 +173,22 @@ public sealed unsafe class QwenTtsCodePredictorTensorSource : IModelTensorSource
         if (lmHeadWeight.Length != elementCount)
             throw new ArgumentException($"SetOutputHead: expected {elementCount} elements ({vocabSize}x{_hiddenDim}), got {lmHeadWeight.Length}.");
 
-        float* buffer = (float*)NativeMemory.Alloc((nuint)(elementCount * sizeof(float)));
+        if (_outputBuffer == 0)
+        {
+            _outputBuffer = (nint)NativeMemory.Alloc((nuint)(elementCount * sizeof(float)));
+            _outputBufferCapacityElements = elementCount;
+            _ownedPointers.Add(_outputBuffer);
+        }
+        else if (elementCount > _outputBufferCapacityElements)
+        {
+            throw new InvalidOperationException(
+                $"SetOutputHead: requested {elementCount} elements exceeds the {_outputBufferCapacityElements}-" +
+                "element buffer already allocated for a live ForwardPass.");
+        }
+
         fixed (float* src = lmHeadWeight)
-            Buffer.MemoryCopy(src, buffer, elementCount * sizeof(float), elementCount * sizeof(float));
-        _ownedPointers.Add((nint)buffer);
-        _syntheticBuffers["output.weight"] = (nint)buffer;
+            Buffer.MemoryCopy(src, (void*)_outputBuffer, _outputBufferCapacityElements * sizeof(float), elementCount * sizeof(float));
+        _syntheticBuffers["output.weight"] = _outputBuffer;
 
         _byCanonicalName["output.weight"] = new GgufTensorInfo("output.weight", 2, [_hiddenDim, vocabSize], DType.Float32, DataOffset: 0);
         _tensors.Clear();

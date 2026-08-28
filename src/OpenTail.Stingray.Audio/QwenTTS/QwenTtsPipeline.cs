@@ -155,9 +155,26 @@ public sealed class QwenTtsPipeline : ITextToSpeechPipeline
             Array.Copy(acoustic, 0, frameCodes, 1, 15);
             frames.Add(frameCodes);
 
+            // Real next-step feedback sums ALL 16 codebook embeddings (semantic c0 via the
+            // talker's own codec table, acoustic c1..c15 via the code predictor's 15 per-codebook
+            // tables), confirmed from the real reference's `tts_engine_step` (`pipeline-tts.cpp`
+            // ~line 1106-1119: `ids[g * N_dec + i] = s.prev_ids[g]` for ALL `num_code_groups`,
+            // fed together with `pt->code_predictor.codec_embedding` into the next talker decode).
+            // Found and fixed 2026-08-28: this pipeline previously only fed c0's embedding,
+            // silently dropping the 15 acoustic codes the code predictor generates every single
+            // frame -- real, per-frame signal loss that compounds across the whole autoregressive
+            // sequence, consistent with the "garbled" (not clean) speech this produced even after
+            // the greedy-decode/sampling fix. See docs/audio-review-progress.md.
             var stepRow = QwenTtsTalkerPromptBuilder.ProjectTextIds(talkerWeights, [specials.TtsPadId]);
             var codecVec = QwenTtsTalkerPromptBuilder.CodecEmbedRow(talkerWeights, c0);
             for (int d = 0; d < QwenTtsTalkerPromptBuilder.TalkerHiddenDim; d++) stepRow[d] += codecVec[d];
+            for (int g = 0; g < acoustic.Length; g++)
+            {
+                var acVec = new float[QwenTtsTalkerPromptBuilder.TalkerHiddenDim];
+                Array.Copy(codePredWeights.CodecEmbd[g], (long)acoustic[g] * QwenTtsTalkerPromptBuilder.TalkerHiddenDim,
+                    acVec, 0, QwenTtsTalkerPromptBuilder.TalkerHiddenDim);
+                for (int d = 0; d < QwenTtsTalkerPromptBuilder.TalkerHiddenDim; d++) stepRow[d] += acVec[d];
+            }
 
             talkerSource.SetPromptEmbedding(stepRow, 1);
             logits = fwd.Forward(0, pos).ToArray();

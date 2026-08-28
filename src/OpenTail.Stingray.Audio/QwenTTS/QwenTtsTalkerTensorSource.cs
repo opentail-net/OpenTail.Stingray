@@ -131,9 +131,12 @@ public sealed unsafe class QwenTtsTalkerTensorSource : IModelTensorSource, IDisp
         return _inner.GetTensorDataPtr(tensor);
     }
 
+    private nint _embedBuffer;
+    private long _embedBufferCapacityElements;
+
     /// <summary>
-    /// Swaps `token_embd.weight` (real name `talker.codec_embd.weight`, otherwise a plain
-    /// codec-token lookup table) to a synthetic buffer of caller-composed rows -- the same
+    /// Writes `token_embd.weight` (real name `talker.codec_embd.weight`, otherwise a plain
+    /// codec-token lookup table) with a synthetic buffer of caller-composed rows -- the same
     /// synthetic-embedding-table technique <c>CosyVoiceLlmTensorSource.EnableSpeechGenerationMode</c>
     /// already established for a different real gap (there: extending the vocab; here: feeding
     /// PRECOMPUTED per-position embeddings, since the real Talker prompt sums a text-projection
@@ -145,6 +148,26 @@ public sealed unsafe class QwenTtsTalkerTensorSource : IModelTensorSource, IDisp
     /// sequential dummy ids `0..numRows-1` into `Prefill`/`Forward`, exploiting the fact
     /// `ForwardPass`'s embedding lookup only cares about `token_embd.weight[id]`, not what the
     /// id conventionally means.
+    ///
+    /// <para><b>REAL BUG FOUND AND FIXED (2026-08-28)</b>: this used to allocate a BRAND NEW
+    /// buffer at a NEW address on every call and swap `_byCanonicalName`/`_syntheticBuffers` to
+    /// point at it. That is invisible to a `ForwardPass` already constructed against this source:
+    /// <see cref="OpenTail.Stingray.Engine.ForwardPass"/>'s own `ResolveTensor` captures
+    /// `token_embd.weight`'s raw data pointer ONCE, in its constructor
+    /// (`ForwardPass.Helpers.cs`'s `ResolveTensor`: `new TensorRef(name, info, info.DType,
+    /// _model.GetTensorDataPtr(info))` -- a `readonly TensorRef` field, never re-resolved). Every
+    /// per-step call in `QwenTtsPipeline.GenerateFrames` (all of them AFTER the one `ForwardPass`
+    /// construction) always feeds token id 0, i.e. always reads row 0 at whatever address was
+    /// captured at construction time -- so every single generated frame after the first was
+    /// silently conditioned on the SAME STALE row (the very first prompt token's embedding),
+    /// never the actual per-step content this method was asked to set. This produced
+    /// speech-shaped but "garbled" audio: the model was never actually seeing what it had
+    /// generated, only a constant, meaningless input repeated at every step. Fixed by keeping ONE
+    /// persistent buffer and writing new content into it IN PLACE (same address every call) --
+    /// grow-only if a caller ever needs more capacity than already allocated, since growing
+    /// (reallocating to a new address) AFTER `ForwardPass` has already captured the old pointer
+    /// would silently reintroduce this exact bug; the capacity check below fails loudly instead.
+    /// </para>
     /// </summary>
     public void SetPromptEmbedding(float[] rows, int numRows)
     {
@@ -152,11 +175,28 @@ public sealed unsafe class QwenTtsTalkerTensorSource : IModelTensorSource, IDisp
         if (rows.Length != elementCount)
             throw new ArgumentException($"SetPromptEmbedding: expected {elementCount} elements ({numRows}x{_hiddenDim}), got {rows.Length}.");
 
-        float* buffer = (float*)NativeMemory.Alloc((nuint)(elementCount * sizeof(float)));
+        if (_embedBuffer == 0)
+        {
+            _embedBuffer = (nint)NativeMemory.Alloc((nuint)(elementCount * sizeof(float)));
+            _embedBufferCapacityElements = elementCount;
+            _ownedPointers.Add(_embedBuffer);
+        }
+        else if (elementCount > _embedBufferCapacityElements)
+        {
+            // See the doc comment above: growing here would move the buffer to a new address
+            // that any already-constructed ForwardPass can never see again. No known caller
+            // needs this (QwenTtsPipeline's usage only ever shrinks after the initial prefill
+            // call), so fail loudly rather than silently reintroducing the stale-pointer bug.
+            throw new InvalidOperationException(
+                $"SetPromptEmbedding: requested {numRows} rows ({elementCount} elements) exceeds the " +
+                $"{_embedBufferCapacityElements}-element buffer already allocated for a live ForwardPass. " +
+                "Call this with the largest row count first (e.g. the initial prefill), then only " +
+                "equal-or-smaller row counts for subsequent per-step calls.");
+        }
+
         fixed (float* src = rows)
-            Buffer.MemoryCopy(src, buffer, elementCount * sizeof(float), elementCount * sizeof(float));
-        _ownedPointers.Add((nint)buffer);
-        _syntheticBuffers["token_embd.weight"] = (nint)buffer;
+            Buffer.MemoryCopy(src, (void*)_embedBuffer, _embedBufferCapacityElements * sizeof(float), elementCount * sizeof(float));
+        _syntheticBuffers["token_embd.weight"] = _embedBuffer;
 
         _byCanonicalName["token_embd.weight"] = new GgufTensorInfo("token_embd.weight", 2, [_hiddenDim, numRows], DType.Float32, DataOffset: 0);
         _tensors.Clear();
