@@ -3137,6 +3137,17 @@ public static unsafe class SimdKernels
 
     public static float DotIq4Xs_Q8K(byte* row, byte* scratch, int cols)
     {
+        if (Avx2.IsSupported && Ssse3.IsSupported && Fma.IsSupported)
+            return DotIq4Xs_Q8K_Avx2(row, scratch, cols);
+        return DotIq4Xs_Q8K_Scalar(row, scratch, cols);
+    }
+
+    /// <summary>
+    /// Scalar reference for <see cref="DotIq4Xs_Q8K_Avx2"/>; also the fallback on non-AVX2
+    /// hardware.
+    /// </summary>
+    private static float DotIq4Xs_Q8K_Scalar(byte* row, byte* scratch, int cols)
+    {
         int nb = cols / 256;
         float* dArr = (float*)scratch;
         sbyte* qsArr = (sbyte*)(scratch + nb * 4);
@@ -3185,6 +3196,77 @@ public static unsafe class SimdKernels
         return sumf;
     }
 
+    /// <summary>
+    /// AVX2 port of ggml_vec_dot_iq4_xs_q8_K's __AVX2__ branch (examples/ggml/src/ggml-cpu/
+    /// arch/x86/quants.c). Per 32-element ib-group: shuffle_epi8 does the 16-entry codebook
+    /// lookup for both nibble halves of a 16-byte q4 load (elements 0..15 and 16..31), packed
+    /// into one 256-bit vector matching the Q8_K activation's element order; mul_add_epi8 (the
+    /// sign/abs maddubs trick -- see DotQ8_0_Q8_0_Avx2's remarks) turns the signed-codebook ×
+    /// signed-activation product into the unsigned×signed shape VPMADDUBSW requires; madd_epi16
+    /// against the broadcast per-group scale reduces to 8 int32 lanes. One FP multiply by
+    /// d_weight*d_activation per 256-element superblock, matching the scalar path exactly.
+    /// </summary>
+    private static float DotIq4Xs_Q8K_Avx2(byte* row, byte* scratch, int cols)
+    {
+        int nb = cols / 256;
+        float* dArr = (float*)scratch;
+        sbyte* qsArr = (sbyte*)(scratch + nb * 4);
+
+        var values128 = Vector128.Create(
+            (sbyte)-127, -104, -83, -65, -49, -35, -22, -10, 1, 13, 25, 38, 53, 69, 89, 113).AsByte();
+        var m4b = Vector128.Create((byte)0x0F);
+        var accum = Vector256<float>.Zero;
+
+        for (int ibl = 0; ibl < nb; ibl++)
+        {
+            byte* blk = row + ibl * 136;
+            float dSuper = HalfToFloat(blk[0], blk[1]) * dArr[ibl];
+            int h = blk[2] | (blk[3] << 8);
+            byte* scalesL = blk + 4;
+            byte* qs = blk + 8;
+            sbyte* q8 = qsArr + ibl * 256;
+
+            var sumi1 = Vector256<int>.Zero;
+            var sumi2 = Vector256<int>.Zero;
+            int qsOff = 0, q8Off = 0;
+
+            for (int ib = 0; ib < 8; ib += 2)
+            {
+                var q4bits1 = Sse2.LoadVector128(qs + qsOff); qsOff += 16;
+                var q4bits2 = Sse2.LoadVector128(qs + qsOff); qsOff += 16;
+                var q8b1 = Vector256.LoadUnsafe(ref *(q8 + q8Off)).AsSByte(); q8Off += 32;
+                var q8b2 = Vector256.LoadUnsafe(ref *(q8 + q8Off)).AsSByte(); q8Off += 32;
+
+                var lo1 = Ssse3.Shuffle(values128, Sse2.And(q4bits1, m4b));
+                var hi1 = Ssse3.Shuffle(values128, Sse2.And(Sse2.ShiftRightLogical(q4bits1.AsUInt16(), 4).AsByte(), m4b));
+                var q4b1 = Vector256.Create(lo1, hi1).AsSByte();
+
+                var lo2 = Ssse3.Shuffle(values128, Sse2.And(q4bits2, m4b));
+                var hi2 = Ssse3.Shuffle(values128, Sse2.And(Sse2.ShiftRightLogical(q4bits2.AsUInt16(), 4).AsByte(), m4b));
+                var q4b2 = Vector256.Create(lo2, hi2).AsSByte();
+
+                var ax1 = Avx2.Abs(q4b1);
+                var sy1 = Avx2.Sign(q8b1, q4b1);
+                var p16_1 = Avx2.MultiplyAddAdjacent(ax1, sy1);
+
+                var ax2 = Avx2.Abs(q4b2);
+                var sy2 = Avx2.Sign(q8b2, q4b2);
+                var p16_2 = Avx2.MultiplyAddAdjacent(ax2, sy2);
+
+                int ls1 = ((scalesL[ib / 2] & 0xF) | ((h << 4) & 0x30)) - 32;
+                int ls2 = ((scalesL[ib / 2] >> 4) | ((h << 2) & 0x30)) - 32;
+                h >>= 4;
+
+                sumi1 = Avx2.Add(sumi1, Avx2.MultiplyAddAdjacent(p16_1, Vector256.Create((short)ls1)));
+                sumi2 = Avx2.Add(sumi2, Avx2.MultiplyAddAdjacent(p16_2, Vector256.Create((short)ls2)));
+            }
+
+            var total = Avx.ConvertToVector256Single(Avx2.Add(sumi1, sumi2));
+            accum = Fma.MultiplyAdd(Vector256.Create(dSuper), total, accum);
+        }
+        return HSum256(accum);
+    }
+
     // ================================================================
     //  IQ2_XS / IQ2_S / IQ3_XXS · Q8_K Dot Products  (one row, pre-quantized input)
     // ================================================================
@@ -3226,6 +3308,79 @@ public static unsafe class SimdKernels
     }
 
     public static float DotIq2Xs_Q8K(byte* row, byte* scratch, int cols)
+    {
+        if (Avx2.IsSupported && Avx.IsSupported && Fma.IsSupported)
+            return DotIq2Xs_Q8K_Avx2(row, scratch, cols);
+        return DotIq2Xs_Q8K_Scalar(row, scratch, cols);
+    }
+
+    /// <summary>
+    /// AVX2 path for IQ2_XS. ggml's own AVX2 kernel uses a memory-aliasing "store the grid
+    /// index vector, reload as scalar uint16s" gather trick that is not a safe pattern to port
+    /// 1:1 into managed code, and IQ2_XS's 512-entry grid is too large for a single
+    /// <c>Ssse3.Shuffle</c> table lookup the way IQ4_XS's 16-entry codebook worked. Instead:
+    /// the unavoidable per-index grid+sign lookups stay scalar (gathered into a 32-byte signed
+    /// buffer, matching Q8_K's per-superblock element order exactly), then the sign/multiply/
+    /// reduce arithmetic is vectorized with the same abs/sign maddubs trick as
+    /// <see cref="DotIq4Xs_Q8K_Avx2"/> and <see cref="DotQ8_0_Q8_0_Avx2"/>. AVX2's maddubs/madd
+    /// operate independently per 128-bit lane, which conveniently matches this format's
+    /// 16+16-element ls1/ls2 split with no extra shuffling needed.
+    /// </summary>
+    private static float DotIq2Xs_Q8K_Avx2(byte* row, byte* scratch, int cols)
+    {
+        int nb = cols / 256;
+        float* dArr = (float*)scratch;
+        sbyte* qsArr = (sbyte*)(scratch + nb * 4);
+        var grid = IqCodebooks.Iq2XsGrid;
+        var ksigns = IqCodebooks.KSignsIq2Xs;
+        var kmask = IqCodebooks.KMaskIq2Xs;
+        var accum = Vector256<float>.Zero;
+        sbyte* gbuf = stackalloc sbyte[32];
+
+        for (int i = 0; i < nb; i++)
+        {
+            byte* blk = row + i * 74;
+            float d = HalfToFloat(blk[0], blk[1]) * dArr[i];
+            byte* qsBytes = blk + 2;
+            byte* scales = blk + 66;
+            sbyte* q8 = qsArr + i * 256;
+            var sumi = Vector256<int>.Zero;
+
+            for (int ib32 = 0; ib32 < 8; ib32++)
+            {
+                int ls1 = 2 * (scales[ib32] & 0xF) + 1;
+                int ls2 = 2 * (scales[ib32] >> 4) + 1;
+
+                for (int l = 0; l < 4; l++)
+                {
+                    int qOff = (4 * ib32 + l) * 2;
+                    int qval = qsBytes[qOff] | (qsBytes[qOff + 1] << 8);
+                    ulong gridVal = grid[qval & 511];
+                    byte signs = ksigns[qval >> 9];
+                    for (int j = 0; j < 8; j++)
+                    {
+                        byte gb = (byte)(gridVal >> (8 * j));
+                        gbuf[l * 8 + j] = (sbyte)((signs & kmask[j]) != 0 ? -gb : gb);
+                    }
+                }
+
+                var gridVec = Avx.LoadVector256(gbuf);
+                var q8Vec = Avx.LoadVector256((sbyte*)(q8 + ib32 * 32));
+                var ax = Avx2.Abs(gridVec);
+                var sy = Avx2.Sign(q8Vec, gridVec);
+                var p16 = Avx2.MultiplyAddAdjacent(ax, sy);
+                var scalesVec = Vector256.Create(Vector128.Create((short)ls1), Vector128.Create((short)ls2));
+                sumi = Avx2.Add(sumi, Avx2.MultiplyAddAdjacent(p16, scalesVec));
+            }
+
+            var total = Avx.ConvertToVector256Single(sumi);
+            accum = Fma.MultiplyAdd(Vector256.Create(d), total, accum);
+        }
+        return 0.125f * HSum256(accum);
+    }
+
+    /// <summary>Scalar reference for <see cref="DotIq2Xs_Q8K_Avx2"/>; also the non-AVX2 fallback.</summary>
+    private static float DotIq2Xs_Q8K_Scalar(byte* row, byte* scratch, int cols)
     {
         int nb = cols / 256;
         float* dArr = (float*)scratch;
@@ -3305,6 +3460,71 @@ public static unsafe class SimdKernels
 
     public static float DotIq2S_Q8K(byte* row, byte* scratch, int cols)
     {
+        if (Avx2.IsSupported && Avx.IsSupported && Fma.IsSupported)
+            return DotIq2S_Q8K_Avx2(row, scratch, cols);
+        return DotIq2S_Q8K_Scalar(row, scratch, cols);
+    }
+
+    /// <summary>AVX2 path for IQ2_S — same design as <see cref="DotIq2Xs_Q8K_Avx2"/> (scalar
+    /// gather into a signed 32-byte buffer, then vectorized abs/sign maddubs+madd), adapted for
+    /// this format's qh-bit grid indexing and raw (non-ksigns-indexed) sign bytes.</summary>
+    private static float DotIq2S_Q8K_Avx2(byte* row, byte* scratch, int cols)
+    {
+        int nb = cols / 256;
+        float* dArr = (float*)scratch;
+        sbyte* qsArr = (sbyte*)(scratch + nb * 4);
+        var grid = IqCodebooks.Iq2SGrid;
+        var kmask = IqCodebooks.KMaskIq2Xs;
+        var accum = Vector256<float>.Zero;
+        sbyte* gbuf = stackalloc sbyte[32];
+
+        for (int i = 0; i < nb; i++)
+        {
+            byte* blk = row + i * 82;
+            float d = HalfToFloat(blk[0], blk[1]) * dArr[i];
+            byte* qsLow = blk + 2;
+            byte* signs = blk + 34;
+            byte* qh = blk + 66;
+            byte* scales = blk + 74;
+            sbyte* q8 = qsArr + i * 256;
+            var sumi = Vector256<int>.Zero;
+
+            for (int ib32 = 0; ib32 < 8; ib32++)
+            {
+                int ls1 = 1 + 2 * (scales[ib32] & 0xF);
+                int ls2 = 1 + 2 * (scales[ib32] >> 4);
+                int baseOff = ib32 * 4;
+
+                for (int l = 0; l < 4; l++)
+                {
+                    int idx = qsLow[baseOff + l] | ((qh[ib32] << (8 - 2 * l)) & 0x300);
+                    ulong gridVal = grid[idx];
+                    byte sgn = signs[baseOff + l];
+                    for (int j = 0; j < 8; j++)
+                    {
+                        byte gb = (byte)(gridVal >> (8 * j));
+                        gbuf[l * 8 + j] = (sbyte)((sgn & kmask[j]) != 0 ? -gb : gb);
+                    }
+                }
+
+                var gridVec = Avx.LoadVector256(gbuf);
+                var q8Vec = Avx.LoadVector256((sbyte*)(q8 + ib32 * 32));
+                var ax = Avx2.Abs(gridVec);
+                var sy = Avx2.Sign(q8Vec, gridVec);
+                var p16 = Avx2.MultiplyAddAdjacent(ax, sy);
+                var scalesVec = Vector256.Create(Vector128.Create((short)ls1), Vector128.Create((short)ls2));
+                sumi = Avx2.Add(sumi, Avx2.MultiplyAddAdjacent(p16, scalesVec));
+            }
+
+            var total = Avx.ConvertToVector256Single(sumi);
+            accum = Fma.MultiplyAdd(Vector256.Create(d), total, accum);
+        }
+        return 0.125f * HSum256(accum);
+    }
+
+    /// <summary>Scalar reference for <see cref="DotIq2S_Q8K_Avx2"/>; also the non-AVX2 fallback.</summary>
+    private static float DotIq2S_Q8K_Scalar(byte* row, byte* scratch, int cols)
+    {
         int nb = cols / 256;
         float* dArr = (float*)scratch;
         sbyte* qsArr = (sbyte*)(scratch + nb * 4);
@@ -3380,6 +3600,71 @@ public static unsafe class SimdKernels
     }
 
     public static float DotIq3Xxs_Q8K(byte* row, byte* scratch, int cols)
+    {
+        if (Avx2.IsSupported && Avx.IsSupported && Fma.IsSupported)
+            return DotIq3Xxs_Q8K_Avx2(row, scratch, cols);
+        return DotIq3Xxs_Q8K_Scalar(row, scratch, cols);
+    }
+
+    /// <summary>AVX2 path for IQ3_XXS — same design as <see cref="DotIq2Xs_Q8K_Avx2"/>, but this
+    /// format has only one scale per 32-element group (like IQ4_XS) instead of a 16+16 split.</summary>
+    private static float DotIq3Xxs_Q8K_Avx2(byte* row, byte* scratch, int cols)
+    {
+        int nb = cols / 256;
+        float* dArr = (float*)scratch;
+        sbyte* qsArr = (sbyte*)(scratch + nb * 4);
+        var grid = IqCodebooks.Iq3XxsGrid;
+        var ksigns = IqCodebooks.KSignsIq2Xs;
+        var kmask = IqCodebooks.KMaskIq2Xs;
+        var accum = Vector256<float>.Zero;
+        sbyte* gbuf = stackalloc sbyte[32];
+
+        for (int i = 0; i < nb; i++)
+        {
+            byte* blk = row + i * 98;
+            float d = HalfToFloat(blk[0], blk[1]) * dArr[i];
+            byte* q3 = blk + 2;
+            byte* gas = blk + 2 + 64;
+            sbyte* q8 = qsArr + i * 256;
+            var sumi = Vector256<int>.Zero;
+
+            for (int ib32 = 0; ib32 < 8; ib32++)
+            {
+                int gOff = ib32 * 4;
+                uint aux32 = (uint)(gas[gOff] | (gas[gOff + 1] << 8) | (gas[gOff + 2] << 16) | (gas[gOff + 3] << 24));
+                int ls = (int)(2 * (aux32 >> 28) + 1);
+                int qOff = ib32 * 8;
+
+                for (int l = 0; l < 4; l++)
+                {
+                    uint g1 = grid[q3[qOff + 2 * l + 0]];
+                    uint g2 = grid[q3[qOff + 2 * l + 1]];
+                    byte signs = ksigns[(int)((aux32 >> (7 * l)) & 127)];
+                    for (int j = 0; j < 4; j++)
+                    {
+                        byte gb1 = (byte)(g1 >> (8 * j));
+                        byte gb2 = (byte)(g2 >> (8 * j));
+                        gbuf[l * 8 + j] = (sbyte)((signs & kmask[j]) != 0 ? -gb1 : gb1);
+                        gbuf[l * 8 + 4 + j] = (sbyte)((signs & kmask[j + 4]) != 0 ? -gb2 : gb2);
+                    }
+                }
+
+                var gridVec = Avx.LoadVector256(gbuf);
+                var q8Vec = Avx.LoadVector256((sbyte*)(q8 + ib32 * 32));
+                var ax = Avx2.Abs(gridVec);
+                var sy = Avx2.Sign(q8Vec, gridVec);
+                var p16 = Avx2.MultiplyAddAdjacent(ax, sy);
+                sumi = Avx2.Add(sumi, Avx2.MultiplyAddAdjacent(p16, Vector256.Create((short)ls)));
+            }
+
+            var total = Avx.ConvertToVector256Single(sumi);
+            accum = Fma.MultiplyAdd(Vector256.Create(d), total, accum);
+        }
+        return 0.25f * HSum256(accum);
+    }
+
+    /// <summary>Scalar reference for <see cref="DotIq3Xxs_Q8K_Avx2"/>; also the non-AVX2 fallback.</summary>
+    private static float DotIq3Xxs_Q8K_Scalar(byte* row, byte* scratch, int cols)
     {
         int nb = cols / 256;
         float* dArr = (float*)scratch;
