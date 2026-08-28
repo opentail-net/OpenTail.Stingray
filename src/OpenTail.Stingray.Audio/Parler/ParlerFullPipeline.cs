@@ -16,10 +16,20 @@ namespace OpenTail.Stingray.Audio.Parler;
 /// <para><b>Real config, confirmed from the actual `parler-tts/parler-tts-mini-v1`
 /// `generation_config.json`/`config.json` on Hugging Face (fetched this fire, not guessed)</b>:
 /// `bos_token_id=1025` (== `decoder_start_token_id`), `eos_token_id=pad_token_id=1024`,
-/// `num_codebooks=9`, `min_new_tokens=10`, real default `do_sample=True` (no fixed
-/// temperature/top_k/top_p recorded in the checkpoint's own generation_config -- this pipeline
-/// uses GREEDY decode instead, as an explicit first-pass simplification consistent with every
-/// other pipeline in this codebase, not a silent approximation).</para>
+/// `num_codebooks=9`, `min_new_tokens=10`, real default `do_sample=True, temperature=1.0`. The
+/// first-pass implementation used GREEDY argmax instead as a deliberate simplification -- WRONG,
+/// found and fixed 2026-08-28: greedy collapses this specific MusicGen-style delayed-codebook
+/// decoder into a near-immediate per-codebook fixed-point attractor (the same code repeated for
+/// hundreds of consecutive frames, e.g. codebook 0 settling on one token for ~285 straight steps
+/// on a 2-word prompt), which the DAC codec decodes to a near-pure tone/drone, not speech. The
+/// real HF `_sample()` routine (which Parler's own `generate()` calls for both its sample and
+/// greedy generation modes) samples each codebook's softmax independently -- no correlated/joint
+/// draw across codebooks -- so this pipeline now does the same: per-step, per-codebook
+/// temperature-1 categorical sample (<see cref="SampleMultinomial"/>), no top-k/top-p filtering
+/// (the checkpoint's own inference example calls plain `do_sample=True, temperature=1.0`). Token
+/// diversity after the fix (same 2-word prompt): unique tokens per codebook rose from 2-4 (greedy)
+/// to 88-249 (sampled) out of 300 generated positions, and the longest same-token run fell from
+/// ~285-290 to 5-18 -- the diagnostic transition this fix was verified against.</para>
 ///
 /// <para><b>Per-step mask application, not separately verified against a fresh oracle but
 /// directly implied by the real `apply_delay_pattern_mask`'s own doc comment ("only preserving
@@ -135,12 +145,45 @@ public sealed class ParlerFullPipeline : ITextToSpeechPipeline
         _dacWeights = new DacWeights(decoderAndDacGguf);
     }
 
-    /// <summary>Full pipeline: text -&gt; mono float32 PCM. Real T5 EOS (id 1) appended to the tokenizer's segmentation-only output, matching the real T5 tokenizer's post-processor.</summary>
-    public float[] Synthesize(string text, int maxNewTokens = 300, int minNewTokens = 10)
+    /// <summary>Real Parler-TTS usage examples' style description when the caller doesn't supply one -- this checkpoint's decoder REQUIRES some description for its T5 cross-attention conditioning to be meaningful (there is no "no style" input), so a neutral default is used rather than reusing the spoken text (which was this pipeline's original, wrong behaviour -- see EmbedPrompts's doc comment).</summary>
+    public const string DefaultDescription = "A clear, neutral voice speaks at a moderate pace with natural intonation and good audio quality.";
+
+    /// <summary>
+    /// Full pipeline: text -&gt; mono float32 PCM.
+    /// </summary>
+    /// <param name="text">The words to actually speak (the real Parler-TTS `prompt_input_ids`
+    /// path -- embedded via <see cref="ParlerDecoderWeights.EmbedPrompts"/> and prepended to the
+    /// decoder's own self-attention sequence). Found missing entirely and wired 2026-08-28: this
+    /// pipeline previously fed <paramref name="text"/> into the T5 encoder as if it were the STYLE
+    /// DESCRIPTION, with no mechanism at all telling the decoder what words to say -- it produced
+    /// speech-shaped but content-free/gibberish audio ("devil-speak") even with correct sampling.</param>
+    /// <param name="description">The voice/style description (the real `input_ids` -&gt; T5
+    /// encoder -&gt; cross-attention conditioning path -- e.g. "A calm male voice, low pitch,
+    /// speaking slowly"). Defaults to <see cref="DefaultDescription"/> when omitted; real T5 EOS
+    /// (id 1) appended to both this and <paramref name="text"/>'s tokenization, matching the real
+    /// T5 tokenizer's post-processor.</param>
+    /// <param name="seed">
+    /// RNG seed for the per-codebook temperature-1 multinomial sample (real Parler-TTS's own
+    /// inference default is <c>do_sample=True, temperature=1.0</c> -- greedy argmax was an
+    /// explicit first-pass simplification that turned out to be wrong: it drives this specific
+    /// MusicGen-style delayed-codebook decoder into a near-immediate per-codebook fixed-point
+    /// attractor (the SAME code repeated for hundreds of consecutive frames), which a DAC codec
+    /// decodes to a near-pure tone/drone, not speech. -1 (default) seeds from
+    /// <see cref="Random.Shared"/>-derived entropy (non-deterministic, matches real usage); pass a
+    /// fixed value for reproducible tests.</param>
+    public float[] Synthesize(string text, string? description = null, int maxNewTokens = 300, int minNewTokens = 10, int seed = -1)
     {
-        var tokenIds = _tokenizer.Encode(text);
-        tokenIds.Add(1); // real T5 EOS id, appended by the real tokenizer's post-processor (see UnigramTokenizerTests)
-        var encoderHidden = T5Encoder.Forward(_t5Weights, [.. tokenIds]);
+        var rng = seed >= 0 ? new Random(seed) : new Random();
+
+        var descriptionIds = _tokenizer.Encode(description ?? DefaultDescription);
+        descriptionIds.Add(1); // real T5 EOS id, appended by the real tokenizer's post-processor (see UnigramTokenizerTests)
+        var encoderHidden = T5Encoder.Forward(_t5Weights, [.. descriptionIds]);
+
+        var promptIds = _tokenizer.Encode(text);
+        promptIds.Add(1); // same real T5 EOS convention, matching the real `tokenizer(text).input_ids` call
+        int promptLen = promptIds.Count;
+        bool hasPrompt = _decoderWeights.EmbedPrompts is not null;
+        if (!hasPrompt) promptLen = 0; // GGUF conversion gap fallback -- see EmbedPrompts's doc comment
 
         int maxLength = 1 + maxNewTokens;
         var initialPerCodebook = new int[NumCodebooks][];
@@ -154,14 +197,31 @@ public sealed class ParlerFullPipeline : ITextToSpeechPipeline
         var cache = new ParlerDecoderKvCache(ParlerDecoderWeights.NumLayers);
         var logitsProcessor = new ParlerLogitsProcessor(EosTokenId, NumCodebooks);
 
+        float[] hidden = [];
+
+        // Real `inputs_embeds = torch.cat([prompt_hidden_states, inputs_embeds], dim=1)`: the
+        // transcript's own token embeddings come FIRST in the decoder's self-attention sequence,
+        // ordinary causal self-attention lets every subsequent audio-token step attend back to
+        // them directly. Real position embeddings are computed ONCE over this whole concatenated
+        // sequence (`ParlerTTSDecoder.forward`'s `positions = self.embed_positions(inputs_embeds,
+        // past_key_values_length)`) -- i.e. one continuous counter, not two independent ones -- so
+        // every audio-token position below is offset by `promptLen`.
+        if (hasPrompt)
+        {
+            for (int i = 0; i < promptLen; i++)
+            {
+                var embed = ParlerDecoder.EmbedPromptToken(_decoderWeights, promptIds[i], i);
+                hidden = ParlerDecoder.ForwardStep(_decoderWeights, cache, embed, encoderHidden);
+            }
+        }
+
         // Feed every already-known initial position (real "first_start_id" prefix) through the KV cache.
         int t0 = sequence[0].Length;
-        float[] hidden = [];
         for (int pos = 0; pos < t0; pos++)
         {
             var ids = new int[NumCodebooks];
             for (int cb = 0; cb < NumCodebooks; cb++) ids[cb] = sequence[cb][pos];
-            var embed = ParlerDecoder.EmbedStep(_decoderWeights, ids, pos);
+            var embed = ParlerDecoder.EmbedStep(_decoderWeights, ids, promptLen + pos);
             hidden = ParlerDecoder.ForwardStep(_decoderWeights, cache, embed, encoderHidden);
         }
 
@@ -186,7 +246,7 @@ public sealed class ParlerFullPipeline : ITextToSpeechPipeline
             }
 
             var predicted = new int[NumCodebooks];
-            for (int cb = 0; cb < NumCodebooks; cb++) predicted[cb] = Argmax(logitsPerCodebook[cb]);
+            for (int cb = 0; cb < NumCodebooks; cb++) predicted[cb] = SampleMultinomial(logitsPerCodebook[cb], rng);
 
             // Real "only preserve predictions where the mask is -1" -- force the known BOS/PAD value where the pattern already knows it.
             var maskAtPos = new int[NumCodebooks];
@@ -202,7 +262,7 @@ public sealed class ParlerFullPipeline : ITextToSpeechPipeline
 
             var nextIds = new int[NumCodebooks];
             for (int cb = 0; cb < NumCodebooks; cb++) nextIds[cb] = sequence[cb][^1];
-            var nextEmbed = ParlerDecoder.EmbedStep(_decoderWeights, nextIds, pos + 1);
+            var nextEmbed = ParlerDecoder.EmbedStep(_decoderWeights, nextIds, promptLen + pos + 1);
             hidden = ParlerDecoder.ForwardStep(_decoderWeights, cache, nextEmbed, encoderHidden);
         }
 
@@ -243,19 +303,67 @@ public sealed class ParlerFullPipeline : ITextToSpeechPipeline
             minLen = Math.Min(minLen, len);
         }
         if (minLen <= 0 || minLen == int.MaxValue) return [[], [], [], [], [], [], [], [], []];
+        var truncated = new int[NumCodebooks][];
+        for (int cb = 0; cb < NumCodebooks; cb++) truncated[cb] = stripped[cb][..minLen];
+
+        // Real-sampling defensive filter, matching examples/TTS.cpp's own `adjust_output_tokens`:
+        // temperature-1 sampling can occasionally draw a special/dead-zone class (BOS=1025,
+        // PAD=1024, or the unused 1026-1087 tail of this decoder's oversized 1088-way vocab -- see
+        // ParlerDecoderWeights's own "+1 for pad... too late to change now" note) mid-sequence,
+        // past the delay-pattern mask's "keep" window where greedy argmax never would have (it
+        // always favoured a real, well-trained code). DacWeights.CodebookSize (1024) is the only
+        // valid range its embedding table actually has rows for -- anything >= it is an
+        // IndexOutOfRangeException waiting to happen, not just an audio-quality issue. Drop the
+        // WHOLE FRAME (all 9 codebooks) wherever any one of them is out of range, exactly like the
+        // reference implementation, rather than clamping (which would silently substitute a
+        // plausible-looking but wrong code).
+        var keptFrames = new List<int>(minLen);
+        for (int t = 0; t < minLen; t++)
+        {
+            bool valid = true;
+            for (int cb = 0; cb < NumCodebooks; cb++)
+                if ((uint)truncated[cb][t] >= DacWeights.CodebookSize) { valid = false; break; }
+            if (valid) keptFrames.Add(t);
+        }
+        if (keptFrames.Count == minLen) return truncated; // common case: nothing to filter, no copy needed
+
         var result = new int[NumCodebooks][];
-        for (int cb = 0; cb < NumCodebooks; cb++) result[cb] = stripped[cb][..minLen];
+        for (int cb = 0; cb < NumCodebooks; cb++)
+        {
+            var row = new int[keptFrames.Count];
+            for (int i = 0; i < keptFrames.Count; i++) row[i] = truncated[cb][keptFrames[i]];
+            result[cb] = row;
+        }
         return result;
     }
 
     private static int[][] Wrap(int[] row) => [[row[0]], [row[1]], [row[2]], [row[3]], [row[4]], [row[5]], [row[6]], [row[7]], [row[8]]];
 
-    private static int Argmax(float[] logits)
+    /// <summary>
+    /// Real Parler-TTS/HF <c>_sample()</c> decode step: temperature-1 softmax then
+    /// <c>torch.multinomial</c>-equivalent categorical draw (no top-k/top-p filtering -- the
+    /// checkpoint's own inference example calls plain <c>do_sample=True, temperature=1.0</c>, and
+    /// per-codebook sampling is genuinely independent in the reference implementation, not a joint
+    /// draw over all 9 codebooks -- see docs/audio-review-progress.md's greedy-collapse writeup).
+    /// Numerically stable (max-subtracted exp, cumulative-sum draw) -- no explicit normalisation
+    /// needed since the draw is scaled by the unnormalised sum directly.
+    /// </summary>
+    private static int SampleMultinomial(float[] logits, Random rng)
     {
-        int idx = 0;
-        float max = logits[0];
-        for (int i = 1; i < logits.Length; i++) if (logits[i] > max) { max = logits[i]; idx = i; }
-        return idx;
+        float max = float.NegativeInfinity;
+        for (int i = 0; i < logits.Length; i++) if (logits[i] > max) max = logits[i];
+
+        double sum = 0.0;
+        for (int i = 0; i < logits.Length; i++) sum += Math.Exp(logits[i] - max);
+
+        double r = rng.NextDouble() * sum;
+        double cumulative = 0.0;
+        for (int i = 0; i < logits.Length; i++)
+        {
+            cumulative += Math.Exp(logits[i] - max);
+            if (r < cumulative) return i;
+        }
+        return logits.Length - 1;
     }
 
     private static unsafe float[] LinearNoBias(float[] input, float[] weight, int inDim, int outDim)

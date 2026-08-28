@@ -28,6 +28,25 @@ public static class ParlerDecoder
 {
     private const int HeadDim = ParlerDecoderWeights.HiddenDim / ParlerDecoderWeights.NumHeads; // 64
 
+    /// <summary>
+    /// Composes the real input embedding for one PROMPT (transcript) token: a plain
+    /// `embed_prompts` lookup + the same sinusoidal position table the audio codebook embeddings
+    /// use, sharing one continuous position counter across the prepended prompt-token prefix and
+    /// the audio tokens that follow it (real `ParlerTTSDecoder.forward`: positions are computed
+    /// ONCE over the already-concatenated prompt+audio sequence, not two independent counters).
+    /// </summary>
+    public static float[] EmbedPromptToken(ParlerDecoderWeights w, int tokenId, int position)
+    {
+        var table = w.EmbedPrompts ?? throw new InvalidOperationException(
+            "This ParlerDecoderWeights has no embed_prompts table (GGUF conversion gap) -- cannot embed a prompt token.");
+        var emb = new float[ParlerDecoderWeights.HiddenDim];
+        long row = (long)tokenId * ParlerDecoderWeights.HiddenDim;
+        long posRow = (long)position * ParlerDecoderWeights.HiddenDim;
+        for (int d = 0; d < ParlerDecoderWeights.HiddenDim; d++)
+            emb[d] = table[row + d] + w.EmbedPositions[posRow + d];
+        return emb;
+    }
+
     /// <summary>Composes the real input embedding for one timestep: sum of 9 codebook-token lookups + the real sinusoidal position embedding.</summary>
     public static float[] EmbedStep(ParlerDecoderWeights w, int[] codebookTokenIds, int position)
     {

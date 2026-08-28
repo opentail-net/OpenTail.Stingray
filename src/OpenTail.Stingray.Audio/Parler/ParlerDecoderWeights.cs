@@ -43,6 +43,24 @@ public sealed class ParlerDecoderWeights
     public float[][] EmbedTokens { get; } = new float[NumCodebooks][];
     /// <summary>[MaxPositions, HiddenDim] -- real precomputed sinusoidal positional embedding buffer, loaded directly (not recomputed).</summary>
     public float[] EmbedPositions { get; }
+    /// <summary>
+    /// [PromptVocabSize, HiddenDim] -- the real `embed_prompts.weight` (a bare `nn.Embedding`, NOT
+    /// through the T5 encoder). Embeds the actual TRANSCRIPT text (via the same T5/Unigram
+    /// tokenizer used for the style description), which gets PREPENDED to the decoder's own
+    /// self-attention input sequence (`prompt_cross_attention=False` is this checkpoint's real
+    /// config default -- confirmed via <c>configuration_parler_tts.py</c>'s class default and this
+    /// checkpoint carrying no override). Found and wired 2026-08-28: was missing from this port
+    /// entirely (inherited from `examples/TTS.cpp`'s own reference implementation, which also
+    /// never implements this tensor/mechanism) -- without it, the decoder had literally no signal
+    /// for WHAT WORDS to say, only the T5 encoder's cross-attention "vibe" from whatever string was
+    /// passed as if it were a voice-style description. Produced speech-shaped but wrong/gibberish
+    /// audio ("devil-speak") even after fixing the separate greedy-decoding collapse bug. Nullable:
+    /// the community GGUF conversion this port also supports does not carry this tensor (confirmed
+    /// absent, matching the same reference gap) -- callers without it fall back to no prompt-prefix
+    /// (the old, incomplete behaviour), not a crash.
+    /// </summary>
+    public float[]? EmbedPrompts { get; }
+    public const int PromptVocabSize = 32128; // real T5/flan-t5 vocab size, confirmed via embed_prompts.weight's own shape
     public ParlerDecoderLayerWeights[] Layers { get; } = new ParlerDecoderLayerWeights[NumLayers];
     public float[] FinalLayerNormWeight { get; }
     public float[] FinalLayerNormBias { get; }
@@ -57,6 +75,7 @@ public sealed class ParlerDecoderWeights
             LmHeads[cb] = loader.ReadF32($"decoder.lm_heads.{cb}.weight");
         }
         EmbedPositions = loader.ReadF32("decoder.model.decoder.embed_positions.weights");
+        EmbedPrompts = loader.ReadF32("embed_prompts.weight");
         FinalLayerNormWeight = loader.ReadF32("decoder.model.decoder.layer_norm.weight");
         FinalLayerNormBias = loader.ReadF32("decoder.model.decoder.layer_norm.bias");
 
@@ -125,6 +144,9 @@ public sealed class ParlerDecoderWeights
             LmHeads[cb] = GetF32(model, $"decoder.lm_heads.{cb}.weight.head");
         }
         EmbedPositions = GetF32(model, "decoder.embed_positions.weights");
+        // Real, confirmed absent from this community conversion (same gap as examples/TTS.cpp's
+        // own reference) -- see EmbedPrompts's doc comment. Left null; callers must fall back.
+        EmbedPrompts = model.FindTensor("embed_prompts.weight") is not null ? GetF32(model, "embed_prompts.weight") : null;
         FinalLayerNormWeight = GetF32(model, "decoder.layer_norm.weight");
         FinalLayerNormBias = GetF32(model, "decoder.layer_norm.bias");
 
