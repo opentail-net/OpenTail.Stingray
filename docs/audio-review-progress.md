@@ -9164,3 +9164,154 @@ a separate, bigger job than this pass's scope -- full golden verification of the
 CodePredictor forward pass against a real PyTorch oracle (`examples/qwen-tts-py`'s own reference
 source is available locally) is the real next step, not a quick follow-up fix. Not attempted this
 session; moving on to Fish Speech per direct instruction.**
+
+## QwenTTS marked NOT SUPPORTED -- golden-verified against the real PyTorch reference down to the exact failure point, but no quick fix found. Full session summary (2026-08-28)
+
+**Decision: `-e qwentts` now throws immediately** (`TtsCommand.cs`, real dispatch line kept commented
+out in place, not deleted, for easy restoration) rather than silently producing wrong audio. This
+closes out this session's QwenTTS work -- real, substantial progress was made (four genuine bugs
+found and fixed, a working golden-verification harness built, the failure precisely localized), but
+the remaining defect has no quick fix and needed its own dedicated investigation to actually resolve.
+
+### Four real bugs found and fixed this session (all kept, all independently verified -- listed in the order found)
+
+1. **Missing sampling** (`QwenTtsPipeline.cs`, `QwenTtsCodePredictorGeneration.cs`): both the
+   talker's semantic-code loop and the code-predictor's acoustic-codebook loop used plain `ArgMax`.
+   Replaced with the real Qwen3-TTS sampling (temperature=0.9, top-k=50, repetition_penalty=1.05 for
+   the talker; temperature=0.9, top-k=50, no penalty for the subtalker -- sourced from the local
+   reference `examples/qwen-tts-py/qwen_tts/core/models/modeling_qwen3_tts.py`, not guessed).
+   Listen-confirmed real progress: fixed the tonal "drill noise" collapse.
+2. **Missing acoustic-codebook feedback**: the real generation loop (`examples/qwentts.cpp`'s
+   `tts_engine_step`) feeds ALL 16 codebooks (semantic + 15 acoustic) back into the next talker
+   step, summed via their respective embedding tables. This pipeline only fed the semantic code
+   `c0`, silently dropping every acoustic code the code predictor generates each frame. Fixed by
+   summing all 16 codebook embeddings for the next-step input, matching the reference exactly.
+3. **Stale-pointer bug, talker side** (`QwenTtsTalkerTensorSource.SetPromptEmbedding`): allocated a
+   brand-new buffer at a new address on every call, but `ForwardPass` captures a tensor's raw data
+   pointer ONCE in its constructor and never re-resolves it -- so every talker step after the first
+   `ForwardPass` construction was silently conditioned on the same stale first-prompt-row embedding.
+   Fixed by keeping one persistent buffer, written in place.
+4. **Stale-pointer bug, code-predictor side** (`QwenTtsCodePredictorTensorSource`'s
+   `SetPromptEmbedding`/`SetOutputHead`), same root cause as #3 but arguably worse: every acoustic
+   codebook step g=1..14 was silently scored through `lm_head[0]` (codebook 1's head) with a stale
+   input, never its own `lm_head[g]` -- so codebooks c2..c15 were each sampled from the SAME
+   (c1-conditioned, lm_head[0]) distribution every frame, not 15 independently meaningful
+   predictions. Fixed the same way as #3.
+
+Each of these was real, listen-confirmed progress at the time (moved the failure mode from "drill
+noise" -> "garbled" -> "man getting stung by bees" -- each fix genuinely changed the character of
+the output, never regressed it) -- but the final result was still not clean speech, which is what
+motivated building real numeric ground truth instead of continuing to guess from listening alone.
+
+### Golden-verification harness built (real, reusable infrastructure -- kept)
+
+Loads the real GGUF weights (`models/qwen-talker-0.6b-base-Q8_0.gguf`, Q8_0-dequantized) directly
+into the actual `Qwen3TTSTalkerModel` PyTorch class from `examples/qwen-tts-py`, feeds it the
+IDENTICAL input embedding our C# pipeline composed, and compares hidden states/logits numerically
+(cosine similarity, max-abs-diff) instead of relying on a human listening to generated audio.
+Needed several compatibility patches for the installed `transformers` 5.7.0 (the vendored reference
+code was written against an older API -- `ROPE_INIT_FUNCTIONS['default']` was removed, `rope_type`
+resolution changed) -- patched via a standard, well-known RoPE frequency formula, not guessed.
+
+**C# side**: `QwenTtsPipeline.cs` gained `STINGRAY_QWENTTS_GOLDEN_DUMP`-gated dumps (prompt
+embedding, hyperparameters, last hidden state, logits). `QwenTtsTalkerTensorSource.cs` now keeps
+`qwen3-tts.block_count` consistent with the `numLayers` it's constructed with (a real fix in its
+own right -- previously always 28 regardless of how many layers were actually aliased, a crash risk
+-- and it doubles as a genuine bisection knob: `QwenTtsPipeline.Generate`'s existing
+`talkerNumLayers` parameter now gives a REAL N-layer trunk). Two temporary xUnit tests in
+`QwenTtsPipelineTests.cs` (`Bisect_TalkerLayers`, `Bisect_SingleTokenLayer`, `Bisect_TwoTokenLayer`
+-- kept, `TODO revert/remove` comments left in place since they're genuinely reusable if this
+investigation resumes) drive specific N-layer / T-token configurations.
+
+### What the harness proved, precisely (real measured cosine similarities, not estimates)
+
+| Test | Cosine similarity | Verdict |
+|---|---|---|
+| T=1 (single token, no cross-attention), 1 layer | **0.999959** | Correct (residual is Q8_0/FP32 noise) |
+| T=2 (two tokens, position 1 attends to position 0+1), 1 layer | **0.760090** | Wrong |
+| T=11 (a real short prompt), 1 layer | **0.560** | Wrong |
+| T=11 (a real short prompt), 28 layers (full model) | **0.005994** | Wrong (near-random) |
+
+**This precisely localizes the defect**: everything that only involves a SINGLE position (Q/K/V
+projection, QK-RMSNorm, RoPE rotation AT POSITION 0 specifically, the FFN, the residual/norm
+structure) is proven correct. Everything involving MULTIPLE positions (causal attention across
+cached positions, RoPE rotation at position > 0, or the KV-cache write/read path) is where the bug
+lives. The T=1-vs-T=2 contrast is the single most informative data point: RoPE's rotation matrix is
+literally the identity at position 0 regardless of which convention (NEOX half-split vs. interleaved
+pairs) is used, so a wrong-convention bug -- or almost any position-dependent bug -- would pass a
+position-0-only test and fail everywhere else, exactly what was observed.
+
+### What was checked and ruled out (by direct source reading against BOTH real references, not assumption)
+
+Cross-checked against two independent real sources: `examples/qwen-tts-py` (the HF/PyTorch
+reference) and `examples/qwentts.cpp` (a from-scratch GGML C++ port) -- both describe the identical
+mechanism, so agreement between them was itself informative (rules out "the C++ port made a
+different design choice").
+
+- **Hyperparameters**: `HeadDim=128, NumHeads=16, NumKvHeads=8, EmbeddingDim=1024, RopeTheta=1e6,
+  RmsNormEps=1e-6` -- confirmed exactly correct via a direct dump of `ModelHyperparams`, matching
+  the real GGUF metadata precisely.
+- **NEOX RoPE selection**: `"qwen3-tts"` is explicitly listed in `ModelGraph.cs`'s NEOX architecture
+  switch -- confirmed selected, not defaulting to the wrong (interleaved) convention.
+- **RoPE rotation formula** (`SimdKernels.ApplyRoPECachedNeox`): `x'[i] = x[i]*cos - x[i+half]*sin`,
+  `x'[i+half] = x[i]*sin + x[i+half]*cos` -- byte-for-byte the standard NEOX half-split formula,
+  matches both references' `rotate_half` exactly.
+- **RoPE frequency table** (`SimdKernels.BuildRopeTable`): `inv_freq[i] = theta^(-2i/headDim)`,
+  `angle = position * inv_freq[i]` -- matches both references' frequency formula exactly.
+- **RoPE dispatch consistency**: EVERY call site (`ForwardPass.Decode.cs`'s `ApplyRope` for
+  single-step decode, `ApplyRopeLayer` for the batched prefill path used by `Prefill()`) correctly
+  branches on `_hp.IsNeoxRope` and calls the same `ApplyRoPECachedNeox` kernel with the same table --
+  no path-specific inconsistency between how the prefill path and the decode path rotate.
+- **No accidental YaRN/partial-RoPE misfire**: YaRN detection reads `{arch}.rope.scaling.factor`
+  specifically, a key this GGUF does not have (only `rope.mrope_section`/`rope.freq_base` exist, an
+  unrelated metadata namespace) -- confirmed `RopeYarnFactor` resolves to its default (1, meaning
+  "off"). Partial-RoPE (`rope.dimension_count`) is also absent, confirmed `ropeDim == headDim`
+  (full rotation), not accidentally partial.
+- **GQA head-to-KV-head grouping** (`ForwardPass.Attention.cs`'s single-step `Attention`): query
+  head `hh` reads KV head `hh / hpkg` where `hpkg = numHeads/kvHeads = 2` -- i.e. query heads (0,1)
+  share KV head 0, (2,3) share KV head 1, etc. -- confirmed matching the real `repeat_kv`'s
+  consecutive-repeat convention (`hidden_states[:, :, None, :, :].expand(..., n_rep, ...)`) exactly.
+- **`mrope_interleaved`/`mrope_section` metadata**: confirmed via the real `apply_multimodal_rotary_
+  pos_emb` source that when all 3 multimodal position axes share the same value (guaranteed for
+  plain-text TTS, no vision/video input), BOTH the interleaved and non-interleaved code branches
+  produce numerically identical cos/sin -- so this metadata genuinely doesn't matter here, not a
+  red herring worth chasing further.
+
+### What's left to check, if this investigation is resumed
+
+1. **Verify the T=2 result isn't a length-1-prefill edge case.** The `Bisect_TwoTokenLayer` test
+   uses `Prefill([0])` (a length-1 prefill) followed by a single `Forward` call -- real usage never
+   prefills fewer than ~10 tokens, so before trusting T=2 further, re-run it with a longer leading
+   prefill (e.g. 5 real tokens, then the position-under-test) to rule out a prefill-length-1-specific
+   artifact being a second, different bug layered on top of the real one.
+2. **Dump post-RoPE Q/K vectors directly**, not just the final hidden state. Add a debug hook
+   inside `Attention()`/`ApplyRopeLayer` (or a temporary standalone kernel-level test) to capture
+   the rotated Q/K vectors at position 1 from both C# and the Python reference, and diff those
+   directly -- this narrows "somewhere in attention" down to a specific tensor (Q after RoPE? K
+   after RoPE? the attention scores themselves? the weighted V-sum? the O-projection?).
+3. **KV-cache write/read consistency**: verify the cached K vector for position 0 (written during
+   the `Prefill([0])` call) is byte-identical to what a fresh, uncached computation of position 0's
+   K would produce -- rules in/out a cache-specific transcription bug (e.g. wrong stride, wrong
+   layer offset) as distinct from a live-computation bug.
+4. Only after 1-3 narrow the failure to a specific tensor/operation should a fix be attempted --
+   this investigation deliberately did NOT guess-and-check further changes without that evidence,
+   consistent with this project's standing "measure, don't assume" discipline.
+
+### Also flagged during this investigation, not itself a blocker
+
+`QwenTtsTalkerLm.cs` (`GenerateCode0`) is dead code -- a synthetic placeholder that fabricates
+plausible-looking token sequences and hidden states purely from `MathF.Sin`/`Exp` formulas, never
+wired to any real model weights. Confirmed the real CLI-invoked pipeline (`QwenTtsPipeline.cs`) uses
+`QwenTtsTalkerTensorSource` (a real, weight-driven tensor source) instead and never calls this class
+at all. Misleading to leave in the tree (reads as a real implementation at a glance) but not itself
+the cause of any reported bug -- worth a cleanup pass whenever QwenTTS is picked back up.
+
+`QwenTtsPipeline`'s real run re-initializes `ForwardPass` roughly once per generated frame/codebook
+(~28 "`[ForwardPass] Pre-faulted ...`" log lines for one short utterance), each re-pre-faulting its
+weight set from scratch -- a real, avoidable performance issue, out of scope while correctness is
+still broken.
+
+**Priority note** (user, 2026-08-28): QwenTTS is on the critical path (highest download numbers of
+the three broken engines) -- this is why it got the deepest investigation of the three. Fish Speech
+is lukewarm priority; CosyVoice is not currently a priority. If resumed, QwenTTS should stay first
+in line among the three.
