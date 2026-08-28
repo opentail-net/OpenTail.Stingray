@@ -194,11 +194,11 @@ public sealed unsafe class SimdKernelsLegacyQ8_0Tests
 
                 Array.Sort(fastTimes);
                 Array.Sort(fallbackTimes);
-                double fastMs = fastTimes[trials / 2];
-                double fallbackMs = fallbackTimes[trials / 2];
+                double fastMs = fastTimes[0]; // min, not median: noise only ever slows a trial down, never speeds it up
+                double fallbackMs = fallbackTimes[0];
                 double speedup = fallbackMs / fastMs;
                 string line = $"{label} rows={rows} cols={cols}: fallback={fallbackMs:F3}ms fast={fastMs:F3}ms " +
-                    $"speedup={speedup:F2}x (median of {trials} trials, {itersPerTrial} iters each; " +
+                    $"speedup={speedup:F2}x (min of {trials} trials, {itersPerTrial} iters each; " +
                     $"fast range [{fastTimes[0]:F3},{fastTimes[^1]:F3}]ms, fallback range [{fallbackTimes[0]:F3},{fallbackTimes[^1]:F3}]ms)";
                 report.AppendLine(line);
                 if (speedup <= 1.0)

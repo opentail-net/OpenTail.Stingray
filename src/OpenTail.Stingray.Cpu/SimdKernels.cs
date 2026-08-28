@@ -804,6 +804,9 @@ public static unsafe class SimdKernels
             // 5-bit-split formats needing a qh side-channel bit per element). The kernel
             // (MatVecQ5_1/DotQ5_1_Q8_1) is correct and equivalence-tested but not dispatched to.
             // Falls through to MatVecDequantFallback via `default`.
+            case DType.BFloat16:
+                MatVecBF16(output, weights, input, rows, cols);
+                break;
             case DType.Float16 when GgmlF16DotEnabled:
                 MatVecF16GgmlCompat(output, weights, input, rows, cols);
                 break;
@@ -3260,6 +3263,71 @@ public static unsafe class SimdKernels
             accum += dW * dA * sumi + mW * sA;
         }
         return accum;
+    }
+
+    // ================================================================
+    //  BFloat16 (Backlog B, self-paired)
+    // ================================================================
+    // Admitted with a working dequantizer but on MatVecDequantFallback. No block/scale structure
+    // at all — raw 2-byte values, one per element (Tensor.cs's block size is 1) — so unlike every
+    // other kernel in this backlog, no activation requantization or scratch buffer is needed:
+    // this engine's established convention for reduced-precision weight formats (see
+    // MatVecF16GgmlCompat's remarks) is to keep the activation at full F32 precision rather than
+    // pair bf16 weights against a bf16-rounded activation the way ggml's own
+    // ggml_vec_dot_bf16 does (bf16 x bf16) -- strictly better accuracy, and simpler here since
+    // bf16->f32 widening is just a 16-bit left-shift of the bit pattern (bf16 IS the top half of
+    // an f32), not a real decode.
+
+    public static void MatVecBF16(float* output, byte* weights, float* input, int rows, int cols)
+    {
+        if (rows >= MinRowsForParallel)
+        {
+            var w = weights; var inp = input; var outp = output; int c = cols;
+            Parallel.For(0, rows, s_parallelOpts, i =>
+            {
+                outp[i] = DotBF16((ushort*)(w + (long)i * c * 2), inp, c);
+            });
+        }
+        else
+        {
+            for (int i = 0; i < rows; i++)
+                output[i] = DotBF16((ushort*)(weights + (long)i * cols * 2), input, cols);
+        }
+    }
+
+    public static float DotBF16(ushort* a, float* b, int n)
+    {
+        if (Avx2.IsSupported && Fma.IsSupported && n >= 8)
+            return DotBF16_Avx2(a, b, n);
+        return DotBF16_Scalar(a, b, n);
+    }
+
+    private static float DotBF16_Avx2(ushort* a, float* b, int n)
+    {
+        var acc = Vector256<float>.Zero;
+        int i = 0;
+        for (; i + 8 <= n; i += 8)
+        {
+            var bits16 = Sse2.LoadVector128(a + i);
+            var widened = Avx2.ConvertToVector256Int32(bits16).AsUInt32();
+            var shifted = Avx2.ShiftLeftLogical(widened, 16);
+            var asFloat = shifted.AsSingle();
+            var bv = Avx.LoadVector256(b + i);
+            acc = Fma.MultiplyAdd(asFloat, bv, acc);
+        }
+        float sum = HSum256(acc);
+        for (; i < n; i++)
+            sum += BitConverter.Int32BitsToSingle(a[i] << 16) * b[i];
+        return sum;
+    }
+
+    /// <summary>Scalar reference for <see cref="DotBF16_Avx2"/>; also the non-AVX2 fallback.</summary>
+    internal static float DotBF16_Scalar(ushort* a, float* b, int n)
+    {
+        float sum = 0f;
+        for (int i = 0; i < n; i++)
+            sum += BitConverter.Int32BitsToSingle(a[i] << 16) * b[i];
+        return sum;
     }
 
     /// <summary>

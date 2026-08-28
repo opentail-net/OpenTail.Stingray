@@ -131,10 +131,13 @@ themselves in ggml, not `Q8_K`, so this is a related but structurally different 
       enum slot; lowest priority in this group, unstarted.
 
 **Self-paired**:
-- [ ] `BFloat16` (`ggml_vec_dot_bf16`, weight and activation both bf16) — likely the cheapest item
-      in this whole backlog: no activation requantization needed, no per-block scale to unpack,
-      just a widen-and-FMA loop. Worth doing first as a confidence-builder before the `Q8_1` infra
-      work.
+- [x] `BFloat16` (`ggml_vec_dot_bf16`) — done, and the cheapest/best win of this whole backlog to
+      implement, as predicted: no activation requantization, no per-block scale, no block
+      structure at all — `bf16→f32` is a 16-bit left-shift of the raw bit pattern, not a real
+      decode, so the "kernel" is just a widen + FMA loop against the raw F32 input (this engine's
+      established full-precision-activation convention, not ggml's real `bf16×bf16` pairing — see
+      `MatVecF16GgmlCompat`'s remarks for the same design choice on `Float16`). **Verified: ~4.2-4.4x**
+      (2 stable repeated runs), rows=17408/cols=5120.
 
 **Pattern observed 2026-08-28: 5-bit-split formats (`Q5_0`, `Q5_1`) don't win with this technique,
 plain-nibble/bitmask/codebook formats (`Q1_0`, `Q2_0`, `MXFP4`, `Q4_1`) all do**, by a wide margin
@@ -154,6 +157,19 @@ using that format** before calling it done — an equivalence test proves correc
 this session already hit two cases (`IQ4_XS` scalar-only, then GDN parallelization) where a
 plausible-sounding change measured ~0%. Report the honest number either way, per `CLAUDE.md`'s
 performance-pass rule.
+
+**Benchmark-robustness note, 2026-08-28: use min-of-trials, not median-of-trials, for these
+microbenchmarks.** The Backlog B perf tests (`SimdKernelsLegacyQ8_0Tests.cs`,
+`SimdKernelsLegacyQ8_1Tests.cs`, `SimdKernelsBF16Tests.cs`) initially took the *median* of 7
+interleaved trials and were measurably flaky as more of them accumulated in the same test run —
+one already-verified-solid kernel (`Q1_0`, previously ~1.25x across isolated runs) spuriously
+failed its `>1.0x` assertion once system load from other concurrently-running tests produced a
+trial with a 4x-wider time spread than usual. Switched all three files to the *minimum* of 7
+trials instead: for a CPU-bound microbenchmark, contention/scheduling noise can only ever make a
+trial slower, never artificially faster, so the minimum is the standard noise-resistant statistic
+(what tools like BenchmarkDotNet/criterion report by default) — median is not, since enough noisy
+trials can drag it upward. 4/4 clean full-suite runs after the fix, versus roughly 1-in-3 to 1-in-2
+flaky before it. Apply the same convention to any future perf test added to this backlog.
 
 ## Measurements — Ministral-8B-Instruct-2410 vs. llama.cpp (2026-08-28)
 
