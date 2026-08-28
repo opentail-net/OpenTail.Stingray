@@ -772,6 +772,12 @@ public static unsafe class SimdKernels
             case DType.IQ3_XXS:
                 MatVecIq3Xxs(output, weights, input, rows, cols);
                 break;
+            case DType.IQ2_XXS:
+                MatVecIq2Xxs(output, weights, input, rows, cols);
+                break;
+            case DType.IQ3_S:
+                MatVecIq3S(output, weights, input, rows, cols);
+                break;
             case DType.Float16 when GgmlF16DotEnabled:
                 MatVecF16GgmlCompat(output, weights, input, rows, cols);
                 break;
@@ -3146,7 +3152,7 @@ public static unsafe class SimdKernels
     /// Scalar reference for <see cref="DotIq4Xs_Q8K_Avx2"/>; also the fallback on non-AVX2
     /// hardware.
     /// </summary>
-    private static float DotIq4Xs_Q8K_Scalar(byte* row, byte* scratch, int cols)
+    internal static float DotIq4Xs_Q8K_Scalar(byte* row, byte* scratch, int cols)
     {
         int nb = cols / 256;
         float* dArr = (float*)scratch;
@@ -3380,7 +3386,7 @@ public static unsafe class SimdKernels
     }
 
     /// <summary>Scalar reference for <see cref="DotIq2Xs_Q8K_Avx2"/>; also the non-AVX2 fallback.</summary>
-    private static float DotIq2Xs_Q8K_Scalar(byte* row, byte* scratch, int cols)
+    internal static float DotIq2Xs_Q8K_Scalar(byte* row, byte* scratch, int cols)
     {
         int nb = cols / 256;
         float* dArr = (float*)scratch;
@@ -3523,7 +3529,7 @@ public static unsafe class SimdKernels
     }
 
     /// <summary>Scalar reference for <see cref="DotIq2S_Q8K_Avx2"/>; also the non-AVX2 fallback.</summary>
-    private static float DotIq2S_Q8K_Scalar(byte* row, byte* scratch, int cols)
+    internal static float DotIq2S_Q8K_Scalar(byte* row, byte* scratch, int cols)
     {
         int nb = cols / 256;
         float* dArr = (float*)scratch;
@@ -3664,7 +3670,7 @@ public static unsafe class SimdKernels
     }
 
     /// <summary>Scalar reference for <see cref="DotIq3Xxs_Q8K_Avx2"/>; also the non-AVX2 fallback.</summary>
-    private static float DotIq3Xxs_Q8K_Scalar(byte* row, byte* scratch, int cols)
+    internal static float DotIq3Xxs_Q8K_Scalar(byte* row, byte* scratch, int cols)
     {
         int nb = cols / 256;
         float* dArr = (float*)scratch;
@@ -3704,6 +3710,293 @@ public static unsafe class SimdKernels
                     q8Off += 8;
                 }
                 bsum += sumi * (int)ls;
+            }
+            sumf += d * bsum;
+        }
+        return 0.25f * sumf;
+    }
+
+    // ================================================================
+    //  IQ2_XXS / IQ3_S · Q8_K Dot Products  (one row, pre-quantized input)
+    // ================================================================
+    // 2026-08-28: same Q8_K-paired family and construction as IQ2_XS/IQ2_S/IQ3_XXS/IQ4_XS above —
+    // both declare vec_dot_type=Q8_K in ggml-cpu.c (ggml_vec_dot_iq2_xxs_q8_K /
+    // ggml_vec_dot_iq3_s_q8_K). Unlike those four, IQ2_XXS/IQ3_S already had real (non-fabricated)
+    // grid tables and dequantizers from this session's earlier IqCodebooks.cs fix — only the fast
+    // matvec path was missing, so this is the exact same technique applied to the two remaining
+    // admitted-but-still-on-MatVecDequantFallback IQ formats found by auditing IsSupportedWeightDType
+    // against SimdKernels.MatVec's dispatch switch (docs/05-cpu-architecture-kernel-opportunities.md).
+    // IQ2_XXS: single scale per 32-element group (like IQ4_XS/IQ3_XXS). IQ3_S: two scales per
+    // 32-element group (like IQ2_XS/IQ2_S) plus a qh side-channel bit and RAW (non-ksigns-indexed)
+    // sign bytes, structurally IQ3_XXS's grid-lookup shape combined with IQ2_S's qh/sign handling.
+
+    public static void MatVecIq2Xxs(float* output, byte* weights, float* input, int rows, int cols)
+    {
+        int bytesPerRow = (cols / 256) * 66;
+        int scratchBytes = Q8KScratchBytes(cols);
+        byte* scratch = stackalloc byte[scratchBytes];
+        QuantizeRowToQ8K(input, cols, scratch);
+
+        if (rows >= MinRowsForParallel)
+        {
+            var w = weights; var s = scratch; var outp = output; int c = cols;
+            Parallel.For(0, rows, s_parallelOpts, i =>
+            {
+                outp[i] = DotIq2Xxs_Q8K(w + (long)i * bytesPerRow, s, c);
+            });
+        }
+        else
+        {
+            for (int i = 0; i < rows; i++)
+                output[i] = DotIq2Xxs_Q8K(weights + (long)i * bytesPerRow, scratch, cols);
+        }
+    }
+
+    public static float DotIq2Xxs_Q8K(byte* row, byte* scratch, int cols)
+    {
+        if (Avx2.IsSupported && Avx.IsSupported && Fma.IsSupported)
+            return DotIq2Xxs_Q8K_Avx2(row, scratch, cols);
+        return DotIq2Xxs_Q8K_Scalar(row, scratch, cols);
+    }
+
+    private static float DotIq2Xxs_Q8K_Avx2(byte* row, byte* scratch, int cols)
+    {
+        int nb = cols / 256;
+        float* dArr = (float*)scratch;
+        sbyte* qsArr = (sbyte*)(scratch + nb * 4);
+        var grid = IqCodebooks.Iq2XxsGrid;
+        var ksigns = IqCodebooks.KSignsIq2Xs;
+        var kmask = IqCodebooks.KMaskIq2Xs;
+        var accum = Vector256<float>.Zero;
+        sbyte* gbuf = stackalloc sbyte[32];
+
+        for (int i = 0; i < nb; i++)
+        {
+            byte* blk = row + i * 66;
+            float d = HalfToFloat(blk[0], blk[1]) * dArr[i];
+            byte* qs = blk + 2;
+            sbyte* q8 = qsArr + i * 256;
+            var sumi = Vector256<int>.Zero;
+
+            for (int ib32 = 0; ib32 < 8; ib32++)
+            {
+                int off = ib32 * 8;
+                uint aux0 = (uint)(qs[off] | (qs[off + 1] << 8) | (qs[off + 2] << 16) | (qs[off + 3] << 24));
+                uint aux1 = (uint)(qs[off + 4] | (qs[off + 5] << 8) | (qs[off + 6] << 16) | (qs[off + 7] << 24));
+                int ls = (int)(2 * (aux1 >> 28) + 1);
+
+                for (int l = 0; l < 4; l++)
+                {
+                    ulong gridVal = grid[(byte)(aux0 >> (8 * l))];
+                    byte signs = ksigns[(int)((aux1 >> (7 * l)) & 127)];
+                    for (int j = 0; j < 8; j++)
+                    {
+                        byte gb = (byte)(gridVal >> (8 * j));
+                        gbuf[l * 8 + j] = (sbyte)((signs & kmask[j]) != 0 ? -gb : gb);
+                    }
+                }
+
+                var gridVec = Avx.LoadVector256(gbuf);
+                var q8Vec = Avx.LoadVector256((sbyte*)(q8 + ib32 * 32));
+                var ax = Avx2.Abs(gridVec);
+                var sy = Avx2.Sign(q8Vec, gridVec);
+                var p16 = Avx2.MultiplyAddAdjacent(ax, sy);
+                sumi = Avx2.Add(sumi, Avx2.MultiplyAddAdjacent(p16, Vector256.Create((short)ls)));
+            }
+
+            var total = Avx.ConvertToVector256Single(sumi);
+            accum = Fma.MultiplyAdd(Vector256.Create(d), total, accum);
+        }
+        return 0.125f * HSum256(accum);
+    }
+
+    /// <summary>Scalar reference for <see cref="DotIq2Xxs_Q8K_Avx2"/>; also the non-AVX2 fallback.</summary>
+    internal static float DotIq2Xxs_Q8K_Scalar(byte* row, byte* scratch, int cols)
+    {
+        int nb = cols / 256;
+        float* dArr = (float*)scratch;
+        sbyte* qsArr = (sbyte*)(scratch + nb * 4);
+        var grid = IqCodebooks.Iq2XxsGrid;
+        var ksigns = IqCodebooks.KSignsIq2Xs;
+        var kmask = IqCodebooks.KMaskIq2Xs;
+        float sumf = 0f;
+
+        for (int i = 0; i < nb; i++)
+        {
+            byte* blk = row + i * 66;
+            float d = HalfToFloat(blk[0], blk[1]) * dArr[i];
+            byte* qs = blk + 2;
+            sbyte* q8 = qsArr + i * 256;
+            int bsum = 0;
+
+            for (int ib32 = 0; ib32 < 8; ib32++)
+            {
+                int off = ib32 * 8;
+                uint aux0 = (uint)(qs[off] | (qs[off + 1] << 8) | (qs[off + 2] << 16) | (qs[off + 3] << 24));
+                uint aux1 = (uint)(qs[off + 4] | (qs[off + 5] << 8) | (qs[off + 6] << 16) | (qs[off + 7] << 24));
+                int ls = (int)(2 * (aux1 >> 28) + 1);
+                int sumi = 0;
+                int q8Off = ib32 * 32;
+
+                for (int l = 0; l < 4; l++)
+                {
+                    ulong gridVal = grid[(byte)(aux0 >> (8 * l))];
+                    byte signs = ksigns[(int)((aux1 >> (7 * l)) & 127)];
+                    for (int j = 0; j < 8; j++)
+                        sumi += (byte)(gridVal >> (8 * j)) * q8[q8Off + j] * ((signs & kmask[j]) != 0 ? -1 : 1);
+                    q8Off += 8;
+                }
+                bsum += sumi * ls;
+            }
+            sumf += d * bsum;
+        }
+        return 0.125f * sumf;
+    }
+
+    public static void MatVecIq3S(float* output, byte* weights, float* input, int rows, int cols)
+    {
+        int bytesPerRow = (cols / 256) * 110;
+        int scratchBytes = Q8KScratchBytes(cols);
+        byte* scratch = stackalloc byte[scratchBytes];
+        QuantizeRowToQ8K(input, cols, scratch);
+
+        if (rows >= MinRowsForParallel)
+        {
+            var w = weights; var s = scratch; var outp = output; int c = cols;
+            Parallel.For(0, rows, s_parallelOpts, i =>
+            {
+                outp[i] = DotIq3S_Q8K(w + (long)i * bytesPerRow, s, c);
+            });
+        }
+        else
+        {
+            for (int i = 0; i < rows; i++)
+                output[i] = DotIq3S_Q8K(weights + (long)i * bytesPerRow, scratch, cols);
+        }
+    }
+
+    public static float DotIq3S_Q8K(byte* row, byte* scratch, int cols)
+    {
+        if (Avx2.IsSupported && Avx.IsSupported && Fma.IsSupported)
+            return DotIq3S_Q8K_Avx2(row, scratch, cols);
+        return DotIq3S_Q8K_Scalar(row, scratch, cols);
+    }
+
+    private static float DotIq3S_Q8K_Avx2(byte* row, byte* scratch, int cols)
+    {
+        int nb = cols / 256;
+        float* dArr = (float*)scratch;
+        sbyte* qsArr = (sbyte*)(scratch + nb * 4);
+        var grid = IqCodebooks.Iq3SGrid;
+        var kmask = IqCodebooks.KMaskIq2Xs;
+        var accum = Vector256<float>.Zero;
+        sbyte* gbuf = stackalloc sbyte[32];
+
+        for (int i = 0; i < nb; i++)
+        {
+            byte* blk = row + i * 110;
+            float d = HalfToFloat(blk[0], blk[1]) * dArr[i];
+            byte* qs = blk + 2;
+            byte* qh = blk + 2 + 64;
+            byte* signs = blk + 2 + 64 + 8;
+            byte* scales = blk + 2 + 64 + 8 + 32;
+            sbyte* q8 = qsArr + i * 256;
+            var sumiAcc = Vector256<int>.Zero;
+            int qsOff = 0, signsOff = 0;
+
+            for (int ib32 = 0; ib32 < 8; ib32 += 2)
+            {
+                int ls1 = 2 * (scales[ib32 / 2] & 0xF) + 1;
+                int ls2 = 2 * (scales[ib32 / 2] >> 4) + 1;
+
+                for (int half = 0; half < 2; half++)
+                {
+                    int ls = half == 0 ? ls1 : ls2;
+                    byte qhByte = qh[ib32 + half];
+
+                    for (int l = 0; l < 4; l++)
+                    {
+                        uint g1 = grid[qs[qsOff + 2 * l] | ((uint)(qhByte << (8 - 2 * l)) & 256)];
+                        uint g2 = grid[qs[qsOff + 2 * l + 1] | ((uint)(qhByte << (7 - 2 * l)) & 256)];
+                        byte s = signs[signsOff + l];
+                        for (int j = 0; j < 4; j++)
+                        {
+                            byte gb1 = (byte)(g1 >> (8 * j));
+                            byte gb2 = (byte)(g2 >> (8 * j));
+                            gbuf[l * 8 + j] = (sbyte)((s & kmask[j]) != 0 ? -gb1 : gb1);
+                            gbuf[l * 8 + 4 + j] = (sbyte)((s & kmask[j + 4]) != 0 ? -gb2 : gb2);
+                        }
+                    }
+
+                    int q8Off = (ib32 + half) * 32;
+                    var gridVec = Avx.LoadVector256(gbuf);
+                    var q8Vec = Avx.LoadVector256((sbyte*)(q8 + q8Off));
+                    var ax = Avx2.Abs(gridVec);
+                    var sy = Avx2.Sign(q8Vec, gridVec);
+                    var p16 = Avx2.MultiplyAddAdjacent(ax, sy);
+                    sumiAcc = Avx2.Add(sumiAcc, Avx2.MultiplyAddAdjacent(p16, Vector256.Create((short)ls)));
+
+                    qsOff += 8;
+                    signsOff += 4;
+                }
+            }
+
+            var total = Avx.ConvertToVector256Single(sumiAcc);
+            accum = Fma.MultiplyAdd(Vector256.Create(d), total, accum);
+        }
+        return 0.25f * HSum256(accum);
+    }
+
+    /// <summary>Scalar reference for <see cref="DotIq3S_Q8K_Avx2"/>; also the non-AVX2 fallback.</summary>
+    internal static float DotIq3S_Q8K_Scalar(byte* row, byte* scratch, int cols)
+    {
+        int nb = cols / 256;
+        float* dArr = (float*)scratch;
+        sbyte* qsArr = (sbyte*)(scratch + nb * 4);
+        var grid = IqCodebooks.Iq3SGrid;
+        var kmask = IqCodebooks.KMaskIq2Xs;
+        float sumf = 0f;
+
+        for (int i = 0; i < nb; i++)
+        {
+            byte* blk = row + i * 110;
+            float d = HalfToFloat(blk[0], blk[1]) * dArr[i];
+            byte* qs = blk + 2;
+            byte* qh = blk + 2 + 64;
+            byte* signs = blk + 2 + 64 + 8;
+            byte* scales = blk + 2 + 64 + 8 + 32;
+            sbyte* q8 = qsArr + i * 256;
+            int bsum = 0;
+            int qsOff = 0, signsOff = 0;
+
+            for (int ib32 = 0; ib32 < 8; ib32 += 2)
+            {
+                int ls1 = 2 * (scales[ib32 / 2] & 0xF) + 1;
+                int ls2 = 2 * (scales[ib32 / 2] >> 4) + 1;
+
+                for (int half = 0; half < 2; half++)
+                {
+                    int ls = half == 0 ? ls1 : ls2;
+                    byte qhByte = qh[ib32 + half];
+                    int sumi = 0;
+                    int q8Off = (ib32 + half) * 32;
+
+                    for (int l = 0; l < 4; l++)
+                    {
+                        uint g1 = grid[qs[qsOff + 2 * l] | ((uint)(qhByte << (8 - 2 * l)) & 256)];
+                        uint g2 = grid[qs[qsOff + 2 * l + 1] | ((uint)(qhByte << (7 - 2 * l)) & 256)];
+                        byte s = signs[signsOff + l];
+                        for (int j = 0; j < 4; j++)
+                        {
+                            sumi += (byte)(g1 >> (8 * j)) * q8[q8Off + j] * ((s & kmask[j]) != 0 ? -1 : 1);
+                            sumi += (byte)(g2 >> (8 * j)) * q8[q8Off + 4 + j] * ((s & kmask[j + 4]) != 0 ? -1 : 1);
+                        }
+                        q8Off += 8;
+                    }
+                    bsum += sumi * ls;
+                    qsOff += 8;
+                    signsOff += 4;
+                }
             }
             sumf += d * bsum;
         }

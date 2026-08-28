@@ -119,24 +119,69 @@ consistent with the overall number. The three formats added after `IQ4_XS` contr
 more percentage points beyond it alone — their larger grids mean more of their per-element cost is
 in the still-scalar gather step, which the vectorization doesn't touch.
 
+**Extended to the two remaining Q8_K-paired IQ formats (2026-08-28), no local model to re-measure
+against.** Auditing `IsSupportedWeightDType` against `SimdKernels.MatVec`'s dispatch switch found
+`IQ2_XXS` and `IQ3_S` were also admitted-but-still-on-`MatVecDequantFallback` — both declare
+`vec_dot_type=Q8_K` in ggml's own dispatch table, same family as the four above, and both already
+had real (non-fabricated) grid tables and dequantizers from this session's earlier `IqCodebooks.cs`
+fix, so only the fast matvec path was missing. Added `MatVecIq2Xxs`/`DotIq2Xxs_Q8K` (single scale
+per 32-element group, like `IQ4_XS`/`IQ3_XXS`) and `MatVecIq3S`/`DotIq3S_Q8K` (two scales per group
+plus a `qh` side-channel bit and raw sign bytes, like `IQ2_S` crossed with `IQ3_XXS`'s grid shape),
+scalar and AVX2 both, following the exact established pattern. No local checkpoint exercises either
+format, so there's no real-model before/after number for these two — verified instead by a new
+`SimdKernelsIqQ8KTests.cs` (AVX2-vs-internal-scalar equivalence, mirroring
+`SimdKernelsQ8KSTests`'s existing pattern for `Q3_K`/`Q4_K`/`Q8_0`), covering **all six** Q8_K-paired
+IQ kernels now, not just the two new ones — 648/648 tests pass (640 pass, 8 skip), stable across
+repeated runs. `IsSupportedWeightDType` now has a fast kernel for every IQ format it admits except
+`IQ1_S`/`IQ1_M` (still unimplemented at any level — see
+[01-gguf-model-coverage-plan.md](01-gguf-model-coverage-plan.md) §2).
+
 **~10-12x still remains unexplained** (llama.cpp reference: ~494ms/token decode on this same
 checkpoint/machine, CPU-only, vs. Stingray's ~5600ms/token after this fix). Candidates for the next
 session, in likely-impact order:
-1. **GDN recurrence parallelization** — `GdnKernels.GdnStepInternal`'s per-head loop
-   (`for (int h = 0; h < hv; h++)`) is plain scalar, single-threaded, no `Parallel.For`/SIMD, and is
-   still ~19% of decode time on its own after the FFN fix. Heads are trivially independent.
-2. **Per-call `Parallel.For` dispatch overhead** — 64 sequential layers × several matvec calls each
-   × single-token (batch=1) decode means many small, short-lived parallel dispatches per token;
-   never measured directly, but plausible given the FFN fix's real-but-modest yield relative to the
-   size of the remaining gap.
+1. **GDN recurrence parallelization** — attempted 2026-08-28, reverted the same session (see
+   below). Net effect on speed was near-zero, and it's the reason item 2 is now the top open
+   question rather than a confirmed lever.
+2. **Per-call `Parallel.For` dispatch overhead** — 64 sequential layers × several matvec/GDN calls
+   each × single-token (batch=1) decode means many small, short-lived parallel dispatches per
+   token. The reverted GDN attempt is consistent with this: real independent work, correctly
+   parallelized, near-zero net gain — the likeliest explanation is dispatch overhead eating most
+   of the prospective win at this call granularity. Worth measuring directly (e.g. total
+   `Parallel.For` call count per token and per-call overhead in isolation) before attempting any
+   more parallelization at this granularity — batching multiple layers/heads' work into fewer,
+   larger parallel regions is the more promising direction than adding more `Parallel.For` call
+   sites.
 3. Whether `MinRowsForParallel`'s threshold is well-tuned for this model's row counts (5120/17408).
-4. A closer AVX2 port of ggml's actual `IQ2_XS`/`IQ2_S`/`IQ3_XXS` gather trick, if the scalar-gather
-   step turns out to be the bottleneck for those three specifically once (1)-(3) are ruled out.
+4. A closer AVX2 port of ggml's actual `IQ2_XS`/`IQ2_S`/`IQ3_XXS`/`IQ2_XXS`/`IQ3_S` gather trick
+   (see the "extended to the two remaining formats" note above), if the scalar-gather step turns
+   out to be the bottleneck for those five specifically once (2)-(3) are ruled out.
 
-`TEMPORARY` instrumentation left in place for the next session: `STINGRAY_PROFILE_DECODE=1` now
-also prints a GDN/Attention/MoE split via `HybridGdnForwardPass.ReportGdnProfile`, gated on the
-same env var as `DecodeProfileTimers`. Remove once GDN parallelization (item 1) is investigated and
-this three-bucket view is no longer needed.
+**GDN recurrence parallelization — attempted and reverted (2026-08-28).**
+`GdnKernels.GdnStepInternal`'s per-head loop was refactored into a shared `GdnStepOneHead` worker
+(pointers via `Unsafe.AsPointer` on the already-native-backed spans) dispatched either sequentially
+or via `Parallel.For` (`MinHeadsForParallel = 8`; this model's 48 GDN v-heads clear that easily).
+Heads are provably independent (disjoint state/q/k/v/z/output slices), so this was a correct, real
+parallelization, not a heuristic — but the measured effect was much smaller than the
+~19%-of-decode-time share implied: GDN bucket 30485ms → 28371ms/token-total (~7% off that bucket,
+~0% net on overall per-token time — within likely run-to-run noise for a single measurement).
+Output stayed byte-identical to the receipt at every check.
+
+**Reverted, not kept, despite the change itself testing correct.** Running the full
+`Tests.ForwardPass.Fast` suite repeatedly after the change surfaced a genuine, reproducible
+intermittent failure (`GdnKernelsTests.GdnChunkedPrefill_MatchesSequentialPrefill`, ~40% failure
+rate across 5 runs, `output[0] mismatch: expected 0, got -0.26433104`) that looked at first like
+data corruption from the parallelization. **It wasn't** — reverting `GdnKernels.cs` to its
+pre-change state and re-running still reproduced flaky failures, on a *different* test each time
+(`GdnChunkedPrefill_MatchesSequentialPrefill` once, `MatMulBatchedQ8EquivalenceTests.
+GateOnButAllowQ8NotRequested_StaysOnTheF32Path` — an `Assert.NotEqual` collision — another time),
+confirming this is **pre-existing test-suite flakiness unrelated to the GDN change**, most likely
+fixed-seed RNG collisions across concurrently-running tests. Worth its own investigation
+separately, but out of scope here. The GDN parallelization was reverted anyway, on its own
+merits: a ~0% measured net gain doesn't justify the real complexity it added (pointer-capture
+tricks, doubled kernel code, one more thing to reason about under threading) once the "it might
+also be causing intermittent corruption" concern turned out to be a false alarm — the corrected
+cost/benefit still didn't clear the bar. Left as a scoped, well-evidenced non-result rather than
+re-attempted or half-kept.
 
 Test suite check after this change: `Tests.ForwardPass.Fast` — 634/642 pass, 7 fail, all the
 pre-existing, environment-specific `Float32` batched/tiered bit-equivalence failures already noted
