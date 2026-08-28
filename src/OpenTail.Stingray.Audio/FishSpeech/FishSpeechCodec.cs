@@ -31,8 +31,27 @@ namespace OpenTail.Stingray.Audio.FishSpeech;
 /// </summary>
 public static class FishSpeechCodec
 {
-    /// <summary>Real `ResidualVectorQuantize.from_codes`-equivalent for one quantizer set: embedding lookup -> pointwise out_proj, summed across all quantizers in the set (semantic has 1, residual has 9). Same time resolution for every codebook, no upsampling.</summary>
-    private static float[] QuantizerSetFromCodes(FishSpeechCodecQuantizerWeights[] quantizers, int[][] codes, int t)
+    /// <summary>
+    /// Real `ResidualVectorQuantize.from_codes`-equivalent for one quantizer set: embedding lookup
+    /// -> pointwise out_proj, summed across all quantizers in the set (semantic has 1, residual
+    /// has 9). Same time resolution for every codebook, no upsampling.
+    ///
+    /// <para><b>Real bug found and fixed (2026-08-28, comparing directly against
+    /// `examples/s2.cpp/src/s2_codec.cpp`'s real `clamp_decode_code`/`sanitize_decode_codes`)</b>:
+    /// codes were used raw, with no bounds check, before this fix -- silently correct as long as
+    /// every code stayed in-range by chance (true for plain greedy `Argmax`, which empirically
+    /// never wandered near the boundary), but a real, reference-confirmed requirement once real
+    /// temperature/top_p/top_k sampling was wired in (see `FishSpeechPipeline.GenerateFrames`):
+    /// `fast_output.weight`'s real output width is 4096 (the SAME width as the semantic
+    /// vocabulary, shared/reused), but each residual codebook's REAL embedding table
+    /// (<see cref="FishSpeechCodecWeights.ResidualCodebookSize"/> = 1024) only has 1024 valid
+    /// rows -- sampling (unlike greedy) can legitimately draw a value in [1024, 4095] for a
+    /// residual codebook, which crashed this method with an `IndexOutOfRangeException` (caught via
+    /// a real repro, not by inspection). The reference clamps every decoded code to its own
+    /// codebook's valid range right before this exact embedding lookup (`code = max(0, min(code,
+    /// codebook_size - 1))`) -- ported verbatim here, not guessed.</para>
+    /// </summary>
+    private static float[] QuantizerSetFromCodes(FishSpeechCodecQuantizerWeights[] quantizers, int[][] codes, int t, int codebookSize)
     {
         var zq = new float[FishSpeechCodecWeights.LatentDim * t];
         for (int qi = 0; qi < quantizers.Length; qi++)
@@ -41,7 +60,7 @@ public static class FishSpeechCodec
             var embed = new float[FishSpeechCodecWeights.CodebookDim * t];
             for (int ti = 0; ti < t; ti++)
             {
-                int code = codes[qi][ti];
+                int code = Math.Clamp(codes[qi][ti], 0, codebookSize - 1);
                 int cbBase = code * FishSpeechCodecWeights.CodebookDim;
                 for (int d = 0; d < FishSpeechCodecWeights.CodebookDim; d++)
                     embed[d * t + ti] = q.Codebook[cbBase + d];
@@ -291,8 +310,8 @@ public static class FishSpeechCodec
     {
         int t = semanticCodes.Length;
 
-        var zqSemantic = QuantizerSetFromCodes([w.SemanticQuantizer], [semanticCodes], t);
-        var zqResidual = QuantizerSetFromCodes(w.ResidualQuantizers, residualCodes, t);
+        var zqSemantic = QuantizerSetFromCodes([w.SemanticQuantizer], [semanticCodes], t, FishSpeechCodecWeights.SemanticCodebookSize);
+        var zqResidual = QuantizerSetFromCodes(w.ResidualQuantizers, residualCodes, t, FishSpeechCodecWeights.ResidualCodebookSize);
         var zq = new float[zqSemantic.Length];
         for (int i = 0; i < zq.Length; i++) zq[i] = zqSemantic[i] + zqResidual[i];
 

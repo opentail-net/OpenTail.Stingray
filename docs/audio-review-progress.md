@@ -9598,3 +9598,83 @@ real conditioning gap in `FishSpeechFastAr.ForwardStep`'s very first call each t
 additionally see codebook 1's own embedding as context) -- codebook 1 is structurally the ONLY
 codebook predicted from hidden state alone, which could still leave it more prone to a persistent
 bias even with proper sampling.
+
+## Fish Speech S2 Pro: step-by-step reference walkthrough + built and ran the REAL reference (s2.cpp) for ground truth -- found and fixed a genuine codec bug (unclamped residual codes), confirmed sampling approach is correct per the reference itself (2026-08-28, direct user instruction "walk through the code... compare to examples/s2.cpp" + "actually try to generate via s2... for me to listen and confirm")
+
+**Part 1: built and ran the real reference.** `examples/s2.cpp` already had a `build/` directory;
+rebuilt cleanly via a proper MSVC Developer environment (`vcvars64.bat`, the earlier direct `cl.exe`
+invocation failed with a missing `<cstdint>` because the shell wasn't in a Developer Command Prompt
+context). Ran the real `s2.exe` CLI on the exact same prompt/model
+(`models/s2-pro-q4_k_m.gguf`, "Hello! I will make some lunch, darling!") -- produced
+`docs/audio-samples/fishspeech-lunch-REFERENCE.wav`. **User listen-confirmed: 100% correct,
+clear female voice.** This is real, decisive ground truth: the checkpoint and text ARE capable of
+clean output; any remaining defect is in this codebase's port, not the model/data.
+
+**Real reference internals read directly, not re-derived from memory**: `s2_prompt.cpp`'s
+`build_prompt` (no-reference-audio branch) matches our `BuildPrompt` byte-for-byte, INCLUDING a
+subtle detail that could easily have been wrong -- the reference uses the raw token id `198` for
+every newline rather than `tokenizer.encode("\n")`; dumped our own prompt tokens and confirmed
+our tokenizer's `Encode("\n")` already resolves to exactly `[198]`, so this was NOT a bug, just
+independently verified rather than assumed.
+
+**Instrumented the real reference itself** (temporary, reverted after use -- `examples/s2.cpp` is
+gitignored/its own repo, no changes persisted) to dump per-frame codebook values via a
+`S2_DUMP_FRAMES=1` env var in `s2_pipeline.cpp`'s `synthesize_prompt_codes_locked`. This produced
+REAL ground-truth per-frame data from the actual reference engine: codebook 1 alone showed 59/70
+distinct values (84% diversity, healthiest of all 10 codebooks) -- decisively confirming that
+proper sampling (not greedy) is the CORRECT behavior for the fast-AR, matching what this doc's
+prior entry already concluded from the reference source code, now also confirmed from the
+reference's actual runtime behavior.
+
+**Re-applied the fast-AR sampling fix** (previously reverted after being listen-confirmed
+"unintelligible... Dalek" for one specific seed) to test properly this time. Ran it across 6
+seeds (1, 2, 3, 7, 42, 123) and dumped semantic-token diversity stats for each: ALL seeds now
+show healthy diversity (longest repeat run 2-4, vs. 125 before any sampling fix) -- the
+repetition-loop bug stays fixed regardless of seed. But roughly half the seeds still hit the
+`maxTokens=200` cap without reaching `im_end` naturally.
+
+**Real bug found via an actual crash, not inspection**: generating audio for seed=123 threw
+`IndexOutOfRangeException` in `FishSpeechCodec.QuantizerSetFromCodes`. Traced to a genuine,
+reference-confirmed defect: `fast_output.weight`'s real GGUF tensor shape is `[2560, 4096]` --
+the SAME 4096-wide output space as the semantic vocabulary (confirmed via `list-tensors`), shared/
+reused for predicting ALL 9 residual codebooks too -- but each residual codebook's real codec
+embedding table only has `ResidualCodebookSize = 1024` valid rows (already a correct, existing
+constant in `FishSpeechCodecWeights.cs`, just never applied at the point of use). Greedy `Argmax`
+empirically never wandered into the invalid `[1024, 4095]` range for the runs observed, silently
+masking this gap; real sampling (correctly, per the reference) explores the full distribution and
+can legitimately draw values in that range, causing an out-of-bounds embedding-table lookup.
+
+Cross-checked directly against the reference's own real code (`s2_codec.cpp`'s
+`clamp_decode_code`/`sanitize_decode_codes`, called right before every codec decode): a simple
+`code = max(0, min(code, codebook_size - 1))`, applied per-codebook using ITS OWN codebook size
+(the semantic codebook against `quantizer_semantic_codebook_size`, each residual codebook against
+`quantizer_residual_codebook_size`) -- not a generic bounds check invented here, ported verbatim.
+**Fixed** in `FishSpeechCodec.QuantizerSetFromCodes` (now takes an explicit `codebookSize`
+parameter and clamps every code before the embedding lookup), with `Decode` passing
+`SemanticCodebookSize` (4096) for the semantic quantizer and `ResidualCodebookSize` (1024) for
+the 9 residual quantizers, exactly matching the reference's two-different-sizes clamp.
+
+**Verified**: seed=123 (the crashing seed) now completes cleanly, producing
+`docs/audio-samples/fishspeech-lunch-seed123.wav` (2.79s). Also regenerated seed=7
+(`fishspeech-lunch-seed7.wav`, 4.69s, a naturally-terminating run) and the CLI's default seed=42
+(`fishspeech-lunch.wav`, 2.60s, unchanged in content since none of its own codes happened to be
+out-of-range -- confirmed directly: 0/56 frames across all 9 residual codebooks exceeded the
+valid [0,1024) range for this specific seed, so the clamp fix is a real, necessary correctness
+fix but not itself sufficient to explain seed=42's still-open "Dalek" quality report). A false
+NaN/overflow alarm during this investigation was traced to the AUTHOR'S OWN Python analysis
+script misreading a 16-bit PCM WAV as float32 (copy-pasted from checking the reference tool's own
+float32 WAV output) -- the actual regenerated audio is clean (0 NaN/Inf, confirmed via a direct
+C# dump of the PCM buffer, not just the WAV file).
+
+Full `*FishSpeech*` test suite re-run: only the same pre-existing, already-documented Q4_K_M
+fast-AR quantization-precision test failure (unrelated, not a regression -- see the "CONCLUSIVELY
+RESOLVED" entry earlier in this doc). No other regressions.
+
+**Status, honestly**: the codec clamp fix is real, necessary, and verified (prevents a genuine
+crash class). The sampling approach is now confirmed correct against the reference's own runtime
+behavior, not just its source code. Three fresh samples are ready for listening comparison against
+the real reference (`fishspeech-lunch.wav` [seed 42, default], `fishspeech-lunch-seed7.wav`,
+`fishspeech-lunch-seed123.wav`, all against `fishspeech-lunch-REFERENCE.wav`) -- whether any of
+these now sound acceptably close to the reference, or whether a further real bug remains (this doc
+deliberately does NOT claim victory before that listening check, consistent with this session's
+repeated lesson that numerical/diversity metrics improving is not the same as confirmed-good audio).
