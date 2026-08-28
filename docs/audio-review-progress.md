@@ -9466,3 +9466,26 @@ pass) prepended/masked into the DiT input the way the reference's `frontend_zero
 CFG. Scoping those two is now much cheaper since the exact reference mel-filterbank construction
 was already read in full this pass (`build_mel_basis(24000, 1920, 80, 0, 12000)` for CosyVoice3
 specifically) -- just not yet ported.
+
+## Fish Speech S2 Pro: documentation double-checked reflects SUPPORTED status; new WAV sample generated (user request, 2026-08-28)
+
+Confirmed `README.md` already lists "Fish Speech S2 Pro" under supported native TTS engines
+(it was never disabled in `TtsCommand.cs` -- only QwenTTS was). `CLAUDE.md`'s Domain Pipelines
+list was out of date (didn't mention Fish Speech, Chatterbox, Orpheus, or Parler at all, and
+listed `Qwen3-TTS 12Hz` without noting it's now marked NOT SUPPORTED) -- updated to list
+`Fish Speech S2 Pro` alongside the other real TTS engines and added an explicit NOTE that
+`qwentts` is currently unsupported, pointing at this doc's QwenTTS entries.
+
+Generated a new real WAV for the user's requested prompt: `stingray tts -e fish -t "Hello! I
+will make some lunch, darling!" -o docs/audio-samples/fishspeech-lunch.wav` -- 9.29s, 44.1kHz,
+non-silent (RMS 2736, peak 31479 of 32768, no clipping), 10.19x RTF on CPU without OpenBLAS.
+
+**Minor, separate observation, not investigated further this pass**: this run and the earlier
+"Hello, this is a test..." run both produced exactly 9.29s of audio despite very different input
+text lengths -- consistent with `FishSpeechPipeline.GenerateFrames`'s semantic-token loop hitting
+its `maxTokens=200` cap rather than naturally sampling the `im_end` stop token for either prompt.
+The loop DOES have real EOS-checking logic (`mainToken != _imEndId`, line ~181), so this isn't a
+missing-stop-condition bug -- more likely `im_end` is just genuinely rare/late under the current
+sampling settings for short prompts. Worth listening to `fishspeech-lunch.wav` for whether the
+requested sentence is followed by extra generated content, and revisiting stop-token behavior if
+so -- not chased further this pass since it wasn't the ask.

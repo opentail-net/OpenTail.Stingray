@@ -66,7 +66,7 @@ The solution (`OpenTail.Stingray.slnx`) is organized into four core layers:
    * `OpenTail.Stingray.Vulkan` â Vortice.Vulkan compute shaders, SPIR-V pipeline cache.
 3. **Engine** (`OpenTail.Stingray.Engine`) â Forward pass dispatch (`ForwardPass`, `CudaForwardPass`, `HybridGdnForwardPass`), paged KV cache (`PagedKvCache`), token sampling (`Sampler`), continuous batching (`ContinuousBatchingEngine`), and speculative decoding (`MtpDecoder`, `DSparkDecoder`).
 4. **Domain Pipelines**:
-   * `OpenTail.Stingray.Audio` â Native TTS/ASR (`CosyVoice 3`, `Qwen3-TTS 12Hz`, `Kokoro-82M`, `F5-TTS`, `MeloTTS`, `Piper`, `OpenAI Whisper`, `NVIDIA NeMo Parakeet ASR`, `Alibaba Qwen3-ASR & ForcedAligner`, `Silero VAD`).
+   * `OpenTail.Stingray.Audio` â Native TTS/ASR (`CosyVoice 3`, `Fish Speech S2 Pro`, `Kokoro-82M`, `F5-TTS`, `MeloTTS`, `Piper`, `Chatterbox-Turbo`, `Orpheus-TTS`, `Parler-TTS`, `OpenAI Whisper`, `NVIDIA NeMo Parakeet ASR`, `Alibaba Qwen3-ASR & ForcedAligner`, `Silero VAD`). NOTE: `Qwen3-TTS 12Hz` (`qwentts` engine) is currently marked NOT SUPPORTED -- see docs/audio-review-progress.md's QwenTTS entries.
    * `OpenTail.Stingray.Diffusion` â Text-to-image/video (`ZImageDiT`, `FluxDiT`, `RRDBNet` Real-ESRGAN upscaler, `VaeDecoder`).
    * `OpenTail.Stingray.Vision` â Multimodal vision (`UnifiedVisionPipeline` for Gemma 4 `gemma4uv`/`gemma4v`, Gemma 3, Llama 4).
    * `OpenTail.Stingray.TurboQuant` â KV cache compression (KVarN Hadamard + Sinkhorn variance normalization).
