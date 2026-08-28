@@ -42,6 +42,30 @@ namespace OpenTail.Stingray.Engine;
 /// </remarks>
 public sealed unsafe class HybridGdnForwardPass : IForwardPass
 {
+    // TEMPORARY diagnostic instrumentation (2026-08-28) for the qwen35 hybrid-GDN CPU perf
+    // investigation (docs/05-cpu-architecture-kernel-opportunities.md) — NOT wired into
+    // DecodeProfileTimers because that timer's Category enum is ForwardPass-specific (QKV/Attn/
+    // OutProj/FFN/Norm/RoPE) and doesn't have a GDN-recurrence bucket. Reuses the same
+    // STINGRAY_PROFILE_DECODE env var so `RunCommand`'s existing Report() call site doesn't need
+    // touching; remove once the real bottleneck is found and fixed.
+    private enum ProfCat { Gdn, Attention, Moe }
+    private static readonly bool s_profEnabled =
+        Environment.GetEnvironmentVariable("STINGRAY_PROFILE_DECODE") == "1";
+    private static readonly long[] s_profTicks = new long[3];
+    private static void AddProf(ProfCat c, long ticks) => System.Threading.Interlocked.Add(ref s_profTicks[(int)c], ticks);
+
+    public static void ReportGdnProfile(TextWriter w)
+    {
+        if (!s_profEnabled) return;
+        long total = s_profTicks[0] + s_profTicks[1] + s_profTicks[2];
+        if (total == 0) return;
+        double Ms(long t) => System.Diagnostics.Stopwatch.GetElapsedTime(0, t).TotalMilliseconds;
+        w.WriteLine("[HybridGdnProfile] Gdn/Attention/Moe block split (TEMPORARY diagnostic, see docs/05):");
+        w.WriteLine($"  GDN recurrence blocks  {Ms(s_profTicks[0]),10:F2}ms  {100.0 * s_profTicks[0] / total,6:F2}%");
+        w.WriteLine($"  Attention blocks       {Ms(s_profTicks[1]),10:F2}ms  {100.0 * s_profTicks[1] / total,6:F2}%");
+        w.WriteLine($"  MoE/FFN blocks         {Ms(s_profTicks[2]),10:F2}ms  {100.0 * s_profTicks[2] / total,6:F2}%");
+    }
+
     private readonly GgufModel _model;
     private readonly ModelHyperparams _hp;
     private readonly GdnConfig _gdn;
@@ -1119,6 +1143,7 @@ public sealed unsafe class HybridGdnForwardPass : IForwardPass
 
             bool isAttn = _hp.LayerTypes![layer] == LayerType.Attention;
             bool bypass = isAttn ? _bypassAttn : _bypassGdn;
+            long __t0 = s_profEnabled ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
             if (bypass)
             {
                 // Identity-skip the block: zero out _hidden so the residual add yields _residual.
@@ -1134,6 +1159,8 @@ public sealed unsafe class HybridGdnForwardPass : IForwardPass
                 if (_traceLayers) EmitBufTrace(position, layer, "gdn-pre-norm", _normBuf, _embDim);
                 GdnBlock(layer, position);
             }
+            if (s_profEnabled)
+                AddProf(isAttn ? ProfCat.Attention : ProfCat.Gdn, System.Diagnostics.Stopwatch.GetTimestamp() - __t0);
 
             // Residual add
             SimdKernels.AddInPlace(_hidden, _residual, _embDim);
@@ -1145,12 +1172,15 @@ public sealed unsafe class HybridGdnForwardPass : IForwardPass
             var postNormW = GetNormWeight(_postAttnNorm[layer]);
             SimdKernels.RmsNorm(_normBuf, _hidden, postNormW, _embDim, _hp.RmsNormEps);
 
+            long __t1 = s_profEnabled ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
             if (_bypassMoe)
                 new Span<float>(_hidden, _embDim).Clear();
             else if (_hp.IsMoE)
                 MoeFfn(layer);
             else
                 DenseFfn(layer);
+            if (s_profEnabled)
+                AddProf(ProfCat.Moe, System.Diagnostics.Stopwatch.GetTimestamp() - __t1);
 
             // Residual add
             SimdKernels.AddInPlace(_hidden, _residual, _embDim);

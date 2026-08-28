@@ -760,6 +760,18 @@ public static unsafe class SimdKernels
             case DType.IQ4_NL:
                 MatVecIq4Nl(output, weights, input, rows, cols);
                 break;
+            case DType.IQ4_XS:
+                MatVecIq4Xs(output, weights, input, rows, cols);
+                break;
+            case DType.IQ2_XS:
+                MatVecIq2Xs(output, weights, input, rows, cols);
+                break;
+            case DType.IQ2_S:
+                MatVecIq2S(output, weights, input, rows, cols);
+                break;
+            case DType.IQ3_XXS:
+                MatVecIq3Xxs(output, weights, input, rows, cols);
+                break;
             case DType.Float16 when GgmlF16DotEnabled:
                 MatVecF16GgmlCompat(output, weights, input, rows, cols);
                 break;
@@ -3086,6 +3098,331 @@ public static unsafe class SimdKernels
             }
         }
         return acc;
+    }
+
+    // ================================================================
+    //  IQ4_XS · Q8_K Dot Product  (one row, pre-quantized input)
+    // ================================================================
+    // Mirrors ggml_vec_dot_iq4_xs_q8_K_generic (examples/ggml/src/ggml-cpu/quants.c). Unlike
+    // IQ4_NL (a plain 32-element block paired with Q8_0), IQ4_XS is a QK_K=256 superblock format
+    // whose ggml vec_dot_type is Q8_K -- ONE scale per 256 elements, not one per 32 -- so it reuses
+    // this file's existing Q8_K scratch (QuantizeRowToQ8K/Q8KScratchBytes, built for Q6_K) rather
+    // than IQ4_NL's Q8_0 path. Replaces the MatVecDequantFallback route this format previously
+    // took (materialize each 136-byte block to 256 F32s, then a separate DotF32 pass) with a
+    // single int-domain pass per 32-element sub-group, matching Dequantize.DequantIq4Xs's already-
+    // verified scale bit-layout (see that method's remarks) -- confirmed identical to this
+    // kernel's ls1/ls2 derivation before writing it, not independently re-derived.
+
+    public static void MatVecIq4Xs(float* output, byte* weights, float* input, int rows, int cols)
+    {
+        int bytesPerRow = (cols / 256) * 136;
+        int scratchBytes = Q8KScratchBytes(cols);
+        byte* scratch = stackalloc byte[scratchBytes];
+        QuantizeRowToQ8K(input, cols, scratch);
+
+        if (rows >= MinRowsForParallel)
+        {
+            var w = weights; var s = scratch; var outp = output; int c = cols;
+            Parallel.For(0, rows, s_parallelOpts, i =>
+            {
+                outp[i] = DotIq4Xs_Q8K(w + (long)i * bytesPerRow, s, c);
+            });
+        }
+        else
+        {
+            for (int i = 0; i < rows; i++)
+                output[i] = DotIq4Xs_Q8K(weights + (long)i * bytesPerRow, scratch, cols);
+        }
+    }
+
+    public static float DotIq4Xs_Q8K(byte* row, byte* scratch, int cols)
+    {
+        int nb = cols / 256;
+        float* dArr = (float*)scratch;
+        sbyte* qsArr = (sbyte*)(scratch + nb * 4);
+        float sumf = 0f;
+
+        fixed (sbyte* cb = s_iq4NlCodebook)
+        {
+            for (int ibl = 0; ibl < nb; ibl++)
+            {
+                byte* blk = row + ibl * 136;
+                float d4d8 = HalfToFloat(blk[0], blk[1]) * dArr[ibl];
+                int h = blk[2] | (blk[3] << 8);
+                byte* scalesL = blk + 4;
+                byte* qs = blk + 8;
+                sbyte* q8 = qsArr + ibl * 256;
+                int qOff = 0;
+
+                for (int ib = 0; ib < 8; ib += 2)
+                {
+                    int ls1 = (scalesL[ib / 2] & 0xF) | ((h << 4) & 0x30);
+                    int ls2 = (scalesL[ib / 2] >> 4) | ((h << 2) & 0x30);
+                    h >>= 4;
+                    float d1 = d4d8 * (ls1 - 32);
+                    float d2 = d4d8 * (ls2 - 32);
+
+                    int sumi1 = 0, sumi2 = 0;
+                    for (int j = 0; j < 16; j++)
+                    {
+                        sumi1 += q8[qOff + j] * cb[qs[j] & 0xF];
+                        sumi2 += q8[qOff + 16 + j] * cb[qs[j] >> 4];
+                    }
+                    sumf += d1 * (sumi1 + sumi2);
+                    qs += 16; qOff += 32;
+
+                    sumi1 = 0; sumi2 = 0;
+                    for (int j = 0; j < 16; j++)
+                    {
+                        sumi1 += q8[qOff + j] * cb[qs[j] & 0xF];
+                        sumi2 += q8[qOff + 16 + j] * cb[qs[j] >> 4];
+                    }
+                    sumf += d2 * (sumi1 + sumi2);
+                    qs += 16; qOff += 32;
+                }
+            }
+        }
+        return sumf;
+    }
+
+    // ================================================================
+    //  IQ2_XS / IQ2_S / IQ3_XXS · Q8_K Dot Products  (one row, pre-quantized input)
+    // ================================================================
+    // Mirror ggml_vec_dot_iq2_xs_q8_K_generic / ggml_vec_dot_iq2_s_q8_K_generic /
+    // ggml_vec_dot_iq3_xxs_q8_K_generic (examples/ggml/src/ggml-cpu/quants.c). Same Q8_K-paired
+    // family as DotIq4Xs_Q8K above -- these three also declare vec_dot_type=GGML_TYPE_Q8_K in
+    // ggml-cpu.c, so they reuse the same Q8_K scratch (QuantizeRowToQ8K/Q8KScratchBytes) rather
+    // than a per-32-block Q8_0 pairing. Grid/sign lookups use IqCodebooks' already-verified real
+    // tables (see IqCodebooks.cs and Dequantize.DequantIq2Xs/DequantIq2S/DequantIq3Xxs, whose
+    // element-order and scale-bit-layout this mirrors exactly -- confirmed against the ggml
+    // reference above before writing, not independently re-derived). Each format's final
+    // fp32 sum needs a constant rescale (0.125 for the two IQ2 variants, 0.25 for IQ3_XXS) because
+    // ggml accumulates the per-superblock dot in the *integer* domain against ls values that omit
+    // the 0.25/0.125 quarter-scale Dequantize.cs folds into its per-element float multiply --
+    // applying the constant once at the end instead of per-element is mathematically identical
+    // and is what makes the int-domain accumulation possible in the first place.
+    // Replaces the MatVecDequantFallback route these formats previously took.
+
+    public static void MatVecIq2Xs(float* output, byte* weights, float* input, int rows, int cols)
+    {
+        int bytesPerRow = (cols / 256) * 74;
+        int scratchBytes = Q8KScratchBytes(cols);
+        byte* scratch = stackalloc byte[scratchBytes];
+        QuantizeRowToQ8K(input, cols, scratch);
+
+        if (rows >= MinRowsForParallel)
+        {
+            var w = weights; var s = scratch; var outp = output; int c = cols;
+            Parallel.For(0, rows, s_parallelOpts, i =>
+            {
+                outp[i] = DotIq2Xs_Q8K(w + (long)i * bytesPerRow, s, c);
+            });
+        }
+        else
+        {
+            for (int i = 0; i < rows; i++)
+                output[i] = DotIq2Xs_Q8K(weights + (long)i * bytesPerRow, scratch, cols);
+        }
+    }
+
+    public static float DotIq2Xs_Q8K(byte* row, byte* scratch, int cols)
+    {
+        int nb = cols / 256;
+        float* dArr = (float*)scratch;
+        sbyte* qsArr = (sbyte*)(scratch + nb * 4);
+        var grid = IqCodebooks.Iq2XsGrid;
+        var ksigns = IqCodebooks.KSignsIq2Xs;
+        var kmask = IqCodebooks.KMaskIq2Xs;
+        float sumf = 0f;
+
+        for (int i = 0; i < nb; i++)
+        {
+            byte* blk = row + i * 74;
+            float d = HalfToFloat(blk[0], blk[1]) * dArr[i];
+            byte* qsBytes = blk + 2;
+            byte* scales = blk + 66;
+            sbyte* q8 = qsArr + i * 256;
+            int q8Off = 0;
+            int bsum = 0;
+
+            for (int ib32 = 0; ib32 < 8; ib32++)
+            {
+                int ls1 = 2 * (scales[ib32] & 0xF) + 1;
+                int ls2 = 2 * (scales[ib32] >> 4) + 1;
+
+                int sumi = 0;
+                for (int l = 0; l < 2; l++)
+                {
+                    int qOff = (4 * ib32 + l) * 2;
+                    int qval = qsBytes[qOff] | (qsBytes[qOff + 1] << 8);
+                    ulong gridVal = grid[qval & 511];
+                    byte signs = ksigns[qval >> 9];
+                    for (int j = 0; j < 8; j++)
+                        sumi += (byte)(gridVal >> (8 * j)) * q8[q8Off + j] * ((signs & kmask[j]) != 0 ? -1 : 1);
+                    q8Off += 8;
+                }
+                bsum += sumi * ls1;
+
+                sumi = 0;
+                for (int l = 2; l < 4; l++)
+                {
+                    int qOff = (4 * ib32 + l) * 2;
+                    int qval = qsBytes[qOff] | (qsBytes[qOff + 1] << 8);
+                    ulong gridVal = grid[qval & 511];
+                    byte signs = ksigns[qval >> 9];
+                    for (int j = 0; j < 8; j++)
+                        sumi += (byte)(gridVal >> (8 * j)) * q8[q8Off + j] * ((signs & kmask[j]) != 0 ? -1 : 1);
+                    q8Off += 8;
+                }
+                bsum += sumi * ls2;
+            }
+            sumf += d * bsum;
+        }
+        return 0.125f * sumf;
+    }
+
+    public static void MatVecIq2S(float* output, byte* weights, float* input, int rows, int cols)
+    {
+        int bytesPerRow = (cols / 256) * 82;
+        int scratchBytes = Q8KScratchBytes(cols);
+        byte* scratch = stackalloc byte[scratchBytes];
+        QuantizeRowToQ8K(input, cols, scratch);
+
+        if (rows >= MinRowsForParallel)
+        {
+            var w = weights; var s = scratch; var outp = output; int c = cols;
+            Parallel.For(0, rows, s_parallelOpts, i =>
+            {
+                outp[i] = DotIq2S_Q8K(w + (long)i * bytesPerRow, s, c);
+            });
+        }
+        else
+        {
+            for (int i = 0; i < rows; i++)
+                output[i] = DotIq2S_Q8K(weights + (long)i * bytesPerRow, scratch, cols);
+        }
+    }
+
+    public static float DotIq2S_Q8K(byte* row, byte* scratch, int cols)
+    {
+        int nb = cols / 256;
+        float* dArr = (float*)scratch;
+        sbyte* qsArr = (sbyte*)(scratch + nb * 4);
+        var grid = IqCodebooks.Iq2SGrid;
+        var kmask = IqCodebooks.KMaskIq2Xs;
+        float sumf = 0f;
+
+        for (int i = 0; i < nb; i++)
+        {
+            byte* blk = row + i * 82;
+            float d = HalfToFloat(blk[0], blk[1]) * dArr[i];
+            byte* qsLow = blk + 2;
+            byte* signs = blk + 34;
+            byte* qh = blk + 66;
+            byte* scales = blk + 74;
+            sbyte* q8 = qsArr + i * 256;
+            int q8Off = 0;
+            int bsum = 0;
+
+            for (int ib32 = 0; ib32 < 8; ib32++)
+            {
+                int ls1 = 1 + 2 * (scales[ib32] & 0xF);
+                int ls2 = 1 + 2 * (scales[ib32] >> 4);
+                int baseOff = ib32 * 4;
+
+                int sumi1 = 0;
+                for (int l = 0; l < 2; l++)
+                {
+                    int idx = qsLow[baseOff + l] | ((qh[ib32] << (8 - 2 * l)) & 0x300);
+                    ulong gridVal = grid[idx];
+                    byte sgn = signs[baseOff + l];
+                    for (int j = 0; j < 8; j++)
+                        sumi1 += (byte)(gridVal >> (8 * j)) * q8[q8Off + j] * ((sgn & kmask[j]) != 0 ? -1 : 1);
+                    q8Off += 8;
+                }
+                int sumi2 = 0;
+                for (int l = 2; l < 4; l++)
+                {
+                    int idx = qsLow[baseOff + l] | ((qh[ib32] << (8 - 2 * l)) & 0x300);
+                    ulong gridVal = grid[idx];
+                    byte sgn = signs[baseOff + l];
+                    for (int j = 0; j < 8; j++)
+                        sumi2 += (byte)(gridVal >> (8 * j)) * q8[q8Off + j] * ((sgn & kmask[j]) != 0 ? -1 : 1);
+                    q8Off += 8;
+                }
+                bsum += ls1 * sumi1 + ls2 * sumi2;
+            }
+            sumf += d * bsum;
+        }
+        return 0.125f * sumf;
+    }
+
+    public static void MatVecIq3Xxs(float* output, byte* weights, float* input, int rows, int cols)
+    {
+        int bytesPerRow = (cols / 256) * 98;
+        int scratchBytes = Q8KScratchBytes(cols);
+        byte* scratch = stackalloc byte[scratchBytes];
+        QuantizeRowToQ8K(input, cols, scratch);
+
+        if (rows >= MinRowsForParallel)
+        {
+            var w = weights; var s = scratch; var outp = output; int c = cols;
+            Parallel.For(0, rows, s_parallelOpts, i =>
+            {
+                outp[i] = DotIq3Xxs_Q8K(w + (long)i * bytesPerRow, s, c);
+            });
+        }
+        else
+        {
+            for (int i = 0; i < rows; i++)
+                output[i] = DotIq3Xxs_Q8K(weights + (long)i * bytesPerRow, scratch, cols);
+        }
+    }
+
+    public static float DotIq3Xxs_Q8K(byte* row, byte* scratch, int cols)
+    {
+        int nb = cols / 256;
+        float* dArr = (float*)scratch;
+        sbyte* qsArr = (sbyte*)(scratch + nb * 4);
+        var grid = IqCodebooks.Iq3XxsGrid;
+        var ksigns = IqCodebooks.KSignsIq2Xs;
+        var kmask = IqCodebooks.KMaskIq2Xs;
+        float sumf = 0f;
+
+        for (int i = 0; i < nb; i++)
+        {
+            byte* blk = row + i * 98;
+            float d = HalfToFloat(blk[0], blk[1]) * dArr[i];
+            byte* q3 = blk + 2;
+            byte* gas = blk + 2 + 64;
+            sbyte* q8 = qsArr + i * 256;
+            int q8Off = 0;
+            int bsum = 0;
+
+            for (int ib32 = 0; ib32 < 8; ib32++)
+            {
+                int gOff = ib32 * 4;
+                uint aux32 = (uint)(gas[gOff] | (gas[gOff + 1] << 8) | (gas[gOff + 2] << 16) | (gas[gOff + 3] << 24));
+                uint ls = 2 * (aux32 >> 28) + 1;
+                int sumi = 0;
+                int qOff = ib32 * 8;
+                for (int l = 0; l < 4; l++)
+                {
+                    uint grid1 = grid[q3[qOff + 2 * l + 0]];
+                    uint grid2 = grid[q3[qOff + 2 * l + 1]];
+                    byte signs = ksigns[(int)((aux32 >> (7 * l)) & 127)];
+                    for (int j = 0; j < 4; j++)
+                    {
+                        sumi += (byte)(grid1 >> (8 * j)) * q8[q8Off + j] * ((signs & kmask[j]) != 0 ? -1 : 1);
+                        sumi += (byte)(grid2 >> (8 * j)) * q8[q8Off + 4 + j] * ((signs & kmask[j + 4]) != 0 ? -1 : 1);
+                    }
+                    q8Off += 8;
+                }
+                bsum += sumi * (int)ls;
+            }
+            sumf += d * bsum;
+        }
+        return 0.25f * sumf;
     }
 
     /// <summary>

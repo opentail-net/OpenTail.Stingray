@@ -2410,6 +2410,7 @@ public sealed class RunCommand : Command<RunCommand.Settings>
 
         if (OpenTail.Stingray.Engine.DecodeProfileTimers.Enabled)
             OpenTail.Stingray.Engine.DecodeProfileTimers.Report(Console.Out);
+        OpenTail.Stingray.Engine.HybridGdnForwardPass.ReportGdnProfile(Console.Out);
 
         if (toolCapture is not null)
             PrintToolCalls(tok, toolCapture);
