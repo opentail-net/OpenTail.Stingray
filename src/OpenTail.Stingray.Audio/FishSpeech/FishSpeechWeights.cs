@@ -25,12 +25,16 @@ public sealed class FishSpeechWeights : IDisposable
     public int SemanticBeginId { get; }
     public int SemanticEndId { get; }
     public bool ScaleCodebookEmbeddings { get; }
+    public float RmsNormEps { get; }
 
     /// <summary>[VocabSize, EmbeddingDim] flat row-major -- the real `embeddings.weight`, tied with the LM output head.</summary>
     public float[] Embeddings { get; }
 
     /// <summary>[NumCodebooks * CodebookSize, EmbeddingDim] flat row-major -- the real shared `codebook_embeddings.weight`, indexed by `value + codebookIndex * CodebookSize` (confirmed from real source, see FishSpeechPipeline's doc comment).</summary>
     public float[] CodebookEmbeddings { get; }
+
+    /// <summary>[EmbeddingDim] -- the slow-AR's final RMSNorm weight `norm.weight`, applied before feeding hidden state to fast-AR.</summary>
+    public float[] NormWeight { get; }
 
     // ── Fast-AR (per-codebook expansion transformer) -- real spec confirmed from
     // examples/s2.cpp/src/s2_model.cpp's real fast_decode forward pass, see FishSpeechFastAr's
@@ -63,9 +67,11 @@ public sealed class FishSpeechWeights : IDisposable
         SemanticBeginId = GetU32("fish_speech.semantic_begin_id", 0);
         SemanticEndId = GetU32("fish_speech.semantic_end_id", 0);
         ScaleCodebookEmbeddings = Model.Metadata.TryGetValue("fish_speech.scale_codebook_embeddings", out var s) && s is bool b && b;
+        RmsNormEps = Model.Metadata.TryGetValue("fish-speech.attention.layer_norm_rms_epsilon", out var epsMain) ? Convert.ToSingle(epsMain) : 1e-6f;
 
         Embeddings = GetTensor("embeddings.weight");
         CodebookEmbeddings = GetTensor("codebook_embeddings.weight");
+        NormWeight = GetTensor("norm.weight");
 
         FastEmbeddingDim = GetU32("fish_speech.fast_embedding_length", 2560);
         FastHeadCount = GetU32("fish_speech.fast_head_count", 32);

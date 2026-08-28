@@ -44,7 +44,6 @@ public sealed class FishSpeechPipeline : IDisposable
     private readonly FishSpeechWeights _weights;
     private readonly int _imEndId;
     private readonly int _voiceId;
-    private readonly int _codebookDim;
     private readonly FishSpeechFastArCache _fastArCache;
 
     public FishSpeechPipeline(string ggufPath, string tokenizerDir, int numLayers = 36, int ctxSize = 2048)
@@ -54,7 +53,7 @@ public sealed class FishSpeechPipeline : IDisposable
         var hp = ModelHyperparams.FromGgufMetadata(_tensorSource.Metadata, _tensorSource);
         _backend = new CpuBackend();
         _fwd = new ForwardPass(_tensorSource, _backend, hp, maxContextLength: ctxSize);
-        _fwd.EnableHiddenTaps([numLayers - 1]); // last layer's output = the trunk's post-trunk pre-final-norm hidden, what the real fast_decode conditions on
+        _fwd.EnableHiddenTaps([numLayers - 1]); // last layer's output = the trunk's post-trunk pre-final-norm hidden
         _weights = new FishSpeechWeights(ggufPath);
         _fastArCache = new FishSpeechFastArCache(_weights.FastBlockCount);
 
@@ -66,11 +65,17 @@ public sealed class FishSpeechPipeline : IDisposable
 
         _imEndId = Single(_tokenizer.Encode("<|im_end|>"));
         _voiceId = Single(_tokenizer.Encode("<|voice|>"));
-        _codebookDim = _model.Metadata.TryGetValue("fish_speech.codec.quantizer_codebook_dim", out var cd) ? Convert.ToInt32(cd) : 8;
     }
 
     private static int Single(IReadOnlyList<int> ids) =>
         ids.Count == 1 ? ids[0] : throw new InvalidOperationException($"expected a single token, got {ids.Count}");
+
+    /// <summary>Applies the slow-AR trunk's final RMSNorm (norm.weight) to the tapped hidden state, matching s2_model.cpp's eval_cached.</summary>
+    private float[] GetNormedHidden(int pos)
+    {
+        var rawHidden = _fwd.HiddenTapsAt(pos).ToArray();
+        return FishSpeechFastAr.RmsNorm(rawHidden, _weights.NormWeight, _weights.RmsNormEps);
+    }
 
     /// <summary>Builds the real prompt token id sequence (no reference audio -- the simple zero-shot case).</summary>
     public List<int> BuildPrompt(string text)
@@ -116,7 +121,8 @@ public sealed class FishSpeechPipeline : IDisposable
 
         if (_weights.ScaleCodebookEmbeddings)
         {
-            float scale = 1f / MathF.Sqrt(_codebookDim);
+            // Real scale factor from s2_model.cpp: 1 / sqrt(num_codebooks + 1) = 1 / sqrt(11)
+            float scale = 1f / MathF.Sqrt(_weights.NumCodebooks + 1);
             for (int d = 0; d < _weights.EmbeddingDim; d++) emb[d] *= scale;
         }
         return emb;
@@ -196,18 +202,17 @@ public sealed class FishSpeechPipeline : IDisposable
 
         const int rasWindowSize = 10;
         const float rasHighTemp = 1.0f, rasHighTopP = 0.9f;
-        const int rasTopK = 30;
+        const float defaultTemp = 0.8f, defaultTopP = 0.8f;
+        const int defaultTopK = 30;
         var rasWindow = new Queue<int>(rasWindowSize);
 
-        int mainToken = ArgmaxMasked(logits, semBegin, semEnd, _imEndId);
-        float[] hidden = _fwd.HiddenTapsAt(pos - 1).ToArray();
+        int mainToken = SampleMasked(logits, semBegin, semEnd, _imEndId, defaultTemp, defaultTopP, defaultTopK, rng);
+        float[] hidden = GetNormedHidden(pos - 1);
 
         for (int step = 0; step < maxTokens && mainToken != _imEndId; step++)
         {
-            // Real "RAS" repetition-avoidance escape hatch (see this method's doc comment): only
-            // fires when the greedy choice is about to repeat -- otherwise greedy is unchanged.
             if (rasWindow.Contains(mainToken) && mainToken >= semBegin && mainToken <= semEnd)
-                mainToken = SampleMasked(logits, semBegin, semEnd, _imEndId, rasHighTemp, rasHighTopP, rasTopK, rng);
+                mainToken = SampleMasked(logits, semBegin, semEnd, _imEndId, rasHighTemp, rasHighTopP, defaultTopK, rng);
 
             rasWindow.Enqueue(mainToken);
             if (rasWindow.Count > rasWindowSize) rasWindow.Dequeue();
@@ -215,32 +220,18 @@ public sealed class FishSpeechPipeline : IDisposable
             int semCode = Math.Clamp(mainToken - semBegin, 0, _weights.CodebookSize - 1);
             semanticTokens.Add(semCode);
 
-            // Real fast-AR codebook expansion: sample codebooks 1..NumCodebooks-1 one at a time,
-            // each conditioned on the slow-AR's own hidden state for THIS timestep plus the
-            // codebook values already decided so far this timestep -- matches s2_generate.cpp's
-            // real per-timestep loop exactly (see FishSpeechFastAr's doc comment). KV-cached
-            // (see FishSpeechFastArCache's doc comment) -- mathematically equivalent to the old
-            // from-scratch-every-call Forward, but reuses attention work across the 9 calls
-            // instead of redoing it (measured this session's baseline as the dominant real cost).
+            // Real fast-AR codebook expansion:
+            // Position 0 = slow-AR hidden state (projected)
+            // Position 1 = fast_embeddings[semCode], which outputs logits for Codebook 1
+            // Position 2..9 = fast_embeddings[cbToken], which outputs logits for Codebook 2..9
             var codebookValues = new int[_weights.NumCodebooks];
             codebookValues[0] = semCode;
             _fastArCache.Reset();
-            var stepLogits = FishSpeechFastAr.ForwardStep(_weights, _fastArCache, hidden);
+            FishSpeechFastAr.ForwardStep(_weights, _fastArCache, hidden);
+            var stepLogits = FishSpeechFastAr.ForwardStep(_weights, _fastArCache, FishSpeechFastAr.EmbedFastToken(_weights, semCode));
             for (int cb = 1; cb < _weights.NumCodebooks; cb++)
             {
-                // Real reference sampling (temp=0.8, top_p=0.8, top_k=30 -- same defaults as the
-                // slow-AR's RAS escape, no masking needed here since fast_logits is already
-                // exactly CodebookSize wide). Was plain Argmax: a direct logit-margin dump proved
-                // codebook 1's "always picks the same value" behavior was a near-tie (margins as
-                // small as 0.006-0.68 in raw logit space, i.e. the runner-up was often within
-                // 1.01x-1.8x probability of the top pick) resolved identically every time by
-                // greedy tie-breaking, not a confident model decision -- consistent with the
-                // "Dalek"/metallic-timbre symptom (near-constant codebook-1 acoustic detail).
-                // Unlike the slow-AR's main-token loop (where full sampling was tried and made
-                // things WORSE, see this file's other doc comments), the reference's own spec
-                // samples the fast-AR unconditionally every call, never greedily -- this is that,
-                // isolated and tested independently rather than combined with the slow-AR change.
-                int cbToken = SampleToken(stepLogits, 0.8f, 0.8f, 30, rng);
+                int cbToken = SampleToken(stepLogits, defaultTemp, defaultTopP, defaultTopK, rng);
                 codebookValues[cb] = cbToken;
                 if (cb < _weights.NumCodebooks - 1)
                     stepLogits = FishSpeechFastAr.ForwardStep(_weights, _fastArCache, FishSpeechFastAr.EmbedFastToken(_weights, cbToken));
@@ -250,12 +241,65 @@ public sealed class FishSpeechPipeline : IDisposable
             var emb = EmbedSemanticToken(mainToken, codebookValues);
             logits = _fwd.ForwardEmbedding(emb, pos);
             pos++;
-            hidden = _fwd.HiddenTapsAt(pos - 1).ToArray();
+            hidden = GetNormedHidden(pos - 1);
 
-            mainToken = ArgmaxMasked(logits, semBegin, semEnd, _imEndId);
+            mainToken = SampleMasked(logits, semBegin, semEnd, _imEndId, defaultTemp, defaultTopP, defaultTopK, rng);
         }
 
         return (semanticTokens, codebooksPerFrame);
+    }
+
+    /// <summary>
+    /// TEST-SUPPORT ONLY: forces semantic tokens from a reference trajectory through slow-AR + fast-AR.
+    /// </summary>
+    public (List<int> SemanticTokens, List<int[]> CodebooksPerFrame) ForceGenerateFrames(string text, int[] forcedSemanticCodes)
+    {
+        var prompt = BuildPrompt(text);
+        _fwd.ResetCache();
+        _fwd.Prefill(prompt);
+        int pos = prompt.Count;
+
+        int semBegin = _weights.SemanticBeginId;
+        var semanticTokens = new List<int>();
+        var codebooksPerFrame = new List<int[]>();
+        float[] hidden = GetNormedHidden(pos - 1);
+
+        for (int step = 0; step < forcedSemanticCodes.Length; step++)
+        {
+            int semCode = forcedSemanticCodes[step];
+            int mainToken = semBegin + semCode;
+            semanticTokens.Add(semCode);
+
+            var codebookValues = new int[_weights.NumCodebooks];
+            codebookValues[0] = semCode;
+            _fastArCache.Reset();
+            FishSpeechFastAr.ForwardStep(_weights, _fastArCache, hidden);
+            var stepLogits = FishSpeechFastAr.ForwardStep(_weights, _fastArCache, FishSpeechFastAr.EmbedFastToken(_weights, semCode));
+            for (int cb = 1; cb < _weights.NumCodebooks; cb++)
+            {
+                int cbToken = ArgmaxLocal(stepLogits);
+                codebookValues[cb] = cbToken;
+                if (cb < _weights.NumCodebooks - 1)
+                    stepLogits = FishSpeechFastAr.ForwardStep(_weights, _fastArCache, FishSpeechFastAr.EmbedFastToken(_weights, cbToken));
+            }
+            codebooksPerFrame.Add(codebookValues);
+
+            var emb = EmbedSemanticToken(mainToken, codebookValues);
+            _fwd.ForwardEmbedding(emb, pos);
+            pos++;
+            hidden = GetNormedHidden(pos - 1);
+        }
+
+        return (semanticTokens, codebooksPerFrame);
+    }
+
+    private static int ArgmaxLocal(ReadOnlySpan<float> logits)
+    {
+        int idx = 0;
+        float max = logits[0];
+        for (int i = 1; i < logits.Length; i++)
+            if (logits[i] > max) { max = logits[i]; idx = i; }
+        return idx;
     }
 
     private static int ArgmaxMasked(ReadOnlySpan<float> logits, int semBegin, int semEnd, int imEndId)
