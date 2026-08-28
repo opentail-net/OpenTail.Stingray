@@ -1,4 +1,5 @@
 using System;
+using System.Numerics.Tensors;
 using System.Threading.Tasks;
 using OpenTail.Stingray.Audio.Primitives;
 using OpenTail.Stingray.Cpu;
@@ -143,7 +144,7 @@ public static class ParlerDecoder
 
             var ctxSpan = context.AsSpan(off, HeadDim);
             for (int j = 0; j < t; j++)
-                for (int d = 0; d < HeadDim; d++) ctxSpan[d] += scores[j] * vCache[j][off + d];
+                TensorPrimitives.MultiplyAdd(vCache[j].AsSpan(off, HeadDim), scores[j], ctxSpan, ctxSpan);
         });
 
         return LinearQ8_0(context, lw.SelfAttnOutWeight, dim, dim);
@@ -184,7 +185,7 @@ public static class ParlerDecoder
 
             var ctxSpan = context.AsSpan(off, HeadDim);
             for (int j = 0; j < tk; j++)
-                for (int d = 0; d < HeadDim; d++) ctxSpan[d] += scores[j] * v[j][off + d];
+                TensorPrimitives.MultiplyAdd(v[j].AsSpan(off, HeadDim), scores[j], ctxSpan, ctxSpan);
         });
 
         return LinearQ8_0(context, lw.CrossAttnOutWeight, dim, dim);
@@ -286,7 +287,7 @@ public static class ParlerDecoder
 
                 var ctxSpan = context[i].AsSpan(off, HeadDim);
                 for (int j = 0; j <= i; j++)
-                    for (int d = 0; d < HeadDim; d++) ctxSpan[d] += scores[j] * v[j][off + d];
+                    TensorPrimitives.MultiplyAdd(v[j].AsSpan(off, HeadDim), scores[j], ctxSpan, ctxSpan);
             }
         });
 
@@ -329,7 +330,7 @@ public static class ParlerDecoder
 
                 var ctxSpan = context[i].AsSpan(off, HeadDim);
                 for (int j = 0; j < tk; j++)
-                    for (int d = 0; d < HeadDim; d++) ctxSpan[d] += scores[j] * v[j][off + d];
+                    TensorPrimitives.MultiplyAdd(v[j].AsSpan(off, HeadDim), scores[j], ctxSpan, ctxSpan);
             }
         });
 

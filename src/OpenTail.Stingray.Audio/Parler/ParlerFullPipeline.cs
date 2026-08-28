@@ -341,29 +341,67 @@ public sealed class ParlerFullPipeline : ITextToSpeechPipeline
 
     /// <summary>
     /// Real Parler-TTS/HF <c>_sample()</c> decode step: temperature-1 softmax then
-    /// <c>torch.multinomial</c>-equivalent categorical draw (no top-k/top-p filtering -- the
-    /// checkpoint's own inference example calls plain <c>do_sample=True, temperature=1.0</c>, and
-    /// per-codebook sampling is genuinely independent in the reference implementation, not a joint
-    /// draw over all 9 codebooks -- see docs/audio-review-progress.md's greedy-collapse writeup).
-    /// Numerically stable (max-subtracted exp, cumulative-sum draw) -- no explicit normalisation
-    /// needed since the draw is scaled by the unnormalised sum directly.
+    /// <c>torch.multinomial</c>-equivalent categorical draw, top-k filtered. Per-codebook sampling
+    /// is genuinely independent in the reference implementation, not a joint draw over all 9
+    /// codebooks -- see docs/audio-review-progress.md's greedy-collapse writeup. Numerically stable
+    /// (max-subtracted exp, cumulative-sum draw) -- no explicit normalisation needed since the draw
+    /// is scaled by the unnormalised sum directly.
     /// </summary>
-    private static int SampleMultinomial(float[] logits, Random rng)
+    /// <param name="topK">
+    /// <b>Correction, 2026-08-28:</b> this checkpoint's own real `generation_config.json`
+    /// (`scratch-llamacpp-ref/parler_generation_config.json`, fetched from Hugging Face) carries
+    /// NO `top_k`/`top_p`/`temperature` keys at all -- just `do_sample: true`. The claim that
+    /// `top_k=50` came from the checkpoint's own released config was wrong (sourced from an
+    /// external suggestion, not re-checked against the local ground truth already sitting in this
+    /// repo). It is kept anyway: unfiltered temperature-1 sampling (the diagnostic Test 1 that
+    /// first fixed the greedy-collapse "drill noise" bug) still occasionally draws a genuinely
+    /// low-probability code, audible as a "gravelly"/noisy texture and a slightly different tone
+    /// even once the actual words are correct -- confirmed by direct A/B listen-comparison, not
+    /// just plausible reasoning: `speech_parler_variant2.wav` (unfiltered, pre-top-k) was
+    /// listen-rejected, `speech_parler_sampled.wav` (top-k=50, same everything else) was
+    /// listen-approved. 50 is a standard, unremarkable top-k value for this class of model
+    /// (nucleus/top-k sampling), not a checkpoint-specific tuned constant -- worth
+    /// revisiting/sweeping if a cleaner result is wanted later, but not asserted as "the" real
+    /// value.
+    /// </param>
+    private static int SampleMultinomial(float[] logits, Random rng, int topK = 50)
     {
-        float max = float.NegativeInfinity;
-        for (int i = 0; i < logits.Length; i++) if (logits[i] > max) max = logits[i];
+        int k = Math.Min(topK, logits.Length);
+        Span<int> topIdx = stackalloc int[k];
+        Span<float> topVal = stackalloc float[k];
+        int filled = 0;
 
+        // Real `torch.topk`: the K largest logits by value, in no particular order beyond that --
+        // a simple insertion into a small sorted-ascending buffer is fine at k=50.
+        for (int i = 0; i < logits.Length; i++)
+        {
+            float v = logits[i];
+            if (filled < k)
+            {
+                int pos = filled++;
+                while (pos > 0 && topVal[pos - 1] > v) { topVal[pos] = topVal[pos - 1]; topIdx[pos] = topIdx[pos - 1]; pos--; }
+                topVal[pos] = v; topIdx[pos] = i;
+            }
+            else if (v > topVal[0])
+            {
+                int pos = 0;
+                while (pos < k - 1 && topVal[pos + 1] < v) { topVal[pos] = topVal[pos + 1]; topIdx[pos] = topIdx[pos + 1]; pos++; }
+                topVal[pos] = v; topIdx[pos] = i;
+            }
+        }
+
+        float max = topVal[k - 1];
         double sum = 0.0;
-        for (int i = 0; i < logits.Length; i++) sum += Math.Exp(logits[i] - max);
+        for (int i = 0; i < k; i++) sum += Math.Exp(topVal[i] - max);
 
         double r = rng.NextDouble() * sum;
         double cumulative = 0.0;
-        for (int i = 0; i < logits.Length; i++)
+        for (int i = 0; i < k; i++)
         {
-            cumulative += Math.Exp(logits[i] - max);
-            if (r < cumulative) return i;
+            cumulative += Math.Exp(topVal[i] - max);
+            if (r < cumulative) return topIdx[i];
         }
-        return logits.Length - 1;
+        return topIdx[k - 1];
     }
 
     private static unsafe float[] LinearNoBias(float[] input, float[] weight, int inDim, int outDim)
