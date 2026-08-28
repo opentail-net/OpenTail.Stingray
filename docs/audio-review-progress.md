@@ -9066,3 +9066,61 @@ than being folded into a "check the other two" pass.
 **Status: documented, not fixed. Next step if picked up**: scope the real size of the job (check
 `examples/cosyvoice.cpp` for its own CamPlus port and speech-tokenizer wiring as reference
 source), rather than guessing effort from this entry alone.
+
+## Fish Speech and QwenTTS survey: same greedy-decode pattern as Parler's Bug 1, confirmed in both; Fish Speech ALSO has a distinct crash bug (2026-08-28)
+
+Checked the remaining two reported-broken pipelines (`speech_fishspeech_FAIL.wav`,
+`speech_qwentts_FAIL.wav`) for the same class of bug Parler-TTS had (greedy-decode collapse).
+Both confirmed to use plain, unconditional `Argmax`/`ArgMax` throughout their autoregressive
+speech-token generation, same as Parler before this session's fix -- this is now a confirmed
+pattern across (at least) three of this codebase's TTS pipelines, not a one-off.
+
+**Fish Speech (`FishSpeechFullPipeline` -> `FishSpeechPipeline.GenerateFrames`)**:
+- Greedy `Argmax`/`ArgmaxMasked` throughout both the slow-AR semantic-token loop and the fast-AR
+  per-codebook expansion (`FishSpeechPipeline.cs` lines ~162-195). `GenerateSemanticTokens`'s own
+  doc comment already flags this honestly: "greedy decode -- a deliberate first-pass
+  simplification; the real reference's own sampler uses temperature/top_p/top_k plus a
+  repetition-avoidance ('RAS') heuristic, not yet wired here."
+- **Separate, more severe bug on top: a hard crash, not just bad audio.** Reproduced via
+  `-e fishspeech`: `ArgumentOutOfRangeException` in `EmbedSemanticToken`'s `Array.Copy`, sourceIndex
+  `-2560` (exactly `-1 * EmbeddingDim`) -- i.e. `ArgmaxMasked` returned its `-1`-initialized
+  fallback sentinel, and the caller never checked for it before using it as an array row index.
+  `ArgmaxMasked` only returns a real value if EITHER the masked `[semBegin, semEnd]` range search
+  finds something OR the `imEndId` check fires; it stays `-1` if the search range is effectively
+  empty against the `logits` array actually passed in. Confirmed via `list-metadata` on
+  `models/s2-pro-q4_k_m.gguf` that the real GGUF-declared range is valid and non-empty
+  (`fish_speech.semantic_begin_id=151678`, `fish_speech.semantic_end_id=155773`,
+  `fish_speech.vocab_size=155776`) -- so the likely cause is that the `logits` array
+  `ForwardPass.Prefill`/`.ForwardEmbedding` actually returns for this tensor source is SHORTER
+  than `semBegin`, not a metadata/config error. Root cause not yet found -- would need to check
+  `FishSpeechTensorSource`'s declared vocab size / lm_head output dimension against what the
+  shared `Engine.ForwardPass` actually returns. This crash happens on literally the first
+  generated token (right after prefill), so it is NOT downstream of the greedy-decode issue --
+  fixing the sampling strategy alone will not fix this pipeline; the crash needs its own dedicated
+  root-cause dive first, before the audio-quality bug is even reachable to reason about.
+
+**QwenTTS (`QwenTtsPipeline`)**: runs to completion, no crash. Confirmed the REAL,
+weight-driven decode path is `QwenTtsPipeline.cs` (`ArgMax` in the Talker LM loop, line ~138) and
+`QwenTtsCodePredictorGeneration.cs` (`ArgMax` in the secondary-codebook expansion, lines ~88/103)
+-- both plain greedy, same shape as Parler's original bug, no other structural gap found in this
+survey pass (not yet listen-confirmed to actually reproduce the drone/noise symptom the way
+Parler's token dump did, since this was a static-code survey, not an instrumented repro).
+
+**Found and worth flagging separately, not itself a correctness bug**: `QwenTtsTalkerLm.cs`
+(`GenerateCode0`) is DEAD CODE -- a synthetic placeholder that fabricates plausible-looking token
+sequences and hidden states purely from `MathF.Sin`/`Exp` formulas, NEVER wired to any real model
+weights or forward pass. Confirmed the actual CLI-invoked pipeline (`QwenTtsPipeline.cs`) uses
+`QwenTtsTalkerTensorSource` (a real, weight-driven tensor source) instead and never calls this
+class at all. Misleading to leave in the tree (reads as a real implementation at a glance) but not
+itself the cause of any reported bug -- noted for a future cleanup pass, not acted on here.
+
+**Also noticed, not investigated further**: `QwenTtsPipeline`'s real run re-initializes
+`ForwardPass` roughly once per generated frame/codebook (~28 "`[ForwardPass] Pre-faulted ...`"
+log lines for one short utterance), each re-pre-faulting its weight set from scratch. Looks like a
+real, avoidable performance issue (repeated setup cost that a persistent/reused `ForwardPass`
+instance across the whole generation loop would eliminate), but out of scope for this
+correctness-focused pass -- flagged for whoever next does a QwenTTS performance pass.
+
+**Status: documented, not fixed. Planned order (per direct instruction): QwenTTS sampling fix
+first (same technique as Parler's `SampleMultinomial`, no known blocking issue), then Fish Speech
+(sampling fix AND the separate crash root-cause, in that pipeline's own follow-up entry).**
