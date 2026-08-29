@@ -69,8 +69,8 @@ public sealed class FishSpeechClipGenDebugTests : HeavyTestBase
         Assert.NotEmpty(pcm);
 
         var result = new OpenTail.Stingray.Audio.AudioGenerationResult(pcm, 44100);
-        string outPath = Path.Combine(outDir!, "fishspeech-lunch-v13-fastar-zeroalloc-seed7.wav");
+        string outPath = Path.Combine(outDir!, "fishspeech-lunch-v14-codec-opt-seed7.wav");
         result.SaveWav(outPath);
-        Console.WriteLine($"[FastArZeroAlloc] saved {outPath} samples={pcm.Length} durationSec={pcm.Length / 44100.0:F2} elapsedSec={sw.Elapsed.TotalSeconds:F2}s");
+        Console.WriteLine($"[CodecOpt] saved {outPath} samples={pcm.Length} durationSec={pcm.Length / 44100.0:F2} elapsedSec={sw.Elapsed.TotalSeconds:F2}s");
     }
 }

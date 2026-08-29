@@ -51,22 +51,40 @@ public static class FishSpeechCodec
     /// codebook's valid range right before this exact embedding lookup (`code = max(0, min(code,
     /// codebook_size - 1))`) -- ported verbatim here, not guessed.</para>
     /// </summary>
-    private static float[] QuantizerSetFromCodes(FishSpeechCodecQuantizerWeights[] quantizers, int[][] codes, int t, int codebookSize)
+    private static unsafe float[] QuantizerSetFromCodes(FishSpeechCodecQuantizerWeights[] quantizers, int[][] codes, int t, int codebookSize)
     {
-        var zq = new float[FishSpeechCodecWeights.LatentDim * t];
-        for (int qi = 0; qi < quantizers.Length; qi++)
+        int latentDim = FishSpeechCodecWeights.LatentDim;
+        int codebookDim = FishSpeechCodecWeights.CodebookDim;
+        var zq = new float[latentDim * t];
+
+        fixed (float* zqPtr = zq)
         {
-            var q = quantizers[qi];
-            var embed = new float[FishSpeechCodecWeights.CodebookDim * t];
-            for (int ti = 0; ti < t; ti++)
+            var zqPtrLocal = zqPtr;
+            for (int qi = 0; qi < quantizers.Length; qi++)
             {
-                int code = Math.Clamp(codes[qi][ti], 0, codebookSize - 1);
-                int cbBase = code * FishSpeechCodecWeights.CodebookDim;
-                for (int d = 0; d < FishSpeechCodecWeights.CodebookDim; d++)
-                    embed[d * t + ti] = q.Codebook[cbBase + d];
+                var q = quantizers[qi];
+                var qCodes = codes[qi];
+                fixed (float* cbPtr = q.Codebook, wPtr = q.OutProjWeight, bPtr = q.OutProjBias)
+                {
+                    var cbLocal = cbPtr;
+                    var wLocal = wPtr;
+                    var bLocal = bPtr;
+
+                    Parallel.For(0, latentDim, oc =>
+                    {
+                        float b = bLocal[oc];
+                        float* wOc = wLocal + oc * codebookDim;
+                        float* zqRow = zqPtrLocal + oc * t;
+
+                        for (int ti = 0; ti < t; ti++)
+                        {
+                            int code = Math.Clamp(qCodes[ti], 0, codebookSize - 1);
+                            float* emb = cbLocal + code * codebookDim;
+                            zqRow[ti] += b + SimdKernels.DotF32(wOc, emb, codebookDim);
+                        }
+                    });
+                }
             }
-            var proj = FullConv1d(embed, FishSpeechCodecWeights.CodebookDim, FishSpeechCodecWeights.LatentDim, t, q.OutProjWeight, q.OutProjBias, kernel: 1, dilation: 1, causalPadLeft: 0);
-            for (int i = 0; i < zq.Length; i++) zq[i] += proj[i];
         }
         return zq;
     }
@@ -222,16 +240,24 @@ public static class FishSpeechCodec
 
         int hidden = channels * 4;
         var output = new float[x.Length];
-        fixed (float* pw1 = w.PwConv1Weight, pw2 = w.PwConv2Weight)
+        fixed (float* pw1 = w.PwConv1Weight, pw2 = w.PwConv2Weight, yPtr = y, xPtr = x, outPtr = output)
+        fixed (float* normW = w.NormWeight, normB = w.NormBias, b1 = w.PwConv1Bias, b2 = w.PwConv2Bias, gamma = w.Gamma)
         {
             var pw1Local = pw1;
             var pw2Local = pw2;
+            var yPtrLocal = yPtr;
+            var xPtrLocal = xPtr;
+            var outPtrLocal = outPtr;
+            var normWLocal = normW;
+            var normBLocal = normB;
+            var b1Local = b1;
+            var b2Local = b2;
+            var gammaLocal = gamma;
+
             Parallel.For(0, t, ti =>
             {
-                // Gather this position's channel vector (channels-last for LayerNorm/Linear;
-                // contiguous so the two Linear layers below can use a straight AVX2 dot product).
-                var row = new float[channels];
-                for (int c = 0; c < channels; c++) row[c] = y[c * t + ti];
+                float* row = stackalloc float[channels];
+                for (int c = 0; c < channels; c++) row[c] = yPtrLocal[c * t + ti];
 
                 float mean = 0f;
                 for (int c = 0; c < channels; c++) mean += row[c];
@@ -240,19 +266,16 @@ public static class FishSpeechCodec
                 for (int c = 0; c < channels; c++) { float d = row[c] - mean; variance += d * d; }
                 variance /= channels;
                 float invStd = 1f / MathF.Sqrt(variance + 1e-6f);
-                for (int c = 0; c < channels; c++) row[c] = (row[c] - mean) * invStd * w.NormWeight[c] + w.NormBias[c];
+                for (int c = 0; c < channels; c++) row[c] = (row[c] - mean) * invStd * normWLocal[c] + normBLocal[c];
 
-                var h = new float[hidden];
-                fixed (float* rowPtr = row, hPtr = h)
+                float* h = stackalloc float[hidden];
+                for (int o = 0; o < hidden; o++)
+                    h[o] = Gelu(b1Local[o] + SimdKernels.DotF32(row, pw1Local + o * channels, channels));
+
+                for (int c = 0; c < channels; c++)
                 {
-                    for (int o = 0; o < hidden; o++)
-                        hPtr[o] = Gelu(w.PwConv1Bias[o] + SimdKernels.DotF32(rowPtr, pw1Local + o * channels, channels));
-
-                    for (int c = 0; c < channels; c++)
-                    {
-                        float sum = w.PwConv2Bias[c] + SimdKernels.DotF32(hPtr, pw2Local + c * hidden, hidden);
-                        output[c * t + ti] = x[c * t + ti] + sum * w.Gamma[c];
-                    }
+                    float sum = b2Local[c] + SimdKernels.DotF32(h, pw2Local + c * hidden, hidden);
+                    outPtrLocal[c * t + ti] = xPtrLocal[c * t + ti] + sum * gammaLocal[c];
                 }
             });
         }
@@ -339,28 +362,45 @@ public static class FishSpeechCodec
         return output;
     }
 
-    private static float[][] QuantizerTransformerLayer(float[][] x, FishSpeechCodecTransformerLayerWeights lw, int t, int dim, int nHead, int headDim, float ropeBase, float eps, int windowSize)
+    private static unsafe float[][] QuantizerTransformerLayer(float[][] x, FishSpeechCodecTransformerLayerWeights lw, int t, int dim, int nHead, int headDim, float ropeBase, float eps, int windowSize)
     {
         int qkvSize = nHead * headDim; // == dim, full MHA (n_local_heads == n_head for this checkpoint)
 
-        // Real perf fix (2026-08-29): each position's RMSNorm/QKV projection is independent of
-        // every other position (only the attention step itself, already parallelized over heads
-        // below, mixes across positions) -- was a plain sequential loop over t, single-threaded,
-        // for what's actually an embarrassingly parallel per-position workload. Measured as the
-        // dominant cost in the codec's newly-added quantizer transformer (see this file's Decode
-        // doc comment) -- 15-frame codec decode alone took ~2.6s before this fix.
-        var normed = new float[t][];
         var q = new float[t][];
         var k = new float[t][];
         var v = new float[t][];
-        Parallel.For(0, t, i =>
+        fixed (float* wNorm = lw.AttentionNormWeight, wQkv = lw.WqkvWeight)
         {
-            normed[i] = FishSpeechFastAr.RmsNorm(x[i], lw.AttentionNormWeight, eps);
-            var qkv = FishSpeechFastAr.LinearNoBias(normed[i], lw.WqkvWeight, dim, 3 * qkvSize);
-            q[i] = qkv.AsSpan(0, qkvSize).ToArray();
-            k[i] = qkv.AsSpan(qkvSize, qkvSize).ToArray();
-            v[i] = qkv.AsSpan(2 * qkvSize, qkvSize).ToArray();
-        });
+            var wNormLocal = wNorm;
+            var wQkvLocal = wQkv;
+            Parallel.For(0, t, i =>
+            {
+                float* normed = stackalloc float[dim];
+                fixed (float* xi = x[i])
+                {
+                    float sumSq = 0f;
+                    for (int d = 0; d < dim; d++) sumSq += xi[d] * xi[d];
+                    float invRms = 1f / MathF.Sqrt(sumSq / dim + eps);
+                    for (int d = 0; d < dim; d++) normed[d] = xi[d] * invRms * wNormLocal[d];
+                }
+
+                var qRow = new float[qkvSize];
+                var kRow = new float[qkvSize];
+                var vRow = new float[qkvSize];
+                float* qkv = stackalloc float[3 * qkvSize];
+                SimdKernels.MatVecF32(qkv, wQkvLocal, normed, 3 * qkvSize, dim);
+
+                fixed (float* qp = qRow, kp = kRow, vp = vRow)
+                {
+                    Buffer.MemoryCopy(qkv, qp, (long)qkvSize * 4, (long)qkvSize * 4);
+                    Buffer.MemoryCopy(qkv + qkvSize, kp, (long)qkvSize * 4, (long)qkvSize * 4);
+                    Buffer.MemoryCopy(qkv + 2 * qkvSize, vp, (long)qkvSize * 4, (long)qkvSize * 4);
+                }
+                q[i] = qRow;
+                k[i] = kRow;
+                v[i] = vRow;
+            });
+        }
 
         for (int i = 0; i < t; i++)
         {
@@ -403,28 +443,63 @@ public static class FishSpeechCodec
         });
 
         var h1 = new float[t][];
-        Parallel.For(0, t, i =>
+        fixed (float* woPtr = lw.WoWeight, gammaPtr = lw.AttentionGamma)
         {
-            var o = FishSpeechFastAr.LinearNoBias(context[i], lw.WoWeight, qkvSize, dim);
-            var row = new float[dim];
-            for (int d = 0; d < dim; d++) row[d] = x[i][d] + o[d] * lw.AttentionGamma[d];
-            h1[i] = row;
-        });
+            var woLocal = woPtr;
+            var gammaLocal = gammaPtr;
+            Parallel.For(0, t, i =>
+            {
+                var row = new float[dim];
+                fixed (float* cp = context[i], rp = row, xp = x[i])
+                {
+                    float* o = stackalloc float[dim];
+                    SimdKernels.MatVecF32(o, woLocal, cp, dim, qkvSize);
+                    for (int d = 0; d < dim; d++) rp[d] = xp[d] + o[d] * gammaLocal[d];
+                }
+                h1[i] = row;
+            });
+        }
 
         int ffnDim = lw.W1Weight.Length / dim;
         var output = new float[t][];
-        Parallel.For(0, t, i =>
+        fixed (float* ffnNormW = lw.FfnNormWeight, w1Ptr = lw.W1Weight, w3Ptr = lw.W3Weight, w2Ptr = lw.W2Weight, ffnGammaPtr = lw.FfnGamma)
         {
-            var ffnNormed = FishSpeechFastAr.RmsNorm(h1[i], lw.FfnNormWeight, eps);
-            var gate = FishSpeechFastAr.LinearNoBias(ffnNormed, lw.W1Weight, dim, ffnDim);
-            var up = FishSpeechFastAr.LinearNoBias(ffnNormed, lw.W3Weight, dim, ffnDim);
-            for (int d = 0; d < ffnDim; d++) gate[d] = FishSpeechFastAr.Silu(gate[d]) * up[d];
-            var ffnOut = FishSpeechFastAr.LinearNoBias(gate, lw.W2Weight, ffnDim, dim);
+            var ffnNormWLocal = ffnNormW;
+            var w1Local = w1Ptr;
+            var w3Local = w3Ptr;
+            var w2Local = w2Ptr;
+            var ffnGammaLocal = ffnGammaPtr;
 
-            var row = new float[dim];
-            for (int d = 0; d < dim; d++) row[d] = h1[i][d] + ffnOut[d] * lw.FfnGamma[d];
-            output[i] = row;
-        });
+            Parallel.For(0, t, i =>
+            {
+                var row = new float[dim];
+                fixed (float* hp = h1[i], rp = row)
+                {
+                    float* ffnNormed = stackalloc float[dim];
+                    float sumSq = 0f;
+                    for (int d = 0; d < dim; d++) sumSq += hp[d] * hp[d];
+                    float invRms = 1f / MathF.Sqrt(sumSq / dim + eps);
+                    for (int d = 0; d < dim; d++) ffnNormed[d] = hp[d] * invRms * ffnNormWLocal[d];
+
+                    float* gate = stackalloc float[ffnDim];
+                    float* up = stackalloc float[ffnDim];
+                    SimdKernels.MatVecF32(gate, w1Local, ffnNormed, ffnDim, dim);
+                    SimdKernels.MatVecF32(up, w3Local, ffnNormed, ffnDim, dim);
+
+                    for (int d = 0; d < ffnDim; d++)
+                    {
+                        float g = gate[d];
+                        gate[d] = (g / (1f + MathF.Exp(-g))) * up[d];
+                    }
+
+                    float* ffnOut = stackalloc float[dim];
+                    SimdKernels.MatVecF32(ffnOut, w2Local, gate, dim, ffnDim);
+
+                    for (int d = 0; d < dim; d++) rp[d] = hp[d] + ffnOut[d] * ffnGammaLocal[d];
+                }
+                output[i] = row;
+            });
+        }
         return output;
     }
 
