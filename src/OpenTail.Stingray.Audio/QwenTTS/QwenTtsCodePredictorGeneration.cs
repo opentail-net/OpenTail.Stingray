@@ -68,6 +68,9 @@ public static class QwenTtsCodePredictorGeneration
         private readonly ForwardPass _fwd;
         private readonly Weights _weights;
 
+        private readonly float[] _promptRowsBuffer = new float[2 * HiddenDim];
+        private readonly float[] _inputEmbBuffer = new float[HiddenDim];
+
         public CodePredictorSession(GgufModel rawModel, Weights weights, int numLayers)
         {
             _weights = weights;
@@ -84,31 +87,29 @@ public static class QwenTtsCodePredictorGeneration
         {
             _fwd.ResetKvCache();
 
-            var promptRows = new float[2 * HiddenDim];
-            talkerLastHidden.CopyTo(promptRows.AsSpan(0, HiddenDim));
-            Array.Copy(_weights.TalkerCodecEmbd, (long)c0 * HiddenDim, promptRows, HiddenDim, HiddenDim);
-            _source.SetPromptEmbedding(promptRows, 2);
+            talkerLastHidden.CopyTo(_promptRowsBuffer.AsSpan(0, HiddenDim));
+            Array.Copy(_weights.TalkerCodecEmbd, (long)c0 * HiddenDim, _promptRowsBuffer, HiddenDim, HiddenDim);
+            _source.SetPromptEmbedding(_promptRowsBuffer, 2);
             _source.SetOutputHead(_weights.LmHead[0], AcousticVocabSize);
 
-            var logits = _fwd.Prefill([0, 1]).ToArray();
+            var logitsSpan = _fwd.Prefill([0, 1]);
 
             var codes = new int[NumAcousticCodebooks];
-            codes[0] = SampleTopK(logits, temperature: 0.9f, topK: 50, rng); // c1, from lm_head.0
+            codes[0] = SampleTopK(logitsSpan, temperature: 0.9f, topK: 50, rng); // c1, from lm_head.0
 
             int pos = 2;
             for (int g = 1; g < NumAcousticCodebooks; g++)
             {
                 int prevCode = codes[g - 1]; // codes[g] in the real 1-indexed doc numbering
-                var inputEmb = new float[HiddenDim];
-                Array.Copy(_weights.CodecEmbd[g - 1], (long)prevCode * HiddenDim, inputEmb, 0, HiddenDim);
+                Array.Copy(_weights.CodecEmbd[g - 1], (long)prevCode * HiddenDim, _inputEmbBuffer, 0, HiddenDim);
 
-                _source.SetPromptEmbedding(inputEmb, 1);
+                _source.SetPromptEmbedding(_inputEmbBuffer, 1);
                 _source.SetOutputHead(_weights.LmHead[g], AcousticVocabSize);
 
-                logits = _fwd.Forward(0, pos).ToArray();
+                logitsSpan = _fwd.Forward(0, pos);
                 pos++;
 
-                codes[g] = SampleTopK(logits, temperature: 0.9f, topK: 50, rng); // c_{g+1}
+                codes[g] = SampleTopK(logitsSpan, temperature: 0.9f, topK: 50, rng); // c_{g+1}
             }
 
             return codes;
@@ -144,7 +145,7 @@ public static class QwenTtsCodePredictorGeneration
     /// docs/audio-review-progress.md. <c>top_p=1.0</c> makes nucleus filtering a no-op, so it is
     /// not implemented here.
     /// </summary>
-    private static int SampleTopK(float[] logits, float temperature, int topK, Random rng)
+    private static int SampleTopK(ReadOnlySpan<float> logits, float temperature, int topK, Random rng)
     {
         int k = Math.Min(topK, logits.Length);
         Span<int> topIdx = stackalloc int[k];

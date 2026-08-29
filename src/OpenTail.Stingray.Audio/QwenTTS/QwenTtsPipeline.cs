@@ -130,7 +130,7 @@ public sealed class QwenTtsPipeline : ITextToSpeechPipeline
         var lastRow = new float[QwenTtsTalkerPromptBuilder.TalkerHiddenDim];
         Array.Copy(promptEmbed, (tRows - 1) * QwenTtsTalkerPromptBuilder.TalkerHiddenDim, lastRow, 0, QwenTtsTalkerPromptBuilder.TalkerHiddenDim);
         talkerSource.SetPromptEmbedding(lastRow, 1);
-        var logits = fwd.Forward(0, tRows - 1).ToArray();
+        var logitsSpan = fwd.Forward(0, tRows - 1);
         int pos = tRows;
 
         if (Environment.GetEnvironmentVariable("STINGRAY_QWENTTS_GOLDEN_DUMP") is { } dumpDir)
@@ -141,8 +141,9 @@ public sealed class QwenTtsPipeline : ITextToSpeechPipeline
             var lastHidden = fwd.LastHidden.ToArray();
             System.IO.File.WriteAllText(System.IO.Path.Combine(dumpDir, "last_hidden.csv"),
                 $"1,{lastHidden.Length}\n" + string.Join(",", lastHidden));
+            var logitsArr = logitsSpan.ToArray();
             System.IO.File.WriteAllText(System.IO.Path.Combine(dumpDir, "logits.csv"),
-                $"1,{logits.Length}\n" + string.Join(",", logits));
+                $"1,{logitsArr.Length}\n" + string.Join(",", logitsArr));
         }
 
         var codePredWeights = QwenTtsCodePredictorGeneration.Weights.Load(_talkerModel);
@@ -152,43 +153,35 @@ public sealed class QwenTtsPipeline : ITextToSpeechPipeline
         var c0History = new List<int>();
         var rng = new Random(seed);
 
+        var padEmbed = QwenTtsTalkerPromptBuilder.ProjectTextIds(talkerWeights, [specials.TtsPadId]);
+        var stepRow = new float[QwenTtsTalkerPromptBuilder.TalkerHiddenDim];
+
         for (int frame = 0; frame < maxFrames; frame++)
         {
-            int c0 = SampleTopK(logits, c0History, temperature: 0.9f, topK: 50, repetitionPenalty: 1.05f, rng);
+            int c0 = SampleTopK(logitsSpan, c0History, temperature: 0.9f, topK: 50, repetitionPenalty: 1.05f, rng);
             if (c0 == specials.CodecEosId) break;
             c0History.Add(c0);
 
-            var talkerLastHidden = fwd.LastHidden.ToArray();
-            var acoustic = codePredSession.GenerateAcousticCodes(c0, talkerLastHidden, rng);
+            var acoustic = codePredSession.GenerateAcousticCodes(c0, fwd.LastHidden, rng);
 
             var frameCodes = new int[16];
             frameCodes[0] = c0;
             Array.Copy(acoustic, 0, frameCodes, 1, 15);
             frames.Add(frameCodes);
 
-            // Real next-step feedback sums ALL 16 codebook embeddings (semantic c0 via the
-            // talker's own codec table, acoustic c1..c15 via the code predictor's 15 per-codebook
-            // tables), confirmed from the real reference's `tts_engine_step` (`pipeline-tts.cpp`
-            // ~line 1106-1119: `ids[g * N_dec + i] = s.prev_ids[g]` for ALL `num_code_groups`,
-            // fed together with `pt->code_predictor.codec_embedding` into the next talker decode).
-            // Found and fixed 2026-08-28: this pipeline previously only fed c0's embedding,
-            // silently dropping the 15 acoustic codes the code predictor generates every single
-            // frame -- real, per-frame signal loss that compounds across the whole autoregressive
-            // sequence, consistent with the "garbled" (not clean) speech this produced even after
-            // the greedy-decode/sampling fix. See docs/audio-review-progress.md.
-            var stepRow = QwenTtsTalkerPromptBuilder.ProjectTextIds(talkerWeights, [specials.TtsPadId]);
+            Array.Copy(padEmbed, stepRow, stepRow.Length);
             var codecVec = QwenTtsTalkerPromptBuilder.CodecEmbedRow(talkerWeights, c0);
-            for (int d = 0; d < QwenTtsTalkerPromptBuilder.TalkerHiddenDim; d++) stepRow[d] += codecVec[d];
+            for (int d = 0; d < stepRow.Length; d++) stepRow[d] += codecVec[d];
             for (int g = 0; g < acoustic.Length; g++)
             {
-                var acVec = new float[QwenTtsTalkerPromptBuilder.TalkerHiddenDim];
-                Array.Copy(codePredWeights.CodecEmbd[g], (long)acoustic[g] * QwenTtsTalkerPromptBuilder.TalkerHiddenDim,
-                    acVec, 0, QwenTtsTalkerPromptBuilder.TalkerHiddenDim);
-                for (int d = 0; d < QwenTtsTalkerPromptBuilder.TalkerHiddenDim; d++) stepRow[d] += acVec[d];
+                int acCode = acoustic[g];
+                int acOffset = acCode * QwenTtsTalkerPromptBuilder.TalkerHiddenDim;
+                var acTable = codePredWeights.CodecEmbd[g];
+                for (int d = 0; d < stepRow.Length; d++) stepRow[d] += acTable[acOffset + d];
             }
 
             talkerSource.SetPromptEmbedding(stepRow, 1);
-            logits = fwd.Forward(0, pos).ToArray();
+            logitsSpan = fwd.Forward(0, pos);
             pos++;
         }
 
@@ -206,16 +199,9 @@ public sealed class QwenTtsPipeline : ITextToSpeechPipeline
     /// nucleus filtering a no-op (keeps the whole top-k set), so it is not implemented here --
     /// would need adding if a caller ever wants a real <c>top_p &lt; 1.0</c>.
     /// </summary>
-    private static int SampleTopK(float[] logits, List<int> history, float temperature, int topK, float repetitionPenalty, Random rng)
+    private static int SampleTopK(ReadOnlySpan<float> logits, List<int> history, float temperature, int topK, float repetitionPenalty, Random rng)
     {
-        if (repetitionPenalty != 1.0f)
-        {
-            foreach (int tok in history)
-            {
-                if ((uint)tok >= (uint)logits.Length) continue;
-                logits[tok] = logits[tok] > 0 ? logits[tok] / repetitionPenalty : logits[tok] * repetitionPenalty;
-            }
-        }
+        HashSet<int>? historySet = (repetitionPenalty != 1.0f && history.Count > 0) ? new HashSet<int>(history) : null;
 
         int k = Math.Min(topK, logits.Length);
         Span<int> topIdx = stackalloc int[k];
@@ -223,7 +209,13 @@ public sealed class QwenTtsPipeline : ITextToSpeechPipeline
         int filled = 0;
         for (int i = 0; i < logits.Length; i++)
         {
-            float v = logits[i] / temperature;
+            float v = logits[i];
+            if (historySet != null && historySet.Contains(i))
+            {
+                v = v > 0 ? v / repetitionPenalty : v * repetitionPenalty;
+            }
+            v /= temperature;
+
             if (filled < k)
             {
                 int pos = filled++;

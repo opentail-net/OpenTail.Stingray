@@ -13,13 +13,13 @@ public static class QwenTtsCodecDac
     /// <summary>input: [T][1024] (post-upsample codec latents). output: raw waveform samples (mono).</summary>
     public static float[] Forward(QwenTtsCodecDacWeights w, float[][] input)
     {
-        var x = CausalConv1d(input, w.PreConvWeight, w.PreConvBias, inCh: 1024, outCh: 1536, kernel: 7, dilation: 1);
+        var x = CausalConv1d(input, w.PreConvWeightT, w.PreConvBias, inCh: 1024, outCh: 1536, kernel: 7, dilation: 1);
 
         for (int b = 0; b < 4; b++)
             x = DecoderBlock(x, w.Blocks[b], QwenTtsCodecDacWeights.Channels[b], QwenTtsCodecDacWeights.Channels[b + 1], QwenTtsCodecDacWeights.Rates[b]);
 
         x = SnakeBeta(x, w.FinalSnakeAlpha, w.FinalSnakeBeta);
-        var wav2d = CausalConv1d(x, w.FinalConvWeight, w.FinalConvBias, inCh: 96, outCh: 1, kernel: 7, dilation: 1);
+        var wav2d = CausalConv1d(x, w.FinalConvWeightT, w.FinalConvBias, inCh: 96, outCh: 1, kernel: 7, dilation: 1);
 
         var wav = new float[wav2d.Length];
         for (int i = 0; i < wav.Length; i++) wav[i] = Math.Clamp(wav2d[i][0], -1f, 1f);
@@ -28,12 +28,16 @@ public static class QwenTtsCodecDac
 
     internal static float[][] DecoderBlockForTest(float[][] x, QwenTtsCodecDacBlockWeights w, int inCh, int outCh, int rate) => DecoderBlock(x, w, inCh, outCh, rate);
 
-    internal static float[][] CausalConv1dForTest(float[][] input, float[] weight, float[] bias, int inCh, int outCh, int kernel, int dilation) => CausalConv1d(input, weight, bias, inCh, outCh, kernel, dilation);
+    internal static float[][] CausalConv1dForTest(float[][] input, float[] weight, float[] bias, int inCh, int outCh, int kernel, int dilation)
+    {
+        var wt = QwenTtsCodecDacWeights.TransposeConvWeight(weight, inCh, outCh, kernel);
+        return CausalConv1d(input, wt, bias, inCh, outCh, kernel, dilation);
+    }
 
     private static float[][] DecoderBlock(float[][] x, QwenTtsCodecDacBlockWeights w, int inCh, int outCh, int rate)
     {
         var snaked = SnakeBeta(x, w.SnakeAlpha, w.SnakeBeta);
-        var up = CausalConvTranspose1d(snaked, w.ConvTWeight, w.ConvTBias, inCh, outCh, kernel: 2 * rate, stride: rate);
+        var up = CausalConvTranspose1d(snaked, w.ConvTWeightT, w.ConvTBias, inCh, outCh, kernel: 2 * rate, stride: rate);
 
         var r = up;
         int[] dilations = [1, 3, 9];
@@ -45,9 +49,9 @@ public static class QwenTtsCodecDac
     private static float[][] ResidualUnit(float[][] x, QwenTtsCodecResidualUnitWeights w, int ch, int dilation)
     {
         var y = SnakeBeta(x, w.Act1Alpha, w.Act1Beta);
-        y = CausalConv1d(y, w.Conv1Weight, w.Conv1Bias, inCh: ch, outCh: ch, kernel: 7, dilation: dilation);
+        y = CausalConv1d(y, w.Conv1WeightT, w.Conv1Bias, inCh: ch, outCh: ch, kernel: 7, dilation: dilation);
         y = SnakeBeta(y, w.Act2Alpha, w.Act2Beta);
-        y = CausalConv1d(y, w.Conv2Weight, w.Conv2Bias, inCh: ch, outCh: ch, kernel: 1, dilation: 1);
+        y = CausalConv1d(y, w.Conv2WeightT, w.Conv2Bias, inCh: ch, outCh: ch, kernel: 1, dilation: 1);
 
         var output = new float[x.Length][];
         for (int t = 0; t < x.Length; t++)
@@ -88,30 +92,13 @@ public static class QwenTtsCodecDac
     }
 
     /// <summary>
-    /// Real causal Conv1d: left-zero-pad by (kernel-1)*dilation. Weight layout [out,in,kernel] flat row-major.
-    ///
-    /// <para>im2col + GEMM (see <c>FishSpeechCodec.FullConv1d</c>'s doc comment for the technique):
-    /// `input[srcT]` rows are already contiguous per timestep (time-major [T][C] layout here,
-    /// unlike the channel-major [C,T] layout in the other codecs), so the weight is transposed
-    /// once per call from [oc,ic,k] to [oc,k,ic] to match, letting the gather use plain
-    /// `Array.Copy` per (ti,k) slice instead of a scattered per-element loop. Each output channel
-    /// then reduces to one AVX2/FMA <see cref="SimdKernels.DotF32"/> call per timestep.</para>
+    /// Real causal Conv1d: left-zero-pad by (kernel-1)*dilation. Weight layout [out,kernel,in] flat row-major (pre-transposed).
     /// </summary>
-    private static unsafe float[][] CausalConv1d(float[][] input, float[] weight, float[] bias, int inCh, int outCh, int kernel, int dilation)
+    private static unsafe float[][] CausalConv1d(float[][] input, float[] weightT, float[] bias, int inCh, int outCh, int kernel, int dilation)
     {
         int t = input.Length;
         int padLeft = (kernel - 1) * dilation;
         int rowLen = kernel * inCh;
-
-        var weightT = new float[outCh * rowLen]; // [oc][k][ic]
-        Parallel.For(0, outCh, oc =>
-        {
-            int wOcBase = oc * inCh * kernel;
-            int wtOcBase = oc * rowLen;
-            for (int ic = 0; ic < inCh; ic++)
-                for (int k = 0; k < kernel; k++)
-                    weightT[wtOcBase + k * inCh + ic] = weight[wOcBase + ic * kernel + k];
-        });
 
         var col = new float[t * rowLen]; // [ti][k][ic]
         Parallel.For(0, t, ti =>
@@ -142,8 +129,8 @@ public static class QwenTtsCodecDac
         return output;
     }
 
-    /// <summary>Real causal ConvTranspose1d: kernel=2*rate, stride=rate, crop=kernel-stride=rate (real DAC convention, different ratio than the ConvNeXt upsample's kernel=stride case). Native weight layout [in,out,kernel].</summary>
-    private static float[][] CausalConvTranspose1d(float[][] input, float[] weight, float[] bias, int inCh, int outCh, int kernel, int stride)
+    /// <summary>Real causal ConvTranspose1d: kernel=2*rate, stride=rate, crop=kernel-stride=rate (real DAC convention). Weight layout [in,kernel,out] (pre-transposed).</summary>
+    private static unsafe float[][] CausalConvTranspose1d(float[][] input, float[] weightT, float[] bias, int inCh, int outCh, int kernel, int stride)
     {
         int t = input.Length;
         int fullT = (t - 1) * stride + kernel;
@@ -152,21 +139,36 @@ public static class QwenTtsCodecDac
         var full = new float[fullT][];
         for (int i = 0; i < fullT; i++) full[i] = (float[])bias.Clone();
 
-        for (int ti = 0; ti < t; ti++)
+        fixed (float* wPtr = weightT)
         {
-            var src = input[ti];
-            int outStart = ti * stride;
-            for (int ic = 0; ic < inCh; ic++)
+            for (int ti = 0; ti < t; ti++)
             {
-                float v = src[ic];
-                if (v == 0f) continue;
-                int wIcBase = ic * outCh * kernel;
-                for (int k = 0; k < kernel; k++)
+                var src = input[ti];
+                int outStart = ti * stride;
+                for (int ic = 0; ic < inCh; ic++)
                 {
-                    var dstRow = full[outStart + k];
-                    int wBase = wIcBase + k;
-                    for (int oc = 0; oc < outCh; oc++)
-                        dstRow[oc] += v * weight[wBase + oc * kernel];
+                    float v = src[ic];
+                    if (v == 0f) continue;
+                    int wtIcBase = ic * kernel * outCh;
+                    for (int k = 0; k < kernel; k++)
+                    {
+                        var dstRow = full[outStart + k];
+                        float* wSlice = wPtr + wtIcBase + k * outCh;
+                        fixed (float* dstPtr = dstRow)
+                        {
+                            int i = 0;
+                            int vecSize = System.Numerics.Vector<float>.Count;
+                            var vAlpha = new System.Numerics.Vector<float>(v);
+                            for (; i <= outCh - vecSize; i += vecSize)
+                            {
+                                var vd = new System.Numerics.Vector<float>(new ReadOnlySpan<float>(dstPtr + i, vecSize));
+                                var vs = new System.Numerics.Vector<float>(new ReadOnlySpan<float>(wSlice + i, vecSize));
+                                var vr = vd + vs * vAlpha;
+                                vr.CopyTo(new Span<float>(dstPtr + i, vecSize));
+                            }
+                            for (; i < outCh; i++) dstPtr[i] += wSlice[i] * v;
+                        }
+                    }
                 }
             }
         }

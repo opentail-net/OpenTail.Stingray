@@ -36,7 +36,7 @@ public static class QwenTtsCodecTransformer
         return output;
     }
 
-    private static float[][] Layer(float[][] x, QwenTtsCodecTransformerLayerWeights lw, QwenTtsCodecTransformerWeights w)
+    private static unsafe float[][] Layer(float[][] x, QwenTtsCodecTransformerLayerWeights lw, QwenTtsCodecTransformerWeights w)
     {
         int t = x.Length;
         int dim = w.HiddenSize;
@@ -81,7 +81,26 @@ public static class QwenTtsCodecTransformer
 
                 var ctxSpan = context[i].AsSpan(off, headDim);
                 for (int j = kMin; j <= i; j++)
-                    for (int d = 0; d < headDim; d++) ctxSpan[d] += scores[j] * v[j][off + d];
+                {
+                    float s = scores[j];
+                    if (s == 0f) continue;
+                    var vj = v[j];
+                    fixed (float* cp = ctxSpan, vp = vj)
+                    {
+                        float* vOffset = vp + off;
+                        int d = 0;
+                        int vecSize = System.Numerics.Vector<float>.Count;
+                        var vS = new System.Numerics.Vector<float>(s);
+                        for (; d <= headDim - vecSize; d += vecSize)
+                        {
+                            var vc = new System.Numerics.Vector<float>(new ReadOnlySpan<float>(cp + d, vecSize));
+                            var vv = new System.Numerics.Vector<float>(new ReadOnlySpan<float>(vOffset + d, vecSize));
+                            var vr = vc + vv * vS;
+                            vr.CopyTo(new Span<float>(cp + d, vecSize));
+                        }
+                        for (; d < headDim; d++) cp[d] += s * vOffset[d];
+                    }
+                }
             }
         });
 
@@ -137,11 +156,12 @@ public static class QwenTtsCodecTransformer
 
     private static float Silu(float x) => x / (1f + MathF.Exp(-x));
 
-    private static float Dot(float[] a, float[] b, int offset, int len)
+    private static unsafe float Dot(float[] a, float[] b, int offset, int len)
     {
-        float sum = 0f;
-        for (int i = 0; i < len; i++) sum += a[offset + i] * b[offset + i];
-        return sum;
+        fixed (float* ap = a, bp = b)
+        {
+            return SimdKernels.DotF32(ap + offset, bp + offset, len);
+        }
     }
 
     private static unsafe float[] LinearNoBias(float[] input, float[] weight, int inDim, int outDim)
@@ -161,11 +181,14 @@ public static class QwenTtsCodecTransformer
         return output;
     }
 
-    private static float[] RmsNorm(float[] x, float[] weight, float eps)
+    private static unsafe float[] RmsNorm(float[] x, float[] weight, float eps)
     {
         int n = x.Length;
-        float sumSq = 0f;
-        for (int i = 0; i < n; i++) sumSq += x[i] * x[i];
+        float sumSq;
+        fixed (float* xp = x)
+        {
+            sumSq = SimdKernels.DotF32(xp, xp, n);
+        }
         float invRms = 1f / MathF.Sqrt(sumSq / n + eps);
         var output = new float[n];
         for (int i = 0; i < n; i++) output[i] = x[i] * invRms * weight[i];

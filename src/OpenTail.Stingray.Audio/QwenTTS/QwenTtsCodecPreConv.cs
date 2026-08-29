@@ -16,12 +16,29 @@ public sealed class QwenTtsCodecPreConvWeights
     public const int Kernel = 3;
 
     public float[] Weight { get; }
+    public float[] WeightT { get; }
     public float[] Bias { get; }
 
     public QwenTtsCodecPreConvWeights(GgufModel model)
     {
         Weight = GetF32(model, "tok_dec.pre_conv.weight");
+        WeightT = TransposeConvWeight(Weight, InChannels, OutChannels, Kernel);
         Bias = GetF32(model, "tok_dec.pre_conv.bias");
+    }
+
+    public static float[] TransposeConvWeight(float[] weight, int inCh, int outCh, int kernel)
+    {
+        int rowLen = kernel * inCh;
+        var weightT = new float[outCh * rowLen];
+        for (int oc = 0; oc < outCh; oc++)
+        {
+            int wOcBase = oc * inCh * kernel;
+            int wtOcBase = oc * rowLen;
+            for (int ic = 0; ic < inCh; ic++)
+                for (int k = 0; k < kernel; k++)
+                    weightT[wtOcBase + k * inCh + ic] = weight[wOcBase + ic * kernel + k];
+        }
+        return weightT;
     }
 
     private static float[] GetF32(GgufModel model, string name)
@@ -36,36 +53,42 @@ public sealed class QwenTtsCodecPreConvWeights
 
 public static class QwenTtsCodecPreConv
 {
-    /// <summary>Real causal Conv1d: input[T][512] -&gt; output[T][1024], left-zero-pad by (kernel-1)=2, weight layout [out,in,kernel] flat row-major (real PyTorch native order, confirmed via this project's established "GGUF displayed shape reversed, flat bytes match PyTorch row-major" convention).</summary>
-    public static float[][] Forward(QwenTtsCodecPreConvWeights w, float[][] input)
+    /// <summary>Real causal Conv1d: input[T][512] -&gt; output[T][1024], left-zero-pad by (kernel-1)=2, pre-transposed [out,kernel,in].</summary>
+    public static unsafe float[][] Forward(QwenTtsCodecPreConvWeights w, float[][] input)
     {
         int t = input.Length;
         int inCh = QwenTtsCodecPreConvWeights.InChannels;
         int outCh = QwenTtsCodecPreConvWeights.OutChannels;
         int kernel = QwenTtsCodecPreConvWeights.Kernel;
         int padLeft = kernel - 1;
+        int rowLen = kernel * inCh;
 
         var output = new float[t][];
-        Parallel.For(0, t, ti =>
+        fixed (float* wPtr = w.WeightT)
         {
-            var row = new float[outCh];
-            for (int oc = 0; oc < outCh; oc++)
+            float* wLocal = wPtr;
+            Parallel.For(0, t, ti =>
             {
-                float sum = w.Bias[oc];
-                int wOcBase = oc * inCh * kernel;
-                for (int k = 0; k < kernel; k++)
+                var row = new float[outCh];
+                for (int oc = 0; oc < outCh; oc++)
                 {
-                    int srcT = ti - padLeft + k;
-                    if (srcT < 0) continue;
-                    var srcRow = input[srcT];
-                    int wBase = wOcBase + k; // weight[oc, ic, k], flat index = oc*inCh*kernel + ic*kernel + k
-                    for (int ic = 0; ic < inCh; ic++)
-                        sum += srcRow[ic] * w.Weight[wBase + ic * kernel];
+                    float sum = w.Bias[oc];
+                    float* wOcBase = wLocal + oc * rowLen;
+                    for (int k = 0; k < kernel; k++)
+                    {
+                        int srcT = ti - padLeft + k;
+                        if (srcT < 0) continue;
+                        var srcRow = input[srcT];
+                        fixed (float* srcPtr = srcRow)
+                        {
+                            sum += SimdKernels.DotF32(srcPtr, wOcBase + k * inCh, inCh);
+                        }
+                    }
+                    row[oc] = sum;
                 }
-                row[oc] = sum;
-            }
-            output[ti] = row;
-        });
+                output[ti] = row;
+            });
+        }
         return output;
     }
 }
