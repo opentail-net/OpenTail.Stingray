@@ -48,6 +48,8 @@ public sealed class FishSpeechWeights : IDisposable
     public int FastContextLength { get; }
     public float FastRmsNormEps { get; }
     public bool FastAttentionQkNorm { get; }
+    public float[,] FastRopeCos { get; }
+    public float[,] FastRopeSin { get; }
 
     /// <summary>[CodebookSize, FastEmbeddingDim] -- single shared table, plain (non-offset) lookup by raw codebook value.</summary>
     public float[] FastEmbeddings { get; }
@@ -82,6 +84,21 @@ public sealed class FishSpeechWeights : IDisposable
         FastContextLength = GetU32("fish_speech.fast_context_length", 11);
         FastRmsNormEps = Model.Metadata.TryGetValue("fish_speech.fast_layer_norm_rms_eps", out var eps) ? Convert.ToSingle(eps) : 1e-6f;
         FastAttentionQkNorm = Model.Metadata.TryGetValue("fish_speech.fast_attention_qk_norm", out var qkn) && qkn is bool qknb && qknb;
+
+        int half = FastHeadDim / 2;
+        int maxPos = Math.Max(FastContextLength, 16);
+        FastRopeCos = new float[maxPos, half];
+        FastRopeSin = new float[maxPos, half];
+        for (int p = 0; p < maxPos; p++)
+        {
+            for (int i = 0; i < half; i++)
+            {
+                float freq = 1f / MathF.Pow(FastRopeFreqBase, 2f * i / FastHeadDim);
+                float angle = p * freq;
+                FastRopeCos[p, i] = MathF.Cos(angle);
+                FastRopeSin[p, i] = MathF.Sin(angle);
+            }
+        }
 
         FastEmbeddings = GetTensor("fast_embeddings.weight");
         FastNormWeight = GetTensor("fast_norm.weight");

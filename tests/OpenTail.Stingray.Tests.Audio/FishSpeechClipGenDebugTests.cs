@@ -63,12 +63,14 @@ public sealed class FishSpeechClipGenDebugTests : HeavyTestBase
         Assert.SkipUnless(modelPath != null && tokDir != null && outDir != null, "prerequisites not found");
 
         using var pipeline = FishSpeechFullPipeline.Load(modelPath!, tokDir!, modelPath!);
+        var sw = System.Diagnostics.Stopwatch.StartNew();
         var pcm = pipeline.Synthesize("Hello! I will make some lunch, darling!", maxTokens: 200, seed: 7);
+        sw.Stop();
         Assert.NotEmpty(pcm);
 
         var result = new OpenTail.Stingray.Audio.AudioGenerationResult(pcm, 44100);
-        string outPath = Path.Combine(outDir!, "fishspeech-lunch-v7-fixed-codec-seed7.wav");
+        string outPath = Path.Combine(outDir!, "fishspeech-lunch-v13-fastar-zeroalloc-seed7.wav");
         result.SaveWav(outPath);
-        Console.WriteLine($"saved {outPath} samples={pcm.Length} durationSec={pcm.Length / 44100.0:F2}");
+        Console.WriteLine($"[FastArZeroAlloc] saved {outPath} samples={pcm.Length} durationSec={pcm.Length / 44100.0:F2} elapsedSec={sw.Elapsed.TotalSeconds:F2}s");
     }
 }

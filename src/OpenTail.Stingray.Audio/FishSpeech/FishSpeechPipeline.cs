@@ -45,6 +45,8 @@ public sealed class FishSpeechPipeline : IDisposable
     private readonly int _imEndId;
     private readonly int _voiceId;
     private readonly FishSpeechFastArCache _fastArCache;
+    private readonly float[] _normedHidden;
+    private readonly float[] _embBuffer;
 
     public FishSpeechPipeline(string ggufPath, string tokenizerDir, int numLayers = 36, int ctxSize = 2048)
     {
@@ -55,7 +57,9 @@ public sealed class FishSpeechPipeline : IDisposable
         _fwd = new ForwardPass(_tensorSource, _backend, hp, maxContextLength: ctxSize);
         _fwd.EnableHiddenTaps([numLayers - 1]); // last layer's output = the trunk's post-trunk pre-final-norm hidden
         _weights = new FishSpeechWeights(ggufPath);
-        _fastArCache = new FishSpeechFastArCache(_weights.FastBlockCount);
+        _fastArCache = new FishSpeechFastArCache(_weights);
+        _normedHidden = new float[_weights.EmbeddingDim];
+        _embBuffer = new float[_weights.EmbeddingDim];
 
         var tokResult = HuggingFaceTokenizerSource.Load(tokenizerDir);
         if (!tokResult.IsUsable || tokResult.Source is null)
@@ -73,8 +77,13 @@ public sealed class FishSpeechPipeline : IDisposable
     /// <summary>Applies the slow-AR trunk's final RMSNorm (norm.weight) to the tapped hidden state, matching s2_model.cpp's eval_cached.</summary>
     private float[] GetNormedHidden(int pos)
     {
-        var rawHidden = _fwd.HiddenTapsAt(pos).ToArray();
-        return FishSpeechFastAr.RmsNorm(rawHidden, _weights.NormWeight, _weights.RmsNormEps);
+        var rawHidden = _fwd.HiddenTapsAt(pos);
+        int n = rawHidden.Length;
+        float sumSq = 0f;
+        for (int i = 0; i < n; i++) sumSq += rawHidden[i] * rawHidden[i];
+        float invRms = 1f / MathF.Sqrt(sumSq / n + _weights.RmsNormEps);
+        for (int i = 0; i < n; i++) _normedHidden[i] = rawHidden[i] * invRms * _weights.NormWeight[i];
+        return _normedHidden;
     }
 
     /// <summary>Builds the real prompt token id sequence (no reference audio -- the simple zero-shot case).</summary>
@@ -107,25 +116,24 @@ public sealed class FishSpeechPipeline : IDisposable
     }
 
     /// <summary>Composes the real per-timestep embedding for a semantic token plus its (so-far-known) codebook values.</summary>
-    private float[] EmbedSemanticToken(int semanticTokenId, int[] codebookValues)
+    private ReadOnlySpan<float> EmbedSemanticToken(int semanticTokenId, int[] codebookValues)
     {
-        var emb = new float[_weights.EmbeddingDim];
-        Array.Copy(_weights.Embeddings, (long)semanticTokenId * _weights.EmbeddingDim, emb, 0, _weights.EmbeddingDim);
+        Array.Copy(_weights.Embeddings, (long)semanticTokenId * _weights.EmbeddingDim, _embBuffer, 0, _weights.EmbeddingDim);
 
         for (int cb = 0; cb < codebookValues.Length; cb++)
         {
             long row = (long)(codebookValues[cb] + cb * _weights.CodebookSize) * _weights.EmbeddingDim;
             for (int d = 0; d < _weights.EmbeddingDim; d++)
-                emb[d] += _weights.CodebookEmbeddings[row + d];
+                _embBuffer[d] += _weights.CodebookEmbeddings[row + d];
         }
 
         if (_weights.ScaleCodebookEmbeddings)
         {
             // Real scale factor from s2_model.cpp: 1 / sqrt(num_codebooks + 1) = 1 / sqrt(11)
             float scale = 1f / MathF.Sqrt(_weights.NumCodebooks + 1);
-            for (int d = 0; d < _weights.EmbeddingDim; d++) emb[d] *= scale;
+            for (int d = 0; d < _weights.EmbeddingDim; d++) _embBuffer[d] *= scale;
         }
-        return emb;
+        return _embBuffer;
     }
 
     /// <summary>

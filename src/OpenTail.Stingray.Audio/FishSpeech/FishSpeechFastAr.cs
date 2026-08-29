@@ -42,19 +42,73 @@ namespace OpenTail.Stingray.Audio.FishSpeech;
 /// </summary>
 public sealed class FishSpeechFastArCache
 {
-    public readonly List<float[]>[] K;
-    public readonly List<float[]>[] V;
+    public readonly int NumLayers;
+    public readonly int KvSize;
+    public readonly int MaxPositions;
 
-    public FishSpeechFastArCache(int numLayers)
+    // Per-layer cached K and V: [NumLayers][MaxPositions][KvSize]
+    public readonly float[][][] K;
+    public readonly float[][][] V;
+    public readonly int[] Counts;
+
+    // Reusable per-step scratch workspace buffers
+    public readonly float[] Normed;
+    public readonly float[] Qkv;
+    public readonly float[] Q;
+    public readonly float[] Context;
+    public readonly float[] AttnOut;
+    public readonly float[] H1;
+    public readonly float[] FfnNormed;
+    public readonly float[] Gate;
+    public readonly float[] Up;
+    public readonly float[] FfnOut;
+    public readonly float[] Output;
+    public readonly float[] Scores;
+    public readonly float[] Logits;
+
+    public FishSpeechFastArCache(int numLayers, int dim, int qSize, int kvSize, int ffnDim, int codebookSize, int maxPositions = 16)
     {
-        K = new List<float[]>[numLayers];
-        V = new List<float[]>[numLayers];
-        Reset();
+        NumLayers = numLayers;
+        KvSize = kvSize;
+        MaxPositions = maxPositions;
+        Counts = new int[numLayers];
+
+        K = new float[numLayers][][];
+        V = new float[numLayers][][];
+        for (int l = 0; l < numLayers; l++)
+        {
+            K[l] = new float[maxPositions][];
+            V[l] = new float[maxPositions][];
+            for (int p = 0; p < maxPositions; p++)
+            {
+                K[l][p] = new float[kvSize];
+                V[l][p] = new float[kvSize];
+            }
+        }
+
+        Normed = new float[dim];
+        Qkv = new float[qSize + 2 * kvSize];
+        Q = new float[qSize];
+        Context = new float[qSize];
+        AttnOut = new float[dim];
+        H1 = new float[dim];
+        FfnNormed = new float[dim];
+        Gate = new float[ffnDim];
+        Up = new float[ffnDim];
+        FfnOut = new float[dim];
+        Output = new float[dim];
+        Scores = new float[maxPositions];
+        Logits = new float[codebookSize];
+    }
+
+    public FishSpeechFastArCache(FishSpeechWeights w, int maxPositions = 16)
+        : this(w.FastBlockCount, w.FastEmbeddingDim, w.FastHeadCount * w.FastHeadDim, w.FastHeadCountKv * w.FastHeadDim, w.FastLayers[0].FfnDim, w.CodebookSize, maxPositions)
+    {
     }
 
     public void Reset()
     {
-        for (int i = 0; i < K.Length; i++) { K[i] = []; V[i] = []; }
+        Array.Clear(Counts, 0, Counts.Length);
     }
 }
 
@@ -82,34 +136,34 @@ public static class FishSpeechFastAr
         return LinearQ8_0(normedLast, w.FastOutputWeight, dim, w.CodebookSize);
     }
 
-    /// <summary>Real embedding lookup for a codebook value fed as the fast-AR's next input position (plain lookup, NOT offset by codebook index -- see <see cref="Forward"/>'s doc comment).</summary>
-    public static float[] EmbedFastToken(FishSpeechWeights w, int value)
+    /// <summary>Real embedding lookup for a codebook value fed as the fast-AR's next input position (plain lookup, NOT offset by codebook index -- zero allocation span view).</summary>
+    public static ReadOnlySpan<float> EmbedFastToken(FishSpeechWeights w, int value)
     {
         int dim = w.FastEmbeddingDim;
-        var row = new float[dim];
-        Array.Copy(w.FastEmbeddings, (long)value * dim, row, 0, dim);
-        return row;
+        return new ReadOnlySpan<float>(w.FastEmbeddings, value * dim, dim);
     }
 
     /// <summary>
     /// KV-cached single-position step, mathematically equivalent to calling
     /// <see cref="Forward"/> with a prefix one token longer each time (see
     /// <see cref="FishSpeechFastArCache"/>'s doc comment), but without redoing attention work
-    /// for already-processed positions. <paramref name="inputVec"/> is the slow-AR's hidden state
-    /// for the very first call this timestep (position 0), or <see cref="EmbedFastToken"/> of the
-    /// just-decided codebook value for every call after that.
+    /// for already-processed positions. Zero GC heap allocations via pre-allocated scratch workspace.
     /// </summary>
-    public static float[] ForwardStep(FishSpeechWeights w, FishSpeechFastArCache cache, float[] inputVec)
+    public static ReadOnlySpan<float> ForwardStep(FishSpeechWeights w, FishSpeechFastArCache cache, ReadOnlySpan<float> inputVec)
     {
-        var x = inputVec;
+        ReadOnlySpan<float> x = inputVec;
         for (int i = 0; i < w.FastLayers.Length; i++)
-            x = LayerStep(x, w.FastLayers[i], w, cache, i);
+        {
+            LayerStep(x, w.FastLayers[i], w, cache, i);
+            x = cache.Output;
+        }
 
-        var normedLast = RmsNorm(x, w.FastNormWeight, w.FastRmsNormEps);
-        return LinearQ8_0(normedLast, w.FastOutputWeight, w.FastEmbeddingDim, w.CodebookSize);
+        RmsNormInPlace(cache.Output, w.FastNormWeight, w.FastRmsNormEps, cache.Normed);
+        LinearQ8_0(cache.Normed, w.FastOutputWeight, w.FastEmbeddingDim, w.CodebookSize, cache.Logits);
+        return cache.Logits;
     }
 
-    private static float[] LayerStep(float[] x, FishSpeechFastLayerWeights lw, FishSpeechWeights w, FishSpeechFastArCache cache, int layerIdx)
+    private static void LayerStep(ReadOnlySpan<float> x, FishSpeechFastLayerWeights lw, FishSpeechWeights w, FishSpeechFastArCache cache, int layerIdx)
     {
         int dim = w.FastEmbeddingDim;
         int nHead = w.FastHeadCount;
@@ -118,31 +172,30 @@ public static class FishSpeechFastAr
         int qSize = nHead * headDim;
         int kvSize = nHeadKv * headDim;
 
-        var normed = RmsNorm(x, lw.AttentionNormWeight, w.FastRmsNormEps);
-        var qkv = LinearQ8_0(normed, lw.WqkvWeight, dim, qSize + 2 * kvSize);
-        var q = qkv.AsSpan(0, qSize).ToArray();
-        var k = qkv.AsSpan(qSize, kvSize).ToArray();
-        var v = qkv.AsSpan(qSize + kvSize, kvSize).ToArray();
+        RmsNormInPlace(x, lw.AttentionNormWeight, w.FastRmsNormEps, cache.Normed);
+        LinearQ8_0(cache.Normed, lw.WqkvWeight, dim, qSize + 2 * kvSize, cache.Qkv);
 
-        int pos = cache.K[layerIdx].Count; // absolute position BEFORE appending this step -- same convention as the batch Forward's index-in-sequence
-        ApplyRope(q, nHead, headDim, pos, w.FastRopeFreqBase);
-        ApplyRope(k, nHeadKv, headDim, pos, w.FastRopeFreqBase);
+        int pos = cache.Counts[layerIdx];
+        var kSlot = cache.K[layerIdx][pos];
+        var vSlot = cache.V[layerIdx][pos];
 
-        cache.K[layerIdx].Add(k);
-        cache.V[layerIdx].Add(v);
-        var kCache = cache.K[layerIdx];
-        var vCache = cache.V[layerIdx];
-        int t = kCache.Count;
+        Array.Copy(cache.Qkv, 0, cache.Q, 0, qSize);
+        Array.Copy(cache.Qkv, qSize, kSlot, 0, kvSize);
+        Array.Copy(cache.Qkv, qSize + kvSize, vSlot, 0, kvSize);
 
-        var context = new float[qSize];
+        ApplyRope(cache.Q, nHead, headDim, pos, w.FastRopeCos, w.FastRopeSin);
+        ApplyRope(kSlot, nHeadKv, headDim, pos, w.FastRopeCos, w.FastRopeSin);
+
+        cache.Counts[layerIdx]++;
+        int t = cache.Counts[layerIdx];
+
+        Array.Clear(cache.Context, 0, qSize);
         int groupSize = nHead / nHeadKv;
         float scale = 1f / MathF.Sqrt(headDim);
-        // Real single-position attention here is tiny (t <= NumCodebooks <= 10, headDim=128,
-        // nHead=32): total work per call is a few hundred thousand FLOPs. `Parallel.For`'s own
-        // thread-pool dispatch overhead swamps that -- measured this session's performance pass:
-        // ~40ms/call before this fix, for work that should take a fraction of a millisecond.
-        // Plain sequential loop, matching the batch `Layer` method's own per-head loop shape.
-        var scores = new float[t];
+
+        var kLayer = cache.K[layerIdx];
+        var vLayer = cache.V[layerIdx];
+
         for (int h = 0; h < nHead; h++)
         {
             int qOff = h * headDim;
@@ -150,30 +203,39 @@ public static class FishSpeechFastAr
             for (int j = 0; j < t; j++)
             {
                 float dot = 0f;
-                for (int d = 0; d < headDim; d++) dot += q[qOff + d] * kCache[j][kvOff + d];
-                scores[j] = dot * scale;
+                var kj = kLayer[j];
+                for (int d = 0; d < headDim; d++) dot += cache.Q[qOff + d] * kj[kvOff + d];
+                cache.Scores[j] = dot * scale;
             }
-            SoftmaxInPlace(scores, t);
+            SoftmaxInPlace(cache.Scores, t);
 
-            var ctxSpan = context.AsSpan(qOff, headDim);
             for (int j = 0; j < t; j++)
-                for (int d = 0; d < headDim; d++) ctxSpan[d] += scores[j] * vCache[j][kvOff + d];
+            {
+                float s = cache.Scores[j];
+                var vj = vLayer[j];
+                for (int d = 0; d < headDim; d++)
+                    cache.Context[qOff + d] += s * vj[kvOff + d];
+            }
         }
 
-        var attnOut = LinearQ8_0(context, lw.WoWeight, qSize, dim);
-        var h1 = new float[dim];
-        for (int d = 0; d < dim; d++) h1[d] = x[d] + attnOut[d];
+        LinearQ8_0(cache.Context, lw.WoWeight, qSize, dim, cache.AttnOut);
+        for (int d = 0; d < dim; d++) cache.H1[d] = x[d] + cache.AttnOut[d];
 
-        var ffnNormed = RmsNorm(h1, lw.FfnNormWeight, w.FastRmsNormEps);
+        RmsNormInPlace(cache.H1, lw.FfnNormWeight, w.FastRmsNormEps, cache.FfnNormed);
         int ffnDim = lw.FfnDim;
-        var gate = LinearQ8_0(ffnNormed, lw.W1Weight, dim, ffnDim);
-        var up = LinearQ8_0(ffnNormed, lw.W3Weight, dim, ffnDim);
-        for (int d = 0; d < ffnDim; d++) gate[d] = Silu(gate[d]) * up[d];
-        var ffnOut = LinearQ8_0(gate, lw.W2Weight, ffnDim, dim);
+        LinearQ8_0(cache.FfnNormed, lw.W1Weight, dim, ffnDim, cache.Gate);
+        LinearQ8_0(cache.FfnNormed, lw.W3Weight, dim, ffnDim, cache.Up);
 
-        var output = new float[dim];
-        for (int d = 0; d < dim; d++) output[d] = h1[d] + ffnOut[d];
-        return output;
+        // Fused SwiGLU activation
+        for (int d = 0; d < ffnDim; d++)
+        {
+            float g = cache.Gate[d];
+            cache.Gate[d] = (g / (1f + MathF.Exp(-g))) * cache.Up[d];
+        }
+
+        LinearQ8_0(cache.Gate, lw.W2Weight, ffnDim, dim, cache.FfnOut);
+
+        for (int d = 0; d < dim; d++) cache.Output[d] = cache.H1[d] + cache.FfnOut[d];
     }
 
     private static float[][] Layer(float[][] x, FishSpeechFastLayerWeights lw, FishSpeechWeights w)
@@ -276,6 +338,26 @@ public static class FishSpeechFastAr
     /// meaning the slow-AR's `ForwardPass` reuse was ALREADY correct here without any fix
     /// needed; this fast-AR module had the wrong convention and is fixed here to match).
     /// </summary>
+    /// <summary>Vectorized RoPE application using precomputed cos/sin tables (zero transcendental function calls).</summary>
+    internal static void ApplyRope(float[] vec, int nHeads, int headDim, int position, float[,] cosTable, float[,] sinTable)
+    {
+        int half = headDim / 2;
+        for (int h = 0; h < nHeads; h++)
+        {
+            int off = h * headDim;
+            for (int i = 0; i < half; i++)
+            {
+                float cos = cosTable[position, i];
+                float sin = sinTable[position, i];
+                int idx0 = off + 2 * i;
+                int idx1 = off + 2 * i + 1;
+                float a = vec[idx0], b = vec[idx1];
+                vec[idx0] = a * cos - b * sin;
+                vec[idx1] = a * sin + b * cos;
+            }
+        }
+    }
+
     /// <summary>Shared with <see cref="FishSpeechCodec"/>'s quantizer post_module transformer, same interleaved RoPE convention.</summary>
     internal static void ApplyRope(float[] vec, int nHeads, int headDim, int position, float freqBase)
     {
@@ -309,7 +391,16 @@ public static class FishSpeechFastAr
         return output;
     }
 
-    /// <summary>Real Q8_0 fused mat-vec (see Q8_0WeightQuantizer's doc comment) -- this session's performance-pass fix for the fast-AR's dominant memory-bandwidth-bound cost. A GGUF-native-dtype variant was tried and reverted (measured ~4% slower for this pipeline's actual Q4_K_M default checkpoint -- see FishSpeechWeights's loader for the full measurement).</summary>
+    /// <summary>Real Q8_0 fused mat-vec (zero allocation into pre-allocated destination buffer).</summary>
+    private static unsafe void LinearQ8_0(float[] input, byte[] weight, int inDim, int outDim, float[] output)
+    {
+        fixed (byte* wp = weight)
+        fixed (float* xp = input, op = output)
+        {
+            SimdKernels.MatVecQ8_0(op, wp, xp, outDim, inDim);
+        }
+    }
+
     private static unsafe float[] LinearQ8_0(float[] input, byte[] weight, int inDim, int outDim)
     {
         var output = new float[outDim];
@@ -319,6 +410,15 @@ public static class FishSpeechFastAr
             SimdKernels.MatVecQ8_0(op, wp, xp, outDim, inDim);
         }
         return output;
+    }
+
+    private static void RmsNormInPlace(ReadOnlySpan<float> x, float[] weight, float eps, float[] output)
+    {
+        int n = x.Length;
+        float sumSq = 0f;
+        for (int i = 0; i < n; i++) sumSq += x[i] * x[i];
+        float invRms = 1f / MathF.Sqrt(sumSq / n + eps);
+        for (int i = 0; i < n; i++) output[i] = x[i] * invRms * weight[i];
     }
 
     internal static float[] RmsNorm(float[] x, float[] weight, float eps)
