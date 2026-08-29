@@ -1,7 +1,10 @@
 using System;
 using System.IO;
+using System.Linq;
 using OpenTail.Stingray.Audio.CosyVoice;
 using OpenTail.Stingray.Core;
+using OpenTail.Stingray.Cpu;
+using OpenTail.Stingray.Engine;
 using Xunit;
 
 namespace OpenTail.Stingray.Tests.Audio;
@@ -82,14 +85,61 @@ public sealed class CosyVoice3LlmLogitsCompareDebugTest : HeavyTestBase
         var ourLogits = CosyVoice3Llm.GetFirstStepLogitsForTest(rawModel, llmSource, "This is a test of voice synthesis.",
             promptText: "this is a test of voice cloning", promptSpeechTokens: promptTokens);
 
+        // Also run token-by-token sequential Forward to see if Prefill vs Decode diverged
+        var tokenizer = CosyVoice3Llm.BuildTokenizer(rawModel);
+        int sosTokenId = rawModel.GetMetadata("sos_token_id", 0);
+        int taskTokenId = rawModel.GetMetadata("task_token_id", 0);
+        string instructionPrefix = rawModel.GetMetadata("cosyvoice.instruction_prefix", "You are a helpful assistant.");
+        var prefixTokens = tokenizer.Encode(instructionPrefix);
+        var endOfPromptTokens = tokenizer.Encode("<|endofprompt|>");
+        var promptTextTokens = tokenizer.Encode("this is a test of voice cloning");
+        var textTokens = tokenizer.Encode("This is a test of voice synthesis.");
+
+        var prefillIds = new List<int> { llmSource.SpeechTokenIdOffset + sosTokenId };
+        prefillIds.AddRange(prefixTokens);
+        prefillIds.AddRange(endOfPromptTokens);
+        prefillIds.AddRange(promptTextTokens);
+        prefillIds.AddRange(textTokens);
+        prefillIds.Add(llmSource.SpeechTokenIdOffset + taskTokenId);
+        foreach (int t in promptTokens) prefillIds.Add(llmSource.SpeechTokenIdOffset + t);
+
+        Console.WriteLine($"[TOKENS] total={prefillIds.Count} sos={sosTokenId} prefixCount={prefixTokens.Count} endofpromptCount={endOfPromptTokens.Count} promptTextCount={promptTextTokens.Count} textCount={textTokens.Count} taskToken={taskTokenId} promptSpeechCount={promptTokens.Length}");
+        Console.WriteLine($"[TOKENS] prefixTokens: [{string.Join(",", prefixTokens)}]");
+        Console.WriteLine($"[TOKENS] endofprompt: [{string.Join(",", endOfPromptTokens)}]");
+        Console.WriteLine($"[TOKENS] promptTextTokens: [{string.Join(",", promptTextTokens)}]");
+        Console.WriteLine($"[TOKENS] textTokens: [{string.Join(",", textTokens)}]");
+        Console.WriteLine($"[TOKENS] first 10 promptTokens: [{string.Join(",", promptTokens.Take(10))}] last 5 promptTokens: [{string.Join(",", promptTokens.TakeLast(5))}]");
+
+        var hp = ModelHyperparams.FromGgufMetadata(llmSource.Metadata, llmSource);
+        Console.WriteLine($"[HYPERPARAMS] hasAttnBias={hp.HasAttnBias} hasAttnOutputBias={hp.HasAttnOutputBias} hasNormBias={hp.HasNormBias} hasFfnBias={hp.HasFfnBias} isNeoxRope={hp.IsNeoxRope} ropeTheta={hp.RopeTheta}");
+        using var backend = new CpuBackend();
+        using var seqFwd = new ForwardPass(llmSource, backend, hp);
+        float[] seqLogits = [];
+        for (int i = 0; i < prefillIds.Count; i++)
+        {
+            seqLogits = seqFwd.Forward(prefillIds[i], i).ToArray();
+        }
+
+        double cosPrefillVsSeq = Cosine(ourLogits, seqLogits);
+        double cosRefVsSeq = Cosine(seqLogits, refLogits);
+        int seqArgmax = ArgMax(seqLogits);
+
         double cos = Cosine(ourLogits, refLogits);
         int ourArgmax = ArgMax(ourLogits);
         int refArgmax = ArgMax(refLogits);
 
-        string msg = $"[LLMLOGITS] our.Length={ourLogits.Length} ref.Length={refLogits.Length} cosine={cos:F6} " +
+        string msg = $"[TOKENS] total={prefillIds.Count} sos={sosTokenId} prefixCount={prefixTokens.Count} endofpromptCount={endOfPromptTokens.Count} promptTextCount={promptTextTokens.Count} textCount={textTokens.Count} taskToken={taskTokenId} promptSpeechCount={promptTokens.Length}\n" +
+                     $"[TOKENS] prefixTokens: [{string.Join(",", prefixTokens)}]\n" +
+                     $"[TOKENS] endofprompt: [{string.Join(",", endOfPromptTokens)}]\n" +
+                     $"[TOKENS] promptTextTokens: [{string.Join(",", promptTextTokens)}]\n" +
+                     $"[TOKENS] textTokens: [{string.Join(",", textTokens)}]\n" +
+                     $"[LLMLOGITS] our.Length={ourLogits.Length} ref.Length={refLogits.Length} cosine={cos:F6} " +
                      $"ourArgmax={ourArgmax} (val={ourLogits[ourArgmax]:F4}) refArgmax={refArgmax} (val={refLogits[refArgmax]:F4}) " +
-                     $"ourAtRefArgmax={ourLogits[refArgmax]:F4} refAtOurArgmax={refLogits[ourArgmax]:F4}";
+                     $"ourAtRefArgmax={ourLogits[refArgmax]:F4} refAtOurArgmax={refLogits[ourArgmax]:F4}\n" +
+                     $"[SEQ COMPARE] cos(Prefill, Seq)={cosPrefillVsSeq:F6} cos(Seq, Ref)={cosRefVsSeq:F6} seqArgmax={seqArgmax} (val={seqLogits[seqArgmax]:F4})";
         Console.WriteLine(msg);
         File.WriteAllText(Path.Combine(Path.GetTempPath(), "llmlogits_compare_result.txt"), msg);
+        Assert.True(cos > 0.99, $"Expected cosine > 0.99 against reference logits, got {cos:F6}");
+        Assert.Equal(refArgmax, ourArgmax);
     }
 }

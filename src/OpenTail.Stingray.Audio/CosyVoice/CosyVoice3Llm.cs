@@ -68,7 +68,7 @@ public static class CosyVoice3Llm
         var textTokens = tokenizer.Encode(text);
         promptSpeechTokens ??= [];
 
-        var hp = ModelHyperparams.FromGgufMetadata(source.Metadata);
+        var hp = ModelHyperparams.FromGgufMetadata(source.Metadata, source);
         using var backend = new CpuBackend();
         using var fwd = new ForwardPass(source, backend, hp);
 
@@ -131,7 +131,7 @@ public static class CosyVoice3Llm
         var textTokens = tokenizer.Encode(text);
         promptSpeechTokens ??= [];
 
-        var hp = ModelHyperparams.FromGgufMetadata(source.Metadata);
+        var hp = ModelHyperparams.FromGgufMetadata(source.Metadata, source);
         using var backend = new CpuBackend();
         using var fwd = new ForwardPass(source, backend, hp);
 
@@ -212,7 +212,7 @@ public static class CosyVoice3Llm
         return candidates[0].Id;
     }
 
-    private static GgufTokenizer BuildTokenizer(GgufModel model)
+    internal static GgufTokenizer BuildTokenizer(GgufModel model)
     {
         var tokensArray = (object[])model.Metadata["tokenizer.vocab.tokens"];
         var mergesArray = model.Metadata.TryGetValue("tokenizer.model.merges", out var mergesObj) ? (object[])mergesObj : [];
