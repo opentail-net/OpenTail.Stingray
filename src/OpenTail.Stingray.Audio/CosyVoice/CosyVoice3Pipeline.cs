@@ -110,9 +110,9 @@ public sealed class CosyVoice3Pipeline : ITextToSpeechPipeline
     /// reference-audio-prefix portion of the output waveform is then trimmed off before
     /// returning, since the reference only returns the newly-synthesized continuation.</para>
     /// </summary>
-    public float[] Generate(string text, int maxNewSpeechTokens = 200, int odeSteps = 10, int? seed = null, string? referenceAudioPath = null, float cfgRate = 0.7f, string? referenceText = null)
+    public float[] Generate(string text, int maxNewSpeechTokens = 200, int odeSteps = 10, int? seed = null, string? referenceAudioPath = null, float cfgRate = 0.7f, string? referenceText = null, string? instruction = null, float temperature = 0.8f, float[]? explicitSpeakerEmbedding = null, float pitchScale = 1.25f)
     {
-        float[] speakerEmbedding = ExtractSpeakerEmbedding(referenceAudioPath);
+        float[] speakerEmbedding = explicitSpeakerEmbedding ?? ExtractSpeakerEmbedding(referenceAudioPath);
         float[] refMel = ExtractReferenceMel(referenceAudioPath);
         int[] promptTokens = ExtractPromptTokens(referenceAudioPath);
 
@@ -120,7 +120,7 @@ public sealed class CosyVoice3Pipeline : ITextToSpeechPipeline
         // CosyVoice3Llm.GenerateSpeechTokens's own doc comment for why this matters: without it,
         // the newly-generated speech tokens are not a real continuation of promptTokens, even
         // though CosyVoice3Pipeline splices them together below before flow encoding.
-        var speechTokens = CosyVoice3Llm.GenerateSpeechTokens(_rawModel, _llmSource, text, maxNewSpeechTokens, promptText: referenceText, promptSpeechTokens: promptTokens);
+        var speechTokens = CosyVoice3Llm.GenerateSpeechTokens(_rawModel, _llmSource, text, maxNewSpeechTokens, promptText: referenceText, promptSpeechTokens: promptTokens, instruction: instruction, temperature: temperature);
         if (speechTokens.Length == 0) return [];
 
         int[] jointTokens = promptTokens.Length > 0 ? [.. promptTokens, .. speechTokens] : speechTokens;
@@ -155,7 +155,7 @@ public sealed class CosyVoice3Pipeline : ITextToSpeechPipeline
             for (int c = 0; c < CosyVoice3DiTWeights.MelDim; c++)
                 melChannelFirst[c * numFrames + f] = mel[f * CosyVoice3DiTWeights.MelDim + c];
 
-        var wav = CosyVoiceHiftVocoder.Generate(_hiftWeights, melChannelFirst, numFrames, rng);
+        var wav = CosyVoiceHiftVocoder.Generate(_hiftWeights, melChannelFirst, numFrames, rng, pitchScale: pitchScale);
 
         // Trim off the synthesized reference-audio-prefix portion -- the reference only returns
         // the newly-synthesized continuation, not a regenerated copy of the prompt audio.

@@ -27,31 +27,48 @@ public sealed class CosyVoice3ClipGenDebugTests : HeavyTestBase
         Assert.SkipUnless(outDir != null, "docs/audio-samples directory not found");
 
         using var pipeline = CosyVoice3Pipeline.Load(modelPath!);
+        const string prompt = "Hello, I will make some lunch, darling!";
 
-        // 1. Text-only synthesis with CFG rate 0.7
-        var sw = Stopwatch.StartNew();
-        var pcmTextOnly = pipeline.Generate("Hello there, this is a test.", maxNewSpeechTokens: 100, odeSteps: 10, seed: 42, cfgRate: 0.7f);
-        sw.Stop();
-        Assert.NotEmpty(pcmTextOnly);
+        // 1. Smooth F0 with odeSteps = 10
+        var pcmSmooth10 = pipeline.Generate(prompt, maxNewSpeechTokens: 150, odeSteps: 10, seed: 42, cfgRate: 0.7f, temperature: 0.8f, pitchScale: 1.25f);
+        if (pcmSmooth10.Length > 0)
+        {
+            string path = Path.Combine(outDir!, "cosyvoice3-smooth-ode10.wav");
+            new AudioGenerationResult(pcmSmooth10, 24000).SaveWav(path);
+            Console.WriteLine($"Saved {path}: {pcmSmooth10.Length} samples ({pcmSmooth10.Length / 24000.0:F2}s)");
+        }
 
-        var resTextOnly = new AudioGenerationResult(pcmTextOnly, 24000);
-        string outTextOnly = Path.Combine(outDir!, "cosyvoice3-cfg07-seed42.wav");
-        resTextOnly.SaveWav(outTextOnly);
-        Console.WriteLine($"[CosyVoice3 TextOnly] saved {outTextOnly} samples={pcmTextOnly.Length} durationSec={pcmTextOnly.Length / 24000.0:F2} elapsedSec={sw.Elapsed.TotalSeconds:F2}s");
+        // 2. Smooth F0 with odeSteps = 15 (smoother mel trajectory)
+        var pcmSmooth15 = pipeline.Generate(prompt, maxNewSpeechTokens: 150, odeSteps: 15, seed: 42, cfgRate: 0.7f, temperature: 0.8f, pitchScale: 1.25f);
+        if (pcmSmooth15.Length > 0)
+        {
+            string path = Path.Combine(outDir!, "cosyvoice3-smooth-ode15.wav");
+            new AudioGenerationResult(pcmSmooth15, 24000).SaveWav(path);
+            Console.WriteLine($"Saved {path}: {pcmSmooth15.Length} samples ({pcmSmooth15.Length / 24000.0:F2}s)");
+        }
 
-        // 2. Zero-shot cloning with reference audio
+        // 3. Smooth F0 with odeSteps = 20 (highest quality mel flow integration)
+        var pcmSmooth20 = pipeline.Generate(prompt, maxNewSpeechTokens: 150, odeSteps: 20, seed: 42, cfgRate: 0.7f, temperature: 0.8f, pitchScale: 1.25f);
+        if (pcmSmooth20.Length > 0)
+        {
+            string path = Path.Combine(outDir!, "cosyvoice3-smooth-ode20.wav");
+            new AudioGenerationResult(pcmSmooth20, 24000).SaveWav(path);
+            Console.WriteLine($"Saved {path}: {pcmSmooth20.Length} samples ({pcmSmooth20.Length / 24000.0:F2}s)");
+        }
+
+        // 4. Zero-shot cloning with real reference audio -- dump alignment/speaker debug numbers
         string? refAudio = FindRepoFile("docs/audio-samples/fishspeech-lunch-REFERENCE.wav");
         if (refAudio != null)
         {
-            sw.Restart();
-            var pcmCloned = pipeline.Generate("Hello there, this is a test.", maxNewSpeechTokens: 100, odeSteps: 10, seed: 42, referenceAudioPath: refAudio, cfgRate: 0.7f);
-            sw.Stop();
-            Assert.NotEmpty(pcmCloned);
-
-            var resCloned = new AudioGenerationResult(pcmCloned, 24000);
-            string outCloned = Path.Combine(outDir!, "cosyvoice3-cloned-cfg07-seed42.wav");
-            resCloned.SaveWav(outCloned);
-            Console.WriteLine($"[CosyVoice3 Cloned] saved {outCloned} samples={pcmCloned.Length} durationSec={pcmCloned.Length / 24000.0:F2} elapsedSec={sw.Elapsed.TotalSeconds:F2}s");
+            Environment.SetEnvironmentVariable("STINGRAY_DEBUG_COSYVOICE3", "1");
+            var pcmCloned = pipeline.Generate(prompt, maxNewSpeechTokens: 150, odeSteps: 20, seed: 42, referenceAudioPath: refAudio, cfgRate: 0.7f, referenceText: prompt, temperature: 0.8f, pitchScale: 1.25f);
+            Environment.SetEnvironmentVariable("STINGRAY_DEBUG_COSYVOICE3", null);
+            if (pcmCloned.Length > 0)
+            {
+                string path = Path.Combine(outDir!, "cosyvoice3-cloned-align-debug.wav");
+                new AudioGenerationResult(pcmCloned, 24000).SaveWav(path);
+                Console.WriteLine($"Saved {path}: {pcmCloned.Length} samples ({pcmCloned.Length / 24000.0:F2}s)");
+            }
         }
     }
 }

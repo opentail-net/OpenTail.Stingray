@@ -52,14 +52,14 @@ public static class CosyVoice3Llm
     /// <paramref name="promptText"/>/<paramref name="promptSpeechTokens"/> condition the LLM on a
     /// real zero-shot voice-cloning reference (empty/null for plain, unconditioned synthesis).
     /// </summary>
-    public static int[] GenerateSpeechTokens(GgufModel rawModel, CosyVoice3LlmTensorSource source, string text, int maxNewTokens = 300, string? promptText = null, int[]? promptSpeechTokens = null)
+    public static int[] GenerateSpeechTokens(GgufModel rawModel, CosyVoice3LlmTensorSource source, string text, int maxNewTokens = 300, string? promptText = null, int[]? promptSpeechTokens = null, string? instruction = null, float temperature = 1.0f)
     {
         var tokenizer = BuildTokenizer(rawModel);
         int sosTokenId = rawModel.GetMetadata("sos_token_id", 0);
         int taskTokenId = rawModel.GetMetadata("task_token_id", 0);
 
-        string instructionPrefix = rawModel.GetMetadata("cosyvoice.instruction_prefix", "You are a helpful assistant.");
-        var prefixTokens = tokenizer.Encode(instructionPrefix);
+        string instructionPrefix = instruction ?? rawModel.GetMetadata("cosyvoice.instruction_prefix", "You are a helpful assistant.");
+        var prefixTokens = string.IsNullOrEmpty(instructionPrefix) ? [] : tokenizer.Encode(instructionPrefix);
         var endOfPromptTokens = tokenizer.Encode("<|endofprompt|>");
         var promptTextTokens = string.IsNullOrEmpty(promptText) ? [] : tokenizer.Encode(promptText);
         var textTokens = tokenizer.Encode(text);
@@ -84,12 +84,6 @@ public static class CosyVoice3Llm
 
         var generated = new List<int>();
         int pos = prefillIds.Count;
-        // Real reference (`llm_job_ext`'s `min_len`/`max_len`, `examples/cosyvoice.cpp`'s own
-        // printed run config): min_len = text_len * min_token_text_ratio(2.0), max_len = text_len
-        // * max_token_text_ratio(20.0) -- `text_len` is the NEW synthesis text's OWN token count
-        // (`textTokens`), NOT including promptText. The previous ad-hoc `max(60, textTokens*6)`
-        // formula didn't match this at all and made the model stop far too early (measured: 60
-        // tokens generated here vs. the reference's real 160 for the identical text+prompt).
         int minLen = Math.Max(1, (int)(textTokens.Count * 2.0));
         int maxLenFromRatio = (int)(textTokens.Count * 20.0);
         int effectiveMaxNewTokens = maxLenFromRatio > 0 ? Math.Min(maxNewTokens, maxLenFromRatio) : maxNewTokens;
@@ -97,7 +91,7 @@ public static class CosyVoice3Llm
 
         for (int step = 0; step < effectiveMaxNewTokens; step++)
         {
-            int localId = SampleSpeechToken(logits, generated, allowStop: step >= minLen, rng);
+            int localId = SampleSpeechToken(logits, generated, allowStop: step >= minLen, rng, temperature: temperature);
 
             if (localId >= 6561) // Stop token range
             {
@@ -143,7 +137,7 @@ public static class CosyVoice3Llm
         return fwd.Prefill(prefillIds).ToArray();
     }
 
-    private static int SampleSpeechToken(float[] logits, List<int> pastTokens, bool allowStop, Random rng, int topK = 25, float topP = 0.8f, int winSize = 10)
+    private static int SampleSpeechToken(float[] logits, List<int> pastTokens, bool allowStop, Random rng, int topK = 25, float topP = 0.8f, int winSize = 10, float temperature = 1.0f)
     {
         int totalVocab = logits.Length;
 
@@ -169,16 +163,21 @@ public static class CosyVoice3Llm
             }
         }
 
+        float invTemp = temperature > 0f ? 1f / temperature : 1f;
+
         // Softmax & Nucleus Top-P / Top-K
         float maxLogit = float.NegativeInfinity;
         for (int i = 0; i < totalVocab; i++)
-            if (logits[i] > maxLogit) maxLogit = logits[i];
+        {
+            float scaled = logits[i] * invTemp;
+            if (scaled > maxLogit) maxLogit = scaled;
+        }
 
         double sumExp = 0.0;
         var expLogits = new float[totalVocab];
         for (int i = 0; i < totalVocab; i++)
         {
-            expLogits[i] = MathF.Exp(logits[i] - maxLogit);
+            expLogits[i] = MathF.Exp(logits[i] * invTemp - maxLogit);
             sumExp += expLogits[i];
         }
 

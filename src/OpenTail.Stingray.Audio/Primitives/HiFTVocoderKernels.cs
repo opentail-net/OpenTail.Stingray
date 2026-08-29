@@ -16,16 +16,19 @@ namespace OpenTail.Stingray.Audio.Primitives;
 public static class HiFTVocoderKernels
 {
     /// <summary>mel is channel-first [MelDim, T]. Returns the waveform samples.</summary>
-    public static float[] Generate(IHiFTVocoderWeights w, float[] mel, int t, Random rng, int melDim = 80)
+    public static float[] Generate(IHiFTVocoderWeights w, float[] mel, int t, Random rng, int melDim = 80, float pitchScale = 1.0f)
     {
         float[] f0 = PredictF0(w.F0Predictor, mel, t, melDim, w.IsCausal);
+        if (pitchScale != 1.0f && pitchScale > 0.05f)
+        {
+            for (int i = 0; i < f0.Length; i++) f0[i] *= pitchScale;
+        }
 
         int totalUp = w.IstftHopLen;
         foreach (int r in w.UpsampleRates) totalUp *= r;
         int sampleLen = t * totalUp;
-        float[] f0Up = NearestUpsample1D(f0, sampleLen);
 
-        float[] harSource = SineGen(f0Up, sampleLen, w.SampleRate, w.NbHarmonics, rng,
+        float[] harSource = SineGen(f0, t, totalUp, w.SampleRate, w.NbHarmonics, rng,
                                     sineAmp: 0.1f, noiseStd: 0.003f, voicedThreshold: 10f);
         float[] excitation = LinearTanhMerge(harSource, sampleLen, w.NbHarmonics + 1, w.MSourceLinearWeight, w.MSourceLinearBias);
 
@@ -39,8 +42,9 @@ public static class HiFTVocoderKernels
     /// reference's own dumped excitation on the exact same F0 input.</summary>
     internal static float[] ExcitationForTest(IHiFTVocoderWeights w, float[] f0, int sampleLen, Random rng)
     {
-        float[] f0Up = NearestUpsample1D(f0, sampleLen);
-        float[] harSource = SineGen(f0Up, sampleLen, w.SampleRate, w.NbHarmonics, rng,
+        int t = f0.Length;
+        int scaleFactor = sampleLen / Math.Max(1, t);
+        float[] harSource = SineGen(f0, t, scaleFactor, w.SampleRate, w.NbHarmonics, rng,
                                     sineAmp: 0.1f, noiseStd: 0.003f, voicedThreshold: 10f);
         return LinearTanhMerge(harSource, sampleLen, w.NbHarmonics + 1, w.MSourceLinearWeight, w.MSourceLinearBias);
     }
@@ -98,44 +102,56 @@ public static class HiFTVocoderKernels
         return f0;
     }
 
-    private static float[] SineGen(float[] f0Up, int len, int sampleRate, int harmonicNum, Random rng,
+    private static float[] SineGen(float[] f0, int t, int scaleFactor, int sampleRate, int harmonicNum, Random rng,
                                     float sineAmp, float noiseStd, float voicedThreshold)
     {
         int dim = harmonicNum + 1;
-        var sineWaves = new float[dim * len];
+        int sampleLen = t * scaleFactor;
+        var sineWaves = new float[dim * sampleLen];
 
-        var phaseOffset = new float[dim];
-        for (int h = 1; h < dim; h++) phaseOffset[h] = (float)((rng.NextDouble() * 2.0 - 1.0) * Math.PI);
+        var randIni = new float[dim];
+        randIni[0] = 0f;
+        for (int h = 1; h < dim; h++) randIni[h] = (float)rng.NextDouble();
 
-        // Each harmonic's cumulative phase only depends on its own row of f0Up -- independent
-        // across h, and this loop touches no shared RNG state (phaseOffset is precomputed above),
-        // so parallelizing across harmonics is a pure speedup with no output/ordering change.
-        System.Threading.Tasks.Parallel.For(0, dim, h =>
+        for (int h = 0; h < dim; h++)
         {
             double harmonicMul = h + 1;
             double freqScale = harmonicMul / sampleRate;
-            int row = h * len;
-            double cumPhaseH = 0.0;
-            for (int n = 0; n < len; n++)
-            {
-                cumPhaseH = (cumPhaseH + f0Up[n] * freqScale) % 1.0;
-                double theta = 2.0 * Math.PI * cumPhaseH;
-                sineWaves[row + n] = sineAmp * MathF.Sin((float)theta + phaseOffset[h]);
-            }
-        });
+            int row = h * sampleLen;
+            double cumPhase = randIni[h];
 
-        for (int n = 0; n < len; n++)
+            for (int ti = 0; ti < t; ti++)
+            {
+                double rad = f0[ti] * freqScale;
+                rad = rad - Math.Floor(rad);
+                cumPhase += rad;
+                float phaseVal = (float)(cumPhase * 2.0 * Math.PI * scaleFactor);
+                float sinVal = sineAmp * MathF.Sin(phaseVal);
+                int frameStart = ti * scaleFactor;
+                for (int s = 0; s < scaleFactor; s++)
+                {
+                    sineWaves[row + frameStart + s] = sinVal;
+                }
+            }
+        }
+
+        for (int ti = 0; ti < t; ti++)
         {
-            bool voiced = f0Up[n] > voicedThreshold;
+            bool voiced = f0[ti] > voicedThreshold;
             float uv = voiced ? 1f : 0f;
             float noiseAmp = uv * noiseStd + (1f - uv) * sineAmp / 3f;
-            for (int h = 0; h < dim; h++)
+            int frameStart = ti * scaleFactor;
+            for (int s = 0; s < scaleFactor; s++)
             {
-                int idx = h * len + n;
-                float u1 = MathF.Max(1e-7f, (float)rng.NextDouble());
-                float u2 = (float)rng.NextDouble();
-                float noise = MathF.Sqrt(-2f * MathF.Log(u1)) * MathF.Cos(2f * MathF.PI * u2) * noiseAmp;
-                sineWaves[idx] = sineWaves[idx] * uv + noise;
+                int n = frameStart + s;
+                for (int h = 0; h < dim; h++)
+                {
+                    int idx = h * sampleLen + n;
+                    float u1 = MathF.Max(1e-7f, (float)rng.NextDouble());
+                    float u2 = (float)rng.NextDouble();
+                    float noise = MathF.Sqrt(-2f * MathF.Log(u1)) * MathF.Cos(2f * MathF.PI * u2) * noiseAmp;
+                    sineWaves[idx] = sineWaves[idx] * uv + noise;
+                }
             }
         }
         return sineWaves;
@@ -722,11 +738,24 @@ public static class HiFTVocoderKernels
     private static float[] NearestUpsample1D(float[] input, int targetLen)
     {
         int inLen = input.Length;
+        if (inLen == 0) return [];
+        if (inLen == 1)
+        {
+            var single = new float[targetLen];
+            Array.Fill(single, input[0]);
+            return single;
+        }
         var output = new float[targetLen];
+        float step = (float)(inLen - 1) / Math.Max(1, targetLen - 1);
         for (int i = 0; i < targetLen; i++)
         {
-            int src = (int)((long)i * inLen / targetLen);
-            output[i] = input[Math.Min(src, inLen - 1)];
+            float pos = i * step;
+            int idx = (int)pos;
+            float frac = pos - idx;
+            if (idx + 1 < inLen)
+                output[i] = input[idx] * (1f - frac) + input[idx + 1] * frac;
+            else
+                output[i] = input[inLen - 1];
         }
         return output;
     }
