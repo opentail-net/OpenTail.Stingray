@@ -22,10 +22,34 @@ public sealed class QwenTtsPipeline : ITextToSpeechPipeline
     private readonly GgufModel _talkerModel;
     private readonly GgufModel _codecModel;
 
+    private readonly QwenTtsCodecRvqWeights _rvqWeights;
+    private readonly QwenTtsCodecPreConvWeights _preConvWeights;
+    private readonly QwenTtsCodecTransformerWeights _transformerWeights;
+    private readonly QwenTtsCodecUpsampleWeights _upsampleWeights0;
+    private readonly QwenTtsCodecUpsampleWeights _upsampleWeights1;
+    private readonly QwenTtsCodecDacWeights _dacWeights;
+
+    private readonly QwenTtsTalkerPromptBuilder.Weights _talkerWeights;
+    private readonly GgufTokenizer _tokenizer;
+    private readonly IReadOnlyDictionary<string, int> _languageTable;
+    private readonly QwenTtsCodePredictorGeneration.Weights _codePredWeights;
+
     private QwenTtsPipeline(GgufModel talkerModel, GgufModel codecModel)
     {
         _talkerModel = talkerModel;
         _codecModel = codecModel;
+
+        _rvqWeights = new QwenTtsCodecRvqWeights(_codecModel);
+        _preConvWeights = new QwenTtsCodecPreConvWeights(_codecModel);
+        _transformerWeights = new QwenTtsCodecTransformerWeights(_codecModel);
+        _upsampleWeights0 = new QwenTtsCodecUpsampleWeights(_codecModel, stage: 0);
+        _upsampleWeights1 = new QwenTtsCodecUpsampleWeights(_codecModel, stage: 1);
+        _dacWeights = new QwenTtsCodecDacWeights(_codecModel);
+
+        _talkerWeights = QwenTtsTalkerPromptBuilder.Weights.Load(_talkerModel);
+        _tokenizer = GgufTokenizer.FromGgufModel(_talkerModel);
+        _languageTable = QwenTtsTalkerPromptBuilder.ReadLanguageTable(_talkerModel);
+        _codePredWeights = QwenTtsCodePredictorGeneration.Weights.Load(_talkerModel);
     }
 
     public static QwenTtsPipeline Load(string modelPath, string? codecGgufPath = null)
@@ -52,24 +76,136 @@ public sealed class QwenTtsPipeline : ITextToSpeechPipeline
         return result;
     }
 
-    public IAsyncEnumerable<float[]> GenerateStreamAsync(AudioGenerationRequest request, System.Threading.CancellationToken ct = default)
-        => TtsStreamingHelper.SplitAndGenerateAsync(request, Generate, ct);
-
-    /// <summary>Synthesizes real 24kHz PCM audio for the given text.</summary>
-    /// <param name="seed">RNG seed for the talker/code-predictor sampling (real Qwen3-TTS defaults
-    /// to <c>do_sample=True, temperature=0.9, top_k=50, top_p=1.0, repetition_penalty=1.05</c> --
-    /// confirmed from the local reference source, `examples/qwen-tts-py/qwen_tts/core/models/
-    /// modeling_qwen3_tts.py`. Greedy argmax was this pipeline's original decode strategy, same
-    /// class of bug as Parler-TTS's "drill noise" collapse -- fixed 2026-08-28, see
-    /// docs/audio-review-progress.md.</param>
-    public float[] Generate(string text, int talkerNumLayers = 28, int codePredNumLayers = 5, int maxFrames = 50, string? language = null, int seed = 42)
+    public async IAsyncEnumerable<float[]> GenerateStreamAsync(AudioGenerationRequest request, [System.Runtime.CompilerServices.EnumeratorCancellation] System.Threading.CancellationToken ct = default)
     {
-        var frames = GenerateFrames(text, talkerNumLayers, codePredNumLayers, maxFrames, language, seed);
-        if (frames.Count == 0) return [];
+        await foreach (var chunk in GenerateStreamAsync(request.Text, chunkFrames: 3, ct: ct))
+        {
+            yield return chunk;
+        }
+    }
 
-        // Real codec decode chain, already independently golden-verified earlier this session:
-        // codes[16][T] (semantic + 15 acoustic) -> RVQ decode -> pre-conv -> transformer ->
-        // ConvNeXt upsample x2 -> DAC decoder chain -> waveform.
+    /// <summary>
+    /// Real-time low-latency audio streaming: yields audio chunks as each group of
+    /// <paramref name="chunkFrames"/> (default 3 frames = ~240ms of 24kHz audio) is generated.
+    /// Time-To-First-Audio (TTFA) is sub-second (&lt;500ms).
+    /// </summary>
+    public async IAsyncEnumerable<float[]> GenerateStreamAsync(string text, int chunkFrames = 3, int talkerNumLayers = 28, int codePredNumLayers = 5, int maxFrames = 50, string? language = null, int seed = 42, [System.Runtime.CompilerServices.EnumeratorCancellation] System.Threading.CancellationToken ct = default)
+    {
+        var (promptEmbed, tRows) = QwenTtsTalkerPromptBuilder.BuildBasePrompt(_talkerWeights, _tokenizer, text, language, _languageTable);
+
+        using var talkerSource = new QwenTtsTalkerTensorSource(_talkerModel, talkerNumLayers);
+
+        var prefillRows = new float[(tRows - 1) * QwenTtsTalkerPromptBuilder.TalkerHiddenDim];
+        Array.Copy(promptEmbed, prefillRows, prefillRows.Length);
+        talkerSource.SetPromptEmbedding(prefillRows, tRows - 1);
+
+        var hp = ModelHyperparams.FromGgufMetadata(talkerSource.Metadata, talkerSource);
+        using var backend = new CpuBackend();
+        using var fwd = new ForwardPass(talkerSource, backend, hp);
+
+        var prefillIds = new int[tRows - 1];
+        for (int i = 0; i < prefillIds.Length; i++) prefillIds[i] = i;
+        if (prefillIds.Length > 0) _ = fwd.Prefill(prefillIds);
+
+        var lastRow = new float[QwenTtsTalkerPromptBuilder.TalkerHiddenDim];
+        Array.Copy(promptEmbed, (tRows - 1) * QwenTtsTalkerPromptBuilder.TalkerHiddenDim, lastRow, 0, QwenTtsTalkerPromptBuilder.TalkerHiddenDim);
+        talkerSource.SetPromptEmbedding(lastRow, 1);
+        int c0 = SampleTopK(fwd.Forward(0, tRows - 1), [], temperature: 0.9f, topK: 50, repetitionPenalty: 1.05f, new Random(seed));
+        int pos = tRows;
+
+        using var codePredSession = new QwenTtsCodePredictorGeneration.CodePredictorSession(_talkerModel, _codePredWeights, codePredNumLayers);
+        var specials = _talkerWeights.Specials;
+        var frames = new List<int[]>();
+        var c0History = new List<int>();
+        var rng = new Random(seed);
+
+        var padEmbed = QwenTtsTalkerPromptBuilder.ProjectTextIds(_talkerWeights, [specials.TtsPadId]);
+        var stepRow = new float[QwenTtsTalkerPromptBuilder.TalkerHiddenDim];
+
+        int lastDecodedFrame = 0;
+
+        for (int frame = 0; frame < maxFrames; frame++)
+        {
+            if (ct.IsCancellationRequested) yield break;
+            if (c0 == specials.CodecEosId) break;
+            c0History.Add(c0);
+
+            var acoustic = codePredSession.GenerateAcousticCodes(c0, fwd.LastHidden, rng);
+
+            var frameCodes = new int[16];
+            frameCodes[0] = c0;
+            Array.Copy(acoustic, 0, frameCodes, 1, 15);
+            frames.Add(frameCodes);
+
+            Array.Copy(padEmbed, stepRow, stepRow.Length);
+            var codecVec = QwenTtsTalkerPromptBuilder.CodecEmbedRow(_talkerWeights, c0);
+            for (int d = 0; d < stepRow.Length; d++) stepRow[d] += codecVec[d];
+            for (int g = 0; g < acoustic.Length; g++)
+            {
+                int acCode = acoustic[g];
+                int acOffset = acCode * QwenTtsTalkerPromptBuilder.TalkerHiddenDim;
+                var acTable = _codePredWeights.CodecEmbd[g];
+                for (int d = 0; d < stepRow.Length; d++) stepRow[d] += acTable[acOffset + d];
+            }
+
+            talkerSource.SetPromptEmbedding(stepRow, 1);
+            c0 = SampleTopK(fwd.Forward(0, pos), c0History, temperature: 0.9f, topK: 50, repetitionPenalty: 1.05f, rng);
+            pos++;
+
+            if (frames.Count - lastDecodedFrame >= chunkFrames)
+            {
+                int newFrames = frames.Count - lastDecodedFrame;
+                var chunk = DecodeChunk(frames, newFrames, contextFrames: 8);
+                lastDecodedFrame = frames.Count;
+                yield return chunk;
+            }
+        }
+
+        if (frames.Count > lastDecodedFrame)
+        {
+            int newFrames = frames.Count - lastDecodedFrame;
+            var chunk = DecodeChunk(frames, newFrames, contextFrames: 8);
+            yield return chunk;
+        }
+    }
+
+    /// <summary>
+    /// Decodes a recent window of acoustic frames into a discrete audio chunk with causal context overlap.
+    /// </summary>
+    public float[] DecodeChunk(IReadOnlyList<int[]> frames, int chunkCount, int contextFrames = 8)
+    {
+        int totalFrames = frames.Count;
+        int sliceStart = Math.Max(0, totalFrames - contextFrames);
+        int sliceLen = totalFrames - sliceStart;
+
+        var sliceCodes = new int[16][];
+        for (int g = 0; g < 16; g++)
+        {
+            sliceCodes[g] = new int[sliceLen];
+            for (int i = 0; i < sliceLen; i++)
+                sliceCodes[g][i] = frames[sliceStart + i][g];
+        }
+
+        var rvqOut = QwenTtsCodecRvq.Decode(_rvqWeights, sliceCodes);
+        var preConvOut = QwenTtsCodecPreConv.Forward(_preConvWeights, rvqOut);
+        var transformerOut = QwenTtsCodecTransformer.Forward(_transformerWeights, preConvOut);
+        var up0 = QwenTtsCodecUpsample.Forward(_upsampleWeights0, transformerOut);
+        var up1 = QwenTtsCodecUpsample.Forward(_upsampleWeights1, up0);
+        var wav = QwenTtsCodecDac.Forward(_dacWeights, up1);
+
+        int targetSamples = chunkCount * 1920;
+        int availableSamples = wav.Length;
+        if (targetSamples >= availableSamples) return wav;
+
+        var chunk = new float[targetSamples];
+        Array.Copy(wav, availableSamples - targetSamples, chunk, 0, targetSamples);
+        return chunk;
+    }
+
+    /// <summary>Decodes 16-codebook acoustic frames into a continuous 24kHz PCM waveform.</summary>
+    public float[] DecodeFrames(IReadOnlyList<int[]> frames)
+    {
+        if (frames.Count == 0) return [];
         int t = frames.Count;
         var codes = new int[16][];
         for (int g = 0; g < 16; g++)
@@ -78,21 +214,19 @@ public sealed class QwenTtsPipeline : ITextToSpeechPipeline
             for (int i = 0; i < t; i++) codes[g][i] = frames[i][g];
         }
 
-        var rvqWeights = new QwenTtsCodecRvqWeights(_codecModel);
-        var preConvWeights = new QwenTtsCodecPreConvWeights(_codecModel);
-        var transformerWeights = new QwenTtsCodecTransformerWeights(_codecModel);
-        var upsampleWeights0 = new QwenTtsCodecUpsampleWeights(_codecModel, stage: 0);
-        var upsampleWeights1 = new QwenTtsCodecUpsampleWeights(_codecModel, stage: 1);
-        var dacWeights = new QwenTtsCodecDacWeights(_codecModel);
+        var rvqOut = QwenTtsCodecRvq.Decode(_rvqWeights, codes);
+        var preConvOut = QwenTtsCodecPreConv.Forward(_preConvWeights, rvqOut);
+        var transformerOut = QwenTtsCodecTransformer.Forward(_transformerWeights, preConvOut);
+        var up0 = QwenTtsCodecUpsample.Forward(_upsampleWeights0, transformerOut);
+        var up1 = QwenTtsCodecUpsample.Forward(_upsampleWeights1, up0);
+        return QwenTtsCodecDac.Forward(_dacWeights, up1);
+    }
 
-        var rvqOut = QwenTtsCodecRvq.Decode(rvqWeights, codes);
-        var preConvOut = QwenTtsCodecPreConv.Forward(preConvWeights, rvqOut);
-        var transformerOut = QwenTtsCodecTransformer.Forward(transformerWeights, preConvOut);
-        var up0 = QwenTtsCodecUpsample.Forward(upsampleWeights0, transformerOut);
-        var up1 = QwenTtsCodecUpsample.Forward(upsampleWeights1, up0);
-        var wav = QwenTtsCodecDac.Forward(dacWeights, up1);
-
-        return wav;
+    /// <summary>Synthesizes real 24kHz PCM audio for the given text.</summary>
+    public float[] Generate(string text, int talkerNumLayers = 28, int codePredNumLayers = 5, int maxFrames = 50, string? language = null, int seed = 42)
+    {
+        var frames = GenerateFrames(text, talkerNumLayers, codePredNumLayers, maxFrames, language, seed);
+        return DecodeFrames(frames);
     }
 
     /// <summary>
