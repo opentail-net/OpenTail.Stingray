@@ -1,4 +1,5 @@
 using System;
+using System.IO;
 using System.Numerics.Tensors;
 using OpenTail.Stingray.Cpu;
 
@@ -36,6 +37,17 @@ public static class HiFTVocoderKernels
     }
 
     internal static float[] PredictF0ForTest(IF0PredictorWeights f0w, float[] mel, int t, int melDim) => PredictF0(f0w, mel, t, melDim, isCausal: false);
+
+    /// <summary>TEST-SUPPORT ONLY: computes the harmonic-source excitation signal directly from a
+    /// given per-frame F0 array (bypassing PredictF0), for numeric comparison against a real
+    /// reference's own dumped excitation on the exact same F0 input.</summary>
+    internal static float[] ExcitationForTest(IHiFTVocoderWeights w, float[] f0, int sampleLen, Random rng)
+    {
+        float[] f0Up = NearestUpsample1D(f0, sampleLen);
+        float[] harSource = SineGen(f0Up, sampleLen, w.SampleRate, w.NbHarmonics, rng,
+                                    sineAmp: 0.1f, noiseStd: 0.003f, voicedThreshold: 10f);
+        return LinearTanhMerge(harSource, sampleLen, w.NbHarmonics + 1, w.MSourceLinearWeight, w.MSourceLinearBias);
+    }
 
     private static float[] PredictF0(IF0PredictorWeights f0w, float[] mel, int t, int melDim, bool isCausal)
     {
@@ -146,6 +158,12 @@ public static class HiFTVocoderKernels
         return output;
     }
 
+    /// <summary>TEST-SUPPORT ONLY: exposes Decode directly, for feeding a real reference's own
+    /// dumped excitation signal in (bypassing our own SineGen) to isolate whether a discrepancy
+    /// lives in source generation vs. the conv/upsample/ISTFT decode stage.</summary>
+    internal static float[] DecodeForTest(IHiFTVocoderWeights w, float[] mel, int t, float[] excitation, int sampleLen, int melDim) =>
+        Decode(w, mel, t, excitation, sampleLen, melDim);
+
     private static float[] Decode(IHiFTVocoderWeights w, float[] mel, int t, float[] excitation, int sampleLen, int melDim)
     {
         int nFft = w.IstftNFft;
@@ -171,6 +189,14 @@ public static class HiFTVocoderKernels
         int curCh = w.BaseChannels;
         int curT = t;
 
+        if (Environment.GetEnvironmentVariable("STINGRAY_DUMP_CONVPRE_PATH") is { Length: > 0 } prePath)
+        {
+            var bytes = new byte[x.Length * sizeof(float)];
+            Buffer.BlockCopy(x, 0, bytes, 0, bytes.Length);
+            File.WriteAllBytes(prePath, bytes);
+            Console.WriteLine($"[DUMP] our convpre ch={curCh} t={curT}");
+        }
+
         for (int i = 0; i < numStages; i++)
         {
             LeakyReluInPlace(x, 0.1f);
@@ -178,9 +204,20 @@ public static class HiFTVocoderKernels
             int chOut = w.BaseChannels >> (i + 1);
             int upK = w.UpsampleKernels[i];
             int upS = w.UpsampleRates[i];
-            int upPad = (upK - upS) / 2;
-            x = ConvTranspose1d(x, w.UpWeight[i], w.UpBias[i], curCh, chOut, curT, upK, upS, upPad);
-            curT = x.Length / chOut;
+            if (w.UsesUpsampleConvTranspose)
+            {
+                int upPad = (upK - upS) / 2;
+                x = ConvTranspose1d(x, w.UpWeight[i], w.UpBias[i], curCh, chOut, curT, upK, upS, upPad);
+                curT = x.Length / chOut;
+            }
+            else
+            {
+                // CosyVoice3's real CausalConv1dUpsample: nearest-neighbor upsample by the
+                // stride factor, then a left-causal, stride-1, *regular* Conv1d.
+                x = NearestUpsampleChannels(x, curCh, curT, upS);
+                curT *= upS;
+                x = CausalConv1dLeftPad(x, curCh, curT, w.UpWeight[i], w.UpBias[i], chOut, upK);
+            }
             curCh = chOut;
 
             if (i == numStages - 1)
@@ -197,9 +234,13 @@ public static class HiFTVocoderKernels
             }
             else
             {
-                int kernel = u * 2;
-                int pad = u / 2;
-                si = Conv1dStrided(sStft, stftCh, stftFrames, w.SourceDownWeight[i], w.SourceDownBias[i], curCh, kernel, u, pad);
+                // Real reference (`CausalConv1dDownSample::build_cgraph` in
+                // examples/cosyvoice.cpp/src/cosyvoice-graph.cpp): left-causal zero-pad by
+                // (stride-1), THEN a stride-`u`, padding-0 conv -- NOT a centered/symmetric
+                // padding. `kernel` is read from the real loaded weight, not derived from `u`
+                // (it happens to equal `2*u` in this checkpoint, but that's incidental).
+                int kernel = w.SourceDownWeight[i].Length / (stftCh * curCh);
+                si = Conv1dStrided(sStft, stftCh, stftFrames, w.SourceDownWeight[i], w.SourceDownBias[i], curCh, kernel, u, padding: u - 1);
             }
             int siT = si.Length / curCh;
             si = AlignTimeLength(si, curCh, siT, curT);
@@ -229,6 +270,14 @@ public static class HiFTVocoderKernels
             float invK = 1f / numKernels;
             for (int j = 0; j < xs.Length; j++) xs[j] *= invK;
             x = xs;
+
+            if (i == 0 && Environment.GetEnvironmentVariable("STINGRAY_DUMP_STAGE0_PATH") is { Length: > 0 } s0Path)
+            {
+                var bytes = new byte[x.Length * sizeof(float)];
+                Buffer.BlockCopy(x, 0, bytes, 0, bytes.Length);
+                File.WriteAllBytes(s0Path, bytes);
+                Console.WriteLine($"[DUMP] our stage0 ch={curCh} t={curT}");
+            }
         }
 
         LeakyReluInPlace(x, 0.01f);
@@ -236,6 +285,14 @@ public static class HiFTVocoderKernels
             ? CausalConv1dLeftPad(x, curCh, curT, w.ConvPostWeight, w.ConvPostBias, nFft + 2, kernel: w.ConvPostKernel)
             : Conv1dSamePad(x, curCh, curT, w.ConvPostWeight, w.ConvPostBias, nFft + 2, kernel: w.ConvPostKernel);
         int outT = x.Length / (nFft + 2);
+
+        if (Environment.GetEnvironmentVariable("STINGRAY_DUMP_CONVPOST_PATH") is { Length: > 0 } dumpPath)
+        {
+            var bytes = new byte[x.Length * sizeof(float)];
+            Buffer.BlockCopy(x, 0, bytes, 0, bytes.Length);
+            File.WriteAllBytes(dumpPath, bytes);
+            Console.WriteLine($"[DUMP] our convpost outT={outT} ch={nFft + 2}");
+        }
 
         int specCh = nFft / 2 + 1;
         var spec = new float[specCh * outT];
@@ -678,6 +735,25 @@ public static class HiFTVocoderKernels
         return output;
     }
 
+    /// <summary>Nearest-neighbor upsample along time by an exact integer factor, per channel (channel-outer [ch,T] layout in and out).</summary>
+    private static float[] NearestUpsampleChannels(float[] input, int ch, int inT, int scale)
+    {
+        int outT = inT * scale;
+        var output = new float[ch * outT];
+        for (int c = 0; c < ch; c++)
+        {
+            int srcBase = c * inT;
+            int dstBase = c * outT;
+            for (int ti = 0; ti < inT; ti++)
+            {
+                float v = input[srcBase + ti];
+                int dst = dstBase + ti * scale;
+                for (int k = 0; k < scale; k++) output[dst + k] = v;
+            }
+        }
+        return output;
+    }
+
     private static void LeakyReluInPlace(float[] x, float slope)
     {
         for (int i = 0; i < x.Length; i++)
@@ -748,4 +824,17 @@ public interface IHiFTVocoderWeights
     /// need to change; CosyVoice's real weight classes override this to <c>true</c>.
     /// </summary>
     bool IsCausal => false;
+
+    /// <summary>
+    /// Whether the per-stage upsample (<see cref="UpWeight"/>/<see cref="UpBias"/>) is a real
+    /// learned <c>ConvTranspose1d</c> (Chatterbox/CosyVoice2's classic HiFTNet architecture,
+    /// weight layout <c>[inCh,outCh,kernel]</c>) or nearest-neighbor upsample followed by a
+    /// plain stride-1 causal <c>Conv1d</c> (CosyVoice3's real
+    /// <c>CausalConv1dUpsample</c>, weight layout <c>[outCh,inCh,kernel]</c> -- confirmed by
+    /// `ups.0.weight`'s real GGUF tensor shape, which matches a plain Conv1d layout, not
+    /// ConvTranspose1d's). Defaults to <c>true</c> (Chatterbox/CosyVoice2's convention, this
+    /// shared kernel's original target) so existing implementers don't need to change;
+    /// CosyVoice3's weight class overrides this to <c>false</c>.
+    /// </summary>
+    bool UsesUpsampleConvTranspose => true;
 }

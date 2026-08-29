@@ -9,19 +9,36 @@ namespace OpenTail.Stingray.Audio.CosyVoice;
 /// through <see cref="ForwardPass"/> autoregressively. Real prompt/token-composition sequence
 /// transcribed directly from `examples/cosyvoice.cpp`'s `cosyvoice-llm-job.cpp`
 /// (`cosyvoice_model_3::llm_job_ext`) and `cosyvoice-prompt.cpp`
-/// (`cosyvoice_prompt_init_from_prompt_speech`/`cosyvoice_model::set_prompt`), simplified to the
-/// no-reference-audio ("cross-lingual"/plain synthesis) case -- no zero-shot voice-cloning prompt
-/// speech tokens injected:
+/// (`cosyvoice_prompt_init_from_prompt_speech`/`cosyvoice_model::set_prompt`):
 ///
 /// <code>
 /// [sos_token_id]                              (speech-embedded, real GGUF metadata "sos_token_id")
 /// + tokenize(instruction_prefix)              (text-embedded, real GGUF metadata "cosyvoice.instruction_prefix")
 /// + tokenize("&lt;|endofprompt|&gt;")               (text-embedded, one real special token)
+/// + tokenize(promptText)                      (text-embedded, the REFERENCE AUDIO's own transcript --
+///                                               `prompt->prompt_text` in `cosyvoice_prompt_init_from_prompt_speech`,
+///                                               empty when there is no reference audio)
 /// + tokenize(synthesis text)                  (text-embedded, real BPE tokenizer from this GGUF's own
 ///                                               non-llama.cpp-standard `tokenizer.vocab.*`/`tokenizer.model.merges` keys)
-/// + [task_token_id]                           (speech-embedded, real GGUF metadata "task_token_id" --
-///                                               becomes the seed token for the first autoregressive decode step)
+/// + [task_token_id]                           (speech-embedded, real GGUF metadata "task_token_id")
+/// + promptSpeechTokens                        (speech-embedded, the reference audio's OWN speech tokens --
+///                                               `prompt->llm_prompt_speech_tokens` -- empty when there is no
+///                                               reference audio. Real reference feeds all but the last one
+///                                               via `prefill_embedding` and treats the last as `cur` (the seed
+///                                               for the next decode step) purely as an artifact of its batched
+///                                               prefill API; functionally equivalent to just appending ALL of
+///                                               them here and reading the resulting logits, since either way
+///                                               the KV cache ends up holding the same sequence and the final
+///                                               position's logits predict the same next token.)
 /// </code>
+///
+/// Without this (the previous, simplified "cross-lingual"-only version of this method), the flow
+/// encoder was being asked to join two token streams that were never generated to be compatible:
+/// the reference audio's real prompt speech tokens (spliced in purely at the FLOW stage by
+/// <see cref="CosyVoice3Pipeline"/>) followed by speech tokens the LLM generated with zero
+/// awareness that ANY prompt/reference existed. Conditioning the LLM itself on
+/// `promptText`/`promptSpeechTokens` here makes its own continuation actually match what
+/// `CosyVoice3Pipeline` splices in front of it.
 ///
 /// Every id above is fed through <see cref="CosyVoice3LlmTensorSource.EnableSpeechGenerationMode"/>'s
 /// combined [text-vocab rows ; speech-vocab rows] embedding table via the ordinary integer
@@ -35,8 +52,10 @@ public static class CosyVoice3Llm
     /// <summary>
     /// Generates real speech token ids for the given synthesis text using the reference sampling
     /// pipeline from examples/cosyvoice.cpp (top_k=25, top_p=0.8, win_size=10, min_len=text_len*2).
+    /// <paramref name="promptText"/>/<paramref name="promptSpeechTokens"/> condition the LLM on a
+    /// real zero-shot voice-cloning reference (empty/null for plain, unconditioned synthesis).
     /// </summary>
-    public static int[] GenerateSpeechTokens(GgufModel rawModel, CosyVoice3LlmTensorSource source, string text, int maxNewTokens = 300)
+    public static int[] GenerateSpeechTokens(GgufModel rawModel, CosyVoice3LlmTensorSource source, string text, int maxNewTokens = 300, string? promptText = null, int[]? promptSpeechTokens = null)
     {
         var tokenizer = BuildTokenizer(rawModel);
         int sosTokenId = rawModel.GetMetadata("sos_token_id", 0);
@@ -44,28 +63,42 @@ public static class CosyVoice3Llm
 
         string instructionPrefix = rawModel.GetMetadata("cosyvoice.instruction_prefix", "You are a helpful assistant.");
         var prefixTokens = tokenizer.Encode(instructionPrefix);
+        var endOfPromptTokens = tokenizer.Encode("<|endofprompt|>");
+        var promptTextTokens = string.IsNullOrEmpty(promptText) ? [] : tokenizer.Encode(promptText);
         var textTokens = tokenizer.Encode(text);
+        promptSpeechTokens ??= [];
 
         var hp = ModelHyperparams.FromGgufMetadata(source.Metadata);
         using var backend = new CpuBackend();
         using var fwd = new ForwardPass(source, backend, hp);
 
-        var prefillIds = new List<int>(prefixTokens.Count + textTokens.Count + 2)
+        var prefillIds = new List<int>(prefixTokens.Count + endOfPromptTokens.Count + promptTextTokens.Count + textTokens.Count + promptSpeechTokens.Length + 2)
         {
             source.SpeechTokenIdOffset + sosTokenId
         };
         prefillIds.AddRange(prefixTokens);
+        prefillIds.AddRange(endOfPromptTokens);
+        prefillIds.AddRange(promptTextTokens);
         prefillIds.AddRange(textTokens);
         prefillIds.Add(source.SpeechTokenIdOffset + taskTokenId);
+        foreach (int t in promptSpeechTokens) prefillIds.Add(source.SpeechTokenIdOffset + t);
 
         var logits = fwd.Prefill(prefillIds).ToArray();
 
         var generated = new List<int>();
         int pos = prefillIds.Count;
-        int minLen = Math.Max(60, textTokens.Count * 6);
+        // Real reference (`llm_job_ext`'s `min_len`/`max_len`, `examples/cosyvoice.cpp`'s own
+        // printed run config): min_len = text_len * min_token_text_ratio(2.0), max_len = text_len
+        // * max_token_text_ratio(20.0) -- `text_len` is the NEW synthesis text's OWN token count
+        // (`textTokens`), NOT including promptText. The previous ad-hoc `max(60, textTokens*6)`
+        // formula didn't match this at all and made the model stop far too early (measured: 60
+        // tokens generated here vs. the reference's real 160 for the identical text+prompt).
+        int minLen = Math.Max(1, (int)(textTokens.Count * 2.0));
+        int maxLenFromRatio = (int)(textTokens.Count * 20.0);
+        int effectiveMaxNewTokens = maxLenFromRatio > 0 ? Math.Min(maxNewTokens, maxLenFromRatio) : maxNewTokens;
         var rng = new Random(42);
 
-        for (int step = 0; step < maxNewTokens; step++)
+        for (int step = 0; step < effectiveMaxNewTokens; step++)
         {
             int localId = SampleSpeechToken(logits, generated, allowStop: step >= minLen, rng);
 
@@ -80,6 +113,37 @@ public static class CosyVoice3Llm
         }
 
         return [.. generated];
+    }
+
+    /// <summary>TEST-SUPPORT ONLY: exposes the raw first-step logits (pre-softmax/top-k/top-p,
+    /// straight from ForwardPass.Prefill) for the same real prompt composition
+    /// GenerateSpeechTokens builds, to cross-check against the real C++ reference's own dumped
+    /// `COSY_DUMP_LLM_LOGITS_PATH` tensor for the identical input sequence.</summary>
+    internal static float[] GetFirstStepLogitsForTest(GgufModel rawModel, CosyVoice3LlmTensorSource source, string text, string? promptText, int[]? promptSpeechTokens)
+    {
+        var tokenizer = BuildTokenizer(rawModel);
+        int sosTokenId = rawModel.GetMetadata("sos_token_id", 0);
+        int taskTokenId = rawModel.GetMetadata("task_token_id", 0);
+        string instructionPrefix = rawModel.GetMetadata("cosyvoice.instruction_prefix", "You are a helpful assistant.");
+        var prefixTokens = tokenizer.Encode(instructionPrefix);
+        var endOfPromptTokens = tokenizer.Encode("<|endofprompt|>");
+        var promptTextTokens = string.IsNullOrEmpty(promptText) ? [] : tokenizer.Encode(promptText);
+        var textTokens = tokenizer.Encode(text);
+        promptSpeechTokens ??= [];
+
+        var hp = ModelHyperparams.FromGgufMetadata(source.Metadata);
+        using var backend = new CpuBackend();
+        using var fwd = new ForwardPass(source, backend, hp);
+
+        var prefillIds = new List<int> { source.SpeechTokenIdOffset + sosTokenId };
+        prefillIds.AddRange(prefixTokens);
+        prefillIds.AddRange(endOfPromptTokens);
+        prefillIds.AddRange(promptTextTokens);
+        prefillIds.AddRange(textTokens);
+        prefillIds.Add(source.SpeechTokenIdOffset + taskTokenId);
+        foreach (int t in promptSpeechTokens) prefillIds.Add(source.SpeechTokenIdOffset + t);
+
+        return fwd.Prefill(prefillIds).ToArray();
     }
 
     private static int SampleSpeechToken(float[] logits, List<int> pastTokens, bool allowStop, Random rng, int topK = 25, float topP = 0.8f, int winSize = 10)

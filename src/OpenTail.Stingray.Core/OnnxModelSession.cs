@@ -129,6 +129,43 @@ public sealed class OnnxModelSession : IDisposable
         return dict;
     }
 
+    /// <summary>
+    /// Executes the ONNX graph with arbitrary named input tensors and returns the first output
+    /// tensor as a flat int array (for graphs whose output is integer token/index IDs, e.g. a
+    /// speech tokenizer, rather than float logits/embeddings).
+    /// </summary>
+    public int[]? RunToIntArray(params (string Name, Array Data, int[] Shape)[] inputs)
+    {
+        if (_session == null || inputs.Length == 0) return null;
+
+        var onnxInputs = new List<NamedOnnxValue>(inputs.Length);
+        foreach (var (name, data, shape) in inputs)
+        {
+            if (_inputNames.Contains(name))
+            {
+                onnxInputs.Add(CreateNamedValue(name, data, shape));
+            }
+        }
+
+        if (onnxInputs.Count == 0) return null;
+
+        using var results = _session.Run(onnxInputs);
+        foreach (var r in results)
+        {
+            switch (r.Value)
+            {
+                case DenseTensor<int> di:
+                    return di.Buffer.ToArray();
+                case DenseTensor<long> dl:
+                    var arr = new int[dl.Buffer.Length];
+                    for (int i = 0; i < arr.Length; i++) arr[i] = checked((int)dl.Buffer.Span[i]);
+                    return arr;
+            }
+        }
+
+        return null;
+    }
+
     private static NamedOnnxValue CreateNamedValue(string name, Array data, int[] shape)
     {
         return data switch

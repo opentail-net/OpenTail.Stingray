@@ -253,60 +253,6 @@ public sealed class FishSpeechPipeline : IDisposable
         return (semanticTokens, codebooksPerFrame);
     }
 
-    /// <summary>
-    /// TEST-SUPPORT ONLY: forces semantic tokens from a reference trajectory through slow-AR + fast-AR.
-    /// </summary>
-    public (List<int> SemanticTokens, List<int[]> CodebooksPerFrame) ForceGenerateFrames(string text, int[] forcedSemanticCodes)
-    {
-        var prompt = BuildPrompt(text);
-        _fwd.ResetCache();
-        _fwd.SkipOutputProjection = true;
-        _fwd.Prefill(prompt);
-        int pos = prompt.Count;
-
-        int semBegin = _weights.SemanticBeginId;
-        var semanticTokens = new List<int>();
-        var codebooksPerFrame = new List<int[]>();
-        float[] hidden = GetNormedHidden(pos - 1);
-
-        for (int step = 0; step < forcedSemanticCodes.Length; step++)
-        {
-            int semCode = forcedSemanticCodes[step];
-            int mainToken = semBegin + semCode;
-            semanticTokens.Add(semCode);
-
-            var codebookValues = new int[_weights.NumCodebooks];
-            codebookValues[0] = semCode;
-            _fastArCache.Reset();
-            FishSpeechFastAr.ForwardStep(_weights, _fastArCache, hidden);
-            var stepLogits = FishSpeechFastAr.ForwardStep(_weights, _fastArCache, FishSpeechFastAr.EmbedFastToken(_weights, semCode));
-            for (int cb = 1; cb < _weights.NumCodebooks; cb++)
-            {
-                int cbToken = ArgmaxLocal(stepLogits);
-                codebookValues[cb] = cbToken;
-                if (cb < _weights.NumCodebooks - 1)
-                    stepLogits = FishSpeechFastAr.ForwardStep(_weights, _fastArCache, FishSpeechFastAr.EmbedFastToken(_weights, cbToken));
-            }
-            codebooksPerFrame.Add(codebookValues);
-
-            var emb = EmbedSemanticToken(mainToken, codebookValues);
-            _fwd.ForwardEmbedding(emb, pos);
-            pos++;
-            hidden = GetNormedHidden(pos - 1);
-        }
-
-        return (semanticTokens, codebooksPerFrame);
-    }
-
-    private static int ArgmaxLocal(ReadOnlySpan<float> logits)
-    {
-        int idx = 0;
-        float max = logits[0];
-        for (int i = 1; i < logits.Length; i++)
-            if (logits[i] > max) { max = logits[i]; idx = i; }
-        return idx;
-    }
-
     private unsafe int SampleCandidateToken(float[] normedHidden, int semBegin, int semEnd, int imEndId, float temperature, float topP, int topK, Random rng)
     {
         int semCount = semEnd - semBegin + 1;

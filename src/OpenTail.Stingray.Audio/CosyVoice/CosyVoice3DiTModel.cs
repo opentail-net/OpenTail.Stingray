@@ -41,20 +41,17 @@ public static class CosyVoice3DiTModel
     }
 
     /// <summary>
-    /// Real Euler-integrated CFM ODE solve (`CausalConditionalCFM::build_cgraph_one_step`,
-    /// `get_t_and_dt` in `cosyvoice-graph.cpp`/`cosyvoice-loader.cpp`): starts from Gaussian
+    /// Real Euler-integrated CFM ODE solve (<c>CausalConditionalCFM::build_cgraph_one_step</c>,
+    /// <c>get_t_and_dt</c> in <c>cosyvoice-graph.cpp</c>/<c>cosyvoice-loader.cpp</c>): starts from Gaussian
     /// noise and integrates the DiT's predicted velocity field over the real 10-step cosine
-    /// schedule `t_span[i] = 1 - cos(0.05*pi*i)` for `i=0..10` (11 points, 10 real Euler steps --
-    /// matches the codebase's pre-existing `CosyVoiceFlowConfig.DefaultOdeSteps=10`).
+    /// schedule <c>t_span[i] = 1 - cos(0.05*pi*i)</c> for <c>i=0..10</c> (11 points, 10 real Euler steps).
     ///
-    /// <para><b>Real, deliberate simplification flagged</b>: the real reference additionally
-    /// runs classifier-free guidance (a second unconditional forward pass per step, combined via
-    /// `dphi_dt*(1+cfg_rate) - cfg_dphi_dt*cfg_rate`, `cfg_rate=0.7`) -- omitted here for a first
-    /// working pass (doubles DiT compute per step for a refinement, not a correctness
-    /// requirement of the ODE solve itself). `cond`/`mu`/`spks` are otherwise the real
-    /// conditioning tensors this class's own doc comment already confirmed.</para>
+    /// <para>Applies Classifier-Free Guidance (CFG) matching <c>cosyvoice-graph.cpp:529-533</c>:
+    /// evaluates both conditional velocity <c>dphiDt</c> (with <paramref name="cond"/>, <paramref name="mu"/>, <paramref name="spks"/>)
+    /// and unconditional velocity <c>cfgDphiDt</c> (with zero conditioning), combined via
+    /// <c>dphi_dt = (1 + cfg_rate) * dphi_dt - cfg_rate * cfg_dphi_dt</c> with <paramref name="cfgRate"/> (default 0.7).</para>
     /// </summary>
-    public static float[] SolveFlowMatchingOde(CosyVoice3DiTWeights w, float[] cond, float[] mu, float[] spks, int numFrames, int odeSteps, Random rng)
+    public static float[] SolveFlowMatchingOde(CosyVoice3DiTWeights w, float[] cond, float[] mu, float[] spks, int numFrames, int odeSteps, Random rng, float cfgRate = 0.7f)
     {
         int melLen = numFrames * CosyVoice3DiTWeights.MelDim;
         var tSpan = new float[odeSteps + 1];
@@ -65,14 +62,34 @@ public static class CosyVoice3DiTModel
         for (int i = 0; i < melLen; i++)
             x[i] = (float)(NextGaussian(rng));
 
+        float[]? zeroCond = null;
+        if (cfgRate > 0f)
+        {
+            zeroCond = new float[melLen]; // Shared all-zero buffer for unconditional cond, mu, spks
+        }
+
         for (int step = 1; step <= odeSteps; step++)
         {
             float t = tSpan[step - 1];
             float dt = tSpan[step] - tSpan[step - 1];
 
             var dphiDt = ForwardVelocity(w, x, cond, mu, spks, t, numFrames);
-            for (int i = 0; i < melLen; i++)
-                x[i] += dt * dphiDt[i];
+
+            if (cfgRate > 0f && zeroCond != null)
+            {
+                var cfgDphiDt = ForwardVelocity(w, x, zeroCond, zeroCond, zeroCond, t, numFrames);
+                float condScale = 1f + cfgRate;
+                for (int i = 0; i < melLen; i++)
+                {
+                    float v = condScale * dphiDt[i] - cfgRate * cfgDphiDt[i];
+                    x[i] += dt * v;
+                }
+            }
+            else
+            {
+                for (int i = 0; i < melLen; i++)
+                    x[i] += dt * dphiDt[i];
+            }
         }
 
         return x;
@@ -137,14 +154,48 @@ public static class CosyVoice3DiTModel
         int hidden = CosyVoice3DiTWeights.HiddenDim;
         var h = F5Kernels.Linear(concatInput, numFrames, concatDim, w.InputProjWeight, w.InputProjBias, hidden);
 
-        var pos = F5Kernels.GroupedConv1dSamePad(h, numFrames, hidden, w.ConvPos1Weight, w.ConvPos1Bias, CosyVoice3DiTWeights.ConvPosKernel, CosyVoice3DiTWeights.ConvPosGroups);
+        var pos = CausalGroupedConv1d(h, numFrames, hidden, w.ConvPos1Weight, w.ConvPos1Bias, CosyVoice3DiTWeights.ConvPosKernel, CosyVoice3DiTWeights.ConvPosGroups);
         for (int i = 0; i < pos.Length; i++) pos[i] = F5Kernels.Mish(pos[i]);
-        pos = F5Kernels.GroupedConv1dSamePad(pos, numFrames, hidden, w.ConvPos2Weight, w.ConvPos2Bias, CosyVoice3DiTWeights.ConvPosKernel, CosyVoice3DiTWeights.ConvPosGroups);
+        pos = CausalGroupedConv1d(pos, numFrames, hidden, w.ConvPos2Weight, w.ConvPos2Bias, CosyVoice3DiTWeights.ConvPosKernel, CosyVoice3DiTWeights.ConvPosGroups);
         for (int i = 0; i < pos.Length; i++) pos[i] = F5Kernels.Mish(pos[i]);
 
         var output = new float[h.Length];
         for (int i = 0; i < output.Length; i++) output[i] = h[i] + pos[i];
         return output;
+    }
+
+    /// <summary>
+    /// Causal grouped 1D convolution matching <c>cosyvoice-graph.cpp:269</c>: left-pads by <c>kernel - 1</c> (30 frames),
+    /// so the convolution is strictly causal and only consumes current and past frames (no future lookahead).
+    /// </summary>
+    public static float[] CausalGroupedConv1d(float[] x, int t, int dim, float[] weight, float[] bias, int kernel, int groups)
+    {
+        int pad = kernel - 1;
+        int inPerGroup = dim / groups;
+        int outPerGroup = dim / groups;
+        var y = new float[t * dim];
+        Parallel.For(0, dim, oc =>
+        {
+            int group = oc / outPerGroup;
+            int inBase = group * inPerGroup;
+            int wBase = oc * inPerGroup * kernel;
+            for (int ti = 0; ti < t; ti++)
+            {
+                float sum = bias[oc];
+                for (int ic = 0; ic < inPerGroup; ic++)
+                {
+                    int wcBase = wBase + ic * kernel;
+                    int srcCh = inBase + ic;
+                    for (int k = 0; k < kernel; k++)
+                    {
+                        int src = ti - pad + k;
+                        if ((uint)src < (uint)t) sum += weight[wcBase + k] * x[src * dim + srcCh];
+                    }
+                }
+                y[ti * dim + oc] = sum;
+            }
+        });
+        return y;
     }
 
     private static float[] TimestepEmbedding(CosyVoice3DiTWeights w, float timestep)
@@ -233,8 +284,36 @@ public static class CosyVoice3DiTModel
         int dim = CosyVoice3DiTWeights.HiddenDim;
         int ffn = CosyVoice3DiTWeights.FfnDim;
         var h = F5Kernels.Linear(x, t, dim, bw.FfInWeight, bw.FfInBias, ffn);
-        for (int i = 0; i < h.Length; i++) h[i] = F5Kernels.GeluTanh(h[i]);
+        for (int i = 0; i < h.Length; i++) h[i] = GeluErf(h[i]);
         return F5Kernels.Linear(h, t, ffn, bw.FfOutWeight, bw.FfOutBias, dim);
+    }
+
+    /// <summary>
+    /// Exact erf-based GELU matching <c>cosyvoice-graph.cpp:403</c> (<c>ggml_gelu_erf</c>).
+    /// </summary>
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+    private static float GeluErf(float x)
+    {
+        return 0.5f * x * (1.0f + Erff(x * 0.7071067811865475f));
+    }
+
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+    private static float Erff(float x)
+    {
+        float a1 = 0.254829592f;
+        float a2 = -0.284496736f;
+        float a3 = 1.421413741f;
+        float a4 = -1.453152027f;
+        float a5 = 1.061405429f;
+        float p = 0.3275911f;
+
+        float sign = x < 0 ? -1f : 1f;
+        x = MathF.Abs(x);
+
+        float t = 1.0f / (1.0f + p * x);
+        float y = 1.0f - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * MathF.Exp(-x * x);
+
+        return sign * y;
     }
 
     /// <summary>See <see cref="F5Kernels.ApplyRotary"/>/<see cref="F5Kernels.MultiHeadSelfAttention"/> (shared with F5-TTS's tensor-for-tensor-identical DiT).</summary>
