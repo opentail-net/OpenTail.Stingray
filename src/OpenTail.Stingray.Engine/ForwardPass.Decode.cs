@@ -496,23 +496,26 @@ public sealed unsafe partial class ForwardPass
         float postFinalNorm = _traceNorms ? L2Norm(_hidden, _embDim) : 0f;
 
         // 4. Output projection → logits (fused, no 400MB intermediate buffer)
-        long logitsStart = profDecode ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
-        FusedMatVec(_logits, _outputWeight, _hidden, _hp.VocabSize, _embDim);
-        if (profDecode) DecodeProfileTimers.Add(DecodeProfileTimers.Category.OutProj, System.Diagnostics.Stopwatch.GetTimestamp() - logitsStart);
+        if (!SkipOutputProjection)
+        {
+            long logitsStart = profDecode ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
+            FusedMatVec(_logits, _outputWeight, _hidden, _hp.VocabSize, _embDim);
+            if (profDecode) DecodeProfileTimers.Add(DecodeProfileTimers.Category.OutProj, System.Diagnostics.Stopwatch.GetTimestamp() - logitsStart);
 
-        // Granite/MiniCPM final-logit scale (already carries llama.cpp's 1/f_logit_scale
-        // reciprocal — see ModelHyperparams.LogitScale).
-        if (_hp.LogitScale != 1f)
-            SimdKernels.ScaleInPlace(_logits, _hp.LogitScale, _hp.VocabSize);
+            // Granite/MiniCPM final-logit scale (already carries llama.cpp's 1/f_logit_scale
+            // reciprocal — see ModelHyperparams.LogitScale).
+            if (_hp.LogitScale != 1f)
+                SimdKernels.ScaleInPlace(_logits, _hp.LogitScale, _hp.VocabSize);
 
-        // Gemma 4 final-logit softcap: x = tanh(x/cap) * cap.
-        if (_hp.FinalLogitSoftcap > 0f)
-            SimdKernels.SoftcapInPlace(_logits, _hp.VocabSize, _hp.FinalLogitSoftcap);
+            // Gemma 4 final-logit softcap: x = tanh(x/cap) * cap.
+            if (_hp.FinalLogitSoftcap > 0f)
+                SimdKernels.SoftcapInPlace(_logits, _hp.VocabSize, _hp.FinalLogitSoftcap);
+        }
 
         if (_traceNorms)
             EmitNormTrace(traceToken, position, embNorm, preFinalNorm, postFinalNorm);
 
-        return new ReadOnlySpan<float>(_logits, _hp.VocabSize);
+        return SkipOutputProjection ? ReadOnlySpan<float>.Empty : new ReadOnlySpan<float>(_logits, _hp.VocabSize);
     }
 
     private void ApplyRope(float* x, int pos, int heads)

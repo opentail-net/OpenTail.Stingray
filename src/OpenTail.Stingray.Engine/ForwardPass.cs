@@ -22,6 +22,12 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
     private readonly int _ctxLen; // scratch buffer sizing (attnScores, TurboQuant)
     private bool _disposed;
 
+    /// <summary>
+    /// When true, <see cref="RunTrunk"/> skips the final vocabulary projection (<c>FusedMatVec</c>).
+    /// Used by specialized pipelines (e.g. Fish Speech) that slice only a small sub-vocabulary.
+    /// </summary>
+    public bool SkipOutputProjection { get; set; }
+
     // GGUF control/user-defined token IDs, when the model carries the optional tokenizer type
     // table. An all-control prompt is structurally unlike normal text and is a numerically hostile
     // input for activation Q8 prefill; PrefillDispatch keeps that narrow case on the sequential

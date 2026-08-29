@@ -182,16 +182,8 @@ public sealed class FishSpeechPipeline : IDisposable
         var rng = new Random(seed ?? 42);
         var prompt = BuildPrompt(text);
         _fwd.ResetCache();
+        _fwd.SkipOutputProjection = false;
 
-        // Every prompt position is plain text (BuildPrompt never emits a semantic/codebook
-        // token), so EmbedTextToken's per-position embedding reduces to the SAME plain embedding-
-        // table lookup ForwardPass's own batched Prefill already does internally (see
-        // EmbedTextToken's doc comment: "token_scale = 1.0 for non-semantic positions -- no-op").
-        // Feeding the whole prompt through one batched Prefill call instead of a sequential
-        // per-token ForwardEmbedding loop is numerically identical but lets the engine batch the
-        // matmuls across positions instead of redoing full single-token decode overhead per
-        // prompt token -- measured this session's performance pass as the dominant remaining cost
-        // after the fast-AR KV cache fix (see docs/audio-review-progress.md).
         var logits = _fwd.Prefill(prompt);
         int pos = prompt.Count;
 
@@ -209,10 +201,14 @@ public sealed class FishSpeechPipeline : IDisposable
         int mainToken = SampleMasked(logits, semBegin, semEnd, _imEndId, defaultTemp, defaultTopP, defaultTopK, rng);
         float[] hidden = GetNormedHidden(pos - 1);
 
+        // For all subsequent decode steps, skip full 155,776-row LM head projection in ForwardPass
+        // and compute candidate dot products directly for the 4,097 valid tokens (38x faster).
+        _fwd.SkipOutputProjection = true;
+
         for (int step = 0; step < maxTokens && mainToken != _imEndId; step++)
         {
             if (rasWindow.Contains(mainToken) && mainToken >= semBegin && mainToken <= semEnd)
-                mainToken = SampleMasked(logits, semBegin, semEnd, _imEndId, rasHighTemp, rasHighTopP, defaultTopK, rng);
+                mainToken = SampleCandidateToken(hidden, semBegin, semEnd, _imEndId, rasHighTemp, rasHighTopP, defaultTopK, rng);
 
             rasWindow.Enqueue(mainToken);
             if (rasWindow.Count > rasWindowSize) rasWindow.Dequeue();
@@ -239,11 +235,11 @@ public sealed class FishSpeechPipeline : IDisposable
             codebooksPerFrame.Add(codebookValues);
 
             var emb = EmbedSemanticToken(mainToken, codebookValues);
-            logits = _fwd.ForwardEmbedding(emb, pos);
+            _fwd.ForwardEmbedding(emb, pos);
             pos++;
             hidden = GetNormedHidden(pos - 1);
 
-            mainToken = SampleMasked(logits, semBegin, semEnd, _imEndId, defaultTemp, defaultTopP, defaultTopK, rng);
+            mainToken = SampleCandidateToken(hidden, semBegin, semEnd, _imEndId, defaultTemp, defaultTopP, defaultTopK, rng);
         }
 
         return (semanticTokens, codebooksPerFrame);
@@ -256,6 +252,7 @@ public sealed class FishSpeechPipeline : IDisposable
     {
         var prompt = BuildPrompt(text);
         _fwd.ResetCache();
+        _fwd.SkipOutputProjection = true;
         _fwd.Prefill(prompt);
         int pos = prompt.Count;
 
@@ -302,16 +299,83 @@ public sealed class FishSpeechPipeline : IDisposable
         return idx;
     }
 
-    private static int ArgmaxMasked(ReadOnlySpan<float> logits, int semBegin, int semEnd, int imEndId)
+    private unsafe int SampleCandidateToken(float[] normedHidden, int semBegin, int semEnd, int imEndId, float temperature, float topP, int topK, Random rng)
     {
-        int best = -1;
-        float bestVal = float.NegativeInfinity;
-        for (int i = semBegin; i <= semEnd && i < logits.Length; i++)
+        int semCount = semEnd - semBegin + 1;
+        int totalCandidates = semCount + 1;
+        var candidateLogits = new float[totalCandidates];
+        var candidateIds = new int[totalCandidates];
+
+        fixed (float* embPtr = _weights.Embeddings, hPtr = normedHidden, logitPtr = candidateLogits)
+        fixed (int* idPtr = candidateIds)
         {
-            if (logits[i] > bestVal) { bestVal = logits[i]; best = i; }
+            var embPtrLocal = embPtr;
+            var hPtrLocal = hPtr;
+            var logitPtrLocal = logitPtr;
+            var idPtrLocal = idPtr;
+            int dim = _weights.EmbeddingDim;
+
+            Parallel.For(0, semCount, i =>
+            {
+                int tokId = semBegin + i;
+                idPtrLocal[i] = tokId;
+                logitPtrLocal[i] = SimdKernels.DotF32(hPtrLocal, embPtrLocal + (long)tokId * dim, dim);
+            });
+
+            idPtrLocal[semCount] = imEndId;
+            logitPtrLocal[semCount] = SimdKernels.DotF32(hPtrLocal, embPtrLocal + (long)imEndId * dim, dim);
         }
-        if (imEndId < logits.Length && logits[imEndId] > bestVal) { best = imEndId; }
-        return best;
+
+        return SampleIndexedToken(candidateLogits, candidateIds, temperature, topP, topK, rng);
+    }
+
+    private static int SampleIndexedToken(ReadOnlySpan<float> logits, ReadOnlySpan<int> tokenIds, float temperature, float topP, int topK, Random rng)
+    {
+        int n = logits.Length;
+        var logitsArr = logits.ToArray();
+        var order = new int[n];
+        for (int i = 0; i < n; i++) order[i] = i;
+        Array.Sort(order, (a, b) => logitsArr[b].CompareTo(logitsArr[a]));
+
+        float max = logitsArr[order[0]];
+        var sortedProbs = new float[n];
+        float sum = 0f;
+        for (int i = 0; i < n; i++) { sortedProbs[i] = MathF.Exp(logitsArr[order[i]] - max); sum += sortedProbs[i]; }
+        if (sum > 0f) for (int i = 0; i < n; i++) sortedProbs[i] /= sum;
+
+        int k = topK > 0 ? Math.Min(topK, n) : n;
+        float p = Math.Clamp(topP, 0f, 1f);
+
+        var kept = new List<int>();
+        float cumsum = 0f;
+        for (int i = 0; i < n; i++)
+        {
+            cumsum += sortedProbs[i];
+            bool removeForTopK = i >= k;
+            bool removeForTopP = i > 0 && cumsum > p;
+            if (removeForTopK || removeForTopP) continue;
+            kept.Add(order[i]);
+        }
+        if (kept.Count == 0) kept.Add(order[0]);
+
+        if (temperature <= 0f) return tokenIds[kept[0]];
+
+        var probs = new float[kept.Count];
+        float keptMax = float.NegativeInfinity;
+        for (int i = 0; i < kept.Count; i++) if (logitsArr[kept[i]] > keptMax) keptMax = logitsArr[kept[i]];
+        float keptSum = 0f;
+        for (int i = 0; i < kept.Count; i++) { probs[i] = MathF.Exp((logitsArr[kept[i]] - keptMax) / temperature); keptSum += probs[i]; }
+        if (keptSum <= 0f) return tokenIds[kept[0]];
+        for (int i = 0; i < probs.Length; i++) probs[i] /= keptSum;
+
+        double r = rng.NextDouble();
+        double acc = 0;
+        for (int i = 0; i < probs.Length; i++)
+        {
+            acc += probs[i];
+            if (r < acc) return tokenIds[kept[i]];
+        }
+        return tokenIds[kept[^1]];
     }
 
     /// <summary>RAS escape-hatch only: applies the real `-inf`-outside-`[semBegin,semEnd]` (plus `im_end`) mask, then <see cref="SampleToken"/>.</summary>
