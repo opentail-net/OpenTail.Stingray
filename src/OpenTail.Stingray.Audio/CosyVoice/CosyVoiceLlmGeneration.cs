@@ -65,7 +65,7 @@ public static class CosyVoiceLlmGeneration
 
         promptSpeechTokens ??= [];
 
-        var hp = ModelHyperparams.FromGgufMetadata(source.Metadata);
+        var hp = ModelHyperparams.FromGgufMetadata(source.Metadata, source);
         using var backend = new Cpu.CpuBackend();
         using var fwd = new ForwardPass(source, backend, hp);
 
