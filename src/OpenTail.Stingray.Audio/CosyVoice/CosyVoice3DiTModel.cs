@@ -33,10 +33,16 @@ public static class CosyVoice3DiTModel
     /// speaker vector across all frames before calling). Returns predicted velocity,
     /// [numFrames, MelDim].
     /// </summary>
-    public static float[] ForwardVelocity(CosyVoice3DiTWeights w, float[] x, float[] cond, float[] mu, float[] spks, float timestep, int numFrames)
+    public static float[] ForwardVelocity(CosyVoice3DiTWeights w, float[] x, float[] cond, float[] mu, float[] spks, float timestep, int numFrames, float[] rotaryCos, float[] rotarySin)
     {
         var h = InputEmbed(w, x, cond, mu, spks, numFrames);
-        return RunBackbone(w, h, timestep, numFrames);
+        return RunBackbone(w, h, timestep, numFrames, rotaryCos, rotarySin);
+    }
+
+    public static float[] ForwardVelocity(CosyVoice3DiTWeights w, float[] x, float[] cond, float[] mu, float[] spks, float timestep, int numFrames)
+    {
+        var (rotaryCos, rotarySin) = F5RotaryEmbedding.Precompute(RotaryInvFreq(), numFrames);
+        return ForwardVelocity(w, x, cond, mu, spks, timestep, numFrames, rotaryCos, rotarySin);
     }
 
     /// <summary>
@@ -50,7 +56,7 @@ public static class CosyVoice3DiTModel
     /// and unconditional velocity <c>cfgDphiDt</c> (with zero conditioning), combined via
     /// <c>dphi_dt = (1 + cfg_rate) * dphi_dt - cfg_rate * cfg_dphi_dt</c> with <paramref name="cfgRate"/> (default 0.7).</para>
     /// </summary>
-    public static float[] SolveFlowMatchingOde(CosyVoice3DiTWeights w, float[] cond, float[] mu, float[] spks, int numFrames, int odeSteps, Random rng, float cfgRate = 0.7f)
+    public static unsafe float[] SolveFlowMatchingOde(CosyVoice3DiTWeights w, float[] cond, float[] mu, float[] spks, int numFrames, int odeSteps, Random rng, float cfgRate = 0.7f)
     {
         int melLen = numFrames * CosyVoice3DiTWeights.MelDim;
         var tSpan = new float[odeSteps + 1];
@@ -67,27 +73,64 @@ public static class CosyVoice3DiTModel
             zeroCond = new float[melLen]; // Shared all-zero buffer for unconditional cond, mu, spks
         }
 
+        var (rotaryCos, rotarySin) = F5RotaryEmbedding.Precompute(RotaryInvFreq(), numFrames);
+
         for (int step = 1; step <= odeSteps; step++)
         {
             float t = tSpan[step - 1];
             float dt = tSpan[step] - tSpan[step - 1];
 
-            var dphiDt = ForwardVelocity(w, x, cond, mu, spks, t, numFrames);
-
             if (cfgRate > 0f && zeroCond != null)
             {
-                var cfgDphiDt = ForwardVelocity(w, x, zeroCond, zeroCond, zeroCond, t, numFrames);
+                float[] dphiDt = null!;
+                float[] cfgDphiDt = null!;
+                Parallel.Invoke(
+                    () => dphiDt = ForwardVelocity(w, x, cond, mu, spks, t, numFrames, rotaryCos, rotarySin),
+                    () => cfgDphiDt = ForwardVelocity(w, x, zeroCond, zeroCond, zeroCond, t, numFrames, rotaryCos, rotarySin)
+                );
+
                 float condScale = 1f + cfgRate;
-                for (int i = 0; i < melLen; i++)
+                fixed (float* xp = x, dp = dphiDt, cp = cfgDphiDt)
                 {
-                    float v = condScale * dphiDt[i] - cfgRate * cfgDphiDt[i];
-                    x[i] += dt * v;
+                    int i = 0;
+                    int vecSize = System.Numerics.Vector<float>.Count;
+                    var vDt = new System.Numerics.Vector<float>(dt);
+                    var vCondScale = new System.Numerics.Vector<float>(condScale);
+                    var vCfgRate = new System.Numerics.Vector<float>(cfgRate);
+                    for (; i <= melLen - vecSize; i += vecSize)
+                    {
+                        var vx = new System.Numerics.Vector<float>(new ReadOnlySpan<float>(xp + i, vecSize));
+                        var vd = new System.Numerics.Vector<float>(new ReadOnlySpan<float>(dp + i, vecSize));
+                        var vc = new System.Numerics.Vector<float>(new ReadOnlySpan<float>(cp + i, vecSize));
+                        var vv = vCondScale * vd - vCfgRate * vc;
+                        var vRes = vx + vDt * vv;
+                        vRes.CopyTo(new Span<float>(xp + i, vecSize));
+                    }
+                    for (; i < melLen; i++)
+                    {
+                        float v = condScale * dp[i] - cfgRate * cp[i];
+                        xp[i] += dt * v;
+                    }
                 }
             }
             else
             {
-                for (int i = 0; i < melLen; i++)
-                    x[i] += dt * dphiDt[i];
+                var dphiDt = ForwardVelocity(w, x, cond, mu, spks, t, numFrames, rotaryCos, rotarySin);
+                fixed (float* xp = x, dp = dphiDt)
+                {
+                    int i = 0;
+                    int vecSize = System.Numerics.Vector<float>.Count;
+                    var vDt = new System.Numerics.Vector<float>(dt);
+                    for (; i <= melLen - vecSize; i += vecSize)
+                    {
+                        var vx = new System.Numerics.Vector<float>(new ReadOnlySpan<float>(xp + i, vecSize));
+                        var vd = new System.Numerics.Vector<float>(new ReadOnlySpan<float>(dp + i, vecSize));
+                        var vRes = vx + vDt * vd;
+                        vRes.CopyTo(new Span<float>(xp + i, vecSize));
+                    }
+                    for (; i < melLen; i++)
+                        xp[i] += dt * dp[i];
+                }
             }
         }
 
@@ -98,16 +141,15 @@ public static class CosyVoice3DiTModel
     {
         double u1 = 1.0 - rng.NextDouble();
         double u2 = rng.NextDouble();
-        return Math.Sqrt(-2.0 * Math.Log(u1)) * Math.Sin(2.0 * Math.PI * u2);
+        return Math.Sqrt(-2.0 * Math.Log(u1)) * Math.Cos(2.0 * Math.PI * u2);
     }
 
     /// <summary>h is the already-embedded hidden state [numFrames, HiddenDim] (post input_embed -- see this class's doc comment for what's NOT yet implemented upstream of this call). Returns the predicted velocity in mel-space [numFrames, MelDim].</summary>
-    public static float[] RunBackbone(CosyVoice3DiTWeights w, float[] h, float timestep, int numFrames)
+    public static float[] RunBackbone(CosyVoice3DiTWeights w, float[] h, float timestep, int numFrames, float[] rotaryCos, float[] rotarySin)
     {
         int dim = CosyVoice3DiTWeights.HiddenDim;
 
         var tEmb = TimestepEmbedding(w, timestep);
-        var (rotaryCos, rotarySin) = F5RotaryEmbedding.Precompute(RotaryInvFreq(), numFrames);
 
         for (int layer = 0; layer < w.NumLayers; layer++)
             h = DiTBlock(w.Blocks[layer], h, tEmb, numFrames, rotaryCos, rotarySin);
@@ -121,13 +163,15 @@ public static class CosyVoice3DiTModel
         Array.Copy(modulation, dim, shift, 0, dim);
 
         var normOut = F5Kernels.LayerNormNoAffine(h, numFrames, dim);
-        for (int ti = 0; ti < numFrames; ti++)
-        {
-            int off = ti * dim;
-            for (int d = 0; d < dim; d++) normOut[off + d] = normOut[off + d] * (1f + scale[d]) + shift[d];
-        }
+        ApplyAffineModulation(normOut, normOut, scale, shift, numFrames, dim);
 
         return F5Kernels.Linear(normOut, numFrames, dim, w.ProjOutWeight, w.ProjOutBias, CosyVoice3DiTWeights.MelDim);
+    }
+
+    public static float[] RunBackbone(CosyVoice3DiTWeights w, float[] h, float timestep, int numFrames)
+    {
+        var (rotaryCos, rotarySin) = F5RotaryEmbedding.Precompute(RotaryInvFreq(), numFrames);
+        return RunBackbone(w, h, timestep, numFrames, rotaryCos, rotarySin);
     }
 
     /// <summary>
@@ -245,37 +289,78 @@ public static class CosyVoice3DiTModel
         Array.Copy(modulation, 5 * dim, gateMlp, 0, dim);
 
         var norm = F5Kernels.LayerNormNoAffine(x, t, dim);
-        for (int ti = 0; ti < t; ti++)
-        {
-            int off = ti * dim;
-            for (int d = 0; d < dim; d++) norm[off + d] = norm[off + d] * (1f + scaleMsa[d]) + shiftMsa[d];
-        }
+        ApplyAffineModulation(norm, norm, scaleMsa, shiftMsa, t, dim);
 
         var attnOut = Attention(bw, norm, t, rotaryCos, rotarySin);
 
         var xAfterAttn = new float[x.Length];
-        for (int ti = 0; ti < t; ti++)
-        {
-            int off = ti * dim;
-            for (int d = 0; d < dim; d++) xAfterAttn[off + d] = x[off + d] + gateMsa[d] * attnOut[off + d];
-        }
+        ApplyGatedResidual(xAfterAttn, x, gateMsa, attnOut, t, dim);
 
         var ffNorm = F5Kernels.LayerNormNoAffine(xAfterAttn, t, dim);
-        for (int ti = 0; ti < t; ti++)
-        {
-            int off = ti * dim;
-            for (int d = 0; d < dim; d++) ffNorm[off + d] = ffNorm[off + d] * (1f + scaleMlp[d]) + shiftMlp[d];
-        }
+        ApplyAffineModulation(ffNorm, ffNorm, scaleMlp, shiftMlp, t, dim);
 
         var ffOut = FeedForward(bw, ffNorm, t);
 
         var output = new float[x.Length];
-        for (int ti = 0; ti < t; ti++)
-        {
-            int off = ti * dim;
-            for (int d = 0; d < dim; d++) output[off + d] = xAfterAttn[off + d] + gateMlp[d] * ffOut[off + d];
-        }
+        ApplyGatedResidual(output, xAfterAttn, gateMlp, ffOut, t, dim);
         return output;
+    }
+
+    private static unsafe void ApplyAffineModulation(float[] dst, float[] src, float[] scale, float[] shift, int t, int dim)
+    {
+        int vecSize = System.Numerics.Vector<float>.Count;
+        fixed (float* dp = dst, sp = src, scp = scale, shp = shift)
+        {
+            float* dpLocal = dp;
+            float* spLocal = sp;
+            float* scpLocal = scp;
+            float* shpLocal = shp;
+            Parallel.For(0, t, ti =>
+            {
+                int off = ti * dim;
+                float* dRow = dpLocal + off;
+                float* sRow = spLocal + off;
+                int d = 0;
+                for (; d <= dim - vecSize; d += vecSize)
+                {
+                    var vs = new System.Numerics.Vector<float>(new ReadOnlySpan<float>(sRow + d, vecSize));
+                    var vScale = new System.Numerics.Vector<float>(new ReadOnlySpan<float>(scpLocal + d, vecSize));
+                    var vShift = new System.Numerics.Vector<float>(new ReadOnlySpan<float>(shpLocal + d, vecSize));
+                    var vr = vs * (System.Numerics.Vector<float>.One + vScale) + vShift;
+                    vr.CopyTo(new Span<float>(dRow + d, vecSize));
+                }
+                for (; d < dim; d++) dRow[d] = sRow[d] * (1f + scpLocal[d]) + shpLocal[d];
+            });
+        }
+    }
+
+    private static unsafe void ApplyGatedResidual(float[] dst, float[] residual, float[] gate, float[] update, int t, int dim)
+    {
+        int vecSize = System.Numerics.Vector<float>.Count;
+        fixed (float* dp = dst, rp = residual, gp = gate, up = update)
+        {
+            float* dpLocal = dp;
+            float* rpLocal = rp;
+            float* gpLocal = gp;
+            float* upLocal = up;
+            Parallel.For(0, t, ti =>
+            {
+                int off = ti * dim;
+                float* dRow = dpLocal + off;
+                float* rRow = rpLocal + off;
+                float* uRow = upLocal + off;
+                int d = 0;
+                for (; d <= dim - vecSize; d += vecSize)
+                {
+                    var vr = new System.Numerics.Vector<float>(new ReadOnlySpan<float>(rRow + d, vecSize));
+                    var vg = new System.Numerics.Vector<float>(new ReadOnlySpan<float>(gpLocal + d, vecSize));
+                    var vu = new System.Numerics.Vector<float>(new ReadOnlySpan<float>(uRow + d, vecSize));
+                    var vRes = vr + vg * vu;
+                    vRes.CopyTo(new Span<float>(dRow + d, vecSize));
+                }
+                for (; d < dim; d++) dRow[d] = rRow[d] + gpLocal[d] * uRow[d];
+            });
+        }
     }
 
     private static float[] FeedForward(CosyVoice3DiTBlockWeights bw, float[] x, int t)

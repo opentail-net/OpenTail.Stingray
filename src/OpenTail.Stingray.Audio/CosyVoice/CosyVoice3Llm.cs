@@ -80,7 +80,7 @@ public static class CosyVoice3Llm
         prefillIds.Add(source.SpeechTokenIdOffset + taskTokenId);
         foreach (int t in promptSpeechTokens) prefillIds.Add(source.SpeechTokenIdOffset + t);
 
-        var logits = fwd.Prefill(prefillIds).ToArray();
+        var logitsSpan = fwd.Prefill(prefillIds);
 
         var generated = new List<int>();
         int pos = prefillIds.Count;
@@ -91,7 +91,7 @@ public static class CosyVoice3Llm
 
         for (int step = 0; step < effectiveMaxNewTokens; step++)
         {
-            int localId = SampleSpeechToken(logits, generated, allowStop: step >= minLen, rng, temperature: temperature);
+            int localId = SampleSpeechToken(logitsSpan, generated, allowStop: step >= minLen, rng, temperature: temperature);
 
             if (localId >= 6561) // Stop token range
             {
@@ -99,7 +99,7 @@ public static class CosyVoice3Llm
             }
 
             generated.Add(localId);
-            logits = fwd.Forward(source.SpeechTokenIdOffset + localId, pos).ToArray();
+            logitsSpan = fwd.Forward(source.SpeechTokenIdOffset + localId, pos);
             pos++;
         }
 
@@ -137,62 +137,76 @@ public static class CosyVoice3Llm
         return fwd.Prefill(prefillIds).ToArray();
     }
 
-    private static int SampleSpeechToken(float[] logits, List<int> pastTokens, bool allowStop, Random rng, int topK = 25, float topP = 0.8f, int winSize = 10, float temperature = 1.0f)
+    private static int SampleSpeechToken(ReadOnlySpan<float> logits, List<int> pastTokens, bool allowStop, Random rng, int topK = 25, float topP = 0.8f, int winSize = 10, float temperature = 1.0f)
     {
         int totalVocab = logits.Length;
+        int maxAllowed = allowStop ? totalVocab : Math.Min(totalVocab, 6561);
+        float invTemp = temperature > 0f ? 1f / temperature : 1f;
 
-        // If stop tokens are not allowed, mask them out
-        if (!allowStop)
-        {
-            for (int i = 6561; i < totalVocab; i++)
-                logits[i] = float.NegativeInfinity;
-        }
-
-        // Repetition penalty over recent window (win_size)
+        Span<int> recentWin = stackalloc int[winSize];
+        int winCount = 0;
         if (pastTokens.Count > 0)
         {
             int start = Math.Max(0, pastTokens.Count - winSize);
             for (int i = start; i < pastTokens.Count; i++)
             {
-                int tok = pastTokens[i];
-                if (tok >= 0 && tok < totalVocab)
-                {
-                    if (logits[tok] > 0) logits[tok] /= 1.2f;
-                    else logits[tok] *= 1.2f;
-                }
+                recentWin[winCount++] = pastTokens[i];
+            }
+        }
+        var recentSpan = recentWin.Slice(0, winCount);
+
+        int k = Math.Min(topK, maxAllowed);
+        Span<int> topIdx = stackalloc int[k];
+        Span<float> topVal = stackalloc float[k];
+        int filled = 0;
+
+        for (int i = 0; i < maxAllowed; i++)
+        {
+            float v = logits[i];
+            if (winCount > 0 && recentSpan.Contains(i))
+            {
+                v = v > 0 ? v / 1.2f : v * 1.2f;
+            }
+            v *= invTemp;
+
+            if (filled < k)
+            {
+                int p = filled++;
+                while (p > 0 && topVal[p - 1] > v) { topVal[p] = topVal[p - 1]; topIdx[p] = topIdx[p - 1]; p--; }
+                topVal[p] = v; topIdx[p] = i;
+            }
+            else if (v > topVal[0])
+            {
+                int p = 0;
+                while (p < k - 1 && topVal[p + 1] < v) { topVal[p] = topVal[p + 1]; topIdx[p] = topIdx[p + 1]; p++; }
+                topVal[p] = v; topIdx[p] = i;
             }
         }
 
-        float invTemp = temperature > 0f ? 1f / temperature : 1f;
+        if (filled == 0) return 0;
 
-        // Softmax & Nucleus Top-P / Top-K
-        float maxLogit = float.NegativeInfinity;
-        for (int i = 0; i < totalVocab; i++)
+        float maxLogit = topVal[filled - 1];
+        Span<float> probs = stackalloc float[filled];
+        Span<int> orderedIds = stackalloc int[filled];
+        float sumExp = 0f;
+
+        for (int i = 0; i < filled; i++)
         {
-            float scaled = logits[i] * invTemp;
-            if (scaled > maxLogit) maxLogit = scaled;
+            int srcIdx = filled - 1 - i; // Descending
+            orderedIds[i] = topIdx[srcIdx];
+            float e = MathF.Exp(topVal[srcIdx] - maxLogit);
+            probs[i] = e;
+            sumExp += e;
         }
 
-        double sumExp = 0.0;
-        var expLogits = new float[totalVocab];
-        for (int i = 0; i < totalVocab; i++)
-        {
-            expLogits[i] = MathF.Exp(logits[i] * invTemp - maxLogit);
-            sumExp += expLogits[i];
-        }
+        float invSum = 1f / sumExp;
+        for (int i = 0; i < filled; i++) probs[i] *= invSum;
 
-        var candidates = new (int Id, float Prob)[totalVocab];
-        for (int i = 0; i < totalVocab; i++)
-            candidates[i] = (i, (float)(expLogits[i] / sumExp));
-
-        Array.Sort(candidates, (a, b) => b.Prob.CompareTo(a.Prob));
-
-        int k = Math.Min(topK, candidates.Length);
         float cumProb = 0f;
         int cutoff = 0;
-        for (int i = 0; i < k; i++)
+        for (int i = 0; i < filled; i++)
         {
-            cumProb += candidates[i].Prob;
+            cumProb += probs[i];
             cutoff = i;
             if (cumProb >= topP) break;
         }
@@ -201,11 +215,11 @@ public static class CosyVoice3Llm
         float running = 0f;
         for (int i = 0; i <= cutoff; i++)
         {
-            running += candidates[i].Prob;
-            if (running >= r) return candidates[i].Id;
+            running += probs[i];
+            if (running >= r) return orderedIds[i];
         }
 
-        return candidates[0].Id;
+        return orderedIds[0];
     }
 
     internal static GgufTokenizer BuildTokenizer(GgufModel model)
