@@ -14,10 +14,16 @@ namespace OpenTail.Stingray.Audio.FishSpeech;
 ///
 /// <para><b>Real decode chain</b>: codes (1 semantic + 9 residual, all same time resolution) -&gt;
 /// per-quantizer embedding lookup -&gt; out_proj -&gt; SUM (semantic + residual, no time-
-/// upsampling within the quantizer itself, same flat pattern as Parler-TTS's DAC) -&gt; real
-/// `post_module` (a bare RMSNorm, NOT a transformer) -&gt; 2x upsample stage (causal
-/// ConvTranspose1d(k=2,stride=2) -&gt; `ConvNeXtBlock`) -&gt; `DAC.decoder` (causal conv -&gt; 4x
-/// causal `DecoderBlock` -&gt; causal conv -&gt; Tanh).</para>
+/// upsampling within the quantizer itself, same flat pattern as Parler-TTS's DAC) -&gt; the real
+/// `quantizer.post_module` -&gt; 2x upsample stage (causal ConvTranspose1d(k=2,stride=2) -&gt;
+/// `ConvNeXtBlock`) -&gt; `DAC.decoder` (causal conv -&gt; 4x causal `DecoderBlock` -&gt; causal
+/// conv -&gt; Tanh). <b>`post_module` is a full 8-layer transformer (real self-attention + RoPE +
+/// per-channel LayerScale + SwiGLU FFN, see <see cref="ApplyQuantizerTransformer"/>), NOT just a
+/// bare RMSNorm</b> -- an earlier pass wrongly concluded otherwise after only spotting the
+/// `post_module.norm.weight` tensor (that transformer's own final norm, not a standalone
+/// replacement for it); see `docs/audio-review-progress.md`'s "gargly" bug entry for the full
+/// derivation against the real reference source. Fixing this was the single biggest correctness
+/// fix in this pipeline's whole port.</para>
 ///
 /// <para><b>All convolutions are CAUSAL (left-pad only)</b> -- confirmed from the real
 /// `CausalConvNet`/`CausalTransConvNet` classes. For a same-resolution conv (kernel=7,
