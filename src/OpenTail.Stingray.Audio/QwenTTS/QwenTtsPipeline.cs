@@ -146,6 +146,7 @@ public sealed class QwenTtsPipeline : ITextToSpeechPipeline
         }
 
         var codePredWeights = QwenTtsCodePredictorGeneration.Weights.Load(_talkerModel);
+        using var codePredSession = new QwenTtsCodePredictorGeneration.CodePredictorSession(_talkerModel, codePredWeights, codePredNumLayers);
         var specials = talkerWeights.Specials;
         var frames = new List<int[]>();
         var c0History = new List<int>();
@@ -158,7 +159,7 @@ public sealed class QwenTtsPipeline : ITextToSpeechPipeline
             c0History.Add(c0);
 
             var talkerLastHidden = fwd.LastHidden.ToArray();
-            var acoustic = QwenTtsCodePredictorGeneration.GenerateAcousticCodes(_talkerModel, codePredWeights, codePredNumLayers, c0, talkerLastHidden, rng);
+            var acoustic = codePredSession.GenerateAcousticCodes(c0, talkerLastHidden, rng);
 
             var frameCodes = new int[16];
             frameCodes[0] = c0;

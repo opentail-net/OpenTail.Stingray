@@ -1180,6 +1180,11 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
     /// invalidated by the next callback or by this method returning.
     /// </para>
     /// </summary>
+    /// <summary>
+    /// Resets the underlying KV cache, allowing zero-allocation reuse of this ForwardPass instance across generation sessions.
+    /// </summary>
+    public void ResetKvCache() => _kvCache.Reset();
+
     public ReadOnlySpan<float> PrefillWithPerPositionLogits(
         IReadOnlyList<int> tokens, int startPos, PositionLogitsCallback onAllPositionLogits)
     {

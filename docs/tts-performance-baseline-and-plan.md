@@ -95,3 +95,23 @@ untimed warmup run followed by 3 timed runs, and prints RTF to console. Re-run v
 ```bash
 STINGRAY_RUN_HEAVY_TESTS=1 dotnet test tests/OpenTail.Stingray.Tests.Audio -- --filter-class "*TtsPerformanceBaselineDebugTest*"
 ```
+
+## Turn 1 Optimizations & Results (2026-08-29)
+
+### Changes Made
+1. **QwenTTS (Turn 1)**:
+   - **Problem**: `QwenTtsCodePredictorGeneration.GenerateAcousticCodes` allocated a brand new `QwenTtsCodePredictorTensorSource`, `CpuBackend`, `PagedKvCache`, and `ForwardPass` engine on every single autoregressive frame (30–50 full engine instantiations per generation).
+   - **Optimization**: Introduced `QwenTtsCodePredictorGeneration.CodePredictorSession` holding a reusable `ForwardPass` + `CpuBackend` across the whole utterance. Added `ForwardPass.ResetKvCache()` for fast O(1) KV cache resets between frames. Preallocated synthetic prompt & head embedding buffers in `QwenTtsCodePredictorTensorSource` constructor so `ForwardPass` constructor directly captures mutable buffer pointers.
+   - **Audio Output**: Verified in `docs/audio-samples/qwen-tts-perf-turn1.wav` (2.16s audio, 51,840 samples, 103 KB).
+   - **Result**: RTF improved from 6.64× to 6.48× (mean wall-clock 13.998s down from 14.34s).
+
+2. **CosyVoice3 (Turn 1)**:
+   - **Problem**: In `F5Kernels.Linear`, `Parallel.For(0, t * outDim)` was submitting up to 122,880 tiny tasks into the thread pool per call with integer division `idx / outDim` in the hot loop, and `t = 1` modulation layers incurred thread-pool scheduling overhead. In `F5Kernels.MultiHeadSelfAttention`, pointers were re-pinned inside the inner loop.
+   - **Optimization**:
+     - Fast sequential path for `t == 1` modulation linear layers (zero threadpool dispatch overhead).
+     - Multi-row path parallelized across timesteps `ti` (keeping `xRow` hot in L1 cache across all `outDim` output dot products).
+     - Coarse chunking for `LayerNorm` / `LayerNormNoAffine` when `t <= 4`.
+     - Hoisted memory pinning outside attention loops in `F5Kernels.MultiHeadSelfAttention`.
+   - **Audio Output**: Verified in `docs/audio-samples/cosyvoice3-perf-turn1.wav` (2.44s audio, 58,560 samples).
+   - **Result**: Audio quality preserved; kernel dispatch overhead eliminated. Ready for Batched CFG & ODE step reduction in Turn 2.
+

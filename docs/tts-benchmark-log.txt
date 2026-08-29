@@ -1,0 +1,9 @@
+[QwenTTS] prompt="Hello, I will make some lunch, darling!" audio=4.00s samples=96000
+[QwenTTS] runs(s)=[24.159, 24.167, 24.955] mean=24.427s RTF=6.107 (lower=faster; 1.0=realtime)
+
+[CosyVoice3] prompt="Hello, I will make some lunch, darling!" audio=2.44s samples=58560
+[CosyVoice3] runs(s)=[24.014, 24.044, 24.528] mean=24.195s RTF=9.916 (lower=faster; 1.0=realtime)
+
+[QwenTTS] prompt="Hello, I will make some lunch, darling!" audio=2.16s samples=51840
+[QwenTTS] runs(s)=[13.828, 14.040, 14.125] mean=13.998s RTF=6.481 (lower=faster; 1.0=realtime)
+

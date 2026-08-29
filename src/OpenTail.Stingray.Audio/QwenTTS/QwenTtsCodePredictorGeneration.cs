@@ -58,6 +58,71 @@ public static class QwenTtsCodePredictorGeneration
     }
 
     /// <summary>
+    /// Reusable engine session for QwenTTS acoustic code generation across multiple frames,
+    /// avoiding per-frame reconstruction of TensorSource, CpuBackend, and ForwardPass.
+    /// </summary>
+    public sealed class CodePredictorSession : IDisposable
+    {
+        private readonly QwenTtsCodePredictorTensorSource _source;
+        private readonly CpuBackend _backend;
+        private readonly ForwardPass _fwd;
+        private readonly Weights _weights;
+
+        public CodePredictorSession(GgufModel rawModel, Weights weights, int numLayers)
+        {
+            _weights = weights;
+            _source = new QwenTtsCodePredictorTensorSource(rawModel, numLayers);
+            var hp = ModelHyperparams.FromGgufMetadata(_source.Metadata, _source);
+            _backend = new CpuBackend();
+            _fwd = new ForwardPass(_source, _backend, hp);
+        }
+
+        /// <summary>
+        /// Generates the 15 real acoustic codes for one frame. Returns `codes[0..14]` = `c1..c15`.
+        /// </summary>
+        public int[] GenerateAcousticCodes(int c0, ReadOnlySpan<float> talkerLastHidden, Random rng)
+        {
+            _fwd.ResetKvCache();
+
+            var promptRows = new float[2 * HiddenDim];
+            talkerLastHidden.CopyTo(promptRows.AsSpan(0, HiddenDim));
+            Array.Copy(_weights.TalkerCodecEmbd, (long)c0 * HiddenDim, promptRows, HiddenDim, HiddenDim);
+            _source.SetPromptEmbedding(promptRows, 2);
+            _source.SetOutputHead(_weights.LmHead[0], AcousticVocabSize);
+
+            var logits = _fwd.Prefill([0, 1]).ToArray();
+
+            var codes = new int[NumAcousticCodebooks];
+            codes[0] = SampleTopK(logits, temperature: 0.9f, topK: 50, rng); // c1, from lm_head.0
+
+            int pos = 2;
+            for (int g = 1; g < NumAcousticCodebooks; g++)
+            {
+                int prevCode = codes[g - 1]; // codes[g] in the real 1-indexed doc numbering
+                var inputEmb = new float[HiddenDim];
+                Array.Copy(_weights.CodecEmbd[g - 1], (long)prevCode * HiddenDim, inputEmb, 0, HiddenDim);
+
+                _source.SetPromptEmbedding(inputEmb, 1);
+                _source.SetOutputHead(_weights.LmHead[g], AcousticVocabSize);
+
+                logits = _fwd.Forward(0, pos).ToArray();
+                pos++;
+
+                codes[g] = SampleTopK(logits, temperature: 0.9f, topK: 50, rng); // c_{g+1}
+            }
+
+            return codes;
+        }
+
+        public void Dispose()
+        {
+            _fwd.Dispose();
+            _backend.Dispose();
+            _source.Dispose();
+        }
+    }
+
+    /// <summary>
     /// Generates the 15 real acoustic codes for one frame. Returns `codes[0..14]` = `c1..c15`.
     /// `talkerLastHidden` must be the Talker's real `ForwardPass.LastHidden` captured
     /// immediately after the `Forward` call that produced `c0` (before any subsequent Talker
@@ -65,40 +130,8 @@ public static class QwenTtsCodePredictorGeneration
     /// </summary>
     public static int[] GenerateAcousticCodes(GgufModel rawModel, Weights weights, int numLayers, int c0, ReadOnlySpan<float> talkerLastHidden, Random rng)
     {
-        using var source = new QwenTtsCodePredictorTensorSource(rawModel, numLayers);
-
-        var promptRows = new float[2 * HiddenDim];
-        talkerLastHidden.CopyTo(promptRows.AsSpan(0, HiddenDim));
-        Array.Copy(weights.TalkerCodecEmbd, (long)c0 * HiddenDim, promptRows, HiddenDim, HiddenDim);
-        source.SetPromptEmbedding(promptRows, 2);
-        source.SetOutputHead(weights.LmHead[0], AcousticVocabSize);
-
-        var hp = ModelHyperparams.FromGgufMetadata(source.Metadata, source);
-        using var backend = new CpuBackend();
-        using var fwd = new ForwardPass(source, backend, hp);
-
-        var logits = fwd.Prefill([0, 1]).ToArray();
-
-        var codes = new int[NumAcousticCodebooks];
-        codes[0] = SampleTopK(logits, temperature: 0.9f, topK: 50, rng); // c1, from lm_head.0
-
-        int pos = 2;
-        for (int g = 1; g < NumAcousticCodebooks; g++)
-        {
-            int prevCode = codes[g - 1]; // codes[g] in the real 1-indexed doc numbering
-            var inputEmb = new float[HiddenDim];
-            Array.Copy(weights.CodecEmbd[g - 1], (long)prevCode * HiddenDim, inputEmb, 0, HiddenDim);
-
-            source.SetPromptEmbedding(inputEmb, 1);
-            source.SetOutputHead(weights.LmHead[g], AcousticVocabSize);
-
-            logits = fwd.Forward(0, pos).ToArray();
-            pos++;
-
-            codes[g] = SampleTopK(logits, temperature: 0.9f, topK: 50, rng); // c_{g+1}
-        }
-
-        return codes;
+        using var session = new CodePredictorSession(rawModel, weights, numLayers);
+        return session.GenerateAcousticCodes(c0, talkerLastHidden, rng);
     }
 
     /// <summary>

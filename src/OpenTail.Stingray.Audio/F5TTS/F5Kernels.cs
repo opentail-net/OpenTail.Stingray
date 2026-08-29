@@ -16,21 +16,36 @@ public static class F5Kernels
         var y = new float[t * outDim];
         unsafe
         {
-            // Flattened over t*outDim (rather than parallelizing over t alone) so single-frame
-            // calls -- e.g. DiTBlock's t=1 modulation projections, called once per layer -- still
-            // get full parallel width across outDim instead of running fully sequentially.
-            fixed (float* xp = x, wp = weight, yp = y)
+            fixed (float* xp = x, wp = weight, yp = y, bp = bias)
             {
                 float* xpLocal = xp;
                 float* wpLocal = wp;
                 float* ypLocal = yp;
-                Parallel.For(0, t * outDim, idx =>
+                float* bpLocal = bp;
+
+                if (t == 1)
                 {
-                    int ti = idx / outDim;
-                    int o = idx - ti * outDim;
-                    float* xRow = xpLocal + ti * inDim;
-                    ypLocal[idx] = (bias is null ? 0f : bias[o]) + OpenTail.Stingray.Cpu.SimdKernels.DotF32(wpLocal + o * inDim, xRow, inDim);
-                });
+                    // Single-row fast path (modulation linear layers): run sequentially without threadpool dispatch overhead
+                    for (int o = 0; o < outDim; o++)
+                    {
+                        float b = bpLocal is null ? 0f : bpLocal[o];
+                        ypLocal[o] = b + OpenTail.Stingray.Cpu.SimdKernels.DotF32(wpLocal + o * inDim, xpLocal, inDim);
+                    }
+                }
+                else
+                {
+                    // Multi-row path: parallelize across timesteps ti; xRow stays hot in L1 cache across all output channels
+                    Parallel.For(0, t, ti =>
+                    {
+                        float* xRow = xpLocal + ti * inDim;
+                        float* yRow = ypLocal + ti * outDim;
+                        for (int o = 0; o < outDim; o++)
+                        {
+                            float b = bpLocal is null ? 0f : bpLocal[o];
+                            yRow[o] = b + OpenTail.Stingray.Cpu.SimdKernels.DotF32(wpLocal + o * inDim, xRow, inDim);
+                        }
+                    });
+                }
             }
         }
         return y;
@@ -40,7 +55,7 @@ public static class F5Kernels
     public static float[] LayerNorm(float[] x, int t, int dim, float[] gamma, float[] beta, float eps = 1e-6f)
     {
         var y = new float[t * dim];
-        Parallel.For(0, t, ti =>
+        void ComputeRow(int ti)
         {
             int off = ti * dim;
             double mean = 0;
@@ -52,7 +67,16 @@ public static class F5Kernels
             float invStd = (float)(1.0 / Math.Sqrt(var + eps));
             for (int d = 0; d < dim; d++)
                 y[off + d] = (float)((x[off + d] - mean) * invStd) * gamma[d] + beta[d];
-        });
+        }
+
+        if (t <= 4)
+        {
+            for (int ti = 0; ti < t; ti++) ComputeRow(ti);
+        }
+        else
+        {
+            Parallel.For(0, t, ComputeRow);
+        }
         return y;
     }
 
@@ -60,7 +84,7 @@ public static class F5Kernels
     public static float[] LayerNormNoAffine(float[] x, int t, int dim, float eps = 1e-6f)
     {
         var y = new float[t * dim];
-        Parallel.For(0, t, ti =>
+        void ComputeRow(int ti)
         {
             int off = ti * dim;
             double mean = 0;
@@ -72,7 +96,16 @@ public static class F5Kernels
             float invStd = (float)(1.0 / Math.Sqrt(var + eps));
             for (int d = 0; d < dim; d++)
                 y[off + d] = (float)((x[off + d] - mean) * invStd);
-        });
+        }
+
+        if (t <= 4)
+        {
+            for (int ti = 0; ti < t; ti++) ComputeRow(ti);
+        }
+        else
+        {
+            Parallel.For(0, t, ComputeRow);
+        }
         return y;
     }
 
@@ -266,36 +299,44 @@ public static class F5Kernels
         float scale = 1f / MathF.Sqrt(headDim);
         var context = new float[t * dim];
 
-        for (int h = 0; h < heads; h++)
+        unsafe
         {
-            int hOff = h * headDim;
-            Parallel.For(0, t, i =>
+            fixed (float* qp = q, kp = k, vp = v, ctxP = context)
             {
-                var scores = new float[t];
-                int qOff = i * dim + hOff;
-                unsafe
+                float* qpLocal = qp;
+                float* kpLocal = kp;
+                float* vpLocal = vp;
+                float* ctxPLocal = ctxP;
+
+                for (int h = 0; h < heads; h++)
                 {
-                    fixed (float* qp = q)
+                    int hOff = h * headDim;
+                    Parallel.For(0, t, i =>
                     {
-                        float* qRow = qp + qOff;
+                        var scores = new float[t];
+                        float* qRow = qpLocal + i * dim + hOff;
                         for (int j = 0; j < t; j++)
                         {
-                            fixed (float* kp = k)
-                                scores[j] = OpenTail.Stingray.Cpu.SimdKernels.DotF32(qRow, kp + j * dim + hOff, headDim) * scale;
+                            scores[j] = OpenTail.Stingray.Cpu.SimdKernels.DotF32(qRow, kpLocal + j * dim + hOff, headDim) * scale;
                         }
-                    }
-                }
-                SoftmaxInPlace(scores, 0, t);
+                        SoftmaxInPlace(scores, 0, t);
 
-                var cSpan = context.AsSpan(i * dim + hOff, headDim);
-                for (int j = 0; j < t; j++)
-                {
-                    float p = scores[j];
-                    if (p == 0f) continue;
-                    var vSpan = v.AsSpan(j * dim + hOff, headDim);
-                    System.Numerics.Tensors.TensorPrimitives.MultiplyAdd(vSpan, p, cSpan, cSpan);
+                        float* cRow = ctxPLocal + i * dim + hOff;
+                        for (int d = 0; d < headDim; d++) cRow[d] = 0f;
+
+                        for (int j = 0; j < t; j++)
+                        {
+                            float p = scores[j];
+                            if (p == 0f) continue;
+                            float* vRow = vpLocal + j * dim + hOff;
+                            for (int d = 0; d < headDim; d++)
+                            {
+                                cRow[d] += p * vRow[d];
+                            }
+                        }
+                    });
                 }
-            });
+            }
         }
 
         return context;

@@ -38,6 +38,7 @@ public sealed class TtsPerformanceBaselineDebugTest : HeavyTestBase
 
         double[] elapsedSec = new double[Runs];
         int sampleCount = 0;
+        float[]? lastWav = null;
         for (int i = 0; i < Runs; i++)
         {
             var sw = Stopwatch.StartNew();
@@ -45,13 +46,26 @@ public sealed class TtsPerformanceBaselineDebugTest : HeavyTestBase
             sw.Stop();
             elapsedSec[i] = sw.Elapsed.TotalSeconds;
             sampleCount = wav.Length;
+            lastWav = wav;
+        }
+
+        if (lastWav != null)
+        {
+            string? outDir = FindRepoFile("docs/audio-samples");
+            if (outDir != null)
+            {
+                string wavPath = Path.Combine(outDir, "qwen-tts-perf-turn1.wav");
+                new AudioGenerationResult(lastWav, 24000).SaveWav(wavPath);
+            }
         }
 
         double audioSec = sampleCount / 24000.0;
         double meanSec = Average(elapsedSec);
         double rtf = meanSec / audioSec;
-        Console.WriteLine($"[QwenTTS] prompt=\"{Prompt}\" audio={audioSec:F2}s samples={sampleCount}");
-        Console.WriteLine($"[QwenTTS] runs(s)=[{string.Join(", ", Array.ConvertAll(elapsedSec, x => x.ToString("F3")))}] mean={meanSec:F3}s RTF={rtf:F3} (lower=faster; 1.0=realtime)");
+        string msg = $"[QwenTTS] prompt=\"{Prompt}\" audio={audioSec:F2}s samples={sampleCount}\n" +
+                     $"[QwenTTS] runs(s)=[{string.Join(", ", Array.ConvertAll(elapsedSec, x => x.ToString("F3")))}] mean={meanSec:F3}s RTF={rtf:F3} (lower=faster; 1.0=realtime)";
+        Console.Error.WriteLine(msg);
+        File.AppendAllText(Path.Combine(FindRepoFile("docs") ?? ".", "tts-benchmark-log.txt"), msg + "\n\n");
     }
 
     [Fact]
@@ -67,6 +81,7 @@ public sealed class TtsPerformanceBaselineDebugTest : HeavyTestBase
 
         double[] elapsedSec = new double[Runs];
         int sampleCount = 0;
+        float[]? lastWav = null;
         for (int i = 0; i < Runs; i++)
         {
             var sw = Stopwatch.StartNew();
@@ -74,13 +89,26 @@ public sealed class TtsPerformanceBaselineDebugTest : HeavyTestBase
             sw.Stop();
             elapsedSec[i] = sw.Elapsed.TotalSeconds;
             sampleCount = wav.Length;
+            lastWav = wav;
+        }
+
+        if (lastWav != null)
+        {
+            string? outDir = FindRepoFile("docs/audio-samples");
+            if (outDir != null)
+            {
+                string wavPath = Path.Combine(outDir, "cosyvoice3-perf-turn1.wav");
+                new AudioGenerationResult(lastWav, 24000).SaveWav(wavPath);
+            }
         }
 
         double audioSec = sampleCount / 24000.0;
         double meanSec = Average(elapsedSec);
         double rtf = meanSec / audioSec;
-        Console.WriteLine($"[CosyVoice3] prompt=\"{Prompt}\" audio={audioSec:F2}s samples={sampleCount}");
-        Console.WriteLine($"[CosyVoice3] runs(s)=[{string.Join(", ", Array.ConvertAll(elapsedSec, x => x.ToString("F3")))}] mean={meanSec:F3}s RTF={rtf:F3} (lower=faster; 1.0=realtime)");
+        string msg = $"[CosyVoice3] prompt=\"{Prompt}\" audio={audioSec:F2}s samples={sampleCount}\n" +
+                     $"[CosyVoice3] runs(s)=[{string.Join(", ", Array.ConvertAll(elapsedSec, x => x.ToString("F3")))}] mean={meanSec:F3}s RTF={rtf:F3} (lower=faster; 1.0=realtime)";
+        Console.Error.WriteLine(msg);
+        File.AppendAllText(Path.Combine(FindRepoFile("docs") ?? ".", "tts-benchmark-log.txt"), msg + "\n\n");
     }
 
     private static double Average(double[] values)
