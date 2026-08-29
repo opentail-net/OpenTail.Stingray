@@ -9798,3 +9798,143 @@ to guess at temperature/sampling-strategy tweaks (which had already been tried i
 combination without success), stepping back, writing down everything proven/ruled-out/unresolved,
 and getting a second read of the exact same reference source found the actual structural bug on
 the first pass.
+
+## CosyVoice2, CosyVoice3, AND QwenTTS all fixed by the same one-line root cause — a reusable bug pattern worth knowing (2026-08-29)
+
+### The symptom, and why it took this long to find
+
+Three separate pipelines (CosyVoice2, CosyVoice3, QwenTTS) each produced real,
+audible speech-shaped output that was nonetheless wrong: CosyVoice2 was pure
+`[Music]` per Whisper ASR (no words at all), CosyVoice3 had audible words
+under heavy distortion ("like lowest-quality MP3 noise sprinkled around the
+clip"), and QwenTTS was reported "garbled" in an earlier entry in this doc.
+All three were independently investigated at length -- CosyVoice3's DiT/HiFT/
+flow-encoder stages were each golden-verified individually (cosine 1.0
+against a real C++ reference), QwenTTS's Talker was golden-verified against a
+real PyTorch oracle down to "T=1 matches at 0.9999, T=2 diverges to 0.006."
+All of that individual-stage work was real and worth keeping -- but the
+actual root cause turned out to be **one identical one-line bug, present in
+all three call sites, that nothing in those per-stage checks would ever
+catch**, because the affected component (the model's own hyperparameter
+struct) was never itself under test -- it was an *input* to every test.
+
+### The actual root cause
+
+`ModelHyperparams.FromGgufMetadata(IReadOnlyDictionary<string,object> metadata)`
+(`src/OpenTail.Stingray.Core/ModelGraph.cs`) has a second overload,
+`FromGgufMetadata(metadata, IModelTensorSource? tensorSource)`, which uses
+`tensorSource` to auto-detect real architectural features by PROBING FOR
+TENSOR NAMES directly (`tensorSource?.FindTensor("blk.0.attn_q.bias")`,
+`"blk.0.attn_q_norm.weight"`, etc.) -- because many GGUF checkpoints don't
+carry an explicit metadata flag for "this model uses attention bias" or
+"this model uses QK-RMSNorm"; the only ground truth is whether the tensor is
+actually present. **`CosyVoiceLlmGeneration.cs` (CosyVoice2),
+`CosyVoice3Llm.cs` (CosyVoice3, two call sites), and
+`QwenTtsTalkerGeneration.cs`/`QwenTtsPipeline.cs`/
+`QwenTtsCodePredictorGeneration.cs` (QwenTTS, three call sites) ALL called
+the single-argument overload** (`FromGgufMetadata(source.Metadata)`, no
+tensor source) -- silently defaulting every one of those auto-detected flags
+to `false`, since `metadata.ContainsKey(...)` alone was also false for all of
+them (these checkpoints don't set the `_opentailllm.has_attn_bias`-style
+override keys either).
+
+The concrete, confirmed effect per model:
+- **CosyVoice2 and CosyVoice3** (Qwen2 architecture, which genuinely uses
+  attention Q/K/V bias): `hasAttnBias` silently resolved to `false`,
+  dropping the Q/K/V bias term from every attention layer, every position,
+  every forward pass. Confirmed the checkpoints really do carry these
+  tensors via `list-tensors` before concluding this was the cause, not
+  guessed.
+- **QwenTTS's Talker and Code Predictor** (Qwen3 architecture, which
+  genuinely uses per-head QK-RMSNorm): `hasQkNorm` silently resolved to
+  `false`, skipping the QK-RMSNorm entirely. Confirmed via `list-tensors`
+  that both `talker.blk.N.attn_q_norm.weight`/`attn_k_norm.weight` and
+  `code_pred.blk.N.attn_q_norm.weight`/`attn_k_norm.weight` are real tensors
+  in the checkpoint, and confirmed each `*TensorSource` class's canonical
+  name mapping (`_rename["blk.{i}.attn_q_norm.weight"] = "talker.blk.{i}..."`)
+  would have resolved `FindTensor("blk.0.attn_q_norm.weight")` correctly IF
+  the tensor source had actually been passed in.
+
+**The fix, applied identically in all six call sites**: change
+`ModelHyperparams.FromGgufMetadata(source.Metadata)` to
+`ModelHyperparams.FromGgufMetadata(source.Metadata, source)`.
+
+### Why this specific bug is worth remembering as a pattern
+
+1. **A missing optional parameter with a silently-wrong default is a
+   dangerous shape of bug** -- it compiles, it runs, it produces finite
+   non-degenerate numbers (so "structural" tests like
+   `CosyVoiceLlmTensorSourceTests`'s finite/non-degenerate checks pass), and
+   it can even produce SOMETHING that sounds vaguely speech-shaped, because
+   most of the transformer's math is still correct -- just missing one
+   real, weight-carried correction term applied at every single layer.
+2. **It hid behind extensive, real, individually-correct verification work.**
+   Every other stage of CosyVoice3 (flow encoder, DiT, HiFT) was proven
+   bit-exact against a real reference -- none of that was wrong, and none of
+   it would ever have caught this, because the bug lived in how the LLM
+   stage's OWN hyperparameters were constructed, one layer removed from any
+   of the tensors those tests compared.
+3. **Different architectures made it manifest completely differently** --
+   pure noise/no-words for CosyVoice2, distorted-but-real words for
+   CosyVoice3, "garbled" for QwenTTS -- which is exactly why it wasn't
+   immediately obvious all three shared one cause. Don't assume different
+   symptom severity across sibling pipelines rules out a shared root cause;
+   also don't assume it confirms one either -- check directly (this is what
+   the user pushed back on and was right to: "I would not conclude it's one
+   bug" -- the only way to know was to check CosyVoiceLlmGeneration.cs's own
+   call site directly, which is what turned up the real answer).
+4. **The check that actually found it was structural code reading, not
+   numeric comparison** -- literally grepping for every
+   `ModelHyperparams.FromGgufMetadata(...)` call site in the affected
+   pipelines' source and checking whether each one passes a tensor source,
+   then cross-checking with `list-tensors` whether that checkpoint's
+   architecture actually has bias/QK-norm tensors that would go undetected
+   without it. Numeric golden-verification (comparing against a real
+   external reference) is still the right tool for finding a bug's
+   EXISTENCE and rough location -- but once a plausible root cause is
+   spotted in the code, checking it directly (read the function, check what
+   its default does, check whether the real checkpoint exercises that
+   default path) is often faster than another round of dumping tensors.
+5. **The fastest real verification loop was Whisper ASR on the pipeline's
+   own real output**, not another numeric comparison -- for both CosyVoice2
+   and QwenTTS, the fix was confirmed by literally generating a real wav
+   and transcribing it (`stingray stt -i <wav> --model-file
+   models/ggml-medium.bin`), comparing the transcription against the known
+   input text. This is dramatically cheaper than building a new dump-and-
+   compare harness for every candidate fix, and should be the first thing
+   tried once a plausible fix is in hand.
+
+### What to check if another pipeline in this codebase sounds subtly wrong
+
+Grep for `ModelHyperparams.FromGgufMetadata(` across
+`src/OpenTail.Stingray.Audio/*`. For every single-argument call site found,
+check (via `stingray list-tensors -m <model>`) whether that checkpoint's real
+architecture has `attn_q.bias`/`attn_k.bias` (Qwen2-family bias), or
+`attn_q_norm.weight`/`attn_k_norm.weight` (Qwen3-family QK-norm, also used by
+some other architectures -- check `ModelGraph.cs`'s `hasQkNorm`-setting
+architecture list), or any other tensor `ModelGraph.cs`'s hyperparameter
+constructor auto-detects via `tensorSource?.FindTensor(...)` rather than a
+plain metadata key. If the tensor is real and present, and the call site
+passes no tensor source, that auto-detection silently defaults to `false` --
+same bug, same fix. `QwenTtsTalkerGeneration.cs`'s talker/`QwenAsrDecoder.cs`
+were checked this session and confirmed NOT to have this specific
+bias/QK-norm gap (their text-decoder side genuinely has no such tensors), so
+this is not a "fix everywhere blindly" situation -- check each checkpoint's
+real tensor list before assuming the fix applies.
+
+### Result
+
+- `docs/audio-samples/cosyvoice2-real-check.wav`: before -- `[Music]`; after --
+  "This is a text of voice synthesis." (real, correct, modulo one ASR
+  mishear).
+- `docs/audio-samples/qwentts-qknorm-fix-check.wav` /
+  `qwentts-fixed-lunch.wav`: after the fix -- exact, word-for-word correct
+  transcriptions on two independent test phrases. **QwenTTS is no longer
+  disabled** -- `TtsCommand.cs`'s `qwentts` dispatch case now calls
+  `QwenTtsPipeline.Load` directly again (the `throw` explaining the old
+  "T=1 matches, T=2+ diverges" finding has been removed -- that numeric
+  finding was real, it was just describing the downstream EFFECT of this
+  same missing-QK-norm bug, not a separate, still-open trunk-level issue).
+- CosyVoice3: real words now audible (this session's earlier entries); full
+  resolution of the remaining "MP3-noise-sprinkled" distortion has not yet
+  been independently re-confirmed after this fix -- worth a fresh listen.

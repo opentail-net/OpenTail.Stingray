@@ -106,17 +106,7 @@ public sealed class TtsCommand : Command<TtsCommand.Settings>
                 "parler" or "parler-tts" or "parlertts" =>
                     ParlerFullPipeline.Load(s.ModelPath ?? ResolveParlerModelPath()),
                 "qwen" or "qwentts" or "qwen-tts" or "qwen-talker" =>
-                    // QwenTtsPipeline.Load(s.ModelPath ?? ResolveQwenTtsModelPath()),
-                    throw new ArgumentException(
-                        "QwenTTS is NOT currently supported: the Talker transformer trunk produces " +
-                        "numerically wrong output for any multi-position input (confirmed via golden " +
-                        "verification against the real PyTorch reference -- single-token input matches " +
-                        "at cosine 0.9999, but two or more tokens diverge as low as cosine 0.006). " +
-                        "Four other real bugs in this pipeline were found and fixed this session " +
-                        "(missing sampling, missing acoustic-codebook feedback, two stale-pointer bugs), " +
-                        "but this trunk-level issue remains open with no quick fix identified. " +
-                        "See docs/audio-review-progress.md's QwenTTS entries for the full investigation " +
-                        "and what's left to check."),
+                    QwenTtsPipeline.Load(s.ModelPath ?? ResolveQwenTtsModelPath()),
                 "fish" or "fishspeech" or "fish-speech" or "s2" or "s2-pro" =>
                     FishSpeechFullPipeline.Load(s.ModelPath ?? ResolveFishSpeechModelPath()),
                 "orpheus" or "orpheus-tts" or "orpheustts" =>

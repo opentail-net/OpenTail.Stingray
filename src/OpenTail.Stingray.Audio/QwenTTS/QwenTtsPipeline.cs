@@ -121,7 +121,7 @@ public sealed class QwenTtsPipeline : ITextToSpeechPipeline
         Array.Copy(promptEmbed, prefillRows, prefillRows.Length);
         talkerSource.SetPromptEmbedding(prefillRows, tRows - 1);
 
-        var hp = ModelHyperparams.FromGgufMetadata(talkerSource.Metadata);
+        var hp = ModelHyperparams.FromGgufMetadata(talkerSource.Metadata, talkerSource);
         if (Environment.GetEnvironmentVariable("STINGRAY_QWENTTS_GOLDEN_DUMP") is not null)
             Console.Error.WriteLine($"hp: HeadDim={hp.HeadDim} NumHeads={hp.NumHeads} NumKvHeads={hp.NumKvHeads} " +
                 $"EmbeddingDim={hp.EmbeddingDim} RopeTheta={hp.RopeTheta} RmsNormEps={hp.RmsNormEps} NumLayers={hp.NumLayers}");

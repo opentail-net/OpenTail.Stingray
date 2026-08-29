@@ -78,7 +78,7 @@ public static class QwenTtsCodePredictorGeneration
         source.SetPromptEmbedding(promptRows, 2);
         source.SetOutputHead(weights.LmHead[0], AcousticVocabSize);
 
-        var hp = ModelHyperparams.FromGgufMetadata(source.Metadata);
+        var hp = ModelHyperparams.FromGgufMetadata(source.Metadata, source);
         using var backend = new CpuBackend();
         using var fwd = new ForwardPass(source, backend, hp);
 
