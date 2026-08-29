@@ -29,45 +29,18 @@ public sealed class CosyVoice3ClipGenDebugTests : HeavyTestBase
         using var pipeline = CosyVoice3Pipeline.Load(modelPath!);
         const string prompt = "Hello, I will make some lunch, darling!";
 
-        // 1. Smooth F0 with odeSteps = 10
-        var pcmSmooth10 = pipeline.Generate(prompt, maxNewSpeechTokens: 150, odeSteps: 10, seed: 42, cfgRate: 0.7f, temperature: 0.8f, pitchScale: 1.25f);
-        if (pcmSmooth10.Length > 0)
-        {
-            string path = Path.Combine(outDir!, "cosyvoice3-smooth-ode10.wav");
-            new AudioGenerationResult(pcmSmooth10, 24000).SaveWav(path);
-            Console.WriteLine($"Saved {path}: {pcmSmooth10.Length} samples ({pcmSmooth10.Length / 24000.0:F2}s)");
-        }
-
-        // 2. Smooth F0 with odeSteps = 15 (smoother mel trajectory)
-        var pcmSmooth15 = pipeline.Generate(prompt, maxNewSpeechTokens: 150, odeSteps: 15, seed: 42, cfgRate: 0.7f, temperature: 0.8f, pitchScale: 1.25f);
-        if (pcmSmooth15.Length > 0)
-        {
-            string path = Path.Combine(outDir!, "cosyvoice3-smooth-ode15.wav");
-            new AudioGenerationResult(pcmSmooth15, 24000).SaveWav(path);
-            Console.WriteLine($"Saved {path}: {pcmSmooth15.Length} samples ({pcmSmooth15.Length / 24000.0:F2}s)");
-        }
-
-        // 3. Smooth F0 with odeSteps = 20 (highest quality mel flow integration)
-        var pcmSmooth20 = pipeline.Generate(prompt, maxNewSpeechTokens: 150, odeSteps: 20, seed: 42, cfgRate: 0.7f, temperature: 0.8f, pitchScale: 1.25f);
-        if (pcmSmooth20.Length > 0)
-        {
-            string path = Path.Combine(outDir!, "cosyvoice3-smooth-ode20.wav");
-            new AudioGenerationResult(pcmSmooth20, 24000).SaveWav(path);
-            Console.WriteLine($"Saved {path}: {pcmSmooth20.Length} samples ({pcmSmooth20.Length / 24000.0:F2}s)");
-        }
-
-        // 4. Zero-shot cloning with real reference audio -- dump alignment/speaker debug numbers
+        // Zero-shot cloning with real reference audio, WITHOUT the pitchScale=1.25 fudge factor --
+        // isolate whether that hand-tuned hack (calibrated against the no-reference case) is what
+        // makes cloned output sound worse than the unconditioned "smooth" runs.
         string? refAudio = FindRepoFile("docs/audio-samples/fishspeech-lunch-REFERENCE.wav");
         if (refAudio != null)
         {
-            Environment.SetEnvironmentVariable("STINGRAY_DEBUG_COSYVOICE3", "1");
-            var pcmCloned = pipeline.Generate(prompt, maxNewSpeechTokens: 150, odeSteps: 20, seed: 42, referenceAudioPath: refAudio, cfgRate: 0.7f, referenceText: prompt, temperature: 0.8f, pitchScale: 1.25f);
-            Environment.SetEnvironmentVariable("STINGRAY_DEBUG_COSYVOICE3", null);
-            if (pcmCloned.Length > 0)
+            var pcmClonedNoPitch = pipeline.Generate(prompt, maxNewSpeechTokens: 150, odeSteps: 20, seed: 42, referenceAudioPath: refAudio, cfgRate: 0.7f, referenceText: prompt, temperature: 0.8f, pitchScale: 1.0f);
+            if (pcmClonedNoPitch.Length > 0)
             {
-                string path = Path.Combine(outDir!, "cosyvoice3-cloned-align-debug.wav");
-                new AudioGenerationResult(pcmCloned, 24000).SaveWav(path);
-                Console.WriteLine($"Saved {path}: {pcmCloned.Length} samples ({pcmCloned.Length / 24000.0:F2}s)");
+                string path = Path.Combine(outDir!, "cosyvoice3-cloned-nopitchscale.wav");
+                new AudioGenerationResult(pcmClonedNoPitch, 24000).SaveWav(path);
+                Console.WriteLine($"Saved {path}: {pcmClonedNoPitch.Length} samples ({pcmClonedNoPitch.Length / 24000.0:F2}s)");
             }
         }
     }

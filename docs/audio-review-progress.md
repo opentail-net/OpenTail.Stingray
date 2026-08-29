@@ -9938,3 +9938,51 @@ real tensor list before assuming the fix applies.
 - CosyVoice3: real words now audible (this session's earlier entries); full
   resolution of the remaining "MP3-noise-sprinkled" distortion has not yet
   been independently re-confirmed after this fix -- worth a fresh listen.
+
+## CosyVoice3: status set to PARTIALLY SUPPORTED, matter closed for now (2026-08-30)
+
+Follow-up session on the "MP3-noise-sprinkled"/wobble distortion above.
+Findings, in order:
+
+- **`HiFTVocoderKernels.SineGen` false-fix, caught and reverted.** A frame-rate
+  cumulative-phase-then-`NEAREST`-hold implementation (looked like a staircase
+  bug on inspection) was rewritten to a continuous per-sample phase ramp,
+  thinking the hold was the wobble's cause. Checked against the real
+  reference (`examples/cosyvoice.cpp/src/cosyvoice-graph.cpp:667`,
+  `SineGen2::build_cgraph`): the frame-rate-cumsum-then-`GGML_SCALE_MODE_
+  NEAREST`-upsample-of-phase *is* the real NSF-HiFiGAN algorithm, not a bug.
+  Reverted back to match the reference exactly. **Lesson: don't "fix" a
+  structure that looks wrong without checking the reference math first** --
+  this wasted a full round-trip.
+- **Zero-shot voice cloning still doesn't reliably transfer speaker
+  identity** ("foreign"/generic voice instead of the cloned reference).
+  Investigated the full speaker-conditioning path end-to-end and found no
+  bug: `CosyVoice3FlowEncoder.ComputeMuAndSpks` already does real
+  L2-normalize + `spk_embed_affine_layer` (192->80) on the CAM++ embedding
+  (`CosyVoice3FlowEncoder.cs:93-94`); the prompt-token/prompt-mel-frame
+  alignment invariant (`promptTokens.Length * 2 == promptFrames`) holds
+  exactly on real data (verified: 65 tokens -> 130 frames); `CamPlus
+  SpeakerEncoder.cs`'s Kaldi fbank frontend (Povey window, pre-emphasis
+  order, mel filterbank constants, log floor, per-bin cepstral mean
+  normalization) matches `cosyvoice-frontend.cpp`'s `extract_spk_embedding`
+  bit-for-bit; `WavReader.cs`'s stereo->mono downmix is correct.
+- **Ruled out `pitchScale` as the cause of cloned output sounding worse than
+  text-only output**: re-ran the same cloned generation with `pitchScale`
+  reset from the hand-tuned `1.25` default to `1.0` -- still sounded worse
+  than the unconditioned run. Note the comparison itself was flawed anyway
+  (text-only synthesis is a strictly easier task than zero-shot cloning, so
+  "cloning sounds worse than no-cloning" isn't proof of a cloning-specific
+  bug on its own).
+- **Not yet checked**: the DiT/CFM `cond` prompt-mel-prefix splice and the
+  CFG unconditional-branch construction in `CosyVoice3DiTModel.
+  SolveFlowMatchingOde` -- the last unverified stage in the speaker-identity
+  path, and the next place to look if this is resumed.
+
+**Decision: CosyVoice3 (and by extension CosyVoice/CosyVoice2, which share
+the same conditioning-gap history) is marked PARTIALLY SUPPORTED, not fully
+proven.** It produces real, intelligible, non-buzzing speech from real
+weights (SineGen fix confirmed correct against the reference), but zero-shot
+voice cloning does not yet reliably reproduce the reference speaker's
+identity. Matter closed for this session -- do not resume without new
+evidence (e.g. a real numeric dump of the `cond`/CFG stage) rather than
+further guessing.

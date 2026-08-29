@@ -17,8 +17,8 @@ OpenTail.Stingray is a high-performance LLM inference engine, image/video diffus
    * Set `STINGRAY_RUN_HEAVY_TESTS=1` to run full real-model/real-GPU test suites before committing major engine/kernel changes.
    * Everyday iteration should target `.Fast` test projects (e.g. `Tests.ForwardPass.Fast`, `Tests.Server.Fast`, `Tests.Audio`).
 3. **Test Filter Syntax**:
-   * Through `dotnet test`: use `--filter-class <Name>` or `--filter-method <Name>` (e.g., `dotnet test tests/OpenTail.Stingray.Tests.Audio -- --filter-class QwenAsrTests`).
-   * When invoking built test `.exe` directly: use single-dash `-class <Name>` / `-method <Name>`.
+   * Through `dotnet test`: use `--filter-class <Name>` or `--filter-method <Name>` (e.g., `dotnet test tests/OpenTail.Stingray.Tests.Audio -- --filter-class QwenAsrTests`). This has been unreliable in practice (silently reports "Zero tests ran" even for a real, discoverable test) — if it does, don't keep retrying flag variants; fall back to invoking the built `.exe` directly.
+   * When invoking built test `.exe` directly (`tests/<Project>/bin/<Config>/net10.0/<Project>.exe -class <Name>`): the class name must be **fully namespace-qualified** (e.g. `-class OpenTail.Stingray.Tests.Audio.CosyVoice3ClipGenDebugTests`, not just `CosyVoice3ClipGenDebugTests`) — the bare class name silently matches zero tests. Build the test project first (`dotnet build tests/<Project> -c Release`) since the `.exe` doesn't rebuild itself.
 4. **Hard Compiler & Build Constraints**:
    * `TreatWarningsAsErrors` is enabled globally â all compiler warnings must be fixed.
    * `InvariantGlobalization` is enabled â no culture-specific string operations.
@@ -31,6 +31,8 @@ OpenTail.Stingray is a high-performance LLM inference engine, image/video diffus
    * When all porting/wiring work on a given model/pipeline is done (every stage golden-verified, wired end-to-end, tests passing), do a performance pass and a DRY pass on it before considering it finished.
    * Performance pass: measure, don't assume. Use real weights and a realistic (not trivially short) input, take enough samples to trust the result (a handful of runs each side, not one), and only keep a change if it's measurably better — a plausible-sounding optimization that isn't actually faster gets reverted, even if the reasoning behind it seemed sound. Write the measured numbers down (e.g. in the relevant progress doc), not just "should be faster."
    * DRY pass: check for logic duplicated across files for the same model/pipeline (e.g. an encoder and decoder that copy-pasted the same `Linear`/`LayerNorm`/attention helpers) and extract shared code, following the existing `Primitives/*Kernels.cs` convention. Re-run the affected golden/structural tests after extracting to confirm no numerical regression.
+8. **Check the real reference before "fixing" code that looks wrong**:
+   * The `examples/*.cpp` folder holds real, working C++/GGML reference ports checked into this repo specifically so this codebase's math can be diff'd against them. If a piece of ported math looks suspicious, grep the reference's actual implementation for that stage *before* rewriting it — a structure that looks like a bug is sometimes the real, intentional algorithm. Reverting a correct port because it "looked wrong" wastes a full round-trip and produces a confident-sounding wrong diagnosis.
 
 ---
 
