@@ -1,5 +1,3 @@
-using System.Diagnostics;
-using System.Runtime.InteropServices;
 
 namespace OpenTail.Stingray.Engine;
 

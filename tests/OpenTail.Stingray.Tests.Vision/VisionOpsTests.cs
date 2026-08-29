@@ -1,7 +1,3 @@
-using System;
-using System.Numerics.Tensors;
-using OpenTail.Stingray.Vision;
-using Xunit;
 
 namespace OpenTail.Stingray.Tests.Vision;
 

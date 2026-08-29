@@ -1,4 +1,3 @@
-using OpenTail.Stingray.Vision;
 
 namespace OpenTail.Stingray.Tests.Vision;
 

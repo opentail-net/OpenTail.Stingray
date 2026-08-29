@@ -1,8 +1,3 @@
-using System;
-using System.IO;
-using OpenTail.Stingray.Audio.Vad;
-using OpenTail.Stingray.Core;
-using Xunit;
 
 namespace OpenTail.Stingray.Tests.Audio.Fast;
 

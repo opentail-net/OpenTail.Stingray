@@ -1,7 +1,6 @@
 using System.Numerics.Tensors;
 using OpenTail.Stingray.Core.Embeddings;
 using OpenTail.Stingray.Engine;
-using Xunit;
 
 namespace OpenTail.Stingray.Tests.Core;
 

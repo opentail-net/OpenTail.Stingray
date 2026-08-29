@@ -1,0 +1,15 @@
+global using System;
+global using System.Collections.Generic;
+global using System.IO;
+global using System.Linq;
+global using System.Threading;
+global using System.Threading.Tasks;
+global using OpenTail.Stingray.Core;
+global using System.Numerics.Tensors;
+global using System.Buffers;
+global using OpenTail.Stingray.Cpu;
+global using System.Runtime.CompilerServices;
+global using OpenTail.Stingray.Diffusion.TextEncoders;
+global using OpenTail.Stingray.Diffusion.Primitives;
+global using System.Text;
+global using System.Text.Json;

@@ -1,6 +1,4 @@
 using System.Collections.Concurrent;
-using System.Numerics;
-using System.Numerics.Tensors;
 
 namespace OpenTail.Stingray.Audio;
 

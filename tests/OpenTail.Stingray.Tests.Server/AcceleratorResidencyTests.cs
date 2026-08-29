@@ -1,5 +1,4 @@
 using OpenTail.Stingray.Engine;
-using OpenTail.Stingray.Server;
 
 namespace OpenTail.Stingray.Tests.Server;
 

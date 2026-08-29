@@ -1,5 +1,4 @@
 using OpenTail.Stingray.Diffusion.QwenImage;
-using Xunit;
 
 namespace OpenTail.Stingray.Tests.Diffusion;
 

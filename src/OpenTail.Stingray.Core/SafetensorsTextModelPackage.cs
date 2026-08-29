@@ -1,4 +1,3 @@
-using System.Text.Json;
 using System.Globalization;
 
 namespace OpenTail.Stingray.Core;

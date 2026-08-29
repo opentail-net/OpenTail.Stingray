@@ -1,6 +1,4 @@
-using OpenTail.Stingray.Audio;
 using OpenTail.Stingray.Audio.Piper;
-using Xunit;
 
 namespace OpenTail.Stingray.Tests.Audio;
 

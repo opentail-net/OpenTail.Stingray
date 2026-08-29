@@ -1,7 +1,4 @@
-using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Diffusion.ControlNet;
-using OpenTail.Stingray.Diffusion.StableDiffusion;
-using Xunit;
 
 namespace OpenTail.Stingray.Tests.Diffusion;
 

@@ -1,4 +1,3 @@
-using System.Text.Json;
 using OpenTail.Stingray.Diffusion;
 using OpenTail.Stingray.Server.Endpoints;
 using Xunit;

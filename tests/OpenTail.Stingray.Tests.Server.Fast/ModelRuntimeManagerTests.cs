@@ -1,9 +1,4 @@
 using System.Diagnostics;
-using System.Runtime.CompilerServices;
-using OpenTail.Stingray.Core;
-using OpenTail.Stingray.Engine;
-using OpenTail.Stingray.Server;
-using OpenTail.Stingray.Sessions;
 
 namespace OpenTail.Stingray.Tests.Server.Fast;
 

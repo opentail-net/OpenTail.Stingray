@@ -1,4 +1,3 @@
-using OpenTail.Stingray.Sessions;
 
 namespace OpenTail.Stingray.Server;
 

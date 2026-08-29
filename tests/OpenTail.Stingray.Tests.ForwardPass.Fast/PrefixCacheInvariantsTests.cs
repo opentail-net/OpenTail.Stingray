@@ -1,7 +1,3 @@
-using System;
-using System.Threading.Tasks;
-using OpenTail.Stingray.Engine;
-using Xunit;
 
 namespace OpenTail.Stingray.Tests.ForwardPass.Fast;
 

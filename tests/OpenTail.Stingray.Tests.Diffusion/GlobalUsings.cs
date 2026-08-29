@@ -1,0 +1,11 @@
+global using System;
+global using System.Collections.Generic;
+global using System.IO;
+global using System.Linq;
+global using System.Threading;
+global using System.Threading.Tasks;
+global using Xunit;
+global using OpenTail.Stingray.Diffusion;
+global using OpenTail.Stingray.Core;
+global using OpenTail.Stingray.Diffusion.StableDiffusion;
+global using OpenTail.Stingray.Diffusion.Wan;

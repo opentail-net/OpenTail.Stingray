@@ -1,4 +1,3 @@
-using OpenTail.Stingray.Cli;
 using System.Text.RegularExpressions;
 
 namespace OpenTail.Stingray.Tests.Cli;

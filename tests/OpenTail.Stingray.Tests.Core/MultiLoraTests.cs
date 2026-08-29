@@ -1,5 +1,4 @@
 using OpenTail.Stingray.Core.Lora;
-using Xunit;
 
 namespace OpenTail.Stingray.Tests.Core;
 

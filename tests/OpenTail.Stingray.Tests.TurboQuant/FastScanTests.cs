@@ -1,5 +1,4 @@
 using System.Runtime.InteropServices;
-using OpenTail.Stingray.TurboQuant;
 
 namespace OpenTail.Stingray.Tests.TurboQuant;
 

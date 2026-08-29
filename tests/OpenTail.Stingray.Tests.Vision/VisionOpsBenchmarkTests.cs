@@ -1,9 +1,5 @@
-using System;
 using System.Diagnostics;
 using System.Runtime.Intrinsics;
-using System.Threading.Tasks;
-using OpenTail.Stingray.Vision;
-using Xunit;
 
 namespace OpenTail.Stingray.Tests.Vision;
 

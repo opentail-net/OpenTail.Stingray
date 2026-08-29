@@ -1,6 +1,5 @@
 namespace OpenTail.Stingray.Vulkan;
 
-using OpenTail.Stingray.Core;
 
 /// <summary>
 /// Which Vulkan implementation the quantized batched matmul

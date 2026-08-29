@@ -1,6 +1,4 @@
 using System.Buffers;
-using System.Runtime.InteropServices;
-using OpenTail.Stingray.Core;
 
 namespace OpenTail.Stingray.Cpu;
 

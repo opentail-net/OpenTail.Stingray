@@ -1,9 +1,3 @@
-using System.Runtime.CompilerServices;
-using System.Runtime.InteropServices;
-using System.Runtime.Intrinsics;
-using System.Runtime.Intrinsics.X86;
-using OpenTail.Stingray.Core;
-using OpenTail.Stingray.Cpu;
 
 namespace OpenTail.Stingray.Engine;
 

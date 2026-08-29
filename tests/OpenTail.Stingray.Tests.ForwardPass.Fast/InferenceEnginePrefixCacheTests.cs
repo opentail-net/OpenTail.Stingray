@@ -1,6 +1,3 @@
-using System.Text;
-using OpenTail.Stingray.Core;
-using OpenTail.Stingray.Engine;
 
 namespace OpenTail.Stingray.Tests.ForwardPass.Fast;
 

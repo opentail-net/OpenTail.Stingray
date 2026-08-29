@@ -1,7 +1,3 @@
-using System.Runtime.InteropServices;
-using OpenTail.Stingray.Core;
-using OpenTail.Stingray.Cpu;
-using OpenTail.Stingray.Cuda;
 
 namespace OpenTail.Stingray.Tests.Cuda;
 

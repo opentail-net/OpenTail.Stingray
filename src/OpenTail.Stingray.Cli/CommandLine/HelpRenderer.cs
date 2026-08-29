@@ -1,4 +1,3 @@
-using OpenTail.Stingray.Cli.Terminal;
 
 namespace OpenTail.Stingray.Cli.CommandLine;
 

@@ -1,0 +1,17 @@
+global using System;
+global using System.Collections.Generic;
+global using System.IO;
+global using System.Linq;
+global using System.Threading;
+global using System.Threading.Tasks;
+global using OpenTail.Stingray.Cli.CommandLine;
+global using System.ComponentModel;
+global using OpenTail.Stingray.Core;
+global using System.Text.Json;
+global using System.Diagnostics;
+global using OpenTail.Stingray.Engine;
+global using OpenTail.Stingray.Cli.Terminal;
+global using OpenTail.Stingray.Vulkan;
+global using OpenTail.Stingray.Cuda;
+global using System.Text.Json.Serialization;
+global using System.Diagnostics.CodeAnalysis;

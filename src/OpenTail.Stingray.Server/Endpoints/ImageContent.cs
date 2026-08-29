@@ -1,4 +1,3 @@
-using OpenTail.Stingray.Engine;
 using OpenTail.Stingray.Vision;
 
 namespace OpenTail.Stingray.Server.Endpoints;

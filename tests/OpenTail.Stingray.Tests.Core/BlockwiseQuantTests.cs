@@ -1,6 +1,3 @@
-using System;
-using OpenTail.Stingray.Cpu;
-using Xunit;
 
 namespace OpenTail.Stingray.Tests.Core;
 

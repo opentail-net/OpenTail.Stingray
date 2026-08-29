@@ -1,6 +1,4 @@
-using System.Runtime.CompilerServices;
 using System.Threading.Channels;
-using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Core.Grammar;
 
 namespace OpenTail.Stingray.Engine;

@@ -1,4 +1,3 @@
-using OpenTail.Stingray.Core;
 
 [assembly: Xunit.AssemblyFixture(typeof(OpenTail.Stingray.Tests.Sessions.SharedModelCacheFixture))]
 

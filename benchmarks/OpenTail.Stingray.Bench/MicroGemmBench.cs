@@ -1,6 +1,3 @@
-using System.Runtime.InteropServices;
-using BenchmarkDotNet.Attributes;
-using OpenTail.Stingray.Cpu;
 
 namespace OpenTail.Stingray.Bench;
 

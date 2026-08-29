@@ -1,11 +1,7 @@
 namespace OpenTail.Stingray.Tests.Sessions.Fast;
 
-using System;
-using System.IO;
 using System.Security.Cryptography;
 using System.Text;
-using OpenTail.Stingray.Sessions;
-using Xunit;
 
 public sealed class FileSessionJournalTests
 {

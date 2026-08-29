@@ -1,6 +1,3 @@
-using OpenTail.Stingray.Core;
-using OpenTail.Stingray.Cpu;
-using OpenTail.Stingray.Engine;
 using OpenTail.Stingray.TurboQuant;
 
 namespace OpenTail.Stingray.Tests.ForwardPass;

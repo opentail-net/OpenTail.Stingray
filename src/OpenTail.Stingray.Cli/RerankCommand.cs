@@ -1,9 +1,4 @@
-using System.ComponentModel;
-using System.Diagnostics;
-using System.Text.Json;
-using OpenTail.Stingray.Cli.CommandLine;
 using OpenTail.Stingray.Core.Embeddings;
-using OpenTail.Stingray.Engine;
 
 namespace OpenTail.Stingray.Cli;
 

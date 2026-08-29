@@ -1,14 +1,3 @@
-using System.Text;
-using System.Text.Json;
-using Microsoft.AspNetCore.Builder;
-using Microsoft.AspNetCore.Http;
-using Microsoft.AspNetCore.Routing;
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Options;
-using OpenTail.Stingray.Core;
-using OpenTail.Stingray.Core.Grammar;
-using OpenTail.Stingray.Engine;
 using OpenTail.Stingray.Server;
 
 namespace OpenTail.Stingray.Server.Endpoints;

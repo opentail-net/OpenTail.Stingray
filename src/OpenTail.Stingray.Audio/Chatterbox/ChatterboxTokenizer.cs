@@ -1,4 +1,3 @@
-using OpenTail.Stingray.Core;
 
 namespace OpenTail.Stingray.Audio.Chatterbox;
 

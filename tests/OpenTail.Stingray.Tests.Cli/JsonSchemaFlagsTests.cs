@@ -1,6 +1,4 @@
 using System.Collections.Immutable;
-using OpenTail.Stingray.Cli;
-using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Core.Grammar;
 
 namespace OpenTail.Stingray.Tests.Cli;

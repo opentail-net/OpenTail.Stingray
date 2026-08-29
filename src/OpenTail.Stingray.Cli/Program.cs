@@ -1,7 +1,5 @@
 using System.Text;
-using OpenTail.Stingray.Cli.CommandLine;
 using OpenTail.Stingray.Cli;
-using OpenTail.Stingray.Core;
 
 // Force UTF-8 for stdin/stdout. On Windows the console defaults to the OEM
 // code page, which mangles multi-byte UTF-8 output (CJK, emoji, smart quotes)

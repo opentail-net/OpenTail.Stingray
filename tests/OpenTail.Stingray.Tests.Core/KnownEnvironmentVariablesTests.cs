@@ -1,6 +1,4 @@
 using System.Text.RegularExpressions;
-using OpenTail.Stingray.Core;
-using Xunit;
 
 namespace OpenTail.Stingray.Tests.Core;
 

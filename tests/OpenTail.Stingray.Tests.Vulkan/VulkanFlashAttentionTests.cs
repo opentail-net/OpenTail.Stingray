@@ -1,6 +1,3 @@
-using OpenTail.Stingray.Core;
-using OpenTail.Stingray.Vulkan;
-using Xunit;
 
 namespace OpenTail.Stingray.Tests.Vulkan;
 

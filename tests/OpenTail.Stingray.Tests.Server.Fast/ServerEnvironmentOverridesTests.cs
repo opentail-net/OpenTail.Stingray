@@ -1,4 +1,3 @@
-using OpenTail.Stingray.Server;
 
 namespace OpenTail.Stingray.Tests.Server.Fast;
 

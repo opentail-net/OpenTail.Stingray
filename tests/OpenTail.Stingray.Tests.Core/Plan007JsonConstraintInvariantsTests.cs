@@ -1,8 +1,3 @@
-using System;
-using System.Text.Json;
-using System.Threading.Tasks;
-using OpenTail.Stingray.Core.Grammar;
-using Xunit;
 
 namespace OpenTail.Stingray.Tests.Core;
 

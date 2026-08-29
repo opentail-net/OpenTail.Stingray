@@ -1,6 +1,3 @@
-using OpenTail.Stingray.Audio;
-using OpenTail.Stingray.Audio.Whisper;
-using Xunit;
 
 namespace OpenTail.Stingray.Tests.Audio;
 

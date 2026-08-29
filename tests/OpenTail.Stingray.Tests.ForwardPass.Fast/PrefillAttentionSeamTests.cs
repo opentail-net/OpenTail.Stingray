@@ -1,7 +1,3 @@
-using System;
-using System.Runtime.InteropServices;
-using OpenTail.Stingray.Engine;
-using Xunit;
 
 namespace OpenTail.Stingray.Tests.ForwardPassTests;
 

@@ -1,8 +1,5 @@
 using System.Collections.Concurrent;
 using System.Runtime.InteropServices;
-using System.Threading;
-using Vortice.Vulkan;
-using OpenTail.Stingray.Core;
 using static Vortice.Vulkan.Vulkan;
 
 namespace OpenTail.Stingray.Vulkan;

@@ -1,5 +1,3 @@
-using OpenTail.Stingray.Cli;
-using OpenTail.Stingray.Engine;
 
 namespace OpenTail.Stingray.Tests.Cli;
 

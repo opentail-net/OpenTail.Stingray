@@ -1,8 +1,3 @@
-using System;
-using System.Collections.Generic;
-using OpenTail.Stingray.Core;
-using OpenTail.Stingray.Engine;
-using Xunit;
 
 namespace OpenTail.Stingray.Tests.Sessions.Fast;
 

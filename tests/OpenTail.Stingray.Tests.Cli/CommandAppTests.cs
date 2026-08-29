@@ -1,5 +1,4 @@
 using System.ComponentModel;
-using OpenTail.Stingray.Cli.CommandLine;
 
 namespace OpenTail.Stingray.Tests.Cli;
 

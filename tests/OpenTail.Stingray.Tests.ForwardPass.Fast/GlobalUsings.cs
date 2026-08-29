@@ -1,0 +1,13 @@
+global using System;
+global using System.Collections.Generic;
+global using System.IO;
+global using System.Linq;
+global using System.Threading;
+global using System.Threading.Tasks;
+global using OpenTail.Stingray.Core;
+global using OpenTail.Stingray.Engine;
+global using OpenTail.Stingray.Cpu;
+global using Xunit;
+global using System.Runtime.Intrinsics.X86;
+global using System.Text;
+global using System.Runtime.InteropServices;

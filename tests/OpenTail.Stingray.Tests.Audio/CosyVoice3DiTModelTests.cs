@@ -1,7 +1,3 @@
-using System.IO;
-using OpenTail.Stingray.Audio.CosyVoice;
-using OpenTail.Stingray.Core;
-using Xunit;
 
 namespace OpenTail.Stingray.Tests.Audio;
 

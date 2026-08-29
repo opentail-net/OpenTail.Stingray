@@ -1,4 +1,3 @@
-using OpenTail.Stingray.TurboQuant;
 
 namespace OpenTail.Stingray.Tests.TurboQuant;
 

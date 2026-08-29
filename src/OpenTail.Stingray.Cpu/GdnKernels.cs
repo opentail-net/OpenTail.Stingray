@@ -49,7 +49,6 @@ namespace OpenTail.Stingray.Cpu;
 //  receive q/k/v as separate spans; the caller is responsible for slicing.
 // ─────────────────────────────────────────────────────────────────────────────
 
-using System.Runtime.CompilerServices;
 
 /// <summary>
 /// Stateless CPU kernels for the Gated DeltaNet (GDN) recurrent block used by

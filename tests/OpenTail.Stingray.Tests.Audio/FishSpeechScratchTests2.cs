@@ -1,8 +1,4 @@
-using System;
-using System.IO;
 using System.Reflection;
-using OpenTail.Stingray.Audio.FishSpeech;
-using Xunit;
 
 namespace OpenTail.Stingray.Tests.Audio.Fast;
 

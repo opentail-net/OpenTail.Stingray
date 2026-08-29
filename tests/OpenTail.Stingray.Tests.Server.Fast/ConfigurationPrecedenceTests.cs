@@ -1,7 +1,5 @@
 using Microsoft.Extensions.Configuration;
-using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
-using OpenTail.Stingray.Server;
 using Xunit;
 
 namespace OpenTail.Stingray.Tests.Server.Fast;

@@ -1,5 +1,3 @@
-using OpenTail.Stingray.Cli;
-using OpenTail.Stingray.Core;
 using Xunit;
 
 namespace OpenTail.Stingray.Tests.Cli;

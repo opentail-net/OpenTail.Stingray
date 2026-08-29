@@ -1,5 +1,3 @@
-using OpenTail.Stingray.Engine;
-using Xunit;
 
 namespace OpenTail.Stingray.Tests.ForwardPass.Fast;
 

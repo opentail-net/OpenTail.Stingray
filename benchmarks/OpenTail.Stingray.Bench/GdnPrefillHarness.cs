@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using OpenTail.Stingray.Cpu;
 
 namespace OpenTail.Stingray.Bench;
 

@@ -1,5 +1,4 @@
 using OpenTail.Stingray.Audio.QwenTTS;
-using Xunit;
 
 namespace OpenTail.Stingray.Tests.Audio;
 

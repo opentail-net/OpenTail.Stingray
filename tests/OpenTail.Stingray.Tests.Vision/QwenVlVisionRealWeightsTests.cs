@@ -1,9 +1,3 @@
-using System;
-using System.IO;
-using System.Linq;
-using OpenTail.Stingray.Core;
-using OpenTail.Stingray.Vision;
-using Xunit;
 
 namespace OpenTail.Stingray.Tests.Vision;
 

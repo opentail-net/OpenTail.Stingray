@@ -1,7 +1,3 @@
-using System;
-using System.IO;
-using OpenTail.Stingray.Audio.FunASR;
-using Xunit;
 
 namespace OpenTail.Stingray.Tests.Audio;
 

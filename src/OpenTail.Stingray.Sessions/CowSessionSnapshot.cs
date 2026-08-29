@@ -1,7 +1,5 @@
 namespace OpenTail.Stingray.Sessions;
 
-using System;
-using System.Collections.Immutable;
 
 public sealed record CowBranchInfo(
     SessionId ParentSessionId,

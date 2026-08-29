@@ -1,4 +1,3 @@
-using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Core.Embeddings;
 
 namespace OpenTail.Stingray.Engine;

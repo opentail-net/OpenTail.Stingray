@@ -1,6 +1,3 @@
-using System.Text;
-using OpenTail.Stingray.Core;
-using Xunit;
 
 namespace OpenTail.Stingray.Tests.Core;
 

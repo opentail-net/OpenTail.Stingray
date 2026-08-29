@@ -1,4 +1,3 @@
-using System;
 
 namespace OpenTail.Stingray.Audio.QwenTTS;
 

@@ -1,4 +1,3 @@
-using OpenTail.Stingray.Core;
 namespace OpenTail.Stingray.Tests.Core;
 
 public sealed class Gemma4ModelHyperparamsTests

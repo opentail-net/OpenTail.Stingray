@@ -1,4 +1,3 @@
-using OpenTail.Stingray.Diffusion.Primitives;
 
 namespace OpenTail.Stingray.Diffusion.QwenImage;
 

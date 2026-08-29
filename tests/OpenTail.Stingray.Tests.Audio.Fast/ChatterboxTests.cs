@@ -1,6 +1,4 @@
-using OpenTail.Stingray.Audio;
 using OpenTail.Stingray.Audio.Chatterbox;
-using Xunit;
 
 namespace OpenTail.Stingray.Tests.Audio;
 

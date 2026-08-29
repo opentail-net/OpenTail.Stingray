@@ -1,5 +1,3 @@
-using System.Runtime.Intrinsics.X86;
-using OpenTail.Stingray.Cpu;
 
 namespace OpenTail.Stingray.Tests.ForwardPass.Fast;
 

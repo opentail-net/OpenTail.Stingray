@@ -1,5 +1,4 @@
 using System.Text.RegularExpressions;
-using Vortice.Vulkan;
 
 namespace OpenTail.Stingray.Vulkan;
 

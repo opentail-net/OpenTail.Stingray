@@ -1,5 +1,3 @@
-using System.Linq;
-using System.Runtime.InteropServices;
 
 namespace OpenTail.Stingray.Tests.ForwardPass.Fast;
 

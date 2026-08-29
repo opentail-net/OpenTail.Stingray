@@ -1,6 +1,3 @@
-using OpenTail.Stingray.Core;
-using OpenTail.Stingray.Cuda;
-using OpenTail.Stingray.Engine;
 using Xunit;
 
 namespace OpenTail.Stingray.Tests.Cuda;

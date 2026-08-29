@@ -1,8 +1,5 @@
-using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Diffusion.SDXL;
-using OpenTail.Stingray.Diffusion.StableDiffusion;
 using OpenTail.Stingray.Diffusion.TextEncoders;
-using Xunit;
 
 namespace OpenTail.Stingray.Tests.Diffusion;
 

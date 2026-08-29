@@ -1,4 +1,3 @@
-using OpenTail.Stingray.Cuda;
 
 namespace OpenTail.Stingray.Tests.Cuda;
 

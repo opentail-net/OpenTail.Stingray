@@ -1,9 +1,4 @@
-using System.Collections.Immutable;
 using System.Diagnostics;
-using OpenTail.Stingray.Core;
-using OpenTail.Stingray.Cpu;
-using OpenTail.Stingray.Engine;
-using OpenTail.Stingray.Sessions;
 
 namespace OpenTail.Stingray.Tests.Sessions;
 

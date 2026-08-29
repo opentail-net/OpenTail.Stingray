@@ -1,4 +1,3 @@
-using System.Text.Json.Serialization;
 using OpenTail.Stingray.Server.Endpoints;
 
 namespace OpenTail.Stingray.Server;

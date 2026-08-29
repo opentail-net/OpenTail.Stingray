@@ -1,4 +1,3 @@
-using Vortice.Vulkan;
 
 namespace OpenTail.Stingray.Vulkan;
 

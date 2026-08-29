@@ -1,7 +1,3 @@
-using System;
-using System.Runtime.InteropServices;
-using OpenTail.Stingray.Core;
-using Xunit;
 
 namespace OpenTail.Stingray.Tests.Core;
 

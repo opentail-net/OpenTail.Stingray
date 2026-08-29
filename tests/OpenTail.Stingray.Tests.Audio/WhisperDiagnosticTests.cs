@@ -1,10 +1,3 @@
-using System;
-using System.IO;
-using System.Linq;
-using System.Text;
-using OpenTail.Stingray.Audio;
-using OpenTail.Stingray.Audio.Whisper;
-using Xunit;
 
 namespace OpenTail.Stingray.Tests.Audio.Fast;
 

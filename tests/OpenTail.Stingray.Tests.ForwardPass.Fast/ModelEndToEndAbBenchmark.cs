@@ -1,11 +1,4 @@
-using System;
 using System.Diagnostics;
-using System.IO;
-using System.Threading.Tasks;
-using OpenTail.Stingray.Core;
-using OpenTail.Stingray.Cpu;
-using OpenTail.Stingray.Engine;
-using Xunit;
 
 namespace OpenTail.Stingray.Tests.ForwardPass.Fast;
 

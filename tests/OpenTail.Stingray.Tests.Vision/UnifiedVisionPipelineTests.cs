@@ -1,5 +1,3 @@
-using OpenTail.Stingray.Vision;
-using Xunit;
 
 namespace OpenTail.Stingray.Tests.Vision;
 

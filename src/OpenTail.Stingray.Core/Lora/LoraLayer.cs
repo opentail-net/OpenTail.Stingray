@@ -1,6 +1,4 @@
-using System.Numerics;
 using System.Runtime.CompilerServices;
-using System.Runtime.InteropServices;
 
 namespace OpenTail.Stingray.Core.Lora;
 

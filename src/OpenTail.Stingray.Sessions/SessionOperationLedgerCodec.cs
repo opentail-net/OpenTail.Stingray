@@ -1,8 +1,5 @@
 namespace OpenTail.Stingray.Sessions;
 
-using System.Collections.Immutable;
-using System.Text;
-using OpenTail.Stingray.Engine;
 
 /// <summary>
 /// Bounded binary representation of terminal completed operations retained across a cold-session

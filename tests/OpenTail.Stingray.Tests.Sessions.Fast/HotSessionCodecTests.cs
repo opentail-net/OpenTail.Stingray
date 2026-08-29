@@ -1,6 +1,3 @@
-using OpenTail.Stingray.Core;
-using OpenTail.Stingray.Engine;
-using OpenTail.Stingray.Sessions;
 using System.Buffers.Binary;
 
 namespace OpenTail.Stingray.Tests.Sessions.Fast;

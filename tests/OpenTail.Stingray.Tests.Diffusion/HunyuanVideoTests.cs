@@ -1,5 +1,4 @@
 using OpenTail.Stingray.Diffusion.HunyuanVideo;
-using Xunit;
 
 namespace OpenTail.Stingray.Tests.Diffusion;
 

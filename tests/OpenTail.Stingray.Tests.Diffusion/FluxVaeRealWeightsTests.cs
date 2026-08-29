@@ -1,8 +1,3 @@
-using System;
-using System.IO;
-using OpenTail.Stingray.Core;
-using OpenTail.Stingray.Diffusion;
-using Xunit;
 
 namespace OpenTail.Stingray.Tests.Diffusion;
 

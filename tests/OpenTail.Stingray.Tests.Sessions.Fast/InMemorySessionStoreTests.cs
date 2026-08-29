@@ -1,5 +1,3 @@
-using OpenTail.Stingray.Sessions;
-using System.Collections.Immutable;
 
 namespace OpenTail.Stingray.Tests.Sessions.Fast;
 

@@ -1,5 +1,4 @@
 using OpenTail.Stingray.Diffusion.Flux3;
-using Xunit;
 
 namespace OpenTail.Stingray.Tests.Diffusion;
 

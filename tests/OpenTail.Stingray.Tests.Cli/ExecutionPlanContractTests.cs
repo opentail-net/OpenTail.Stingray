@@ -1,7 +1,4 @@
 using System.Text.Json;
-using OpenTail.Stingray.Cli;
-using OpenTail.Stingray.Core;
-using OpenTail.Stingray.Engine;
 
 namespace OpenTail.Stingray.Tests.Cli;
 

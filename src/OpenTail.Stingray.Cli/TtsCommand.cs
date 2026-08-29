@@ -1,8 +1,3 @@
-using System;
-using System.ComponentModel;
-using System.Diagnostics;
-using System.IO;
-using System.Threading;
 using OpenTail.Stingray.Audio;
 using OpenTail.Stingray.Audio.Chatterbox;
 using OpenTail.Stingray.Audio.CosyVoice;
@@ -14,7 +9,6 @@ using OpenTail.Stingray.Audio.Orpheus;
 using OpenTail.Stingray.Audio.Parler;
 using OpenTail.Stingray.Audio.Piper;
 using OpenTail.Stingray.Audio.QwenTTS;
-using OpenTail.Stingray.Cli.CommandLine;
 
 namespace OpenTail.Stingray.Cli;
 

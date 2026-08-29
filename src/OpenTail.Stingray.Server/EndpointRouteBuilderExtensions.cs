@@ -1,4 +1,3 @@
-using Microsoft.AspNetCore.Routing;
 using OpenTail.Stingray.Server.Endpoints;
 
 namespace OpenTail.Stingray.Server;
@@ -18,7 +17,7 @@ public static class EndpointRouteBuilderExtensions
     public static IEndpointRouteBuilder MapOpenTailStingray(this IEndpointRouteBuilder endpoints)
     {
         endpoints.MapOpenAiEndpoints();
-        endpoints.MapOpenAiAudioEndpoints();
+        endpoints.MapOpenAiAudioEndpoints();
         endpoints.MapOpenAiImageEndpoints();
         endpoints.MapOpenAiEmbeddingEndpoints();
         endpoints.MapRerankEndpoints();

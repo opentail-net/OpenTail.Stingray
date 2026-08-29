@@ -1,9 +1,4 @@
-using System;
-using System.Diagnostics;
-using System.IO;
 using System.Numerics.Tensors;
-using System.Threading.Tasks;
-using Xunit;
 
 namespace OpenTail.Stingray.Tests.Audio;
 

@@ -1,6 +1,5 @@
 using System.Runtime.InteropServices;
 using System.Text.Json;
-using OpenTail.Stingray.Vision;
 
 namespace OpenTail.Stingray.Tests.Vision;
 

@@ -1,5 +1,4 @@
 using System.Collections.Concurrent;
-using OpenTail.Stingray.Sessions;
 
 namespace OpenTail.Stingray.Server;
 

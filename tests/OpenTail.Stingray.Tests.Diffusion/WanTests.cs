@@ -1,5 +1,3 @@
-using OpenTail.Stingray.Diffusion.Wan;
-using Xunit;
 
 namespace OpenTail.Stingray.Tests.Diffusion;
 

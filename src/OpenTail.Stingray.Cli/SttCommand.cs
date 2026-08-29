@@ -1,8 +1,5 @@
-using System.ComponentModel;
-using System.Diagnostics;
 using OpenTail.Stingray.Audio;
 using OpenTail.Stingray.Audio.Whisper;
-using OpenTail.Stingray.Cli.CommandLine;
 
 namespace OpenTail.Stingray.Cli;
 

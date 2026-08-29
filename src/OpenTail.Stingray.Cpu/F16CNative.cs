@@ -1,5 +1,3 @@
-using System.Runtime.InteropServices;
-using System.Runtime.Intrinsics.X86;
 
 namespace OpenTail.Stingray.Cpu;
 

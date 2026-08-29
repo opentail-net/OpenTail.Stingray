@@ -1,8 +1,4 @@
-using OpenTail.Stingray.Core;
-using OpenTail.Stingray.Engine;
 using OpenTail.Stingray.Vision;
-using OpenTail.Stingray.Vulkan;
-using Vortice.Vulkan;
 
 namespace OpenTail.Stingray.Tests.Vulkan;
 

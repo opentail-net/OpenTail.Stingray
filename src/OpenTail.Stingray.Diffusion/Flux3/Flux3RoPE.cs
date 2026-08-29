@@ -1,5 +1,3 @@
-using System.Numerics.Tensors;
-using OpenTail.Stingray.Diffusion.Primitives;
 
 namespace OpenTail.Stingray.Diffusion.Flux3;
 

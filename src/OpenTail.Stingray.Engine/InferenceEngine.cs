@@ -1,9 +1,6 @@
 using System.Collections.Concurrent;
-using System.Diagnostics;
-using System.Runtime.CompilerServices;
 using System.Threading.Channels;
 using Microsoft.Extensions.Logging;
-using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Vision;
 
 namespace OpenTail.Stingray.Engine;

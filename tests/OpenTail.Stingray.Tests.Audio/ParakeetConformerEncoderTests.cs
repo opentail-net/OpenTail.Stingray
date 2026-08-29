@@ -1,8 +1,4 @@
-using System;
-using System.IO;
-using OpenTail.Stingray.Audio;
 using OpenTail.Stingray.Audio.Parakeet;
-using Xunit;
 
 namespace OpenTail.Stingray.Tests.Audio;
 

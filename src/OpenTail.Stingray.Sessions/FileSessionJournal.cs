@@ -1,10 +1,5 @@
 namespace OpenTail.Stingray.Sessions;
 
-using System;
-using System.Collections.Generic;
-using System.IO;
-using System.Security.Cryptography;
-using System.Text;
 
 public enum SessionJournalRecordKind : ushort
 {

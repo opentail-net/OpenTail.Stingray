@@ -1,8 +1,3 @@
-using System;
-using System.Diagnostics;
-using System.IO;
-using OpenTail.Stingray.Audio.Vad;
-using Xunit;
 
 namespace OpenTail.Stingray.Tests.Audio;
 

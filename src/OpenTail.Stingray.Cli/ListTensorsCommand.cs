@@ -1,7 +1,3 @@
-using System.ComponentModel;
-using OpenTail.Stingray.Cli.Terminal;
-using OpenTail.Stingray.Cli.CommandLine;
-using OpenTail.Stingray.Core;
 
 namespace OpenTail.Stingray.Cli;
 

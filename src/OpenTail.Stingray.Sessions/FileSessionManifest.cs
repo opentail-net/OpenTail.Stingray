@@ -1,11 +1,5 @@
 namespace OpenTail.Stingray.Sessions;
 
-using System;
-using System.Collections.Immutable;
-using System.IO;
-using System.Security.Cryptography;
-using System.Text;
-using OpenTail.Stingray.Core;
 
 public sealed record SegmentBlockRef(
     string BlockId,

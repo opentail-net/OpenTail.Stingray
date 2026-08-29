@@ -1,6 +1,3 @@
-using System;
-using System.IO;
-using OpenTail.Stingray.Core;
 
 namespace OpenTail.Stingray.Vision;
 

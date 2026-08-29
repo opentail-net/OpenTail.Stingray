@@ -1,6 +1,3 @@
-using System.Diagnostics;
-using OpenTail.Stingray.Core;
-using OpenTail.Stingray.Cuda;
 
 namespace OpenTail.Stingray.Tests.Cuda;
 

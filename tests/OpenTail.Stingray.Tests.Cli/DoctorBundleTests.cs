@@ -1,6 +1,4 @@
 using System.IO.Compression;
-using OpenTail.Stingray.Cli;
-using OpenTail.Stingray.Cli.CommandLine;
 
 namespace OpenTail.Stingray.Tests.Cli;
 
