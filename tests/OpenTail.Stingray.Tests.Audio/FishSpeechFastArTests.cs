@@ -125,4 +125,50 @@ public sealed class FishSpeechFastArTests : HeavyTestBase
         File.WriteAllText(Path.Combine(Path.GetTempPath(), "fishspeech_fastar_q8_cosine.txt"), $"cosine={cosine}\n");
         Assert.True(cosine > 0.99, $"cosine similarity {cosine} too low vs golden fast-AR logits (Q8_0)");
     }
+
+    /// <summary>
+    /// Direct equivalence check for the perf-optimized <see cref="FishSpeechFastAr.LayerStep"/>
+    /// (fused MatVecDual gate/up, TensorPrimitives.Dot attention) against the untouched, golden-
+    /// verified <see cref="FishSpeechFastAr.Forward"/> path -- the golden oracle only exercises
+    /// `Forward`/`Layer`, never `ForwardStep`/`LayerStep`, so this is the only correctness check
+    /// for the code actually touched by this perf pass. Per the doc comment on `ForwardStep`,
+    /// sequential ForwardStep calls over a prefix must be mathematically equivalent to one
+    /// Forward call over the same prefix.
+    /// </summary>
+    [Fact]
+    public void ForwardStep_MatchesForward_ForSamePrefix()
+    {
+        string? modelPath = FindModelPath("s2-pro-q8_0.gguf");
+        Assert.SkipUnless(modelPath != null, "models/s2-pro-q8_0.gguf not found");
+
+        string? inputPath = FindRepoFile("scratch-llamacpp-ref/fishspeech_fastar_golden_input.txt");
+        Assert.SkipUnless(inputPath != null, "golden fast-AR input file not found");
+
+        var inputLines = File.ReadAllText(inputPath!).Trim().Split('\n');
+        var hiddenCsv = inputLines[0].Split(',');
+        var hidden = new float[hiddenCsv.Length];
+        for (int i = 0; i < hidden.Length; i++) hidden[i] = float.Parse(hiddenCsv[i]);
+
+        var prefixCsv = inputLines[1].Split(',');
+        var prefix = new int[prefixCsv.Length];
+        for (int i = 0; i < prefix.Length; i++) prefix[i] = int.Parse(prefixCsv[i]);
+
+        using var weights = new FishSpeechWeights(modelPath!);
+        var expected = FishSpeechFastAr.Forward(weights, hidden, prefix);
+
+        var cache = new FishSpeechFastArCache(weights);
+        var stepLogits = FishSpeechFastAr.ForwardStep(weights, cache, hidden);
+        foreach (var t in prefix)
+            stepLogits = FishSpeechFastAr.ForwardStep(weights, cache, FishSpeechFastAr.EmbedFastToken(weights, t));
+
+        double dot = 0, normA = 0, normB = 0;
+        for (int i = 0; i < expected.Length; i++)
+        {
+            dot += stepLogits[i] * expected[i];
+            normA += stepLogits[i] * stepLogits[i];
+            normB += expected[i] * expected[i];
+        }
+        double cosine = dot / (Math.Sqrt(normA) * Math.Sqrt(normB));
+        Assert.True(cosine > 0.999, $"ForwardStep vs Forward cosine similarity {cosine} too low -- LayerStep perf changes may have broken math");
+    }
 }
