@@ -786,6 +786,58 @@ public sealed class TtsPerformanceBaselineDebugTest : HeavyTestBase
     }
 
     [Fact]
+    public async Task Streaming_F5Tts()
+    {
+        string? modelPath = FindRepoFile("models/f5tts_base.safetensors");
+        Assert.SkipUnless(modelPath != null, "F5TTS safetensors model not found");
+
+        using var pipeline = OpenTail.Stingray.Audio.F5TTS.F5TtsPipeline.Load(modelPath!);
+
+        var req = new AudioGenerationRequest { Text = Prompt };
+
+        // Warmup (not timed)
+        await foreach (var _ in pipeline.GenerateStreamAsync(req)) { }
+
+        var sw = Stopwatch.StartNew();
+        double ttfaSec = 0;
+        var chunks = new List<float[]>();
+        int totalSamples = 0;
+
+        await foreach (var chunk in pipeline.GenerateStreamAsync(req))
+        {
+            if (chunks.Count == 0)
+            {
+                ttfaSec = sw.Elapsed.TotalSeconds;
+            }
+            chunks.Add(chunk);
+            totalSamples += chunk.Length;
+        }
+        sw.Stop();
+        double totalSec = sw.Elapsed.TotalSeconds;
+
+        var fullPcm = new float[totalSamples];
+        int offset = 0;
+        foreach (var c in chunks)
+        {
+            Array.Copy(c, 0, fullPcm, offset, c.Length);
+            offset += c.Length;
+        }
+
+        string? outDir = FindRepoFile("docs/audio-samples");
+        if (outDir != null)
+        {
+            string wavPath = Path.Combine(outDir, "f5tts-streaming-streamed.wav");
+            new AudioGenerationResult(fullPcm, pipeline.DefaultSampleRate).SaveWav(wavPath);
+        }
+
+        double audioSec = (double)totalSamples / pipeline.DefaultSampleRate;
+        string msg = $"[F5-TTS-Stream] prompt=\"{Prompt}\" audio={audioSec:F2}s samples={totalSamples} chunks={chunks.Count}\n" +
+                     $"[F5-TTS-Stream] Time-To-First-Audio (TTFA)={ttfaSec:F3}s TotalTime={totalSec:F3}s";
+        Console.Error.WriteLine(msg);
+        File.AppendAllText(Path.Combine(FindRepoFile("docs") ?? ".", "tts-benchmark-log.txt"), msg + "\n\n");
+    }
+
+    [Fact]
     public void Baseline_Chatterbox()
     {
         string? t3Path = FindRepoFile("models/chatterbox-turbo-t3-q4_k.gguf");

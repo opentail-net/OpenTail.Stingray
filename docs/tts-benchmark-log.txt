@@ -412,3 +412,6 @@
 [F5-TTS] prompt="Hello, I will make some lunch, darling!" audio=2.77s samples=66560
 [F5-TTS] runs(s)=[75.532, 75.928, 75.559] mean=75.673s RTF=27.286 (lower=faster; 1.0=realtime)
 
+[F5-TTS-Stream] prompt="Hello, I will make some lunch, darling!" audio=2.77s samples=66560 chunks=1
+[F5-TTS-Stream] Time-To-First-Audio (TTFA)=72.400s TotalTime=72.401s
+
