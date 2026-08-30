@@ -732,7 +732,8 @@ public sealed class TtsPerformanceBaselineDebugTest : HeavyTestBase
         using var loader = OpenTail.Stingray.Core.SafetensorsLoader.Open(modelPath!);
         using var pipeline = new OpenTail.Stingray.Audio.Parler.ParlerFullPipeline(tokenizerPath!, loader);
 
-        var warm = pipeline.Synthesize(Prompt, maxNewTokens: 250);
+        const string femaleDesc = "A clear female voice speaks with a warm and friendly tone in a quiet environment.";
+        var warm = pipeline.Synthesize(Prompt, description: femaleDesc, maxNewTokens: 250);
         Assert.NotEmpty(warm);
 
         double[] elapsedSec = new double[Runs];
@@ -741,7 +742,7 @@ public sealed class TtsPerformanceBaselineDebugTest : HeavyTestBase
         for (int i = 0; i < Runs; i++)
         {
             var sw = Stopwatch.StartNew();
-            var wav = pipeline.Synthesize(Prompt, maxNewTokens: 250);
+            var wav = pipeline.Synthesize(Prompt, description: femaleDesc, maxNewTokens: 250);
             sw.Stop();
             elapsedSec[i] = sw.Elapsed.TotalSeconds;
             sampleCount = wav.Length;
