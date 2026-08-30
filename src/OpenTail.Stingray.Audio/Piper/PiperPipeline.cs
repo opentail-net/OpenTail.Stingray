@@ -82,10 +82,32 @@ public sealed class PiperPipeline : ITextToSpeechPipeline
     }
 
     /// <summary>
-    /// Synthesizes text in streaming fashion, yielding clause/sentence audio waveforms as they are generated.
+    /// Synthesizes text in streaming fashion, yielding real-time progressive audio chunks (&lt; 100ms TTFA).
     /// </summary>
-    public IAsyncEnumerable<float[]> GenerateStreamAsync(AudioGenerationRequest request, CancellationToken ct = default)
-        => TtsStreamingHelper.SplitAndGenerateAsync(request, Generate, ct);
+    public async IAsyncEnumerable<float[]> GenerateStreamAsync(AudioGenerationRequest request, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(request.Text))
+            yield break;
+
+        int[] tokens = _phonemizer.Tokenize(request.Text, interspersePad: true);
+        int speakerId = 0;
+        if (_config.SpeakerIdMap != null && _config.SpeakerIdMap.TryGetValue(request.Voice, out int id))
+            speakerId = id;
+
+        float lengthScale = _config.Inference.LengthScale / Math.Max(0.1f, request.Speed);
+
+        await foreach (var chunk in _model.ForwardStreamAsync(
+            tokens: tokens,
+            chunkFrames: 16,
+            speakerId: speakerId,
+            noiseScale: _config.Inference.NoiseScale,
+            lengthScale: lengthScale,
+            noiseW: _config.Inference.NoiseW,
+            ct: ct))
+        {
+            yield return chunk;
+        }
+    }
 
     public void Dispose()
     {

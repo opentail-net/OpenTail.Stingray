@@ -26,7 +26,7 @@ public static class PiperHifiGanDecoder
 
         for (int stage = 0; stage < 3; stage++)
         {
-            for (int i = 0; i < x.Length; i++) x[i] = HifiGanKernels.LeakyRelu(x[i], LeakyReluAlpha);
+            LeakyReluInPlace(x, LeakyReluAlpha);
 
             int outCh = ch / 2;
             int newT = t * UpStrides[stage];
@@ -34,21 +34,20 @@ public static class PiperHifiGanDecoder
             ch = outCh;
             t = newT;
 
-            float[]? sum = null;
+            var sum = new float[ch * t];
             for (int k = 0; k < 3; k++)
             {
                 int rbIndex = stage * 3 + k;
-                var rbOut = ResBlockForward(x, ch, t, w.DecResblocks[rbIndex], ResblockKernels[k], ResblockDilations[k]);
-                if (sum is null) sum = rbOut;
-                else for (int i = 0; i < sum.Length; i++) sum[i] += rbOut[i];
+                var rbOut = ResBlockForward((float[])x.Clone(), ch, t, w.DecResblocks[rbIndex], ResblockKernels[k], ResblockDilations[k]);
+                System.Numerics.Tensors.TensorPrimitives.Add(sum, rbOut, sum);
             }
-            for (int i = 0; i < sum!.Length; i++) sum[i] /= 3f;
+            System.Numerics.Tensors.TensorPrimitives.Multiply(sum, 1f / 3f, sum);
             x = sum;
         }
 
-        for (int i = 0; i < x.Length; i++) x[i] = HifiGanKernels.LeakyRelu(x[i], LeakyReluAlpha);
+        LeakyReluInPlace(x, LeakyReluAlpha);
         var post = HifiGanKernels.Conv1dSamePad(x, ch, t, w.DecConvPostWeight, null, 1, kernel: 7);
-        for (int i = 0; i < post.Length; i++) post[i] = MathF.Tanh(post[i]);
+        System.Numerics.Tensors.TensorPrimitives.Tanh(post, post);
         return post;
     }
 
@@ -57,13 +56,17 @@ public static class PiperHifiGanDecoder
         var x = input;
         for (int layer = 0; layer < 2; layer++)
         {
-            var y = new float[ch * t];
-            for (int i = 0; i < y.Length; i++) y[i] = HifiGanKernels.LeakyRelu(x[i], LeakyReluAlpha);
+            var y = (float[])x.Clone();
+            LeakyReluInPlace(y, LeakyReluAlpha);
             y = HifiGanKernels.Conv1dDilated(y, ch, t, rb.ConvWeight[layer], rb.ConvBias[layer], ch, kernel, dilations[layer]);
-            var next = new float[ch * t];
-            for (int i = 0; i < next.Length; i++) next[i] = x[i] + y[i];
-            x = next;
+            System.Numerics.Tensors.TensorPrimitives.Add(x, y, x);
         }
         return x;
+    }
+
+    private static void LeakyReluInPlace(float[] data, float alpha = 0.1f)
+    {
+        for (int i = 0; i < data.Length; i++)
+            data[i] = data[i] >= 0f ? data[i] : data[i] * alpha;
     }
 }

@@ -115,3 +115,12 @@
 [MMS-TTS-Stream-Frame16] prompt="Hello, I will make some lunch, darling!" audio=2.90s samples=46336 chunks=12
 [MMS-TTS-Stream-Frame16] Time-To-First-Audio (TTFA)=0.365s TotalTime=9.760s
 
+[Piper-lessac-medium] prompt="Hello, I will make some lunch, darling!" audio=2.75s samples=60672
+[Piper-lessac-medium] runs(s)=[1.053, 0.988, 0.451] mean=0.831s RTF=0.302 (lower=faster; 1.0=realtime)
+
+[Piper-lessac-medium] prompt="Hello, I will make some lunch, darling!" audio=3.24s samples=71424
+[Piper-lessac-medium] runs(s)=[0.454, 0.457, 0.917] mean=0.609s RTF=0.188 (lower=faster; 1.0=realtime)
+
+[Piper-Stream-Frame16] prompt="Hello, I will make some lunch, darling!" audio=3.16s samples=69632 chunks=17
+[Piper-Stream-Frame16] Time-To-First-Audio (TTFA)=0.199s TotalTime=3.664s
+

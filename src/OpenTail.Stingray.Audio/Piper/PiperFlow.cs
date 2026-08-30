@@ -54,25 +54,20 @@ public static class PiperFlow
         int half = PiperOnnxWeights.FlowHalfChannels;
 
         var x0 = new float[half * t];
-        var x1 = new float[half * t];
         Array.Copy(z, 0, x0, 0, half * t);
-        Array.Copy(z, half * t, x1, 0, half * t);
 
         // h = pre(x0), channel-first [half, T] -> [hidden, T].
-        var h = Conv1x1(x0, half, t, lw.PreWeight, lw.PreBias, PiperOnnxWeights.FlowHalfChannels * 2);
+        var h = VitsAttentionKernels.Conv1x1(x0, half, t, lw.PreWeight, lw.PreBias, PiperOnnxWeights.FlowHalfChannels * 2);
 
         h = WnForward(h, t, lw.Enc);
 
         // m = post(h): mean_only, so post outputs [half, T] directly (no logs channel).
-        var m = Conv1x1(h, PiperOnnxWeights.FlowHalfChannels * 2, t, lw.PostWeight, lw.PostBias, half);
+        var m = VitsAttentionKernels.Conv1x1(h, PiperOnnxWeights.FlowHalfChannels * 2, t, lw.PostWeight, lw.PostBias, half);
 
         // reverse: x1 = (x1 - m) * exp(-logs), logs implicitly 0 (mean_only) -> x1 - m.
-        var x1Out = new float[half * t];
-        for (int i = 0; i < x1Out.Length; i++) x1Out[i] = x1[i] - m[i];
-
         var output = new float[2 * half * t];
         Array.Copy(x0, 0, output, 0, half * t);
-        Array.Copy(x1Out, 0, output, half * t, half * t);
+        System.Numerics.Tensors.TensorPrimitives.Subtract(z.AsSpan(half * t, half * t), m, output.AsSpan(half * t, half * t));
         return output;
     }
 
@@ -86,7 +81,6 @@ public static class PiperFlow
         int hidden = PiperOnnxWeights.FlowHalfChannels * 2; // 192
         const int kernel = PiperOnnxWeights.FlowWnKernel;
         const int dilation = PiperOnnxWeights.FlowWnDilation;
-        int pad = (kernel * dilation - dilation) / 2;
 
         var output = new float[hidden * t];
         var cur = x;
@@ -94,25 +88,18 @@ public static class PiperFlow
         for (int layer = 0; layer < PiperOnnxWeights.FlowWnLayers; layer++)
         {
             // in_layer: dilated conv, hidden -> 2*hidden (gate+filter).
-            var xIn = DilatedConv(cur, hidden, t, wn.InWeight[layer], wn.InBias[layer], 2 * hidden, kernel, dilation, pad);
+            var xIn = HifiGanKernels.Conv1dDilated(cur, hidden, t, wn.InWeight[layer], wn.InBias[layer], 2 * hidden, kernel, dilation);
 
             var acts = new float[hidden * t];
-            for (int c = 0; c < hidden; c++)
-            {
-                int filterBase = c * t;
-                int gateBase = (hidden + c) * t;
-                for (int ti = 0; ti < t; ti++)
-                {
-                    float filterVal = MathF.Tanh(xIn[filterBase + ti]);
-                    float gateVal = 1f / (1f + MathF.Exp(-xIn[gateBase + ti]));
-                    acts[filterBase + ti] = filterVal * gateVal;
-                }
-            }
+            var gateActs = new float[hidden * t];
+            System.Numerics.Tensors.TensorPrimitives.Tanh(xIn.AsSpan(0, hidden * t), acts);
+            System.Numerics.Tensors.TensorPrimitives.Sigmoid(xIn.AsSpan(hidden * t, hidden * t), gateActs);
+            System.Numerics.Tensors.TensorPrimitives.Multiply(acts, gateActs, acts);
 
             // res_skip_layer: 1x1 conv, hidden -> (last layer: hidden [skip only]; else: 2*hidden [res+skip]).
             bool isLast = layer == PiperOnnxWeights.FlowWnLayers - 1;
             int resSkipOutCh = isLast ? hidden : 2 * hidden;
-            var resSkip = Conv1x1(acts, hidden, t, wn.ResSkipWeight[layer], wn.ResSkipBias[layer], resSkipOutCh);
+            var resSkip = VitsAttentionKernels.Conv1x1(acts, hidden, t, wn.ResSkipWeight[layer], wn.ResSkipBias[layer], resSkipOutCh);
 
             if (!isLast)
             {
@@ -127,64 +114,6 @@ public static class PiperFlow
             }
         }
 
-        return output;
-    }
-
-    /// <summary>im2col + GEMM (see <c>FishSpeechCodec.FullConv1d</c>'s doc comment for the technique): the gather is independent of `oc`, hoisted out, and each output channel reduces to one AVX2/FMA <see cref="SimdKernels.DotF32"/> call per timestep.</summary>
-    private static unsafe float[] DilatedConv(float[] input, int inCh, int t, float[] weight, float[] bias, int outCh, int kernel, int dilation, int pad)
-    {
-        int rowLen = inCh * kernel;
-        var col = new float[t * rowLen];
-        System.Threading.Tasks.Parallel.For(0, t, ti =>
-        {
-            int rowBase = ti * rowLen;
-            for (int ic = 0; ic < inCh; ic++)
-            {
-                int xBase = ic * t;
-                int rBase = rowBase + ic * kernel;
-                for (int k = 0; k < kernel; k++)
-                {
-                    int src = ti - pad + k * dilation;
-                    col[rBase + k] = (uint)src < (uint)t ? input[xBase + src] : 0f;
-                }
-            }
-        });
-
-        var output = new float[outCh * t];
-        fixed (float* colPtr = col, weightPtr = weight, outputPtr = output)
-        {
-            var colLocal = colPtr;
-            var weightLocal = weightPtr;
-            var outputLocal = outputPtr;
-            System.Threading.Tasks.Parallel.For(0, outCh, oc =>
-            {
-                float b = bias[oc];
-                float* wOc = weightLocal + oc * rowLen;
-                float* outBase = outputLocal + oc * t;
-                for (int ti = 0; ti < t; ti++)
-                    outBase[ti] = b + SimdKernels.DotF32(wOc, colLocal + ti * rowLen, rowLen);
-            });
-        }
-        return output;
-    }
-
-    /// <summary>Per-timestep 1x1 conv (a Linear applied independently at every timestep), input/output
-    /// channel-first -- gathers each timestep's channel column then uses the real SIMD matvec kernel
-    /// (same pattern as PiperTextEncoder.ConvOverTime1x1) instead of a scalar strided dot product.</summary>
-    private static unsafe float[] Conv1x1(float[] input, int inCh, int t, float[] weight, float[] bias, int outCh)
-    {
-        var output = new float[outCh * t];
-        var col = new float[inCh];
-        var outCol = new float[outCh];
-        for (int ti = 0; ti < t; ti++)
-        {
-            for (int c = 0; c < inCh; c++) col[c] = input[c * t + ti];
-            fixed (float* w = weight, x = col, y = outCol)
-            {
-                SimdKernels.MatVecF32(y, w, x, outCh, inCh);
-            }
-            for (int c = 0; c < outCh; c++) output[c * t + ti] = outCol[c] + bias[c];
-        }
         return output;
     }
 }

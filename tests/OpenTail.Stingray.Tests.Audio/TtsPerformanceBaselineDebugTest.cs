@@ -447,6 +447,102 @@ public sealed class TtsPerformanceBaselineDebugTest : HeavyTestBase
         File.AppendAllText(Path.Combine(FindRepoFile("docs") ?? ".", "tts-benchmark-log.txt"), msg + "\n\n");
     }
 
+    [Fact]
+    public void Baseline_Piper()
+    {
+        string? onnxPath = FindRepoFile("models/en_US-lessac-medium.onnx");
+        string? jsonPath = FindRepoFile("models/en_US-lessac-medium.onnx.json");
+        Assert.SkipUnless(onnxPath != null && jsonPath != null, "Piper ONNX model not found");
+
+        var pipeline = OpenTail.Stingray.Audio.Piper.PiperPipeline.FromConfigFile(jsonPath!);
+
+        // Warmup
+        var warm = pipeline.Generate(new AudioGenerationRequest { Text = Prompt });
+        Assert.NotEmpty(warm.Samples);
+
+        double[] elapsedSec = new double[Runs];
+        int sampleCount = 0;
+        float[]? lastWav = null;
+        for (int i = 0; i < Runs; i++)
+        {
+            var sw = Stopwatch.StartNew();
+            var res = pipeline.Generate(new AudioGenerationRequest { Text = Prompt });
+            sw.Stop();
+            elapsedSec[i] = sw.Elapsed.TotalSeconds;
+            sampleCount = res.Samples.Length;
+            lastWav = res.Samples;
+        }
+
+        if (lastWav != null)
+        {
+            string? outDir = FindRepoFile("docs/audio-samples");
+            if (outDir != null)
+            {
+                string wavPath = Path.Combine(outDir, "piper-perf-turn1.wav");
+                new AudioGenerationResult(lastWav, pipeline.DefaultSampleRate).SaveWav(wavPath);
+            }
+        }
+
+        double audioSec = (double)sampleCount / pipeline.DefaultSampleRate;
+        double meanSec = Average(elapsedSec);
+        double rtf = meanSec / audioSec;
+        string msg = $"[Piper-lessac-medium] prompt=\"{Prompt}\" audio={audioSec:F2}s samples={sampleCount}\n" +
+                     $"[Piper-lessac-medium] runs(s)=[{string.Join(", ", Array.ConvertAll(elapsedSec, x => x.ToString("F3")))}] mean={meanSec:F3}s RTF={rtf:F3} (lower=faster; 1.0=realtime)";
+        Console.Error.WriteLine(msg);
+        File.AppendAllText(Path.Combine(FindRepoFile("docs") ?? ".", "tts-benchmark-log.txt"), msg + "\n\n");
+    }
+
+    [Fact]
+    public async Task Streaming_Piper()
+    {
+        string? onnxPath = FindRepoFile("models/en_US-lessac-medium.onnx");
+        string? jsonPath = FindRepoFile("models/en_US-lessac-medium.onnx.json");
+        Assert.SkipUnless(onnxPath != null && jsonPath != null, "Piper ONNX model not found");
+
+        var pipeline = OpenTail.Stingray.Audio.Piper.PiperPipeline.FromConfigFile(jsonPath!);
+
+        // Warmup
+        await foreach (var _ in pipeline.GenerateStreamAsync(new AudioGenerationRequest { Text = Prompt })) break;
+
+        var sw = Stopwatch.StartNew();
+        double ttfaSec = 0;
+        var chunks = new List<float[]>();
+        int totalSamples = 0;
+
+        await foreach (var chunk in pipeline.GenerateStreamAsync(new AudioGenerationRequest { Text = Prompt }))
+        {
+            if (chunks.Count == 0)
+            {
+                ttfaSec = sw.Elapsed.TotalSeconds;
+            }
+            chunks.Add(chunk);
+            totalSamples += chunk.Length;
+        }
+        sw.Stop();
+        double totalSec = sw.Elapsed.TotalSeconds;
+
+        var fullPcm = new float[totalSamples];
+        int offset = 0;
+        foreach (var c in chunks)
+        {
+            Array.Copy(c, 0, fullPcm, offset, c.Length);
+            offset += c.Length;
+        }
+
+        string? outDir = FindRepoFile("docs/audio-samples");
+        if (outDir != null)
+        {
+            string wavPath = Path.Combine(outDir, "piper-streaming-streamed.wav");
+            new AudioGenerationResult(fullPcm, pipeline.DefaultSampleRate).SaveWav(wavPath);
+        }
+
+        double audioSec = (double)totalSamples / pipeline.DefaultSampleRate;
+        string msg = $"[Piper-Stream-Frame16] prompt=\"{Prompt}\" audio={audioSec:F2}s samples={totalSamples} chunks={chunks.Count}\n" +
+                     $"[Piper-Stream-Frame16] Time-To-First-Audio (TTFA)={ttfaSec:F3}s TotalTime={totalSec:F3}s";
+        Console.Error.WriteLine(msg);
+        File.AppendAllText(Path.Combine(FindRepoFile("docs") ?? ".", "tts-benchmark-log.txt"), msg + "\n\n");
+    }
+
     private static double Average(double[] values)
     {
         double sum = 0;

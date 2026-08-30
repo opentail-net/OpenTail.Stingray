@@ -35,7 +35,7 @@ public static class PiperDurationPredictor
 
         // z = noise * noise_w, channel-first [2, T].
         var z = new float[2 * t];
-        for (int i = 0; i < z.Length; i++) z[i] = noise[i] * noiseScaleW;
+        System.Numerics.Tensors.TensorPrimitives.Multiply(noise.AsSpan(0, 2 * t), noiseScaleW, z);
 
         // Flip(8) -> ConvFlow(7) -> Flip(6) -> ConvFlow(5) -> Flip(4) -> ConvFlow(3) -> Flip(2) -> ElementwiseAffine(0)
         z = VitsDurationFlowKernels.Flip(z, t);

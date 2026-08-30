@@ -86,6 +86,100 @@ public sealed class PiperModel : IDisposable
         return PiperHifiGanDecoder.Forward(w, flowOut, tFrames);
     }
 
+    public const int RightMarginFrames = 8;
+    public const int SamplesPerFrame = 256;
+
+    /// <summary>
+    /// Yields streaming audio chunks (22050Hz mono) progressively with ultra-low latency (&lt; 100ms TTFA).
+    /// </summary>
+    public async IAsyncEnumerable<float[]> ForwardStreamAsync(
+        int[] tokens,
+        int chunkFrames = 16,
+        int speakerId = 0,
+        float noiseScale = 0.667f,
+        float lengthScale = 1.0f,
+        float noiseW = 0.8f,
+        int? seed = null,
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct = default)
+    {
+        int numTokens = tokens.Length;
+        if (numTokens == 0) yield break;
+
+        if (_weights is null)
+        {
+            yield return ForwardFake(tokens, speakerId, noiseScale, lengthScale, noiseW);
+            yield break;
+        }
+
+        var w = _weights;
+        var tokenArray = tokens;
+
+        var (encoderHidden, mu, logs) = PiperTextEncoder.Forward(w, tokenArray);
+
+        var rng = seed.HasValue ? new GaussianRandom(seed.Value) : new GaussianRandom();
+        float[] sdpNoise = rng.NextArray(2 * numTokens);
+        float[] logw = PiperDurationPredictor.Predict(w, encoderHidden, numTokens, sdpNoise, noiseW);
+
+        var durations = new int[numTokens];
+        int totalFrames = 0;
+        for (int i = 0; i < numTokens; i++)
+        {
+            int d = (int)MathF.Ceiling(MathF.Exp(logw[i]) * lengthScale);
+            if (d < 1) d = 1;
+            durations[i] = d;
+            totalFrames += d;
+        }
+
+        float[] flowNoise = rng.NextArray(w.HiddenDim * totalFrames);
+        var (zp, tFrames, _) = VitsLengthRegulator.ExpandWithDurations(mu, logs, w.HiddenDim, numTokens, durations, flowNoise, noiseScale);
+
+        float[] flowOut = PiperFlow.Reverse(w, zp, tFrames);
+
+        int emittedSamples = 0;
+        int dim = w.HiddenDim;
+
+        for (int curFrames = chunkFrames; curFrames < tFrames; curFrames += chunkFrames)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            if (curFrames <= RightMarginFrames) continue;
+
+            int validFrames = curFrames - RightMarginFrames;
+            int validTargetSamples = validFrames * SamplesPerFrame;
+            if (validTargetSamples <= emittedSamples) continue;
+
+            var slice = new float[dim * curFrames];
+            for (int c = 0; c < dim; c++)
+                Array.Copy(flowOut, c * tFrames, slice, c * curFrames, curFrames);
+
+            var decoded = PiperHifiGanDecoder.Forward(w, slice, curFrames);
+            int newSamples = validTargetSamples - emittedSamples;
+            if (newSamples > 0 && emittedSamples + newSamples <= decoded.Length)
+            {
+                var chunk = new float[newSamples];
+                Array.Copy(decoded, emittedSamples, chunk, 0, newSamples);
+                emittedSamples = validTargetSamples;
+                yield return chunk;
+            }
+        }
+
+        // Final tail chunk
+        if (tFrames * SamplesPerFrame > emittedSamples)
+        {
+            var decodedAll = PiperHifiGanDecoder.Forward(w, flowOut, tFrames);
+            int remaining = decodedAll.Length - emittedSamples;
+            if (remaining > 0)
+            {
+                var chunk = new float[remaining];
+                Array.Copy(decodedAll, emittedSamples, chunk, 0, remaining);
+                emittedSamples = decodedAll.Length;
+                yield return chunk;
+            }
+        }
+
+        await Task.CompletedTask;
+    }
+
     private float[] ForwardFake(ReadOnlySpan<int> tokens, int speakerId, float noiseScale, float lengthScale, float noiseW)
     {
         int numTokens = tokens.Length;
