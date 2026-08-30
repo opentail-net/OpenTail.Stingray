@@ -88,7 +88,8 @@ public sealed class ChatterboxPipeline : ITextToSpeechPipeline
         var speechTokens = _acousticLm.GenerateSpeechTokens(
             textTokens: textTokens,
             speakerFeatures: speakerFeatures ?? [],
-            temperature: 0.7f);
+            temperature: 0.7f,
+            maxTokens: Math.Clamp(textTokens.Length * 12, 32, 512));
 
         if (diag) DiagLog($"T3 speech-token generation: {sw!.ElapsedMilliseconds}ms, {speechTokens.Count} tokens");
         sw?.Restart();

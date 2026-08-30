@@ -829,6 +829,59 @@ public sealed class TtsPerformanceBaselineDebugTest : HeavyTestBase
     }
 
     [Fact]
+    public async Task Streaming_Chatterbox()
+    {
+        string? t3Path = FindRepoFile("models/chatterbox-turbo-t3-q4_k.gguf");
+        string? s3GenPath = FindRepoFile("models/chatterbox-turbo-s3gen-q4_k.gguf");
+        Assert.SkipUnless(t3Path != null && s3GenPath != null, "Chatterbox GGUF models not found");
+
+        using var pipeline = OpenTail.Stingray.Audio.Chatterbox.ChatterboxPipeline.Load(t3Path!, s3GenPath!);
+
+        var req = new AudioGenerationRequest { Text = Prompt, Voice = "nova" };
+
+        // Warmup
+        await foreach (var _ in pipeline.GenerateStreamAsync(req)) break;
+
+        var sw = Stopwatch.StartNew();
+        double ttfaSec = 0;
+        var chunks = new List<float[]>();
+        int totalSamples = 0;
+
+        await foreach (var chunk in pipeline.GenerateStreamAsync(req))
+        {
+            if (chunks.Count == 0)
+            {
+                ttfaSec = sw.Elapsed.TotalSeconds;
+            }
+            chunks.Add(chunk);
+            totalSamples += chunk.Length;
+        }
+        sw.Stop();
+        double totalSec = sw.Elapsed.TotalSeconds;
+
+        var fullPcm = new float[totalSamples];
+        int offset = 0;
+        foreach (var c in chunks)
+        {
+            Array.Copy(c, 0, fullPcm, offset, c.Length);
+            offset += c.Length;
+        }
+
+        string? outDir = FindRepoFile("docs/audio-samples");
+        if (outDir != null)
+        {
+            string wavPath = Path.Combine(outDir, "chatterbox-streaming-streamed.wav");
+            new AudioGenerationResult(fullPcm, pipeline.DefaultSampleRate).SaveWav(wavPath);
+        }
+
+        double audioSec = (double)totalSamples / pipeline.DefaultSampleRate;
+        string msg = $"[Chatterbox-Stream] prompt=\"{Prompt}\" audio={audioSec:F2}s samples={totalSamples} chunks={chunks.Count}\n" +
+                     $"[Chatterbox-Stream] Time-To-First-Audio (TTFA)={ttfaSec:F3}s TotalTime={totalSec:F3}s";
+        Console.Error.WriteLine(msg);
+        File.AppendAllText(Path.Combine(FindRepoFile("docs") ?? ".", "tts-benchmark-log.txt"), msg + "\n\n");
+    }
+
+    [Fact]
     public void Baseline_Parler()
     {
         string? modelPath = FindRepoFile("models/parler-tts-mini-v1.safetensors");
