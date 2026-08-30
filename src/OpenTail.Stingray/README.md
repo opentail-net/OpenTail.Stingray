@@ -38,7 +38,7 @@ In Python and C++, running modern local AI requires juggling 4–5 fragmented, h
   * **Google & Meta:** Gemma 4 UV (`gemma4uv`), Gemma 4 ViT (`gemma4v`), Gemma 3 SigLIP (`gemma3`), and Llama 4 (`llama4`).
 * 🎙️ **Studio Audio & Voice Stack:**
   * **Speech-to-Text (ASR):** Whisper (Large-v3 / Turbo), NVIDIA NeMo Parakeet FastConformer CTC, Alibaba Qwen3-ASR (0.6B/1.7B), Qwen3-ForcedAligner (word timestamps), FunASR Paraformer, SenseVoice, and Silero VAD.
-  * **Neural Voice & Voice Cloning (TTS):** Qwen3-TTS 12Hz (with ERes2NetV2 192-dim voice cloning speaker encoder), Kokoro-82M, Chatterbox-Turbo, F5-TTS Flow-Matching DiT, CosyVoice 2.0 / 300M, Piper VITS, and MeloTTS Multilingual VITS.
+  * **Neural Voice & Voice Cloning (TTS):** Qwen3-TTS 12Hz (with ERes2NetV2 192-dim voice cloning speaker encoder), Coqui XTTS-v2 (GPT2 autoregressive codec + FiLM-conditioned HiFi-GAN, zero-shot voice cloning), Kokoro-82M, Chatterbox-Turbo, F5-TTS Flow-Matching DiT, CosyVoice 2.0 / 300M, Piper VITS, Meta MMS-TTS (Massively Multilingual VITS), and MeloTTS Multilingual VITS.
   * **Broadcast DSP:** Rational windowed-sinc resamplers, ATSC A/85 downmixing, and TPDF dithered 16-bit/24-bit WAV exporter.
 * 🎨 **State-of-the-Art Diffusion & Video:**
   * **Image Architectures:** SD 1.5, SDXL, SD 3 / 3.5 (MMDiT), FLUX.1 (schnell/dev), FLUX.2 (Klein & Kontext multi-reference), FLUX 3 (3D/4D RoPE Multimodal), and Z-Image-Turbo.
