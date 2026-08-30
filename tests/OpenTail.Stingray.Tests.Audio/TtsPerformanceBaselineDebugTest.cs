@@ -353,6 +353,50 @@ public sealed class TtsPerformanceBaselineDebugTest : HeavyTestBase
         File.AppendAllText(Path.Combine(FindRepoFile("docs") ?? ".", "tts-benchmark-log.txt"), msg + "\n\n");
     }
 
+    [Fact]
+    public void Baseline_MmsTts()
+    {
+        string? checkpointDir = FindRepoFile("models/mms-tts-eng/model.safetensors") is { } p ? Path.GetDirectoryName(p) : null;
+        Assert.SkipUnless(checkpointDir != null, "MMS-TTS checkpoint not found");
+
+        var pipeline = OpenTail.Stingray.Audio.MmsTts.MmsTtsPipeline.Load(checkpointDir!);
+
+        // Warmup
+        var warm = pipeline.Generate(Prompt, seed: 42);
+        Assert.NotEmpty(warm);
+
+        double[] elapsedSec = new double[Runs];
+        int sampleCount = 0;
+        float[]? lastWav = null;
+        for (int i = 0; i < Runs; i++)
+        {
+            var sw = Stopwatch.StartNew();
+            var wav = pipeline.Generate(Prompt, seed: 42);
+            sw.Stop();
+            elapsedSec[i] = sw.Elapsed.TotalSeconds;
+            sampleCount = wav.Length;
+            lastWav = wav;
+        }
+
+        if (lastWav != null)
+        {
+            string? outDir = FindRepoFile("docs/audio-samples");
+            if (outDir != null)
+            {
+                string wavPath = Path.Combine(outDir, "mms-tts-perf-turn1.wav");
+                new AudioGenerationResult(lastWav, pipeline.DefaultSampleRate).SaveWav(wavPath);
+            }
+        }
+
+        double audioSec = (double)sampleCount / pipeline.DefaultSampleRate;
+        double meanSec = Average(elapsedSec);
+        double rtf = meanSec / audioSec;
+        string msg = $"[MMS-TTS-eng] prompt=\"{Prompt}\" audio={audioSec:F2}s samples={sampleCount}\n" +
+                     $"[MMS-TTS-eng] runs(s)=[{string.Join(", ", Array.ConvertAll(elapsedSec, x => x.ToString("F3")))}] mean={meanSec:F3}s RTF={rtf:F3} (lower=faster; 1.0=realtime)";
+        Console.Error.WriteLine(msg);
+        File.AppendAllText(Path.Combine(FindRepoFile("docs") ?? ".", "tts-benchmark-log.txt"), msg + "\n\n");
+    }
+
     private static double Average(double[] values)
     {
         double sum = 0;

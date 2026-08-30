@@ -68,27 +68,19 @@ public static class MmsTtsFlow
     {
         const int kernel = MmsTtsWeights.FlowWnKernel;
         const int dilation = MmsTtsWeights.FlowWnDilation;
-        int pad = (kernel * dilation - dilation) / 2;
 
         var output = new float[hidden * t];
         var cur = x;
 
         for (int layer = 0; layer < MmsTtsWeights.FlowWnLayers; layer++)
         {
-            var xIn = DilatedConv(cur, hidden, t, wn.InWeight[layer], wn.InBias[layer], 2 * hidden, kernel, dilation, pad);
+            var xIn = HifiGanKernels.Conv1dDilated(cur, hidden, t, wn.InWeight[layer], wn.InBias[layer], 2 * hidden, kernel, dilation);
 
             var acts = new float[hidden * t];
-            for (int c = 0; c < hidden; c++)
-            {
-                int filterBase = c * t;
-                int gateBase = (hidden + c) * t;
-                for (int ti = 0; ti < t; ti++)
-                {
-                    float filterVal = MathF.Tanh(xIn[filterBase + ti]);
-                    float gateVal = 1f / (1f + MathF.Exp(-xIn[gateBase + ti]));
-                    acts[filterBase + ti] = filterVal * gateVal;
-                }
-            }
+            var gateActs = new float[hidden * t];
+            System.Numerics.Tensors.TensorPrimitives.Tanh(xIn.AsSpan(0, hidden * t), acts);
+            System.Numerics.Tensors.TensorPrimitives.Sigmoid(xIn.AsSpan(hidden * t, hidden * t), gateActs);
+            System.Numerics.Tensors.TensorPrimitives.Multiply(acts, gateActs, acts);
 
             bool isLast = layer == MmsTtsWeights.FlowWnLayers - 1;
             int resSkipOutCh = isLast ? hidden : 2 * hidden;
@@ -107,43 +99,6 @@ public static class MmsTtsFlow
             }
         }
 
-        return output;
-    }
-
-    private static unsafe float[] DilatedConv(float[] input, int inCh, int t, float[] weight, float[] bias, int outCh, int kernel, int dilation, int pad)
-    {
-        int rowLen = inCh * kernel;
-        var col = new float[t * rowLen];
-        System.Threading.Tasks.Parallel.For(0, t, ti =>
-        {
-            int rowBase = ti * rowLen;
-            for (int ic = 0; ic < inCh; ic++)
-            {
-                int xBase = ic * t;
-                int rBase = rowBase + ic * kernel;
-                for (int k = 0; k < kernel; k++)
-                {
-                    int src = ti - pad + k * dilation;
-                    col[rBase + k] = (uint)src < (uint)t ? input[xBase + src] : 0f;
-                }
-            }
-        });
-
-        var output = new float[outCh * t];
-        fixed (float* colPtr = col, weightPtr = weight, outputPtr = output)
-        {
-            var colLocal = colPtr;
-            var weightLocal = weightPtr;
-            var outputLocal = outputPtr;
-            System.Threading.Tasks.Parallel.For(0, outCh, oc =>
-            {
-                float b = bias[oc];
-                float* wOc = weightLocal + oc * rowLen;
-                float* outBase = outputLocal + oc * t;
-                for (int ti = 0; ti < t; ti++)
-                    outBase[ti] = b + SimdKernels.DotF32(wOc, colLocal + ti * rowLen, rowLen);
-            });
-        }
         return output;
     }
 }
