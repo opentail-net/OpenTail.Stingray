@@ -634,6 +634,112 @@ public sealed class TtsPerformanceBaselineDebugTest : HeavyTestBase
     }
 
     [Fact]
+    public async Task Streaming_Kokoro()
+    {
+        string? modelPath = FindRepoFile("models/kokoro-82m-q8_0.gguf");
+        string? voicePath = FindRepoFile("models/kokoro-voice-af_heart.gguf");
+        Assert.SkipUnless(modelPath != null && voicePath != null, "Kokoro GGUF model or voice not found");
+
+        using var model = OpenTail.Stingray.Audio.Kokoro.KokoroModel.Load(modelPath!, voicePath!);
+        using var pipeline = new OpenTail.Stingray.Audio.Kokoro.KokoroPipeline(model);
+
+        var req = new AudioGenerationRequest { Text = Prompt, Voice = "af_heart" };
+
+        // Warmup
+        await foreach (var _ in pipeline.GenerateStreamAsync(req)) break;
+
+        var sw = Stopwatch.StartNew();
+        double ttfaSec = 0;
+        var chunks = new List<float[]>();
+        int totalSamples = 0;
+
+        await foreach (var chunk in pipeline.GenerateStreamAsync(req))
+        {
+            if (chunks.Count == 0)
+            {
+                ttfaSec = sw.Elapsed.TotalSeconds;
+            }
+            chunks.Add(chunk);
+            totalSamples += chunk.Length;
+        }
+        sw.Stop();
+        double totalSec = sw.Elapsed.TotalSeconds;
+
+        var fullPcm = new float[totalSamples];
+        int offset = 0;
+        foreach (var c in chunks)
+        {
+            Array.Copy(c, 0, fullPcm, offset, c.Length);
+            offset += c.Length;
+        }
+
+        string? outDir = FindRepoFile("docs/audio-samples");
+        if (outDir != null)
+        {
+            string wavPath = Path.Combine(outDir, "kokoro-streaming-streamed.wav");
+            new AudioGenerationResult(fullPcm, pipeline.DefaultSampleRate).SaveWav(wavPath);
+        }
+
+        double audioSec = (double)totalSamples / pipeline.DefaultSampleRate;
+        string msg = $"[Kokoro-82M-Stream] prompt=\"{Prompt}\" audio={audioSec:F2}s samples={totalSamples} chunks={chunks.Count}\n" +
+                     $"[Kokoro-82M-Stream] Time-To-First-Audio (TTFA)={ttfaSec:F3}s TotalTime={totalSec:F3}s";
+        Console.Error.WriteLine(msg);
+        File.AppendAllText(Path.Combine(FindRepoFile("docs") ?? ".", "tts-benchmark-log.txt"), msg + "\n\n");
+    }
+
+    [Fact]
+    public async Task Streaming_MeloTts()
+    {
+        string? modelPath = FindRepoFile("models/melotts-zh_en.onnx");
+        Assert.SkipUnless(modelPath != null, "MeloTTS ONNX model not found");
+
+        using var pipeline = OpenTail.Stingray.Audio.MeloTTS.MeloPipeline.Load(modelPath!);
+
+        var req = new AudioGenerationRequest { Text = Prompt, Voice = "EN-US" };
+
+        // Warmup
+        await foreach (var _ in pipeline.GenerateStreamAsync(req)) break;
+
+        var sw = Stopwatch.StartNew();
+        double ttfaSec = 0;
+        var chunks = new List<float[]>();
+        int totalSamples = 0;
+
+        await foreach (var chunk in pipeline.GenerateStreamAsync(req))
+        {
+            if (chunks.Count == 0)
+            {
+                ttfaSec = sw.Elapsed.TotalSeconds;
+            }
+            chunks.Add(chunk);
+            totalSamples += chunk.Length;
+        }
+        sw.Stop();
+        double totalSec = sw.Elapsed.TotalSeconds;
+
+        var fullPcm = new float[totalSamples];
+        int offset = 0;
+        foreach (var c in chunks)
+        {
+            Array.Copy(c, 0, fullPcm, offset, c.Length);
+            offset += c.Length;
+        }
+
+        string? outDir = FindRepoFile("docs/audio-samples");
+        if (outDir != null)
+        {
+            string wavPath = Path.Combine(outDir, "melotts-streaming-streamed.wav");
+            new AudioGenerationResult(fullPcm, pipeline.DefaultSampleRate).SaveWav(wavPath);
+        }
+
+        double audioSec = (double)totalSamples / pipeline.DefaultSampleRate;
+        string msg = $"[MeloTTS-Stream] prompt=\"{Prompt}\" audio={audioSec:F2}s samples={totalSamples} chunks={chunks.Count}\n" +
+                     $"[MeloTTS-Stream] Time-To-First-Audio (TTFA)={ttfaSec:F3}s TotalTime={totalSec:F3}s";
+        Console.Error.WriteLine(msg);
+        File.AppendAllText(Path.Combine(FindRepoFile("docs") ?? ".", "tts-benchmark-log.txt"), msg + "\n\n");
+    }
+
+    [Fact]
     public void Baseline_F5Tts()
     {
         string? modelPath = FindRepoFile("models/f5tts_base.safetensors");
@@ -764,6 +870,60 @@ public sealed class TtsPerformanceBaselineDebugTest : HeavyTestBase
         double rtf = meanSec / audioSec;
         string msg = $"[Parler-TTS] prompt=\"{Prompt}\" audio={audioSec:F2}s samples={sampleCount}\n" +
                      $"[Parler-TTS] runs(s)=[{string.Join(", ", Array.ConvertAll(elapsedSec, x => x.ToString("F3")))}] mean={meanSec:F3}s RTF={rtf:F3} (lower=faster; 1.0=realtime)";
+        Console.Error.WriteLine(msg);
+        File.AppendAllText(Path.Combine(FindRepoFile("docs") ?? ".", "tts-benchmark-log.txt"), msg + "\n\n");
+    }
+
+    [Fact]
+    public async Task Streaming_Parler()
+    {
+        string? modelPath = FindRepoFile("models/parler-tts-mini-v1.safetensors");
+        string? tokenizerPath = FindRepoFile("scratch-llamacpp-ref/parler-tokenizer/tokenizer.json");
+        Assert.SkipUnless(modelPath != null && tokenizerPath != null, "Parler safetensors model or tokenizer not found");
+
+        using var loader = OpenTail.Stingray.Core.SafetensorsLoader.Open(modelPath!);
+        using var pipeline = new OpenTail.Stingray.Audio.Parler.ParlerFullPipeline(tokenizerPath!, loader);
+
+        const string femaleDesc = "A clear female voice speaks with a warm and friendly tone in a quiet environment.";
+
+        // Warmup
+        await foreach (var _ in pipeline.SynthesizeStreamAsync(Prompt, description: femaleDesc, maxNewTokens: 250, chunkFrames: 16)) break;
+
+        var sw = Stopwatch.StartNew();
+        double ttfaSec = 0;
+        var chunks = new List<float[]>();
+        int totalSamples = 0;
+
+        await foreach (var chunk in pipeline.SynthesizeStreamAsync(Prompt, description: femaleDesc, maxNewTokens: 250, chunkFrames: 16))
+        {
+            if (chunks.Count == 0)
+            {
+                ttfaSec = sw.Elapsed.TotalSeconds;
+            }
+            chunks.Add(chunk);
+            totalSamples += chunk.Length;
+        }
+        sw.Stop();
+        double totalSec = sw.Elapsed.TotalSeconds;
+
+        var fullPcm = new float[totalSamples];
+        int offset = 0;
+        foreach (var c in chunks)
+        {
+            Array.Copy(c, 0, fullPcm, offset, c.Length);
+            offset += c.Length;
+        }
+
+        string? outDir = FindRepoFile("docs/audio-samples");
+        if (outDir != null)
+        {
+            string wavPath = Path.Combine(outDir, "parler-streaming-streamed.wav");
+            new AudioGenerationResult(fullPcm, pipeline.DefaultSampleRate).SaveWav(wavPath);
+        }
+
+        double audioSec = (double)totalSamples / pipeline.DefaultSampleRate;
+        string msg = $"[Parler-TTS-Stream-Frame16] prompt=\"{Prompt}\" audio={audioSec:F2}s samples={totalSamples} chunks={chunks.Count}\n" +
+                     $"[Parler-TTS-Stream-Frame16] Time-To-First-Audio (TTFA)={ttfaSec:F3}s TotalTime={totalSec:F3}s";
         Console.Error.WriteLine(msg);
         File.AppendAllText(Path.Combine(FindRepoFile("docs") ?? ".", "tts-benchmark-log.txt"), msg + "\n\n");
     }

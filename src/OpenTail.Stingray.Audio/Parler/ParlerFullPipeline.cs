@@ -104,7 +104,7 @@ public sealed class ParlerFullPipeline : ITextToSpeechPipeline
     }
 
     public IAsyncEnumerable<float[]> GenerateStreamAsync(AudioGenerationRequest request, System.Threading.CancellationToken ct = default)
-        => TtsStreamingHelper.SplitAndGenerateAsync(request, Generate, ct);
+        => SynthesizeStreamAsync(request.Text, request.Voice ?? DefaultDescription, ct: ct);
 
     public ParlerFullPipeline(string tokenizerJsonPath, SafetensorsLoader loader, IDisposable? ownedLoader = null)
     {
@@ -292,6 +292,160 @@ public sealed class ParlerFullPipeline : ITextToSpeechPipeline
         }
 
         return pcm;
+    }
+
+    /// <summary>
+    /// Streaming synthesis: as the delayed multi-codebook tokens are generated autoregressively,
+    /// yields newly completed decoded PCM audio chunks with low Time-To-First-Audio (TTFA).
+    /// </summary>
+    public async IAsyncEnumerable<float[]> SynthesizeStreamAsync(string text, string? description = null, int maxNewTokens = 300, int minNewTokens = 10, int chunkFrames = 16, int seed = -1, [System.Runtime.CompilerServices.EnumeratorCancellation] System.Threading.CancellationToken ct = default)
+    {
+        var rng = seed >= 0 ? new Random(seed) : new Random();
+
+        var descriptionIds = _tokenizer.Encode(description ?? DefaultDescription);
+        descriptionIds.Add(1);
+        var encoderHidden = T5Encoder.Forward(_t5Weights, [.. descriptionIds]);
+
+        var promptIds = _tokenizer.Encode(text);
+        promptIds.Add(1);
+        int promptLen = promptIds.Count;
+        bool hasPrompt = _decoderWeights.EmbedPrompts is not null;
+        if (!hasPrompt) promptLen = 0;
+
+        int maxLength = 1 + maxNewTokens;
+        var initialPerCodebook = new int[NumCodebooks][];
+        for (int cb = 0; cb < NumCodebooks; cb++) initialPerCodebook[cb] = [BosTokenId];
+
+        var (initialInput, patternMask) = ParlerDelayPattern.Build(initialPerCodebook, BosTokenId, PadTokenId, maxLength, NumCodebooks);
+
+        var sequence = new int[NumCodebooks][];
+        for (int cb = 0; cb < NumCodebooks; cb++) sequence[cb] = [.. initialInput[cb]];
+
+        var cache = new ParlerDecoderKvCache(ParlerDecoderWeights.NumLayers);
+        var logitsProcessor = new ParlerLogitsProcessor(EosTokenId, NumCodebooks);
+        var logitsPerCodebook = new float[NumCodebooks][];
+        for (int cb = 0; cb < NumCodebooks; cb++)
+            logitsPerCodebook[cb] = new float[ParlerDecoderWeights.OutputVocabSize];
+
+        float[] hidden = [];
+
+        if (hasPrompt)
+        {
+            for (int i = 0; i < promptLen; i++)
+            {
+                var embed = ParlerDecoder.EmbedPromptToken(_decoderWeights, promptIds[i], i);
+                hidden = ParlerDecoder.ForwardStep(_decoderWeights, cache, embed, encoderHidden);
+            }
+        }
+
+        int t0 = sequence[0].Length;
+        for (int pos = 0; pos < t0; pos++)
+        {
+            var ids = new int[NumCodebooks];
+            for (int cb = 0; cb < NumCodebooks; cb++) ids[cb] = sequence[cb][pos];
+            var embed = ParlerDecoder.EmbedStep(_decoderWeights, ids, promptLen + pos);
+            hidden = ParlerDecoder.ForwardStep(_decoderWeights, cache, embed, encoderHidden);
+        }
+
+        int yieldedFrames = 0;
+
+        for (int step = 0; step < maxNewTokens; step++)
+        {
+            ct.ThrowIfCancellationRequested();
+            int pos = t0 + step;
+            if (pos >= maxLength) break;
+
+            Parallel.For(0, NumCodebooks, cb =>
+                LinearNoBias(hidden, _decoderWeights.LmHeads[cb], logitsPerCodebook[cb], ParlerDecoderWeights.HiddenDim, ParlerDecoderWeights.OutputVocabSize));
+
+            if (step >= minNewTokens)
+            {
+                var history = new int[NumCodebooks][];
+                for (int cb = 0; cb < NumCodebooks; cb++) history[cb] = sequence[cb];
+                logitsProcessor.Apply(history, logitsPerCodebook);
+            }
+
+            var predicted = new int[NumCodebooks];
+            for (int cb = 0; cb < NumCodebooks; cb++)
+            {
+                if (Array.IndexOf(sequence[cb], EosTokenId) >= 0)
+                    predicted[cb] = EosTokenId;
+                else
+                    predicted[cb] = SampleMultinomial(logitsPerCodebook[cb], rng);
+            }
+
+            var maskAtPos = new int[NumCodebooks];
+            for (int cb = 0; cb < NumCodebooks; cb++) maskAtPos[cb] = pos < patternMask[cb].Length ? patternMask[cb][pos] : PadTokenId;
+            var forced = ParlerDelayPattern.Apply(Wrap(predicted), Wrap(maskAtPos));
+
+            for (int cb = 0; cb < NumCodebooks; cb++) sequence[cb] = [.. sequence[cb], forced[cb][0]];
+
+            bool allEos = true;
+            for (int cb = 0; cb < NumCodebooks; cb++)
+                if (sequence[cb][^1] != EosTokenId) { allEos = false; break; }
+
+            int availableFrames = int.MaxValue;
+            for (int cb = 0; cb < NumCodebooks; cb++)
+            {
+                int start = cb + 1;
+                int count = Math.Max(0, sequence[cb].Length - start);
+                availableFrames = Math.Min(availableFrames, count);
+            }
+
+            if (availableFrames >= yieldedFrames + chunkFrames)
+            {
+                int readyCount = availableFrames - yieldedFrames;
+                var chunkCodes = new int[NumCodebooks][];
+                for (int cb = 0; cb < NumCodebooks; cb++)
+                {
+                    int start = cb + 1 + yieldedFrames;
+                    chunkCodes[cb] = sequence[cb][start..(start + readyCount)];
+                }
+                var pcmChunk = DacDecoder.Decode(_dacWeights, chunkCodes);
+                if (pcmChunk.Length > 0)
+                {
+                    yield return pcmChunk;
+                }
+                yieldedFrames += readyCount;
+            }
+
+            if (step >= minNewTokens && allEos) break;
+
+            var nextIds = new int[NumCodebooks];
+            for (int cb = 0; cb < NumCodebooks; cb++) nextIds[cb] = sequence[cb][^1];
+            var nextEmbed = ParlerDecoder.EmbedStep(_decoderWeights, nextIds, promptLen + pos + 1);
+            hidden = ParlerDecoder.ForwardStep(_decoderWeights, cache, nextEmbed, encoderHidden);
+        }
+
+        int totalFrames = int.MaxValue;
+        for (int cb = 0; cb < NumCodebooks; cb++)
+        {
+            var row = sequence[cb];
+            int start = cb + 1;
+            int end = row.Length;
+            for (int i = start; i < row.Length; i++)
+            {
+                if (row[i] == EosTokenId || row[i] == PadTokenId) { end = i; break; }
+            }
+            int len = Math.Max(0, end - start);
+            totalFrames = Math.Min(totalFrames, len);
+        }
+
+        if (totalFrames > yieldedFrames)
+        {
+            int remaining = totalFrames - yieldedFrames;
+            var tailCodes = new int[NumCodebooks][];
+            for (int cb = 0; cb < NumCodebooks; cb++)
+            {
+                int start = cb + 1 + yieldedFrames;
+                tailCodes[cb] = sequence[cb][start..(start + remaining)];
+            }
+            var pcmTail = DacDecoder.Decode(_dacWeights, tailCodes);
+            if (pcmTail.Length > 0)
+            {
+                yield return pcmTail;
+            }
+        }
     }
 
     /// <summary>Strips each codebook's real BOS-offset prefix and truncates at the first genuine EOS, then aligns all 9 codebooks.</summary>

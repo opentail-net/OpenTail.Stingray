@@ -232,3 +232,15 @@
 [CosyVoice3] prompt="Hello, I will make some lunch, darling!" audio=2.96s samples=71040
 [CosyVoice3] runs(s)=[20.766, 20.794, 20.915] mean=20.825s RTF=7.035 (lower=faster; 1.0=realtime)
 
+[Parler-TTS-Stream-Frame16] prompt="Hello, I will make some lunch, darling!" audio=2.32s samples=102400 chunks=13
+[Parler-TTS-Stream-Frame16] Time-To-First-Audio (TTFA)=1.227s TotalTime=10.360s
+
+[Kokoro-82M-Stream] prompt="Hello, I will make some lunch, darling!" audio=4.78s samples=114660 chunks=3
+[Kokoro-82M-Stream] Time-To-First-Audio (TTFA)=1.223s TotalTime=4.331s
+
+[Parler-TTS-Stream-Frame16] prompt="Hello, I will make some lunch, darling!" audio=2.21s samples=97280 chunks=12
+[Parler-TTS-Stream-Frame16] Time-To-First-Audio (TTFA)=1.097s TotalTime=8.825s
+
+[MeloTTS-Stream] prompt="Hello, I will make some lunch, darling!" audio=2.37s samples=104448 chunks=3
+[MeloTTS-Stream] Time-To-First-Audio (TTFA)=0.429s TotalTime=2.553s
+
