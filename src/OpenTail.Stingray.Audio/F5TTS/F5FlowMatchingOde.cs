@@ -25,6 +25,7 @@ public static class F5FlowMatchingOde
         int steps = 16,
         float cfgStrength = 1.0f,
         float swaySamplingCoef = -1.0f,
+        float cfgDecayCutoff = 0.55f,
         int seed = 42)
     {
         int melDim = F5TtsWeights.MelDim;
@@ -64,8 +65,16 @@ public static class F5FlowMatchingOde
             float t = Sway(t0, swaySamplingCoef);
             float dt = Sway(t1, swaySamplingCoef) - t;
 
+            // Dynamic CFG Decay: guidance is applied during formative early trajectory (t < cfgDecayCutoff)
+            // and decays smoothly to pure conditional velocity for the final refinement passes.
+            float currentCfg = 0f;
+            if (cfgStrength >= 1e-5f && t < cfgDecayCutoff)
+            {
+                currentCfg = cfgStrength * (1.0f - (t / cfgDecayCutoff) * 0.5f);
+            }
+
             float[] v;
-            if (cfgStrength < 1e-5f)
+            if (currentCfg < 1e-5f)
             {
                 v = F5DiTModel.ForwardVelocity(w, x, condMel, textEmbedCond, t, numFrames, rotaryCos, rotarySin);
             }
@@ -78,7 +87,7 @@ public static class F5FlowMatchingOde
                 );
                 v = new float[vCond.Length];
                 System.Numerics.Tensors.TensorPrimitives.Subtract(vCond, vUncond, v);
-                System.Numerics.Tensors.TensorPrimitives.MultiplyAdd(v, cfgStrength, vCond, v);
+                System.Numerics.Tensors.TensorPrimitives.MultiplyAdd(v, currentCfg, vCond, v);
             }
 
             System.Numerics.Tensors.TensorPrimitives.MultiplyAdd(v, dt, x, x);
