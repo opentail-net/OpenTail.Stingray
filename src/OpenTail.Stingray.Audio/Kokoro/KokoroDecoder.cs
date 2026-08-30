@@ -229,12 +229,8 @@ public static class KokoroDecoder
         int phaseCh = genNFft / 2 + 1; // 11
         var spec  = new float[specCh  * outT];
         var phase = new float[phaseCh * outT];
-        for (int c = 0; c < specCh;  c++)
-            for (int ti = 0; ti < outT; ti++)
-                spec[c * outT + ti] = MathF.Exp(x[c * outT + ti]);
-        for (int c = 0; c < phaseCh; c++)
-            for (int ti = 0; ti < outT; ti++)
-                phase[c * outT + ti] = MathF.Sin(x[(specCh + c) * outT + ti]);
+        System.Numerics.Tensors.TensorPrimitives.Exp(x.AsSpan(0, specCh * outT), spec);
+        System.Numerics.Tensors.TensorPrimitives.Sin(x.AsSpan(specCh * outT, phaseCh * outT), phase);
 
         return InverseSTFT(spec, phase, specCh, outT, genNFft, genHop);
     }
@@ -264,7 +260,7 @@ public static class KokoroDecoder
             Snake1DInPlace(xt, w.Alpha2[i], ch, t);
             xt = Conv1dDilated(xt, w.Convs2Weight[i], w.Convs2Bias[i], ch, ch, t, kernel: kernel, dilation: 1);
 
-            for (int j = 0; j < cur.Length; j++) cur[j] += xt[j];
+            System.Numerics.Tensors.TensorPrimitives.Add(cur, xt, cur);
         }
         return cur;
     }
@@ -281,34 +277,39 @@ public static class KokoroDecoder
             {
                 float v = x[row + ti];
                 float sv = MathF.Sin(a * v);
-                x[row + ti] = v + invA * sv * sv;
+                x[row + ti] = v + invA * (sv * sv);
             }
         }
     }
 
-    private static float[] AdaIn1d(float[] x, float[] style, float[] fcWeight, float[] fcBias, int ch, int styleDim, int t)
+    private static unsafe float[] AdaIn1d(float[] x, float[] style, float[] fcWeight, float[] fcBias, int ch, int styleDim, int t)
     {
         var h = new float[2 * ch];
-        for (int o = 0; o < 2 * ch; o++)
+        fixed (float* w = fcWeight, s = style, y = h)
         {
-            float sum = fcBias[o];
-            int wBase = o * styleDim;
-            for (int d = 0; d < styleDim; d++) sum += fcWeight[wBase + d] * style[d];
-            h[o] = sum;
+            SimdKernels.MatVecF32(y, w, s, 2 * ch, styleDim);
         }
+        for (int o = 0; o < 2 * ch; o++) h[o] += fcBias[o];
+
         var output = new float[ch * t];
         for (int c = 0; c < ch; c++)
         {
-            double mean = 0;
-            for (int ti = 0; ti < t; ti++) mean += x[c * t + ti];
-            mean /= t;
-            double var = 0;
-            for (int ti = 0; ti < t; ti++) { double d = x[c * t + ti] - mean; var += d * d; }
-            var /= t;
-            float invStd = (float)(1.0 / Math.Sqrt(var + 1e-5));
-            float gamma = h[c], beta = h[ch + c];
+            var srcSpan = x.AsSpan(c * t, t);
+            var dstSpan = output.AsSpan(c * t, t);
+
+            float mean = System.Numerics.Tensors.TensorPrimitives.Sum(srcSpan) / t;
+            float varSum = 0f;
             for (int ti = 0; ti < t; ti++)
-                output[c * t + ti] = (1f + gamma) * ((float)((x[c * t + ti] - mean) * invStd)) + beta;
+            {
+                float d = srcSpan[ti] - mean;
+                varSum += d * d;
+            }
+            float invStd = 1.0f / MathF.Sqrt(varSum / t + 1e-5f);
+            float scale = (1f + h[c]) * invStd;
+            float shift = h[ch + c] - mean * scale;
+
+            for (int ti = 0; ti < t; ti++)
+                dstSpan[ti] = srcSpan[ti] * scale + shift;
         }
         return output;
     }
@@ -368,8 +369,9 @@ public static class KokoroDecoder
             float sum = b;
             int row = n * 9;
             for (int h = 0; h < 9; h++) sum += weight[h] * sines[row + h];
-            output[n] = MathF.Tanh(sum);
+            output[n] = sum;
         }
+        System.Numerics.Tensors.TensorPrimitives.Tanh(output, output);
         return output;
     }
 

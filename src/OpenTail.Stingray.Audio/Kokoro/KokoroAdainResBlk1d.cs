@@ -41,47 +41,40 @@ public static class KokoroAdainResBlk1d
 
         float invSqrt2 = 1f / MathF.Sqrt(2f);
         var output = new float[dimOut * poolT];
-        for (int i = 0; i < output.Length; i++)
-            output[i] = (xt[i] + xs[i]) * invSqrt2;
+        System.Numerics.Tensors.TensorPrimitives.Add(xt, xs, output);
+        System.Numerics.Tensors.TensorPrimitives.Multiply(output, invSqrt2, output);
         return output;
     }
 
     /// <summary>AdaIN1d: InstanceNorm1d (per-channel, over T, affine=False) then (1+gamma)*norm+beta from fc(style).</summary>
-    private static float[] AdaIn1d(float[] x, float[] style, float[] fcWeight, float[] fcBias, int channels, int styleDim, int t)
+    private static unsafe float[] AdaIn1d(float[] x, float[] style, float[] fcWeight, float[] fcBias, int channels, int styleDim, int t)
     {
         var h = new float[2 * channels];
-        for (int o = 0; o < 2 * channels; o++)
+        fixed (float* w = fcWeight, s = style, y = h)
         {
-            float sum = fcBias[o];
-            int wBase = o * styleDim;
-            for (int d = 0; d < styleDim; d++)
-                sum += fcWeight[wBase + d] * style[d];
-            h[o] = sum;
+            SimdKernels.MatVecF32(y, w, s, 2 * channels, styleDim);
         }
+        for (int o = 0; o < 2 * channels; o++) h[o] += fcBias[o];
 
         var output = new float[channels * t];
         for (int c = 0; c < channels; c++)
         {
-            double mean = 0;
-            for (int ti = 0; ti < t; ti++) mean += x[c * t + ti];
-            mean /= t;
+            var srcSpan = x.AsSpan(c * t, t);
+            var dstSpan = output.AsSpan(c * t, t);
 
-            double variance = 0;
+            float mean = System.Numerics.Tensors.TensorPrimitives.Sum(srcSpan) / t;
+            float varSum = 0f;
             for (int ti = 0; ti < t; ti++)
             {
-                double d = x[c * t + ti] - mean;
-                variance += d * d;
+                float d = srcSpan[ti] - mean;
+                varSum += d * d;
             }
-            variance /= t;
-            float invStd = (float)(1.0 / Math.Sqrt(variance + InstanceNormEps));
+            float invStd = 1.0f / MathF.Sqrt(varSum / t + InstanceNormEps);
+            float scale = (1f + h[c]) * invStd;
+            float shift = h[channels + c] - mean * scale;
 
-            float gamma = h[c];
-            float beta = h[channels + c];
             for (int ti = 0; ti < t; ti++)
-            {
-                float normed = (float)((x[c * t + ti] - mean) * invStd);
-                output[c * t + ti] = (1f + gamma) * normed + beta;
-            }
+                dstSpan[ti] = srcSpan[ti] * scale + shift;
         }
         return output;
     }

@@ -172,3 +172,9 @@
 [MMS-TTS-Stream-Frame16] prompt="Hello, I will make some lunch, darling!" audio=2.90s samples=46336 chunks=12
 [MMS-TTS-Stream-Frame16] Time-To-First-Audio (TTFA)=0.267s TotalTime=10.248s
 
+[Kokoro-82M] prompt="Hello, I will make some lunch, darling!" audio=2.93s samples=70220
+[Kokoro-82M] runs(s)=[3.381, 3.242, 3.223] mean=3.282s RTF=1.122 (lower=faster; 1.0=realtime)
+
+[Kokoro-82M] prompt="Hello, I will make some lunch, darling!" audio=2.93s samples=70220
+[Kokoro-82M] runs(s)=[2.806, 2.907, 2.792] mean=2.835s RTF=0.969 (lower=faster; 1.0=realtime)
+
