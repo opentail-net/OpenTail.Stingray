@@ -10681,3 +10681,57 @@ ComputeLatents`'s output, upsample-interpolated per `HifiDecoder.forward`'s real
 the vocoder alongside this ResNet encoder's d-vector, for a complete, real, end-to-end XTTS-v2
 pipeline (still missing only a native BPE tokenizer for text input, and orchestration wiring
 tying every already-verified piece together into one `XttsPipeline` class + CLI entry).
+
+## XTTS-v2: FiLM-conditioned HiFi-GAN vocoder (`hifigan_decoder.waveform_decoder`)
+
+Fetched the real source `TTS/vocoder/models/hifigan_generator.py` (322 lines) via curl and read
+it in full before writing any code. Confirmed the real `HifiganGenerator.forward`: `o =
+conv_pre(x); o = o + cond_layer(g)` (applied ONCE, right after `conv_pre`), then per upsample
+stage: `leaky_relu -> ups[i] (ConvTranspose1d) -> o = o + conds[i](g)` (since
+`cond_in_each_up_layer=True`) `-> average of resblocks[i*num_kernels+j](o) over j`, then final
+`leaky_relu -> conv_post (no bias, conv_post_bias=False) -> tanh`. `ResBlock1`'s topology
+(3 conv pairs, dilations `(1,3,5)` for `convs1`, always `1` for `convs2`, `LeakyReLU` before each
+conv, residual add) is identical to the already-ported `MmsTtsHifiGanDecoder`'s pattern -- reused
+that exact structure, only adding the new FiLM conditioning terms.
+
+**Key insight on the conditioning shape**: `g` (the speaker d-vector) is a real `[B,512,1]`
+tensor (`T=1`) fed through plain `nn.Conv1d(cond_channels, ch, 1)` layers (`cond_layer`/
+`conds.N`, NOT weight-normed, real bias). Since `g` has `T=1` and `o` has `T=full-length`,
+`o = o + cond_layer(g)` relies on PyTorch's standard broadcast-add (a length-1 dim repeats).
+Ported this in C# as a simple `[outCh]`-dim `Linear` projection of the flat `[512]` d-vector,
+broadcast-added over every timestep of `o` -- mathematically identical, avoids an unnecessary
+`T=1` conv special case.
+
+Verified real construction args and confirmed EVERY weight key with zero missing/unexpected
+against `HifiganGenerator`'s real `load_state_dict(strict=False)` in the golden script before
+writing the C# loader (`XttsVocoderWeights`): `in_channels=1024, out_channels=1,
+resblock_type="1", resblock_dilation_sizes=[[1,3,5]]*3, resblock_kernel_sizes=[3,7,11],
+upsample_kernel_sizes=[16,16,4,4], upsample_initial_channel=512, upsample_rates=[8,8,2,2],
+cond_channels=512, conv_pre_weight_norm=False, conv_post_weight_norm=False,
+conv_post_bias=False, cond_in_each_up_layer=True`. `conv_pre`/`conv_post` ship as plain
+(non-weight-normed) tensors in the real checkpoint (`conv_pre_weight_norm=False`); `ups.N`/
+`resblocks.N.convs1/2.N` ship as the newer `nn.utils.parametrizations.weight_norm`
+(`.parametrizations.weight.original0`/`original1`) -- folded via the exact same formula already
+used for CosyVoice's HiFT decoder (`CosyVoiceHiftWeights.GetFoldedConvWeight`).
+
+Golden reference (`scratch-llamacpp-ref/xtts_vocoder_golden.py`): built the real
+`HifiganGenerator` with the confirmed construction args, loaded `model.pth`'s real
+`hifigan_decoder.waveform_decoder.*` weights (zero missing/unexpected keys), ran a fixed
+synthetic `[1,1024,20]` latent input and `[1,512,1]` d-vector through `.forward(x, g)`
+(`torch.manual_seed(1234)`), dumped input/output to CSV. Isolated this stage from the
+interpolation-preprocessing/full-pipeline complexity, matching the established staged-
+verification pattern.
+
+`XttsVocoderTests.Forward_SyntheticInput_MatchesGoldenOracle`: **passed on the first attempt,
+cosine >0.99** -- no bugs found this time (the careful real-source-first, real-construction-args
+discipline applied to every prior XTTS-v2 piece paid off directly here).
+
+**Ten major XTTS-v2 pieces now shipped this cron cycle. Every individual model component is now
+real, weight-driven, and golden-verified.** Remaining work is orchestration only: (1) the
+`HifiDecoder.forward` interpolation preprocessing (`F.interpolate`, linear mode, first by
+`ar_mel_length_compression(1024)/output_hop_length(256)=4x`, then by
+`output_sample_rate(24000)/input_sample_rate(22050)≈1.088x`) between `XttsGptLatents.
+ComputeLatents`'s output and this vocoder's input, (2) a native BPE tokenizer for XTTS's real
+`vocab.json` (HuggingFace `tokenizers`-library JSON format), (3) a top-level `XttsPipeline` class
+wiring every already-verified piece together end-to-end, mirroring `MmsTtsPipeline`'s pattern,
+(4) CLI wiring in `TtsCommand.cs`.
