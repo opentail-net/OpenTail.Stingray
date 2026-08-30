@@ -193,11 +193,10 @@ public static class FishSpeechFastAr
         {
             int qOff = h * headDim;
             int kvOff = (h / groupSize) * headDim;
+            var qSpan = cache.Q.AsSpan(qOff, headDim);
             for (int j = 0; j < t; j++)
             {
-                float dot = 0f;
-                var kj = kLayer[j];
-                for (int d = 0; d < headDim; d++) dot += cache.Q[qOff + d] * kj[kvOff + d];
+                float dot = System.Numerics.Tensors.TensorPrimitives.Dot(qSpan, kLayer[j].AsSpan(kvOff, headDim));
                 cache.Scores[j] = dot * scale;
             }
             SoftmaxInPlace(cache.Scores, t);
@@ -216,14 +215,13 @@ public static class FishSpeechFastAr
 
         RmsNormInPlace(cache.H1, lw.FfnNormWeight, w.FastRmsNormEps, cache.FfnNormed);
         int ffnDim = lw.FfnDim;
-        LinearQ8_0(cache.FfnNormed, lw.W1Weight, dim, ffnDim, cache.Gate);
-        LinearQ8_0(cache.FfnNormed, lw.W3Weight, dim, ffnDim, cache.Up);
+        LinearQ8_0Dual(cache.FfnNormed, lw.W1Weight, lw.W3Weight, dim, ffnDim, cache.Gate, cache.Up);
 
         // Fused SwiGLU activation
-        for (int d = 0; d < ffnDim; d++)
+        unsafe
         {
-            float g = cache.Gate[d];
-            cache.Gate[d] = (g / (1f + MathF.Exp(-g))) * cache.Up[d];
+            fixed (float* gp = cache.Gate, up = cache.Up)
+                SimdKernels.SiLuMul(gp, up, ffnDim);
         }
 
         LinearQ8_0(cache.Gate, lw.W2Weight, ffnDim, dim, cache.FfnOut);
@@ -384,6 +382,16 @@ public static class FishSpeechFastAr
         return output;
     }
 
+    /// <summary>Real Q8_0 fused dual mat-vec (zero allocation into pre-allocated destination buffers).</summary>
+    private static unsafe void LinearQ8_0Dual(float[] input, byte[] weight1, byte[] weight2, int inDim, int outDim, float[] output1, float[] output2)
+    {
+        fixed (byte* wp1 = weight1, wp2 = weight2)
+        fixed (float* xp = input, op1 = output1, op2 = output2)
+        {
+            SimdKernels.MatVecDual(op1, wp1, op2, wp2, xp, outDim, inDim, DType.Q8_0, DType.Q8_0);
+        }
+    }
+
     /// <summary>Real Q8_0 fused mat-vec (zero allocation into pre-allocated destination buffer).</summary>
     private static unsafe void LinearQ8_0(float[] input, byte[] weight, int inDim, int outDim, float[] output)
     {
@@ -408,10 +416,10 @@ public static class FishSpeechFastAr
     private static void RmsNormInPlace(ReadOnlySpan<float> x, float[] weight, float eps, float[] output)
     {
         int n = x.Length;
-        float sumSq = 0f;
-        for (int i = 0; i < n; i++) sumSq += x[i] * x[i];
+        float sumSq = System.Numerics.Tensors.TensorPrimitives.SumOfSquares(x);
         float invRms = 1f / MathF.Sqrt(sumSq / n + eps);
-        for (int i = 0; i < n; i++) output[i] = x[i] * invRms * weight[i];
+        System.Numerics.Tensors.TensorPrimitives.Multiply(x, invRms, output.AsSpan(0, n));
+        System.Numerics.Tensors.TensorPrimitives.Multiply(output.AsSpan(0, n), weight.AsSpan(0, n), output.AsSpan(0, n));
     }
 
     internal static float[] RmsNorm(float[] x, float[] weight, float eps)
