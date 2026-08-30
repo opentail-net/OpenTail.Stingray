@@ -10770,3 +10770,43 @@ XTTS's real `vocab.json`, (2) a top-level `XttsPipeline` class wiring every alre
 (mel extraction → conditioning encoder → prefix → sampling loop → gpt_latents →
 `XttsHifiDecoder` → waveform) end-to-end, mirroring `MmsTtsPipeline`'s pattern, (3) CLI wiring in
 `TtsCommand.cs`.
+
+## XTTS-v2: native BPE tokenizer (`XttsBpeTokenizer`)
+
+Fetched the real `TTS/tts/layers/xtts/tokenizer.py` (859 lines) and confirmed `VoiceBpeTokenizer.
+encode`'s real pipeline: run the large per-language `multilingual_cleaners`/number-expansion text
+normalization pass, prepend `[lang]`, replace every literal space with the literal substring
+`"[SPACE]"`, then call `tokenizers.Tokenizer.from_file("vocab.json").encode(text).ids`. Inspected
+the real `vocab.json` directly: `model.type="BPE"`, no `continuing_subword_prefix`/
+`end_of_word_suffix` (plain char-level BPE, no word-boundary markers), `pre_tokenizer.
+type="Whitespace"` (regex `\w+|[^\w\s]+` -- silently drops raw whitespace, which is exactly why
+the real code substitutes literal `"[SPACE]"` for every space before tokenizing), `normalizer=null`,
+`fuse_unk=false`. `added_tokens` (`[STOP]`,`[UNK]`,`[SPACE]`, per-language tags, `[START]`) are
+matched as literal longest-first substrings BEFORE pre-tokenization (HF's `AddedVocabulary`) --
+this is why `"[SPACE]"` becomes one token instead of three (`[`,`SPACE`,`]`).
+
+**Verified the exact algorithm by hand-implementing it in Python and diffing against the real
+`tokenizers.Tokenizer.from_file(...).encode(text).ids`** on representative English/French test
+sentences (including edge cases: single character, empty-after-tag) BEFORE writing any C# --
+matched exactly on every case. Ported that verified algorithm directly to `XttsBpeTokenizer.cs`:
+added-token literal scan (longest match, left-to-right) over the raw text, `Whitespace`-regex
+pre-tokenize each plain-text span between added-token hits, then standard rank-ordered greedy
+pairwise BPE merge per word (lowest merge-list index wins at each step, repeat until no adjacent
+pair is in the merge table).
+
+**Scope note, matching this port's established practice of using the real tokenizer's own output
+ids as the golden bar in isolation**: this class ports ONLY the `tokenizers.Tokenizer.encode`
+algorithm itself, not the separate (very large, heavily locale-specific: number expansion,
+currency/date spelling, per-language cleaner rules) `multilingual_cleaners` text-normalization
+pass that runs before it in the real pipeline -- callers must pass already-normalized text. Full
+per-language normalization is out of scope for this pass; documented here so no future session
+assumes it's already handled.
+
+`XttsBpeTokenizerTests.Encode_RealSentences_MatchesGoldenOracle`: **passed, exact ID-sequence
+match (not just cosine), on all 5 real-vocab.json test sentences, first attempt** -- the
+verify-in-Python-first discipline paid off directly again.
+
+**Twelve major XTTS-v2 pieces now shipped.** Remaining work: (1) a top-level `XttsPipeline` class
+wiring every already-verified piece (tokenizer → GPT prefix/conditioning → sampling loop →
+gpt_latents → `XttsHifiDecoder` → waveform) end-to-end, mirroring `MmsTtsPipeline`'s pattern,
+(2) CLI wiring in `TtsCommand.cs`.
