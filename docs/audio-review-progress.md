@@ -10305,3 +10305,42 @@ via `WebFetch`/`WebSearch` instead of a local install, same as how this entry's 
 survey was done from raw tensor inspection). Do not port math from memory alone for a model this
 size -- the FishSpeech/CosyVoice3 debugging history earlier in this session is the cautionary
 tale for why.
+
+### XTTS-v2: DVAE decoder ported and golden-verified (2026-08-30, next cron cycle, same fire)
+
+First real piece of XTTS-v2 shipped, per the porting order recommended above (smallest/most
+tractable first). `src/OpenTail.Stingray.Audio/Xtts/XttsDvaeWeights.cs` +
+`XttsDvaeDecoder.cs` -- real `DiscreteVAE.decode` port (codebook index -> mel-like latent),
+confirmed against the actual `TTS/tts/layers/xtts/dvae.py` source (fetched directly via `curl`,
+not memory) AND the real construction args from `TTS/tts/layers/xtts/trainer/gpt_trainer.py`
+(`channels=80, positional_dims=1, codebook_dim=512, hidden_dim=512, num_resnet_blocks=3,
+kernel_size=3, num_layers=2, use_transposed_convs=False` -- confirms `UpsampledConv` uses real
+nearest-neighbor interpolate + conv, NOT `ConvTranspose1d`, a detail that would have been easy to
+get wrong from the class's `use_transposed_convs=True` DEFAULT alone).
+
+**Environment fix**: converted `dvae.pth`/`model.pth`/`mel_stats.pth` to safetensors
+(`scratch-llamacpp-ref/xtts_convert_to_safetensors.py`, real values unaltered) rather than writing
+a from-scratch Python-pickle parser in C# -- lets this load through the existing, already-robust
+`SafetensorsLoader` like every other pipeline. `models/xtts-v2/*.safetensors` now exist alongside
+the original `.pth` files (both gitignored under `models/`).
+
+**Golden reference built by loading `dvae.py` directly** (`scratch-llamacpp-ref/
+xtts_dvae_decoder_golden.py`), bypassing the still-broken full `TTS` package import chain
+(patched around one more `TTS.utils.generic_utils` import inside `dvae.py` itself with a 2-line
+local stub) -- confirms the "hand-derive from real source, don't fight the broken install"
+fallback plan from the prior entry works fine for isolated pieces; the FULL package (needed for
+GPT2/xtts.py-level golden references) is still broken in this environment (see below).
+
+`XttsDvaeDecoderTests.Decode_RealWeights_MatchesGoldenOracle`: PASSES, cosine >0.99 vs the real
+reference's `DiscreteVAE.decode` output on a fixed 10-code deterministic input (codes ->
+[80, 40] mel-like output, confirming the real 4x upsample from two stride-2 stages).
+
+**Next**: the GPT2 trunk is next per the recommended order (biggest risk/payoff). Before writing
+it: (1) get a tiny Conv1D-transpose unit test passing first (HF GPT2's `Conv1D` stores
+`[in_features, out_features]`, NOT this codebase's usual `[out,in]` -- verify the matvec direction
+with a trivial 2x2 case before wiring 30 real layers), (2) the full `TTS` package's broken
+`transformers.pytorch_utils.isin_mps_friendly` import is inside `TTS/tts/layers/tortoise/
+autoregressive.py`, not `gpt.py` itself -- check whether `gpt.py`'s own real forward pass can be
+loaded in isolation (same `importlib.util.spec_from_file_location` trick used for `dvae.py` here)
+without pulling in the broken `tortoise/autoregressive.py` module, to get a real GPT2-stage golden
+reference without needing the full package fixed.
