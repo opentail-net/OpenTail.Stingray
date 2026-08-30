@@ -5,6 +5,7 @@ using OpenTail.Stingray.Audio.F5TTS;
 using OpenTail.Stingray.Audio.FishSpeech;
 using OpenTail.Stingray.Audio.Kokoro;
 using OpenTail.Stingray.Audio.MeloTTS;
+using OpenTail.Stingray.Audio.MmsTts;
 using OpenTail.Stingray.Audio.Orpheus;
 using OpenTail.Stingray.Audio.Parler;
 using OpenTail.Stingray.Audio.Piper;
@@ -105,7 +106,9 @@ public sealed class TtsCommand : Command<TtsCommand.Settings>
                     FishSpeechFullPipeline.Load(s.ModelPath ?? ResolveFishSpeechModelPath()),
                 "orpheus" or "orpheus-tts" or "orpheustts" =>
                     OrpheusPipeline.Load(s.ModelPath ?? ResolveOrpheusModelPath(), allowGpu: allowGpu),
-                _ => throw new ArgumentException($"Unknown TTS engine: '{s.Engine}'. Supported: kokoro, piper, f5tts, chatterbox, melo, cosyvoice, parler, qwentts, fishspeech, orpheus.")
+                "mms" or "mms-tts" or "mmstts" =>
+                    MmsTtsPipeline.Load(s.ModelPath ?? ResolveMmsTtsModelPath()),
+                _ => throw new ArgumentException($"Unknown TTS engine: '{s.Engine}'. Supported: kokoro, piper, f5tts, chatterbox, melo, cosyvoice, parler, qwentts, fishspeech, orpheus, mms.")
             };
         }
         catch (Exception ex)
@@ -207,6 +210,17 @@ public sealed class TtsCommand : Command<TtsCommand.Settings>
         throw new ArgumentException(
             "No CosyVoice3 model found. Pass --model (-m) with a path to a CosyVoice .gguf checkpoint " +
             "(e.g. models/cosyvoice3/CosyVoice3-2512_F16.gguf), or place one at that default path.");
+    }
+
+    private static string ResolveMmsTtsModelPath()
+    {
+        foreach (var c in new[] { "models/mms-tts-eng" })
+            if (Directory.Exists(c) && File.Exists(Path.Combine(c, "model.safetensors"))) return c;
+
+        throw new ArgumentException(
+            "No MMS-TTS model found. Pass --model (-m) with a path to an MMS-TTS checkpoint directory " +
+            "(containing config.json/vocab.json/model.safetensors, e.g. models/mms-tts-eng, from " +
+            "huggingface.co/facebook/mms-tts-<lang>), or place one at that default path.");
     }
 
     private static string ResolveParlerModelPath()

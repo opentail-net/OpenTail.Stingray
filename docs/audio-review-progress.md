@@ -9986,3 +9986,172 @@ voice cloning does not yet reliably reproduce the reference speaker's
 identity. Matter closed for this session -- do not resume without new
 evidence (e.g. a real numeric dump of the `cond`/CFG stage) rather than
 further guessing.
+
+## New work started: MMS-TTS (VITS) and XTTS-v2 -- user-authorized, autonomous cron loop running every 30 min (2026-08-30)
+
+User asked for two NEW pipelines: MMS-TTS/VITS and XTTS-v2. AFK, running
+autonomously via a recurring cron job (`CronCreate`, job id `f2df87a5`,
+fires `:07`/`:37` past every hour, session-only -- dies if this terminal
+closes, auto-expires after 7 days). **Another AI is working on Fish
+Speech in parallel this session -- do not touch FishSpeech files.**
+
+**Final instruction from the user, to action once both models are 100%
+done**: update all four top-level README files (`README.md`,
+`src/OpenTail.Stingray/README.md`, `src/OpenTail.Stingray.Cli/README.md`,
+`src/OpenTail.Stingray.Server/README.md`) to correctly reflect the new
+MMS-TTS and XTTS-v2 support once real, not before.
+
+### MMS-TTS research (real findings, verified against the real live checkpoint)
+
+**Huge shortcut found**: Piper (`src/OpenTail.Stingray.Audio/Piper/`) is
+already a REAL, weight-driven, perf-tested VITS + HiFi-GAN implementation
+(NOT the "fake" state an earlier, now-stale doc warning in
+`docs/048-model-provenance-and-real-weights-verification-plan.md`
+described -- that was fixed later this session; see this doc's own
+`PiperFlow`/`PiperFlowTests` entries). MMS-TTS IS a VITS model (same
+architecture family, Meta's multilingual VITS checkpoints) -- confirmed
+by downloading the real `facebook/mms-tts-eng` checkpoint
+(`models/mms-tts-eng/{config.json,vocab.json,model.safetensors}`, real
+HuggingFace `transformers.VitsModel`, license `cc-by-nc-4.0` --
+**non-commercial license, flag this to the user before any commercial
+use claim**) and reading its real `config.json` + safetensors header
+(fetched via HTTP range requests, not a full download-then-parse):
+
+- Hyperparams match Piper's architecture class exactly: `hidden_size=192`,
+  `num_attention_heads=2`, `window_size=4` (relative-position attention
+  radius), 6 encoder layers, stochastic duration predictor (4 flows),
+  ResidualCouplingBlock prior flow, HiFi-GAN decoder (`upsample_rates=
+  [8,8,2,2]`, differs from Piper's specific checkpoint but same
+  architecture class). `vocab_size=38` -- plain character-level vocab
+  (`vocab.json`), NOT phonemized like Piper's espeak-ng IPA pipeline --
+  simpler frontend needed, no phonemizer port required for English.
+- Real tensor names (via safetensors header, HTTP range-fetched: first
+  8 bytes = little-endian header length, then that many bytes = JSON
+  tensor index) map close to 1:1 onto Piper's existing code structure:
+  - `text_encoder.embed_tokens.weight` = Piper's `sid`/EmbeddingWeight
+  - `text_encoder.encoder.layers.N.attention.{q,k,v,out}_proj.{weight,bias}`
+    = Piper's `enc_p.encoder.attn_layers.N.conv_{q,k,v,o}` (HF uses
+    Linear, original VITS/Piper uses Conv1d kernel=1 -- mathematically
+    the same op, mind the weight-shape transpose when porting
+    `PiperTextEncoder.cs`'s math)
+  - `text_encoder.encoder.layers.N.attention.emb_rel_k/v` = same name in Piper
+  - `text_encoder.encoder.layers.N.feed_forward.conv_1/2` = Piper's `ffn_layers`
+  - `text_encoder.encoder.layers.N.layer_norm`/`final_layer_norm` = Piper's `norm_layers_1/2`
+  - `text_encoder.project` = Piper's `enc_p.proj` (mu/logs split)
+  - `duration_predictor.*` = Piper's `dp.*` (StochasticDurationPredictor, DDS convs)
+  - `flow.flows.N.*` = Piper's `flow.flows.N` (ResidualCouplingLayer, WaveNet-style)
+  - `decoder.*` = Piper's `dec.*` (HiFi-GAN: conv_pre, upsampler/ups, resblocks, conv_post)
+  - `posterior_encoder.*` exists but is TRAINING-ONLY (VITS's posterior
+    encoder is not used at inference time -- only `text_encoder` (prior)
+    + `duration_predictor` + `flow` (reverse mode) + `decoder` matter for
+    TTS synthesis). Do not port this.
+- **Weight-norm status differs by module** (checked via grep for
+  `weight_g`/`weight_v` suffixes in the safetensors header): `decoder.*`,
+  `duration_predictor.*`, and `text_encoder.*` are ALREADY FUSED (plain
+  `.weight`/`.bias`, no `weight_g`/`weight_v` pair) -- load directly, no
+  defusing needed. ONLY `flow.flows.N.wavenet.{in,res_skip}_layers.N.*`
+  (and the unused `posterior_encoder.wavenet.*`) ship as raw
+  `weight_g`/`weight_v` pairs (older `nn.utils.weight_norm` convention,
+  dim=0). **Reuse `DacWeights.FoldConvWeight` (`src/OpenTail.Stingray.
+  Audio/Parler/DacWeights.cs:174`)** -- same exact math (`weight_g[outCh]
+  * weight_v[outCh,:,:] / ||weight_v[outCh,:,:]||_2`), already
+  implemented and proven correct in this codebase.
+
+### Plan / next steps (for the next cron-triggered continuation)
+
+1. Create `src/OpenTail.Stingray.Audio/MmsTts/` following the Piper file
+   layout: `MmsTtsWeights.cs` (safetensors loader, mirroring
+   `PiperOnnxWeights.cs`'s structure but reading via `SafetensorsLoader`
+   + `DacWeights.FoldConvWeight` for the flow's WaveNet convs),
+   `MmsTtsTextEncoder.cs`, `MmsTtsDurationPredictor.cs`, `MmsTtsFlow.cs`,
+   `MmsTtsHifiGanDecoder.cs` (all four should be near-direct ports of the
+   matching `Piper*.cs` file, adjusted for HF's Linear-vs-Conv1d q/k/v/out
+   projections and this checkpoint's own upsample rates/dilations),
+   `MmsTtsTokenizer.cs` (trivial -- `vocab.json` char->id map, no
+   phonemizer), `MmsTtsPipeline.cs` (ties it together, mirrors
+   `PiperPipeline.cs`).
+2. Golden-verify against the real HF `transformers` Python reference
+   (`pip install transformers`, run `VitsModel.from_pretrained(...)`,
+   dump intermediate tensors) at each stage, same methodology this
+   session used throughout (text encoder output, duration predictor
+   durations, flow output, final waveform) -- do NOT skip this, VITS has
+   several easy-to-get-wrong details (relative-position attention exact
+   indexing, the stochastic duration predictor's normalizing-flow reverse
+   direction, HiFi-GAN's exact resblock/upsample interleaving).
+3. Wire into `TtsCommand.cs`/CLI dispatch and write real tests following
+   the existing `Piper*Tests.cs` pattern.
+4. THEN start XTTS-v2 research (bigger: GPT2-style autoregressive
+   text->mel-token model + DVAE + HiFi-GAN + perceiver-resampler speaker
+   conditioning encoder, ~1.8GB checkpoint, Coqui's own CPML license --
+   also has usage restrictions, flag to user). Not started yet this pass.
+5. Once BOTH are real, weight-driven, and tested: update the four READMEs
+   per the user's instruction above, and update
+   `docs/048-model-provenance-and-real-weights-verification-plan.md`'s
+   matrix.
+
+### MMS-TTS: DONE -- real, weight-driven, golden-verified end-to-end against the real HuggingFace reference (2026-08-30, same fire)
+
+Followed the plan above through to completion. `src/OpenTail.Stingray.Audio/MmsTts/`:
+`MmsTtsWeights.cs` (safetensors loader, real HF `transformers.VitsModel` tensor names, a
+name-translating adapter (`DdsNameAdapter`) so the shared `VitsDdsConvWeights`/
+`VitsConvFlowWeights` primitives -- built for Piper's different naming -- work unmodified),
+`MmsTtsConfig.cs`, `MmsTtsTokenizer.cs`, `MmsTtsTextEncoder.cs`, `MmsTtsDurationPredictor.cs`,
+`MmsTtsFlow.cs`, `MmsTtsHifiGanDecoder.cs`, `MmsTtsPipeline.cs`. Wired into `TtsCommand.cs` as
+engine `mms`/`mms-tts`/`mmstts`.
+
+**Real golden reference built and used, not guessed**: installed `transformers`/`torch` (network
++ `pip install` both confirmed working in this environment), wrote
+`scratch-llamacpp-ref/mms_tts_golden.py` against the real `facebook/mms-tts-eng` checkpoint --
+monkeypatches `torch.randn`/`torch.randn_like` to capture the exact noise draws the stochastic
+duration predictor and flow's prior-sampling use (same "feed golden noise into the port directly"
+technique as `piper_golden_sdp.py`, isolating "is the math right" from "does the RNG match"), and
+wraps `duration_predictor.forward`/`flow.forward` to dump their real intermediate outputs.
+
+**Every stage verified independently against real reference output, cosine >0.99, not just an
+end-to-end "audio came out" check**:
+- `MmsTtsTextEncoderTests.Forward_RealWeights_MatchesGoldenOracle` -- encoderHidden + mu vs real `text_encoder` output.
+- `MmsTtsPipelineTests.DurationPredictor_RealWeights_MatchesGoldenLogw` -- logw vs real `duration_predictor(reverse=True)` output, fed the real captured noise.
+- `MmsTtsPipelineTests.Flow_RealWeights_MatchesGoldenOutput` -- flow output vs real `flow(reverse=True)` output (fed the real captured `zp`, so this isolates the flow's own math from noise/length-regulator correctness).
+- `MmsTtsPipelineTests.Waveform_RealWeights_MatchesGoldenOutput` -- full HiFi-GAN decoder output vs the real final waveform, chained from the same golden `zp`.
+- `MmsTtsPipelineTests.Generate_RealWeights_ProducesNonDegenerateAudio` -- real end-to-end pipeline (its own RNG), non-NaN/non-silent, saves `docs/audio-samples/mms-tts-first-real-clip.wav`.
+
+All 5 tests pass. Also confirmed end-to-end via the real CLI (`stingray tts -e mms -t "..."
+-o ...`): produced `docs/audio-samples/mms-tts-cli-check.wav` in 1.99s wall-clock for 2.93s of
+audio -- **RTF 0.68x, i.e. genuinely faster than real-time** (every other TTS pipeline measured
+this session has been 2x-9x slower than real-time; MMS-TTS is small and feed-forward, not
+autoregressive, so this is architecturally expected, not a fluke -- still worth re-confirming with
+`docs/tts-benchmark-log.txt`'s multi-run methodology before quoting it as a stable number).
+
+**Real architectural details confirmed against the actual HF source
+(`transformers/models/vits/modeling_vits.py`), not assumed from the Piper analogy** -- worth
+recording since a few would have been easy to get wrong:
+- Tokenizer: `VitsTokenizer._tokenize` intersperses blank token id 0 between every character AND
+  at both ends (`add_blank=True`), after lowercase+strip-non-vocab normalization
+  (`phonemize=False` for this English checkpoint per its own `tokenizer_config.json` --
+  confirmed via the real Python tokenizer's own output on "Hello, world!", not guessed).
+- Duration predictor flow pruning: HF stores 5 `duration_predictor.flows.N` (0=ElementwiseAffine,
+  1..4=ConvFlow). Real reverse-mode `flows[:-2]+[flows[-1]]` on the REVERSED list drops
+  `flows.1` (the FIRST-constructed ConvFlow) -- real order: Flip->ConvFlow(4)->Flip->
+  ConvFlow(3)->Flip->ConvFlow(2)->Flip->ElementwiseAffine(0). Confirmed by reading
+  `VitsStochasticDurationPredictor.forward`'s actual source, not derived from Piper's ONNX-
+  graph-inspected equivalent pruning (which was the initial hypothesis and turned out right,
+  but was verified rather than trusted).
+- Length regulator: NO per-token minimum-duration-of-1 floor in the real reference (unlike
+  Piper's own C# port, which added one) -- a token can legitimately contribute zero frames;
+  `VitsLengthRegulator.Expand` already matches the real reference's floor-less behavior, so
+  `MmsTtsPipeline.Generate` does NOT add Piper's extra clamp.
+- HiFi-GAN: real `ResBlock1` topology (3 conv PAIRS, dilations (1,3,5) cycling regardless of
+  the resblock's own kernel size) -- same as MeloTTS's confirmed topology, NOT Piper's simpler
+  2-conv resblock. Confirmed via both the real config.json AND the real
+  `HifiGanResidualBlock`/`VitsHifiGan` source.
+
+**Not yet done**: multi-language support (only `facebook/mms-tts-eng` downloaded/tested; other
+~1100 MMS-TTS language checkpoints should work with the same loader/pipeline unchanged, just a
+different `models/mms-tts-<lang>/` directory, since the architecture is checkpoint-family-wide --
+untested, worth a quick spot-check on a second language before claiming full multilingual
+support). No dedicated streaming test (the generic `TtsStreamingHelper` path is wired via
+`GenerateStreamAsync` but not independently tested). License: `cc-by-nc-4.0` --
+**non-commercial**, flag to the user before any commercial use claim (same caveat as the
+research entry above).
+
+**Next**: XTTS-v2 research (not started).
