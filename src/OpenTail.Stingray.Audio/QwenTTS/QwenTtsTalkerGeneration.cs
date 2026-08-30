@@ -63,12 +63,6 @@ public static class QwenTtsTalkerGeneration
         return [.. generated];
     }
 
-    private static int ArgMax(ReadOnlySpan<float> logits)
-    {
-        int best = 0;
-        float bestVal = float.NegativeInfinity;
-        for (int i = 0; i < logits.Length; i++)
-            if (logits[i] > bestVal) { bestVal = logits[i]; best = i; }
-        return best;
-    }
+    private static int ArgMax(ReadOnlySpan<float> logits) =>
+        System.Numerics.Tensors.TensorPrimitives.IndexOfMax(logits);
 }

@@ -275,15 +275,13 @@ public static class FishSpeechFastAr
                 // Real causal mask: position i only attends to positions <= i.
                 for (int j = 0; j <= i; j++)
                 {
-                    float dot = 0f;
-                    for (int d = 0; d < headDim; d++) dot += q[i][qOff + d] * k[j][kvOff + d];
-                    scores[j] = dot * scale;
+                    scores[j] = TensorPrimitives.Dot(q[i].AsSpan(qOff, headDim), k[j].AsSpan(kvOff, headDim)) * scale;
                 }
                 SoftmaxInPlace(scores, i + 1);
 
                 var ctxSpan = context[i].AsSpan(qOff, headDim);
                 for (int j = 0; j <= i; j++)
-                    for (int d = 0; d < headDim; d++) ctxSpan[d] += scores[j] * v[j][kvOff + d];
+                    TensorPrimitives.MultiplyAdd(v[j].AsSpan(kvOff, headDim), scores[j], ctxSpan, ctxSpan);
             }
         });
 
@@ -294,7 +292,7 @@ public static class FishSpeechFastAr
         for (int i = 0; i < t; i++)
         {
             var row = new float[dim];
-            for (int d = 0; d < dim; d++) row[d] = x[i][d] + attnOut[i][d];
+            TensorPrimitives.Add(x[i], attnOut[i], row);
             h1[i] = row;
         }
 

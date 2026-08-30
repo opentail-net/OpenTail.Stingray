@@ -307,9 +307,8 @@ public static class KokoroDecoder
             float invStd = 1.0f / MathF.Sqrt(varSum / t + 1e-5f);
             float scale = (1f + h[c]) * invStd;
             float shift = h[ch + c] - mean * scale;
-
-            for (int ti = 0; ti < t; ti++)
-                dstSpan[ti] = srcSpan[ti] * scale + shift;
+            System.Numerics.Tensors.TensorPrimitives.Multiply(srcSpan, scale, dstSpan);
+            System.Numerics.Tensors.TensorPrimitives.Add(dstSpan, shift, dstSpan);
         }
         return output;
     }

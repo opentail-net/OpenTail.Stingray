@@ -60,17 +60,17 @@ public static class MeloGenerator
             ch = outCh;
             t = newT;
 
-            float[]? sum = null;
-            for (int k = 0; k < 3; k++)
-            {
-                int rbIndex = stage * 3 + k;
-                var rbOut = ResBlock1Forward(x, ch, t, w.DecResblocks[rbIndex], ResblockKernels[k]);
-                if (sum is null) sum = rbOut;
-                else System.Numerics.Tensors.TensorPrimitives.Add(sum, rbOut, sum);
-            }
-            float inv3 = 1f / 3f;
-            System.Numerics.Tensors.TensorPrimitives.Multiply(sum!, inv3, sum!);
-            x = sum!;
+            float[] rbOut0 = null!, rbOut1 = null!, rbOut2 = null!;
+            Parallel.Invoke(
+                () => rbOut0 = ResBlock1Forward(x, ch, t, w.DecResblocks[stage * 3 + 0], ResblockKernels[0]),
+                () => rbOut1 = ResBlock1Forward(x, ch, t, w.DecResblocks[stage * 3 + 1], ResblockKernels[1]),
+                () => rbOut2 = ResBlock1Forward(x, ch, t, w.DecResblocks[stage * 3 + 2], ResblockKernels[2])
+            );
+
+            System.Numerics.Tensors.TensorPrimitives.Add(rbOut0, rbOut1, rbOut0);
+            System.Numerics.Tensors.TensorPrimitives.Add(rbOut0, rbOut2, rbOut0);
+            System.Numerics.Tensors.TensorPrimitives.Multiply(rbOut0, 1f / 3f, rbOut0);
+            x = rbOut0;
         }
 
         LeakyReluInPlace(x, LeakyReluAlpha);
