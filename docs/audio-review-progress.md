@@ -10344,3 +10344,48 @@ autoregressive.py`, not `gpt.py` itself -- check whether `gpt.py`'s own real for
 loaded in isolation (same `importlib.util.spec_from_file_location` trick used for `dvae.py` here)
 without pulling in the broken `tortoise/autoregressive.py` module, to get a real GPT2-stage golden
 reference without needing the full package fixed.
+
+### XTTS-v2: full Python reference environment FIXED (2026-08-30, same cron cycle) -- supersedes the "still broken" note above
+
+The `TTS` package import chain is fixed with two small patches, not a Python downgrade:
+1. `pip install torchcodec` (this was the SECOND real blocker, only surfaced after the first fix).
+2. Monkey-patch `transformers.pytorch_utils.isin_mps_friendly = lambda e, t: torch.isin(e, t)`
+   BEFORE importing `TTS` (the real function was removed/renamed in current `transformers` 5.7.0;
+   `torch.isin` is a drop-in replacement for what it did -- confirmed by reading the one call site
+   in `TTS/tts/layers/tortoise/autoregressive.py`, not just papering over the ImportError blindly).
+
+`import TTS; from TTS.tts.layers.xtts.gpt import GPT` now succeeds cleanly (`TTS.__version__ ==
+'0.27.5'`). This unblocks a REAL, FULL golden reference (GPT2 trunk, conditioning encoder,
+perceiver, speaker encoder, vocoder -- everything) for the rest of this port, not just isolated
+pieces like the DVAE decoder above. Use this two-line patch at the top of every future XTTS golden
+script instead of the `dvae.py`-only workaround.
+
+### XTTS-v2: GPT2 trunk ported and golden-verified on first try (2026-08-30, same cron cycle)
+
+`src/OpenTail.Stingray.Audio/Xtts/XttsGptWeights.cs` + `XttsGptTrunk.cs`: the real 30-layer GPT2
+trunk (`gpt.gpt.*`, confirmed a plain standard HF `GPT2Model` via
+`build_hf_gpt_transformer` -- `wte`/`wpe` deleted, `h.N.*` blocks are vanilla GPT2 decoder math).
+Transposes HF `Conv1D`'s `[in,out]` weight storage to this codebase's usual `[out,in]` at load
+time (`XttsGptWeights.ReadConv1DWeightTransposed`) so every downstream matvec stays consistent
+with every other pipeline. Standard pre-LN causal self-attention (16 heads, head_dim=64) + GELU
+("gelu_new" tanh-approximation, HF GPT2Config's real un-overridden default) MLP.
+
+`XttsGptTrunkTests.Forward_RealWeights_MatchesGoldenOracle`: **passed on the first try**, cosine
+>0.99 against `scratch-llamacpp-ref/xtts_gpt_trunk_golden.py`'s real `model.gpt.gpt(inputs_embeds=
+...)` output (12-token deterministic random input embedding, bypassing tokenization/conditioning
+entirely -- isolates the trunk's own math). This was the single biggest risk/payoff item in the
+whole port (per the recommended porting order above) and the Conv1D transpose direction was the
+one detail most likely to silently produce wrong-but-plausible output -- confirmed correct.
+
+**Environment note for future XTTS golden scripts**: the isin_mps_friendly + torchcodec fix from
+the entry above makes the FULL `TTS` package usable now -- `scratch-llamacpp-ref/
+xtts_load_real_model.py` confirms `Xtts.init_from_config`+`load_checkpoint` loads the real model
+end-to-end with real weights. Use `model.gpt.gpt(...)`/`model.gpt.conditioning_encoder(...)`/etc.
+directly for per-stage golden dumps going forward, same pattern as this entry's script.
+
+**Next**: text/mel token embeddings + positional embeddings (small, straightforward -- just real
+embedding table lookups, `gpt.text_embedding`/`gpt.mel_embedding`/`gpt.text_pos_embedding`/
+`gpt.mel_pos_embedding`, already loaded tensor names confirmed in the earlier architecture-survey
+entry), then the conditioning encoder + Perceiver Resampler, then the two speaker encoders, then
+the FiLM-conditioned vocoder, then the real autoregressive sampling loop (top-k/top-p/temperature/
+repetition-penalty per config.json's real defaults) tying it all together.
