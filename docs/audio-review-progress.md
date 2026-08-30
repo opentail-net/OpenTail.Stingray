@@ -10389,3 +10389,39 @@ embedding table lookups, `gpt.text_embedding`/`gpt.mel_embedding`/`gpt.text_pos_
 entry), then the conditioning encoder + Perceiver Resampler, then the two speaker encoders, then
 the FiLM-conditioned vocoder, then the real autoregressive sampling loop (top-k/top-p/temperature/
 repetition-penalty per config.json's real defaults) tying it all together.
+
+### XTTS-v2: conditioning encoder + Perceiver Resampler ported and golden-verified on first try (2026-08-30, same cron cycle)
+
+`src/OpenTail.Stingray.Audio/Xtts/XttsConditioningWeights.cs` + `XttsConditioningEncoder.cs`: the
+real speaker/style conditioning path (`gpt.conditioning_encoder.*` + `gpt.conditioning_perceiver.
+*`) -- mel-spectrogram reference audio -> conv1x1 init -> 6x self-attention `AttentionBlock`
+(GroupNorm(32 groups), a non-standard per-head QKV channel LAYOUT confirmed from
+`QKVAttentionLegacy`'s real reshape math, residual added to the NORMALIZED input not the raw
+input) -> real `PerceiverResampler` (32 learned latents, 2 layers, cross-attention where the K/V
+context is `[latents ++ encoder-output]` concatenated -- confirmed from
+`cross_attn_include_queries=True`'s real behavior, GEGLU FeedForward with `dim_inner=int(dim*4*2/
+3)=2730` -- NOT the naive `dim*4` a surface reading of `ff_mult=4` would suggest, final RMSNorm).
+
+Fetched the real source for every piece before writing any code (`TTS/tts/layers/tortoise/
+autoregressive.py`'s `ConditioningEncoder`/`LearnedPositionEmbeddings`, `arch_utils.py`'s
+`AttentionBlock`/`QKVAttentionLegacy`/`normalization`, `xtts/perceiver_encoder.py`'s
+`PerceiverResampler`/`Attention`/`RMSNorm`/`FeedForward`, `tortoise/transformer.py`'s `GEGLU`) --
+several details here (the residual-on-normed-x quirk, the per-head-interleaved QKV channel layout,
+the FFN inner-dim formula, the concatenated cross-attention context) would have been real,
+plausible-looking bugs if guessed from the class/parameter names alone.
+
+`XttsConditioningEncoderTests.Encode_RealWeights_MatchesGoldenOracle`: **passed on the first
+try**, cosine >0.99 against `scratch-llamacpp-ref/xtts_conditioning_golden.py`'s real
+`model.gpt.get_style_emb(...)` output (fixed random mel input, isolates this stage from mel
+extraction).
+
+**Three major real, golden-verified pieces shipped this single cron cycle**: DVAE decoder, GPT2
+trunk, conditioning encoder + Perceiver Resampler. All three passed golden verification on the
+first attempt -- the "fetch real source before writing any code" discipline established this
+cycle is working well and should continue for the remaining pieces.
+
+**Next**: text/mel token+positional embeddings (small, trivial lookups -- do this next, it is the
+missing piece connecting the conditioning output + GPT2 trunk into a real end-to-end forward
+pass), then the two speaker encoders (GPT-conditioning path is now done; the SEPARATE
+`hifigan_decoder.speaker_encoder` ResNet-SE + `hifigan_decoder.waveform_decoder`'s FiLM
+conditioning are still unported), then the real autoregressive sampling loop.
