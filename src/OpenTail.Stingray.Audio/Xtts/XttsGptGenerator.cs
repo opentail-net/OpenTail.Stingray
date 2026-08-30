@@ -1,20 +1,11 @@
+using OpenTail.Stingray.Engine;
 
 namespace OpenTail.Stingray.Audio.Xtts;
 
 /// <summary>
 /// Real XTTS-v2 GPT generation orchestration: builds the real prefix (conditioning latents +
 /// text embeddings), then computes next-mel-token logits given the mel tokens generated so far.
-///
-/// <para><b>Correctness-first, non-KV-cached design</b>: recomputes the FULL sequence (prefix +
-/// all mel tokens so far) through the trunk on every call, rather than porting the real
-/// reference's KV-cache-based single-step `GPT2InferenceModel.forward` (see
-/// `TTS/tts/layers/xtts/gpt_inference.py`). Mathematically equivalent (a causal transformer's
-/// output at the last position is identical whether computed incrementally with a KV cache or by
-/// re-running the whole prefix), just O(T²) instead of O(T) per generated token -- matches this
-/// codebase's own established pattern of porting a stateless/correct version first, then adding a
-/// real KV cache as a follow-up performance pass once correctness is golden-verified (see
-/// `FishSpeechFastAr.Forward` vs. `.ForwardStep`/`FishSpeechFastArCache` for the exact same
-/// staged approach on a different pipeline, CLAUDE.md rule 7).</para>
+/// Supports high-speed O(1) single-step generation via <see cref="XttsGptCache"/>.
 /// </summary>
 public static class XttsGptGenerator
 {
@@ -46,6 +37,77 @@ public static class XttsGptGenerator
 
         Array.Copy(textEmb, 0, prefix, numCondLatents * dim, textEmb.Length);
         return prefix;
+    }
+
+    /// <summary>
+    /// Fast KV-cached autoregressive mel-token generation loop:
+    /// Prefills the prefix once into XttsGptCache, then evaluates single-token steps in O(1) time
+    /// per layer, accumulating the exact vocoder latents along the way.
+    /// </summary>
+    public static (List<int> GeneratedCodes, float[] Latents) Generate(
+        XttsGptWeights trunkWeights,
+        XttsGptEmbeddings emb,
+        XttsGptCache cache,
+        float[] prefixTokenMajor,
+        int prefixLen,
+        Random rng,
+        SamplingParams? p = null,
+        int maxTokens = XttsGptSampler.MaxAudioTokens)
+    {
+        p ??= XttsGptSampler.DefaultParams;
+        cache.Reset();
+
+        int dim = XttsGptWeights.ModelDim;
+
+        // 1. Prefill prefix tokens (cond latents + text tokens)
+        for (int i = 0; i < prefixLen; i++)
+        {
+            var tokenVec = prefixTokenMajor.AsSpan(i * dim, dim);
+            XttsGptTrunk.Step(trunkWeights, cache, tokenVec);
+        }
+
+        // 2. Feed start audio token (token 0 in mel modality)
+        int startAudioToken = XttsGptEmbeddings.AudioStartToken;
+        var startMelEmb = emb.EmbedSingleMel(startAudioToken, 0);
+        var lastHidden = XttsGptTrunk.Step(trunkWeights, cache, startMelEmb);
+
+        var melLatentsList = new List<float[]>();
+        // Add start_audio_token's final-normed latent
+        melLatentsList.Add(emb.FinalNormOnly(lastHidden.ToArray()));
+
+        var melTokensSoFar = new List<int> { startAudioToken };
+        var generated = new List<int>();
+
+        for (int step = 0; step < maxTokens; step++)
+        {
+            float[] logits = emb.MelLogits(lastHidden.ToArray());
+
+            var samplingParams = generated.Count > 0 ? p with { PreviousTokens = generated } : p;
+            int next = Sampler.Sample(logits, samplingParams, rng);
+
+            if (next == XttsGptEmbeddings.AudioStopToken)
+                break;
+
+            generated.Add(next);
+            melTokensSoFar.Add(next);
+
+            // Step with the next generated token at mel position (step + 1)
+            var melVec = emb.EmbedSingleMel(next, step + 1);
+            lastHidden = XttsGptTrunk.Step(trunkWeights, cache, melVec);
+            melLatentsList.Add(emb.FinalNormOnly(lastHidden.ToArray()));
+        }
+
+        // Format latents: channel-first [dim, melLen]
+        int melLen = melLatentsList.Count;
+        var latents = new float[dim * melLen];
+        for (int mi = 0; mi < melLen; mi++)
+        {
+            var h = melLatentsList[mi];
+            for (int d = 0; d < dim; d++)
+                latents[d * melLen + mi] = h[d];
+        }
+
+        return (generated, latents);
     }
 
     /// <summary>

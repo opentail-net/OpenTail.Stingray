@@ -85,3 +85,6 @@
 [FishSpeech-Stream-Frame1] prompt="Hello, I will make some lunch, darling!" audio=3.16s samples=139264 chunks=68
 [FishSpeech-Stream-Frame1] Time-To-First-Audio (TTFA)=0.752s TotalTime=116.434s
 
+[XTTS-v2] prompt="Hello, I will make some lunch, darling!" audio=4.50s samples=108032
+[XTTS-v2] runs(s)=[15.886, 15.760, 16.045] mean=15.897s RTF=3.532 (lower=faster; 1.0=realtime)
+

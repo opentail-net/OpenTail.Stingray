@@ -62,6 +62,18 @@ public sealed class XttsGptEmbeddings
     /// <summary>Real `mel_embedding(ids) + mel_pos_embedding(ids)` (absolute positions 0..ids.Length-1, independent of any text-side position count). Returns token-major [T, ModelDim].</summary>
     public float[] EmbedMel(ReadOnlySpan<int> ids) => EmbedTokenMajor(ids, MelEmbeddingWeight, MelPosEmbeddingWeight);
 
+    /// <summary>Real `mel_embedding(tokenId) + mel_pos_embedding(melPos)`. Returns single token vector [ModelDim].</summary>
+    public float[] EmbedSingleMel(int tokenId, int melPos)
+    {
+        int dim = XttsGptWeights.ModelDim;
+        var output = new float[dim];
+        int tokBase = tokenId * dim;
+        int posBase = melPos * dim;
+        for (int d = 0; d < dim; d++)
+            output[d] = MelEmbeddingWeight[tokBase + d] + MelPosEmbeddingWeight[posBase + d];
+        return output;
+    }
+
     private static float[] EmbedTokenMajor(ReadOnlySpan<int> ids, float[] tokenTable, float[] posTable)
     {
         int dim = XttsGptWeights.ModelDim;

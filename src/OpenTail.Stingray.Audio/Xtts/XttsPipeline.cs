@@ -33,6 +33,7 @@ public sealed class XttsPipeline : ITextToSpeechPipeline
 
     private readonly XttsGptWeights _gptWeights;
     private readonly XttsGptEmbeddings _gptEmb;
+    private readonly XttsGptCache _gptCache;
     private readonly XttsConditioningWeights _condWeights;
     private readonly XttsResNetWeights _resNetWeights;
     private readonly XttsVocoderWeights _vocoderWeights;
@@ -43,6 +44,7 @@ public sealed class XttsPipeline : ITextToSpeechPipeline
     {
         _gptWeights = gptWeights;
         _gptEmb = gptEmb;
+        _gptCache = new XttsGptCache(gptWeights);
         _condWeights = condWeights;
         _resNetWeights = resNetWeights;
         _vocoderWeights = vocoderWeights;
@@ -92,12 +94,10 @@ public sealed class XttsPipeline : ITextToSpeechPipeline
         var prefix = XttsGptGenerator.BuildPrefix(_gptEmb, condLatents, numCondLatents, textIds, out int prefixLen);
 
         var rng = seed.HasValue ? new Random(seed.Value) : new Random();
-        var generatedCodes = XttsGptSampler.Generate(_gptWeights, _gptEmb, prefix, prefixLen, rng);
+        var (generatedCodes, gptLatents) = XttsGptGenerator.Generate(_gptWeights, _gptEmb, _gptCache, prefix, prefixLen, rng);
         if (generatedCodes.Count == 0) return [];
 
-        float[] gptLatents = XttsGptLatents.ComputeLatents(_gptWeights, _gptEmb, prefix, prefixLen, System.Runtime.InteropServices.CollectionsMarshal.AsSpan(generatedCodes));
         int latentsT = gptLatents.Length / XttsGptWeights.ModelDim;
-
         return XttsHifiDecoder.Forward(_vocoderWeights, gptLatents, latentsT, speakerEmbedding);
     }
 

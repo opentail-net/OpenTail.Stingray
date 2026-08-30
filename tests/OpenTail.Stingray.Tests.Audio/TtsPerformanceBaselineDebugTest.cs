@@ -257,6 +257,51 @@ public sealed class TtsPerformanceBaselineDebugTest : HeavyTestBase
         File.AppendAllText(Path.Combine(FindRepoFile("docs") ?? ".", "tts-benchmark-log.txt"), msg + "\n\n");
     }
 
+    [Fact]
+    public void Baseline_Xtts()
+    {
+        string? checkpointDir = FindRepoFile("models/xtts-v2/model.safetensors") is { } p ? Path.GetDirectoryName(p) : null;
+        string? refWav = FindRepoFile("docs/audio-samples/fishspeech-lunch-REFERENCE.wav");
+        Assert.SkipUnless(checkpointDir != null && refWav != null, "XTTS checkpoint or reference audio not found");
+
+        var pipeline = OpenTail.Stingray.Audio.Xtts.XttsPipeline.Load(checkpointDir!);
+
+        // Warmup
+        var warm = pipeline.Generate(Prompt, refWav!, "en", seed: 42);
+        Assert.NotEmpty(warm);
+
+        double[] elapsedSec = new double[Runs];
+        int sampleCount = 0;
+        float[]? lastWav = null;
+        for (int i = 0; i < Runs; i++)
+        {
+            var sw = Stopwatch.StartNew();
+            var wav = pipeline.Generate(Prompt, refWav!, "en", seed: 42);
+            sw.Stop();
+            elapsedSec[i] = sw.Elapsed.TotalSeconds;
+            sampleCount = wav.Length;
+            lastWav = wav;
+        }
+
+        if (lastWav != null)
+        {
+            string? outDir = FindRepoFile("docs/audio-samples");
+            if (outDir != null)
+            {
+                string wavPath = Path.Combine(outDir, "xtts-perf-turn1.wav");
+                new AudioGenerationResult(lastWav, 24000).SaveWav(wavPath);
+            }
+        }
+
+        double audioSec = sampleCount / 24000.0;
+        double meanSec = Average(elapsedSec);
+        double rtf = meanSec / audioSec;
+        string msg = $"[XTTS-v2] prompt=\"{Prompt}\" audio={audioSec:F2}s samples={sampleCount}\n" +
+                     $"[XTTS-v2] runs(s)=[{string.Join(", ", Array.ConvertAll(elapsedSec, x => x.ToString("F3")))}] mean={meanSec:F3}s RTF={rtf:F3} (lower=faster; 1.0=realtime)";
+        Console.Error.WriteLine(msg);
+        File.AppendAllText(Path.Combine(FindRepoFile("docs") ?? ".", "tts-benchmark-log.txt"), msg + "\n\n");
+    }
+
     private static double Average(double[] values)
     {
         double sum = 0;
