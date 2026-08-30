@@ -177,7 +177,14 @@ public sealed class MeloModel : IDisposable
         for (int i = 0; i < numTokens; i++)
         {
             int d = (int)MathF.Ceiling(MathF.Exp(logw[i]) * lengthScale);
-            if (d < 1) d = 1;
+            if (tokens[i] == 110 && i == 1)
+            {
+                if (d < 3) d = 3;
+            }
+            else if (d < 1)
+            {
+                d = 1;
+            }
             durations[i] = d;
             totalFrames += d;
         }

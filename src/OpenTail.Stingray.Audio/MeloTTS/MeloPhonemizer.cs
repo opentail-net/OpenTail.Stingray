@@ -77,7 +77,12 @@ public sealed class MeloPhonemizer
             {
                 foreach (var p in phones)
                 {
-                    if (TokenMap.TryGetValue(p, out int pid))
+                    string meloPhone = p switch
+                    {
+                        "hh" => "h",
+                        _ => p
+                    };
+                    if (TokenMap.TryGetValue(meloPhone, out int pid))
                         rawPhones.Add(pid);
                 }
             }

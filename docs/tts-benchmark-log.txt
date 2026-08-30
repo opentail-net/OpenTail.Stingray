@@ -295,3 +295,9 @@
 [MeloTTS-Stream] prompt="Hello, I will make some lunch, darling!" audio=3.03s samples=133632 chunks=3
 [MeloTTS-Stream] Time-To-First-Audio (TTFA)=0.657s TotalTime=3.652s
 
+[MeloTTS] prompt="Hello, I will make some lunch, darling!" audio=2.75s samples=121344
+[MeloTTS] runs(s)=[3.900, 3.923, 3.823] mean=3.882s RTF=1.411 (lower=faster; 1.0=realtime)
+
+[MeloTTS-Stream] prompt="Hello, I will make some lunch, darling!" audio=3.04s samples=134144 chunks=3
+[MeloTTS-Stream] Time-To-First-Audio (TTFA)=0.671s TotalTime=3.745s
+
