@@ -418,3 +418,6 @@
 [F5-TTS] prompt="Hello, I will make some lunch, darling!" audio=2.77s samples=66560
 [F5-TTS] runs(s)=[74.006, 72.936, 73.374] mean=73.439s RTF=26.480 (lower=faster; 1.0=realtime)
 
+[F5-TTS] prompt="Hello, I will make some lunch, darling!" audio=2.77s samples=66560
+[F5-TTS] runs(s)=[79.310, 79.820, 80.114] mean=79.748s RTF=28.755 (lower=faster; 1.0=realtime)
+

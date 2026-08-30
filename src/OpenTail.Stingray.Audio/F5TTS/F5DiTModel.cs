@@ -21,10 +21,23 @@ public static class F5DiTModel
     public static float[] ForwardVelocity(F5TtsWeights w, float[] x, float[] cond, ReadOnlySpan<int> text, float timestep, int numFrames, bool dropText)
     {
         var textEmbed = F5TextEmbedding.Forward(w, text, numFrames, dropText);
+        var (rotaryCos, rotarySin) = F5RotaryEmbedding.Precompute(w.RotaryInvFreq, numFrames);
+        return ForwardVelocity(w, x, cond, textEmbed, timestep, numFrames, rotaryCos, rotarySin);
+    }
+
+    /// <summary>Optimized forward pass accepting precomputed/cached textEmbed, rotaryCos, and rotarySin to avoid redundant recomputations across ODE steps.</summary>
+    public static float[] ForwardVelocity(
+        F5TtsWeights w,
+        float[] x,
+        float[] cond,
+        float[] textEmbed,
+        float timestep,
+        int numFrames,
+        float[] rotaryCos,
+        float[] rotarySin)
+    {
         var h = F5InputEmbedding.Forward(w, x, cond, textEmbed, numFrames);
         var tEmb = F5TimestepEmbedding.Forward(w, timestep);
-
-        var (rotaryCos, rotarySin) = F5RotaryEmbedding.Precompute(w.RotaryInvFreq, numFrames);
 
         for (int layer = 0; layer < F5TtsWeights.NumLayers; layer++)
             h = F5DiTBlock.Forward(w, w.Blocks[layer], h, tEmb, numFrames, rotaryCos, rotarySin);

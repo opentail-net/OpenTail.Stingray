@@ -42,6 +42,21 @@ public static class F5FlowMatchingOde
         var nullCond = new float[condMel.Length];
         var tokenArray = text.ToArray();
 
+        // Caching: textEmbed and rotaryCos/Sin are invariant across all ODE steps
+        var (rotaryCos, rotarySin) = F5RotaryEmbedding.Precompute(w.RotaryInvFreq, numFrames);
+        float[] textEmbedCond = null!, textEmbedUncond = null!;
+        if (cfgStrength < 1e-5f)
+        {
+            textEmbedCond = F5TextEmbedding.Forward(w, tokenArray, numFrames, dropText: false);
+        }
+        else
+        {
+            Parallel.Invoke(
+                () => textEmbedCond = F5TextEmbedding.Forward(w, tokenArray, numFrames, dropText: false),
+                () => textEmbedUncond = F5TextEmbedding.Forward(w, tokenArray, numFrames, dropText: true)
+            );
+        }
+
         for (int step = 0; step < steps; step++)
         {
             float t0 = (float)step / steps;
@@ -52,14 +67,14 @@ public static class F5FlowMatchingOde
             float[] v;
             if (cfgStrength < 1e-5f)
             {
-                v = F5DiTModel.ForwardVelocity(w, x, condMel, tokenArray, t, numFrames, dropText: false);
+                v = F5DiTModel.ForwardVelocity(w, x, condMel, textEmbedCond, t, numFrames, rotaryCos, rotarySin);
             }
             else
             {
                 float[] vCond = null!, vUncond = null!;
                 Parallel.Invoke(
-                    () => vCond = F5DiTModel.ForwardVelocity(w, x, condMel, tokenArray, t, numFrames, dropText: false),
-                    () => vUncond = F5DiTModel.ForwardVelocity(w, x, nullCond, tokenArray, t, numFrames, dropText: true)
+                    () => vCond = F5DiTModel.ForwardVelocity(w, x, condMel, textEmbedCond, t, numFrames, rotaryCos, rotarySin),
+                    () => vUncond = F5DiTModel.ForwardVelocity(w, x, nullCond, textEmbedUncond, t, numFrames, rotaryCos, rotarySin)
                 );
                 v = new float[vCond.Length];
                 System.Numerics.Tensors.TensorPrimitives.Subtract(vCond, vUncond, v);
