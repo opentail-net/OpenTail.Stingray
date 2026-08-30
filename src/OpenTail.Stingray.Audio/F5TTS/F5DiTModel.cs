@@ -46,7 +46,7 @@ public static class F5DiTModel
         int dim = F5TtsWeights.HiddenDim;
         var siluT = new float[dim];
         for (int d = 0; d < dim; d++) siluT[d] = F5Kernels.SiLU(tEmb[d]);
-        var modulation = F5Kernels.Linear(siluT, 1, dim, w.NormOutLinearWeight, w.NormOutLinearBias, dim * 2);
+        var modulation = F5Kernels.LinearQ8_0(siluT, 1, dim, w.NormOutLinearQ8, w.NormOutLinearBias, dim * 2);
 
         var normOut = F5Kernels.LayerNormNoAffine(h, numFrames, dim);
         unsafe
@@ -75,6 +75,6 @@ public static class F5DiTModel
             }
         }
 
-        return F5Kernels.Linear(normOut, numFrames, dim, w.ProjOutWeight, w.ProjOutBias, F5TtsWeights.MelDim);
+        return F5Kernels.LinearQ8_0(normOut, numFrames, dim, w.ProjOutQ8, w.ProjOutBias, F5TtsWeights.MelDim);
     }
 }

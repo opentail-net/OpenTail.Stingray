@@ -49,6 +49,47 @@ public static class F5Kernels
         return y;
     }
 
+    /// <summary>Per-timestep Linear with Q8_0 weights: y[t,o] = bias[o] + MatVecQ8_0(weight, x[t]).</summary>
+    public static unsafe float[] LinearQ8_0(float[] x, int t, int inDim, byte[] q8Weight, float[]? bias, int outDim)
+    {
+        var y = new float[t * outDim];
+        fixed (float* xp = x, yp = y, bp = bias)
+        fixed (byte* wp = q8Weight)
+        {
+            float* xpLocal = xp;
+            float* ypLocal = yp;
+            byte* wpLocal = wp;
+            float* bpLocal = bp;
+
+            if (t == 1)
+            {
+                OpenTail.Stingray.Cpu.SimdKernels.MatVecQ8_0(ypLocal, wpLocal, xpLocal, outDim, inDim);
+                if (bpLocal != null)
+                {
+                    var ySpan = new Span<float>(ypLocal, outDim);
+                    var bSpan = new ReadOnlySpan<float>(bpLocal, outDim);
+                    System.Numerics.Tensors.TensorPrimitives.Add(ySpan, bSpan, ySpan);
+                }
+            }
+            else
+            {
+                Parallel.For(0, t, ti =>
+                {
+                    float* xRow = xpLocal + ti * inDim;
+                    float* yRow = ypLocal + ti * outDim;
+                    OpenTail.Stingray.Cpu.SimdKernels.MatVecQ8_0(yRow, wpLocal, xRow, outDim, inDim);
+                    if (bpLocal != null)
+                    {
+                        var ySpan = new Span<float>(yRow, outDim);
+                        var bSpan = new ReadOnlySpan<float>(bpLocal, outDim);
+                        System.Numerics.Tensors.TensorPrimitives.Add(ySpan, bSpan, ySpan);
+                    }
+                });
+            }
+        }
+        return y;
+    }
+
     /// <summary>Per-timestep affine LayerNorm over the last (channel) dim.</summary>
     public static float[] LayerNorm(float[] x, int t, int dim, float[] gamma, float[] beta, float eps = 1e-6f)
     {

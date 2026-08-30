@@ -775,6 +775,8 @@ public sealed class TtsPerformanceBaselineDebugTest : HeavyTestBase
                 new AudioGenerationResult(lastWav, pipeline.DefaultSampleRate).SaveWav(turn1Path);
                 string turn2Path = Path.Combine(outDir, "f5tts-perf-turn2.wav");
                 new AudioGenerationResult(lastWav, pipeline.DefaultSampleRate).SaveWav(turn2Path);
+                string turn3Path = Path.Combine(outDir, "f5tts-perf-turn3.wav");
+                new AudioGenerationResult(lastWav, pipeline.DefaultSampleRate).SaveWav(turn3Path);
             }
         }
 

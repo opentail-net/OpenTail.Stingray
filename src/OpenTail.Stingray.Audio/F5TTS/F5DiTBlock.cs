@@ -32,7 +32,7 @@ public static class F5DiTBlock
 
         var siluT = new float[dim];
         for (int d = 0; d < dim; d++) siluT[d] = F5Kernels.SiLU(tEmb[d]);
-        var modulation = F5Kernels.Linear(siluT, 1, dim, bw.AttnNormLinearWeight, bw.AttnNormLinearBias, dim * 6);
+        var modulation = F5Kernels.LinearQ8_0(siluT, 1, dim, bw.AttnNormLinearQ8, bw.AttnNormLinearBias, dim * 6);
 
         var norm = F5Kernels.LayerNormNoAffine(x, t, dim);
         ApplyAffineModulationSlice(norm, norm, modulation, 1 * dim, 0 * dim, t, dim);
@@ -113,9 +113,9 @@ public static class F5DiTBlock
     {
         int dim = F5TtsWeights.HiddenDim;
         int ffn = F5TtsWeights.FfnDim;
-        var h = F5Kernels.Linear(x, t, dim, bw.FfInWeight, bw.FfInBias, ffn);
+        var h = F5Kernels.LinearQ8_0(x, t, dim, bw.FfInQ8, bw.FfInBias, ffn);
         for (int i = 0; i < h.Length; i++) h[i] = F5Kernels.GeluTanh(h[i]);
-        return F5Kernels.Linear(h, t, ffn, bw.FfOutWeight, bw.FfOutBias, dim);
+        return F5Kernels.LinearQ8_0(h, t, ffn, bw.FfOutQ8, bw.FfOutBias, dim);
     }
 
     /// <summary>Interleaved ("GPT-J style") RoPE q/k projection + multi-head self-attention -- see <see cref="F5Kernels.ApplyRotary"/>/<see cref="F5Kernels.MultiHeadSelfAttention"/> (shared with CosyVoice3's tensor-for-tensor-identical DiT).</summary>
@@ -125,15 +125,15 @@ public static class F5DiTBlock
         int heads = F5TtsWeights.NumHeads;
         int headDim = F5TtsWeights.HeadDim;
 
-        var q = F5Kernels.Linear(norm, t, dim, bw.ToQWeight, bw.ToQBias, dim);
-        var k = F5Kernels.Linear(norm, t, dim, bw.ToKWeight, bw.ToKBias, dim);
-        var v = F5Kernels.Linear(norm, t, dim, bw.ToVWeight, bw.ToVBias, dim);
+        var q = F5Kernels.LinearQ8_0(norm, t, dim, bw.ToQQ8, bw.ToQBias, dim);
+        var k = F5Kernels.LinearQ8_0(norm, t, dim, bw.ToKQ8, bw.ToKBias, dim);
+        var v = F5Kernels.LinearQ8_0(norm, t, dim, bw.ToVQ8, bw.ToVBias, dim);
 
         // Real F5TTS_Base.yaml: pe_attn_head=1 -- RoPE applies to only the FIRST attention head, not all 16 (confirmed via modules.py's AttnProcessor.forward, `query[:, :pn, :, :] = apply_rotary_pos_emb(...)`).
         F5Kernels.ApplyRotary(q, t, heads, headDim, rotaryCos, rotarySin, numRopeHeads: 1);
         F5Kernels.ApplyRotary(k, t, heads, headDim, rotaryCos, rotarySin, numRopeHeads: 1);
 
         var context = F5Kernels.MultiHeadSelfAttention(q, k, v, t, heads, headDim);
-        return F5Kernels.Linear(context, t, dim, bw.ToOutWeight, bw.ToOutBias, dim);
+        return F5Kernels.LinearQ8_0(context, t, dim, bw.ToOutQ8, bw.ToOutBias, dim);
     }
 }

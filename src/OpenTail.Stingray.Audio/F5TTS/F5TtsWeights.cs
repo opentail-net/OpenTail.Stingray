@@ -58,8 +58,10 @@ public sealed class F5TtsWeights : IDisposable
 
     // --- norm_out / proj_out ---
     public float[] NormOutLinearWeight { get; } // [2048, 1024]
+    public byte[] NormOutLinearQ8 { get; }
     public float[] NormOutLinearBias { get; }
     public float[] ProjOutWeight { get; } // [100, 1024]
+    public byte[] ProjOutQ8 { get; }
     public float[] ProjOutBias { get; }
 
     public F5TtsWeights(string safetensorsPath)
@@ -92,8 +94,11 @@ public sealed class F5TtsWeights : IDisposable
 
         NormOutLinearWeight = Read("norm_out.linear.weight");
         NormOutLinearBias = Read("norm_out.linear.bias");
+        NormOutLinearQ8 = OpenTail.Stingray.Audio.Primitives.Q8_0WeightQuantizer.Quantize(NormOutLinearWeight, 2048, 1024);
+
         ProjOutWeight = Read("proj_out.weight");
         ProjOutBias = Read("proj_out.bias");
+        ProjOutQ8 = OpenTail.Stingray.Audio.Primitives.Q8_0WeightQuantizer.Quantize(ProjOutWeight, 100, 1024);
     }
 
     public float[] Read(string name) => Loader.ReadF32($"ema_model.transformer.{name}");
@@ -135,18 +140,25 @@ public sealed class F5TextBlockWeights
 public sealed class F5DiTBlockWeights
 {
     public float[] AttnNormLinearWeight { get; } // [6144, 1024]
+    public byte[] AttnNormLinearQ8 { get; }
     public float[] AttnNormLinearBias { get; }
     public float[] ToQWeight { get; }
+    public byte[] ToQQ8 { get; }
     public float[] ToQBias { get; }
     public float[] ToKWeight { get; }
+    public byte[] ToKQ8 { get; }
     public float[] ToKBias { get; }
     public float[] ToVWeight { get; }
+    public byte[] ToVQ8 { get; }
     public float[] ToVBias { get; }
     public float[] ToOutWeight { get; }
+    public byte[] ToOutQ8 { get; }
     public float[] ToOutBias { get; }
     public float[] FfInWeight { get; } // [2048, 1024]
+    public byte[] FfInQ8 { get; }
     public float[] FfInBias { get; }
     public float[] FfOutWeight { get; } // [1024, 2048]
+    public byte[] FfOutQ8 { get; }
     public float[] FfOutBias { get; }
 
     public F5DiTBlockWeights(F5TtsWeights w, int i)
@@ -154,17 +166,30 @@ public sealed class F5DiTBlockWeights
         string p = $"transformer_blocks.{i}";
         AttnNormLinearWeight = w.Read($"{p}.attn_norm.linear.weight");
         AttnNormLinearBias = w.Read($"{p}.attn_norm.linear.bias");
+        AttnNormLinearQ8 = OpenTail.Stingray.Audio.Primitives.Q8_0WeightQuantizer.Quantize(AttnNormLinearWeight, 6144, 1024);
+
         ToQWeight = w.Read($"{p}.attn.to_q.weight");
         ToQBias = w.Read($"{p}.attn.to_q.bias");
+        ToQQ8 = OpenTail.Stingray.Audio.Primitives.Q8_0WeightQuantizer.Quantize(ToQWeight, 1024, 1024);
+
         ToKWeight = w.Read($"{p}.attn.to_k.weight");
         ToKBias = w.Read($"{p}.attn.to_k.bias");
+        ToKQ8 = OpenTail.Stingray.Audio.Primitives.Q8_0WeightQuantizer.Quantize(ToKWeight, 1024, 1024);
+
         ToVWeight = w.Read($"{p}.attn.to_v.weight");
         ToVBias = w.Read($"{p}.attn.to_v.bias");
+        ToVQ8 = OpenTail.Stingray.Audio.Primitives.Q8_0WeightQuantizer.Quantize(ToVWeight, 1024, 1024);
+
         ToOutWeight = w.Read($"{p}.attn.to_out.0.weight");
         ToOutBias = w.Read($"{p}.attn.to_out.0.bias");
+        ToOutQ8 = OpenTail.Stingray.Audio.Primitives.Q8_0WeightQuantizer.Quantize(ToOutWeight, 1024, 1024);
+
         FfInWeight = w.Read($"{p}.ff.ff.0.0.weight");
         FfInBias = w.Read($"{p}.ff.ff.0.0.bias");
+        FfInQ8 = OpenTail.Stingray.Audio.Primitives.Q8_0WeightQuantizer.Quantize(FfInWeight, 2048, 1024);
+
         FfOutWeight = w.Read($"{p}.ff.ff.2.weight");
         FfOutBias = w.Read($"{p}.ff.ff.2.bias");
+        FfOutQ8 = OpenTail.Stingray.Audio.Primitives.Q8_0WeightQuantizer.Quantize(FfOutWeight, 1024, 2048);
     }
 }
