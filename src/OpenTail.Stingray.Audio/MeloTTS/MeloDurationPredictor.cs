@@ -31,8 +31,8 @@ public static class MeloDurationPredictor
         float[] logwDp = PredictDp(w, encoderHidden, t, g);
 
         var logw = new float[t];
-        for (int i = 0; i < t; i++)
-            logw[i] = logwSdp[i] * sdpRatio + logwDp[i] * (1f - sdpRatio);
+        System.Numerics.Tensors.TensorPrimitives.Multiply(logwSdp, sdpRatio, logwSdp);
+        System.Numerics.Tensors.TensorPrimitives.MultiplyAdd(logwDp, 1f - sdpRatio, logwSdp, logw);
         return logw;
     }
 
@@ -46,7 +46,7 @@ public static class MeloDurationPredictor
         x = VitsAttentionKernels.Conv1x1(x, dim, t, w.SdpProjWeight, w.SdpProjBias, dim);
 
         var z = new float[2 * t];
-        for (int i = 0; i < z.Length; i++) z[i] = noise[i] * noiseScaleW;
+        System.Numerics.Tensors.TensorPrimitives.Multiply(noise, noiseScaleW, z);
 
         // Same pruned execution order as Piper's dp (see PiperDurationPredictor's doc comment):
         // Flip(8) -> ConvFlow(7) -> Flip(6) -> ConvFlow(5) -> Flip(4) -> ConvFlow(3) -> Flip(2) -> ElementwiseAffine(0)
@@ -74,11 +74,11 @@ public static class MeloDurationPredictor
         AddConditioning(x, t, dim, g, w.DpCondWeight, w.DpCondBias);
 
         var h = VitsAttentionKernels.Conv1dSamePad(x, dim, t, w.DpConv1Weight, w.DpConv1Bias, filter, 3);
-        for (int i = 0; i < h.Length; i++) if (h[i] < 0f) h[i] = 0f; // ReLU
+        System.Numerics.Tensors.TensorPrimitives.Max(h, 0f, h); // ReLU
         h = VitsAttentionKernels.LayerNormChannelFirst(h, filter, t, w.DpNorm1Gamma, w.DpNorm1Beta);
 
         h = VitsAttentionKernels.Conv1dSamePad(h, filter, t, w.DpConv2Weight, w.DpConv2Bias, filter, 3);
-        for (int i = 0; i < h.Length; i++) if (h[i] < 0f) h[i] = 0f; // ReLU
+        System.Numerics.Tensors.TensorPrimitives.Max(h, 0f, h); // ReLU
         h = VitsAttentionKernels.LayerNormChannelFirst(h, filter, t, w.DpNorm2Gamma, w.DpNorm2Beta);
 
         var proj = VitsAttentionKernels.Conv1x1(h, filter, t, w.DpProjWeight, w.DpProjBias, 1);
@@ -86,19 +86,19 @@ public static class MeloDurationPredictor
     }
 
     /// <summary>x += cond(g) in place; cond is a 1x1 conv (gin_channels -> dim), g is a single [gin_channels] vector broadcast over every timestep.</summary>
-    private static void AddConditioning(float[] x, int t, int dim, float[] g, float[] condWeight, float[] condBias)
+    private static unsafe void AddConditioning(float[] x, int t, int dim, float[] g, float[] condWeight, float[] condBias)
     {
         int gin = g.Length;
         var condOut = new float[dim];
-        for (int o = 0; o < dim; o++)
+        fixed (float* wP = condWeight, gP = g, cP = condOut)
         {
-            float sum = condBias[o];
-            int wBase = o * gin;
-            for (int i = 0; i < gin; i++) sum += condWeight[wBase + i] * g[i];
-            condOut[o] = sum;
+            SimdKernels.MatVecF32(cP, wP, gP, dim, gin);
         }
-        for (int ti = 0; ti < t; ti++)
-            for (int c = 0; c < dim; c++)
-                x[c * t + ti] += condOut[c];
+        System.Numerics.Tensors.TensorPrimitives.Add(condOut, condBias, condOut);
+        for (int c = 0; c < dim; c++)
+        {
+            var span = x.AsSpan(c * t, t);
+            System.Numerics.Tensors.TensorPrimitives.Add(span, condOut[c], span);
+        }
     }
 }

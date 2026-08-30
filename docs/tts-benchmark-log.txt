@@ -187,3 +187,6 @@
 [MeloTTS] prompt="Hello, I will make some lunch, darling!" audio=2.55s samples=112640
 [MeloTTS] runs(s)=[3.575, 3.626, 3.684] mean=3.628s RTF=1.420 (lower=faster; 1.0=realtime)
 
+[MeloTTS] prompt="Hello, I will make some lunch, darling!" audio=2.52s samples=111104
+[MeloTTS] runs(s)=[3.552, 3.666, 3.482] mean=3.567s RTF=1.416 (lower=faster; 1.0=realtime)
+
