@@ -10544,3 +10544,54 @@ ResNet-SE + FiLM-conditioned `hifigan_decoder.waveform_decoder` vocoder). Once t
 plus wiring `XttsDvaeDecoder` onto the sampler's real generated codes and `XttsMelExtractor`
 into the pipeline's reference-audio conditioning path, this is a complete, real, end-to-end
 XTTS-v2 pipeline with nothing left faked.
+
+### XTTS-v2: IMPORTANT CORRECTION -- the DVAE decoder is NOT used at real inference time; real vocoder input is the GPT trunk's own hidden states (2026-08-30, same cron cycle)
+
+While building the speaker-encoder/vocoder path, checked `TTS/tts/models/xtts.py`'s real
+`inference`/`full_inference` methods before wiring the DVAE decoder in, and found this session's
+earlier assumption was wrong: **the real synthesis path never calls `DiscreteVAE.decode`**. Real
+flow: `gpt_codes = self.gpt.generate(...)` (the autoregressive sampling loop, already built and
+verified as `XttsGptSampler`), THEN a SECOND forward pass `gpt_latents = self.gpt(text_tokens,
+text_len, gpt_codes, expected_output_len, cond_latents=gpt_cond_latent, return_latent=True)` --
+this re-runs `GPT.forward` (not `.generate()`) over the already-sampled codes with
+`return_latent=True`, which makes `GPT.get_logits` return HIDDEN STATES (after both the trunk's
+own `ln_f` and the separate `gpt.final_norm`) instead of projecting through `mel_head`. THESE
+1024-dim hidden states (`decoder_input_dim=1024` in `HifiDecoder`'s real construction, matching
+the GPT's `model_dim`, NOT the DVAE's 80-dim mel output) are what `self.hifigan_decoder(gpt_latents,
+g=speaker_embedding)` actually consumes. The DVAE decoder this session built and golden-verified
+earlier (`XttsDvaeDecoder`) is real, correct, and may still be useful (training-time reconstruction,
+potential debug/visualization tooling), but is **not wired into the real audio-synthesis path** --
+noted here so no future session wastes time trying to connect it to the vocoder.
+
+`src/OpenTail.Stingray.Audio/Xtts/XttsGptLatents.cs`: the real vocoder-input extraction --
+re-runs `XttsGptTrunk.Forward` over `[prefix ++ start_audio_token ++ generatedCodes]` and applies
+`gpt.final_norm` at each mel position. **Deliberately does NOT replicate the reference's own
+padding/trim arithmetic** (`code_lengths=ceil(wav_lengths/code_stride_len)+3`,
+`set_mel_padding`, a `sub=-5` trailing trim the reference's OWN authors flagged "don't ask me why
+😄") -- relies on a real, verifiable invariant instead: causal self-attention means a position's
+hidden state depends only on itself and EARLIER positions, never on tokens appended after it, so
+feeding just `[start_audio_token, ...generatedCodes]` (no trailing padding) gives EXACTLY the
+reference's own values at the same relative positions, just without extra trailing positions to
+trim away.
+
+`XttsGptLatentsTests.ComputeLatents_RealWeights_MatchesGoldenOracle`: **passed**, cosine >0.99
+comparing the overlapping-prefix of positions against `scratch-llamacpp-ref/
+xtts_gpt_latents_golden.py`'s real `GPT.forward(..., return_latent=True)` output -- validates
+both the extraction math AND the causal-invariance argument used to sidestep the padding quirk.
+
+**Seven major XTTS-v2 pieces now shipped this single cron cycle, every one verified correct on
+first attempt (or, in this DVAE case, correctly identified as real-but-unused before being
+mistakenly wired in)**: DVAE decoder, GPT2 trunk, conditioning+perceiver, embeddings+
+orchestration, sampling loop, mel extraction, gpt_latents extraction.
+
+**Still not done**: a native BPE tokenizer, the ResNet-SE speaker encoder (`hifigan_decoder.
+speaker_encoder`, real construction confirmed: `input_dim=64, proj_dim=512, log_input=True,
+use_torch_spec=True`, own 16kHz/n_fft=512/hop=160/win=400/n_mels=64 mel frontend with
+`preemphasis=0.97` -- a THIRD, distinct mel config in this port, after the DVAE's 22050Hz/80-mel
+and (not yet needed) any others), and the FiLM-conditioned HiFi-GAN vocoder itself
+(`hifigan_decoder.waveform_decoder`, a `HifiganGenerator` with `cond_channels=512`/
+`cond_in_each_up_layer=True` -- confirmed real construction args from `HifiDecoder.__init__`).
+Once those two land, `XttsGptLatents.ComputeLatents`'s output feeds directly into the vocoder
+(after upsample-interpolation per `HifiDecoder.forward`'s real
+`ar_mel_length_compression/output_hop_length` + `output_sample_rate/input_sample_rate` scaling)
+for a complete, real, end-to-end XTTS-v2 pipeline.

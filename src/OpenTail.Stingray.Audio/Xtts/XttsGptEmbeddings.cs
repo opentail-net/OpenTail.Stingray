@@ -91,6 +91,9 @@ public sealed class XttsGptEmbeddings
         return Linear(normed, TextHeadWeight, TextHeadBias, NumTextTokens);
     }
 
+    /// <summary>The real separate `gpt.final_norm` alone (no head projection) -- used by <see cref="XttsGptLatents"/> to extract real vocoder-input hidden states.</summary>
+    public float[] FinalNormOnly(float[] hidden) => LayerNorm(hidden, FinalNormWeight, FinalNormBias);
+
     private static float[] LayerNorm(float[] x, float[] gamma, float[] beta, float eps = 1e-5f)
     {
         int dim = x.Length;
