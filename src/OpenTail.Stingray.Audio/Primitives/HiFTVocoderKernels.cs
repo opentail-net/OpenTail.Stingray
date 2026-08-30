@@ -157,7 +157,12 @@ public static class HiFTVocoderKernels
                     float u1 = MathF.Max(1e-7f, (float)rng.NextDouble());
                     float u2 = (float)rng.NextDouble();
                     float gNoise = MathF.Sqrt(-2.0f * MathF.Log(u1)) * MathF.Cos(2.0f * MathF.PI * u2);
-                    sineWaves[idx] += noiseAmp * gNoise;
+                    // Real NSF SineGen.forward: `sine_waves = sine_waves * uv + noise`. `uv` must scale
+                    // the periodic sine term itself (zeroing it during unvoiced frames), not just pick
+                    // noiseAmp -- otherwise full-amplitude harmonics leak through under the noise during
+                    // consonants/silence. (Restored; was dropped in the uncommitted phase-accumulation
+                    // rewrite, which is otherwise unchanged here.)
+                    sineWaves[idx] = sineWaves[idx] * uv + noiseAmp * gNoise;
                 }
             }
         }
