@@ -231,9 +231,11 @@ public sealed class ChatterboxAcousticLm : IDisposable
         {
             var h = new float[dim];
             int posRow = (startPos + i) * dim;
-            for (int d = 0; d < dim; d++) h[d] = chunkEmbeds[i][d] + w.WpeWeight[posRow + d];
+            System.Numerics.Tensors.TensorPrimitives.Add(chunkEmbeds[i], w.WpeWeight.AsSpan(posRow, dim), h);
             hidden[i] = h;
         }
+
+        var scores = new float[kCache[0].Count + n];
 
         for (int l = 0; l < w.NumLayers; l++)
         {
@@ -280,29 +282,22 @@ public sealed class ChatterboxAcousticLm : IDisposable
 
                 unsafe
                 {
-                    fixed (float* qp = q, ctxBase = context)
+                    fixed (float* qp = q, ctxBase = context, sp = scores)
                     {
-                        nint qAddr = (nint)qp;
-                        nint ctxAddr = (nint)ctxBase;
-
-                        System.Threading.Tasks.Parallel.For(0, NumHeads, h =>
+                        for (int h = 0; h < NumHeads; h++)
                         {
-                            float* qHead = (float*)qAddr;
-                            float* ctxHead = (float*)ctxAddr;
                             int hOff = h * HeadDim;
-                            float* qPtr = qHead + hOff;
-                            float* cPtr = ctxHead + hOff;
-
-                            var scores = stackalloc float[availableKeys];
+                            float* qPtr = qp + hOff;
+                            float* cPtr = ctxBase + hOff;
 
                             for (int t = 0; t < availableKeys; t++)
                             {
                                 var kt = kCacheL[t];
                                 fixed (float* ktp = kt)
-                                    scores[t] = SimdKernels.DotF32(qPtr, ktp + hOff, HeadDim) * scale;
+                                    sp[t] = SimdKernels.DotF32(qPtr, ktp + hOff, HeadDim) * scale;
                             }
 
-                            SoftmaxInPlace(new Span<float>(scores, availableKeys));
+                            SoftmaxInPlace(new Span<float>(sp, availableKeys));
 
                             if (HeadDim == 64 && Avx.IsSupported && Fma.IsSupported)
                             {
@@ -317,7 +312,7 @@ public sealed class ChatterboxAcousticLm : IDisposable
 
                                 for (int t = 0; t < availableKeys; t++)
                                 {
-                                    float p = scores[t];
+                                    float p = sp[t];
                                     if (p == 0f) continue;
                                     var pVec = Vector256.Create(p);
                                     var vt = vCacheL[t];
@@ -350,7 +345,7 @@ public sealed class ChatterboxAcousticLm : IDisposable
                                 for (int t = 0; t < availableKeys; t++)
                                 {
                                     var vt = vCacheL[t];
-                                    float p = scores[t];
+                                    float p = sp[t];
                                     if (p == 0f) continue;
                                     fixed (float* vtp = vt)
                                     {
@@ -359,9 +354,10 @@ public sealed class ChatterboxAcousticLm : IDisposable
                                     }
                                 }
                             }
-                        });
+                        }
                     }
                 }
+
                 contexts = [context];
             }
             else
@@ -405,7 +401,7 @@ public sealed class ChatterboxAcousticLm : IDisposable
             var attnOut = LinearBatched(contexts, layer.AttnOutputWeight, layer.AttnOutputBias, dim, dim);
 
             for (int i = 0; i < n; i++)
-                for (int d = 0; d < dim; d++) hidden[i][d] += attnOut[i][d];
+                System.Numerics.Tensors.TensorPrimitives.Add(hidden[i], attnOut[i], hidden[i]);
 
             // --- MLP block ---
             var ffnNormed = new float[n][];
@@ -415,7 +411,7 @@ public sealed class ChatterboxAcousticLm : IDisposable
             for (int i = 0; i < n; i++) GeluNewInPlace(fcAll[i]);
             var projAll = LinearBatched(fcAll, layer.FfnProjWeight, layer.FfnProjBias, w.IntermediateSize, dim);
             for (int i = 0; i < n; i++)
-                for (int d = 0; d < dim; d++) hidden[i][d] += projAll[i][d];
+                System.Numerics.Tensors.TensorPrimitives.Add(hidden[i], projAll[i], hidden[i]);
         }
 
         // Final LayerNorm (ln_f / t3.output_norm).
@@ -490,20 +486,13 @@ public sealed class ChatterboxAcousticLm : IDisposable
         return outputs;
     }
 
-    private static float[] LayerNorm(float[] x, float[] weight, float[] bias, float eps = 1e-5f)
+    private static unsafe float[] LayerNorm(float[] x, float[] weight, float[] bias, float eps = 1e-5f)
     {
-        int n = x.Length;
-        double mean = 0;
-        for (int i = 0; i < n; i++) mean += x[i];
-        mean /= n;
-        double var = 0;
-        for (int i = 0; i < n; i++) { double d = x[i] - mean; var += d * d; }
-        var /= n;
-        float invStd = (float)(1.0 / Math.Sqrt(var + eps));
-
-        var output = new float[n];
-        for (int i = 0; i < n; i++)
-            output[i] = (float)((x[i] - mean) * invStd) * weight[i] + bias[i];
+        var output = new float[x.Length];
+        fixed (float* xp = x, wp = weight, bp = bias, op = output)
+        {
+            SimdKernels.LayerNorm(op, xp, wp, bp, x.Length, eps);
+        }
         return output;
     }
 

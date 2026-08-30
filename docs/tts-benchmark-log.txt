@@ -211,3 +211,12 @@
 [Parler-TTS] prompt="Hello, I will make some lunch, darling!" audio=2.66s samples=117248
 [Parler-TTS] runs(s)=[12.880, 13.248, 14.438] mean=13.522s RTF=5.086 (lower=faster; 1.0=realtime)
 
+[Chatterbox] prompt="Hello, I will make some lunch, darling!" audio=2.60s samples=62400
+[Chatterbox] runs(s)=[10.793, 11.370, 11.105] mean=11.089s RTF=4.265 (lower=faster; 1.0=realtime)
+
+[Chatterbox] prompt="Hello, I will make some lunch, darling!" audio=2.40s samples=57600
+[Chatterbox] runs(s)=[10.771, 10.785, 10.923] mean=10.826s RTF=4.511 (lower=faster; 1.0=realtime)
+
+[Chatterbox] prompt="Hello, I will make some lunch, darling!" audio=3.00s samples=72000
+[Chatterbox] runs(s)=[11.560, 11.678, 12.145] mean=11.795s RTF=3.932 (lower=faster; 1.0=realtime)
+

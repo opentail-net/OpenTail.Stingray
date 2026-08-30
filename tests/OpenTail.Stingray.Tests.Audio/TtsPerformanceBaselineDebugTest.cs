@@ -708,7 +708,7 @@ public sealed class TtsPerformanceBaselineDebugTest : HeavyTestBase
             string? outDir = FindRepoFile("docs/audio-samples");
             if (outDir != null)
             {
-                string wavPath = Path.Combine(outDir, "chatterbox-perf-baseline.wav");
+                string wavPath = Path.Combine(outDir, "chatterbox-perf-turn1.wav");
                 new AudioGenerationResult(lastWav, pipeline.DefaultSampleRate).SaveWav(wavPath);
             }
         }
