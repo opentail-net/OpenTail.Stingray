@@ -732,7 +732,7 @@ public sealed class TtsPerformanceBaselineDebugTest : HeavyTestBase
         using var loader = OpenTail.Stingray.Core.SafetensorsLoader.Open(modelPath!);
         using var pipeline = new OpenTail.Stingray.Audio.Parler.ParlerFullPipeline(tokenizerPath!, loader);
 
-        var warm = pipeline.Synthesize(Prompt, maxNewTokens: 100);
+        var warm = pipeline.Synthesize(Prompt, maxNewTokens: 250);
         Assert.NotEmpty(warm);
 
         double[] elapsedSec = new double[Runs];
@@ -741,7 +741,7 @@ public sealed class TtsPerformanceBaselineDebugTest : HeavyTestBase
         for (int i = 0; i < Runs; i++)
         {
             var sw = Stopwatch.StartNew();
-            var wav = pipeline.Synthesize(Prompt, maxNewTokens: 100);
+            var wav = pipeline.Synthesize(Prompt, maxNewTokens: 250);
             sw.Stop();
             elapsedSec[i] = sw.Elapsed.TotalSeconds;
             sampleCount = wav.Length;
@@ -754,11 +754,11 @@ public sealed class TtsPerformanceBaselineDebugTest : HeavyTestBase
             if (outDir != null)
             {
                 string wavPath = Path.Combine(outDir, "parler-perf-turn1.wav");
-                new AudioGenerationResult(lastWav, 24000).SaveWav(wavPath);
+                new AudioGenerationResult(lastWav, pipeline.DefaultSampleRate).SaveWav(wavPath);
             }
         }
 
-        double audioSec = sampleCount / 24000.0;
+        double audioSec = (double)sampleCount / pipeline.DefaultSampleRate;
         double meanSec = Average(elapsedSec);
         double rtf = meanSec / audioSec;
         string msg = $"[Parler-TTS] prompt=\"{Prompt}\" audio={audioSec:F2}s samples={sampleCount}\n" +
