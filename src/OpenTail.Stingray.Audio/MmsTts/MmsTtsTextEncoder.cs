@@ -39,11 +39,11 @@ public static class MmsTtsTextEncoder
                 layer.ConvVWeight, layer.ConvVBias,
                 layer.ConvOWeight, layer.ConvOBias,
                 layer.EmbRelK, layer.EmbRelV);
-            for (int i = 0; i < x.Length; i++) x[i] += attnOut[i];
+            System.Numerics.Tensors.TensorPrimitives.Add(x, attnOut, x);
             x = VitsAttentionKernels.LayerNormChannelFirst(x, dim, t, layer.Norm1Gamma, layer.Norm1Beta);
 
             var ffnOut = Ffn(x, t, w, layer);
-            for (int i = 0; i < x.Length; i++) x[i] += ffnOut[i];
+            System.Numerics.Tensors.TensorPrimitives.Add(x, ffnOut, x);
             x = VitsAttentionKernels.LayerNormChannelFirst(x, dim, t, layer.Norm2Gamma, layer.Norm2Beta);
         }
 
@@ -61,7 +61,7 @@ public static class MmsTtsTextEncoder
         int dim = w.HiddenDim;
         int ffnHidden = lw.Ffn1Bias.Length;
         var h = VitsAttentionKernels.Conv1dSamePad(x, dim, t, lw.Ffn1Weight, lw.Ffn1Bias, ffnHidden, w.FfnKernel);
-        for (int i = 0; i < h.Length; i++) if (h[i] < 0f) h[i] = 0f; // ReLU
+        System.Numerics.Tensors.TensorPrimitives.Max(h, 0f, h); // ReLU
         return VitsAttentionKernels.Conv1dSamePad(h, ffnHidden, t, lw.Ffn2Weight, lw.Ffn2Bias, dim, w.FfnKernel);
     }
 }

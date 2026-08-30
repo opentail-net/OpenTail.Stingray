@@ -38,7 +38,7 @@ public static class MmsTtsDurationPredictor
         x = VitsAttentionKernels.Conv1x1(x, dim, t, w.DpConvProjWeight, w.DpConvProjBias, dim);
 
         var z = new float[2 * t];
-        for (int i = 0; i < z.Length; i++) z[i] = noise[i] * noiseScaleW;
+        System.Numerics.Tensors.TensorPrimitives.Multiply(noise.AsSpan(0, 2 * t), noiseScaleW, z);
 
         z = VitsDurationFlowKernels.Flip(z, t);
         z = VitsDurationFlowKernels.ConvFlowReverse(z, t, x, dim, w.DpFlow4);

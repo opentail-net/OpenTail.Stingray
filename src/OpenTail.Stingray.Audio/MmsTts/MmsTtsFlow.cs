@@ -46,20 +46,15 @@ public static class MmsTtsFlow
     private static float[] CouplingLayerReverse(float[] z, int t, MmsCouplingLayerWeights lw, int half)
     {
         var x0 = new float[half * t];
-        var x1 = new float[half * t];
         Array.Copy(z, 0, x0, 0, half * t);
-        Array.Copy(z, half * t, x1, 0, half * t);
 
         var h = VitsAttentionKernels.Conv1x1(x0, half, t, lw.PreWeight, lw.PreBias, half * 2);
         h = WnForward(h, t, lw.Wavenet, half * 2);
         var m = VitsAttentionKernels.Conv1x1(h, half * 2, t, lw.PostWeight, lw.PostBias, half);
 
-        var x1Out = new float[half * t];
-        for (int i = 0; i < x1Out.Length; i++) x1Out[i] = x1[i] - m[i];
-
         var output = new float[2 * half * t];
         Array.Copy(x0, 0, output, 0, half * t);
-        Array.Copy(x1Out, 0, output, half * t, half * t);
+        System.Numerics.Tensors.TensorPrimitives.Subtract(z.AsSpan(half * t, half * t), m, output.AsSpan(half * t, half * t));
         return output;
     }
 
