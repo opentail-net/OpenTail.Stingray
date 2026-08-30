@@ -83,6 +83,7 @@ public sealed class F5TtsPipeline : ITextToSpeechPipeline
         int refFrames = 0;
         float[]? refMel = null;
         string fullText = request.Text;
+        string refText = "";
 
         if (!string.IsNullOrEmpty(request.ReferenceAudioPath) && File.Exists(request.ReferenceAudioPath))
         {
@@ -90,7 +91,7 @@ public sealed class F5TtsPipeline : ITextToSpeechPipeline
             refMel = _melExtractor.ExtractMel(refPcm);
             refFrames = refMel.Length / F5MelExtractor.NumMels;
 
-            string refText = request.ReferenceText ?? "";
+            refText = request.ReferenceText ?? "";
             if (!string.IsNullOrEmpty(refText))
             {
                 if (!refText.EndsWith(' ')) refText += " ";
@@ -98,13 +99,29 @@ public sealed class F5TtsPipeline : ITextToSpeechPipeline
             }
         }
 
-        // 2. Target duration estimation
-        int charCount = request.Text.Length;
-        float genSeconds = Math.Max(1.0f, (float)charCount / 14.0f) / Math.Max(0.2f, request.Speed);
-        int genFrames = (int)(genSeconds * (DefaultSampleRate / 256.0f));
-        genFrames = Math.Clamp(genFrames, 32, 2048);
-
-        int totalFrames = refFrames + genFrames;
+        // 2. Target duration estimation. Real reference formula (utils_infer.py's
+        // infer_batch_process): duration = ref_audio_len + int(ref_audio_len/ref_text_len *
+        // gen_text_len / speed) -- scales the generated length by the REFERENCE clip's own real
+        // speaking pace (frames per UTF-8 byte of its transcript), not a fixed chars-per-second
+        // guess. A flat heuristic under/over-estimates whenever the reference speaker's pace
+        // differs from the guessed rate, clipping the tail of the generated audio when it
+        // under-estimates (confirmed: this was cutting off word endings like "-ing").
+        int genTextBytes = System.Text.Encoding.UTF8.GetByteCount(request.Text);
+        float speed = Math.Max(0.2f, request.Speed);
+        int totalFrames;
+        if (refFrames > 0 && !string.IsNullOrEmpty(refText))
+        {
+            int refTextBytes = System.Text.Encoding.UTF8.GetByteCount(refText);
+            int genFrames = refTextBytes > 0 ? (int)(refFrames / (float)refTextBytes * genTextBytes / speed) : 0;
+            totalFrames = refFrames + genFrames;
+        }
+        else
+        {
+            // No reference pace available (text-only synthesis): fall back to the flat heuristic.
+            float genSeconds = Math.Max(1.0f, genTextBytes / 14.0f) / speed;
+            int genFrames = (int)(genSeconds * (DefaultSampleRate / 256.0f));
+            totalFrames = refFrames + genFrames;
+        }
         totalFrames = Math.Clamp(totalFrames, 32, 2048);
 
         float[] condMel = new float[totalFrames * F5MelExtractor.NumMels];
