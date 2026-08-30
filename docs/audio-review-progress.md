@@ -10155,3 +10155,153 @@ support). No dedicated streaming test (the generic `TtsStreamingHelper` path is 
 research entry above).
 
 **Next**: XTTS-v2 research (not started).
+
+### XTTS-v2: research started, model download in progress (2026-08-30, same fire)
+
+Downloaded the real `coqui/XTTS-v2` checkpoint (`models/xtts-v2/`): `config.json`, `vocab.json`,
+`mel_stats.pth`, `dvae.pth` (210MB) done; `model.pth` (~1.9GB, the GPT2 + HiFi-GAN vocoder
+weights) still downloading as this entry is written -- check `models/xtts-v2/model.pth`'s size
+before resuming (should be ~1.9GB when complete).
+
+**License**: `coqui-public-model-license` (CPML) -- confirmed by reading the real
+`LICENSE.txt` from the checkpoint repo, NOT just the HF metadata tag. Non-commercial only
+(personal research/testing/eval permitted; explicitly excludes "use to train other models for
+commercial use" and any revenue-generating activity). Same category as MMS-TTS's cc-by-nc-4.0 --
+flag clearly before any commercial use claim, consistent with this codebase's existing acceptance
+of research-licensed checkpoints elsewhere (Piper's Blizzard-2013 caveat, MMS-TTS's cc-by-nc-4.0).
+
+**Real architecture, confirmed from the real `config.json`'s `model_args`** (this is Tortoise-TTS
+lineage, NOT VITS -- a completely different architecture family from every other pipeline in this
+codebase except QwenTTS/Orpheus/FishSpeech's own GPT-style discrete-audio-token approach, so the
+CLOSEST existing analogue in this codebase is FishSpeech's slow-AR trunk + fast-AR codebook
+expansion, not Piper/MeloTTS/MMS-TTS's VITS flow-matching approach):
+- **GPT2-style autoregressive text -> discrete audio-token model**: `gpt_layers=30`,
+  `gpt_n_model_channels=1024`, `gpt_n_heads=16` (a real ~350M-parameter-class transformer decoder,
+  comparable in scale to FishSpeech's own 36-layer slow-AR trunk), `gpt_number_text_tokens=6681`
+  (BPE vocab, real `vocab.json` -- a proper multilingual BPE tokenizer, NOT MMS-TTS's
+  plain-character scheme), `gpt_num_audio_tokens=1026` (1024 real codes + start/stop tokens
+  `gpt_start_audio_token=1024`/`gpt_stop_audio_token=1025`, matching the DVAE codebook's real
+  1024-entry size confirmed below).
+- **DVAE (discrete VAE)** for audio tokenization -- `dvae.pth` inspected directly via `torch.load`
+  (`scratch-llamacpp-ref/xtts_dvae_inspect.py`): a real VQ-VAE-style residual-conv encoder/decoder
+  (53 tensors total) around a 1024-entry x 512-dim codebook (`codebook.embed` [512,1024]). Encoder:
+  `encoder.0`(80->512,k3) -> `encoder.1`(512->1024,k3) -> `encoder.2/3/4`(1024->1024 residual conv
+  blocks, k3+k3+k1 each) -> `encoder.5`(1024->512,k1, pre-quantization projection). Decoder (mirror
+  image): `decoder.0`(512->1024,k1) -> `decoder.1/2/3`(residual blocks) -> `decoder.4/5` (upsample
+  convs) -> `decoder.6`(512->80,k1, back to mel-dim). **Only the DECODER path is needed at
+  inference** (GPT2 autoregressively predicts codebook INDICES directly -- no audio-side encoding
+  happens at synthesis time; DVAE.encode is training-only, used to build the GPT2's training
+  targets from real audio). This makes the DVAE piece small and tractable (~30 decoder tensors).
+- **Speaker conditioning**: `gpt_use_perceiver_resampler=true`, `d_vector_dim=512` -- a real
+  Perceiver-Resampler (cross-attention pooling of a reference audio's mel features into a fixed-
+  size conditioning sequence) feeds the GPT2's prefix, PLUS a separate global d-vector (512-dim,
+  `speakers_xtts.pth` ships precomputed d-vectors for XTTS-v2's built-in voices -- NOT downloaded
+  yet). This is architecturally distinct from every other zero-shot-cloning pipeline in this
+  codebase (CosyVoice3's CAM++ x-vector + real-mel-prefix splice is the closest analogue, but XTTS
+  uses a proper attention-based Perceiver Resampler, not a fixed-size embedding).
+- **Vocoder**: `decoder_input_dim=1024`, `output_sample_rate=24000`, `output_hop_length=256`,
+  `cond_d_vector_in_each_upsampling_layer=true` (the vocoder is ALSO speaker-conditioned per
+  upsample stage, unlike MeloTTS's single-point conditioning) -- real architecture and exact
+  weight names not yet inspected (lives inside `model.pth`, not yet parsed).
+
+**Not yet done (this is the large remaining piece, comparable in scope to this session's
+CosyVoice3/FishSpeech ports -- budget multiple sessions, not one)**:
+1. Parse `model.pth`'s real state_dict once the download completes (`torch.load`, same technique
+   as `xtts_dvae_inspect.py`) to get the GPT2/vocoder's exact real tensor names/shapes -- do this
+   BEFORE writing any C# weight loader, same discipline as MMS-TTS's research phase.
+2. Port the DVAE decoder (small, tractable -- do this first, it's fully self-contained and
+   verifiable in isolation against a real Python DVAE.decode() call).
+3. Port the real BPE tokenizer (`vocab.json` -- check its exact format/vocab type before assuming
+   it matches this codebase's existing `GgufTokenizer.FromSource`/`HfBpeTokenizerLoader`
+   conventions; XTTS's tokenizer is Coqui's own, not necessarily GPT-2/byte-level-BPE compatible).
+4. Port the GPT2 text->audio-token autoregressive decoder (the big piece -- 30 layers, real KV
+   cache, real top-k/top-p/temperature/repetition-penalty sampling per config.json's real
+   defaults: `temperature=0.75, top_k=50, top_p=0.85, repetition_penalty=5.0`).
+5. Port the Perceiver Resampler + speaker d-vector conditioning path.
+6. Port the vocoder (real architecture TBD once `model.pth` is parsed).
+7. Golden-verify EACH stage independently against a real Python `TTS` (coqui-tts pip package)
+   forward pass, same rigor as MMS-TTS's port -- do not skip this given how much bigger the blast
+   radius for a subtle bug is here (30-layer autoregressive generation compounds errors badly,
+   same lesson this session already learned from FishSpeech's own slow-AR debugging history).
+
+Python environment for this research (`pip install transformers torch scipy`, confirmed working
+this session) does NOT yet have `TTS` (Coqui's own package) or `phonemizer` installed -- needed
+before building a golden reference for XTTS specifically; try `pip install TTS` next session (note:
+Coqui's own `TTS` package may need extra dependencies for XTTS specifically, check its own
+`requirements.txt`).
+
+### XTTS-v2: model.pth's real architecture confirmed (963 real tensors, full survey) -- genuinely multi-session scope from here (2026-08-30, same fire)
+
+`model.pth` fully downloaded (1.87GB) and inspected via `torch.load` (had to stub out the real
+`TTS` package with a dummy meta-path finder in `scratch-llamacpp-ref/xtts_model_inspect.py` --
+`coqui-tts`'s installed version has a broken import chain against the current `transformers`
+5.7.0 in this environment (`isin_mps_friendly` was removed), and downgrading `transformers` to a
+compatible ~4.46 version failed to build here -- Python 3.14 has no prebuilt `tokenizers` wheel
+and no Rust toolchain to build one from source. The stub is enough to read tensor names/shapes;
+building a real Python golden reference for XTTS specifically still needs that fixed, see "next
+session" note below). Two top-level modules, 963 tensors total:
+
+**`gpt.*` (426 tensors) -- real standard HuggingFace-GPT2-naming transformer** (`gpt.gpt.h.N.
+{ln_1,attn.c_attn,attn.c_proj,ln_2,mlp.c_fc,mlp.c_proj}`, `gpt.gpt.ln_f`) -- 30 layers, confirmed
+matching config.json's `gpt_layers=30`. **Uses HF GPT2's `Conv1D` module, NOT `nn.Linear`** --
+weight shape is `[in_features, out_features]` (TRANSPOSED vs. this codebase's usual `[out,in]`
+row-major convention every other pipeline's matvec kernels assume) -- confirmed via
+`c_attn.weight` shape `(1024, 3072)` for a 1024->3072 (q+k+v concat) projection. **Must either
+transpose at load time or write a transposed matvec variant** -- getting this backwards would
+silently produce wrong-but-plausible-shaped output, a real trap.
+- `gpt.text_embedding`/`gpt.text_pos_embedding`/`gpt.text_head` (vocab 6681) and
+  `gpt.mel_embedding`/`gpt.mel_pos_embedding`/`gpt.mel_head` (vocab 1026) are SEPARATE
+  embedding/head pairs sharing the single GPT2 trunk -- same "shared trunk, per-modality
+  embed/head" pattern this codebase already handles for QwenTTS/FishSpeech/Orpheus, just with a
+  real full GPT2 (not the simpler per-step designs those use).
+- `gpt.conditioning_encoder`: mel-spectrogram (80-dim) -> conv init (80->1024) -> N attention
+  blocks (real QKV self-attention, `qkv`/`proj_out` conv1d-kernel1) -- processes the reference
+  audio's mel into a conditioning sequence.
+- `gpt.conditioning_perceiver`: a REAL Perceiver Resampler -- 32 learned latents
+  (`conditioning_perceiver.latents` [32,1024]), cross-attention layers (`to_q`/`to_kv`/`to_out`),
+  confirms the research entry above's prediction from config.json's `gpt_use_perceiver_
+  resampler=true`.
+
+**`hifigan_decoder.*` (536 tensors) -- TWO separate speaker-conditioning paths, not one**:
+- `hifigan_decoder.speaker_encoder.*`: a REAL, SEPARATE ResNet-SE (squeeze-excitation) speaker
+  encoder -- `conv1`->`bn1`->`layer1..4` (each a real BasicBlock w/ SE, some with `downsample`),
+  `attention` (an attentive-pooling head), `fc` (->512-dim d-vector), with its OWN mel-spectrogram
+  frontend (`torch_spec.0`=STFT filter, `torch_spec.1`=mel_scale fb + window) -- this is
+  INDEPENDENT of `gpt.conditioning_encoder`/`conditioning_perceiver` above (which feeds the GPT2's
+  prefix); this one feeds the VOCODER's own speaker conditioning. Two different speaker
+  representations for two different purposes -- do not conflate them when porting.
+- `hifigan_decoder.waveform_decoder.*`: a real HiFi-GAN generator (`conv_pre`/`ups.N`/
+  `resblocks.N.convs1/convs2`/`conv_post`) PLUS real FiLM-style per-upsample-stage speaker
+  conditioning (`cond_layer`, `conds.N`) -- matches config.json's
+  `cond_d_vector_in_each_upsampling_layer=true`. **Weight-norm status: `parametrizations.weight.
+  original0`/`original1`** (PyTorch's NEWER `nn.utils.parametrizations.weight_norm` naming,
+  `original0`=magnitude, `original1`=direction) -- same math as the older `weight_g`/`weight_v`
+  convention (`DacWeights.FoldConvWeight`/`MmsTtsWeights.FoldConvWeight`'s formula), different
+  key names -- this codebase's own `CosyVoiceHiftWeights.GetFoldedConvWeight` doc comment already
+  flagged this exact naming variant exists elsewhere, confirming it's a known, already-handled
+  pattern, not a new problem to solve from scratch.
+
+**DVAE decoder** (`dvae.pth`, from the earlier entry): 30 decoder tensors, small and tractable,
+confirmed inference-only-needs-decoder (codes come from the GPT2, not from encoding real audio at
+synthesis time).
+
+**Total remaining scope, roughly**: a real 30-layer GPT2 (with Conv1D's transposed weight
+convention -- a genuine new pattern for this codebase), a conv+attention conditioning encoder, a
+real Perceiver Resampler (also new), a ResNet-SE speaker encoder with attentive pooling (also
+new -- closest existing analogue is CosyVoice3's CAM++ x-vector extractor, but architecturally
+different), a DVAE decoder (small), and a FiLM-conditioned HiFi-GAN vocoder (the HiFi-GAN part
+itself is well-trodden ground in this codebase; the FiLM conditioning per-stage is new). This is
+genuinely comparable in scope to this session's CosyVoice3 port (which took the bulk of a long
+session) -- budget accordingly, do NOT try to rush the remaining pieces in a single pass. Recommend
+porting and golden-verifying in this order: DVAE decoder (smallest, fully self-contained) -> GPT2
+trunk (biggest risk/payoff, get Conv1D transposition right first with a tiny unit test before
+wiring the full 30 layers) -> conditioning encoder + perceiver -> speaker encoder -> vocoder.
+
+**Next session must-do before writing any more C# for XTTS**: fix the Python reference environment
+(either get a working `coqui-tts` install -- likely needs a Python 3.10/3.11 venv with a prebuilt
+`tokenizers` wheel available, since Python 3.14 in this environment has none and no Rust toolchain
+to build one -- or hand-derive the GPT2/Perceiver/ResNet-SE math from `TTS`'s own GitHub source
+via `WebFetch`/`WebSearch` instead of a local install, same as how this entry's architecture
+survey was done from raw tensor inspection). Do not port math from memory alone for a model this
+size -- the FishSpeech/CosyVoice3 debugging history earlier in this session is the cautionary
+tale for why.
