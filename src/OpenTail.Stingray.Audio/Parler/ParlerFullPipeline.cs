@@ -244,7 +244,14 @@ public sealed class ParlerFullPipeline : ITextToSpeechPipeline
             }
 
             var predicted = new int[NumCodebooks];
-            for (int cb = 0; cb < NumCodebooks; cb++) predicted[cb] = SampleMultinomial(logitsPerCodebook[cb], rng);
+            for (int cb = 0; cb < NumCodebooks; cb++)
+            {
+                // Once a codebook has emitted EOS, latch it to EOS so it does not sample random post-utterance tokens
+                if (Array.IndexOf(sequence[cb], EosTokenId) >= 0)
+                    predicted[cb] = EosTokenId;
+                else
+                    predicted[cb] = SampleMultinomial(logitsPerCodebook[cb], rng);
+            }
 
             // Real "only preserve predictions where the mask is -1" -- force the known BOS/PAD value where the pattern already knows it.
             var maskAtPos = new int[NumCodebooks];
@@ -264,7 +271,7 @@ public sealed class ParlerFullPipeline : ITextToSpeechPipeline
             hidden = ParlerDecoder.ForwardStep(_decoderWeights, cache, nextEmbed, encoderHidden);
         }
 
-        // Real un-delay: drop BOS/PAD-only tail/head per codebook offset, keep only genuinely generated audio codes.
+        // Real un-delay: drop BOS prefix and truncate each codebook at its first genuine EOS
         var unDelayed = UnDelay(sequence);
         if (unDelayed[0].Length == 0) return [];
         var pcm = DacDecoder.Decode(_dacWeights, unDelayed);
@@ -285,7 +292,7 @@ public sealed class ParlerFullPipeline : ITextToSpeechPipeline
         return pcm;
     }
 
-    /// <summary>Strips each codebook's real BOS-offset prefix and any trailing EOS/PAD, then truncates every stream to the shortest resulting length (the real frame count all 9 codebooks agree on).</summary>
+    /// <summary>Strips each codebook's real BOS-offset prefix and truncates at the first genuine EOS, then aligns all 9 codebooks.</summary>
     private static int[][] UnDelay(int[][] sequence)
     {
         var stripped = new int[NumCodebooks][];
@@ -295,7 +302,14 @@ public sealed class ParlerFullPipeline : ITextToSpeechPipeline
             var row = sequence[cb];
             int start = cb + 1; // skip this codebook's own BOS-offset prefix (cb+1 BOS tokens precede its real content)
             int end = row.Length;
-            while (end > start && (row[end - 1] == EosTokenId || row[end - 1] == PadTokenId)) end--;
+            for (int i = start; i < row.Length; i++)
+            {
+                if (row[i] == EosTokenId || row[i] == PadTokenId)
+                {
+                    end = i;
+                    break;
+                }
+            }
             int len = Math.Max(0, end - start);
             stripped[cb] = len > 0 ? row[start..end] : [];
             minLen = Math.Min(minLen, len);
