@@ -10810,3 +10810,46 @@ verify-in-Python-first discipline paid off directly again.
 wiring every already-verified piece (tokenizer → GPT prefix/conditioning → sampling loop →
 gpt_latents → `XttsHifiDecoder` → waveform) end-to-end, mirroring `MmsTtsPipeline`'s pattern,
 (2) CLI wiring in `TtsCommand.cs`.
+
+## XTTS-v2: conditioning mel frontend bug fix, end-to-end pipeline, CLI wiring
+
+Before wiring the top-level pipeline, re-checked which real mel-extraction function the
+conditioning-encoder path actually uses (`Xtts.get_gpt_cond_latents` -> `wav_to_mel_cloning`) and
+found `XttsMelExtractor` had only ever been golden-verified against `dvae_wav_to_mel`
+(`n_fft=1024`) -- which, per this port's own earlier DVAE-not-used-at-inference finding, is NOT
+on the real inference path at all. The real conditioning path calls with `n_fft=2048,
+hop_length=256, win_length=1024` (confirmed `gpt_use_perceiver_resampler=True` in XTTS-v2's own
+real `config.json`). Refactored `XttsMelExtractor` to take `n_fft`/`hop`/`win` as constructor
+parameters (`ForConditioningCloning()` factory for the real path; the original n_fft=1024 config
+kept as the parameterless ctor for the still-useful, still-golden-verified DVAE stage) instead of
+hardcoding one function's values. This resurfaced the SAME `win_length<n_fft` real `torch.stft`
+framing bug already found and fixed once for `XttsSpeakerMelExtractor` (silently masked in the
+original DVAE config only because `n_fft==win_length` there by coincidence) -- fixed the same way
+(read the full `n_fft` span per frame, center-pad the window to `n_fft`). Golden-verified against
+the real `wav_to_mel_cloning` output on the same reference clip: cosine >0.99; the original DVAE
+golden test still passes unchanged.
+
+Wired `XttsPipeline` (`ITextToSpeechPipeline`, voice-cloning only): tokenizer -> conditioning mel
+(`ForConditioningCloning`, single-chunk since XTTS-v2's own defaults are
+`gpt_cond_len=gpt_cond_chunk_len=6s`) -> `XttsConditioningEncoder` -> `XttsGptGenerator.
+BuildPrefix` -> `XttsGptSampler.Generate` -> `XttsGptLatents.ComputeLatents` -> speaker-encoder
+mel/`XttsResNetEncoder` (real `l2_norm=True` applied explicitly at this call site, matching
+`get_speaker_embedding`) -> `XttsHifiDecoder` -> waveform. Documented two deliberate scope
+limits in the class doc: no per-language `multilingual_cleaners` text normalization (matches
+`XttsBpeTokenizer`'s own documented scope), and single-chunk (not multi-chunk-averaged)
+conditioning, which matches the real reference's OWN default behavior since
+`gpt_cond_len==gpt_cond_chunk_len` by default anyway.
+
+`XttsPipelineTests.Generate_RealWeightsRealReference_ProducesFiniteBoundedWaveform`: **passed** --
+real weights, a real reference clip, real short text, full pipeline run end-to-end, finite/bounded
+non-trivial waveform output. Takes ~3m15s per generation on this non-KV-cached, correctness-first
+design (O(T²) full-sequence recompute per generated token, same established pattern as
+`FishSpeechFastAr.Forward`) -- a real KV cache is future work per CLAUDE.md rule 7.
+
+Wired the `xtts`/`xtts-v2`/`xttsv2` engine into `TtsCommand.cs` (`ResolveXttsModelPath`, real
+`--ref-audio` CLI flag already generic across every voice-cloning engine, no new CLI plumbing
+needed there).
+
+**All thirteen major XTTS-v2 pieces now shipped, golden-verified individually, and wired
+end-to-end through the CLI.** Combined with MMS-TTS (100% done earlier this cycle), both models
+the user asked for are now real, weight-driven, and working.

@@ -10,6 +10,7 @@ using OpenTail.Stingray.Audio.Orpheus;
 using OpenTail.Stingray.Audio.Parler;
 using OpenTail.Stingray.Audio.Piper;
 using OpenTail.Stingray.Audio.QwenTTS;
+using OpenTail.Stingray.Audio.Xtts;
 
 namespace OpenTail.Stingray.Cli;
 
@@ -108,7 +109,9 @@ public sealed class TtsCommand : Command<TtsCommand.Settings>
                     OrpheusPipeline.Load(s.ModelPath ?? ResolveOrpheusModelPath(), allowGpu: allowGpu),
                 "mms" or "mms-tts" or "mmstts" =>
                     MmsTtsPipeline.Load(s.ModelPath ?? ResolveMmsTtsModelPath()),
-                _ => throw new ArgumentException($"Unknown TTS engine: '{s.Engine}'. Supported: kokoro, piper, f5tts, chatterbox, melo, cosyvoice, parler, qwentts, fishspeech, orpheus, mms.")
+                "xtts" or "xtts-v2" or "xttsv2" =>
+                    XttsPipeline.Load(s.ModelPath ?? ResolveXttsModelPath()),
+                _ => throw new ArgumentException($"Unknown TTS engine: '{s.Engine}'. Supported: kokoro, piper, f5tts, chatterbox, melo, cosyvoice, parler, qwentts, fishspeech, orpheus, mms, xtts.")
             };
         }
         catch (Exception ex)
@@ -221,6 +224,18 @@ public sealed class TtsCommand : Command<TtsCommand.Settings>
             "No MMS-TTS model found. Pass --model (-m) with a path to an MMS-TTS checkpoint directory " +
             "(containing config.json/vocab.json/model.safetensors, e.g. models/mms-tts-eng, from " +
             "huggingface.co/facebook/mms-tts-<lang>), or place one at that default path.");
+    }
+
+    private static string ResolveXttsModelPath()
+    {
+        foreach (var c in new[] { "models/xtts-v2" })
+            if (Directory.Exists(c) && File.Exists(Path.Combine(c, "model.safetensors"))) return c;
+
+        throw new ArgumentException(
+            "No XTTS-v2 model found. Pass --model (-m) with a path to an XTTS-v2 checkpoint directory " +
+            "(containing vocab.json/model.safetensors/mel_stats.safetensors, converted from " +
+            "huggingface.co/coqui/XTTS-v2's model.pth via scratch-llamacpp-ref/xtts_convert_to_safetensors.py), " +
+            "or place one at that default path. XTTS-v2 also requires --ref-audio (a real voice-cloning source clip).");
     }
 
     private static string ResolveParlerModelPath()
