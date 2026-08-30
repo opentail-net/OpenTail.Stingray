@@ -190,3 +190,9 @@
 [MeloTTS] prompt="Hello, I will make some lunch, darling!" audio=2.52s samples=111104
 [MeloTTS] runs(s)=[3.552, 3.666, 3.482] mean=3.567s RTF=1.416 (lower=faster; 1.0=realtime)
 
+[Parler-TTS] prompt="Hello, I will make some lunch, darling!" audio=1.96s samples=47104
+[Parler-TTS] runs(s)=[4.742, 4.930, 4.751] mean=4.808s RTF=2.450 (lower=faster; 1.0=realtime)
+
+[Parler-TTS] prompt="Hello, I will make some lunch, darling!" audio=1.96s samples=47104
+[Parler-TTS] runs(s)=[4.726, 4.733, 4.496] mean=4.652s RTF=2.370 (lower=faster; 1.0=realtime)
+

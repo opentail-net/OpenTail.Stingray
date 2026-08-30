@@ -36,10 +36,12 @@ public static class ParlerDecoder
         var table = w.EmbedPrompts ?? throw new InvalidOperationException(
             "This ParlerDecoderWeights has no embed_prompts table (GGUF conversion gap) -- cannot embed a prompt token.");
         var emb = new float[ParlerDecoderWeights.HiddenDim];
-        long row = (long)tokenId * ParlerDecoderWeights.HiddenDim;
-        long posRow = (long)position * ParlerDecoderWeights.HiddenDim;
-        for (int d = 0; d < ParlerDecoderWeights.HiddenDim; d++)
-            emb[d] = table[row + d] + w.EmbedPositions[posRow + d];
+        int row = tokenId * ParlerDecoderWeights.HiddenDim;
+        int posRow = position * ParlerDecoderWeights.HiddenDim;
+        System.Numerics.Tensors.TensorPrimitives.Add(
+            table.AsSpan(row, ParlerDecoderWeights.HiddenDim),
+            w.EmbedPositions.AsSpan(posRow, ParlerDecoderWeights.HiddenDim),
+            emb);
         return emb;
     }
 
@@ -47,14 +49,14 @@ public static class ParlerDecoder
     public static float[] EmbedStep(ParlerDecoderWeights w, int[] codebookTokenIds, int position)
     {
         var emb = new float[ParlerDecoderWeights.HiddenDim];
+        int dim = ParlerDecoderWeights.HiddenDim;
         for (int cb = 0; cb < ParlerDecoderWeights.NumCodebooks; cb++)
         {
-            long row = (long)codebookTokenIds[cb] * ParlerDecoderWeights.HiddenDim;
-            var table = w.EmbedTokens[cb];
-            for (int d = 0; d < ParlerDecoderWeights.HiddenDim; d++) emb[d] += table[row + d];
+            int row = codebookTokenIds[cb] * dim;
+            System.Numerics.Tensors.TensorPrimitives.Add(emb, w.EmbedTokens[cb].AsSpan(row, dim), emb);
         }
-        long posRow = (long)position * ParlerDecoderWeights.HiddenDim;
-        for (int d = 0; d < ParlerDecoderWeights.HiddenDim; d++) emb[d] += w.EmbedPositions[posRow + d];
+        int posRow = position * dim;
+        System.Numerics.Tensors.TensorPrimitives.Add(emb, w.EmbedPositions.AsSpan(posRow, dim), emb);
         return emb;
     }
 
@@ -96,19 +98,19 @@ public static class ParlerDecoder
         var selfAttnOut = SelfAttentionStep(normed1, lw, cache, layerIdx);
 
         var afterSelf = new float[dim];
-        for (int d = 0; d < dim; d++) afterSelf[d] = x[d] + selfAttnOut[d];
+        System.Numerics.Tensors.TensorPrimitives.Add(x, selfAttnOut, afterSelf);
 
         var normed2 = LayerNorm(afterSelf, lw.CrossAttnLayerNormWeight, lw.CrossAttnLayerNormBias);
         var crossAttnOut = CrossAttentionStep(normed2, encoderHidden, lw, cache, layerIdx);
 
         var afterCross = new float[dim];
-        for (int d = 0; d < dim; d++) afterCross[d] = afterSelf[d] + crossAttnOut[d];
+        System.Numerics.Tensors.TensorPrimitives.Add(afterSelf, crossAttnOut, afterCross);
 
         var normed3 = LayerNorm(afterCross, lw.FinalLayerNormWeight, lw.FinalLayerNormBias);
         var ffnOut = FfnStep(normed3, lw);
 
         var output = new float[dim];
-        for (int d = 0; d < dim; d++) output[d] = afterCross[d] + ffnOut[d];
+        System.Numerics.Tensors.TensorPrimitives.Add(afterCross, ffnOut, output);
         return output;
     }
 
@@ -362,12 +364,8 @@ public static class ParlerDecoder
         return sign * y;
     }
 
-    private static float Dot(float[] a, float[] b, int offset, int len)
-    {
-        float sum = 0f;
-        for (int i = 0; i < len; i++) sum += a[offset + i] * b[offset + i];
-        return sum;
-    }
+    private static float Dot(float[] a, float[] b, int offset, int len) =>
+        System.Numerics.Tensors.TensorPrimitives.Dot(a.AsSpan(offset, len), b.AsSpan(offset, len));
 
     private static unsafe float[] LinearNoBias(float[] input, float[] weight, int inDim, int outDim)
     {
@@ -384,34 +382,28 @@ public static class ParlerDecoder
         weight.MatVec(input, inDim, outDim);
 
     /// <summary>Real `nn.LayerNorm`: mean-subtract, variance-normalize, scale + bias (NOT RMSNorm).</summary>
-    private static float[] LayerNorm(float[] x, float[] weight, float[] bias, float eps = ParlerDecoderWeights.LayerNormEps)
+    private static unsafe float[] LayerNorm(float[] x, float[] weight, float[] bias, float eps = ParlerDecoderWeights.LayerNormEps)
     {
-        int n = x.Length;
-        float mean = 0f;
-        for (int i = 0; i < n; i++) mean += x[i];
-        mean /= n;
-        float variance = 0f;
-        for (int i = 0; i < n; i++) { float d = x[i] - mean; variance += d * d; }
-        variance /= n;
-        float invStd = 1f / MathF.Sqrt(variance + eps);
-
-        var output = new float[n];
-        for (int i = 0; i < n; i++) output[i] = (x[i] - mean) * invStd * weight[i] + bias[i];
+        var output = new float[x.Length];
+        fixed (float* xp = x, wp = weight, bp = bias, op = output)
+        {
+            SimdKernels.LayerNorm(op, xp, wp, bp, x.Length, eps);
+        }
         return output;
     }
 
     private static void SoftmaxInPlace(float[] scores, int count)
     {
-        float max = float.NegativeInfinity;
-        for (int i = 0; i < count; i++) if (scores[i] > max) max = scores[i];
+        var span = scores.AsSpan(0, count);
+        float max = System.Numerics.Tensors.TensorPrimitives.Max(span);
         float sum = 0f;
         for (int i = 0; i < count; i++)
         {
-            float e = MathF.Exp(scores[i] - max);
-            scores[i] = e;
+            float e = MathF.Exp(span[i] - max);
+            span[i] = e;
             sum += e;
         }
         float invSum = 1f / sum;
-        for (int i = 0; i < count; i++) scores[i] *= invSum;
+        System.Numerics.Tensors.TensorPrimitives.Multiply(span, invSum, span);
     }
 }

@@ -753,7 +753,7 @@ public sealed class TtsPerformanceBaselineDebugTest : HeavyTestBase
             string? outDir = FindRepoFile("docs/audio-samples");
             if (outDir != null)
             {
-                string wavPath = Path.Combine(outDir, "parler-perf-baseline.wav");
+                string wavPath = Path.Combine(outDir, "parler-perf-turn1.wav");
                 new AudioGenerationResult(lastWav, 24000).SaveWav(wavPath);
             }
         }

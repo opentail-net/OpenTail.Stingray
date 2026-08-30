@@ -10,13 +10,9 @@ public sealed class ParlerScratchTests : HeavyTestBase
         string? tokDir = FindRepoDir("scratch-llamacpp-ref/parler-tokenizer");
         Assert.SkipUnless(tokDir != null, "parler-tokenizer dir not found");
 
-        var result = HuggingFaceTokenizerSource.Load(tokDir!);
-        Assert.True(result.IsUsable, string.Join("; ", result.Rejections.Select(r => r.Detail)));
-
-        var tokenizer = GgufTokenizer.FromSource(result.Source!);
+        var tokenizer = UnigramTokenizer.FromTokenizerJson(Path.Combine(tokDir!, "tokenizer.json"));
         var ids = tokenizer.Encode("A female speaker with a clear voice.");
-        File.WriteAllText(Path.Combine(Path.GetTempPath(), "parler_tokenizer_test.txt"),
-            string.Join(",", ids));
+        Assert.NotEmpty(ids);
     }
 
     private static string? FindRepoDir(string relativePath)
