@@ -10595,3 +10595,42 @@ Once those two land, `XttsGptLatents.ComputeLatents`'s output feeds directly int
 (after upsample-interpolation per `HifiDecoder.forward`'s real
 `ar_mel_length_compression/output_hop_length` + `output_sample_rate/input_sample_rate` scaling)
 for a complete, real, end-to-end XTTS-v2 pipeline.
+
+### XTTS-v2: speaker-encoder mel frontend, real bug found+fixed+verified (2026-08-30, same cron cycle)
+
+`src/OpenTail.Stingray.Audio/Xtts/XttsSpeakerMelExtractor.cs`: real `ResNetSpeakerEncoder`'s
+`torch_spec` frontend (`TTS/encoder/models/base_encoder.py`'s `get_torch_mel_spectrogram_class`)
+-- pre-emphasis (0.97, real reflect-boundary formula) -> HAMMING-windowed (not Hann) mel
+spectrogram, 16kHz/n_fft=512/hop=160/win=400/n_mels=64, real un-overridden defaults `power=2.0`,
+`mel_scale="htk"`, and **`norm=None`** (no Slaney area normalization here, unlike
+`XttsMelExtractor`'s DVAE-frontend config) -- a THIRD, independent mel config in this port.
+
+**Real bug found by testing against real audio, not assumed correct from reading source alone**:
+first attempt scored cosine 0.22 (near-orthogonal, not a subtle rounding issue). Root cause,
+confirmed via direct `torch.stft` experimentation (not guessed): when `win_length(400) <
+n_fft(512)`, `torch.stft` reads the FULL `n_fft`-length span of input samples per frame (not just
+`win_length` samples) and applies a window function that is CENTER-padded to `n_fft` length with
+zeros on both sides (`(n_fft-win_length)/2` on each side) -- NOT a `win_length`-length read
+left-aligned then zero-padded on the right, which is what this port's first draft did (and what
+`XttsMelExtractor`'s existing code effectively does too, invisibly-correct only because THAT
+extractor happens to have `n_fft == win_length`, so there's no padding to get wrong). **General
+lesson for any future mel extractor in this codebase where `n_fft != win_length`**: center-pad the
+window function itself, and read a full-`n_fft`-length span of input samples per frame -- don't
+copy the left-aligned pattern from an extractor where the two happened to be equal.
+
+`XttsSpeakerMelExtractorTests.ExtractMel_RealAudio_MatchesGoldenOracle`: **passed, cosine >0.99,
+on real audio**, after the fix.
+
+**Eight major XTTS-v2 pieces now shipped this single cron cycle**: DVAE decoder, GPT2 trunk,
+conditioning+perceiver, embeddings+orchestration, sampling loop, mel extraction, gpt_latents
+extraction, speaker-encoder mel frontend.
+
+**Next**: the ResNet-SE speaker encoder itself is the large remaining piece -- a real ResNet-34-
+style 2D CNN (`layers=[3,4,6,3]` `SEBasicBlock`s, `num_filters=[32,64,128,256]`, real BatchNorm2d
+in inference mode, squeeze-excitation, attentive statistics pooling ("ASP": weighted mean+std over
+time, real attention weights via a small conv+softmax head) -> `fc` projection to a 512-dim
+d-vector. This codebase has NO existing CPU 2D-conv/BatchNorm primitives to reuse (Diffusion's
+own `Conv2d` is a GPU-only Vulkan path, not cross-project-reusable) -- will need new 2D conv/
+BatchNorm2d/SE primitives, likely worth its own file in `Primitives/` given the scale. After that,
+the FiLM-conditioned HiFi-GAN vocoder (`HifiganGenerator`, `cond_channels=512`,
+`cond_in_each_up_layer=True`) is the final piece for a complete real pipeline.
