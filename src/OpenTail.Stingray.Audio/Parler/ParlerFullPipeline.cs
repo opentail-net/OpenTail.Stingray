@@ -366,9 +366,7 @@ public sealed class ParlerFullPipeline : ITextToSpeechPipeline
         }
 
         int yieldedFrames = 0;
-        const int OverlapFrames = 4;
-        const int OverlapSamples = OverlapFrames * 512; // 2048 samples
-        float[]? prevOverlap = null;
+        const int ContextFrames = 8; // 4096 samples receptive field buffer
 
         for (int step = 0; step < maxNewTokens; step++)
         {
@@ -413,11 +411,13 @@ public sealed class ParlerFullPipeline : ITextToSpeechPipeline
                 availableFrames = Math.Min(availableFrames, count);
             }
 
-            if (availableFrames >= yieldedFrames + chunkFrames + OverlapFrames)
+            if (availableFrames >= yieldedFrames + chunkFrames + ContextFrames)
             {
-                int readyCount = availableFrames - yieldedFrames - OverlapFrames;
-                int decodeFrames = (yieldedFrames == 0 ? 0 : OverlapFrames) + readyCount + OverlapFrames;
-                int startFrame = yieldedFrames == 0 ? 0 : yieldedFrames - OverlapFrames;
+                int readyCount = availableFrames - yieldedFrames - ContextFrames;
+                int leftPad = Math.Min(ContextFrames, yieldedFrames);
+                int rightPad = ContextFrames;
+                int startFrame = yieldedFrames - leftPad;
+                int decodeFrames = leftPad + readyCount + rightPad;
 
                 var chunkCodes = new int[NumCodebooks][];
                 for (int cb = 0; cb < NumCodebooks; cb++)
@@ -434,36 +434,13 @@ public sealed class ParlerFullPipeline : ITextToSpeechPipeline
                 var pcmRaw = DacDecoder.Decode(_dacWeights, chunkCodes);
                 for (int i = 0; i < pcmRaw.Length; i++) pcmRaw[i] *= 0.85f;
 
-                if (prevOverlap == null)
+                int pcmStart = leftPad * 512;
+                int pcmCount = readyCount * 512;
+                if (pcmRaw.Length >= pcmStart + pcmCount)
                 {
-                    int outCount = readyCount * 512;
-                    if (pcmRaw.Length >= outCount + OverlapSamples)
-                    {
-                        var outChunk = new float[outCount];
-                        Array.Copy(pcmRaw, 0, outChunk, 0, outCount);
-                        yield return outChunk;
-
-                        prevOverlap = new float[OverlapSamples];
-                        Array.Copy(pcmRaw, outCount, prevOverlap, 0, OverlapSamples);
-                    }
-                }
-                else
-                {
-                    int outCount = readyCount * 512;
-                    int expectedTotal = OverlapSamples + outCount + OverlapSamples;
-                    if (pcmRaw.Length >= expectedTotal)
-                    {
-                        var outChunk = new float[OverlapSamples + outCount];
-                        for (int i = 0; i < OverlapSamples; i++)
-                        {
-                            float alpha = (float)i / OverlapSamples;
-                            outChunk[i] = prevOverlap[i] * (1f - alpha) + pcmRaw[i] * alpha;
-                        }
-                        Array.Copy(pcmRaw, OverlapSamples, outChunk, OverlapSamples, outCount);
-                        yield return outChunk;
-
-                        Array.Copy(pcmRaw, OverlapSamples + outCount, prevOverlap, 0, OverlapSamples);
-                    }
+                    var pcmChunk = new float[pcmCount];
+                    Array.Copy(pcmRaw, pcmStart, pcmChunk, 0, pcmCount);
+                    yield return pcmChunk;
                 }
 
                 yieldedFrames += readyCount;
@@ -494,8 +471,9 @@ public sealed class ParlerFullPipeline : ITextToSpeechPipeline
         if (totalFrames > yieldedFrames)
         {
             int remaining = totalFrames - yieldedFrames;
-            int startFrame = yieldedFrames == 0 ? 0 : yieldedFrames - OverlapFrames;
-            int decodeFrames = (yieldedFrames == 0 ? 0 : OverlapFrames) + remaining;
+            int leftPad = Math.Min(ContextFrames, yieldedFrames);
+            int startFrame = yieldedFrames - leftPad;
+            int decodeFrames = leftPad + remaining;
 
             var tailCodes = new int[NumCodebooks][];
             for (int cb = 0; cb < NumCodebooks; cb++)
@@ -512,47 +490,23 @@ public sealed class ParlerFullPipeline : ITextToSpeechPipeline
             var pcmRaw = DacDecoder.Decode(_dacWeights, tailCodes);
             for (int i = 0; i < pcmRaw.Length; i++) pcmRaw[i] *= 0.85f;
 
-            if (prevOverlap != null && pcmRaw.Length >= OverlapSamples)
+            int pcmStart = leftPad * 512;
+            int pcmCount = remaining * 512;
+            if (pcmRaw.Length >= pcmStart)
             {
-                var outChunk = new float[pcmRaw.Length];
-                for (int i = 0; i < OverlapSamples; i++)
-                {
-                    float alpha = (float)i / OverlapSamples;
-                    outChunk[i] = prevOverlap[i] * (1f - alpha) + pcmRaw[i] * alpha;
-                }
-                Array.Copy(pcmRaw, OverlapSamples, outChunk, OverlapSamples, pcmRaw.Length - OverlapSamples);
+                int actualCount = Math.Min(pcmCount, pcmRaw.Length - pcmStart);
+                var pcmTail = new float[actualCount];
+                Array.Copy(pcmRaw, pcmStart, pcmTail, 0, actualCount);
 
-                int fadeLen = Math.Min(2205, outChunk.Length);
+                int fadeLen = Math.Min(2205, pcmTail.Length);
                 for (int i = 0; i < fadeLen; i++)
                 {
-                    int idx = outChunk.Length - fadeLen + i;
+                    int idx = pcmTail.Length - fadeLen + i;
                     float fade = 0.5f * (1f + MathF.Cos(MathF.PI * i / fadeLen));
-                    outChunk[idx] *= fade;
+                    pcmTail[idx] *= fade;
                 }
-                yield return outChunk;
+                yield return pcmTail;
             }
-            else if (pcmRaw.Length > 0)
-            {
-                int fadeLen = Math.Min(2205, pcmRaw.Length);
-                for (int i = 0; i < fadeLen; i++)
-                {
-                    int idx = pcmRaw.Length - fadeLen + i;
-                    float fade = 0.5f * (1f + MathF.Cos(MathF.PI * i / fadeLen));
-                    pcmRaw[idx] *= fade;
-                }
-                yield return pcmRaw;
-            }
-        }
-        else if (prevOverlap != null)
-        {
-            int fadeLen = Math.Min(2205, prevOverlap.Length);
-            for (int i = 0; i < fadeLen; i++)
-            {
-                int idx = prevOverlap.Length - fadeLen + i;
-                float fade = 0.5f * (1f + MathF.Cos(MathF.PI * i / fadeLen));
-                prevOverlap[idx] *= fade;
-            }
-            yield return prevOverlap;
         }
     }
 
