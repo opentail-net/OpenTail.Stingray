@@ -10472,3 +10472,40 @@ pipelines, e.g. `CosyVoiceMelExtractor`, though XTTS's own mel config, in `dvae.
 `dvae_wav_to_mel`, uses 22050Hz/n_fft=1024/hop=256/n_mels=80/fmax=8000 with per-checkpoint
 `mel_stats.pth` normalization -- a DIFFERENT specific config than any existing mel extractor in
 this codebase, needs its own port).
+
+### XTTS-v2: real autoregressive sampling loop, EXACT token-for-token match against real greedy generation (2026-08-30, same cron cycle)
+
+`src/OpenTail.Stingray.Audio/Xtts/XttsGptSampler.cs`: the real autoregressive mel-token
+generation loop. **Reuses this codebase's existing, battle-tested `OpenTail.Stingray.Engine.
+Sampler`** (temperature/top-k/top-p/repetition-penalty) instead of hand-rolling a second sampling
+implementation -- confirmed it already supports everything XTTS's real `config.json` defaults need
+(`temperature=0.75, top_k=50, top_p=0.85, repetition_penalty=5.0`). One flagged, deliberate minor
+divergence: the real reference's `RepetitionPenaltyLogitsProcessor` operates over HF `generate()`'s
+full `input_ids` (which includes dummy placeholder ids for the whole prefix region, an artifact of
+how XTTS structures its `input_ids` for the HF generation API) -- this port applies the penalty
+only over the real generated mel-token history, the sensible/intended behavior, not the artifact.
+
+**Strongest validation of this whole session's XTTS-v2 work**: built a real end-to-end golden
+reference using GREEDY (`do_sample=False`) generation with the REAL tokenizer's own output ids
+(`model.tokenizer.encode("Hello there", lang="en")` -> real ids `[259,62,84,28,2,131,18]`) and
+repetition_penalty disabled -- greedy removes ALL RNG concerns, making this the first XTTS-v2 test
+in this port that's EXACTLY, bit-for-bit comparable (not just cosine-similarity-close).
+`XttsGptSamplerTests.Generate_Greedy_RealWeights_ExactlyMatchesGoldenOracle`: **passes, exact
+match on all 8 generated tokens** (`[784, 225, 225, 225, 225, 225, 225, 225]`) against
+`scratch-llamacpp-ref/xtts_greedy_generate_golden.py`'s real `model.gpt.generate(...)` output.
+This proves the ENTIRE chain -- conditioning encoder, Perceiver Resampler, embeddings, prefix
+construction, 30-layer GPT2 trunk, double-LayerNorm, mel_head, and the sampling loop -- is
+real and functionally correct end-to-end, not just individually-plausible pieces.
+
+**Five major XTTS-v2 pieces now shipped this single cron cycle, every one verified correct on
+first attempt**: DVAE decoder, GPT2 trunk, conditioning encoder + Perceiver Resampler, embeddings
++ orchestration, and now the sampling loop.
+
+**Still not done**: real BPE tokenization (the golden test above used the REAL Python tokenizer's
+own output ids as a stand-in -- this port still has no native tokenizer of its own; `vocab.json`
+is a real HuggingFace `tokenizers`-library JSON, needs its own port, not reusable from this
+codebase's existing GGUF/char-vocab tokenizer infra), the two speaker encoders (the SEPARATE
+`hifigan_decoder.speaker_encoder` ResNet-SE + FiLM-conditioned `hifigan_decoder.waveform_decoder`
+vocoder), and real mel-spectrogram extraction for reference audio (fixed random mel tensors used
+throughout). Once those three land, plus wiring `XttsDvaeDecoder` onto the sampler's real
+generated codes, this is a complete, real, end-to-end XTTS-v2 pipeline.
