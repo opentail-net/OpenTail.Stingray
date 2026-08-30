@@ -158,7 +158,16 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
     private readonly TensorRef[] _ffnNorm;
     private readonly TensorRef[] _wGate, _wUp, _wDown;
     private readonly TensorRef _outputNorm;
-    private readonly TensorRef _outputWeight;
+    private TensorRef _outputWeight;
+
+    /// <summary>
+    /// Swaps the raw data pointer for the output projection head without reallocating or modifying the tensor metadata.
+    /// Used by multi-head models such as QwenTTS acoustic code predictor.
+    /// </summary>
+    public void SetOutputWeightDataPtr(byte* dataPtr)
+    {
+        _outputWeight = new TensorRef(_outputWeight.Name, _outputWeight.Info, _outputWeight.DType, dataPtr);
+    }
 
     // Optional attention biases (Qwen models)
     private readonly bool _hasAttnBias;

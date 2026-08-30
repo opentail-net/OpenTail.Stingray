@@ -562,6 +562,7 @@ public sealed unsafe partial class ForwardPass
 
             float* lastHidden = batchHidden + (long)(N - 1) * _embDim;
             FastNorm(lastHidden, lastHidden, outNormW, outNormB, _embDim, _hp.RmsNormEps);
+            Copy(_hidden, lastHidden, _embDim);
             FusedMatVec(_logits, _outputWeight, lastHidden, _hp.VocabSize, _embDim);
 
             return new ReadOnlySpan<float>(_logits, _hp.VocabSize);

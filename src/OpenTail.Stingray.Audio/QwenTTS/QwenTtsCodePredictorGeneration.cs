@@ -61,7 +61,7 @@ public static class QwenTtsCodePredictorGeneration
     /// Reusable engine session for QwenTTS acoustic code generation across multiple frames,
     /// avoiding per-frame reconstruction of TensorSource, CpuBackend, and ForwardPass.
     /// </summary>
-    public sealed class CodePredictorSession : IDisposable
+    public sealed unsafe class CodePredictorSession : IDisposable
     {
         private readonly QwenTtsCodePredictorTensorSource _source;
         private readonly CpuBackend _backend;
@@ -70,6 +70,8 @@ public static class QwenTtsCodePredictorGeneration
 
         private readonly float[] _promptRowsBuffer = new float[2 * HiddenDim];
         private readonly float[] _inputEmbBuffer = new float[HiddenDim];
+        private readonly System.Runtime.InteropServices.GCHandle[] _lmHeadHandles;
+        private readonly byte*[] _lmHeadPointers;
 
         public CodePredictorSession(GgufModel rawModel, Weights weights, int numLayers)
         {
@@ -78,6 +80,14 @@ public static class QwenTtsCodePredictorGeneration
             var hp = ModelHyperparams.FromGgufMetadata(_source.Metadata, _source);
             _backend = new CpuBackend();
             _fwd = new ForwardPass(_source, _backend, hp);
+
+            _lmHeadHandles = new System.Runtime.InteropServices.GCHandle[NumAcousticCodebooks];
+            _lmHeadPointers = new byte*[NumAcousticCodebooks];
+            for (int i = 0; i < NumAcousticCodebooks; i++)
+            {
+                _lmHeadHandles[i] = System.Runtime.InteropServices.GCHandle.Alloc(weights.LmHead[i], System.Runtime.InteropServices.GCHandleType.Pinned);
+                _lmHeadPointers[i] = (byte*)_lmHeadHandles[i].AddrOfPinnedObject();
+            }
         }
 
         /// <summary>
@@ -90,7 +100,7 @@ public static class QwenTtsCodePredictorGeneration
             talkerLastHidden.CopyTo(_promptRowsBuffer.AsSpan(0, HiddenDim));
             Array.Copy(_weights.TalkerCodecEmbd, (long)c0 * HiddenDim, _promptRowsBuffer, HiddenDim, HiddenDim);
             _source.SetPromptEmbedding(_promptRowsBuffer, 2);
-            _source.SetOutputHead(_weights.LmHead[0], AcousticVocabSize);
+            _fwd.SetOutputWeightDataPtr(_lmHeadPointers[0]);
 
             var logitsSpan = _fwd.Prefill([0, 1]);
 
@@ -104,7 +114,7 @@ public static class QwenTtsCodePredictorGeneration
                 Array.Copy(_weights.CodecEmbd[g - 1], (long)prevCode * HiddenDim, _inputEmbBuffer, 0, HiddenDim);
 
                 _source.SetPromptEmbedding(_inputEmbBuffer, 1);
-                _source.SetOutputHead(_weights.LmHead[g], AcousticVocabSize);
+                _fwd.SetOutputWeightDataPtr(_lmHeadPointers[g]);
 
                 logitsSpan = _fwd.Forward(0, pos);
                 pos++;
@@ -117,6 +127,8 @@ public static class QwenTtsCodePredictorGeneration
 
         public void Dispose()
         {
+            foreach (var h in _lmHeadHandles)
+                if (h.IsAllocated) h.Free();
             _fwd.Dispose();
             _backend.Dispose();
             _source.Dispose();

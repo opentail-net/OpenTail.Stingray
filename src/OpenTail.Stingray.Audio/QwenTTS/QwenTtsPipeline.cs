@@ -236,24 +236,15 @@ public sealed class QwenTtsPipeline : ITextToSpeechPipeline
     /// </summary>
     private List<int[]> GenerateFrames(string text, int talkerNumLayers, int codePredNumLayers, int maxFrames, string? language, int seed)
     {
-        var talkerWeights = QwenTtsTalkerPromptBuilder.Weights.Load(_talkerModel);
-        var tokenizer = GgufTokenizer.FromGgufModel(_talkerModel);
-        var languageTable = QwenTtsTalkerPromptBuilder.ReadLanguageTable(_talkerModel);
-        var (promptEmbed, tRows) = QwenTtsTalkerPromptBuilder.BuildBasePrompt(talkerWeights, tokenizer, text, language, languageTable);
+        var (promptEmbed, tRows) = QwenTtsTalkerPromptBuilder.BuildBasePrompt(_talkerWeights, _tokenizer, text, language, _languageTable);
 
         using var talkerSource = new QwenTtsTalkerTensorSource(_talkerModel, talkerNumLayers);
 
-        // Real fix for the "LastHidden is all-zero right after Prefill alone" constraint this
-        // session found: prefill everything except the last prompt row, then a real Forward
-        // step for that last row, so LastHidden is valid from the very first generated frame.
         var prefillRows = new float[(tRows - 1) * QwenTtsTalkerPromptBuilder.TalkerHiddenDim];
         Array.Copy(promptEmbed, prefillRows, prefillRows.Length);
         talkerSource.SetPromptEmbedding(prefillRows, tRows - 1);
 
         var hp = ModelHyperparams.FromGgufMetadata(talkerSource.Metadata, talkerSource);
-        if (Environment.GetEnvironmentVariable("STINGRAY_QWENTTS_GOLDEN_DUMP") is not null)
-            Console.Error.WriteLine($"hp: HeadDim={hp.HeadDim} NumHeads={hp.NumHeads} NumKvHeads={hp.NumKvHeads} " +
-                $"EmbeddingDim={hp.EmbeddingDim} RopeTheta={hp.RopeTheta} RmsNormEps={hp.RmsNormEps} NumLayers={hp.NumLayers}");
         using var backend = new CpuBackend();
         using var fwd = new ForwardPass(talkerSource, backend, hp);
 
@@ -267,27 +258,13 @@ public sealed class QwenTtsPipeline : ITextToSpeechPipeline
         var logitsSpan = fwd.Forward(0, tRows - 1);
         int pos = tRows;
 
-        if (Environment.GetEnvironmentVariable("STINGRAY_QWENTTS_GOLDEN_DUMP") is { } dumpDir)
-        {
-            System.IO.Directory.CreateDirectory(dumpDir);
-            System.IO.File.WriteAllText(System.IO.Path.Combine(dumpDir, "prompt_embed.csv"),
-                $"{tRows},{QwenTtsTalkerPromptBuilder.TalkerHiddenDim}\n" + string.Join(",", promptEmbed));
-            var lastHidden = fwd.LastHidden.ToArray();
-            System.IO.File.WriteAllText(System.IO.Path.Combine(dumpDir, "last_hidden.csv"),
-                $"1,{lastHidden.Length}\n" + string.Join(",", lastHidden));
-            var logitsArr = logitsSpan.ToArray();
-            System.IO.File.WriteAllText(System.IO.Path.Combine(dumpDir, "logits.csv"),
-                $"1,{logitsArr.Length}\n" + string.Join(",", logitsArr));
-        }
-
-        var codePredWeights = QwenTtsCodePredictorGeneration.Weights.Load(_talkerModel);
-        using var codePredSession = new QwenTtsCodePredictorGeneration.CodePredictorSession(_talkerModel, codePredWeights, codePredNumLayers);
-        var specials = talkerWeights.Specials;
+        using var codePredSession = new QwenTtsCodePredictorGeneration.CodePredictorSession(_talkerModel, _codePredWeights, codePredNumLayers);
+        var specials = _talkerWeights.Specials;
         var frames = new List<int[]>();
         var c0History = new List<int>();
         var rng = new Random(seed);
 
-        var padEmbed = QwenTtsTalkerPromptBuilder.ProjectTextIds(talkerWeights, [specials.TtsPadId]);
+        var padEmbed = QwenTtsTalkerPromptBuilder.ProjectTextIds(_talkerWeights, [specials.TtsPadId]);
         var stepRow = new float[QwenTtsTalkerPromptBuilder.TalkerHiddenDim];
 
         for (int frame = 0; frame < maxFrames; frame++)
@@ -304,13 +281,13 @@ public sealed class QwenTtsPipeline : ITextToSpeechPipeline
             frames.Add(frameCodes);
 
             Array.Copy(padEmbed, stepRow, stepRow.Length);
-            var codecVec = QwenTtsTalkerPromptBuilder.CodecEmbedRow(talkerWeights, c0);
+            var codecVec = QwenTtsTalkerPromptBuilder.CodecEmbedRow(_talkerWeights, c0);
             for (int d = 0; d < stepRow.Length; d++) stepRow[d] += codecVec[d];
             for (int g = 0; g < acoustic.Length; g++)
             {
                 int acCode = acoustic[g];
                 int acOffset = acCode * QwenTtsTalkerPromptBuilder.TalkerHiddenDim;
-                var acTable = codePredWeights.CodecEmbd[g];
+                var acTable = _codePredWeights.CodecEmbd[g];
                 for (int d = 0; d < stepRow.Length; d++) stepRow[d] += acTable[acOffset + d];
             }
 

@@ -37,3 +37,21 @@
 [CosyVoice3] prompt="Hello, I will make some lunch, darling!" audio=2.96s samples=71040
 [CosyVoice3] runs(s)=[22.101, 22.010, 22.511] mean=22.207s RTF=7.502 (lower=faster; 1.0=realtime)
 
+[QwenTTS-Stream] prompt="Hello, I will make some lunch, darling!" audio=2.16s samples=51840 chunks=9
+[QwenTTS-Stream] Time-To-First-Audio (TTFA)=2.780s TotalTime=21.602s
+
+[QwenTTS-Stream] prompt="Hello, I will make some lunch, darling!" audio=2.16s samples=51840 chunks=9
+[QwenTTS-Stream] Time-To-First-Audio (TTFA)=2.047s TotalTime=11.364s
+
+[QwenTTS-Stream-Frame1] prompt="Hello, I will make some lunch, darling!" audio=2.16s samples=51840 chunks=27
+[QwenTTS-Stream-Frame1] Time-To-First-Audio (TTFA)=0.499s TotalTime=25.110s
+
+[QwenTTS] prompt="Hello, I will make some lunch, darling!" audio=2.64s samples=63360
+[QwenTTS] runs(s)=[6.661, 6.425, 6.591] mean=6.559s RTF=2.485 (lower=faster; 1.0=realtime)
+
+[QwenTTS] prompt="Hello, I will make some lunch, darling!" audio=2.16s samples=51840
+[QwenTTS] runs(s)=[5.946, 6.047, 5.783] mean=5.925s RTF=2.743 (lower=faster; 1.0=realtime)
+
+[QwenTTS] prompt="Hello, I will make some lunch, darling!" audio=2.16s samples=51840
+[QwenTTS] runs(s)=[5.445, 5.340, 5.138] mean=5.308s RTF=2.457 (lower=faster; 1.0=realtime)
+
