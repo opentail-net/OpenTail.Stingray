@@ -23,7 +23,7 @@ public static class F5FlowMatchingOde
         ReadOnlySpan<int> text,
         int numFrames,
         int steps = 32,
-        float cfgStrength = 2.0f,
+        float cfgStrength = 1.0f,
         float swaySamplingCoef = -1.0f,
         int seed = 42)
     {

@@ -135,7 +135,7 @@ public sealed class F5TtsPipeline : ITextToSpeechPipeline
         if (_weights is not null && _tokenizer is not null)
         {
             int[] tokens = _tokenizer.Encode(fullText);
-            generatedMel = F5FlowMatchingOde.Solve(_weights, condMel, tokens, totalFrames, steps: 32, cfgStrength: 2.0f, swaySamplingCoef: -1.0f);
+            generatedMel = F5FlowMatchingOde.Solve(_weights, condMel, tokens, totalFrames, steps: 32, cfgStrength: 1.0f, swaySamplingCoef: -1.0f);
         }
         else
         {
