@@ -89,21 +89,18 @@ public sealed class ChatterboxTokenizer
         {
             string normalized = PuncNorm(text);
             var ids = tok.Encode(normalized);
-            var result = new int[ids.Count + 2];
-            result[0] = _startTextToken;
-            for (int i = 0; i < ids.Count; i++) result[i + 1] = ids[i];
-            result[^1] = _stopTextToken;
+            var result = new int[ids.Count];
+            for (int i = 0; i < ids.Count; i++) result[i] = ids[i];
             return result;
         }
 
         if (string.IsNullOrWhiteSpace(text)) return [1, 2];
 
-        var tokens = new List<int>(text.Length + 2) { 1 };
+        var tokens = new List<int>(text.Length);
         foreach (char c in text)
         {
             tokens.Add(_charVocab.TryGetValue(c, out int id) ? id : 3 /* <unk> */);
         }
-        tokens.Add(2);
         return tokens.ToArray();
     }
 }
