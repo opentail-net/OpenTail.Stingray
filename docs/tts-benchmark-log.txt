@@ -319,3 +319,9 @@
 [Parler-TTS] prompt="Hello, I will make some lunch, darling!" audio=2.57s samples=113152
 [Parler-TTS] runs(s)=[13.775, 14.308, 15.477] mean=14.520s RTF=5.659 (lower=faster; 1.0=realtime)
 
+[Parler-TTS-Stream-Frame16] prompt="Hello, I will make some lunch, darling!" audio=3.17s samples=139776 chunks=14
+[Parler-TTS-Stream-Frame16] Time-To-First-Audio (TTFA)=1.493s TotalTime=14.004s
+
+[Parler-TTS] prompt="Hello, I will make some lunch, darling!" audio=2.57s samples=113152
+[Parler-TTS] runs(s)=[15.838, 15.107, 14.371] mean=15.105s RTF=5.887 (lower=faster; 1.0=realtime)
+
