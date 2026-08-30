@@ -124,3 +124,51 @@
 [Piper-Stream-Frame16] prompt="Hello, I will make some lunch, darling!" audio=3.16s samples=69632 chunks=17
 [Piper-Stream-Frame16] Time-To-First-Audio (TTFA)=0.199s TotalTime=3.664s
 
+[QwenTTS] prompt="Hello, I will make some lunch, darling!" audio=2.16s samples=51840
+[QwenTTS] runs(s)=[5.818, 5.708, 5.909] mean=5.811s RTF=2.690 (lower=faster; 1.0=realtime)
+
+[CosyVoice3] prompt="Hello, I will make some lunch, darling!" audio=2.96s samples=71040
+[CosyVoice3] runs(s)=[22.001, 21.549, 22.022] mean=21.857s RTF=7.384 (lower=faster; 1.0=realtime)
+
+[XTTS-Stream-Chunk6] prompt="Hello, I will make some lunch, darling!" audio=4.50s samples=108032 chunks=17
+[XTTS-Stream-Chunk6] Time-To-First-Audio (TTFA)=2.981s TotalTime=57.032s
+
+[FishSpeech] prompt="Hello, I will make some lunch, darling!" audio=3.11s samples=137216
+[FishSpeech] runs(s)=[30.476, 30.456, 31.220] mean=30.717s RTF=9.872 (lower=faster; 1.0=realtime)
+
+[MeloTTS] prompt="Hello, I will make some lunch, darling!" audio=2.54s samples=112128
+[MeloTTS] runs(s)=[4.055, 3.731, 3.885] mean=3.890s RTF=1.530 (lower=faster; 1.0=realtime)
+
+[Piper-lessac-medium] prompt="Hello, I will make some lunch, darling!" audio=2.86s samples=62976
+[Piper-lessac-medium] runs(s)=[0.594, 0.950, 0.511] mean=0.685s RTF=0.240 (lower=faster; 1.0=realtime)
+
+[F5-TTS] prompt="Hello, I will make some lunch, darling!" audio=2.77s samples=66560
+[F5-TTS] runs(s)=[85.509, 85.576, 85.174] mean=85.419s RTF=30.800 (lower=faster; 1.0=realtime)
+
+[MMS-TTS-eng] prompt="Hello, I will make some lunch, darling!" audio=2.85s samples=45568
+[MMS-TTS-eng] runs(s)=[1.650, 1.457, 1.566] mean=1.557s RTF=0.547 (lower=faster; 1.0=realtime)
+
+[Kokoro-82M] prompt="Hello, I will make some lunch, darling!" audio=2.93s samples=70220
+[Kokoro-82M] runs(s)=[3.332, 3.129, 3.177] mean=3.212s RTF=1.098 (lower=faster; 1.0=realtime)
+
+[Parler-TTS] prompt="Hello, I will make some lunch, darling!" audio=1.96s samples=47104
+[Parler-TTS] runs(s)=[6.109, 6.173, 5.398] mean=5.894s RTF=3.003 (lower=faster; 1.0=realtime)
+
+[FishSpeech-Stream-Frame1] prompt="Hello, I will make some lunch, darling!" audio=3.11s samples=137216 chunks=67
+[FishSpeech-Stream-Frame1] Time-To-First-Audio (TTFA)=0.732s TotalTime=106.950s
+
+[XTTS-v2] prompt="Hello, I will make some lunch, darling!" audio=4.50s samples=108032
+[XTTS-v2] runs(s)=[12.582, 12.821, 13.153] mean=12.852s RTF=2.855 (lower=faster; 1.0=realtime)
+
+[QwenTTS-Stream-Frame1] prompt="Hello, I will make some lunch, darling!" audio=2.16s samples=51840 chunks=27
+[QwenTTS-Stream-Frame1] Time-To-First-Audio (TTFA)=0.496s TotalTime=24.459s
+
+[Chatterbox] prompt="Hello, I will make some lunch, darling!" audio=2.48s samples=59520
+[Chatterbox] runs(s)=[11.420, 11.254, 11.046] mean=11.240s RTF=4.532 (lower=faster; 1.0=realtime)
+
+[Piper-Stream-Frame16] prompt="Hello, I will make some lunch, darling!" audio=2.80s samples=61696 chunks=16
+[Piper-Stream-Frame16] Time-To-First-Audio (TTFA)=0.205s TotalTime=3.046s
+
+[MMS-TTS-Stream-Frame16] prompt="Hello, I will make some lunch, darling!" audio=2.90s samples=46336 chunks=12
+[MMS-TTS-Stream-Frame16] Time-To-First-Audio (TTFA)=0.267s TotalTime=10.248s
+

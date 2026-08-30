@@ -543,6 +543,230 @@ public sealed class TtsPerformanceBaselineDebugTest : HeavyTestBase
         File.AppendAllText(Path.Combine(FindRepoFile("docs") ?? ".", "tts-benchmark-log.txt"), msg + "\n\n");
     }
 
+    [Fact]
+    public void Baseline_Kokoro()
+    {
+        string? modelPath = FindRepoFile("models/kokoro-82m-q8_0.gguf");
+        string? voicePath = FindRepoFile("models/kokoro-voice-af_heart.gguf");
+        Assert.SkipUnless(modelPath != null && voicePath != null, "Kokoro GGUF model or voice not found");
+
+        using var model = OpenTail.Stingray.Audio.Kokoro.KokoroModel.Load(modelPath!, voicePath!);
+        using var pipeline = new OpenTail.Stingray.Audio.Kokoro.KokoroPipeline(model);
+
+        var req = new AudioGenerationRequest { Text = Prompt, Voice = "af_heart" };
+        var warm = pipeline.Generate(req);
+        Assert.NotEmpty(warm.Samples);
+
+        double[] elapsedSec = new double[Runs];
+        int sampleCount = 0;
+        float[]? lastWav = null;
+        for (int i = 0; i < Runs; i++)
+        {
+            var sw = Stopwatch.StartNew();
+            var res = pipeline.Generate(req);
+            sw.Stop();
+            elapsedSec[i] = sw.Elapsed.TotalSeconds;
+            sampleCount = res.Samples.Length;
+            lastWav = res.Samples;
+        }
+
+        if (lastWav != null)
+        {
+            string? outDir = FindRepoFile("docs/audio-samples");
+            if (outDir != null)
+            {
+                string wavPath = Path.Combine(outDir, "kokoro-perf-baseline.wav");
+                new AudioGenerationResult(lastWav, pipeline.DefaultSampleRate).SaveWav(wavPath);
+            }
+        }
+
+        double audioSec = (double)sampleCount / pipeline.DefaultSampleRate;
+        double meanSec = Average(elapsedSec);
+        double rtf = meanSec / audioSec;
+        string msg = $"[Kokoro-82M] prompt=\"{Prompt}\" audio={audioSec:F2}s samples={sampleCount}\n" +
+                     $"[Kokoro-82M] runs(s)=[{string.Join(", ", Array.ConvertAll(elapsedSec, x => x.ToString("F3")))}] mean={meanSec:F3}s RTF={rtf:F3} (lower=faster; 1.0=realtime)";
+        Console.Error.WriteLine(msg);
+        File.AppendAllText(Path.Combine(FindRepoFile("docs") ?? ".", "tts-benchmark-log.txt"), msg + "\n\n");
+    }
+
+    [Fact]
+    public void Baseline_MeloTts()
+    {
+        string? modelPath = FindRepoFile("models/melotts-zh_en.onnx");
+        Assert.SkipUnless(modelPath != null, "MeloTTS ONNX model not found");
+
+        using var pipeline = OpenTail.Stingray.Audio.MeloTTS.MeloPipeline.Load(modelPath!);
+
+        var req = new AudioGenerationRequest { Text = Prompt, Voice = "EN-US" };
+        var warm = pipeline.Generate(req);
+        Assert.NotEmpty(warm.Samples);
+
+        double[] elapsedSec = new double[Runs];
+        int sampleCount = 0;
+        float[]? lastWav = null;
+        for (int i = 0; i < Runs; i++)
+        {
+            var sw = Stopwatch.StartNew();
+            var res = pipeline.Generate(req);
+            sw.Stop();
+            elapsedSec[i] = sw.Elapsed.TotalSeconds;
+            sampleCount = res.Samples.Length;
+            lastWav = res.Samples;
+        }
+
+        if (lastWav != null)
+        {
+            string? outDir = FindRepoFile("docs/audio-samples");
+            if (outDir != null)
+            {
+                string wavPath = Path.Combine(outDir, "melotts-perf-baseline.wav");
+                new AudioGenerationResult(lastWav, pipeline.DefaultSampleRate).SaveWav(wavPath);
+            }
+        }
+
+        double audioSec = (double)sampleCount / pipeline.DefaultSampleRate;
+        double meanSec = Average(elapsedSec);
+        double rtf = meanSec / audioSec;
+        string msg = $"[MeloTTS] prompt=\"{Prompt}\" audio={audioSec:F2}s samples={sampleCount}\n" +
+                     $"[MeloTTS] runs(s)=[{string.Join(", ", Array.ConvertAll(elapsedSec, x => x.ToString("F3")))}] mean={meanSec:F3}s RTF={rtf:F3} (lower=faster; 1.0=realtime)";
+        Console.Error.WriteLine(msg);
+        File.AppendAllText(Path.Combine(FindRepoFile("docs") ?? ".", "tts-benchmark-log.txt"), msg + "\n\n");
+    }
+
+    [Fact]
+    public void Baseline_F5Tts()
+    {
+        string? modelPath = FindRepoFile("models/f5tts_base.safetensors");
+        Assert.SkipUnless(modelPath != null, "F5TTS safetensors model not found");
+
+        using var pipeline = OpenTail.Stingray.Audio.F5TTS.F5TtsPipeline.Load(modelPath!);
+
+        var req = new AudioGenerationRequest { Text = Prompt };
+        var warm = pipeline.Generate(req);
+        Assert.NotEmpty(warm.Samples);
+
+        double[] elapsedSec = new double[Runs];
+        int sampleCount = 0;
+        float[]? lastWav = null;
+        for (int i = 0; i < Runs; i++)
+        {
+            var sw = Stopwatch.StartNew();
+            var res = pipeline.Generate(req);
+            sw.Stop();
+            elapsedSec[i] = sw.Elapsed.TotalSeconds;
+            sampleCount = res.Samples.Length;
+            lastWav = res.Samples;
+        }
+
+        if (lastWav != null)
+        {
+            string? outDir = FindRepoFile("docs/audio-samples");
+            if (outDir != null)
+            {
+                string wavPath = Path.Combine(outDir, "f5tts-perf-baseline.wav");
+                new AudioGenerationResult(lastWav, pipeline.DefaultSampleRate).SaveWav(wavPath);
+            }
+        }
+
+        double audioSec = (double)sampleCount / pipeline.DefaultSampleRate;
+        double meanSec = Average(elapsedSec);
+        double rtf = meanSec / audioSec;
+        string msg = $"[F5-TTS] prompt=\"{Prompt}\" audio={audioSec:F2}s samples={sampleCount}\n" +
+                     $"[F5-TTS] runs(s)=[{string.Join(", ", Array.ConvertAll(elapsedSec, x => x.ToString("F3")))}] mean={meanSec:F3}s RTF={rtf:F3} (lower=faster; 1.0=realtime)";
+        Console.Error.WriteLine(msg);
+        File.AppendAllText(Path.Combine(FindRepoFile("docs") ?? ".", "tts-benchmark-log.txt"), msg + "\n\n");
+    }
+
+    [Fact]
+    public void Baseline_Chatterbox()
+    {
+        string? t3Path = FindRepoFile("models/chatterbox-turbo-t3-q4_k.gguf");
+        string? s3GenPath = FindRepoFile("models/chatterbox-turbo-s3gen-q4_k.gguf");
+        Assert.SkipUnless(t3Path != null && s3GenPath != null, "Chatterbox GGUF models not found");
+
+        using var pipeline = OpenTail.Stingray.Audio.Chatterbox.ChatterboxPipeline.Load(t3Path!, s3GenPath!);
+
+        var req = new AudioGenerationRequest { Text = Prompt, Voice = "nova" };
+        var warm = pipeline.Generate(req);
+        Assert.NotEmpty(warm.Samples);
+
+        double[] elapsedSec = new double[Runs];
+        int sampleCount = 0;
+        float[]? lastWav = null;
+        for (int i = 0; i < Runs; i++)
+        {
+            var sw = Stopwatch.StartNew();
+            var res = pipeline.Generate(req);
+            sw.Stop();
+            elapsedSec[i] = sw.Elapsed.TotalSeconds;
+            sampleCount = res.Samples.Length;
+            lastWav = res.Samples;
+        }
+
+        if (lastWav != null)
+        {
+            string? outDir = FindRepoFile("docs/audio-samples");
+            if (outDir != null)
+            {
+                string wavPath = Path.Combine(outDir, "chatterbox-perf-baseline.wav");
+                new AudioGenerationResult(lastWav, pipeline.DefaultSampleRate).SaveWav(wavPath);
+            }
+        }
+
+        double audioSec = (double)sampleCount / pipeline.DefaultSampleRate;
+        double meanSec = Average(elapsedSec);
+        double rtf = meanSec / audioSec;
+        string msg = $"[Chatterbox] prompt=\"{Prompt}\" audio={audioSec:F2}s samples={sampleCount}\n" +
+                     $"[Chatterbox] runs(s)=[{string.Join(", ", Array.ConvertAll(elapsedSec, x => x.ToString("F3")))}] mean={meanSec:F3}s RTF={rtf:F3} (lower=faster; 1.0=realtime)";
+        Console.Error.WriteLine(msg);
+        File.AppendAllText(Path.Combine(FindRepoFile("docs") ?? ".", "tts-benchmark-log.txt"), msg + "\n\n");
+    }
+
+    [Fact]
+    public void Baseline_Parler()
+    {
+        string? modelPath = FindRepoFile("models/parler-tts-mini-v1.safetensors");
+        string? tokenizerPath = FindRepoFile("scratch-llamacpp-ref/parler-tokenizer/tokenizer.json");
+        Assert.SkipUnless(modelPath != null && tokenizerPath != null, "Parler safetensors model or tokenizer not found");
+
+        using var loader = OpenTail.Stingray.Core.SafetensorsLoader.Open(modelPath!);
+        using var pipeline = new OpenTail.Stingray.Audio.Parler.ParlerFullPipeline(tokenizerPath!, loader);
+
+        var warm = pipeline.Synthesize(Prompt, maxNewTokens: 100);
+        Assert.NotEmpty(warm);
+
+        double[] elapsedSec = new double[Runs];
+        int sampleCount = 0;
+        float[]? lastWav = null;
+        for (int i = 0; i < Runs; i++)
+        {
+            var sw = Stopwatch.StartNew();
+            var wav = pipeline.Synthesize(Prompt, maxNewTokens: 100);
+            sw.Stop();
+            elapsedSec[i] = sw.Elapsed.TotalSeconds;
+            sampleCount = wav.Length;
+            lastWav = wav;
+        }
+
+        if (lastWav != null)
+        {
+            string? outDir = FindRepoFile("docs/audio-samples");
+            if (outDir != null)
+            {
+                string wavPath = Path.Combine(outDir, "parler-perf-baseline.wav");
+                new AudioGenerationResult(lastWav, 24000).SaveWav(wavPath);
+            }
+        }
+
+        double audioSec = sampleCount / 24000.0;
+        double meanSec = Average(elapsedSec);
+        double rtf = meanSec / audioSec;
+        string msg = $"[Parler-TTS] prompt=\"{Prompt}\" audio={audioSec:F2}s samples={sampleCount}\n" +
+                     $"[Parler-TTS] runs(s)=[{string.Join(", ", Array.ConvertAll(elapsedSec, x => x.ToString("F3")))}] mean={meanSec:F3}s RTF={rtf:F3} (lower=faster; 1.0=realtime)";
+        Console.Error.WriteLine(msg);
+        File.AppendAllText(Path.Combine(FindRepoFile("docs") ?? ".", "tts-benchmark-log.txt"), msg + "\n\n");
+    }
+
     private static double Average(double[] values)
     {
         double sum = 0;
