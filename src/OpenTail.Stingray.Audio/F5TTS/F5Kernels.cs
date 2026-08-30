@@ -57,22 +57,19 @@ public static class F5Kernels
     }
 
     /// <summary>Per-timestep non-affine LayerNorm (elementwise_affine=False), for AdaLN modulation.</summary>
-    public static float[] LayerNormNoAffine(float[] x, int t, int dim, float eps = 1e-6f)
+    public static unsafe float[] LayerNormNoAffine(float[] x, int t, int dim, float eps = 1e-6f)
     {
         var y = new float[t * dim];
-        Parallel.For(0, t, ti =>
+        fixed (float* xp = x, yp = y)
         {
-            int off = ti * dim;
-            double mean = 0;
-            for (int d = 0; d < dim; d++) mean += x[off + d];
-            mean /= dim;
-            double var = 0;
-            for (int d = 0; d < dim; d++) { double diff = x[off + d] - mean; var += diff * diff; }
-            var /= dim;
-            float invStd = (float)(1.0 / Math.Sqrt(var + eps));
-            for (int d = 0; d < dim; d++)
-                y[off + d] = (float)((x[off + d] - mean) * invStd);
-        });
+            float* xpLocal = xp;
+            float* ypLocal = yp;
+            Parallel.For(0, t, ti =>
+            {
+                int off = ti * dim;
+                OpenTail.Stingray.Cpu.SimdKernels.PureLayerNorm(ypLocal + off, xpLocal + off, dim, eps);
+            });
+        }
         return y;
     }
 
@@ -210,19 +207,22 @@ public static class F5Kernels
         return y;
     }
 
-    public static void SoftmaxInPlace(float[] scores, int offset, int length)
+    public static void SoftmaxInPlace(float[] scores, int offset, int length) =>
+        SoftmaxInPlace(scores.AsSpan(offset, length));
+
+    public static void SoftmaxInPlace(Span<float> scores)
     {
         float max = float.NegativeInfinity;
-        for (int i = 0; i < length; i++) if (scores[offset + i] > max) max = scores[offset + i];
+        for (int i = 0; i < scores.Length; i++) if (scores[i] > max) max = scores[i];
         float sum = 0f;
-        for (int i = 0; i < length; i++)
+        for (int i = 0; i < scores.Length; i++)
         {
-            float e = MathF.Exp(scores[offset + i] - max);
-            scores[offset + i] = e;
+            float e = MathF.Exp(scores[i] - max);
+            scores[i] = e;
             sum += e;
         }
         float invSum = 1f / sum;
-        for (int i = 0; i < length; i++) scores[offset + i] *= invSum;
+        for (int i = 0; i < scores.Length; i++) scores[i] *= invSum;
     }
 
     /// <summary>x_transformers-convention RoPE, applied in place to a [t, heads*headDim] tensor. Shared by F5-TTS's DiT and CosyVoice3's DiT (tensor-for-tensor identical architecture, see CosyVoice3DiTModel's doc comment) -- was hand-duplicated in both files until extracted here.</summary>
@@ -254,46 +254,45 @@ public static class F5Kernels
     /// q/k/v [t, heads*headDim]. Returns context [t, heads*headDim] (pre output-projection).
     /// Shared by F5-TTS's DiT and CosyVoice3's DiT -- was hand-duplicated in both files (including
     /// a scalar, non-SIMD QK/AV inner loop parallelized only over `heads`) until extracted here.
-    /// Parallelizes over `t` instead of `heads`: heads is a small, fixed constant (e.g. 16) while
-    /// t (frame count) scales with utterance length and is usually far larger, so this gives much
-    /// more parallel width; the QK dot and the AV accumulation both use SIMD (DotF32/
-    /// TensorPrimitives.MultiplyAdd) instead of scalar loops, following the pattern already
-    /// verified in Primitives/CfmUNetKernels.cs.
     /// </summary>
-    public static float[] MultiHeadSelfAttention(float[] q, float[] k, float[] v, int t, int heads, int headDim)
+    public static unsafe float[] MultiHeadSelfAttention(float[] q, float[] k, float[] v, int t, int heads, int headDim)
     {
         int dim = heads * headDim;
         float scale = 1f / MathF.Sqrt(headDim);
         var context = new float[t * dim];
 
-        for (int h = 0; h < heads; h++)
+        fixed (float* qp = q, kp = k, vp = v, ctxp = context)
         {
-            int hOff = h * headDim;
-            Parallel.For(0, t, i =>
-            {
-                var scores = new float[t];
-                int qOff = i * dim + hOff;
-                unsafe
-                {
-                    fixed (float* qp = q)
-                    {
-                        float* qRow = qp + qOff;
-                        for (int j = 0; j < t; j++)
-                        {
-                            fixed (float* kp = k)
-                                scores[j] = OpenTail.Stingray.Cpu.SimdKernels.DotF32(qRow, kp + j * dim + hOff, headDim) * scale;
-                        }
-                    }
-                }
-                SoftmaxInPlace(scores, 0, t);
+            float* qBase = qp;
+            float* kBase = kp;
+            float* vBase = vp;
+            float* ctxBase = ctxp;
 
-                var cSpan = context.AsSpan(i * dim + hOff, headDim);
+            Parallel.For(0, heads * t, idx =>
+            {
+                int h = idx / t;
+                int i = idx - h * t;
+                int hOff = h * headDim;
+                float* qRow = qBase + i * dim + hOff;
+
+                var scores = new float[t];
+                for (int j = 0; j < t; j++)
+                {
+                    scores[j] = OpenTail.Stingray.Cpu.SimdKernels.DotF32(qRow, kBase + j * dim + hOff, headDim) * scale;
+                }
+
+                SoftmaxInPlace(scores.AsSpan());
+
+                float* cRow = ctxBase + i * dim + hOff;
+                for (int d = 0; d < headDim; d++) cRow[d] = 0f;
+
                 for (int j = 0; j < t; j++)
                 {
                     float p = scores[j];
                     if (p == 0f) continue;
-                    var vSpan = v.AsSpan(j * dim + hOff, headDim);
-                    System.Numerics.Tensors.TensorPrimitives.MultiplyAdd(vSpan, p, cSpan, cSpan);
+                    float* vRow = vBase + j * dim + hOff;
+                    for (int d = 0; d < headDim; d++)
+                        cRow[d] += p * vRow[d];
                 }
             });
         }

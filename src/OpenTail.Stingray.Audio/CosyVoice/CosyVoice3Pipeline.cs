@@ -110,7 +110,7 @@ public sealed class CosyVoice3Pipeline : ITextToSpeechPipeline
     /// reference-audio-prefix portion of the output waveform is then trimmed off before
     /// returning, since the reference only returns the newly-synthesized continuation.</para>
     /// </summary>
-    public float[] Generate(string text, int maxNewSpeechTokens = 200, int odeSteps = 10, int? seed = null, string? referenceAudioPath = null, float cfgRate = 0.7f, string? referenceText = null, string? instruction = null, float temperature = 0.8f, float[]? explicitSpeakerEmbedding = null, float pitchScale = 1.25f)
+    public float[] Generate(string text, int maxNewSpeechTokens = 200, int odeSteps = 10, int? seed = null, string? referenceAudioPath = null, float cfgRate = 0.7f, string? referenceText = null, string? instruction = null, float temperature = 0.8f, float[]? explicitSpeakerEmbedding = null, float pitchScale = 1.0f)
     {
         float[] speakerEmbedding = explicitSpeakerEmbedding ?? ExtractSpeakerEmbedding(referenceAudioPath);
         float[] refMel = ExtractReferenceMel(referenceAudioPath);
