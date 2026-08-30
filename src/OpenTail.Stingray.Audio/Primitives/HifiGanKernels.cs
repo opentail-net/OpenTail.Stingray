@@ -15,6 +15,34 @@ public static class HifiGanKernels
 {
     public static float LeakyRelu(float v, float alpha = 0.1f) => v >= 0f ? v : v * alpha;
 
+    /// <summary>Real `torch.nn.functional.interpolate(x, scale_factor=[s], mode="linear")` (default
+    /// `align_corners=False`), channel-first `[ch,tIn]` -&gt; `[ch,tOut]` where `tOut = floor(tIn*scale)`.
+    /// Per-output-sample source coordinate: `src = (o+0.5)*(tIn/tOut) - 0.5`, clamped to `&gt;=0`, linearly
+    /// interpolated between `floor(src)` and `min(floor(src)+1, tIn-1)`. Verified bit-exact (max abs diff
+    /// 0.0) against real PyTorch in `scratch-llamacpp-ref/xtts_interpolate_golden.py` -- used by XTTS-v2's
+    /// `HifiDecoder.forward` to upsample GPT latents before the vocoder.</summary>
+    public static float[] LinearInterpolate1d(float[] input, int ch, int tIn, double scale, out int tOut)
+    {
+        tOut = (int)Math.Floor(tIn * scale);
+        double realScale = (double)tIn / tOut;
+        var output = new float[ch * tOut];
+        for (int c = 0; c < ch; c++)
+        {
+            int srcBase = c * tIn;
+            int dstBase = c * tOut;
+            for (int o = 0; o < tOut; o++)
+            {
+                double src = (o + 0.5) * realScale - 0.5;
+                if (src < 0.0) src = 0.0;
+                int i0 = (int)Math.Floor(src);
+                int i1 = Math.Min(i0 + 1, tIn - 1);
+                double frac = src - i0;
+                output[dstBase + o] = (float)(input[srcBase + i0] * (1.0 - frac) + input[srcBase + i1] * frac);
+            }
+        }
+        return output;
+    }
+
     public static float[] Conv1dSamePad(float[] input, int inCh, int t, float[] weight, float[]? bias, int outCh, int kernel) =>
         Conv1dDilated(input, inCh, t, weight, bias, outCh, kernel, dilation: 1);
 

@@ -10735,3 +10735,38 @@ ComputeLatents`'s output and this vocoder's input, (2) a native BPE tokenizer fo
 `vocab.json` (HuggingFace `tokenizers`-library JSON format), (3) a top-level `XttsPipeline` class
 wiring every already-verified piece together end-to-end, mirroring `MmsTtsPipeline`'s pattern,
 (4) CLI wiring in `TtsCommand.cs`.
+
+## XTTS-v2: `HifiDecoder.forward` interpolation preprocessing
+
+Fetched the real source `TTS/tts/layers/xtts/hifigan_decoder.py` via curl. Confirmed `HifiDecoder.
+forward` does two chained `torch.nn.functional.interpolate(..., mode="linear")` calls (default
+`align_corners=False`) before the vocoder: first `scale_factor=[ar_mel_length_compression(1024)/
+output_hop_length(256)]=4x`, then `scale_factor=[output_sample_rate(24000)/
+input_sample_rate(22050)]≈1.0884x`.
+
+**Verified the exact real interpolation formula numerically** (not assumed from PyTorch docs)
+by comparing a small hand-implemented Python reimplementation against real `F.interpolate`
+output directly: `tOut = floor(tIn*scale)`, `realScale = tIn/tOut`, per-output-sample source
+coord `src = (o+0.5)*realScale - 0.5` (clamped `>=0`), linear blend between `floor(src)` and
+`min(floor(src)+1, tIn-1)` -- **max abs diff 0.0** (bit-exact), confirming the formula before
+porting. Added as a new shared primitive, `HifiGanKernels.LinearInterpolate1d`, since this is a
+generic real PyTorch-interpolate reimplementation any future vocoder port needing the same
+upsample-before-decode pattern could reuse.
+
+Wired both stages + the vocoder call into a new `XttsHifiDecoder.Forward` orchestration method.
+
+Golden reference (`scratch-llamacpp-ref/xtts_hifidecoder_golden.py`): built the real
+`HifiDecoder`, loaded `model.pth`'s real `hifigan_decoder.{waveform_decoder,speaker_encoder}.*`
+weights (zero missing/unexpected keys after correctly stripping the `hifigan_decoder.` prefix --
+first attempt missed this and showed all-missing, a straightforward prefix bug caught immediately
+by the zero-missing-keys check this port always does before trusting a golden dump), ran a fixed
+synthetic `[1,15,1024]` latent input + `[1,512,1]` d-vector through `.forward(latents, g=g)`.
+
+`XttsHifiDecoderTests.Forward_SyntheticInput_MatchesGoldenOracle`: **passed, cosine >0.99, on the
+first fully-correct attempt.**
+
+**Eleven major XTTS-v2 pieces now shipped.** Remaining work: (1) a native BPE tokenizer for
+XTTS's real `vocab.json`, (2) a top-level `XttsPipeline` class wiring every already-verified piece
+(mel extraction → conditioning encoder → prefix → sampling loop → gpt_latents →
+`XttsHifiDecoder` → waveform) end-to-end, mirroring `MmsTtsPipeline`'s pattern, (3) CLI wiring in
+`TtsCommand.cs`.
