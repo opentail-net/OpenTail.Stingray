@@ -30,29 +30,29 @@ public static class MeloGenerator
     private static readonly int[] UpStrides = [8, 8, 2, 2, 2];
 
     /// <summary>z is the flow's output, channel-first [192, T]. g is the speaker embedding [GinChannels]. Returns mono waveform samples.</summary>
-    public static float[] Forward(MeloOnnxWeights w, float[] z, int t, float[] g)
+    /// <summary>z is the flow's output, channel-first [192, T]. g is the speaker embedding [GinChannels]. Returns mono waveform samples.</summary>
+    public static unsafe float[] Forward(MeloOnnxWeights w, float[] z, int t, float[] g)
     {
         int ch = 512;
         var x = HifiGanKernels.Conv1dSamePad(z, w.HiddenDim, t, w.DecConvPreWeight, w.DecConvPreBias, ch, kernel: 7);
 
         // dec.cond: standard Conv1d(gin_channels, upsample_initial_channel, 1) -- [out,in] layout
-        // (a real Conv1d export, NOT the spk_emb_linear MatMul-transpose quirk seen elsewhere).
         int gin = w.GinChannels;
         var cond = new float[ch];
-        for (int o = 0; o < ch; o++)
+        fixed (float* wP = w.DecCondWeight, gP = g, cP = cond)
         {
-            float sum = w.DecCondBias[o];
-            int wBase = o * gin;
-            for (int i = 0; i < gin; i++) sum += w.DecCondWeight[wBase + i] * g[i];
-            cond[o] = sum;
+            SimdKernels.MatVecF32(cP, wP, gP, ch, gin);
         }
-        for (int ti = 0; ti < t; ti++)
-            for (int c = 0; c < ch; c++)
-                x[c * t + ti] += cond[c];
+        System.Numerics.Tensors.TensorPrimitives.Add(cond, w.DecCondBias, cond);
+        for (int c = 0; c < ch; c++)
+        {
+            var span = x.AsSpan(c * t, t);
+            System.Numerics.Tensors.TensorPrimitives.Add(span, cond[c], span);
+        }
 
         for (int stage = 0; stage < 5; stage++)
         {
-            for (int i = 0; i < x.Length; i++) x[i] = HifiGanKernels.LeakyRelu(x[i], LeakyReluAlpha);
+            LeakyReluInPlace(x, LeakyReluAlpha);
 
             int outCh = ch / 2;
             int newT = t * UpStrides[stage];
@@ -66,45 +66,45 @@ public static class MeloGenerator
                 int rbIndex = stage * 3 + k;
                 var rbOut = ResBlock1Forward(x, ch, t, w.DecResblocks[rbIndex], ResblockKernels[k]);
                 if (sum is null) sum = rbOut;
-                else for (int i = 0; i < sum.Length; i++) sum[i] += rbOut[i];
+                else System.Numerics.Tensors.TensorPrimitives.Add(sum, rbOut, sum);
             }
-            for (int i = 0; i < sum!.Length; i++) sum[i] /= 3f;
-            x = sum;
+            float inv3 = 1f / 3f;
+            System.Numerics.Tensors.TensorPrimitives.Multiply(sum!, inv3, sum!);
+            x = sum!;
         }
 
-        for (int i = 0; i < x.Length; i++) x[i] = HifiGanKernels.LeakyRelu(x[i], LeakyReluAlpha);
+        LeakyReluInPlace(x, LeakyReluAlpha);
         var post = HifiGanKernels.Conv1dSamePad(x, ch, t, w.DecConvPostWeight, null, 1, kernel: 7);
-        for (int i = 0; i < post.Length; i++) post[i] = MathF.Tanh(post[i]);
+        System.Numerics.Tensors.TensorPrimitives.Tanh(post, post);
         return post;
     }
 
     /// <summary>
     /// ResBlock1.forward: for j in 0,1,2: xt = leaky_relu(x); xt = convs1[j](xt) [dilation =
     /// ResblockDilations[j] = 1,3,5]; xt = leaky_relu(xt); xt = convs2[j](xt) [dilation=1]; x = xt
-    /// + x. NOT Piper's simpler 2-conv resblock, and NOT indexed by the resblock's own kernel
-    /// group `k` -- every resblock reuses the same (1,3,5) dilation tuple internally regardless
-    /// of its kernel size (see <see cref="ResblockDilations"/>'s doc comment; an earlier version
-    /// of this method took a single `dilation` parameter equal to `ResblockDilations[k]`, which
-    /// applied the SAME dilation to all 3 internal j-iterations instead of cycling through
-    /// 1,3,5 -- caught via golden bisection: cosine ~1.0 through conv_pre/cond/upsample, then
-    /// dropping to ~0.86 at the very first resblock's own output).
+    /// + x.
     /// </summary>
     private static float[] ResBlock1Forward(float[] input, int ch, int t, MeloResBlockWeights rb, int kernel)
     {
-        var x = input;
+        var x = (float[])input.Clone();
+        var xt = new float[ch * t];
         for (int j = 0; j < 3; j++)
         {
             int dilation = ResblockDilations[j];
-            var xt = new float[ch * t];
-            for (int i = 0; i < xt.Length; i++) xt[i] = HifiGanKernels.LeakyRelu(x[i], LeakyReluAlpha);
-            xt = HifiGanKernels.Conv1dDilated(xt, ch, t, rb.Convs1Weight[j], rb.Convs1Bias[j], ch, kernel, dilation);
-            for (int i = 0; i < xt.Length; i++) xt[i] = HifiGanKernels.LeakyRelu(xt[i], LeakyReluAlpha);
-            xt = HifiGanKernels.Conv1dDilated(xt, ch, t, rb.Convs2Weight[j], rb.Convs2Bias[j], ch, kernel, dilation: 1);
+            Array.Copy(x, xt, x.Length);
+            LeakyReluInPlace(xt, LeakyReluAlpha);
+            var c1 = HifiGanKernels.Conv1dDilated(xt, ch, t, rb.Convs1Weight[j], rb.Convs1Bias[j], ch, kernel, dilation);
+            LeakyReluInPlace(c1, LeakyReluAlpha);
+            var c2 = HifiGanKernels.Conv1dDilated(c1, ch, t, rb.Convs2Weight[j], rb.Convs2Bias[j], ch, kernel, dilation: 1);
 
-            var next = new float[ch * t];
-            for (int i = 0; i < next.Length; i++) next[i] = xt[i] + x[i];
-            x = next;
+            System.Numerics.Tensors.TensorPrimitives.Add(x, c2, x);
         }
         return x;
+    }
+
+    private static void LeakyReluInPlace(float[] x, float alpha)
+    {
+        for (int i = 0; i < x.Length; i++)
+            if (x[i] < 0f) x[i] *= alpha;
     }
 }

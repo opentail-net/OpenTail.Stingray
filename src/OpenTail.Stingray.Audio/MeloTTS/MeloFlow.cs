@@ -53,9 +53,7 @@ public static class MeloFlow
         MeloOnnxWeights w, MeloFlowLayerWeights fw, float[] x, int t, int half, int channels, float[] g)
     {
         var x0 = new float[half * t];
-        var x1 = new float[half * t];
         Array.Copy(x, 0, x0, 0, half * t);
-        Array.Copy(x, half * t, x1, 0, half * t);
 
         var h = VitsAttentionKernels.Conv1x1(x0, half, t, fw.PreWeight, fw.PreBias, channels);
 
@@ -68,7 +66,7 @@ public static class MeloFlow
 
         var output = new float[channels * t];
         Array.Copy(x0, 0, output, 0, half * t);
-        for (int i = 0; i < half * t; i++) output[half * t + i] = x1[i] - m[i]; // exp(-logs) == 1
+        System.Numerics.Tensors.TensorPrimitives.Subtract(x.AsSpan(half * t, half * t), m, output.AsSpan(half * t, half * t));
         return output;
     }
 

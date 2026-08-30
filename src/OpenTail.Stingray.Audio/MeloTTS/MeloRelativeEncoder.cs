@@ -21,9 +21,11 @@ public static class MeloRelativeEncoder
         {
             if (i == condLayerIdx && spkProjected != null)
             {
-                for (int ti = 0; ti < t; ti++)
-                    for (int c = 0; c < dim; c++)
-                        x[c * t + ti] += spkProjected[c];
+                for (int c = 0; c < dim; c++)
+                {
+                    var span = x.AsSpan(c * t, t);
+                    System.Numerics.Tensors.TensorPrimitives.Add(span, spkProjected[c], span);
+                }
             }
 
             var layer = layers[i];
@@ -34,11 +36,11 @@ public static class MeloRelativeEncoder
                 layer.ConvVWeight, layer.ConvVBias,
                 layer.ConvOWeight, layer.ConvOBias,
                 layer.EmbRelK, layer.EmbRelV);
-            for (int k = 0; k < x.Length; k++) x[k] += attnOut[k];
+            System.Numerics.Tensors.TensorPrimitives.Add(x, attnOut, x);
             x = VitsAttentionKernels.LayerNormChannelFirst(x, dim, t, layer.Norm1Gamma, layer.Norm1Beta);
 
             var ffnOut = Ffn(x, t, dim, ffnKernel, layer);
-            for (int k = 0; k < x.Length; k++) x[k] += ffnOut[k];
+            System.Numerics.Tensors.TensorPrimitives.Add(x, ffnOut, x);
             x = VitsAttentionKernels.LayerNormChannelFirst(x, dim, t, layer.Norm2Gamma, layer.Norm2Beta);
         }
         return x;
@@ -48,7 +50,7 @@ public static class MeloRelativeEncoder
     {
         int ffnHidden = lw.Ffn1Bias.Length;
         var h = VitsAttentionKernels.Conv1dSamePad(x, dim, t, lw.Ffn1Weight, lw.Ffn1Bias, ffnHidden, kernel);
-        for (int i = 0; i < h.Length; i++) if (h[i] < 0f) h[i] = 0f; // ReLU
+        System.Numerics.Tensors.TensorPrimitives.Max(h, 0f, h); // ReLU
         return VitsAttentionKernels.Conv1dSamePad(h, ffnHidden, t, lw.Ffn2Weight, lw.Ffn2Bias, dim, kernel);
     }
 
