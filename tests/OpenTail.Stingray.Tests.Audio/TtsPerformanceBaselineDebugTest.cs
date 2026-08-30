@@ -575,7 +575,7 @@ public sealed class TtsPerformanceBaselineDebugTest : HeavyTestBase
             string? outDir = FindRepoFile("docs/audio-samples");
             if (outDir != null)
             {
-                string wavPath = Path.Combine(outDir, "kokoro-perf-turn1.wav");
+                string wavPath = Path.Combine(outDir, "kokoro-perf-turn2.wav");
                 new AudioGenerationResult(lastWav, pipeline.DefaultSampleRate).SaveWav(wavPath);
             }
         }

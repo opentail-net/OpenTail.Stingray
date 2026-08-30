@@ -34,13 +34,12 @@ public static class KokoroBertEncoder
         for (int i = 0; i < t; i++)
         {
             int tok = inputIds[i];
-            for (int d = 0; d < embSize; d++)
-            {
-                float word = bert.EmbdTokWeight[tok * embSize + d];
-                float pos = bert.EmbdPosWeight[i * embSize + d];
-                float tt = bert.EmbdTtWeight[0 * embSize + d]; // token_type_id always 0 here
-                emb[i * embSize + d] = word + pos + tt;
-            }
+            var wSpan = bert.EmbdTokWeight.AsSpan(tok * embSize, embSize);
+            var pSpan = bert.EmbdPosWeight.AsSpan(i * embSize, embSize);
+            var tSpan = bert.EmbdTtWeight.AsSpan(0, embSize);
+            var dst = emb.AsSpan(i * embSize, embSize);
+            System.Numerics.Tensors.TensorPrimitives.Add(wSpan, pSpan, dst);
+            System.Numerics.Tensors.TensorPrimitives.Add(dst, tSpan, dst);
         }
         var embNormed = new float[t * embSize];
         unsafe
@@ -101,7 +100,7 @@ public static class KokoroBertEncoder
             AddBiasInPlace(attnProj, bert.AttnOBias, t, hidden);
 
             // residual + LN
-            for (int i = 0; i < t * hidden; i++) attnProj[i] += hiddenStates[i];
+            System.Numerics.Tensors.TensorPrimitives.Add(attnProj, hiddenStates, attnProj);
             unsafe
             {
                 fixed (float* src = attnProj, dst = hiddenStates, w = bert.AttnLnWeight, b = bert.AttnLnBias)
@@ -120,7 +119,8 @@ public static class KokoroBertEncoder
                 }
             }
             AddBiasInPlace(ffnMid, bert.FfnUpBias, t, ffDim);
-            for (int i = 0; i < ffnMid.Length; i++) ffnMid[i] = GeluNew(ffnMid[i]);
+            for (int i = 0; i < t * ffDim; i++)
+                ffnMid[i] = GeluNew(ffnMid[i]);
 
             unsafe
             {
@@ -132,7 +132,7 @@ public static class KokoroBertEncoder
             AddBiasInPlace(ffnOut, bert.FfnDownBias, t, hidden);
 
             // residual + LN
-            for (int i = 0; i < t * hidden; i++) ffnOut[i] += hiddenStates[i];
+            System.Numerics.Tensors.TensorPrimitives.Add(ffnOut, hiddenStates, ffnOut);
             unsafe
             {
                 fixed (float* src = ffnOut, dst = hiddenStates, w = bert.FfnLnWeight, b = bert.FfnLnBias)
@@ -180,13 +180,12 @@ public static class KokoroBertEncoder
             int off = h * headDim;
             for (int i = 0; i < t; i++)
             {
+                int qOff = i * hidden + off;
                 float maxScore = float.NegativeInfinity;
                 for (int j = 0; j < t; j++)
                 {
-                    float dot = 0f;
-                    for (int d = 0; d < headDim; d++)
-                        dot += q[i * hidden + off + d] * k[j * hidden + off + d];
-                    dot *= scale;
+                    int kOff = j * hidden + off;
+                    float dot = System.Numerics.Tensors.TensorPrimitives.Dot(q.AsSpan(qOff, headDim), k.AsSpan(kOff, headDim)) * scale;
                     scores[j] = dot;
                     if (dot > maxScore) maxScore = dot;
                 }
@@ -196,12 +195,13 @@ public static class KokoroBertEncoder
                     scores[j] = MathF.Exp(scores[j] - maxScore);
                     sum += scores[j];
                 }
+                float invSum = 1f / sum;
                 for (int d = 0; d < headDim; d++)
                 {
                     float acc = 0f;
                     for (int j = 0; j < t; j++)
                         acc += scores[j] * v[j * hidden + off + d];
-                    output[i * hidden + off + d] = acc / sum;
+                    output[i * hidden + off + d] = acc * invSum;
                 }
             }
         }
@@ -210,8 +210,10 @@ public static class KokoroBertEncoder
     private static void AddBiasInPlace(float[] data, float[] bias, int rows, int cols)
     {
         for (int i = 0; i < rows; i++)
-            for (int d = 0; d < cols; d++)
-                data[i * cols + d] += bias[d];
+        {
+            var row = data.AsSpan(i * cols, cols);
+            System.Numerics.Tensors.TensorPrimitives.Add(row, bias, row);
+        }
     }
 
     /// <summary>ALBERT's default hidden_act "gelu_new": tanh-approximation GELU (matches GPT-2/BERT-new, not the erf-exact variant).</summary>

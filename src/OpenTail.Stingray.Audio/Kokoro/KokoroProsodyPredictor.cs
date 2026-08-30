@@ -60,18 +60,23 @@ public static class KokoroProsodyPredictor
         var lstmOut = KokoroLstm.Bidirectional(pred.SharedLstm, d, t, catDim, hiddenPerDir);
 
         var durations = new float[t];
-        for (int ti = 0; ti < t; ti++)
+        var logits = new float[maxDur];
+        var sigmoids = new float[maxDur];
+        unsafe
         {
-            float sum = 0f;
-            for (int k = 0; k < maxDur; k++)
+            fixed (float* w = pred.DurProjWeight, b = pred.DurProjBias, l = logits, s = sigmoids, inp = lstmOut)
             {
-                float logit = pred.DurProjBias[k];
-                int wBase = k * channels;
-                for (int c = 0; c < channels; c++)
-                    logit += pred.DurProjWeight[wBase + c] * lstmOut[ti * channels + c];
-                sum += Sigmoid(logit);
+                for (int ti = 0; ti < t; ti++)
+                {
+                    SimdKernels.MatVecF32(l, w, inp + ti * channels, maxDur, channels);
+                    var lSpan = logits.AsSpan();
+                    var bSpan = pred.DurProjBias.AsSpan();
+                    var sSpan = sigmoids.AsSpan();
+                    System.Numerics.Tensors.TensorPrimitives.Add(lSpan, bSpan, lSpan);
+                    System.Numerics.Tensors.TensorPrimitives.Sigmoid(lSpan, sSpan);
+                    durations[ti] = System.Numerics.Tensors.TensorPrimitives.Sum(sSpan);
+                }
             }
-            durations[ti] = sum;
         }
         return durations;
     }

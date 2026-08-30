@@ -77,26 +77,29 @@ public static class KokoroTextEncoder
     private static float[] Conv1d(float[] input, float[] weight, float[] bias, int inCh, int outCh, int t, int kernel, int padding)
     {
         var output = new float[outCh * t];
-        for (int oc = 0; oc < outCh; oc++)
+        System.Threading.Tasks.Parallel.For(0, outCh, oc =>
         {
+            var outRow = new float[t];
+            Array.Fill(outRow, bias[oc]);
             int wOcBase = oc * inCh * kernel;
-            for (int ti = 0; ti < t; ti++)
+            for (int ic = 0; ic < inCh; ic++)
             {
-                float sum = bias[oc];
-                for (int ic = 0; ic < inCh; ic++)
+                var inRow = input.AsSpan(ic * t, t);
+                int wBase = wOcBase + ic * kernel;
+                for (int k = 0; k < kernel; k++)
                 {
-                    int wBase = wOcBase + ic * kernel;
-                    int srcBase = ic * t;
-                    for (int k = 0; k < kernel; k++)
-                    {
-                        int srcT = ti + k - padding;
-                        if ((uint)srcT >= (uint)t) continue;
-                        sum += weight[wBase + k] * input[srcBase + srcT];
-                    }
+                    int shift = k - padding;
+                    int start = Math.Max(0, -shift);
+                    int end = Math.Min(t, t - shift);
+                    int len = end - start;
+                    if (len <= 0) continue;
+                    var inSlice = inRow.Slice(start + shift, len);
+                    var outSlice = outRow.AsSpan(start, len);
+                    System.Numerics.Tensors.TensorPrimitives.MultiplyAdd(inSlice, weight[wBase + k], outSlice, outSlice);
                 }
-                output[oc * t + ti] = sum;
             }
-        }
+            Array.Copy(outRow, 0, output, oc * t, t);
+        });
         return output;
     }
 
