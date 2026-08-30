@@ -97,3 +97,6 @@
 [XTTS-Stream-Chunk6] prompt="Hello, I will make some lunch, darling!" audio=4.44s samples=106583 chunks=17
 [XTTS-Stream-Chunk6] Time-To-First-Audio (TTFA)=3.009s TotalTime=14.548s
 
+[XTTS-Stream-Chunk6] prompt="Hello, I will make some lunch, darling!" audio=4.50s samples=108032 chunks=17
+[XTTS-Stream-Chunk6] Time-To-First-Audio (TTFA)=2.824s TotalTime=54.481s
+

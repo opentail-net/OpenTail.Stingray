@@ -179,7 +179,6 @@ public sealed class XttsPipeline : ITextToSpeechPipeline
         string referenceAudioPath,
         string lang = "en",
         int chunkTokens = 6,
-        int contextTokens = 8,
         int? seed = null,
         [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct = default)
     {
@@ -192,77 +191,62 @@ public sealed class XttsPipeline : ITextToSpeechPipeline
         var rng = seed.HasValue ? new Random(seed.Value) : new Random();
 
         var allLatents = new List<float[]>();
-        var pendingLatents = new List<float[]>();
+        int pendingTokens = 0;
+        int emittedSamples = 0;
 
         foreach (var (token, latent) in XttsGptGenerator.GenerateLatentsStream(_gptWeights, _gptEmb, _gptCache, prefix, prefixLen, rng))
         {
             ct.ThrowIfCancellationRequested();
             allLatents.Add(latent);
-            pendingLatents.Add(latent);
+            pendingTokens++;
 
-            if (pendingLatents.Count >= chunkTokens)
+            if (pendingTokens >= chunkTokens)
             {
-                var chunkPcm = DecodeLatentsChunk(allLatents, pendingLatents.Count, contextTokens, speakerEmbedding);
-                pendingLatents.Clear();
+                var chunkPcm = DecodeProgressiveChunk(allLatents, ref emittedSamples, speakerEmbedding);
+                pendingTokens = 0;
                 if (chunkPcm.Length > 0)
                     yield return chunkPcm;
             }
         }
 
-        if (pendingLatents.Count > 0)
+        if (pendingTokens > 0)
         {
-            var chunkPcm = DecodeLatentsChunk(allLatents, pendingLatents.Count, contextTokens, speakerEmbedding);
+            var chunkPcm = DecodeProgressiveChunk(allLatents, ref emittedSamples, speakerEmbedding);
             if (chunkPcm.Length > 0)
                 yield return chunkPcm;
         }
         await Task.CompletedTask;
     }
 
-    private float[] DecodeLatentsChunk(List<float[]> allLatents, int newLatentsCount, int contextTokens, float[] speakerEmbedding)
+    private float[] DecodeProgressiveChunk(List<float[]> allLatents, ref int emittedSamples, float[] speakerEmbedding)
     {
         int totalLatents = allLatents.Count;
-        int startLatent = Math.Max(0, totalLatents - newLatentsCount - contextTokens);
-        int windowLatents = totalLatents - startLatent;
-        int priorOverlapLatents = windowLatents - newLatentsCount;
-
         int dim = XttsGptWeights.ModelDim;
-        var channelFirstSlice = new float[dim * windowLatents];
-        for (int li = 0; li < windowLatents; li++)
+        var channelFirst = new float[dim * totalLatents];
+        for (int li = 0; li < totalLatents; li++)
         {
-            var h = allLatents[startLatent + li];
+            var h = allLatents[li];
             for (int d = 0; d < dim; d++)
-                channelFirstSlice[d * windowLatents + li] = h[d];
+                channelFirst[d * totalLatents + li] = h[d];
         }
 
-        var decodedWindow = XttsHifiDecoder.Forward(_vocoderWeights, channelFirstSlice, windowLatents, speakerEmbedding);
+        var decodedAll = XttsHifiDecoder.Forward(_vocoderWeights, channelFirst, totalLatents, speakerEmbedding);
 
-        // Compute ratio of samples per window latent
-        double samplesPerLatent = (double)decodedWindow.Length / windowLatents;
-        int skipSamples = (int)Math.Round(priorOverlapLatents * samplesPerLatent);
-        int takeSamples = (int)Math.Round(newLatentsCount * samplesPerLatent);
+        if (decodedAll.Length <= emittedSamples)
+            return [];
 
-        if (skipSamples + takeSamples <= decodedWindow.Length)
-        {
-            var chunk = new float[takeSamples];
-            Array.Copy(decodedWindow, skipSamples, chunk, 0, takeSamples);
-            return chunk;
-        }
-        else if (skipSamples < decodedWindow.Length)
-        {
-            int available = decodedWindow.Length - skipSamples;
-            var chunk = new float[available];
-            Array.Copy(decodedWindow, skipSamples, chunk, 0, available);
-            return chunk;
-        }
-
-        return decodedWindow;
+        int newSamples = decodedAll.Length - emittedSamples;
+        var chunk = new float[newSamples];
+        Array.Copy(decodedAll, emittedSamples, chunk, 0, newSamples);
+        emittedSamples = decodedAll.Length;
+        return chunk;
     }
 
     public IAsyncEnumerable<float[]> GenerateStreamAsync(AudioGenerationRequest request, CancellationToken ct = default)
     {
         if (string.IsNullOrEmpty(request.ReferenceAudioPath) || !File.Exists(request.ReferenceAudioPath))
             throw new InvalidOperationException("XTTS-v2 requires a reference audio clip via AudioGenerationRequest.ReferenceAudioPath.");
-        return GenerateStreamAsync(request.Text, request.ReferenceAudioPath, lang: "en", chunkTokens: 6, contextTokens: 8, seed: null, ct: ct);
+        return GenerateStreamAsync(request.Text, request.ReferenceAudioPath, lang: "en", chunkTokens: 6, seed: null, ct: ct);
     }
 
     public void Dispose() { }
