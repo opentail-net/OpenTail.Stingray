@@ -94,3 +94,6 @@
 [XTTS-v2] prompt="Hello, I will make some lunch, darling!" audio=4.50s samples=108032
 [XTTS-v2] runs(s)=[12.900, 12.777, 12.785] mean=12.821s RTF=2.848 (lower=faster; 1.0=realtime)
 
+[XTTS-Stream-Chunk6] prompt="Hello, I will make some lunch, darling!" audio=4.44s samples=106583 chunks=17
+[XTTS-Stream-Chunk6] Time-To-First-Audio (TTFA)=3.009s TotalTime=14.548s
+

@@ -40,11 +40,10 @@ public static class XttsGptGenerator
     }
 
     /// <summary>
-    /// Fast KV-cached autoregressive mel-token generation loop:
-    /// Prefills the prefix once into XttsGptCache, then evaluates single-token steps in O(1) time
-    /// per layer, accumulating the exact vocoder latents along the way.
+    /// Streaming generator: yields each mel step's final-normed 1024-dim latent vector as soon as it is sampled.
+    /// First latent corresponds to `start_audio_token`, followed by each generated code's latent until `stop_audio_token`.
     /// </summary>
-    public static (List<int> GeneratedCodes, float[] Latents) Generate(
+    public static IEnumerable<(int TokenId, float[] Latent)> GenerateLatentsStream(
         XttsGptWeights trunkWeights,
         XttsGptEmbeddings emb,
         XttsGptCache cache,
@@ -69,18 +68,17 @@ public static class XttsGptGenerator
         // 2. Feed start audio token (token 0 in mel modality)
         int startAudioToken = XttsGptEmbeddings.AudioStartToken;
         var startMelEmb = emb.EmbedSingleMel(startAudioToken, 0);
-        var lastHidden = XttsGptTrunk.Step(trunkWeights, cache, startMelEmb);
+        var lastHidden = new float[dim];
+        XttsGptTrunk.Step(trunkWeights, cache, startMelEmb).CopyTo(lastHidden);
 
-        var melLatentsList = new List<float[]>();
-        // Add start_audio_token's final-normed latent
-        melLatentsList.Add(emb.FinalNormOnly(lastHidden.ToArray()));
+        yield return (startAudioToken, emb.FinalNormOnly(lastHidden));
 
         var melTokensSoFar = new List<int> { startAudioToken };
         var generated = new List<int>();
 
         for (int step = 0; step < maxTokens; step++)
         {
-            float[] logits = emb.MelLogits(lastHidden.ToArray());
+            float[] logits = emb.MelLogits(lastHidden);
 
             var samplingParams = generated.Count > 0 ? p with { PreviousTokens = generated } : p;
             int next = Sampler.Sample(logits, samplingParams, rng);
@@ -93,8 +91,42 @@ public static class XttsGptGenerator
 
             // Step with the next generated token at mel position (step + 1)
             var melVec = emb.EmbedSingleMel(next, step + 1);
-            lastHidden = XttsGptTrunk.Step(trunkWeights, cache, melVec);
-            melLatentsList.Add(emb.FinalNormOnly(lastHidden.ToArray()));
+            XttsGptTrunk.Step(trunkWeights, cache, melVec).CopyTo(lastHidden);
+            yield return (next, emb.FinalNormOnly(lastHidden));
+        }
+    }
+
+    /// <summary>
+    /// Fast KV-cached autoregressive mel-token generation loop:
+    /// Prefills the prefix once into XttsGptCache, then evaluates single-token steps in O(1) time
+    /// per layer, accumulating the exact vocoder latents along the way.
+    /// </summary>
+    public static (List<int> GeneratedCodes, float[] Latents) Generate(
+        XttsGptWeights trunkWeights,
+        XttsGptEmbeddings emb,
+        XttsGptCache cache,
+        float[] prefixTokenMajor,
+        int prefixLen,
+        Random rng,
+        SamplingParams? p = null,
+        int maxTokens = XttsGptSampler.MaxAudioTokens)
+    {
+        int dim = XttsGptWeights.ModelDim;
+        var melLatentsList = new List<float[]>();
+        var generated = new List<int>();
+
+        bool isFirst = true;
+        foreach (var (token, latent) in GenerateLatentsStream(trunkWeights, emb, cache, prefixTokenMajor, prefixLen, rng, p, maxTokens))
+        {
+            if (isFirst)
+            {
+                isFirst = false;
+            }
+            else
+            {
+                generated.Add(token);
+            }
+            melLatentsList.Add(latent);
         }
 
         // Format latents: channel-first [dim, melLen]
