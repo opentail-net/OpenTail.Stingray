@@ -175,7 +175,8 @@ public static class DacDecoder
             var embed = new float[DacWeights.CodebookDim * t];
             for (int ti = 0; ti < t; ti++)
             {
-                int code = codes[qi][ti];
+                int rawCode = codes[qi][ti];
+                int code = (uint)rawCode < (uint)DacWeights.CodebookSize ? rawCode : 0;
                 int cbBase = code * DacWeights.CodebookDim;
                 for (int d = 0; d < DacWeights.CodebookDim; d++)
                     embed[d * t + ti] = q.Codebook[cbBase + d];

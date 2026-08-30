@@ -414,6 +414,11 @@ public sealed class ParlerFullPipeline : ITextToSpeechPipeline
                 {
                     int start = cb + 1 + sliceStart;
                     chunkCodes[cb] = sequence[cb][start..(start + sliceLen)];
+                    for (int f = 0; f < sliceLen; f++)
+                    {
+                        if ((uint)chunkCodes[cb][f] >= DacWeights.CodebookSize)
+                            chunkCodes[cb][f] = 0;
+                    }
                 }
                 var pcmFull = DacDecoder.Decode(_dacWeights, chunkCodes);
                 int pcmStart = leftPad * 512;
@@ -421,12 +426,16 @@ public sealed class ParlerFullPipeline : ITextToSpeechPipeline
                 if (pcmFull.Length >= pcmStart + pcmCount)
                 {
                     var pcmChunk = new float[pcmCount];
-                    Array.Copy(pcmFull, pcmStart, pcmChunk, 0, pcmCount);
+                    for (int i = 0; i < pcmCount; i++)
+                        pcmChunk[i] = pcmFull[pcmStart + i] * 0.80f;
                     yield return pcmChunk;
                 }
                 else if (pcmFull.Length > 0)
                 {
-                    yield return pcmFull;
+                    var pcmChunk = new float[pcmFull.Length];
+                    for (int i = 0; i < pcmFull.Length; i++)
+                        pcmChunk[i] = pcmFull[i] * 0.80f;
+                    yield return pcmChunk;
                 }
                 yieldedFrames += readyCount;
             }
@@ -465,6 +474,11 @@ public sealed class ParlerFullPipeline : ITextToSpeechPipeline
             {
                 int start = cb + 1 + sliceStart;
                 tailCodes[cb] = sequence[cb][start..(start + sliceLen)];
+                for (int f = 0; f < sliceLen; f++)
+                {
+                    if ((uint)tailCodes[cb][f] >= DacWeights.CodebookSize)
+                        tailCodes[cb][f] = 0;
+                }
             }
             var pcmFull = DacDecoder.Decode(_dacWeights, tailCodes);
             int pcmStart = leftPad * 512;
@@ -473,7 +487,8 @@ public sealed class ParlerFullPipeline : ITextToSpeechPipeline
             {
                 int actualCount = Math.Min(pcmCount, pcmFull.Length - pcmStart);
                 var pcmTail = new float[actualCount];
-                Array.Copy(pcmFull, pcmStart, pcmTail, 0, actualCount);
+                for (int i = 0; i < actualCount; i++)
+                    pcmTail[i] = pcmFull[pcmStart + i] * 0.80f;
                 if (pcmTail.Length > 0)
                 {
                     yield return pcmTail;
