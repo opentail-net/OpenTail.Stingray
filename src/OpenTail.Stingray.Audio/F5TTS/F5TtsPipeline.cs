@@ -258,12 +258,40 @@ public sealed class F5TtsPipeline : ITextToSpeechPipeline
             var (samples, sr, _) = WavReader.ReadWav(wavPath);
             if (sr != 24000)
                 samples = AudioResampler.Resample(samples, sr, 24000);
-            return samples;
+            return TrimSilenceEdges(samples, sr: 24000);
         }
         catch
         {
             return new float[24000]; // 1s fallback silence
         }
+    }
+
+    /// <summary>Real `remove_silence_edges` (`utils_infer.py`): trims leading/trailing silence
+    /// below -42dBFS, then appends exactly 50ms of silence at the end (real
+    /// `remove_silence_edges(aseg) + AudioSegment.silent(duration=50)` in
+    /// `preprocess_ref_audio_text`). Without this, the raw reference clip's own recorded
+    /// leading/trailing pauses get baked directly into the conditioning prefix, and generation
+    /// naturally continues whatever pause was at the end of the reference before starting the new
+    /// text -- reported as "a long pause at the start" of generated output.</summary>
+    private static float[] TrimSilenceEdges(float[] pcm, int sr)
+    {
+        if (pcm.Length == 0) return pcm;
+
+        const float thresholdDbfs = -42f;
+        float threshold = MathF.Pow(10f, thresholdDbfs / 20f);
+
+        int start = 0;
+        while (start < pcm.Length && MathF.Abs(pcm[start]) < threshold) start++;
+        if (start == pcm.Length) return pcm; // fully silent clip -- leave as-is rather than emit nothing
+
+        int end = pcm.Length - 1;
+        while (end > start && MathF.Abs(pcm[end]) < threshold) end--;
+
+        int trimmedLen = end - start + 1;
+        int trailingSilenceSamples = sr / 20; // 50ms
+        var result = new float[trimmedLen + trailingSilenceSamples];
+        Array.Copy(pcm, start, result, 0, trimmedLen);
+        return result;
     }
 
     public void Dispose()
