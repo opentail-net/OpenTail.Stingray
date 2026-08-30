@@ -32,13 +32,17 @@ public sealed class QwenTtsGenerateWavDebugTest : HeavyTestBase
         Assert.SkipUnless(talkerPath != null, "QwenTTS talker model not found");
 
         using var pipeline = QwenTtsPipeline.Load(talkerPath!);
-        var wav = pipeline.Generate("This is a test of voice synthesis.", seed: 42);
+
+        // Same text/seed as TtsPerformanceBaselineDebugTest's streaming benchmark
+        // (qwen-tts-streaming-streamed.wav), so the two are directly A/B comparable --
+        // isolates whether non-streaming vs streaming decode differs, independent of text content.
+        var wav = pipeline.Generate("Hello, I will make some lunch, darling!", seed: 42);
 
         Assert.True(wav.Length > 0, "QwenTTS produced empty audio");
 
         string repoRoot = Directory.GetParent(Path.GetDirectoryName(talkerPath!)!)!.FullName;
         var result = new AudioGenerationResult(wav, 24000);
-        string outPath = Path.Combine(repoRoot, "docs", "audio-samples", "qwentts-qknorm-fix-check.wav");
+        string outPath = Path.Combine(repoRoot, "docs", "audio-samples", "qwentts-nonstreaming-samesentence.wav");
         result.SaveWav(outPath);
         Console.WriteLine($"Wrote {outPath}, {wav.Length} samples, {wav.Length / 24000.0:F2}s");
     }
