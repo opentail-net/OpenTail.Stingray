@@ -76,6 +76,19 @@ public sealed class XttsPipeline : ITextToSpeechPipeline
         return new XttsPipeline(gptWeights, gptEmb, condWeights, resNetWeights, vocoderWeights, tokenizer, melStats);
     }
 
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, (float[] CondLatents, int NumCondLatents, float[] SpeakerEmb)> _refCache = new();
+
+    private (float[] CondLatents, int NumCondLatents, float[] SpeakerEmb) GetOrComputeReference(string referenceAudioPath)
+    {
+        return _refCache.GetOrAdd(referenceAudioPath, path =>
+        {
+            var (refPcm22050, refPcm16000) = LoadReferenceAudio(path);
+            float[] condLatents = ComputeConditioningLatents(refPcm22050, out int numCondLatents);
+            float[] speakerEmbedding = ComputeSpeakerEmbedding(refPcm16000);
+            return (condLatents, numCondLatents, speakerEmbedding);
+        });
+    }
+
     /// <summary>
     /// Real voice-cloned synthesis. `referenceAudioPath` is a real reference wav (any sample rate,
     /// resampled internally); `lang` is a real XTTS-v2 language tag (`en`, `fr`, `de`, ...).
@@ -83,10 +96,7 @@ public sealed class XttsPipeline : ITextToSpeechPipeline
     /// </summary>
     public float[] Generate(string text, string referenceAudioPath, string lang = "en", int? seed = null)
     {
-        var (refPcm22050, refPcm16000) = LoadReferenceAudio(referenceAudioPath);
-
-        float[] condLatents = ComputeConditioningLatents(refPcm22050, out int numCondLatents);
-        float[] speakerEmbedding = ComputeSpeakerEmbedding(refPcm16000);
+        var (condLatents, numCondLatents, speakerEmbedding) = GetOrComputeReference(referenceAudioPath);
 
         string taggedText = $"[{(lang == "zh" ? "zh-cn" : lang)}]{text.Replace(" ", "[SPACE]")}";
         var textIds = _tokenizer.Encode(taggedText).ToArray();

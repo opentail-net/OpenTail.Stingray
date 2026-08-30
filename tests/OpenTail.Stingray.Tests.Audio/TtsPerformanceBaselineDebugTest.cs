@@ -288,7 +288,7 @@ public sealed class TtsPerformanceBaselineDebugTest : HeavyTestBase
             string? outDir = FindRepoFile("docs/audio-samples");
             if (outDir != null)
             {
-                string wavPath = Path.Combine(outDir, "xtts-perf-turn1.wav");
+                string wavPath = Path.Combine(outDir, "xtts-perf-turn2.wav");
                 new AudioGenerationResult(lastWav, 24000).SaveWav(wavPath);
             }
         }

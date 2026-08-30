@@ -106,11 +106,34 @@ public static class XttsGptTrunk
 
     private static unsafe void LinearWithBias(float[] input, float[] weight, float[] bias, int outDim, int inDim, float[] output)
     {
-        fixed (float* wp = weight, xp = input, op = output)
+        fixed (float* wp = weight, xp = input, op = output, bp = bias)
         {
-            SimdKernels.MatVecF32(op, wp, xp, outDim, inDim);
+            if (System.Runtime.Intrinsics.X86.Fma.IsSupported && inDim >= 32)
+            {
+                int r = 0;
+                for (; r + 4 <= outDim; r += 4)
+                {
+                    float* m0 = wp + (long)r * inDim;
+                    float* m1 = wp + (long)(r + 1) * inDim;
+                    float* m2 = wp + (long)(r + 2) * inDim;
+                    float* m3 = wp + (long)(r + 3) * inDim;
+                    SimdKernels.MatVecF32_4Row(m0, m1, m2, m3, xp, inDim, out op[r], out op[r + 1], out op[r + 2], out op[r + 3]);
+                    op[r] += bp[r];
+                    op[r + 1] += bp[r + 1];
+                    op[r + 2] += bp[r + 2];
+                    op[r + 3] += bp[r + 3];
+                }
+                for (; r < outDim; r++)
+                {
+                    op[r] = SimdKernels.DotF32(wp + (long)r * inDim, xp, inDim) + bp[r];
+                }
+            }
+            else
+            {
+                SimdKernels.MatVecF32(op, wp, xp, outDim, inDim);
+                System.Numerics.Tensors.TensorPrimitives.Add(output.AsSpan(0, outDim), bias.AsSpan(0, outDim), output.AsSpan(0, outDim));
+            }
         }
-        System.Numerics.Tensors.TensorPrimitives.Add(output.AsSpan(0, outDim), bias.AsSpan(0, outDim), output.AsSpan(0, outDim));
     }
 
     private static void LayerNorm(ReadOnlySpan<float> x, float[] gamma, float[] beta, float[] output, float eps = 1e-5f)
