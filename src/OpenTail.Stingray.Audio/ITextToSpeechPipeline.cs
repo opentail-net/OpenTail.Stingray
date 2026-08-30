@@ -38,7 +38,7 @@ public record AudioGenerationRequest
 /// </summary>
 public static class TtsStreamingHelper
 {
-    private static readonly Regex SentenceSplit = new(@"(?<=[.!?,;\n])\s+", RegexOptions.Compiled);
+    private static readonly Regex SentenceSplit = new(@"(?<=[.!?\n])\s+", RegexOptions.Compiled);
 
     public static async IAsyncEnumerable<float[]> SplitAndGenerateAsync(
         AudioGenerationRequest request,
