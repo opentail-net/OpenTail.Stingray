@@ -10425,3 +10425,50 @@ missing piece connecting the conditioning output + GPT2 trunk into a real end-to
 pass), then the two speaker encoders (GPT-conditioning path is now done; the SEPARATE
 `hifigan_decoder.speaker_encoder` ResNet-SE + `hifigan_decoder.waveform_decoder`'s FiLM
 conditioning are still unported), then the real autoregressive sampling loop.
+
+### XTTS-v2: token/positional embeddings + full first-decode-step orchestration, golden-verified (2026-08-30, same cron cycle)
+
+`src/OpenTail.Stingray.Audio/Xtts/XttsGptEmbeddings.cs` (real `text_embedding`/`text_pos_embedding`/
+`mel_embedding`/`mel_pos_embedding` lookups + `text_head`/`mel_head`/`final_norm` output
+projection) + `XttsGptGenerator.cs` (real prefix construction -- `[cond_latents ++ padded-text-
+embeddings]`, matching `GPT.compute_embeddings` -- and next-mel-logit computation).
+
+**Real special token ids confirmed** (`TTS/tts/layers/xtts/gpt.py`'s `GPT.__init__` defaults,
+cross-checked against which the real checkpoint's config.json overrides): `start_text_token=261`,
+`stop_text_token=0` (class defaults, not overridden), `start_audio_token=1024`,
+`stop_audio_token=1025` (config.json DOES override the class defaults of 8192/8193).
+
+**Real double-LayerNorm architecture confirmed** (easy to mistake for a bug): HF `GPT2Model`
+applies its OWN internal `ln_f` before returning `last_hidden_state` (already inside
+`XttsGptTrunk.Forward`), and XTTS's `GPT2InferenceModel` applies a SECOND, separate `gpt.
+final_norm` before the head projection (`lm_head = Sequential(final_norm, mel_head)`) --
+confirmed directly from `gpt_inference.py`'s real construction, not assumed.
+
+**Non-KV-cached design, deliberate**: `XttsGptGenerator.NextMelLogits` recomputes the full
+sequence through the trunk every call rather than porting the real reference's KV-cache-based
+`GPT2InferenceModel.forward` -- mathematically identical output, O(T²) instead of O(T), matching
+this codebase's own established "correct first, real KV cache as a later perf pass" pattern (same
+staged approach as `FishSpeechFastAr.Forward` vs. `.ForwardStep`/`FishSpeechFastArCache`).
+
+`XttsGptGeneratorTests.NextMelLogits_RealWeights_MatchesGoldenOracle_FirstStep`: **passed**,
+cosine >0.99 AND exact argmax match against `scratch-llamacpp-ref/xtts_first_step_golden.py`'s
+real reference (which hand-replicates `compute_embeddings` + one `GPT2InferenceModel.forward`
+prefill step, since `compute_embeddings` itself doesn't return the embeddings directly). This
+ties together every piece shipped so far (conditioning encoder, Perceiver Resampler, GPT2 trunk,
+embeddings) into one real, verified forward pass -- **four major pieces now shipped this single
+cron cycle run** (DVAE decoder, GPT2 trunk, conditioning+perceiver, embeddings+orchestration),
+every one passing golden verification on the first attempt.
+
+**Still not done**: real BPE tokenization (`vocab.json` is a real HuggingFace `tokenizers`-library
+JSON, NOT the simple char-vocab MMS-TTS used -- a separate, non-trivial piece; placeholder fixed
+token ids were used for all golden tests above), the autoregressive sampling loop (real
+top-k/top-p/temperature/repetition-penalty, standard HF `generate()` machinery -- this codebase
+likely already has equivalent sampling logic in its main LLM `Sampler.cs`, worth checking for
+reuse before hand-rolling), the two speaker encoders (GPT-conditioning path is done; the
+SEPARATE `hifigan_decoder.speaker_encoder` ResNet-SE + FiLM-conditioned vocoder are not), and real
+mel-spectrogram extraction for the reference audio (fixed random mel tensors were used for all
+golden tests above -- this codebase likely already has a usable mel extractor pattern from other
+pipelines, e.g. `CosyVoiceMelExtractor`, though XTTS's own mel config, in `dvae.py`'s
+`dvae_wav_to_mel`, uses 22050Hz/n_fft=1024/hop=256/n_mels=80/fmax=8000 with per-checkpoint
+`mel_stats.pth` normalization -- a DIFFERENT specific config than any existing mel extractor in
+this codebase, needs its own port).
