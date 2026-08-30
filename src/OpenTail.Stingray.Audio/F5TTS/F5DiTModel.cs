@@ -34,15 +34,32 @@ public static class F5DiTModel
         var siluT = new float[dim];
         for (int d = 0; d < dim; d++) siluT[d] = F5Kernels.SiLU(tEmb[d]);
         var modulation = F5Kernels.Linear(siluT, 1, dim, w.NormOutLinearWeight, w.NormOutLinearBias, dim * 2);
-        var scale = new float[dim]; var shift = new float[dim];
-        Array.Copy(modulation, 0, scale, 0, dim);
-        Array.Copy(modulation, dim, shift, 0, dim);
 
         var normOut = F5Kernels.LayerNormNoAffine(h, numFrames, dim);
-        for (int ti = 0; ti < numFrames; ti++)
+        unsafe
         {
-            int off = ti * dim;
-            for (int d = 0; d < dim; d++) normOut[off + d] = normOut[off + d] * (1f + scale[d]) + shift[d];
+            int vecSize = System.Numerics.Vector<float>.Count;
+            fixed (float* np = normOut, mp = modulation)
+            {
+                float* npLocal = np;
+                float* scpLocal = mp;
+                float* shpLocal = mp + dim;
+                Parallel.For(0, numFrames, ti =>
+                {
+                    int off = ti * dim;
+                    float* nRow = npLocal + off;
+                    int d = 0;
+                    for (; d <= dim - vecSize; d += vecSize)
+                    {
+                        var vn = new System.Numerics.Vector<float>(new ReadOnlySpan<float>(nRow + d, vecSize));
+                        var vScale = new System.Numerics.Vector<float>(new ReadOnlySpan<float>(scpLocal + d, vecSize));
+                        var vShift = new System.Numerics.Vector<float>(new ReadOnlySpan<float>(shpLocal + d, vecSize));
+                        var vr = vn * (System.Numerics.Vector<float>.One + vScale) + vShift;
+                        vr.CopyTo(new Span<float>(nRow + d, vecSize));
+                    }
+                    for (; d < dim; d++) nRow[d] = nRow[d] * (1f + scpLocal[d]) + shpLocal[d];
+                });
+            }
         }
 
         return F5Kernels.Linear(normOut, numFrames, dim, w.ProjOutWeight, w.ProjOutBias, F5TtsWeights.MelDim);

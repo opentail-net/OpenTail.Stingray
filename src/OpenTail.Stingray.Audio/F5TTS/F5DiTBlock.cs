@@ -30,52 +30,83 @@ public static class F5DiTBlock
     {
         int dim = F5TtsWeights.HiddenDim;
 
-        // AdaLayerNorm: emb = linear(silu(tEmb)) -> chunk6 (each size dim), constant across all t.
         var siluT = new float[dim];
         for (int d = 0; d < dim; d++) siluT[d] = F5Kernels.SiLU(tEmb[d]);
         var modulation = F5Kernels.Linear(siluT, 1, dim, bw.AttnNormLinearWeight, bw.AttnNormLinearBias, dim * 6);
 
-        var shiftMsa = new float[dim]; var scaleMsa = new float[dim]; var gateMsa = new float[dim];
-        var shiftMlp = new float[dim]; var scaleMlp = new float[dim]; var gateMlp = new float[dim];
-        Array.Copy(modulation, 0 * dim, shiftMsa, 0, dim);
-        Array.Copy(modulation, 1 * dim, scaleMsa, 0, dim);
-        Array.Copy(modulation, 2 * dim, gateMsa, 0, dim);
-        Array.Copy(modulation, 3 * dim, shiftMlp, 0, dim);
-        Array.Copy(modulation, 4 * dim, scaleMlp, 0, dim);
-        Array.Copy(modulation, 5 * dim, gateMlp, 0, dim);
-
         var norm = F5Kernels.LayerNormNoAffine(x, t, dim);
-        for (int ti = 0; ti < t; ti++)
-        {
-            int off = ti * dim;
-            for (int d = 0; d < dim; d++) norm[off + d] = norm[off + d] * (1f + scaleMsa[d]) + shiftMsa[d];
-        }
+        ApplyAffineModulationSlice(norm, norm, modulation, 1 * dim, 0 * dim, t, dim);
 
         var attnOut = Attention(w, bw, norm, t, rotaryCos, rotarySin);
 
         var xAfterAttn = new float[x.Length];
-        for (int ti = 0; ti < t; ti++)
-        {
-            int off = ti * dim;
-            for (int d = 0; d < dim; d++) xAfterAttn[off + d] = x[off + d] + gateMsa[d] * attnOut[off + d];
-        }
+        ApplyGatedResidualSlice(xAfterAttn, x, modulation, 2 * dim, attnOut, t, dim);
 
         var ffNorm = F5Kernels.LayerNormNoAffine(xAfterAttn, t, dim);
-        for (int ti = 0; ti < t; ti++)
-        {
-            int off = ti * dim;
-            for (int d = 0; d < dim; d++) ffNorm[off + d] = ffNorm[off + d] * (1f + scaleMlp[d]) + shiftMlp[d];
-        }
+        ApplyAffineModulationSlice(ffNorm, ffNorm, modulation, 4 * dim, 3 * dim, t, dim);
 
         var ffOut = FeedForward(bw, ffNorm, t);
 
         var output = new float[x.Length];
-        for (int ti = 0; ti < t; ti++)
-        {
-            int off = ti * dim;
-            for (int d = 0; d < dim; d++) output[off + d] = xAfterAttn[off + d] + gateMlp[d] * ffOut[off + d];
-        }
+        ApplyGatedResidualSlice(output, xAfterAttn, modulation, 5 * dim, ffOut, t, dim);
         return output;
+    }
+
+    private static unsafe void ApplyAffineModulationSlice(float[] dst, float[] src, float[] modulation, int scaleOffset, int shiftOffset, int t, int dim)
+    {
+        int vecSize = System.Numerics.Vector<float>.Count;
+        fixed (float* dp = dst, sp = src, mp = modulation)
+        {
+            float* dpLocal = dp;
+            float* spLocal = sp;
+            float* scpLocal = mp + scaleOffset;
+            float* shpLocal = mp + shiftOffset;
+            Parallel.For(0, t, ti =>
+            {
+                int off = ti * dim;
+                float* dRow = dpLocal + off;
+                float* sRow = spLocal + off;
+                int d = 0;
+                for (; d <= dim - vecSize; d += vecSize)
+                {
+                    var vs = new System.Numerics.Vector<float>(new ReadOnlySpan<float>(sRow + d, vecSize));
+                    var vScale = new System.Numerics.Vector<float>(new ReadOnlySpan<float>(scpLocal + d, vecSize));
+                    var vShift = new System.Numerics.Vector<float>(new ReadOnlySpan<float>(shpLocal + d, vecSize));
+                    var vr = vs * (System.Numerics.Vector<float>.One + vScale) + vShift;
+                    vr.CopyTo(new Span<float>(dRow + d, vecSize));
+                }
+                for (; d < dim; d++) dRow[d] = sRow[d] * (1f + scpLocal[d]) + shpLocal[d];
+            });
+        }
+    }
+
+    private static unsafe void ApplyGatedResidualSlice(float[] dst, float[] residual, float[] modulation, int gateOffset, float[] update, int t, int dim)
+    {
+        int vecSize = System.Numerics.Vector<float>.Count;
+        fixed (float* dp = dst, rp = residual, mp = modulation, up = update)
+        {
+            float* dpLocal = dp;
+            float* rpLocal = rp;
+            float* gpLocal = mp + gateOffset;
+            float* upLocal = up;
+            Parallel.For(0, t, ti =>
+            {
+                int off = ti * dim;
+                float* dRow = dpLocal + off;
+                float* rRow = rpLocal + off;
+                float* uRow = upLocal + off;
+                int d = 0;
+                for (; d <= dim - vecSize; d += vecSize)
+                {
+                    var vr = new System.Numerics.Vector<float>(new ReadOnlySpan<float>(rRow + d, vecSize));
+                    var vg = new System.Numerics.Vector<float>(new ReadOnlySpan<float>(gpLocal + d, vecSize));
+                    var vu = new System.Numerics.Vector<float>(new ReadOnlySpan<float>(uRow + d, vecSize));
+                    var vRes = vr + vg * vu;
+                    vRes.CopyTo(new Span<float>(dRow + d, vecSize));
+                }
+                for (; d < dim; d++) dRow[d] = rRow[d] + gpLocal[d] * uRow[d];
+            });
+        }
     }
 
     private static float[] FeedForward(F5DiTBlockWeights bw, float[] x, int t)
