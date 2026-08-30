@@ -132,17 +132,17 @@ public static class ParlerDecoder
 
         var context = new float[dim];
         float scale = 1f / MathF.Sqrt(HeadDim);
-        Parallel.For(0, heads, h =>
+        var scores = new float[t];
+        for (int h = 0; h < heads; h++)
         {
             int off = h * HeadDim;
-            var scores = new float[t];
             for (int j = 0; j < t; j++) scores[j] = Dot(qNew, kCache[j], off, HeadDim) * scale;
             SoftmaxInPlace(scores, t);
 
             var ctxSpan = context.AsSpan(off, HeadDim);
             for (int j = 0; j < t; j++)
                 TensorPrimitives.MultiplyAdd(vCache[j].AsSpan(off, HeadDim), scores[j], ctxSpan, ctxSpan);
-        });
+        }
 
         return LinearQ8_0(context, lw.SelfAttnOutWeight, dim, dim);
     }
@@ -160,11 +160,11 @@ public static class ParlerDecoder
         {
             var kCross = new float[tk][];
             var vCross = new float[tk][];
-            Parallel.For(0, tk, j =>
+            for (int j = 0; j < tk; j++)
             {
                 kCross[j] = LinearQ8_0(encoderHidden[j], lw.CrossAttnKWeight, dim, dim);
                 vCross[j] = LinearQ8_0(encoderHidden[j], lw.CrossAttnVWeight, dim, dim);
-            });
+            }
             cache.CrossK[layerIdx] = kCross;
             cache.CrossV[layerIdx] = vCross;
         }
@@ -173,17 +173,17 @@ public static class ParlerDecoder
 
         var context = new float[dim];
         float scale = 1f / MathF.Sqrt(HeadDim);
-        Parallel.For(0, heads, h =>
+        var scoresCross = new float[tk];
+        for (int h = 0; h < heads; h++)
         {
             int off = h * HeadDim;
-            var scores = new float[tk];
-            for (int j = 0; j < tk; j++) scores[j] = Dot(q, k[j], off, HeadDim) * scale;
-            SoftmaxInPlace(scores, tk);
+            for (int j = 0; j < tk; j++) scoresCross[j] = Dot(q, k[j], off, HeadDim) * scale;
+            SoftmaxInPlace(scoresCross, tk);
 
             var ctxSpan = context.AsSpan(off, HeadDim);
             for (int j = 0; j < tk; j++)
-                TensorPrimitives.MultiplyAdd(v[j].AsSpan(off, HeadDim), scores[j], ctxSpan, ctxSpan);
-        });
+                TensorPrimitives.MultiplyAdd(v[j].AsSpan(off, HeadDim), scoresCross[j], ctxSpan, ctxSpan);
+        }
 
         return LinearQ8_0(context, lw.CrossAttnOutWeight, dim, dim);
     }

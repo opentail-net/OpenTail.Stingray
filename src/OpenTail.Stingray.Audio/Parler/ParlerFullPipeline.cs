@@ -194,6 +194,9 @@ public sealed class ParlerFullPipeline : ITextToSpeechPipeline
 
         var cache = new ParlerDecoderKvCache(ParlerDecoderWeights.NumLayers);
         var logitsProcessor = new ParlerLogitsProcessor(EosTokenId, NumCodebooks);
+        var logitsPerCodebook = new float[NumCodebooks][];
+        for (int cb = 0; cb < NumCodebooks; cb++)
+            logitsPerCodebook[cb] = new float[ParlerDecoderWeights.OutputVocabSize];
 
         float[] hidden = [];
 
@@ -232,9 +235,8 @@ public sealed class ParlerFullPipeline : ITextToSpeechPipeline
             // architecture has no data dependency between them, so run them in parallel (measured
             // this session's performance pass; each is a full HiddenDim(1024)->OutputVocabSize(1088)
             // matvec, non-trivial work to leave serialized on a 12-core box).
-            var logitsPerCodebook = new float[NumCodebooks][];
             Parallel.For(0, NumCodebooks, cb =>
-                logitsPerCodebook[cb] = LinearNoBias(hidden, _decoderWeights.LmHeads[cb], ParlerDecoderWeights.HiddenDim, ParlerDecoderWeights.OutputVocabSize));
+                LinearNoBias(hidden, _decoderWeights.LmHeads[cb], logitsPerCodebook[cb], ParlerDecoderWeights.HiddenDim, ParlerDecoderWeights.OutputVocabSize));
 
             if (step >= minNewTokens)
             {
@@ -416,14 +418,12 @@ public sealed class ParlerFullPipeline : ITextToSpeechPipeline
         return topIdx[k - 1];
     }
 
-    private static unsafe float[] LinearNoBias(float[] input, float[] weight, int inDim, int outDim)
+    private static unsafe void LinearNoBias(float[] input, float[] weight, float[] output, int inDim, int outDim)
     {
-        var output = new float[outDim];
         fixed (float* wp = weight, xp = input, op = output)
         {
             Cpu.SimdKernels.MatVecF32(op, wp, xp, outDim, inDim);
         }
-        return output;
     }
 
     public void Dispose()
