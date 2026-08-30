@@ -56,8 +56,90 @@ public sealed class FishSpeechFullPipeline : ITextToSpeechPipeline
         return result;
     }
 
+    public const int SamplesPerFrame = 2048;
+
     public IAsyncEnumerable<float[]> GenerateStreamAsync(AudioGenerationRequest request, System.Threading.CancellationToken ct = default)
-        => TtsStreamingHelper.SplitAndGenerateAsync(request, Generate, ct);
+        => GenerateStreamAsync(request.Text, chunkFrames: 1, contextFrames: 8, maxTokens: 200, seed: 42, ct: ct);
+
+    public async IAsyncEnumerable<float[]> GenerateStreamAsync(string text, int chunkFrames = 1, int contextFrames = 8, int maxTokens = 200, int? seed = null, [System.Runtime.CompilerServices.EnumeratorCancellation] System.Threading.CancellationToken ct = default)
+    {
+        var allSemantic = new List<int>();
+        var allCodebooks = new List<int[]>();
+        var pendingSemantic = new List<int>();
+        var pendingCodebooks = new List<int[]>();
+
+        foreach (var (semCode, codebookValues) in _talker.GenerateFramesStream(text, maxTokens, seed))
+        {
+            ct.ThrowIfCancellationRequested();
+            allSemantic.Add(semCode);
+            allCodebooks.Add(codebookValues);
+            pendingSemantic.Add(semCode);
+            pendingCodebooks.Add(codebookValues);
+
+            if (pendingSemantic.Count >= chunkFrames)
+            {
+                var chunkPcm = DecodeChunk(allSemantic, allCodebooks, pendingSemantic.Count, contextFrames);
+                pendingSemantic.Clear();
+                pendingCodebooks.Clear();
+                if (chunkPcm.Length > 0)
+                {
+                    yield return chunkPcm;
+                }
+            }
+        }
+
+        if (pendingSemantic.Count > 0)
+        {
+            var chunkPcm = DecodeChunk(allSemantic, allCodebooks, pendingSemantic.Count, contextFrames);
+            if (chunkPcm.Length > 0)
+            {
+                yield return chunkPcm;
+            }
+        }
+        await Task.CompletedTask;
+    }
+
+    private float[] DecodeChunk(List<int> allSemantic, List<int[]> allCodebooks, int newFramesCount, int contextFrames)
+    {
+        int totalFrames = allSemantic.Count;
+        int startFrame = Math.Max(0, totalFrames - newFramesCount - contextFrames);
+        int windowFrames = totalFrames - startFrame;
+        int priorOverlapFrames = windowFrames - newFramesCount;
+
+        var semanticSlice = new int[windowFrames];
+        int numResidual = allCodebooks[0].Length - 1;
+        var residualSlice = new int[numResidual][];
+        for (int cb = 0; cb < numResidual; cb++)
+            residualSlice[cb] = new int[windowFrames];
+
+        for (int i = 0; i < windowFrames; i++)
+        {
+            int globalFrame = startFrame + i;
+            semanticSlice[i] = allSemantic[globalFrame];
+            for (int cb = 0; cb < numResidual; cb++)
+                residualSlice[cb][i] = allCodebooks[globalFrame][cb + 1];
+        }
+
+        var decodedWindow = FishSpeechCodec.Decode(_codecWeights, semanticSlice, residualSlice);
+        int skipSamples = priorOverlapFrames * SamplesPerFrame;
+        int takeSamples = newFramesCount * SamplesPerFrame;
+
+        if (skipSamples + takeSamples <= decodedWindow.Length)
+        {
+            var chunk = new float[takeSamples];
+            Array.Copy(decodedWindow, skipSamples, chunk, 0, takeSamples);
+            return chunk;
+        }
+        else if (skipSamples < decodedWindow.Length)
+        {
+            int available = decodedWindow.Length - skipSamples;
+            var chunk = new float[available];
+            Array.Copy(decodedWindow, skipSamples, chunk, 0, available);
+            return chunk;
+        }
+
+        return decodedWindow;
+    }
 
     /// <summary>Full pipeline: text -&gt; mono float32 PCM (44.1kHz, matching the real codec's native rate).</summary>
     public float[] Synthesize(string text, int maxTokens = 200, int? seed = null)

@@ -42,6 +42,18 @@ public sealed class FishSpeechPipeline : IDisposable
     private readonly float[] _normedHidden;
     private readonly float[] _embBuffer;
 
+    // Zero-allocation sampling scratch buffers
+    private readonly float[] _candidateLogits;
+    private readonly int[] _candidateIds;
+    private readonly int[] _candidateOrder;
+    private readonly float[] _sortedProbs;
+    private readonly int[] _candidateKept;
+    private readonly float[] _candidateSampleProbs;
+    private readonly int[] _codebookOrder;
+    private readonly float[] _codebookSortedProbs;
+    private readonly int[] _codebookKept;
+    private readonly float[] _codebookSampleProbs;
+
     public FishSpeechPipeline(string ggufPath, string tokenizerDir, int numLayers = 36, int ctxSize = 2048)
     {
         _model = GgufModel.Open(ggufPath);
@@ -54,6 +66,20 @@ public sealed class FishSpeechPipeline : IDisposable
         _fastArCache = new FishSpeechFastArCache(_weights);
         _normedHidden = new float[_weights.EmbeddingDim];
         _embBuffer = new float[_weights.EmbeddingDim];
+
+        int maxCandidates = (_weights.SemanticEndId - _weights.SemanticBeginId + 1) + 1;
+        _candidateLogits = new float[maxCandidates];
+        _candidateIds = new int[maxCandidates];
+        _candidateOrder = new int[maxCandidates];
+        _sortedProbs = new float[maxCandidates];
+        _candidateKept = new int[maxCandidates];
+        _candidateSampleProbs = new float[maxCandidates];
+
+        int codebookSize = _weights.CodebookSize;
+        _codebookOrder = new int[codebookSize];
+        _codebookSortedProbs = new float[codebookSize];
+        _codebookKept = new int[codebookSize];
+        _codebookSampleProbs = new float[codebookSize];
 
         var tokResult = HuggingFaceTokenizerSource.Load(tokenizerDir);
         if (!tokResult.IsUsable || tokResult.Source is null)
@@ -68,15 +94,10 @@ public sealed class FishSpeechPipeline : IDisposable
     private static int Single(IReadOnlyList<int> ids) =>
         ids.Count == 1 ? ids[0] : throw new InvalidOperationException($"expected a single token, got {ids.Count}");
 
-    /// <summary>Applies the slow-AR trunk's final RMSNorm (norm.weight) to the tapped hidden state, matching s2_model.cpp's eval_cached.</summary>
+    /// <summary>Reads the slow-AR trunk's final RMSNorm hidden state directly from ForwardPass.</summary>
     private float[] GetNormedHidden(int pos)
     {
-        var rawHidden = _fwd.HiddenTapsAt(pos);
-        int n = rawHidden.Length;
-        float sumSq = 0f;
-        for (int i = 0; i < n; i++) sumSq += rawHidden[i] * rawHidden[i];
-        float invRms = 1f / MathF.Sqrt(sumSq / n + _weights.RmsNormEps);
-        for (int i = 0; i < n; i++) _normedHidden[i] = rawHidden[i] * invRms * _weights.NormWeight[i];
+        _fwd.LastHidden.CopyTo(_normedHidden);
         return _normedHidden;
     }
 
@@ -112,20 +133,19 @@ public sealed class FishSpeechPipeline : IDisposable
     /// <summary>Composes the real per-timestep embedding for a semantic token plus its (so-far-known) codebook values.</summary>
     private ReadOnlySpan<float> EmbedSemanticToken(int semanticTokenId, int[] codebookValues)
     {
-        Array.Copy(_weights.Embeddings, (long)semanticTokenId * _weights.EmbeddingDim, _embBuffer, 0, _weights.EmbeddingDim);
+        int dim = _weights.EmbeddingDim;
+        Array.Copy(_weights.Embeddings, (long)semanticTokenId * dim, _embBuffer, 0, dim);
 
         for (int cb = 0; cb < codebookValues.Length; cb++)
         {
-            long row = (long)(codebookValues[cb] + cb * _weights.CodebookSize) * _weights.EmbeddingDim;
-            for (int d = 0; d < _weights.EmbeddingDim; d++)
-                _embBuffer[d] += _weights.CodebookEmbeddings[row + d];
+            long row = (long)(codebookValues[cb] + cb * _weights.CodebookSize) * dim;
+            System.Numerics.Tensors.TensorPrimitives.Add(_embBuffer.AsSpan(0, dim), _weights.CodebookEmbeddings.AsSpan((int)row, dim), _embBuffer.AsSpan(0, dim));
         }
 
         if (_weights.ScaleCodebookEmbeddings)
         {
-            // Real scale factor from s2_model.cpp: 1 / sqrt(num_codebooks + 1) = 1 / sqrt(11)
             float scale = 1f / MathF.Sqrt(_weights.NumCodebooks + 1);
-            for (int d = 0; d < _weights.EmbeddingDim; d++) _embBuffer[d] *= scale;
+            System.Numerics.Tensors.TensorPrimitives.Multiply(_embBuffer.AsSpan(0, dim), scale, _embBuffer.AsSpan(0, dim));
         }
         return _embBuffer;
     }
@@ -181,6 +201,21 @@ public sealed class FishSpeechPipeline : IDisposable
     /// </summary>
     public (List<int> SemanticTokens, List<int[]> CodebooksPerFrame) GenerateFrames(string text, int maxTokens = 200, int? seed = null)
     {
+        var semanticTokens = new List<int>();
+        var codebooksPerFrame = new List<int[]>();
+        foreach (var (sem, cb) in GenerateFramesStream(text, maxTokens, seed))
+        {
+            semanticTokens.Add(sem);
+            codebooksPerFrame.Add(cb);
+        }
+        return (semanticTokens, codebooksPerFrame);
+    }
+
+    /// <summary>
+    /// Streaming generator: yields each frame's `(semCode, codebookValues)` as soon as it is sampled.
+    /// </summary>
+    public IEnumerable<(int SemanticToken, int[] Codebooks)> GenerateFramesStream(string text, int maxTokens = 200, int? seed = null)
+    {
         var rng = new Random(seed ?? 42);
         var prompt = BuildPrompt(text);
         _fwd.ResetCache();
@@ -191,8 +226,6 @@ public sealed class FishSpeechPipeline : IDisposable
 
         int semBegin = _weights.SemanticBeginId;
         int semEnd = _weights.SemanticEndId;
-        var semanticTokens = new List<int>();
-        var codebooksPerFrame = new List<int[]>();
 
         const int rasWindowSize = 10;
         const float rasHighTemp = 1.0f, rasHighTopP = 0.9f;
@@ -216,7 +249,6 @@ public sealed class FishSpeechPipeline : IDisposable
             if (rasWindow.Count > rasWindowSize) rasWindow.Dequeue();
 
             int semCode = Math.Clamp(mainToken - semBegin, 0, _weights.CodebookSize - 1);
-            semanticTokens.Add(semCode);
 
             // Real fast-AR codebook expansion:
             // Position 0 = slow-AR hidden state (projected)
@@ -234,7 +266,8 @@ public sealed class FishSpeechPipeline : IDisposable
                 if (cb < _weights.NumCodebooks - 1)
                     stepLogits = FishSpeechFastAr.ForwardStep(_weights, _fastArCache, FishSpeechFastAr.EmbedFastToken(_weights, cbToken));
             }
-            codebooksPerFrame.Add(codebookValues);
+
+            yield return (semCode, codebookValues);
 
             var emb = EmbedSemanticToken(mainToken, codebookValues);
             _fwd.ForwardEmbedding(emb, pos);
@@ -243,126 +276,152 @@ public sealed class FishSpeechPipeline : IDisposable
 
             mainToken = SampleCandidateToken(hidden, semBegin, semEnd, _imEndId, defaultTemp, defaultTopP, defaultTopK, rng);
         }
-
-        return (semanticTokens, codebooksPerFrame);
     }
 
     private unsafe int SampleCandidateToken(float[] normedHidden, int semBegin, int semEnd, int imEndId, float temperature, float topP, int topK, Random rng)
     {
         int semCount = semEnd - semBegin + 1;
         int totalCandidates = semCount + 1;
-        var candidateLogits = new float[totalCandidates];
-        var candidateIds = new int[totalCandidates];
 
-        fixed (float* embPtr = _weights.Embeddings, hPtr = normedHidden, logitPtr = candidateLogits)
-        fixed (int* idPtr = candidateIds)
+        fixed (float* embPtr = _weights.Embeddings, hPtr = normedHidden, logitPtr = _candidateLogits)
+        fixed (int* idPtr = _candidateIds)
         {
-            var embPtrLocal = embPtr;
-            var hPtrLocal = hPtr;
-            var logitPtrLocal = logitPtr;
-            var idPtrLocal = idPtr;
             int dim = _weights.EmbeddingDim;
+            SimdKernels.MatVecF32(logitPtr, embPtr + (long)semBegin * dim, hPtr, semCount, dim);
+            for (int i = 0; i < semCount; i++) idPtr[i] = semBegin + i;
 
-            Parallel.For(0, semCount, i =>
-            {
-                int tokId = semBegin + i;
-                idPtrLocal[i] = tokId;
-                logitPtrLocal[i] = SimdKernels.DotF32(hPtrLocal, embPtrLocal + (long)tokId * dim, dim);
-            });
-
-            idPtrLocal[semCount] = imEndId;
-            logitPtrLocal[semCount] = SimdKernels.DotF32(hPtrLocal, embPtrLocal + (long)imEndId * dim, dim);
+            idPtr[semCount] = imEndId;
+            logitPtr[semCount] = SimdKernels.DotF32(hPtr, embPtr + (long)imEndId * dim, dim);
         }
 
-        return SampleIndexedToken(candidateLogits, candidateIds, temperature, topP, topK, rng);
+        return SampleIndexedTokenZeroAlloc(_candidateLogits.AsSpan(0, totalCandidates), _candidateIds.AsSpan(0, totalCandidates), temperature, topP, topK, rng);
     }
 
-    private static int SampleIndexedToken(ReadOnlySpan<float> logits, ReadOnlySpan<int> tokenIds, float temperature, float topP, int topK, Random rng)
+    private int SampleIndexedTokenZeroAlloc(ReadOnlySpan<float> logits, ReadOnlySpan<int> tokenIds, float temperature, float topP, int topK, Random rng)
     {
         int n = logits.Length;
-        var logitsArr = logits.ToArray();
-        var order = new int[n];
-        for (int i = 0; i < n; i++) order[i] = i;
-        Array.Sort(order, (a, b) => logitsArr[b].CompareTo(logitsArr[a]));
+        for (int i = 0; i < n; i++) _candidateOrder[i] = i;
 
-        float max = logitsArr[order[0]];
-        var sortedProbs = new float[n];
+        var logitsArr = _candidateLogits;
+        Array.Sort(_candidateOrder, 0, n, Comparer<int>.Create((a, b) => logitsArr[b].CompareTo(logitsArr[a])));
+
+        float max = logitsArr[_candidateOrder[0]];
         float sum = 0f;
-        for (int i = 0; i < n; i++) { sortedProbs[i] = MathF.Exp(logitsArr[order[i]] - max); sum += sortedProbs[i]; }
-        if (sum > 0f) for (int i = 0; i < n; i++) sortedProbs[i] /= sum;
+        for (int i = 0; i < n; i++)
+        {
+            float pVal = MathF.Exp(logitsArr[_candidateOrder[i]] - max);
+            _sortedProbs[i] = pVal;
+            sum += pVal;
+        }
+        if (sum > 0f)
+        {
+            float invSum = 1f / sum;
+            for (int i = 0; i < n; i++) _sortedProbs[i] *= invSum;
+        }
 
         int k = topK > 0 ? Math.Min(topK, n) : n;
         float p = Math.Clamp(topP, 0f, 1f);
 
-        var kept = new List<int>();
+        int keptCount = 0;
         float cumsum = 0f;
         for (int i = 0; i < n; i++)
         {
-            cumsum += sortedProbs[i];
+            cumsum += _sortedProbs[i];
             bool removeForTopK = i >= k;
             bool removeForTopP = i > 0 && cumsum > p;
             if (removeForTopK || removeForTopP) continue;
-            kept.Add(order[i]);
+            _candidateKept[keptCount++] = _candidateOrder[i];
         }
-        if (kept.Count == 0) kept.Add(order[0]);
+        if (keptCount == 0)
+        {
+            _candidateKept[0] = _candidateOrder[0];
+            keptCount = 1;
+        }
 
-        if (temperature <= 0f) return tokenIds[kept[0]];
+        if (temperature <= 0f) return tokenIds[_candidateKept[0]];
 
-        var probs = new float[kept.Count];
         float keptMax = float.NegativeInfinity;
-        for (int i = 0; i < kept.Count; i++) if (logitsArr[kept[i]] > keptMax) keptMax = logitsArr[kept[i]];
+        for (int i = 0; i < keptCount; i++)
+        {
+            float l = logitsArr[_candidateKept[i]];
+            if (l > keptMax) keptMax = l;
+        }
+
         float keptSum = 0f;
-        for (int i = 0; i < kept.Count; i++) { probs[i] = MathF.Exp((logitsArr[kept[i]] - keptMax) / temperature); keptSum += probs[i]; }
-        if (keptSum <= 0f) return tokenIds[kept[0]];
-        for (int i = 0; i < probs.Length; i++) probs[i] /= keptSum;
+        float invTemp = 1f / temperature;
+        for (int i = 0; i < keptCount; i++)
+        {
+            float pExp = MathF.Exp((logitsArr[_candidateKept[i]] - keptMax) * invTemp);
+            _candidateSampleProbs[i] = pExp;
+            keptSum += pExp;
+        }
+        if (keptSum <= 0f) return tokenIds[_candidateKept[0]];
+
+        float invKeptSum = 1f / keptSum;
+        for (int i = 0; i < keptCount; i++) _candidateSampleProbs[i] *= invKeptSum;
 
         double r = rng.NextDouble();
         double acc = 0;
-        for (int i = 0; i < probs.Length; i++)
+        for (int i = 0; i < keptCount; i++)
         {
-            acc += probs[i];
-            if (r < acc) return tokenIds[kept[i]];
+            acc += _candidateSampleProbs[i];
+            if (r < acc || i == keptCount - 1)
+                return tokenIds[_candidateKept[i]];
         }
-        return tokenIds[kept[^1]];
+        return tokenIds[_candidateKept[0]];
     }
 
     /// <summary>RAS escape-hatch only: applies the real `-inf`-outside-`[semBegin,semEnd]` (plus `im_end`) mask, then <see cref="SampleToken"/>.</summary>
-    private static int SampleMasked(ReadOnlySpan<float> logits, int semBegin, int semEnd, int imEndId, float temperature, float topP, int topK, Random rng)
+    private int SampleMasked(ReadOnlySpan<float> logits, int semBegin, int semEnd, int imEndId, float temperature, float topP, int topK, Random rng)
     {
-        var biased = new float[logits.Length];
-        Array.Fill(biased, float.NegativeInfinity);
-        for (int i = semBegin; i <= semEnd && i < logits.Length; i++) biased[i] = logits[i];
-        if (imEndId < logits.Length) biased[imEndId] = logits[imEndId];
-        return SampleToken(biased, temperature, topP, topK, rng);
+        int maxCandidates = (semEnd - semBegin + 1) + 1;
+        int totalCandidates = maxCandidates;
+        int semCount = semEnd - semBegin + 1;
+
+        for (int i = 0; i < semCount; i++)
+        {
+            int tokId = semBegin + i;
+            _candidateIds[i] = tokId;
+            _candidateLogits[i] = tokId < logits.Length ? logits[tokId] : float.NegativeInfinity;
+        }
+        _candidateIds[semCount] = imEndId;
+        _candidateLogits[semCount] = imEndId < logits.Length ? logits[imEndId] : float.NegativeInfinity;
+
+        return SampleIndexedTokenZeroAlloc(_candidateLogits.AsSpan(0, totalCandidates), _candidateIds.AsSpan(0, totalCandidates), temperature, topP, topK, rng);
     }
 
     /// <summary>
-    /// Real port of `examples/s2.cpp/src/s2_sampler.cpp`'s `sample_token`: sort logits
-    /// descending, compute the UN-tempered softmax over the full sorted list (used only for the
-    /// top-p cumulative-mass threshold), keep the intersection of the top-k highest and the
-    /// smallest prefix whose cumulative un-tempered probability exceeds top_p (always keeping at
-    /// least the top-1), then re-softmax just the kept logits WITH temperature and sample
-    /// categorically. Only used by the RAS escape hatch in <see cref="GenerateFrames"/> -- normal
-    /// decoding stays plain greedy (see that method's doc comment for why).
+    /// Real port of `examples/s2.cpp/src/s2_sampler.cpp`'s `sample_token`: zero-allocation version.
     /// </summary>
-    private static int SampleToken(ReadOnlySpan<float> logits, float temperature, float topP, int topK, Random rng)
+    private int SampleToken(float[] logits, float temperature, float topP, int topK, Random rng)
     {
         int n = logits.Length;
-        var logitsArr = logits.ToArray();
-        var order = new int[n];
-        for (int i = 0; i < n; i++) order[i] = i;
-        Array.Sort(order, (a, b) => logitsArr[b].CompareTo(logitsArr[a]));
+        int[] order = n == _codebookOrder.Length ? _codebookOrder : new int[n];
+        float[] sortedProbs = n == _codebookSortedProbs.Length ? _codebookSortedProbs : new float[n];
+        int[] kept = n == _codebookKept.Length ? _codebookKept : new int[n];
+        float[] sampleProbs = n == _codebookSampleProbs.Length ? _codebookSampleProbs : new float[n];
 
-        float max = logitsArr[order[0]];
-        var sortedProbs = new float[n];
+        for (int i = 0; i < n; i++) order[i] = i;
+        Array.Sort(order, 0, n, Comparer<int>.Create((a, b) => logits[b].CompareTo(logits[a])));
+
+        float max = logits[order[0]];
         float sum = 0f;
-        for (int i = 0; i < n; i++) { sortedProbs[i] = MathF.Exp(logitsArr[order[i]] - max); sum += sortedProbs[i]; }
-        if (sum > 0f) for (int i = 0; i < n; i++) sortedProbs[i] /= sum;
+        for (int i = 0; i < n; i++)
+        {
+            float pVal = MathF.Exp(logits[order[i]] - max);
+            sortedProbs[i] = pVal;
+            sum += pVal;
+        }
+        if (sum > 0f)
+        {
+            float invSum = 1f / sum;
+            for (int i = 0; i < n; i++) sortedProbs[i] *= invSum;
+        }
 
         int k = topK > 0 ? Math.Min(topK, n) : n;
         float p = Math.Clamp(topP, 0f, 1f);
 
-        var kept = new List<int>();
+        int keptCount = 0;
         float cumsum = 0f;
         for (int i = 0; i < n; i++)
         {
@@ -370,28 +429,45 @@ public sealed class FishSpeechPipeline : IDisposable
             bool removeForTopK = i >= k;
             bool removeForTopP = i > 0 && cumsum > p;
             if (removeForTopK || removeForTopP) continue;
-            kept.Add(order[i]);
+            kept[keptCount++] = order[i];
         }
-        if (kept.Count == 0) kept.Add(order[0]);
+        if (keptCount == 0)
+        {
+            kept[0] = order[0];
+            keptCount = 1;
+        }
 
         if (temperature <= 0f) return kept[0];
 
-        var probs = new float[kept.Count];
         float keptMax = float.NegativeInfinity;
-        for (int i = 0; i < kept.Count; i++) if (logitsArr[kept[i]] > keptMax) keptMax = logitsArr[kept[i]];
+        for (int i = 0; i < keptCount; i++)
+        {
+            float l = logits[kept[i]];
+            if (l > keptMax) keptMax = l;
+        }
+
         float keptSum = 0f;
-        for (int i = 0; i < kept.Count; i++) { probs[i] = MathF.Exp((logitsArr[kept[i]] - keptMax) / temperature); keptSum += probs[i]; }
+        float invTemp = 1f / temperature;
+        for (int i = 0; i < keptCount; i++)
+        {
+            float pExp = MathF.Exp((logits[kept[i]] - keptMax) * invTemp);
+            sampleProbs[i] = pExp;
+            keptSum += pExp;
+        }
         if (keptSum <= 0f) return kept[0];
-        for (int i = 0; i < probs.Length; i++) probs[i] /= keptSum;
+
+        float invKeptSum = 1f / keptSum;
+        for (int i = 0; i < keptCount; i++) sampleProbs[i] *= invKeptSum;
 
         double r = rng.NextDouble();
         double acc = 0;
-        for (int i = 0; i < probs.Length; i++)
+        for (int i = 0; i < keptCount; i++)
         {
-            acc += probs[i];
-            if (r < acc) return kept[i];
+            acc += sampleProbs[i];
+            if (r < acc || i == keptCount - 1)
+                return kept[i];
         }
-        return kept[^1];
+        return kept[0];
     }
 
     public void Dispose()

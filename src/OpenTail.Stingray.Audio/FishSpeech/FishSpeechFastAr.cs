@@ -139,12 +139,10 @@ public static class FishSpeechFastAr
     }
 
     /// <summary>
-    /// KV-cached single-position step, mathematically equivalent to calling
-    /// <see cref="Forward"/> with a prefix one token longer each time (see
-    /// <see cref="FishSpeechFastArCache"/>'s doc comment), but without redoing attention work
+    /// Evaluates ONE step of the fast-AR model at the current position, using the cached K/V state
     /// for already-processed positions. Zero GC heap allocations via pre-allocated scratch workspace.
     /// </summary>
-    public static ReadOnlySpan<float> ForwardStep(FishSpeechWeights w, FishSpeechFastArCache cache, ReadOnlySpan<float> inputVec)
+    public static float[] ForwardStep(FishSpeechWeights w, FishSpeechFastArCache cache, ReadOnlySpan<float> inputVec)
     {
         ReadOnlySpan<float> x = inputVec;
         for (int i = 0; i < w.FastLayers.Length; i++)

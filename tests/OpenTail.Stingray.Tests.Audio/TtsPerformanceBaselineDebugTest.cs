@@ -162,6 +162,57 @@ public sealed class TtsPerformanceBaselineDebugTest : HeavyTestBase
     }
 
     [Fact]
+    public async Task Streaming_FishSpeech()
+    {
+        string? modelPath = FindRepoFile("models/s2-pro-q4_k_m.gguf");
+        string? tokDir = FindRepoFile("examples/s2.cpp");
+        Assert.SkipUnless(modelPath != null && tokDir != null, "FishSpeech S2 Pro GGUF or tokenizer not found");
+
+        using var pipeline = new FishSpeechFullPipeline(modelPath!, tokDir!, modelPath!);
+
+        // Warmup (not timed): JIT and tensor allocations
+        await foreach (var _ in pipeline.GenerateStreamAsync(Prompt, chunkFrames: 1, seed: 42)) { }
+
+        var sw = Stopwatch.StartNew();
+        double ttfaSec = 0;
+        var chunks = new List<float[]>();
+        int totalSamples = 0;
+
+        await foreach (var chunk in pipeline.GenerateStreamAsync(Prompt, chunkFrames: 1, seed: 42))
+        {
+            if (chunks.Count == 0)
+            {
+                ttfaSec = sw.Elapsed.TotalSeconds;
+            }
+            chunks.Add(chunk);
+            totalSamples += chunk.Length;
+        }
+        sw.Stop();
+        double totalSec = sw.Elapsed.TotalSeconds;
+
+        var fullPcm = new float[totalSamples];
+        int offset = 0;
+        foreach (var c in chunks)
+        {
+            Array.Copy(c, 0, fullPcm, offset, c.Length);
+            offset += c.Length;
+        }
+
+        string? outDir = FindRepoFile("docs/audio-samples");
+        if (outDir != null)
+        {
+            string wavPath = Path.Combine(outDir, "fishspeech-streaming-streamed.wav");
+            new AudioGenerationResult(fullPcm, 44100).SaveWav(wavPath);
+        }
+
+        double audioSec = totalSamples / 44100.0;
+        string msg = $"[FishSpeech-Stream-Frame1] prompt=\"{Prompt}\" audio={audioSec:F2}s samples={totalSamples} chunks={chunks.Count}\n" +
+                     $"[FishSpeech-Stream-Frame1] Time-To-First-Audio (TTFA)={ttfaSec:F3}s TotalTime={totalSec:F3}s";
+        Console.Error.WriteLine(msg);
+        File.AppendAllText(Path.Combine(FindRepoFile("docs") ?? ".", "tts-benchmark-log.txt"), msg + "\n\n");
+    }
+
+    [Fact]
     public void Baseline_FishSpeech()
     {
         string? modelPath = FindRepoFile("models/s2-pro-q4_k_m.gguf");
@@ -192,7 +243,7 @@ public sealed class TtsPerformanceBaselineDebugTest : HeavyTestBase
             string? outDir = FindRepoFile("docs/audio-samples");
             if (outDir != null)
             {
-                string wavPath = Path.Combine(outDir, "fishspeech-perf-turn1.wav");
+                string wavPath = Path.Combine(outDir, "fishspeech-perf-turn3.wav");
                 new AudioGenerationResult(lastWav, 44100).SaveWav(wavPath);
             }
         }
