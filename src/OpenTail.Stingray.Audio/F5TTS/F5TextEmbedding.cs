@@ -3,10 +3,18 @@ namespace OpenTail.Stingray.Audio.F5TTS;
 
 /// <summary>
 /// F5-TTS's `TextEmbedding` (dit.py): token ids -> zero-padded-to-audio-length embedding + fixed
-/// sinusoidal position embedding + 4x ConvNeXtV2Block, re-masking to zero at padded positions
-/// after every stage. Ported directly from `examples/f5-tts-py/f5_tts/model/backbones/dit.py`'s
-/// `TextEmbedding.forward` (the `mask_padding=True`, non-tensor-`seq_len`, `average_upsampling=
-/// False` branch -- the one this checkpoint's config and single-utterance inference path use).
+/// sinusoidal position embedding + 4x ConvNeXtV2Block. Ported directly from
+/// `examples/f5-tts-py/f5_tts/model/backbones/dit.py`'s `TextEmbedding.forward` (the non-tensor-
+/// `seq_len`, `average_upsampling=False` branch -- the one this checkpoint's config and single-
+/// utterance inference path use).
+///
+/// <para><b>Real `F5TTS_Base.yaml` sets `text_mask_padding: False`</b> (confirmed against the
+/// real config, not assumed) -- with a non-tensor `seq_len` (this pipeline's own usage), that
+/// makes the reference's entire `text_mask == 0` / `masked_fill` re-zeroing mechanism dead code
+/// (every branch that would apply it is gated behind `if self.mask_padding`), so padded positions
+/// simply flow through the ConvNeXt blocks holding whatever the embedding-row-0 ("filler" token)
+/// + sinusoidal-position values naturally are, NOT hard-zeroed before/after each block. This class
+/// does NOT re-mask, matching that real behavior.</para>
 ///
 /// Unlike VITS's length regulator, F5-TTS does NOT explicitly align text tokens to audio frames
 /// via a duration model inside the DiT itself -- it just zero-pads the RAW token sequence out to
@@ -36,22 +44,12 @@ public static class F5TextEmbedding
         int dim = F5TtsWeights.TextDim;
         int numTokens = tokens.Length;
 
-        // text = text + 1 (0 reserved as filler); truncate to numFrames; zero-pad the tail.
+        // text = text + 1 (0 reserved as filler); truncate to numFrames; zero-pad the tail (real
+        // `F.pad(text, ..., value=0)` -- row 0 is the filler token's own LEARNED embedding, not a
+        // literal zero vector; no re-masking follows, see class doc).
         var shifted = new int[numFrames];
-        var isPad = new bool[numFrames];
         for (int i = 0; i < numFrames; i++)
-        {
-            if (i < numTokens && i < numFrames)
-            {
-                shifted[i] = dropText ? 0 : tokens[i] + 1;
-                isPad[i] = false;
-            }
-            else
-            {
-                shifted[i] = 0;
-                isPad[i] = true;
-            }
-        }
+            shifted[i] = (i < numTokens && !dropText) ? tokens[i] + 1 : 0;
 
         var x = new float[numFrames * dim];
         for (int i = 0; i < numFrames; i++)
@@ -76,25 +74,10 @@ public static class F5TextEmbedding
             }
         }
 
-        MaskPad(x, numFrames, dim, isPad);
-
         for (int b = 0; b < w.TextBlocks.Length; b++)
-        {
             x = ConvNeXtV2Block(x, numFrames, dim, w.TextBlocks[b]);
-            MaskPad(x, numFrames, dim, isPad);
-        }
 
         return x;
-    }
-
-    private static void MaskPad(float[] x, int numFrames, int dim, bool[] isPad)
-    {
-        for (int i = 0; i < numFrames; i++)
-        {
-            if (!isPad[i]) continue;
-            int off = i * dim;
-            Array.Clear(x, off, dim);
-        }
     }
 
     /// <summary>ConvNeXtV2Block.forward: residual + pwconv2(grn(gelu(pwconv1(layernorm(dwconv(x)))))).</summary>

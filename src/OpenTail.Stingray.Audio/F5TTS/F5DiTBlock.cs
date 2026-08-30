@@ -8,6 +8,21 @@ namespace OpenTail.Stingray.Audio.F5TTS;
 /// reading the actual installed `x_transformers` package source) + gated FFN (tanh-approx GELU).
 /// This checkpoint has no qk_norm and attn_mask_enabled=False (single-utterance inference, no
 /// batch padding to mask), so those code paths are simply omitted rather than implemented unused.
+///
+/// <para><b>Critical, previously-missed real config value</b>: the real, official `F5TTS_Base`
+/// checkpoint's own `F5TTS_Base.yaml` sets `pe_attn_head: 1` -- RoPE is applied to only the FIRST
+/// attention head, NOT uniformly to all 16 (confirmed directly in `modules.py`'s `AttnProcessor.
+/// forward`: `query[:, :pn, :, :] = apply_rotary_pos_emb(...)` when `pe_attn_head` is set). This
+/// checkpoint's `model.safetensors` was independently confirmed byte-identical to the canonical
+/// `SWivid/F5-TTS`/`F5TTS_Base/model_1200000.safetensors` release (not a mismatched/wrong file).
+/// Applying RoPE to all heads (this port's original assumption, matching the DIFFERENT
+/// `F5TTS_v1_Base` checkpoint's real `pe_attn_head: null`) still runs without error -- same
+/// tensor shapes -- but silently computes structurally wrong attention for 15 of 16 heads,
+/// producing fluent-sounding but content-incorrect speech (confirmed: this exact symptom
+/// persisted identically through the real, unmodified, official Python reference across two
+/// independently-pinned dependency environments before this was found -- it was never a C#-
+/// specific porting bug). See `docs/audio-review-progress.md`'s F5-TTS entry for the full
+/// investigation trail.</para>
 /// </summary>
 public static class F5DiTBlock
 {
@@ -83,8 +98,9 @@ public static class F5DiTBlock
         var k = F5Kernels.Linear(norm, t, dim, bw.ToKWeight, bw.ToKBias, dim);
         var v = F5Kernels.Linear(norm, t, dim, bw.ToVWeight, bw.ToVBias, dim);
 
-        F5Kernels.ApplyRotary(q, t, heads, headDim, rotaryCos, rotarySin);
-        F5Kernels.ApplyRotary(k, t, heads, headDim, rotaryCos, rotarySin);
+        // Real F5TTS_Base.yaml: pe_attn_head=1 -- RoPE applies to only the FIRST attention head, not all 16 (confirmed via modules.py's AttnProcessor.forward, `query[:, :pn, :, :] = apply_rotary_pos_emb(...)`).
+        F5Kernels.ApplyRotary(q, t, heads, headDim, rotaryCos, rotarySin, numRopeHeads: 1);
+        F5Kernels.ApplyRotary(k, t, heads, headDim, rotaryCos, rotarySin, numRopeHeads: 1);
 
         var context = F5Kernels.MultiHeadSelfAttention(q, k, v, t, heads, headDim);
         return F5Kernels.Linear(context, t, dim, bw.ToOutWeight, bw.ToOutBias, dim);

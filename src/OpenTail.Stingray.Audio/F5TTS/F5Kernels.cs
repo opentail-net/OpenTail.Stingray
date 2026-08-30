@@ -238,15 +238,17 @@ public static class F5Kernels
         for (int i = 0; i < scores.Length; i++) scores[i] *= invSum;
     }
 
-    /// <summary>x_transformers-convention RoPE, applied in place to a [t, heads*headDim] tensor. Shared by F5-TTS's DiT and CosyVoice3's DiT (tensor-for-tensor identical architecture, see CosyVoice3DiTModel's doc comment) -- was hand-duplicated in both files until extracted here.</summary>
-    public static void ApplyRotary(float[] x, int t, int heads, int headDim, float[] rotaryCos, float[] rotarySin)
+    /// <summary>x_transformers-convention RoPE, applied in place to a [t, heads*headDim] tensor. Shared by F5-TTS's DiT and CosyVoice3's DiT (tensor-for-tensor identical architecture, see CosyVoice3DiTModel's doc comment) -- was hand-duplicated in both files until extracted here.
+    /// <paramref name="numRopeHeads"/> is the real `AttnProcessor.pe_attn_head` config (`modules.py`): when not null/less than `heads`, RoPE is applied ONLY to the first `numRopeHeads` heads (real `query[:, :pn, :, :] = apply_rotary_pos_emb(...)`), leaving the rest unrotated -- NOT a uniform apply-to-all-heads default. Confirmed real per-checkpoint: `F5TTS_Base`'s own `F5TTS_Base.yaml` sets `pe_attn_head: 1` (only head 0 gets RoPE); defaults to `heads` (apply to every head) for checkpoints that don't set this (e.g. `F5TTS_v1_Base`'s `pe_attn_head: null`, and CosyVoice3's own real config).</summary>
+    public static void ApplyRotary(float[] x, int t, int heads, int headDim, float[] rotaryCos, float[] rotarySin, int? numRopeHeads = null)
     {
         int dim = heads * headDim;
         int halfHead = headDim / 2;
+        int ropeHeads = numRopeHeads ?? heads;
         for (int ti = 0; ti < t; ti++)
         {
             int angleBase = ti * halfHead;
-            for (int h = 0; h < heads; h++)
+            for (int h = 0; h < ropeHeads; h++)
             {
                 int hOff = ti * dim + h * headDim;
                 for (int k = 0; k < halfHead; k++)

@@ -2,8 +2,18 @@
 namespace OpenTail.Stingray.Audio.F5TTS;
 
 /// <summary>
-/// 100-channel Mel-Spectrogram feature extractor for 24000Hz audio in F5-TTS.
-/// (n_fft=1024, hop_length=256, win_length=1024, fmin=0, fmax=12000).
+/// 100-channel Mel-Spectrogram feature extractor for 24000Hz audio in F5-TTS
+/// (n_fft=1024, hop_length=256, win_length=1024, fmin=0, fmax=12000), matching
+/// `examples/f5-tts-py/f5_tts/model/modules.py`'s real `get_vocos_mel_spectrogram` (this
+/// checkpoint's real `mel_spec_type="vocos"`): `torchaudio.transforms.MelSpectrogram(power=1,
+/// center=True, normalized=False, norm=None)`.
+///
+/// <para><b>Real `center=True` framing, confirmed against the reference before this was verified
+/// (see docs/audio-review-progress.md's F5-TTS entry)</b>: PyTorch's `torch.stft(center=True,
+/// pad_mode="reflect")` reflect-pads the waveform by `n_fft/2` samples on BOTH sides before
+/// framing, so frame 0 is centered at sample 0 -- NOT framed directly from `pcm[0]` with no
+/// padding, which time-shifts every frame by `n_fft/2` samples (21ms at 24kHz) relative to the
+/// real reference and produces a different frame count. Fixed here to match.</para>
 /// </summary>
 public sealed class F5MelExtractor
 {
@@ -12,6 +22,7 @@ public sealed class F5MelExtractor
     public const int Nfft = 1024;
     public const int HopLength = 256;
     public const int WinLength = 1024;
+    public const int Pad = Nfft / 2; // 512, real torch.stft center=True reflect padding
 
     private readonly float[][] _melFilters;
     private readonly float[] _hannWindow;
@@ -29,9 +40,26 @@ public sealed class F5MelExtractor
     /// </summary>
     public float[] ExtractMel(ReadOnlySpan<float> pcm)
     {
-        if (pcm.Length < HopLength) return new float[NumMels];
+        if (pcm.Length == 0) return new float[NumMels];
 
-        int numFrames = (pcm.Length - WinLength) / HopLength + 1;
+        int len = pcm.Length;
+        int paddedLen = len + 2 * Pad;
+        var signal = new float[paddedLen];
+
+        // Reflect padding (torch.stft's center=True default, pad_mode="reflect").
+        for (int i = 0; i < Pad; i++)
+        {
+            int leftIdx = (Pad - i) % len;
+            if (leftIdx < 0) leftIdx += len;
+            signal[i] = pcm[leftIdx];
+
+            int rightIdx = (len - 2 - i) % len;
+            if (rightIdx < 0) rightIdx += len;
+            signal[i + len + Pad] = pcm[rightIdx];
+        }
+        pcm.CopyTo(signal.AsSpan(Pad, len));
+
+        int numFrames = (paddedLen - WinLength) / HopLength + 1;
         if (numFrames <= 0) numFrames = 1;
 
         var mels = new float[numFrames * NumMels];
@@ -42,12 +70,12 @@ public sealed class F5MelExtractor
 
         for (int f = 0; f < numFrames; f++)
         {
-            int pcmOff = f * HopLength;
+            int off = f * HopLength;
 
             for (int n = 0; n < WinLength; n++)
             {
-                int sampleIdx = pcmOff + n;
-                float sample = (sampleIdx < pcm.Length) ? pcm[sampleIdx] : 0f;
+                int sampleIdx = off + n;
+                float sample = (sampleIdx < paddedLen) ? signal[sampleIdx] : 0f;
                 windowed[n] = sample * _hannWindow[n];
             }
 

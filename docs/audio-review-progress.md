@@ -10853,3 +10853,92 @@ needed there).
 **All thirteen major XTTS-v2 pieces now shipped, golden-verified individually, and wired
 end-to-end through the CLI.** Combined with MMS-TTS (100% done earlier this cycle), both models
 the user asked for are now real, weight-driven, and working.
+
+## F5-TTS: `F5MelExtractor` centering bug fix, then a much bigger find -- `pe_attn_head=1` RoPE bug, real full-pipeline garbling root-caused and fixed
+
+Asked to verify F5-TTS against the real source examples. Found `F5MelExtractor.cs` (reference-
+audio conditioning mel) was never golden-verified against real raw-audio input (only against a
+pre-computed mel tensor) and had no `center=True` reflect-padding, unlike the real
+`get_vocos_mel_spectrogram`'s `torchaudio.transforms.MelSpectrogram(center=True)` -- every frame
+was time-shifted by `n_fft/2` samples (21ms) relative to the real reference. Fixed (reflect-pad by
+`Nfft/2`, matching the pattern already established for `XttsMelExtractor`/`XttsSpeakerMelExtractor`
+earlier this doc).
+
+That fix alone wasn't enough to produce intelligible reference-audio-conditioned speech, which
+kicked off a long investigation. **Full trail, in order, since every dead end is worth recording
+so a future session doesn't repeat it:**
+
+1. Generated real cloned + text-only speech via the CLI; both transcribed (real Whisper ASR,
+   this codebase's own) as fluent-sounding but completely WRONG English content.
+2. Ran the fully official, unmodified Python reference (`f5_tts.infer.utils_infer`'s
+   `load_model`/`load_vocoder`/`infer_process`/`preprocess_ref_audio_text`, not a hand-rolled
+   equivalent) with the exact same checkpoint -- **identical failure mode**, ruling out a C#-
+   specific bug immediately.
+3. Verified the checkpoint itself (`models/f5tts_base.safetensors`) is the genuine, canonical
+   `SWivid/F5-TTS`/`F5TTS_Base/model_1200000.safetensors` release -- downloaded it fresh, diffed
+   tensors directly (`proj_out.weight` etc.), byte-identical, same key set. Not a bad/wrong file.
+4. Verified `models/f5tts_vocab.txt` is byte-identical (md5-matched) to the repo's own bundled
+   `f5_tts/infer/examples/vocab.txt`. Not a vocab mismatch either.
+5. Tried both current pip-latest `x-transformers` (2.26.3) and the repo's own declared minimum
+   (1.31.14) -- same failure both times.
+6. Built an entirely separate, isolated Python 3.11 venv (`scratch-llamacpp-ref/.venv-f5-py311`)
+   with period-correct `torch==2.3.0`/`torchaudio==2.3.0` (contemporaneous with F5-TTS's 2024
+   release) instead of the bleeding-edge `torch 2.11.0` this session's main Python env had --
+   **same failure again**, ruling out a torch-version-skew theory.
+7. Verified the RAW reference audio clips themselves transcribe perfectly (both
+   `fishspeech-lunch-REFERENCE.wav` and the repo's own official `basic_ref_en.wav`) -- not
+   corrupted source files. Also verified `preprocess_ref_audio_text`'s own pydub-based
+   silence-trimming preprocessing step doesn't corrupt the clip (copied its intermediate temp wav
+   out and transcribed it directly -- still perfect).
+8. **The real breakthrough came from the user's own listening feedback**: "it feels like a step
+   forward, because we have words, but the language is not English" -- prompted checking whether
+   this codebase's own `stt` CLI command was silently forcing English decode
+   (`WhisperPipeline.cs`: `language: request.Language ?? "en"`, confirmed -- no real auto-detect
+   exposed) rather than truly auto-detecting. Cross-checked with genuine multilingual
+   `openai-whisper` (real auto language-ID, not forced) -- it also landed on "en" for the
+   generated audio, which redirected the investigation toward the MODEL's real config rather than
+   the ASR tooling.
+9. **Root cause, found by diffing `F5TTS_Base.yaml` against `F5TTS_v1_Base.yaml`** (prompted by
+   noticing our local checkpoint's internal `step` metadata value, 1250000, coincidentally matched
+   `F5TTS_v1_Base/model_1250000.safetensors`'s filename -- a red herring that led to the right
+   place anyway): the two real checkpoint configs differ in `text_mask_padding` (`False` for
+   `Base`, `True` for `v1_Base`) and **`pe_attn_head`** (`1` for `Base`, `null`/all-heads for
+   `v1_Base`). This port's DiT construction (and the original `f5_golden_dit.py` golden-dump
+   script) used `v1_Base`'s values throughout, even though the checkpoint being loaded is
+   genuinely `F5TTS_Base` (confirmed real, step 3 above). `pe_attn_head=1` means the REAL model
+   applies RoPE to only the FIRST attention head (`modules.py`'s `AttnProcessor.forward`:
+   `query[:, :pn, :, :] = apply_rotary_pos_emb(...)` when set) -- applying it to all 16 heads
+   (this port's original behavior) runs without error (identical tensor shapes) but silently
+   computes structurally wrong attention for 15 of 16 heads on every layer. This is exactly the
+   kind of bug that produces fluent-sounding-but-wrong output: the model still generates
+   plausible speech-like audio, just not attending to the text correctly.
+
+### Fix
+
+- `F5Kernels.ApplyRotary` gained an optional `numRopeHeads` parameter (default `heads`, so
+  CosyVoice3's shared use of this same kernel is unaffected); `F5DiTBlock.cs`'s two call sites
+  now pass `numRopeHeads: 1`, matching the real `F5TTS_Base` config.
+- `F5TextEmbedding.cs`: removed the `MaskPad` re-zeroing of padded text positions before/after
+  each ConvNeXt block. Real `TextEmbedding.forward`'s entire `text_mask`/`masked_fill` mechanism
+  is gated behind `if self.mask_padding`, and the real config is `text_mask_padding: False` for
+  this checkpoint (confirmed above) -- with this pipeline's non-tensor `seq_len` usage, that makes
+  the masking entirely dead code in the real reference. Removed to match; padded positions now
+  correctly flow through holding the filler-token embedding + sinusoidal position value, not a
+  hard zero.
+- Regenerated `f5_golden_dit.py`'s golden dump with the corrected `text_mask_padding=False,
+  pe_attn_head=1` construction args (the OLD dump was itself generated with the wrong
+  `v1_Base`-shaped config, so it would have kept validating the bug as "correct" otherwise).
+  `F5DiTModelTests` passes against the corrected dump.
+
+### Result
+
+Regenerated the CLI's cloned-voice output with both fixes
+(`docs/audio-samples/f5tts-rope-pe-attn-head-fix-check.wav`, real reference clip + real ref text,
+real weights, full C# pipeline) and transcribed it with this codebase's own Whisper: **"Hello, I
+will make some lunch darling."** -- an exact, word-for-word match to the requested text. F5-TTS's
+full pipeline is now confirmed genuinely intelligible and correct, not just individually
+golden-verified at the single-forward-pass DiT level (which, per this investigation, can pass
+cleanly while the checkpoint's real per-checkpoint config is still silently wrong -- a real,
+general lesson: a golden test only proves the port matches ITS OWN reference construction args;
+if those construction args themselves don't match the real checkpoint's actual training config,
+the golden test can't catch it).
