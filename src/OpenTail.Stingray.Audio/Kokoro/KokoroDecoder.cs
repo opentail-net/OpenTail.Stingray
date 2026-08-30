@@ -124,11 +124,11 @@ public static class KokoroDecoder
 
         int f0Len   = f0Curve.Length; // 2T
         int f0UpLen = f0Len * totalUp;
-        float[] f0Up = NearestUpsample1D(f0Curve, f0UpLen);
+        float[] f0Up = LinearUpsample1D(f0Curve, f0UpLen);
 
         // SineGen: 9-harmonic cumulative-phase sine source
         float[] harSource = SineGen(f0Up, f0UpLen, kw.SampleRate, harmonicNum: 8,
-                                    sineAmp: 0.1f, noiseStd: 0.003f, voicedThreshold: 10f);
+                                    sineAmp: 0.1f, noiseStd: 0.001f, voicedThreshold: 10f);
 
         // SourceModuleHnNSF: Linear(9->1) + Tanh
         float[] harMerged = LinearTanh9to1(harSource, f0UpLen, gw.MSourceWeight, gw.MSourceBias);
@@ -670,14 +670,26 @@ public static class KokoroDecoder
         return output;
     }
 
-    private static float[] NearestUpsample1D(float[] input, int targetLen)
+    private static float[] LinearUpsample1D(float[] input, int targetLen)
     {
         int inLen = input.Length;
+        if (inLen == 0) return new float[targetLen];
+        if (inLen == 1)
+        {
+            var res = new float[targetLen];
+            Array.Fill(res, input[0]);
+            return res;
+        }
+
         var output = new float[targetLen];
+        float scale = (float)(inLen - 1) / (targetLen - 1);
         for (int i = 0; i < targetLen; i++)
         {
-            int src = (int)((long)i * inLen / targetLen);
-            output[i] = input[Math.Min(src, inLen - 1)];
+            float pos = i * scale;
+            int idx = (int)pos;
+            int nextIdx = Math.Min(idx + 1, inLen - 1);
+            float frac = pos - idx;
+            output[i] = input[idx] + (input[nextIdx] - input[idx]) * frac;
         }
         return output;
     }

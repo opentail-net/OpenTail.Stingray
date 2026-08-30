@@ -395,16 +395,29 @@ public sealed class ParlerFullPipeline : ITextToSpeechPipeline
             if (availableFrames >= yieldedFrames + chunkFrames)
             {
                 int readyCount = availableFrames - yieldedFrames;
+                int leftPad = Math.Min(4, yieldedFrames);
+                int rightPad = Math.Min(4, availableFrames - (yieldedFrames + readyCount));
+                int sliceStart = yieldedFrames - leftPad;
+                int sliceLen = leftPad + readyCount + rightPad;
+
                 var chunkCodes = new int[NumCodebooks][];
                 for (int cb = 0; cb < NumCodebooks; cb++)
                 {
-                    int start = cb + 1 + yieldedFrames;
-                    chunkCodes[cb] = sequence[cb][start..(start + readyCount)];
+                    int start = cb + 1 + sliceStart;
+                    chunkCodes[cb] = sequence[cb][start..(start + sliceLen)];
                 }
-                var pcmChunk = DacDecoder.Decode(_dacWeights, chunkCodes);
-                if (pcmChunk.Length > 0)
+                var pcmFull = DacDecoder.Decode(_dacWeights, chunkCodes);
+                int pcmStart = leftPad * 512;
+                int pcmCount = readyCount * 512;
+                if (pcmFull.Length >= pcmStart + pcmCount)
                 {
+                    var pcmChunk = new float[pcmCount];
+                    Array.Copy(pcmFull, pcmStart, pcmChunk, 0, pcmCount);
                     yield return pcmChunk;
+                }
+                else if (pcmFull.Length > 0)
+                {
+                    yield return pcmFull;
                 }
                 yieldedFrames += readyCount;
             }
@@ -434,16 +447,28 @@ public sealed class ParlerFullPipeline : ITextToSpeechPipeline
         if (totalFrames > yieldedFrames)
         {
             int remaining = totalFrames - yieldedFrames;
+            int leftPad = Math.Min(4, yieldedFrames);
+            int sliceStart = yieldedFrames - leftPad;
+            int sliceLen = leftPad + remaining;
+
             var tailCodes = new int[NumCodebooks][];
             for (int cb = 0; cb < NumCodebooks; cb++)
             {
-                int start = cb + 1 + yieldedFrames;
-                tailCodes[cb] = sequence[cb][start..(start + remaining)];
+                int start = cb + 1 + sliceStart;
+                tailCodes[cb] = sequence[cb][start..(start + sliceLen)];
             }
-            var pcmTail = DacDecoder.Decode(_dacWeights, tailCodes);
-            if (pcmTail.Length > 0)
+            var pcmFull = DacDecoder.Decode(_dacWeights, tailCodes);
+            int pcmStart = leftPad * 512;
+            int pcmCount = remaining * 512;
+            if (pcmFull.Length >= pcmStart)
             {
-                yield return pcmTail;
+                int actualCount = Math.Min(pcmCount, pcmFull.Length - pcmStart);
+                var pcmTail = new float[actualCount];
+                Array.Copy(pcmFull, pcmStart, pcmTail, 0, actualCount);
+                if (pcmTail.Length > 0)
+                {
+                    yield return pcmTail;
+                }
             }
         }
     }

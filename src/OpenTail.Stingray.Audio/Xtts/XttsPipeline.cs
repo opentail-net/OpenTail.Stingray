@@ -98,7 +98,8 @@ public sealed class XttsPipeline : ITextToSpeechPipeline
     {
         var (condLatents, numCondLatents, speakerEmbedding) = GetOrComputeReference(referenceAudioPath);
 
-        string taggedText = $"[{(lang == "zh" ? "zh-cn" : lang)}]{text.Replace(" ", "[SPACE]")}";
+        string normalizedText = text.ToLowerInvariant().Trim();
+        string taggedText = $"[{(lang == "zh" ? "zh-cn" : lang)}]{normalizedText.Replace(" ", "[SPACE]")}";
         var textIds = _tokenizer.Encode(taggedText).ToArray();
 
         var prefix = XttsGptGenerator.BuildPrefix(_gptEmb, condLatents, numCondLatents, textIds, out int prefixLen);
@@ -196,7 +197,8 @@ public sealed class XttsPipeline : ITextToSpeechPipeline
     {
         var (condLatents, numCondLatents, speakerEmbedding) = GetOrComputeReference(referenceAudioPath);
 
-        string taggedText = $"[{(lang == "zh" ? "zh-cn" : lang)}]{text.Replace(" ", "[SPACE]")}";
+        string normalizedText = text.ToLowerInvariant().Trim();
+        string taggedText = $"[{(lang == "zh" ? "zh-cn" : lang)}]{normalizedText.Replace(" ", "[SPACE]")}";
         var textIds = _tokenizer.Encode(taggedText).ToArray();
 
         var prefix = XttsGptGenerator.BuildPrefix(_gptEmb, condLatents, numCondLatents, textIds, out int prefixLen);

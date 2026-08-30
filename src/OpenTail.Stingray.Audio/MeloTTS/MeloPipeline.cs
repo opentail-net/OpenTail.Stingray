@@ -74,6 +74,22 @@ public sealed class MeloPipeline : ITextToSpeechPipeline
             noiseScale: 0.6f,
             noiseScaleW: 0.8f);
 
+        // 5. Volume / Peak Normalization (to 0.85 full scale)
+        if (samples.Length > 0)
+        {
+            float maxVal = 0f;
+            for (int i = 0; i < samples.Length; i++)
+            {
+                float a = MathF.Abs(samples[i]);
+                if (a > maxVal) maxVal = a;
+            }
+            if (maxVal > 1e-4f && maxVal < 0.8f)
+            {
+                float gain = 0.85f / maxVal;
+                for (int i = 0; i < samples.Length; i++) samples[i] *= gain;
+            }
+        }
+
         var result = new AudioGenerationResult(samples, DefaultSampleRate);
 
         if (!string.IsNullOrEmpty(request.OutputPath))

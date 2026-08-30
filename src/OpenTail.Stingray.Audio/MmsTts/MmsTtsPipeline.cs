@@ -71,6 +71,7 @@ public sealed class MmsTtsPipeline : ITextToSpeechPipeline
         for (int i = 0; i < tokens.Length; i++)
         {
             int d = (int)MathF.Ceiling(MathF.Exp(logw[i]) * lengthScale);
+            if (tokens[i] != 0 && d < 1) d = 1;
             durations[i] = d < 0 ? 0 : d;
             totalFrames += durations[i];
         }
@@ -112,6 +113,7 @@ public sealed class MmsTtsPipeline : ITextToSpeechPipeline
         for (int i = 0; i < tokens.Length; i++)
         {
             int d = (int)MathF.Ceiling(MathF.Exp(logw[i]) * lengthScale);
+            if (tokens[i] != 0 && d < 1) d = 1;
             durations[i] = d < 0 ? 0 : d;
             totalFrames += durations[i];
         }

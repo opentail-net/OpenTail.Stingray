@@ -111,27 +111,34 @@ public static class HiFTVocoderKernels
 
         var randIni = new float[dim];
         randIni[0] = 0f;
-        for (int h = 1; h < dim; h++) randIni[h] = (float)rng.NextDouble();
+        for (int h = 1; h < dim; h++) randIni[h] = (float)(rng.NextDouble() * 2.0 * Math.PI);
+
+        // Linear interpolation of F0 across sample rate
+        var f0Upsampled = new float[sampleLen];
+        for (int ti = 0; ti < t; ti++)
+        {
+            float f0Start = f0[ti];
+            float f0End = ti < t - 1 ? f0[ti + 1] : f0[ti];
+            int frameStart = ti * scaleFactor;
+            for (int s = 0; s < scaleFactor; s++)
+            {
+                float alpha = (float)s / scaleFactor;
+                f0Upsampled[frameStart + s] = f0Start + (f0End - f0Start) * alpha;
+            }
+        }
 
         for (int h = 0; h < dim; h++)
         {
             double harmonicMul = h + 1;
-            double freqScale = harmonicMul / sampleRate;
+            double freqFactor = harmonicMul * 2.0 * Math.PI / sampleRate;
             int row = h * sampleLen;
-            double cumPhase = randIni[h];
+            double phase = randIni[h];
 
-            for (int ti = 0; ti < t; ti++)
+            for (int n = 0; n < sampleLen; n++)
             {
-                double rad = f0[ti] * freqScale;
-                rad = rad - Math.Floor(rad);
-                cumPhase += rad;
-                float phaseVal = (float)(cumPhase * 2.0 * Math.PI * scaleFactor);
-                float sinVal = sineAmp * MathF.Sin(phaseVal);
-                int frameStart = ti * scaleFactor;
-                for (int s = 0; s < scaleFactor; s++)
-                {
-                    sineWaves[row + frameStart + s] = sinVal;
-                }
+                phase += f0Upsampled[n] * freqFactor;
+                if (phase > 2.0 * Math.PI) phase -= 2.0 * Math.PI * Math.Floor(phase / (2.0 * Math.PI));
+                sineWaves[row + n] = sineAmp * (float)Math.Sin(phase);
             }
         }
 
@@ -149,11 +156,12 @@ public static class HiFTVocoderKernels
                     int idx = h * sampleLen + n;
                     float u1 = MathF.Max(1e-7f, (float)rng.NextDouble());
                     float u2 = (float)rng.NextDouble();
-                    float noise = MathF.Sqrt(-2f * MathF.Log(u1)) * MathF.Cos(2f * MathF.PI * u2) * noiseAmp;
-                    sineWaves[idx] = sineWaves[idx] * uv + noise;
+                    float gNoise = MathF.Sqrt(-2.0f * MathF.Log(u1)) * MathF.Cos(2.0f * MathF.PI * u2);
+                    sineWaves[idx] += noiseAmp * gNoise;
                 }
             }
         }
+
         return sineWaves;
     }
 
