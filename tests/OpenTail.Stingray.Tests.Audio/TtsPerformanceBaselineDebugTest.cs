@@ -842,6 +842,39 @@ public sealed class TtsPerformanceBaselineDebugTest : HeavyTestBase
     }
 
     [Fact]
+    public void Paragraph_F5Tts()
+    {
+        string? modelPath = FindRepoFile("models/f5tts_base.safetensors");
+        Assert.SkipUnless(modelPath != null, "F5TTS safetensors model not found");
+
+        using var pipeline = OpenTail.Stingray.Audio.F5TTS.F5TtsPipeline.Load(modelPath!);
+
+        const string paragraph = "Antigravity is a modern high-performance audio and speech processing framework built in native C# with hardware acceleration. It delivers ultra low latency voice synthesis and real-time transcription across diverse neural architectures.";
+
+        var req = new AudioGenerationRequest { Text = paragraph };
+
+        var sw = Stopwatch.StartNew();
+        var res = pipeline.Generate(req);
+        sw.Stop();
+        double elapsedSec = sw.Elapsed.TotalSeconds;
+        int sampleCount = res.Samples.Length;
+        double audioSec = (double)sampleCount / pipeline.DefaultSampleRate;
+        double rtf = elapsedSec / audioSec;
+
+        string? outDir = FindRepoFile("docs/audio-samples");
+        if (outDir != null)
+        {
+            string wavPath = Path.Combine(outDir, "f5tts-paragraph-turn2-fp32.wav");
+            new AudioGenerationResult(res.Samples, pipeline.DefaultSampleRate).SaveWav(wavPath);
+        }
+
+        string msg = $"[F5-TTS-Paragraph-FP32] prompt=\"{paragraph.Substring(0, 40)}...\" audio={audioSec:F2}s samples={sampleCount}\n" +
+                     $"[F5-TTS-Paragraph-FP32] time={elapsedSec:F3}s RTF={rtf:F3} (lower=faster; 1.0=realtime)";
+        Console.Error.WriteLine(msg);
+        File.AppendAllText(Path.Combine(FindRepoFile("docs") ?? ".", "tts-benchmark-log.txt"), msg + "\n\n");
+    }
+
+    [Fact]
     public void Baseline_Chatterbox()
     {
         string? t3Path = FindRepoFile("models/chatterbox-turbo-t3-q4_k.gguf");

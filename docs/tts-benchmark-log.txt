@@ -427,3 +427,9 @@
 [F5-TTS] prompt="Hello, I will make some lunch, darling!" audio=2.77s samples=66560
 [F5-TTS] runs(s)=[38.926, 38.354, 40.084] mean=39.121s RTF=14.106 (lower=faster; 1.0=realtime)
 
+[F5-TTS-Paragraph-Q8] prompt="Antigravity is a modern high-performance..." audio=16.84s samples=404224
+[F5-TTS-Paragraph-Q8] time=523.261s RTF=31.068 (lower=faster; 1.0=realtime)
+
+[F5-TTS-Paragraph-FP32] prompt="Antigravity is a modern high-performance..." audio=16.84s samples=404224
+[F5-TTS-Paragraph-FP32] time=545.979s RTF=32.416 (lower=faster; 1.0=realtime)
+
