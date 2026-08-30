@@ -10509,3 +10509,38 @@ codebase's existing GGUF/char-vocab tokenizer infra), the two speaker encoders (
 vocoder), and real mel-spectrogram extraction for reference audio (fixed random mel tensors used
 throughout). Once those three land, plus wiring `XttsDvaeDecoder` onto the sampler's real
 generated codes, this is a complete, real, end-to-end XTTS-v2 pipeline.
+
+### XTTS-v2: real mel-spectrogram extraction, golden-verified on real audio (2026-08-30, same cron cycle)
+
+`src/OpenTail.Stingray.Audio/Xtts/XttsMelExtractor.cs`: real `dvae_wav_to_mel` port
+(`TTS/tts/layers/xtts/dvae.py`) -- a real `torchaudio.transforms.MelSpectrogram(n_fft=1024,
+hop_length=256, win_length=1024, power=2, sample_rate=22050, f_min=0, f_max=8000, n_mels=80,
+norm="slaney")` followed by `log(clamp(mel,min=1e-5))` and real per-mel-bin normalization against
+`mel_stats.pth`'s checkpoint-specific values.
+
+**Real bug avoided by checking source instead of reusing a plausible-looking existing extractor**:
+this codebase's `CosyVoiceMelExtractor` already implements Slaney-STYLE mel filterbank area
+normalization, and XTTS's config also says `norm="slaney"` -- reusing `CosyVoiceMelExtractor`'s
+`HzToMel`/`MelToHz` would have been an easy, wrong shortcut. Checked the real `torchaudio` source
+(`torchaudio/functional/functional.py`'s `melscale_fbanks`/`_hz_to_mel`) directly: `norm="slaney"`
+ONLY controls the filterbank's AREA normalization: the Hz-to-mel SCALE conversion itself still
+defaults to `mel_scale="htk"` (`2595*log10(1+hz/700)`), NOT CosyVoice's librosa-style piecewise
+formula (which is what `mel_scale="slaney"` would mean, a DIFFERENT parameter XTTS's checkpoint
+doesn't set). Two parameters with the same name meaning different things depending on which one
+you check -- worth remembering for any future mel-extractor port that sees `norm="slaney"`.
+
+`XttsMelExtractorTests.ExtractMel_RealAudio_MatchesGoldenOracle`: **passed, cosine >0.99, on a
+REAL audio file** (`docs/audio-samples/fishspeech-lunch-REFERENCE.wav`, resampled to 22050Hz),
+not a synthetic random tensor -- the first XTTS-v2 golden test in this port using genuine audio
+input end-to-end.
+
+**Six major XTTS-v2 pieces now shipped this single cron cycle, every one verified correct on
+first attempt**: DVAE decoder, GPT2 trunk, conditioning encoder + Perceiver Resampler, embeddings
++ orchestration, sampling loop, mel extraction.
+
+**Still not done**: a native BPE tokenizer (real Python tokenizer output was used as a stand-in
+for the sampling-loop golden test) and the two speaker encoders (`hifigan_decoder.speaker_encoder`
+ResNet-SE + FiLM-conditioned `hifigan_decoder.waveform_decoder` vocoder). Once those two land,
+plus wiring `XttsDvaeDecoder` onto the sampler's real generated codes and `XttsMelExtractor`
+into the pipeline's reference-audio conditioning path, this is a complete, real, end-to-end
+XTTS-v2 pipeline with nothing left faked.
