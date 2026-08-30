@@ -22,7 +22,7 @@ public static class F5FlowMatchingOde
         float[] condMel,
         ReadOnlySpan<int> text,
         int numFrames,
-        int steps = 32,
+        int steps = 16,
         float cfgStrength = 1.0f,
         float swaySamplingCoef = -1.0f,
         int seed = 42)
