@@ -368,7 +368,12 @@ public static class CosyVoice3DiTModel
         int dim = CosyVoice3DiTWeights.HiddenDim;
         int ffn = CosyVoice3DiTWeights.FfnDim;
         var h = F5Kernels.Linear(x, t, dim, bw.FfInWeight, bw.FfInBias, ffn);
-        for (int i = 0; i < h.Length; i++) h[i] = GeluErf(h[i]);
+        Parallel.For(0, t, ti =>
+        {
+            int off = ti * ffn;
+            for (int d = 0; d < ffn; d++)
+                h[off + d] = GeluErf(h[off + d]);
+        });
         return F5Kernels.Linear(h, t, ffn, bw.FfOutWeight, bw.FfOutBias, dim);
     }
 

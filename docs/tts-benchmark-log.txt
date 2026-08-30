@@ -229,3 +229,6 @@
 [CosyVoice3] prompt="Hello, I will make some lunch, darling!" audio=2.96s samples=71040
 [CosyVoice3] runs(s)=[21.635, 21.314, 21.301] mean=21.417s RTF=7.235 (lower=faster; 1.0=realtime)
 
+[CosyVoice3] prompt="Hello, I will make some lunch, darling!" audio=2.96s samples=71040
+[CosyVoice3] runs(s)=[20.766, 20.794, 20.915] mean=20.825s RTF=7.035 (lower=faster; 1.0=realtime)
+

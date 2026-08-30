@@ -16,21 +16,34 @@ public static class F5Kernels
         var y = new float[t * outDim];
         unsafe
         {
-            // Flattened over t*outDim (rather than parallelizing over t alone) so single-frame
-            // calls -- e.g. DiTBlock's t=1 modulation projections, called once per layer -- still
-            // get full parallel width across outDim instead of running fully sequentially.
-            fixed (float* xp = x, wp = weight, yp = y)
+            fixed (float* xp = x, wp = weight, yp = y, bp = bias)
             {
                 float* xpLocal = xp;
                 float* wpLocal = wp;
                 float* ypLocal = yp;
-                Parallel.For(0, t * outDim, idx =>
+                float* bpLocal = bp;
+
+                if (t == 1)
                 {
-                    int ti = idx / outDim;
-                    int o = idx - ti * outDim;
-                    float* xRow = xpLocal + ti * inDim;
-                    ypLocal[idx] = (bias is null ? 0f : bias[o]) + OpenTail.Stingray.Cpu.SimdKernels.DotF32(wpLocal + o * inDim, xRow, inDim);
-                });
+                    Parallel.For(0, outDim, o =>
+                    {
+                        float b = bpLocal != null ? bpLocal[o] : 0f;
+                        ypLocal[o] = b + OpenTail.Stingray.Cpu.SimdKernels.DotF32(wpLocal + o * inDim, xpLocal, inDim);
+                    });
+                }
+                else
+                {
+                    Parallel.For(0, t, ti =>
+                    {
+                        float* xRow = xpLocal + ti * inDim;
+                        float* yRow = ypLocal + ti * outDim;
+                        for (int o = 0; o < outDim; o++)
+                        {
+                            float b = bpLocal != null ? bpLocal[o] : 0f;
+                            yRow[o] = b + OpenTail.Stingray.Cpu.SimdKernels.DotF32(wpLocal + o * inDim, xRow, inDim);
+                        }
+                    });
+                }
             }
         }
         return y;
