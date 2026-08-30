@@ -337,3 +337,6 @@
 [Chatterbox] prompt="Hello, I will make some lunch, darling!" audio=2.52s samples=60480
 [Chatterbox] runs(s)=[11.409, 10.980, 11.106] mean=11.165s RTF=4.431 (lower=faster; 1.0=realtime)
 
+[CosyVoice3] prompt="Hello, I will make some lunch, darling!" audio=2.96s samples=71040
+[CosyVoice3] runs(s)=[21.941, 25.378, 22.723] mean=23.347s RTF=7.888 (lower=faster; 1.0=realtime)
+

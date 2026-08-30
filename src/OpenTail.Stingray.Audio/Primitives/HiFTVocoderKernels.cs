@@ -102,6 +102,10 @@ public static class HiFTVocoderKernels
         return f0;
     }
 
+    /// <summary>
+    /// Real NSF harmonic sine-source generator with smooth linear F0 interpolation and continuous
+    /// per-sample phase accumulation, eliminating staircase frame-step quantization noise.
+    /// </summary>
     private static float[] SineGen(float[] f0, int t, int scaleFactor, int sampleRate, int harmonicNum, Random rng,
                                     float sineAmp, float noiseStd, float voicedThreshold)
     {
@@ -109,11 +113,10 @@ public static class HiFTVocoderKernels
         int sampleLen = t * scaleFactor;
         var sineWaves = new float[dim * sampleLen];
 
-        var randIni = new float[dim];
-        randIni[0] = 0f;
-        for (int h = 1; h < dim; h++) randIni[h] = (float)(rng.NextDouble() * 2.0 * Math.PI);
+        var randIniRadians = new float[dim];
+        randIniRadians[0] = 0f;
+        for (int h = 1; h < dim; h++) randIniRadians[h] = (float)(rng.NextDouble() * 2.0 * Math.PI);
 
-        // Linear interpolation of F0 across sample rate
         var f0Upsampled = new float[sampleLen];
         for (int ti = 0; ti < t; ti++)
         {
@@ -132,7 +135,7 @@ public static class HiFTVocoderKernels
             double harmonicMul = h + 1;
             double freqFactor = harmonicMul * 2.0 * Math.PI / sampleRate;
             int row = h * sampleLen;
-            double phase = randIni[h];
+            double phase = randIniRadians[h];
 
             for (int n = 0; n < sampleLen; n++)
             {
