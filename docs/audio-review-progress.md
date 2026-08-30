@@ -10634,3 +10634,50 @@ own `Conv2d` is a GPU-only Vulkan path, not cross-project-reusable) -- will need
 BatchNorm2d/SE primitives, likely worth its own file in `Primitives/` given the scale. After that,
 the FiLM-conditioned HiFi-GAN vocoder (`HifiganGenerator`, `cond_channels=512`,
 `cond_in_each_up_layer=True`) is the final piece for a complete real pipeline.
+
+### XTTS-v2: ResNet-SE speaker encoder -- real bug found+fixed, golden-verified on real audio (2026-08-30, same cron cycle)
+
+`src/OpenTail.Stingray.Audio/Xtts/XttsResNetKernels.cs` (new generic 2D-conv/BatchNorm2d/BatchNorm1d/
+SE-block primitives -- this codebase's first CPU 2D-conv usage; Diffusion's own `Conv2d` is a
+GPU-only Vulkan path, not reusable here), `XttsResNetWeights.cs`, `XttsResNetEncoder.cs`: the real
+`ResNetSpeakerEncoder` (`TTS/encoder/models/resnet.py`) -- log+InstanceNorm1d(affine=False) ->
+conv1+relu+bn1 -> 4 ResNet layers (`[3,4,6,3]` real `SEBasicBlock`s, 3 stride-2 downsamples,
+squeeze-excitation each block) -> reshape -> real attentive statistics pooling (ASP: softmax-
+weighted mean+std over time via a small conv+BN+conv attention head) -> `fc` projection to a
+512-dim d-vector.
+
+**Real bug found via staged debugging (cosine 0.40 end-to-end on first attempt), root-caused to
+a single missing bias tensor, not re-derived by eye**: isolated stage-by-stage
+(InstanceNorm matched exactly at cosine 1.0, so the bug was downstream) down to `conv1` alone
+(cosine 0.54 immediately after just the first conv, before relu/bn1). Verified the `Conv2d`
+ALGORITHM itself was correct first (a tiny hand-traced 5x5/3x3 unit test against real PyTorch
+matched exactly), which pointed at something specific to the real weights/call rather than the
+math. Root cause: `ResNetSpeakerEncoder.__init__`'s stem `self.conv1 = nn.Conv2d(1, num_filters[0],
+kernel_size=3, stride=1, padding=1)` does NOT pass `bias=False` (unlike EVERY `SEBasicBlock`
+conv in the same file, which all explicitly say `bias=False`) -- so `conv1` alone has a real bias
+term that was silently missing from this port's first draft. Confirmed directly against the real
+checkpoint (`hifigan_decoder.speaker_encoder.conv1.bias` exists in the safetensors), not assumed.
+**General lesson**: when porting a network with a repeated block pattern, don't assume the
+STEM/entry conv follows the same bias convention as the repeated blocks -- check each
+`nn.Conv2d`/`nn.Conv1d` construction call's own `bias=` argument individually, since PyTorch's
+Conv default is `bias=True` and it's easy to assume a `False` seen elsewhere applies uniformly.
+
+`XttsResNetEncoderTests.Forward_RealAudio_MatchesGoldenOracle`: **passed, cosine >0.99, on real
+audio**, after the fix.
+
+**Nine major XTTS-v2 pieces now shipped this single cron cycle**: DVAE decoder, GPT2 trunk,
+conditioning+perceiver, embeddings+orchestration, sampling loop, mel extraction, gpt_latents
+extraction, speaker-encoder mel frontend, ResNet-SE speaker encoder.
+
+**Only one piece left for a complete real pipeline**: the FiLM-conditioned HiFi-GAN vocoder
+(`hifigan_decoder.waveform_decoder`, a `HifiganGenerator` -- real construction confirmed:
+`cond_channels=512` (the d-vector from this ResNet encoder), `cond_in_each_up_layer=True`,
+`resblock_type="1"`, same `resblock_dilation_sizes/kernel_sizes/upsample_rates/
+upsample_initial_channel/upsample_kernel_sizes` as already confirmed in the earlier architecture-
+survey entry -- fetch `TTS/vocoder/models/hifigan_generator.py`'s real source for the exact FiLM
+conditioning mechanism (`cond_layer`/`conds.N`, real tensor names already known) before writing
+any code, same discipline as every other piece this cycle). Once that lands: `XttsGptLatents.
+ComputeLatents`'s output, upsample-interpolated per `HifiDecoder.forward`'s real scaling, feeds
+the vocoder alongside this ResNet encoder's d-vector, for a complete, real, end-to-end XTTS-v2
+pipeline (still missing only a native BPE tokenizer for text input, and orchestration wiring
+tying every already-verified piece together into one `XttsPipeline` class + CLI entry).
