@@ -71,10 +71,10 @@ public sealed class MeloPipeline : ITextToSpeechPipeline
             speakerId: speakerId,
             speed: request.Speed,
             sdpRatio: 0.2f,
-            noiseScale: 0.6f,
-            noiseScaleW: 0.8f);
+            noiseScale: 0.333f,
+            noiseScaleW: 0.6f);
 
-        // 5. Volume / Peak Normalization (to 0.85 full scale)
+        // 5. Volume / Peak Normalization (to 0.75 full scale)
         if (samples.Length > 0)
         {
             float maxVal = 0f;
@@ -83,9 +83,9 @@ public sealed class MeloPipeline : ITextToSpeechPipeline
                 float a = MathF.Abs(samples[i]);
                 if (a > maxVal) maxVal = a;
             }
-            if (maxVal > 1e-4f && maxVal < 0.8f)
+            if (maxVal > 1e-4f && maxVal < 0.75f)
             {
-                float gain = 0.85f / maxVal;
+                float gain = 0.75f / maxVal;
                 for (int i = 0; i < samples.Length; i++) samples[i] *= gain;
             }
         }

@@ -128,7 +128,7 @@ public static class KokoroDecoder
 
         // SineGen: 9-harmonic cumulative-phase sine source
         float[] harSource = SineGen(f0Up, f0UpLen, kw.SampleRate, harmonicNum: 8,
-                                    sineAmp: 0.1f, noiseStd: 0.001f, voicedThreshold: 10f);
+                                    sineAmp: 0.1f, noiseStd: 0.0f, voicedThreshold: 10f);
 
         // SourceModuleHnNSF: Linear(9->1) + Tanh
         float[] harMerged = LinearTanh9to1(harSource, f0UpLen, gw.MSourceWeight, gw.MSourceBias);

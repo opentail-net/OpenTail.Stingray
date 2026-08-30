@@ -838,7 +838,7 @@ public sealed class TtsPerformanceBaselineDebugTest : HeavyTestBase
         using var loader = OpenTail.Stingray.Core.SafetensorsLoader.Open(modelPath!);
         using var pipeline = new OpenTail.Stingray.Audio.Parler.ParlerFullPipeline(tokenizerPath!, loader);
 
-        const string femaleDesc = "A clear female voice speaks with a warm and friendly tone in a quiet environment.";
+        const string femaleDesc = "A clear, warm female voice speaks at a relaxed, natural pace with clear articulation and gentle pauses in a quiet studio environment.";
         var warm = pipeline.Synthesize(Prompt, description: femaleDesc, maxNewTokens: 250);
         Assert.NotEmpty(warm);
 
@@ -884,7 +884,7 @@ public sealed class TtsPerformanceBaselineDebugTest : HeavyTestBase
         using var loader = OpenTail.Stingray.Core.SafetensorsLoader.Open(modelPath!);
         using var pipeline = new OpenTail.Stingray.Audio.Parler.ParlerFullPipeline(tokenizerPath!, loader);
 
-        const string femaleDesc = "A clear female voice speaks with a warm and friendly tone in a quiet environment.";
+        const string femaleDesc = "A clear, warm female voice speaks at a relaxed, natural pace with clear articulation and gentle pauses in a quiet studio environment.";
 
         // Warmup
         await foreach (var _ in pipeline.SynthesizeStreamAsync(Prompt, description: femaleDesc, maxNewTokens: 250, chunkFrames: 16)) break;

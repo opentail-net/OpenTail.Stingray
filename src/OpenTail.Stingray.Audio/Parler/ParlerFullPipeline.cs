@@ -291,6 +291,15 @@ public sealed class ParlerFullPipeline : ITextToSpeechPipeline
             for (int i = 0; i < pcm.Length; i++) pcm[i] *= gain;
         }
 
+        // Gentle 50ms trailing cosine fade-out so ending decay is smooth and natural
+        int fadeLen = Math.Min(2205, pcm.Length);
+        for (int i = 0; i < fadeLen; i++)
+        {
+            int idx = pcm.Length - fadeLen + i;
+            float fade = 0.5f * (1f + MathF.Cos(MathF.PI * i / fadeLen));
+            pcm[idx] *= fade;
+        }
+
         return pcm;
     }
 
