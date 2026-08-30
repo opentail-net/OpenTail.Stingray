@@ -97,6 +97,13 @@ public sealed class MeloPhonemizer
         {
             rawPhones.Add(110);
         }
+        else
+        {
+            if (rawPhones[0] != 110)
+                rawPhones.Insert(0, 110);
+            if (rawPhones[^1] != 110)
+                rawPhones.Add(110);
+        }
 
         // Intersperse pad token (0) between every token (VITS commons.intersperse)
         int total = rawPhones.Count * 2 + 1;

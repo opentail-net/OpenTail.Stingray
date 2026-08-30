@@ -289,3 +289,9 @@
 [Chatterbox-Stream] prompt="Hello, I will make some lunch, darling!" audio=3.64s samples=87360 chunks=3
 [Chatterbox-Stream] Time-To-First-Audio (TTFA)=8.365s TotalTime=25.831s
 
+[MeloTTS] prompt="Hello, I will make some lunch, darling!" audio=2.74s samples=120832
+[MeloTTS] runs(s)=[3.784, 3.769, 3.821] mean=3.791s RTF=1.384 (lower=faster; 1.0=realtime)
+
+[MeloTTS-Stream] prompt="Hello, I will make some lunch, darling!" audio=3.03s samples=133632 chunks=3
+[MeloTTS-Stream] Time-To-First-Audio (TTFA)=0.657s TotalTime=3.652s
+
