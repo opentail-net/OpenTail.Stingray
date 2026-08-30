@@ -161,21 +161,21 @@ public sealed class ParlerFullPipeline : ITextToSpeechPipeline
     /// (id 1) appended to both this and <paramref name="text"/>'s tokenization, matching the real
     /// T5 tokenizer's post-processor.</param>
     /// <param name="seed">
-    /// RNG seed for the per-codebook temperature-1 multinomial sample (real Parler-TTS's own
-    /// inference default is <c>do_sample=True, temperature=1.0</c> -- greedy argmax was an
-    /// explicit first-pass simplification that turned out to be wrong: it drives this specific
-    /// MusicGen-style delayed-codebook decoder into a near-immediate per-codebook fixed-point
-    /// attractor (the SAME code repeated for hundreds of consecutive frames), which a DAC codec
-    /// decodes to a near-pure tone/drone, not speech. -1 (default) seeds from
-    /// <see cref="Random.Shared"/>-derived entropy (non-deterministic, matches real usage); pass a
-    /// fixed value for reproducible tests.</param>
+    /// RNG seed for the per-codebook temperature-1 multinomial sample. Pass -1 for default deterministic seed.</param>
     public float[] Synthesize(string text, string? description = null, int maxNewTokens = 300, int minNewTokens = 10, int seed = -1)
     {
-        var rng = seed >= 0 ? new Random(seed) : new Random();
+        var rng = seed >= 0 ? new Random(seed) : new Random(42);
+        return SynthesizeInternal(text, description, maxNewTokens, minNewTokens, rng, encoderHidden: null);
+    }
 
-        var descriptionIds = _tokenizer.Encode(description ?? DefaultDescription);
-        descriptionIds.Add(1); // real T5 EOS id, appended by the real tokenizer's post-processor (see UnigramTokenizerTests)
-        var encoderHidden = T5Encoder.Forward(_t5Weights, [.. descriptionIds]);
+    internal float[] SynthesizeInternal(string text, string? description, int maxNewTokens, int minNewTokens, Random rng, float[][]? encoderHidden)
+    {
+        if (encoderHidden is null)
+        {
+            var descriptionIds = _tokenizer.Encode(description ?? DefaultDescription);
+            descriptionIds.Add(1); // real T5 EOS id, appended by the real tokenizer's post-processor (see UnigramTokenizerTests)
+            encoderHidden = T5Encoder.Forward(_t5Weights, [.. descriptionIds]);
+        }
 
         var promptIds = _tokenizer.Encode(text);
         promptIds.Add(1); // same real T5 EOS convention, matching the real `tokenizer(text).input_ids` call
@@ -317,6 +317,11 @@ public sealed class ParlerFullPipeline : ITextToSpeechPipeline
     {
         if (string.IsNullOrWhiteSpace(text)) yield break;
 
+        var rng = seed >= 0 ? new Random(seed) : new Random(42);
+        var descriptionIds = _tokenizer.Encode(description ?? DefaultDescription);
+        descriptionIds.Add(1);
+        var encoderHidden = T5Encoder.Forward(_t5Weights, [.. descriptionIds]);
+
         var sentences = System.Text.RegularExpressions.Regex.Split(text.Trim(), @"(?<=[.!?,;\n])\s+");
         foreach (var s in sentences)
         {
@@ -324,7 +329,7 @@ public sealed class ParlerFullPipeline : ITextToSpeechPipeline
             if (string.IsNullOrEmpty(trimmed)) continue;
             ct.ThrowIfCancellationRequested();
 
-            var chunkAudio = Synthesize(trimmed, description, maxNewTokens, seed: seed);
+            var chunkAudio = SynthesizeInternal(trimmed, description, maxNewTokens, minNewTokens: 10, rng, encoderHidden);
             if (chunkAudio.Length > 0)
             {
                 yield return chunkAudio;
