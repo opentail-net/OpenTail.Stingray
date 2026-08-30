@@ -397,6 +397,56 @@ public sealed class TtsPerformanceBaselineDebugTest : HeavyTestBase
         File.AppendAllText(Path.Combine(FindRepoFile("docs") ?? ".", "tts-benchmark-log.txt"), msg + "\n\n");
     }
 
+    [Fact]
+    public async Task Streaming_MmsTts()
+    {
+        string? checkpointDir = FindRepoFile("models/mms-tts-eng/model.safetensors") is { } p ? Path.GetDirectoryName(p) : null;
+        Assert.SkipUnless(checkpointDir != null, "MMS-TTS checkpoint not found");
+
+        var pipeline = OpenTail.Stingray.Audio.MmsTts.MmsTtsPipeline.Load(checkpointDir!);
+
+        // Warmup
+        await foreach (var _ in pipeline.GenerateStreamAsync(Prompt, chunkFrames: 16, seed: 42)) break;
+
+        var sw = Stopwatch.StartNew();
+        double ttfaSec = 0;
+        var chunks = new List<float[]>();
+        int totalSamples = 0;
+
+        await foreach (var chunk in pipeline.GenerateStreamAsync(Prompt, chunkFrames: 16, seed: 42))
+        {
+            if (chunks.Count == 0)
+            {
+                ttfaSec = sw.Elapsed.TotalSeconds;
+            }
+            chunks.Add(chunk);
+            totalSamples += chunk.Length;
+        }
+        sw.Stop();
+        double totalSec = sw.Elapsed.TotalSeconds;
+
+        var fullPcm = new float[totalSamples];
+        int offset = 0;
+        foreach (var c in chunks)
+        {
+            Array.Copy(c, 0, fullPcm, offset, c.Length);
+            offset += c.Length;
+        }
+
+        string? outDir = FindRepoFile("docs/audio-samples");
+        if (outDir != null)
+        {
+            string wavPath = Path.Combine(outDir, "mms-tts-streaming-streamed.wav");
+            new AudioGenerationResult(fullPcm, pipeline.DefaultSampleRate).SaveWav(wavPath);
+        }
+
+        double audioSec = (double)totalSamples / pipeline.DefaultSampleRate;
+        string msg = $"[MMS-TTS-Stream-Frame16] prompt=\"{Prompt}\" audio={audioSec:F2}s samples={totalSamples} chunks={chunks.Count}\n" +
+                     $"[MMS-TTS-Stream-Frame16] Time-To-First-Audio (TTFA)={ttfaSec:F3}s TotalTime={totalSec:F3}s";
+        Console.Error.WriteLine(msg);
+        File.AppendAllText(Path.Combine(FindRepoFile("docs") ?? ".", "tts-benchmark-log.txt"), msg + "\n\n");
+    }
+
     private static double Average(double[] values)
     {
         double sum = 0;

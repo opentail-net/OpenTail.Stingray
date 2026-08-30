@@ -8,7 +8,10 @@ namespace OpenTail.Stingray.Audio.Primitives;
 /// Extracted from the original Piper-only implementation so MeloTTS's end-to-end path reuses it.</summary>
 public sealed class GaussianRandom
 {
-    private readonly Random _rng = new();
+    private readonly Random _rng;
+
+    public GaussianRandom() => _rng = new Random();
+    public GaussianRandom(int seed) => _rng = new Random(seed);
 
     public float[] NextArray(int count)
     {

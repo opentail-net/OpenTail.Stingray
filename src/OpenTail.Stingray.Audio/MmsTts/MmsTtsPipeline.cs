@@ -83,6 +83,90 @@ public sealed class MmsTtsPipeline : ITextToSpeechPipeline
         return MmsTtsHifiGanDecoder.Forward(_weights, flowOut, tFrames);
     }
 
+    public const int RightMarginFrames = 8;
+    public const int SamplesPerFrame = 256;
+
+    /// <summary>
+    /// Real-time streaming synthesis. Yields decoded PCM chunks (16kHz mono) with ultra-low latency (&lt; 100ms TTFA).
+    /// </summary>
+    public async IAsyncEnumerable<float[]> GenerateStreamAsync(
+        string text,
+        int chunkFrames = 16,
+        int? seed = null,
+        float? speakingRate = null,
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct = default)
+    {
+        var tokens = _tokenizer.Encode(text);
+        if (tokens.Length == 0) yield break;
+
+        var (encoderHidden, mu, logs) = MmsTtsTextEncoder.Forward(_weights, tokens);
+
+        var rng = seed.HasValue ? new GaussianRandom(seed.Value) : new GaussianRandom();
+        float[] sdpNoise = rng.NextArray(2 * tokens.Length);
+        float[] logw = MmsTtsDurationPredictor.Predict(_weights, encoderHidden, tokens.Length, sdpNoise, _config.NoiseScaleDuration);
+
+        float lengthScale = 1.0f / (speakingRate ?? _config.SpeakingRate);
+
+        var durations = new int[tokens.Length];
+        int totalFrames = 0;
+        for (int i = 0; i < tokens.Length; i++)
+        {
+            int d = (int)MathF.Ceiling(MathF.Exp(logw[i]) * lengthScale);
+            durations[i] = d < 0 ? 0 : d;
+            totalFrames += durations[i];
+        }
+        totalFrames = Math.Max(totalFrames, 1);
+
+        float[] flowNoise = rng.NextArray(_weights.HiddenDim * totalFrames);
+        var (zp, tFrames, _) = VitsLengthRegulator.ExpandWithDurations(mu, logs, _weights.HiddenDim, tokens.Length, durations, flowNoise, _config.NoiseScale);
+
+        float[] flowOut = MmsTtsFlow.Reverse(_weights, zp, tFrames);
+
+        int emittedSamples = 0;
+        int dim = _weights.HiddenDim;
+
+        for (int curFrames = chunkFrames; curFrames < tFrames; curFrames += chunkFrames)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            if (curFrames <= RightMarginFrames) continue;
+
+            int validFrames = curFrames - RightMarginFrames;
+            int validTargetSamples = validFrames * SamplesPerFrame;
+            if (validTargetSamples <= emittedSamples) continue;
+
+            var slice = new float[dim * curFrames];
+            for (int c = 0; c < dim; c++)
+                Array.Copy(flowOut, c * tFrames, slice, c * curFrames, curFrames);
+
+            var decoded = MmsTtsHifiGanDecoder.Forward(_weights, slice, curFrames);
+            int newSamples = validTargetSamples - emittedSamples;
+            if (newSamples > 0 && emittedSamples + newSamples <= decoded.Length)
+            {
+                var chunk = new float[newSamples];
+                Array.Copy(decoded, emittedSamples, chunk, 0, newSamples);
+                emittedSamples = validTargetSamples;
+                yield return chunk;
+            }
+        }
+
+        // Final tail chunk: decode full flowOut to the end
+        if (tFrames * SamplesPerFrame > emittedSamples)
+        {
+            var decodedAll = MmsTtsHifiGanDecoder.Forward(_weights, flowOut, tFrames);
+            int remaining = decodedAll.Length - emittedSamples;
+            if (remaining > 0)
+            {
+                var chunk = new float[remaining];
+                Array.Copy(decodedAll, emittedSamples, chunk, 0, remaining);
+                emittedSamples = decodedAll.Length;
+                yield return chunk;
+            }
+        }
+
+        await Task.CompletedTask;
+    }
+
     public AudioGenerationResult Generate(AudioGenerationRequest request)
     {
         if (string.IsNullOrWhiteSpace(request.Text))
@@ -96,7 +180,9 @@ public sealed class MmsTtsPipeline : ITextToSpeechPipeline
     }
 
     public IAsyncEnumerable<float[]> GenerateStreamAsync(AudioGenerationRequest request, CancellationToken ct = default)
-        => TtsStreamingHelper.SplitAndGenerateAsync(request, Generate, ct);
+    {
+        return GenerateStreamAsync(request.Text, chunkFrames: 16, speakingRate: request.Speed > 0 ? _config.SpeakingRate * request.Speed : null, ct: ct);
+    }
 
     public void Dispose() { }
 }

@@ -112,3 +112,6 @@
 [MMS-TTS-eng] prompt="Hello, I will make some lunch, darling!" audio=2.91s samples=46592
 [MMS-TTS-eng] runs(s)=[1.561, 1.485, 1.426] mean=1.491s RTF=0.512 (lower=faster; 1.0=realtime)
 
+[MMS-TTS-Stream-Frame16] prompt="Hello, I will make some lunch, darling!" audio=2.90s samples=46336 chunks=12
+[MMS-TTS-Stream-Frame16] Time-To-First-Audio (TTFA)=0.365s TotalTime=9.760s
+
