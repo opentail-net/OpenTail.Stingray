@@ -118,6 +118,30 @@ for Wan. Attempting to actually run them surfaced something more significant tha
      this pass — no local checkpoint (`hunyuan_video_720_cfgdistill_fp8_e4m3fn.safetensors` is
      large, not downloaded) and its own text-conditioning wiring wasn't audited.
 
+     **Update (follow-up session, 2026-08-31): downloaded and structurally smoke-tested.**
+     Downloaded the real 13.2GB checkpoint (`Kijai/HunyuanVideo_comfy`) and ran a 1-step, 256x256,
+     zero-conditioning CPU smoke test. Real, clean finding: **the DiT forward pass runs completely
+     through every layer with no tensor errors** -- `HunyuanVideoModel`'s real multi-candidate
+     tensor-name/config detection (dim, head count, double/single block depth all auto-detected
+     from real tensor shapes) is structurally correct against this real checkpoint, a meaningfully
+     better starting state than Wan's DiT had before its fixes. The run fails only at VAE decode
+     (`Safetensors tensor not found: 'decoder.conv_in.weight'`) -- the exact same bug CLASS Wan had
+     before its VAE rewrite: `HunyuanVideoPipeline.Load()` falls back to the DiT checkpoint itself
+     for VAE tensors when no separate `--vae` is given (this "diffusion_models"-only repackaged
+     checkpoint has none), and even with a real separate HunyuanVideo VAE checkpoint, the generic
+     SD-style `VaeDecoder` class wouldn't match its real tensor names either (HunyuanVideo's real
+     VAE, like Wan's, needs its own dedicated decoder class).
+
+     **Real remaining gaps for a working generation** (not attempted this pass -- each is its own
+     Wan-VAE-sized or larger effort): (1) a real HunyuanVideo VAE checkpoint + a dedicated decoder
+     class written against its real tensor names/architecture (same shape of work as
+     `WanVaeDecoder3D`'s rewrite); (2) real dual text conditioning -- `HunyuanVideoPipeline.Generate`
+     is never even called with a `textContext:` argument in `ImageCommand.cs`'s `RunHunyuanVideo`,
+     same all-zero-conditioning gap Wan had, except HunyuanVideo's real reference needs BOTH a
+     CLIP text encoder AND an LLM (LLaVA/similar) encoder ("Dual Text Conditioning"), a bigger
+     integration than Wan's single UMT5. Deferred as a separate, future multi-session item -- the
+     DiT itself being structurally sound is the real, valuable finding to keep from this pass.
+
 ## Scope note
 
 RealESRGAN, Z-Image-Turbo, SD1.5, and SDXL-Turbo have real local weights and confirmed real,

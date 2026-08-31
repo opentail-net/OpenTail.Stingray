@@ -51,7 +51,7 @@ Sourced from [`docs/audio-review-progress.md`](docs/audio-review-progress.md) an
 | Z-Image-Turbo | 🟡 | 👂 | Vulkan (GPU only) | Same model correct on CPU; solid-black output on the Vulkan GPU path specifically — reproducible, not yet root-caused |
 | Wan 2.1 / 2.2 Video | 🔴 | 👂 | CPU / Vulkan / CUDA | Real DiT/VAE bugs fixed (2026-08-31), pipeline runs end-to-end without error, but an 8-step run still shows no convergence toward the prompt — a real bug remains, not yet root-caused |
 | LTX-Video | 🔴 | 🔴 | — | Structural placeholder: transformer weights are never applied, text conditioning is literal random noise |
-| HunyuanVideo | 🔴 | ⚪ | — | Weights load correctly but untested — no local checkpoint, text-conditioning wiring unaudited |
+| HunyuanVideo | 🔴 | ⚪ | — | DiT runs clean through every layer with real weights (2026-08-31 smoke test) — blocked on a real VAE decoder (needs its own class, same as Wan) and real dual CLIP+LLM text conditioning, neither wired yet |
 | FLUX.1, SD3/3.5, Stable Audio | 🔴 | 🔴 | — | Not attempted — no local weights, no download automation yet |
 | Vision (17+ architectures) | — | ⚪ | CPU / CUDA / Vulkan | Extensively implemented (see below); not independently re-verified in the audit pass this table is sourced from |
 
