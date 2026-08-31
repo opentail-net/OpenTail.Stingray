@@ -66,8 +66,19 @@ for Wan. Attempting to actually run them surfaced something more significant tha
      `WanVaeDecoder3D`, which itself needed a full rewrite (see below). **Real, end-to-end 1-step
      CPU run at 256×256 now completes and produces a real, non-degenerate image** (see
      `wan2.1-t2v_red-apple-white-table_CPU-256x256-1step_pipeline-runs-not-converged.png` in this
-     directory) — expected "unconverged flow-matching" appearance at 1 step, not yet verified at a
-     real step count (8-20+) for actual image *correctness*, which is the next real milestone.
+     directory) — expected "unconverged flow-matching" appearance at 1 step.
+
+     **8-step follow-up run (same session): still NOT converging** (see
+     `wan2.1-t2v_red-apple-white-table_CPU-256x256-8steps_NOT-CONVERGING-BUG.png`). At 8 real
+     Euler steps with CFG guidance=6, a working flow-matching pipeline should show clear emerging
+     structure toward the prompt (compare Z-Image-Turbo's real apple shape at just 4 steps,
+     `z-image-turbo_red-apple-on-white-table_CPU-256x256-4steps_GOOD.png`) -- this output looks
+     essentially unchanged from the 1-step image, no red/white/apple-shaped structure at all. This
+     means a real bug remains beyond the ones already fixed (text_embedding MLP, AdaLN modulation,
+     cross-attn pre-norm, VAE tensor names) -- most likely somewhere in the DiT's attention/RoPE,
+     the CFG combination, or the flow-matching schedule itself, not yet root-caused. Flagged as an
+     open, real gap rather than claimed fixed -- do not mark Wan green until a run actually
+     converges.
 
    - **`WanVaeDecoder3D` was ALSO wrong** (found while fixing the above): assumed HuggingFace-
      `diffusers`-renamed tensor keys (`decoder.conv_in`, `decoder.mid_block.resnets.N`,

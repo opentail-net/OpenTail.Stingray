@@ -49,7 +49,7 @@ Sourced from [`docs/audio-review-progress.md`](docs/audio-review-progress.md) an
 | CosyVoice 2 / 3 | 🟡 | 👂 | CPU | Produces real, intelligible, non-buzzing speech; zero-shot voice cloning doesn't yet reliably transfer speaker identity — marked partially supported (2026-08-30) |
 | Stable Diffusion 1.5, SDXL-Turbo, Z-Image-Turbo | 🟢 | 👂 | CPU / Vulkan | Real timed generations confirmed this session — see [diffusion samples](docs/diffusion-samples/README.md) |
 | Z-Image-Turbo | 🟡 | 👂 | Vulkan (GPU only) | Same model correct on CPU; solid-black output on the Vulkan GPU path specifically — reproducible, not yet root-caused |
-| Wan 2.1 / 2.2 Video | 🟡 | 👂 | CPU / Vulkan / CUDA | Real DiT (UMT5 conditioning, AdaLN modulation) and VAE bugs found and fixed (2026-08-31); real end-to-end 1-step run produces a real, non-degenerate image, but not yet verified at a real step count — image *correctness* still unconfirmed |
+| Wan 2.1 / 2.2 Video | 🔴 | 👂 | CPU / Vulkan / CUDA | Real DiT/VAE bugs fixed (2026-08-31), pipeline runs end-to-end without error, but an 8-step run still shows no convergence toward the prompt — a real bug remains, not yet root-caused |
 | LTX-Video | 🔴 | 🔴 | — | Structural placeholder: transformer weights are never applied, text conditioning is literal random noise |
 | HunyuanVideo | 🔴 | ⚪ | — | Weights load correctly but untested — no local checkpoint, text-conditioning wiring unaudited |
 | FLUX.1, SD3/3.5, Stable Audio | 🔴 | 🔴 | — | Not attempted — no local weights, no download automation yet |
