@@ -39,7 +39,7 @@ public static class F5TextEmbedding
     /// directly), while the pad MASK used for zeroing during the ConvNeXt blocks still reflects
     /// the ORIGINAL (pre-drop) token/pad boundary, not "everything is padding".
     /// </summary>
-    public static float[] Forward(F5TtsWeights w, ReadOnlySpan<int> tokens, int numFrames, bool dropText)
+    public static float[] Forward(F5TtsWeights w, ReadOnlySpan<int> tokens, int numFrames, bool dropText, Core.IComputeBackend? backend = null)
     {
         int dim = F5TtsWeights.TextDim;
         int numTokens = tokens.Length;
@@ -75,22 +75,26 @@ public static class F5TextEmbedding
         }
 
         for (int b = 0; b < w.TextBlocks.Length; b++)
-            x = ConvNeXtV2Block(x, numFrames, dim, w.TextBlocks[b]);
+            x = ConvNeXtV2Block(x, numFrames, dim, w.TextBlocks[b], backend);
 
         return x;
     }
 
     /// <summary>ConvNeXtV2Block.forward: residual + pwconv2(grn(gelu(pwconv1(layernorm(dwconv(x)))))).</summary>
-    private static float[] ConvNeXtV2Block(float[] x, int t, int dim, F5TextBlockWeights bw)
+    private static float[] ConvNeXtV2Block(float[] x, int t, int dim, F5TextBlockWeights bw, Core.IComputeBackend? backend = null)
     {
         var h = F5Kernels.DepthwiseConv1dSamePad(x, t, dim, bw.DwConvWeight, bw.DwConvBias, kernel: 7);
         h = F5Kernels.LayerNorm(h, t, dim, bw.NormWeight, bw.NormBias);
 
         int inter = bw.PwConv1Bias.Length;
-        h = F5Kernels.Linear(h, t, dim, bw.PwConv1Weight, bw.PwConv1Bias, inter);
+        h = backend is not null
+            ? F5Kernels.LinearGpu(backend, h, t, dim, bw.PwConv1Weight, bw.PwConv1Bias, inter)
+            : F5Kernels.Linear(h, t, dim, bw.PwConv1Weight, bw.PwConv1Bias, inter);
         for (int i = 0; i < h.Length; i++) h[i] = F5Kernels.GeluExact(h[i]);
         h = F5Kernels.Grn(h, t, inter, bw.GrnGamma, bw.GrnBeta);
-        h = F5Kernels.Linear(h, t, inter, bw.PwConv2Weight, bw.PwConv2Bias, dim);
+        h = backend is not null
+            ? F5Kernels.LinearGpu(backend, h, t, inter, bw.PwConv2Weight, bw.PwConv2Bias, dim)
+            : F5Kernels.Linear(h, t, inter, bw.PwConv2Weight, bw.PwConv2Bias, dim);
 
         var output = new float[x.Length];
         for (int i = 0; i < output.Length; i++) output[i] = x[i] + h[i];

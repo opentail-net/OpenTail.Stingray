@@ -25,6 +25,7 @@ public sealed class F5TtsPipeline : ITextToSpeechPipeline
     private readonly F5TtsWeights? _weights;
     private readonly F5Tokenizer? _tokenizer;
     private readonly VocosWeights? _vocosWeights;
+    private readonly Core.IComputeBackend? _backend;
 
     public F5TtsPipeline(
         F5MelExtractor? melExtractor = null,
@@ -32,7 +33,8 @@ public sealed class F5TtsPipeline : ITextToSpeechPipeline
         F5VocosVocoder? vocoder = null,
         F5TtsWeights? weights = null,
         F5Tokenizer? tokenizer = null,
-        VocosWeights? vocosWeights = null)
+        VocosWeights? vocosWeights = null,
+        Core.IComputeBackend? backend = null)
     {
         _weights = weights;
         _tokenizer = tokenizer;
@@ -40,6 +42,7 @@ public sealed class F5TtsPipeline : ITextToSpeechPipeline
         _melExtractor = melExtractor ?? new F5MelExtractor();
         _textEncoder = textEncoder ?? new F5TextEncoder();
         _vocoder = vocoder ?? new F5VocosVocoder();
+        _backend = backend;
     }
 
     /// <summary>
@@ -47,9 +50,12 @@ public sealed class F5TtsPipeline : ITextToSpeechPipeline
     /// to `models/f5tts_vocab.txt` next to the weights file if not given (falls back to the fake
     /// text path if neither is found, same as the no-weights constructor). `vocosPath` defaults
     /// to `models/vocos-mel-24khz.safetensors` next to the weights file if not given (falls back
-    /// to the fake vocoder if not found).
+    /// to the fake vocoder if not found). <paramref name="backend"/>, when supplied, routes the
+    /// DiT's Sgemm-shaped projections through it (--backend vulkan, see
+    /// docs/052-vulkan-backend-for-tts-engines-plan.md); the mel extractor and Vocos vocoder stay
+    /// CPU-only regardless.
     /// </summary>
-    public static F5TtsPipeline Load(string safetensorsPath, string? vocabPath = null, string? vocosPath = null)
+    public static F5TtsPipeline Load(string safetensorsPath, string? vocabPath = null, string? vocosPath = null, Core.IComputeBackend? backend = null)
     {
         if (string.IsNullOrWhiteSpace(safetensorsPath) || !File.Exists(safetensorsPath))
             throw new FileNotFoundException($"F5-TTS model file not found: {safetensorsPath}");
@@ -66,7 +72,7 @@ public sealed class F5TtsPipeline : ITextToSpeechPipeline
         string resolvedVocosPath = vocosPath ?? Path.Combine(modelDir, "vocos-mel-24khz.safetensors");
         VocosWeights? vocosWeights = File.Exists(resolvedVocosPath) ? new VocosWeights(resolvedVocosPath) : null;
 
-        return new F5TtsPipeline(melExtractor, textEncoder, vocoder, weights, tokenizer, vocosWeights);
+        return new F5TtsPipeline(melExtractor, textEncoder, vocoder, weights, tokenizer, vocosWeights, backend);
     }
 
     /// <summary>
@@ -135,7 +141,7 @@ public sealed class F5TtsPipeline : ITextToSpeechPipeline
         if (_weights is not null && _tokenizer is not null)
         {
             int[] tokens = _tokenizer.Encode(fullText);
-            generatedMel = F5FlowMatchingOde.Solve(_weights, condMel, tokens, totalFrames, steps: 16, cfgStrength: 1.0f, swaySamplingCoef: -1.0f);
+            generatedMel = F5FlowMatchingOde.Solve(_weights, condMel, tokens, totalFrames, steps: 16, cfgStrength: 1.0f, swaySamplingCoef: -1.0f, backend: _backend);
         }
         else
         {

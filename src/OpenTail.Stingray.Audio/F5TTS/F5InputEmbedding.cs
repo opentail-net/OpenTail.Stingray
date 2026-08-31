@@ -6,7 +6,7 @@ namespace OpenTail.Stingray.Audio.F5TTS;
 public static class F5InputEmbedding
 {
     /// <summary>x/cond are [numFrames, MelDim] (channel-last), textEmbed is [numFrames, TextDim]. Returns [numFrames, HiddenDim].</summary>
-    public static float[] Forward(F5TtsWeights w, float[] x, float[] cond, float[] textEmbed, int numFrames)
+    public static float[] Forward(F5TtsWeights w, float[] x, float[] cond, float[] textEmbed, int numFrames, Core.IComputeBackend? backend = null)
     {
         int melDim = F5TtsWeights.MelDim;
         int textDim = F5TtsWeights.TextDim;
@@ -24,7 +24,9 @@ public static class F5InputEmbedding
             System.Array.Copy(textEmbed, textOff, concat, outOff + 2 * melDim, textDim);
         }
 
-        var h = F5Kernels.Linear(concat, numFrames, concatDim, w.InputProjWeight, w.InputProjBias, hidden);
+        var h = backend is not null
+            ? F5Kernels.LinearGpu(backend, concat, numFrames, concatDim, w.InputProjWeight, w.InputProjBias, hidden)
+            : F5Kernels.Linear(concat, numFrames, concatDim, w.InputProjWeight, w.InputProjBias, hidden);
 
         var pos = ConvPositionEmbedding(w, h, numFrames, hidden);
         var output = new float[h.Length];

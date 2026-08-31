@@ -26,7 +26,8 @@ public static class F5FlowMatchingOde
         float cfgStrength = 1.0f,
         float swaySamplingCoef = -1.0f,
         float cfgDecayCutoff = 0.55f,
-        int seed = 42)
+        int seed = 42,
+        Core.IComputeBackend? backend = null)
     {
         int melDim = F5TtsWeights.MelDim;
         var rng = new Random(seed);
@@ -48,7 +49,15 @@ public static class F5FlowMatchingOde
         float[] textEmbedCond = null!, textEmbedUncond = null!;
         if (cfgStrength < 1e-5f)
         {
-            textEmbedCond = F5TextEmbedding.Forward(w, tokenArray, numFrames, dropText: false);
+            textEmbedCond = F5TextEmbedding.Forward(w, tokenArray, numFrames, dropText: false, backend);
+        }
+        else if (backend is not null)
+        {
+            // Same reasoning as Chatterbox/CosyVoice3: IComputeBackend isn't verified thread-safe
+            // for concurrent dispatch from two threads onto one instance -- serialize instead of
+            // Parallel.Invoke when GPU-backed.
+            textEmbedCond = F5TextEmbedding.Forward(w, tokenArray, numFrames, dropText: false, backend);
+            textEmbedUncond = F5TextEmbedding.Forward(w, tokenArray, numFrames, dropText: true, backend);
         }
         else
         {
@@ -76,15 +85,25 @@ public static class F5FlowMatchingOde
             float[] v;
             if (currentCfg < 1e-5f)
             {
-                v = F5DiTModel.ForwardVelocity(w, x, condMel, textEmbedCond, t, numFrames, rotaryCos, rotarySin);
+                v = F5DiTModel.ForwardVelocity(w, x, condMel, textEmbedCond, t, numFrames, rotaryCos, rotarySin, backend);
             }
             else
             {
-                float[] vCond = null!, vUncond = null!;
-                Parallel.Invoke(
-                    () => vCond = F5DiTModel.ForwardVelocity(w, x, condMel, textEmbedCond, t, numFrames, rotaryCos, rotarySin),
-                    () => vUncond = F5DiTModel.ForwardVelocity(w, x, nullCond, textEmbedUncond, t, numFrames, rotaryCos, rotarySin)
-                );
+                float[] vCond, vUncond;
+                if (backend is not null)
+                {
+                    vCond = F5DiTModel.ForwardVelocity(w, x, condMel, textEmbedCond, t, numFrames, rotaryCos, rotarySin, backend);
+                    vUncond = F5DiTModel.ForwardVelocity(w, x, nullCond, textEmbedUncond, t, numFrames, rotaryCos, rotarySin, backend);
+                }
+                else
+                {
+                    float[] vc = null!, vu = null!;
+                    Parallel.Invoke(
+                        () => vc = F5DiTModel.ForwardVelocity(w, x, condMel, textEmbedCond, t, numFrames, rotaryCos, rotarySin),
+                        () => vu = F5DiTModel.ForwardVelocity(w, x, nullCond, textEmbedUncond, t, numFrames, rotaryCos, rotarySin)
+                    );
+                    vCond = vc; vUncond = vu;
+                }
                 v = new float[vCond.Length];
                 System.Numerics.Tensors.TensorPrimitives.Subtract(vCond, vUncond, v);
                 System.Numerics.Tensors.TensorPrimitives.MultiplyAdd(v, currentCfg, vCond, v);

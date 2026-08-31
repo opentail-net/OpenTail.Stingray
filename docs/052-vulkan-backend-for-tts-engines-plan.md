@@ -97,11 +97,33 @@ free 2x CPU-side parallelism from serializing the CFG cond/uncond branches for G
 Real and expected on this machine's weak iGPU per the user's own instruction -- not a blocker,
 option ships regardless.
 
-### 3. F5-TTS — TODO
+### 3. F5-TTS — DONE
 
-DiT flow-matching, own kernel implementation under `src/OpenTail.Stingray.Audio/F5TTS/`. Same
-hybrid-port approach. Wire via `F5TtsPipeline.Load(..., backend:)`. A/B against README's recorded
-12.965x CPU RTF.
+Own kernel set under `src/OpenTail.Stingray.Audio/F5TTS/` (`F5Kernels.cs`, shared with
+CosyVoice3's DiT). Unlike CosyVoice3, F5-TTS's own DiT blocks (`F5DiTBlock.cs`, `F5DiTModel.cs`)
+use **Q8_0-quantized** weights (`LinearQ8_0`, raw `byte[]`) for every attention/FFN projection,
+not plain F32 — `IComputeBackend` has no Q8_0 GPU dequant (only Q4_K/Q5_K via
+`SupportsGpuDequant`), so added `F5Kernels.LinearGpuQ8_0`: dequantizes to F32 on CPU once (cached
+by the raw Q8_0 array's own identity, `ConditionalWeakTable<byte[], Tensor>`), uploads that F32
+once, same Sgemm dispatch as `LinearGpu` after that. `F5TimestepEmbedding`/`F5InputEmbedding`'s
+initial proj/`F5TextEmbedding`'s ConvNeXt pointwise convs use plain F32 weights (`LinearGpu`
+instead). Threaded `IComputeBackend?` through `F5FlowMatchingOde.Solve` →
+`F5DiTModel.ForwardVelocity`/`F5TextEmbedding.Forward` → `F5DiTBlock.Forward` →
+`Attention`/`FeedForward`. Same CFG-branch serialization fix as the other two engines, applied at
+**two** sites here (the text-embedding cond/uncond `Parallel.Invoke` AND the per-step velocity
+cond/uncond `Parallel.Invoke`).
+
+**Wired via**: `TtsCommand.cs`'s `--backend vulkan` → `F5TtsPipeline.Load(..., backend:)`.
+
+**Verified**: `F5DiTModelTests` (exercises `F5DiTModel.ForwardVelocity`, the code actually touched)
+passes unchanged under `STINGRAY_RUN_HEAVY_TESTS=1`.
+
+Real A/B on this machine, same reference sentence: **CPU 12.98x RTF vs GPU 25.41x RTF — GPU ~2x
+slower here** (both outputs identical byte length, real/non-degenerate). Consistent with the
+established pattern (per-op dispatch overhead across F5-TTS's 22 layers × 16 ODE steps, serialized
+CFG losing free CPU parallelism, plus the one-time Q8_0→F32 dequant cost this engine specifically
+pays that the others don't). Real and expected on this machine; ships regardless per user
+instruction.
 
 ### 4. FishSpeech S2 Pro — TODO
 

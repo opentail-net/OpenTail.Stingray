@@ -107,7 +107,7 @@ public sealed class TtsCommand : Command<TtsCommand.Settings>
                     ? PiperPipeline.FromConfigFile(s.ModelPath)
                     : throw new ArgumentException("--model (-m) is required for the piper engine (path to .onnx.json config)."),
                 "f5" or "f5tts" or "f5-tts" => s.ModelPath is not null
-                    ? F5TtsPipeline.Load(s.ModelPath)
+                    ? F5TtsPipeline.Load(s.ModelPath, backend: gpuBackend)
                     : throw new ArgumentException("--model (-m) is required for the f5tts engine (path to .safetensors model file)."),
                 "chatterbox" or "chatterbox-turbo" =>
                     ChatterboxPipeline.Load(s.ModelPath ?? ResolveChatterboxModelPath(), backend: gpuBackend),

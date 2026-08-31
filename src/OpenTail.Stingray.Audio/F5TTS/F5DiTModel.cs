@@ -25,7 +25,9 @@ public static class F5DiTModel
         return ForwardVelocity(w, x, cond, textEmbed, timestep, numFrames, rotaryCos, rotarySin);
     }
 
-    /// <summary>Optimized forward pass accepting precomputed/cached textEmbed, rotaryCos, and rotarySin to avoid redundant recomputations across ODE steps.</summary>
+    /// <summary>Optimized forward pass accepting precomputed/cached textEmbed, rotaryCos, and rotarySin to avoid redundant recomputations across ODE steps.
+    /// <paramref name="backend"/>, when supplied, routes every Sgemm-shaped op through it (--backend
+    /// vulkan, see docs/052-vulkan-backend-for-tts-engines-plan.md).</summary>
     public static float[] ForwardVelocity(
         F5TtsWeights w,
         float[] x,
@@ -34,23 +36,28 @@ public static class F5DiTModel
         float timestep,
         int numFrames,
         float[] rotaryCos,
-        float[] rotarySin)
+        float[] rotarySin,
+        Core.IComputeBackend? backend = null)
     {
-        var h = F5InputEmbedding.Forward(w, x, cond, textEmbed, numFrames);
-        var tEmb = F5TimestepEmbedding.Forward(w, timestep);
+        var h = F5InputEmbedding.Forward(w, x, cond, textEmbed, numFrames, backend);
+        var tEmb = F5TimestepEmbedding.Forward(w, timestep, backend);
 
         for (int layer = 0; layer < F5TtsWeights.NumLayers; layer++)
-            h = F5DiTBlock.Forward(w, w.Blocks[layer], h, tEmb, numFrames, rotaryCos, rotarySin);
+            h = F5DiTBlock.Forward(w, w.Blocks[layer], h, tEmb, numFrames, rotaryCos, rotarySin, backend);
 
         // norm_out: AdaLayerNorm_Final -- emb = linear(silu(t)) -> chunk2(scale,shift); x = LN_noaffine(x)*(1+scale)+shift.
         int dim = F5TtsWeights.HiddenDim;
         var siluT = new float[dim];
         for (int d = 0; d < dim; d++) siluT[d] = F5Kernels.SiLU(tEmb[d]);
-        var modulation = F5Kernels.LinearQ8_0(siluT, 1, dim, w.NormOutLinearQ8, w.NormOutLinearBias, dim * 2);
+        var modulation = backend is not null
+            ? F5Kernels.LinearGpuQ8_0(backend, siluT, 1, dim, w.NormOutLinearQ8, w.NormOutLinearBias, dim * 2)
+            : F5Kernels.LinearQ8_0(siluT, 1, dim, w.NormOutLinearQ8, w.NormOutLinearBias, dim * 2);
 
         var normOut = F5Kernels.LayerNormNoAffine(h, numFrames, dim);
         F5Kernels.ApplyAffineModulationSlice(normOut, normOut, modulation, scaleOffset: 0, shiftOffset: dim, numFrames, dim);
 
-        return F5Kernels.LinearQ8_0(normOut, numFrames, dim, w.ProjOutQ8, w.ProjOutBias, F5TtsWeights.MelDim);
+        return backend is not null
+            ? F5Kernels.LinearGpuQ8_0(backend, normOut, numFrames, dim, w.ProjOutQ8, w.ProjOutBias, F5TtsWeights.MelDim)
+            : F5Kernels.LinearQ8_0(normOut, numFrames, dim, w.ProjOutQ8, w.ProjOutBias, F5TtsWeights.MelDim);
     }
 }

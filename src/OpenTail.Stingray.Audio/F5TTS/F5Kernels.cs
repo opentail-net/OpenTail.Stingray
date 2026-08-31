@@ -100,6 +100,53 @@ public static class F5Kernels
         return y;
     }
 
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<byte[], CoreTensor> GpuWeightCacheQ8 = new();
+
+    /// <summary>GPU-dispatched equivalent of <see cref="LinearQ8_0"/> via an <see cref="IComputeBackend"/>
+    /// (--backend vulkan). No Q8_0 GPU dequant exists on <see cref="IComputeBackend"/> (only Q4_K/
+    /// Q5_K, see <see cref="IComputeBackend.SupportsGpuDequant"/>), so the weight is dequantized to
+    /// F32 on the CPU once (cached by the raw Q8_0 array's own identity) and uploaded as F32 --
+    /// same one-time cost model as <see cref="LinearGpu"/>'s direct F32 upload.</summary>
+    public static unsafe float[] LinearGpuQ8_0(IComputeBackend backend, float[] x, int t, int inDim, byte[] q8Weight, float[]? bias, int outDim)
+    {
+        if (!GpuWeightCacheQ8.TryGetValue(q8Weight, out var wGpu))
+        {
+            int count = outDim * inDim;
+            var f32 = new float[count];
+            Cpu.Dequantize.ToFloat32(q8Weight, f32, DType.Q8_0, count);
+            wGpu = backend.Upload(f32, TensorShape.D1(count), exact: true);
+            GpuWeightCacheQ8.Add(q8Weight, wGpu);
+        }
+
+        var xGpu = backend.Upload(x, TensorShape.D1(t * inDim));
+        var cGpu = backend.Allocate(TensorShape.D1(t * outDim));
+        var y = new float[t * outDim];
+        try
+        {
+            backend.Sgemm(cGpu, xGpu, wGpu, t, inDim, outDim);
+            backend.Synchronize();
+            backend.Download(cGpu, y);
+        }
+        finally
+        {
+            backend.Free(xGpu);
+            backend.Free(cGpu);
+        }
+
+        if (bias is not null)
+        {
+            fixed (float* yp = y, bp = bias)
+            {
+                for (int row = 0; row < t; row++)
+                {
+                    float* yRow = yp + row * outDim;
+                    for (int o = 0; o < outDim; o++) yRow[o] += bp[o];
+                }
+            }
+        }
+        return y;
+    }
+
     /// <summary>Per-timestep Linear with Q8_0 weights: y[t,o] = bias[o] + MatVecQ8_0(weight, x[t]).</summary>
     public static unsafe float[] LinearQ8_0(float[] x, int t, int inDim, byte[] q8Weight, float[]? bias, int outDim)
     {

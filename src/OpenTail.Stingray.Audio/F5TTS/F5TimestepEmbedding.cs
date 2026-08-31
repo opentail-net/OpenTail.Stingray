@@ -4,7 +4,7 @@ namespace OpenTail.Stingray.Audio.F5TTS;
 /// <summary>F5-TTS's `TimestepEmbedding`: SinusPositionEmbedding(256) -> Linear(256,1024) -> SiLU -> Linear(1024,1024).</summary>
 public static class F5TimestepEmbedding
 {
-    public static float[] Forward(F5TtsWeights w, float timestep)
+    public static float[] Forward(F5TtsWeights w, float timestep, Core.IComputeBackend? backend = null)
     {
         int freqDim = F5TtsWeights.TimeFreqDim;
         int halfDim = freqDim / 2;
@@ -21,8 +21,12 @@ public static class F5TimestepEmbedding
             sinusEmbed[halfDim + k] = MathF.Cos(angle);
         }
 
-        var h = F5Kernels.Linear(sinusEmbed, 1, freqDim, w.TimeMlp0Weight, w.TimeMlp0Bias, F5TtsWeights.HiddenDim);
+        var h = backend is not null
+            ? F5Kernels.LinearGpu(backend, sinusEmbed, 1, freqDim, w.TimeMlp0Weight, w.TimeMlp0Bias, F5TtsWeights.HiddenDim)
+            : F5Kernels.Linear(sinusEmbed, 1, freqDim, w.TimeMlp0Weight, w.TimeMlp0Bias, F5TtsWeights.HiddenDim);
         for (int i = 0; i < h.Length; i++) h[i] = F5Kernels.SiLU(h[i]);
-        return F5Kernels.Linear(h, 1, F5TtsWeights.HiddenDim, w.TimeMlp2Weight, w.TimeMlp2Bias, F5TtsWeights.HiddenDim);
+        return backend is not null
+            ? F5Kernels.LinearGpu(backend, h, 1, F5TtsWeights.HiddenDim, w.TimeMlp2Weight, w.TimeMlp2Bias, F5TtsWeights.HiddenDim)
+            : F5Kernels.Linear(h, 1, F5TtsWeights.HiddenDim, w.TimeMlp2Weight, w.TimeMlp2Bias, F5TtsWeights.HiddenDim);
     }
 }
