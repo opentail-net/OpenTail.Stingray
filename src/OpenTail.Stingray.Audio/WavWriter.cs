@@ -74,6 +74,15 @@ public static class WavWriter
 
         stream.Write(header);
 
+        // Check peak magnitude to prevent digital hard clipping if samples exceed [-1.0, 1.0]
+        float maxAbs = 0f;
+        for (int i = 0; i < samples.Length; i++)
+        {
+            float abs = MathF.Abs(samples[i]);
+            if (abs > maxAbs) maxAbs = abs;
+        }
+        float invScale = maxAbs > 1.0f ? 0.95f / maxAbs : 1.0f;
+
         // Convert float samples to 16-bit signed PCM with optional TPDF dither
         byte[] pcmBuffer = new byte[Math.Min(4096, samples.Length * 2)];
         int offset = 0;
@@ -84,7 +93,7 @@ public static class WavWriter
             int count = Math.Min(pcmBuffer.Length / 2, samples.Length - offset);
             for (int i = 0; i < count; i++)
             {
-                short sample16 = QuantizeSample(samples[offset + i], dither, ref rngState);
+                short sample16 = QuantizeSample(samples[offset + i] * invScale, dither, ref rngState);
                 BinaryPrimitives.WriteInt16LittleEndian(pcmBuffer.AsSpan(i * 2, 2), sample16);
             }
             stream.Write(pcmBuffer, 0, count * 2);
