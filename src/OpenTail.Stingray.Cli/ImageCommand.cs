@@ -783,7 +783,7 @@ public sealed class ImageCommand : Command<ImageCommand.Settings>
         if (!deviceNone && deviceIndex >= 0)
         {
             try { gpu = new VulkanBackend(deviceIndex); }
-            catch { }
+            catch (Exception ex) { AnsiConsole.MarkupLine($"[yellow]Note:[/] Vulkan GPU init failed ({Markup.Escape(ex.Message)}); falling back to CPU."); }
         }
 
         AnsiConsole.MarkupLine("[bold]HunyuanVideo Video Diffusion (DiT + Dual Text Conditioning)[/]");
@@ -860,7 +860,7 @@ public sealed class ImageCommand : Command<ImageCommand.Settings>
         if (!deviceNone && deviceIndex >= 0)
         {
             try { gpu = new VulkanBackend(deviceIndex); }
-            catch { }
+            catch (Exception ex) { AnsiConsole.MarkupLine($"[yellow]Note:[/] Vulkan GPU init failed ({Markup.Escape(ex.Message)}); falling back to CPU."); }
         }
 
         AnsiConsole.MarkupLine("[bold]Wan 2.1 / 2.2 Video Diffusion (DiT + UMT5)[/]");
@@ -934,7 +934,7 @@ public sealed class ImageCommand : Command<ImageCommand.Settings>
         if (!deviceNone && deviceIndex >= 0)
         {
             try { gpu = new VulkanBackend(deviceIndex); }
-            catch { }
+            catch (Exception ex) { AnsiConsole.MarkupLine($"[yellow]Note:[/] Vulkan GPU init failed ({Markup.Escape(ex.Message)}); falling back to CPU."); }
         }
 
         AnsiConsole.MarkupLine("[bold]Qwen Image (60-layer MM-DiT + Qwen2.5-VL)[/]");
