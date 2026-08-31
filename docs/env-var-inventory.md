@@ -29,6 +29,10 @@ names are treated as valid, `doctor` would not have flagged it either. The warni
 `STINGRAY_MAX_QUEUE` and the dead entry is out of the registry, so the mistake is now reported with
 a closest-match suggestion.
 
+**Reconciled again 2026-08-31 — `KnownEnvironmentVariables.All` now contains **176** names**
+(added `STINGRAY_DEBUG_COSYVOICE3`, `STINGRAY_DUMP_CONVPOST_PATH`, `STINGRAY_DUMP_CONVPRE_PATH`,
+`STINGRAY_DUMP_STAGE0_PATH`: diagnostic dumps used for audio pipeline and HiFT vocoder validation.)
+
 **Reconciled again 2026-08-28 — `KnownEnvironmentVariables.All` now contains **172** names**
 (added `STINGRAY_DBG_TOKEN_RANK`: a `--verbose-prompt` diagnostic added to `RunCommand.cs` that
 prints a specific token's logit value and rank in the final logits, used while investigating

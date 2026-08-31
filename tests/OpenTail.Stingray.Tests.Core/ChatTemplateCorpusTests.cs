@@ -108,8 +108,20 @@ public sealed class ChatTemplateCorpusTests
         if (Directory.Exists(@"E:\models")) yield return @"E:\models";
     }
 
-    public static IEnumerable<object[]> Corpus() =>
-        DiscoverCorpus().Select(e => new object[] { e.FileName, e.Architecture, e.Template });
+    public static IEnumerable<object?[]> Corpus()
+    {
+        var discovered = DiscoverCorpus();
+        if (discovered.Count == 0)
+        {
+            yield return new object?[] { null, null, null };
+            yield break;
+        }
+
+        foreach (var e in discovered)
+        {
+            yield return new object?[] { e.FileName, e.Architecture, e.Template };
+        }
+    }
 
     /// <summary>
     /// Single-turn render must not raise, must be non-empty, and must contain the user's message
@@ -118,10 +130,12 @@ public sealed class ChatTemplateCorpusTests
     /// </summary>
     [Theory]
     [MemberData(nameof(Corpus))]
-    public void SingleTurn_RendersAndPreservesContent(string fileName, string architecture, JinjaChatTemplate template)
+    public void SingleTurn_RendersAndPreservesContent(string? fileName, string? architecture, JinjaChatTemplate? template)
     {
-        string? rendered = RenderOrFail(template, fileName, architecture, "single-turn", () =>
-            template.Render(new Dictionary<string, object?>
+        Assert.SkipUnless(template is not null, "model fixture not present in this environment");
+
+        string? rendered = RenderOrFail(template!, fileName!, architecture!, "single-turn", () =>
+            template!.Render(new Dictionary<string, object?>
             {
                 ["messages"] = BuildSingleTurn(),
                 ["add_generation_prompt"] = true,
@@ -141,10 +155,12 @@ public sealed class ChatTemplateCorpusTests
     /// </summary>
     [Theory]
     [MemberData(nameof(Corpus))]
-    public void MultiTurn_PreservesContentAndOrder(string fileName, string architecture, JinjaChatTemplate template)
+    public void MultiTurn_PreservesContentAndOrder(string? fileName, string? architecture, JinjaChatTemplate? template)
     {
-        string? rendered = RenderOrFail(template, fileName, architecture, "multi-turn", () =>
-            template.Render(new Dictionary<string, object?>
+        Assert.SkipUnless(template is not null, "model fixture not present in this environment");
+
+        string? rendered = RenderOrFail(template!, fileName!, architecture!, "multi-turn", () =>
+            template!.Render(new Dictionary<string, object?>
             {
                 ["messages"] = BuildMultiTurn(),
                 ["add_generation_prompt"] = true,
@@ -186,10 +202,12 @@ public sealed class ChatTemplateCorpusTests
     /// </summary>
     [Theory]
     [MemberData(nameof(Corpus))]
-    public void WithTools_DoesNotRaise(string fileName, string architecture, JinjaChatTemplate template)
+    public void WithTools_DoesNotRaise(string? fileName, string? architecture, JinjaChatTemplate? template)
     {
-        string? rendered = RenderOrFail(template, fileName, architecture, "with-tools", () =>
-            template.Render(new Dictionary<string, object?>
+        Assert.SkipUnless(template is not null, "model fixture not present in this environment");
+
+        string? rendered = RenderOrFail(template!, fileName!, architecture!, "with-tools", () =>
+            template!.Render(new Dictionary<string, object?>
             {
                 ["messages"] = BuildSingleTurn(),
                 ["add_generation_prompt"] = true,
