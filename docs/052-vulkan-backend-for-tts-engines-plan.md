@@ -67,17 +67,35 @@ real, size-dependent split, GPU 3.4x slower at dim=256 attention width / 4.1x fa
 FFN width, but the CFM decoder — 2 Euler steps — is a small slice of Chatterbox's total time next
 to the T3 acoustic LM's autoregressive decode, so the two effects cancel out end-to-end here).
 
-### 2. CosyVoice 3 — TODO, next up
+### 2. CosyVoice 3 — DONE
 
 Does **not** share `CfmUNetKernels` — has its own DiT (`CosyVoice3DiTModel.cs`,
-`CosyVoice3DiTWeights.cs`). Needs its own, separate `IComputeBackend?` threading through its
-transformer-block linear projections + FFN, same hybrid approach as Chatterbox (Sgemm-shaped ops
-to GPU, conv/norm/activation stay CPU). Check `CosyVoice3DiTModel.cs`'s block structure for the
-real per-op layout before assuming it matches Chatterbox's shape 1:1 (per CLAUDE.md rule 8, verify
-against the real reference math, don't assume). Wire via `CosyVoice3Pipeline.Load(..., backend:)`
-in `TtsCommand.cs`. Verify against whatever golden/structural test already covers CosyVoice3 (grep
-`tests/OpenTail.Stingray.Tests.Audio` for `CosyVoice3`). A/B against the CPU RTF already on record
-(7.476x, README).
+`CosyVoice3DiTWeights.cs`), which itself reuses F5-TTS's `F5Kernels.Linear` for every matmul (the
+two DiTs are tensor-for-tensor architecturally identical per the class's own doc comment). Added
+`F5Kernels.LinearGpu` (a `ConditionalWeakTable<float[], Tensor>`-keyed persistent GPU weight
+cache, since `F5Kernels` operates on raw `float[]` rather than a dedicated weight-wrapper type
+like `CfmLinearWeight`) and a local `Lin(backend, ...)` dispatcher in `CosyVoice3DiTModel`, threaded
+through `ForwardVelocity` → `InputEmbed`/`RunBackbone` → `DiTBlock` → `Attention`/`FeedForward` +
+`TimestepEmbedding`. Conv position embedding (`CausalGroupedConv1d`) stays CPU-only (no GPU conv
+kernel). Same CFG-branch-thread-safety fix as Chatterbox: `SolveFlowMatchingOde`'s cond/uncond
+`Parallel.Invoke` is serialized when GPU-backed.
+
+**Wired via**: `TtsCommand.cs`'s `--backend vulkan` → `CosyVoice3Pipeline.Load(..., backend:)` →
+`SolveFlowMatchingOde`.
+
+**Verified**: `CosyVoice3DiTRunBackboneGoldenTests`/`CosyVoice3DiTModelTests` (the ones that
+actually exercise the code paths touched) still pass with `STINGRAY_RUN_HEAVY_TESTS=1`, no
+regression. (`CosyVoice3DiTInputEmbedGoldenTests` fails on both HEAD and this branch identically —
+confirmed via `git stash` before touching anything — a real, pre-existing, unrelated failure, not
+caused by this work; not investigated further here, out of scope for this plan.)
+
+Real A/B on this machine, same reference sentence: **CPU 7.85x RTF vs GPU 12.82x RTF — GPU is
+genuinely slower here** (both outputs identical length/real, non-degenerate). Attributable to (a)
+the same per-op GPU dispatch overhead the Chatterbox probe measured, at CosyVoice3's larger scale
+across many more ops (10 Euler steps × full DiT stack vs Chatterbox's 2 steps), and (b) losing the
+free 2x CPU-side parallelism from serializing the CFG cond/uncond branches for GPU thread-safety.
+Real and expected on this machine's weak iGPU per the user's own instruction -- not a blocker,
+option ships regardless.
 
 ### 3. F5-TTS — TODO
 

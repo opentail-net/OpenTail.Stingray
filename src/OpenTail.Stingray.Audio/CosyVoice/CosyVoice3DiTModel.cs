@@ -1,4 +1,5 @@
 using OpenTail.Stingray.Audio.F5TTS;
+using OpenTail.Stingray.Core;
 
 namespace OpenTail.Stingray.Audio.CosyVoice;
 
@@ -26,6 +27,14 @@ namespace OpenTail.Stingray.Audio.CosyVoice;
 /// </summary>
 public static class CosyVoice3DiTModel
 {
+    /// <summary>Dispatches to <see cref="F5Kernels.LinearGpu"/> when <paramref name="backend"/> is
+    /// supplied (--backend vulkan), else the existing CPU <see cref="F5Kernels.Linear"/> path.
+    /// See docs/052-vulkan-backend-for-tts-engines-plan.md.</summary>
+    private static float[] Lin(IComputeBackend? backend, float[] x, int t, int inDim, float[] weight, float[]? bias, int outDim) =>
+        backend is not null
+            ? F5Kernels.LinearGpu(backend, x, t, inDim, weight, bias, outDim)
+            : F5Kernels.Linear(x, t, inDim, weight, bias, outDim);
+
     /// <summary>
     /// Full DiT forward pass. x/cond/mu/spks are channel-last [numFrames, MelDim] (spks is
     /// logically per-utterance but passed pre-broadcast to every frame here, matching
@@ -33,10 +42,10 @@ public static class CosyVoice3DiTModel
     /// speaker vector across all frames before calling). Returns predicted velocity,
     /// [numFrames, MelDim].
     /// </summary>
-    public static float[] ForwardVelocity(CosyVoice3DiTWeights w, float[] x, float[] cond, float[] mu, float[] spks, float timestep, int numFrames, float[] rotaryCos, float[] rotarySin)
+    public static float[] ForwardVelocity(CosyVoice3DiTWeights w, float[] x, float[] cond, float[] mu, float[] spks, float timestep, int numFrames, float[] rotaryCos, float[] rotarySin, IComputeBackend? backend = null)
     {
-        var h = InputEmbed(w, x, cond, mu, spks, numFrames);
-        return RunBackbone(w, h, timestep, numFrames, rotaryCos, rotarySin);
+        var h = InputEmbed(w, x, cond, mu, spks, numFrames, backend);
+        return RunBackbone(w, h, timestep, numFrames, rotaryCos, rotarySin, backend);
     }
 
     public static float[] ForwardVelocity(CosyVoice3DiTWeights w, float[] x, float[] cond, float[] mu, float[] spks, float timestep, int numFrames)
@@ -56,7 +65,7 @@ public static class CosyVoice3DiTModel
     /// and unconditional velocity <c>cfgDphiDt</c> (with zero conditioning), combined via
     /// <c>dphi_dt = (1 + cfg_rate) * dphi_dt - cfg_rate * cfg_dphi_dt</c> with <paramref name="cfgRate"/> (default 0.7).</para>
     /// </summary>
-    public static unsafe float[] SolveFlowMatchingOde(CosyVoice3DiTWeights w, float[] cond, float[] mu, float[] spks, int numFrames, int odeSteps, Random rng, float cfgRate = 0.7f)
+    public static unsafe float[] SolveFlowMatchingOde(CosyVoice3DiTWeights w, float[] cond, float[] mu, float[] spks, int numFrames, int odeSteps, Random rng, float cfgRate = 0.7f, IComputeBackend? backend = null)
     {
         int melLen = numFrames * CosyVoice3DiTWeights.MelDim;
         var tSpan = new float[odeSteps + 1];
@@ -82,12 +91,26 @@ public static class CosyVoice3DiTModel
 
             if (cfgRate > 0f && zeroCond != null)
             {
-                float[] dphiDt = null!;
-                float[] cfgDphiDt = null!;
-                Parallel.Invoke(
-                    () => dphiDt = ForwardVelocity(w, x, cond, mu, spks, t, numFrames, rotaryCos, rotarySin),
-                    () => cfgDphiDt = ForwardVelocity(w, x, zeroCond, zeroCond, zeroCond, t, numFrames, rotaryCos, rotarySin)
-                );
+                float[] dphiDt;
+                float[] cfgDphiDt;
+                // Same reasoning as ChatterboxCfmDecoder: IComputeBackend isn't verified
+                // thread-safe for concurrent dispatch from two threads onto one instance, so
+                // serialize the CFG cond/uncond branches when GPU-backed instead of Parallel.Invoke.
+                if (backend is not null)
+                {
+                    dphiDt = ForwardVelocity(w, x, cond, mu, spks, t, numFrames, rotaryCos, rotarySin, backend);
+                    cfgDphiDt = ForwardVelocity(w, x, zeroCond, zeroCond, zeroCond, t, numFrames, rotaryCos, rotarySin, backend);
+                }
+                else
+                {
+                    float[] dCond = null!, dUncond = null!;
+                    Parallel.Invoke(
+                        () => dCond = ForwardVelocity(w, x, cond, mu, spks, t, numFrames, rotaryCos, rotarySin),
+                        () => dUncond = ForwardVelocity(w, x, zeroCond, zeroCond, zeroCond, t, numFrames, rotaryCos, rotarySin)
+                    );
+                    dphiDt = dCond;
+                    cfgDphiDt = dUncond;
+                }
 
                 float condScale = 1f + cfgRate;
                 fixed (float* xp = x, dp = dphiDt, cp = cfgDphiDt)
@@ -115,7 +138,7 @@ public static class CosyVoice3DiTModel
             }
             else
             {
-                var dphiDt = ForwardVelocity(w, x, cond, mu, spks, t, numFrames, rotaryCos, rotarySin);
+                var dphiDt = ForwardVelocity(w, x, cond, mu, spks, t, numFrames, rotaryCos, rotarySin, backend);
                 fixed (float* xp = x, dp = dphiDt)
                 {
                     int i = 0;
@@ -145,23 +168,23 @@ public static class CosyVoice3DiTModel
     }
 
     /// <summary>h is the already-embedded hidden state [numFrames, HiddenDim] (post input_embed -- see this class's doc comment for what's NOT yet implemented upstream of this call). Returns the predicted velocity in mel-space [numFrames, MelDim].</summary>
-    public static float[] RunBackbone(CosyVoice3DiTWeights w, float[] h, float timestep, int numFrames, float[] rotaryCos, float[] rotarySin)
+    public static float[] RunBackbone(CosyVoice3DiTWeights w, float[] h, float timestep, int numFrames, float[] rotaryCos, float[] rotarySin, IComputeBackend? backend = null)
     {
         int dim = CosyVoice3DiTWeights.HiddenDim;
 
-        var tEmb = TimestepEmbedding(w, timestep);
+        var tEmb = TimestepEmbedding(w, timestep, backend);
 
         for (int layer = 0; layer < w.NumLayers; layer++)
-            h = DiTBlock(w.Blocks[layer], h, tEmb, numFrames, rotaryCos, rotarySin);
+            h = DiTBlock(w.Blocks[layer], h, tEmb, numFrames, rotaryCos, rotarySin, backend);
 
         var siluT = new float[dim];
         for (int d = 0; d < dim; d++) siluT[d] = F5Kernels.SiLU(tEmb[d]);
-        var modulation = F5Kernels.Linear(siluT, 1, dim, w.NormOutLinearWeight, w.NormOutLinearBias, dim * 2);
+        var modulation = Lin(backend, siluT, 1, dim, w.NormOutLinearWeight, w.NormOutLinearBias, dim * 2);
 
         var normOut = F5Kernels.LayerNormNoAffine(h, numFrames, dim);
         F5Kernels.ApplyAffineModulationSlice(normOut, normOut, modulation, scaleOffset: 0, shiftOffset: dim, numFrames, dim);
 
-        return F5Kernels.Linear(normOut, numFrames, dim, w.ProjOutWeight, w.ProjOutBias, CosyVoice3DiTWeights.MelDim);
+        return Lin(backend, normOut, numFrames, dim, w.ProjOutWeight, w.ProjOutBias, CosyVoice3DiTWeights.MelDim);
     }
 
     public static float[] RunBackbone(CosyVoice3DiTWeights w, float[] h, float timestep, int numFrames)
@@ -175,7 +198,7 @@ public static class CosyVoice3DiTModel
     /// -> proj -> + ConvPositionEmbedding(kernel=31, groups=16). x/cond/mu/spks are each
     /// channel-last [numFrames, MelDim]; spks is expected already broadcast to every frame.
     /// </summary>
-    public static float[] InputEmbed(CosyVoice3DiTWeights w, float[] x, float[] cond, float[] mu, float[] spks, int numFrames)
+    public static float[] InputEmbed(CosyVoice3DiTWeights w, float[] x, float[] cond, float[] mu, float[] spks, int numFrames, IComputeBackend? backend = null)
     {
         int melDim = CosyVoice3DiTWeights.MelDim;
         int concatDim = melDim * 4;
@@ -191,7 +214,7 @@ public static class CosyVoice3DiTModel
         }
 
         int hidden = CosyVoice3DiTWeights.HiddenDim;
-        var h = F5Kernels.Linear(concatInput, numFrames, concatDim, w.InputProjWeight, w.InputProjBias, hidden);
+        var h = Lin(backend, concatInput, numFrames, concatDim, w.InputProjWeight, w.InputProjBias, hidden);
 
         var pos = CausalGroupedConv1d(h, numFrames, hidden, w.ConvPos1Weight, w.ConvPos1Bias, CosyVoice3DiTWeights.ConvPosKernel, CosyVoice3DiTWeights.ConvPosGroups);
         for (int i = 0; i < pos.Length; i++) pos[i] = F5Kernels.Mish(pos[i]);
@@ -237,7 +260,7 @@ public static class CosyVoice3DiTModel
         return y;
     }
 
-    private static float[] TimestepEmbedding(CosyVoice3DiTWeights w, float timestep)
+    private static float[] TimestepEmbedding(CosyVoice3DiTWeights w, float timestep, IComputeBackend? backend = null)
     {
         int freqDim = CosyVoice3DiTWeights.TimeFreqDim;
         int halfDim = freqDim / 2;
@@ -252,9 +275,9 @@ public static class CosyVoice3DiTModel
             sinusEmbed[halfDim + k] = MathF.Cos(angle);
         }
 
-        var h = F5Kernels.Linear(sinusEmbed, 1, freqDim, w.TimeMlp0Weight, w.TimeMlp0Bias, CosyVoice3DiTWeights.HiddenDim);
+        var h = Lin(backend, sinusEmbed, 1, freqDim, w.TimeMlp0Weight, w.TimeMlp0Bias, CosyVoice3DiTWeights.HiddenDim);
         for (int i = 0; i < h.Length; i++) h[i] = F5Kernels.SiLU(h[i]);
-        return F5Kernels.Linear(h, 1, CosyVoice3DiTWeights.HiddenDim, w.TimeMlp2Weight, w.TimeMlp2Bias, CosyVoice3DiTWeights.HiddenDim);
+        return Lin(backend, h, 1, CosyVoice3DiTWeights.HiddenDim, w.TimeMlp2Weight, w.TimeMlp2Bias, CosyVoice3DiTWeights.HiddenDim);
     }
 
     /// <summary>Same RoPE base/formula F5-TTS's `F5RotaryEmbedding` uses (theta=10000, standard `x_transformers` convention) -- confirmed applicable since head_dim (64) matches exactly; not yet cross-checked against `examples/cosyvoice.cpp`'s own RoPE construction, flagged alongside the input_embed gap above.</summary>
@@ -267,18 +290,18 @@ public static class CosyVoice3DiTModel
         return invFreq;
     }
 
-    private static float[] DiTBlock(CosyVoice3DiTBlockWeights bw, float[] x, float[] tEmb, int t, float[] rotaryCos, float[] rotarySin)
+    private static float[] DiTBlock(CosyVoice3DiTBlockWeights bw, float[] x, float[] tEmb, int t, float[] rotaryCos, float[] rotarySin, IComputeBackend? backend = null)
     {
         int dim = CosyVoice3DiTWeights.HiddenDim;
 
         var siluT = new float[dim];
         for (int d = 0; d < dim; d++) siluT[d] = F5Kernels.SiLU(tEmb[d]);
-        var modulation = F5Kernels.Linear(siluT, 1, dim, bw.AttnNormLinearWeight, bw.AttnNormLinearBias, dim * 6);
+        var modulation = Lin(backend, siluT, 1, dim, bw.AttnNormLinearWeight, bw.AttnNormLinearBias, dim * 6);
 
         var norm = F5Kernels.LayerNormNoAffine(x, t, dim);
         F5Kernels.ApplyAffineModulationSlice(norm, norm, modulation, 1 * dim, 0 * dim, t, dim);
 
-        var attnOut = Attention(bw, norm, t, rotaryCos, rotarySin);
+        var attnOut = Attention(bw, norm, t, rotaryCos, rotarySin, backend);
 
         var xAfterAttn = new float[x.Length];
         F5Kernels.ApplyGatedResidualSlice(xAfterAttn, x, modulation, 2 * dim, attnOut, t, dim);
@@ -286,25 +309,25 @@ public static class CosyVoice3DiTModel
         var ffNorm = F5Kernels.LayerNormNoAffine(xAfterAttn, t, dim);
         F5Kernels.ApplyAffineModulationSlice(ffNorm, ffNorm, modulation, 4 * dim, 3 * dim, t, dim);
 
-        var ffOut = FeedForward(bw, ffNorm, t);
+        var ffOut = FeedForward(bw, ffNorm, t, backend);
 
         var output = new float[x.Length];
         F5Kernels.ApplyGatedResidualSlice(output, xAfterAttn, modulation, 5 * dim, ffOut, t, dim);
         return output;
     }
 
-    private static float[] FeedForward(CosyVoice3DiTBlockWeights bw, float[] x, int t)
+    private static float[] FeedForward(CosyVoice3DiTBlockWeights bw, float[] x, int t, IComputeBackend? backend = null)
     {
         int dim = CosyVoice3DiTWeights.HiddenDim;
         int ffn = CosyVoice3DiTWeights.FfnDim;
-        var h = F5Kernels.Linear(x, t, dim, bw.FfInWeight, bw.FfInBias, ffn);
+        var h = Lin(backend, x, t, dim, bw.FfInWeight, bw.FfInBias, ffn);
         Parallel.For(0, t, ti =>
         {
             int off = ti * ffn;
             for (int d = 0; d < ffn; d++)
                 h[off + d] = GeluErf(h[off + d]);
         });
-        return F5Kernels.Linear(h, t, ffn, bw.FfOutWeight, bw.FfOutBias, dim);
+        return Lin(backend, h, t, ffn, bw.FfOutWeight, bw.FfOutBias, dim);
     }
 
     /// <summary>
@@ -336,20 +359,20 @@ public static class CosyVoice3DiTModel
     }
 
     /// <summary>See <see cref="F5Kernels.ApplyRotary"/>/<see cref="F5Kernels.MultiHeadSelfAttention"/> (shared with F5-TTS's tensor-for-tensor-identical DiT).</summary>
-    private static float[] Attention(CosyVoice3DiTBlockWeights bw, float[] norm, int t, float[] rotaryCos, float[] rotarySin)
+    private static float[] Attention(CosyVoice3DiTBlockWeights bw, float[] norm, int t, float[] rotaryCos, float[] rotarySin, IComputeBackend? backend = null)
     {
         int dim = CosyVoice3DiTWeights.HiddenDim;
         int heads = CosyVoice3DiTWeights.NumHeads;
         int headDim = CosyVoice3DiTWeights.HeadDim;
 
-        var q = F5Kernels.Linear(norm, t, dim, bw.ToQWeight, bw.ToQBias, dim);
-        var k = F5Kernels.Linear(norm, t, dim, bw.ToKWeight, bw.ToKBias, dim);
-        var v = F5Kernels.Linear(norm, t, dim, bw.ToVWeight, bw.ToVBias, dim);
+        var q = Lin(backend, norm, t, dim, bw.ToQWeight, bw.ToQBias, dim);
+        var k = Lin(backend, norm, t, dim, bw.ToKWeight, bw.ToKBias, dim);
+        var v = Lin(backend, norm, t, dim, bw.ToVWeight, bw.ToVBias, dim);
 
         F5Kernels.ApplyRotary(q, t, heads, headDim, rotaryCos, rotarySin);
         F5Kernels.ApplyRotary(k, t, heads, headDim, rotaryCos, rotarySin);
 
         var context = F5Kernels.MultiHeadSelfAttention(q, k, v, t, heads, headDim);
-        return F5Kernels.Linear(context, t, dim, bw.ToOutWeight, bw.ToOutBias, dim);
+        return Lin(backend, context, t, dim, bw.ToOutWeight, bw.ToOutBias, dim);
     }
 }

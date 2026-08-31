@@ -115,7 +115,7 @@ public sealed class TtsCommand : Command<TtsCommand.Settings>
                     ? MeloPipeline.Load(s.ModelPath)
                     : throw new ArgumentException("--model (-m) is required for the melo engine (path to model file)."),
                 "cosyvoice" or "cosyvoice3" or "cosy" =>
-                    CosyVoice3Pipeline.Load(s.ModelPath ?? ResolveCosyVoiceModelPath()),
+                    CosyVoice3Pipeline.Load(s.ModelPath ?? ResolveCosyVoiceModelPath(), backend: gpuBackend),
                 "parler" or "parler-tts" or "parlertts" =>
                     ParlerFullPipeline.Load(s.ModelPath ?? ResolveParlerModelPath()),
                 "qwen" or "qwentts" or "qwen-tts" or "qwen-talker" =>

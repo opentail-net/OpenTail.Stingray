@@ -1,3 +1,5 @@
+using CoreTensor = OpenTail.Stingray.Core.Tensor;
+using OpenTail.Stingray.Core;
 
 namespace OpenTail.Stingray.Audio.F5TTS;
 
@@ -43,6 +45,55 @@ public static class F5Kernels
                             yRow[o] = b + OpenTail.Stingray.Cpu.SimdKernels.DotF32(wpLocal + o * inDim, xRow, inDim);
                         }
                     });
+                }
+            }
+        }
+        return y;
+    }
+
+    // Per-weight-array persistent GPU tensor cache for the --backend vulkan path (see docs/052-
+    // vulkan-backend-for-tts-engines-plan.md). Keyed by the weight array's own reference identity
+    // (each DiT block's weight array is a distinct, stable instance for the pipeline's lifetime),
+    // so weights upload once and every subsequent call reuses the cached GPU tensor -- same
+    // convention as CfmLinearWeight.GpuMatMul (Primitives), just keyed externally since F5Kernels
+    // operates on raw float[] rather than a dedicated weight-wrapper type.
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<float[], CoreTensor> GpuWeightCache = new();
+
+    /// <summary>GPU-dispatched equivalent of <see cref="Linear"/> via an <see cref="IComputeBackend"/>
+    /// (--backend vulkan): y[t,o] = bias[o] + weight[o,:] . x[t,:]. Weight uploaded once (cached by
+    /// array identity) and reused; bias added on CPU after download (negligible next to the matmul,
+    /// no fused bias-add on the generic backend surface).</summary>
+    public static unsafe float[] LinearGpu(IComputeBackend backend, float[] x, int t, int inDim, float[] weight, float[]? bias, int outDim)
+    {
+        if (!GpuWeightCache.TryGetValue(weight, out var wGpu))
+        {
+            wGpu = backend.Upload(weight, TensorShape.D1(weight.Length), exact: true);
+            GpuWeightCache.Add(weight, wGpu);
+        }
+
+        var xGpu = backend.Upload(x, TensorShape.D1(t * inDim));
+        var cGpu = backend.Allocate(TensorShape.D1(t * outDim));
+        var y = new float[t * outDim];
+        try
+        {
+            backend.Sgemm(cGpu, xGpu, wGpu, t, inDim, outDim);
+            backend.Synchronize();
+            backend.Download(cGpu, y);
+        }
+        finally
+        {
+            backend.Free(xGpu);
+            backend.Free(cGpu);
+        }
+
+        if (bias is not null)
+        {
+            fixed (float* yp = y, bp = bias)
+            {
+                for (int row = 0; row < t; row++)
+                {
+                    float* yRow = yp + row * outDim;
+                    for (int o = 0; o < outDim; o++) yRow[o] += bp[o];
                 }
             }
         }

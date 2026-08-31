@@ -47,8 +47,9 @@ public sealed class CosyVoice3Pipeline : ITextToSpeechPipeline
     private readonly CosyVoice3HiftWeights _hiftWeights;
     private readonly string? _campplusOnnxPath;
     private readonly string? _speechTokenizerOnnxPath;
+    private readonly Core.IComputeBackend? _backend;
 
-    private CosyVoice3Pipeline(GgufModel rawModel, CosyVoice3LlmTensorSource llmSource, CosyVoice3FlowEncoderWeights flowWeights, CosyVoice3DiTWeights ditWeights, CosyVoice3HiftWeights hiftWeights, string? campplusOnnxPath, string? speechTokenizerOnnxPath)
+    private CosyVoice3Pipeline(GgufModel rawModel, CosyVoice3LlmTensorSource llmSource, CosyVoice3FlowEncoderWeights flowWeights, CosyVoice3DiTWeights ditWeights, CosyVoice3HiftWeights hiftWeights, string? campplusOnnxPath, string? speechTokenizerOnnxPath, Core.IComputeBackend? backend = null)
     {
         _rawModel = rawModel;
         _llmSource = llmSource;
@@ -57,10 +58,15 @@ public sealed class CosyVoice3Pipeline : ITextToSpeechPipeline
         _hiftWeights = hiftWeights;
         _campplusOnnxPath = campplusOnnxPath;
         _speechTokenizerOnnxPath = speechTokenizerOnnxPath;
+        _backend = backend;
     }
 
-    /// <summary>Loads all real CosyVoice3 weights from the single bundled GGUF file.</summary>
-    public static CosyVoice3Pipeline Load(string ggufPath)
+    /// <summary>Loads all real CosyVoice3 weights from the single bundled GGUF file.
+    /// <paramref name="backend"/>, when supplied, routes the flow-matching DiT's Sgemm-shaped
+    /// projections through it (--backend vulkan option, see
+    /// docs/052-vulkan-backend-for-tts-engines-plan.md); the LLM, ConvPositionEmbedding, and
+    /// HiFTGenerator vocoder stay CPU-only regardless.</summary>
+    public static CosyVoice3Pipeline Load(string ggufPath, Core.IComputeBackend? backend = null)
     {
         if (string.IsNullOrWhiteSpace(ggufPath) || !File.Exists(ggufPath))
             throw new FileNotFoundException($"CosyVoice3 GGUF model not found: {ggufPath}");
@@ -74,7 +80,7 @@ public sealed class CosyVoice3Pipeline : ITextToSpeechPipeline
         string? campplusOnnxPath = ResolveOnnxPath(ggufPath, "campplus.onnx", "models/campplus.onnx");
         string? speechTokenizerOnnxPath = ResolveOnnxPath(ggufPath, "speech_tokenizer_v3.onnx", "models/cosyvoice_speech_tokenizer_v2.onnx");
 
-        return new CosyVoice3Pipeline(rawModel, llmSource, flowWeights, ditWeights, hiftWeights, campplusOnnxPath, speechTokenizerOnnxPath);
+        return new CosyVoice3Pipeline(rawModel, llmSource, flowWeights, ditWeights, hiftWeights, campplusOnnxPath, speechTokenizerOnnxPath, backend);
     }
 
     /// <summary>
@@ -140,7 +146,7 @@ public sealed class CosyVoice3Pipeline : ITextToSpeechPipeline
             Array.Copy(spks, 0, spksBroadcast, f * CosyVoice3DiTWeights.MelDim, CosyVoice3DiTWeights.MelDim);
 
         var rng = new Random(seed ?? 0);
-        var mel = CosyVoice3DiTModel.SolveFlowMatchingOde(_ditWeights, cond, mu, spksBroadcast, numFrames, odeSteps, rng, cfgRate: cfgRate);
+        var mel = CosyVoice3DiTModel.SolveFlowMatchingOde(_ditWeights, cond, mu, spksBroadcast, numFrames, odeSteps, rng, cfgRate: cfgRate, backend: _backend);
 
         if (Environment.GetEnvironmentVariable("STINGRAY_DEBUG_COSYVOICE3") is { Length: > 0 })
         {
