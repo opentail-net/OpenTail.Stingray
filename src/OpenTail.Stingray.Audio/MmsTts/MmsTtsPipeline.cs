@@ -58,20 +58,19 @@ public sealed class MmsTtsPipeline : ITextToSpeechPipeline
 
         var rng = new GaussianRandom();
         float[] sdpNoise = rng.NextArray(2 * tokens.Length);
-        float[] logw = MmsTtsDurationPredictor.Predict(_weights, encoderHidden, tokens.Length, sdpNoise, _config.NoiseScaleDuration);
+        float noiseScaleDuration = Math.Min(0.333f, _config.NoiseScaleDuration);
+        float[] logw = MmsTtsDurationPredictor.Predict(_weights, encoderHidden, tokens.Length, sdpNoise, noiseScaleDuration);
 
         float lengthScale = 1.0f / (speakingRate ?? _config.SpeakingRate);
 
-        // Real reference computes durations via ceil(exp(logw)*mask*lengthScale) with NO per-token
-        // minimum-1 floor (unlike Piper's own implementation, which adds one) -- a token CAN
-        // legitimately contribute zero frames. VitsLengthRegulator.Expand already matches this
-        // (durations[i] = max(0, ceil(...)), no floor of 1).
         var durations = new int[tokens.Length];
         int totalFrames = 0;
         for (int i = 0; i < tokens.Length; i++)
         {
             int d = (int)MathF.Ceiling(MathF.Exp(logw[i]) * lengthScale);
-            if (tokens[i] != 0 && d < 1) d = 1;
+            // Space token (id 19) is an explicit pause: ensure at least 3 frames (~48ms) so pauses are never swallowed
+            if (tokens[i] == 19 && d < 3) d = 3;
+            else if (tokens[i] != 0 && d < 1) d = 1;
             durations[i] = d < 0 ? 0 : d;
             totalFrames += durations[i];
         }

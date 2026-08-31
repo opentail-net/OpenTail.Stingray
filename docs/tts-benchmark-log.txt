@@ -445,3 +445,6 @@
 [Piper-lessac-medium] prompt="Hello, I will make some lunch, darling!" audio=2.35s samples=51712
 [Piper-lessac-medium] runs(s)=[0.532, 0.571, 0.594] mean=0.566s RTF=0.241 (lower=faster; 1.0=realtime)
 
+[MMS-TTS-eng] prompt="Hello, I will make some lunch, darling!" audio=2.93s samples=46848
+[MMS-TTS-eng] runs(s)=[1.559, 1.571, 1.450] mean=1.527s RTF=0.521 (lower=faster; 1.0=realtime)
+

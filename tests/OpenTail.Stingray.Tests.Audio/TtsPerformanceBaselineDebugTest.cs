@@ -383,8 +383,10 @@ public sealed class TtsPerformanceBaselineDebugTest : HeavyTestBase
             string? outDir = FindRepoFile("docs/audio-samples");
             if (outDir != null)
             {
-                string wavPath = Path.Combine(outDir, "mms-tts-perf-turn2.wav");
-                new AudioGenerationResult(lastWav, pipeline.DefaultSampleRate).SaveWav(wavPath);
+                string turn2Path = Path.Combine(outDir, "mms-tts-perf-turn2.wav");
+                new AudioGenerationResult(lastWav, pipeline.DefaultSampleRate).SaveWav(turn2Path);
+                string turn3Path = Path.Combine(outDir, "mms-tts-perf-turn3.wav");
+                new AudioGenerationResult(lastWav, pipeline.DefaultSampleRate).SaveWav(turn3Path);
             }
         }
 

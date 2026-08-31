@@ -41,9 +41,10 @@ public sealed class MmsTtsTokenizer
     /// </summary>
     public int[] Encode(string text)
     {
-        var lowered = text.ToLowerInvariant();
-        var kept = new List<char>(lowered.Length);
-        foreach (var c in lowered)
+        var normalized = System.Text.RegularExpressions.Regex.Replace(text.ToLowerInvariant(), @"[.,!?;:]", " ");
+        normalized = System.Text.RegularExpressions.Regex.Replace(normalized, @"\s+", " ").Trim();
+        var kept = new List<char>(normalized.Length);
+        foreach (var c in normalized)
             if (_charToId.ContainsKey(c)) kept.Add(c);
 
         var ids = new int[kept.Count * 2 + 1];
