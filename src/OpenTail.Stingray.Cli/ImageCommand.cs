@@ -63,6 +63,16 @@ public sealed class ImageCommand : Command<ImageCommand.Settings>
         [Description("(Z-Image) Path to Qwen3 tokenizer.json")]
         public string? QwenTokenizerPath { get; init; }
 
+        // ── Wan options ──────────────────────────────────────────────────
+
+        [CommandOption("--umt5-encoder")]
+        [Description("(Wan) Path to the real UMT5-XXL text encoder safetensors (converted from Wan-AI/Wan2.1-T2V-1.3B's models_t5_umt5-xxl-enc-bf16.pth)")]
+        public string? Umt5EncoderPath { get; init; }
+
+        [CommandOption("--umt5-tokenizer")]
+        [Description("(Wan) Path to the real UMT5 tokenizer.json (Wan-AI/Wan2.1-T2V-1.3B's google/umt5-xxl/tokenizer.json)")]
+        public string? Umt5TokenizerPath { get; init; }
+
         [CommandOption("--ngl|--n-gpu-layers|--gpu-layers|-g")]
         [Description("(Z-Image) GPU acceleration: -1 = auto (CUDA→Vulkan→CPU, default), 0 = CPU only")]
         [DefaultValue(-1)]
@@ -862,6 +872,10 @@ public sealed class ImageCommand : Command<ImageCommand.Settings>
         float guidance = s.CfgScale > 0 ? s.CfgScale : 6.0f;
         int frames = s.VideoFrames > 0 ? s.VideoFrames : 1;
 
+        string? modelDir = Path.GetDirectoryName(Path.GetFullPath(modelPath));
+        string? umt5EncoderPath = s.Umt5EncoderPath ?? ResolveWanUmt5Encoder(modelDir);
+        string? umt5TokenizerPath = s.Umt5TokenizerPath ?? ResolveWanUmt5Tokenizer(modelDir);
+
         IComputeBackend? gpu = null;
         if (!deviceNone && deviceIndex >= 0)
         {
@@ -872,6 +886,10 @@ public sealed class ImageCommand : Command<ImageCommand.Settings>
         AnsiConsole.MarkupLine("[bold]Wan 2.1 / 2.2 Video Diffusion (DiT + UMT5)[/]");
         AnsiConsole.MarkupLine($"[dim]Model:[/]    {Markup.Escape(modelPath)}");
         AnsiConsole.MarkupLine($"[dim]Size:[/]     {s.Width}×{s.Height} (frames={frames})  steps={steps}  guidance={guidance}  seed={s.Seed}");
+        if (umt5EncoderPath is not null && umt5TokenizerPath is not null)
+            AnsiConsole.MarkupLine($"[dim]UMT5:[/]     {Markup.Escape(umt5EncoderPath)}");
+        else
+            AnsiConsole.MarkupLine("[yellow]Note:[/] No real UMT5 encoder/tokenizer found (--umt5-encoder/--umt5-tokenizer) -- text conditioning will be all-zero (unconditional generation only).");
         if (s.UpscalerPath is not null)
             AnsiConsole.MarkupLine($"[dim]Upscaler:[/] {Markup.Escape(s.UpscalerPath)}");
         AnsiConsole.MarkupLine($"[dim]Output:[/]   {Markup.Escape(output)}");
@@ -883,6 +901,16 @@ public sealed class ImageCommand : Command<ImageCommand.Settings>
             RRDBNet? upscaler = null;
             if (s.UpscalerPath is not null)
                 upscaler = RRDBNet.Load(s.UpscalerPath, gpu);
+
+            float[]? condContext = null, uncondContext = null;
+            if (umt5EncoderPath is not null && umt5TokenizerPath is not null)
+            {
+                AnsiConsole.MarkupLine("[dim]Encoding prompt with real UMT5-XXL…[/]");
+                var tokenizer = OpenTail.Stingray.Diffusion.TextEncoders.T5Tokenizer.FromFile(umt5TokenizerPath, maxLen: 226);
+                using var umt5 = new OpenTail.Stingray.Diffusion.TextEncoders.UMT5Encoder(umt5EncoderPath);
+                condContext = umt5.Encode(tokenizer.Tokenize(s.Prompt!));
+                uncondContext = umt5.Encode(tokenizer.Tokenize(s.NegativePrompt ?? ""));
+            }
 
             using var pipeline = OpenTail.Stingray.Diffusion.Wan.WanPipeline.Load(modelPath, s.VaePath, gpu);
 
@@ -905,7 +933,9 @@ public sealed class ImageCommand : Command<ImageCommand.Settings>
                         outputPath: output,
                         progress: (step, total) => ctx.Status($"Denoising step {step}/{total} on {target}…"),
                         upscaler: upscaler,
-                        upscaleBlend: s.UpscaleBlend);
+                        upscaleBlend: s.UpscaleBlend,
+                        textContext: condContext,
+                        negativeTextContext: uncondContext);
                 });
 
             sw.Stop();
@@ -921,6 +951,20 @@ public sealed class ImageCommand : Command<ImageCommand.Settings>
         {
             gpu?.Dispose();
         }
+    }
+
+    private static string? ResolveWanUmt5Encoder(string? modelDir)
+    {
+        foreach (var c in new[] { Path.Combine(modelDir ?? ".", "wan2.1", "models_t5_umt5-xxl-enc-bf16.safetensors"), "models/wan2.1/models_t5_umt5-xxl-enc-bf16.safetensors" })
+            if (File.Exists(c)) return c;
+        return null;
+    }
+
+    private static string? ResolveWanUmt5Tokenizer(string? modelDir)
+    {
+        foreach (var c in new[] { Path.Combine(modelDir ?? ".", "wan2.1", "umt5-tokenizer.json"), "models/wan2.1/umt5-tokenizer.json" })
+            if (File.Exists(c)) return c;
+        return null;
     }
 
     private static bool IsQwenImage(string path)

@@ -2,26 +2,32 @@
 namespace OpenTail.Stingray.Diffusion.TextEncoders;
 
 /// <summary>
-/// UMT5-XXL encoder-only transformer (`google/umt5-xxl`), the real text encoder Wan 2.1/2.2 uses
+/// UMT5-XXL encoder-only transformer, the real text encoder Wan 2.1/2.2 uses
 /// (`WanPipeline._get_t5_prompt_embeds` in `examples/diffusers/src/diffusers/pipelines/wan/
 /// pipeline_wan.py`). Produces context embeddings [seq, 4096] for the Wan DiT's cross-attention.
 ///
 /// Loads weights from `models_t5_umt5-xxl-enc-bf16.pth` (converted to safetensors; Wan's own
 /// checkpoint, `Wan-AI/Wan2.1-T2V-1.3B`).
 ///
-/// <para>Same overall shape as <see cref="T5Encoder"/> (T5-XXL, used by FLUX) -- SAME real
-/// dimensions (24 layers, d_model=4096, 64 heads, head_dim=64, d_ff=10240), SAME real GELU-gated
-/// FFN, SAME real bidirectional relative-position-bucket formula (both confirmed against the real
-/// `google/umt5-xxl`/`google/t5-v1_1-xxl` `config.json`s directly: `feed_forward_proj: "gated-
-/// gelu"`, `dense_act_fn: "gelu_new"`, `relative_attention_num_buckets: 32`,
-/// `relative_attention_max_distance: 128` -- identical on both). The ONE real, load-bearing
-/// architectural difference (confirmed against the actual `transformers.models.umt5.modeling_umt5`
-/// source, not assumed from the "U" in the name): UMT5's `UMT5LayerSelfAttention.__init__` sets
-/// `has_relative_attention_bias=True` for EVERY encoder block (`relative_attention_bias.weight`
-/// exists once per layer), whereas plain T5 only has this on layer 0 and shares that single bias
-/// across every other layer. Real vocab size is also much larger (256384 vs T5-XXL's 32128,
-/// UMT5 is a multilingual model) -- irrelevant to the math itself, just the embedding table size.
-/// </para>
+/// <para><b>Real tensor names, confirmed directly against the actual downloaded checkpoint (NOT
+/// the standard HF `transformers.models.umt5` naming this class originally assumed before
+/// inspecting the real file)</b>: Wan ships its own reimplementation/re-export of UMT5, not a
+/// literal HF `UMT5EncoderModel` state dict. Real keys: `token_embedding.weight` [256384,4096],
+/// `blocks.{i}.norm1`/`norm2.weight`, `blocks.{i}.attn.{q,k,v,o}.weight`,
+/// `blocks.{i}.ffn.gate.0.weight` (the GELU-activated branch, `wi_0` in HF's naming),
+/// `blocks.{i}.ffn.fc1.weight` (the linear/value branch, `wi_1`), `blocks.{i}.ffn.fc2.weight`
+/// (output projection, `wo`), `blocks.{i}.pos_embedding.embedding.weight` [32,64] (real, genuine
+/// PER-LAYER relative position bias -- confirmed present on every one of the 24 blocks, unlike
+/// plain T5 which only has this on block 0 and shares it everywhere), `norm.weight` (final layer
+/// norm). No biases anywhere (T5-family convention, all real Linear layers are bias=False).</para>
+///
+/// <para>Math itself (dims, GELU-gated FFN, unscaled attention + additive relative-position bias,
+/// bidirectional bucket formula) matches <see cref="T5Encoder"/> (T5-XXL, FLUX's encoder) --
+/// confirmed identical between the real `google/umt5-xxl` and `google/t5-v1_1-xxl` configs
+/// (`feed_forward_proj: "gated-gelu"`, `dense_act_fn: "gelu_new"`,
+/// `relative_attention_num_buckets: 32`, `relative_attention_max_distance: 128`, 24 layers,
+/// d_model=4096, 64 heads, d_ff=10240). Real vocab is far larger (256384 vs 32128, UMT5 is
+/// multilingual) -- irrelevant to the math, just the embedding table size.</para>
 /// </summary>
 public sealed class UMT5Encoder : IDisposable
 {
@@ -41,7 +47,7 @@ public sealed class UMT5Encoder : IDisposable
     public float[] Encode(int[] tokens)
     {
         int seq = tokens.Length;
-        var tokEmb = _st.ReadF32("shared.weight");
+        var tokEmb = _st.ReadF32("token_embedding.weight");
 
         var x = new float[seq * Dim];
         for (int t = 0; t < seq; t++)
@@ -53,30 +59,29 @@ public sealed class UMT5Encoder : IDisposable
         for (int i = 0; i < Layers; i++)
             x = EncoderBlock(x, seq, i);
 
-        var fnW = _st.ReadF32("encoder.final_layer_norm.weight");
+        var fnW = _st.ReadF32("norm.weight");
         DiffusionOps.RmsNorm(x, fnW, Dim);
         return x;
     }
 
     private float[] EncoderBlock(float[] x, int seq, int blockIdx)
     {
-        string p = $"encoder.block.{blockIdx}.layer";
+        string p = $"blocks.{blockIdx}";
 
-        // Real UMT5: EVERY block has its own relative_attention_bias (unlike plain T5, which
-        // only has one on block 0 and reuses it everywhere).
-        var rpW = _st.ReadF32($"{p}.0.SelfAttention.relative_attention_bias.weight");
+        // Real Wan UMT5: every block has its own relative position bias.
+        var rpW = _st.ReadF32($"{p}.pos_embedding.embedding.weight");
         var relPosBias = ComputeRelPosBias(rpW, seq, Heads);
 
-        var lnW0 = _st.ReadF32($"{p}.0.layer_norm.weight");
+        var lnW0 = _st.ReadF32($"{p}.norm1.weight");
         var xNorm = x.ToArray();
         DiffusionOps.RmsNorm(xNorm, lnW0, Dim);
-        var attn = SelfAttention(xNorm, relPosBias, seq, $"{p}.0.SelfAttention");
+        var attn = SelfAttention(xNorm, relPosBias, seq, $"{p}.attn");
         for (int i = 0; i < x.Length; i++) x[i] += attn[i];
 
-        var lnW1 = _st.ReadF32($"{p}.1.layer_norm.weight");
+        var lnW1 = _st.ReadF32($"{p}.norm2.weight");
         var xNorm2 = x.ToArray();
         DiffusionOps.RmsNorm(xNorm2, lnW1, Dim);
-        var ff = FeedForward(xNorm2, seq, $"{p}.1.DenseReluDense");
+        var ff = FeedForward(xNorm2, seq, $"{p}.ffn");
         for (int i = 0; i < x.Length; i++) x[i] += ff[i];
 
         return x;
@@ -93,10 +98,8 @@ public sealed class UMT5Encoder : IDisposable
         var k = DiffusionOps.Linear(x, kW, null, seq, Dim, Dim);
         var v = DiffusionOps.Linear(x, vW, null, seq, Dim, Dim);
 
-        // Real T5-family attention: NO 1/sqrt(headDim) scaling (query/key projections have no
-        // bias and the model is trained without softmax scaling; the relative position bias is
-        // the only additive term). Confirmed: T5Attention.forward computes scores as a raw
-        // matmul, scaling is folded into initialization instead.
+        // Real T5-family attention: raw matmul, NO 1/sqrt(head_dim) scaling (see T5Encoder's
+        // matching fix/doc comment -- confirmed against the real T5Attention.forward source).
         var attnOut = new float[seq * Dim];
 
         for (int h = 0; h < Heads; h++)
@@ -132,18 +135,19 @@ public sealed class UMT5Encoder : IDisposable
 
     private float[] FeedForward(float[] x, int seq, string p)
     {
-        // Real gated-gelu FFN (matches T5Encoder's, see this class's doc comment).
-        var wi0W = _st.ReadF32($"{p}.wi_0.weight");
-        var wi1W = _st.ReadF32($"{p}.wi_1.weight");
-        var woW  = _st.ReadF32($"{p}.wo.weight");
+        // Real gated-gelu FFN. Wan's own naming: ffn.gate.0 = the GELU-activated branch (wi_0 in
+        // HF naming), ffn.fc1 = the linear/value branch (wi_1), ffn.fc2 = output projection (wo).
+        var gateW = _st.ReadF32($"{p}.gate.0.weight");
+        var fc1W  = _st.ReadF32($"{p}.fc1.weight");
+        var fc2W  = _st.ReadF32($"{p}.fc2.weight");
 
-        var gate = DiffusionOps.Linear(x, wi0W, null, seq, Dim, FfDim);
-        var val  = DiffusionOps.Linear(x, wi1W, null, seq, Dim, FfDim);
+        var gate = DiffusionOps.Linear(x, gateW, null, seq, Dim, FfDim);
+        var val  = DiffusionOps.Linear(x, fc1W, null, seq, Dim, FfDim);
 
         for (int i = 0; i < gate.Length; i++)
             gate[i] = DiffusionOps.Gelu(gate[i]) * val[i];
 
-        return DiffusionOps.Linear(gate, woW, null, seq, FfDim, Dim);
+        return DiffusionOps.Linear(gate, fc2W, null, seq, FfDim, Dim);
     }
 
     private static float[] ComputeRelPosBias(float[] biasWeight, int seq, int nHeads)

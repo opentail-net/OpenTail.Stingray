@@ -118,10 +118,20 @@ public sealed class WanModel : IDisposable
 
         // 2. Patch & Text input projections
         var x = Linear("patch_embedding", packed, InChannels, _dim);
-        var txtProj = Linear("text_embedding", textContext, TextDim, _dim);
+        var txtProj = ComputeTextEmbedding(textContext);
 
         // 3. Timestep embedding (sinusoidal 256 -> linear dim -> silu -> linear dim)
         var tEmb = ComputeTimestepEmbedding(timestep);
+
+        // Real Wan DiT: a SHARED "time_projection" linear (dim -> 6*dim, applied once, not
+        // per-block) whose output is then ADDITIVELY combined with each block's own per-block
+        // "modulation" parameter (`scale_shift_table`, a learned constant -- NOT a Linear weight;
+        // confirmed against `WanTimeTextImageEmbedding`/`WanTransformerBlock.forward` in
+        // transformer_wan.py, and against the real GGUF's `time_projection.1.weight`
+        // [dim,6*dim] + per-block `blocks.{i}.modulation` [dim,6,1] tensor shapes).
+        var timeProjSilu = (float[])tEmb.Clone();
+        DiffusionOps.SiluInPlace(timeProjSilu);
+        var timestepProj = Linear("time_projection.1", timeProjSilu, _dim, _dim * 6);
 
         // 4. 3D-RoPE positional frequencies
         var (cos, sin) = WanRoPE.Compute3DRoPE(numFrames, patchH, patchW, _headDim);
@@ -130,18 +140,27 @@ public sealed class WanModel : IDisposable
         for (int b = 0; b < _numLayers; b++)
         {
             string p = $"blocks.{b}";
-            x = TransformerBlock(p, x, tEmb, cos, sin, txtProj, numTokens, numTxtTokens);
+            x = TransformerBlock(p, x, timestepProj, cos, sin, txtProj, numTokens, numTxtTokens);
         }
 
         // 6. Final Layer (AdaLN + Linear dim -> 64)
-        var headMod = Linear("head.modulation", DiffusionOpsSilu(tEmb), _dim, _dim * 2);
-        var headGamma = headMod.AsSpan(0, _dim);
-        var headBeta = headMod.AsSpan(_dim, _dim);
+        // Real: `shift, scale = (self.scale_shift_table + temb.unsqueeze(1)).chunk(2, dim=1)` --
+        // additive broadcast of the RAW (unprojected) temb against the head's own 2*dim constant,
+        // not a Linear (see WanTransformer3DModel.forward's final-layer block).
+        var headModParam = GetWeight("head.modulation");
+        var headShift = new float[_dim];
+        var headScale = new float[_dim];
+        for (int d = 0; d < _dim; d++)
+        {
+            headShift[d] = headModParam[d] + tEmb[d];
+            headScale[d] = headModParam[_dim + d] + tEmb[d];
+        }
 
         var normed = (float[])x.Clone();
-        DiffusionOps.LayerNorm(normed, headGamma, headBeta, _dim);
+        LayerNormNoAffine(normed, _dim);
+        normed = Modulate(normed, numTokens, headShift, headScale);
 
-        var outPacked = Linear("head.linear", normed, _dim, InChannels);
+        var outPacked = Linear("head.head", normed, _dim, InChannels);
 
         // 7. Unpack patches [numTokens, 64] -> [16, numFrames, latH, latW]
         return UnpackLatents(outPacked, numFrames, latH, latW);
@@ -150,15 +169,21 @@ public sealed class WanModel : IDisposable
     private float[] TransformerBlock(
         string prefix,
         float[] x,
-        float[] tEmb,
+        float[] timestepProj,
         float[] cos,
         float[] sin,
         float[] txtContext,
         int numTokens,
         int numTxt)
     {
-        // 1. Modulation parameters: 6 * dim (shift1, scale1, gate1, shift2, scale2, gate2)
-        var mod = Linear($"{prefix}.modulation", DiffusionOpsSilu(tEmb), _dim, _dim * 6);
+        // Real: per-block additive AdaLN modulation = this block's own learned constant
+        // (`scale_shift_table`, GGUF `{prefix}.modulation`) + the SHARED `timestepProj` computed
+        // once in Forward -- NOT a per-block Linear (confirmed against `WanTransformerBlock.
+        // forward`'s `self.scale_shift_table + temb` in transformer_wan.py, and the real GGUF's
+        // bare (bias-less, non-`.weight`-suffixed) `blocks.{i}.modulation` [dim,6,1] tensor).
+        var modParam = GetWeight($"{prefix}.modulation");
+        var mod = new float[_dim * 6];
+        for (int i = 0; i < mod.Length; i++) mod[i] = modParam[i] + timestepProj[i];
         var s1 = mod.AsSpan(0 * _dim, _dim);
         var sc1 = mod.AsSpan(1 * _dim, _dim);
         var g1 = mod.AsSpan(2 * _dim, _dim);
@@ -166,22 +191,57 @@ public sealed class WanModel : IDisposable
         var sc2 = mod.AsSpan(4 * _dim, _dim);
         var g2 = mod.AsSpan(5 * _dim, _dim);
 
-        // 2. Modulated Self-Attention with 3D-RoPE
-        var normed1 = Modulate(x, numTokens, s1, sc1);
+        // 1. Self-attention: affine-free LayerNorm (real `norm1`, `elementwise_affine=False`,
+        // no learned weight/bias tensor in the checkpoint) -> AdaLN modulate -> self-attn (3D-RoPE)
+        // -> gated residual.
+        var norm1 = (float[])x.Clone();
+        LayerNormNoAffine(norm1, _dim);
+        var normed1 = Modulate(norm1, numTokens, s1, sc1);
         var selfAttn = SelfAttention($"{prefix}.self_attn", normed1, cos, sin, numTokens);
         ApplyGatedResidual(x, selfAttn, numTokens, g1);
 
-        // 3. Cross-Attention with T5 text tokens
-        var crossAttn = CrossAttention($"{prefix}.cross_attn", x, txtContext, numTokens, numTxt);
+        // 2. Cross-Attention with T5/UMT5 text tokens: real per-block AFFINE LayerNorm (the
+        // checkpoint's own `{prefix}.norm3.weight`/`.bias` -- the only per-block LayerNorm with
+        // real learned params; `cross_attn_norm=True` in the real config) -> cross-attn -> plain
+        // (UNGATED) residual add. Previously this ran cross-attention on raw, un-normalized `x`.
+        var norm3W = GetWeight($"{prefix}.norm3.weight");
+        var norm3B = GetWeight($"{prefix}.norm3.bias");
+        var normedCross = (float[])x.Clone();
+        DiffusionOps.LayerNorm(normedCross, norm3W, norm3B, _dim);
+        var crossAttn = CrossAttention($"{prefix}.cross_attn", normedCross, txtContext, numTokens, numTxt);
         for (int i = 0; i < x.Length; i++)
             x[i] += crossAttn[i];
 
-        // 4. Modulated FeedForward (GELU approx tanh)
-        var normed2 = Modulate(x, numTokens, s2, sc2);
+        // 3. Modulated FeedForward (GELU approx tanh): affine-free LayerNorm (real `norm3` in
+        // diffusers' own naming, i.e. the FFN pre-norm; also `elementwise_affine=False`) -> AdaLN
+        // modulate -> FFN -> gated residual.
+        var norm2 = (float[])x.Clone();
+        LayerNormNoAffine(norm2, _dim);
+        var normed2 = Modulate(norm2, numTokens, s2, sc2);
         var ffn = FeedForward($"{prefix}.ffn", normed2, numTokens);
         ApplyGatedResidual(x, ffn, numTokens, g2);
 
         return x;
+    }
+
+    /// <summary>Mean/variance LayerNorm with no learned affine (real `FP32LayerNorm(...,
+    /// elementwise_affine=False)`, used for the two per-block AdaLN-modulated pre-norms).</summary>
+    private static void LayerNormNoAffine(Span<float> x, int dim, float eps = 1e-6f)
+    {
+        int n = x.Length / dim;
+        for (int row = 0; row < n; row++)
+        {
+            var row_ = x.Slice(row * dim, dim);
+            float mean = 0f;
+            for (int d = 0; d < dim; d++) mean += row_[d];
+            mean /= dim;
+            for (int d = 0; d < dim; d++) row_[d] -= mean;
+            float var = 0f;
+            for (int d = 0; d < dim; d++) var += row_[d] * row_[d];
+            var /= dim;
+            float scale = 1f / MathF.Sqrt(var + eps);
+            for (int d = 0; d < dim; d++) row_[d] *= scale;
+        }
     }
 
     private float[] SelfAttention(string prefix, float[] x, float[] cos, float[] sin, int seqLen)
@@ -333,6 +393,17 @@ public sealed class WanModel : IDisposable
         var t0 = Linear("time_embedding.0", emb, 256, _dim);
         DiffusionOps.SiluInPlace(t0);
         return Linear("time_embedding.2", t0, _dim, _dim);
+    }
+
+    // Real Wan DiT text conditioning projection: `PixArtAlphaTextProjection(text_embed_dim, dim,
+    // act_fn="gelu_tanh")` in transformer_wan.py's `WanTimeTextImageEmbedding` -- linear_1 -> GELU
+    // (tanh-approx) -> linear_2, NOT a single linear (confirmed real GGUF tensor names are
+    // `text_embedding.0`/`text_embedding.2`, matching `time_embedding`'s own two-layer shape).
+    private float[] ComputeTextEmbedding(float[] textContext)
+    {
+        var t0 = Linear("text_embedding.0", textContext, TextDim, _dim);
+        for (int i = 0; i < t0.Length; i++) t0[i] = DiffusionOps.Gelu(t0[i]);
+        return Linear("text_embedding.2", t0, _dim, _dim);
     }
 
     private static float[] DiffusionOpsSilu(float[] x)

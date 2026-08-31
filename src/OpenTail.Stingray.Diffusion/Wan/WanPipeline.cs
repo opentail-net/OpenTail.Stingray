@@ -10,7 +10,14 @@ public sealed class WanPipeline : IDiffusionPipeline
 {
     private readonly IWeightLoader _weights;
     private readonly WanModel _transformer;
-    private readonly VaeDecoder _vae;
+    // Real Wan VAE: a proper 3D causal VAE (decoder.conv1, decoder.middle.*.residual,
+    // decoder.upsamples.*, gamma-based norm, 3D conv kernels [C,C,3,3,3]) -- NOT the generic
+    // 2D Stable-Diffusion-style VaeDecoder (decoder.conv_in.weight etc.) this pipeline used to
+    // construct for its single-frame path only, while the multi-frame path already (correctly)
+    // used this same WanVaeDecoder3D class. Unified onto one decoder for both paths -- numFrames=1
+    // is just the degenerate case of the same real 3D decode, not a special path needing its own
+    // (wrong) decoder.
+    private readonly WanVaeDecoder3D _vae;
     private bool _disposed;
 
     public string Architecture => "WanVideo";
@@ -18,7 +25,7 @@ public sealed class WanPipeline : IDiffusionPipeline
     public WanPipeline(
         IWeightLoader weights,
         WanModel transformer,
-        VaeDecoder vae)
+        WanVaeDecoder3D vae)
     {
         _weights = weights;
         _transformer = transformer;
@@ -41,7 +48,7 @@ public sealed class WanPipeline : IDiffusionPipeline
                 : SafetensorsLoader.Open(vaePath);
         }
 
-        var vae = new VaeDecoder(vaeLoader, backend: backend);
+        var vae = new WanVaeDecoder3D(vaeLoader, backend: backend);
 
         return new WanPipeline(weights, transformer, vae);
     }
@@ -64,6 +71,7 @@ public sealed class WanPipeline : IDiffusionPipeline
         RRDBNet? upscaler = null,
         float upscaleBlend = 1.0f,
         float[]? textContext = null,
+        float[]? negativeTextContext = null,
         float[]? initImageRgb = null,
         WanModel? highNoiseTransformer = null,
         float highNoiseBoundary = 0.5f)
@@ -75,10 +83,16 @@ public sealed class WanPipeline : IDiffusionPipeline
         int latW = width / 8;
         int latC = 16;
 
-        // 1. Text conditioning context [seqLen, 4096] (or dummy context for conformance)
+        // 1. Text conditioning context [seqLen, 4096] (or dummy context for conformance).
+        // `prompt`/`negativePrompt` are NOT re-encoded here -- real text encoding (real UMT5,
+        // see TextEncoders/UMT5Encoder.cs) is the caller's responsibility, matching this class's
+        // existing `textContext` pre-computed-embedding pattern; `negativeTextContext` follows
+        // the same convention (falls back to an all-zero context, the prior behavior, if the
+        // caller doesn't supply a real negative-prompt encoding -- `negativePrompt` itself was
+        // previously accepted but silently discarded entirely).
         int seqLen = 512;
         var condContext = textContext ?? new float[seqLen * WanModel.TextDim];
-        var uncondContext = new float[seqLen * WanModel.TextDim];
+        var uncondContext = negativeTextContext ?? new float[seqLen * WanModel.TextDim];
 
         // 2. Initial Gaussian noise in video latent space [16, numFrames, latH, latW]
         var latent = SampleGaussianNoise(latC * numFrames * latH * latW, seed);
@@ -133,21 +147,10 @@ public sealed class WanPipeline : IDiffusionPipeline
             progress?.Invoke(step + 1, steps);
         }
 
-        // 5. Decode all video frame latents to RGB pixels via 16-channel VAE
-        int singleFrameLen = latC * latH * latW;
-        // 5. Decode 3D Latents to full RGB video frames
-        List<float[]> allFrames;
-        if (numFrames > 1)
-        {
-            using var vae3d = new WanVaeDecoder3D(_weights);
-            allFrames = vae3d.Decode(latent, numFrames, latH, latW);
-        }
-        else
-        {
-            var singleFrameLatent = new float[latC * latH * latW];
-            Array.Copy(latent, 0, singleFrameLatent, 0, singleFrameLatent.Length);
-            allFrames = [_vae.Decode(singleFrameLatent, latH, latW)];
-        }
+        // 5. Decode 3D latents to full RGB video frames via the real 3D causal VAE (same decoder
+        // for numFrames==1 and numFrames>1 -- see the _vae field's doc comment for why these were
+        // previously two different, inconsistently-wired code paths).
+        List<float[]> allFrames = _vae.Decode(latent, numFrames, latH, latW);
 
         // Optional super-resolution upscaling per frame
         if (upscaler is not null)
