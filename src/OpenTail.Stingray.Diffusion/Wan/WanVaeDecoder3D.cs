@@ -88,7 +88,7 @@ public sealed class WanVaeDecoder3D : IDisposable
         if (latent.Length != c * t * latH * latW)
             throw new ArgumentException($"Latent size mismatch: expected {c * t * latH * latW}, got {latent.Length}");
 
-        // 1. Real per-channel un-normalization: z = latent / latents_std + latents_mean.
+        // 1. Real per-channel un-normalization: z = latent * latents_std + latents_mean.
         var z = new float[latent.Length];
         int spatial = latH * latW;
         for (int ch = 0; ch < c; ch++)
@@ -98,7 +98,7 @@ public sealed class WanVaeDecoder3D : IDisposable
             {
                 int off = (ch * t + ti) * spatial;
                 for (int s = 0; s < spatial; s++)
-                    z[off + s] = latent[off + s] / std + mean;
+                    z[off + s] = latent[off + s] * std + mean;
             }
         }
 
@@ -352,13 +352,17 @@ public sealed class WanVaeDecoder3D : IDisposable
                         for (int dh = 0; dh < 3; dh++)
                         for (int dw = 0; dw < 3; dw++)
                         {
-                            // Nearest 2x upsample composed with the pad-1 3x3 conv: source pixel
-                            // for upsampled position (oh,ow) is the nearest-neighbor (oh/2, ow/2)
-                            // in the pre-upsample map; conv kernel then samples pad-1 around that.
-                            int inH = oh / 2 - 1 + dh;
-                            int inW = ow / 2 - 1 + dw;
-                            if (inH >= 0 && inH < h && inW >= 0 && inW < w)
+                            // Nearest 2x upsample composed with the pad-1 3x3 conv: the 3x3 kernel
+                            // centered at upsampled position (oh, ow) samples at (upH, upW).
+                            // In the pre-upsampled source tensor, that corresponds to (upH / 2, upW / 2).
+                            int upH = oh - 1 + dh;
+                            int upW = ow - 1 + dw;
+                            if (upH >= 0 && upH < outH && upW >= 0 && upW < outW)
+                            {
+                                int inH = upH / 2;
+                                int inW = upW / 2;
                                 sum += x[inFrameOff + inH * w + inW] * weight[weightOff + dh * 3 + dw];
+                            }
                         }
                     }
                     output[outOff + oh * outW + ow] = sum;

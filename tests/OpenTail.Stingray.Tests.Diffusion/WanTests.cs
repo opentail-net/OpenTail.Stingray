@@ -25,28 +25,38 @@ public sealed class WanTests
     }
 
     [Fact]
-    public void Wan_PackAndUnpackLatents_IsLosslessIdentity()
+    public void Wan_PackLatents_ProducesExpectedConv3DChannelOrdering()
     {
-        int numFrames = 2;
-        int latH = 16;
-        int latW = 16;
+        int numFrames = 1;
+        int latH = 4;
+        int latW = 4;
         int channels = 16;
         int totalElements = channels * numFrames * latH * latW;
 
         var original = new float[totalElements];
-        for (int i = 0; i < original.Length; i++)
-            original[i] = i * 0.005f - 3.0f;
+        // Mark channel 1, y=0, x=0
+        original[(1 * numFrames + 0) * latH * latW + 0 * latW + 0] = 42.0f;
 
         var packed = WanModel.PackLatents(original, numFrames, latH, latW);
-        int expectedTokens = numFrames * (latH / 2) * (latW / 2);
-        int expectedChannels = channels * 2 * 2; // 64
-        Assert.Equal(expectedTokens * expectedChannels, packed.Length);
+        // Token (0, 0): channel 1, dy=0, dx=0 corresponds to channel offset (1 * 2 + 0) * 2 + 0 = 4
+        Assert.Equal(42.0f, packed[4]);
+    }
+
+    [Fact]
+    public void Wan_UnpackLatents_ProducesExpectedLinearChannelOrdering()
+    {
+        int numFrames = 1;
+        int latH = 4;
+        int latW = 4;
+        int totalTokens = numFrames * (latH / 2) * (latW / 2);
+
+        var packed = new float[totalTokens * 64];
+        // Token (0, 0): dy=1, dx=0, c=3 -> spatialSubOff = (1 * 2 + 0) * 16 = 32 + 3 = 35
+        packed[35] = 99.0f;
 
         var unpacked = WanModel.UnpackLatents(packed, numFrames, latH, latW);
-        Assert.Equal(original.Length, unpacked.Length);
-
-        for (int i = 0; i < original.Length; i++)
-            Assert.Equal(original[i], unpacked[i], tolerance: 1e-6f);
+        // Expected dst: c=3, y=1, x=0 -> (3 * 1 + 0) * 16 + 1 * 4 + 0 = 3 * 16 + 4 = 52
+        Assert.Equal(99.0f, unpacked[52]);
     }
 
     [Fact]

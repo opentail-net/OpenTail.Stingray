@@ -326,23 +326,32 @@ public sealed class WanModel : IDisposable
         return output;
     }
 
+    /// <summary>Real Wan QK-norm: `torch.nn.RMSNorm(dim_head * heads, ...)` -- ONE RMS statistic
+    /// over the FULL projected `dim`-length row (all heads concatenated), computed and applied
+    /// BEFORE the conceptual split into heads, with the full `dim`-length learned gamma indexed
+    /// contiguously across the whole row (`gamma[h*headDim+d]`, not `gamma[d]` reused per head).
+    /// Confirmed against `WanAttention.__init__`/`forward` (`query = attn.norm_q(query)` runs on
+    /// the un-split `(seq, dim)` tensor, `unflatten(2, (heads, -1))` happens only afterward) --
+    /// found and fixed 2026-08-31 after this file's previous per-head-RMS-with-truncated-gamma
+    /// version was root-caused as corrupting every attention call in every block. Note: since Q/K
+    /// buffers are already row-major `[seqLen, dim]` with each token's dim-length row itself
+    /// contiguous across heads (`h*headDim+d` sweeps 0..dim-1), "the full row" and "all heads
+    /// concatenated" are the same contiguous span -- no data layout change needed here.</summary>
     private static void RmsNormHeads(float[] qk, int seqLen, int numHeads, int headDim, float[] gamma)
     {
+        int dim = numHeads * headDim;
         for (int s = 0; s < seqLen; s++)
         {
-            for (int h = 0; h < numHeads; h++)
+            int rowOff = s * dim;
+            float sumSq = 0f;
+            for (int d = 0; d < dim; d++)
             {
-                int off = (s * numHeads + h) * headDim;
-                float sumSq = 0f;
-                for (int d = 0; d < headDim; d++)
-                {
-                    float val = qk[off + d];
-                    sumSq += val * val;
-                }
-                float invRms = 1.0f / MathF.Sqrt(sumSq / headDim + 1e-6f);
-                for (int d = 0; d < headDim; d++)
-                    qk[off + d] = qk[off + d] * invRms * gamma[d];
+                float val = qk[rowOff + d];
+                sumSq += val * val;
             }
+            float invRms = 1.0f / MathF.Sqrt(sumSq / dim + 1e-6f);
+            for (int d = 0; d < dim; d++)
+                qk[rowOff + d] = qk[rowOff + d] * invRms * gamma[d];
         }
     }
 
@@ -486,18 +495,19 @@ public sealed class WanModel : IDisposable
                 {
                     int tokenIdx = (f * patchH + ph) * patchW + pw;
                     int tokenOff = tokenIdx * InChannels;
-                    int chanOffset = 0;
 
-                    for (int c = 0; c < OutChannels; c++)
+                    for (int dy = 0; dy < 2; dy++)
                     {
-                        for (int dy = 0; dy < 2; dy++)
+                        for (int dx = 0; dx < 2; dx++)
                         {
-                            for (int dx = 0; dx < 2; dx++)
+                            int y = ph * 2 + dy;
+                            int x = pw * 2 + dx;
+                            int spatialSubOff = (dy * 2 + dx) * OutChannels;
+
+                            for (int c = 0; c < OutChannels; c++)
                             {
-                                int y = ph * 2 + dy;
-                                int x = pw * 2 + dx;
                                 int dstIdx = ((c * numFrames + f) * latH + y) * latW + x;
-                                unpacked[dstIdx] = packed[tokenOff + chanOffset++];
+                                unpacked[dstIdx] = packed[tokenOff + spatialSubOff + c];
                             }
                         }
                     }
