@@ -30,11 +30,46 @@ dedicated card — timings reflect that.
    own Vulkan kernel path (its S3-DiT architecture), not a general Vulkan/GPU-backend bug. Real,
    reproducible, not yet root-caused.
 
+## Round 2: Wan / LTX-Video / HunyuanVideo — a much bigger finding
+
+Downloaded real checkpoints for Wan2.1 (VAE, converted from the official `.pth` to safetensors)
+and LTX-Video (`ltx-video-2b-v0.9.1.safetensors`, 5.7GB), on top of the DiT GGUF already present
+for Wan. Attempting to actually run them surfaced something more significant than a single bug:
+
+3. **`ImageCommand.Execute`'s dispatch chain never routed to Wan, HunyuanVideo, or LTX-Video at
+   all** (fixed, commit `6bf83d2`). `RunWan`/`RunHunyuanVideo`/`RunLtxVideo` all exist as real,
+   implemented functions, and `IsStableDiffusion`'s own exclusion list already accounted for all
+   three (implying this was the intent) — but `Execute()` itself never called `IsWan`/
+   `IsHunyuanVideo`/`IsLtxVideo`. Any of their model paths silently fell through to the FLUX loader
+   and failed with a misleading FLUX-shaped error instead. Fixed by adding the three missing checks.
+
+4. **Fixing the dispatch surfaced that none of the three are actually finished end-to-end** (NOT
+   fixed — these are real porting gaps, not quick wiring bugs, flagged for a dedicated follow-up
+   rather than attempted here):
+   - **Wan 2.1**: `WanModel` genuinely receives and applies real transformer weights. But running
+     it for real against the DiT-only GGUF fails with `GGUF tensor not found: 'text_embedding.
+     weight'` — the real UMT5 text encoder isn't baked into the DiT quant and isn't wired up
+     anywhere in the CLI path, so there's currently no way to get a real text-conditioned Wan
+     generation from this command. (Separately, `WanPipeline.Load()` also constructs the generic
+     2D `VaeDecoder` with `vaePath` for its single-frame path, while `Generate()`'s multi-frame
+     path builds an entirely separate `WanVaeDecoder3D` from `_weights` instead — two different,
+     inconsistently-wired VAE code paths in the same pipeline.)
+   - **LTX-Video**: `RunLtxVideo` called `new LtxVideoPipeline()` (the bare parameterless
+     constructor) instead of `LtxVideoPipeline.Load(modelPath, ...)`, so the user's `-m` checkpoint
+     was never even opened. Beyond that CLI-level bug: `LtxVideoPipeline.Load()` itself constructs
+     `new LtxVideoModel()` with no arguments, never applying the loaded `IWeightLoader` to the
+     transformer at all, and `GenerateVideo`'s "text context" is `0.01f *
+     (rng.NextSingle() - 0.5f)` — literal random noise, not a real text encoder. This pipeline is
+     a structural placeholder, not a finished port.
+   - **HunyuanVideo**: `HunyuanVideoModel` does receive real weights (like Wan), but wasn't tested
+     this pass — no local checkpoint (`hunyuan_video_720_cfgdistill_fp8_e4m3fn.safetensors` is
+     large, not downloaded) and its own text-conditioning wiring wasn't audited.
+
 ## Scope note
 
-RealESRGAN, Z-Image-Turbo, SD1.5, and SDXL-Turbo now have real local weights and confirmed real
-generations. FLUX.1, SD3/3.5, Wan 2.1/2.2, LTX-Video, and HunyuanVideo were **not** attempted this
-pass — none have complete local weight sets (missing VAE/text-encoders/DiT checkpoints of their
-own, each multiple GB), and `scripts/download-model.ps1` doesn't yet have download entries for
-them (only `z-image-turbo`/`z-image-turbo-q8`/`realesrgan-x4`). Getting real examples for those
-would need sourcing + verifying each one's correct checkpoint files from scratch.
+RealESRGAN, Z-Image-Turbo, SD1.5, and SDXL-Turbo have real local weights and confirmed real,
+correct generations. Wan2.1 and LTX-Video have real local weights too, but real generation is
+currently blocked by the porting gaps above (not just missing files). FLUX.1, SD3/3.5, and
+HunyuanVideo were not attempted this pass — no local weight sets, and `scripts/download-model.ps1`
+doesn't have download entries for them yet (only `z-image-turbo`/`z-image-turbo-q8`/
+`realesrgan-x4`).
