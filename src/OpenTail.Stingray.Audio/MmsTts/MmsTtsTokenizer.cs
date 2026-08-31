@@ -56,4 +56,11 @@ public sealed class MmsTtsTokenizer
         // ids[0], ids[2], ids[4], ... stay 0 (the blank token id) -- default array value.
         return ids;
     }
+
+    /// <summary>Real vocab id for a given character, or null if this checkpoint's vocab doesn't
+    /// contain it (e.g. a non-Latin-script checkpoint has no 'a'..'z'). Lets callers derive
+    /// language-specific token ids (e.g. the space/vowel duration heuristics in
+    /// <see cref="MmsTtsPipeline"/>) from the real loaded vocab instead of hardcoding ids that
+    /// only hold for one specific checkpoint (`facebook/mms-tts-eng`).</summary>
+    public int? IdFor(char c) => _charToId.TryGetValue(c, out int id) ? id : null;
 }

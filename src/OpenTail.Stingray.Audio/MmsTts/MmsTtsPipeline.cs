@@ -63,15 +63,23 @@ public sealed class MmsTtsPipeline : ITextToSpeechPipeline
 
         float lengthScale = 1.0f / (speakingRate ?? _config.SpeakingRate);
 
+        // Derived from the real loaded vocab (not hardcoded ids -- those only held for
+        // facebook/mms-tts-eng's specific vocab.json ordering and would silently apply to the
+        // wrong characters, or none at all, on any other language checkpoint). A vowel/space
+        // absent from this checkpoint's vocab (e.g. a non-Latin-script language) just yields
+        // null and that heuristic is skipped for it.
+        int? spaceId = _tokenizer.IdFor(' ');
+        var vowelIds = "aeiou".Select(_tokenizer.IdFor).Where(id => id.HasValue).Select(id => id!.Value).ToHashSet();
+
         var durations = new int[tokens.Length];
         int totalFrames = 0;
         for (int i = 0; i < tokens.Length; i++)
         {
             int d = (int)MathF.Ceiling(MathF.Exp(logw[i]) * lengthScale);
-            // Space token (id 19) is an explicit pause: ensure at least 4 frames (~64ms)
-            if (tokens[i] == 19 && d < 4) d = 4;
-            // Vowels (a=26, e=7, i=18, o=22, u=4): ensure at least 5 frames (~80ms) so vowels are never truncated abruptly
-            else if ((tokens[i] == 22 || tokens[i] == 7 || tokens[i] == 26 || tokens[i] == 18 || tokens[i] == 4) && d < 5) d = 5;
+            // Space is an explicit pause: ensure at least 4 frames (~64ms)
+            if (spaceId.HasValue && tokens[i] == spaceId.Value && d < 4) d = 4;
+            // Vowels: ensure at least 5 frames (~80ms) so vowels are never truncated abruptly
+            else if (vowelIds.Contains(tokens[i]) && d < 5) d = 5;
             else if (tokens[i] != 0 && d < 1) d = 1;
             durations[i] = d < 0 ? 0 : d;
             totalFrames += durations[i];
