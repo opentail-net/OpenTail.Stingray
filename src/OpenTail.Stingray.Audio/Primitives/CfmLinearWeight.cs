@@ -1,3 +1,5 @@
+using CoreTensor = OpenTail.Stingray.Core.Tensor;
+using OpenTail.Stingray.Core;
 
 namespace OpenTail.Stingray.Audio.Primitives;
 
@@ -32,12 +34,55 @@ public sealed class CfmLinearWeight
     public int OutDim => _outDim;
     public int InDim => _inDim;
 
+    // Lazily-uploaded, persistent GPU copy of this weight (--backend vulkan path). Uploaded once
+    // on first GPU use and reused for every subsequent call (weights are static across the whole
+    // Euler ODE solve), matching ZImageDiT's existing weight-caching convention.
+    private CoreTensor? _gpuWeight;
+    private IComputeBackend? _gpuBackend;
+
     private CfmLinearWeight(short[]? f16Bits, float[]? f32, int outDim, int inDim)
     {
         _f16Bits = f16Bits;
         _f32 = f32;
         _outDim = outDim;
         _inDim = inDim;
+    }
+
+    /// <summary>Batch linear layer via a GPU backend: outputMatrix[T, outDim] = inputMatrix[T, inDim] * weight^T + bias.
+    /// Weight is uploaded once and cached on this instance; bias is added on the CPU after download
+    /// (bias-add is negligible next to the matmul and IComputeBackend has no fused bias-add).</summary>
+    public unsafe void GpuMatMul(IComputeBackend backend, float* inputMatrix, int t, float* outputMatrix, float* bias = null)
+    {
+        if (_f32 is not { } w) throw new InvalidOperationException("GpuMatMul requires an F32-backed CfmLinearWeight.");
+
+        if (_gpuWeight is null || !ReferenceEquals(_gpuBackend, backend))
+        {
+            _gpuWeight = backend.Upload(w, TensorShape.D1(w.Length), exact: true);
+            _gpuBackend = backend;
+        }
+
+        var xGpu = backend.Upload(new ReadOnlySpan<float>(inputMatrix, t * _inDim), TensorShape.D1(t * _inDim));
+        var cGpu = backend.Allocate(TensorShape.D1(t * _outDim));
+        try
+        {
+            backend.Sgemm(cGpu, xGpu, _gpuWeight, t, _inDim, _outDim);
+            backend.Synchronize();
+            backend.Download(cGpu, new Span<float>(outputMatrix, t * _outDim));
+        }
+        finally
+        {
+            backend.Free(xGpu);
+            backend.Free(cGpu);
+        }
+
+        if (bias is not null)
+        {
+            for (int row = 0; row < t; row++)
+            {
+                float* outRow = outputMatrix + (nint)row * _outDim;
+                for (int o = 0; o < _outDim; o++) outRow[o] += bias[o];
+            }
+        }
     }
 
     /// <summary>Creates a CFM UNet linear-layer weight preserving full Float32 precision.</summary>

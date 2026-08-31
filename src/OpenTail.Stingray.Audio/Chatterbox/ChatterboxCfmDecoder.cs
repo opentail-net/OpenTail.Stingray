@@ -36,7 +36,7 @@ public static class ChatterboxCfmDecoder
     /// channel-first [80, T] (still the FULL prompt+generated length -- caller slices off the
     /// prompt-length prefix, matching flow.py's `feat[:, :, mel_len1:]`).
     /// </summary>
-    public static float[] Generate(ChatterboxS3GenWeights w, float[] mu, float[] cond, float[] spkEmbed, int t, Random rng, int nSteps = 2)
+    public static float[] Generate(ChatterboxS3GenWeights w, float[] mu, float[] cond, float[] spkEmbed, int t, Random rng, int nSteps = 2, Core.IComputeBackend? backend = null)
     {
         int mel = w.DecOutChannels; // 80
 
@@ -59,25 +59,47 @@ public static class ChatterboxCfmDecoder
             float[] dxdtCond = null!;
             float[] dxdtUncond = null!;
 
-            System.Threading.Tasks.Parallel.Invoke(
-                () =>
-                {
-                    dxdtCond = CfmUNetKernels.RunEstimator(
-                        w.DownStage, (IUnetStageWeights[])w.MidStages, w.UpStage,
-                        w.FinalBlockConvWeight, w.FinalBlockConvBias, w.FinalBlockLnWeight, w.FinalBlockLnBias,
-                        w.FinalProjWeight, w.FinalProjBias,
-                        x, mu, cond, spkEmbed, timeEmb,
-                        t, mel, w.DecChannels, w.DecNumHeads, w.DecHeadDim);
-                },
-                () =>
-                {
-                    dxdtUncond = CfmUNetKernels.RunEstimator(
-                        w.DownStage, (IUnetStageWeights[])w.MidStages, w.UpStage,
-                        w.FinalBlockConvWeight, w.FinalBlockConvBias, w.FinalBlockLnWeight, w.FinalBlockLnBias,
-                        w.FinalProjWeight, w.FinalProjBias,
-                        x, muZeros, condZeros, spkZeros, timeEmb,
-                        t, mel, w.DecChannels, w.DecNumHeads, w.DecHeadDim);
-                });
+            // IComputeBackend implementations (e.g. VulkanBackend) are not documented/verified
+            // thread-safe for concurrent dispatch from two threads onto the same instance --
+            // run the cond/uncond branches sequentially when GPU-backed instead of the CPU path's
+            // free Parallel.Invoke concurrency, to avoid a real correctness risk for a marginal win.
+            if (backend is not null)
+            {
+                dxdtCond = CfmUNetKernels.RunEstimator(
+                    w.DownStage, (IUnetStageWeights[])w.MidStages, w.UpStage,
+                    w.FinalBlockConvWeight, w.FinalBlockConvBias, w.FinalBlockLnWeight, w.FinalBlockLnBias,
+                    w.FinalProjWeight, w.FinalProjBias,
+                    x, mu, cond, spkEmbed, timeEmb,
+                    t, mel, w.DecChannels, w.DecNumHeads, w.DecHeadDim, backend);
+                dxdtUncond = CfmUNetKernels.RunEstimator(
+                    w.DownStage, (IUnetStageWeights[])w.MidStages, w.UpStage,
+                    w.FinalBlockConvWeight, w.FinalBlockConvBias, w.FinalBlockLnWeight, w.FinalBlockLnBias,
+                    w.FinalProjWeight, w.FinalProjBias,
+                    x, muZeros, condZeros, spkZeros, timeEmb,
+                    t, mel, w.DecChannels, w.DecNumHeads, w.DecHeadDim, backend);
+            }
+            else
+            {
+                System.Threading.Tasks.Parallel.Invoke(
+                    () =>
+                    {
+                        dxdtCond = CfmUNetKernels.RunEstimator(
+                            w.DownStage, (IUnetStageWeights[])w.MidStages, w.UpStage,
+                            w.FinalBlockConvWeight, w.FinalBlockConvBias, w.FinalBlockLnWeight, w.FinalBlockLnBias,
+                            w.FinalProjWeight, w.FinalProjBias,
+                            x, mu, cond, spkEmbed, timeEmb,
+                            t, mel, w.DecChannels, w.DecNumHeads, w.DecHeadDim);
+                    },
+                    () =>
+                    {
+                        dxdtUncond = CfmUNetKernels.RunEstimator(
+                            w.DownStage, (IUnetStageWeights[])w.MidStages, w.UpStage,
+                            w.FinalBlockConvWeight, w.FinalBlockConvBias, w.FinalBlockLnWeight, w.FinalBlockLnBias,
+                            w.FinalProjWeight, w.FinalProjBias,
+                            x, muZeros, condZeros, spkZeros, timeEmb,
+                            t, mel, w.DecChannels, w.DecNumHeads, w.DecHeadDim);
+                    });
+            }
 
             float dt = tNext - tCur;
             float factorCond = (1f + cfgRate) * dt;

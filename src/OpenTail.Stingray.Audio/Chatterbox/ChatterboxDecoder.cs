@@ -18,12 +18,14 @@ public sealed class ChatterboxDecoder : IDisposable
     private readonly ChatterboxS3GenWeights? _s3Weights;
     private readonly ChatterboxWeights? _t3Weights; // holds the conds.gen.* default-voice conditioning
     private readonly ChatterboxOnnxDecoder? _onnxDecoder;
+    private readonly Core.IComputeBackend? _backend;
 
-    public ChatterboxDecoder(ChatterboxS3GenWeights? s3Weights = null, ChatterboxWeights? t3Weights = null, ChatterboxOnnxDecoder? onnxDecoder = null)
+    public ChatterboxDecoder(ChatterboxS3GenWeights? s3Weights = null, ChatterboxWeights? t3Weights = null, ChatterboxOnnxDecoder? onnxDecoder = null, Core.IComputeBackend? backend = null)
     {
         _s3Weights = s3Weights;
         _t3Weights = t3Weights;
         _onnxDecoder = onnxDecoder ?? new ChatterboxOnnxDecoder();
+        _backend = backend;
     }
 
     /// <summary>
@@ -52,7 +54,7 @@ public sealed class ChatterboxDecoder : IDisposable
             // 2. Pure C# AVX2 S3Gen Neural Decoder fallback
             if (_s3Weights is { } s3w)
             {
-                return DecodeReal(s3w, promptTokens, genEmbedding, promptFeat, speechTokens);
+                return DecodeReal(s3w, promptTokens, genEmbedding, promptFeat, speechTokens, _backend);
             }
         }
 
@@ -84,7 +86,7 @@ public sealed class ChatterboxDecoder : IDisposable
         return filtered;
     }
 
-    private static float[] DecodeReal(ChatterboxS3GenWeights w, int[] promptTokens, float[] genEmbedding, float[] promptFeat, IReadOnlyList<int> speechTokens)
+    private static float[] DecodeReal(ChatterboxS3GenWeights w, int[] promptTokens, float[] genEmbedding, float[] promptFeat, IReadOnlyList<int> speechTokens, Core.IComputeBackend? backend = null)
     {
         var speechTokenList = FilterAndPadSpeechTokens(speechTokens);
         if (speechTokenList.Count == 0) return [];
@@ -110,7 +112,7 @@ public sealed class ChatterboxDecoder : IDisposable
         }
 
         var rng = Random.Shared;
-        var melOut = ChatterboxCfmDecoder.Generate(w, mu, cond, spkEmbed, totalFrames, rng, nSteps: 2);
+        var melOut = ChatterboxCfmDecoder.Generate(w, mu, cond, spkEmbed, totalFrames, rng, nSteps: 2, backend: backend);
         if (diag) ChatterboxPipeline.DiagLog($"  S3Gen CFM decoder: {sw!.ElapsedMilliseconds}ms");
         sw?.Restart();
 

@@ -79,6 +79,23 @@ public sealed class TtsCommand : Command<TtsCommand.Settings>
         string engine = s.Engine.ToLowerInvariant();
         bool allowGpu = s.Backend.ToLowerInvariant() is not ("cpu" or "0");
 
+        // Explicit opt-in only ("vulkan", not "auto") -- the CFM UNet's real, measured Vulkan
+        // perf is a mixed bag (small attention-width matmuls lose to CPU, the wider FFN matmul
+        // wins), so don't silently default existing users onto an unproven-net path the way
+        // "auto" does for other engines' allowGpu. Left as an explicit --backend vulkan choice.
+        Core.IComputeBackend? gpuBackend = null;
+        if (s.Backend.ToLowerInvariant() == "vulkan")
+        {
+            try
+            {
+                gpuBackend = new Vulkan.VulkanBackend(0);
+            }
+            catch (Exception ex)
+            {
+                AnsiConsole.MarkupLine($"[yellow]Note:[/] Vulkan GPU init failed ({ex.Message}); falling back to CPU.");
+            }
+        }
+
         try
         {
             pipeline = engine switch
@@ -93,7 +110,7 @@ public sealed class TtsCommand : Command<TtsCommand.Settings>
                     ? F5TtsPipeline.Load(s.ModelPath)
                     : throw new ArgumentException("--model (-m) is required for the f5tts engine (path to .safetensors model file)."),
                 "chatterbox" or "chatterbox-turbo" =>
-                    ChatterboxPipeline.Load(s.ModelPath ?? ResolveChatterboxModelPath()),
+                    ChatterboxPipeline.Load(s.ModelPath ?? ResolveChatterboxModelPath(), backend: gpuBackend),
                 "melo" or "melotts" => s.ModelPath is not null
                     ? MeloPipeline.Load(s.ModelPath)
                     : throw new ArgumentException("--model (-m) is required for the melo engine (path to model file)."),

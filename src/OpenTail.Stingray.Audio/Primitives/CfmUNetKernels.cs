@@ -1,5 +1,6 @@
 using System.Runtime.Intrinsics;
 using System.Runtime.Intrinsics.X86;
+using OpenTail.Stingray.Core;
 
 namespace OpenTail.Stingray.Audio.Primitives;
 
@@ -30,7 +31,8 @@ public static class CfmUNetKernels
         float[] finalBlockConvWeight, float[] finalBlockConvBias, float[] finalBlockLnWeight, float[] finalBlockLnBias,
         float[] finalProjWeight, float[] finalProjBias,
         float[] x, float[] mu, float[] cond, float[] spkEmbed, float[] timeEmb,
-        int t, int melDim, int channels, int heads, int headDim)
+        int t, int melDim, int channels, int heads, int headDim,
+        IComputeBackend? backend = null)
     {
         int inCh = melDim * 4;
         var input = new float[inCh * t];
@@ -52,7 +54,7 @@ public static class CfmUNetKernels
         float[] curIn = tbBufA, curOut = tbBufB;
         foreach (var tb in down.TransformerBlocks)
         {
-            TransformerBlock(curIn, curOut, channels, t, tb, heads, headDim, scratch);
+            TransformerBlock(curIn, curOut, channels, t, tb, heads, headDim, scratch, backend);
             (curIn, curOut) = (curOut, curIn);
         }
         Array.Copy(curIn, downOut, chT);
@@ -70,7 +72,7 @@ public static class CfmUNetKernels
             curIn = tbBufA; curOut = tbBufB;
             foreach (var tb in stage.TransformerBlocks)
             {
-                TransformerBlock(curIn, curOut, channels, t, tb, heads, headDim, scratch);
+                TransformerBlock(curIn, curOut, channels, t, tb, heads, headDim, scratch, backend);
                 (curIn, curOut) = (curOut, curIn);
             }
             Array.Copy(curIn, midOut, chT);
@@ -85,7 +87,7 @@ public static class CfmUNetKernels
         curIn = tbBufA; curOut = tbBufB;
         foreach (var tb in up.TransformerBlocks)
         {
-            TransformerBlock(curIn, curOut, channels, t, tb, heads, headDim, scratch);
+            TransformerBlock(curIn, curOut, channels, t, tb, heads, headDim, scratch, backend);
             (curIn, curOut) = (curOut, curIn);
         }
         Array.Copy(curIn, upOut, chT);
@@ -240,7 +242,7 @@ public static class CfmUNetKernels
         }
     }
 
-    private static unsafe void TransformerBlock(float[] x, float[] output, int dim, int t, IUnetTransformerBlockWeights tw, int heads, int headDim, UnetScratchBuffers scratch)
+    private static unsafe void TransformerBlock(float[] x, float[] output, int dim, int t, IUnetTransformerBlockWeights tw, int heads, int headDim, UnetScratchBuffers scratch, IComputeBackend? backend = null)
     {
         int ffDim = tw.FfUpWeight.OutDim;
         int tFf = t * ffDim;
@@ -253,7 +255,7 @@ public static class CfmUNetKernels
         var ffDown = scratch.FfDown;
 
         LayerNormChannelFirstToRowMajor(x, normed, dim, t, tw.Norm1Weight, tw.Norm1Bias);
-        SelfAttention(normed, attnOut, t, dim, tw, heads, headDim, scratch);
+        SelfAttention(normed, attnOut, t, dim, tw, heads, headDim, scratch, backend);
 
         System.Threading.Tasks.Parallel.For(0, dim, c =>
         {
@@ -267,9 +269,18 @@ public static class CfmUNetKernels
         fixed (float* n3Ptr = normed3, ffUpPtr = ffUp, ffUpBiasPtr = tw.FfUpBias,
                       ffDownPtr = ffDown, ffDownBiasPtr = tw.FfDownBias)
         {
-            tw.FfUpWeight.MatMul(n3Ptr, t, ffUpPtr, ffUpBiasPtr);
-            GeluInPlace(ffUp, tFf);
-            tw.FfDownWeight.MatMul(ffUpPtr, t, ffDownPtr, ffDownBiasPtr);
+            if (backend is not null)
+            {
+                tw.FfUpWeight.GpuMatMul(backend, n3Ptr, t, ffUpPtr, ffUpBiasPtr);
+                GeluInPlace(ffUp, tFf);
+                tw.FfDownWeight.GpuMatMul(backend, ffUpPtr, t, ffDownPtr, ffDownBiasPtr);
+            }
+            else
+            {
+                tw.FfUpWeight.MatMul(n3Ptr, t, ffUpPtr, ffUpBiasPtr);
+                GeluInPlace(ffUp, tFf);
+                tw.FfDownWeight.MatMul(ffUpPtr, t, ffDownPtr, ffDownBiasPtr);
+            }
         }
 
         System.Threading.Tasks.Parallel.For(0, dim, c =>
@@ -280,7 +291,7 @@ public static class CfmUNetKernels
         });
     }
 
-    private static unsafe void SelfAttention(float[] inputRowMajor, float[] output, int t, int dim, IUnetTransformerBlockWeights tw, int heads, int headDim, UnetScratchBuffers scratch)
+    private static unsafe void SelfAttention(float[] inputRowMajor, float[] output, int t, int dim, IUnetTransformerBlockWeights tw, int heads, int headDim, UnetScratchBuffers scratch, IComputeBackend? backend = null)
     {
         int qkvDim = heads * headDim;
 
@@ -291,9 +302,18 @@ public static class CfmUNetKernels
 
         fixed (float* inPtr = inputRowMajor, qPtr = qBuf, kPtr = kBuf, vPtr = vBuf, ctxPtr = contextBuf, outPtr = output, outBiasPtr = tw.OutBias)
         {
-            tw.QWeight.MatMul(inPtr, t, qPtr);
-            tw.KWeight.MatMul(inPtr, t, kPtr);
-            tw.VWeight.MatMul(inPtr, t, vPtr);
+            if (backend is not null)
+            {
+                tw.QWeight.GpuMatMul(backend, inPtr, t, qPtr);
+                tw.KWeight.GpuMatMul(backend, inPtr, t, kPtr);
+                tw.VWeight.GpuMatMul(backend, inPtr, t, vPtr);
+            }
+            else
+            {
+                tw.QWeight.MatMul(inPtr, t, qPtr);
+                tw.KWeight.MatMul(inPtr, t, kPtr);
+                tw.VWeight.MatMul(inPtr, t, vPtr);
+            }
 
             float scale = 1f / MathF.Sqrt(headDim);
 
@@ -402,7 +422,10 @@ public static class CfmUNetKernels
                 }
             });
 
-            tw.OutWeight.MatMul(ctxPtr, t, outPtr, outBiasPtr);
+            if (backend is not null)
+                tw.OutWeight.GpuMatMul(backend, ctxPtr, t, outPtr, outBiasPtr);
+            else
+                tw.OutWeight.MatMul(ctxPtr, t, outPtr, outBiasPtr);
         }
     }
 

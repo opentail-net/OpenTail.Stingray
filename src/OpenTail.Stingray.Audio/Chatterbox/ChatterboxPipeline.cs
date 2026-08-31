@@ -31,8 +31,11 @@ public sealed class ChatterboxPipeline : ITextToSpeechPipeline
 
     /// <summary>
     /// Loads a real Chatterbox pipeline from GGUF model files (T3 Acoustic LM and optional S3Gen vocoder).
+    /// <paramref name="backend"/>, when supplied, routes the S3Gen CFM decoder's attention/FFN
+    /// projections through it (--backend vulkan option) instead of the CPU F16C path; everything
+    /// else in the pipeline (T3 acoustic LM, HiFTGenerator vocoder) stays CPU-only regardless.
     /// </summary>
-    public static ChatterboxPipeline Load(string t3GgufPath, string? s3GenGgufPath = null)
+    public static ChatterboxPipeline Load(string t3GgufPath, string? s3GenGgufPath = null, Core.IComputeBackend? backend = null)
     {
         if (string.IsNullOrWhiteSpace(t3GgufPath) || !File.Exists(t3GgufPath))
             throw new FileNotFoundException($"Chatterbox T3 GGUF model not found: {t3GgufPath}");
@@ -57,7 +60,7 @@ public sealed class ChatterboxPipeline : ITextToSpeechPipeline
             : null;
         var tokenizer = new ChatterboxTokenizer(weights);
         var acousticLm = new ChatterboxAcousticLm(weights);
-        var decoder = new ChatterboxDecoder(s3GenWeights, weights);
+        var decoder = new ChatterboxDecoder(s3GenWeights, weights, backend: backend);
 
         return new ChatterboxPipeline(tokenizer, acousticLm, decoder, weights, s3GenWeights);
     }
