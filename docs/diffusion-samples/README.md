@@ -54,6 +54,34 @@ for Wan. Attempting to actually run them surfaced something more significant tha
      2D `VaeDecoder` with `vaePath` for its single-frame path, while `Generate()`'s multi-frame
      path builds an entirely separate `WanVaeDecoder3D` from `_weights` instead — two different,
      inconsistently-wired VAE code paths in the same pipeline.)
+
+     **Update (commit `801c551`, following-up session)**: all of the above fixed. Wired a real
+     UMT5-XXL text encoder (`UMT5Encoder.cs`, rewritten against the real Wan-shipped checkpoint's
+     own tensor names, not HF's) through `--umt5-encoder`/`--umt5-tokenizer` CLI flags. Along the
+     way, found and fixed three further real bugs in `WanModel.cs` itself once real (non-zero)
+     text conditioning actually started flowing through it: `text_embedding` was a single Linear
+     instead of the real 2-layer MLP; the AdaLN modulation was computing a fictitious per-block
+     Linear instead of the real shared-projection-plus-additive-constant scheme; cross-attention
+     was missing its pre-norm entirely. Unified the single/multi-frame VAE paths onto one real
+     `WanVaeDecoder3D`, which itself needed a full rewrite (see below). **Real, end-to-end 1-step
+     CPU run at 256×256 now completes and produces a real, non-degenerate image** (see
+     `wan2.1-t2v_red-apple-white-table_CPU-256x256-1step_pipeline-runs-not-converged.png` in this
+     directory) — expected "unconverged flow-matching" appearance at 1 step, not yet verified at a
+     real step count (8-20+) for actual image *correctness*, which is the next real milestone.
+
+   - **`WanVaeDecoder3D` was ALSO wrong** (found while fixing the above): assumed HuggingFace-
+     `diffusers`-renamed tensor keys (`decoder.conv_in`, `decoder.mid_block.resnets.N`,
+     `decoder.up_blocks.N`, split `to_q`/`to_k`/`to_v`, a custom "DupUp3D" upsample) that don't
+     exist in the real downloaded `Wan2.1_VAE.safetensors` at all, and silently returned
+     zero-filled tensors for any missing weight instead of erroring — which is exactly why this
+     went unnoticed until the DiT-side bugs were fixed far enough to actually reach VAE decode.
+     Fully rewritten against the real checkpoint's own tensor names/shapes, cross-checked against
+     both `examples/stable-diffusion.cpp/src/model/vae/wan_vae.hpp` and
+     `examples/diffusers/.../autoencoder_kl_wan.py`. Real, documented scope limit: the real
+     architecture's temporal-upsample doubling only fires with a previous latent frame's
+     causal-conv cache, which isn't threaded across frames yet — bit-exact for single-frame
+     (image) output, a real gap for multi-frame video (would need real per-frame cache
+     threading to get the correct `(t-1)*4+1` output-frame count).
    - **LTX-Video**: `RunLtxVideo` called `new LtxVideoPipeline()` (the bare parameterless
      constructor) instead of `LtxVideoPipeline.Load(modelPath, ...)`, so the user's `-m` checkpoint
      was never even opened. Beyond that CLI-level bug: `LtxVideoPipeline.Load()` itself constructs
