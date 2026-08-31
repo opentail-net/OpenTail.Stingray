@@ -21,82 +21,83 @@ namespace OpenTail.Stingray.Audio.Parler;
 /// subsequent layer's attention scores -- it is NOT recomputed per layer (confirmed: only block
 /// 0 has a real `relative_attention_bias.weight` tensor in the checkpoint; `compute_bias` is
 /// called once and the result threaded through as `position_bias` in the real source).</para>
+///
+/// <para><b>DRY/perf pass (2026-08-31)</b>: rewritten from a jagged `float[][]` (one array per
+/// token) representation with per-row `Parallel.For(0, t, i => weight.MatVec(x[i]))` calls to a
+/// flat `float[]` (row-major [t, DModel]) representation using `CfmLinearWeight.MatMul`'s
+/// existing batched (all `t` rows in one call) path instead -- same real math, same real weights,
+/// just data layout. Per CLAUDE.md rule 7, only keep if measurably faster: this real CPU
+/// architecture change is also what unblocks the Vulkan `--backend` option (docs/052 §5's
+/// "T5Encoder's real blocker isn't weight format, it's call shape" note) for a later pass.</para>
 /// </summary>
 public static class T5Encoder
 {
-    /// <summary>Runs the full T5 encoder. `tokenIds` -&gt; embed -&gt; 24x T5 layer (self-attn + gated-GELU FFN) -&gt; final RMSNorm. Returns [T, DModel].</summary>
+    /// <summary>Runs the full T5 encoder. `tokenIds` -&gt; embed -&gt; 24x T5 layer (self-attn + gated-GELU FFN) -&gt; final RMSNorm. Returns [t][DModel] (public API unchanged; internally batched flat, see class doc comment).</summary>
     public static float[][] Forward(T5EncoderWeights w, int[] tokenIds)
     {
         int t = tokenIds.Length;
-        var x = new float[t][];
+        int dim = T5EncoderWeights.DModel;
+        var x = new float[t * dim];
         for (int i = 0; i < t; i++)
-        {
-            var row = new float[T5EncoderWeights.DModel];
-            Array.Copy(w.SharedEmbedding, (long)tokenIds[i] * T5EncoderWeights.DModel, row, 0, T5EncoderWeights.DModel);
-            x[i] = row;
-        }
+            Array.Copy(w.SharedEmbedding, (long)tokenIds[i] * dim, x, (long)i * dim, dim);
 
         var positionBias = ComputeRelativePositionBias(w, t);
 
         foreach (var layer in w.Layers)
-            x = T5Layer(x, layer, positionBias);
+            x = T5Layer(x, layer, t, positionBias);
+
+        var flatOut = new float[t * dim];
+        Parallel.For(0, t, i => T5LayerNorm(x.AsSpan(i * dim, dim), w.FinalLayerNormWeight, flatOut.AsSpan(i * dim, dim)));
 
         var output = new float[t][];
-        Parallel.For(0, t, i => output[i] = T5LayerNorm(x[i], w.FinalLayerNormWeight));
+        for (int i = 0; i < t; i++)
+        {
+            output[i] = new float[dim];
+            Array.Copy(flatOut, i * dim, output[i], 0, dim);
+        }
         return output;
     }
 
-    private static float[][] T5Layer(float[][] x, T5LayerWeights lw, float[][,] positionBias)
+    private static float[] T5Layer(float[] x, T5LayerWeights lw, int t, float[][,] positionBias)
     {
-        int t = x.Length;
-        var normed1 = new float[t][];
-        Parallel.For(0, t, i => normed1[i] = T5LayerNorm(x[i], lw.SelfAttnLayerNormWeight));
+        int dim = T5EncoderWeights.DModel;
+        var normed1 = new float[t * dim];
+        Parallel.For(0, t, i => T5LayerNorm(x.AsSpan(i * dim, dim), lw.SelfAttnLayerNormWeight, normed1.AsSpan(i * dim, dim)));
 
-        var attnOut = SelfAttention(normed1, lw, positionBias);
+        var attnOut = SelfAttention(normed1, lw, t, positionBias);
 
-        var afterAttn = new float[t][];
-        Parallel.For(0, t, i =>
-        {
-            var row = new float[T5EncoderWeights.DModel];
-            for (int d = 0; d < T5EncoderWeights.DModel; d++) row[d] = x[i][d] + attnOut[i][d];
-            afterAttn[i] = row;
-        });
+        var afterAttn = new float[t * dim];
+        TensorPrimitives.Add(x, attnOut, afterAttn);
 
-        var normed2 = new float[t][];
-        Parallel.For(0, t, i => normed2[i] = T5LayerNorm(afterAttn[i], lw.FfnLayerNormWeight));
+        var normed2 = new float[t * dim];
+        Parallel.For(0, t, i => T5LayerNorm(afterAttn.AsSpan(i * dim, dim), lw.FfnLayerNormWeight, normed2.AsSpan(i * dim, dim)));
 
-        var ffnOut = GatedFfn(normed2, lw);
+        var ffnOut = GatedFfn(normed2, lw, t);
 
-        var output = new float[t][];
-        Parallel.For(0, t, i =>
-        {
-            var row = new float[T5EncoderWeights.DModel];
-            for (int d = 0; d < T5EncoderWeights.DModel; d++) row[d] = afterAttn[i][d] + ffnOut[i][d];
-            output[i] = row;
-        });
+        var output = new float[t * dim];
+        TensorPrimitives.Add(afterAttn, ffnOut, output);
         return output;
     }
 
     /// <summary>Real T5 self-attention: NO 1/sqrt(headDim) scaling, plus the shared relative position bias added to raw scores before softmax.</summary>
-    private static float[][] SelfAttention(float[][] x, T5LayerWeights lw, float[][,] positionBias)
+    private static unsafe float[] SelfAttention(float[] x, T5LayerWeights lw, int t, float[][,] positionBias)
     {
-        int t = x.Length;
+        int dim = T5EncoderWeights.DModel;
         int nHeads = T5EncoderWeights.NumHeads;
         int dKv = T5EncoderWeights.DKv;
         int qkvDim = nHeads * dKv; // 1024, equals DModel for this config
 
-        var q = new float[t][];
-        var k = new float[t][];
-        var v = new float[t][];
-        Parallel.For(0, t, i =>
+        var q = new float[t * qkvDim];
+        var k = new float[t * qkvDim];
+        var v = new float[t * qkvDim];
+        fixed (float* xp = x, qp = q, kp = k, vp = v)
         {
-            q[i] = lw.SelfAttnQWeight.MatVec(x[i]);
-            k[i] = lw.SelfAttnKWeight.MatVec(x[i]);
-            v[i] = lw.SelfAttnVWeight.MatVec(x[i]);
-        });
+            lw.SelfAttnQWeight.MatMul(xp, t, qp);
+            lw.SelfAttnKWeight.MatMul(xp, t, kp);
+            lw.SelfAttnVWeight.MatMul(xp, t, vp);
+        }
 
-        var context = new float[t][];
-        for (int i = 0; i < t; i++) context[i] = new float[qkvDim];
+        var context = new float[t * qkvDim];
 
         Parallel.For(0, nHeads, h =>
         {
@@ -107,34 +108,46 @@ public static class T5Encoder
                 for (int j = 0; j < t; j++)
                 {
                     float dot = 0f;
-                    for (int d = 0; d < dKv; d++) dot += q[i][off + d] * k[j][off + d];
+                    for (int d = 0; d < dKv; d++) dot += q[i * qkvDim + off + d] * k[j * qkvDim + off + d];
                     scores[j] = dot + positionBias[h][i, j]; // NO scaling -- real T5 quirk
                 }
                 SoftmaxInPlace(scores);
 
-                var ctxSpan = context[i].AsSpan(off, dKv);
+                var ctxSpan = context.AsSpan(i * qkvDim + off, dKv);
                 for (int j = 0; j < t; j++)
-                    for (int d = 0; d < dKv; d++) ctxSpan[d] += scores[j] * v[j][off + d];
+                {
+                    float s = scores[j];
+                    var vSpan = v.AsSpan(j * qkvDim + off, dKv);
+                    for (int d = 0; d < dKv; d++) ctxSpan[d] += s * vSpan[d];
+                }
             }
         });
 
-        var output = new float[t][];
-        Parallel.For(0, t, i => output[i] = lw.SelfAttnOWeight.MatVec(context[i]));
+        var output = new float[t * dim];
+        fixed (float* cp = context, op = output)
+            lw.SelfAttnOWeight.MatMul(cp, t, op);
         return output;
     }
 
     /// <summary>Real T5DenseGatedActDense: `wo(gelu_new(wi_0(x)) * wi_1(x))`, no biases anywhere.</summary>
-    private static float[][] GatedFfn(float[][] x, T5LayerWeights lw)
+    private static unsafe float[] GatedFfn(float[] x, T5LayerWeights lw, int t)
     {
-        int t = x.Length;
-        var output = new float[t][];
-        Parallel.For(0, t, i =>
+        int dim = T5EncoderWeights.DModel;
+        int ff = T5EncoderWeights.DFf;
+        var gate = new float[t * ff];
+        var up = new float[t * ff];
+        fixed (float* xp = x, gp = gate, up_ = up)
         {
-            var gate = lw.FfnWi0Weight.MatVec(x[i]);
-            var up = lw.FfnWi1Weight.MatVec(x[i]);
-            for (int d = 0; d < T5EncoderWeights.DFf; d++) gate[d] = GeluNew(gate[d]) * up[d];
-            output[i] = lw.FfnWoWeight.MatVec(gate);
-        });
+            lw.FfnWi0Weight.MatMul(xp, t, gp);
+            lw.FfnWi1Weight.MatMul(xp, t, up_);
+        }
+
+        for (int i = 0; i < gate.Length; i++)
+            gate[i] = GeluNew(gate[i]) * up[i];
+
+        var output = new float[t * dim];
+        fixed (float* gp = gate, op = output)
+            lw.FfnWoWeight.MatMul(gp, t, op);
         return output;
     }
 
@@ -191,16 +204,13 @@ public static class T5Encoder
     }
 
     /// <summary>Real T5LayerNorm: pure RMSNorm, NO bias, NO mean-subtraction.</summary>
-    private static float[] T5LayerNorm(float[] x, float[] weight, float eps = 1e-6f)
+    private static void T5LayerNorm(ReadOnlySpan<float> x, float[] weight, Span<float> output, float eps = 1e-6f)
     {
         int n = x.Length;
         float sumSq = 0f;
         for (int i = 0; i < n; i++) sumSq += x[i] * x[i];
         float invRms = 1f / MathF.Sqrt(sumSq / n + eps);
-
-        var output = new float[n];
         for (int i = 0; i < n; i++) output[i] = x[i] * invRms * weight[i];
-        return output;
     }
 
     private static void SoftmaxInPlace(float[] scores)
