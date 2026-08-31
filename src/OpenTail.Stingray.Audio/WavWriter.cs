@@ -21,6 +21,32 @@ public static class WavWriter
 {
     private const double SilenceThreshold = 1e-5; // ~ -100 dBFS
 
+    /// <summary>Peak-normalization scale factor: 1.0 if the sample buffer's peak magnitude is
+    /// already at or below <paramref name="threshold"/>, otherwise the factor that scales the
+    /// peak down to exactly <paramref name="targetPeak"/>. Shared by this writer's own hard-clip
+    /// guard (threshold=1.0) and any pipeline wanting pre-emptive headroom normalization on its
+    /// own in-memory samples (e.g. a lower threshold to avoid volume topping out well before
+    /// actual clipping) -- both want the same peak-scan-then-scale math, just different
+    /// thresholds/targets.</summary>
+    public static float ComputePeakScale(ReadOnlySpan<float> samples, float threshold, float targetPeak)
+    {
+        float maxAbs = 0f;
+        for (int i = 0; i < samples.Length; i++)
+        {
+            float abs = MathF.Abs(samples[i]);
+            if (abs > maxAbs) maxAbs = abs;
+        }
+        return maxAbs > threshold ? targetPeak / maxAbs : 1.0f;
+    }
+
+    /// <summary>Applies <see cref="ComputePeakScale"/> in place.</summary>
+    public static void NormalizePeakInPlace(float[] samples, float threshold, float targetPeak)
+    {
+        float scale = ComputePeakScale(samples, threshold, targetPeak);
+        if (scale == 1.0f) return;
+        for (int i = 0; i < samples.Length; i++) samples[i] *= scale;
+    }
+
     /// <summary>
     /// Writes float audio samples in [-1.0, 1.0] to a standard 16-bit PCM WAV file.
     /// </summary>
@@ -74,14 +100,8 @@ public static class WavWriter
 
         stream.Write(header);
 
-        // Check peak magnitude to prevent digital hard clipping if samples exceed [-1.0, 1.0]
-        float maxAbs = 0f;
-        for (int i = 0; i < samples.Length; i++)
-        {
-            float abs = MathF.Abs(samples[i]);
-            if (abs > maxAbs) maxAbs = abs;
-        }
-        float invScale = maxAbs > 1.0f ? 0.95f / maxAbs : 1.0f;
+        // Prevent digital hard clipping if samples exceed [-1.0, 1.0].
+        float invScale = ComputePeakScale(samples, threshold: 1.0f, targetPeak: 0.95f);
 
         // Convert float samples to 16-bit signed PCM with optional TPDF dither
         byte[] pcmBuffer = new byte[Math.Min(4096, samples.Length * 2)];

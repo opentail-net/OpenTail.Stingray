@@ -127,6 +127,71 @@ public static class F5Kernels
         return y;
     }
 
+    /// <summary>AdaLN-Zero scale/shift modulation, `dst = src * (1 + modulation[scaleOffset..]) + modulation[shiftOffset..]`,
+    /// reading scale/shift as two `dim`-length slices out of a single combined `modulation` buffer
+    /// (the real chunked-Linear-output layout every AdaLN variant in this codebase's DiT family
+    /// uses -- F5-TTS's per-block 6-way chunk, its own `norm_out`'s 2-way chunk, and CosyVoice3's
+    /// tensor-for-tensor-identical DiT, all share this exact op; was hand-duplicated three times
+    /// -- twice as a private method, once inlined -- until extracted here).</summary>
+    public static unsafe void ApplyAffineModulationSlice(float[] dst, float[] src, float[] modulation, int scaleOffset, int shiftOffset, int t, int dim)
+    {
+        int vecSize = System.Numerics.Vector<float>.Count;
+        fixed (float* dp = dst, sp = src, mp = modulation)
+        {
+            float* dpLocal = dp;
+            float* spLocal = sp;
+            float* scpLocal = mp + scaleOffset;
+            float* shpLocal = mp + shiftOffset;
+            Parallel.For(0, t, ti =>
+            {
+                int off = ti * dim;
+                float* dRow = dpLocal + off;
+                float* sRow = spLocal + off;
+                int d = 0;
+                for (; d <= dim - vecSize; d += vecSize)
+                {
+                    var vs = new System.Numerics.Vector<float>(new ReadOnlySpan<float>(sRow + d, vecSize));
+                    var vScale = new System.Numerics.Vector<float>(new ReadOnlySpan<float>(scpLocal + d, vecSize));
+                    var vShift = new System.Numerics.Vector<float>(new ReadOnlySpan<float>(shpLocal + d, vecSize));
+                    var vr = vs * (System.Numerics.Vector<float>.One + vScale) + vShift;
+                    vr.CopyTo(new Span<float>(dRow + d, vecSize));
+                }
+                for (; d < dim; d++) dRow[d] = sRow[d] * (1f + scpLocal[d]) + shpLocal[d];
+            });
+        }
+    }
+
+    /// <summary>AdaLN-Zero gated residual add, `dst = residual + modulation[gateOffset..] * update`
+    /// (see <see cref="ApplyAffineModulationSlice"/>'s doc comment -- same sharing rationale).</summary>
+    public static unsafe void ApplyGatedResidualSlice(float[] dst, float[] residual, float[] modulation, int gateOffset, float[] update, int t, int dim)
+    {
+        int vecSize = System.Numerics.Vector<float>.Count;
+        fixed (float* dp = dst, rp = residual, mp = modulation, up = update)
+        {
+            float* dpLocal = dp;
+            float* rpLocal = rp;
+            float* gpLocal = mp + gateOffset;
+            float* upLocal = up;
+            Parallel.For(0, t, ti =>
+            {
+                int off = ti * dim;
+                float* dRow = dpLocal + off;
+                float* rRow = rpLocal + off;
+                float* uRow = upLocal + off;
+                int d = 0;
+                for (; d <= dim - vecSize; d += vecSize)
+                {
+                    var vr = new System.Numerics.Vector<float>(new ReadOnlySpan<float>(rRow + d, vecSize));
+                    var vg = new System.Numerics.Vector<float>(new ReadOnlySpan<float>(gpLocal + d, vecSize));
+                    var vu = new System.Numerics.Vector<float>(new ReadOnlySpan<float>(uRow + d, vecSize));
+                    var vRes = vr + vg * vu;
+                    vRes.CopyTo(new Span<float>(dRow + d, vecSize));
+                }
+                for (; d < dim; d++) dRow[d] = rRow[d] + gpLocal[d] * uRow[d];
+            });
+        }
+    }
+
     public static float SiLU(float x) => x / (1f + MathF.Exp(-x));
 
     public static float Mish(float x) => x * MathF.Tanh(MathF.Log(1f + MathF.Exp(x)));

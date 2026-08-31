@@ -49,31 +49,7 @@ public static class F5DiTModel
         var modulation = F5Kernels.LinearQ8_0(siluT, 1, dim, w.NormOutLinearQ8, w.NormOutLinearBias, dim * 2);
 
         var normOut = F5Kernels.LayerNormNoAffine(h, numFrames, dim);
-        unsafe
-        {
-            int vecSize = System.Numerics.Vector<float>.Count;
-            fixed (float* np = normOut, mp = modulation)
-            {
-                float* npLocal = np;
-                float* scpLocal = mp;
-                float* shpLocal = mp + dim;
-                Parallel.For(0, numFrames, ti =>
-                {
-                    int off = ti * dim;
-                    float* nRow = npLocal + off;
-                    int d = 0;
-                    for (; d <= dim - vecSize; d += vecSize)
-                    {
-                        var vn = new System.Numerics.Vector<float>(new ReadOnlySpan<float>(nRow + d, vecSize));
-                        var vScale = new System.Numerics.Vector<float>(new ReadOnlySpan<float>(scpLocal + d, vecSize));
-                        var vShift = new System.Numerics.Vector<float>(new ReadOnlySpan<float>(shpLocal + d, vecSize));
-                        var vr = vn * (System.Numerics.Vector<float>.One + vScale) + vShift;
-                        vr.CopyTo(new Span<float>(nRow + d, vecSize));
-                    }
-                    for (; d < dim; d++) nRow[d] = nRow[d] * (1f + scpLocal[d]) + shpLocal[d];
-                });
-            }
-        }
+        F5Kernels.ApplyAffineModulationSlice(normOut, normOut, modulation, scaleOffset: 0, shiftOffset: dim, numFrames, dim);
 
         return F5Kernels.LinearQ8_0(normOut, numFrames, dim, w.ProjOutQ8, w.ProjOutBias, F5TtsWeights.MelDim);
     }

@@ -157,13 +157,9 @@ public static class CosyVoice3DiTModel
         var siluT = new float[dim];
         for (int d = 0; d < dim; d++) siluT[d] = F5Kernels.SiLU(tEmb[d]);
         var modulation = F5Kernels.Linear(siluT, 1, dim, w.NormOutLinearWeight, w.NormOutLinearBias, dim * 2);
-        var scale = new float[dim];
-        var shift = new float[dim];
-        Array.Copy(modulation, 0, scale, 0, dim);
-        Array.Copy(modulation, dim, shift, 0, dim);
 
         var normOut = F5Kernels.LayerNormNoAffine(h, numFrames, dim);
-        ApplyAffineModulation(normOut, normOut, scale, shift, numFrames, dim);
+        F5Kernels.ApplyAffineModulationSlice(normOut, normOut, modulation, scaleOffset: 0, shiftOffset: dim, numFrames, dim);
 
         return F5Kernels.Linear(normOut, numFrames, dim, w.ProjOutWeight, w.ProjOutBias, CosyVoice3DiTWeights.MelDim);
     }
@@ -280,135 +276,21 @@ public static class CosyVoice3DiTModel
         var modulation = F5Kernels.Linear(siluT, 1, dim, bw.AttnNormLinearWeight, bw.AttnNormLinearBias, dim * 6);
 
         var norm = F5Kernels.LayerNormNoAffine(x, t, dim);
-        ApplyAffineModulationSlice(norm, norm, modulation, 1 * dim, 0 * dim, t, dim);
+        F5Kernels.ApplyAffineModulationSlice(norm, norm, modulation, 1 * dim, 0 * dim, t, dim);
 
         var attnOut = Attention(bw, norm, t, rotaryCos, rotarySin);
 
         var xAfterAttn = new float[x.Length];
-        ApplyGatedResidualSlice(xAfterAttn, x, modulation, 2 * dim, attnOut, t, dim);
+        F5Kernels.ApplyGatedResidualSlice(xAfterAttn, x, modulation, 2 * dim, attnOut, t, dim);
 
         var ffNorm = F5Kernels.LayerNormNoAffine(xAfterAttn, t, dim);
-        ApplyAffineModulationSlice(ffNorm, ffNorm, modulation, 4 * dim, 3 * dim, t, dim);
+        F5Kernels.ApplyAffineModulationSlice(ffNorm, ffNorm, modulation, 4 * dim, 3 * dim, t, dim);
 
         var ffOut = FeedForward(bw, ffNorm, t);
 
         var output = new float[x.Length];
-        ApplyGatedResidualSlice(output, xAfterAttn, modulation, 5 * dim, ffOut, t, dim);
+        F5Kernels.ApplyGatedResidualSlice(output, xAfterAttn, modulation, 5 * dim, ffOut, t, dim);
         return output;
-    }
-
-    private static unsafe void ApplyAffineModulationSlice(float[] dst, float[] src, float[] modulation, int scaleOffset, int shiftOffset, int t, int dim)
-    {
-        int vecSize = System.Numerics.Vector<float>.Count;
-        fixed (float* dp = dst, sp = src, mp = modulation)
-        {
-            float* dpLocal = dp;
-            float* spLocal = sp;
-            float* scpLocal = mp + scaleOffset;
-            float* shpLocal = mp + shiftOffset;
-            Parallel.For(0, t, ti =>
-            {
-                int off = ti * dim;
-                float* dRow = dpLocal + off;
-                float* sRow = spLocal + off;
-                int d = 0;
-                for (; d <= dim - vecSize; d += vecSize)
-                {
-                    var vs = new System.Numerics.Vector<float>(new ReadOnlySpan<float>(sRow + d, vecSize));
-                    var vScale = new System.Numerics.Vector<float>(new ReadOnlySpan<float>(scpLocal + d, vecSize));
-                    var vShift = new System.Numerics.Vector<float>(new ReadOnlySpan<float>(shpLocal + d, vecSize));
-                    var vr = vs * (System.Numerics.Vector<float>.One + vScale) + vShift;
-                    vr.CopyTo(new Span<float>(dRow + d, vecSize));
-                }
-                for (; d < dim; d++) dRow[d] = sRow[d] * (1f + scpLocal[d]) + shpLocal[d];
-            });
-        }
-    }
-
-    private static unsafe void ApplyGatedResidualSlice(float[] dst, float[] residual, float[] modulation, int gateOffset, float[] update, int t, int dim)
-    {
-        int vecSize = System.Numerics.Vector<float>.Count;
-        fixed (float* dp = dst, rp = residual, mp = modulation, up = update)
-        {
-            float* dpLocal = dp;
-            float* rpLocal = rp;
-            float* gpLocal = mp + gateOffset;
-            float* upLocal = up;
-            Parallel.For(0, t, ti =>
-            {
-                int off = ti * dim;
-                float* dRow = dpLocal + off;
-                float* rRow = rpLocal + off;
-                float* uRow = upLocal + off;
-                int d = 0;
-                for (; d <= dim - vecSize; d += vecSize)
-                {
-                    var vr = new System.Numerics.Vector<float>(new ReadOnlySpan<float>(rRow + d, vecSize));
-                    var vg = new System.Numerics.Vector<float>(new ReadOnlySpan<float>(gpLocal + d, vecSize));
-                    var vu = new System.Numerics.Vector<float>(new ReadOnlySpan<float>(uRow + d, vecSize));
-                    var vRes = vr + vg * vu;
-                    vRes.CopyTo(new Span<float>(dRow + d, vecSize));
-                }
-                for (; d < dim; d++) dRow[d] = rRow[d] + gpLocal[d] * uRow[d];
-            });
-        }
-    }
-
-    private static unsafe void ApplyAffineModulation(float[] dst, float[] src, float[] scale, float[] shift, int t, int dim)
-    {
-        int vecSize = System.Numerics.Vector<float>.Count;
-        fixed (float* dp = dst, sp = src, scp = scale, shp = shift)
-        {
-            float* dpLocal = dp;
-            float* spLocal = sp;
-            float* scpLocal = scp;
-            float* shpLocal = shp;
-            Parallel.For(0, t, ti =>
-            {
-                int off = ti * dim;
-                float* dRow = dpLocal + off;
-                float* sRow = spLocal + off;
-                int d = 0;
-                for (; d <= dim - vecSize; d += vecSize)
-                {
-                    var vs = new System.Numerics.Vector<float>(new ReadOnlySpan<float>(sRow + d, vecSize));
-                    var vScale = new System.Numerics.Vector<float>(new ReadOnlySpan<float>(scpLocal + d, vecSize));
-                    var vShift = new System.Numerics.Vector<float>(new ReadOnlySpan<float>(shpLocal + d, vecSize));
-                    var vr = vs * (System.Numerics.Vector<float>.One + vScale) + vShift;
-                    vr.CopyTo(new Span<float>(dRow + d, vecSize));
-                }
-                for (; d < dim; d++) dRow[d] = sRow[d] * (1f + scpLocal[d]) + shpLocal[d];
-            });
-        }
-    }
-
-    private static unsafe void ApplyGatedResidual(float[] dst, float[] residual, float[] gate, float[] update, int t, int dim)
-    {
-        int vecSize = System.Numerics.Vector<float>.Count;
-        fixed (float* dp = dst, rp = residual, gp = gate, up = update)
-        {
-            float* dpLocal = dp;
-            float* rpLocal = rp;
-            float* gpLocal = gp;
-            float* upLocal = up;
-            Parallel.For(0, t, ti =>
-            {
-                int off = ti * dim;
-                float* dRow = dpLocal + off;
-                float* rRow = rpLocal + off;
-                float* uRow = upLocal + off;
-                int d = 0;
-                for (; d <= dim - vecSize; d += vecSize)
-                {
-                    var vr = new System.Numerics.Vector<float>(new ReadOnlySpan<float>(rRow + d, vecSize));
-                    var vg = new System.Numerics.Vector<float>(new ReadOnlySpan<float>(gpLocal + d, vecSize));
-                    var vu = new System.Numerics.Vector<float>(new ReadOnlySpan<float>(uRow + d, vecSize));
-                    var vRes = vr + vg * vu;
-                    vRes.CopyTo(new Span<float>(dRow + d, vecSize));
-                }
-                for (; d < dim; d++) dRow[d] = rRow[d] + gpLocal[d] * uRow[d];
-            });
-        }
     }
 
     private static float[] FeedForward(CosyVoice3DiTBlockWeights bw, float[] x, int t)

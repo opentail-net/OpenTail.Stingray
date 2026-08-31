@@ -164,21 +164,8 @@ public sealed class F5TtsPipeline : ITextToSpeechPipeline
             ? VocosVocoder.Decode(_vocosWeights, targetMel, targetFrames)
             : _vocoder.Synthesize(targetMel, targetFrames);
 
-        // Peak normalization with -0.5 dBFS headroom (0.95 peak target) to eliminate clipping / volume topping out
-        float maxAbs = 0f;
-        for (int i = 0; i < audio.Length; i++)
-        {
-            float abs = MathF.Abs(audio[i]);
-            if (abs > maxAbs) maxAbs = abs;
-        }
-        if (maxAbs > 0.95f)
-        {
-            float scale = 0.95f / maxAbs;
-            for (int i = 0; i < audio.Length; i++)
-            {
-                audio[i] *= scale;
-            }
-        }
+        // Peak normalization with -0.5 dBFS headroom (0.95 peak target) to eliminate clipping / volume topping out.
+        WavWriter.NormalizePeakInPlace(audio, threshold: 0.95f, targetPeak: 0.95f);
 
         var result = new AudioGenerationResult(audio, DefaultSampleRate);
 
