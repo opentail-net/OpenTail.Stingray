@@ -125,19 +125,60 @@ CFG losing free CPU parallelism, plus the one-time Q8_0→F32 dequant cost this 
 pays that the others don't). Real and expected on this machine; ships regardless per user
 instruction.
 
-### 4. FishSpeech S2 Pro — TODO
+### 4. FishSpeech S2 Pro — AUDITED, real reasons NOT to port (both halves)
 
-Dual-AR + Firefly codec, `src/OpenTail.Stingray.Audio/FishSpeech/`. Likely the most structurally
-different of the four (dual autoregressive transformers, not a flow-matching UNet/DiT) — audit
-its real hot path before assuming the same QKV/FFN-Sgemm pattern applies cleanly. Wire via
-`FishSpeechFullPipeline.Load(..., backend:)`. A/B against README's recorded 16.285x CPU RTF.
+Dual-AR: a slow-AR trunk (the real LLM engine, `ForwardPass`) + a fast-AR per-codebook expansion
+transformer (`FishSpeechFastAr.cs`, hand-rolled). Audited both, per this plan's own "audit before
+assuming the pattern applies" step -- found real, structural reasons neither half fits the
+Chatterbox/CosyVoice3/F5-TTS recipe:
 
-### 5. Parler-TTS — stretch goal, only if time remains
+- **Fast-AR**: its own doc comment states it runs "at most 1 + num_codebooks-1 = 10 tokens over
+  4 layers," re-run from scratch on every call, and is separately documented (performance-pass
+  entry, `docs/audio-review-progress.md`) as "the single largest real cost in the whole Fish
+  Speech pipeline" *precisely because* it's called so frequently at that tiny size. This is a
+  workload where GPU dispatch overhead (upload/Sgemm/download/sync round-trip per op) would
+  dominate on **any** GPU, not just this machine's weak one -- unlike the other three engines,
+  where the probe showed a genuine, size-dependent split (some ops win, some lose). There is no
+  tensor size here that would plausibly cross over to a GPU win on stronger hardware; the op count
+  and per-call frequency are the problem, not the op size. Building this as a GPU option would be
+  building something with no real use case, not "leave it available for other hardware." Not
+  ported.
+- **Slow-AR trunk**: uses this codebase's general LLM `ForwardPass` class. `ForwardPass` accepts
+  an `IComputeBackend` constructor parameter, but confirmed (via `RunCommand.cs`'s own real
+  dispatch code, the actual working `-g`/Vulkan path for normal text LLM inference) that
+  `ForwardPass` is ALWAYS constructed with `CpuBackend` in practice -- real Vulkan LLM inference
+  uses a structurally separate class, `GpuForwardPass`, instead. Swapping `FishSpeechPipeline`'s
+  `_backend`/`_fwd` from `CpuBackend`/`ForwardPass` to `VulkanBackend`/`GpuForwardPass` is a real,
+  larger change with unverified risk: `FishSpeechPipeline` depends on `ForwardPass.EnableHiddenTaps`/
+  `.LastHidden` (bridges the slow-AR's per-position hidden state into the fast-AR, see
+  `FishSpeechFastAr.Forward`'s doc comment) and `GpuForwardPass`'s API parity for those two members
+  was not verified this pass. Doing this safely needs its own audit + test pass, not a same-recipe
+  drop-in -- flagged as a real, separate follow-up, not attempted here.
 
-Ranked 8/11 (5.659x CPU RTF), already uses `CfmLinearWeight` for its T5 encoder
-(`T5EncoderWeights.cs`) — the `GpuMatMul` plumbing from step 1 may be directly reusable there with
-much less new code than 2-4. Lower priority than 2-4 since it's less slow and the win, if any, is
-smaller in absolute terms.
+**Not marked DONE or dropped -- genuinely out of scope for this plan's recipe, for real
+structural reasons recorded above, not skipped for lack of time.**
+
+### 5. Parler-TTS — audited (stretch goal), not ported this pass
+
+Ranked 8/11 (5.659x CPU RTF). Two halves, audited:
+
+- **`ParlerDecoder.ForwardStep`** (the autoregressive decoder, almost certainly the real
+  bottleneck): single-token (t=1) per call, one call per generated audio frame -- same
+  fundamentally-bad-GPU-target shape as FishSpeech's fast-AR (§4). Not a candidate.
+- **`T5Encoder`** (one-time text conditioning, `T5EncoderWeights.cs`, already uses
+  `CfmLinearWeight`): the real blocker isn't weight format this time, it's call shape --
+  `SelfAttention`/`GatedFfn` call `CfmLinearWeight.MatVec(x[i])` (single-row) inside a
+  `Parallel.For(0, t, ...)` loop, not one batched multi-row call. `CfmLinearWeight.GpuMatMul`
+  (added in §1) takes a batched `(inputMatrix, t)` — using it inside the existing per-row loop
+  would issue *t* separate GPU dispatches per weight per layer, strictly worse than not porting
+  it. Doing this properly needs restructuring `SelfAttention`/`GatedFfn` to batch all `t` rows
+  into one call first (a real, if fairly mechanical, refactor) -- not attempted this pass, since
+  it's explicitly the lowest-priority item and the three higher-priority engines (§1-3) plus the
+  honest audit of §4 already used the available time for this session.
+
+**Not started.** A reasonable next step if resumed: batch `T5Encoder`'s per-row loops into
+per-layer batched calls (CPU-side win too, independent of GPU), then the existing `GpuMatMul`
+plumbing applies directly.
 
 ## Process for each remaining engine (repeat of what worked for Chatterbox)
 
