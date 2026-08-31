@@ -2,40 +2,42 @@
 namespace OpenTail.Stingray.Diffusion.TextEncoders;
 
 /// <summary>
-/// T5-XXL encoder-only transformer.
-/// Produces context embeddings [seq, 4096] for the FLUX DiT.
+/// UMT5-XXL encoder-only transformer (`google/umt5-xxl`), the real text encoder Wan 2.1/2.2 uses
+/// (`WanPipeline._get_t5_prompt_embeds` in `examples/diffusers/src/diffusers/pipelines/wan/
+/// pipeline_wan.py`). Produces context embeddings [seq, 4096] for the Wan DiT's cross-attention.
 ///
-/// Loads weights from t5xxl_fp16.safetensors or t5xxl_fp8.safetensors.
-/// Architecture: 24 encoder layers, d_model=4096, 64 heads, head_dim=64, d_ff=10240.
-/// Notable differences from standard transformers:
-///   - T5LayerNorm = RMSNorm without mean-centering or bias
-///   - Relative position bias (bias[head, query_pos - key_pos + max_dist])
-///   - GELU("gelu_new", tanh-approx) gated FFN, real `google/t5-v1_1-xxl` config
-///     (`feed_forward_proj: "gated-gelu"`, `dense_act_fn: "gelu_new"`, confirmed against the
-///     real HF config -- NOT SiLU, despite this class's own prior doc comment claiming so; fixed
-///     after finding the same activation choice needed re-verifying for Wan's UMT5 encoder, which
-///     shares this exact FFN shape): h = gelu_new(w1*x) * (w3*x); out = w2*h
-///   - No absolute position embeddings
+/// Loads weights from `models_t5_umt5-xxl-enc-bf16.pth` (converted to safetensors; Wan's own
+/// checkpoint, `Wan-AI/Wan2.1-T2V-1.3B`).
+///
+/// <para>Same overall shape as <see cref="T5Encoder"/> (T5-XXL, used by FLUX) -- SAME real
+/// dimensions (24 layers, d_model=4096, 64 heads, head_dim=64, d_ff=10240), SAME real GELU-gated
+/// FFN, SAME real bidirectional relative-position-bucket formula (both confirmed against the real
+/// `google/umt5-xxl`/`google/t5-v1_1-xxl` `config.json`s directly: `feed_forward_proj: "gated-
+/// gelu"`, `dense_act_fn: "gelu_new"`, `relative_attention_num_buckets: 32`,
+/// `relative_attention_max_distance: 128` -- identical on both). The ONE real, load-bearing
+/// architectural difference (confirmed against the actual `transformers.models.umt5.modeling_umt5`
+/// source, not assumed from the "U" in the name): UMT5's `UMT5LayerSelfAttention.__init__` sets
+/// `has_relative_attention_bias=True` for EVERY encoder block (`relative_attention_bias.weight`
+/// exists once per layer), whereas plain T5 only has this on layer 0 and shares that single bias
+/// across every other layer. Real vocab size is also much larger (256384 vs T5-XXL's 32128,
+/// UMT5 is a multilingual model) -- irrelevant to the math itself, just the embedding table size.
+/// </para>
 /// </summary>
-public sealed class T5Encoder : IDisposable
+public sealed class UMT5Encoder : IDisposable
 {
     private const int Layers      = 24;
     private const int Dim         = 4096;
     private const int Heads       = 64;
     private const int HeadDim     = 64;
     private const int FfDim       = 10240;
-    private const int VocabSize   = 32128;
     private const int RelPosBuckets = 32;
     private const int MaxRelPos   = 128;
 
     private readonly SafetensorsLoader _st;
-    private float[]? _relPosBias; // lazy cached
 
-    public T5Encoder(string path) => _st = SafetensorsLoader.Open(path);
+    public UMT5Encoder(string path) => _st = SafetensorsLoader.Open(path);
 
-    /// <summary>
-    /// Encode token ids → context embeddings [seq, 4096].
-    /// </summary>
+    /// <summary>Encode token ids -> context embeddings [seq, 4096].</summary>
     public float[] Encode(int[] tokens)
     {
         int seq = tokens.Length;
@@ -45,45 +47,32 @@ public sealed class T5Encoder : IDisposable
         for (int t = 0; t < seq; t++)
         {
             int off = tokens[t] * Dim;
-            x.AsSpan().Slice(t * Dim, Dim).Fill(0);
             tokEmb.AsSpan(off, Dim).CopyTo(x.AsSpan(t * Dim, Dim));
         }
 
-        // Precompute relative position bias from first block (shared across all blocks)
-        if (_relPosBias is null)
-        {
-            var rpW = _st.ReadF32("encoder.block.0.layer.0.SelfAttention.relative_attention_bias.weight");
-            // rpW: [num_buckets, num_heads] = [32, 64]
-            _relPosBias = ComputeRelPosBias(rpW, seq, Heads);
-        }
-        else if (_relPosBias.Length != seq * seq * Heads)
-        {
-            // Recompute if sequence length changed
-            var rpW = _st.ReadF32("encoder.block.0.layer.0.SelfAttention.relative_attention_bias.weight");
-            _relPosBias = ComputeRelPosBias(rpW, seq, Heads);
-        }
-
         for (int i = 0; i < Layers; i++)
-            x = EncoderBlock(x, _relPosBias, seq, i);
+            x = EncoderBlock(x, seq, i);
 
-        // Final layer norm
         var fnW = _st.ReadF32("encoder.final_layer_norm.weight");
         DiffusionOps.RmsNorm(x, fnW, Dim);
-        return x;  // [seq, 4096]
+        return x;
     }
 
-    private float[] EncoderBlock(float[] x, float[] relPosBias, int seq, int blockIdx)
+    private float[] EncoderBlock(float[] x, int seq, int blockIdx)
     {
         string p = $"encoder.block.{blockIdx}.layer";
 
-        // Self-attention sub-layer
+        // Real UMT5: EVERY block has its own relative_attention_bias (unlike plain T5, which
+        // only has one on block 0 and reuses it everywhere).
+        var rpW = _st.ReadF32($"{p}.0.SelfAttention.relative_attention_bias.weight");
+        var relPosBias = ComputeRelPosBias(rpW, seq, Heads);
+
         var lnW0 = _st.ReadF32($"{p}.0.layer_norm.weight");
         var xNorm = x.ToArray();
         DiffusionOps.RmsNorm(xNorm, lnW0, Dim);
-        var attn = SelfAttention(xNorm, relPosBias, seq, $"{p}.0.SelfAttention", blockIdx);
+        var attn = SelfAttention(xNorm, relPosBias, seq, $"{p}.0.SelfAttention");
         for (int i = 0; i < x.Length; i++) x[i] += attn[i];
 
-        // Feed-forward sub-layer
         var lnW1 = _st.ReadF32($"{p}.1.layer_norm.weight");
         var xNorm2 = x.ToArray();
         DiffusionOps.RmsNorm(xNorm2, lnW1, Dim);
@@ -93,7 +82,7 @@ public sealed class T5Encoder : IDisposable
         return x;
     }
 
-    private float[] SelfAttention(float[] x, float[] relBias, int seq, string p, int blockIdx)
+    private float[] SelfAttention(float[] x, float[] relBias, int seq, string p)
     {
         var qW = _st.ReadF32($"{p}.q.weight");
         var kW = _st.ReadF32($"{p}.k.weight");
@@ -104,6 +93,10 @@ public sealed class T5Encoder : IDisposable
         var k = DiffusionOps.Linear(x, kW, null, seq, Dim, Dim);
         var v = DiffusionOps.Linear(x, vW, null, seq, Dim, Dim);
 
+        // Real T5-family attention: NO 1/sqrt(headDim) scaling (query/key projections have no
+        // bias and the model is trained without softmax scaling; the relative position bias is
+        // the only additive term). Confirmed: T5Attention.forward computes scores as a raw
+        // matmul, scaling is folded into initialization instead.
         var attnOut = new float[seq * Dim];
 
         for (int h = 0; h < Heads; h++)
@@ -117,11 +110,6 @@ public sealed class T5Encoder : IDisposable
                     int qOff = i * Dim + h * HeadDim;
                     int kOff = j * Dim + h * HeadDim;
                     for (int d = 0; d < HeadDim; d++) dot += q[qOff + d] * k[kOff + d];
-                    // Real T5Attention.forward: `scores = torch.matmul(query, key.T)` -- a RAW
-                    // matmul with NO 1/sqrt(head_dim) scaling (confirmed against the real source;
-                    // T5 folds this into its own initialization instead of the forward pass, unlike
-                    // standard scaled-dot-product attention). The relative position bias is the
-                    // only additive term. Was incorrectly scaled here.
                     scores[i * seq + j] = dot + relBias[(h * seq + i) * seq + j];
                 }
             }
@@ -144,35 +132,27 @@ public sealed class T5Encoder : IDisposable
 
     private float[] FeedForward(float[] x, int seq, string p)
     {
-        // Flan-T5 gated SiLU FFN: h = silu(wi_0 * x) * (wi_1 * x); out = wo * h
-        var wi0W = _st.ReadF32($"{p}.wi_0.weight");  // [FfDim, Dim]
-        var wi1W = _st.ReadF32($"{p}.wi_1.weight");  // [FfDim, Dim]
-        var woW  = _st.ReadF32($"{p}.wo.weight");    // [Dim, FfDim]
+        // Real gated-gelu FFN (matches T5Encoder's, see this class's doc comment).
+        var wi0W = _st.ReadF32($"{p}.wi_0.weight");
+        var wi1W = _st.ReadF32($"{p}.wi_1.weight");
+        var woW  = _st.ReadF32($"{p}.wo.weight");
 
         var gate = DiffusionOps.Linear(x, wi0W, null, seq, Dim, FfDim);
         var val  = DiffusionOps.Linear(x, wi1W, null, seq, Dim, FfDim);
 
-        // h = gelu_new(gate) * val -- real T5v1.1/UMT5 "gated-gelu" FFN (verified against the
-        // real google/t5-v1_1-xxl and google/umt5-xxl configs: dense_act_fn="gelu_new").
         for (int i = 0; i < gate.Length; i++)
             gate[i] = DiffusionOps.Gelu(gate[i]) * val[i];
 
         return DiffusionOps.Linear(gate, woW, null, seq, FfDim, Dim);
     }
 
-    /// <summary>Compute T5 relative position bias for a sequence length.</summary>
     private static float[] ComputeRelPosBias(float[] biasWeight, int seq, int nHeads)
     {
-        // biasWeight: [RelPosBuckets, nHeads] = [32, 64]
         var bias = new float[nHeads * seq * seq];
         for (int i = 0; i < seq; i++)
         {
             for (int j = 0; j < seq; j++)
             {
-                // Real T5 `compute_bias`: relative_position = memory_position(j) - context_position(i).
-                // Was `i - j` (sign-flipped) -- swaps which bucket half ("to the left" vs "to the
-                // right" of the query) a given position pair lands in without erroring, a subtle
-                // directional bug caught while re-deriving this exact formula for Wan's UMT5 encoder.
                 int bucket = RelPosBucket(j - i);
                 for (int h = 0; h < nHeads; h++)
                     bias[(h * seq + i) * seq + j] = biasWeight[bucket * nHeads + h];
@@ -183,11 +163,10 @@ public sealed class T5Encoder : IDisposable
 
     private static int RelPosBucket(int relPos)
     {
-        // T5 bidirectional relative position bucketing (32 total buckets = 16 positive, 16 negative)
         bool negative = relPos < 0;
         int pos = negative ? -relPos : relPos;
-        int numBuckets = RelPosBuckets / 2; // 16 buckets per direction
-        int maxExact = numBuckets / 2;     // 8 exact positions (0..7)
+        int numBuckets = RelPosBuckets / 2;
+        int maxExact = numBuckets / 2;
 
         int bucket;
         if (pos < maxExact)

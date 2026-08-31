@@ -8,14 +8,18 @@ namespace OpenTail.Stingray.Diffusion.TextEncoders;
 ///
 /// Supports the unigram tokenizer model used by T5.
 /// BOS = 0, EOS = 1, UNK = 2, PAD = 0.
-/// Maximum output length: 77 tokens (FLUX convention).
+/// Maximum output length is configurable via <see cref="MaxLen"/>/`FromFile`'s `maxLen` param --
+/// 77 for FLUX's T5, 226 for Wan's UMT5 (both real conventions from their own real pipelines).
 /// </summary>
 public sealed class T5Tokenizer
 {
     private readonly string[] _idToToken;
     private readonly Dictionary<string, int> _tokenToId;
     private const int EosToken = 1;
-    private const int MaxLen   = 77;
+
+    /// <summary>Max output length (including the trailing EOS token). FLUX's own T5 uses 77;
+    /// Wan's UMT5 encoder uses 226 (real `max_sequence_length` in `WanPipeline._get_t5_prompt_embeds`).</summary>
+    public int MaxLen { get; init; } = 77;
 
     private T5Tokenizer(string[] idToToken, Dictionary<string, int> tokenToId)
     {
@@ -23,8 +27,8 @@ public sealed class T5Tokenizer
         _tokenToId  = tokenToId;
     }
 
-    /// <summary>Load from a HuggingFace tokenizer.json file.</summary>
-    public static T5Tokenizer FromFile(string path)
+    /// <summary>Load from a HuggingFace tokenizer.json file. <paramref name="maxLen"/> defaults to FLUX's 77; pass 226 for Wan's UMT5 encoder.</summary>
+    public static T5Tokenizer FromFile(string path, int maxLen = 77)
     {
         using var doc = JsonDocument.Parse(File.ReadAllBytes(path));
         var model   = doc.RootElement.GetProperty("model");
@@ -49,7 +53,7 @@ public sealed class T5Tokenizer
             }
         }
 
-        return new T5Tokenizer(tokens.ToArray(), tokenToId);
+        return new T5Tokenizer(tokens.ToArray(), tokenToId) { MaxLen = maxLen };
     }
 
     /// <summary>
