@@ -117,7 +117,7 @@ public sealed class TtsCommand : Command<TtsCommand.Settings>
                 "cosyvoice" or "cosyvoice3" or "cosy" =>
                     CosyVoice3Pipeline.Load(s.ModelPath ?? ResolveCosyVoiceModelPath(), backend: gpuBackend),
                 "parler" or "parler-tts" or "parlertts" =>
-                    ParlerFullPipeline.Load(s.ModelPath ?? ResolveParlerModelPath()),
+                    ParlerFullPipeline.Load(s.ModelPath ?? ResolveParlerModelPath(), backend: gpuBackend),
                 "qwen" or "qwentts" or "qwen-tts" or "qwen-talker" =>
                     QwenTtsPipeline.Load(s.ModelPath ?? ResolveQwenTtsModelPath()),
                 "fish" or "fishspeech" or "fish-speech" or "s2" or "s2-pro" =>

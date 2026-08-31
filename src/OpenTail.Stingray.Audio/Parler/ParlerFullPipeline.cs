@@ -55,8 +55,13 @@ public sealed class ParlerFullPipeline : ITextToSpeechPipeline
     private readonly ParlerDecoderWeights _decoderWeights;
     private readonly DacWeights _dacWeights;
     private readonly IDisposable? _ownedLoader;
+    private readonly IComputeBackend? _backend;
 
-    public static ParlerFullPipeline Load(string modelPath, string? tokenizerPath = null)
+    /// <summary><paramref name="backend"/>, when supplied, routes the T5 encoder's Q/K/V/O and FFN
+    /// projections through it (--backend vulkan; see docs/052-vulkan-backend-for-tts-engines-plan.md
+    /// §5) -- the decoder/DAC codec stay CPU-only regardless (single-token-per-call autoregressive
+    /// decode, a poor GPU target on any hardware, see docs/053's analysis).</summary>
+    public static ParlerFullPipeline Load(string modelPath, string? tokenizerPath = null, IComputeBackend? backend = null)
     {
         tokenizerPath ??= ResolveTokenizerPath(modelPath);
         if (modelPath.EndsWith(".gguf", StringComparison.OrdinalIgnoreCase))
@@ -70,12 +75,12 @@ public sealed class ParlerFullPipeline : ITextToSpeechPipeline
             {
                 var loader = SafetensorsLoader.Open(safetensorsCandidate);
                 var gguf = GgufModel.Open(modelPath);
-                return new ParlerFullPipeline(tokenizerPath, loader, gguf, loader);
+                return new ParlerFullPipeline(tokenizerPath, loader, gguf, loader, backend);
             }
         }
 
         var directLoader = SafetensorsLoader.Open(modelPath);
-        return new ParlerFullPipeline(tokenizerPath, directLoader, directLoader);
+        return new ParlerFullPipeline(tokenizerPath, directLoader, directLoader, backend);
     }
 
     private static string ResolveTokenizerPath(string modelPath)
@@ -106,22 +111,24 @@ public sealed class ParlerFullPipeline : ITextToSpeechPipeline
     public IAsyncEnumerable<float[]> GenerateStreamAsync(AudioGenerationRequest request, System.Threading.CancellationToken ct = default)
         => SynthesizeStreamAsync(request.Text, request.Voice ?? DefaultDescription, ct: ct);
 
-    public ParlerFullPipeline(string tokenizerJsonPath, SafetensorsLoader loader, IDisposable? ownedLoader = null)
+    public ParlerFullPipeline(string tokenizerJsonPath, SafetensorsLoader loader, IDisposable? ownedLoader = null, IComputeBackend? backend = null)
     {
         _tokenizer = UnigramTokenizer.FromTokenizerJson(tokenizerJsonPath);
         _t5Weights = new T5EncoderWeights(loader);
         _decoderWeights = new ParlerDecoderWeights(loader);
         _dacWeights = new DacWeights(loader);
         _ownedLoader = ownedLoader;
+        _backend = backend;
     }
 
-    public ParlerFullPipeline(string tokenizerJsonPath, SafetensorsLoader loader, GgufModel decoderAndDacGguf, IDisposable? ownedLoader = null)
+    public ParlerFullPipeline(string tokenizerJsonPath, SafetensorsLoader loader, GgufModel decoderAndDacGguf, IDisposable? ownedLoader = null, IComputeBackend? backend = null)
     {
         _tokenizer = UnigramTokenizer.FromTokenizerJson(tokenizerJsonPath);
         _t5Weights = new T5EncoderWeights(loader);
         _decoderWeights = new ParlerDecoderWeights(decoderAndDacGguf);
         _dacWeights = new DacWeights(decoderAndDacGguf);
         _ownedLoader = ownedLoader;
+        _backend = backend;
     }
 
     /// <summary>
@@ -174,7 +181,7 @@ public sealed class ParlerFullPipeline : ITextToSpeechPipeline
         {
             var descriptionIds = _tokenizer.Encode(description ?? DefaultDescription);
             descriptionIds.Add(1); // real T5 EOS id, appended by the real tokenizer's post-processor (see UnigramTokenizerTests)
-            encoderHidden = T5Encoder.Forward(_t5Weights, [.. descriptionIds]);
+            encoderHidden = T5Encoder.Forward(_t5Weights, [.. descriptionIds], _backend);
         }
 
         var promptIds = _tokenizer.Encode(text);
@@ -322,7 +329,7 @@ public sealed class ParlerFullPipeline : ITextToSpeechPipeline
 
         var descriptionIds = _tokenizer.Encode(description ?? DefaultDescription);
         descriptionIds.Add(1);
-        var encoderHidden = T5Encoder.Forward(_t5Weights, [.. descriptionIds]);
+        var encoderHidden = T5Encoder.Forward(_t5Weights, [.. descriptionIds], _backend);
 
         var promptIds = _tokenizer.Encode(text);
         promptIds.Add(1);

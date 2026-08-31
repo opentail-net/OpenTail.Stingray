@@ -32,8 +32,11 @@ namespace OpenTail.Stingray.Audio.Parler;
 /// </summary>
 public static class T5Encoder
 {
-    /// <summary>Runs the full T5 encoder. `tokenIds` -&gt; embed -&gt; 24x T5 layer (self-attn + gated-GELU FFN) -&gt; final RMSNorm. Returns [t][DModel] (public API unchanged; internally batched flat, see class doc comment).</summary>
-    public static float[][] Forward(T5EncoderWeights w, int[] tokenIds)
+    /// <summary>Runs the full T5 encoder. `tokenIds` -&gt; embed -&gt; 24x T5 layer (self-attn + gated-GELU FFN) -&gt; final RMSNorm. Returns [t][DModel] (public API unchanged; internally batched flat, see class doc comment).
+    /// <paramref name="backend"/>, when supplied, routes the Q/K/V/O and FFN projections through
+    /// <see cref="CfmLinearWeight.GpuMatMul"/> (--backend vulkan; only viable now that the encoder
+    /// is batched -- see docs/052-vulkan-backend-for-tts-engines-plan.md §5).</summary>
+    public static float[][] Forward(T5EncoderWeights w, int[] tokenIds, IComputeBackend? backend = null)
     {
         int t = tokenIds.Length;
         int dim = T5EncoderWeights.DModel;
@@ -44,7 +47,7 @@ public static class T5Encoder
         var positionBias = ComputeRelativePositionBias(w, t);
 
         foreach (var layer in w.Layers)
-            x = T5Layer(x, layer, t, positionBias);
+            x = T5Layer(x, layer, t, positionBias, backend);
 
         var flatOut = new float[t * dim];
         Parallel.For(0, t, i => T5LayerNorm(x.AsSpan(i * dim, dim), w.FinalLayerNormWeight, flatOut.AsSpan(i * dim, dim)));
@@ -58,13 +61,13 @@ public static class T5Encoder
         return output;
     }
 
-    private static float[] T5Layer(float[] x, T5LayerWeights lw, int t, float[][,] positionBias)
+    private static float[] T5Layer(float[] x, T5LayerWeights lw, int t, float[][,] positionBias, IComputeBackend? backend = null)
     {
         int dim = T5EncoderWeights.DModel;
         var normed1 = new float[t * dim];
         Parallel.For(0, t, i => T5LayerNorm(x.AsSpan(i * dim, dim), lw.SelfAttnLayerNormWeight, normed1.AsSpan(i * dim, dim)));
 
-        var attnOut = SelfAttention(normed1, lw, t, positionBias);
+        var attnOut = SelfAttention(normed1, lw, t, positionBias, backend);
 
         var afterAttn = new float[t * dim];
         TensorPrimitives.Add(x, attnOut, afterAttn);
@@ -72,7 +75,7 @@ public static class T5Encoder
         var normed2 = new float[t * dim];
         Parallel.For(0, t, i => T5LayerNorm(afterAttn.AsSpan(i * dim, dim), lw.FfnLayerNormWeight, normed2.AsSpan(i * dim, dim)));
 
-        var ffnOut = GatedFfn(normed2, lw, t);
+        var ffnOut = GatedFfn(normed2, lw, t, backend);
 
         var output = new float[t * dim];
         TensorPrimitives.Add(afterAttn, ffnOut, output);
@@ -80,7 +83,7 @@ public static class T5Encoder
     }
 
     /// <summary>Real T5 self-attention: NO 1/sqrt(headDim) scaling, plus the shared relative position bias added to raw scores before softmax.</summary>
-    private static unsafe float[] SelfAttention(float[] x, T5LayerWeights lw, int t, float[][,] positionBias)
+    private static unsafe float[] SelfAttention(float[] x, T5LayerWeights lw, int t, float[][,] positionBias, IComputeBackend? backend = null)
     {
         int dim = T5EncoderWeights.DModel;
         int nHeads = T5EncoderWeights.NumHeads;
@@ -92,9 +95,18 @@ public static class T5Encoder
         var v = new float[t * qkvDim];
         fixed (float* xp = x, qp = q, kp = k, vp = v)
         {
-            lw.SelfAttnQWeight.MatMul(xp, t, qp);
-            lw.SelfAttnKWeight.MatMul(xp, t, kp);
-            lw.SelfAttnVWeight.MatMul(xp, t, vp);
+            if (backend is not null)
+            {
+                lw.SelfAttnQWeight.GpuMatMul(backend, xp, t, qp);
+                lw.SelfAttnKWeight.GpuMatMul(backend, xp, t, kp);
+                lw.SelfAttnVWeight.GpuMatMul(backend, xp, t, vp);
+            }
+            else
+            {
+                lw.SelfAttnQWeight.MatMul(xp, t, qp);
+                lw.SelfAttnKWeight.MatMul(xp, t, kp);
+                lw.SelfAttnVWeight.MatMul(xp, t, vp);
+            }
         }
 
         var context = new float[t * qkvDim];
@@ -125,12 +137,15 @@ public static class T5Encoder
 
         var output = new float[t * dim];
         fixed (float* cp = context, op = output)
-            lw.SelfAttnOWeight.MatMul(cp, t, op);
+        {
+            if (backend is not null) lw.SelfAttnOWeight.GpuMatMul(backend, cp, t, op);
+            else lw.SelfAttnOWeight.MatMul(cp, t, op);
+        }
         return output;
     }
 
     /// <summary>Real T5DenseGatedActDense: `wo(gelu_new(wi_0(x)) * wi_1(x))`, no biases anywhere.</summary>
-    private static unsafe float[] GatedFfn(float[] x, T5LayerWeights lw, int t)
+    private static unsafe float[] GatedFfn(float[] x, T5LayerWeights lw, int t, IComputeBackend? backend = null)
     {
         int dim = T5EncoderWeights.DModel;
         int ff = T5EncoderWeights.DFf;
@@ -138,8 +153,16 @@ public static class T5Encoder
         var up = new float[t * ff];
         fixed (float* xp = x, gp = gate, up_ = up)
         {
-            lw.FfnWi0Weight.MatMul(xp, t, gp);
-            lw.FfnWi1Weight.MatMul(xp, t, up_);
+            if (backend is not null)
+            {
+                lw.FfnWi0Weight.GpuMatMul(backend, xp, t, gp);
+                lw.FfnWi1Weight.GpuMatMul(backend, xp, t, up_);
+            }
+            else
+            {
+                lw.FfnWi0Weight.MatMul(xp, t, gp);
+                lw.FfnWi1Weight.MatMul(xp, t, up_);
+            }
         }
 
         for (int i = 0; i < gate.Length; i++)
@@ -147,7 +170,10 @@ public static class T5Encoder
 
         var output = new float[t * dim];
         fixed (float* gp = gate, op = output)
-            lw.FfnWoWeight.MatMul(gp, t, op);
+        {
+            if (backend is not null) lw.FfnWoWeight.GpuMatMul(backend, gp, t, op);
+            else lw.FfnWoWeight.MatMul(gp, t, op);
+        }
         return output;
     }
 

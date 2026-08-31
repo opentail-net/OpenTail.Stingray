@@ -176,9 +176,15 @@ Ranked 8/11 (5.659x CPU RTF). Two halves, audited:
   it's explicitly the lowest-priority item and the three higher-priority engines (§1-3) plus the
   honest audit of §4 already used the available time for this session.
 
-**Not started.** A reasonable next step if resumed: batch `T5Encoder`'s per-row loops into
-per-layer batched calls (CPU-side win too, independent of GPU), then the existing `GpuMatMul`
-plumbing applies directly.
+**DONE (follow-up session, 2026-08-31)**: `T5Encoder`'s per-row loops batched into per-layer
+batched calls (`T5Layer`/`SelfAttention`/`GatedFfn` rewritten onto a flat `[t, DModel]` buffer,
+public `Forward` API unchanged), then `--backend vulkan` wired through
+`ParlerFullPipeline.Load(..., backend:)` exactly as planned. Verified: `T5EncoderTests`,
+`ParlerFullPipelineGgufTests`, `ParlerFullPipelineTests` all pass unchanged. Real A/B on this
+machine, same reference sentence: **CPU 6.61x RTF vs GPU 6.70x RTF -- a wash**, consistent with
+Chatterbox's pattern (the T5 encoder is a small, one-time slice of Parler's total generation time;
+`ParlerDecoder.ForwardStep`'s per-token autoregressive loop dominates and isn't GPU-backed, per
+this same section's earlier analysis). Ships regardless per the standing user instruction.
 
 ## Process for each remaining engine (repeat of what worked for Chatterbox)
 
