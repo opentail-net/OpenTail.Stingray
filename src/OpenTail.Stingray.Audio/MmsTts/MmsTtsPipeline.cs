@@ -58,7 +58,7 @@ public sealed class MmsTtsPipeline : ITextToSpeechPipeline
 
         var rng = new GaussianRandom();
         float[] sdpNoise = rng.NextArray(2 * tokens.Length);
-        float noiseScaleDuration = Math.Min(0.333f, _config.NoiseScaleDuration);
+        float noiseScaleDuration = Math.Min(0.1f, _config.NoiseScaleDuration);
         float[] logw = MmsTtsDurationPredictor.Predict(_weights, encoderHidden, tokens.Length, sdpNoise, noiseScaleDuration);
 
         float lengthScale = 1.0f / (speakingRate ?? _config.SpeakingRate);
@@ -68,8 +68,10 @@ public sealed class MmsTtsPipeline : ITextToSpeechPipeline
         for (int i = 0; i < tokens.Length; i++)
         {
             int d = (int)MathF.Ceiling(MathF.Exp(logw[i]) * lengthScale);
-            // Space token (id 19) is an explicit pause: ensure at least 3 frames (~48ms) so pauses are never swallowed
-            if (tokens[i] == 19 && d < 3) d = 3;
+            // Space token (id 19) is an explicit pause: ensure at least 4 frames (~64ms)
+            if (tokens[i] == 19 && d < 4) d = 4;
+            // Vowels (a=26, e=7, i=18, o=22, u=4): ensure at least 5 frames (~80ms) so vowels are never truncated abruptly
+            else if ((tokens[i] == 22 || tokens[i] == 7 || tokens[i] == 26 || tokens[i] == 18 || tokens[i] == 4) && d < 5) d = 5;
             else if (tokens[i] != 0 && d < 1) d = 1;
             durations[i] = d < 0 ? 0 : d;
             totalFrames += durations[i];

@@ -41,8 +41,11 @@ public sealed class MmsTtsTokenizer
     /// </summary>
     public int[] Encode(string text)
     {
-        var normalized = System.Text.RegularExpressions.Regex.Replace(text.ToLowerInvariant(), @"[.,!?;:]", " ");
-        normalized = System.Text.RegularExpressions.Regex.Replace(normalized, @"\s+", " ").Trim();
+        // Convert comma/semicolon into double spaces (natural clause breath pause) and period/exclamation into triple spaces (sentence pause)
+        var normalized = text.ToLowerInvariant();
+        normalized = System.Text.RegularExpressions.Regex.Replace(normalized, @"[,;:]", "  ");
+        normalized = System.Text.RegularExpressions.Regex.Replace(normalized, @"[.!?\n]", "   ");
+        normalized = System.Text.RegularExpressions.Regex.Replace(normalized, @"\s{4,}", "   ").Trim();
         var kept = new List<char>(normalized.Length);
         foreach (var c in normalized)
             if (_charToId.ContainsKey(c)) kept.Add(c);

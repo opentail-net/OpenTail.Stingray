@@ -448,3 +448,6 @@
 [MMS-TTS-eng] prompt="Hello, I will make some lunch, darling!" audio=2.93s samples=46848
 [MMS-TTS-eng] runs(s)=[1.559, 1.571, 1.450] mean=1.527s RTF=0.521 (lower=faster; 1.0=realtime)
 
+[MMS-TTS-eng] prompt="Hello, I will make some lunch, darling!" audio=3.60s samples=57600
+[MMS-TTS-eng] runs(s)=[1.853, 1.825, 1.857] mean=1.845s RTF=0.512 (lower=faster; 1.0=realtime)
+
