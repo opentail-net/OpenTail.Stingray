@@ -442,3 +442,6 @@
 [F5-TTS-Stream] prompt="Hello, I will make some lunch, darling!" audio=2.77s samples=66560 chunks=1
 [F5-TTS-Stream] Time-To-First-Audio (TTFA)=37.721s TotalTime=37.721s
 
+[Piper-lessac-medium] prompt="Hello, I will make some lunch, darling!" audio=2.35s samples=51712
+[Piper-lessac-medium] runs(s)=[0.532, 0.571, 0.594] mean=0.566s RTF=0.241 (lower=faster; 1.0=realtime)
+

@@ -480,6 +480,8 @@ public sealed class TtsPerformanceBaselineDebugTest : HeavyTestBase
             {
                 string wavPath = Path.Combine(outDir, "piper-perf-turn1.wav");
                 new AudioGenerationResult(lastWav, pipeline.DefaultSampleRate).SaveWav(wavPath);
+                string turn2Path = Path.Combine(outDir, "piper-perf-turn2.wav");
+                new AudioGenerationResult(lastWav, pipeline.DefaultSampleRate).SaveWav(turn2Path);
             }
         }
 

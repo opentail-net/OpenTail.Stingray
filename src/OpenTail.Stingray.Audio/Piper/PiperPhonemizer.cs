@@ -99,7 +99,11 @@ public sealed class PiperPhonemizer
             }
         }
 
-        return sb.ToString();
+        var result = sb.ToString();
+        // Eliminate redundant space tokens immediately after punctuation to prevent double/triple pauses
+        result = Regex.Replace(result, @"([.,!?;:])\s+", "$1");
+        result = Regex.Replace(result, @"\s+", " ");
+        return result.Trim();
     }
 
     /// <summary>
