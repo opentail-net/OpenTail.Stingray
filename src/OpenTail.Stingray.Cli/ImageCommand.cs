@@ -1099,9 +1099,13 @@ public sealed class ImageCommand : Command<ImageCommand.Settings>
             try
             {
                 using var loader = SafetensorsLoader.Open(path);
-                if (loader.Contains("model.diffusion_model.input_blocks.4.1.transformer_blocks.0.attn2.to_k.weight") ||
-                    loader.Contains("diffusion_model.input_blocks.4.1.transformer_blocks.0.attn2.to_k.weight") ||
-                    loader.Contains("conditioner.embedders.1.model.transformer.resblocks.0.attn.in_proj_weight"))
+                // Real, SDXL-EXCLUSIVE signal only: the second (OpenCLIP-G) text encoder.
+                // input_blocks.4.1...attn2.to_k.weight was ALSO checked here before, but that
+                // tensor exists in a standard SD1.5 UNet too (block 4 has cross-attention there
+                // as well) -- confirmed directly against a real v1-5-pruned-emaonly.safetensors,
+                // which caused every SD1.5 checkpoint to be misdetected as SDXL and fail to load
+                // (SDXL's text-encoder tensor names don't exist in an SD1.5 file). Removed.
+                if (loader.Contains("conditioner.embedders.1.model.transformer.resblocks.0.attn.in_proj_weight"))
                     return true;
             }
             catch { }
