@@ -9987,6 +9987,29 @@ identity. Matter closed for this session -- do not resume without new
 evidence (e.g. a real numeric dump of the `cond`/CFG stage) rather than
 further guessing.
 
+## CosyVoice3: the "not yet checked" CFG/cond lead above is now checked -- confirmed CORRECT, bug is elsewhere (follow-up session, 2026-08-31)
+
+Cross-checked the real reference's exact CFG batch construction
+(`CausalConditionalCFM::prepare_context` in `examples/cosyvoice.cpp/src/
+cosyvoice-graph.cpp`): `mu_in`/`spks_in`/`cond_in` are each built via
+`ggml_pad(ctx, tensor, 0, 0, 1, 0)` -- a zero-pad along the batch dimension,
+producing a real batch-of-2 tensor `[real_value, zeros]` for the DiT's single
+combined forward call (real reference does one batched call + splits the
+output, `split_tensor<2>` in `build_cgraph_one_step`, not two separate calls
+like this port -- an execution-strategy difference, not a math difference).
+**Confirms `CosyVoice3DiTModel.SolveFlowMatchingOde`'s existing
+`zeroCond`-for-cond/mu/spks uncond-branch construction is exactly correct**
+against the real reference -- this was the one remaining unchecked item in
+the speaker-identity investigation, and it checks out clean.
+
+**Implication**: the voice-cloning identity bug is NOT in the CFG/cond
+construction (now definitively ruled out). Real remaining candidates, none
+yet audited this pass: `CosyVoiceSpeechTokenizer`'s real reference-audio
+token extraction accuracy, or the LLM's own real conditioning on
+`promptTokens`/`promptText` (`CosyVoice3Llm.GenerateSpeechTokens`).  Matter
+closed again for this pass -- resume with a real numeric/audio check of one
+of those two, not further guessing at the DiT/CFM stage.
+
 ## New work started: MMS-TTS (VITS) and XTTS-v2 -- user-authorized, autonomous cron loop running every 30 min (2026-08-30)
 
 User asked for two NEW pipelines: MMS-TTS/VITS and XTTS-v2. AFK, running
