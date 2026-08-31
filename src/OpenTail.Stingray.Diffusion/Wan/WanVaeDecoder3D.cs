@@ -187,11 +187,11 @@ public sealed class WanVaeDecoder3D : IDisposable
         int padW = kw / 2;
         int spatial = h * w;
 
-        Parallel.For(0, t, outT =>
+        Parallel.For(0, outCh, oc =>
         {
-            for (int oc = 0; oc < outCh; oc++)
+            float b = bias[oc];
+            for (int outT = 0; outT < t; outT++)
             {
-                float b = bias[oc];
                 int outOffset = (oc * t + outT) * spatial;
 
                 for (int oh = 0; oh < h; oh++)
@@ -335,11 +335,11 @@ public sealed class WanVaeDecoder3D : IDisposable
         var output = new float[outC * t * outH * outW];
         int spatialOut = outH * outW;
 
-        Parallel.For(0, t, ti =>
+        Parallel.For(0, outC, oc =>
         {
-            for (int oc = 0; oc < outC; oc++)
+            float b = bias[oc];
+            for (int ti = 0; ti < t; ti++)
             {
-                float b = bias[oc];
                 int outOff = (oc * t + ti) * spatialOut;
                 for (int oh = 0; oh < outH; oh++)
                 for (int ow = 0; ow < outW; ow++)
@@ -382,9 +382,9 @@ public sealed class WanVaeDecoder3D : IDisposable
         var output = new float[x.Length];
         int spatial = h * w;
 
-        Parallel.For(0, t, ti =>
+        for (int ti = 0; ti < t; ti++)
         {
-            for (int s = 0; s < spatial; s++)
+            Parallel.For(0, spatial, s =>
             {
                 float sumSq = 0f;
                 for (int ch = 0; ch < c; ch++)
@@ -398,8 +398,8 @@ public sealed class WanVaeDecoder3D : IDisposable
                     int idx = (ch * t + ti) * spatial + s;
                     output[idx] = x[idx] * invRms * gamma[ch];
                 }
-            }
-        });
+            });
+        }
 
         return output;
     }

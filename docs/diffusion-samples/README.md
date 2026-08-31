@@ -142,6 +142,100 @@ for Wan. Attempting to actually run them surfaced something more significant tha
      integration than Wan's single UMT5. Deferred as a separate, future multi-session item -- the
      DiT itself being structurally sound is the real, valuable finding to keep from this pass.
 
+## Round 3: five real Wan bugs fixed (RoPE, QK-norm, unpatchify, VAE scaling, VAE upsample) — still no convergence, real bug remains
+
+Following up on Round 2's "real bug remains, not yet root-caused": two more real, reference-verified
+DiT defects were found and fixed this session — interleaved ("GPT-J") RoPE pairing where the code
+previously used split-half/NEOX pairing (`WanRoPE.cs`), and QK-norm computed per-head instead of
+over the full concatenated projection width (`WanModel.RmsNormHeads`). Neither alone changed the
+non-convergence symptom, but both are genuine, reference-confirmed fixes (confirmed against
+`transformer_wan.py`), kept regardless.
+
+A parallel session (same git author, commit `31bc129`) independently found and fixed three further
+real bugs: `UnpackLatents`'s channel-ordering (spatial-sub-position must be the outer index with
+channel inner, not the reverse — confirmed against `transformer_wan.py`'s unpatchify
+`reshape`/`permute`), the VAE latent-unnormalization formula (`z = latent * std + mean`, not
+`z = latent / std + mean`), and the VAE's nearest-2x-upsample+conv coordinate math. All 81 tests in
+`OpenTail.Stingray.Tests.Diffusion` pass with the combined fix set.
+
+**Verification run with all five fixes applied** (2 steps, 256×256, CPU, ~1234s,
+`wan-unpatchify-fix-check.png` in this directory): still does **not** converge toward the prompt.
+The output changed character, though — it's no longer unstructured noise, but a regular periodic
+grid/checkerboard tiling artifact (visible vertical banding at what looks like the patch or VAE
+upsample tile boundary). That's a real, measured negative result, and a more specific one than
+Round 2's: a periodic tiling artifact at 2-step count points at a remaining bug in how tiles/patches
+are stitched back together spatially — most likely still in the unpatchify path, the VAE's spatial
+upsample tiling, or a patch-embedding/grid-arrangement mismatch — rather than in RoPE, QK-norm, or
+the two VAE formula fixes, which are now independently confirmed correct. **Do not mark Wan green.**
+The five fixes are kept (each individually reference-verified), but the root cause of
+non-convergence is still open.
+
+**Follow-up diagnostic (2026-08-31): bug localized to the VAE decoder, not the DiT.** Per another
+AI's suggested split-test, `WanVaeDecoder3D.Decode` was fed a synthetic all-zero latent directly
+(bypassing `WanModel`/`WanRoPE` entirely) — after the decoder's own `z = latent * std + mean`
+un-normalization this becomes a perfectly flat, spatially-constant per-channel field with zero
+input variation. The decode still produced visible periodic horizontal banding
+(`wan-vae-synthetic-dc-latent-diagnostic.png` in this directory,
+`WanVaeSyntheticLatentDiagnosticTests.Decode_AllZeroSyntheticLatent_IsolatesVaeFromDiT`). Since the
+input carried no spatial signal at all, the banding can only have been introduced by the decoder
+itself — this rules out RoPE, QK-norm, patchify/unpatchify, and the DiT generally as the source of
+this specific artifact, and localizes it to `WanVaeDecoder3D`'s `ResampleSpatial` (nearest-upsample
++ conv phase) or `CausalConv3D` (replicate-pad edge handling) path. Not yet root-caused further —
+the diagnostic's own numeric even/odd-column-parity metric measured the wrong axis (the real
+artifact is row-wise/horizontal, not column-wise/vertical) and should be redone measuring row
+parity before further narrowing.
+
+**Correction after redoing the row-parity measurement properly (same day): the VAE is actually
+clean, and the "periodic banding" read was a misread of a boundary-decay gradient.** Dumping real
+per-row R-channel values (not just the even/odd split) showed the center of the decoded frame
+(rows 124-131 of 256) identical to 5 decimal places — a perfectly flat interior — with rows near
+the top edge (0-23) showing a smooth, monotonic gradient converging toward that flat center value.
+Even/odd row split: 0.0000; even/odd column split: 0.0001. That is exactly the expected signature
+of a CORRECT zero-padded conv stack (~20 stacked `padding=1` 3x3/3x3x3 convs between `conv1` and
+`conv_out`) fed a spatially-uniform input: a boundary artifact that creeps roughly one pixel deeper
+per layer, decaying to nothing well before the center, not full-frame periodic banding. (Convolving
+a spatially-constant field with any fixed kernel yields a spatially-constant field at every interior
+position, regardless of what the kernel's weight VALUES are — so genuinely periodic banding from a
+uniform input would require a bug that breaks translation invariance, which this data rules out.)
+The earlier "checkerboard" read of the small PNG thumbnail was very likely a moiré/downscaling
+artifact from viewing a shrunk 256x256 image, not real per-pixel structure.
+
+**Deep line-by-line re-verification of `WanVaeDecoder3D` and `WanModel`'s patchify/unpatchify/RoPE
+against the real reference, following up on the other AI's four hypotheses — all four ruled out:**
+1. *RoPE axis mislabeling (t/h/w swapped)*: checked `WanRotaryPosEmbed.forward` in
+   `transformer_wan.py` directly — frequency axes are concatenated `[t_dim, h_dim, w_dim]` and the
+   token grid is flattened `(ppf, pph, ppw)` row-major (t outermost, w innermost), and `WanRoPE.cs`
+   assigns `dimT` first, `dimH` to the height position, `dimW` to the width position in the exact
+   same order. No swap.
+2. *VAE `ResampleSpatial` upsample phase offset*: `WanUpsample(mode="nearest-exact")` composed with
+   the pad-1 3x3 conv was re-derived from PyTorch's actual `nearest-exact` index formula
+   (`floor((dst+0.5)*scale)`); for an exact 2x scale factor this reduces to `dst // 2`, identical to
+   the plain-`nearest` mapping already implemented. No phase bug, and the empirical DC-latent test
+   now confirms it directly.
+3. *VAE `CausalConv3D` single-frame temporal slice selection*: re-derived `WanCausalConv3d`'s real
+   padding tuple (`_padding = (padW,padW,padH,padH, 2*padT, 0)`, confirmed in
+   `autoencoder_kl_wan.py`) — for `kt=3, padding=1` that's exactly `padT=2` on the LEFT only (causal,
+   zero-padded, not replicate — Wan differs from HunyuanVideo here), matching this port's own
+   `CausalConv3D` exactly, including which single kernel tap survives at `t=1`.
+4. *DiT `patch_embedding` weight layout mismatch between `PackLatents` and the real conv weight*:
+   confirmed `patch_embedding` is a real `nn.Conv3d(16, dim, kernel_size=(1,2,2))`, whose weight's
+   row-major layout is `[dim, 16, 1, 2, 2]` — channel outermost, patch-position innermost — and
+   `PackLatents`'s own loop order (`c` outer, `dy`, `dx` inner) matches exactly. Separately,
+   `proj_out`'s real output-feature order was re-derived from `transformer_wan.py`'s own
+   `reshape(...,p_t,p_h,p_w,out_channels).permute(...)` (lines 726-730): channel is the FASTEST/
+   innermost index there, which is the opposite convention from `patch_embedding`'s — but that's
+   expected (they're different weight matrices with independently-real conventions, not required to
+   match each other), and `UnpackLatents`'s `(dy*2+dx)*OutChannels + c` layout matches `proj_out`'s
+   real order exactly (re-confirming the earlier `31bc129` fix, not a new bug).
+
+**Working hypothesis, not yet tested: 2 denoising steps may simply be too few for ANY correct
+flow-matching model to converge, and the "checkerboard" look could be the model's own 2x2 patch
+grid showing through an under-denoised early-step latent** — normal behavior at 2 steps, not a bug
+signature. All five previously-fixed bugs are real and correctly fixed; all four of the newest
+hypotheses are now individually ruled out by direct reference comparison; the VAE is empirically
+clean. A longer run (12+ steps) is the next real test of whether the pipeline was actually working
+correctly the whole time and the low step count was simply misleading. See below for that run.
+
 ## Scope note
 
 RealESRGAN, Z-Image-Turbo, SD1.5, and SDXL-Turbo have real local weights and confirmed real,

@@ -226,22 +226,18 @@ public sealed class WanModel : IDisposable
 
     /// <summary>Mean/variance LayerNorm with no learned affine (real `FP32LayerNorm(...,
     /// elementwise_affine=False)`, used for the two per-block AdaLN-modulated pre-norms).</summary>
-    private static void LayerNormNoAffine(Span<float> x, int dim, float eps = 1e-6f)
+    private static void LayerNormNoAffine(float[] x, int dim, float eps = 1e-6f)
     {
         int n = x.Length / dim;
-        for (int row = 0; row < n; row++)
+        Parallel.For(0, n, row =>
         {
-            var row_ = x.Slice(row * dim, dim);
-            float mean = 0f;
-            for (int d = 0; d < dim; d++) mean += row_[d];
-            mean /= dim;
-            for (int d = 0; d < dim; d++) row_[d] -= mean;
-            float var = 0f;
-            for (int d = 0; d < dim; d++) var += row_[d] * row_[d];
-            var /= dim;
-            float scale = 1f / MathF.Sqrt(var + eps);
-            for (int d = 0; d < dim; d++) row_[d] *= scale;
-        }
+            var row_ = x.AsSpan(row * dim, dim);
+            float mean = TensorPrimitives.Sum(row_) / dim;
+            TensorPrimitives.Subtract(row_, mean, row_);
+            float sumSq = TensorPrimitives.SumOfSquares(row_);
+            float scale = 1f / MathF.Sqrt(sumSq / dim + eps);
+            TensorPrimitives.Multiply(row_, scale, row_);
+        });
     }
 
     private float[] SelfAttention(string prefix, float[] x, float[] cos, float[] sin, int seqLen)
@@ -284,21 +280,20 @@ public sealed class WanModel : IDisposable
         float scale = 1.0f / MathF.Sqrt(headDim);
         var output = new float[qSeq * numHeads * headDim];
 
-        for (int h = 0; h < numHeads; h++)
+        Parallel.For(0, numHeads, h =>
         {
             for (int i = 0; i < qSeq; i++)
             {
                 int qRow = (i * numHeads + h) * headDim;
+                var qSpan = q.AsSpan(qRow, headDim);
                 var scores = new float[kvSeq];
                 float maxScore = float.NegativeInfinity;
 
                 for (int j = 0; j < kvSeq; j++)
                 {
                     int kRow = (j * numHeads + h) * headDim;
-                    float dot = 0f;
-                    for (int d = 0; d < headDim; d++)
-                        dot += q[qRow + d] * k[kRow + d];
-                    dot *= scale;
+                    var kSpan = k.AsSpan(kRow, headDim);
+                    float dot = TensorPrimitives.Dot(qSpan, kSpan) * scale;
                     scores[j] = dot;
                     if (dot > maxScore) maxScore = dot;
                 }
@@ -321,7 +316,7 @@ public sealed class WanModel : IDisposable
                     output[outRow + d] = sum;
                 }
             }
-        }
+        });
 
         return output;
     }
@@ -340,19 +335,15 @@ public sealed class WanModel : IDisposable
     private static void RmsNormHeads(float[] qk, int seqLen, int numHeads, int headDim, float[] gamma)
     {
         int dim = numHeads * headDim;
-        for (int s = 0; s < seqLen; s++)
+        Parallel.For(0, seqLen, s =>
         {
             int rowOff = s * dim;
-            float sumSq = 0f;
-            for (int d = 0; d < dim; d++)
-            {
-                float val = qk[rowOff + d];
-                sumSq += val * val;
-            }
+            var rowSpan = qk.AsSpan(rowOff, dim);
+            float sumSq = TensorPrimitives.SumOfSquares(rowSpan);
             float invRms = 1.0f / MathF.Sqrt(sumSq / dim + 1e-6f);
             for (int d = 0; d < dim; d++)
                 qk[rowOff + d] = qk[rowOff + d] * invRms * gamma[d];
-        }
+        });
     }
 
     private float[] FeedForward(string prefix, float[] x, int seqLen)
@@ -429,19 +420,16 @@ public sealed class WanModel : IDisposable
         int rows = x.Length / inDim;
         var outF = new float[rows * outDim];
 
-        for (int r = 0; r < rows; r++)
+        Parallel.For(0, outDim, o =>
         {
-            int inOff = r * inDim;
-            int outOff = r * outDim;
-            for (int o = 0; o < outDim; o++)
+            float bVal = b is not null ? b[o] : 0f;
+            var wRow = w.AsSpan(o * inDim, inDim);
+            for (int r = 0; r < rows; r++)
             {
-                float sum = b is not null ? b[o] : 0f;
-                int wOff = o * inDim;
-                for (int i = 0; i < inDim; i++)
-                    sum += x[inOff + i] * w[wOff + i];
-                outF[outOff + o] = sum;
+                var xRow = x.AsSpan(r * inDim, inDim);
+                outF[r * outDim + o] = bVal + TensorPrimitives.Dot(xRow, wRow);
             }
-        }
+        });
         return outF;
     }
 
