@@ -16,6 +16,7 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="OpenTail.Stingray.Tests.Vision" />
+    <InternalsVisibleTo Include="OpenTail.Stingray.Tests.Diffusion" />
   </ItemGroup>
 
 </Project>
