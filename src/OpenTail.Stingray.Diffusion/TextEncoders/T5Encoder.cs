@@ -10,7 +10,11 @@ namespace OpenTail.Stingray.Diffusion.TextEncoders;
 /// Notable differences from standard transformers:
 ///   - T5LayerNorm = RMSNorm without mean-centering or bias
 ///   - Relative position bias (bias[head, query_pos - key_pos + max_dist])
-///   - SiLU gated FFN (Flan-T5 / T5v1.1 style): h = silu(w1*x) * (w3*x); out = w2*h
+///   - GELU("gelu_new", tanh-approx) gated FFN, real `google/t5-v1_1-xxl` config
+///     (`feed_forward_proj: "gated-gelu"`, `dense_act_fn: "gelu_new"`, confirmed against the
+///     real HF config -- NOT SiLU, despite this class's own prior doc comment claiming so; fixed
+///     after finding the same activation choice needed re-verifying for Wan's UMT5 encoder, which
+///     shares this exact FFN shape): h = gelu_new(w1*x) * (w3*x); out = w2*h
 ///   - No absolute position embeddings
 /// </summary>
 public sealed class T5Encoder : IDisposable
@@ -145,9 +149,10 @@ public sealed class T5Encoder : IDisposable
         var gate = DiffusionOps.Linear(x, wi0W, null, seq, Dim, FfDim);
         var val  = DiffusionOps.Linear(x, wi1W, null, seq, Dim, FfDim);
 
-        // h = silu(gate) * val
+        // h = gelu_new(gate) * val -- real T5v1.1/UMT5 "gated-gelu" FFN (verified against the
+        // real google/t5-v1_1-xxl and google/umt5-xxl configs: dense_act_fn="gelu_new").
         for (int i = 0; i < gate.Length; i++)
-            gate[i] = DiffusionOps.Silu(gate[i]) * val[i];
+            gate[i] = DiffusionOps.Gelu(gate[i]) * val[i];
 
         return DiffusionOps.Linear(gate, woW, null, seq, FfDim, Dim);
     }
@@ -161,7 +166,11 @@ public sealed class T5Encoder : IDisposable
         {
             for (int j = 0; j < seq; j++)
             {
-                int bucket = RelPosBucket(i - j);
+                // Real T5 `compute_bias`: relative_position = memory_position(j) - context_position(i).
+                // Was `i - j` (sign-flipped) -- swaps which bucket half ("to the left" vs "to the
+                // right" of the query) a given position pair lands in without erroring, a subtle
+                // directional bug caught while re-deriving this exact formula for Wan's UMT5 encoder.
+                int bucket = RelPosBucket(j - i);
                 for (int h = 0; h < nHeads; h++)
                     bias[(h * seq + i) * seq + j] = biasWeight[bucket * nHeads + h];
             }
