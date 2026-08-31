@@ -13,30 +13,47 @@ NativeAOT-publishes to a single binary.
 
 ## What actually works today
 
-A brutally honest status matrix, not a feature-list. 🟢 real weights, verified end-to-end (golden-verified against the real reference and/or a listened-to sample). 🟡 produces real output but with a known, open correctness gap. 🔴 not there yet — placeholder, unwired, or unverified. Sourced from [`docs/audio-review-progress.md`](docs/audio-review-progress.md) and [`docs/diffusion-samples/README.md`](docs/diffusion-samples/README.md); dates are when each was last verified.
+A brutally honest status matrix, not a feature-list — and "verified" isn't one thing, so **Status** and **Confidence** are separate columns.
 
-| Capability | Status | Backend | Notes |
-|---|:---:|---|---|
-| LLM inference (GGUF) | 🟢 | CPU / CUDA / Vulkan | Core engine — the most mature, most tested part of the project |
-| Whisper ASR | 🟢 | CPU | 100 languages |
-| Piper TTS | 🟢 | CPU | Fastest engine, 0.19× RTF |
-| MMS-TTS | 🟢 | CPU | Golden-verified against the real HuggingFace reference (2026-08-30) |
-| Kokoro | 🟢 | CPU | Streaming |
-| MeloTTS | 🟢 | CPU | Streaming |
-| XTTS-v2 | 🟢 | CPU | Voice cloning, 13 pieces golden-verified end-to-end (2026-08-30) |
-| QwenTTS | 🟢 | CPU | Was disabled after a QK-norm bug; fixed and re-enabled (2026-08-29) |
-| Chatterbox-Turbo | 🟢 | CPU | Golden-tested, perf-optimized |
-| Parler-TTS | 🟢 | CPU | Two correctness bugs found & fixed by ear (2026-08-28) |
-| F5-TTS | 🟢 | CPU | RoPE bug root-caused and fixed (2026-08-28) |
-| Fish Speech S2 Pro | 🟢 | CPU | User-confirmed "sonically 100% spot on" (2026-08-29) |
-| CosyVoice 2 / 3 | 🟡 | CPU | Produces real, intelligible, non-buzzing speech; zero-shot voice cloning doesn't yet reliably transfer speaker identity — marked partially supported (2026-08-30) |
-| Stable Diffusion 1.5, SDXL-Turbo, Z-Image-Turbo | 🟢 | CPU / Vulkan | Real timed generations confirmed this session — see [diffusion samples](docs/diffusion-samples/README.md) |
-| Z-Image-Turbo | 🟡 | Vulkan (GPU only) | Same model correct on CPU; solid-black output on the Vulkan GPU path specifically — reproducible, not yet root-caused |
-| Wan 2.1 / 2.2 Video | 🔴 | CPU / Vulkan / CUDA | Real DiT wiring bugs (missing UMT5 conditioning, wrong AdaLN modulation) found and fixed in-progress; not yet verified end-to-end |
-| LTX-Video | 🔴 | — | Structural placeholder: transformer weights are never applied, text conditioning is literal random noise |
-| HunyuanVideo | 🔴 | — | Weights load correctly but untested — no local checkpoint, text-conditioning wiring unaudited |
-| FLUX.1, SD3/3.5, Stable Audio | 🔴 | — | Not attempted — no local weights, no download automation yet |
-| Vision (17+ architectures) | — | CPU / CUDA / Vulkan | Extensively implemented (see below); not independently re-verified in the audit pass this table is sourced from |
+| Status | Meaning |
+|---|---|
+| 🟢 Correct | Produces the right output today |
+| 🟡 Partial | Produces real output but with a known, open correctness gap |
+| 🔴 Not there | Placeholder, unwired, or not attempted |
+
+Confidence is *how* that was checked, since an exact numerical match, a golden token sequence, a perceptual listen, and "the model loads" are very different claims:
+
+| Confidence | Meaning |
+|---|---|
+| 🔬 Golden-verified | Automated test compares against a real reference (exact tensor/logit match or cosine similarity threshold) |
+| 👂 Working, listened/read | Real weights, full pipeline run end-to-end, a human (or transcription) confirmed the output is correct |
+| ⚪ Implemented | Code exists and runs against real weights, not independently validated this pass |
+| 🔴 Placeholder | Not functional — stubbed, unwired, or synthetic data standing in for a real component |
+
+Sourced from [`docs/audio-review-progress.md`](docs/audio-review-progress.md) and [`docs/diffusion-samples/README.md`](docs/diffusion-samples/README.md); dates are when each was last verified.
+
+| Capability | Status | Confidence | Backend | Notes |
+|---|:---:|:---:|---|---|
+| LLM inference (GGUF) | 🟢 | 🔬 | CPU / CUDA / Vulkan | Core engine — the most mature, most tested part of the project |
+| MMS-TTS | 🟢 | 🔬 | CPU | Golden-verified against the real HuggingFace reference (2026-08-30) |
+| XTTS-v2 | 🟢 | 🔬 | CPU | Voice cloning, 13 pieces individually golden-verified, wired end-to-end (2026-08-30) |
+| Chatterbox-Turbo | 🟢 | 🔬 | CPU | Golden-tested (`ChatterboxCfmDecoderTests`), perf-optimized |
+| QwenTTS | 🟢 | 👂 | CPU | Was disabled after a QK-norm bug; fixed 2026-08-29 — verified via exact, word-for-word correct ASR transcriptions on two test phrases, not a numeric golden compare |
+| Parler-TTS | 🟢 | 👂 | CPU | Two correctness bugs found & fixed by ear (2026-08-28) |
+| F5-TTS | 🟢 | 👂 | CPU | RoPE bug root-caused and fixed (2026-08-28) |
+| Fish Speech S2 Pro | 🟢 | 👂 | CPU | User-confirmed "sonically 100% spot on" (2026-08-29) |
+| Whisper ASR | 🟢 | ⚪ | CPU | 100 languages; not re-verified this pass |
+| Piper TTS | 🟢 | ⚪ | CPU | Fastest engine, 0.19× RTF; not re-verified this pass |
+| Kokoro | 🟢 | ⚪ | CPU | Streaming; not re-verified this pass |
+| MeloTTS | 🟢 | ⚪ | CPU | Streaming; not re-verified this pass |
+| CosyVoice 2 / 3 | 🟡 | 👂 | CPU | Produces real, intelligible, non-buzzing speech; zero-shot voice cloning doesn't yet reliably transfer speaker identity — marked partially supported (2026-08-30) |
+| Stable Diffusion 1.5, SDXL-Turbo, Z-Image-Turbo | 🟢 | 👂 | CPU / Vulkan | Real timed generations confirmed this session — see [diffusion samples](docs/diffusion-samples/README.md) |
+| Z-Image-Turbo | 🟡 | 👂 | Vulkan (GPU only) | Same model correct on CPU; solid-black output on the Vulkan GPU path specifically — reproducible, not yet root-caused |
+| Wan 2.1 / 2.2 Video | 🔴 | ⚪ | CPU / Vulkan / CUDA | Real DiT wiring bugs (missing UMT5 conditioning, wrong AdaLN modulation) found and fixed in-progress; not yet verified end-to-end |
+| LTX-Video | 🔴 | 🔴 | — | Structural placeholder: transformer weights are never applied, text conditioning is literal random noise |
+| HunyuanVideo | 🔴 | ⚪ | — | Weights load correctly but untested — no local checkpoint, text-conditioning wiring unaudited |
+| FLUX.1, SD3/3.5, Stable Audio | 🔴 | 🔴 | — | Not attempted — no local weights, no download automation yet |
+| Vision (17+ architectures) | — | ⚪ | CPU / CUDA / Vulkan | Extensively implemented (see below); not independently re-verified in the audit pass this table is sourced from |
 
 Runs GGUF and SafeTensors models on CPU (AVX2/AVX-512 SIMD) and GPU (Vulkan compute shaders or CUDA cuBLAS), with:
 - **OpenAI- and Anthropic-compatible API server** (/v1/chat/completions, /v1/audio/speech, /v1/audio/transcriptions), native dynamic Multi-LoRA serving,
