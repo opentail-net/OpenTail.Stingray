@@ -231,6 +231,12 @@ public sealed class ImageCommand : Command<ImageCommand.Settings>
             return RunSd3(s, modelPath, deviceIndex, deviceNone);
         if (IsSdxl(modelPath))
             return RunSdxl(s, modelPath, deviceIndex, deviceNone);
+        if (IsWan(modelPath))
+            return RunWan(s, modelPath, deviceIndex, deviceNone);
+        if (IsHunyuanVideo(modelPath))
+            return RunHunyuanVideo(s, modelPath, deviceIndex, deviceNone);
+        if (IsLtxVideo(modelPath))
+            return RunLtxVideo(s, modelPath, deviceIndex, deviceNone);
         if (IsStableDiffusion(modelPath))
             return RunStableDiffusion(s, modelPath, deviceIndex, deviceNone);
         return RunFlux(s, modelPath, deviceIndex, deviceNone);
