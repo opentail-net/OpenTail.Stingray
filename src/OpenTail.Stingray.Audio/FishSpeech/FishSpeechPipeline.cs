@@ -159,15 +159,15 @@ public sealed class FishSpeechPipeline : IDisposable
     public List<int> GenerateSemanticTokens(string text, int maxTokens = 200, int? seed = null) =>
         GenerateFrames(text, maxTokens, seed).SemanticTokens;
 
-    /// <summary>TEMP bisection hook (docs/audio-review-progress.md's Fish Speech NaN investigation): runs just the real prompt prefill and returns the raw logits, for a caller to check for NaN. TODO remove once the bug is found.</summary>
-    public float[] PrefillForBisection(List<int> prompt)
+    /// <summary>Bisection hook (docs/audio-review-progress.md's Fish Speech NaN investigation): runs just the real prompt prefill and returns the raw logits, for a caller to check for NaN. Internal-only test/debug utility, not part of the public API.</summary>
+    internal float[] PrefillForBisection(List<int> prompt)
     {
         _fwd.ResetCache();
         return _fwd.Prefill(prompt).ToArray();
     }
 
-    /// <summary>TEMP bisection hook: taps a specific layer's hidden state after prefill, to trace activation magnitude growth across layers. TODO remove once the bug is found.</summary>
-    public float[] PrefillHiddenTapForBisection(List<int> prompt, int tapLayer)
+    /// <summary>Bisection hook: taps a specific layer's hidden state after prefill, to trace activation magnitude growth across layers. Internal-only test/debug utility, not part of the public API.</summary>
+    internal float[] PrefillHiddenTapForBisection(List<int> prompt, int tapLayer)
     {
         _fwd.ResetCache();
         _fwd.EnableHiddenTaps([tapLayer]);
