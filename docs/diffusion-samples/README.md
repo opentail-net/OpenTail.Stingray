@@ -100,6 +100,20 @@ for Wan. Attempting to actually run them surfaced something more significant tha
      transformer at all, and `GenerateVideo`'s "text context" is `0.01f *
      (rng.NextSingle() - 0.5f)` — literal random noise, not a real text encoder. This pipeline is
      a structural placeholder, not a finished port.
+
+     **Re-audited (follow-up session, 2026-08-31), real scope is bigger than the above implies**:
+     `LtxVideoModel` has NO weight-loading capability anywhere in the class -- no
+     `IWeightLoader` constructor parameter, no `GetWeight`/tensor-read calls at all. Its
+     "patchify projection" (`Forward`'s step 2) is a hardcoded formula (`0.05f / (1 + i)`), and
+     its timestep embedding (step 3) is a hardcoded sinusoidal formula with no learned MLP. This
+     is not a wiring gap on top of a real port -- it's a from-scratch architectural stub with
+     zero real weight consumption anywhere in the 28-layer transformer. Porting it for real
+     (patchify Linear, timestep MLP, 28x real AdaLN+self-attn-with-RoPE+T5-cross-attn+FFN
+     blocks, plus a real T5-XXL text encoder integration) is comparable in scope to this
+     session's entire Wan DiT+VAE effort, not a quick fix -- a real reference does exist
+     (`examples/stable-diffusion.cpp/src/model/diffusion/ltxv.hpp`, per this file's own doc
+     comment) so it's tractable, just a genuinely separate, multi-session undertaking. Deferred
+     rather than attempted mid-checklist alongside smaller, well-scoped items.
    - **HunyuanVideo**: `HunyuanVideoModel` does receive real weights (like Wan), but wasn't tested
      this pass — no local checkpoint (`hunyuan_video_720_cfgdistill_fp8_e4m3fn.safetensors` is
      large, not downloaded) and its own text-conditioning wiring wasn't audited.
