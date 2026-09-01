@@ -270,6 +270,19 @@ before starting any of them:**
   (`models.h`: `llama_model_minicpm::graph = llama_model_granite::graph`) — MiniCPM is Granite's
   scale trio with different constants, not a different structure. `granite` ADMITTED, `smollm3`
   ADMITTED, `minicpm` blocked on a tokenizer gap, not the forward pass — see §1d.
+- **`internlm2` — ADMITTED 2026-09-01, full 8-of-8-token exact greedy match, zero code changes.**
+  Re-checked after `GgufTokenizer.SpmMergePiecesByScore` landed, following the exact `minicpm`/
+  `ernie4_5`/`baichuan` pattern below: re-downloaded `bartowski/internlm2_5-1_8b-chat-GGUF` Q4_K_M
+  (1.17 GB, deleted after this receipt), confirmed the same `tokenizer.ggml.model=llama` +
+  scores-only-no-merges shape the 2026-08-08/08-09 notes below diagnosed (correctly, on the
+  tokenizer side) as "Unigram-LM" — re-confirmed since as the already-fixed SPM-score case, not
+  real Unigram-LM. The architecture side needed genuinely zero new code: grepping
+  `ModelGraph.cs`/`ForwardPass.cs` found no `internlm2`-specific kernel gate anywhere, so this
+  engine's existing generic plain pre-norm/GQA/RoPE dispatch already covered it (confirming the
+  2026-08-08 "architecturally trivial, identical shape to exaone" assessment below). Full evidence
+  in `ModelCompatibility.cs`'s `"internlm2"` allowlist comment, no persisted test (checkpoint not
+  vendored, matching this file's `granite`/`smollm3`/`xverse`/`minicpm` convention).
+
 - **`internlm2` — SKIPPED 2026-08-09 (re-checked under the new bucket-2 policy): blocked on the
   TOKENIZER axis, not the architecture axis or the license (which no longer blocks by itself).**
   The 2026-08-08 assessment ("architecturally trivial... `tokenizer.ggml.model: llama`
@@ -418,21 +431,26 @@ code path (an early exception) than the one the full, valid template actually ex
 small, syntactically-valid synthetic snippets isolating one construct at a time
 (`{{ x | tojson(indent=4) }}`) run through the same bounded-`Task.Wait` harness.
 
-**`minicpm` — NOT admitted, 2026-08-08. Forward-pass math presumed correct (it's Granite's graph),
-tokenizer axis blocked.** `openbmb/MiniCPM4-0.5B` (Apache-2.0, via `Mungert/MiniCPM4-0.5B-GGUF`) is
-the only permissively-licensed checkpoint tried — MiniCPM-2B classic carries a restrictive weight
-license (§1c). Its GGUF declares `tokenizer.ggml.model=llama` with a `tokenizer.ggml.scores` array
-and **no `tokenizer.ggml.merges` array at all**. Llama and Gemma, the only two `tokenizer.ggml.model`
-values this engine's SPM path has ever been exercised against, both carry an explicit merges list
-even under that model tag — this engine's SPM code assumes one exists and needs it to do BPE-style
-greedy merge-priority tokenization. A scores-only vocabulary is Unigram-LM SentencePiece (Viterbi
-segmentation over per-token log-probabilities), a genuinely different algorithm, not a variant of
-what's implemented. Measured, not guessed: encoding `"The capital of France is"` (llama-tokenize
-reference `[1507, 8107, 1379, 8360, 1410]`) produced five unrelated ids in the 59000s — the merge-
-less path is falling back to something like single-token/byte lookups. `ModelCompatibility.cs`
-records this inline rather than admitting the architecture; revisit if a MiniCPM checkpoint with a
-BPE-order (merges-bearing) SPM vocab turns up, or when Unigram SentencePiece is implemented as its
-own axis-3 item.
+**`minicpm` — ADMITTED 2026-09-01, full 8-of-8-token exact greedy match through EOS.** Re-checked
+after `GgufTokenizer.SpmMergePiecesByScore` landed (built 2026-09-02 while re-admitting `xverse`,
+i.e. chronologically after this note was first written but before this admission — the fix
+predates its own writeup catching up to it). The 2026-08-08 diagnosis above was correct that this
+checkpoint's GGUF declares `tokenizer.ggml.model=llama` with `tokenizer.ggml.scores` and no
+`tokenizer.ggml.merges`, but WRONG to call that "Unigram-LM SentencePiece" — that label was
+speculative (no real Unigram-LM checkpoint had been checked yet at the time). Re-examining it
+against real llama.cpp source (`llm_tokenizer_spm_session::tokenize`) during the `xverse`
+investigation showed this is still plain SPM-BPE; the merges list was never part of the real
+algorithm at all, it's a GGUF export convenience some converters emit redundantly. A candidate
+merge is valid purely because its concatenated text is already a vocab entry, prioritized by that
+entry's own score — exactly what `SpmMergePiecesByScore` implements, no Unigram/Viterbi machinery
+needed. `openbmb/MiniCPM4-0.5B` (Apache-2.0, via `Mungert/MiniCPM4-0.5B-GGUF`, Q4_K_M, 263 MB,
+deleted after this receipt): the graph is zero new code (Granite's builder, already admitted).
+Prompt tokenizes byte-for-byte identically to `llama-tokenize` (15 tokens incl. BOS); greedy
+continuation of `"The capital of France is"` matches `llama-server`'s `/completion`
+(`return_tokens: true`) exactly through EOS: `[2219, 8107, 1379, 8360, 1410, 11225, 72, 73440]`
+("...is Paris." + `<|im_end|>`) on both sides, CPU backend. Full evidence in
+`ModelCompatibility.cs`'s `"minicpm"` allowlist comment, no persisted test (checkpoint not
+vendored, matching this file's existing convention for `granite`/`smollm3`/`xverse`).
 
 ### 1e. `smollm3` — ADMITTED 2026-08-08, full 24-token exact greedy match
 
@@ -1064,8 +1082,57 @@ path Gemma 4 owns) — clean.
 `RopeOnlySwaLayers`/`UsesLayerNorm` code paths without good reason — this receipt is currently the
 only thing in the codebase exercising them.
 
-### `ernie4_5` (dense path) — ASSESSED 2026-08-09, architecturally trivial (Apache-2.0, genuinely
-bucket-1!), blocked on the SAME Unigram-LM tokenizer gap as `minicpm`/`internlm2`
+**Re-checked 2026-09-01: the tokenizer axis is NOT actually blocked.** Re-downloaded
+`bartowski/baidu_ERNIE-4.5-0.3B-PT-GGUF` Q8_0 (386 MB) and confirmed its GGUF metadata directly:
+`tokenizer.ggml.model=llama`, `tokenizer.ggml.scores` (103,424 entries) present, no
+`tokenizer.ggml.merges` array — the exact same shape as `minicpm` (§1d), already fixed by
+`GgufTokenizer.SpmMergePiecesByScore`, NOT genuine Unigram-LM (that needs `model=t5`, which this
+checkpoint does not declare). What's still genuinely missing is the ARCHITECTURE side: unlike
+`minicpm` (which reuses Granite's graph builder verbatim), `ernie4_5` has no forward-pass code in
+`ModelGraph.cs`/`ForwardPass.cs` at all yet — the 2026-08-08 "architecturally trivial" assessment
+below was a reading of the reference source, not an implementation. Checkpoint deleted after this
+metadata check (never ran end-to-end — no architecture code to run it against). Next real step: add
+the dense trunk (per the assessment below, a `gptneox`/`exaone`-shaped plain pre-norm/GQA/RoPE
+block, no new kernel types) to `ModelGraph.cs`, then re-download this same checkpoint for a real
+greedy-parity admission.
+
+### `ernie4_5` (dense path) — ADMITTED 2026-09-01, full 8-of-8-token exact greedy match, and a
+real THIRD SPM tokenizer bug found and fixed along the way (general, not `ernie4_5`-specific)
+
+Re-checked after `SpmMergePiecesByScore` landed, same pattern as `minicpm`/`baichuan`/`internlm2`
+above: architecture side needed zero new code (`ernie4-5.cpp`'s dense branch is plain RMSNorm
+pre-norm/SiLU-gated-FFN/GQA/full-RoPE, identical shape to `exaone`). First greedy-parity attempt
+against `baidu/ERNIE-4.5-0.3B-PT` (Apache-2.0, bucket-1, via `bartowski/baidu_ERNIE-4.5-0.3B-PT-
+GGUF` Q8_0, 386 MB, deleted after this receipt) found a REAL divergence, though: 18 of 19 prompt
+tokens matched the reference exactly, but a literal newline mid-prompt (`"...is\nAssistant: "`)
+produced `UnknownTokenId` (0) on this engine vs `23` (`"<0x0A>"`) on the reference.
+
+**Root cause, confirmed against `examples/llama.cpp/llama.cpp/src/llama-vocab.cpp`'s real
+`llm_tokenizer_spm_session::resegment` and `llama_vocab::byte_to_token`**: after SPM merging, any
+final symbol with no direct vocab entry is supposed to fall back to one token PER UTF-8 BYTE, each
+looked up as its SentencePiece byte-fallback token (`<0xXX>`, uppercase hex; falling further back
+to the raw single-byte string if a model has that form instead, and only to UNK if neither exists).
+`GgufTokenizer.EncodeSpm` instead emitted a single `UnknownTokenId` for the whole unmatched piece —
+a real, GENERAL SPM gap, not specific to `ernie4_5`, and distinct from the two `xverse`-motivated
+fixes: `SpmMergePiecesByScore` made merging work at all; this is the still-unmatched-AFTER-merging
+tail case neither that fix nor `AddSpacePrefix` touched. Any SPM-tokenized checkpoint whose
+byte-fallback vocab gets exercised (control characters, rare Unicode, any character genuinely
+outside the merged vocabulary) was silently corrupting to UNK on this path before this fix — this
+plausibly affects every already-admitted SPM architecture too (`llama`/`gemma`/`granite`/`exaone`/
+`xverse`/`minicpm`/`baichuan`/`internlm2`), just never surfaced because none of those receipts'
+test prompts happened to contain a byte-fallback-triggering character.
+
+Fixed via `GgufTokenizer.AppendSpmByteFallback` (tries `<0xXX>` then the raw single-byte string
+before falling to UNK), covered by `SpmMergeByScoreTests.
+EncodeSpm_PieceWithNoDirectVocabEntry_UsesByteFallbackToken_NotUnk` (synthetic vocab, no model
+file needed). Full `Tests.Core` suite re-run clean after the fix (648 passed, 0 failed).
+
+Re-verified after the fix: prompt tokenizes byte-for-byte identically to `llama-tokenize` (20
+tokens incl. BOS, including the previously-diverging newline). Greedy continuation **FULL
+8-of-8-token exact match through EOS**: engine and `llama-server` both produce `[700, 9689, 315,
+10298, 357, 11855, 93937, 2]` ("The capital of France is Paris." + `</s>`). No persisted
+architecture-admission test (checkpoint not vendored, matching this file's bucket-1-but-transient
+convention — the tokenizer FIX itself is what's permanently covered).
 
 `baidu/ERNIE-4.5-0.3B-PT` (Apache-2.0 — genuinely permissive, not bucket-2), via
 `bartowski/baidu_ERNIE-4.5-0.3B-PT-GGUF`, Q8_0 (386 MB — the smallest checkpoint used all session).
@@ -1080,6 +1147,20 @@ symptom directly: `tokenizer.Encode("The capital of France is")` produced one to
 CHARACTER-ish fragment from deep in the vocab (`[93955, 93931, 93920, ...]`), the same
 merge-lookup-failure fallback signature as `internlm2`. GGUF deleted (never got to a real receipt,
 since the architecture can't be verified without a working tokenizer for this vocab format).
+
+**CORRECTION, 2026-09-01: this "Unigram-LM" label was speculative and wrong for `minicpm` — see
+its own entry above (§1d).** `minicpm`'s `tokenizer.ggml.model=llama` + scores-only vocab is plain
+SPM-BPE with the merges list simply absent (a GGUF export convenience, not part of the real
+algorithm) — fixed by `GgufTokenizer.SpmMergePiecesByScore`, `minicpm` is now ADMITTED. Real
+Unigram-LM (`tokenizer.ggml.model=t5`, genuine Viterbi lattice segmentation, implemented
+2026-09-01 as `UnigramTokenizer.FromGgufVocab`) is a DIFFERENT vocab type this project has not yet
+confirmed any of `internlm2`/`ernie4_5`/`baichuan`/`orion`/`nanbeige` actually use — every one of
+them was diagnosed the same way `minicpm` originally was (`model=llama`, scores present, merges
+absent), which is now suspected to be the SAME already-fixed SPM-score case for all five, not
+Unigram-LM at all. None re-checked against a real downloaded GGUF since `SpmMergePiecesByScore`
+landed — that re-check, not further Unigram-LM work, is the real next step for the remaining five.
+The paragraph below is preserved as it was originally written (pre-correction) for the historical
+record of what was believed at the time.
 
 **Unigram-LM SentencePiece now confirmed blocking THREE architectures** (`minicpm`, `internlm2`,
 `ernie4_5`) **— the highest-leverage remaining tokenizer-axis gap in the whole plan.** All three
@@ -1605,6 +1686,61 @@ against the full `Tests.ForwardPass` suite (994 passes, 1 pre-existing unrelated
 `ModelCompatibility.cs` for the full verification evidence.
 
 ---
+
+**Re-checked 2026-09-01: `baichuan` already works today, zero code changes, via a common
+conversion quirk — but `orion` is unconfirmed.** Downloaded `shaowenchen/baichuan2-7b-chat-gguf`
+Q2_K (3.27 GB, deleted after this receipt) to test the tokenizer-fix theory the same way as
+`minicpm`/`ernie4_5` above. Its GGUF metadata declares `general.architecture=llama` (NOT
+`baichuan`) — this particular converter emits Baichuan2's `W_pack` as already-split Q/K/V tensors,
+so the checkpoint is genuinely, structurally plain-Llama-shaped at the tensor level, not merely
+"similar." `tokenizer.ggml.model=llama` with `tokenizer.ggml.scores` (125,696 entries) and no
+merges — same shape already fixed by `SpmMergePiecesByScore`. Result: **full 8-of-8-token exact
+greedy match** against `llama-server`'s `/completion` (`return_tokens: true`) for "The capital of
+France is" → " Paris." + stop, CPU backend, zero allowlist/architecture code touched (the checkpoint
+is already covered by the existing `"llama"` entry). No persisted test, no allowlist entry added —
+there is nothing to admit; this checkpoint was never blocked once the SPM-score fix landed. Caveat:
+this is one specific converter's output, not proof that every `general.architecture=baichuan`
+GGUF (the literal `baichuan.cpp` arch string) is covered — a checkpoint that actually declares
+`baichuan` as its architecture string still needs the allowlist entry this note originally
+flagged as free (zero new code), just not yet re-verified against a checkpoint carrying that exact
+tag. `orion` was not re-checked this pass (needs its own small new LayerNorm-with-bias +
+gated-SiLU-FFN combination per the original note below, so it's a real code task, not a free
+re-check like `baichuan`/`minicpm`/`ernie4_5`).
+
+**Re-checked 2026-09-01, `orion`: tokenizer axis confirmed cleared, architecture axis unchanged
+(still real new code, as originally scoped).** Header-only partial download (first 8 MB, via HTTP
+range request) of `demonsu/orion-14b-chat-gguf` `ggml-model-Q4_K_M.gguf` — the full 8.81 GB file
+was not downloaded, matching the original session's bandwidth-conscious methodology.
+`general.architecture=orion` (a real, distinct arch string, unlike `baichuan`'s converter quirk
+above), real `orion.*` hyperparameter keys present, `tokenizer.ggml.scores` present with no
+`tokenizer.ggml.merges` — the same already-fixed SPM-score shape. Confirms the tokenizer is no
+longer a blocker whenever the architecture side (LayerNorm-with-bias + gated-SiLU-FFN, per the
+original note below) gets built — a real, scoped, not-yet-started coding task, not a free
+re-check.
+
+**Checked 2026-09-01, `nanbeige`: this is now a materially different, harder problem than the
+original note below describes — a genuinely new architectural mechanism, not the same small gap.**
+Header-only partial download (first 8 MB) of `bartowski/Nanbeige_Nanbeige4.2-3B-GGUF`
+`Nanbeige_Nanbeige4.2-3B-Q4_K_M.gguf`. `general.architecture=nanbeige`, tokenizer axis confirmed
+the same already-fixed SPM-score shape (`tokenizer.ggml.scores` present, no `merges`) — so far
+consistent with the original note. But this checkpoint's real hyperparameter keys include
+`nanbeige.num_loops` and `nanbeige.skip_loop_final_norm`, which the original note never mentions —
+a genuine Looped-Transformer mechanism (a fixed set of physical layers reused `num_loops` times for
+extra effective depth) newly shipped in the Nanbeige4.x family, not present in whatever older
+Nanbeige checkpoint the original note assessed. This is a real new mechanism this engine has never
+implemented (looping a block subgraph N times is structurally different from "one pass through N
+distinct layers"), not a small kernel-combination task like `orion`'s. Separately, the original
+note's SECOND blocker — this session's local `tools/llama.cpp` reference binary not recognizing
+`nanbeige` as a known architecture at all — appears RESOLVED: attempting to load this (deliberately
+truncated) partial file via `llama-tokenize` failed on the expected "tensor data not within file
+bounds" error (a symptom of the file being incomplete by design), not the old "unknown model
+architecture: 'nanbeige'" error, meaning the reference tool now recognizes the architecture. Not
+re-verified with a full download this pass. Net: `nanbeige` is not close to admission — it needs a
+new looped-subgraph execution mechanism, a materially bigger lift than `orion`'s, and should be
+re-scoped (not treated as a peer of `orion`/`baichuan`/`internlm2`/`minicpm`/`ernie4_5` in future
+prioritization). **Operator review, 2026-09-01: deprioritized off the active list entirely** — real
+Nanbeige download volume doesn't justify implementing a genuinely new execution mechanism for it,
+independent of the scoping question above. Revisit only if that changes.
 
 ### `baichuan` and `orion` — CHECKED 2026-08-09, BOTH BLOCKED on the same Unigram-LM tokenizer gap
 

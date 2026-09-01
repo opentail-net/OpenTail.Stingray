@@ -69,21 +69,55 @@ that is more elegant but lower-visibility.
      smoke test (`ltx_test_apple_512.png`) shows clear prompt semantic adherence but high-contrast/
      dither artifacts. Requires step-by-step multi-step Euler trajectory oracle diffing against
      reference `pipeline_ltx_video.py`, VAE spatial noise gating, and CFG guidance rescaling.
-5. **SentencePiece Unigram-LM tokenizer — implemented 2026-09-01, not yet admitted on a real GGUF
-   checkpoint.** `GgufTokenizer` now detects `tokenizer.ggml.model=t5` (real llama.cpp's
-   `LLAMA_VOCAB_TYPE_UGM` trigger) and routes through the existing real Viterbi
-   `UnigramTokenizer` (built for Parler-TTS's T5 encoder) via a new
+5. **SentencePiece Unigram-LM tokenizer — implemented 2026-09-01.** `GgufTokenizer` now detects
+   `tokenizer.ggml.model=t5` (real llama.cpp's `LLAMA_VOCAB_TYPE_UGM` trigger) and routes through
+   the existing real Viterbi `UnigramTokenizer` (built for Parler-TTS's T5 encoder) via a new
    `UnigramTokenizer.FromGgufVocab(tokens, scores, unkId, tokenTypes)` factory — uses GGUF's real
    `tokenizer.ggml.token_type` array (NORMAL=1) for the UNK-fallback-score computation instead of
-   `FromTokenizerJson`'s bracket heuristic, since GGUF actually carries that real per-piece type
-   data. Also fixed the UGM-specific default `unknown_token_id` (2, not SPM's 0). Full solution
-   builds clean; `UnigramTokenizerTests` covers `FromGgufVocab` matching `FromTokenizerJson`
-   byte-for-byte on Parler's real vocab, plus a synthetic token-type-array case. **Still open**: no
-   real blocked checkpoint (`minicpm`, `internlm2`, `ernie4_5`, `baichuan`, `orion`, `nanbeige` — see
-   the done-archive's per-architecture "CHECKED and BLOCKED" entries) is present locally to produce
-   a real greedy-parity admission receipt — none were re-downloaded this pass. Also still open: the
-   `precompiled_charsmap` binary normalization gap, documented as a known limitation on
-   `UnigramTokenizer`'s class doc (plain-ASCII input unaffected).
+   `FromTokenizerJson`'s bracket heuristic. Also fixed the UGM-specific default `unknown_token_id`
+   (2, not SPM's 0). Full solution builds clean; `UnigramTokenizerTests` covers `FromGgufVocab`
+   matching `FromTokenizerJson` byte-for-byte on Parler's real vocab, plus a synthetic
+   token-type-array case. `precompiled_charsmap` binary normalization remains a documented known
+   gap on `UnigramTokenizer`'s class doc (plain-ASCII input unaffected).
+   **Correction, same day**: re-downloading `minicpm` to admit it (below) found the "six
+   Unigram-LM-blocked architectures" framing was speculative and wrong for at least `minicpm` — its
+   `model=llama` + scores-only vocab is plain SPM-BPE with the merges array simply absent (a GGUF
+   export convenience, not part of the real algorithm), already fixed by
+   `GgufTokenizer.SpmMergePiecesByScore` (the `xverse`-motivated fix), not by today's Unigram-LM
+   work at all. `internlm2`/`ernie4_5`/`baichuan`/`orion`/`nanbeige` were all diagnosed the exact
+   same way `minicpm` originally was. `ernie4_5` is now ALSO ADMITTED (2026-09-01, zero new
+   architecture code — same shape as `exaone`) — and re-checking it surfaced a real THIRD SPM
+   tokenizer bug, general-purpose, not `ernie4_5`-specific: `GgufTokenizer.EncodeSpm` mapped any
+   post-merge piece with no direct vocab entry straight to `UnknownTokenId`, instead of real
+   llama.cpp's per-UTF8-BYTE `<0xXX>` byte-fallback lookup. This plausibly affected every
+   already-admitted SPM architecture whenever a byte-fallback-triggering character (control chars,
+   rare Unicode) showed up — none of their receipts happened to test one. Fixed via
+   `GgufTokenizer.AppendSpmByteFallback`, covered by a new synthetic-vocab test in
+   `SpmMergeByScoreTests.cs`. `baichuan` — at least the common
+   `shaowenchen/baichuan2-7b-chat-gguf` conversion — needed **zero changes**: that GGUF declares
+   `general.architecture=llama` (a converter quirk that splits `W_pack` into ordinary Q/K/V
+   tensors), so it was never actually blocked once the SPM fix landed; full 8/8-token greedy match,
+   nothing to admit. `internlm2` is now ALSO ADMITTED (2026-09-01): same already-fixed tokenizer
+   case, and zero new architecture code needed — no `internlm2`-specific kernel gate existed
+   anywhere in `ModelGraph.cs`/`ForwardPass.cs`, so this engine's existing generic pre-norm/GQA/RoPE
+   dispatch already covered it; full 8/8-token exact greedy match. `minicpm` is now ADMITTED too —
+   see item 8 below. **`orion`/`nanbeige` checked 2026-09-01, closing out the six-architecture
+   sweep**: `orion`'s tokenizer axis is also the same already-fixed case, but its architecture side
+   still needs real new code (a small LayerNorm-with-bias + gated-SiLU-FFN kernel combination, not
+   yet built) — a real, scoped, low-effort task for whenever architecture work is prioritized.
+   `nanbeige` turned out to be a bigger, different problem than originally scoped: the current
+   Nanbeige4.x family (`nanbeige.num_loops`/`nanbeige.skip_loop_final_norm` in its GGUF metadata)
+   is a genuine Looped-Transformer — a fixed set of physical layers reused N times for extra
+   effective depth — a real new execution mechanism this engine has never implemented, not a small
+   kernel gap like `orion`'s. Do not treat `nanbeige` as a peer-priority item to `orion` going
+   forward; it needs its own scoping pass, **and per 2026-09-01 operator review it isn't worth that
+   pass regardless — real Nanbeige download volume is too low to justify a genuinely new execution
+   mechanism for it. Deprioritized off this list entirely, not just reordered.**
+   **Six-architecture sweep result: 4 ADMITTED with zero new architecture code (`minicpm`,
+   `baichuan`, `internlm2`, `ernie4_5` — the last one also surfacing a real general SPM
+   byte-fallback bug, fixed), 1 real-but-small architecture task remaining (`orion`, tokenizer axis
+   already clear), 1 deprioritized (`nanbeige`, looped-transformer mechanism, too low demand to
+   pursue).**
 6. **CPU greedy-decode non-determinism investigation** — low visibility, high correctness stakes;
    run in parallel with whichever other item is active whenever idle capacity allows, per the
    existing note in the "Standing state" archive (2 non-reproducing sightings under CPU contention;

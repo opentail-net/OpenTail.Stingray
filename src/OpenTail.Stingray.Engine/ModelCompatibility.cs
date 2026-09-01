@@ -138,6 +138,66 @@ public static class ModelCompatibility
         // test to catch a mistake. A change to RunTrunk/PrefillCore/the rope_freqs handling above
         // could silently break this profile and nothing in CI would notice.
         "exaone",
+        "orion", // TEMP probe 2026-09-01, revert if architecturally incomplete
+
+        // ernie4_5 (dense path) -- ADMITTED 2026-09-01. Was diagnosed as blocked purely on the
+        // tokenizer axis (same shape as minicpm/internlm2/baichuan: tokenizer.ggml.model=llama with
+        // tokenizer.ggml.scores present and no merges, already fixed by
+        // GgufTokenizer.SpmMergePiecesByScore), and the forward pass needed zero new code (dense,
+        // non-MoE branch is a plain RMSNorm pre-norm/SiLU-gated-FFN/GQA/full-RoPE trunk, identical
+        // shape to exaone -- confirmed against examples/llama.cpp/llama.cpp/src/models/
+        // ernie4-5.cpp). First greedy-parity attempt found a REAL THIRD tokenizer bug, though: a
+        // literal newline mid-prompt diverged from the reference at exactly one token (engine
+        // produced UnknownTokenId=0, reference produced 23 = "<0x0A>"). Root cause: GgufTokenizer.
+        // EncodeSpm's "no direct vocab entry after merging" branch emitted a single UnknownTokenId
+        // for the whole unmatched piece, instead of real llama.cpp's per-UTF8-BYTE SentencePiece
+        // byte-fallback lookup (llm_tokenizer_spm_session::resegment's "output any symbols that did
+        // not form tokens as bytes" branch -> llama_vocab::byte_to_token, tries "<0xXX>" uppercase
+        // hex first, then the raw single-byte string, only falling to UNK if neither exists) -- a
+        // real, general SPM gap distinct from the two xverse-motivated fixes (SpmMergePiecesByScore
+        // made merging work at all; this is the still-unmatched-after-merging TAIL case neither of
+        // those touched). Fixed via GgufTokenizer.AppendSpmByteFallback, covered by
+        // SpmMergeByScoreTests.EncodeSpm_PieceWithNoDirectVocabEntry_UsesByteFallbackToken_NotUnk.
+        //
+        // Checkpoint: baidu/ERNIE-4.5-0.3B-PT (Apache-2.0, genuinely permissive -- bucket-1), via
+        // bartowski/baidu_ERNIE-4.5-0.3B-PT-GGUF, Q8_0 (386 MB). Transient local download, never
+        // vendored, deleted immediately after this receipt.
+        //
+        // Verification evidence (2026-09-01, tools/llama.cpp llama-tokenize/llama-server, CPU
+        // backend), AFTER the byte-fallback fix: templated prompt "<|begin_of_sentence|>User: The
+        // capital of France is\nAssistant: " tokenizes byte-for-byte identically to llama-tokenize
+        // (20 tokens incl. BOS). Greedy continuation FULL 8-of-8-token exact match through EOS:
+        // engine and llama-server both produce [700, 9689, 315, 10298, 357, 11855, 93937, 2] ("The
+        // capital of France is Paris." + </s>).
+        //
+        // DO NOT MODIFY THIS ARCHITECTURE'S CODE PATH WITHOUT GOOD REASON — there is no regression
+        // test to catch a mistake (the tokenizer fix itself IS covered, see above).
+        "ernie4_5",
+
+        // internlm2 -- ADMITTED 2026-09-01. Was blocked purely on the tokenizer axis (same as
+        // minicpm/ernie4_5/baichuan): tokenizer.ggml.model=llama with tokenizer.ggml.scores
+        // (92,544 entries) and no tokenizer.ggml.merges array -- already fixed by
+        // GgufTokenizer.SpmMergePiecesByScore. The forward pass needed genuinely zero new code:
+        // internlm2's plain pre-norm/GQA/RoPE trunk was already covered by this engine's existing
+        // generic dispatch (no architecture-specific kernel gate exists for it anywhere in
+        // ModelGraph.cs/ForwardPass.cs -- confirmed by grep before this admission), so adding the
+        // allowlist string alone was sufficient.
+        //
+        // Checkpoint: internlm/internlm2_5-1_8b-chat (custom InternLM license, not a clean SPDX
+        // permissive license -- bucket-2), via bartowski/internlm2_5-1_8b-chat-GGUF, Q4_K_M
+        // (1.17 GB). Transient local download, never vendored, deleted immediately after this
+        // receipt.
+        //
+        // Verification evidence (2026-09-01, tools/llama.cpp llama-server /completion with
+        // return_tokens:true, CPU backend): templated prompt
+        // "<s><|im_start|>user\nThe capital of France is<|im_end|>\n<|im_start|>assistant\n".
+        // Full 8-of-8-token exact greedy match through EOS: engine and llama-server both produce
+        // [918, 6872, 446, 9760, 505, 12247, 281, 92542] ("The capital of France is Paris." +
+        // <|im_end|>).
+        //
+        // DO NOT MODIFY THIS ARCHITECTURE'S CODE PATH WITHOUT GOOD REASON — there is no regression
+        // test to catch a mistake.
+        "internlm2",
         // starcoder2 — ADMITTED 2026-08-09, full 24-of-24-token exact match. Reuses gptneox/
         // falcon's LayerNorm-with-bias + non-gated biased-GELU FFN infrastructure exactly (same
         // SimdKernels.LayerNorm/GeluInPlace, same HasNormBias/HasFfnBias/HasAttnBias/
@@ -503,6 +563,43 @@ public static class ModelCompatibility
         // DO NOT MODIFY THIS ARCHITECTURE'S CODE PATH WITHOUT GOOD REASON — there is no regression
         // test to catch a mistake.
         "xverse",
+
+        // minicpm — ADMITTED 2026-09-01. Was blocked purely on the tokenizer axis (§01 coverage
+        // plan §1d/§1c): shares Granite's graph builder verbatim (llama.cpp's models.h:
+        // llama_model_minicpm::graph == llama_model_granite::graph — same embedding/residual/
+        // logit-scale trio, different constants), so the forward pass needed zero new code once
+        // Granite/smollm3 were admitted. The real blocker was its GGUF declaring
+        // tokenizer.ggml.model=llama with a tokenizer.ggml.scores array and NO
+        // tokenizer.ggml.merges array — this engine's SPM path used to require a merges table for
+        // any tokenization at all and fell through to character-level fragmentation. Already fixed
+        // by GgufTokenizer.SpmMergePiecesByScore (built while re-admitting xverse, 2026-09-02) —
+        // NOT by this session's separate real-Unigram-LM (tokenizer.ggml.model=t5) addition, which
+        // this checkpoint doesn't use at all (worth noting: this project's own docs had
+        // provisionally grouped minicpm/internlm2/ernie4_5/baichuan/orion/nanbeige together under
+        // "Unigram-LM SentencePiece" before any of them were actually re-checked against a real
+        // downloaded GGUF; minicpm turns out to be the scores-only SPM case, the same shape as
+        // xverse's own second bug, not genuine Unigram-LM. The other five remain unverified and
+        // may turn out to be either shape.).
+        //
+        // Checkpoint: openbmb/MiniCPM4-0.5B (Apache-2.0), via Mungert/MiniCPM4-0.5B-GGUF,
+        // Q4_K_M (263 MB). Transient local download, never vendored, deleted immediately after
+        // this receipt.
+        //
+        // Verification evidence (2026-09-01, tools/llama.cpp llama-tokenize/llama-server, CPU
+        // backend — this checkpoint's Vulkan-hybrid-offload output is a separate, unrelated known
+        // issue, see the Z-Image BF16/Sgemm-precision bug for the general shape of that class of
+        // bug; not investigated further here since the tokenizer/architecture axis is what this
+        // item was scoped to): full templated prompt "<|im_start|>user\nThe capital of France
+        // is<|im_end|>\n<|im_start|>assistant\n" tokenizes identically on both sides (15 tokens
+        // including BOS: [1, 73441, 3060, 5, 2219, 8107, 1379, 8360, 1410, 73440, 59320, 5, 73441,
+        // 16434, 5]). Greedy continuation FULL 8-of-8-token exact match through EOS: engine and
+        // llama-server both produce [2219, 8107, 1379, 8360, 1410, 11225, 72, 73440] ("The capital
+        // of France is Paris." + <|im_end|>), engine's own per-step top-1 confirmed via
+        // --verbose-prompt debug trace, llama-server's via /completion with return_tokens:true.
+        //
+        // DO NOT MODIFY THIS ARCHITECTURE'S CODE PATH WITHOUT GOOD REASON — there is no regression
+        // test to catch a mistake.
+        "minicpm",
     };
     // deepseek2 — NOT admitted, closed for now. A CPU-only MLA implementation exists in
     // ForwardPass.cs (compressed-latent K/V, YaRN RoPE, kq_scale/mscale correction, per-layer

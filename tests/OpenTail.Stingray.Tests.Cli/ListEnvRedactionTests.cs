@@ -41,14 +41,28 @@ public sealed class ListEnvRedactionTests
         Assert.False(ListEnvCommand.IsSensitive(name), $"{name} was redacted but carries no secret");
 
     /// <summary>
-    /// Nothing in the engine's real 141-name surface should currently trip the credential filter.
-    /// If this fails, a genuinely secret-bearing variable has been added — decide deliberately
-    /// whether it belongs in the environment at all, then update this test.
+    /// Deliberate, reviewed exception to the "nothing should trip the filter" rule below.
+    /// <c>STINGRAY_DBG_TOKEN_RANK</c> holds a numeric LLM token ID for a <c>--verbose-prompt</c>
+    /// debug probe (see <c>docs/env-var-inventory.md</c>), not an authentication token — the name
+    /// collides with the credential filter's "TOKEN" substring purely coincidentally. Reviewed and
+    /// accepted 2026-09-01: masking its value in <c>list-env</c> is harmless (it's a debug integer,
+    /// nobody needs to read it off a screenshot), so over-redaction here costs nothing, and
+    /// renaming would break continuity with the historical investigation docs that reference this
+    /// exact name. Do not add further names here without the same explicit review.
+    /// </summary>
+    private static readonly string[] KnownFalsePositives = ["STINGRAY_DBG_TOKEN_RANK"];
+
+    /// <summary>
+    /// Nothing in the engine's real known-variable surface should currently trip the credential
+    /// filter, except the reviewed exceptions in <see cref="KnownFalsePositives"/>. If this fails
+    /// with a name not in that list, a genuinely secret-bearing variable has been added — decide
+    /// deliberately whether it belongs in the environment at all, then update this test.
     /// </summary>
     [Fact]
     public void NoKnownEngineVariableCurrentlyLooksLikeACredential()
     {
-        var flagged = KnownEnvironmentVariables.All.Where(ListEnvCommand.IsSensitive).ToList();
+        var flagged = KnownEnvironmentVariables.All.Where(ListEnvCommand.IsSensitive)
+            .Except(KnownFalsePositives).ToList();
         Assert.True(flagged.Count == 0,
             "These known variables match the credential filter and would be redacted: " +
             string.Join(", ", flagged));

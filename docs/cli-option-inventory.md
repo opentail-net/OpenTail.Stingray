@@ -1,11 +1,13 @@
 # CLI option inventory — generated from source, classification complete
 
 **Generated:** by `scripts/gen-cli-option-inventory.ps1`, which scans `[CommandOption]` /
-`[Description]` pairs under `src/OpenTail.Stingray.Cli`. Last regenerated **2026-08-24**, recording
-**195 option declarations** across 16 command files — the same count the
-`StaticPlanConfigurationTests` guard enforces against source. (Reconciled one row of drift:
-`SttCommand`'s `--model-file` existed in source but had no row here — caught by CI failing
-`CliOptionInventory_DeclaredCountMatchesSource`.)
+`[Description]` pairs under `src/OpenTail.Stingray.Cli`. Last regenerated **2026-09-01**, recording
+**197 option declarations** across 16 command files — the same count the
+`StaticPlanConfigurationTests` guard enforces against source. (Reconciled three rows of drift:
+`ImageCommand` gained `--umt5-encoder`/`--umt5-tokenizer` for Wan's real UMT5-XXL text encoder, and
+`TtsCommand` lost `--cfg` and gained `--backend` — caught by CI failing
+`CliOptionInventory_DeclaredCountMatchesSource`. New rows classified `stable`, matching every other
+encoder/tokenizer-path and backend-selection option in this table.)
 
 The tables below are no longer hand-maintained. Regenerate with the script rather than editing rows
 by hand; `-Check` exits non-zero when they are stale.
@@ -117,6 +119,8 @@ hoc at each read site rather than in one place.
 | `--t5-tokenizer` | stable | (FLUX) Path to T5 tokenizer.json |
 | `--t5xxl` | stable | (FLUX) Path to T5-XXL encoder safetensors |
 | `--text-encoder` | stable | (sd-cli mode only) Path to LLM-style text encoder GGUF |
+| `--umt5-encoder` | stable | (Wan) Path to the real UMT5-XXL text encoder safetensors (converted from Wan-AI/Wan2.1-T2V-1.3B's models_t5_umt5-xxl-enc-bf16.pth) |
+| `--umt5-tokenizer` | stable | (Wan) Path to the real UMT5 tokenizer.json (Wan-AI/Wan2.1-T2V-1.3B's google/umt5-xxl/tokenizer.json) |
 | `--upscale-blend` | expert | Blend factor for the upscaled result (0.0–1.0). 1.0 = full RRDB (sharpest), <1.0 softens by blending with bicubic. Default 1.0. |
 | `--upscaler` | stable | Path to ESRGAN/Real-ESRGAN upscaler weights (.safetensors). Upscales the generated image by ×2 or ×4 before saving. |
 | `--use-sdcpp` | expert | Delegate to stable-diffusion.cpp sd-cli instead of native pipeline (for comparison) |
@@ -327,7 +331,7 @@ hoc at each read site rather than in one place.
 
 | Option | Class | Description |
 |---|---|---|
-| `--cfg <CFG>` | stable | Classifier-Free Guidance strength for Flow-Matching DiT (default: 2.0). |
+| `--backend <BACKEND>` | stable | Compute backend: auto (default), vulkan, or cpu. |
 | `--engine <ENGINE>` | stable | TTS architecture engine: kokoro (default), piper, f5tts, chatterbox, or melo. |
 | `--model <PATH>` | stable | Custom model checkpoint path (.gguf, .onnx, or .safetensors). |
 | `--nfe <NFE>` | stable | Number of Function Evaluations / ODE solver steps for Flow-Matching DiT (default: 32). |

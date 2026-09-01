@@ -748,10 +748,40 @@ public sealed partial class GgufTokenizer : ITokenizer
         {
             if (_vocab.TryGetValue(piece, out int id))
                 ids.Add(id);
+            else
+                AppendSpmByteFallback(piece, ids);
+        }
+        return ids;
+    }
+
+    /// <summary>
+    /// Real llama.cpp SPM fallback for a merged piece with no direct vocab entry
+    /// (<c>llm_tokenizer_spm_session::resegment</c>'s "output any symbols that did not form
+    /// tokens as bytes" branch): emit one token per UTF-8 BYTE of the piece, not one UnknownTokenId
+    /// for the whole piece -- each byte is looked up as its SentencePiece byte-fallback token
+    /// (<c>&lt;0xXX&gt;</c>, uppercase hex, real format confirmed via <c>llama_vocab::byte_to_token</c>),
+    /// falling back to the raw single-byte string entry if a model has that form instead, and only
+    /// falling all the way to UnknownTokenId if neither exists. Found missing while re-checking
+    /// `ernie4_5` (2026-09-01): a literal newline mid-prompt (no direct "\n" vocab entry, but a real
+    /// "&lt;0x0A&gt;" byte-fallback entry at a different id) was mapped to UNK instead of that byte
+    /// token -- the one divergence in an otherwise full greedy match, isolating this as a real,
+    /// general SPM gap distinct from the two `xverse`-motivated fixes (SpmMergePiecesByScore /
+    /// AddSpacePrefix): those made merging work at all; this is the STILL-unmatched-after-merging
+    /// tail case neither of them touched.
+    /// </summary>
+    private void AppendSpmByteFallback(string piece, List<int> ids)
+    {
+        var utf8 = Encoding.UTF8.GetBytes(piece);
+        foreach (byte b in utf8)
+        {
+            string hex = $"<0x{b:X2}>";
+            if (_vocab.TryGetValue(hex, out int hexId))
+                ids.Add(hexId);
+            else if (_vocab.TryGetValue(((char)b).ToString(), out int rawId))
+                ids.Add(rawId);
             else if (UnknownTokenId >= 0)
                 ids.Add(UnknownTokenId);
         }
-        return ids;
     }
 
     /// <summary>

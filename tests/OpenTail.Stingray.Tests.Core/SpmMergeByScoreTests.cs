@@ -44,6 +44,35 @@ public sealed class SpmMergeByScoreTests
         return pieces;
     }
 
+    /// <summary>
+    /// Real bug found re-checking `ernie4_5` (2026-09-01): after merging, a piece with no direct
+    /// vocab entry fell straight to a single UnknownTokenId for the WHOLE piece instead of real
+    /// llama.cpp's per-UTF8-BYTE `&lt;0xXX&gt;` fallback (`llm_tokenizer_spm_session::resegment`'s
+    /// "output any symbols that did not form tokens as bytes" branch, confirmed against
+    /// `llama_vocab::byte_to_token`). A newline mid-prompt was the real-world trigger: no direct
+    /// "\n" vocab entry, but a real "&lt;0x0A&gt;" byte-fallback entry existed and was never tried.
+    /// </summary>
+    [Fact]
+    public void EncodeSpm_PieceWithNoDirectVocabEntry_UsesByteFallbackToken_NotUnk()
+    {
+        var source = new TokenizerSource
+        {
+            ModelFamily = "llama",
+            Tokens = ["<unk>", "<s>", "</s>", "A", "<0x0A>", "B"],
+            Scores = [0f, 0f, 0f, 0f, 0f, 0f],
+            UnknownTokenId = 0,
+            BosTokenId = 1,
+            EosTokenId = 2,
+        };
+        var tokenizer = GgufTokenizer.FromSource(source);
+
+        // "A\nB" -> "A" and "B" are direct vocab hits; "\n" has no direct entry but does have a
+        // real "<0x0A>" byte-fallback entry (id 4) -- must resolve to that, not to UnknownTokenId.
+        var ids = tokenizer.Encode("A\nB");
+        Assert.Contains(4, ids);
+        Assert.DoesNotContain(0, ids);
+    }
+
     [Fact]
     public void EmptyInput_ReturnsEmpty()
     {
