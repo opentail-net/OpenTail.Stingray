@@ -10,6 +10,9 @@ public sealed class LtxVideoPipeline : IDiffusionPipeline
     private readonly IWeightLoader? _weights;
     private readonly LtxVideoModel _transformer;
     private readonly LtxVaeDecoder? _vae;
+    private readonly IWeightLoader? _t5Weights;
+    private readonly TextEncoders.T5Encoder? _t5;
+    private readonly TextEncoders.T5Tokenizer? _t5Tokenizer;
     private readonly int _temporalScale;
     private readonly int _spatialScale;
     private readonly int _fps;
@@ -21,6 +24,9 @@ public sealed class LtxVideoPipeline : IDiffusionPipeline
         LtxVideoModel transformer,
         LtxVaeDecoder? vae = null,
         IWeightLoader? weights = null,
+        TextEncoders.T5Encoder? t5 = null,
+        TextEncoders.T5Tokenizer? t5Tokenizer = null,
+        IWeightLoader? t5Weights = null,
         int temporalScale = 8,
         int spatialScale = 32,
         int fps = 24)
@@ -28,12 +34,26 @@ public sealed class LtxVideoPipeline : IDiffusionPipeline
         _transformer = transformer;
         _vae = vae;
         _weights = weights;
+        _t5 = t5;
+        _t5Tokenizer = t5Tokenizer;
+        _t5Weights = t5Weights;
         _temporalScale = temporalScale;
         _spatialScale = spatialScale;
         _fps = fps;
     }
 
-    public static LtxVideoPipeline Load(string modelPath, string? vaePath = null, IComputeBackend? backend = null)
+    /// <param name="textEncoderDir">Real T5-v1.1-XXL encoder directory (HF sharded-safetensors
+    /// layout, e.g. `Lightricks/LTX-Video`'s own `text_encoder/` subfolder) -- optional; without it
+    /// the pipeline falls back to placeholder random-noise text conditioning (structurally runnable,
+    /// not semantically meaningful).</param>
+    /// <param name="tokenizerJsonPath">Matching `tokenizer.json` (fast-tokenizer format) for
+    /// <paramref name="textEncoderDir"/> -- required if that parameter is provided.</param>
+    public static LtxVideoPipeline Load(
+        string modelPath,
+        string? vaePath = null,
+        IComputeBackend? backend = null,
+        string? textEncoderDir = null,
+        string? tokenizerJsonPath = null)
     {
         IWeightLoader weights = modelPath.EndsWith(".gguf", StringComparison.OrdinalIgnoreCase)
             ? GgufWeightLoader.Open(modelPath)
@@ -58,7 +78,18 @@ public sealed class LtxVideoPipeline : IDiffusionPipeline
             vae = new LtxVaeDecoder(weights);
         }
 
-        return new LtxVideoPipeline(transformer, vae, weights);
+        IWeightLoader? t5Weights = null;
+        TextEncoders.T5Encoder? t5 = null;
+        TextEncoders.T5Tokenizer? t5Tokenizer = null;
+        if (!string.IsNullOrWhiteSpace(textEncoderDir) && Directory.Exists(textEncoderDir)
+            && !string.IsNullOrWhiteSpace(tokenizerJsonPath) && File.Exists(tokenizerJsonPath))
+        {
+            t5Weights = SafetensorsLoader.OpenDirectory(textEncoderDir);
+            t5 = TextEncoders.T5Encoder.FromLoader(t5Weights);
+            t5Tokenizer = TextEncoders.T5Tokenizer.FromFile(tokenizerJsonPath, maxLen: 256);
+        }
+
+        return new LtxVideoPipeline(transformer, vae, weights, t5, t5Tokenizer, t5Weights);
     }
 
     public void Generate(ImageGenerationRequest request)
@@ -107,15 +138,27 @@ public sealed class LtxVideoPipeline : IDiffusionPipeline
             latents[i] = MathF.Sqrt(-2.0f * MathF.Log(u1)) * MathF.Cos(2.0f * MathF.PI * u2);
         }
 
-        // Placeholder text conditioning: real T5-v1.1-XXL encoder is not yet ported/wired (not
-        // downloaded locally -- see docs/055-ltx-video-implementation-plan.md step 6). This feeds
-        // caption_projection's 4096-dim input, not `CrossAttentionDim` (2048, the projected size).
-        int textTokens = 128;
         int textDim = _transformer.CaptionChannels;
-        var textContext = new float[textTokens * textDim];
-        for (int i = 0; i < textContext.Length; i++)
+        float[] textContext;
+        if (_t5 is not null && _t5Tokenizer is not null)
         {
-            textContext[i] = 0.01f * (rng.NextSingle() - 0.5f);
+            // Real T5-v1.1-XXL text conditioning (numerically verified against HuggingFace
+            // `transformers`' real T5EncoderModel, >0.999 cosine similarity -- see
+            // LtxT5EncoderGoldenParityTests). Feeds caption_projection's 4096-dim input directly.
+            var tokenIds = _t5Tokenizer.Tokenize(prompt);
+            textContext = _t5.Encode(tokenIds);
+        }
+        else
+        {
+            // Placeholder text conditioning: no real T5-v1.1-XXL encoder wired for this Load() call
+            // (pass textEncoderDir/tokenizerJsonPath to enable it). Structurally runnable, not
+            // semantically meaningful.
+            int textTokens = 128;
+            textContext = new float[textTokens * textDim];
+            for (int i = 0; i < textContext.Length; i++)
+            {
+                textContext[i] = 0.01f * (rng.NextSingle() - 0.5f);
+            }
         }
 
         float shift = 3.0f;
@@ -219,6 +262,8 @@ public sealed class LtxVideoPipeline : IDiffusionPipeline
         {
             _disposed = true;
             _vae?.Dispose();
+            _t5?.Dispose();
+            _t5Weights?.Dispose();
             _weights?.Dispose();
         }
     }

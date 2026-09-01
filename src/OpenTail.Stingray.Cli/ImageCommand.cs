@@ -1289,8 +1289,19 @@ public sealed class ImageCommand : Command<ImageCommand.Settings>
         AnsiConsole.MarkupLine($"[dim]Prompt:[/]  \"{Markup.Escape(s.Prompt!)}\"");
         AnsiConsole.MarkupLine($"[dim]Size:[/]    {width}x{height}, {videoFrames} frames, {steps} steps, CFG {cfgScale:F1}");
 
+        // Auto-detect a `<models>/ltx-t5/text_encoder` + `tokenizer/tokenizer.json` pair sitting
+        // alongside the model directory (this project's own local download convention -- see
+        // docs/055-ltx-video-implementation-plan.md step 6) for real T5-v1.1-XXL text conditioning;
+        // falls back to placeholder conditioning if absent.
+        string? modelsDir = Path.GetDirectoryName(Path.GetFullPath(modelPath));
+        string? textEncoderDir = modelsDir is null ? null : Path.Combine(modelsDir, "ltx-t5", "text_encoder");
+        string? tokenizerJsonPath = modelsDir is null ? null : Path.Combine(modelsDir, "ltx-t5", "tokenizer", "tokenizer.json");
+        if (textEncoderDir is not null && !Directory.Exists(textEncoderDir)) textEncoderDir = null;
+        if (tokenizerJsonPath is not null && !File.Exists(tokenizerJsonPath)) tokenizerJsonPath = null;
+
         var sw = System.Diagnostics.Stopwatch.StartNew();
-        using var pipeline = OpenTail.Stingray.Diffusion.LTXVideo.LtxVideoPipeline.Load(modelPath);
+        using var pipeline = OpenTail.Stingray.Diffusion.LTXVideo.LtxVideoPipeline.Load(
+            modelPath, textEncoderDir: textEncoderDir, tokenizerJsonPath: tokenizerJsonPath);
 
         var req = new OpenTail.Stingray.Diffusion.ImageGenerationRequest
         {

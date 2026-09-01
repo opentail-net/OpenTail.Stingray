@@ -28,10 +28,27 @@ public sealed class T5Encoder : IDisposable
     private const int RelPosBuckets = 32;
     private const int MaxRelPos   = 128;
 
-    private readonly SafetensorsLoader _st;
+    private readonly IWeightLoader _st;
+    private readonly bool _ownsLoader;
     private float[]? _relPosBias; // lazy cached
 
-    public T5Encoder(string path) => _st = SafetensorsLoader.Open(path);
+    public T5Encoder(string path)
+    {
+        _st = SafetensorsLoader.Open(path);
+        _ownsLoader = true;
+    }
+
+    private T5Encoder(IWeightLoader loader, bool ownsLoader)
+    {
+        _st = loader;
+        _ownsLoader = ownsLoader;
+    }
+
+    /// <summary>Wraps an already-open loader (e.g. <see cref="SafetensorsLoader.OpenDirectory"/> for
+    /// a sharded HF-format checkpoint like `Lightricks/LTX-Video`'s own `text_encoder/` folder) --
+    /// caller retains ownership and must dispose it themselves; this instance's own
+    /// <see cref="Dispose"/> is then a no-op.</summary>
+    public static T5Encoder FromLoader(IWeightLoader loader) => new(loader, ownsLoader: false);
 
     /// <summary>
     /// Encode token ids → context embeddings [seq, 4096].
@@ -204,5 +221,8 @@ public sealed class T5Encoder : IDisposable
         return relPos > 0 ? numBuckets + bucket : bucket;
     }
 
-    public void Dispose() => _st.Dispose();
+    public void Dispose()
+    {
+        if (_ownsLoader) _st.Dispose();
+    }
 }
