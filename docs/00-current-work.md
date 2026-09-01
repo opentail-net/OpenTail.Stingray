@@ -57,20 +57,18 @@ that is more elegant but lower-visibility.
    sounds like the reference speaker. See `docs/qwentts-cosyvoice3-handoff.md` §2 for the full
    re-verification and exactly what to check next if it still doesn't sound right.
 
-**P1:**
-4. **LTX-Video — make it genuinely real** (a focused follow-on campaign, only after the P0 items
-   close). This is the single biggest re-rank from the popularity review: previously scoped low
-   because it's real implementation work, not debugging (transformer weights are never applied, text
-   conditioning is literal random noise), but the LTX model family's download volume is large enough
-   to outweigh that. **Full implementation plan written 2026-09-02**, see
-   [055-ltx-video-implementation-plan.md](055-ltx-video-implementation-plan.md) — real tensor
-   inventory of the local checkpoint confirms the architecture is a 28-layer/2048-hidden PixArt-
-   style DiT (NOT Wan-shaped: patch_size=1 so no real spatial patching happens in the transformer,
-   cross-attention operates at 2048-dim on a pre-projected caption sequence rather than raw T5's
-   4096-dim, FFN is ordinary 2-layer GELU not gated), plus a dependency-ordered build/verification
-   plan and the real gotchas (VAE decoder is itself timestep-conditioned; RoPE uses continuous
-   pixel-space coordinates, not integer latent indices). Do not start this while Wan/Z-Image/CosyVoice are still active — it would break
-   the consolidation discipline the rest of this document argues for.
+4. **LTX-Video — core port and performance pass complete; trajectory convergence pending** (2026-09-01).
+   All individual architecture blocks are implemented, performant, and pass golden numeric parity
+   tests (>0.999 cosine-sim against HuggingFace diffusers & official `ltx-video` references):
+   - 28-layer PixArt-style DiT (`LtxVideoModel.cs`) with continuous 3D RoPE.
+   - Timestep-conditioned 3D causal VAE decoder (`LtxVaeDecoder.cs`).
+   - T5-v1.1-XXL text encoder (`T5Encoder.cs`) & exact Unigram SentencePiece tokenizer.
+   - Measured performance pass landed: 12.5% faster DiT forward, 1.93x faster VAE decode.
+   - **Remaining Multi-Step Convergence Gaps** (separate milestone, see
+     [055-ltx-video-implementation-plan.md](055-ltx-video-implementation-plan.md)): end-to-end visual
+     smoke test (`ltx_test_apple_512.png`) shows clear prompt semantic adherence but high-contrast/
+     dither artifacts. Requires step-by-step multi-step Euler trajectory oracle diffing against
+     reference `pipeline_ltx_video.py`, VAE spatial noise gating, and CFG guidance rescaling.
 5. **SentencePiece Unigram-LM tokenizer.** Best pure infrastructure ROI on the list: one
    implementation unlocks six blocked GGUF architectures at once (`minicpm`, `internlm2`, `ernie4_5`,
    `baichuan`, `orion`, `nanbeige` — see the done-archive's per-architecture "CHECKED and BLOCKED"

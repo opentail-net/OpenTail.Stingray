@@ -255,7 +255,12 @@ public sealed class LtxVideoPipeline : IDiffusionPipeline
                 var frameRgb = new float[3 * outSpatial];
                 for (int c = 0; c < 3; c++)
                 {
-                    Array.Copy(video, (c * outF + f) * outSpatial, frameRgb, c * outSpatial, outSpatial);
+                    int srcBase = (c * outF + f) * outSpatial;
+                    int dstBase = c * outSpatial;
+                    for (int p = 0; p < outSpatial; p++)
+                    {
+                        frameRgb[dstBase + p] = Math.Clamp((video[srcBase + p] + 1.0f) * 0.5f, 0.0f, 1.0f);
+                    }
                 }
                 results.Add(frameRgb);
             }
