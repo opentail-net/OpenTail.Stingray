@@ -2165,42 +2165,67 @@ public sealed unsafe class CudaForwardPass : IForwardPass, IBatchedForwardPass, 
 
     /// <inheritdoc/>
     /// <remarks>
-    /// Gemma 4 only: image input (issue #250) splices vision soft tokens into the decode
-    /// stream. The CUDA partial-offload hybrid implements the same seam (issue #252,
-    /// <see cref="CudaHybridForwardPass.ForwardEmbedding"/>); non-Gemma arches and the
-    /// Vulkan partial-offload hybrid don't.
+    /// Image input (issue #250) splices vision soft tokens into the decode stream.
+    /// Supports Gemma 4, Gemma 3, LLaVA, and all generic dense transformer architectures.
     /// </remarks>
-    public bool SupportsEmbeddingInput => _isGemma4Like;
+    public bool SupportsEmbeddingInput => true;
 
     /// <summary>
     /// Forward one position from a PRECOMPUTED embedding (a vision soft token) instead of a
     /// token-table lookup. The CUDA mirror of <see cref="ForwardPass.ForwardEmbedding"/>:
-    /// uploads the supplied embedding into the device hidden buffer and — per gemma4.cpp —
-    /// skips the sqrt(EmbeddingDim) embedding scale (raw embeddings arrive final, gemma4.cpp:182)
-    /// while still building the per-layer (PLE) projections from the padding token (id 0,
-    /// the multimodal branch of build_inp_per_layer). The device region (and its optional
-    /// CUDA graph) is identical to <see cref="ForwardGemma4"/>, so a graph captured during
-    /// text decode replays unchanged here. Gemma 4 only.
+    /// uploads the supplied embedding into the device hidden buffer and skips the
+    /// sqrt(EmbeddingDim) embedding scale (raw embeddings arrive final).
+    /// For Gemma 4 (PLE models), builds the per-layer projections from the padding token (id 0).
     /// </summary>
     public ReadOnlySpan<float> ForwardEmbedding(ReadOnlySpan<float> embedding, int position)
     {
-        if (!_isGemma4Like)
-            throw new NotSupportedException(
-                "ForwardEmbedding (image input) is only supported for Gemma 4 on the CUDA backend.");
         if (embedding.Length != _embDim)
             throw new ArgumentException(
                 $"embedding length {embedding.Length} != model embedding dim {_embDim}.");
 
-        // 1. Upload the precomputed embedding into _hidden. No sqrt(d) scale (gemma4.cpp:182).
+        // 1. Upload the precomputed embedding into _hidden. No sqrt(d) scale.
         _gpu.UploadInto(_hidden, embedding);
 
-        // 2. PLE pre-pass from the padding token (multimodal build_inp_per_layer branch).
-        if (_hp.HasPerLayerTokenEmbd)
-            BuildPerLayerProjectionsGpu(0);
+        if (_isGemma4Like)
+        {
+            // 2. PLE pre-pass from the padding token (multimodal build_inp_per_layer branch).
+            if (_hp.HasPerLayerTokenEmbd)
+                BuildPerLayerProjectionsGpu(0);
 
-        // 3. Transformer layers + final norm/output (same device region as text decode).
-        if (!TryRunGemma4DeviceRegionViaGraph(position))
-            RunGemma4DeviceRegion(position);
+            // 3. Transformer layers + final norm/output (same device region as text decode).
+            if (!TryRunGemma4DeviceRegionViaGraph(position))
+                RunGemma4DeviceRegion(position);
+        }
+        else
+        {
+            if (_tqEnabled && _tqQuantizer == TqQuantizer.KVarN && _fp32Count >= _tqFp32Window)
+            {
+                int kvDimP = _numKvHeads * _headDim;
+                for (int layer = 0; layer < _hp.NumLayers; layer++)
+                    PromoteKvarnTile(layer, kvDimP);
+                _tqCompressedLen += KVarNCompressor.TileTokens;
+                _fp32Count -= KVarNCompressor.TileTokens;
+            }
+
+            if (!TryRunDeviceRegionViaGraph(position))
+                RunDeviceRegion(position);
+
+            if (_tqEnabled)
+            {
+                if (_tqQuantizer == TqQuantizer.KVarN)
+                {
+                    _fp32Count++;
+                }
+                else
+                {
+                    if (_fp32Count >= _tqFp32Window)
+                        _tqCompressedLen++;
+                    _fp32WriteIdx = (_fp32WriteIdx + 1) % _tqFp32Window;
+                    if (_fp32Count < _tqFp32Window)
+                        _fp32Count++;
+                }
+            }
+        }
 
         _gpu.Download(_logits, _logitsBuf);
         _gpu.Synchronize();

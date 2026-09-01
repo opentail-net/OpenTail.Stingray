@@ -25,6 +25,13 @@ public sealed partial class GgufTokenizer : ITokenizer
     // ▁ boundaries so merges like "▁ capital → ▁capital" never fire. We do the
     // merge loop ourselves directly against this map.
     private readonly Dictionary<(string, string), int>? _spmMerges;
+    // Per-token scores (tokenizer.ggml.scores), aligned by vocab id -- the REAL SentencePiece
+    // BPE merge-priority signal (see TokenizerSource.Scores's doc comment). Null when the source
+    // has none; EncodeSpm falls back to treating every score as 0.0f in that case, matching
+    // llama.cpp's own fallback (still correct, since the real algorithm is gated on vocabulary
+    // membership, not on this array being present).
+    private readonly float[]? _spmScores;
+    private readonly bool _addSpacePrefix;
 
     // Byte-level BPE pre-tokenizer split cascade, applied BEFORE byte encoding — see
     // EncodeByteLevelBpe for why that order matters, and PreTokenizerPatterns for why it is a
@@ -113,6 +120,8 @@ public sealed partial class GgufTokenizer : ITokenizer
         bool needsByteEncoding,
         bool isSpmBpe,
         Dictionary<(string, string), int>? spmMerges,
+        float[]? spmScores,
+        bool addSpacePrefix,
         ImmutableArray<int> eogTokenIds,
         Regex[]? preTokenSplit = null,
         Dictionary<(string, string), int>? byteBpeMerges = null,
@@ -128,6 +137,8 @@ public sealed partial class GgufTokenizer : ITokenizer
         _needsByteEncoding = needsByteEncoding;
         _isSpmBpe = isSpmBpe;
         _spmMerges = spmMerges;
+        _spmScores = spmScores;
+        _addSpacePrefix = addSpacePrefix;
         _preTokenSplit = preTokenSplit;
         _byteBpeMerges = byteBpeMerges;
         VocabSize = vocabSize;
@@ -205,18 +216,38 @@ public sealed partial class GgufTokenizer : ITokenizer
             for (int i = 0; i < raw.Length; i++) tokenTypes[i] = Convert.ToInt32(raw[i]);
         }
 
+        float[]? scores = null;
+        if (model.Metadata.TryGetValue("tokenizer.ggml.scores", out var scoresObj))
+        {
+            var raw = (object[])scoresObj;
+            scores = new float[raw.Length];
+            for (int i = 0; i < raw.Length; i++) scores[i] = Convert.ToSingle(raw[i]);
+        }
+
         int eos = GetMetadataInt(model, "tokenizer.ggml.eos_token_id", 2);
+        string modelFamily = model.Metadata.TryGetValue("tokenizer.ggml.model", out var tmObj) ? (string)tmObj : "";
+        // Real llama.cpp default for LLAMA_VOCAB_TYPE_SPM (tokenizer.ggml.model=llama) is
+        // add_space_prefix=true -- a leading space is prepended before tokenizing, so "The" at
+        // the very start of a prompt encodes as the SAME piece as a mid-sentence " The" (both
+        // "▁The"), not the bare "The" piece (a different vocab entry, if one exists at all).
+        // tokenizer.ggml.add_space_prefix, when present, overrides this. Found missing entirely
+        // while re-admitting `xverse` (2026-09-02): first-token divergence only, every subsequent
+        // token matched exactly, isolating this from the separate SpmMergePiecesByScore fix.
+        bool addSpacePrefix = GetMetadataBool(model, "tokenizer.ggml.add_space_prefix", modelFamily == "llama");
+
         var source = new TokenizerSource
         {
             Tokens = tokens,
             Merges = merges,
+            Scores = scores,
             TokenTypes = tokenTypes,
             BosTokenId = GetMetadataInt(model, "tokenizer.ggml.bos_token_id", 1),
             EosTokenId = eos,
             UnknownTokenId = GetMetadataInt(model, "tokenizer.ggml.unknown_token_id", 0),
             PadTokenId = GetMetadataInt(model, "tokenizer.ggml.padding_token_id", eos),
             AddBosToken = GetMetadataBool(model, "tokenizer.ggml.add_bos_token", false),
-            ModelFamily = model.Metadata.TryGetValue("tokenizer.ggml.model", out var tmObj) ? (string)tmObj : "",
+            AddSpacePrefix = addSpacePrefix,
+            ModelFamily = modelFamily,
             TokenizerPre = model.Metadata.TryGetValue("tokenizer.ggml.pre", out var tpObj) ? (string)tpObj : "",
             ChatTemplate = model.Metadata.TryGetValue("tokenizer.chat_template", out var tmpl) && tmpl is string t ? t : null,
         };
@@ -450,6 +481,8 @@ public sealed partial class GgufTokenizer : ITokenizer
             needsByteEncoding,
             isSpmBpe,
             spmMerges,
+            source.Scores,
+            source.AddSpacePrefix,
             eogIds,
             preTokenSplit,
             byteBpeMerges,
@@ -592,6 +625,7 @@ public sealed partial class GgufTokenizer : ITokenizer
             text = EncodeToGpt2Bytes(text);
         else if (_isSpmBpe)
         {
+            if (_addSpacePrefix) text = " " + text;
             text = text.Replace(' ', '▁');
             if (_spmMerges is not null)
                 return EncodeSpm(text);
@@ -659,9 +693,11 @@ public sealed partial class GgufTokenizer : ITokenizer
     }
 
     /// <summary>
-    /// SentencePiece-style BPE: split into unicode code points, then iteratively
-    /// apply the highest-priority adjacent merge (lowest index in merges array)
-    /// until no merges apply. Matches llama.cpp's <c>llm_tokenizer_spm</c> behaviour.
+    /// SentencePiece-style BPE: split into unicode code points, then iteratively apply the
+    /// highest-SCORE adjacent merge whose concatenated text exists in the vocabulary (leftmost on
+    /// a score tie), until no merge applies. Matches llama.cpp's real <c>llm_tokenizer_spm</c>
+    /// algorithm exactly -- see <see cref="SpmMergePiecesByScore"/>'s doc comment for why this is
+    /// NOT the same as the merges-rank-table algorithm the byte-BPE path uses.
     /// </summary>
     private IReadOnlyList<int> EncodeSpm(string text)
     {
@@ -670,7 +706,7 @@ public sealed partial class GgufTokenizer : ITokenizer
         var en = System.Globalization.StringInfo.GetTextElementEnumerator(text);
         while (en.MoveNext()) pieces.Add((string)en.Current);
 
-        var merged = SpmMergePieces(pieces, _spmMerges!);
+        var merged = SpmMergePiecesByScore(pieces, _vocab, _spmScores);
 
         var ids = new List<int>(merged.Count);
         foreach (var piece in merged)
@@ -681,6 +717,84 @@ public sealed partial class GgufTokenizer : ITokenizer
                 ids.Add(UnknownTokenId);
         }
         return ids;
+    }
+
+    /// <summary>
+    /// Real SentencePiece BPE merge, matching llama.cpp's <c>llm_tokenizer_spm_session::tokenize</c>
+    /// exactly: unlike <see cref="SpmMergePieces"/> (a merges-RANK-table algorithm reused for
+    /// byte-level BPE), classic SentencePiece (<c>tokenizer.ggml.model=llama</c>) has no merges
+    /// list in the real algorithm at all -- a candidate adjacent pair is mergeable purely because
+    /// its CONCATENATED TEXT already exists as a vocabulary entry, and among mergeable candidates
+    /// the one with the HIGHEST SCORE (that entry's own <c>tokenizer.ggml.scores</c> value) is
+    /// applied first, leftmost breaking ties (confirmed against <c>llm_bigram_spm::comparator</c>:
+    /// <c>(l.score &lt; r.score) || (l.score == r.score &amp;&amp; l.left &gt; r.left)</c> under a
+    /// max-heap). <c>tokenizer.ggml.merges</c> is a GGUF export convenience some converters also
+    /// emit that happens to encode a compatible order for models that ship it, which is why this
+    /// bug (this engine using the merges-rank algorithm for real SPM too) went unnoticed for every
+    /// architecture that ships both arrays -- it silently fragmented tokenization down to
+    /// near-individual-codepoints for any checkpoint shipping neither (found investigating
+    /// `xverse`, 2026-09-02). <paramref name="scores"/> may be null (checkpoint has no scores
+    /// array); every candidate is then treated as score 0.0f, matching llama.cpp's own fallback --
+    /// still correct, since mergeability is gated on vocabulary membership, not on this array.
+    /// </summary>
+    internal static List<string> SpmMergePiecesByScore(
+        List<string> pieces, IReadOnlyDictionary<string, int> vocab, float[]? scores)
+    {
+        int n = pieces.Count;
+        if (n == 0) return pieces;
+
+        var sym = new string?[n];
+        var prev = new int[n];
+        var next = new int[n];
+        for (int i = 0; i < n; i++)
+        {
+            sym[i] = pieces[i];
+            prev[i] = i - 1;
+            next[i] = i + 1 < n ? i + 1 : -1;
+        }
+
+        float Score(int id) => scores is not null && (uint)id < (uint)scores.Length ? scores[id] : 0f;
+
+        // Max-heap on score (highest first), leftmost slot breaking ties -- matches
+        // llm_bigram_spm::comparator under std::priority_queue exactly. PriorityQueue<> is a
+        // min-heap, so negate the score and keep the left index as the tie-break key: two
+        // candidates with the same negated score compare by left index ascending, i.e. leftmost
+        // wins the tie, same as the reference.
+        var pq = new PriorityQueue<(int l, int r, int llen, int rlen), (float negScore, int l)>();
+
+        void TryAdd(int l, int r)
+        {
+            if (l < 0 || r < 0) return;
+            if (sym[l] is not { } ls || sym[r] is not { } rs) return;
+            string merged = ls + rs;
+            if (!vocab.TryGetValue(merged, out int id)) return;
+            pq.Enqueue((l, r, ls.Length, rs.Length), (-Score(id), l));
+        }
+
+        for (int i = 0; i + 1 < n; i++) TryAdd(i, i + 1);
+
+        while (pq.Count > 0)
+        {
+            var (l, r, llen, rlen) = pq.Dequeue();
+            // Skip a stale candidate: either operand already consumed (null) or grown (len
+            // changed), so this queued pair no longer reflects the current adjacency.
+            if (sym[l] is not { } ls || sym[r] is not { } rs || ls.Length != llen || rs.Length != rlen)
+                continue;
+
+            sym[l] = ls + rs;
+            sym[r] = null;
+            int nn = next[r];
+            next[l] = nn;
+            if (nn >= 0) prev[nn] = l;
+
+            TryAdd(prev[l], l);
+            TryAdd(l, nn);
+        }
+
+        var result = new List<string>();
+        for (int s = 0; s >= 0; s = next[s])
+            if (sym[s] is { } piece) result.Add(piece);
+        return result;
     }
 
     /// <summary>

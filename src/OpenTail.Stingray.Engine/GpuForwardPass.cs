@@ -1349,6 +1349,28 @@ public sealed unsafe class GpuForwardPass : IForwardPass
         DispatchEmbedLookup(token);
         _gpu.RecordBarrier();
 
+        RunStandardLayers(position);
+
+        // Final norm + output projection
+        _gpu.RecordBarrier(); // last layer's AddInPlace → final norm
+        _gpu.RmsNorm(_hidden, _hidden, _wOutputNorm, _hp.RmsNormEps);
+        _gpu.RecordBarrier();
+        GpuMatMul(_logits, _wOutput, _hidden);
+
+        // Fold the logits download into the main submit: no second command buffer needed.
+        _gpu.RecordComputeToTransferBarrier();
+        _gpu.RecordDownloadToStaging(_logits, _logitsBuf.Length);
+
+        _gpu.EndRecordAndSubmit();
+
+        _gpu.ReadFromStaging(_logitsBuf);
+        GuardFiniteLogits();
+        _kvLength = Math.Max(_kvLength, position + 1);
+        return _logitsBuf;
+    }
+
+    private void RunStandardLayers(int position)
+    {
         for (int layer = 0; layer < _hp.NumLayers; layer++)
         {
             // Copy hidden → residual + RmsNorm (barrier after both)
@@ -1580,23 +1602,6 @@ public sealed unsafe class GpuForwardPass : IForwardPass
             if (_fp32Count < _tqFp32Window)
                 _fp32Count++;
         }
-
-        // Final norm + output projection
-        _gpu.RecordBarrier(); // last layer's AddInPlace → final norm
-        _gpu.RmsNorm(_hidden, _hidden, _wOutputNorm, _hp.RmsNormEps);
-        _gpu.RecordBarrier();
-        GpuMatMul(_logits, _wOutput, _hidden);
-
-        // Fold the logits download into the main submit: no second command buffer needed.
-        _gpu.RecordComputeToTransferBarrier();
-        _gpu.RecordDownloadToStaging(_logits, _logitsBuf.Length);
-
-        _gpu.EndRecordAndSubmit();
-
-        _gpu.ReadFromStaging(_logitsBuf);
-        GuardFiniteLogits();
-        _kvLength = Math.Max(_kvLength, position + 1);
-        return _logitsBuf;
     }
 
     // ================================================================
@@ -1688,73 +1693,77 @@ public sealed unsafe class GpuForwardPass : IForwardPass
 
     /// <inheritdoc/>
     /// <remarks>
-    /// Gemma 4 only: image input (issue #252) splices vision soft tokens into the decode
-    /// stream. Other arches don't implement the seam, and neither does the Vulkan
-    /// partial-offload hybrid (<see cref="HybridForwardPass"/> has no Gemma 4 trunk); the
-    /// CUDA partial-offload hybrid does (<see cref="CudaHybridForwardPass.ForwardEmbedding"/>).
+    /// Image input (issue #252) splices vision soft tokens into the decode stream across
+    /// all supported architectures (Gemma 4, Gemma 3, LLaVA, etc.).
     /// </remarks>
-    public bool SupportsEmbeddingInput => _isGemma4;
+    public bool SupportsEmbeddingInput => true;
 
     /// <summary>
     /// Forward one position from a PRECOMPUTED embedding (a vision soft token) instead of a
-    /// token-table lookup. The Vulkan mirror of <see cref="ForwardGemma4"/> (and of
-    /// <c>ForwardPass.ForwardEmbedding</c> / <c>CudaForwardPass.ForwardEmbedding</c>): the
-    /// supplied embedding is uploaded into the device hidden buffer and — per the
-    /// <see cref="IForwardPass.ForwardEmbedding"/> contract and gemma4.cpp:182 — the
+    /// token-table lookup. The Vulkan mirror of <see cref="ForwardPass.ForwardEmbedding"/>:
+    /// the supplied embedding is uploaded into the device hidden buffer and the
     /// sqrt(EmbeddingDim) embedding scale is SKIPPED (the soft tokens arrive already final).
-    /// The transformer trunk + final norm/output/softcap are identical to
-    /// <see cref="ForwardGemma4"/>. Gemma 4 only. When the model has PLE (issue #351) the per-layer
-    /// projection cache is built from the PADDING token (id 0) — matching llama.cpp's multimodal
-    /// <c>build_inp_per_layer</c> branch and <c>CudaForwardPass.ForwardEmbedding</c> — since a soft
-    /// token has no token id to index the PLE table. The upload runs BEFORE <c>BeginRecord</c>
-    /// because <see cref="UploadToExisting"/> owns its own command-buffer begin/submit/wait and
-    /// cannot be nested inside an in-progress record.
+    /// For Gemma 4, PLE row upload and Gemma 4 layer execution run with padding token 0.
+    /// For standard dense models, runs the standard layer sequence.
     /// </summary>
     public ReadOnlySpan<float> ForwardEmbedding(ReadOnlySpan<float> embedding, int position)
     {
-        if (!_isGemma4)
-            throw new NotSupportedException(
-                "ForwardEmbedding (image input) is only supported for Gemma 4 on the Vulkan backend.");
         if (embedding.Length != _embDim)
             throw new ArgumentException(
                 $"embedding length {embedding.Length} != model embedding dim {_embDim}.");
 
-        // 1. Upload the precomputed embedding into _hidden. No sqrt(d) scale (gemma4.cpp:182).
-        //    Done OUTSIDE the record block: UploadToExisting submits + waits its own command
-        //    buffer, so it cannot be nested between BeginRecord and EndRecordAndSubmit. The PLE
-        //    row gather + upload (issue #351) is likewise pre-record and uses the padding token 0.
+        // 1. Upload the precomputed embedding into _hidden. No sqrt(d) scale.
         UploadToExisting(_hidden, embedding);
-        if (_hasPle) BuildPerLayerRowUpload(0);
 
-        // 2. Transformer layers + final norm/output/softcap (same device region as text decode).
-        _gpu.BeginRecord();
-        // The upload above is a transfer write in a prior (fence-waited) submission; insert a
-        // transfer→compute barrier so the first layer's _hidden read is ordered after it and the
-        // write is made visible to the shader (host fence-wait alone doesn't guarantee visibility
-        // to this submission's compute reads). The barrier's first scope includes the earlier
-        // transfer submission in queue order (and covers the _gpuPleRow transfer too).
-        _gpu.RecordTransferBarrier();
-        // PLE per-layer projection cache from the padding token (reads _hidden + _gpuPleRow).
-        if (_hasPle) BuildPerLayerProjectionsGpu();
-        RunGemma4Layers(position);
-
-        _gpu.RmsNorm(_hidden, _hidden, _wOutputNorm, _hp.RmsNormEps);
-        _gpu.RecordBarrier();
-        GpuMatMul(_logits, _wOutput, _hidden);
-        if (_hp.FinalLogitSoftcap > 0f)
+        if (_isGemma4)
         {
+            if (_hasPle) BuildPerLayerRowUpload(0);
+
+            // 2. Transformer layers + final norm/output/softcap
+            _gpu.BeginRecord();
+            _gpu.RecordTransferBarrier();
+            if (_hasPle) BuildPerLayerProjectionsGpu();
+            RunGemma4Layers(position);
+
+            _gpu.RmsNorm(_hidden, _hidden, _wOutputNorm, _hp.RmsNormEps);
             _gpu.RecordBarrier();
-            _gpu.SoftcapInPlace(_logits, _hp.FinalLogitSoftcap);
+            GpuMatMul(_logits, _wOutput, _hidden);
+            if (_hp.FinalLogitSoftcap > 0f)
+            {
+                _gpu.RecordBarrier();
+                _gpu.SoftcapInPlace(_logits, _hp.FinalLogitSoftcap);
+            }
+
+            _gpu.RecordComputeToTransferBarrier();
+            _gpu.RecordDownloadToStaging(_logits, _logitsBuf.Length);
+            _gpu.EndRecordAndSubmit();
+            _gpu.ReadFromStaging(_logitsBuf);
+            GuardFiniteLogits();
+
+            _kvLength = Math.Max(_kvLength, position + 1);
+            return _logitsBuf;
         }
+        else
+        {
+            _gpu.BeginRecord();
+            _gpu.RecordTransferBarrier();
+            RunStandardLayers(position);
 
-        _gpu.RecordComputeToTransferBarrier();
-        _gpu.RecordDownloadToStaging(_logits, _logitsBuf.Length);
-        _gpu.EndRecordAndSubmit();
-        _gpu.ReadFromStaging(_logitsBuf);
-        GuardFiniteLogits();
+            // Final norm + output projection
+            _gpu.RecordBarrier();
+            _gpu.RmsNorm(_hidden, _hidden, _wOutputNorm, _hp.RmsNormEps);
+            _gpu.RecordBarrier();
+            GpuMatMul(_logits, _wOutput, _hidden);
 
-        _kvLength = Math.Max(_kvLength, position + 1);
-        return _logitsBuf;
+            _gpu.RecordComputeToTransferBarrier();
+            _gpu.RecordDownloadToStaging(_logits, _logitsBuf.Length);
+            _gpu.EndRecordAndSubmit();
+            _gpu.ReadFromStaging(_logitsBuf);
+            GuardFiniteLogits();
+
+            _kvLength = Math.Max(_kvLength, position + 1);
+            return _logitsBuf;
+        }
     }
 
     /// <summary>Gemma 4 embedding gather. Mirrors the CUDA path, but Vulkan ships only

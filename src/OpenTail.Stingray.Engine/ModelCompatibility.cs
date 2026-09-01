@@ -470,6 +470,42 @@ public static class ModelCompatibility
         "exaone4",
         "mistral3",
         "ministral",
+        // xverse — re-investigated and admitted 2026-09-02, FULL 24-of-24-token exact greedy
+        // match, bucket-2 (code Apache-2.0, but weights under XVERSE's own custom "Model License
+        // Agreement" — free for commercial use per its own docs, but not a clean SPDX permissive
+        // license, so no persisted test per this file's bucket-2 policy). Literal plain-Llama
+        // trunk, zero new architecture code (confirmed against xverse.cpp: RMSNorm pre-norm,
+        // ordinary biasless Q/K/V/O attention, standard/NORM RoPE — llama_model_rope_type()
+        // places LLM_ARCH_XVERSE in the same case as LLM_ARCH_LLAMA — standard SiLU-gated FFN, no
+        // QK-norm). This was always a tokenizer-axis blocker, not an architecture one (first
+        // flagged 2026-08-09): the checkpoint has neither tokenizer.ggml.merges nor
+        // tokenizer.ggml.scores despite declaring tokenizer.ggml.model=llama. Two real,
+        // independent SPM-tokenizer bugs were found and fixed re-investigating this: (1) this
+        // engine used a merges-RANK-TABLE algorithm for genuine SentencePiece BPE, but the real
+        // algorithm (confirmed against llama.cpp's llm_tokenizer_spm_session::tokenize) has no
+        // merges list at all — a merge is valid because the concatenated text is already a vocab
+        // entry, prioritized by that entry's own score (GgufTokenizer.SpmMergePiecesByScore) —
+        // this fix is real and permanent, exercised by SpmMergeByScoreTests.cs's synthetic fuzz
+        // suite regardless of xverse's own license; (2) this engine never implemented
+        // add_space_prefix (real llama.cpp default true for SPM — a leading space is prepended
+        // before tokenizing, TokenizerSource.AddSpacePrefix).
+        //
+        // Checkpoint: xverse/XVERSE-7B-Chat-GGUF, Q4_K_M (4.47 GB). Transient local download,
+        // never vendored, deleted immediately after this receipt.
+        //
+        // Verification evidence (2026-09-02, XVERSE-7B-Chat-GGUF Q4_K_M, tools/llama.cpp build
+        // 10306/6b5c2efb4): prompt "The capital of France is" -> ids [96740, 98398, 97896, 96604,
+        // 98030, 96884, 96636]. Reference continuation captured via llama-server's /completion
+        // endpoint with return_tokens:true (NOT by re-tokenizing the printed text — this vocab
+        // has genuine tokenizer non-injectivity, so retokenizing the model's own printed output
+        // reproduced a DIFFERENT 29-token sequence than the 24 tokens actually sampled):
+        // [97003, 96579, 99455, 42, 118, 99413, 96672, 99629, 47, 96677, 96570, 98216, 98131,
+        // 96604, 97042, 9044, 52, 53, 100061, 97357, 49, 97060, 96636, 98927]. Full 24-of-24-token
+        // exact match against this engine, no near-tie, no divergence anywhere.
+        //
+        // DO NOT MODIFY THIS ARCHITECTURE'S CODE PATH WITHOUT GOOD REASON — there is no regression
+        // test to catch a mistake.
+        "xverse",
     };
     // deepseek2 — NOT admitted, closed for now. A CPU-only MLA implementation exists in
     // ForwardPass.cs (compressed-latent K/V, YaRN RoPE, kq_scale/mscale correction, per-layer

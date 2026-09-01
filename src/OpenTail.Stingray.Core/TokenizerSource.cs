@@ -28,6 +28,18 @@ public sealed record TokenizerSource
     /// <summary>BPE merge rules in priority order, each "left right". Empty for non-BPE vocabularies.</summary>
     public string[] Merges { get; init; } = [];
 
+    /// <summary>
+    /// Per-token SentencePiece unigram scores (<c>tokenizer.ggml.scores</c>), aligned with
+    /// <see cref="Tokens"/> by index. Null when the source has none. This is the REAL priority
+    /// signal for classic SentencePiece BPE (<c>tokenizer.ggml.model=llama</c>) tokenization --
+    /// <see cref="Merges"/> is a GGUF export convenience some converters also emit, not something
+    /// llama.cpp's own <c>llm_tokenizer_spm</c> reads at all. A model can (and some real
+    /// checkpoints do) ship neither array; llama.cpp's fallback there is to treat every score as
+    /// 0.0f and still tokenize correctly, since its merge algorithm is gated on vocabulary
+    /// membership, not on the scores/merges array being present.
+    /// </summary>
+    public float[]? Scores { get; init; }
+
     /// <summary>Per-token type codes, or null when the source does not classify tokens.</summary>
     public int[]? TokenTypes { get; init; }
 
@@ -37,6 +49,14 @@ public sealed record TokenizerSource
     /// </summary>
     public IReadOnlyDictionary<string, int> AdditionalSpecialTokens { get; init; } =
         new Dictionary<string, int>(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Whether a leading space is prepended before tokenizing (real llama.cpp's
+    /// <c>add_space_prefix</c>, default <c>true</c> for classic SentencePiece
+    /// <c>tokenizer.ggml.model=llama</c>, overridable via <c>tokenizer.ggml.add_space_prefix</c>).
+    /// Only consulted for genuine SPM tokenization; ignored otherwise.
+    /// </summary>
+    public bool AddSpacePrefix { get; init; }
 
     public int BosTokenId { get; init; } = 1;
     public int EosTokenId { get; init; } = 2;
