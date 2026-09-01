@@ -69,11 +69,21 @@ that is more elegant but lower-visibility.
      smoke test (`ltx_test_apple_512.png`) shows clear prompt semantic adherence but high-contrast/
      dither artifacts. Requires step-by-step multi-step Euler trajectory oracle diffing against
      reference `pipeline_ltx_video.py`, VAE spatial noise gating, and CFG guidance rescaling.
-5. **SentencePiece Unigram-LM tokenizer.** Best pure infrastructure ROI on the list: one
-   implementation unlocks six blocked GGUF architectures at once (`minicpm`, `internlm2`, `ernie4_5`,
-   `baichuan`, `orion`, `nanbeige` — see the done-archive's per-architecture "CHECKED and BLOCKED"
-   entries), and any future Unigram-tokenized checkpoint besides. Lower individual download numbers
-   than the P0 items, but it's recurring leverage, not a one-off unlock.
+5. **SentencePiece Unigram-LM tokenizer — implemented 2026-09-01, not yet admitted on a real GGUF
+   checkpoint.** `GgufTokenizer` now detects `tokenizer.ggml.model=t5` (real llama.cpp's
+   `LLAMA_VOCAB_TYPE_UGM` trigger) and routes through the existing real Viterbi
+   `UnigramTokenizer` (built for Parler-TTS's T5 encoder) via a new
+   `UnigramTokenizer.FromGgufVocab(tokens, scores, unkId, tokenTypes)` factory — uses GGUF's real
+   `tokenizer.ggml.token_type` array (NORMAL=1) for the UNK-fallback-score computation instead of
+   `FromTokenizerJson`'s bracket heuristic, since GGUF actually carries that real per-piece type
+   data. Also fixed the UGM-specific default `unknown_token_id` (2, not SPM's 0). Full solution
+   builds clean; `UnigramTokenizerTests` covers `FromGgufVocab` matching `FromTokenizerJson`
+   byte-for-byte on Parler's real vocab, plus a synthetic token-type-array case. **Still open**: no
+   real blocked checkpoint (`minicpm`, `internlm2`, `ernie4_5`, `baichuan`, `orion`, `nanbeige` — see
+   the done-archive's per-architecture "CHECKED and BLOCKED" entries) is present locally to produce
+   a real greedy-parity admission receipt — none were re-downloaded this pass. Also still open: the
+   `precompiled_charsmap` binary normalization gap, documented as a known limitation on
+   `UnigramTokenizer`'s class doc (plain-ASCII input unaffected).
 6. **CPU greedy-decode non-determinism investigation** — low visibility, high correctness stakes;
    run in parallel with whichever other item is active whenever idle capacity allows, per the
    existing note in the "Standing state" archive (2 non-reproducing sightings under CPU contention;

@@ -111,6 +111,28 @@ public sealed class UnigramTokenizer
         return new UnigramTokenizer(pieces, scores, unkId, isNormal);
     }
 
+    /// <summary>
+    /// Loads a real Unigram model from GGUF's own vocab arrays (<c>tokenizer.ggml.tokens</c>,
+    /// <c>tokenizer.ggml.scores</c>), used when <c>tokenizer.ggml.model=t5</c> (real llama.cpp's
+    /// <c>LLAMA_VOCAB_TYPE_UGM</c> trigger). Unlike <see cref="FromTokenizerJson"/>'s bracket
+    /// heuristic (no better data available in a plain HF <c>tokenizer.json</c>), GGUF actually
+    /// carries the real per-piece type array (<c>tokenizer.ggml.token_type</c>, GGUF/llama.cpp's
+    /// <c>llama_token_type</c> enum: 1=NORMAL, 2=UNKNOWN, 3=CONTROL, 4=USER_DEFINED, 5=UNUSED,
+    /// 6=BYTE) -- used here directly for the NORMAL-vs-not distinction that feeds the UNK fallback
+    /// score, when present, instead of guessing from bracket punctuation.
+    /// </summary>
+    public static UnigramTokenizer FromGgufVocab(string[] tokens, float[] scores, int unkId, int[]? tokenTypes)
+    {
+        var isNormal = new bool[tokens.Length];
+        for (int i = 0; i < tokens.Length; i++)
+        {
+            isNormal[i] = tokenTypes is not null
+                ? tokenTypes[i] == 1 // llama_token_type.LLAMA_TOKEN_TYPE_NORMAL
+                : !(tokens[i].Length >= 2 && tokens[i][0] == '<' && tokens[i][^1] == '>');
+        }
+        return new UnigramTokenizer(tokens, scores, unkId, isNormal);
+    }
+
     private void Insert(string piece, int id)
     {
         var bytes = Encoding.UTF8.GetBytes(piece);

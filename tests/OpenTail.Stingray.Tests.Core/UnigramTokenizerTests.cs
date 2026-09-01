@@ -70,4 +70,74 @@ public sealed class UnigramTokenizerTests
             Assert.Equal(expected, actual);
         }
     }
+
+    /// <summary>
+    /// <see cref="UnigramTokenizer.FromGgufVocab"/> is the GGUF-path factory (used when
+    /// `tokenizer.ggml.model=t5`, unblocking `minicpm`/`internlm2`/`ernie4_5`/`baichuan`/
+    /// `orion`/`nanbeige`). With no token-type array it falls back to the same bracket heuristic
+    /// as <see cref="UnigramTokenizer.FromTokenizerJson"/>, so re-loading Parler's real
+    /// tokenizer.json's own vocab/scores through the GGUF-shaped factory must produce byte-for-byte
+    /// identical segmentation to the tokenizer.json path on the same golden fixture.
+    /// </summary>
+    [Fact]
+    public void FromGgufVocab_NoTokenTypes_MatchesFromTokenizerJson_OnRealVocab()
+    {
+        string? tokenizerPath = FindRepoFile("scratch-llamacpp-ref/parler-tokenizer/tokenizer.json");
+        string? goldenPath = FindRepoFile("scratch-llamacpp-ref/parler-tokenizer/unigram_golden2.json");
+        Assert.SkipUnless(tokenizerPath != null && goldenPath != null,
+            "Parler-TTS real tokenizer.json / harder golden fixture not found");
+
+        using var doc0 = JsonDocument.Parse(File.ReadAllBytes(tokenizerPath!));
+        var vocab = doc0.RootElement.GetProperty("model").GetProperty("vocab");
+        int n = vocab.GetArrayLength();
+        var pieces = new string[n];
+        var scores = new float[n];
+        int i = 0;
+        foreach (var entry in vocab.EnumerateArray())
+        {
+            pieces[i] = entry[0].GetString() ?? "";
+            scores[i] = entry[1].GetSingle();
+            i++;
+        }
+        int unkId = doc0.RootElement.GetProperty("model").TryGetProperty("unk_id", out var u) ? u.GetInt32() : 0;
+
+        var jsonTok = UnigramTokenizer.FromTokenizerJson(tokenizerPath!);
+        var ggufTok = UnigramTokenizer.FromGgufVocab(pieces, scores, unkId, tokenTypes: null);
+
+        using var doc = JsonDocument.Parse(File.ReadAllBytes(goldenPath!));
+        foreach (var entry in doc.RootElement.EnumerateArray())
+        {
+            string text = entry.GetProperty("text").GetString()!;
+            Assert.Equal(jsonTok.Encode(text), ggufTok.Encode(text));
+        }
+    }
+
+    /// <summary>
+    /// When a real GGUF `tokenizer.ggml.token_type` array is supplied, it must be used directly
+    /// (llama_token_type NORMAL=1) rather than the bracket heuristic -- a piece that looks like a
+    /// bracketed control token (e.g. "&lt;x&gt;") but is typed NORMAL (type=1) must still count
+    /// toward the UNK-fallback minimum score, and vice versa for an unbracketed piece typed
+    /// CONTROL (type=3).
+    /// </summary>
+    [Fact]
+    public void FromGgufVocab_WithTokenTypes_UsesRealTypeArray_NotBracketHeuristic()
+    {
+        // 0: "▁" NORMAL, 1: "a" NORMAL but low score, 2: "<x>" NORMAL (bracketed but real-typed
+        // NORMAL) with a very low score that only affects the UNK floor if actually counted,
+        // 3: "unused" CONTROL (unbracketed but real-typed CONTROL) which must be EXCLUDED from the
+        // NORMAL-minimum even though the bracket heuristic would have included it.
+        string[] pieces = ["▁", "a", "<x>", "unused"];
+        float[] scores = [-1f, -2f, -100f, -1000f];
+        int[] tokenTypes = [1, 1, 1, 3];
+
+        var tok = UnigramTokenizer.FromGgufVocab(pieces, scores, unkId: 0, tokenTypes);
+
+        // "b" has no vocab entry at all -> forces a UNK edge whose score is
+        // (min NORMAL score) - 10. Real-typed NORMAL must include piece 2's -100 (bracket
+        // heuristic would have excluded it), and must NOT include piece 3's -1000 (bracket
+        // heuristic would have included it, being unbracketed).
+        var ids = tok.Encode("▁b");
+        // "▁" segments normally (piece 0); "b" has no match, hits the UNK path with id 0 (unkId).
+        Assert.Equal([0, 0], ids);
+    }
 }

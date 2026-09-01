@@ -32,6 +32,11 @@ public sealed partial class GgufTokenizer : ITokenizer
     // membership, not on this array being present).
     private readonly float[]? _spmScores;
     private readonly bool _addSpacePrefix;
+    // Real SentencePiece Unigram-LM (tokenizer.ggml.model=t5) -- a genuinely different
+    // segmentation algorithm (Viterbi lattice over per-token scores), not merges-based at all.
+    // Null unless the model declares this vocab type. Uses the SAME Metaspace ('▁') convention
+    // as SPM for decode, so Decode/DecodeBytes treat it identically to _isSpmBpe there.
+    private readonly UnigramTokenizer? _unigram;
 
     // Byte-level BPE pre-tokenizer split cascade, applied BEFORE byte encoding — see
     // EncodeByteLevelBpe for why that order matters, and PreTokenizerPatterns for why it is a
@@ -122,6 +127,7 @@ public sealed partial class GgufTokenizer : ITokenizer
         Dictionary<(string, string), int>? spmMerges,
         float[]? spmScores,
         bool addSpacePrefix,
+        UnigramTokenizer? unigram,
         ImmutableArray<int> eogTokenIds,
         Regex[]? preTokenSplit = null,
         Dictionary<(string, string), int>? byteBpeMerges = null,
@@ -139,6 +145,7 @@ public sealed partial class GgufTokenizer : ITokenizer
         _spmMerges = spmMerges;
         _spmScores = spmScores;
         _addSpacePrefix = addSpacePrefix;
+        _unigram = unigram;
         _preTokenSplit = preTokenSplit;
         _byteBpeMerges = byteBpeMerges;
         VocabSize = vocabSize;
@@ -234,6 +241,11 @@ public sealed partial class GgufTokenizer : ITokenizer
         // while re-admitting `xverse` (2026-09-02): first-token divergence only, every subsequent
         // token matched exactly, isolating this from the separate SpmMergePiecesByScore fix.
         bool addSpacePrefix = GetMetadataBool(model, "tokenizer.ggml.add_space_prefix", modelFamily == "llama");
+        // Real llama.cpp default UNK id differs by vocab type: 0 for LLAMA_VOCAB_TYPE_SPM
+        // (tokenizer.ggml.model=llama), 2 for LLAMA_VOCAB_TYPE_UGM (tokenizer.ggml.model=t5 --
+        // real SentencePiece Unigram-LM, confirmed via tokenizer_model=="t5" in llama-vocab.cpp).
+        // tokenizer.ggml.unknown_token_id, when present, overrides this either way.
+        int defaultUnkId = modelFamily == "t5" ? 2 : 0;
 
         var source = new TokenizerSource
         {
@@ -243,7 +255,7 @@ public sealed partial class GgufTokenizer : ITokenizer
             TokenTypes = tokenTypes,
             BosTokenId = GetMetadataInt(model, "tokenizer.ggml.bos_token_id", 1),
             EosTokenId = eos,
-            UnknownTokenId = GetMetadataInt(model, "tokenizer.ggml.unknown_token_id", 0),
+            UnknownTokenId = GetMetadataInt(model, "tokenizer.ggml.unknown_token_id", defaultUnkId),
             PadTokenId = GetMetadataInt(model, "tokenizer.ggml.padding_token_id", eos),
             AddBosToken = GetMetadataBool(model, "tokenizer.ggml.add_bos_token", false),
             AddSpacePrefix = addSpacePrefix,
@@ -339,6 +351,20 @@ public sealed partial class GgufTokenizer : ITokenizer
         // format"). Use the in-memory BpeOptions API for these models — no file parsing.
         bool isSpmModel = source.ModelFamily is "gemma" or "gemma2" or "gemma3" or "gemma4" or "llama";
 
+        // Real SentencePiece Unigram-LM (LLAMA_VOCAB_TYPE_UGM, tokenizer.ggml.model=t5 --
+        // confirmed via llama-vocab.cpp's `tokenizer_model == "t5"` check). A genuinely different
+        // segmentation algorithm from both SPM-BPE and byte-BPE: Viterbi max-additive-log-score
+        // lattice search over per-token scores, not a merge-priority table. Blocks minicpm,
+        // internlm2, ernie4_5, baichuan, orion, nanbeige until now -- these ship
+        // tokenizer.ggml.scores with NO merges array, which this engine used to fall through to
+        // byte-BPE for (near-total fragmentation, same symptom class as the `xverse` SPM bug, but
+        // this one really is a different algorithm entirely, not a missing-data edge case in an
+        // algorithm this engine already implements).
+        bool isUnigramModel = source.ModelFamily == "t5";
+        UnigramTokenizer? unigram = isUnigramModel && source.Scores is not null
+            ? UnigramTokenizer.FromGgufVocab(source.Tokens, source.Scores, source.UnknownTokenId, source.TokenTypes)
+            : null;
+
         Tokenizer? inner = null;
         bool needsByteEncoding = false;
         bool isSpmBpe = false;
@@ -351,7 +377,7 @@ public sealed partial class GgufTokenizer : ITokenizer
         // and the StarCoder/SmolLM family — measured, see PreTokenizerParityTests.
         Regex[]? preTokenSplit = null;
         bool knownPre = true;
-        if (!isSpmModel && source.Merges.Length > 0)
+        if (!isSpmModel && !isUnigramModel && source.Merges.Length > 0)
         {
             knownPre = PreTokenizerPatterns.TryResolve(source.TokenizerPre, out var resolved);
             preTokenSplit = resolved;
@@ -359,8 +385,10 @@ public sealed partial class GgufTokenizer : ITokenizer
 
         // Try CodeGenTokenizer first (better decode quality for GPT-2 style models).
         // CodeGenTokenizer handles GPT-2 byte-level BPE encoding internally.
-        // Skip for SPM models — their merges contain whitespace that breaks the parser.
-        if (!isSpmModel)
+        // Skip for SPM and Unigram-LM models — SPM's merges contain whitespace that breaks the
+        // parser; Unigram has no merges array at all (a real vocab-only, score-based model), so
+        // there's nothing meaningful for CodeGenTokenizer to build from here.
+        if (!isSpmModel && !isUnigramModel)
         {
             try
             {
@@ -483,6 +511,7 @@ public sealed partial class GgufTokenizer : ITokenizer
             spmMerges,
             source.Scores,
             source.AddSpacePrefix,
+            unigram,
             eogIds,
             preTokenSplit,
             byteBpeMerges,
@@ -612,6 +641,12 @@ public sealed partial class GgufTokenizer : ITokenizer
     private IReadOnlyList<int> EncodeTextSegment(string text)
     {
         if (text.Length == 0) return [];
+
+        // Real Unigram-LM (Viterbi lattice, not merge-based) -- takes priority over every other
+        // path; UnigramTokenizer.Encode does its own Metaspace ('▁') preprocessing internally, so
+        // pass raw text, not pre-replaced.
+        if (_unigram is not null)
+            return _unigram.Encode(text);
 
         // BpeTokenizer doesn't do GPT-2 byte-level encoding internally —
         // we must convert raw bytes to GPT-2 Unicode before BPE lookup.
@@ -965,7 +1000,7 @@ public sealed partial class GgufTokenizer : ITokenizer
 
         var text = _inner.Decode(tokens) ?? string.Empty;
 
-        if (_isSpmBpe)
+        if (_isSpmBpe || _unigram is not null)
             return text.Replace('▁', ' ');
 
         // BpeTokenizer may output GPT-2 byte-level BPE artifacts:
@@ -990,7 +1025,7 @@ public sealed partial class GgufTokenizer : ITokenizer
         if ((uint)token >= (uint)_idToToken.Length)
             return [];
 
-        if (_isSpmBpe)
+        if (_isSpmBpe || _unigram is not null)
             return Encoding.UTF8.GetBytes(_idToToken[token].Replace('▁', ' '));
 
         return Gpt2CharsToBytes(_idToToken[token]);
