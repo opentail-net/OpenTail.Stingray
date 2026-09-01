@@ -157,7 +157,7 @@ public sealed class WanModel : IDisposable
         }
 
         var normed = (float[])x.Clone();
-        LayerNormNoAffine(normed, _dim);
+        DiffusionOps.LayerNormNoAffine(normed, _dim);
         normed = Modulate(normed, numTokens, headShift, headScale);
 
         var outPacked = Linear("head.head", normed, _dim, InChannels);
@@ -195,7 +195,7 @@ public sealed class WanModel : IDisposable
         // no learned weight/bias tensor in the checkpoint) -> AdaLN modulate -> self-attn (3D-RoPE)
         // -> gated residual.
         var norm1 = (float[])x.Clone();
-        LayerNormNoAffine(norm1, _dim);
+        DiffusionOps.LayerNormNoAffine(norm1, _dim);
         var normed1 = Modulate(norm1, numTokens, s1, sc1);
         var selfAttn = SelfAttention($"{prefix}.self_attn", normed1, cos, sin, numTokens);
         ApplyGatedResidual(x, selfAttn, numTokens, g1);
@@ -216,28 +216,12 @@ public sealed class WanModel : IDisposable
         // diffusers' own naming, i.e. the FFN pre-norm; also `elementwise_affine=False`) -> AdaLN
         // modulate -> FFN -> gated residual.
         var norm2 = (float[])x.Clone();
-        LayerNormNoAffine(norm2, _dim);
+        DiffusionOps.LayerNormNoAffine(norm2, _dim);
         var normed2 = Modulate(norm2, numTokens, s2, sc2);
         var ffn = FeedForward($"{prefix}.ffn", normed2, numTokens);
         ApplyGatedResidual(x, ffn, numTokens, g2);
 
         return x;
-    }
-
-    /// <summary>Mean/variance LayerNorm with no learned affine (real `FP32LayerNorm(...,
-    /// elementwise_affine=False)`, used for the two per-block AdaLN-modulated pre-norms).</summary>
-    private static void LayerNormNoAffine(float[] x, int dim, float eps = 1e-6f)
-    {
-        int n = x.Length / dim;
-        Parallel.For(0, n, row =>
-        {
-            var row_ = x.AsSpan(row * dim, dim);
-            float mean = TensorPrimitives.Sum(row_) / dim;
-            TensorPrimitives.Subtract(row_, mean, row_);
-            float sumSq = TensorPrimitives.SumOfSquares(row_);
-            float scale = 1f / MathF.Sqrt(sumSq / dim + eps);
-            TensorPrimitives.Multiply(row_, scale, row_);
-        });
     }
 
     private float[] SelfAttention(string prefix, float[] x, float[] cos, float[] sin, int seqLen)
@@ -256,7 +240,7 @@ public sealed class WanModel : IDisposable
         WanRoPE.ApplyRoPE(q, cos, sin, seqLen, _numHeads, _headDim);
         WanRoPE.ApplyRoPE(k, cos, sin, seqLen, _numHeads, _headDim);
 
-        var attn = MultiHeadAttention(q, k, v, seqLen, seqLen, _numHeads, _headDim);
+        var attn = DiffusionOps.MultiHeadAttention(q, k, v, seqLen, seqLen, _numHeads, _headDim);
         return Linear($"{prefix}.o", attn, _dim, _dim);
     }
 
@@ -271,54 +255,8 @@ public sealed class WanModel : IDisposable
         var normK = TryGetWeight($"{prefix}.norm_k.weight");
         if (normK is not null) RmsNormHeads(k, ctxLen, _numHeads, _headDim, normK);
 
-        var attn = MultiHeadAttention(q, k, v, seqLen, ctxLen, _numHeads, _headDim);
+        var attn = DiffusionOps.MultiHeadAttention(q, k, v, seqLen, ctxLen, _numHeads, _headDim);
         return Linear($"{prefix}.o", attn, _dim, _dim);
-    }
-
-    private static float[] MultiHeadAttention(float[] q, float[] k, float[] v, int qSeq, int kvSeq, int numHeads, int headDim)
-    {
-        float scale = 1.0f / MathF.Sqrt(headDim);
-        var output = new float[qSeq * numHeads * headDim];
-
-        Parallel.For(0, numHeads, h =>
-        {
-            for (int i = 0; i < qSeq; i++)
-            {
-                int qRow = (i * numHeads + h) * headDim;
-                var qSpan = q.AsSpan(qRow, headDim);
-                var scores = new float[kvSeq];
-                float maxScore = float.NegativeInfinity;
-
-                for (int j = 0; j < kvSeq; j++)
-                {
-                    int kRow = (j * numHeads + h) * headDim;
-                    var kSpan = k.AsSpan(kRow, headDim);
-                    float dot = TensorPrimitives.Dot(qSpan, kSpan) * scale;
-                    scores[j] = dot;
-                    if (dot > maxScore) maxScore = dot;
-                }
-
-                float sumExp = 0f;
-                for (int j = 0; j < kvSeq; j++)
-                {
-                    scores[j] = MathF.Exp(scores[j] - maxScore);
-                    sumExp += scores[j];
-                }
-                float invSum = 1f / sumExp;
-                for (int j = 0; j < kvSeq; j++) scores[j] *= invSum;
-
-                int outRow = (i * numHeads + h) * headDim;
-                for (int d = 0; d < headDim; d++)
-                {
-                    float sum = 0f;
-                    for (int j = 0; j < kvSeq; j++)
-                        sum += scores[j] * v[(j * numHeads + h) * headDim + d];
-                    output[outRow + d] = sum;
-                }
-            }
-        });
-
-        return output;
     }
 
     /// <summary>Real Wan QK-norm: `torch.nn.RMSNorm(dim_head * heads, ...)` -- ONE RMS statistic

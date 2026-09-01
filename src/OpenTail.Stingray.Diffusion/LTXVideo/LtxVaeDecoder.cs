@@ -186,7 +186,7 @@ public sealed class LtxVaeDecoder : IDisposable
         if (injectNoise) InjectSpatialNoise(hState, $"{prefix}.per_channel_scale2", c, f, h, w);
 
         // Real shortcut is Identity here: every VAE resnet keeps in_channels==out_channels.
-        for (int i = 0; i < x.Length; i++) hState[i] += x[i];
+        TensorPrimitives.Add(hState, x, hState);
         return hState;
     }
 
@@ -351,7 +351,9 @@ public sealed class LtxVaeDecoder : IDisposable
             float sc = 1f + scale[ch];
             float sh = shift[ch];
             int off = ch * spatial;
-            for (int p = 0; p < spatial; p++) x[off + p] = x[off + p] * sc + sh;
+            var span = x.AsSpan(off, spatial);
+            TensorPrimitives.Multiply(span, sc, span);
+            TensorPrimitives.Add(span, sh, span);
         });
     }
 
@@ -387,9 +389,7 @@ public sealed class LtxVaeDecoder : IDisposable
         var outF = new float[outDim];
         Parallel.For(0, outDim, o =>
         {
-            float sum = b[o];
-            int rowOff = o * inDim;
-            for (int i = 0; i < inDim; i++) sum += x[i] * w[rowOff + i];
+            float sum = b[o] + TensorPrimitives.Dot(x.AsSpan(0, inDim), w.AsSpan(o * inDim, inDim));
             outF[o] = sum;
         });
         return outF;
@@ -410,38 +410,92 @@ public sealed class LtxVaeDecoder : IDisposable
         int spatial = h * w;
 
         var xArr = x.ToArray();
-        var output = new float[outCh * f * h * w];
+        return CausalConv3D(xArr, weight, bias, inCh, outCh, f, h, w, padT, padH, padW, spatial);
+    }
+
+    private float[] CausalConv3D(float[] xArr, string name, int inCh, int outCh, int f, int h, int w, bool causalTemporal)
+    {
+        var weight = GetWeight($"{name}.conv.weight");
+        var bias = GetWeight($"{name}.conv.bias");
+        const int k = 3;
+        int padT = causalTemporal ? k - 1 : (k - 1) / 2;
+        int padH = k / 2, padW = k / 2;
+        int spatial = h * w;
+
+        return CausalConv3D(xArr, weight, bias, inCh, outCh, f, h, w, padT, padH, padW, spatial);
+    }
+
+    private static float[] CausalConv3D(float[] xArr, float[] weight, float[] bias, int inCh, int outCh, int f, int h, int w, int padT, int padH, int padW, int spatial)
+    {
+        const int k = 3;
+        var output = new float[outCh * f * spatial];
 
         Parallel.For(0, outCh, oc =>
         {
             float b = bias[oc];
+            int ocWeightBase = oc * inCh * 27;
+
             for (int outT = 0; outT < f; outT++)
             {
                 int outOffset = (oc * f + outT) * spatial;
-                for (int oh = 0; oh < h; oh++)
-                for (int ow = 0; ow < w; ow++)
-                {
-                    float sum = b;
-                    for (int ic = 0; ic < inCh; ic++)
-                    for (int dt = 0; dt < k; dt++)
-                    {
-                        int inT = outT - padT + dt;
-                        // Edge-replicate (not zero-pad) temporal boundary, matching real
-                        // `x[:, :, :1].repeat(...)` / `x[:, :, -1:].repeat(...)`.
-                        int clampedT = Math.Clamp(inT, 0, f - 1);
-                        int inFrameOff = (ic * f + clampedT) * spatial;
-                        int weightSliceOff = (((oc * inCh + ic) * k + dt) * k) * k;
 
-                        for (int dh = 0; dh < k; dh++)
-                        for (int dw = 0; dw < k; dw++)
+                for (int oh = 0; oh < h; oh++)
+                {
+                    int inH0 = oh - padH;
+                    int inH1 = oh - padH + 1;
+                    int inH2 = oh - padH + 2;
+                    bool h0 = inH0 >= 0 && inH0 < h;
+                    bool h1 = inH1 >= 0 && inH1 < h;
+                    bool h2 = inH2 >= 0 && inH2 < h;
+
+                    for (int ow = 0; ow < w; ow++)
+                    {
+                        int inW0 = ow - padW;
+                        int inW1 = ow - padW + 1;
+                        int inW2 = ow - padW + 2;
+                        bool w0 = inW0 >= 0 && inW0 < w;
+                        bool w1 = inW1 >= 0 && inW1 < w;
+                        bool w2 = inW2 >= 0 && inW2 < w;
+
+                        float sum = b;
+
+                        for (int ic = 0; ic < inCh; ic++)
                         {
-                            int inH = oh - padH + dh;
-                            int inW = ow - padW + dw;
-                            if (inH >= 0 && inH < h && inW >= 0 && inW < w)
-                                sum += xArr[inFrameOff + inH * w + inW] * weight[weightSliceOff + dh * k + dw];
+                            int icWeightBase = ocWeightBase + ic * 27;
+
+                            for (int dt = 0; dt < k; dt++)
+                            {
+                                int inT = outT - padT + dt;
+                                int clampedT = Math.Clamp(inT, 0, f - 1);
+                                int inFrameOff = (ic * f + clampedT) * spatial;
+                                int wOff = icWeightBase + dt * 9;
+
+                                if (h0)
+                                {
+                                    int r = inFrameOff + inH0 * w;
+                                    if (w0) sum += xArr[r + inW0] * weight[wOff + 0];
+                                    if (w1) sum += xArr[r + inW1] * weight[wOff + 1];
+                                    if (w2) sum += xArr[r + inW2] * weight[wOff + 2];
+                                }
+                                if (h1)
+                                {
+                                    int r = inFrameOff + inH1 * w;
+                                    if (w0) sum += xArr[r + inW0] * weight[wOff + 3];
+                                    if (w1) sum += xArr[r + inW1] * weight[wOff + 4];
+                                    if (w2) sum += xArr[r + inW2] * weight[wOff + 5];
+                                }
+                                if (h2)
+                                {
+                                    int r = inFrameOff + inH2 * w;
+                                    if (w0) sum += xArr[r + inW0] * weight[wOff + 6];
+                                    if (w1) sum += xArr[r + inW1] * weight[wOff + 7];
+                                    if (w2) sum += xArr[r + inW2] * weight[wOff + 8];
+                                }
+                            }
                         }
+
+                        output[outOffset + oh * w + ow] = sum;
                     }
-                    output[outOffset + oh * w + ow] = sum;
                 }
             }
         });

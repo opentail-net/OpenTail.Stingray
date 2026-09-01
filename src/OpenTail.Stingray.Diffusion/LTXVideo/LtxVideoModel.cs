@@ -260,7 +260,7 @@ public sealed class LtxVideoModel : IDisposable
         }
 
         var normed = (float[])x.Clone();
-        LayerNormNoAffine(normed, d, NormEps);
+        DiffusionOps.LayerNormNoAffine(normed, d, NormEps);
         var modulated = Modulate(normed, numTokens, d, finalShift, finalScale);
 
         return Linear("proj_out", modulated, d, OutChannels);
@@ -284,7 +284,7 @@ public sealed class LtxVideoModel : IDisposable
         // 1. Self-attention: RMSNorm (non-affine) -> AdaLN modulate -> attn1 (full-width QK-norm,
         // continuous 3D RoPE) -> gated residual.
         var norm1 = (float[])x.Clone();
-        RmsNormNoAffine(norm1, d, NormEps);
+        DiffusionOps.RmsNormNoAffine(norm1, d, NormEps);
         var (shiftMsa, scaleMsa, gateMsa) = GetModTriple(table, timestepProj, numTokens, d, 0);
         var normed1 = Modulate(norm1, numTokens, d, shiftMsa, scaleMsa);
         var selfAttn = Attention($"{prefix}.attn1", normed1, normed1, ropeCos, ropeSin, numTokens, numTokens, applyRope: true);
@@ -303,7 +303,7 @@ public sealed class LtxVideoModel : IDisposable
         // 3. FFN: RMSNorm (non-affine) -> AdaLN modulate -> ordinary 2-layer GELU MLP (2048->8192->2048,
         // NOT gated SiLU) -> gated residual.
         var norm2 = (float[])x.Clone();
-        RmsNormNoAffine(norm2, d, NormEps);
+        DiffusionOps.RmsNormNoAffine(norm2, d, NormEps);
         var (shiftMlp, scaleMlp, gateMlp) = GetModTriple(table, timestepProj, numTokens, d, 3);
         var normed2 = Modulate(norm2, numTokens, d, shiftMlp, scaleMlp);
         var ffn = FeedForward($"{prefix}.ff", normed2);
@@ -359,52 +359,8 @@ public sealed class LtxVideoModel : IDisposable
             LtxVideoRoPE.ApplyRoPE(k, ropeCos, ropeSin, kvSeq, numHeads: 1, headDim: d);
         }
 
-        var attnOut = MultiHeadAttention(q, k, v, qSeq, kvSeq, NumHeads, HeadDim);
+        var attnOut = DiffusionOps.MultiHeadAttention(q, k, v, qSeq, kvSeq, NumHeads, HeadDim);
         return Linear($"{prefix}.to_out.0", attnOut, d, d);
-    }
-
-    private static float[] MultiHeadAttention(float[] q, float[] k, float[] v, int qSeq, int kvSeq, int numHeads, int headDim)
-    {
-        float scale = 1.0f / MathF.Sqrt(headDim);
-        var output = new float[qSeq * numHeads * headDim];
-
-        Parallel.For(0, numHeads, h =>
-        {
-            var scores = new float[kvSeq];
-            for (int i = 0; i < qSeq; i++)
-            {
-                int qRow = (i * numHeads + h) * headDim;
-                var qSpan = q.AsSpan(qRow, headDim);
-                float maxScore = float.NegativeInfinity;
-
-                for (int j = 0; j < kvSeq; j++)
-                {
-                    int kRow = (j * numHeads + h) * headDim;
-                    float dot = TensorPrimitives.Dot(qSpan, k.AsSpan(kRow, headDim)) * scale;
-                    scores[j] = dot;
-                    if (dot > maxScore) maxScore = dot;
-                }
-
-                float sumExp = 0f;
-                for (int j = 0; j < kvSeq; j++)
-                {
-                    scores[j] = MathF.Exp(scores[j] - maxScore);
-                    sumExp += scores[j];
-                }
-                float invSum = 1f / sumExp;
-
-                int outRow = (i * numHeads + h) * headDim;
-                for (int dIdx = 0; dIdx < headDim; dIdx++)
-                {
-                    float sum = 0f;
-                    for (int j = 0; j < kvSeq; j++)
-                        sum += scores[j] * v[(j * numHeads + h) * headDim + dIdx];
-                    output[outRow + dIdx] = sum * invSum;
-                }
-            }
-        });
-
-        return output;
     }
 
     /// <summary>Ordinary 2-layer GELU MLP, 2048->8192->2048 -- real `ff.net.0.proj` / `ff.net.2`
@@ -439,62 +395,40 @@ public sealed class LtxVideoModel : IDisposable
         return Linear("adaln_single.emb.timestep_embedder.linear_2", h1, HiddenSize, HiddenSize);
     }
 
-    /// <summary>Block-level `RMSNorm(dim, eps, elementwise_affine=False)` (no learned weight) --
-    /// used for `norm1`/`norm2` inside each transformer block. Distinct from the FULL-WIDTH,
-    /// weighted q_norm/k_norm RMSNorm used inside attention, and from the model's own final
-    /// `norm_out` (a real mean-centered LayerNorm, not RMSNorm -- see <see cref="LayerNormNoAffine"/>).</summary>
-    private static void RmsNormNoAffine(float[] x, int dim, float eps)
-    {
-        int n = x.Length / dim;
-        Parallel.For(0, n, row =>
-        {
-            var rowSpan = x.AsSpan(row * dim, dim);
-            float sumSq = TensorPrimitives.SumOfSquares(rowSpan);
-            float invRms = 1f / MathF.Sqrt(sumSq / dim + eps);
-            TensorPrimitives.Multiply(rowSpan, invRms, rowSpan);
-        });
-    }
-
-    /// <summary>Real `nn.LayerNorm(dim, eps, elementwise_affine=False)` -- mean-centered AND
-    /// variance-normalized (unlike every other norm in this model, which is RMS-only). Used ONLY
-    /// for the model's final `norm_out`, confirmed directly against
-    /// `LTXVideoTransformer3DModel.norm_out` in diffusers' real `transformer_ltx.py` -- a
-    /// plausible-looking RMSNorm substitution here would silently corrupt the final projection's
-    /// input distribution.</summary>
-    private static void LayerNormNoAffine(float[] x, int dim, float eps)
-    {
-        int n = x.Length / dim;
-        Parallel.For(0, n, row =>
-        {
-            var rowSpan = x.AsSpan(row * dim, dim);
-            float mean = TensorPrimitives.Sum(rowSpan) / dim;
-            TensorPrimitives.Subtract(rowSpan, mean, rowSpan);
-            float sumSq = TensorPrimitives.SumOfSquares(rowSpan);
-            float scale = 1f / MathF.Sqrt(sumSq / dim + eps);
-            TensorPrimitives.Multiply(rowSpan, scale, rowSpan);
-        });
-    }
-
-    private static float[] Modulate(float[] x, int numTokens, int dim, ReadOnlySpan<float> shift, ReadOnlySpan<float> scale)
+    private static float[] Modulate(float[] x, int numTokens, int dim, float[] shift, float[] scale)
     {
         var outF = new float[x.Length];
-        for (int t = 0; t < numTokens; t++)
+        var scalePlusOne = new float[dim];
+        for (int i = 0; i < dim; i++) scalePlusOne[i] = 1.0f + scale[i];
+
+        Parallel.For(0, numTokens, t =>
         {
             int off = t * dim;
-            for (int i = 0; i < dim; i++)
-                outF[off + i] = x[off + i] * (1.0f + scale[i]) + shift[i];
-        }
+            var xSpan = x.AsSpan(off, dim);
+            var outSpan = outF.AsSpan(off, dim);
+            TensorPrimitives.Multiply(xSpan, scalePlusOne, outSpan);
+            TensorPrimitives.Add(outSpan, shift, outSpan);
+        });
         return outF;
     }
 
-    private static void ApplyGatedResidual(float[] x, float[] branch, int numTokens, int dim, ReadOnlySpan<float> gate)
+    private static void ApplyGatedResidual(float[] x, float[] branch, int numTokens, int dim, float[] gate)
     {
-        for (int t = 0; t < numTokens; t++)
+        Parallel.For(0, numTokens, t =>
         {
             int off = t * dim;
-            for (int i = 0; i < dim; i++)
-                x[off + i] += branch[off + i] * gate[i];
-        }
+            var xSpan = x.AsSpan(off, dim);
+            var bSpan = branch.AsSpan(off, dim);
+            TensorPrimitives.MultiplyAdd(bSpan, gate, xSpan, xSpan);
+        });
+    }
+
+    private float[] Linear(string name, float[] x, int inDim, int outDim)
+    {
+        var w = GetWeight($"{name}.weight");
+        var b = TryGetWeight($"{name}.bias");
+        int rows = x.Length / inDim;
+        return DiffusionOps.Linear(x, w, b, rows, inDim, outDim);
     }
 
     private float[] Linear(string name, ReadOnlySpan<float> x, int inDim, int outDim)
@@ -502,20 +436,8 @@ public sealed class LtxVideoModel : IDisposable
         var w = GetWeight($"{name}.weight");
         var b = TryGetWeight($"{name}.bias");
         int rows = x.Length / inDim;
-        var outF = new float[rows * outDim];
-        var xCopy = x.ToArray(); // captured for the parallel closure below
-
-        Parallel.For(0, outDim, o =>
-        {
-            float bVal = b is not null ? b[o] : 0f;
-            var wRow = w.AsSpan(o * inDim, inDim);
-            for (int r = 0; r < rows; r++)
-            {
-                var xRow = xCopy.AsSpan(r * inDim, inDim);
-                outF[r * outDim + o] = bVal + TensorPrimitives.Dot(xRow, wRow);
-            }
-        });
-        return outF;
+        var xArr = x.ToArray();
+        return DiffusionOps.Linear(xArr, w, b, rows, inDim, outDim);
     }
 
     public void Dispose()

@@ -709,6 +709,91 @@ internal static unsafe class DiffusionOps
         float inv = 1f / sum;
         for (int i = 0; i < n; i++) scores[i] *= inv;
     }
+
+    /// <summary>
+    /// Multi-head scaled dot-product attention for CPU diffusion models (Wan, LTX, etc.).
+    /// q: [qSeq, numHeads * headDim]
+    /// k, v: [kvSeq, numHeads * headDim]
+    /// output: [qSeq, numHeads * headDim]
+    /// </summary>
+    public static float[] MultiHeadAttention(float[] q, float[] k, float[] v, int qSeq, int kvSeq, int numHeads, int headDim)
+    {
+        float scale = 1.0f / MathF.Sqrt(headDim);
+        var output = new float[qSeq * numHeads * headDim];
+
+        Parallel.For(0, numHeads, h =>
+        {
+            var scores = new float[kvSeq];
+            for (int i = 0; i < qSeq; i++)
+            {
+                int qRow = (i * numHeads + h) * headDim;
+                var qSpan = q.AsSpan(qRow, headDim);
+                float maxScore = float.NegativeInfinity;
+
+                for (int j = 0; j < kvSeq; j++)
+                {
+                    int kRow = (j * numHeads + h) * headDim;
+                    var kSpan = k.AsSpan(kRow, headDim);
+                    float dot = TensorPrimitives.Dot(qSpan, kSpan) * scale;
+                    scores[j] = dot;
+                    if (dot > maxScore) maxScore = dot;
+                }
+
+                float sumExp = 0f;
+                for (int j = 0; j < kvSeq; j++)
+                {
+                    scores[j] = MathF.Exp(scores[j] - maxScore);
+                    sumExp += scores[j];
+                }
+                float invSum = 1f / sumExp;
+
+                int outRow = (i * numHeads + h) * headDim;
+                var outSpan = output.AsSpan(outRow, headDim);
+                outSpan.Clear();
+                for (int j = 0; j < kvSeq; j++)
+                {
+                    float s = scores[j] * invSum;
+                    if (s == 0f) continue;
+                    int vRow = (j * numHeads + h) * headDim;
+                    TensorPrimitives.MultiplyAdd(v.AsSpan(vRow, headDim), s, outSpan, outSpan);
+                }
+            }
+        });
+
+        return output;
+    }
+
+    /// <summary>
+    /// Mean/variance Layer Normalization with no learned affine parameters.
+    /// </summary>
+    public static void LayerNormNoAffine(float[] x, int dim, float eps = 1e-6f)
+    {
+        int n = x.Length / dim;
+        Parallel.For(0, n, row =>
+        {
+            var rowSpan = x.AsSpan(row * dim, dim);
+            float mean = TensorPrimitives.Sum(rowSpan) / dim;
+            TensorPrimitives.Subtract(rowSpan, mean, rowSpan);
+            float sumSq = TensorPrimitives.SumOfSquares(rowSpan);
+            float scale = 1f / MathF.Sqrt(sumSq / dim + eps);
+            TensorPrimitives.Multiply(rowSpan, scale, rowSpan);
+        });
+    }
+
+    /// <summary>
+    /// Root-Mean-Square Normalization with no learned affine parameters.
+    /// </summary>
+    public static void RmsNormNoAffine(float[] x, int dim, float eps = 1e-6f)
+    {
+        int n = x.Length / dim;
+        Parallel.For(0, n, row =>
+        {
+            var rowSpan = x.AsSpan(row * dim, dim);
+            float sumSq = TensorPrimitives.SumOfSquares(rowSpan);
+            float invRms = 1f / MathF.Sqrt(sumSq / dim + eps);
+            TensorPrimitives.Multiply(rowSpan, invRms, rowSpan);
+        });
+    }
 }
 
 

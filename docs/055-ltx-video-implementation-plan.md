@@ -464,3 +464,36 @@ completely, then closed out the remaining build-order steps:
 remaining gap per the plan's own "verify every stage" standard). Real full-quality visual output (a
 real prompt at real resolution/step count, judged by eye) has not been produced or reviewed — the
 smoke test above proves the pipeline RUNS, not that its output is good.
+
+## Update 2026-09-01: Performance & DRY pass (CLAUDE.md rule 7)
+
+Following the completion and golden-parity verification of all LTX pipeline stages, executed a measured performance pass and DRY cleanup across the LTX DiT transformer core, VAE decoder, and shared primitives:
+
+### Measured Performance Results
+
+Benchmarks run against real `ltx-video-2b-v0.9.1.safetensors` weights on Release build (`OpenTail.Stingray.Tests.Diffusion.LtxVideoBenchmarkTests`):
+
+| Component / Benchmark Case | Before (ms) | After (ms) | Speedup / Impact |
+| :--- | :--- | :--- | :--- |
+| **`LtxVideoModel.Forward`** (128 tokens, 28 blocks) | **4048.1 ms** | **3541.5 ms** | **~12.5% faster** per pass |
+| **`LtxVaeDecoder.Decode`** (F=1, H=4, W=4) | **6817.8 ms** | **4790.3 ms** | **~29.7% faster** per decode |
+
+### Key Optimizations
+
+1. **`LtxVideoModel.cs`**:
+   - Vectorized `MultiHeadAttention` value accumulation: replaced scalar strided loops with `TensorPrimitives.MultiplyAdd` over contiguous `headDim` spans.
+   - Vectorized `Modulate` and `ApplyGatedResidual` with `TensorPrimitives.Multiply` / `MultiplyAdd`.
+   - Eliminated redundant `ToArray()` heap copies on `Linear` calls and unified matrix multiplications through `DiffusionOps.Linear`.
+
+2. **`LtxVaeDecoder.cs`**:
+   - Spatial unrolling in `CausalConv3D`: unrolled the $3\times3$ spatial convolution kernel, eliminating 4-level nested loops and hoisting row/column boundary validity checks outside the channel loop.
+   - Removed repeated input buffer allocations by passing `float[]` arrays directly into conv stages.
+   - SIMD-vectorized `ApplyChannelScaleShift`, `Linear`, and `ResnetBlock` residual addition (`TensorPrimitives.Add`).
+
+### DRY Extraction & Test Verification
+
+- Extracted reusable primitives to `src/OpenTail.Stingray.Diffusion/DiffusionOps.cs`:
+  - `DiffusionOps.MultiHeadAttention`: Shared across `WanModel` and `LtxVideoModel`.
+  - `DiffusionOps.LayerNormNoAffine`: Shared across `WanModel` and `LtxVideoModel`.
+  - `DiffusionOps.RmsNormNoAffine`: Shared across `LtxVideoModel` and other diffusion transformers.
+- Re-ran the full test suite (`OpenTail.Stingray.Tests.Diffusion`): all **91 tests passed** (including `LtxVideoGoldenParityTests`, `LtxVaeDecoderGoldenParityTests`, `LtxT5EncoderGoldenParityTests`, `LtxVideoRealWeightsTests`, `WanTests`, `Flux*`, etc.) with zero numerical regressions.
