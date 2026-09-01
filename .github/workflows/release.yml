@@ -51,7 +51,7 @@ jobs:
             exit 1
           fi
           tag_version="${GITHUB_REF#refs/tags/stingray-v}"
-          file_version="$(grep -oPm1 '(?<=<Version>)[^<]+' Directory.Build.props)"
+          file_version="$(grep -oPm1 '(?<=<Version>)[^<]+(?=</Version>)' Directory.Build.props)"
           echo "tag=$tag_version  Directory.Build.props=$file_version"
           if [ "$tag_version" != "$file_version" ]; then
             echo "::error::Tag stingray-v$tag_version does not match <Version>$file_version</Version> in Directory.Build.props."
