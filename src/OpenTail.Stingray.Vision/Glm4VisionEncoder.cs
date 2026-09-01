@@ -18,7 +18,7 @@ public sealed unsafe class Glm4VisionEncoder
     private readonly float _eps;
 
     private readonly float[] _patchEmbd0WF32;
-    private readonly VisionTensorRef _patchEmbd1W;
+    private readonly float[] _patchEmbd1WF32;
     private readonly float[]? _patchBias;
     private readonly float[]? _normEmbdW;
     private readonly float[]? _normEmbdB;
@@ -44,12 +44,13 @@ public sealed unsafe class Glm4VisionEncoder
     private sealed class LayerWeights
     {
         public float[]? Ln1W;
-        public VisionTensorRef AttnQW;
-        public float[]? AttnQB;
-        public VisionTensorRef AttnKW;
-        public float[]? AttnKB;
-        public VisionTensorRef AttnVW;
-        public float[]? AttnVB;
+        // This checkpoint stores Q/K/V as one fused tensor (v.blk.N.attn_qkv.weight, out=3*embd) --
+        // the separate v.blk.N.attn_q/k/v.weight names used previously don't exist here, so those
+        // lookups always failed and MatVecAny's "no-op on missing tensor" contract silently left
+        // Q/K/V at their zero-initialized buffer contents for every layer, making the entire
+        // attention sub-layer numerically inert (zero in, zero out) regardless of the softmax fix.
+        public VisionTensorRef AttnQkvW;
+        public float[]? AttnQkvB;
         public VisionTensorRef AttnOutW;
         public float[]? AttnOutB;
         public float[]? Ln2W;
@@ -81,7 +82,10 @@ public sealed unsafe class Glm4VisionEncoder
 
         _patchEmbd0WF32 = VisionOps.DequantizeToFloat32(
             VisionOps.GetTensor(gguf, "v.patch_embd.0.weight", "v.patch_embd.weight"));
-        _patchEmbd1W = VisionOps.GetTensor(gguf, "v.patch_embd.1.weight", "v.patch_embd.weight.1");
+        // Real glm4v.cpp sums TWO conv2d patch embeddings (patch_embeddings_0 + patch_embeddings_1)
+        // -- this second one was being fetched into an unused VisionTensorRef and never applied.
+        _patchEmbd1WF32 = VisionOps.DequantizeToFloat32(
+            VisionOps.GetTensor(gguf, "v.patch_embd.1.weight", "v.patch_embd.weight.1"));
         _patchBias = VisionOps.GetTensorArray(gguf, "v.patch_bias");
         _normEmbdW = VisionOps.GetTensorArray(gguf, "v.norm_embd.weight");
         _normEmbdB = VisionOps.GetTensorArray(gguf, "v.norm_embd.bias");
@@ -119,12 +123,8 @@ public sealed unsafe class Glm4VisionEncoder
             _blocks[l] = new LayerWeights
             {
                 Ln1W = VisionOps.GetTensorArray(gguf, $"v.blk.{l}.ln1.weight"),
-                AttnQW = VisionOps.GetTensor(gguf, $"v.blk.{l}.attn_q.weight"),
-                AttnQB = VisionOps.GetTensorArray(gguf, $"v.blk.{l}.attn_q.bias"),
-                AttnKW = VisionOps.GetTensor(gguf, $"v.blk.{l}.attn_k.weight"),
-                AttnKB = VisionOps.GetTensorArray(gguf, $"v.blk.{l}.attn_k.bias"),
-                AttnVW = VisionOps.GetTensor(gguf, $"v.blk.{l}.attn_v.weight"),
-                AttnVB = VisionOps.GetTensorArray(gguf, $"v.blk.{l}.attn_v.bias"),
+                AttnQkvW = VisionOps.GetTensor(gguf, $"v.blk.{l}.attn_qkv.weight"),
+                AttnQkvB = VisionOps.GetTensorArray(gguf, $"v.blk.{l}.attn_qkv.bias"),
                 AttnOutW = VisionOps.GetTensor(gguf, $"v.blk.{l}.attn_out.weight"),
                 AttnOutB = VisionOps.GetTensorArray(gguf, $"v.blk.{l}.attn_out.bias"),
                 Ln2W = VisionOps.GetTensorArray(gguf, $"v.blk.{l}.ln2.weight"),
@@ -152,7 +152,11 @@ public sealed unsafe class Glm4VisionEncoder
             return [];
         }
 
-        // 1. Dual Conv2D Patch Linear Projections + Bias + Norm
+        // 1. Dual Conv2D Patch Linear Projections + Bias, then RMSNorm(norm_embd), THEN add the
+        // learned position embedding raw (real order: conv -> +patch_bias -> norm_embd RMSNorm ->
+        // build_vit's own `inp = ggml_add(inp, learned_pos_embd)` happens AFTER norm_embd and
+        // BEFORE any transformer layer -- adding pos_embd before the RMSNorm, as this did before,
+        // silently rescaled/warped the position signal through the norm on every forward pass).
         var hiddenStates = new float[numPatches * _embd];
         ExtractPatches(chw, targetWidth, targetHeight, patchesX, patchesY, hiddenStates);
 
@@ -161,7 +165,17 @@ public sealed unsafe class Glm4VisionEncoder
             fixed (float* normEmbdW = _normEmbdW) ApplyRmsNorm(hiddenStates, numPatches, _embd, normEmbdW);
         }
 
+        if (_posEmbdF32.Length > 0)
+        {
+            for (int p = 0; p < numPatches; p++)
+            {
+                int off = p * _embd;
+                for (int d = 0; d < _embd; d++) hiddenStates[off + d] += _posEmbdF32[off + d];
+            }
+        }
+
         // 2. ViT Transformer Blocks
+        var qkvBuf = new float[numPatches * 3 * _embd];
         var qBuf = new float[numPatches * _embd];
         var kBuf = new float[numPatches * _embd];
         var vBuf = new float[numPatches * _embd];
@@ -180,7 +194,7 @@ public sealed unsafe class Glm4VisionEncoder
         {
             var blk = _blocks[l];
 
-            fixed (float* ln1W = blk.Ln1W, attnQB = blk.AttnQB, attnKB = blk.AttnKB, attnVB = blk.AttnVB,
+            fixed (float* ln1W = blk.Ln1W, attnQkvB = blk.AttnQkvB,
                    attnOutB = blk.AttnOutB, ln2W = blk.Ln2W, ffnGateB = blk.FfnGateB, ffnUpB = blk.FfnUpB,
                    ffnDownB = blk.FfnDownB)
             {
@@ -188,10 +202,18 @@ public sealed unsafe class Glm4VisionEncoder
                 Array.Copy(hiddenStates, normed, hiddenStates.Length);
                 ApplyRmsNorm(normed, numPatches, _embd, ln1W);
 
-                // Q, K, V Linear Projections
-                VisionOps.MatVecAny(normed, blk.AttnQW, attnQB, numPatches, _embd, _embd, qBuf);
-                VisionOps.MatVecAny(normed, blk.AttnKW, attnKB, numPatches, _embd, _embd, kBuf);
-                VisionOps.MatVecAny(normed, blk.AttnVW, attnVB, numPatches, _embd, _embd, vBuf);
+                // Fused QKV Linear Projection (real tensor: v.blk.N.attn_qkv.weight, out=3*embd),
+                // then split into per-head-contiguous Q/K/V exactly as ggml_view_4d's three offset
+                // views do (0, embd, 2*embd along the output dim).
+                VisionOps.MatVecAny(normed, blk.AttnQkvW, attnQkvB, numPatches, _embd, 3 * _embd, qkvBuf);
+                for (int p = 0; p < numPatches; p++)
+                {
+                    int srcOff = p * 3 * _embd;
+                    int dstOff = p * _embd;
+                    Array.Copy(qkvBuf, srcOff, qBuf, dstOff, _embd);
+                    Array.Copy(qkvBuf, srcOff + _embd, kBuf, dstOff, _embd);
+                    Array.Copy(qkvBuf, srcOff + 2 * _embd, vBuf, dstOff, _embd);
+                }
 
                 // M-RoPE 2D Multimodal Rotary Embeddings
                 ApplyMrope(qBuf, kBuf, patchesX, patchesY);
@@ -416,46 +438,15 @@ public sealed unsafe class Glm4VisionEncoder
                                     float pixel = chw[c * planeSize + (y * width + x)];
                                     int weightIdx = wOffset + c * patchArea + (dy * patchSize + dx);
                                     sum += pixel * _patchEmbd0WF32[weightIdx];
+                                    // Real glm4v.cpp sums a SECOND conv2d (patch_embeddings_1) into
+                                    // the same output -- previously fetched but never applied.
+                                    if (_patchEmbd1WF32.Length > 0)
+                                        sum += pixel * _patchEmbd1WF32[weightIdx];
                                 }
                             }
                         }
 
-                        if (_posEmbdF32.Length > 0)
-                        {
-                            sum += _posEmbdF32[patchIdx * _embd + d];
-                        }
-
                         output[outOffset + d] = sum;
-                    }
-                }
-            }
-        }
-    }
-
-    private void ApplyPixelMerge(float[] src, int patchesX, int patchesY, int scale, float[] dst)
-    {
-        int downX = patchesX / scale;
-        int downY = patchesY / scale;
-        int mergedDim = _embd * scale * scale;
-
-        for (int dy = 0; dy < downY; dy++)
-        {
-            for (int dx = 0; dx < downX; dx++)
-            {
-                int dstTokenIdx = dy * downX + dx;
-                int dstOffset = dstTokenIdx * mergedDim;
-
-                int subIdx = 0;
-                for (int sy = 0; sy < scale; sy++)
-                {
-                    for (int sx = 0; sx < scale; sx++)
-                    {
-                        int srcX = dx * scale + sx;
-                        int srcY = dy * scale + sy;
-                        int srcPatchIdx = srcY * patchesX + srcX;
-
-                        Array.Copy(src, srcPatchIdx * _embd, dst, dstOffset + subIdx * _embd, _embd);
-                        subIdx++;
                     }
                 }
             }
@@ -482,9 +473,22 @@ public sealed unsafe class Glm4VisionEncoder
         }
     }
 
+    /// <summary>
+    /// Real GLM4V 4-section M-RoPE (ggml_rope_multi, GGML_ROPE_TYPE_VISION, sections all =
+    /// headDim/4, n_dims=headDim/2). Traced through ggml's real ggml_mrope_cache_init +
+    /// GGML_ROPE_TYPE_VISION's rotate_pairs(ne0, n_dims) call in ggml-cpu/ops.cpp: because
+    /// n_dims=headDim/2 and the per-section sector index only ever ranges over [0,headDim/2),
+    /// the theta_w/theta_e sections (position channels 2 and 3, both real duplicates of
+    /// row/col anyway per glm4v's own position-array construction) are never actually selected
+    /// -- only channels 0 (row/py) and 1 (col/px) matter in practice, splitting the FULL
+    /// [0,headDim/2) index range in half: first quarter uses py, second quarter uses px. The
+    /// previous version here only rotated the first HALF of headDim (leaving the second half
+    /// completely untouched) and used px for every rotated pair (py was never read at all).
+    /// </summary>
     private void ApplyMrope(float[] q, float[] k, int patchesX, int patchesY)
     {
-        int mropeHalf = _headDim / 4;
+        int half = _headDim / 2;
+        int quarter = _headDim / 4;
         for (int py = 0; py < patchesY; py++)
         {
             for (int px = 0; px < patchesX; px++)
@@ -493,46 +497,24 @@ public sealed unsafe class Glm4VisionEncoder
                 for (int h = 0; h < _heads; h++)
                 {
                     int headOff = (p * _heads + h) * _headDim;
-                    for (int d = 0; d < mropeHalf; d++)
+                    for (int ic = 0; ic < half; ic++)
                     {
-                        float freqX = MathF.Pow(_ropeTheta, -2.0f * d / _headDim);
-                        float thetaX = px * freqX;
-                        float cosX = MathF.Cos(thetaX);
-                        float sinX = MathF.Sin(thetaX);
+                        float pos = ic < quarter ? py : px;
+                        float freq = MathF.Pow(_ropeTheta, -4.0f * ic / _headDim);
+                        float theta = pos * freq;
+                        float cosT = MathF.Cos(theta);
+                        float sinT = MathF.Sin(theta);
 
-                        float q0 = q[headOff + d];
-                        float q1 = q[headOff + d + mropeHalf];
-                        q[headOff + d] = q0 * cosX - q1 * sinX;
-                        q[headOff + d + mropeHalf] = q0 * sinX + q1 * cosX;
+                        float q0 = q[headOff + ic];
+                        float q1 = q[headOff + ic + half];
+                        q[headOff + ic] = q0 * cosT - q1 * sinT;
+                        q[headOff + ic + half] = q0 * sinT + q1 * cosT;
 
-                        float k0 = k[headOff + d];
-                        float k1 = k[headOff + d + mropeHalf];
-                        k[headOff + d] = k0 * cosX - k1 * sinX;
-                        k[headOff + d + mropeHalf] = k0 * sinX + k1 * cosX;
+                        float k0 = k[headOff + ic];
+                        float k1 = k[headOff + ic + half];
+                        k[headOff + ic] = k0 * cosT - k1 * sinT;
+                        k[headOff + ic + half] = k0 * sinT + k1 * cosT;
                     }
-                }
-            }
-        }
-    }
-
-    // FOUND, NOT FIXED (out of scope for this migration -- same finding as KimiVisionEncoder.cs,
-    // MiniCpmVisionEncoder.cs, QwenVlVisionEncoder.cs): never reads q or k, never scores, never
-    // softmaxes -- copies scaled v straight through. Real, pre-existing, unrelated to this pass's
-    // dtype migration.
-    private static void ComputeAttention(float[] q, float[] k, float[] v, int nTokens, int heads, int headDim, float[] output)
-    {
-        float scale = 1.0f / MathF.Sqrt(headDim);
-
-        for (int h = 0; h < heads; h++)
-        {
-            for (int i = 0; i < nTokens; i++)
-            {
-                int qOff = (i * heads + h) * headDim;
-                int outOff = (i * heads + h) * headDim;
-
-                for (int d = 0; d < headDim; d++)
-                {
-                    output[outOff + d] = v[qOff + d] * scale;
                 }
             }
         }

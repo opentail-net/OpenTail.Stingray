@@ -460,19 +460,71 @@ All four fixes verified compiling clean and re-checked against the differentiati
 passes, same 4 pre-existing unrelated failures as before (`YoutuVl`, `KimiVl`, `MiniCpmV`,
 `HunyuanVl`), no new regressions.
 
-While tracing the real position-ID construction for `PROJECTOR_TYPE_GLM4V` in `clip.cpp` (needed
-to build the golden Python reference's RoPE), found that GLM4V's real patch/token order is NOT
-plain row-major: patches are grouped into 2×2 merge-blocks *before* the transformer runs (real
-loop: `for y step merge_ratio { for x step merge_ratio { for dy in 0..1 { for dx in 0..1 } } }`),
-and position IDs are assigned per that grouped sequence order, not raster order. The current C#
-encoder processes patches in plain raster order throughout (`ExtractPatches`, `ApplyMrope`, the
-new `ApplyPatchMerger` above) and has no such reordering step. This is the same *kind* of gap as
-the windowed-attention one above — a real missing structural computation, not a wrong value in an
-otherwise-complete one — so, consistent with the operator call above, **not implementing the
-reordering this pass**. GLM-4.6V's golden numeric test is deferred alongside Exaone4/MiMoVl/
-Qwen2.5-VL until that reordering is implemented as real feature work; the differentiation-level
-bug fixes above stand on their own regardless (they're real correctness improvements even before
-golden parity is reachable).
+**UPDATE (2026-09-02, same day): the reordering turned out to be a non-issue, and GLM-4.6V is now
+fully golden-verified with two more real bugs found and fixed.** While tracing the real
+position-ID construction for `PROJECTOR_TYPE_GLM4V` in `clip.cpp` (needed to build the golden
+Python reference's RoPE), found that GLM4V's real patch/token order is NOT plain row-major:
+patches are grouped into 2×2 merge-blocks *before* the transformer runs (real loop: `for y step
+merge_ratio { for x step merge_ratio { for dy in 0..1 { for dx in 0..1 } } }`), and position IDs
+are assigned per that grouped sequence order, not raster order. Worked through the exact
+permute/reshape math in `glm4v.cpp` by hand (ggml_permute + ggml_reshape_4d index algebra) and
+confirmed this reorder is purely a MEMORY-LAYOUT convenience for the real code's own
+`ggml_conv_2d`-based patch merger (which needs spatially contiguous blocks) — since GLM4V's
+attention has no windowing/masking (confirmed earlier), self-attention is fully permutation-
+equivariant: reordering all tokens the same way permutes the output identically and changes no
+values, as long as (a) RoPE positions are assigned per spatial location rather than per sequence
+index, and (b) the merger step gathers the correct spatial neighbors regardless of storage order.
+The already-written `ApplyMrope` (indexed by real `px,py`) and the new `ApplyPatchMerger` (which
+explicitly computes `srcY,srcX` rather than assuming memory contiguity) already satisfy both
+conditions — so the C# encoder needed NO reordering step at all. This reasoning was verified, not
+just assumed: built the real golden Python reference (`scripts/glm4v_ref.py`) and ran the parity
+test rather than trusting the argument alone.
+
+While building that reference, cross-checking every real tensor name via `list-tensors` surfaced
+**two more real, more severe bugs**, on top of the four already fixed above:
+- **Q/K/V were being read from tensor names that don't exist in this checkpoint at all.**
+  `v.blk.N.attn_q/k/v.weight` are absent — this checkpoint stores a single FUSED
+  `v.blk.N.attn_qkv.weight` (out=3×embd). Every one of the 24 layers' `MatVecAny(..., attn_q/k/v,
+  ...)` calls was silently a no-op (missing-tensor contract), leaving Q/K/V permanently at their
+  zero-initialized buffer contents for the entire forward pass — the real (now-fixed) softmax
+  attention from earlier in this pass was mathematically correct but numerically inert the whole
+  time, since it was attending over all-zero Q/K/V. Fixed: read the fused tensor once per layer,
+  split into Q/K/V via the same three offset slices `ggml_view_4d` uses in the real C++.
+- **The second dual patch-embedding conv was fetched but never summed.** Real glm4v.cpp adds TWO
+  conv2d outputs (`patch_embeddings_0 + patch_embeddings_1`); `_patchEmbd1W` was being loaded into
+  a field and then never referenced anywhere in `ExtractPatches`. Fixed: sum both.
+- **Position embeddings were added in the wrong place relative to `norm_embd`.** Real order:
+  `+patch_bias → RMSNorm(norm_embd) → +learned_pos_embd` (the position add happens in
+  `build_vit`, strictly AFTER the norm). The previous code added `pos_embd` INSIDE the same loop
+  as `patch_bias`, before the RMSNorm ran — meaning the position signal was being rescaled/warped
+  by the norm on every forward pass instead of added raw afterward. Fixed: moved the pos_embd add
+  to after `ApplyRmsNorm`.
+- **The 4-section M-RoPE only rotated the first half of `head_dim`, using column position for
+  everything.** Derived the real math by hand from `ggml_mrope_cache_init` +
+  `GGML_ROPE_TYPE_VISION`'s `rotate_pairs(ne0, n_dims)` call in `ggml-cpu/ops.cpp`: with
+  `n_dims=head_dim/2` and 4 equal-size sections, the per-section sector index provably never
+  reaches sections 2/3, so only 2 of the 4 declared position channels are ever actually used —
+  first quarter of `[0,head_dim/2)` rotates by row/`py`, second quarter by column/`px`, each
+  paired with its `+head_dim/2` partner (covering the FULL `head_dim`, not just the first half).
+  The previous implementation rotated only `[0,head_dim/2)` (leaving `[head_dim/2,head_dim)`
+  completely untouched) and used `px` for every pair, never reading `py` at all. Fixed with the
+  derived formula; see `Glm4VisionEncoder.ApplyMrope`'s doc comment for the full derivation.
+
+Built `scripts/glm4v_ref.py` (real numpy port of `glm4v.cpp`'s full forward pass, generated at the
+checkpoint's native 336×336/24×24-patch image size so its learned `position_embd`, sized for
+exactly 576 positions, applies with no resize) and `Glm4VisionEmbedderParityTests.cs`
+(`Forward_MatchesNumpyReference`, same threshold as Pixtral: cosine > 0.97, meanAbs < 5e-2).
+**Passed** (21.8s). Re-ran the full differentiation suite afterward: same 4 pre-existing unrelated
+failures, no new regressions, full solution builds clean.
+
+GLM-4.6V is now the fourth architecture (after Gemma4UV, Llava, Pixtral) with real golden numeric
+verification — six real bugs found and fixed across the two passes on this one architecture,
+several of them severe enough (dead attention, dead patch-merger, wrong tensor names entirely)
+that the differentiation test's "not degenerate" bar had been passing despite the actual math
+being substantially broken. `Exaone4`/`MiMoVl`/`Qwen2.5-VL` remain the only ones still blocked, on
+the real windowed-attention gap described above — unlike GLM-4.6V's apparent gap, that one is real
+(those checkpoints declare `n_wa_pattern > 0` and their encoders unconditionally run full
+attention), not a memory-layout artifact.
 
 ---
 
