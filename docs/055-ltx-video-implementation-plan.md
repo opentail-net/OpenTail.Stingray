@@ -688,3 +688,40 @@ numerically verified correct against every real reference at essentially machine
 every stage that can be isolated and tested -- that work stands regardless of this checkpoint's own
 real-world output quality.
 
+## Update 2026-09-02: RESOLVED -- root cause was contributing factor #1 above (resolution far
+below the model's trained regime). Confirmed on BOTH the real native pipeline and the C# port.
+
+Per the plan above, the cheapest untested hypothesis (256x256 being far below this checkpoint's
+real training/recommended regime -- the model card documents 1216x704 as the flagship resolution
+and states it "works best on resolutions under 720x1280") was tested directly, at user approval, by
+re-running the same real native `LTXVideoPipeline` script from the DEFINITIVE section above with
+only `height`/`width` raised from 256x256 to 512x512 (same prompt "a photograph of a red apple on a
+wooden table", same seed 42, same `num_inference_steps=20`, `guidance_scale=4.5`,
+`vae_per_channel_normalize=True`).
+
+**Real native Python pipeline at 512x512**: produced a genuinely recognizable image -- a
+red apple/tomato-like object with real color and surface texture, sitting on a wooden-toned
+surface. Some artifacts remain (a horizontal striping band), but this is categorically different
+from the pure salt-and-pepper noise seen at 256x256. Saved as
+`docs/diffusion-samples/ltx-video-python-reference-512.png`.
+
+**This C# port at the identical settings** (`dotnet run --project src/OpenTail.Stingray.Cli -c
+Debug -- image -m models/ltx-video-2b-v0.9.1.safetensors -p "a photograph of a red apple on a
+wooden table" --width 512 --height 512 --video-frames 1 --steps 20 --cfg-scale 4.5`, 710.8s):
+produced the SAME kind of result -- a recognizable red apple/tomato shape with a wooden-table-toned
+background, with a comparable blurriness/striping artifact band in the upper portion of the frame.
+Saved as `docs/diffusion-samples/ltx-video-csharp-port-512.png`.
+
+**Conclusion**: the visual-corruption investigation is closed. It was never a porting bug (already
+proven definitively above) -- it was this checkpoint being tested far outside its intended
+resolution regime. Both the official pipeline and this C# port converge to the same real,
+recognizable output once given a realistic resolution, which is strong independent confirmation
+that the C# port's math is correct end-to-end (DiT, RoPE, VAE decode, per-channel latent
+normalization, scheduler, CFG all included in this comparison). The remaining artifacts (blur,
+horizontal striping) appear in *both* implementations at 512x512, so they are almost certainly
+either (a) inherent to this specific 2B v0.9.1 checkpoint at this resolution/step count, or (b) a
+symptom of the still-untested contributing factors from the DEFINITIVE section (`enhance_prompt`
+caption-refinement step, or running a larger/newer checkpoint) -- not a remaining C#-vs-reference
+gap. No further action needed on the port itself; 256x256 (or similarly small) resolutions should
+simply be avoided/warned against as unrepresentative of this model's real quality.
+
