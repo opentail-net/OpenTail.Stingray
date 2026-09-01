@@ -505,8 +505,7 @@ examples/
 /chatterbox_lunch_darling_verified.wav
 
 # Repo-root scratch output in general (debug scripts, tensor dumps, one-off audio/image checks
-# run from the repo root during investigation) -- deliberate fixtures belong in docs/audio-samples/
-# or docs/diffusion-samples/ instead, per this repo's own convention.
+# run from the repo root during investigation).
 /*.wav
 /*.png
 /scratch*.cs
@@ -514,26 +513,15 @@ examples/
 /check_time.cs
 /dump_*.cs
 /*_tensors.txt
-/docs/audio-samples/chatterbox-vulkan-listen.wav
-/docs/audio-samples/cosyvoice3-hift-bisect-ourexcitation.wav
-/docs/audio-samples/cosyvoice3-vulkan-listen.wav
-/docs/audio-samples/f5tts-mel-centering-fix-check-textonly.wav
-/docs/audio-samples/f5tts-mel-centering-fix-check.wav
-/docs/audio-samples/f5tts-official-infer-check.wav
-/docs/audio-samples/f5tts-preprocessed-ref-check.wav
-/docs/audio-samples/f5tts-real-python-canonical-check.wav
-/docs/audio-samples/f5tts-real-python-nocfg-check.wav
-/docs/audio-samples/f5tts-real-python-reference-check.wav
-/docs/audio-samples/f5tts-speed115-check.wav
-/docs/audio-samples/f5tts-vulkan-listen.wav
-/docs/audio-samples/hift-fix-check-chatterbox.wav
-/docs/audio-samples/hift-fix-check-cosyvoice3.wav
-/docs/audio-samples/hift-split-fix-cosyvoice3.wav
-/docs/audio-samples/parler-vulkan-listen.wav
-/docs/diffusion-samples/wan-32x32-heart-check-perf.png
-/docs/diffusion-samples/wan-32x32-heart-check.png
-/docs/diffusion-samples/wan-qknorm-fix-check.png
-/docs/diffusion-samples/wan-vae-synthetic-dc-latent-16x16-diagnostic.png
-/docs/diffusion-samples/wan-vae-synthetic-dc-latent-8x8-diagnostic.png
-/docs/diffusion-samples/zimage-vulkan-64-debug.png
-/docs/diffusion-samples/zimage-vulkan-debug2.png
+
+# docs/audio-samples/ and docs/diffusion-samples/ are local-only as of 2026-09-03 (previous
+# convention tracked real fixtures here in git; reversed -- these accumulate large binary media
+# and bloat the repo). Keep generating real samples into these directories locally as before,
+# just don't commit them. A doc that needs to CITE a specific sample should link to it by
+# filename/path in prose; the file itself stays uncommitted. Excluding directory CONTENTS (not
+# the directories themselves) so the one real (non-media) doc that lives inside
+# diffusion-samples/ can be un-ignored below and stay tracked as normal -- gitignore can't
+# re-include a file whose parent directory is itself excluded.
+/docs/audio-samples/*
+/docs/diffusion-samples/*
+!/docs/diffusion-samples/README.md

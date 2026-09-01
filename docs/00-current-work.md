@@ -137,9 +137,22 @@ that is more elegant but lower-visibility.
     sliding-window attention, biased MoE experts, an OpenAI-specific SwiGLU/gating variant).
     Potentially high popularity, but explicitly a new campaign, not a known/started gap — do not
     chase this opportunistically ahead of the ordered list above just because it's individually
-    popular; that violates the consolidation strategy this list is built around. The same
-    discipline applies to FLUX.1, SD3/3.5 — strategically attractive, not yet started, not to be
-    chased ahead of turn.
+    popular; that violates the consolidation strategy this list is built around.
+12. **FLUX.1, SD3/3.5** — **checked 2026-09-02, not a stub, but never executed.** `FluxDiT.cs`
+    (784 lines) and `SD3/Sd3Pipeline.cs` are real, substantial ports — genuine double/single-stream
+    MMDiT blocks reading real named tensors via `IWeightLoader`/`GgufWeightLoader`/
+    `SafetensorsLoader`, not hardcoded formulas. But no checkpoint has ever been downloaded, so
+    neither has ever been run once — unknown whether either produces correct output, garbage, or
+    crashes. `Sd3ConformanceTests.cs` doesn't settle this either: it never instantiates the real
+    pipeline, only checks array-concatenation arithmetic (`768+1280=2048`). Next real step, if
+    picked up: download a small checkpoint and run it once to find out which of those three it is,
+    same as the LTX-Video "structural stub → real port" pass. Strategically attractive given real
+    demand, but explicitly a new campaign — do not chase ahead of turn.
+13. **Stable Audio 3** — **checked 2026-09-02, genuine unwired stub**, same shape LTX-Video was
+    before its plan: `StableAudioDiT`/`AcousticVaeDecoder`/`StableAudioPipeline` exist in
+    `src/OpenTail.Stingray.Diffusion/StableAudio/` but take no `IWeightLoader` and read no real
+    tensors anywhere. No local checkpoint downloaded. Not yet planned/scoped the way LTX-Video was
+    — would need its own architecture-inventory-first planning pass before any implementation.
 
 ---
 
