@@ -117,29 +117,37 @@ points back here): patchify/unpatchify (`EulerFlowScheduler.PackLatent`/`UnpackL
 against the real `"b c (h ph) (w pw) -> b (h w) (c ph pw)"` einops rearrange, channel-outer/
 row/col patch layout and row-major patch-grid sequence order both match.
 
+## Round 5 (2026-09-01): two suspects ruled out definitively
+
+**VAE latent shift/scale conditioning is confirmed CORRECT, not the cause.** Read
+`VaeDecoder.Decode`: `z[i] = latent[i] * scale + shift` with `scale = 1/0.3611`,
+`shift = 0.1159` for 16-channel (FLUX) latents — exactly matches the real
+`(latent / scaling_factor) + shift_factor` formula, real values. Cleared.
+
+**Q2_K-specific kernel artifact is definitively ruled out.** Re-ran the identical repro at
+Q8_0 (near-full precision, `flux1-schnell-Q8_0.gguf` from the same `city96/FLUX.1-schnell-gguf`
+repo) instead of Q2_K. Result: the SAME tiling artifact, the SAME seam positions (same horizontal
+band ~20% down, same vertical split in the lower half) — just a different exact color palette
+(expected, since quant precision genuinely changes exact values even when the underlying
+computation is correct). If this were a quantization-block-boundary kernel bug, going from Q2_K's
+16/32-element sub-blocks to Q8_0's different block structure should have changed the artifact's
+period or character. It didn't. This rules out `SimdKernels.MatVecQ2K`/quant-precision entirely —
+the bug is a genuine architecture/math issue, reproducible at any precision.
+
+**Net effect on the remaining suspect list**: VAE conditioning and quantization are both cleared.
+That leaves attention/QKV wiring (item 3 below, not yet re-checked) and the full numeric
+golden-parity pass (item 4) as the real remaining candidates — probably worth moving thoroughness
+up: the seam's specific, consistent geometry (same fractional-height positions across two
+completely different quant levels) suggests something tied to a fixed structural boundary in the
+computation (a tile/chunk size, a fixed attention window, or an image-dimension-dependent index)
+rather than a diffuse numerical issue, which is exactly the kind of thing a block-by-block
+numeric diff (item 4) would localize quickly.
+
 ## Where to look next (suggested priority order, not mandatory)
 
-1. **VAE latent shift/scale conditioning.** FLUX's real VAE decode applies a `shift_factor` and
-   `scaling_factor` to the latent before decoding (`(latent / scaling_factor) + shift_factor`,
-   real values `scaling_factor=0.3611`, `shift_factor=0.1159` per BFL's `ae.safetensors`
-   metadata / diffusers' `AutoencoderKL` config for FLUX). Check whether `VaeDecoder`/
-   `ImagePipeline.Generate` applies these at all, and with the right sign/order. A wrong or
-   missing shift/scale on an otherwise-correct latent is a very plausible source of a structured,
-   periodic-looking decode, since the VAE's conv stack would be decoding an out-of-distribution
-   input it was never trained to handle gracefully, but whose statistics are still "plausible
-   enough" to produce texture rather than blank noise. Worth noting given Round 3's new seam
-   detail (a horizontal band ~20% down, a vertical split in the lower half): a wrong shift/scale
-   interacting with the VAE decoder's own internal up/downsampling stages could plausibly produce
-   seams at those kinds of fractional-of-height boundaries too, so this is still the first thing
-   to check even with the seam clue in hand, not a reason to skip to something more exotic.
-2. **Q2_K-specific dequant/matvec kernel artifact.** This is the first time this project has ever
-   run Q2_K weights through `FluxDiT.MatQ`'s CPU path at this scale. A periodic pattern that
-   survives a real semantic fix could be a quantization-block-boundary artifact (Q2_K uses 16- or
-   32-element sub-blocks; a wrong stride/offset in `SimdKernels.MatVecQ2K`/`QuantizeRowToQ8K`
-   could produce exactly this kind of small-period repeating structure). Cheapest test: re-run
-   with a higher-precision quant (Q4_K_S or Q8_0, both available from the same
-   `city96/FLUX.1-schnell-gguf` repo) — if the artifact's period or character changes with quant
-   level, that's strong evidence it's a kernel-precision issue, not an architecture bug.
+1. ~~VAE latent shift/scale conditioning~~ — **CHECKED AND CLEARED, see Round 5 above.**
+2. ~~Q2_K-specific dequant/matvec kernel artifact~~ — **CHECKED AND CLEARED, see Round 5 above**
+   (re-ran at Q8_0, identical artifact and seam positions).
 3. **Attention QKV wiring inside `DoubleBlock`/`SingleBlock`.** Not yet re-checked line-by-line
    against real FLUX's `SelfAttention`/`DoubleStreamBlock` this pass. Check the QK-RMSNorm
    (`QKNorm` in `FluxDiT.cs`) is applied per-head with the real per-head `query_norm.scale`/

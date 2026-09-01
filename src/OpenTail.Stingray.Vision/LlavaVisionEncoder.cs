@@ -47,10 +47,14 @@ public sealed unsafe class LlavaVisionEncoder
         public float[]? AttnOutB;
         public float[]? Ln2W;
         public float[]? Ln2B;
-        public VisionTensorRef FfnUpW;
-        public float[]? FfnUpB;
-        public VisionTensorRef FfnDownW;
-        public float[]? FfnDownB;
+        // Named by FUNCTION (first = embd->intermediate, second = intermediate->embd), not by
+        // the GGUF tensor name -- some real checkpoints (e.g. llava-v1.5-7b's own mmproj) name
+        // "ffn_up"/"ffn_down" backwards relative to their actual direction. See the constructor
+        // for how these are assigned per-checkpoint from the tensors' own real shapes.
+        public VisionTensorRef FfnFirstW;
+        public float[]? FfnFirstB;
+        public VisionTensorRef FfnSecondW;
+        public float[]? FfnSecondB;
         public int FfnIntermediate;
     }
 
@@ -87,7 +91,46 @@ public sealed unsafe class LlavaVisionEncoder
         for (int l = 0; l < _layers; l++)
         {
             var upTensor = gguf.FindTensor($"v.blk.{l}.ffn_up.weight");
-            int intermediate = upTensor.HasValue ? (int)upTensor.Value.Dimensions[1] : (_embd * 4);
+            var downTensor = gguf.FindTensor($"v.blk.{l}.ffn_down.weight");
+
+            var upW = VisionOps.GetTensor(gguf, $"v.blk.{l}.ffn_up.weight");
+            var upB = VisionOps.GetTensorArray(gguf, $"v.blk.{l}.ffn_up.bias");
+            var downW = VisionOps.GetTensor(gguf, $"v.blk.{l}.ffn_down.weight");
+            var downB = VisionOps.GetTensorArray(gguf, $"v.blk.{l}.ffn_down.bias");
+
+            // Real GGUF ne is [in,out] (ne0 = fastest = the tensor's own real input width,
+            // matching VisionOps.MatVecAny's row-major [outDim,inDim] contract). Determine which
+            // of ffn_up/ffn_down is genuinely the FIRST (embd->intermediate) linear by checking
+            // which one's own input width (Dimensions[0]) equals embd, rather than assuming the
+            // name "ffn_up" means "first" -- confirmed against a real checkpoint
+            // (llava-v1.5-7b's own mmproj) where the names are backwards: "ffn_up" is actually
+            // intermediate->embd (Dimensions=[4096,1024], in=4096) and "ffn_down" is actually
+            // embd->intermediate (Dimensions=[1024,4096], in=1024). Found via a real golden
+            // numeric mismatch against scripts/llava_ref.py (2026-09-01) -- the previous
+            // hardcoded "ffn_up is always first" assumption silently read the wrong quarter of
+            // each FFN weight tensor for this checkpoint, undetected by the differentiation-only
+            // real-weight test (which doesn't check numeric correctness, only "not degenerate").
+            bool upIsFirst = upTensor.HasValue && (int)upTensor.Value.Dimensions[0] == _embd;
+            VisionTensorRef firstW, secondW;
+            float[]? firstB, secondB;
+            int intermediate;
+            if (upIsFirst)
+            {
+                firstW = upW; firstB = upB; secondW = downW; secondB = downB;
+                intermediate = (int)upTensor!.Value.Dimensions[1];
+            }
+            else if (downTensor.HasValue && (int)downTensor.Value.Dimensions[0] == _embd)
+            {
+                firstW = downW; firstB = downB; secondW = upW; secondB = upB;
+                intermediate = (int)downTensor.Value.Dimensions[1];
+            }
+            else
+            {
+                // Neither tensor's input width matches embd (missing tensors, or a genuinely
+                // unexpected shape) -- fall back to the old naming assumption rather than throw.
+                firstW = upW; firstB = upB; secondW = downW; secondB = downB;
+                intermediate = upTensor.HasValue ? (int)upTensor.Value.Dimensions[1] : (_embd * 4);
+            }
 
             _blocks[l] = new LayerWeights
             {
@@ -105,10 +148,10 @@ public sealed unsafe class LlavaVisionEncoder
                 AttnOutB = VisionOps.GetTensorArray(gguf, $"v.blk.{l}.attn_out.bias"),
                 Ln2W = VisionOps.GetTensorArray(gguf, $"v.blk.{l}.ln2.weight"),
                 Ln2B = VisionOps.GetTensorArray(gguf, $"v.blk.{l}.ln2.bias"),
-                FfnUpW = VisionOps.GetTensor(gguf, $"v.blk.{l}.ffn_up.weight"),
-                FfnUpB = VisionOps.GetTensorArray(gguf, $"v.blk.{l}.ffn_up.bias"),
-                FfnDownW = VisionOps.GetTensor(gguf, $"v.blk.{l}.ffn_down.weight"),
-                FfnDownB = VisionOps.GetTensorArray(gguf, $"v.blk.{l}.ffn_down.bias"),
+                FfnFirstW = firstW,
+                FfnFirstB = firstB,
+                FfnSecondW = secondW,
+                FfnSecondB = secondB,
                 FfnIntermediate = intermediate
             };
         }
@@ -153,7 +196,7 @@ public sealed unsafe class LlavaVisionEncoder
 
             fixed (float* ln1W = blk.Ln1W, ln1B = blk.Ln1B, attnQkvB = blk.AttnQkvB, attnQB = blk.AttnQB,
                    attnKB = blk.AttnKB, attnVB = blk.AttnVB, attnOutB = blk.AttnOutB, ln2W = blk.Ln2W,
-                   ln2B = blk.Ln2B, ffnUpB = blk.FfnUpB, ffnDownB = blk.FfnDownB)
+                   ln2B = blk.Ln2B, ffnFirstB = blk.FfnFirstB, ffnSecondB = blk.FfnSecondB)
             {
                 Array.Copy(hiddenStates, normed, hiddenStates.Length);
                 VisionOps.LayerNorm(normed, totalTokensIn, _embd, ln1W, ln1B, _eps);
@@ -184,9 +227,9 @@ public sealed unsafe class LlavaVisionEncoder
                 VisionOps.LayerNorm(normed, totalTokensIn, _embd, ln2W, ln2B, _eps);
 
                 int intermediate = blk.FfnIntermediate;
-                VisionOps.MatVecAny(normed, blk.FfnUpW, ffnUpB, totalTokensIn, _embd, intermediate, ffnMid);
+                VisionOps.MatVecAny(normed, blk.FfnFirstW, ffnFirstB, totalTokensIn, _embd, intermediate, ffnMid);
                 VisionOps.QuickGelu(ffnMid.AsSpan(0, totalTokensIn * intermediate));
-                VisionOps.MatVecAny(ffnMid, blk.FfnDownW, ffnDownB, totalTokensIn, intermediate, _embd, attnOut);
+                VisionOps.MatVecAny(ffnMid, blk.FfnSecondW, ffnSecondB, totalTokensIn, intermediate, _embd, attnOut);
 
                 for (int i = 0; i < hiddenStates.Length; i++) hiddenStates[i] += attnOut[i];
             }

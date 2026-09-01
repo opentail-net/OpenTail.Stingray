@@ -63,18 +63,32 @@ public sealed class LlavaVisionModel : IDisposable
         int patchSize = GetInt(gguf, "clip.vision.patch_size", 14);
         int imageSize = GetInt(gguf, "clip.vision.image_size", 336);
         int embeddingDim = GetInt(gguf, "clip.vision.embedding_length", 1024);
-        int projectionDim = GetInt(gguf, "clip.vision.projection_dim", 0);
         int layerCount = GetInt(gguf, "clip.vision.block_count", 24);
         int headCount = GetInt(gguf, "clip.vision.attention.head_count", 16);
         int headDim = headCount > 0 ? embeddingDim / headCount : 64;
         bool hasClassEmbd = gguf.FindTensor("v.class_embd").HasValue || gguf.FindTensor("v.cls_embd").HasValue;
         float eps = GetFloat(gguf, "clip.vision.attention.layer_norm_epsilon", 1e-5f);
+        bool hasLlavaProjector = gguf.Metadata.TryGetValue("clip.has_llava_projector", out var hlp)
+            && hlp is bool hlpB && hlpB;
+
+        // `clip.vision.projection_dim` describes CLIP's OWN native image-text contrastive
+        // projection head -- a completely different, unrelated linear layer that the real
+        // llava.cpp build() (has_llava_projector branch) never touches at all. Trusting it here
+        // silently produced the wrong output width (768 instead of the real 4096, matching
+        // Llama-7B's hidden size) for every llava/granite-projector checkpoint -- found chasing
+        // a real numeric mismatch against scripts/llava_ref.py's golden reference (2026-09-01),
+        // not visible from the differentiation-only real-weight test, which doesn't check width.
+        // When the llava MLP projector is present, ALWAYS derive the true output width from the
+        // real mm.2/mm.0 weight tensor's own actual output dimension instead.
+        int projectionDim = hasLlavaProjector ? 0 : GetInt(gguf, "clip.vision.projection_dim", 0);
 
         if (projectionDim <= 0)
         {
             var pTensor = gguf.FindTensor("mm.2.weight") ?? gguf.FindTensor("mm.1.weight") ?? gguf.FindTensor("mm.0.weight");
             if (pTensor.HasValue)
             {
+                // Real GGUF ne is [in,out] (ne0 = fastest = input dim, matching MatVecAny's own
+                // row-major [outDim,inDim] contract) -- Dimensions[1] is the real output width.
                 projectionDim = (int)pTensor.Value.Dimensions[1];
             }
             else

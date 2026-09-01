@@ -60,8 +60,18 @@ public sealed unsafe class PixtralVisionEncoder
         _preLnW = VisionOps.GetTensorArray(gguf, "v.pre_ln.weight");
         _postLnW = VisionOps.GetTensorArray(gguf, "v.post_ln.weight");
 
-        _mlp0W = VisionOps.GetTensor(gguf, "mm.0.weight");
-        _mlp0B = VisionOps.GetTensorArray(gguf, "mm.0.bias");
+        // Real pixtral.cpp's projector (LlavaMultiModalProjector) uses tensors named
+        // "mm.1"/"mm.2" (confirmed against build_ffn(cur, model.mm_1_w, ..., model.mm_2_w, ...,
+        // FFN_GELU, -1) in tools/mtmd/models/pixtral.cpp), NOT "mm.0"/"mm.2" like llava's own
+        // projector. This previously looked for the non-existent "mm.0.weight", so
+        // `_mlp0W.IsValid` was always false and the encoder silently fell through to a raw
+        // truncating copy of the pre-projection hidden state instead of ever running the real
+        // projector at all -- found via a real golden numeric mismatch against
+        // scripts/pixtral_ref.py (2026-09-01): the transformer stack matched the reference
+        // almost exactly (per-token cosine > 0.99) but the final output was completely
+        // uncorrelated, isolating the bug to this step specifically.
+        _mlp0W = VisionOps.GetTensor(gguf, "mm.1.weight");
+        _mlp0B = VisionOps.GetTensorArray(gguf, "mm.1.bias");
         _mlp2W = VisionOps.GetTensor(gguf, "mm.2.weight");
         _mlp2B = VisionOps.GetTensorArray(gguf, "mm.2.bias");
 

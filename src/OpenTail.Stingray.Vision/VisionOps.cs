@@ -483,8 +483,22 @@ public static unsafe class VisionOps
     }
 
     /// <summary>
-    /// Continuous 2D Rotary Position Embedding (Pixtral-style):
-    /// Rotates first half of each head with horizontal patch position X, and second half with vertical patch position Y.
+    /// Continuous 2D Rotary Position Embedding (Pixtral-style). Confirmed against the real
+    /// llama.cpp reference (<c>clip.cpp</c>'s <c>build_rope_2d</c> plus its real <c>pos_h</c>/
+    /// <c>pos_w</c> fill: <c>pos_h[i] = i / n_patches_per_col</c> (row), <c>pos_w[i] = i %
+    /// n_patches_per_col</c> (col), and <c>build_rope_2d(cur, pos_h, pos_w, ...)</c> feeds
+    /// <c>pos_h</c> (row) to the FIRST half and <c>pos_w</c> (col) to the SECOND half) --
+    /// two real, independent bugs found and fixed here (2026-09-01, found chasing a real
+    /// numeric mismatch against scripts/pixtral_ref.py, a from-scratch port of the same real
+    /// C++): (1) this method previously rotated the FIRST half by column (X) and the SECOND by
+    /// row (Y) -- backwards; (2) the SECOND half is missing a real extra frequency scale,
+    /// <c>freq_scale_odd = theta^(-2/headDim)</c> (applied via `ggml_rope_ext`'s own
+    /// `freq_scale` parameter in the real call, present only for the second/odd half -- see the
+    /// C++'s own comment: "then for the second half, we use freq_scale to shift the inv_freq").
+    /// Without both fixes the two RoPE halves rotate by the wrong axis at the wrong rate, which
+    /// is structural enough to completely decorrelate the embedding (measured: per-token cosine
+    /// similarity against the real reference went from -0.02 -- i.e. no better than
+    /// uncorrelated -- to a match after fixing both).
     /// </summary>
     public static void Continuous2DRoPE(
         float[] q,
@@ -497,6 +511,7 @@ public static unsafe class VisionOps
     {
         int halfDim = headDim / 2;
         int quarterDim = halfDim / 2;
+        float freqScaleOdd = MathF.Pow(theta, -2f / headDim);
 
         Parallel.For(0, patchesY, py =>
         {
@@ -508,11 +523,11 @@ public static unsafe class VisionOps
                 {
                     int headOff = (tokenIdx * heads + h) * headDim;
 
-                    // Rotate X on first half
+                    // First half: rotate by ROW position (py), plain per-dim frequency.
                     for (int d = 0; d < quarterDim; d++)
                     {
                         float freq = MathF.Pow(theta, -(float)(2 * d) / halfDim);
-                        float angle = px * freq;
+                        float angle = py * freq;
                         float cos = MathF.Cos(angle);
                         float sin = MathF.Sin(angle);
 
@@ -528,11 +543,12 @@ public static unsafe class VisionOps
                         k[i1] = k0 * sin + k1 * cos;
                     }
 
-                    // Rotate Y on second half
+                    // Second half: rotate by COLUMN position (px), with the extra
+                    // freq_scale_odd factor real llama.cpp applies only to this half.
                     for (int d = 0; d < quarterDim; d++)
                     {
                         float freq = MathF.Pow(theta, -(float)(2 * d) / halfDim);
-                        float angle = py * freq;
+                        float angle = px * freq * freqScaleOdd;
                         float cos = MathF.Cos(angle);
                         float sin = MathF.Sin(angle);
 
