@@ -433,11 +433,16 @@ completely, then closed out the remaining build-order steps:
   (~19GB, real T5-v1.1-XXL fp32, sharded). Added `T5Encoder.FromLoader(IWeightLoader)` so it can
   wrap `SafetensorsLoader.OpenDirectory`'s sharded-checkpoint support. Verified against HuggingFace
   `transformers`' real `T5EncoderModel` loaded with the same weights: **>0.999 cosine similarity**
-  on real token ids (`LtxT5EncoderGoldenParityTests`). **Known, separately-tracked gap**: the
-  existing tokenizer's greedy-longest-match segmentation is NOT Viterbi-optimal like real
-  SentencePiece Unigram, confirmed to diverge on a real prompt (matches
-  `docs/00-current-work.md`'s "Unigram-tokenizer" backlog item — pre-existing, not introduced or
-  fixed here; documented with a real repro in `LtxT5EncoderGoldenParityTests`).
+  on real token ids (`LtxT5EncoderGoldenParityTests`). **Tokenizer gap closed** (2026-09-01, same
+  pass): `T5Tokenizer.Tokenize` previously did a greedy-longest-match approximation, confirmed to
+  diverge from real SentencePiece Unigram segmentation on a real prompt (matched
+  `docs/00-current-work.md`'s "Unigram-tokenizer" backlog item). Replaced with a real
+  Viterbi-optimal dynamic program over the vocab's log-probability scores (maximizes total
+  log-probability across the whole string, matching real SentencePiece semantics) — now produces
+  byte-for-byte identical token ids to HuggingFace's real `T5TokenizerFast` on the same prompt
+  (`LtxT5EncoderGoldenParityTests`' tokenizer test flipped from documenting the mismatch to a
+  passing exact-match assertion). Full `OpenTail.Stingray.Tests.Diffusion` suite (89 tests, all
+  models sharing this tokenizer) re-run clean after the change.
 - **Scheduler / CFG** (`LtxVideoPipeline.GenerateVideo`): replaced the previous ad-hoc fixed-shift
   timestep formula with the real `RectifiedFlowScheduler` math from `ltx_video/schedulers/rf.py`
   (`get_normal_shift` + `time_shift`, resolution-dependent via the real embedded scheduler config's
@@ -456,7 +461,6 @@ completely, then closed out the remaining build-order steps:
 
 **What's still not independently numerically verified**: the scheduler/CFG loop's own trajectory
 (only smoke-tested, not golden-tensor-verified against a real multi-step run — the single biggest
-remaining gap per the plan's own "verify every stage" standard), and the T5 tokenizer's exact
-segmentation (tracked separately, not an LTX-specific gap). Real full-quality visual output (a real
-prompt at real resolution/step count, judged by eye) has not been produced or reviewed — the smoke
-test above proves the pipeline RUNS, not that its output is good.
+remaining gap per the plan's own "verify every stage" standard). Real full-quality visual output (a
+real prompt at real resolution/step count, judged by eye) has not been produced or reviewed — the
+smoke test above proves the pipeline RUNS, not that its output is good.
