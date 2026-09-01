@@ -40,18 +40,31 @@ explaining the real vs. wrong behavior at its fix site:
      frequency slots `[0, head_dim/2)` regardless of axis — meaning column-axis frequencies were
      computed but never actually applied. Column position was silently ignored entirely.
 
-After fix #4, the output is confirmed byte-different from the pre-fix run (verified via file
-hash), so the fix has a real numeric effect — **but the visible artifact (see below) is
-unchanged in character.**
+5. **Euler integration step sign inversion.** In `EulerFlowScheduler.cs` (`Denoise`), `dt = tNext - t < 0`
+   was paired with `x[j] -= dt * v[j]`, which computed $x - (-|dt|) \cdot v = x + |dt| \cdot v$. In
+   Flow Matching, velocity $v = x_1 - x_0$ (noise $-$ data); integrating backward toward data
+   requires subtracting velocity ($\Delta t = t - tNext > 0 \implies x -= \Delta t \cdot v$). The
+   old code had been adding noise on every single step.
+
+6. **Stream token concatenation ordering (`[img, txt]` vs `[txt, img]`).** Confirmed against real
+   BFL FLUX source (`DoubleStreamBlock`, `SingleStreamBlock` in `flux/modules/layers.py`):
+   - Real FLUX concatenates `[txt, img]` (text tokens $0 \dots 511$, followed by image tokens).
+   - `FluxDiT.cs` had concatenated `[img, txt]`, feeding image tokens into the text slots and text
+     tokens into the image slots throughout single-stream blocks and final layer extraction.
+   - Fixed across `JointAttention`, `SingleBlock`, and `Forward`.
+
+7. **RoPE sequence alignment.** Aligned `Flux2DRoPE` table building and `ApplyInPlace` to match
+   `[txt (identity), img (spatial)]`, ensuring image tokens receive spatial frequencies and text
+   tokens remain unrotated.
 
 ## The remaining problem
 
-Pipeline runs to completion cleanly (no exceptions), ~860s for 4 steps on CPU-only with a Q2_K
-quant, but the output image is a periodic small-tile pattern repeated uniformly across the whole
-512×512 frame — not remotely resembling the prompt. It looks like a regular textile/chevron
-texture, not noise, not a blank/gray field, and not a recognizable-but-flawed image (contrast this
-with LTX-Video's artifact, which does show real prompt-semantic structure with dithering on top —
-FLUX's current artifact shows NO prompt-semantic structure at all).
+Pipeline runs to completion cleanly (no exceptions), but the output image is a periodic small-tile
+pattern repeated uniformly across the whole 512×512 frame — not remotely resembling the prompt. It
+looks like a regular textile/chevron texture, not noise, not a blank/gray field, and not a
+recognizable-but-flawed image (contrast this with LTX-Video's artifact, which does show real
+prompt-semantic structure with dithering on top — FLUX's current artifact shows NO prompt-semantic
+structure at all).
 
 **Why RoPE was ruled out as the (sole) cause**: if a purely positional signal were driving the
 periodic pattern, fixing it should have changed the artifact's structure, not just its exact pixel
@@ -59,6 +72,43 @@ values. It didn't — same tiling character before and after the RoPE rewrite. T
 from attention/positional wiring and toward something either upstream of the DiT's semantic
 content (VAE latent conditioning) or downstream of it in a way that's structurally periodic
 regardless of input.
+
+**Round 3 (2026-09-01, verification of items 5-7 above): the Euler-sign and token-ordering fixes
+are real and independently confirmed against the actual BFL reference source, but did NOT fix the
+artifact either — and a separate, unrelated performance change made things measurably worse.**
+Verified item 5 (Euler sign) algebraically matches real `sampling.py`'s
+`img = img + (t_prev - t_curr) * pred` exactly. Verified item 6 (token ordering) matches real
+`layers.py`'s `torch.cat((txt_q, img_q), dim=2)` and `model.py`'s `torch.cat((txt, img), 1)`
+exactly, confirmed via direct fetch of the real GitHub source, not from memory. Both are genuine,
+correctly-diagnosed, correctly-fixed bugs. **But re-running the exact same repro after these
+fixes still produces a tiling artifact** — same fundamental phenomenon, though now a different
+color palette (blue/pink/white herringbone vs. the earlier version's warmer tones), and with a
+new detail: a visible horizontal seam roughly 20% down the frame and a vertical seam splitting the
+lower portion in half. That seam structure hadn't appeared in any earlier run.
+
+Separately, and NOT part of items 5-7: an unrelated performance change was made to
+`DiffusionOps.cs`/`FluxDiT.cs` in the same round (large diff, not yet characterized in this doc —
+check `git log`/`git diff` on those two files for what actually changed). Measured effect:
+**slower, not faster** — 1549.2s for the same 4-step run, vs. 860.8s before any of round 2/3's
+changes — and peak process memory around 19 GB (real FLUX weights at Q2_K/fp8 total roughly
+9-10 GB, so this is suspicious on its own). The new seam artifact appeared in the SAME run as this
+performance change, so it's not yet established whether the seams are from a bug in the
+performance change itself (a plausible culprit: a broken chunking/parallelization scheme — seams
+at consistent fractional offsets are a classic symptom of tiled/batched processing with a
+boundary-handling bug) or were already latent and just newly exposed. **Not yet disentangled —
+next session should likely start by reverting/isolating the performance change specifically and
+re-testing with only items 5-7 applied, to establish a clean baseline before deciding whether the
+performance change is worth keeping in its current form.**
+
+**One concrete lead for that investigation**: the performance diff adds several new `Parallel.For`
+call sites inside `FluxDiT.cs`'s per-block methods (`DoubleBlock`/`SingleBlock` now also take a
+new `ws` workspace parameter not present before). If `ws` is a mutable scratch buffer shared
+across parallel loop iterations without per-iteration isolation, that's a textbook source of both
+a race condition (→ the new seam artifact, if the race manifests at consistent iteration/chunk
+boundaries) and unexpected slowdown (→ false sharing / cache-line contention across threads
+fighting over the same buffer, which also fits the measured 19 GB peak memory if the workspace
+ends up being allocated per-thread rather than actually shared as intended). This is a real,
+checkable hypothesis, not confirmed — start there.
 
 **Already checked and confirmed correct this pass** (do not re-investigate unless new evidence
 points back here): patchify/unpatchify (`EulerFlowScheduler.PackLatent`/`UnpackLatent`) — verified
@@ -124,11 +174,13 @@ dotnet run --project src/OpenTail.Stingray.Cli -c Release -- image \
   --output flux-out.png
 ```
 
-CPU-only, ~14-15 minutes for 4 steps. Prior runs are saved at
-`docs/diffusion-samples/flux-schnell-first-run.png` (pre-RoPE-fix) and
-`docs/diffusion-samples/flux-schnell-rope-fix.png` (post-RoPE-fix) for visual comparison — both
-gitignored/local-only per this project's convention, so they only exist on whichever machine
-generated them.
+CPU-only, ~14-15 minutes for 4 steps before the performance change (item above), ~26 minutes
+after it (measured regression, not an improvement). Prior runs are saved at
+`docs/diffusion-samples/flux-schnell-first-run.png` (pre-RoPE-fix),
+`docs/diffusion-samples/flux-schnell-rope-fix.png` (post-RoPE-fix, pre items 5-7), and
+`docs/diffusion-samples/flux-schnell-perf-fix.png` (post items 5-7 AND the performance change,
+showing the new seam artifact) for visual comparison — all gitignored/local-only per this
+project's convention, so they only exist on whichever machine generated them.
 
 ## House rules for whoever picks this up (from this project's `CLAUDE.md`)
 

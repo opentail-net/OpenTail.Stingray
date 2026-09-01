@@ -115,19 +115,20 @@ internal static class Flux2DRoPE
     }
 
     /// <summary>
-    /// Apply RoPE to Q or K tensor in-place.
+    /// Apply RoPE to Q or K tensor in-place for a slice of tokens [startToken, startToken + tokenCount).
     /// x layout: [nSeq, nHeads, headDim], cos/sin: [nSeq, headDim/2] (one value per adjacent pair).
-    /// Only applied to the first <paramref name="nImgPatches"/> positions (image patches); text
-    /// positions are left unchanged, which is exactly equivalent to real FLUX's own behavior of
-    /// applying an always-identity (position-0) rotation to text tokens.
     /// </summary>
     public static void ApplyInPlace(float[] x, float[] cos, float[] sin,
-                                    int nSeq, int nHeads, int headDim, int nImgPatches)
+                                    int nSeq, int nHeads, int headDim,
+                                    int startToken = 0, int tokenCount = -1)
     {
+        if (tokenCount < 0) tokenCount = nSeq - startToken;
         int nPairs = headDim / 2;
-        for (int s = 0; s < nImgPatches && s < nSeq; s++)
+        int endToken = Math.Min(nSeq, startToken + tokenCount);
+
+        for (int s = startToken; s < endToken; s++)
         {
-            int freqOff = s * nPairs;
+            int freqOff = (s - startToken) * nPairs;
             for (int h = 0; h < nHeads; h++)
             {
                 int xOff = (s * nHeads + h) * headDim;

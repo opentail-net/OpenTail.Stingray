@@ -729,49 +729,62 @@ internal static unsafe class DiffusionOps
     /// </summary>
     public static float[] MultiHeadAttention(float[] q, float[] k, float[] v, int qSeq, int kvSeq, int numHeads, int headDim)
     {
-        float scale = 1.0f / MathF.Sqrt(headDim);
         var output = new float[qSeq * numHeads * headDim];
-
-        Parallel.For(0, numHeads, h =>
-        {
-            var scores = new float[kvSeq];
-            for (int i = 0; i < qSeq; i++)
-            {
-                int qRow = (i * numHeads + h) * headDim;
-                var qSpan = q.AsSpan(qRow, headDim);
-                float maxScore = float.NegativeInfinity;
-
-                for (int j = 0; j < kvSeq; j++)
-                {
-                    int kRow = (j * numHeads + h) * headDim;
-                    var kSpan = k.AsSpan(kRow, headDim);
-                    float dot = TensorPrimitives.Dot(qSpan, kSpan) * scale;
-                    scores[j] = dot;
-                    if (dot > maxScore) maxScore = dot;
-                }
-
-                float sumExp = 0f;
-                for (int j = 0; j < kvSeq; j++)
-                {
-                    scores[j] = MathF.Exp(scores[j] - maxScore);
-                    sumExp += scores[j];
-                }
-                float invSum = 1f / sumExp;
-
-                int outRow = (i * numHeads + h) * headDim;
-                var outSpan = output.AsSpan(outRow, headDim);
-                outSpan.Clear();
-                for (int j = 0; j < kvSeq; j++)
-                {
-                    float s = scores[j] * invSum;
-                    if (s == 0f) continue;
-                    int vRow = (j * numHeads + h) * headDim;
-                    TensorPrimitives.MultiplyAdd(v.AsSpan(vRow, headDim), s, outSpan, outSpan);
-                }
-            }
-        });
-
+        MultiHeadAttention(q, k, v, output.AsSpan(), qSeq, kvSeq, numHeads, headDim);
         return output;
+    }
+
+    public static void MultiHeadAttention(float[] q, float[] k, float[] v, Span<float> output, int qSeq, int kvSeq, int numHeads, int headDim)
+    {
+        float scale = 1.0f / MathF.Sqrt(headDim);
+
+        fixed (float* pQ = q, pK = k, pV = v, pOut = output)
+        {
+            float* pQLocal = pQ;
+            float* pKLocal = pK;
+            float* pVLocal = pV;
+            float* pOutLocal = pOut;
+
+            Parallel.For(0, numHeads, h =>
+            {
+                var scores = new float[kvSeq];
+                for (int i = 0; i < qSeq; i++)
+                {
+                    int qRow = (i * numHeads + h) * headDim;
+                    var qSpan = new ReadOnlySpan<float>(pQLocal + qRow, headDim);
+                    float maxScore = float.NegativeInfinity;
+
+                    for (int j = 0; j < kvSeq; j++)
+                    {
+                        int kRow = (j * numHeads + h) * headDim;
+                        var kSpan = new ReadOnlySpan<float>(pKLocal + kRow, headDim);
+                        float dot = TensorPrimitives.Dot(qSpan, kSpan) * scale;
+                        scores[j] = dot;
+                        if (dot > maxScore) maxScore = dot;
+                    }
+
+                    float sumExp = 0f;
+                    for (int j = 0; j < kvSeq; j++)
+                    {
+                        scores[j] = MathF.Exp(scores[j] - maxScore);
+                        sumExp += scores[j];
+                    }
+                    float invSum = 1f / sumExp;
+
+                    int outRow = (i * numHeads + h) * headDim;
+                    var outSpan = new Span<float>(pOutLocal + outRow, headDim);
+                    outSpan.Clear();
+                    for (int j = 0; j < kvSeq; j++)
+                    {
+                        float s = scores[j] * invSum;
+                        if (s == 0f) continue;
+                        int vRow = (j * numHeads + h) * headDim;
+                        var vSpan = new ReadOnlySpan<float>(pVLocal + vRow, headDim);
+                        TensorPrimitives.MultiplyAdd(vSpan, s, outSpan, outSpan);
+                    }
+                }
+            });
+        }
     }
 
     /// <summary>

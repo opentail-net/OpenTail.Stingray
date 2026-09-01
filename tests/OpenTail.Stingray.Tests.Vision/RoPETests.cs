@@ -15,7 +15,7 @@ public sealed class Flux2DRoPETests
     public void BuildFreqs_Position0_CosIsOneSinIsZero()
     {
         int[] positions = [0, 0];
-        var (cos, sin) = OpenTail.Stingray.Diffusion.Flux2DRoPE.BuildFreqs(positions, nPatches: 1, headDim: 8);
+        var (cos, sin) = OpenTail.Stingray.Diffusion.Flux2DRoPE.BuildFreqs(positions, nPatches: 1, headDim: 128);
         Assert.All(cos, c => Assert.Equal(1f, c, precision: 5));
         Assert.All(sin, s => Assert.Equal(0f, s, precision: 5));
     }
@@ -24,21 +24,23 @@ public sealed class Flux2DRoPETests
     public void BuildFreqs_ReturnsTablesShapedNPatchesByHeadDim()
     {
         int[] positions = [0, 0, 1, 2, 3, 4];
-        var (cos, sin) = OpenTail.Stingray.Diffusion.Flux2DRoPE.BuildFreqs(positions, nPatches: 3, headDim: 8);
-        Assert.Equal(3 * 8, cos.Length);
-        Assert.Equal(3 * 8, sin.Length);
+        var (cos, sin) = OpenTail.Stingray.Diffusion.Flux2DRoPE.BuildFreqs(positions, nPatches: 3, headDim: 128);
+        Assert.Equal(3 * 64, cos.Length);
+        Assert.Equal(3 * 64, sin.Length);
     }
 
     [Fact]
     public void ApplyInPlace_IsRotationThatPreservesVectorNorm()
     {
-        const int nSeq = 2, nHeads = 1, headDim = 4;
-        float[] x = [1f, 2f, 3f, 4f, 5f, 6f, 7f, 8f];
+        const int nSeq = 2, nHeads = 1, headDim = 128;
+        var rng = new System.Random(42);
+        float[] x = new float[nSeq * nHeads * headDim];
+        for (int i = 0; i < x.Length; i++) x[i] = rng.NextSingle() * 2f - 1f;
         double normBefore = System.Math.Sqrt(x.Sum(v => (double)v * v));
 
         int[] positions = [1, 2, 3, 4];
         var (cos, sin) = OpenTail.Stingray.Diffusion.Flux2DRoPE.BuildFreqs(positions, nPatches: nSeq, headDim: headDim);
-        OpenTail.Stingray.Diffusion.Flux2DRoPE.ApplyInPlace(x, cos, sin, nSeq, nHeads, headDim, nImgPatches: nSeq);
+        OpenTail.Stingray.Diffusion.Flux2DRoPE.ApplyInPlace(x, cos, sin, nSeq, nHeads, headDim, tokenCount: nSeq);
 
         double normAfter = System.Math.Sqrt(x.Sum(v => (double)v * v));
         Assert.Equal(normBefore, normAfter, precision: 3);
@@ -47,16 +49,18 @@ public sealed class Flux2DRoPETests
     [Fact]
     public void ApplyInPlace_LeavesPositionsBeyondNImgPatchesUnchanged()
     {
-        const int nSeq = 2, nHeads = 1, headDim = 4;
-        float[] x = [1f, 2f, 3f, 4f, 9f, 9f, 9f, 9f];
+        const int nSeq = 2, nHeads = 1, headDim = 128;
+        var rng = new System.Random(42);
+        float[] x = new float[nSeq * nHeads * headDim];
+        for (int i = 0; i < x.Length; i++) x[i] = rng.NextSingle() * 2f - 1f;
         float[] original = (float[])x.Clone();
 
         int[] positions = [1, 2, 3, 4];
         var (cos, sin) = OpenTail.Stingray.Diffusion.Flux2DRoPE.BuildFreqs(positions, nPatches: nSeq, headDim: headDim);
         // Only the first patch (index 0) counts as an image patch; the second (text) is untouched.
-        OpenTail.Stingray.Diffusion.Flux2DRoPE.ApplyInPlace(x, cos, sin, nSeq, nHeads, headDim, nImgPatches: 1);
+        OpenTail.Stingray.Diffusion.Flux2DRoPE.ApplyInPlace(x, cos, sin, nSeq, nHeads, headDim, tokenCount: 1);
 
-        Assert.Equal(original[4..], x[4..]);
+        Assert.Equal(original[headDim..], x[headDim..]);
     }
 }
 

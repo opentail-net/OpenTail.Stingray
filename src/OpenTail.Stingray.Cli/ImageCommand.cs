@@ -536,7 +536,7 @@ public sealed class ImageCommand : Command<ImageCommand.Settings>
         }
         catch (Exception ex)
         {
-            AnsiConsole.MarkupLine($"[red]Error:[/] {Markup.Escape(ex.Message)}");
+            AnsiConsole.MarkupLine($"[red]Error:[/] {Markup.Escape(ex.ToString())}");
             return 1;
         }
 

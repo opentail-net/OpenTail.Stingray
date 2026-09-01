@@ -62,17 +62,16 @@ public sealed class EulerFlowScheduler
 
         for (int i = 0; i < n; i++)
         {
-            float t    = _timesteps[i];
+            float t     = _timesteps[i];
             float tNext = (i + 1 < n) ? _timesteps[i + 1] : 0f;
-            float dt   = tNext - t;  // negative (we go from 1→0)
+            float dt    = t - tNext;  // positive step size (we integrate backward from t=1 → t=0)
 
             // Predict velocity
             var v = ditForward(x, t);
 
             // Euler step (flow matching, backward integration):
-            //   x_{t-Δt} = x_t - Δt * v   (Δt > 0, subtracting the velocity)
-            // With dt = tNext - t < 0: x_new = x - dt * v = x + |dt| * v
-            // This moves x toward the data (clean image) direction.
+            //   x_{t - Δt} = x_t - Δt * v   (Δt = t - tNext > 0)
+            // Moves x from noise (t=1) toward clean data (t=0).
             for (int j = 0; j < x.Length; j++)
                 x[j] -= dt * v[j];
 

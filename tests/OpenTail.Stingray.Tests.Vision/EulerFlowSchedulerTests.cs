@@ -20,6 +20,17 @@ public sealed class EulerFlowSchedulerTests
     }
 
     [Fact]
+    public void Denoise_ConstantVelocity_SubtractsVelocityScaledByDt()
+    {
+        // 2 steps (t=1.0 -> 0.5 -> 0.0): dt=0.5 on each step
+        var sched = OpenTail.Stingray.Diffusion.EulerFlowScheduler.Linear(numSteps: 2);
+        float[] noise = [1.0f];
+        // v = 1.0 -> x = 1.0 - 0.5*1.0 - 0.5*1.0 = 0.0
+        float[] result = sched.Denoise(noise, (x, t) => [1.0f]);
+        Assert.Equal(0.0f, result[0], precision: 5);
+    }
+
+    [Fact]
     public void Denoise_DoesNotMutateInputArray()
     {
         var sched = OpenTail.Stingray.Diffusion.EulerFlowScheduler.Linear(numSteps: 2);
