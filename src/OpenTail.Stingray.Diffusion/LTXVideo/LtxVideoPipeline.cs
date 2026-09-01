@@ -110,13 +110,18 @@ public sealed class LtxVideoPipeline : IDiffusionPipeline
         }
     }
 
+    /// <param name="guidance">Real classifier-free-guidance scale; the real pipeline's own default
+    /// is 4.5 (`pipeline_ltx_video.py`'s `guidance_scale` parameter), not the previous placeholder
+    /// default of 3.0. CFG only actually applies (an extra unconditional forward pass per step,
+    /// blended in) when a real T5 encoder/tokenizer was supplied to <see cref="Load"/> -- without
+    /// one there is no real negative-prompt embedding to guide away from.</param>
     public List<float[]> GenerateVideo(
         string prompt,
         int width = 768,
         int height = 512,
         int numFrames = 25,
         int steps = 25,
-        float guidance = 3.0f,
+        float guidance = 4.5f,
         int seed = -1,
         Action<int, int>? progress = null)
     {
@@ -140,6 +145,7 @@ public sealed class LtxVideoPipeline : IDiffusionPipeline
 
         int textDim = _transformer.CaptionChannels;
         float[] textContext;
+        float[]? negativeTextContext = null; // real CFG's unconditional (empty-prompt) branch
         if (_t5 is not null && _t5Tokenizer is not null)
         {
             // Real T5-v1.1-XXL text conditioning (numerically verified against HuggingFace
@@ -147,12 +153,19 @@ public sealed class LtxVideoPipeline : IDiffusionPipeline
             // LtxT5EncoderGoldenParityTests). Feeds caption_projection's 4096-dim input directly.
             var tokenIds = _t5Tokenizer.Tokenize(prompt);
             textContext = _t5.Encode(tokenIds);
+
+            if (guidance > 1.0f)
+            {
+                var negativeIds = _t5Tokenizer.Tokenize(string.Empty);
+                negativeTextContext = _t5.Encode(negativeIds);
+            }
         }
         else
         {
             // Placeholder text conditioning: no real T5-v1.1-XXL encoder wired for this Load() call
             // (pass textEncoderDir/tokenizerJsonPath to enable it). Structurally runnable, not
-            // semantically meaningful.
+            // semantically meaningful. No CFG without a real negative-prompt embedding to guide
+            // away from.
             int textTokens = 128;
             textContext = new float[textTokens * textDim];
             for (int i = 0; i < textContext.Length; i++)
@@ -161,16 +174,43 @@ public sealed class LtxVideoPipeline : IDiffusionPipeline
             }
         }
 
-        float shift = 3.0f;
-        float dt = 1.0f / steps;
+        // Real `RectifiedFlowScheduler` (config: `sampler="Uniform"` (default), `shifting="SD3"`,
+        // `target_shift_terminal=None` -- confirmed against this checkpoint's own embedded
+        // `__metadata__["config"]["scheduler"]` JSON): base timesteps are a plain
+        // `linspace(1, 1/steps, steps)`, then resolution-DEPENDENT-shifted via
+        // `sd3_resolution_dependent_timestep_shift` -- `shift = get_normal_shift(numLatentTokens)`
+        // (linear interpolation between (1024 tokens -> 0.95) and (4096 tokens -> 2.05)), then
+        // `time_shift(shift, sigma=1, t) = exp(shift) / (exp(shift) + (1/t - 1))` per real
+        // `ltx_video/schedulers/rf.py`. This is NOT the ad-hoc `shift/(1+(shift-1)*t)` formula (a
+        // fixed shift=3.0) this pipeline used previously -- that was a plausible-looking
+        // approximation, not the real, resolution-dependent formula.
+        int numLatentTokens = numLatentFrames * patchH * patchW;
+        float sd3Shift = GetNormalShift(numLatentTokens);
+
+        var shiftedTimesteps = new float[steps + 1]; // padded with a trailing 0, per real `step()`
+        for (int i = 0; i < steps; i++)
+        {
+            float tRaw = 1.0f - (float)i / steps; // linspace(1, 1/steps, steps)
+            shiftedTimesteps[i] = TimeShift(sd3Shift, 1.0f, tRaw);
+        }
+        shiftedTimesteps[steps] = 0f;
 
         for (int step = 0; step < steps; step++)
         {
-            float tRaw = 1.0f - (float)step / steps;
-            float tShifted = (shift * tRaw) / (1.0f + (shift - 1.0f) * tRaw);
-            float timestep = tShifted * 1000.0f;
+            float tShifted = shiftedTimesteps[step];
+            float dt = tShifted - shiftedTimesteps[step + 1]; // real: current - next lower timestep
+            float timestep = tShifted * _transformer.TimestepScale;
 
             var vPred = _transformer.Forward(latents, timestep, textContext, numLatentFrames, patchH, patchW);
+
+            if (negativeTextContext is not null)
+            {
+                // Real classifier-free guidance: `noise_pred = uncond + guidance_scale * (cond -
+                // uncond)` (`pipeline_ltx_video.py`'s real combine step).
+                var vPredUncond = _transformer.Forward(latents, timestep, negativeTextContext, numLatentFrames, patchH, patchW);
+                for (int i = 0; i < vPred.Length; i++)
+                    vPred[i] = vPredUncond[i] + guidance * (vPred[i] - vPredUncond[i]);
+            }
 
             for (int i = 0; i < totalLatentElements; i++)
             {
@@ -250,6 +290,20 @@ public sealed class LtxVideoPipeline : IDiffusionPipeline
 
         return results;
     }
+
+    /// <summary>Real `get_normal_shift`: linear interpolation of the SD3 resolution-dependent shift
+    /// parameter between (1024 tokens -&gt; 0.95) and (4096 tokens -&gt; 2.05).</summary>
+    private static float GetNormalShift(int nTokens, int minTokens = 1024, int maxTokens = 4096,
+        float minShift = 0.95f, float maxShift = 2.05f)
+    {
+        float m = (maxShift - minShift) / (maxTokens - minTokens);
+        float b = minShift - m * minTokens;
+        return m * nTokens + b;
+    }
+
+    /// <summary>Real `time_shift(mu, sigma, t) = exp(mu) / (exp(mu) + (1/t - 1)^sigma)`.</summary>
+    private static float TimeShift(float mu, float sigma, float t)
+        => MathF.Exp(mu) / (MathF.Exp(mu) + MathF.Pow(1.0f / t - 1.0f, sigma));
 
     private static void SaveRgbPlanarAsPng(float[] rgbPlanar, int width, int height, string outputPath)
     {
