@@ -1707,16 +1707,22 @@ tag. `orion` was not re-checked this pass (needs its own small new LayerNorm-wit
 gated-SiLU-FFN combination per the original note below, so it's a real code task, not a free
 re-check like `baichuan`/`minicpm`/`ernie4_5`).
 
-**Re-checked 2026-09-01, `orion`: tokenizer axis confirmed cleared, architecture axis unchanged
-(still real new code, as originally scoped).** Header-only partial download (first 8 MB, via HTTP
-range request) of `demonsu/orion-14b-chat-gguf` `ggml-model-Q4_K_M.gguf` — the full 8.81 GB file
-was not downloaded, matching the original session's bandwidth-conscious methodology.
-`general.architecture=orion` (a real, distinct arch string, unlike `baichuan`'s converter quirk
-above), real `orion.*` hyperparameter keys present, `tokenizer.ggml.scores` present with no
-`tokenizer.ggml.merges` — the same already-fixed SPM-score shape. Confirms the tokenizer is no
-longer a blocker whenever the architecture side (LayerNorm-with-bias + gated-SiLU-FFN, per the
-original note below) gets built — a real, scoped, not-yet-started coding task, not a free
-re-check.
+**ADMITTED 2026-09-01, full 4-of-4-token exact greedy match, zero new code — the "real architecture
+task" this note originally scoped turned out to already be free.** A first pass this same day
+confirmed the tokenizer axis cleared via a header-only partial download (first 8 MB), same
+conclusion as below. Downloading the full checkpoint (`demonsu/orion-14b-chat-gguf`
+`ggml-model-Q4_K_M.gguf`, 8.81 GB, deleted after this receipt) to actually attempt the "LayerNorm-
+with-bias + gated-SiLU-FFN" architecture work this note assumed was needed found there was nothing
+left to build: reading the real reference (`examples/llama.cpp/llama.cpp/src/models/orion.cpp`)
+first showed `ModelGraph.cs`'s `UsesLayerNorm` flag is driven purely by tensor presence
+(`blk.0.attn_norm.bias` found in the GGUF, architecture-agnostic — the same detection
+`gptneox`/`falcon`/`codeshell` already use), and `orion`'s gated-SiLU FFN
+(`ffn_gate`/`ffn_up`/`ffn_down`, no bias) is the exact shape the plain llama FFN path already
+builds. `orion` was also already in `ModelGraph.cs`'s `isNeoxRope` dispatch table from an earlier
+session pass. The allowlist string alone was sufficient — no `ModelGraph.cs`/`ForwardPass.cs`
+changes at all. Full evidence in `ModelCompatibility.cs`'s `"orion"` allowlist comment: 33-of-33
+prompt tokens and 4-of-4 greedy-continuation tokens match `llama-tokenize`/`llama-server` exactly
+("Paris." + EOS). No persisted test (bucket-2, checkpoint not vendored).
 
 **Checked 2026-09-01, `nanbeige`: this is now a materially different, harder problem than the
 original note below describes — a genuinely new architectural mechanism, not the same small gap.**

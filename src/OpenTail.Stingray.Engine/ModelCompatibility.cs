@@ -138,7 +138,36 @@ public static class ModelCompatibility
         // test to catch a mistake. A change to RunTrunk/PrefillCore/the rope_freqs handling above
         // could silently break this profile and nothing in CI would notice.
         "exaone",
-        "orion", // TEMP probe 2026-09-01, revert if architecturally incomplete
+
+        // orion -- ADMITTED 2026-09-01, full 4-of-4-token exact greedy match, zero new code.
+        // Was diagnosed as blocked on tokenizer.ggml.model=llama + scores-only-no-merges (same
+        // shape as minicpm/internlm2/baichuan/ernie4_5, already fixed by SpmMergePiecesByScore)
+        // plus an architecture-side "new LayerNorm-with-bias + gated-SiLU-FFN combination" the
+        // original 2026-08-09 note assumed was unbuilt. Re-reading the real reference
+        // (examples/llama.cpp/llama.cpp/src/models/orion.cpp) before writing anything found this
+        // combination was ALREADY covered by existing generic dispatch: ModelGraph.cs's
+        // UsesLayerNorm flag is driven purely by tensor presence (blk.0.attn_norm.bias found in
+        // the GGUF, model-agnostic -- the same detection gptneox/falcon/codeshell already use),
+        // and orion's gated-SiLU FFN (ffn_gate/ffn_up/ffn_down, no bias) is the same shape the
+        // plain llama FFN path already builds. orion was also already in ModelGraph.cs's
+        // isNeoxRope dispatch table from an earlier session pass. Net: the allowlist string alone
+        // was sufficient, no ModelGraph.cs/ForwardPass.cs changes needed at all.
+        //
+        // Checkpoint: OrionStarAI/Orion-14B-Chat (custom OrionStar license, not a clean SPDX
+        // permissive license -- bucket-2), via demonsu/orion-14b-chat-gguf, Q4_K_M (8.81 GB).
+        // Transient local download, never vendored, deleted immediately after this receipt.
+        //
+        // Verification evidence (2026-09-01, tools/llama.cpp llama-tokenize/llama-server, CPU
+        // backend): templated prompt
+        // "<|im_start|>user\nThe capital of France is<|im_end|>\n<|im_start|>assistant\n"
+        // tokenizes byte-for-byte identically to llama-tokenize (33 tokens, no BOS --
+        // tokenizer.ggml.add_bos_token=false for this checkpoint). Full 4-of-4-token exact greedy
+        // match through EOS: engine and llama-server both produce [23571, 327, 50376, 2]
+        // ("Paris." + </s>).
+        //
+        // DO NOT MODIFY THIS ARCHITECTURE'S CODE PATH WITHOUT GOOD REASON — there is no regression
+        // test to catch a mistake.
+        "orion",
 
         // ernie4_5 (dense path) -- ADMITTED 2026-09-01. Was diagnosed as blocked purely on the
         // tokenizer axis (same shape as minicpm/internlm2/baichuan: tokenizer.ggml.model=llama with

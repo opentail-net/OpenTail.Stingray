@@ -113,11 +113,18 @@ that is more elegant but lower-visibility.
    forward; it needs its own scoping pass, **and per 2026-09-01 operator review it isn't worth that
    pass regardless — real Nanbeige download volume is too low to justify a genuinely new execution
    mechanism for it. Deprioritized off this list entirely, not just reordered.**
-   **Six-architecture sweep result: 4 ADMITTED with zero new architecture code (`minicpm`,
+   **`orion` ALSO ADMITTED (2026-09-01)**: the "small new LayerNorm-with-bias + gated-SiLU-FFN"
+   architecture task this note originally scoped turned out to already be free too — `UsesLayerNorm`
+   is driven purely by tensor presence (`blk.0.attn_norm.bias`, architecture-agnostic detection
+   already used by `gptneox`/`falcon`/`codeshell`), `orion`'s gated-SiLU FFN is the same shape the
+   plain llama FFN path already builds, and `orion` was already in the NEOX-RoPE dispatch table.
+   Allowlist string alone was sufficient. Full 4/4-token exact greedy match.
+   **Six-architecture sweep result: 5 ADMITTED with zero new architecture code (`minicpm`,
    `baichuan`, `internlm2`, `ernie4_5` — the last one also surfacing a real general SPM
-   byte-fallback bug, fixed), 1 real-but-small architecture task remaining (`orion`, tokenizer axis
-   already clear), 1 deprioritized (`nanbeige`, looped-transformer mechanism, too low demand to
-   pursue).**
+   byte-fallback bug, fixed — and `orion`), 1 deprioritized (`nanbeige`, looped-transformer
+   mechanism, too low demand to pursue). Every architecture originally diagnosed as needing real
+   new code turned out not to, once actually checked against real reference source and real
+   checkpoints instead of assumed from an earlier read.**
 6. **CPU greedy-decode non-determinism investigation** — low visibility, high correctness stakes;
    run in parallel with whichever other item is active whenever idle capacity allows, per the
    existing note in the "Standing state" archive (2 non-reproducing sightings under CPU contention;
