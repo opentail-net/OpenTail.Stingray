@@ -224,28 +224,24 @@ public sealed class FluxDiT : IDisposable
         // Self-attention over full sequence
         float[] attnOut = SelfAttention(q, k, v, nSeq, nh, hd);
 
-        // GEGLU activation on mlpH: split into two halves, y = x1 * gelu(x2)
-        var mlpOut = Geglu(mlpH, nSeq, d * 4);
+        // Real FLUX single block (confirmed against the real BFL/diffusers reference,
+        // FluxSingleTransformerBlock: mlp_hidden_dim = dim*4, act_mlp = GELU(tanh-approx) applied
+        // directly to the FULL mlp_hidden_dim -- NOT a GEGLU gated-split, which the previous
+        // version of this code guessed at and then documented its own uncertainty about inline.
+        // Confirmed independently against this checkpoint's real linear2 weight shape
+        // ([d, 5d] = [3072, 15360] for d=3072) -- consistent ONLY with concatenating the
+        // un-split, un-halved 4d-wide GELU'd MLP output with the d-wide attention output.
+        DiffusionOps.GeluInPlace(mlpH);
 
-        // linear2: concatenate attn_out [d] + mlp_out [2d] → project to [d]
-        var combined = new float[nSeq * (d + d * 2)];
+        // linear2: concatenate attn_out [d] + mlp_out [4d] → project to [d]
+        int combinedDim = d + d * 4;
+        var combined = new float[nSeq * combinedDim];
         for (int i = 0; i < nSeq; i++)
         {
-            attnOut.AsSpan(i * d, d).CopyTo(combined.AsSpan(i * (d + d * 2), d));
-            mlpOut.AsSpan(i * d * 2, d * 2).CopyTo(combined.AsSpan(i * (d + d * 2) + d, d * 2));
+            attnOut.AsSpan(i * d, d).CopyTo(combined.AsSpan(i * combinedDim, d));
+            mlpH.AsSpan(i * d * 4, d * 4).CopyTo(combined.AsSpan(i * combinedDim + d, d * 4));
         }
-        // Actually linear2 is [d, d+4d/2] = [d, 3d]... let's recompute
-        // FLUX single block: linear2 projects attn_out (d) + mlp_gated (d*2) back to d
-        // But the standard FLUX single block fuses attention + MLP:
-        //   combined output (d + mlp_out_d) → linear2 → x update
-        // mlp_out_d = d*4/2 = d*2 (after GEGLU splits d*4 in half)
-        // linear2: [d, d + d*2] = [d, 3d]... but some impls use [d, d] for attn only
-        // Following the actual FLUX code: linear2 = [d, d+mlp_hidden] where mlp_hidden=d*4/2
-        // Wait, let me reconsider. The combined is attn_out(d) + mlp_out(d*2) = 3d → linear2(d) = [d,3d]
-        // Actually linear2 weight is [d, 3d] because it takes [attn_out, mlp_geglu_out] = [d + d*2]
-        // And mlp hidden = 4*d, geglu cuts that in half = 2*d
-        // So linear2: weight [d, 3d]
-        var out_ = MatQ(combined, nSeq, d + d * 2, $"{p}.linear2", d, null);
+        var out_ = MatQ(combined, nSeq, combinedDim, $"{p}.linear2.weight", d, null);
 
         // Gate and residual
         ScaleGateAdd(x, out_, mod, nSeq, d, gateIdx: 2);
@@ -263,7 +259,7 @@ public sealed class FluxDiT : IDisposable
         var normed = RmsNormMod(img, mod, nImg, d, shift: 0, scale: 1);
 
         // Linear(d, outChannels)
-        return MatQ(normed, nImg, d, $"{p}.linear", _p.OutChannels, W($"{p}.linear.bias"));
+        return MatQ(normed, nImg, d, $"{p}.linear.weight", _p.OutChannels, W($"{p}.linear.bias"));
     }
 
     // ── Attention helpers ─────────────────────────────────────────────────
@@ -373,22 +369,6 @@ public sealed class FluxDiT : IDisposable
         return MatQ(h, n, hidden, $"{prefix}.2.weight", d, W($"{prefix}.2.bias"));
     }
 
-    private static float[] Geglu(float[] x, int n, int totalDim)
-    {
-        // GEGLU: x has shape [n, totalDim]. Split into two halves: gate, val.
-        // output = gate * gelu(val)
-        int half = totalDim / 2;
-        var out_ = new float[n * half];
-        for (int i = 0; i < n; i++)
-        {
-            int off = i * totalDim;
-            int o   = i * half;
-            for (int j = 0; j < half; j++)
-                out_[o + j] = DiffusionOps.Gelu(x[off + j]) * x[off + half + j];
-        }
-        return out_;
-    }
-
     private float[] MlpProj(string prefix, float[] x, int inDim, int outDim)
     {
         var h = DiffusionOps.Linear(x, W($"{prefix}.in_layer.weight"), W($"{prefix}.in_layer.bias"), 1, inDim, outDim);
@@ -487,10 +467,27 @@ public sealed class FluxDiT : IDisposable
 
     // ── Weight access ─────────────────────────────────────────────────────
 
+    /// <summary>
+    /// Some GGUF exports of FLUX (e.g. city96's ComfyUI-GGUF converter) strip the redundant
+    /// "model.diffusion_model." prefix since the file only ever contains DiT tensors -- while
+    /// this class's own naming (and real diffusers-format safetensors checkpoints) keep it. Try
+    /// the requested name as-is first, then with that prefix stripped, so either convention loads.
+    /// </summary>
+    private const string DiffusionModelPrefix = "model.diffusion_model.";
+
+    private GgufTensorInfo? FindTensor(string name)
+    {
+        var info = _model.FindTensor(name);
+        if (info is not null) return info;
+        return name.StartsWith(DiffusionModelPrefix, StringComparison.Ordinal)
+            ? _model.FindTensor(name[DiffusionModelPrefix.Length..])
+            : null;
+    }
+
     private float[] W(string name)
     {
         if (_weightCache.TryGetValue(name, out var cached)) return cached;
-        var info = _model.FindTensor(name) ?? throw new KeyNotFoundException($"DiT weight not found: {name}");
+        var info = FindTensor(name) ?? throw new KeyNotFoundException($"DiT weight not found: {name}");
         var data = DequantGguf(info);
         _weightCache[name] = data;
         return data;
@@ -499,7 +496,7 @@ public sealed class FluxDiT : IDisposable
     private float[]? OptW(string name)
     {
         if (_weightCache.TryGetValue(name, out var cached)) return cached;
-        var info = _model.FindTensor(name);
+        var info = FindTensor(name);
         if (info is null) return null;
         var data = DequantGguf(info.Value);
         _weightCache[name] = data;
@@ -529,7 +526,7 @@ public sealed class FluxDiT : IDisposable
     {
         var result = new float[n * outDim];
 
-        var info = _model.FindTensor(wName);
+        var info = FindTensor(wName);
         if (info.HasValue)
         {
             var ti       = info.Value;

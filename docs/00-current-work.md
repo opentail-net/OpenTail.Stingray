@@ -46,16 +46,18 @@ that is more elegant but lower-visibility.
    corruption appeared at the very first op that consumed real text features). Fixed by gating the
    BF16 path on `BestSgemmPrecision==Bf16`, matching the pattern `ZImageDiT` already used correctly.
    Verified: real, recognizable apple image on the Vulkan GPU path (`zimage-vulkan-fixed.png`).
-3. **CosyVoice 2/3 speaker-identity transfer** — **re-scoped, 2026-09-01**: the handoff doc
-   describing "cond is all-zero" and "CFG is missing" was stale — both were already fixed by an
-   earlier commit (`4cb189f`). Re-verified the real mel extractor (`CosyVoiceMelExtractor.cs`)
-   line-for-line against `cosyvoice-frontend.cpp`'s `extract_speech_feat`/`build_mel_basis`, and
-   ran a real end-to-end generation with `--ref-audio` — every stage produces real, non-degenerate
-   data (real prompt tokens, real mel frames, real speaker embedding, real CFG). **What's left is
-   purely a listening judgment call, not implementation**: `docs/audio-samples/
-   cosyvoice3-identity-check.wav` needs a human ear to confirm whether the cloned voice actually
-   sounds like the reference speaker. See `docs/qwentts-cosyvoice3-handoff.md` §2 for the full
-   re-verification and exactly what to check next if it still doesn't sound right.
+3. **CosyVoice 2/3 speaker-identity transfer** — **re-scoped 2026-09-01, judged by ear 2026-09-01:
+   quality is sub-par.** The handoff doc describing "cond is all-zero" and "CFG is missing" was
+   stale — both were already fixed by an earlier commit (`4cb189f`). Re-verified the real mel
+   extractor (`CosyVoiceMelExtractor.cs`) line-for-line against `cosyvoice-frontend.cpp`'s
+   `extract_speech_feat`/`build_mel_basis`, and ran a real end-to-end generation with `--ref-audio`
+   — every stage produces real, non-degenerate data (real prompt tokens, real mel frames, real
+   speaker embedding, real CFG). The operator listened to `docs/audio-samples/
+   cosyvoice3-identity-check.wav` and confirmed speaker-identity transfer is not convincing. Since
+   every numeric stage checked real, this is likely a genuine subtle bug, not a missing feature —
+   next real step is a stage-by-stage numeric diff against the real CosyVoice3 Python/C++
+   reference (speaker embedding, prompt/speech tokens, DiT mel output), not further structural
+   re-verification. See `docs/qwentts-cosyvoice3-handoff.md` §2 for the full history.
 
 4. **LTX-Video — core port and performance pass complete; trajectory convergence pending** (2026-09-01).
    All individual architecture blocks are implemented, performant, and pass golden numeric parity
@@ -189,16 +191,95 @@ that is more elegant but lower-visibility.
     Potentially high popularity, but explicitly a new campaign, not a known/started gap — do not
     chase this opportunistically ahead of the ordered list above just because it's individually
     popular; that violates the consolidation strategy this list is built around.
-12. **FLUX.1, SD3/3.5** — **checked 2026-09-02, not a stub, but never executed.** `FluxDiT.cs`
-    (784 lines) and `SD3/Sd3Pipeline.cs` are real, substantial ports — genuine double/single-stream
-    MMDiT blocks reading real named tensors via `IWeightLoader`/`GgufWeightLoader`/
-    `SafetensorsLoader`, not hardcoded formulas. But no checkpoint has ever been downloaded, so
-    neither has ever been run once — unknown whether either produces correct output, garbage, or
-    crashes. `Sd3ConformanceTests.cs` doesn't settle this either: it never instantiates the real
-    pipeline, only checks array-concatenation arithmetic (`768+1280=2048`). Next real step, if
-    picked up: download a small checkpoint and run it once to find out which of those three it is,
-    same as the LTX-Video "structural stub → real port" pass. Strategically attractive given real
-    demand, but explicitly a new campaign — do not chase ahead of turn.
+12. **FLUX.1 — run for the first time 2026-09-01: real bugs found and fixed, but output is still
+    wrong (structural stub → real-but-broken port, same stage as Wan/LTX).** Downloaded a full
+    real checkpoint set for the first time ever (`city96/FLUX.1-schnell-gguf` Q2_K DiT + real
+    `ae.safetensors`/`clip_l.safetensors`/T5-XXL fp8 text encoders + real CLIP/T5 tokenizer.jsons,
+    all transient, deleted after this pass) and ran `opentail-llm image` end-to-end. Found and
+    fixed THREE real bugs along the way, each caught only because this was the first real
+    execution:
+    1. **Tensor-name prefix mismatch**: `FluxDiT.cs` hardcodes `model.diffusion_model.*` tensor
+       names (the real diffusers/safetensors convention), but city96's GGUF converter strips that
+       redundant prefix since the file only ever holds DiT tensors — every single weight lookup
+       failed immediately. Fixed via a `FindTensor` fallback that tries both conventions.
+    2. **Two missing `.weight` suffixes**: `SingleBlock`'s `linear2` and `FinalLayer`'s `linear`
+       `MatQ` calls passed the bare tensor-name prefix instead of appending `.weight` (every OTHER
+       call site does this via the `LinearNoBias`/`LinearBias` helpers, but these two called `MatQ`
+       directly and were never exercised until now).
+    3. **Real architectural bug in `SingleBlock`'s MLP**: the existing code applied GEGLU (split
+       the MLP hidden state in half, gate one half with the other) — but confirmed against the real
+       diffusers `FluxSingleTransformerBlock` reference (`transformer_flux.py`) AND independently
+       against this checkpoint's own `linear2` weight shape (`[3072, 15360]` = `[d, 5d]`, only
+       consistent with concatenating the FULL un-split, un-halved `4d`-wide MLP output with the
+       `d`-wide attention output — GEGLU's halved `2d` would need a `[d, 3d]` shape, which the real
+       weight isn't), FLUX's single-block MLP is a plain GELU(tanh-approx) over the full
+       `mlp_hidden_dim = 4·d`, never gated/split at all. The code's own inline comments
+       (`"Wait, let me reconsider..."`) show this was a half-resolved guess from whenever it was
+       first written, never actually checked against reference or run. Fixed: full-width
+       `GeluInPlace`, `combined` dim corrected to `d + 4d`, dead `Geglu` helper removed.
+    **After all three fixes, the pipeline runs to completion (860.8s, CPU-only, 4 steps) without
+    crashing** — a real, substantive improvement — **but the output image
+    (`docs/diffusion-samples/flux-schnell-first-run.png`) is a periodic tiling/checkerboard
+    pattern, not anything resembling the prompt ("a red apple on a wooden table").** The
+    regularity of the pattern (a small repeating tile across the whole 512×512 frame, not random
+    noise) points at a patchify/unpatchify or latent-packing ordering bug — img/txt sequence
+    concatenation order, patch-to-pixel unpacking, or 2D RoPE position-id assignment are the next
+    places to check — but this was NOT investigated further this pass (stopped to report back
+    rather than open a much deeper blind investigation). Not yet at LTX-Video's "golden numeric
+    parity on every individual block" stage — FLUX has no golden/reference numeric tests at all,
+    so the next real step (if picked up) is the same discipline LTX-Video used: per-block
+    numeric diffing against the real diffusers reference, not further guessing from output shape
+    alone. `SD3/Sd3Pipeline.cs` remains completely unexecuted still — not attempted this pass.
+
+    **Round 2, same day: a FOURTH real bug found and fixed (2D RoPE), but the tiling artifact
+    survived it unchanged.** `Flux2DRoPE.cs` had two independent, compounding real bugs, confirmed
+    against black-forest-labs/flux's actual `flux/math.py` (`rope`/`apply_rope`) and
+    `flux/modules/layers.py` (`EmbedND`), not guessed:
+    - **Wrong axis split.** Real FLUX uses THREE position axes (`axes_dim=[16, 56, 56]`): a
+      leading always-zero axis (a no-op/identity rotation for plain text-to-image — no time
+      dimension), then row (56), then col (56), each independently theta-scaled using ITS OWN
+      axis dim (56), not `head_dim` (128). The previous code split `head_dim` evenly in half
+      (64 row / 64 col) with no identity portion and the wrong per-axis theta scale.
+    - **Wrong rotation convention, and column position silently never used at all.** Real FLUX
+      rotates ADJACENT element pairs `(x[2i], x[2i+1])` (the GPT-NeoX/interleaved convention).
+      The previous code implemented "rotate-half" instead (`x[i]` paired with `x[i+head_dim/2]`)
+      — a different, incompatible convention — and compounding that, its rotation loop only ever
+      read frequency slots `[0, head_dim/2)`, meaning the column-axis frequencies (stored at
+      `[head_dim/2, head_dim)` under the old half/half split) were computed but **never actually
+      read**. Every patch's horizontal position was silently ignored entirely, regardless of the
+      convention bug.
+    Rewrote `Flux2DRoPE.cs`'s `BuildFreqs`/`ApplyInPlace` to the real 16/56/56 split and real
+    interleaved-pair rotation. Full `Tests.Diffusion` suite (91 tests) still green after the
+    rewrite. Re-ran the same repro (below): output is BYTE-DIFFERENT from the pre-fix run
+    (confirmed via hash, so the fix has a real effect) but the periodic tiling artifact's
+    character is visually unchanged. This is itself informative: if RoPE (a purely positional
+    signal) were the dominant cause of a periodic per-patch tile, fixing it should have changed
+    the artifact's STRUCTURE, not just its exact values — surviving a real, verified fix points
+    away from "subtle attention-wiring/positional bug" and toward something more mechanical,
+    either upstream of the DiT's semantic content (VAE latent shift/scale conditioning) or
+    downstream of it in a way that's structurally periodic regardless of input (e.g. a
+    Q2_K-specific dequant/matvec kernel artifact). Patchify/unpatchify (`EulerFlowScheduler.
+    PackLatent`/`UnpackLatent`) was also re-checked against the real
+    `"b c (h ph) (w pw) -> b (h w) (c ph pw)"` einops rearrange this pass and found already
+    correct — channel-outer-then-row-then-col patch layout, row-major patch-grid sequence order,
+    both matching real FLUX exactly.
+
+    **PAUSED here 2026-09-01 (operator call)** — four real, verified bugs found and fixed this
+    pass (tensor-prefix mismatch, two missing `.weight` suffixes, GEGLU→plain-GELU MLP, and the
+    full 2D RoPE rewrite above); the tiling-artifact root cause is not pursued further until
+    picked back up — see `docs/056-flux-tiling-artifact-handoff.md` for a self-contained
+    continuation brief. Checkpoints used (all deleted after this pass, re-download to resume):
+    DiT `city96/FLUX.1-schnell-gguf` → `flux1-schnell-Q2_K.gguf` (4.01 GB); VAE
+    `ffxvs/vae-flux` → `ae.safetensors` (335 MB, ungated mirror — `black-forest-labs/
+    FLUX.1-schnell`'s own copy is access-gated); CLIP-L `comfyanonymous/flux_text_encoders` →
+    `clip_l.safetensors` (246 MB); T5-XXL `comfyanonymous/flux_text_encoders` →
+    `t5xxl_fp8_e4m3fn.safetensors` (4.9 GB); CLIP tokenizer `openai/clip-vit-large-patch14` →
+    `tokenizer.json`; T5 tokenizer `YuCollection/FLUX.1-schnell-Diffusers` →
+    `tokenizer_2/tokenizer.json` (plain `google/t5-v1_1-xxl` has no fast-tokenizer `tokenizer.json`
+    of its own). Repro command: `opentail-llm image -m flux1-schnell-Q2_K.gguf --vae
+    ae.safetensors --clip-l clip_l.safetensors --clip-tokenizer tokenizer.json --t5xxl
+    t5xxl_fp8_e4m3fn.safetensors --t5-tokenizer tokenizer_2/tokenizer.json -p "a red apple on a
+    wooden table" --steps 4 --seed 42`.
 13. **Stable Audio 3** — **checked 2026-09-02, genuine unwired stub**, same shape LTX-Video was
     before its plan: `StableAudioDiT`/`AcousticVaeDecoder`/`StableAudioPipeline` exist in
     `src/OpenTail.Stingray.Diffusion/StableAudio/` but take no `IWeightLoader` and read no real

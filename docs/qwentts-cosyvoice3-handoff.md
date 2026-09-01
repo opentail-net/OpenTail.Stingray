@@ -114,14 +114,16 @@ real end-to-end generation with `--ref-audio`:
 `speechTokens=87 promptTokens=65 numFrames=304 promptFrames=130`, real non-zero speaker embedding,
 `refMel.Length=10400` (130 frames × 80 mel, exactly matching promptFrames), plausible mel output
 range (`min=-14.41 max=5.64 mean=-4.22`) — every stage is producing real, non-degenerate data.
-**Not yet judged by ear** — per this doc's own "listener is the final authority" rule, whether the
-cloned voice actually sounds like the reference speaker is a human-judgment call this session
-cannot make. Output: `docs/audio-samples/cosyvoice3-identity-check.wav` (ref:
+**Judged by ear, 2026-09-01 (operator): quality is sub-par** — speaker identity transfer is not
+convincing on `docs/audio-samples/cosyvoice3-identity-check.wav` (ref:
 `docs/audio-samples/fishspeech-lunch-REFERENCE.wav`, text: "The quick brown fox jumps over the lazy
-dog."). **Next step for whoever picks this up: listen to that file and report whether the speaker
-identity actually transferred** — if not, the numeric pipeline is real and correct enough that any
-remaining gap is likely a genuine subtle bug (worth the same "numeric verify" discipline against
-the C++ reference build), not a wholesale missing feature anymore.
+dog."). Per this doc's own reasoning above: since every numeric stage checked real and
+non-degenerate (real prompt tokens, real speaker embedding, real mel, real CFG), this is likely a
+genuine subtle bug rather than a wholesale missing feature. **Not yet root-caused** — next step is
+the same "numeric verify" discipline used elsewhere in this project: diff this pipeline's
+intermediate tensors (speaker embedding, prompt/speech token sequences, DiT mel output) against the
+real CosyVoice3 Python/C++ reference implementation stage-by-stage, rather than further structural
+re-verification of pieces already confirmed present and non-zero.
 
 ### Also worth checking, not yet investigated
 
