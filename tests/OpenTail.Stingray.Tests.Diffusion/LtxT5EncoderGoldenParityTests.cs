@@ -58,19 +58,15 @@ public sealed class LtxT5EncoderGoldenParityTests
     }
 
     /// <summary>
-    /// KNOWN, PRE-EXISTING GAP (not introduced by the LTX work, found while verifying it): real
-    /// T5/SentencePiece Unigram tokenization is Viterbi-OPTIMAL (picks the globally
-    /// highest-log-probability segmentation), but <see cref="T5Tokenizer.Tokenize"/> does a GREEDY
-    /// longest-match instead -- confirmed to diverge on this real prompt at "fox" (real:
-    /// `[..., 9, 1131, 3, 20400, 1180, ...]`; greedy: `[..., 9, 1131, 5575, 226, 1180, ...]`, a
-    /// different, wrong split). This matches `docs/00-current-work.md`'s tracked "Unigram-tokenizer"
-    /// backlog item -- out of scope for the LTX-Video port itself (the T5 ENCODER math is verified
-    /// correct against real token ids in the test below; only the tokenizer's own segmentation
-    /// algorithm needs the real Viterbi fix, tracked separately). Documents the gap with a real
-    /// example rather than silently passing or being deleted.
+    /// Real Viterbi-optimal SentencePiece Unigram segmentation (fixed 2026-09-01, replacing a
+    /// greedy longest-match approximation that was confirmed to diverge from HuggingFace's real
+    /// `T5TokenizerFast` on this exact prompt at "fox": real `[..., 9, 1131, 3, 20400, 1180, ...]`
+    /// vs. the old greedy algorithm's wrong `[..., 9, 1131, 5575, 226, 1180, ...]`). Matches
+    /// `docs/00-current-work.md`'s formerly-tracked "Unigram-tokenizer" backlog item -- closed by
+    /// this fix.
     /// </summary>
     [Fact]
-    public void T5Tokenizer_GreedyLongestMatch_DivergesFromRealViterbiUnigram_KnownGap()
+    public void T5Tokenizer_MatchesRealT5TokenizerFast_ViaViterbiUnigram()
     {
         string? tokenizerJson = FindRepoFile(TokenizerJsonRelative);
         string? goldenDir = FindGoldenDir();
@@ -83,9 +79,7 @@ public sealed class LtxT5EncoderGoldenParityTests
         var tokenizer = T5Tokenizer.FromFile(tokenizerJson, maxLen: 256);
         var ids = tokenizer.Tokenize("A cinematic shot of a red fox running through snow");
 
-        // Documents the CURRENT (imperfect) behavior -- flip to Assert.Equal once the tokenizer's
-        // greedy algorithm is replaced with real Viterbi Unigram decoding.
-        Assert.NotEqual(goldenIds, ids);
+        Assert.Equal(goldenIds, ids);
     }
 
     [Fact]
