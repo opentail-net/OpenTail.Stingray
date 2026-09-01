@@ -354,6 +354,62 @@ autoencoder_kl_ltx.py`, confirmed present in the installed `diffusers` package) 
 writing C#" discipline that paid off for the transformer above, rather than being folded into
 another pass as an afterthought.
 
+### Blocker found 2026-09-01: the real v0.9.1 checkpoint's decoder does NOT match the CURRENT
+installed `diffusers`' `LTXVideoDecoder3d` wiring -- do not port against it blind
+
+The transformer core above hit zero missing/unexpected keys against current `diffusers` -- the VAE
+does not:
+- **No `mid_block.*` tensors exist anywhere in the real checkpoint** (`vae.decoder.mid_block` --
+  zero matches), but `LTXVideoDecoder3d.__init__` in the installed `diffusers` version
+  UNCONDITIONALLY constructs one (`self.mid_block = LTXVideoMidBlock3d(...)`) with no `if` gate.
+  Either the real v0.9.1 release predates the mid_block being added, or it's folded into something
+  else -- not yet resolved.
+- **The real checkpoint has 7 top-level `up_blocks` (indices 0-6), alternating a resnet-heavy stage
+  (0,2,4,6 -- 8/7/6/5 `res_blocks` each, channel widths 1024/512/256/128) with a plain upsample-only
+  stage (1,3,5 -- a single bare `conv.conv`, no `res_blocks`, no `time_embedder`)**. The installed
+  `diffusers.LTXVideoUpBlock3d` class instead bundles an optional single resnet (`conv_in`) +
+  upsampler + N more resnets ALL inside one block instance -- i.e. today's class produces one
+  combined block per stage, not two separate top-level blocks the way the real checkpoint's tensor
+  names imply. `config.json` fetched from the `Lightricks/LTX-Video` HF repo's `main` branch
+  (`block_out_channels=[128,256,512,512]`, `layers_per_block=[4,3,3,3,4]`) ALSO doesn't match --
+  those channel widths and layer counts are smaller than the real checkpoint's (1024 top channel
+  width vs. 512, and 8/7/6/5 layers vs. the config's implied 3/3/3/4). The repo has no tag/branch
+  pinned to `v0.9.1` (`list_repo_refs` returns only `main` and `13b_097_distilled`) to fetch an
+  exact matching config from.
+- **Per-stage `inject_noise` (the `per_channel_scale1`/`per_channel_scale2` tensors) is present on
+  up_block 2/4/6's res_blocks but absent on up_block 0's** -- another per-stage config knob that
+  isn't uniform and isn't derivable from the current default config.
+
+Per this project's own standing rule (CLAUDE.md: "check the real reference before 'fixing' code
+that looks wrong" / this doc's own "read the reference, verify numerically, don't trust
+structure-only ports" methodology that caught 3 real transformer bugs above): **do not write a VAE
+decoder port against the current `diffusers` class wiring** -- it's a materially different, newer
+architecture revision than what actually produced this checkpoint's weights, and a structurally-
+plausible port built against it would silently be wrong in ways a shape-only sanity check wouldn't
+catch (exactly the failure mode the golden-parity testing above exists to prevent). The reusable,
+almost-certainly version-stable pieces are the low-level building blocks whose math is simple and
+checkpoint-shape-confirmed regardless of top-level wiring -- `LTXVideoCausalConv3d` (causal-pad-then-
+conv3d) and `LTXVideoResnetBlock3d`'s per-tensor formula (RMSNorm eps=1e-8 non-affine -> optional
+4-way timestep scale/shift -> SiLU -> conv1 -> optional per-channel noise -> RMSNorm -> optional
+scale/shift halves 2/3 -> SiLU -> conv2 -> optional noise -> shortcut norm+conv if channels change
+-> residual add), both read in full above and shape-confirmed against the real checkpoint's tensors
+(`[C,C,3,3,3]` conv kernels, `[4,C]` scale_shift_table per res-block). What's NOT safe to assume
+without a matching reference is: whether/how a mid-block-equivalent operation happens, the exact
+`LTXVideoUpsampler3d` stride/`upscale_factor`/residual-mode combination for each of the 3 plain
+upsample stages (their conv output-channel multipliers -- 4096/1024=4, 2048/512=4, 1024/256=4 --
+are consistent with each other but don't uniquely pin down `stride`/`upscale_factor` without testing
+against a real decode), and the exact pixel-unshuffle/`patch_size` used at `conv_out` (48=3×16
+implies `patch_size=4` per the `out_channels*patch_size**2` formula, consistent with the fetched
+config, but that's the one value this pass DOES trust since it's a simple, checkpoint-confirmed
+arithmetic identity, not a version-sensitive wiring choice).
+
+**Next step for whoever picks this up**: either (a) find the actual v0.9.1-era `ltx-video`
+inference repo source (Lightricks' own GitHub, not the diffusers-integrated version) with matching
+model code, or (b) get a real decode (even a single frame, even government-cheese quality) out of
+the ORIGINAL Lightricks Python inference stack running THIS SAME checkpoint file locally, and dump
+its own intermediate tensors the same way the transformer's golden fixtures were produced --
+whichever is faster to set up. Do not guess-and-check against the wrong architecture revision.
+
 ## Not yet done / explicitly deferred by this planning pass
 
 - Full tensor dump of the VAE portion of `ltx-video-2b-v0.9.1.safetensors` (this pass only dumped
