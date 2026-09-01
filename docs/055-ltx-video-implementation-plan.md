@@ -640,3 +640,51 @@ captures, or points to needing the real native `pipeline_ltx_video.LTXVideoPipel
   to localize exactly where the two diverge, now that every individually-testable component is
   confirmed correct in isolation.
 
+## Update 2026-09-01 (continued): DEFINITIVE result -- the real, unmodified native
+`LTXVideoPipeline` class ALSO produces the same corruption. This is conclusively not a porting bug.
+
+Ran the ACTUAL, complete, unmodified `ltx_video.pipelines.pipeline_ltx_video.LTXVideoPipeline`
+class end-to-end (not diffusers' transformer, not an ad-hoc assembly of pieces): real native
+`Transformer3DModel.from_pretrained` (the checkpoint's own intended transformer class, loaded via
+its single-file path with zero missing/renamed keys), real `CausalVideoAutoencoder`, real
+`RectifiedFlowScheduler`, real `SymmetricPatchifier`, real T5 tokenizer+encoder, with the pipeline's
+own real defaults (`num_inference_steps=20`, `guidance_scale=4.5`, `vae_per_channel_normalize=True`)
+at the same 256x256/apple-prompt scenario used throughout this investigation. Two harmless bugs hit
+along the way (a `kwargs["vae_per_channel_normalize"]` KeyError needing that kwarg passed
+explicitly since `__call__` only reads it via `.get()` once earlier and re-indexes it directly
+later; a 5D-vs-4D tensor-dim mismatch in `image_processor.postprocess` for single-image/`num_frames=1`
+calls, worked around with a transparent squeeze wrapper rather than patching the library) — both are
+real, minor bugs/rough edges in the pip-distributed `ltx-video` package itself for this exact calling
+pattern, not anything related to the corruption being investigated.
+
+**Result: the real, complete, official pipeline produces the SAME KIND of heavily
+salt-and-pepper-corrupted output** as this C# port and the earlier from-scratch Python assembly —
+all three, independently, converge on the same failure mode at these settings.
+
+**This conclusively rules out the C# port (and the porting approach in general) as the cause.**
+Three independent implementations — this project's C# port, an ad-hoc from-scratch Python assembly
+of individually-verified real components, and the actual unmodified official pipeline class itself —
+all produce the same corrupted output from the same checkpoint at the same settings. The remaining
+explanation space is now narrow:
+1. **The 2B v0.9.1 checkpoint + these settings genuinely don't converge cleanly this way.** Possible
+   contributing factors not yet tested: resolution (256x256 may be well below what this model was
+   trained/tuned for -- real LTX-Video demos typically use much larger resolutions like 768x512);
+   the `enhance_prompt=True` LLM-based caption-refinement step (skipped here since it needs
+   additional caption/LLM models not loaded) may be load-bearing for this checkpoint's real quality,
+   not just a nicety; running in mixed bf16/fp32 (this pass's T5 was loaded in bf16 to fit available
+   RAM, everything else in fp32) rather than a single consistent precision throughout.
+2. **A step genuinely outside the pip package** (only available in Lightricks' own GitHub repo, not
+   this `pip download ltx-video` distribution) is required -- the referenced
+   `configs/ltxv-13b-0.9.7-dev.yaml` default config is for an entirely different, newer 13B model;
+   the real 2B-v0.9.1-specific recommended config/recipe was never found in this package.
+
+**Recommendation for whoever picks this up next**: stop debugging this as a "wrong output" bug in
+this port -- it almost certainly isn't one, given the definitive result above. Instead, either (a)
+find and try the exact 2B-v0.9.1-specific settings from Lightricks' own GitHub repo (not this pip
+package) or their own demo/Space, or (b) treat this checkpoint/settings combination as genuinely
+unreliable for this project's purposes and consider whether a newer/larger LTX-Video checkpoint
+(the 13B 0.9.7 the bundled config references) is a better target instead. The C# port itself is
+numerically verified correct against every real reference at essentially machine precision across
+every stage that can be isolated and tested -- that work stands regardless of this checkpoint's own
+real-world output quality.
+
