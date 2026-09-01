@@ -305,6 +305,55 @@ numeric parity (untouched this pass — golden dump above only exercises the tra
 committed — regenerate it from this doc's description if the golden fixtures ever need refreshing
 (e.g. after a real bugfix changes the expected output).
 
+## VAE decoder tensor inventory (real dump against `ltx-video-2b-v0.9.1.safetensors`, 2026-09-01 --
+closes this doc's earlier "not yet independently tensor-verified" gap on the VAE section)
+
+297 `vae.*` tensors, ALL under `vae.decoder.*` (no `vae.encoder.*` present in this checkpoint --
+confirms the plan's step 7 assumption that only decode-time inference is supported by this file;
+encoding real video would need a separate encoder checkpoint, out of scope for T2V).
+
+```
+vae.decoder.conv_in.conv.{weight,bias}            [1024, 128, 3, 3, 3]  -- 3D conv, 128 latent ch -> 1024
+vae.decoder.up_blocks.{0,2,4,6}.res_blocks.{0..N}.conv1.conv.{weight,bias}   [C, C, 3, 3, 3]  (3D conv)
+vae.decoder.up_blocks.{0,2,4,6}.res_blocks.{0..N}.conv2.conv.{weight,bias}   [C, C, 3, 3, 3]
+vae.decoder.up_blocks.{0,2,4,6}.res_blocks.{0..N}.scale_shift_table          (per-res-block timestep modulation)
+vae.decoder.up_blocks.{0,2,4}.time_embedder.timestep_embedder.linear_1/.linear_2   (per-up-block timestep MLP)
+vae.decoder.up_blocks.{1,3,5}.conv.conv.{weight,bias}   -- plain (non-res, non-timestep) upsample convs
+vae.decoder.last_time_embedder.timestep_embedder.linear_1/.linear_2
+vae.decoder.last_scale_shift_table
+vae.decoder.timestep_scale_multiplier   -- scalar (0-d tensor)
+vae.decoder.conv_out.conv.{weight,bias}            [48, 128, 3, 3, 3]  -- 128 -> 48, NOT 128->3
+```
+
+Confirms, first-hand:
+- **The VAE decoder is genuinely timestep-conditioned end-to-end**, not just at one entry point: 4
+  separate up-block stages (indices 0,2,4,6 -- channel widths 1024/512/256/128, 8/7/6/5 res-blocks
+  respectively) each own a `time_embedder` MLP AND a per-res-block `scale_shift_table`, plus one more
+  top-level `last_time_embedder`/`last_scale_shift_table` pair right before `conv_out`. Up-block
+  indices 1,3,5 are plain spatial/temporal upsample convs with no timestep conditioning at all
+  (`up_blocks.{1,3,5}.conv.conv`, no `res_blocks`/`time_embedder` keys under them) -- confirms the
+  real structure alternates [timestep-conditioned resnet stage] / [plain upsample] rather than
+  conditioning uniformly throughout.
+- **All convolutions are genuinely 3D** (`[outC, inC, 3, 3, 3]` kernel shape) -- causal-3D-conv
+  handling (the temporal-causality concern the plan's "biggest gotcha" section already flagged)
+  applies to every one of these, not just a boundary layer.
+- **`conv_out` maps 128→48, not 128→3`** -- 48 = 3 (RGB) × 16, i.e. the real decoder's last stage
+  produces a pixel-UNSHUFFLED output (a 4×4 spatial packing factor) that needs an explicit
+  pixel-shuffle/depth-to-space unpack to real RGB after `conv_out`, not a direct 3-channel image --
+  an easy-to-miss step if implemented by pattern-matching Wan's `WanVaeDecoder3D` (which decodes
+  directly to 3 channels with no such unpack).
+- **`timestep_scale_multiplier` is a real learned/stored scalar tensor** (0-d), not a hardcoded
+  constant the way this project's other decode-timestep handling might assume.
+
+This is a substantially larger, more structurally distinct undertaking than the transformer (4
+timestep-conditioned resnet stages + 3 plain upsample stages + causal 3D convs + a pixel-unshuffle
+tail, vs. the transformer's uniform repeated-block structure) -- treat it as its own dedicated
+implementation+verification pass, following the same "read `ltxv.hpp`'s VAE section AND diff
+against `diffusers`' real `AutoencoderKLLTXVideo` (`diffusers/models/autoencoders/
+autoencoder_kl_ltx.py`, confirmed present in the installed `diffusers` package) line-by-line before
+writing C#" discipline that paid off for the transformer above, rather than being folded into
+another pass as an afterthought.
+
 ## Not yet done / explicitly deferred by this planning pass
 
 - Full tensor dump of the VAE portion of `ltx-video-2b-v0.9.1.safetensors` (this pass only dumped
