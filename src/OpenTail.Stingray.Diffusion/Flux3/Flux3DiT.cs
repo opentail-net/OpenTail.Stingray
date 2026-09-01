@@ -186,16 +186,5 @@ public sealed class Flux3DiT
         }
     }
 
-    private static void RmsNorm(Span<float> tensor, int dim)
-    {
-        int nTokens = tensor.Length / dim;
-        for (int i = 0; i < nTokens; i++)
-        {
-            var slice = tensor.Slice(i * dim, dim);
-            float norm = TensorPrimitives.Norm(slice);
-            float rms = norm / MathF.Sqrt(dim);
-            float scale = 1.0f / (rms + 1e-6f);
-            TensorPrimitives.Multiply(slice, scale, slice);
-        }
-    }
+    private static void RmsNorm(Span<float> tensor, int dim) => DiffusionOps.RmsNormNoAffinePostSqrtEps(tensor, dim);
 }

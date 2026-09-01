@@ -792,6 +792,27 @@ internal static unsafe class DiffusionOps
     }
 
     /// <summary>
+    /// Root-Mean-Square Normalization with no learned affine parameters, epsilon applied AFTER the
+    /// sqrt (`1/(rms+eps)`) rather than inside it -- the convention used by Flux2/Flux3/StableAudio
+    /// (extracted verbatim from three byte-identical copies, not merged into
+    /// <see cref="RmsNormNoAffine"/> above, which applies eps inside the sqrt; the two are
+    /// numerically equivalent for realistic magnitudes but are a different formula, so kept
+    /// separate rather than silently changed during a DRY pass).
+    /// </summary>
+    public static void RmsNormNoAffinePostSqrtEps(Span<float> tensor, int dim, float eps = 1e-6f)
+    {
+        int nTokens = tensor.Length / dim;
+        for (int i = 0; i < nTokens; i++)
+        {
+            var slice = tensor.Slice(i * dim, dim);
+            float norm = TensorPrimitives.Norm(slice);
+            float rms = norm / MathF.Sqrt(dim);
+            float scale = 1.0f / (rms + eps);
+            TensorPrimitives.Multiply(slice, scale, slice);
+        }
+    }
+
+    /// <summary>
     /// Root-Mean-Square Normalization with no learned affine parameters.
     /// </summary>
     public static void RmsNormNoAffine(float[] x, int dim, float eps = 1e-6f)

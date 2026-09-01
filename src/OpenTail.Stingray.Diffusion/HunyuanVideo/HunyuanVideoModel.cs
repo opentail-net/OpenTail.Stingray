@@ -512,22 +512,7 @@ public sealed class HunyuanVideoModel : IDisposable
         var w = GetWeight($"{name}.weight");
         var b = TryGetWeight($"{name}.bias");
         int rows = x.Length / inDim;
-        var outF = new float[rows * outDim];
-
-        for (int r = 0; r < rows; r++)
-        {
-            int inOff = r * inDim;
-            int outOff = r * outDim;
-            for (int o = 0; o < outDim; o++)
-            {
-                float sum = b is not null ? b[o] : 0f;
-                int wOff = o * inDim;
-                for (int i = 0; i < inDim; i++)
-                    sum += x[inOff + i] * w[wOff + i];
-                outF[outOff + o] = sum;
-            }
-        }
-        return outF;
+        return DiffusionOps.Linear(x, w, b, rows, inDim, outDim);
     }
 
     public static float[] PackLatents(float[] latents, int numFrames, int latH, int latW)

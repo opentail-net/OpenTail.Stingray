@@ -389,43 +389,7 @@ public sealed class SdxlUNet2DConditionModel : IDisposable
     }
 
     private static float[] MultiHeadAttention(float[] q, float[] k, float[] v, int qLen, int kvLen, int c, int nHeads, int headDim)
-    {
-        float scale = 1f / MathF.Sqrt(headDim);
-        var output = new float[qLen * c];
-
-        Parallel.For(0, nHeads, h =>
-        {
-            int headOffset = h * headDim;
-            var scores = new float[kvLen];
-
-            for (int qi = 0; qi < qLen; qi++)
-            {
-                int qBase = qi * c + headOffset;
-
-                for (int kj = 0; kj < kvLen; kj++)
-                {
-                    int kBase = kj * c + headOffset;
-                    float dot = 0f;
-                    for (int d = 0; d < headDim; d++)
-                        dot += q[qBase + d] * k[kBase + d];
-                    scores[kj] = dot * scale;
-                }
-
-                DiffusionOps.Softmax(scores, 0, kvLen);
-
-                int outBase = qi * c + headOffset;
-                for (int d = 0; d < headDim; d++)
-                {
-                    float sum = 0f;
-                    for (int kj = 0; kj < kvLen; kj++)
-                        sum += scores[kj] * v[kj * c + headOffset + d];
-                    output[outBase + d] = sum;
-                }
-            }
-        });
-
-        return output;
-    }
+        => DiffusionOps.MultiHeadAttention(q, k, v, qLen, kvLen, nHeads, headDim);
 
     public float[] Forward(float[] x, float timestep, float[] context, float[] addEmbeds, int latH, int latW)
     {
