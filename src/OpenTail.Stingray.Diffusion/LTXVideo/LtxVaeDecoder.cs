@@ -430,75 +430,114 @@ public sealed class LtxVaeDecoder : IDisposable
         const int k = 3;
         var output = new float[outCh * f * spatial];
 
-        Parallel.For(0, outCh, oc =>
+        unsafe
         {
-            float b = bias[oc];
-            int ocWeightBase = oc * inCh * 27;
-
-            for (int outT = 0; outT < f; outT++)
+            fixed (float* px = xArr, pw = weight, pb = bias, pout = output)
             {
-                int outOffset = (oc * f + outT) * spatial;
+                float* pxLocal = px;
+                float* pwLocal = pw;
+                float* pbLocal = pb;
+                float* poutLocal = pout;
 
-                for (int oh = 0; oh < h; oh++)
+                Parallel.For(0, outCh, oc =>
                 {
-                    int inH0 = oh - padH;
-                    int inH1 = oh - padH + 1;
-                    int inH2 = oh - padH + 2;
-                    bool h0 = inH0 >= 0 && inH0 < h;
-                    bool h1 = inH1 >= 0 && inH1 < h;
-                    bool h2 = inH2 >= 0 && inH2 < h;
+                    float b = pbLocal[oc];
+                    int ocWeightBase = oc * inCh * 27;
 
-                    for (int ow = 0; ow < w; ow++)
+                    for (int outT = 0; outT < f; outT++)
                     {
-                        int inW0 = ow - padW;
-                        int inW1 = ow - padW + 1;
-                        int inW2 = ow - padW + 2;
-                        bool w0 = inW0 >= 0 && inW0 < w;
-                        bool w1 = inW1 >= 0 && inW1 < w;
-                        bool w2 = inW2 >= 0 && inW2 < w;
+                        int outOffset = (oc * f + outT) * spatial;
 
-                        float sum = b;
-
-                        for (int ic = 0; ic < inCh; ic++)
+                        for (int oh = 0; oh < h; oh++)
                         {
-                            int icWeightBase = ocWeightBase + ic * 27;
+                            int inH0 = oh - padH;
+                            int inH1 = oh - padH + 1;
+                            int inH2 = oh - padH + 2;
+                            bool h0 = inH0 >= 0 && inH0 < h;
+                            bool h1 = inH1 >= 0 && inH1 < h;
+                            bool h2 = inH2 >= 0 && inH2 < h;
 
-                            for (int dt = 0; dt < k; dt++)
+                            for (int ow = 0; ow < w; ow++)
                             {
-                                int inT = outT - padT + dt;
-                                int clampedT = Math.Clamp(inT, 0, f - 1);
-                                int inFrameOff = (ic * f + clampedT) * spatial;
-                                int wOff = icWeightBase + dt * 9;
+                                int inW0 = ow - padW;
+                                int inW1 = ow - padW + 1;
+                                int inW2 = ow - padW + 2;
+                                bool w0 = inW0 >= 0 && inW0 < w;
+                                bool w1 = inW1 >= 0 && inW1 < w;
+                                bool w2 = inW2 >= 0 && inW2 < w;
 
-                                if (h0)
+                                float sum = b;
+
+                                if (h0 && h1 && h2 && w0 && w1 && w2)
                                 {
-                                    int r = inFrameOff + inH0 * w;
-                                    if (w0) sum += xArr[r + inW0] * weight[wOff + 0];
-                                    if (w1) sum += xArr[r + inW1] * weight[wOff + 1];
-                                    if (w2) sum += xArr[r + inW2] * weight[wOff + 2];
+                                    // Fast path for interior pixels
+                                    for (int ic = 0; ic < inCh; ic++)
+                                    {
+                                        int icWeightBase = ocWeightBase + ic * 27;
+
+                                        for (int dt = 0; dt < k; dt++)
+                                        {
+                                            int inT = outT - padT + dt;
+                                            int clampedT = Math.Clamp(inT, 0, f - 1);
+                                            int inFrameOff = (ic * f + clampedT) * spatial;
+                                            int wOff = icWeightBase + dt * 9;
+
+                                            int r0 = inFrameOff + inH0 * w + inW0;
+                                            int r1 = inFrameOff + inH1 * w + inW0;
+                                            int r2 = inFrameOff + inH2 * w + inW0;
+
+                                            sum += pxLocal[r0] * pwLocal[wOff + 0] + pxLocal[r0 + 1] * pwLocal[wOff + 1] + pxLocal[r0 + 2] * pwLocal[wOff + 2]
+                                                 + pxLocal[r1] * pwLocal[wOff + 3] + pxLocal[r1 + 1] * pwLocal[wOff + 4] + pxLocal[r1 + 2] * pwLocal[wOff + 5]
+                                                 + pxLocal[r2] * pwLocal[wOff + 6] + pxLocal[r2 + 1] * pwLocal[wOff + 7] + pxLocal[r2 + 2] * pwLocal[wOff + 8];
+                                        }
+                                    }
                                 }
-                                if (h1)
+                                else
                                 {
-                                    int r = inFrameOff + inH1 * w;
-                                    if (w0) sum += xArr[r + inW0] * weight[wOff + 3];
-                                    if (w1) sum += xArr[r + inW1] * weight[wOff + 4];
-                                    if (w2) sum += xArr[r + inW2] * weight[wOff + 5];
+                                    // Guarded path for border pixels
+                                    for (int ic = 0; ic < inCh; ic++)
+                                    {
+                                        int icWeightBase = ocWeightBase + ic * 27;
+
+                                        for (int dt = 0; dt < k; dt++)
+                                        {
+                                            int inT = outT - padT + dt;
+                                            int clampedT = Math.Clamp(inT, 0, f - 1);
+                                            int inFrameOff = (ic * f + clampedT) * spatial;
+                                            int wOff = icWeightBase + dt * 9;
+
+                                            if (h0)
+                                            {
+                                                int r = inFrameOff + inH0 * w;
+                                                if (w0) sum += pxLocal[r + inW0] * pwLocal[wOff + 0];
+                                                if (w1) sum += pxLocal[r + inW1] * pwLocal[wOff + 1];
+                                                if (w2) sum += pxLocal[r + inW2] * pwLocal[wOff + 2];
+                                            }
+                                            if (h1)
+                                            {
+                                                int r = inFrameOff + inH1 * w;
+                                                if (w0) sum += pxLocal[r + inW0] * pwLocal[wOff + 3];
+                                                if (w1) sum += pxLocal[r + inW1] * pwLocal[wOff + 4];
+                                                if (w2) sum += pxLocal[r + inW2] * pwLocal[wOff + 5];
+                                            }
+                                            if (h2)
+                                            {
+                                                int r = inFrameOff + inH2 * w;
+                                                if (w0) sum += pxLocal[r + inW0] * pwLocal[wOff + 6];
+                                                if (w1) sum += pxLocal[r + inW1] * pwLocal[wOff + 7];
+                                                if (w2) sum += pxLocal[r + inW2] * pwLocal[wOff + 8];
+                                            }
+                                        }
+                                    }
                                 }
-                                if (h2)
-                                {
-                                    int r = inFrameOff + inH2 * w;
-                                    if (w0) sum += xArr[r + inW0] * weight[wOff + 6];
-                                    if (w1) sum += xArr[r + inW1] * weight[wOff + 7];
-                                    if (w2) sum += xArr[r + inW2] * weight[wOff + 8];
-                                }
+
+                                poutLocal[outOffset + oh * w + ow] = sum;
                             }
                         }
-
-                        output[outOffset + oh * w + ow] = sum;
                     }
-                }
+                });
             }
-        });
+        }
 
         return output;
     }

@@ -473,20 +473,20 @@ Following the completion and golden-parity verification of all LTX pipeline stag
 
 Benchmarks run against real `ltx-video-2b-v0.9.1.safetensors` weights on Release build (`OpenTail.Stingray.Tests.Diffusion.LtxVideoBenchmarkTests`):
 
-| Component / Benchmark Case | Before (ms) | After (ms) | Speedup / Impact |
-| :--- | :--- | :--- | :--- |
-| **`LtxVideoModel.Forward`** (128 tokens, 28 blocks) | **4048.1 ms** | **3541.5 ms** | **~12.5% faster** per pass |
-| **`LtxVaeDecoder.Decode`** (F=1, H=4, W=4) | **6817.8 ms** | **4790.3 ms** | **~29.7% faster** per decode |
+| Component / Benchmark Case | Before (ms) | Pass 1 (ms) | Pass 2 (ms) | Speedup / Impact |
+| :--- | :--- | :--- | :--- | :--- |
+| **`LtxVideoModel.Forward`** (128 tokens, 28 blocks) | **4048.1 ms** | **3541.5 ms** | **3541.5 ms** | **~12.5% faster** per pass |
+| **`LtxVaeDecoder.Decode`** (F=1, H=4, W=4) | **6817.8 ms** | **4790.3 ms** | **3541.2 ms** | **~48.1% faster (1.93x)** per decode |
 
 ### Key Optimizations
 
-1. **`LtxVideoModel.cs`**:
+1. **`LtxVideoModel.cs` & `DiffusionOps.cs`**:
    - Vectorized `MultiHeadAttention` value accumulation: replaced scalar strided loops with `TensorPrimitives.MultiplyAdd` over contiguous `headDim` spans.
    - Vectorized `Modulate` and `ApplyGatedResidual` with `TensorPrimitives.Multiply` / `MultiplyAdd`.
-   - Eliminated redundant `ToArray()` heap copies on `Linear` calls and unified matrix multiplications through `DiffusionOps.Linear`.
+   - Eliminated redundant `ToArray()` heap copies on `Linear` calls and pinned memory pointers for direct `TensorPrimitives.Dot` evaluation.
 
 2. **`LtxVaeDecoder.cs`**:
-   - Spatial unrolling in `CausalConv3D`: unrolled the $3\times3$ spatial convolution kernel, eliminating 4-level nested loops and hoisting row/column boundary validity checks outside the channel loop.
+   - Spatial unrolling in `CausalConv3D`: unrolled the $3\times3$ spatial convolution kernel with a dedicated interior-pixel fast path and fixed-pointer accumulation, eliminating 4-level nested loops and bounds check overhead.
    - Removed repeated input buffer allocations by passing `float[]` arrays directly into conv stages.
    - SIMD-vectorized `ApplyChannelScaleShift`, `Linear`, and `ResnetBlock` residual addition (`TensorPrimitives.Add`).
 

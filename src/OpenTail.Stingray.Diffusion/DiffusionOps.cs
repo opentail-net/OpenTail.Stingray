@@ -396,25 +396,36 @@ internal static unsafe class DiffusionOps
     // ── Linear (dense) layer helpers ──────────────────────────────────────
 
     /// <summary>
-    /// Dense layer for float32 weights (VAE decoder): out[i] = sum_j(weight[i,j] * x[j]) + bias[i].
-    /// weight: [outDim, inDim], result: [n, outDim].
-    /// Uses TensorPrimitives.Dot for hardware-accelerated SIMD — no GCHandle, no unsafe.
-    /// For large quantized GGUF weights use SimdKernels.MatMulBatched via IWeightLoader.TryGetRaw.
+    /// Linear projection: y = x @ weight^T + bias.
+    /// x: [n, inDim], weight: [outDim, inDim], bias: [outDim] (optional), result: [n, outDim].
+    /// Uses TensorPrimitives.Dot for hardware-accelerated SIMD with zero per-token allocations.
     /// </summary>
     public static float[] Linear(float[] x, float[] weight, float[]? bias, int n, int inDim, int outDim)
     {
         var result = new float[n * outDim];
 
-        Parallel.For(0, outDim, o =>
+        fixed (float* px = x, pw = weight, pr = result)
+        fixed (float* pb = bias)
         {
-            float b0   = bias is not null ? bias[o] : 0f;
-            var   wRow = weight.AsSpan(o * inDim, inDim);
-            for (int b = 0; b < n; b++)
+            float* pxLocal = px;
+            float* pwLocal = pw;
+            float* prLocal = pr;
+            float* pbLocal = pb;
+
+            Parallel.For(0, outDim, o =>
             {
-                var xRow = x.AsSpan(b * inDim, inDim);
-                result[b * outDim + o] = b0 + TensorPrimitives.Dot<float>(xRow, wRow);
-            }
-        });
+                float b0 = pbLocal != null ? pbLocal[o] : 0f;
+                float* wRow = pwLocal + (nuint)o * (nuint)inDim;
+                var wSpan = new ReadOnlySpan<float>(wRow, inDim);
+
+                for (int b = 0; b < n; b++)
+                {
+                    float* xRow = pxLocal + (nuint)b * (nuint)inDim;
+                    var xSpan = new ReadOnlySpan<float>(xRow, inDim);
+                    prLocal[(nuint)b * (nuint)outDim + (nuint)o] = b0 + TensorPrimitives.Dot<float>(xSpan, wSpan);
+                }
+            });
+        }
 
         return result;
     }
