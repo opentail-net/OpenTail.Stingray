@@ -264,11 +264,17 @@ that is more elegant but lower-visibility.
     correct — channel-outer-then-row-then-col patch layout, row-major patch-grid sequence order,
     both matching real FLUX exactly.
 
-    **PAUSED here 2026-09-01 (operator call)** — four real, verified bugs found and fixed this
-    pass (tensor-prefix mismatch, two missing `.weight` suffixes, GEGLU→plain-GELU MLP, and the
-    full 2D RoPE rewrite above); the tiling-artifact root cause is not pursued further until
-    picked back up — see `docs/056-flux-tiling-artifact-handoff.md` for a self-contained
-    continuation brief. Checkpoints used (all deleted after this pass, re-download to resume):
+    **Update 2026-09-01, rounds 2-4 (see `docs/056-flux-tiling-artifact-handoff.md` for full
+    detail, kept current there — this entry is not being kept in sync line-by-line going
+    forward)**: two more real bugs found and fixed against the real BFL reference (a
+    flow-matching Euler integration sign inversion, and a `[txt,img]`-vs-`[img,txt]` stream
+    token-ordering bug) — six real bugs fixed total now. Tiling artifact still not resolved,
+    now with a visible seam. A performance rewrite (`Workspace`/`Parallel.For`) landed in the
+    same round; an initial race-condition suspicion was tested and DISPROVEN (two identical runs
+    produced byte-identical output), and an initial "slower" timing measurement turned out to be
+    shared-machine contention, not a real regression — the performance change is not implicated
+    in the artifact. Paused again pending the next round (VAE conditioning is the next suspect).
+    Checkpoints used (all deleted after each pass, re-download to resume):
     DiT `city96/FLUX.1-schnell-gguf` → `flux1-schnell-Q2_K.gguf` (4.01 GB); VAE
     `ffxvs/vae-flux` → `ae.safetensors` (335 MB, ungated mirror — `black-forest-labs/
     FLUX.1-schnell`'s own copy is access-gated); CLIP-L `comfyanonymous/flux_text_encoders` →

@@ -86,29 +86,31 @@ color palette (blue/pink/white herringbone vs. the earlier version's warmer tone
 new detail: a visible horizontal seam roughly 20% down the frame and a vertical seam splitting the
 lower portion in half. That seam structure hadn't appeared in any earlier run.
 
-Separately, and NOT part of items 5-7: an unrelated performance change was made to
-`DiffusionOps.cs`/`FluxDiT.cs` in the same round (large diff, not yet characterized in this doc —
-check `git log`/`git diff` on those two files for what actually changed). Measured effect:
-**slower, not faster** — 1549.2s for the same 4-step run, vs. 860.8s before any of round 2/3's
-changes — and peak process memory around 19 GB (real FLUX weights at Q2_K/fp8 total roughly
-9-10 GB, so this is suspicious on its own). The new seam artifact appeared in the SAME run as this
-performance change, so it's not yet established whether the seams are from a bug in the
-performance change itself (a plausible culprit: a broken chunking/parallelization scheme — seams
-at consistent fractional offsets are a classic symptom of tiled/batched processing with a
-boundary-handling bug) or were already latent and just newly exposed. **Not yet disentangled —
-next session should likely start by reverting/isolating the performance change specifically and
-re-testing with only items 5-7 applied, to establish a clean baseline before deciding whether the
-performance change is worth keeping in its current form.**
+Separately, a performance change was made to `DiffusionOps.cs`/`FluxDiT.cs` in the same round,
+introducing a shared `Workspace` object (`ArrayPool`-rented scratch buffers reused across all
+double/single blocks) and several new `Parallel.For` call sites inside `DoubleBlock`/`SingleBlock`/
+`QKNorm`/`UnpackQkv`/`UnpackSingleLin1`/`ScaleGateAdd`.
 
-**One concrete lead for that investigation**: the performance diff adds several new `Parallel.For`
-call sites inside `FluxDiT.cs`'s per-block methods (`DoubleBlock`/`SingleBlock` now also take a
-new `ws` workspace parameter not present before). If `ws` is a mutable scratch buffer shared
-across parallel loop iterations without per-iteration isolation, that's a textbook source of both
-a race condition (→ the new seam artifact, if the race manifests at consistent iteration/chunk
-boundaries) and unexpected slowdown (→ false sharing / cache-line contention across threads
-fighting over the same buffer, which also fits the measured 19 GB peak memory if the workspace
-ends up being allocated per-thread rather than actually shared as intended). This is a real,
-checkable hypothesis, not confirmed — start there.
+**Round 4 (2026-09-01): race condition hypothesis TESTED AND DISPROVEN. The "slowdown" also
+appears to have been a measurement artifact, not a real regression.** Re-ran the exact same repro
+twice in a row with no code changes between runs (both after items 5-7): outputs are
+**byte-identical (same MD5, same file size)**. A genuine data race across threads would not
+reliably reproduce the exact same output twice — this rules out the shared-`Workspace`
+race-condition theory outright. Re-reading the code confirms why: every `Parallel.For` call site
+in this diff writes to strictly disjoint index ranges per iteration (per-head, per-token, or
+per-position slices that never overlap between iterations), and blocks execute strictly
+sequentially (the outer `for` loop over layers, `Parallel.For` itself blocks until all iterations
+complete before returning) — so despite looking suspicious, this code is not actually racy.
+Timing also came back close to the original baseline on the repeat run (886.7s vs. the original
+860.8s baseline, vs. 1549.2s measured once previously) — the earlier "slower" measurement was very
+likely contaminated by other processes contending for CPU on this shared machine (this project's
+own docs note elsewhere that concurrent AI sessions share this box), not a real regression in the
+performance change itself. **Net: the performance change is not implicated in the tiling/seam
+artifact, and is not a measured regression either — both suspicions from Round 3 are cleared.**
+The new seam artifact (still present, confirmed via the byte-identical re-run) needs a different
+explanation — back to the original suspects: VAE latent conditioning, Q2_K kernel precision, or
+attention/QKV wiring (see the numbered list below, written before Round 3/4 and still the right
+place to look next).
 
 **Already checked and confirmed correct this pass** (do not re-investigate unless new evidence
 points back here): patchify/unpatchify (`EulerFlowScheduler.PackLatent`/`UnpackLatent`) — verified
@@ -125,7 +127,11 @@ row/col patch layout and row-major patch-grid sequence order both match.
    missing shift/scale on an otherwise-correct latent is a very plausible source of a structured,
    periodic-looking decode, since the VAE's conv stack would be decoding an out-of-distribution
    input it was never trained to handle gracefully, but whose statistics are still "plausible
-   enough" to produce texture rather than blank noise.
+   enough" to produce texture rather than blank noise. Worth noting given Round 3's new seam
+   detail (a horizontal band ~20% down, a vertical split in the lower half): a wrong shift/scale
+   interacting with the VAE decoder's own internal up/downsampling stages could plausibly produce
+   seams at those kinds of fractional-of-height boundaries too, so this is still the first thing
+   to check even with the seam clue in hand, not a reason to skip to something more exotic.
 2. **Q2_K-specific dequant/matvec kernel artifact.** This is the first time this project has ever
    run Q2_K weights through `FluxDiT.MatQ`'s CPU path at this scale. A periodic pattern that
    survives a real semantic fix could be a quantization-block-boundary artifact (Q2_K uses 16- or
