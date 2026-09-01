@@ -521,7 +521,7 @@ public sealed record ModelHyperparams
             "llada-moe" or "rnd1" or
             "olmo2" or "olmoe" or
             "phi2" or "phi3" or "phimoe" or
-            "plamo" or "plamo2" or "plamo3" or
+            "plamo" or "plamo2" or
             "gemma" or "gemma2" or "gemma3" or "gemma3n" or "gemma4" or "gemma-embedding" or
             "starcoder2" or "openelm" or "gptneox" or "codeshell" or "orion" or
             "nemotron" or "exaone" or "exaone4" or "exaone-moe" or

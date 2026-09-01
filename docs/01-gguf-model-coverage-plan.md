@@ -1621,47 +1621,8 @@ but small LayerNorm-with-bias + gated-SiLU-FFN combination) — the architecture
 blocker for either. Neither downloaded in full; no GGUF to delete, no allowlist entry was ever
 added.
 
-### `arcee` — CHECKED 2026-08-09, BLOCKED on YaRN RoPE scaling, a substantial unimplemented
-mechanism — NOT the easiest remaining item after all
-
-`arcee.cpp` looked promising on first read: RMSNorm, standard biasless GQA, and only one
-genuinely new piece — non-gated FFN with ReLU² activation (`LLM_FFN_RELU_SQR`, `y = relu(x)^2`)
-instead of GELU/xIELU, plus an already-mostly-generic `AttentionScaleOverride`. Built and then
-FULLY REVERTED once the real blocker surfaced: `SimdKernels.ReluSqrInPlace` (mirroring the existing
-`GeluInPlace`/`XieluInPlace` non-gated-activation kernels), `ModelHyperparams.UsesReluSquared`
-(`arch == "arcee"`, wired the same way `XieluAlphaN`'s presence already disambiguates GELU from
-xIELU), and both `DenseFfn` and `PrefillCore`'s non-gated-FFN call sites — all compiled and were
-architecturally correct, but were reverted before any checkpoint was tested against them, once
-`arcee-ai/AFM-4.5B`'s real metadata was read.
-
-**The actual blocker: `arcee.rope.scaling.type = yarn`, `factor = 20`,
-`original_context_length = 4096`** — confirmed present on BOTH the Instruct and Base releases via
-the same partial-download trick (checked before downloading either checkpoint in full a second
-time). This engine has NO YaRN implementation anywhere — `ModelGraph.cs` has zero mentions of it,
-and `SimdKernels.BuildRopeTable` only builds a plain theta-based table with an optional linear
-`freqFactors` array (the `llama3`-style long-context tensor, a much simpler mechanism already
-supported). YaRN is NTK-by-parts frequency interpolation (low-frequency head dims get the full
-scaling-factor wavelength stretch, high-frequency dims are left alone, a ramp function blends the
-middle band) PLUS an attention/`mscale` factor applied to attention scores — genuinely comparable in
-complexity to the YaRN correction already flagged as part of MLA's five-mechanism scope in §1f item
-4, not a small addition. Critically, YaRN's frequency remapping affects EVERY position, not only
-ones beyond the original 4096-token context — so even a short "capital of France" greedy-parity
-probe would exercise the wrong math, not just long-context generation.
-
-**Correctly abandoned once the true scope was visible, consistent with "always take the easiest
-first."** Reverted the ReLU² work completely (confirmed via grep: zero remaining
-`ReluSquared`/`arcee` references in `ModelGraph.cs`/`SimdKernels.cs`/`ForwardPass.cs`) rather than
-leave inert, unreachable code for an architecture never added to the allowlist — `arcee` was never
-added to `ModelCompatibility.cs`, so nothing was left in a half-admitted state. Both checkpoints
-(`AFM-4.5B` Instruct and Base, 4.9 GB each) deleted without ever being fully verified. If YaRN is
-ever implemented for a different, higher-priority reason, `arcee`'s remaining gap (ReLU²) would be
-a same-day addition — the ReLU² kernel design above is recorded here so it doesn't need
-re-deriving.
-
----
-
 ### 1v. `jais2` — ADMITTED 2026-08-09, FULL 3-of-3-token exact greedy match (including a natural
-EOS stop), bucket-2 — the ReLU² work built for `arcee` found a real home
+EOS stop), bucket-2
 
 `yoriis/JAIS2-IT-0.3` (a third-party fine-tune of `inceptionai/Jais-2-8B-Chat`, itself Apache-2.0
 but gated behind the HF web UI's terms-acceptance flow, which this session cannot do
@@ -1678,14 +1639,11 @@ zero new work on any of those.
 
 **The one genuinely new piece: non-gated FFN with ReLU-squared activation** (`max(0,x)^2`,
 llama.cpp's `LLM_FFN_RELU_SQR`), biased the same way GPT-NeoX's GELU already is (up-bias applied
-INSIDE the activation, down-bias after). This is the exact mechanism built, then fully reverted,
-for `arcee` earlier this session — `arcee` turned out to also need YaRN RoPE scaling (a much larger,
-still-unimplemented piece), so it was abandoned, but the ReLU² kernel design (`SimdKernels.
-ReluSqrInPlace`, `ModelHyperparams.UsesReluSquared`) carried over cleanly here since `jais2` needs
-nothing else new — confirming the plan doc's note that the reverted work "would be a same-day
-addition" the next time a ReLU²-only architecture came up. Wired into both `DenseFfn` and
-`PrefillCore`'s non-gated-FFN branches, alongside the existing xIELU/GELU dispatch, mirroring the
-GELU bias placement exactly (only the activation function itself differs).
+INSIDE the activation, down-bias after). New kernel: `SimdKernels.ReluSqrInPlace` +
+`ModelHyperparams.UsesReluSquared` (`arch == "jais2"`, wired the same way `XieluAlphaN`'s presence
+already disambiguates GELU from xIELU). Wired into both `DenseFfn` and `PrefillCore`'s non-gated-FFN
+branches, alongside the existing xIELU/GELU dispatch, mirroring the GELU bias placement exactly
+(only the activation function itself differs).
 
 **Also needed a new pre-tokenizer regex.** `tokenizer.ggml.pre = jais-2` is not in this engine's
 existing table — confirmed against `llama-vocab.cpp`'s `LLAMA_VOCAB_PRE_TYPE_JAIS2` case:
@@ -1712,49 +1670,6 @@ disturb any existing pre-type).
 
 **No automated test kept in the tree** (bucket-2) — see the `"jais2"` entry's comment in
 `ModelCompatibility.cs` for the full verification evidence.
-
----
-
-### `plamo3` — CHECKED 2026-08-09, BLOCKED on a genuinely distinct tokenizer algorithm
-(`LLAMA_VOCAB_TYPE_PLAMO2`) — a FOURTH tokenizer-axis gap this session, not the Unigram-LM one
-
-`plamo3.cpp` (197 lines) looked like an excellent candidate on first read: sandwich norm
-(pre-norm AND post-norm on both attention and FFN — already generic from Gemma-4/OLMo2/GLM4),
-fused single-tensor QKV (already generic, keyed on tensor name), a fused double-width `ffn_up`
-SwiGLU split with no separate `ffn_gate` (the exact GLM4 mechanism, already generic), and per-head
-QK-norm applied BEFORE RoPE (this engine's default timing) — all zero new work. The one real
-architecture-side piece needed: sliding-window attention using cohere2's scalar-period
-`set_swa_pattern` convention (`plamo3.attention.sliding_window_pattern=8`, confirmed as a plain
-scalar via `list-metadata` on `mmnga-o/plamo-3-nict-2b-base-gguf`, matching cohere2's convention
-rather than Gemma 4's literal bool-array one) COMBINED with Gemma-4-style dual-frequency RoPE
-(`rope.freq_base=1e6` global, `rope.freq_base_swa=1e4` SWA — RoPE applied on EVERY layer, unlike
-cohere2 which skips it entirely on global layers). Built by widening the cohere2 SWA-pattern branch
-in `ModelGraph.cs` to `arch is "cohere2" or "plamo3"` and adding a `plamo3`-only sub-block that sets
-`RopeThetaSwa` and a uniform (not genuinely per-layer-varying) `LayerRopeDim` array — deliberately
-NOT also setting `LayerHeadDim`, to avoid pulling in Gemma 4's per-layer-head-dim sequential-only
-machinery this architecture doesn't need.
-
-**Blocked before any of that could be verified: `tokenizer.ggml.model = plamo2`**, a genuinely
-distinct llama.cpp vocab TYPE (`LLAMA_VOCAB_TYPE_PLAMO2`, confirmed in `llama-vocab.cpp` — its own
-dedicated tokenizer algorithm with dedicated encode/decode/detokenize code paths throughout the
-file), not a pre-type variant within the SPM or BPE families this engine already implements. This
-engine's `GgufTokenizer` only special-cases `gemma`/`gemma2`/`gemma3`/`gemma4`/`llama` as SPM;
-everything else — including `plamo2` — falls through to byte-BPE. Combined with this checkpoint's
-`tokenizer.ggml.scores` array (present) and no `merges` array, the practical result would be the
-SAME kind of severe fragmentation already measured for `xverse`/`baichuan`/`orion`, just from a
-different root cause: not a missing-merges BPE fallback or an unimplemented Unigram-LM Viterbi
-segmentation, but an entirely separate tokenizer ALGORITHM this engine has never encountered before.
-A fourth distinct tokenizer-axis gap this session, alongside the "neither array" defect (`xverse`),
-the standard Unigram-LM gap (`minicpm`/`internlm2`/`ernie4_5`/`baichuan`/`orion`), and now this one.
-
-**Correctly abandoned once the true blocker was visible, consistent with `arcee`'s precedent
-earlier this session.** Reverted the `ModelGraph.cs` SWA-pattern/dual-RoPE work completely back to
-its cohere2-only form (confirmed via grep: no remaining `plamo3`-specific code anywhere in
-`ModelGraph.cs`/`ModelCompatibility.cs`) rather than leave unverified, unreachable code for an
-architecture never added to the allowlist. Checkpoint (`plamo-3-nict-2b-base`, 2.77 GB Q8_0) deleted
-without ever being tested. If a PLaMo2-family tokenizer is ever implemented for a different,
-higher-priority reason, `plamo3`'s architecture-side design (documented above) is a same-day
-addition — the same "kernel design recorded, checkpoint gone" pattern as `arcee`'s ReLU² notes.
 
 ---
 
@@ -1823,7 +1738,7 @@ first place) is evidently a more recent checkout than the compiled reference bin
 there is currently NO way to generate a llama.cpp reference for this architecture at all, tokenizer
 gap aside.
 
-**Reverted completely, consistent with `arcee`/`plamo3`'s precedent.** All architecture-side work
+**Reverted completely.** All architecture-side work
 (the `NumPhysicalLayers`/`SkipLoopFinalNorm` hyperparameters, the `LoopedTensorSource` file, the
 `RunTrunk` loop-boundary norm, the `PrefillDispatch` gate) removed and confirmed via grep — zero
 remaining `nanbeige`/`NumPhysicalLayers`/`LoopedTensorSource` references anywhere in `src/`.

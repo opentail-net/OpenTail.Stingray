@@ -86,8 +86,7 @@ that is more elegant but lower-visibility.
    blocked on a real VAE decoder (own class, same shape of work as `WanVaeDecoder3D`) and real dual
    CLIP+LLM text conditioning. Real demand (a popular community Diffusers repack sees tens of
    thousands of downloads/month) but well below Wan/LTX/Z-Image.
-8. **`arcee` YaRN RoPE scaling** — small, well-scoped, low external-demand architecture unlock.
-9. **`xverse` tokenizer fix** — **root-caused and fixed, 2026-09-02.** The old framing ("absent
+8. **`xverse` tokenizer fix** — **root-caused and fixed, 2026-09-02.** The old framing ("absent
    scores") was imprecise: the real defect was architectural, not a missing-data edge case — this
    engine's SPM path (`tokenizer.ggml.model=llama`) used a merges-RANK-TABLE algorithm (built from
    `tokenizer.ggml.merges`) for genuine SentencePiece tokenization, but real SentencePiece BPE
@@ -131,20 +130,18 @@ that is more elegant but lower-visibility.
    regardless of xverse's own license.
 
 **P3 and later campaigns (not scheduled, revisit only after the above closes):**
-10. **DeepSeek2/MiniCPM3 MLA** — the single biggest architectural lift in the coverage plan
-    (5 genuinely new mechanisms); potentially high popularity if ever tackled, but deliberately
-    deprioritized behind smaller, faster wins.
-11. **Newer LTX families (LTX-2.3/2.5, etc.)** — a later campaign once the base LTX-Video port is
+9. **DeepSeek2/MiniCPM3 MLA** — the single biggest architectural lift in the coverage plan
+   (5 genuinely new mechanisms); potentially high popularity if ever tackled, but deliberately
+   deprioritized behind smaller, faster wins.
+10. **Newer LTX families (LTX-2.3/2.5, etc.)** — a later campaign once the base LTX-Video port is
     real; these newer variants individually out-download even the original LTX-Video model.
-12. **Mamba / Jamba / RWKV** — a genuinely different recurrent forward-pass family; the largest
-    remaining architecture-coverage lift on the list.
-13. **GPT-OSS / BitNet** — each need multiple substantial new mechanisms (attention sinks,
-    alternating sliding-window, biased-MoE, OpenAI-specific gating for GPT-OSS; Sub-LN plus a new
-    ternary packed-weight format for BitNet). Potentially high popularity, but explicitly new
-    campaigns, not known/started gaps — do not chase these opportunistically ahead of the ordered
-    list above just because they are individually popular; that violates the consolidation strategy
-    this list is built around. The same discipline applies to FLUX.1, SD3/3.5 — strategically
-    attractive, not yet started, not to be chased ahead of turn.
+11. **GPT-OSS** — needs multiple substantial new mechanisms (attention sinks, alternating
+    sliding-window attention, biased MoE experts, an OpenAI-specific SwiGLU/gating variant).
+    Potentially high popularity, but explicitly a new campaign, not a known/started gap — do not
+    chase this opportunistically ahead of the ordered list above just because it's individually
+    popular; that violates the consolidation strategy this list is built around. The same
+    discipline applies to FLUX.1, SD3/3.5 — strategically attractive, not yet started, not to be
+    chased ahead of turn.
 
 ---
 
@@ -217,14 +214,17 @@ confirmed pre-existing (the test file hasn't changed since before this session, 
 so this is unrelated to any GPU-path work done this session):
 
 - `YoutuVl` and `HunyuanVl`: `EmbedImage` returns a completely all-zero embedding buffer.
+  **Re-admitted 2026-09-02 after briefly being dropped — kept, but explicitly lowest priority to
+  fix among these 4** (real demand for these two specific architectures is lower than
+  `KimiVl`/`MiniCpmV`).
 - `KimiVl`: two genuinely different input images produce embeddings whose cosine similarity is
   `NaN` (a degenerate/zero-norm embedding on at least one side).
 - `MiniCpmV`: two genuinely different input images produce embeddings with cosine similarity
   `1.0000001` — i.e. identical, meaning the image content isn't actually reaching the encoder
   output for at least one of the two inputs.
 
-131/135 real-weight tests in this suite pass. Not yet root-caused — no reference source has been
-read for these 4 architectures yet this session. Given the failure SHAPE (all-zero or
+131/135 real-weight tests in this suite pass. Not yet root-caused for any of the 4 — no reference
+source has been read for these architectures yet this session. Given the failure SHAPE (all-zero or
 identical-regardless-of-input) rather than "wrong but non-degenerate" output, the likely culprit
 category is a wiring/plumbing bug (an input never reaching the encoder, a buffer never written, an
 early-return path) rather than a subtle numerical error — matching the pattern several other real

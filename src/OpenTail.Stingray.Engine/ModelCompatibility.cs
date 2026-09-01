@@ -431,10 +431,7 @@ public static class ModelCompatibility
         // (PreTokenizerPatterns.Jais2, registered under "jais-2") — Llama-3's pattern with the
         // trailing whitespace alternative replaced by a cascading fixed-length run (512, 256, ...,
         // 1), ported directly from llama-vocab.cpp's LLAMA_VOCAB_PRE_TYPE_JAIS2 case, verified
-        // against llama-tokenize before writing any forward-pass code. (This is the SAME ReLU²
-        // mechanism built, then fully reverted, for `arcee` earlier this session — arcee turned
-        // out to also need YaRN RoPE scaling, a much bigger unimplemented piece, so it was
-        // abandoned; the kernel design carried over cleanly to jais2, which needed nothing else.)
+        // against llama-tokenize before writing any forward-pass code.
         //
         // NO AUTOMATED TEST FOR THIS ARCHITECTURE, FOR LICENCE REASONS. Checkpoint:
         // `yoriis/JAIS2-IT-0.3` (a third-party fine-tune of `inceptionai/Jais-2-8B-Chat`, itself

@@ -414,25 +414,10 @@ declare `tokenizer.ggml.scores` with no `merges` key. Architecture side was neve
 (`baichuan`'s 7B variant is a literal zero-code plain-llama clone; `orion` needed only a small new
 LayerNorm-with-bias + gated-SiLU-FFN combination). Neither downloaded in full.
 
-**`arcee` CHECKED and BLOCKED, 2026-08-09 — YaRN RoPE scaling, a substantial unimplemented
-mechanism, not the "easiest" item it first looked like.** Built and then FULLY REVERTED a ReLU²
-activation kernel + `ModelHyperparams.UsesReluSquared` + both FFN call-site wirings once
-`arcee-ai/AFM-4.5B`'s real metadata showed `rope.scaling.type=yarn` (factor 20, confirmed on both
-the Instruct and Base releases via the same partial-download trick) — this engine has no YaRN
-implementation at all (NTK-by-parts frequency interpolation + an attention/mscale factor,
-comparable in complexity to the YaRN piece already flagged in MLA's scope), and it affects every
-position, not just long-context generation, so even a short greedy-parity probe would exercise the
-wrong math. Reverted completely (confirmed via grep) rather than leave inert code for an
-architecture never added to the allowlist. Both checkpoints deleted. See
-[../01-gguf-model-coverage-plan.md](../01-gguf-model-coverage-plan.md) for the full finding and the
-ReLU² design notes, kept so a future YaRN implementation doesn't need to re-derive them.
-
 **ARCHITECTURE ADMITTED — `jais2`, 2026-08-09, FULL 3-of-3-token exact greedy match (including a
-natural EOS stop), bucket-2 — the `arcee` ReLU² work found a real home.** LayerNorm-with-bias,
-separate biased Q/K/V/output projections, and standard NEOX RoPE were all already generic. The one
-new piece — non-gated FFN with ReLU-squared activation — is the EXACT mechanism reverted for
-`arcee` earlier this session (`arcee` also needed YaRN, `jais2` needs nothing else new), so the
-kernel design carried over cleanly: `SimdKernels.ReluSqrInPlace` + `ModelHyperparams.
+natural EOS stop), bucket-2.** LayerNorm-with-bias, separate biased Q/K/V/output projections, and
+standard NEOX RoPE were all already generic. The one new piece — non-gated FFN with ReLU-squared
+activation — needed a new kernel: `SimdKernels.ReluSqrInPlace` + `ModelHyperparams.
 UsesReluSquared`, wired into both `DenseFfn` and `PrefillCore`'s non-gated-FFN branches. Also
 needed a new pre-tokenizer regex (`PreTokenizerPatterns.Jais2`, registered under `"jais-2"`) —
 Llama-3's pattern with the trailing whitespace alternative replaced by a cascading fixed-length run
@@ -440,20 +425,6 @@ Llama-3's pattern with the trailing whitespace alternative replaced by a cascadi
 third-party fine-tune of the gated `inceptionai/Jais-2-8B-Chat`) — bucket-2, no persisted test;
 evidence recorded on the `"jais2"` allowlist entry and in
 [../01-gguf-model-coverage-plan.md](../01-gguf-model-coverage-plan.md) §1v.
-
-**`plamo3` CHECKED and BLOCKED, 2026-08-09 — a FOURTH distinct tokenizer-axis gap, not an
-architecture problem.** `plamo3.cpp` needed only one real architecture-side piece (cohere2-style
-scalar-period SWA combined with Gemma-4-style dual-frequency RoPE, since PLaMo-3 runs RoPE on
-every layer at two different bases rather than skipping it on global layers like cohere2) — built,
-then reverted once `tokenizer.ggml.model=plamo2` was found: a genuinely distinct llama.cpp vocab
-TYPE (`LLAMA_VOCAB_TYPE_PLAMO2`), not a pre-type variant within SPM or BPE. This engine has no
-support for it at all — falls through to byte-BPE with no merges array, the same fragmentation
-signature as `xverse`/`baichuan`/`orion` but from a different root cause. Reverted the
-`ModelGraph.cs` SWA/RoPE work completely (confirmed via grep) rather than leave it unverified and
-unreachable, matching `arcee`'s precedent. Checkpoint deleted without ever being tested. See
-[../01-gguf-model-coverage-plan.md](../01-gguf-model-coverage-plan.md) for the full finding and the
-architecture-side design, kept so a future PLaMo2-tokenizer implementation doesn't need to
-re-derive it.
 
 **ARCHITECTURE ADMITTED — `maincoder`, 2026-08-09, FULL 24-of-24-token exact greedy match,
 bucket-1, genuinely zero new code.** A literal Qwen3-shaped architecture — RMSNorm, biasless GQA
@@ -478,7 +449,7 @@ tokenizer gap already blocking `minicpm`/`internlm2`/`ernie4_5`/`baichuan`/`orio
 architectures), and (2) independently, this session's local `tools/llama.cpp` reference binary
 doesn't even recognize `nanbeige` as an architecture — the source tree read from is newer than the
 compiled binary, so no reference exists at all right now regardless of the tokenizer. Reverted
-completely (confirmed via grep), matching `arcee`/`plamo3`'s precedent. Checkpoint deleted without
+completely (confirmed via grep). Checkpoint deleted without
 ever being verified. See [../01-gguf-model-coverage-plan.md](../01-gguf-model-coverage-plan.md) for the
 full finding and the `LoopedTensorSource` design, kept as the pattern for any future
 weight-looping architecture once both blockers clear.
