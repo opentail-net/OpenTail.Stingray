@@ -41,6 +41,17 @@ public sealed class LtxVideoModel : IDisposable
     public float RopeTheta { get; } = 10000.0f;
     public float TimestepScale { get; } = 1000.0f;
 
+    // Intermediate-tensor capture for golden/numeric-parity tests (LtxVideoGoldenParityTests) --
+    // NOT used by the real inference path, populated unconditionally on each Forward() call since
+    // the cost is negligible next to the transformer itself.
+    internal float[]? LastProjInOut { get; private set; }
+    internal float[]? LastCaptionProjOut { get; private set; }
+    internal float[]? LastEmbeddedTimestep { get; private set; }
+    internal float[]? LastTimestepProj { get; private set; }
+    internal float[]? LastRopeCos { get; private set; }
+    internal float[]? LastRopeSin { get; private set; }
+    internal float[]? LastBlock0Out { get; private set; }
+
     public LtxVideoModel(IWeightLoader weights, string prefix = "model.diffusion_model")
     {
         _weights = weights;
@@ -209,18 +220,36 @@ public sealed class LtxVideoModel : IDisposable
         DiffusionOps.SiluInPlace(siluEmb);
         var timestepProj = Linear("adaln_single.linear", siluEmb, d, d * 6);
 
-        // 4. Continuous 3D RoPE (self-attention only; cross-attention gets none)
-        var (ropeCos, ropeSin) = LtxVideoRoPE.ComputeContinuous3DRoPE(numFrames, patchH, patchW, HeadDim, RopeTheta);
+        // 4. Continuous 3D RoPE (self-attention only; cross-attention gets none). Real:
+        // `LTXVideoRotaryPosEmbed(dim=inner_dim, ...)` -- the rotation is computed over the FULL
+        // hidden dim (2048), applied to q/k BEFORE the conceptual head split (`apply_rotary_emb`
+        // runs on the un-split `[B,S,inner_dim]` tensor) -- NOT a per-head-width table repeated
+        // identically across heads the way Wan's RoPE works. Confirmed directly against
+        // `LTXVideoRotaryPosEmbed.__init__`'s `dim` argument in diffusers' real transformer_ltx.py
+        // (found via golden-tensor mismatch: a per-head-width table gave near-zero cosine
+        // similarity against the real reference's actual rope_cos/rope_sin dump).
+        var (ropeCos, ropeSin) = LtxVideoRoPE.ComputeContinuous3DRoPE(numFrames, patchH, patchW, d, RopeTheta);
+
+        LastProjInOut = (float[])x.Clone();
+        LastCaptionProjOut = captionProj;
+        LastEmbeddedTimestep = embeddedTimestep;
+        LastTimestepProj = timestepProj;
+        LastRopeCos = ropeCos;
+        LastRopeSin = ropeSin;
 
         // 5. Transformer blocks
         for (int layer = 0; layer < NumLayers; layer++)
         {
             x = TransformerBlock($"transformer_blocks.{layer}", x, timestepProj, ropeCos, ropeSin,
                 captionProj, numTokens, numTxt);
+            if (layer == 0) LastBlock0Out = (float[])x.Clone();
         }
 
-        // 6. Final layer: RMSNorm (non-affine) -> AdaLN-modulate with TOP-LEVEL scale_shift_table
-        // [2,hidden] additively combined with the raw embedded_timestep -> proj_out (Linear dim->out)
+        // 6. Final layer: real `nn.LayerNorm(inner_dim, eps=1e-6, elementwise_affine=False)`
+        // (mean+variance normalized -- NOT RMSNorm, unlike every other norm in this model; confirmed
+        // directly against `LTXVideoTransformer3DModel.norm_out` in diffusers' real
+        // transformer_ltx.py) -> AdaLN-modulate with TOP-LEVEL scale_shift_table [2,hidden]
+        // additively combined with the raw embedded_timestep -> proj_out (Linear dim->out)
         var topTable = GetWeight("scale_shift_table"); // [2, d]: shift, scale
         var finalShift = new float[d];
         var finalScale = new float[d];
@@ -231,7 +260,7 @@ public sealed class LtxVideoModel : IDisposable
         }
 
         var normed = (float[])x.Clone();
-        RmsNormNoAffine(normed, d, NormEps);
+        LayerNormNoAffine(normed, d, NormEps);
         var modulated = Modulate(normed, numTokens, d, finalShift, finalScale);
 
         return Linear("proj_out", modulated, d, OutChannels);
@@ -321,10 +350,13 @@ public sealed class LtxVideoModel : IDisposable
         DiffusionOps.RmsNorm(q, qNorm, d, QkNormEps);
         DiffusionOps.RmsNorm(k, kNorm, d, QkNormEps);
 
+        // Real: `apply_rotary_emb` runs on q/k BEFORE the head split (`x.unflatten(2,(heads,-1))`
+        // happens only afterward, in the attention processor) -- the rotation table spans the FULL
+        // hidden dim, so apply it as ONE "head" of width `d`, not per-head with a repeated table.
         if (applyRope && ropeCos is not null && ropeSin is not null)
         {
-            LtxVideoRoPE.ApplyRoPE(q, ropeCos, ropeSin, qSeq, NumHeads, HeadDim);
-            LtxVideoRoPE.ApplyRoPE(k, ropeCos, ropeSin, kvSeq, NumHeads, HeadDim);
+            LtxVideoRoPE.ApplyRoPE(q, ropeCos, ropeSin, qSeq, numHeads: 1, headDim: d);
+            LtxVideoRoPE.ApplyRoPE(k, ropeCos, ropeSin, kvSeq, numHeads: 1, headDim: d);
         }
 
         var attnOut = MultiHeadAttention(q, k, v, qSeq, kvSeq, NumHeads, HeadDim);
@@ -407,8 +439,10 @@ public sealed class LtxVideoModel : IDisposable
         return Linear("adaln_single.emb.timestep_embedder.linear_2", h1, HiddenSize, HiddenSize);
     }
 
-    /// <summary>Real block-level `rms_norm(x, eps)` (`ggml_rms_norm`, NO learned weight) -- distinct
-    /// from the FULL-WIDTH, weighted q_norm/k_norm RMSNorm used inside attention.</summary>
+    /// <summary>Block-level `RMSNorm(dim, eps, elementwise_affine=False)` (no learned weight) --
+    /// used for `norm1`/`norm2` inside each transformer block. Distinct from the FULL-WIDTH,
+    /// weighted q_norm/k_norm RMSNorm used inside attention, and from the model's own final
+    /// `norm_out` (a real mean-centered LayerNorm, not RMSNorm -- see <see cref="LayerNormNoAffine"/>).</summary>
     private static void RmsNormNoAffine(float[] x, int dim, float eps)
     {
         int n = x.Length / dim;
@@ -418,6 +452,26 @@ public sealed class LtxVideoModel : IDisposable
             float sumSq = TensorPrimitives.SumOfSquares(rowSpan);
             float invRms = 1f / MathF.Sqrt(sumSq / dim + eps);
             TensorPrimitives.Multiply(rowSpan, invRms, rowSpan);
+        });
+    }
+
+    /// <summary>Real `nn.LayerNorm(dim, eps, elementwise_affine=False)` -- mean-centered AND
+    /// variance-normalized (unlike every other norm in this model, which is RMS-only). Used ONLY
+    /// for the model's final `norm_out`, confirmed directly against
+    /// `LTXVideoTransformer3DModel.norm_out` in diffusers' real `transformer_ltx.py` -- a
+    /// plausible-looking RMSNorm substitution here would silently corrupt the final projection's
+    /// input distribution.</summary>
+    private static void LayerNormNoAffine(float[] x, int dim, float eps)
+    {
+        int n = x.Length / dim;
+        Parallel.For(0, n, row =>
+        {
+            var rowSpan = x.AsSpan(row * dim, dim);
+            float mean = TensorPrimitives.Sum(rowSpan) / dim;
+            TensorPrimitives.Subtract(rowSpan, mean, rowSpan);
+            float sumSq = TensorPrimitives.SumOfSquares(rowSpan);
+            float scale = 1f / MathF.Sqrt(sumSq / dim + eps);
+            TensorPrimitives.Multiply(rowSpan, scale, rowSpan);
         });
     }
 

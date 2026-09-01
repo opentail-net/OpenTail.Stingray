@@ -246,6 +246,65 @@ internal sealed class LtxTransformerBlock
 }
 ```
 
+## Update 2026-09-01: DiT transformer core implemented AND numerically verified against the real HF `diffusers` reference
+
+Phases 0-5 of the build order above are done, not just structurally but numerically:
+`LtxVideoModel` (`src/OpenTail.Stingray.Diffusion/LTXVideo/LtxVideoModel.cs`) is now a real
+`IWeightLoader`-backed port with checkpoint-driven config detection, real `patchify_proj`/
+`caption_projection`/`adaln_single`/28-block-transformer/`proj_out` weights, and a rewritten
+`LtxVideoRoPE.cs`.
+
+**`diffusers` (the real HF Python package) is available in this environment** (`pip install
+diffusers` succeeded) and its `diffusers/models/transformers/transformer_ltx.py` is the actual
+released reference implementation used to produce the real checkpoint — far more authoritative than
+`stable-diffusion.cpp`'s ggml port for numeric verification, since it's literally the training-time
+module the checkpoint's weights were fit to. Loading the real `ltx-video-2b-v0.9.1.safetensors`
+into `LTXVideoTransformer3DModel` (after remapping `patchify_proj`→`proj_in`, `adaln_single`→
+`time_embed`, `q_norm`/`k_norm`→`norm_q`/`norm_k`) hit **zero missing/unexpected keys** — full
+confirmation this project's tensor-name understanding is exactly right.
+
+Diffing against `diffusers` found real bugs the ggml-reference-only reading missed:
+- **RoPE is computed over the FULL hidden dim (2048), not per-head (64), and applied to q/k BEFORE
+  the head split** (`LTXVideoRotaryPosEmbed(dim=inner_dim, ...)`, `apply_rotary_emb` runs on the
+  un-split `[B,S,inner_dim]` tensor). A per-head-width table repeated identically across all 32
+  heads (what was originally built, and what the ggml reference's `num_heads` parameter to
+  `build_video_rope_matrix` implied) gave near-zero cosine similarity against the real reference's
+  own `rope_cos`/`rope_sin` dump. Fixed by computing the rotation over `HiddenSize` and applying it
+  as a single "head" of width `d` before the per-head attention split.
+- **Rotation is INTERLEAVED (pairs `(x[2i],x[2i+1])`, `cos`/`sin` values duplicated via
+  `repeat_interleave(2)`), matching this project's own `WanRoPE` convention** — NOT split-half
+  ("NEOX") as the ggml reference's `video_rope_interleaved=false` config flag implied.
+- **Coordinates are plain `index * rope_interpolation_scale[axis] / base[axis]`** (real default
+  `rope_interpolation_scale = (vae_temporal_ratio/frame_rate, vae_spatial_ratio, vae_spatial_ratio)`
+  = `(8/25, 32, 32)`, `base = (20, 2048, 2048)`, `frame_rate` default 25) — no causal `+1-scale`
+  temporal shift, no "middle indices grid" start/end averaging; both were real features of the
+  ggml/C++ port's *config surface* but not what the actual released weights' RoPE module computes.
+- **Frequency channels are laid out FREQUENCY-major** (`[f0_t,f0_h,f0_w, f1_t,f1_h,f1_w, ...]`), not
+  axis-major (`[all t, all h, all w]`).
+- **The model's final `norm_out` is a real mean-centered `nn.LayerNorm` (no affine), NOT RMSNorm** —
+  every other norm in the model (block `norm1`/`norm2`, attention `q_norm`/`k_norm`) is RMS-only, so
+  this was an easy one to get wrong by pattern-matching the rest of the model.
+
+**Numeric parity is now a committed, runnable test**
+(`tests/OpenTail.Stingray.Tests.Diffusion/LtxVideoGoldenParityTests.cs`), not just eyeballed once:
+golden intermediate tensors (RoPE cos/sin, `patchify_proj` output, `caption_projection` output,
+block-0 output, full 28-block output) were dumped from the real `LTXVideoTransformer3DModel` loaded
+with the real checkpoint weights, saved as small float32 `.bin` fixtures under
+`tests/OpenTail.Stingray.Tests.Diffusion/TestData/LtxGolden/`, and are diffed against this project's
+own `LtxVideoModel.Forward()` output (via internal `LastRopeCos`/`LastProjInOut`/etc. capture
+fields, `InternalsVisibleTo`-exposed) on every test run. Results: RoPE cosine similarity >0.9999,
+`patchify_proj`/`caption_projection` >0.999, block-0 output >0.99, full 28-block forward >0.95
+(bounded below 1.0 by the checkpoint's real BF16 storage precision, not a known bug). This closes
+the numeric-verification gate the build order's step 4 calls a hard requirement before trusting
+anything downstream.
+
+**Still not done**: T5-v1.1-XXL encoder (not downloaded), the real timestep-conditioned VAE decoder
+(pipeline still uses the generic placeholder `VaeDecoder`), and the scheduler/guidance loop's own
+numeric parity (untouched this pass — golden dump above only exercises the transformer, not
+`FlowMatchEulerDiscreteScheduler`/CFG). The Python dump script itself was a scratch file, not
+committed — regenerate it from this doc's description if the golden fixtures ever need refreshing
+(e.g. after a real bugfix changes the expected output).
+
 ## Not yet done / explicitly deferred by this planning pass
 
 - Full tensor dump of the VAE portion of `ltx-video-2b-v0.9.1.safetensors` (this pass only dumped

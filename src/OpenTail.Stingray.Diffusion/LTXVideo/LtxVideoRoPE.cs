@@ -2,25 +2,30 @@ namespace OpenTail.Stingray.Diffusion.LTXVideo;
 
 /// <summary>
 /// 3D continuous-coordinate Rotary Positional Embedding for LTX-Video.
-/// Reference: stable-diffusion.cpp:src/model/diffusion/ltxv.hpp
-/// (generate_freq_grid / build_video_rope_matrix / apply_hidden_rope).
 ///
-/// Real convention (per the reference, ported literally rather than assumed from Wan's RoPE):
-/// positions are CONTINUOUS pixel-space coordinates (latent index * VAE scale factor, with the
-/// temporal axis additionally shifted by the model's causal-VAE convention and averaged over the
-/// latent cell's start/end -- "middle indices grid", `use_middle_indices_grid=true` in the real
-/// config), normalized against `max_pos=[20,2048,2048]` and mapped to `[-1,1]` before being
-/// multiplied by a log-spaced frequency ladder scaled by pi/2 -- NOT `pos * theta^(-2i/dim)` the
-/// way Wan/Llama-style RoPE computes it. Rotation itself is split-half ("NEOX" style, pairs
-/// `(x[i], x[i+dim/2])`), matching the real config's `video_rope_interleaved=false`.
+/// Ported directly from HuggingFace `diffusers`' real, released
+/// `LTXVideoRotaryPosEmbed`/`apply_rotary_emb` (`diffusers/models/transformers/transformer_ltx.py`)
+/// -- NOT the `stable-diffusion.cpp` reference this project otherwise follows, whose
+/// `build_video_rope_matrix` (causal temporal shift, "middle indices grid" averaging, split-half
+/// rotation) turned out to disagree with the actual PyTorch reference on three separate points once
+/// diffusers was available locally to diff against directly:
+/// 1. Coordinates are plain `index * rope_interpolation_scale[axis] / base[axis]` -- no causal
+///    `+1-scale` shift, no start/end-of-cell averaging.
+/// 2. Frequency channels are laid out FREQUENCY-major, `[f0_t,f0_h,f0_w, f1_t,f1_h,f1_w, ...]`, not
+///    AXIS-major (`[all t, all h, all w]`).
+/// 3. Rotation is INTERLEAVED (pairs `(x[2i],x[2i+1])`, cos/sin values duplicated via
+///    `repeat_interleave(2)`), matching this project's own `WanRoPE` convention -- not split-half.
+/// `rope_interpolation_scale` real default (`pipeline_ltx.py`): `(vae_temporal_ratio / frame_rate,
+/// vae_spatial_ratio, vae_spatial_ratio)` = `(8/25, 32, 32)` for the real released VAE + default
+/// `frame_rate=25`.
 /// </summary>
 public static class LtxVideoRoPE
 {
     /// <summary>
-    /// Builds per-token cos/sin tables of length <paramref name="headDim"/> each (split-half
-    /// layout: index i and i+headDim/2 share one rotation angle), for a dense (numFrames, patchH,
-    /// patchW) video-token grid in raster (frame, then row, then col) order -- matching this
-    /// project's own token ordering convention for Wan/patchify.
+    /// Builds per-token cos/sin tables of length <paramref name="headDim"/> each (interleaved
+    /// layout: index 2i and 2i+1 share one rotation angle), for a dense (numFrames, patchH, patchW)
+    /// video-token grid in raster (frame, then row, then col) order -- matching this project's own
+    /// token ordering convention for Wan/patchify.
     /// </summary>
     public static (float[] cos, float[] sin) ComputeContinuous3DRoPE(
         int numFrames,
@@ -28,20 +33,25 @@ public static class LtxVideoRoPE
         int patchW,
         int headDim = 64,
         float theta = 10000.0f,
-        float frameRate = 24.0f,
+        float frameRate = 25.0f,
         int temporalScale = 8,
         int spatialScaleH = 32,
         int spatialScaleW = 32,
-        int maxPosT = 20,
-        int maxPosH = 2048,
-        int maxPosW = 2048,
-        bool causalTemporalPositioning = true,
-        bool useMiddleIndicesGrid = true)
+        int baseNumFrames = 20,
+        int baseHeight = 2048,
+        int baseWidth = 2048,
+        int patchSizeT = 1,
+        int patchSizeS = 1)
     {
-        int halfDim = headDim / 2;
-        int freqCount = headDim / 6; // 2 * positionalDims(=3)
+        int freqCount = headDim / 6;
         var indices = BuildFreqGrid(theta, freqCount);
-        int padSize = halfDim - freqCount * 3;
+        int padHalf = headDim / 2 - freqCount * 3;
+
+        // real: rope_interpolation_scale = (vae_temporal_ratio / frame_rate, vae_spatial, vae_spatial)
+        float scaleT = temporalScale / frameRate;
+        float coordScaleT = scaleT * patchSizeT / baseNumFrames;
+        float coordScaleH = (float)spatialScaleH * patchSizeS / baseHeight;
+        float coordScaleW = (float)spatialScaleW * patchSizeS / baseWidth;
 
         int totalTokens = numFrames * patchH * patchW;
         var cos = new float[totalTokens * headDim];
@@ -50,48 +60,27 @@ public static class LtxVideoRoPE
         int token = 0;
         for (int t = 0; t < numFrames; t++)
         {
-            float pixelT = t * temporalScale;
-            if (causalTemporalPositioning) pixelT = MathF.Max(0f, pixelT + 1f - temporalScale);
-            if (useMiddleIndicesGrid)
-            {
-                float endT = (t + 1) * temporalScale;
-                if (causalTemporalPositioning) endT = MathF.Max(0f, endT + 1f - temporalScale);
-                pixelT = 0.5f * (pixelT + endT);
-            }
-            pixelT /= frameRate;
-
+            float coordT = t * coordScaleT;
             for (int h = 0; h < patchH; h++)
             {
-                float pixelH = h * spatialScaleH;
-                if (useMiddleIndicesGrid) pixelH += 0.5f * spatialScaleH;
-
+                float coordH = h * coordScaleH;
                 for (int w = 0; w < patchW; w++)
                 {
-                    float pixelW = w * spatialScaleW;
-                    if (useMiddleIndicesGrid) pixelW += 0.5f * spatialScaleW;
-
-                    float coordT = pixelT / maxPosT;
-                    float coordH = pixelH / maxPosH;
-                    float coordW = pixelW / maxPosW;
-
+                    float coordW = w * coordScaleW;
                     int baseOff = token * headDim;
-                    int freqIdx = padSize;
+                    int outIdx = padHalf;
 
-                    // Leading pad entries carry angle 0 (cos=1, sin=0).
-                    for (int p = 0; p < padSize; p++)
+                    for (int p = 0; p < padHalf; p++)
                     {
-                        cos[baseOff + p] = 1f;
-                        cos[baseOff + halfDim + p] = 1f;
-                        sin[baseOff + p] = 0f;
-                        sin[baseOff + halfDim + p] = 0f;
+                        WriteAngle(cos, sin, baseOff, p, 0f);
                     }
 
                     for (int f = 0; f < freqCount; f++)
                     {
                         float idxVal = indices[f];
-                        WriteAngle(cos, sin, baseOff, halfDim, freqIdx++, idxVal * (coordT * 2f - 1f));
-                        WriteAngle(cos, sin, baseOff, halfDim, freqIdx++, idxVal * (coordH * 2f - 1f));
-                        WriteAngle(cos, sin, baseOff, halfDim, freqIdx++, idxVal * (coordW * 2f - 1f));
+                        WriteAngle(cos, sin, baseOff, outIdx++, idxVal * (coordT * 2f - 1f));
+                        WriteAngle(cos, sin, baseOff, outIdx++, idxVal * (coordH * 2f - 1f));
+                        WriteAngle(cos, sin, baseOff, outIdx++, idxVal * (coordW * 2f - 1f));
                     }
 
                     token++;
@@ -102,18 +91,20 @@ public static class LtxVideoRoPE
         return (cos, sin);
     }
 
-    private static void WriteAngle(float[] cos, float[] sin, int baseOff, int halfDim, int i, float angle)
+    /// <summary>Writes one rotation angle at half-dim index <paramref name="halfIdx"/>, duplicated
+    /// (`repeat_interleave(2)`) into the full-dim array at `[2*halfIdx, 2*halfIdx+1]`.</summary>
+    private static void WriteAngle(float[] cos, float[] sin, int baseOff, int halfIdx, float angle)
     {
         float c = MathF.Cos(angle);
         float s = MathF.Sin(angle);
-        cos[baseOff + i] = c;
-        cos[baseOff + halfDim + i] = c;
-        sin[baseOff + i] = s;
-        sin[baseOff + halfDim + i] = s;
+        int i = baseOff + 2 * halfIdx;
+        cos[i] = c;
+        cos[i + 1] = c;
+        sin[i] = s;
+        sin[i + 1] = s;
     }
 
-    /// <summary>Real `generate_freq_grid(theta, positional_dims=3, dim)`: a log-spaced ladder from
-    /// 1 to theta, scaled by pi/2 (a single-entry ladder is pi/2 exactly).</summary>
+    /// <summary>Real `theta ** linspace(0, 1, dim//6) * pi/2`.</summary>
     private static float[] BuildFreqGrid(float theta, int freqCount)
     {
         var outArr = new float[freqCount];
@@ -121,7 +112,7 @@ public static class LtxVideoRoPE
         float halfPi = MathF.PI / 2f;
         if (freqCount == 1)
         {
-            outArr[0] = halfPi;
+            outArr[0] = halfPi; // theta^0 * pi/2
             return outArr;
         }
         float logTheta = MathF.Log(theta);
@@ -133,13 +124,14 @@ public static class LtxVideoRoPE
         return outArr;
     }
 
-    /// <summary>Split-half ("NEOX") rotation: pairs `(x[i], x[i+dim/2])` share one angle, matching
-    /// the real `video_rope_interleaved=false` config -- applied only to attn1 (self-attention);
-    /// attn2 (cross-attention against the caption sequence) receives no RoPE at all per the
-    /// reference (`pe=nullptr` on that call).</summary>
+    /// <summary>Real `apply_rotary_emb`: interleaved pairs `(x[2i], x[2i+1])` treated as
+    /// (real, imag); `x_rotated = [-x_imag, x_real]` (also interleaved); `out = x*cos +
+    /// x_rotated*sin`. Since `cos[2i]==cos[2i+1]` and `sin[2i]==sin[2i+1]` (repeat_interleave), this
+    /// reduces to the same interleaved rotation this project's `WanRoPE.ApplyRoPE` already
+    /// implements -- applied only to attn1 (self-attention); attn2 (cross-attention against the
+    /// caption sequence) receives no RoPE at all per the reference (`image_rotary_emb=None`).</summary>
     public static unsafe void ApplyRoPE(float[] qk, float[] cos, float[] sin, int seqLen, int numHeads, int headDim)
     {
-        int half = headDim / 2;
         fixed (float* pQk = qk, pCos = cos, pSin = sin)
         {
             for (int s = 0; s < seqLen; s++)
@@ -149,15 +141,15 @@ public static class LtxVideoRoPE
                 for (int h = 0; h < numHeads; h++)
                 {
                     float* head = pQk + ((long)s * numHeads + h) * headDim;
-                    for (int d = 0; d < half; d++)
+                    for (int d = 0; d < headDim; d += 2)
                     {
                         float x1 = head[d];
-                        float x2 = head[d + half];
+                        float x2 = head[d + 1];
                         float c = pCosTok[d];
                         float sRot = pSinTok[d];
 
                         head[d] = x1 * c - x2 * sRot;
-                        head[d + half] = x1 * sRot + x2 * c;
+                        head[d + 1] = x1 * sRot + x2 * c;
                     }
                 }
             }
