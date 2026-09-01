@@ -530,3 +530,10 @@ examples/
 /docs/audio-samples/hift-fix-check-cosyvoice3.wav
 /docs/audio-samples/hift-split-fix-cosyvoice3.wav
 /docs/audio-samples/parler-vulkan-listen.wav
+/docs/diffusion-samples/wan-32x32-heart-check-perf.png
+/docs/diffusion-samples/wan-32x32-heart-check.png
+/docs/diffusion-samples/wan-qknorm-fix-check.png
+/docs/diffusion-samples/wan-vae-synthetic-dc-latent-16x16-diagnostic.png
+/docs/diffusion-samples/wan-vae-synthetic-dc-latent-8x8-diagnostic.png
+/docs/diffusion-samples/zimage-vulkan-64-debug.png
+/docs/diffusion-samples/zimage-vulkan-debug2.png
