@@ -88,7 +88,10 @@ public sealed class LtxVaeDecoderGoldenParityTests
 
         Assert.Equal(goldenOutput.Length, output.Length);
 
+        // Observed near machine-precision match (>0.999999) with noise injection disabled on both
+        // sides -- kept at 0.999 (not tighter) to tolerate float32 accumulation-order differences
+        // across the 7-stage decoder without becoming a flaky test.
         float cos = CosineSimilarity(output, goldenOutput);
-        Assert.True(cos > 0.9f, $"VAE decode cosine-sim too low: {cos}");
+        Assert.True(cos > 0.999f, $"VAE decode cosine-sim too low: {cos}");
     }
 }
