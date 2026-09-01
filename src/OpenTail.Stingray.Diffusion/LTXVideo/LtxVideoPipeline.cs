@@ -18,14 +18,14 @@ public sealed class LtxVideoPipeline : IDiffusionPipeline
     public string Architecture => "LTX-Video";
 
     public LtxVideoPipeline(
-        LtxVideoModel? transformer = null,
+        LtxVideoModel transformer,
         VaeDecoder? vae = null,
         IWeightLoader? weights = null,
         int temporalScale = 8,
         int spatialScale = 32,
         int fps = 24)
     {
-        _transformer = transformer ?? new LtxVideoModel();
+        _transformer = transformer;
         _vae = vae;
         _weights = weights;
         _temporalScale = temporalScale;
@@ -39,8 +39,13 @@ public sealed class LtxVideoPipeline : IDiffusionPipeline
             ? GgufWeightLoader.Open(modelPath)
             : SafetensorsLoader.Open(modelPath);
 
-        var transformer = new LtxVideoModel();
+        var transformer = new LtxVideoModel(weights);
 
+        // NOTE: LTX-Video's real VAE decoder is timestep-conditioned (decode_timestep/
+        // decode_noise_scale threaded through the decoder's own residual blocks), NOT a plain
+        // causal-VAE the way Wan's `VaeDecoder`/`WanVaeDecoder3D` is -- reusing `VaeDecoder` here
+        // is a known, deliberate placeholder (see docs/055-ltx-video-implementation-plan.md's "The
+        // single biggest gotcha" section) until the real LTX VAE gets its own port.
         VaeDecoder? vae = null;
         if (!string.IsNullOrWhiteSpace(vaePath) && File.Exists(vaePath))
         {
@@ -99,8 +104,11 @@ public sealed class LtxVideoPipeline : IDiffusionPipeline
             latents[i] = MathF.Sqrt(-2.0f * MathF.Log(u1)) * MathF.Cos(2.0f * MathF.PI * u2);
         }
 
+        // Placeholder text conditioning: real T5-v1.1-XXL encoder is not yet ported/wired (not
+        // downloaded locally -- see docs/055-ltx-video-implementation-plan.md step 6). This feeds
+        // caption_projection's 4096-dim input, not `CrossAttentionDim` (2048, the projected size).
         int textTokens = 128;
-        int textDim = _transformer.CrossAttentionDim;
+        int textDim = _transformer.CaptionChannels;
         var textContext = new float[textTokens * textDim];
         for (int i = 0; i < textContext.Length; i++)
         {

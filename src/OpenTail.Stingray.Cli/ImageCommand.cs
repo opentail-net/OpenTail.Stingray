@@ -1290,7 +1290,7 @@ public sealed class ImageCommand : Command<ImageCommand.Settings>
         AnsiConsole.MarkupLine($"[dim]Size:[/]    {width}x{height}, {videoFrames} frames, {steps} steps, CFG {cfgScale:F1}");
 
         var sw = System.Diagnostics.Stopwatch.StartNew();
-        using var pipeline = new OpenTail.Stingray.Diffusion.LTXVideo.LtxVideoPipeline();
+        using var pipeline = OpenTail.Stingray.Diffusion.LTXVideo.LtxVideoPipeline.Load(modelPath);
 
         var req = new OpenTail.Stingray.Diffusion.ImageGenerationRequest
         {

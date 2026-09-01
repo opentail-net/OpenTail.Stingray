@@ -80,8 +80,48 @@ that is more elegant but lower-visibility.
    CLIP+LLM text conditioning. Real demand (a popular community Diffusers repack sees tens of
    thousands of downloads/month) but well below Wan/LTX/Z-Image.
 8. **`arcee` YaRN RoPE scaling** — small, well-scoped, low external-demand architecture unlock.
-9. **`xverse` tokenizer fix** — small, well-scoped, distinct from the Unigram gap (an SPM
-   absent-scores-array defect), low external-demand architecture unlock.
+9. **`xverse` tokenizer fix** — **root-caused and fixed, 2026-09-02.** The old framing ("absent
+   scores") was imprecise: the real defect was architectural, not a missing-data edge case — this
+   engine's SPM path (`tokenizer.ggml.model=llama`) used a merges-RANK-TABLE algorithm (built from
+   `tokenizer.ggml.merges`) for genuine SentencePiece tokenization, but real SentencePiece BPE
+   (confirmed by reading llama.cpp's actual `llm_tokenizer_spm_session::tokenize`) has no merges
+   list in the algorithm at all — a candidate merge is valid purely because its concatenated text
+   is a vocabulary entry, prioritized by that entry's own `tokenizer.ggml.scores` value (highest
+   first, leftmost on a tie). `tokenizer.ggml.merges` is a GGUF export convenience some converters
+   also emit, which is why every model shipping both arrays worked by coincidence. Any checkpoint
+   without a merges array (`xverse`, but also a real local checkpoint,
+   `models/paddleocr-vl-1.6.gguf`, which has scores but no merges — confirmed independently
+   broken and now fixed) fragmented to near-character-level.
+   Implemented the real algorithm (`GgufTokenizer.SpmMergePiecesByScore`), added `tokenizer.ggml.
+   scores` reading, and a 5000-case fuzz-parity suite (`SpmMergeByScoreTests.cs`) against a naive
+   O(n²) oracle. Verified against `paddleocr-vl-1.6.gguf`: a 44-char sentence now tokenizes to 10
+   sensible tokens with a perfect round-trip decode (previously would have fragmented). Full Core
+   suite (642 tests) still green — the old merges-rank algorithm is untouched and still serves the
+   byte-level-BPE path, which is a genuinely different, correct use of that mechanism.
+   **ARCHITECTURE ADMITTED, same day.** Downloaded `xverse/XVERSE-7B-Chat-GGUF` (Q4_K_M, genuinely
+   Apache-2.0), confirmed genuinely `general.architecture=xverse` with neither
+   `tokenizer.ggml.merges` nor `tokenizer.ggml.scores` (the exact worst case). Found and fixed a
+   SECOND, independent tokenizer bug in the process: this engine never implemented real
+   llama.cpp's `add_space_prefix` (default `true` for `tokenizer.ggml.model=llama`, prepends a
+   leading space before tokenizing) — the first attempt diverged at token 0 only, with every
+   subsequent token already exact, which is what isolated it as a second bug rather than a
+   leftover from the first fix. Also had to abandon "retokenize the printed continuation text" as
+   an evidence-gathering method for this checkpoint specifically — this vocab has genuine
+   tokenizer non-injectivity (multiple valid tokenizations of the same string), so re-encoding the
+   model's own printed output reproduced a DIFFERENT sequence (29 tokens) than what the model
+   actually sampled (24 tokens); used `llama-server`'s `/completion` endpoint with
+   `return_tokens: true` instead, which returns the real, authoritative per-step sampled ids.
+   **Result: FULL 24-of-24-token exact greedy match**, zero new architecture code (confirmed
+   against `xverse.cpp`: literal plain-Llama trunk). Correction after first writing this up: the
+   checkpoint is actually bucket-2, not bucket-1 — the archived note's original "custom Model
+   License Agreement" finding was right; the GGUF repo's own HF `cardData.license: apache-2.0`
+   only covers the conversion code, not the weights (confirmed via the base model's own README,
+   which describes a separate weight license requiring a commercial-use application). Per this
+   project's bucket-2 policy, no persisted test — evidence recorded as a comment on the `"xverse"`
+   allowlist entry in `ModelCompatibility.cs` instead. `xverse` added to the allowlist; checkpoint
+   deleted after the receipt. The tokenizer fixes themselves (`SpmMergePiecesByScore`,
+   `AddSpacePrefix`) are permanent and covered by `SpmMergeByScoreTests.cs`'s synthetic fuzz suite
+   regardless of xverse's own license.
 
 **P3 and later campaigns (not scheduled, revisit only after the above closes):**
 10. **DeepSeek2/MiniCPM3 MLA** — the single biggest architectural lift in the coverage plan

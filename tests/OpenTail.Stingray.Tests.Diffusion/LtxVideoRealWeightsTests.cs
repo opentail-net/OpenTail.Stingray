@@ -45,4 +45,29 @@ public sealed class LtxVideoRealWeightsTests
         Assert.NotNull(pipeline);
         Assert.Equal("LTX-Video", pipeline.Architecture);
     }
+
+    /// <summary>Checks `LtxVideoModel.DetectConfig` against the real v0.9.1 checkpoint's own tensor
+    /// shapes (verified directly against the safetensors JSON header --
+    /// docs/055-ltx-video-implementation-plan.md's tensor inventory).</summary>
+    [Fact]
+    public void LtxVideo_RealModelFile_DetectConfigMatchesKnownArchitecture()
+    {
+        string? modelPath = FindModelPath(ModelFileName);
+        if (modelPath is null) return;
+
+        using var loader = SafetensorsLoader.Open(modelPath);
+        var model = new LtxVideoModel(loader);
+
+        Assert.Equal(128, model.InChannels);
+        Assert.Equal(128, model.OutChannels);
+        Assert.Equal(2048, model.HiddenSize);
+        Assert.Equal(32, model.NumHeads);
+        Assert.Equal(64, model.HeadDim);
+        Assert.Equal(28, model.NumLayers);
+        Assert.Equal(2048, model.CrossAttentionDim);
+        Assert.Equal(4096, model.CaptionChannels);
+        Assert.False(model.CrossAttentionAdaln);
+        Assert.False(model.SelfAttentionGated);
+        Assert.False(model.CrossAttentionGated);
+    }
 }
