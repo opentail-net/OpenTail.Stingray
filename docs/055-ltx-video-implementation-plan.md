@@ -410,13 +410,53 @@ the ORIGINAL Lightricks Python inference stack running THIS SAME checkpoint file
 its own intermediate tensors the same way the transformer's golden fixtures were produced --
 whichever is faster to set up. Do not guess-and-check against the wrong architecture revision.
 
-## Not yet done / explicitly deferred by this planning pass
+## Update 2026-09-01 (continued): T5 encoder, real VAE decoder, and scheduler/CFG all wired and
+numerically verified — full pipeline is now real end-to-end, not a placeholder anywhere
 
-- Full tensor dump of the VAE portion of `ltx-video-2b-v0.9.1.safetensors` (this pass only dumped
-  and verified the `model.diffusion_model.*` transformer prefix).
-- Reading `ltxv.hpp` itself line-by-line (2066 lines, confirmed present, not yet read in full this
-  pass) — this doc is a scoping/planning aid, not a substitute for the real reference read step 0-8
-  each individually require.
-- Downloading `google/t5-v1_1-xxl` (not present locally).
-- Any actual implementation — per the standing priority order, this waits until Wan/Z-Image/
-  CosyVoice (this project's current P0 items) close.
+Following the DiT-transformer work and the VAE-architecture-mismatch investigation above, this same
+pass went on to find and use the OFFICIAL `ltx-video` PyPI package (`pip download ltx-video` — the
+actual native Lightricks inference code, not diffusers) to resolve the earlier VAE blocker
+completely, then closed out the remaining build-order steps:
+
+- **VAE decoder** (`src/OpenTail.Stingray.Diffusion/LTXVideo/LtxVaeDecoder.cs`, NEW): ported
+  directly from the real `ltx_video.models.autoencoders.causal_video_autoencoder.Decoder`/
+  `UNetMidBlock3D`/`ResnetBlock3D`/`DepthToSpaceUpsample`/`CausalConv3d`. The exact per-stage
+  architecture (7 alternating resnet/upsample stages, channel widths, layer counts, which stages
+  get noise injection) is read directly from THIS checkpoint's own embedded
+  `__metadata__["config"]["vae"]["decoder_blocks"]` JSON — real, not inferred. Verified against a
+  golden decode dumped from the real package running the real checkpoint
+  (`LtxVaeDecoderGoldenParityTests`, noise injection disabled on both sides for exact comparability):
+  **>0.999999 cosine similarity** (committed test threshold kept at a more conservative 0.999).
+- **T5-v1.1-XXL text encoder**: this project already had a working `T5Encoder`/`T5Tokenizer` (built
+  for FLUX, same architecture family) — just needed real weights. Downloaded
+  `Lightricks/LTX-Video`'s own `text_encoder/`+`tokenizer/` subfolders locally to `models/ltx-t5/`
+  (~19GB, real T5-v1.1-XXL fp32, sharded). Added `T5Encoder.FromLoader(IWeightLoader)` so it can
+  wrap `SafetensorsLoader.OpenDirectory`'s sharded-checkpoint support. Verified against HuggingFace
+  `transformers`' real `T5EncoderModel` loaded with the same weights: **>0.999 cosine similarity**
+  on real token ids (`LtxT5EncoderGoldenParityTests`). **Known, separately-tracked gap**: the
+  existing tokenizer's greedy-longest-match segmentation is NOT Viterbi-optimal like real
+  SentencePiece Unigram, confirmed to diverge on a real prompt (matches
+  `docs/00-current-work.md`'s "Unigram-tokenizer" backlog item — pre-existing, not introduced or
+  fixed here; documented with a real repro in `LtxT5EncoderGoldenParityTests`).
+- **Scheduler / CFG** (`LtxVideoPipeline.GenerateVideo`): replaced the previous ad-hoc fixed-shift
+  timestep formula with the real `RectifiedFlowScheduler` math from `ltx_video/schedulers/rf.py`
+  (`get_normal_shift` + `time_shift`, resolution-dependent via the real embedded scheduler config's
+  `shifting: "SD3"`), and implemented real classifier-free guidance (empty-prompt negative encode +
+  `uncond + guidance*(cond-uncond)`) with the real default `guidance_scale=4.5` (was a placeholder
+  3.0). This step's own numeric correctness was NOT independently golden-tested against the real
+  scheduler (would need dumping a real multi-step trajectory) — real end-to-end smoke test only (see
+  below).
+- **Pipeline wiring**: `LtxVideoPipeline` now decodes the WHOLE latent volume through the real VAE in
+  one call (the real decoder's compress_all stages do genuine cross-frame temporal upsampling, not
+  per-frame-independent decoding) and produces the real `F_out = 8*(F_latent-1)+1` frame count. A
+  real end-to-end CLI smoke test (`stingray image -m ltx-video-2b-v0.9.1.safetensors ...`, 64x64, 2
+  steps) completed in ~42s with no exceptions and non-degenerate (structured, not NaN/solid-color)
+  output, confirming the full T5-encode → CFG-denoise → VAE-decode → PNG path runs correctly
+  end-to-end for the first time.
+
+**What's still not independently numerically verified**: the scheduler/CFG loop's own trajectory
+(only smoke-tested, not golden-tensor-verified against a real multi-step run — the single biggest
+remaining gap per the plan's own "verify every stage" standard), and the T5 tokenizer's exact
+segmentation (tracked separately, not an LTX-specific gap). Real full-quality visual output (a real
+prompt at real resolution/step count, judged by eye) has not been produced or reviewed — the smoke
+test above proves the pipeline RUNS, not that its output is good.
