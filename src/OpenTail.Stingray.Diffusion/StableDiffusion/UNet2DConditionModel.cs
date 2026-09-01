@@ -8,11 +8,9 @@ namespace OpenTail.Stingray.Diffusion.StableDiffusion;
 /// </summary>
 public sealed class UNet2DConditionModel : IDisposable
 {
-    private readonly IWeightLoader _weights;
+    private readonly CachedWeightReader _weightReader;
     private readonly IComputeBackend? _backend;
-    private readonly Dictionary<string, float[]> _weightCache = new(StringComparer.Ordinal);
     private readonly Dictionary<string, CoreTensor>? _gpuWeights;
-    private readonly string _prefix;
 
     private const int ModelChannels = 320;
     private const int TimeEmbedDim = 1280;
@@ -22,40 +20,19 @@ public sealed class UNet2DConditionModel : IDisposable
 
     public UNet2DConditionModel(IWeightLoader weights, string prefix = "model.diffusion_model.", IComputeBackend? backend = null)
     {
-        _weights = weights;
-        _prefix = prefix;
+        _weightReader = new CachedWeightReader(weights, prefix);
         _backend = backend;
         if (_backend is not null)
             _gpuWeights = new Dictionary<string, CoreTensor>(StringComparer.Ordinal);
     }
 
-    private float[] GetWeight(string name)
-    {
-        string fullName = _prefix + name;
-        if (!_weightCache.TryGetValue(fullName, out var w))
-        {
-            w = _weights.ReadF32(fullName);
-            _weightCache[fullName] = w;
-        }
-        return w;
-    }
+    private float[] GetWeight(string name) => _weightReader.Get(name);
 
-    private float[]? TryGetWeight(string name)
-    {
-        string fullName = _prefix + name;
-        if (_weightCache.TryGetValue(fullName, out var w)) return w;
-        if (_weights.Contains(fullName))
-        {
-            w = _weights.ReadF32(fullName);
-            _weightCache[fullName] = w;
-            return w;
-        }
-        return null;
-    }
+    private float[]? TryGetWeight(string name) => _weightReader.TryGet(name);
 
     private CoreTensor GetGpuWeight(string name, float[] cpuWeight)
     {
-        string fullName = _prefix + name;
+        string fullName = _weightReader.Prefix + name;
         if (_gpuWeights!.TryGetValue(fullName, out var wGpu)) return wGpu;
 
         wGpu = _backend!.Upload(cpuWeight.AsSpan(), TensorShape.D1(cpuWeight.Length));
@@ -561,7 +538,7 @@ public sealed class UNet2DConditionModel : IDisposable
             foreach (var t in _gpuWeights.Values) _backend!.Free(t);
             _gpuWeights.Clear();
         }
-        _weightCache.Clear();
+        _weightReader.Clear();
     }
 }
 

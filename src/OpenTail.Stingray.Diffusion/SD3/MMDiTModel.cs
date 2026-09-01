@@ -9,11 +9,9 @@ namespace OpenTail.Stingray.Diffusion.SD3;
 /// </summary>
 public sealed class MMDiTModel : IDisposable
 {
-    private readonly IWeightLoader _weights;
+    private readonly CachedWeightReader _weightReader;
     private readonly IComputeBackend? _backend;
-    private readonly Dictionary<string, float[]> _weightCache = new(StringComparer.Ordinal);
     private readonly Dictionary<string, CoreTensor>? _gpuWeights;
-    private readonly string _prefix;
 
     public int HiddenSize { get; }
     public int NumHeads { get; }
@@ -38,8 +36,7 @@ public sealed class MMDiTModel : IDisposable
         int admInChannels = 2048,
         IComputeBackend? backend = null)
     {
-        _weights = weights;
-        _prefix = prefix;
+        _weightReader = new CachedWeightReader(weights, prefix);
         HiddenSize = hiddenSize;
         NumHeads = numHeads;
         HeadDim = hiddenSize / numHeads;
@@ -54,33 +51,13 @@ public sealed class MMDiTModel : IDisposable
             _gpuWeights = new Dictionary<string, CoreTensor>(StringComparer.Ordinal);
     }
 
-    private float[] GetWeight(string name)
-    {
-        string fullName = _prefix + name;
-        if (!_weightCache.TryGetValue(fullName, out var w))
-        {
-            w = _weights.ReadF32(fullName);
-            _weightCache[fullName] = w;
-        }
-        return w;
-    }
+    private float[] GetWeight(string name) => _weightReader.Get(name);
 
-    private float[]? TryGetWeight(string name)
-    {
-        string fullName = _prefix + name;
-        if (_weightCache.TryGetValue(fullName, out var w)) return w;
-        if (_weights.Contains(fullName))
-        {
-            w = _weights.ReadF32(fullName);
-            _weightCache[fullName] = w;
-            return w;
-        }
-        return null;
-    }
+    private float[]? TryGetWeight(string name) => _weightReader.TryGet(name);
 
     private CoreTensor GetGpuWeight(string name, float[] cpuWeight)
     {
-        string fullName = _prefix + name;
+        string fullName = _weightReader.Prefix + name;
         if (_gpuWeights!.TryGetValue(fullName, out var wGpu)) return wGpu;
 
         wGpu = _backend!.Upload(cpuWeight.AsSpan(), TensorShape.D1(cpuWeight.Length));
@@ -377,7 +354,7 @@ public sealed class MMDiTModel : IDisposable
             foreach (var t in _gpuWeights.Values) _backend!.Free(t);
             _gpuWeights.Clear();
         }
-        _weightCache.Clear();
+        _weightReader.Clear();
     }
 }
 
