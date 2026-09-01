@@ -365,18 +365,10 @@ public sealed class LtxVaeDecoder : IDisposable
     /// directly as the per-stage/final shared timestep embedding.</summary>
     private float[] TimestepEmbedMlp(string prefix, float scaledTimestep, int dim)
     {
+        // flip_sin_to_cos=True: [cos, sin] order (real `get_timestep_embedding`), matching
+        // DiffusionOps.SinusoidalTimestepEmbedding's own [cos,sin] layout.
         const int freqEmbedSize = 256;
-        var emb = new float[freqEmbedSize];
-        int half = freqEmbedSize / 2;
-        for (int i = 0; i < half; i++)
-        {
-            float freq = MathF.Exp(-MathF.Log(10000.0f) * i / half);
-            float angle = scaledTimestep * freq;
-            // flip_sin_to_cos=True: [cos, sin] order (real `get_timestep_embedding`).
-            emb[i] = MathF.Cos(angle);
-            emb[half + i] = MathF.Sin(angle);
-        }
-
+        var emb = DiffusionOps.SinusoidalTimestepEmbedding(scaledTimestep, freqEmbedSize);
         var h1 = Linear($"{prefix}.linear_1", emb, freqEmbedSize, dim);
         DiffusionOps.SiluInPlace(h1);
         return Linear($"{prefix}.linear_2", h1, dim, dim);

@@ -376,16 +376,7 @@ public sealed class QwenImageModel : IDisposable
 
     private float[] ComputeTimestepEmbedding(float timestep)
     {
-        var emb = new float[256];
-        int half = 128;
-        float factor = 10000.0f;
-        for (int i = 0; i < half; i++)
-        {
-            float freq = MathF.Exp(-MathF.Log(factor) * i / half);
-            emb[i] = MathF.Cos(timestep * freq);
-            emb[half + i] = MathF.Sin(timestep * freq);
-        }
-
+        var emb = DiffusionOps.SinusoidalTimestepEmbedding(timestep);
         var t0 = Linear("time_text_embed.timestep_embedder.linear_1", emb, 256, HiddenDim);
         DiffusionOps.SiluInPlace(t0);
         return Linear("time_text_embed.timestep_embedder.linear_2", t0, HiddenDim, HiddenDim);

@@ -379,17 +379,7 @@ public sealed class LtxVideoModel : IDisposable
     private float[] TimestepEmbedder(float timestep)
     {
         const int freqEmbedSize = 256;
-        var emb = new float[freqEmbedSize];
-        int half = freqEmbedSize / 2;
-        float scaledT = timestep;
-        for (int i = 0; i < half; i++)
-        {
-            float freq = MathF.Exp(-MathF.Log(10000.0f) * i / half);
-            float angle = scaledT * freq;
-            emb[i] = MathF.Cos(angle);
-            emb[half + i] = MathF.Sin(angle);
-        }
-
+        var emb = DiffusionOps.SinusoidalTimestepEmbedding(timestep, freqEmbedSize);
         var h1 = Linear("adaln_single.emb.timestep_embedder.linear_1", emb, freqEmbedSize, HiddenSize);
         DiffusionOps.SiluInPlace(h1);
         return Linear("adaln_single.emb.timestep_embedder.linear_2", h1, HiddenSize, HiddenSize);

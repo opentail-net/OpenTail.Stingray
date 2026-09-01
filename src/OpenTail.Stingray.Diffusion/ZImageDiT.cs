@@ -165,15 +165,7 @@ public sealed class ZImageDiT : IDisposable
         // So t_model = 1 - t.
         float tScaled = (1f - t) * _p.TScale;
         int   freqDim = 256;
-        var   sinEmb  = new float[freqDim];
-        int   half    = freqDim / 2;
-        for (int i = 0; i < half; i++)
-        {
-            float freq = MathF.Exp(-MathF.Log(10000f) * i / half);
-            float v    = tScaled * freq;
-            sinEmb[i]        = MathF.Cos(v);
-            sinEmb[i + half] = MathF.Sin(v);
-        }
+        var   sinEmb  = DiffusionOps.SinusoidalTimestepEmbedding(tScaled, freqDim);
         var h = MatQ(sinEmb, 1, freqDim, "t_embedder.mlp.0.weight", "t_embedder.mlp.0.bias", 1024);
         DiffusionOps.SiLUInPlace(h);
         return MatQ(h, 1, 1024, "t_embedder.mlp.2.weight", "t_embedder.mlp.2.bias", _p.AdalnEmbedDim);

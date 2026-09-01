@@ -792,6 +792,57 @@ internal static unsafe class DiffusionOps
     }
 
     /// <summary>
+    /// AdaLN-Zero modulate over row-major `[seqLen, dim]` data: `y = x * (1+scale) + shift`, `scale`
+    /// and `shift` shared across all rows (broadcast per-channel). Extracted from byte-identical
+    /// copies in Wan and HunyuanVideo.
+    /// </summary>
+    public static float[] ModulateRows(float[] x, int seqLen, int dim, ReadOnlySpan<float> shift, ReadOnlySpan<float> scale)
+    {
+        var outF = new float[seqLen * dim];
+        for (int i = 0; i < seqLen; i++)
+        {
+            int off = i * dim;
+            for (int d = 0; d < dim; d++)
+                outF[off + d] = x[off + d] * (1.0f + scale[d]) + shift[d];
+        }
+        return outF;
+    }
+
+    /// <summary>
+    /// AdaLN-Zero gated residual add over row-major `[seqLen, dim]` data: `x += branch * gate`,
+    /// `gate` shared across all rows. Extracted from byte-identical copies in Wan and HunyuanVideo.
+    /// </summary>
+    public static void ApplyGatedResidualRows(float[] x, float[] branch, int seqLen, int dim, ReadOnlySpan<float> gate)
+    {
+        for (int i = 0; i < seqLen; i++)
+        {
+            int off = i * dim;
+            for (int d = 0; d < dim; d++)
+                x[off + d] += branch[off + d] * gate[d];
+        }
+    }
+
+    /// <summary>
+    /// Sinusoidal timestep positional embedding: `[cos(t*f_0..f_{half-1}), sin(t*f_0..f_{half-1})]`,
+    /// `f_i = exp(-log(theta) * i / half)` -- the same building block duplicated (byte-for-byte, only
+    /// the surrounding Linear/SiLU/Linear MLP tensor names differed) across Wan, HunyuanVideo,
+    /// QwenImage, LTX-Video's transformer AND VAE decoder, and Z-Image before this extraction.
+    /// </summary>
+    public static float[] SinusoidalTimestepEmbedding(float timestep, int dim = 256, float theta = 10000f)
+    {
+        var emb = new float[dim];
+        int half = dim / 2;
+        for (int i = 0; i < half; i++)
+        {
+            float freq = MathF.Exp(-MathF.Log(theta) * i / half);
+            float angle = timestep * freq;
+            emb[i] = MathF.Cos(angle);
+            emb[half + i] = MathF.Sin(angle);
+        }
+        return emb;
+    }
+
+    /// <summary>
     /// Root-Mean-Square Normalization with no learned affine parameters, epsilon applied AFTER the
     /// sqrt (`1/(rms+eps)`) rather than inside it -- the convention used by Flux2/Flux3/StableAudio
     /// (extracted verbatim from three byte-identical copies, not merged into

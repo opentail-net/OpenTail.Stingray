@@ -292,42 +292,14 @@ public sealed class WanModel : IDisposable
     }
 
     private float[] Modulate(float[] x, int seqLen, ReadOnlySpan<float> shift, ReadOnlySpan<float> scale)
-    {
-        var outF = new float[x.Length];
-        for (int i = 0; i < seqLen; i++)
-        {
-            int off = i * _dim;
-            for (int d = 0; d < _dim; d++)
-            {
-                float val = x[off + d];
-                outF[off + d] = val * (1.0f + scale[d]) + shift[d];
-            }
-        }
-        return outF;
-    }
+        => DiffusionOps.ModulateRows(x, seqLen, _dim, shift, scale);
 
     private void ApplyGatedResidual(float[] x, float[] branch, int seqLen, ReadOnlySpan<float> gate)
-    {
-        for (int i = 0; i < seqLen; i++)
-        {
-            int off = i * _dim;
-            for (int d = 0; d < _dim; d++)
-                x[off + d] += branch[off + d] * gate[d];
-        }
-    }
+        => DiffusionOps.ApplyGatedResidualRows(x, branch, seqLen, _dim, gate);
 
     private float[] ComputeTimestepEmbedding(float timestep)
     {
-        var emb = new float[256];
-        int half = 128;
-        float factor = 10000.0f;
-        for (int i = 0; i < half; i++)
-        {
-            float freq = MathF.Exp(-MathF.Log(factor) * i / half);
-            emb[i] = MathF.Cos(timestep * freq);
-            emb[half + i] = MathF.Sin(timestep * freq);
-        }
-
+        var emb = DiffusionOps.SinusoidalTimestepEmbedding(timestep);
         var t0 = Linear("time_embedding.0", emb, 256, _dim);
         DiffusionOps.SiluInPlace(t0);
         return Linear("time_embedding.2", t0, _dim, _dim);
