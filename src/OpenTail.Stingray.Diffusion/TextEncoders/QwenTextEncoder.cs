@@ -43,7 +43,16 @@ public sealed class QwenTextEncoder : IDisposable
         _model   = model;
         _p       = p;
         _backend = backend;
-        if (backend is not null)
+        // Real bf16 SGEMM support varies by backend (CUDA: sm_80+; Vulkan: only when the device
+        // exposes VK_KHR_shader_bfloat16 -- most integrated GPUs, including the AMD iGPU this was
+        // found on, do not). BestSgemmPrecision is the correct cross-backend capability signal;
+        // unconditionally uploading bf16 tensors whenever ANY backend is present (the previous
+        // check) silently corrupted output on any backend that reports Fp16/Fp32 instead --
+        // Sgemm's own dispatch has no bf16 fallback conversion, so it fell through to the fp32
+        // shader while reading 2-byte bf16 buffers as 4-byte fp32, producing garbage/NaN. Found
+        // 2026-09-01 via Z-Image's Vulkan black-image bug: cap_embedder.1's output (the first op
+        // to actually consume Qwen3's encoded text features) was NaN/Inf on this exact path.
+        if (backend?.BestSgemmPrecision == SgemmPrecision.Bf16)
             _gpuWeights = new Dictionary<string, CoreTensor>(StringComparer.Ordinal);
         (_ropeCos, _ropeSin) = BuildRopeTables(_maxSeqLen, p.QwenHeadDim, p.QwenRopeTheta);
     }

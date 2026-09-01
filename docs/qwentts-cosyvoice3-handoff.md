@@ -43,152 +43,23 @@ that this approach works, and it documents dead ends worth not repeating.
 
 ---
 
-## 1. QwenTTS — currently disabled, `-e qwentts` throws immediately
+## 1. QwenTTS — RESOLVED, moved to done/
 
-### Current state
-
-`src/OpenTail.Stingray.Cli/TtsCommand.cs`'s `qwentts` dispatch case is a `throw`, with the real
-working dispatch line kept as a `//`-commented-out line directly above it (restore that line to
-re-enable). Main pipeline code:
-- `src/OpenTail.Stingray.Audio/QwenTTS/QwenTtsPipeline.cs` — the Talker (slow-AR-equivalent)
-  generation loop.
-- `src/OpenTail.Stingray.Audio/QwenTTS/QwenTtsTalkerTensorSource.cs` — tensor-name remapping for
-  the Talker, reusing the shared `ForwardPass` engine (same reuse pattern Fish Speech's slow-AR
-  used successfully).
-- `src/OpenTail.Stingray.Audio/QwenTTS/QwenTtsCodePredictorGeneration.cs` — secondary/acoustic
-  codebook expansion (this model's equivalent of Fish Speech's fast-AR).
-- `src/OpenTail.Stingray.Audio/QwenTTS/QwenTtsCodePredictorTensorSource.cs`.
-- `src/OpenTail.Stingray.Audio/QwenTTS/QwenTtsTalkerLm.cs` — **DEAD CODE, do not use or trust**:
-  a synthetic placeholder (`GenerateCode0`) that fabricates plausible-looking output via
-  `MathF.Sin`/`Exp` formulas, never wired to real weights. Confirmed the real pipeline
-  (`QwenTtsPipeline.cs`) never calls it. Misleading if read cold — flagged for cleanup, not yet
-  removed.
-
-Model: `models/qwen-talker-0.6b-base-Q8_0.gguf`. Real C++/GGML reference:
-**`examples/qwentts.cpp`** (confirmed present locally, NOT yet built — no `build/` directory
-exists yet, unlike `examples/s2.cpp` which was already built this session). Also available: a
-real PyTorch reference at `examples/qwen-tts-py` (used for an earlier golden-verification pass,
-see below) — prefer the C++ reference as source of truth per the methodology above, but the
-Python one is there if the C++ build proves difficult.
-
-### What's already known (real, not guessed) — four bugs already found and fixed
-
-1. **Missing sampling** (fixed): both the Talker's semantic-code loop and the code-predictor's
-   acoustic-codebook loop used plain `ArgMax`. Replaced with real Qwen3-TTS sampling
-   (temperature=0.9, top-k=50, repetition_penalty=1.05 for the talker; temperature=0.9, top-k=50,
-   no penalty for the subtalker — sourced from `examples/qwen-tts-py`'s real model config, not
-   guessed). This fixed an audible tonal "drill noise" collapse.
-2. **Missing acoustic-codebook feedback** (fixed): the real generation loop feeds ALL 16
-   codebooks (semantic + 15 acoustic) back into the next talker step, summed via their respective
-   embedding tables. The port only fed back the semantic code, silently dropping every acoustic
-   code. Fixed by summing all 16 codebook embeddings for the next-step input.
-3. **Stale-pointer bug, talker side** (fixed): `QwenTtsTalkerTensorSource.SetPromptEmbedding`
-   allocated a brand-new buffer at a new address on every call, but `ForwardPass` captures a
-   tensor's raw data pointer ONCE at construction and never re-resolves it — every talker step
-   after the first was silently conditioned on a stale first-prompt-row embedding. Fixed with one
-   persistent buffer, written in place. **This exact bug shape (stale pointer from
-   reallocate-instead-of-write-in-place) is worth checking for anywhere else in this pipeline that
-   might do the same thing, and worth checking in CosyVoice3 too if its debugging gets this far.**
-4. **Same stale-pointer bug, code-predictor side** (fixed): same root cause as #3, in
-   `QwenTtsCodePredictorTensorSource`.
-
-### The real, still-unsolved blocker: golden-verified, precisely localized, no fix found
-
-A real golden-verification harness was built: loads the real Q8_0-dequantized GGUF weights
-directly into the actual `Qwen3TTSTalkerModel` PyTorch class from `examples/qwen-tts-py`, feeds it
-the IDENTICAL input embedding the C# pipeline composed, and compares hidden states/logits
-numerically. Needed some `transformers` 5.7.0 API compatibility patches (documented in
-`docs/audio-review-progress.md`'s QwenTTS section, not re-derive-worthy, just re-apply if the
-harness needs rebuilding).
-
-**Precise result** (real measured cosine similarities):
-
-| Test | Cosine similarity | Verdict |
-|---|---|---|
-| T=1 (single token, no cross-attention), 1 layer | 0.999959 | Correct |
-| T=2 (two tokens), 1 layer | 0.760090 | Wrong |
-| T=11 (a real short prompt), 1 layer | 0.560 | Wrong |
-| T=11, 28 layers (full model) | 0.005994 | Wrong (near-random) |
-
-This precisely localizes the bug: **everything involving only a SINGLE position is proven
-correct** (Q/K/V projection, QK-RMSNorm, RoPE rotation at position 0 specifically — which is
-literally the identity rotation regardless of convention, so this test alone doesn't distinguish
-NEOX vs interleaved — FFN, residual/norm structure). **Everything involving MULTIPLE positions is
-where the bug lives**: causal attention across cached positions, RoPE rotation at position > 0, or
-the KV-cache write/read path.
-
-**Ruled out already** (checked against both `examples/qwen-tts-py` and `examples/qwentts.cpp`,
-agreement between the two references was itself informative):
-- Hyperparameters (HeadDim=128, NumHeads=16, NumKvHeads=8, EmbeddingDim=1024, RopeTheta=1e6,
-  RmsNormEps=1e-6) — confirmed exactly correct via direct `ModelHyperparams` dump.
-- NEOX RoPE selection — `"qwen3-tts"` is explicitly in `ModelGraph.cs`'s NEOX architecture switch,
-  confirmed taken (not silently falling back to interleaved).
-- The NEOX RoPE rotation formula itself (`SimdKernels.ApplyRoPECachedNeox`) — byte-for-byte
-  matches both references' `rotate_half`.
-- The RoPE frequency table (`SimdKernels.BuildRopeTable`) — matches both references' formula.
-- RoPE dispatch consistency — every call site (single-step decode AND batched prefill) branches on
-  `_hp.IsNeoxRope` correctly and uses the same table, no path-specific mismatch found.
-- YaRN / partial-RoPE — confirmed NOT accidentally triggered (the relevant metadata keys are
-  absent from this GGUF, defaults resolve to "off").
-- GQA head-to-KV-head grouping — confirmed matches the real `repeat_kv`'s consecutive-repeat
-  convention exactly.
-- `mrope_interleaved`/`mrope_section` metadata — confirmed genuinely irrelevant for plain-text TTS
-  (no vision/video input means all 3 multimodal position axes are identical, so both code branches
-  of `apply_multimodal_rotary_pos_emb` produce numerically identical cos/sin regardless).
-
-### What's NOT yet been tried (concrete next steps, in priority order)
-
-1. **Rule out a T=2-specific edge case first.** The T=2 test used `Prefill([0])` (a length-1
-   prefill) followed by one `Forward` call — real usage never prefills fewer than ~10 tokens.
-   Before trusting the T=2 result as representative of the real bug, re-run it with a longer
-   leading prefill (e.g. 5 real tokens, then the position under test) to rule out a
-   prefill-length-1-specific artifact being a SECOND bug layered on top of the real one.
-2. **Dump post-RoPE Q/K vectors directly, not just the final hidden state or logits.** Add a debug
-   hook inside the attention/RoPE application code (or a temporary standalone kernel-level test)
-   to capture the rotated Q/K vectors at position 1 from both C# and the Python reference, and
-   diff those directly. This narrows "somewhere in attention" down to a specific tensor: Q after
-   RoPE? K after RoPE? the raw attention scores? the weighted V-sum? the output projection?
-3. **KV-cache write/read consistency.** Verify the cached K vector for position 0 (written during
-   a `Prefill([0])` call) is byte-identical to what a FRESH, uncached computation of position 0's
-   K would produce. This is the exact test that (in a different but structurally similar
-   investigation) never got run for Fish Speech either, and is a good candidate for "the bug that
-   only shows up with 2+ positions but is invisible in a position-0-only test."
-4. **Given `examples/qwentts.cpp` exists but isn't built yet**: build it (same MSVC Developer
-   environment requirement as `examples/s2.cpp` — plain `cl.exe` from a bare shell fails on a
-   missing `<cstdint>`; use
-   `vcvars64.bat` first, e.g. `cmd /c '"C:\Program Files (x86)\Microsoft Visual
-   Studio\18\BuildTools\VC\Auxiliary\Build\vcvars64.bat" && cd /d <repo>\examples\qwentts.cpp &&
-   cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build --config Release --parallel
-   8'`, adjust for whatever this repo's actual CMake target/flags turn out to be), then apply the
-   EXACT Fish-Speech-proven methodology: add a temporary env-var-gated dump of the real
-   reference's per-position hidden states/logits for a real multi-token prompt, and diff against
-   the C# port position by position. This is likely to be much faster than continuing with the
-   Python harness alone, and is how Fish Speech's actual remaining bugs were eventually found —
-   the C++ reference is closer to "the same kind of code" as this port than the Python reference
-   is, so bugs found by comparing against it tend to be more specific/actionable.
-5. Only after 1-4 narrow the failure to a specific tensor/operation should a fix be attempted —
-   the QwenTTS investigation deliberately did NOT guess-and-check further changes without that
-   evidence, and that discipline should continue.
-
-### Also flagged, not blockers
-
-- `QwenTtsPipeline`'s real run re-initializes `ForwardPass` roughly once per generated
-  frame/codebook (~28 `[ForwardPass] Pre-faulted...` log lines for one short utterance), each
-  re-pre-faulting its weight set from scratch — a real, avoidable performance issue, worth a perf
-  pass (same category of work just done for Fish Speech) once correctness is fixed, not before.
-- `QwenTtsTalkerLm.cs`'s dead code (see above) should be deleted once someone confirms nothing
-  else references it, to stop it misleading future readers.
+QwenTTS is fixed and re-enabled (commit `05a4152`, same missing-tensor-source bug class as
+CosyVoice2/3). The original investigation content (four earlier bug fixes, the golden-verification
+harness, the precisely-localized multi-position blocker, and the fix) is archived at
+[done/qwentts-handoff-resolved.md](done/qwentts-handoff-resolved.md).
 
 ---
 
-## 2. CosyVoice3 — currently runs, but produces a "dentist drill" sound
+## 2. CosyVoice3 — runs end-to-end with real conditioning; speech is intelligible; identity-transfer awaiting a listen
 
-### Current state
+### Current state (updated 2026-09-01 — see below, most of this section describes an earlier, now-resolved state)
 
 `-e cosyvoice`/`cosyvoice3`/`cosy` on the CLI routes to `CosyVoice3Pipeline`
-(`src/OpenTail.Stingray.Audio/CosyVoice/CosyVoice3Pipeline.cs`). It does NOT throw — it runs to
-completion and produces audio, but that audio sounds wrong (described as "dentist drill",
-consistent across multiple attempts including with the real-speaker-embedding fix below).
+(`src/OpenTail.Stingray.Audio/CosyVoice/CosyVoice3Pipeline.cs`). Per `docs/audio-review-progress.md`
+(2026-08-30), speech is real and intelligible, non-buzzing. The "dentist drill" description below
+was this project's EARLIER state, before both the mel-conditioning and CFG fixes landed.
 
 Other real, working, already-verified components (per `docs/audio-review-progress.md`, cosine
 >0.999 golden-verified against real oracles for each): `CosyVoice3FlowEncoder.cs` (flow encoder),
@@ -221,35 +92,36 @@ this codebase's existing `SpectralKernels.ComputePowerSpectrum` FFT helper), fee
 `tests/OpenTail.Stingray.Tests.Audio/CamPlusSpeakerEncoderTests.cs` (real, non-degenerate 192-dim
 output from real audio) and an end-to-end CLI run.
 
-**This did NOT fix the "dentist drill" sound.** Two other pieces of real, missing conditioning
-remain (already correctly scoped in an earlier entry, not yet attempted):
+**UPDATE (2026-09-01): both items below were already fixed by an earlier session (commit
+`4cb189f`, "fix real HiFT source-injection padding bug + wire LLM zero-shot conditioning"), this
+section was simply left stale.** Re-verified directly by reading the current source and running a
+real end-to-end generation with `--ref-audio`:
 
-### What's still missing (concrete, scoped, not yet attempted)
+1. **`cond` is no longer all-zero.** `CosyVoiceMelExtractor.cs` is a complete, real port of
+   `extract_speech_feat` (720-sample reflect pad, periodic Hann window, FFT-magnitude spectrum,
+   Slaney mel filterbank, `log(max(1e-5, energy))`) — confirmed matching the reference's exact
+   formula (`build_mel_basis(24000, 1920, 80, 0, 12000)`, the same `hz_to_mel`/`mel_to_hz` Slaney
+   constants) line-for-line against `cosyvoice-frontend.cpp`'s current source. `CosyVoice3Pipeline`
+   also now extracts real prompt speech TOKENS (`CosyVoiceSpeechTokenizer`, a separate real ONNX
+   model, not just the CAM++ speaker embedding) and prepends them to the LLM's generation, matching
+   the reference's real zero-shot mechanism where the LLM continues from the reference utterance's
+   own tokens, not just conditions on a speaker vector.
+2. **Real CFG is now implemented** in `CosyVoice3DiTModel.SolveFlowMatchingOde` (a genuine
+   conditional/unconditional dual forward pass with `zeroCond`/extrapolation, `cfgRate` parameter
+   defaulting to 0.7, threaded through the CLI).
 
-1. **`cond` (the reference conditioning mel) is still all-zero.** CosyVoice3 is architecturally a
-   zero-shot voice-CLONING model (confirmed via `list-metadata` — no baked-in voice-preset
-   metadata keys, unlike Kokoro-style engines). The DiT's real input expects a reference audio's
-   OWN mel-spectrogram (a different, CosyVoice3-specific mel filterbank than CamPlus's fbank —
-   the reference's own mel-basis construction was already read in full this project:
-   `build_mel_basis(24000.f, 1920, 80, 0.0f, 12000.0f)` in `examples/cosyvoice.cpp`'s
-   `cosyvoice-frontend.cpp` — 24kHz, 80-bin, `n_fft=1920`, `fmin=0`, `fmax=12000`, DISTINCT
-   parameters from CamPlus's own fbank, already spec'd, just not yet ported). This mel needs to be
-   computed from the same `--ref-audio` file already being loaded for the speaker embedding, then
-   fed into the DiT alongside (masked/prepended to) the DiT's own input the way the reference's
-   real `frontend_zero_shot` function does — read that function in full in
-   `cosyvoice-frontend.cpp` before implementing, don't guess the exact masking/prepending
-   mechanics.
-2. **The DiT's classifier-free-guidance (CFG) refinement step is omitted entirely.** Flagged in
-   `CosyVoice3DiTModel.SolveFlowMatchingOde`'s own doc comment. Needs the real CFG scale/mechanics
-   read from the reference source and ported — this is a standard diffusion-model technique
-   (unconditional + conditional forward passes, extrapolated), but get the exact scale factor and
-   whether it's applied at every ODE step or only some from the real source, don't assume.
-
-Given a real speaker embedding is now wired in and BOTH of these are still missing, the honest
-expectation is that fixing #1 alone might not be enough either — try #1 first (bigger of the two,
-most likely to matter most since a diffusion model with zero conditioning input is fundamentally
-out-of-distribution), re-verify with the same "numeric check before audio" discipline, THEN
-attempt #2 if #1 alone doesn't fix it.
+**Verified working end-to-end** (2026-09-01, `STINGRAY_DEBUG_COSYVOICE3=1`, real ref-audio):
+`speechTokens=87 promptTokens=65 numFrames=304 promptFrames=130`, real non-zero speaker embedding,
+`refMel.Length=10400` (130 frames × 80 mel, exactly matching promptFrames), plausible mel output
+range (`min=-14.41 max=5.64 mean=-4.22`) — every stage is producing real, non-degenerate data.
+**Not yet judged by ear** — per this doc's own "listener is the final authority" rule, whether the
+cloned voice actually sounds like the reference speaker is a human-judgment call this session
+cannot make. Output: `docs/audio-samples/cosyvoice3-identity-check.wav` (ref:
+`docs/audio-samples/fishspeech-lunch-REFERENCE.wav`, text: "The quick brown fox jumps over the lazy
+dog."). **Next step for whoever picks this up: listen to that file and report whether the speaker
+identity actually transferred** — if not, the numeric pipeline is real and correct enough that any
+remaining gap is likely a genuine subtle bug (worth the same "numeric verify" discipline against
+the C++ reference build), not a wholesale missing feature anymore.
 
 ### Also worth checking, not yet investigated
 

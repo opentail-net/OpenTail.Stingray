@@ -875,6 +875,9 @@ public sealed class ImageCommand : Command<ImageCommand.Settings>
         string? modelDir = Path.GetDirectoryName(Path.GetFullPath(modelPath));
         string? umt5EncoderPath = s.Umt5EncoderPath ?? ResolveWanUmt5Encoder(modelDir);
         string? umt5TokenizerPath = s.Umt5TokenizerPath ?? ResolveWanUmt5Tokenizer(modelDir);
+        string? vaePath = s.VaePath ?? ResolveWanVae(modelDir);
+        if (vaePath is null)
+            AnsiConsole.MarkupLine("[yellow]Note:[/] No real Wan VAE found (--vae) -- decode will fail with a missing-tensor error once denoising completes.");
 
         IComputeBackend? gpu = null;
         if (!deviceNone && deviceIndex >= 0)
@@ -912,7 +915,7 @@ public sealed class ImageCommand : Command<ImageCommand.Settings>
                 uncondContext = umt5.Encode(tokenizer.Tokenize(s.NegativePrompt ?? ""));
             }
 
-            using var pipeline = OpenTail.Stingray.Diffusion.Wan.WanPipeline.Load(modelPath, s.VaePath, gpu);
+            using var pipeline = OpenTail.Stingray.Diffusion.Wan.WanPipeline.Load(modelPath, vaePath, gpu);
 
             string target = gpu is not null ? gpu.Name : "CPU";
             AnsiConsole.Status()
@@ -963,6 +966,13 @@ public sealed class ImageCommand : Command<ImageCommand.Settings>
     private static string? ResolveWanUmt5Tokenizer(string? modelDir)
     {
         foreach (var c in new[] { Path.Combine(modelDir ?? ".", "wan2.1", "umt5-tokenizer.json"), "models/wan2.1/umt5-tokenizer.json" })
+            if (File.Exists(c)) return c;
+        return null;
+    }
+
+    private static string? ResolveWanVae(string? modelDir)
+    {
+        foreach (var c in new[] { Path.Combine(modelDir ?? ".", "wan2.1", "Wan2.1_VAE.safetensors"), "models/wan2.1/Wan2.1_VAE.safetensors" })
             if (File.Exists(c)) return c;
         return null;
     }

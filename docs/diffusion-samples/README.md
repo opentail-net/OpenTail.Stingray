@@ -236,6 +236,89 @@ hypotheses are now individually ruled out by direct reference comparison; the VA
 clean. A longer run (12+ steps) is the next real test of whether the pipeline was actually working
 correctly the whole time and the low step count was simply misleading. See below for that run.
 
+**2026-09-01: switched to tiny (32x32/64x64) resolutions for fast iteration — real, reproducible
+periodic artifact found at 64x64, much cheaper to work with than 256x256.** A commit
+(`8035bc7`, another session, same author) parallelized/SIMD-vectorized `WanModel`'s `Linear`/
+`MultiHeadAttention`/`LayerNorm` and the VAE's convolutions with no numerical change (verified:
+`WanTests`/`WanVae3DTests` still pass, and a 32x32/20-step run reproduces the exact same pixel
+values, min=2/max=38/mean=7.964, before and after) — full pipeline (UMT5 + 20 steps + VAE) dropped
+from 173s to 27s at 32x32, and 64x64/20-steps runs in 37s. Real minimum size is 16x16
+(`width % 16 != 0` is the only hard constraint in `WanPipeline.Generate`); 32x32 gives only 4
+spatial DiT tokens (patchH=patchW=2) and produced a very dark but non-degenerate image (min=2,
+max=38 out of 255 -- real spatial variation, not a flat collapse). 64x64 (16 tokens,
+patchH=patchW=4, `wan-64x64-heart-check.png`) produced a clearly non-uniform, visibly periodic
+result: broad alternating light/dark bands across the width with roughly a ~32px period (2 cycles
+across 64px) -- notably NOT matching the DiT's own 4-patch grid at this resolution (which would
+predict a 16px/4-cycle period), which points more toward the VAE's upsample stages (8->16->32->64,
+3 doublings) than the DiT's patchify grid as the introduction point. Not yet root-caused further,
+but this is now a real, ~30-second, reproducible repro to iterate against instead of the
+20+-minute-per-step 256x256 runs used in Round 3 above.
+
+**Correction, same day: the 64x64 banding is mostly/entirely the SAME benign VAE boundary-decay
+effect as before, not new DiT evidence.** Re-ran the synthetic all-zero-latent VAE isolation test
+(`Decode_AllZeroSyntheticLatent_AtSmallSize_ChecksBoundaryDecayCoverage`) at latH=latW=8 (matching
+the 64x64 case) instead of 32. Even with a perfectly flat, zero-variance DC input, the VAE alone
+produces a clear ~8px-period oscillation across the ENTIRE 64px frame (no flat interior at all --
+row values rise and dip roughly once per 8 rows, one cycle per source latent pixel). The ~20-24px
+boundary-decay radius measured at 256x256 is a property of the fixed ~20-conv-layer decoder stack,
+not of the output resolution -- so it dominates completely at 64x64 (radius > half the frame),
+partially at 128x128, and is negligible at 256x256+. **The 32x32/64x64 speed win (6.5x from the
+perf commit, further ~35x from resolution) came at the cost of testing in a regime where even a
+CORRECT implementation would show heavy VAE-driven artifacting, unrelated to any DiT bug.** These
+tiny sizes are still useful for raw speed/crash/regression checks (confirmed the perf commit is
+bit-exact via a 32x32 pixel-value comparison), but are not a reliable proxy for "does it converge"
+without first subtracting out this known VAE floor effect. **Update, same day: 128x128 is ALSO contaminated, and the real mechanism is more precise than
+"boundary decay."** Real 128x128/20-step run with a real prompt (`wan-128x128-apple-check.png`)
+showed a strong, regular scale/weave pattern across the ENTIRE frame, not fading toward a flat
+center -- so re-ran the DC-latent VAE isolation at latH=latW=16 (matching 128x128) and found the
+SAME ~8px-period ripple persisting all the way to the true center (rows 60-70 of 128, still
+oscillating in lockstep with rows 52/60/68 at a consistent ~8-row period, no flattening at all).
+The real mechanism: the decoder's first ~6 conv layers (conv1 + 2 mid-block resnets + stage-0's 3
+residual blocks) all run AT THE LATENT'S OWN RESOLUTION, before any upsampling -- so what actually
+happens is each individual LATENT pixel gets a slightly different post-conv value depending on its
+own distance from the LATENT grid's edge (receptive-field radius ~6-8 latent pixels), and that
+per-latent-pixel value then gets blown up into a full block of output pixels by the nearest-neighbor
+upsample stages. A latent grid has to be roughly 2x the ~6-8px receptive-field radius (i.e.
+>~16-20 latent pixels wide) before ANY latent position is far enough from every edge to be
+genuinely unaffected -- explaining exactly why 8x8 and 16x16 latents (64x64/128x128 images) never
+flatten anywhere, while the original 32x32-latent/256x256-image test did (rows 124-131 flat to 5
+decimals -- latent rows ~15-16 out of 32, the only ones far enough from the 32-row grid's edges).
+**Practical conclusion: none of 32x32/64x64/128x128 are clean enough to tell a real DiT bug apart
+from this benign, resolution-independent VAE ripple -- they're all contaminated by it to varying
+degrees.** 256x256 (or larger) is the smallest size where the DC-latent test showed genuine
+flatness, so it's the smallest reliable test size, even though it's not as cheap as the tiny sizes.
+The 6.5x perf-commit speedup still helps a lot here: a 256x256/12-step run that would have taken
+~4 hours pre-speedup should now take roughly 35-40 minutes -- still not "fast iteration," but far
+more tractable than before. Re-launched with this in mind, and with `--vae` correctly included this
+time (the missing-`--vae` mistake from earlier in this investigation was never actually the VAE's
+fault -- `RunWan` simply has no auto-resolve fallback for `--vae` the way it does for
+`--umt5-encoder`/`--umt5-tokenizer`; worth fixing as a real, if minor, usability gap). **Fixed** --
+`ImageCommand.cs` now has `ResolveWanVae` mirroring the UMT5 resolvers.
+
+**Decisive result: real 256x256/12-step run (`wan-256x256-12step-postperf-check.png`, 251s with the
+new perf commit) still shows a strong, regular grid/tiling artifact -- this DISPROVES the
+"just needs more steps" hypothesis.** At this resolution the VAE-boundary-ripple confound doesn't
+apply (the DC-latent test showed a genuinely flat center at 32x32-latent/256px), so this is real,
+persistent DiT-side (or CFG/schedule-side) structure that survived: five independently
+reference-verified bug fixes (RoPE pairing, QK-norm scope, unpatchify ordering, VAE scaling, VAE
+upsample math), a full re-verification of RoPE axis assignment, AdaLN block+head modulation, the
+flow-matching schedule/CFG formula, the GELU formula, and text-embedding padding handling -- all
+individually confirmed correct against `transformer_wan.py`/`autoencoder_kl_wan.py` -- and a full
+checkpoint tensor-shape dissection (DiT: 30 blocks, all shapes/detected-config values match; VAE:
+resample-block indices predicted then confirmed byte-for-byte against the real safetensors header;
+UMT5: per-layer relative-position-bias correctly handled). **Every specific, checkable hypothesis
+raised this round has been ruled out.** The remaining bug is real but not yet located -- candidates
+not yet exhaustively checked: the DiT's actual attention computation (softmax/scale/masking, as
+opposed to the RoPE/QK-norm pieces already verified), the CFG guidance SCALE value itself (guidance
+was always the default 6.0 -- not yet tried at 1.0/unconditional to isolate whether CFG combination
+itself is doing something wrong), or a genuinely subtle numerical issue in the attention/FFN kernels
+not caught by structural comparison. Handing this off at this state rather than continuing to
+re-verify already-checked pieces -- the next productive step is probably a numeric (not just
+structural) comparison against a real PyTorch/diffusers reference run of the same prompt/seed,
+dumping intermediate hidden states layer-by-layer, the same "golden-verify before listening/looking"
+methodology that resolved Fish Speech's and QwenTTS's real bugs after structural review alone
+wasn't enough.
+
 ## Scope note
 
 RealESRGAN, Z-Image-Turbo, SD1.5, and SDXL-Turbo have real local weights and confirmed real,

@@ -41,6 +41,42 @@ public sealed class WanVaeSyntheticLatentDiagnosticTests
         return null;
     }
 
+    /// <summary>
+    /// Same DC-latent isolation as <see cref="Decode_AllZeroSyntheticLatent_IsolatesVaeFromDiT"/>
+    /// but at latH=latW=8 (a 64x64 output) -- added 2026-09-01 after a real end-to-end 64x64 run
+    /// showed clear periodic banding, to check whether that's genuine DiT-introduced structure or
+    /// just the same benign boundary-decay effect the 32x32-latent test found, now covering the
+    /// WHOLE frame because the ~20-conv-layer decay radius no longer fits inside a much smaller
+    /// image. If this ALSO bands from a pure-DC input, the 64x64 repro is not informative about the
+    /// DiT/RoPE side -- it would just be an unavoidable small-resolution VAE artifact.
+    /// </summary>
+    [Fact]
+    public void Decode_AllZeroSyntheticLatent_AtSmallSize_ChecksBoundaryDecayCoverage()
+    {
+        string? vaePath = FindVaePath();
+        if (vaePath is null) return;
+
+        const int latH = 16, latW = 16, t = 1, c = WanVaeDecoder3D.LatentChannels;
+        var zeroLatent = new float[c * t * latH * latW];
+
+        using var loader = SafetensorsLoader.Open(vaePath);
+        using var vae = new WanVaeDecoder3D(loader);
+
+        List<float[]> frames = vae.Decode(zeroLatent, t, latH, latW);
+        int width = latW * WanVaeDecoder3D.SpatialScale;
+        int height = latH * WanVaeDecoder3D.SpatialScale;
+
+        string outDir = FindDocsDiffusionSamplesDir();
+        string outPath = Path.Combine(outDir, "wan-vae-synthetic-dc-latent-16x16-diagnostic.png");
+        PngWriter.Write(outPath, frames[0], width, height);
+
+        var rgb = frames[0];
+        int xMid = width / 2;
+        for (int y = 0; y < height; y++)
+            Console.WriteLine($"[WanVae 8x8-latent row dump] row {y,3}: R@x0={rgb[y * width + 0]:F5}  R@xmid={rgb[y * width + xMid]:F5}  R@xlast={rgb[y * width + width - 1]:F5}");
+        Console.WriteLine($"[WanVae 8x8-latent diagnostic] wrote {outPath}");
+    }
+
     [Fact]
     public void Decode_AllZeroSyntheticLatent_IsolatesVaeFromDiT()
     {
