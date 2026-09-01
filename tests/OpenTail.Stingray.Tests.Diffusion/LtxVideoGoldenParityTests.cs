@@ -131,12 +131,16 @@ public sealed class LtxVideoGoldenParityTests
             $"caption_projection cosine-sim too low: {CosineSimilarity(model.LastCaptionProjOut!, goldenCaptionProj)}");
 
         // Block 0 full forward (self-attn+RoPE, cross-attn, FFN, AdaLN modulation all combined --
-        // the single highest-value numeric check per the plan's own build order).
+        // the single highest-value numeric check per the plan's own build order). Tightened
+        // 2026-09-01 while investigating the "LTX-Video output is visually wrong" finding: the
+        // original >0.99 threshold turned out to be conservative, not load-bearing -- re-measured
+        // at effectively machine precision (>0.999999), ruling the transformer OUT as the source of
+        // the visual bug rather than just "close enough".
         float block0Cos = CosineSimilarity(model.LastBlock0Out!, goldenBlock0);
-        Assert.True(block0Cos > 0.99f, $"block0 cosine-sim too low: {block0Cos}");
+        Assert.True(block0Cos > 0.9999f, $"block0 cosine-sim too low: {block0Cos}");
 
-        // Full 28-block forward + final projection.
+        // Full 28-block forward + final projection. Same tightening/finding as block0 above.
         float fullCos = CosineSimilarity(output, goldenFullOut);
-        Assert.True(fullCos > 0.95f, $"full-forward cosine-sim too low: {fullCos}");
+        Assert.True(fullCos > 0.9999f, $"full-forward cosine-sim too low: {fullCos}");
     }
 }

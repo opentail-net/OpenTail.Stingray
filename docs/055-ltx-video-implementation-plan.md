@@ -515,3 +515,128 @@ Every individual component has verified golden parity (>0.999 cosine similarity 
    - Rectified Flow velocity predictions with CFG $\ge 3.0$ can cause latent dynamic range overflow over multiple Euler integration steps.
    - Implementing standard guidance rescaling (`noise_pred * (std(uncond) / std(noise_pred))`) will prevent clipping and oversaturation.
 
+## Update 2026-09-01 (continued): item 1 resolved (real trajectory oracle now matches); item 2's
+real mechanism corrected; empirical test of the noise-injection hypothesis in progress
+
+**Item 1 (step-by-step trajectory oracle) is done and passes.** Dumped a real 4-step trajectory
+from the official `ltx_video` package's actual `RectifiedFlowScheduler` + `diffusers`'
+`LTXVideoTransformer3DModel` (real weights, tiny F=1/H=2/W=2 scenario, real CFG=4.5) and
+reimplemented the exact same scheduler-shift + CFG + Euler-step loop in C# against
+`LtxVideoModel` directly (`LtxVideoTrajectoryGoldenTests.cs`, golden fixtures under
+`TestData/LtxTrajectoryGolden/`). Result: the shifted-timestep formula matches the real scheduler
+to <1e-4 absolute error at every step, and the resulting latents after each of the 4 real
+CFG-denoising steps match the real reference to >0.999 cosine similarity. This rules OUT the
+scheduler/CFG/step-loop arithmetic itself as the source of the visual bug — the multi-step
+integration is numerically correct, at least at this small scale. (Also re-tightened
+`LtxVideoGoldenParityTests`' block0/full-forward thresholds from a loose >0.95/>0.99 to >0.9999
+while investigating this — they were already passing at that level, meaning the transformer itself
+was never actually the loose link the old threshold implied.) Also independently re-verified the
+VAE decoder at F=2 (multi-frame, exercising the real temporal-frame-trim path the earlier F=1-only
+golden test couldn't -- with F=1 the "drop the first upsampled frame" trim is trivially
+self-correcting regardless of whether the trim index is right) at >0.999999 cosine similarity
+(`LtxVaeDecoderMultiFrameGoldenTests.cs`). Every stage tested so far, including the actual
+multi-step loop, is correct.
+
+**Item 2's claim needs a correction**: `decode_noise_scale` (the real pipeline's `0.0`-by-default
+parameter) does NOT gate `ResnetBlock3D`'s own internal per-channel StyleGAN-style noise injection
+(`_feed_spatial_noise`, `self.inject_noise`) at all -- those are two separate, unrelated noise
+sources in the real reference:
+- `decode_noise_scale` mixes fresh Gaussian noise into the LATENT tensor itself, before it's ever
+  passed to `vae.decode(...)` (`pipeline_ltx_video.py`: `latents = latents*(1-decode_noise_scale) +
+  noise*decode_noise_scale`) -- real default `0.0` means this step is a no-op, already correctly
+  matching `LtxVideoPipeline`'s existing behavior (no pre-decode noise mixing implemented, which is
+  the same as mixing in 0% noise).
+- `ResnetBlock3D.inject_noise` (the per-stage `[C,1,1]` `per_channel_scale1`/`per_channel_scale2`
+  weights, real config: stages 2/4/6 have it, stage 0 doesn't) is a fixed, checkpoint-baked
+  ARCHITECTURE flag with no runtime on/off switch in the real reference at all -- every real
+  inference call, at any `decode_noise_scale`, unconditionally runs it. Confirmed directly against
+  `ResnetBlock3D.forward`'s real source (read in full during the original VAE port pass): there is
+  no conditional around the `if self.inject_noise:` branch tied to any pipeline-level parameter.
+- So `LtxVaeDecoder.Decode`'s own `injectNoise` parameter (added for exact golden-test
+  comparability against a noise-disabled reference run) being left at its default `true` for real
+  generation is NOT a deviation from real behavior -- the real model genuinely, always injects this
+  noise. If the visible grain turns out to be too strong, the more likely real culprits are (a) a
+  units/scale bug in `InjectSpatialNoise`'s own noise generation (the Box-Muller RNG, or the spatial
+  broadcast pattern) rather than "noise injection should have been off", or (b) the grain is
+  actually correct StyleGAN-style texture that a real, fully-converged (not still-slightly-wrong)
+  image would mask better once the remaining low-frequency structure issue is fixed, or (c) genuine
+  real-model behavior at this checkpoint/settings that isn't actually a bug at all.
+## Update 2026-09-01 (continued): extensive empirical narrowing -- one real bug found and fixed
+(missing per-channel VAE latent normalization), but the visual corruption is NOT yet fully resolved
+
+Ran a long series of controlled A/B real generations (256x256, 30 steps, real T5, prompt "a
+photograph of a red apple on a wooden table") to isolate the remaining corruption, on top of the
+already-passing golden tests above. Each result:
+
+1. **`injectNoise:false` vs the real-default `true`** (StyleGAN-style per-channel decoder noise):
+   nearly IDENTICAL corruption either way. Ruled out -- this is not the (or not the dominant) cause.
+   Reverted `LtxVideoPipeline` back to the real default (`true`); the earlier hypothesis in this doc
+   that `decode_noise_scale=0.0` should disable it was wrong (see the correction two updates above --
+   `decode_noise_scale` and `ResnetBlock3D.inject_noise` are unrelated mechanisms in the real code).
+2. **Real negative prompt** (`"worst quality, inconsistent motion, blurry, jittery, distorted"`, the
+   package's own recommended default per `ltx_video/inference.py`) **vs empty string**: latent std
+   growth over the 30 steps dropped slightly (2.66 -> 2.21 by the final step) but visual corruption
+   was equally severe. Real recipe, worth keeping, not the fix.
+3. **CFG entirely disabled** (`guidance_scale=1.0`, pure conditional generation, no uncond blend at
+   all): latent std STILL grew to ~2.2 by step 29 and the image was STILL equally corrupted. This
+   rules out CFG combination/guidance-scale magnitude as the cause -- the divergence happens in
+   plain conditional denoising too.
+4. **A from-scratch, independent Python assembly** of the same three already-individually-verified
+   real components (diffusers' `LTXVideoTransformer3DModel`, `ltx_video`'s real
+   `CausalVideoAutoencoder`, `ltx_video`'s real `RectifiedFlowScheduler`, real T5) at the exact same
+   settings produced the SAME KIND of "structurally-plausible-but-heavily-corrupted" output as the
+   C# port -- ruling OUT the C# port itself as the (sole) source of the bug. Whatever is wrong is
+   either present in this exact assembly-of-real-parts approach (vs. the real, full native
+   `pipeline_ltx_video.LTXVideoPipeline` class, which does more bookkeeping this ad-hoc assembly
+   skips -- see "still not tried" below) or a genuine property of this checkpoint/settings this pass
+   hasn't identified yet.
+5. **Real per-channel VAE latent normalization -- a genuine, previously-undiscovered bug, found and
+   fixed**: `pipeline_ltx_video.py`'s real default is `vae_per_channel_normalize=True` (not the
+   global `scaling_factor=1.0` this port assumed was the only normalization). The real un-normalize
+   step (`latent_denorm[c] = latent[c] * std_of_means[c] + mean_of_means[c]`) uses PER-CHANNEL
+   statistics stored directly in the checkpoint under `vae.per_channel_statistics.{std-of-means,
+   mean-of-means}` -- confirmed present (128 values each), with `std_of_means` spanning **0.11 to
+   1.41** across channels (a 12x range) and `mean_of_means` spanning -0.6 to 0.875. Skipping this
+   entirely (as this port always had) feeds the VAE decoder per-channel-mis-scaled latents, which is
+   exactly the kind of bug that would preserve rough spatial/semantic structure (matching the
+   "recognizable apple shape" convergence already observed) while scrambling per-channel/per-color
+   relationships (matching the salt-and-pepper color corruption observed). **Applied this fix to
+   `LtxVideoPipeline.GenerateVideo`** (reads the two tensors from the main checkpoint, applies the
+   per-channel affine right before building the VAE's channel-first input) -- real output value
+   range shrank from roughly [-3.7, 3.9] to [-1.7, 1.8], much more plausible for a VAE decoder, in
+   both the Python re-test and the C# re-test. **However, the visual corruption itself was NOT
+   resolved by this fix alone** -- both the Python and C# re-tests after applying it still show the
+   same kind of heavy per-pixel corruption. This is a real, confirmed, kept fix (matches the real
+   pipeline's actual default behavior and produces more sane value ranges), just not sufficient by
+   itself to explain the full symptom.
+
+**Numeric verification status after this pass (all still hold, re-run clean)**: transformer at both
+the original 32-token test scale AND real-generation 64-token scale (>0.999999 cosine similarity,
+tightened from a looser threshold that was masking how good the match actually was -- see
+`LtxVideoRealScaleGoldenTests`), VAE decoder at F=1 and F=2 (multi-frame temporal trim path,
+>0.999999 -- see `LtxVaeDecoderMultiFrameGoldenTests`), the real multi-step scheduler-shift + CFG +
+Euler-integration LOOP itself reproduced step-by-step against a real reference trajectory (>0.999
+cosine per step across 4 real steps -- see `LtxVideoTrajectoryGoldenTests`), and T5 encoder+tokenizer
+exact-match. Every piece that can be isolated and golden-tested checks out; the remaining bug is
+either in an assembly-level detail neither this port nor the from-scratch Python re-implementation
+captures, or points to needing the real native `pipeline_ltx_video.LTXVideoPipeline` class itself
+(not diffusers' transformer + ad-hoc scheduler/CFG wiring) as the reference to diff against next.
+
+**Not yet tried / concrete next steps for whoever picks this up**:
+- Run the REAL, full native `ltx_video.pipelines.pipeline_ltx_video.LTXVideoPipeline` class
+  end-to-end (not the from-scratch assembly this pass used) with the real weights, to get a
+  definitive "does the real, complete reference pipeline itself produce a clean image at these
+  settings" answer -- would need the native pipeline's own `Patchifier`/`indices_grid`/
+  `conditioning_mask` plumbing (skipped so far since diffusers' transformer takes
+  `rope_interpolation_scale` directly and doesn't need it), and its exact `num_inference_steps`/
+  `guidance_scale` recommended values for the 2B v0.9.1 checkpoint specifically (not found bundled
+  in the pip package -- the referenced `configs/ltxv-13b-0.9.7-dev.yaml` is for a different, newer
+  13B model; the 2B-specific recommended config lives only in the GitHub repo, not this package).
+- If the real native pipeline ALSO produces corruption at these settings, this checkpoint/recipe
+  combination may simply need very different settings (more steps, a specific resolution multiple,
+  or is not meant for single-image T2V at all) rather than there being a further code bug to find.
+- If the real native pipeline produces a CLEAN image, diff its own real intermediate latent
+  trajectory (dumped the same way as `LtxVideoTrajectoryGoldenTests`' fixture) against this port's
+  to localize exactly where the two diverge, now that every individually-testable component is
+  confirmed correct in isolation.
+

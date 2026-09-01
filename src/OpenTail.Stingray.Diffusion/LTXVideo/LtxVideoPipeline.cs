@@ -229,6 +229,20 @@ public sealed class LtxVideoPipeline : IDiffusionPipeline
             // do real cross-frame temporal upsampling, not a per-frame-independent operation) --
             // channel-first [C,F,H,W] layout, converted from this pipeline's token-major
             // [numTokens, C] latent buffer.
+            //
+            // Real `un_normalize_latents(latents, vae, vae_per_channel_normalize=True)` -- the real
+            // pipeline's DEFAULT (found 2026-09-01 while investigating a real generation coming out
+            // as pure noise/corruption despite every other stage golden-testing at machine
+            // precision): `latent_denorm[c] = latent[c] * std_of_means[c] + mean_of_means[c]`, a
+            // per-channel affine transform using this checkpoint's own
+            // `vae.per_channel_statistics.{std-of-means,mean-of-means}` tensors (std_of_means spans
+            // 0.11-1.41 across the 128 channels -- skipping this is a real, confirmed bug, not a
+            // no-op). Was previously never applied anywhere in this port.
+            var stdOfMeans = _weights?.Contains("vae.per_channel_statistics.std-of-means") == true
+                ? _weights.ReadF32("vae.per_channel_statistics.std-of-means") : null;
+            var meanOfMeans = _weights?.Contains("vae.per_channel_statistics.mean-of-means") == true
+                ? _weights.ReadF32("vae.per_channel_statistics.mean-of-means") : null;
+
             var chFirst = new float[inChannels * numLatentFrames * spatialSize];
             for (int f = 0; f < numLatentFrames; f++)
             {
@@ -237,12 +251,22 @@ public sealed class LtxVideoPipeline : IDiffusionPipeline
                 {
                     int srcOff = (tokenBase + p) * inChannels;
                     for (int c = 0; c < inChannels; c++)
-                        chFirst[(c * numLatentFrames + f) * spatialSize + p] = latents[srcOff + c];
+                    {
+                        float v = latents[srcOff + c];
+                        if (stdOfMeans is not null && meanOfMeans is not null)
+                            v = v * stdOfMeans[c] + meanOfMeans[c];
+                        chFirst[(c * numLatentFrames + f) * spatialSize + p] = v;
+                    }
                 }
             }
 
             // Real pipeline default: `decode_timestep=0.0` (not the "nominal 0.05" this project's
             // earlier planning-pass research guessed -- see LtxVaeDecoder's own doc comment).
+            // injectNoise defaults to true (real behavior): confirmed 2026-09-01 that
+            // decode_noise_scale (real default 0.0) does NOT gate this -- it's a separate,
+            // always-on architecture feature (per-channel StyleGAN-style noise), see
+            // LtxVaeDecoder's own doc comment. Empirically disabling it did not fix the visual
+            // corruption either, consistent with it not being the (or the only) real cause.
             var video = _vae.Decode(chFirst, decodeTimestep: 0f, numLatentFrames, patchH, patchW);
 
             int outF = 8 * (numLatentFrames - 1) + 1; // real `F_out = 8*(F_latent-1)+1` (LtxVaeDecoder.TemporalScale)
