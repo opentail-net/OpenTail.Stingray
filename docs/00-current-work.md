@@ -384,6 +384,98 @@ OpenTail.Stingray.Tests.Vision.exe -class OpenTail.Stingray.Tests.Vision.Multimo
 
 ---
 
+## Vision golden-verification pass (2026-09-01): 5 real numeric bugs found and fixed in 2 of the
+## 6 confirmed-working architectures; 3 more need a real missing feature, not a bug fix
+
+Elevated the 6 architectures the real-weight differentiation suite confirms as "not obviously
+broken" (`Llava`, `Pixtral`, `Exaone4`, `MiMoVl`, `Qwen2.5-VL`, `GLM-4.6V`) toward real golden
+numeric parity, following the existing `gemma4uv_ref.py` pattern (hand-written numpy port of the
+real llama.cpp mtmd C++ reference, reading the same local mmproj GGUF, checked against the C#
+encoder's actual output). This is a stronger claim than the differentiation test, which only
+checks "not degenerate" (no NaN, has variance, distinguishes two different images) — it doesn't
+check numeric correctness at all.
+
+**`Llava` and `Pixtral`: golden-verified, 5 real bugs found and fixed** (see
+`tests/OpenTail.Stingray.Tests.Vision/LlavaVisionEmbedderParityTests.cs`/
+`PixtralVisionEmbedderParityTests.cs`, `scripts/llava_ref.py`/`pixtral_ref.py`):
+- Llava: `LlavaVisionModel.ProjectionDim` read the wrong metadata key (`clip.vision.
+  projection_dim`, CLIP's own unrelated native projection head) instead of deriving the real
+  llava-projector output width from `mm.2`'s actual tensor shape — every projector matmul was
+  silently truncated. Also: this checkpoint's `ffn_up`/`ffn_down` tensor NAMES are backwards
+  relative to their real direction; fixed by deriving role from each tensor's own real input
+  width instead of trusting the name.
+- Pixtral: the MLP projector looked for the non-existent `mm.0.weight` (real pixtral tensors are
+  `mm.1`/`mm.2`) — silently fell back to a raw truncating copy, never running the real projector
+  at all. Also: 2D RoPE had the row/col halves swapped and was missing a real `freq_scale_odd`
+  factor on the second half.
+
+Both golden-verified now; full `Tests.Diffusion` suite and the differentiation suite re-run clean
+after these changes (same 4 pre-existing unrelated failures below, no new regressions).
+
+**`Exaone4`, `MiMoVl`, `Qwen2.5-VL`: NOT a bug-fix task — a real, missing feature (windowed
+attention) blocks meaningful golden verification.** Checked before writing any Python reference
+(cheaper than discovering it via a failed numeric comparison): none of
+`Exaone4VisionEncoder.cs`/`MimoVlVisionEncoder.cs`/`QwenVlVisionEncoder.cs` reference "window" at
+all — they always run full (unmasked) attention on every layer. But all three real local
+checkpoints declare `clip.vision.n_wa_pattern` (7 for Exaone4, 8 for MiMoVl and Qwen2.5-VL),
+meaning the real llama.cpp reference applies LOCAL/masked attention on most layers (only every
+Nth layer gets full attention), plus a real window-index reordering step
+(`window_idx`/`inv_window_idx` in the real C++) around it. This is fundamentally different in
+kind from the Llava/Pixtral bugs above — those were wrong values in an otherwise-complete
+computation; this is a missing computation affecting the majority of layers. Building a "golden
+test matching current C# scope" the way Pixtral's IMG_BREAK gap was handled would be much less
+meaningful here, since windowed vs. full attention changes the actual math for most of the
+network, not just a final step. **Real estimated scope: implement windowed local attention +
+index reordering for three architectures — a genuine new-feature task, not a golden-test
+elevation.** Deliberately not attempted this pass (operator call, 2026-09-01) — do this properly
+as its own scoped task later, not opportunistically mid-golden-test-pass.
+
+`GLM-4.6V` has no `n_wa_pattern`/window metadata at all in its real local checkpoint, so it does
+not have this gap — tractable the same way Llava/Pixtral were, see below for its own result.
+
+**`GLM-4.6V`: 4 real bugs fixed (attention and patch-merger were both complete no-op stubs), but
+golden numeric verification is blocked by a second, different real missing feature (2×2
+merge-block patch reordering) — deferred alongside the windowed-attention gap above.**
+Cross-checked `Glm4VisionEncoder.cs`/`Glm4VisionModel.cs` against the real
+`tools/mtmd/models/glm4v.cpp` (122 lines) before writing any Python reference and found the
+existing C# encoder was far more broken than the differentiation test (`Glm4V_RealWeights_
+LoadsAndEmbedsImage`, which only checks non-degeneracy) could ever catch:
+- `ComputeAttention` never read Q or K, never scored, never softmaxed — it just copied scaled V
+  straight through. Fixed: routed through the shared, real `VisionOps.Attention` (the same
+  vectorized scaled dot-product + softmax every other working encoder uses).
+- The patch merger declared `mm.patch_merger.weight`/`.bias` as fields but never once used them —
+  it just concatenated raw 2×2 patch groups and fed that straight into the FC projector. Real
+  glm4v.cpp does a genuine strided Conv2D through `mm.patch_merger.weight` (kernel=stride=2,
+  1536→4096) first. Fixed: implemented the real conv2d merge.
+- The FC projector looked for `mm.fc.weight`/`mm.0.weight`, neither of which exists in this
+  checkpoint (confirmed via `list-tensors`) — real name is `mm.model.fc.weight`. Silently fell
+  back to a truncating raw copy every time. Fixed: added the real name as the primary candidate.
+- The entire projector tail past FC was missing: real glm4v.cpp does
+  `mm.post_norm` (plain LayerNorm, eps=1e-5 — distinct from the ViT's own RMS eps) → `ggml_gelu_
+  erf` (erf-based GELU, not the tanh-approximation used elsewhere in this codebase) → a gated
+  SiLU FFN (`mm.gate`/`mm.up`/`mm.down`, 4096→10944→4096). Added all three stages.
+
+All four fixes verified compiling clean and re-checked against the differentiation suite
+(`MultimodalRealWeightsTests`, 11 architectures) — `Glm4V_RealWeights_LoadsAndEmbedsImage` still
+passes, same 4 pre-existing unrelated failures as before (`YoutuVl`, `KimiVl`, `MiniCpmV`,
+`HunyuanVl`), no new regressions.
+
+While tracing the real position-ID construction for `PROJECTOR_TYPE_GLM4V` in `clip.cpp` (needed
+to build the golden Python reference's RoPE), found that GLM4V's real patch/token order is NOT
+plain row-major: patches are grouped into 2×2 merge-blocks *before* the transformer runs (real
+loop: `for y step merge_ratio { for x step merge_ratio { for dy in 0..1 { for dx in 0..1 } } }`),
+and position IDs are assigned per that grouped sequence order, not raster order. The current C#
+encoder processes patches in plain raster order throughout (`ExtractPatches`, `ApplyMrope`, the
+new `ApplyPatchMerger` above) and has no such reordering step. This is the same *kind* of gap as
+the windowed-attention one above — a real missing structural computation, not a wrong value in an
+otherwise-complete one — so, consistent with the operator call above, **not implementing the
+reordering this pass**. GLM-4.6V's golden numeric test is deferred alongside Exaone4/MiMoVl/
+Qwen2.5-VL until that reordering is implemented as real feature work; the differentiation-level
+bug fixes above stand on their own regardless (they're real correctness improvements even before
+golden parity is reachable).
+
+---
+
 ## Second new finding — Gemma 3's own text generation is broken on BOTH CPU and Vulkan, unrelated to vision (2026-09-02)
 
 While trying to verify another session's real, unrelated GPU-decode-path change (widening

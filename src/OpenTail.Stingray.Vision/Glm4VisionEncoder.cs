@@ -25,10 +25,19 @@ public sealed unsafe class Glm4VisionEncoder
     private readonly float[] _posEmbdF32;
     private readonly float[]? _postLnW;
 
-    private readonly VisionTensorRef _patchMergerW;
+    private readonly float[] _patchMergerWF32;
     private readonly float[]? _patchMergerB;
     private readonly VisionTensorRef _fcW;
     private readonly float[]? _fcB;
+    private readonly float[]? _mmPostNormW;
+    private readonly float[]? _mmPostNormB;
+    private readonly VisionTensorRef _mmGateW;
+    private readonly float[]? _mmGateB;
+    private readonly VisionTensorRef _mmUpW;
+    private readonly float[]? _mmUpB;
+    private readonly VisionTensorRef _mmDownW;
+    private readonly float[]? _mmDownB;
+    private readonly int _mmFfnDim;
 
     private readonly LayerWeights[] _blocks;
 
@@ -79,11 +88,27 @@ public sealed unsafe class Glm4VisionEncoder
         _posEmbdF32 = VisionOps.DequantizeToFloat32(VisionOps.GetTensor(gguf, "v.position_embd.weight", "v.position_embd"));
         _postLnW = VisionOps.GetTensorArray(gguf, "v.post_ln.weight");
 
-        _patchMergerW = VisionOps.GetTensor(gguf, "mm.patch_merger.weight");
+        _patchMergerWF32 = VisionOps.DequantizeToFloat32(VisionOps.GetTensor(gguf, "mm.patch_merger.weight"));
         _patchMergerB = VisionOps.GetTensorArray(gguf, "mm.patch_merger.bias");
 
-        _fcW = VisionOps.GetTensor(gguf, "mm.fc.weight", "mm.0.weight");
-        _fcB = VisionOps.GetTensorArray(gguf, "mm.fc.bias", "mm.0.bias");
+        // Real tensor name in this checkpoint is "mm.model.fc.weight" (confirmed via list-tensors),
+        // not "mm.fc.weight"/"mm.0.weight" -- those names never matched, silently falling through to
+        // the truncating-copy fallback below. Real glm4v.cpp: build_mm(model.mm_fc_w, cur).
+        _fcW = VisionOps.GetTensor(gguf, "mm.model.fc.weight", "mm.fc.weight", "mm.0.weight");
+        _fcB = VisionOps.GetTensorArray(gguf, "mm.model.fc.bias", "mm.fc.bias", "mm.0.bias");
+
+        // Real glm4v.cpp projector tail (build_norm -> gelu_erf -> build_ffn), entirely missing
+        // from the prior implementation. Real tensor names: mm.post_norm.* (plain LayerNorm,
+        // eps=1e-5, NOT the ViT's own RMS eps), mm.gate/mm.up/mm.down.* (gated SiLU FFN).
+        _mmPostNormW = VisionOps.GetTensorArray(gguf, "mm.post_norm.weight");
+        _mmPostNormB = VisionOps.GetTensorArray(gguf, "mm.post_norm.bias");
+        _mmGateW = VisionOps.GetTensor(gguf, "mm.gate.weight");
+        _mmGateB = VisionOps.GetTensorArray(gguf, "mm.gate.bias");
+        _mmUpW = VisionOps.GetTensor(gguf, "mm.up.weight");
+        _mmUpB = VisionOps.GetTensorArray(gguf, "mm.up.bias");
+        _mmDownW = VisionOps.GetTensor(gguf, "mm.down.weight");
+        _mmDownB = VisionOps.GetTensorArray(gguf, "mm.down.bias");
+        _mmFfnDim = _mmGateW.IsValid ? (int)_mmGateW.Info.Dimensions[1] : 0;
 
         _blocks = new LayerWeights[_layers];
         for (int l = 0; l < _layers; l++)
@@ -172,7 +197,7 @@ public sealed unsafe class Glm4VisionEncoder
                 ApplyMrope(qBuf, kBuf, patchesX, patchesY);
 
                 // Self-Attention & Out-Projection
-                ComputeAttention(qBuf, kBuf, vBuf, numPatches, _heads, _headDim, normed);
+                VisionOps.Attention(qBuf, kBuf, vBuf, numPatches, _heads, _headDim, normed);
                 VisionOps.MatVecAny(normed, blk.AttnOutW, attnOutB, numPatches, _embd, _embd, attnOut);
 
                 // Residual 1
@@ -206,35 +231,159 @@ public sealed unsafe class Glm4VisionEncoder
             fixed (float* postLnW = _postLnW) ApplyRmsNorm(hiddenStates, numPatches, _embd, postLnW);
         }
 
-        // 3. Patch Merger (2x2 spatial downsample -> 4 * embd)
+        // 3. Patch Merger: real strided Conv2D (kernel=stride=mergeFactor, embd -> mm.patch_merger's
+        // own output width, here 4096) via mm.patch_merger.weight/bias -- NOT a plain
+        // concat-then-linear. Real glm4v.cpp: reshape/permute to [n_embd,gx,gy,batch] then
+        // ggml_conv_2d(mm_patch_merger_w, cur, n_merge, n_merge, 0,0,1,1) + mm_patch_merger_b.
         int scale = _mergeFactor; // 2
         int downX = patchesX / scale;
         int downY = patchesY / scale;
         tokenCount = downX * downY;
-        int mergedDim = _embd * scale * scale; // 4 * 1152 = 4608
+        int mergerOutDim = _patchMergerWF32.Length > 0 ? _patchMergerB?.Length ?? _projDim : _embd * scale * scale;
 
-        var merged = new float[tokenCount * mergedDim];
-        ApplyPixelMerge(hiddenStates, patchesX, patchesY, scale, merged);
+        var merged = new float[tokenCount * mergerOutDim];
+        ApplyPatchMerger(hiddenStates, patchesX, patchesY, scale, mergerOutDim, merged);
 
-        // 4. FC Projector: (mergedDim -> projDim)
-        var visualTokens = new float[tokenCount * _projDim];
+        // 4. FC Projector (mm.model.fc): mergerOutDim -> projDim
+        var afterFc = new float[tokenCount * _projDim];
         if (_fcW.IsValid)
         {
             fixed (float* fcB = _fcB)
             {
-                VisionOps.MatVecAny(merged, _fcW, fcB, tokenCount, mergedDim, _projDim, visualTokens);
+                VisionOps.MatVecAny(merged, _fcW, fcB, tokenCount, mergerOutDim, _projDim, afterFc);
             }
         }
         else
         {
             for (int t = 0; t < tokenCount; t++)
             {
-                int copyDim = Math.Min(mergedDim, _projDim);
-                Array.Copy(merged, t * mergedDim, visualTokens, t * _projDim, copyDim);
+                int copyDim = Math.Min(mergerOutDim, _projDim);
+                Array.Copy(merged, t * mergerOutDim, afterFc, t * _projDim, copyDim);
             }
         }
 
+        // 5. mm.post_norm (plain LayerNorm, eps=1e-5 -- distinct from the ViT's own RMS eps) ->
+        // gelu_erf -> gated SiLU FFN (mm.gate/mm.up/mm.down). Real glm4v.cpp order:
+        // build_norm(NORM_TYPE_NORMAL) -> ggml_gelu_erf -> build_ffn.
+        if (_mmPostNormW != null)
+        {
+            fixed (float* w = _mmPostNormW, b = _mmPostNormB)
+            {
+                ApplyLayerNorm(afterFc, tokenCount, _projDim, w, b, 1e-5f);
+            }
+        }
+        for (int i = 0; i < afterFc.Length; i++) afterFc[i] = GeluErfScalar(afterFc[i]);
+
+        if (!_mmGateW.IsValid || !_mmUpW.IsValid || !_mmDownW.IsValid || _mmFfnDim == 0)
+        {
+            return afterFc;
+        }
+
+        var gate = new float[tokenCount * _mmFfnDim];
+        var up = new float[tokenCount * _mmFfnDim];
+        var visualTokens = new float[tokenCount * _projDim];
+        fixed (float* gateB = _mmGateB, upB = _mmUpB, downB = _mmDownB)
+        {
+            VisionOps.MatVecAny(afterFc, _mmGateW, gateB, tokenCount, _projDim, _mmFfnDim, gate);
+            VisionOps.MatVecAny(afterFc, _mmUpW, upB, tokenCount, _projDim, _mmFfnDim, up);
+            for (int i = 0; i < gate.Length; i++)
+            {
+                float g = gate[i];
+                gate[i] = (g / (1.0f + MathF.Exp(-g))) * up[i];
+            }
+            VisionOps.MatVecAny(gate, _mmDownW, downB, tokenCount, _mmFfnDim, _projDim, visualTokens);
+        }
+
         return visualTokens;
+    }
+
+    /// <summary>Real erf-based GELU: 0.5*x*(1+erf(x/sqrt(2))), matching ggml_gelu_erf.</summary>
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+    private static float GeluErfScalar(float x)
+    {
+        return 0.5f * x * (1.0f + Erf(x * 0.7071067811865476f));
+    }
+
+    // Abramowitz-Stegun 7.1.26 approximation, max error ~1.5e-7 -- ample for this test's thresholds.
+    private static float Erf(float x)
+    {
+        float sign = x < 0 ? -1f : 1f;
+        x = MathF.Abs(x);
+        const float a1 = 0.254829592f, a2 = -0.284496736f, a3 = 1.421413741f;
+        const float a4 = -1.453152027f, a5 = 1.061405429f, p = 0.3275911f;
+        float t = 1.0f / (1.0f + p * x);
+        float y = 1.0f - ((((a5 * t + a4) * t + a3) * t + a2) * t + a1) * t * MathF.Exp(-x * x);
+        return sign * y;
+    }
+
+    private static void ApplyLayerNorm(float[] states, int nTokens, int dim, float* weights, float* bias, float eps)
+    {
+        for (int t = 0; t < nTokens; t++)
+        {
+            int off = t * dim;
+            float mean = 0f;
+            for (int d = 0; d < dim; d++) mean += states[off + d];
+            mean /= dim;
+
+            float varSum = 0f;
+            for (int d = 0; d < dim; d++)
+            {
+                float diff = states[off + d] - mean;
+                varSum += diff * diff;
+            }
+            float invStd = 1.0f / MathF.Sqrt(varSum / dim + eps);
+
+            for (int d = 0; d < dim; d++)
+            {
+                float norm = (states[off + d] - mean) * invStd;
+                float w = weights != null ? weights[d] : 1f;
+                float b = bias != null ? bias[d] : 0f;
+                states[off + d] = norm * w + b;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Real strided Conv2D patch merger: for each scale x scale block of ViT output patches,
+    /// out[o] = bias[o] + sum over (dy,dx,c) of weight[o,c,dy,dx] * hidden[srcPatch,c].
+    /// Weight raw layout matches patch_embd's convention: ne0=kw(fastest), ne1=kh, ne2=cin, ne3=cout.
+    /// </summary>
+    private void ApplyPatchMerger(float[] src, int patchesX, int patchesY, int scale, int outDim, float[] dst)
+    {
+        int downX = patchesX / scale;
+        int downY = patchesY / scale;
+        int cin = _embd;
+        int kArea = scale * scale;
+
+        Parallel.For(0, downY, dy0 =>
+        {
+            for (int dx0 = 0; dx0 < downX; dx0++)
+            {
+                int dstTokenIdx = dy0 * downX + dx0;
+                int dstOff = dstTokenIdx * outDim;
+
+                for (int o = 0; o < outDim; o++)
+                {
+                    float sum = _patchMergerB != null ? _patchMergerB[o] : 0f;
+                    int wOffO = o * (cin * kArea);
+                    for (int c = 0; c < cin; c++)
+                    {
+                        int wOffC = wOffO + c * kArea;
+                        for (int dy = 0; dy < scale; dy++)
+                        {
+                            int srcY = dy0 * scale + dy;
+                            for (int dx = 0; dx < scale; dx++)
+                            {
+                                int srcX = dx0 * scale + dx;
+                                int srcPatchIdx = srcY * patchesX + srcX;
+                                sum += src[srcPatchIdx * cin + c] * _patchMergerWF32[wOffC + dy * scale + dx];
+                            }
+                        }
+                    }
+                    dst[dstOff + o] = sum;
+                }
+            }
+        });
     }
 
     private void ExtractPatches(ReadOnlySpan<float> chw, int width, int height, int patchesX, int patchesY, float[] output)
