@@ -879,9 +879,14 @@ public static class UnifiedVisionPipeline
         public int EmbeddingDim => _model.ProjectionDim;
         public int ImageWidth => _model.ImageSize;
         public int ImageHeight => _model.ImageSize;
-        public string ImageOpenMarker => "<|image|>";
-        public string ImageCloseMarker => "";
-        public string PlaceholderMarker => "<|image|>";
+        // Real Gemma 3 markers (confirmed against examples/llama.cpp/llama.cpp/tools/mtmd/mtmd.cpp's
+        // PROJECTOR_TYPE_GEMMA3 case: img_beg="<start_of_image>", img_end="<end_of_image>") --
+        // this class previously carried Gemma4VAdapter's "<|image|>" verbatim from a copy-paste,
+        // which isn't a real Gemma 3 special token at all, so the placeholder was never found in
+        // the tokenized prompt (found 2026-09-02 while verifying an unrelated GPU-path change).
+        public string ImageOpenMarker => "<start_of_image>";
+        public string ImageCloseMarker => "<end_of_image>";
+        public string PlaceholderMarker => "<start_of_image>";
 
         public float[] EmbedImage(ReadOnlySpan<byte> rgb, int width, int height, out int tokenCount)
         {

@@ -53,7 +53,7 @@ Sourced from [`docs/audio-review-progress.md`](docs/audio-review-progress.md) an
 | LTX-Video | 🔴 | 🔴 | — | Structural placeholder: transformer weights are never applied, text conditioning is literal random noise |
 | HunyuanVideo | 🔴 | ⚪ | — | DiT runs clean through every layer with real weights (2026-08-31 smoke test) — blocked on a real VAE decoder (needs its own class, same as Wan) and real dual CLIP+LLM text conditioning, neither wired yet |
 | FLUX.1, SD3/3.5, Stable Audio | 🔴 | 🔴 | — | Not attempted — no local weights, no download automation yet |
-| Vision (17+ architectures) | — | ⚪ | CPU / CUDA / Vulkan | Extensively implemented (see below); not independently re-verified in the audit pass this table is sourced from |
+| Vision (17+ architectures) | 🟡 | 👂 | CPU / CUDA / Vulkan | Extensively implemented (see below); real-weight test suite (2026-09-02) found 4 architectures producing degenerate output — `YoutuVl`/`HunyuanVl` return all-zero embeddings, `KimiVl` returns NaN cosine similarity, `MiniCpmV` returns identical embeddings for distinct images. Rest of the suite (131/135 real-weight tests) passing |
 
 Runs GGUF and SafeTensors models on CPU (AVX2/AVX-512 SIMD) and GPU (Vulkan compute shaders or CUDA cuBLAS), with:
 - **OpenAI- and Anthropic-compatible API server** (/v1/chat/completions, /v1/audio/speech, /v1/audio/transcriptions), native dynamic Multi-LoRA serving,

@@ -62,7 +62,14 @@ that is more elegant but lower-visibility.
    close). This is the single biggest re-rank from the popularity review: previously scoped low
    because it's real implementation work, not debugging (transformer weights are never applied, text
    conditioning is literal random noise), but the LTX model family's download volume is large enough
-   to outweigh that. Do not start this while Wan/Z-Image/CosyVoice are still active — it would break
+   to outweigh that. **Full implementation plan written 2026-09-02**, see
+   [055-ltx-video-implementation-plan.md](055-ltx-video-implementation-plan.md) — real tensor
+   inventory of the local checkpoint confirms the architecture is a 28-layer/2048-hidden PixArt-
+   style DiT (NOT Wan-shaped: patch_size=1 so no real spatial patching happens in the transformer,
+   cross-attention operates at 2048-dim on a pre-projected caption sequence rather than raw T5's
+   4096-dim, FFN is ordinary 2-layer GELU not gated), plus a dependency-ordered build/verification
+   plan and the real gotchas (VAE decoder is itself timestep-conditioned; RoPE uses continuous
+   pixel-space coordinates, not integer latent indices). Do not start this while Wan/Z-Image/CosyVoice are still active — it would break
    the consolidation discipline the rest of this document argues for.
 5. **SentencePiece Unigram-LM tokenizer.** Best pure infrastructure ROI on the list: one
    implementation unlocks six blocked GGUF architectures at once (`minicpm`, `internlm2`, `ernie4_5`,
@@ -198,6 +205,74 @@ defect affecting real concurrent `HotSession` traffic at 5–15 simultaneous req
 resolved — see the entry below and [031](031-concurrent-decode-batch-tier-divergence-bug.md). Was
 never a migration-plan defect and never blocked Phases 1-3 (all three are done/verified
 independent of this).
+
+---
+
+## New finding — 4 vision architectures produce degenerate embeddings (2026-09-02)
+
+A full run of `tests/OpenTail.Stingray.Tests.Vision`'s real-weight suite
+(`MultimodalRealWeightsTests.cs`, 135 tests, 33 min real-weight run) surfaced 4 genuine failures,
+confirmed pre-existing (the test file hasn't changed since before this session, and its call path
+— `UnifiedVisionPipeline.Open`/`EmbedImage` — never touches `IComputeBackend`/CUDA/Vulkan at all,
+so this is unrelated to any GPU-path work done this session):
+
+- `YoutuVl` and `HunyuanVl`: `EmbedImage` returns a completely all-zero embedding buffer.
+- `KimiVl`: two genuinely different input images produce embeddings whose cosine similarity is
+  `NaN` (a degenerate/zero-norm embedding on at least one side).
+- `MiniCpmV`: two genuinely different input images produce embeddings with cosine similarity
+  `1.0000001` — i.e. identical, meaning the image content isn't actually reaching the encoder
+  output for at least one of the two inputs.
+
+131/135 real-weight tests in this suite pass. Not yet root-caused — no reference source has been
+read for these 4 architectures yet this session. Given the failure SHAPE (all-zero or
+identical-regardless-of-input) rather than "wrong but non-degenerate" output, the likely culprit
+category is a wiring/plumbing bug (an input never reaching the encoder, a buffer never written, an
+early-return path) rather than a subtle numerical error — matching the pattern several other real
+bugs in this project turned out to be (e.g. Wan's earlier missing-`--vae` mistake, or the
+Z-Image/QwenTextEncoder BF16-corruption bug). Real weight test: rerun via
+`STINGRAY_RUN_HEAVY_TESTS=1 tests/OpenTail.Stingray.Tests.Vision/bin/Release/net10.0/
+OpenTail.Stingray.Tests.Vision.exe -class OpenTail.Stingray.Tests.Vision.MultimodalRealWeightsTests`.
+
+---
+
+## Second new finding — Gemma 3's own text generation is broken on BOTH CPU and Vulkan, unrelated to vision (2026-09-02)
+
+While trying to verify another session's real, unrelated GPU-decode-path change (widening
+`ForwardEmbedding`/`SupportsEmbeddingInput` beyond Gemma-4-only in `GpuForwardPass.cs`/
+`CudaForwardPass.cs` — that code itself looks like real, careful engineering and compiles clean,
+but ships with placeholder-stub tests, `Assert.True(true)` and pure-arithmetic checks that never
+call the real code, so it was unverified when found), downloaded a real `gemma-3-4b-it-Q4_K_M.gguf`
++ its real `mmproj-gemma-3-4b-it-f16.gguf` to test end-to-end.
+
+**First, a real, fixed, unrelated bug**: `Gemma3Adapter` (`UnifiedVisionPipeline.cs`) was a literal
+copy-paste of `Gemma4VAdapter` with the class renamed but its marker strings never updated —
+`PlaceholderMarker`/`ImageOpenMarker` were both `"<|image|>"` (Gemma 4's real marker), which isn't
+a real Gemma 3 special token at all, so `--image` on a real Gemma 3 checkpoint always failed with
+"expected 1 image placeholder token(s) ... but found 0". Fixed to Gemma 3's real markers
+(`<start_of_image>`/`<end_of_image>`, confirmed against `examples/llama.cpp/llama.cpp/tools/mtmd/
+mtmd.cpp`'s `PROJECTOR_TYPE_GEMMA3` case).
+
+**With that fixed, a genuinely bigger, pre-existing problem surfaced**: real end-to-end generation
+with a real image produces incoherent multi-script gibberish on BOTH backends (different garbage on
+each — not even backend-consistent). To isolate whether this was the vision path or something more
+fundamental, ran the SAME checkpoint on a PLAIN TEXT prompt ("The capital of France is") with NO
+image/mmproj/ForwardEmbedding involved at all:
+- **CPU**: stops after 2 tokens, effectively blank output — a real, separate degenerate-generation
+  bug.
+- **Vulkan**: produces the SAME KIND of incoherent multi-script gibberish
+  ("productos teinte expertos...ಬೇಕ...") as the vision run did.
+
+**This means Gemma 3 text generation itself is broken on this engine, on both backends,
+independent of vision entirely** — the garbage seen in the vision run was NOT introduced by the
+embedding-splice widening being verified; it reproduces with zero vision/embedding code in the
+path at all. This is a real, deeper, previously-undocumented correctness gap for `gemma3` as a text
+architecture (not just its vision encoder), and it means the embedding-splice widening's own
+correctness genuinely cannot be verified until this more fundamental bug is found and fixed first —
+there's no working Gemma-3 baseline on either backend to verify against yet. Not root-caused this
+pass (no reference source read yet for Gemma 3's specific text-decode mechanics — e.g. its
+alternating local/global sliding-window attention pattern, its own norm/scale conventions — the
+next real step, following this project's own established methodology, before any further attempt
+at either backend).
 
 ---
 
