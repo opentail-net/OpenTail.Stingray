@@ -921,6 +921,51 @@ generation still correct.
 
 ---
 
+## Third new finding — vision test-coverage sweep found two more real bugs in previously-untested checkpoints (2026-09-02)
+
+`MultimodalRealWeightsTests.cs` covered only 11 of the 22 vision adapters in `UnifiedVisionPipeline.cs`
+despite several of the other 11 having real checkpoints already sitting in `models/` with zero test
+coverage — same "sitting untested" shape `KimiVl`/`MiniCpmV`/`YoutuVl`/`HunyuanVl` were in before real
+bugs were found in each. Added 7 differentiation-level tests for the untested-but-locally-present
+checkpoints: `PaddleOcr`, `DotsOcr`, `Granite4Vision`, `GraniteVision3`, `Llama4`, `Nemotron`,
+`Gemma4V_E4B`. Two of the seven surfaced real bugs (a concurrent session on this same machine found
+and fixed the first before this session could; the second was found and fixed here):
+
+- **Nemotron** (`NemotronVisionEncoder.cs`): the register-token count was hardcoded to 4 instead of
+  read from `v.class_embedding`'s own shape (`n_registers = model.class_embedding->ne[1]` per the
+  real `tools/mtmd/models/nemotron-v2-vl.cpp`) — this checkpoint's real `v.class_embd` is `[1280,16]`,
+  i.e. 16 registers, not 4. Compounded by a second bug: position embeddings were indexed by
+  post-concat token index (`nRegisters + patchIdx`) instead of pre-concat patch index (`patchIdx`
+  alone) — the real reference adds `position_embeddings` to the patch tokens BEFORE concatenating the
+  register tokens, and `v.position_embd.weight`'s real shape `[1280,1024,1]` is sized for exactly
+  1024 patches (32×32 @ patch16/512px) with no room for registers at all. Both fixed; landed in
+  commit `a950c4f` (a concurrent session's work, independently identical to this session's own
+  in-progress uncommitted fix at the time — confirmed byte-identical diff, nothing further to do).
+- **Llava-routed SigLIP checkpoints** (`LlavaVisionEncoder.cs`): `GraniteVision3_RealWeights_
+  LoadsAndEmbedsImage` (`mmproj-granite-vision-3.2-2b-f16.gguf`, routed via `UnifiedVisionPipeline`'s
+  real `projector_type="mlp"` autodetect, not a `granite4_vision`-specific path) crashed with an
+  `IndexOutOfRangeException`. Root cause confirmed against `examples/llama.cpp/llama.cpp/tools/mtmd/
+  clip.cpp`: the real CLS-token slot and its patch-position offset are BOTH conditional on whether
+  the checkpoint actually has a `class_embedding` tensor (`n_pos = num_patches + (model.
+  class_embedding ? 1 : 0)`; `patch_offset = model.class_embedding ? 1 : 0`) — `LlavaVisionEncoder.cs`
+  hardcoded both unconditionally (`totalTokensIn = numPatches + 1`, `tokenIdx = patchIdx + 1`). This
+  checkpoint is SigLIP-style (confirmed via `list-tensors`: no `v.class_embd` tensor at all, and
+  `v.position_embd.weight` sized for exactly `729 = 27×27` patches with no reserved CLS row), so the
+  unconditional `+1` offset read past the end of `_posEmbdF32` on every patch. Fixed by making both
+  the token-count reservation and the position-embedding/CLS-strip offset conditional on
+  `_clsEmbd != null`, matching the real reference exactly. Verified: full `MultimodalRealWeightsTests`
+  re-run clean, 18/18 pass including both `GraniteVision3_RealWeights_LoadsAndEmbedsImage` (newly
+  fixed) and `Llava_RealWeights_LoadsAndEmbedsImage` (the CLS-bearing `llava-v1.5-7b` checkpoint,
+  the regression check that mattered most since the fix touches code both tests share) — no
+  regressions.
+
+Remaining 5 of the 7 new tests (`PaddleOcr`, `DotsOcr`, `Granite4Vision`, `Llama4`, `Gemma4V_E4B`)
+passed cleanly on first run with no bugs found. Vision real-weight coverage is now 18/22 adapters
+(up from 11/22); the 4 still uncovered (`InternVl`, `CogVlm`, `MobileNetV5`, `DeepSeekOcr`) have no
+matching local checkpoint on this machine.
+
+---
+
 ## Priority 1 — model coverage
 
 See [01-gguf-model-coverage-plan.md](01-gguf-model-coverage-plan.md) for the audit and the ordered

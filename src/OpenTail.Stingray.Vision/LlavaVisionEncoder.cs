@@ -160,12 +160,20 @@ public sealed unsafe class LlavaVisionEncoder
     public float[] Forward(ReadOnlySpan<float> chw, int targetWidth, int targetHeight, int patchesX, int patchesY, out int tokenCount)
     {
         int numPatches = patchesX * patchesY;
-        int totalTokensIn = numPatches + 1; // + CLS
+        // Real reference (clip.cpp): `n_pos = num_patches + (model.class_embedding ? 1 : 0)` --
+        // the CLS slot is conditional on whether a real v.class_embd tensor exists at all. SigLIP-
+        // style checkpoints (e.g. granite-vision-3.2-2b's mmproj, routed here via projector_type
+        // "mlp") have NO class_embedding tensor and a position_embd table sized for EXACTLY
+        // numPatches positions (confirmed via list-tensors: 729 = 27x27, no +1 row) -- unconditionally
+        // reserving a CLS slot here indexed every patch's position embedding one row too far,
+        // running off the end of _posEmbdF32 for any checkpoint without a real CLS token.
+        bool hasCls = _clsEmbd != null;
+        int totalTokensIn = numPatches + (hasCls ? 1 : 0);
 
         var hiddenStates = new float[totalTokensIn * _embd];
         fixed (float* chwPtr = chw)
         {
-            ExtractPatchesWithCls(chwPtr, targetWidth, targetHeight, patchesX, patchesY, hiddenStates);
+            ExtractPatchesWithCls(chwPtr, targetWidth, targetHeight, patchesX, patchesY, hasCls, hiddenStates);
         }
 
         if (_preLnW != null)
@@ -243,10 +251,10 @@ public sealed unsafe class LlavaVisionEncoder
             }
         }
 
-        // Strip CLS token
+        // Strip CLS token (only if this checkpoint actually has one -- see hasCls above).
         tokenCount = numPatches;
         var patchEmbeddings = new float[numPatches * _embd];
-        Array.Copy(hiddenStates, _embd, patchEmbeddings, 0, numPatches * _embd);
+        Array.Copy(hiddenStates, hasCls ? _embd : 0, patchEmbeddings, 0, numPatches * _embd);
 
         // 2-layer GELU MLP Projector
         var visualTokens = new float[tokenCount * _projDim];
@@ -272,19 +280,20 @@ public sealed unsafe class LlavaVisionEncoder
         return visualTokens;
     }
 
-    private void ExtractPatchesWithCls(float* chw, int width, int height, int patchesX, int patchesY, float[] output)
+    private void ExtractPatchesWithCls(float* chw, int width, int height, int patchesX, int patchesY, bool hasCls, float[] output)
     {
         int patchSize = _m.PatchSize;
         int patchArea = patchSize * patchSize;
         int planeSize = width * height;
+        int patchOffset = hasCls ? 1 : 0; // real clip.cpp: `patch_offset = model.class_embedding ? 1 : 0`
 
-        if (_clsEmbd != null)
+        if (hasCls)
         {
-            for (int d = 0; d < _embd; d++) output[d] = _clsEmbd[d];
-        }
-        if (_posEmbdF32.Length > 0)
-        {
-            for (int d = 0; d < _embd; d++) output[d] += _posEmbdF32[d];
+            for (int d = 0; d < _embd; d++) output[d] = _clsEmbd![d];
+            if (_posEmbdF32.Length > 0)
+            {
+                for (int d = 0; d < _embd; d++) output[d] += _posEmbdF32[d];
+            }
         }
 
         Parallel.For(0, patchesY, py =>
@@ -292,7 +301,7 @@ public sealed unsafe class LlavaVisionEncoder
             for (int px = 0; px < patchesX; px++)
             {
                 int patchIdx = py * patchesX + px;
-                int tokenIdx = patchIdx + 1;
+                int tokenIdx = patchIdx + patchOffset;
                 int outOffset = tokenIdx * _embd;
 
                 if (_patchEmbdWF32.Length > 0)
