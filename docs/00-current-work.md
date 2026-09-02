@@ -181,9 +181,22 @@ that is more elegant but lower-visibility.
    regardless of xverse's own license.
 
 **P3 and later campaigns (not scheduled, revisit only after the above closes):**
-9. **DeepSeek2/MiniCPM3 MLA** — the single biggest architectural lift in the coverage plan
-   (5 genuinely new mechanisms); potentially high popularity if ever tackled, but deliberately
-   deprioritized behind smaller, faster wins.
+9. **DeepSeek2/MiniCPM3 MLA (also covers the DeepSeek-V3/R1 lineage)** — the single biggest
+   architectural lift in the coverage plan (5 genuinely new mechanisms: MLA itself, the
+   compressed-latent KV cache page layout, DeepSeek's own YaRN `mscale` correction variant,
+   leading-dense-block MoE routing, and DeepSeek2OCR's separate branch — see
+   `01-gguf-model-coverage-plan.md` §4 for the line-by-line reference verification against
+   `examples/llama.cpp/llama.cpp/src/models/deepseek2.cpp`). **DeepSeek-V3 and R1 both declare the
+   SAME `deepseek2` GGUF architecture string as V2 — they are not a separate gate entry — so this
+   one item's work item covers all three, not just V2.** Not yet checked this session: whether V3/
+   R1's real structural differences from V2 (multi-token-prediction/MTP head(s), the larger
+   256-expert MoE routing table, and V3's native FP8 weight format vs. V2's BF16) require any
+   additional handling beyond what `deepseek2.cpp` already covers generically, or whether existing
+   GGUF conversions for V3/R1 simply drop the MTP head(s) entirely (common convention for inference
+   -- MTP is a training-time-only auxiliary loss in the original DeepSeek-V3 paper, not needed for
+   plain autoregressive generation) — worth confirming against a real V3/R1 GGUF's tensor inventory
+   before assuming parity with V2. Potentially high popularity if ever tackled (R1 in particular),
+   but deliberately deprioritized behind smaller, faster wins.
 10. **Newer LTX families (LTX-2.3/2.5, etc.)** — a later campaign once the base LTX-Video port is
     real; these newer variants individually out-download even the original LTX-Video model.
 11. **GPT-OSS** — needs multiple substantial new mechanisms (attention sinks, alternating
@@ -286,11 +299,32 @@ that is more elegant but lower-visibility.
     ae.safetensors --clip-l clip_l.safetensors --clip-tokenizer tokenizer.json --t5xxl
     t5xxl_fp8_e4m3fn.safetensors --t5-tokenizer tokenizer_2/tokenizer.json -p "a red apple on a
     wooden table" --steps 4 --seed 42`.
-13. **Stable Audio 3** — **checked 2026-09-02, genuine unwired stub**, same shape LTX-Video was
-    before its plan: `StableAudioDiT`/`AcousticVaeDecoder`/`StableAudioPipeline` exist in
-    `src/OpenTail.Stingray.Diffusion/StableAudio/` but take no `IWeightLoader` and read no real
-    tensors anywhere. No local checkpoint downloaded. Not yet planned/scoped the way LTX-Video was
-    — would need its own architecture-inventory-first planning pass before any implementation.
+13. **Stable Audio 3** — **checked 2026-09-02, genuine unwired stub — same day, text encoder AND
+    DiT both fully ported and golden-verified against the real reference, each passing on the
+    first real run. Only the VAE remains unported.** See [057 — Stable Audio 3 implementation
+    plan](057-stable-audio-3-implementation-plan.md) for full detail. `stabilityai/
+    stable-audio-3-small-music-base` turned out to be ungated and fully self-contained: real DiT
+    weights, real VAE encoder+decoder weights, AND the real T5Gemma text conditioner
+    (weights+tokenizer) all bundled in one download — no HF approval needed, unlike the gated
+    `-small-music`/`-medium` checkpoints. `T5GemmaEncoder.cs` (real Gemma-2-family formulas: RoPE,
+    softcapping, `query_pre_attn_scalar`, Gemma's `(1+weight)` RMSNorm) and `StableAudioDiT.cs`
+    (real partial-rotary RoPE — only 32 of 64 head-dim channels rotated, a real GPT-J-style detail
+    that would have been very easy to get plausibly-wrong; real V-zeroing cross-attention masking,
+    not additive; 6-way sigmoid-gated AdaLN; SwiGLU FFN; 64 learned memory tokens) both pass their
+    golden parity tests (`StableAudioT5GemmaEncoderGoldenParityTests.cs`,
+    `StableAudioDiTGoldenParityTests.cs`) against real HF `transformers`/the real `stable_audio_3`
+    Python package run directly as the oracle (this environment has working `torch`+`transformers`,
+    so no hand-written numpy port was needed the way T5-XXL/GLM-4.6V required). `StableAudioParams`
+    was wrong on every real hyperparameter (`LatentChannels` 64→256, `HiddenSize` 768→1024, `Depth`
+    12→20, `NumHeads` 12→16, `TextContextDim` 4096→768) — fixed. `StableAudioPipeline.cs` rewritten
+    to real conditioning assembly (prompt+seconds_total concatenation, real learned
+    padding-embedding substitution, real `NumberConditioner`) and confirmed running end-to-end
+    (real weights, real Euler steps, valid WAV) — known gaps: no T5Gemma tokenizer wired yet
+    (`StableAudioRequest` takes pre-tokenized ids), and the VAE
+    (`TransformerResamplingBlock`/`DynamicTanh`, architecture inventoried but resampling mechanism
+    not yet decoded) is still the original placeholder stub, so output audio is not real yet. Next
+    real step: decode `TransformerResamplingBlock`'s resampling mechanism from the real source, then
+    port `AcousticVaeDecoder` (and add a matching encoder, currently absent).
 
 ---
 
@@ -797,9 +831,6 @@ work. The three findings that justify its position at the top:
    `Decode(Encode(s)) == s` still holds when the split is wrong, which is why the existing suites
    never caught it. Fixed by `PreTokenizerPatterns`, a ported pre-type → regex-cascade table; all
    parity rows now pass. Digits look like the obvious discriminator but are not — see the plan.
-
-`CLAUDE.md` overstates architecture support — it lists `deepseek2` and OLMoE, neither of which the
-gate admits. Correct it in the same change that resolves the gate.
 
 ## Priority 2 — model families already part-built
 

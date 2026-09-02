@@ -6,20 +6,20 @@ namespace OpenTail.Stingray.Diffusion.StableAudio;
 /// </summary>
 public sealed record StableAudioParams
 {
-    /// <summary>Number of latent channels per acoustic frame (default: 64).</summary>
-    public int LatentChannels { get; init; } = 64;
+    /// <summary>Number of latent channels per acoustic frame (real value from `small-music-base`'s checkpoint: 256).</summary>
+    public int LatentChannels { get; init; } = 256;
 
-    /// <summary>Hidden embedding dimension D for the MMDiT transformer (default: 768 for Small, 1536 for Medium).</summary>
-    public int HiddenSize { get; init; } = 768;
+    /// <summary>Hidden embedding dimension D for the DiT transformer (real value: 1024 for Small).</summary>
+    public int HiddenSize { get; init; } = 1024;
 
-    /// <summary>Number of transformer layers / depth (default: 12 for Small, 24 for Medium).</summary>
-    public int Depth { get; init; } = 12;
+    /// <summary>Number of transformer layers / depth (real value: 20 for Small).</summary>
+    public int Depth { get; init; } = 20;
 
-    /// <summary>Number of attention heads (default: 12, HeadDim = 64).</summary>
-    public int NumHeads { get; init; } = 12;
+    /// <summary>Number of attention heads (real value: 16, HeadDim = 64).</summary>
+    public int NumHeads { get; init; } = 16;
 
-    /// <summary>Text conditioner dimension from T5 (default: 4096).</summary>
-    public int TextContextDim { get; init; } = 4096;
+    /// <summary>Text conditioner dimension from the real T5Gemma encoder (google/t5gemma-b-b-ul2, hidden_size=768 — NOT T5-XXL's 4096).</summary>
+    public int TextContextDim { get; init; } = 768;
 
     /// <summary>Dimension of timestep and continuous timing Fourier feature embeddings (default: 256).</summary>
     public int TimingFeaturesDim { get; init; } = 256;
