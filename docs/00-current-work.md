@@ -483,10 +483,11 @@ so this is unrelated to any GPU-path work done this session):
   `UnifiedVisionPipeline.cs` found along the way (`t.Name == A && t.Name == B` can never be true
   for a single tensor). `MultimodalRealWeightsTests` (11 tests, all real-weight architectures):
   11/11 pass, 0 regressions — `HunyuanVl_RealWeights_LoadsAndEmbedsImage` now produces a
-  non-degenerate, input-differentiating embedding. **Not yet golden-verified** — no
-  `scripts/hunyuanvl_ref.py` numpy reference or parity test written yet (deferred, box was busy
-  with a concurrent SD3.5 test); see `docs/059-hunyuanvl-implementation-plan.md`'s update for the
-  exact remaining step. Do not mark this "done" in the README matrix until that happens.
+  non-degenerate, input-differentiating embedding. **GOLDEN-VERIFIED (2026-09-02, same day):**
+  `scripts/hunyuanvl_ref.py` (numpy reference) + `HunyuanVlVisionEmbedderParityTests.cs`
+  (`Forward_MatchesNumpyReference`) written and passing (min per-token cosine > 0.97) on a
+  deliberately non-native 160×128 test image chosen to actually exercise the bilinear
+  position-embedding resize path. Now safe to mark confirmed-working in the README matrix.
 
 Given the failure SHAPE (all-zero or identical-regardless-of-input) rather than "wrong but
 non-degenerate" output, the likely culprit category is a wiring/plumbing bug (an input never

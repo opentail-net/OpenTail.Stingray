@@ -13,19 +13,19 @@ inference read the same wrong `mm.model_proj.weight` name (now `mm.model.fc.weig
 (`t.Name == "mm.pre_norm.weight" && t.Name == "mm.model_proj.weight"` — a single tensor can never
 equal two different names — fixed to two separate `.Any()` checks with the correct name).
 
-**Verification status: differentiation-level only, NOT golden-verified.** `dotnet build` clean
-(0 warnings/errors); `MultimodalRealWeightsTests` (11 tests, all real-weights vision
-architectures including `HunyuanVl_RealWeights_LoadsAndEmbedsImage`) run clean: 11/11 passed, 0
-regressions in any other architecture. This confirms the embedding is no longer all-zero and
-differentiates between two different input images — but per this plan's own step 5 and this
-session's established bar for other architectures, that is NOT sufficient to declare this
-correct. **Still needed, not done this pass** (box was busy with a concurrent SD3.5 test, so the
-numpy-reference route was deferred rather than rushed): `scripts/hunyuanvl_ref.py` (real numpy
-port of `hunyuanvl.cpp`'s `build()` + the bilinear resize, reading the same local
-`models/mmproj-hunyuanocr-q8_0.gguf`) and a matching `HunyuanVlVisionEmbedderParityTests.cs`
-per-token cosine-similarity test, the same pattern used for GLM-4.6V/Llava/Pixtral/Exaone4/
-Qwen2.5-VL/MimoVl this session. Do not treat this architecture as "done" in the README matrix
-until that golden-verification pass actually happens.
+**Verification status: GOLDEN-VERIFIED (2026-09-02).** `dotnet build` clean (0 warnings/errors);
+`MultimodalRealWeightsTests` (11 tests, all real-weights vision architectures including
+`HunyuanVl_RealWeights_LoadsAndEmbedsImage`) run clean: 11/11 passed, 0 regressions in any other
+architecture. Beyond the differentiation bar, wrote `scripts/hunyuanvl_ref.py` (a real numpy port
+of `hunyuanvl.cpp`'s `build()` + `clip.cpp`'s bilinear position-embedding resize, reading the same
+local `models/mmproj-hunyuanocr-q8_0.gguf`) and `HunyuanVlVisionEmbedderParityTests.cs`
+(`Forward_MatchesNumpyReference`, per-token cosine-similarity check, same pattern as GLM-4.6V/
+Llava/Pixtral/Exaone4/Qwen2.5-VL/MimoVl this session) — **passes** (min per-token cosine > 0.97,
+mean abs diff < 5e-2) on a deliberately non-native 160×128 test image (patchesX=10, patchesY=8,
+chosen specifically so the bilinear position-embedding resize path is actually exercised, not
+skipped — a native 2048×2048 image would coincide exactly with the stored 128×128 grid). Real
+token count confirmed matching the formula: `(outX+1)*outY+2 = (5+1)*4+2 = 26`. This architecture
+can now be marked confirmed-working in the README matrix.
 
 ---
 

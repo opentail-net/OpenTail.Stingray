@@ -15,6 +15,7 @@ internal static class VisionTestPaths
     public const string Qwen25VlMmprojFile = "mmproj-qwen2.5-vl-7b-f16.gguf";
     public const string Exaone4MmprojFile = "mmproj-exaone-4.5-q8_0.gguf";
     public const string MimoVlMmprojFile = "mmproj-mimovl-7b-q8_0.gguf";
+    public const string HunyuanVlMmprojFile = "mmproj-hunyuanocr-q8_0.gguf";
 
     private static string? FindModel(string file)
     {
@@ -44,6 +45,7 @@ internal static class VisionTestPaths
     public static string? FindQwen25VlMmproj() => FindModel(Qwen25VlMmprojFile);
     public static string? FindExaone4Mmproj() => FindModel(Exaone4MmprojFile);
     public static string? FindMimoVlMmproj() => FindModel(MimoVlMmprojFile);
+    public static string? FindHunyuanVlMmproj() => FindModel(HunyuanVlMmprojFile);
 
     /// <summary>Repo-root-relative golden fixtures produced by scripts/gemma4uv_ref.py.</summary>
     public static string? FindFixtureDir() => FindFixtureDir("gemma4uv");
