@@ -480,11 +480,23 @@ full `generate_audio`-shaped end-to-end numeric comparison (the flow-matching Eu
 wasn't diffed step-by-step against a real reference run -- the per-step math it calls, the DiT
 forward, now is verified, which is the load-bearing piece).
 
+**Sample regenerated after the fix**: re-ran the same 8-second real-weight sample (same prompt,
+same seed 1234) with the `condition_embedder` fix applied. Output changed substantially from the
+pre-fix version -- RMS jumped from ~0.11-0.12 to ~0.55-0.67 per 0.5s window (peak now hits the
+int16 clamp at 1.0, i.e. real clipping in the raw un-normalized VAE output), spectral flatness
+0.266 (still far from white-noise's 1.0, still structured/tonal). The much higher amplitude is a
+real, expected consequence of the fix -- before it, cross-attention was reading an un-projected
+(effectively wrong-scale) condition sequence. The clipping itself is a new, separate, real
+observation: `AceStepOobleckDecoder.Decode` returns raw un-normalized PCM (matches the real
+`AutoencoderOobleck.decode`, which also doesn't normalize) -- a real product-facing pipeline likely
+needs a peak-normalize-before-WAV step this port doesn't have yet; flagged as a real open item, not
+fixed speculatively here.
+
 **Not yet done** (before calling V1 truly finished, per this project's own standards): (1) no VAE
 decoder golden-parity check yet (real non-degeneracy only, see Phase F); (2) an ACTUAL human
-listening pass on the generated sample above is still outstanding (only numeric proxies have been
-checked so far) -- note the zero-`src_latents` gap is now the LEADING remaining source of quality
-uncertainty, since the DiT math itself is now numerically confirmed correct.
+listening pass on the (fixed, regenerated) sample is still outstanding (only numeric proxies have
+been checked so far); (3) real output-normalization/clipping handling before WAV export, found
+while regenerating the sample above -- not yet implemented.
 
 ## Immediate next steps (in order)
 

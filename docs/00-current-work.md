@@ -354,9 +354,14 @@ that is more elegant but lower-visibility.
     Fixed. With the fix, `AceStepDiTGoldenParityTests` measures **~7e-6 relative error** against the
     real `diffusers` reference (essentially F32-rounding-level agreement over 24 real layers);
     `AceStepLyricEncoderGoldenParityTests` similarly passes well under 0.1%. `EncodeLyrics` made
-    `public` to support this. All eight real-weight AceStep tests pass together. **Not yet done: VAE
-    decoder golden-parity, and an actual human listening pass.** See `docs/064-acestep-
-    implementation-plan.md`'s "Golden-parity check" section for the full writeup.
+    `public` to support this. All eight real-weight AceStep tests pass together. Regenerated the 8s
+    sample with the fix applied — output changed substantially (RMS ~0.11→~0.6 per window, peak now
+    clips at the int16 max), confirming the fix materially changes behavior as expected; also
+    surfaced a new, real, separate finding: `AceStepOobleckDecoder.Decode` returns raw un-normalized
+    PCM (matches the real decoder, which doesn't normalize either) — a real pipeline likely needs a
+    peak-normalize-before-WAV step this port doesn't have yet. **Not yet done: VAE decoder
+    golden-parity, an actual human listening pass, output normalization before WAV export.** See
+    `docs/064-acestep-implementation-plan.md`'s "Golden-parity check" section for the full writeup.
 12. **Real NaN bug in `Engine.ForwardPass`'s f16 qwen3 path — found 2026-09-03 while testing
     ACE-Step's Qwen3 text encoder, NOT ACE-Step-specific.** A real 13-token sequence (real ACE-Step
     SFT-prompt text, official `Qwen/Qwen3-Embedding-0.6B-GGUF` f16 quant) produces NaN logits at
