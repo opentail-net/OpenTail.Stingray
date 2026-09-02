@@ -777,13 +777,19 @@ The real fix already landed (CPU) is not blocked on finding the GPU one.
 See [01-gguf-model-coverage-plan.md](01-gguf-model-coverage-plan.md) for the audit and the ordered
 work. The three findings that justify its position at the top:
 
-1. **The architecture gate does not run on the CLI inference path.** `ValidateForTextGeneration` is
-   called by `doctor`, `static-plan`, and the server loader — not by `RunCommand`. The CLI will
-   attempt architectures the server refuses. `docs/cpu-performance-baseline.md` contains a measured
-   CPU baseline for OLMoE, an architecture the gate rejects.
-2. **The whole IQ quant family is unimplemented.** `DType` declares eight IQ formats;
-   `Dequantize.ToFloat32` implements one (`IQ4_NL`). Large models on Hugging Face are distributed
-   predominantly as IQ quants, so this excludes more repos than the architecture list does.
+1. ~~**The architecture gate does not run on the CLI inference path.**~~ **STALE — already fixed
+   (dated 2026-08-08 per `RunCommand.cs`'s own inline comment, confirmed 2026-09-02).**
+   `RunCommand.cs`'s GGUF load path now calls `ModelCompatibility.ValidateForTextGeneration(model)`
+   unless `--allow-unverified-arch` is explicitly passed (which prints a loud warning instead of
+   silently proceeding) — matching `doctor`/`static-plan`/the server loader. This item can be
+   removed from the plan; verified by reading `RunCommand.cs:900-919` directly, not assumed.
+2. ~~**The whole IQ quant family is unimplemented.**~~ **STALE — already fixed (confirmed
+   2026-09-02).** All 9 IQ formats (`IQ1_S`, `IQ1_M`, `IQ2_XXS`, `IQ2_XS`, `IQ2_S`, `IQ3_XXS`,
+   `IQ3_S`, `IQ4_NL`, `IQ4_XS`) have real scalar dequantize decoders in `Dequantize.cs` (each with
+   its own doc comment citing the matching `ggml` `dequantize_row_iq*` reference) and are dispatched
+   in `SimdKernels`'s `MatVec` switch (either a dedicated fast path or `MatVecDequantFallback`).
+   Verified by reading both files directly, not assumed. This item can be removed from the plan too
+   — whoever fixed this evidently didn't update `01-gguf-model-coverage-plan.md`/this doc to match.
 3. **DEFECT FOUND AND FIXED (2026-08-08) — Qwen3 tokenized differently from llama.cpp.** Only
    `tekken` had an explicit pre-tokenizer regex; every other byte-BPE model silently got GPT-2's,
    whatever `tokenizer.ggml.pre` declared. Measured on Qwen3-0.6B against `llama-tokenize` b8585,
