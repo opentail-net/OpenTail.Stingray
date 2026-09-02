@@ -857,13 +857,19 @@ public sealed unsafe class GpuForwardPass : IForwardPass
             _wqNorm = new Tensor[L]; _wkNorm = new Tensor[L];
         }
 
-        // Gemma 4: per-layer post-norms (sandwich norm), per-head Q/K norm (gemma4 keeps these in
-        // their own arrays so the per-layer-head_dim HeadNorm dims are unambiguous), and the
-        // per-layer scalar output gain.
+        // Sandwich norm (post-attention / post-ffw RmsNorm, applied BEFORE the residual add):
+        // real on Gemma 2/3 as well as Gemma 4, not gemma4-exclusive. Previously gated on
+        // _isGemma4, so these tensors were never uploaded for Gemma 3 (which sets
+        // HasPostAttnNorm/HasPostFfwNorm but has LayerHeadDim == null, so _isGemma4 is false) —
+        // RunStandardLayers then silently skipped both norms entirely, which is why Gemma 3's
+        // GPU/Vulkan output was still gibberish after fixing the embedding-scale/SWA gaps.
+        if (hp.HasPostAttnNorm) _wPostAttnNorm = new Tensor[L];
+        if (hp.HasPostFfwNorm) _wPostFfwNorm = new Tensor[L];
+        // Gemma 4 only: per-layer scalar output gain and gemma4's own per-head Q/K norm arrays
+        // (kept separate from the generic _wqNorm/_wkNorm above so the per-layer-head_dim
+        // HeadNorm dims stay unambiguous).
         if (_isGemma4)
         {
-            if (hp.HasPostAttnNorm) _wPostAttnNorm = new Tensor[L];
-            if (hp.HasPostFfwNorm) _wPostFfwNorm = new Tensor[L];
             if (hp.HasLayerOutputScale) _layerOutputScale = new float[L];
             if (_hasQkNorm) { _wQNormG4 = new Tensor[L]; _wKNormG4 = new Tensor[L]; }
         }
@@ -917,12 +923,13 @@ public sealed unsafe class GpuForwardPass : IForwardPass
                 _gpuPlePostNorm![i] = UploadWeight($"blk.{i}.post_norm.weight");
             }
 
+            if (_wPostAttnNorm is not null)
+                _wPostAttnNorm[i] = UploadWeight($"blk.{i}.post_attention_norm.weight");
+            if (_wPostFfwNorm is not null)
+                _wPostFfwNorm[i] = UploadWeight($"blk.{i}.post_ffw_norm.weight");
+
             if (_isGemma4)
             {
-                if (_wPostAttnNorm is not null)
-                    _wPostAttnNorm[i] = UploadWeight($"blk.{i}.post_attention_norm.weight");
-                if (_wPostFfwNorm is not null)
-                    _wPostFfwNorm[i] = UploadWeight($"blk.{i}.post_ffw_norm.weight");
                 if (_layerOutputScale is not null)
                     _layerOutputScale[i] = LoadScalarF32($"blk.{i}.layer_output_scale.weight");
             }
@@ -1597,6 +1604,14 @@ public sealed unsafe class GpuForwardPass : IForwardPass
             }
             _gpu.RecordBarrier(); // hidden written → add
 
+            // Sandwich norm (Gemma 2/3, not gemma4-exclusive): post-attention RmsNorm BEFORE the
+            // residual add. Mirrors CPU ForwardPass.Decode.cs exactly.
+            if (_wPostAttnNorm is not null)
+            {
+                _gpu.RmsNorm(_hidden, _hidden, _wPostAttnNorm[layer], _hp.RmsNormEps);
+                _gpu.RecordBarrier();
+            }
+
             _gpu.AddInPlace(_hidden, _residual);
             _gpu.RecordBarrier(); // hidden done → FFN copy reads it
 
@@ -1611,6 +1626,13 @@ public sealed unsafe class GpuForwardPass : IForwardPass
             else
                 GpuDenseFfn(layer);
             _gpu.RecordBarrier(); // hidden written → add
+
+            // Sandwich norm: post-FFN RmsNorm BEFORE the residual add.
+            if (_wPostFfwNorm is not null)
+            {
+                _gpu.RmsNorm(_hidden, _hidden, _wPostFfwNorm[layer], _hp.RmsNormEps);
+                _gpu.RecordBarrier();
+            }
 
             _gpu.AddInPlace(_hidden, _residual);
             _gpu.RecordBarrier(); // hidden done → next layer's compute copy reads it
@@ -2370,6 +2392,17 @@ public sealed unsafe class GpuForwardPass : IForwardPass
 
         for (int layer = 0; layer < _hp.NumLayers; layer++)
         {
+            // Sliding-window attention (Gemma 3, Cohere2, ...) + per-layer RoPE theta: same real
+            // gap as RunStandardLayers had (fixed 2026-09-02) — this batched trunk serves prefill,
+            // which is where SWA/local-theta actually matters most (every prompt goes through it).
+            // NOTE: AttentionBatched/AttentionBatchedFlash/AttentionBatchedBf16/AttentionBatchedQ8_0
+            // have NO window parameter at all (no shader support) — SWA layers are forced onto the
+            // per-token BatchVerifyAppendAttend fallback below (which DOES support window, fixed
+            // alongside this), trading batched-attention throughput for correctness on those layers
+            // rather than silently running full causal attention on an SWA layer.
+            bool isSwa = _hp.IsSwaLayer is { } swaArr && swaArr[layer];
+            float layerRopeTheta = isSwa && _ropeThetaSwa > 0f ? _ropeThetaSwa : _hp.RopeTheta;
+
             // residualK = hiddenK (whole buffer, elementwise).
             _gpu.RecordComputeCopy(_residualK, _hiddenK);
             _gpu.RecordBarrier();
@@ -2428,8 +2461,8 @@ public sealed unsafe class GpuForwardPass : IForwardPass
             {
                 // RoPE: row r uses position startPos+r (per-token absolute position via base_pos
                 // + gl_WorkGroupID.y in the shader) — bit-identical to k RoPE calls.
-                _gpu.RoPEBatched(_qK, startPos, _headDim, _numHeads, k, _hp.RopeTheta, _hp.IsNeoxRope);
-                _gpu.RoPEBatched(_kK, startPos, _headDim, _numKvHeads, k, _hp.RopeTheta, _hp.IsNeoxRope);
+                _gpu.RoPEBatched(_qK, startPos, _headDim, _numHeads, k, layerRopeTheta, _hp.IsNeoxRope);
+                _gpu.RoPEBatched(_kK, startPos, _headDim, _numKvHeads, k, layerRopeTheta, _hp.IsNeoxRope);
                 _gpu.RecordBarrier();
             }
 
@@ -2477,11 +2510,11 @@ public sealed unsafe class GpuForwardPass : IForwardPass
             // entire K/V cache per query. Measured 49.3 → 20.3 t/s prefill at 2898 tokens purely
             // from that fallback. q8_0 still has no flash variant (block-dequant in the tile load),
             // so it keeps the old path.
-            bool flashAttn = allowFlashAttention
+            bool flashAttn = !isSwa && allowFlashAttention
                 && _kvDType is DType.Float32 or DType.BFloat16
                 && VulkanBackend.SupportsFlashAttention((uint)_headDim, k);
-            bool batchedAttn = flashAttn
-                || (startPos + k <= 4096 && _kvDType is DType.Float32 or DType.BFloat16 or DType.Q8_0);
+            bool batchedAttn = !isSwa && (flashAttn
+                || (startPos + k <= 4096 && _kvDType is DType.Float32 or DType.BFloat16 or DType.Q8_0));
             if (batchedAttn)
             {
                 switch (_kvDType)
@@ -2529,7 +2562,7 @@ public sealed unsafe class GpuForwardPass : IForwardPass
                     _gpu.RecordComputeCopyRegion(_v, 0, _vK, (long)i * kvDim * f32, (long)kvDim * f32);
                     _gpu.RecordBarrier();
 
-                    BatchVerifyAppendAttend(layer, position);
+                    BatchVerifyAppendAttend(layer, position, isSwa ? (uint)_hp.SlidingWindowSize : 0u);
 
                     _gpu.RecordComputeCopyRegion(_attnOutK, (long)i * qDim * f32, _attnOut, 0, (long)qDim * f32);
                     _gpu.RecordBarrier();
@@ -2553,6 +2586,15 @@ public sealed unsafe class GpuForwardPass : IForwardPass
                 }
             }
 
+            // Sandwich norm (Gemma 2/3, not gemma4-exclusive): post-attention RmsNorm over all k
+            // rows BEFORE the residual add — same real gap as RunStandardLayers had, fixed
+            // alongside it. Mirrors CPU ForwardPass.Decode.cs exactly.
+            if (_wPostAttnNorm is not null)
+            {
+                _gpu.RmsNormBatched(_hiddenK, _hiddenK, _wPostAttnNorm[layer], embDim, k, _hp.RmsNormEps);
+                _gpu.RecordBarrier();
+            }
+
             // + residual (whole buffer), then residualK = hiddenK for the FFN.
             _gpu.AddInPlace(_hiddenK, _residualK);
             _gpu.RecordBarrier();
@@ -2572,6 +2614,13 @@ public sealed unsafe class GpuForwardPass : IForwardPass
             _gpu.RecordBarrier();
             _gpu.MatMulBatched(_hiddenK, _wDown[layer], _ffnGateK, k, WeightDType(_wDown[layer]), allowInt8);
             _gpu.RecordBarrier();
+
+            // Sandwich norm: post-FFN RmsNorm over all k rows BEFORE the residual add.
+            if (_wPostFfwNorm is not null)
+            {
+                _gpu.RmsNormBatched(_hiddenK, _hiddenK, _wPostFfwNorm[layer], embDim, k, _hp.RmsNormEps);
+                _gpu.RecordBarrier();
+            }
 
             _gpu.AddInPlace(_hiddenK, _residualK);
             _gpu.RecordBarrier();
@@ -2642,7 +2691,7 @@ public sealed unsafe class GpuForwardPass : IForwardPass
     /// q8_0) — identical to the single-query <see cref="Forward"/> non-TQ branches. TurboQuant is
     /// excluded by <see cref="SupportsBatchVerify"/>, so the TQ path is unreachable here.
     /// </summary>
-    private void BatchVerifyAppendAttend(int layer, int position)
+    private void BatchVerifyAppendAttend(int layer, int position, uint window = 0u)
     {
         int kvDim = _numKvHeads * _headDim;
         uint seqLen = (uint)(position + 1);
@@ -2655,11 +2704,11 @@ public sealed unsafe class GpuForwardPass : IForwardPass
             if (_splitKvEnabled && position + 1 > SplitKvMinPosition && _headDim % 32 == 0 && _splitKvPartialO is not null)
                 _gpu.AttentionSplitKvBf16(_q, _gpuKCache[layer], _gpuVCache[layer], _attnOut,
                     _splitKvPartialO, _splitKvPartialMeta!,
-                    (uint)_numHeads, (uint)_numKvHeads, (uint)_headDim, seqLen, (uint)_maxSeqLen, window: 0u);
+                    (uint)_numHeads, (uint)_numKvHeads, (uint)_headDim, seqLen, (uint)_maxSeqLen, window: window);
             else
                 _gpu.AttentionBf16(_q, _gpuKCache[layer], _gpuVCache[layer], _attnOut,
                     _attnScoresScratch,
-                    (uint)_numHeads, (uint)_numKvHeads, (uint)_headDim, seqLen, (uint)_maxSeqLen, window: 0u);
+                    (uint)_numHeads, (uint)_numKvHeads, (uint)_headDim, seqLen, (uint)_maxSeqLen, window: window);
         }
         else if (_kvDType == DType.Q8_0)
         {
@@ -2669,11 +2718,11 @@ public sealed unsafe class GpuForwardPass : IForwardPass
             if (_splitKvEnabled && position + 1 > SplitKvMinPosition && _headDim % 32 == 0 && _splitKvPartialO is not null)
                 _gpu.AttentionSplitKvQ8(_q, _gpuKCache[layer], _gpuVCache[layer], _attnOut,
                     _splitKvPartialO, _splitKvPartialMeta!,
-                    (uint)_numHeads, (uint)_numKvHeads, (uint)_headDim, seqLen, (uint)_maxSeqLen, window: 0u);
+                    (uint)_numHeads, (uint)_numKvHeads, (uint)_headDim, seqLen, (uint)_maxSeqLen, window: window);
             else
                 _gpu.AttentionQ8_0(_q, _gpuKCache[layer], _gpuVCache[layer], _attnOut,
                     _attnScoresScratch,
-                    (uint)_numHeads, (uint)_numKvHeads, (uint)_headDim, seqLen, (uint)_maxSeqLen, window: 0u);
+                    (uint)_numHeads, (uint)_numKvHeads, (uint)_headDim, seqLen, (uint)_maxSeqLen, window: window);
         }
         else
         {
@@ -2683,11 +2732,11 @@ public sealed unsafe class GpuForwardPass : IForwardPass
             if (_splitKvEnabled && position + 1 > SplitKvMinPosition && _headDim % 32 == 0 && _splitKvPartialO is not null)
                 _gpu.AttentionSplitKv(_q, _gpuKCache[layer], _gpuVCache[layer], _attnOut,
                     _splitKvPartialO, _splitKvPartialMeta!,
-                    (uint)_numHeads, (uint)_numKvHeads, (uint)_headDim, seqLen, (uint)_maxSeqLen, window: 0u);
+                    (uint)_numHeads, (uint)_numKvHeads, (uint)_headDim, seqLen, (uint)_maxSeqLen, window: window);
             else
                 _gpu.Attention(_q, _gpuKCache[layer], _gpuVCache[layer], _attnOut,
                     _attnScoresScratch,
-                    (uint)_numHeads, (uint)_numKvHeads, (uint)_headDim, seqLen, (uint)_maxSeqLen, window: 0u);
+                    (uint)_numHeads, (uint)_numKvHeads, (uint)_headDim, seqLen, (uint)_maxSeqLen, window: window);
         }
         _gpu.RecordBarrier();
     }

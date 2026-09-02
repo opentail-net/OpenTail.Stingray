@@ -865,16 +865,59 @@ entirely separate hand-rolled forward-pass implementation (no code sharing with 
   plain single-token generation, the case actually being debugged; real gap for speculative
   decoding on SWA-gated architectures specifically, noted for later).
 
-**After all of the above, GPU/Vulkan generation is measurably different (confirmed via direct
-before/after diff of the exact same command) but STILL produces incoherent gibberish, not correct
-text.** This means there is at least one more, still-unlocated GPU-specific bug beyond the three
-metadata-parsing gaps shared with CPU — the CPU fix alone proves the ROOT metadata/hyperparameter
-gap is now closed correctly (same `ModelGraph.cs` object feeds both backends), so the remaining
-GPU-only defect is somewhere in `GpuForwardPass.cs`'s own shader dispatch/kernel logic (RmsNorm,
-MatMul, QK-norm, or RoPE convention specifics), not a parsing gap. **Time-boxed at ~2 hours per the
-operator's own instruction — stopping here with CPU fully fixed and GPU partially improved but
-still broken, moving to the Wan/FLUX diffusion investigations next rather than continuing to dig.**
-The real fix already landed (CPU) is not blocked on finding the GPU one.
+**After all of the above, GPU/Vulkan generation was measurably different (confirmed via direct
+before/after diff of the exact same command) but STILL produced incoherent gibberish, not correct
+text.** This meant there was at least one more, still-unlocated GPU-specific bug beyond the three
+metadata-parsing gaps shared with CPU. **Time-boxed at ~2 hours per the operator's own
+instruction — paused here 2026-09-02, moved to the Wan/FLUX diffusion investigations, resumed
+2026-09-02 (same day, later) on the operator's own instruction ("Gemma 3 GPU is likely ok to
+tackle next").**
+
+**UPDATE (2026-09-02, later same day): ROOT-CAUSED AND FIXED. GPU/Vulkan Gemma 3 now produces
+correct, coherent text.** The remaining GPU-only defect was real sandwich-norm (post-attention /
+post-FFN RmsNorm, applied BEFORE the residual add) tensor handling — `blk.{i}.post_attention_norm.
+weight` / `blk.{i}.post_ffw_norm.weight` are real, present tensors on this Gemma 3 checkpoint
+(confirmed via `list-tensors`) that CPU's `ForwardPass.Decode.cs` already applies generically
+(`_postAttnNorm`/`_postFfwNorm`, gated only on `hp.HasPostAttnNorm`/`HasPostFfwNorm`), but
+`GpuForwardPass.cs` had the equivalent `_wPostAttnNorm`/`_wPostFfwNorm` fields allocated/uploaded/
+applied ONLY inside the `_isGemma4`-gated code path (`RunGemma4Layers`) — Gemma 3 sets
+`HasPostAttnNorm`/`HasPostFfwNorm` but is not gemma4 (`LayerHeadDim` is null, so `_isGemma4` is
+false), so these real tensors were silently never uploaded and never applied on Gemma 3's actual
+GPU decode path (`RunStandardLayers`), meaning every layer's attention and FFN outputs joined the
+residual stream completely unnormalized. Fixed by:
+1. Un-gating the `_wPostAttnNorm`/`_wPostFfwNorm` allocation/upload from `_isGemma4` to the generic
+   `hp.HasPostAttnNorm`/`HasPostFfwNorm` flags (matching CPU's own gate).
+2. Applying both RmsNorms in `RunStandardLayers` at the same point CPU does (post-attention, before
+   the residual add; post-FFN, before the residual add).
+3. **The prefill/batched trunk (`RecordBatchedTrunk`) had the identical gap** — no sandwich-norm
+   application at all — plus two more real gaps only surfaced by actually reading it end to end:
+   it hardcoded the single global `_hp.RopeTheta` for every `RoPEBatched` call (no per-layer
+   SWA-theta selection), and its fast batched-attention kernels (`AttentionBatched`/
+   `AttentionBatchedFlash`/`AttentionBatchedBf16`/`AttentionBatchedQ8_0`) have **no window
+   parameter in the shader at all** — genuinely no SWA support, not a wiring gap. Since every
+   real prompt (anything longer than one token) goes through this path, it would have kept Gemma 3
+   broken even after fixing `RunStandardLayers` alone. Fixed the sandwich norm (via
+   `RmsNormBatched`, same insertion points) and per-layer RoPE theta directly; for SWA layers,
+   forced the interleaved per-token fallback (`BatchVerifyAppendAttend`, which DOES thread a
+   `window` parameter through the single-token attention shaders) instead of the batched fast path,
+   trading batched-attention throughput on SWA layers for correctness rather than leaving a
+   silent full-causal-attention bug on those layers. Also fixed `BatchVerifyAppendAttend` itself,
+   which still hardcoded `window: 0u` at all 6 of its own call sites (noted as an open gap in the
+   original investigation) — now takes a real `window` parameter threaded from the caller.
+4. **Real shader-level SWA support for the batched fast-attention kernels remains a genuine,
+   deferred gap** — adding a `window` push-constant to `AttentionBatched`/`AttentionBatchedFlash`/
+   etc. needs new SPIR-V (`scripts/gen-spirv.ps1`, Vulkan SDK) and was out of scope for this pass;
+   the fallback-to-per-token-path workaround above is correctness-preserving but not the
+   throughput-optimal fix. Noted for a future perf pass.
+
+**Verified**: `-g -1` (GPU/Vulkan) on `gemma-3-4b-it-Q4_K_M.gguf`, prompt "The capital of France
+is" → `**Paris**.` (correct, matches CPU). A second, longer prompt ("Explain what a for loop is in
+one sentence.") also produced coherent, correct English — confirms both the single-token decode
+path and the (much more commonly exercised) prefill path are fixed, not just the trivial 1-token
+case. `OpenTail.Stingray.Tests.ForwardPass.Fast` re-run clean (661 passed / 8 skipped, no
+regressions). Spot-checked a non-Gemma model (`Qwen3-4B-Q4_K_M.gguf`, no sandwich-norm tensors) on
+GPU to confirm the un-gating change is a true no-op for architectures without these tensors —
+generation still correct.
 
 ---
 
