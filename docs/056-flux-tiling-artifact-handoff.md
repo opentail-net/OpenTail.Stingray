@@ -196,6 +196,62 @@ after it (measured regression, not an improvement). Prior runs are saved at
 showing the new seam artifact) for visual comparison — all gitignored/local-only per this
 project's convention, so they only exist on whichever machine generated them.
 
+## Round 6 (2026-09-02): a real, severe AdaLN-modulation bug found and fixed — artifact character genuinely changed, still not correct
+
+Followed the doc's own priority order: re-checked item 3 (attention QKV wiring) structurally
+first. `UnpackQkv`'s `[q|k|v]` blocked-chunk assumption matches real
+`attn.to_qkv(hidden_states).chunk(3, dim=-1)` exactly (confirmed via the real vendored
+`examples/diffusers/src/diffusers/models/transformers/transformer_flux.py`). `QKNorm`'s per-head
+RMSNorm application and the `UnpackQkv`/`QKNorm` head-addressing convention (`(token*nh+h)*hd`,
+head outer / head_dim inner) also match the standard `view(seq, heads, head_dim)` convention. No
+bug found there. Also re-checked `PackLatent`'s channel-outer patch layout against real FLUX's
+einops pattern `"b c (h ph) (w pw) -> b (h w) (c ph pw)"` — the `(c ph pw)` output order is
+channel-slowest/ph/pw-fastest, exactly matching `PackLatent`'s `for ch { for ky { for kx } }`
+nesting. Confirmed correct (re-affirming the doc's existing "already checked" note, not a new
+finding).
+
+**Real find: `AdaLNMod` applied `SiLU` AFTER the modulation linear layer instead of BEFORE it.**
+Read the real reference class directly (`AdaLayerNormZero`/`AdaLayerNormZeroSingle` in the vendored
+`examples/diffusers/src/diffusers/models/normalization.py`):
+```python
+self.silu = nn.SiLU()
+self.linear = nn.Linear(embedding_dim, 6 * embedding_dim, bias=bias)
+...
+emb = self.linear(self.silu(emb))
+shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = emb.chunk(6, dim=1)
+```
+SiLU gates the SHARED conditioning vector (`vec`/`temb`) BEFORE the linear projects it into the
+six shift/scale/gate chunks. `FluxDiT.cs`'s `AdaLNMod` did `Linear(vec)` THEN `SiluInPlace(mod)`
+— applying a nonlinearity directly to the already-projected shift/scale/gate values, which were
+never meant to pass through one. This is called ~4 times per block (`img_mod`/`txt_mod` in every
+`DoubleBlock`, `modulation` in every `SingleBlock`, plus `FinalLayer`'s own modulation) across all
+19 double + 38 single blocks — a small but pervasive, structurally wrong transformation applied to
+the conditioning signal that drives EVERY residual/gate/norm operation in the entire network.
+(The chunk *order* — `shift,scale,gate` × 2 — was already correct; only the SiLU timing was wrong.)
+
+Fixed: `AdaLNMod` now clones `vec` (it's reused across multiple calls within a block, so must not
+be mutated in place), applies `SiluInPlace` to the clone, then runs the linear projection on the
+gated result — matching `self.linear(self.silu(emb))` exactly.
+
+**Result: re-ran the full repro (256×256, Q2_K, 4 steps, seed 42) after this one fix.** The output's
+*character* is genuinely, visibly different from every prior round — no longer the periodic
+"textile/chevron" tiling pattern with the flat-color/no-prompt-semantic-structure signature that
+persisted through Rounds 3-5 regardless of the RoPE/Euler/token-ordering/VAE/quantization fixes.
+It's now a field of disorganized, colorful confetti-like noise — still visibly wrong (no coherent
+apple, no recognizable prompt-semantic structure), but structurally different in a way that matches
+this project's own established "if fixing X changes the artifact's STRUCTURE (not just its pixel
+values/palette), X was plausibly a real contributing cause" diagnostic (the same logic Round 2 used
+to initially rule OUT RoPE as the sole cause, applied here in the confirming direction instead).
+This is real, positive, measured evidence that the SiLU-timing bug was a genuine, previously-hidden
+contributor to the wrong output -- not a decisive full fix, since the image still isn't correct.
+
+**Time-boxed at ~2h per the operator's own instruction — stopping here.** The real next step is
+still item 4 from the priority list above (a numeric golden-parity pass against real diffusers,
+block by block) — now more promising than before, since the AdaLN fix demonstrably moved the
+output character, suggesting the pipeline may be closer to correct than Rounds 3-5 assumed and the
+remaining gap could be one or two more bugs of similar scope rather than something fundamental.
+Checkpoints deleted after this pass per project convention, as always.
+
 ## House rules for whoever picks this up (from this project's `CLAUDE.md`)
 
 - **No subagents** — do all work directly in the main session for this project.

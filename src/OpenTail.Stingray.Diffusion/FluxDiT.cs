@@ -374,9 +374,18 @@ public sealed class FluxDiT : IDisposable
 
     private float[] AdaLNMod(string linPath, float[] vec, int d, int nOut)
     {
-        var mod = DiffusionOps.Linear(vec, W($"{linPath}.weight"), W($"{linPath}.bias"), 1, d, nOut * d);
-        DiffusionOps.SiluInPlace(mod);
-        return mod;
+        // Real FLUX (AdaLayerNormZero/AdaLayerNormZeroSingle.forward,
+        // diffusers/models/normalization.py): `emb = self.linear(self.silu(emb))` -- SiLU gates
+        // the shared conditioning vector BEFORE the modulation linear projects it into the
+        // shift/scale/gate chunks. This previously applied SiLU AFTER the linear instead, directly
+        // squashing the projected shift/scale/gate values through a nonlinearity they were never
+        // meant to pass through -- wrong on every one of the ~4 modulation calls per block, across
+        // all 19 double + 38 single blocks. `vec` is reused across multiple AdaLNMod calls (e.g.
+        // DoubleBlock's img_mod and txt_mod both read the same vec), so SiLU must run on a COPY,
+        // not in place.
+        var gated = (float[])vec.Clone();
+        DiffusionOps.SiluInPlace(gated);
+        return DiffusionOps.Linear(gated, W($"{linPath}.weight"), W($"{linPath}.bias"), 1, d, nOut * d);
     }
 
     private static unsafe void ScaleGateAdd(float[] x, float[] update, float[] mod,
