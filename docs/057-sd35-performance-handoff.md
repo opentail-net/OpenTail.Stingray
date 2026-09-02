@@ -95,11 +95,17 @@ comparison** (same methodology as `docs/055-ltx-video-implementation-plan.md`/
 `docs/056-flux-tiling-artifact-handoff.md`) — not more performance work. Suspect areas to check
 first, in order of how recently they were touched without being numerically verified against the
 real diffusers `SD35AdaLayerNormZeroX`/`JointTransformerBlock` source: the dual-attention gate
-ordering (does `gate_msa2` really apply to `attn2`'s output and not `attn`'s?), the QK-RMSNorm
-per-head axis (row-major vs. column-major head split), and the timestep/pooled-embedding
-computation feeding the AdaLN conditioning vector — none of the 5 "fixed" bugs in this doc were
+ordering (does `gate_msa2` really apply to `attn2`'s output and not `attn`'s?) and the QK-RMSNorm
+per-head axis (row-major vs. column-major head split) — none of the 5 "fixed" bugs in this doc were
 ever golden-verified against a numpy reference, only structurally reasoned from source and
 crash-driven (bounds-check messages), unlike this project's usual golden-verification bar for
+
+**UPDATE (2026-09-02): timestep/pooled-embedding stage golden-verified, RULED OUT.**
+`scripts/sd3_timestep_embed_ref.py` + `Sd3TimestepEmbedParityTests.cs` (numpy reference of
+`CombinedTimestepTextProjEmbeddings`, real `sd3.5_medium-Q8_0.gguf` weights) — **PASS**, cosine
+> 0.999. The single AdaLN conditioning vector every joint block reads is correct, so the bug is
+NOT there; it narrows to the per-block math (dual-attention gate ordering / QK-RMSNorm axis /
+joint attention itself), which is the next thing to golden-verify, in that priority order.
 other architectures this session.
 
 ## Where to look first for further performance work (suggested priority order, not mandatory)
