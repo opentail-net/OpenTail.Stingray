@@ -256,9 +256,23 @@ question the first draft of this doc flagged:
    before any code was written against it.
 4. Scaffold the five core classes (`AceStepConfig`, `AceStepGenerationParams`, `AceStepModel`,
    `AceStepPipeline`, weight-loader stubs) with real constants — **DONE, this session's deliverable**.
-5. Check whether the existing `ForwardPass`/GGUF `"qwen3"` engine path can be reused as the text
-   encoder (per the "real potential shortcut" note above) before writing a new one from scratch —
-   the highest-leverage open question for the next session.
+5. ~~Check whether the existing `ForwardPass`/GGUF `"qwen3"` engine path can be reused as the text
+   encoder~~ **Investigated, same session, real nuanced answer** (not a clean yes): `ForwardPass`
+   already has exactly the right extraction primitive for this
+   (`EnableHiddenTaps(layerIds)`/`HiddenTapsAt(position)`, an existing per-token/per-layer hidden-
+   state tap, plus a `LastHidden` property) — if a Qwen3-Embedding-0.6B checkpoint can be loaded
+   into a `ForwardPass`, getting `text_hidden_states` out is basically free. BUT the SafeTensors
+   text-model loading lane (`Core/SafetensorsTextModelPackage.cs`) that would load this checkpoint
+   WITHOUT a GGUF conversion currently gates `model_type` to `llama`/`mistral` only
+   (`SafetensorsTextModelPackage.Open` throws `NotSupportedException` for anything else) — `qwen3`
+   is admitted for the separate GGUF-loading path (`ModelCompatibility.cs`), not this one. So the
+   real options are: (a) convert `Qwen3-Embedding-0.6B` to GGUF first (existing tooling, likely the
+   less risky path), or (b) extend `SafetensorsTextModelPackage`'s supported `model_type` set to
+   include `qwen3` and verify the downstream tensor-name-mapping/QK-norm wiring actually handles it
+   correctly — a real, scoped, but genuinely separate piece of engine work from ACE-Step itself,
+   deliberately NOT attempted in this session (would need its own verification pass, out of scope
+   for "port ACE-Step's text encoder"). Recommend (a) for the next session unless a GGUF conversion
+   turns out to be unexpectedly awkward for this specific checkpoint.
 6. Build outward from there per the golden-test ladder in the original plan (config → tokenizer →
    Qwen3 → condition encoder → one DiT block → full DiT → one scheduler step → full 8-step latent →
    VAE → end-to-end), each with a real golden/non-degeneracy check before moving on, matching how
