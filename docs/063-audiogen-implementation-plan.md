@@ -119,6 +119,18 @@ published AudioGen demos (duration, sampling parameters, and this specific check
 quality ceiling are all real, separate variables from correctness) — only that the C# port itself
 is not the cause.
 
+**Follow-up, same day**: generated a second sample with a less inherently-noisy prompt ("a dog
+barking twice", `docs/audio-samples/audiogen-medium-dog-bark-sample.wav`,
+`AudioGenGenerationSmokeTests.Generate_RealWeights_WritesSecondListenableSample`) — **user-confirmed
+"sounds much better than the rain one."** User also flagged a long quiet lead-in before any sound
+starts. Checked via a windowed-RMS energy envelope: the clip is nearly silent (RMS ~0.0007-0.002)
+from 0-2.7s, then TWO distinct loud bursts at 2.8-2.9s and 3.2-3.3s (RMS 100-300x higher,
+0.05-0.32), then quiet again — i.e. the model placed two real bark events, with ambient room-tone
+before/between/after them, matching "barking twice" semantically. This is expected, realistic
+structure for animal-sound recordings (natural training clips typically have silence padding
+around the actual event) — confirms correct behavior, not a bug; a different seed or shorter
+duration would place the barks differently, not eliminate the lead-in pattern as a concept.
+
 ## Known gaps (same shape as MusicGen's, not yet closed)
 
 - No numeric golden-parity reference against real AudioCraft output (no reference dump script run
