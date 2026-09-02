@@ -917,7 +917,7 @@ ownership Phase 0 deliverable 1 (both inventories) is now **DONE, 2026-08-15**:
   that needs a per-variable owner call, not a drive-by deletion, so it wasn't done as part of the
   classification pass itself.
 
-## SD3/3.5 run for the first time ever (2026-09-02): two real blocking bugs found and fixed, one more (native crash) found and NOT yet fixed
+## SD3/3.5 run for the first time ever (2026-09-02): five real blocking bugs found and fixed; correctness now blocked on CPU performance, not a known bug
 
 `Sd3Pipeline`/`MMDiTModel` were real, non-stubbed ports that had literally never been run against
 a real checkpoint (per the README's own prior honest status). Picked this up as a natural
@@ -956,22 +956,54 @@ re-export) preserves the real StabilityAI `joint_blocks`/`x_embedder`/`context_e
   `ApplyHeadRmsNorm` (per-head RMSNorm, no bias, no-ops gracefully if a checkpoint variant lacks
   the tensor) applied to Q and K right after the qkv split, on both the image and text streams.
 
-**Result: the pipeline now loads and progresses much further into real denoising than ever before,
-but crashes with a native `AccessViolationException` inside `DiffusionOps.Linear`'s vectorized dot
-product, deeper in the block loop** (not on the very first op, as the two fixes above were) — a
-real, further, NOT-yet-root-caused bug, most likely a buffer-size/dimension mismatch somewhere
-downstream of the attention block (MLP, adaLN modulation width, or a later block's own tensor
-shape not matching the hardcoded `HiddenSize=1536`/`NumHeads=24`/`Depth=24`/`ContextSize=4096`
-defaults — not yet checked against this specific checkpoint's real shapes one by one). Time-boxed;
-stopping here with real, verified progress (2 genuine blocking bugs fixed, checkpoint now loads and
-runs partway) rather than continuing to guess at the crash site. `OpenTail.Stingray.Tests.Diffusion`
-re-run clean (94/94), no regressions from either fix. Checkpoints deleted after this pass per
-project convention (`city96`'s GGUF + the HF diffusers text-encoder/VAE files, ~10GB total).
+With those two fixed, the pipeline crashed with a native `AccessViolationException` inside
+`DiffusionOps.Linear`'s vectorized dot product, deeper in the block loop. Added a real bounds
+check to `MMDiTModel.Lin` (throws a precise `InvalidOperationException` naming the call site and
+the exact expected-vs-actual buffer sizes, instead of corrupting memory silently) and re-ran to
+get an exact diagnosis instead of guessing from the stack trace — this pinpointed three MORE real,
+distinct bugs, all confirmed against the real vendored `examples/diffusers` source before fixing:
 
-**Next step for whoever picks this up**: dump the exact array lengths at the `DiffusionOps.Linear`
-call site that crashes (which `Lin(...)` call, its `n`/`inDim`/`outDim` vs. the actual loaded
-weight buffer's real element count) to localize the dimension mismatch precisely, rather than
-guessing from the stack trace alone.
+- **Missing SiLU before every AdaLN modulation linear.** Real `AdaLayerNormZero`/
+  `AdaLayerNormZeroX`/`AdaLayerNormContinuous.forward`: `emb = self.linear(self.silu(emb))` — the
+  shared conditioning vector (`tVec`) must be SiLU-gated before EVERY modulation `Linear` call.
+  `MMDiTModel` applied no SiLU at all at any of the three call sites (`x_block`/`context_block` per
+  block, plus `final_layer`) — confirmed by the real `.1` tensor-name suffix itself
+  (`nn.Sequential(SiLU(), Linear())`, index 0 = the parameter-free SiLU, index 1 = the real
+  `Linear` whose weights are what's actually in the checkpoint). Fixed with a `SiluGate` helper
+  (clones `tVec` before gating, since it's reused across every block and the final layer).
+- **SD3.5-medium's real "dual-attention" (MMDiT-X) extension was entirely unimplemented.** This
+  is what the crash above was actually reporting: `joint_blocks.N.x_block.adaLN_modulation.1`'s
+  real weight buffer is `9*HiddenSize*HiddenSize`, not the assumed `6*HiddenSize*HiddenSize`, for
+  the first 13 of this checkpoint's 24 blocks (confirmed via `list-tensors`: those blocks each
+  declare a full second attention module, `x_block.attn2.{qkv,proj,ln_q,ln_k}`, identically shaped
+  to `attn`). Real `JointTransformerBlock(use_dual_attention=True)` runs a SECOND, image-only
+  self-attention pass (`attn2`, own separate weights, no text tokens involved) gated by an extra
+  `gate_msa2` and added as a second residual on the image stream, between the joint-attention
+  residual and the MLP; the extra modulation chunks (`shift_msa2`/`scale_msa2`/`gate_msa2`, indices
+  6/7/8) come from `SD35AdaLayerNormZeroX`'s 9-chunk output. Implemented: per-block detection via
+  real tensor presence (`attn2.qkv.weight`, not a hardcoded layer-index list), the second
+  self-attention pass, and its gated residual.
+- **Missing `context_pre_only` handling for the last block.** Real: only the FINAL block
+  (`b == Depth-1`) sets `context_pre_only=True` — its `context_block` uses a plain
+  `AdaLayerNormContinuous` (shift+scale only, no gate — 2 chunks, not 6), the joint attention still
+  runs normally (image tokens still attend to the normed text tokens), but the text stream's
+  attention output is then discarded entirely (`encoder_hidden_states = None`) — no gate/residual,
+  no MLP, since nothing reads the text stream's value after the last block. Implemented: detect
+  `contextPreOnly = b == Depth-1`, size `txtMod` to 2 chunks for that block, and skip the
+  gate/residual/MLP steps for `c` when it's true (they'd otherwise read out-of-bounds chunks that
+  don't exist in a 2-chunk buffer — exactly the crash the bounds check above would have caught).
+
+**Result: five real bugs found and fixed (fused-QKV, missing QK-norm, missing SiLU-before-
+modulation, missing dual-attention, missing context_pre_only), zero crashes through the full
+24-block trunk. Numeric correctness itself is NOT yet confirmed — CPU denoising at 512×512 is too
+slow to iterate practically** (a 15-step run didn't finish inside a 15-minute wait; a 4-step run
+was still in flight when this pass was time-boxed and stopped). This is now a genuine **performance**
+blocker on verifying correctness, not a known remaining bug — everything checkable via structural
+reference comparison has been checked and fixed. `OpenTail.Stingray.Tests.Diffusion` re-run clean
+(96/96), no regressions from any of the five fixes. Checkpoints deleted after this pass per project
+convention. See `docs/057-sd35-performance-handoff.md` for a self-contained handoff prompt for
+whoever picks up the performance work next (dual-attention roughly doubles compute on the first 13
+of 24 blocks, on top of the base MMDiT cost already being CPU-bound at this size).
 
 ## Priority 4 — performance
 

@@ -55,6 +55,15 @@ public sealed class MMDiTModel : IDisposable
 
     private float[]? TryGetWeight(string name) => _weightReader.TryGet(name);
 
+    /// <summary>Returns a SiLU-gated COPY of a conditioning vector reused across multiple
+    /// adaLN_modulation Linear calls (real: `self.linear(self.silu(emb))`).</summary>
+    private static float[] SiluGate(float[] vec)
+    {
+        var gated = (float[])vec.Clone();
+        DiffusionOps.SiluInPlace(gated);
+        return gated;
+    }
+
     /// <summary>Splits a fused [n, 3*dim] qkv projection into three contiguous [n, dim] blocks.</summary>
     private static (float[] q, float[] k, float[] v) SplitQkv(float[] qkv, int n, int dim)
     {
@@ -104,6 +113,24 @@ public sealed class MMDiTModel : IDisposable
     {
         var wF = GetWeight($"{name}.weight");
         var bF = TryGetWeight($"{name}.bias");
+
+        // Real checkpoint has never been run against this port before this pass -- a wrong
+        // n/inDim/outDim here previously corrupted memory silently (DiffusionOps.Linear indexes
+        // raw pointers with no bounds check) instead of failing loudly. Catch the mismatch here
+        // with the exact call site and buffer sizes instead of an opaque AccessViolationException
+        // deep in a vectorized dot product.
+        if (wF.Length != (long)outDim * inDim)
+            throw new InvalidOperationException(
+                $"MMDiTModel.Lin(\"{name}\"): weight buffer has {wF.Length} elements, expected " +
+                $"outDim*inDim = {outDim}*{inDim} = {(long)outDim * inDim}. n={n}, x.Length={x.Length} " +
+                $"(expected n*inDim={(long)n * inDim}).");
+        if (x.Length < (long)n * inDim)
+            throw new InvalidOperationException(
+                $"MMDiTModel.Lin(\"{name}\"): input buffer has {x.Length} elements, expected at least " +
+                $"n*inDim = {n}*{inDim} = {(long)n * inDim}.");
+        if (bF is not null && bF.Length != outDim)
+            throw new InvalidOperationException(
+                $"MMDiTModel.Lin(\"{name}\"): bias buffer has {bF.Length} elements, expected outDim={outDim}.");
 
         if (_backend is null)
         {
@@ -212,10 +239,38 @@ public sealed class MMDiTModel : IDisposable
         {
             string blk = $"joint_blocks.{b}";
 
-            // Modulations: 6 parameters for image, 6 parameters for text
-            // [6 * HiddenSize]
-            var imgMod = Lin($"{blk}.x_block.adaLN_modulation.1", tVec, 1, HiddenSize, 6 * HiddenSize);
-            var txtMod = Lin($"{blk}.context_block.adaLN_modulation.1", tVec, 1, HiddenSize, 6 * HiddenSize);
+            // SD3.5-medium's first 13 of 24 blocks are "dual-attention" (real diffusers:
+            // JointTransformerBlock(use_dual_attention=True) / SD35AdaLayerNormZeroX) -- an EXTRA
+            // image-only self-attention pass alongside the normal joint attention. Detected via
+            // real tensor presence (this block's own attn2.qkv.weight), not a hardcoded layer-index
+            // list, matching this project's established convention. When present, x_block's
+            // modulation is 9*HiddenSize (shift/scale/gate for msa, mlp, AND msa2) instead of 6;
+            // confirmed via the real crash this pass surfaced (x_block.adaLN_modulation.1's real
+            // weight buffer was 9*HiddenSize*HiddenSize, not the assumed 6*HiddenSize*HiddenSize).
+            bool dualAttn = TryGetWeight($"{blk}.x_block.attn2.qkv.weight") is not null;
+            int imgModChunks = dualAttn ? 9 : 6;
+
+            // Real: the LAST block has context_pre_only=True (confirmed by this pass's own crash:
+            // the real last block's context_block.adaLN_modulation.1 weight buffer is 2*HiddenSize
+            // wide, not 6x) -- its context_block uses a plain AdaLayerNormContinuous (shift+scale
+            // only, no gate) instead of AdaLayerNormZero, joint attention still runs normally using
+            // that normed context (image tokens still attend to text), but the text stream's
+            // attention output is then DISCARDED entirely (real: `encoder_hidden_states = None`) --
+            // no gate/residual, no MLP, since nothing reads the text stream's value after the last
+            // block anyway.
+            bool contextPreOnly = b == Depth - 1;
+            int txtModChunks = contextPreOnly ? 2 : 6;
+
+            // Modulations. Real AdaLayerNormZero/AdaLayerNormZeroX/AdaLayerNormContinuous:
+            // `emb = self.linear(self.silu(emb))` -- SiLU gates tVec BEFORE the modulation linear,
+            // matching the real ".1" tensor-name suffix (nn.Sequential(SiLU(), Linear()), index 0
+            // = the parameter-free SiLU, index 1 = the real Linear whose weights are what's
+            // actually in the checkpoint). This was previously MISSING entirely (not just
+            // misordered, unlike FLUX's equivalent bug fixed earlier this session) at all three
+            // call sites (img/txt per-block modulation + the final layer's). tVec is reused across
+            // every block and the final layer, so SiLU must run on a copy each time.
+            var imgMod = Lin($"{blk}.x_block.adaLN_modulation.1", SiluGate(tVec), 1, HiddenSize, imgModChunks * HiddenSize);
+            var txtMod = Lin($"{blk}.context_block.adaLN_modulation.1", SiluGate(tVec), 1, HiddenSize, txtModChunks * HiddenSize);
 
             // ── Self/Joint Attention ────────────────────────────────────────
             var xNorm1 = ModulateNorm(x, imgMod, 0, numImgTokens, HiddenSize);
@@ -251,30 +306,59 @@ public sealed class MMDiTModel : IDisposable
             var cAttn = jointAttn.AsSpan(numImgTokens * HiddenSize, numTextTokens * HiddenSize).ToArray();
 
             var xProj = Lin($"{blk}.x_block.attn.proj", xAttn, numImgTokens, HiddenSize, HiddenSize);
-            var cProj = Lin($"{blk}.context_block.attn.proj", cAttn, numTextTokens, HiddenSize, HiddenSize);
-
             ApplyGateAndResidual(x, xProj, imgMod, 2, numImgTokens, HiddenSize);
-            ApplyGateAndResidual(c, cProj, txtMod, 2, numTextTokens, HiddenSize);
+
+            // context_pre_only (last block): text stream's attention output is computed as part
+            // of the joint attention (image tokens still attend to it) but then DISCARDED --
+            // real: no gate/residual/proj is applied on the text side, no MLP, `encoder_hidden_
+            // states = None` at the end of this block. txtMod only has 2 chunks (shift,scale) here
+            // -- reading a gate chunk[2] would be out of bounds.
+            if (!contextPreOnly)
+            {
+                var cProj = Lin($"{blk}.context_block.attn.proj", cAttn, numTextTokens, HiddenSize, HiddenSize);
+                ApplyGateAndResidual(c, cProj, txtMod, 2, numTextTokens, HiddenSize);
+            }
+
+            // ── Second, image-only self-attention (dual-attention blocks only) ──────────────
+            // Real: `attn_output2 = self.attn2(hidden_states=norm_hidden_states2, ...)`, gated by
+            // gate_msa2 and added as a SECOND residual on the image stream, AFTER the joint
+            // attention's residual and BEFORE the MLP -- real attn2 has its own separate
+            // qkv/proj/ln_q/ln_k weights and never sees the text tokens at all (image-only,
+            // ordinary non-joint self-attention).
+            if (dualAttn)
+            {
+                var xNorm1b = ModulateNorm(x, imgMod, 6, numImgTokens, HiddenSize);
+                var (x2Q, x2K, x2V) = SplitQkv(Lin($"{blk}.x_block.attn2.qkv", xNorm1b, numImgTokens, HiddenSize, 3 * HiddenSize), numImgTokens, HiddenSize);
+                ApplyHeadRmsNorm(x2Q, $"{blk}.x_block.attn2.ln_q", numImgTokens, NumHeads, HeadDim);
+                ApplyHeadRmsNorm(x2K, $"{blk}.x_block.attn2.ln_k", numImgTokens, NumHeads, HeadDim);
+                var x2Attn = JointMultiHeadAttention(x2Q, x2K, x2V, numImgTokens, HiddenSize, NumHeads, HeadDim);
+                var x2Proj = Lin($"{blk}.x_block.attn2.proj", x2Attn, numImgTokens, HiddenSize, HiddenSize);
+                ApplyGateAndResidual(x, x2Proj, imgMod, 8, numImgTokens, HiddenSize);
+            }
 
             // ── FeedForward (MLP) ───────────────────────────────────────────
             var xNorm2 = ModulateNorm(x, imgMod, 3, numImgTokens, HiddenSize);
-            var cNorm2 = ModulateNorm(c, txtMod, 3, numTextTokens, HiddenSize);
 
             int mlpHidden = HiddenSize * 4;
             var xMlp1 = Lin($"{blk}.x_block.mlp.fc1", xNorm2, numImgTokens, HiddenSize, mlpHidden);
             DiffusionOps.GeluInPlace(xMlp1);
             var xMlp2 = Lin($"{blk}.x_block.mlp.fc2", xMlp1, numImgTokens, mlpHidden, HiddenSize);
-
-            var cMlp1 = Lin($"{blk}.context_block.mlp.fc1", cNorm2, numTextTokens, HiddenSize, mlpHidden);
-            DiffusionOps.GeluInPlace(cMlp1);
-            var cMlp2 = Lin($"{blk}.context_block.mlp.fc2", cMlp1, numTextTokens, mlpHidden, HiddenSize);
-
             ApplyGateAndResidual(x, xMlp2, imgMod, 5, numImgTokens, HiddenSize);
-            ApplyGateAndResidual(c, cMlp2, txtMod, 5, numTextTokens, HiddenSize);
+
+            // Real: context_pre_only blocks apply no MLP to the text stream at all (it's discarded
+            // right after attention above); txtMod has no chunk 3/4/5 to read here either.
+            if (!contextPreOnly)
+            {
+                var cNorm2 = ModulateNorm(c, txtMod, 3, numTextTokens, HiddenSize);
+                var cMlp1 = Lin($"{blk}.context_block.mlp.fc1", cNorm2, numTextTokens, HiddenSize, mlpHidden);
+                DiffusionOps.GeluInPlace(cMlp1);
+                var cMlp2 = Lin($"{blk}.context_block.mlp.fc2", cMlp1, numTextTokens, mlpHidden, HiddenSize);
+                ApplyGateAndResidual(c, cMlp2, txtMod, 5, numTextTokens, HiddenSize);
+            }
         }
 
         // 5. Final Layer: modulation + linear projection back to patch channels
-        var finalMod = Lin("final_layer.adaLN_modulation.1", tVec, 1, HiddenSize, 2 * HiddenSize);
+        var finalMod = Lin("final_layer.adaLN_modulation.1", SiluGate(tVec), 1, HiddenSize, 2 * HiddenSize);
         var finalNorm = ModulateNorm(x, finalMod, 0, numImgTokens, HiddenSize);
 
         int outPatchDim = OutChannels * p * p;
