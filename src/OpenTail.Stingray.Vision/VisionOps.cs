@@ -402,6 +402,85 @@ public static unsafe class VisionOps
     }
 
     /// <summary>
+    /// Windowed/local variant of <see cref="AttentionGqa"/>: identical scaled dot-product GQA
+    /// softmax attention, except a query token at index i may only attend to a key token at index
+    /// j when <c>windowId[i] == windowId[j]</c> (all other scores are masked to -infinity before
+    /// softmax). Matches the real llama.cpp reference's window_mask semantics
+    /// (tools/mtmd/clip.cpp's PROJECTOR_TYPE_QWEN25VL/EXAONE4_5 case): the real C++ builds a
+    /// full [n_tok,n_tok] additive mask and reorders tokens into window-contiguous blocks purely
+    /// as an implementation/perf detail for a dense matmul-based attention kernel; computing
+    /// window membership directly from each token's real spatial window id (as done here) is
+    /// mathematically identical and needs no token reordering, matching this project's own
+    /// GLM-4.6V finding that a real spatial-index-based approach is a legitimate substitute for
+    /// reindex-based real reference code as long as membership is derived from real coordinates.
+    /// </summary>
+    public static void AttentionGqaWindowed(
+        float[] q,
+        float[] k,
+        float[] v,
+        int nTokens,
+        int qHeads,
+        int kvHeads,
+        int headDim,
+        float[] output,
+        int[] windowId)
+    {
+        float scale = 1.0f / MathF.Sqrt(headDim);
+        int groupSize = qHeads / kvHeads;
+        int qEmbd = qHeads * headDim;
+        int kvEmbd = kvHeads * headDim;
+
+        Parallel.For(0, qHeads, qh =>
+        {
+            int kvHead = qh / groupSize;
+            int qOffHead = qh * headDim;
+            int kvOffHead = kvHead * headDim;
+
+            var scores = new float[nTokens];
+
+            for (int i = 0; i < nTokens; i++)
+            {
+                int wi = windowId[i];
+                int qOff = i * qEmbd + qOffHead;
+                var qi = new ReadOnlySpan<float>(q, qOff, headDim);
+
+                float maxScore = float.NegativeInfinity;
+                for (int j = 0; j < nTokens; j++)
+                {
+                    if (windowId[j] != wi) { scores[j] = float.NegativeInfinity; continue; }
+                    int kOff = j * kvEmbd + kvOffHead;
+                    var kj = new ReadOnlySpan<float>(k, kOff, headDim);
+                    float s = TensorPrimitives.Dot(qi, kj) * scale;
+                    scores[j] = s;
+                    if (s > maxScore) maxScore = s;
+                }
+
+                float expSum = 0f;
+                for (int j = 0; j < nTokens; j++)
+                {
+                    float exp = scores[j] == float.NegativeInfinity ? 0f : MathF.Exp(scores[j] - maxScore);
+                    scores[j] = exp;
+                    expSum += exp;
+                }
+                float invSum = expSum > 0f ? 1.0f / expSum : 0f;
+                var scoresSpan = new Span<float>(scores);
+                TensorPrimitives.Multiply(scoresSpan, invSum, scoresSpan);
+
+                int outOff = i * qEmbd + qOffHead;
+                var outSpan = new Span<float>(output, outOff, headDim);
+                outSpan.Clear();
+                for (int j = 0; j < nTokens; j++)
+                {
+                    if (scores[j] == 0f) continue;
+                    int vOff = j * kvEmbd + kvOffHead;
+                    var vj = new ReadOnlySpan<float>(v, vOff, headDim);
+                    TensorPrimitives.MultiplyAdd(vj, scores[j], outSpan, outSpan);
+                }
+            }
+        });
+    }
+
+    /// <summary>
     /// Applies Gaussian Error Linear Unit (GELU) with Tanh approximation: 0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3))).
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -616,8 +695,17 @@ public static unsafe class VisionOps
     }
 
     /// <summary>
-    /// Multimodal Rotary Position Embedding (M-RoPE, Qwen/MiMo/Exaone style).
-    /// Rotates quarter sub-bands with X (width) and Y (height) coordinates.
+    /// Multimodal Rotary Position Embedding (M-RoPE, Qwen/MiMo/Exaone style) -- shared by
+    /// Exaone4VisionEncoder and MimoVlVisionEncoder (Qwen2VL/GLM4V's own encoders each keep a
+    /// private near-identical copy of this same fix; see Glm4VisionEncoder.ApplyMrope's doc
+    /// comment for the full derivation from ggml_mrope_cache_init + GGML_ROPE_TYPE_VISION's
+    /// rotate_pairs in ggml-cpu/ops.cpp).
+    ///
+    /// The real reference (ggml_rope_multi, sections all = headDim/4, n_dims=headDim/2) only ever
+    /// selects 2 of its 4 declared position channels in practice: pairs span the index ic in
+    /// [0,headDim/2) with its +headDim/2 partner (covering the FULL head_dim, not two disjoint
+    /// local quarter-pairs as this method previously implemented) -- first quarter of that range
+    /// rotates by row/Y, second quarter by column/X.
     /// </summary>
     public static void ApplyMRoPE(
         float[] q,
@@ -629,7 +717,8 @@ public static unsafe class VisionOps
         int headDim,
         float theta = 10000.0f)
     {
-        int mropeHalf = headDim / 4;
+        int half = headDim / 2;
+        int quarter = headDim / 4;
 
         Parallel.For(0, patchesY, py =>
         {
@@ -640,68 +729,36 @@ public static unsafe class VisionOps
                 for (int h = 0; h < qHeads; h++)
                 {
                     int headOff = (p * qHeads + h) * headDim;
-
-                    // Rotate X coordinate on first section
-                    for (int d = 0; d < mropeHalf; d++)
+                    for (int ic = 0; ic < half; ic++)
                     {
-                        float freqX = MathF.Pow(theta, -2.0f * d / headDim);
-                        float thetaX = px * freqX;
-                        float cosX = MathF.Cos(thetaX);
-                        float sinX = MathF.Sin(thetaX);
+                        float pos = ic < quarter ? py : px;
+                        float freq = MathF.Pow(theta, -4.0f * ic / headDim);
+                        float th = pos * freq;
+                        float cosT = MathF.Cos(th);
+                        float sinT = MathF.Sin(th);
 
-                        float q0 = q[headOff + d];
-                        float q1 = q[headOff + d + mropeHalf];
-                        q[headOff + d] = q0 * cosX - q1 * sinX;
-                        q[headOff + d + mropeHalf] = q0 * sinX + q1 * cosX;
-                    }
-
-                    // Rotate Y coordinate on second section
-                    int ySecOff = headOff + 2 * mropeHalf;
-                    for (int d = 0; d < mropeHalf; d++)
-                    {
-                        float freqY = MathF.Pow(theta, -2.0f * d / headDim);
-                        float thetaY = py * freqY;
-                        float cosY = MathF.Cos(thetaY);
-                        float sinY = MathF.Sin(thetaY);
-
-                        float q0 = q[ySecOff + d];
-                        float q1 = q[ySecOff + d + mropeHalf];
-                        q[ySecOff + d] = q0 * cosY - q1 * sinY;
-                        q[ySecOff + d + mropeHalf] = q0 * sinY + q1 * cosY;
+                        float q0 = q[headOff + ic];
+                        float q1 = q[headOff + ic + half];
+                        q[headOff + ic] = q0 * cosT - q1 * sinT;
+                        q[headOff + ic + half] = q0 * sinT + q1 * cosT;
                     }
                 }
 
                 for (int h = 0; h < kvHeads; h++)
                 {
                     int headOff = (p * kvHeads + h) * headDim;
-
-                    // Rotate X coordinate on first section
-                    for (int d = 0; d < mropeHalf; d++)
+                    for (int ic = 0; ic < half; ic++)
                     {
-                        float freqX = MathF.Pow(theta, -2.0f * d / headDim);
-                        float thetaX = px * freqX;
-                        float cosX = MathF.Cos(thetaX);
-                        float sinX = MathF.Sin(thetaX);
+                        float pos = ic < quarter ? py : px;
+                        float freq = MathF.Pow(theta, -4.0f * ic / headDim);
+                        float th = pos * freq;
+                        float cosT = MathF.Cos(th);
+                        float sinT = MathF.Sin(th);
 
-                        float k0 = k[headOff + d];
-                        float k1 = k[headOff + d + mropeHalf];
-                        k[headOff + d] = k0 * cosX - k1 * sinX;
-                        k[headOff + d + mropeHalf] = k0 * sinX + k1 * cosX;
-                    }
-
-                    // Rotate Y coordinate on second section
-                    int ySecOff = headOff + 2 * mropeHalf;
-                    for (int d = 0; d < mropeHalf; d++)
-                    {
-                        float freqY = MathF.Pow(theta, -2.0f * d / headDim);
-                        float thetaY = py * freqY;
-                        float cosY = MathF.Cos(thetaY);
-                        float sinY = MathF.Sin(thetaY);
-
-                        float k0 = k[ySecOff + d];
-                        float k1 = k[ySecOff + d + mropeHalf];
-                        k[ySecOff + d] = k0 * cosY - k1 * sinY;
-                        k[ySecOff + d + mropeHalf] = k0 * sinY + k1 * cosY;
+                        float k0 = k[headOff + ic];
+                        float k1 = k[headOff + ic + half];
+                        k[headOff + ic] = k0 * cosT - k1 * sinT;
+                        k[headOff + ic + half] = k0 * sinT + k1 * cosT;
                     }
                 }
             }

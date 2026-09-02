@@ -528,6 +528,89 @@ attention), not a memory-layout artifact.
 
 ---
 
+## Windowed-attention gap closed: Exaone4, MiMoVl, Qwen2.5-VL all golden-verified (2026-09-02)
+
+Implemented real windowed/local attention for the three architectures whose gap was described
+above, closing it entirely rather than leaving it deferred. Real mechanism (`tools/mtmd/clip.cpp`'s
+shared `PROJECTOR_TYPE_QWEN25VL`/`EXAONE4_5`/`YOUTUVL` case, `tools/mtmd/models/qwen2vl.cpp` +
+`exaone4_5.cpp`): layer `il` gets FULL attention only when `(il+1) % n_wa_pattern == 0`; every
+other layer only attends within its own `gridWindow x gridWindow` merge-tile spatial window
+(`gridWindow = attn_window_size / patch_size / merge_ratio`, real default `attn_window_size=112`
+if unset). The real reference computes this via token reordering into contiguous blocks + a dense
+mask; implemented it instead by deriving each token's window id directly from its real spatial
+(row,col) merge-tile position and masking cross-window scores to `-infinity` before softmax
+(`VisionOps.AttentionGqaWindowed`, new) — mathematically identical, no reordering needed, same
+technique validated by GLM-4.6V's patch-merger finding above.
+
+Added windowing to `Exaone4VisionEncoder.cs`, `QwenVlVisionEncoder.cs`, and
+`MimoVlVisionEncoder.cs`, each gated on real `clip.vision.n_wa_pattern`/`clip.vision.window_size`
+metadata (now read into `WindowAttnPattern`/`WindowSize` on all three model classes).
+
+**Along the way, found and fixed the same "M-RoPE only rotates half of head_dim, using the wrong
+axis" bug a third and fourth time** (first found and fixed for GLM-4.6V, see above) — it turned out
+to also be present in `QwenVlVisionEncoder.ApplyMrope` (its own private copy) AND in the shared
+`VisionOps.ApplyMRoPE` helper that `Exaone4VisionEncoder`/`MimoVlVisionEncoder` both call. Same
+real derivation applies in all four places (traced from `ggml_mrope_cache_init` +
+`GGML_ROPE_TYPE_VISION`'s `rotate_pairs` in `ggml-cpu/ops.cpp`): only 2 of the 4 declared position
+channels are ever actually selected, covering the FULL `head_dim` via each index's
+`+head_dim/2` partner (first quarter of `[0,head_dim/2)` by row, second quarter by column) — not
+two disjoint local quarter-pairs using only column position, as all four previously implemented.
+
+**Additional real bugs found while building golden tests for each architecture** (same
+"golden-test-elevation surfaces real bugs the differentiation test can't catch" pattern as
+Llava/Pixtral/GLM-4.6V above):
+- `QwenVlVisionEncoder`: the second dual-conv patch embedding (`v.patch_embd.weight.1`, confirmed
+  present via `list-tensors`) was fetched into an unused field and never summed into the patch
+  embedding output — same class of bug as GLM-4.6V's own dual-patch-embed miss.
+- `MimoVlVisionEncoder`: real local checkpoints under this class's name only ever store SEPARATE
+  `attn_q/k/v` tensors, never a fused `attn_qkv` — but the encoder only ever looked for the fused
+  name, so `MatVec`'s "no-op on missing weight" contract silently left Q/K/V at zero for every
+  layer the whole time. Added a separate-Q/K/V fallback path (mirrors the one
+  `QwenVlVisionEncoder` already had for the reverse case).
+- `MimoVlVisionModel`: `head_count_kv` defaulted to a hardcoded `8` (a GQA assumption) when the
+  metadata key was absent — but both real local checkpoints under this class's name have NO such
+  key at all (confirmed via `list-metadata`) and are plain MHA (`head_count_kv` should equal
+  `head_count`, i.e. 16). The wrong default caused K/V projections to read only the first 8
+  heads' worth of a weight matrix sized for the full 16, producing garbage K/V. Fixed the default
+  to `headCount`.
+- `MimoVlVisionEncoder`: post-attention-stack normalization used plain `LayerNorm` (mean-centered)
+  instead of `RMSNorm` — a real mismatch against the actual graph these checkpoints run (real
+  `qwen2vl.cpp`/`exaone4_5.cpp` use `NORM_TYPE_RMS` uniformly throughout, no mixing).
+- `Exaone4VisionEncoder`/`MimoVlVisionEncoder`: both called the shared `VisionOps.ApplyMRoPE` with
+  `patchesX`/`patchesY` swapped at the call site (the helper's real parameter order is
+  `(q,k,patchesX,patchesY,...)`). Harmless on the square test images used here (row/col symmetric),
+  but wrong for real non-square images. Fixed both call sites while already in this code.
+
+Also worth noting: **no local checkpoint for Qwen2.5-VL existed on disk before this pass** —
+the earlier README/docs claim that it "passes differentiation" had nothing real behind it locally
+(the differentiation test silently returns early when its checkpoint is missing, which looks
+identical to "passing" in a bare test-runner summary). Downloaded a real one
+(`unsloth/Qwen2.5-VL-7B-Instruct-GGUF`, `mmproj-F16.gguf`, ~1.3GB, confirmed via `list-metadata`:
+`n_wa_pattern=8`, `projector_type=qwen2.5vl_merger`) and kept it in `models/` alongside the other
+real-weight-suite checkpoints (not a scratch/debug download).
+
+**`MimoVl` real-scope note**: `MimoVlVisionEncoder.cs`'s own doc comment describes the more
+elaborate real MIMOVL projector (row/col-banded sliding-window attention sinks, transposed
+merge-unit reordering — see `tools/mtmd/models/mimovl.cpp`), but BOTH real local checkpoints under
+this class's name are actually `clip.projector_type=qwen2.5vl_merger` (confirmed via
+`list-metadata`) — functionally identical to Qwen2.5-VL's own graph, just with plain MHA. This
+pass's golden test (`scripts/mimovl_ref.py`) and the windowing/bug fixes above target the graph
+these real local checkpoints actually need; the genuine row/col-sink MIMOVL graph remains
+unimplemented and untested, since no local checkpoint exercises it.
+
+Added `scripts/exaone4_ref.py`, `scripts/qwen25vl_ref.py`, `scripts/mimovl_ref.py` (real numpy
+ports, same methodology as `glm4v_ref.py`) and matching parity tests
+(`Exaone4VisionEmbedderParityTests.cs`, `Qwen25VlVisionEmbedderParityTests.cs`,
+`MimoVlVisionEmbedderParityTests.cs`). All three pass (cosine > 0.97, meanAbs < 5e-2). Full
+differentiation suite re-run clean after every round of fixes, no regressions.
+
+**All 6 of the "confirmed-working" architectures from the original differentiation-suite pass are
+now golden-verified**: Gemma4UV, Llava, Pixtral, GLM-4.6V, Exaone4, Qwen2.5-VL, MimoVl (the scoped
+graph). Every one of them had at least one real, severe bug (not just cosmetic) that the
+differentiation test's "not obviously broken" bar had been passing regardless.
+
+---
+
 ## Second new finding — Gemma 3's own text generation is broken on BOTH CPU and Vulkan, unrelated to vision (2026-09-02)
 
 While trying to verify another session's real, unrelated GPU-decode-path change (widening

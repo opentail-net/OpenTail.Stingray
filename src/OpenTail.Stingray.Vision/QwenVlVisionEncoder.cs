@@ -18,7 +18,7 @@ public sealed unsafe class QwenVlVisionEncoder
     private readonly float _eps;
 
     private readonly float[] _patchEmbd0WF32;
-    private readonly VisionTensorRef _patchEmbd1W;
+    private readonly float[] _patchEmbd1WF32;
     private readonly float[]? _patchBias;
     private readonly float[] _positionEmbdF32;
     private readonly float[]? _postLnW;
@@ -73,7 +73,12 @@ public sealed unsafe class QwenVlVisionEncoder
         // Ingest Stem & Global Tensors
         _patchEmbd0WF32 = VisionOps.DequantizeToFloat32(
             VisionOps.GetTensor(gguf, "v.patch_embd.weight", "v.patch_embd.0.weight"));
-        _patchEmbd1W = VisionOps.GetTensor(gguf, "v.patch_embd.weight.1", "v.patch_embd.1.weight");
+        // Real Qwen2.5-VL sums TWO conv2d patch embeddings (temporal Conv3D split into two
+        // Conv2Ds, same convention GLM4V/Exaone4/MimoVl all share) -- this second one was fetched
+        // into an unused VisionTensorRef and never applied. Confirmed present in this checkpoint
+        // via list-tensors (v.patch_embd.weight.1).
+        _patchEmbd1WF32 = VisionOps.DequantizeToFloat32(
+            VisionOps.GetTensor(gguf, "v.patch_embd.weight.1", "v.patch_embd.1.weight"));
         _patchBias = VisionOps.GetTensorArray(gguf, "v.patch_bias");
         _positionEmbdF32 = VisionOps.DequantizeToFloat32(VisionOps.GetTensor(gguf, "v.position_embd.weight", "v.position_embd"));
         _postLnW = VisionOps.GetTensorArray(gguf, "v.post_ln.weight");
@@ -136,6 +141,30 @@ public sealed unsafe class QwenVlVisionEncoder
         var hiddenStates = new float[numPatches * _embd];
         ExtractPatchEmbeddings(chw, targetWidth, targetHeight, patchesX, patchesY, hiddenStates);
 
+        // Windowed/local attention (real qwen2vl.cpp, shared with exaone4_5.cpp): layer il gets
+        // FULL attention only when (il+1) % waPattern == 0; every other layer only attends within
+        // a spatial window of gridWindow x gridWindow MERGE-TILES. See Exaone4VisionEncoder's
+        // matching comment / VisionOps.AttentionGqaWindowed's doc comment for the real-reference
+        // derivation and why deriving window membership from real (row,col) needs no reordering.
+        bool useWindowAttn = _m.WindowAttnPattern > 0;
+        int[]? windowId = null;
+        if (useWindowAttn)
+        {
+            int gridWindow = Math.Max(1, _m.WindowSize / patchSize / mergeFactor);
+            int mergeCols = Math.Max(1, patchesX / mergeFactor);
+            int windowCols = (mergeCols + gridWindow - 1) / gridWindow;
+            windowId = new int[numPatches];
+            for (int py = 0; py < patchesY; py++)
+            {
+                int windowRow = (py / mergeFactor) / gridWindow;
+                for (int px = 0; px < patchesX; px++)
+                {
+                    int windowCol = (px / mergeFactor) / gridWindow;
+                    windowId[py * patchesX + px] = windowRow * windowCols + windowCol;
+                }
+            }
+        }
+
         // 2. ViT Transformer Blocks
         var qBuf = new float[numPatches * _embd];
         var kBuf = new float[numPatches * _embd];
@@ -185,8 +214,12 @@ public sealed unsafe class QwenVlVisionEncoder
                 // Multimodal 2D RoPE (M-RoPE)
                 ApplyMrope(qBuf, kBuf, patchesX, patchesY);
 
-                // Self-Attention & Out-Projection
-                ComputeSelfAttention(qBuf, kBuf, vBuf, patchesX, patchesY, normed);
+                // Self-Attention & Out-Projection -- windowed except every waPattern-th layer
+                bool fullAttn = !useWindowAttn || (l + 1) % _m.WindowAttnPattern == 0;
+                if (fullAttn)
+                    VisionOps.Attention(qBuf, kBuf, vBuf, numPatches, _heads, _headDim, normed);
+                else
+                    VisionOps.AttentionGqaWindowed(qBuf, kBuf, vBuf, numPatches, _heads, _heads, _headDim, normed, windowId!);
                 VisionOps.MatVecAny(normed, blk.AttnOutW, attnOutB, numPatches, _embd, _embd, attnOut);
 
                 // Residual 1
@@ -259,6 +292,8 @@ public sealed unsafe class QwenVlVisionEncoder
                                     float pixel = chw[c * totalPixels + (y * width + x)];
                                     int weightIdx = wOffset + c * patchArea + (dy * patchSize + dx);
                                     sum += pixel * _patchEmbd0WF32[weightIdx];
+                                    if (_patchEmbd1WF32.Length > 0)
+                                        sum += pixel * _patchEmbd1WF32[weightIdx];
                                 }
                             }
                         }
@@ -317,9 +352,20 @@ public sealed unsafe class QwenVlVisionEncoder
         }
     }
 
+    /// <summary>
+    /// Real Qwen2VL-family 4-section M-RoPE (ggml_rope_multi, GGML_ROPE_TYPE_VISION, sections all
+    /// = headDim/4, n_dims=headDim/2) -- identical mechanism to GLM4V's (see
+    /// Glm4VisionEncoder.ApplyMrope's doc comment for the full derivation from
+    /// ggml_mrope_cache_init + rotate_pairs in ggml-cpu/ops.cpp): only 2 of the 4 declared
+    /// position channels are ever actually selected, covering the FULL head_dim in two halves
+    /// (first quarter of [0,head_dim/2) by row/py, second quarter by column/px, each paired with
+    /// its +head_dim/2 partner). The previous version here only rotated the first HALF of
+    /// head_dim and used px for every pair (py was never read).
+    /// </summary>
     private void ApplyMrope(float[] q, float[] k, int patchesX, int patchesY)
     {
-        int mropeHalf = _headDim / 4;
+        int half = _headDim / 2;
+        int quarter = _headDim / 4;
         for (int py = 0; py < patchesY; py++)
         {
             for (int px = 0; px < patchesX; px++)
@@ -328,46 +374,24 @@ public sealed unsafe class QwenVlVisionEncoder
                 for (int h = 0; h < _heads; h++)
                 {
                     int headOff = (p * _heads + h) * _headDim;
-                    for (int d = 0; d < mropeHalf; d++)
+                    for (int ic = 0; ic < half; ic++)
                     {
-                        float freqX = MathF.Pow(10000.0f, -2.0f * d / _headDim);
-                        float thetaX = px * freqX;
-                        float cosX = MathF.Cos(thetaX);
-                        float sinX = MathF.Sin(thetaX);
+                        float pos = ic < quarter ? py : px;
+                        float freq = MathF.Pow(10000.0f, -4.0f * ic / _headDim);
+                        float theta = pos * freq;
+                        float cosT = MathF.Cos(theta);
+                        float sinT = MathF.Sin(theta);
 
-                        float q0 = q[headOff + d];
-                        float q1 = q[headOff + d + mropeHalf];
-                        q[headOff + d] = q0 * cosX - q1 * sinX;
-                        q[headOff + d + mropeHalf] = q0 * sinX + q1 * cosX;
+                        float q0 = q[headOff + ic];
+                        float q1 = q[headOff + ic + half];
+                        q[headOff + ic] = q0 * cosT - q1 * sinT;
+                        q[headOff + ic + half] = q0 * sinT + q1 * cosT;
 
-                        float k0 = k[headOff + d];
-                        float k1 = k[headOff + d + mropeHalf];
-                        k[headOff + d] = k0 * cosX - k1 * sinX;
-                        k[headOff + d + mropeHalf] = k0 * sinX + k1 * cosX;
+                        float k0 = k[headOff + ic];
+                        float k1 = k[headOff + ic + half];
+                        k[headOff + ic] = k0 * cosT - k1 * sinT;
+                        k[headOff + ic + half] = k0 * sinT + k1 * cosT;
                     }
-                }
-            }
-        }
-    }
-
-    // FOUND, NOT FIXED (out of scope for this migration -- same finding as KimiVisionEncoder.cs and
-    // MiniCpmVisionEncoder.cs): this never reads q or k, never scores, never softmaxes -- copies
-    // scaled v straight through. Real, pre-existing, unrelated to this pass's dtype migration.
-    private void ComputeSelfAttention(float[] q, float[] k, float[] v, int patchesX, int patchesY, float[] output)
-    {
-        int nPatches = patchesX * patchesY;
-        float scale = 1.0f / MathF.Sqrt(_headDim);
-
-        for (int h = 0; h < _heads; h++)
-        {
-            for (int i = 0; i < nPatches; i++)
-            {
-                int qOff = (i * _heads + h) * _headDim;
-                int outOff = (i * _heads + h) * _headDim;
-
-                for (int d = 0; d < _headDim; d++)
-                {
-                    output[outOff + d] = v[qOff + d] * scale;
                 }
             }
         }

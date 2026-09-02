@@ -114,6 +114,32 @@ public sealed unsafe class Exaone4VisionEncoder
         var x = new float[nP * _embd];
         DualPatchEmbed(chw, imgWidth, imgHeight, ps, patchesX, patchesY, x);
 
+        // Windowed/local attention (real exaone4_5.cpp): layer il gets FULL attention only when
+        // (il+1) % waPattern == 0; every other layer only attends within a spatial window of
+        // gridWindow x gridWindow MERGE-TILES (not raw patches -- windowing is computed over the
+        // post-merge grid, so every patch inside one 2x2 merge-tile always shares a window id).
+        // Window membership is derived directly from each token's real (row,col), which is
+        // mathematically equivalent to the real C++'s reorder-into-contiguous-blocks-then-mask
+        // approach (same reasoning as GLM-4.6V's patch-merger finding) and needs no reordering.
+        bool useWindowAttn = _m.WindowAttnPattern > 0;
+        int[]? windowId = null;
+        if (useWindowAttn)
+        {
+            int mergeRatio = _m.MergeRatio;
+            int gridWindow = Math.Max(1, _m.WindowSize / ps / mergeRatio);
+            int mergeCols = Math.Max(1, patchesX / mergeRatio);
+            windowId = new int[nP];
+            for (int py = 0; py < patchesY; py++)
+            {
+                int windowRow = (py / mergeRatio) / gridWindow;
+                for (int px = 0; px < patchesX; px++)
+                {
+                    int windowCol = (px / mergeRatio) / gridWindow;
+                    windowId[py * patchesX + px] = windowRow * ((mergeCols + gridWindow - 1) / gridWindow) + windowCol;
+                }
+            }
+        }
+
         var normed   = new float[nP * _embd];
         var qkvBuf   = new float[nP * (_heads + 2 * _kvHeads) * _headDim];
         var qBuf     = new float[nP * _heads * _headDim];
@@ -145,10 +171,17 @@ public sealed unsafe class Exaone4VisionEncoder
                 SplitQkv(qkvBuf, nP, _heads, _kvHeads, _headDim, qBuf, kBuf, vBuf);
 
                 // 2D M-RoPE
-                VisionOps.ApplyMRoPE(qBuf, kBuf, patchesY, patchesX, _heads, _kvHeads, _headDim, theta: 10000.0f);
+                // ApplyMRoPE's real parameter order is (q,k,patchesX,patchesY,...) -- this call
+                // had them swapped (harmless only on square test images; wrong on real non-square
+                // ones, where row/col position would be transposed).
+                VisionOps.ApplyMRoPE(qBuf, kBuf, patchesX, patchesY, _heads, _kvHeads, _headDim, theta: 10000.0f);
 
-                // GQA Attention
-                VisionOps.AttentionGqa(qBuf, kBuf, vBuf, nP, _heads, _kvHeads, _headDim, attnOut);
+                // GQA Attention -- windowed on every layer except every waPattern-th (full)
+                bool fullAttn = !useWindowAttn || (l + 1) % _waPattern == 0;
+                if (fullAttn)
+                    VisionOps.AttentionGqa(qBuf, kBuf, vBuf, nP, _heads, _kvHeads, _headDim, attnOut);
+                else
+                    VisionOps.AttentionGqaWindowed(qBuf, kBuf, vBuf, nP, _heads, _kvHeads, _headDim, attnOut, windowId!);
 
                 // Project attention out & residual
                 VisionOps.MatVec(attnOut, b.OW, ob, nP, _heads * _headDim, _embd, tmp);

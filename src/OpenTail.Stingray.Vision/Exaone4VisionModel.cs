@@ -21,8 +21,15 @@ public sealed class Exaone4VisionModel : IDisposable
     public int KvHeadCount { get; }
     public int HeadDim { get; }
     public float RopeTheta { get; }
-    /// <summary>Window attention repeating pattern size (0 = no window attn).</summary>
+    /// <summary>Window attention repeating pattern size (0 = no window attn). Real semantics
+    /// (exaone4_5.cpp): layer il gets FULL attention only when (il+1) % WindowAttnPattern == 0;
+    /// every other layer is windowed/local.</summary>
     public int WindowAttnPattern { get; }
+    /// <summary>Window size in pixels (clip.vision.window_size, real default 112 if unset).
+    /// Grid window (in merge-tiles per side) = WindowSize / PatchSize / MergeRatio.</summary>
+    public int WindowSize { get; }
+    /// <summary>Spatial merge ratio (clip.vision.spatial_merge_size, real default 2).</summary>
+    public int MergeRatio { get; }
     public float Eps { get; }
 
     private bool _disposed;
@@ -32,14 +39,15 @@ public sealed class Exaone4VisionModel : IDisposable
         int patchSize, int imageSize,
         int embeddingDim, int projectionDim,
         int layerCount, int headCount, int kvHeadCount, int headDim,
-        float ropeTheta, int windowAttnPattern, float eps)
+        float ropeTheta, int windowAttnPattern, int windowSize, int mergeRatio, float eps)
     {
         Gguf = gguf; ProjectorType = projectorType;
         PatchSize = patchSize; ImageSize = imageSize;
         EmbeddingDim = embeddingDim; ProjectionDim = projectionDim;
         LayerCount = layerCount; HeadCount = headCount;
         KvHeadCount = kvHeadCount; HeadDim = headDim;
-        RopeTheta = ropeTheta; WindowAttnPattern = windowAttnPattern; Eps = eps;
+        RopeTheta = ropeTheta; WindowAttnPattern = windowAttnPattern;
+        WindowSize = windowSize; MergeRatio = mergeRatio; Eps = eps;
     }
 
     public static Exaone4VisionModel Open(string path) => FromGguf(GgufModel.Open(path));
@@ -61,6 +69,9 @@ public sealed class Exaone4VisionModel : IDisposable
         int headDim       = headCount > 0 ? embeddingDim / headCount : 40;
         float ropeTheta   = GetFloat(gguf, "clip.vision.rope.freq_base", 10000.0f);
         int waPattern     = GetInt(gguf, "clip.vision.n_wa_pattern", 0);
+        int windowSize    = GetInt(gguf, "clip.vision.window_size", 112);
+        int mergeRatio    = GetInt(gguf, "clip.vision.spatial_merge_size", 2);
+        if (mergeRatio <= 0) mergeRatio = 2;
         float eps         = GetFloat(gguf, "clip.vision.attention.layer_norm_epsilon", 1e-6f);
 
         if (projectionDim <= 0)
@@ -71,7 +82,7 @@ public sealed class Exaone4VisionModel : IDisposable
 
         return new Exaone4VisionModel(
             gguf, projType, patchSize, imageSize, embeddingDim, projectionDim,
-            layerCount, headCount, kvHeadCount, headDim, ropeTheta, waPattern, eps);
+            layerCount, headCount, kvHeadCount, headDim, ropeTheta, waPattern, windowSize, mergeRatio, eps);
     }
 
     private static int GetInt(GgufModel gguf, string key, int def)

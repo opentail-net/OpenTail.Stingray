@@ -34,6 +34,11 @@ public sealed unsafe class MimoVlVisionEncoder
     {
         public float[]? QkvW;
         public float[]? QkvB;
+        // Real local checkpoints under this class's name have SEPARATE attn_q/k/v tensors, not a
+        // fused attn_qkv -- QkvW/QkvB above were always null for them (no such tensor exists),
+        // silently no-op'ing the QKV projection (MatVec's "no-op on missing weight" contract)
+        // and leaving every layer's attention running on all-zero Q/K/V the whole time.
+        public float[]? QW, QB, KW, KB, VW, VB;
         public float[]? OW;
         public float[]? OB;
         public float[]? Ln1W, Ln1B, Ln2W, Ln2B;
@@ -79,6 +84,12 @@ public sealed unsafe class MimoVlVisionEncoder
             {
                 QkvW     = VisionOps.LoadTensorF32(gguf,  $"v.blk.{l}.attn_qkv.weight"),
                 QkvB     = VisionOps.GetTensorArray(gguf, $"v.blk.{l}.attn_qkv.bias"),
+                QW       = VisionOps.LoadTensorF32(gguf,  $"v.blk.{l}.attn_q.weight"),
+                QB       = VisionOps.GetTensorArray(gguf, $"v.blk.{l}.attn_q.bias"),
+                KW       = VisionOps.LoadTensorF32(gguf,  $"v.blk.{l}.attn_k.weight"),
+                KB       = VisionOps.GetTensorArray(gguf, $"v.blk.{l}.attn_k.bias"),
+                VW       = VisionOps.LoadTensorF32(gguf,  $"v.blk.{l}.attn_v.weight"),
+                VB       = VisionOps.GetTensorArray(gguf, $"v.blk.{l}.attn_v.bias"),
                 OW       = VisionOps.LoadTensorF32(gguf,  $"v.blk.{l}.attn_out.weight"),
                 OB       = VisionOps.GetTensorArray(gguf, $"v.blk.{l}.attn_out.bias"),
                 Ln1W     = VisionOps.GetTensorArray(gguf, $"v.blk.{l}.ln1.weight"),
@@ -112,6 +123,29 @@ public sealed unsafe class MimoVlVisionEncoder
         var x = new float[nPatches * _embd];
         ExtractDualPatchEmbeddings(chw, imgWidth, imgHeight, patchesX, patchesY, patchSize, x);
 
+        // Windowed/local attention -- same simple n_wa_pattern spatial-window mechanism as
+        // Exaone4/QwenVl (see those encoders' matching comments): this class's real local
+        // checkpoints are qwen2.5vl_merger-projector-typed, not the more elaborate real MIMOVL
+        // row/col-banded-sink graph, so that's the mechanism that actually applies here.
+        bool useWindowAttn = _m.WindowAttnPattern > 0;
+        int[]? windowId = null;
+        if (useWindowAttn)
+        {
+            int gridWindow = Math.Max(1, _m.WindowSize / patchSize / _nMerge);
+            int mergeCols = Math.Max(1, patchesX / _nMerge);
+            int windowCols = (mergeCols + gridWindow - 1) / gridWindow;
+            windowId = new int[nPatches];
+            for (int py = 0; py < patchesY; py++)
+            {
+                int windowRow = (py / _nMerge) / gridWindow;
+                for (int px = 0; px < patchesX; px++)
+                {
+                    int windowCol = (px / _nMerge) / gridWindow;
+                    windowId[py * patchesX + px] = windowRow * windowCols + windowCol;
+                }
+            }
+        }
+
         var normed = new float[nPatches * _embd];
         int qkvOutDim = (_heads + 2 * _kvHeads) * _headDim;
         var qkvBuf = new float[nPatches * qkvOutDim];
@@ -135,22 +169,40 @@ public sealed unsafe class MimoVlVisionEncoder
         {
             var b = _blocks[l];
 
-            fixed (float* ln1W = b.Ln1W, qkvB = b.QkvB, ob = b.OB, ln2W = b.Ln2W, ffnUpB = b.FfnUpB,
-                   ffnGateB = b.FfnGateB, ffnDownB = b.FfnDownB, attnSinks = b.AttnSinks)
+            fixed (float* ln1W = b.Ln1W, qkvB = b.QkvB, qb = b.QB, kb = b.KB, vb = b.VB, ob = b.OB,
+                   ln2W = b.Ln2W, ffnUpB = b.FfnUpB, ffnGateB = b.FfnGateB, ffnDownB = b.FfnDownB,
+                   attnSinks = b.AttnSinks)
             {
                 // Pre-Attn Norm (RMSNorm)
                 Array.Copy(x, normed, x.Length);
                 VisionOps.RmsNorm(normed, nPatches, _embd, ln1W, _eps);
 
-                // Compute QKV
-                VisionOps.MatVec(normed, b.QkvW, qkvB, nPatches, _embd, qkvOutDim, qkvBuf);
-                SplitQkv(qkvBuf, nPatches, _heads, _kvHeads, _headDim, qBuf, kBuf, vBuf);
+                // Compute QKV -- fused if present, else separate Q/K/V (real local checkpoints)
+                if (b.QkvW != null)
+                {
+                    VisionOps.MatVec(normed, b.QkvW, qkvB, nPatches, _embd, qkvOutDim, qkvBuf);
+                    SplitQkv(qkvBuf, nPatches, _heads, _kvHeads, _headDim, qBuf, kBuf, vBuf);
+                }
+                else
+                {
+                    VisionOps.MatVec(normed, b.QW, qb, nPatches, _embd, _heads * _headDim, qBuf);
+                    VisionOps.MatVec(normed, b.KW, kb, nPatches, _embd, _kvHeads * _headDim, kBuf);
+                    VisionOps.MatVec(normed, b.VW, vb, nPatches, _embd, _kvHeads * _headDim, vBuf);
+                }
 
                 // 2D M-RoPE
-                VisionOps.ApplyMRoPE(qBuf, kBuf, patchesY, patchesX, _heads, _kvHeads, _headDim, theta: 10000.0f);
+                // ApplyMRoPE's real parameter order is (q,k,patchesX,patchesY,...) -- this call
+                // had them swapped (harmless only on square test images; wrong on real non-square
+                // ones, where row/col position would be transposed).
+                VisionOps.ApplyMRoPE(qBuf, kBuf, patchesX, patchesY, _heads, _kvHeads, _headDim, theta: 10000.0f);
 
-                // GQA Attention with optional Attention Sinks
-                VisionOps.AttentionGqa(qBuf, kBuf, vBuf, nPatches, _heads, _kvHeads, _headDim, attnOut, attnSinks);
+                // GQA Attention with optional Attention Sinks -- windowed except every
+                // waPattern-th layer (real full_attn = (il+1) % waPattern == 0)
+                bool fullAttn = !useWindowAttn || (l + 1) % _m.WindowAttnPattern == 0;
+                if (fullAttn)
+                    VisionOps.AttentionGqa(qBuf, kBuf, vBuf, nPatches, _heads, _kvHeads, _headDim, attnOut, attnSinks);
+                else
+                    VisionOps.AttentionGqaWindowed(qBuf, kBuf, vBuf, nPatches, _heads, _kvHeads, _headDim, attnOut, windowId!);
 
                 // Project attention out & residual
                 VisionOps.MatVec(attnOut, b.OW, ob, nPatches, _heads * _headDim, _embd, tmp);
@@ -173,12 +225,15 @@ public sealed unsafe class MimoVlVisionEncoder
             }
         }
 
-        // Post-LN
+        // Post-Norm -- real qwen2vl.cpp/exaone4_5.cpp use RMSNorm uniformly throughout the ViT
+        // (norm_t=NORM_TYPE_RMS for the whole graph, including this final norm); using plain
+        // LayerNorm (mean-centered) here instead was a real mismatch against the graph these
+        // checkpoints actually run.
         if (_postLnW != null)
         {
-            fixed (float* postLnW = _postLnW, postLnB = _postLnB)
+            fixed (float* postLnW = _postLnW)
             {
-                VisionOps.LayerNorm(x, nPatches, _embd, postLnW, postLnB, _eps);
+                VisionOps.RmsNorm(x, nPatches, _embd, postLnW, _eps);
             }
         }
 
