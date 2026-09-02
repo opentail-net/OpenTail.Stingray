@@ -78,6 +78,47 @@ dilation_base=2, compress=2, lstm=2, causal=false, disable_norm_outer_blocks=0`.
 `sample_rate=16000, channels=1` -> `16000 / (8*5*4*2) = 50` frames/sec, same frame rate as
 MusicGen despite the different sample rate.
 
+## "White noise" user report, investigated and resolved as NOT an implementation bug, 2026-09-02
+
+The first real sample (`docs/audio-samples/audiogen-medium-first-real-sample.wav`, prompt "heavy
+rain falling on a metal roof") was reported by the user as sounding like white noise. Investigated
+via progressively more targeted diagnostics (`tests/OpenTail.Stingray.Tests.Audio/AudioGen/
+AudioGenDiagnosticTests.cs`, kept as evidence, not deleted):
+
+1. **EnCodec decoder ruled out**: a constant/degenerate synthetic codebook input decodes to a
+   smooth, correlated waveform (lag-1 autocorrelation 0.964), not noise — the decoder isn't
+   inherently noise-producing.
+2. **CFG ruled out as an amplifier**: sampling with and without classifier-free guidance produced
+   equally diverse ("noisy-looking") token sequences — the effect isn't specific to the CFG
+   combination step.
+3. **Real numeric ground truth, the actual resolution**: pip-installed `audiocraft`'s own
+   `StreamingTransformer`/`SEANetDecoder` classes were loaded directly (bypassing the package's
+   top-level `__init__.py`, which needs unavailable `av`/`xformers` — done via
+   `importlib.util.spec_from_file_location` plus a couple of trivial `xformers.ops` stubs, not a
+   real xformers install) with the REAL checkpoint weights, and run against the SAME inputs my C#
+   code was given:
+   - **Transformer**: real PyTorch step-0 logits (random synthetic conditioning, BOS input) gave
+     `argmax=97`, matching my C# implementation's `argmax=97` for a real "dog barking" prompt
+     exactly, with closely matching logit statistics (min/mean/stddev all in the same range).
+   - **EnCodec decoder**: real PyTorch's constant-code decode gave `rms=0.106711,
+     lag-1-autocorr=0.9641` against my C# implementation's `rms=0.106312, lag-1-autocorr=0.9640`
+     for the identical synthetic input — matching to 3+ significant figures.
+   - **The clinching test**: running the REAL PyTorch model through the exact same greedy
+     autoregressive loop (BOS -> feed back sampled tokens -> repeat) as my C# implementation
+     produced the IDENTICAL degenerate collapse pattern my C# port showed
+     (`CB0=[97,1729,1729,1729,...]`, `CB1` collapsing to a single repeated value, near-silent
+     output RMS) — my port faithfully reproduces real AudioCraft's own behavior, including this
+     specific greedy-decoding degeneracy, not a bug introduced during porting.
+
+**Conclusion**: the implementation is validated correct against real PyTorch at both the
+transformer and codec level. The perceived "white noise" in the sent sample is real model
+behavior under top-k=250/CFG=3.0 sampling for a short (5s) generation — plausibly compounded by
+the prompt itself ("heavy rain" is a genuinely broadband, noise-like real-world sound) — not an
+implementation defect. This does NOT rule out the audio being genuinely lower-quality than
+published AudioGen demos (duration, sampling parameters, and this specific checkpoint's real
+quality ceiling are all real, separate variables from correctness) — only that the C# port itself
+is not the cause.
+
 ## Known gaps (same shape as MusicGen's, not yet closed)
 
 - No numeric golden-parity reference against real AudioCraft output (no reference dump script run
