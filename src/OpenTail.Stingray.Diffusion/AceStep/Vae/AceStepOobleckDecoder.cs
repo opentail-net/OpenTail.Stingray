@@ -147,7 +147,7 @@ public static class AceStepOobleckDecoder
         var channelsPerStage = ChannelsPerStage();
         var ratios = UpsamplingRatios();
 
-        var x = FullConv1d(latent, AceStepConfig.VaeDecoderInputChannels, channelsPerStage[0], latentLen, w.Conv1Weight, w.Conv1Bias, kernel: 7, dilation: 1, padding: 3);
+        var x = AceStepOobleckKernels.FullConv1d(latent, AceStepConfig.VaeDecoderInputChannels, channelsPerStage[0], latentLen, w.Conv1Weight, w.Conv1Bias, kernel: 7, dilation: 1, padding: 3);
 
         int ch = channelsPerStage[0];
         int curT = latentLen;
@@ -159,126 +159,22 @@ public static class AceStepOobleckDecoder
             ch = outCh;
         }
 
-        x = Snake(x, ch, curT, w.FinalSnakeAlpha, w.FinalSnakeBeta);
-        var pcm = FullConv1d(x, ch, AceStepConfig.VaeAudioChannels, curT, w.Conv2Weight, bias: null, kernel: 7, dilation: 1, padding: 3);
+        x = AceStepOobleckKernels.Snake(x, ch, curT, w.FinalSnakeAlpha, w.FinalSnakeBeta);
+        var pcm = AceStepOobleckKernels.FullConv1d(x, ch, AceStepConfig.VaeAudioChannels, curT, w.Conv2Weight, bias: null, kernel: 7, dilation: 1, padding: 3);
         return pcm; // [audioChannels, curT]
     }
 
     private static (float[] Data, int T) DecoderBlock(float[] x, int inCh, int outCh, int t, OobleckDecoderBlockWeights w, int stride)
     {
-        var y = Snake(x, inCh, t, w.Snake1Alpha, w.Snake1Beta);
+        var y = AceStepOobleckKernels.Snake(x, inCh, t, w.Snake1Alpha, w.Snake1Beta);
         int kernel = 2 * stride;
         int padding = (int)MathF.Ceiling(stride / 2f);
-        var (up, outT) = ConvTranspose1d(y, inCh, outCh, t, w.ConvTWeight, w.ConvTBias, kernel, stride, padding);
+        var (up, outT) = AceStepOobleckKernels.ConvTranspose1d(y, inCh, outCh, t, w.ConvTWeight, w.ConvTBias, kernel, stride, padding);
 
         var cur = up;
-        cur = ResidualUnit(cur, outCh, outT, w.ResUnits[0], dilation: 1);
-        cur = ResidualUnit(cur, outCh, outT, w.ResUnits[1], dilation: 3);
-        cur = ResidualUnit(cur, outCh, outT, w.ResUnits[2], dilation: 9);
+        cur = AceStepOobleckKernels.ResidualUnit(cur, outCh, outT, w.ResUnits[0], dilation: 1);
+        cur = AceStepOobleckKernels.ResidualUnit(cur, outCh, outT, w.ResUnits[1], dilation: 3);
+        cur = AceStepOobleckKernels.ResidualUnit(cur, outCh, outT, w.ResUnits[2], dilation: 9);
         return (cur, outT);
-    }
-
-    private static float[] ResidualUnit(float[] x, int channels, int t, OobleckResidualUnitWeights w, int dilation)
-    {
-        int pad = (7 - 1) * dilation / 2;
-        var y = Snake(x, channels, t, w.Snake1Alpha, w.Snake1Beta);
-        y = FullConv1d(y, channels, channels, t, w.Conv1Weight, w.Conv1Bias, kernel: 7, dilation: dilation, padding: pad);
-        y = Snake(y, channels, t, w.Snake2Alpha, w.Snake2Beta);
-        y = FullConv1d(y, channels, channels, t, w.Conv2Weight, w.Conv2Bias, kernel: 1, dilation: 1, padding: 0);
-
-        var output = new float[y.Length];
-        for (int i = 0; i < y.Length; i++) output[i] = x[i] + y[i]; // real OobleckResidualUnit: plain identity shortcut
-        return output;
-    }
-
-    /// <summary>Real Oobleck `Snake1d`: `x + (1/(exp(beta)+1e-9)) * sin(exp(alpha)*x)^2` -- both `alpha` and `beta` are stored in LOG-SCALE (`logscale=True`, real default), confirmed from `diffusers/models/autoencoders/autoencoder_oobleck.py`. Do NOT use the raw stored values directly -- omitting the `exp()` would be a silent, wrong-but-plausible-shaped bug.</summary>
-    private static float[] Snake(float[] x, int channels, int t, float[] logAlpha, float[] logBeta)
-    {
-        var output = new float[x.Length];
-        for (int c = 0; c < channels; c++)
-        {
-            float alpha = MathF.Exp(logAlpha[c]);
-            float beta = MathF.Exp(logBeta[c]);
-            float invBeta = 1f / (beta + 1e-9f);
-            int baseIdx = c * t;
-            for (int i = 0; i < t; i++)
-            {
-                float v = x[baseIdx + i];
-                float s = MathF.Sin(alpha * v);
-                output[baseIdx + i] = v + invBeta * s * s;
-            }
-        }
-        return output;
-    }
-
-    /// <summary>Real FULL (non-depthwise) Conv1d, symmetric ("same"-style) padding -- same im2col+GEMM technique as `Parler.DacDecoder`/`Primitives.EncodecDecoderKernels`'s identically-shaped helpers. `bias` may be null (real `conv2` has `bias=False`).</summary>
-    private static unsafe float[] FullConv1d(float[] x, int inCh, int outCh, int t, float[] weight, float[]? bias, int kernel, int dilation, int padding)
-    {
-        int rowLen = inCh * kernel;
-        var col = new float[t * rowLen];
-        Parallel.For(0, t, ti =>
-        {
-            int rowBase = ti * rowLen;
-            for (int ic = 0; ic < inCh; ic++)
-            {
-                int xBase = ic * t;
-                int rBase = rowBase + ic * kernel;
-                for (int k = 0; k < kernel; k++)
-                {
-                    int src = ti - padding + k * dilation;
-                    col[rBase + k] = (uint)src < (uint)t ? x[xBase + src] : 0f;
-                }
-            }
-        });
-
-        var output = new float[outCh * t];
-        fixed (float* colPtr = col, weightPtr = weight, outputPtr = output)
-        {
-            var colPtrLocal = colPtr;
-            var weightPtrLocal = weightPtr;
-            var outputPtrLocal = outputPtr;
-            Parallel.For(0, outCh, oc =>
-            {
-                float b = bias?[oc] ?? 0f;
-                float* wOc = weightPtrLocal + oc * rowLen;
-                float* outBase = outputPtrLocal + oc * t;
-                for (int ti = 0; ti < t; ti++)
-                    outBase[ti] = b + SimdKernels.DotF32(wOc, colPtrLocal + ti * rowLen, rowLen);
-            });
-        }
-        return output;
-    }
-
-    /// <summary>Real ConvTranspose1d, weight layout `[inCh, outCh, kernel]` flat row-major, WITH real padding/cropping applied inline (real `nn.ConvTranspose1d(..., padding=ceil(stride/2))`, unlike EnCodec's own transpose conv which trims separately) -- standard PyTorch semantics: `outT = (t-1)*stride - 2*padding + kernel`.</summary>
-    private static (float[] Data, int T) ConvTranspose1d(float[] x, int inCh, int outCh, int t, float[] weight, float[] bias, int kernel, int stride, int padding)
-    {
-        int outT = (t - 1) * stride - 2 * padding + kernel;
-        var output = new float[outCh * outT];
-        Parallel.For(0, outCh, oc =>
-        {
-            float b = bias[oc];
-            int dstBase = oc * outT;
-            for (int ti = 0; ti < outT; ti++) output[dstBase + ti] = b;
-
-            for (int ic = 0; ic < inCh; ic++)
-            {
-                int srcBase = ic * t;
-                int wBase = (ic * outCh + oc) * kernel;
-                for (int ti = 0; ti < t; ti++)
-                {
-                    float v = x[srcBase + ti];
-                    int outStart = ti * stride - padding;
-
-                    int kStart = outStart < 0 ? -outStart : 0;
-                    int kEnd = outStart + kernel > outT ? outT - outStart : kernel;
-                    if (kStart >= kEnd) continue;
-
-                    var wSpan = weight.AsSpan(wBase + kStart, kEnd - kStart);
-                    var dstSpan = output.AsSpan(dstBase + outStart + kStart, kEnd - kStart);
-                    TensorPrimitives.MultiplyAdd(wSpan, v, dstSpan, dstSpan);
-                }
-            }
-        });
-        return (output, outT);
     }
 }
