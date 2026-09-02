@@ -97,28 +97,9 @@ public sealed class StableAudioPipeline : IDisposable
         var rng = request.Seed >= 0 ? new Random(request.Seed) : new Random();
         var latent = SampleGaussian(totalLatentElements, rng);
 
-        var (condTokens, secondsTotalRaw) = BuildConditioning(promptTokenIds, duration);
-        int nCond = condTokens.Length / CondTokenDim;
-        var nullCondTokens = new float[condTokens.Length]; // real `null_embed = torch.zeros_like(...)`
-
-        int steps = Math.Max(1, request.Steps);
-        for (int step = 0; step < steps; step++)
-        {
-            float t = 1.0f - (float)step / steps;
-            float nextT = 1.0f - (float)(step + 1) / steps;
-            float dt = nextT - t;
-
-            var v = PredictVelocity(latent, seqLen, condTokens, nullCondTokens, nCond, secondsTotalRaw, t, request.CfgScale);
-
-            for (int i = 0; i < latent.Length; i++)
-            {
-                latent[i] += dt * v[i];
-            }
-
-            request.Progress?.Invoke(step + 1, steps);
-        }
-
-        float[] pcm = _vae.Decode(latent, seqLen);
+        float[] pcm = GenerateFromLatent(
+            latent, seqLen, promptTokenIds, duration,
+            Math.Max(1, request.Steps), request.CfgScale, request.Progress);
 
         if (!string.IsNullOrEmpty(request.OutputPath))
         {
@@ -132,6 +113,42 @@ public sealed class StableAudioPipeline : IDisposable
         }
 
         return pcm;
+    }
+
+    /// <summary>
+    /// Real generation core (conditioning assembly + Euler/CFG loop + VAE decode) from an explicit
+    /// starting latent, factored out of <see cref="Generate"/> so a golden test can drive it with a
+    /// fixed (not randomly-sampled) latent and compare the full real pipeline's output directly
+    /// against a real end-to-end Python reference run -- <see cref="Generate"/> is just this plus
+    /// real Gaussian noise sampling and the WAV-file side effect. <c>internal</c>, not private, for
+    /// exactly that test (see <c>StableAudioPipelineGoldenParityTests</c>).
+    /// </summary>
+    internal float[] GenerateFromLatent(
+        float[] initialLatent, int seqLen, int[] promptTokenIds, float durationSeconds,
+        int steps, float cfgScale, Action<int, int>? progress = null)
+    {
+        var latent = initialLatent;
+        var (condTokens, secondsTotalRaw) = BuildConditioning(promptTokenIds, durationSeconds);
+        int nCond = condTokens.Length / CondTokenDim;
+        var nullCondTokens = new float[condTokens.Length]; // real `null_embed = torch.zeros_like(...)`
+
+        for (int step = 0; step < steps; step++)
+        {
+            float t = 1.0f - (float)step / steps;
+            float nextT = 1.0f - (float)(step + 1) / steps;
+            float dt = nextT - t;
+
+            var v = PredictVelocity(latent, seqLen, condTokens, nullCondTokens, nCond, secondsTotalRaw, t, cfgScale);
+
+            for (int i = 0; i < latent.Length; i++)
+            {
+                latent[i] += dt * v[i];
+            }
+
+            progress?.Invoke(step + 1, steps);
+        }
+
+        return _vae.Decode(latent, seqLen);
     }
 
     private int[] ResolvePromptTokenIds(StableAudioRequest request)

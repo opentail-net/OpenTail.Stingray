@@ -354,10 +354,27 @@ that is more elegant but lower-visibility.
     `Encode_SentencePieceStyleBpe_UsesRankPriorityNotLeftmostTie` (synthetic, provably distinguishes
     the two algorithms), `Encode_RealT5GemmaTokenizer_MatchesRealTransformersIds` (real-checkpoint
     regression); existing `PreTokenizerParityTests`/`SpmMergeByScoreTests`/`SpmMergeTests` all still
-    pass unchanged, confirming classic GGUF SPM/byte-BPE behavior wasn't touched. Remaining gaps:
-    VAE `Encode` direction implemented but not golden-tested (only `Decode`, the direction
-    generation needs, is verified), and no full pipeline-level (as opposed to per-component) golden
-    verification against a real end-to-end reference run yet.
+    pass unchanged, confirming classic GGUF SPM/byte-BPE behavior wasn't touched.
+    **VAE `Encode` direction golden-verified same day** (`AcousticVae_Encode_MatchesRealSAMEEncoderReference`,
+    passed on the first real run, sharing nearly all machinery with the already-verified `Decode`).
+    **Full real end-to-end pipeline golden test also added and passing**
+    (`StableAudioPipelineGoldenParityTests.cs`): real tokenizer → T5Gemma → DiT (multi-step
+    Euler+CFG) → VAE decode, against a real Python end-to-end reference run. Building it found one
+    more real bug (in the Python reference script this time, not this port: `DiffusionTransformer`'s
+    `diffusion_objective` lives as a sibling of `config` in the real `model_config.json`, not inside
+    it — missing that left the reference model silently defaulting to the wrong `"v"` objective
+    instead of the real `"rectified_flow"`, producing a wrong oracle for CFG checks; isolated by
+    hooking the real model's own internal `apg_project` call and finding it didn't match a
+    `sigma=t`-based recomputation until the objective was fixed). Also found a real, understood
+    non-bug: this test's specific (seed, 0.5s duration, `cfg_scale=6.0`) combination is numerically
+    chaotic for both the real reference AND this port (out-of-distribution latent magnitudes, mean
+    ~24/max ~94 vs. the bottleneck's roughly-unit training scale) — confirmed via cross-decoding
+    (the real reference's own final latent decodes through this port's VAE at cosine ~0.98, and this
+    port's own trajectory matches the reference step-for-step to cosine >0.999, but the VAE
+    chaotically amplifies the tiny remaining fp32 differences at this scale regardless of step
+    count, measured no better at 25 steps than 3) — the test's threshold (0.3) reflects that real
+    measurement rather than an aspirational tighter bound. A real listening/quality check at
+    realistic, non-instability-triggering durations remains a real gap.
 
 ---
 

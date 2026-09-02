@@ -86,4 +86,31 @@ public sealed class StableAudioVaeGoldenParityTests
         float cos = CosineSimilarity(pcm, goldenPcm);
         Assert.True(cos > 0.99f, $"AcousticVae decode cosine-sim too low: {cos}");
     }
+
+    /// <summary>
+    /// Numeric parity check of <see cref="AcousticVae"/>'s encoder path (patchify → real
+    /// `SAMEEncoder` → `SoftNormBottleneck.encode`) against a golden run of the real
+    /// `stable_audio_3.models.autoencoders.SAMEEncoder` on the same fixed-seed synthetic raw audio,
+    /// same real checkpoint weights, same eval-time-noise-disabled convention as the decode test
+    /// above.
+    /// </summary>
+    [Fact]
+    public void AcousticVae_Encode_MatchesRealSAMEEncoderReference()
+    {
+        string? ditDir = FindRepoFile(DitDirRelative);
+        string? goldenDir = FindGoldenDir();
+        if (ditDir is null || goldenDir is null) return; // skip: needs local VAE weights + fixtures
+
+        using var st = SafetensorsLoader.OpenDirectory(ditDir);
+        using var vae = AcousticVae.FromLoader(st);
+
+        var pcm = ReadFloats(Path.Combine(goldenDir, "encode_pcm.bin"));
+        var goldenLatents = ReadFloats(Path.Combine(goldenDir, "encode_latents.bin"));
+
+        var latents = vae.Encode(pcm, pcm.Length / 2);
+
+        Assert.Equal(goldenLatents.Length, latents.Length);
+        float cos = CosineSimilarity(latents, goldenLatents);
+        Assert.True(cos > 0.99f, $"AcousticVae encode cosine-sim too low: {cos}");
+    }
 }
