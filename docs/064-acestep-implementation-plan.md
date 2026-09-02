@@ -413,17 +413,27 @@ signal even at only 8 real Euler steps with the zero-`src_latents` placeholder -
 NOT a substitute for an actual human listening pass (no ears were involved in producing these
 numbers) and NOT proof the zero-`src_latents` gap has zero quality cost.
 
+**DRY pass done, same day** (CLAUDE.md rule 7 -- porting is complete, and `AceStepConditionEncoder`
+became a genuine second real, verified caller of the DiT's GQA/RoPE/per-head-QK-norm/softmax/SiLU
+math): extracted the byte-identical duplication into
+`src/OpenTail.Stingray.Diffusion/AceStep/Primitives/AceStepAttentionKernels.cs`
+(`BuildRope`/`ApplyRope`/`RmsNormPerHead`/`RmsNorm`/`SoftmaxRange`/`Silu`), matching this project's
+existing `Primitives/*Kernels.cs` convention. Both `AceStepDiT.cs` and `AceStepConditionEncoder.cs`
+now call the shared kernels; each caller's own per-layer glue (AdaLN modulation vs. plain pre-norm,
+gated vs. ungated residuals) stayed separate -- only the shared attention/norm math moved. All six
+real-weight AceStep tests (text encoder, VAE decoder, DiT, condition encoder, flow scheduler,
+end-to-end pipeline) re-run and pass unchanged after the extraction, confirming no numerical
+regression.
+
 **Not yet done** (before calling V1 truly finished, per this project's own standards): (1) no
 numeric golden-parity check against a real `diffusers`/`Ace-Step1.5` end-to-end reference run --
 correctness rests on careful reading of the real source (documented inline throughout) plus
 real-weight non-degeneracy at every stage, not a numeric diff yet, matching the DiT's own
 not-yet-done note; (2) an ACTUAL human listening pass on the generated sample above is still
 outstanding (only numeric proxies have been checked so far) -- the zero-`src_latents` gap remains
-the leading suspect if a human listener finds quality lacking; (3) no performance pass yet (CLAUDE.md
-rule 7 says to do this once porting is complete -- it now is); (4) the DRY pass between
-`AceStepConditionEncoder`'s and `AceStepDiT`'s duplicated GQA/RoPE/QK-norm attention code (also
-flagged, also deferred per rule 7 until a genuine second need to touch that duplication arises) is
-still outstanding.
+the leading suspect if a human listener finds quality lacking; (3) no performance pass yet
+(CLAUDE.md rule 7 also calls for this now that porting is complete -- measure real weights, a
+realistic (not trivially short) input, multiple samples, keep only measurably-better changes).
 
 ## Immediate next steps (in order)
 

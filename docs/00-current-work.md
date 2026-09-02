@@ -330,10 +330,14 @@ that is more elegant but lower-visibility.
     across every 0.5s window (no silence, no clipping runaway), spectral flatness 0.166 (far from
     white-noise's 1.0, consistent with structured/tonal content) — a real, non-degenerate,
     plausibly-musical numeric signal, but NOT a substitute for an actual human listening pass, which
-    is still outstanding. **Not yet done: numeric golden-parity vs. a real `diffusers` reference
-    run, an actual human listening pass on the generated sample, a performance pass (now due per
-    CLAUDE.md rule 7), and the condition-encoder/DiT attention DRY pass (also now due).** See
-    `docs/064-acestep-implementation-plan.md`'s "Phase E progress" section for the full writeup.
+    is still outstanding. **Update, same day: DRY pass done** (CLAUDE.md rule 7) — extracted the
+    byte-identical GQA/RoPE/QK-norm/softmax/SiLU duplication between `AceStepDiT` and
+    `AceStepConditionEncoder` into `AceStep/Primitives/AceStepAttentionKernels.cs`, matching this
+    project's `Primitives/*Kernels.cs` convention; all six real-weight AceStep tests re-run and pass
+    unchanged, confirming no numerical regression. **Not yet done: numeric golden-parity vs. a real
+    `diffusers` reference run, an actual human listening pass on the generated sample, and a
+    performance pass (still due per CLAUDE.md rule 7).** See `docs/064-acestep-implementation-
+    plan.md`'s "Phase E progress" section for the full writeup.
 12. **Real NaN bug in `Engine.ForwardPass`'s f16 qwen3 path — found 2026-09-03 while testing
     ACE-Step's Qwen3 text encoder, NOT ACE-Step-specific.** A real 13-token sequence (real ACE-Step
     SFT-prompt text, official `Qwen/Qwen3-Embedding-0.6B-GGUF` f16 quant) produces NaN logits at

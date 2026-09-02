@@ -1,4 +1,6 @@
 using OpenTail.Stingray.Audio.Primitives;
+using OpenTail.Stingray.Diffusion.AceStep.Primitives;
+using static OpenTail.Stingray.Diffusion.AceStep.Primitives.AceStepAttentionKernels;
 
 namespace OpenTail.Stingray.Diffusion.AceStep.Transformer;
 
@@ -382,94 +384,6 @@ public static class AceStepDiT
         }
         return result;
     }
-
-    /// <summary>Real Qwen3-style RoPE table: `inv_freq[i] = theta^(-2i/headDim)`, position `p` in `[0,seqLen)`.</summary>
-    private static (float[] Cos, float[] Sin) BuildRope(int seqLen, int headDim, float theta)
-    {
-        int half = headDim / 2;
-        var cos = new float[seqLen * headDim];
-        var sin = new float[seqLen * headDim];
-        for (int p = 0; p < seqLen; p++)
-        {
-            for (int i = 0; i < half; i++)
-            {
-                float invFreq = MathF.Pow(theta, -2f * i / headDim);
-                float angle = p * invFreq;
-                float c = MathF.Cos(angle), s = MathF.Sin(angle);
-                // Real HF convention: cos/sin tables are duplicated across both halves of head_dim.
-                cos[p * headDim + i] = c; cos[p * headDim + half + i] = c;
-                sin[p * headDim + i] = s; sin[p * headDim + half + i] = s;
-            }
-        }
-        return (cos, sin);
-    }
-
-    /// <summary>Real `apply_rotary_pos_emb` (rotate_half convention): `q_embed = q*cos + rotate_half(q)*sin`, `rotate_half(x) = cat(-x[half:], x[:half])`.</summary>
-    private static void ApplyRope(float[] qOrK, int seqLen, int numHeads, int headDim, float[] cos, float[] sin)
-    {
-        int half = headDim / 2;
-        int rowDim = numHeads * headDim;
-        for (int t = 0; t < seqLen; t++)
-        {
-            int cosBase = t * headDim;
-            for (int h = 0; h < numHeads; h++)
-            {
-                int off = t * rowDim + h * headDim;
-                for (int i = 0; i < half; i++)
-                {
-                    float x1 = qOrK[off + i];
-                    float x2 = qOrK[off + half + i];
-                    float c1 = cos[cosBase + i], s1 = sin[cosBase + i];
-                    float c2 = cos[cosBase + half + i], s2 = sin[cosBase + half + i];
-                    qOrK[off + i] = x1 * c1 - x2 * s1;
-                    qOrK[off + half + i] = x2 * c2 + x1 * s2;
-                }
-            }
-        }
-    }
-
-    /// <summary>Real per-head Q/K RMSNorm (`Qwen3RMSNorm(head_dim)`), applied independently to each head's `head_dim`-wide slice.</summary>
-    private static void RmsNormPerHead(float[] qOrK, int seqLen, int numHeads, int headDim, float[] weight, float eps = 1e-6f)
-    {
-        for (int t = 0; t < seqLen; t++)
-        {
-            for (int h = 0; h < numHeads; h++)
-            {
-                int off = t * numHeads * headDim + h * headDim;
-                var span = qOrK.AsSpan(off, headDim);
-                float sumSq = 0f;
-                for (int i = 0; i < headDim; i++) sumSq += span[i] * span[i];
-                float invRms = 1f / MathF.Sqrt(sumSq / headDim + eps);
-                for (int i = 0; i < headDim; i++) span[i] = span[i] * invRms * weight[i];
-            }
-        }
-    }
-
-    private static void RmsNorm(ReadOnlySpan<float> x, float[] weight, Span<float> output, float eps)
-    {
-        int n = x.Length;
-        float sumSq = 0f;
-        for (int i = 0; i < n; i++) sumSq += x[i] * x[i];
-        float invRms = 1f / MathF.Sqrt(sumSq / n + eps);
-        for (int i = 0; i < n; i++) output[i] = x[i] * invRms * weight[i];
-    }
-
-    private static void SoftmaxRange(float[] scores, int start, int end)
-    {
-        float max = float.NegativeInfinity;
-        for (int i = start; i < end; i++) if (scores[i] > max) max = scores[i];
-        float sum = 0f;
-        for (int i = start; i < end; i++)
-        {
-            float e = MathF.Exp(scores[i] - max);
-            scores[i] = e;
-            sum += e;
-        }
-        float invSum = 1f / sum;
-        for (int i = start; i < end; i++) scores[i] *= invSum;
-    }
-
-    private static float Silu(float x) => x / (1f + MathF.Exp(-x));
 
     /// <summary>
     /// Real `proj_in`: `torch.cat([context_latents, hidden_states], dim=-1)` (channel-concat,

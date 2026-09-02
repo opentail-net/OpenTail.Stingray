@@ -1,4 +1,5 @@
 using OpenTail.Stingray.Audio.Primitives;
+using static OpenTail.Stingray.Diffusion.AceStep.Primitives.AceStepAttentionKernels;
 
 namespace OpenTail.Stingray.Diffusion.AceStep.Conditioning;
 
@@ -19,11 +20,11 @@ namespace OpenTail.Stingray.Diffusion.AceStep.Conditioning;
 /// <para><b>Lyric encoder is NOT the same as the DiT's AdaLN layers</b>: real
 /// `AceStepEncoderLayer` is a STANDARD pre-norm transformer block (`input_layernorm -&gt; self_attn
 /// -&gt; +residual`, `post_attention_layernorm -&gt; mlp -&gt; +residual`), no timestep modulation at
-/// all -- do not reuse `AceStepDiT`'s AdaLN math here. Same GQA/RoPE/per-head-QK-norm attention
-/// primitives as the DiT (byte-identical formulas, real duplication -- worth extracting to a
-/// shared kernel in a later DRY pass per CLAUDE.md rule 7, not done speculatively here with only
-/// two real callers whose per-layer glue still differs, matching how MusicGen/AudioGen's
-/// generation loop was left un-merged for the same reason).</para>
+/// all -- do not reuse `AceStepDiT`'s AdaLN math here. Shares its GQA/RoPE/per-head-QK-norm
+/// primitives with the DiT's self-attention via <see cref="Primitives.AceStepAttentionKernels"/>
+/// (DRY pass done once this class became a second real, verified caller of the same math -- per
+/// CLAUDE.md rule 7). Each caller's own per-layer glue (AdaLN modulation vs. plain pre-norm) stays
+/// separate; only the shared attention/norm math moved.</para>
 ///
 /// <para><b>Real lyric embedding path</b>: lyrics are embedded via Qwen3's raw token-embedding
 /// LOOKUP (NOT the full Qwen3 forward pass -- confirmed from the real `diffusers` ACE-Step
@@ -277,87 +278,4 @@ public static class AceStepConditionEncoder
         return rows;
     }
 
-    private static (float[] Cos, float[] Sin) BuildRope(int seqLen, int headDim, float theta)
-    {
-        int half = headDim / 2;
-        var cos = new float[seqLen * headDim];
-        var sin = new float[seqLen * headDim];
-        for (int p = 0; p < seqLen; p++)
-        {
-            for (int i = 0; i < half; i++)
-            {
-                float invFreq = MathF.Pow(theta, -2f * i / headDim);
-                float angle = p * invFreq;
-                float c = MathF.Cos(angle), s = MathF.Sin(angle);
-                cos[p * headDim + i] = c; cos[p * headDim + half + i] = c;
-                sin[p * headDim + i] = s; sin[p * headDim + half + i] = s;
-            }
-        }
-        return (cos, sin);
-    }
-
-    private static void ApplyRope(float[] qOrK, int seqLen, int numHeads, int headDim, float[] cos, float[] sin)
-    {
-        int half = headDim / 2;
-        int rowDim = numHeads * headDim;
-        for (int t = 0; t < seqLen; t++)
-        {
-            int cosBase = t * headDim;
-            for (int h = 0; h < numHeads; h++)
-            {
-                int off = t * rowDim + h * headDim;
-                for (int i = 0; i < half; i++)
-                {
-                    float x1 = qOrK[off + i];
-                    float x2 = qOrK[off + half + i];
-                    float c1 = cos[cosBase + i], s1 = sin[cosBase + i];
-                    float c2 = cos[cosBase + half + i], s2 = sin[cosBase + half + i];
-                    qOrK[off + i] = x1 * c1 - x2 * s1;
-                    qOrK[off + half + i] = x2 * c2 + x1 * s2;
-                }
-            }
-        }
-    }
-
-    private static void RmsNormPerHead(float[] qOrK, int seqLen, int numHeads, int headDim, float[] weight, float eps = 1e-6f)
-    {
-        for (int t = 0; t < seqLen; t++)
-        {
-            for (int h = 0; h < numHeads; h++)
-            {
-                int off = t * numHeads * headDim + h * headDim;
-                var span = qOrK.AsSpan(off, headDim);
-                float sumSq = 0f;
-                for (int i = 0; i < headDim; i++) sumSq += span[i] * span[i];
-                float invRms = 1f / MathF.Sqrt(sumSq / headDim + eps);
-                for (int i = 0; i < headDim; i++) span[i] = span[i] * invRms * weight[i];
-            }
-        }
-    }
-
-    private static void RmsNorm(ReadOnlySpan<float> x, float[] weight, Span<float> output, float eps)
-    {
-        int n = x.Length;
-        float sumSq = 0f;
-        for (int i = 0; i < n; i++) sumSq += x[i] * x[i];
-        float invRms = 1f / MathF.Sqrt(sumSq / n + eps);
-        for (int i = 0; i < n; i++) output[i] = x[i] * invRms * weight[i];
-    }
-
-    private static void SoftmaxRange(float[] scores, int start, int end)
-    {
-        float max = float.NegativeInfinity;
-        for (int i = start; i < end; i++) if (scores[i] > max) max = scores[i];
-        float sum = 0f;
-        for (int i = start; i < end; i++)
-        {
-            float e = MathF.Exp(scores[i] - max);
-            scores[i] = e;
-            sum += e;
-        }
-        float invSum = 1f / sum;
-        for (int i = start; i < end; i++) scores[i] *= invSum;
-    }
-
-    private static float Silu(float x) => x / (1f + MathF.Exp(-x));
 }
