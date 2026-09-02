@@ -359,8 +359,21 @@ that is more elegant but lower-visibility.
     clips at the int16 max), confirming the fix materially changes behavior as expected; also
     surfaced a new, real, separate finding: `AceStepOobleckDecoder.Decode` returns raw un-normalized
     PCM (matches the real decoder, which doesn't normalize either) — a real pipeline likely needs a
-    peak-normalize-before-WAV step this port doesn't have yet. **Not yet done: VAE decoder
-    golden-parity, an actual human listening pass, output normalization before WAV export.** See
+    peak-normalize-before-WAV step this port doesn't have yet.
+    **Update, same day: human listening feedback ("soup of noise") investigated and root-caused.**
+    Extended golden-parity to the VAE decoder: `AceStepOobleckDecoderGoldenParityTests` measures
+    **~4e-6 relative error** against the real `diffusers` `AutoencoderOobleck` reference — also
+    essentially bit-exact, ruling out the VAE as the cause. With DiT, lyric encoder, AND VAE decoder
+    all independently numerically verified, the noise is almost certainly a real CONDITIONING gap,
+    not a code bug: (1) the zero-`src_latents` placeholder (already flagged), and (2) more
+    significantly, V1's condition sequence entirely OMITS the timbre segment (real order is
+    `[lyric, timbre, text]`) rather than replacing it with placeholder rows — a bigger distribution
+    shift than wrong values would be, since the DiT was trained on a condition sequence that always
+    includes a (if silent-reference) timbre segment. Real next step: implement the timbre encoder
+    path (its weights already exist in the checkpoint, just unused) with the real learned
+    `silence_latent` substituted for "no reference audio" — blocked on locating that same missing
+    buffer flagged in Phase E. **V1 should currently be understood as "numerically correct given its
+    inputs, but tested with out-of-distribution conditioning," not yet a reliable generator.** See
     `docs/064-acestep-implementation-plan.md`'s "Golden-parity check" section for the full writeup.
 12. **Real NaN bug in `Engine.ForwardPass`'s f16 qwen3 path — found 2026-09-03 while testing
     ACE-Step's Qwen3 text encoder, NOT ACE-Step-specific.** A real 13-token sequence (real ACE-Step

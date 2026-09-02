@@ -492,11 +492,41 @@ observation: `AceStepOobleckDecoder.Decode` returns raw un-normalized PCM (match
 needs a peak-normalize-before-WAV step this port doesn't have yet; flagged as a real open item, not
 fixed speculatively here.
 
-**Not yet done** (before calling V1 truly finished, per this project's own standards): (1) no VAE
-decoder golden-parity check yet (real non-degeneracy only, see Phase F); (2) an ACTUAL human
-listening pass on the (fixed, regenerated) sample is still outstanding (only numeric proxies have
-been checked so far); (3) real output-normalization/clipping handling before WAV export, found
-while regenerating the sample above -- not yet implemented.
+**Human listening feedback, same day: "it's a soup of noise."** Real, honest signal that numeric
+proxies alone missed. Investigated by extending the golden-parity technique to the VAE decoder
+(the one real component not yet numerically checked): `AceStepOobleckDecoderGoldenParityTests`
+(same technique -- real `vae.safetensors` loaded into the real `diffusers` `AutoencoderOobleck`
+decoder with zero missing/unexpected keys, fixed-seed synthetic latent, numeric diff) measures
+**~4e-6 relative error** -- also essentially bit-exact. **This rules out the VAE decoder as the
+cause.** With the DiT (~7e-6), lyric encoder (well under 0.1%), and VAE decoder (~4e-6) all now
+independently numerically verified against real references on synthetic inputs, the code paths
+this project wrote are confirmed correct at the component level. The "soup of noise" is therefore
+almost certainly a real CONDITIONING gap, not a math bug:
+
+1. **The zero-`src_latents` placeholder** (flagged since Phase E) -- the DiT was never trained on
+   literal zeros here; real inference always feeds either real source-audio latents or the real
+   learned `silence_latent` buffer, which this project doesn't have.
+2. **The timbre encoder is entirely absent from V1's condition sequence**, not just fed zeros --
+   the real condition sequence is `[lyric, timbre, text]` (`_pack_sequences` order, confirmed
+   earlier this session); V1 omits the timbre segment's rows entirely rather than replacing them
+   with placeholder rows. The DiT's cross-attention was trained on a condition sequence that always
+   includes a real (if silent-reference) timbre segment -- structurally shortening it, not just
+   changing its values, is a bigger distribution shift than the `src_latents` gap alone.
+3. Real clipping (7.4% of samples at the int16 max in the regenerated sample) compounds whatever
+   the underlying signal quality is, though clipping alone doesn't explain "noise" for an otherwise
+   structured signal.
+
+**Real next step**: the `encoder.timbre_encoder.*` weights DO exist in the real checkpoint (this
+project just never wired them, V1 scope) -- implementing the timbre encoder path with the real
+learned `silence_latent` substituted for "no reference audio" (matching the real pipeline's own
+`prepare_condition` behavior) is the concrete, verifiable fix candidate, blocked on the same missing
+`silence_latent` buffer already flagged in Phase E. Until that buffer is found or reconstructed, V1
+should be understood as "numerically correct given its inputs, but tested with out-of-distribution
+conditioning" -- not yet a reliable text-to-music generator.
+
+**Not yet done**: (1) locate or reconstruct the real `silence_latent` buffer; (2) implement the
+timbre encoder path (weights already loadable, just unused); (3) re-run the human listening check
+once both land; (4) output-normalization/clipping handling before WAV export.
 
 ## Immediate next steps (in order)
 
