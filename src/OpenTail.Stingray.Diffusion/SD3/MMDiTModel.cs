@@ -55,6 +55,41 @@ public sealed class MMDiTModel : IDisposable
 
     private float[]? TryGetWeight(string name) => _weightReader.TryGet(name);
 
+    /// <summary>Splits a fused [n, 3*dim] qkv projection into three contiguous [n, dim] blocks.</summary>
+    private static (float[] q, float[] k, float[] v) SplitQkv(float[] qkv, int n, int dim)
+    {
+        var q = new float[n * dim];
+        var k = new float[n * dim];
+        var v = new float[n * dim];
+        for (int t = 0; t < n; t++)
+        {
+            int src = t * 3 * dim;
+            Array.Copy(qkv, src, q, t * dim, dim);
+            Array.Copy(qkv, src + dim, k, t * dim, dim);
+            Array.Copy(qkv, src + 2 * dim, v, t * dim, dim);
+        }
+        return (q, k, v);
+    }
+
+    /// <summary>Per-head RMSNorm (no bias) applied in place, using a real ln_q/ln_k.weight tensor
+    /// if present; no-op if the checkpoint doesn't declare it for this block.</summary>
+    private void ApplyHeadRmsNorm(float[] x, string weightName, int n, int numHeads, int headDim)
+    {
+        var w = TryGetWeight($"{weightName}.weight");
+        if (w is null) return;
+        for (int t = 0; t < n; t++)
+        {
+            for (int h = 0; h < numHeads; h++)
+            {
+                int off = t * numHeads * headDim + h * headDim;
+                float sumSq = 0f;
+                for (int d = 0; d < headDim; d++) sumSq += x[off + d] * x[off + d];
+                float invStd = 1f / MathF.Sqrt(sumSq / headDim + 1e-6f);
+                for (int d = 0; d < headDim; d++) x[off + d] = x[off + d] * invStd * w[d];
+            }
+        }
+    }
+
     private CoreTensor GetGpuWeight(string name, float[] cpuWeight)
     {
         string fullName = _weightReader.Prefix + name;
@@ -186,13 +221,23 @@ public sealed class MMDiTModel : IDisposable
             var xNorm1 = ModulateNorm(x, imgMod, 0, numImgTokens, HiddenSize);
             var cNorm1 = ModulateNorm(c, txtMod, 0, numTextTokens, HiddenSize);
 
-            var xQ = Lin($"{blk}.x_block.attn.qkv.0", xNorm1, numImgTokens, HiddenSize, HiddenSize);
-            var xK = Lin($"{blk}.x_block.attn.qkv.1", xNorm1, numImgTokens, HiddenSize, HiddenSize);
-            var xV = Lin($"{blk}.x_block.attn.qkv.2", xNorm1, numImgTokens, HiddenSize, HiddenSize);
+            // Real checkpoint (confirmed via list-tensors on both the safetensors and GGUF forms)
+            // stores ONE fused qkv.weight [dim, 3*dim], not three separate qkv.0/1/2 matrices --
+            // this had never been tested against a real checkpoint before (SD3 "has never actually
+            // been run once", per docs/00-current-work.md), so this wrong assumption was never
+            // caught. Real mmdit.py: `qkv = self.qkv(x)` then `.reshape(B,N,3,heads,head_dim)` --
+            // a flat 3*dim output split into three contiguous dim-wide blocks [q|k|v], same
+            // convention as FLUX's fused qkv.
+            var (xQ, xK, xV) = SplitQkv(Lin($"{blk}.x_block.attn.qkv", xNorm1, numImgTokens, HiddenSize, 3 * HiddenSize), numImgTokens, HiddenSize);
+            var (cQ, cK, cV) = SplitQkv(Lin($"{blk}.context_block.attn.qkv", cNorm1, numTextTokens, HiddenSize, 3 * HiddenSize), numTextTokens, HiddenSize);
 
-            var cQ = Lin($"{blk}.context_block.attn.qkv.0", cNorm1, numTextTokens, HiddenSize, HiddenSize);
-            var cK = Lin($"{blk}.context_block.attn.qkv.1", cNorm1, numTextTokens, HiddenSize, HiddenSize);
-            var cV = Lin($"{blk}.context_block.attn.qkv.2", cNorm1, numTextTokens, HiddenSize, HiddenSize);
+            // QK-RMSNorm (per-head, no bias): real checkpoint tensors attn.ln_q.weight/
+            // attn.ln_k.weight [headDim] exist (confirmed via list-tensors) but were never read at
+            // all previously -- a second real gap alongside the fused-QKV one above.
+            ApplyHeadRmsNorm(xQ, $"{blk}.x_block.attn.ln_q", numImgTokens, NumHeads, HeadDim);
+            ApplyHeadRmsNorm(xK, $"{blk}.x_block.attn.ln_k", numImgTokens, NumHeads, HeadDim);
+            ApplyHeadRmsNorm(cQ, $"{blk}.context_block.attn.ln_q", numTextTokens, NumHeads, HeadDim);
+            ApplyHeadRmsNorm(cK, $"{blk}.context_block.attn.ln_k", numTextTokens, NumHeads, HeadDim);
 
             // Concatenate image + text tokens
             int totalTokens = numImgTokens + numTextTokens;

@@ -92,6 +92,10 @@ public sealed class ImageCommand : Command<ImageCommand.Settings>
         [Description("(FLUX) Path to CLIP-L encoder safetensors")]
         public string? ClipLPath { get; init; }
 
+        [CommandOption("--clip-g")]
+        [Description("(SD3/3.5) Path to OpenCLIP-bigG encoder safetensors -- when given together with --clip-l and --vae, -m is read as the standalone MMDiT transformer safetensors (the standard diffusers multi-file layout) instead of a single combined checkpoint")]
+        public string? ClipGPath { get; init; }
+
         [CommandOption("--clip-tokenizer")]
         [Description("(FLUX) Path to CLIP tokenizer.json")]
         public string? ClipTokenizerPath { get; init; }
@@ -1110,7 +1114,9 @@ public sealed class ImageCommand : Command<ImageCommand.Settings>
             if (s.UpscalerPath is not null)
                 upscaler = RRDBNet.Load(s.UpscalerPath, gpu);
 
-            using var pipeline = Sd3Pipeline.Load(modelPath, s.ClipTokenizerPath, gpu);
+            using var pipeline = s.ClipGPath is not null && s.ClipLPath is not null && s.VaePath is not null
+                ? Sd3Pipeline.LoadSeparate(s.ClipLPath, s.ClipGPath, modelPath, s.VaePath, s.ClipTokenizerPath, gpu)
+                : Sd3Pipeline.Load(modelPath, s.ClipTokenizerPath, gpu);
 
             string target = gpu is not null ? gpu.Name : "CPU";
             AnsiConsole.Status()

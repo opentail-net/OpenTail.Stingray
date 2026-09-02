@@ -886,6 +886,62 @@ ownership Phase 0 deliverable 1 (both inventories) is now **DONE, 2026-08-15**:
   that needs a per-variable owner call, not a drive-by deletion, so it wasn't done as part of the
   classification pass itself.
 
+## SD3/3.5 run for the first time ever (2026-09-02): two real blocking bugs found and fixed, one more (native crash) found and NOT yet fixed
+
+`Sd3Pipeline`/`MMDiTModel` were real, non-stubbed ports that had literally never been run against
+a real checkpoint (per the README's own prior honest status). Picked this up as a natural
+extension of the FLUX/Wan pattern this session ("press go, fix what breaks").
+
+**Structural gap found first: the CLI could only ever load ONE specific, gated checkpoint layout.**
+`Sd3Pipeline.Load`'s `PrefixWeightLoader(weights, "text_encoders.clip_l.transformer.")` etc. only
+matches the StabilityAI single-file "..._incl_clips[_t5xxlfp8].safetensors" ComfyUI-style export —
+which is gated on HuggingFace with no ungated mirror found. Every other freely-available layout
+(the standard HF `diffusers` multi-file repo layout, and `city96`'s GGUF quantizations) is a
+different file arrangement entirely, and the CLI had no way to point at separate encoder/VAE/
+transformer files (unlike FLUX/Z-Image, which already have `--clip-l`/`--t5xxl`/`--vae`). Added
+`Sd3Pipeline.LoadSeparate` (clip-l/clip-g/transformer/vae as four independent files) and a new
+`--clip-g` CLI flag (`RunSd3` now branches to `LoadSeparate` when `--clip-l`/`--clip-g`/`--vae` are
+all given, else falls back to the original combined-file `Load`). Also found via direct byte
+inspection that the standalone HF `text_encoder`/`text_encoder_2` files keep a `text_model.`
+prefix the encoder classes don't expect (needed `PrefixWeightLoader` wrapping to strip it) — while
+the HF `diffusers`-native `transformer/diffusion_pytorch_model.safetensors` export uses a
+genuinely DIFFERENT tensor layout (`transformer_blocks.N`/separate `add_q_proj`/`add_k_proj`/
+`add_v_proj`, not `joint_blocks.N`/fused `qkv`) that `MMDiTModel` does not implement — worked
+around by using `city96/stable-diffusion-3.5-medium-gguf` instead, which (unlike the diffusers
+re-export) preserves the real StabilityAI `joint_blocks`/`x_embedder`/`context_embedder` naming
+`MMDiTModel` actually expects, confirmed via direct `list-tensors` inspection before assuming.
+
+**Two real bugs found in `MMDiTModel.cs` itself, once a loadable checkpoint was in hand:**
+- **Fused-QKV misassumption — the actual blocker.** `MMDiTModel` read three SEPARATE
+  `qkv.0`/`qkv.1`/`qkv.2` weight matrices per attention block; the real checkpoint (confirmed via
+  `list-tensors` on both the safetensors and GGUF forms) stores ONE fused `qkv.weight`
+  `[dim, 3*dim]`, matching real `mmdit.py`'s `self.qkv = nn.Linear(dim, dim*3)` then
+  `.reshape(B,N,3,heads,head_dim)`. This alone made every real checkpoint unloadable (`Safetensors/
+  GGUF tensor not found: '...attn.qkv.0.weight'`) — exactly why this had never been run once.
+  Fixed: one fused `Lin` call + a `SplitQkv` helper (contiguous `[q|k|v]` block split, same
+  convention already used for FLUX's fused qkv this session).
+- **Missing QK-RMSNorm.** The real checkpoint declares `attn.ln_q.weight`/`attn.ln_k.weight`
+  (`[headDim]` each, confirmed present) that `MMDiTModel` never read or applied at all. Added
+  `ApplyHeadRmsNorm` (per-head RMSNorm, no bias, no-ops gracefully if a checkpoint variant lacks
+  the tensor) applied to Q and K right after the qkv split, on both the image and text streams.
+
+**Result: the pipeline now loads and progresses much further into real denoising than ever before,
+but crashes with a native `AccessViolationException` inside `DiffusionOps.Linear`'s vectorized dot
+product, deeper in the block loop** (not on the very first op, as the two fixes above were) — a
+real, further, NOT-yet-root-caused bug, most likely a buffer-size/dimension mismatch somewhere
+downstream of the attention block (MLP, adaLN modulation width, or a later block's own tensor
+shape not matching the hardcoded `HiddenSize=1536`/`NumHeads=24`/`Depth=24`/`ContextSize=4096`
+defaults — not yet checked against this specific checkpoint's real shapes one by one). Time-boxed;
+stopping here with real, verified progress (2 genuine blocking bugs fixed, checkpoint now loads and
+runs partway) rather than continuing to guess at the crash site. `OpenTail.Stingray.Tests.Diffusion`
+re-run clean (94/94), no regressions from either fix. Checkpoints deleted after this pass per
+project convention (`city96`'s GGUF + the HF diffusers text-encoder/VAE files, ~10GB total).
+
+**Next step for whoever picks this up**: dump the exact array lengths at the `DiffusionOps.Linear`
+call site that crashes (which `Lin(...)` call, its `n`/`inDim`/`outDim` vs. the actual loaded
+weight buffer's real element count) to localize the dimension mismatch precisely, rather than
+guessing from the stack trace alone.
+
 ## Priority 4 — performance
 
 [05-cpu-architecture-kernel-opportunities.md](05-cpu-architecture-kernel-opportunities.md). All of

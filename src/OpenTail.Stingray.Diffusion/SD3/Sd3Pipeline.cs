@@ -61,6 +61,52 @@ public sealed class Sd3Pipeline : IDisposable, IDiffusionPipeline
         return new Sd3Pipeline(weights, tokenizer, clipL, clipG, mmdit, vae);
     }
 
+    /// <summary>
+    /// Loads from the standard HuggingFace diffusers multi-file layout (separate
+    /// text_encoder/text_encoder_2/transformer/vae safetensors) instead of a single combined
+    /// checkpoint. The official StabilityAI single-file "..._incl_clips[_t5xxlfp8].safetensors"
+    /// variant <see cref="Load"/> targets is gated on HuggingFace and has no ungated mirror; the
+    /// separate-file diffusers layout (e.g. ckpt/stable-diffusion-3.5-medium) is freely available.
+    /// Each of these files is already tensor-name-stripped to what <see cref="Load"/>'s
+    /// <see cref="PrefixWeightLoader"/> calls would produce (confirmed by direct inspection: the
+    /// standalone transformer file's tensors are named e.g. "context_embedder.bias", matching
+    /// the combined file's "model.diffusion_model.context_embedder.bias" with that prefix
+    /// stripped) — so no prefix wrapping is needed here, just direct per-file loaders.
+    /// </summary>
+    public static Sd3Pipeline LoadSeparate(
+        string clipLPath, string clipGPath, string transformerPath, string vaePath,
+        string? tokenizerPath = null, IComputeBackend? backend = null)
+    {
+        tokenizerPath ??= Path.Combine(AppContext.BaseDirectory, "models", "clip_tokenizer.json");
+        var tokenizer = ClipTokenizer.FromFile(tokenizerPath);
+
+        // The standalone HF diffusers text_encoder/text_encoder_2 safetensors keep the real
+        // "text_model." prefix on every tensor (confirmed by direct inspection); the encoder
+        // classes' own tensor lookups (shared with the combined-checkpoint Load() path above,
+        // where PrefixWeightLoader already strips down past this level) expect it stripped.
+        var clipLWeights = new PrefixWeightLoader(SafetensorsLoader.Open(clipLPath), "text_model.");
+        var clipL = new ClipLEncoder(clipLWeights);
+        var clipGWeights = new PrefixWeightLoader(SafetensorsLoader.Open(clipGPath), "text_model.");
+        var clipG = new OpenClipGEncoder(clipGWeights);
+
+        // The transformer file may be either a standalone safetensors export using the REAL
+        // StabilityAI/ComfyUI tensor names (joint_blocks/x_embedder/context_embedder -- what
+        // MMDiTModel expects, matching the combined Load() path after prefix-stripping) or a
+        // GGUF conversion (which also preserves those same real names at the root, no prefix at
+        // all) -- NOT the HF `diffusers`-native re-export (transformer_blocks/pos_embed.proj/
+        // separate add_q_proj|add_k_proj|add_v_proj), which is a structurally different fused-QKV
+        // layout MMDiTModel does not implement and was not attempted here.
+        IWeightLoader mmditWeights = transformerPath.EndsWith(".gguf", StringComparison.OrdinalIgnoreCase)
+            ? GgufWeightLoader.Open(transformerPath)
+            : SafetensorsLoader.Open(transformerPath);
+        var mmdit = new MMDiTModel(mmditWeights, prefix: "", backend: backend);
+
+        var vaeWeights = SafetensorsLoader.Open(vaePath);
+        var vae = new VaeDecoder(vaeWeights, backend: backend);
+
+        return new Sd3Pipeline(mmditWeights, tokenizer, clipL, clipG, mmdit, vae);
+    }
+
     public void Generate(
         string prompt,
         string? negativePrompt = null,
