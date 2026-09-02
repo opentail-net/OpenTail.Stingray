@@ -448,7 +448,16 @@ so this is unrelated to any GPU-path work done this session):
   same category as the windowed-attention gap closed earlier this session — not a tensor-rename
   fix, so picking it up mid-pass would risk a half-implemented result. Still explicitly lowest
   priority (real demand for this specific architecture is lower than the others fixed this
-  session).
+  session). **Full implementation plan written 2026-09-02** (real reference read in full —
+  `tools/mtmd/models/hunyuanvl.cpp` + `clip.cpp`'s `PROJECTOR_TYPE_HUNYUANVL` position-fill branch
+  — and cross-checked against the real local checkpoint): see
+  `docs/059-hunyuanvl-implementation-plan.md`. Turns out to be FOUR independent real gaps, not
+  three: the two wrong tensor names above, PLUS the conv2d merger's real raw-byte weight-layout
+  ordering (channel-outer/spatial-inner, not the pixel-shuffle-then-linear the current code does),
+  PLUS a real, specific bilinear position-embedding resize (native grid is 128×128, needs resizing
+  to the actual image's patch grid on every forward pass — currently just truncated/added raw),
+  PLUS missing `image_newline` row-marker insertion and `image_begin`/`image_end` sequence
+  wrapping (a real token-count change, not currently implemented at all).
 
 Given the failure SHAPE (all-zero or identical-regardless-of-input) rather than "wrong but
 non-degenerate" output, the likely culprit category is a wiring/plumbing bug (an input never
