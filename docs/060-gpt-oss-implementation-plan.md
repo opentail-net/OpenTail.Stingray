@@ -292,9 +292,49 @@ waiting for it to finish, exactly as instructed.
   golden parity) all depend on it. Per-layer RoPE frequency base (global vs. SWA) IS implemented,
   independent of the YaRN gap above.
 
-## Open question for the user (superseded above for the download; still open for the rest)
+## Progress, 2026-09-02 — download complete, FIRST REAL RUN, passed
 
-The download decision is resolved (in progress). Once it completes: confirm whether to proceed
-straight to Phase 3 verification against it, and whether the external plan's specific YaRN
-parameters should be trusted as-is or re-derived from the real GGUF's own metadata once available
-(`list-metadata` against the downloaded file will settle this cheaply).
+Download finished (~11.3 GiB, `models/gpt-oss-20b-MXFP4.gguf`). Wrote and ran
+`tests/OpenTail.Stingray.Tests.ForwardPass/GptOssRealWeightSmokeTests.cs` (heavy-gated, bypasses
+`ModelCompatibility`'s gate deliberately — constructs `GptOssForwardPass` directly, since
+`gpt-oss` isn't admitted): loaded the real GGUF, read real hyperparameters from its metadata
+(confirming `general.architecture == "gpt-oss"` and `block_count` is 24 or 36 as the reference
+expects), constructed `GptOssTensorSet`/`GptOssForwardPass` against the REAL tensors, and ran one
+token through all 24 layers.
+
+**Result: PASSED.** No crash, no missing-tensor exception, no NaN/Inf in any of the 200k+ logit
+values, not all-zero. ~10 seconds wall time. This is the first time any of this code has ever
+executed — every tensor name assumption in `GptOssTensorSet.cs` (attn_q/k/v/output + biases,
+attn_sinks, post_attention_norm, ffn_gate_inp + bias, ffn_*_exps + per-expert biases) resolved
+successfully against the real file, and the whole attention/MoE/RoPE pipeline ran to completion
+without throwing.
+
+**What this proves and what it doesn't**: this is a genuine, non-trivial milestone — it means
+every tensor name is right, every shape assumption holds, the NEOX RoPE fix (caught pre-run) and
+the MXFP4 dispatch work correctly enough to not corrupt values into NaN/Inf across 24 layers of
+biased attention + sinks + alternating SWA + biased MoE with a real 32-expert router. It does
+**not** prove numerical correctness — no token has been compared against any reference yet. Per
+this codebase's Confidence scale (README.md), this moves gpt-oss from 🔵 Unexecuted to ⚪
+Implemented ("runs against real weights, not independently validated") — the same tier `deepseek2`
+sits at, except deepseek2's ⚪ tier is paired with a KNOWN-wrong 🟡 status, while gpt-oss's
+correctness is still genuinely unknown either way.
+
+**CLI unavailable this session**: `list-metadata`/`list-tensors` via the CLI were blocked by
+another session's in-progress, currently-non-compiling edit to `Program.cs`/`AdmitArchCommand.cs`/
+`PullCommand.cs` (unrelated to this work, not touched). Worked around it by reading
+`GgufModel.Metadata`/`FindTensor` directly in the test instead — which turned out to be a cleaner
+path for this anyway (no separate CLI process, same real weights).
+
+**Next steps for Phase 4-5** (still not done): the actual correctness questions — expert-selection
+identity, attention-sink magnitude sanity, SWA window boundary correctness — need either a
+reference trace (llama.cpp eval-callback, same tooling the `deepseek2` investigation built) or a
+tokenizer wired for this architecture to run a real prompt and eyeball the completion. Neither
+done this session; this smoke test used a fixed raw token id specifically to avoid needing a
+working tokenizer path first.
+
+## Open question for the user
+
+Confirm whether to proceed to Phase 4 (a real prompt + eyeballed/reference-compared completion,
+needs a tokenizer wired for `gpt-oss` — check whether this codebase's existing tokenizer
+infrastructure already covers gpt-oss's `tokenizer.ggml.pre` value or needs its own entry) next,
+or pause here given the CLI is currently unbuildable from another session's in-progress work.
