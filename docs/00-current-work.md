@@ -180,8 +180,29 @@ that is more elegant but lower-visibility.
    `AddSpacePrefix`) are permanent and covered by `SpmMergeByScoreTests.cs`'s synthetic fuzz suite
    regardless of xverse's own license.
 
+9. **MusicGen (text-to-music) — first real end-to-end generation working, 2026-09-02.**
+   `facebook/musicgen-small` has 2M+ HF downloads; strong popularity-adjusted case per this doc's
+   ordering rationale. Full pipeline built and run against real weights same day: T5 text
+   conditioning (bundled in musicgen-small's own checkpoint, not a separate `t5-base` download —
+   see below) -> 24-layer delayed-pattern decoder with classifier-free guidance -> EnCodec 32kHz
+   decoder, producing real non-degenerate, listenable audio
+   (`docs/audio-samples/musicgen-small-first-real-sample.wav`, gitignored/local). Two real bugs
+   found and fixed during the first real-weight run: (1) a delay-pattern input/target off-by-one
+   (a causal LM can't be fed the token it's about to predict — caught by a unit test before
+   reaching real weights), (2) a missing `enc_to_dec_proj` (768->1024) projection between the T5
+   text encoder and the decoder's cross-attention, discovered only once real tensor inspection
+   showed `musicgen-small`'s own checkpoint bundles a full `text_encoder.*` tree (same convention
+   as `Parler.T5EncoderWeights`) rather than composing a separate stock checkpoint as originally
+   assumed. Full writeup, known gaps (no numeric golden-parity reference yet, CFG null-condition
+   convention unverified, no performance/DRY pass yet) in
+   `docs/062-musicgen-implementation-plan.md`. **License note:** MusicGen checkpoints are CC-BY-NC
+   4.0 (code is MIT) — treat like the `xverse`/bucket-2 weight-license cases above, does not block
+   implementation but blocks any default-on redistribution. Next real step: a numeric golden
+   reference (ideally a real independent Python/torch run) to verify the CFG null-condition
+   convention and per-stage numerics, not further structural work.
+
 **P3 and later campaigns (not scheduled, revisit only after the above closes):**
-9. **DeepSeek2/MiniCPM3 MLA (also covers the DeepSeek-V3/R1 lineage)** — the single biggest
+10. **DeepSeek2/MiniCPM3 MLA (also covers the DeepSeek-V3/R1 lineage)** — the single biggest
    architectural lift in the coverage plan (5 genuinely new mechanisms: MLA itself, the
    compressed-latent KV cache page layout, DeepSeek's own YaRN `mscale` correction variant,
    leading-dense-block MoE routing, and DeepSeek2OCR's separate branch — see
@@ -197,14 +218,14 @@ that is more elegant but lower-visibility.
    plain autoregressive generation) — worth confirming against a real V3/R1 GGUF's tensor inventory
    before assuming parity with V2. Potentially high popularity if ever tackled (R1 in particular),
    but deliberately deprioritized behind smaller, faster wins.
-10. **Newer LTX families (LTX-2.3/2.5, etc.)** — a later campaign once the base LTX-Video port is
+11. **Newer LTX families (LTX-2.3/2.5, etc.)** — a later campaign once the base LTX-Video port is
     real; these newer variants individually out-download even the original LTX-Video model.
-11. **GPT-OSS** — needs multiple substantial new mechanisms (attention sinks, alternating
+12. **GPT-OSS** — needs multiple substantial new mechanisms (attention sinks, alternating
     sliding-window attention, biased MoE experts, an OpenAI-specific SwiGLU/gating variant).
     Potentially high popularity, but explicitly a new campaign, not a known/started gap — do not
     chase this opportunistically ahead of the ordered list above just because it's individually
     popular; that violates the consolidation strategy this list is built around.
-12. **FLUX.1 — run for the first time 2026-09-01: real bugs found and fixed, but output is still
+13. **FLUX.1 — run for the first time 2026-09-01: real bugs found and fixed, but output is still
     wrong (structural stub → real-but-broken port, same stage as Wan/LTX).** Downloaded a full
     real checkpoint set for the first time ever (`city96/FLUX.1-schnell-gguf` Q2_K DiT + real
     `ae.safetensors`/`clip_l.safetensors`/T5-XXL fp8 text encoders + real CLIP/T5 tokenizer.jsons,
@@ -299,7 +320,7 @@ that is more elegant but lower-visibility.
     ae.safetensors --clip-l clip_l.safetensors --clip-tokenizer tokenizer.json --t5xxl
     t5xxl_fp8_e4m3fn.safetensors --t5-tokenizer tokenizer_2/tokenizer.json -p "a red apple on a
     wooden table" --steps 4 --seed 42`.
-13. **Stable Audio 3** — **checked 2026-09-02, genuine unwired stub — same day, all three real
+14. **Stable Audio 3** — **checked 2026-09-02, genuine unwired stub — same day, all three real
     components (text encoder, DiT, VAE decode) fully ported and golden-verified against the real
     reference.** See [057 — Stable Audio 3 implementation plan]
     (057-stable-audio-3-implementation-plan.md) for full detail. `stabilityai/
@@ -375,6 +396,13 @@ that is more elegant but lower-visibility.
     count, measured no better at 25 steps than 3) — the test's threshold (0.3) reflects that real
     measurement rather than an aspirational tighter bound. A real listening/quality check at
     realistic, non-instability-triggering durations remains a real gap.
+
+    **CLOSED, 2026-09-02.** Generated a real 6s sample ("lofi house loop", seed 42, steps 25,
+    cfg_scale=6.0 — the real Gradio-demo defaults, deliberately not the golden fixture's chaotic
+    0.5s/high-magnitude case) and had the operator listen. **Verdict: "100% good."** Stable Audio 3
+    is now fully done — every component golden-verified numerically, and output quality confirmed by
+    ear at a realistic duration. See `docs/057-stable-audio-3-implementation-plan.md` for the full
+    detail; README status matrix updated to match.
 
 ---
 
@@ -1078,6 +1106,20 @@ ownership Phase 0 deliverable 1 (both inventories) is now **DONE, 2026-08-15**:
   classification pass itself.
 
 ## SD3/3.5 run for the first time ever (2026-09-02): five real blocking bugs found and fixed; correctness now blocked on CPU performance, not a known bug
+
+**UPDATE (2026-09-02, later): the heading above is now stale.** The 20-step disambiguation run this
+section called for has been done (`docs/057-sd35-performance-handoff.md`): same prompt/seed,
+256×256, 20 steps (real SD3.5's recommended 20-28 range) — 656.9s/11m5s — output is still pure
+disorganized color noise, structurally indistinguishable from the earlier 4-step result. This rules
+out "too few steps" and confirms a real, remaining correctness bug, not a performance/convergence
+question. The timestep/pooled-embedding conditioning stage has since been golden-verified correct
+(`Sd3TimestepEmbedParityTests.cs`, cosine > 0.999), narrowing the bug to per-block math — dual-attention
+gate ordering (`gate_msa2` applying to `attn2` vs `attn`), the QK-RMSNorm per-head axis, or joint
+attention itself. None of the five bugs already fixed were ever golden-verified against a numpy
+reference (only structurally reasoned + crash-driven), unlike this project's usual bar. **Next real
+step is the same block-by-block diffusers-reference numeric diff methodology used for LTX-Video/FLUX
+(`docs/055-ltx-video-implementation-plan.md`/`docs/056-flux-tiling-artifact-handoff.md`), not further
+performance work.** See `docs/057-sd35-performance-handoff.md` for the full, current handoff.
 
 `Sd3Pipeline`/`MMDiTModel` were real, non-stubbed ports that had literally never been run against
 a real checkpoint (per the README's own prior honest status). Picked this up as a natural
