@@ -88,3 +88,28 @@ The solution (`OpenTail.Stingray.slnx`) is organized into four core layers:
 * **Subsystem Architecture & Layouts**: [docs/reference/OpenTail.Stingray-Design.md](docs/reference/OpenTail.Stingray-Design.md)
 * **Model Command Examples & Archive**: [docs/reference/claude-reference-archive.md](docs/reference/claude-reference-archive.md)
 * **Active Engineering Backlog**: [docs/00-current-work.md](docs/00-current-work.md)
+* **Coverage tooling** (`pull`, `admit-arch`, `gen-vision-scaffold`): [docs/061-coverage-tooling.md](docs/061-coverage-tooling.md)
+
+---
+
+## Coverage tooling: `pull` / `admit-arch` / `gen-vision-scaffold`
+
+Three CLI commands exist specifically to speed up this project's "run any GGUF from Hugging Face"
+goal — see [docs/061-coverage-tooling.md](docs/061-coverage-tooling.md) for full usage and how
+each works internally. Short version:
+
+* `stingray pull -r <owner/repo>` — download a GGUF straight from a Hugging Face repo id (quant
+  selection, sharded-checkpoint support, resumable download). Use this instead of fetching
+  checkpoints by hand before running/admitting a new architecture.
+* `stingray admit-arch -m <path> [--reference-tokens ids] [-p prompt]` — triages a GGUF whose
+  `general.architecture` isn't yet in `ModelCompatibility`'s allowlist: tokenizer/tensor
+  inventory, a real bypassed forward-pass run, and (given a reference token sequence captured
+  from `llama-server`/`llama-tokenize`) a pasteable `ADMIT`/`REJECT` verdict block. Use this as
+  the first step whenever admitting a new text-generation architecture — it does not replace
+  capturing a real independent reference, only the mechanical comparison against it.
+* `stingray gen-vision-scaffold -m <mmproj> -a <arch>` — real tensor/metadata inventory plus a
+  starter `<Arch>VisionEmbedderParityTests.cs` for a new vision architecture. The independent
+  oracle is the real vendored `tools/llama.cpp/llama-mtmd-cli.exe`/`llama-mtmd-debug.exe`
+  binaries, not a hand-written reimplementation — **do not add new Python reference scripts**
+  (`scripts/*_ref.py`); that pattern predates this project's no-Python rule and is not being
+  extended.
