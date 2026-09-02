@@ -102,4 +102,40 @@ public sealed class AudioGenGenerationSmokeTests : HeavyTestBase
 
         Assert.True(File.Exists(outPath));
     }
+
+    /// <summary>A second real sample with a more acoustically distinctive prompt than "heavy rain"
+    /// (which is itself a genuinely broadband/noise-like real-world sound, per the
+    /// 2026-09-02 investigation in docs/063-audiogen-implementation-plan.md) -- meant as a fairer
+    /// by-ear read on this checkpoint's real quality ceiling.</summary>
+    [Fact]
+    public void Generate_RealWeights_WritesSecondListenableSample()
+    {
+        var weights = FindWeights();
+        Assert.SkipUnless(weights is not null,
+            "models/audiogen-medium/{audiogen-medium-lm.safetensors,audiogen-medium-encodec16k.safetensors,t5-large.safetensors,t5-large-tokenizer.json} not found");
+        var (lmPath, codecPath, t5Path, tokenizerPath) = weights!.Value;
+
+        string? repoRoot = FindRepoFile("README.md");
+        Assert.SkipUnless(repoRoot != null, "repo root not found");
+        string samplesDir = Path.Combine(Path.GetDirectoryName(repoRoot!)!, "docs", "audio-samples");
+        Directory.CreateDirectory(samplesDir);
+
+        using var lmLoader = SafetensorsLoader.Open(lmPath);
+        using var codecLoader = SafetensorsLoader.Open(codecPath);
+        using var t5Loader = SafetensorsLoader.Open(t5Path);
+
+        var textEncoderWeights = AudioGenTextEncoderWeights.Load(t5Loader);
+        var tokenizer = T5Tokenizer.FromFile(tokenizerPath);
+        var transformerWeights = new AudioGenTransformerWeights(lmLoader);
+        var codecWeights = AudioGenEncodecDecoderWeights.Load(codecLoader);
+        var generator = new AudioGenGenerator(textEncoderWeights, tokenizer, transformerWeights, codecWeights);
+
+        var pcm = generator.Generate("a dog barking twice", durationSeconds: 5.0f, seed: 7,
+            guidanceScale: AudioGenConfig.DefaultGuidanceScale, topK: AudioGenConfig.DefaultTopK, temperature: AudioGenConfig.DefaultTemperature);
+
+        string outPath = Path.Combine(samplesDir, "audiogen-medium-dog-bark-sample.wav");
+        WavWriter.WriteWav(outPath, pcm, sampleRate: AudioGenConfig.SampleRate, channels: 1);
+
+        Assert.True(File.Exists(outPath));
+    }
 }
