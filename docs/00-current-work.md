@@ -260,7 +260,12 @@ that is more elegant but lower-visibility.
     required either, since this bypasses that lane entirely by loading a GGUF directly).
     `AceStepQwen3TextEncoderTests` passes against real weights with the real SFT-formatted prompt
     template. **Found and worked around a real engine bug in the process, tracked separately
-    below (item 12).**
+    below (item 12).** Also landed Phase F (Oobleck VAE decoder, out of order — done early since
+    it was already fully specified from real `diffusers` source): `AceStepOobleckDecoder.cs`
+    passes against the real 337MB VAE checkpoint, and independently CONFIRMS the 25Hz-latent/
+    48kHz claim mathematically (`product(downsampling_ratios)=2*4*4*6*10=1920`, `48000/1920=25`
+    exactly) rather than just citing it. Two components (text encoder, VAE decoder) now real and
+    tested; DiT, condition encoder, and flow-matching scheduler remain.
 12. **Real NaN bug in `Engine.ForwardPass`'s f16 qwen3 path — found 2026-09-03 while testing
     ACE-Step's Qwen3 text encoder, NOT ACE-Step-specific.** A real 13-token sequence (real ACE-Step
     SFT-prompt text, official `Qwen/Qwen3-Embedding-0.6B-GGUF` f16 quant) produces NaN logits at

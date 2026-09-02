@@ -265,6 +265,29 @@ qwen3 path having a genuine NaN-producing bug in shared, heavily-used engine cod
 investigation independent of ACE-Step — flagged in `docs/00-current-work.md`, not silently
 worked around without a record.
 
+## Phase F progress, 2026-09-03: Oobleck VAE decoder working (real weights, out of order per the plan's own Phase F slot -- done early since it was already fully specified)
+
+`src/OpenTail.Stingray.Diffusion/AceStep/Vae/AceStepOobleckDecoder.cs`: real `AutoencoderOobleck`
+decoder, transcribed directly from `diffusers` 0.40.0 source, tensor names/shapes confirmed
+against the real checkpoint (`vae/diffusion_pytorch_model.safetensors`, downloaded in full this
+session, 337MB). Self-contained rather than force-reusing `Primitives.EncodecDecoderKernels`
+(genuinely different Snake activation formula -- see below). Real test
+(`AceStepOobleckDecoderTests`) passes against real weights: correct output shape, finite,
+non-silent PCM from a synthetic latent.
+
+**Independently confirmed the 25Hz/48kHz claim mathematically**, not just cited from
+documentation: real hop length = `product(downsampling_ratios)` = `2*4*4*6*10 = 1920`;
+`48000/1920 = 25` exactly. The test asserts both numbers directly from
+`AceStepConfig`'s real config values.
+
+**Real decoder channel progression note** (a correction to this plan's own earlier assumption):
+the channel-per-stage sequence is `2048 -> 1024 -> 512 -> 256 -> 128 -> 128` -- NOT a clean
+halving at every stage (the last stage keeps 128->128) -- derived from the real
+`channel_multiples=[1,2,4,8,16]` config list the same way the real `OobleckDecoder.__init__`
+computes each block's `input_dim`/`output_dim`, not assumed to follow
+`Primitives.EncodecDecoderWeights.DefaultChannelsPerStage`'s simple doubling pattern (that helper
+does not apply here and was correctly NOT reused for this reason).
+
 ## Immediate next steps (in order)
 
 1. Download the real weights (`acestep-v15-turbo/model.safetensors` ~4.79GB,
