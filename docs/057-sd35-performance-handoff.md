@@ -88,7 +88,9 @@ vs. the earlier 4-step run). **656.9s / 11m5s wall clock.** Output is still pure
 color noise, structurally indistinguishable from the 4-step result — no partial apple/table
 shape, no convergence trend visible between the two step counts. This rules out "too few steps"
 conclusively: a genuinely-converging model shows recognizable structure emerging well before 20
-steps at this resolution. **Next step is the numeric block-by-block diffusers-reference
+steps at this resolution. **Python 3.14 + torch 2.11+cpu + diffusers are already installed on this
+machine** (`python` on PATH, not `python3` — confirmed 2026-09-02, removes the "needs a Python
+diffusers env" setup step previously assumed blocking this). **Next step is the numeric block-by-block diffusers-reference
 comparison** (same methodology as `docs/055-ltx-video-implementation-plan.md`/
 `docs/056-flux-tiling-artifact-handoff.md`) — not more performance work. Suspect areas to check
 first, in order of how recently they were touched without being numerically verified against the
