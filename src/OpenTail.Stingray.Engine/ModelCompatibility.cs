@@ -682,6 +682,23 @@ public static class ModelCompatibility
     // lightning-indexer/DSA concept with deepseek4, but deepseek32's indexer is simpler (a real
     // raw indexer_attn_k tensor, no compression needed).
     //
+    // gpt-oss — NOT admitted. GptOssForwardPass (GptOssForwardPass.cs) is a structurally
+    // complete ALPHA/UNTESTED IForwardPass: GQA attention with biased QKVO, attention sinks,
+    // alternating 1:1 sliding/full-window masking, and MoE with per-expert biases, the OAI
+    // SwiGLU activation, and select-then-softmax gating. NEVER RUN — a real gpt-oss-20b MXFP4
+    // GGUF download was started but this code was written without waiting for it, per explicit
+    // user direction. Unlike DeepSeek, this codebase ALREADY has full MXFP4 weight-format
+    // support (SimdKernels.MatVecMxfp4, admitted dtype) — the real gap here was purely the
+    // architecture graph, not the quantization format; see
+    // docs/060-gpt-oss-implementation-plan.md for the full architecture-mapping audit against
+    // an external plan that incorrectly assumed MXFP4 was missing. Known gap: RoPE is plain
+    // (non-YaRN) — an external, NOT-independently-confirmed claim says gpt-oss-20b uses YaRN
+    // (factor 32/orig-ctx 4096/beta_fast 32/beta_slow 1/theta 150000); if a real GGUF confirms
+    // this, port the same already-verified YaRN formula chain used for deepseek32
+    // (`ApplyYarnRope` in DeepSeek32ForwardPass.cs) rather than re-deriving it. Per-expert MoE
+    // bias tensor slicing was also not independently re-verified against a real GGUF's actual
+    // layout. Do not admit until a real checkpoint produces a passing receipt.
+    //
     // minicpm — NOT admitted. The forward-pass scale trio (reusing Granite's graph, see
     // GraniteGreedyParityTests) is implemented and presumed correct, but MiniCPM4-0.5B — the only
     // Apache-2.0 checkpoint tried (2026-08-08) — declares tokenizer.ggml.model=llama with a
