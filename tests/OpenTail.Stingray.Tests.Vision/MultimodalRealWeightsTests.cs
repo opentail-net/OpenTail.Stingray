@@ -294,4 +294,139 @@ public sealed class MultimodalRealWeightsTests
         Assert.Equal(tokenCountA, tokenCountB);
         ValidateEmbeddingRigorously(tokensA, tokensB, tokenCountA, embedder.EmbeddingDim);
     }
+
+    // ---- Checkpoints present locally with real weights but never previously exercised by any
+    // test (2026-09-02 coverage sweep) -- same "sitting untested" shape KimiVl/MiniCpmV/YoutuVl/
+    // HunyuanVl were in before real bugs were found in each. Differentiation-level only, matching
+    // this file's existing bar; a real bug found via any of these should get the same
+    // golden-verification treatment (scripts/<name>_ref.py + *EmbedderParityTests.cs) the others
+    // got, not just a fix.
+
+    [Fact]
+    public void PaddleOcr_RealWeights_LoadsAndEmbedsImage()
+    {
+        string? path = FindModelPath("PaddleOCR-VL-1.6-GGUF-mmproj.gguf") ?? FindModelPath("mmproj-paddleocr-vl-1.6.gguf");
+        if (path is null) return;
+
+        using var embedder = UnifiedVisionPipeline.Open(path);
+        Assert.NotNull(embedder);
+
+        var (imgA, imgB) = CreateTestImagePair(280, 280);
+        var tokensA = embedder.EmbedImage(imgA, 280, 280, out int tokenCountA);
+        var tokensB = embedder.EmbedImage(imgB, 280, 280, out int tokenCountB);
+
+        Assert.Equal(tokenCountA, tokenCountB);
+        ValidateEmbeddingRigorously(tokensA, tokensB, tokenCountA, embedder.EmbeddingDim);
+    }
+
+    [Fact]
+    public void DotsOcr_RealWeights_LoadsAndEmbedsImage()
+    {
+        string? path = FindModelPath("mmproj-dots.ocr-Q8_0.gguf");
+        if (path is null) return;
+
+        using var embedder = UnifiedVisionPipeline.Open(path);
+        Assert.NotNull(embedder);
+
+        var (imgA, imgB) = CreateTestImagePair(280, 280);
+        var tokensA = embedder.EmbedImage(imgA, 280, 280, out int tokenCountA);
+        var tokensB = embedder.EmbedImage(imgB, 280, 280, out int tokenCountB);
+
+        Assert.Equal(tokenCountA, tokenCountB);
+        ValidateEmbeddingRigorously(tokensA, tokensB, tokenCountA, embedder.EmbeddingDim);
+    }
+
+    [Fact]
+    public void Granite4Vision_RealWeights_LoadsAndEmbedsImage()
+    {
+        string? path = FindModelPath("mmproj-granite-4.0-3b-vision-f16.gguf");
+        if (path is null) return;
+
+        using var embedder = UnifiedVisionPipeline.Open(path);
+        Assert.NotNull(embedder);
+
+        // Native image_size=384, patch_size=16 (24x24 patch grid) -- confirmed via list-metadata.
+        var (imgA, imgB) = CreateTestImagePair(384, 384);
+        var tokensA = embedder.EmbedImage(imgA, 384, 384, out int tokenCountA);
+        var tokensB = embedder.EmbedImage(imgB, 384, 384, out int tokenCountB);
+
+        Assert.Equal(tokenCountA, tokenCountB);
+        ValidateEmbeddingRigorously(tokensA, tokensB, tokenCountA, embedder.EmbeddingDim);
+    }
+
+    [Fact]
+    public void GraniteVision3_RealWeights_LoadsAndEmbedsImage()
+    {
+        // clip.projector_type is real "mlp" on this checkpoint (confirmed via list-metadata), not
+        // "granite4_vision" -- routes through LlavaAdapter, not Granite4Adapter. Testing via
+        // UnifiedVisionPipeline.Open so it exercises whatever the real autodetect routes to.
+        string? path = FindModelPath("mmproj-granite-vision-3.2-2b-f16.gguf");
+        if (path is null) return;
+
+        using var embedder = UnifiedVisionPipeline.Open(path);
+        Assert.NotNull(embedder);
+
+        var (imgA, imgB) = CreateTestImagePair(336, 336);
+        var tokensA = embedder.EmbedImage(imgA, 336, 336, out int tokenCountA);
+        var tokensB = embedder.EmbedImage(imgB, 336, 336, out int tokenCountB);
+
+        Assert.Equal(tokenCountA, tokenCountB);
+        ValidateEmbeddingRigorously(tokensA, tokensB, tokenCountA, embedder.EmbeddingDim);
+    }
+
+    [Fact]
+    public void Llama4_RealWeights_LoadsAndEmbedsImage()
+    {
+        string? path = FindModelPath("mmproj-llama-4-scout-17b-16e-instruct-f16.gguf");
+        if (path is null) return;
+
+        using var embedder = UnifiedVisionPipeline.Open(path);
+        Assert.NotNull(embedder);
+
+        // Native image_size=336, patch_size=14 (24x24 patch grid) -- confirmed via list-metadata.
+        var (imgA, imgB) = CreateTestImagePair(336, 336);
+        var tokensA = embedder.EmbedImage(imgA, 336, 336, out int tokenCountA);
+        var tokensB = embedder.EmbedImage(imgB, 336, 336, out int tokenCountB);
+
+        Assert.Equal(tokenCountA, tokenCountB);
+        ValidateEmbeddingRigorously(tokensA, tokensB, tokenCountA, embedder.EmbeddingDim);
+    }
+
+    [Fact]
+    public void Nemotron_RealWeights_LoadsAndEmbedsImage()
+    {
+        string? path = FindModelPath("mmproj-nemotron-nano-12b-v2-vl-bf16.gguf");
+        if (path is null) return;
+
+        using var embedder = UnifiedVisionPipeline.Open(path);
+        Assert.NotNull(embedder);
+
+        // patch_size=16; using 256x256 (16x16 patch grid) rather than the native 512 max to keep
+        // the test fast -- dynamic/tiled preprocessors in this codebase generally accept smaller
+        // inputs than their configured max.
+        var (imgA, imgB) = CreateTestImagePair(256, 256);
+        var tokensA = embedder.EmbedImage(imgA, 256, 256, out int tokenCountA);
+        var tokensB = embedder.EmbedImage(imgB, 256, 256, out int tokenCountB);
+
+        Assert.Equal(tokenCountA, tokenCountB);
+        ValidateEmbeddingRigorously(tokensA, tokensB, tokenCountA, embedder.EmbeddingDim);
+    }
+
+    [Fact]
+    public void Gemma4V_E4B_RealWeights_LoadsAndEmbedsImage()
+    {
+        string? path = FindModelPath("gemma-4-E4B-it-mmproj.gguf");
+        if (path is null) return;
+
+        using var embedder = UnifiedVisionPipeline.Open(path);
+        Assert.NotNull(embedder);
+
+        // Native image_size=224, patch_size=16 (14x14 patch grid) -- confirmed via list-metadata.
+        var (imgA, imgB) = CreateTestImagePair(224, 224);
+        var tokensA = embedder.EmbedImage(imgA, 224, 224, out int tokenCountA);
+        var tokensB = embedder.EmbedImage(imgB, 224, 224, out int tokenCountB);
+
+        Assert.Equal(tokenCountA, tokenCountB);
+        ValidateEmbeddingRigorously(tokensA, tokensB, tokenCountA, embedder.EmbeddingDim);
+    }
 }

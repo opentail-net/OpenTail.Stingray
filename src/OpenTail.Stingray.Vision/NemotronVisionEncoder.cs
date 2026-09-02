@@ -113,7 +113,12 @@ public sealed unsafe class NemotronVisionEncoder
     public float[] Forward(ReadOnlySpan<float> chw, int targetWidth, int targetHeight, int patchesX, int patchesY, out int tokenCount)
     {
         int numPatches = patchesX * patchesY;
-        int nRegisters = 4; // Standard register token count
+        // Real register count (examples/llama.cpp/llama.cpp/tools/mtmd/models/nemotron-v2-vl.cpp:
+        // "const int n_registers = model.class_embedding->ne[1]") is read from the class_embedding
+        // tensor's own shape, NOT a fixed constant -- this checkpoint's real v.class_embd is
+        // [1280,16], i.e. 16 registers, not the previously-hardcoded 4. That mismatch alone put
+        // every downstream token index 12 rows off from where the real reference puts it.
+        int nRegisters = _embd > 0 ? _clsEmbdF32.Length / _embd : 0;
         int totalTokensIn = numPatches + nRegisters;
 
         var hiddenStates = new float[totalTokensIn * _embd];
@@ -279,9 +284,18 @@ public sealed unsafe class NemotronVisionEncoder
                             }
                         }
 
+                        // Real reference adds position embeddings ONLY to the patch tokens, BEFORE
+                        // concatenating the register tokens (nemotron-v2-vl.cpp: `inp = ggml_add(
+                        // ctx0, inp, model.position_embeddings)` runs while `inp` still holds only
+                        // the n_patches patch embeddings; `ggml_concat` with class_embedding happens
+                        // on the NEXT line). v.position_embd.weight's real shape [1280,1024,1] is
+                        // sized for exactly n_patches (1024 = 32x32 @ patch16/512px) with no room
+                        // for registers at all -- indexing by tokenIdx (which includes the register
+                        // offset) instead of patchIdx alone was the second half of the same
+                        // off-by-nRegisters bug that the nRegisters fix above didn't fully cover.
                         if (_posEmbdF32.Length > 0)
                         {
-                            sum += _posEmbdF32[tokenIdx * _embd + d];
+                            sum += _posEmbdF32[patchIdx * _embd + d];
                         }
 
                         output[outOffset + d] = sum;

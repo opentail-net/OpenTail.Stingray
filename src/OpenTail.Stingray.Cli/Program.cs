@@ -63,6 +63,12 @@ app.Configure(config =>
         .WithDescription("Generate dense semantic vector embeddings for text with pooling and Matryoshka support.");
     config.AddCommand<RerankCommand>("rerank")
         .WithDescription("Score and rerank candidate documents by relevance against a search query.");
+    config.AddCommand<PullCommand>("pull")
+        .WithDescription("Download a GGUF model from Hugging Face by repo id, e.g. `stingray pull -r bartowski/Qwen2.5-7B-Instruct-GGUF`");
+    config.AddCommand<AdmitArchCommand>("admit-arch")
+        .WithDescription("Triage a GGUF whose architecture is not yet allowlisted: tokenizer/tensor inventory, a real bypassed forward-pass run, and (with --reference-tokens) a formatted ADMIT/REJECT verdict.");
+    config.AddCommand<GenVisionScaffoldCommand>("gen-vision-scaffold")
+        .WithDescription("Print an mmproj's real tensor/metadata inventory and scaffold a new <Arch>VisionEmbedderParityTests.cs (pure C#, no Python).");
 });
 
 return app.Run(args);
