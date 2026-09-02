@@ -1016,15 +1016,32 @@ distinct bugs, all confirmed against the real vendored `examples/diffusers` sour
 
 **Result: five real bugs found and fixed (fused-QKV, missing QK-norm, missing SiLU-before-
 modulation, missing dual-attention, missing context_pre_only), zero crashes through the full
-24-block trunk. Numeric correctness itself is NOT yet confirmed — CPU denoising at 512×512 is too
-slow to iterate practically** (a 15-step run didn't finish inside a 15-minute wait; a 4-step run
-was still in flight when this pass was time-boxed and stopped). This is now a genuine **performance**
-blocker on verifying correctness, not a known remaining bug — everything checkable via structural
-reference comparison has been checked and fixed. `OpenTail.Stingray.Tests.Diffusion` re-run clean
-(96/96), no regressions from any of the five fixes. Checkpoints deleted after this pass per project
-convention. See `docs/057-sd35-performance-handoff.md` for a self-contained handoff prompt for
-whoever picks up the performance work next (dual-attention roughly doubles compute on the first 13
-of 24 blocks, on top of the base MMDiT cost already being CPU-bound at this size).
+24-block trunk.** `OpenTail.Stingray.Tests.Diffusion` re-run clean (98/98), no regressions.
+Checkpoints deleted after this pass per project convention.
+
+**Performance pass (2026-09-02, same day, another session/AI): ArrayPool-based `Workspace` scratch
+buffers (replacing per-call `new float[]` allocations throughout `Forward`), `Span`-based
+`Lin`/attention/norm helpers instead of array-returning ones, and `Parallel.Invoke` to run the
+CFG conditional/unconditional forward passes concurrently.** Reviewed for correctness before
+trusting: `CachedWeightReader` (the shared weight cache both concurrent `Forward` calls read from)
+is properly `lock`-guarded; each `Forward` call allocates its own local `Workspace` from
+`ArrayPool<float>.Shared` (thread-safe to rent/return concurrently, no shared mutable state
+between the two concurrent calls beyond the already-locked cache) — the concurrency change is
+correctness-safe. `OpenTail.Stingray.Tests.Diffusion` re-run clean (98/98) after these changes too.
+
+**First-ever COMPLETED real run: 256×256, 4 steps, CPU, Q8_0 GGUF — 215.0s total.** This is the
+first real, measured timing number for this pipeline (no prior run — CPU or otherwise — had ever
+finished). **Output is not yet a recognizable image** — colorful, disorganized noise, not the
+earlier "periodic tiling" signature FLUX had before its own AdaLN fix, and not obviously
+structured at all. This could mean either a still-undiscovered correctness bug, OR (more likely,
+given the caveat below) that 4 steps is genuinely too few for this non-distilled model to converge
+— unlike FLUX-schnell (a 4-step-distilled model, where 4 steps is the intended full schedule),
+real SD3.5 is NOT step-distilled and its own default/recommended step count is much higher
+(20-28). This has not been disambiguated yet — the next real test is the same prompt/seed at a
+realistic step count (try 20+) now that 215s/4-steps gives a real basis to estimate the time
+budget for that (roughly 5x longer, ballpark ~18 minutes at 256×256, before optimizing further).
+Checkpoints deleted again after this run. See `docs/057-sd35-performance-handoff.md` (updated with
+this real number) for the full handoff if picking this back up.
 
 ## Priority 4 — performance
 

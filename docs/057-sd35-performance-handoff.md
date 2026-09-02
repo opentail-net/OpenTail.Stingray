@@ -4,15 +4,14 @@
 for whoever (human or AI) picks this back up — you should not need to re-read the whole session
 history to continue.
 
-## The task
-
-Make `Sd3Pipeline`/`MMDiTModel` (`src/OpenTail.Stingray.Diffusion/SD3/`) fast enough to iterate on
-practically — the current CPU path is too slow to use as a normal dev loop. This is now a
-**performance** problem, not a correctness one: every bug found by structural comparison against
-the real reference has been found and fixed this pass (see below), and the pipeline runs the full
-24-block trunk with zero crashes. What's genuinely unverified is whether the OUTPUT is numerically
-correct, and that can't be checked yet because a single real run doesn't finish in a practical
-amount of time.
+**UPDATE (2026-09-02, same day): a first performance pass landed (ArrayPool `Workspace` +
+`Span`-based helpers + concurrent CFG passes via `Parallel.Invoke`), reviewed and confirmed
+thread-safe, and the FIRST-EVER completed run happened: 256×256, 4 steps, CPU, Q8_0 GGUF —
+**215.0s total**. Output is not yet a recognizable image (disorganized color noise, not the
+earlier "periodic tiling" signature). This is most likely because 4 steps is genuinely too few
+for this non-distilled model — real SD3.5's own recommended step count is 20-28, unlike FLUX-
+schnell's 4-step distillation — not necessarily a remaining bug, but this has NOT been
+disambiguated yet. See "Next step" at the bottom.
 
 ## What's already fixed (five real, verified bugs)
 
@@ -45,13 +44,30 @@ See `docs/00-current-work.md`'s "SD3/3.5 run for the first time ever" section fo
 per-bug narrative if you want more context on any of these — but you should not need to
 re-derive or re-verify them.
 
-## The remaining problem: CPU is too slow to verify correctness
+## Performance pass #1 (landed): ArrayPool Workspace + Span helpers + concurrent CFG
 
-A 512×512, 15-step CPU run (Q8_0 GGUF DiT + fp16 HF diffusers text encoders/VAE) did not finish
-inside a 15-minute wait (no crash, no error — it was still denoising when stopped). A follow-up
-4-step run was still in flight when this pass was time-boxed and stopped, so **no completed timing
-number exists yet for this checkpoint at this resolution**. Do not assume any specific per-step
-time from this doc — measure fresh.
+`MMDiTModel.Forward` now rents its scratch buffers once per call from `ArrayPool<float>.Shared`
+(a `Workspace` struct, disposed at the end of `Forward`) instead of allocating a fresh `float[]`
+for every intermediate at every block, and `Lin`/`ModulateNorm`/`ApplyGateAndResidual`/
+`JointMultiHeadAttention` all take `Span<float>`/`ReadOnlySpan<float>` and write into
+caller-provided buffers instead of returning new arrays. Separately, `Sd3Pipeline.Generate`'s
+denoising loop now runs the CFG conditional and unconditional `_mmdit.Forward` calls concurrently
+via `Parallel.Invoke` (previously sequential) — a real 2x-ish win on a multi-core box, since CFG
+requires two full, independent forward passes per step. Verified thread-safe before trusting: the
+shared `CachedWeightReader` weight cache both concurrent calls read from is properly
+`lock`-guarded, and each `Forward` call's `Workspace` rents its own buffers from the (thread-safe)
+`ArrayPool<float>.Shared` — no shared mutable state between the two concurrent calls beyond the
+already-locked cache. `OpenTail.Stingray.Tests.Diffusion` re-run clean (98/98) after these changes.
+
+**First real completed number: 256×256, 4 steps, CPU, Q8_0 GGUF — 215.0s.** This is a real,
+measured baseline (previous attempts at 512×512/15-steps and even 512×512/4-steps never
+completed within a practical wait, so this is the first actual data point). Scaling from here:
+512×512 is 4x the pixel/token count of 256×256, and joint attention is `O(n^2)` in token count on
+top of that, so do NOT assume linear scaling — measure 512×512 fresh rather than 4x-ing this
+number. A rough estimate for MORE steps at the SAME 256×256 resolution: ~5x the steps (4→20) is
+roughly ~5x the time if per-step cost dominates (it should, since weight loading/caching is a
+one-time cost after the first step) — ballpark ~18 minutes for a real 20-step run at 256×256,
+untested. Get a real number before committing to that estimate.
 
 What's known architecturally that affects the perf profile specifically for SD3.5-medium (as
 opposed to SD3.5-large, which doesn't have dual-attention at all, or SD3-medium/large before it,
@@ -64,14 +80,25 @@ which have neither dual-attention nor the same block count):
   8x-downsamples first) attending jointly with whatever the T5/CLIP text-token count is — the
   attention itself is `O(n^2)` in that combined token count, on top of the doubled-compute blocks.
 
-## Where to look first (suggested priority order, not mandatory)
+## Next step: disambiguate "too few steps" from "still a bug"
 
-1. **Measure before optimizing.** Get one real, complete timing number first — a full run at a
-   SMALL resolution (try 128×128 or 256×256 first; SD3.5's real minimum resolution constraints
-   haven't been checked, but VAE downsampling + patch_size=2 means width/height need to be
-   divisible by at least 16) and low step count (4), so you have a real baseline to compare
-   against before touching anything. This project's own `CLAUDE.md` rule 7 applies directly here:
-   "measure, don't assume... only keep a change if it's measurably better."
+The real 256×256/4-step run (above) produced disorganized color noise, not a recognizable image.
+Before doing ANY more performance work, run the SAME prompt/seed at a REAL SD3.5 step count
+(try 20, the low end of the real recommended 20-28 range) at the same 256×256 resolution. If that
+converges to something recognizable, the pipeline is likely correct and 4 steps was just
+genuinely insufficient (SD3.5 is not step-distilled, unlike FLUX-schnell). If it's STILL noise at
+20 steps, that's real evidence of a remaining correctness bug, and the next move is the same
+numeric block-by-block diffusers-reference comparison this project used for LTX-Video and FLUX
+(see `docs/055-ltx-video-implementation-plan.md`/`docs/056-flux-tiling-artifact-handoff.md` for
+that methodology). Do this BEFORE further perf work — optimizing something that's still
+numerically wrong wastes effort twice over.
+
+## Where to look first for further performance work (suggested priority order, not mandatory)
+
+1. **Measure before optimizing** (`CLAUDE.md` rule 7: "measure, don't assume... only keep a
+   change if it's measurably better") — the 215.0s/256×256/4-step number above is a first
+   baseline; get a fresh one after each further change, interleaved control/candidate, not a
+   single run.
 2. **Check whether GPU offload (`-g -1` / Vulkan / CUDA) already works and is faster**, before
    assuming CPU-only optimization is the right lever. `MMDiTModel`'s `Lin` helper already has a
    `_backend`-gated GPU dispatch path (`GetGpuWeight`/`_backend.Upload`/`_backend.Allocate`) —
@@ -84,12 +111,14 @@ which have neither dual-attention nor the same block count):
    assuming this is the hot path, though — the joint attention (`JointMultiHeadAttention`,
    `O(n^2)` over the combined ~1024+ token sequence) is a real candidate too, especially since it
    now runs TWICE (once for `attn`, once for `attn2`) on the first 13 blocks.
-4. **Once a real baseline number exists**, decide whether this is a "make the existing kernels
-   faster" problem (parallelization, vectorization, avoiding redundant allocations — `MMDiTModel`
-   allocates a fresh `float[]` for every intermediate at every block, e.g. `SplitQkv`/`ModulateNorm`
-   both `.Clone()`/allocate rather than reusing scratch buffers) or a "this resolution/step count is
-   just not viable on CPU, GPU is the real answer" problem. Don't assume before measuring which one
-   it is.
+4. **The allocation-avoidance pass (`Workspace`/`Span`-based helpers) already landed** — most
+   per-block intermediates now come from `ArrayPool` rentals, not fresh `float[]`s. What's LEFT
+   allocating fresh per-block: `imgTokens`/`unpatchified`/`outLatent` in `Forward` (patchify/
+   unpatchify, once per call not per-block, likely low-value to chase), and
+   `ComputeTimeAndPooledEmbedding` (once per call, also low-value). Decide next whether the
+   remaining lever is "make the existing kernels faster" (vectorization/cache-locality inside
+   `Lin`/`JointMultiHeadAttention`) or "this resolution/step count is just not viable on CPU, GPU
+   is the real answer" — don't assume which before measuring.
 
 ## How to reproduce
 
