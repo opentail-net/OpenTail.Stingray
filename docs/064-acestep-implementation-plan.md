@@ -223,6 +223,48 @@ question the first draft of this doc flagged:
    (not bidirectional) attention now has a confirmed-correct real spec to implement against
    directly, matching this project's existing per-domain-encoder convention.
 
+## Phase B progress, 2026-09-03: Qwen3 text encoder working (real GGUF, existing engine reused)
+
+The Qwen3-reuse shortcut (flagged above as needing either a GGUF conversion or a
+`SafetensorsTextModelPackage` extension) is now DONE via the simpler path: the official
+`Qwen/Qwen3-Embedding-0.6B-GGUF` quant exists on HF (no converter needed — real llama.cpp
+`convert_hf_to_gguf.py` vendored in this repo doesn't even have Qwen3 support, an older copy; the
+official quant made that moot). `stingray list-metadata` confirmed `general.architecture=qwen3`
+with every dim matching this doc's captured `Qwen3-Embedding-0.6B/config.json` exactly.
+
+`src/OpenTail.Stingray.Diffusion/AceStep/Text/AceStepQwen3TextEncoder.cs` now wraps the existing
+`Engine.ForwardPass` (GGUF-based, real qwen3 kernels this engine already runs for text generation)
+using `EnableHiddenTaps`/`HiddenTapsAt` (a pre-existing mechanism, built for DSpark draft-model
+conditioning, not written this session) to extract per-token hidden states, plus one small new
+piece of real math: `EnableHiddenTaps` captures a layer's PRE-final-norm output (HF's
+`hidden_states[i+1]` convention), but real `Qwen3Model.forward().last_hidden_state` is
+POST-final-norm — so this class applies the model's own `output_norm.weight` RMSNorm itself to
+each tapped row. Real test:
+`tests/OpenTail.Stingray.Tests.Diffusion/AceStep/AceStepQwen3TextEncoderTests.cs`, passing against
+real weights with the real SFT-formatted prompt template.
+
+### Real bug found in the shared engine (not ACE-Step-specific), worked around
+
+While testing the real SFT-formatted prompt, `Engine.ForwardPass.Prefill` produced NaN logits at
+position 12 of a real 13-token sequence
+(`[2,29051,198,14449,279,7699,41733,6911,3118,389,279,2661,4682]`, using the f16 quant). Localized
+precisely via the existing `STINGRAY_TRACE_NORMS=1` diagnostic (not written this session): every
+layer 0-26's residual-stream L2 norm stayed finite and grew normally (reaching ~600-800 by layer
+26), and layer 27 (the model's LAST transformer layer) alone turned the output to NaN for this
+specific position/token/context combination — reproduced identically via both the sequential
+`Forward` and batched `Prefill` capture paths, and confirmed NOT specific to
+`EnableHiddenTaps`/this session's new code (a raw `Prefill` call with no taps enabled at all
+reproduces it too). Cross-checked against the Q8_0 quant of the exact same checkpoint on the
+identical token sequence: **no NaN** — isolating this to the f16 weight-storage/kernel path
+specifically (plausibly an F16 dynamic-range overflow given the real, legitimately large
+activation norms by that layer, though not fully root-caused to a specific line of kernel code).
+
+**Practical resolution for ACE-Step**: `AceStepQwen3TextEncoderTests` uses the Q8_0 quant, which
+does not reproduce the bug and is smaller/faster anyway. **Real, separate follow-up**: the f16
+qwen3 path having a genuine NaN-producing bug in shared, heavily-used engine code is worth its own
+investigation independent of ACE-Step — flagged in `docs/00-current-work.md`, not silently
+worked around without a record.
+
 ## Immediate next steps (in order)
 
 1. Download the real weights (`acestep-v15-turbo/model.safetensors` ~4.79GB,

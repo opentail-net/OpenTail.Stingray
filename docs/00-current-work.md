@@ -251,9 +251,36 @@ that is more elegant but lower-visibility.
     `docs/064-acestep-implementation-plan.md`. Realistically a multi-session port even scoped to
     Turbo-only/text+lyrics-only (no planner LM, no cover/repaint/audio-conditioning, no FSQ
     tokenizer — all confirmed genuinely deferrable from the real `generate_audio` code path).
+    **Update, same day**: Phase B (Qwen3 text encoder) done — reuses the EXISTING
+    `Engine.ForwardPass` (GGUF-based, real qwen3 kernels already used for text generation) via its
+    pre-existing `EnableHiddenTaps` mechanism (built for DSpark, not written this session), plus
+    the real `output_norm.weight` RMSNorm applied manually to match HF's post-final-norm
+    `last_hidden_state` convention. Real weights: the official `Qwen/Qwen3-Embedding-0.6B-GGUF`
+    (no converter needed — no safetensors-lane change to `SafetensorsTextModelPackage` was
+    required either, since this bypasses that lane entirely by loading a GGUF directly).
+    `AceStepQwen3TextEncoderTests` passes against real weights with the real SFT-formatted prompt
+    template. **Found and worked around a real engine bug in the process, tracked separately
+    below (item 12).**
+12. **Real NaN bug in `Engine.ForwardPass`'s f16 qwen3 path — found 2026-09-03 while testing
+    ACE-Step's Qwen3 text encoder, NOT ACE-Step-specific.** A real 13-token sequence (real ACE-Step
+    SFT-prompt text, official `Qwen/Qwen3-Embedding-0.6B-GGUF` f16 quant) produces NaN logits at
+    position 12. Localized via the existing `STINGRAY_TRACE_NORMS=1` diagnostic: every layer 0-26's
+    residual norm stays finite and grows normally (~600-800 by layer 26); layer 27 (the model's
+    LAST transformer layer) alone turns it to NaN for this specific position/context. Reproduces
+    identically via both the sequential `Forward` and batched `Prefill` capture paths; confirmed
+    NOT specific to `EnableHiddenTaps` (a raw `Prefill` with no taps enabled reproduces it too).
+    The Q8_0 quant of the IDENTICAL checkpoint on the IDENTICAL token sequence does NOT reproduce
+    it — isolates this to the f16 weight-storage/kernel path specifically (plausibly an F16
+    dynamic-range overflow given the real, legitimately large activation norms by that layer, not
+    fully root-caused to a specific kernel line). Worked around for ACE-Step's purposes by using
+    the Q8_0 quant instead (smaller/faster anyway); NOT root-caused or fixed at the engine level —
+    a real, separate, low-visibility-but-concerning finding (silent NaN production, not a crash) in
+    heavily-shared code worth its own investigation. See
+    `docs/064-acestep-implementation-plan.md`'s "Phase B progress" section for the exact repro
+    (token IDs included).
 
 **P3 and later campaigns (not scheduled, revisit only after the above closes):**
-12. **DeepSeek2/MiniCPM3 MLA (also covers the DeepSeek-V3/R1 lineage)** — the single biggest
+13. **DeepSeek2/MiniCPM3 MLA (also covers the DeepSeek-V3/R1 lineage)** — the single biggest
    architectural lift in the coverage plan (5 genuinely new mechanisms: MLA itself, the
    compressed-latent KV cache page layout, DeepSeek's own YaRN `mscale` correction variant,
    leading-dense-block MoE routing, and DeepSeek2OCR's separate branch — see
@@ -269,14 +296,14 @@ that is more elegant but lower-visibility.
    plain autoregressive generation) — worth confirming against a real V3/R1 GGUF's tensor inventory
    before assuming parity with V2. Potentially high popularity if ever tackled (R1 in particular),
    but deliberately deprioritized behind smaller, faster wins.
-13. **Newer LTX families (LTX-2.3/2.5, etc.)** — a later campaign once the base LTX-Video port is
+14. **Newer LTX families (LTX-2.3/2.5, etc.)** — a later campaign once the base LTX-Video port is
     real; these newer variants individually out-download even the original LTX-Video model.
-14. **GPT-OSS** — needs multiple substantial new mechanisms (attention sinks, alternating
+15. **GPT-OSS** — needs multiple substantial new mechanisms (attention sinks, alternating
     sliding-window attention, biased MoE experts, an OpenAI-specific SwiGLU/gating variant).
     Potentially high popularity, but explicitly a new campaign, not a known/started gap — do not
     chase this opportunistically ahead of the ordered list above just because it's individually
     popular; that violates the consolidation strategy this list is built around.
-15. **FLUX.1 — run for the first time 2026-09-01: real bugs found and fixed, but output is still
+16. **FLUX.1 — run for the first time 2026-09-01: real bugs found and fixed, but output is still
     wrong (structural stub → real-but-broken port, same stage as Wan/LTX).** Downloaded a full
     real checkpoint set for the first time ever (`city96/FLUX.1-schnell-gguf` Q2_K DiT + real
     `ae.safetensors`/`clip_l.safetensors`/T5-XXL fp8 text encoders + real CLIP/T5 tokenizer.jsons,
@@ -371,7 +398,7 @@ that is more elegant but lower-visibility.
     ae.safetensors --clip-l clip_l.safetensors --clip-tokenizer tokenizer.json --t5xxl
     t5xxl_fp8_e4m3fn.safetensors --t5-tokenizer tokenizer_2/tokenizer.json -p "a red apple on a
     wooden table" --steps 4 --seed 42`.
-16. **Stable Audio 3** — **checked 2026-09-02, genuine unwired stub — same day, all three real
+17. **Stable Audio 3** — **checked 2026-09-02, genuine unwired stub — same day, all three real
     components (text encoder, DiT, VAE decode) fully ported and golden-verified against the real
     reference.** See [057 — Stable Audio 3 implementation plan]
     (057-stable-audio-3-implementation-plan.md) for full detail. `stabilityai/
