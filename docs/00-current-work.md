@@ -325,10 +325,15 @@ that is more elegant but lower-visibility.
     really wires text encoder → condition encoder → flow scheduler → VAE decoder into one call;
     `AceStepPipelineEndToEndTests` (2s duration) passes on the FIRST real end-to-end run against all
     four real checkpoints — finite, non-silent, correctly-shaped 48kHz stereo PCM from a real text
-    prompt. **Not yet done: numeric golden-parity vs. a real `diffusers` reference run, an audible
-    listening pass (WAV sample), a performance pass (now due per CLAUDE.md rule 7), and the
-    condition-encoder/DiT attention DRY pass (also now due).** See `docs/064-acestep-
-    implementation-plan.md`'s "Phase E progress" section for the full writeup.
+    prompt. Generated and numerically characterized a real 8s sample (gitignored
+    `docs/diffusion-samples/acestep_v15turbo_cinematic_orchestral_8s.wav`): RMS stable ~0.11-0.12
+    across every 0.5s window (no silence, no clipping runaway), spectral flatness 0.166 (far from
+    white-noise's 1.0, consistent with structured/tonal content) — a real, non-degenerate,
+    plausibly-musical numeric signal, but NOT a substitute for an actual human listening pass, which
+    is still outstanding. **Not yet done: numeric golden-parity vs. a real `diffusers` reference
+    run, an actual human listening pass on the generated sample, a performance pass (now due per
+    CLAUDE.md rule 7), and the condition-encoder/DiT attention DRY pass (also now due).** See
+    `docs/064-acestep-implementation-plan.md`'s "Phase E progress" section for the full writeup.
 12. **Real NaN bug in `Engine.ForwardPass`'s f16 qwen3 path — found 2026-09-03 while testing
     ACE-Step's Qwen3 text encoder, NOT ACE-Step-specific.** A real 13-token sequence (real ACE-Step
     SFT-prompt text, official `Qwen/Qwen3-Embedding-0.6B-GGUF` f16 quant) produces NaN logits at

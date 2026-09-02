@@ -401,17 +401,29 @@ formatting -> Qwen3 text encoder -> condition encoder (text+lyrics, empty lyric 
 low) passes on the FIRST real end-to-end run against all four real checkpoints: finite, non-silent,
 correctly-shaped 48kHz stereo PCM from a real text prompt.
 
+**Real sample generated and numerically characterized, same day**: an 8-second real-weight sample
+(`docs/diffusion-samples/acestep_v15turbo_cinematic_orchestral_8s.wav`, prompt "A cinematic
+orchestral soundtrack with deep drums", instrumental, seed 1234 -- gitignored, not committed, per
+this project's own rule 9) was generated via a throwaway scratch test (deleted after use, per rule
+9) and characterized the same way the AudioGen "white noise" investigation did: RMS stays stable
+around 0.11-0.12 across every 0.5s window for the full 8s (no silence, no runaway clipping -- peak
+0.47), and spectral flatness is 0.166 (far from 1.0, which would indicate white-noise-like output;
+consistent with tonal/structured audio content). This is a real, non-degenerate, plausibly-musical
+signal even at only 8 real Euler steps with the zero-`src_latents` placeholder -- reassuring, but
+NOT a substitute for an actual human listening pass (no ears were involved in producing these
+numbers) and NOT proof the zero-`src_latents` gap has zero quality cost.
+
 **Not yet done** (before calling V1 truly finished, per this project's own standards): (1) no
 numeric golden-parity check against a real `diffusers`/`Ace-Step1.5` end-to-end reference run --
 correctness rests on careful reading of the real source (documented inline throughout) plus
 real-weight non-degeneracy at every stage, not a numeric diff yet, matching the DiT's own
-not-yet-done note; (2) no audible-quality listening pass yet (generate a real WAV into
-`docs/diffusion-samples/` and listen, matching the discipline already applied to
-MusicGen/AudioGen's "white noise" investigation) -- the zero-`src_latents` gap above is the leading
-suspect if quality turns out poor; (3) no performance pass yet (CLAUDE.md rule 7 says to do this
-once porting is complete -- it now is); (4) the DRY pass between `AceStepConditionEncoder`'s and
-`AceStepDiT`'s duplicated GQA/RoPE/QK-norm attention code (also flagged, also deferred per rule 7
-until a genuine second need to touch that duplication arises) is still outstanding.
+not-yet-done note; (2) an ACTUAL human listening pass on the generated sample above is still
+outstanding (only numeric proxies have been checked so far) -- the zero-`src_latents` gap remains
+the leading suspect if a human listener finds quality lacking; (3) no performance pass yet (CLAUDE.md
+rule 7 says to do this once porting is complete -- it now is); (4) the DRY pass between
+`AceStepConditionEncoder`'s and `AceStepDiT`'s duplicated GQA/RoPE/QK-norm attention code (also
+flagged, also deferred per rule 7 until a genuine second need to touch that duplication arises) is
+still outstanding.
 
 ## Immediate next steps (in order)
 
