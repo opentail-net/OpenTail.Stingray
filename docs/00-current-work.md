@@ -228,9 +228,32 @@ that is more elegant but lower-visibility.
     (`docs/audio-samples/audiogen-medium-first-real-sample.wav`, gitignored/local). Same known
     gaps as MusicGen (no numeric golden-parity reference, no performance pass — a 48-layer/1536-dim
     model is meaningfully slower per step than MusicGen's 24-layer/1024-dim).
+11. **ACE-Step 1.5 Turbo (text-to-music, DiT+VAE) — scoped and archaeology-complete, 2026-09-03;
+    implementation not started.** Genuinely much larger scope than MusicGen/AudioGen: a hybrid
+    diffusion system (24-layer flow-matching DiT with GQA/RoPE/RMSNorm/AdaLN + cross-attention,
+    a Qwen3-Embedding-0.6B text encoder, an 8-layer lyric encoder, a 4-layer timbre encoder, and a
+    real `AutoencoderOobleck` VAE — five real, separately-trained submodules, not one codec-LM
+    variant). The `ACE-Step/Ace-Step1.5` HF repo bundles the actual reference PyTorch source as
+    `custom_code` (`modeling_acestep_v15_turbo.py`, ~2140 lines) — read directly rather than
+    reconstructed from documentation, confirmed against the real checkpoint's own tensor headers
+    (677 tensors for the turbo DiT, matching every module name the source predicts exactly). Real
+    config captured: `hidden_size=2048, heads=16, kv_heads=8 (GQA), layers=24`, alternating
+    sliding(128)/full attention, `in_channels=192` (noisy latent + src_latents + chunk_masks,
+    64 each), real hardcoded shift-1/2/3 8-step Euler-ODE timestep tables (not a generic
+    flow-matching formula). Confirmed this project's EXISTING Stable Audio 3 VAE (`AcousticVae`)
+    is a genuinely different architecture (Stability's bespoke transformer-resampling design) from
+    `AutoencoderOobleck` despite both being audio-diffusion VAEs — not reusable, would have been a
+    real mistake to assume otherwise. Scaffolded the five core classes
+    (`src/OpenTail.Stingray.Diffusion/AceStep/`: `AceStepConfig`, `AceStepGenerationParams`,
+    `AceStepModel`, `AceStepPipeline`, weight-bundle placeholders) with real config constants;
+    `AceStepPipeline.Generate` still throws `NotImplementedException`. Full architecture writeup,
+    reuse-vs-new breakdown, and the real next-step order in
+    `docs/064-acestep-implementation-plan.md`. Realistically a multi-session port even scoped to
+    Turbo-only/text+lyrics-only (no planner LM, no cover/repaint/audio-conditioning, no FSQ
+    tokenizer — all confirmed genuinely deferrable from the real `generate_audio` code path).
 
 **P3 and later campaigns (not scheduled, revisit only after the above closes):**
-11. **DeepSeek2/MiniCPM3 MLA (also covers the DeepSeek-V3/R1 lineage)** — the single biggest
+12. **DeepSeek2/MiniCPM3 MLA (also covers the DeepSeek-V3/R1 lineage)** — the single biggest
    architectural lift in the coverage plan (5 genuinely new mechanisms: MLA itself, the
    compressed-latent KV cache page layout, DeepSeek's own YaRN `mscale` correction variant,
    leading-dense-block MoE routing, and DeepSeek2OCR's separate branch — see
@@ -246,14 +269,14 @@ that is more elegant but lower-visibility.
    plain autoregressive generation) — worth confirming against a real V3/R1 GGUF's tensor inventory
    before assuming parity with V2. Potentially high popularity if ever tackled (R1 in particular),
    but deliberately deprioritized behind smaller, faster wins.
-12. **Newer LTX families (LTX-2.3/2.5, etc.)** — a later campaign once the base LTX-Video port is
+13. **Newer LTX families (LTX-2.3/2.5, etc.)** — a later campaign once the base LTX-Video port is
     real; these newer variants individually out-download even the original LTX-Video model.
-13. **GPT-OSS** — needs multiple substantial new mechanisms (attention sinks, alternating
+14. **GPT-OSS** — needs multiple substantial new mechanisms (attention sinks, alternating
     sliding-window attention, biased MoE experts, an OpenAI-specific SwiGLU/gating variant).
     Potentially high popularity, but explicitly a new campaign, not a known/started gap — do not
     chase this opportunistically ahead of the ordered list above just because it's individually
     popular; that violates the consolidation strategy this list is built around.
-14. **FLUX.1 — run for the first time 2026-09-01: real bugs found and fixed, but output is still
+15. **FLUX.1 — run for the first time 2026-09-01: real bugs found and fixed, but output is still
     wrong (structural stub → real-but-broken port, same stage as Wan/LTX).** Downloaded a full
     real checkpoint set for the first time ever (`city96/FLUX.1-schnell-gguf` Q2_K DiT + real
     `ae.safetensors`/`clip_l.safetensors`/T5-XXL fp8 text encoders + real CLIP/T5 tokenizer.jsons,
@@ -348,7 +371,7 @@ that is more elegant but lower-visibility.
     ae.safetensors --clip-l clip_l.safetensors --clip-tokenizer tokenizer.json --t5xxl
     t5xxl_fp8_e4m3fn.safetensors --t5-tokenizer tokenizer_2/tokenizer.json -p "a red apple on a
     wooden table" --steps 4 --seed 42`.
-15. **Stable Audio 3** — **checked 2026-09-02, genuine unwired stub — same day, all three real
+16. **Stable Audio 3** — **checked 2026-09-02, genuine unwired stub — same day, all three real
     components (text encoder, DiT, VAE decode) fully ported and golden-verified against the real
     reference.** See [057 — Stable Audio 3 implementation plan]
     (057-stable-audio-3-implementation-plan.md) for full detail. `stabilityai/
