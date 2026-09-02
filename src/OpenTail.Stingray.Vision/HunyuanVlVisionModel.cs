@@ -74,8 +74,8 @@ public sealed class HunyuanVlVisionModel : IDisposable
 
         if (projectionDim <= 0)
         {
-            // Infer from mm.model_proj weight dimensions
-            var pTensor = gguf.FindTensor("mm.model_proj.weight");
+            // Infer from mm.model.fc weight dimensions (real GGUF tensor name).
+            var pTensor = gguf.FindTensor("mm.model.fc.weight");
             projectionDim = pTensor.HasValue ? (int)pTensor.Value.Dimensions[1] : 4096;
         }
 

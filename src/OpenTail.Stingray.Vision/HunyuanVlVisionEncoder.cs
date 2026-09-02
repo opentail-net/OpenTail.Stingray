@@ -25,15 +25,18 @@ public sealed unsafe class HunyuanVlVisionEncoder
     private readonly float[]? _mmPreNormW;
     private readonly float[]? _mm0W;
     private readonly float[]? _mm0B;
-    private readonly float[]? _mm1W;
-    private readonly float[]? _mm1B;
+    private readonly float[]? _mm2W;
+    private readonly float[]? _mm2B;
     private readonly float[]? _mmModelProjW;
     private readonly float[]? _mmModelProjB;
     private readonly float[]? _mmPostNormW;
+    private readonly float[]? _imageNewline;
+    private readonly float[]? _imageBegin;
+    private readonly float[]? _imageEnd;
 
-    // Intermediate FFN dim for projector mm.0
+    // Intermediate FFN dim for projector mm.0 (real strided Conv2D output channels) and mm.2 (1x1 conv, real GGUF name "mm.2.weight")
     private readonly int _mm0OutDim;
-    private readonly int _mm1OutDim;
+    private readonly int _mm2OutDim;
 
     private readonly LayerWeights[] _blocks;
 
@@ -70,19 +73,29 @@ public sealed unsafe class HunyuanVlVisionEncoder
         _postLnW      = VisionOps.GetTensorArray(gguf, "v.post_ln.weight");
         _postLnB      = VisionOps.GetTensorArray(gguf, "v.post_ln.bias");
         _mmPreNormW   = VisionOps.GetTensorArray(gguf, "mm.pre_norm.weight");
+        // mm.0: real strided Conv2D (kernel=stride=n_merge), embd -> mm0OutDim. Raw GGUF layout
+        // [kw,kh,cin,cout] (ne0=kw fastest .. ne3=cout slowest) - channel OUTER, spatial INNER
+        // per-output-channel, same convention as v.patch_embd.weight / GLM-4.6V's patch merger.
         _mm0W         = VisionOps.LoadTensorF32(gguf, "mm.0.weight");
         _mm0B         = VisionOps.GetTensorArray(gguf, "mm.0.bias");
-        _mm1W         = VisionOps.LoadTensorF32(gguf, "mm.1.weight");
-        _mm1B         = VisionOps.GetTensorArray(gguf, "mm.1.bias");
-        _mmModelProjW = VisionOps.LoadTensorF32(gguf, "mm.model_proj.weight");
-        _mmModelProjB = VisionOps.GetTensorArray(gguf, "mm.model_proj.bias");
+        // mm.2: real 1x1 Conv2D (mathematically a plain per-position Linear). Real GGUF name is
+        // "mm.2.weight", NOT "mm.1.weight" (mm.1.* does not exist in the real checkpoint).
+        _mm2W         = VisionOps.LoadTensorF32(gguf, "mm.2.weight");
+        _mm2B         = VisionOps.GetTensorArray(gguf, "mm.2.bias");
+        // Real GGUF name is "mm.model.fc.weight", NOT "mm.model_proj.weight" (which does not exist).
+        _mmModelProjW = VisionOps.LoadTensorF32(gguf, "mm.model.fc.weight");
+        _mmModelProjB = VisionOps.GetTensorArray(gguf, "mm.model.fc.bias");
         _mmPostNormW  = VisionOps.GetTensorArray(gguf, "mm.post_norm.weight");
+        _imageNewline = VisionOps.GetTensorArray(gguf, "v.image_newline");
+        _imageBegin   = VisionOps.GetTensorArray(gguf, "mm.image_begin");
+        _imageEnd     = VisionOps.GetTensorArray(gguf, "mm.image_end");
 
-        // Infer projector intermediate dimensions from tensor shapes
+        // Infer projector intermediate dimensions from tensor shapes. mm.0.weight real raw shape
+        // is [kw,kh,cin,cout] (ne3=cout is the LAST/slowest dimension), not [in,out].
         var mm0T = gguf.FindTensor("mm.0.weight");
-        _mm0OutDim = mm0T.HasValue ? (int)mm0T.Value.Dimensions[1] : _projDim;
-        var mm1T = gguf.FindTensor("mm.1.weight");
-        _mm1OutDim = mm1T.HasValue ? (int)mm1T.Value.Dimensions[1] : _projDim;
+        _mm0OutDim = mm0T.HasValue ? (int)mm0T.Value.Dimensions[^1] : _embd * _nMerge * _nMerge;
+        var mm2T = gguf.FindTensor("mm.2.weight");
+        _mm2OutDim = mm2T.HasValue ? (int)mm2T.Value.Dimensions[^1] : _projDim;
 
         _blocks = new LayerWeights[_layers];
         for (int l = 0; l < _layers; l++)
@@ -125,11 +138,12 @@ public sealed unsafe class HunyuanVlVisionEncoder
         var x = new float[nP * _embd];
         Im2ColAndEmbed(chw, imgWidth, imgHeight, ps, patchesX, patchesY, x);
 
-        // 2. Learned position embeddings
+        // 2. Learned position embeddings: real v.position_embd.weight is a native 128x128 grid
+        // that must be bilinearly resized (pixel-center, align_corners=False) to the real
+        // (patchesX,patchesY) grid on every forward pass -- NOT a raw truncated add.
         if (_posEmbd != null)
         {
-            int maxP = Math.Min(nP * _embd, _posEmbd.Length);
-            for (int i = 0; i < maxP; i++) x[i] += _posEmbd[i];
+            AddResizedPosEmbd(x, patchesX, patchesY);
         }
 
         // 3. Pre-LN
@@ -209,36 +223,171 @@ public sealed unsafe class HunyuanVlVisionEncoder
         int m    = _nMerge;
         int outX = Math.Max(1, patchesX / m);
         int outY = Math.Max(1, patchesY / m);
-        tokenCount = outX * outY;
-        int mergedDim = _embd * m * m;
+        int mergedTokens = outX * outY;
 
-        var merged = new float[tokenCount * mergedDim];
-        VisionOps.PixelShuffle2x2(x, patchesY, patchesX, _embd, merged);
+        // mm.0: real strided Conv2D (kernel=stride=n_merge), NOT pixel-shuffle-then-linear.
+        var mm0Out = new float[mergedTokens * _mm0OutDim];
+        ApplyStridedConv2DMerge(x, patchesX, patchesY, m, _mm0OutDim, mm0Out);
+        VisionOps.Gelu(mm0Out);
 
-        var mm0Out = new float[tokenCount * _mm0OutDim];
-        fixed (float* mm0B = _mm0B, mm1B = _mm1B, mmModelProjB = _mmModelProjB, mmPostNormW = _mmPostNormW)
+        // mm.2: real 1x1 Conv2D == plain per-position Linear (real GGUF name "mm.2.weight").
+        var mm2Out = new float[mergedTokens * _mm2OutDim];
+        fixed (float* mm2B = _mm2B) VisionOps.MatVec(mm0Out, _mm2W, mm2B, mergedTokens, _mm0OutDim, _mm2OutDim, mm2Out);
+
+        // Insert the learned image_newline embedding after every row of the merged grid before
+        // the final projection: real token count is (outX+1)*outY, not outX*outY.
+        float[] withNewlines;
+        int rowTokens;
+        if (_imageNewline != null)
         {
-            VisionOps.MatVec(merged, _mm0W, mm0B, tokenCount, mergedDim, _mm0OutDim, mm0Out);
-            VisionOps.Gelu(mm0Out);
-
-            var mm1Out = new float[tokenCount * _mm1OutDim];
-            VisionOps.MatVec(mm0Out, _mm1W, mm1B, tokenCount, _mm0OutDim, _mm1OutDim, mm1Out);
-
-            float[] proj;
-            if (_mmModelProjW != null)
+            rowTokens = outX + 1;
+            withNewlines = new float[rowTokens * outY * _mm2OutDim];
+            for (int row = 0; row < outY; row++)
             {
-                proj = new float[tokenCount * _projDim];
-                VisionOps.MatVec(mm1Out, _mmModelProjW, mmModelProjB, tokenCount, _mm1OutDim, _projDim, proj);
+                Array.Copy(mm2Out, row * outX * _mm2OutDim, withNewlines, row * rowTokens * _mm2OutDim, outX * _mm2OutDim);
+                Array.Copy(_imageNewline, 0, withNewlines, (row * rowTokens + outX) * _mm2OutDim, Math.Min(_mm2OutDim, _imageNewline.Length));
+            }
+        }
+        else
+        {
+            rowTokens = outX;
+            withNewlines = mm2Out;
+        }
+        int gridTokens = rowTokens * outY;
+
+        // Final projection to LLM hidden size (real GGUF name "mm.model.fc.weight").
+        float[] proj;
+        int projTokens;
+        if (_mmModelProjW != null)
+        {
+            var projected = new float[gridTokens * _projDim];
+            fixed (float* mmModelProjB = _mmModelProjB)
+                VisionOps.MatVec(withNewlines, _mmModelProjW, mmModelProjB, gridTokens, _mm2OutDim, _projDim, projected);
+
+            // Wrap with mm.image_begin / mm.image_end learned LLM-hidden-size embeddings.
+            if (_imageBegin != null && _imageEnd != null)
+            {
+                projTokens = gridTokens + 2;
+                proj = new float[projTokens * _projDim];
+                Array.Copy(_imageBegin, 0, proj, 0, Math.Min(_projDim, _imageBegin.Length));
+                Array.Copy(projected, 0, proj, _projDim, projected.Length);
+                Array.Copy(_imageEnd, 0, proj, (projTokens - 1) * _projDim, Math.Min(_projDim, _imageEnd.Length));
             }
             else
             {
-                proj = mm1Out;
+                projTokens = gridTokens;
+                proj = projected;
             }
+        }
+        else
+        {
+            projTokens = gridTokens;
+            proj = withNewlines;
+        }
 
-            if (mmPostNormW != null)
-                VisionOps.RmsNorm(proj, tokenCount, _projDim, mmPostNormW, _eps);
+        tokenCount = projTokens;
 
-            return proj;
+        // mm.post_norm applies to the WHOLE wrapped sequence (including begin/end markers).
+        if (_mmPostNormW != null)
+        {
+            fixed (float* mmPostNormW = _mmPostNormW) VisionOps.RmsNorm(proj, projTokens, _projDim, mmPostNormW, _eps);
+        }
+
+        return proj;
+    }
+
+    /// <summary>
+    /// Real learned position-embedding bilinear resize: v.position_embd.weight is a native
+    /// 128x128 grid that must be resized to the real (patchesX,patchesY) grid on every forward
+    /// pass (pixel-center convention, align_corners=False), matching clip.cpp's
+    /// PROJECTOR_TYPE_HUNYUANVL branch exactly -- not a raw truncated add.
+    /// </summary>
+    private void AddResizedPosEmbd(float[] x, int patchesX, int patchesY)
+    {
+        int nGrid = (int)Math.Round(Math.Sqrt(_posEmbd!.Length / (double)_embd));
+        if (nGrid <= 0) return;
+
+        float sx = (patchesX + 0.1f) / nGrid;
+        float sy = (patchesY + 0.1f) / nGrid;
+
+        Parallel.For(0, patchesY, y =>
+        {
+            float fy = (y + 0.5f) / sy - 0.5f;
+            int y0 = Math.Clamp((int)MathF.Floor(fy), 0, nGrid - 1);
+            int y1 = Math.Clamp(y0 + 1, 0, nGrid - 1);
+            float wy1 = Math.Clamp(fy - y0, 0f, 1f);
+            float wy0 = 1f - wy1;
+
+            for (int xIdx = 0; xIdx < patchesX; xIdx++)
+            {
+                float fx = (xIdx + 0.5f) / sx - 0.5f;
+                int x0 = Math.Clamp((int)MathF.Floor(fx), 0, nGrid - 1);
+                int x1 = Math.Clamp(x0 + 1, 0, nGrid - 1);
+                float wx1 = Math.Clamp(fx - x0, 0f, 1f);
+                float wx0 = 1f - wx1;
+
+                int dstOff = (y * patchesX + xIdx) * _embd;
+                int o00 = (y0 * nGrid + x0) * _embd;
+                int o01 = (y0 * nGrid + x1) * _embd;
+                int o10 = (y1 * nGrid + x0) * _embd;
+                int o11 = (y1 * nGrid + x1) * _embd;
+
+                for (int d = 0; d < _embd; d++)
+                {
+                    x[dstOff + d] +=
+                        wy0 * wx0 * _posEmbd[o00 + d] + wy0 * wx1 * _posEmbd[o01 + d] +
+                        wy1 * wx0 * _posEmbd[o10 + d] + wy1 * wx1 * _posEmbd[o11 + d];
+                }
+            }
+        });
+    }
+
+    /// <summary>
+    /// Real strided Conv2D projector merger (mm.0): for each n_merge x n_merge block of ViT
+    /// output patches, out[o] = bias[o] + sum over (c,dy,dx) of weight[o,c,dy,dx] * hidden[srcPatch,c].
+    /// Weight raw GGUF layout is [kw,kh,cin,cout] (ne0=kw fastest .. ne3=cout slowest), i.e. for a
+    /// fixed output channel the real per-position index order is channel OUTER, spatial (dy,dx)
+    /// INNER -- the same convention as v.patch_embd.weight and GLM-4.6V's patch merger.
+    /// </summary>
+    private void ApplyStridedConv2DMerge(float[] src, int patchesX, int patchesY, int scale, int outDim, float[] dst)
+    {
+        int downX = patchesX / scale;
+        int downY = patchesY / scale;
+        int cin = _embd;
+        int kArea = scale * scale;
+
+        fixed (float* w = _mm0W)
+        {
+            var wLocal = w;
+            Parallel.For(0, downY, dy0 =>
+            {
+                for (int dx0 = 0; dx0 < downX; dx0++)
+                {
+                    int dstTokenIdx = dy0 * downX + dx0;
+                    int dstOff = dstTokenIdx * outDim;
+
+                    for (int o = 0; o < outDim; o++)
+                    {
+                        float sum = _mm0B != null ? _mm0B[o] : 0f;
+                        int wOffO = o * (cin * kArea);
+                        for (int c = 0; c < cin; c++)
+                        {
+                            int wOffC = wOffO + c * kArea;
+                            for (int dy = 0; dy < scale; dy++)
+                            {
+                                int srcY = dy0 * scale + dy;
+                                for (int dx = 0; dx < scale; dx++)
+                                {
+                                    int srcX = dx0 * scale + dx;
+                                    int srcPatchIdx = srcY * patchesX + srcX;
+                                    sum += src[srcPatchIdx * cin + c] * wLocal[wOffC + dy * scale + dx];
+                                }
+                            }
+                        }
+                        dst[dstOff + o] = sum;
+                    }
+                }
+            });
         }
     }
 

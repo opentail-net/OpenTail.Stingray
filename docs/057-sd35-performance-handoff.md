@@ -80,18 +80,25 @@ which have neither dual-attention nor the same block count):
   8x-downsamples first) attending jointly with whatever the T5/CLIP text-token count is — the
   attention itself is `O(n^2)` in that combined token count, on top of the doubled-compute blocks.
 
-## Next step: disambiguate "too few steps" from "still a bug"
+## RESOLVED (2026-09-02): still noise at 20 steps — this is a real, remaining correctness bug
 
-The real 256×256/4-step run (above) produced disorganized color noise, not a recognizable image.
-Before doing ANY more performance work, run the SAME prompt/seed at a REAL SD3.5 step count
-(try 20, the low end of the real recommended 20-28 range) at the same 256×256 resolution. If that
-converges to something recognizable, the pipeline is likely correct and 4 steps was just
-genuinely insufficient (SD3.5 is not step-distilled, unlike FLUX-schnell). If it's STILL noise at
-20 steps, that's real evidence of a remaining correctness bug, and the next move is the same
-numeric block-by-block diffusers-reference comparison this project used for LTX-Video and FLUX
-(see `docs/055-ltx-video-implementation-plan.md`/`docs/056-flux-tiling-artifact-handoff.md` for
-that methodology). Do this BEFORE further perf work — optimizing something that's still
-numerically wrong wastes effort twice over.
+Ran the disambiguation test this doc called for: same prompt/seed ("a red apple on a wooden
+table", seed 42), same 256×256 resolution, 20 steps (real SD3.5 recommended range is 20-28,
+vs. the earlier 4-step run). **656.9s / 11m5s wall clock.** Output is still pure disorganized
+color noise, structurally indistinguishable from the 4-step result — no partial apple/table
+shape, no convergence trend visible between the two step counts. This rules out "too few steps"
+conclusively: a genuinely-converging model shows recognizable structure emerging well before 20
+steps at this resolution. **Next step is the numeric block-by-block diffusers-reference
+comparison** (same methodology as `docs/055-ltx-video-implementation-plan.md`/
+`docs/056-flux-tiling-artifact-handoff.md`) — not more performance work. Suspect areas to check
+first, in order of how recently they were touched without being numerically verified against the
+real diffusers `SD35AdaLayerNormZeroX`/`JointTransformerBlock` source: the dual-attention gate
+ordering (does `gate_msa2` really apply to `attn2`'s output and not `attn`'s?), the QK-RMSNorm
+per-head axis (row-major vs. column-major head split), and the timestep/pooled-embedding
+computation feeding the AdaLN conditioning vector — none of the 5 "fixed" bugs in this doc were
+ever golden-verified against a numpy reference, only structurally reasoned from source and
+crash-driven (bounds-check messages), unlike this project's usual golden-verification bar for
+other architectures this session.
 
 ## Where to look first for further performance work (suggested priority order, not mandatory)
 

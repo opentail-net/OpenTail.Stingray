@@ -475,6 +475,18 @@ so this is unrelated to any GPU-path work done this session):
   to the actual image's patch grid on every forward pass — currently just truncated/added raw),
   PLUS missing `image_newline` row-marker insertion and `image_begin`/`image_end` sequence
   wrapping (a real token-count change, not currently implemented at all).
+  **UPDATE (2026-09-02, same day): all four gaps implemented.** Two tensor-name fixes, a real
+  strided-Conv2D merger (`ApplyStridedConv2DMerge`, adapted from `Glm4VisionEncoder.
+  ApplyPatchMerger`), the exact bilinear position-embedding resize (`AddResizedPosEmbd`), and
+  newline/begin-end wrapping with the real `(outX+1)*outY+2` token count, `mm.post_norm` moved to
+  apply to the whole wrapped sequence. Also fixed an always-false autodetect condition in
+  `UnifiedVisionPipeline.cs` found along the way (`t.Name == A && t.Name == B` can never be true
+  for a single tensor). `MultimodalRealWeightsTests` (11 tests, all real-weight architectures):
+  11/11 pass, 0 regressions — `HunyuanVl_RealWeights_LoadsAndEmbedsImage` now produces a
+  non-degenerate, input-differentiating embedding. **Not yet golden-verified** — no
+  `scripts/hunyuanvl_ref.py` numpy reference or parity test written yet (deferred, box was busy
+  with a concurrent SD3.5 test); see `docs/059-hunyuanvl-implementation-plan.md`'s update for the
+  exact remaining step. Do not mark this "done" in the README matrix until that happens.
 
 Given the failure SHAPE (all-zero or identical-regardless-of-input) rather than "wrong but
 non-degenerate" output, the likely culprit category is a wiring/plumbing bug (an input never

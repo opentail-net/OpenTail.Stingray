@@ -1,6 +1,35 @@
 # 059 — HunyuanVL (HunyuanOCR) vision encoder implementation plan
 
-**Status: PLAN ONLY, not started.** Written after reading the complete real reference
+**UPDATE (2026-09-02): all four gaps implemented.** `src/OpenTail.Stingray.Vision/
+HunyuanVlVisionEncoder.cs` now has the two tensor-name fixes (`mm.2.weight`/`mm.model.fc.weight`),
+a real strided-Conv2D merger (`ApplyStridedConv2DMerge`, adapted from `Glm4VisionEncoder.
+ApplyPatchMerger`'s index math per the DRY note below), the real bilinear position-embedding
+resize (`AddResizedPosEmbd`, exact formula from `clip.cpp`), and `image_newline` row insertion +
+`mm.image_begin`/`mm.image_end` sequence wrapping with the real `(outX+1)*outY+2` token-count
+formula, applying `mm.post_norm` to the whole wrapped sequence as the real reference does. Also
+fixed two related bugs found while implementing: `HunyuanVlVisionModel.cs`'s `projectionDim`
+inference read the same wrong `mm.model_proj.weight` name (now `mm.model.fc.weight`), and
+`UnifiedVisionPipeline.cs`'s GGUF-autodetect fallback branch had an always-false condition
+(`t.Name == "mm.pre_norm.weight" && t.Name == "mm.model_proj.weight"` — a single tensor can never
+equal two different names — fixed to two separate `.Any()` checks with the correct name).
+
+**Verification status: differentiation-level only, NOT golden-verified.** `dotnet build` clean
+(0 warnings/errors); `MultimodalRealWeightsTests` (11 tests, all real-weights vision
+architectures including `HunyuanVl_RealWeights_LoadsAndEmbedsImage`) run clean: 11/11 passed, 0
+regressions in any other architecture. This confirms the embedding is no longer all-zero and
+differentiates between two different input images — but per this plan's own step 5 and this
+session's established bar for other architectures, that is NOT sufficient to declare this
+correct. **Still needed, not done this pass** (box was busy with a concurrent SD3.5 test, so the
+numpy-reference route was deferred rather than rushed): `scripts/hunyuanvl_ref.py` (real numpy
+port of `hunyuanvl.cpp`'s `build()` + the bilinear resize, reading the same local
+`models/mmproj-hunyuanocr-q8_0.gguf`) and a matching `HunyuanVlVisionEmbedderParityTests.cs`
+per-token cosine-similarity test, the same pattern used for GLM-4.6V/Llava/Pixtral/Exaone4/
+Qwen2.5-VL/MimoVl this session. Do not treat this architecture as "done" in the README matrix
+until that golden-verification pass actually happens.
+
+---
+
+**Original status: PLAN ONLY, not started.** Written after reading the complete real reference
 (`examples/llama.cpp/llama.cpp/tools/mtmd/models/hunyuanvl.cpp`, 63 lines, read in full) and the
 real `PROJECTOR_TYPE_HUNYUANVL` position-embedding-fill branch in `clip.cpp`, cross-checked line
 by line against the current `src/OpenTail.Stingray.Vision/HunyuanVlVisionEncoder.cs` and the real

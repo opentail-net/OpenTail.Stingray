@@ -221,7 +221,7 @@ public static class UnifiedVisionPipeline
             return new QwenVlAdapter(model);
         }
 
-        if (gguf.Tensors.Any(t => t.Name == "mm.pre_norm.weight" && t.Name == "mm.model_proj.weight"))
+        if (gguf.Tensors.Any(t => t.Name == "mm.pre_norm.weight") && gguf.Tensors.Any(t => t.Name == "mm.model.fc.weight"))
         {
             var model = HunyuanVlVisionModel.Open(mmprojPath);
             return new HunyuanVlAdapter(model);
