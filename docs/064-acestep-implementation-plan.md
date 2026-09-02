@@ -144,7 +144,7 @@ src/OpenTail.Stingray.Diffusion/AceStep/
     AceStepModel.cs               -- weight bundle (DiT + VAE + Qwen3 + condition encoder)
     AceStepPipeline.cs            -- orchestration (encode -> condition -> Euler loop -> VAE decode)
     Text/
-        AceStepQwen3TextEncoder.cs   -- bidirectional-vs-causal verified against real reference before writing
+        AceStepQwen3TextEncoder.cs   -- CAUSAL Qwen3 (confirmed against real diffusers pipeline, see below) for the text prompt; lyrics use only an embedding lookup, no transformer
     Conditioning/
         AceStepConditionEncoder.cs   -- text_projector + lyric_encoder + timbre_encoder + pack_sequences
     Transformer/
@@ -164,6 +164,65 @@ audio-domain-specific pieces (Qwen3 text encoder, Oobleck VAE) still get their o
 codec-LM neighborhood, since the underlying mechanism (diffusion, not autoregressive token
 generation) is genuinely different.
 
+## Corrections and confirmations from the real `diffusers` ACE-Step pipeline (found after this doc's first draft)
+
+`diffusers` 0.40.0 (already installed in this environment) ships the complete official ACE-Step
+pipeline (`diffusers.pipelines.ace_step.pipeline_ace_step`, 1295 lines, plus
+`diffusers.models.transformers.ace_step_transformer`) — read directly, resolving every open
+question the first draft of this doc flagged:
+
+1. **Real correction to this plan's original metadata assumption**: BPM/keyscale/timesignature are
+   **NOT** projected as separate structured tensors by a dedicated encoder. They are templated
+   directly into the TEXT PROMPT STRING and encoded through the same Qwen3 text encoder as
+   ordinary text, via a real fixed template (`pipeline_ace_step.py`'s `SFT_GEN_PROMPT`/
+   `_build_metadata_string`):
+   ```
+   # Instruction
+   {instruction}            (default: "Fill the audio semantic mask based on the given conditions:")
+
+   # Caption
+   {prompt}
+
+   # Metas
+   - bpm: {bpm or "N/A"}
+   - timesignature: {timesignature or "N/A"}
+   - keyscale: {keyscale or "N/A"}
+   - duration: {int(audio_duration)} seconds
+   <|endoftext|>
+   ```
+   Lyrics use a SEPARATE, simpler template (not this one): `# Languages\n{vocal_language}\n\n#
+   Lyric\n{lyrics}<|endoftext|>`. Do not build an `AceStepMetadata` class with its own tensor
+   projection as the original plan draft suggested -- it's plain string formatting upstream of the
+   tokenizer.
+2. **Text vs. lyric encoding are genuinely different real paths, confirmed** (resolves this doc's
+   original open question #3): the formatted TEXT string runs through the FULL Qwen3 model
+   (`self.text_encoder(input_ids=...).last_hidden_state`, standard CAUSAL decoder masking, all 28
+   layers) to produce `text_hidden_states`. The formatted LYRIC string only runs through Qwen3's
+   `get_input_embeddings()` (a plain token-embedding lookup, no transformer layers at all) --
+   `AceStepLyricEncoder`'s own 8 bidirectional layers (already read from
+   `modeling_acestep_v15_turbo.py`) are what actually contextualizes the lyric embeddings. Do not
+   run the lyric text through the full Qwen3 model.
+3. **Turbo genuinely has no inference-time CFG, confirmed** (not an assumption): `do_
+   classifier_free_guidance` returns `False` whenever `is_turbo=True` regardless of the requested
+   `guidance_scale`, and the pipeline forces `guidance_scale=1.0` with a warning if a caller passes
+   one for a turbo checkpoint. Confirms V1 needs only a single conditional forward pass per step,
+   no null-condition branch at all for the Turbo path (the real `null_condition_emb` tensor exists
+   in the checkpoint for the base/SFT variants' real CFG, out of scope for V1).
+4. **Real potential shortcut worth checking before writing a new Qwen3 encoder from scratch**:
+   `"qwen3"` is already an admitted GGUF architecture in this engine's existing generic LLM
+   `ForwardPass` (`ModelCompatibility.cs`), meaning real GQA/RoPE/RMSNorm/SwiGLU kernels for this
+   exact architecture already exist and are proven (used for real Qwen3 text generation). Two real
+   open questions before relying on this: (a) does the existing `ForwardPass` API expose raw
+   per-token hidden states (needed here) rather than only next-token logits -- a diffusion
+   conditioning use case is a genuinely new consumption pattern for that engine path, not
+   necessarily already supported; (b) does a GGUF conversion of `Qwen3-Embedding-0.6B` specifically
+   exist/need producing, since the real checkpoint here is a stock safetensors release. If both
+   check out, this could replace a large fraction of the "write a new Qwen3 encoder" work in the
+   original layout below with "wire the existing engine into this pipeline as a hidden-state
+   source" -- a materially smaller task. If not, `Text/AceStepQwen3TextEncoder.cs`'s CAUSAL
+   (not bidirectional) attention now has a confirmed-correct real spec to implement against
+   directly, matching this project's existing per-domain-encoder convention.
+
 ## Immediate next steps (in order)
 
 1. Download the real weights (`acestep-v15-turbo/model.safetensors` ~4.79GB,
@@ -171,17 +230,36 @@ generation) is genuinely different.
    confirm the full 677-tensor turbo inventory (only a partial range was fetched this session) plus
    full VAE inventory against the encoder side too (only decoder tensors were visible in this
    session's partial fetch).
-2. Verify the real `AutoencoderOobleck` Snake1d formula from HF `diffusers` source (this
-   environment has network + Python access, as demonstrated during the AudioGen investigation) —
-   do not assume it matches DAC's single-parameter Snake.
-3. Verify whether ACE-Step's Qwen3 text/lyric encoding is causal or bidirectional in the real
-   pipeline code that CALLS this model (not visible in `modeling_acestep_v15_turbo.py` alone,
-   since it only consumes pre-computed `text_hidden_states`) — check the `Ace-Step1.5` repo's own
-   pipeline/inference script if one exists, or the real `transformers`/`diffusers` ACE-Step
-   pipeline class once identified.
+2. ~~Verify the real `AutoencoderOobleck` Snake1d formula~~ **DONE, same session**: real formula
+   from `diffusers/models/autoencoders/autoencoder_oobleck.py`, confirmed NOT the same as DAC's
+   single-parameter Snake: `x + (1/(exp(beta)+1e-9)) * sin(exp(alpha)*x)^2` -- both `alpha` and
+   `beta` are stored in LOG-SCALE (`logscale=True` real default), so both need `exp()` applied
+   before use, a real easy-to-miss detail (using the raw stored values directly would be a
+   real, silent bug). Full decoder structure also confirmed: `conv1(k=7,pad=3) -> N x
+   OobleckDecoderBlock(snake1 -> ConvTranspose1d(k=2*stride, pad=ceil(stride/2)) -> 3x
+   OobleckResidualUnit at dilations 1/3/9, same shape as DAC's residual stack) -> snake1 ->
+   conv2(k=7,pad=3,NO bias, channels->audio_channels)`. The decoder's `upsampling_ratios`
+   constructor param is the REVERSE of the config's `downsampling_ratios` (confirmed from the real
+   class docstring: "used in reverse order for upsampling in the decoder") -- so decoder strides
+   are `[10,6,4,4,2]` for this checkpoint's real `downsampling_ratios=[2,4,4,6,10]`, not the
+   config order directly. Structurally this is now directly buildable by adapting
+   `Primitives.EncodecDecoderKernels`'s existing `FullConv1d`/`ConvTranspose1dNoPad`/weight-norm-
+   fold helpers with a new two-parameter Snake activation swapped in for ELU.
+3. ~~Verify whether ACE-Step's Qwen3 text/lyric encoding is causal or bidirectional~~ **DONE, same
+   session**: read the real official `diffusers` ACE-Step pipeline (`diffusers` 0.40.0, already
+   installed in this environment -- ships the complete real
+   `diffusers.pipelines.ace_step.pipeline_ace_step`/`diffusers.models.transformers
+   .ace_step_transformer`, 1295+ lines, not partial). See the "Corrections and confirmations" 
+   section above for the full real answer: text is CAUSAL full-Qwen3, lyrics are embedding-lookup-
+   only, metadata is templated into the text string (not a separate tensor), and Turbo genuinely
+   skips CFG. This resolved a real wrong assumption in this plan's first draft (metadata handling)
+   before any code was written against it.
 4. Scaffold the five core classes (`AceStepConfig`, `AceStepGenerationParams`, `AceStepModel`,
-   `AceStepPipeline`, weight-loader stubs) with real constants — this session's deliverable.
-5. Build outward from there per the golden-test ladder in the original plan (config → tokenizer →
+   `AceStepPipeline`, weight-loader stubs) with real constants — **DONE, this session's deliverable**.
+5. Check whether the existing `ForwardPass`/GGUF `"qwen3"` engine path can be reused as the text
+   encoder (per the "real potential shortcut" note above) before writing a new one from scratch —
+   the highest-leverage open question for the next session.
+6. Build outward from there per the golden-test ladder in the original plan (config → tokenizer →
    Qwen3 → condition encoder → one DiT block → full DiT → one scheduler step → full 8-step latent →
    VAE → end-to-end), each with a real golden/non-degeneracy check before moving on, matching how
    MusicGen/AudioGen were verified.
