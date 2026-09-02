@@ -93,6 +93,19 @@ public static partial class PreTokenizerPatterns
     [GeneratedRegex("""[!"#$%&'()*+,\-./:;<=>?@\[\\\]^_`{|}~][A-Za-z]+|[^\r\n\p{L}\p{P}\p{S}]?[\p{L}\p{M}]+| ?[\p{P}\p{S}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+""")]
     private static partial Regex HunyuanDenseTail();
 
+    /// <summary>
+    /// GPT-4o family (also used by Llama 4, Kanana-2, and Talkie — llama.cpp folds all four onto
+    /// the same LLAMA_VOCAB_PRE_TYPE_GPT4O case). Ported from the ORIGINAL tokenizer.json regex
+    /// (llama-vocab.cpp's own comment marks it "original regex from tokenizer.json"), not
+    /// llama.cpp's std::regex-compatible ASCII rewrite of it — same reasoning as <see cref="Tekken"/>'s
+    /// choice: .NET's Unicode-category (`\p{L}`, `\p{N}`, etc.) and lookahead support means the
+    /// original is directly usable, and it's the ground truth the ASCII rewrite was itself
+    /// approximating. Distinguishes leading-uppercase-run vs. trailing-lowercase-run word shapes
+    /// (title case vs. camelCase-tail), each optionally followed by a contraction suffix.
+    /// </summary>
+    [GeneratedRegex("""[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]*[\p{Ll}\p{Lm}\p{Lo}\p{M}]+(?i:'s|'t|'re|'ve|'m|'ll|'d)?|[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]+[\p{Ll}\p{Lm}\p{Lo}\p{M}]*(?i:'s|'t|'re|'ve|'m|'ll|'d)?|\p{N}{1,3}| ?[^\s\p{L}\p{N}]+[\r\n/]*|\s*[\r\n]+|\s+(?!\S)|\s+""")]
+    private static partial Regex Gpt4o();
+
     // --- Registry --------------------------------------------------------------------------
 
     /// <summary>
@@ -173,6 +186,16 @@ public static partial class PreTokenizerPatterns
             case "deepseek3-llm":
             case "joyai-llm":
                 patterns = [DigitRun3(), Cjk(), HunyuanDenseTail()];
+                return true;
+
+            // llama.cpp: LLAMA_VOCAB_PRE_TYPE_GPT4O and the cases folded onto it. gpt-oss
+            // declares "gpt-4o" (confirmed against a real gpt-oss-20b-MXFP4.gguf's own
+            // tokenizer.ggml.pre metadata, 2026-09-02 -- docs/060-gpt-oss-implementation-plan.md).
+            case "gpt-4o":
+            case "llama4":
+            case "kanana2":
+            case "talkie":
+                patterns = [Gpt4o()];
                 return true;
 
             default:

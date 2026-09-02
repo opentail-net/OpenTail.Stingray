@@ -66,6 +66,79 @@ public sealed class GptOssRealWeightSmokeTests : HeavyTestBase
         Assert.True(anyNonZero, "all logits were exactly zero -- suspicious, likely a wiring bug");
     }
 
+    /// <summary>
+    /// Diagnostic, not a parity receipt (no known-correct reference completion exists to assert
+    /// against yet — see docs/060-...md Phase 4). Tokenizes a real prompt (exercising the new
+    /// "gpt-4o" pre-tokenizer cascade added to PreTokenizerPatterns.cs this session, confirmed
+    /// against this checkpoint's real tokenizer.ggml.pre value) and greedy-decodes a few tokens,
+    /// printing the completion for a human to eyeball. Only weak invariants are asserted (no
+    /// crash, no immediate degenerate single-token repetition) since there's nothing stronger to
+    /// check against yet.
+    /// </summary>
+    [Fact]
+    public void GptOss_TokenizesAndGreedyDecodes_ForEyeballing()
+    {
+        var path = FindModel();
+        Assert.SkipWhen(path is null, $"{ModelFile} is required for this smoke test.");
+
+        using var model = GgufModel.Open(path!);
+        var metadata = model.Metadata;
+        const string arch = "gpt-oss";
+
+        Assert.Equal("gpt-4o", Convert.ToString(metadata["tokenizer.ggml.pre"]));
+
+        var tokenizer = GgufTokenizer.FromGgufModel(model);
+        var promptTokens = tokenizer.Encode("The capital of France is");
+        Assert.True(promptTokens.Count > 0);
+
+        int numLayer = Convert.ToInt32(metadata[$"{arch}.block_count"]);
+        int embedDim = Convert.ToInt32(metadata[$"{arch}.embedding_length"]);
+        int numHeads = Convert.ToInt32(metadata[$"{arch}.attention.head_count"]);
+        int numHeadsKv = Convert.ToInt32(metadata[$"{arch}.attention.head_count_kv"]);
+        int headDim = Convert.ToInt32(metadata[$"{arch}.attention.key_length"]);
+        int numExperts = Convert.ToInt32(metadata[$"{arch}.expert_count"]);
+        int numExpertsUsed = Convert.ToInt32(metadata[$"{arch}.expert_used_count"]);
+        int vocabSize = (int)model.FindTensor("output.weight")!.Value.Dimensions[1];
+        var hp = GptOssHyperparams.FromGgufMetadata(
+            metadata, arch, numLayer, embedDim, numHeads, numHeadsKv, headDim,
+            numExperts, numExpertsUsed, vocabSize);
+
+        using var fwd = new GptOssForwardPass(model, hp);
+
+        ReadOnlySpan<float> logits = default;
+        int pos = 0;
+        foreach (int t in promptTokens)
+        {
+            logits = fwd.Forward(t, pos++);
+        }
+
+        var generated = new List<int>();
+        for (int i = 0; i < 12; i++)
+        {
+            int next = Argmax(logits);
+            generated.Add(next);
+            logits = fwd.Forward(next, pos++);
+        }
+
+        string continuation = tokenizer.Decode(generated.ToArray());
+        Console.WriteLine($"Prompt: The capital of France is");
+        Console.WriteLine($"Continuation ({generated.Count} tokens): {continuation}");
+        Console.WriteLine($"Token ids: {string.Join(", ", generated)}");
+
+        Assert.False(generated.TrueForAll(t => t == generated[0]), "degenerate: every generated token identical");
+    }
+
+    private static int Argmax(ReadOnlySpan<float> logits)
+    {
+        int best = 0;
+        float bestVal = logits[0];
+        for (int i = 1; i < logits.Length; i++)
+        {
+            if (logits[i] > bestVal) { bestVal = logits[i]; best = i; }
+        }
+        return best;
+    }
+
     private static string? FindModel()
     {
         var dir = Directory.GetCurrentDirectory();

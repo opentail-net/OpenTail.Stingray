@@ -332,9 +332,53 @@ tokenizer wired for this architecture to run a real prompt and eyeball the compl
 done this session; this smoke test used a fixed raw token id specifically to avoid needing a
 working tokenizer path first.
 
+## Progress, 2026-09-02 — Phase 4: tokenizer wired, real prompt gets "Paris" on the FIRST try
+
+Checked this checkpoint's real `tokenizer.ggml.pre` metadata directly: **`"gpt-4o"`** — not
+covered by `PreTokenizerPatterns.cs` at all (confirmed by grep before assuming). llama.cpp folds
+`gpt-4o`/`llama4`/`kanana2`/`talkie` onto the same `LLAMA_VOCAB_PRE_TYPE_GPT4O` regex cascade
+(`llama-vocab.cpp:2293-2298`) — added a new `Gpt4o()` pattern to `PreTokenizerPatterns.cs`, ported
+from the reference's own "original regex from tokenizer.json" comment (not llama.cpp's
+`std::regex`-compatible ASCII rewrite of it — same reasoning `Tekken()`'s existing doc comment
+already established: .NET's native Unicode-category/lookahead support means the original is
+directly usable). Purely additive — no existing `case` branch touched.
+
+**Extended the smoke test with a real prompt.** Tokenized "The capital of France is" with the new
+pattern, ran it through `GptOssForwardPass`, greedy-decoded 12 tokens:
+
+```
+Prompt: The capital of France is
+Continuation (12 tokens):  Paris."
+    # Test with a non-existent entity
+
+Token ids: 12650, 14396, 271, 1069, 4674, 483, 261, 2893, 130142, 9481, 198, 271
+```
+
+**The very first tokens are " Paris."** — this is real, substantive, positive evidence toward
+correctness, not just "didn't crash." Unlike every step of the `deepseek2` investigation (which
+never once produced "Paris" across 4+ rounds and multiple real bug fixes) or the still-entirely-
+unverified DeepSeek V3.2/V4 alpha code, this port got the textbook capital-of-France completion
+right on the FIRST real prompt it was ever given, with zero iteration. The trailing tokens wander
+into code-comment-shaped text, which is unsurprising and not itself evidence of a bug — this is
+raw greedy decoding with no chat template/stop sequence/sampling, on a model whose real usage
+expects the Harmony format (Phase 6, not attempted).
+
+**This does not replace a real parity receipt** — one lucky-looking prefix is not proof of
+token-for-token correctness, and this is a single prompt with no reference comparison. But it is
+strong enough evidence to make continuing toward a real receipt (Phase 5) clearly worthwhile,
+which was genuinely uncertain before this ran. Also worth noting for whoever continues: another
+session finished new coverage tooling in parallel this session —
+`stingray admit-arch -m <path> [--reference-tokens ids] [-p prompt]` (see
+`docs/061-coverage-tooling.md`) does tokenizer/tensor inventory plus a real bypassed forward-pass
+run and, given a captured reference token sequence, produces a pasteable `ADMIT`/`REJECT` verdict
+— check whether it can drive `GptOssForwardPass` directly or only the shared generic
+`Engine.ForwardPass` path (which gpt-oss isn't wired into) before assuming it "just works" for
+this architecture.
+
 ## Open question for the user
 
-Confirm whether to proceed to Phase 4 (a real prompt + eyeballed/reference-compared completion,
-needs a tokenizer wired for `gpt-oss` — check whether this codebase's existing tokenizer
-infrastructure already covers gpt-oss's `tokenizer.ggml.pre` value or needs its own entry) next,
+Confirm whether to proceed to Phase 5 (capture a real reference token sequence — needs either
+`llama-cli`/`llama-server` run against this same checkpoint, or the `admit-arch` tool's
+`--reference-tokens` flow if it turns out to support this alpha class — and do a real
+token-for-token parity check) next,
 or pause here given the CLI is currently unbuildable from another session's in-progress work.
