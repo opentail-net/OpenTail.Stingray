@@ -334,10 +334,16 @@ that is more elegant but lower-visibility.
     byte-identical GQA/RoPE/QK-norm/softmax/SiLU duplication between `AceStepDiT` and
     `AceStepConditionEncoder` into `AceStep/Primitives/AceStepAttentionKernels.cs`, matching this
     project's `Primitives/*Kernels.cs` convention; all six real-weight AceStep tests re-run and pass
-    unchanged, confirming no numerical regression. **Not yet done: numeric golden-parity vs. a real
-    `diffusers` reference run, an actual human listening pass on the generated sample, and a
-    performance pass (still due per CLAUDE.md rule 7).** See `docs/064-acestep-implementation-
-    plan.md`'s "Phase E progress" section for the full writeup.
+    unchanged, confirming no numerical regression. **Update, same day: performance pass done**
+    (measured, not assumed) — real 10s generations average **123.01s** wall-clock (3 runs after
+    warmup: 121.78/122.52/124.74s), CPU, real weights. Confirmed the matmul path already uses this
+    project's own real SIMD kernels (`SimdKernels.MatVecF32`), not a naive fallback; the "OpenBLAS:
+    not found" log line is unrelated (GGUF text-engine diagnostic, not on this path). No change kept
+    this pass — the real next lever (batching per-position `MatMul` calls into one GEMM per layer)
+    is flagged but deliberately not implemented without re-measuring first. **Not yet done: numeric
+    golden-parity vs. a real `diffusers` reference run, an actual human listening pass on the
+    generated sample.** See `docs/064-acestep-implementation-plan.md`'s "Phase E progress" section
+    for the full writeup.
 12. **Real NaN bug in `Engine.ForwardPass`'s f16 qwen3 path — found 2026-09-03 while testing
     ACE-Step's Qwen3 text encoder, NOT ACE-Step-specific.** A real 13-token sequence (real ACE-Step
     SFT-prompt text, official `Qwen/Qwen3-Embedding-0.6B-GGUF` f16 quant) produces NaN logits at

@@ -425,15 +425,28 @@ real-weight AceStep tests (text encoder, VAE decoder, DiT, condition encoder, fl
 end-to-end pipeline) re-run and pass unchanged after the extraction, confirming no numerical
 regression.
 
+**Performance pass, same day** (CLAUDE.md rule 7 -- measured, not assumed): real 10-second
+`AceStepPipeline.Generate()` calls (real weights, 8 real Euler steps, CPU, `AceStepConditionEncoder`
+lyric encoder empty since `Instrumental=true`), 3 timed runs after a warmup run to exclude JIT/weight-
+paging cost: **121.78s / 122.52s / 124.74s, mean 123.01s** -- i.e. roughly 12.3s of wall-clock per
+second of generated audio at this duration/step-count. Confirmed the CPU matmul path already goes
+through this project's own real SIMD kernels (`CfmLinearWeight.MatMul` -&gt; `SimdKernels.MatVecF32`,
+AVX2/AVX-512), NOT a naive scalar fallback -- the "OpenBLAS: not found" log line during these runs
+is unrelated to this path (that's the GGUF text-generation engine's own diagnostic, not something
+`CfmLinearWeight` depends on). No change was made this pass: `MatVecF32` is called once per sequence
+position rather than as one batched GEMM across all `t` positions at once (per-row `MatMul` loop
+inside the attention/MLP helpers) -- that's the obvious next lever if a real speedup is needed, but
+per this project's own rule ("only keep a change if it's measurably better"), it is left unimplemented
+rather than spec-implemented without re-measuring; revisit with a real profiler pass (not guesswork)
+if 10s-of-audio-in-~2-minutes turns out too slow for the intended use.
+
 **Not yet done** (before calling V1 truly finished, per this project's own standards): (1) no
 numeric golden-parity check against a real `diffusers`/`Ace-Step1.5` end-to-end reference run --
 correctness rests on careful reading of the real source (documented inline throughout) plus
 real-weight non-degeneracy at every stage, not a numeric diff yet, matching the DiT's own
 not-yet-done note; (2) an ACTUAL human listening pass on the generated sample above is still
 outstanding (only numeric proxies have been checked so far) -- the zero-`src_latents` gap remains
-the leading suspect if a human listener finds quality lacking; (3) no performance pass yet
-(CLAUDE.md rule 7 also calls for this now that porting is complete -- measure real weights, a
-realistic (not trivially short) input, multiple samples, keep only measurably-better changes).
+the leading suspect if a human listener finds quality lacking.
 
 ## Immediate next steps (in order)
 
