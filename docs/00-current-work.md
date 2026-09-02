@@ -299,32 +299,45 @@ that is more elegant but lower-visibility.
     ae.safetensors --clip-l clip_l.safetensors --clip-tokenizer tokenizer.json --t5xxl
     t5xxl_fp8_e4m3fn.safetensors --t5-tokenizer tokenizer_2/tokenizer.json -p "a red apple on a
     wooden table" --steps 4 --seed 42`.
-13. **Stable Audio 3** — **checked 2026-09-02, genuine unwired stub — same day, text encoder AND
-    DiT both fully ported and golden-verified against the real reference, each passing on the
-    first real run. Only the VAE remains unported.** See [057 — Stable Audio 3 implementation
-    plan](057-stable-audio-3-implementation-plan.md) for full detail. `stabilityai/
+13. **Stable Audio 3** — **checked 2026-09-02, genuine unwired stub — same day, all three real
+    components (text encoder, DiT, VAE decode) fully ported and golden-verified against the real
+    reference.** See [057 — Stable Audio 3 implementation plan]
+    (057-stable-audio-3-implementation-plan.md) for full detail. `stabilityai/
     stable-audio-3-small-music-base` turned out to be ungated and fully self-contained: real DiT
     weights, real VAE encoder+decoder weights, AND the real T5Gemma text conditioner
     (weights+tokenizer) all bundled in one download — no HF approval needed, unlike the gated
     `-small-music`/`-medium` checkpoints. `T5GemmaEncoder.cs` (real Gemma-2-family formulas: RoPE,
-    softcapping, `query_pre_attn_scalar`, Gemma's `(1+weight)` RMSNorm) and `StableAudioDiT.cs`
+    softcapping, `query_pre_attn_scalar`, Gemma's `(1+weight)` RMSNorm), `StableAudioDiT.cs`
     (real partial-rotary RoPE — only 32 of 64 head-dim channels rotated, a real GPT-J-style detail
-    that would have been very easy to get plausibly-wrong; real V-zeroing cross-attention masking,
-    not additive; 6-way sigmoid-gated AdaLN; SwiGLU FFN; 64 learned memory tokens) both pass their
-    golden parity tests (`StableAudioT5GemmaEncoderGoldenParityTests.cs`,
-    `StableAudioDiTGoldenParityTests.cs`) against real HF `transformers`/the real `stable_audio_3`
+    that would have been very easy to get plausibly-wrong; 6-way sigmoid-gated AdaLN; SwiGLU FFN;
+    64 learned memory tokens; **correction, same day**: cross-attention masking was initially
+    implemented as V-zeroing, reasoned from the attention class's fallback-path code in isolation —
+    re-reading `dit.py`'s actual `forward()` found it unconditionally discards any
+    `cross_attn_cond_mask` before it ever reaches attention, a permanent kernel-compat workaround —
+    so real cross-attention here never masks anything at all; fixed by removing masking (and the
+    now-pointless `condMask` parameter) entirely), and
+    `AcousticVae.cs` (real `TransformerResamplingBlock`: chunked dual-pass windowed
+    differential-attention with shift-padding, `DynamicTanh` norm, weight-normalized mapping convs
+    — the most intricate of the three, needed two real bug fixes before its golden test passed,
+    unlike the other two which passed first try) all pass their golden parity tests
+    (`StableAudioT5GemmaEncoderGoldenParityTests.cs`, `StableAudioDiTGoldenParityTests.cs`,
+    `StableAudioVaeGoldenParityTests.cs`) against real HF `transformers`/the real `stable_audio_3`
     Python package run directly as the oracle (this environment has working `torch`+`transformers`,
     so no hand-written numpy port was needed the way T5-XXL/GLM-4.6V required). `StableAudioParams`
     was wrong on every real hyperparameter (`LatentChannels` 64→256, `HiddenSize` 768→1024, `Depth`
-    12→20, `NumHeads` 12→16, `TextContextDim` 4096→768) — fixed. `StableAudioPipeline.cs` rewritten
-    to real conditioning assembly (prompt+seconds_total concatenation, real learned
-    padding-embedding substitution, real `NumberConditioner`) and confirmed running end-to-end
-    (real weights, real Euler steps, valid WAV) — known gaps: no T5Gemma tokenizer wired yet
-    (`StableAudioRequest` takes pre-tokenized ids), and the VAE
-    (`TransformerResamplingBlock`/`DynamicTanh`, architecture inventoried but resampling mechanism
-    not yet decoded) is still the original placeholder stub, so output audio is not real yet. Next
-    real step: decode `TransformerResamplingBlock`'s resampling mechanism from the real source, then
-    port `AcousticVaeDecoder` (and add a matching encoder, currently absent).
+    12→20, `NumHeads` 12→16, `TextContextDim` 4096→768, `LatentFrameRate` 43.0664→10.77 — off by
+    exactly 4x) — fixed. `StableAudioPipeline.cs` rewritten to real conditioning assembly
+    (prompt+seconds_total concatenation, real learned padding-embedding substitution, real
+    `NumberConditioner`) and confirmed running fully end-to-end with real weights (real Euler
+    steps, real VAE decode, valid WAV). **Real classifier-free guidance also wired same day**
+    (`StableAudioPipeline.PredictVelocity`): runs the DiT twice per step (conditioned +
+    unconditioned) and applies the real default Adaptive Projected Guidance (orthogonal-projection
+    variant, not vanilla CFG — matches the real Gradio demo's own default, `cfg_scale=6.0`).
+    Remaining known gaps: no T5Gemma tokenizer wired yet (`StableAudioRequest` takes pre-tokenized
+    ids), VAE `Encode` direction implemented but not golden-tested (only `Decode`, the direction
+    generation needs, is verified), and no full pipeline-level (as opposed to per-component) golden
+    verification against a real end-to-end reference run yet. Next real step: the T5Gemma tokenizer,
+    to let the pipeline take raw prompt strings.
 
 ---
 

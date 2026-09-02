@@ -83,16 +83,13 @@ public sealed class StableAudioDiTGoldenParityTests
         var secondsTotalRaw = ReadFloats(Path.Combine(goldenDir, "seconds_total_raw.bin"));
         var goldenVelocity = ReadFloats(Path.Combine(goldenDir, "velocity.bin"));
 
-        var maskBytes = File.ReadAllBytes(Path.Combine(goldenDir, "cond_mask.bin"));
-        var maskInts = new int[maskBytes.Length / 4];
-        Buffer.BlockCopy(maskBytes, 0, maskInts, 0, maskBytes.Length);
-        var condMask = new bool[maskInts.Length];
-        for (int i = 0; i < condMask.Length; i++) condMask[i] = maskInts[i] != 0;
-
         Assert.Equal(NCond, condTokens.Length / CondTokenDim);
-        Assert.Equal(NCond, condMask.Length);
 
-        var velocity = dit.Forward(latent, SeqLen, condTokens, NCond, condMask, secondsTotalRaw, timestep: 0.5f);
+        // Note: the real reference this fixture was generated from never passed a
+        // cross_attn_cond_mask to model.forward() either -- the real model UNCONDITIONALLY
+        // discards it before it would ever reach attention anyway (see StableAudioDiT.Forward's
+        // doc comment), so this comparison already reflects real production behavior exactly.
+        var velocity = dit.Forward(latent, SeqLen, condTokens, NCond, secondsTotalRaw, timestep: 0.5f);
 
         Assert.Equal(goldenVelocity.Length, velocity.Length);
         float cos = CosineSimilarity(velocity, goldenVelocity);

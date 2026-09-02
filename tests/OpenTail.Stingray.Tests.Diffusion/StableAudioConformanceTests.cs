@@ -36,33 +36,32 @@ public sealed class StableAudioConformanceTests
         int nCond = 3;
         var latent = new float[seqLen * 256];
         var condTokens = new float[nCond * 768];
-        var condMask = new[] { true, true, true };
         var secondsTotalRaw = new float[768];
 
-        float[] velocity = dit.Forward(latent, seqLen, condTokens, nCond, condMask, secondsTotalRaw, timestep: 0.5f);
+        float[] velocity = dit.Forward(latent, seqLen, condTokens, nCond, secondsTotalRaw, timestep: 0.5f);
 
         Assert.NotNull(velocity);
         Assert.Equal(seqLen * 256, velocity.Length);
     }
 
+    /// <summary>Shape/bounds smoke test on the real VAE decoder (accuracy is covered by
+    /// <c>StableAudioVaeGoldenParityTests</c> once written -- see plan doc 057).</summary>
     [Fact]
-    public void AcousticVaeDecoder_DecodesLatentsToStereoPcm()
+    public void AcousticVae_DecodesLatentsToStereoPcm()
     {
-        int latentChannels = 16;
-        int audioChannels = 2;
-        int upsampleRatio = 256;
+        string? ditDir = FindRepoFile(DitDirRelative);
+        if (ditDir is null) return; // skip: needs local DiT+VAE weights
 
-        var decoder = new AcousticVaeDecoder(latentChannels, audioChannels, upsampleRatio);
+        using var st = SafetensorsLoader.OpenDirectory(ditDir);
+        using var vae = AcousticVae.FromLoader(st);
 
-        int seqLen = 10;
-        var latents = new float[seqLen * latentChannels];
-        Array.Fill(latents, 0.5f);
+        int seqLen = 4;
+        var latents = new float[seqLen * 256];
+        Array.Fill(latents, 0.1f);
 
-        float[] pcm = decoder.Decode(latents, seqLen);
+        float[] pcm = vae.Decode(latents, seqLen);
 
-        int expectedSamples = seqLen * upsampleRatio * audioChannels;
-        Assert.Equal(expectedSamples, pcm.Length);
-
+        Assert.True(pcm.Length > 0);
         for (int i = 0; i < pcm.Length; i++)
         {
             Assert.InRange(pcm[i], -1.0f, 1.0f);

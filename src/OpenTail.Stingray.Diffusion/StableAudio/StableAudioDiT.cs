@@ -55,17 +55,19 @@ public sealed class StableAudioDiT : IDisposable
     /// <paramref name="condTokens"/>: [nCond, 768] real cross-attention context -- the real
     /// pipeline concatenates the (padding-substituted) prompt embeddings with the `seconds_total`
     /// NumberConditioner embedding along the sequence axis (`cross_attention_cond_ids: [prompt,
-    /// seconds_total]`); <paramref name="condMask"/> marks which of those rows are real tokens
-    /// (true) vs. padding (false) -- padding rows still participate in cross-attention's softmax
-    /// normalization (real V-zeroing masking, see the plan doc), so this is NOT plain
-    /// exclude-from-attention masking.
+    /// seconds_total]`). There is no `condMask` parameter: the real reference unconditionally
+    /// discards any cross-attention padding mask before it ever reaches the attention op (a
+    /// permanent workaround for a flash-attention kernel issue, confirmed by reading `dit.py` --
+    /// `mask_padding_attention: true` in the real `model_config.json` is misleading, this is NOT
+    /// actually applied), so real cross-attention always attends to every row of
+    /// <paramref name="condTokens"/> including padding, and this port matches that exactly.
     /// <paramref name="secondsTotalRaw"/>: [768] the raw (pre-`to_global_embed`) `seconds_total`
     /// NumberConditioner embedding -- used again here as the DiT's separate global (AdaLN)
     /// conditioning input, distinct from its row inside <paramref name="condTokens"/>.
     /// </summary>
     public float[] Forward(
         float[] latent, int seqLen,
-        float[] condTokens, int nCond, bool[] condMask,
+        float[] condTokens, int nCond,
         float[] secondsTotalRaw,
         float timestep)
     {
@@ -92,7 +94,7 @@ public sealed class StableAudioDiT : IDisposable
 
         for (int layer = 0; layer < Depth; layer++)
         {
-            xFull = TransformerLayer(xFull, totalSeq, layer, condEmbed, nCond, condMask, cos, sin, globalCond);
+            xFull = TransformerLayer(xFull, totalSeq, layer, condEmbed, nCond, cos, sin, globalCond);
         }
 
         var stripped = new float[seqLen * Dim];
@@ -177,7 +179,7 @@ public sealed class StableAudioDiT : IDisposable
 
     private float[] TransformerLayer(
         float[] x, int seq, int layerIdx,
-        float[] condEmbed, int nCond, bool[] condMask,
+        float[] condEmbed, int nCond,
         float[] cos, float[] sin, float[] globalCond)
     {
         string p = $"model.model.transformer.layers.{layerIdx}";
@@ -212,7 +214,7 @@ public sealed class StableAudioDiT : IDisposable
         var crossNormW = _st.ReadF32($"{p}.cross_attend_norm.gamma");
         var xCrossNorm = x.ToArray();
         DiffusionOps.RmsNorm(xCrossNorm, crossNormW, Dim, eps: 1e-5f);
-        var cross = CrossAttention(xCrossNorm, seq, condEmbed, nCond, condMask, p);
+        var cross = CrossAttention(xCrossNorm, seq, condEmbed, nCond, p);
         for (int i = 0; i < x.Length; i++) x[i] += cross[i];
 
         var ffNormW = _st.ReadF32($"{p}.ff_norm.gamma");
@@ -266,7 +268,7 @@ public sealed class StableAudioDiT : IDisposable
         return DiffusionOps.Linear(attnOut, outW, null, seq, Dim, Dim);
     }
 
-    private float[] CrossAttention(float[] x, int seq, float[] condEmbed, int nCond, bool[] condMask, string p)
+    private float[] CrossAttention(float[] x, int seq, float[] condEmbed, int nCond, string p)
     {
         var qW = _st.ReadF32($"{p}.cross_attn.to_q.weight");
         var kvW = _st.ReadF32($"{p}.cross_attn.to_kv.weight");
@@ -287,14 +289,14 @@ public sealed class StableAudioDiT : IDisposable
         PerHeadRmsNorm(q, seq, qNormW);
         PerHeadRmsNorm(k, nCond, kNormW);
 
-        // Real masking: V-zeroing on padded context rows BEFORE the weighted sum -- softmax itself
-        // is computed over the real (unmasked) K, so padded rows still consume softmax probability
-        // mass. See the plan doc's "Cross-attention" section for why this must not be replaced with
-        // additive -inf masking.
-        for (int t = 0; t < nCond; t++)
-        {
-            if (!condMask[t]) v.AsSpan(t * Dim, Dim).Clear();
-        }
+        // Real reference behavior, confirmed by reading dit.py line-by-line (not the "V-zeroing"
+        // this class originally implemented, which was a plausible-looking but wrong guess): the
+        // real forward() UNCONDITIONALLY discards any cross_attn_cond_mask right after receiving it
+        // (`cross_attn_cond_mask = None  # Temporarily disabling conditioning masks due to kernel
+        // issue for flash attention`), on every code path including the CFG branch -- so real
+        // cross-attention in this shipped checkpoint never masks padded context rows at all, despite
+        // `mask_padding_attention: true` in the real model_config.json suggesting otherwise. No
+        // masking is applied here to match that real (if surprising) behavior exactly.
 
         var attnOut = DotProductAttention(q, k, v, seq, nCond, mask: null);
 

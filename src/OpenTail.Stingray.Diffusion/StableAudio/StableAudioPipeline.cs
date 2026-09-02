@@ -19,6 +19,13 @@ public sealed record StableAudioRequest
     public float DurationSeconds { get; init; } = 10.0f;
     public int Steps { get; init; } = 25;
     public int Seed { get; init; } = -1;
+
+    /// <summary>Real classifier-free guidance scale (`cfg_scale` in the reference). Default 6.0
+    /// matches the real Gradio demo interface's own default (the `DiffusionTransformer` class-level
+    /// API default is 1.0/no-CFG; 6.0 is what the shipped generation experience actually uses).
+    /// Set to 1.0 to disable CFG entirely (skips the extra unconditioned forward pass).</summary>
+    public float CfgScale { get; init; } = 6.0f;
+
     public required string OutputPath { get; init; }
     public Action<int, int>? Progress { get; init; }
 }
@@ -26,13 +33,11 @@ public sealed record StableAudioRequest
 /// <summary>
 /// End-to-end text-to-audio and music synthesis pipeline for Stable Audio 3.
 ///
-/// <para><b>Status, 2026-09-02</b>: the text encoder (<see cref="T5GemmaEncoder"/>) and DiT
-/// (<see cref="StableAudioDiT"/>) are real, weight-driven ports, golden-verified for the encoder
-/// (see <c>StableAudioT5GemmaEncoderGoldenParityTests</c>) and spec-complete-but-not-yet-verified
-/// for the DiT. <see cref="AcousticVaeDecoder"/> is still the ORIGINAL placeholder stub (no real
-/// weights) -- the real VAE (`TransformerResamplingBlock`) has not been ported yet, so end-to-end
-/// output from this pipeline is not real audio until that lands. See
-/// docs/057-stable-audio-3-implementation-plan.md for the full status.</para>
+/// <para><b>Status, 2026-09-02</b>: the text encoder (<see cref="T5GemmaEncoder"/>), DiT
+/// (<see cref="StableAudioDiT"/>), and VAE (<see cref="AcousticVae"/>) are all real, weight-driven,
+/// golden-verified-or-verified-in-progress ports -- see
+/// docs/057-stable-audio-3-implementation-plan.md for the full status of each. All three share the
+/// same <see cref="IWeightLoader"/> (the real checkpoint bundles DiT + VAE weights together).</para>
 /// </summary>
 public sealed class StableAudioPipeline : IDisposable
 {
@@ -41,7 +46,7 @@ public sealed class StableAudioPipeline : IDisposable
 
     private readonly T5GemmaEncoder _textEncoder;
     private readonly StableAudioDiT _transformer;
-    private readonly AcousticVaeDecoder _decoder;
+    private readonly AcousticVae _vae;
     private readonly StableAudioParams _params;
     private readonly IWeightLoader _weights;
     private bool _disposed;
@@ -49,7 +54,7 @@ public sealed class StableAudioPipeline : IDisposable
     public bool IsDisposed => _disposed;
     public StableAudioParams Params => _params;
 
-    /// <param name="dit">Loader open on the real DiT checkpoint (e.g. `small-music-base/model.safetensors`).</param>
+    /// <param name="dit">Loader open on the real checkpoint (e.g. `small-music-base/model.safetensors`) -- holds both the DiT and VAE weights.</param>
     /// <param name="textEncoderWeights">Loader open on the real T5Gemma encoder checkpoint (e.g. the bundled `t5gemma-b-b-ul2/` subfolder).</param>
     public StableAudioPipeline(IWeightLoader dit, IWeightLoader textEncoderWeights, StableAudioParams? @params = null)
     {
@@ -57,7 +62,7 @@ public sealed class StableAudioPipeline : IDisposable
         _weights = dit;
         _transformer = StableAudioDiT.FromLoader(dit);
         _textEncoder = T5GemmaEncoder.FromLoader(textEncoderWeights);
-        _decoder = new AcousticVaeDecoder(_params.LatentChannels, _params.AudioChannels, upsampleRatio: 1024);
+        _vae = AcousticVae.FromLoader(dit);
     }
 
     /// <summary>
@@ -75,7 +80,9 @@ public sealed class StableAudioPipeline : IDisposable
         var rng = request.Seed >= 0 ? new Random(request.Seed) : new Random();
         var latent = SampleGaussian(totalLatentElements, rng);
 
-        var (condTokens, condMask, secondsTotalRaw) = BuildConditioning(request.PromptTokenIds, duration);
+        var (condTokens, secondsTotalRaw) = BuildConditioning(request.PromptTokenIds, duration);
+        int nCond = condTokens.Length / CondTokenDim;
+        var nullCondTokens = new float[condTokens.Length]; // real `null_embed = torch.zeros_like(...)`
 
         int steps = Math.Max(1, request.Steps);
         for (int step = 0; step < steps; step++)
@@ -84,11 +91,7 @@ public sealed class StableAudioPipeline : IDisposable
             float nextT = 1.0f - (float)(step + 1) / steps;
             float dt = nextT - t;
 
-            var v = _transformer.Forward(
-                latent, seqLen,
-                condTokens, condTokens.Length / CondTokenDim, condMask,
-                secondsTotalRaw,
-                timestep: t);
+            var v = PredictVelocity(latent, seqLen, condTokens, nullCondTokens, nCond, secondsTotalRaw, t, request.CfgScale);
 
             for (int i = 0; i < latent.Length; i++)
             {
@@ -98,7 +101,7 @@ public sealed class StableAudioPipeline : IDisposable
             request.Progress?.Invoke(step + 1, steps);
         }
 
-        float[] pcm = _decoder.Decode(latent, seqLen);
+        float[] pcm = _vae.Decode(latent, seqLen);
 
         if (!string.IsNullOrEmpty(request.OutputPath))
         {
@@ -115,13 +118,64 @@ public sealed class StableAudioPipeline : IDisposable
     }
 
     /// <summary>
+    /// Real classifier-free guidance, matching `DiffusionTransformer.forward`'s CFG branch exactly
+    /// (rectified-flow objective, real default `apg_scale=1.0` -- full Adaptive Projected Guidance,
+    /// not vanilla CFG; the real Gradio demo interface's own default, not just the class's raw API
+    /// default of no-CFG): runs the DiT twice (conditioned + unconditioned, the latter with an
+    /// all-zero cross-attn context, `global_embed`/`seconds_total` conditioning shared unchanged
+    /// between both passes), converts both outputs to denoised-`x` estimates, projects their
+    /// difference to keep only the component ORTHOGONAL to the conditioned estimate (`apg_project`
+    /// in the reference -- a single global dot product/norm over the whole `[seqLen,256]` latent,
+    /// not per-channel), then re-derives the guided velocity from the guided denoised estimate.
+    /// </summary>
+    private float[] PredictVelocity(
+        float[] latent, int seqLen,
+        float[] condTokens, float[] nullCondTokens, int nCond,
+        float[] secondsTotalRaw, float sigma, float cfgScale)
+    {
+        var condOutput = _transformer.Forward(latent, seqLen, condTokens, nCond, secondsTotalRaw, timestep: sigma);
+        if (cfgScale == 1.0f) return condOutput;
+
+        var uncondOutput = _transformer.Forward(latent, seqLen, nullCondTokens, nCond, secondsTotalRaw, timestep: sigma);
+
+        int n = latent.Length;
+        var condDenoised = new float[n];
+        var uncondDenoised = new float[n];
+        var diff = new float[n];
+        for (int i = 0; i < n; i++)
+        {
+            condDenoised[i] = latent[i] - condOutput[i] * sigma;
+            uncondDenoised[i] = latent[i] - uncondOutput[i] * sigma;
+            diff[i] = condDenoised[i] - uncondDenoised[i];
+        }
+
+        // apg_project: orthogonal component of `diff` relative to `condDenoised`, treating the
+        // whole latent as one vector (real `dim=[-1,-2]` reduction over both channel and time).
+        double normSq = 0, dot = 0;
+        for (int i = 0; i < n; i++) normSq += (double)condDenoised[i] * condDenoised[i];
+        float invNorm = (float)(1.0 / (Math.Sqrt(normSq) + 1e-12));
+        for (int i = 0; i < n; i++) dot += (double)diff[i] * (condDenoised[i] * invNorm);
+
+        var velocity = new float[n];
+        for (int i = 0; i < n; i++)
+        {
+            float v1Normalized = condDenoised[i] * invNorm;
+            float parallel = (float)dot * v1Normalized;
+            float orthogonal = diff[i] - parallel;
+            float cfgDenoised = condDenoised[i] + (cfgScale - 1f) * orthogonal;
+            velocity[i] = (latent[i] - cfgDenoised) / sigma;
+        }
+        return velocity;
+    }
+
+    /// <summary>
     /// Real cross-attention conditioning assembly, matching `diffusion.py`'s
     /// `get_conditioning_inputs`: `cross_attn_cond = concat([prompt(256,768), seconds_total(1,768)])`,
     /// with the real T5GemmaConditioner's `padding_mode="learned"` substitution applied to padded
     /// prompt rows, and `seconds_total`'s own raw embedding returned separately for the DiT's
     /// global (AdaLN) conditioning input.
     /// </summary>
-    private (float[] condTokens, bool[] condMask, float[] secondsTotalRaw) BuildConditioning(int[] promptTokenIds, float durationSeconds)
+    private (float[] condTokens, float[] secondsTotalRaw) BuildConditioning(int[] promptTokenIds, float durationSeconds)
     {
         int realLen = Math.Min(promptTokenIds.Length, PromptMaxLength);
         var paddedIds = new int[PromptMaxLength];
@@ -149,11 +203,7 @@ public sealed class StableAudioPipeline : IDisposable
         promptEmbed.AsSpan().CopyTo(condTokens);
         secondsTotalRaw.AsSpan().CopyTo(condTokens.AsSpan(PromptMaxLength * CondTokenDim, CondTokenDim));
 
-        var condMask = new bool[PromptMaxLength + 1];
-        mask.AsSpan().CopyTo(condMask);
-        condMask[PromptMaxLength] = true;
-
-        return (condTokens, condMask, secondsTotalRaw);
+        return (condTokens, secondsTotalRaw);
     }
 
     /// <summary>

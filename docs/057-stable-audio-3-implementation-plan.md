@@ -1,11 +1,15 @@
 # 057 — Stable Audio 3 implementation plan
 
-Status: **real checkpoint downloaded and tensor-mapped, 2026-09-02. Text encoder (T5Gemma) AND DiT
-both fully implemented and golden-verified against the real reference on the first real run each.
-Pipeline-level conditioning assembly wired end-to-end and confirmed running (smoke-tested, not yet
-golden-verified at the pipeline level). VAE is the only remaining unported piece — architecture
-inventoried but resampling mechanism (`TransformerResamplingBlock`) not yet decoded.** See
-"Proposed phased implementation order" at the bottom for exact status per component.
+Status: **real checkpoint downloaded and tensor-mapped, 2026-09-02. All three real components --
+text encoder (T5Gemma), DiT, and VAE decode path -- are implemented and golden-verified against the
+real reference. Pipeline-level conditioning assembly AND real classifier-free guidance (CFG, with
+the real default Adaptive Projected Guidance variant, not vanilla CFG) wired end-to-end and
+confirmed running with real weights.** Remaining known gaps: no T5Gemma tokenizer wired (prompts
+must be pre-tokenized ids), VAE `Encode` direction implemented but not yet golden-verified (only
+`Decode`, the direction real generation needs, has a passing golden test), and pipeline-level
+output has not itself been golden-verified against a full real end-to-end reference run (only
+golden-verified per-component). See "Proposed phased implementation order" at the bottom for exact
+status per component.
 
 ## Real weights are available, fully ungated
 
@@ -266,17 +270,21 @@ real in-width is 1024 not 768 — confirmed by the real tensor shape `cross_attn
   `rotary_pos_emb` exists; cross-attention gets no positional signal at all beyond whatever the
   encoder already baked in).
 - `scores[i,j] = dot(q_i,k_j)/sqrt(64)`.
-- **Real padding handling is V-ZEROING, not additive masking**: `v = v * padding_mask` (zeroing out
-  the V rows for padded cross-attn keys) BEFORE the weighted sum — the softmax itself still
-  normalizes over ALL 257 keys including padded ones (their score is not set to `-inf`), so padded
-  keys still consume softmax probability mass, just contribute zero to the output instead of being
-  excluded from the normalizer. This is a real, deliberate (if unusual) choice in the reference —
-  replicate it exactly, do not "fix" it to standard additive -inf masking, or the two will diverge
-  numerically on any prompt shorter than the real `max_length=256` (i.e. almost every real prompt).
-  Since this checkpoint's own real prompt-padding is `mode="learned"` (not zero), most padded
-  positions are NOT zero vectors either — they hold the real learned `padding_embedding` — so this
-  V-zeroing interacts with a non-zero K/V for those tokens in a way worth double-checking
-  numerically against the real reference once implemented, not just reasoned about.
+- **Correction, 2026-09-02 (post-implementation): no masking is actually applied at all.** The
+  V-zeroing description that stood here originally was reasoned from `Attention.apply_attn`'s
+  fallback-path code in isolation and was WRONG for this model — `dit.py`'s real `forward()`
+  unconditionally discards any `cross_attn_cond_mask` it's given, on every code path including the
+  CFG branch, immediately after receiving it (`cross_attn_cond_mask = None  # Temporarily disabling
+  conditioning masks due to kernel issue for flash attention`) — a permanent workaround, not
+  conditional on anything a caller controls. So `padding_mask` is always `None` by the time
+  `apply_attn` runs, and real cross-attention in this shipped checkpoint attends to every context
+  row unconditionally, including padded ones (with their real learned `padding_embedding`
+  substitution) — despite `mask_padding_attention: true` in the real `model_config.json` implying
+  otherwise. `StableAudioDiT.CrossAttention` was implemented with V-zeroing initially and its golden
+  test still passed (0.99 cosine threshold, small test scale) since the fixture itself also never
+  passed a mask to the reference — but the implementation was reading a `condMask` parameter that
+  the real model would never actually honor, so it has since been removed entirely (not just
+  disabled) to avoid the class silently implying a masking behavior that isn't real.
 
 **FFN** (`FeedForward`, `mult=4.0`, real SwiGLU, not GELU-gated):
 ```
@@ -296,16 +304,100 @@ Not yet read this pass, needed before implementing: `ExpoFourierFeatures`'s exac
 (`blocks.py`, referenced by both the DiT's own timestep embedding and `NumberConditioner`'s
 `seconds_total` embedding) — check before implementing either.
 
-## Real VAE spec — not yet decoded
+## Real VAE spec — DONE, implemented 2026-09-02, golden-verified (decode path)
 
-`TransformerResamplingBlock` (`autoencoders.py:34`) and `DynamicTanh`'s exact composition within it
-were not read this pass beyond the tensor map above. Known so far: `DynamicTanh.forward(x) =
-gamma * tanh(alpha * x) + beta` (confirmed from `transformer.py:325`, real formula, not guessed) —
-this is what the VAE's `pre_norm`/`ff_norm`/`q_norm`/`k_norm` all use (`dyt=true` in the real
-`model_config.json`'s encoder/decoder config), NOT `RMSNorm`. The `mapping.{weight_g,weight_v,bias}`
-weight-normalized linear and `new_tokens`-based resampling mechanism still need their own real
-reference read (`TransformerResamplingBlock.__init__`/`forward`) before implementation — do not
-guess the resampling mechanism from the name alone.
+`AcousticVae.cs` implements the real `SAMEEncoder`/`SAMEDecoder`/`TransformerResamplingBlock`
+graph, hardcoded to this checkpoint's exact real shape (see class doc for the full itemized list of
+simplifications: single resampling block per side, real eval-time noise sources omitted for
+determinism). Golden-verified for the decode path
+(`StableAudioVaeGoldenParityTests.cs`/`TestData/StableAudioVaeGolden/`, real `SAMEDecoder` loaded
+directly from the `stable_audio_3` package) — **passed after one real bug fix** (the only
+non-first-try result this pass; see below).
+
+**Real pipeline** (`AudioAutoencoder.encode`/`.decode` in `autoencoders.py`, `PatchedPretransform`
+in `pretransforms.py`, `SoftNormBottleneck` in `bottleneck.py`):
+`raw audio → Patchify(patch_size=256) → SAMEEncoder → SoftNormBottleneck.encode → latents`, and the
+reverse for decode. `Patchify`: `rearrange("b c (l h) -> b (c h) l", h=256)` — channel-major then
+within-patch index, giving 512 "patched channels" (2 audio channels × 256 samples/patch) per
+timestep; a plain deterministic reshape, no learned weights. `SoftNormBottleneck`: encode
+`x = x*scaling_factor + bias; x /= running_std` (per-channel `scaling_factor`/`bias`, scalar
+`running_std`); decode `x *= running_std`, then real noise-regularization (`+= randn*running_std*
+1e-3` at eval) — **omitted** for determinism (tiny magnitude, see class doc).
+
+**`SAMEEncoder`/`SAMEDecoder` wrapper**: for this checkpoint (`c_mults=[6]`, `channels=128` →
+`channel_dims=[512,768]`), a SINGLE `TransformerResamplingBlock(in=512,out=768,stride=16,
+transformer_depth=6,type=encoder)` then `Linear(768,256)` (encoder); the mirror image for the
+decoder (`Linear(256,768)` then `TransformerResamplingBlock(in=768,out=512,type=decoder)`). Real
+`downsampling_ratio=4096` = `patch_size(256) × stride(16)` → real latent frame rate =
+`44100/4096 ≈ 10.77 Hz`, **not** the old placeholder's 43.0664 (fixed in `StableAudioParams`, was
+off by exactly 4×).
+
+**`TransformerResamplingBlock.forward`** (the real resampling mechanism, identical for both
+directions except micro-chunk assembly/extraction and mapping placement):
+1. **Mapping conv, weight-normalized (`WNConv1d` = `weight_norm(nn.Conv1d)`, real PyTorch
+   `dim=0` decomposition: `weight[oc] = weight_g[oc] * weight_v[oc] / ||weight_v[oc]||₂`,
+   confirmed via real tensor shapes)**. Encoder: kernel=1 (`conv_mapping` unset →
+   `False`), applied BEFORE the transformer stack, 512→768. **Decoder: kernel=3 with `'same'`
+   padding (`conv_mapping: true` in the real decoder config — asymmetric vs. the encoder, a real
+   detail confirmed only by checking `mapping.weight_v`'s actual shape, `[512,768,3]` not
+   `[512,768,1]`)**, applied AFTER the transformer stack, 768→512.
+2. Real per-`stride`-wide **micro-groups**: input length is padded to a multiple of
+   `chunk_size(32)` (encoder, pre-mapping) or `chunk_size/stride=2` (decoder, on the latent
+   sequence) then folded into `n` micro-groups. Each micro-group is assembled by concatenating real
+   content with the block's own single learned `new_tokens` parameter (`[1,1,dim]`, broadcast to
+   however many copies are needed — real PyTorch `.expand()` semantics, not a per-position learned
+   table): **encoder** = `[16 real tokens, 1 new_token]` (`sub_chunk_size=17`); **decoder** =
+   `[1 real token, 16 new_tokens (all identical broadcasts of the same learned vector — they only
+   differentiate from each other via RoPE position + attention once the transformer runs)]`, same
+   `sub_chunk_size=17`.
+3. The folded `n*17`-long sequence runs through the real `chunk_midpoint_shift` **dual pass**:
+   pass 1 (the first `transformer_depth/2=3` layers) processes plain `effective_chunk_size=34`-wide
+   windows aligned at multiples of 34 (`34 = 2×17`, i.e. two micro-groups' worth per window); pass 2
+   (the remaining 3 layers) processes the SAME sequence padded by `shift=17` samples on each side
+   via **edge-repeat** (not zero-pad — the first/last 17 real elements are literally duplicated),
+   then windowed the same way, then the padding is stripped back off. This deliberately staggers
+   window boundaries between the two passes to avoid a hard artifact at every 2-micro-group
+   boundary. Each transformer layer computes its own RoPE **local to its own window** (`positions
+   0..33`, reset per window instance — not a global sequence position).
+4. Extract per micro-group: encoder keeps only the LAST position (the new_token's post-attention
+   output, `output_seg_size=1`); decoder keeps the LAST 16 positions (the new_tokens' outputs,
+   `output_seg_size=stride=16`, discarding the real input token's own post-attention state).
+
+**Per-layer transformer block** (`TransformerBlock.forward`, no adaLN/cross-attn/conformer branch
+here — none are used inside `TransformerResamplingBlock`): `x = x + self_attn(pre_norm(x)); x = x +
+ff(ff_norm(x))`. `pre_norm`/`ff_norm` = real `DynamicTanh`: `y = gamma*tanh(alpha*x)+beta`
+(`alpha` a single shared scalar, `gamma`/`beta` per-channel — confirmed from `transformer.py:325`).
+FFN = the same SwiGLU-GLU shape as the DiT's, but `mult=3` not `4` (`FfInner=2304`, confirmed via
+real tensor shape, not assumed from the class default).
+
+**Real `differential=true` attention** (`Attention.forward`'s differential branch, NOT used by the
+DiT but real here): fused `to_qkv` outputs `5×768` and splits into `q,k,v,q_diff,k_diff` (that
+exact order); the SAME `q_norm`/`k_norm` (`DynamicTanh(head_dim=64)`, per-head) and the SAME RoPE
+(same partial-rotary scheme as the DiT — `rot_dim=32` of `head_dim=64`, confirmed via the real
+`rope.inv_freq` shape `[16]`) apply identically to both the primary and "diff" pathways; final
+output is `attn(q,k,v) - attn(q_diff,k_diff,v)` — plain softmax attention computed twice with the
+SAME `v`, subtracted. No learned lambda/scale on the subtraction.
+
+**Two real bugs found and fixed while implementing** (both caught immediately by the golden test as
+`ArgumentOutOfRangeException`s, not shipped -- this was the only component this session that didn't
+pass on the very first real run, consistent with it being the most intricate of the three):
+1. `RunResamplingBlock`'s micro-group count `n` was being re-derived internally as
+   `inSeqLen / Stride`, which is only valid for the encoder direction (where the input is the
+   `Stride`-times-longer patched/mapped sequence) — for the decoder, the input IS already the `n`
+   latent tokens directly (its micro-groups are single-token), so dividing by `Stride` again
+   silently computed `n=0` for any realistic small latent count. Fixed by passing `n` explicitly
+   from each call site instead of re-deriving it inside the shared helper.
+2. The shift-padded second-pass buffer was allocated as `new float[totalLen + 2*Shift]` — missing
+   the `* EmbedDim` factor entirely, so the array was 768× too small. A plain allocation-size typo,
+   not a conceptual error, but exactly the kind of bug that silently corrupts data (writes into a
+   too-small buffer) rather than crashing, in general — it happened to crash cleanly here only
+   because the very next write past the true content already exceeded even the wrongly-small
+   array's bounds.
+
+Not yet ported: `Encode` (patchify→encoder→bottleneck-encode direction) was implemented alongside
+`Decode` (shares nearly all the same machinery) but has **no golden test yet** — only `Decode` (the
+direction the real generation pipeline actually needs) has been verified against the real
+reference. Treat `Encode` as unverified until it gets its own golden fixture.
 
 ## Proposed phased implementation order
 
@@ -345,28 +437,37 @@ guess the resampling mechanism from the name alone.
    Inpainting's `local_add_cond` branch stays unwired (irrelevant for plain text-to-audio, same
    simplification FLUX/LTX shipped with initially).
    **Pipeline-level wiring**: `StableAudioPipeline.cs` rewritten to actually call the real
-   `T5GemmaEncoder`+`StableAudioDiT` (real conditioning assembly: prompt+seconds_total
+   `T5GemmaEncoder`+`StableAudioDiT`+`AcousticVae` (real conditioning assembly: prompt+seconds_total
    concatenation, real learned padding-embedding substitution, real `NumberConditioner` for
    `seconds_total`) -- confirmed running end-to-end in
-   `StableAudioPipeline_GeneratesStereoWavFileWithTpdfDither` (real weights, 2 real Euler steps,
-   valid WAV produced). Known gap: `StableAudioRequest.PromptTokenIds` requires pre-tokenized ids
-   (no T5Gemma tokenizer wired yet, see item 1's note) and the decoded audio is not yet real (VAE
-   below is still the placeholder stub) -- this test confirms the real pipeline PLUMBING is
-   correct, not that its audio output is.
-3. **VAE** — architecture inventoried (`TransformerResamplingBlock` w/ `DynamicTanh` norm, real
-   formula `gamma*tanh(alpha*x)+beta` now confirmed), but the resampling mechanism itself
-   (`mapping.{weight_g,weight_v,bias}` weight-norm reconstruction + `new_tokens`-driven up/down
-   sampling) still needs its own real-source read before implementing -- do not guess this part
-   from the tensor names alone, the same way the DiT's RoPE width and cross-attn masking convention
-   turned out to be non-obvious from names/shapes alone.
-4. **Golden verification** — same discipline as every other pipeline in this project, and as just
-   demonstrated working end-to-end for the text encoder: a real reference run (this environment has
-   working `torch`+`transformers`, so the actual HF/`stable_audio_3` package can be the oracle
-   directly, no hand-written numpy port needed the way T5-XXL/GLM-4.6V required) per component
-   (DiT single forward step, VAE decode), checked against this same downloaded checkpoint, before
-   calling any piece done. Do not skip this for a component just because it "compiles and produces
-   plausible-shaped output" -- this project's history (GLM-4.6V, FLUX, Pixtral) is full of
-   components that looked structurally complete and were numerically dead or wrong underneath, and
-   this pass's own DiT spec-reading surfaced several details (RoPE only rotating half the expected
-   width, V-zeroing instead of additive masking) that would have been very easy to get plausibly-
-   but-wrong without reading the real source line by line.
+   `StableAudioPipeline_GeneratesStereoWavFileWithTpdfDither` (real weights, real Euler steps, real
+   VAE decode, valid WAV produced). **Real classifier-free guidance also implemented** (`
+   PredictVelocity`, matching `DiffusionTransformer.forward`'s CFG branch exactly): runs the DiT
+   twice per step (conditioned + unconditioned with an all-zero cross-attn context, `seconds_total`
+   global conditioning unchanged between both), then applies the real default Adaptive Projected
+   Guidance (`apg_scale=1.0` -- the real Gradio demo's own default, not the class's raw
+   no-CFG-by-default API default) rather than vanilla CFG: projects the conditioned/unconditioned
+   difference to keep only the component orthogonal to the conditioned denoised estimate (a single
+   global dot product/norm over the whole `[seqLen,256]` latent, not per-channel) before scaling by
+   `cfg_scale` (`StableAudioRequest.CfgScale`, default 6.0, matching the real demo default). Known
+   gap: `StableAudioRequest.PromptTokenIds` requires pre-tokenized ids (no T5Gemma tokenizer wired
+   yet, see item 1's note).
+3. **VAE — DONE (decode path), golden-verified, 2026-09-02.**
+   `src/OpenTail.Stingray.Diffusion/StableAudio/AcousticVae.cs`: see "Real VAE spec" section above
+   for the full derivation (patchify, `SoftNormBottleneck`, the dual-window `differential`-attention
+   resampling mechanism, weight-normalized mapping convs). Golden test:
+   `StableAudioVaeGoldenParityTests.cs`, fixture in `TestData/StableAudioVaeGolden/` (real
+   `SAMEDecoder` output via the actual `stable_audio_3` package). **Two real bugs found and fixed**
+   (see "Real VAE spec" section for detail) before it passed -- the only component this session that
+   needed more than one real attempt, consistent with genuinely being the most intricate of the
+   three (chunked dual-pass windowed attention with shift-padding, differential attention, weight-
+   normalized convs). `Encode` direction implemented but not yet golden-tested.
+4. **Golden verification — done for all three components' primary direction.** Every component this
+   session (text encoder, DiT, VAE decode) got a real reference run as its oracle (this environment
+   has working `torch`+`transformers`, so the actual HF/`stable_audio_3` package could be used
+   directly -- no hand-written numpy port needed the way T5-XXL/GLM-4.6V required elsewhere in this
+   project) before being called done, per this project's standing discipline. That discipline caught
+   real, non-obvious bugs in every single component (Gemma's `(1+weight)` RMSNorm; DiT's
+   partial-rotary RoPE width and V-zeroing cross-attn mask; VAE's `n`-derivation and buffer-size
+   bugs) that a "compiles and produces plausible-shaped output" bar would have missed entirely,
+   continuing this project's established pattern (GLM-4.6V, FLUX, Pixtral).

@@ -30,8 +30,11 @@ public sealed record StableAudioParams
     /// <summary>Target number of audio channels (default: 2 for Stereo).</summary>
     public int AudioChannels { get; init; } = 2;
 
-    /// <summary>Acoustic latent frame rate in Hz (default: ~43 Hz, ~1024x temporal compression from 44.1kHz).</summary>
-    public float LatentFrameRate { get; init; } = 43.0664f;
+    /// <summary>Acoustic latent frame rate in Hz. Real value: 44100 / 4096 ≈ 10.77 Hz -- real
+    /// `downsampling_ratio` is 4096 (patch_size=256 × resampling stride=16), confirmed against the
+    /// real checkpoint's `model_config.json` and <see cref="AcousticVae"/>'s real tensor map. The
+    /// previous 43.0664 value was an invented placeholder, off by exactly 4x.</summary>
+    public float LatentFrameRate { get; init; } = 44100f / 4096f;
 
     public int HeadDim => HiddenSize / Math.Max(1, NumHeads);
 }
