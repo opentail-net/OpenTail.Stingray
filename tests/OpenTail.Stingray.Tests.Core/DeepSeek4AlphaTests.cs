@@ -288,4 +288,47 @@ public class DeepSeek4AlphaTests
         state.Clear();
         Assert.Equal(0, state.Csa(0)!.BlockCount);
     }
+
+    [Theory]
+    [InlineData(0, 4, 0, -1)]
+    [InlineData(0, 4, 3, -1)]
+    [InlineData(1, 4, 0, 0)]
+    [InlineData(1, 4, 3, 3)]
+    [InlineData(2, 4, 0, 4)]
+    [InlineData(2, 4, 3, 7)]
+    public void OverlapPrevRowIndex_MatchesImmediatelyPrecedingBlockHypothesis(int blockIndex, int ratio, int r, int expected)
+    {
+        // Block 0 has no history -> -1 (caller substitutes the synthetic zero/-inf row). Block k>0's
+        // prev half is exactly block (k-1)'s own row range [((k-1)*ratio) .. (k*ratio)-1].
+        Assert.Equal(expected, DeepSeek4Graph.OverlapPrevRowIndex(blockIndex, ratio, r));
+    }
+
+    [Theory]
+    [InlineData(0, 4, 0, 0)]
+    [InlineData(0, 4, 3, 3)]
+    [InlineData(1, 4, 0, 4)]
+    [InlineData(2, 4, 0, 8)]
+    public void OverlapCurRowIndex_MatchesThisBlocksOwnRowRange(int blockIndex, int ratio, int r, int expected)
+    {
+        Assert.Equal(expected, DeepSeek4Graph.OverlapCurRowIndex(blockIndex, ratio, r));
+    }
+
+    [Fact]
+    public void OverlapRowIndices_ConsecutiveBlocksTileWithoutGapOrOverlap()
+    {
+        // Block k's cur range and block (k+1)'s prev range must be the SAME 4 raw-token
+        // positions -- that's the entire point of the overlap scheme (block k+1's compression
+        // reaches back into block k's own raw rows without recomputation). If this ever fails,
+        // the two index functions have drifted out of sync with each other.
+        const int ratio = 4;
+        for (int k = 0; k < 5; k++)
+        {
+            for (int r = 0; r < ratio; r++)
+            {
+                int curOfK = DeepSeek4Graph.OverlapCurRowIndex(k, ratio, r);
+                int prevOfKPlus1 = DeepSeek4Graph.OverlapPrevRowIndex(k + 1, ratio, r);
+                Assert.Equal(curOfK, prevOfKPlus1);
+            }
+        }
+    }
 }

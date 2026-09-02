@@ -317,6 +317,223 @@ context (V4/V3.2), which may itself shed light on the V2-Lite routing-margin que
 - `deepseek2-ocr` — quick audit only, to confirm nothing in Phases 0-2 silently affects the
   existing working vision branch. Not a rebuild.
 
+## CSA (compress_ratio==4) decomposition — precise implementation plan
+
+Written 2026-09-02 at the user's request, after HCA (ratio==128) was implemented and CSA was
+deferred. This section decomposes exactly what CSA needs, structural piece by structural piece,
+re-derived from the `build_overlap_compressed_kv_from_state`/`build_csa_lid_attention`/
+`build_lid_top_k` reference code already read this session (deepseek4.cpp:466-522, 524-606,
+608-793, 734-793, 979-1258 — no new reading was done for this section; it is a decomposition of
+material already captured in this conversation, not a fresh reference pass).
+
+**Update, same day — implemented per this plan, immediately after it was written.** All three
+attention variants (raw, HCA, CSA) now exist in `DeepSeek4ForwardPass.cs`. What was built,
+following the 6-step order below exactly except step 1 (Hadamard, explicitly skipped —
+`k_rot` is treated as always absent, a documented known gap rather than a blocking prerequisite):
+- `AppendOverlapRow`/`FinalizeOverlapBlock` — the raw-token-granularity overlap state store and
+  prev/cur gather (steps 2-3), used for BOTH the main CSA stream and the separate LID stream
+  (same method, different tensors, per the plan).
+- `SelectCsaAttendableBlocks` — the lightning indexer wiring (step 4): indexer Q via
+  `indexer_attn_q_b(qrNormed)` + NEOX RoPE (a NEW `ApplyRopeNeox` helper, distinct from the main
+  attention's interleaved `ApplyRopeInterleaved` — confirmed as the indexer's own convention from
+  the reference's hardcoded `LLAMA_ROPE_TYPE_NEOX`), indexer K = the persisted LID-compressed
+  blocks, `indexer_weights` replicated across keys to fit `LightningIndexerScore`'s existing
+  signature, top-k selection via the already-tested `SelectTopKIndices`.
+- The masked raw+compressed attention concat (step 5) — simplified from a separate mask array
+  into directly building the combined key list from only the raw cache plus the SELECTED
+  top-k blocks (mathematically equivalent to `build_top_k_mask`'s -inf-elsewhere approach, just
+  expressed as "don't include the excluded ones" rather than "include all, then mask").
+- Constructor (step 6) now accepts ratio 4 alongside 0 and 128 — every valid `compress_ratio`
+  the reference declares is now structurally handled.
+
+**New, CSA-specific gaps introduced by this implementation, on top of the ones already flagged for
+raw/HCA** (all documented in the file's header):
+- The overlap gather ("prev = 4 rows immediately preceding this block, cur = this block's own 4
+  rows") is a working HYPOTHESIS, not confirmed against `llama-kv-cache-dsv4.cpp`'s actual
+  `state_read_idxs` construction (still unread).
+- Hadamard rotation (`k_rot`) is entirely unimplemented — treated as always absent. A real
+  checkpoint that populates it will get silently wrong output through this path, not an error.
+- The indexer Q's RoPE is applied at position 0 unconditionally (`SelectCsaAttendableBlocks`
+  doesn't currently receive the caller's absolute decode position) — a known, flagged, NOT
+  silently-assumed-correct bug, not a design choice; trivial to fix by threading `position`
+  through once this is being verified against ground truth.
+- Builds clean, 0 warnings; all 15 existing tests still pass unchanged. No new tests added this
+  round (token budget) — a synthetic multi-token test exercising CSA's 4-token block boundary
+  (mirroring the multi-token HCA test suggested earlier but still not written either) remains the
+  most valuable next increment before any real-weight attempt.
+
+The step-by-step reasoning and shape/tensor derivations below are kept as-written (the plan that
+was executed), for anyone re-verifying the implementation against this reasoning later:
+
+### Why CSA is a fundamentally different design from HCA, not just "smaller ratio"
+
+HCA (already implemented) uses a **finalize-then-discard** model: buffer `ratio`=128 raw tokens'
+compressed projections, once full compute ONE compressed block via a per-channel softmax-weighted
+sum, persist just that block, clear the buffer. Each raw token contributes to exactly one block,
+once.
+
+CSA uses a **sliding, boundary-straddling overlap** model instead, and needs its own state shape:
+
+1. **Per-token state row, not per-block.** Every processed token — not just block boundaries —
+   projects a `2*n_embd_head`-wide row (`attn_comp_wkv`/`attn_comp_wgate`, `coff=2` for ratio 4:
+   `coff = ratio==4 ? 2 : 1`, deepseek4.cpp:131) and that row is persisted to state EVERY token,
+   forming a ring/history of raw per-token rows — confirmed by `kv_state->ne[0] == 2*n_embd_head`
+   (deepseek4.cpp:541), i.e. the persistent storage's row width is the full `coff`-scaled width,
+   not a plain `n_embd_head`-wide finalized block like HCA's.
+2. **Each row packs TWO roles.** The two `n_embd_head`-wide halves of that `2*n_embd_head`-wide
+   row are read differently depending on which block-window is querying them:
+   `build_overlap_compressed_kv_from_state` (deepseek4.cpp:524-606) gathers `2*ratio` per-block
+   row-reads via `state_read_idxs` (asserted length `2*ratio*n_blocks`, deepseek4.cpp:540), splits
+   them into a "prev" half (the first `ratio` reads, taking only the FIRST `n_embd_head` columns
+   of each gathered row — `kv_prev`, deepseek4.cpp:553-556) and a "cur" half (the second `ratio`
+   reads, taking only the SECOND `n_embd_head` columns — `kv_cur`, deepseek4.cpp:563-566, note the
+   `+ ggml_row_size(type, n_embd_head)` column offset). `kv_prev` and `kv_cur` are concatenated
+   into one `[n_embd_head, 2*ratio, n_blocks]` tensor (deepseek4.cpp:573-577) — i.e. **one CSA
+   block's compression window is 8 half-vectors wide** (for ratio=4), not 4. This is the
+   mechanism that lets a block's compression smoothly incorporate context that straddles the
+   previous block's boundary, without recomputing the previous block.
+3. **A synthetic boundary row.** Before any of the above, `kv_state`/`score_state` get one
+   synthetic row appended: an all-zero KV row and an all-`-inf` score row
+   (`dsv4_append_zero_row`, deepseek4.cpp:204-210, 545-546) — so a read that lands "before the
+   first real token" (the very first block's "prev" half) resolves to a harmless zero-weighted
+   contribution instead of reading uninitialized memory.
+4. **Same math after gathering.** Once the `[n_embd_head, 2*ratio, n_blocks]` window is built, the
+   compression math is IDENTICAL to HCA's: per-channel softmax over the window axis, weighted sum,
+   RMSNorm (`attn_comp_norm`), split-and-partial-RoPE. This part is already ported —
+   `DeepSeek4Graph.CsaCompressBlock` (`DeepSeek4Alpha.cs`) already forwards to `HcaCompressBlock`
+   with `ratio` doubled to `2*ratio`, anticipating exactly this. **`CsaCompressBlock` does not
+   need to change** — only the code that gathers its `kvConcat`/`scoreConcat` inputs (the overlap
+   read-index logic in points 1-3) is missing.
+
+### Concrete gather algorithm to implement (translating the ggml graph-index arithmetic to a plain loop)
+
+For a CSA layer, maintain (per layer) a plain append-only list of raw per-token rows,
+`rawRows[pos]`, each `2*headDim` wide (the direct `attn_comp_wkv`/`attn_comp_wgate` projection
+output for that token, score-half with the `attn_comp_ape` positional term added — same shape as
+today's `AccumulateHcaCompression`, just not cleared/discarded after use). A prepended synthetic
+row (all-zero KV, all `-inf` score) sits at index `-1` conceptually (index 0 of a 1-indexed
+array, or handle as a special case).
+
+To compress the block covering positions `[4k, 4k+4)` (0-indexed, `k` = block index):
+
+- **prev half** = the 4 rows *immediately preceding* this block, i.e. `rawRows[4k-4 .. 4k-1]`
+  (for `k==0`, all 4 of these are the synthetic zero/-inf row) — take each row's FIRST
+  `headDim`-wide half.
+- **cur half** = the 4 rows *of this block itself*, i.e. `rawRows[4k .. 4k+3]` — take each row's
+  SECOND `headDim`-wide half.
+- Concatenate prev-half (4 rows) then cur-half (4 rows) → the `[headDim, 8]` window
+  `CsaCompressBlock` expects, in that order (prev-then-cur, matching `ggml_concat(kv_prev,
+  kv_cur, 1)`, deepseek4.cpp:573).
+- `blockPosition` for the RoPE step = `k` (the block index), same convention as HCA.
+
+This reframing (read the row-history directly by position arithmetic, rather than replaying
+ggml's `state_read_idxs` index-buffer construction verbatim) is believed equivalent to the
+reference for the steady-state, non-rewound, single-sequence case this codebase's simplified
+`DeepSeek4CompressedState` already targets — but was not checked against the reference's own
+`comp_plan`/`state_read_idxs` construction code (that logic lives in
+`llama-kv-cache-dsv4.cpp`, not `deepseek4.cpp`, and was not read this session). Treat the "prev
+half = immediately preceding 4 rows, cur half = this block's own 4 rows" framing as the working
+hypothesis to implement and verify against ground truth, not as confirmed.
+
+**State cache implication**: `DeepSeek4CompressedState`/`DeepSeek4CompressedLayerState` (as built
+for HCA) persist one row *per finalized block*. CSA needs a DIFFERENT persisted-row granularity —
+one row *per raw token* (never discarded, since a later block's "prev half" can reach back further
+than the immediately-preceding block) — plus the two-halves-per-row split above. This is naturally
+a separate storage shape, not a reuse of the existing `DeepSeek4CompressedLayerState.Persist`
+call (which expects one `headDim`-wide KV+score pair *per finalized compressed output*, not per
+raw token pre-compression). Cleanest approach: add a second, raw-token-granularity list-based
+store (a plain `List<float[]>` of `2*headDim`-wide rows per layer, analogous to `_kvCache` but
+`2*headDim` wide and never cleared) rather than overloading `DeepSeek4CompressedLayerState` for
+two different meanings.
+
+### The lightning indexer's OWN compression stream (separate from the layer's main CSA stream)
+
+CSA layers additionally run the lightning indexer, which has its OWN, structurally-identical
+overlap-compression pipeline over a SEPARATE tensor set (`indexer_comp_wkv`/`indexer_comp_wgate`/
+`indexer_comp_ape`/`indexer_comp_norm` — already resolved as optional tensors in
+`DeepSeek4TensorSet`, unused until now) and its own persistent state
+(`inp_dsv4->mctx->get_lid_state()`, a third `DeepSeek4CompressedState`-shaped stream alongside
+CSA's and HCA's). Confirmed from deepseek4.cpp:1073-1140: this block builds `lid_state_kv`/
+`lid_state_score` via `indexer_comp_wkv`/`indexer_comp_wgate` + `indexer_comp_ape`, in the exact
+same overlap-gather-then-compress shape as the main CSA stream (same `DSV4_CSA_RATIO=4` constant
+used directly, deepseek4.cpp:1104 — hardcoded, not the layer's own `ratio` variable, though for a
+CSA layer they're numerically the same). **Important structural note**: deepseek4's per-layer
+tensor set has NO separate raw `indexer_attn_k`/`indexer_k_proj` tensor (unlike deepseek32) — the
+lightning indexer's "keys" ARE this compressed LID stream's persisted blocks, read back via
+`inp_dsv4->mctx->get_lid()->get_k(...)` (deepseek4.cpp:653, inside `build_lid_top_k`) — i.e. **the
+indexer attends over compressed 4-token blocks, not raw per-token keys.** This needs its own
+gather-and-compress implementation, structurally identical to the main CSA stream's (same
+algorithm above, different tensors/state), not a separate mechanism to design from scratch.
+
+### The Hadamard rotation — a new primitive, needed by CSA/LID, not by HCA
+
+`build_csa_lid_attention`/`build_hca_attention` both conditionally apply
+`llama_mul_mat_hadamard(ctx0, tensor, k_rot)` to Q, the raw `kv` projection, and (for CSA) the
+attention output, wherever `inp_attn->self_k_rot`/`inp_dsv4->get_csa().k_rot` is non-null
+(deepseek4.cpp:752-755, 787-789, 807-810, 843-845, 861-864, 878-880). This is a fixed (or
+per-model-loaded, not re-checked which) orthogonal Hadamard-matrix multiply — a decorrelation
+trick sometimes used before quantization/compression to spread information more evenly across
+channels. **This codebase has no Hadamard-transform primitive today** — grep confirms no
+`Hadamard` symbol anywhere outside this plan doc and the reference. HCA's implementation so far
+never triggers this path (unclear whether HCA layers ever populate `k_rot` — not checked; if they
+do, today's `AccumulateHcaCompression`/raw-attention code silently skips it, a latent gap worth
+flagging even for the already-"working" HCA skeleton). Before CSA can be implemented at all, this
+needs: (a) confirming from a real GGUF's tensor inventory whether `k_rot` is a loaded weight or a
+fixed, code-generated matrix (llama.cpp sometimes constructs canonical Hadamard matrices
+in-code rather than loading them — not checked which applies here), and (b) a
+`HadamardTransform(float* x, ...)` kernel ported the same way `DeepSeek4Graph`'s other math was.
+
+### Top-k masking and the raw+compressed attention concat (the "easy" remaining piece)
+
+Once the above produces a working CSA-compressed-block store and a working LID top-k index list
+(`DeepSeek4Graph.LightningIndexerScore` + `SelectTopKIndices`, both already ported and unit
+tested), the actual attention step is a bounded, mechanical extension of what
+`DeepSeek4ForwardPass.RawAttention`/HCA's `GetKeyOrCompressed` already do:
+
+1. Compute `top_k` indices over the LID-compressed blocks (`build_lid_top_k`, deepseek4.cpp:
+   608-703) — score = `sum_head(relu(indexer_q · indexer_k) * indexer_weight)` per compressed LID
+   block, masked additively by causality, top-`indexer_top_k` selected. Already have
+   `LightningIndexerScore`/`SelectTopKIndices` for this; need the indexer Q/K projections
+   (`indexer_attn_q_b(qr)`, rope, Hadamard) and the per-block LID K read wired.
+2. Build a combined key/value sequence: raw recent-token cache (as today) + ALL CSA-compressed
+   blocks (as HCA already does for its own stream) — but the attention MASK for the compressed
+   portion is not "attend to everything" (HCA's current behavior) — it is "attend only to the
+   `indexer_top_k` blocks selected in step 1, `-inf` elsewhere" (`build_top_k_mask`,
+   deepseek4.cpp:705-732). This is a straightforward per-position mask array, mechanically simple
+   once the top-k indices exist.
+3. Softmax-weighted-V sum exactly as today's raw/HCA attention already does, just against the
+   masked combined sequence.
+4. If `k_rot` is present (see Hadamard note above), apply it to Q/kv before scoring and to the
+   attention output afterward.
+
+### Summary: ordered list of what to build, with dependencies
+
+1. **Hadamard transform primitive** (`HadamardTransform` kernel + a decision on whether `k_rot` is
+   a loaded weight or code-generated) — needed before anything else if real checkpoints populate
+   `k_rot`; independent of the rest, so worth resolving first since it's a small, self-contained
+   unknown.
+2. **Raw-token-granularity overlap state store** — a new, `2*headDim`-wide, never-discarded
+   per-token row list per layer (distinct from `DeepSeek4CompressedLayerState`'s per-block
+   granularity), for BOTH the main CSA stream and the separate LID stream (two instances per CSA
+   layer).
+3. **The prev/cur overlap gather** (the "concrete gather algorithm" section above), feeding the
+   already-implemented `DeepSeek4Graph.CsaCompressBlock` — implement once, reuse for both the main
+   CSA stream and the LID stream (same algorithm, different tensors).
+4. **Lightning indexer Q/K projection + top-k scoring wiring** — mostly assembling already-ported
+   pieces (`LightningIndexerScore`, `SelectTopKIndices`) around the new LID compression stream
+   from step 3.
+5. **`build_top_k_mask`-equivalent masking + the raw+compressed concat attention step** — the most
+   mechanical piece, closely mirroring `RawAttention`'s existing structure and HCA's
+   `GetKeyOrCompressed`.
+6. **Wire into `DeepSeek4ForwardPass`**: extend the constructor's ratio gate to accept 4, extend
+   `RawAttention` (or split into a `CsaAttention` method) to call the above instead of throwing.
+
+Steps 2-3 are the direct extension of what HCA already proved out (same compression math, +
+different gather). Step 1 is a genuinely new, independent primitive. Steps 4-5 are new but
+mechanical, built from already-tested pieces. None of this can be numerically verified without
+either a real DeepSeek-V4 GGUF or a synthetic ground-truth fixture — same caveat as every other
+piece of this Phase 0 alpha.
+
 ## Open questions for the user before Phase 0 starts
 
 1. Which V4-Flash GGUF (source, quant level) to download — smallest is ~99 GB (Q2_K_S). Confirm

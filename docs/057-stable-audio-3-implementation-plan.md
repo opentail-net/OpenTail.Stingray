@@ -2,51 +2,74 @@
 
 Status: **real checkpoint downloaded and tensor-mapped, 2026-09-02. All three real components --
 text encoder (T5Gemma), DiT, and VAE decode path -- are implemented and golden-verified against the
-real reference. Pipeline-level conditioning assembly AND real classifier-free guidance (CFG, with
-the real default Adaptive Projected Guidance variant, not vanilla CFG) wired end-to-end and
-confirmed running with real weights.** Remaining known gaps: no T5Gemma tokenizer wired (prompts
-must be pre-tokenized ids -- root-caused, see "T5Gemma tokenizer" section below for the exact,
-scoped next step), VAE `Encode` direction implemented but not yet golden-verified (only `Decode`,
-the direction real generation needs, has a passing golden test), and pipeline-level output has not
-itself been golden-verified against a full real end-to-end reference run (only golden-verified
-per-component). See "Proposed phased implementation order" at the bottom for exact status per
-component.
+real reference. Pipeline-level conditioning assembly, real classifier-free guidance (CFG, with the
+real default Adaptive Projected Guidance variant, not vanilla CFG), AND the real T5Gemma tokenizer
+are all wired end-to-end and confirmed running with real weights -- `StableAudioPipeline.Generate`
+now takes a raw prompt string.** Remaining known gaps: VAE `Encode` direction implemented but not
+yet golden-verified (only `Decode`, the direction real generation needs, has a passing golden
+test), and pipeline-level output has not itself been golden-verified against a full real end-to-end
+reference run (only golden-verified per-component). See "Proposed phased implementation order" at
+the bottom for exact status per component.
 
-## T5Gemma tokenizer — root-caused, 2026-09-02, not yet fixed
+## T5Gemma tokenizer — root-caused AND fixed, 2026-09-02
 
 Checked whether this project's existing generic HF-BPE tokenizer infrastructure
 (`HuggingFaceTokenizerSource.Load` + `GgufTokenizer.FromSource`, already used by the main LLM engine
 for any model shipping a plain `tokenizer.json`) could tokenize T5Gemma prompts directly, since the
 real bundled `t5gemma-b-b-ul2/tokenizer.json` declares `model.type: "BPE"` (satisfying that loader's
-BPE-only acceptance check) with a real 256000-entry vocab and merges list.
-
-**It does not work as-is.** Encoding "A beautiful piano arpeggio grows into a grand cinematic
-climax" through `GgufTokenizer.FromSource` produced `[235280, 241753, 20909, 241753, 84505, 241753,
-486, 554, 16194, 241753, ...]` — visibly wrong (the repeated `241753` token is a strong tell) against
-the real tokenizer's actual output for this same prompt (already captured in this project's own
-golden fixture, `TestData/StableAudioT5GemmaGolden/ids.bin`): `[235280, 4964, 16748, 813, 554,
+BPE-only acceptance check) with a real 256000-entry vocab and merges list. It did not work as-is:
+encoding "A beautiful piano arpeggio grows into a grand cinematic climax" produced `[235280, 241753,
+20909, 241753, 84505, 241753, 486, 554, 16194, 241753, ...]` against the real tokenizer's actual
+output (captured in `TestData/StableAudioT5GemmaGolden/ids.bin`): `[235280, 4964, 16748, 813, 554,
 16194, 26075, 1280, 476, 4497, 106852, 82923]`.
 
-**Root cause, confirmed by reading the real `tokenizer.json` directly** (not guessed): this
-tokenizer's real preprocessing pipeline includes a `normalizer` step this project's BPE loader does
-not implement — `{"type": "Replace", "pattern": {"String": " "}, "content": "▁"}` (U+2581, the
-classic SentencePiece space-marker) — which replaces every literal space with `▁` BEFORE BPE
-merging runs, followed by a `Split` pre-tokenizer on (now-nonexistent) literal spaces and a
-`byte_fallback: true` model flag for out-of-vocabulary bytes. This is a real, standard convention
-for HF "fast tokenizer" exports of SentencePiece-family vocabularies (Gemma/T5Gemma among them) as
-BPE, distinct from the GPT-2/Llama-BPE style (`Ġ`-prefixed) this project's loader was evidently
-built against. Encoding without the space→`▁` substitution first means the BPE merge algorithm
-never sees the vocabulary's actual `▁`-prefixed tokens as merge candidates, producing a
-badly-fragmented, wrong tokenization.
+**Two real, independent bugs found and fixed in this shared engine-wide tokenizer infrastructure**
+(not a narrow Stable-Audio-only patch — `HuggingFaceTokenizerSource.cs`/`GgufTokenizer.cs` are used
+by the main LLM engine for any model shipping a plain `tokenizer.json`):
 
-**Real next step**: teach `HuggingFaceTokenizerSource`/`GgufTokenizer`'s BPE path to read and apply
-a `normalizer.type == "Replace"` step (pattern → content substitution) before pre-tokenization, when
-one is declared in `tokenizer.json`. This is shared, engine-wide tokenizer infrastructure other
-model loaders also depend on — implement and verify carefully (a synthetic-vocab unit test plus
-this real T5Gemma fixture as a real-checkpoint regression test, matching this project's established
-pattern for tokenizer fixes, e.g. `SpmMergeByScoreTests.cs`), not as a narrow Stable-Audio-only
-patch. Once fixed, `StableAudioPipeline` can take raw prompt strings instead of
-`StableAudioRequest.PromptTokenIds`.
+1. **Missing SentencePiece normalizer detection.** This tokenizer's real preprocessing pipeline
+   declares a `normalizer` step this loader didn't apply — `{"type": "Replace", "pattern": {"String":
+   " "}, "content": "▁"}` (U+2581, the classic SentencePiece space-marker) — replacing every literal
+   space with `▁` before BPE merging runs. A real, standard convention for HF "fast tokenizer"
+   exports of SentencePiece-family vocabularies (Gemma/T5Gemma among them), distinct from the
+   GPT-2/Llama-BPE style (`Ġ`-prefixed) this loader was evidently built against. Fixed:
+   `HuggingFaceTokenizerSource.Load` now detects this normalizer (`HasSpaceToMetaspaceNormalizer`,
+   handling both a bare `Replace` normalizer and one nested in a `Sequence`) and routes the source
+   through `ModelFamily="gemma"`, reusing `GgufTokenizer`'s existing, already-correct Gemma/Llama SPM
+   space-substitution machinery (`_isSpmBpe`) instead of the plain byte-level BPE path.
+2. **Wrong merge-priority algorithm once routed to the SPM path.** With bug 1 fixed alone, tokenizing
+   still diverged on multi-merge subwords -- "arpeggio" became `▁arp`+`egg`+`io` instead of the real
+   `▁ar`+`pe`+`ggio`. Root cause: `GgufTokenizer.EncodeSpm` unconditionally used
+   `SpmMergePiecesByScore` (the score-based, leftmost-tie-broken algorithm real llama.cpp SPM
+   actually uses, `tokenizer.ggml.model=llama` -- correct there, and must NOT change, per the earlier
+   `xverse` fix's own finding that classic SPM does NOT use a merges-rank table at all). But a real
+   HF-exported BPE vocabulary like T5Gemma's has no unigram scores at all -- its real merges LIST is
+   the authoritative rank-priority order, a genuinely different algorithm. With scores absent,
+   `SpmMergePiecesByScore` silently treated every candidate as score 0.0 and broke ties leftmost,
+   which is not the same as real rank-priority BPE (lowest-rank mergeable pair wins wherever it
+   occurs in the sequence, not merely the leftmost one). Fixed via a new
+   `TokenizerSource.MergesAreRankPriority` flag (`false` by default, so every existing GGUF-sourced
+   SPM tokenizer is completely unaffected), set `true` only by the new HF-Gemma-BPE detection path;
+   `EncodeSpm` now routes to the already-existing, already-tested rank-priority merge algorithm
+   (`SpmMergePieces`, previously only used for the unrelated byte-level-BPE-with-declared-pre-tokenizer
+   path) when this flag is set, instead of ever touching classic SPM's score-based behavior.
+
+Both fixes verified against the real T5Gemma tokenizer end to end: encoding the real test prompt now
+produces the EXACT real ids, `[235280, 4964, 16748, 813, 554, 16194, 26075, 1280, 476, 4497, 106852,
+82923]`. New tests in `HuggingFaceTokenizerSourceTests.cs`:
+`Load_SentencePieceStyleNormalizer_RoutesToGemmaFamilyWithRankPriorityMerges` (synthetic, checks the
+detection), `Encode_SentencePieceStyleBpe_UsesRankPriorityNotLeftmostTie` (synthetic, a constructed
+vocab/merges table where the two algorithms provably disagree, so this test would fail if the
+rank-priority routing regressed), and `Encode_RealT5GemmaTokenizer_MatchesRealTransformersIds`
+(the real-checkpoint regression, skips if the local checkpoint is absent). Existing
+`PreTokenizerParityTests`/`SpmMergeByScoreTests`/`SpmMergeTests` all still pass unchanged, confirming
+neither fix touched classic GGUF SPM/byte-BPE behavior.
+
+`StableAudioPipeline` now takes a raw `StableAudioRequest.Prompt` string (tokenized internally via
+this fixed path) as well as pre-tokenized `PromptTokenIds`, gated on a new optional `textEncoderDir`
+constructor parameter (the directory holding the real `tokenizer.json`) -- confirmed end-to-end in
+`StableAudioPipeline_GeneratesStereoWavFileWithTpdfDither` with a real prompt string
+("lofi house loop") through the real tokenizer, encoder, DiT (with real CFG), and VAE decode.
 
 ## Real weights are available, fully ungated
 

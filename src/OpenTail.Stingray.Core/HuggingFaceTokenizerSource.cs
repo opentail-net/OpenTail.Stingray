@@ -129,6 +129,24 @@ public static class HuggingFaceTokenizerSource
 
             string[] merges = ReadMerges(model);
 
+            // A real "SentencePiece-family vocabulary exported as HF BPE" (Gemma/T5Gemma among
+            // them): the tokenizer declares a `normalizer` step that replaces literal spaces with
+            // U+2581 ('▁', SentencePiece's metaspace marker) BEFORE BPE merging ever runs, and the
+            // vocabulary/merges are themselves written in terms of '▁'. This is architecturally
+            // different from GPT-2/Llama3-style byte-level BPE (which uses a `Ġ`-prefixed
+            // ByteLevel pre-tokenizer instead) despite both declaring `model.type: "BPE"` --
+            // encoding through the plain byte-level path here fragments badly, since the merge
+            // table's real candidates never appear without the substitution happening first (found
+            // 2026-09-02 porting Stable Audio 3's T5Gemma text conditioner: this loader accepted
+            // T5Gemma's real tokenizer.json as BPE and silently produced wrong token ids, confirmed
+            // by diffing against real `transformers`-tokenized ids for the same prompt -- see
+            // docs/057-stable-audio-3-implementation-plan.md's "T5Gemma tokenizer" section).
+            // `GgufTokenizer` already implements this exact space<->'▁' substitution correctly for
+            // any `ModelFamily` in `{gemma, gemma2, gemma3, gemma4, llama}` (the `_isSpmBpe` path,
+            // built for GGUF-sourced Gemma/Llama SPM vocabularies) -- routing a detected HF export
+            // through that same family name reuses it instead of reimplementing the substitution.
+            bool isSpmStyleBpe = HasSpaceToMetaspaceNormalizer(root);
+
             var addedSpecial = new Dictionary<string, int>(StringComparer.Ordinal);
             var addedTypes = new Dictionary<int, int>();
             if (root.TryGetProperty("added_tokens", out var added) && added.ValueKind == JsonValueKind.Array)
@@ -173,7 +191,9 @@ public static class HuggingFaceTokenizerSource
                 UnknownTokenId = config.Unk ?? 0,
                 PadTokenId = config.Pad ?? config.Eos ?? 2,
                 AddBosToken = config.AddBos,
-                ModelFamily = "hf-bpe",
+                ModelFamily = isSpmStyleBpe ? "gemma" : "hf-bpe",
+                AddSpacePrefix = isSpmStyleBpe && config.AddPrefixSpace,
+                MergesAreRankPriority = isSpmStyleBpe,
                 ChatTemplate = config.ChatTemplate,
             }, rejections);
         }
@@ -208,7 +228,7 @@ public static class HuggingFaceTokenizerSource
     }
 
     private readonly record struct TokenizerConfig(
-        int? Bos, int? Eos, int? Unk, int? Pad, bool AddBos, string? ChatTemplate);
+        int? Bos, int? Eos, int? Unk, int? Pad, bool AddBos, bool AddPrefixSpace, string? ChatTemplate);
 
     private static TokenizerConfig ReadTokenizerConfig(string packageRoot, string[] tokens)
     {
@@ -217,6 +237,7 @@ public static class HuggingFaceTokenizerSource
 
         int? bos = null, eos = null, unk = null, pad = null;
         bool addBos = false;
+        bool addPrefixSpace = false;
         string? chatTemplate = null;
 
         foreach (string file in (string[])["tokenizer_config.json", "special_tokens_map.json"])
@@ -236,6 +257,8 @@ public static class HuggingFaceTokenizerSource
 
                 if (json.TryGetProperty("add_bos_token", out var abt) && abt.ValueKind == JsonValueKind.True)
                     addBos = true;
+                if (json.TryGetProperty("add_prefix_space", out var aps) && aps.ValueKind == JsonValueKind.True)
+                    addPrefixSpace = true;
                 if (chatTemplate is null
                     && json.TryGetProperty("chat_template", out var ct) && ct.ValueKind == JsonValueKind.String)
                     chatTemplate = ct.GetString();
@@ -246,7 +269,44 @@ public static class HuggingFaceTokenizerSource
                 // TokenizerSource defaults rather than blocking the package.
             }
         }
-        return new TokenizerConfig(bos, eos, unk, pad, addBos, chatTemplate);
+        return new TokenizerConfig(bos, eos, unk, pad, addBos, addPrefixSpace, chatTemplate);
+    }
+
+    /// <summary>
+    /// Detects a real SentencePiece-family vocabulary exported as HF BPE: a `normalizer` step
+    /// (directly, or nested inside a `Sequence`) that replaces literal spaces with U+2581 ('▁')
+    /// before merging. See the call site's doc comment for why this distinguishes it from
+    /// GPT-2/Llama3-style byte-level BPE despite both declaring `model.type: "BPE"`.
+    /// </summary>
+    private static bool HasSpaceToMetaspaceNormalizer(JsonElement root)
+    {
+        if (!root.TryGetProperty("normalizer", out var normalizer) || normalizer.ValueKind != JsonValueKind.Object)
+            return false;
+
+        if (normalizer.TryGetProperty("type", out var seqType) && seqType.ValueKind == JsonValueKind.String
+            && seqType.GetString() == "Sequence"
+            && normalizer.TryGetProperty("normalizers", out var sub) && sub.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var step in sub.EnumerateArray())
+                if (IsSpaceToMetaspaceReplace(step)) return true;
+            return false;
+        }
+
+        return IsSpaceToMetaspaceReplace(normalizer);
+    }
+
+    private static bool IsSpaceToMetaspaceReplace(JsonElement normalizer)
+    {
+        if (normalizer.ValueKind != JsonValueKind.Object) return false;
+        if (!normalizer.TryGetProperty("type", out var type) || type.ValueKind != JsonValueKind.String
+            || type.GetString() != "Replace")
+            return false;
+        if (!normalizer.TryGetProperty("content", out var content) || content.ValueKind != JsonValueKind.String
+            || content.GetString() != "▁")
+            return false;
+        return normalizer.TryGetProperty("pattern", out var pattern) && pattern.ValueKind == JsonValueKind.Object
+            && pattern.TryGetProperty("String", out var patStr) && patStr.ValueKind == JsonValueKind.String
+            && patStr.GetString() == " ";
     }
 
     /// <summary>

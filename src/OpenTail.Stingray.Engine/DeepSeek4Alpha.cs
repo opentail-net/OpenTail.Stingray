@@ -671,6 +671,28 @@ public static class DeepSeek4Graph
         => HcaCompressBlock(kvConcat, scoreConcat, 2 * ratio, headDim, ropeDim, normWeight, rmsNormEps,
             ropeApply, compressRopeFreqBase, blockPosition, result);
 
+    /// <summary>
+    /// The "prev half" row index for slot <paramref name="r"/> (0..ratio-1) of CSA/LID overlap
+    /// block <paramref name="blockIndex"/>, per this codebase's working-hypothesis reading of
+    /// <c>build_overlap_compressed_kv_from_state</c> (deepseek4.cpp:524-606) documented in
+    /// docs/058-deepseek-full-lineage-implementation-plan.md's "CSA decomposition" section: the
+    /// `ratio` raw-token rows immediately preceding this block. Returns -1 for a row that falls
+    /// before position 0 (block 0's prev half, or any block whose prev window reaches past the
+    /// start of the sequence) -- the caller substitutes the reference's synthetic zero-KV/-inf-
+    /// score row (<c>dsv4_append_zero_row</c>) for a -1 result. Pulled out as a pure, standalone
+    /// function specifically so the window arithmetic is unit-testable without a real
+    /// GgufModel/forward pass.
+    /// </summary>
+    public static int OverlapPrevRowIndex(int blockIndex, int ratio, int r) => blockIndex * ratio - ratio + r;
+
+    /// <summary>
+    /// The "cur half" row index for slot <paramref name="r"/> (0..ratio-1) of CSA/LID overlap
+    /// block <paramref name="blockIndex"/>: this block's own `ratio` raw-token rows. Always
+    /// non-negative and always already-populated by construction (a block is only finalized once
+    /// its own rows exist). See <see cref="OverlapPrevRowIndex"/>.
+    /// </summary>
+    public static int OverlapCurRowIndex(int blockIndex, int ratio, int r) => blockIndex * ratio + r;
+
     // ── MoE routing (sqrt-softplus gating) ─────────────────────────────────────────────────
 
     /// <summary>

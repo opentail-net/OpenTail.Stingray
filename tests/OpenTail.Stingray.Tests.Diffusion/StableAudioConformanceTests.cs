@@ -81,14 +81,14 @@ public sealed class StableAudioConformanceTests
 
         using var ditWeights = SafetensorsLoader.OpenDirectory(ditDir);
         using var textEncoderWeights = SafetensorsLoader.OpenDirectory(t5gemmaDir);
-        using var pipeline = new StableAudioPipeline(ditWeights, textEncoderWeights);
+        using var pipeline = new StableAudioPipeline(ditWeights, textEncoderWeights, t5gemmaDir);
 
         string tempWav = Path.Combine(Path.GetTempPath(), $"stable_audio_test_{Guid.NewGuid():N}.wav");
         try
         {
             var request = new StableAudioRequest
             {
-                PromptTokenIds = [1, 2, 3, 4, 5],
+                Prompt = "lofi house loop",
                 DurationSeconds = 0.1f,
                 Steps = 2,
                 OutputPath = tempWav,

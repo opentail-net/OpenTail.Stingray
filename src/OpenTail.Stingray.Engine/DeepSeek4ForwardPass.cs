@@ -10,20 +10,26 @@ namespace OpenTail.Stingray.Engine;
 // prompt. It has NEVER been run -- there is no DeepSeek-V4 GGUF available this session, so
 // nothing below has executed even once, let alone been checked against a reference.
 //
-// HONEST SCOPE LIMIT, read before using this for anything: compress_ratio==0 ("raw attention")
-// and compress_ratio==128 (HCA) layers are implemented. compress_ratio==4 (CSA) still throws
-// NotSupportedException at construction. Reason CSA is deferred and HCA isn't: the compression
-// projection's output width is coff*n_embd_head where coff = (ratio==4 ? 2 : 1)
-// (deepseek4.cpp:129-136) -- for HCA (ratio 128, coff=1) this is one compressed row per raw
-// token, structurally identical to the simple "one token in, one compressed row out" model this
-// port already assumes. For CSA (ratio 4, coff=2), ONE token's compression call produces TWO
-// sub-rows via an overlapping-window scheme (build_overlap_compressed_kv_from_state,
-// deepseek4.cpp:524-606) this session could not reverse-engineer with confidence in the time
-// available -- implementing it wrong would be worse than leaving it explicitly unimplemented.
-// CSA also needs the lightning indexer's top-k mask folded into its attention
-// (build_csa_lid_attention), which HCA does not. A real V4-Flash checkpoint likely uses BOTH
-// ratios across its layers, so this class still cannot run such a checkpoint end-to-end -- it now
-// covers two of the three attention variants, not all three.
+// HONEST SCOPE LIMIT, read before using this for anything: compress_ratio 0 (raw), 128 (HCA), and
+// now 4 (CSA) are all implemented -- every attention variant deepseek4 declares. CSA's
+// implementation follows docs/058-deepseek-full-lineage-implementation-plan.md's "CSA
+// decomposition" section precisely, with the SAME caveats that section flagged, repeated here:
+//  - The overlap gather (which raw-token rows feed a given block's "prev"/"cur" halves) is
+//    implemented as "prev = the 4 rows immediately preceding this block, cur = this block's own
+//    4 rows" -- a working HYPOTHESIS reverse-engineered from deepseek4.cpp's ggml graph-index
+//    construction (build_overlap_compressed_kv_from_state, deepseek4.cpp:524-606), NOT confirmed
+//    against the reference's actual state_read_idxs construction (llama-kv-cache-dsv4.cpp, never
+//    read this session).
+//  - The Hadamard rotation (`k_rot`, llama_mul_mat_hadamard) that the reference conditionally
+//    applies to Q/kv/output around CSA (and possibly HCA) attention is NOT implemented -- this
+//    codebase has no Hadamard-transform primitive, and whether it's a loaded weight or a
+//    code-generated fixed matrix was never checked. Treated as absent (k_rot == null) throughout;
+//    a real checkpoint that declares it will silently get wrong output, not an error.
+//  - The lightning indexer's per-query indexer_weights ([numHeads], one scalar set per QUERY
+//    token, broadcast across every key) is replicated across keys to match
+//    DeepSeek4Graph.LightningIndexerScore's existing [numKeys, numHeads] signature --
+//    mathematically equivalent to the reference's broadcast-multiply, not a simplification of the
+//    actual math, just of the call shape.
 //
 // TWO SPECIFIC AREAS OF THE RAW-ATTENTION PORT BELOW ARE HIGH-RISK AND NOT CONFIDENTLY VERIFIED
 // (flagged in-line at the point they're used, repeated here for visibility):
@@ -42,11 +48,11 @@ namespace OpenTail.Stingray.Engine;
 // ============================================================================================
 
 /// <summary>
-/// ALPHA/UNTESTED, RAW-ATTENTION-ONLY. See this file's header. Implements <see cref="IForwardPass"/>
-/// well enough to structurally exercise DeepSeek-V4's hyper-connection + MoE + raw-attention
-/// wiring end-to-end for a synthetic or ratio-0-only checkpoint; throws on any layer with
-/// compress_ratio != 0 (CSA/HCA), which real DeepSeek-V4 checkpoints are expected to use
-/// extensively.
+/// ALPHA/UNTESTED. See this file's header. Implements <see cref="IForwardPass"/>, driving all
+/// three of DeepSeek-V4's attention variants (raw, HCA, CSA) end to end for a real prompt --
+/// structurally complete, but with several specific, in-file-flagged high-risk/unverified
+/// details (K==V MQA, output-side rope_ext_back, CSA's overlap gather hypothesis, no Hadamard
+/// rotation) that make numerical correctness against a real checkpoint unproven either way.
 /// </summary>
 public sealed unsafe class DeepSeek4ForwardPass : IForwardPass
 {
@@ -69,6 +75,16 @@ public sealed unsafe class DeepSeek4ForwardPass : IForwardPass
     private readonly List<float[]>[] _hcaScoreBuffer;
     private readonly int[] _hcaTokensSinceBlockStart;
 
+    // Per-layer CSA overlap state: EVERY raw token's compressed projection is appended here and
+    // NEVER discarded (unlike HCA's clear-on-finalize buffer) -- a later block's "prev half" can
+    // reach back further than the immediately preceding block. Two independent streams: the main
+    // CSA stream (2*headDim-wide rows) and the lightning indexer's own stream (2*indexerHeadDim-
+    // wide rows), per docs/058-...md's "CSA decomposition" section. Only populated for ratio==4
+    // layers.
+    private readonly List<float[]>[] _csaKvRows, _csaScoreRows;
+    private readonly List<float[]>[] _lidKvRows, _lidScoreRows;
+    private readonly int _indexerHeadDim;
+
     public DeepSeek4ForwardPass(GgufModel model, DeepSeek4Hyperparams hp)
     {
         _model = model;
@@ -81,18 +97,18 @@ public sealed unsafe class DeepSeek4ForwardPass : IForwardPass
         _ropeDim = hp.RopeDim;
         _nopeDim = _headDim - _ropeDim;
         _numLayer = hp.NumLayer;
+        _indexerHeadDim = hp.IndexerHeadSize;
 
         _compressRatio = new int[_numLayer];
         for (int il = 0; il < _numLayer; il++)
         {
             int ratio = il < hp.CompressRatios.Count ? hp.CompressRatios[il] : 0;
-            if (ratio != 0 && ratio != 128)
+            if (ratio != 0 && ratio != 128 && ratio != 4)
             {
                 throw new NotSupportedException(
                     $"DeepSeek4ForwardPass (alpha): layer {il} has compress_ratio={ratio} -- " +
-                    "only 0 (raw attention) and 128 (HCA) are implemented; 4 (CSA) is explicitly " +
-                    "deferred, see this file's header. See " +
-                    "docs/058-deepseek-full-lineage-implementation-plan.md Phase 0.");
+                    "only 0, 4, and 128 are valid per the reference (deepseek4.cpp:148-150). " +
+                    "See docs/058-deepseek-full-lineage-implementation-plan.md Phase 0.");
             }
             _compressRatio[il] = ratio;
         }
@@ -101,11 +117,19 @@ public sealed unsafe class DeepSeek4ForwardPass : IForwardPass
         _hcaKvBuffer = new List<float[]>[_numLayer];
         _hcaScoreBuffer = new List<float[]>[_numLayer];
         _hcaTokensSinceBlockStart = new int[_numLayer];
+        _csaKvRows = new List<float[]>[_numLayer];
+        _csaScoreRows = new List<float[]>[_numLayer];
+        _lidKvRows = new List<float[]>[_numLayer];
+        _lidScoreRows = new List<float[]>[_numLayer];
         for (int il = 0; il < _numLayer; il++)
         {
             _kvCache[il] = [];
             _hcaKvBuffer[il] = [];
             _hcaScoreBuffer[il] = [];
+            _csaKvRows[il] = [];
+            _csaScoreRows[il] = [];
+            _lidKvRows[il] = [];
+            _lidScoreRows[il] = [];
         }
 
         _compressedState = new DeepSeek4CompressedState(_numLayer, _headDim, hp.IndexerHeadSize, hp.CompressRatios);
@@ -299,17 +323,40 @@ public sealed unsafe class DeepSeek4ForwardPass : IForwardPass
 
         // HCA layers (ratio==128): also accumulate/finalize compressed blocks and attend over
         // raw+compressed together (build_hca_attention's raw_k + hca_k concat, deepseek4.cpp:
-        // 832-833). CSA (ratio==4) is not reached here -- gated out at construction.
+        // 832-833).
         int ratio = _compressRatio[il];
         if (ratio == 128)
         {
             AccumulateHcaCompression(il, layer, normedInput, position);
         }
 
-        var keys = _kvCache[il];
-        var compressedKeys = ratio == 128 ? _compressedState.Hca(il)!.BlockCount : 0;
+        // CSA layers (ratio==4): accumulate the overlap state, finalize blocks at boundaries, run
+        // the lightning indexer, and select which compressed blocks are attendable this step (see
+        // docs/058-...md's "CSA decomposition" section -- this call mutates _compressedState.Csa
+        // and .Lid but returns only the top-k SELECTED block indices; unselected blocks are
+        // excluded from attention entirely below, matching build_top_k_mask's -inf treatment).
+        int[]? csaSelectedBlocks = null;
+        if (ratio == 4)
+        {
+            AccumulateCsaCompression(il, layer, normedInput, position);
+            csaSelectedBlocks = SelectCsaAttendableBlocks(il, layer, qrNormed, normedInput, position);
+        }
 
-        int numKeys = keys.Count + compressedKeys;
+        // Combined attendable key/value sequence: raw recent tokens, followed by compressed
+        // blocks (all of them for HCA; only the indexer's top-k SELECTED ones for CSA --
+        // unselected CSA blocks are simply excluded, equivalent to build_top_k_mask's -inf).
+        var allKeys = new List<float[]>(_kvCache[il]);
+        if (ratio == 128)
+        {
+            var hcaState = _compressedState.Hca(il)!;
+            for (int b = 0; b < hcaState.BlockCount; b++) allKeys.Add(hcaState.GetBlock(b).Kv.ToArray());
+        }
+        else if (ratio == 4)
+        {
+            var csaState = _compressedState.Csa(il)!;
+            foreach (int b in csaSelectedBlocks!) allKeys.Add(csaState.GetBlock(b).Kv.ToArray());
+        }
+        int numKeys = allKeys.Count;
 
         // Multi-head attention: each Q head attends over the SAME cached kv sequence
         // (deepseek4.cpp's raw path uses one shared kv "head" -- true MQA).
@@ -321,7 +368,7 @@ public sealed unsafe class DeepSeek4ForwardPass : IForwardPass
             var qHead = q.AsSpan(h * _headDim, _headDim);
             for (int t = 0; t < numKeys; t++)
             {
-                var kt = GetKeyOrCompressed(il, keys, t, compressedKeys);
+                var kt = allKeys[t];
                 float dot = 0f;
                 for (int d = 0; d < _headDim; d++) dot += qHead[d] * kt[d];
                 scores[t] = dot * scale;
@@ -334,7 +381,7 @@ public sealed unsafe class DeepSeek4ForwardPass : IForwardPass
             outHead.Clear();
             for (int t = 0; t < numKeys; t++)
             {
-                var vt = GetKeyOrCompressed(il, keys, t, compressedKeys);
+                var vt = allKeys[t];
                 float w = scores[t];
                 for (int d = 0; d < _headDim; d++) outHead[d] += vt[d] * w;
             }
@@ -362,19 +409,6 @@ public sealed unsafe class DeepSeek4ForwardPass : IForwardPass
             SimdKernels.MatVec(outPtr, layer.WoB!.Value.DataPtr, inPtr, _embedDim, outLoraRank, layer.WoB.Value.DType);
         }
         return result;
-    }
-
-    /// <summary>
-    /// Indexes into the combined "raw cache followed by compressed HCA blocks" key sequence
-    /// (deepseek4.cpp's build_hca_attention concatenates raw_k then hca_k, deepseek4.cpp:832-833
-    /// -- this port matches that ordering: indices [0, rawCount) are raw, [rawCount, rawCount+
-    /// compressedCount) are compressed blocks).
-    /// </summary>
-    private float[] GetKeyOrCompressed(int il, List<float[]> rawKeys, int index, int compressedCount)
-    {
-        if (index < rawKeys.Count) return rawKeys[index];
-        var (kv, _) = _compressedState.Hca(il)!.GetBlock(index - rawKeys.Count);
-        return kv.ToArray();
     }
 
     /// <summary>
@@ -441,6 +475,204 @@ public sealed unsafe class DeepSeek4ForwardPass : IForwardPass
         _hcaKvBuffer[il].Clear();
         _hcaScoreBuffer[il].Clear();
         _hcaTokensSinceBlockStart[il] = 0;
+    }
+
+    /// <summary>
+    /// CSA (ratio==4, coff==2) overlap state accumulation. Per
+    /// docs/058-deepseek-full-lineage-implementation-plan.md's "CSA decomposition" section:
+    /// projects this token's <c>2*headDim</c>-wide comp-kv/comp-score rows (via
+    /// <c>attn_comp_wkv</c>/<c>attn_comp_wgate</c> + the <c>attn_comp_ape</c> positional table,
+    /// same shape as HCA's projection but coff=2-wide) into the NEVER-CLEARED per-token row
+    /// history (<see cref="_csaKvRows"/>/<see cref="_csaScoreRows"/>), and does the same for the
+    /// lightning indexer's own, structurally identical, separate compression stream (via
+    /// <c>indexer_comp_wkv</c>/<c>indexer_comp_wgate</c>/<c>indexer_comp_ape</c>, width
+    /// <c>2*indexerHeadDim</c>). At every 4th token (block boundary), finalizes BOTH streams'
+    /// newly-completed block using the "prev = 4 rows immediately preceding this block, cur =
+    /// this block's own 4 rows" overlap-gather HYPOTHESIS documented in the plan doc (NOT
+    /// confirmed against the reference's actual index construction) and persists the results to
+    /// <see cref="DeepSeek4CompressedState.Csa"/>/<see cref="DeepSeek4CompressedState.Lid"/>.
+    /// </summary>
+    private void AccumulateCsaCompression(int il, DeepSeek4LayerTensors layer, float[] normedInput, int position)
+    {
+        const int ratio = 4;
+        int csaCoffDim = 2 * _headDim;
+        int lidCoffDim = 2 * _indexerHeadDim;
+
+        AppendOverlapRow(normedInput, layer.AttnCompWkv!.Value, layer.AttnCompWgate!.Value, layer.AttnCompApe!.Value,
+            csaCoffDim, position % ratio, _csaKvRows[il], _csaScoreRows[il]);
+        AppendOverlapRow(normedInput, layer.IndexerCompWkv!.Value, layer.IndexerCompWgate!.Value, layer.IndexerCompApe!.Value,
+            lidCoffDim, position % ratio, _lidKvRows[il], _lidScoreRows[il]);
+
+        if ((position + 1) % ratio != 0) return;
+
+        int blockIndex = position / ratio;
+        FinalizeOverlapBlock(_csaKvRows[il], _csaScoreRows[il], blockIndex, ratio, _headDim,
+            AsFloatSpan(layer.AttnCompNorm), _compressedState.Csa(il)!);
+        FinalizeOverlapBlock(_lidKvRows[il], _lidScoreRows[il], blockIndex, ratio, _indexerHeadDim,
+            AsFloatSpan(layer.IndexerCompNorm), _compressedState.Lid(il)!);
+    }
+
+    /// <summary>Projects and appends one raw token's coff-wide comp-kv/comp-score row + APE term.</summary>
+    private void AppendOverlapRow(
+        float[] normedInput, DeepSeek4TensorRef wkv, DeepSeek4TensorRef wgate, DeepSeek4TensorRef ape,
+        int coffDim, int posInBlock, List<float[]> kvRows, List<float[]> scoreRows)
+    {
+        var compKv = new float[coffDim];
+        var compScore = new float[coffDim];
+        fixed (float* inPtr = normedInput, kvPtr = compKv, scorePtr = compScore)
+        {
+            SimdKernels.MatVec(kvPtr, wkv.DataPtr, inPtr, coffDim, _embedDim, wkv.DType);
+            SimdKernels.MatVec(scorePtr, wgate.DataPtr, inPtr, coffDim, _embedDim, wgate.DType);
+        }
+        int apeBytesPerRow = (coffDim / DTypeInfo.BlockSize(ape.DType)) * DTypeInfo.BytesPerBlock(ape.DType);
+        byte* apeRowPtr = ape.DataPtr + (long)posInBlock * apeBytesPerRow;
+        var apeRow = new float[coffDim];
+        fixed (float* apeOutPtr = apeRow)
+        {
+            SimdKernels.DequantRow(apeRowPtr, apeOutPtr, coffDim, ape.DType);
+        }
+        for (int i = 0; i < coffDim; i++) compScore[i] += apeRow[i];
+        kvRows.Add(compKv);
+        scoreRows.Add(compScore);
+    }
+
+    /// <summary>
+    /// Finalizes block <paramref name="blockIndex"/> (covering raw positions
+    /// [4*blockIndex, 4*blockIndex+4)) via the overlap gather: "prev" = the FIRST half of each of
+    /// the 4 rows immediately preceding this block (rows[4k-4..4k-1], or a synthetic zero/-inf
+    /// row when k==0 / not enough history), "cur" = the SECOND half of each of this block's own 4
+    /// rows (rows[4k..4k+3]) -- see this file's header and the plan doc for the working-hypothesis
+    /// caveat. Feeds the already-verified <see cref="DeepSeek4Graph.CsaCompressBlock"/>.
+    /// </summary>
+    private void FinalizeOverlapBlock(
+        List<float[]> kvRows, List<float[]> scoreRows, int blockIndex, int ratio, int headDim,
+        ReadOnlySpan<float> normWeight, DeepSeek4CompressedLayerState target)
+    {
+        int coffDim = 2 * headDim;
+        var kvWindow = new float[2 * ratio * headDim];
+        var scoreWindow = new float[2 * ratio * headDim];
+
+        for (int r = 0; r < ratio; r++)
+        {
+            int prevRowIndex = DeepSeek4Graph.OverlapPrevRowIndex(blockIndex, ratio, r);
+            ReadOnlySpan<float> prevKv = prevRowIndex >= 0 ? kvRows[prevRowIndex].AsSpan(0, headDim) : new float[headDim];
+            ReadOnlySpan<float> prevScore;
+            if (prevRowIndex >= 0)
+            {
+                prevScore = scoreRows[prevRowIndex].AsSpan(0, headDim);
+            }
+            else
+            {
+                var negInf = new float[headDim];
+                Array.Fill(negInf, float.NegativeInfinity);
+                prevScore = negInf;
+            }
+            prevKv.CopyTo(kvWindow.AsSpan(r * headDim, headDim));
+            prevScore.CopyTo(scoreWindow.AsSpan(r * headDim, headDim));
+
+            int curRowIndex = DeepSeek4Graph.OverlapCurRowIndex(blockIndex, ratio, r);
+            ReadOnlySpan<float> curKv = kvRows[curRowIndex].AsSpan(headDim, headDim);
+            ReadOnlySpan<float> curScore = scoreRows[curRowIndex].AsSpan(headDim, headDim);
+            curKv.CopyTo(kvWindow.AsSpan((ratio + r) * headDim, headDim));
+            curScore.CopyTo(scoreWindow.AsSpan((ratio + r) * headDim, headDim));
+        }
+
+        var result = new float[headDim];
+        DeepSeek4Graph.CsaCompressBlock(
+            kvWindow, scoreWindow, ratio, headDim, _ropeDim,
+            normWeight, _hp.RmsNormEps,
+            (span, ropeDim, blockPos, freqBase) => ApplyRopeInterleaved(span, (int)blockPos, freqBase),
+            _hp.CompressRopeFreqBase, blockIndex,
+            result);
+
+        target.Persist(result, new float[headDim]);
+    }
+
+    /// <summary>
+    /// Runs the lightning indexer over CSA layer <paramref name="il"/>'s persisted LID-compressed
+    /// blocks and returns the indices of the top-<c>indexer_top_k</c> most-attendable blocks
+    /// (deepseek4.cpp:608-703, <c>build_lid_top_k</c>). All persisted blocks are causally valid by
+    /// construction (a block is only finalized once every raw token it covers has been processed,
+    /// which cannot happen in the future relative to the current decode position) so no additional
+    /// causal mask is applied here, unlike the reference's <c>kq_mask</c> term. Indexer Q comes
+    /// from <c>indexer_attn_q_b(qrNormed)</c>, NEOX-roped (the indexer's own explicit
+    /// LLAMA_ROPE_TYPE_NEOX convention, deepseek4.cpp:640-642 -- DIFFERENT from the main
+    /// attention's interleaved convention used elsewhere in this file); indexer K is the
+    /// persisted LID block itself (no separate raw indexer-key tensor exists for deepseek4, see
+    /// the plan doc). Per-query indexer_weights ([numHeads], one scalar per head, constant across
+    /// keys) are replicated across every key to match
+    /// <see cref="DeepSeek4Graph.LightningIndexerScore"/>'s [numKeys, numHeads] signature --
+    /// mathematically equivalent to the reference's broadcast multiply. <paramref name="position"/>
+    /// is the caller's absolute decode position, used for indexer Q's RoPE (fixed 2026-09-02 --
+    /// previously hardcoded to 0, see the plan doc's progress log).
+    /// </summary>
+    private int[] SelectCsaAttendableBlocks(int il, DeepSeek4LayerTensors layer, float[] qrNormed, float[] normedInput, int position)
+    {
+        var lidState = _compressedState.Lid(il)!;
+        int numKeys = lidState.BlockCount;
+        if (numKeys == 0) return [];
+
+        int numIndexerHeads = _hp.IndexerNumHeads;
+        int indexerRopeDim = _ropeDim; // n_rot -- same rotation width as main attention.
+        int indexerNopeDim = _indexerHeadDim - indexerRopeDim;
+
+        var indexerQ = new float[numIndexerHeads * _indexerHeadDim];
+        fixed (float* inPtr = qrNormed, outPtr = indexerQ)
+        {
+            SimdKernels.MatVec(outPtr, layer.IndexerAttnQB!.Value.DataPtr, inPtr, numIndexerHeads * _indexerHeadDim, qrNormed.Length, layer.IndexerAttnQB.Value.DType);
+        }
+        for (int h = 0; h < numIndexerHeads; h++)
+        {
+            ApplyRopeNeox(indexerQ.AsSpan(h * _indexerHeadDim + indexerNopeDim, indexerRopeDim), position, _hp.RopeFreqBase);
+        }
+
+        var indexerWeightsPerHead = new float[numIndexerHeads];
+        fixed (float* inPtr = normedInput, outPtr = indexerWeightsPerHead)
+        {
+            SimdKernels.MatVec(outPtr, layer.IndexerProj!.Value.DataPtr, inPtr, numIndexerHeads, _embedDim, layer.IndexerProj.Value.DType);
+        }
+        float indexerScale = 1f / MathF.Sqrt(_indexerHeadDim * numIndexerHeads);
+        for (int h = 0; h < numIndexerHeads; h++) indexerWeightsPerHead[h] *= indexerScale;
+
+        var k = new float[numKeys * numIndexerHeads * _indexerHeadDim];
+        var weights = new float[numKeys * numIndexerHeads];
+        for (int t = 0; t < numKeys; t++)
+        {
+            var (blockKv, _) = lidState.GetBlock(t);
+            for (int h = 0; h < numIndexerHeads; h++)
+            {
+                blockKv.Span.CopyTo(k.AsSpan((t * numIndexerHeads + h) * _indexerHeadDim, _indexerHeadDim));
+                weights[t * numIndexerHeads + h] = indexerWeightsPerHead[h];
+            }
+        }
+
+        var mask = new float[numKeys]; // all-zero: every persisted block is causally valid (see doc comment).
+        var scores = new float[numKeys];
+        DeepSeek4Graph.LightningIndexerScore(indexerQ, k, weights, mask, numIndexerHeads, _indexerHeadDim, numKeys, scores);
+
+        int topK = Math.Min(_hp.IndexerTopK, numKeys);
+        return DeepSeek4Graph.SelectTopKIndices(scores, topK);
+    }
+
+    /// <summary>
+    /// NEOX-style RoPE (rotates pairs (i, i+half)), the lightning indexer's explicit convention
+    /// per deepseek4.cpp's hardcoded LLAMA_ROPE_TYPE_NEOX at its q_pe/k_pe rope_ext calls --
+    /// distinct from <see cref="ApplyRopeInterleaved"/>, which the rest of this file (main
+    /// attention, CSA/HCA block compression) uses.
+    /// </summary>
+    private static void ApplyRopeNeox(Span<float> x, int position, float freqBase)
+    {
+        int dim = x.Length;
+        int half = dim / 2;
+        for (int i = 0; i < half; i++)
+        {
+            float freq = MathF.Pow(freqBase, -2f * i / dim);
+            float theta = position * freq;
+            float cos = MathF.Cos(theta), sin = MathF.Sin(theta);
+            float x0 = x[i], x1 = x[i + half];
+            x[i] = x0 * cos - x1 * sin;
+            x[i + half] = x0 * sin + x1 * cos;
+        }
     }
 
     private float[] MoeFfn(int il, DeepSeek4LayerTensors layer, float[] normedInput, int token)

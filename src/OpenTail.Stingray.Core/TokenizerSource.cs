@@ -58,6 +58,18 @@ public sealed record TokenizerSource
     /// </summary>
     public bool AddSpacePrefix { get; init; }
 
+    /// <summary>
+    /// True when <see cref="Merges"/> is a real, authoritative rank-priority merge list (a genuine
+    /// HF "fast tokenizer" BPE export of a SentencePiece-family vocabulary, e.g. Gemma/T5Gemma's
+    /// <c>tokenizer.json</c>) rather than GGUF's <c>tokenizer.ggml.merges</c> convenience array
+    /// (which real llama.cpp SPM tokenization, <c>tokenizer.ggml.model=llama</c>, does NOT use at
+    /// all -- that real algorithm is score-based, see <see cref="GgufTokenizer.SpmMergePiecesByScore"/>'s
+    /// doc comment). Defaults to <c>false</c> so every existing GGUF-sourced SPM tokenizer keeps
+    /// using the score-based algorithm unchanged; only set <c>true</c> by a source that is
+    /// genuinely rank-priority BPE with no unigram scores at all.
+    /// </summary>
+    public bool MergesAreRankPriority { get; init; }
+
     public int BosTokenId { get; init; } = 1;
     public int EosTokenId { get; init; } = 2;
     public int UnknownTokenId { get; init; }

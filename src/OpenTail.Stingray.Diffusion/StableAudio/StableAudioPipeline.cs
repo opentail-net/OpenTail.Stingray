@@ -1,21 +1,21 @@
 using OpenTail.Stingray.Audio;
+using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Diffusion.TextEncoders;
 
 namespace OpenTail.Stingray.Diffusion.StableAudio;
 
 /// <summary>
-/// Generation request for Stable Audio 3.
-///
-/// <para><b>Known gap, 2026-09-02</b>: no T5Gemma tokenizer has been wired into this project yet
-/// (see docs/057-stable-audio-3-implementation-plan.md), so the prompt must be supplied as
-/// already-tokenized ids (real `google/t5gemma-b-b-ul2` SentencePiece vocab, padded/truncated to
-/// 256 tokens with a matching attention mask) rather than a raw string. <see cref="PromptTokenIds"/>
-/// with length &lt; 256 is padded internally with the real T5GemmaConditioner's learned padding
-/// embedding, matching `padding_mode="learned"`.</para>
+/// Generation request for Stable Audio 3. Supply either <see cref="Prompt"/> (a raw string,
+/// tokenized internally by <see cref="StableAudioPipeline"/>'s real T5Gemma tokenizer) or
+/// <see cref="PromptTokenIds"/> directly (pre-tokenized, for callers with their own tokenization or
+/// tests) -- exactly one must be set. Either way, ids are padded/truncated to 256 tokens internally,
+/// with padding rows replaced by the real T5GemmaConditioner's learned padding embedding, matching
+/// `padding_mode="learned"`.
 /// </summary>
 public sealed record StableAudioRequest
 {
-    public required int[] PromptTokenIds { get; init; }
+    public string? Prompt { get; init; }
+    public int[]? PromptTokenIds { get; init; }
     public float DurationSeconds { get; init; } = 10.0f;
     public int Steps { get; init; } = 25;
     public int Seed { get; init; } = -1;
@@ -49,6 +49,7 @@ public sealed class StableAudioPipeline : IDisposable
     private readonly AcousticVae _vae;
     private readonly StableAudioParams _params;
     private readonly IWeightLoader _weights;
+    private readonly GgufTokenizer? _tokenizer;
     private bool _disposed;
 
     public bool IsDisposed => _disposed;
@@ -56,22 +57,38 @@ public sealed class StableAudioPipeline : IDisposable
 
     /// <param name="dit">Loader open on the real checkpoint (e.g. `small-music-base/model.safetensors`) -- holds both the DiT and VAE weights.</param>
     /// <param name="textEncoderWeights">Loader open on the real T5Gemma encoder checkpoint (e.g. the bundled `t5gemma-b-b-ul2/` subfolder).</param>
-    public StableAudioPipeline(IWeightLoader dit, IWeightLoader textEncoderWeights, StableAudioParams? @params = null)
+    /// <param name="textEncoderDir">Directory holding the real T5Gemma `tokenizer.json` (typically
+    /// the same directory <paramref name="textEncoderWeights"/> was opened on). Required for
+    /// <see cref="StableAudioRequest.Prompt"/> (raw-string) requests; omit if every caller supplies
+    /// <see cref="StableAudioRequest.PromptTokenIds"/> directly instead.</param>
+    public StableAudioPipeline(IWeightLoader dit, IWeightLoader textEncoderWeights, string? textEncoderDir = null, StableAudioParams? @params = null)
     {
         _params = @params ?? new StableAudioParams();
         _weights = dit;
         _transformer = StableAudioDiT.FromLoader(dit);
         _textEncoder = T5GemmaEncoder.FromLoader(textEncoderWeights);
         _vae = AcousticVae.FromLoader(dit);
+
+        if (textEncoderDir is not null)
+        {
+            var tokSource = HuggingFaceTokenizerSource.Load(textEncoderDir);
+            if (!tokSource.IsUsable || tokSource.Source is null)
+                throw new InvalidOperationException(
+                    $"Failed to load T5Gemma tokenizer from '{textEncoderDir}': {string.Join("; ", tokSource.Rejections)}");
+            _tokenizer = GgufTokenizer.FromSource(tokSource.Source);
+        }
     }
 
     /// <summary>
-    /// Generates high-fidelity stereo audio from a pre-tokenized prompt and duration specification.
+    /// Generates high-fidelity stereo audio from a text prompt (or pre-tokenized ids) and a
+    /// duration specification.
     /// </summary>
     public float[] Generate(StableAudioRequest request)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         ArgumentNullException.ThrowIfNull(request);
+
+        int[] promptTokenIds = ResolvePromptTokenIds(request);
 
         float duration = Math.Max(0.5f, request.DurationSeconds);
         int seqLen = (int)Math.Ceiling(duration * _params.LatentFrameRate);
@@ -80,7 +97,7 @@ public sealed class StableAudioPipeline : IDisposable
         var rng = request.Seed >= 0 ? new Random(request.Seed) : new Random();
         var latent = SampleGaussian(totalLatentElements, rng);
 
-        var (condTokens, secondsTotalRaw) = BuildConditioning(request.PromptTokenIds, duration);
+        var (condTokens, secondsTotalRaw) = BuildConditioning(promptTokenIds, duration);
         int nCond = condTokens.Length / CondTokenDim;
         var nullCondTokens = new float[condTokens.Length]; // real `null_embed = torch.zeros_like(...)`
 
@@ -115,6 +132,22 @@ public sealed class StableAudioPipeline : IDisposable
         }
 
         return pcm;
+    }
+
+    private int[] ResolvePromptTokenIds(StableAudioRequest request)
+    {
+        bool hasPrompt = !string.IsNullOrEmpty(request.Prompt);
+        bool hasIds = request.PromptTokenIds is not null;
+        if (hasPrompt == hasIds)
+            throw new ArgumentException("Exactly one of StableAudioRequest.Prompt or PromptTokenIds must be set.");
+
+        if (hasIds) return request.PromptTokenIds!;
+
+        if (_tokenizer is null)
+            throw new InvalidOperationException(
+                "StableAudioRequest.Prompt requires the pipeline to be constructed with a textEncoderDir (real T5Gemma tokenizer.json).");
+
+        return [.. _tokenizer.Encode(request.Prompt!)];
     }
 
     /// <summary>

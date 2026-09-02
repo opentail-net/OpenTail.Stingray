@@ -23,6 +23,100 @@ public sealed class HuggingFaceTokenizerSourceTests
     }
 
     /// <summary>
+    /// A real HF "fast tokenizer" BPE export of a SentencePiece-family vocabulary (Gemma/T5Gemma)
+    /// declares a `normalizer` step replacing literal spaces with U+2581 ('▁') before merging --
+    /// found 2026-09-02 porting Stable Audio 3's T5Gemma text conditioner, where this loader
+    /// accepted the real tokenizer.json as plain BPE (`model.type: "BPE"`) and silently produced
+    /// wrong token ids because that substitution never ran. Detecting it routes the source through
+    /// `GgufTokenizer`'s existing Gemma/Llama SPM machinery (`ModelFamily="gemma"`) instead of the
+    /// plain byte-level BPE path, AND marks the merges list as rank-priority (real BPE, not
+    /// GGUF-Llama's score-based algorithm -- see <see cref="TokenizerSource.MergesAreRankPriority"/>).
+    /// </summary>
+    [Fact]
+    public void Load_SentencePieceStyleNormalizer_RoutesToGemmaFamilyWithRankPriorityMerges()
+    {
+        using var dir = new TempDir();
+        dir.WriteTokenizerJson(normalizer: """{"type":"Replace","pattern":{"String":" "},"content":"▁"}""");
+
+        var result = HuggingFaceTokenizerSource.Load(dir.Path);
+
+        Assert.True(result.IsUsable, string.Join("; ", result.Rejections));
+        var source = result.Source!;
+        Assert.Equal("gemma", source.ModelFamily);
+        Assert.True(source.MergesAreRankPriority);
+    }
+
+    /// <summary>
+    /// Real BPE merge order is priority-ranked (earliest-declared merge applies first wherever it
+    /// is found in the sequence), NOT "leftmost mergeable pair wins on a score tie" (the real
+    /// algorithm for genuine llama.cpp SPM, `tokenizer.ggml.model=llama` -- see
+    /// <see cref="GgufTokenizer.SpmMergePiecesByScore"/>'s doc comment). A vocab where these two
+    /// algorithms disagree: pieces `[a, b, c]`, merges `["b c", "a b"]` (rank 0 then rank 1). Real
+    /// rank-priority BPE applies the LOWEST-rank mergeable pair wherever it occurs -- "b c" (rank 0)
+    /// beats "a b" (rank 1) even though "a b" is leftmost -- giving `[a, bc]`. The leftmost-tie
+    /// algorithm this loader silently used before this fix would instead merge "a b" first (the
+    /// first mergeable pair scanning left-to-right, since both have score 0.0), giving `[ab, c]`.
+    /// This is exactly the class of divergence that showed up on a real T5Gemma prompt containing
+    /// "arpeggio" before this fix ("▁arp"+"egg"+"io" instead of the real "▁ar"+"pe"+"ggio").
+    /// </summary>
+    [Fact]
+    public void Encode_SentencePieceStyleBpe_UsesRankPriorityNotLeftmostTie()
+    {
+        using var dir = new TempDir();
+        dir.WriteTokenizerJson(
+            vocab: """{"<unk>":0,"a":1,"b":2,"c":3,"ab":4,"bc":5,"abc":6}""",
+            merges: """["b c", "a b"]""",
+            normalizer: """{"type":"Replace","pattern":{"String":" "},"content":"▁"}""");
+
+        var result = HuggingFaceTokenizerSource.Load(dir.Path);
+        Assert.True(result.IsUsable, string.Join("; ", result.Rejections));
+
+        var tok = GgufTokenizer.FromSource(result.Source!);
+        var ids = tok.Encode("abc");
+
+        Assert.Equal([1, 5], ids); // "a" (id 1) + "bc" (id 5) -- the real rank-priority result
+    }
+
+    /// <summary>
+    /// Real-checkpoint regression test for the fix above: the real bundled T5Gemma tokenizer
+    /// (Stable Audio 3's text conditioner, see docs/057-stable-audio-3-implementation-plan.md),
+    /// encoding the exact prompt whose real ids were captured from HF `transformers` for
+    /// <c>StableAudioT5GemmaEncoderGoldenParityTests</c>. Skips (does not fail) when the local
+    /// checkpoint isn't present, same convention as this project's other real-weight fixtures.
+    /// </summary>
+    [Fact]
+    public void Encode_RealT5GemmaTokenizer_MatchesRealTransformersIds()
+    {
+        string? dir = FindRepoDir("models/stable-audio-3-t5gemma");
+        if (dir is null) return; // skip: needs the local T5Gemma checkpoint (tokenizer.json lives alongside the weights)
+
+        var result = HuggingFaceTokenizerSource.Load(dir);
+        Assert.True(result.IsUsable, string.Join("; ", result.Rejections));
+
+        var tok = GgufTokenizer.FromSource(result.Source!);
+        var ids = tok.Encode("A beautiful piano arpeggio grows into a grand cinematic climax");
+
+        // Real ids captured via HF `transformers`' AutoTokenizer for this exact prompt -- see
+        // tests/OpenTail.Stingray.Tests.Diffusion/TestData/StableAudioT5GemmaGolden/ids.bin
+        // (the first 12 non-padding entries there).
+        Assert.Equal([235280, 4964, 16748, 813, 554, 16194, 26075, 1280, 476, 4497, 106852, 82923], ids);
+    }
+
+    private static string? FindRepoDir(string relativePath)
+    {
+        var dir = Directory.GetCurrentDirectory();
+        for (int i = 0; i < 8; i++)
+        {
+            var p = Path.Combine(dir, relativePath.Replace('/', Path.DirectorySeparatorChar));
+            if (Directory.Exists(p)) return p;
+            var parent = Directory.GetParent(dir);
+            if (parent is null) break;
+            dir = parent.FullName;
+        }
+        return null;
+    }
+
+    /// <summary>
     /// A non-BPE model would encode without error through a BPE constructor and disagree with the
     /// model's training — silently wrong rather than failing.
     /// </summary>
@@ -209,11 +303,14 @@ public sealed class HuggingFaceTokenizerSourceTests
             string modelType = "BPE",
             string vocab = """{"<unk>":0,"<s>":1,"</s>":2,"a":3,"b":4,"ab":5}""",
             string merges = """["a b"]""",
-            string addedTokens = "[]")
+            string addedTokens = "[]",
+            string? normalizer = null)
         {
+            string normalizerJson = normalizer is null ? "null" : normalizer;
             File.WriteAllText(System.IO.Path.Combine(Path, "tokenizer.json"), $$"""
                 {
                   "added_tokens": {{addedTokens}},
+                  "normalizer": {{normalizerJson}},
                   "model": {
                     "type": "{{modelType}}",
                     "vocab": {{vocab}},

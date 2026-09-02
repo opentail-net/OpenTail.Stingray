@@ -333,19 +333,31 @@ that is more elegant but lower-visibility.
     (`StableAudioPipeline.PredictVelocity`): runs the DiT twice per step (conditioned +
     unconditioned) and applies the real default Adaptive Projected Guidance (orthogonal-projection
     variant, not vanilla CFG — matches the real Gradio demo's own default, `cfg_scale=6.0`).
-    Remaining known gaps: no T5Gemma tokenizer wired yet (`StableAudioRequest` takes pre-tokenized
-    ids — **root-caused same day**: this project's existing generic HF-BPE tokenizer loader
-    [`HuggingFaceTokenizerSource`/`GgufTokenizer.FromSource`] accepts T5Gemma's real
-    `tokenizer.json` (`model.type: "BPE"`) but encodes it WRONG — confirmed by comparing against the
-    real captured golden ids for the same prompt. Root cause: this tokenizer's real preprocessing
-    declares a `normalizer` step (`Replace " " → "▁"`, the classic SentencePiece space-marker) that
-    the loader doesn't apply before BPE merging, a real gap in shared, engine-wide tokenizer
-    infrastructure (affects any future SentencePiece-as-BPE HF export, not just T5Gemma) — see plan
-    057's "T5Gemma tokenizer" section for the exact fix scope, deliberately not attempted this pass
-    since it touches shared infrastructure other model loaders depend on), VAE `Encode` direction
-    implemented but not golden-tested (only `Decode`, the direction generation needs, is verified),
-    and no full pipeline-level (as opposed to per-component) golden verification against a real
-    end-to-end reference run yet.
+    **T5Gemma tokenizer root-caused AND fixed same day**: this project's existing generic HF-BPE
+    tokenizer loader (`HuggingFaceTokenizerSource`/`GgufTokenizer.FromSource`, shared engine-wide
+    infrastructure, not Stable-Audio-specific) accepted T5Gemma's real `tokenizer.json`
+    (`model.type: "BPE"`) but encoded it WRONG — confirmed by comparing against the real captured
+    golden ids for the same prompt. Two real, independent bugs fixed: (1) the loader never detected
+    a real `normalizer` step (`Replace " " → "▁"`, the SentencePiece space-marker) declared by this
+    tokenizer, now detected and routed through `GgufTokenizer`'s existing Gemma/Llama SPM
+    space-substitution machinery; (2) even after that fix, `EncodeSpm` still used the score-based
+    leftmost-tie merge algorithm (correct for genuine llama.cpp SPM, per the earlier `xverse` fix —
+    deliberately NOT touched) instead of the real rank-priority BPE algorithm this HF export
+    actually needs (no unigram scores, a real ordered merges list instead) — fixed via a new
+    `TokenizerSource.MergesAreRankPriority` flag routing to the already-existing, already-tested
+    `SpmMergePieces` rank algorithm. Verified: real prompt now tokenizes to the EXACT real ids.
+    `StableAudioPipeline.Generate` now takes a raw `Prompt` string end-to-end (tokenizer → encoder →
+    DiT with CFG → VAE decode), confirmed in
+    `StableAudioPipeline_GeneratesStereoWavFileWithTpdfDither`. New tests:
+    `HuggingFaceTokenizerSourceTests.cs`'s
+    `Load_SentencePieceStyleNormalizer_RoutesToGemmaFamilyWithRankPriorityMerges`,
+    `Encode_SentencePieceStyleBpe_UsesRankPriorityNotLeftmostTie` (synthetic, provably distinguishes
+    the two algorithms), `Encode_RealT5GemmaTokenizer_MatchesRealTransformersIds` (real-checkpoint
+    regression); existing `PreTokenizerParityTests`/`SpmMergeByScoreTests`/`SpmMergeTests` all still
+    pass unchanged, confirming classic GGUF SPM/byte-BPE behavior wasn't touched. Remaining gaps:
+    VAE `Encode` direction implemented but not golden-tested (only `Decode`, the direction
+    generation needs, is verified), and no full pipeline-level (as opposed to per-component) golden
+    verification against a real end-to-end reference run yet.
 
 ---
 

@@ -31,6 +31,13 @@ public sealed partial class GgufTokenizer : ITokenizer
     // llama.cpp's own fallback (still correct, since the real algorithm is gated on vocabulary
     // membership, not on this array being present).
     private readonly float[]? _spmScores;
+    // True for a real HF "fast tokenizer" BPE export of a SentencePiece-family vocabulary (e.g.
+    // Gemma/T5Gemma's tokenizer.json) -- see TokenizerSource.MergesAreRankPriority's doc comment.
+    // Routes EncodeSpm to the rank-priority merge algorithm (SpmMergePieces) instead of the
+    // score-based one (SpmMergePiecesByScore), which stays the default for every GGUF-sourced SPM
+    // tokenizer (real llama.cpp SPM has no merge-rank concept at all, even when a GGUF happens to
+    // carry a tokenizer.ggml.merges convenience array -- see SpmMergePiecesByScore's doc comment).
+    private readonly bool _mergesAreRankPriority;
     private readonly bool _addSpacePrefix;
     // Real SentencePiece Unigram-LM (tokenizer.ggml.model=t5) -- a genuinely different
     // segmentation algorithm (Viterbi lattice over per-token scores), not merges-based at all.
@@ -126,6 +133,7 @@ public sealed partial class GgufTokenizer : ITokenizer
         bool isSpmBpe,
         Dictionary<(string, string), int>? spmMerges,
         float[]? spmScores,
+        bool mergesAreRankPriority,
         bool addSpacePrefix,
         UnigramTokenizer? unigram,
         ImmutableArray<int> eogTokenIds,
@@ -144,6 +152,7 @@ public sealed partial class GgufTokenizer : ITokenizer
         _isSpmBpe = isSpmBpe;
         _spmMerges = spmMerges;
         _spmScores = spmScores;
+        _mergesAreRankPriority = mergesAreRankPriority;
         _addSpacePrefix = addSpacePrefix;
         _unigram = unigram;
         _preTokenSplit = preTokenSplit;
@@ -510,6 +519,7 @@ public sealed partial class GgufTokenizer : ITokenizer
             isSpmBpe,
             spmMerges,
             source.Scores,
+            source.MergesAreRankPriority,
             source.AddSpacePrefix,
             unigram,
             eogIds,
@@ -741,7 +751,20 @@ public sealed partial class GgufTokenizer : ITokenizer
         var en = System.Globalization.StringInfo.GetTextElementEnumerator(text);
         while (en.MoveNext()) pieces.Add((string)en.Current);
 
-        var merged = SpmMergePiecesByScore(pieces, _vocab, _spmScores);
+        // Two genuinely different real algorithms share this entry point: classic llama.cpp SPM
+        // (tokenizer.ggml.model=llama) is score-based with no merge-rank concept, even when a GGUF
+        // happens to carry a tokenizer.ggml.merges convenience array (see SpmMergePiecesByScore's
+        // doc comment -- this is the `xverse` fix, and must stay the default here); a real HF "fast
+        // tokenizer" BPE export of a SentencePiece-family vocabulary (Gemma/T5Gemma) is the
+        // opposite -- no unigram scores at all, and its real merges list IS the authoritative
+        // rank-priority order (found 2026-09-02 porting Stable Audio 3's T5Gemma text conditioner:
+        // routing it through the score-based algorithm with all-zero scores silently picked the
+        // leftmost mergeable pair at each step instead of the real highest-priority one, diverging
+        // from the real tokenizer on multi-merge subwords like "arpeggio" -> "▁arp"+"egg"+"io"
+        // instead of the real "▁ar"+"pe"+"ggio").
+        var merged = _mergesAreRankPriority && _spmMerges is { Count: > 0 }
+            ? SpmMergePieces(pieces, _spmMerges)
+            : SpmMergePiecesByScore(pieces, _vocab, _spmScores);
 
         var ids = new List<int>(merged.Count);
         foreach (var piece in merged)
