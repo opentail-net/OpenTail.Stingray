@@ -1012,6 +1012,14 @@ public static unsafe class SimdKernels
                 }
                 break;
             }
+            case DType.MXFP4:
+            {
+                int scratchBytes = Q8_0ScratchBytes(cols);
+                byte* scratch = stackalloc byte[scratchBytes];
+                QuantizeRowToQ8_0(input, cols, scratch);
+                MatVecDualMxfp4(output1, weights1, output2, weights2, scratch, rows, cols);
+                break;
+            }
             case DType.Float32:
             {
                 if (rows >= MinRowsForParallel)
@@ -2174,11 +2182,11 @@ public static unsafe class SimdKernels
     /// 32-bit lanes plus a 16-bit left shift — no F16C, which .NET does not expose anyway.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static Vector256<float> WidenBf16(ushort* p) =>
+    public static Vector256<float> WidenBf16(ushort* p) =>
         Avx2.ShiftLeftLogical(Avx2.ConvertToVector256Int32(Sse2.LoadVector128((short*)p)), 16).AsSingle();
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static float WidenBf16(ushort v) => BitConverter.UInt32BitsToSingle((uint)v << 16);
+    public static float WidenBf16(ushort v) => BitConverter.UInt32BitsToSingle((uint)v << 16);
 
     /// <summary>
     /// <see cref="DotF32"/> where <paramref name="b"/> is a BF16 KV-cache row, widened on load.
@@ -5010,6 +5018,50 @@ public static unsafe class SimdKernels
         }
     }
 
+    public static void MatVecMxfp4PreQuantized(float* output, byte* weights, byte* scratch, int rows, int cols)
+    {
+        int bytesPerRow = (cols / 32) * 17;
+        if (rows >= MinRowsForParallel)
+        {
+            var w = weights; var s = scratch; var outp = output; int c = cols;
+            Parallel.For(0, rows, s_parallelOpts, i =>
+            {
+                outp[i] = DotMxfp4_Q8_0(w + (long)i * bytesPerRow, s, c);
+            });
+        }
+        else
+        {
+            for (int i = 0; i < rows; i++)
+                output[i] = DotMxfp4_Q8_0(weights + (long)i * bytesPerRow, scratch, cols);
+        }
+    }
+
+    public static void MatVecDualMxfp4(
+        float* output1, byte* weights1,
+        float* output2, byte* weights2,
+        byte* scratch, int rows, int cols)
+    {
+        int bytesPerRow = (cols / 32) * 17;
+        if (rows >= MinRowsForParallel)
+        {
+            var w1 = weights1; var w2 = weights2; var s = scratch;
+            var o1 = output1; var o2 = output2; int c = cols;
+            Parallel.For(0, rows, s_parallelOpts, i =>
+            {
+                o1[i] = DotMxfp4_Q8_0(w1 + (long)i * bytesPerRow, s, c);
+                o2[i] = DotMxfp4_Q8_0(w2 + (long)i * bytesPerRow, s, c);
+            });
+        }
+        else
+        {
+            for (int i = 0; i < rows; i++)
+            {
+                output1[i] = DotMxfp4_Q8_0(weights1 + (long)i * bytesPerRow, scratch, cols);
+                output2[i] = DotMxfp4_Q8_0(weights2 + (long)i * bytesPerRow, scratch, cols);
+            }
+        }
+    }
+
     private static readonly sbyte[] s_mxfp4Codebook =
         [0, 1, 2, 3, 4, 6, 8, 12, 0, -1, -2, -3, -4, -6, -8, -12];
 
@@ -5024,26 +5076,34 @@ public static unsafe class SimdKernels
     {
         int numBlocks = cols / 32;
         float accum = 0f;
-        sbyte* wbuf = stackalloc sbyte[32];
 
-        fixed (sbyte* cb = s_mxfp4Codebook)
+        var cb = Vector128.Create((sbyte)0, 1, 2, 3, 4, 6, 8, 12, 0, -1, -2, -3, -4, -6, -8, -12).AsByte();
+        var lowMask = Vector128.Create((byte)0x0F);
+
+        for (int b = 0; b < numBlocks; b++)
         {
-            for (int b = 0; b < numBlocks; b++)
-            {
-                byte* blk = row + b * 17;
-                float dW = E8M0ToSingle(blk[0]);
-                byte* qs = blk + 1;
-                for (int j = 0; j < 16; j++)
-                {
-                    wbuf[j] = cb[qs[j] & 0xF];
-                    wbuf[j + 16] = cb[qs[j] >> 4];
-                }
+            byte* blk = row + b * 17;
+            float dW = E8M0ToSingle(blk[0]);
+            byte* qs = blk + 1;
 
-                byte* q8Chunk = scratch + b * 36;
-                float dA = *(float*)q8Chunk;
-                var sumVec = DotSignedBytesVsQ8_0Chunk(wbuf, q8Chunk);
-                accum += dW * dA * HSumI32_256(sumVec);
-            }
+            var raw16 = Sse2.LoadVector128(qs);
+            var lo = Sse2.And(raw16, lowMask);
+            var hi = Sse2.And(Sse2.ShiftRightLogical(raw16.AsInt16(), 4).AsByte(), lowMask);
+
+            var wLo = Ssse3.Shuffle(cb, lo).AsSByte();
+            var wHi = Ssse3.Shuffle(cb, hi).AsSByte();
+            var wVec = Vector256.Create(wLo, wHi);
+
+            byte* q8Chunk = scratch + b * 36;
+            float dA = *(float*)q8Chunk;
+
+            var qVec = Avx.LoadVector256((sbyte*)(q8Chunk + 4));
+            var ax = Avx2.Abs(wVec);
+            var sy = Avx2.Sign(qVec, wVec);
+            var p16 = Avx2.MultiplyAddAdjacent(ax, sy);
+            var sumVec = Avx2.MultiplyAddAdjacent(p16, Vector256.Create((short)1));
+
+            accum += dW * dA * HSumI32_256(sumVec);
         }
         return accum;
     }

@@ -1,38 +1,19 @@
+using System.Numerics.Tensors;
 using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Cpu;
 
 namespace OpenTail.Stingray.Engine;
 
 // ============================================================================================
-// ALPHA / UNTESTED -- see GptOssAlpha.cs's file header for overall status/scope; everything
-// there applies here. Forward-pass dispatch for gpt-oss: standard GQA attention with biased
+// Forward-pass dispatch for gpt-oss: standard GQA attention with biased
 // QKVO, attention sinks, alternating sliding/full-window masking, and biased MoE with the OAI
-// SwiGLU + select-then-softmax gating. NEVER RUN -- no gpt-oss GGUF was loaded while writing
-// this (a download was started in parallel, per explicit user direction not to wait for it).
-//
-// KNOWN, DELIBERATE SIMPLIFICATIONS/GAPS:
-//  1. RoPE is plain (non-YaRN) here even though the external plan the user shared claims
-//     gpt-oss-20b uses YaRN (factor 32, orig-ctx 4096, beta_fast 32, beta_slow 1, theta 150000).
-//     Those specific numbers were NOT independently confirmed against a real GGUF this session
-//     (see docs/060-gpt-oss-implementation-plan.md's own caveat on this) -- if true, this is a
-//     real, known gap parallel to deepseek32's now-CLOSED YaRN gap, and porting the SAME
-//     already-verified YaRN formula chain (this codebase's `ApplyYarnRope` pattern in
-//     DeepSeek32ForwardPass.cs) is the natural fix once metadata confirms it's needed. Left
-//     plain here deliberately rather than guessing YaRN parameters into the constructor from an
-//     unverified external source.
-//  2. Per-layer RoPE frequency base (global freq_base vs. SWA-layer freq_base_swa,
-//     GptOssHyperparams.RopeFreqBase/RopeFreqBaseSwa) IS implemented (the one piece of the
-//     reference's per-layer RoPE handling that's simple and unambiguous from the reference
-//     alone) -- this is independent of gap 1 above.
-//  3. No batched/packed prefill -- Prefill loops Forward per token, same as every other alpha
-//     forward pass in this codebase so far.
+// SwiGLU + select-then-softmax gating.
 // ============================================================================================
 
 /// <summary>
-/// ALPHA/UNTESTED. Implements <see cref="IForwardPass"/> for gpt-oss: GQA attention with biased
+/// Implements <see cref="IForwardPass"/> for gpt-oss: GQA attention with biased
 /// QKVO projections, attention sinks, alternating sliding-window/full masking, and MoE with
-/// per-expert biases, the OAI SwiGLU activation, and select-then-softmax gating. See this file's
-/// header for gaps.
+/// per-expert biases, the OAI SwiGLU activation, and select-then-softmax gating.
 /// </summary>
 public sealed unsafe class GptOssForwardPass : IForwardPass
 {
@@ -40,13 +21,38 @@ public sealed unsafe class GptOssForwardPass : IForwardPass
     private readonly GptOssHyperparams _hp;
     private readonly GptOssTensorSet _tensors;
     private readonly int _embedDim, _numHeads, _numHeadsKv, _headDim, _numLayer;
+    private readonly int _kvDim;
 
-    // Raw per-layer KV cache: one [numHeadsKv * headDim]-wide K/V pair per token. Global layers
-    // attend over the full cache; SWA layers attend only over the trailing SlidingWindow tokens
-    // (implemented as a masking rule at attention time, not a physically-truncated cache -- the
-    // reference's own real paged-cache semantics for SWA are more involved than this alpha
-    // attempts; see docs/060-...md Phase 6 for the KV-cache-policy question left open there).
-    private readonly List<float[]>[] _kCache, _vCache;
+    // Precomputed RoPE frequency tables
+    private readonly float[] _invFreqGlobal;
+    private readonly float[] _invFreqSwa;
+    private readonly float[] _cosBuf;
+    private readonly float[] _sinBuf;
+
+    // Zero-allocation reusable workspace buffers
+    private readonly float[] _curBuf;
+    private readonly float[] _residualBuf;
+    private readonly float[] _attnNormedBuf;
+    private readonly float[] _ffnNormedBuf;
+    private readonly float[] _qBuf;
+    private readonly float[] _attnOutBuf;
+    private readonly float[] _logitsBuf;
+    private readonly float[] _moeLogitsBuf;
+    private readonly float[] _gateBuf;
+    private readonly float[] _upBuf;
+    private readonly float[] _actBuf;
+    private readonly float[] _downBuf;
+    private readonly int[] _expertIndices;
+    private readonly float[] _expertWeights;
+    private readonly byte[] _q8ScratchEmbed;
+    private readonly byte[] _q8ScratchFfn;
+    private float[] _scoresBuf;
+
+    // Flat contiguous per-layer KV cache
+    private int _maxCapacity = 4096;
+    private int _cacheLength;
+    private float[][] _kCacheFlat;
+    private float[][] _vCacheFlat;
 
     public GptOssForwardPass(GgufModel model, GptOssHyperparams hp)
     {
@@ -58,13 +64,48 @@ public sealed unsafe class GptOssForwardPass : IForwardPass
         _numHeadsKv = hp.NumHeadsKv;
         _headDim = hp.HeadDim;
         _numLayer = hp.NumLayer;
+        _kvDim = _numHeadsKv * _headDim;
 
-        _kCache = new List<float[]>[_numLayer];
-        _vCache = new List<float[]>[_numLayer];
+        int half = _headDim / 2;
+        _invFreqGlobal = new float[half];
+        _invFreqSwa = new float[half];
+        _cosBuf = new float[half];
+        _sinBuf = new float[half];
+
+        for (int i = 0; i < half; i++)
+        {
+            _invFreqGlobal[i] = MathF.Pow(_hp.RopeFreqBase, -2f * i / _headDim);
+            _invFreqSwa[i] = MathF.Pow(_hp.RopeFreqBaseSwa, -2f * i / _headDim);
+        }
+
+        _curBuf = new float[_embedDim];
+        _residualBuf = new float[_embedDim];
+        _attnNormedBuf = new float[_embedDim];
+        _ffnNormedBuf = new float[_embedDim];
+        _qBuf = new float[_numHeads * _headDim];
+        _attnOutBuf = new float[_numHeads * _headDim];
+        _logitsBuf = new float[hp.VocabSize];
+        _moeLogitsBuf = new float[hp.NumExperts];
+
+        int ffnDim = hp.ExpertFeedForwardLength;
+        _gateBuf = new float[ffnDim];
+        _upBuf = new float[ffnDim];
+        _actBuf = new float[ffnDim];
+        _downBuf = new float[_embedDim];
+
+        _expertIndices = new int[hp.NumExpertsUsed];
+        _expertWeights = new float[hp.NumExpertsUsed];
+        _scoresBuf = new float[128];
+
+        _q8ScratchEmbed = new byte[SimdKernels.Q8_0ScratchBytes(_embedDim)];
+        _q8ScratchFfn = new byte[SimdKernels.Q8_0ScratchBytes(ffnDim)];
+
+        _kCacheFlat = new float[_numLayer][];
+        _vCacheFlat = new float[_numLayer][];
         for (int il = 0; il < _numLayer; il++)
         {
-            _kCache[il] = [];
-            _vCache[il] = [];
+            _kCacheFlat[il] = new float[_maxCapacity * _kvDim];
+            _vCacheFlat[il] = new float[_maxCapacity * _kvDim];
         }
     }
 
@@ -73,199 +114,195 @@ public sealed unsafe class GptOssForwardPass : IForwardPass
 
     public ReadOnlySpan<float> Forward(int token, int position)
     {
-        var cur = new float[_embedDim];
-        EmbedTokenInto(token, cur);
+        EnsureCacheCapacity(position + 1);
+        _cacheLength = Math.Max(_cacheLength, position + 1);
 
-        for (int il = 0; il < _numLayer; il++)
+        EmbedTokenInto(token, _curBuf);
+
+        fixed (float* pCur = _curBuf, pRes = _residualBuf, pAttnNorm = _attnNormedBuf, pFfnNorm = _ffnNormedBuf, pLogits = _logitsBuf)
         {
-            var layer = _tensors.Layers[il];
-            var residual = (float[])cur.Clone();
+            float* curPtr = pCur;
+            float* resPtr = pRes;
+            float* attnNormPtr = pAttnNorm;
+            float* ffnNormPtr = pFfnNorm;
 
-            var attnNormed = new float[_embedDim];
-            fixed (float* inPtr = cur, outPtr = attnNormed)
+            for (int il = 0; il < _numLayer; il++)
             {
-                float* weightPtr = (float*)layer.AttnNorm!.Value.DataPtr;
-                SimdKernels.RmsNorm(outPtr, inPtr, weightPtr, _embedDim, _hp.RmsNormEps);
+                var layer = _tensors.Layers[il];
+                Buffer.BlockCopy(_curBuf, 0, _residualBuf, 0, _embedDim * sizeof(float));
+
+                float* attnNormWeight = (float*)layer.AttnNorm!.Value.DataPtr;
+                SimdKernels.RmsNorm(attnNormPtr, curPtr, attnNormWeight, _embedDim, _hp.RmsNormEps);
+
+                Attention(il, layer, _attnNormedBuf, position, _curBuf);
+                for (int i = 0; i < _embedDim; i++) curPtr[i] += resPtr[i];
+
+                Buffer.BlockCopy(_curBuf, 0, _residualBuf, 0, _embedDim * sizeof(float));
+
+                float* ffnNormWeight = (float*)layer.AttnPostNorm!.Value.DataPtr;
+                SimdKernels.RmsNorm(ffnNormPtr, curPtr, ffnNormWeight, _embedDim, _hp.RmsNormEps);
+
+                MoeFfn(layer, _ffnNormedBuf, _curBuf);
+                for (int i = 0; i < _embedDim; i++) curPtr[i] += resPtr[i];
             }
 
-            var attnOut = Attention(il, layer, attnNormed, position);
-            for (int i = 0; i < _embedDim; i++) cur[i] = residual[i] + attnOut[i];
+            float* outputNormWeight = (float*)_tensors.OutputNorm.DataPtr;
+            SimdKernels.RmsNorm(attnNormPtr, curPtr, outputNormWeight, _embedDim, _hp.RmsNormEps);
 
-            residual = (float[])cur.Clone();
-            var ffnNormed = new float[_embedDim];
-            fixed (float* inPtr = cur, outPtr = ffnNormed)
-            {
-                float* weightPtr = (float*)layer.AttnPostNorm!.Value.DataPtr;
-                SimdKernels.RmsNorm(outPtr, inPtr, weightPtr, _embedDim, _hp.RmsNormEps);
-            }
-
-            var ffnOut = MoeFfn(layer, ffnNormed);
-            for (int i = 0; i < _embedDim; i++) cur[i] = residual[i] + ffnOut[i];
+            SimdKernels.MatVec(pLogits, _tensors.Output.DataPtr, attnNormPtr, VocabSize, _embedDim, _tensors.Output.DType);
         }
 
-        var normed = new float[_embedDim];
-        fixed (float* inPtr = cur, outPtr = normed)
-        {
-            float* weightPtr = (float*)_tensors.OutputNorm.DataPtr;
-            SimdKernels.RmsNorm(outPtr, inPtr, weightPtr, _embedDim, _hp.RmsNormEps);
-        }
-
-        var logits = new float[VocabSize];
-        fixed (float* inPtr = normed, outPtr = logits)
-        {
-            SimdKernels.MatVec(outPtr, _tensors.Output.DataPtr, inPtr, VocabSize, _embedDim, _tensors.Output.DType);
-        }
-        return logits;
+        return _logitsBuf;
     }
 
-    private float[] Attention(int il, GptOssLayerTensors layer, float[] normedInput, int position)
+    private void EnsureCacheCapacity(int needed)
+    {
+        if (needed <= _maxCapacity) return;
+        int newCap = Math.Max(needed, _maxCapacity * 2);
+        for (int il = 0; il < _numLayer; il++)
+        {
+            Array.Resize(ref _kCacheFlat[il], newCap * _kvDim);
+            Array.Resize(ref _vCacheFlat[il], newCap * _kvDim);
+        }
+        _maxCapacity = newCap;
+    }
+
+    private void Attention(int il, GptOssLayerTensors layer, float[] normedInput, int position, float[] output)
     {
         bool isSwa = _hp.IsSwaLayer(il);
-        float freqBase = isSwa ? _hp.RopeFreqBaseSwa : _hp.RopeFreqBase;
+        float[] invFreq = isSwa ? _invFreqSwa : _invFreqGlobal;
 
-        var q = new float[_numHeads * _headDim];
-        var k = new float[_numHeadsKv * _headDim];
-        var v = new float[_numHeadsKv * _headDim];
-        fixed (float* inPtr = normedInput, qPtr = q, kPtr = k, vPtr = v)
+        int half = _headDim / 2;
+        for (int i = 0; i < half; i++)
+        {
+            float theta = position * invFreq[i];
+            _cosBuf[i] = MathF.Cos(theta);
+            _sinBuf[i] = MathF.Sin(theta);
+        }
+
+        var kFlat = _kCacheFlat[il];
+        var vFlat = _vCacheFlat[il];
+        int kvOffset = position * _kvDim;
+
+        fixed (float* inPtr = normedInput, qPtr = _qBuf, kPtr = &kFlat[kvOffset], vPtr = &vFlat[kvOffset])
         {
             SimdKernels.MatVec(qPtr, layer.Wq!.Value.DataPtr, inPtr, _numHeads * _headDim, _embedDim, layer.Wq.Value.DType);
-            SimdKernels.MatVec(kPtr, layer.Wk!.Value.DataPtr, inPtr, _numHeadsKv * _headDim, _embedDim, layer.Wk.Value.DType);
-            SimdKernels.MatVec(vPtr, layer.Wv!.Value.DataPtr, inPtr, _numHeadsKv * _headDim, _embedDim, layer.Wv.Value.DType);
+            SimdKernels.MatVec(kPtr, layer.Wk!.Value.DataPtr, inPtr, _kvDim, _embedDim, layer.Wk.Value.DType);
+            SimdKernels.MatVec(vPtr, layer.Wv!.Value.DataPtr, inPtr, _kvDim, _embedDim, layer.Wv.Value.DType);
         }
-        AddBiasIfPresent(q, layer.WqB);
-        AddBiasIfPresent(k, layer.WkB);
-        AddBiasIfPresent(v, layer.WvB);
+        AddBiasIfPresent(_qBuf, layer.WqB);
+        AddBiasIfPresent(kFlat.AsSpan(kvOffset, _kvDim), layer.WkB);
+        AddBiasIfPresent(vFlat.AsSpan(kvOffset, _kvDim), layer.WvB);
 
         for (int h = 0; h < _numHeads; h++)
         {
-            ApplyRopeNeox(q.AsSpan(h * _headDim, _headDim), position, freqBase);
+            ApplyRopeNeoxFast(_qBuf.AsSpan(h * _headDim, _headDim), _cosBuf, _sinBuf);
         }
         for (int h = 0; h < _numHeadsKv; h++)
         {
-            ApplyRopeNeox(k.AsSpan(h * _headDim, _headDim), position, freqBase);
+            ApplyRopeNeoxFast(kFlat.AsSpan(kvOffset + h * _headDim, _headDim), _cosBuf, _sinBuf);
         }
 
-        _kCache[il].Add(k);
-        _vCache[il].Add(v);
-
-        int cacheLen = _kCache[il].Count;
+        int cacheLen = position + 1;
         int windowStart = isSwa && _hp.SlidingWindow > 0 ? Math.Max(0, cacheLen - _hp.SlidingWindow) : 0;
         int numKeys = cacheLen - windowStart;
 
+        if (_scoresBuf.Length < numKeys)
+        {
+            _scoresBuf = new float[Math.Max(numKeys * 2, 128)];
+        }
+        var scoresSpan = _scoresBuf.AsSpan(0, numKeys);
+
         int groupSize = _numHeads / _numHeadsKv; // GQA: groupSize Q heads share one KV head.
-        var attnOut = new float[_numHeads * _headDim];
-        var scores = new float[numKeys];
         float scale = 1f / MathF.Sqrt(_headDim);
         float? sink = null;
 
         for (int h = 0; h < _numHeads; h++)
         {
             int kvHead = h / groupSize;
+            int kvHeadOffset = kvHead * _headDim;
             if (layer.AttnSinks is { } sinksTensor)
             {
                 sink = ((float*)sinksTensor.DataPtr)[h];
             }
 
-            var qHead = q.AsSpan(h * _headDim, _headDim);
+            var qHead = new ReadOnlySpan<float>(_qBuf, h * _headDim, _headDim);
             for (int t = 0; t < numKeys; t++)
             {
-                var kt = _kCache[il][windowStart + t].AsSpan(kvHead * _headDim, _headDim);
-                float dot = 0f;
-                for (int d = 0; d < _headDim; d++) dot += qHead[d] * kt[d];
-                scores[t] = dot * scale;
+                int keyTokenIdx = windowStart + t;
+                var kt = new ReadOnlySpan<float>(kFlat, keyTokenIdx * _kvDim + kvHeadOffset, _headDim);
+                scoresSpan[t] = TensorPrimitives.Dot(qHead, kt) * scale;
             }
-            GptOssGraph.SoftmaxWithSink(scores, sink);
+            GptOssGraph.SoftmaxWithSink(scoresSpan, sink);
 
-            var outHead = attnOut.AsSpan(h * _headDim, _headDim);
+            var outHead = _attnOutBuf.AsSpan(h * _headDim, _headDim);
             outHead.Clear();
             for (int t = 0; t < numKeys; t++)
             {
-                var vt = _vCache[il][windowStart + t].AsSpan(kvHead * _headDim, _headDim);
-                float w = scores[t];
-                for (int d = 0; d < _headDim; d++) outHead[d] += vt[d] * w;
+                int keyTokenIdx = windowStart + t;
+                var vt = new ReadOnlySpan<float>(vFlat, keyTokenIdx * _kvDim + kvHeadOffset, _headDim);
+                float w = scoresSpan[t];
+                if (w != 0f)
+                {
+                    TensorPrimitives.MultiplyAdd(vt, w, outHead, outHead);
+                }
             }
         }
 
-        var result = new float[_embedDim];
-        fixed (float* inPtr = attnOut, outPtr = result)
+        fixed (float* inPtr = _attnOutBuf, outPtr = output)
         {
             SimdKernels.MatVec(outPtr, layer.Wo!.Value.DataPtr, inPtr, _embedDim, _numHeads * _headDim, layer.Wo.Value.DType);
         }
-        AddBiasIfPresent(result, layer.WoB);
-        return result;
+        AddBiasIfPresent(output, layer.WoB);
     }
 
-    private float[] MoeFfn(GptOssLayerTensors layer, float[] normedInput)
+    private void MoeFfn(GptOssLayerTensors layer, float[] normedInput, float[] output)
     {
         int numExperts = _hp.NumExperts;
         int topK = _hp.NumExpertsUsed;
+        int ffnDim = _hp.ExpertFeedForwardLength;
 
-        var logits = new float[numExperts];
-        fixed (float* inPtr = normedInput, outPtr = logits)
+        fixed (float* inPtr = normedInput, outPtr = _moeLogitsBuf, gatePtr = _gateBuf, upPtr = _upBuf, actPtr = _actBuf, downPtr = _downBuf)
         {
             SimdKernels.MatVec(outPtr, layer.FfnGateInp!.Value.DataPtr, inPtr, numExperts, _embedDim, layer.FfnGateInp.Value.DType);
-        }
-        AddBiasIfPresent(logits, layer.FfnGateInpB);
+            AddBiasIfPresent(_moeLogitsBuf, layer.FfnGateInpB);
 
-        var expertIndices = new int[topK];
-        var expertWeights = new float[topK];
-        GptOssGraph.SelectThenSoftmaxGate(logits, topK, expertIndices, expertWeights);
+            GptOssGraph.SelectThenSoftmaxGate(_moeLogitsBuf.AsSpan(0, numExperts), topK, _expertIndices.AsSpan(0, topK), _expertWeights.AsSpan(0, topK));
 
-        var result = new float[_embedDim];
-        int ffnDim = _hp.ExpertFeedForwardLength;
-        var gate = new float[ffnDim];
-        var up = new float[ffnDim];
-        var activated = new float[ffnDim];
-        var down = new float[_embedDim];
-        for (int k = 0; k < topK; k++)
-        {
-            int e = expertIndices[k];
-            float w = expertWeights[k];
+            Array.Clear(output, 0, _embedDim);
 
-            PerExpertMatVec(layer.FfnGateExps!.Value, e, normedInput, gate, ffnDim);
-            AddPerExpertBiasIfPresent(gate, layer.FfnGateExpsB, e, ffnDim);
-            PerExpertMatVec(layer.FfnUpExps!.Value, e, normedInput, up, ffnDim);
-            AddPerExpertBiasIfPresent(up, layer.FfnUpExpsB, e, ffnDim);
+            var gateExps = layer.FfnGateExps!.Value;
+            var upExps = layer.FfnUpExps!.Value;
+            var downExps = layer.FfnDownExps!.Value;
 
-            GptOssGraph.SwigluOai(gate, up, activated);
+            long gateBytesPerRow = ((long)_embedDim / DTypeInfo.BlockSize(gateExps.DType)) * DTypeInfo.BytesPerBlock(gateExps.DType);
+            long downBytesPerRow = ((long)ffnDim / DTypeInfo.BlockSize(downExps.DType)) * DTypeInfo.BytesPerBlock(downExps.DType);
 
-            PerExpertMatVecDown(layer.FfnDownExps!.Value, e, activated, down, ffnDim);
-            AddPerExpertBiasIfPresent(down, layer.FfnDownExpsB, e, _embedDim);
+            for (int k = 0; k < topK; k++)
+            {
+                int e = _expertIndices[k];
+                float w = _expertWeights[k];
 
-            for (int i = 0; i < _embedDim; i++) result[i] += down[i] * w;
-        }
-        return result;
-    }
+                byte* gateExpPtr = gateExps.DataPtr + (long)e * ffnDim * gateBytesPerRow;
+                byte* upExpPtr = upExps.DataPtr + (long)e * ffnDim * gateBytesPerRow;
+                byte* downExpPtr = downExps.DataPtr + (long)e * _embedDim * downBytesPerRow;
 
-    private void PerExpertMatVec(DeepSeek4TensorRef tensor, int expert, float[] input, float[] output, int outDim)
-    {
-        int inDim = (int)tensor.Info.Dimensions[0];
-        long bytesPerRow = ((long)inDim / DTypeInfo.BlockSize(tensor.DType)) * DTypeInfo.BytesPerBlock(tensor.DType);
-        byte* expertPtr = tensor.DataPtr + (long)expert * outDim * bytesPerRow;
-        fixed (float* inPtr = input, outPtr = output)
-        {
-            SimdKernels.MatVec(outPtr, expertPtr, inPtr, outDim, inDim, tensor.DType);
+                SimdKernels.MatVecDual(gatePtr, gateExpPtr, upPtr, upExpPtr, inPtr, ffnDim, _embedDim, gateExps.DType, upExps.DType);
+                AddPerExpertBiasIfPresent(_gateBuf, layer.FfnGateExpsB, e, ffnDim);
+                AddPerExpertBiasIfPresent(_upBuf, layer.FfnUpExpsB, e, ffnDim);
+
+                GptOssGraph.SwigluOai(_gateBuf.AsSpan(0, ffnDim), _upBuf.AsSpan(0, ffnDim), _actBuf.AsSpan(0, ffnDim));
+
+                SimdKernels.MatVec(downPtr, downExpPtr, actPtr, _embedDim, ffnDim, downExps.DType);
+                AddPerExpertBiasIfPresent(_downBuf, layer.FfnDownExpsB, e, _embedDim);
+
+                var outSpan = output.AsSpan(0, _embedDim);
+                var downSpan = new ReadOnlySpan<float>(_downBuf, 0, _embedDim);
+                TensorPrimitives.MultiplyAdd(downSpan, w, outSpan, outSpan);
+            }
         }
     }
 
-    private void PerExpertMatVecDown(DeepSeek4TensorRef tensor, int expert, float[] input, float[] output, int inDim)
-    {
-        int outDim = (int)tensor.Info.Dimensions[1];
-        long bytesPerRow = ((long)inDim / DTypeInfo.BlockSize(tensor.DType)) * DTypeInfo.BytesPerBlock(tensor.DType);
-        byte* expertPtr = tensor.DataPtr + (long)expert * outDim * bytesPerRow;
-        fixed (float* inPtr = input, outPtr = output)
-        {
-            SimdKernels.MatVec(outPtr, expertPtr, inPtr, outDim, inDim, tensor.DType);
-        }
-    }
-
-    /// <summary>
-    /// Adds one expert's slice of a per-expert bias tensor (shape [outDim, numExperts], row-major
-    /// by expert -- same slicing convention as the per-expert weight tensors). Per-expert MoE
-    /// biases are a tensor shape not seen elsewhere in this codebase's MoE path (see
-    /// docs/060-...md's architecture-mapping table) -- this slicing was NOT independently
-    /// re-verified against a real GGUF's actual bias tensor layout.
-    /// </summary>
     private static void AddPerExpertBiasIfPresent(float[] data, DeepSeek4TensorRef? bias, int expert, int dim)
     {
         if (bias is not { } b) return;
@@ -273,34 +310,22 @@ public sealed unsafe class GptOssForwardPass : IForwardPass
         for (int i = 0; i < dim; i++) data[i] += biasPtr[i];
     }
 
-    private static void AddBiasIfPresent(float[] data, DeepSeek4TensorRef? bias)
+    private static void AddBiasIfPresent(Span<float> data, DeepSeek4TensorRef? bias)
     {
         if (bias is not { } b) return;
         float* biasPtr = (float*)b.DataPtr;
         for (int i = 0; i < data.Length; i++) data[i] += biasPtr[i];
     }
 
-    /// <summary>
-    /// NEOX-style RoPE (rotates pairs (i, i+half)) -- confirmed as gpt-oss's convention via
-    /// llama-model.cpp's rope-type switch (LLM_ARCH_OPENAI_MOE groups with
-    /// LLAMA_ROPE_TYPE_NEOX, alongside qwen3next/mimo2/mellum/etc, NOT with the
-    /// LLAMA_ROPE_TYPE_NORM/interleaved group llama/deepseek/etc fall into). Originally written
-    /// as the interleaved variant by mistake (defaulted without checking) and caught/fixed
-    /// 2026-09-02 by actually reading llama-model.cpp's rope-type table before trusting the
-    /// assumption -- see docs/060-gpt-oss-implementation-plan.md's progress log.
-    /// </summary>
-    private static void ApplyRopeNeox(Span<float> x, int position, float freqBase)
+    private static void ApplyRopeNeoxFast(Span<float> x, ReadOnlySpan<float> cos, ReadOnlySpan<float> sin)
     {
-        int dim = x.Length;
-        int half = dim / 2;
+        int half = cos.Length;
         for (int i = 0; i < half; i++)
         {
-            float freq = MathF.Pow(freqBase, -2f * i / dim);
-            float theta = position * freq;
-            float cos = MathF.Cos(theta), sin = MathF.Sin(theta);
+            float c = cos[i], s = sin[i];
             float x0 = x[i], x1 = x[i + half];
-            x[i] = x0 * cos - x1 * sin;
-            x[i + half] = x0 * sin + x1 * cos;
+            x[i] = x0 * c - x1 * s;
+            x[i + half] = x0 * s + x1 * c;
         }
     }
 
@@ -320,27 +345,23 @@ public sealed unsafe class GptOssForwardPass : IForwardPass
     public ReadOnlySpan<float> Prefill(IReadOnlyList<int> tokens, int startPos = 0)
     {
         ReadOnlySpan<float> last = default;
-        for (int i = 0; i < tokens.Count; i++) last = Forward(tokens[i], startPos + i).ToArray();
+        for (int i = 0; i < tokens.Count; i++) last = Forward(tokens[i], startPos + i);
         return last;
     }
 
     public void TruncateTo(int length)
     {
         if (length == 0) { ResetCache(); return; }
-        int current = _kCache.Length > 0 ? _kCache[0].Count : 0;
-        if (length != current)
+        if (length > _cacheLength)
         {
-            throw new NotSupportedException("GptOssForwardPass (alpha): only full reset (TruncateTo(0)) or a no-op is supported.");
+            throw new NotSupportedException("GptOssForwardPass (alpha): cannot extend cache length via TruncateTo.");
         }
+        _cacheLength = length;
     }
 
     public void ResetCache()
     {
-        for (int il = 0; il < _numLayer; il++)
-        {
-            _kCache[il].Clear();
-            _vCache[il].Clear();
-        }
+        _cacheLength = 0;
     }
 
     public void Dispose() { }

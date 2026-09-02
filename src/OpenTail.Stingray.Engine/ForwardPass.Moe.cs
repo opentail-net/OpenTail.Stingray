@@ -119,8 +119,8 @@ public sealed unsafe partial class ForwardPass
         // Shared expert uses the same dim as routed experts (ExpertIntermediateDim)
         if (_hp.HasSharedExpert)
         {
-            FusedMatVec(_expertGate, _wGateShexp![layer], _normBuf, expertDim, _embDim);
-            FusedMatVec(_expertUp, _wUpShexp![layer], _normBuf, expertDim, _embDim);
+            SimdKernels.MatVecDual(_expertGate, _wGateShexp![layer].DataPtr, _expertUp, _wUpShexp![layer].DataPtr,
+                _normBuf, expertDim, _embDim, _wGateShexp[layer].DType, _wUpShexp[layer].DType);
             SimdKernels.SiLuMul(_expertGate, _expertUp, expertDim);
             FusedMatVec(_sharedOut, _wDownShexp![layer], _expertGate, _embDim, expertDim);
         }
@@ -137,8 +137,8 @@ public sealed unsafe partial class ForwardPass
             // Expert weights are packed: all experts concatenated in one tensor.
             // Each expert's gate/up is [expertDim, embDim], down is [embDim, expertDim].
             // Expert slice offset in packed tensor: expertIdx * expertDim * (bytes per row)
-            ExpertMatVec(_expertGate, _wGateExps![layer], expertIdx, expertDim, _embDim, _normBuf);
-            ExpertMatVec(_expertUp, _wUpExps![layer], expertIdx, expertDim, _embDim, _normBuf);
+            ExpertMatVecDual(_expertGate, _wGateExps![layer], _expertUp, _wUpExps![layer],
+                expertIdx, expertDim, _embDim, _normBuf);
 
             if (_hp.UseSigmoidGating)
             {
@@ -458,6 +458,26 @@ public sealed unsafe partial class ForwardPass
     /// <summary>Bytes one weight row of <paramref name="cols"/> elements occupies in this dtype.</summary>
     private static int RowBytes(DType dtype, int cols) =>
         (cols / DTypeInfo.BlockSize(dtype)) * DTypeInfo.BytesPerBlock(dtype);
+
+    /// <summary>
+    /// Dual MatVec for a single expert slice from packed gate/up expert tensors.
+    /// Runs both projections in a single parallel dispatch, sharing the input vector.
+    /// </summary>
+    private void ExpertMatVecDual(
+        float* output1, in TensorRef packedTensor1,
+        float* output2, in TensorRef packedTensor2,
+        int expertIdx, int rows, int cols, float* input)
+    {
+        int bytesPerRow1 = RowBytes(packedTensor1.DType, cols);
+        int bytesPerRow2 = RowBytes(packedTensor2.DType, cols);
+        long expertOffset1 = (long)expertIdx * rows * bytesPerRow1;
+        long expertOffset2 = (long)expertIdx * rows * bytesPerRow2;
+        byte* expertData1 = packedTensor1.DataPtr + expertOffset1;
+        byte* expertData2 = packedTensor2.DataPtr + expertOffset2;
+
+        SimdKernels.MatVecDual(output1, expertData1, output2, expertData2, input, rows, cols,
+            packedTensor1.DType, packedTensor2.DType);
+    }
 
     /// <summary>
     /// MatVec for a single expert slice from a packed expert tensor.

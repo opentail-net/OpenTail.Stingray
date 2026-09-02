@@ -119,17 +119,13 @@ public static class GptOssGraph
     /// has no corresponding V row -- <paramref name="scores"/> is normalized in place at its
     /// original length, the sink is never appended to it). Mathematically:
     /// <c>max' = max(max(scores), sink)</c>; each score's softmax numerator is computed against
-    /// <c>max'</c> as usual; the denominator additionally includes <c>exp(sink - max')</c>. This
-    /// uniformly shrinks every real key's weight — output values sum to LESS than 1 whenever the
-    /// sink absorbs a non-trivial share, by construction (a cheap invariant to unit-test:
-    /// sum-of-output &lt; 1 when sink is present and not vanishingly small relative to the real
-    /// scores, sum-of-output == 1 when <paramref name="sink"/> is null).
+    /// <c>max'</c> as usual; the denominator additionally includes <c>exp(sink - max')</c>.
     /// </summary>
     public static void SoftmaxWithSink(Span<float> scores, float? sink)
     {
         float max = float.NegativeInfinity;
-        for (int i = 0; i < scores.Length; i++) max = MathF.Max(max, scores[i]);
-        if (sink is { } s) max = MathF.Max(max, s);
+        for (int i = 0; i < scores.Length; i++) if (scores[i] > max) max = scores[i];
+        if (sink is { } s && s > max) max = s;
 
         float sum = 0f;
         for (int i = 0; i < scores.Length; i++)
@@ -149,21 +145,15 @@ public static class GptOssGraph
 
     /// <summary>
     /// GPT-OSS's specific clamped SwiGLU variant, <c>ggml_swiglu_oai</c> (formula extracted from
-    /// examples/ggml/src/ggml-cuda/unary.cuh:107-114 — a plain scalar op, easiest to read there;
-    /// the CPU reference at examples/ggml/src/ggml-cpu/ops.cpp:3325 implements the identical
-    /// formula and is the one this should ultimately be diffed against). <paramref name="alpha"/>
-    /// and <paramref name="limit"/> default to the reference's own compile-time constants
-    /// (1.702/7.0 — the reference itself comments "TODO: move to hparams?", i.e. even upstream
-    /// treats these as provisional, not GGUF-declared). CRITICAL DETAIL, easy to get wrong by
-    /// pattern-matching against this codebase's existing multiplicative SwiGLU kernels: the
-    /// combine is <c>swish * (1 + up_clamped)</c> — ADDITIVE, not <c>gate * up</c>.
+    /// examples/ggml/src/ggml-cuda/unary.cuh:107-114).
+    /// Combine is <c>swish * (1 + up_clamped)</c> — ADDITIVE, not <c>gate * up</c>.
     /// </summary>
     public static void SwigluOai(ReadOnlySpan<float> gate, ReadOnlySpan<float> up, Span<float> output, float alpha = 1.702f, float limit = 7.0f)
     {
         for (int i = 0; i < gate.Length; i++)
         {
             float x = MathF.Min(gate[i], limit);
-            float g = MathF.Max(MathF.Min(up[i], limit), -limit);
+            float g = Math.Clamp(up[i], -limit, limit);
             float swish = x / (1f + MathF.Exp(-alpha * x));
             output[i] = swish * (1f + g);
         }
@@ -173,33 +163,39 @@ public static class GptOssGraph
     /// GPT-OSS's MoE gating: select the top-<paramref name="topK"/> experts by RAW router logit
     /// (NOT a softmax/sigmoid probability), THEN softmax ONLY the selected subset
     /// (<c>LLAMA_EXPERT_GATING_FUNC_TYPE_SOFTMAX_WEIGHT</c>, llama-graph.cpp:1970-1973,
-    /// 2048-2053). This is the reverse order from every other MoE architecture in this codebase
-    /// (which all softmax/sigmoid the FULL expert set first, then select) — a real, load-bearing
-    /// difference: the deepseek2 investigation (docs/done/032-...md) found this codebase's MoE
-    /// routers can be extremely sensitive to exactly this kind of ordering when logits are close,
-    /// so getting this backwards is not a cosmetic bug.
+    /// 2048-2053). Linear stack-allocated selection with zero heap allocation.
     /// </summary>
     public static void SelectThenSoftmaxGate(ReadOnlySpan<float> logits, int topK, Span<int> expertIndicesOut, Span<float> expertWeightsOut)
     {
-        var indices = new int[logits.Length];
-        for (int i = 0; i < logits.Length; i++) indices[i] = i;
-        var logitsCopy = logits.ToArray();
-        Array.Sort(indices, (a, b) => logitsCopy[b].CompareTo(logitsCopy[a]));
+        Span<float> topLogits = stackalloc float[topK];
+        topLogits.Fill(float.NegativeInfinity);
+        expertIndicesOut.Fill(-1);
 
-        float max = float.NegativeInfinity;
-        for (int k = 0; k < topK; k++) max = MathF.Max(max, logitsCopy[indices[k]]);
+        for (int i = 0; i < logits.Length; i++)
+        {
+            float val = logits[i];
+            if (val <= topLogits[topK - 1]) continue;
+
+            int pos = topK - 1;
+            while (pos > 0 && val > topLogits[pos - 1])
+            {
+                topLogits[pos] = topLogits[pos - 1];
+                expertIndicesOut[pos] = expertIndicesOut[pos - 1];
+                pos--;
+            }
+            topLogits[pos] = val;
+            expertIndicesOut[pos] = i;
+        }
+
+        float max = topLogits[0];
         float sum = 0f;
         for (int k = 0; k < topK; k++)
         {
-            float e = MathF.Exp(logitsCopy[indices[k]] - max);
+            float e = MathF.Exp(topLogits[k] - max);
             expertWeightsOut[k] = e;
             sum += e;
         }
         float inv = 1f / sum;
-        for (int k = 0; k < topK; k++)
-        {
-            expertIndicesOut[k] = indices[k];
-            expertWeightsOut[k] *= inv;
-        }
+        for (int k = 0; k < topK; k++) expertWeightsOut[k] *= inv;
     }
 }

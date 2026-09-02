@@ -50,9 +50,13 @@ public sealed class GptOssRealWeightSmokeTests : HeavyTestBase
 
         using var fwd = new GptOssForwardPass(model, hp);
 
-        // "The capital of France is" tokenized would need a real tokenizer wired for this arch,
-        // not part of this smoke test's scope -- use a fixed low token id instead, which is
-        // sufficient to exercise every layer's real weights end to end.
+        Console.WriteLine($"Wq dtype: {model.FindTensor("blk.0.attn_q.weight")?.DType}");
+        Console.WriteLine($"Wo dtype: {model.FindTensor("blk.0.attn_output.weight")?.DType}");
+        Console.WriteLine($"GateInp dtype: {model.FindTensor("blk.0.ffn_gate_inp.weight")?.DType}");
+        Console.WriteLine($"GateExps dtype: {model.FindTensor("blk.0.ffn_gate_exps.weight")?.DType}");
+        Console.WriteLine($"DownExps dtype: {model.FindTensor("blk.0.ffn_down_exps.weight")?.DType}");
+        Console.WriteLine($"Output dtype: {model.FindTensor("output.weight")?.DType}");
+
         var logits = fwd.Forward(token: 100, position: 0);
 
         Assert.Equal(vocabSize, logits.Length);
@@ -126,6 +130,58 @@ public sealed class GptOssRealWeightSmokeTests : HeavyTestBase
         Console.WriteLine($"Token ids: {string.Join(", ", generated)}");
 
         Assert.False(generated.TrueForAll(t => t == generated[0]), "degenerate: every generated token identical");
+    }
+
+    [Fact]
+    public void GptOss_Benchmark_DecodeSpeed()
+    {
+        var path = FindModel();
+        Assert.SkipWhen(path is null, $"{ModelFile} is required for this smoke test.");
+
+        using var model = GgufModel.Open(path!);
+        var metadata = model.Metadata;
+        const string arch = "gpt-oss";
+
+        int numLayer = Convert.ToInt32(metadata[$"{arch}.block_count"]);
+        int embedDim = Convert.ToInt32(metadata[$"{arch}.embedding_length"]);
+        int numHeads = Convert.ToInt32(metadata[$"{arch}.attention.head_count"]);
+        int numHeadsKv = Convert.ToInt32(metadata[$"{arch}.attention.head_count_kv"]);
+        int headDim = Convert.ToInt32(metadata[$"{arch}.attention.key_length"]);
+        int numExperts = Convert.ToInt32(metadata[$"{arch}.expert_count"]);
+        int numExpertsUsed = Convert.ToInt32(metadata[$"{arch}.expert_used_count"]);
+        int vocabSize = (int)model.FindTensor("output.weight")!.Value.Dimensions[1];
+        var hp = GptOssHyperparams.FromGgufMetadata(
+            metadata, arch, numLayer, embedDim, numHeads, numHeadsKv, headDim,
+            numExperts, numExpertsUsed, vocabSize);
+
+        using var fwd = new GptOssForwardPass(model, hp);
+
+        // Warmup (1 token)
+        var logits = fwd.Forward(100, 0);
+
+        int decodeTokens = 16;
+        long bytesBefore = GC.GetAllocatedBytesForCurrentThread();
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var tokenSw = System.Diagnostics.Stopwatch.StartNew();
+        for (int i = 0; i < decodeTokens; i++)
+        {
+            tokenSw.Restart();
+            int next = Argmax(logits);
+            logits = fwd.Forward(next, 1 + i);
+            Console.WriteLine($"Token {i + 1}/{decodeTokens} (id={next}): {tokenSw.Elapsed.TotalMilliseconds:F1} ms");
+        }
+        sw.Stop();
+        long bytesAfter = GC.GetAllocatedBytesForCurrentThread();
+
+        double totalMs = sw.Elapsed.TotalMilliseconds;
+        double msPerToken = totalMs / decodeTokens;
+        double tokPerSec = decodeTokens / sw.Elapsed.TotalSeconds;
+        long allocBytesPerToken = (bytesAfter - bytesBefore) / decodeTokens;
+
+        Console.WriteLine($"\n=======================================================");
+        Console.WriteLine($"[GPT-OSS 20B MXFP4 CPU SPEED] Sustained Speed: {tokPerSec:F2} T/S ({msPerToken:F2} ms/tok)");
+        Console.WriteLine($"[GPT-OSS 20B MXFP4 CPU SPEED] Total: {totalMs:F2} ms for {decodeTokens} tokens | Alloc: {allocBytesPerToken / 1024.0:F1} KB/token");
+        Console.WriteLine($"=======================================================\n");
     }
 
     private static int Argmax(ReadOnlySpan<float> logits)

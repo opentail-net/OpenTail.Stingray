@@ -1151,17 +1151,168 @@ public sealed unsafe partial class ForwardPass
 
             if (bf16)
             {
+                if (Fma.IsSupported && hdLocal == 64)
+                {
+                    var a0 = Vector256<float>.Zero;
+                    var a1 = Vector256<float>.Zero;
+                    var a2 = Vector256<float>.Zero;
+                    var a3 = Vector256<float>.Zero;
+                    var a4 = Vector256<float>.Zero;
+                    var a5 = Vector256<float>.Zero;
+                    var a6 = Vector256<float>.Zero;
+                    var a7 = Vector256<float>.Zero;
+
+                    for (int i = 0; i < scoreLen; i++)
+                    {
+                        float w = headScores[i];
+                        if (w == 0f) continue;
+
+                        ushort* vVec = cache.Bf16ValueAtHead(rl, startLocal + i, kvHead);
+                        var wv = Vector256.Create(w);
+
+                        a0 = Fma.MultiplyAdd(wv, SimdKernels.WidenBf16(vVec + 0), a0);
+                        a1 = Fma.MultiplyAdd(wv, SimdKernels.WidenBf16(vVec + 8), a1);
+                        a2 = Fma.MultiplyAdd(wv, SimdKernels.WidenBf16(vVec + 16), a2);
+                        a3 = Fma.MultiplyAdd(wv, SimdKernels.WidenBf16(vVec + 24), a3);
+                        a4 = Fma.MultiplyAdd(wv, SimdKernels.WidenBf16(vVec + 32), a4);
+                        a5 = Fma.MultiplyAdd(wv, SimdKernels.WidenBf16(vVec + 40), a5);
+                        a6 = Fma.MultiplyAdd(wv, SimdKernels.WidenBf16(vVec + 48), a6);
+                        a7 = Fma.MultiplyAdd(wv, SimdKernels.WidenBf16(vVec + 56), a7);
+                    }
+
+                    Avx.Store(outHead + 0, a0);
+                    Avx.Store(outHead + 8, a1);
+                    Avx.Store(outHead + 16, a2);
+                    Avx.Store(outHead + 24, a3);
+                    Avx.Store(outHead + 32, a4);
+                    Avx.Store(outHead + 40, a5);
+                    Avx.Store(outHead + 48, a6);
+                    Avx.Store(outHead + 56, a7);
+                    return;
+                }
+
                 for (int i = 0; i < scoreLen; i++)
-                    SimdKernels.AccumulateScaledBf16(
-                        outHead, cache.Bf16ValueAtHead(rl, startLocal + i, kvHead), headScores[i], hdLocal);
+                {
+                    float w = headScores[i];
+                    if (w != 0f)
+                        SimdKernels.AccumulateScaledBf16(
+                            outHead, cache.Bf16ValueAtHead(rl, startLocal + i, kvHead), w, hdLocal);
+                }
+                return;
+            }
+
+            if (Fma.IsSupported && hdLocal == 64)
+            {
+                var a0 = Vector256<float>.Zero;
+                var a1 = Vector256<float>.Zero;
+                var a2 = Vector256<float>.Zero;
+                var a3 = Vector256<float>.Zero;
+                var a4 = Vector256<float>.Zero;
+                var a5 = Vector256<float>.Zero;
+                var a6 = Vector256<float>.Zero;
+                var a7 = Vector256<float>.Zero;
+
+                for (int i = 0; i < scoreLen; i++)
+                {
+                    float w = headScores[i];
+                    if (w == 0f) continue;
+
+                    int t = startLocal + i;
+                    float* vVec = cache.ValueAtHead(rl, t, kvHead);
+                    var wv = Vector256.Create(w);
+
+                    a0 = Fma.MultiplyAdd(wv, Avx.LoadVector256(vVec + 0), a0);
+                    a1 = Fma.MultiplyAdd(wv, Avx.LoadVector256(vVec + 8), a1);
+                    a2 = Fma.MultiplyAdd(wv, Avx.LoadVector256(vVec + 16), a2);
+                    a3 = Fma.MultiplyAdd(wv, Avx.LoadVector256(vVec + 24), a3);
+                    a4 = Fma.MultiplyAdd(wv, Avx.LoadVector256(vVec + 32), a4);
+                    a5 = Fma.MultiplyAdd(wv, Avx.LoadVector256(vVec + 40), a5);
+                    a6 = Fma.MultiplyAdd(wv, Avx.LoadVector256(vVec + 48), a6);
+                    a7 = Fma.MultiplyAdd(wv, Avx.LoadVector256(vVec + 56), a7);
+                }
+
+                Avx.Store(outHead + 0, a0);
+                Avx.Store(outHead + 8, a1);
+                Avx.Store(outHead + 16, a2);
+                Avx.Store(outHead + 24, a3);
+                Avx.Store(outHead + 32, a4);
+                Avx.Store(outHead + 40, a5);
+                Avx.Store(outHead + 48, a6);
+                Avx.Store(outHead + 56, a7);
+                return;
+            }
+            else if (Fma.IsSupported && hdLocal == 128)
+            {
+                var a0 = Vector256<float>.Zero;
+                var a1 = Vector256<float>.Zero;
+                var a2 = Vector256<float>.Zero;
+                var a3 = Vector256<float>.Zero;
+                var a4 = Vector256<float>.Zero;
+                var a5 = Vector256<float>.Zero;
+                var a6 = Vector256<float>.Zero;
+                var a7 = Vector256<float>.Zero;
+                var a8 = Vector256<float>.Zero;
+                var a9 = Vector256<float>.Zero;
+                var a10 = Vector256<float>.Zero;
+                var a11 = Vector256<float>.Zero;
+                var a12 = Vector256<float>.Zero;
+                var a13 = Vector256<float>.Zero;
+                var a14 = Vector256<float>.Zero;
+                var a15 = Vector256<float>.Zero;
+
+                for (int i = 0; i < scoreLen; i++)
+                {
+                    float w = headScores[i];
+                    if (w == 0f) continue;
+
+                    int t = startLocal + i;
+                    float* vVec = cache.ValueAtHead(rl, t, kvHead);
+                    var wv = Vector256.Create(w);
+
+                    a0 = Fma.MultiplyAdd(wv, Avx.LoadVector256(vVec + 0), a0);
+                    a1 = Fma.MultiplyAdd(wv, Avx.LoadVector256(vVec + 8), a1);
+                    a2 = Fma.MultiplyAdd(wv, Avx.LoadVector256(vVec + 16), a2);
+                    a3 = Fma.MultiplyAdd(wv, Avx.LoadVector256(vVec + 24), a3);
+                    a4 = Fma.MultiplyAdd(wv, Avx.LoadVector256(vVec + 32), a4);
+                    a5 = Fma.MultiplyAdd(wv, Avx.LoadVector256(vVec + 40), a5);
+                    a6 = Fma.MultiplyAdd(wv, Avx.LoadVector256(vVec + 48), a6);
+                    a7 = Fma.MultiplyAdd(wv, Avx.LoadVector256(vVec + 56), a7);
+                    a8 = Fma.MultiplyAdd(wv, Avx.LoadVector256(vVec + 64), a8);
+                    a9 = Fma.MultiplyAdd(wv, Avx.LoadVector256(vVec + 72), a9);
+                    a10 = Fma.MultiplyAdd(wv, Avx.LoadVector256(vVec + 80), a10);
+                    a11 = Fma.MultiplyAdd(wv, Avx.LoadVector256(vVec + 88), a11);
+                    a12 = Fma.MultiplyAdd(wv, Avx.LoadVector256(vVec + 96), a12);
+                    a13 = Fma.MultiplyAdd(wv, Avx.LoadVector256(vVec + 104), a13);
+                    a14 = Fma.MultiplyAdd(wv, Avx.LoadVector256(vVec + 112), a14);
+                    a15 = Fma.MultiplyAdd(wv, Avx.LoadVector256(vVec + 120), a15);
+                }
+
+                Avx.Store(outHead + 0, a0);
+                Avx.Store(outHead + 8, a1);
+                Avx.Store(outHead + 16, a2);
+                Avx.Store(outHead + 24, a3);
+                Avx.Store(outHead + 32, a4);
+                Avx.Store(outHead + 40, a5);
+                Avx.Store(outHead + 48, a6);
+                Avx.Store(outHead + 56, a7);
+                Avx.Store(outHead + 64, a8);
+                Avx.Store(outHead + 72, a9);
+                Avx.Store(outHead + 80, a10);
+                Avx.Store(outHead + 88, a11);
+                Avx.Store(outHead + 96, a12);
+                Avx.Store(outHead + 104, a13);
+                Avx.Store(outHead + 112, a14);
+                Avx.Store(outHead + 120, a15);
                 return;
             }
 
             for (int i = 0; i < scoreLen; i++)
             {
+                float w = headScores[i];
+                if (w == 0f) continue;
+
                 int t = startLocal + i;
                 float* vVec = cache.ValueAtHead(rl, t, kvHead);
-                float w = headScores[i];
                 if (Fma.IsSupported && hdLocal >= 8)
                 {
                     var wv = Vector256.Create(w);
