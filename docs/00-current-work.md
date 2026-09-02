@@ -708,11 +708,67 @@ embedding-splice widening being verified; it reproduces with zero vision/embeddi
 path at all. This is a real, deeper, previously-undocumented correctness gap for `gemma3` as a text
 architecture (not just its vision encoder), and it means the embedding-splice widening's own
 correctness genuinely cannot be verified until this more fundamental bug is found and fixed first —
-there's no working Gemma-3 baseline on either backend to verify against yet. Not root-caused this
-pass (no reference source read yet for Gemma 3's specific text-decode mechanics — e.g. its
-alternating local/global sliding-window attention pattern, its own norm/scale conventions — the
-next real step, following this project's own established methodology, before any further attempt
-at either backend).
+there's no working Gemma-3 baseline on either backend to verify against yet.
+
+**UPDATE (2026-09-02, same day): CPU root-caused and FULLY FIXED. GPU/Vulkan improved but a
+second, still-unlocated bug remains.**
+
+Read the real reference (`examples/llama.cpp/llama.cpp/src/models/gemma3.cpp`) end to end before
+touching anything, per this project's own established methodology. Found that `ModelGraph.cs`
+(`ParseHyperparams`) had a whole `if (isGemma4) { ... }` block that reads embedding scale, the
+sliding-window pattern, and the SWA-specific RoPE base — and `isGemma4` is a literal string
+match on `"gemma4"` only. **`gemma3` fell through this entire block with none of it applied**:
+- **Embedding scale**: real gemma3.cpp does `inpL = ggml_scale(ctx0, inpL, ubatch.token ?
+  sqrtf(n_embd) : 1.0f)` immediately after the embedding lookup, for every Gemma generation
+  (1/2/3/4). Missing this left the token-identity signal in the residual stream permanently
+  under-scaled by ~sqrt(n_embd) (≈50x for this 2560-wide 4B checkpoint) relative to every later
+  attention/FFN contribution — a pre-norm architecture's residual path carries the raw embedding
+  forward untouched, so this corruption compounds across every layer and is never later corrected.
+- **Sliding-window attention**: completely absent for gemma3 — every layer ran full/global
+  attention regardless of the real 5-local:1-global pattern (period 6,
+  `hparams.set_swa_pattern(swa_period)` with `dense_first=false`, the exact same formula already
+  implemented for `cohere2` in this file, just reused with gemma3's own real default period).
+- **SWA RoPE base**: real Gemma 3 uses a distinct, much smaller theta (10000, `rope_freq_base_swa`)
+  on local/SWA layers vs. the global theta (1,000,000 for this checkpoint) — entirely unread.
+
+Added a new `arch.Equals("gemma3", ...)` branch in `ModelGraph.cs` implementing all three,
+reusing the cohere2 SWA-pattern formula and the existing generic `_isSwaLayer`/`SlidingWindowSize`/
+`RopeThetaSwa`/`EmbeddingScale` consumption already present in `ForwardPass.Decode.cs` /
+`ForwardPass.PrefillCore.cs` (no changes needed there — this was purely a metadata-parsing gap).
+
+**Result: CPU generation is now completely correct.** `-g 0` (CPU-only) on
+`gemma-3-4b-it-Q4_K_M.gguf` with prompt "The capital of France is" now produces
+`**Paris**.` (coherent, correct) — previously it stopped after 2 tokens, effectively blank.
+`OpenTail.Stingray.Tests.ForwardPass.Fast` re-run clean (661 passed / 8 skipped, no OpenBLAS in
+this environment) — no regressions.
+
+**GPU/Vulkan (`GpuForwardPass.cs`) needed the identical fixes independently** — it has its own,
+entirely separate hand-rolled forward-pass implementation (no code sharing with the CPU
+`ForwardPass` class) that turned out to have the SAME three gaps, plus one more:
+- `RunStandardLayers` (the non-Gemma4 GPU decode trunk) hardcoded `window: 0u` on every one of its
+  6 attention-dispatch call sites and used a single `_hp.RopeTheta` for every RoPE call — no
+  per-layer `isSwa`/`SlidingWindowSize`/`RopeThetaSwa` selection existed AT ALL in this method
+  (confirmed only one `_hp.IsSwaLayer` reference in the whole file, inside the unrelated
+  Gemma-4-specific `RunGemma4Layers`). Fixed: added the same per-layer `isSwa`/`window`/
+  `layerRopeTheta` computation CPU already had, threaded into all 6 call sites.
+- `EmbeddingScale` was applied ONLY inside `ForwardGemma4` — the standard `Forward`/
+  `RunStandardLayers` decode path, and the separate `RecordBatchedTrunk` (prefill + speculative
+  batch-verify) path, never applied it at all. Fixed both.
+- **Still open**: `BatchVerifyAppendAttend` (speculative-decode single-step append/attend) still
+  hardcodes `window: 0u` at all 6 of its own call sites — not fixed this pass (not exercised by
+  plain single-token generation, the case actually being debugged; real gap for speculative
+  decoding on SWA-gated architectures specifically, noted for later).
+
+**After all of the above, GPU/Vulkan generation is measurably different (confirmed via direct
+before/after diff of the exact same command) but STILL produces incoherent gibberish, not correct
+text.** This means there is at least one more, still-unlocated GPU-specific bug beyond the three
+metadata-parsing gaps shared with CPU — the CPU fix alone proves the ROOT metadata/hyperparameter
+gap is now closed correctly (same `ModelGraph.cs` object feeds both backends), so the remaining
+GPU-only defect is somewhere in `GpuForwardPass.cs`'s own shader dispatch/kernel logic (RmsNorm,
+MatMul, QK-norm, or RoPE convention specifics), not a parsing gap. **Time-boxed at ~2 hours per the
+operator's own instruction — stopping here with CPU fully fixed and GPU partially improved but
+still broken, moving to the Wan/FLUX diffusion investigations next rather than continuing to dig.**
+The real fix already landed (CPU) is not blocked on finding the GPU one.
 
 ---
 

@@ -725,6 +725,62 @@ public sealed record ModelHyperparams
             // ModelHyperparams.RopeOnlySwaLayers) — ropeThetaSwa stays 0f (unset), so the
             // SWA-rope-table construction path (gated on RopeThetaSwa > 0f) never fires.
         }
+        else if (arch.Equals("gemma3", StringComparison.OrdinalIgnoreCase) && numLayers > 0)
+        {
+            // Real gemma3.cpp (load_arch_hparams + graph<iswa>::graph), confirmed against source
+            // directly rather than assumed — this whole architecture was previously falling
+            // through with NONE of its real setup applied (the isGemma4 gate above excludes the
+            // literal string "gemma3", and this file had no separate gemma3 branch at all),
+            // silently running Gemma 3 as if it were a plain dense transformer with no embedding
+            // scale, no sliding-window attention, and no SWA-specific RoPE base. Root-caused as
+            // the primary cause of Gemma 3 producing incoherent/degenerate text on both backends
+            // (2026-09-02 finding, see docs/00-current-work.md).
+            //
+            // 1. Embedding scale: real gemma3.cpp does
+            //    `inpL = ggml_scale(ctx0, inpL, ubatch.token ? sqrtf(n_embd) : 1.0f)` right after
+            //    the embedding lookup, for every Gemma generation (1/2/3/4) — missing this alone
+            //    would leave the token-identity signal in the residual stream permanently
+            //    under-scaled by ~sqrt(n_embd) (e.g. ~50x for a 2560-wide model) relative to every
+            //    later attention/FFN contribution, since a pre-norm architecture's residual path
+            //    carries the raw (unscaled) embedding forward untouched.
+            embeddingScale = MathF.Sqrt(embDim);
+
+            // 2. Sliding-window attention: real gemma3.cpp reads a plain scalar window size
+            //    (LLM_KV_ATTENTION_SLIDING_WINDOW) and a period (LLM_KV_ATTENTION_SLIDING_WINDOW_
+            //    PATTERN, real default 6 when absent — NOT Gemma 4's literal per-layer bool-array
+            //    convention), then calls hparams.set_swa_pattern(swa_period) with the library
+            //    default dense_first=false: is_swa[il] = period==0 || (il % period < period-1).
+            //    That is the EXACT same formula already implemented for cohere2 just above, reused
+            //    here with gemma3's own real default period of 6 (vs cohere2's 4).
+            slidingWindow = GetInt(metadata, $"{arch}.attention.sliding_window");
+            if (slidingWindow > 0)
+            {
+                int swaPeriod = GetInt(metadata, $"{arch}.attention.sliding_window_pattern", 6);
+                var swa = new bool[numLayers];
+                for (int i = 0; i < numLayers; i++)
+                    swa[i] = swaPeriod == 0 || (i % swaPeriod < swaPeriod - 1);
+                isSwaLayer = swa;
+
+                // Real: `ml.get_key(LLM_KV_ROPE_FREQ_BASE_SWA, ..., false)` — optional, only
+                // applied when the key is present. Gemma 3's real default local-layer rope base
+                // (rope_local_base_freq in the HF config) is 10000, distinct from the global
+                // rope_theta (typically 1_000_000) already read into RopeTheta above.
+                ropeThetaSwa = GetFloat(metadata, $"{arch}.rope.freq_base_swa", 10_000f);
+
+                // ForwardPass only builds the separate SWA RoPE table when _layerRopeDim is
+                // non-null (its gemma-4 origin: SWA layers there use a genuinely smaller rope
+                // dim). Gemma 3's SWA layers use the SAME rope dim as global layers — only the
+                // theta differs — so a uniform array (every entry = ropeDim) satisfies that gate
+                // correctly without changing per-layer head/rope sizing.
+                layerRopeDim = Enumerable.Repeat(ropeDim, numLayers).ToArray();
+            }
+
+            // 3. Final logit softcapping: real gemma3.cpp still reads this key (default 0.0f) even
+            //    though newer Gemma-3 checkpoints normally omit it (softcapping was replaced by
+            //    QK-norm) — reading it generically here is harmless (0 = a no-op multiplier
+            //    downstream) and correct for any checkpoint that DOES set it.
+            finalLogitSoftcap = GetFloat(metadata, $"{arch}.final_logit_softcapping");
+        }
 
         // Granite (dense/MoE/hybrid) and MiniCPM share ONE graph builder in llama.cpp
         // (models.h: "using graph = llama_model_granite::graph") — MiniCPM is Granite's

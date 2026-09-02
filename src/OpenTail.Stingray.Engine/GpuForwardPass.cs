@@ -1349,6 +1349,19 @@ public sealed unsafe class GpuForwardPass : IForwardPass
         DispatchEmbedLookup(token);
         _gpu.RecordBarrier();
 
+        // Embedding scale (sqrt(embDim) for every Gemma generation, 1/2/3/4 alike) was only ever
+        // applied on the ForwardGemma4 path below — the standard (non-gemma4) path never applied
+        // it at all, silently running every non-Gemma4 architecture that sets EmbeddingScale
+        // (Gemma 3 in particular) with the token-identity signal permanently under-scaled in the
+        // residual stream. Same real bug class as the CPU ForwardPass.Decode.cs fix (which already
+        // had this generically) and the ModelGraph.cs gemma3 metadata-parsing gap fixed alongside
+        // it (2026-09-02 finding).
+        if (_hp.EmbeddingScale != 1f)
+        {
+            _gpu.ScaleInPlace(_hidden, _hp.EmbeddingScale);
+            _gpu.RecordBarrier();
+        }
+
         RunStandardLayers(position);
 
         // Final norm + output projection
@@ -1373,6 +1386,19 @@ public sealed unsafe class GpuForwardPass : IForwardPass
     {
         for (int layer = 0; layer < _hp.NumLayers; layer++)
         {
+            // Sliding-window attention (Gemma 3, Cohere2, ...): this whole method previously had
+            // NO per-layer SWA handling at all — every attention dispatch below hardcoded
+            // window: 0u (full causal) and every RoPE call used the single global _hp.RopeTheta,
+            // regardless of _hp.IsSwaLayer/_hp.SlidingWindowSize/_ropeThetaSwa. The CPU
+            // ForwardPass (ForwardPass.Decode.cs) already reads these generically; this GPU path
+            // did not, which is why Gemma 3 (SWA-gated, real local-layer rope theta 10000 vs
+            // global 1e6) produced degenerate output on the Vulkan/GPU backend even after fixing
+            // the CPU-side ModelGraph.cs gap (embedding scale + SWA metadata parsing) that this
+            // path also depends on but wasn't consuming.
+            bool isSwa = _hp.IsSwaLayer is { } swaArr && swaArr[layer];
+            float layerRopeTheta = isSwa && _ropeThetaSwa > 0f ? _ropeThetaSwa : _hp.RopeTheta;
+            uint window = isSwa ? (uint)_hp.SlidingWindowSize : 0u;
+
             // Copy hidden → residual + RmsNorm (barrier after both)
             CopyBuffer(_residual, _hidden);
             _gpu.RecordBarrier();
@@ -1415,8 +1441,8 @@ public sealed unsafe class GpuForwardPass : IForwardPass
                 if (useRoPE)
                 {
                     // RoPE on Q and K
-                    _gpu.RoPE(_q, position, _headDim, _hp.RopeTheta, _hp.IsNeoxRope);
-                    _gpu.RoPE(_k, position, _headDim, _hp.RopeTheta, _hp.IsNeoxRope);
+                    _gpu.RoPE(_q, position, _headDim, layerRopeTheta, _hp.IsNeoxRope);
+                    _gpu.RoPE(_k, position, _headDim, layerRopeTheta, _hp.IsNeoxRope);
                     _gpu.RecordBarrier();
                 }
 
@@ -1499,14 +1525,14 @@ public sealed unsafe class GpuForwardPass : IForwardPass
                     _gpu.AttentionSplitKvBf16(_q, _gpuKCache[layer], _gpuVCache[layer], _attnOut,
                         _splitKvPartialO, _splitKvPartialMeta!,
                         (uint)_numHeads, (uint)_numKvHeads, (uint)_headDim,
-                        (uint)(position + 1), (uint)_maxSeqLen, window: 0u);
+                        (uint)(position + 1), (uint)_maxSeqLen, window: window);
                 }
                 else
                 {
                     _gpu.AttentionBf16(_q, _gpuKCache[layer], _gpuVCache[layer], _attnOut,
                         _attnScoresScratch,
                         (uint)_numHeads, (uint)_numKvHeads, (uint)_headDim,
-                        (uint)(position + 1), (uint)_maxSeqLen, window: 0u);
+                        (uint)(position + 1), (uint)_maxSeqLen, window: window);
                 }
             }
             else if (_kvDType == DType.Q8_0)
@@ -1526,14 +1552,14 @@ public sealed unsafe class GpuForwardPass : IForwardPass
                     _gpu.AttentionSplitKvQ8(_q, _gpuKCache[layer], _gpuVCache[layer], _attnOut,
                         _splitKvPartialO, _splitKvPartialMeta!,
                         (uint)_numHeads, (uint)_numKvHeads, (uint)_headDim,
-                        (uint)(position + 1), (uint)_maxSeqLen, window: 0u);
+                        (uint)(position + 1), (uint)_maxSeqLen, window: window);
                 }
                 else
                 {
                     _gpu.AttentionQ8_0(_q, _gpuKCache[layer], _gpuVCache[layer], _attnOut,
                         _attnScoresScratch,
                         (uint)_numHeads, (uint)_numKvHeads, (uint)_headDim,
-                        (uint)(position + 1), (uint)_maxSeqLen, window: 0u);
+                        (uint)(position + 1), (uint)_maxSeqLen, window: window);
                 }
             }
             else
@@ -1551,14 +1577,14 @@ public sealed unsafe class GpuForwardPass : IForwardPass
                     _gpu.AttentionSplitKv(_q, _gpuKCache[layer], _gpuVCache[layer], _attnOut,
                         _splitKvPartialO, _splitKvPartialMeta!,
                         (uint)_numHeads, (uint)_numKvHeads, (uint)_headDim,
-                        (uint)(position + 1), (uint)_maxSeqLen, window: 0u);
+                        (uint)(position + 1), (uint)_maxSeqLen, window: window);
                 }
                 else
                 {
                     _gpu.Attention(_q, _gpuKCache[layer], _gpuVCache[layer], _attnOut,
                         _attnScoresScratch,
                         (uint)_numHeads, (uint)_numKvHeads, (uint)_headDim,
-                        (uint)(position + 1), (uint)_maxSeqLen, window: 0u);
+                        (uint)(position + 1), (uint)_maxSeqLen, window: window);
                 }
             }
             _gpu.RecordBarrier(); // attnOut done → output projection
@@ -2329,6 +2355,15 @@ public sealed unsafe class GpuForwardPass : IForwardPass
         {
             DispatchEmbedLookup(tokens[i]);
             _gpu.RecordBarrier();
+            // Same missing-EmbeddingScale gap as the single-token standard Forward path (fixed
+            // alongside it, 2026-09-02) — this batched trunk serves both prefill and speculative
+            // batch-verify, so every token here needs the same sqrt(embDim) scale Gemma 3/1/2
+            // require.
+            if (_hp.EmbeddingScale != 1f)
+            {
+                _gpu.ScaleInPlace(_hidden, _hp.EmbeddingScale);
+                _gpu.RecordBarrier();
+            }
             _gpu.RecordComputeCopyRegion(_hiddenK, (long)i * embDim * f32, _hidden, 0, (long)embDim * f32);
             _gpu.RecordBarrier();
         }
