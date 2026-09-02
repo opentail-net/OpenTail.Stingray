@@ -13,22 +13,18 @@ namespace OpenTail.Stingray.Diffusion.AceStep.Transformer;
 /// next timestep to step toward. On every other step, `dt = t_curr - t_next`, `xt = xt - vt * dt`
 /// (real Euler ODE: `dx/dt = -v`).</para>
 ///
-/// <para><b>Real gap, documented rather than silently assumed</b>: the real `diffusers`
-/// `AceStepConditionEncoder` ships a learned `silence_latent` buffer (VAE-encoded real audio
-/// silence) used as `src_latents` for plain text-to-music generation (no reference/cover audio) --
-/// confirmed from `diffusers/pipelines/ace_step/pipeline_ace_step.py`'s `prepare_src_latents`. That
-/// buffer is NOT present in the real `acestep-v15-turbo/model.safetensors` checkpoint this project
-/// downloaded (confirmed by inspecting its real safetensors header -- no `silence_latent` key
-/// anywhere), so it is evidently supplied by a separate converter/asset this project does not have.
-/// This scheduler uses all-zero `src_latents` as an explicit, flagged placeholder for the V1
-/// text-to-music (non-cover) path -- the real `diffusers` pipeline's comment warns that feeding
-/// zeros into the TIMBRE encoder produces OOD/drone-like audio, but V1 never calls the timbre
-/// encoder at all (text+lyrics-only condition encoder scope), so that specific warning does not
-/// apply here; the open question is only how much zero `src_latents` (as opposed to real encoded
-/// silence) degrades the DiT's own context-conditioning input. Revisit if/when the real
-/// `silence_latent` buffer is located. `chunk_masks` = all-ones IS confirmed real for plain
-/// generation (the same pipeline's `_build_chunk_mask` doc comment: "dumping the chunk_masks tensor
-/// that generate_audio actually receives (unique values = [True])").</para>
+/// <para><b>Real `src_latents`</b>: the real `diffusers` `AceStepConditionEncoder` ships a learned
+/// `silence_latent` buffer (VAE-encoded real audio silence) used as `src_latents` for plain
+/// text-to-music generation (no reference/cover audio) -- confirmed from
+/// `diffusers/pipelines/ace_step/pipeline_ace_step.py`'s `prepare_src_latents`. That buffer is NOT
+/// present in the real `acestep-v15-turbo/model.safetensors` checkpoint this project downloaded, so
+/// this project derives it itself by encoding a real all-zero (true silence) waveform through the
+/// real, golden-verified <see cref="Vae.AceStepOobleckEncoder"/> -- see that class's doc comment.
+/// Callers pass the resulting rows as <paramref name="srcLatents"/>; passing `null` falls back to
+/// an all-zero placeholder (kept only for tests/callers that don't have a VAE encoder handy).
+/// `chunk_masks` = all-ones IS confirmed real for plain generation (the same pipeline's
+/// `_build_chunk_mask` doc comment: "dumping the chunk_masks tensor that generate_audio actually
+/// receives (unique values = [True])").</para>
 /// </summary>
 public static class AceStepFlowScheduler
 {
@@ -42,7 +38,8 @@ public static class AceStepFlowScheduler
         float[][] conditionSequence,
         int latentFrames,
         float shift,
-        int? seed)
+        int? seed,
+        float[][]? srcLatents = null)
     {
         if (!AceStepConfig.ShiftTimestepSchedules.TryGetValue(shift, out var schedule))
         {
@@ -55,12 +52,13 @@ public static class AceStepFlowScheduler
 
         int acousticDim = AceStepConfig.AudioAcousticHiddenDim;
 
-        // Real V1 gap: no real `silence_latent` buffer available (see class doc comment) --
-        // src_latents=zeros, chunk_masks=ones (the latter IS confirmed real for plain generation).
+        // context_latents = cat([src_latents, chunk_masks], dim=-1); chunk_masks=all-ones is
+        // confirmed real for plain generation (see class doc comment).
         var contextLatents = new float[latentFrames][];
         for (int t = 0; t < latentFrames; t++)
         {
             var row = new float[2 * acousticDim];
+            if (srcLatents is not null) Array.Copy(srcLatents[t], 0, row, 0, acousticDim);
             for (int i = acousticDim; i < 2 * acousticDim; i++) row[i] = 1f; // chunk_masks half = 1
             contextLatents[t] = row;
         }

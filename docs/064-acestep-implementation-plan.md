@@ -524,9 +524,42 @@ learned `silence_latent` substituted for "no reference audio" (matching the real
 should be understood as "numerically correct given its inputs, but tested with out-of-distribution
 conditioning" -- not yet a reliable text-to-music generator.
 
-**Not yet done**: (1) locate or reconstruct the real `silence_latent` buffer; (2) implement the
-timbre encoder path (weights already loadable, just unused); (3) re-run the human listening check
-once both land; (4) output-normalization/clipping handling before WAV export.
+## Real silence_latent + timbre encoder wired, same day: both gaps closed
+
+Ported the real VAE encoder (`AceStepOobleckEncoder`) specifically to derive a real `silence_latent`
+self-sufficiently -- see its own doc comment. Golden-verified against the real `diffusers`
+`AutoencoderOobleck.encoder` on the first run: zero missing/unexpected keys, ~measured relative
+error well under tolerance (see `AceStepOobleckEncoderGoldenParityTests`). Shared conv/Snake/
+residual-unit primitives with the decoder extracted into `AceStepOobleckKernels.cs` (two real,
+immediately-existing callers, not premature DRY).
+
+Ported the real timbre encoder (`AceStepTimbreEncoder`: `embed_tokens` -> 4-layer bidirectional
+encoder -- SAME `AceStepEncoderLayer` class as the lyric encoder, now shared via
+`AceStepConditionEncoder.RunBidirectionalEncoder` -- -> CLS-like pooling at position 0). Golden-
+verified against the real `diffusers` `AceStepTimbreEncoder` on the first run: zero missing/
+unexpected keys. `AceStepConditionEncoder.Forward` gained a `timbreRow` parameter, packed in the
+real order `[lyric, timbre, text]`.
+
+Wired both into `AceStepPipeline.Generate()`: encodes true digital silence (real all-zero PCM)
+through the VAE encoder to derive real latent rows, uses a 750-frame slice (`timbre_fix_frame =
+ceil(30*25Hz)`, the real reference's own constant) as the timbre encoder's input, and uses the
+first `latentFrames` rows as `src_latents` for the flow scheduler -- both now match the real
+pipeline's own "no reference audio" path exactly, not placeholders. `AceStepFlowScheduler.Generate`
+gained an `srcLatents` parameter (defaults to zero only as a test-only fallback).
+
+`AceStepPipelineEndToEndTests` re-passes with the full real conditioning (231s for a 2s clip -- the
+750-frame timbre attention pass adds real, meaningful cost, a real product-facing perf item for
+later). Regenerated the 8s sample: clipping dropped from 7.4% to 1.6% of samples, spectral flatness
+improved from 0.266 to 0.229 (more tonal/structured). Sent to the user for a second listening pass
+-- awaiting their read before concluding whether this actually resolves the "soup of noise" report
+or whether a further real issue remains (numeric proxies alone are not sufficient, per this
+session's own standing rule established by the first listening-feedback investigation).
+
+**Not yet done**: (1) numeric golden-parity for the full end-to-end pipeline (each component is
+now individually verified, but no single reference run chains all of them together numerically);
+(2) confirm via human listening whether the "soup of noise" report is resolved; (3) output-
+normalization/clipping handling before WAV export (still present, reduced not eliminated); (4) a
+performance look at the 750-frame timbre pass, now that it is real, wired, always-on cost.
 
 ## Immediate next steps (in order)
 

@@ -45,9 +45,11 @@ public sealed class AceStepPipelineEndToEndTests
         using var turboLoader = SafetensorsLoader.Open(turboPath!);
         var ditWeights = AceStepDiTWeights.Load(turboLoader);
         var conditionWeights = AceStepConditionEncoderWeights.Load(turboLoader);
+        var timbreWeights = AceStepTimbreEncoderWeights.Load(turboLoader);
 
         using var vaeLoader = SafetensorsLoader.Open(vaePath!);
         var vaeWeights = AceStepOobleckDecoderWeights.Load(vaeLoader);
+        var vaeEncoderWeights = AceStepOobleckEncoderWeights.Load(vaeLoader);
 
         using var textEncoder = new AceStepQwen3TextEncoder(ggufPath!);
 
@@ -55,8 +57,10 @@ public sealed class AceStepPipelineEndToEndTests
         {
             Transformer = ditWeights,
             Vae = vaeWeights,
+            VaeEncoder = vaeEncoderWeights,
             TextEncoder = textEncoder,
             ConditionEncoder = conditionWeights,
+            TimbreEncoder = timbreWeights,
         };
         var pipeline = new AceStepPipeline(model);
 

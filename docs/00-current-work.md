@@ -375,6 +375,17 @@ that is more elegant but lower-visibility.
     buffer flagged in Phase E. **V1 should currently be understood as "numerically correct given its
     inputs, but tested with out-of-distribution conditioning," not yet a reliable generator.** See
     `docs/064-acestep-implementation-plan.md`'s "Golden-parity check" section for the full writeup.
+    **Update, same day: both conditioning gaps closed.** Ported the real VAE encoder
+    (`AceStepOobleckEncoder`, golden-verified) specifically to self-derive a real `silence_latent`
+    (encode true digital silence), and the real timbre encoder (`AceStepTimbreEncoder`, golden-
+    verified, shares its layer stack with the lyric encoder). Wired both into
+    `AceStepPipeline.Generate()`: real silence-derived `src_latents` and a real 750-frame timbre
+    embedding packed as `[lyric, timbre, text]` — both now match the real "no reference audio" path
+    exactly, not placeholders. `AceStepPipelineEndToEndTests` re-passes (231s for 2s, the real
+    750-frame timbre attention pass adds meaningful cost — flagged for a later perf look).
+    Regenerated the 8s sample: clipping 7.4%→1.6%, spectral flatness 0.266→0.229 (more tonal). Sent
+    to the user for a second listening pass — awaiting their read on whether the noise report is
+    actually resolved.
 12. **Real NaN bug in `Engine.ForwardPass`'s f16 qwen3 path — found 2026-09-03 while testing
     ACE-Step's Qwen3 text encoder, NOT ACE-Step-specific.** A real 13-token sequence (real ACE-Step
     SFT-prompt text, official `Qwen/Qwen3-Embedding-0.6B-GGUF` f16 quant) produces NaN logits at

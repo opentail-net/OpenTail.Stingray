@@ -5,19 +5,24 @@ using OpenTail.Stingray.Diffusion.AceStep.Vae;
 namespace OpenTail.Stingray.Diffusion.AceStep;
 
 /// <summary>
-/// Top-level ACE-Step Turbo text-to-music pipeline: real V1 end-to-end wiring (text+lyrics only,
-/// no reference-audio/cover/repaint) -- see docs/064-acestep-implementation-plan.md for each
-/// component's own golden/non-degeneracy verification (text encoder, condition encoder, DiT, flow
-/// scheduler, VAE decoder are each individually tested against real weights; this class only wires
-/// them together, it introduces no new math of its own beyond the real SFT prompt template and the
-/// latent-to-channel-major-PCM layout conversions each component already documents).
+/// Top-level ACE-Step Turbo text-to-music pipeline: real V1 end-to-end wiring (text+lyrics, plus a
+/// real self-derived "no reference audio" timbre condition -- no actual reference-audio/cover/
+/// repaint support) -- see docs/064-acestep-implementation-plan.md for each component's own
+/// golden-parity verification against the real `diffusers` reference; this class only wires them
+/// together, it introduces no new math of its own beyond the real SFT prompt template and the
+/// latent-to-channel-major-PCM layout conversions each component already documents.
 ///
 /// <para>Real flow (from `AceStepConditionGenerationModel.generate_audio`): encode prompt via
-/// Qwen3 (causal, full model, final-RMSNorm'd `last_hidden_state`) -&gt; condition encoder packs
-/// text+lyric into one cross-attention sequence (V1 has no timbre/reference-audio conditioning) -&gt;
+/// Qwen3 (causal, full model, final-RMSNorm'd `last_hidden_state`) -&gt; derive a real
+/// `silence_latent` by encoding true digital silence through <see cref="AceStepOobleckEncoder"/>
+/// (self-sufficient substitute for the real checkpoint's missing `silence_latent` buffer -- see
+/// that class's doc comment) -&gt; condition encoder packs `[lyric, timbre, text]` into one
+/// cross-attention sequence, where `timbre` is the real pooled embedding of that silence latent
+/// (matches the real pipeline's own "no reference audio" path, NOT a placeholder) -&gt;
 /// <see cref="AceStepFlowScheduler"/> runs the real hardcoded shift-1/2/3 Euler-ODE schedule
-/// through the DiT (cross-attention K/V computed once and reused every step) -&gt; the real
-/// `AutoencoderOobleck` VAE decodes the resulting 25Hz latent to 48kHz stereo PCM.</para>
+/// through the DiT, using that same silence latent as `src_latents` (also matching the real
+/// pipeline's own "no reference audio" path) -&gt; the real `AutoencoderOobleck` VAE decodes the
+/// resulting 25Hz latent to 48kHz stereo PCM.</para>
 /// </summary>
 public sealed class AceStepPipeline
 {
@@ -43,12 +48,27 @@ public sealed class AceStepPipeline
             ? []
             : _model.TextEncoder.Tokenize(parameters.Lyrics);
 
-        var condition = AceStepConditionEncoder.Forward(
-            _model.ConditionEncoder, textHidden, lyricTokenIds, _model.TextEncoder.TokenEmbeddingTable);
-
         int latentFrames = (int)MathF.Round(parameters.DurationSeconds * 25f); // real 25Hz acoustic latent rate
+
+        // Real "no reference audio" path: encode true digital silence through the real VAE encoder
+        // to derive src_latents/timbre input, matching the real pipeline's own silence_latent-based
+        // fallback (see AceStepOobleckEncoder's doc comment for why this project derives it itself).
+        const int timbreFixFrames = 750; // real `timbre_fix_frame = ceil(30 * 25Hz)`
+        int silenceFrames = Math.Max(timbreFixFrames, latentFrames);
+        var silenceRows = ComputeSilenceLatent(silenceFrames);
+
+        var timbreInput = new float[Math.Min(timbreFixFrames, silenceFrames)][];
+        Array.Copy(silenceRows, timbreInput, timbreInput.Length);
+        var timbreRow = AceStepTimbreEncoder.Forward(_model.TimbreEncoder, timbreInput);
+
+        var srcLatents = new float[latentFrames][];
+        Array.Copy(silenceRows, srcLatents, latentFrames);
+
+        var condition = AceStepConditionEncoder.Forward(
+            _model.ConditionEncoder, textHidden, lyricTokenIds, _model.TextEncoder.TokenEmbeddingTable, timbreRow);
+
         var latentRows = AceStepFlowScheduler.Generate(
-            _model.Transformer, condition, latentFrames, parameters.Shift, parameters.Seed);
+            _model.Transformer, condition, latentFrames, parameters.Shift, parameters.Seed, srcLatents);
 
         // AceStepFlowScheduler returns [t][acousticDim] (time-major); AceStepOobleckDecoder.Decode
         // wants [acousticDim, t] flat channel-major -- transpose.
@@ -72,6 +92,26 @@ public sealed class AceStepPipeline
             Left = left,
             Right = right,
         };
+    }
+
+    /// <summary>Encodes real true digital silence (all-zero stereo PCM) through the real VAE encoder to derive `frames` real latent rows -- see <see cref="AceStepOobleckEncoder"/>'s doc comment.</summary>
+    private float[][] ComputeSilenceLatent(int frames)
+    {
+        int hopLength = AceStepConfig.VaeDownsamplingRatios.Aggregate(1, (a, b) => a * b);
+        int sampleCount = frames * hopLength;
+        var zeroPcm = new float[AceStepConfig.VaeAudioChannels * sampleCount]; // real true silence
+
+        var flat = AceStepOobleckEncoder.EncodeMode(_model.VaeEncoder, zeroPcm, AceStepConfig.VaeAudioChannels, sampleCount);
+
+        int latentDim = AceStepConfig.VaeDecoderInputChannels;
+        var rows = new float[frames][];
+        for (int t = 0; t < frames; t++)
+        {
+            var row = new float[latentDim];
+            for (int c = 0; c < latentDim; c++) row[c] = flat[c * frames + t];
+            rows[t] = row;
+        }
+        return rows;
     }
 }
 
