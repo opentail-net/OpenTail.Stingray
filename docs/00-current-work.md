@@ -362,22 +362,35 @@ confirmed pre-existing (the test file hasn't changed since before this session, 
 — `UnifiedVisionPipeline.Open`/`EmbedImage` — never touches `IComputeBackend`/CUDA/Vulkan at all,
 so this is unrelated to any GPU-path work done this session):
 
-- `YoutuVl` and `HunyuanVl`: `EmbedImage` returns a completely all-zero embedding buffer.
-  **Re-admitted 2026-09-02 after briefly being dropped — kept, but explicitly lowest priority to
-  fix among these 4** (real demand for these two specific architectures is lower than
-  `KimiVl`/`MiniCpmV`). **Still unfixed** — see below for the other two.
-- ~~`KimiVl`: two genuinely different input images produce embeddings whose cosine similarity is
-  `NaN`~~ **FIXED 2026-09-02** — see "KimiVl and MiniCpmV fixed" below.
-- ~~`MiniCpmV`: two genuinely different input images produce embeddings with cosine similarity
-  `1.0000001`~~ **FIXED 2026-09-02** — see "KimiVl and MiniCpmV fixed" below.
+- ~~`YoutuVl`: `EmbedImage` returns a completely all-zero embedding buffer~~ **FIXED 2026-09-02**
+  — real projector tensor is `mm.2.weight` (confirmed via `list-tensors`), not `mm.1.weight`;
+  that name never matched, so `LoadTensorF32` returned null and the final `MatVec`'s
+  "no-op on missing weight" contract silently skipped the whole second projector layer, leaving
+  the output at its zero-initialized default the entire time. Same tensor-naming-mismatch class of
+  bug as Pixtral's `mm.0`-vs-`mm.1` earlier this session. Fixed by adding the real name as the
+  primary candidate (`GetTensor(gguf, "mm.2.weight", "mm.1.weight")`). Verified via the
+  differentiation suite going from failing to passing, no regressions on full re-run.
+- `HunyuanVl` (checkpoint: HunyuanOCR): **investigated, NOT a quick fix — genuine architecture
+  gap, deliberately not attempted this pass.** Real tensors (`list-tensors`) reveal a
+  substantially different, 3-stage projector than what `HunyuanVlVisionEncoder.cs` implements:
+  `mm.0.weight` is a real strided **Conv2D** `[2,2,1152,2304]` (same "genuine conv2d merger, not a
+  plain linear" shape GLM-4.6V had), `mm.2.weight` is a second **1×1 Conv2D** `[1,1,2304,4608]`
+  (functionally a pointwise linear, but still conv-shaped in the GGUF), and there's a THIRD stage,
+  `mm.model.fc.weight` `[4608,1024]`, that the C# encoder doesn't reference under any name at all
+  (it looks for `mm.model_proj.weight`, which doesn't exist). This is real, scoped feature work —
+  same category as the windowed-attention gap closed earlier this session — not a tensor-rename
+  fix, so picking it up mid-pass would risk a half-implemented result. Still explicitly lowest
+  priority (real demand for this specific architecture is lower than the others fixed this
+  session).
 
 Given the failure SHAPE (all-zero or identical-regardless-of-input) rather than "wrong but
 non-degenerate" output, the likely culprit category is a wiring/plumbing bug (an input never
 reaching the encoder, a buffer never written, an early-return path) rather than a subtle numerical
 error — matching the pattern several other real bugs in this project turned out to be (e.g. Wan's
 earlier missing-`--vae` mistake, or the Z-Image/QwenTextEncoder BF16-corruption bug); this
-hypothesis held for `KimiVl`/`MiniCpmV` (both were dead-stub/wrong-dimension bugs) but remains
-unverified for `YoutuVl`/`HunyuanVl`. Real weight test: rerun via
+hypothesis held for `KimiVl`/`MiniCpmV`/`YoutuVl` (dead-stub/wrong-dimension/wrong-tensor-name bugs
+respectively) but `HunyuanVl` turned out to be a genuine missing-feature gap instead. Real weight
+test: rerun via
 `STINGRAY_RUN_HEAVY_TESTS=1 tests/OpenTail.Stingray.Tests.Vision/bin/Release/net10.0/
 OpenTail.Stingray.Tests.Vision.exe -class OpenTail.Stingray.Tests.Vision.MultimodalRealWeightsTests`.
 

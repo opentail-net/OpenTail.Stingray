@@ -66,12 +66,16 @@ public sealed unsafe class YoutuVlVisionEncoder
         _mmInputNormW = VisionOps.GetTensorArray(gguf, "mm.input_norm.weight");
         _mm0W         = VisionOps.LoadTensorF32(gguf, "mm.0.weight");
         _mm0B         = VisionOps.GetTensorArray(gguf, "mm.0.bias");
-        _mm1W         = VisionOps.LoadTensorF32(gguf, "mm.1.weight");
-        _mm1B         = VisionOps.GetTensorArray(gguf, "mm.1.bias");
+        // Real tensor name in this checkpoint is "mm.2.weight" (confirmed via list-tensors), not
+        // "mm.1.weight" -- that name never matched, silently leaving mm1W null and the final
+        // MatVec a no-op (missing-weight contract), which is exactly why the whole embedding
+        // came back all-zero: the second projector layer never ran at all.
+        _mm1W         = VisionOps.LoadTensorF32(gguf, "mm.2.weight", "mm.1.weight");
+        _mm1B         = VisionOps.GetTensorArray(gguf, "mm.2.bias", "mm.1.bias");
 
         var mm0T = gguf.FindTensor("mm.0.weight");
         _mm0OutDim = mm0T.HasValue ? (int)mm0T.Value.Dimensions[1] : _projDim;
-        var mm1T = gguf.FindTensor("mm.1.weight");
+        var mm1T = gguf.FindTensor("mm.2.weight") ?? gguf.FindTensor("mm.1.weight");
         _mm1OutDim = mm1T.HasValue ? (int)mm1T.Value.Dimensions[1] : _projDim;
 
         _blocks = new LayerWeights[_layers];
