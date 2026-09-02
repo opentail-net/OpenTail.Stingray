@@ -319,6 +319,32 @@ dumping intermediate hidden states layer-by-layer, the same "golden-verify befor
 methodology that resolved Fish Speech's and QwenTTS's real bugs after structural review alone
 wasn't enough.
 
+**2026-09-02: CFG-scale sensitivity checked directly -- ruled out.** Ran the same prompt/seed at
+128x128/8 steps at `--cfg-scale 1.0` (fully unconditional, no CFG combination at all) and
+`--cfg-scale 6.0` (the normal default). Both show the exact SAME regular grid/basket-weave
+structure -- same cell boundaries, same count/size of repeating cells, only the color palette
+differs between the two runs. If CFG combination itself were introducing the artifact (e.g. a
+sign error or scale bug in `uncondVelocity[i] + guidance * (condVelocity[i] - uncondVelocity[i])`),
+disabling it entirely should have changed the artifact's structure, not just its color -- it didn't,
+so CFG combination is ruled out as the cause, narrowing the remaining candidates from the list
+above to the DiT's attention computation itself or a subtle FFN/attention kernel numerical issue.
+(Aside, confirmed while doing this: the CLI's own `--cfg-scale 1.0` does NOT get silently
+overridden -- that override only exists in the separate `WanPipeline.Generate(ImageGenerationRequest)`
+convenience overload, which the CLI's `RunWan` path doesn't call; the direct multi-arg `Generate(...)`
+overload it does call has no such sentinel, so this test is valid as run.)
+
+The grid cell size visually matches the DiT's own token/patch grid at this resolution (128x128 image
+-> VAE 8x downsample -> 16x16 latent -> patch_size (1,2,2) -> 8x8 = 64 spatial tokens) closely enough
+that each visible "cell" plausibly corresponds to one token's own decoded patch, largely uniform
+internally with a sharp boundary against its neighbors -- consistent with (but not proof of) tokens
+not sharing spatial context correctly through attention, rather than a purely local
+patchify/unpatchify/VAE-formula bug (all already individually verified correct). Not pursued further
+this pass (time-boxed at ~2h per the operator's own instruction, per-problem cap) -- the numeric
+diffusers-reference layer-dump comparison recommended above remains the real next step, requiring a
+working Python `diffusers` Wan environment plus intermediate-hidden-state hook instrumentation on
+both sides, which is substantial enough setup to warrant its own dedicated pass rather than a
+squeezed-in attempt.
+
 ## Scope note
 
 RealESRGAN, Z-Image-Turbo, SD1.5, and SDXL-Turbo have real local weights and confirmed real,
