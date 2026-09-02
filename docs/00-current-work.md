@@ -314,6 +314,21 @@ that is more elegant but lower-visibility.
     path is genuinely wired). **All four V1 components (text encoder, DiT, VAE decoder, condition
     encoder) are now real and tested; only the flow-matching Euler scheduler loop and
     `AceStepPipeline.Generate()`'s end-to-end wiring remain.**
+    **Update, same day: V1 end-to-end working.** `AceStepFlowScheduler.cs` — the real Turbo
+    Euler-ODE loop (`get_x0_from_noise` on the final step, `xt -= vt*dt` otherwise, cross-attention
+    K/V cached once and reused every step) — passes on the FIRST real-weight run, including a
+    seed-sensitivity check. Real, flagged gap: the real `diffusers` pipeline's learned
+    `silence_latent` buffer (used as `src_latents` for plain text2music) is NOT present in this
+    project's downloaded `turbo.safetensors` (confirmed via its own real header — no such key among
+    678 tensors), so `src_latents` uses an explicit zero placeholder for now; `chunk_masks=all-ones`
+    IS confirmed real from the diffusers pipeline's own comment. `AceStepPipeline.Generate()` now
+    really wires text encoder → condition encoder → flow scheduler → VAE decoder into one call;
+    `AceStepPipelineEndToEndTests` (2s duration) passes on the FIRST real end-to-end run against all
+    four real checkpoints — finite, non-silent, correctly-shaped 48kHz stereo PCM from a real text
+    prompt. **Not yet done: numeric golden-parity vs. a real `diffusers` reference run, an audible
+    listening pass (WAV sample), a performance pass (now due per CLAUDE.md rule 7), and the
+    condition-encoder/DiT attention DRY pass (also now due).** See `docs/064-acestep-
+    implementation-plan.md`'s "Phase E progress" section for the full writeup.
 12. **Real NaN bug in `Engine.ForwardPass`'s f16 qwen3 path — found 2026-09-03 while testing
     ACE-Step's Qwen3 text encoder, NOT ACE-Step-specific.** A real 13-token sequence (real ACE-Step
     SFT-prompt text, official `Qwen/Qwen3-Embedding-0.6B-GGUF` f16 quant) produces NaN logits at

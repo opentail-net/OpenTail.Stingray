@@ -1,6 +1,14 @@
 # ACE-Step 1.5 Turbo implementation plan
 
-Status: **scoped and archaeology-complete, 2026-09-03 — implementation not started.** This is a
+Status: **V1 end-to-end working, 2026-09-03** — real weights for all four components (Qwen3 text
+encoder, condition encoder, DiT, Oobleck VAE decoder) wired through a real flow-matching Euler-ODE
+scheduler and `AceStepPipeline.Generate()`; `AceStepPipelineEndToEndTests` produces finite,
+non-silent 48kHz stereo audio from a real text prompt on the first real end-to-end run. See the
+"Phase E progress" section below for what's still open (numeric golden-parity, the missing real
+`silence_latent` buffer, audible quality assessment) before calling this production-ready.
+
+Status (superseded, kept for history): **scoped and archaeology-complete, 2026-09-03 —
+implementation not started.** This is a
 genuinely much larger architecture than MusicGen/AudioGen (a DiT + flow-matching + VAE stack with
 a lyric encoder, a timbre encoder, and an FSQ audio tokenizer/detokenizer, not just a codec-LM
 variant), so this doc captures the real, checkpoint-verified architecture before any code is
@@ -354,6 +362,56 @@ path) is genuinely wired rather than silently ignoring its input.
 All four V1 components (text encoder, DiT, VAE decoder, condition encoder) are now real and
 individually tested against real weights. Only the flow-matching Euler scheduler loop and
 `AceStepPipeline.Generate()`'s end-to-end wiring remain.
+
+## Phase E progress, 2026-09-03: flow-matching Euler scheduler + real end-to-end generation
+
+`src/OpenTail.Stingray.Diffusion/AceStep/Transformer/AceStepFlowScheduler.cs`: the real Turbo
+`infer_method="ode"` Euler-ODE loop from `generate_audio`, transcribed directly (the `"sde"` branch
+is a real alternative in the reference but unused by any real Turbo default, not ported). Samples
+Gaussian noise at the target latent length, runs the schedule selected by `shift` (snapping to the
+nearest of the real {1,2,3} values exactly like the reference), and on the final step computes
+`x0 = xt - vt*t` directly (`get_x0_from_noise`) instead of an Euler step. Cross-attention K/V is
+precomputed once via `AceStepDiT.PrepareCrossAttention` and reused every step, matching the real
+reference's `EncoderDecoderCache` optimization.
+
+**Real, documented gap**: the real `diffusers` `AceStepConditionEncoder` ships a learned
+`silence_latent` buffer (VAE-encoded real audio silence), used as `src_latents` for plain
+text-to-music generation (confirmed from `diffusers/pipelines/ace_step/pipeline_ace_step.py`'s
+`prepare_src_latents`). That buffer is genuinely NOT present in the real
+`acestep-v15-turbo/model.safetensors` checkpoint this project downloaded (confirmed by inspecting
+its real safetensors header directly -- no `silence_latent` key among its 678 tensors), so it must
+ship as a separate converter/asset this project doesn't have. `AceStepFlowScheduler` uses all-zero
+`src_latents` as an explicit, flagged placeholder for V1 -- the real pipeline's own comment warns
+zeros put the TIMBRE encoder OOD (drone-like audio), but V1 never calls the timbre encoder at all
+(text+lyrics-only condition encoder scope), so that specific warning doesn't directly apply; the
+real open question is how much zero `src_latents` degrades the DiT's own context conditioning
+relative to real encoded silence. `chunk_masks` = all-ones IS confirmed real for plain generation
+(the same pipeline's own doc comment: "dumping the chunk_masks tensor ... unique values = [True]").
+Revisit if/when the real `silence_latent` buffer is located (candidate: the official `diffusers`-
+converted checkpoint on HF, as opposed to the raw `custom_code` Ace-Step1.5 repo used so far).
+
+`AceStepFlowSchedulerTests` passes on the FIRST real-weight run against the full DiT checkpoint
+with a synthetic condition sequence: finite non-degenerate output, and a real sensitivity check
+(two different seeds produce measurably different final latents).
+
+`AceStepPipeline.Generate()` is now real, wiring all four components together: real SFT prompt
+formatting -> Qwen3 text encoder -> condition encoder (text+lyrics, empty lyric token list for
+`Instrumental=true`) -> flow scheduler -> Oobleck VAE decode -> stereo `StereoAudioBuffer`.
+`AceStepPipelineEndToEndTests` (2-second duration, to keep the real 8-step loop's wall-clock cost
+low) passes on the FIRST real end-to-end run against all four real checkpoints: finite, non-silent,
+correctly-shaped 48kHz stereo PCM from a real text prompt.
+
+**Not yet done** (before calling V1 truly finished, per this project's own standards): (1) no
+numeric golden-parity check against a real `diffusers`/`Ace-Step1.5` end-to-end reference run --
+correctness rests on careful reading of the real source (documented inline throughout) plus
+real-weight non-degeneracy at every stage, not a numeric diff yet, matching the DiT's own
+not-yet-done note; (2) no audible-quality listening pass yet (generate a real WAV into
+`docs/diffusion-samples/` and listen, matching the discipline already applied to
+MusicGen/AudioGen's "white noise" investigation) -- the zero-`src_latents` gap above is the leading
+suspect if quality turns out poor; (3) no performance pass yet (CLAUDE.md rule 7 says to do this
+once porting is complete -- it now is); (4) the DRY pass between `AceStepConditionEncoder`'s and
+`AceStepDiT`'s duplicated GQA/RoPE/QK-norm attention code (also flagged, also deferred per rule 7
+until a genuine second need to touch that duplication arises) is still outstanding.
 
 ## Immediate next steps (in order)
 
