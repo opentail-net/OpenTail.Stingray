@@ -302,6 +302,18 @@ that is more elegant but lower-visibility.
     so this test drives cross-attention with a synthetic real-shaped condition sequence. Three of
     four V1 components (text encoder, DiT, VAE decoder) now real and tested; only the condition
     encoder and the flow-matching Euler scheduler loop remain before a genuine end-to-end attempt.
+    **Update, same day**: landed the condition encoder too — `AceStepConditionEncoder.cs` (V1
+    text+lyrics scope): text hidden states through `text_projector`, lyrics through a raw Qwen3
+    token-embedding lookup (not a full Qwen3 forward — confirmed from real `diffusers` source) then
+    `embed_tokens` (a real `nn.Linear` with bias) then 8 real bidirectional GQA/RoPE/QK-norm layers
+    (same math as the DiT, duplicated per CLAUDE.md rule 7 rather than shared prematurely), packed
+    as `[lyricHidden, textProjected]`. `AceStepQwen3TextEncoder` gained `Tokenize`/
+    `TokenEmbeddingTable` to supply the raw lyric-lookup table. `AceStepConditionEncoderTests`
+    passes on the FIRST real-weight run: correct shape, finite output, AND a real sensitivity check
+    (two different lyric strings produce measurably different condition rows, confirming the lyric
+    path is genuinely wired). **All four V1 components (text encoder, DiT, VAE decoder, condition
+    encoder) are now real and tested; only the flow-matching Euler scheduler loop and
+    `AceStepPipeline.Generate()`'s end-to-end wiring remain.**
 12. **Real NaN bug in `Engine.ForwardPass`'s f16 qwen3 path — found 2026-09-03 while testing
     ACE-Step's Qwen3 text encoder, NOT ACE-Step-specific.** A real 13-token sequence (real ACE-Step
     SFT-prompt text, official `Qwen/Qwen3-Embedding-0.6B-GGUF` f16 quant) produces NaN logits at

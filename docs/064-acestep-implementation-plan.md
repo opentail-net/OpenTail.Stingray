@@ -321,6 +321,40 @@ Three of the four V1 components are now real and tested (text encoder, DiT, VAE 
 condition encoder (packs text+lyric+timbre into the DiT's cross-attention sequence) and the
 flow-matching Euler scheduler loop remain before a genuine text-to-music end-to-end attempt.
 
+## Phase C progress, 2026-09-03: condition encoder working (real weights, text+lyric V1 scope)
+
+`src/OpenTail.Stingray.Diffusion/AceStep/Conditioning/AceStepConditionEncoder.cs`: real
+`AceStepConditionEncoder`/`AceStepLyricEncoder` V1 scope (text + lyrics, no timbre/reference-audio
+-- matches the plan's own V1 cut). Text hidden states are projected via `text_projector` (real
+`nn.Linear`, no bias); lyrics are embedded via a raw Qwen3 token-embedding LOOKUP (not a full
+Qwen3 forward pass, confirmed from the real `diffusers` pipeline), then `embed_tokens` (a real
+`nn.Linear` WITH bias despite the confusing name, projecting `1024 -> 2048`), then run through 8
+real bidirectional (sliding/full alternating, same `layer_types` pattern as the DiT) transformer
+layers with the same GQA/RoPE/per-head-QK-norm math as `AceStepDiT.cs` -- necessarily duplicated
+since those are private static methods on a different class; left un-shared per CLAUDE.md rule 7
+(DRY only once 2+ real verified callers exist, matching how MusicGen/AudioGen's generation loop
+was left un-merged for the same reason). Real `pack_sequences` (sort-by-mask, for batched/padded
+scenarios) is a no-op for V1's single unpadded prompt, so this class just concatenates
+`[lyricHidden, textProjected]` directly rather than reimplementing padding-aware sorting that
+never triggers.
+
+To supply the raw Qwen3 embedding table to the condition encoder, `AceStepQwen3TextEncoder`
+(`src/OpenTail.Stingray.Diffusion/AceStep/Text/AceStepQwen3TextEncoder.cs`) gained two small public
+members: `Tokenize(string)` (raw tokenization without a full forward pass, for lyric token IDs) and
+`TokenEmbeddingTable` (lazily-loaded, dequantized real `token_embd.weight`, row-major
+`[vocab, hiddenSize]`).
+
+`AceStepConditionEncoderTests.Forward_RealWeights_ProducesNonDegenerateCondition` passes on the
+FIRST real-weight run against `turbo.safetensors`'s condition-encoder tensors and the real Q8_0
+Qwen3-Embedding-0.6B GGUF: correct shape (`lyricTokens.Length + textHidden.Length` rows of 2048),
+finite non-degenerate output, AND a real sensitivity check -- two different lyric strings produce
+measurably different packed condition rows, confirming the lyric-encoder path (not just the text
+path) is genuinely wired rather than silently ignoring its input.
+
+All four V1 components (text encoder, DiT, VAE decoder, condition encoder) are now real and
+individually tested against real weights. Only the flow-matching Euler scheduler loop and
+`AceStepPipeline.Generate()`'s end-to-end wiring remain.
+
 ## Immediate next steps (in order)
 
 1. Download the real weights (`acestep-v15-turbo/model.safetensors` ~4.79GB,

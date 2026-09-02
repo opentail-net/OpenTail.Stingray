@@ -47,6 +47,7 @@ public sealed class AceStepQwen3TextEncoder : IDisposable
     private readonly CpuBackend _backend;
     private readonly ModelHyperparams _hp;
     private readonly float[] _outputNormWeight;
+    private readonly Lazy<float[]> _tokenEmbeddingTable;
 
     public AceStepQwen3TextEncoder(string ggufPath)
     {
@@ -59,7 +60,22 @@ public sealed class AceStepQwen3TextEncoder : IDisposable
             ?? throw new InvalidDataException("Qwen3 GGUF missing required tensor 'output_norm.weight'.");
         _outputNormWeight = new float[normInfo.ElementCount];
         Dequantize.ToFloat32(_model.GetTensorData(normInfo), _outputNormWeight, normInfo.DType, normInfo.ElementCount);
+
+        _tokenEmbeddingTable = new Lazy<float[]>(() =>
+        {
+            var info = _model.FindTensor("token_embd.weight")
+                ?? throw new InvalidDataException("Qwen3 GGUF missing required tensor 'token_embd.weight'.");
+            var table = new float[info.ElementCount];
+            Dequantize.ToFloat32(_model.GetTensorData(info), table, info.DType, info.ElementCount);
+            return table;
+        });
     }
+
+    /// <summary>Tokenizes real text with this encoder's own real Qwen3 tokenizer -- exposed for callers (e.g. ACE-Step's lyric path) that need raw token IDs without running a full forward pass.</summary>
+    public int[] Tokenize(string text) => _tokenizer.Encode(text).ToArray();
+
+    /// <summary>Real Qwen3 `token_embd.weight` (flat, row-major `[vocab, hiddenSize]`) -- exposed for ACE-Step's real lyric path, which embeds lyric tokens via a raw lookup (NOT a full Qwen3 forward pass, confirmed from the real `diffusers` ACE-Step pipeline). Loaded lazily since not every caller needs it.</summary>
+    public float[] TokenEmbeddingTable => _tokenEmbeddingTable.Value;
 
     /// <summary>Tokenizes and encodes real text through the full causal Qwen3 model, applying the final RMSNorm to each position's tap to match real `last_hidden_state`. Returns `[t][hiddenSize]`.</summary>
     public float[][] Encode(string text)
