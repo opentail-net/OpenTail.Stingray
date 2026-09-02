@@ -27,6 +27,7 @@ public sealed unsafe class KimiVisionEncoder
     private readonly float[]? _mmInputNormB;
     private readonly VisionTensorRef _mm1W;
     private readonly float[]? _mm1B;
+    private readonly int _mm1OutDim;
     private readonly VisionTensorRef _mm2W;
     private readonly float[]? _mm2B;
 
@@ -84,6 +85,13 @@ public sealed unsafe class KimiVisionEncoder
         _mm1B = VisionOps.GetTensorArray(gguf, "mm.1.bias");
         _mm2W = VisionOps.GetTensor(gguf, "mm.2.weight");
         _mm2B = VisionOps.GetTensorArray(gguf, "mm.2.bias");
+        // Real bug: mm.1's output width was hardcoded to _projDim (2048), but its real GGUF shape
+        // is mergedDim x mergedDim (4608x4608, confirmed via list-tensors) -- mm.1 projects
+        // mergedDim->mergedDim, NOT mergedDim->projDim; only mm.2 (4608->2048) narrows to projDim.
+        // Telling MatVecAny the wrong (smaller) outDim/inDim across the mm.1->mm.2 boundary made
+        // the kernel use the wrong row stride when reading mm.2's real 4608-wide weight rows,
+        // reading garbage bytes from adjacent rows and producing exploding (~1e15) output values.
+        _mm1OutDim = _mm1W.IsValid ? (int)_mm1W.Info.Dimensions[1] : _projDim;
 
         _blocks = new LayerWeights[_layers];
         for (int l = 0; l < _layers; l++)
@@ -182,7 +190,7 @@ public sealed unsafe class KimiVisionEncoder
                 Apply2dInterleavedRope(qBuf, kBuf, patchesX, patchesY);
 
                 // Self-Attention & Out-Projection
-                ComputeAttention(qBuf, kBuf, vBuf, numPatches, _heads, _headDim, normed);
+                VisionOps.Attention(qBuf, kBuf, vBuf, numPatches, _heads, _headDim, normed);
                 VisionOps.MatVecAny(normed, blk.AttnOutW, attnOutB, numPatches, _embd, _embd, attnOut);
 
                 // Residual 1
@@ -222,25 +230,29 @@ public sealed unsafe class KimiVisionEncoder
         tokenCount = downX * downY;
         int mergedDim = _embd * scale * scale;
 
-        var merged = new float[tokenCount * mergedDim];
-        ApplyPixelMerge(hiddenStates, patchesX, patchesY, scale, merged);
-
-        // 4. Projection Norm & 2-Layer GELU MLP Projector
+        // Real bug: mm.input_norm.weight/bias are sized for _embd (1152), not mergedDim (4608,
+        // confirmed via list-tensors) -- this norm applies to each patch's embd-sized vector
+        // BEFORE the 2x2 pixel-shuffle merge, not after. Applying it post-merge with dim=mergedDim
+        // read far past the end of the real 1152-element weight/bias arrays into adjacent garbage
+        // heap memory, exploding every value to ~1e16-1e19 magnitude.
         if (_mmInputNormW != null)
         {
             fixed (float* mmInputNormW = _mmInputNormW, mmInputNormB = _mmInputNormB)
             {
-                ApplyLayerNorm(merged, tokenCount, mergedDim, mmInputNormW, mmInputNormB);
+                ApplyLayerNorm(hiddenStates, numPatches, _embd, mmInputNormW, mmInputNormB);
             }
         }
+
+        var merged = new float[tokenCount * mergedDim];
+        ApplyPixelMerge(hiddenStates, patchesX, patchesY, scale, merged);
 
         var visualTokens = new float[tokenCount * _projDim];
         if (_mm1W.IsValid && _mm2W.IsValid)
         {
             fixed (float* mm1B = _mm1B, mm2B = _mm2B)
             {
-                var midBuf = new float[tokenCount * _projDim];
-                VisionOps.MatVecAny(merged, _mm1W, mm1B, tokenCount, mergedDim, _projDim, midBuf);
+                var midBuf = new float[tokenCount * _mm1OutDim];
+                VisionOps.MatVecAny(merged, _mm1W, mm1B, tokenCount, mergedDim, _mm1OutDim, midBuf);
 
                 // GELU
                 for (int i = 0; i < midBuf.Length; i++)
@@ -249,7 +261,7 @@ public sealed unsafe class KimiVisionEncoder
                     midBuf[i] = 0.5f * x * (1.0f + MathF.Tanh(MathF.Sqrt(2.0f / MathF.PI) * (x + 0.044715f * x * x * x)));
                 }
 
-                VisionOps.MatVecAny(midBuf, _mm2W, mm2B, tokenCount, _projDim, _projDim, visualTokens);
+                VisionOps.MatVecAny(midBuf, _mm2W, mm2B, tokenCount, _mm1OutDim, _projDim, visualTokens);
             }
         }
         else
@@ -404,28 +416,4 @@ public sealed unsafe class KimiVisionEncoder
         }
     }
 
-    // FOUND, NOT FIXED (out of scope for this migration -- see docs/vl-migration-plan-2026-08-20.md):
-    // this does not compute attention at all. It never reads q or k, never does a Q.K score, never
-    // softmaxes -- it just copies v (scaled by 1/sqrt(headDim)) straight to the output. That means
-    // every token attends to itself with weight 1 and ignores every other token, regardless of
-    // content. A real bug, pre-existing, unrelated to the GetTensorPtr/MatVecF16 dtype migration
-    // this pass is doing -- flagged for separate follow-up, not touched here.
-    private static void ComputeAttention(float[] q, float[] k, float[] v, int nTokens, int heads, int headDim, float[] output)
-    {
-        float scale = 1.0f / MathF.Sqrt(headDim);
-
-        for (int h = 0; h < heads; h++)
-        {
-            for (int i = 0; i < nTokens; i++)
-            {
-                int qOff = (i * heads + h) * headDim;
-                int outOff = (i * heads + h) * headDim;
-
-                for (int d = 0; d < headDim; d++)
-                {
-                    output[outOff + d] = v[qOff + d] * scale;
-                }
-            }
-        }
-    }
 }

@@ -219,7 +219,7 @@ public sealed unsafe class MiniCpmVisionEncoder
                     VisionOps.MatVecAny(normed, blk.AttnVW, attnVB, numPatches, _embd, _embd, vBuf);
                 }
 
-                ComputeAttention(qBuf, kBuf, vBuf, numPatches, _heads, _headDim, normed);
+                VisionOps.Attention(qBuf, kBuf, vBuf, numPatches, _heads, _headDim, normed);
                 VisionOps.MatVecAny(normed, blk.AttnOutW, attnOutB, numPatches, _embd, _embd, attnOut);
 
                 // Residual 1
@@ -389,49 +389,58 @@ public sealed unsafe class MiniCpmVisionEncoder
         }
     }
 
-    // FOUND, NOT FIXED (out of scope for this migration -- see docs/vl-migration-plan-2026-08-20.md
-    // and the identical finding in KimiVisionEncoder.cs): neither this nor ComputeCrossAttention
-    // below actually computes attention. This one never reads q or k, never scores, never
-    // softmaxes -- it copies v straight through scaled by 1/sqrt(headDim). ComputeCrossAttention is
-    // the same shape of bug but copies q instead (so the resampler's output doesn't depend on the
-    // image patches -- k and v -- at all). Both real, pre-existing, unrelated to this pass's
-    // GetTensorPtr/MatVecF16 dtype migration.
-    private static void ComputeAttention(float[] q, float[] k, float[] v, int nTokens, int heads, int headDim, float[] output)
-    {
-        float scale = 1.0f / MathF.Sqrt(headDim);
-
-        for (int h = 0; h < heads; h++)
-        {
-            for (int i = 0; i < nTokens; i++)
-            {
-                int qOff = (i * heads + h) * headDim;
-                int outOff = (i * heads + h) * headDim;
-
-                for (int d = 0; d < headDim; d++)
-                {
-                    output[outOff + d] = v[qOff + d] * scale;
-                }
-            }
-        }
-    }
-
+    // Real scaled dot-product cross-attention: nQueries learned queries attend over nKeys
+    // image-patch keys/values. FIXED (was a stub that only copied q*scale, never reading k or v
+    // at all -- meaning the resampler's output was a fixed function of the checkpoint's learned
+    // query alone, identical regardless of image content; this exactly explains the real
+    // "two distinct images produce identical embeddings" failure this fix addresses).
     private static void ComputeCrossAttention(float[] q, float[] k, float[] v, int nQueries, int nKeys, int heads, int headDim, float[] output)
     {
         float scale = 1.0f / MathF.Sqrt(headDim);
+        int embd = heads * headDim;
 
-        for (int h = 0; h < heads; h++)
+        Parallel.For(0, heads, h =>
         {
-            for (int qIdx = 0; qIdx < nQueries; qIdx++)
-            {
-                int qOff = (qIdx * heads + h) * headDim;
-                int outOff = (qIdx * heads + h) * headDim;
+            int headOff = h * headDim;
+            var scores = new float[nKeys];
 
-                for (int d = 0; d < headDim; d++)
+            for (int qi = 0; qi < nQueries; qi++)
+            {
+                int qOff = qi * embd + headOff;
+                var qSpan = new ReadOnlySpan<float>(q, qOff, headDim);
+
+                float maxScore = float.NegativeInfinity;
+                for (int ki = 0; ki < nKeys; ki++)
                 {
-                    output[outOff + d] = q[qOff + d] * scale;
+                    int kOff = ki * embd + headOff;
+                    var kSpan = new ReadOnlySpan<float>(k, kOff, headDim);
+                    float s = 0f;
+                    for (int d = 0; d < headDim; d++) s += qSpan[d] * kSpan[d];
+                    s *= scale;
+                    scores[ki] = s;
+                    if (s > maxScore) maxScore = s;
+                }
+
+                float expSum = 0f;
+                for (int ki = 0; ki < nKeys; ki++)
+                {
+                    float e = MathF.Exp(scores[ki] - maxScore);
+                    scores[ki] = e;
+                    expSum += e;
+                }
+                float invSum = expSum > 0f ? 1.0f / expSum : 0f;
+
+                int outOff = qi * embd + headOff;
+                for (int d = 0; d < headDim; d++) output[outOff + d] = 0f;
+                for (int ki = 0; ki < nKeys; ki++)
+                {
+                    float p = scores[ki] * invSum;
+                    if (p == 0f) continue;
+                    int vOff = ki * embd + headOff;
+                    for (int d = 0; d < headDim; d++) output[outOff + d] += v[vOff + d] * p;
                 }
             }
-        }
+        });
     }
 
     private static void Add2dSinusoidalPositionEmbedding(float[] kPos, int patchesX, int patchesY, int dim)

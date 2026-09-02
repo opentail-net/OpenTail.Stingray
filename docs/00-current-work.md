@@ -365,20 +365,19 @@ so this is unrelated to any GPU-path work done this session):
 - `YoutuVl` and `HunyuanVl`: `EmbedImage` returns a completely all-zero embedding buffer.
   **Re-admitted 2026-09-02 after briefly being dropped — kept, but explicitly lowest priority to
   fix among these 4** (real demand for these two specific architectures is lower than
-  `KimiVl`/`MiniCpmV`).
-- `KimiVl`: two genuinely different input images produce embeddings whose cosine similarity is
-  `NaN` (a degenerate/zero-norm embedding on at least one side).
-- `MiniCpmV`: two genuinely different input images produce embeddings with cosine similarity
-  `1.0000001` — i.e. identical, meaning the image content isn't actually reaching the encoder
-  output for at least one of the two inputs.
+  `KimiVl`/`MiniCpmV`). **Still unfixed** — see below for the other two.
+- ~~`KimiVl`: two genuinely different input images produce embeddings whose cosine similarity is
+  `NaN`~~ **FIXED 2026-09-02** — see "KimiVl and MiniCpmV fixed" below.
+- ~~`MiniCpmV`: two genuinely different input images produce embeddings with cosine similarity
+  `1.0000001`~~ **FIXED 2026-09-02** — see "KimiVl and MiniCpmV fixed" below.
 
-131/135 real-weight tests in this suite pass. Not yet root-caused for any of the 4 — no reference
-source has been read for these architectures yet this session. Given the failure SHAPE (all-zero or
-identical-regardless-of-input) rather than "wrong but non-degenerate" output, the likely culprit
-category is a wiring/plumbing bug (an input never reaching the encoder, a buffer never written, an
-early-return path) rather than a subtle numerical error — matching the pattern several other real
-bugs in this project turned out to be (e.g. Wan's earlier missing-`--vae` mistake, or the
-Z-Image/QwenTextEncoder BF16-corruption bug). Real weight test: rerun via
+Given the failure SHAPE (all-zero or identical-regardless-of-input) rather than "wrong but
+non-degenerate" output, the likely culprit category is a wiring/plumbing bug (an input never
+reaching the encoder, a buffer never written, an early-return path) rather than a subtle numerical
+error — matching the pattern several other real bugs in this project turned out to be (e.g. Wan's
+earlier missing-`--vae` mistake, or the Z-Image/QwenTextEncoder BF16-corruption bug); this
+hypothesis held for `KimiVl`/`MiniCpmV` (both were dead-stub/wrong-dimension bugs) but remains
+unverified for `YoutuVl`/`HunyuanVl`. Real weight test: rerun via
 `STINGRAY_RUN_HEAVY_TESTS=1 tests/OpenTail.Stingray.Tests.Vision/bin/Release/net10.0/
 OpenTail.Stingray.Tests.Vision.exe -class OpenTail.Stingray.Tests.Vision.MultimodalRealWeightsTests`.
 
@@ -608,6 +607,58 @@ differentiation suite re-run clean after every round of fixes, no regressions.
 now golden-verified**: Gemma4UV, Llava, Pixtral, GLM-4.6V, Exaone4, Qwen2.5-VL, MimoVl (the scoped
 graph). Every one of them had at least one real, severe bug (not just cosmetic) that the
 differentiation test's "not obviously broken" bar had been passing regardless.
+
+---
+
+## KimiVl and MiniCpmV fixed: 2 of the 4 remaining degenerate-embedding architectures closed (2026-09-02)
+
+Root-caused and fixed both of the two higher-priority failures from "New finding — 4 vision
+architectures produce degenerate embeddings" above (`YoutuVl`/`HunyuanVl` remain, still explicitly
+lowest priority — see that section). Neither has a golden numeric test (no local reference build
+was attempted this round); verification here is the differentiation suite
+(`MultimodalRealWeightsTests`) going from failing to passing, confirmed clean on a full re-run with
+no new regressions.
+
+**`KimiVl` (`NaN` cosine similarity, i.e. a zero-norm/degenerate embedding)**: found via a
+temporary env-var-gated debug-instrumentation bisection (same technique used for Pixtral earlier
+this session) that printed mean/min/max at each pipeline stage — the explosion (finite but
+~1e15-1e19 magnitude, not literally `NaN` until the cosine division) traced to exactly two spots in
+`KimiVisionEncoder.cs`:
+- `mm.1`'s real GGUF shape is `mergedDim x mergedDim` (4608x4608, confirmed via `list-tensors`),
+  but its output width was hardcoded to `_projDim` (2048) instead of read from the tensor itself.
+  Since `mm.2`'s real input width is `mergedDim` (4608), narrowing `mm.1`'s output to 2048 before
+  feeding it into `mm.2` at `inDim=2048` made `SimdKernels.MatVec` use the wrong row stride when
+  reading `mm.2`'s real 4608-wide weight rows — every row after the first read garbage bytes from
+  the wrong offset. Fixed: derive `mm.1`'s output width from its own tensor shape
+  (`_mm1W.Info.Dimensions[1]`) instead of assuming `_projDim`.
+- `mm.input_norm.weight`/`.bias` are sized for `_embd` (1152), not `mergedDim` (4608) — this norm
+  applies to each patch's embd-sized vector BEFORE the 2x2 pixel-shuffle merge, not after. The
+  code applied it post-merge with `dim=mergedDim`, reading 4608 elements out of a real 1152-element
+  array — the extra 3456 reads walked into adjacent garbage heap memory. Fixed: moved the norm to
+  apply on `hiddenStates` (dim `_embd`) before `ApplyPixelMerge` runs, matching the real tensor
+  size.
+
+Also fixed the same dead-attention stub already found and fixed in `Glm4VisionEncoder.cs`/
+`QwenVlVisionEncoder.cs` this session — `ComputeAttention` never read `q`/`k`, never softmaxed,
+just copied scaled `v` through. Routed through the shared, real `VisionOps.Attention`. This alone
+didn't explain the `NaN` (the real corruption was the two bugs above), but it was numerically
+inert the same way the other encoders' copies were, and is now real self-attention.
+
+**`MiniCpmV` (two genuinely different images produce identical, `cosSim≈1.0`, embeddings)**: the
+resampler's `ComputeCrossAttention` — cross-attention from the model's learned, checkpoint-fixed
+query tokens over the image-patch keys/values — was a dead stub that never read `k` or `v` at all,
+just copied `q*scale` straight to the output. Since the query is a fixed learned parameter
+(identical for every image), and the stub's output depended on nothing else, the resampler's
+output — and therefore the whole encoder's final embedding — was mathematically guaranteed to be
+identical regardless of image content. This is an exact, mechanistic explanation for the observed
+failure, not just a plausible-sounding fix: with no dependence on `k`/`v`, cosine similarity
+between any two images' outputs was always going to be ~1.0. Implemented real scaled dot-product
+cross-attention (`nQueries` queries attending over `nKeys` image-patch keys/values, softmax over
+keys). Also fixed the ViT stack's own `ComputeAttention`, the same dead stub as `KimiVl`'s.
+
+Both fixes verified via a full differentiation-suite re-run: `KimiVl` and `MiniCpmV` now pass,
+same 2 remaining pre-existing failures (`YoutuVl`, `HunyuanVl`, both all-zero embeddings, lowest
+priority), no new regressions (9/11 architectures now pass differentiation, up from 7/11).
 
 ---
 
