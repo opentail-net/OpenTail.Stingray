@@ -164,8 +164,12 @@ public sealed class Sd3Pipeline : IDisposable, IDiffusionPipeline
             float t = 1.0f - step * dt;
             float timestep = t * 1000.0f; // Scale to 0..1000 for Fourier embedding
 
-            var condPred = _mmdit.Forward(x, timestep, condContext, condPooledY, latH, latW, 77);
-            var uncondPred = _mmdit.Forward(x, timestep, uncondContext, uncondPooledY, latH, latW, 77);
+            float[] condPred = null!;
+            float[] uncondPred = null!;
+            Parallel.Invoke(
+                () => condPred = _mmdit.Forward(x, timestep, condContext, condPooledY, latH, latW, 77),
+                () => uncondPred = _mmdit.Forward(x, timestep, uncondContext, uncondPooledY, latH, latW, 77)
+            );
 
             // CFG Combination
             for (int i = 0; i < x.Length; i++)

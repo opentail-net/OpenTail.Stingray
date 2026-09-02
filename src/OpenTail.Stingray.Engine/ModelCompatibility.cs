@@ -652,6 +652,16 @@ public static class ModelCompatibility
     // --allow-unverified-arch. GPU backends have no MLA support at all — CPU-only was the
     // deliberately agreed scope.
     //
+    // deepseek4 — NOT admitted, NOT wired at all (no GGUF tensor loading, no forward-pass
+    // dispatch entry, no KV cache support). DeepSeek4Graph (DeepSeek4Alpha.cs, same project) is
+    // an explicitly-labeled ALPHA/UNTESTED port of V4's algorithmic core (hyper-connections,
+    // lightning indexer, CSA/HCA compressed-KV math) from the vendored llama.cpp reference,
+    // written without ever loading a real DeepSeek-V4 GGUF — see
+    // docs/058-deepseek-full-lineage-implementation-plan.md Phase 0. Only synthetic
+    // shape/invariant unit tests exist (DeepSeek4AlphaTests.cs) — zero real-weight verification.
+    // Do not admit under any circumstance until GGUF loading, dispatch, and a persistent
+    // compressed-KV state cache are built and a real checkpoint produces a passing receipt.
+    //
     // minicpm — NOT admitted. The forward-pass scale trio (reusing Granite's graph, see
     // GraniteGreedyParityTests) is implemented and presumed correct, but MiniCPM4-0.5B — the only
     // Apache-2.0 checkpoint tried (2026-08-08) — declares tokenizer.ggml.model=llama with a

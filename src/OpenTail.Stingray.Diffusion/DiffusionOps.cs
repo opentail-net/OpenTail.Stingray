@@ -400,33 +400,55 @@ internal static unsafe class DiffusionOps
     /// x: [n, inDim], weight: [outDim, inDim], bias: [outDim] (optional), result: [n, outDim].
     /// Uses TensorPrimitives.Dot for hardware-accelerated SIMD with zero per-token allocations.
     /// </summary>
-    public static float[] Linear(float[] x, float[] weight, float[]? bias, int n, int inDim, int outDim)
+    public static void Linear(ReadOnlySpan<float> x, ReadOnlySpan<float> weight, ReadOnlySpan<float> bias, Span<float> result, int n, int inDim, int outDim)
     {
-        var result = new float[n * outDim];
-
-        fixed (float* px = x, pw = weight, pr = result)
-        fixed (float* pb = bias)
+        fixed (float* px = x, pw = weight, pr = result, pb = bias)
         {
             float* pxLocal = px;
             float* pwLocal = pw;
             float* prLocal = pr;
             float* pbLocal = pb;
 
-            Parallel.For(0, outDim, o =>
+            if (n > 1)
             {
-                float b0 = pbLocal != null ? pbLocal[o] : 0f;
-                float* wRow = pwLocal + (nuint)o * (nuint)inDim;
-                var wSpan = new ReadOnlySpan<float>(wRow, inDim);
-
-                for (int b = 0; b < n; b++)
+                Parallel.For(0, n, b =>
                 {
                     float* xRow = pxLocal + (nuint)b * (nuint)inDim;
                     var xSpan = new ReadOnlySpan<float>(xRow, inDim);
-                    prLocal[(nuint)b * (nuint)outDim + (nuint)o] = b0 + TensorPrimitives.Dot<float>(xSpan, wSpan);
-                }
-            });
-        }
+                    float* prRow = prLocal + (nuint)b * (nuint)outDim;
 
+                    for (int o = 0; o < outDim; o++)
+                    {
+                        float b0 = pbLocal != null ? pbLocal[o] : 0f;
+                        float* wRow = pwLocal + (nuint)o * (nuint)inDim;
+                        var wSpan = new ReadOnlySpan<float>(wRow, inDim);
+                        prRow[o] = b0 + TensorPrimitives.Dot<float>(xSpan, wSpan);
+                    }
+                });
+            }
+            else
+            {
+                Parallel.For(0, outDim, o =>
+                {
+                    float b0 = pbLocal != null ? pbLocal[o] : 0f;
+                    float* wRow = pwLocal + (nuint)o * (nuint)inDim;
+                    var wSpan = new ReadOnlySpan<float>(wRow, inDim);
+                    var xSpan = new ReadOnlySpan<float>(pxLocal, inDim);
+                    prLocal[o] = b0 + TensorPrimitives.Dot<float>(xSpan, wSpan);
+                });
+            }
+        }
+    }
+
+    /// <summary>
+    /// Linear projection: y = x @ weight^T + bias.
+    /// x: [n, inDim], weight: [outDim, inDim], bias: [outDim] (optional), result: [n, outDim].
+    /// Uses TensorPrimitives.Dot for hardware-accelerated SIMD with zero per-token allocations.
+    /// </summary>
+    public static float[] Linear(float[] x, float[] weight, float[]? bias, int n, int inDim, int outDim)
+    {
+        var result = new float[n * outDim];
+        Linear(x.AsSpan(0, n * inDim), weight.AsSpan(0, outDim * inDim), bias is not null ? bias.AsSpan(0, outDim) : ReadOnlySpan<float>.Empty, result, n, inDim, outDim);
         return result;
     }
 

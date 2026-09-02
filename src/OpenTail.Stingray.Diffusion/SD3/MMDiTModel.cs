@@ -1,3 +1,5 @@
+using System.Buffers;
+using System.Numerics.Tensors;
 using CoreTensor = OpenTail.Stingray.Core.Tensor;
 
 namespace OpenTail.Stingray.Diffusion.SD3;
@@ -55,61 +57,125 @@ public sealed class MMDiTModel : IDisposable
 
     private float[]? TryGetWeight(string name) => _weightReader.TryGet(name);
 
-    /// <summary>Returns a SiLU-gated COPY of a conditioning vector reused across multiple
-    /// adaLN_modulation Linear calls (real: `self.linear(self.silu(emb))`).</summary>
-    private static float[] SiluGate(float[] vec)
+    private sealed class Workspace : IDisposable
     {
-        var gated = (float[])vec.Clone();
-        DiffusionOps.SiluInPlace(gated);
-        return gated;
+        public readonly float[] Q;
+        public readonly float[] K;
+        public readonly float[] V;
+        public readonly float[] AttnOut;
+        public readonly float[] NormedImg;
+        public readonly float[] NormedTxt;
+        public readonly float[] QkvImg;
+        public readonly float[] QkvTxt;
+        public readonly float[] OutImg;
+        public readonly float[] OutTxt;
+        public readonly float[] MlpBuf;
+        public readonly float[] ImgMod;
+        public readonly float[] TxtMod;
+        public readonly float[] Scores;
+        public readonly float[] TVecSilu;
+
+        public Workspace(int totalTokens, int numImgTokens, int numTextTokens, int hiddenSize, int numHeads)
+        {
+            int maxTokens = Math.Max(totalTokens, Math.Max(numImgTokens, numTextTokens));
+            int mlpHidden = hiddenSize * 4;
+            Q = ArrayPool<float>.Shared.Rent(totalTokens * hiddenSize);
+            K = ArrayPool<float>.Shared.Rent(totalTokens * hiddenSize);
+            V = ArrayPool<float>.Shared.Rent(totalTokens * hiddenSize);
+            AttnOut = ArrayPool<float>.Shared.Rent(totalTokens * hiddenSize);
+            NormedImg = ArrayPool<float>.Shared.Rent(numImgTokens * hiddenSize);
+            NormedTxt = ArrayPool<float>.Shared.Rent(numTextTokens * hiddenSize);
+            QkvImg = ArrayPool<float>.Shared.Rent(numImgTokens * 3 * hiddenSize);
+            QkvTxt = ArrayPool<float>.Shared.Rent(numTextTokens * 3 * hiddenSize);
+            OutImg = ArrayPool<float>.Shared.Rent(numImgTokens * hiddenSize);
+            OutTxt = ArrayPool<float>.Shared.Rent(numTextTokens * hiddenSize);
+            MlpBuf = ArrayPool<float>.Shared.Rent(maxTokens * mlpHidden);
+            ImgMod = ArrayPool<float>.Shared.Rent(9 * hiddenSize);
+            TxtMod = ArrayPool<float>.Shared.Rent(6 * hiddenSize);
+            Scores = ArrayPool<float>.Shared.Rent(numHeads * totalTokens);
+            TVecSilu = ArrayPool<float>.Shared.Rent(hiddenSize);
+        }
+
+        public void Dispose()
+        {
+            ArrayPool<float>.Shared.Return(Q);
+            ArrayPool<float>.Shared.Return(K);
+            ArrayPool<float>.Shared.Return(V);
+            ArrayPool<float>.Shared.Return(AttnOut);
+            ArrayPool<float>.Shared.Return(NormedImg);
+            ArrayPool<float>.Shared.Return(NormedTxt);
+            ArrayPool<float>.Shared.Return(QkvImg);
+            ArrayPool<float>.Shared.Return(QkvTxt);
+            ArrayPool<float>.Shared.Return(OutImg);
+            ArrayPool<float>.Shared.Return(OutTxt);
+            ArrayPool<float>.Shared.Return(MlpBuf);
+            ArrayPool<float>.Shared.Return(ImgMod);
+            ArrayPool<float>.Shared.Return(TxtMod);
+            ArrayPool<float>.Shared.Return(Scores);
+            ArrayPool<float>.Shared.Return(TVecSilu);
+        }
     }
 
-    /// <summary>Splits a fused [n, 3*dim] qkv projection into three contiguous [n, dim] blocks.</summary>
-    private static (float[] q, float[] k, float[] v) SplitQkv(float[] qkv, int n, int dim)
+    private static unsafe void UnpackQkv(ReadOnlySpan<float> qkv, Span<float> q, Span<float> k, Span<float> v, int dstTokenStart, int tokenCount, int dim)
     {
-        var q = new float[n * dim];
-        var k = new float[n * dim];
-        var v = new float[n * dim];
-        for (int t = 0; t < n; t++)
+        fixed (float* pQkv = qkv, pQ = q, pK = k, pV = v)
         {
-            int src = t * 3 * dim;
-            Array.Copy(qkv, src, q, t * dim, dim);
-            Array.Copy(qkv, src + dim, k, t * dim, dim);
-            Array.Copy(qkv, src + 2 * dim, v, t * dim, dim);
+            float* pQkvLocal = pQkv;
+            float* pQLocal = pQ;
+            float* pKLocal = pK;
+            float* pVLocal = pV;
+
+            Parallel.For(0, tokenCount, i =>
+            {
+                int srcOff = i * 3 * dim;
+                int dstOff = (dstTokenStart + i) * dim;
+                new ReadOnlySpan<float>(pQkvLocal + srcOff, dim).CopyTo(new Span<float>(pQLocal + dstOff, dim));
+                new ReadOnlySpan<float>(pQkvLocal + srcOff + dim, dim).CopyTo(new Span<float>(pKLocal + dstOff, dim));
+                new ReadOnlySpan<float>(pQkvLocal + srcOff + 2 * dim, dim).CopyTo(new Span<float>(pVLocal + dstOff, dim));
+            });
         }
-        return (q, k, v);
     }
 
     /// <summary>Per-head RMSNorm (no bias) applied in place, using a real ln_q/ln_k.weight tensor
     /// if present; no-op if the checkpoint doesn't declare it for this block.</summary>
-    private void ApplyHeadRmsNorm(float[] x, string weightName, int n, int numHeads, int headDim)
+    private unsafe void ApplyHeadRmsNorm(Span<float> x, string weightName, int n, int numHeads, int headDim)
     {
         var w = TryGetWeight($"{weightName}.weight");
         if (w is null) return;
-        for (int t = 0; t < n; t++)
+
+        fixed (float* pX = x, pW = w)
         {
-            for (int h = 0; h < numHeads; h++)
+            float* pXLocal = pX;
+            float* pWLocal = pW;
+
+            Parallel.For(0, n * numHeads, idx =>
             {
-                int off = t * numHeads * headDim + h * headDim;
-                float sumSq = 0f;
-                for (int d = 0; d < headDim; d++) sumSq += x[off + d] * x[off + d];
+                int t = idx / numHeads;
+                int h = idx % numHeads;
+                int off = (t * numHeads + h) * headDim;
+                var slice = new Span<float>(pXLocal + off, headDim);
+                var weightSpan = new ReadOnlySpan<float>(pWLocal, headDim);
+                float sumSq = TensorPrimitives.SumOfSquares(slice);
                 float invStd = 1f / MathF.Sqrt(sumSq / headDim + 1e-6f);
-                for (int d = 0; d < headDim; d++) x[off + d] = x[off + d] * invStd * w[d];
-            }
+                for (int d = 0; d < headDim; d++)
+                    slice[d] = slice[d] * invStd * weightSpan[d];
+            });
         }
     }
 
     private CoreTensor GetGpuWeight(string name, float[] cpuWeight)
     {
         string fullName = _weightReader.Prefix + name;
-        if (_gpuWeights!.TryGetValue(fullName, out var wGpu)) return wGpu;
-
-        wGpu = _backend!.Upload(cpuWeight.AsSpan(), TensorShape.D1(cpuWeight.Length));
-        _gpuWeights[fullName] = wGpu;
-        return wGpu;
+        lock (_gpuWeights!)
+        {
+            if (_gpuWeights.TryGetValue(fullName, out var wGpu)) return wGpu;
+            wGpu = _backend!.Upload(cpuWeight.AsSpan(), TensorShape.D1(cpuWeight.Length));
+            _gpuWeights[fullName] = wGpu;
+            return wGpu;
+        }
     }
 
-    public float[] Lin(string name, float[] x, int n, int inDim, int outDim)
+    public unsafe void Lin(string name, ReadOnlySpan<float> x, Span<float> dst, int n, int inDim, int outDim)
     {
         var wF = GetWeight($"{name}.weight");
         var bF = TryGetWeight($"{name}.bias");
@@ -128,25 +194,29 @@ public sealed class MMDiTModel : IDisposable
             throw new InvalidOperationException(
                 $"MMDiTModel.Lin(\"{name}\"): input buffer has {x.Length} elements, expected at least " +
                 $"n*inDim = {n}*{inDim} = {(long)n * inDim}.");
+        if (dst.Length < (long)n * outDim)
+            throw new InvalidOperationException(
+                $"MMDiTModel.Lin(\"{name}\"): dest buffer has {dst.Length} elements, expected at least " +
+                $"n*outDim = {n}*{outDim} = {(long)n * outDim}.");
         if (bF is not null && bF.Length != outDim)
             throw new InvalidOperationException(
                 $"MMDiTModel.Lin(\"{name}\"): bias buffer has {bF.Length} elements, expected outDim={outDim}.");
 
         if (_backend is null)
         {
-            return DiffusionOps.Linear(x, wF, bF, n, inDim, outDim);
+            DiffusionOps.Linear(x.Slice(0, n * inDim), wF.AsSpan(0, outDim * inDim), bF is not null ? bF.AsSpan(0, outDim) : ReadOnlySpan<float>.Empty, dst.Slice(0, n * outDim), n, inDim, outDim);
+            return;
         }
 
         var wGpu = GetGpuWeight($"{name}.weight", wF);
-        var xGpu = _backend.Upload(x.AsSpan(0, n * inDim), TensorShape.D1(n * inDim));
+        var xGpu = _backend.Upload(x.Slice(0, n * inDim), TensorShape.D1(n * inDim));
         var cGpu = _backend.Allocate(TensorShape.D1(n * outDim));
-        var result = new float[n * outDim];
 
         try
         {
             _backend.Sgemm(cGpu, xGpu, wGpu, n, inDim, outDim);
             _backend.Synchronize();
-            _backend.Download(cGpu, result);
+            _backend.Download(cGpu, dst.Slice(0, n * outDim));
         }
         finally
         {
@@ -156,15 +226,25 @@ public sealed class MMDiTModel : IDisposable
 
         if (bF is not null)
         {
-            Parallel.For(0, n, i =>
+            fixed (float* pDst = dst, pB = bF)
             {
-                int off = i * outDim;
-                for (int o = 0; o < outDim; o++)
-                    result[off + o] += bF[o];
-            });
+                float* pDstLocal = pDst;
+                float* pBLocal = pB;
+                Parallel.For(0, n, i =>
+                {
+                    int off = i * outDim;
+                    for (int o = 0; o < outDim; o++)
+                        pDstLocal[off + o] += pBLocal[o];
+                });
+            }
         }
+    }
 
-        return result;
+    public float[] Lin(string name, float[] x, int n, int inDim, int outDim)
+    {
+        var res = new float[n * outDim];
+        Lin(name, x.AsSpan(0, n * inDim), res.AsSpan(), n, inDim, outDim);
+        return res;
     }
 
     public float[] ComputeTimeAndPooledEmbedding(float timestep, float[] pooledY)
@@ -204,7 +284,10 @@ public sealed class MMDiTModel : IDisposable
         int imgH = latH / p;
         int imgW = latW / p;
         int numImgTokens = imgH * imgW;
+        int totalTokens = numImgTokens + numTextTokens;
         int inPatchDim = InChannels * p * p;
+
+        using var ws = new Workspace(totalTokens, numImgTokens, numTextTokens, HiddenSize, NumHeads);
 
         // 1. Patchify latents: [1, 16, latH, latW] -> [numImgTokens, inPatchDim]
         var imgTokens = new float[numImgTokens * inPatchDim];
@@ -233,6 +316,8 @@ public sealed class MMDiTModel : IDisposable
 
         // 3. Time + Pooled Embedding
         var tVec = ComputeTimeAndPooledEmbedding(timestep, pooledY);
+        tVec.AsSpan().CopyTo(ws.TVecSilu.AsSpan(0, HiddenSize));
+        DiffusionOps.SiluInPlace(ws.TVecSilu.AsSpan(0, HiddenSize));
 
         // 4. Joint MMDiT Transformer Blocks
         for (int b = 0; b < Depth; b++)
@@ -265,16 +350,13 @@ public sealed class MMDiTModel : IDisposable
             // `emb = self.linear(self.silu(emb))` -- SiLU gates tVec BEFORE the modulation linear,
             // matching the real ".1" tensor-name suffix (nn.Sequential(SiLU(), Linear()), index 0
             // = the parameter-free SiLU, index 1 = the real Linear whose weights are what's
-            // actually in the checkpoint). This was previously MISSING entirely (not just
-            // misordered, unlike FLUX's equivalent bug fixed earlier this session) at all three
-            // call sites (img/txt per-block modulation + the final layer's). tVec is reused across
-            // every block and the final layer, so SiLU must run on a copy each time.
-            var imgMod = Lin($"{blk}.x_block.adaLN_modulation.1", SiluGate(tVec), 1, HiddenSize, imgModChunks * HiddenSize);
-            var txtMod = Lin($"{blk}.context_block.adaLN_modulation.1", SiluGate(tVec), 1, HiddenSize, txtModChunks * HiddenSize);
+            // actually in the checkpoint).
+            Lin($"{blk}.x_block.adaLN_modulation.1", ws.TVecSilu.AsSpan(0, HiddenSize), ws.ImgMod.AsSpan(0, imgModChunks * HiddenSize), 1, HiddenSize, imgModChunks * HiddenSize);
+            Lin($"{blk}.context_block.adaLN_modulation.1", ws.TVecSilu.AsSpan(0, HiddenSize), ws.TxtMod.AsSpan(0, txtModChunks * HiddenSize), 1, HiddenSize, txtModChunks * HiddenSize);
 
             // ── Self/Joint Attention ────────────────────────────────────────
-            var xNorm1 = ModulateNorm(x, imgMod, 0, numImgTokens, HiddenSize);
-            var cNorm1 = ModulateNorm(c, txtMod, 0, numTextTokens, HiddenSize);
+            ModulateNorm(x.AsSpan(0, numImgTokens * HiddenSize), ws.NormedImg.AsSpan(0, numImgTokens * HiddenSize), ws.ImgMod.AsSpan(0, imgModChunks * HiddenSize), 0, numImgTokens, HiddenSize);
+            ModulateNorm(c.AsSpan(0, numTextTokens * HiddenSize), ws.NormedTxt.AsSpan(0, numTextTokens * HiddenSize), ws.TxtMod.AsSpan(0, txtModChunks * HiddenSize), 0, numTextTokens, HiddenSize);
 
             // Real checkpoint (confirmed via list-tensors on both the safetensors and GGUF forms)
             // stores ONE fused qkv.weight [dim, 3*dim], not three separate qkv.0/1/2 matrices --
@@ -283,30 +365,27 @@ public sealed class MMDiTModel : IDisposable
             // caught. Real mmdit.py: `qkv = self.qkv(x)` then `.reshape(B,N,3,heads,head_dim)` --
             // a flat 3*dim output split into three contiguous dim-wide blocks [q|k|v], same
             // convention as FLUX's fused qkv.
-            var (xQ, xK, xV) = SplitQkv(Lin($"{blk}.x_block.attn.qkv", xNorm1, numImgTokens, HiddenSize, 3 * HiddenSize), numImgTokens, HiddenSize);
-            var (cQ, cK, cV) = SplitQkv(Lin($"{blk}.context_block.attn.qkv", cNorm1, numTextTokens, HiddenSize, 3 * HiddenSize), numTextTokens, HiddenSize);
+            Lin($"{blk}.x_block.attn.qkv", ws.NormedImg.AsSpan(0, numImgTokens * HiddenSize), ws.QkvImg.AsSpan(0, numImgTokens * 3 * HiddenSize), numImgTokens, HiddenSize, 3 * HiddenSize);
+            Lin($"{blk}.context_block.attn.qkv", ws.NormedTxt.AsSpan(0, numTextTokens * HiddenSize), ws.QkvTxt.AsSpan(0, numTextTokens * 3 * HiddenSize), numTextTokens, HiddenSize, 3 * HiddenSize);
+
+            UnpackQkv(ws.QkvImg.AsSpan(0, numImgTokens * 3 * HiddenSize), ws.Q.AsSpan(0, totalTokens * HiddenSize), ws.K.AsSpan(0, totalTokens * HiddenSize), ws.V.AsSpan(0, totalTokens * HiddenSize), 0, numImgTokens, HiddenSize);
+            UnpackQkv(ws.QkvTxt.AsSpan(0, numTextTokens * 3 * HiddenSize), ws.Q.AsSpan(0, totalTokens * HiddenSize), ws.K.AsSpan(0, totalTokens * HiddenSize), ws.V.AsSpan(0, totalTokens * HiddenSize), numImgTokens, numTextTokens, HiddenSize);
 
             // QK-RMSNorm (per-head, no bias): real checkpoint tensors attn.ln_q.weight/
             // attn.ln_k.weight [headDim] exist (confirmed via list-tensors) but were never read at
             // all previously -- a second real gap alongside the fused-QKV one above.
-            ApplyHeadRmsNorm(xQ, $"{blk}.x_block.attn.ln_q", numImgTokens, NumHeads, HeadDim);
-            ApplyHeadRmsNorm(xK, $"{blk}.x_block.attn.ln_k", numImgTokens, NumHeads, HeadDim);
-            ApplyHeadRmsNorm(cQ, $"{blk}.context_block.attn.ln_q", numTextTokens, NumHeads, HeadDim);
-            ApplyHeadRmsNorm(cK, $"{blk}.context_block.attn.ln_k", numTextTokens, NumHeads, HeadDim);
+            ApplyHeadRmsNorm(ws.Q.AsSpan(0, numImgTokens * HiddenSize), $"{blk}.x_block.attn.ln_q", numImgTokens, NumHeads, HeadDim);
+            ApplyHeadRmsNorm(ws.K.AsSpan(0, numImgTokens * HiddenSize), $"{blk}.x_block.attn.ln_k", numImgTokens, NumHeads, HeadDim);
+            ApplyHeadRmsNorm(ws.Q.AsSpan(numImgTokens * HiddenSize, numTextTokens * HiddenSize), $"{blk}.context_block.attn.ln_q", numTextTokens, NumHeads, HeadDim);
+            ApplyHeadRmsNorm(ws.K.AsSpan(numImgTokens * HiddenSize, numTextTokens * HiddenSize), $"{blk}.context_block.attn.ln_k", numTextTokens, NumHeads, HeadDim);
 
-            // Concatenate image + text tokens
-            int totalTokens = numImgTokens + numTextTokens;
-            var jointQ = ConcatSeq(xQ, cQ, numImgTokens, numTextTokens, HiddenSize);
-            var jointK = ConcatSeq(xK, cK, numImgTokens, numTextTokens, HiddenSize);
-            var jointV = ConcatSeq(xV, cV, numImgTokens, numTextTokens, HiddenSize);
+            JointMultiHeadAttention(ws.Q.AsSpan(0, totalTokens * HiddenSize), ws.K.AsSpan(0, totalTokens * HiddenSize), ws.V.AsSpan(0, totalTokens * HiddenSize), ws.AttnOut.AsSpan(0, totalTokens * HiddenSize), ws.Scores, totalTokens, HiddenSize, NumHeads, HeadDim);
 
-            var jointAttn = JointMultiHeadAttention(jointQ, jointK, jointV, totalTokens, HiddenSize, NumHeads, HeadDim);
+            var xAttn = ws.AttnOut.AsSpan(0, numImgTokens * HiddenSize);
+            var cAttn = ws.AttnOut.AsSpan(numImgTokens * HiddenSize, numTextTokens * HiddenSize);
 
-            var xAttn = jointAttn.AsSpan(0, numImgTokens * HiddenSize).ToArray();
-            var cAttn = jointAttn.AsSpan(numImgTokens * HiddenSize, numTextTokens * HiddenSize).ToArray();
-
-            var xProj = Lin($"{blk}.x_block.attn.proj", xAttn, numImgTokens, HiddenSize, HiddenSize);
-            ApplyGateAndResidual(x, xProj, imgMod, 2, numImgTokens, HiddenSize);
+            Lin($"{blk}.x_block.attn.proj", xAttn, ws.OutImg.AsSpan(0, numImgTokens * HiddenSize), numImgTokens, HiddenSize, HiddenSize);
+            ApplyGateAndResidual(x.AsSpan(0, numImgTokens * HiddenSize), ws.OutImg.AsSpan(0, numImgTokens * HiddenSize), ws.ImgMod.AsSpan(0, imgModChunks * HiddenSize), 2, numImgTokens, HiddenSize);
 
             // context_pre_only (last block): text stream's attention output is computed as part
             // of the joint attention (image tokens still attend to it) but then DISCARDED --
@@ -315,8 +394,8 @@ public sealed class MMDiTModel : IDisposable
             // -- reading a gate chunk[2] would be out of bounds.
             if (!contextPreOnly)
             {
-                var cProj = Lin($"{blk}.context_block.attn.proj", cAttn, numTextTokens, HiddenSize, HiddenSize);
-                ApplyGateAndResidual(c, cProj, txtMod, 2, numTextTokens, HiddenSize);
+                Lin($"{blk}.context_block.attn.proj", cAttn, ws.OutTxt.AsSpan(0, numTextTokens * HiddenSize), numTextTokens, HiddenSize, HiddenSize);
+                ApplyGateAndResidual(c.AsSpan(0, numTextTokens * HiddenSize), ws.OutTxt.AsSpan(0, numTextTokens * HiddenSize), ws.TxtMod.AsSpan(0, txtModChunks * HiddenSize), 2, numTextTokens, HiddenSize);
             }
 
             // ── Second, image-only self-attention (dual-attention blocks only) ──────────────
@@ -327,42 +406,44 @@ public sealed class MMDiTModel : IDisposable
             // ordinary non-joint self-attention).
             if (dualAttn)
             {
-                var xNorm1b = ModulateNorm(x, imgMod, 6, numImgTokens, HiddenSize);
-                var (x2Q, x2K, x2V) = SplitQkv(Lin($"{blk}.x_block.attn2.qkv", xNorm1b, numImgTokens, HiddenSize, 3 * HiddenSize), numImgTokens, HiddenSize);
-                ApplyHeadRmsNorm(x2Q, $"{blk}.x_block.attn2.ln_q", numImgTokens, NumHeads, HeadDim);
-                ApplyHeadRmsNorm(x2K, $"{blk}.x_block.attn2.ln_k", numImgTokens, NumHeads, HeadDim);
-                var x2Attn = JointMultiHeadAttention(x2Q, x2K, x2V, numImgTokens, HiddenSize, NumHeads, HeadDim);
-                var x2Proj = Lin($"{blk}.x_block.attn2.proj", x2Attn, numImgTokens, HiddenSize, HiddenSize);
-                ApplyGateAndResidual(x, x2Proj, imgMod, 8, numImgTokens, HiddenSize);
+                ModulateNorm(x.AsSpan(0, numImgTokens * HiddenSize), ws.NormedImg.AsSpan(0, numImgTokens * HiddenSize), ws.ImgMod.AsSpan(0, imgModChunks * HiddenSize), 6, numImgTokens, HiddenSize);
+                Lin($"{blk}.x_block.attn2.qkv", ws.NormedImg.AsSpan(0, numImgTokens * HiddenSize), ws.QkvImg.AsSpan(0, numImgTokens * 3 * HiddenSize), numImgTokens, HiddenSize, 3 * HiddenSize);
+                UnpackQkv(ws.QkvImg.AsSpan(0, numImgTokens * 3 * HiddenSize), ws.Q.AsSpan(0, numImgTokens * HiddenSize), ws.K.AsSpan(0, numImgTokens * HiddenSize), ws.V.AsSpan(0, numImgTokens * HiddenSize), 0, numImgTokens, HiddenSize);
+                ApplyHeadRmsNorm(ws.Q.AsSpan(0, numImgTokens * HiddenSize), $"{blk}.x_block.attn2.ln_q", numImgTokens, NumHeads, HeadDim);
+                ApplyHeadRmsNorm(ws.K.AsSpan(0, numImgTokens * HiddenSize), $"{blk}.x_block.attn2.ln_k", numImgTokens, NumHeads, HeadDim);
+                JointMultiHeadAttention(ws.Q.AsSpan(0, numImgTokens * HiddenSize), ws.K.AsSpan(0, numImgTokens * HiddenSize), ws.V.AsSpan(0, numImgTokens * HiddenSize), ws.AttnOut.AsSpan(0, numImgTokens * HiddenSize), ws.Scores, numImgTokens, HiddenSize, NumHeads, HeadDim);
+                Lin($"{blk}.x_block.attn2.proj", ws.AttnOut.AsSpan(0, numImgTokens * HiddenSize), ws.OutImg.AsSpan(0, numImgTokens * HiddenSize), numImgTokens, HiddenSize, HiddenSize);
+                ApplyGateAndResidual(x.AsSpan(0, numImgTokens * HiddenSize), ws.OutImg.AsSpan(0, numImgTokens * HiddenSize), ws.ImgMod.AsSpan(0, imgModChunks * HiddenSize), 8, numImgTokens, HiddenSize);
             }
 
             // ── FeedForward (MLP) ───────────────────────────────────────────
-            var xNorm2 = ModulateNorm(x, imgMod, 3, numImgTokens, HiddenSize);
+            ModulateNorm(x.AsSpan(0, numImgTokens * HiddenSize), ws.NormedImg.AsSpan(0, numImgTokens * HiddenSize), ws.ImgMod.AsSpan(0, imgModChunks * HiddenSize), 3, numImgTokens, HiddenSize);
 
             int mlpHidden = HiddenSize * 4;
-            var xMlp1 = Lin($"{blk}.x_block.mlp.fc1", xNorm2, numImgTokens, HiddenSize, mlpHidden);
-            DiffusionOps.GeluInPlace(xMlp1);
-            var xMlp2 = Lin($"{blk}.x_block.mlp.fc2", xMlp1, numImgTokens, mlpHidden, HiddenSize);
-            ApplyGateAndResidual(x, xMlp2, imgMod, 5, numImgTokens, HiddenSize);
+            Lin($"{blk}.x_block.mlp.fc1", ws.NormedImg.AsSpan(0, numImgTokens * HiddenSize), ws.MlpBuf.AsSpan(0, numImgTokens * mlpHidden), numImgTokens, HiddenSize, mlpHidden);
+            DiffusionOps.GeluInPlace(ws.MlpBuf.AsSpan(0, numImgTokens * mlpHidden));
+            Lin($"{blk}.x_block.mlp.fc2", ws.MlpBuf.AsSpan(0, numImgTokens * mlpHidden), ws.OutImg.AsSpan(0, numImgTokens * HiddenSize), numImgTokens, mlpHidden, HiddenSize);
+            ApplyGateAndResidual(x.AsSpan(0, numImgTokens * HiddenSize), ws.OutImg.AsSpan(0, numImgTokens * HiddenSize), ws.ImgMod.AsSpan(0, imgModChunks * HiddenSize), 5, numImgTokens, HiddenSize);
 
             // Real: context_pre_only blocks apply no MLP to the text stream at all (it's discarded
             // right after attention above); txtMod has no chunk 3/4/5 to read here either.
             if (!contextPreOnly)
             {
-                var cNorm2 = ModulateNorm(c, txtMod, 3, numTextTokens, HiddenSize);
-                var cMlp1 = Lin($"{blk}.context_block.mlp.fc1", cNorm2, numTextTokens, HiddenSize, mlpHidden);
-                DiffusionOps.GeluInPlace(cMlp1);
-                var cMlp2 = Lin($"{blk}.context_block.mlp.fc2", cMlp1, numTextTokens, mlpHidden, HiddenSize);
-                ApplyGateAndResidual(c, cMlp2, txtMod, 5, numTextTokens, HiddenSize);
+                ModulateNorm(c.AsSpan(0, numTextTokens * HiddenSize), ws.NormedTxt.AsSpan(0, numTextTokens * HiddenSize), ws.TxtMod.AsSpan(0, txtModChunks * HiddenSize), 3, numTextTokens, HiddenSize);
+                Lin($"{blk}.context_block.mlp.fc1", ws.NormedTxt.AsSpan(0, numTextTokens * HiddenSize), ws.MlpBuf.AsSpan(0, numTextTokens * mlpHidden), numTextTokens, HiddenSize, mlpHidden);
+                DiffusionOps.GeluInPlace(ws.MlpBuf.AsSpan(0, numTextTokens * mlpHidden));
+                Lin($"{blk}.context_block.mlp.fc2", ws.MlpBuf.AsSpan(0, numTextTokens * mlpHidden), ws.OutTxt.AsSpan(0, numTextTokens * HiddenSize), numTextTokens, mlpHidden, HiddenSize);
+                ApplyGateAndResidual(c.AsSpan(0, numTextTokens * HiddenSize), ws.OutTxt.AsSpan(0, numTextTokens * HiddenSize), ws.TxtMod.AsSpan(0, txtModChunks * HiddenSize), 5, numTextTokens, HiddenSize);
             }
         }
 
         // 5. Final Layer: modulation + linear projection back to patch channels
-        var finalMod = Lin("final_layer.adaLN_modulation.1", SiluGate(tVec), 1, HiddenSize, 2 * HiddenSize);
-        var finalNorm = ModulateNorm(x, finalMod, 0, numImgTokens, HiddenSize);
+        Lin("final_layer.adaLN_modulation.1", ws.TVecSilu.AsSpan(0, HiddenSize), ws.ImgMod.AsSpan(0, 2 * HiddenSize), 1, HiddenSize, 2 * HiddenSize);
+        ModulateNorm(x.AsSpan(0, numImgTokens * HiddenSize), ws.NormedImg.AsSpan(0, numImgTokens * HiddenSize), ws.ImgMod.AsSpan(0, 2 * HiddenSize), 0, numImgTokens, HiddenSize);
 
         int outPatchDim = OutChannels * p * p;
-        var unpatchified = Lin("final_layer.linear", finalNorm, numImgTokens, HiddenSize, outPatchDim);
+        var unpatchified = new float[numImgTokens * outPatchDim];
+        Lin("final_layer.linear", ws.NormedImg.AsSpan(0, numImgTokens * HiddenSize), unpatchified.AsSpan(), numImgTokens, HiddenSize, outPatchDim);
 
         // 6. Unpatchify back to [1, 16, latH, latW]
         var outLatent = new float[OutChannels * latH * latW];
@@ -386,104 +467,137 @@ public sealed class MMDiTModel : IDisposable
         return outLatent;
     }
 
-    private static float[] ModulateNorm(float[] tokens, float[] modVec, int modIdxOffset, int numTokens, int dim)
+    private static unsafe void ModulateNorm(ReadOnlySpan<float> tokens, Span<float> normed, ReadOnlySpan<float> modVec, int modIdxOffset, int numTokens, int dim)
     {
         // modVec contains shift [dim] and scale [dim] starting at modIdxOffset * dim
         int shiftOff = modIdxOffset * dim;
         int scaleOff = (modIdxOffset + 1) * dim;
+        var shift = modVec.Slice(shiftOff, dim);
+        var scale = modVec.Slice(scaleOff, dim);
 
-        var normed = (float[])tokens.Clone();
-        for (int i = 0; i < numTokens; i++)
+        fixed (float* pTokens = tokens, pNormed = normed, pShift = shift, pScale = scale)
         {
-            int off = i * dim;
-            // LayerNorm over token
-            float mean = 0f;
-            for (int d = 0; d < dim; d++) mean += normed[off + d];
-            mean /= dim;
+            float* pTokLocal = pTokens;
+            float* pNormLocal = pNormed;
+            float* pShiftLocal = pShift;
+            float* pScaleLocal = pScale;
 
-            float var = 0f;
-            for (int d = 0; d < dim; d++)
+            Parallel.For(0, numTokens, i =>
             {
-                float diff = normed[off + d] - mean;
-                var += diff * diff;
-            }
-            float invStd = 1f / MathF.Sqrt(var / dim + 1e-6f);
+                int off = i * dim;
+                var inRow = new ReadOnlySpan<float>(pTokLocal + off, dim);
+                var outRow = new Span<float>(pNormLocal + off, dim);
 
-            for (int d = 0; d < dim; d++)
-            {
-                float n = (normed[off + d] - mean) * invStd;
-                normed[off + d] = n * (1f + modVec[scaleOff + d]) + modVec[shiftOff + d];
-            }
+                float mean = TensorPrimitives.Sum(inRow) / dim;
+                float sumSq = 0f;
+                for (int d = 0; d < dim; d++)
+                {
+                    float diff = inRow[d] - mean;
+                    sumSq += diff * diff;
+                }
+                float invStd = 1f / MathF.Sqrt(sumSq / dim + 1e-6f);
+
+                for (int d = 0; d < dim; d++)
+                {
+                    float n = (inRow[d] - mean) * invStd;
+                    outRow[d] = n * (1f + pScaleLocal[d]) + pShiftLocal[d];
+                }
+            });
         }
-        return normed;
     }
 
-    private static void ApplyGateAndResidual(float[] target, float[] branch, float[] modVec, int gateIdx, int numTokens, int dim)
+    private static unsafe void ApplyGateAndResidual(Span<float> target, ReadOnlySpan<float> branch, ReadOnlySpan<float> modVec, int gateIdx, int numTokens, int dim)
     {
         int gateOff = gateIdx * dim;
-        Parallel.For(0, numTokens, i =>
+        var gate = modVec.Slice(gateOff, dim);
+
+        fixed (float* pT = target, pB = branch, pG = gate)
         {
-            int off = i * dim;
-            for (int d = 0; d < dim; d++)
-                target[off + d] += branch[off + d] * modVec[gateOff + d];
-        });
+            float* pTLocal = pT;
+            float* pBLocal = pB;
+            float* pGLocal = pG;
+
+            Parallel.For(0, numTokens, i =>
+            {
+                int off = i * dim;
+                var tSpan = new Span<float>(pTLocal + off, dim);
+                var bSpan = new ReadOnlySpan<float>(pBLocal + off, dim);
+                var gSpan = new ReadOnlySpan<float>(pGLocal, dim);
+                TensorPrimitives.MultiplyAdd(bSpan, gSpan, tSpan, tSpan);
+            });
+        }
     }
 
-    private static float[] ConcatSeq(float[] seq1, float[] seq2, int n1, int n2, int dim)
-    {
-        var cat = new float[(n1 + n2) * dim];
-        Array.Copy(seq1, 0, cat, 0, n1 * dim);
-        Array.Copy(seq2, 0, cat, n1 * dim, n2 * dim);
-        return cat;
-    }
-
-    private static float[] JointMultiHeadAttention(float[] q, float[] k, float[] v, int totalTokens, int dim, int nHeads, int headDim)
+    private static unsafe void JointMultiHeadAttention(
+        ReadOnlySpan<float> q, ReadOnlySpan<float> k, ReadOnlySpan<float> v, Span<float> output,
+        float[] threadScores, int totalTokens, int dim, int nHeads, int headDim)
     {
         float scale = 1f / MathF.Sqrt(headDim);
-        var output = new float[totalTokens * dim];
 
-        Parallel.For(0, nHeads, h =>
+        fixed (float* pQ = q, pK = k, pV = v, pOut = output, pScores = threadScores)
         {
-            int headOffset = h * headDim;
-            var scores = new float[totalTokens];
+            float* pQLocal = pQ;
+            float* pKLocal = pK;
+            float* pVLocal = pV;
+            float* pOutLocal = pOut;
+            float* pScoresLocal = pScores;
 
-            for (int qi = 0; qi < totalTokens; qi++)
+            Parallel.For(0, nHeads, h =>
             {
-                int qBase = qi * dim + headOffset;
+                int headOffset = h * headDim;
+                float* scores = pScoresLocal + h * totalTokens;
 
-                for (int kj = 0; kj < totalTokens; kj++)
+                for (int qi = 0; qi < totalTokens; qi++)
                 {
-                    int kBase = kj * dim + headOffset;
-                    float dot = 0f;
-                    for (int d = 0; d < headDim; d++)
-                        dot += q[qBase + d] * k[kBase + d];
-                    scores[kj] = dot * scale;
-                }
+                    int qBase = qi * dim + headOffset;
+                    var qSpan = new ReadOnlySpan<float>(pQLocal + qBase, headDim);
+                    float maxScore = float.NegativeInfinity;
 
-                DiffusionOps.Softmax(scores, 0, totalTokens);
-
-                int outBase = qi * dim + headOffset;
-                for (int d = 0; d < headDim; d++)
-                {
-                    float sum = 0f;
                     for (int kj = 0; kj < totalTokens; kj++)
-                        sum += scores[kj] * v[kj * dim + headOffset + d];
-                    output[outBase + d] = sum;
-                }
-            }
-        });
+                    {
+                        int kBase = kj * dim + headOffset;
+                        var kSpan = new ReadOnlySpan<float>(pKLocal + kBase, headDim);
+                        float dot = TensorPrimitives.Dot(qSpan, kSpan) * scale;
+                        scores[kj] = dot;
+                        if (dot > maxScore) maxScore = dot;
+                    }
 
-        return output;
+                    float sumExp = 0f;
+                    for (int kj = 0; kj < totalTokens; kj++)
+                    {
+                        float exp = MathF.Exp(scores[kj] - maxScore);
+                        scores[kj] = exp;
+                        sumExp += exp;
+                    }
+                    float invSum = 1f / sumExp;
+
+                    int outBase = qi * dim + headOffset;
+                    var outSpan = new Span<float>(pOutLocal + outBase, headDim);
+                    outSpan.Clear();
+
+                    for (int kj = 0; kj < totalTokens; kj++)
+                    {
+                        float s = scores[kj] * invSum;
+                        if (s == 0f) continue;
+                        int vBase = kj * dim + headOffset;
+                        var vSpan = new ReadOnlySpan<float>(pVLocal + vBase, headDim);
+                        TensorPrimitives.MultiplyAdd(vSpan, s, outSpan, outSpan);
+                    }
+                }
+            });
+        }
     }
 
     public void Dispose()
     {
         if (_gpuWeights is not null)
         {
-            foreach (var t in _gpuWeights.Values) _backend!.Free(t);
-            _gpuWeights.Clear();
+            lock (_gpuWeights)
+            {
+                foreach (var t in _gpuWeights.Values) _backend!.Free(t);
+                _gpuWeights.Clear();
+            }
         }
         _weightReader.Clear();
     }
 }
-

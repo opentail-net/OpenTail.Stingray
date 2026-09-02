@@ -26,26 +26,35 @@ internal sealed class CachedWeightReader
     public float[] Get(string name)
     {
         string fullName = _prefix + name;
-        if (!_cache.TryGetValue(fullName, out var w))
+        lock (_cache)
         {
-            w = _weights.ReadF32(fullName);
-            _cache[fullName] = w;
+            if (!_cache.TryGetValue(fullName, out var w))
+            {
+                w = _weights.ReadF32(fullName);
+                _cache[fullName] = w;
+            }
+            return w;
         }
-        return w;
     }
 
     public float[]? TryGet(string name)
     {
         string fullName = _prefix + name;
-        if (_cache.TryGetValue(fullName, out var w)) return w;
-        if (_weights.Contains(fullName))
+        lock (_cache)
         {
-            w = _weights.ReadF32(fullName);
-            _cache[fullName] = w;
-            return w;
+            if (_cache.TryGetValue(fullName, out var w)) return w;
+            if (_weights.Contains(fullName))
+            {
+                w = _weights.ReadF32(fullName);
+                _cache[fullName] = w;
+                return w;
+            }
+            return null;
         }
-        return null;
     }
 
-    public void Clear() => _cache.Clear();
+    public void Clear()
+    {
+        lock (_cache) _cache.Clear();
+    }
 }
