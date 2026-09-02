@@ -334,10 +334,18 @@ that is more elegant but lower-visibility.
     unconditioned) and applies the real default Adaptive Projected Guidance (orthogonal-projection
     variant, not vanilla CFG — matches the real Gradio demo's own default, `cfg_scale=6.0`).
     Remaining known gaps: no T5Gemma tokenizer wired yet (`StableAudioRequest` takes pre-tokenized
-    ids), VAE `Encode` direction implemented but not golden-tested (only `Decode`, the direction
-    generation needs, is verified), and no full pipeline-level (as opposed to per-component) golden
-    verification against a real end-to-end reference run yet. Next real step: the T5Gemma tokenizer,
-    to let the pipeline take raw prompt strings.
+    ids — **root-caused same day**: this project's existing generic HF-BPE tokenizer loader
+    [`HuggingFaceTokenizerSource`/`GgufTokenizer.FromSource`] accepts T5Gemma's real
+    `tokenizer.json` (`model.type: "BPE"`) but encodes it WRONG — confirmed by comparing against the
+    real captured golden ids for the same prompt. Root cause: this tokenizer's real preprocessing
+    declares a `normalizer` step (`Replace " " → "▁"`, the classic SentencePiece space-marker) that
+    the loader doesn't apply before BPE merging, a real gap in shared, engine-wide tokenizer
+    infrastructure (affects any future SentencePiece-as-BPE HF export, not just T5Gemma) — see plan
+    057's "T5Gemma tokenizer" section for the exact fix scope, deliberately not attempted this pass
+    since it touches shared infrastructure other model loaders depend on), VAE `Encode` direction
+    implemented but not golden-tested (only `Decode`, the direction generation needs, is verified),
+    and no full pipeline-level (as opposed to per-component) golden verification against a real
+    end-to-end reference run yet.
 
 ---
 

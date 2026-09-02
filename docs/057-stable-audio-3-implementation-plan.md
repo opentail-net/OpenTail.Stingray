@@ -5,11 +5,48 @@ text encoder (T5Gemma), DiT, and VAE decode path -- are implemented and golden-v
 real reference. Pipeline-level conditioning assembly AND real classifier-free guidance (CFG, with
 the real default Adaptive Projected Guidance variant, not vanilla CFG) wired end-to-end and
 confirmed running with real weights.** Remaining known gaps: no T5Gemma tokenizer wired (prompts
-must be pre-tokenized ids), VAE `Encode` direction implemented but not yet golden-verified (only
-`Decode`, the direction real generation needs, has a passing golden test), and pipeline-level
-output has not itself been golden-verified against a full real end-to-end reference run (only
-golden-verified per-component). See "Proposed phased implementation order" at the bottom for exact
-status per component.
+must be pre-tokenized ids -- root-caused, see "T5Gemma tokenizer" section below for the exact,
+scoped next step), VAE `Encode` direction implemented but not yet golden-verified (only `Decode`,
+the direction real generation needs, has a passing golden test), and pipeline-level output has not
+itself been golden-verified against a full real end-to-end reference run (only golden-verified
+per-component). See "Proposed phased implementation order" at the bottom for exact status per
+component.
+
+## T5Gemma tokenizer — root-caused, 2026-09-02, not yet fixed
+
+Checked whether this project's existing generic HF-BPE tokenizer infrastructure
+(`HuggingFaceTokenizerSource.Load` + `GgufTokenizer.FromSource`, already used by the main LLM engine
+for any model shipping a plain `tokenizer.json`) could tokenize T5Gemma prompts directly, since the
+real bundled `t5gemma-b-b-ul2/tokenizer.json` declares `model.type: "BPE"` (satisfying that loader's
+BPE-only acceptance check) with a real 256000-entry vocab and merges list.
+
+**It does not work as-is.** Encoding "A beautiful piano arpeggio grows into a grand cinematic
+climax" through `GgufTokenizer.FromSource` produced `[235280, 241753, 20909, 241753, 84505, 241753,
+486, 554, 16194, 241753, ...]` — visibly wrong (the repeated `241753` token is a strong tell) against
+the real tokenizer's actual output for this same prompt (already captured in this project's own
+golden fixture, `TestData/StableAudioT5GemmaGolden/ids.bin`): `[235280, 4964, 16748, 813, 554,
+16194, 26075, 1280, 476, 4497, 106852, 82923]`.
+
+**Root cause, confirmed by reading the real `tokenizer.json` directly** (not guessed): this
+tokenizer's real preprocessing pipeline includes a `normalizer` step this project's BPE loader does
+not implement — `{"type": "Replace", "pattern": {"String": " "}, "content": "▁"}` (U+2581, the
+classic SentencePiece space-marker) — which replaces every literal space with `▁` BEFORE BPE
+merging runs, followed by a `Split` pre-tokenizer on (now-nonexistent) literal spaces and a
+`byte_fallback: true` model flag for out-of-vocabulary bytes. This is a real, standard convention
+for HF "fast tokenizer" exports of SentencePiece-family vocabularies (Gemma/T5Gemma among them) as
+BPE, distinct from the GPT-2/Llama-BPE style (`Ġ`-prefixed) this project's loader was evidently
+built against. Encoding without the space→`▁` substitution first means the BPE merge algorithm
+never sees the vocabulary's actual `▁`-prefixed tokens as merge candidates, producing a
+badly-fragmented, wrong tokenization.
+
+**Real next step**: teach `HuggingFaceTokenizerSource`/`GgufTokenizer`'s BPE path to read and apply
+a `normalizer.type == "Replace"` step (pattern → content substitution) before pre-tokenization, when
+one is declared in `tokenizer.json`. This is shared, engine-wide tokenizer infrastructure other
+model loaders also depend on — implement and verify carefully (a synthetic-vocab unit test plus
+this real T5Gemma fixture as a real-checkpoint regression test, matching this project's established
+pattern for tokenizer fixes, e.g. `SpmMergeByScoreTests.cs`), not as a narrow Stable-Audio-only
+patch. Once fixed, `StableAudioPipeline` can take raw prompt strings instead of
+`StableAudioRequest.PromptTokenIds`.
 
 ## Real weights are available, fully ungated
 
