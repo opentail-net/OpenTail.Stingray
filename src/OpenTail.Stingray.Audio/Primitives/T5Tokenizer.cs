@@ -1,15 +1,15 @@
 
-namespace OpenTail.Stingray.Audio.MusicGen;
+namespace OpenTail.Stingray.Audio.Primitives;
 
 /// <summary>
-/// SentencePiece-compatible T5 Unigram tokenizer for MusicGen's `t5-base` text conditioner.
-/// Same real Viterbi-optimal segmentation algorithm as
-/// <see cref="Diffusion.TextEncoders.T5Tokenizer"/> (duplicated here rather than cross-referenced,
-/// matching this codebase's existing per-domain-pipeline convention -- see
-/// <see cref="MusicGenTextEncoderWeights"/>'s doc comment for why Parler similarly keeps its own
-/// T5 encoder rather than sharing Diffusion's). BOS=0(unused, T5 has no BOS), EOS=1, UNK=2, PAD=0.
+/// SentencePiece-compatible T5 Unigram tokenizer, shared by every non-gated T5 text conditioner
+/// in this project's Audio pipelines (MusicGen's `t5-base`, AudioGen's `t5-large`). Same real
+/// Viterbi-optimal segmentation algorithm as the Diffusion project's own
+/// `OpenTail.Stingray.Diffusion.TextEncoders.T5Tokenizer` (duplicated rather than cross-referenced
+/// across the Audio/Diffusion project boundary, matching this codebase's per-domain-pipeline
+/// convention). BOS=0 (unused, T5 has no BOS), EOS=1, UNK=2, PAD=0.
 /// </summary>
-public sealed class MusicGenT5Tokenizer
+public sealed class T5Tokenizer
 {
     private readonly Dictionary<string, (int Id, double Score)> _tokenToEntry;
     private readonly int _maxTokenLen;
@@ -20,14 +20,14 @@ public sealed class MusicGenT5Tokenizer
     /// <summary>Max output length (including the trailing EOS token). t5-base's own `n_positions` is 512; MusicGen prompts are short, so a much smaller practical cap is used.</summary>
     public int MaxLen { get; init; } = 256;
 
-    private MusicGenT5Tokenizer(Dictionary<string, (int, double)> tokenToEntry, int maxTokenLen)
+    private T5Tokenizer(Dictionary<string, (int, double)> tokenToEntry, int maxTokenLen)
     {
         _tokenToEntry = tokenToEntry;
         _maxTokenLen = maxTokenLen;
     }
 
     /// <summary>Load from a HuggingFace `tokenizer.json` file (t5-base's own, NOT the raw `spiece.model` binary).</summary>
-    public static MusicGenT5Tokenizer FromFile(string path, int maxLen = 256)
+    public static T5Tokenizer FromFile(string path, int maxLen = 256)
     {
         using var doc = JsonDocument.Parse(File.ReadAllBytes(path));
         var model = doc.RootElement.GetProperty("model");
@@ -52,7 +52,7 @@ public sealed class MusicGenT5Tokenizer
             }
         }
 
-        return new MusicGenT5Tokenizer(tokenToEntry, maxTokenLen) { MaxLen = maxLen };
+        return new T5Tokenizer(tokenToEntry, maxTokenLen) { MaxLen = maxLen };
     }
 
     /// <summary>Tokenize via real Viterbi-optimal SentencePiece Unigram segmentation. Returns token ids including a trailing EOS.</summary>

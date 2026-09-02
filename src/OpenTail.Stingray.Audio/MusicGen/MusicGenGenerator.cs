@@ -17,16 +17,16 @@ namespace OpenTail.Stingray.Audio.MusicGen;
 /// </summary>
 public sealed class MusicGenGenerator
 {
-    private readonly MusicGenTextEncoderWeights _textEncoderWeights;
-    private readonly MusicGenT5Tokenizer _tokenizer;
+    private readonly NonGatedT5EncoderWeights _textEncoderWeights;
+    private readonly T5Tokenizer _tokenizer;
     private readonly MusicGenTransformerWeights _transformerWeights;
-    private readonly EncodecDecoderWeights _codecWeights;
+    private readonly Primitives.EncodecDecoderWeights _codecWeights;
 
     public MusicGenGenerator(
-        MusicGenTextEncoderWeights textEncoderWeights,
-        MusicGenT5Tokenizer tokenizer,
+        NonGatedT5EncoderWeights textEncoderWeights,
+        T5Tokenizer tokenizer,
         MusicGenTransformerWeights transformerWeights,
-        EncodecDecoderWeights codecWeights)
+        Primitives.EncodecDecoderWeights codecWeights)
     {
         _textEncoderWeights = textEncoderWeights;
         _tokenizer = tokenizer;
@@ -103,7 +103,7 @@ public sealed class MusicGenGenerator
             }
         }
 
-        return EncodecDecoder.Decode(_codecWeights, generated);
+        return Primitives.EncodecDecoderKernels.Decode(_codecWeights, generated);
     }
 
     private static int ArgMax(float[] logits)

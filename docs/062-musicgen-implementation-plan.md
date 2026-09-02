@@ -8,6 +8,17 @@ not a golden-parity result yet, see "Known gaps" below). Implementation lives in
 `src/OpenTail.Stingray.Audio/MusicGen/`; tests in
 `tests/OpenTail.Stingray.Tests.Audio/MusicGen/`.
 
+## DRY pass, 2026-09-02 (same day as AudioGen)
+
+Once AudioGen needed the byte-for-byte identical non-gated T5 encoder algorithm and EnCodec
+decoder layer skeleton (just different dims/ratios), both were extracted to shared kernels:
+`Primitives/T5EncoderKernels.cs` and `Primitives/EncodecDecoderKernels.cs`. MusicGen's own
+`MusicGenTextEncoder`/`MusicGenTextEncoderWeights`/`EncodecDecoderWeights` files became thin
+loaders delegating to those kernels; `MusicGenT5Tokenizer` moved to `Primitives/T5Tokenizer.cs`
+(it was already fully generic). Re-ran the full MusicGen test suite after each step of this
+refactor — zero regressions. See `docs/063-audiogen-implementation-plan.md` for the full
+reuse-vs-new breakdown and why the generation LOOP itself was deliberately NOT merged yet.
+
 ## Known gaps (not yet closed)
 
 - **No numeric golden-parity verification against a real independent reference** (no local

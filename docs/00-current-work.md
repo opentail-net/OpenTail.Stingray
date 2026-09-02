@@ -197,12 +197,40 @@ that is more elegant but lower-visibility.
    convention unverified, no performance/DRY pass yet) in
    `docs/062-musicgen-implementation-plan.md`. **License note:** MusicGen checkpoints are CC-BY-NC
    4.0 (code is MIT) — treat like the `xverse`/bucket-2 weight-license cases above, does not block
-   implementation but blocks any default-on redistribution. Next real step: a numeric golden
-   reference (ideally a real independent Python/torch run) to verify the CFG null-condition
-   convention and per-stage numerics, not further structural work.
+   implementation but blocks any default-on redistribution. **Update, same day**: the CFG
+   null-condition convention (all-zero encoder_hidden_states) is now independently CONFIRMED, not
+   guessed — reading AudioGen's real `audiocraft` source (pip-installed to do that port, see item
+   10) showed the real mechanism (empty-string T5 output masked to zero) always converges to the
+   same all-zero result. A DRY pass also landed same day: the non-gated T5 encoder and EnCodec
+   decoder math moved to shared `Primitives/T5EncoderKernels.cs`/`Primitives/EncodecDecoderKernels.cs`
+   once AudioGen needed the byte-identical algorithms at different dims/ratios — MusicGen's own
+   files now thin loaders over those, full test suite re-verified green after each refactor step.
+   Next real step: a numeric golden reference (ideally a real independent Python/torch run) to
+   verify per-stage numerics, not further structural work.
+10. **AudioGen (text-to-sound) — first real end-to-end generation working, 2026-09-02, same day as
+    MusicGen.** `facebook/audiogen-medium`: real AudioCraft LM (single-stage autoregressive
+    Transformer over delayed EnCodec codebooks, same architecture family MusicGen uses) + a
+    separately-trained 16kHz environmental-sound EnCodec + external frozen `t5-large` text
+    conditioning. No official HF `transformers`-format release exists for this model (unlike
+    MusicGen) — shipped only as raw native AudioCraft `.bin` "Solver" checkpoints
+    (`state_dict.bin`/`compression_state_dict.bin`, no safetensors, no `config.json`); converted
+    to safetensors via this environment's already-available Python/torch
+    (`torch.load`+`safetensors.torch.save_file`, native tensor names preserved verbatim), not a
+    hand-rolled PyTorch-pickle parser in C#. Every real hyperparameter (dims, layer count, delay
+    pattern, EnCodec ratios, T5 variant, CFG coefficient) came from the checkpoint's own embedded
+    `xp.cfg` training config, confirmed against the real `audiocraft` Python package's source
+    (pip-installed specifically to check this rather than guessed from MusicGen's numbers) — see
+    `docs/063-audiogen-implementation-plan.md` for the full reuse-vs-new breakdown against
+    MusicGen's infrastructure (delay pattern and CFG formula proved byte-identical and reused
+    unchanged; T5/EnCodec math extracted to shared kernels; low-level transformer code stayed
+    separate due to real structural differences — fused QKV, computed vs. buffered sinusoidal
+    position embeddings, no linear-layer bias). Produces real non-degenerate, listenable audio
+    (`docs/audio-samples/audiogen-medium-first-real-sample.wav`, gitignored/local). Same known
+    gaps as MusicGen (no numeric golden-parity reference, no performance pass — a 48-layer/1536-dim
+    model is meaningfully slower per step than MusicGen's 24-layer/1024-dim).
 
 **P3 and later campaigns (not scheduled, revisit only after the above closes):**
-10. **DeepSeek2/MiniCPM3 MLA (also covers the DeepSeek-V3/R1 lineage)** — the single biggest
+11. **DeepSeek2/MiniCPM3 MLA (also covers the DeepSeek-V3/R1 lineage)** — the single biggest
    architectural lift in the coverage plan (5 genuinely new mechanisms: MLA itself, the
    compressed-latent KV cache page layout, DeepSeek's own YaRN `mscale` correction variant,
    leading-dense-block MoE routing, and DeepSeek2OCR's separate branch — see
@@ -218,14 +246,14 @@ that is more elegant but lower-visibility.
    plain autoregressive generation) — worth confirming against a real V3/R1 GGUF's tensor inventory
    before assuming parity with V2. Potentially high popularity if ever tackled (R1 in particular),
    but deliberately deprioritized behind smaller, faster wins.
-11. **Newer LTX families (LTX-2.3/2.5, etc.)** — a later campaign once the base LTX-Video port is
+12. **Newer LTX families (LTX-2.3/2.5, etc.)** — a later campaign once the base LTX-Video port is
     real; these newer variants individually out-download even the original LTX-Video model.
-12. **GPT-OSS** — needs multiple substantial new mechanisms (attention sinks, alternating
+13. **GPT-OSS** — needs multiple substantial new mechanisms (attention sinks, alternating
     sliding-window attention, biased MoE experts, an OpenAI-specific SwiGLU/gating variant).
     Potentially high popularity, but explicitly a new campaign, not a known/started gap — do not
     chase this opportunistically ahead of the ordered list above just because it's individually
     popular; that violates the consolidation strategy this list is built around.
-13. **FLUX.1 — run for the first time 2026-09-01: real bugs found and fixed, but output is still
+14. **FLUX.1 — run for the first time 2026-09-01: real bugs found and fixed, but output is still
     wrong (structural stub → real-but-broken port, same stage as Wan/LTX).** Downloaded a full
     real checkpoint set for the first time ever (`city96/FLUX.1-schnell-gguf` Q2_K DiT + real
     `ae.safetensors`/`clip_l.safetensors`/T5-XXL fp8 text encoders + real CLIP/T5 tokenizer.jsons,
@@ -320,7 +348,7 @@ that is more elegant but lower-visibility.
     ae.safetensors --clip-l clip_l.safetensors --clip-tokenizer tokenizer.json --t5xxl
     t5xxl_fp8_e4m3fn.safetensors --t5-tokenizer tokenizer_2/tokenizer.json -p "a red apple on a
     wooden table" --steps 4 --seed 42`.
-14. **Stable Audio 3** — **checked 2026-09-02, genuine unwired stub — same day, all three real
+15. **Stable Audio 3** — **checked 2026-09-02, genuine unwired stub — same day, all three real
     components (text encoder, DiT, VAE decode) fully ported and golden-verified against the real
     reference.** See [057 — Stable Audio 3 implementation plan]
     (057-stable-audio-3-implementation-plan.md) for full detail. `stabilityai/

@@ -43,10 +43,10 @@ public sealed class MusicGenGenerationSmokeTests : HeavyTestBase
         // tensor tree (see MusicGenTextEncoderWeights' doc comment) -- no separate t5-base download needed.
         using var musicGenLoader = SafetensorsLoader.Open(musicGenPath!);
 
-        var textEncoderWeights = new MusicGenTextEncoderWeights(musicGenLoader);
-        var tokenizer = MusicGenT5Tokenizer.FromFile(tokenizerPath!);
+        var textEncoderWeights = MusicGenTextEncoderWeights.Load(musicGenLoader);
+        var tokenizer = T5Tokenizer.FromFile(tokenizerPath!);
         var transformerWeights = new MusicGenTransformerWeights(musicGenLoader);
-        var codecWeights = new EncodecDecoderWeights(musicGenLoader);
+        var codecWeights = MusicGenEncodecDecoderWeights.Load(musicGenLoader);
 
         var generator = new MusicGenGenerator(textEncoderWeights, tokenizer, transformerWeights, codecWeights);
 
@@ -78,10 +78,10 @@ public sealed class MusicGenGenerationSmokeTests : HeavyTestBase
         Directory.CreateDirectory(samplesDir);
 
         using var loader = SafetensorsLoader.Open(musicGenPath!);
-        var textEncoderWeights = new MusicGenTextEncoderWeights(loader);
-        var tokenizer = MusicGenT5Tokenizer.FromFile(tokenizerPath!);
+        var textEncoderWeights = MusicGenTextEncoderWeights.Load(loader);
+        var tokenizer = T5Tokenizer.FromFile(tokenizerPath!);
         var transformerWeights = new MusicGenTransformerWeights(loader);
-        var codecWeights = new EncodecDecoderWeights(loader);
+        var codecWeights = MusicGenEncodecDecoderWeights.Load(loader);
         var generator = new MusicGenGenerator(textEncoderWeights, tokenizer, transformerWeights, codecWeights);
 
         var pcm = generator.Generate("upbeat acoustic guitar melody, happy", durationSeconds: 5.0f, seed: 42,
