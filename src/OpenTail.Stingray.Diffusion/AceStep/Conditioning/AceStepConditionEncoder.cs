@@ -104,7 +104,8 @@ public sealed class AceStepEncoderLayerWeights
 public static class AceStepConditionEncoder
 {
     /// <summary>Real V1-scoped forward: project text hidden states, encode lyrics through the real 8-layer bidirectional encoder, concatenate `[lyric, text]` (real `pack_sequences`, simplified for V1's unpadded single-sequence case -- see class doc comment). Returns the packed condition sequence for the DiT's cross-attention.</summary>
-    public static unsafe float[][] Forward(AceStepConditionEncoderWeights w, float[][] textHiddenStates, int[] lyricTokenIds, float[] qwen3TokenEmbeddingTable)
+    /// <param name="timbreRow">The real pooled `[hidden]` timbre embedding from <see cref="AceStepTimbreEncoder.Forward"/> (packed as ONE row between lyric and text, real order `[lyric, timbre, text]` -- confirmed from the real `AceStepConditionEncoder.forward`'s `_pack_sequences` calls). Pass `null` to omit the timbre segment entirely (pre-fix V1 behavior) -- real inference always includes it, even for "no reference audio" (a real, learned-silence-derived embedding, not a placeholder row of zeros).</param>
+    public static unsafe float[][] Forward(AceStepConditionEncoderWeights w, float[][] textHiddenStates, int[] lyricTokenIds, float[] qwen3TokenEmbeddingTable, float[]? timbreRow = null)
     {
         int hidden = AceStepConfig.HiddenSize;
         int textDim = AceStepConfig.TextHiddenDim;
@@ -133,27 +134,34 @@ public static class AceStepConditionEncoder
 
         var lyricHidden = EncodeLyrics(w, lyricEmbeds);
 
-        var packed = new float[lyricHidden.Length + textProjected.Length][];
+        // Real order: [lyric, timbre, text] (_pack_sequences(lyric,timbre) then _pack_sequences(that,text)).
+        int timbreLen = timbreRow is null ? 0 : 1;
+        var packed = new float[lyricHidden.Length + timbreLen + textProjected.Length][];
         Array.Copy(lyricHidden, packed, lyricHidden.Length);
-        Array.Copy(textProjected, 0, packed, lyricHidden.Length, textProjected.Length);
+        if (timbreRow is not null) packed[lyricHidden.Length] = timbreRow;
+        Array.Copy(textProjected, 0, packed, lyricHidden.Length + timbreLen, textProjected.Length);
         return packed;
     }
 
     /// <summary>Runs the real 8-layer bidirectional lyric encoder on already-`embed_tokens`-projected (hidden_size-wide) embeddings. Exposed (not private) so golden-parity tests can drive it directly with a real reference's exact intermediate tensor -- see <see cref="Forward"/> for the full real pipeline (raw Qwen3 lookup -&gt; `embed_tokens` -&gt; this method).</summary>
-    public static float[][] EncodeLyrics(AceStepConditionEncoderWeights w, float[][] embeds)
+    public static float[][] EncodeLyrics(AceStepConditionEncoderWeights w, float[][] embeds) =>
+        RunBidirectionalEncoder(w.LyricLayers, embeds, w.LyricNormWeight);
+
+    /// <summary>Real `AceStepEncoderLayer` stack shared by BOTH the lyric encoder and <see cref="AceStepTimbreEncoder"/> -- identical real Python class in both, so shared here now that a second real, verified caller exists (CLAUDE.md rule 7). Runs `layers.Length` bidirectional (sliding/full alternating) pre-norm transformer layers then a final RMSNorm.</summary>
+    public static float[][] RunBidirectionalEncoder(AceStepEncoderLayerWeights[] layers, float[][] embeds, float[] normWeight)
     {
         int seqLen = embeds.Length;
         var (cos, sin) = BuildRope(seqLen, AceStepConfig.HeadDim, AceStepConfig.RopeTheta);
 
         var x = embeds;
-        for (int li = 0; li < w.LyricLayers.Length; li++)
-            x = EncoderLayer(w.LyricLayers[li], x, seqLen, AceStepConfig.IsSlidingLayer(li), cos, sin);
+        for (int li = 0; li < layers.Length; li++)
+            x = EncoderLayer(layers[li], x, seqLen, AceStepConfig.IsSlidingLayer(li), cos, sin);
 
         var output = new float[seqLen][];
         for (int t = 0; t < seqLen; t++)
         {
             output[t] = new float[AceStepConfig.HiddenSize];
-            RmsNorm(x[t], w.LyricNormWeight, output[t], 1e-6f);
+            RmsNorm(x[t], normWeight, output[t], 1e-6f);
         }
         return output;
     }
