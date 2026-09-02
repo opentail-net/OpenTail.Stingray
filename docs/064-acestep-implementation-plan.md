@@ -288,6 +288,39 @@ computes each block's `input_dim`/`output_dim`, not assumed to follow
 `Primitives.EncodecDecoderWeights.DefaultChannelsPerStage`'s simple doubling pattern (that helper
 does not apply here and was correctly NOT reused for this reason).
 
+## Phase D progress, 2026-09-03: the 24-layer DiT working (real weights, biggest remaining piece)
+
+`src/OpenTail.Stingray.Diffusion/AceStep/Transformer/AceStepDiT.cs` (forward pass) +
+`AceStepDiTWeights.cs` (loader): the full real `AceStepDiTModel` -- GQA self-attention
+(alternating sliding-window/full, both BIDIRECTIONAL not causal), per-head Q/K RMSNorm before
+RoPE, cross-attention (no RoPE, no gate on its residual -- both real, easy-to-miss facts, see the
+class doc comment), Qwen3-style SwiGLU MLP, 6-way AdaLN modulation from a shared per-step timestep
+embedding, and the `proj_in`/`proj_out` Conv1d/ConvTranspose1d patchify/de-patchify. Cross-attention
+K/V is precomputed once via `PrepareCrossAttention` and reused across steps (matches the real
+reference's own `EncoderDecoderCache` optimization, and the same shape as MusicGen/AudioGen's
+`PrepareCrossAttention` pattern in this codebase, applied to a bidirectional DiT instead of an AR
+LM). Downloaded the full real `acestep-v15-turbo/model.safetensors` (4.79GB) this session.
+
+`AceStepDiTTests` passes on the FIRST real-weight run: correct shapes end to end
+(`ProjIn -> Forward -> ProjOut`), finite non-degenerate output, AND -- the more meaningful check --
+different timesteps produce measurably different output, confirming the AdaLN timestep-conditioning
+path is genuinely wired (a common silent-bug shape: dropping the timestep embedding would still
+produce finite, shape-correct, but timestep-INSENSITIVE output, which this test would have caught).
+No real condition encoder exists yet, so this test drives cross-attention with a synthetic
+(real-shaped) condition sequence -- sufficient to validate the DiT's own weight loading and math,
+not yet an end-to-end golden check.
+
+**Not yet done**: numeric golden-parity against a real `diffusers`/`AceStepTransformer1DModel`
+reference run (no reference dump script written this session, unlike AudioGen's real
+`audiocraft`-based cross-check) -- this DiT's correctness rests on careful reading of the real
+source (documented inline) plus real-weight non-degeneracy, not a numeric diff yet. Given the real
+`diffusers` package is right there in this environment, a real reference dump is a realistic,
+worthwhile next step before trusting output QUALITY (as opposed to "it runs").
+
+Three of the four V1 components are now real and tested (text encoder, DiT, VAE decoder); only the
+condition encoder (packs text+lyric+timbre into the DiT's cross-attention sequence) and the
+flow-matching Euler scheduler loop remain before a genuine text-to-music end-to-end attempt.
+
 ## Immediate next steps (in order)
 
 1. Download the real weights (`acestep-v15-turbo/model.safetensors` ~4.79GB,

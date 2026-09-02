@@ -17,6 +17,34 @@ Two consequences worth stating plainly, because they cut against the previous ro
 - DSpark speculative decoding and SafeTensors Phases 4-6 are **parked**, not scheduled. Both are
   implemented far enough to be useful and neither moves the goal.
 
+## User-requested checkpoint targets (2026-09-03, not yet scoped)
+
+The user has asked for these specific checkpoints to be supported, in addition to whatever this
+doc's existing priority ordering already covers. Not yet archaeology'd, scoped, or sequenced
+against the rest of this backlog — recorded here as a standing want-list, to be turned into a real
+scoped plan (matching the MusicGen/AudioGen/ACE-Step docs' pattern: real config + tensor inventory
+before any code) when picked up.
+
+- **Stable Audio 3 Medium** and **Stable Audio 3 Small SFX** — larger/SFX-focused variants of the
+  already-shipped Stable Audio 3 (see item 17 below). User provided a detailed sequencing plan for
+  these (Small SFX first as a "how configurable is the existing runtime" proof, consolidate, then
+  Medium's real new work: a bigger DiT config + the SAME-L autoencoder with sliding-window
+  attention) — kept in full, not started, in
+  `docs/065-stable-audio-3-medium-smallsfx-future-plan.md`. Real architecture equivalence to the
+  existing `AcousticVae`/`T5GemmaEncoder`/`StableAudioDiT` stack is a hypothesis to verify against
+  real checkpoint tensors first, not assumed (the ACE-Step/Stable-Audio-3 VAE mixup earlier this
+  week — two genuinely different architectures that looked similar on paper — is the exact
+  cautionary precedent).
+- **MiniMax-Music3** — a genuinely new architecture family for this project (hybrid autoregressive
+  + flow-matching: 8B Global LLM + 0.6B Local LLM + 2.4B flow-matching + 123M Flow-VAE, with
+  Global/Local HIDDEN STATES fused into the flow synthesizer, not just discrete RVQ tokens
+  decoded through a codec — a real structural difference from every codec-LM or single-DiT model
+  already on this list). Detailed sequencing plan kept in full, not started, in
+  `docs/066-minimax-music3-future-plan.md`. User's sequencing note: after ACE-Step, before niche
+  audio models. Real archaeology (config, tokenizer, tensor inventory, real reference source if
+  available) needed before any implementation — the ~57.4GB/11B+-parameter checkpoint-size figure
+  in that doc is cited from documentation, not confirmed against a real download yet.
+
 ## Cross-project priority order (popularity-adjusted, 2026-09-01)
 
 The sections below ("Ordered runway", Priorities 1-4) are scoped to the **LLM/GGUF coverage goal**
@@ -264,8 +292,16 @@ that is more elegant but lower-visibility.
     it was already fully specified from real `diffusers` source): `AceStepOobleckDecoder.cs`
     passes against the real 337MB VAE checkpoint, and independently CONFIRMS the 25Hz-latent/
     48kHz claim mathematically (`product(downsampling_ratios)=2*4*4*6*10=1920`, `48000/1920=25`
-    exactly) rather than just citing it. Two components (text encoder, VAE decoder) now real and
-    tested; DiT, condition encoder, and flow-matching scheduler remain.
+    exactly) rather than just citing it. **Update, same day**: landed the 24-layer DiT too --
+    `AceStepDiT.cs`/`AceStepDiTWeights.cs`, the biggest remaining piece (GQA + bidirectional
+    sliding/full self-attention + per-head QK-RMSNorm + RoPE + cross-attention with cached K/V
+    across steps + AdaLN timestep modulation + SwiGLU MLP). `AceStepDiTTests` passes on the FIRST
+    real-weight run against the full 4.79GB turbo checkpoint: correct shapes, finite output, and
+    (the more meaningful check) genuinely different output across different timesteps, confirming
+    timestep-conditioning is really wired, not silently dropped. No condition encoder exists yet,
+    so this test drives cross-attention with a synthetic real-shaped condition sequence. Three of
+    four V1 components (text encoder, DiT, VAE decoder) now real and tested; only the condition
+    encoder and the flow-matching Euler scheduler loop remain before a genuine end-to-end attempt.
 12. **Real NaN bug in `Engine.ForwardPass`'s f16 qwen3 path — found 2026-09-03 while testing
     ACE-Step's Qwen3 text encoder, NOT ACE-Step-specific.** A real 13-token sequence (real ACE-Step
     SFT-prompt text, official `Qwen/Qwen3-Embedding-0.6B-GGUF` f16 quant) produces NaN logits at
