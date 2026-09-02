@@ -290,17 +290,25 @@ public class DeepSeek4AlphaTests
     }
 
     [Theory]
-    [InlineData(0, 4, 0, -1)]
-    [InlineData(0, 4, 3, -1)]
     [InlineData(1, 4, 0, 0)]
     [InlineData(1, 4, 3, 3)]
     [InlineData(2, 4, 0, 4)]
     [InlineData(2, 4, 3, 7)]
     public void OverlapPrevRowIndex_MatchesImmediatelyPrecedingBlockHypothesis(int blockIndex, int ratio, int r, int expected)
     {
-        // Block 0 has no history -> -1 (caller substitutes the synthetic zero/-inf row). Block k>0's
-        // prev half is exactly block (k-1)'s own row range [((k-1)*ratio) .. (k*ratio)-1].
+        // Block k>0's prev half is exactly block (k-1)'s own row range [((k-1)*ratio) .. (k*ratio)-1].
         Assert.Equal(expected, DeepSeek4Graph.OverlapPrevRowIndex(blockIndex, ratio, r));
+    }
+
+    [Theory]
+    [InlineData(0, 4, 0)]
+    [InlineData(0, 4, 3)]
+    public void OverlapPrevRowIndex_IsNegativeForBlockZero(int blockIndex, int ratio, int r)
+    {
+        // Block 0 has no history -> a negative index (the caller substitutes the reference's
+        // synthetic zero-KV/-inf-score row for any negative result -- see FinalizeOverlapBlock's
+        // `prevRowIndex >= 0` check; the exact negative VALUE is not itself meaningful).
+        Assert.True(DeepSeek4Graph.OverlapPrevRowIndex(blockIndex, ratio, r) < 0);
     }
 
     [Theory]

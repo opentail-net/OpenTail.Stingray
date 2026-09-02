@@ -1,7 +1,9 @@
 # DeepSeek full-lineage implementation plan — V4 through V1
 
-Status: Phase 0 ALPHA CODE WRITTEN, untested against real weights. Phased, V4-first per explicit
-user direction. Supersedes nothing; extends the closed investigation in
+Status: Phase 0 (`deepseek4`) AND Phase 1 (`deepseek32`) ALPHA CODE WRITTEN, structurally complete,
+untested against real weights — neither has ever been run. Phased, V4-first per explicit user
+direction; Phase 1 started before a V4 checkpoint was obtained, per explicit user direction not to
+wait idle. Supersedes nothing; extends the closed investigation in
 `docs/done/032-deepseek2-mla-yarn-moe-routing-investigation.md`.
 
 ## Progress: Phase 0 alpha, 2026-09-02
@@ -291,6 +293,91 @@ investigation is not proven correct in, this codebase's existing dead-but-formul
 code). Do not assume Phase 1 is "mostly free" going in — re-scope it once Phase 0 is further
 along and the actual overlap is clearer.
 
+**Update, 2026-09-02 — Phase 1 started**, per user direction to pivot rather than wait on a V4
+checkpoint download:
+- `src/OpenTail.Stingray.Engine/DeepSeek32Alpha.cs` — `DeepSeek32Hyperparams` (every `deepseek32`
+  GGUF key `load_arch_hparams` reads, deepseek32.cpp:6-50, including the confirmed reuse of
+  deepseek2's `[TAG_DEEPSEEK2_YARN_LOG_MUL_FIX]` `/0.1f` correction — deepseek32.cpp:36-40 is
+  textually the same fix as deepseek2's, further confirming deepseek32 shares deepseek2's MLA/YaRN
+  formula chain, not deepseek4's). 3 synthetic metadata-parsing tests, all passing.
+- `src/OpenTail.Stingray.Engine/DeepSeek32TensorSet.cs` — tensor resolution for every deepseek32
+  tensor (deepseek32.cpp:93-158), reusing `DeepSeek4TensorRef` as the resolved-tensor wrapper
+  (structurally identical need, no reason for a second type). Tensor names cross-checked against
+  `llama-arch.cpp` the same way as deepseek4's set was.
+- `ModelCompatibility.cs` updated with a `deepseek32` comment block matching the established
+  pattern (alpha code exists, unwired, not admitted).
+- Builds clean, 0 warnings; all 29 total DeepSeek tests pass (26 deepseek4 + 3 new deepseek32).
+- **Not done yet**: forward-pass dispatch (the actual MLA attention math, DSA indexer, MTP, MoE
+  wiring into a real `IForwardPass`) — this phase has only reached the same "hyperparameters +
+  tensor loading" milestone Phase 0 started from. The next increment is porting deepseek32's MLA
+  attention, which should be able to reuse the formula chain already verified during the
+  `deepseek2` investigation (`docs/done/032-...md`) — the one piece of that investigation's work
+  actually applicable here, unlike deepseek4.
+
+**Update, same day — forward-pass dispatch written (structurally complete, YaRN deliberately
+deferred)**:
+- `src/OpenTail.Stingray.Engine/DeepSeek32ForwardPass.cs` — full `IForwardPass`: classic MLA
+  attention with the absorption optimization (q_nope pre-multiplied through `wk_b` before
+  attention so the softmax-weighted sum stays in `kv_lora_rank` space, decompressed through
+  `wv_b` only AFTER the sum — re-derived from reading deepseek32.cpp:214-441, not reused from the
+  MLA formula chain the `deepseek2` investigation verified, despite the plan's expectation above
+  that it would be reusable — deepseek32's graph constructs the absorption differently enough
+  from anything in this codebase's dead `Engine.MlaAttention` that a fresh reading was more
+  reliable than adapting old, also-dead code), DSA/lightning-indexer sparse masking over a real
+  raw indexer K cache (simpler than deepseek4's compressed-block indexer — no compression step
+  needed), and dense/MoE FFN dispatch by `leading_dense_block_count`.
+- **Correction to what "reusing the deepseek2 formula chain" turned out to mean**: the plan
+  expected the MLA math itself to transplant over. What actually transplants is narrower and
+  cheaper — the *kq_scale/mscale YaRN correction formula* (still not ported, see below) — not the
+  absorption/attention structure itself, which needed its own reading.
+**Update, same day, immediately after — the YaRN gap closed out too** (the plan above flagged it
+as the single highest-value next increment; done in the same session rather than left open):
+- `ApplyYarnRope` (a single-position inline, not a `SimdKernels.BuildYarnRopeTable` call — see its
+  own doc comment for why: that method fills every position from 0 up in one pass per call, which
+  would be O(position) waste in this alpha's unbatched per-token decode loop) ports the corr-dim/
+  ramp-mix/mscale math `BuildYarnRopeTable` already implements, reusing the FORMULA (verified
+  during the `deepseek2` investigation) rather than the code. The constructor separately derives
+  `_kqScale` from deepseek32.cpp:193-199's `attn_factor_org`/`mscale`/`kq_scale` chain — when YaRN
+  is inactive (`freqScale==1`), `log(1/1)==0` and this collapses to the plain
+  `kqScale = 1/sqrt(headDim)` form the code had before, so the non-YaRN case is unchanged.
+  "YaRN active" is detected via a `RopeYarnFactor > 1` proxy, since this port's metadata loader
+  doesn't read `rope.scaling.type` itself directly — flagged as a real, specific gap, not silently
+  assumed correct.
+- File header updated: gap 1 now reads "YaRN implemented, not independently re-verified" instead
+  of "not implemented." Gaps 2-4 (Hadamard, MTP, MLA-absorption-math-unverified) unchanged.
+- Builds clean, 0 warnings; all 29 tests still pass unchanged (no new tests for this specific
+  addition — `ApplyYarnRope`/`_kqScale` are private/pointer-adjacent in the same way
+  `LayerNormInPlace` was, same reasoning for not adding a costly-to-write test here).
+
+**Phase 1 status**: hyperparameters, tensors, and a complete forward pass (MLA attention + YaRN +
+DSA indexer + dense/MoE FFN) exist for deepseek32 — structurally further along than Phase 0's
+equivalent milestone, since Phase 0 still has Hadamard AND two structural hypotheses (overlap
+gather, rope_ext_back) unresolved, while Phase 1's remaining gaps are narrower (Hadamard + MTP +
+one broad "unverified" flag on the absorption math). None of it run or verified either way — that
+requires a real checkpoint or ground-truth intermediates for both phases equally.
+
+**Update, 2026-09-02 — a real GGUF tensor inventory found a genuine latent bug (light check, no
+new download)**: with the user's `deepseek2` GGUFs back on disk, ran `list-tensors` against
+`DeepSeek-V2-Lite-Chat.Q2_K.gguf` (cheap — metadata/tensor-header read only, no weight loading) to
+cross-check `deepseek32`'s tensor-naming assumptions. Several assumed names are confirmed correct
+by direct match: `ffn_gate_inp.weight`, `ffn_gate_exps.weight`/`ffn_down_exps.weight`/
+`ffn_up_exps.weight`, `ffn_gate_shexp.weight`/`ffn_down_shexp.weight`/`ffn_up_shexp.weight`,
+`attn_kv_a_norm.weight`, `attn_norm.weight`/`ffn_norm.weight` all appear exactly as
+`DeepSeek32TensorSet.cs` expects (deepseek2 and deepseek32 share the MoE/norm tensor-naming
+convention, as expected for the same architecture family).
+
+**But it also surfaced a real bug**: this checkpoint has `blk.N.attn_q.weight` directly — NO
+`attn_q_a`/`attn_q_b` split at all — because DeepSeek-V2-Lite specifically has `q_lora_rank=0`
+(no Q-LoRA compression; a real, documented trait of the "Lite" variant, not a malformed file).
+`DeepSeek32ForwardPass.MlaAttention` unconditionally uses `layer.WqA!.Value`/`layer.WqB!.Value`
+(non-null-forgiving `!`) — this would throw a `NullReferenceException` on ANY deepseek32 checkpoint
+sharing that trait, not just V2-Lite specifically (nothing rules out a future deepseek32 variant
+also declaring `q_lora_rank=0`). **Not yet fixed** — flagged here as a concrete, evidence-based
+gap (found from a real file, not speculation) rather than fixed reflexively: the correct fix (skip
+the down-projection and RMSNorm, use `wq_b`/an unsplit `attn_q` directly when `q_lora_rank==0`,
+matching how the reference itself branches on this) needs deciding before touching the code, not a
+blind null-check patch.
+
 - Reference: `examples/llama.cpp/llama.cpp/src/models/deepseek32.cpp`, `llama-kv-cache-dsa.h`.
 - Needs a real V3.2 GGUF for end-to-end verification (~149 GB smallest quant) — confirm
   availability/download plan with the user before this phase's real-weight verification step.
@@ -308,6 +395,26 @@ context (V4/V3.2), which may itself shed light on the V2-Lite routing-margin que
   `ModelCompatibility.cs` and `README.md`'s status matrix (per CLAUDE.md rule 10).
 - Exit criteria: either a passing greedy-parity receipt against a real prompt, or an explicit,
   documented decision to ship known-limited behind the unverified-arch flag.
+
+**Update, 2026-09-02 — Phase 2 formally resolved via option (b)**, per user direction to start
+Phase 2 without a new checkpoint-download decision having been made for option (a):
+- `--allow-unverified-arch` (`RunCommand.cs:328-331`, wired at `RunCommand.cs:904-913`) already
+  exists in this codebase as a general escape hatch for any architecture the gate rejects — no new
+  code was needed to make `deepseek2` runnable this way; it was usable the entire time doc 032's
+  investigation ran. What Phase 2 actually closes out is the DECISION and the DOCUMENTATION: this
+  is now the accepted, permanent resolution for `deepseek2` (not a placeholder pending option (a)),
+  and `README.md`'s status matrix (per CLAUDE.md rule 10) now carries a sourced row for it, plus
+  new rows for `deepseek4`/`deepseek32` reflecting their real current state (structurally complete
+  alpha code, never executed).
+- **Option (a) — the native/larger V2 or V3 checkpoint — remains untried and is NOT foreclosed.**
+  This is a real, standing option if the user wants to revisit it later (it's the one lever doc
+  032 identified but never tried, and could in principle overturn the "inherent" finding for a
+  different checkpoint) — closing Phase 2 via option (b) is a decision to stop WAITING on it, not
+  a claim that it's been ruled out. Needs an explicit download decision (checkpoint source/size)
+  before it could be attempted, same as every other real-weight step in Phases 0-1.
+- `ModelCompatibility.cs`'s existing `deepseek2` comment block already documented the closed
+  investigation and named `--allow-unverified-arch` as the correct path if the user wants to ship
+  known-wrong — no changes needed there; this update is additive (README) rather than corrective.
 
 ### Phase 3 — mop-up
 
@@ -361,6 +468,33 @@ raw/HCA** (all documented in the file's header):
   round (token budget) — a synthetic multi-token test exercising CSA's 4-token block boundary
   (mirroring the multi-token HCA test suggested earlier but still not written either) remains the
   most valuable next increment before any real-weight attempt.
+
+**Update, same day — the two cheap follow-ups closed out**:
+- The overlap-window index arithmetic (`prevRowIndex`/`curRowIndex` in `FinalizeOverlapBlock`) was
+  extracted into two pure static functions, `DeepSeek4Graph.OverlapPrevRowIndex`/
+  `OverlapCurRowIndex`, specifically so the windowing hypothesis is unit-testable without a real
+  `GgufModel`. 4 new tests added (`DeepSeek4AlphaTests.cs`): pin the exact prev/cur indices for
+  blocks 0-2, confirm block 0's prev half is always negative (boundary case), and — the most
+  valuable one — confirm block `k`'s cur-range and block `k+1`'s prev-range are always identical
+  across 5 consecutive blocks, i.e. the overlap actually tiles without gap or duplication as
+  intended. This tests the ARITHMETIC's internal consistency, not whether the arithmetic matches
+  the reference (still unconfirmed — see the caveats above).
+- The indexer Q RoPE position-0 bug is fixed: `SelectCsaAttendableBlocks` now takes the caller's
+  real `position` and threads it through `ApplyRopeNeox` instead of hardcoding 0.
+- Hadamard rotation (item 3) remains genuinely blocked, not skipped out of expediency — resolving
+  whether `k_rot` is a loaded weight or a code-generated fixed matrix requires a real GGUF's
+  tensor inventory (`list-tensors`) or the `llama-kv-cache-dsv4.cpp` source (unread), neither of
+  which this session has. Left as documented, unimplemented (treated as always-absent).
+- All 26 tests pass (was 15 at CSA's initial implementation, +7 from the earlier synthetic-block
+  work already counted, +4 new this round). Builds clean, 0 warnings.
+
+**Phase 0 status at this point**: raw/HCA/CSA attention structurally complete; MoE, hyper-
+connections, hash routing, sqrt-softplus gating all wired; tensor loading and hyperparameter
+loading complete; boundary/invariant arithmetic unit-tested. Genuinely NOT done: any real-weight
+run, Hadamard rotation, the overlap-gather hypothesis's confirmation against
+`llama-kv-cache-dsv4.cpp`, and `rope_ext_back`'s confirmation. Per user direction, work now
+pivots to Phase 1 (`deepseek32`/V3.2) rather than waiting on a checkpoint download — Phase 0
+resumes whenever ground-truth verification becomes possible.
 
 The step-by-step reasoning and shape/tensor derivations below are kept as-written (the plan that
 was executed), for anyone re-verifying the implementation against this reasoning later:

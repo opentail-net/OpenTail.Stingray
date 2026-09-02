@@ -652,15 +652,35 @@ public static class ModelCompatibility
     // --allow-unverified-arch. GPU backends have no MLA support at all — CPU-only was the
     // deliberately agreed scope.
     //
-    // deepseek4 — NOT admitted, NOT wired at all (no GGUF tensor loading, no forward-pass
-    // dispatch entry, no KV cache support). DeepSeek4Graph (DeepSeek4Alpha.cs, same project) is
-    // an explicitly-labeled ALPHA/UNTESTED port of V4's algorithmic core (hyper-connections,
-    // lightning indexer, CSA/HCA compressed-KV math) from the vendored llama.cpp reference,
-    // written without ever loading a real DeepSeek-V4 GGUF — see
-    // docs/058-deepseek-full-lineage-implementation-plan.md Phase 0. Only synthetic
-    // shape/invariant unit tests exist (DeepSeek4AlphaTests.cs) — zero real-weight verification.
-    // Do not admit under any circumstance until GGUF loading, dispatch, and a persistent
-    // compressed-KV state cache are built and a real checkpoint produces a passing receipt.
+    // deepseek4 — NOT admitted. DeepSeek4ForwardPass (DeepSeek4ForwardPass.cs) is a structurally
+    // complete ALPHA/UNTESTED IForwardPass covering all three of V4's attention variants (raw,
+    // HCA, CSA), hyper-connections, MoE (incl. hash routing + sqrt-softplus gating), and tensor
+    // loading (DeepSeek4TensorSet.cs) — but it has NEVER been run: no DeepSeek-V4 GGUF has been
+    // loaded, no output compared against any reference. Multiple specific pieces are known-
+    // unverified or known-wrong (MQA K==V, output-side rope_ext_back, CSA's overlap-gather
+    // hypothesis, Hadamard rotation entirely unimplemented) — see this file's own header and
+    // docs/058-deepseek-full-lineage-implementation-plan.md Phase 0 for the full, current list.
+    // Only synthetic shape/invariant/boundary unit tests exist (DeepSeek4AlphaTests.cs) — zero
+    // real-weight verification. Do not admit under any circumstance until a real checkpoint
+    // produces a passing greedy-parity or perplexity receipt.
+    //
+    // deepseek32 — NOT admitted. DeepSeek32ForwardPass (DeepSeek32ForwardPass.cs) is a
+    // structurally complete ALPHA/UNTESTED IForwardPass: classic MLA attention with absorption,
+    // DSA/lightning-indexer sparse masking over a real raw indexer K cache, dense/MoE FFN
+    // dispatch. NEVER RUN — no DeepSeek-V3.2 GGUF available. Four specific, deliberate
+    // simplifications documented in the file's header: (1) YaRN RoPE scaling IS implemented
+    // (ported from the deepseek2 investigation's already-verified formula chain,
+    // docs/done/032-...md), but not independently re-verified in this new context, and the
+    // "YaRN active" detection is a RopeYarnFactor>1 proxy rather than reading
+    // rope.scaling.type directly; (2) Hadamard rotation on the indexer's Q/K not implemented
+    // (same gap/reason as deepseek4); (3) MTP not implemented; (4) the MLA absorption math was
+    // re-derived from reading deepseek32.cpp, not reused from this codebase's dead
+    // Engine.MlaAttention/DeepSeekMoeGraph classes, and is unverified. Phase
+    // 1 of docs/058-...md. IMPORTANT: deepseek32 is NOT a subset of deepseek4 despite the version
+    // ordering — classic MLA is a different attention design from V4's CSA/HCA compressed-state
+    // mechanism; none of deepseek4's CSA/HCA/hyper-connection code is reusable here. Shares the
+    // lightning-indexer/DSA concept with deepseek4, but deepseek32's indexer is simpler (a real
+    // raw indexer_attn_k tensor, no compression needed).
     //
     // minicpm — NOT admitted. The forward-pass scale trio (reusing Granite's graph, see
     // GraniteGreedyParityTests) is implemented and presumed correct, but MiniCPM4-0.5B — the only
