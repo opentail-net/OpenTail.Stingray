@@ -139,7 +139,8 @@ public static class AceStepConditionEncoder
         return packed;
     }
 
-    private static float[][] EncodeLyrics(AceStepConditionEncoderWeights w, float[][] embeds)
+    /// <summary>Runs the real 8-layer bidirectional lyric encoder on already-`embed_tokens`-projected (hidden_size-wide) embeddings. Exposed (not private) so golden-parity tests can drive it directly with a real reference's exact intermediate tensor -- see <see cref="Forward"/> for the full real pipeline (raw Qwen3 lookup -&gt; `embed_tokens` -&gt; this method).</summary>
+    public static float[][] EncodeLyrics(AceStepConditionEncoderWeights w, float[][] embeds)
     {
         int seqLen = embeds.Length;
         var (cos, sin) = BuildRope(seqLen, AceStepConfig.HeadDim, AceStepConfig.RopeTheta);

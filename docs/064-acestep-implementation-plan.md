@@ -440,13 +440,51 @@ per this project's own rule ("only keep a change if it's measurably better"), it
 rather than spec-implemented without re-measuring; revisit with a real profiler pass (not guesswork)
 if 10s-of-audio-in-~2-minutes turns out too slow for the intended use.
 
-**Not yet done** (before calling V1 truly finished, per this project's own standards): (1) no
-numeric golden-parity check against a real `diffusers`/`Ace-Step1.5` end-to-end reference run --
-correctness rests on careful reading of the real source (documented inline throughout) plus
-real-weight non-degeneracy at every stage, not a numeric diff yet, matching the DiT's own
-not-yet-done note; (2) an ACTUAL human listening pass on the generated sample above is still
-outstanding (only numeric proxies have been checked so far) -- the zero-`src_latents` gap remains
-the leading suspect if a human listener finds quality lacking.
+## Golden-parity check, 2026-09-03: real bug found and fixed, DiT + lyric encoder now numerically verified
+
+Discovered that `diffusers` ships a real, checkpoint-compatible reimplementation of ACE-Step 1.5
+Turbo (`diffusers.models.transformers.ace_step_transformer.AceStepTransformer1DModel` and
+`diffusers.pipelines.ace_step.modeling_ace_step.AceStepLyricEncoder`) that this project's own real
+`turbo.safetensors` checkpoint loads into with a purely mechanical tensor-name remap (`q_proj`->
+`to_q`, `o_proj`->`to_out.0`, etc. -- documented in the (gitignored, scratch-only) `golden_dit.py`/
+`golden_lyric.py` scripts). `load_state_dict(strict=False)` reported **zero missing and zero
+unexpected keys** for both modules against the real checkpoint, confirming this project's own
+tensor-name/shape understanding of the real architecture is exactly correct.
+
+**Real bug found**: `AceStepDiTWeights` already loaded the real `decoder.condition_embedder.weight/
+bias` tensors (a real, learned `[2048,2048]` `nn.Linear`), but nothing in `AceStepDiT.cs` ever
+applied them -- `PrepareCrossAttention` fed the raw condition-encoder output straight into
+cross-attention K/V, when the real `AceStepTransformer1DModel.forward` applies
+`encoder_hidden_states = self.condition_embedder(encoder_hidden_states)` exactly once, before any
+layer sees it. This is the kind of bug non-degeneracy testing (finite, shape-correct, sensitive-to-
+input output) structurally cannot catch -- the DiT still ran, still produced plausible-looking
+output, and was still numerically WRONG. Fixed in `AceStepDiT.PrepareCrossAttention` (now projects
+`encoderHiddenStatesRaw` through `w.ConditionEmbedderWeight`/`Bias` before computing K/V).
+
+**Numeric verification**: with the fix applied, `AceStepDiTGoldenParityTests` (fixed-seed synthetic
+`hidden_states`/`context_latents`/`encoder_hidden_states`/`timestep`, real weights, compared against
+the real `diffusers` reference's output over the SAME real weights) measures **relative error
+~7e-6** -- essentially F32-rounding-level agreement over the full 24-layer forward pass, not just
+"close". `AceStepLyricEncoderGoldenParityTests` (real 8-layer lyric encoder, same remap technique)
+similarly passes well under a 0.1% relative-error tolerance. `EncodeLyrics` was made `public` (was
+`private`) specifically so this test could drive it directly with the real reference's exact
+intermediate tensor. All eight real-weight AceStep tests (four component tests, flow scheduler,
+end-to-end pipeline, two golden-parity checks) re-run and pass together.
+
+**Scope of this golden-parity check**: covers the DiT (the largest, most bug-prone component) and
+the lyric encoder end-to-end at essentially bit-exact agreement. Does NOT cover: the Qwen3 text
+encoder (already reuses this project's existing, separately-tested `Engine.ForwardPass`, out of
+scope for an ACE-Step-specific reference), the Oobleck VAE decoder (a real `diffusers`
+`AutoencoderOobleck` golden check is a realistic, still-open next step, not done this pass), or a
+full `generate_audio`-shaped end-to-end numeric comparison (the flow-matching Euler loop itself
+wasn't diffed step-by-step against a real reference run -- the per-step math it calls, the DiT
+forward, now is verified, which is the load-bearing piece).
+
+**Not yet done** (before calling V1 truly finished, per this project's own standards): (1) no VAE
+decoder golden-parity check yet (real non-degeneracy only, see Phase F); (2) an ACTUAL human
+listening pass on the generated sample above is still outstanding (only numeric proxies have been
+checked so far) -- note the zero-`src_latents` gap is now the LEADING remaining source of quality
+uncertainty, since the DiT math itself is now numerically confirmed correct.
 
 ## Immediate next steps (in order)
 

@@ -340,10 +340,23 @@ that is more elegant but lower-visibility.
     project's own real SIMD kernels (`SimdKernels.MatVecF32`), not a naive fallback; the "OpenBLAS:
     not found" log line is unrelated (GGUF text-engine diagnostic, not on this path). No change kept
     this pass — the real next lever (batching per-position `MatMul` calls into one GEMM per layer)
-    is flagged but deliberately not implemented without re-measuring first. **Not yet done: numeric
-    golden-parity vs. a real `diffusers` reference run, an actual human listening pass on the
-    generated sample.** See `docs/064-acestep-implementation-plan.md`'s "Phase E progress" section
-    for the full writeup.
+    is flagged but deliberately not implemented without re-measuring first.
+    **Update, same day: real golden-parity check, real bug found and fixed.** Discovered
+    `diffusers` ships a checkpoint-compatible real reimplementation of the DiT and lyric encoder;
+    loading this project's real `turbo.safetensors` into it via a purely mechanical tensor-name
+    remap reported ZERO missing/unexpected keys, confirming this port's tensor-name understanding is
+    exactly correct. **Found a real bug this way**: `AceStepDiTWeights` already loaded the real
+    `decoder.condition_embedder.weight/bias` (`[2048,2048]` learned Linear), but nothing applied it
+    — `AceStepDiT.PrepareCrossAttention` fed the raw condition sequence straight into cross-attention
+    K/V instead of projecting it through `condition_embedder` first, as the real
+    `AceStepTransformer1DModel.forward` does. This produced finite, plausible, sensitivity-passing —
+    but numerically WRONG — output; exactly the class of bug non-degeneracy testing cannot catch.
+    Fixed. With the fix, `AceStepDiTGoldenParityTests` measures **~7e-6 relative error** against the
+    real `diffusers` reference (essentially F32-rounding-level agreement over 24 real layers);
+    `AceStepLyricEncoderGoldenParityTests` similarly passes well under 0.1%. `EncodeLyrics` made
+    `public` to support this. All eight real-weight AceStep tests pass together. **Not yet done: VAE
+    decoder golden-parity, and an actual human listening pass.** See `docs/064-acestep-
+    implementation-plan.md`'s "Golden-parity check" section for the full writeup.
 12. **Real NaN bug in `Engine.ForwardPass`'s f16 qwen3 path — found 2026-09-03 while testing
     ACE-Step's Qwen3 text encoder, NOT ACE-Step-specific.** A real 13-token sequence (real ACE-Step
     SFT-prompt text, official `Qwen/Qwen3-Embedding-0.6B-GGUF` f16 quant) produces NaN logits at

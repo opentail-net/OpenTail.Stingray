@@ -49,15 +49,27 @@ public static class AceStepDiT
         public required int SeqLen { get; init; }
     }
 
-    /// <summary>Precomputes cross-attention K/V (per-head Q/K-RMSNorm applied, NO RoPE) from the condition-encoder's packed output, plus the self-attention RoPE cos/sin tables for a given patchified sequence length. Both are constant across all real Euler steps.</summary>
-    public static unsafe Context PrepareCrossAttention(AceStepDiTWeights w, float[][] encoderHiddenStates, int seqLen)
+    /// <summary>Precomputes cross-attention K/V (per-head Q/K-RMSNorm applied, NO RoPE) from the condition-encoder's packed output, plus the self-attention RoPE cos/sin tables for a given patchified sequence length. Both are constant across all real Euler steps.
+    /// <para><b>Real, easy-to-miss step</b>: the condition sequence is projected through the real
+    /// `condition_embedder` (a real, learned `nn.Linear(hidden,hidden)` -- NOT a no-op even though
+    /// in/out dims match) exactly ONCE here, before any layer's cross-attention -- confirmed from
+    /// the real `diffusers` `AceStepTransformer1DModel.forward`: `encoder_hidden_states =
+    /// self.condition_embedder(encoder_hidden_states)`. Found missing via a real golden-parity
+    /// review against that source (this project's own `AceStepConditionEncoderWeights` already
+    /// loaded the real `decoder.condition_embedder.weight/bias` tensors, but nothing applied them --
+    /// the weights sat unused).</para></summary>
+    public static unsafe Context PrepareCrossAttention(AceStepDiTWeights w, float[][] encoderHiddenStatesRaw, int seqLen)
     {
         int hidden = AceStepConfig.HiddenSize;
-        int condLen = encoderHiddenStates.Length;
+        int condLen = encoderHiddenStatesRaw.Length;
         int kvDim = AceStepConfig.NumKeyValueHeads * AceStepConfig.HeadDim;
 
+        var rawFlat = new float[condLen * hidden];
+        for (int i = 0; i < condLen; i++) Array.Copy(encoderHiddenStatesRaw[i], 0, rawFlat, i * hidden, hidden);
+
         var flat = new float[condLen * hidden];
-        for (int i = 0; i < condLen; i++) Array.Copy(encoderHiddenStates[i], 0, flat, i * hidden, hidden);
+        fixed (float* rp = rawFlat, fp = flat, bp = w.ConditionEmbedderBias)
+            w.ConditionEmbedderWeight.MatMul(rp, condLen, fp, bp);
 
         var crossK = new float[w.Layers.Length][];
         var crossV = new float[w.Layers.Length][];
