@@ -843,3 +843,44 @@ proven differential-attention/DynamicTanh machinery as the template (not a base 
 duplicate-then-DRY-later discipline as the DiT), widen the config, and add real sliding-window
 attention (a real, new mechanism `AcousticVae.cs` doesn't have) using the now-confirmed
 `stride+1`-scaled window formula. Implementation starts next.
+
+## Sprint 5 — SAME-L DONE, 2026-09-03, first real-weight decode passed
+
+Read the real `TransformerResamplingBlock.forward`'s branch logic directly (the
+`if sliding_window is None: <dual-pass chunked/shifted> else: <single-pass banded attention>`
+split) -- confirmed Medium's real `sliding_window: [1,1]` (scaled by `_get_sliding_window_size` to
+`±17` frames on the folded sequence) takes the SIMPLER of the two real branches: no outer chunk/
+shift split at all, one pass through all 12 transformer layers over the whole folded sequence, each
+with a real banded (`±17`) self-attention -- same shape as this project's own `AceStepDiT`
+sliding-window attention, not the more complex dual-pass mechanism `AcousticVae.cs` needed for
+Small.
+
+Real, tensor-shape-confirmed correction along the way: Medium's DECODER final mapping conv is
+kernel=1 (`mapping.weight_v` shape `[512,1536,1]`), NOT kernel=3 like Small's -- checked directly
+rather than assumed from Small's shape.
+
+`src/OpenTail.Stingray.Diffusion/StableAudio/SameLargeVae.cs`: new sibling class (duplicated from
+`AcousticVae.cs`'s structure, not inherited -- same discipline as the DiT), reusing its exact real
+differential-attention/DynamicTanh formula unchanged, widened to `EmbedDim=1536, NumHeads=24,
+TransformerDepth=12`, with the dual-pass chunking replaced by single-pass banded attention.
+
+`StableAudio3MediumVaeTests` passes on the FIRST real-weight run against the full real 9.22GB
+checkpoint: correct shape (`n*Stride*PatchSize*AudioChannels` samples), finite, non-silent output.
+
+**Deliberately deferred real gap**: `sinusoidal_blocks: [8]` (decoder-only, selects a real
+per-layer FeedForward variant for the last several layers) is not implemented -- `FeedForward`
+always uses the plain SwiGLU path, flagged in the class's own doc comment.
+
+**Real disk-space incident during this work**: the C: drive filled to 100% (redundant checkpoint
+copies sat in both the HF cache AND this project's own `models/` directory -- ~11GB duplicated),
+which corrupted `OpenTail.Stingray.Cuda`'s build output mid-write. Cleared the redundant HF cache
+copies (project already had its own `models/` copies) and did a clean rebuild of the Cuda project
+to recover -- worth remembering: this environment's disk is not infinite, redundant multi-GB
+checkpoint copies should be cleaned up promptly once mirrored into `models/`.
+
+**Not yet done**: `sinusoidal_blocks` FF variant; numeric golden-parity for SAME-L (same real-
+weights-non-degeneracy-not-golden-verified caveat as the DiT, for the same underlying package-
+version reasons, now resolved in confidence but not yet turned into an actual numeric diff); wiring
+`StableAudioMediumDiT` + `SameLargeVae` + the shared T5Gemma encoder into a real
+`StableAudioMediumPipeline` for genuine end-to-end text-to-music generation -- the last remaining
+step before Medium is a usable model, not just two independently-tested components.
