@@ -7,14 +7,20 @@ namespace OpenTail.Stingray.Diffusion.StableAudio;
 /// layers, embed dim 1536, 24 heads (head_dim still 64), and real DIFFERENTIAL attention on BOTH
 /// self- and cross-attention (`attn_kwargs.differential=true`, confirmed absent for Small).
 ///
-/// <para><b>Real differential attention</b> (extracted directly from the actual
-/// `stable_audio_tools` package's `Attention.forward`, not the published Differential-Transformer
-/// paper's learnable-lambda variant): the QKV (self-attn) or Q/KV (cross-attn) projection widens to
-/// produce a SECOND `(q_diff, k_diff)` pair sharing the SAME `v`. `qk_norm` and RoPE (self-attention
-/// only) apply identically to both the main and diff pairs (the real reference just stacks them
-/// along an extra leading dim before norm/RoPE, which is elementwise over the trailing head_dim
-/// regardless). Two full attention passes run against that shared `v`, and the final output is
-/// simply `out = out_main - out_diff` -- no learnable mixing coefficient.</para>
+/// <para><b>Differential attention -- formula confidence downgraded, real caveat</b>: this
+/// implementation follows the public `stable-audio-tools` (pip) package's `Attention.forward`
+/// (widen QKV/QK-V to add a second `(q_diff, k_diff)` pair sharing the SAME `v`, `qk_norm`/RoPE
+/// applied identically to both pairs, `out = out_main - out_diff`, no learnable mixing). The
+/// tensor-shape widening factors (5x self-attn, 2x/3x cross-attn Q/KV) ARE real and confirmed
+/// directly against this checkpoint's own safetensors header, independent of any Python package.
+/// The exact computational formula is NOT independently confirmed, however: this session found the
+/// installed `stable-audio-tools==0.0.19` package is NOT a fully version-matched reference for
+/// these real checkpoints (constructing its real classes from the checkpoint's own
+/// `model_config.json` throws `TypeError`s for real fields it doesn't support --
+/// `local_add_cond_dim`, `sinusoidal_blocks`, `differential` on the VAE, `mapping_style`,
+/// `variable_stride`, `mask_noise` -- see docs/057's "IMPORTANT CORRECTION" section). Treat the
+/// formula here as structurally plausible and real-weight-tested for non-degeneracy, NOT
+/// golden-verified, until a version-matched reference or true numeric parity check exists.</para>
 ///
 /// <para><b>Duplicated from `StableAudioDiT` rather than refactored in place</b>, deliberately: that
 /// class is already golden-verified for Small and used in production; converting its `const` fields

@@ -34,12 +34,24 @@ before any code) when picked up.
   to `docs/diffusion-samples/` for a listening check. The real architecture-equivalence caution
   below (ACE-Step/Stable-Audio-3 VAE mixup precedent) turned out NOT to apply here — verified, not
   assumed, exactly per that same discipline.
-- **Stable Audio 3 Medium** — not yet started. User's detailed sequencing plan (Small SFX proof,
-  consolidate, then Medium's real new work: bigger DiT config + SAME-L autoencoder with
-  sliding-window attention) kept in full in
-  `docs/065-stable-audio-3-medium-smallsfx-future-plan.md`. No `stabilityai/stable-audio-3-medium*`
-  repo located yet — real archaeology (does Medium actually share this DiT/VAE shape, unlike the
-  ACE-Step/Stable-Audio-3 VAE mixup cautionary precedent) still needed before assuming reuse.
+- **Stable Audio 3 Medium — DiT real-weight-tested, formula confidence downgraded, 2026-09-03.**
+  `stabilityai/stable-audio-3-medium-base` located; real archaeology confirmed Medium genuinely
+  differs from Small (embed_dim 1536 vs 1024, depth 24 vs 20, heads 24 vs 16, real differential
+  attention, SAME-L VAE with real config differences) — unlike SFX, this needed real new code.
+  `StableAudioMediumDiT` (`src/OpenTail.Stingray.Diffusion/StableAudio/`) implements differential
+  self-/cross-attention; real tensor SHAPES were confirmed directly against the checkpoint's own
+  safetensors header (independent of any Python package) and `StableAudio3MediumDiTTests` passes
+  real-weight non-degeneracy + timestep-sensitivity checks. **Important correction, same session**:
+  attempting a rigorous golden-parity check (matching this project's own standing discipline) found
+  the public `stable-audio-tools` pip package is NOT a version-matched reference for these real
+  checkpoints — constructing its classes from the checkpoint's own real config throws `TypeError`s
+  for real fields it doesn't support (`local_add_cond_dim`, `sinusoidal_blocks`, `differential` on
+  the VAE too, `mapping_style`, `variable_stride`, `mask_noise`). This downgrades the differential-
+  attention FORMULA (not the tensor shapes, which remain solid) from "confirmed" to "structurally
+  plausible, real-weight-tested, not golden-verified" — see docs/057's "IMPORTANT CORRECTION"
+  section for the full writeup. SAME-L (Sprint 5) implementation is paused pending either a real
+  version-matched reference or an explicit "best-effort, not confirmed" framing for its own real
+  new mechanisms (VAE differential attention, sliding-window bounds).
 - **MiniMax-Music3** — a genuinely new architecture family for this project (hybrid autoregressive
   + flow-matching: 8B Global LLM + 0.6B Local LLM + 2.4B flow-matching + 123M Flow-VAE, with
   Global/Local HIDDEN STATES fused into the flow synthesizer, not just discrete RVQ tokens

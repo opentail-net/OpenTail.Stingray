@@ -741,3 +741,52 @@ differences between Small and Medium not yet traced to their consuming code).
 `AcousticVae.cs` is the structural template, NOT a base class to inherit from per the same
 duplicate-then-DRY-later discipline used for the DiT above); golden-verify against the real
 `stable_audio_tools` package now that it's installed in this environment.
+
+## IMPORTANT CORRECTION, same day: the public `stable-audio-tools` pip package does NOT fully match these real checkpoints -- downgrades confidence in the differential-attention formula above
+
+Attempted the rigorous check this project's own discipline calls for: actually construct the real
+`DiffusionTransformer`/`TAAEDecoder` classes from `stable-audio-tools==0.0.19` (pip, `--no-deps`,
+plus resolving/stubbing its transitive `k_diffusion`/`skimage`/training-sampling dependency chain
+which is unrelated to a forward pass) using the checkpoint's OWN real `model_config.json`, and
+`load_state_dict` real weights into them -- the SAME technique that gave ACE-Step's golden-parity
+checks "zero missing/unexpected keys" confidence.
+
+**Real result: this did NOT work.** Constructing `DiffusionTransformer(**dit_cfg)` from the real
+Medium config throws `TypeError: TransformerBlock.__init__() got an unexpected keyword argument
+'local_add_cond_dim'` -- a real config field the actual checkpoint uses (local/inpainting
+conditioning) that this installed package version's `TransformerBlock` does not accept at all.
+Separately, constructing `TAAEDecoder(**vae_dec_cfg)` from the real config throws `TypeError:
+TAAEBlock.__init__() got an unexpected keyword argument 'sinusoidal_blocks'` -- and the full real
+decoder config lists SEVERAL more fields this package's `TAAEBlock`/`TAAEDecoder` don't accept:
+`sinusoidal_blocks`, **`differential`** (confirming the VAE's own attention ALSO uses differential
+attention, not just the DiT -- a real fact this session had not yet found), `mapping_style`,
+`dim_heads` (a per-block override), `variable_stride`, `use_flash`, `mask_noise`.
+
+**What this means, concretely**: the publicly pip-installable `stable-audio-tools` is a real,
+genuine OSS project, but it is NOT the exact internal package Stability used to ship these Stable
+Audio 3.0 checkpoints -- it is missing real, checkpoint-load-bearing features (inpainting local
+conditioning, VAE differential attention, sinusoidal positional blocks, variable-stride resampling,
+training-time mask-noise robustness). This retroactively affects confidence in this doc's own
+earlier "real differential-attention formula, extracted directly from the actual `stable_audio_
+tools` package source" claim above: the TENSOR SHAPES that formula's widening factors (5×/2×/3×)
+were cross-checked against are real and checkpoint-derived (safetensors header, independent of any
+Python package) and remain solid; but the EXACT computational formula (chunk order, whether the
+diff pair truly shares `v` exactly as this package's `Attention.forward` does it) now carries real,
+unresolved uncertainty, since the package that formula came from is confirmed to not be a complete,
+version-matched implementation of this checkpoint family. `StableAudioMediumDiT`'s real-weight
+smoke test (finite, timestep-sensitive output) still passed, which is consistent with a structurally
+plausible implementation, but is NOT the same bar as a true numeric golden-parity confirmation, and
+should not be read as one.
+
+**Real, honest status change**: Sprint 4 (Medium DiT) moves from "done, real-weight-verified" to
+"real-weight non-degeneracy verified, differential-attention formula UNCONFIRMED against a
+version-matched reference." Sprint 5 (SAME-L) archaeology is on the same footing -- the real
+`sliding_window`/`dyt`/`differential` consumption questions flagged above cannot be resolved by
+reading this package's source with full confidence anymore. **Do not proceed to implement SAME-L's
+decoder against this package's source as if it were an oracle** -- either locate a real, version-
+matched reference (the actual internal `stable_audio_3` package docs/057 originally referenced, if
+findable), or proceed implementing from the checkpoint's real tensor names/shapes alone (which are
+trustworthy) while being explicit in code comments that the exact math for real-only-in-Medium
+mechanisms (VAE differential attention, sliding-window bounds, sinusoidal positional blocks) is a
+best-effort reconstruction pending a true reference, not a confirmed port -- matching how this
+project has always distinguished "structurally plausible" from "golden-verified" elsewhere.
