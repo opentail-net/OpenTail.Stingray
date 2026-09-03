@@ -187,11 +187,70 @@ under 0.1% relative error.
 
 **All three small real inference-time components are now landed and golden-verified**
 (`vocoder`, `rvq_depth_decoder`, `condition_encoder`) -- ~1.6GB of real weights, three real golden-
-parity tests, all passing on their first run. Next: read the real `encoders.py`/`before_denoise.py`/
-`denoise.py`/`decoders.py` block source for the exact real special-token prompt format and
-chunked-denoise loop (no large download needed for this), before attempting the two big downloads
-(`language_model/` ~17.2GB, `transformer/` ~9.7GB) that are still blocked on this session's disk
-space.
+parity tests, all passing on their first run.
+
+## Real autoregressive generation loop, fully specified from source, 2026-09-03
+
+Read `diffusers/modular_pipelines/minimax_music3/encoders.py` in full (362 lines,
+`MiniMaxMusic3TokenizeStep` + `MiniMaxMusic3AutoregressiveStep`) -- this is a REAL, extremely
+precise specification (exact special-token ids, exact prompt string, exact CFG top-k masking) that
+would be near-impossible to reconstruct correctly without the real source; worth recording in full
+here rather than re-deriving later.
+
+**Real prompt template** (`_clean_caption`/`_normalize_lyrics` do real, non-trivial text
+normalization first -- markdown stripping, structural-tag lowercasing, `[verse]`-style tags forced
+onto their own line):
+```
+<|im_start|><|caption_start|>{cleaned_caption}<|caption_end|><|lyrics_start|>{normalized_lyrics}<|lyrics_end|><|im_end|><|audio_start|>
+```
+Tokenized once via the real `Qwen2Tokenizer`; the REAL unconditional (CFG-null) branch is not a
+separate empty prompt but the SAME token sequence with every token except the first and the two
+trailing structure tokens replaced by a single real `_AUDIO_CFG_TOKEN_ID` (`151654`) -- both
+branches run through the language model together as a real batch-of-2.
+
+**Real special token ids** (checkpoint-specific, not derivable from the tokenizer's own vocab):
+`_AUDIO_END_TOKEN_ID=151670`, `_AUDIO_CFG_TOKEN_ID=151654`, `_AUDIO_CODE_OFFSET=151675`,
+`_SEMANTIC_VOCAB_SIZE=16384`. `_MAX_PROMPT_TOKENS=5000`, `_MAX_AUDIO_FRAMES=9000` (six minutes at
+the real 25Hz frame rate).
+
+**Real per-frame generation loop** (`MiniMaxMusic3AutoregressiveStep.__call__`):
+1. Real `language_model.model.embed_tokens(text_ids)` -> real Qwen3 forward with `use_cache=True`
+   -> `last_hidden`, real KV cache kept across the whole loop.
+2. Real semantic-code sampling: `lm_head(last_hidden)` -> mask everything outside the real audio-
+   code vocab range and the END token -> real CFG (`unconditional + (conditional-unconditional) *
+   1.5`, `_AR_CFG_SCALE=1.5`) restricted to the conditional branch's real top-50
+   (`_AR_CFG_TOP_K=50`) candidates before re-masking (avoids NaN from guiding two `-inf` logits) ->
+   real top-50 (`_AR_SAMPLING_TOP_K=50`) multinomial sample. Sampling the real END token id stops
+   generation.
+3. Real depth-code generation (`_generate_depth_codes`, uses `MiniMaxMusic3RvqDepthDecoder` as a
+   real autoregressive per-frame mini-transformer, NOT a single forward call): starts the real
+   depth sequence with `[projection(last_hidden), projection(embed(semantic_code))]`, then for each
+   of the 7 residual codebooks: run the depth decoder forward over the sequence so far, take the
+   real LAST step's hidden state, apply that codebook's real output head, apply the SAME real CFG
+   formula (`cfg_scale=1.5`), sample top-50, append the sampled code's real embedding
+   (`audio_embeddings` row `code + (index-1)*audio_vocab_size`) projected into the sequence for the
+   next depth step.
+4. Real per-frame hidden state = `cat([last_hidden(global, 1 layer), depth_hidden(7 residual-
+   codebook hiddens concatenated)])` -- confirms the exact real 8-layer concatenation this doc's
+   earlier "hidden-state fusion" finding already established, now with the EXACT real assembly
+   order (global first, then c1..c7 in codebook order).
+5. Real feedback embedding for the next frame (`_embed_audio_frame`): sums the semantic code's real
+   language-model token embedding with the SUM of all 7 residual codes' real `audio_embeddings`
+   rows, then scales by `num_codebooks**-0.5` (`8**-0.5`) -- real, easy-to-miss normalization
+   constant.
+6. Real "off-by-one" detail: frame index 0 only advances the language model's state past the real
+   `<|audio_start|>` token and does NOT emit a frame -- only `frame_index > 0` iterations get
+   appended to `frame_hiddens`.
+
+This is now a COMPLETE real specification for Phase B (Global) + Phase C (Local/depth) generation
+-- the two big real downloads (`language_model/`, `transformer/`) are the only remaining blocker
+before this loop can actually be exercised end-to-end; the logic itself needs no further real
+archaeology to implement.
+
+**Not yet done**: read `denoise.py`/`decoders.py`/`before_denoise.py` for the real chunked flow-
+matching denoise loop's exact mechanics (the 200-frame-window/overlap-blend scheme is already
+confirmed at a high level from the block docstrings, but not yet the real per-chunk math); the two
+big downloads remain blocked on this session's current disk space.
 
 ## Why this is architecturally distinct from every other audio model on this project's list
 
