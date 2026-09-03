@@ -301,6 +301,39 @@ real V1 implementation attempt is the two big downloads** (`language_model/` ~17
 Qwen3ForCausalLM, `transformer/` ~9.7GB the flow-matching DiT) -- both need real disk space this
 session currently lacks (~11GB free as of the last check), not further research.
 
+## Transformer code written from real source, awaiting weights, 2026-09-03
+
+Read `diffusers/models/transformers/transformer_minimax_music3.py` in full (the flow-matching DiT
+class) and wrote `src/OpenTail.Stingray.Diffusion/MiniMaxMusic3/MiniMaxMusic3Transformer.cs` against
+it -- disk space (7.8GB free as of this pass, shrinking as this session's other checkpoints/builds
+accumulate) still blocks downloading the real 9.7GB weights, but every real tensor name was
+cross-checked against the checkpoint's own small, free
+`transformer/diffusion_pytorch_model.safetensors.index.json` before writing any code, so this is
+ready to golden-verify immediately once space is freed -- matching the "write structure from real
+source, verify once weights land" pattern already proven this session for `StableAudioMediumDiT`.
+
+**Real, remarkably simple mechanism -- unlike every other DiT this project has ported this
+session, there is NO AdaLN at all**: the timestep embedding is PREPENDED as one extra sequence
+token before the transformer blocks and stripped off after them (`hidden_states = cat([temb,
+hidden_states])`, then `hidden_states[:, 1:]` after all 36 layers) -- a real, plain "timestep-as-a-
+token" scheme. Standard `LayerNorm` pre-norm blocks (not RMSNorm), full bidirectional self-
+attention (no causal mask, no windowing, no GQA), partial GPT-J-style RoPE (`rotary_dim=32` of
+`head_dim=64`), and a real GLU-style FF (`ff_in` produces `2*ff_inner_dim`, split into
+`[gate_states, gate]`, output is `gate_states * silu(gate)`).
+
+Real input assembly: `concat([noisy_latent(128), zeros(128), condition.transpose(2048)])` along
+channels (`2304` channels total) -> `preprocess_conv` (real `Conv1d(k=1)`, no bias) added as a
+RESIDUAL (`conv(x)+x`, not replacing `x`) -> `proj_in` to the real inner dim (`2048`). Output side
+mirrors this with `proj_out` + `postprocess_conv` (again a residual, not a replacement).
+
+**Not yet done**: real-weight non-degeneracy test and golden-parity check (both blocked on the
+9.7GB download); wiring the full V1 pipeline (tokenize -> autoregressive -> condition_encoder ->
+this transformer's chunked Euler loop -> vocoder -> crop/stitch) together, which also needs the
+17.2GB `language_model/` download. Given this environment's current disk constraints, the practical
+next step once resumed is likely to free disk space deliberately (the user's own call, not this
+session's to make unilaterally) or work in a fresh environment with more headroom, rather than
+trying to fit ~27GB of new downloads into an already-tight ~8GB.
+
 ## Why this is architecturally distinct from every other audio model on this project's list
 
 Not another MusicGen/AudioGen codec-LM, not another ACE-Step-style single DiT+VAE — a genuine
