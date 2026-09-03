@@ -344,6 +344,20 @@ disk margin** -- flagging this as a real, user-visible blocker rather than pushi
 filling a shared disk to the brim is exactly the kind of action this project's own risk guidance
 calls for pausing on rather than deciding unilaterally.
 
+**Final real confirmation, same day**: read `modular_pipeline.py` (the real
+`MiniMaxMusic3ModularPipeline` class) -- its real `sampling_rate`/`frame_rate`/`latent_hop_length`/
+`num_channels_latents` properties (44100Hz, 25Hz, 512, 128) all match what's already recorded in
+`MiniMaxMusic3Config`, confirming Phase A archaeology's numbers are complete and self-consistent.
+
+**Deliberate stopping point**: the remaining real work -- the top-level pipeline class wiring the
+autoregressive generation loop (real KV-cache management, real per-frame sampling, real depth-code
+loop) -- is genuinely complex, stateful code that this session's own discipline says should not be
+written blind without SOME way to test it (unlike the DiT, which is a single stateless forward pass
+safe to write from spec alone and verify later). Writing it now, with neither the `language_model`
+nor `transformer` weights available to even non-degeneracy-test it, risks producing plausible-but-
+untested glue that would need real rework anyway once the weights land. Holding this for when disk
+space is available rather than guessing further.
+
 ## Why this is architecturally distinct from every other audio model on this project's list
 
 Not another MusicGen/AudioGen codec-LM, not another ACE-Step-style single DiT+VAE — a genuine
