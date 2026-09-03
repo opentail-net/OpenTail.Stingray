@@ -790,3 +790,56 @@ trustworthy) while being explicit in code comments that the exact math for real-
 mechanisms (VAE differential attention, sliding-window bounds, sinusoidal positional blocks) is a
 best-effort reconstruction pending a true reference, not a confirmed port -- matching how this
 project has always distinguished "structurally plausible" from "golden-verified" elsewhere.
+
+## CONFIDENCE RESTORED, same day: the PyPI release was stale, GitHub `main` matches
+
+The PyPI `stable-audio-tools` release (0.0.19/0.0.20) is simply BEHIND the project's real GitHub
+`main` branch (commit `3241adba`) -- `main` has `local_add_cond_dim`, `differential` (on the VAE
+too), `sinusoidal_blocks`, `dyt`, `variable_stride`, and every other real field the checkpoint uses.
+Python 3.14 (this environment) is outside the package's declared `<3.11` support range so `pip
+install` itself refuses, but the real `.py` source files were fetched directly from GitHub `main`
+(raw content, no pip needed) and read directly -- same real-source-reading discipline as every other
+architecture this session, just via a different fetch path.
+
+**Differential attention formula (DiT): RE-CONFIRMED, byte-identical to what was already
+implemented.** `Attention.forward`'s real differential branch in `main` is unchanged from the stale
+package: `to_qkv` chunk(5) -> `(q,k,v,q_diff,k_diff)`; `qk_norm`/RoPE applied identically to both
+pairs (stacked, elementwise over head_dim); two full attention passes sharing `v`; `out = out_main -
+out_diff`. `StableAudioMediumDiT`'s implementation needs no changes. The earlier downgrade was about
+this package's UNRELATED config-field support (an honest, worthwhile check to run), not about this
+specific formula, which turns out to have been correct all along.
+
+**SAME-L's real class is `TransformerResamplingBlock`, NOT the stale package's `TAAEBlock`** (a
+second, older class of the same rough shape still present in `main` -- real, easy trap: matching
+tensor/config field NAMES against the wrong class in the same file). Real, now-confirmed answers to
+both open questions from Sprint 5's archaeology:
+
+- **`qk_norm` is `"dyt"` (DynamicTanh-based), not `"ln"`** -- `attn_kwargs={'qk_norm': "dyt" if dyt
+  else "rms", ...}`, and `dyt` DEFAULTS to `True` in `TransformerResamplingBlock.__init__`. Medium's
+  config omits the `dyt` key entirely (uses the default, `True`) -- so Medium ALSO uses DynamicTanh
+  qk_norm, contradicting this doc's earlier "`dyt` absent for Medium" reading of the raw config
+  diff (true that the KEY is absent, false that the BEHAVIOR differs -- the default fills it in
+  identically). **Real, load-bearing correction to an earlier finding in this same doc.**
+- **`sliding_window` is a per-stride multiplier, not a raw frame count**: `_get_sliding_window_size`
+  computes `[(win * (stride + 1 + prepend_cond_length)) for win in window]` -- Medium's `[1, 1]`
+  scales by each block's own `(stride+1)`, not a literal ±1-frame window. Small's config omits the
+  key entirely -&gt; `sliding_window=None` -&gt; **no windowing at all, full attention** (confirmed:
+  `_get_sliding_window_size` returns `None` when `window is None`).
+- **`differential=True` is ALSO the real DEFAULT for `TransformerResamplingBlock`** -- and re-
+  checking this doc's own very first Phase-0 config dump (SFX's full `taae_v2` encoder config,
+  captured verbatim near the top of this doc), `"differential": true` was present THERE TOO, just
+  never flagged as a Small-vs-Medium difference because it's identical between them. **This means
+  Small's SAME-S VAE already uses real differential attention** -- and `AcousticVae.cs` (this
+  project's own already-shipped, golden-verified Small VAE) **already implements it**: real fused
+  `to_qkv`-style chunk(5), per-head `DynamicTanh` qk_norm applied identically to both pairs, RoPE,
+  two attention passes, `out = out_main - out_diff` (see `AcousticVae.cs` around its own
+  `PerHeadDynamicTanh`/differential-attention comment). SAME-L needs the SAME real mechanism, just
+  wider (`dim_heads=128` vs Small's 64, `channels=256` vs 128, `transformer_depths=[12]` vs `[6]`)
+  plus real sliding-window attention added (which Small's `AcousticVae.cs` doesn't need, since its
+  own window is `None`).
+
+**Net effect**: SAME-L is now a well-scoped, structurally de-risked port -- reuse `AcousticVae.cs`'s
+proven differential-attention/DynamicTanh machinery as the template (not a base class, same
+duplicate-then-DRY-later discipline as the DiT), widen the config, and add real sliding-window
+attention (a real, new mechanism `AcousticVae.cs` doesn't have) using the now-confirmed
+`stride+1`-scaled window formula. Implementation starts next.

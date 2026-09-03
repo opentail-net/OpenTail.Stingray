@@ -49,9 +49,18 @@ before any code) when picked up.
   the VAE too, `mapping_style`, `variable_stride`, `mask_noise`). This downgrades the differential-
   attention FORMULA (not the tensor shapes, which remain solid) from "confirmed" to "structurally
   plausible, real-weight-tested, not golden-verified" — see docs/057's "IMPORTANT CORRECTION"
-  section for the full writeup. SAME-L (Sprint 5) implementation is paused pending either a real
-  version-matched reference or an explicit "best-effort, not confirmed" framing for its own real
-  new mechanisms (VAE differential attention, sliding-window bounds).
+  section for the full writeup. **Update, same session: confidence restored.** The PyPI release was
+  simply stale — the project's real GitHub `main` branch has every field the checkpoint needs, and
+  its differential-attention formula is byte-identical to what was already implemented (re-
+  confirmed, not changed). Also resolved SAME-L's two open questions from Sprint 5 archaeology:
+  `qk_norm` is real DynamicTanh-based (`"dyt"`, defaults `True` for BOTH Small and Medium — an
+  earlier reading of "dyt absent for Medium" was correcting a key-presence artifact, not a real
+  behavior difference), and `sliding_window` is a per-block `(stride+1)`-scaled multiplier, not a
+  raw frame count (Small's absent key means `sliding_window=None` → full attention, no windowing).
+  Real bonus finding: Small's SAME-S VAE ALSO uses differential attention by the same real default,
+  and this project's own already-shipped `AcousticVae.cs` already implements it — SAME-L reuses
+  that same proven mechanism, just wider, plus real sliding-window attention added. SAME-L
+  implementation starts next.
 - **MiniMax-Music3** — a genuinely new architecture family for this project (hybrid autoregressive
   + flow-matching: 8B Global LLM + 0.6B Local LLM + 2.4B flow-matching + 123M Flow-VAE, with
   Global/Local HIDDEN STATES fused into the flow synthesizer, not just discrete RVQ tokens
