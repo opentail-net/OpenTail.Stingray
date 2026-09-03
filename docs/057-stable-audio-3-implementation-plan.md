@@ -46,6 +46,18 @@ this -- measured no better at 25 steps (cosine ~0.51) than at 3 (cosine ~0.64). 
 this specific chaotic case cannot reliably meet. A real listening/quality check at realistic
 (multi-second, not this instability-triggering short/high-CFG) durations remains a real gap.
 
+**Listening-check sample generated, 2026-09-02** — 6s, "lofi house loop", seed 42, steps 25,
+cfg_scale=6.0 (real Gradio-demo defaults, not the chaotic 0.5s/steps=25 golden-fixture case above).
+Ran real end-to-end (tokenizer → T5Gemma → DiT Euler+CFG → VAE decode), 390.8s wall clock on this
+machine, wrote `docs/audio-samples/stable-audio-3-listening-check.wav` (local-only, not committed —
+see `CLAUDE.md` rule 9). Handed to the operator to judge by ear. **Verdict, 2026-09-02: "100% good."** This closes the last
+open gap on Stable Audio 3 — text encoder, DiT, VAE, tokenizer, and now real listening-check output
+quality at a realistic (non-chaotic) duration/seed are all confirmed. The one-off generator test
+used to produce the sample was removed from `StableAudioPipelineGoldenParityTests.cs` after capture
+— it was a manual-check scaffold, not a real regression test. Stable Audio 3 can be considered fully
+done; update the README status matrix and `docs/00-current-work.md` item 13 accordingly if not
+already reflected.
+
 ## T5Gemma tokenizer — root-caused AND fixed, 2026-09-02
 
 Checked whether this project's existing generic HF-BPE tokenizer infrastructure
@@ -566,3 +578,62 @@ reference. Treat `Encode` as unverified until it gets its own golden fixture.
    partial-rotary RoPE width and V-zeroing cross-attn mask; VAE's `n`-derivation and buffer-size
    bugs) that a "compiles and produces plausible-shaped output" bar would have missed entirely,
    continuing this project's established pattern (GLM-4.6V, FLUX, Pixtral).
+
+## SA3_MODEL_MATRIX — Small SFX vs. Small Music, real archaeology, 2026-09-03
+
+Per docs/065's Phase 0 ("architecture comparison first, before any code"). Real `model_config.json`
+field-by-field diff (`stabilityai/stable-audio-3-small-sfx-base` vs. the already-working
+`stabilityai/stable-audio-3-small-music-base`), plus real file hashes via the HF Hub API:
+
+| Component | Small Music (working) | Small SFX | Same? |
+|---|---|---|---|
+| DiT config (`model.diffusion.config`) | embed_dim=1024, depth=20, heads=16, head_dim=64, cond_token_dim=768, global_cond_dim=768, qk_norm=rms, global_cond_type=adaLN, num_memory_tokens=64 | byte-identical | **YES** |
+| VAE/pretransform config (`taae_v2`) | in_channels=512, channels=128, c_mults=[6], strides=[16], latent_dim=256, transformer_depths=[6], dyt=true, differential=true | byte-identical (only a cosmetic `scale:1.0` field present in SFX's config, functionally a no-op default) | **YES** |
+| T5Gemma text encoder weights | `t5gemma-b-b-ul2/model.safetensors`, sha256 `9b05ea5a...` | **IDENTICAL sha256** `9b05ea5a...` (same file, same size, mirrored into both repos) | **YES, byte-for-byte** |
+| Diffusion+VAE weights (`model.safetensors`) | sha256 `79691fac...` | sha256 `0c7cddb2...` (same SIZE, 2270384940 bytes -- same tensor shapes -- different trained values) | **NO** (expected -- this IS the actual model difference) |
+| `conditioning.configs[0].config.repo_id` | points at `stable-audio-3-small-music` | points at `stable-audio-3-small-sfx` | Cosmetic only -- both resolve to the identical T5Gemma weights above |
+
+**Exit criterion met**: Small SFX needs **zero DiT/VAE code changes** -- same `embed_dim`/`depth`/
+`heads`/`taae_v2` config the existing `StableAudioDiT`/`AcousticVae`/`StableAudioPipeline` already
+implement and golden-verified against Small Music. `StableAudioPipeline`'s constructor already
+takes an arbitrary `IWeightLoader` (no baked-in checkpoint path), so it is architecturally
+checkpoint-agnostic already -- pointing it at the real SFX `model.safetensors` should just work.
+The real remaining work is verification (real tensor names inside SFX's `model.safetensors` do
+match, real-weight non-degeneracy, a real generated SFX sample) plus whatever duration-range
+difference the checkpoints encode (both show identical `sample_size`/`distribution_shift_options`
+in `model_config.json`, so "SFX supports longer duration" from the official docs, if real, is not
+visible in these config fields -- needs checking against the loaded params directly, not assumed).
+
+This strongly changes docs/065's own Sprint 1/2 estimate ("Small SFX mostly tests how configurable
+the existing runtime is") from a hypothesis to a confirmed, near-zero-new-code integration --
+Sprint 3's consolidation work (generic `IStableAudio3Engine`/variant enum) is still real and
+worthwhile, but the "does the DiT/VAE architecture actually match" risk this Phase 0 existed to
+retire is now retired.
+
+**Medium**: not yet investigated -- no `stabilityai/stable-audio-3-medium*` repo located in this
+pass; real Sprint 4/5 archaeology (does it actually share this DiT/VAE shape, or diverge like this
+plan's own AcousticVae/AutoencoderOobleck cautionary tale) remains open, unlike SFX which turned
+out to need none.
+
+## Small SFX — WORKING, 2026-09-03, confirms the zero-new-code prediction above
+
+Downloaded the real `stable-audio-3-small-sfx-base/model.safetensors` (2.27GB, real 685-tensor
+count -- matches Small Music's own real tensor count exactly). `StableAudio3SmallSfxTests` (new,
+`tests/OpenTail.Stingray.Tests.Diffusion/StableAudio3SmallSfxTests.cs`) drives the EXISTING,
+completely unmodified `StableAudioPipeline`/`StableAudioDiT`/`AcousticVae` classes pointed at this
+checkpoint (reusing the already-local T5Gemma weights, since they're the byte-identical file) --
+passes on the FIRST run: finite, non-silent real SFX audio from a real prompt ("a glass bottle
+shattering on a hard floor"). Zero source changes were needed anywhere in
+`src/OpenTail.Stingray.Diffusion/StableAudio/` -- the SA3_MODEL_MATRIX archaeology's prediction
+held exactly.
+
+Generated a real 3s sample (`docs/diffusion-samples/sa3_small-sfx_glass-shatter_3s.wav`, gitignored
+per rule 9, 25 real Euler steps + real CFG/APG) for a listening check.
+
+**Not yet done**: (1) no numeric golden-parity fixture specifically for SFX (the DiT/VAE MATH is
+already golden-verified via the Small Music fixtures this checkpoint shares architecturally, so
+this is lower priority than it was for a genuinely new architecture like ACE-Step, but a real SFX
+end-to-end reference dump would still be the more rigorous bar); (2) the docs/065 plan's own
+Sprint 3 (generic `IStableAudio3Engine`/`StableAudio3Variant` API) not started -- both checkpoints
+currently require the caller to construct `StableAudioPipeline` directly with the right directory,
+no unified variant-selection surface yet; (3) Medium entirely unstarted.

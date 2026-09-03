@@ -25,16 +25,21 @@ against the rest of this backlog — recorded here as a standing want-list, to b
 scoped plan (matching the MusicGen/AudioGen/ACE-Step docs' pattern: real config + tensor inventory
 before any code) when picked up.
 
-- **Stable Audio 3 Medium** and **Stable Audio 3 Small SFX** — larger/SFX-focused variants of the
-  already-shipped Stable Audio 3 (see item 17 below). User provided a detailed sequencing plan for
-  these (Small SFX first as a "how configurable is the existing runtime" proof, consolidate, then
-  Medium's real new work: a bigger DiT config + the SAME-L autoencoder with sliding-window
-  attention) — kept in full, not started, in
-  `docs/065-stable-audio-3-medium-smallsfx-future-plan.md`. Real architecture equivalence to the
-  existing `AcousticVae`/`T5GemmaEncoder`/`StableAudioDiT` stack is a hypothesis to verify against
-  real checkpoint tensors first, not assumed (the ACE-Step/Stable-Audio-3 VAE mixup earlier this
-  week — two genuinely different architectures that looked similar on paper — is the exact
-  cautionary precedent).
+- **Stable Audio 3 Small SFX — WORKING, 2026-09-03.** Real archaeology (`SA3_MODEL_MATRIX` section,
+  docs/057) found Small SFX's DiT/VAE config is byte-identical to the already-working Small Music
+  runtime and its T5Gemma text encoder is the literal same checkpoint (identical sha256) — so it
+  needed ZERO source changes, just pointing the existing `StableAudioPipeline` at the real SFX
+  `model.safetensors` (2.27GB, 685 tensors, confirmed matching). `StableAudio3SmallSfxTests` passes
+  on the first run: real finite, non-silent SFX audio from a real prompt. A real 3s sample generated
+  to `docs/diffusion-samples/` for a listening check. The real architecture-equivalence caution
+  below (ACE-Step/Stable-Audio-3 VAE mixup precedent) turned out NOT to apply here — verified, not
+  assumed, exactly per that same discipline.
+- **Stable Audio 3 Medium** — not yet started. User's detailed sequencing plan (Small SFX proof,
+  consolidate, then Medium's real new work: bigger DiT config + SAME-L autoencoder with
+  sliding-window attention) kept in full in
+  `docs/065-stable-audio-3-medium-smallsfx-future-plan.md`. No `stabilityai/stable-audio-3-medium*`
+  repo located yet — real archaeology (does Medium actually share this DiT/VAE shape, unlike the
+  ACE-Step/Stable-Audio-3 VAE mixup cautionary precedent) still needed before assuming reuse.
 - **MiniMax-Music3** — a genuinely new architecture family for this project (hybrid autoregressive
   + flow-matching: 8B Global LLM + 0.6B Local LLM + 2.4B flow-matching + 123M Flow-VAE, with
   Global/Local HIDDEN STATES fused into the flow synthesizer, not just discrete RVQ tokens
