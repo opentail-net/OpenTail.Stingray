@@ -706,6 +706,38 @@ output, confirming AdaLN conditioning is genuinely wired) -- matches Sprint 4's 
 `stable-audio-tools` reference run with Medium's real weights, differential attention included --
 the newly-installed `stable-audio-tools` package makes this realistic as a next step, following the
 same technique as ACE-Step's golden-parity checks this session); (2) real T5Gemma/VAE wiring into a
-full `StableAudioMediumPipeline` not started -- SAME-L (Sprint 5) blocks the VAE half; (3) SAME-L's
-real windowed-attention/DynamicTanh-absence/mapping differences still need reading from the real
-`autoencoders.py` source before porting.
+full `StableAudioMediumPipeline` not started -- SAME-L (Sprint 5) blocks the VAE half.
+
+## Sprint 5 — SAME-L (real source read, implementation not started)
+
+Read the real `TAAEBlock`/`TAAEEncoder`/`TAAEDecoder` classes directly (same
+`stable_audio_tools/models/autoencoders.py` the DiT archaeology used). Real, confirmed structure:
+each `TAAEBlock` is a strided conv (`WNConv1d`/`WNConvTranspose1d`, `kernel=2*stride,
+padding=ceil(stride/2)`, same shape as the small-model `AcousticVae`'s own resampling convs) plus a
+real stack of `transformer_depth` `TransformerBlock`s using `dim_heads=128` (note: DOUBLE the DiT's
+64), `qk_norm="ln"` (real LayerNorm-based qk_norm, NOT RMSNorm -- a real, easy-to-miss difference
+from every other qk_norm user in this project), `add_rope=True`, and real `sliding_window` attention
+(`attn_kwargs={'sliding_window': sliding_window, ...}`).
+
+**Real open question, not yet resolved**: the config diff found Medium's encoder/decoder set
+`sliding_window: [1, 1]` explicitly while Small's config has NO such key at all (falls back to
+`TAAEEncoder`/`TAAEDecoder`'s own Python-level default of `[63, 64]`, confirmed from the class
+signature). A window of literally `[1,1]` frames each side would be an extremely tight, almost-
+diagonal-only attention span for a model this size -- plausible (SAME-L may lean on `transformer_
+depths=[12]`, double Small's `[6]`, to make up for tighter per-layer receptive field) but NOT yet
+confirmed against how `sliding_window` is actually consumed inside `Attention`/`TransformerBlock`
+(units, inclusive/exclusive bounds, whether it's frame-count or something else). Read that
+consumption path before implementing -- do not assume `[1,1]` means what it looks like.
+
+Also real and confirmed: `dyt` (config's `DynamicTanh` norm flag) is present+true for Small,
+ABSENT for Medium -- needs checking what `TAAEBlock`/its `norm_kwargs`/`remove_norms` actually do
+with that flag (not visible in the `TAAEBlock` constructor signature itself, likely consumed
+elsewhere, e.g. in how `AudioAutoencoder`'s own encoder/decoder wrapper conv-mapping stages choose
+their activation -- the config's separate `conv_mapping`/`use_snake` flags are also real, confirmed
+differences between Small and Medium not yet traced to their consuming code).
+
+**Not yet done**: read `Attention`'s real `sliding_window` handling and `AudioAutoencoder`'s
+`dyt`/`conv_mapping` consumption; port `SameArge`/`TAAEDecoder`-equivalent C# decoder (Small's
+`AcousticVae.cs` is the structural template, NOT a base class to inherit from per the same
+duplicate-then-DRY-later discipline used for the DiT above); golden-verify against the real
+`stable_audio_tools` package now that it's installed in this environment.
