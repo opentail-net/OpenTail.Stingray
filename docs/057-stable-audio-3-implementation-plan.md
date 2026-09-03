@@ -637,3 +637,42 @@ end-to-end reference dump would still be the more rigorous bar); (2) the docs/06
 Sprint 3 (generic `IStableAudio3Engine`/`StableAudio3Variant` API) not started -- both checkpoints
 currently require the caller to construct `StableAudioPipeline` directly with the right directory,
 no unified variant-selection surface yet; (3) Medium entirely unstarted.
+
+## Medium — real archaeology done, 2026-09-03; genuinely different (unlike SFX)
+
+`stabilityai/stable-audio-3-medium-base` located and real-archaeology'd (field-by-field
+`model_config.json` diff against Small Music, same technique as the SFX matrix above). Unlike SFX,
+Medium is a REAL architecture change, confirming this plan's own caution rather than repeating
+SFX's "turned out identical" result:
+
+- **T5Gemma text encoder is STILL the identical checkpoint** (sha256 `9b05ea5a...`, same as Small
+  Music/SFX -- already have it locally, no re-download needed).
+- **DiT config, real differences**: `embed_dim` 1024→1536, `depth` 20→24, `num_heads` 16→24 (head_dim
+  stays 64), and `attn_kwargs.differential` False→**True** (a real new attention variant, see
+  below). `sample_size` 5324800→16777216 (matches a real, much longer max duration).
+- **VAE (`taae_v2`, "SAME-L") config, real differences**: `channels` 128→256, `transformer_depths`
+  [6]→[12], and a real `sliding_window: [1, 1]` key present (absent in Small's config entirely) --
+  confirms docs/065's own flag that SAME-L uses windowed attention, a genuinely new mechanism this
+  port's `AcousticVae` doesn't have. Also: `dyt` (DynamicTanh norm) present in Small, ABSENT in
+  Medium; `conv_mapping`/`chunk_size` present in Small, absent in Medium -- real, structural
+  differences in the resampling/mapping scheme, not just size knobs. Real checkpoint downloaded
+  (9.22GB `model.safetensors`) to confirm real tensor names before assuming any of this from config
+  alone (per this project's own rule 8).
+
+**Real differential-attention formula, extracted directly from the actual `stable_audio_tools`
+package source** (`pip install stable-audio-tools --no-deps`; not the paper's learnable-λ variant
+this project might otherwise have assumed -- checking the real source mattered here): applies to
+BOTH self- AND cross-attention (both constructed with the same shared `attn_kwargs` in
+`TransformerBlock.__init__`, confirmed from `transformer.py`). When `differential=True`, the QKV
+(or Q / KV) projection widens to produce a SECOND (`q_diff`, `k_diff`) pair sharing the SAME `v`;
+two full attention passes run (`(q,k,v)` and `(q_diff,k_diff,v)`), and the final output is simply
+`out = out_main - out_diff` -- no learnable mixing coefficient, no per-head lambda. RoPE (self-
+attention only, unaffected for cross-attention) is applied to BOTH q and q_diff uniformly. This is
+a real, well-scoped, implementable addition to the existing `StableAudioDiT`/`Attention` port, not
+a fundamentally new attention mechanism.
+
+**Status**: real checkpoint download in progress (9.22GB); DiT differential-attention formula and
+config deltas fully understood from real source; SAME-L's real windowed-attention/DynamicTanh/
+mapping differences identified from config but NOT yet read from real `autoencoders.py` source
+(next step, alongside real tensor-name confirmation once the checkpoint finishes downloading).
+Continuing per docs/065's own Sprint 4 (Medium DiT) → Sprint 5 (SAME-L decoder) order.
