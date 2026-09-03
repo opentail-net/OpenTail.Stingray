@@ -154,10 +154,27 @@ MiniMax-Music3 component -- structurally close to `Audio.Parler.DacDecoder`'s sh
 self-contained (CLAUDE.md rule 7 -- DRY once a second real caller of the SAME exact formula
 exists, not speculatively here since Snake's parameterization differs from Parler's).
 
-Next: `MiniMaxMusic3RVQDepthDecoder` (small, 4 layers, real next-easiest component) and
-`MiniMaxMusic3ConditionEncoder` (8 layers), then the real `encoders.py`/`before_denoise.py`/
-`denoise.py`/`decoders.py` block source for the exact prompt format and chunked-denoise loop,
-before attempting the two big downloads.
+## RVQ depth decoder ported, golden-verified, 2026-09-03
+
+`src/OpenTail.Stingray.Diffusion/MiniMaxMusic3/MiniMaxMusic3RvqDepthDecoder.cs`: the real "Local"
+component. Real, simple architecture confirmed from source (`minimax_music3_rvq_depth_decoder.py`):
+unlike every other transformer this project has ported this session, it uses LEARNED absolute
+positional embeddings (`pos_embedding`, `max_position_embeddings=16`) added at the input rather than
+RoPE -- standard causal full self-attention otherwise (no GQA, `heads=16, head_dim=256`), standard
+pre-norm RMSNorm + SwiGLU blocks. Real per-step flow: the projected global hidden state followed by
+up to 7 embedded residual-codebook codes (`audio_embeddings`, real row offset
+`codebookIdx*audioVocabSize + code`), each step's hidden state feeding that step's own real output
+head (`audio_heads`, 7 heads for the 7 residual codebooks c1..c7).
+
+Loaded the real `diffusers.MiniMaxMusic3RVQDepthDecoder` with the same real weights (zero missing/
+unexpected keys) and diffed against a fixed-seed synthetic input -- `MiniMaxMusic3RvqDepthDecoder
+GoldenParityTests` passes on the FIRST run, well under 0.1% relative error.
+
+Two of five real inference-time components now landed and golden-verified (vocoder,
+rvq_depth_decoder). Next: `MiniMaxMusic3ConditionEncoder` (8 layers, real condition/context input
+for the flow-matching transformer), then the real `encoders.py`/`before_denoise.py`/`denoise.py`/
+`decoders.py` block source for the exact prompt format and chunked-denoise loop, before attempting
+the two big downloads (`language_model/`, `transformer/`).
 
 ## Why this is architecturally distinct from every other audio model on this project's list
 
