@@ -34,33 +34,25 @@ before any code) when picked up.
   to `docs/diffusion-samples/` for a listening check. The real architecture-equivalence caution
   below (ACE-Step/Stable-Audio-3 VAE mixup precedent) turned out NOT to apply here — verified, not
   assumed, exactly per that same discipline.
-- **Stable Audio 3 Medium — DiT real-weight-tested, formula confidence downgraded, 2026-09-03.**
-  `stabilityai/stable-audio-3-medium-base` located; real archaeology confirmed Medium genuinely
-  differs from Small (embed_dim 1536 vs 1024, depth 24 vs 20, heads 24 vs 16, real differential
-  attention, SAME-L VAE with real config differences) — unlike SFX, this needed real new code.
-  `StableAudioMediumDiT` (`src/OpenTail.Stingray.Diffusion/StableAudio/`) implements differential
-  self-/cross-attention; real tensor SHAPES were confirmed directly against the checkpoint's own
-  safetensors header (independent of any Python package) and `StableAudio3MediumDiTTests` passes
-  real-weight non-degeneracy + timestep-sensitivity checks. **Important correction, same session**:
-  attempting a rigorous golden-parity check (matching this project's own standing discipline) found
-  the public `stable-audio-tools` pip package is NOT a version-matched reference for these real
-  checkpoints — constructing its classes from the checkpoint's own real config throws `TypeError`s
-  for real fields it doesn't support (`local_add_cond_dim`, `sinusoidal_blocks`, `differential` on
-  the VAE too, `mapping_style`, `variable_stride`, `mask_noise`). This downgrades the differential-
-  attention FORMULA (not the tensor shapes, which remain solid) from "confirmed" to "structurally
-  plausible, real-weight-tested, not golden-verified" — see docs/057's "IMPORTANT CORRECTION"
-  section for the full writeup. **Update, same session: confidence restored.** The PyPI release was
-  simply stale — the project's real GitHub `main` branch has every field the checkpoint needs, and
-  its differential-attention formula is byte-identical to what was already implemented (re-
-  confirmed, not changed). Also resolved SAME-L's two open questions from Sprint 5 archaeology:
-  `qk_norm` is real DynamicTanh-based (`"dyt"`, defaults `True` for BOTH Small and Medium — an
-  earlier reading of "dyt absent for Medium" was correcting a key-presence artifact, not a real
-  behavior difference), and `sliding_window` is a per-block `(stride+1)`-scaled multiplier, not a
-  raw frame count (Small's absent key means `sliding_window=None` → full attention, no windowing).
-  Real bonus finding: Small's SAME-S VAE ALSO uses differential attention by the same real default,
-  and this project's own already-shipped `AcousticVae.cs` already implements it — SAME-L reuses
-  that same proven mechanism, just wider, plus real sliding-window attention added. SAME-L
-  implementation starts next.
+- **Stable Audio 3 Medium — V1 end-to-end WORKING, 2026-09-03.** Real archaeology confirmed Medium
+  genuinely differs from Small (embed_dim 1536 vs 1024, depth 24 vs 20, heads 24 vs 16, real
+  differential attention on both DiT and VAE, SAME-L VAE with real sliding-window attention) —
+  unlike SFX, this needed real new code, all now landed: `StableAudioMediumDiT` (differential self-/
+  cross-attention, real tensor shapes confirmed against the checkpoint's own header) and
+  `SameLargeVae` (reuses `AcousticVae.cs`'s proven differential-attention/DynamicTanh machinery,
+  widened, with single-pass banded sliding-window attention replacing Small's dual-pass chunking —
+  real branch logic confirmed by reading `TransformerResamplingBlock.forward` directly). A real
+  mid-session correction-then-restoration is worth knowing about: the public `stable-audio-tools`
+  PyPI release turned out to be stale for several real config fields, which briefly downgraded
+  confidence in the differential-attention formula — fetching the real GitHub `main` source
+  directly re-confirmed the formula was correct all along (see docs/057's "CONFIDENCE RESTORED"
+  section for the full arc). `StableAudioMediumPipeline` wires text encoder (T5Gemma, literal same
+  checkpoint as Small) + DiT + VAE together; `StableAudio3MediumPipelineTests` passes real
+  end-to-end generation on the first run. A real 4s sample was generated and sent for a listening
+  check. **Not yet done**: numeric golden-parity, the `sinusoidal_blocks` FF variant (decoder-only,
+  deliberately deferred), and docs/065's Sprint 3 consolidation (`IStableAudio3Engine`) now that
+  three real variants (Small Music, Small SFX, Medium) exist. See docs/057-stable-audio-3-
+  implementation-plan.md for the full writeup.
 - **MiniMax-Music3** — a genuinely new architecture family for this project (hybrid autoregressive
   + flow-matching: 8B Global LLM + 0.6B Local LLM + 2.4B flow-matching + 123M Flow-VAE, with
   Global/Local HIDDEN STATES fused into the flow synthesizer, not just discrete RVQ tokens
