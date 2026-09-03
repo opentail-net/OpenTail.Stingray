@@ -880,7 +880,25 @@ checkpoint copies should be cleaned up promptly once mirrored into `models/`.
 
 **Not yet done**: `sinusoidal_blocks` FF variant; numeric golden-parity for SAME-L (same real-
 weights-non-degeneracy-not-golden-verified caveat as the DiT, for the same underlying package-
-version reasons, now resolved in confidence but not yet turned into an actual numeric diff); wiring
-`StableAudioMediumDiT` + `SameLargeVae` + the shared T5Gemma encoder into a real
-`StableAudioMediumPipeline` for genuine end-to-end text-to-music generation -- the last remaining
-step before Medium is a usable model, not just two independently-tested components.
+version reasons, now resolved in confidence but not yet turned into an actual numeric diff).
+
+## Medium end-to-end pipeline wired, same day
+
+`src/OpenTail.Stingray.Diffusion/StableAudio/StableAudioMediumPipeline.cs`: duplicated from
+`StableAudioPipeline` (Small) -- same real conditioning assembly, real CFG/APG formula, same Euler
+loop -- wired to `StableAudioMediumDiT`/`SameLargeVae` instead of Small's `StableAudioDiT`/
+`AcousticVae`. The T5Gemma text encoder is reused completely unchanged (literal same checkpoint
+file, confirmed identical sha256 earlier this session). `StableAudio3MediumPipelineTests` exercises
+the full real chain (real tokenizer -> real T5Gemma -> real differential-attention DiT with real
+CFG (two forward passes/step) -> real SAME-L banded-attention decode) against the full real 9.22GB
++ 1.18GB checkpoints.
+
+Medium's V1 (text-to-music, no editing modes) is now feature-complete at the "real weights load,
+real forward pass runs end to end" bar -- the same bar SFX and ACE-Step's V1 cleared before their
+own golden-parity/quality passes. Remaining before calling Medium done: numeric golden-parity (DiT
+and VAE formulas are real-source-confirmed but not yet turned into an actual numeric diff), a real
+generated sample + listening check (same discipline this session already applied to ACE-Step after
+the "soup of noise" report -- do not assume "produces audio" means "sounds right"), the
+`sinusoidal_blocks` FF variant, and docs/065's own Sprint 3 consolidation (`IStableAudio3Engine`)
+now that there are three real variants (Small Music, Small SFX, Medium) that could share one
+surface.
