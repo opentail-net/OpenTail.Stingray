@@ -86,7 +86,7 @@ public sealed class StableAudioMediumDiT : IDisposable
         memTokens.AsSpan().CopyTo(xFull.AsSpan(0, MemoryTokens * Dim));
         x.AsSpan().CopyTo(xFull.AsSpan(MemoryTokens * Dim, seqLen * Dim));
 
-        var (cos, sin) = BuildPartialRope(totalSeq);
+        var (cos, sin) = StableAudioAttentionKernels.BuildPartialRope(totalSeq);
 
         var globalCond = GlobalCondEmbedder(globalEmbed);
 
@@ -132,7 +132,7 @@ public sealed class StableAudioMediumDiT : IDisposable
 
     private float[] ToTimestepEmbed(float timestep)
     {
-        var feats = ExpoFourierFeatures(timestep, TimestepFeaturesDim);
+        var feats = StableAudioAttentionKernels.ExpoFourierFeatures(timestep, TimestepFeaturesDim);
         var w0 = _st.ReadF32("model.model.to_timestep_embed.0.weight");
         var b0 = _st.ReadF32("model.model.to_timestep_embed.0.bias");
         var w2 = _st.ReadF32("model.model.to_timestep_embed.2.weight");
@@ -140,23 +140,6 @@ public sealed class StableAudioMediumDiT : IDisposable
         var h = DiffusionOps.Linear(feats, w0, b0, 1, TimestepFeaturesDim, Dim);
         DiffusionOps.SiluInPlace(h);
         return DiffusionOps.Linear(h, w2, b2, 1, Dim, Dim);
-    }
-
-    private static float[] ExpoFourierFeatures(float t, int dim)
-    {
-        int half = dim / 2;
-        var outp = new float[dim];
-        float logMin = MathF.Log(ExpoMinFreq);
-        float logMax = MathF.Log(ExpoMaxFreq);
-        for (int i = 0; i < half; i++)
-        {
-            float ramp = half == 1 ? 0f : (float)i / (half - 1);
-            float freq = MathF.Exp(ramp * (logMax - logMin) + logMin);
-            float arg = t * freq * 2f * MathF.PI;
-            outp[i] = MathF.Cos(arg);
-            outp[half + i] = MathF.Sin(arg);
-        }
-        return outp;
     }
 
     private float[] GlobalCondEmbedder(float[] globalEmbed)
@@ -200,7 +183,7 @@ public sealed class StableAudioMediumDiT : IDisposable
         for (int t = 0; t < seq; t++)
         {
             var row = attn.AsSpan(t * Dim, Dim);
-            for (int i = 0; i < Dim; i++) row[i] *= Sigmoid(1f - gateSelf[i]);
+            for (int i = 0; i < Dim; i++) row[i] *= StableAudioAttentionKernels.Sigmoid(1f - gateSelf[i]);
         }
         for (int i = 0; i < x.Length; i++) x[i] += attn[i];
 
@@ -223,14 +206,12 @@ public sealed class StableAudioMediumDiT : IDisposable
         for (int t = 0; t < seq; t++)
         {
             var row = ff.AsSpan(t * Dim, Dim);
-            for (int i = 0; i < Dim; i++) row[i] *= Sigmoid(1f - gateFf[i]);
+            for (int i = 0; i < Dim; i++) row[i] *= StableAudioAttentionKernels.Sigmoid(1f - gateFf[i]);
         }
         for (int i = 0; i < x.Length; i++) x[i] += ff[i];
 
         return x;
     }
-
-    private static float Sigmoid(float x) => 1f / (1f + MathF.Exp(-x));
 
     /// <summary>Real DIFFERENTIAL self-attention: `to_qkv` widens to `5*Dim` (`q,k,v,q_diff,k_diff`,
     /// real chunk order confirmed from source). `qk_norm`/RoPE apply identically to the main and
@@ -259,18 +240,18 @@ public sealed class StableAudioMediumDiT : IDisposable
             qkv.AsSpan(b + 4 * Dim, Dim).CopyTo(kDiff.AsSpan(t * Dim, Dim));
         }
 
-        PerHeadRmsNorm(q, seq, qNormW);
-        PerHeadRmsNorm(k, seq, kNormW);
-        PerHeadRmsNorm(qDiff, seq, qNormW);
-        PerHeadRmsNorm(kDiff, seq, kNormW);
+        StableAudioAttentionKernels.PerHeadRmsNorm(q, seq, Heads, Dim, qNormW);
+        StableAudioAttentionKernels.PerHeadRmsNorm(k, seq, Heads, Dim, kNormW);
+        StableAudioAttentionKernels.PerHeadRmsNorm(qDiff, seq, Heads, Dim, qNormW);
+        StableAudioAttentionKernels.PerHeadRmsNorm(kDiff, seq, Heads, Dim, kNormW);
 
-        ApplyPartialRope(q, seq, cos, sin);
-        ApplyPartialRope(k, seq, cos, sin);
-        ApplyPartialRope(qDiff, seq, cos, sin);
-        ApplyPartialRope(kDiff, seq, cos, sin);
+        StableAudioAttentionKernels.ApplyPartialRope(q, seq, Heads, Dim, cos, sin);
+        StableAudioAttentionKernels.ApplyPartialRope(k, seq, Heads, Dim, cos, sin);
+        StableAudioAttentionKernels.ApplyPartialRope(qDiff, seq, Heads, Dim, cos, sin);
+        StableAudioAttentionKernels.ApplyPartialRope(kDiff, seq, Heads, Dim, cos, sin);
 
-        var attnMain = DotProductAttention(q, k, v, seq, seq);
-        var attnDiff = DotProductAttention(qDiff, kDiff, v, seq, seq);
+        var attnMain = StableAudioAttentionKernels.DotProductAttention(q, k, v, seq, seq, Heads, Dim);
+        var attnDiff = StableAudioAttentionKernels.DotProductAttention(qDiff, kDiff, v, seq, seq, Heads, Dim);
         var attnOut = new float[attnMain.Length];
         for (int i = 0; i < attnOut.Length; i++) attnOut[i] = attnMain[i] - attnDiff[i];
 
@@ -311,64 +292,17 @@ public sealed class StableAudioMediumDiT : IDisposable
             kv.AsSpan(b + 2 * Dim, Dim).CopyTo(v.AsSpan(t * Dim, Dim));
         }
 
-        PerHeadRmsNorm(q, seq, qNormW);
-        PerHeadRmsNorm(qDiff, seq, qNormW);
-        PerHeadRmsNorm(k, nCond, kNormW);
-        PerHeadRmsNorm(kDiff, nCond, kNormW);
+        StableAudioAttentionKernels.PerHeadRmsNorm(q, seq, Heads, Dim, qNormW);
+        StableAudioAttentionKernels.PerHeadRmsNorm(qDiff, seq, Heads, Dim, qNormW);
+        StableAudioAttentionKernels.PerHeadRmsNorm(k, nCond, Heads, Dim, kNormW);
+        StableAudioAttentionKernels.PerHeadRmsNorm(kDiff, nCond, Heads, Dim, kNormW);
 
-        var attnMain = DotProductAttention(q, k, v, seq, nCond);
-        var attnDiff = DotProductAttention(qDiff, kDiff, v, seq, nCond);
+        var attnMain = StableAudioAttentionKernels.DotProductAttention(q, k, v, seq, nCond, Heads, Dim);
+        var attnDiff = StableAudioAttentionKernels.DotProductAttention(qDiff, kDiff, v, seq, nCond, Heads, Dim);
         var attnOut = new float[attnMain.Length];
         for (int i = 0; i < attnOut.Length; i++) attnOut[i] = attnMain[i] - attnDiff[i];
 
         return DiffusionOps.Linear(attnOut, outW, null, seq, Dim, Dim);
-    }
-
-    private static void PerHeadRmsNorm(float[] qkOrV, int seq, float[] weight)
-    {
-        for (int t = 0; t < seq; t++)
-        {
-            for (int h = 0; h < Heads; h++)
-            {
-                DiffusionOps.RmsNorm(qkOrV.AsSpan(t * Dim + h * HeadDim, HeadDim), weight, HeadDim, eps: 1e-6f);
-            }
-        }
-    }
-
-    private static float[] DotProductAttention(float[] q, float[] k, float[] v, int seqQ, int seqKv)
-    {
-        float scale = 1f / MathF.Sqrt(HeadDim);
-        var outp = new float[seqQ * Dim];
-
-        for (int h = 0; h < Heads; h++)
-        {
-            var scores = new float[seqQ * seqKv];
-            for (int i = 0; i < seqQ; i++)
-            {
-                int qOff = i * Dim + h * HeadDim;
-                for (int j = 0; j < seqKv; j++)
-                {
-                    int kOff = j * Dim + h * HeadDim;
-                    float dot = 0f;
-                    for (int d = 0; d < HeadDim; d++) dot += q[qOff + d] * k[kOff + d];
-                    scores[i * seqKv + j] = dot * scale;
-                }
-            }
-            DiffusionOps.Softmax(scores, seqKv);
-
-            for (int i = 0; i < seqQ; i++)
-            {
-                int outOff = i * Dim + h * HeadDim;
-                for (int j = 0; j < seqKv; j++)
-                {
-                    float w = scores[i * seqKv + j];
-                    if (w == 0f) continue;
-                    int vOff = j * Dim + h * HeadDim;
-                    for (int d = 0; d < HeadDim; d++) outp[outOff + d] += w * v[vOff + d];
-                }
-            }
-        }
-        return outp;
     }
 
     private float[] FeedForward(float[] x, int seq, string p)
@@ -389,45 +323,6 @@ public sealed class StableAudioMediumDiT : IDisposable
         }
 
         return DiffusionOps.Linear(h, w2, b2, seq, FfInner, Dim);
-    }
-
-    private static (float[] cos, float[] sin) BuildPartialRope(int seq)
-    {
-        int half = RopeRotDim / 2;
-        var cos = new float[seq * half];
-        var sin = new float[seq * half];
-        for (int s = 0; s < seq; s++)
-        {
-            for (int i = 0; i < half; i++)
-            {
-                float invFreq = MathF.Pow(RopeTheta, -2.0f * i / RopeRotDim);
-                float angle = s * invFreq;
-                cos[s * half + i] = MathF.Cos(angle);
-                sin[s * half + i] = MathF.Sin(angle);
-            }
-        }
-        return (cos, sin);
-    }
-
-    private static void ApplyPartialRope(float[] qk, int seq, float[] cos, float[] sin)
-    {
-        int half = RopeRotDim / 2;
-        for (int s = 0; s < seq; s++)
-        {
-            for (int h = 0; h < Heads; h++)
-            {
-                int headOff = s * Dim + h * HeadDim;
-                for (int i = 0; i < half; i++)
-                {
-                    float c = cos[s * half + i];
-                    float sn = sin[s * half + i];
-                    float x1 = qk[headOff + i];
-                    float x2 = qk[headOff + half + i];
-                    qk[headOff + i] = x1 * c - x2 * sn;
-                    qk[headOff + half + i] = x1 * sn + x2 * c;
-                }
-            }
-        }
     }
 
     public void Dispose()

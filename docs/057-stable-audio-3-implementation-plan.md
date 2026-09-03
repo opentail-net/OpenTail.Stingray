@@ -902,3 +902,20 @@ the "soup of noise" report -- do not assume "produces audio" means "sounds right
 `sinusoidal_blocks` FF variant, and docs/065's own Sprint 3 consolidation (`IStableAudio3Engine`)
 now that there are three real variants (Small Music, Small SFX, Medium) that could share one
 surface.
+
+## DRY pass: shared DiT attention kernels, 2026-09-03
+
+Per CLAUDE.md rule 7 (once a second real, verified caller exists), extracted the byte-identical
+RoPE/per-head-RMSNorm/dot-product-attention/`ExpoFourierFeatures`/sigmoid formulas duplicated
+between `StableAudioDiT` (Small) and `StableAudioMediumDiT` into
+`StableAudioAttentionKernels.cs`. Real, confirmed detail that made this a clean extraction:
+`HeadDim`(64), `RopeRotDim`(32), `RopeTheta`(10000), and `ExpoMinFreq`/`ExpoMaxFreq`(0.5/10000) are
+IDENTICAL between Small and Medium's real checkpoints -- only `Heads`/`Dim` genuinely differ, so
+those are the only real parameters the shared kernels need. Both DiT classes' own per-layer glue
+(AdaLN modulation, differential-attention widening, config dims) stayed where it was -- only the
+shared math moved, matching the same discipline already applied to ACE-Step's kernel extraction.
+
+Re-ran the full Small + Medium test suite after the extraction: `StableAudioDiTGoldenParityTests`
+(the real NUMERIC golden-parity check for Small, not just non-degeneracy) plus every other Small/
+Medium test (T5Gemma, VAE, conformance, SFX, Medium DiT, Medium VAE) all pass unchanged --
+confirms zero regression from the extraction.
