@@ -49,7 +49,13 @@ before any code) when picked up.
   section for the full arc). `StableAudioMediumPipeline` wires text encoder (T5Gemma, literal same
   checkpoint as Small) + DiT + VAE together; `StableAudio3MediumPipelineTests` passes real
   end-to-end generation on the first run. A real 4s sample was generated and sent for a listening
-  check. **Not yet done**: numeric golden-parity, the `sinusoidal_blocks` FF variant (decoder-only,
+  check. **Update, same session: DRY + performance passes done.** Extracted the shared DiT
+  attention kernels (RoPE/RMSNorm/dot-product-attention/timestep-Fourier) between Small and Medium
+  into `StableAudioAttentionKernels.cs` — zero regression, confirmed via the real numeric golden-
+  parity suite (not just non-degeneracy) re-run after. Measured real generation timing: mean 387s
+  for a 4s/15-step CFG-enabled generation (~97s wall-clock per second of audio on CPU) — no code
+  change made, the next lever is flagged, not implemented without a profiler-driven re-measurement.
+  **Not yet done**: numeric golden-parity, the `sinusoidal_blocks` FF variant (decoder-only,
   deliberately deferred), and docs/065's Sprint 3 consolidation (`IStableAudio3Engine`) now that
   three real variants (Small Music, Small SFX, Medium) exist. See docs/057-stable-audio-3-
   implementation-plan.md for the full writeup.
