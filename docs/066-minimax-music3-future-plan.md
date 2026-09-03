@@ -334,6 +334,16 @@ next step once resumed is likely to free disk space deliberately (the user's own
 session's to make unilaterally) or work in a fresh environment with more headroom, rather than
 trying to fit ~27GB of new downloads into an already-tight ~8GB.
 
+**Real disk-space update, same day**: cleared two more redundant HF-cache checkpoint copies already
+mirrored into this project's own `models/` directory (`stable-audio-3-small-music-base`,
+`MiniMax-Music3`'s small components) -- freed disk from ~7.8GB to ~13GB. Still genuinely
+insufficient for either of the two big downloads (transformer 9.7GB would leave ~3GB headroom,
+language_model 17.2GB doesn't fit at all) without real risk of repeating this session's earlier
+disk-full build corruption incident. **Deliberately NOT attempting either big download at this
+disk margin** -- flagging this as a real, user-visible blocker rather than pushing through it, since
+filling a shared disk to the brim is exactly the kind of action this project's own risk guidance
+calls for pausing on rather than deciding unilaterally.
+
 ## Why this is architecturally distinct from every other audio model on this project's list
 
 Not another MusicGen/AudioGen codec-LM, not another ACE-Step-style single DiT+VAE — a genuine
