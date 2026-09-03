@@ -247,10 +247,59 @@ This is now a COMPLETE real specification for Phase B (Global) + Phase C (Local/
 before this loop can actually be exercised end-to-end; the logic itself needs no further real
 archaeology to implement.
 
-**Not yet done**: read `denoise.py`/`decoders.py`/`before_denoise.py` for the real chunked flow-
-matching denoise loop's exact mechanics (the 200-frame-window/overlap-blend scheme is already
-confirmed at a high level from the block docstrings, but not yet the real per-chunk math); the two
-big downloads remain blocked on this session's current disk space.
+## Real chunked flow-matching denoise + stitching, fully specified, 2026-09-03 -- Phase A archaeology COMPLETE
+
+Read `before_denoise.py` (73 lines), `denoise.py` (328 lines), and `decoders.py` (95 lines) in
+full. Combined with the autoregressive spec above, EVERY stage of the real pipeline is now
+precisely understood from source, closing out Phase A archaeology entirely.
+
+**Real chunk bookkeeping** (`MiniMaxMusic3PrepareChunksStep`): `_CHUNK_FRAMES=200`,
+`_CHUNK_HOP=100` (real semantic-frame units, 25Hz) -- `chunk_starts = [0]` if the whole song fits
+in one window, else `range(0, num_frames - 100, 100)`.
+
+**Real per-chunk flow-matching loop** (`MiniMaxMusic3ChunkDenoiseStep`, 5 real sub-steps run per
+chunk `k`):
+1. **Condition** (`MiniMaxMusic3ChunkConditionStep`): `condition_encoder(frame_hiddens[chunk_start:
+   chunk_end])` -> real latent-timeline condition for this window; the FIRST `overlap` latent
+   positions get spliced from the PREVIOUS window's own condition (`previous_condition`), not the
+   fresh one -- keeps the transformer's cross-attention context continuous across window
+   boundaries.
+2. **Prepare latents**: fresh `randn` noise sized to this window's real condition length (each
+   window gets NEW noise, not carried), except a real `noise_prompt` snapshot of that fresh noise
+   over the overlap region is kept for step 4's blending.
+3. **Set timesteps**: real sigma schedule `np.linspace(1.0, 1/num_inference_steps,
+   num_inference_steps)` (linear, `shift=1.0` matches the real `scheduler_config.json`) -- reset
+   fresh for every window.
+4. **Denoise inner** (the real Euler loop, `guidance_scale=1.7`, confirmed real CFG default):
+   before EVERY step, the overlap region of `latents` is overwritten with a real per-step blend
+   `(1-(1-1e-6)*t)*noise_prompt + t*previous_latent[:overlap]` (`t` = current flow sigma) -- softly
+   interpolates the overlap from the previous window's already-denoised latent toward fresh noise
+   as `t` decreases, keeping the SAME real Euler trajectory shape as the rest of the window rather
+   than hard-pasting. Real CFG: the unconditional branch conditions on `torch.zeros_like(condition)`
+   (NOT a re-encoded empty prompt) -- `transformer(hidden_states=latents, timestep=t,
+   encoder_hidden_states=condition)` called once per branch, guided, then a standard
+   `scheduler.step`.
+5. **Update chunk**: after all steps, the overlap region is HARD-reset to `previous_latent[:overlap]`
+   (a real final correction, not just the soft per-step blend); the trailing `_OVERLAP_LATENT_LENGTH
+   =172` real latent frames (of a real `344`-latent-frame-wide overlap region, `[L-344, L-172)`) are
+   saved as `previous_latent`/`previous_condition` for the NEXT window; this window's full
+   (uncropped) latents are appended to `latent_chunks`.
+
+**Real vocoder-decode + stitch** (`MiniMaxMusic3VocoderDecodeStep`): each window's latents are
+vocoded independently, then CROPPED before concatenation -- every window but the first drops its
+leading `_CROP_LEFT_LATENT(86) * hopLength` samples, every window but the last drops its trailing
+`_CROP_RIGHT_LATENT(344-86=258) * hopLength` samples, and the cropped waveforms are concatenated
+(NOT cross-faded) to tile the full song exactly. Final `clamp(-1,1)`.
+
+**Phase A archaeology is now COMPLETE**: every real component's config/tensor shapes (five real
+weighted modules) and the ENTIRE real generation algorithm (tokenize -> prompt-template assembly ->
+autoregressive Global+Local generation with real CFG -> chunked flow-matching denoise with real
+overlap-blend -> vocoder decode -> crop-and-stitch) are now precisely specified from real source,
+not assumed or guessed at any point. Three of five real components are already ported and golden-
+verified (vocoder, rvq_depth_decoder, condition_encoder). **The only remaining blocker before a
+real V1 implementation attempt is the two big downloads** (`language_model/` ~17.2GB real stock
+Qwen3ForCausalLM, `transformer/` ~9.7GB the flow-matching DiT) -- both need real disk space this
+session currently lacks (~11GB free as of the last check), not further research.
 
 ## Why this is architecturally distinct from every other audio model on this project's list
 
