@@ -134,6 +134,31 @@ generation loop; (3) the two big real downloads (`language_model/` ~17.2GB,
 even partially golden-verified (condition_encoder, rvq_depth_decoder, vocoder in isolation) without
 them.
 
+## Vocoder ported, golden-verified, 2026-09-03 -- first real MiniMax-Music3 component landed
+
+`src/OpenTail.Stingray.Diffusion/MiniMaxMusic3/MiniMaxMusic3Vocoder.cs`: real, transcribed directly
+from the installed `diffusers` source (`minimax_music3_vocoder.py`). A single-parameter-Snake
+DAC-style decoder -- `alpha` used DIRECTLY (no `exp()`, real `torch.ones` init), unlike ACE-Step's
+Oobleck two-parameter LOG-SCALE Snake; confirmed from real source, not assumed from either prior
+Snake variant this project has ported. Real "folded stereo" detail: the decoder network is MONO
+(`latent_channels/2 = 64` input channels); stereo comes from reshaping the real `[128, T]` latent
+into two `[64, T]` channel-streams (decoded independently, batch-folded in the real reference) --
+NOT a stereo-aware architecture. Real channel progression `1536 -> 768 -> 384 -> 192 -> 96` across
+4 blocks (strides `8,8,4,2`, hop=512), confirmed against the real checkpoint's own tensor shapes.
+
+`MiniMaxMusic3VocoderGoldenParityTests`: loaded the real `diffusers.MiniMaxMusic3Vocoder` with the
+same real weights (`load_state_dict(strict=False)` reported zero missing/unexpected keys,
+confirming tensor-name understanding exactly) and diffed against a fixed-seed synthetic latent --
+**passes on the FIRST run**, well under 0.1% relative error. This is the first real, verified
+MiniMax-Music3 component -- structurally close to `Audio.Parler.DacDecoder`'s shape but kept
+self-contained (CLAUDE.md rule 7 -- DRY once a second real caller of the SAME exact formula
+exists, not speculatively here since Snake's parameterization differs from Parler's).
+
+Next: `MiniMaxMusic3RVQDepthDecoder` (small, 4 layers, real next-easiest component) and
+`MiniMaxMusic3ConditionEncoder` (8 layers), then the real `encoders.py`/`before_denoise.py`/
+`denoise.py`/`decoders.py` block source for the exact prompt format and chunked-denoise loop,
+before attempting the two big downloads.
+
 ## Why this is architecturally distinct from every other audio model on this project's list
 
 Not another MusicGen/AudioGen codec-LM, not another ACE-Step-style single DiT+VAE — a genuine

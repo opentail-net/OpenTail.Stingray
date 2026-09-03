@@ -53,15 +53,22 @@ before any code) when picked up.
   deliberately deferred), and docs/065's Sprint 3 consolidation (`IStableAudio3Engine`) now that
   three real variants (Small Music, Small SFX, Medium) exist. See docs/057-stable-audio-3-
   implementation-plan.md for the full writeup.
-- **MiniMax-Music3** — a genuinely new architecture family for this project (hybrid autoregressive
-  + flow-matching: 8B Global LLM + 0.6B Local LLM + 2.4B flow-matching + 123M Flow-VAE, with
-  Global/Local HIDDEN STATES fused into the flow synthesizer, not just discrete RVQ tokens
-  decoded through a codec — a real structural difference from every codec-LM or single-DiT model
-  already on this list). Detailed sequencing plan kept in full, not started, in
-  `docs/066-minimax-music3-future-plan.md`. User's sequencing note: after ACE-Step, before niche
-  audio models. Real archaeology (config, tokenizer, tensor inventory, real reference source if
-  available) needed before any implementation — the ~57.4GB/11B+-parameter checkpoint-size figure
-  in that doc is cited from documentation, not confirmed against a real download yet.
+- **MiniMax-Music3 — Phase A archaeology done, first component (vocoder) golden-verified,
+  2026-09-03.** Real checkpoint located (`MiniMaxAI/MiniMax-Music3`); real total 57.35GB confirmed,
+  but the real inference pipeline (`modular_model_index.json`'s component graph) uses only ~28.5GB
+  across six components — roughly 29GB (`qwen_7B/`, a real different `AbabForCausalLM` MoE/hybrid-
+  attention architecture despite its confusing Qwen-like name; `flowmatching_vae.pth` 9.83GB;
+  `dav.pth` 491MB) is not referenced by real inference at all, correcting this doc's original
+  documentation-cited component framing. The installed `diffusers==0.40.0` already ships real,
+  complete source for every component plus a full real modular pipeline whose block docstrings
+  resolved the original "hidden-state fusion" question directly (no separate fusion module — the
+  RVQ depth decoder's per-codebook hidden states are simply concatenated) and confirmed real
+  44.1kHz sample rate + 200-frame chunked long-form generation. `MiniMaxMusic3Vocoder`
+  (`src/OpenTail.Stingray.Diffusion/MiniMaxMusic3/`) is now real and golden-verified against the
+  actual `diffusers` class — passes on the first run, well under 0.1% relative error. Next:
+  `MiniMaxMusic3RVQDepthDecoder` and `MiniMaxMusic3ConditionEncoder` (both small, downloaded), then
+  the real prompt-format/chunked-denoise source, before the two big downloads (~27GB combined,
+  blocked on this session's current ~11GB free disk). See docs/066-minimax-music3-future-plan.md.
 
 ## Cross-project priority order (popularity-adjusted, 2026-09-01)
 
