@@ -82,6 +82,58 @@ download-use-delete cycle, not assumed to just fit.
 -- read them as the user's own framing/sequencing preferences, not as confirmed architecture facts
 where they conflict with the real findings above.**
 
+## Real diffusers source ALREADY EXISTS for all five components -- major find
+
+The installed `diffusers==0.40.0` in this environment already ships real, complete classes for
+every real pipeline component: `MiniMaxMusic3Transformer1DModel`, `MiniMaxMusic3ConditionEncoder`,
+`MiniMaxMusic3RVQDepthDecoder`, `MiniMaxMusic3Vocoder`, plus a full real modular pipeline
+(`diffusers/modular_pipelines/minimax_music3/`) with real block classes and their own docstrings
+describing the exact real data flow. This gives MiniMax-Music3 the SAME real-source-oracle
+advantage ACE-Step and Stable Audio 3 Medium had this session (golden-parity checks, exact real
+formulas, no guessing) -- a much stronger starting position than this doc's original framing
+assumed, and found essentially for free (no large download needed, the classes were already
+installed alongside everything else fetched this session).
+
+**Real pipeline flow, read directly from `MiniMaxMusic3Blocks`'/`MiniMaxMusic3SemanticGenerationStep`'/
+`MiniMaxMusic3CoreDenoiseStep`'s own docstrings** (`diffusers/modular_pipelines/minimax_music3/
+modular_blocks_minimax_music3.py`):
+
+1. **Tokenize + autoregressive generation** (`tokenizer` + `language_model` (Qwen3, real stock
+   architecture) + `rvq_depth_decoder`): assembles a special-token prompt from the caption + lyrics,
+   runs the real Qwen3 autoregressively, producing `frame_hiddens` of shape `[1, frames,
+   num_codebooks * hidden_size]` (`num_codebooks=8`, `hidden_size=4096` -> 32768-wide per frame).
+   **This directly answers the original doc's "hidden-state fusion" question**: there is no separate
+   fusion module at all -- `rvq_depth_decoder` (the real "Local" component, 4 layers/8 codebooks)
+   produces the additional per-codebook hidden states, and they are simply CONCATENATED into one
+   wide per-frame vector. The mysterious `MiniMaxMusic3HiddenStateFusion` primitive this doc
+   originally proposed does not need to exist as a separate class.
+2. **Chunked flow-matching denoise** (`condition_encoder` + `transformer` + `scheduler` +
+   `guider`/CFG): splits `frame_hiddens` into **200-frame windows** and flow-matches each window's
+   Flow-VAE latent from noise, **blending each window into the previous one over their overlap**
+   (real, concrete long-form mechanism -- resolves this doc's earlier "reportedly operates on
+   overlapping chunks... needs confirming" uncertainty into a confirmed fact).
+3. **Vocoder decode** (`vocoder`, real "DAC-style"): latents -> stereo waveform. **Real sample rate
+   confirmed as 44.1kHz** (`vocoder/config.json`'s own `sampling_rate: 44100`, and the real
+   pipeline docstring says so explicitly too) -- resolves this doc's earlier flagged 32kHz-vs-44.1kHz
+   discrepancy definitively in favor of 44.1kHz.
+
+Also downloaded the three small real component weight files this session
+(`condition_encoder/diffusion_pytorch_model.safetensors` ~100MB,
+`vocoder/diffusion_pytorch_model.safetensors` ~217MB,
+`rvq_depth_decoder/diffusion_pytorch_model.safetensors` ~1.29GB) -- real tensor-name/shape
+archaeology against them (matching this session's established technique) is the concrete next
+step, not yet done.
+
+**Revised, real next steps**: (1) real tensor-name archaeology on the three small downloaded
+components against their real diffusers class `__init__`/`load_state_dict` shapes (same technique
+used for every ACE-Step/Stable-Audio-3 component this session); (2) read the real
+`MiniMaxMusic3TokenizeStep`/`MiniMaxMusic3AutoregressiveStep` source (`encoders.py` in the same
+modular_pipelines directory) for the exact real special-token prompt format and per-codebook
+generation loop; (3) the two big real downloads (`language_model/` ~17.2GB,
+`transformer/` ~9.7GB) remain the real disk-space blocker -- everything else can be prototyped and
+even partially golden-verified (condition_encoder, rvq_depth_decoder, vocoder in isolation) without
+them.
+
 ## Why this is architecturally distinct from every other audio model on this project's list
 
 Not another MusicGen/AudioGen codec-LM, not another ACE-Step-style single DiT+VAE — a genuine
