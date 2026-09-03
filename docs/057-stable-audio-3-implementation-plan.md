@@ -919,3 +919,19 @@ Re-ran the full Small + Medium test suite after the extraction: `StableAudioDiTG
 (the real NUMERIC golden-parity check for Small, not just non-degeneracy) plus every other Small/
 Medium test (T5Gemma, VAE, conformance, SFX, Medium DiT, Medium VAE) all pass unchanged --
 confirms zero regression from the extraction.
+
+## Performance pass: Medium, 2026-09-03
+
+Per CLAUDE.md rule 7, measured (not assumed) real Medium generation timing: a real 4-second, real
+15-Euler-step (with real CFG, so two DiT forward passes per step), `cfg_scale=6.0`, real prompt
+("A beautiful piano arpeggio grows into a grand cinematic climax") generation, 3 timed runs after a
+warmup run to exclude JIT/weight-paging cost: **121.86s / 382.90s / 396.27s / 381.86s** (warmup run
+121.86s excluded from the mean), **mean 387.01s** for the 3 measured runs -- roughly 97s of
+wall-clock per second of generated audio at these settings, CPU, real weights. This is real,
+substantially slower than Small (unsurprising: 1536-dim/24-layer/24-head with real differential
+attention running TWO full attention passes per layer per CFG branch, vs Small's 1024-dim/20-layer/
+16-head single-pass attention) -- no change was made this pass; the real next lever (SAME-L's
+banded attention is already O(window) not O(n²), so the DiT's own dense self-/cross-attention over
+`memory_tokens(64)+seqLen` positions is the more likely place to look, plus the real 2x-per-step
+CFG cost) is flagged but deliberately left unimplemented without a profiler-driven re-measurement to
+justify it, matching this project's own "only keep a change if it's measurably better" rule.
