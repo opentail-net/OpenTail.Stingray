@@ -1,9 +1,86 @@
-# MiniMax-Music3 — future plan (kept, not started)
+# MiniMax-Music3 — future plan
 
-Status: **saved for later, 2026-09-03** — on the radar per user request, not scoped against real
-checkpoints yet. ACE-Step 1.5 Turbo is the active thread; this is recorded so the plan doesn't
-need to be re-derived when picked up. Sequencing note from the user: MiniMax-Music3 after
-ACE-Step, before spending time on niche audio models.
+Status: **Phase A archaeology done, 2026-09-03** — ACE-Step 1.5 Turbo and Stable Audio 3 Small
+SFX/Medium are now complete (all V1-working); this is next per the user's own sequencing note
+(after ACE-Step, before niche audio models). Real checkpoint located and inspected
+(`MiniMaxAI/MiniMax-Music3` on Hugging Face) -- several of this doc's own original figures (cited
+from documentation, not yet checkpoint-confirmed at the time) turned out to be significantly off.
+See "Phase A archaeology, real findings" below before trusting anything in the older sections past
+this point.
+
+## Phase A archaeology, real findings, 2026-09-03 -- corrects several documented-only figures above
+
+Real total repo size: **57.35GB** (confirms the ~57.4GB figure this doc originally cited from
+documentation -- that part held up). But the real, load-bearing correction: **the actual inference
+pipeline (`modular_model_index.json`'s real `MiniMaxMusic3ModularPipeline` component graph) only
+uses SIX of the repo's components, totaling ~28.5GB** -- roughly HALF the repo:
+
+```
+condition_encoder/  (diffusers, MiniMaxMusic3ConditionEncoder)        ~100MB
+language_model/     (transformers, Qwen3ForCausalLM -- REAL, STOCK    ~17.2GB (4 safetensors shards)
+                      Qwen3 config: hidden=4096, layers=36, heads=32,
+                      kv_heads=8, intermediate=12288 -- an ~8B-class
+                      dense Qwen3, loadable via this project's
+                      EXISTING Qwen3/GGUF support, not a bespoke port)
+rvq_depth_decoder/  (diffusers, MiniMaxMusic3RVQDepthDecoder --        ~1.29GB
+                      hidden=4096, 4 layers, 16 heads, 8 codebooks,
+                      audio_vocab_size=1024, max_position=16)
+transformer/        (diffusers, MiniMaxMusic3Transformer1DModel --     ~9.7GB (2 shards)
+                      the flow-matching DiT: condition_dim=2048,
+                      36 layers, 32 heads, head_dim=64, in_channels=128,
+                      rotary_dim=32)
+vocoder/            (diffusers, MiniMaxMusic3Vocoder -- latent_dim=128,~217MB
+                      decoder_hidden=1536, upsampling_ratios=[8,8,4,2]
+                      =512 hop @ 44100Hz)
+scheduler/          (diffusers, FlowMatchEulerDiscreteScheduler,       tiny (JSON only)
+                      shift=1.0, no dynamic shifting)
+```
+
+**The other ~29GB in the repo is NOT referenced by the real pipeline's component graph at all**:
+`qwen_7B/qwen_7B/` (~19GB across 48 shards -- a real, DIFFERENT, MiniMax-native `AbabForCausalLM`
+architecture, `model_type: mixtral`, real custom fields `layernorm_full_attention_alpha/beta`,
+`layernorm_linear_attention_alpha/beta` suggesting a hybrid linear+full attention scheme, distinct
+audio-token decoder head fields `audio_num_codebooks=8`/`decoder_num_layers=4` -- despite the
+directory's confusing "qwen_7B" name, this is NOT the same as `language_model/`'s real, stock
+`Qwen3ForCausalLM`), `flowmatching_vae.pth` (9.83GB, single `.pth` file, real purpose
+unconfirmed -- given its size (~80x the `vocoder/`'s 217MB) and that the real inference pipeline
+never references it, the leading hypothesis is a training-time encode-side asset, not an
+inference-time decode component; NOT confirmed), and `dav.pth` (491MB, real purpose also
+unconfirmed, not in the pipeline graph either).
+
+**This retroactively corrects this doc's own original "FOUR real, separately-sized components"
+framing** (Global 8B + Local 0.6B + Flow 2.4B + Flow-VAE 123M, cited from documentation before any
+real checkpoint was inspected): the real modular pipeline graph shows FIVE real weighted
+components (condition_encoder, language_model, rvq_depth_decoder, transformer, vocoder), and there
+is no directly-visible standalone "0.6B Local LLM" matching that description among them --
+`rvq_depth_decoder` (a real, modest 4-layer/4096-hidden model) is the closest real candidate for
+"predicts the remaining RVQ codebooks conditioned on the Global model's output," but whether it
+also does real hidden-state fusion (this doc's own "real, load-bearing detail" about the Global/
+Local fusion mechanism) is NOT yet confirmed from config alone -- needs real source/tensor-name
+archaeology, not assumed from the old framing. The `vocoder/`'s real 217MB size (~108M params in
+bf16) is much closer to the originally-cited "123M Flow-VAE" than `flowmatching_vae.pth`'s 9.83GB
+is -- the real `vocoder/` component is likely what that original figure meant, not the giant `.pth`
+file.
+
+**Real, concrete next steps** (before any code): (1) download the small components first
+(`condition_encoder/` 100MB + `vocoder/` 217MB + `rvq_depth_decoder/` 1.29GB ≈ 1.6GB total, safe
+and cheap) and inspect their real tensor names/shapes the same way every other model in this
+series was archaeology'd; (2) find and read the real `diffusers` source for
+`MiniMaxMusic3ConditionEncoder`/`MiniMaxMusic3Transformer1DModel`/`MiniMaxMusic3RVQDepthDecoder`/
+`MiniMaxMusic3Vocoder` (these class names suggest they may already be merged into a real `diffusers`
+branch/PR, matching how ACE-Step's and Stable Audio 3's real classes were found in `diffusers`/
+`stable-audio-tools` source this session -- check before assuming no reference exists); (3) confirm
+whether `rvq_depth_decoder` really does the Global/Local hidden-state fusion this doc's older
+sections describe, or whether that mechanism lives somewhere else entirely (real source read, not
+assumed); (4) the ~17.2GB `language_model/`+~9.7GB `transformer/` are the two big real downloads
+needed for a working V1 (~27GB combined) -- this environment's disk is currently tight (11GB free
+as of this archaeology pass; ACE-Step/Stable-Audio-3-Medium checkpoints already consumed most of
+this session's downloaded-checkpoint budget), so these need either freed disk space or a staged
+download-use-delete cycle, not assumed to just fit.
+
+**The sections below this point are the ORIGINAL plan, written before this real archaeology pass
+-- read them as the user's own framing/sequencing preferences, not as confirmed architecture facts
+where they conflict with the real findings above.**
 
 ## Why this is architecturally distinct from every other audio model on this project's list
 
