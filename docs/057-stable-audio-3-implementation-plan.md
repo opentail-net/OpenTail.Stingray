@@ -676,3 +676,36 @@ config deltas fully understood from real source; SAME-L's real windowed-attentio
 mapping differences identified from config but NOT yet read from real `autoencoders.py` source
 (next step, alongside real tensor-name confirmation once the checkpoint finishes downloading).
 Continuing per docs/065's own Sprint 4 (Medium DiT) → Sprint 5 (SAME-L decoder) order.
+
+## Sprint 4 — Medium DiT DONE, 2026-09-03, first real-weight run passed
+
+Downloaded the real 9.22GB `model.safetensors` (997 tensors -- confirmed real differential-
+attention tensor shapes before writing any code, per rule 8: `self_attn.to_qkv.weight` is
+`[7680,1536]` = 5×1536 exactly as the real source predicted; `cross_attn.to_q.weight` is
+`[3072,1536]` = 2×1536; `cross_attn.to_kv.weight` is `[4608,1536]` = 3×1536; `project_in.weight` is
+`[1536,256]`; `memory_tokens` is `[64,1536]` -- every real shape matched the config-diff prediction
+exactly).
+
+`src/OpenTail.Stingray.Diffusion/StableAudio/StableAudioMediumDiT.cs`: a new sibling class to the
+existing, already golden-verified `StableAudioDiT` (Small) -- duplicated rather than refactored in
+place, deliberately (see the class's own doc comment: converting `StableAudioDiT`'s `const` config
+into instance state to serve two variants is a real DRY candidate, but doing it in the SAME change
+that adds Medium risks regressing the already-shipped Small path; defer the unification to its own
+change once Medium is itself verified, per CLAUDE.md rule 7's own timing). Implements the real
+differential self-/cross-attention (two full attention passes sharing `v`, `out = out_main -
+out_diff`, `qk_norm`/RoPE applied identically to both the main and diff pairs) alongside the wider
+config (1536/24/24).
+
+`StableAudio3MediumDiTTests` passes on the FIRST real-weight run: real `model.safetensors` loads
+without error (confirming every real tensor name this class reads), finite non-degenerate output,
+and a real timestep-sensitivity check (two different timesteps produce measurably different
+output, confirming AdaLN conditioning is genuinely wired) -- matches Sprint 4's own exit criterion
+("latent generation only, no audio yet is fine at this stage").
+
+**Not yet done**: (1) no numeric golden-parity check yet (would need a real Python
+`stable-audio-tools` reference run with Medium's real weights, differential attention included --
+the newly-installed `stable-audio-tools` package makes this realistic as a next step, following the
+same technique as ACE-Step's golden-parity checks this session); (2) real T5Gemma/VAE wiring into a
+full `StableAudioMediumPipeline` not started -- SAME-L (Sprint 5) blocks the VAE half; (3) SAME-L's
+real windowed-attention/DynamicTanh-absence/mapping differences still need reading from the real
+`autoencoders.py` source before porting.
