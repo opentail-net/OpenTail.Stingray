@@ -170,11 +170,28 @@ Loaded the real `diffusers.MiniMaxMusic3RVQDepthDecoder` with the same real weig
 unexpected keys) and diffed against a fixed-seed synthetic input -- `MiniMaxMusic3RvqDepthDecoder
 GoldenParityTests` passes on the FIRST run, well under 0.1% relative error.
 
-Two of five real inference-time components now landed and golden-verified (vocoder,
-rvq_depth_decoder). Next: `MiniMaxMusic3ConditionEncoder` (8 layers, real condition/context input
-for the flow-matching transformer), then the real `encoders.py`/`before_denoise.py`/`denoise.py`/
-`decoders.py` block source for the exact prompt format and chunked-denoise loop, before attempting
-the two big downloads (`language_model/`, `transformer/`).
+## Condition encoder ported, golden-verified, 2026-09-03 -- all three small components now done
+
+`src/OpenTail.Stingray.Diffusion/MiniMaxMusic3/MiniMaxMusic3ConditionEncoder.cs`: real, tiny (only
+3 learned parameters: an 8-way softmax layer-mixing weight, a scalar scale, and a
+`Conv1d(k=3,pad=1)` projection). Real per-frame flow: the 8 concatenated condition layers (1 global
++ 7 residual-codebook hidden states, matching `MiniMaxMusic3RvqDepthDecoder`'s own real per-step
+output) get mixed with LEARNED softmax weights (ELMo-style), scaled, projected `4096 -> 2048`, then
+nearest-neighbor-resampled from the language model's real 25Hz frame rate to the Flow-VAE's real
+`44100/512 ≈ 86.13Hz` latent frame rate (ratio confirmed `≈3.4453125`, exact real formula from
+source, not assumed).
+
+Loaded the real `diffusers.MiniMaxMusic3ConditionEncoder` with the same real weights (zero missing/
+unexpected keys) and diffed against a fixed-seed synthetic input -- passes on the FIRST run, well
+under 0.1% relative error.
+
+**All three small real inference-time components are now landed and golden-verified**
+(`vocoder`, `rvq_depth_decoder`, `condition_encoder`) -- ~1.6GB of real weights, three real golden-
+parity tests, all passing on their first run. Next: read the real `encoders.py`/`before_denoise.py`/
+`denoise.py`/`decoders.py` block source for the exact real special-token prompt format and
+chunked-denoise loop (no large download needed for this), before attempting the two big downloads
+(`language_model/` ~17.2GB, `transformer/` ~9.7GB) that are still blocked on this session's disk
+space.
 
 ## Why this is architecturally distinct from every other audio model on this project's list
 
