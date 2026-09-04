@@ -1,3 +1,4 @@
+using System.Numerics.Tensors;
 using OpenTail.Stingray.Audio.Primitives;
 
 namespace OpenTail.Stingray.Diffusion.MiniMaxMusic3;
@@ -115,6 +116,29 @@ public static class MiniMaxMusic3RvqDepthDecoder
         return output;
     }
 
+    /// <summary>
+    /// Incremental forward for a single depth step: adds pos_embedding for stepIndex, evaluates each layer with KV caching,
+    /// appends K and V to cache, and returns the single output hidden state [hidden].
+    /// </summary>
+    public static unsafe float[] ForwardStep(
+        MiniMaxMusic3RvqDepthDecoderWeights w,
+        float[] inputEmbed,
+        int stepIndex,
+        MiniMaxMusic3RvqDepthKvCache cache)
+    {
+        int hidden = MiniMaxMusic3Config.RvqDepthDecoderHiddenSize;
+        var x = new float[hidden];
+        for (int i = 0; i < hidden; i++)
+            x[i] = inputEmbed[i] + w.PosEmbeddingWeight[stepIndex * hidden + i];
+
+        for (int li = 0; li < w.Layers.Length; li++)
+            x = LayerIncremental(w.Layers[li], x, stepIndex, cache.Keys[li], cache.Values[li]);
+
+        var output = new float[hidden];
+        RmsNorm(x, w.NormWeight, output, 1e-6f);
+        return output;
+    }
+
     /// <summary>Embeds a real residual code (real codebook index `codebookIdx` in `[0,6]`, real code value in `[0,audioVocabSize)`) via the real `audio_embeddings` table, real row offset `codebookIdx*audioVocabSize + code` (confirmed from the real embedding table's shape `[audioVocabSize*(numCodebooks-1), hidden]`).</summary>
     public static float[] EmbedResidualCode(MiniMaxMusic3RvqDepthDecoderWeights w, int codebookIdx, int code)
     {
@@ -200,11 +224,11 @@ public static class MiniMaxMusic3RvqDepthDecoder
             var scores = new float[seqLen];
             for (int i = 0; i < seqLen; i++)
             {
+                var qSpan = q.AsSpan(i * hidden + off, headDim);
                 for (int j = 0; j <= i; j++) // real causal mask
                 {
-                    float dot = 0f;
-                    for (int d = 0; d < headDim; d++) dot += q[i * hidden + off + d] * k[j * hidden + off + d];
-                    scores[j] = dot * scale;
+                    var kSpan = k.AsSpan(j * hidden + off, headDim);
+                    scores[j] = TensorPrimitives.Dot(qSpan, kSpan) * scale;
                 }
                 SoftmaxRange(scores, 0, i + 1);
 
@@ -213,7 +237,7 @@ public static class MiniMaxMusic3RvqDepthDecoder
                 {
                     float s = scores[j];
                     var vSpan = v.AsSpan(j * hidden + off, headDim);
-                    for (int d = 0; d < headDim; d++) ctxSpan[d] += s * vSpan[d];
+                    TensorPrimitives.MultiplyAdd(vSpan, s, ctxSpan, ctxSpan);
                 }
             }
         });
@@ -225,6 +249,109 @@ public static class MiniMaxMusic3RvqDepthDecoder
         var rows = new float[seqLen][];
         for (int t = 0; t < seqLen; t++) { rows[t] = new float[hidden]; Array.Copy(output, t * hidden, rows[t], 0, hidden); }
         return rows;
+    }
+
+    private static unsafe float[] LayerIncremental(
+        DepthDecoderLayerWeights lw,
+        float[] x,
+        int stepIndex,
+        List<float[]> keyCache,
+        List<float[]> valCache)
+    {
+        int hidden = MiniMaxMusic3Config.RvqDepthDecoderHiddenSize;
+
+        var normed1 = new float[hidden];
+        RmsNorm(x, lw.InputLayerNormWeight, normed1, 1e-6f);
+
+        var attnOut = SelfAttentionIncremental(lw, normed1, stepIndex, keyCache, valCache);
+        var afterAttn = new float[hidden];
+        for (int i = 0; i < hidden; i++) afterAttn[i] = x[i] + attnOut[i];
+
+        var normed2 = new float[hidden];
+        RmsNorm(afterAttn, lw.PostAttnLayerNormWeight, normed2, 1e-6f);
+
+        var mlpOut = MlpStep(lw, normed2);
+        var output = new float[hidden];
+        for (int i = 0; i < hidden; i++) output[i] = afterAttn[i] + mlpOut[i];
+        return output;
+    }
+
+    private static unsafe float[] SelfAttentionIncremental(
+        DepthDecoderLayerWeights lw,
+        float[] normed,
+        int stepIndex,
+        List<float[]> keyCache,
+        List<float[]> valCache)
+    {
+        int hidden = MiniMaxMusic3Config.RvqDepthDecoderHiddenSize;
+        int numHeads = MiniMaxMusic3Config.RvqDepthDecoderNumHeads;
+        int headDim = hidden / numHeads;
+        float scale = MathF.Pow(headDim, -0.5f);
+
+        var q = new float[hidden];
+        var k = new float[hidden];
+        var v = new float[hidden];
+        fixed (float* np = normed, qp = q, kp = k, vp = v)
+        {
+            lw.QWeight.MatMul(np, 1, qp);
+            lw.KWeight.MatMul(np, 1, kp);
+            lw.VWeight.MatMul(np, 1, vp);
+        }
+
+        keyCache.Add(k);
+        valCache.Add(v);
+
+        int totalLen = keyCache.Count;
+        var context = new float[hidden];
+
+        Parallel.For(0, numHeads, h =>
+        {
+            int off = h * headDim;
+            var scores = new float[totalLen];
+            var qSpan = q.AsSpan(off, headDim);
+
+            for (int j = 0; j < totalLen; j++)
+            {
+                var kSpan = keyCache[j].AsSpan(off, headDim);
+                scores[j] = TensorPrimitives.Dot(qSpan, kSpan) * scale;
+            }
+            SoftmaxRange(scores, 0, totalLen);
+
+            var ctxSpan = context.AsSpan(off, headDim);
+            for (int j = 0; j < totalLen; j++)
+            {
+                float s = scores[j];
+                var vSpan = valCache[j].AsSpan(off, headDim);
+                TensorPrimitives.MultiplyAdd(vSpan, s, ctxSpan, ctxSpan);
+            }
+        });
+
+        var output = new float[hidden];
+        fixed (float* cp = context, op = output)
+            lw.OWeight.MatMul(cp, 1, op);
+
+        return output;
+    }
+
+    private static unsafe float[] MlpStep(DepthDecoderLayerWeights lw, float[] normed)
+    {
+        int hidden = MiniMaxMusic3Config.RvqDepthDecoderHiddenSize;
+        int ffn = MiniMaxMusic3Config.RvqDepthDecoderIntermediateSize;
+
+        var gate = new float[ffn];
+        var up = new float[ffn];
+        fixed (float* np = normed, gp = gate, up_ = up)
+        {
+            lw.GateWeight.MatMul(np, 1, gp);
+            lw.UpWeight.MatMul(np, 1, up_);
+        }
+        for (int i = 0; i < gate.Length; i++) gate[i] = Silu(gate[i]) * up[i];
+
+        var output = new float[hidden];
+        fixed (float* gp = gate, op = output)
+            lw.DownWeight.MatMul(gp, 1, op);
+
+        return output;
     }
 
     private static unsafe float[][] Mlp(DepthDecoderLayerWeights lw, float[][] normed, int seqLen)

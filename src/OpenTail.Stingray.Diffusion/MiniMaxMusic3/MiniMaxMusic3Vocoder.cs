@@ -1,3 +1,5 @@
+using System.Runtime.Intrinsics;
+
 namespace OpenTail.Stingray.Diffusion.MiniMaxMusic3;
 
 /// <summary>
@@ -219,69 +221,123 @@ public static class MiniMaxMusic3Vocoder
     private static unsafe float[] FullConv1d(float[] x, int inCh, int outCh, int t, float[] weight, float[]? bias, int kernel, int dilation, int padding)
     {
         int rowLen = inCh * kernel;
-        var col = new float[t * rowLen];
-        Parallel.For(0, t, ti =>
-        {
-            int rowBase = ti * rowLen;
-            for (int ic = 0; ic < inCh; ic++)
-            {
-                int xBase = ic * t;
-                int rBase = rowBase + ic * kernel;
-                for (int k = 0; k < kernel; k++)
-                {
-                    int src = ti - padding + k * dilation;
-                    col[rBase + k] = (uint)src < (uint)t ? x[xBase + src] : 0f;
-                }
-            }
-        });
-
         var output = new float[outCh * t];
-        fixed (float* colPtr = col, weightPtr = weight, outputPtr = output)
+
+        // Temporal tiling: process in chunks of tileSize (at most 1024 timesteps)
+        // Eliminates multi-hundred-megabyte heap allocations and keeps colTile resident in L3 cache.
+        int tileSize = 1024;
+        int maxChunk = Math.Min(tileSize, t);
+        var colTile = new float[maxChunk * rowLen];
+
+        fixed (float* xPtr = x, weightPtr = weight, outputPtr = output, colTilePtr = colTile)
         {
-            var colPtrLocal = colPtr;
-            var weightPtrLocal = weightPtr;
-            var outputPtrLocal = outputPtr;
-            Parallel.For(0, outCh, oc =>
+            nint xAddr = (nint)xPtr;
+            nint wAddr = (nint)weightPtr;
+            nint outAddr = (nint)outputPtr;
+            nint colTileAddr = (nint)colTilePtr;
+
+            for (int tStart = 0; tStart < t; tStart += tileSize)
             {
-                float b = bias?[oc] ?? 0f;
-                float* wOc = weightPtrLocal + oc * rowLen;
-                float* outBase = outputPtrLocal + oc * t;
-                for (int ti = 0; ti < t; ti++)
-                    outBase[ti] = b + SimdKernels.DotF32(wOc, colPtrLocal + ti * rowLen, rowLen);
-            });
+                int tChunk = Math.Min(tileSize, t - tStart);
+
+                Parallel.For(0, tChunk, tiLocal =>
+                {
+                    int ti = tStart + tiLocal;
+                    float* row = (float*)colTileAddr + (long)tiLocal * rowLen;
+                    for (int ic = 0; ic < inCh; ic++)
+                    {
+                        float* xCh = (float*)xAddr + (long)ic * t;
+                        float* rBase = row + ic * kernel;
+                        for (int k = 0; k < kernel; k++)
+                        {
+                            int src = ti - padding + k * dilation;
+                            rBase[k] = (uint)src < (uint)t ? xCh[src] : 0f;
+                        }
+                    }
+                });
+
+                Parallel.For(0, outCh, oc =>
+                {
+                    float b = bias?[oc] ?? 0f;
+                    float* wOc = (float*)wAddr + (long)oc * rowLen;
+                    float* outChPtr = (float*)outAddr + (long)oc * t + tStart;
+                    for (int tiLocal = 0; tiLocal < tChunk; tiLocal++)
+                    {
+                        outChPtr[tiLocal] = b + SimdKernels.DotF32(wOc, (float*)colTileAddr + (long)tiLocal * rowLen, rowLen);
+                    }
+                });
+            }
         }
         return output;
     }
 
-    private static (float[] Data, int T) ConvTranspose1d(float[] x, int inCh, int outCh, int t, float[] weight, float[] bias, int kernel, int stride, int padding)
+    private static unsafe (float[] Data, int T) ConvTranspose1d(float[] x, int inCh, int outCh, int t, float[] weight, float[] bias, int kernel, int stride, int padding)
     {
         int outT = (t - 1) * stride - 2 * padding + kernel;
         var output = new float[outCh * outT];
-        Parallel.For(0, outCh, oc =>
+
+        fixed (float* outPtr = output, wPtr = weight, xPtr = x)
         {
-            float b = bias[oc];
-            int dstBase = oc * outT;
-            for (int ti = 0; ti < outT; ti++) output[dstBase + ti] = b;
+            nint outAddr = (nint)outPtr;
+            nint wAddr = (nint)wPtr;
+            nint xAddr = (nint)xPtr;
 
-            for (int ic = 0; ic < inCh; ic++)
+            Parallel.For(0, outCh, oc =>
             {
-                int srcBase = ic * t;
-                int wBase = (ic * outCh + oc) * kernel;
-                for (int ti = 0; ti < t; ti++)
+                float b = bias[oc];
+                float* dstCh = (float*)outAddr + (long)oc * outT;
+                for (int ti = 0; ti < outT; ti++) dstCh[ti] = b;
+
+                for (int ic = 0; ic < inCh; ic++)
                 {
-                    float v = x[srcBase + ti];
-                    int outStart = ti * stride - padding;
+                    float* xRow = (float*)xAddr + (long)ic * t;
+                    float* wBase = (float*)wAddr + ((long)ic * outCh + oc) * kernel;
 
-                    int kStart = outStart < 0 ? -outStart : 0;
-                    int kEnd = outStart + kernel > outT ? outT - outStart : kernel;
-                    if (kStart >= kEnd) continue;
+                    for (int ti = 0; ti < t; ti++)
+                    {
+                        float v = xRow[ti];
+                        if (v == 0f) continue;
 
-                    var wSpan = weight.AsSpan(wBase + kStart, kEnd - kStart);
-                    var dstSpan = output.AsSpan(dstBase + outStart + kStart, kEnd - kStart);
-                    TensorPrimitives.MultiplyAdd(wSpan, v, dstSpan, dstSpan);
+                        int outStart = ti * stride - padding;
+                        int kStart = outStart < 0 ? -outStart : 0;
+                        int kEnd = outStart + kernel > outT ? outT - outStart : kernel;
+                        if (kStart >= kEnd) continue;
+
+                        int len = kEnd - kStart;
+                        float* pW = wBase + kStart;
+                        float* pDst = dstCh + outStart + kStart;
+
+                        int k = 0;
+                        if (Vector256.IsHardwareAccelerated && len >= 8)
+                        {
+                            var vVec = Vector256.Create(v);
+                            for (; k + 8 <= len; k += 8)
+                            {
+                                var wVec = Vector256.Load(pW + k);
+                                var dVec = Vector256.Load(pDst + k);
+                                var res = Vector256.FusedMultiplyAdd(wVec, vVec, dVec);
+                                res.Store(pDst + k);
+                            }
+                        }
+                        if (Vector128.IsHardwareAccelerated && k + 4 <= len)
+                        {
+                            var vVec128 = Vector128.Create(v);
+                            for (; k + 4 <= len; k += 4)
+                            {
+                                var wVec = Vector128.Load(pW + k);
+                                var dVec = Vector128.Load(pDst + k);
+                                var res = Vector128.FusedMultiplyAdd(wVec, vVec128, dVec);
+                                res.Store(pDst + k);
+                            }
+                        }
+                        for (; k < len; k++)
+                        {
+                            pDst[k] += pW[k] * v;
+                        }
+                    }
                 }
-            }
-        });
+            });
+        }
         return (output, outT);
     }
 }

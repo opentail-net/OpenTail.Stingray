@@ -56,7 +56,20 @@ public static class MiniMaxMusic3Config
     public const int LanguageModelHeadDim = 128;
     public const float LanguageModelRmsNormEps = 1e-6f;
     public const float LanguageModelRopeTheta = 1_000_000f;
+    public const int LanguageModelVocabSize = 200_000;
 
     // ── Real chunked long-form generation (confirmed from `MiniMaxMusic3CoreDenoiseStep`) ──
     public const int ChunkFrames = 200;
+
+    // ── Real autoregressive generation constants (`MiniMaxMusic3TokenizeStep` /
+    // `MiniMaxMusic3AutoregressiveStep`, `diffusers/modular_pipelines/minimax_music3/encoders.py`) ──
+    public const int AudioEndTokenId = 151670;
+    public const int AudioCfgTokenId = 151654;
+    public const int AudioCodeOffset = 151675;
+    public const int SemanticVocabSize = 16384;
+    public const int MaxPromptTokens = 5000;
+    public const int MaxAudioFrames = 9000;
+    public const float ArCfgScale = 1.5f;
+    public const int ArCfgTopK = 50;
+    public const int ArSamplingTopK = 50;
 }

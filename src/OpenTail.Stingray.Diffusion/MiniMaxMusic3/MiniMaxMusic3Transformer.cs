@@ -1,3 +1,8 @@
+using System.Numerics.Tensors;
+using CoreTensor = OpenTail.Stingray.Core.Tensor;
+using OpenTail.Stingray.Core;
+using OpenTail.Stingray.Cpu;
+
 namespace OpenTail.Stingray.Diffusion.MiniMaxMusic3;
 
 /// <summary>
@@ -29,8 +34,11 @@ namespace OpenTail.Stingray.Diffusion.MiniMaxMusic3;
 /// side mirrors this: `proj_out` (Linear, no bias) back to `in_channels`(128) -&gt; `postprocess_conv`
 /// (`Conv1d(k=1)`, no bias) added as a residual again.</para>
 /// </summary>
-public sealed class MiniMaxMusic3TransformerWeights
+public sealed class MiniMaxMusic3TransformerWeights : IDisposable
 {
+    private MiniMaxMusic3GpuTransformerWeights? _gpuWeights;
+    private readonly Lock _gpuLock = new();
+
     public required float[] TimeProjWeight { get; init; } // MiniMaxMusic3FourierEmbedding: [fourierDim/2, 1], no bias
     public required TimestepEmbeddingWeights TimeEmbed { get; init; }
     public required float[] PreprocessConvWeight { get; init; } // Conv1d k=1, no bias, [concatChannels, concatChannels, 1]
@@ -38,6 +46,25 @@ public sealed class MiniMaxMusic3TransformerWeights
     public required MiniMaxMusic3TransformerBlockWeights[] Blocks { get; init; } // 36 real layers
     public required float[] ProjOutWeight { get; init; } // Linear [inChannels, innerDim], no bias
     public required float[] PostprocessConvWeight { get; init; } // Conv1d k=1, no bias, [inChannels, inChannels, 1]
+
+    public MiniMaxMusic3GpuTransformerWeights GetOrCreateGpuWeights(IComputeBackend backend)
+    {
+        if (_gpuWeights is not null) return _gpuWeights;
+        lock (_gpuLock)
+        {
+            _gpuWeights ??= new MiniMaxMusic3GpuTransformerWeights(this, backend);
+            return _gpuWeights;
+        }
+    }
+
+    public void Dispose()
+    {
+        lock (_gpuLock)
+        {
+            _gpuWeights?.Dispose();
+            _gpuWeights = null;
+        }
+    }
 
     public static MiniMaxMusic3TransformerWeights Load(SafetensorsLoader loader)
     {
@@ -113,61 +140,393 @@ public static class MiniMaxMusic3Transformer
     /// time-major (`[length][channels]`); `condition` must already be resampled onto the latent
     /// timeline (real <see cref="MiniMaxMusic3ConditionEncoder"/> output). Pass an all-zero
     /// `condition` for the real unconditional CFG branch. Returns `[length][inChannels(128)]`.</summary>
-    public static float[][] Forward(MiniMaxMusic3TransformerWeights w, float[][] latent, float[][] condition, float timestep)
+    public static unsafe float[][] Forward(
+        MiniMaxMusic3TransformerWeights w,
+        float[][] latent,
+        float[][] condition,
+        float timestep,
+        IComputeBackend? backend = null)
     {
+        var gpu = backend is not null ? w.GetOrCreateGpuWeights(backend) : null;
+
         int inChannels = MiniMaxMusic3Config.TransformerInChannels; // 128
         int condDim = MiniMaxMusic3Config.TransformerConditionDim; // 2048
         int concatChannels = 2 * inChannels + condDim; // 2304
         int inner = MiniMaxMusic3Config.TransformerNumAttentionHeads * MiniMaxMusic3Config.TransformerAttentionHeadDim;
         int length = latent.Length;
+        int seqLen = length + 1;
+        int ffn = MiniMaxMusic3Config.TransformerFfInnerDim;
+        int heads = MiniMaxMusic3Config.TransformerNumAttentionHeads;
+        int headDim = MiniMaxMusic3Config.TransformerAttentionHeadDim;
 
-        // Real: concat([latent, zeros, condition]) along channels, preprocess_conv(k=1) + residual.
-        var concatRows = new float[length][];
+        // Flatten latent and condition directly into flat concat buffer [length * concatChannels]
+        var concat = new float[length * concatChannels];
         for (int t = 0; t < length; t++)
         {
-            var row = new float[concatChannels];
-            Array.Copy(latent[t], 0, row, 0, inChannels);
+            int baseIdx = t * concatChannels;
+            Array.Copy(latent[t], 0, concat, baseIdx, inChannels);
             // zeros already default-initialized in [inChannels, 2*inChannels)
-            Array.Copy(condition[t], 0, row, 2 * inChannels, condDim);
-            concatRows[t] = row;
+            Array.Copy(condition[t], 0, concat, baseIdx + 2 * inChannels, condDim);
         }
-        var conv1x1 = Conv1x1NoBias(concatRows, length, concatChannels, concatChannels, w.PreprocessConvWeight);
-        var preNet = new float[length][];
-        for (int t = 0; t < length; t++)
+
+        // preprocess_conv (1x1) + residual
+        var preNet = new float[length * concatChannels];
+        fixed (float* cp = concat, pp = preNet, wpPre = w.PreprocessConvWeight)
         {
-            preNet[t] = new float[concatChannels];
-            for (int c = 0; c < concatChannels; c++) preNet[t][c] = conv1x1[t][c] + concatRows[t][c];
+            MatMul(backend, gpu?.PreprocessConvWeight, pp, wpPre, cp, length, concatChannels, concatChannels);
+            for (int i = 0; i < length * concatChannels; i++) pp[i] += cp[i];
         }
 
         var temb = TimestepEmbed(w, timestep);
 
-        // proj_in, then prepend the timestep token.
-        var projIn = LinearNoBias(preNet, length, concatChannels, inner, w.ProjInWeight);
-        int seqLen = length + 1;
-        var x = new float[seqLen][];
-        x[0] = temb;
-        for (int t = 0; t < length; t++) x[t + 1] = projIn[t];
+        // proj_in: [length, concatChannels] -> [length, inner], prepend temb -> x [seqLen * inner]
+        var x = new float[seqLen * inner];
+        Array.Copy(temb, 0, x, 0, inner);
+        fixed (float* xp = x, pp = preNet, wpIn = w.ProjInWeight)
+        {
+            MatMul(backend, gpu?.ProjInWeight, xp + inner, wpIn, pp, length, inner, concatChannels);
+        }
+
+        // Scratch buffers allocated ONCE for all 36 blocks:
+        var normed1 = new float[seqLen * inner];
+        var q = new float[seqLen * inner];
+        var k = new float[seqLen * inner];
+        var v = new float[seqLen * inner];
+        var context = new float[seqLen * inner];
+        var attnOut = new float[seqLen * inner];
+        var normed2 = new float[seqLen * inner];
+        var ffProj = new float[seqLen * 2 * ffn];
+        var gated = new float[seqLen * ffn];
+        var ffOut = new float[seqLen * inner];
 
         var (cos, sin) = BuildPartialRope(seqLen);
-        for (int li = 0; li < w.Blocks.Length; li++)
-            x = Block(w.Blocks[li], x, seqLen, cos, sin);
 
-        // Strip the timestep token, proj_out, postprocess_conv + residual.
-        var stripped = new float[length][];
-        for (int t = 0; t < length; t++) stripped[t] = x[t + 1];
-        var projOut = LinearNoBias(stripped, length, inner, inChannels, w.ProjOutWeight);
-        var postConv = Conv1x1NoBias(projOut, length, inChannels, inChannels, w.PostprocessConvWeight);
+        fixed (float* xp = x, n1p = normed1, qp = q, kp = k, vp = v, ctxp = context,
+                      aop = attnOut, n2p = normed2, fpp = ffProj, gp = gated, fop = ffOut)
+        {
+            for (int li = 0; li < w.Blocks.Length; li++)
+            {
+                var lw = w.Blocks[li];
+                var bGpu = gpu?.Blocks[li];
+
+                // 1. LayerNorm 1
+                fixed (float* wNorm1 = lw.Norm1Weight, bNorm1 = lw.Norm1Bias)
+                {
+                    for (int t = 0; t < seqLen; t++)
+                        LayerNormRow(xp + t * inner, wNorm1, bNorm1, n1p + t * inner, inner);
+                }
+
+                // 2. Q, K, V projections
+                fixed (float* wQ = lw.QWeight, wK = lw.KWeight, wV = lw.VWeight)
+                {
+                    MatMulQkv(backend, bGpu?.QWeight, bGpu?.KWeight, bGpu?.VWeight,
+                              qp, kp, vp, wQ, wK, wV, n1p, seqLen, inner);
+                }
+
+                // 3. Partial RoPE
+                ApplyPartialRope(q, seqLen, heads, headDim, cos, sin);
+                ApplyPartialRope(k, seqLen, heads, headDim, cos, sin);
+
+                // 4. Attention
+                float scale = 1f / MathF.Sqrt(headDim);
+                Parallel.For(0, heads, h =>
+                {
+                    int off = h * headDim;
+                    Span<float> scores = stackalloc float[seqLen];
+                    for (int i = 0; i < seqLen; i++)
+                    {
+                        var qSpan = q.AsSpan(i * inner + off, headDim);
+                        for (int j = 0; j < seqLen; j++)
+                        {
+                            var kSpan = k.AsSpan(j * inner + off, headDim);
+                            scores[j] = TensorPrimitives.Dot(qSpan, kSpan) * scale;
+                        }
+                        SoftmaxRange(scores, 0, seqLen);
+
+                        var ctxSpan = context.AsSpan(i * inner + off, headDim);
+                        ctxSpan.Clear();
+                        for (int j = 0; j < seqLen; j++)
+                        {
+                            var vSpan = v.AsSpan(j * inner + off, headDim);
+                            TensorPrimitives.MultiplyAdd(vSpan, scores[j], ctxSpan, ctxSpan);
+                        }
+                    }
+                });
+
+                // 5. O projection
+                fixed (float* wO = lw.OWeight)
+                {
+                    MatMul(backend, bGpu?.OWeight, aop, wO, ctxp, seqLen, inner, inner);
+                }
+
+                // 6. Residual add 1
+                for (int i = 0; i < seqLen * inner; i++) xp[i] += aop[i];
+
+                // 7. LayerNorm 2
+                fixed (float* wNorm2 = lw.Norm2Weight, bNorm2 = lw.Norm2Bias)
+                {
+                    for (int t = 0; t < seqLen; t++)
+                        LayerNormRow(xp + t * inner, wNorm2, bNorm2, n2p + t * inner, inner);
+                }
+
+                // 8. FeedForward: in -> silu*gate -> out
+                fixed (float* wFfIn = lw.FfInWeight, bFfIn = lw.FfInBias,
+                              wFfOut = lw.FfOutWeight, bFfOut = lw.FfOutBias)
+                {
+                    MatMul(backend, bGpu?.FfInWeight, fpp, wFfIn, n2p, seqLen, 2 * ffn, inner);
+                    for (int t = 0; t < seqLen; t++)
+                    {
+                        int ppBase = t * 2 * ffn;
+                        int gpBase = t * ffn;
+                        for (int i = 0; i < ffn; i++)
+                        {
+                            float gateState = fpp[ppBase + i] + bFfIn[i];
+                            float gateVal = fpp[ppBase + ffn + i] + bFfIn[ffn + i];
+                            gp[gpBase + i] = gateState * Silu(gateVal);
+                        }
+                    }
+                    MatMul(backend, bGpu?.FfOutWeight, fop, wFfOut, gp, seqLen, inner, ffn);
+                    for (int t = 0; t < seqLen; t++)
+                    {
+                        int foBase = t * inner;
+                        for (int i = 0; i < inner; i++)
+                            xp[foBase + i] += fop[foBase + i] + bFfOut[i];
+                    }
+                }
+            }
+        }
+
+        // Strip timestep token (rows 1..seqLen-1), proj_out, postprocess_conv + residual
+        var stripped = new float[length * inner];
+        Array.Copy(x, inner, stripped, 0, length * inner);
+
+        var projOut = new float[length * inChannels];
+        var postConv = new float[length * inChannels];
+        fixed (float* sp = stripped, pop = projOut, wOut = w.ProjOutWeight, pcp = postConv, wPost = w.PostprocessConvWeight)
+        {
+            MatMul(backend, gpu?.ProjOutWeight, pop, wOut, sp, length, inChannels, inner);
+            MatMul(backend, gpu?.PostprocessConvWeight, pcp, wPost, pop, length, inChannels, inChannels);
+        }
 
         var output = new float[length][];
         for (int t = 0; t < length; t++)
         {
-            output[t] = new float[inChannels];
-            for (int c = 0; c < inChannels; c++) output[t][c] = postConv[t][c] + projOut[t][c];
+            var row = new float[inChannels];
+            int baseIdx = t * inChannels;
+            for (int c = 0; c < inChannels; c++) row[c] = postConv[baseIdx + c] + projOut[baseIdx + c];
+            output[t] = row;
         }
         return output;
     }
 
-    private static float[] TimestepEmbed(MiniMaxMusic3TransformerWeights w, float timestep)
+    /// <summary>
+    /// Co-evaluates conditional and unconditional CFG branches in a single pass (batch=2),
+    /// streaming the 36-layer FP32 weights from memory ONCE instead of TWICE.
+    /// </summary>
+    public static unsafe (float[][] Cond, float[][] Uncond) ForwardPair(
+        MiniMaxMusic3TransformerWeights w,
+        float[][] latent,
+        float[][] condition,
+        float[][] zeroCondition,
+        float timestep,
+        IComputeBackend? backend = null)
+    {
+        var gpu = backend is not null ? w.GetOrCreateGpuWeights(backend) : null;
+
+        int length = latent.Length;
+        int seqLen = length + 1;
+        int heads = MiniMaxMusic3Config.TransformerNumAttentionHeads;
+        int headDim = MiniMaxMusic3Config.TransformerAttentionHeadDim;
+        int inner = heads * headDim;
+        int inChannels = MiniMaxMusic3Config.TransformerInChannels;
+        int condDim = MiniMaxMusic3Config.TransformerConditionDim;
+        int concatChannels = 2 * inChannels + condDim;
+        int ffn = MiniMaxMusic3Config.TransformerFfInnerDim;
+        int totalTokens = 2 * seqLen;
+
+        // Flatten latent and conditions directly into flat concat buffer [2 * length * concatChannels]
+        var concat = new float[2 * length * concatChannels];
+        for (int t = 0; t < length; t++)
+        {
+            int base0 = t * concatChannels;
+            Array.Copy(latent[t], 0, concat, base0, inChannels);
+            Array.Copy(condition[t], 0, concat, base0 + 2 * inChannels, condDim);
+
+            int base1 = (length + t) * concatChannels;
+            Array.Copy(latent[t], 0, concat, base1, inChannels);
+            Array.Copy(zeroCondition[t], 0, concat, base1 + 2 * inChannels, condDim);
+        }
+
+        // preprocess_conv (1x1) + residual for both sequences
+        var preNet = new float[2 * length * concatChannels];
+        fixed (float* cp = concat, pp = preNet, wpPre = w.PreprocessConvWeight)
+        {
+            MatMul(backend, gpu?.PreprocessConvWeight, pp, wpPre, cp, 2 * length, concatChannels, concatChannels);
+            for (int i = 0; i < 2 * length * concatChannels; i++) pp[i] += cp[i];
+        }
+
+        var temb = TimestepEmbed(w, timestep);
+
+        // proj_in: [2 * length, concatChannels] -> prepend temb to each sequence
+        var x = new float[totalTokens * inner];
+        Array.Copy(temb, 0, x, 0, inner);
+        int seq1Base = seqLen * inner;
+        Array.Copy(temb, 0, x, seq1Base, inner);
+
+        fixed (float* xp = x, pp = preNet, wpIn = w.ProjInWeight)
+        {
+            MatMul(backend, gpu?.ProjInWeight, xp + inner, wpIn, pp, length, inner, concatChannels);
+            MatMul(backend, gpu?.ProjInWeight, xp + seq1Base + inner, wpIn, pp + (long)length * concatChannels, length, inner, concatChannels);
+        }
+
+        // Scratch buffers allocated ONCE for both sequences across all 36 blocks:
+        var normed1 = new float[totalTokens * inner];
+        var q = new float[totalTokens * inner];
+        var k = new float[totalTokens * inner];
+        var v = new float[totalTokens * inner];
+        var context = new float[totalTokens * inner];
+        var attnOut = new float[totalTokens * inner];
+        var normed2 = new float[totalTokens * inner];
+        var ffProj = new float[totalTokens * 2 * ffn];
+        var gated = new float[totalTokens * ffn];
+        var ffOut = new float[totalTokens * inner];
+
+        var (cos, sin) = BuildPartialRope(seqLen);
+
+        fixed (float* xp = x, n1p = normed1, qp = q, kp = k, vp = v, ctxp = context,
+                      aop = attnOut, n2p = normed2, fpp = ffProj, gp = gated, fop = ffOut)
+        {
+            for (int li = 0; li < w.Blocks.Length; li++)
+            {
+                var lw = w.Blocks[li];
+                var bGpu = gpu?.Blocks[li];
+
+                // 1. LayerNorm 1
+                fixed (float* wNorm1 = lw.Norm1Weight, bNorm1 = lw.Norm1Bias)
+                {
+                    for (int t = 0; t < totalTokens; t++)
+                        LayerNormRow(xp + t * inner, wNorm1, bNorm1, n1p + t * inner, inner);
+                }
+
+                // 2. Q, K, V projections
+                fixed (float* wQ = lw.QWeight, wK = lw.KWeight, wV = lw.VWeight)
+                {
+                    MatMulQkv(backend, bGpu?.QWeight, bGpu?.KWeight, bGpu?.VWeight,
+                              qp, kp, vp, wQ, wK, wV, n1p, totalTokens, inner);
+                }
+
+                // 3. Partial RoPE (applied per sequence)
+                ApplyPartialRope(q.AsSpan(0, seqLen * inner), seqLen, heads, headDim, cos, sin);
+                ApplyPartialRope(q.AsSpan(seq1Base, seqLen * inner), seqLen, heads, headDim, cos, sin);
+                ApplyPartialRope(k.AsSpan(0, seqLen * inner), seqLen, heads, headDim, cos, sin);
+                ApplyPartialRope(k.AsSpan(seq1Base, seqLen * inner), seqLen, heads, headDim, cos, sin);
+
+                // 4. Attention (per sequence across all heads in parallel)
+                float scale = 1f / MathF.Sqrt(headDim);
+                Parallel.For(0, 2 * heads, bh =>
+                {
+                    int b = bh / heads;
+                    int h = bh % heads;
+                    int bOffset = b * seq1Base;
+                    int headOff = h * headDim;
+                    Span<float> scores = stackalloc float[seqLen];
+                    for (int i = 0; i < seqLen; i++)
+                    {
+                        var qSpan = q.AsSpan(bOffset + i * inner + headOff, headDim);
+                        for (int j = 0; j < seqLen; j++)
+                        {
+                            var kSpan = k.AsSpan(bOffset + j * inner + headOff, headDim);
+                            scores[j] = TensorPrimitives.Dot(qSpan, kSpan) * scale;
+                        }
+                        SoftmaxRange(scores, 0, seqLen);
+
+                        var ctxSpan = context.AsSpan(bOffset + i * inner + headOff, headDim);
+                        ctxSpan.Clear();
+                        for (int j = 0; j < seqLen; j++)
+                        {
+                            var vSpan = v.AsSpan(bOffset + j * inner + headOff, headDim);
+                            TensorPrimitives.MultiplyAdd(vSpan, scores[j], ctxSpan, ctxSpan);
+                        }
+                    }
+                });
+
+                // 5. O projection
+                fixed (float* wO = lw.OWeight)
+                {
+                    MatMul(backend, bGpu?.OWeight, aop, wO, ctxp, totalTokens, inner, inner);
+                }
+
+                // 6. Residual add 1
+                for (int i = 0; i < totalTokens * inner; i++) xp[i] += aop[i];
+
+                // 7. LayerNorm 2
+                fixed (float* wNorm2 = lw.Norm2Weight, bNorm2 = lw.Norm2Bias)
+                {
+                    for (int t = 0; t < totalTokens; t++)
+                        LayerNormRow(xp + t * inner, wNorm2, bNorm2, n2p + t * inner, inner);
+                }
+
+                // 8. FeedForward
+                fixed (float* wFfIn = lw.FfInWeight, bFfIn = lw.FfInBias,
+                              wFfOut = lw.FfOutWeight, bFfOut = lw.FfOutBias)
+                {
+                    MatMul(backend, bGpu?.FfInWeight, fpp, wFfIn, n2p, totalTokens, 2 * ffn, inner);
+                    for (int t = 0; t < totalTokens; t++)
+                    {
+                        int ppBase = t * 2 * ffn;
+                        int gpBase = t * ffn;
+                        for (int i = 0; i < ffn; i++)
+                        {
+                            float gateState = fpp[ppBase + i] + bFfIn[i];
+                            float gateVal = fpp[ppBase + ffn + i] + bFfIn[ffn + i];
+                            gp[gpBase + i] = gateState * Silu(gateVal);
+                        }
+                    }
+                    MatMul(backend, bGpu?.FfOutWeight, fop, wFfOut, gp, totalTokens, inner, ffn);
+                    for (int t = 0; t < totalTokens; t++)
+                    {
+                        int foBase = t * inner;
+                        for (int i = 0; i < inner; i++)
+                            xp[foBase + i] += fop[foBase + i] + bFfOut[i];
+                    }
+                }
+            }
+        }
+
+        // Strip timestep token (rows 1..seqLen-1) for each sequence
+        var stripped = new float[2 * length * inner];
+        Array.Copy(x, inner, stripped, 0, length * inner);
+        Array.Copy(x, seq1Base + inner, stripped, length * inner, length * inner);
+
+        var projOut = new float[2 * length * inChannels];
+        var postConv = new float[2 * length * inChannels];
+        fixed (float* sp = stripped, pop = projOut, wOut = w.ProjOutWeight, pcp = postConv, wPost = w.PostprocessConvWeight)
+        {
+            MatMul(backend, gpu?.ProjOutWeight, pop, wOut, sp, 2 * length, inChannels, inner);
+            MatMul(backend, gpu?.PostprocessConvWeight, pcp, wPost, pop, 2 * length, inChannels, inChannels);
+        }
+
+        var vCond = new float[length][];
+        var vUncond = new float[length][];
+        for (int t = 0; t < length; t++)
+        {
+            var rCond = new float[inChannels];
+            var rUncond = new float[inChannels];
+            int idxCond = t * inChannels;
+            int idxUncond = (length + t) * inChannels;
+            for (int c = 0; c < inChannels; c++)
+            {
+                rCond[c] = postConv[idxCond + c] + projOut[idxCond + c];
+                rUncond[c] = postConv[idxUncond + c] + projOut[idxUncond + c];
+            }
+            vCond[t] = rCond;
+            vUncond[t] = rUncond;
+        }
+
+        return (vCond, vUncond);
+    }
+
+    private static unsafe float[] TimestepEmbed(MiniMaxMusic3TransformerWeights w, float timestep)
     {
         int fourierDim = MiniMaxMusic3Config.TransformerFourierEmbeddingDim;
         int half = fourierDim / 2;
@@ -182,166 +541,24 @@ public static class MiniMaxMusic3Transformer
             freq[half + i] = MathF.Sin(angle);
         }
 
-        var mid = LinearWithBias(freq, fourierDim, inner, w.TimeEmbed.Linear1Weight, w.TimeEmbed.Linear1Bias);
-        for (int i = 0; i < mid.Length; i++) mid[i] = Silu(mid[i]);
-        return LinearWithBias(mid, inner, inner, w.TimeEmbed.Linear2Weight, w.TimeEmbed.Linear2Bias);
-    }
-
-    private static float[][] Block(MiniMaxMusic3TransformerBlockWeights lw, float[][] x, int seqLen, float[] cos, float[] sin)
-    {
-        int inner = MiniMaxMusic3Config.TransformerNumAttentionHeads * MiniMaxMusic3Config.TransformerAttentionHeadDim;
-
-        var normed1 = new float[seqLen][];
-        for (int t = 0; t < seqLen; t++) { normed1[t] = new float[inner]; LayerNorm(x[t], lw.Norm1Weight, lw.Norm1Bias, normed1[t]); }
-
-        var attnOut = SelfAttention(lw, normed1, seqLen, cos, sin);
-        var afterAttn = new float[seqLen][];
-        for (int t = 0; t < seqLen; t++)
+        var mid = new float[inner];
+        fixed (float* fp = freq, mp = mid, w1 = w.TimeEmbed.Linear1Weight, b1 = w.TimeEmbed.Linear1Bias)
         {
-            afterAttn[t] = new float[inner];
-            for (int i = 0; i < inner; i++) afterAttn[t][i] = x[t][i] + attnOut[t][i];
+            SimdKernels.MatMulBatchedF32(mp, w1, fp, 1, inner, fourierDim);
+            for (int i = 0; i < inner; i++) mp[i] = Silu(mp[i] + b1[i]);
         }
 
-        var normed2 = new float[seqLen][];
-        for (int t = 0; t < seqLen; t++) { normed2[t] = new float[inner]; LayerNorm(afterAttn[t], lw.Norm2Weight, lw.Norm2Bias, normed2[t]); }
-
-        var ffOut = FeedForward(lw, normed2, seqLen);
-        var output = new float[seqLen][];
-        for (int t = 0; t < seqLen; t++)
+        var output = new float[inner];
+        fixed (float* mp = mid, op = output, w2 = w.TimeEmbed.Linear2Weight, b2 = w.TimeEmbed.Linear2Bias)
         {
-            output[t] = new float[inner];
-            for (int i = 0; i < inner; i++) output[t][i] = afterAttn[t][i] + ffOut[t][i];
+            SimdKernels.MatMulBatchedF32(op, w2, mp, 1, inner, inner);
+            for (int i = 0; i < inner; i++) op[i] += b2[i];
         }
         return output;
     }
 
-    private static float[][] SelfAttention(MiniMaxMusic3TransformerBlockWeights lw, float[][] normed, int seqLen, float[] cos, float[] sin)
+    private static unsafe void LayerNormRow(float* x, float* weight, float* bias, float* output, int n)
     {
-        int heads = MiniMaxMusic3Config.TransformerNumAttentionHeads;
-        int headDim = MiniMaxMusic3Config.TransformerAttentionHeadDim;
-        int inner = heads * headDim;
-
-        var q = LinearNoBias(normed, seqLen, inner, inner, lw.QWeight);
-        var k = LinearNoBias(normed, seqLen, inner, inner, lw.KWeight);
-        var v = LinearNoBias(normed, seqLen, inner, inner, lw.VWeight);
-
-        var qFlat = Flatten(q, seqLen, inner);
-        var kFlat = Flatten(k, seqLen, inner);
-        ApplyPartialRope(qFlat, seqLen, heads, headDim, cos, sin);
-        ApplyPartialRope(kFlat, seqLen, heads, headDim, cos, sin);
-
-        var vFlat = Flatten(v, seqLen, inner);
-        float scale = 1f / MathF.Sqrt(headDim);
-        var context = new float[seqLen * inner];
-        Parallel.For(0, heads, h =>
-        {
-            int off = h * headDim;
-            var scores = new float[seqLen];
-            for (int i = 0; i < seqLen; i++)
-            {
-                for (int j = 0; j < seqLen; j++)
-                {
-                    float dot = 0f;
-                    for (int d = 0; d < headDim; d++) dot += qFlat[i * inner + off + d] * kFlat[j * inner + off + d];
-                    scores[j] = dot * scale;
-                }
-                SoftmaxRange(scores, 0, seqLen);
-
-                var ctxSpan = context.AsSpan(i * inner + off, headDim);
-                for (int j = 0; j < seqLen; j++)
-                {
-                    float s = scores[j];
-                    var vSpan = vFlat.AsSpan(j * inner + off, headDim);
-                    for (int d = 0; d < headDim; d++) ctxSpan[d] += s * vSpan[d];
-                }
-            }
-        });
-
-        var contextRows = Unflatten(context, seqLen, inner);
-        return LinearNoBias(contextRows, seqLen, inner, inner, lw.OWeight);
-    }
-
-    private static float[][] FeedForward(MiniMaxMusic3TransformerBlockWeights lw, float[][] normed, int seqLen)
-    {
-        int inner = MiniMaxMusic3Config.TransformerNumAttentionHeads * MiniMaxMusic3Config.TransformerAttentionHeadDim;
-        int ffn = MiniMaxMusic3Config.TransformerFfInnerDim;
-
-        var proj = LinearWithBias(normed, seqLen, inner, 2 * ffn, lw.FfInWeight, lw.FfInBias);
-        var gated = new float[seqLen][];
-        for (int t = 0; t < seqLen; t++)
-        {
-            var row = new float[ffn];
-            var gateStates = proj[t].AsSpan(0, ffn);
-            var gate = proj[t].AsSpan(ffn, ffn);
-            for (int i = 0; i < ffn; i++) row[i] = gateStates[i] * Silu(gate[i]);
-            gated[t] = row;
-        }
-
-        return LinearWithBias(gated, seqLen, ffn, inner, lw.FfOutWeight, lw.FfOutBias);
-    }
-
-    // ── Shared small helpers (real Conv1d k=1 no-bias, Linear no-bias/with-bias, LayerNorm, partial RoPE) ──
-
-    private static float[][] Conv1x1NoBias(float[][] x, int seqLen, int inCh, int outCh, float[] weight)
-    {
-        // Real Conv1d(kernel=1): output[t,oc] = sum_ic weight[oc,ic,0] * x[t,ic] (no bias).
-        var output = new float[seqLen][];
-        for (int t = 0; t < seqLen; t++)
-        {
-            var row = new float[outCh];
-            for (int oc = 0; oc < outCh; oc++)
-            {
-                float acc = 0f;
-                int wBase = oc * inCh;
-                for (int ic = 0; ic < inCh; ic++) acc += weight[wBase + ic] * x[t][ic];
-                row[oc] = acc;
-            }
-            output[t] = row;
-        }
-        return output;
-    }
-
-    private static float[][] LinearNoBias(float[][] x, int seqLen, int inDim, int outDim, float[] weight)
-    {
-        var output = new float[seqLen][];
-        for (int t = 0; t < seqLen; t++)
-        {
-            var row = new float[outDim];
-            for (int oc = 0; oc < outDim; oc++)
-            {
-                float acc = 0f;
-                int wBase = oc * inDim;
-                for (int ic = 0; ic < inDim; ic++) acc += weight[wBase + ic] * x[t][ic];
-                row[oc] = acc;
-            }
-            output[t] = row;
-        }
-        return output;
-    }
-
-    private static float[] LinearWithBias(float[] x, int inDim, int outDim, float[] weight, float[] bias)
-    {
-        var output = new float[outDim];
-        for (int oc = 0; oc < outDim; oc++)
-        {
-            float acc = bias[oc];
-            int wBase = oc * inDim;
-            for (int ic = 0; ic < inDim; ic++) acc += weight[wBase + ic] * x[ic];
-            output[oc] = acc;
-        }
-        return output;
-    }
-
-    private static float[][] LinearWithBias(float[][] x, int seqLen, int inDim, int outDim, float[] weight, float[] bias)
-    {
-        var output = new float[seqLen][];
-        for (int t = 0; t < seqLen; t++) output[t] = LinearWithBias(x[t], inDim, outDim, weight, bias);
-        return output;
-    }
-
-    private static void LayerNorm(float[] x, float[] weight, float[] bias, float[] output)
-    {
-        int n = x.Length;
         float mean = 0f;
         for (int i = 0; i < n; i++) mean += x[i];
         mean /= n;
@@ -349,20 +566,6 @@ public static class MiniMaxMusic3Transformer
         for (int i = 0; i < n; i++) { float d = x[i] - mean; varSum += d * d; }
         float invStd = 1f / MathF.Sqrt(varSum / n + 1e-5f);
         for (int i = 0; i < n; i++) output[i] = (x[i] - mean) * invStd * weight[i] + bias[i];
-    }
-
-    private static float[] Flatten(float[][] rows, int seqLen, int dim)
-    {
-        var flat = new float[seqLen * dim];
-        for (int t = 0; t < seqLen; t++) Array.Copy(rows[t], 0, flat, t * dim, dim);
-        return flat;
-    }
-
-    private static float[][] Unflatten(float[] flat, int seqLen, int dim)
-    {
-        var rows = new float[seqLen][];
-        for (int t = 0; t < seqLen; t++) { rows[t] = new float[dim]; Array.Copy(flat, t * dim, rows[t], 0, dim); }
-        return rows;
     }
 
     /// <summary>Real `MiniMaxMusic3RotaryEmbedding`: standard GPT-J-style partial rotary
@@ -390,7 +593,7 @@ public static class MiniMaxMusic3Transformer
     }
 
     /// <summary>Real `_apply_partial_rotary_emb` (rotate_half convention over just the leading `rotaryDim` channels; the remaining `headDim-rotaryDim` channels pass through untouched).</summary>
-    private static void ApplyPartialRope(float[] qOrK, int seqLen, int numHeads, int headDim, float[] cos, float[] sin)
+    private static void ApplyPartialRope(Span<float> qOrK, int seqLen, int numHeads, int headDim, float[] cos, float[] sin)
     {
         int rotaryDim = MiniMaxMusic3Config.TransformerRotaryDim;
         int half = rotaryDim / 2;
@@ -415,7 +618,7 @@ public static class MiniMaxMusic3Transformer
         }
     }
 
-    private static void SoftmaxRange(float[] scores, int start, int end)
+    private static void SoftmaxRange(Span<float> scores, int start, int end)
     {
         float max = float.NegativeInfinity;
         for (int i = start; i < end; i++) if (scores[i] > max) max = scores[i];
@@ -428,6 +631,159 @@ public static class MiniMaxMusic3Transformer
         }
         float invSum = 1f / sum;
         for (int i = start; i < end; i++) scores[i] *= invSum;
+    }
+
+    private static unsafe void MatMul(
+        IComputeBackend? backend,
+        CoreTensor? gpuWeight,
+        float* output,
+        float* weights,
+        float* input,
+        int batchSize,
+        int rows,
+        int cols)
+    {
+        if (backend is not null && gpuWeight is not null)
+        {
+            int inCount = batchSize * cols;
+            int outCount = batchSize * rows;
+            var xGpu = backend.Upload(new ReadOnlySpan<float>(input, inCount), TensorShape.D1(inCount));
+            var cGpu = backend.Allocate(TensorShape.D1(outCount));
+            try
+            {
+                backend.Sgemm(cGpu, xGpu, gpuWeight, batchSize, cols, rows);
+                backend.Synchronize();
+                backend.Download(cGpu, new Span<float>(output, outCount));
+                return;
+            }
+            finally
+            {
+                backend.Free(xGpu);
+                backend.Free(cGpu);
+            }
+        }
+
+        MatMulRowMajor(output, weights, input, batchSize, rows, cols);
+    }
+
+    private static unsafe void MatMulQkv(
+        IComputeBackend? backend,
+        CoreTensor? wQGpu, CoreTensor? wKGpu, CoreTensor? wVGpu,
+        float* qOut, float* kOut, float* vOut,
+        float* wQ, float* wK, float* wV,
+        float* input,
+        int batchSize,
+        int dim)
+    {
+        if (backend is not null && wQGpu is not null && wKGpu is not null && wVGpu is not null)
+        {
+            int count = batchSize * dim;
+            var xGpu = backend.Upload(new ReadOnlySpan<float>(input, count), TensorShape.D1(count));
+            var cGpu = backend.Allocate(TensorShape.D1(count));
+            try
+            {
+                backend.Sgemm(cGpu, xGpu, wQGpu, batchSize, dim, dim);
+                backend.Synchronize();
+                backend.Download(cGpu, new Span<float>(qOut, count));
+
+                backend.Sgemm(cGpu, xGpu, wKGpu, batchSize, dim, dim);
+                backend.Synchronize();
+                backend.Download(cGpu, new Span<float>(kOut, count));
+
+                backend.Sgemm(cGpu, xGpu, wVGpu, batchSize, dim, dim);
+                backend.Synchronize();
+                backend.Download(cGpu, new Span<float>(vOut, count));
+                return;
+            }
+            finally
+            {
+                backend.Free(xGpu);
+                backend.Free(cGpu);
+            }
+        }
+
+        MatMulRowMajor(qOut, wQ, input, batchSize, dim, dim);
+        MatMulRowMajor(kOut, wK, input, batchSize, dim, dim);
+        MatMulRowMajor(vOut, wV, input, batchSize, dim, dim);
+    }
+
+    private static unsafe void MatMulRowMajor(float* output, float* weights, float* input,
+        int batchSize, int rows, int cols)
+    {
+        if (batchSize <= 1)
+        {
+            if (batchSize == 1) SimdKernels.MatVecF32(output, weights, input, rows, cols);
+            return;
+        }
+
+        int numThreads = Math.Min(Environment.ProcessorCount, (rows + 63) / 64);
+        if (numThreads <= 1)
+        {
+            int r = 0;
+            for (; r + 4 <= rows; r += 4)
+            {
+                float* m0 = weights + (long)r * cols;
+                float* m1 = weights + (long)(r + 1) * cols;
+                float* m2 = weights + (long)(r + 2) * cols;
+                float* m3 = weights + (long)(r + 3) * cols;
+                for (int n = 0; n < batchSize; n++)
+                {
+                    float* x = input + (long)n * cols;
+                    SimdKernels.MatVecF32_4Row(m0, m1, m2, m3, x, cols, out float r0, out float r1, out float r2, out float r3);
+                    long baseIdx = (long)n * rows + r;
+                    output[baseIdx] = r0;
+                    output[baseIdx + 1] = r1;
+                    output[baseIdx + 2] = r2;
+                    output[baseIdx + 3] = r3;
+                }
+            }
+            for (; r < rows; r++)
+            {
+                float* wRow = weights + (long)r * cols;
+                for (int n = 0; n < batchSize; n++)
+                    output[(long)n * rows + r] = SimdKernels.DotF32(wRow, input + (long)n * cols, cols);
+            }
+            return;
+        }
+
+        int chunkSize = ((rows + numThreads - 1) / numThreads + 3) & ~3;
+        nint outAddr = (nint)output;
+        nint wAddr = (nint)weights;
+        nint inAddr = (nint)input;
+
+        Parallel.For(0, numThreads, t =>
+        {
+            float* outp = (float*)outAddr;
+            float* wp = (float*)wAddr;
+            float* inp = (float*)inAddr;
+
+            int start = t * chunkSize;
+            int end = Math.Min(rows, start + chunkSize);
+            int r = start;
+            for (; r + 4 <= end; r += 4)
+            {
+                float* m0 = wp + (long)r * cols;
+                float* m1 = wp + (long)(r + 1) * cols;
+                float* m2 = wp + (long)(r + 2) * cols;
+                float* m3 = wp + (long)(r + 3) * cols;
+                for (int n = 0; n < batchSize; n++)
+                {
+                    float* x = inp + (long)n * cols;
+                    SimdKernels.MatVecF32_4Row(m0, m1, m2, m3, x, cols, out float r0, out float r1, out float r2, out float r3);
+                    long baseIdx = (long)n * rows + r;
+                    outp[baseIdx] = r0;
+                    outp[baseIdx + 1] = r1;
+                    outp[baseIdx + 2] = r2;
+                    outp[baseIdx + 3] = r3;
+                }
+            }
+            for (; r < end; r++)
+            {
+                float* wRow = wp + (long)r * cols;
+                for (int n = 0; n < batchSize; n++)
+                    outp[(long)n * rows + r] = SimdKernels.DotF32(wRow, inp + (long)n * cols, cols);
+            }
+        });
     }
 
     private static float Silu(float x) => x / (1f + MathF.Exp(-x));
