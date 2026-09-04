@@ -3,7 +3,7 @@ namespace OpenTail.Stingray.Cpu;
 
 /// <summary>
 /// Opt-in feature flag configuration for the Fused Small-Batch Micro-GEMM CPU kernel.
-/// Gated behind <c>STINGRAY_CPU_MICRO_GEMM=1</c> (or <c>STINGRAY_MICRO_GEMM=1</c>).
+/// Gated behind <c>STINGRAY_CPU_MICRO_GEMM=1</c>.
 /// Defaults to <b>false (disabled)</b>.
 /// </summary>
 public static class MicroGemmConfig
@@ -26,13 +26,11 @@ public static class MicroGemmConfig
     public static int MaxMicroBatchSize { get; set; } = 64;
 
     /// <summary>
-    /// Reads <c>STINGRAY_CPU_MICRO_GEMM</c> or <c>STINGRAY_MICRO_GEMM</c> from environment.
+    /// Reads <c>STINGRAY_CPU_MICRO_GEMM</c> from environment.
     /// </summary>
     public static bool ReadFromEnvironment()
     {
-        string? val = Environment.GetEnvironmentVariable("STINGRAY_Q4K_MICRO_GEMM")
-                   ?? Environment.GetEnvironmentVariable("STINGRAY_CPU_MICRO_GEMM")
-                   ?? Environment.GetEnvironmentVariable("STINGRAY_MICRO_GEMM");
+        string? val = Environment.GetEnvironmentVariable("STINGRAY_CPU_MICRO_GEMM");
         if (string.IsNullOrWhiteSpace(val)) return false;
         val = val.Trim();
         return val == "1" || val.Equals("true", StringComparison.OrdinalIgnoreCase);

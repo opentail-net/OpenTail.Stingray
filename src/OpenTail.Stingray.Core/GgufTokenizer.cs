@@ -388,8 +388,18 @@ public sealed partial class GgufTokenizer : ITokenizer
         bool knownPre = true;
         if (!isSpmModel && !isUnigramModel && source.Merges.Length > 0)
         {
-            knownPre = PreTokenizerPatterns.TryResolve(source.TokenizerPre, out var resolved);
-            preTokenSplit = resolved;
+            if (!string.IsNullOrEmpty(source.TokenizerPreRawRegex))
+            {
+                // A tokenizer.json's own declared split regex is ground truth -- skip the named
+                // GGUF-pre-type lookup entirely (that table is keyed on tokenizer.ggml.pre, which
+                // a tokenizer.json load never populates).
+                preTokenSplit = [new Regex(source.TokenizerPreRawRegex, RegexOptions.None)];
+            }
+            else
+            {
+                knownPre = PreTokenizerPatterns.TryResolve(source.TokenizerPre, out var resolved);
+                preTokenSplit = resolved;
+            }
         }
 
         // Try CodeGenTokenizer first (better decode quality for GPT-2 style models).

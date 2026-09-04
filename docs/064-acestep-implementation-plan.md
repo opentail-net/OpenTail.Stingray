@@ -561,6 +561,18 @@ now individually verified, but no single reference run chains all of them togeth
 normalization/clipping handling before WAV export (still present, reduced not eliminated); (4) a
 performance look at the 750-frame timbre pass, now that it is real, wired, always-on cost.
 
+**Re-verified fresh, 2026-09-04**: re-ran all 9 real-weight test classes
+(`AceStepConditionEncoderTests`, `AceStepDiTGoldenParityTests`, `AceStepFlowSchedulerTests`,
+`AceStepLyricEncoderGoldenParityTests`, `AceStepOobleckDecoderGoldenParityTests`,
+`AceStepOobleckEncoderGoldenParityTests`, `AceStepQwen3TextEncoderTests`,
+`AceStepTimbreEncoderGoldenParityTests`, `AceStepPipelineEndToEndTests`) -- all 9 still pass,
+including the full end-to-end pipeline test (408s real generation). This confirms the status above
+is accurate as written, not stale -- every individual component is real golden-parity-verified, the
+full pipeline runs end-to-end without crashing or degenerating, but the two real "not yet done"
+items above (full-chain numeric parity, human listening confirmation) genuinely remain open. Not
+correcting a percentage here, unlike MiniMax-Music3's 2026-09-04 correction -- this doc's own
+framing already matched reality.
+
 ## Immediate next steps (in order)
 
 1. Download the real weights (`acestep-v15-turbo/model.safetensors` ~4.79GB,

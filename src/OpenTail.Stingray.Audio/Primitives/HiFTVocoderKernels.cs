@@ -35,7 +35,7 @@ public static class HiFTVocoderKernels
         return Decode(w, mel, t, excitation, sampleLen, melDim);
     }
 
-    internal static float[] PredictF0ForTest(IF0PredictorWeights f0w, float[] mel, int t, int melDim) => PredictF0(f0w, mel, t, melDim, isCausal: false);
+    internal static float[] PredictF0ForTest(IF0PredictorWeights f0w, float[] mel, int t, int melDim) => PredictF0(f0w, mel, t, melDim, isCausal: true);
 
     /// <summary>TEST-SUPPORT ONLY: computes the harmonic-source excitation signal directly from a
     /// given per-frame F0 array (bypassing PredictF0), for numeric comparison against a real

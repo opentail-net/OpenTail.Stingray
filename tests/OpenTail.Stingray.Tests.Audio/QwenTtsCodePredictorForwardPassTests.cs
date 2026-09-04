@@ -48,7 +48,12 @@ public sealed class QwenTtsCodePredictorForwardPassTests : HeavyTestBase
         var codecEmbd0 = tensorSource.FindTensor("token_embd.weight");
         Assert.NotNull(codecEmbd0);
         var embdBytes = tensorSource.GetTensorData(codecEmbd0!.Value);
-        int bytesPerRow = (hp.EmbeddingDim / 32) * 34; // real Q8_0 block size: 34 bytes per 32-element block
+        // Real, dtype-agnostic row size -- `token_embd.weight` isn't guaranteed to share the
+        // model's overall quant scheme (embeddings are commonly left in a different/unquantized
+        // format even in an otherwise-quantized GGUF); hardcoding Q8_0's 34-bytes-per-32-block
+        // math here previously crashed with ArgumentOutOfRangeException on checkpoints where this
+        // tensor is actually Float32.
+        int bytesPerRow = (int)DTypeInfo.ByteSize(hp.EmbeddingDim, codecEmbd0.Value.DType);
         var row0 = new float[hp.EmbeddingDim];
         Dequantize.ToFloat32(embdBytes[..bytesPerRow], row0, codecEmbd0.Value.DType, hp.EmbeddingDim);
 

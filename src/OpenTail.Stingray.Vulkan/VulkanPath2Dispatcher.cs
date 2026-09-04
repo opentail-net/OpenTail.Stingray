@@ -3,7 +3,7 @@ namespace OpenTail.Stingray.Vulkan;
 
 /// <summary>
 /// Opt-in feature flag configuration for Vulkan Path 2 Cooperative Tiled GEMM (<c>MatMulTiledQ4K</c>).
-/// Gated behind <c>STINGRAY_VULKAN_PATH2_EXPERIMENTAL=1</c> (or <c>STINGRAY_VULKAN_PATH2=1</c>).
+/// Gated behind <c>STINGRAY_VULKAN_PATH2=1</c>.
 /// Defaults to <b>false (disabled)</b>.
 /// </summary>
 public static class VulkanPath2Config
@@ -26,12 +26,11 @@ public static class VulkanPath2Config
     public static int MaxTileTokens { get; set; } = 16;
 
     /// <summary>
-    /// Reads <c>STINGRAY_VULKAN_PATH2_EXPERIMENTAL</c> or <c>STINGRAY_VULKAN_PATH2</c> from environment.
+    /// Reads <c>STINGRAY_VULKAN_PATH2</c> from environment.
     /// </summary>
     public static bool ReadFromEnvironment()
     {
-        string? val = Environment.GetEnvironmentVariable("STINGRAY_VULKAN_PATH2_EXPERIMENTAL")
-                   ?? Environment.GetEnvironmentVariable("STINGRAY_VULKAN_PATH2");
+        string? val = Environment.GetEnvironmentVariable("STINGRAY_VULKAN_PATH2");
         if (string.IsNullOrWhiteSpace(val)) return false;
         val = val.Trim();
         return val == "1" || val.Equals("true", StringComparison.OrdinalIgnoreCase);

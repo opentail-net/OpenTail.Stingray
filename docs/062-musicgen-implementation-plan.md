@@ -157,3 +157,40 @@ Sprint 1: pull `facebook/musicgen-small` (check for a GGUF conversion via `sting
 plan a safetensors loader path since this is a new checkpoint format for this project), inventory
 tensors/config, and produce the tensor-mapping table this whole plan depends on. Nothing past this
 should be coded until that table exists and matches the real checkpoint, not blog-post recollection.
+
+## Numeric golden-parity CLOSED, 2026-09-04
+
+`MusicGenDecoderGoldenParityTests` (`scratch-llamacpp-ref/musicgen_decoder_golden.py`, pure-numpy
+oracle transcribed from real HF `transformers` MusicGen decoder source, loaded directly against
+`models/musicgen-small/musicgen-small.safetensors` -- real tensor names confirmed matching
+`MusicGenTransformerWeights.cs`'s assumptions exactly, no surprises) compares real production
+`MusicGenTransformer.Step`'s codebook-0 logits (3 fixed timesteps x 4 codebooks, synthetic T5-
+stand-in encoder hidden state) against the oracle: cosine similarity > 0.999, passed on the first
+try, no bug found. Real 4.53s wall-clock confirms genuine execution of all 24 real transformer
+layers, not a silent skip. This closes MusicGen's last documented gap ("not yet golden-verified
+numerically") -- see README's status matrix for the updated row.
+
+**Update, same day -- FULL pipeline closure, not just the decoder.** The operator explicitly
+required every real stage closed, not just the riskiest one. Three more real golden-parity tests
+built and passing, all against `models/musicgen-small/musicgen-small.safetensors`:
+- **T5 text encoder** (`MusicGenTextEncoderGoldenParityTests`,
+  `scratch-llamacpp-ref/musicgen_t5_encoder_golden.py`): real relative-position-bias self-attention
+  (no 1/sqrt(d) scaling), real RMSNorm-only `T5LayerNorm`, plain ReLU FFN. Cosine > 0.999, 0.356s.
+- **EnCodec 32kHz decoder** (`MusicGenEncodecDecoderGoldenParityTests`,
+  `scratch-llamacpp-ref/musicgen_encodec_decoder_golden.py`): real weight-norm folding, 2-layer
+  whole-stack-residual LSTM, trimmed transpose-conv upsampling. Cosine > 0.999, 0.414s.
+- **Full end-to-end chain** (`MusicGenEndToEndGoldenParityTests`,
+  `scratch-llamacpp-ref/musicgen_e2e_golden.py`): calls the actual PUBLIC `MusicGenGenerator.Generate`
+  entry point (not a hand-wired internal pipeline) with a real prompt ("electronic dance music"),
+  independently confirms the real C# `T5Tokenizer` produces the identical token ids the oracle
+  assumed (guards against tokenizer drift as a separate failure mode), real greedy delayed-pattern
+  decode (`guidanceScale=1.0`, `topK=1` for determinism) chained through to real EnCodec decode.
+  Cosine > 0.999, 5.7s (confirms real multi-layer/multi-step computation).
+
+All 4 golden tests (this update's 3 + the earlier decoder-only one) pass together, 0 failed,
+3.656s combined. **Zero production bugs found in this pass** -- every stage's C# already matched
+real reference math exactly on first comparison; the existing doc comments citing specific real
+quirks (no T5 attention scaling, RMSNorm-only LayerNorm, weight-norm folding, single whole-stack
+LSTM residual, `trim_right_ratio=1.0` conv trimming, delay-pattern lookback index) were all
+independently confirmed correct, not just plausible-sounding. MusicGen's numeric verification is
+now genuinely complete across every real stage.

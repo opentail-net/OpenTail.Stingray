@@ -92,6 +92,18 @@ public sealed record TokenizerSource
     /// </summary>
     public string TokenizerPre { get; init; } = string.Empty;
 
+    /// <summary>
+    /// A pre-tokenizer split regex read VERBATIM from a <c>tokenizer.json</c>'s own
+    /// <c>pre_tokenizer</c> field (the "Split" stage of a "Sequence" pre-tokenizer, e.g. Qwen2's
+    /// real `(?i:'s|'t|...)|[^\r\n\p{L}\p{N}]?\p{L}+|...` pattern), when present. Takes priority
+    /// over <see cref="TokenizerPre"/>'s named-pattern lookup: a HF export's own declared regex is
+    /// ground truth and needs no name-matching against <see cref="PreTokenizerPatterns"/>'s known
+    /// GGUF <c>tokenizer.ggml.pre</c> table, which a <c>tokenizer.json</c> load never populates in
+    /// the first place (GGUF-only metadata). Empty when the source has no such field, or the
+    /// package is GGUF-derived (that path uses <see cref="TokenizerPre"/> instead).
+    /// </summary>
+    public string TokenizerPreRawRegex { get; init; } = string.Empty;
+
     /// <summary>Jinja chat template, or null when the package ships none.</summary>
     public string? ChatTemplate { get; init; }
 }

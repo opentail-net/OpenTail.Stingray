@@ -867,9 +867,16 @@ TransformerDepth=12`, with the dual-pass chunking replaced by single-pass banded
 `StableAudio3MediumVaeTests` passes on the FIRST real-weight run against the full real 9.22GB
 checkpoint: correct shape (`n*Stride*PatchSize*AudioChannels` samples), finite, non-silent output.
 
-**Deliberately deferred real gap**: `sinusoidal_blocks: [8]` (decoder-only, selects a real
-per-layer FeedForward variant for the last several layers) is not implemented -- `FeedForward`
-always uses the plain SwiGLU path, flagged in the class's own doc comment.
+**`sinusoidal_blocks: [8]` FeedForward variant -- implemented and CONFIRMED FIXED, 2026-09-03**:
+was deliberately deferred (decoder-only, selects a real per-layer FeedForward variant for the last
+several layers); operator reported the "piano arpeggio" sample as poor quality, this was diagnosed
+as the leading suspect (see docs/066's investigation) and confirmed as the real bug once
+implemented -- a regenerated sample with the fix was judged good by ear against the original's not
+good. Real formula (GitHub `main`, PyPI 0.0.19 lacks the `sinusoidal` kwarg entirely): `sinusoidal
+= True if ((transformer_depth - i) < sinusoidal_blocks) else False`, which for
+`TransformerDepth=12`/`SinusoidalBlocks=8` selects the LAST 7 layers (off-by-one against its own
+name, ported as-is). The only change: GLU gate activation becomes `Sin(x)=sin(pi*x)` instead of
+`SiLU` on those layers.
 
 **Real disk-space incident during this work**: the C: drive filled to 100% (redundant checkpoint
 copies sat in both the HF cache AND this project's own `models/` directory -- ~11GB duplicated),
@@ -878,9 +885,10 @@ copies (project already had its own `models/` copies) and did a clean rebuild of
 to recover -- worth remembering: this environment's disk is not infinite, redundant multi-GB
 checkpoint copies should be cleaned up promptly once mirrored into `models/`.
 
-**Not yet done**: `sinusoidal_blocks` FF variant; numeric golden-parity for SAME-L (same real-
-weights-non-degeneracy-not-golden-verified caveat as the DiT, for the same underlying package-
-version reasons, now resolved in confidence but not yet turned into an actual numeric diff).
+**Not yet done**: numeric golden-parity for SAME-L (same real-weights-non-degeneracy-not-golden-
+verified caveat as the DiT, for the same underlying package-version reasons, now resolved in
+confidence but not yet turned into an actual numeric diff). The `sinusoidal_blocks` FF variant is
+now DONE -- see the "CONFIRMED FIXED, 2026-09-03" note above.
 
 ## Medium end-to-end pipeline wired, same day
 

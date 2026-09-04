@@ -30,12 +30,18 @@ namespace OpenTail.Stingray.Diffusion.StableAudio;
 /// real per-checkpoint config, real source `WNConv1d(..., 3 if conv_mapping else 1, ...)`. Checked
 /// directly rather than copying Small's kernel assumption.</para>
 ///
-/// <para><b>Known, deliberately deferred real gap</b>: `sinusoidal_blocks: [8]` on the real decoder
-/// config (absent on the encoder) selects a real per-layer FeedForward variant
-/// (`ff_kwargs={"sinusoidal": sinusoidal}`) for the LAST several decoder layers -- not yet ported
-/// (this class's `FeedForward` always uses the plain SwiGLU path). Flagged, not implemented, same
-/// as this project's standing practice for scoped-out real features (matches how ACE-Step's V1
-/// scope explicitly deferred timbre conditioning before it was later added).</para>
+/// <para><b>`sinusoidal_blocks: [8]` FeedForward variant, implemented</b>: the real decoder config
+/// (absent on the encoder) sets `ff_kwargs={"sinusoidal": sinusoidal}` per transformer layer, real
+/// source `sinusoidal = True if ((transformer_depth - i) &lt; sinusoidal_blocks) else False` for
+/// `i in range(transformer_depth)` (`TransformerResamplingBlock.__init__`, GitHub main). With
+/// `TransformerDepth=12`/`SinusoidalBlocks=8` this literally selects the LAST 7 layers (i=5..11 --
+/// i=4 gives 12-4=8, not &lt;8, so it stays plain), not 8; ported exactly as written, not
+/// "corrected" to 8. The real `FeedForward`/`GLU` structure is otherwise byte-identical (x, gate =
+/// proj(x).chunk(2); return x * act(gate)) -- the ONLY change is the gate activation: real
+/// `Sin(x) = sin(pi * x)` (`stable_audio_tools.models.transformer.Sin`) replacing `SiLU`,
+/// confirmed from GitHub main's `transformer.py` (the PyPI 0.0.19 release has no `sinusoidal`
+/// kwarg on `FeedForward` at all -- same stale-vs-main gap this session already hit for
+/// `local_add_cond_dim`/`differential`).</para>
 /// </summary>
 public sealed class SameLargeVae : IDisposable
 {
@@ -47,6 +53,7 @@ public sealed class SameLargeVae : IDisposable
     private const int Stride = 16;
     private const int SubChunkSize = Stride + 1; // 17
     private const int TransformerDepth = 12;
+private const int SinusoidalBlocks = 8; // decoder-only real `sinusoidal_blocks: [8]`
     private const int NumHeads = 24;
     private const int HeadDim = 64;
     private const int RopeRotDim = 32;
@@ -255,7 +262,9 @@ public sealed class SameLargeVae : IDisposable
         for (int li = 0; li < TransformerDepth; li++)
         {
             string layerPrefix = $"{prefix}.transformers.{li}";
-            TransformerBlockForward(folded, totalLen, layerPrefix, cos, sin);
+            // Real `sinusoidal = True if ((transformer_depth - i) < sinusoidal_blocks) else False`, decoder-only.
+            bool sinusoidal = !isEncoder && (TransformerDepth - li) < SinusoidalBlocks;
+            TransformerBlockForward(folded, totalLen, layerPrefix, cos, sin, sinusoidal);
         }
 
         int outputSegSize = isEncoder ? 1 : Stride;
@@ -269,7 +278,7 @@ public sealed class SameLargeVae : IDisposable
         return outp;
     }
 
-    private void TransformerBlockForward(float[] x, int seq, string p, float[] cos, float[] sin)
+    private void TransformerBlockForward(float[] x, int seq, string p, float[] cos, float[] sin, bool sinusoidal)
     {
         var preAlpha = _st.ReadF32($"{p}.pre_norm.alpha")[0];
         var preGamma = _st.ReadF32($"{p}.pre_norm.gamma");
@@ -288,7 +297,7 @@ public sealed class SameLargeVae : IDisposable
         var ffNormed = x.ToArray();
         DynamicTanh(ffNormed, ffAlpha, ffGamma, ffBeta, EmbedDim);
 
-        var ff = FeedForward(ffNormed, seq, p);
+        var ff = FeedForward(ffNormed, seq, p, sinusoidal);
         for (int i = 0; i < x.Length; i++) x[i] += ff[i];
     }
 
@@ -396,7 +405,10 @@ public sealed class SameLargeVae : IDisposable
         return outp;
     }
 
-    private float[] FeedForward(float[] x, int seq, string p)
+    /// <summary>Real `FeedForward`/`GLU`: `x, gate = proj(x).chunk(2); return x * act(gate)`. `act` is
+    /// `SiLU` normally, but real `Sin(x) = sin(pi * x)` on the layers `sinusoidal` selects (see class
+    /// doc comment for the exact real per-layer selection formula).</summary>
+    private float[] FeedForward(float[] x, int seq, string p, bool sinusoidal)
     {
         var w0 = _st.ReadF32($"{p}.ff.ff.0.proj.weight");
         var b0 = _st.ReadF32($"{p}.ff.ff.0.proj.bias");
@@ -410,7 +422,10 @@ public sealed class SameLargeVae : IDisposable
             var val = proj.AsSpan(t * 2 * FfInner, FfInner);
             var gate = proj.AsSpan(t * 2 * FfInner + FfInner, FfInner);
             var dst = h.AsSpan(t * FfInner, FfInner);
-            for (int i = 0; i < FfInner; i++) dst[i] = val[i] * DiffusionOps.Silu(gate[i]);
+            if (sinusoidal)
+                for (int i = 0; i < FfInner; i++) dst[i] = val[i] * MathF.Sin(MathF.PI * gate[i]);
+            else
+                for (int i = 0; i < FfInner; i++) dst[i] = val[i] * DiffusionOps.Silu(gate[i]);
         }
 
         return DiffusionOps.Linear(h, w2, b2, seq, FfInner, EmbedDim);

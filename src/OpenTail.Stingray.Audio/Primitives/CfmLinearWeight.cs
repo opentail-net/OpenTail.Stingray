@@ -124,24 +124,16 @@ public sealed class CfmLinearWeight
 
         fixed (float* w = _f32)
         {
-            nint inAddr = (nint)inputMatrix;
-            nint outAddr = (nint)outputMatrix;
-            nint wAddr = (nint)w;
-            nint bAddr = (nint)bias;
-
-            System.Threading.Tasks.Parallel.For(0, t, ti =>
+            for (int ti = 0; ti < t; ti++)
             {
-                float* inRow = (float*)inAddr + (nuint)ti * (nuint)inDim;
-                float* outRow = (float*)outAddr + (nuint)ti * (nuint)outDim;
-                float* wPtr = (float*)wAddr;
-                float* b = (float*)bAddr;
-
-                SimdKernels.MatVecF32(outRow, wPtr, inRow, outDim, inDim);
-                if (b != null)
+                float* inRow = inputMatrix + (nuint)ti * (nuint)inDim;
+                float* outRow = outputMatrix + (nuint)ti * (nuint)outDim;
+                SimdKernels.MatVecF32(outRow, w, inRow, outDim, inDim);
+                if (bias != null)
                 {
-                    for (int o = 0; o < outDim; o++) outRow[o] += b[o];
+                    for (int o = 0; o < outDim; o++) outRow[o] += bias[o];
                 }
-            });
+            }
         }
     }
 

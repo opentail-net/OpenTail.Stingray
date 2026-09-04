@@ -91,7 +91,8 @@ public sealed class StableAudioPipeline : IDisposable
         int[] promptTokenIds = ResolvePromptTokenIds(request);
 
         float duration = Math.Max(0.5f, request.DurationSeconds);
-        int seqLen = (int)Math.Ceiling(duration * _params.LatentFrameRate);
+        int effectiveSeqLen = StableAudioScheduleKernels.EffectiveSeqLen(duration, _params.LatentFrameRate);
+        int seqLen = StableAudioScheduleKernels.PaddedSeqLen(effectiveSeqLen, _params.LatentFrameRate);
         int totalLatentElements = seqLen * _params.LatentChannels;
 
         var rng = request.Seed >= 0 ? new Random(request.Seed) : new Random();
@@ -99,7 +100,12 @@ public sealed class StableAudioPipeline : IDisposable
 
         float[] pcm = GenerateFromLatent(
             latent, seqLen, promptTokenIds, duration,
-            Math.Max(1, request.Steps), request.CfgScale, request.Progress);
+            Math.Max(1, request.Steps), request.CfgScale, request.Progress, effectiveSeqLen);
+
+        // Real `generate_diffusion_cond` trims the padded-headroom decode back to the requested
+        // duration's real sample count before returning/writing.
+        int requestedSamples = (int)MathF.Round(duration * _params.SampleRate) * _params.AudioChannels;
+        if (requestedSamples > 0 && requestedSamples < pcm.Length) pcm = pcm[..requestedSamples];
 
         if (!string.IsNullOrEmpty(request.OutputPath))
         {
@@ -125,7 +131,7 @@ public sealed class StableAudioPipeline : IDisposable
     /// </summary>
     internal float[] GenerateFromLatent(
         float[] initialLatent, int seqLen, int[] promptTokenIds, float durationSeconds,
-        int steps, float cfgScale, Action<int, int>? progress = null)
+        int steps, float cfgScale, Action<int, int>? progress = null, int? effectiveSeqLen = null)
     {
         var latent = initialLatent;
         var (condTokens, secondsTotalRaw) = BuildConditioning(promptTokenIds, durationSeconds);
@@ -136,6 +142,16 @@ public sealed class StableAudioPipeline : IDisposable
         {
             float t = 1.0f - (float)step / steps;
             float nextT = 1.0f - (float)(step + 1) / steps;
+            // Real `use_effective_length_for_schedule`: the timestep warp is keyed off the UNPADDED
+            // (effective) sequence length, not the padded one actually being denoised. Only applied
+            // when a caller explicitly opts in (`effectiveSeqLen` provided) -- `StableAudioPipelineGoldenParityTests`'
+            // golden fixture was generated against the real reference's PLAIN linear schedule (this
+            // port's own dist_shift gap at the time), so it intentionally keeps calling without it.
+            if (effectiveSeqLen is int eff)
+            {
+                t = StableAudioScheduleKernels.ShiftTimestep(t, eff);
+                nextT = StableAudioScheduleKernels.ShiftTimestep(nextT, eff);
+            }
             float dt = nextT - t;
 
             var v = PredictVelocity(latent, seqLen, condTokens, nullCondTokens, nCond, secondsTotalRaw, t, cfgScale);

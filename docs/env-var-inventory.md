@@ -29,6 +29,16 @@ names are treated as valid, `doctor` would not have flagged it either. The warni
 `STINGRAY_MAX_QUEUE` and the dead entry is out of the registry, so the mistake is now reported with
 a closest-match suggestion.
 
+**Reconciled again 2026-09-02 — `KnownEnvironmentVariables.All` now contains **173** names**
+(two true duplicate-alias pairs collapsed to their canonical name, per the session plan in
+`docs/00-current-work.md`: `STINGRAY_MICRO_GEMM`/`STINGRAY_Q4K_MICRO_GEMM` removed, keeping only
+`STINGRAY_CPU_MICRO_GEMM`; `STINGRAY_VULKAN_PATH2_EXPERIMENTAL` removed, keeping only
+`STINGRAY_VULKAN_PATH2`. Both were genuinely the same flag under multiple names, not independent
+settings — `MicroGemmKernel.ReadFromEnvironment`/`VulkanPath2Dispatcher.ReadFromEnvironment` no
+longer read the retired names. This is a name reduction, not a review of the `experimental`
+surface's dead-code candidates — that per-variable owner review remains open, see
+`04-quality-of-life-improvements-plan.md` item 1.)
+
 **Reconciled again 2026-08-31 — `KnownEnvironmentVariables.All` now contains **176** names**
 (added `STINGRAY_DEBUG_COSYVOICE3`, `STINGRAY_DUMP_CONVPOST_PATH`, `STINGRAY_DUMP_CONVPRE_PATH`,
 `STINGRAY_DUMP_STAGE0_PATH`: diagnostic dumps used for audio pipeline and HiFT vocoder validation.)
@@ -146,9 +156,7 @@ dynamically composed names.
 | `STINGRAY_PREFILL_ATTN_KV_OUTER_TILES` | experimental | Query tiles held live per KV pack in the reorder above (default 8 = 512 queries, ~256 KB scratch at headDim 64). Trades footprint for K-pack reuse; proven not to change results. |
 | `STINGRAY_CPU_KPACK_SIMD` | test seam | `0` restores the scalar K-pack transpose in Flash-64 prefill. Both forms emit identical bytes (a transpose only moves floats), so this is a bisect seam and an A/B measurement handle, not a tuning knob. |
 | `STINGRAY_CPU_VNNI` | test seam | `0` forces the AVX2 chain in `SimdKernels.DotU8I8ToI32` even where VNNI exists. Not a tuning knob: the three branches are claimed bit-identical, but a host only executes one, so this is what lets a VNNI-capable machine run the Q4_K suites both ways and check that claim. |
-| `STINGRAY_CPU_MICRO_GEMM` | experimental | Alias of `STINGRAY_Q4K_MICRO_GEMM`/`STINGRAY_MICRO_GEMM` (`MicroGemmKernel.ReadFromEnvironment` reads all three, first match wins) — gates the small-batch Q4_K micro-GEMM kernel (`MicroGemmQ4K`). |
-| `STINGRAY_MICRO_GEMM` | experimental | Alias of `STINGRAY_CPU_MICRO_GEMM`/`STINGRAY_Q4K_MICRO_GEMM`, same feature flag. |
-| `STINGRAY_Q4K_MICRO_GEMM` | experimental | Alias of `STINGRAY_CPU_MICRO_GEMM`/`STINGRAY_MICRO_GEMM`, same feature flag; this is the name the class-level doc comment leads with. |
+| `STINGRAY_CPU_MICRO_GEMM` | experimental | Gates the small-batch Q4_K micro-GEMM kernel (`MicroGemmQ4K`) in `MicroGemmKernel.ReadFromEnvironment`. **Consolidated 2026-09-02**: was three aliases for this one flag (`STINGRAY_MICRO_GEMM`, `STINGRAY_Q4K_MICRO_GEMM`) — collapsed to this single canonical name, the other two removed from the registry and no longer read. |
 
 ## OpenTail.Stingray.Cli, OpenTail.Stingray.Cpu, OpenTail.Stingray.Server
 
@@ -385,7 +393,6 @@ dynamically composed names.
 | `STINGRAY_VULKAN_DP4A` | experimental | |
 | `STINGRAY_VULKAN_MM_PATH` | experimental | |
 | `STINGRAY_VULKAN_MM_STATS` | diagnostic | |
-| `STINGRAY_VULKAN_PATH2` | experimental | Alias of `STINGRAY_VULKAN_PATH2_EXPERIMENTAL` (`VulkanPath2Dispatcher.ReadFromEnvironment` reads both, first match wins) — gates the Vulkan Path 2 cooperative-tiled-GEMM kernel (`MatMulTiledQ4K`). Defaults off. |
-| `STINGRAY_VULKAN_PATH2_EXPERIMENTAL` | experimental | Alias of `STINGRAY_VULKAN_PATH2`, same feature flag; this is the name the class-level doc comment leads with. |
+| `STINGRAY_VULKAN_PATH2` | experimental | Gates the Vulkan Path 2 cooperative-tiled-GEMM kernel (`MatMulTiledQ4K`) in `VulkanPath2Dispatcher.ReadFromEnvironment`. Defaults off. **Consolidated 2026-09-02**: was two aliases for this one flag (`STINGRAY_VULKAN_PATH2_EXPERIMENTAL`) — collapsed to this single canonical name, the other removed from the registry and no longer read. |
 | `STINGRAY_VULKAN_UMA_FRACTION` | experimental | |
 | `STINGRAY_VULKAN_VALIDATION` | diagnostic | |

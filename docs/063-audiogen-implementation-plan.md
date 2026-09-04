@@ -146,11 +146,25 @@ duration would place the barks differently, not eliminate the lead-in pattern as
 
 ## Suggested next steps
 
-1. A real Python-side golden dump using the now-installed `audiocraft` package (LM logits at a
-   few real steps, T5 conditioning vector, EnCodec decode of a known token sequence) — this
-   environment can actually do this for AudioGen, unlike MusicGen where no local reference model
-   was ever run.
+1. ~~A real Python-side golden dump...~~ **DONE, 2026-09-04** — see below. The installed
+   `audiocraft` package's top-level import is broken in this environment
+   (`ModuleNotFoundError: No module named 'av'`) so the oracle hand-transcribes the real
+   `StreamingTransformerLayer`/`LMModel` math into pure numpy directly against the real GitHub
+   source instead, matching this project's established golden-oracle pattern (e.g. Parler-TTS's).
 2. CFG batch-2 performance pass once correctness is verified — same shape of work noted in
    MusicGen's plan doc.
 3. Revisit the shared-generation-loop question (`AudioTokenGenerator`) once/if a third
    AudioCraft-family model (e.g. MAGNeT, a MusicGen melody variant) is ported — not before.
+
+## Numeric golden-parity CLOSED, 2026-09-04
+
+`AudioGenDecoderGoldenParityTests` (`scratch-llamacpp-ref/audiogen_decoder_golden.py`, pure-numpy
+oracle hand-transcribed from the real AudioCraft `StreamingTransformerLayer`/`LMModel` GitHub
+source, loaded directly against `models/audiogen-medium/audiogen-medium-lm.safetensors` -- real
+tensor names confirmed directly from the checkpoint, e.g. fused-QKV `in_proj_weight`, `linears.{q}`
+per-codebook heads, `condition_provider.conditioners.description.output_proj`) compares real
+production `AudioGenTransformer.Step`'s per-codebook logits (3 fixed timesteps, synthetic T5-large
+stand-in) against the oracle: cosine similarity > 0.999, passed on the first try, no bug found.
+Real 15.7s wall-clock confirms genuine execution of all 48 real transformer layers at 1536-dim,
+not a silent skip. This closes AudioGen's last documented gap ("not yet golden-verified
+numerically") -- see README's status matrix for the updated row.

@@ -4,7 +4,7 @@ namespace OpenTail.Stingray.Cpu;
 /// <summary>
 /// Small-Batch Micro-Kernel for Q4_K quantized GGUF weights.
 /// Optimised for small prompt sequence batch sizes (M in [1, 16]).
-/// Gated behind <c>STINGRAY_Q4K_MICRO_GEMM=1</c> (or <c>STINGRAY_CPU_MICRO_GEMM=1</c>).
+/// Gated behind <c>STINGRAY_CPU_MICRO_GEMM=1</c>.
 /// Defaults to <b>false (disabled)</b>.
 /// </summary>
 public static unsafe class MicroGemmQ4K

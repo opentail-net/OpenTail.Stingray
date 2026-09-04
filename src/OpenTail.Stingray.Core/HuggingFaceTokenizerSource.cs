@@ -179,6 +179,8 @@ public static class HuggingFaceTokenizerSource
                     if (pair.Key >= 0 && pair.Key < tokenTypes.Length) tokenTypes[pair.Key] = pair.Value;
             }
 
+            string preTokenizerRawRegex = isSpmStyleBpe ? "" : ReadPreTokenizerSplitRegex(root);
+
             var config = ReadTokenizerConfig(packageRoot, tokens);
             return new Result(new TokenizerSource
             {
@@ -194,9 +196,50 @@ public static class HuggingFaceTokenizerSource
                 ModelFamily = isSpmStyleBpe ? "gemma" : "hf-bpe",
                 AddSpacePrefix = isSpmStyleBpe && config.AddPrefixSpace,
                 MergesAreRankPriority = isSpmStyleBpe,
+                TokenizerPreRawRegex = preTokenizerRawRegex,
                 ChatTemplate = config.ChatTemplate,
             }, rejections);
         }
+    }
+
+    /// <summary>
+    /// Reads a `tokenizer.json`'s own declared pre-tokenizer split regex verbatim, when present:
+    /// either a single `"type": "Split"` pre-tokenizer, or the first `"Split"` stage inside a
+    /// `"type": "Sequence"` pre-tokenizer (the real shape a byte-level BPE export like Qwen2's
+    /// uses -- `Sequence([Split(pattern), ByteLevel(...)])`). Returns "" when there is no
+    /// `pre_tokenizer` field, or its shape doesn't match either of those (a `ByteLevel`-only
+    /// pre-tokenizer with no explicit `Split` stage relies on its OWN default GPT-2 behavior,
+    /// which <see cref="PreTokenizerPatterns"/>'s GPT-2 fallback already covers correctly).
+    /// </summary>
+    private static string ReadPreTokenizerSplitRegex(JsonElement root)
+    {
+        if (!root.TryGetProperty("pre_tokenizer", out var pre) || pre.ValueKind != JsonValueKind.Object)
+            return "";
+
+        if (TryGetSplitPattern(pre, out string direct)) return direct;
+
+        if (pre.TryGetProperty("type", out var typeEl) && typeEl.ValueKind == JsonValueKind.String
+            && typeEl.GetString() == "Sequence"
+            && pre.TryGetProperty("pretokenizers", out var stages) && stages.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var stage in stages.EnumerateArray())
+                if (TryGetSplitPattern(stage, out string nested)) return nested;
+        }
+        return "";
+    }
+
+    private static bool TryGetSplitPattern(JsonElement pretokenizer, out string pattern)
+    {
+        pattern = "";
+        if (pretokenizer.ValueKind != JsonValueKind.Object) return false;
+        if (!pretokenizer.TryGetProperty("type", out var typeEl) || typeEl.ValueKind != JsonValueKind.String
+            || typeEl.GetString() != "Split") return false;
+        if (!pretokenizer.TryGetProperty("pattern", out var patternEl) || patternEl.ValueKind != JsonValueKind.Object) return false;
+        if (!patternEl.TryGetProperty("Regex", out var regexEl) || regexEl.ValueKind != JsonValueKind.String) return false;
+        string? value = regexEl.GetString();
+        if (string.IsNullOrEmpty(value)) return false;
+        pattern = value;
+        return true;
     }
 
     /// <summary>

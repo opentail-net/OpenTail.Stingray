@@ -55,26 +55,67 @@ before any code) when picked up.
   parity suite (not just non-degeneracy) re-run after. Measured real generation timing: mean 387s
   for a 4s/15-step CFG-enabled generation (~97s wall-clock per second of audio on CPU) — no code
   change made, the next lever is flagged, not implemented without a profiler-driven re-measurement.
-  **Not yet done**: numeric golden-parity, the `sinusoidal_blocks` FF variant (decoder-only,
-  deliberately deferred), and docs/065's Sprint 3 consolidation (`IStableAudio3Engine`) now that
-  three real variants (Small Music, Small SFX, Medium) exist. See docs/057-stable-audio-3-
-  implementation-plan.md for the full writeup.
-- **MiniMax-Music3 — Phase A archaeology done, first component (vocoder) golden-verified,
-  2026-09-03.** Real checkpoint located (`MiniMaxAI/MiniMax-Music3`); real total 57.35GB confirmed,
-  but the real inference pipeline (`modular_model_index.json`'s component graph) uses only ~28.5GB
-  across six components — roughly 29GB (`qwen_7B/`, a real different `AbabForCausalLM` MoE/hybrid-
-  attention architecture despite its confusing Qwen-like name; `flowmatching_vae.pth` 9.83GB;
-  `dav.pth` 491MB) is not referenced by real inference at all, correcting this doc's original
-  documentation-cited component framing. The installed `diffusers==0.40.0` already ships real,
-  complete source for every component plus a full real modular pipeline whose block docstrings
-  resolved the original "hidden-state fusion" question directly (no separate fusion module — the
-  RVQ depth decoder's per-codebook hidden states are simply concatenated) and confirmed real
-  44.1kHz sample rate + 200-frame chunked long-form generation. `MiniMaxMusic3Vocoder`
-  (`src/OpenTail.Stingray.Diffusion/MiniMaxMusic3/`) is now real and golden-verified against the
-  actual `diffusers` class — passes on the first run, well under 0.1% relative error. Next:
-  `MiniMaxMusic3RVQDepthDecoder` and `MiniMaxMusic3ConditionEncoder` (both small, downloaded), then
-  the real prompt-format/chunked-denoise source, before the two big downloads (~27GB combined,
-  blocked on this session's current ~11GB free disk). See docs/066-minimax-music3-future-plan.md.
+  **`sinusoidal_blocks` FeedForward variant implemented and CONFIRMED FIXED, 2026-09-03**: the
+  operator reported the original `sa3_medium_piano-arpeggio_4s.wav` sample as poor quality; the
+  deliberately-deferred `sinusoidal_blocks: [8]` gap (real GLU gate activation `Sin(x)=sin(pi*x)`
+  replacing `SiLU` on `SameLargeVae`'s last 7 decoder layers, real formula from GitHub `main`
+  fetched fresh -- PyPI has no such kwarg) was the leading suspect and turned out to be the real
+  bug: a regenerated sample (`sa3_medium_piano-arpeggio_4s_v2.wav`, same prompt/seed/duration, 25
+  steps) was confirmed by ear as good, the original confirmed as not. See docs/066's "CONFIRMED
+  FIXED" update for the full derivation.
+  **Same day, second real gap found and fixed across all three SA3 variants**: the real reference
+  pads every generation with 6s of latent headroom, masks attention over it, and warps the Euler
+  timestep schedule via a real `DistributionShift` formula (confirmed from real per-checkpoint
+  `model_config.json` + GitHub `main` source: `use_effective_length_for_schedule`/
+  `mask_padding_attention` both `true` for Small Music, Small SFX, AND Medium) -- none of which
+  this port implemented until now (`StableAudioScheduleKernels.cs`, new shared file). Attention
+  masking specifically is NOT implemented (documented gap -- neither DiT class accepts a mask at
+  all yet). All four existing Small/Medium tests re-pass with zero regression; SFX, Small Music,
+  and Medium samples all regenerated with the fix for the operator's own listening check (not
+  judged by this session -- operator was AFK during this work). **All three variants' samples
+  confirmed present and passing as of this update** (Medium's combined regen took ~17min, the
+  real perf-tax flagged above -- separate from the correctness question). Also confirmed: Small Music's
+  real `sinusoidal_blocks` is `[0]` (inert), explaining why it never needed Medium's fix; and a
+  minor, real, but negligible (~1000x below signal scale) gap in `SoftNormBottleneck.decode()`
+  (real inference-time noise injection, RNG-dependent, not implemented -- not a plausible quality
+  cause). See docs/066's "(4)/(5)/(6)" updates for the full derivation.
+  **Not yet done**: numeric golden-parity (DiT and VAE) for Medium, real attention-masking over
+  the padding region for all variants, and docs/065's Sprint 3 consolidation
+  (`IStableAudio3Engine`) now that three real variants (Small Music, Small SFX, Medium) exist. See
+  docs/057-stable-audio-3-implementation-plan.md for the full writeup.
+- **MiniMax-Music3 — CORRECTION 2026-09-04: this bullet was badly stale.** It previously read
+  "Phase A archaeology done, first component (vocoder) golden-verified" and estimated ~15% overall
+  complete, citing the big `language_model/`/`transformer/` downloads as disk-space-blocked. Both
+  claims were wrong as of this correction: **all six real components are downloaded locally
+  (`models/minimax-music3/`, ~27GB total) and ALL SIX have real, passing golden-parity tests**
+  (`MiniMaxMusic3ConditionEncoderGoldenParityTests`, `MiniMaxMusic3GlobalModelGoldenParityTests`,
+  `MiniMaxMusic3PromptEncoderGoldenParityTests`, `MiniMaxMusic3RvqDepthDecoderGoldenParityTests`,
+  `MiniMaxMusic3TransformerGoldenParityTests`, `MiniMaxMusic3VocoderGoldenParityTests`, plus
+  `MiniMaxMusic3GlobalKvCacheConsistencyTests` and `MiniMaxMusic3AutoregressiveGeneratorSmokeTests`
+  — re-ran all 8 test classes fresh on 2026-09-04, every one passes with real weights). Real git
+  history confirms this was done in commits after this bullet was last written and simply never
+  reflected here: `cf7c061` (vocoder), `049a740` (RVQ depth decoder), `0e6a938` (condition
+  encoder), `549f62f` (DiT transformer). A full real end-to-end pipeline
+  (`MiniMaxMusic3Pipeline.cs`) and two scratch sample-generation tests also exist. **Real, accurate
+  status: every individual component is golden-verified; NOT yet done is a real listening check of
+  full end-to-end generated audio** (the scratch generate-sample tests exist but their output
+  hasn't been judged by ear this session) **and numeric golden-parity of the full multi-stage
+  pipeline together** (each stage verified in isolation, not the composed whole). This is much
+  closer to "feature-complete, pending a quality listening pass" than "15% done" — do not trust
+  the old framing in docs/066's earlier sections without cross-checking against this correction.
+  **Update, same day: real composition bug found and fixed.** A first real 200-frame generation
+  produced audible garbage ("jitter," per the operator) despite every component's own golden test
+  passing — a frame-index off-by-one in `MiniMaxMusic3AutoregressiveGenerator.Generate` (confirmed
+  against the real `diffusers==0.40.0` source: frame 0's sampled codes are a prefill-only warm-up
+  never meant to be appended to the real output, per the reference's own `range(max_frames+1)`
+  loop with a `frame_index > 0` append guard — this port's loop lacked that guard, prepending a
+  spurious frame to every generation). Fixed, all 8 existing golden-parity/smoke tests re-verified
+  with zero regression, and a full 200-frame regen with the fix completed (3352.9s ≈ 56min real
+  wall-clock, real weights) — `docs/diffusion-samples/minimax_music3_v1_folk_verse_200frames.wav`
+  is ready for the operator's own listening judgment (not judged by this session; the original
+  jitter sample is preserved as `..._200frames_PREFIX_jitter.wav` for reference). See docs/066's
+  "RESOLVED, 2026-09-04" entry for the full derivation.
+  See docs/066-minimax-music3-future-plan.md.
 
 ## Cross-project priority order (popularity-adjusted, 2026-09-01)
 

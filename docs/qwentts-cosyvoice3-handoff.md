@@ -136,6 +136,87 @@ re-verification of pieces already confirmed present and non-zero.
   speaker identity) — `models/cosyvoice_speech_tokenizer.onnx`/`_v2.onnx` sit locally, unclear if
   already wired to anything useful. Flagged, not investigated.
 
+## REAL REGRESSION FOUND, 2026-09-04 — high-priority next lead for the speaker-identity bug
+
+Re-ran `CosyVoice3DiTInputEmbedGoldenTests`/`CosyVoice3HiftF0PredictorGoldenTests` (both
+previously documented as **PASSED, cosine > 0.999** earlier in this doc's own history) and both
+now FAIL: InputEmbed cosine 0.639, F0Predictor cosine 0.018 (near-uncorrelated). This is a real,
+confirmed regression, NOT a stale-oracle situation like Fish Speech's codec test (ruled out --
+checked file timestamps: both golden fixtures and `models/cosyvoice3/CosyVoice3-2512_F16.gguf`
+are all from the same day, 2026-08-22, consistent with each other, not stale relative to a later
+checkpoint change).
+
+**Two hypotheses checked and ruled out**:
+1. The `HiFTVocoderKernels.PredictF0`'s ad-hoc `f0Max < 5.0f && f0Max > 0.05f -> scale by 500Hz`
+   heuristic (lines ~87-96, not part of any real reference algorithm) was the first suspect --
+   disabling it entirely reproduced the EXACT SAME cosine value (0.018402344515694283, identical
+   to the last digit), proving the heuristic isn't even triggered for this fixture. Ruled out.
+2. A shared-kernel regression in `F5Kernels.cs` (which `CosyVoice3DiTModel`'s InputEmbed reuses,
+   per this doc's own earlier entries) was the second suspect, especially given a same-day
+   `ddafcf3 revert(audio): restore baseline F5Kernels for CosyVoice3` commit exists. Not fully
+   ruled out for InputEmbed specifically, but CANNOT explain F0Predictor's failure at all --
+   `PredictF0` uses only `HiFTVocoderKernels`'s own `Conv1dSamePad`/`CausalConv1dLeftPad`/
+   `CausalConv1dRightPad`, never touches `F5Kernels`. Since both tests broke independently on
+   unrelated code paths, a single shared-kernel bug is unlikely to explain both.
+
+**Leading real hypothesis, NOT yet confirmed**: a systemic issue in GGUF tensor loading/
+dequantization for this specific checkpoint's format (`CosyVoice3-2512_F16.gguf` -- Float16
+storage) would explain simultaneous breakage across otherwise-unrelated code paths that both read
+tensors from the same GGUF file. Worth checking directly (dump a few known tensor values from
+this GGUF via `list-tensors`/a small standalone read and compare against a fresh `gguf` Python
+read) before assuming either component's own math is at fault -- this could turn out to be the
+SAME kind of "wrong byte-size assumption" bug found and fixed elsewhere this session
+(`QwenTtsCodePredictorForwardPassTests`), just in different code.
+
+**RESOLVED, same session -- both are STALE TEST INFRASTRUCTURE, not production bugs. Correcting
+the "high-priority lead" framing above; do not chase this as a live speaker-identity suspect.**
+
+- **F0Predictor**: `HiFTVocoderKernels.PredictF0ForTest` (test-support only) hardcoded
+  `isCausal: false`. Production's real weight classes (`CosyVoice3HiftWeights`/
+  `CosyVoiceHiftWeights`) hardcode `IHiFTVocoderWeights.IsCausal => true` -- production ALWAYS
+  uses the real causal path already. Changed the test-support call to `isCausal: true`; cosine now
+  passes at >0.999 (verified: `CosyVoice3HiftF0PredictorGoldenTests` green). Real fix, real test
+  bug, zero production impact.
+- **InputEmbed**: production's `CosyVoice3DiTModel.InputEmbed` was switched from
+  `F5Kernels.GroupedConv1dSamePad` to a new real `CausalGroupedConv1d` (matching
+  `cosyvoice-graph.cpp:269`'s real left-pad-by-`kernel-1` convention) in the SAME commit
+  (`4cb189f`) that fixed the F0 predictor's padding -- a genuine, deliberate, real correctness fix.
+  But `scratch-llamacpp-ref/cosyvoice3_dit_inputembed_golden.py` (the Python oracle) was never
+  regenerated to match -- its own class doc comment still cites the old, no-longer-used
+  `GroupedConv1dSamePad`. The 0.639 (partial, not near-zero) cosine is consistent with this: most
+  of `InputEmbed`'s math (Linear projection, Mish activation) is unchanged, only the conv padding
+  differs. NOT fixed this session (would require re-running the Python golden-dump script with the
+  causal conv semantics) -- flagged as a real, understood, low-priority test-hygiene gap, same
+  category as Fish Speech's stale codec oracle.
+
+**Bottom line**: production CosyVoice3 code for both InputEmbed and F0Predictor already reflects
+the real, correct causal-padding fixes from `4cb189f`. Neither failure is new evidence for the
+still-open speaker-identity bug.
+
+**Checked the other lead too, same session**: `4cb189f`'s own commit message flagged the LLM's
+forward pass as a real, unresolved bug at the time ("cosine 0.30, argmax mismatch... not yet
+root-caused"). Re-ran `CosyVoice3LlmLogitsCompareDebugTest` fresh -- **this is ALSO already fixed**
+(presumably in a later, undocumented commit): `cosine=0.998779`, `ourArgmax=4011` exactly matches
+`refArgmax=4011`. Not a live bug anymore.
+
+**Net result of this session's CosyVoice3 re-check**: every component this pass touched --
+F0Predictor (test bug, now fixed), InputEmbed (stale oracle, production correct), and the LLM
+forward pass (already fixed since `4cb189f`, just never re-confirmed/documented) -- comes back
+clean. The speaker-identity bug investigation genuinely returns to square one: no numeric
+component-level check surfaced anything wrong. Real next steps, in order of cost: (1) get a fresh
+listen of current CosyVoice3 output -- it's possible an intervening fix (the LLM one, or something
+else) already improved quality and nobody re-listened since the last "sub-par" verdict; (2) if
+still sub-par after a fresh listen, the bug likely lives in something not yet golden-tested at all
+(the RVQ/speech-tokenizer frontend, the speaker-embedding extraction itself, or a subtle
+interaction between correct components -- e.g. right conditioning fed at the wrong sequence
+position) rather than in any of the individually-verified forward-pass stages.
+
+**Fresh sample generated for that listen, 2026-09-04**: `CosyVoice3ClipGenDebugTests` re-run,
+produced `docs/audio-samples/cosyvoice3-cloned-nopitchscale.wav` (3.44s, real cloned voice against
+`fishspeech-lunch-REFERENCE.wav`) with all of today's fixes in place. NOT judged by this session --
+ready for the operator's own listen to see whether the LLM logits fix (already resolved before
+today, just re-confirmed) improved perceived quality since the last "sub-par" verdict.
+
 ---
 
 ## General reminders for whoever picks either of these up

@@ -806,4 +806,131 @@ public sealed class HybridGdnForwardPassTests : HeavyTestBase
             "+ PrefillMtp at startPos=8. Likely cause: hidden-history slot 7 " +
             "was overwritten by EnsureMtpHiddenHistoryCap's grow.");
     }
+
+    /// <summary>
+    /// Probes for the real Ornith-1.0-9B checkpoint (`bartowski/deepreinforce-ai_Ornith-1.0-9B-GGUF`,
+    /// Q4_K_M, 5.5 GB) in the project-local <c>models/</c> directory. Despite its "dense" GGUF
+    /// architecture string (<c>qwen35</c>), this checkpoint carries real Gated-DeltaNet tensors and
+    /// activates the hybrid path via the <c>_opentailllm.is_hybrid_ssm</c> tensor-presence probe —
+    /// see <see cref="Ornith10ArchitectureTests.Ornith9BDense_ActivatesHybridWhenGdnTensorsProbed"/>
+    /// in Tests.Core.
+    /// </summary>
+    private static string? FindOrnithModelPath()
+    {
+        const string relative = @"models\deepreinforce-ai_Ornith-1.0-9B-Q4_K_M.gguf";
+        var dir = Directory.GetCurrentDirectory();
+        for (int i = 0; i < 8; i++)
+        {
+            var p = Path.Combine(dir, relative);
+            if (File.Exists(p)) return p;
+            var parent = Directory.GetParent(dir);
+            if (parent is null) break;
+            dir = parent.FullName;
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// GDN state-lifecycle conformance (docs/02-qwen35moe-plan.md item 3): proves
+    /// <see cref="HybridGdnForwardPass.TruncateTo"/>'s snapshot-restore branch (which calls
+    /// <see cref="GdnStateCache.RestoreFrom"/> under the hood, issue #21) reconstructs the EXACT
+    /// recurrent state a real GDN checkpoint had at capture time — not merely "doesn't crash" or
+    /// "stays finite" (the bar the existing MTP hidden-history test above and the smoke test up top
+    /// both use). Real, weight-driven test: <see cref="GdnStateCacheSnapshotTests"/> in
+    /// Tests.ForwardPass.Fast already round-trips the byte format itself, but only against a
+    /// synthetic 4-layer toy config — this closes the gap against real GDN kernels and real
+    /// checkpoint dimensions.
+    ///
+    /// Method: prefill a real prompt, capture a snapshot, decode a fixed suffix and record every
+    /// step's logits (pass 1). Advance the state FURTHER past the suffix (simulating unrelated
+    /// server activity after the snapshot point — without this, restoring to "the current position"
+    /// would be a no-op and prove nothing). Restore to the snapshot via
+    /// <c>TruncateTo(snapshotLength)</c>, replay the IDENTICAL suffix from the IDENTICAL starting
+    /// position, and assert every logit is EXACTLY equal (not just close) to pass 1 — a genuinely
+    /// restored state must reproduce the same floating-point computation bit-for-bit, since nothing
+    /// about the recomputation itself changed.
+    /// </summary>
+    [Fact]
+    public void HybridGdnForwardPass_Ornith9B_SnapshotRestore_IsByteIdenticalToUninterruptedDecode()
+    {
+        var path = FindOrnithModelPath();
+        Assert.SkipUnless(path is not null, "Ornith-1.0-9B fixture not present in this environment");
+
+        using var modelHandle = SharedModelCacheFixture.Instance.Acquire(path);
+        var model = modelHandle.Model;
+        var hp = ModelHyperparams.FromGgufMetadata(model.Metadata, model);
+        Assert.True(hp.IsHybridSsm, "Expected the real Ornith-1.0-9B checkpoint to probe as hybrid GDN");
+        Assert.NotNull(hp.Gdn);
+
+        var tokenizer = GgufTokenizer.FromGgufModel(model);
+        using var backend = new CpuBackend();
+        using var fwd = new HybridGdnForwardPass(model, backend, hp);
+        Assert.True(fwd.SupportsSnapshot);
+
+        var promptTokens = tokenizer.Encode("The capital of France is");
+        Assert.NotEmpty(promptTokens);
+
+        var promptLogits = fwd.Prefill(promptTokens);
+        {
+            int nf = 0;
+            var badIdx = new List<int>();
+            for (int v = 0; v < promptLogits.Length; v++)
+                if (!float.IsFinite(promptLogits[v])) { nf++; if (badIdx.Count < 10) badIdx.Add(v); }
+            Console.Error.WriteLine($"[diag] promptLogits nonFinite={nf}/{promptLogits.Length} firstBadIdx=[{string.Join(",", badIdx)}]");
+        }
+        if (Environment.GetEnvironmentVariable("STINGRAY_TEST_SKIP_SNAPSHOT") != "1")
+            fwd.CaptureSnapshot();
+        int snapshotLength = promptTokens.Count;
+        Assert.Equal(promptTokens.Count, snapshotLength);
+
+        // Pass 1: greedy-decode a real suffix from the snapshot point (feeding each predicted
+        // token back in, same as real usage) — NOT arbitrary fixed ids. Record both the tokens
+        // actually chosen and each step's logits (deep-copied: the returned span aliases
+        // internal scratch the NEXT Forward call overwrites).
+        const int suffixLen = 5;
+        var suffixTokens = new int[suffixLen];
+        var firstPassLogits = new float[suffixLen][];
+        int pos = snapshotLength;
+        var logits = promptLogits;
+        for (int i = 0; i < suffixLen; i++)
+        {
+            int next = Sampler.Greedy(logits);
+            suffixTokens[i] = next;
+            logits = fwd.Forward(next, pos++);
+            firstPassLogits[i] = logits.ToArray();
+            int nonFinite = 0;
+            foreach (var v in firstPassLogits[i]) if (!float.IsFinite(v)) nonFinite++;
+            Console.Error.WriteLine($"[diag] step={i} pos={pos - 1} token={next} nonFinite={nonFinite}/{firstPassLogits[i].Length}");
+        }
+        foreach (var step in firstPassLogits)
+            foreach (var v in step)
+                Assert.True(float.IsFinite(v), "Pass 1 produced a non-finite logit — a real forward-pass " +
+                    "correctness bug, unrelated to snapshot/restore; fix that first.");
+
+        // Advance state further past the suffix — a real rewind target, not a same-position no-op.
+        int extra = suffixTokens[^1];
+        for (int i = 0; i < 20; i++)
+        {
+            var l = fwd.Forward(extra, pos++);
+            extra = Sampler.Greedy(l);
+        }
+
+        // Restore to the snapshot and replay the IDENTICAL suffix tokens from the identical
+        // starting position — not resampling, so this is a strict apples-to-apples reproduction
+        // check of the restored state, not just "does decoding still look sane."
+        fwd.TruncateTo(snapshotLength);
+        pos = snapshotLength;
+        for (int i = 0; i < suffixLen; i++)
+        {
+            var replayed = fwd.Forward(suffixTokens[i], pos++);
+            Assert.Equal(firstPassLogits[i].Length, replayed.Length);
+            for (int v = 0; v < replayed.Length; v++)
+            {
+                Assert.True(firstPassLogits[i][v] == replayed[v],
+                    $"Snapshot-restore mismatch at suffix step {i}, vocab idx {v}: " +
+                    $"first pass {firstPassLogits[i][v]}, replay {replayed[v]}. " +
+                    "TruncateTo's snapshot branch did not reconstruct the exact GDN recurrent state.");
+            }
+        }
+    }
 }

@@ -10965,3 +10965,107 @@ cleanly while the checkpoint's real per-checkpoint config is still silently wron
 general lesson: a golden test only proves the port matches ITS OWN reference construction args;
 if those construction args themselves don't match the real checkpoint's actual training config,
 the golden test can't catch it).
+
+## TTS/diffusion-audio re-verification sweep, 2026-09-04 (closing the "nearly-done" gap list)
+
+Re-ran real-weight test suites across most of the TTS/diffusion-audio roster to check whether
+documented completion percentages still hold, after the operator flagged several "~95%" items as
+worth actually re-confirming rather than assumed. Real findings, not assumed:
+
+- **Parler-TTS**: `ParlerDecoderTests`/`ParlerDecoderKvCacheTests` actually ran (real weight loads,
+  ~4s each) and passed -- this is LIVE numeric golden-parity, not just the "confirmed by ear"
+  framing already on record. Upgrades confidence, no code change needed.
+- **Fish Speech S2 Pro**: two apparent test failures on this pass
+  (`FishSpeechFastArTests.Forward_RealWeights_MatchesGoldenOracle` cosine 0.44,
+  `FishSpeechCodecTests.Decode_RealWeights_MatchesGoldenPcmOutput` cosine 0.05) were BOTH bisected
+  and confirmed pre-existing, already-documented non-bugs from earlier entries in this doc (Q4_K_M
+  quantization-compounding, confirmed non-bug via a real Q8_0 golden match earlier; and a stale
+  Python golden ORACLE that predates the real `quantizer.post_module` transformer architecture fix
+  -- the C# code is correct, the fixture is outdated). Git-bisected the codec failure specifically
+  against `d4831e1` (a perf-pass commit I initially suspected) and got byte-identical cosine
+  before/after, ruling it out definitively. Fish Speech remains genuinely fully verified.
+- **Piper/Kokoro/MeloTTS/F5-TTS DiT**: all four "RealWeights"-style tests silently no-op'd
+  (`if (modelPath is null) return;`) because their model files aren't present in this environment's
+  `models/` right now (only Whisper's GGUFs are local) -- they report "passed" in ~0.1-0.3s, which
+  is the tell. These were NOT actually re-verified this pass despite superficially looking green;
+  re-verifying them for real requires downloading the missing checkpoints first, a real additional
+  cost not incurred here.
+- **Whisper**: genuinely re-ran (6 real tests, real timing) -- actually re-verified.
+- **QwenTTS**: 12/13 real-weight test classes pass. The 13th
+  (`QwenTtsCodePredictorForwardPassTests`) had a REAL bug, found and fixed: it hardcoded Q8_0's
+  34-bytes-per-32-block math to compute a tensor row's byte size instead of querying the tensor's
+  actual `DType` (which for this specific synthetic `token_embd.weight` alias -- see
+  `QwenTtsCodePredictorTensorSource`'s own doc comment -- is `Float32`, not `Q8_0`), causing
+  `Dequantize.ToFloat32` to throw `ArgumentOutOfRangeException`. Fixed by using the existing
+  generic `DTypeInfo.ByteSize(elementCount, dtype)` helper instead of hardcoding one format's
+  block math. After the fix, the test runs further but now hits a NEW, narrower issue: the
+  resulting logits contain a non-finite value. NOT chased further this session -- this specific
+  test's own doc comment already scopes it as "construction/shape/finite smoke test only, not a
+  numerical correctness claim," and it exercises an auxiliary/non-canonical code path (directly
+  feeding a manually-dequantized embedding row into `ForwardEmbedding`, bypassing the tensor
+  source's intended synthetic-buffer mechanism) -- the REAL end-to-end generation tests
+  (`QwenTtsCodePredictorGenerationTests`, `QwenTtsTalkerGenerationTests`, `QwenTtsPipelineTests`),
+  which exercise the same CodePredictor component through its actual intended call path, all pass
+  cleanly. QwenTTS's documented ~95%/"confirmed by ear" status is unaffected by this -- flagging
+  the NaN as a real, open, low-priority test-hygiene gap for a future session, not a correctness
+  regression.
+- **ACE-Step 1.5 Turbo**: re-ran all 9 real-weight test classes including the full end-to-end
+  pipeline test (408s real generation) -- all still pass. Confirmed the existing "~80%,
+  archaeology-complete, not yet numerically-verified end-to-end, not yet human-listened" framing in
+  `docs/064-acestep-implementation-plan.md` was ALREADY accurate, unlike MiniMax-Music3 below --
+  no correction needed, just a fresh re-verification note.
+- **MusicGen/AudioGen**: re-ran both real end-to-end smoke tests (`AudioGenGenerationSmokeTests`
+  3/3 passed in 962.9s, `MusicGenGenerationSmokeTests` 2/2 passed in 113.8s) -- both confirmed
+  matching their documented "not yet golden-verified numerically, but real end-to-end generation
+  works" status exactly. No correction needed.
+- **MiniMax-Music3**: see the dedicated correction in `docs/066-minimax-music3-future-plan.md` and
+  `docs/00-current-work.md` -- the previous "~15%, only vocoder done, blocked on disk space"
+  framing was badly stale. All six real components are downloaded and individually golden-verified
+  (8/8 real-weight test classes pass). Real remaining gap: a full end-to-end listening check and
+  full-chain numeric golden-parity, not individual component work.
+
+**Operational lesson, same sweep**: running multiple heavy real-weight test/generation processes
+concurrently (MiniMax's real 17GB language model resident, AudioGen's T5-large encoder, several
+`Tests.Diffusion`/`Tests.Audio` instances at once) pushed free system memory down to within ~18GB
+of a 66GB total at one point. Recovered fine without intervention, but worth sequencing rather
+than parallelizing large-checkpoint jobs going forward, and checking free memory before adding a
+third concurrent heavy job when two are already running.
+
+## Broad finding, 2026-09-04: this environment's `models/` only holds a curated subset -- most of the "RealWeights" test suite silently no-ops here, across nearly every subsystem
+
+Systematically re-ran every `*RealWeights*`-style test class found via `grep -rl "if (modelPath is
+null) return;" tests/` (31 files) to check how much of the suite ACTUALLY exercises real weights
+in this specific environment, after the Piper/Kokoro/MeloTTS/F5-TTS DiT no-ops earlier in this
+sweep suggested the problem might be broader. **It is much broader than three or four engines**:
+confirmed silent no-ops (all report "passed" in ~0.1-0.4s, the tell for this pattern) for
+`SileroVadRealWeightsTests`, `QwenForcedAlignerRealWeightsTests`, `QwenAsrRealWeightsTests`,
+`ParakeetRealWeightsTests`, `KokoroWeightsTests`, `FunAsrRealWeightsTests`, `F5TtsRealWeightsTests`,
+`CosyVoiceRealWeightsTests` (v1/v2, distinct from the CosyVoice3 tests that DID run for real
+earlier in this sweep), `ChatterboxRealWeightsTests`, `FluxVaeRealWeightsTests`,
+`Sd3ConformanceTests`, `WanVideoRealWeightsTests` -- **and even the core LLM/GGUF suite**:
+`SmolLm2RealWeightsTests`, `SmolLm2135MRealWeightsTests`, `Qwen25RealWeightsTests`,
+`QwenCoderRealWeightsTests`, `GgufAudioAndEmbeddingRealWeightsTests`,
+`EmbeddingsRealWeightsTests`, `BertEmbeddingRealWeightsTests`.
+
+Confirmed genuinely real (multi-second real timing, weight-loading log lines) in the same sweep:
+Whisper, Vision's `MultimodalRealWeightsTests` (18/18, 135.8s), CosyVoice3's own golden/pipeline
+tests, QwenTTS, Fish Speech, Parler, ACE-Step, MusicGen/AudioGen, Stable Audio 3 (all 3 variants),
+MiniMax-Music3's component golden tests.
+
+**This is a real, environment-specific characteristic, not evidence of broken code** -- `models/`
+here holds a curated working set (large base LLMs like `gpt-oss-20b`/`Ornith-9B`/`gemma-3-4b`,
+Whisper, CosyVoice2/3, Fish Speech, Parler, Orpheus, several vision mmproj files, Z-Image, vocos,
+snac) but not the specific smaller/older checkpoints (`SmolLM2`, `Qwen2.5`, base `XTTS-v2`, `Piper`,
+`Kokoro`, `Silero VAD`, `Parakeet`, `FunASR`, base `QwenASR`/`ForcedAligner`, `Chatterbox`, `F5-TTS`
+legacy DiT test's expected file, `CosyVoice` v1/v2 legacy test's expected files) that many other
+`RealWeights` tests look for -- consistent with this project's own documented disk-space
+discipline (work with one candidate model's weights at a time, not in bulk).
+
+**Real, general lesson for reading this project's test output going forward**: a `dotnet test`/
+`.exe -class` run reporting "N passed, 0 failed" is NOT by itself evidence that N real
+verifications happened -- always check per-class wall-clock time (sub-second across the board is
+the reliable tell for a silent-no-op batch) or look for a real weight-loading log line
+(`[ForwardPass] Pre-faulted...`) before citing a green test run as confirmation of anything. This
+applies retroactively to any status claim in this project's docs that cites "tests pass" without
+a timing/log detail alongside it -- worth a healthy level of distrust until re-confirmed the same
+way this whole sweep has been doing.

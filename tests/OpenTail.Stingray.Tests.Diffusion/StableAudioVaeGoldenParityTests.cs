@@ -67,6 +67,22 @@ public sealed class StableAudioVaeGoldenParityTests
         return (float)(dot / (Math.Sqrt(na) * Math.Sqrt(nb) + 1e-12));
     }
 
+    /// <summary>Sum of squared first-differences -- a cheap high-frequency-energy proxy. Cosine
+    /// similarity alone is dominated by low-frequency energy (most audio's energy is low-frequency),
+    /// so a decoder that quietly attenuates highs (a "muffled" bug) can still pass a >0.99 cosine
+    /// check against a reference that has intact highs. This catches that case by comparing how much
+    /// high-frequency energy survives relative to the reference.</summary>
+    private static double HighFreqEnergy(ReadOnlySpan<float> pcm)
+    {
+        double sum = 0;
+        for (int i = 1; i < pcm.Length; i++)
+        {
+            double d = pcm[i] - pcm[i - 1];
+            sum += d * d;
+        }
+        return sum;
+    }
+
     [Fact]
     public void AcousticVae_Decode_MatchesRealSAMEDecoderReference()
     {
@@ -85,6 +101,12 @@ public sealed class StableAudioVaeGoldenParityTests
         Assert.Equal(goldenPcm.Length, pcm.Length);
         float cos = CosineSimilarity(pcm, goldenPcm);
         Assert.True(cos > 0.99f, $"AcousticVae decode cosine-sim too low: {cos}");
+
+        double portedHf = HighFreqEnergy(pcm);
+        double goldenHf = HighFreqEnergy(goldenPcm);
+        double hfRatio = portedHf / (goldenHf + 1e-12);
+        Assert.True(hfRatio > 0.8,
+            $"AcousticVae decode high-frequency energy is {hfRatio:P0} of reference -- possible muffling/low-pass bug (ported={portedHf:E3}, golden={goldenHf:E3})");
     }
 
     /// <summary>
