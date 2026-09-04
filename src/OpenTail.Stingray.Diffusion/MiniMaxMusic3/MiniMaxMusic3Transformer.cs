@@ -526,7 +526,13 @@ public static class MiniMaxMusic3Transformer
         return (vCond, vUncond);
     }
 
-    private static unsafe float[] TimestepEmbed(MiniMaxMusic3TransformerWeights w, float timestep)
+    private static unsafe float[] TimestepEmbed(MiniMaxMusic3TransformerWeights w, float timestep) =>
+        TimestepEmbed(w.TimeProjWeight, w.TimeEmbed, timestep);
+
+    /// <summary>Shared timestep-embedding core -- takes just the two small tensors this needs
+    /// rather than a whole weights object, so the FP32 and Q8-quantized call sites (which don't
+    /// share a common weights type) both go through the same math instead of duplicating it.</summary>
+    private static unsafe float[] TimestepEmbed(float[] timeProjWeight, TimestepEmbeddingWeights timeEmbed, float timestep)
     {
         int fourierDim = MiniMaxMusic3Config.TransformerFourierEmbeddingDim;
         int half = fourierDim / 2;
@@ -536,20 +542,20 @@ public static class MiniMaxMusic3Transformer
         var freq = new float[fourierDim];
         for (int i = 0; i < half; i++)
         {
-            float angle = 2f * MathF.PI * timestep * w.TimeProjWeight[i];
+            float angle = 2f * MathF.PI * timestep * timeProjWeight[i];
             freq[i] = MathF.Cos(angle);
             freq[half + i] = MathF.Sin(angle);
         }
 
         var mid = new float[inner];
-        fixed (float* fp = freq, mp = mid, w1 = w.TimeEmbed.Linear1Weight, b1 = w.TimeEmbed.Linear1Bias)
+        fixed (float* fp = freq, mp = mid, w1 = timeEmbed.Linear1Weight, b1 = timeEmbed.Linear1Bias)
         {
             SimdKernels.MatMulBatchedF32(mp, w1, fp, 1, inner, fourierDim);
             for (int i = 0; i < inner; i++) mp[i] = Silu(mp[i] + b1[i]);
         }
 
         var output = new float[inner];
-        fixed (float* mp = mid, op = output, w2 = w.TimeEmbed.Linear2Weight, b2 = w.TimeEmbed.Linear2Bias)
+        fixed (float* mp = mid, op = output, w2 = timeEmbed.Linear2Weight, b2 = timeEmbed.Linear2Bias)
         {
             SimdKernels.MatMulBatchedF32(op, w2, mp, 1, inner, inner);
             for (int i = 0; i < inner; i++) op[i] += b2[i];
@@ -784,6 +790,465 @@ public static class MiniMaxMusic3Transformer
                     outp[(long)n * rows + r] = SimdKernels.DotF32(wRow, inp + (long)n * cols, cols);
             }
         });
+    }
+
+    private static unsafe void MatMulRowMajorQ8(
+        float* output,
+        byte* weightsQ8,
+        float* input,
+        int batchSize,
+        int rows,
+        int cols)
+    {
+        int bytesPerRow = (cols / 32) * 34;
+        int scratchBytesPerToken = SimdKernels.Q8_0ScratchBytes(cols);
+        int totalScratch = scratchBytesPerToken * batchSize;
+        byte* scratch = stackalloc byte[totalScratch];
+
+        for (int n = 0; n < batchSize; n++)
+        {
+            SimdKernels.QuantizeRowToQ8_0(input + (long)n * cols, cols, scratch + (long)n * scratchBytesPerToken);
+        }
+
+        nint outAddr = (nint)output;
+        nint wAddr = (nint)weightsQ8;
+        nint sAddr = (nint)scratch;
+
+        Parallel.For(0, rows, r =>
+        {
+            byte* rowW = (byte*)wAddr + (long)r * bytesPerRow;
+            float* outp = (float*)outAddr;
+            byte* sc = (byte*)sAddr;
+
+            for (int n = 0; n < batchSize; n++)
+            {
+                outp[(long)n * rows + r] = SimdKernels.DotQ8_0_Q8_0(rowW, sc + (long)n * scratchBytesPerToken, cols);
+            }
+        });
+    }
+
+    private static unsafe void MatMulQkvQ8(
+        float* qOut, float* kOut, float* vOut,
+        byte* wQ, byte* wK, byte* wV,
+        byte* scratchInner,
+        float* input,
+        int batchSize,
+        int dim)
+    {
+        int bytesPerRow = (dim / 32) * 34;
+        int scratchBytesPerToken = SimdKernels.Q8_0ScratchBytes(dim);
+
+        for (int n = 0; n < batchSize; n++)
+        {
+            SimdKernels.QuantizeRowToQ8_0(input + (long)n * dim, dim, scratchInner + (long)n * scratchBytesPerToken);
+        }
+
+        nint qAddr = (nint)qOut, kAddr = (nint)kOut, vAddr = (nint)vOut;
+        nint wqAddr = (nint)wQ, wkAddr = (nint)wK, wvAddr = (nint)wV;
+        nint sAddr = (nint)scratchInner;
+
+        Parallel.For(0, dim, r =>
+        {
+            byte* rQ = (byte*)wqAddr + (long)r * bytesPerRow;
+            byte* rK = (byte*)wkAddr + (long)r * bytesPerRow;
+            byte* rV = (byte*)wvAddr + (long)r * bytesPerRow;
+            float* qo = (float*)qAddr;
+            float* ko = (float*)kAddr;
+            float* vo = (float*)vAddr;
+            byte* sc = (byte*)sAddr;
+
+            for (int n = 0; n < batchSize; n++)
+            {
+                byte* tokenSc = sc + (long)n * scratchBytesPerToken;
+                long outIdx = (long)n * dim + r;
+                qo[outIdx] = SimdKernels.DotQ8_0_Q8_0(rQ, tokenSc, dim);
+                ko[outIdx] = SimdKernels.DotQ8_0_Q8_0(rK, tokenSc, dim);
+                vo[outIdx] = SimdKernels.DotQ8_0_Q8_0(rV, tokenSc, dim);
+            }
+        });
+    }
+
+    /// <summary>
+    /// Evaluates the flow-matching velocity using Q8_0 block-quantized weights on CPU,
+    /// achieving a 3.76x reduction in weight memory bandwidth.
+    /// </summary>
+    public static unsafe float[][] Forward(
+        MiniMaxMusic3QuantizedTransformerWeights qw,
+        float[][] latent,
+        float[][] condition,
+        float timestep)
+    {
+        int inChannels = MiniMaxMusic3Config.TransformerInChannels; // 128
+        int condDim = MiniMaxMusic3Config.TransformerConditionDim; // 2048
+        int concatChannels = 2 * inChannels + condDim; // 2304
+        int inner = MiniMaxMusic3Config.TransformerNumAttentionHeads * MiniMaxMusic3Config.TransformerAttentionHeadDim;
+        int length = latent.Length;
+        int seqLen = length + 1;
+        int ffn = MiniMaxMusic3Config.TransformerFfInnerDim;
+        int heads = MiniMaxMusic3Config.TransformerNumAttentionHeads;
+        int headDim = MiniMaxMusic3Config.TransformerAttentionHeadDim;
+
+        var concat = new float[length * concatChannels];
+        for (int t = 0; t < length; t++)
+        {
+            int baseIdx = t * concatChannels;
+            Array.Copy(latent[t], 0, concat, baseIdx, inChannels);
+            Array.Copy(condition[t], 0, concat, baseIdx + 2 * inChannels, condDim);
+        }
+
+        var preNet = new float[length * concatChannels];
+        fixed (float* cp = concat, pp = preNet)
+        fixed (byte* wpPre = qw.PreprocessConvWeight)
+        {
+            MatMulRowMajorQ8(pp, wpPre, cp, length, concatChannels, concatChannels);
+            for (int i = 0; i < length * concatChannels; i++) pp[i] += cp[i];
+        }
+
+        var temb = TimestepEmbed(qw.TimeProjWeight, qw.TimeEmbed, timestep);
+
+        var x = new float[seqLen * inner];
+        Array.Copy(temb, 0, x, 0, inner);
+        fixed (float* xp = x, pp = preNet)
+        fixed (byte* wpIn = qw.ProjInWeight)
+        {
+            MatMulRowMajorQ8(xp + inner, wpIn, pp, length, inner, concatChannels);
+        }
+
+        var normed1 = new float[seqLen * inner];
+        var q = new float[seqLen * inner];
+        var k = new float[seqLen * inner];
+        var v = new float[seqLen * inner];
+        var context = new float[seqLen * inner];
+        var attnOut = new float[seqLen * inner];
+        var normed2 = new float[seqLen * inner];
+        var ffProj = new float[seqLen * 2 * ffn];
+        var gated = new float[seqLen * ffn];
+        var ffOut = new float[seqLen * inner];
+        var scratchInner = new byte[seqLen * SimdKernels.Q8_0ScratchBytes(inner)];
+
+        var (cos, sin) = BuildPartialRope(seqLen);
+
+        fixed (float* xp = x, n1p = normed1, qp = q, kp = k, vp = v, ctxp = context,
+                      aop = attnOut, n2p = normed2, fpp = ffProj, gp = gated, fop = ffOut)
+        fixed (byte* sip = scratchInner)
+        {
+            for (int li = 0; li < qw.Blocks.Length; li++)
+            {
+                var qb = qw.Blocks[li];
+
+                fixed (float* wNorm1 = qb.Norm1Weight, bNorm1 = qb.Norm1Bias)
+                {
+                    for (int t = 0; t < seqLen; t++)
+                        LayerNormRow(xp + t * inner, wNorm1, bNorm1, n1p + t * inner, inner);
+                }
+
+                fixed (byte* wQ = qb.QWeight, wK = qb.KWeight, wV = qb.VWeight)
+                {
+                    MatMulQkvQ8(qp, kp, vp, wQ, wK, wV, sip, n1p, seqLen, inner);
+                }
+
+                ApplyPartialRope(q, seqLen, heads, headDim, cos, sin);
+                ApplyPartialRope(k, seqLen, heads, headDim, cos, sin);
+
+                float scale = 1f / MathF.Sqrt(headDim);
+                Parallel.For(0, heads, h =>
+                {
+                    int off = h * headDim;
+                    Span<float> scores = stackalloc float[seqLen];
+                    for (int i = 0; i < seqLen; i++)
+                    {
+                        var qSpan = q.AsSpan(i * inner + off, headDim);
+                        for (int j = 0; j < seqLen; j++)
+                        {
+                            var kSpan = k.AsSpan(j * inner + off, headDim);
+                            scores[j] = TensorPrimitives.Dot(qSpan, kSpan) * scale;
+                        }
+                        SoftmaxRange(scores, 0, seqLen);
+
+                        var ctxSpan = context.AsSpan(i * inner + off, headDim);
+                        ctxSpan.Clear();
+                        for (int j = 0; j < seqLen; j++)
+                        {
+                            var vSpan = v.AsSpan(j * inner + off, headDim);
+                            TensorPrimitives.MultiplyAdd(vSpan, scores[j], ctxSpan, ctxSpan);
+                        }
+                    }
+                });
+
+                fixed (byte* wO = qb.OWeight)
+                {
+                    MatMulRowMajorQ8(aop, wO, ctxp, seqLen, inner, inner);
+                }
+
+                for (int i = 0; i < seqLen * inner; i++) xp[i] += aop[i];
+
+                fixed (float* wNorm2 = qb.Norm2Weight, bNorm2 = qb.Norm2Bias)
+                {
+                    for (int t = 0; t < seqLen; t++)
+                        LayerNormRow(xp + t * inner, wNorm2, bNorm2, n2p + t * inner, inner);
+                }
+
+                fixed (byte* wFfIn = qb.FfInWeight, wFfOut = qb.FfOutWeight)
+                fixed (float* bFfIn = qb.FfInBias, bFfOut = qb.FfOutBias)
+                {
+                    MatMulRowMajorQ8(fpp, wFfIn, n2p, seqLen, 2 * ffn, inner);
+                    for (int t = 0; t < seqLen; t++)
+                    {
+                        int ppBase = t * 2 * ffn;
+                        int gpBase = t * ffn;
+                        for (int i = 0; i < ffn; i++)
+                        {
+                            float gateState = fpp[ppBase + i] + bFfIn[i];
+                            float gateVal = fpp[ppBase + ffn + i] + bFfIn[ffn + i];
+                            gp[gpBase + i] = gateState * Silu(gateVal);
+                        }
+                    }
+                    MatMulRowMajorQ8(fop, wFfOut, gp, seqLen, inner, ffn);
+                    for (int t = 0; t < seqLen; t++)
+                    {
+                        int foBase = t * inner;
+                        for (int i = 0; i < inner; i++)
+                            xp[foBase + i] += fop[foBase + i] + bFfOut[i];
+                    }
+                }
+            }
+        }
+
+        var stripped = new float[length * inner];
+        Array.Copy(x, inner, stripped, 0, length * inner);
+
+        var projOut = new float[length * inChannels];
+        var postConv = new float[length * inChannels];
+        fixed (float* sp = stripped, pop = projOut, pcp = postConv)
+        fixed (byte* wOut = qw.ProjOutWeight, wPost = qw.PostprocessConvWeight)
+        {
+            MatMulRowMajorQ8(pop, wOut, sp, length, inChannels, inner);
+            MatMulRowMajorQ8(pcp, wPost, pop, length, inChannels, inChannels);
+        }
+
+        var output = new float[length][];
+        for (int t = 0; t < length; t++)
+        {
+            var row = new float[inChannels];
+            int baseIdx = t * inChannels;
+            for (int c = 0; c < inChannels; c++) row[c] = postConv[baseIdx + c] + projOut[baseIdx + c];
+            output[t] = row;
+        }
+        return output;
+    }
+
+    /// <summary>
+    /// Co-evaluates conditional and unconditional CFG branches in a single pass using Q8_0 quantized weights.
+    /// </summary>
+    public static unsafe (float[][] Cond, float[][] Uncond) ForwardPair(
+        MiniMaxMusic3QuantizedTransformerWeights qw,
+        float[][] latent,
+        float[][] condition,
+        float[][] zeroCondition,
+        float timestep)
+    {
+        int length = latent.Length;
+        int seqLen = length + 1;
+        int heads = MiniMaxMusic3Config.TransformerNumAttentionHeads;
+        int headDim = MiniMaxMusic3Config.TransformerAttentionHeadDim;
+        int inner = heads * headDim;
+        int inChannels = MiniMaxMusic3Config.TransformerInChannels;
+        int condDim = MiniMaxMusic3Config.TransformerConditionDim;
+        int concatChannels = 2 * inChannels + condDim;
+        int ffn = MiniMaxMusic3Config.TransformerFfInnerDim;
+        int totalTokens = 2 * seqLen;
+
+        var concat = new float[2 * length * concatChannels];
+        for (int t = 0; t < length; t++)
+        {
+            int base0 = t * concatChannels;
+            Array.Copy(latent[t], 0, concat, base0, inChannels);
+            Array.Copy(condition[t], 0, concat, base0 + 2 * inChannels, condDim);
+
+            int base1 = (length + t) * concatChannels;
+            Array.Copy(latent[t], 0, concat, base1, inChannels);
+            Array.Copy(zeroCondition[t], 0, concat, base1 + 2 * inChannels, condDim);
+        }
+
+        var preNet = new float[2 * length * concatChannels];
+        fixed (float* cp = concat, pp = preNet)
+        fixed (byte* wpPre = qw.PreprocessConvWeight)
+        {
+            MatMulRowMajorQ8(pp, wpPre, cp, 2 * length, concatChannels, concatChannels);
+            for (int i = 0; i < 2 * length * concatChannels; i++) pp[i] += cp[i];
+        }
+
+        var temb = TimestepEmbed(qw.TimeProjWeight, qw.TimeEmbed, timestep);
+
+        var x = new float[totalTokens * inner];
+        Array.Copy(temb, 0, x, 0, inner);
+        Array.Copy(temb, 0, x, seqLen * inner, inner);
+
+        fixed (float* xp = x, pp = preNet)
+        fixed (byte* wpIn = qw.ProjInWeight)
+        {
+            MatMulRowMajorQ8(xp + inner, wpIn, pp, length, inner, concatChannels);
+            MatMulRowMajorQ8(xp + (seqLen + 1) * inner, wpIn, pp + (long)length * concatChannels, length, inner, concatChannels);
+        }
+
+        var normed1 = new float[totalTokens * inner];
+        var q = new float[totalTokens * inner];
+        var k = new float[totalTokens * inner];
+        var v = new float[totalTokens * inner];
+        var context = new float[totalTokens * inner];
+        var attnOut = new float[totalTokens * inner];
+        var normed2 = new float[totalTokens * inner];
+        var ffProj = new float[totalTokens * 2 * ffn];
+        var gated = new float[totalTokens * ffn];
+        var ffOut = new float[totalTokens * inner];
+        var scratchInner = new byte[totalTokens * SimdKernels.Q8_0ScratchBytes(inner)];
+
+        var (cos, sin) = BuildPartialRope(seqLen);
+
+        fixed (float* xp = x, n1p = normed1, qp = q, kp = k, vp = v, ctxp = context,
+                      aop = attnOut, n2p = normed2, fpp = ffProj, gp = gated, fop = ffOut)
+        fixed (byte* sip = scratchInner)
+        {
+            for (int li = 0; li < qw.Blocks.Length; li++)
+            {
+                var qb = qw.Blocks[li];
+
+                fixed (float* wNorm1 = qb.Norm1Weight, bNorm1 = qb.Norm1Bias)
+                {
+                    for (int t = 0; t < totalTokens; t++)
+                        LayerNormRow(xp + t * inner, wNorm1, bNorm1, n1p + t * inner, inner);
+                }
+
+                fixed (byte* wQ = qb.QWeight, wK = qb.KWeight, wV = qb.VWeight)
+                {
+                    MatMulQkvQ8(qp, kp, vp, wQ, wK, wV, sip, n1p, totalTokens, inner);
+                }
+
+                ApplyPartialRope(q, seqLen, heads, headDim, cos, sin);
+                ApplyPartialRope(k, seqLen, heads, headDim, cos, sin);
+                float* qUncond = qp + (long)seqLen * inner;
+                float* kUncond = kp + (long)seqLen * inner;
+                ApplyPartialRope(new Span<float>(qUncond, seqLen * inner), seqLen, heads, headDim, cos, sin);
+                ApplyPartialRope(new Span<float>(kUncond, seqLen * inner), seqLen, heads, headDim, cos, sin);
+
+                float scale = 1f / MathF.Sqrt(headDim);
+                Parallel.For(0, heads, h =>
+                {
+                    int off = h * headDim;
+                    Span<float> scores = stackalloc float[seqLen];
+
+                    // Cond sequence
+                    for (int i = 0; i < seqLen; i++)
+                    {
+                        var qSpan = q.AsSpan(i * inner + off, headDim);
+                        for (int j = 0; j < seqLen; j++)
+                        {
+                            var kSpan = k.AsSpan(j * inner + off, headDim);
+                            scores[j] = TensorPrimitives.Dot(qSpan, kSpan) * scale;
+                        }
+                        SoftmaxRange(scores, 0, seqLen);
+
+                        var ctxSpan = context.AsSpan(i * inner + off, headDim);
+                        ctxSpan.Clear();
+                        for (int j = 0; j < seqLen; j++)
+                        {
+                            var vSpan = v.AsSpan(j * inner + off, headDim);
+                            TensorPrimitives.MultiplyAdd(vSpan, scores[j], ctxSpan, ctxSpan);
+                        }
+                    }
+
+                    // Uncond sequence
+                    int seqOffset = seqLen * inner;
+                    for (int i = 0; i < seqLen; i++)
+                    {
+                        var qSpan = q.AsSpan(seqOffset + i * inner + off, headDim);
+                        for (int j = 0; j < seqLen; j++)
+                        {
+                            var kSpan = k.AsSpan(seqOffset + j * inner + off, headDim);
+                            scores[j] = TensorPrimitives.Dot(qSpan, kSpan) * scale;
+                        }
+                        SoftmaxRange(scores, 0, seqLen);
+
+                        var ctxSpan = context.AsSpan(seqOffset + i * inner + off, headDim);
+                        ctxSpan.Clear();
+                        for (int j = 0; j < seqLen; j++)
+                        {
+                            var vSpan = v.AsSpan(seqOffset + j * inner + off, headDim);
+                            TensorPrimitives.MultiplyAdd(vSpan, scores[j], ctxSpan, ctxSpan);
+                        }
+                    }
+                });
+
+                fixed (byte* wO = qb.OWeight)
+                {
+                    MatMulRowMajorQ8(aop, wO, ctxp, totalTokens, inner, inner);
+                }
+
+                for (int i = 0; i < totalTokens * inner; i++) xp[i] += aop[i];
+
+                fixed (float* wNorm2 = qb.Norm2Weight, bNorm2 = qb.Norm2Bias)
+                {
+                    for (int t = 0; t < totalTokens; t++)
+                        LayerNormRow(xp + t * inner, wNorm2, bNorm2, n2p + t * inner, inner);
+                }
+
+                fixed (byte* wFfIn = qb.FfInWeight, wFfOut = qb.FfOutWeight)
+                fixed (float* bFfIn = qb.FfInBias, bFfOut = qb.FfOutBias)
+                {
+                    MatMulRowMajorQ8(fpp, wFfIn, n2p, totalTokens, 2 * ffn, inner);
+                    for (int t = 0; t < totalTokens; t++)
+                    {
+                        int ppBase = t * 2 * ffn;
+                        int gpBase = t * ffn;
+                        for (int i = 0; i < ffn; i++)
+                        {
+                            float gateState = fpp[ppBase + i] + bFfIn[i];
+                            float gateVal = fpp[ppBase + ffn + i] + bFfIn[ffn + i];
+                            gp[gpBase + i] = gateState * Silu(gateVal);
+                        }
+                    }
+                    MatMulRowMajorQ8(fop, wFfOut, gp, totalTokens, inner, ffn);
+                    for (int t = 0; t < totalTokens; t++)
+                    {
+                        int foBase = t * inner;
+                        for (int i = 0; i < inner; i++)
+                            xp[foBase + i] += fop[foBase + i] + bFfOut[i];
+                    }
+                }
+            }
+        }
+
+        var stripped = new float[2 * length * inner];
+        Array.Copy(x, inner, stripped, 0, length * inner);
+        Array.Copy(x, (seqLen + 1) * inner, stripped, length * inner, length * inner);
+
+        var projOut = new float[2 * length * inChannels];
+        var postConv = new float[2 * length * inChannels];
+        fixed (float* sp = stripped, pop = projOut, pcp = postConv)
+        fixed (byte* wOut = qw.ProjOutWeight, wPost = qw.PostprocessConvWeight)
+        {
+            MatMulRowMajorQ8(pop, wOut, sp, 2 * length, inChannels, inner);
+            MatMulRowMajorQ8(pcp, wPost, pop, 2 * length, inChannels, inChannels);
+        }
+
+        var vCond = new float[length][];
+        var vUncond = new float[length][];
+        for (int t = 0; t < length; t++)
+        {
+            var rCond = new float[inChannels];
+            var rUncond = new float[inChannels];
+            int idxCond = t * inChannels;
+            int idxUncond = (length + t) * inChannels;
+            for (int c = 0; c < inChannels; c++)
+            {
+                rCond[c] = postConv[idxCond + c] + projOut[idxCond + c];
+                rUncond[c] = postConv[idxUncond + c] + projOut[idxUncond + c];
+            }
+            vCond[t] = rCond;
+            vUncond[t] = rUncond;
+        }
+
+        return (vCond, vUncond);
     }
 
     private static float Silu(float x) => x / (1f + MathF.Exp(-x));
