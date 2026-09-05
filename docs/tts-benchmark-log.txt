@@ -451,3 +451,93 @@
 [MMS-TTS-eng] prompt="Hello, I will make some lunch, darling!" audio=3.60s samples=57600
 [MMS-TTS-eng] runs(s)=[1.853, 1.825, 1.857] mean=1.845s RTF=0.512 (lower=faster; 1.0=realtime)
 
+[CosyVoice3] prompt="Hello, I will make some lunch, darling!" audio=2.96s samples=71040
+[CosyVoice3] runs(s)=[19.364, 19.552, 19.458] mean=19.458s RTF=6.574 (lower=faster; 1.0=realtime)
+
+[Piper-lessac-medium] prompt="Hello, I will make some lunch, darling!" audio=2.38s samples=52480
+[Piper-lessac-medium] runs(s)=[0.472, 0.375, 0.369] mean=0.405s RTF=0.170 (lower=faster; 1.0=realtime)
+
+[MeloTTS] prompt="Hello, I will make some lunch, darling!" audio=2.76s samples=121856
+[MeloTTS] runs(s)=[3.187, 3.328, 3.313] mean=3.276s RTF=1.185 (lower=faster; 1.0=realtime)
+
+[Parler-TTS] prompt="Hello, I will make some lunch, darling!" audio=2.81s samples=123904
+[Parler-TTS] runs(s)=[16.527, 17.842, 17.717] mean=17.362s RTF=6.180 (lower=faster; 1.0=realtime)
+
+[Kokoro-82M] prompt="Hello, I will make some lunch, darling!" audio=2.93s samples=70220
+[Kokoro-82M] runs(s)=[2.589, 2.557, 2.508] mean=2.551s RTF=0.872 (lower=faster; 1.0=realtime)
+
+[Chatterbox] prompt="Hello, I will make some lunch, darling!" audio=2.48s samples=59520
+[Chatterbox] runs(s)=[11.948, 12.105, 11.937] mean=11.996s RTF=4.837 (lower=faster; 1.0=realtime)
+
+[MMS-TTS-eng] prompt="Hello, I will make some lunch, darling!" audio=3.60s samples=57600
+[MMS-TTS-eng] runs(s)=[1.619, 1.512, 1.528] mean=1.553s RTF=0.431 (lower=faster; 1.0=realtime)
+
+[F5-TTS] prompt="Hello, I will make some lunch, darling!" audio=2.78s samples=66816
+[F5-TTS] runs(s)=[0.041, 0.039, 0.039] mean=0.040s RTF=0.014 (lower=faster; 1.0=realtime)
+
+[FishSpeech] prompt="Hello, I will make some lunch, darling!" audio=3.11s samples=137216
+[FishSpeech] runs(s)=[25.593, 24.717, 24.894] mean=25.068s RTF=8.057 (lower=faster; 1.0=realtime)
+
+[Parler-TTS] prompt="Hello, I will make some lunch, darling!" audio=2.25s samples=99328
+[Parler-TTS] runs(s)=[15.844, 15.850, 14.881] mean=15.525s RTF=6.893 (lower=faster; 1.0=realtime)
+
+[Parler-TTS] prompt="Hello, I will make some lunch, darling!" audio=2.81s samples=123904
+[Parler-TTS] runs(s)=[18.157, 18.095, 16.432] mean=17.561s RTF=6.250 (lower=faster; 1.0=realtime)
+
+[F5-CFG-Bisect] cfgStrength=1.0 (NEW batched path): rms=1.9192 peak=9.4363 anyNaN=False
+[F5-CFG-Bisect] cfgStrength=0.0 (OLD single-stream path): rms=1.6749 peak=8.7782 anyNaN=False
+
+[F5-TTS] prompt="Hello, I will make some lunch, darling!" audio=2.77s samples=66560
+[F5-TTS] runs(s)=[28.105, 27.999, 27.631] mean=27.911s RTF=10.064 (lower=faster; 1.0=realtime)
+
+[Chatterbox] prompt="Hello, I will make some lunch, darling!" audio=2.48s samples=59520
+[Chatterbox] runs(s)=[12.265, 12.309, 12.116] mean=12.230s RTF=4.932 (lower=faster; 1.0=realtime)
+
+[Chatterbox] prompt="Hello, I will make some lunch, darling!" audio=2.56s samples=61440
+[Chatterbox] runs(s)=[14.502, 15.083, 15.219] mean=14.935s RTF=5.834 (lower=faster; 1.0=realtime)
+
+[Chatterbox] prompt="Hello, I will make some lunch, darling!" audio=2.44s samples=58560
+[Chatterbox] runs(s)=[15.201, 14.649, 14.824] mean=14.891s RTF=6.103 (lower=faster; 1.0=realtime)
+
+[Chatterbox] prompt="Hello, I will make some lunch, darling!" audio=2.92s samples=70080
+[Chatterbox] runs(s)=[14.710, 14.315, 15.326] mean=14.784s RTF=5.063 (lower=faster; 1.0=realtime)
+
+[Chatterbox] prompt="Hello, I will make some lunch, darling!" audio=2.48s samples=59520
+[Chatterbox] runs(s)=[15.553, 14.848, 15.137] mean=15.179s RTF=6.121 (lower=faster; 1.0=realtime)
+
+[Chatterbox] prompt="Hello, I will make some lunch, darling!" audio=2.36s samples=56640
+[Chatterbox] runs(s)=[15.246, 14.973, 15.353] mean=15.191s RTF=6.437 (lower=faster; 1.0=realtime)
+
+[Chatterbox] prompt="Hello, I will make some lunch, darling!" audio=2.52s samples=60480
+[Chatterbox] runs(s)=[14.707, 14.936, 14.962] mean=14.868s RTF=5.900 (lower=faster; 1.0=realtime)
+
+[Chatterbox] prompt="Hello, I will make some lunch, darling!" audio=2.36s samples=56640
+[Chatterbox] runs(s)=[14.384, 14.918, 14.312] mean=14.538s RTF=6.160 (lower=faster; 1.0=realtime)
+
+[Chatterbox] prompt="Hello, I will make some lunch, darling!" audio=2.36s samples=56640
+[Chatterbox] runs(s)=[15.029, 15.087, 14.509] mean=14.875s RTF=6.303 (lower=faster; 1.0=realtime)
+
+[Chatterbox] prompt="Hello, I will make some lunch, darling!" audio=2.72s samples=65280
+[Chatterbox] runs(s)=[14.984, 15.204, 15.632] mean=15.273s RTF=5.615 (lower=faster; 1.0=realtime)
+
+[Chatterbox] prompt="Hello, I will make some lunch, darling!" audio=2.52s samples=60480
+[Chatterbox] runs(s)=[14.610, 14.058, 14.634] mean=14.434s RTF=5.728 (lower=faster; 1.0=realtime)
+
+[Chatterbox] prompt="Hello, I will make some lunch, darling!" audio=2.52s samples=60480
+[Chatterbox] runs(s)=[15.263, 14.948, 14.808] mean=15.006s RTF=5.955 (lower=faster; 1.0=realtime)
+
+[Chatterbox] prompt="Hello, I will make some lunch, darling!" audio=2.56s samples=61440
+[Chatterbox] runs(s)=[14.467, 14.625, 14.914] mean=14.669s RTF=5.730 (lower=faster; 1.0=realtime)
+
+[QwenTTS] prompt="Hello, I will make some lunch, darling!" audio=2.16s samples=51840
+[QwenTTS] runs(s)=[6.906, 6.527, 6.943] mean=6.792s RTF=3.145 (lower=faster; 1.0=realtime)
+
+[XTTS-v2] prompt="Hello, I will make some lunch, darling!" audio=3.85s samples=92416
+[XTTS-v2] runs(s)=[10.610, 10.701, 10.664] mean=10.658s RTF=2.768 (lower=faster; 1.0=realtime)
+
+[XTTS-v2] prompt="Hello, I will make some lunch, darling!" audio=3.85s samples=92416
+[XTTS-v2] runs(s)=[10.843, 10.523, 10.807] mean=10.725s RTF=2.785 (lower=faster; 1.0=realtime)
+
+[XTTS-v2] prompt="Hello, I will make some lunch, darling!" audio=3.85s samples=92416
+[XTTS-v2] runs(s)=[10.517, 10.844, 10.689] mean=10.683s RTF=2.774 (lower=faster; 1.0=realtime)
+

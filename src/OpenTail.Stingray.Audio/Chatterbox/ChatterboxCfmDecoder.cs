@@ -59,47 +59,28 @@ public static class ChatterboxCfmDecoder
             float[] dxdtCond = null!;
             float[] dxdtUncond = null!;
 
-            // IComputeBackend implementations (e.g. VulkanBackend) are not documented/verified
-            // thread-safe for concurrent dispatch from two threads onto the same instance --
-            // run the cond/uncond branches sequentially when GPU-backed instead of the CPU path's
-            // free Parallel.Invoke concurrency, to avoid a real correctness risk for a marginal win.
-            if (backend is not null)
-            {
-                dxdtCond = CfmUNetKernels.RunEstimator(
-                    w.DownStage, (IUnetStageWeights[])w.MidStages, w.UpStage,
-                    w.FinalBlockConvWeight, w.FinalBlockConvBias, w.FinalBlockLnWeight, w.FinalBlockLnBias,
-                    w.FinalProjWeight, w.FinalProjBias,
-                    x, mu, cond, spkEmbed, timeEmb,
-                    t, mel, w.DecChannels, w.DecNumHeads, w.DecHeadDim, backend);
-                dxdtUncond = CfmUNetKernels.RunEstimator(
-                    w.DownStage, (IUnetStageWeights[])w.MidStages, w.UpStage,
-                    w.FinalBlockConvWeight, w.FinalBlockConvBias, w.FinalBlockLnWeight, w.FinalBlockLnBias,
-                    w.FinalProjWeight, w.FinalProjBias,
-                    x, muZeros, condZeros, spkZeros, timeEmb,
-                    t, mel, w.DecChannels, w.DecNumHeads, w.DecHeadDim, backend);
-            }
-            else
-            {
-                System.Threading.Tasks.Parallel.Invoke(
-                    () =>
-                    {
-                        dxdtCond = CfmUNetKernels.RunEstimator(
-                            w.DownStage, (IUnetStageWeights[])w.MidStages, w.UpStage,
-                            w.FinalBlockConvWeight, w.FinalBlockConvBias, w.FinalBlockLnWeight, w.FinalBlockLnBias,
-                            w.FinalProjWeight, w.FinalProjBias,
-                            x, mu, cond, spkEmbed, timeEmb,
-                            t, mel, w.DecChannels, w.DecNumHeads, w.DecHeadDim);
-                    },
-                    () =>
-                    {
-                        dxdtUncond = CfmUNetKernels.RunEstimator(
-                            w.DownStage, (IUnetStageWeights[])w.MidStages, w.UpStage,
-                            w.FinalBlockConvWeight, w.FinalBlockConvBias, w.FinalBlockLnWeight, w.FinalBlockLnBias,
-                            w.FinalProjWeight, w.FinalProjBias,
-                            x, muZeros, condZeros, spkZeros, timeEmb,
-                            t, mel, w.DecChannels, w.DecNumHeads, w.DecHeadDim);
-                    });
-            }
+            // Both the CPU and GPU-backed paths run cond/uncond sequentially. IComputeBackend
+            // implementations (e.g. VulkanBackend) are not documented/verified thread-safe for
+            // concurrent dispatch from two threads onto the same instance, and the CPU path's
+            // Parallel.Invoke concurrency was found to be a genuine data race too (2026-09-05:
+            // running the two RunEstimator calls concurrently on the same shared weight objects
+            // produced NaN and enormous garbage values that varied nondeterministically across
+            // otherwise-identical, same-seed runs -- CfmUNetKernels.RunEstimator's internal
+            // Parallel.For loops were verified index-disjoint on their own, so the race is in
+            // running two full concurrent RunEstimator invocations against it, not in one; making
+            // both branches sequential removes the race for a small, worthwhile perf cost).
+            dxdtCond = CfmUNetKernels.RunEstimator(
+                w.DownStage, (IUnetStageWeights[])w.MidStages, w.UpStage,
+                w.FinalBlockConvWeight, w.FinalBlockConvBias, w.FinalBlockLnWeight, w.FinalBlockLnBias,
+                w.FinalProjWeight, w.FinalProjBias,
+                x, mu, cond, spkEmbed, timeEmb,
+                t, mel, w.DecChannels, w.DecNumHeads, w.DecHeadDim, backend);
+            dxdtUncond = CfmUNetKernels.RunEstimator(
+                w.DownStage, (IUnetStageWeights[])w.MidStages, w.UpStage,
+                w.FinalBlockConvWeight, w.FinalBlockConvBias, w.FinalBlockLnWeight, w.FinalBlockLnBias,
+                w.FinalProjWeight, w.FinalProjBias,
+                x, muZeros, condZeros, spkZeros, timeEmb,
+                t, mel, w.DecChannels, w.DecNumHeads, w.DecHeadDim, backend);
 
             float dt = tNext - tCur;
             float factorCond = (1f + cfgRate) * dt;

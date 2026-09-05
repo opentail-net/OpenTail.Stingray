@@ -109,7 +109,21 @@ public sealed class XttsPipeline : ITextToSpeechPipeline
         if (generatedCodes.Count == 0) return [];
 
         int latentsT = gptLatents.Length / XttsGptWeights.ModelDim;
-        return XttsHifiDecoder.Forward(_vocoderWeights, gptLatents, latentsT, speakerEmbedding);
+        var samples = XttsHifiDecoder.Forward(_vocoderWeights, gptLatents, latentsT, speakerEmbedding);
+
+        if (Environment.GetEnvironmentVariable("STINGRAY_XTTS_TRACE") == "1")
+        {
+            // t1 = latentsT * 4 (ar_mel_length_compression/output_hop_length), t2 = t1 *
+            // (24000/22050) (sample-rate interpolation), final samples = t2 * 256 (vocoder's
+            // UpsampleRates [8,8,2,2] product) -- see XttsHifiDecoder.Forward/XttsVocoderWeights.
+            double expectedSamples = latentsT * CompressionRatio * SampleRateRatio * 256.0;
+            Console.Error.WriteLine($"[XttsTrace] text=\"{text}\" textIds={textIds.Length} generatedCodes={generatedCodes.Count} " +
+                $"latentsT={latentsT} hitMaxCap={generatedCodes.Count >= XttsGptSampler.MaxAudioTokens} " +
+                $"expectedSamplesFromFormula={expectedSamples:F0} actualSamples={samples.Length} " +
+                $"audioSec={samples.Length / 24000.0:F2}");
+        }
+
+        return samples;
     }
 
     private float[] ComputeConditioningLatents(float[] refPcm22050, out int numCondLatents)

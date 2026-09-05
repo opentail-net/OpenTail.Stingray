@@ -56,10 +56,26 @@ public static class DenseKernels
         }
     }
 
-    /// <summary>In-place softmax on Span, float-accumulated.</summary>
+    /// <summary>In-place softmax on Span, float-accumulated. Explicit max-subtraction, not
+    /// <c>TensorPrimitives.SoftMax(x, x)</c> -- confirmed root cause (2026-09-05) of Chatterbox's
+    /// S3Gen CFM decoder producing NaN mid-stack (reproducible, always in the real/non-zero
+    /// conditioning branch, always around mid-stage 7-9's transformer blocks): bisected by
+    /// swapping this exact call back to the explicit stable formula with everything else held
+    /// fixed, which eliminated the NaN. Do not swap back to <c>TensorPrimitives.SoftMax</c> here
+    /// without re-verifying against a real Chatterbox generation, not just a golden/unit test.</summary>
     public static void SoftmaxInPlace(Span<float> scores)
     {
-        TensorPrimitives.SoftMax(scores, scores);
+        float max = float.NegativeInfinity;
+        for (int i = 0; i < scores.Length; i++) if (scores[i] > max) max = scores[i];
+        float sum = 0f;
+        for (int i = 0; i < scores.Length; i++)
+        {
+            float e = MathF.Exp(scores[i] - max);
+            scores[i] = e;
+            sum += e;
+        }
+        float invSum = 1f / sum;
+        for (int i = 0; i < scores.Length; i++) scores[i] *= invSum;
     }
 
     /// <summary>In-place softmax, float-accumulated (no double promotion -- matches the numerical path every other softmax in this codebase uses).</summary>

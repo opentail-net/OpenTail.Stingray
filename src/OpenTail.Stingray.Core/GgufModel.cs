@@ -67,10 +67,14 @@ public sealed unsafe class GgufModel : IDisposable, IModelTensorSource
             // Open all shard files and acquire memory-mapped pointers
             for (int s = 0; s < shardCount; s++)
             {
-                var fi = new FileInfo(shardPaths[s]);
-                if (!fi.Exists)
+                if (!File.Exists(shardPaths[s]))
                     throw new FileNotFoundException("GGUF shard file not found.", shardPaths[s]);
-                fileSizes[s] = fi.Length;
+                // FileInfo.Length reads the reparse point's own attributes without following it,
+                // so it reports 0 for a symlink even though the OS transparently follows the link
+                // for actual reads (e.g. models/ pointing GGUFs at an external drive). Opening a
+                // handle and reading its Length follows the link and reports the real target size.
+                using (var probe = File.OpenHandle(shardPaths[s], FileMode.Open, FileAccess.Read, FileShare.Read))
+                    fileSizes[s] = RandomAccess.GetLength(probe);
                 mmfs[s]      = MemoryMappedFile.CreateFromFile(shardPaths[s], FileMode.Open, null, 0, MemoryMappedFileAccess.Read);
                 accessors[s] = mmfs[s].CreateViewAccessor(0, fileSizes[s], MemoryMappedFileAccess.Read);
                 byte* ptr = null;

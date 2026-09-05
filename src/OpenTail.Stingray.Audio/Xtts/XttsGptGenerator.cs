@@ -80,7 +80,17 @@ public static class XttsGptGenerator
         {
             float[] logits = emb.MelLogits(lastHidden);
 
-            var samplingParams = generated.Count > 0 ? p with { PreviousTokens = generated } : p;
+            // The shared Sampler's repetition penalty compounds per OCCURRENCE (llama.cpp
+            // convention: pow(penalty, count)), but the real XTTS-v2 reference calls HF's
+            // RepetitionPenaltyLogitsProcessor, which applies the penalty ONCE per token regardless
+            // of how many times it recurs (its `scatter_` overwrites rather than compounds for
+            // duplicate indices). Deduplicating history before passing it to the shared Sampler
+            // makes every candidate's occurrence count 0 or 1, collapsing the compounding formula
+            // to HF's idempotent one without changing the Sampler's engine-wide semantics -- found
+            // by direct comparison against the real reference: with the compounding penalty, a
+            // token seen many times across a stuck repetitive stretch gets an astronomically large
+            // penalty (penalty^10+) that behaves nothing like the real reference's constant one.
+            var samplingParams = generated.Count > 0 ? p with { PreviousTokens = generated.Distinct().ToList() } : p;
             int next = Sampler.Sample(logits, samplingParams, rng);
 
             if (next == XttsGptEmbeddings.AudioStopToken)

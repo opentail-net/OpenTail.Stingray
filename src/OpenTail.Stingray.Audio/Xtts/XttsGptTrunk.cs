@@ -20,10 +20,17 @@ public static class XttsGptTrunk
     public static ReadOnlySpan<float> Step(XttsGptWeights w, XttsGptCache cache, ReadOnlySpan<float> inputVec)
     {
         ReadOnlySpan<float> x = inputVec;
+        bool trace = Environment.GetEnvironmentVariable("STINGRAY_XTTS_LAYER_TRACE") == "1";
         for (int i = 0; i < w.Layers.Length; i++)
         {
             LayerStep(x, w.Layers[i], cache, i);
             x = cache.Output;
+            if (trace)
+            {
+                double sumsq = 0;
+                foreach (var v in x) sumsq += (double)v * v;
+                Console.Error.WriteLine($"[XttsLayerTrace] layer={i} rms={Math.Sqrt(sumsq / x.Length):F6} first3=[{x[0]:F4},{x[1]:F4},{x[2]:F4}]");
+            }
         }
 
         LayerNorm(cache.Output, w.FinalNormWeight, w.FinalNormBias, cache.LastHidden);
@@ -196,9 +203,30 @@ public static class XttsGptTrunk
         return VitsAttentionKernels.Conv1x1(context, dim, t, lw.AttnCProjWeight, lw.AttnCProjBias, dim);
     }
 
+    /// <summary>Explicit max-subtracted stable softmax, not <c>TensorPrimitives.SoftMax(x, x)</c> --
+    /// same class of bug as Chatterbox's S3Gen CFM decoder (see
+    /// <see cref="OpenTail.Stingray.Audio.Primitives.DenseKernels.SoftmaxInPlace"/>'s doc comment):
+    /// confirmed via direct comparison against the real PyTorch reference's per-step logits that
+    /// this call was producing a substantially wrong winning token (a token the reference doesn't
+    /// even rank in its top 5) starting a few generation steps in, compounding into a stable
+    /// degenerate "stuck repeating the same token" state that (under real sampling) essentially
+    /// never reaches XTTS's stop_audio_token -- explaining the port's "always hits the 605-token
+    /// hard cap" bug. Do not swap back without re-verifying against a real multi-step generation,
+    /// not just a single-step golden test.</summary>
     private static void SoftmaxPrefixInPlace(float[] scores, int len)
     {
-        TensorPrimitives.SoftMax(scores.AsSpan(0, len), scores.AsSpan(0, len));
+        var span = scores.AsSpan(0, len);
+        float max = float.NegativeInfinity;
+        for (int i = 0; i < len; i++) if (span[i] > max) max = span[i];
+        float sum = 0f;
+        for (int i = 0; i < len; i++)
+        {
+            float e = MathF.Exp(span[i] - max);
+            span[i] = e;
+            sum += e;
+        }
+        float invSum = 1f / sum;
+        for (int i = 0; i < len; i++) span[i] *= invSum;
     }
 
     private static unsafe float[] Mlp(float[] x, int t, XttsGptLayerWeights lw)
