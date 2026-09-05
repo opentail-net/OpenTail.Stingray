@@ -16,6 +16,8 @@ public sealed class FishSpeechFullPipelineTests : HeavyTestBase
         {
             var p = Path.Combine(dir, "models", fileName);
             if (File.Exists(p)) return p;
+            var pModels = Path.Combine(dir, "models", "_models", fileName);
+            if (File.Exists(pModels)) return pModels;
             var parent = Directory.GetParent(dir);
             if (parent is null) break;
             dir = parent.FullName;

@@ -257,7 +257,7 @@ public sealed class FishSpeechPipeline : IDisposable
             var codebookValues = new int[_weights.NumCodebooks];
             codebookValues[0] = semCode;
             _fastArCache.Reset();
-            FishSpeechFastAr.ForwardStep(_weights, _fastArCache, hidden);
+            FishSpeechFastAr.ForwardStep(_weights, _fastArCache, hidden, computeLogits: false);
             var stepLogits = FishSpeechFastAr.ForwardStep(_weights, _fastArCache, FishSpeechFastAr.EmbedFastToken(_weights, semCode));
             for (int cb = 1; cb < _weights.NumCodebooks; cb++)
             {
@@ -303,7 +303,7 @@ public sealed class FishSpeechPipeline : IDisposable
         for (int i = 0; i < n; i++) _candidateOrder[i] = i;
 
         var logitsArr = _candidateLogits;
-        Array.Sort(_candidateOrder, 0, n, Comparer<int>.Create((a, b) => logitsArr[b].CompareTo(logitsArr[a])));
+        _candidateOrder.AsSpan(0, n).Sort(new LogitsComparer(logitsArr));
 
         float max = logitsArr[_candidateOrder[0]];
         float sum = 0f;
@@ -402,7 +402,7 @@ public sealed class FishSpeechPipeline : IDisposable
         float[] sampleProbs = n == _codebookSampleProbs.Length ? _codebookSampleProbs : new float[n];
 
         for (int i = 0; i < n; i++) order[i] = i;
-        Array.Sort(order, 0, n, Comparer<int>.Create((a, b) => logits[b].CompareTo(logits[a])));
+        order.AsSpan(0, n).Sort(new LogitsComparer(logits));
 
         float max = logits[order[0]];
         float sum = 0f;
@@ -468,6 +468,11 @@ public sealed class FishSpeechPipeline : IDisposable
                 return kept[i];
         }
         return kept[0];
+    }
+
+    private readonly struct LogitsComparer(float[] logits) : IComparer<int>
+    {
+        public int Compare(int x, int y) => logits[y].CompareTo(logits[x]);
     }
 
     public void Dispose()

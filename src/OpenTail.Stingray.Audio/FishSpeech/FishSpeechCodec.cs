@@ -63,31 +63,26 @@ public static class FishSpeechCodec
         fixed (float* zqPtr = zq)
         {
             var zqPtrLocal = zqPtr;
-            for (int qi = 0; qi < quantizers.Length; qi++)
+            Parallel.For(0, latentDim, oc =>
             {
-                var q = quantizers[qi];
-                var qCodes = codes[qi];
-                fixed (float* cbPtr = q.Codebook, wPtr = q.OutProjWeight, bPtr = q.OutProjBias)
+                float* zqRow = zqPtrLocal + oc * t;
+                for (int qi = 0; qi < quantizers.Length; qi++)
                 {
-                    var cbLocal = cbPtr;
-                    var wLocal = wPtr;
-                    var bLocal = bPtr;
-
-                    Parallel.For(0, latentDim, oc =>
+                    var q = quantizers[qi];
+                    var qCodes = codes[qi];
+                    float b = q.OutProjBias[oc];
+                    fixed (float* cbLocal = q.Codebook, wLocal = q.OutProjWeight)
                     {
-                        float b = bLocal[oc];
                         float* wOc = wLocal + oc * codebookDim;
-                        float* zqRow = zqPtrLocal + oc * t;
-
                         for (int ti = 0; ti < t; ti++)
                         {
                             int code = Math.Clamp(qCodes[ti], 0, codebookSize - 1);
                             float* emb = cbLocal + code * codebookDim;
                             zqRow[ti] += b + SimdKernels.DotF32(wOc, emb, codebookDim);
                         }
-                    });
+                    }
                 }
-            }
+            });
         }
         return zq;
     }
@@ -106,38 +101,65 @@ public static class FishSpeechCodec
     private static unsafe float[] FullConv1d(float[] x, int inCh, int outCh, int t, float[] weight, float[] bias, int kernel, int dilation, int causalPadLeft)
     {
         int rowLen = inCh * kernel;
-        var col = new float[t * rowLen]; // [ti][ic*kernel+k], matches weight's [oc][ic*kernel+k] layout
-        Parallel.For(0, t, ti =>
+        float[] col = ArrayPool<float>.Shared.Rent(t * rowLen);
+        try
         {
-            int rowBase = ti * rowLen;
-            for (int ic = 0; ic < inCh; ic++)
+            if (t <= 32)
             {
-                int xBase = ic * t;
-                int rBase = rowBase + ic * kernel;
-                for (int k = 0; k < kernel; k++)
+                for (int ti = 0; ti < t; ti++)
                 {
-                    int src = ti - causalPadLeft + k * dilation;
-                    col[rBase + k] = (uint)src < (uint)t ? x[xBase + src] : 0f;
+                    int rowBase = ti * rowLen;
+                    for (int ic = 0; ic < inCh; ic++)
+                    {
+                        int xBase = ic * t;
+                        int rBase = rowBase + ic * kernel;
+                        for (int k = 0; k < kernel; k++)
+                        {
+                            int src = ti - causalPadLeft + k * dilation;
+                            col[rBase + k] = (uint)src < (uint)t ? x[xBase + src] : 0f;
+                        }
+                    }
                 }
             }
-        });
-
-        var output = new float[outCh * t];
-        fixed (float* colPtr = col, weightPtr = weight, outputPtr = output)
-        {
-            var colPtrLocal = colPtr;
-            var weightPtrLocal = weightPtr;
-            var outputPtrLocal = outputPtr;
-            Parallel.For(0, outCh, oc =>
+            else
             {
-                float b = bias[oc];
-                float* wOc = weightPtrLocal + oc * rowLen;
-                float* outBase = outputPtrLocal + oc * t;
-                for (int ti = 0; ti < t; ti++)
-                    outBase[ti] = b + SimdKernels.DotF32(wOc, colPtrLocal + ti * rowLen, rowLen);
-            });
+                Parallel.For(0, t, ti =>
+                {
+                    int rowBase = ti * rowLen;
+                    for (int ic = 0; ic < inCh; ic++)
+                    {
+                        int xBase = ic * t;
+                        int rBase = rowBase + ic * kernel;
+                        for (int k = 0; k < kernel; k++)
+                        {
+                            int src = ti - causalPadLeft + k * dilation;
+                            col[rBase + k] = (uint)src < (uint)t ? x[xBase + src] : 0f;
+                        }
+                    }
+                });
+            }
+
+            var output = new float[outCh * t];
+            fixed (float* colPtr = col, weightPtr = weight, outputPtr = output)
+            {
+                var colPtrLocal = colPtr;
+                var weightPtrLocal = weightPtr;
+                var outputPtrLocal = outputPtr;
+                Parallel.For(0, outCh, oc =>
+                {
+                    float b = bias[oc];
+                    float* wOc = weightPtrLocal + oc * rowLen;
+                    float* outBase = outputPtrLocal + oc * t;
+                    for (int ti = 0; ti < t; ti++)
+                        outBase[ti] = b + SimdKernels.DotF32(wOc, colPtrLocal + ti * rowLen, rowLen);
+                });
+            }
+            return output;
         }
-        return output;
+        finally
+        {
+            ArrayPool<float>.Shared.Return(col);
+        }
     }
 
     /// <summary>Real causal depthwise Conv1d (groups=channels), same left-pad convention as <see cref="FullConv1d"/>. Weight layout [channels, 1, kernel] flat -> effectively [channels, kernel].</summary>
@@ -182,33 +204,46 @@ public static class FishSpeechCodec
     private static float[] CausalConvTranspose1d(float[] x, int inCh, int outCh, int t, float[] weight, float[] bias, int kernel, int stride)
     {
         int rawT = (t - 1) * stride + kernel; // padding=0 in the underlying nn.ConvTranspose1d
-        var raw = new float[outCh * rawT];
-        Parallel.For(0, outCh, oc =>
+        float[] raw = ArrayPool<float>.Shared.Rent(outCh * rawT);
+        try
         {
-            float b = bias[oc];
-            int dstBase = oc * rawT;
-            for (int ti = 0; ti < rawT; ti++) raw[dstBase + ti] = b;
+            Array.Clear(raw, 0, outCh * rawT);
 
-            for (int ic = 0; ic < inCh; ic++)
+            Parallel.For(0, outCh, oc =>
             {
-                int srcBase = ic * t;
-                int wBase = (ic * outCh + oc) * kernel;
-                for (int ti = 0; ti < t; ti++)
-                {
-                    float v = x[srcBase + ti];
-                    int outStart = ti * stride;
-                    for (int k = 0; k < kernel; k++)
-                        raw[dstBase + outStart + k] += v * weight[wBase + k];
-                }
-            }
-        });
+                float b = bias[oc];
+                int dstBase = oc * rawT;
+                raw.AsSpan(dstBase, rawT).Fill(b);
 
-        int cropRight = kernel - stride; // real `pad = kernel_size - stride`, padding_left=0
-        int outT = rawT - cropRight;
-        var output = new float[outCh * outT];
-        for (int oc = 0; oc < outCh; oc++)
-            Array.Copy(raw, oc * rawT, output, oc * outT, outT);
-        return output;
+                for (int ic = 0; ic < inCh; ic++)
+                {
+                    int srcBase = ic * t;
+                    int wBase = (ic * outCh + oc) * kernel;
+                    var wSpan = weight.AsSpan(wBase, kernel);
+
+                    for (int ti = 0; ti < t; ti++)
+                    {
+                        float v = x[srcBase + ti];
+                        if (v == 0f) continue;
+
+                        int outStart = dstBase + ti * stride;
+                        var rawSpan = raw.AsSpan(outStart, kernel);
+                        TensorPrimitives.MultiplyAdd(wSpan, v, rawSpan, rawSpan);
+                    }
+                }
+            });
+
+            int cropRight = kernel - stride; // real `pad = kernel_size - stride`, padding_left=0
+            int outT = rawT - cropRight;
+            var output = new float[outCh * outT];
+            for (int oc = 0; oc < outCh; oc++)
+                Array.Copy(raw, oc * rawT, output, oc * outT, outT);
+            return output;
+        }
+        finally
+        {
+            ArrayPool<float>.Shared.Return(raw);
+        }
     }
 
     /// <summary>
@@ -226,12 +261,15 @@ public static class FishSpeechCodec
             float a = alpha[c];
             float invA = 1f / a;
             int baseIdx = c * t;
-            for (int i = 0; i < t; i++)
-            {
-                float v = x[baseIdx + i];
-                float s = MathF.Sin(a * v);
-                output[baseIdx + i] = v + invA * s * s;
-            }
+
+            var xSpan = x.AsSpan(baseIdx, t);
+            var outSpan = output.AsSpan(baseIdx, t);
+
+            // Vectorized Snake: out = x + (sin(a * x)^2) / a
+            TensorPrimitives.Multiply(xSpan, a, outSpan);
+            TensorPrimitives.Sin(outSpan, outSpan);
+            TensorPrimitives.Multiply(outSpan, outSpan, outSpan);
+            TensorPrimitives.MultiplyAdd(outSpan, invA, xSpan, outSpan);
         });
         return output;
     }
@@ -305,9 +343,8 @@ public static class FishSpeechCodec
         y = Snake1d(y, channels, t, w.Alpha1);
         y = FullConv1d(y, channels, channels, t, w.Conv1Weight, w.Conv1Bias, kernel: 1, dilation: 1, causalPadLeft: 0);
 
-        var output = new float[y.Length];
-        for (int i = 0; i < y.Length; i++) output[i] = x[i] + y[i];
-        return output;
+        TensorPrimitives.Add(x, y, y);
+        return y;
     }
 
     private static (float[] Data, int T) DecoderBlock(float[] x, int inCh, int outCh, int t, FishSpeechCodecDecoderBlockWeights w, int stride)

@@ -141,8 +141,10 @@ public static class FishSpeechFastAr
     /// <summary>
     /// Evaluates ONE step of the fast-AR model at the current position, using the cached K/V state
     /// for already-processed positions. Zero GC heap allocations via pre-allocated scratch workspace.
+    /// When <paramref name="computeLogits"/> is false, skips final RMSNorm and output projection (useful
+    /// for position 0 which only populates KV cache without predicting next codebook).
     /// </summary>
-    public static float[] ForwardStep(FishSpeechWeights w, FishSpeechFastArCache cache, ReadOnlySpan<float> inputVec)
+    public static float[] ForwardStep(FishSpeechWeights w, FishSpeechFastArCache cache, ReadOnlySpan<float> inputVec, bool computeLogits = true)
     {
         ReadOnlySpan<float> x = inputVec;
         for (int i = 0; i < w.FastLayers.Length; i++)
@@ -150,6 +152,9 @@ public static class FishSpeechFastAr
             LayerStep(x, w.FastLayers[i], w, cache, i);
             x = cache.Output;
         }
+
+        if (!computeLogits)
+            return cache.Logits;
 
         RmsNormInPlace(cache.Output, w.FastNormWeight, w.FastRmsNormEps, cache.Normed);
         LinearQ8_0(cache.Normed, w.FastOutputWeight, w.FastEmbeddingDim, w.CodebookSize, cache.Logits);

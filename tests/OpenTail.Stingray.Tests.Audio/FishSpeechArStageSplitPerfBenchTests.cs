@@ -14,6 +14,8 @@ public sealed class FishSpeechArStageSplitPerfBenchTests : HeavyTestBase
         {
             var p = Path.Combine(dir, "models", fileName);
             if (File.Exists(p)) return p;
+            var pModels = Path.Combine(dir, "models", "_models", fileName);
+            if (File.Exists(pModels)) return pModels;
             var parent = Directory.GetParent(dir);
             if (parent is null) break;
             dir = parent.FullName;
@@ -50,7 +52,7 @@ public sealed class FishSpeechArStageSplitPerfBenchTests : HeavyTestBase
         void OneFrame()
         {
             cache.Reset();
-            var stepLogits = FishSpeechFastAr.ForwardStep(weights, cache, hidden);
+            var stepLogits = FishSpeechFastAr.ForwardStep(weights, cache, hidden, computeLogits: false);
             for (int cb = 1; cb < weights.NumCodebooks; cb++)
             {
                 int tok = cb; // fixed, deterministic -- only timing matters here
