@@ -1258,3 +1258,83 @@ Systematic component-by-component performance engineering loop with measured bef
 - End-to-end 20-frame pipeline generation test (`ZZ_ScratchMiniMaxMusic3PipelineSmokeTests`): dropped from **156.39s** down to **54.956s** (**2.84x faster** end-to-end).
 - All 12 MiniMax Music 3 test suites passed cleanly with 0 errors.
 
+## Two real correctness bugs found and fixed, 2026-09-04/05 (diffed against the real `minimaxmusic.cpp` C++ reference)
+
+The 200-frame sample was judged "jitter, not music" despite every component's own golden-parity
+test passing. Cloned `ServeurpersoCom/minimaxmusic.cpp` (a real, working GGML port) and diffed the
+full pipeline against it stage by stage:
+
+1. **Flow-scheduler sigma direction was backwards**: `MiniMaxMusic3FlowScheduler` ran the Euler
+   schedule descending (1.0->0.0, generic `diffusers`-style), but the reference runs it ASCENDING
+   (0.0->1.0, confirmed against its own windowing math and its DiT's Fourier timestep embedding,
+   which feeds raw `t` in with no rescaling). Fixed.
+2. **Residual-codebook CFG sampling used the wrong ranking order**: the semantic head restricts to
+   the conditional branch's top-k FIRST, then applies CFG -- but the reference's residual-codebook
+   sampling applies CFG to the FULL vocab first, then takes top-k of the GUIDED result. Reusing the
+   semantic-style ranking for both (as this port did) silently dropped candidates CFG would have
+   promoted, for 7 of every 8 sampling decisions per frame. Fixed.
+
+User confirmed the resulting audio is correct after both fixes.
+
+## Real GPU (Vulkan) offload path + Q8_0 CPU quantization added for the Flow DiT, 2026-09-04/05
+
+Both added as explicit, non-default opt-in side paths (per direction -- the default pipeline stays
+FP32 CPU) with their own bit-for-bit/tight-tolerance parity tests
+(`MiniMaxMusic3TransformerGpuParityTests`, `MiniMaxMusic3TransformerQuantBenchmarkTests`).
+**Real measured results, this machine (Ryzen 5700G, integrated Radeon graphics, no discrete GPU)**:
+GPU is 2.5x SLOWER than CPU for one 36-layer DiT forward (298ms CPU vs 761ms GPU) -- plausible given
+per-call `Upload`/`Sgemm`/`Synchronize` dispatch overhead on a small/shared-memory iGPU; NOT
+evidence the GPU path is bad in general, see CLAUDE.md rule 13. Q8_0 gives only 1.10x CPU latency
+(294ms->267ms) for 3.76x weight-byte compression, at a real accuracy cost (cosine 0.996, 8.66%
+relative L1 error) -- a real but modest win, kept as an explicit side option, not the default.
+**Real memory-lifetime bug found and fixed in the Q8 path**: `MiniMaxMusic3QuantizedTransformerWeights`
+originally kept the WHOLE source FP32 weights object alive via an `OriginalFp32` field (needed for
+the small un-quantized norms/biases/timestep weights), so quantizing never actually reduced peak
+memory -- it only added ~1.6GB on top of the ~6GB FP32 object that stayed resident regardless. Fixed
+by copying just the small FP32 tensors directly onto the quantized types instead of keeping a
+reference to the whole source object.
+
+## Real C++ reference benchmark + AR-loop fix closing nearly the whole remaining gap, 2026-09-05
+
+Built the real `minimaxmusic.cpp` reference from source (MSVC Build Tools, CPU-only AVX2 backend,
+no BLAS) and converted this project's own real checkpoint to its GGUF format (`convert.py`, two
+small local patches: skip the `dav.pth`-only VAE-encoder tensors since only text2music decode is
+needed, and glob sharded `diffusion_pytorch_model-*-of-*.safetensors` files directly since this
+checkpoint has no `index.json`). Ran the identical 200-frame/8s generation for a real, direct
+timing comparison:
+
+- **Before this fix**: our port 582.9s vs the reference's 477.8s (~1.22x slower).
+- **Real per-stage isolated measurement found the DiT was NOT the bottleneck** (a fresh isolated
+  `ForwardPair` benchmark at the real T=689 scale measured 31.73s/step, actually FASTER than the
+  reference's own logged 34.3s/step) -- contradicting the initial (wrong) assumption that the Flow
+  stage was where to optimize. Measuring instead of assuming found the real bottleneck: the RVQ
+  depth decoder's per-frame cost (891.5ms) was disproportionately high for a 0.6B/4-layer model,
+  actually costing MORE per frame than the 8B/36-layer Global LM's own step (455.4ms) -- a strong
+  signal of per-call dispatch/bandwidth overhead, not raw compute.
+- **Real fix**: the depth decoder's 7 per-frame CFG steps ran as 14 fully separate calls (2 branches
+  x 7 steps), each independently re-streaming the same weight matrices (up to 64MB per matrix, far
+  bigger than this CPU's L3 cache) from RAM and each dispatching its own `Parallel.For`. Added
+  `CfmLinearWeight.MatMulPairRowMajor` (streams each weight row ONCE, applies to both CFG branches)
+  and `MiniMaxMusic3RvqDepthDecoder.ForwardStepPair`, wired into the real generator loop. Verified
+  via a new tight-tolerance parity test (`MiniMaxMusic3RvqDepthDecoderStepPairParityTests` -- not
+  literal bit-for-bit, since the new row-major reduction and the original `MatVecF32`'s 4-row-
+  interleaved reduction have different, equally-valid floating-point accumulation orders, matching
+  this project's own precedent for the analogous Q8 `ForwardPair` check).
+- **Real measured result**: depth decoder per-frame cost dropped 887.5ms -> 466.5ms (**1.90x**,
+  isolated benchmark). Full end-to-end 200-frame generation dropped from 582.9s to **489.5-528.6s**
+  across repeated runs (real machine-level run-to-run variance of ~30-40s observed on this box,
+  not attributable to the code) -- closing nearly the entire gap against the C++ reference's 477.8s.
+- **Vocoder/VAE decode real remaining gap, investigated and NOT resolved**: isolated stage timing
+  found VAE decode taking 29-33s vs the reference's 13.1s (~2.2-2.5x slower) -- a real, reproducible
+  gap, unlike the DiT/AR-loop noise. Tested the GC/allocation-pressure hypothesis (every `Snake`/
+  `FullConv1d`/`ConvTranspose1d` call allocates a fresh large output array, up to ~135MB at the
+  deepest upsampling stage) by re-running with `DOTNET_gcServer=1` -- measured NO improvement
+  (32.6s vs 29.1s, within noise), refuting that hypothesis. Rough FLOP accounting (~1.5x10^11
+  multiply-adds for the `ConvTranspose1d` stages alone, one stereo decode) puts the observed cost in
+  a plausible range for genuine dense-1D-convolution compute at this scale on already-vectorized
+  (FMA), already-parallelized (`Parallel.For`) code -- most likely the same class of gap as the DiT/
+  GPU findings above (GGML's years of hand-tuned, cache-blocked conv kernels vs this project's newer
+  SIMD code), not a discoverable bug. A real fix would need a genuine conv-kernel cache-blocking
+  redesign (tiling `ConvTranspose1d`/`FullConv1d` across output channels and time together, similar
+  in spirit to the DiT's `MatMulRowMajor` rewrite) -- real, larger-scope work, not yet attempted.
+

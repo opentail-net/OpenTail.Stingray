@@ -139,6 +139,191 @@ public static class MiniMaxMusic3RvqDepthDecoder
         return output;
     }
 
+    /// <summary>Incremental forward for BOTH CFG branches (conditional + unconditional) of a single
+    /// depth step in one call. Real, measured motivation: each of the 6 major per-layer matmuls
+    /// (Q/K/V/O/gate/up[+down]) reads a full weight matrix (up to 64MB for the 4096x4096 attention
+    /// projections -- far larger than this machine's L3 cache) off RAM; calling <see cref="ForwardStep"/>
+    /// twice (once per branch) re-streams every one of those matrices from RAM a second time for no
+    /// reason, since both branches read the identical weights. This calls
+    /// <see cref="CfmLinearWeight.MatMulPairRowMajor"/> instead, which streams each weight row ONCE
+    /// and applies it to both branches' inputs -- halving both the RAM traffic and the number of
+    /// `Parallel.For` dispatches per step (a real, separate cost at this call frequency: 7 steps x 4
+    /// layers x 200 frames). Attention is still computed per-branch (KV caches are branch-specific),
+    /// but batched into one `Parallel.For` dispatch over both branches' heads together, mirroring
+    /// <see cref="MiniMaxMusic3Transformer.ForwardPair"/>'s existing CFG-batching pattern for the
+    /// Flow DiT. Numerically identical to two separate <see cref="ForwardStep"/> calls -- see
+    /// `MiniMaxMusic3RvqDepthDecoderGoldenParityTests.ForwardStepPair_MatchesForwardStep_BitForBit`.
+    /// </summary>
+    public static unsafe (float[] Cond, float[] Uncond) ForwardStepPair(
+        MiniMaxMusic3RvqDepthDecoderWeights w,
+        float[] condInputEmbed,
+        float[] uncondInputEmbed,
+        int stepIndex,
+        MiniMaxMusic3RvqDepthKvCache condCache,
+        MiniMaxMusic3RvqDepthKvCache uncondCache)
+    {
+        int hidden = MiniMaxMusic3Config.RvqDepthDecoderHiddenSize;
+        var xCond = new float[hidden];
+        var xUncond = new float[hidden];
+        for (int i = 0; i < hidden; i++)
+        {
+            float pos = w.PosEmbeddingWeight[stepIndex * hidden + i];
+            xCond[i] = condInputEmbed[i] + pos;
+            xUncond[i] = uncondInputEmbed[i] + pos;
+        }
+
+        for (int li = 0; li < w.Layers.Length; li++)
+        {
+            (xCond, xUncond) = LayerIncrementalPair(
+                w.Layers[li], xCond, xUncond, stepIndex,
+                condCache.Keys[li], condCache.Values[li],
+                uncondCache.Keys[li], uncondCache.Values[li]);
+        }
+
+        var outCond = new float[hidden];
+        var outUncond = new float[hidden];
+        RmsNorm(xCond, w.NormWeight, outCond, 1e-6f);
+        RmsNorm(xUncond, w.NormWeight, outUncond, 1e-6f);
+        return (outCond, outUncond);
+    }
+
+    private static unsafe (float[] Cond, float[] Uncond) LayerIncrementalPair(
+        DepthDecoderLayerWeights lw,
+        float[] xCond, float[] xUncond,
+        int stepIndex,
+        List<float[]> condKeyCache, List<float[]> condValCache,
+        List<float[]> uncondKeyCache, List<float[]> uncondValCache)
+    {
+        int hidden = MiniMaxMusic3Config.RvqDepthDecoderHiddenSize;
+
+        var normed1Cond = new float[hidden];
+        var normed1Uncond = new float[hidden];
+        RmsNorm(xCond, lw.InputLayerNormWeight, normed1Cond, 1e-6f);
+        RmsNorm(xUncond, lw.InputLayerNormWeight, normed1Uncond, 1e-6f);
+
+        var (attnCond, attnUncond) = SelfAttentionIncrementalPair(
+            lw, normed1Cond, normed1Uncond, stepIndex, condKeyCache, condValCache, uncondKeyCache, uncondValCache);
+
+        var afterAttnCond = new float[hidden];
+        var afterAttnUncond = new float[hidden];
+        for (int i = 0; i < hidden; i++)
+        {
+            afterAttnCond[i] = xCond[i] + attnCond[i];
+            afterAttnUncond[i] = xUncond[i] + attnUncond[i];
+        }
+
+        var normed2Cond = new float[hidden];
+        var normed2Uncond = new float[hidden];
+        RmsNorm(afterAttnCond, lw.PostAttnLayerNormWeight, normed2Cond, 1e-6f);
+        RmsNorm(afterAttnUncond, lw.PostAttnLayerNormWeight, normed2Uncond, 1e-6f);
+
+        var (mlpCond, mlpUncond) = MlpStepPair(lw, normed2Cond, normed2Uncond);
+
+        var outCond = new float[hidden];
+        var outUncond = new float[hidden];
+        for (int i = 0; i < hidden; i++)
+        {
+            outCond[i] = afterAttnCond[i] + mlpCond[i];
+            outUncond[i] = afterAttnUncond[i] + mlpUncond[i];
+        }
+        return (outCond, outUncond);
+    }
+
+    private static unsafe (float[] Cond, float[] Uncond) SelfAttentionIncrementalPair(
+        DepthDecoderLayerWeights lw,
+        float[] normedCond, float[] normedUncond,
+        int stepIndex,
+        List<float[]> condKeyCache, List<float[]> condValCache,
+        List<float[]> uncondKeyCache, List<float[]> uncondValCache)
+    {
+        int hidden = MiniMaxMusic3Config.RvqDepthDecoderHiddenSize;
+        int numHeads = MiniMaxMusic3Config.RvqDepthDecoderNumHeads;
+        int headDim = hidden / numHeads;
+        float scale = MathF.Pow(headDim, -0.5f);
+
+        var qCond = new float[hidden]; var qUncond = new float[hidden];
+        var kCond = new float[hidden]; var kUncond = new float[hidden];
+        var vCond = new float[hidden]; var vUncond = new float[hidden];
+        fixed (float* npc = normedCond, npu = normedUncond,
+                      qpc = qCond, qpu = qUncond, kpc = kCond, kpu = kUncond, vpc = vCond, vpu = vUncond)
+        {
+            lw.QWeight.MatMulPairRowMajor(npc, npu, qpc, qpu);
+            lw.KWeight.MatMulPairRowMajor(npc, npu, kpc, kpu);
+            lw.VWeight.MatMulPairRowMajor(npc, npu, vpc, vpu);
+        }
+
+        condKeyCache.Add(kCond); condValCache.Add(vCond);
+        uncondKeyCache.Add(kUncond); uncondValCache.Add(vUncond);
+
+        int totalLen = condKeyCache.Count; // same length as uncondKeyCache -- both branches step together
+        var contextCond = new float[hidden];
+        var contextUncond = new float[hidden];
+
+        Parallel.For(0, 2 * numHeads, bh =>
+        {
+            bool cond = bh < numHeads;
+            int h = cond ? bh : bh - numHeads;
+            int off = h * headDim;
+            var keyCache = cond ? condKeyCache : uncondKeyCache;
+            var valCache = cond ? condValCache : uncondValCache;
+            var q = cond ? qCond : qUncond;
+            var context = cond ? contextCond : contextUncond;
+
+            var scores = new float[totalLen];
+            var qSpan = q.AsSpan(off, headDim);
+            for (int j = 0; j < totalLen; j++)
+            {
+                var kSpan = keyCache[j].AsSpan(off, headDim);
+                scores[j] = TensorPrimitives.Dot(qSpan, kSpan) * scale;
+            }
+            SoftmaxRange(scores, 0, totalLen);
+
+            var ctxSpan = context.AsSpan(off, headDim);
+            for (int j = 0; j < totalLen; j++)
+            {
+                float s = scores[j];
+                var vSpan = valCache[j].AsSpan(off, headDim);
+                TensorPrimitives.MultiplyAdd(vSpan, s, ctxSpan, ctxSpan);
+            }
+        });
+
+        var outCond = new float[hidden];
+        var outUncond = new float[hidden];
+        fixed (float* cpc = contextCond, cpu = contextUncond, opc = outCond, opu = outUncond)
+        {
+            lw.OWeight.MatMulPairRowMajor(cpc, cpu, opc, opu);
+        }
+        return (outCond, outUncond);
+    }
+
+    private static unsafe (float[] Cond, float[] Uncond) MlpStepPair(DepthDecoderLayerWeights lw, float[] normedCond, float[] normedUncond)
+    {
+        int hidden = MiniMaxMusic3Config.RvqDepthDecoderHiddenSize;
+        int ffn = MiniMaxMusic3Config.RvqDepthDecoderIntermediateSize;
+
+        var gateCond = new float[ffn]; var gateUncond = new float[ffn];
+        var upCond = new float[ffn]; var upUncond = new float[ffn];
+        fixed (float* npc = normedCond, npu = normedUncond,
+                      gpc = gateCond, gpu = gateUncond, upc = upCond, upu = upUncond)
+        {
+            lw.GateWeight.MatMulPairRowMajor(npc, npu, gpc, gpu);
+            lw.UpWeight.MatMulPairRowMajor(npc, npu, upc, upu);
+        }
+        for (int i = 0; i < ffn; i++)
+        {
+            gateCond[i] = Silu(gateCond[i]) * upCond[i];
+            gateUncond[i] = Silu(gateUncond[i]) * upUncond[i];
+        }
+
+        var outCond = new float[hidden];
+        var outUncond = new float[hidden];
+        fixed (float* gpc = gateCond, gpu = gateUncond, opc = outCond, opu = outUncond)
+        {
+            lw.DownWeight.MatMulPairRowMajor(gpc, gpu, opc, opu);
+        }
+        return (outCond, outUncond);
+    }
+
     /// <summary>Embeds a real residual code (real codebook index `codebookIdx` in `[0,6]`, real code value in `[0,audioVocabSize)`) via the real `audio_embeddings` table, real row offset `codebookIdx*audioVocabSize + code` (confirmed from the real embedding table's shape `[audioVocabSize*(numCodebooks-1), hidden]`).</summary>
     public static float[] EmbedResidualCode(MiniMaxMusic3RvqDepthDecoderWeights w, int codebookIdx, int code)
     {

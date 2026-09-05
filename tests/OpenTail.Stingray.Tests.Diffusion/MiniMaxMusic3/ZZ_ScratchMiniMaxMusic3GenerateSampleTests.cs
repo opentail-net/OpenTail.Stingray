@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using OpenTail.Stingray.Audio;
 using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Diffusion.MiniMaxMusic3;
@@ -68,6 +69,9 @@ public sealed class ZZ_ScratchMiniMaxMusic3GenerateSampleTests
         Assert.SkipUnless(langDir != null && depthPath != null && condPath != null && transformerDir != null && vocoderPath != null && tokenizerDir != null && repoRoot != null,
             "one or more models/minimax-music3/* real weight/tokenizer files not found");
 
+        var swTotal = Stopwatch.StartNew();
+        var sw = Stopwatch.StartNew();
+
         using var langLoader = SafetensorsLoader.OpenDirectory(langDir!);
         using var globalModel = new MiniMaxMusic3GlobalModel(langLoader);
 
@@ -78,10 +82,14 @@ public sealed class ZZ_ScratchMiniMaxMusic3GenerateSampleTests
         int[] promptTokens = promptEncoder.BuildConditionalPrompt(
             "Intimate acoustic folk, male vocal, fingerpicked guitar",
             "[Verse]\nWalking through the morning rain");
+        Console.WriteLine($"[timing] LM+depth load, tokenizer, prompt build: {sw.Elapsed.TotalSeconds:F1}s");
+        sw.Restart();
 
         var random = new Random(42);
         var representation = MiniMaxMusic3AutoregressiveGenerator.Generate(globalModel, depthWeights, promptTokens, maxFrames: 200, random);
         Assert.True(representation.FrameCount >= 1, "AR generator produced zero frames");
+        Console.WriteLine($"[timing] AR loop (LM prefill+{representation.FrameCount} frames, depth decoder): {sw.Elapsed.TotalSeconds:F1}s");
+        sw.Restart();
 
         using var condLoader = SafetensorsLoader.Open(condPath!);
         var conditionWeights = MiniMaxMusic3ConditionEncoderWeights.Load(condLoader);
@@ -91,9 +99,13 @@ public sealed class ZZ_ScratchMiniMaxMusic3GenerateSampleTests
 
         using var vocoderLoader = SafetensorsLoader.Open(vocoderPath!);
         var vocoderWeights = MiniMaxMusic3VocoderWeights.Load(vocoderLoader);
+        Console.WriteLine($"[timing] Cond+DiT+VAE weight load: {sw.Elapsed.TotalSeconds:F1}s");
+        sw.Restart();
 
         var pcm = MiniMaxMusic3Pipeline.Synthesize(conditionWeights, transformerWeights, vocoderWeights, representation, numFlowSteps: 8, seed: 7);
         Assert.True(pcm.Length > 0, "vocoder produced zero samples");
+        Console.WriteLine($"[timing] Condition encode + Flow DiT (8 steps) + VAE decode: {sw.Elapsed.TotalSeconds:F1}s");
+        sw.Restart();
 
         // Real vocoder output is channel-planar ([L...][R...]), WavWriter needs interleaved.
         int samplesPerChannel = pcm.Length / 2;
@@ -108,6 +120,9 @@ public sealed class ZZ_ScratchMiniMaxMusic3GenerateSampleTests
         Directory.CreateDirectory(outDir);
         string outPath = Path.Combine(outDir, $"minimax_music3_v1_folk_verse_{representation.FrameCount}frames.wav");
         WavWriter.WriteWav(outPath, interleaved, sampleRate: MiniMaxMusic3Config.VocoderSampleRate, channels: 2);
+
+        Console.WriteLine($"[timing] Interleave + write WAV: {sw.Elapsed.TotalSeconds:F1}s");
+        Console.WriteLine($"[timing] TOTAL: {swTotal.Elapsed.TotalSeconds:F1}s");
 
         Assert.True(File.Exists(outPath));
     }

@@ -91,6 +91,66 @@ public sealed class CfmLinearWeight
         return new CfmLinearWeight(null, weightF32, outDim, inDim);
     }
 
+    /// <summary>Batch-of-2 row-major matmul: streams each weight row ONCE from RAM and applies it to
+    /// BOTH input vectors (e.g. a CFG conditional/unconditional pair) via a single `Parallel.For`
+    /// dispatch over output rows, instead of two separate <see cref="MatMul"/> calls (each of which
+    /// independently re-streams the whole weight matrix and dispatches its own `Parallel.For`).
+    ///
+    /// <para>Added for single-token (`t=1`) incremental decode call sites where a weight matrix is
+    /// too large to stay resident in cache across sequential calls (e.g. MiniMax-Music3's RVQ depth
+    /// decoder: a 4096x4096 F32 weight is 64MB, far larger than this machine's L3 cache, so two
+    /// sequential single-token <see cref="MatMul"/> calls each pay the full RAM-bandwidth cost of
+    /// streaming it -- exactly the class of fix already landed for
+    /// <c>MiniMaxMusic3Transformer.MatMulRowMajor</c>, applied here to the shared kernel instead of
+    /// being duplicated inline). Additive: does not change <see cref="MatMul"/> or any other existing
+    /// call site's behavior.</para>
+    ///
+    /// <para>F32 weights only (this project's real MiniMax-Music3 depth-decoder weights are F32, not
+    /// F16) -- throws if this instance was constructed from F16 bits.</para>
+    /// </summary>
+    public unsafe void MatMulPairRowMajor(float* input0, float* input1, float* output0, float* output1, float* bias = null)
+    {
+        if (_f32 is not { } w) throw new NotSupportedException("MatMulPairRowMajor requires an F32-backed CfmLinearWeight.");
+        int inDim = _inDim, outDim = _outDim;
+
+        fixed (float* wp = w)
+        {
+            int numThreads = Math.Min(Environment.ProcessorCount, (outDim + 63) / 64);
+            if (numThreads <= 1)
+            {
+                RunRows(wp, 0, outDim);
+                return;
+            }
+
+            int chunkSize = (outDim + numThreads - 1) / numThreads;
+            nint wAddr = (nint)wp, o0Addr = (nint)output0, o1Addr = (nint)output1,
+                i0Addr = (nint)input0, i1Addr = (nint)input1, bAddr = (nint)bias;
+
+            System.Threading.Tasks.Parallel.For(0, numThreads, t =>
+            {
+                int start = t * chunkSize;
+                int end = Math.Min(outDim, start + chunkSize);
+                RunRowsThreadLocal((float*)wAddr, (float*)i0Addr, (float*)i1Addr, (float*)o0Addr, (float*)o1Addr, (float*)bAddr, inDim, start, end);
+            });
+        }
+
+        void RunRows(float* weights, int start, int end) =>
+            RunRowsThreadLocal(weights, input0, input1, output0, output1, bias, inDim, start, end);
+
+        static void RunRowsThreadLocal(float* weights, float* in0, float* in1, float* out0, float* out1, float* b, int inDim, int start, int end)
+        {
+            for (int r = start; r < end; r++)
+            {
+                float* wRow = weights + (long)r * inDim;
+                float v0 = SimdKernels.DotF32(wRow, in0, inDim);
+                float v1 = SimdKernels.DotF32(wRow, in1, inDim);
+                if (b != null) { v0 += b[r]; v1 += b[r]; }
+                out0[r] = v0;
+                out1[r] = v1;
+            }
+        }
+    }
+
     /// <summary>Batch linear layer across T rows: outputMatrix[T, outDim] = inputMatrix[T, inDim] * weight^T + bias.</summary>
     public unsafe void MatMul(float* inputMatrix, int t, float* outputMatrix, float* bias = null)
     {

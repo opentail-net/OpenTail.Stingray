@@ -73,11 +73,13 @@ public static class MiniMaxMusic3AutoregressiveGenerator
             var semanticEmbed = globalModel.EmbedToken(MiniMaxMusic3Config.AudioCodeOffset + semanticCode);
             var projectedSemantic = MiniMaxMusic3RvqDepthDecoder.Project(depthWeights, semanticEmbed);
 
-            MiniMaxMusic3RvqDepthDecoder.ForwardStep(depthWeights, MiniMaxMusic3RvqDepthDecoder.Project(depthWeights, condLastHidden), 0, condDepthCache);
-            MiniMaxMusic3RvqDepthDecoder.ForwardStep(depthWeights, MiniMaxMusic3RvqDepthDecoder.Project(depthWeights, uncondLastHidden), 0, uncondDepthCache);
+            MiniMaxMusic3RvqDepthDecoder.ForwardStepPair(depthWeights,
+                MiniMaxMusic3RvqDepthDecoder.Project(depthWeights, condLastHidden),
+                MiniMaxMusic3RvqDepthDecoder.Project(depthWeights, uncondLastHidden),
+                0, condDepthCache, uncondDepthCache);
 
-            var condDepthLast = MiniMaxMusic3RvqDepthDecoder.ForwardStep(depthWeights, projectedSemantic, 1, condDepthCache);
-            var uncondDepthLast = MiniMaxMusic3RvqDepthDecoder.ForwardStep(depthWeights, projectedSemantic, 1, uncondDepthCache);
+            var (condDepthLast, uncondDepthLast) = MiniMaxMusic3RvqDepthDecoder.ForwardStepPair(
+                depthWeights, projectedSemantic, projectedSemantic, 1, condDepthCache, uncondDepthCache);
 
             var residualCodes = new int[numResidualCodebooks];
             var localHiddenConcat = new float[numResidualCodebooks * depthHidden];
@@ -95,8 +97,8 @@ public static class MiniMaxMusic3AutoregressiveGenerator
                 if (ci + 1 < numResidualCodebooks)
                 {
                     var embedded = MiniMaxMusic3RvqDepthDecoder.Project(depthWeights, MiniMaxMusic3RvqDepthDecoder.EmbedResidualCode(depthWeights, ci, code));
-                    condDepthLast = MiniMaxMusic3RvqDepthDecoder.ForwardStep(depthWeights, embedded, ci + 2, condDepthCache);
-                    uncondDepthLast = MiniMaxMusic3RvqDepthDecoder.ForwardStep(depthWeights, embedded, ci + 2, uncondDepthCache);
+                    (condDepthLast, uncondDepthLast) = MiniMaxMusic3RvqDepthDecoder.ForwardStepPair(
+                        depthWeights, embedded, embedded, ci + 2, condDepthCache, uncondDepthCache);
                 }
             }
 
