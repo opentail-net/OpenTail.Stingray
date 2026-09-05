@@ -46,34 +46,19 @@ public static class FunAsrKernels
         return output;
     }
 
-    public static float[] LayerNorm(float[] x, float[] weight, float[] bias, float eps = 1e-12f)
+    public static unsafe float[] LayerNorm(float[] x, float[] weight, float[] bias, float eps = 1e-12f)
     {
-        int n = x.Length;
-        float mean = TensorPrimitives.Sum((ReadOnlySpan<float>)x) / n;
-        float variance = 0f;
-        for (int i = 0; i < n; i++) { float d = x[i] - mean; variance += d * d; }
-        variance /= n;
-        float invStd = 1f / MathF.Sqrt(variance + eps);
-
-        var output = new float[n];
-        for (int i = 0; i < n; i++)
-            output[i] = (x[i] - mean) * invStd * weight[i] + bias[i];
+        var output = new float[x.Length];
+        fixed (float* op = output, xp = x, wp = weight, bp = bias)
+        {
+            SimdKernels.LayerNorm(op, xp, wp, bp, x.Length, eps);
+        }
         return output;
     }
 
     public static void SoftmaxInPlace(float[] scores)
     {
-        float max = float.NegativeInfinity;
-        for (int i = 0; i < scores.Length; i++) if (scores[i] > max) max = scores[i];
-        float sum = 0f;
-        for (int i = 0; i < scores.Length; i++)
-        {
-            float e = MathF.Exp(scores[i] - max);
-            scores[i] = e;
-            sum += e;
-        }
-        float invSum = 1f / sum;
-        for (int i = 0; i < scores.Length; i++) scores[i] *= invSum;
+        TensorPrimitives.SoftMax(scores, scores);
     }
 
     /// <summary>Real FSMN depthwise (per-channel) Conv1d memory term: symmetric pad, residual add of the conv's OWN input (not a caller-supplied different residual) -- shared verbatim by the encoder's `forward_fsmn` self-attention branch and the decoder's FSMN-only self-attention. Parallelized over channels.</summary>

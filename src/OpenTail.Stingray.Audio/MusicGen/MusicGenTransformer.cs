@@ -267,33 +267,16 @@ public static class MusicGenTransformer
         return sign * y;
     }
 
-    private static void LayerNorm(ReadOnlySpan<float> x, float[] weight, float[] bias, Span<float> output, float eps = 1e-5f)
+    private static unsafe void LayerNorm(ReadOnlySpan<float> x, float[] weight, float[] bias, Span<float> output, float eps = 1e-5f)
     {
-        int n = x.Length;
-        float mean = 0f;
-        for (int i = 0; i < n; i++) mean += x[i];
-        mean /= n;
-
-        float variance = 0f;
-        for (int i = 0; i < n; i++) { float d = x[i] - mean; variance += d * d; }
-        variance /= n;
-
-        float invStd = 1f / MathF.Sqrt(variance + eps);
-        for (int i = 0; i < n; i++) output[i] = (x[i] - mean) * invStd * weight[i] + bias[i];
+        fixed (float* op = output, xp = x, wp = weight, bp = bias)
+        {
+            SimdKernels.LayerNorm(op, xp, wp, bp, x.Length, eps);
+        }
     }
 
     private static void SoftmaxInPlace(float[] scores)
     {
-        float max = float.NegativeInfinity;
-        for (int i = 0; i < scores.Length; i++) if (scores[i] > max) max = scores[i];
-        float sum = 0f;
-        for (int i = 0; i < scores.Length; i++)
-        {
-            float e = MathF.Exp(scores[i] - max);
-            scores[i] = e;
-            sum += e;
-        }
-        float invSum = 1f / sum;
-        for (int i = 0; i < scores.Length; i++) scores[i] *= invSum;
+        TensorPrimitives.SoftMax(scores, scores);
     }
 }

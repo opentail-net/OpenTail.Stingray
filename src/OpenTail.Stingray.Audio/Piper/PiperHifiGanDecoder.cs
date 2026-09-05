@@ -38,7 +38,7 @@ public static class PiperHifiGanDecoder
             for (int k = 0; k < 3; k++)
             {
                 int rbIndex = stage * 3 + k;
-                var rbOut = ResBlockForward((float[])x.Clone(), ch, t, w.DecResblocks[rbIndex], ResblockKernels[k], ResblockDilations[k]);
+                var rbOut = ResBlockForward(x, ch, t, w.DecResblocks[rbIndex], ResblockKernels[k], ResblockDilations[k]);
                 System.Numerics.Tensors.TensorPrimitives.Add(sum, rbOut, sum);
             }
             System.Numerics.Tensors.TensorPrimitives.Multiply(sum, 1f / 3f, sum);
@@ -53,20 +53,32 @@ public static class PiperHifiGanDecoder
 
     private static float[] ResBlockForward(float[] input, int ch, int t, PiperResBlockWeights rb, int kernel, int[] dilations)
     {
-        var x = input;
+        var x = (float[])input.Clone();
+        var y = new float[x.Length];
         for (int layer = 0; layer < 2; layer++)
         {
-            var y = (float[])x.Clone();
-            LeakyReluInPlace(y, LeakyReluAlpha);
-            y = HifiGanKernels.Conv1dDilated(y, ch, t, rb.ConvWeight[layer], rb.ConvBias[layer], ch, kernel, dilations[layer]);
-            System.Numerics.Tensors.TensorPrimitives.Add(x, y, x);
+            LeakyRelu(x, y, LeakyReluAlpha);
+            var convOut = HifiGanKernels.Conv1dDilated(y, ch, t, rb.ConvWeight[layer], rb.ConvBias[layer], ch, kernel, dilations[layer]);
+            System.Numerics.Tensors.TensorPrimitives.Add(x, convOut, x);
         }
         return x;
+    }
+
+    private static void LeakyRelu(ReadOnlySpan<float> src, Span<float> dst, float alpha = 0.1f)
+    {
+        for (int i = 0; i < src.Length; i++)
+        {
+            float v = src[i];
+            dst[i] = v >= 0f ? v : v * alpha;
+        }
     }
 
     private static void LeakyReluInPlace(float[] data, float alpha = 0.1f)
     {
         for (int i = 0; i < data.Length; i++)
-            data[i] = data[i] >= 0f ? data[i] : data[i] * alpha;
+        {
+            float v = data[i];
+            if (v < 0f) data[i] = v * alpha;
+        }
     }
 }

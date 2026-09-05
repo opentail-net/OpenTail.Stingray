@@ -132,12 +132,12 @@ public static class ParlerDecoder
 
         var context = new float[dim];
         float scale = 1f / MathF.Sqrt(HeadDim);
-        var scores = new float[t];
+        Span<float> scores = t <= 1024 ? stackalloc float[t] : new float[t];
         for (int h = 0; h < heads; h++)
         {
             int off = h * HeadDim;
             for (int j = 0; j < t; j++) scores[j] = Dot(qNew, kCache[j], off, HeadDim) * scale;
-            SoftmaxInPlace(scores, t);
+            SoftmaxInPlace(scores);
 
             var ctxSpan = context.AsSpan(off, HeadDim);
             for (int j = 0; j < t; j++)
@@ -173,12 +173,12 @@ public static class ParlerDecoder
 
         var context = new float[dim];
         float scale = 1f / MathF.Sqrt(HeadDim);
-        var scoresCross = new float[tk];
+        Span<float> scoresCross = tk <= 1024 ? stackalloc float[tk] : new float[tk];
         for (int h = 0; h < heads; h++)
         {
             int off = h * HeadDim;
             for (int j = 0; j < tk; j++) scoresCross[j] = Dot(q, k[j], off, HeadDim) * scale;
-            SoftmaxInPlace(scoresCross, tk);
+            SoftmaxInPlace(scoresCross);
 
             var ctxSpan = context.AsSpan(off, HeadDim);
             for (int j = 0; j < tk; j++)
@@ -392,18 +392,11 @@ public static class ParlerDecoder
         return output;
     }
 
-    private static void SoftmaxInPlace(float[] scores, int count)
+    private static void SoftmaxInPlace(Span<float> scores)
     {
-        var span = scores.AsSpan(0, count);
-        float max = System.Numerics.Tensors.TensorPrimitives.Max(span);
-        float sum = 0f;
-        for (int i = 0; i < count; i++)
-        {
-            float e = MathF.Exp(span[i] - max);
-            span[i] = e;
-            sum += e;
-        }
-        float invSum = 1f / sum;
-        System.Numerics.Tensors.TensorPrimitives.Multiply(span, invSum, span);
+        TensorPrimitives.SoftMax(scores, scores);
     }
+
+    private static void SoftmaxInPlace(float[] scores, int count) =>
+        SoftmaxInPlace(scores.AsSpan(0, count));
 }

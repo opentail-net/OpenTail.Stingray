@@ -115,14 +115,16 @@ public static class ParakeetConformerEncoder
     /// <summary>Depthwise conv2d: groups == channels, each output channel uses only its matching input channel.</summary>
     private static float[] Conv2dDepthwise(float[] input, int channels, int hin, int win, float[] weight, float[] bias, int k, int stride, int pad, out int hout, out int wout)
     {
-        hout = (hin + 2 * pad - k) / stride + 1;
-        wout = (win + 2 * pad - k) / stride + 1;
-        var output = new float[channels * hout * wout];
-        for (int c = 0; c < channels; c++)
+        int houtLocal = (hin + 2 * pad - k) / stride + 1;
+        int woutLocal = (win + 2 * pad - k) / stride + 1;
+        hout = houtLocal;
+        wout = woutLocal;
+        var output = new float[channels * houtLocal * woutLocal];
+        Parallel.For(0, channels, c =>
         {
-            for (int ho = 0; ho < hout; ho++)
+            for (int ho = 0; ho < houtLocal; ho++)
             {
-                for (int wo = 0; wo < wout; wo++)
+                for (int wo = 0; wo < woutLocal; wo++)
                 {
                     float sum = bias[c];
                     for (int kh = 0; kh < k; kh++)
@@ -137,10 +139,10 @@ public static class ParakeetConformerEncoder
                             sum += wt * input[c * hin * win + hi * win + wi];
                         }
                     }
-                    output[c * hout * wout + ho * wout + wo] = sum;
+                    output[c * houtLocal * woutLocal + ho * woutLocal + wo] = sum;
                 }
             }
-        }
+        });
         return output;
     }
 
@@ -148,7 +150,7 @@ public static class ParakeetConformerEncoder
     private static float[] Conv2dPointwise(float[] input, int cin, int h, int w, float[] weight, float[] bias, int cout)
     {
         var output = new float[cout * h * w];
-        for (int co = 0; co < cout; co++)
+        Parallel.For(0, cout, co =>
         {
             float b = bias[co];
             int wBase = co * cin;
@@ -162,13 +164,13 @@ public static class ParakeetConformerEncoder
                     output[co * h * w + hp * w + wp] = sum;
                 }
             }
-        }
+        });
         return output;
     }
 
     private static void ReluInPlace(float[] x)
     {
-        for (int i = 0; i < x.Length; i++) if (x[i] < 0f) x[i] = 0f;
+        TensorPrimitives.Max((ReadOnlySpan<float>)x, 0f, x);
     }
 
     // -----------------------------------------------------------------

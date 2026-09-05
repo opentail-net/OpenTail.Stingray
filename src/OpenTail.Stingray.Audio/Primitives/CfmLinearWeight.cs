@@ -170,8 +170,7 @@ public sealed class CfmLinearWeight
             for (int r = start; r < end; r++)
             {
                 float* wRow = weights + (long)r * inDim;
-                float v0 = SimdKernels.DotF32(wRow, in0, inDim);
-                float v1 = SimdKernels.DotF32(wRow, in1, inDim);
+                Cpu.SimdKernels.DotF32_2In(in0, in1, wRow, inDim, out float v0, out float v1);
                 if (b != null) { v0 += b[r]; v1 += b[r]; }
                 out0[r] = v0;
                 out1[r] = v1;

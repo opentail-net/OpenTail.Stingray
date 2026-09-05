@@ -21,7 +21,7 @@ public static class DenseKernels
             SimdKernels.MatVecF32(yp, wp, xp, outDim, inDim);
         }
         if (bias != null)
-            for (int o = 0; o < outDim; o++) output[o] += bias[o];
+            TensorPrimitives.Add((ReadOnlySpan<float>)output, bias, output);
         return output;
     }
 
@@ -36,20 +36,13 @@ public static class DenseKernels
         return output;
     }
 
-    public static float[] LayerNorm(float[] x, float[] weight, float[] bias, float eps = 1e-5f)
+    public static unsafe float[] LayerNorm(float[] x, float[] weight, float[] bias, float eps = 1e-5f)
     {
-        int n = x.Length;
-        double mean = 0;
-        for (int i = 0; i < n; i++) mean += x[i];
-        mean /= n;
-        double var = 0;
-        for (int i = 0; i < n; i++) { double d = x[i] - mean; var += d * d; }
-        var /= n;
-        float invStd = (float)(1.0 / Math.Sqrt(var + eps));
-
-        var output = new float[n];
-        for (int i = 0; i < n; i++)
-            output[i] = (float)((x[i] - mean) * invStd) * weight[i] + bias[i];
+        var output = new float[x.Length];
+        fixed (float* op = output, xp = x, wp = weight, bp = bias)
+        {
+            SimdKernels.LayerNorm(op, xp, wp, bp, x.Length, eps);
+        }
         return output;
     }
 
@@ -66,17 +59,7 @@ public static class DenseKernels
     /// <summary>In-place softmax on Span, float-accumulated.</summary>
     public static void SoftmaxInPlace(Span<float> scores)
     {
-        float max = float.NegativeInfinity;
-        for (int i = 0; i < scores.Length; i++) if (scores[i] > max) max = scores[i];
-        float sum = 0f;
-        for (int i = 0; i < scores.Length; i++)
-        {
-            float e = MathF.Exp(scores[i] - max);
-            scores[i] = e;
-            sum += e;
-        }
-        float invSum = 1f / sum;
-        for (int i = 0; i < scores.Length; i++) scores[i] *= invSum;
+        TensorPrimitives.SoftMax(scores, scores);
     }
 
     /// <summary>In-place softmax, float-accumulated (no double promotion -- matches the numerical path every other softmax in this codebase uses).</summary>

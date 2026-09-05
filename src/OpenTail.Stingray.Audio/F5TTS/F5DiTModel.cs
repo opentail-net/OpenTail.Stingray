@@ -60,4 +60,60 @@ public static class F5DiTModel
             ? F5Kernels.LinearGpuQ8_0(backend, normOut, numFrames, dim, w.ProjOutQ8, w.ProjOutBias, F5TtsWeights.MelDim)
             : F5Kernels.LinearQ8_0(normOut, numFrames, dim, w.ProjOutQ8, w.ProjOutBias, F5TtsWeights.MelDim);
     }
+
+    /// <summary>
+    /// Dual-stream CFG forward pass (batch=2: cond + uncond).
+    /// Concatenates cond and uncond tokens and evaluates all 22 layers in a single pass, streaming
+    /// weights from memory/VRAM once per block rather than twice.
+    /// Returns (vCond, vUncond) each [numFrames, MelDim].
+    /// </summary>
+    public static (float[] VCond, float[] VUncond) ForwardVelocityBatch2(
+        F5TtsWeights w,
+        float[] x,
+        float[] condMel,
+        float[] nullCond,
+        float[] textEmbedCond,
+        float[] textEmbedUncond,
+        float timestep,
+        int numFrames,
+        float[] rotaryCos,
+        float[] rotarySin,
+        Core.IComputeBackend? backend = null)
+    {
+        int dim = F5TtsWeights.HiddenDim;
+        int halfLen = numFrames * dim;
+
+        var hCond = F5InputEmbedding.Forward(w, x, condMel, textEmbedCond, numFrames, backend);
+        var hUncond = F5InputEmbedding.Forward(w, x, nullCond, textEmbedUncond, numFrames, backend);
+
+        var h2 = new float[2 * halfLen];
+        hCond.CopyTo(h2.AsSpan(0, halfLen));
+        hUncond.CopyTo(h2.AsSpan(halfLen, halfLen));
+
+        var tEmb = F5TimestepEmbedding.Forward(w, timestep, backend);
+
+        for (int layer = 0; layer < F5TtsWeights.NumLayers; layer++)
+            h2 = F5DiTBlock.ForwardBatch2(w, w.Blocks[layer], h2, tEmb, numFrames, rotaryCos, rotarySin, backend);
+
+        var siluT = new float[dim];
+        for (int d = 0; d < dim; d++) siluT[d] = F5Kernels.SiLU(tEmb[d]);
+        var modulation = backend is not null
+            ? F5Kernels.LinearGpuQ8_0(backend, siluT, 1, dim, w.NormOutLinearQ8, w.NormOutLinearBias, dim * 2)
+            : F5Kernels.LinearQ8_0(siluT, 1, dim, w.NormOutLinearQ8, w.NormOutLinearBias, dim * 2);
+
+        int t2 = 2 * numFrames;
+        var normOut = F5Kernels.LayerNormNoAffine(h2, t2, dim);
+        F5Kernels.ApplyAffineModulationSlice(normOut, normOut, modulation, scaleOffset: 0, shiftOffset: dim, t2, dim);
+
+        var v2 = backend is not null
+            ? F5Kernels.LinearGpuQ8_0(backend, normOut, t2, dim, w.ProjOutQ8, w.ProjOutBias, F5TtsWeights.MelDim)
+            : F5Kernels.LinearQ8_0(normOut, t2, dim, w.ProjOutQ8, w.ProjOutBias, F5TtsWeights.MelDim);
+
+        int melLen = numFrames * F5TtsWeights.MelDim;
+        var vCond = new float[melLen];
+        var vUncond = new float[melLen];
+        Array.Copy(v2, 0, vCond, 0, melLen);
+        Array.Copy(v2, melLen, vUncond, 0, melLen);
+        return (vCond, vUncond);
+    }
 }

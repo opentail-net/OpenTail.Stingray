@@ -50,10 +50,21 @@ public static class DacDecoder
     /// sibling): the gather doesn't depend on `oc`, so it's hoisted out and each output channel
     /// reduces to one AVX2/FMA <see cref="SimdKernels.DotF32"/> call per timestep.</para>
     /// </summary>
+    [ThreadStatic] private static float[]? t_colBuf;
+
+    private static float[] GetColBuffer(int size)
+    {
+        if (t_colBuf == null || t_colBuf.Length < size)
+        {
+            t_colBuf = new float[Math.Max(size, 65536)];
+        }
+        return t_colBuf;
+    }
+
     private static unsafe float[] FullConv1d(float[] x, int inCh, int outCh, int t, float[] weight, float[] bias, int kernel, int dilation, int padding)
     {
         int rowLen = inCh * kernel;
-        var col = new float[t * rowLen];
+        var col = GetColBuffer(t * rowLen);
         Parallel.For(0, t, ti =>
         {
             int rowBase = ti * rowLen;

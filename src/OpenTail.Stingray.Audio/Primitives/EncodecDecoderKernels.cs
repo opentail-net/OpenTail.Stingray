@@ -202,11 +202,22 @@ public static class EncodecDecoderKernels
         return output;
     }
 
+    [ThreadStatic] private static float[]? t_colBuf;
+
+    private static float[] GetColBuffer(int size)
+    {
+        if (t_colBuf == null || t_colBuf.Length < size)
+        {
+            t_colBuf = new float[Math.Max(size, 65536)];
+        }
+        return t_colBuf;
+    }
+
     /// <summary>Real FULL (non-depthwise) Conv1d, symmetric ("same"-style) padding.</summary>
     private static unsafe float[] FullConv1d(float[] x, int inCh, int outCh, int t, float[] weight, float[] bias, int kernel, int dilation, int padding)
     {
         int rowLen = inCh * kernel;
-        var col = new float[t * rowLen];
+        var col = GetColBuffer(t * rowLen);
         Parallel.For(0, t, ti =>
         {
             int rowBase = ti * rowLen;

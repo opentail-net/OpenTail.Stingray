@@ -57,7 +57,7 @@ public static class KokoroAdainResBlk1d
         for (int o = 0; o < 2 * channels; o++) h[o] += fcBias[o];
 
         var output = new float[channels * t];
-        for (int c = 0; c < channels; c++)
+        Parallel.For(0, channels, c =>
         {
             var srcSpan = x.AsSpan(c * t, t);
             var dstSpan = output.AsSpan(c * t, t);
@@ -73,16 +73,19 @@ public static class KokoroAdainResBlk1d
             float scale = (1f + h[c]) * invStd;
             float shift = h[channels + c] - mean * scale;
 
-            for (int ti = 0; ti < t; ti++)
-                dstSpan[ti] = srcSpan[ti] * scale + shift;
-        }
+            System.Numerics.Tensors.TensorPrimitives.Multiply(srcSpan, scale, dstSpan);
+            System.Numerics.Tensors.TensorPrimitives.Add(dstSpan, shift, dstSpan);
+        });
         return output;
     }
 
     private static void LeakyReluInPlace(float[] x)
     {
         for (int i = 0; i < x.Length; i++)
-            if (x[i] < 0f) x[i] *= LeakyReluSlope;
+        {
+            float v = x[i];
+            if (v < 0f) x[i] = v * LeakyReluSlope;
+        }
     }
 
     // Scale-and-shift-add vectorization -- see ChatterboxCfmDecoder.cs/ChatterboxVocoder.cs for

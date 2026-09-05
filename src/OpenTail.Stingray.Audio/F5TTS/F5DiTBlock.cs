@@ -60,6 +60,77 @@ public static class F5DiTBlock
         return output;
     }
 
+    /// <summary>
+    /// Batched forward pass for CFG (batch=2: cond + uncond).
+    /// Concatenates cond and uncond along sequence dimension (total 2*t frames) for all GEMM operations
+    /// (ToQ, ToK, ToV, ToOut, FfIn, FfOut), so weights are streamed from memory/VRAM exactly ONCE per block
+    /// instead of twice. Self-attention is applied to cond and uncond independently.
+    /// </summary>
+    public static float[] ForwardBatch2(
+        F5TtsWeights w, F5DiTBlockWeights bw,
+        float[] h2,
+        float[] tEmb,
+        int t,
+        float[] rotaryCos, float[] rotarySin,
+        Core.IComputeBackend? backend = null)
+    {
+        int dim = F5TtsWeights.HiddenDim;
+        int t2 = 2 * t;
+
+        var siluT = new float[dim];
+        for (int d = 0; d < dim; d++) siluT[d] = F5Kernels.SiLU(tEmb[d]);
+        var modulation = LinQ8(backend, siluT, 1, dim, bw.AttnNormLinearQ8, bw.AttnNormLinearBias, dim * 6);
+
+        var norm = F5Kernels.LayerNormNoAffine(h2, t2, dim);
+        F5Kernels.ApplyAffineModulationSlice(norm, norm, modulation, 1 * dim, 0 * dim, t2, dim);
+
+        var q = LinQ8(backend, norm, t2, dim, bw.ToQQ8, bw.ToQBias, dim);
+        var k = LinQ8(backend, norm, t2, dim, bw.ToKQ8, bw.ToKBias, dim);
+        var v = LinQ8(backend, norm, t2, dim, bw.ToVQ8, bw.ToVBias, dim);
+
+        int heads = F5TtsWeights.NumHeads;
+        int headDim = F5TtsWeights.HeadDim;
+        int halfLen = t * dim;
+
+        F5Kernels.ApplyRotary(q, 0, t, heads, headDim, rotaryCos, rotarySin, numRopeHeads: 1);
+        F5Kernels.ApplyRotary(q, halfLen, t, heads, headDim, rotaryCos, rotarySin, numRopeHeads: 1);
+        F5Kernels.ApplyRotary(k, 0, t, heads, headDim, rotaryCos, rotarySin, numRopeHeads: 1);
+        F5Kernels.ApplyRotary(k, halfLen, t, heads, headDim, rotaryCos, rotarySin, numRopeHeads: 1);
+
+        var context = new float[2 * halfLen];
+        unsafe
+        {
+            fixed (float* qp = q, kp = k, vp = v, ctxp = context)
+            {
+                F5Kernels.MultiHeadSelfAttentionSlice(qp, kp, vp, ctxp, t, heads, headDim);
+                F5Kernels.MultiHeadSelfAttentionSlice(qp + halfLen, kp + halfLen, vp + halfLen, ctxp + halfLen, t, heads, headDim);
+            }
+        }
+
+        var attnOut = LinQ8(backend, context, t2, dim, bw.ToOutQ8, bw.ToOutBias, dim);
+
+        var h2AfterAttn = new float[h2.Length];
+        F5Kernels.ApplyGatedResidualSlice(h2AfterAttn, h2, modulation, 2 * dim, attnOut, t2, dim);
+
+        var ffNorm = F5Kernels.LayerNormNoAffine(h2AfterAttn, t2, dim);
+        F5Kernels.ApplyAffineModulationSlice(ffNorm, ffNorm, modulation, 4 * dim, 3 * dim, t2, dim);
+
+        int ffn = F5TtsWeights.FfnDim;
+        var ffMid = LinQ8(backend, ffNorm, t2, dim, bw.FfInQ8, bw.FfInBias, ffn);
+        unsafe
+        {
+            fixed (float* pMid = ffMid)
+            {
+                Cpu.SimdKernels.GeluInPlace(pMid, ffMid.Length);
+            }
+        }
+        var ffOut = LinQ8(backend, ffMid, t2, ffn, bw.FfOutQ8, bw.FfOutBias, dim);
+
+        var output = new float[h2.Length];
+        F5Kernels.ApplyGatedResidualSlice(output, h2AfterAttn, modulation, 5 * dim, ffOut, t2, dim);
+        return output;
+    }
+
     private static float[] FeedForward(F5DiTBlockWeights bw, float[] x, int t, Core.IComputeBackend? backend = null)
     {
         int dim = F5TtsWeights.HiddenDim;

@@ -1595,6 +1595,39 @@ public static unsafe class SimdKernels
         }
     }
 
+    /// <summary>
+    /// Dual-input MatVec: output0 = matrix * input0 and output1 = matrix * input1.
+    /// Each row of <paramref name="matrix"/> is read from memory/L3 cache ONCE and multiplied with
+    /// both <paramref name="input0"/> and <paramref name="input1"/> simultaneously via <see cref="DotF32_2In"/>.
+    /// Halves DDR4/L3 memory read bandwidth during classifier-free guidance (CFG) in diffusion models.
+    /// </summary>
+    public static void MatVecF32_2In(
+        float* output0, float* output1,
+        float* matrix,
+        float* input0, float* input1,
+        int rows, int cols)
+    {
+        if (rows >= MinRowsForParallel)
+        {
+            var m = matrix; var i0 = input0; var i1 = input1;
+            var o0 = output0; var o1 = output1; int c = cols;
+            Parallel.For(0, rows, s_parallelOpts, r =>
+            {
+                float* row = m + (long)r * c;
+                DotF32_2In(i0, i1, row, c, out o0[r], out o1[r]);
+            });
+        }
+        else
+        {
+            for (int r = 0; r < rows; r++)
+            {
+                float* row = matrix + (long)r * cols;
+                DotF32_2In(input0, input1, row, cols, out output0[r], out output1[r]);
+            }
+        }
+    }
+
+
     // ================================================================
     //  Q4_K Fused MatVec
     // ================================================================
@@ -2100,6 +2133,45 @@ public static unsafe class SimdKernels
     /// neither is currently worth it. Kept because it is correct, and because a restructured
     /// attention that batches uniformly could use it.</para>
     /// </remarks>
+    /// <summary>
+    /// Computes two simultaneous dot products with the SAME vector <paramref name="b"/>:
+    /// <c>s0 = dot(a0, b)</c> and <c>s1 = dot(a1, b)</c>. Vector <paramref name="b"/> is loaded
+    /// from memory into an AVX2 register once and multiplied into both accumulator streams in the
+    /// same iteration. Used for classifier-free guidance (CFG batching: cond and uncond against the
+    /// same model weight row) and multi-stream AR attention.
+    /// </summary>
+    public static void DotF32_2In(float* a0, float* a1, float* b, int n,
+        out float s0, out float s1)
+    {
+        if (Fma.IsSupported && n >= 8)
+        {
+            var acc0 = Vector256<float>.Zero;
+            var acc1 = Vector256<float>.Zero;
+
+            int i = 0;
+            for (; i + 8 <= n; i += 8)
+            {
+                var vb = Avx.LoadVector256(b + i);          // loaded once, used two times
+                acc0 = Fma.MultiplyAdd(Avx.LoadVector256(a0 + i), vb, acc0);
+                acc1 = Fma.MultiplyAdd(Avx.LoadVector256(a1 + i), vb, acc1);
+            }
+
+            s0 = HSum256(acc0);
+            s1 = HSum256(acc1);
+
+            for (; i < n; i++)
+            {
+                float bv = b[i];
+                s0 += a0[i] * bv;
+                s1 += a1[i] * bv;
+            }
+            return;
+        }
+
+        s0 = DotF32(a0, b, n);
+        s1 = DotF32(a1, b, n);
+    }
+
     public static void DotF32_4In(float* a0, float* a1, float* a2, float* a3, float* b, int n,
         out float s0, out float s1, out float s2, out float s3)
     {
@@ -9454,22 +9526,61 @@ public static unsafe class SimdKernels
     }
 
     /// <summary>
+    /// Vectorized Tanh-approximate GELU: <c>output[i] = 0.5*x[i]*(1 + tanh(sqrt(2/pi) * (x[i] + 0.044715*x[i]^3)))</c>.
+    /// Uses AVX2 + Fma with <see cref="ExpApprox256"/> when supported. Safe for in-place use (<c>output == input</c>).
+    /// </summary>
+    public static void GeluF32(float* output, float* input, int n)
+    {
+        const float kAlpha = 0.7978845608028654f;
+        const float kBeta = 0.044715f;
+
+        if (Fma.IsSupported && n >= 8)
+        {
+            var half = Vector256.Create(0.5f);
+            var one = Vector256.Create(1.0f);
+            var two = Vector256.Create(2.0f);
+            var alpha = Vector256.Create(kAlpha);
+            var beta = Vector256.Create(kBeta);
+            var clampHi = Vector256.Create(20.0f);
+            var clampLo = Vector256.Create(-20.0f);
+            int i = 0;
+            for (; i + 8 <= n; i += 8)
+            {
+                var g = Avx.LoadVector256(input + i);
+                var g2 = Avx.Multiply(g, g);
+                var inner = Avx.Multiply(alpha,
+                    Avx.Multiply(g, Fma.MultiplyAdd(beta, g2, one)));
+                var twoInner = Avx.Max(clampLo, Avx.Min(clampHi, Avx.Multiply(two, inner)));
+                var e2x = ExpApprox256(twoInner);
+                var tanh = Avx.Divide(Avx.Subtract(e2x, one), Avx.Add(e2x, one));
+                var gelu = Avx.Multiply(half, Avx.Multiply(g, Avx.Add(one, tanh)));
+                Avx.Store(output + i, gelu);
+            }
+            for (; i < n; i++)
+            {
+                float v = input[i];
+                float inner = kAlpha * (v + kBeta * v * v * v);
+                output[i] = 0.5f * v * (1f + MathF.Tanh(inner));
+            }
+        }
+        else
+        {
+            for (int i = 0; i < n; i++)
+            {
+                float v = input[i];
+                float inner = kAlpha * (v + kBeta * v * v * v);
+                output[i] = 0.5f * v * (1f + MathF.Tanh(inner));
+            }
+        }
+    }
+
+    /// <summary>
     /// Tanh-approximate GELU applied in place: <c>x[i] = 0.5*x[i]*(1 + tanh(sqrt(2/pi) *
     /// (x[i] + 0.044715*x[i]^3)))</c>. Same constants as <see cref="GeluTanhMul_Scalar"/>
     /// (verified against <c>ggml_gelu_f32</c>); used by GPT-NeoX/Pythia's non-gated FFN,
     /// which has no separate gate tensor to fuse the multiply against.
     /// </summary>
-    public static void GeluInPlace(float* x, int n)
-    {
-        const float kAlpha = 0.7978845608028654f;
-        const float kBeta = 0.044715f;
-        for (int i = 0; i < n; i++)
-        {
-            float v = x[i];
-            float inner = kAlpha * (v + kBeta * v * v * v);
-            x[i] = 0.5f * v * (1f + MathF.Tanh(inner));
-        }
-    }
+    public static void GeluInPlace(float* x, int n) => GeluF32(x, x, n);
 
     /// <summary>
     /// "Quick" GELU (sigmoid/logistic approximation): <c>x * sigmoid(1.702*x)</c>. Distinct from

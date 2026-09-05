@@ -63,13 +63,13 @@ public sealed class QwenAsrAudioEncoder : IDisposable
 
         // mel input as a 1-channel image, IDX(0,h=t,w=f) = t*nMels + f (frame-major, matches
         // QwenAsrMelExtractor's layout directly, same convention as ParakeetConformerEncoder).
-        var stage1 = Conv2dFull(mel.ToArray(), cin: 1, hin: numMelFrames, win: nMels, w.Conv1Weight, w.Conv1Bias, c, k: 3, stride: 2, pad: 1, out int h1, out int w1);
+        var stage1 = Conv2dFull(mel.ToArray(), cin: 1, hin: numMelFrames, win: nMels, w.Conv1WeightCL, w.Conv1Bias, c, k: 3, stride: 2, pad: 1, out int h1, out int w1);
         GeluInPlace(stage1);
 
-        var stage2 = Conv2dFull(stage1, cin: c, hin: h1, win: w1, w.Conv2Weight, w.Conv2Bias, c, k: 3, stride: 2, pad: 1, out int h2, out int w2);
+        var stage2 = Conv2dFull(stage1, cin: c, hin: h1, win: w1, w.Conv2WeightCL, w.Conv2Bias, c, k: 3, stride: 2, pad: 1, out int h2, out int w2);
         GeluInPlace(stage2);
 
-        var stage3 = Conv2dFull(stage2, cin: c, hin: h2, win: w2, w.Conv3Weight, w.Conv3Bias, c, k: 3, stride: 2, pad: 1, out int h3, out int w3);
+        var stage3 = Conv2dFull(stage2, cin: c, hin: h2, win: w2, w.Conv3WeightCL, w.Conv3Bias, c, k: 3, stride: 2, pad: 1, out int h3, out int w3);
         GeluInPlace(stage3);
 
         int t = h3;
@@ -223,7 +223,7 @@ public sealed class QwenAsrAudioEncoder : IDisposable
     /// itself) so cin becomes contiguous on both operands, then uses SimdKernels.DotF32 (AVX2/
     /// FMA) for the per-(kh,kw) accumulation instead of a scalar inner loop.
     /// </summary>
-    private static unsafe float[] Conv2dFull(float[] input, int cin, int hin, int win, float[] weight, float[] bias, int cout, int k, int stride, int pad, out int hout, out int wout)
+    private static unsafe float[] Conv2dFull(float[] input, int cin, int hin, int win, float[] weightCL, float[] bias, int cout, int k, int stride, int pad, out int hout, out int wout)
     {
         int houtLocal = (hin + 2 * pad - k) / stride + 1;
         int woutLocal = (win + 2 * pad - k) / stride + 1;
@@ -231,17 +231,17 @@ public sealed class QwenAsrAudioEncoder : IDisposable
         wout = woutLocal;
 
         var inputCL = new float[hin * win * cin];
-        for (int ci = 0; ci < cin; ci++)
-            for (int hi = 0; hi < hin; hi++)
-                for (int wi = 0; wi < win; wi++)
-                    inputCL[(hi * win + wi) * cin + ci] = input[ci * hin * win + hi * win + wi];
-
-        var weightCL = new float[cout * k * k * cin];
-        for (int co = 0; co < cout; co++)
+        if (cin == 1)
+        {
+            Array.Copy(input, inputCL, input.Length);
+        }
+        else
+        {
             for (int ci = 0; ci < cin; ci++)
-                for (int kh = 0; kh < k; kh++)
-                    for (int kw = 0; kw < k; kw++)
-                        weightCL[((co * k + kh) * k + kw) * cin + ci] = weight[kw + kh * k + ci * k * k + co * k * k * cin];
+                for (int hi = 0; hi < hin; hi++)
+                    for (int wi = 0; wi < win; wi++)
+                        inputCL[(hi * win + wi) * cin + ci] = input[ci * hin * win + hi * win + wi];
+        }
 
         var output = new float[cout * houtLocal * woutLocal];
         fixed (float* inCLp = inputCL, wCLp = weightCL, outp = output)
@@ -276,17 +276,13 @@ public sealed class QwenAsrAudioEncoder : IDisposable
         return output;
     }
 
-    private static void GeluInPlace(float[] x)
+    private static unsafe void GeluInPlace(float[] x)
     {
-        for (int i = 0; i < x.Length; i++) x[i] = Gelu(x[i]);
+        fixed (float* xp = x)
+        {
+            OpenTail.Stingray.Cpu.SimdKernels.GeluInPlace(xp, x.Length);
+        }
     }
-
-    // examples/crispasr/src/qwen3_asr.cpp uses ggml_gelu_erf (exact erf-based GELU) throughout
-    // the AuT encoder, not the tanh approximation -- .NET has no built-in erf, and the tanh
-    // approximation's error vs exact GELU is small (~1e-3 relative) but NOT zero, so this is a
-    // known, not-yet-closed numerical gap flagged for the golden-verification pass rather than
-    // guessed at with a hand-rolled erf approximation under time pressure.
-    private static float Gelu(float x) => 0.5f * x * (1.0f + MathF.Tanh(0.7978845608f * (x + 0.044715f * x * x * x)));
 
     private static float[] SinusoidalPositionalEmbeddings(int length, int channels)
     {
@@ -314,18 +310,13 @@ public sealed class QwenAsrAudioEncoder : IDisposable
         return output;
     }
 
-    private static float[] LayerNorm(float[] x, float[] weight, float[] bias, float eps = 1e-5f)
+    private static unsafe float[] LayerNorm(float[] x, float[] weight, float[] bias, float eps = 1e-5f)
     {
-        int n = x.Length;
-        float mean = TensorPrimitives.Sum((ReadOnlySpan<float>)x) / n;
-        float variance = 0f;
-        for (int i = 0; i < n; i++) { float d = x[i] - mean; variance += d * d; }
-        variance /= n;
-        float invStd = 1f / MathF.Sqrt(variance + eps);
-
-        var output = new float[n];
-        for (int i = 0; i < n; i++)
-            output[i] = (x[i] - mean) * invStd * weight[i] + bias[i];
+        var output = new float[x.Length];
+        fixed (float* op = output, xp = x, wp = weight, bp = bias)
+        {
+            OpenTail.Stingray.Cpu.SimdKernels.LayerNorm(op, xp, wp, bp, x.Length, eps);
+        }
         return output;
     }
 

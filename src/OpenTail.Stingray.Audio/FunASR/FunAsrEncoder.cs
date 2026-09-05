@@ -100,9 +100,15 @@ public static class FunAsrEncoder
         Parallel.For(0, t, i =>
         {
             var qkv = FunAsrKernels.Linear(x[i], lw.AttnQkvWeight, lw.AttnQkvBias, lw.InputDim, nFeat * 3);
-            q[i] = qkv.AsSpan(0, nFeat).ToArray();
-            k[i] = qkv.AsSpan(nFeat, nFeat).ToArray();
-            v[i] = qkv.AsSpan(2 * nFeat, nFeat).ToArray();
+            var qi = new float[nFeat];
+            var ki = new float[nFeat];
+            var vi = new float[nFeat];
+            Array.Copy(qkv, 0, qi, 0, nFeat);
+            Array.Copy(qkv, nFeat, ki, 0, nFeat);
+            Array.Copy(qkv, 2 * nFeat, vi, 0, nFeat);
+            q[i] = qi;
+            k[i] = ki;
+            v[i] = vi;
         });
 
         var fsmnMemory = FunAsrKernels.FsmnDepthwiseConv(v, lw.AttnFsmnWeight, kernel: 11);

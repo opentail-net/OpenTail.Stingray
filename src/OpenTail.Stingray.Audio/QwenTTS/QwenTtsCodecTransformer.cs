@@ -57,11 +57,11 @@ public static class QwenTtsCodecTransformer
             v[i] = LinearNoBias(normed1[i], lw.VWeight, dim, qkvDim);
         });
 
-        for (int i = 0; i < t; i++)
+        Parallel.For(0, t, i =>
         {
             ApplyRopeNeox(q[i], nHeads, headDim, i, w.RopeTheta);
             ApplyRopeNeox(k[i], nHeads, headDim, i, w.RopeTheta);
-        }
+        });
 
         var context = new float[t][];
         for (int i = 0; i < t; i++) context[i] = new float[qkvDim];
@@ -84,22 +84,7 @@ public static class QwenTtsCodecTransformer
                 {
                     float s = scores[j];
                     if (s == 0f) continue;
-                    var vj = v[j];
-                    fixed (float* cp = ctxSpan, vp = vj)
-                    {
-                        float* vOffset = vp + off;
-                        int d = 0;
-                        int vecSize = System.Numerics.Vector<float>.Count;
-                        var vS = new System.Numerics.Vector<float>(s);
-                        for (; d <= headDim - vecSize; d += vecSize)
-                        {
-                            var vc = new System.Numerics.Vector<float>(new ReadOnlySpan<float>(cp + d, vecSize));
-                            var vv = new System.Numerics.Vector<float>(new ReadOnlySpan<float>(vOffset + d, vecSize));
-                            var vr = vc + vv * vS;
-                            vr.CopyTo(new Span<float>(cp + d, vecSize));
-                        }
-                        for (; d < headDim; d++) cp[d] += s * vOffset[d];
-                    }
+                    System.Numerics.Tensors.TensorPrimitives.MultiplyAdd(v[j].AsSpan(off, headDim), s, ctxSpan, ctxSpan);
                 }
             }
         });
@@ -197,16 +182,8 @@ public static class QwenTtsCodecTransformer
 
     private static void SoftmaxRange(float[] scores, int start, int end)
     {
-        float max = float.NegativeInfinity;
-        for (int i = start; i <= end; i++) if (scores[i] > max) max = scores[i];
-        float sum = 0f;
-        for (int i = start; i <= end; i++)
-        {
-            float e = MathF.Exp(scores[i] - max);
-            scores[i] = e;
-            sum += e;
-        }
-        float invSum = 1f / sum;
-        for (int i = start; i <= end; i++) scores[i] *= invSum;
+        int count = end - start + 1;
+        var slice = scores.AsSpan(start, count);
+        System.Numerics.Tensors.TensorPrimitives.SoftMax(slice, slice);
     }
 }

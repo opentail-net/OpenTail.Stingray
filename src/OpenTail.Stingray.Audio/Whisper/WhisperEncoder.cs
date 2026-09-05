@@ -313,34 +313,25 @@ public sealed class WhisperEncoder
         LinearReal(attnRaw, seqLen, lw.OutWeight, lw.OutBias, dModel, output);
     }
 
-    private static void ComputeMlpReal(float[] input, int seqLen, int dModel, WhisperEncoderLayerWeights lw, Span<float> output)
+    private static unsafe void ComputeMlpReal(float[] input, int seqLen, int dModel, WhisperEncoderLayerWeights lw, Span<float> output)
     {
         int hiddenDim = dModel * 4;
         float[] hidden = new float[seqLen * hiddenDim];
         LinearReal(input, seqLen, lw.Mlp0Weight, lw.Mlp0Bias, hiddenDim, hidden);
 
-        Parallel.For(0, hidden.Length, i => hidden[i] = Gelu(hidden[i]));
+        fixed (float* hp = hidden)
+        {
+            SimdKernels.GeluInPlace(hp, hidden.Length);
+        }
 
         LinearReal(hidden, seqLen, lw.Mlp2Weight, lw.Mlp2Bias, dModel, output);
     }
 
-    private static void LayerNormAffine(ReadOnlySpan<float> input, float[] weight, float[] bias, Span<float> output, float eps)
+    private static unsafe void LayerNormAffine(ReadOnlySpan<float> input, float[] weight, float[] bias, Span<float> output, float eps)
     {
-        int n = input.Length;
-        float mean = TensorPrimitives.Sum(input) / n;
-
-        float variance = 0f;
-        for (int i = 0; i < n; i++)
+        fixed (float* ip = input, wp = weight, bp = bias, op = output)
         {
-            float diff = input[i] - mean;
-            variance += diff * diff;
-        }
-        variance /= n;
-
-        float invStd = 1.0f / MathF.Sqrt(variance + eps);
-        for (int i = 0; i < n; i++)
-        {
-            output[i] = (input[i] - mean) * invStd * weight[i] + bias[i];
+            SimdKernels.LayerNorm(op, ip, wp, bp, input.Length, eps);
         }
     }
 

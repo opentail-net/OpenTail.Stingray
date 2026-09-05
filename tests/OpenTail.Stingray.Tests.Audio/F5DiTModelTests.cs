@@ -118,4 +118,38 @@ public sealed class F5DiTModelTests : HeavyTestBase
         double cosine = CosineSimilarity(velocity, goldenVelocity);
         Assert.True(cosine > 0.99, $"Final velocity cosine similarity {cosine} too low vs golden PyTorch output.");
     }
+
+    [Fact]
+    public void F5DiT_ForwardVelocityBatch2_MatchesSinglePassOutputs()
+    {
+        string? modelPath = FindRepoFile("models/f5tts_base.safetensors");
+        string? dir = FindRepoFile("scratch-llamacpp-ref/f5_golden_dit/velocity.npy");
+        if (modelPath is null || dir is null) return;
+        string baseDir = Path.GetDirectoryName(dir)!;
+
+        var weights = new F5TtsWeights(modelPath);
+
+        float[] x = ReadNpyFloat32(Path.Combine(baseDir, "input_x.npy"));
+        float[] cond = ReadNpyFloat32(Path.Combine(baseDir, "input_cond.npy"));
+        int[] tokens = ReadNpyInt64AsInt32(Path.Combine(baseDir, "input_text.npy"));
+        const float timestep = 0.3f;
+        const int numFrames = 20;
+
+        var (rotaryCos, rotarySin) = F5RotaryEmbedding.Precompute(weights.RotaryInvFreq, numFrames);
+        var textEmbedCond = F5TextEmbedding.Forward(weights, tokens, numFrames, dropText: false);
+        var textEmbedUncond = F5TextEmbedding.Forward(weights, tokens, numFrames, dropText: true);
+        var nullCond = new float[cond.Length];
+
+        float[] vCondExpected = F5DiTModel.ForwardVelocity(weights, x, cond, textEmbedCond, timestep, numFrames, rotaryCos, rotarySin);
+        float[] vUncondExpected = F5DiTModel.ForwardVelocity(weights, x, nullCond, textEmbedUncond, timestep, numFrames, rotaryCos, rotarySin);
+
+        var (vCondActual, vUncondActual) = F5DiTModel.ForwardVelocityBatch2(
+            weights, x, cond, nullCond, textEmbedCond, textEmbedUncond, timestep, numFrames, rotaryCos, rotarySin);
+
+        double cosCond = CosineSimilarity(vCondActual, vCondExpected);
+        double cosUncond = CosineSimilarity(vUncondActual, vUncondExpected);
+
+        Assert.True(cosCond > 0.9999, $"Batch2 vCond cosine similarity {cosCond} too low vs single-pass output.");
+        Assert.True(cosUncond > 0.9999, $"Batch2 vUncond cosine similarity {cosUncond} too low vs single-pass output.");
+    }
 }

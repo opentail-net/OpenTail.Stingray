@@ -444,7 +444,7 @@ public static class F5Kernels
 
     /// <summary>x_transformers-convention RoPE, applied in place to a [t, heads*headDim] tensor. Shared by F5-TTS's DiT and CosyVoice3's DiT (tensor-for-tensor identical architecture, see CosyVoice3DiTModel's doc comment) -- was hand-duplicated in both files until extracted here.
     /// <paramref name="numRopeHeads"/> is the real `AttnProcessor.pe_attn_head` config (`modules.py`): when not null/less than `heads`, RoPE is applied ONLY to the first `numRopeHeads` heads (real `query[:, :pn, :, :] = apply_rotary_pos_emb(...)`), leaving the rest unrotated -- NOT a uniform apply-to-all-heads default. Confirmed real per-checkpoint: `F5TTS_Base`'s own `F5TTS_Base.yaml` sets `pe_attn_head: 1` (only head 0 gets RoPE); defaults to `heads` (apply to every head) for checkpoints that don't set this (e.g. `F5TTS_v1_Base`'s `pe_attn_head: null`, and CosyVoice3's own real config).</summary>
-    public static void ApplyRotary(float[] x, int t, int heads, int headDim, float[] rotaryCos, float[] rotarySin, int? numRopeHeads = null)
+    public static void ApplyRotary(float[] x, int offset, int t, int heads, int headDim, float[] rotaryCos, float[] rotarySin, int? numRopeHeads = null)
     {
         int dim = heads * headDim;
         int halfHead = headDim / 2;
@@ -454,7 +454,7 @@ public static class F5Kernels
             int angleBase = ti * halfHead;
             for (int h = 0; h < ropeHeads; h++)
             {
-                int hOff = ti * dim + h * headDim;
+                int hOff = offset + ti * dim + h * headDim;
                 for (int k = 0; k < halfHead; k++)
                 {
                     float cos = rotaryCos[angleBase + k];
@@ -468,6 +468,45 @@ public static class F5Kernels
         }
     }
 
+    public static void ApplyRotary(float[] x, int t, int heads, int headDim, float[] rotaryCos, float[] rotarySin, int? numRopeHeads = null) =>
+        ApplyRotary(x, 0, t, heads, headDim, rotaryCos, rotarySin, numRopeHeads);
+
+    public static unsafe void MultiHeadSelfAttentionSlice(
+        float* qBase, float* kBase, float* vBase, float* ctxBase,
+        int t, int heads, int headDim)
+    {
+        int dim = heads * headDim;
+        float scale = 1f / MathF.Sqrt(headDim);
+
+        Parallel.For(0, heads * t, idx =>
+        {
+            int h = idx / t;
+            int i = idx - h * t;
+            int hOff = h * headDim;
+            float* qRow = qBase + i * dim + hOff;
+
+            Span<float> scores = t <= 2048 ? stackalloc float[t] : new float[t];
+            for (int j = 0; j < t; j++)
+            {
+                scores[j] = Cpu.SimdKernels.DotF32(qRow, kBase + j * dim + hOff, headDim) * scale;
+            }
+
+            SoftmaxInPlace(scores);
+
+            float* cRow = ctxBase + i * dim + hOff;
+            var cSpan = new Span<float>(cRow, headDim);
+            cSpan.Clear();
+
+            for (int j = 0; j < t; j++)
+            {
+                float p = scores[j];
+                if (p == 0f) continue;
+                var vSpan = new ReadOnlySpan<float>(vBase + j * dim + hOff, headDim);
+                System.Numerics.Tensors.TensorPrimitives.MultiplyAdd(vSpan, p, cSpan, cSpan);
+            }
+        });
+    }
+
     /// <summary>
     /// Full non-causal multi-head self-attention given already-projected, already-rotary-applied
     /// q/k/v [t, heads*headDim]. Returns context [t, heads*headDim] (pre output-projection).
@@ -477,45 +516,11 @@ public static class F5Kernels
     public static unsafe float[] MultiHeadSelfAttention(float[] q, float[] k, float[] v, int t, int heads, int headDim)
     {
         int dim = heads * headDim;
-        float scale = 1f / MathF.Sqrt(headDim);
         var context = new float[t * dim];
-
         fixed (float* qp = q, kp = k, vp = v, ctxp = context)
         {
-            float* qBase = qp;
-            float* kBase = kp;
-            float* vBase = vp;
-            float* ctxBase = ctxp;
-
-            Parallel.For(0, heads * t, idx =>
-            {
-                int h = idx / t;
-                int i = idx - h * t;
-                int hOff = h * headDim;
-                float* qRow = qBase + i * dim + hOff;
-
-                var scores = new float[t];
-                for (int j = 0; j < t; j++)
-                {
-                    scores[j] = OpenTail.Stingray.Cpu.SimdKernels.DotF32(qRow, kBase + j * dim + hOff, headDim) * scale;
-                }
-
-                SoftmaxInPlace(scores.AsSpan());
-
-                float* cRow = ctxBase + i * dim + hOff;
-                for (int d = 0; d < headDim; d++) cRow[d] = 0f;
-
-                for (int j = 0; j < t; j++)
-                {
-                    float p = scores[j];
-                    if (p == 0f) continue;
-                    float* vRow = vBase + j * dim + hOff;
-                    for (int d = 0; d < headDim; d++)
-                        cRow[d] += p * vRow[d];
-                }
-            });
+            MultiHeadSelfAttentionSlice(qp, kp, vp, ctxp, t, heads, headDim);
         }
-
         return context;
     }
 }

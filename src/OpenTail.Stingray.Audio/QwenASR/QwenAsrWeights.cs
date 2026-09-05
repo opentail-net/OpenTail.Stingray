@@ -124,10 +124,13 @@ public sealed class QwenAsrWeights : IDisposable
 
         Conv1Weight = GetTensor("audio.conv.1.weight");
         Conv1Bias = GetTensor("audio.conv.1.bias");
+        Conv1WeightCL = PrepackWeightCL(Conv1Weight, cout: AudioConvChannels, cin: 1, k: 3);
         Conv2Weight = GetTensor("audio.conv.2.weight");
         Conv2Bias = GetTensor("audio.conv.2.bias");
+        Conv2WeightCL = PrepackWeightCL(Conv2Weight, cout: AudioConvChannels, cin: AudioConvChannels, k: 3);
         Conv3Weight = GetTensor("audio.conv.3.weight");
         Conv3Bias = GetTensor("audio.conv.3.bias");
+        Conv3WeightCL = PrepackWeightCL(Conv3Weight, cout: AudioConvChannels, cin: AudioConvChannels, k: 3);
         var convOutF32 = GetTensor("audio.conv_out.weight"); // no bias tensor for this one
         ConvOutWeight = CfmLinearWeight.FromF32WithF16Conversion(convOutF32, outDim: AudioDim, inDim: convOutF32.Length / AudioDim);
         LnPostWeight = GetTensor("audio.ln_post.weight");
@@ -227,10 +230,13 @@ public sealed class QwenAsrWeights : IDisposable
 
         Conv1Weight = GetTensor("audio.conv.1.weight");
         Conv1Bias = GetTensor("audio.conv.1.bias");
+        Conv1WeightCL = PrepackWeightCL(Conv1Weight, cout: AudioConvChannels, cin: 1, k: 3);
         Conv2Weight = GetTensor("audio.conv.2.weight");
         Conv2Bias = GetTensor("audio.conv.2.bias");
+        Conv2WeightCL = PrepackWeightCL(Conv2Weight, cout: AudioConvChannels, cin: AudioConvChannels, k: 3);
         Conv3Weight = GetTensor("audio.conv.3.weight");
         Conv3Bias = GetTensor("audio.conv.3.bias");
+        Conv3WeightCL = PrepackWeightCL(Conv3Weight, cout: AudioConvChannels, cin: AudioConvChannels, k: 3);
         var convOutF32 = GetTensor("audio.conv_out.weight");
         ConvOutWeight = CfmLinearWeight.FromF32WithF16Conversion(convOutF32, outDim: AudioDim, inDim: convOutF32.Length / AudioDim);
         LnPostWeight = GetTensor("audio.ln_post.weight");
@@ -321,10 +327,13 @@ public sealed class QwenAsrWeights : IDisposable
     // --- AuT audio encoder weights (Whisper-style: conv2d stem + absolute-pos transformer) ---
     public float[] Conv1Weight { get; }
     public float[] Conv1Bias { get; }
+    public float[] Conv1WeightCL { get; }
     public float[] Conv2Weight { get; }
     public float[] Conv2Bias { get; }
+    public float[] Conv2WeightCL { get; }
     public float[] Conv3Weight { get; }
     public float[] Conv3Bias { get; }
+    public float[] Conv3WeightCL { get; }
     public CfmLinearWeight ConvOutWeight { get; } // [7680, 896], no bias
     public float[] LnPostWeight { get; }
     public float[] LnPostBias { get; }
@@ -335,6 +344,17 @@ public sealed class QwenAsrWeights : IDisposable
     public CfmLinearWeight Proj2Weight { get; }
     public float[] Proj2Bias { get; }
     public QwenAsrAudioLayerWeights[] AudioLayerWeights { get; }
+
+    public static float[] PrepackWeightCL(float[] weight, int cout, int cin, int k)
+    {
+        var weightCL = new float[cout * k * k * cin];
+        for (int co = 0; co < cout; co++)
+            for (int ci = 0; ci < cin; ci++)
+                for (int kh = 0; kh < k; kh++)
+                    for (int kw = 0; kw < k; kw++)
+                        weightCL[((co * k + kh) * k + kw) * cin + ci] = weight[kw + kh * k + ci * k * k + co * k * k * cin];
+        return weightCL;
+    }
 
     /// <summary>Loads and dequantizes a required tensor by exact canonical (`audio.*`) name to a flat float[] in file storage order -- transparently reads through whichever real backing store (GGUF or Safetensors) this instance was constructed from.</summary>
     public float[] GetTensor(string name)

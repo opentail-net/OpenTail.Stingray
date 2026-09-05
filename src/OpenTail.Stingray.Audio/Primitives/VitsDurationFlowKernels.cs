@@ -54,11 +54,15 @@ public static class VitsDurationFlowKernels
 
         var x1Out = new float[t];
         float invSqrtFilter = 1f / MathF.Sqrt(contextDim);
+        var widths = new float[NumBins];
+        var heights = new float[NumBins];
+        var derivatives = new float[NumBins + 1];
+        float boundaryConst = MathF.Log(MathF.Exp(1f - MinDerivative) - 1f);
+        derivatives[0] = boundaryConst;
+        derivatives[NumBins] = boundaryConst;
+
         for (int ti = 0; ti < t; ti++)
         {
-            var widths = new float[NumBins];
-            var heights = new float[NumBins];
-            var derivatives = new float[NumBins + 1];
             for (int b = 0; b < NumBins; b++)
             {
                 widths[b] = h[b * t + ti] * invSqrtFilter;
@@ -66,9 +70,6 @@ public static class VitsDurationFlowKernels
             }
             for (int b = 0; b < NumBins - 1; b++)
                 derivatives[b + 1] = h[(2 * NumBins + b) * t + ti];
-            float boundaryConst = MathF.Log(MathF.Exp(1f - MinDerivative) - 1f);
-            derivatives[0] = boundaryConst;
-            derivatives[NumBins] = boundaryConst;
 
             x1Out[ti] = RationalQuadraticSplineInverse(x1[ti], widths, heights, derivatives);
         }

@@ -409,15 +409,16 @@ public static class CfmUNetKernels
 
                     DenseKernels.SoftmaxInPlace(new Span<float>(scores, t));
 
-                    for (int d = 0; d < headDim; d++) ctxHead[d] = 0f;
+                    new Span<float>(ctxHead, headDim).Clear();
 
                     for (int j = 0; j < t; j++)
                     {
                         float s = scores[j];
                         if (s == 0f) continue;
                         float* vRow = vHead + (nuint)j * (nuint)qkvDim + (nuint)hOff;
-                        for (int d = 0; d < headDim; d++)
-                            ctxHead[d] += s * vRow[d];
+                        var vSpan = new ReadOnlySpan<float>(vRow, headDim);
+                        var cSpan = new Span<float>(ctxHead, headDim);
+                        System.Numerics.Tensors.TensorPrimitives.MultiplyAdd(vSpan, s, cSpan, cSpan);
                     }
                 }
             });
@@ -526,21 +527,15 @@ public static class CfmUNetKernels
 
     private static void MishInPlace(float[] x) => MishInPlace(x, x.Length);
 
-    private static void GeluInPlace(float[] x, int len)
+    private static unsafe void GeluInPlace(float[] x, int len)
     {
-        const float c = 0.7978845608028654f;
-        for (int i = 0; i < len; i++)
+        fixed (float* xp = x)
         {
-            float v = x[i];
-            float inner = c * (v + 0.044715f * v * v * v);
-            x[i] = 0.5f * v * (1f + MathF.Tanh(inner));
+            Cpu.SimdKernels.GeluInPlace(xp, len);
         }
     }
 
-    private static void GeluInPlace(float[] x)
-    {
-        GeluInPlace(x, x.Length);
-    }
+    private static void GeluInPlace(float[] x) => GeluInPlace(x, x.Length);
 
     /// <summary>Linear layer via a <see cref="CfmLinearWeight"/> (real hardware F16C when available, F32 fallback otherwise) plus bias.</summary>
     private static float[] Linear(float[] input, CfmLinearWeight weight, float[] bias)

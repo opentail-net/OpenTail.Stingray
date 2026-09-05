@@ -71,13 +71,12 @@ public static class XttsGptTrunk
             }
             SoftmaxPrefixInPlace(cache.Scores, t);
 
+            var ctxSpan = cache.Context.AsSpan(hOff, headDim);
             for (int j = 0; j < t; j++)
             {
                 float s = cache.Scores[j];
                 if (s == 0f) continue;
-                var vj = vLayer[j];
-                for (int d = 0; d < headDim; d++)
-                    cache.Context[hOff + d] += s * vj[hOff + d];
+                TensorPrimitives.MultiplyAdd(vLayer[j].AsSpan(hOff, headDim), s, ctxSpan, ctxSpan);
             }
         }
 
@@ -94,8 +93,13 @@ public static class XttsGptTrunk
         LinearWithBias(cache.FfnNormed, lw.MlpCFcWeight, lw.MlpCFcBias, ffnDim, dim, cache.FfnMid);
 
         // 8. GeluNew
-        for (int i = 0; i < ffnDim; i++)
-            cache.FfnMid[i] = GeluNew(cache.FfnMid[i]);
+        unsafe
+        {
+            fixed (float* fp = cache.FfnMid)
+            {
+                SimdKernels.GeluInPlace(fp, ffnDim);
+            }
+        }
 
         // 9. mlp.c_proj
         LinearWithBias(cache.FfnMid, lw.MlpCProjWeight, lw.MlpCProjBias, dim, ffnDim, cache.FfnOut);
@@ -113,20 +117,12 @@ public static class XttsGptTrunk
         System.Numerics.Tensors.TensorPrimitives.Add(output.AsSpan(0, outDim), bias.AsSpan(0, outDim), output.AsSpan(0, outDim));
     }
 
-    private static void LayerNorm(ReadOnlySpan<float> x, float[] gamma, float[] beta, float[] output, float eps = 1e-5f)
+    private static unsafe void LayerNorm(ReadOnlySpan<float> x, float[] gamma, float[] beta, float[] output, float eps = 1e-5f)
     {
-        int dim = x.Length;
-        float mean = System.Numerics.Tensors.TensorPrimitives.Average(x);
-        float sumSqDiff = 0f;
-        for (int i = 0; i < dim; i++)
+        fixed (float* xp = x, gp = gamma, bp = beta, op = output)
         {
-            float d = x[i] - mean;
-            sumSqDiff += d * d;
+            SimdKernels.LayerNorm(op, xp, gp, bp, x.Length, eps);
         }
-        float var = sumSqDiff / dim;
-        float invStd = 1f / MathF.Sqrt(var + eps);
-        for (int i = 0; i < dim; i++)
-            output[i] = (x[i] - mean) * invStd * gamma[i] + beta[i];
     }
 
     /// <summary>inputEmbeds is channel-first [ModelDim, T]. Returns the trunk's final hidden state (after ln_f), channel-first [ModelDim, T].</summary>
@@ -202,26 +198,19 @@ public static class XttsGptTrunk
 
     private static void SoftmaxPrefixInPlace(float[] scores, int len)
     {
-        float max = float.NegativeInfinity;
-        for (int i = 0; i < len; i++) if (scores[i] > max) max = scores[i];
-        float sum = 0f;
-        for (int i = 0; i < len; i++)
-        {
-            float e = MathF.Exp(scores[i] - max);
-            scores[i] = e;
-            sum += e;
-        }
-        float invSum = 1f / sum;
-        for (int i = 0; i < len; i++) scores[i] *= invSum;
+        TensorPrimitives.SoftMax(scores.AsSpan(0, len), scores.AsSpan(0, len));
     }
 
-    private static float[] Mlp(float[] x, int t, XttsGptLayerWeights lw)
+    private static unsafe float[] Mlp(float[] x, int t, XttsGptLayerWeights lw)
     {
         int dim = XttsGptWeights.ModelDim;
         int ffn = XttsGptWeights.FfnDim;
 
         var h = VitsAttentionKernels.Conv1x1(x, dim, t, lw.MlpCFcWeight, lw.MlpCFcBias, ffn);
-        for (int i = 0; i < h.Length; i++) h[i] = GeluNew(h[i]);
+        fixed (float* hp = h)
+        {
+            SimdKernels.GeluInPlace(hp, h.Length);
+        }
         return VitsAttentionKernels.Conv1x1(h, ffn, t, lw.MlpCProjWeight, lw.MlpCProjBias, dim);
     }
 

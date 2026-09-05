@@ -53,22 +53,16 @@ public sealed class SileroVad : IVoiceActivityDetector
         // 2. Learned STFT: Conv1d(padded, StftBasis[258,1,256], stride=128) -> real/imag halves.
         Span<float> real = stackalloc float[SileroVadWeights.NumFreqBins * NumStftFrames];
         Span<float> imag = stackalloc float[SileroVadWeights.NumFreqBins * NumStftFrames];
+        int stftKernel = SileroVadWeights.SttKernel;
         for (int f = 0; f < NumStftFrames; f++)
         {
-            int start = f * SileroVadWeights.SttStride;
+            var paddedSlice = padded.Slice(f * SileroVadWeights.SttStride, stftKernel);
             for (int k = 0; k < SileroVadWeights.NumFreqBins; k++)
             {
-                float sumR = 0f, sumI = 0f;
-                int rBase = k * SileroVadWeights.SttKernel;
-                int iBase = (SileroVadWeights.NumFreqBins + k) * SileroVadWeights.SttKernel;
-                for (int n = 0; n < SileroVadWeights.SttKernel; n++)
-                {
-                    float s = padded[start + n];
-                    sumR += s * w.StftBasis[rBase + n];
-                    sumI += s * w.StftBasis[iBase + n];
-                }
-                real[k * NumStftFrames + f] = sumR;
-                imag[k * NumStftFrames + f] = sumI;
+                int rBase = k * stftKernel;
+                int iBase = (SileroVadWeights.NumFreqBins + k) * stftKernel;
+                real[k * NumStftFrames + f] = TensorPrimitives.Dot(paddedSlice, w.StftBasis.AsSpan(rBase, stftKernel));
+                imag[k * NumStftFrames + f] = TensorPrimitives.Dot(paddedSlice, w.StftBasis.AsSpan(iBase, stftKernel));
             }
         }
 
@@ -97,20 +91,19 @@ public sealed class SileroVad : IVoiceActivityDetector
         // comment. Bias is Wb+Rb concatenated ([1,1024]=8*128): both halves are summed per gate.
         Span<float> lstmOut = stackalloc float[SileroVadWeights.HiddenDim * len3];
         Span<float> gates = stackalloc float[4 * SileroVadWeights.HiddenDim];
+        int hd = SileroVadWeights.HiddenDim;
+        Span<float> encCol = stackalloc float[hd];
         for (int t = 0; t < len3; t++)
         {
-            for (int g = 0; g < 4 * SileroVadWeights.HiddenDim; g++)
+            for (int d = 0; d < hd; d++) encCol[d] = enc3[d * len3 + t];
+            for (int g = 0; g < 4 * hd; g++)
             {
-                float val = w.LstmBias[g] + w.LstmBias[4 * SileroVadWeights.HiddenDim + g];
-                for (int d = 0; d < SileroVadWeights.HiddenDim; d++)
-                {
-                    val += enc3[d * len3 + t] * w.LstmWih[g * SileroVadWeights.HiddenDim + d];
-                    val += _hState[d] * w.LstmWhh[g * SileroVadWeights.HiddenDim + d];
-                }
+                float val = w.LstmBias[g] + w.LstmBias[4 * hd + g];
+                val += TensorPrimitives.Dot(encCol, w.LstmWih.AsSpan(g * hd, hd));
+                val += TensorPrimitives.Dot(_hState.AsSpan(), w.LstmWhh.AsSpan(g * hd, hd));
                 gates[g] = val;
             }
 
-            int hd = SileroVadWeights.HiddenDim;
             for (int d = 0; d < hd; d++)
             {
                 float iGate = Sigmoid(gates[d]);

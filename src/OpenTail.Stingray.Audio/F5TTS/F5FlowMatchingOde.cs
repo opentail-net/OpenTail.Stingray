@@ -89,21 +89,8 @@ public static class F5FlowMatchingOde
             }
             else
             {
-                float[] vCond, vUncond;
-                if (backend is not null)
-                {
-                    vCond = F5DiTModel.ForwardVelocity(w, x, condMel, textEmbedCond, t, numFrames, rotaryCos, rotarySin, backend);
-                    vUncond = F5DiTModel.ForwardVelocity(w, x, nullCond, textEmbedUncond, t, numFrames, rotaryCos, rotarySin, backend);
-                }
-                else
-                {
-                    float[] vc = null!, vu = null!;
-                    Parallel.Invoke(
-                        () => vc = F5DiTModel.ForwardVelocity(w, x, condMel, textEmbedCond, t, numFrames, rotaryCos, rotarySin),
-                        () => vu = F5DiTModel.ForwardVelocity(w, x, nullCond, textEmbedUncond, t, numFrames, rotaryCos, rotarySin)
-                    );
-                    vCond = vc; vUncond = vu;
-                }
+                var (vCond, vUncond) = F5DiTModel.ForwardVelocityBatch2(
+                    w, x, condMel, nullCond, textEmbedCond, textEmbedUncond, t, numFrames, rotaryCos, rotarySin, backend);
                 v = new float[vCond.Length];
                 System.Numerics.Tensors.TensorPrimitives.Subtract(vCond, vUncond, v);
                 System.Numerics.Tensors.TensorPrimitives.MultiplyAdd(v, currentCfg, vCond, v);
