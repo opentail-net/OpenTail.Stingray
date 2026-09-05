@@ -553,3 +553,6 @@
 [XTTS-v2] prompt="Hello, I will make some lunch, darling!" audio=3.85s samples=92416
 [XTTS-v2] runs(s)=[9.739, 9.828, 9.882] mean=9.816s RTF=2.549 (lower=faster; 1.0=realtime)
 
+[XTTS-v2] prompt="Hello, I will make some lunch, darling!" audio=3.85s samples=92416
+[XTTS-v2] runs(s)=[9.995, 9.892, 9.690] mean=9.859s RTF=2.560 (lower=faster; 1.0=realtime)
+

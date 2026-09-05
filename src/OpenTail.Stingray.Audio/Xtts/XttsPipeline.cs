@@ -111,6 +111,9 @@ public sealed class XttsPipeline : ITextToSpeechPipeline
         int latentsT = gptLatents.Length / XttsGptWeights.ModelDim;
         var samples = XttsHifiDecoder.Forward(_vocoderWeights, gptLatents, latentsT, speakerEmbedding);
 
+        // Smooth 20ms trailing cosine fade-out so ending decay terminates at 0.0 with no cut click
+        ApplyTrailingFadeOut(samples.AsSpan(), 480);
+
         if (Environment.GetEnvironmentVariable("STINGRAY_XTTS_TRACE") == "1")
         {
             // t1 = latentsT * 4 (ar_mel_length_compression/output_hop_length), t2 = t1 *
@@ -274,7 +277,28 @@ public sealed class XttsPipeline : ITextToSpeechPipeline
         var chunk = new float[newSamples];
         Array.Copy(decodedAll, emittedSamples, chunk, 0, newSamples);
         emittedSamples = maxTake;
+
+        if (isFinal && chunk.Length > 0)
+        {
+            ApplyTrailingFadeOut(chunk.AsSpan(), 480);
+        }
+
         return chunk;
+    }
+
+    /// <summary>
+    /// Smooth trailing cosine fade-out over `fadeSamples` (e.g. 480 samples = 20ms @ 24kHz)
+    /// to guarantee monotonic decay to 0.0, avoiding vocoder boundary truncation clicks.
+    /// </summary>
+    private static void ApplyTrailingFadeOut(Span<float> pcm, int fadeSamples = 480)
+    {
+        int fadeLen = Math.Min(fadeSamples, pcm.Length);
+        for (int i = 0; i < fadeLen; i++)
+        {
+            int idx = pcm.Length - fadeLen + i;
+            float fade = 0.5f * (1f + MathF.Cos(MathF.PI * i / fadeLen));
+            pcm[idx] *= fade;
+        }
     }
 
     public IAsyncEnumerable<float[]> GenerateStreamAsync(AudioGenerationRequest request, CancellationToken ct = default)
