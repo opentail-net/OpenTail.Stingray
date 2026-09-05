@@ -11175,3 +11175,25 @@ bundled in the same commit without a written rationale -- and nothing catches th
 since correctness tests don't check performance and performance benchmarks are throwaway files
 that don't run by default. Worth periodically re-auditing "this was proven faster once" claims
 against the actual current code, not just trusting the doc history. No subagents used.
+
+## Same F16C recovery extended to ACE-Step's condition/timbre encoders (2026-09-05, same fire)
+
+`AceStepConditionEncoder`/`AceStepTimbreEncoder` (real Qwen3-based text/lyric/timbre conditioning,
+called ONCE per generation in `AceStepPipeline.Generate`, strictly BEFORE
+`AceStepFlowScheduler.Generate`'s iterative Euler-ODE DiT loop -- confirmed by reading the call
+order, not assumed) also construct their weights via `CfmLinearWeight.FromF32`, so they were
+silently affected by the same accidental revert. Deliberately did NOT touch `AceStepDiTWeights.cs`
+(the actual iterative diffusion transformer) -- same reasoning as the T5-encoder entry above: this
+technique's safety is proven for single-pass encoders, not (yet) re-verified for iterative
+flow-matching, and ACE-Step's DiT is architecturally the same shape of thing the original revert
+may have been protecting.
+
+Swapped both encoders' 17 `CfmLinearWeight.FromF32` call sites to `FromF32WithF16Conversion`. Real
+correctness re-verified: `AceStepConditionEncoderTests` and `AceStepTimbreEncoderGoldenParityTests`
+both re-pass clean with real weights (`[ForwardPass] Pre-faulted 0.74 GiB...` confirms real, not a
+no-op), and the full `AceStepPipelineEndToEndTests` real generation (227.7s) also re-passes clean.
+Not isolated-timed separately this pass (unlike the T5 case) -- ACE-Step's dominant cost is its
+DiT, left untouched here, so this fix's full-pipeline impact is expected to be small by the same
+logic the original Parler-TTS T5 entry already documented (3.4% on a decode-dominated pipeline);
+applied for consistency with the recovered technique and because it's free once correctness is
+confirmed, not chased for a headline number here.

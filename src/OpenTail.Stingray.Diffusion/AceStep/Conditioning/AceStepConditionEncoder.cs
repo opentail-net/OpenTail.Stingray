@@ -54,8 +54,8 @@ public sealed class AceStepConditionEncoderWeights
 
         return new AceStepConditionEncoderWeights
         {
-            TextProjectorWeight = CfmLinearWeight.FromF32(loader.ReadF32("encoder.text_projector.weight"), outDim: hidden, inDim: textDim),
-            LyricEmbedWeight = CfmLinearWeight.FromF32(loader.ReadF32("encoder.lyric_encoder.embed_tokens.weight"), outDim: hidden, inDim: textDim),
+            TextProjectorWeight = CfmLinearWeight.FromF32WithF16Conversion(loader.ReadF32("encoder.text_projector.weight"), outDim: hidden, inDim: textDim),
+            LyricEmbedWeight = CfmLinearWeight.FromF32WithF16Conversion(loader.ReadF32("encoder.lyric_encoder.embed_tokens.weight"), outDim: hidden, inDim: textDim),
             LyricEmbedBias = loader.ReadF32("encoder.lyric_encoder.embed_tokens.bias"),
             LyricLayers = lyricLayers,
             LyricNormWeight = loader.ReadF32("encoder.lyric_encoder.norm.weight"),
@@ -72,16 +72,16 @@ public sealed class AceStepConditionEncoderWeights
         return new AceStepEncoderLayerWeights
         {
             InputLayerNormWeight = loader.ReadF32($"{p}.input_layernorm.weight"),
-            QWeight = CfmLinearWeight.FromF32(loader.ReadF32($"{p}.self_attn.q_proj.weight"), outDim: qDim, inDim: hidden),
-            KWeight = CfmLinearWeight.FromF32(loader.ReadF32($"{p}.self_attn.k_proj.weight"), outDim: kvDim, inDim: hidden),
-            VWeight = CfmLinearWeight.FromF32(loader.ReadF32($"{p}.self_attn.v_proj.weight"), outDim: kvDim, inDim: hidden),
-            OWeight = CfmLinearWeight.FromF32(loader.ReadF32($"{p}.self_attn.o_proj.weight"), outDim: hidden, inDim: qDim),
+            QWeight = CfmLinearWeight.FromF32WithF16Conversion(loader.ReadF32($"{p}.self_attn.q_proj.weight"), outDim: qDim, inDim: hidden),
+            KWeight = CfmLinearWeight.FromF32WithF16Conversion(loader.ReadF32($"{p}.self_attn.k_proj.weight"), outDim: kvDim, inDim: hidden),
+            VWeight = CfmLinearWeight.FromF32WithF16Conversion(loader.ReadF32($"{p}.self_attn.v_proj.weight"), outDim: kvDim, inDim: hidden),
+            OWeight = CfmLinearWeight.FromF32WithF16Conversion(loader.ReadF32($"{p}.self_attn.o_proj.weight"), outDim: hidden, inDim: qDim),
             QNormWeight = loader.ReadF32($"{p}.self_attn.q_norm.weight"),
             KNormWeight = loader.ReadF32($"{p}.self_attn.k_norm.weight"),
             PostAttnLayerNormWeight = loader.ReadF32($"{p}.post_attention_layernorm.weight"),
-            MlpGateWeight = CfmLinearWeight.FromF32(loader.ReadF32($"{p}.mlp.gate_proj.weight"), outDim: ffn, inDim: hidden),
-            MlpUpWeight = CfmLinearWeight.FromF32(loader.ReadF32($"{p}.mlp.up_proj.weight"), outDim: ffn, inDim: hidden),
-            MlpDownWeight = CfmLinearWeight.FromF32(loader.ReadF32($"{p}.mlp.down_proj.weight"), outDim: hidden, inDim: ffn),
+            MlpGateWeight = CfmLinearWeight.FromF32WithF16Conversion(loader.ReadF32($"{p}.mlp.gate_proj.weight"), outDim: ffn, inDim: hidden),
+            MlpUpWeight = CfmLinearWeight.FromF32WithF16Conversion(loader.ReadF32($"{p}.mlp.up_proj.weight"), outDim: ffn, inDim: hidden),
+            MlpDownWeight = CfmLinearWeight.FromF32WithF16Conversion(loader.ReadF32($"{p}.mlp.down_proj.weight"), outDim: hidden, inDim: ffn),
         };
     }
 }
