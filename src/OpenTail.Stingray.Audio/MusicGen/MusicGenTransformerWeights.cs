@@ -28,7 +28,7 @@ public sealed class MusicGenTransformerWeights
 
     public MusicGenTransformerWeights(SafetensorsLoader loader)
     {
-        EncToDecProjWeight = CfmLinearWeight.FromF32(loader.ReadF32("enc_to_dec_proj.weight"), outDim: MusicGenConfig.DecoderHiddenSize, inDim: MusicGenConfig.TextDModel);
+        EncToDecProjWeight = CfmLinearWeight.FromF32WithF16Conversion(loader.ReadF32("enc_to_dec_proj.weight"), outDim: MusicGenConfig.DecoderHiddenSize, inDim: MusicGenConfig.TextDModel);
         EncToDecProjBias = loader.ReadF32("enc_to_dec_proj.bias");
         for (int q = 0; q < MusicGenConfig.NumCodebooks; q++)
             EmbedTokens[q] = loader.ReadF32($"decoder.model.decoder.embed_tokens.{q}.weight");
@@ -39,29 +39,29 @@ public sealed class MusicGenTransformerWeights
 
         int hidden = MusicGenConfig.DecoderHiddenSize;
         for (int q = 0; q < MusicGenConfig.NumCodebooks; q++)
-            LmHeads[q] = CfmLinearWeight.FromF32(loader.ReadF32($"decoder.lm_heads.{q}.weight"), outDim: MusicGenConfig.CodebookSize, inDim: hidden);
+            LmHeads[q] = CfmLinearWeight.FromF32WithF16Conversion(loader.ReadF32($"decoder.lm_heads.{q}.weight"), outDim: MusicGenConfig.CodebookSize, inDim: hidden);
 
         for (int i = 0; i < MusicGenConfig.DecoderNumLayers; i++)
         {
             string p = $"decoder.model.decoder.layers.{i}";
             Layers[i] = new MusicGenDecoderLayerWeights
             {
-                SelfAttnQWeight = CfmLinearWeight.FromF32(loader.ReadF32($"{p}.self_attn.q_proj.weight"), outDim: hidden, inDim: hidden),
-                SelfAttnKWeight = CfmLinearWeight.FromF32(loader.ReadF32($"{p}.self_attn.k_proj.weight"), outDim: hidden, inDim: hidden),
-                SelfAttnVWeight = CfmLinearWeight.FromF32(loader.ReadF32($"{p}.self_attn.v_proj.weight"), outDim: hidden, inDim: hidden),
-                SelfAttnOWeight = CfmLinearWeight.FromF32(loader.ReadF32($"{p}.self_attn.out_proj.weight"), outDim: hidden, inDim: hidden),
+                SelfAttnQWeight = CfmLinearWeight.FromF32WithF16Conversion(loader.ReadF32($"{p}.self_attn.q_proj.weight"), outDim: hidden, inDim: hidden),
+                SelfAttnKWeight = CfmLinearWeight.FromF32WithF16Conversion(loader.ReadF32($"{p}.self_attn.k_proj.weight"), outDim: hidden, inDim: hidden),
+                SelfAttnVWeight = CfmLinearWeight.FromF32WithF16Conversion(loader.ReadF32($"{p}.self_attn.v_proj.weight"), outDim: hidden, inDim: hidden),
+                SelfAttnOWeight = CfmLinearWeight.FromF32WithF16Conversion(loader.ReadF32($"{p}.self_attn.out_proj.weight"), outDim: hidden, inDim: hidden),
                 SelfAttnLayerNormWeight = loader.ReadF32($"{p}.self_attn_layer_norm.weight"),
                 SelfAttnLayerNormBias = loader.ReadF32($"{p}.self_attn_layer_norm.bias"),
 
-                CrossAttnQWeight = CfmLinearWeight.FromF32(loader.ReadF32($"{p}.encoder_attn.q_proj.weight"), outDim: hidden, inDim: hidden),
-                CrossAttnKWeight = CfmLinearWeight.FromF32(loader.ReadF32($"{p}.encoder_attn.k_proj.weight"), outDim: hidden, inDim: hidden),
-                CrossAttnVWeight = CfmLinearWeight.FromF32(loader.ReadF32($"{p}.encoder_attn.v_proj.weight"), outDim: hidden, inDim: hidden),
-                CrossAttnOWeight = CfmLinearWeight.FromF32(loader.ReadF32($"{p}.encoder_attn.out_proj.weight"), outDim: hidden, inDim: hidden),
+                CrossAttnQWeight = CfmLinearWeight.FromF32WithF16Conversion(loader.ReadF32($"{p}.encoder_attn.q_proj.weight"), outDim: hidden, inDim: hidden),
+                CrossAttnKWeight = CfmLinearWeight.FromF32WithF16Conversion(loader.ReadF32($"{p}.encoder_attn.k_proj.weight"), outDim: hidden, inDim: hidden),
+                CrossAttnVWeight = CfmLinearWeight.FromF32WithF16Conversion(loader.ReadF32($"{p}.encoder_attn.v_proj.weight"), outDim: hidden, inDim: hidden),
+                CrossAttnOWeight = CfmLinearWeight.FromF32WithF16Conversion(loader.ReadF32($"{p}.encoder_attn.out_proj.weight"), outDim: hidden, inDim: hidden),
                 CrossAttnLayerNormWeight = loader.ReadF32($"{p}.encoder_attn_layer_norm.weight"),
                 CrossAttnLayerNormBias = loader.ReadF32($"{p}.encoder_attn_layer_norm.bias"),
 
-                Fc1Weight = CfmLinearWeight.FromF32(loader.ReadF32($"{p}.fc1.weight"), outDim: MusicGenConfig.DecoderFfnDim, inDim: hidden),
-                Fc2Weight = CfmLinearWeight.FromF32(loader.ReadF32($"{p}.fc2.weight"), outDim: hidden, inDim: MusicGenConfig.DecoderFfnDim),
+                Fc1Weight = CfmLinearWeight.FromF32WithF16Conversion(loader.ReadF32($"{p}.fc1.weight"), outDim: MusicGenConfig.DecoderFfnDim, inDim: hidden),
+                Fc2Weight = CfmLinearWeight.FromF32WithF16Conversion(loader.ReadF32($"{p}.fc2.weight"), outDim: hidden, inDim: MusicGenConfig.DecoderFfnDim),
                 FinalLayerNormWeight = loader.ReadF32($"{p}.final_layer_norm.weight"),
                 FinalLayerNormBias = loader.ReadF32($"{p}.final_layer_norm.bias"),
             };

@@ -11197,3 +11197,45 @@ DiT, left untouched here, so this fix's full-pipeline impact is expected to be s
 logic the original Parler-TTS T5 entry already documented (3.4% on a decode-dominated pipeline);
 applied for consistency with the recovered technique and because it's free once correctness is
 confirmed, not chased for a headline number here.
+
+## F16C recovery extended to the actual dominant cost: MusicGen's and AudioGen's autoregressive DECODERS (not just their T5 encoders) -- real 3.0-3.7x end-to-end speedup, the biggest win this session (2026-09-05, same fire)
+
+The prior two entries fixed the T5 ENCODERS (single-pass, called once per generation, a small
+fraction of total wall time by this session's own earlier accounting -- the Parler-TTS T5 entry
+already noted the AR decoder "runs once per generated token and dominates total wall time"). Went
+back and checked whether `MusicGenTransformerWeights`/`AudioGenTransformerWeights` -- the actual
+delayed-pattern autoregressive DECODER, the dominant cost per that same reasoning -- was already
+quantized (an earlier assumption going into this loop iteration, based on a different doc entry
+about Fish Speech/Parler's decoders). It was NOT: both decoders build every Q/K/V/O, cross-attn
+Q/K/V/O, FC1/FC2, and LM-head weight via plain `CfmLinearWeight.FromF32`, same as the encoders
+were before the last two fixes. Confirmed the call pattern is a real single-token incremental
+decode step (`weight.MatMul(x, 1, out)`, `1` = batch size), the exact same shape already proven
+safe and fast for Whisper's decoder (2.00x on its LM head) -- a real causal AR transformer, not
+iterative flow-matching, so the same safety reasoning applies. Swapped all 12 `CfmLinearWeight.FromF32`
+call sites in each of `MusicGenTransformerWeights.cs`/`AudioGenTransformerWeights.cs` to
+`FromF32WithF16Conversion`.
+
+**Real correctness**: `MusicGenDecoderGoldenParityTests`/`AudioGenDecoderGoldenParityTests` and
+both models' `*EndToEndGoldenParityTests` all re-pass clean with real weights (2.7-10.1s real
+timings, not no-ops).
+
+**Real, measured end-to-end performance** -- re-ran the exact same real-generation smoke tests this
+project already had recorded baselines for:
+
+| | Before (recorded baseline) | After (just measured) | Speedup |
+|---|---:|---:|---:|
+| MusicGen (`MusicGenGenerationSmokeTests`, 2 real generations) | 113.8s | **38.1s** | **2.99x** |
+| AudioGen (`AudioGenGenerationSmokeTests`, 3 real generations) | 962.9s | **261.4s** | **3.68x** |
+
+This is the largest real, verified win of this whole performance-pass loop -- unlike the T5-encoder
+fixes (small full-pipeline impact by design, since the encoder was never the bottleneck), this
+lands directly on the actual dominant cost for both models. Same caveat as every other fix this
+loop: deliberately did not touch anything CFM/iterative-flow-matching (neither MusicGen nor
+AudioGen has such a stage -- both are pure discrete-token autoregressive decoders with an EnCodec
+decode at the end, which doesn't use `CfmLinearWeight` at all).
+
+**Real lesson**: the assumption that "the decoder is already quantized, so it's not worth
+checking" (carried over from a different pair of models' history) was wrong for MusicGen/AudioGen
+specifically -- worth re-verifying "already optimized" claims against the ACTUAL current code for
+the ACTUAL model in question, not generalizing from a different model's history, even within the
+same investigation. No subagents used.

@@ -37,9 +37,9 @@ public sealed class AudioGenTransformerWeights
 
         int hidden = AudioGenConfig.HiddenSize;
         for (int q = 0; q < AudioGenConfig.NumCodebooks; q++)
-            LmHeads[q] = CfmLinearWeight.FromF32(loader.ReadF32($"linears.{q}.weight"), outDim: AudioGenConfig.CodebookSize, inDim: hidden);
+            LmHeads[q] = CfmLinearWeight.FromF32WithF16Conversion(loader.ReadF32($"linears.{q}.weight"), outDim: AudioGenConfig.CodebookSize, inDim: hidden);
 
-        OutputProjWeight = CfmLinearWeight.FromF32(
+        OutputProjWeight = CfmLinearWeight.FromF32WithF16Conversion(
             loader.ReadF32("condition_provider.conditioners.description.output_proj.weight"),
             outDim: hidden, inDim: AudioGenConfig.TextDModel);
         OutputProjBias = loader.ReadF32("condition_provider.conditioners.description.output_proj.bias");
@@ -52,22 +52,22 @@ public sealed class AudioGenTransformerWeights
 
             Layers[i] = new AudioGenDecoderLayerWeights
             {
-                SelfAttnQWeight = CfmLinearWeight.FromF32(SliceRows(selfInProj, hidden, hidden, 0), outDim: hidden, inDim: hidden),
-                SelfAttnKWeight = CfmLinearWeight.FromF32(SliceRows(selfInProj, hidden, hidden, hidden), outDim: hidden, inDim: hidden),
-                SelfAttnVWeight = CfmLinearWeight.FromF32(SliceRows(selfInProj, hidden, hidden, 2 * hidden), outDim: hidden, inDim: hidden),
-                SelfAttnOutProjWeight = CfmLinearWeight.FromF32(loader.ReadF32($"{p}.self_attn.out_proj.weight"), outDim: hidden, inDim: hidden),
+                SelfAttnQWeight = CfmLinearWeight.FromF32WithF16Conversion(SliceRows(selfInProj, hidden, hidden, 0), outDim: hidden, inDim: hidden),
+                SelfAttnKWeight = CfmLinearWeight.FromF32WithF16Conversion(SliceRows(selfInProj, hidden, hidden, hidden), outDim: hidden, inDim: hidden),
+                SelfAttnVWeight = CfmLinearWeight.FromF32WithF16Conversion(SliceRows(selfInProj, hidden, hidden, 2 * hidden), outDim: hidden, inDim: hidden),
+                SelfAttnOutProjWeight = CfmLinearWeight.FromF32WithF16Conversion(loader.ReadF32($"{p}.self_attn.out_proj.weight"), outDim: hidden, inDim: hidden),
                 Norm1Weight = loader.ReadF32($"{p}.norm1.weight"),
                 Norm1Bias = loader.ReadF32($"{p}.norm1.bias"),
 
-                CrossAttnQWeight = CfmLinearWeight.FromF32(SliceRows(crossInProj, hidden, hidden, 0), outDim: hidden, inDim: hidden),
-                CrossAttnKWeight = CfmLinearWeight.FromF32(SliceRows(crossInProj, hidden, hidden, hidden), outDim: hidden, inDim: hidden),
-                CrossAttnVWeight = CfmLinearWeight.FromF32(SliceRows(crossInProj, hidden, hidden, 2 * hidden), outDim: hidden, inDim: hidden),
-                CrossAttnOutProjWeight = CfmLinearWeight.FromF32(loader.ReadF32($"{p}.cross_attention.out_proj.weight"), outDim: hidden, inDim: hidden),
+                CrossAttnQWeight = CfmLinearWeight.FromF32WithF16Conversion(SliceRows(crossInProj, hidden, hidden, 0), outDim: hidden, inDim: hidden),
+                CrossAttnKWeight = CfmLinearWeight.FromF32WithF16Conversion(SliceRows(crossInProj, hidden, hidden, hidden), outDim: hidden, inDim: hidden),
+                CrossAttnVWeight = CfmLinearWeight.FromF32WithF16Conversion(SliceRows(crossInProj, hidden, hidden, 2 * hidden), outDim: hidden, inDim: hidden),
+                CrossAttnOutProjWeight = CfmLinearWeight.FromF32WithF16Conversion(loader.ReadF32($"{p}.cross_attention.out_proj.weight"), outDim: hidden, inDim: hidden),
                 NormCrossWeight = loader.ReadF32($"{p}.norm_cross.weight"),
                 NormCrossBias = loader.ReadF32($"{p}.norm_cross.bias"),
 
-                Linear1Weight = CfmLinearWeight.FromF32(loader.ReadF32($"{p}.linear1.weight"), outDim: AudioGenConfig.FfnDim, inDim: hidden),
-                Linear2Weight = CfmLinearWeight.FromF32(loader.ReadF32($"{p}.linear2.weight"), outDim: hidden, inDim: AudioGenConfig.FfnDim),
+                Linear1Weight = CfmLinearWeight.FromF32WithF16Conversion(loader.ReadF32($"{p}.linear1.weight"), outDim: AudioGenConfig.FfnDim, inDim: hidden),
+                Linear2Weight = CfmLinearWeight.FromF32WithF16Conversion(loader.ReadF32($"{p}.linear2.weight"), outDim: hidden, inDim: AudioGenConfig.FfnDim),
                 Norm2Weight = loader.ReadF32($"{p}.norm2.weight"),
                 Norm2Bias = loader.ReadF32($"{p}.norm2.bias"),
             };
