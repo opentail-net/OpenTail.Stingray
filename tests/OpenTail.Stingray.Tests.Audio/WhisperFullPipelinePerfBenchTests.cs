@@ -12,13 +12,15 @@ namespace OpenTail.Stingray.Tests.Audio;
 /// </summary>
 public sealed class WhisperFullPipelinePerfBenchTests : HeavyTestBase
 {
+    // Updated 2026-09-05: this machine's models/ now only has the GGUF repackaging (lossless,
+    // same underlying ggml F16 weights) of these checkpoints, not the original ggml-*.bin files --
+    // rotated per this project's disk-space discipline. WhisperPipeline.LoadFromGguf below.
     private static readonly (string Label, string FileName)[] Models =
     [
-        ("Tiny", "ggml-tiny.bin"),
-        ("Base", "ggml-base.bin"),
-        ("Small", "ggml-small.bin"),
-        ("Medium", "ggml-medium.bin"),
-        ("Large-v3", "ggml-large-v3.bin"),
+        ("Base", "whisper-base.gguf"),
+        ("Small", "whisper-small.gguf"),
+        ("Medium", "whisper-medium.gguf"),
+        ("Large-v3", "whisper-large-v3.gguf"),
     ];
 
     [Fact]
@@ -48,7 +50,7 @@ public sealed class WhisperFullPipelinePerfBenchTests : HeavyTestBase
             }
             anyRan = true;
 
-            using var pipeline = WhisperPipeline.Load(modelPath);
+            using var pipeline = WhisperPipeline.LoadFromGguf(modelPath);
 
             var request = new SpeechToTextRequest
             {

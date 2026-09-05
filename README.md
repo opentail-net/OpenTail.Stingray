@@ -43,7 +43,7 @@ Sourced from [`docs/audio-review-progress.md`](docs/audio-review-progress.md), [
 | Parler-TTS | 🟢 | 👂 | CPU | Two correctness bugs found & fixed by ear (2026-08-28) |
 | F5-TTS | 🟢 | 👂 | CPU | RoPE bug root-caused and fixed (2026-08-28) |
 | Fish Speech S2 Pro | 🟢 | 👂 | CPU | User-confirmed "sonically 100% spot on" (2026-08-29) |
-| Whisper ASR | 🟢 | ⚪ | CPU | 100 languages; not re-verified this pass |
+| Whisper ASR | 🟢 | 🔬 | CPU | 100 languages. **2026-09-05**: confirmed and recorded the real end-to-end RTF impact of the native F16C GEMV kernel (landed and correctness-verified in an earlier session, but never re-measured end-to-end until now) — Medium 44.64s→10.32s (RTF 3.72→**0.86**, now faster than real-time), Large-v3 87.69s→19.13s (RTF 7.31→**1.59**), Base/Small ~4-4.4x faster too. Overturns the earlier "Medium/Large-v3 unambiguously too slow" finding. See `docs/audio-review-progress.md` |
 | Piper TTS | 🟢 | 👂 | CPU | Fastest engine, 0.19× RTF; user-confirmed by ear (2026-09-03). Checkpoint not always resident locally (rotated for disk space per this project's own discipline) — that's routine, not a confidence downgrade |
 | Kokoro | 🟢 | 👂 | CPU | Streaming; user-confirmed by ear (2026-09-03). Checkpoint not always resident locally (rotated for disk space) — routine, not a confidence downgrade |
 | MeloTTS | 🟢 | 👂 | CPU | Streaming; user-confirmed by ear (2026-09-03). Checkpoint not always resident locally (rotated for disk space) — routine, not a confidence downgrade |

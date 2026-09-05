@@ -11069,3 +11069,51 @@ the reliable tell for a silent-no-op batch) or look for a real weight-loading lo
 applies retroactively to any status claim in this project's docs that cites "tests pass" without
 a timing/log detail alongside it -- worth a healthy level of distrust until re-confirmed the same
 way this whole sweep has been doing.
+
+## Whisper: the native F16C win's real end-to-end RTF was never actually measured and recorded -- confirmed now, and it's huge (2026-09-05)
+
+Following up on MiniMax-Music3's performance work this session (real 1.9x depth-decoder fix,
+closing most of a gap against an independent C++ reference), picked Whisper Medium/Large-v3 as the
+next documented "genuinely too slow" candidate per this project's own RTF table above. Before
+touching any code, re-read this doc's own Whisper history in full: two kernel-level experiments
+already tried and reverted as real regressions (batched GEMM, Q8_0 weight quantization -- the
+latter 2.5-2.8x SLOWER), a phase-timing investigation that correctly identified the encoder as
+87-88% of wall time, an attention-chunking fix that gave a real but modest 6-16% win, and finally
+a **native F16C shim** (P/Invoke into a ~20-line hand-written AVX2/F16C native DLL, since .NET has
+no managed path to hardware F16->F32 conversion) that measured **4.45-4.69x faster** in isolation
+on the encoder's actual dominant GEMV shapes and was fully wired into production with all
+correctness tests re-passing. That entry's very last line says the full end-to-end RTF was never
+re-measured after landing it ("before any dedicated RTF re-measurement").
+
+That gap sat unmeasured since then. Updated the existing throwaway `WhisperFullPipelinePerfBenchTests`
+to point at the GGUF-repackaged checkpoints actually present in this environment's `models/` now
+(the original `ggml-*.bin` files were rotated out per this project's disk-space discipline;
+`WhisperGgmlModel.LoadFromGguf`'s own doc comment confirms this is a lossless repackaging of the
+identical ggml F16 weights, so the comparison is valid) and re-ran it for real, 12s synthetic
+audio, 3 timed runs per model after a warmup, same methodology as every prior entry in this
+investigation:
+
+| Model | Pre-F16C (last recorded) | Post-F16C (real, just measured) | Speedup |
+|---|---:|---:|---:|
+| Base | 4.20s (RTF 0.350) | 1.04s (RTF **0.087**) | 4.0x |
+| Small | 14.24s (RTF 1.187) | 3.22s (RTF **0.268**) | 4.4x |
+| Medium | 44.64s (RTF 3.720) | 10.32s (RTF **0.860**) | 4.3x |
+| Large-v3 | 87.69s (RTF 7.307) | 19.13s (RTF **1.594**) | 4.6x |
+
+**This overturns the "Medium and Large-v3 are unambiguously too slow for practical real-time-
+adjacent use" verdict from earlier in this doc.** Medium is now genuinely FASTER than real-time
+(RTF 0.860 < 1.0). Large-v3 -- the model that never responded to any of the earlier fixes
+(attention chunking measured flat on it specifically) -- dropped from 7.97x/8.0x real-time to
+1.59x, a real, practically significant change from "unusable" to "real-time-adjacent." No code
+was changed to get this number; it was simply never confirmed and written down after the F16C
+work landed, so the docs kept citing a stale, far more pessimistic picture of Whisper's real
+current state. (Tiny wasn't re-measured this pass -- its `ggml-tiny.bin` equivalent GGUF wasn't
+present in this environment's `models/` at time of testing; not expected to change the conclusion
+given every other size responded consistently.)
+
+**Real lesson matching this session's MiniMax-Music3 work**: a real, verified, production-committed
+performance fix is not "done" until its actual claimed benefit is confirmed at the metric that
+matters (here, end-to-end RTF, not an isolated microbenchmark) and written down -- an isolated
+4.5x GEMV win sitting uncombined with the rest of the pipeline's cost is a promise, not a result.
+`WhisperFullPipelinePerfBenchTests.cs` left in the tree (already was), updated to the current
+GGUF-format checkpoints for future reuse.
