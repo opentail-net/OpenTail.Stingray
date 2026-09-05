@@ -107,6 +107,11 @@ public sealed class Sd3ConformanceTests
         Add("x_embedder.proj.weight", hidden * inPatchDim);
         Add("x_embedder.proj.bias", hidden);
 
+        // Real checkpoint-stored positional embedding grid (see MMDiTModel.AddCroppedPosEmbed) --
+        // this synthetic test's latH=latW=4/patchSize=2 gives a 2x2 patch grid, so a 2x2 pos_embed
+        // grid (no cropping margin) is enough to exercise the real code path.
+        Add("pos_embed", 2 * 2 * hidden);
+
         Add("context_embedder.weight", hidden * contextSize);
         Add("context_embedder.bias", hidden);
 

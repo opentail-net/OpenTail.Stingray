@@ -1,5 +1,92 @@
 # 057 — SD3.5-medium performance handoff
 
+## RESOLVED, 2026-09-05: four real correctness bugs found and fixed via direct diffusers source comparison -- real, coherent (non-photorealistic) image output achieved
+
+Following this doc's own "next step is numeric verification, not more performance work" pointer.
+Downloaded real checkpoints (`sd3.5_medium-Q4_K_M.gguf` via `stingray pull`, text encoders + VAE
+via `hf download adamo1139/stable-diffusion-3.5-medium-ungated`, a stock CLIP tokenizer) and ran
+the exact 256x256/20-step/seed-42 disambiguation test this doc already called for ("a red apple on
+a wooden table"), iterating four times as each real bug was found and fixed. Every fix below was
+confirmed by directly reading `examples/diffusers/src/diffusers/models/{attention.py,
+normalization.py,embeddings.py}` first (CLAUDE.md rule 8), not guessed.
+
+**The real image progression, in order (this is itself useful evidence for anyone re-verifying):**
+1. **Before any fix**: pure disorganized, oversaturated color noise -- fine, roughly pixel/small-
+   blob-scale, no structure at all.
+2. **After fix 1 (norm_hidden_states2 caching) alone**: visually indistinguishable from (1) --
+   this fix was real but not the dominant symptom driver.
+3. **After fix 2 (VAE scale/shift) added**: still visually near-identical to (1)/(2) (confirmed the
+   fix had compiled in via DLL timestamp) -- also real, but garbage-in-garbage-out: a wrong-but-
+   still-arbitrary latent looks like noise under any reasonable VAE scale.
+4. **After fix 3 (unpatchify channel order) added**: a QUALITATIVE change -- from garish random
+   blotches to a much finer, muted, perfectly regular/periodic grid-like WEAVE texture, uniform
+   across the whole image, no spatial variation anywhere. This specific signature (regular,
+   position-independent texture) is the classic symptom of a transformer with no positional
+   information reaching it.
+5. **After fix 4 (positional embedding) added**: a MAJOR qualitative change -- real, coherent,
+   asymmetric image structure: distinct object/geometric shapes, real edges, shading, and what
+   reads as reflections on a surface, warm brown/orange/yellow tones. **Not** a clean,
+   photorealistic "red apple on a wooden table" (SD3.5-medium at 20 steps / 256x256 / a Q4_K_M
+   quant is not going to be photorealistic regardless), but unambiguously a real generated image
+   with genuine spatial structure -- not noise, not a uniform texture, by a wide margin the
+   farthest this checkpoint has ever gotten in this project's history. This is the honest, current
+   state: real progress, not (yet) a confirmed "this exactly matches the prompt" result.
+
+**The four real bugs, each in `src/OpenTail.Stingray.Diffusion/`:**
+
+1. **`SD3/MMDiTModel.cs`: dual-attention blocks normalized the WRONG input for `attn2`.** Real
+   `SD35AdaLayerNormZeroX.forward` computes BOTH `norm_hidden_states` (for `attn`) and
+   `norm_hidden_states2` (for `attn2`) from ONE shared `self.norm(hidden_states)` call over the
+   block's ORIGINAL, pre-attention `hidden_states` -- both are cached together before any attention
+   runs. This port instead recomputed `norm_hidden_states2` at the point of use, by which time `x`
+   had already been mutated by the first attention's residual add -- feeding `attn2` a LayerNorm of
+   the wrong (post-residual) input. Fixed by adding a `NormedImg2` workspace buffer, computed
+   immediately after the main branch's `ModulateNorm` (before any mutation), used at the `attn2`
+   call site instead of recomputing.
+2. **`VaeDecoder.cs`: SD3.5's VAE was silently decoded with FLUX/Z-Image-Turbo's scale/shift.**
+   `VaeDecoder` is shared across SD1.5/SDXL (4-channel), FLUX.1/Z-Image-Turbo (16-channel, real
+   scale=1/0.3611, shift=0.1159), and SD3/3.5 (ALSO 16-channel, but a genuinely different VAE
+   checkpoint with its own real `scaling_factor=1.5305`/`shift_factor=0.0609`, confirmed from the
+   real `stabilityai/stable-diffusion-3.5-medium` `vae/config.json`) -- channel count alone cannot
+   distinguish the two 16-channel cases, and the existing heuristic silently applied FLUX's
+   constants to SD3.5's latents (~4.24x scale error). Added a `Decode(..., float? scaleOverride,
+   float? shiftOverride)` overload; `Sd3Pipeline.cs` now passes its own real values explicitly.
+3. **`SD3/MMDiTModel.cs`: unpatchify assumed the WRONG per-patch channel/spatial flattening
+   order.** Real `_unpatchify` (`x.reshape(B,h,w,p,p,c)` then `einsum("nhwpqc->nchpwq")`) lays out
+   each patch token's raw output as `(dy, dx, channel)` with CHANNEL fastest-varying. This port
+   assumed the same `(channel, dy, dx)` order patchify's INPUT side correctly uses (matching
+   `x_embedder`'s real `Conv2d` weight layout) -- but `x_embedder.proj` and `final_layer.linear`
+   are different real weight matrices with genuinely different flattening conventions, not
+   symmetric. Fixed the unpatchify loop order (dy outer, dx middle, channel innermost).
+4. **`SD3/MMDiTModel.cs`: no positional embedding was ever added to image tokens.** Real
+   `PatchEmbed.forward` does `latent = self.proj(latent); return latent + pos_embed` -- a real,
+   checkpoint-stored 2D sincos positional embedding (confirmed via `list-tensors`: a real tensor
+   literally named `pos_embed`, corresponding to a 384x384 position grid = this checkpoint's real
+   `pos_embed_max_size` config), center-cropped to the actual generation's patch grid
+   (`top/left = (384 - height_or_width) / 2`, per the real `cropped_pos_embed`) and added to every
+   patch token BEFORE any transformer block runs. This port added no positional information
+   anywhere -- added `MMDiTModel.AddCroppedPosEmbed`, lazily loading and caching the real tensor,
+   applied right after the `x_embedder` projection.
+
+**Real correctness verification**: `Sd3ConformanceTests` (4/4, including the structural
+`Sd3_MMDiTModel_Forward_ExecutesCorrectly` smoke test, updated with a synthetic `pos_embed` tensor
+so its mock weight set still exercises the real code path) and `Sd3TimestepEmbedParityTests` (the
+existing real numeric oracle for the timestep/pooled-embedding conditioning vector, unaffected by
+any of these four fixes) both re-pass clean.
+
+**Not yet done / real open items**: the output is not yet numerically golden-verified against a
+real diffusers reference (no Python-side oracle was built this pass -- the direct source-reading
+methodology was used instead, and the real image progression above is the actual evidence), and
+the current output, while a real image, is not confirmed to match the specific prompt content. If
+further chasing this: the remaining most-likely next levers (not yet checked) are the CLIP text
+encoder's pooled-output extraction (EOS-token position vs real `CLIPTextModelWithProjection`) and
+whether joint-attention's QK-norm could still be degrading text-conditioning influence even with
+positions now correct. Checkpoints (`models/sd3.5_medium-Q4_K_M.gguf`,
+`models/sd35-medium-aux/`, `models/clip_tokenizer.json`) deleted after this pass per this project's
+disk-space convention -- re-fetchable via the "How to reproduce" section below (the
+`--clip-tokenizer` file can come from any stock CLIP checkpoint, e.g.
+`hf download openai/clip-vit-large-patch14 tokenizer.json`).
+
 **Status: paused 2026-09-02, ready to hand off.** This doc is written as a self-contained brief
 for whoever (human or AI) picks this back up — you should not need to re-read the whole session
 history to continue.

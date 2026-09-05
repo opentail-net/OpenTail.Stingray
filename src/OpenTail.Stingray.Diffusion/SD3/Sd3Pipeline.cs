@@ -183,7 +183,11 @@ public sealed class Sd3Pipeline : IDisposable, IDiffusionPipeline
         }
 
         // 4. VAE Decode (16-channel latents)
-        var pixels = _vae.Decode(x, latH, latW);
+        // Real SD3/3.5 VAE scaling_factor=1.5305/shift_factor=0.0609 (confirmed from the real
+        // stabilityai/stable-diffusion-3.5-medium vae/config.json) -- a DIFFERENT 16-channel VAE
+        // checkpoint than FLUX/Z-Image-Turbo's, so VaeDecoder's channel-count-based default (tuned
+        // for FLUX/Z-Image) is wrong here; pass the real values explicitly.
+        var pixels = _vae.Decode(x, latH, latW, scaleOverride: 1f / 1.5305f, shiftOverride: 0.0609f);
 
         // 5. Optional Super-Resolution
         int outWidth = width, outHeight = height;

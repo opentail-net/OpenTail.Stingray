@@ -57,6 +57,41 @@ public sealed class MMDiTModel : IDisposable
 
     private float[]? TryGetWeight(string name) => _weightReader.TryGet(name);
 
+    // Real, checkpoint-stored 2D sincos positional embedding (`pos_embed`, real shape
+    // [1, PosEmbedMaxSize^2, HiddenSize] flattened) -- see AddCroppedPosEmbed's call site doc
+    // comment. Lazily loaded once and cached; PosEmbedMaxSize (384) is derived from the tensor's
+    // own real length, not hardcoded, so this stays correct if a different-size checkpoint variant
+    // is ever loaded.
+    private float[]? _posEmbed;
+    private int _posEmbedMaxSize;
+
+    private unsafe void AddCroppedPosEmbed(float[] x, int numImgTokens, int imgH, int imgW)
+    {
+        if (_posEmbed is null)
+        {
+            _posEmbed = GetWeight("pos_embed");
+            _posEmbedMaxSize = (int)Math.Round(Math.Sqrt(_posEmbed.Length / (double)HiddenSize));
+        }
+
+        int top = (_posEmbedMaxSize - imgH) / 2;
+        int left = (_posEmbedMaxSize - imgW) / 2;
+
+        fixed (float* xp = x, pep = _posEmbed)
+        {
+            for (int py = 0; py < imgH; py++)
+            {
+                for (int px = 0; px < imgW; px++)
+                {
+                    int tokenIdx = py * imgW + px;
+                    int gridIdx = (top + py) * _posEmbedMaxSize + (left + px);
+                    var dst = new Span<float>(xp + (long)tokenIdx * HiddenSize, HiddenSize);
+                    var src = new ReadOnlySpan<float>(pep + (long)gridIdx * HiddenSize, HiddenSize);
+                    TensorPrimitives.Add(dst, src, dst);
+                }
+            }
+        }
+    }
+
     private sealed class Workspace : IDisposable
     {
         public readonly float[] Q;
@@ -64,6 +99,7 @@ public sealed class MMDiTModel : IDisposable
         public readonly float[] V;
         public readonly float[] AttnOut;
         public readonly float[] NormedImg;
+        public readonly float[] NormedImg2;
         public readonly float[] NormedTxt;
         public readonly float[] QkvImg;
         public readonly float[] QkvTxt;
@@ -84,6 +120,7 @@ public sealed class MMDiTModel : IDisposable
             V = ArrayPool<float>.Shared.Rent(totalTokens * hiddenSize);
             AttnOut = ArrayPool<float>.Shared.Rent(totalTokens * hiddenSize);
             NormedImg = ArrayPool<float>.Shared.Rent(numImgTokens * hiddenSize);
+            NormedImg2 = ArrayPool<float>.Shared.Rent(numImgTokens * hiddenSize);
             NormedTxt = ArrayPool<float>.Shared.Rent(numTextTokens * hiddenSize);
             QkvImg = ArrayPool<float>.Shared.Rent(numImgTokens * 3 * hiddenSize);
             QkvTxt = ArrayPool<float>.Shared.Rent(numTextTokens * 3 * hiddenSize);
@@ -103,6 +140,7 @@ public sealed class MMDiTModel : IDisposable
             ArrayPool<float>.Shared.Return(V);
             ArrayPool<float>.Shared.Return(AttnOut);
             ArrayPool<float>.Shared.Return(NormedImg);
+            ArrayPool<float>.Shared.Return(NormedImg2);
             ArrayPool<float>.Shared.Return(NormedTxt);
             ArrayPool<float>.Shared.Return(QkvImg);
             ArrayPool<float>.Shared.Return(QkvTxt);
@@ -311,6 +349,18 @@ public sealed class MMDiTModel : IDisposable
         // Linear x_embedder projection: inPatchDim -> HiddenSize
         var x = Lin("x_embedder.proj", imgTokens, numImgTokens, inPatchDim, HiddenSize);
 
+        // Real `PatchEmbed.forward`: `return latent + pos_embed` -- a real, checkpoint-stored 2D
+        // sincos positional embedding (`pos_embed`, real shape [1, pos_embed_max_size^2=147456,
+        // HiddenSize] i.e. a 384x384 grid for this checkpoint's real `pos_embed_max_size=384`,
+        // confirmed via list-tensors), CENTER-CROPPED to this generation's real `imgH x imgW` grid
+        // (`top/left = (384 - height)//2`) and added elementwise to every patch token. This port
+        // previously added NO positional embedding at all -- every patch token was
+        // position-agnostic, which the joint attention alone cannot compensate for (attention has
+        // no inherent notion of position), plausibly explaining a uniform/periodic-looking output
+        // texture with no real spatial structure. Confirmed via direct source comparison
+        // (embeddings.py's PatchEmbed.forward/cropped_pos_embed), not guessed.
+        AddCroppedPosEmbed(x, numImgTokens, imgH, imgW);
+
         // 2. Project text context: ContextSize (4096) -> HiddenSize
         var c = Lin("context_embedder", textContext, numTextTokens, ContextSize, HiddenSize);
 
@@ -357,6 +407,19 @@ public sealed class MMDiTModel : IDisposable
             // ── Self/Joint Attention ────────────────────────────────────────
             ModulateNorm(x.AsSpan(0, numImgTokens * HiddenSize), ws.NormedImg.AsSpan(0, numImgTokens * HiddenSize), ws.ImgMod.AsSpan(0, imgModChunks * HiddenSize), 0, numImgTokens, HiddenSize);
             ModulateNorm(c.AsSpan(0, numTextTokens * HiddenSize), ws.NormedTxt.AsSpan(0, numTextTokens * HiddenSize), ws.TxtMod.AsSpan(0, txtModChunks * HiddenSize), 0, numTextTokens, HiddenSize);
+
+            // Real SD35AdaLayerNormZeroX.forward computes BOTH norm_hidden_states (chunk 0/1, for
+            // `attn`) AND norm_hidden_states2 (chunk 6/7, for `attn2`) from ONE shared
+            // `self.norm(hidden_states)` call over the block's ORIGINAL, pre-attention `x` --
+            // both are just different affine modulations of the same underlying LayerNorm output,
+            // computed together before any attention/residual touches `x`. Must cache
+            // norm_hidden_states2 here, NOT recompute it later at the attn2 call site: by then `x`
+            // has already been mutated by the first attention's residual (below), so a fresh
+            // ModulateNorm(x, ...) there would normalize the WRONG (post-residual) input -- a real
+            // bug this port had (see docs/057-sd35-performance-handoff.md's open "does gate_msa2
+            // really apply..." lead; the actual bug was WHICH input gets normalized, not the gate).
+            if (dualAttn)
+                ModulateNorm(x.AsSpan(0, numImgTokens * HiddenSize), ws.NormedImg2.AsSpan(0, numImgTokens * HiddenSize), ws.ImgMod.AsSpan(0, imgModChunks * HiddenSize), 6, numImgTokens, HiddenSize);
 
             // Real checkpoint (confirmed via list-tensors on both the safetensors and GGUF forms)
             // stores ONE fused qkv.weight [dim, 3*dim], not three separate qkv.0/1/2 matrices --
@@ -406,8 +469,7 @@ public sealed class MMDiTModel : IDisposable
             // ordinary non-joint self-attention).
             if (dualAttn)
             {
-                ModulateNorm(x.AsSpan(0, numImgTokens * HiddenSize), ws.NormedImg.AsSpan(0, numImgTokens * HiddenSize), ws.ImgMod.AsSpan(0, imgModChunks * HiddenSize), 6, numImgTokens, HiddenSize);
-                Lin($"{blk}.x_block.attn2.qkv", ws.NormedImg.AsSpan(0, numImgTokens * HiddenSize), ws.QkvImg.AsSpan(0, numImgTokens * 3 * HiddenSize), numImgTokens, HiddenSize, 3 * HiddenSize);
+                Lin($"{blk}.x_block.attn2.qkv", ws.NormedImg2.AsSpan(0, numImgTokens * HiddenSize), ws.QkvImg.AsSpan(0, numImgTokens * 3 * HiddenSize), numImgTokens, HiddenSize, 3 * HiddenSize);
                 UnpackQkv(ws.QkvImg.AsSpan(0, numImgTokens * 3 * HiddenSize), ws.Q.AsSpan(0, numImgTokens * HiddenSize), ws.K.AsSpan(0, numImgTokens * HiddenSize), ws.V.AsSpan(0, numImgTokens * HiddenSize), 0, numImgTokens, HiddenSize);
                 ApplyHeadRmsNorm(ws.Q.AsSpan(0, numImgTokens * HiddenSize), $"{blk}.x_block.attn2.ln_q", numImgTokens, NumHeads, HeadDim);
                 ApplyHeadRmsNorm(ws.K.AsSpan(0, numImgTokens * HiddenSize), $"{blk}.x_block.attn2.ln_k", numImgTokens, NumHeads, HeadDim);
@@ -446,6 +508,17 @@ public sealed class MMDiTModel : IDisposable
         Lin("final_layer.linear", ws.NormedImg.AsSpan(0, numImgTokens * HiddenSize), unpatchified.AsSpan(), numImgTokens, HiddenSize, outPatchDim);
 
         // 6. Unpatchify back to [1, 16, latH, latW]
+        //
+        // Real diffusers `_unpatchify`: `x.reshape(B, h, w, p, p, c)` then
+        // `einsum("nhwpqc->nchpwq")` -- the per-token flat vector is laid out as (dy=p, dx=q,
+        // channel=c) with CHANNEL FASTEST-VARYING, the OPPOSITE convention from patchify's input
+        // side above (which flattens as (channel, dy, dx), matching x_embedder's real Conv2d
+        // weight layout [oc, ic, ky, kx]). These are two DIFFERENT weight matrices
+        // (x_embedder.proj vs final_layer.linear) with genuinely different real flattening
+        // conventions -- not symmetric. Getting this wrong scrambles which output channel/spatial
+        // offset each of final_layer.linear's raw output values maps to, producing patch-sized
+        // (not pixel-sized) color-blotch noise after VAE decode -- confirmed via direct comparison
+        // against the real source, not guessed (CLAUDE.md rule 8).
         var outLatent = new float[OutChannels * latH * latW];
         for (int py = 0; py < imgH; py++)
         for (int px = 0; px < imgW; px++)
@@ -454,9 +527,9 @@ public sealed class MMDiTModel : IDisposable
             int srcBase = tokenIdx * outPatchDim;
             int idx = 0;
 
-            for (int ch = 0; ch < OutChannels; ch++)
             for (int dy = 0; dy < p; dy++)
             for (int dx = 0; dx < p; dx++)
+            for (int ch = 0; ch < OutChannels; ch++)
             {
                 int y = py * p + dy;
                 int xCoord = px * p + dx;

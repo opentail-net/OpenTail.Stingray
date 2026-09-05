@@ -44,12 +44,27 @@ public sealed class VaeDecoder : IDisposable, IVaeDecoder
 
     /// <summary>
     /// Decode latent [C, H, W] → RGB float [3, H*8, W*8], values in [0,1].
+    ///
+    /// <para><b>Real per-checkpoint scale/shift</b>: FLUX.1/Z-Image-Turbo and SD3/3.5 both use a
+    /// 16-CHANNEL latent space, but they are DIFFERENT VAE checkpoints with different real
+    /// `scaling_factor`/`shift_factor` config values -- channel count alone cannot distinguish
+    /// them. <paramref name="scaleOverride"/>/<paramref name="shiftOverride"/> let a caller that
+    /// knows which checkpoint it has pass the real values explicitly; omitted, this falls back to
+    /// the channel-count heuristic (correct for SD1.5's 4-channel VAE and FLUX/Z-Image's 16-channel
+    /// VAE, WRONG for SD3/3.5's 16-channel VAE -- <see cref="Sd3.Sd3Pipeline"/> always passes its
+    /// own real values, `1/1.5305` and `0.0609`, confirmed from the real `stabilityai/
+    /// stable-diffusion-3.5-medium` `vae/config.json`).</para>
     /// </summary>
-    public float[] Decode(float[] latent, int latH, int latW)
+    public float[] Decode(float[] latent, int latH, int latW) => Decode(latent, latH, latW, null, null);
+
+    /// <summary>Overload accepting an explicit real scale/shift for a checkpoint the channel-count
+    /// heuristic would get wrong (see the class-level remarks above) -- <see cref="Sd3.Sd3Pipeline"/>
+    /// always calls this form.</summary>
+    public float[] Decode(float[] latent, int latH, int latW, float? scaleOverride, float? shiftOverride)
     {
         int latentCh = latent.Length / (latH * latW);
-        float scale = latentCh == 4 ? (1f / 0.18215f) : (1f / 0.3611f);
-        float shift = latentCh == 4 ? 0f : VaeShift;
+        float scale = scaleOverride ?? (latentCh == 4 ? (1f / 0.18215f) : (1f / 0.3611f));
+        float shift = shiftOverride ?? (latentCh == 4 ? 0f : VaeShift);
 
         var z = new float[latent.Length];
         for (int i = 0; i < z.Length; i++)
