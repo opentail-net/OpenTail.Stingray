@@ -11117,3 +11117,61 @@ matters (here, end-to-end RTF, not an isolated microbenchmark) and written down 
 4.5x GEMV win sitting uncombined with the rest of the pipeline's cost is a promise, not a result.
 `WhisperFullPipelinePerfBenchTests.cs` left in the tree (already was), updated to the current
 GGUF-format checkpoints for future reuse.
+
+## Real, accidentally-lost F16C win recovered for T5 encoders (Parler-TTS, MusicGen, AudioGen) + QwenASR's audio encoder -- an undocumented commit had silently reverted this technique project-wide for `CfmLinearWeight`'s callers (2026-09-05)
+
+While looking for the next lever after Whisper, found that `CfmLinearWeight.FromF32` -- the shared
+factory this history already recorded wiring F16C into for CosyVoice2/Chatterbox's CFM decoder,
+QwenASR's AuT encoder, and Parler-TTS's T5 encoder -- currently does NOT do F16 conversion at all
+(`git blame` traces it to `f54e907`, "chatterbox speed improvement", which reverted `FromF32`
+itself back to plain F32 for every caller, bundled in the same commit as a change to run
+Chatterbox's CFM decoder's CFG cond/uncond branches in `Parallel.Invoke`; three `.wav` files
+committed alongside it -- `..._f32_pristine.wav`, `..._dual_cfm.wav`, `..._flat_matmul.wav` --
+suggest a real audible A/B listening comparison drove it, with no written rationale anywhere in
+this doc). Because `CfmLinearWeight` is now used far more broadly than when F16C was first wired
+in -- AudioGen, MusicGen, ACE-Step's condition/timbre encoders and DiT, and even this session's own
+MiniMax-Music3 depth-decoder fix all construct weights via the same `FromF32` -- that one revert
+silently undid the proven win for every one of them, not just Chatterbox's CFM decoder.
+
+Given the revert's real reason is unknown and plausibly specific to CFM's iterative multi-step
+flow-matching (where small per-step precision loss can compound across Euler steps -- a real risk
+that does NOT apply to a single-pass transformer encoder), did NOT blindly restore F16C to
+`FromF32` itself. Instead added a separate, explicitly-named `FromF32WithF16Conversion` factory
+(so CFM/flow-matching callers -- Chatterbox, CosyVoice2, ACE-Step's DiT, MiniMax-Music3's depth
+decoder -- are left exactly as they are, untouched by this change) and wired it into ONLY the
+genuinely single-pass encoder call sites this history already proved safe before the accidental
+revert: the shared `T5EncoderKernels.Load` (used by MusicGen's t5-base and AudioGen's t5-large),
+Parler-TTS's own gated-FFN `T5EncoderWeights`, and QwenASR's `QwenAsrWeights`/
+`QwenAsrAudioLayerWeights` (all 12 of that file's `CfmLinearWeight.FromF32` call sites are
+genuinely `audio.*`-prefixed AuT-encoder tensors, confirmed by reading the prefix strings, not
+assumed).
+
+**Real, measured correctness**: `AudioGenTextEncoderGoldenParityTests` and
+`MusicGenTextEncoderGoldenParityTests` (real stock t5-large/t5-base checkpoints, cosine > 0.999
+oracle) both re-pass clean with real weight-loading timings (2.0s, 0.6s). `MusicGenDecoderGoldenParityTests`,
+`AudioGenDecoderGoldenParityTests`, `MusicGenEndToEndGoldenParityTests`, and
+`AudioGenEndToEndGoldenParityTests` (the full chained pipelines) all re-pass clean too, real timings
+(1.5-7.1s). QwenASR's own `QwenAsrAudioEncoderTests` skipped visibly (its specific quantized GGUF
+isn't present in this environment right now) -- not independently re-verified this pass, flagged
+honestly rather than assumed safe just because the same class worked elsewhere.
+
+**Real, measured performance** (new throwaway `ZZ_ScratchT5EncoderF16BenchTests`, real MusicGen
+t5-base checkpoint, isolated forward-pass A/B against a hand-built plain-F32 clone of the same
+loader, 20 real tokens, 5 timed runs after warmup):
+
+| | F16C (now default for this call site) | Plain F32 | Speedup | Cosine (F16 vs F32) |
+|---|---:|---:|---:|---:|
+| T5 encoder forward | 37.49ms | 135.02ms | **3.60x** | 1.000000 |
+
+Matches the magnitude of every prior confirmed instance of this technique (Whisper 4.45-4.69x,
+CosyVoice2/Chatterbox CFM 1.5x, QwenASR encoder 1.36x before its own later accidental revert) --
+essentially zero measured precision loss at this scale, consistent with T5's encoder being a
+single forward pass with no iterative accumulation to compound error across.
+
+**Real lesson, third instance this session of the same pattern** (after MiniMax-Music3's AR-loop
+fix and Whisper's unconfirmed-RTF gap): a real, previously-verified performance win can silently
+regress back to baseline as an unintended side effect of an UNRELATED later change, if the two are
+bundled in the same commit without a written rationale -- and nothing catches this automatically,
+since correctness tests don't check performance and performance benchmarks are throwaway files
+that don't run by default. Worth periodically re-auditing "this was proven faster once" claims
+against the actual current code, not just trusting the doc history. No subagents used.

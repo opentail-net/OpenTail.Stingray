@@ -91,6 +91,34 @@ public sealed class CfmLinearWeight
         return new CfmLinearWeight(null, weightF32, outDim, inDim);
     }
 
+    /// <summary>Converts a plain F32 weight matrix to F16 ONCE at construction time and dispatches
+    /// every subsequent call through the native F16C kernel (falling back to F32 automatically when
+    /// <see cref="F16CNative.IsAvailable"/> is false). Deliberately a SEPARATE, explicitly-opted-into
+    /// factory from <see cref="FromF32"/> rather than a change to that method's default behavior:
+    /// <see cref="FromF32"/> itself briefly did this automatically (`ad98570`), then was reverted
+    /// back to plain F32 (`f54e907`, "chatterbox speed improvement") for every caller of this shared
+    /// class at once, with no written rationale beyond a same-commit change that started running a
+    /// CFM decoder's CFG-conditional/unconditional branches in parallel via `Parallel.Invoke` -- the
+    /// three `.wav` files committed alongside that revert suggest a real audible A/B listening
+    /// comparison drove it, plausibly specific to CFM's iterative multi-step flow-matching solve
+    /// (where small per-step precision loss can compound across steps) rather than to F16C itself.
+    /// Given that ambiguity, this method exists so a genuinely single-pass encoder architecture
+    /// (already proven safe for Whisper's/QwenASR's/CosyVoice2's encoders before the revert) can opt
+    /// back into the technique explicitly, without silently re-enabling it for CFM/flow-matching
+    /// callers that may have been reverted for a real, undocumented quality reason. Verify real
+    /// correctness AND performance before keeping any use of this at a new call site -- do not
+    /// assume it is safe just because it worked elsewhere.</summary>
+    public static CfmLinearWeight FromF32WithF16Conversion(float[] weightF32, int outDim, int inDim)
+    {
+        if (!F16CNative.IsAvailable)
+            return new CfmLinearWeight(null, weightF32, outDim, inDim);
+
+        var f16Bits = new short[weightF32.Length];
+        for (int i = 0; i < weightF32.Length; i++)
+            f16Bits[i] = unchecked((short)BitConverter.HalfToUInt16Bits((Half)weightF32[i]));
+        return new CfmLinearWeight(f16Bits, null, outDim, inDim);
+    }
+
     /// <summary>Batch-of-2 row-major matmul: streams each weight row ONCE from RAM and applies it to
     /// BOTH input vectors (e.g. a CFG conditional/unconditional pair) via a single `Parallel.For`
     /// dispatch over output rows, instead of two separate <see cref="MatMul"/> calls (each of which

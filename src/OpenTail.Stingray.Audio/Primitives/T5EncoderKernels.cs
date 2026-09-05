@@ -54,13 +54,13 @@ public static class T5EncoderKernels
             string p = $"{prefix}encoder.block.{i}";
             layers[i] = new T5EncoderLayerWeights
             {
-                SelfAttnQWeight = CfmLinearWeight.FromF32(loader.ReadF32($"{p}.layer.0.SelfAttention.q.weight"), outDim: qkvDim, inDim: dims.DModel),
-                SelfAttnKWeight = CfmLinearWeight.FromF32(loader.ReadF32($"{p}.layer.0.SelfAttention.k.weight"), outDim: qkvDim, inDim: dims.DModel),
-                SelfAttnVWeight = CfmLinearWeight.FromF32(loader.ReadF32($"{p}.layer.0.SelfAttention.v.weight"), outDim: qkvDim, inDim: dims.DModel),
-                SelfAttnOWeight = CfmLinearWeight.FromF32(loader.ReadF32($"{p}.layer.0.SelfAttention.o.weight"), outDim: dims.DModel, inDim: qkvDim),
+                SelfAttnQWeight = CfmLinearWeight.FromF32WithF16Conversion(loader.ReadF32($"{p}.layer.0.SelfAttention.q.weight"), outDim: qkvDim, inDim: dims.DModel),
+                SelfAttnKWeight = CfmLinearWeight.FromF32WithF16Conversion(loader.ReadF32($"{p}.layer.0.SelfAttention.k.weight"), outDim: qkvDim, inDim: dims.DModel),
+                SelfAttnVWeight = CfmLinearWeight.FromF32WithF16Conversion(loader.ReadF32($"{p}.layer.0.SelfAttention.v.weight"), outDim: qkvDim, inDim: dims.DModel),
+                SelfAttnOWeight = CfmLinearWeight.FromF32WithF16Conversion(loader.ReadF32($"{p}.layer.0.SelfAttention.o.weight"), outDim: dims.DModel, inDim: qkvDim),
                 SelfAttnLayerNormWeight = loader.ReadF32($"{p}.layer.0.layer_norm.weight"),
-                FfnWiWeight = CfmLinearWeight.FromF32(loader.ReadF32($"{p}.layer.1.DenseReluDense.wi.weight"), outDim: dims.DFf, inDim: dims.DModel),
-                FfnWoWeight = CfmLinearWeight.FromF32(loader.ReadF32($"{p}.layer.1.DenseReluDense.wo.weight"), outDim: dims.DModel, inDim: dims.DFf),
+                FfnWiWeight = CfmLinearWeight.FromF32WithF16Conversion(loader.ReadF32($"{p}.layer.1.DenseReluDense.wi.weight"), outDim: dims.DFf, inDim: dims.DModel),
+                FfnWoWeight = CfmLinearWeight.FromF32WithF16Conversion(loader.ReadF32($"{p}.layer.1.DenseReluDense.wo.weight"), outDim: dims.DModel, inDim: dims.DFf),
                 FfnLayerNormWeight = loader.ReadF32($"{p}.layer.1.layer_norm.weight"),
             };
         }
