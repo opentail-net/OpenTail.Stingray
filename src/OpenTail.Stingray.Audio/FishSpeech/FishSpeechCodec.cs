@@ -100,6 +100,59 @@ public static class FishSpeechCodec
     /// </summary>
     private static unsafe float[] FullConv1d(float[] x, int inCh, int outCh, int t, float[] weight, float[] bias, int kernel, int dilation, int causalPadLeft)
     {
+        if (kernel == 1 && dilation == 1 && causalPadLeft == 0)
+        {
+            float[] col1 = ArrayPool<float>.Shared.Rent(t * inCh);
+            try
+            {
+                fixed (float* xPtr = x, colPtr = col1, weightPtr = weight, biasPtr = bias)
+                {
+                    var xPtrLocal = xPtr;
+                    var colPtrLocal = colPtr;
+                    var weightPtrLocal = weightPtr;
+                    var biasPtrLocal = biasPtr;
+
+                    if (t <= 32)
+                    {
+                        for (int ic = 0; ic < inCh; ic++)
+                        {
+                            float* xRow = xPtrLocal + ic * t;
+                            for (int ti = 0; ti < t; ti++)
+                                colPtrLocal[ti * inCh + ic] = xRow[ti];
+                        }
+                    }
+                    else
+                    {
+                        Parallel.For(0, inCh, ic =>
+                        {
+                            float* xRow = xPtrLocal + ic * t;
+                            for (int ti = 0; ti < t; ti++)
+                                colPtrLocal[ti * inCh + ic] = xRow[ti];
+                        });
+                    }
+
+                    var output = new float[outCh * t];
+                    fixed (float* outputPtr = output)
+                    {
+                        var outputPtrLocal = outputPtr;
+                        Parallel.For(0, outCh, oc =>
+                        {
+                            float b = biasPtrLocal[oc];
+                            float* wOc = weightPtrLocal + oc * inCh;
+                            float* outBase = outputPtrLocal + oc * t;
+                            for (int ti = 0; ti < t; ti++)
+                                outBase[ti] = b + SimdKernels.DotF32(wOc, colPtrLocal + ti * inCh, inCh);
+                        });
+                    }
+                    return output;
+                }
+            }
+            finally
+            {
+                ArrayPool<float>.Shared.Return(col1);
+            }
+        }
+
         int rowLen = inCh * kernel;
         float[] col = ArrayPool<float>.Shared.Rent(t * rowLen);
         try
@@ -201,7 +254,7 @@ public static class FishSpeechCodec
     /// oracle producing an unexpectedly short PCM length (1024 instead of the expected 4096 for
     /// a 2-timestep input) before any cosine-similarity check was even needed.</para>
     /// </summary>
-    private static float[] CausalConvTranspose1d(float[] x, int inCh, int outCh, int t, float[] weight, float[] bias, int kernel, int stride)
+    private static unsafe float[] CausalConvTranspose1d(float[] x, int inCh, int outCh, int t, float[] weight, float[] bias, int kernel, int stride)
     {
         int rawT = (t - 1) * stride + kernel; // padding=0 in the underlying nn.ConvTranspose1d
         float[] raw = ArrayPool<float>.Shared.Rent(outCh * rawT);
@@ -209,29 +262,102 @@ public static class FishSpeechCodec
         {
             Array.Clear(raw, 0, outCh * rawT);
 
-            Parallel.For(0, outCh, oc =>
+            fixed (float* rawPtr = raw, weightPtr = weight, xPtr = x, biasPtr = bias)
             {
-                float b = bias[oc];
-                int dstBase = oc * rawT;
-                raw.AsSpan(dstBase, rawT).Fill(b);
+                var rawPtrLocal = rawPtr;
+                var weightPtrLocal = weightPtr;
+                var xPtrLocal = xPtr;
+                var biasPtrLocal = biasPtr;
 
-                for (int ic = 0; ic < inCh; ic++)
+                Parallel.For(0, outCh, oc =>
                 {
-                    int srcBase = ic * t;
-                    int wBase = (ic * outCh + oc) * kernel;
-                    var wSpan = weight.AsSpan(wBase, kernel);
+                    float b = biasPtrLocal[oc];
+                    int dstBase = oc * rawT;
+                    float* dst = rawPtrLocal + dstBase;
+                    for (int i = 0; i < rawT; i++) dst[i] = b;
 
-                    for (int ti = 0; ti < t; ti++)
+                    for (int ic = 0; ic < inCh; ic++)
                     {
-                        float v = x[srcBase + ti];
-                        if (v == 0f) continue;
+                        float* srcRow = xPtrLocal + ic * t;
+                        float* w = weightPtrLocal + (ic * outCh + oc) * kernel;
 
-                        int outStart = dstBase + ti * stride;
-                        var rawSpan = raw.AsSpan(outStart, kernel);
-                        TensorPrimitives.MultiplyAdd(wSpan, v, rawSpan, rawSpan);
+                        switch (kernel)
+                        {
+                            case 2:
+                                float w0 = w[0], w1 = w[1];
+                                for (int ti = 0; ti < t; ti++)
+                                {
+                                    float v = srcRow[ti];
+                                    if (v == 0f) continue;
+                                    float* r = dst + ti * stride;
+                                    r[0] += v * w0;
+                                    r[1] += v * w1;
+                                }
+                                break;
+                            case 4:
+                                float k0 = w[0], k1 = w[1], k2 = w[2], k3 = w[3];
+                                for (int ti = 0; ti < t; ti++)
+                                {
+                                    float v = srcRow[ti];
+                                    if (v == 0f) continue;
+                                    float* r = dst + ti * stride;
+                                    r[0] += v * k0;
+                                    r[1] += v * k1;
+                                    r[2] += v * k2;
+                                    r[3] += v * k3;
+                                }
+                                break;
+                            case 8:
+                                var wVec8 = *(System.Runtime.Intrinsics.Vector256<float>*)w;
+                                for (int ti = 0; ti < t; ti++)
+                                {
+                                    float v = srcRow[ti];
+                                    if (v == 0f) continue;
+                                    float* r = dst + ti * stride;
+                                    var rVec = *(System.Runtime.Intrinsics.Vector256<float>*)r;
+                                    var vVec = System.Runtime.Intrinsics.Vector256.Create(v);
+                                    *(System.Runtime.Intrinsics.Vector256<float>*)r = System.Runtime.Intrinsics.X86.Fma.IsSupported
+                                        ? System.Runtime.Intrinsics.X86.Fma.MultiplyAdd(vVec, wVec8, rVec)
+                                        : (vVec * wVec8 + rVec);
+                                }
+                                break;
+                            case 16:
+                                var w0_8 = *(System.Runtime.Intrinsics.Vector256<float>*)w;
+                                var w1_8 = *(System.Runtime.Intrinsics.Vector256<float>*)(w + 8);
+                                for (int ti = 0; ti < t; ti++)
+                                {
+                                    float v = srcRow[ti];
+                                    if (v == 0f) continue;
+                                    float* r = dst + ti * stride;
+                                    var vVec = System.Runtime.Intrinsics.Vector256.Create(v);
+                                    var r0 = *(System.Runtime.Intrinsics.Vector256<float>*)r;
+                                    var r1 = *(System.Runtime.Intrinsics.Vector256<float>*)(r + 8);
+                                    if (System.Runtime.Intrinsics.X86.Fma.IsSupported)
+                                    {
+                                        *(System.Runtime.Intrinsics.Vector256<float>*)r = System.Runtime.Intrinsics.X86.Fma.MultiplyAdd(vVec, w0_8, r0);
+                                        *(System.Runtime.Intrinsics.Vector256<float>*)(r + 8) = System.Runtime.Intrinsics.X86.Fma.MultiplyAdd(vVec, w1_8, r1);
+                                    }
+                                    else
+                                    {
+                                        *(System.Runtime.Intrinsics.Vector256<float>*)r = vVec * w0_8 + r0;
+                                        *(System.Runtime.Intrinsics.Vector256<float>*)(r + 8) = vVec * w1_8 + r1;
+                                    }
+                                }
+                                break;
+                            default:
+                                for (int ti = 0; ti < t; ti++)
+                                {
+                                    float v = srcRow[ti];
+                                    if (v == 0f) continue;
+                                    float* r = dst + ti * stride;
+                                    for (int k = 0; k < kernel; k++)
+                                        r[k] += v * w[k];
+                                }
+                                break;
+                        }
                     }
-                }
-            });
+                });
+            }
 
             int cropRight = kernel - stride; // real `pad = kernel_size - stride`, padding_left=0
             int outT = rawT - cropRight;
