@@ -541,3 +541,15 @@
 [XTTS-v2] prompt="Hello, I will make some lunch, darling!" audio=3.85s samples=92416
 [XTTS-v2] runs(s)=[10.517, 10.844, 10.689] mean=10.683s RTF=2.774 (lower=faster; 1.0=realtime)
 
+[XTTS-v2] prompt="Hello, I will make some lunch, darling!" audio=3.85s samples=92416
+[XTTS-v2] runs(s)=[10.444, 10.525, 10.450] mean=10.473s RTF=2.720 (lower=faster; 1.0=realtime)
+
+[XTTS-v2] prompt="Hello, I will make some lunch, darling!" audio=3.85s samples=92416
+[XTTS-v2] runs(s)=[9.843, 9.694, 9.688] mean=9.742s RTF=2.530 (lower=faster; 1.0=realtime)
+
+[XTTS-v2] prompt="Hello, I will make some lunch, darling!" audio=3.85s samples=92416
+[XTTS-v2] runs(s)=[9.794, 9.689, 9.614] mean=9.699s RTF=2.519 (lower=faster; 1.0=realtime)
+
+[XTTS-v2] prompt="Hello, I will make some lunch, darling!" audio=3.85s samples=92416
+[XTTS-v2] runs(s)=[9.739, 9.828, 9.882] mean=9.816s RTF=2.549 (lower=faster; 1.0=realtime)
+

@@ -1,4 +1,7 @@
 
+using System.Numerics.Tensors;
+using OpenTail.Stingray.Cpu;
+
 namespace OpenTail.Stingray.Audio.Xtts;
 
 /// <summary>
@@ -69,8 +72,10 @@ public sealed class XttsGptEmbeddings
         var output = new float[dim];
         int tokBase = tokenId * dim;
         int posBase = melPos * dim;
-        for (int d = 0; d < dim; d++)
-            output[d] = MelEmbeddingWeight[tokBase + d] + MelPosEmbeddingWeight[posBase + d];
+        TensorPrimitives.Add(
+            MelEmbeddingWeight.AsSpan(tokBase, dim),
+            MelPosEmbeddingWeight.AsSpan(posBase, dim),
+            output.AsSpan(0, dim));
         return output;
     }
 
@@ -106,32 +111,23 @@ public sealed class XttsGptEmbeddings
     /// <summary>The real separate `gpt.final_norm` alone (no head projection) -- used by <see cref="XttsGptLatents"/> to extract real vocoder-input hidden states.</summary>
     public float[] FinalNormOnly(float[] hidden) => LayerNorm(hidden, FinalNormWeight, FinalNormBias);
 
-    private static float[] LayerNorm(float[] x, float[] gamma, float[] beta, float eps = 1e-5f)
+    private static unsafe float[] LayerNorm(float[] x, float[] gamma, float[] beta, float eps = 1e-5f)
     {
-        int dim = x.Length;
-        double mean = 0;
-        for (int i = 0; i < dim; i++) mean += x[i];
-        mean /= dim;
-        double var = 0;
-        for (int i = 0; i < dim; i++) { double d = x[i] - mean; var += d * d; }
-        var /= dim;
-        float invStd = (float)(1.0 / Math.Sqrt(var + eps));
-        var output = new float[dim];
-        for (int i = 0; i < dim; i++)
-            output[i] = (float)((x[i] - mean) * invStd) * gamma[i] + beta[i];
+        var output = new float[x.Length];
+        fixed (float* xp = x, gp = gamma, bp = beta, op = output)
+        {
+            SimdKernels.LayerNorm(op, xp, gp, bp, x.Length, eps);
+        }
         return output;
     }
 
-    private static float[] Linear(float[] x, float[] weight, float[] bias, int outDim)
+    private static unsafe float[] Linear(float[] x, float[] weight, float[] bias, int outDim)
     {
         int inDim = x.Length;
         var output = new float[outDim];
-        for (int o = 0; o < outDim; o++)
+        fixed (float* op = output, wp = weight, bp = bias, xp = x)
         {
-            float sum = bias[o];
-            int wBase = o * inDim;
-            for (int i = 0; i < inDim; i++) sum += weight[wBase + i] * x[i];
-            output[o] = sum;
+            SimdKernels.MatVecF32(op, wp, bp, xp, outDim, inDim);
         }
         return output;
     }

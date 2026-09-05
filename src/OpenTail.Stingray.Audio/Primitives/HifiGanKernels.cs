@@ -1,4 +1,8 @@
 
+using System.Numerics.Tensors;
+using System.Runtime.Intrinsics;
+using System.Runtime.Intrinsics.X86;
+
 namespace OpenTail.Stingray.Audio.Primitives;
 
 /// <summary>
@@ -14,6 +18,34 @@ namespace OpenTail.Stingray.Audio.Primitives;
 public static class HifiGanKernels
 {
     public static float LeakyRelu(float v, float alpha = 0.1f) => v >= 0f ? v : v * alpha;
+
+    public static void LeakyReluInPlace(Span<float> x, float alpha = 0.1f)
+    {
+        int i = 0;
+        if (Avx.IsSupported && x.Length >= 8)
+        {
+            var vZero = Vector256<float>.Zero;
+            var vAlpha = Vector256.Create(alpha);
+            unsafe
+            {
+                fixed (float* p = x)
+                {
+                    for (; i + 8 <= x.Length; i += 8)
+                    {
+                        var v = Avx.LoadVector256(p + i);
+                        var vNeg = Avx.Multiply(v, vAlpha);
+                        var mask = Avx.Compare(v, vZero, FloatComparisonMode.OrderedGreaterThanOrEqualNonSignaling);
+                        var res = Avx.BlendVariable(vNeg, v, mask);
+                        Avx.Store(p + i, res);
+                    }
+                }
+            }
+        }
+        for (; i < x.Length; i++)
+        {
+            if (x[i] < 0f) x[i] *= alpha;
+        }
+    }
 
     /// <summary>Real `torch.nn.functional.interpolate(x, scale_factor=[s], mode="linear")` (default
     /// `align_corners=False`), channel-first `[ch,tIn]` -&gt; `[ch,tOut]` where `tOut = floor(tIn*scale)`.
@@ -48,13 +80,19 @@ public static class HifiGanKernels
 
     public static float[] Conv1dDilated(float[] input, int inCh, int t, float[] weight, float[]? bias, int outCh, int kernel, int dilation)
     {
-        int pad = (kernel * dilation - dilation) / 2;
         var output = new float[outCh * t];
+        Conv1dDilated(input, inCh, t, weight, bias, outCh, kernel, dilation, output);
+        return output;
+    }
+
+    public static void Conv1dDilated(float[] input, int inCh, int t, float[] weight, float[]? bias, int outCh, int kernel, int dilation, float[] output)
+    {
+        int pad = (kernel * dilation - dilation) / 2;
         Parallel.For(0, outCh, oc =>
         {
             float b = bias is null ? 0f : bias[oc];
             int wBase = oc * inCh * kernel;
-            for (int ti = 0; ti < t; ti++) output[oc * t + ti] = b;
+            output.AsSpan(oc * t, t).Fill(b);
 
             for (int ic = 0; ic < inCh; ic++)
             {
@@ -69,7 +107,6 @@ public static class HifiGanKernels
                 }
             }
         });
-        return output;
     }
 
     /// <summary>output[dstBase+ti] += weight * input[srcBase+ti+shift] for all ti where the shifted
@@ -94,21 +131,31 @@ public static class HifiGanKernels
         var output = new float[outCh * outT];
         Parallel.For(0, outCh, oc =>
         {
-            for (int ti = 0; ti < outT; ti++) output[oc * outT + ti] = bias[oc];
+            output.AsSpan(oc * outT, outT).Fill(bias[oc]);
 
             for (int ic = 0; ic < inCh; ic++)
             {
                 int srcBase = ic * t;
                 int wBase = ic * outCh * kernel + oc * kernel;
+                var wSpan = weight.AsSpan(wBase, kernel);
+
                 for (int si = 0; si < t; si++)
                 {
                     float inputVal = input[srcBase + si];
                     if (inputVal == 0f) continue;
                     int outStart = si * stride - pad;
-                    for (int k = 0; k < kernel; k++)
+                    if (outStart >= 0 && outStart + kernel <= outT)
                     {
-                        int oti = outStart + k;
-                        if ((uint)oti < (uint)outT) output[oc * outT + oti] += weight[wBase + k] * inputVal;
+                        var dst = output.AsSpan(oc * outT + outStart, kernel);
+                        TensorPrimitives.MultiplyAdd(wSpan, inputVal, dst, dst);
+                    }
+                    else
+                    {
+                        for (int k = 0; k < kernel; k++)
+                        {
+                            int oti = outStart + k;
+                            if ((uint)oti < (uint)outT) output[oc * outT + oti] += weight[wBase + k] * inputVal;
+                        }
                     }
                 }
             }

@@ -1534,7 +1534,10 @@ public static unsafe class SimdKernels
         }
     }
 
-    public static void MatVecF32(float* output, float* matrix, float* input, int rows, int cols)
+    public static void MatVecF32(float* output, float* matrix, float* input, int rows, int cols) =>
+        MatVecF32(output, matrix, null, input, rows, cols);
+
+    public static void MatVecF32(float* output, float* matrix, float* bias, float* input, int rows, int cols)
     {
         if (Fma.IsSupported && cols >= 32)
         {
@@ -1547,7 +1550,67 @@ public static unsafe class SimdKernels
                     int start = t * chunkSize;
                     int end = Math.Min(rows, start + chunkSize);
                     int r = start;
-                    for (; r + 4 <= end; r += 4)
+                    if (bias != null)
+                    {
+                        for (; r + 4 <= end; r += 4)
+                        {
+                            float* m0 = matrix + (long)r * cols;
+                            float* m1 = matrix + (long)(r + 1) * cols;
+                            float* m2 = matrix + (long)(r + 2) * cols;
+                            float* m3 = matrix + (long)(r + 3) * cols;
+                            MatVecF32_4Row(m0, m1, m2, m3, input, cols, out float r0, out float r1, out float r2, out float r3);
+                            output[r] = r0 + bias[r];
+                            output[r + 1] = r1 + bias[r + 1];
+                            output[r + 2] = r2 + bias[r + 2];
+                            output[r + 3] = r3 + bias[r + 3];
+                        }
+                        for (; r < end; r++)
+                        {
+                            output[r] = DotF32(matrix + (long)r * cols, input, cols) + bias[r];
+                        }
+                    }
+                    else
+                    {
+                        for (; r + 4 <= end; r += 4)
+                        {
+                            float* m0 = matrix + (long)r * cols;
+                            float* m1 = matrix + (long)(r + 1) * cols;
+                            float* m2 = matrix + (long)(r + 2) * cols;
+                            float* m3 = matrix + (long)(r + 3) * cols;
+                            MatVecF32_4Row(m0, m1, m2, m3, input, cols, out output[r], out output[r + 1], out output[r + 2], out output[r + 3]);
+                        }
+                        for (; r < end; r++)
+                        {
+                            output[r] = DotF32(matrix + (long)r * cols, input, cols);
+                        }
+                    }
+                });
+            }
+            else
+            {
+                int r = 0;
+                if (bias != null)
+                {
+                    for (; r + 4 <= rows; r += 4)
+                    {
+                        float* m0 = matrix + (long)r * cols;
+                        float* m1 = matrix + (long)(r + 1) * cols;
+                        float* m2 = matrix + (long)(r + 2) * cols;
+                        float* m3 = matrix + (long)(r + 3) * cols;
+                        MatVecF32_4Row(m0, m1, m2, m3, input, cols, out float r0, out float r1, out float r2, out float r3);
+                        output[r] = r0 + bias[r];
+                        output[r + 1] = r1 + bias[r + 1];
+                        output[r + 2] = r2 + bias[r + 2];
+                        output[r + 3] = r3 + bias[r + 3];
+                    }
+                    for (; r < rows; r++)
+                    {
+                        output[r] = DotF32(matrix + (long)r * cols, input, cols) + bias[r];
+                    }
+                }
+                else
+                {
+                    for (; r + 4 <= rows; r += 4)
                     {
                         float* m0 = matrix + (long)r * cols;
                         float* m1 = matrix + (long)(r + 1) * cols;
@@ -1555,26 +1618,10 @@ public static unsafe class SimdKernels
                         float* m3 = matrix + (long)(r + 3) * cols;
                         MatVecF32_4Row(m0, m1, m2, m3, input, cols, out output[r], out output[r + 1], out output[r + 2], out output[r + 3]);
                     }
-                    for (; r < end; r++)
+                    for (; r < rows; r++)
                     {
                         output[r] = DotF32(matrix + (long)r * cols, input, cols);
                     }
-                });
-            }
-            else
-            {
-                int r = 0;
-                for (; r + 4 <= rows; r += 4)
-                {
-                    float* m0 = matrix + (long)r * cols;
-                    float* m1 = matrix + (long)(r + 1) * cols;
-                    float* m2 = matrix + (long)(r + 2) * cols;
-                    float* m3 = matrix + (long)(r + 3) * cols;
-                    MatVecF32_4Row(m0, m1, m2, m3, input, cols, out output[r], out output[r + 1], out output[r + 2], out output[r + 3]);
-                }
-                for (; r < rows; r++)
-                {
-                    output[r] = DotF32(matrix + (long)r * cols, input, cols);
                 }
             }
             return;
@@ -1582,16 +1629,20 @@ public static unsafe class SimdKernels
 
         if (rows >= MinRowsForParallel)
         {
-            var m = matrix; var inp = input; var outp = output;
+            var m = matrix; var inp = input; var outp = output; var b = bias;
             Parallel.For(0, rows, s_parallelOpts, i =>
             {
-                outp[i] = DotF32(m + (long)i * cols, inp, cols);
+                float dot = DotF32(m + (long)i * cols, inp, cols);
+                outp[i] = b != null ? dot + b[i] : dot;
             });
         }
         else
         {
             for (int i = 0; i < rows; i++)
-                output[i] = DotF32(matrix + (long)i * cols, input, cols);
+            {
+                float dot = DotF32(matrix + (long)i * cols, input, cols);
+                output[i] = bias != null ? dot + bias[i] : dot;
+            }
         }
     }
 

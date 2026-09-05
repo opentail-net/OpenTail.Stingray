@@ -17,7 +17,7 @@ public static class XttsGptTrunk
     /// Evaluates ONE step of the GPT2 trunk with KV cache at the current position.
     /// Zero heap allocations via pre-allocated scratch workspace.
     /// </summary>
-    public static ReadOnlySpan<float> Step(XttsGptWeights w, XttsGptCache cache, ReadOnlySpan<float> inputVec)
+    public static ReadOnlySpan<float> Step(XttsGptWeights w, XttsGptCache cache, ReadOnlySpan<float> inputVec, bool computeFinalNorm = true)
     {
         ReadOnlySpan<float> x = inputVec;
         bool trace = Environment.GetEnvironmentVariable("STINGRAY_XTTS_LAYER_TRACE") == "1";
@@ -32,6 +32,8 @@ public static class XttsGptTrunk
                 Console.Error.WriteLine($"[XttsLayerTrace] layer={i} rms={Math.Sqrt(sumsq / x.Length):F6} first3=[{x[0]:F4},{x[1]:F4},{x[2]:F4}]");
             }
         }
+
+        if (!computeFinalNorm) return ReadOnlySpan<float>.Empty;
 
         LayerNorm(cache.Output, w.FinalNormWeight, w.FinalNormBias, cache.LastHidden);
         return cache.LastHidden;
@@ -54,7 +56,6 @@ public static class XttsGptTrunk
         var kSlot = cache.K[layerIdx][pos];
         var vSlot = cache.V[layerIdx][pos];
 
-        Array.Copy(cache.Qkv, 0, cache.Q, 0, dim);
         Array.Copy(cache.Qkv, dim, kSlot, 0, dim);
         Array.Copy(cache.Qkv, 2 * dim, vSlot, 0, dim);
 
@@ -70,7 +71,7 @@ public static class XttsGptTrunk
         for (int h = 0; h < heads; h++)
         {
             int hOff = h * headDim;
-            var qSpan = cache.Q.AsSpan(hOff, headDim);
+            var qSpan = cache.Qkv.AsSpan(hOff, headDim);
             for (int j = 0; j < t; j++)
             {
                 float dot = System.Numerics.Tensors.TensorPrimitives.Dot(qSpan, kLayer[j].AsSpan(hOff, headDim));
@@ -117,11 +118,10 @@ public static class XttsGptTrunk
 
     private static unsafe void LinearWithBias(float[] input, float[] weight, float[] bias, int outDim, int inDim, float[] output)
     {
-        fixed (float* wp = weight, xp = input, op = output)
+        fixed (float* wp = weight, bp = bias, xp = input, op = output)
         {
-            SimdKernels.MatVecF32(op, wp, xp, outDim, inDim);
+            SimdKernels.MatVecF32(op, wp, bp, xp, outDim, inDim);
         }
-        System.Numerics.Tensors.TensorPrimitives.Add(output.AsSpan(0, outDim), bias.AsSpan(0, outDim), output.AsSpan(0, outDim));
     }
 
     private static unsafe void LayerNorm(ReadOnlySpan<float> x, float[] gamma, float[] beta, float[] output, float eps = 1e-5f)

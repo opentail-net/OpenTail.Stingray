@@ -62,7 +62,7 @@ public static class XttsGptGenerator
         for (int i = 0; i < prefixLen; i++)
         {
             var tokenVec = prefixTokenMajor.AsSpan(i * dim, dim);
-            XttsGptTrunk.Step(trunkWeights, cache, tokenVec);
+            XttsGptTrunk.Step(trunkWeights, cache, tokenVec, computeFinalNorm: false);
         }
 
         // 2. Feed start audio token (token 0 in mel modality)

@@ -1,4 +1,7 @@
 
+using System.Numerics.Tensors;
+using OpenTail.Stingray.Audio.Primitives;
+
 namespace OpenTail.Stingray.Audio.Xtts;
 
 /// <summary>
@@ -29,7 +32,7 @@ public static class XttsVocoder
 
         for (int stage = 0; stage < numStages; stage++)
         {
-            for (int i = 0; i < o.Length; i++) o[i] = HifiGanKernels.LeakyRelu(o[i], LeakyReluAlpha);
+            HifiGanKernels.LeakyReluInPlace(o.AsSpan(), LeakyReluAlpha);
 
             int outCh = ch / 2;
             int newT = t * XttsVocoderWeights.UpsampleRates[stage];
@@ -41,19 +44,24 @@ public static class XttsVocoder
             var condStage = LinearVec(speakerEmbedding, w.CondsWeight[stage], w.CondsBias[stage], ch);
             AddBroadcastInPlace(o, ch, t, condStage);
 
+            int stageSize = ch * t;
+            var bufA = new float[stageSize];
+            var bufB = new float[stageSize];
+
             float[]? sum = null;
             for (int k = 0; k < numKernels; k++)
             {
                 int rbIndex = stage * numKernels + k;
-                var rbOut = ResBlock1Forward(o, ch, t, w.ResBlocks[rbIndex], XttsVocoderWeights.ResblockKernelSizes[k]);
+                var rbOut = ResBlock1Forward(o, ch, t, w.ResBlocks[rbIndex], XttsVocoderWeights.ResblockKernelSizes[k], bufA, bufB);
                 if (sum is null) sum = rbOut;
-                else for (int i = 0; i < sum.Length; i++) sum[i] += rbOut[i];
+                else TensorPrimitives.Add(sum.AsSpan(), rbOut.AsSpan(), sum.AsSpan());
             }
-            for (int i = 0; i < sum!.Length; i++) sum[i] /= numKernels;
-            o = sum;
+            float invKernels = 1f / numKernels;
+            TensorPrimitives.Multiply(sum!.AsSpan(), invKernels, sum.AsSpan());
+            o = sum!;
         }
 
-        for (int i = 0; i < o.Length; i++) o[i] = HifiGanKernels.LeakyRelu(o[i], LeakyReluAlpha);
+        HifiGanKernels.LeakyReluInPlace(o.AsSpan(), LeakyReluAlpha);
         // Real conv_post: no bias (conv_post_bias=False).
         var post = HifiGanKernels.Conv1dSamePad(o, ch, t, w.ConvPostWeight, null, XttsVocoderWeights.OutChannels, kernel: 7);
         for (int i = 0; i < post.Length; i++) post[i] = MathF.Tanh(post[i]);
@@ -61,24 +69,34 @@ public static class XttsVocoder
     }
 
     /// <summary>Real ResBlock1: for j in 0,1,2: xt=leaky_relu(x); xt=convs1[j](xt)[dilation=(1,3,5)[j]]; xt=leaky_relu(xt); xt=convs2[j](xt)[dilation=1]; x=xt+x.</summary>
-    private static float[] ResBlock1Forward(float[] input, int ch, int t, XttsVocResBlockWeights rb, int kernel)
+    private static float[] ResBlock1Forward(float[] input, int ch, int t, XttsVocResBlockWeights rb, int kernel, float[] bufA, float[] bufB)
     {
-        var x = input;
-        Span<int> dilations = [1, 3, 5];
+        int size = ch * t;
+        var curX = new float[size];
+        Array.Copy(input, curX, size);
+
+        ReadOnlySpan<int> dilations = [1, 3, 5];
         for (int j = 0; j < 3; j++)
         {
             int dilation = dilations[j];
-            var xt = new float[ch * t];
-            for (int i = 0; i < xt.Length; i++) xt[i] = HifiGanKernels.LeakyRelu(x[i], LeakyReluAlpha);
-            xt = HifiGanKernels.Conv1dDilated(xt, ch, t, rb.Convs1Weight[j], rb.Convs1Bias[j], ch, kernel, dilation);
-            for (int i = 0; i < xt.Length; i++) xt[i] = HifiGanKernels.LeakyRelu(xt[i], LeakyReluAlpha);
-            xt = HifiGanKernels.Conv1dDilated(xt, ch, t, rb.Convs2Weight[j], rb.Convs2Bias[j], ch, kernel, dilation: 1);
 
-            var next = new float[ch * t];
-            for (int i = 0; i < next.Length; i++) next[i] = xt[i] + x[i];
-            x = next;
+            // 1. xt = leaky_relu(x)
+            Array.Copy(curX, bufA, size);
+            HifiGanKernels.LeakyReluInPlace(bufA.AsSpan(), LeakyReluAlpha);
+
+            // 2. xt = convs1[j](xt)[dilation=(1,3,5)[j]]
+            HifiGanKernels.Conv1dDilated(bufA, ch, t, rb.Convs1Weight[j], rb.Convs1Bias[j], ch, kernel, dilation, bufB);
+
+            // 3. xt = leaky_relu(xt)
+            HifiGanKernels.LeakyReluInPlace(bufB.AsSpan(), LeakyReluAlpha);
+
+            // 4. xt = convs2[j](xt)[dilation=1]
+            HifiGanKernels.Conv1dDilated(bufB, ch, t, rb.Convs2Weight[j], rb.Convs2Bias[j], ch, kernel, dilation: 1, bufA);
+
+            // 5. x = xt + x
+            TensorPrimitives.Add(bufA.AsSpan(), curX.AsSpan(), curX.AsSpan());
         }
-        return x;
+        return curX;
     }
 
     private static float[] LinearVec(float[] x, float[] weight, float[] bias, int outDim)
@@ -89,7 +107,7 @@ public static class XttsVocoder
         {
             float sum = bias[o];
             int wBase = o * inDim;
-            for (int i = 0; i < inDim; i++) sum += weight[wBase + i] * x[i];
+            sum += TensorPrimitives.Dot(weight.AsSpan(wBase, inDim), x.AsSpan());
             output[o] = sum;
         }
         return output;
@@ -101,7 +119,7 @@ public static class XttsVocoder
         {
             float v = addPerChannel[c];
             int baseIdx = c * t;
-            for (int ti = 0; ti < t; ti++) x[baseIdx + ti] += v;
+            TensorPrimitives.Add(x.AsSpan(baseIdx, t), v, x.AsSpan(baseIdx, t));
         }
     }
 }
