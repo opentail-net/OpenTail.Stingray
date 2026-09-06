@@ -2,6 +2,8 @@
 
 **Stopping is for wimps** (the user's own words, verbatim, as a standing directive): when working the model-porting backlog autonomously (see `docs/00-current-work.md` / `docs/audio-review-progress.md`), do not stop or idle when one item stalls — document the blocker precisely and switch to another item in the queue. Keep making real, verified, committed progress across the backlog rather than halting the whole session on a single stuck bug.
 
+**Be proactive about this instead of waiting to be asked** (the user's own words, verbatim, as a standing directive): when there's a known ranked backlog of models to port (see `docs/00-current-work.md` for the current ranked list), don't wait to be told to check whether a given model's checkpoint is present or to start a missing download — check the whole list against `models/`/`models/_models/` proactively, and kick off downloads (in parallel, as background tasks, for as many missing ones as reasonably fit) for whichever are absent, without being asked item-by-item. The user has given blanket authorization to download checkpoints into `models/_models/`.
+
 Guidance for AI coding agents working on OpenTail.Stingray.
 
 ## Project Overview
