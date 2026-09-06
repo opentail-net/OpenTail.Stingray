@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-Stopping is for wimps.
+**Stopping is for wimps** (the user's own words, verbatim, as a standing directive): when working the model-porting backlog autonomously (see `docs/00-current-work.md` / `docs/audio-review-progress.md`), do not stop or idle when one item stalls — document the blocker precisely and switch to another item in the queue. Keep making real, verified, committed progress across the backlog rather than halting the whole session on a single stuck bug.
 
 Guidance for AI coding agents working on OpenTail.Stingray.
 
