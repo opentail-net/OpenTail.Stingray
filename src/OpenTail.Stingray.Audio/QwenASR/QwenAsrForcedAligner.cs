@@ -180,6 +180,13 @@ public sealed class QwenAsrForcedAligner : IDisposable
         var hp = ModelHyperparams.FromGgufMetadata(source.Metadata);
         using var backend = new CpuBackend();
         using var fwd = new ForwardPass(source, backend, hp);
+        bool faTraceLayers = Environment.GetEnvironmentVariable("STINGRAY_FA_TRACE") == "1" && fwd.SupportsHiddenTaps;
+        if (faTraceLayers)
+        {
+            var allLayers = new int[hp.NumLayers];
+            for (int i = 0; i < hp.NumLayers; i++) allLayers[i] = i;
+            fwd.EnableHiddenTaps(allLayers);
+        }
 
         // EXPERIMENT (2026-09-06), DISPROVEN: tested whether the classify head's read-position
         // needed a -1 shift relative to the <timestamp> token's own index (a "predict-next"
@@ -225,6 +232,22 @@ public sealed class QwenAsrForcedAligner : IDisposable
             double std = Math.Sqrt(Math.Max(0, logitsSumSq / logitsCount - mean * mean));
             Console.Error.WriteLine($"[FA-STAGE-CS] classify_logits n={logitsCount} mean={mean:F6} std={std:F6}");
             Console.Error.WriteLine($"[FA-STAGE-CS] raw_timestamp_ids=[{string.Join(",", classIds)}]");
+        }
+        if (faTraceLayers)
+        {
+            int lastPos = prompt.Length - 1;
+            var tapDim = fwd.HiddenTapDim;
+            int embDim = tapDim / hp.NumLayers;
+            var row = fwd.HiddenTapsAt(lastPos);
+            for (int layer = 0; layer < hp.NumLayers; layer++)
+            {
+                var slice = row.Slice(layer * embDim, embDim);
+                double sum = 0, sumsq = 0;
+                foreach (var v in slice) { sum += v; sumsq += (double)v * v; }
+                double m = sum / embDim;
+                double sd = Math.Sqrt(Math.Max(0, sumsq / embDim - m * m));
+                Console.Error.WriteLine($"[FA-STAGE-CS] layer_{layer} n={embDim} mean={m:F6} std={sd:F6}");
+            }
         }
         if (found != timestampPositions.Count)
             throw new InvalidOperationException($"AlignReal only observed {found}/{timestampPositions.Count} timestamp positions during prefill.");

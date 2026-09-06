@@ -11782,9 +11782,50 @@ this and earlier sessions). The large `prompt_embeddings` aggregate std (18.15, 
 suspicious earlier) is a red herring: it reflects the TEXT portion of the spliced prompt
 (the audio portion alone matches closely as shown above), and large-norm outlier token
 embeddings are a known, benign phenomenon in real trained LLMs -- not chasing that
-further. **Next concrete step**: bisect INSIDE the decoder stack itself (per-layer
-hidden-state mean/std taps, one per of the model's `num_hidden_layers`, both sides) to
-find the first layer where this port's computation and the reference's diverge, the same
-divide-and-conquer method that has now successfully resolved every other stuck bug this
-session (RMVPE's ResBlock ReLU placement, RVC's ConvTranspose OOB quirk) -- not yet
-attempted for this bug specifically.
+further.
+
+**Update, same session -- per-layer bisection found the real divergence point.** Added
+per-layer hidden-state taps on both sides: on the reference, a new
+`qwen_decoder_debug_taps()` accessor (`qwen_decoder.h`/`.cpp`) lets
+`QwenDecoderStackModule::build`'s shared layer loop mark each layer's output as a graph
+output under `STINGRAY_FA_TRACE=1`, without threading a new parameter through every
+`QwenCausalDecoderModule`/`QwenDecoderHiddenModule` call site in this widely-shared
+module; on this port, this codebase's OWN pre-existing `IForwardPass.EnableHiddenTaps`/
+`HiddenTapBuffer` mechanism (not previously used for this investigation) was wired into
+`QwenAsrForcedAligner.AlignReal` to capture the same per-layer output at the same final
+prompt position.
+
+Real per-layer hidden-state std, last position (28 layers, `text_decoder.hidden_size`
+=1024), reference vs this port:
+
+| layer | reference std | this port std |
+|---|---|---|
+| 0 | 2.20 | 1.57 |
+| 1 | 2.88 | 2.57 |
+| **2** | **20.00** | **3.67** |
+| 3 | 20.16 | 4.54 |
+| ... | (slow, steady climb to ~66 by layer 27) | (slow, steady climb to ~63 by layer 27) |
+| 27 (final) | 66.11 | 63.09 |
+
+**The reference jumps by ~7x between layer 1 and layer 2 (2.88 -> 20.00) and then climbs
+steadily from that elevated base; this port's own std grows smoothly with no
+discontinuity anywhere.** By the final layer the two are coincidentally close in raw
+magnitude (66.11 vs 63.09) -- which is why the earlier full-decoder aggregate stats
+(mean/std across ALL 130 positions) looked only "noticeably different" rather than
+wildly divergent, masking how different the two computations actually are internally.
+This is the concrete, actionable lead: some layer-2-specific mechanism in the real
+Qwen3 decoder architecture -- a known "activation outlier"/"rogue dimension" phenomenon
+documented in several LLM families, often tied to a specific attention or norm detail
+on an early layer -- produces a discontinuous jump that this port's implementation does
+not reproduce. Both computations are receiving the same, verified-matching input (the
+audio embeddings match almost exactly, per the earlier update), so the divergence is a
+real computational difference starting at layer 2's own attention or MLP block, not
+something upstream. **Not yet found**: which specific line of `QwenDecoderLayerModule`'s
+real math (attention scaling, QK-norm epsilon, RoPE application, a per-layer config
+difference this port's `ModelHyperparams`/`QwenAsrLlmSafetensorsTensorSource` reading
+might be missing) causes this. Next step: read `QwenDecoderLayerModule::build`'s exact
+attention/MLP formulas line-by-line against this port's `ForwardPass` equivalent,
+specifically hunting for anything that activates differently starting exactly at layer 2
+(not layer 0 or 1) -- e.g. a per-layer QK-norm weight, a layer-specific RoPE frequency
+schedule, or a numerically-sensitive epsilon that only saturates once activations exceed
+some threshold reached by layer 2.
