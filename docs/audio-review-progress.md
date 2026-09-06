@@ -12043,3 +12043,26 @@ discipline that has paid off repeatedly this session, e.g. RVC's bundled-voice-p
 discovery). Next concrete step: write the LLM prefix addition (smallest, highest-leverage
 change), then the semantic HuBERT + bridging-conv encoder, then the acoustic DAC decoder
 adapted from `DacWeights.cs`'s structure.
+
+**Update, 2026-09-06 -- OmniVoice: LLM tensor source + semantic HuBERT encoder both real-
+weight-verified.** `OmniVoiceLlmTensorSource.cs` (real `llm.*` tensors, tied-embedding
+case) and `OmniVoiceSemanticWeights.cs`/`OmniVoiceSemanticEncoder.cs` (real
+`semantic_model.*` HuBERT tensors, forward pass adapted directly from the already
+golden-verified `RvcHubertEncoder.cs`) are both written and confirmed against the real
+downloaded checkpoint: all 28 LLM layers load with finite values, and the semantic
+encoder produces finite, non-degenerate output on real audio (`a.wav`, 297 tokens,
+mean=0.00036, std=0.62400 -- a similar scale to RVC's own golden-verified HuBERT output,
+consistent with the same architecture family). Neither is golden-verified against a real
+OmniVoice reference run yet (no CLI/warm-bench task wired up for `omnivoice` in
+`examples/audio.cpp` the way `rvc`/`qwen3_forced_aligner`/`voxtral_realtime` are -- would
+need to check if one exists under `tests/omnivoice/` before assuming none does).
+
+**Still not done**: the `encoder_semantic.conv_blocks.*` bridging stage (adapts HuBERT's
+output to the DAC codec's time resolution), the acoustic DAC encoder/decoder/quantizer
+(`acoustic_encoder.*`/`acoustic_decoder.*`/`quantizer.quantizers.*`, real 8-codebook
+VQ-VAE-style codebooks confirmed via tensor dump: `embed`/`embed_avg`/`cluster_size`/
+`project_in`/`project_out` per codebook), and the actual generation loop (LLM producing
+mixed text/audio-codebook tokens via `audio_embeddings`/`audio_heads`/
+`codebook_layer_offsets`, then decoding through the acoustic decoder). This is real,
+substantial remaining work, but the two hardest-to-get-wrong pieces (LLM tensor mapping,
+HuBERT-family semantic encoder) are now done and verified.
