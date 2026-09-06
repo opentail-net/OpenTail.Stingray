@@ -11888,3 +11888,23 @@ formula before writing a new one. **Not yet started**: no C# code written for th
 yet -- this pass is scoping only, given the genuine new-code surface (streaming windowed
 attention + full RNNT decoder) is comparable in size to RVC's synthesizer, not a quick
 follow-on to Parakeet.
+
+**Update, same session -- Q/K vector stats (post-RoPE) added for layers 0-3.** Extended
+the reference's per-layer taps to also capture Q and K immediately after RoPE (before
+QK-norm is even applied, to see the raw projection scale): `layer_0_k std=22.59`,
+`layer_1_k std=7.59`, `layer_2_k std=6.79`, `layer_3_k std=3.81` -- K vectors are already
+huge at layer 0 (a real "attention sink" phenomenon: a well-known, EXPECTED property of
+trained transformers where one token, usually the first/BOS, gets a disproportionately
+large key norm so attention can cheaply route to it as a no-op/rest state). Critically,
+this rules out "K magnitude" as the direct cause of the layer-2 output jump: layer 0 and
+1 have LARGER k-std than layer 2 (22.59, 7.59 vs 6.79) yet their OUTPUT std stays modest
+(2.20, 2.88) while layer 2's output jumps to 20.00 despite a SMALLER k-std. The jump is
+therefore about which layer's trained attention pattern actually exploits the sink token
+(a property of that layer's attention weights specifically), not the raw K norm feeding
+into it. Confirms the earlier read of `QwenDecoderLayerModule::build` was right that
+there's no per-layer config difference -- this really is were the model's own learned
+behavior first kicks in, and this port's failure to reproduce it means its attention
+weighting (not the QKV projections feeding it) is where to keep looking next: comparing
+POST-SOFTMAX attention weights (not raw scores, which flash-attention doesn't expose as
+a separate tensor -- would need the non-flash `attention_from_heads` path instead) at
+layer 2 specifically, on both sides.
