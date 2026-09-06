@@ -11531,3 +11531,27 @@ orientation, ResBlock ReLU placement), taking end-to-end salience from unusable
 per-frame peak (max=0.81235 vs the reference's 0.97022, with the reference's own value
 itself not being the "clean" ground truth due to the OOB quirk above). Moving on to the
 k-NN retrieval index and synthesizer next.
+
+**Update, 2026-09-06 -- synthesizer weight loading done; real discovery: the checkpoint
+bundles MULTIPLE named voices, not one default voice.** Started the RVC synthesizer
+(VITS-style: relative-position-attention text encoder, a 4-block affine-coupling
+normalizing flow, and an NSF-HiFiGAN generator with a sine excitation source) by writing
+`RvcSynthesizerWeights.cs`, a direct transcription of `synthesizer.cpp`'s
+`load_weights`/`fold_weight_norm` (real PyTorch `weight_norm(dim=0)` reconstruction,
+simpler than F5-TTS's `dim=2` positional-conv case since these are ordinary conv
+weights). A real tensor-name dump (2807 total names in `rvc-f16.gguf`) revealed the
+voice-model tensors are NOT a single unprefixed default voice as first assumed -- the
+checkpoint bundles several real named voices side by side, each under its own prefix:
+`voice_v1_chocola_checkpoint/`, `voice_v1_fraise_checkpoint/`,
+`voice_v2_default_checkpoint/`, `voice_v2_manthos_checkpoint/` (plus a matching
+`..._index_vectors/` prefix per voice holding that voice's k-NN retrieval index --
+`centroids`/`vectors`/`list_offsets`/`list_lengths`/`metric_type`/`nprobe`, exactly the
+sidecar shape `retrieval_index.cpp`'s `load_retrieval_sidecar` expects). Updated
+`RvcSynthesizerWeights`'s constructor to take a `voicePrefix` parameter accordingly.
+`RvcSynthesizerWeightsLoadTests` loads `voice_v2_default_checkpoint` (v2, 768-wide phone
+embedding, F0, 40kHz) end-to-end -- all ~74 real tensor groups (6 text-attention layers,
+4 flow blocks with weight-norm-folded WaveNet-style affine couplings, 4 decoder
+upsample stages, 12 HiFi-GAN resblocks) load with finite values. **Not yet implemented**:
+the actual forward pass (`RvcSynthesizer` graph -- text encoder, flow reverse, generator)
+and the k-NN retrieval blend itself; this commit is weight-loading plumbing only, same
+staged approach used for HuBERT and RMVPE.
