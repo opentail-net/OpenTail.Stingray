@@ -12441,3 +12441,38 @@ built around causal autoregressive decoding. Setting this aside per project conv
 (3+ real scoping passes without landing code) to rotate to another queue item; pick back
 up with a fresh angle (read `make_schedule` and the mask-embedding convention first) when
 resumed.
+
+## VibeVoice ASR -- scoped, 2026-09-06
+
+Read `examples/audio.cpp/src/models/vibevoice_asr/{assets.h,speech_encoder.cpp}` (real
+architecture, not guessed). Real pipeline: audio -> TWO separate VAE-style codec
+encoders run in parallel (`acoustic_tokenizer` and `semantic_tokenizer`, both configured
+via `VibeVoiceTokenizerConfig` -- causal conv, configurable `mixer_layer`, real per-stage
+`encoder_ratios`/`encoder_depths`, LayerScale, disable-last-norm option; the SAME real
+codec family implemented in `speech_tokenizer.cpp`, 2152 lines, shared between the
+acoustic and semantic variants via config) -> the acoustic branch's mean latent is
+Gaussian-RESAMPLED (`sample_vibevoice_acoustic_latents_gaussian`, real `fix_std`-based
+VAE reparameterization using a SPECIFIC RNG precision, `TorchRandnPrecision::BFloat16` --
+this needs bit-for-bit RNG stream matching to be truly golden-verifiable, a real added
+complexity not present in RVC/OmniVoice/Nemotron's simpler deterministic pipelines) ->
+both acoustic and semantic latents are separately projected by `connector.cpp` (442
+lines) -> summed -> fed as continuous multimodal embeddings into a standard
+**Qwen2.5-1.5B** decoder (`VibeVoiceDecoderConfig`'s fields are a textbook Qwen2/2.5
+GQA/RoPE/RMSNorm config) for autoregressive text generation.
+
+**Reuse assessment**: the LLM decoder itself needs ZERO new forward-pass code -- same
+"present as a standard architecture to the existing engine" technique already used for
+`OmniVoiceLlmTensorSource`/`QwenAsrLlmSafetensorsTensorSource` this session (Qwen2.5 is
+directly supported). The `VibeVoiceDiffusionHeadConfig` (DDPM 1000-step diffusion head)
+is confirmed NOT needed for the ASR/understanding direction -- `speech_encoder.cpp`'s real
+`encode()` never touches it; that's exclusively for the TTS/generation direction (a
+separate, even bigger task, out of scope for "ASR"). The real new-code surface is: (1) the
+acoustic+semantic VAE encoder stack (`speech_tokenizer.cpp`, 2152 lines -- large, likely
+the single biggest remaining unwritten piece across this session's whole backlog), (2) the
+Gaussian reparameterization sampling step with matching RNG precision, (3) the connector
+projections (442 lines, moderate). This is comparable in size to RVC's full HuBERT+
+RMVPE+Synthesizer combined, or bigger given the RNG-matching requirement -- **not started
+this session**, scoped only. Real next step if picked up: read `speech_tokenizer.cpp`'s
+encoder stage-by-stage (likely a ConvNeXt/Mamba-style causal stack given `mixer_layer`
+config) before writing any code, then tackle the RNG-precision question separately since
+it may block exact golden verification even after the deterministic parts are ported.
