@@ -9,9 +9,37 @@ namespace OpenTail.Stingray.Audio.FunASR;
 /// LayerNorm`.</summary>
 public static class FunAsrNanoEncoder
 {
-    /// <summary>mel is frame-major [T][InputSize] (560-dim, post mel+LFR+CMVN via
-    /// <see cref="FunAsrRealMelExtractor"/>). Returns per-frame encoder hidden states
-    /// [T][DModel].</summary>
+    /// <summary>Real LFR (Low Frame Rate) splice, transcribed directly from
+    /// `examples/audio.cpp/src/framework/audio/kaldi_fbank.cpp` (NOT the funasr Python
+    /// `apply_lfr`-derived <see cref="FunAsrRealMelExtractor.ApplyLfr"/>, which uses a different,
+    /// more complex right-padding formula for the OLD CIF-Paraformer pipeline -- this real C++
+    /// reference instead just CLAMPS the source frame index to <c>[0, melFrames-1]</c> on both
+    /// ends, a much simpler and unambiguous algorithm): `frames = 1 + (melFrames-1)/lfrN`;
+    /// `leftPad = (lfrM-1)/2`; for each output frame/stacked-frame pair,
+    /// `sourceFrame = clamp(outputFrame*lfrN + stackedFrame - leftPad, 0, melFrames-1)`.</summary>
+    public static float[][] ApplyRealLfr(float[][] logMel, int lfrM, int lfrN)
+    {
+        int melFrames = logMel.Length;
+        int featDim = logMel[0].Length;
+        int leftPad = (lfrM - 1) / 2;
+        int frames = 1 + (melFrames - 1) / lfrN;
+        var output = new float[frames][];
+        for (int o = 0; o < frames; o++)
+        {
+            var row = new float[lfrM * featDim];
+            for (int s = 0; s < lfrM; s++)
+            {
+                int sourceFrame = Math.Clamp(o * lfrN + s - leftPad, 0, melFrames - 1);
+                Array.Copy(logMel[sourceFrame], 0, row, s * featDim, featDim);
+            }
+            output[o] = row;
+        }
+        return output;
+    }
+
+    /// <summary>mel is frame-major [T][InputSize] (560-dim, post mel+LFR via
+    /// <see cref="ApplyRealLfr"/> -- no CMVN, this architecture's real frontend has none).
+    /// Returns per-frame encoder hidden states [T][DModel].</summary>
     public static float[][] Forward(FunAsrNanoEncoderWeights w, float[][] mel)
     {
         int t = mel.Length;

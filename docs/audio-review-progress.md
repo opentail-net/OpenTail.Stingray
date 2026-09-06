@@ -12660,3 +12660,31 @@ placeholder vs. how the real HF processor invokes the chat template might differ
 this port's hand-built string). This is documented as a known-open bug for whoever
 resumes this item, following this session's "flag it precisely, don't grind indefinitely"
 convention rather than continuing to guess at fixes without a real reference trace.
+
+**Update, 2026-09-06 -- Fun-ASR-Nano-2512: found and fixed a real waveform-scaling bug in
+the shared mel frontend.** Discovered a real fixture set at
+`examples/audio.cpp/tests/fun_asr_nano/{frontend,encoder,adaptor,decoder}_reference.
+{json,bin}` -- self-contained real reference data (synthetic silence/impulse/sine waveforms
+with real expected mel+LFR output, generated directly from the real
+`transformers.FunAsrNanoFeatureExtractor`) that needed no external audio or C++ build.
+Golden-testing `FunAsrRealMelExtractor.ExtractLogMel` against it (`silence`/`impulse`/
+`sine_440hz` fixtures) found a real bug: `silence` matched exactly (0.000000) but
+`impulse`/`sine_440hz` were off by a suspiciously constant `~20.794`. `2*ln(32768) =
+20.7944` -- confirming the bug exactly: `ExtractLogMel` unconditionally scales the input
+waveform by 32768 (int16 range), a real convention from the OLD CIF-Paraformer pipeline's
+`torchaudio.compliance.kaldi.fbank` usage, but the CURRENT architecture's real
+`transformers.FunAsrNanoFeatureExtractor` does NOT apply this rescale. `silence` didn't
+catch it because `log(epsilon)` is scale-invariant at the floor. Fixed by adding a
+`waveformScale` parameter (default `32768f`, preserving the old pipeline's behavior; the
+new pipeline now passes `1f`). Re-verified: `impulse` maxAbsDiff 0.000030, `sine_440hz`
+0.004611 -- both now match the real reference closely. **This was a real, previously-silent
+bug affecting the FunASR-nano end-to-end pipeline's mel input.**
+
+Re-ran the full end-to-end transcription test after the fix: output is still not a
+coherent transcription (a different, but similarly wrong, blend of common English function
+words), confirming a SECOND bug remains elsewhere. Found `encoder_reference.json` -- a
+real, more powerful fixture using the ACTUAL published checkpoint's real weights (3 real
+input frames, expected checkpoints at `stem`/`main_layer_{0,24,48}`/`main_layer_norm`/
+`timestamp_layer_{0,10,19}`/`final`) -- the natural next step to isolate exactly which
+stage of the 70-block encoder stack diverges, since the mel frontend is now confirmed
+correct. Not yet run as of this update.

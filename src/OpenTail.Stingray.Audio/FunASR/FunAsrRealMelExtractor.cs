@@ -100,8 +100,17 @@ public sealed class FunAsrRealMelExtractor
 
     private static float MelScale(float freq) => 1127f * MathF.Log(1f + freq / 700f);
 
-    /// <summary>Extracts real mel features: frame-major [T, 80] log-mel, BEFORE LFR splice/CMVN. `pcm16k` is expected in [-1,1] float range (scaled to int16 range internally, matching Kaldi's convention).</summary>
-    public float[][] ExtractLogMel(ReadOnlySpan<float> pcm16k)
+    /// <summary>Extracts real mel features: frame-major [T, 80] log-mel, BEFORE LFR splice/CMVN.
+    /// `pcm16k` is expected in [-1,1] float range. `waveformScale` defaults to 32768 (int16 range),
+    /// matching the OLD CIF-Paraformer pipeline's real `torchaudio.compliance.kaldi.fbank`
+    /// convention -- but the CURRENT Fun-ASR-Nano-2512 architecture's real
+    /// `transformers.FunAsrNanoFeatureExtractor` reference does NOT apply this rescale (confirmed
+    /// via `frontend_reference.json`'s real fixtures: a constant `2*ln(32768)=20.7944` offset
+    /// appeared on every non-silent signal when this class's default scale was used unconditionally
+    /// -- silence matched exactly since `log(epsilon)` is scale-invariant at floor, which is why
+    /// that one fixture alone didn't catch the bug). Pass `waveformScale: 1f` for the current
+    /// architecture.</summary>
+    public float[][] ExtractLogMel(ReadOnlySpan<float> pcm16k, float waveformScale = 32768f)
     {
         if (pcm16k.Length < WindowSize) return [];
         int numFrames = 1 + (pcm16k.Length - WindowSize) / WindowShift;
@@ -114,7 +123,7 @@ public sealed class FunAsrRealMelExtractor
         for (int f = 0; f < numFrames; f++)
         {
             int start = f * WindowShift;
-            for (int i = 0; i < WindowSize; i++) frame[i] = pcm16k[start + i] * 32768f;
+            for (int i = 0; i < WindowSize; i++) frame[i] = pcm16k[start + i] * waveformScale;
 
             // Remove DC offset (subtract row mean).
             float mean = 0f;

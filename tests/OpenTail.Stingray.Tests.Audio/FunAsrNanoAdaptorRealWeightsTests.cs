@@ -37,8 +37,8 @@ public sealed class FunAsrNanoAdaptorRealWeightsTests : HeavyTestBase
         if (sr != 16000) samples = AudioResampler.Resample(samples, sr, 16000);
 
         var melExtractor = new OpenTail.Stingray.Audio.FunASR.FunAsrRealMelExtractor();
-        var logMel = melExtractor.ExtractLogMel(samples);
-        var lfr = OpenTail.Stingray.Audio.FunASR.FunAsrRealMelExtractor.ApplyLfr(logMel);
+        var logMel = melExtractor.ExtractLogMel(samples, waveformScale: 1f);
+        var lfr = OpenTail.Stingray.Audio.FunASR.FunAsrNanoEncoder.ApplyRealLfr(logMel, 7, 6);
         int frames = Math.Min(lfr.Length, 150);
         var trimmed = new float[frames][];
         Array.Copy(lfr, trimmed, frames);
