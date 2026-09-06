@@ -1,5 +1,7 @@
 # CLAUDE.md
 
+Stopping is for wimps.
+
 Guidance for AI coding agents working on OpenTail.Stingray.
 
 ## Project Overview
