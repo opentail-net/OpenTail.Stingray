@@ -12305,3 +12305,21 @@ sliding-window(57) Transformer-XL rel-pos Conformer encoder (uses a real
 also builds, worth reading in full before implementing since it affects both the
 subsampling output masking and the encoder's self-attention masking), then the RNNT
 greedy-decode loop (LSTM predictor + joint network).
+
+**Update, 2026-09-06 -- Nemotron ASR: real dw_striding subsampling front-end
+implemented and structurally verified.** Implemented `NemotronAsrSubsampling` per the
+exact recipe recorded in the previous update (asymmetric causal pad on both time and
+freq axes, kernel=3/stride=2, 3 stages). Added an explicit runtime check
+(`flatDim == PreOutWeight.Length/HiddenDim`) that would throw if the causal padding
+formula didn't reproduce the reference's own asserted `stage3_features=17` for a 128-mel
+input -- it did not throw, confirming the formula transcription is correct end-to-end
+(256*17=4352 matches `pre_encode.out.weight`'s real shape exactly). Ran on real `a.wav`
+with the real checkpoint: 596 mel frames -> 76 subsampled frames (~7.84x, consistent with
+8x minus the causal edge effects), hidden dim 1024, mean=-1.06295 std=88.79884, all
+finite. `NemotronAsrSubsamplingTests` covers this.
+
+**Still remaining**: the causal + sliding-window(57) Transformer-XL rel-pos Conformer
+encoder layers (24x) and the RNNT predictor+joint greedy decode loop. Next step per the
+standing work queue is to read `encoder.cpp`'s `TimeMask4d`/`attention_mask`/`keep_mask`
+masking scheme and the rel-pos self-attention build function before implementing the
+encoder layer forward pass.
