@@ -12619,3 +12619,44 @@ construction (`prompt.cpp`) and tokenizer wiring (`tokenizer_text.cpp`). The aud
 half of the pipeline (frontend, encoder, adaptor) is now real-weight-verified end to end;
 only the text-generation half remains before attempting a real transcription, which would
 be the THIRD full working ASR pipeline this session if it lands.
+
+**Update, 2026-09-06 -- Fun-ASR-Nano-2512 fully wired end-to-end (mel -> encoder ->
+adaptor -> LLM splice -> ForwardPass decode -> tokenizer decode), but the output is NOT
+yet a coherent transcription -- a real remaining bug, reported honestly rather than
+overclaimed.** Implemented `FunAsrNanoLlmGgufTensorSource` (same technique as
+`FunAsrNanoLlmTensorSource` but sourced from the real audio.cpp-packed GGUF via
+`RvcPackedTensorSource` instead of a separately-downloaded raw safetensors file -- this
+checkpoint already contains every `model.language_model.*` tensor needed, confirmed, so no
+second download was needed). Downloaded the real small tokenizer assets directly from
+`FunAudioLLM/Fun-ASR-Nano-2512-hf` (`tokenizer.json`, `config.json`, etc. -- NOT the large
+safetensors weights) into `models/_models/fun-asr-nano-hf-tokenizer/`, loaded via the
+existing generic `HuggingFaceTokenizerSource`/`GgufTokenizer.FromSource`. Built the real
+ChatML prompt matching `prompt.cpp`'s `build()` exactly (`<|im_start|>system\nYou are a
+helpful assistant.<|im_end|>\n<|im_start|>user\n语音转写：<audio placeholder><|im_end|>\n
+<|im_start|>assistant\n`), confirmed the real audio placeholder token
+(`audio_token_id=151646`) appears exactly once as its own special token (not garbled by
+BPE), expanded it to one synthetic id per real audio-adapted embedding frame (same
+`EnableAudioConditioning`/`AudioTokenIdOffset` splice technique as OmniVoice/Qwen3-ASR this
+session), and ran the real existing engine `ForwardPass` Qwen3 decode loop with greedy
+sampling.
+
+**Result**: 99 audio tokens, 64 emitted text tokens, real BPE-decoded English words (`"
+o and to to to to to to to to     to to to p to to to to a at a a a a at it at a   to a
+for at at a at a a a at a a as e a at a! o first at at at at at at for at at"`) -- the
+tokenizer/decode path is clearly working (real English word fragments, not raw byte
+garbage), but the CONTENT is incoherent, not a transcription of the real audio ("This
+little work was finished in 1803..."). This means a real bug remains somewhere in
+{encoder, adaptor, prompt/audio-token splice, or LFR frame trimming} that hasn't been
+found yet -- NOT a success, and should not be counted as this session's third working ASR
+pipeline until root-caused. Candidate causes not yet ruled out, in rough likelihood
+order: (1) an LFR or SAN-M input-scaling subtlety only visible when comparing against a
+real reference numeric trace (no golden fixture exists for the FULL encoder stack, only
+the single-block `sanm_reference.json` used earlier -- that block-level match does not
+guarantee the 70-block composition is bug-free), (2) the real CMVN step being genuinely
+ABSENT from the current architecture's frontend was double-checked (`frontend.cpp` has no
+CMVN call, unlike the old Paraformer path) -- so skipping it was correct, not the bug,
+(3) a real prompt-template or special-token subtlety (e.g. the literal object_ref_start
+placeholder vs. how the real HF processor invokes the chat template might differ from
+this port's hand-built string). This is documented as a known-open bug for whoever
+resumes this item, following this session's "flag it precisely, don't grind indefinitely"
+convention rather than continuing to guess at fixes without a real reference trace.
