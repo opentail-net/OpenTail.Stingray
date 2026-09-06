@@ -12091,3 +12091,39 @@ end-to-end golden verification against a real reference run (no CLI/warm-bench t
 found wired up for `omnivoice` in `examples/audio.cpp` yet -- would need to check
 `tests/omnivoice/` for one, or add trace instrumentation the same way RVC/Voxtral/
 ForcedAligner were verified).
+
+**Update, 2026-09-06 -- IMPORTANT CORRECTION: Voxtral's text decoder is NOT plain
+Mistral.** Earlier scoping this session claimed the text decoder "needs zero new code"
+since its `text_config` is a standard Mistral GQA config -- that is true of the
+CONFIG, but the real graph construction (`text_decoder.cpp`'s `FullContextGraph`, lines
+~460-522) reveals two real additions beyond a stock Mistral block, found while tracing
+the real audio-embedding splice mechanism (itself also different from what was assumed
+-- see below):
+
+1. **Real splice mechanism is additive, not row-replacement.** Unlike Qwen3-ASR/
+   ForcedAligner's approach (`ggml_set_rows`/synthetic-vocab-id row replacement, already
+   implemented in this port via `EnableAudioConditioning`), Voxtral computes
+   `x = token_embedding(ids) + audio_embeddings` where `audio_embeddings` is a
+   **zero-filled tensor the same length as the full padded sequence**, with the real
+   encoder output copied into the FIRST `min(audio_tokens, capacity)` positions only
+   (`FullContextGraph::run`, `padded_audio` -- confirmed via the real `std::memcpy` call
+   copying from offset 0). The text prompt itself (`build_transcription_prompt`) is just
+   `[BOS, kStreamingPadToken x (32+delay_tokens)]`, padded out to graph capacity with
+   `pad_token_id` -- there is no attempt to align specific "audio slot" tokens with
+   specific audio frames; the two signals are added independently by raw position index.
+2. **A real AdaLN-Zero-style delay-conditioning gate on the MLP branch**, not present in
+   any generic Mistral implementation: a `time_embedding(num_delay_tokens, hidden_size)`
+   (standard sinusoidal timestep embedding, cos/sin halves, base 10000) is computed ONCE
+   per request (not per-position -- a single `[hidden_size]` vector), then per-layer:
+   `ada = Linear(hidden->32, no bias)(t_cond); GELU; Linear(32->hidden, no bias);
+   scale = 1 + ada; mlp_in = post_norm(x) * scale` (broadcast identically across every
+   position) -- via real per-layer `ada1_weight`/`ada2_weight` tensors. This is a small,
+   tractable addition (one FiLM-style gate, computed once and reused every layer), not a
+   large undertaking, but it is real, required, new code -- not something the existing
+   generic Mistral/`ForwardPass` path already does.
+
+**Revised next step**: implement `VoxtralTextDecoder.cs` (a small wrapper: standard
+Mistral GQA block + the additive audio-embedding splice + the one-time AdaLN gate) rather
+than assuming the existing generic decoder path can be reused as-is for this model. The
+mel frontend and audio tower remain unaffected by this correction and stay
+golden-verified as already documented above.
