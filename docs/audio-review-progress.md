@@ -12184,3 +12184,48 @@ generation loop (the streaming per-step audio-row-advancing `DecodeStepGraph`, n
 implemented -- this prefill result only covers the FIRST position), and the minor
 audio_tokens off-by-one (likely a small resampling or STFT-centering rounding difference,
 not investigated further since it did not block this verification).
+
+**Update, 2026-09-06 -- MAJOR MILESTONE: Voxtral's full autoregressive generation loop
+implemented and produces an EXACT transcription match against the reference.**
+Implemented the real `DecodeStepGraph`-equivalent incremental decode in C#
+(`VoxtralTextDecoder.PrefillWithCache`/`.Step`, `KvCache`): real per-layer K/V caches
+populated during prefill, extended one token at a time via `SelfAttentionStep`
+(computes only the NEW position's Q/K/V, attends over the full growing cache) --
+avoiding the O(n^2)-repeated-full-recompute-per-step approach, which would have taken
+on the order of hours for an ~85-token generation given this port's naive scalar
+matmuls. The generation loop (`VoxtralGenerationLoopTests`) greedily decodes starting
+from the prefill's last-position argmax, advancing to the NEXT unseen real
+audio-embedding row each step (matching the reference's real per-step audio-row
+advancement) for up to 200 steps, then decodes the resulting token ids via the real
+`tekken.json` vocabulary (id<1000 -> `special_tokens[id].token_str`; else raw
+base64-decoded UTF-8 bytes from `vocab[id-1000]`).
+
+**Result, on real `a.wav` with real Voxtral weights:** after stripping the real
+`[STREAMING_PAD]`/`[STREAMING_WORD]` per-word streaming boundary markers (themselves
+correctly emitted, not noise -- e.g. the model correctly emits `[STREAMING_WORD]`
+immediately before each real new word and several `[STREAMING_PAD]` between words,
+consistent with genuine streaming-ASR pacing), the decoded plain transcription is:
+
+> "This little work was finished in the year 1803, and intended for immediate publication."
+
+This is an **exact, word-for-word match** against the reference's real captured
+`text_output`: "This little work was finished in the year 1803, and intended for
+immediate publication." Every real word, including the year and punctuation, matches.
+This is the strongest verification result of this session -- a full independent
+transcription match, not just a top-1/top-2 logits match at a single position. The
+first-run raw token stream (`generated` ids) was:
+`32,32,32,32,33,2409,32,32,33,4945,32,32,33,2196,32,33,1486,32,32,32,32,33,11608,1294,32,
+33,1278,2637,32,32,32,32,32,32,32,32,32,32,32,32,32,32,33,1032,1049,1056,1048,1051,1044,
+32,33,1321,32,32,32,32,33,13650,32,33,1394,32,32,32,33,20726,32,32,32,32,32,32,32,32,33,
+19389,1046,32,32,32,32,32,32,32,32,1046` -- note real EOS (token 2) was never hit within
+the 200-step budget, so the loop runs slightly past the sentence's natural end and
+emits a stray trailing "." after the sentence already ended (harmless duplicate
+punctuation, collapsed by the test's own post-processing, not a modeling bug).
+
+Voxtral Realtime's full pipeline (mel frontend, 32-layer audio tower, additive-splice +
+AdaLN-gated 26-layer Mistral decoder, short-window prefill, and now the full
+KV-cache incremental generation loop) is now end-to-end golden-verified on real audio
+and real weights. Remaining known gaps: the minor prefill `audio_tokens` off-by-one
+(124 ref vs 123 this port, still not chased -- did not affect this transcription
+match), and no real EOS-based early stopping (the loop always runs to the fixed
+`max_new_tokens` budget rather than detecting the reference's real stop condition).

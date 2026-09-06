@@ -233,4 +233,224 @@ public static class VoxtralTextDecoder
         }
         return output;
     }
+
+    /// <summary>Per-layer KV cache for incremental (one-token-at-a-time) decoding -- real KV-cache
+    /// reuse across autoregressive steps, matching the reference's <c>DecodeStepGraph</c> mechanism
+    /// (same computation as <see cref="Forward"/>'s full self-attention, just incremental).</summary>
+    public sealed class KvCache
+    {
+        public required List<float[]>[] K { get; init; } // [layer][position] -> kvHeads*headDim
+        public required List<float[]>[] V { get; init; }
+    }
+
+    /// <summary>Runs prefill exactly like <see cref="Forward"/> but also populates a
+    /// <see cref="KvCache"/> so subsequent single-token steps can reuse the computed K/V instead of
+    /// recomputing the full prefix every step. Returns per-position logits (same as
+    /// <see cref="Forward"/>) plus the populated cache.</summary>
+    public static (float[][] Logits, KvCache Cache) PrefillWithCache(VoxtralTextDecoderWeights w, int[] tokenIds, float[][] audioEmbeddings, int numDelayTokens)
+    {
+        int hidden = VoxtralTextDecoderWeights.HiddenSize;
+        int n = tokenIds.Length;
+        var x = new float[n][];
+        for (int t = 0; t < n; t++)
+        {
+            var row = new float[hidden];
+            int embedBase = tokenIds[t] * hidden;
+            for (int d = 0; d < hidden; d++) row[d] = w.EmbedTokensWeight[embedBase + d];
+            if (t < audioEmbeddings.Length)
+            {
+                var audio = audioEmbeddings[t];
+                for (int d = 0; d < hidden; d++) row[d] += audio[d];
+            }
+            x[t] = row;
+        }
+
+        var tCond = TimeEmbedding(numDelayTokens, hidden);
+        int numLayers = w.Layers.Length;
+        var cache = new KvCache
+        {
+            K = new List<float[]>[numLayers],
+            V = new List<float[]>[numLayers],
+        };
+        for (int l = 0; l < numLayers; l++) { cache.K[l] = new List<float[]>(n + 128); cache.V[l] = new List<float[]>(n + 128); }
+
+        for (int li = 0; li < numLayers; li++)
+        {
+            var layer = w.Layers[li];
+            var attnIn = RmsNormRows(x, hidden, layer.InputNorm);
+            var attn = SelfAttentionCaching(attnIn, hidden, layer, cache.K[li], cache.V[li]);
+            AddRows(x, attn);
+
+            var mlpIn = RmsNormRows(x, hidden, layer.PostNorm);
+            var scale = AdaGate(tCond, layer);
+            for (int t = 0; t < n; t++)
+                for (int d = 0; d < hidden; d++)
+                    mlpIn[t][d] *= scale[d];
+            var mlp = Mlp(mlpIn, hidden, layer);
+            AddRows(x, mlp);
+        }
+
+        var normed = RmsNormRows(x, hidden, w.NormWeight);
+        var logits = new float[n][];
+        for (int t = 0; t < n; t++)
+            logits[t] = LinearNoBias(normed[t], w.EmbedTokensWeight, hidden, VoxtralTextDecoderWeights.VocabSize);
+        return (logits, cache);
+    }
+
+    /// <summary>Decodes exactly one new token at <paramref name="position"/>, reusing/extending
+    /// <paramref name="cache"/>. <paramref name="audioEmbedding"/> is the audio row to add at this
+    /// position, or null once the audio-embedding sequence is exhausted. Returns logits for the
+    /// new position.</summary>
+    public static float[] Step(VoxtralTextDecoderWeights w, KvCache cache, int tokenId, float[]? audioEmbedding, int position, int numDelayTokens)
+    {
+        int hidden = VoxtralTextDecoderWeights.HiddenSize;
+        var x = new float[hidden];
+        int embedBase = tokenId * hidden;
+        for (int d = 0; d < hidden; d++) x[d] = w.EmbedTokensWeight[embedBase + d];
+        if (audioEmbedding is not null)
+            for (int d = 0; d < hidden; d++) x[d] += audioEmbedding[d];
+
+        var tCond = TimeEmbedding(numDelayTokens, hidden);
+
+        for (int li = 0; li < w.Layers.Length; li++)
+        {
+            var layer = w.Layers[li];
+            var attnIn = RmsNormRow(x, hidden, layer.InputNorm);
+            var attn = SelfAttentionStep(attnIn, hidden, layer, cache.K[li], cache.V[li], position);
+            for (int d = 0; d < hidden; d++) x[d] += attn[d];
+
+            var mlpIn = RmsNormRow(x, hidden, layer.PostNorm);
+            var scale = AdaGate(tCond, layer);
+            for (int d = 0; d < hidden; d++) mlpIn[d] *= scale[d];
+            var mlp = MlpRow(mlpIn, hidden, layer);
+            for (int d = 0; d < hidden; d++) x[d] += mlp[d];
+        }
+
+        var normed = RmsNormRow(x, hidden, w.NormWeight);
+        return LinearNoBias(normed, w.EmbedTokensWeight, hidden, VoxtralTextDecoderWeights.VocabSize);
+    }
+
+    private static float[] SelfAttentionCaching(float[][] xRows, int hidden, VoxtralTextLayerWeights l, List<float[]> kCache, List<float[]> vCache)
+    {
+        int frames = xRows.Length;
+        int heads = VoxtralTextDecoderWeights.NumHeads;
+        int kvHeads = VoxtralTextDecoderWeights.NumKvHeads;
+        int headDim = VoxtralTextDecoderWeights.HeadDim;
+        int kvRepeat = heads / kvHeads;
+        float invSqrtD = 1f / MathF.Sqrt(headDim);
+
+        var q = new float[frames][];
+        for (int t = 0; t < frames; t++)
+        {
+            q[t] = LinearNoBias(xRows[t], l.QWeight, hidden, heads * headDim);
+            var k = LinearNoBias(xRows[t], l.KWeight, hidden, kvHeads * headDim);
+            var v = LinearNoBias(xRows[t], l.VWeight, hidden, kvHeads * headDim);
+            RopeNeoxInPlace(q[t], heads, headDim, t);
+            RopeNeoxInPlace(k, kvHeads, headDim, t);
+            kCache.Add(k);
+            vCache.Add(v);
+        }
+
+        var contextFlat = new float[frames][];
+        for (int t = 0; t < frames; t++) contextFlat[t] = new float[heads * headDim];
+
+        var scores = new float[frames];
+        for (int h = 0; h < heads; h++)
+        {
+            int qBase = h * headDim;
+            int kvBase = (h / kvRepeat) * headDim;
+            for (int i = 0; i < frames; i++)
+            {
+                float maxScore = float.NegativeInfinity;
+                for (int j = 0; j <= i; j++)
+                {
+                    float dot = 0f;
+                    for (int d = 0; d < headDim; d++) dot += q[i][qBase + d] * kCache[j][kvBase + d];
+                    dot *= invSqrtD;
+                    scores[j] = dot;
+                    if (dot > maxScore) maxScore = dot;
+                }
+                float sum = 0f;
+                for (int j = 0; j <= i; j++) { scores[j] = MathF.Exp(scores[j] - maxScore); sum += scores[j]; }
+                float invSum = 1f / sum;
+                for (int d = 0; d < headDim; d++)
+                {
+                    float acc = 0f;
+                    for (int j = 0; j <= i; j++) acc += scores[j] * invSum * vCache[j][kvBase + d];
+                    contextFlat[i][qBase + d] = acc;
+                }
+            }
+        }
+
+        var output = new float[frames][];
+        for (int t = 0; t < frames; t++) output[t] = LinearNoBias(contextFlat[t], l.OWeight, heads * headDim, hidden);
+        var flatOut = new float[frames * hidden];
+        for (int t = 0; t < frames; t++) Array.Copy(output[t], 0, flatOut, t * hidden, hidden);
+        return flatOut;
+    }
+
+    private static float[] SelfAttentionStep(float[] xRow, int hidden, VoxtralTextLayerWeights l, List<float[]> kCache, List<float[]> vCache, int position)
+    {
+        int heads = VoxtralTextDecoderWeights.NumHeads;
+        int kvHeads = VoxtralTextDecoderWeights.NumKvHeads;
+        int headDim = VoxtralTextDecoderWeights.HeadDim;
+        int kvRepeat = heads / kvHeads;
+        float invSqrtD = 1f / MathF.Sqrt(headDim);
+
+        var q = LinearNoBias(xRow, l.QWeight, hidden, heads * headDim);
+        var k = LinearNoBias(xRow, l.KWeight, hidden, kvHeads * headDim);
+        var v = LinearNoBias(xRow, l.VWeight, hidden, kvHeads * headDim);
+        RopeNeoxInPlace(q, heads, headDim, position);
+        RopeNeoxInPlace(k, kvHeads, headDim, position);
+        kCache.Add(k);
+        vCache.Add(v);
+
+        int total = kCache.Count; // includes this new position
+        var scores = new float[total];
+        var context = new float[heads * headDim];
+        for (int h = 0; h < heads; h++)
+        {
+            int qBase = h * headDim;
+            int kvBase = (h / kvRepeat) * headDim;
+            float maxScore = float.NegativeInfinity;
+            for (int j = 0; j < total; j++)
+            {
+                float dot = 0f;
+                for (int d = 0; d < headDim; d++) dot += q[qBase + d] * kCache[j][kvBase + d];
+                dot *= invSqrtD;
+                scores[j] = dot;
+                if (dot > maxScore) maxScore = dot;
+            }
+            float sum = 0f;
+            for (int j = 0; j < total; j++) { scores[j] = MathF.Exp(scores[j] - maxScore); sum += scores[j]; }
+            float invSum = 1f / sum;
+            for (int d = 0; d < headDim; d++)
+            {
+                float acc = 0f;
+                for (int j = 0; j < total; j++) acc += scores[j] * invSum * vCache[j][kvBase + d];
+                context[qBase + d] = acc;
+            }
+        }
+
+        return LinearNoBias(context, l.OWeight, heads * headDim, hidden);
+    }
+
+    private static float[] MlpRow(float[] xRow, int hidden, VoxtralTextLayerWeights l)
+    {
+        int inter = VoxtralTextDecoderWeights.IntermediateSize;
+        var gate = LinearNoBias(xRow, l.GateWeight, hidden, inter);
+        var up = LinearNoBias(xRow, l.UpWeight, hidden, inter);
+        for (int i = 0; i < inter; i++) gate[i] = Silu(gate[i]) * up[i];
+        return LinearNoBias(gate, l.DownWeight, inter, hidden);
+    }
+
+    private static float[] RmsNormRow(float[] row, int hidden, float[] weight)
+    {
+        double sumSq = 0;
+        for (int c = 0; c < hidden; c++) sumSq += (double)row[c] * row[c];
+        float invRms = (float)(1.0 / Math.Sqrt(sumSq / hidden + VoxtralTextDecoderWeights.RmsNormEps));
+        var outRow = new float[hidden];
+        for (int c = 0; c < hidden; c++) outRow[c] = row[c] * invRms * weight[c];
+        return outRow;
+    }
 }
