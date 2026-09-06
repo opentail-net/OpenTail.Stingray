@@ -123,6 +123,15 @@ public sealed class QwenAsrForcedAligner : IDisposable
         if (inMelFrames == 0) return [];
         var (audioSoftTokens, numAudioTokens) = _realEncoder.Forward(mel, inMelFrames);
 
+        if (Environment.GetEnvironmentVariable("STINGRAY_FORCEDALIGNER_TRACE") == "1")
+        {
+            double sum = 0, sumsq = 0, absMax = 0;
+            foreach (var v in audioSoftTokens) { sum += v; sumsq += (double)v * v; absMax = Math.Max(absMax, Math.Abs(v)); }
+            double mean = sum / audioSoftTokens.Length;
+            double std = Math.Sqrt(Math.Max(0, sumsq / audioSoftTokens.Length - mean * mean));
+            Console.Error.WriteLine($"[FA-Trace] inMelFrames={inMelFrames} numAudioTokens={numAudioTokens} audioSoftTokens: mean={mean:F4} std={std:F4} absMax={absMax:F4}");
+        }
+
         // Build the real prompt: <|audio_start|><|audio_pad|>xN<|audio_end|> + per word
         // "word<timestamp><timestamp>". Encoding each word/prefix segment SEPARATELY through the
         // same BPE vocab, then splicing in the real <timestamp> token id directly, is exactly
@@ -143,6 +152,14 @@ public sealed class QwenAsrForcedAligner : IDisposable
             promptIds.Add(_timestampTokenId);
             timestampPositions.Add(promptIds.Count);
             promptIds.Add(_timestampTokenId);
+        }
+
+        if (Environment.GetEnvironmentVariable("STINGRAY_FORCEDALIGNER_TRACE") == "1")
+        {
+            Console.Error.WriteLine($"[FA-Trace] promptIds.Count={promptIds.Count} first20=[{string.Join(",", promptIds.Take(20))}]");
+            Console.Error.WriteLine($"[FA-Trace] audioPadTokenId={_realWeights.AudioPadTokenId} timestampTokenId={_timestampTokenId}");
+            int audioPadCount = promptIds.Count(id => id == _realWeights.AudioPadTokenId);
+            Console.Error.WriteLine($"[FA-Trace] audioPadCount in prompt={audioPadCount} (expect numAudioTokens={numAudioTokens})");
         }
 
         using var source = new QwenAsrLlmSafetensorsTensorSource(
@@ -178,8 +195,8 @@ public sealed class QwenAsrForcedAligner : IDisposable
                 if (logits[c] > bestVal) { bestVal = logits[c]; best = c; }
             }
             classIds[idx] = best;
-            if (debugTrace && found < 3)
-                Console.Error.WriteLine($"[FA-Trace] position={position} logits.Length={logits.Length} best={best} bestVal={bestVal:F4}");
+            if (debugTrace && found < 2)
+                Console.Error.WriteLine($"[FA-Trace] position={position} logits[0..9]=[{string.Join(",", logits.Slice(0, 10).ToArray().Select(v => v.ToString("F3")))}] logits[1..5]sum={logits[1]+logits[2]+logits[3]+logits[4]+logits[5]:F3}");
             found++;
         });
         if (found != timestampPositions.Count)
@@ -208,11 +225,43 @@ public sealed class QwenAsrForcedAligner : IDisposable
     }
 
     /// <summary>Whitespace-based word tokenization matching the real reference's
-    /// `tokenize_space_language` for non-CJK languages -- CJK per-character splitting
-    /// (`tokenize_chinese_mixed`) is not yet ported, matching this pipeline's current
-    /// English-first scope.</summary>
-    private static string[] TokenizeAlignableWords(string text) =>
-        text.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+    /// `tokenize_space_language`/`clean_token` for non-CJK languages -- CJK per-character
+    /// splitting (`tokenize_chinese_mixed`) is not yet ported, matching this pipeline's current
+    /// English-first scope. `clean_token` strips everything except apostrophe/ASCII-alnum/CJK/a
+    /// handful of non-ASCII letter ranges from EVERY word -- confirmed real and load-bearing:
+    /// leaving trailing punctuation (e.g. "three," "publication.") attached changes the real
+    /// BPE token count per word, shifting every subsequent `&lt;timestamp&gt;` token's absolute
+    /// position in the prompt relative to what the real reference (and the model's training
+    /// data) expects.</summary>
+    private static string[] TokenizeAlignableWords(string text)
+    {
+        var raw = text.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        var cleaned = new List<string>(raw.Length);
+        foreach (var word in raw)
+        {
+            var sb = new System.Text.StringBuilder(word.Length);
+            foreach (var ch in word)
+            {
+                if (ch == '\'' || char.IsAsciiLetterOrDigit(ch) || IsKeptNonAsciiLetterOrNumber(ch))
+                    sb.Append(ch);
+            }
+            if (sb.Length > 0) cleaned.Add(sb.ToString());
+        }
+        return [.. cleaned];
+    }
+
+    /// <summary>Real non-ASCII letter/number ranges `clean_token` keeps (Latin Extended, Greek,
+    /// Cyrillic, Thai, Hiragana/Katakana, Hangul, plus CJK), ported directly from
+    /// `processor.cpp`'s `is_kept_non_ascii_letter_or_number`/`is_cjk`.</summary>
+    private static bool IsKeptNonAsciiLetterOrNumber(char ch)
+    {
+        int c = ch;
+        return (c >= 0x00C0 && c <= 0x02AF) || (c >= 0x0370 && c <= 0x03FF) ||
+               (c >= 0x0400 && c <= 0x052F) || (c >= 0x0E00 && c <= 0x0E7F) ||
+               (c >= 0x3040 && c <= 0x30FF) || (c >= 0xAC00 && c <= 0xD7AF) ||
+               (c >= 0x4E00 && c <= 0x9FFF) || (c >= 0x3400 && c <= 0x4DBF) ||
+               (c >= 0xF900 && c <= 0xFAFF);
+    }
 
     /// <summary>
     /// Real longest-non-decreasing-subsequence-based timestamp repair, ported directly from

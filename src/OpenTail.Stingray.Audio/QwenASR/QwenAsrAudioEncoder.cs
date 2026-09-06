@@ -12,6 +12,17 @@ public sealed record QwenAsrEncoderConfig
     public int NumHeads { get; init; } = 14;        // 14 for 0.6B, 16 for 1.7B
     public int QwenHiddenDim { get; init; } = 1024; // 1024 for 0.6B, 2048 for 1.7B
     public int WindowSizeInfer { get; init; } = 800; // 8 seconds attention window
+    /// <summary>Real chunk-size divisor (`audio_config.n_window`, confirmed via
+    /// examples/audio.cpp's real qwen3_asr_audio_encoder_token_count/audio_encoder.cpp:
+    /// `chunk_frame_limit = n_window * 2`): the conv stem does NOT run over the whole mel
+    /// sequence at once -- it splits input frames into independent chunks of at most
+    /// `NWindow*2` frames each, runs the SAME 3-stage conv stem on every chunk separately (its
+    /// own edge padding per chunk, not just at the sequence ends), and restarts the sinusoidal
+    /// positional embedding at position 0 for every chunk, before concatenating all chunks'
+    /// tokens. See <see cref="Forward"/>'s doc comment for why this matters (a single
+    /// continuous-sequence conv gives the WRONG token count and content for any audio longer
+    /// than one chunk).</summary>
+    public int NWindow { get; init; } = 50;
 }
 
 /// <summary>
@@ -49,6 +60,28 @@ public sealed class QwenAsrAudioEncoder : IDisposable
     /// <see cref="QwenAsrMelExtractor"/>) through the real conv stem + AuT transformer +
     /// adapter projection into Qwen3 LLM token embeddings.
     /// Output: [numAudioTokens, QwenHiddenDim].
+    ///
+    /// <para><b>Real chunking, confirmed against `examples/audio.cpp`'s
+    /// `qwen3_asr_audio_encoder_token_count`/`audio_encoder.cpp` (root-caused 2026-09-06 chasing
+    /// a Qwen3-ForcedAligner off-by-2-audio-tokens bug that turned out to be this, affecting the
+    /// base ASR pipeline too for any audio longer than one chunk)</b>: the conv stem does NOT
+    /// run over the whole mel sequence as one continuous conv -- input frames are split into
+    /// independent chunks of at most <see cref="QwenAsrEncoderConfig.NWindow"/>*2 frames each,
+    /// the SAME 3-stage conv stem runs on every chunk SEPARATELY (its own edge padding at every
+    /// chunk boundary, not just the sequence's own start/end), and the sinusoidal positional
+    /// embedding restarts at position 0 for every chunk, before all chunks' tokens are
+    /// concatenated. A single continuous-sequence conv (this method's previous behavior)
+    /// produces a WRONG token count and content for any audio longer than one chunk (confirmed:
+    /// 75 tokens here vs the real reference's 77, for a 593-mel-frame/~5.9s clip) -- the extra
+    /// per-chunk edge padding accumulates real extra tokens a single continuous conv can't
+    /// produce.</para>
+    ///
+    /// <para>NOT yet implemented: the real windowed (not full) self-attention mask the reference
+    /// applies across chunks when the total token count exceeds one attention window
+    /// (`max_chunk_tokens * (WindowSizeInfer/NWindow/2)` &#8776; 104 tokens for the default
+    /// config) -- full attention across the whole concatenated sequence (this method's existing
+    /// behavior) is only correct up to that many tokens (roughly a 13-second clip). Longer audio
+    /// needs the real windowing restriction ported too; flagged rather than guessed.</para>
     /// </summary>
     public (float[] ProjectedTokens, int NumTokens) Forward(ReadOnlySpan<float> mel, int numMelFrames)
     {
@@ -60,44 +93,48 @@ public sealed class QwenAsrAudioEncoder : IDisposable
         var w = _weights;
         int nMels = Config.InMelChannels;
         int c = 480; // audio.conv_channels
+        int encDim = Config.EncoderDim;
+        int chunkFrameLimit = Config.NWindow * 2;
 
-        // mel input as a 1-channel image, IDX(0,h=t,w=f) = t*nMels + f (frame-major, matches
-        // QwenAsrMelExtractor's layout directly, same convention as ParakeetConformerEncoder).
-        var stage1 = Conv2dFull(mel.ToArray(), cin: 1, hin: numMelFrames, win: nMels, w.Conv1WeightCL, w.Conv1Bias, c, k: 3, stride: 2, pad: 1, out int h1, out int w1);
-        GeluInPlace(stage1);
-
-        var stage2 = Conv2dFull(stage1, cin: c, hin: h1, win: w1, w.Conv2WeightCL, w.Conv2Bias, c, k: 3, stride: 2, pad: 1, out int h2, out int w2);
-        GeluInPlace(stage2);
-
-        var stage3 = Conv2dFull(stage2, cin: c, hin: h2, win: w2, w.Conv3WeightCL, w.Conv3Bias, c, k: 3, stride: 2, pad: 1, out int h3, out int w3);
-        GeluInPlace(stage3);
-
-        int t = h3;
-        int flatDim = c * w3; // 480 * 16 = 7680, matches audio.conv_out.weight's input dim
-
-        // Flatten channel-major (matches Parakeet's identical permute+flatten convention):
-        // feature[k] = channel*w3 + freq_w.
-        var flat = new float[t][];
-        for (int ti = 0; ti < t; ti++)
+        var chunkTokens = new List<float[]>();
+        for (int chunkStart = 0; chunkStart < numMelFrames; chunkStart += chunkFrameLimit)
         {
-            var row = new float[flatDim];
-            for (int ch = 0; ch < c; ch++)
-                for (int fw = 0; fw < w3; fw++)
-                    row[ch * w3 + fw] = stage3[ch * h3 * w3 + ti * w3 + fw];
-            flat[ti] = row;
+            int chunkLen = Math.Min(chunkFrameLimit, numMelFrames - chunkStart);
+            var chunkMel = mel.Slice(chunkStart * nMels, chunkLen * nMels).ToArray();
+
+            // mel input as a 1-channel image, IDX(0,h=t,w=f) = t*nMels + f (frame-major, matches
+            // QwenAsrMelExtractor's layout directly, same convention as ParakeetConformerEncoder).
+            var stage1 = Conv2dFull(chunkMel, cin: 1, hin: chunkLen, win: nMels, w.Conv1WeightCL, w.Conv1Bias, c, k: 3, stride: 2, pad: 1, out int h1, out int w1);
+            GeluInPlace(stage1);
+
+            var stage2 = Conv2dFull(stage1, cin: c, hin: h1, win: w1, w.Conv2WeightCL, w.Conv2Bias, c, k: 3, stride: 2, pad: 1, out int h2, out int w2);
+            GeluInPlace(stage2);
+
+            var stage3 = Conv2dFull(stage2, cin: c, hin: h2, win: w2, w.Conv3WeightCL, w.Conv3Bias, c, k: 3, stride: 2, pad: 1, out int h3, out int w3);
+            GeluInPlace(stage3);
+
+            int chunkT = h3;
+            int flatDim = c * w3; // 480 * 16 = 7680, matches audio.conv_out.weight's input dim
+
+            // Flatten channel-major (matches Parakeet's identical permute+flatten convention):
+            // feature[k] = channel*w3 + freq_w.
+            var chunkPosEmb = SinusoidalPositionalEmbeddings(chunkT, encDim);
+            for (int ti = 0; ti < chunkT; ti++)
+            {
+                var row = new float[flatDim];
+                for (int ch = 0; ch < c; ch++)
+                    for (int fw = 0; fw < w3; fw++)
+                        row[ch * w3 + fw] = stage3[ch * h3 * w3 + ti * w3 + fw];
+
+                var tokenVec = w.ConvOutWeight.MatVec(row);
+                for (int d = 0; d < encDim; d++)
+                    tokenVec[d] += chunkPosEmb[ti * encDim + d];
+                chunkTokens.Add(tokenVec);
+            }
         }
 
-        int encDim = Config.EncoderDim;
-        var x = new float[t][];
-        for (int ti = 0; ti < t; ti++)
-            x[ti] = w.ConvOutWeight.MatVec(flat[ti]);
-
-        // Whisper-convention sinusoidal absolute positional embedding (fixed, not learned --
-        // no positional-embedding tensor exists in this checkpoint).
-        var posEmb = SinusoidalPositionalEmbeddings(t, encDim);
-        for (int ti = 0; ti < t; ti++)
-            for (int d = 0; d < encDim; d++)
-                x[ti][d] += posEmb[ti * encDim + d];
+        int t = chunkTokens.Count;
+        var x = chunkTokens.ToArray();
 
         foreach (var layer in w.AudioLayerWeights)
             x = EncoderBlock(x, layer, t, encDim, Config.NumHeads);
