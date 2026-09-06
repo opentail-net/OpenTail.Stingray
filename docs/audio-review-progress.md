@@ -11623,3 +11623,49 @@ chasing this further given the actual audio output is already verified correct.
 0/off) and `native_pipeline.cpp`'s orchestration layer (audio chunk splitting for long
 clips, RMS mix, pad-crop, resampling to the requested output rate) needed for a complete,
 callable voice-conversion API in this codebase.
+
+## Voxtral Realtime -- scoped, weight loader for the audio tower written, 2026-09-06
+
+Confirmed the text decoder half (`mistralai/Voxtral-Mini-4B-Realtime-2602`'s
+`text_config`) is a standard Mistral: 26 layers, GQA 32/8 heads, head_dim=128,
+RoPE theta=1e6, sliding_window=8192, tied embeddings -- architecturally identical to
+Mistral checkpoints this engine already runs via the existing `ForwardPass`/
+`ModelCompatibility` allowlist, so it needs NO new decoder code. The real new work is the
+audio tower + multimodal projector (`examples/audio.cpp/src/models/voxtral_realtime/
+audio_encoder.cpp`, not guessed):
+
+- Frontend: real log-mel features, 128 mel bins, 16kHz, n_fft=400/hop=160 (Whisper-style
+  frontend numbers, but note the ENCODER itself is not Whisper-shaped).
+- Stem: `Conv1d(128->1280,k=3,s=1,pad=1)` + GELU(erf) -> `Conv1d(1280->1280,k=3,s=2,pad=1)`
+  + GELU(erf) -- 2x downsample, standard Whisper-style conv frontend.
+- 32 transformer layers, each: RMSNorm -> full MHA (32 heads == 32 kv-heads, no GQA in the
+  audio tower despite the text decoder using GQA; Q/V have bias, K does not) with RoPE
+  NEOX (theta=1e6) and a **750-step causal sliding-window** mask (audio-tower-local,
+  unrelated to the text decoder's own 8192-token window) -> residual add -> RMSNorm ->
+  SwiGLU MLP (down_proj has bias, gate/up do not) -> residual add. This is essentially a
+  Llama/Mistral-style transformer block applied to audio frames, not an exotic
+  architecture -- this engine already has RoPE-NEOX/MHA/SwiGLU/RMSNorm kernels from its
+  text-decoder support, so the actual new C# code is comparatively small relative to
+  RVC's RMVPE U-Net or VITS synthesizer.
+- Final RMSNorm, then downsample by `downsample_factor=4` (reshape 4 adjacent 1280-dim
+  steps into one 5120-dim vector) -> `Linear(5120->3072, no bias)` -> GELU(erf) ->
+  `Linear(3072->3072, no bias)` -> real audio embeddings, spliced into the text token
+  stream at `<|audio_pad|>`-equivalent placeholder positions (same conceptual pattern as
+  Qwen3-ASR/ForcedAligner's `EnableAudioConditioning` already in this codebase).
+
+Wrote `VoxtralAudioEncoderWeights.cs` (weight-loading plumbing, real tensor names from
+`load_weights` -- `audio_tower.embedder.conv{1,2}.{weight,bias}`,
+`audio_tower.layers.{i}.self_attn.{q,k,v,o}_proj.{weight,bias}` (no `k_proj.bias`),
+`audio_tower.layers.{i}.mlp.{gate,up,down}_proj.{weight,bias}` (no `gate`/`up` bias),
+`audio_tower.norm.weight`, `multi_modal_projector.linear_{1,2}.weight`). All constants
+(hidden=1280, intermediate=5120, 32 layers, 32/32 heads, head_dim=64, mel_bins=128,
+sliding_window=750, rope_theta=1e6, downsample_factor=4) cross-checked directly against
+the real checkpoint's own downloaded `config.json` (not just the reference's hardcoded
+defaults) -- exact match.
+
+**Not yet downloaded/tested**: the real checkpoint is ~17.7GB (4.4B params, bf16
+safetensors, `model.safetensors`/`consolidated.safetensors` -- no GGUF exists yet on HF,
+so this codebase's `pull` command, which only fetches GGUF files, does not apply here; a
+real download would need a direct HF fetch or a local GGUF conversion first). Weight
+loading, the forward pass, the frontend's exact mel formula, and the audio-token splicing
+into the text prompt are all still to be written/verified against real weights.
