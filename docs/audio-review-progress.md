@@ -12898,3 +12898,17 @@ plain text-only forward pass the same way Fun-ASR-Nano's LLM path was diagnosed)
 audio codec's Transformer-augmented conv stages (reusing `VibeVoiceConvNeXtBlock`-adjacent
 patterns is NOT applicable here -- this is a different, attention-based per-stage design,
 not ConvNeXt), then the local transformer + generation loop.
+
+**Update, 2026-09-06 -- VoxCPM2 checkpoint downloaded; real architecture uses classic
+`weight_g`/`weight_v` weight-norm (not the newer `parametrizations` naming) for its
+audio VAE decoder.** Downloaded the real `VoxCPM2-GGUF` checkpoint (889 tensors) via
+`stingray pull`. Real tensor prefixes: `audiovae_weights/decoder.model.{i}.{bias,weight_g,
+weight_v}` -- a real HiFiGAN-style neural vocoder decoder using the OLDER PyTorch
+`weight_norm` convention (`weight_g`/`weight_v` directly, the SAME reconstruction already
+implemented for RVC's HiFiGAN generator this session, i.e. `w = weight_v *
+(weight_g/||weight_v||)` per output channel) -- distinct from MOSS-TTS-Nano's newer
+`parametrizations.weight.original0/1` naming for the same underlying weight-norm concept.
+Not yet scoped further (main LLM/text-side tensor names under the `weights/` prefix not
+yet dumped). Real next step if picked up: dump the full 889-tensor list (same technique
+used for MOSS-TTS-Nano) to identify the text/audio LLM architecture before any
+implementation.
