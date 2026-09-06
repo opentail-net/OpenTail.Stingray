@@ -181,22 +181,35 @@ public sealed class QwenAsrForcedAligner : IDisposable
         using var backend = new CpuBackend();
         using var fwd = new ForwardPass(source, backend, hp);
 
+        // EXPERIMENT (2026-09-06), DISPROVEN: tested whether the classify head's read-position
+        // needed a -1 shift relative to the <timestamp> token's own index (a "predict-next"
+        // convention mismatch would have produced the observed symptom). Result: shifting made
+        // no difference -- class 0 still dominated at every position, ruling this out. Also
+        // ruled out this same session: Q8 activation-quantized prefill (STINGRAY_CPU_PREFILL_Q8=0
+        // changes nothing), and weight corruption (class 0's row in the real checkpoint's
+        // thinker.lm_head.weight has norm 0.438, actually BELOW the ~0.63 average across all 5000
+        // rows -- not anomalous at all). The remaining bug is most likely in the hidden-state
+        // computation itself (attention/layers), not the classify head or its wiring -- needs
+        // real intermediate hidden-state comparison against the C++ reference to pin down
+        // further. Left gated behind an env var (default 0 = no shift, matching the reference's
+        // own indexing) in case it's useful for a future investigation session.
+        int readShift = Environment.GetEnvironmentVariable("STINGRAY_FA_READ_SHIFT") is { Length: > 0 } s && int.TryParse(s, out var shiftVal) ? shiftVal : 0;
         var classIds = new int[timestampPositions.Count];
-        var wanted = new HashSet<int>(timestampPositions);
+        var wantedPositionToIdx = new Dictionary<int, int>();
+        for (int i = 0; i < timestampPositions.Count; i++) wantedPositionToIdx[timestampPositions[i] + readShift] = i;
         int found = 0;
         bool debugTrace = Environment.GetEnvironmentVariable("STINGRAY_FORCEDALIGNER_TRACE") == "1";
         fwd.PrefillWithPerPositionLogits(prompt, 0, (position, logits) =>
         {
-            if (!wanted.Contains(position)) return;
-            int idx = timestampPositions.IndexOf(position);
+            if (!wantedPositionToIdx.TryGetValue(position, out int idx)) return;
             int best = 0; float bestVal = float.NegativeInfinity;
             for (int c = 0; c < logits.Length; c++)
             {
                 if (logits[c] > bestVal) { bestVal = logits[c]; best = c; }
             }
             classIds[idx] = best;
-            if (debugTrace && found < 2)
-                Console.Error.WriteLine($"[FA-Trace] position={position} logits[0..9]=[{string.Join(",", logits.Slice(0, 10).ToArray().Select(v => v.ToString("F3")))}] logits[1..5]sum={logits[1]+logits[2]+logits[3]+logits[4]+logits[5]:F3}");
+            if (debugTrace && found < 4)
+                Console.Error.WriteLine($"[FA-Trace] readShift={readShift} position={position} best={best} bestVal={bestVal:F4} logits[0..9]=[{string.Join(",", logits.Slice(0, 10).ToArray().Select(v => v.ToString("F3")))}]");
             found++;
         });
         if (found != timestampPositions.Count)
