@@ -18,12 +18,46 @@ public static class RvcSynthesizerEncoder
     private const float LReluSlope = 0.1f;
     private const float LayerNormEps = 1e-5f;
 
+    /// <summary>All real intermediate tensors, exposed for golden-verification against the
+    /// reference's own `rvc.synth.{m,logs,z_p,z,raw_output}` traces. All channel-major [C*T]
+    /// except <see cref="Audio"/> (raw waveform samples).</summary>
+    public readonly record struct ForwardResult(float[] M, float[] Logs, float[] Zp, float[] Z, float[] Audio);
+
     /// <summary>Real end-to-end forward pass. <paramref name="featuresBtc"/> is frame-major
     /// [frames][featureDim] (HuBERT content, optionally retrieval-blended). <paramref
-    /// name="pitchIds"/>/<paramref name="sineBtc"/> are only used when <c>weights.HasF0</c>.
-    /// Returns the raw generator waveform (pre RMS-mix / pad-crop, matching the reference's own
-    /// `RvcSynthesizerOutput.audio` before `native_pipeline.cpp`'s post-processing).</summary>
-    public static float[] Forward(
+    /// name="pitchIds"/>/<paramref name="sineSource"/> are only used when <c>weights.HasF0</c>.
+    /// <paramref name="noiseChannelMajor"/> is the real Gaussian noise added to `z_p`
+    /// (`[InterChannels*frames]`, channel-major) -- the reference generates this via a
+    /// Philox-based CUDA RNG (`generate_torch_cuda_randn`, seed 1234) that this port does not
+    /// replicate; for golden verification, pass the reference's own dumped noise array directly
+    /// rather than trying to reproduce its RNG bit-for-bit. Returns the raw generator waveform
+    /// (pre RMS-mix / pad-crop, matching the reference's own `RvcSynthesizerOutput.audio` before
+    /// `native_pipeline.cpp`'s post-processing).</summary>
+    public static ForwardResult Forward(
+        RvcSynthesizerWeights w,
+        float[][] featuresBtc,
+        int[] pitchIds,
+        ReadOnlySpan<float> sineSource,
+        int speakerId,
+        ReadOnlySpan<float> noiseChannelMajor)
+    {
+        int frames = featuresBtc.Length;
+        var (m, logs) = BuildTextEncoderStats(w, featuresBtc, pitchIds);
+
+        int inter = RvcSynthesizerWeights.InterChannels;
+        var zp = new float[inter * frames];
+        for (int i = 0; i < zp.Length; i++)
+            zp[i] = m[i] + MathF.Exp(logs[i]) * noiseChannelMajor[i] * 0.66666f;
+
+        var g = SpeakerEmbedding(w, speakerId); // [GinChannels]
+        var z = BuildFlowReverse(w, zp, frames, g);
+        var audio = BuildGenerator(w, z, frames, g, sineSource);
+        return new ForwardResult(m, logs, zp, z, audio);
+    }
+
+    /// <summary>Convenience overload for non-golden-verification callers: samples its own noise
+    /// from <paramref name="noiseRng"/> instead of requiring an externally-supplied array.</summary>
+    public static ForwardResult Forward(
         RvcSynthesizerWeights w,
         float[][] featuresBtc,
         int[] pitchIds,
@@ -32,20 +66,9 @@ public static class RvcSynthesizerEncoder
         Random noiseRng)
     {
         int frames = featuresBtc.Length;
-        var (m, logs) = BuildTextEncoderStats(w, featuresBtc, pitchIds);
-
-        int inter = RvcSynthesizerWeights.InterChannels;
-        var zp = new float[inter * frames];
-        for (int c = 0; c < inter; c++)
-            for (int t = 0; t < frames; t++)
-            {
-                float noise = SampleStandardNormal(noiseRng);
-                zp[c * frames + t] = m[c * frames + t] + MathF.Exp(logs[c * frames + t]) * noise * 0.66666f;
-            }
-
-        var g = SpeakerEmbedding(w, speakerId); // [GinChannels]
-        var z = BuildFlowReverse(w, zp, frames, g);
-        return BuildGenerator(w, z, frames, g, sineSource);
+        var noise = new float[RvcSynthesizerWeights.InterChannels * frames];
+        for (int i = 0; i < noise.Length; i++) noise[i] = SampleStandardNormal(noiseRng);
+        return Forward(w, featuresBtc, pitchIds, sineSource, speakerId, noise);
     }
 
     private static float SampleStandardNormal(Random rng)

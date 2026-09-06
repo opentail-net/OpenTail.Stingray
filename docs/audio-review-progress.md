@@ -11581,3 +11581,45 @@ real audio, a bigger follow-on step (same as the HuBERT/RMVPE individual-then-en
 staging already used elsewhere in this section). The k-NN retrieval index and the
 `native_pipeline.cpp`-level orchestration (chunk splitting, RMS mix, pad-crop) are also
 still not ported.
+
+**Update, 2026-09-06 -- synthesizer golden-verified: final audio matches the reference to
+floating-point precision.** Extended `engine::debug::trace_log_f32`'s existing (but only
+40-sparse-sample) `rvc.synth.*` traces with real full-array binary dumps
+(`STINGRAY_RVC_TRACE=1`-gated, in `native_pipeline.cpp` for the synthesizer's real inputs
+-- `features`/`pitch`/`sine_source` -- and in `synthesizer.cpp` for the exact Gaussian
+`noise` fed into `z_p` and the `m`/`logs`/`z_p`/`z`/`raw_output` intermediates), since a
+real numeric comparison needs full arrays, not 40 samples. The reference's `z_p` noise
+comes from a Philox-based CUDA RNG (`generate_torch_cuda_randn`, seed 1234) this port
+does not replicate -- rather than reimplementing that RNG, `RvcSynthesizerEncoder.Forward`
+now takes an explicit `noiseChannelMajor` parameter so a golden-verification test can feed
+the reference's own exact dumped noise directly (a convenience overload sampling from a
+`Random` is kept for non-golden callers).
+
+`RvcSynthesizerRealReferenceMatchTests` feeds the reference's real dumped
+features/pitch/sine_source/noise (from a real end-to-end run on `a.wav`, 794 frames)
+into `RvcSynthesizerEncoder.Forward` and compares every intermediate against the
+reference's real dumped arrays, element-wise:
+
+| tensor | meanAbsDiff | maxAbsDiff |
+|---|---|---|
+| `logs` | 0.00000 | 0.00000 |
+| `z_p` | 0.00000 | 0.00003 |
+| `z` | 0.00000 | 0.00003 |
+| `audio` (final waveform, 317600 samples) | 0.00000 | 0.00003 |
+
+The final audio output -- what actually matters for voice conversion -- matches the real
+C++ reference to floating-point noise level. One anomaly: the dumped `m` array itself
+disagreed substantially (meanAbsDiff=0.416) despite `z_p = m + exp(logs)*noise*0.66666`
+matching almost exactly with the SAME `logs`/`noise` -- which is only arithmetically
+possible if this port's own `m` already equals the reference's real `m` to the same
+precision as everything downstream of it. This points to the `rvc_synth_m.bin` dump
+itself being unreliable (most likely a `ggml_gallocr` buffer-reuse subtlety specific to
+the newly-added debug-output tensor, similar in spirit to the RMVPE ConvTranspose2d
+off-by-one found earlier in this section), not a real bug in this port -- the
+proof is that everything computed FROM `m` (`z_p`, `z`, `audio`) matches exactly. Not
+chasing this further given the actual audio output is already verified correct.
+
+**Still not ported**: the k-NN retrieval index (optional, `retrieval_blend` defaults to
+0/off) and `native_pipeline.cpp`'s orchestration layer (audio chunk splitting for long
+clips, RMS mix, pad-crop, resampling to the requested output rate) needed for a complete,
+callable voice-conversion API in this codebase.

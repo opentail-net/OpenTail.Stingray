@@ -48,7 +48,8 @@ public sealed class RvcSynthesizerEncoderForwardTests : HeavyTestBase
         var sine = new float[frames * w.HopSamples];
         for (int i = 0; i < sine.Length; i++) sine[i] = MathF.Sin(2 * MathF.PI * 220f * i / 16000f) * 0.1f;
 
-        var audio = OpenTail.Stingray.Audio.Rvc.RvcSynthesizerEncoder.Forward(w, features, pitchIds, sine, speakerId: 0, noiseRng: rng);
+        var result = OpenTail.Stingray.Audio.Rvc.RvcSynthesizerEncoder.Forward(w, features, pitchIds, sine, speakerId: 0, noiseRng: rng);
+        var audio = result.Audio;
 
         Assert.True(audio.Length > 0);
         double sum = 0, sumSq = 0;
