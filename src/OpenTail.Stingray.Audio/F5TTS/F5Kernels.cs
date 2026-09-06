@@ -443,7 +443,14 @@ public static class F5Kernels
     }
 
     /// <summary>x_transformers-convention RoPE, applied in place to a [t, heads*headDim] tensor. Shared by F5-TTS's DiT and CosyVoice3's DiT (tensor-for-tensor identical architecture, see CosyVoice3DiTModel's doc comment) -- was hand-duplicated in both files until extracted here.
-    /// <paramref name="numRopeHeads"/> is the real `AttnProcessor.pe_attn_head` config (`modules.py`): when not null/less than `heads`, RoPE is applied ONLY to the first `numRopeHeads` heads (real `query[:, :pn, :, :] = apply_rotary_pos_emb(...)`), leaving the rest unrotated -- NOT a uniform apply-to-all-heads default. Confirmed real per-checkpoint: `F5TTS_Base`'s own `F5TTS_Base.yaml` sets `pe_attn_head: 1` (only head 0 gets RoPE); defaults to `heads` (apply to every head) for checkpoints that don't set this (e.g. `F5TTS_v1_Base`'s `pe_attn_head: null`, and CosyVoice3's own real config).</summary>
+    /// <paramref name="numRopeHeads"/> is the real `AttnProcessor.pe_attn_head` config (`modules.py`): when not null/less than `heads`, RoPE is applied ONLY to the first `numRopeHeads` heads (real `query[:, :pn, :, :] = apply_rotary_pos_emb(...)`), leaving the rest unrotated -- NOT a uniform apply-to-all-heads default. Confirmed real per-checkpoint: `F5TTS_Base`'s own `F5TTS_Base.yaml` sets `pe_attn_head: 1` (only head 0 gets RoPE); defaults to `heads` (apply to every head) for checkpoints that don't set this (e.g. `F5TTS_v1_Base`'s `pe_attn_head: null`).
+    /// CosyVoice3 ALSO rotates only head 0 (numRopeHeads: 1), confirmed via
+    /// `examples/audio.cpp/src/framework/modules/attention/positional_modules.cpp:76-91` calling
+    /// `ggml_rope_ext` with `n_dims=head_dim=64` on the UNSPLIT [t,1024] q/k projection --
+    /// real GGML rope semantics for n_dims &lt; the tensor's last dimension rotate only the first
+    /// n_dims elements (head 0) and pass the rest through unrotated. An earlier version of this
+    /// comment claimed CosyVoice3 defaults to all-heads rope; that was wrong (never traced
+    /// through to ggml_rope_ext's actual behavior) -- see CosyVoice3DiTModel.Attention's call site.</summary>
     public static void ApplyRotary(float[] x, int offset, int t, int heads, int headDim, float[] rotaryCos, float[] rotarySin, int? numRopeHeads = null)
     {
         int dim = heads * headDim;

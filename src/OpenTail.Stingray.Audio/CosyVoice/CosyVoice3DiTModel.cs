@@ -167,6 +167,26 @@ public static class CosyVoice3DiTModel
                     double sxsq = 0, sdsq = 0, scsq = 0;
                     for (int j = 0; j < melLen; j++) { sxsq += (double)x[j] * x[j]; sdsq += (double)dphiDt[j] * dphiDt[j]; scsq += (double)cfgDphiDt[j] * cfgDphiDt[j]; }
                     Console.Error.WriteLine($"[CfgTrace] step={step} t={t:F3} dt={dt:F3} x_rms={Math.Sqrt(sxsq / melLen):F4} condV_rms={Math.Sqrt(sdsq / melLen):F4} uncondV_rms={Math.Sqrt(scsq / melLen):F4}");
+
+                    // Track a few representative channels' std growth across ALL ODE steps (not
+                    // just the final one) to see WHERE the low-mel-frequency-channel excess
+                    // variance first opens up relative to the reference, rather than only its
+                    // end state.
+                    {
+                        int mel = CosyVoice3DiTWeights.MelDim;
+                        int[] trackedCh = [0, 1, 2, 4, 21, 40, 60];
+                        var stepSb = new System.Text.StringBuilder($"[XPerChStep] step={step} std[");
+                        foreach (var c in trackedCh)
+                        {
+                            double sum = 0, sumsq = 0;
+                            for (int f = 0; f < numFrames; f++) { double v = x[f * mel + c]; sum += v; sumsq += v * v; }
+                            double mean = sum / numFrames;
+                            double variance = Math.Max(0, sumsq / numFrames - mean * mean);
+                            stepSb.Append($"ch{c}={Math.Sqrt(variance):F3} ");
+                        }
+                        stepSb.Append(']');
+                        Console.Error.WriteLine(stepSb.ToString());
+                    }
                     if (step == odeSteps)
                     {
                         int mel = CosyVoice3DiTWeights.MelDim;
@@ -368,7 +388,13 @@ public static class CosyVoice3DiTModel
         return Lin(backend, h, 1, CosyVoice3DiTWeights.HiddenDim, w.TimeMlp2Weight, w.TimeMlp2Bias, CosyVoice3DiTWeights.HiddenDim);
     }
 
-    /// <summary>Same RoPE base/formula F5-TTS's `F5RotaryEmbedding` uses (theta=10000, standard `x_transformers` convention) -- confirmed applicable since head_dim (64) matches exactly; not yet cross-checked against `examples/cosyvoice.cpp`'s own RoPE construction, flagged alongside the input_embed gap above.</summary>
+    /// <summary>Same RoPE base/formula F5-TTS's `F5RotaryEmbedding` uses (theta=10000, standard `x_transformers` convention). Cross-checked against the real reference's own RoPE construction
+    /// (`examples/audio.cpp/src/models/cosyvoice3/flow.cpp:322-326`'s `attention_config()`:
+    /// `rope_theta=10000.0F`, `rope_freq_scale` defaults to `1.0F`, `rope_type=GGML_ROPE_TYPE_NORMAL`
+    /// -- confirmed via `ggml.h`'s own doc comment that NORMAL mode is interleaved-pairs rotation
+    /// `[cscs...]` for the first `n_dims` elements, matching this file's/F5Kernels.ApplyRotary's
+    /// convention exactly) -- all match. See Attention's numRopeHeads:1 call site for the one real
+    /// discrepancy this cross-check found (RoPE applied only to head 0, not all 16 heads).</summary>
     private static float[] RotaryInvFreq()
     {
         int halfHead = CosyVoice3DiTWeights.HeadDim / 2;
@@ -463,8 +489,21 @@ public static class CosyVoice3DiTModel
         var k = Lin(backend, norm, t, dim, bw.ToKWeight, bw.ToKBias, dim);
         var v = Lin(backend, norm, t, dim, bw.ToVWeight, bw.ToVBias, dim);
 
-        F5Kernels.ApplyRotary(q, t, heads, headDim, rotaryCos, rotarySin);
-        F5Kernels.ApplyRotary(k, t, heads, headDim, rotaryCos, rotarySin);
+        // Real reference (examples/audio.cpp's projected_grouped_self_attention.cpp:97-111,
+        // cosyvoice3/flow.cpp:322-326) applies RoPE to the UNSPLIT [t, 1024] q/k projection
+        // (before reshape_projected_heads splits it into [t, 16, 64]) via
+        // ggml_rope_ext(..., n_dims=head_dim=64, ...) -- confirmed via positional_modules.cpp:76-91
+        // this maps straight to ggml_rope_ext with n_dims < the tensor's last dimension (1024).
+        // Real GGML rope semantics for n_dims < ne[0] rotate ONLY the first n_dims elements and
+        // pass the rest through unrotated (the same partial-rotary mechanism used by e.g.
+        // GPT-NeoX-style models) -- so only elements [0,64) (head 0) are ever rotated; heads
+        // 1-15 (elements [64,1024)) pass through completely unrotated. This earlier had NO
+        // numRopeHeads argument (defaulting to all 16 heads), silently distorting 15 of 16
+        // heads' attention on every one of the 22 layers -- an earlier comment on
+        // F5Kernels.ApplyRotary claiming "CosyVoice3's own real config" rotates all heads was
+        // wrong (never actually traced through to ggml_rope_ext's real n_dims-vs-ne[0] behavior).
+        F5Kernels.ApplyRotary(q, t, heads, headDim, rotaryCos, rotarySin, numRopeHeads: 1);
+        F5Kernels.ApplyRotary(k, t, heads, headDim, rotaryCos, rotarySin, numRopeHeads: 1);
 
         var context = F5Kernels.MultiHeadSelfAttention(q, k, v, t, heads, headDim);
         return Lin(backend, context, t, dim, bw.ToOutWeight, bw.ToOutBias, dim);

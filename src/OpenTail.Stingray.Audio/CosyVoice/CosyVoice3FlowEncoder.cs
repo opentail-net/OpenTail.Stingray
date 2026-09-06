@@ -93,6 +93,26 @@ public static class CosyVoice3FlowEncoder
         var l2 = L2Normalize(speakerVector192);
         var spks = Linear(l2, w.SpkEmbedAffineWeight, w.SpkEmbedAffineBias, CosyVoice3FlowEncoderWeights.SpeakerEmbedDim, CosyVoice3FlowEncoderWeights.EmbedDim);
 
+        if (System.Environment.GetEnvironmentVariable("STINGRAY_CFG_TRACE") == "1")
+        {
+            int dim = CosyVoice3FlowEncoderWeights.EmbedDim;
+            int frames = mu.Length / dim;
+            var meanSb = new System.Text.StringBuilder("[MuTrace] mean=");
+            var stdSb = new System.Text.StringBuilder("[MuTrace] std=");
+            for (int c = 0; c < dim; c++)
+            {
+                double sum = 0, sumsq = 0;
+                for (int f = 0; f < frames; f++) { double v = mu[f * dim + c]; sum += v; sumsq += v * v; }
+                double mean = sum / frames;
+                double variance = System.Math.Max(0, sumsq / frames - mean * mean);
+                meanSb.Append(mean.ToString("F3")).Append(',');
+                stdSb.Append(System.Math.Sqrt(variance).ToString("F3")).Append(',');
+            }
+            System.Console.Error.WriteLine(meanSb.ToString());
+            System.Console.Error.WriteLine(stdSb.ToString());
+            System.Console.Error.WriteLine($"[SpksTrace] {string.Join(",", System.Array.ConvertAll(spks, v => v.ToString("F3")))}");
+        }
+
         return (mu, spks);
     }
 

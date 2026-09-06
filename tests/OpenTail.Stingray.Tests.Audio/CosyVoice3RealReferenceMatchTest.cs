@@ -45,6 +45,70 @@ public sealed class CosyVoice3RealReferenceMatchTest : HeavyTestBase
         Console.Error.WriteLine($"[CosyVoice3RealMatch] samples={pcm.Length} seconds={pcm.Length / 24000.0:F2}");
     }
 
+    /// <summary>Generalization check for the RoPE-heads fix (numRopeHeads:1 in
+    /// CosyVoice3DiTModel.Attention): a SECOND, independent text/seed pair (different from
+    /// Generate_MatchingRealReferenceInputs' "Hello, I will make some lunch, darling!"/seed 42),
+    /// with its own real reference run captured via cosyvoice3-REFERENCE-gen2.wav, so the fix's
+    /// per-channel agreement with the reference isn't just an artifact of the one sample it was
+    /// found and tuned against.</summary>
+    [Fact]
+    public void Generate_SecondIndependentSample_ChannelStatsVsReference()
+    {
+        string? modelPath = FindRepoFile("models/cosyvoice3/CosyVoice3-2512_F16-with-noise.gguf");
+        Assert.SkipUnless(modelPath != null, "CosyVoice3 GGUF model not found");
+        string? refAudio = FindRepoFile("docs/audio-samples/cosyvoice3-ref-b.wav");
+        Assert.SkipUnless(refAudio != null, "reference b.wav not found");
+        string? outDir = FindRepoFile("docs/audio-samples");
+        Assert.SkipUnless(outDir != null, "docs/audio-samples directory not found");
+        string? refWavPath = FindRepoFile("docs/audio-samples/cosyvoice3-REFERENCE-gen2.wav");
+        Assert.SkipUnless(refWavPath != null, "cosyvoice3-REFERENCE-gen2.wav not found (real C++ reference run)");
+
+        using var pipeline = CosyVoice3Pipeline.Load(modelPath!);
+
+        const string targetText = "The weather today is absolutely beautiful, perfect for a long walk in the park.";
+        const string referenceText = "Some call me nature. Others call me Mother Nature. I have been here for over four and a half billion years.";
+
+        var pcm = pipeline.Generate(targetText, maxNewSpeechTokens: 200, odeSteps: 10, seed: 123,
+            referenceAudioPath: refAudio, cfgRate: 0.7f, referenceText: referenceText, temperature: 0.8f, pitchScale: 1.0f);
+
+        Assert.NotEmpty(pcm);
+        string ourPath = Path.Combine(outDir!, "cosyvoice3-OURS-gen2.wav");
+        new OpenTail.Stingray.Audio.AudioGenerationResult(pcm, 24000).SaveWav(ourPath);
+        Console.Error.WriteLine($"[Gen2] samples={pcm.Length} seconds={pcm.Length / 24000.0:F2}");
+
+        var (refSamples, _, _) = WavReader.ReadWav(refWavPath!);
+        var refMel = CosyVoiceMelExtractor.Shared.ExtractMel(refSamples);
+        var ourMel = CosyVoiceMelExtractor.Shared.ExtractMel(pcm);
+        const int melDim = 80;
+        int refFrames = refMel.Length / melDim;
+        int ourFrames = ourMel.Length / melDim;
+
+        int worstOutlier = -1; double worstRatio = 1.0;
+        var sb = new System.Text.StringBuilder("[Gen2ChannelStats] ratios=");
+        for (int c = 0; c < melDim; c++)
+        {
+            double refSum = 0, refSumSq = 0;
+            for (int f = 0; f < refFrames; f++) { double v = refMel[f * melDim + c]; refSum += v; refSumSq += v * v; }
+            double refMean = refSum / refFrames;
+            double refStd = Math.Sqrt(Math.Max(0, refSumSq / refFrames - refMean * refMean));
+
+            double ourSum = 0, ourSumSq = 0;
+            for (int f = 0; f < ourFrames; f++) { double v = ourMel[f * melDim + c]; ourSum += v; ourSumSq += v * v; }
+            double ourMean = ourSum / ourFrames;
+            double ourStd = Math.Sqrt(Math.Max(0, ourSumSq / ourFrames - ourMean * ourMean));
+
+            double ratio = refStd > 1e-6 ? ourStd / refStd : 0;
+            sb.Append(ratio.ToString("F2")).Append(',');
+            if (Math.Abs(Math.Log(Math.Max(ratio, 1e-6))) > Math.Abs(Math.Log(Math.Max(worstRatio, 1e-6))))
+            {
+                worstRatio = ratio;
+                worstOutlier = c;
+            }
+        }
+        Console.Error.WriteLine(sb.ToString());
+        Console.Error.WriteLine($"[Gen2ChannelStats] worstOutlierChannel={worstOutlier} ratio={worstRatio:F2}");
+    }
+
     [Fact]
     public void CompareWaveformsChannelStats()
     {

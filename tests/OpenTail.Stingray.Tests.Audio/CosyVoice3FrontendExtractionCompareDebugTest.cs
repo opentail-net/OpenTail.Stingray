@@ -68,8 +68,8 @@ public sealed class CosyVoice3FrontendExtractionCompareDebugTest : HeavyTestBase
         // compare against the wrong audio).
         string? prompt16kPath = FindModelPath("examples/cosyvoice.cpp/prompt16k.pcm");
         string? prompt24kPath = FindModelPath("examples/cosyvoice.cpp/prompt24k.pcm");
-        string? campplusPath = FindModelPath("models/campplus.onnx");
-        string? speechTokenizerPath = FindModelPath("models/cosyvoice_speech_tokenizer_v2.onnx");
+        string? campplusPath = FindModelPath("models/campplus.onnx") ?? FindModelPath("models/cosyvoice3/frontend-onnx/campplus.onnx");
+        string? speechTokenizerPath = FindModelPath("models/cosyvoice_speech_tokenizer_v2.onnx") ?? FindModelPath("models/cosyvoice3/frontend-onnx/speech_tokenizer_v3.onnx");
         Assert.SkipUnless(prompt16kPath != null && prompt24kPath != null && campplusPath != null && speechTokenizerPath != null,
             "reference prompt PCM or ONNX frontends not found");
 
