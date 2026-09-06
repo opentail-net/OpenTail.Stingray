@@ -11555,3 +11555,29 @@ upsample stages, 12 HiFi-GAN resblocks) load with finite values. **Not yet imple
 the actual forward pass (`RvcSynthesizer` graph -- text encoder, flow reverse, generator)
 and the k-NN retrieval blend itself; this commit is weight-loading plumbing only, same
 staged approach used for HuBERT and RMVPE.
+
+**Update, 2026-09-06 -- synthesizer forward pass written and runs end-to-end.** Wrote
+`RvcSynthesizerEncoder.cs`, a direct transcription of `build_text_encoder_stats`/
+`build_flow_reverse`/`build_generator`. Notable simplification versus the reference: the
+relative-position self-attention is implemented with plain O(T^2 x headDim) loops
+computing the windowed relative bias directly per `(i,j)` pair (distance beyond
+±`RelativeWindowSize` contributes zero, matching `expanded_relative_embedding`'s real
+zero-padding-beyond-window semantics) instead of replicating the reference's
+reshape/pad/slice trick that exists only to express the same windowed-relative-attention
+computation efficiently as dense matrix ops for a ggml graph -- mathematically
+equivalent, much simpler to get right in plain C#. One real bug found and fixed while
+first running this: `emb_rel_k`/`emb_rel_v` are SHARED across both attention heads (a
+single `(2*window+1) x headDim` tensor, no head dimension) -- the first draft multiplied
+the lookup offset by a per-head stride that doesn't exist in the real tensor, causing an
+immediate out-of-bounds read.
+
+`RvcSynthesizerEncoderForwardTests` runs the full forward pass (text encoder -> flow
+reverse -> NSF-HiFiGAN generator) against real `voice_v2_default_checkpoint` weights with
+synthetic HuBERT-shaped content/pitch input (40 frames, 768-wide features, mid-range
+pitch bin) and confirms finite, non-degenerate output (16000 samples, mean=-0.0013,
+std=0.112, no NaN/collapse). **Not yet golden-verified** against the real C++
+reference -- that needs a real end-to-end run through HuBERT -> RMVPE -> synthesizer on
+real audio, a bigger follow-on step (same as the HuBERT/RMVPE individual-then-end-to-end
+staging already used elsewhere in this section). The k-NN retrieval index and the
+`native_pipeline.cpp`-level orchestration (chunk splitting, RMS mix, pad-crop) are also
+still not ported.
