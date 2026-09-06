@@ -11740,3 +11740,51 @@ prompt-construction and postprocessing logic. Not attempting a from-scratch
 implementation in this pass; the concrete next step is checking whether this codebase's
 EXISTING HuBERT and RVQ-codec runtime code (per the reuse opportunities above) can be
 adapted rather than re-derived, before writing any new lower-level kernels.
+
+## Qwen3-ForcedAligner -- classify-head-always-0 bug: audio encoder RULED OUT, 2026-09-06
+
+Real per-stage instrumentation finally added directly to the reference's own
+`qwen3_asr` runtime (not just the aligner-specific code) to pin down where this port's
+computation actually diverges, after five earlier disproven hypotheses (position shift,
+Q8 prefill, weight corruption, plus two already-fixed bugs) left the root cause
+unlocated. Added `STINGRAY_FA_TRACE=1`-gated stat dumps to `qwen3_asr/audio_encoder.cpp`
+(the real audio-embedding output, before any prompt splicing) and
+`qwen3_asr/thinker.cpp`'s `PromptClassificationGraph` (the post-splice prompt embedding
+and the full classify-logits tensor, plus the last position's top-5 logits), then ran
+the real reference CLI directly (`--task align --family qwen3_forced_aligner`, discovered
+via `--help` after the `--request-option transcript=...` form failed --
+the real flags are `--text`/`--language`) on the same real `a.wav` + transcript this
+project's own `QwenForcedAlignerRealAlignmentTests` uses.
+
+**Real reference numbers** (audio encoder output BEFORE any text-decoder involvement):
+`tokens=77 hidden=1024 mean=0.006738 std=0.548819 absmax=3.156284`. **This port's own
+numbers for the identical audio**: `mean=0.0072 std=0.5285 absMax=3.8304`. These match
+almost exactly -- **the audio encoder is not the bug**, closing off the single largest
+remaining suspect area (the encoder chunking fix and this exact numeric match together
+now put the encoder on solid ground).
+
+The divergence shows up one stage later: the reference's full classify-logits tensor
+(all 130 positions x 5000 classes) has `mean=-5.631607 std=2.680001`, while this port's
+equivalent computation gives `mean=-3.903847 std=2.262210` -- noticeably different
+aggregate statistics despite the encoder output (the thing that feeds into this
+computation) matching almost exactly. The reference's real per-position argmax classify
+tokens are also confirmed meaningful and non-degenerate:
+`raw_timestamp_ids=[1,4,4,8,8,11,12,15,15,21,21,23,23,24,24,28,28,34,34,36,36,42,47,49,
+49,56,56,58,58,64,64,74]` (its own last-row top-5 logits: class 74 at 15.46, then 75,
+73, 0, 72 -- class 0 is present but NOT dominant in the real reference), confirming this
+is genuinely a real, solvable numeric bug in this port and not some property of the
+model itself that happens to always produce class 0.
+
+**Conclusion so far**: the bug is now narrowed to the **text-decoder transformer layers
+or the classify head itself** (not the audio encoder, not the prompt/position
+construction, not the audio-token splicing -- all independently confirmed correct in
+this and earlier sessions). The large `prompt_embeddings` aggregate std (18.15, noted as
+suspicious earlier) is a red herring: it reflects the TEXT portion of the spliced prompt
+(the audio portion alone matches closely as shown above), and large-norm outlier token
+embeddings are a known, benign phenomenon in real trained LLMs -- not chasing that
+further. **Next concrete step**: bisect INSIDE the decoder stack itself (per-layer
+hidden-state mean/std taps, one per of the model's `num_hidden_layers`, both sides) to
+find the first layer where this port's computation and the reference's diverge, the same
+divide-and-conquer method that has now successfully resolved every other stuck bug this
+session (RMVPE's ResBlock ReLU placement, RVC's ConvTranspose OOB quirk) -- not yet
+attempted for this bug specifically.

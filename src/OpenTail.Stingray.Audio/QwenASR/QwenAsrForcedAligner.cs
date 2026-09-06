@@ -199,8 +199,15 @@ public sealed class QwenAsrForcedAligner : IDisposable
         for (int i = 0; i < timestampPositions.Count; i++) wantedPositionToIdx[timestampPositions[i] + readShift] = i;
         int found = 0;
         bool debugTrace = Environment.GetEnvironmentVariable("STINGRAY_FORCEDALIGNER_TRACE") == "1";
+        bool faTrace = Environment.GetEnvironmentVariable("STINGRAY_FA_TRACE") == "1";
+        double logitsSum = 0, logitsSumSq = 0; long logitsCount = 0;
         fwd.PrefillWithPerPositionLogits(prompt, 0, (position, logits) =>
         {
+            if (faTrace)
+            {
+                foreach (var v in logits) { logitsSum += v; logitsSumSq += (double)v * v; }
+                logitsCount += logits.Length;
+            }
             if (!wantedPositionToIdx.TryGetValue(position, out int idx)) return;
             int best = 0; float bestVal = float.NegativeInfinity;
             for (int c = 0; c < logits.Length; c++)
@@ -212,6 +219,13 @@ public sealed class QwenAsrForcedAligner : IDisposable
                 Console.Error.WriteLine($"[FA-Trace] readShift={readShift} position={position} best={best} bestVal={bestVal:F4} logits[0..9]=[{string.Join(",", logits.Slice(0, 10).ToArray().Select(v => v.ToString("F3")))}]");
             found++;
         });
+        if (faTrace)
+        {
+            double mean = logitsSum / logitsCount;
+            double std = Math.Sqrt(Math.Max(0, logitsSumSq / logitsCount - mean * mean));
+            Console.Error.WriteLine($"[FA-STAGE-CS] classify_logits n={logitsCount} mean={mean:F6} std={std:F6}");
+            Console.Error.WriteLine($"[FA-STAGE-CS] raw_timestamp_ids=[{string.Join(",", classIds)}]");
+        }
         if (found != timestampPositions.Count)
             throw new InvalidOperationException($"AlignReal only observed {found}/{timestampPositions.Count} timestamp positions during prefill.");
 
