@@ -12833,3 +12833,29 @@ available.
 `connector.cpp`/speech-encoder wiring (already scoped in an earlier update), and the
 Gaussian VAE reparameterization step with its specific RNG precision requirement (flagged
 earlier as a real added complexity for exact golden verification).
+
+## MOSS TTS -- scoped, 2026-09-06
+
+Read `examples/audio.cpp/include/engine/models/moss/moss_tts_nano/assets.h` (real config
+structs, not guessed) -- two real checkpoint variants exist (`moss_tts_local` and
+`moss_tts_nano`; scoped the smaller `nano` variant first). Real architecture: a genuine
+**dual-transformer hierarchical design**, the same family as Kyutai's Moshi / Sesame's
+CSM (and structurally similar in spirit to this session's own MusicGen/AudioGen work from
+an earlier session) -- a "global" transformer (standard GPT-style causal decoder over an
+interleaved text+coarse-audio-token sequence, real special tokens
+`im_start`/`im_end`/`audio_start`/`audio_end`/`audio_user_slot`/`audio_assistant_slot`) 
+produces one hidden state per output frame, which a smaller "local" transformer then
+consumes to autoregressively decode that frame's `n_vq=16` RVQ codebook tokens one at a
+time (`audio_codebook_sizes`, `audio_vocab_size=1024`). A separate real neural audio codec
+(`moss-audio-tokenizer-nano`: 48kHz STEREO, 16-quantizer RVQ) converts the generated codes
+to a waveform -- notably a much higher sample rate and channel count than every other
+codec ported this session (RVC/OmniVoice/FunASR-nano's codecs are all mono, 16-24kHz).
+
+**Reuse assessment**: the global transformer is very likely a standard causal
+transformer directly presentable to the existing engine (same technique used repeatedly
+this session), but the LOCAL transformer's per-frame multi-codebook autoregressive loop
+and the stereo/48kHz RVQ codec are both genuinely new work with no existing analog in this
+codebase. This is comparable in scope to VibeVoice's VAE codec (a full new codec + a
+two-level generation loop) -- not started, scoped only. Real next step if picked up: read
+`generator.cpp`/`local_frame_decoder.h` for the exact per-frame codebook decode order and
+the audio tokenizer's real codec architecture before writing any code.
