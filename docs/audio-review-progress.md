@@ -12127,3 +12127,30 @@ Mistral GQA block + the additive audio-embedding splice + the one-time AdaLN gat
 than assuming the existing generic decoder path can be reused as-is for this model. The
 mel frontend and audio tower remain unaffected by this correction and stay
 golden-verified as already documented above.
+
+**Update, 2026-09-06 -- Voxtral prefill wired end-to-end; a further architectural
+correction found: the prefill window is short (39 tokens), not the full audio length.**
+Traced `session.cpp`'s real call site precisely: `FullContextGraph`'s `capacity_` is set
+from `prompt.input_ids.size()` (a SHORT, fixed prompt -- `[BOS] + (32+delay_tokens)` pad
+tokens, 39 total for the real default config), NOT `audio_embeddings.tokens` (which is
+much larger, one per real encoder step). Only the FIRST `min(audio_tokens, capacity)`
+audio-embedding rows are added into this short prefill window; the model then continues
+generating NEW tokens one at a time via a SEPARATE `DecodeStepGraph`, each step consuming
+the NEXT unseen audio-embedding row (`audio_row`/`current_step.valid_steps` advancing) --
+a genuinely streaming, per-step audio-conditioned decode loop, not a single one-shot
+full-context forward pass. Implementing the FULL autoregressive generation loop (with
+real per-step audio-row advancement, KV-cache growth, and sampling) is a distinctly
+bigger task than the prefill alone -- not yet attempted.
+
+Wired together the real end-to-end PREFILL computation (`VoxtralMelExtractor` -> real
+`padded_streaming_audio` padding, replicated exactly in C# -> `VoxtralAudioEncoder` ->
+39-token prompt (`[1] + 38x32`) -> `VoxtralTextDecoder`) and added a matching
+`STINGRAY_VOXTRAL_TRACE=1` instrumentation to the reference's own prefill
+(`text_decoder.cpp`, right before token sampling) dumping the last-position logits'
+mean/std/top-5. Real reference confirms `prompt_tokens=39 audio_tokens=124` -- both
+counts match this port's own independently-computed values exactly, confirming the
+padding/prompt-construction formulas were transcribed correctly. Reference's real top
+prediction at this position is token 32 (`StreamingPad` itself -- the model correctly
+continues emitting pad tokens through the delay window before real transcription
+begins, consistent with real streaming-ASR behavior). Numeric comparison of this port's
+own logits against that reference trace is still in progress as of this update.
