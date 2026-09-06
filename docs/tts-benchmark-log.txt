@@ -556,3 +556,15 @@
 [XTTS-v2] prompt="Hello, I will make some lunch, darling!" audio=3.85s samples=92416
 [XTTS-v2] runs(s)=[9.995, 9.892, 9.690] mean=9.859s RTF=2.560 (lower=faster; 1.0=realtime)
 
+[XTTS-v2] prompt="Hello, I will make some lunch, darling!" audio=3.85s samples=92416
+[XTTS-v2] runs(s)=[10.010, 9.984, 9.951] mean=9.982s RTF=2.592 (lower=faster; 1.0=realtime)
+
+[CosyVoice3] prompt="Hello, I will make some lunch, darling!" audio=2.96s samples=71040
+[CosyVoice3] runs(s)=[17.381, 17.707, 18.107] mean=17.732s RTF=5.990 (lower=faster; 1.0=realtime)
+
+[CosyVoice3] prompt="Hello, I will make some lunch, darling!" audio=2.96s samples=71040
+[CosyVoice3] runs(s)=[18.256, 19.209, 18.816] mean=18.760s RTF=6.338 (lower=faster; 1.0=realtime)
+
+[CosyVoice3] prompt="Hello, I will make some lunch, darling!" audio=2.96s samples=71040
+[CosyVoice3] runs(s)=[18.412, 18.533, 18.018] mean=18.321s RTF=6.190 (lower=faster; 1.0=realtime)
+

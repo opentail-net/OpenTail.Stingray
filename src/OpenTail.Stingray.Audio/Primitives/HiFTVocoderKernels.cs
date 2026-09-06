@@ -37,6 +37,12 @@ public static class HiFTVocoderKernels
 
     internal static float[] PredictF0ForTest(IF0PredictorWeights f0w, float[] mel, int t, int melDim) => PredictF0(f0w, mel, t, melDim, isCausal: true);
 
+    /// <summary>TEST/EXPERIMENT SUPPORT: PredictF0 with the real per-checkpoint causal flag
+    /// (unlike <see cref="PredictF0ForTest"/>, which hardcodes true), for pipeline-specific
+    /// experiments that need the exact same F0 contour <see cref="Generate"/> itself would use.</summary>
+    internal static float[] PredictF0Full(IF0PredictorWeights f0w, float[] mel, int t, int melDim, bool isCausal) =>
+        PredictF0(f0w, mel, t, melDim, isCausal);
+
     /// <summary>TEST-SUPPORT ONLY: computes the harmonic-source excitation signal directly from a
     /// given per-frame F0 array (bypassing PredictF0), for numeric comparison against a real
     /// reference's own dumped excitation on the exact same F0 input.</summary>
@@ -192,7 +198,7 @@ public static class HiFTVocoderKernels
     internal static float[] DecodeForTest(IHiFTVocoderWeights w, float[] mel, int t, float[] excitation, int sampleLen, int melDim) =>
         Decode(w, mel, t, excitation, sampleLen, melDim);
 
-    private static float[] Decode(IHiFTVocoderWeights w, float[] mel, int t, float[] excitation, int sampleLen, int melDim)
+    internal static float[] Decode(IHiFTVocoderWeights w, float[] mel, int t, float[] excitation, int sampleLen, int melDim)
     {
         int nFft = w.IstftNFft;
         int hop = w.IstftHopLen;

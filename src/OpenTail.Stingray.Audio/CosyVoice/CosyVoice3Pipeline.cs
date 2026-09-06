@@ -116,11 +116,38 @@ public sealed class CosyVoice3Pipeline : ITextToSpeechPipeline
     /// reference-audio-prefix portion of the output waveform is then trimmed off before
     /// returning, since the reference only returns the newly-synthesized continuation.</para>
     /// </summary>
-    public float[] Generate(string text, int maxNewSpeechTokens = 200, int odeSteps = 10, int? seed = null, string? referenceAudioPath = null, float cfgRate = 0.7f, string? referenceText = null, string? instruction = null, float temperature = 0.8f, float[]? explicitSpeakerEmbedding = null, float pitchScale = 1.0f)
+    public float[] Generate(string text, int maxNewSpeechTokens = 200, int odeSteps = 10, int? seed = null, string? referenceAudioPath = null, float cfgRate = 0.7f, string? referenceText = null, string? instruction = null, float temperature = 0.8f, float[]? explicitSpeakerEmbedding = null, float pitchScale = 1.0f, bool useFrameHoldSineGenExperiment = false)
     {
         float[] speakerEmbedding = explicitSpeakerEmbedding ?? ExtractSpeakerEmbedding(referenceAudioPath);
         float[] refMel = ExtractReferenceMel(referenceAudioPath);
         int[] promptTokens = ExtractPromptTokens(referenceAudioPath);
+
+        // refMel (from ExtractReferenceMel's own independent hop/padding) and promptTokens (from
+        // the separate ONNX speech tokenizer) are NOT guaranteed to land on exactly matching
+        // frame counts under TokenMelRatio -- confirmed via real [DBG] trace on the reference
+        // audio: 352 prompt tokens (704 frames under TokenMelRatio=2) vs 703 refMel frames, a real
+        // one-frame skew. The real reference (examples/cosyvoice.cpp's
+        // cosyvoice_frontend_prompt_speech_finalize) resolves this by truncating BOTH down to
+        // their mutually-consistent common length (min(refMelFrames/TokenMelRatio, tokenCount)),
+        // not by letting either one dominate -- otherwise `mu` (built from promptTokens) and
+        // `cond` (built from refMel) transition from prompt to target content on different
+        // frames, which the DiT's causal conv smears and CFG then amplifies over the ODE steps.
+        // This showed up as excess variance concentrated in the low mel-frequency (most
+        // DC-sensitive) channels of the generated target audio.
+        if (promptTokens.Length > 0 && refMel.Length > 0)
+        {
+            int refMelFrames = refMel.Length / CosyVoice3DiTWeights.MelDim;
+            int alignedTokens = Math.Min(refMelFrames / CosyVoice3FlowEncoderWeights.TokenMelRatio, promptTokens.Length);
+            if (alignedTokens != promptTokens.Length)
+                promptTokens = promptTokens[..alignedTokens];
+            int alignedMelFrames = alignedTokens * CosyVoice3FlowEncoderWeights.TokenMelRatio;
+            if (alignedMelFrames != refMelFrames)
+            {
+                var trimmedMel = new float[alignedMelFrames * CosyVoice3DiTWeights.MelDim];
+                Array.Copy(refMel, trimmedMel, trimmedMel.Length);
+                refMel = trimmedMel;
+            }
+        }
 
         // Condition the LLM itself on the reference (promptText/promptTokens) -- see
         // CosyVoice3Llm.GenerateSpeechTokens's own doc comment for why this matters: without it,
@@ -134,6 +161,8 @@ public sealed class CosyVoice3Pipeline : ITextToSpeechPipeline
 
         int numFrames = mu.Length / CosyVoice3DiTWeights.MelDim;
         var cond = new float[mu.Length];
+        // promptTokens and refMel were aligned to a common frame count above, so mu's and cond's
+        // prompt/target boundary now land on the same frame -- either source gives the same value.
         int promptFrames = 0;
         if (refMel.Length > 0)
         {
@@ -155,21 +184,57 @@ public sealed class CosyVoice3Pipeline : ITextToSpeechPipeline
             Console.Error.WriteLine($"[DBG] speechTokens={speechTokens.Length} promptTokens={promptTokens.Length} numFrames={numFrames} promptFrames={promptFrames} spk[0..3]={string.Join(",", speakerEmbedding[..Math.Min(4, speakerEmbedding.Length)])} refMel.Length={refMel.Length} mel min={melMin:F4} max={melMax:F4} mean={melSum / mel.Length:F4} meanAbs={melAbsSum / mel.Length:F4}");
         }
 
-        // mel is channel-last [numFrames, MelDim]; HiFT's real forward expects channel-first [MelDim, T] flat.
-        var melChannelFirst = new float[mel.Length];
-        for (int f = 0; f < numFrames; f++)
-            for (int c = 0; c < CosyVoice3DiTWeights.MelDim; c++)
-                melChannelFirst[c * numFrames + f] = mel[f * CosyVoice3DiTWeights.MelDim + c];
+        // Slices ONLY target mel frames [targetFrames, MelDim] matching C++ reference
+        // (examples/audio.cpp/src/models/cosyvoice3/flow.cpp:810-817 and session.cpp:224-230).
+        // HiFT is executed strictly on the target continuation, eliminating boundary clicking
+        // and convolutional prompt bleeding.
+        int targetFrames = numFrames - promptFrames;
+        if (targetFrames <= 0) return [];
 
-        var wav = CosyVoiceHiftVocoder.Generate(_hiftWeights, melChannelFirst, numFrames, rng, pitchScale: pitchScale);
-
-        // Trim off the synthesized reference-audio-prefix portion -- the reference only returns
-        // the newly-synthesized continuation, not a regenerated copy of the prompt audio.
-        if (promptFrames > 0)
+        var melChannelFirst = new float[targetFrames * CosyVoice3DiTWeights.MelDim];
+        for (int f = 0; f < targetFrames; f++)
         {
-            int trimSamples = Math.Min(promptFrames * CosyVoiceMelExtractor.HopLength, wav.Length);
-            wav = wav[trimSamples..];
+            int srcFrame = promptFrames + f;
+            for (int c = 0; c < CosyVoice3DiTWeights.MelDim; c++)
+            {
+                melChannelFirst[c * targetFrames + f] = mel[srcFrame * CosyVoice3DiTWeights.MelDim + c];
+            }
         }
+
+        if (Environment.GetEnvironmentVariable("STINGRAY_CFG_TRACE") == "1")
+        {
+            int worstFrame = -1; float worstAbs = 0f;
+            for (int f = 0; f < targetFrames; f++)
+            {
+                float m = 0f;
+                for (int c = 0; c < CosyVoice3DiTWeights.MelDim; c++) m = Math.Max(m, Math.Abs(melChannelFirst[c * targetFrames + f]));
+                if (m > worstAbs) { worstAbs = m; worstFrame = f; }
+            }
+            Console.Error.WriteLine($"[TargetMelTrace] targetFrames={targetFrames} worstFrame={worstFrame} worstAbs={worstAbs:F4}");
+
+            var sb = new System.Text.StringBuilder("[ChannelStats] mean=");
+            for (int c = 0; c < CosyVoice3DiTWeights.MelDim; c++)
+            {
+                double sum = 0;
+                for (int f = 0; f < targetFrames; f++) sum += melChannelFirst[c * targetFrames + f];
+                sb.Append((sum / targetFrames).ToString("F3")).Append(',');
+            }
+            Console.Error.WriteLine(sb.ToString());
+            var sb2 = new System.Text.StringBuilder("[ChannelStats] std=");
+            for (int c = 0; c < CosyVoice3DiTWeights.MelDim; c++)
+            {
+                double sum = 0, sumsq = 0;
+                for (int f = 0; f < targetFrames; f++) { sum += melChannelFirst[c * targetFrames + f]; sumsq += (double)melChannelFirst[c * targetFrames + f] * melChannelFirst[c * targetFrames + f]; }
+                double mean = sum / targetFrames;
+                double variance = sumsq / targetFrames - mean * mean;
+                sb2.Append(Math.Sqrt(Math.Max(0, variance)).ToString("F3")).Append(',');
+            }
+            Console.Error.WriteLine(sb2.ToString());
+        }
+
+        var wav = useFrameHoldSineGenExperiment
+            ? CosyVoiceSineGenFrameHoldExperiment.Generate(_hiftWeights, melChannelFirst, targetFrames, rng, pitchScale: pitchScale)
+            : CosyVoiceHiftVocoder.Generate(_hiftWeights, melChannelFirst, targetFrames, rng, pitchScale: pitchScale);
 
         // Peak normalize to 0.85 full scale
         float peak = 0f;
@@ -257,7 +322,21 @@ public sealed class CosyVoice3Pipeline : ITextToSpeechPipeline
             if (sr != CosyVoiceMelExtractor.SampleRate)
                 samples = AudioResampler.Resample(samples, sr, CosyVoiceMelExtractor.SampleRate);
 
-            return CosyVoiceMelExtractor.Shared.ExtractMel(samples);
+            var mel = CosyVoiceMelExtractor.Shared.ExtractMel(samples);
+            if (Environment.GetEnvironmentVariable("STINGRAY_CFG_TRACE") == "1" && mel.Length > 0)
+            {
+                int melDim = CosyVoice3DiTWeights.MelDim;
+                int frames = mel.Length / melDim;
+                int worstFrame = -1; float worstAbs = 0f;
+                for (int f = 0; f < frames; f++)
+                {
+                    float m = 0f;
+                    for (int c = 0; c < melDim; c++) m = Math.Max(m, Math.Abs(mel[f * melDim + c]));
+                    if (m > worstAbs) { worstAbs = m; worstFrame = f; }
+                }
+                Console.Error.WriteLine($"[RefMelTrace] frames={frames} worstFrame={worstFrame} worstAbs={worstAbs:F4}");
+            }
+            return mel;
         }
         catch (Exception ex)
         {

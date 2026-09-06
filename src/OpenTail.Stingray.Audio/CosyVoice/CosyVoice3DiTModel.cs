@@ -72,9 +72,35 @@ public static class CosyVoice3DiTModel
         for (int i = 0; i <= odeSteps; i++)
             tSpan[i] = 1f - MathF.Cos(0.05f * MathF.PI * i * (10f / odeSteps));
 
+        // The flow-matching ODE's starting state is NOT fresh per-call randomness. The real
+        // reference (`read_noise_prefix` in examples/audio.cpp's flow.cpp) reads a fixed,
+        // pre-baked noise tensor (`decoder.rand_noise`, [15000, 80], CHANNEL-MAJOR -- 80
+        // contiguous runs of up to 15000 frame values each) baked into the checkpoint and slices
+        // a frame-count-sized prefix off each channel's run every call -- it never samples fresh
+        // Gaussian noise at inference time. This matters because two independent PRNG
+        // implementations (.NET's `Random` vs PyTorch's generator) can NEVER reproduce the same
+        // "random" sequence even given a matching seed; a shared, frozen buffer baked into the
+        // checkpoint is the only way two independent implementations can start the ODE from
+        // literally the same state. Root-caused this session: fresh-per-call Gaussian noise here
+        // produced a uniform ~1.3-3x excess mel variance across all 80 channels vs the real
+        // reference, which is what the long-standing "wobbling/metallic" CosyVoice3 quality
+        // issue traced back to.
+        //
+        // Use the checkpoint's own tensor when it carries one (spliced in via
+        // CosyVoice3SpliceRandNoiseTool, or present natively as in the upstream Q8_0 checkpoint);
+        // otherwise fall back to FallbackRandNoise, a buffer built ONCE with a fixed seed (NOT
+        // matching the real reference's actual values, since that's impossible across languages,
+        // but at least internally reproducible run-to-run for OUR OWN pipeline). Never regenerate
+        // fresh randomness per call in either branch -- that reintroduces the exact bug this
+        // replaces.
+        float[] noiseSource = w.RandNoise ?? FallbackRandNoise;
+        if (numFrames > NoiseCapacityFrames)
+            throw new InvalidOperationException(
+                $"CosyVoice3 requested {numFrames} mel frames, which exceeds the fixed flow noise buffer's capacity of {NoiseCapacityFrames} frames.");
         var x = new float[melLen];
-        for (int i = 0; i < melLen; i++)
-            x[i] = (float)(NextGaussian(rng));
+        for (int f = 0; f < numFrames; f++)
+            for (int c = 0; c < CosyVoice3DiTWeights.MelDim; c++)
+                x[f * CosyVoice3DiTWeights.MelDim + c] = noiseSource[c * NoiseCapacityFrames + f];
 
         float[]? zeroCond = null;
         if (cfgRate > 0f)
@@ -135,6 +161,48 @@ public static class CosyVoice3DiTModel
                         xp[i] += dt * v;
                     }
                 }
+
+                if (Environment.GetEnvironmentVariable("STINGRAY_CFG_TRACE") == "1")
+                {
+                    double sxsq = 0, sdsq = 0, scsq = 0;
+                    for (int j = 0; j < melLen; j++) { sxsq += (double)x[j] * x[j]; sdsq += (double)dphiDt[j] * dphiDt[j]; scsq += (double)cfgDphiDt[j] * cfgDphiDt[j]; }
+                    Console.Error.WriteLine($"[CfgTrace] step={step} t={t:F3} dt={dt:F3} x_rms={Math.Sqrt(sxsq / melLen):F4} condV_rms={Math.Sqrt(sdsq / melLen):F4} uncondV_rms={Math.Sqrt(scsq / melLen):F4}");
+                    if (step == odeSteps)
+                    {
+                        int mel = CosyVoice3DiTWeights.MelDim;
+                        int worstFrame = -1; float worstAbs = 0f;
+                        for (int f = 0; f < numFrames; f++)
+                        {
+                            float m = 0f;
+                            for (int c = 0; c < mel; c++) m = Math.Max(m, Math.Abs(x[f * mel + c]));
+                            if (m > worstAbs) { worstAbs = m; worstFrame = f; }
+                        }
+                        Console.Error.WriteLine($"[CfgTrace] FINAL worstFrame={worstFrame}/{numFrames} worstAbs={worstAbs:F4} (whole seq, prompt+target)");
+
+                        // Per-channel breakdown of the cond vs uncond velocity RMS on the final
+                        // step, to test whether CFG amplification ((1+cfgRate)*cond - cfgRate*uncond)
+                        // is what's inflating specific mel channels: if cond/uncond diverge sharply
+                        // on the low-frequency channels, CFG's subtraction would amplify exactly
+                        // those channels' variance in x.
+                        var condSb = new System.Text.StringBuilder("[CfgTrace] condV_perCh_rms=");
+                        var uncondSb = new System.Text.StringBuilder("[CfgTrace] uncondV_perCh_rms=");
+                        for (int c = 0; c < mel; c++)
+                        {
+                            double sd = 0, su = 0;
+                            for (int f = 0; f < numFrames; f++)
+                            {
+                                double dv = dphiDt[f * mel + c];
+                                double uv = cfgDphiDt[f * mel + c];
+                                sd += dv * dv;
+                                su += uv * uv;
+                            }
+                            condSb.Append(Math.Sqrt(sd / numFrames).ToString("F3")).Append(',');
+                            uncondSb.Append(Math.Sqrt(su / numFrames).ToString("F3")).Append(',');
+                        }
+                        Console.Error.WriteLine(condSb.ToString());
+                        Console.Error.WriteLine(uncondSb.ToString());
+                    }
+                }
             }
             else
             {
@@ -159,6 +227,26 @@ public static class CosyVoice3DiTModel
 
         return x;
     }
+
+    // Matches the real checkpoint's fixed noise tensor capacity (`50 * 300` frames in the real
+    // reference's `read_noise_prefix`), so a checkpoint-provided and fallback buffer can be
+    // sliced identically regardless of which one is in use.
+    private const int NoiseCapacityFrames = 50 * 300;
+
+    /// <summary>Frozen fallback noise buffer for checkpoints that don't carry the real
+    /// `decoder.rand_noise` tensor -- built ONCE, with a fixed seed, the first time it's needed,
+    /// and reused (sliced, never regenerated) on every subsequent call. See the doc comment at
+    /// its call site in <see cref="SolveFlowMatchingOde"/> for why this must never be freshly
+    /// randomized per call.</summary>
+    private static readonly Lazy<float[]> FallbackRandNoiseLazy = new(() =>
+    {
+        var buf = new float[NoiseCapacityFrames * CosyVoice3DiTWeights.MelDim];
+        var rng = new Random(0);
+        for (int i = 0; i < buf.Length; i++)
+            buf[i] = (float)NextGaussian(rng);
+        return buf;
+    });
+    private static float[] FallbackRandNoise => FallbackRandNoiseLazy.Value;
 
     private static double NextGaussian(Random rng)
     {
@@ -321,11 +409,17 @@ public static class CosyVoice3DiTModel
         int dim = CosyVoice3DiTWeights.HiddenDim;
         int ffn = CosyVoice3DiTWeights.FfnDim;
         var h = Lin(backend, x, t, dim, bw.FfInWeight, bw.FfInBias, ffn);
+        // EXPERIMENT (2026-09-05): examples/audio.cpp/src/models/cosyvoice3/flow.cpp explicitly
+        // configures GeluApproximation::Tanh for this exact FeedForward, disagreeing with the
+        // older examples/cosyvoice.cpp reference this file's GeluErf was verified against.
+        // Gated behind an env var for A/B listening, not switched by default -- two independent
+        // references disagreeing needs a real listen, not a coin flip.
+        bool useTanhGelu = Environment.GetEnvironmentVariable("STINGRAY_COSYVOICE3_TANH_GELU") == "1";
         Parallel.For(0, t, ti =>
         {
             int off = ti * ffn;
             for (int d = 0; d < ffn; d++)
-                h[off + d] = GeluErf(h[off + d]);
+                h[off + d] = useTanhGelu ? F5Kernels.GeluTanh(h[off + d]) : GeluErf(h[off + d]);
         });
         return Lin(backend, h, t, ffn, bw.FfOutWeight, bw.FfOutBias, dim);
     }

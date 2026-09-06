@@ -86,12 +86,16 @@ public sealed class CosyVoice3OurLlmWithRefPromptDebugTest : HeavyTestBase
         var rng = new Random(42);
         var mel = CosyVoice3DiTModel.SolveFlowMatchingOde(ditWeights, cond, mu, spksBroadcast, numFrames, odeSteps: 10, rng, cfgRate: 0.7f);
 
-        var melChannelFirst = new float[mel.Length];
-        for (int f = 0; f < numFrames; f++)
+        int targetFrames = numFrames - promptFrames;
+        var melChannelFirst = new float[targetFrames * melDim];
+        for (int f = 0; f < targetFrames; f++)
+        {
+            int srcFrame = promptFrames + f;
             for (int c = 0; c < melDim; c++)
-                melChannelFirst[c * numFrames + f] = mel[f * melDim + c];
+                melChannelFirst[c * targetFrames + f] = mel[srcFrame * melDim + c];
+        }
 
-        var wav = CosyVoiceHiftVocoder.Generate(hiftWeights, melChannelFirst, numFrames, rng);
+        var wav = CosyVoiceHiftVocoder.Generate(hiftWeights, melChannelFirst, targetFrames, rng);
 
         float peak = 0f;
         for (int i = 0; i < wav.Length; i++) peak = MathF.Max(peak, MathF.Abs(wav[i]));

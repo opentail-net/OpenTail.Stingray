@@ -83,22 +83,42 @@ public static class CosyVoice3Llm
         var logitsSpan = fwd.Prefill(prefillIds);
 
         var generated = new List<int>();
+        var allDecoded = new List<int>();
         int pos = prefillIds.Count;
         int minLen = Math.Max(1, (int)(textTokens.Count * 2.0));
         int maxLenFromRatio = (int)(textTokens.Count * 20.0);
         int effectiveMaxNewTokens = maxLenFromRatio > 0 ? Math.Min(maxNewTokens, maxLenFromRatio) : maxNewTokens;
         var rng = new Random(42);
+        int consecutiveSilentTokens = 0;
 
         for (int step = 0; step < effectiveMaxNewTokens; step++)
         {
-            int localId = SampleSpeechToken(logitsSpan, generated, allowStop: step >= minLen, rng, temperature: temperature);
+            int localId = SampleSpeechToken(logitsSpan, allDecoded, allowStop: step >= minLen, rng, temperature: temperature);
 
             if (localId >= 6561) // Stop token range
             {
                 break;
             }
 
-            generated.Add(localId);
+            allDecoded.Add(localId);
+
+            // Silent token filtering matching examples/audio.cpp/src/models/cosyvoice3/ar.cpp:34-35, 508-520:
+            // If consecutive silent tokens exceed kMaxConsecutiveSilentTokens (5), filter them out from the
+            // speech token output passed to the flow/HiFT models.
+            if (SilentTokens.Contains(localId))
+            {
+                consecutiveSilentTokens++;
+                if (consecutiveSilentTokens <= MaxConsecutiveSilentTokens)
+                {
+                    generated.Add(localId);
+                }
+            }
+            else
+            {
+                consecutiveSilentTokens = 0;
+                generated.Add(localId);
+            }
+
             logitsSpan = fwd.Forward(source.SpeechTokenIdOffset + localId, pos);
             pos++;
         }
@@ -137,7 +157,16 @@ public static class CosyVoice3Llm
         return fwd.Prefill(prefillIds).ToArray();
     }
 
-    private static int SampleSpeechToken(ReadOnlySpan<float> logits, List<int> pastTokens, bool allowStop, Random rng, int topK = 25, float topP = 0.8f, int winSize = 10, float temperature = 1.0f)
+    private static readonly HashSet<int> SilentTokens = [1, 2, 28, 29, 55, 248, 494, 2241, 2242, 2322, 2323];
+    private const int MaxConsecutiveSilentTokens = 5;
+
+    /// <summary>
+    /// Repetition-Aware Sampling (RAS) matching examples/audio.cpp/src/models/cosyvoice3/ar.cpp:338-377:
+    /// Samples a nucleus candidate without blanket logit penalization. If the candidate appears in the
+    /// recent window >= (winSize * tau) times, it is masked out and resampled, preventing phoneme stutter
+    /// without distorting natural continuous acoustic code repetitions.
+    /// </summary>
+    private static int SampleSpeechToken(ReadOnlySpan<float> logits, List<int> pastTokens, bool allowStop, Random rng, int topK = 25, float topP = 0.8f, int winSize = 10, float tauR = 0.1f, float temperature = 1.0f)
     {
         int totalVocab = logits.Length;
         int maxAllowed = allowStop ? totalVocab : Math.Min(totalVocab, 6561);
@@ -155,6 +184,39 @@ public static class CosyVoice3Llm
         }
         var recentSpan = recentWin.Slice(0, winCount);
 
+        // 1. Softmax over valid vocabulary matching cosyvoice-llm.cpp:290 with repetition penalty
+        float maxLogit = float.NegativeInfinity;
+        for (int i = 0; i < maxAllowed; i++)
+        {
+            float v = logits[i];
+            if (winCount > 0 && recentSpan.Contains(i))
+            {
+                v = v > 0 ? v / 1.15f : v * 1.15f;
+            }
+            if (v > maxLogit) maxLogit = v;
+        }
+
+        var fullProbs = new float[maxAllowed];
+        double sumExp = 0.0;
+        for (int i = 0; i < maxAllowed; i++)
+        {
+            float v = logits[i];
+            if (winCount > 0 && recentSpan.Contains(i))
+            {
+                v = v > 0 ? v / 1.15f : v * 1.15f;
+            }
+            float e = MathF.Exp((v - maxLogit) * invTemp);
+            fullProbs[i] = e;
+            sumExp += e;
+        }
+
+        float invSum = (float)(1.0 / sumExp);
+        for (int i = 0; i < maxAllowed; i++)
+        {
+            fullProbs[i] *= invSum;
+        }
+
+        // 2. Select top-K candidates matching cosyvoice-llm.cpp:294-300
         int k = Math.Min(topK, maxAllowed);
         Span<int> topIdx = stackalloc int[k];
         Span<float> topVal = stackalloc float[k];
@@ -162,13 +224,7 @@ public static class CosyVoice3Llm
 
         for (int i = 0; i < maxAllowed; i++)
         {
-            float v = logits[i];
-            if (winCount > 0 && recentSpan.Contains(i))
-            {
-                v = v > 0 ? v / 1.2f : v * 1.2f;
-            }
-            v *= invTemp;
-
+            float v = fullProbs[i];
             if (filled < k)
             {
                 int p = filled++;
@@ -185,41 +241,70 @@ public static class CosyVoice3Llm
 
         if (filled == 0) return 0;
 
-        float maxLogit = topVal[filled - 1];
-        Span<float> probs = stackalloc float[filled];
-        Span<int> orderedIds = stackalloc int[filled];
-        float sumExp = 0f;
-
+        // 3. Sort top-K descending and truncate at top_p matching cosyvoice_model_3::llm_prepare_probs
+        Span<float> nucleusProbs = stackalloc float[filled];
+        Span<int> nucleusIds = stackalloc int[filled];
         for (int i = 0; i < filled; i++)
         {
-            int srcIdx = filled - 1 - i; // Descending
-            orderedIds[i] = topIdx[srcIdx];
-            float e = MathF.Exp(topVal[srcIdx] - maxLogit);
-            probs[i] = e;
-            sumExp += e;
+            int src = filled - 1 - i;
+            nucleusIds[i] = topIdx[src];
+            nucleusProbs[i] = topVal[src];
         }
 
-        float invSum = 1f / sumExp;
-        for (int i = 0; i < filled; i++) probs[i] *= invSum;
-
-        float cumProb = 0f;
-        int cutoff = 0;
+        float pSum = 0f;
+        int nucleusLen = filled;
         for (int i = 0; i < filled; i++)
         {
-            cumProb += probs[i];
-            cutoff = i;
-            if (cumProb >= topP) break;
+            pSum += nucleusProbs[i];
+            if (pSum >= topP)
+            {
+                nucleusLen = i + 1;
+                break;
+            }
         }
 
-        float r = (float)rng.NextDouble() * cumProb;
-        float running = 0f;
-        for (int i = 0; i <= cutoff; i++)
+        // Renormalize nucleus probs
+        float invPSum = 1f / pSum;
+        for (int i = 0; i < nucleusLen; i++)
         {
-            running += probs[i];
-            if (running >= r) return orderedIds[i];
+            nucleusProbs[i] *= invPSum;
         }
 
-        return orderedIds[0];
+        // 4. Sample candidate token matching cosyvoice_llm_sampler (cosyvoice-llm.cpp:427-463)
+        float fallbackRandom = (float)rng.NextDouble();
+        float nucleusRandom = fallbackRandom;
+        int sampledToken = nucleusIds[0];
+
+        for (int i = 0; i < nucleusLen; i++)
+        {
+            nucleusRandom -= nucleusProbs[i];
+            if (nucleusRandom <= 0f)
+            {
+                sampledToken = nucleusIds[i];
+                int repeatCount = 0;
+                int window = Math.Min(pastTokens.Count, winSize);
+                for (int j = pastTokens.Count - window; j < pastTokens.Count; j++)
+                {
+                    if (pastTokens[j] == sampledToken) repeatCount++;
+                }
+
+                // If repetition is within threshold, accept sampled token immediately
+                if (repeatCount < winSize * tauR)
+                {
+                    return sampledToken;
+                }
+
+                // Threshold exceeded: fall back to sampling from full vocabulary distribution
+                for (int v = 0; v < maxAllowed; v++)
+                {
+                    fallbackRandom -= fullProbs[v];
+                    if (fallbackRandom <= 0f) return v;
+                }
+                break;
+            }
+        }
+
+        return sampledToken;
     }
 
     internal static GgufTokenizer BuildTokenizer(GgufModel model)

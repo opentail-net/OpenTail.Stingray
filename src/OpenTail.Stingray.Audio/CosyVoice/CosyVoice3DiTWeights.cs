@@ -53,6 +53,19 @@ public sealed class CosyVoice3DiTWeights
 
     public CosyVoice3DiTBlockWeights[] Blocks { get; }
 
+    /// <summary>The flow-matching ODE's fixed starting noise, `[15000, 80]` row-major by mel
+    /// frame, when the loaded checkpoint carries it (the real reference embeds this as
+    /// `decoder.rand_noise`/`flow/decoder.rand_noise` and slices a frame-count-sized prefix off
+    /// it every call instead of ever sampling fresh randomness -- see
+    /// <see cref="CosyVoice3DiTModel"/>'s ODE solver for why: independent PRNGs in different
+    /// languages/runtimes can never reproduce the same "random" sequence even with a matching
+    /// seed, so a shared frozen buffer baked into the checkpoint is the only way two independent
+    /// implementations can start the ODE from literally the same state). Null when the checkpoint
+    /// doesn't carry the tensor (e.g. the stock `CosyVoice3-2512_F16.gguf` before splicing it in
+    /// via `CosyVoice3SpliceRandNoiseTool`) -- callers fall back to a locally-generated, ONE-TIME
+    /// fixed-seed buffer in that case, never to fresh per-call randomness.</summary>
+    public float[]? RandNoise { get; }
+
     public CosyVoice3DiTWeights(GgufModel model)
     {
         NumLayers = model.Metadata.TryGetValue("decoder.estimator.depth", out var d) ? Convert.ToInt32(d) : 22;
@@ -77,6 +90,10 @@ public sealed class CosyVoice3DiTWeights
         Blocks = new CosyVoice3DiTBlockWeights[NumLayers];
         for (int i = 0; i < NumLayers; i++)
             Blocks[i] = new CosyVoice3DiTBlockWeights(model, i);
+
+        var noiseInfo = model.FindTensor("decoder.rand_noise") ?? model.FindTensor("flow/decoder.rand_noise");
+        if (noiseInfo != null)
+            RandNoise = GetTensor(model, noiseInfo.Value.Name);
     }
 
     internal static float[] GetTensor(GgufModel model, string name)

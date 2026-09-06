@@ -20,6 +20,7 @@ public sealed unsafe class GgufModel : IDisposable, IModelTensorSource
     private readonly byte*[] _shardBasePtrs;
     private readonly long[] _shardFileSizes;
     private readonly long[] _shardDataStartOffsets;
+    private readonly long[] _shardTensorInfoEndOffsets;
     private bool _disposed;
 
     public GgufHeader Header { get; }
@@ -32,6 +33,7 @@ public sealed unsafe class GgufModel : IDisposable, IModelTensorSource
         byte*[] shardBasePtrs,
         long[] shardFileSizes,
         long[] shardDataStartOffsets,
+        long[] shardTensorInfoEndOffsets,
         GgufHeader header,
         IReadOnlyDictionary<string, object> metadata,
         IReadOnlyList<GgufTensorInfo> tensors)
@@ -41,6 +43,7 @@ public sealed unsafe class GgufModel : IDisposable, IModelTensorSource
         _shardBasePtrs = shardBasePtrs;
         _shardFileSizes = shardFileSizes;
         _shardDataStartOffsets = shardDataStartOffsets;
+        _shardTensorInfoEndOffsets = shardTensorInfoEndOffsets;
         Header = header;
         Metadata = metadata;
         Tensors = tensors;
@@ -61,6 +64,7 @@ public sealed unsafe class GgufModel : IDisposable, IModelTensorSource
         var basePtrs   = new byte*[shardCount];
         var fileSizes  = new long[shardCount];
         var dataStarts = new long[shardCount];
+        var tensorInfoEnds = new long[shardCount];
 
         try
         {
@@ -103,7 +107,7 @@ public sealed unsafe class GgufModel : IDisposable, IModelTensorSource
                 alignment = Convert.ToInt32(alignObj);
 
             var allTensors = new List<GgufTensorInfo>((int)tensorCount0 * shardCount);
-            ParseTensorInfos(ref reader0, tensorCount0, alignment, shardIndex: 0, fileSizes[0], out dataStarts[0], allTensors);
+            ParseTensorInfos(ref reader0, tensorCount0, alignment, shardIndex: 0, fileSizes[0], out dataStarts[0], out tensorInfoEnds[0], allTensors);
 
             // Parse remaining shards: skip their metadata, collect tensor infos
             for (int s = 1; s < shardCount; s++)
@@ -121,7 +125,7 @@ public sealed unsafe class GgufModel : IDisposable, IModelTensorSource
                     reader.SkipGgufValue(vt);                        // value
                 }
 
-                ParseTensorInfos(ref reader, tensorCountS, alignment, shardIndex: s, fileSizes[s], out dataStarts[s], allTensors);
+                ParseTensorInfos(ref reader, tensorCountS, alignment, shardIndex: s, fileSizes[s], out dataStarts[s], out tensorInfoEnds[s], allTensors);
             }
 
             // Inject synthetic metadata from tensor inspection
@@ -171,7 +175,7 @@ public sealed unsafe class GgufModel : IDisposable, IModelTensorSource
             // Report actual version from header
             var finalHeader = new GgufHeader(header.Magic, header.Version, (ulong)allTensors.Count, header.MetadataKvCount);
 
-            return new GgufModel(mmfs, accessors, basePtrs, fileSizes, dataStarts, finalHeader, metadata, allTensors);
+            return new GgufModel(mmfs, accessors, basePtrs, fileSizes, dataStarts, tensorInfoEnds, finalHeader, metadata, allTensors);
         }
         catch
         {
@@ -195,6 +199,22 @@ public sealed unsafe class GgufModel : IDisposable, IModelTensorSource
         ResolveTensorRange(tensor, out byte* basePtr, out long absoluteOffset, out _);
         return basePtr + absoluteOffset;
     }
+
+    /// <summary>Absolute byte offset (from the start of the file) where shard 0's tensor-data
+    /// section begins -- i.e. everywhere the header, KV metadata, and tensor-info array end and
+    /// raw tensor bytes start. Every <see cref="GgufTensorInfo.DataOffset"/> is relative to this.
+    /// Exposed for GGUF-splicing tools that need to append a new tensor's bytes after the existing
+    /// data blob without touching (or needing to understand) the KV metadata encoding at all.</summary>
+    public long Shard0DataStartOffset => _shardDataStartOffsets[0];
+
+    /// <summary>Absolute byte offset (from the start of the file) where shard 0's tensor-info array
+    /// ends, BEFORE any alignment padding -- i.e. exactly where a new <see cref="GgufTensorInfo"/>
+    /// entry can be inserted so it is read contiguously with the existing ones. A GGUF-splicing
+    /// tool that copies [0, Shard0TensorInfoEndOffset) verbatim, appends one new tensor-info entry,
+    /// re-pads to alignment, then appends the original data blob ([Shard0DataStartOffset, EOF))
+    /// verbatim, produces a file that parses identically to the original plus the new tensor --
+    /// without needing to understand the KV metadata value encoding at all.</summary>
+    public long Shard0TensorInfoEndOffset => _shardTensorInfoEndOffsets[0];
 
     /// <summary>
     /// Returns a read-only span directly into the memory-mapped file for the given tensor. Zero-copy.
@@ -343,6 +363,7 @@ public sealed unsafe class GgufModel : IDisposable, IModelTensorSource
         int shardIndex,
         long fileSize,
         out long dataStartOffset,
+        out long tensorInfoEndOffset,
         List<GgufTensorInfo> result)
     {
         var tensors = new GgufTensorInfo[(int)tensorCount];
@@ -375,6 +396,7 @@ public sealed unsafe class GgufModel : IDisposable, IModelTensorSource
             tensors[i] = new GgufTensorInfo(tName, (int)nDims, dims, dtype, offset, shardIndex);
         }
 
+        tensorInfoEndOffset = reader.Position;
         dataStartOffset = AlignUp(reader.Position, alignment);
 
         // Second pass: every tensor's byte range must lie inside this shard. dataStartOffset is only
