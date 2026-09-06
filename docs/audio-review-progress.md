@@ -12229,3 +12229,34 @@ and real weights. Remaining known gaps: the minor prefill `audio_tokens` off-by-
 (124 ref vs 123 this port, still not chased -- did not affect this transcription
 match), and no real EOS-based early stopping (the loop always runs to the fixed
 `max_new_tokens` budget rather than detecting the reference's real stop condition).
+
+**Update, 2026-09-06 -- Nemotron ASR: real weight loader implemented and load-verified
+against the real downloaded checkpoint.** Downloaded the real GGUF checkpoint
+(`nvidia/nemotron-3.5-asr-streaming-0.6b`, Q8_0 quant, via `stingray pull`) and confirmed
+its own real metadata/tensor listing matches this session's earlier scoping exactly:
+`asr.head_type=rnnt`, 24-layer FastConformer encoder (`d_model=1024`, `n_heads=8`,
+`d_ff=4096`, real Transformer-XL relative-position self-attention --
+`self_attn.linear_pos`/`pos_bias_u`/`pos_bias_v`), `dw_striding` 8x subsampling
+(`pre_encode.conv.{0,2,3,5,6}` + `pre_encode.out`), a real 2-layer LSTM prediction
+network (`decoder.prediction.dec_rnn.lstm.{ih,hh}_l{0,1}`), and a joint network
+(`joint.{enc,pred,joint_net.2}`). Implemented `NemotronAsrWeights`/
+`NemotronAsrConformerLayer`/`NemotronAsrLstmLayer` (new
+`OpenTail.Stingray.Audio/NemotronAsr/`), reusing the GGUF-tensor-reading pattern from
+`ParakeetWeights.cs`. One real correction made while wiring it up (found via a real
+`InvalidDataException`, not guessed): the checkpoint's own `asr.encoder.use_bias=false`
+metadata means the FFN linears (`feed_forward{1,2}.linear{1,2}`) and the depthwise conv
+carry NO bias tensors -- these fields were made nullable (`TryGetTensor`) rather than
+required. Also confirmed via metadata (`asr.encoder.conv_norm=layer_norm` and the absence
+of `running_mean`/`running_var` tensors alongside `conv.batch_norm.{weight,bias}`) that,
+despite the "batch_norm" tensor name, this checkpoint's conv-module normalization is a
+plain affine LayerNorm, NOT a real BatchNorm requiring statistics folding (unlike
+Parakeet/canary_ctc's genuine BatchNorm1d) -- so no BN-fold step is needed here.
+`NemotronAsrWeightsLoadTests` confirms every tensor this port assumes resolves, shape
+constraints hold (`24 layers, hidden=1024, vocab=13088, blank=13087, predHidden=640`),
+and all dequantized values are finite. **Not yet implemented**: the mel/log-mel
+preprocessing (real `preprocessor.fb` filterbank matrix is shipped in the checkpoint, not
+recomputed -- same convention as Parakeet), the `dw_striding` subsampling forward pass,
+the causal+sliding-window(57) Transformer-XL rel-pos Conformer encoder forward pass (the
+genuinely new-code part vs. Parakeet's full-context variant), and the full RNNT
+greedy-decode loop (LSTM predictor + joint network + frame-synchronous search). This is
+real forward progress on a previously scoped-only item, not yet a working forward pass.
