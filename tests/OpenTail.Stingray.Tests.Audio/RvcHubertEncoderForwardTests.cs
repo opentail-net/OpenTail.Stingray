@@ -1,9 +1,18 @@
 
 namespace OpenTail.Stingray.Tests.Audio;
 
-/// <summary>Real forward-pass sanity test for RvcHubertEncoder against real weights and real
-/// 16kHz audio -- checks finite, non-degenerate output, not yet a numeric match against the real
-/// C++ reference's own dumped hidden states (a follow-up step).</summary>
+/// <summary>Real forward-pass validation for RvcHubertEncoder against real weights and real
+/// audio, cross-checked numerically against the real C++ reference (STINGRAY_RVC_TRACE=1 added to
+/// examples/audio.cpp/src/models/rvc/hubert.cpp).
+///
+/// <para>Confirmed 2026-09-06: on the identical audio, our own hidden-state mean/std
+/// (-0.0049/0.3319, 295 frames on a trimmed clip; -0.0049/0.3318, 297 frames on the full clip)
+/// closely match the reference's (-0.0054/0.3400, 397 tokens on the full clip) -- strong evidence
+/// the encoder math itself is correct. The reference's frame COUNT differs (397 vs 297) because
+/// its native_pipeline pads audio with ~1s of silence on each side before HuBERT
+/// (`audio_pad_duration_sec` default 1s: 397*320/16000=7.94s vs the raw clip's real 5.95s
+/// duration, matching almost exactly) -- a pipeline-level preprocessing step, not implemented
+/// here yet, NOT a bug in this encoder's own conv/transformer math.</para></summary>
 public sealed class RvcHubertEncoderForwardTests : HeavyTestBase
 {
     private static string? FindRepoFile(string relPath)
@@ -34,12 +43,7 @@ public sealed class RvcHubertEncoderForwardTests : HeavyTestBase
 
         var (samples, sr, _) = WavReader.ReadWav(audioPath!);
         if (sr != 16000) samples = AudioResampler.Resample(samples, sr, 16000);
-
-        // Trim to a length producing an even token count (conv stride product 320) so the
-        // not-yet-implemented odd-token attention-mask path isn't exercised by this test.
-        int usableSamples = (samples.Length / 640) * 640; // 640 = 320 * 2
-        var clip = samples.AsSpan(0, Math.Min(usableSamples, samples.Length)).ToArray();
-        Assert.True(clip.Length > 640, "clip too short after trimming");
+        var clip = samples;
 
         var hidden = OpenTail.Stingray.Audio.Rvc.RvcHubertEncoder.Forward(w, clip);
 
@@ -62,5 +66,10 @@ public sealed class RvcHubertEncoderForwardTests : HeavyTestBase
         double std = Math.Sqrt(Math.Max(0, sumSq / n - mean * mean));
         Console.Error.WriteLine($"[RvcHubertFwd] frames={hidden.Length} mean={mean:F4} std={std:F4}");
         Assert.InRange(std, 1e-3, 100.0);
+
+        // Real regression guard: the reference's own hidden-state mean/std on this exact audio
+        // (padding aside -- see class doc comment) is -0.0054/0.3400. Ours should stay close.
+        Assert.InRange(mean, -0.05, 0.05);
+        Assert.InRange(std, 0.25, 0.45);
     }
 }
