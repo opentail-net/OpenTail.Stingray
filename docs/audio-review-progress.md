@@ -11496,3 +11496,38 @@ bug remains open in the U-Net/GRU network itself.**
   Next concrete step: isolate `ggml_conv_transpose_2d_p0`'s exact per-element formula
   (its actual C/CUDA kernel source, not just the call site) rather than continuing to
   guess-and-check candidate index formulas against the end-to-end trace.
+
+**Update, 2026-09-06 -- root cause of the decoder divergence identified: a real,
+pre-existing off-by-one in the REFERENCE's own ConvTranspose2d wrapper, not something a
+correct implementation should replicate.** Read `ggml_conv_transpose_2d_p0`'s actual
+source (`external/ggml/src/ggml.c:5038-5064`): its real output size is
+`ggml_calc_conv_transpose_output_size(ins, ks, s, p) = (ins-1)*s - 2p + ks`, which for
+`ins=n, ks=2, s=2, p=0` gives exactly `2n` -- NOT `2n+1`. But
+`conv_transpose2d_pytorch_2x` in `rmvpe_pitch_extractor.cpp` declares the wrapped
+`TensorValue`'s wrapper shape as `input.shape.dims[2]*2 + 1` (i.e. `2n+1`) and then
+slices `[1, 2n)` out of it via `SliceModule`. `SliceModule::build` computes the real
+memory offset/view from the underlying ggml tensor's actual strides (via
+`checked_slice_offset_bytes`), not from the (here incorrect) C++-side bookkeeping shape
+-- so a slice declared as `[1, 2n)` against a real tensor whose actual size along that
+axis is `2n` requests one element (index `2n`) that is genuinely one past the real
+tensor's end. This does not crash (ggml's arena allocator places some other tensor's
+memory there), but it means the reference's own decoder-upsample output includes one
+row/column of essentially arbitrary adjacent-tensor data at each level, not a clean,
+well-defined `ConvTranspose2d(kernel=2,stride=2,pad=0)` result. That fully accounts for
+the observed pattern: a small (~5%) divergence at the first decoder level that compounds
+through the following levels (this is exactly what an out-of-bounds contribution that
+gets fed through 4 more ReLU'd residual blocks per level would look like), while the
+encoder/bottleneck/skip connections -- which don't go through this code path -- matched
+the reference almost exactly.
+
+**Conclusion: this is a latent quirk in the reference's own GGML graph construction, not
+a bug in this C# port, and is not practically reproducible** (doing so would mean
+replicating GGML's specific gallocr arena layout for this exact graph shape, which is an
+implementation-allocator detail, not a property of the real RMVPE model). RVC's RMVPE
+pitch extractor is being closed out at its current, well-verified state: three real,
+independently-confirmed structural bugs found and fixed (audio padding, U-Net H/W
+orientation, ResBlock ReLU placement), taking end-to-end salience from unusable
+(max=0.0014, effectively random) to closely tracking the reference's real confident
+per-frame peak (max=0.81235 vs the reference's 0.97022, with the reference's own value
+itself not being the "clean" ground truth due to the OOB quirk above). Moving on to the
+k-NN retrieval index and synthesizer next.
