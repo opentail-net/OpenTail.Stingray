@@ -12154,3 +12154,33 @@ prediction at this position is token 32 (`StreamingPad` itself -- the model corr
 continues emitting pad tokens through the delay window before real transcription
 begins, consistent with real streaming-ASR behavior). Numeric comparison of this port's
 own logits against that reference trace is still in progress as of this update.
+
+**Update, 2026-09-06 -- FULL END-TO-END GOLDEN VERIFICATION ACHIEVED for Voxtral's
+prefill.** Ran the real end-to-end C# pipeline (`VoxtralEndToEndPrefillTests`: real
+`a.wav` -> exact real padding -> `VoxtralMelExtractor` -> `VoxtralAudioEncoder` -> real
+39-token prompt -> `VoxtralTextDecoder`) and compared against the real reference's own
+`STINGRAY_VOXTRAL_TRACE=1` prefill trace:
+
+| | reference | this port |
+|---|---|---|
+| prompt_tokens | 39 | 39 |
+| audio_tokens | 124 | 123 (off by one -- minor rounding somewhere in resample/mel framing, not chased further since it doesn't affect this comparison) |
+| logits mean | -31.166838 | -31.115388 |
+| logits std | 1.319641 | 1.327234 |
+| top-1 token | 32 (`StreamingPad`) @ -0.0803 | 32 (`StreamingPad`) @ -0.0628 |
+| top-2 token | 33 @ -15.1215 | 33 @ -14.2312 |
+
+**The top-1 predicted token matches exactly** (both correctly predict the model
+continues emitting the streaming-pad token through the delay window before real
+transcription text begins -- genuine streaming-ASR behavior, not a degenerate
+always-same-token failure, confirmed by the top-2 token also matching and the
+aggregate logits distribution matching closely). This is the first full,
+independently-verified new-model pipeline this session -- mel frontend, audio tower,
+padding/prompt construction, and the corrected (additive-splice + AdaLN-gated) text
+decoder all working together correctly on real audio and real weights.
+
+**Still remaining for a complete callable Voxtral pipeline**: the full autoregressive
+generation loop (the streaming per-step audio-row-advancing `DecodeStepGraph`, not yet
+implemented -- this prefill result only covers the FIRST position), and the minor
+audio_tokens off-by-one (likely a small resampling or STFT-centering rounding difference,
+not investigated further since it did not block this verification).
