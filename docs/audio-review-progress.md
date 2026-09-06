@@ -11239,3 +11239,78 @@ checking" (carried over from a different pair of models' history) was wrong for 
 specifically -- worth re-verifying "already optimized" claims against the ACTUAL current code for
 the ACTUAL model in question, not generalizing from a different model's history, even within the
 same investigation. No subagents used.
+
+## CosyVoice3 "wobbling/metallic" and "lack of full clarity" quality issue -- root-caused and fixed, 2026-09-06
+
+Long-standing CosyVoice3 quality issue (tracked in this doc's earlier CosyVoice3 sections and in
+`docs/qwentts-cosyvoice3-handoff.md`) finally root-caused via genuine numeric comparison against
+the real `examples/audio.cpp` reference, built from source and run against real weights. Two
+sessions' worth of work, three real bugs found and fixed in total:
+
+1. **Frozen flow-matching ODE noise** (`CosyVoice3DiTModel.SolveFlowMatchingOde`): was seeding the
+   CFM ODE's initial state with fresh per-call `NextGaussian` draws. The real reference instead
+   reads a fixed, pre-baked `decoder.rand_noise` tensor baked into the checkpoint and slices a
+   frame-count-sized prefix off it every call -- it never samples fresh randomness at inference.
+   Independent PRNGs in different runtimes can never reproduce the same "random" sequence even
+   with a matching seed, so a shared frozen buffer is the only way two independent implementations
+   can start the ODE from the same state. Fixed via a new byte-level GGUF-splicing tool
+   (`CosyVoice3SpliceRandNoiseTool`, never touches the source checkpoint) that extracts the real
+   tensor from the upstream Q8_0 reference checkpoint into a new file; `CosyVoice3DiTWeights` loads
+   it when present, falling back to a one-time fixed-seed buffer otherwise.
+
+2. **Prompt/target frame-boundary misalignment** (`CosyVoice3Pipeline.Generate`): `refMel` (from
+   `CosyVoiceMelExtractor`'s own independent hop/padding) and `promptTokens` (from the ONNX speech
+   tokenizer) don't reliably land on exactly matching frame counts under `TokenMelRatio` -- real
+   `[DBG]` trace on the reference audio showed 352 prompt tokens (704 frames under ratio=2) vs 703
+   refMel frames, a real one-frame skew. This meant `mu` (built from tokens) and `cond` (built from
+   refMel) transitioned from prompt to target content on different frames, which the DiT's causal
+   conv-pos-embed smeared forward and CFG then amplified. Fixed by truncating both `promptTokens`
+   and `refMel` to their mutually consistent common length up front (`min(refMelFrames/ratio,
+   tokenCount)`), matching the real reference's `cosyvoice_frontend_prompt_speech_finalize`.
+
+3. **RoPE applied to all 16 attention heads instead of only head 0** (`CosyVoice3DiTModel.
+   Attention`) -- **the actual dominant root cause**, found after (1) and (2) measurably improved
+   but did not fully close the gap. `F5Kernels.ApplyRotary` was called without `numRopeHeads`,
+   defaulting to rotating every head. The real reference (`examples/audio.cpp`'s
+   `projected_grouped_self_attention.cpp:97-111`, `cosyvoice3/flow.cpp:322-326`) applies RoPE to
+   the UNSPLIT `[t, 1024]` q/k projection via `ggml_rope_ext(..., n_dims=head_dim=64, ...)` --
+   confirmed directly from `ggml.h`'s own documented semantics (`GGML_ROPE_TYPE_NORMAL n_dims=4 -->
+   [cscs0000]`) that `n_dims` less than the tensor's full width rotates only the first `n_dims`
+   elements and passes the rest through completely unrotated. So only head 0 (elements `[0,64)`)
+   is ever rotated in the real model; heads 1-15 (`[64,1024)`) pass through untouched. Rotating all
+   16 heads silently distorted attention on every one of the 22 transformer layers -- same bug
+   class already fixed for F5-TTS's DiT (`F5DiTBlock.cs`'s `numRopeHeads: 1`), which this codebase
+   had NOT carried over to CosyVoice3 despite the explicit "tensor-for-tensor identical" doc
+   comment on `CosyVoice3DiTWeights`. Fixed by passing `numRopeHeads: 1` at the CosyVoice3 call
+   site. An earlier comment on `F5Kernels.ApplyRotary` claiming "CosyVoice3's own real config"
+   rotates all heads was itself wrong (never traced through to `ggml_rope_ext`'s actual behavior).
+
+**Verification (real per-channel mel variance vs the reference, not just listening)**:
+- Sample 1 ("Hello, I will make some lunch, darling!", seed 42): channel-0 std went from 1.48
+  (2.8x too high vs the reference's 0.53) to 0.48 (matching); all 80 channels converged to
+  0.92x-1.15x of the reference (was up to 2.8x before the RoPE fix).
+- Sample 2 ("The weather today is absolutely beautiful...", seed 123, kept as a permanent
+  regression test `CosyVoice3RealReferenceMatchTest.Generate_SecondIndependentSample_
+  ChannelStatsVsReference`): all 80 channels land within 0.89x-1.28x of the reference, confirming
+  the fix generalizes rather than being tuned to one sample.
+
+**Also cross-checked and confirmed correct** (no further bugs) against the real reference during
+this investigation: RoPE theta (10000)/freq_scale (1.0)/interleaved-pairs convention (`ggml.h`'s
+`GGML_ROPE_TYPE_NORMAL`), causal conv-pos-embed left-padding, absence of QK-norm, non-causal
+attention, AdaLN modulation slice ordering (`shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp,
+gate_mlp` at offsets `0,dim,2dim,3dim,4dim,5dim`), attention scale factor (`1/sqrt(head_dim)`),
+GELU tanh-vs-erf variant (re-tested after the RoPE fix, still no measurable effect -- ruled out
+twice now), and the cosine ODE time schedule.
+
+**Also found but explicitly NOT "fixed"**: `CosyVoice3DiTInputEmbedGoldenTests`
+(`InputEmbed_RealWeights_MatchesGoldenOracle`) now fails at ~0.64 cosine similarity (was >0.999
+when first written). Traced to its Python oracle (`scratch-llamacpp-ref/
+cosyvoice3_dit_inputembed_golden.py`) using non-causal SAME/centered padding for the conv-pos-embed,
+while the real reference (confirmed via `flow.cpp`'s `causal_conv_pos_embed`,
+`ggml_pad_ext(..., kConvPosKernel-1, 0, ...)` -- left-only padding) and our current C# code both
+correctly use CAUSAL left-only padding. The oracle predates that correction and was never updated;
+our code is right, the fixture is stale. Left as a known, understood, low-priority cleanup item
+(regenerate the fixture with causal padding) rather than "fixed" by matching working code to a
+wrong oracle.
+
+**User confirmed by ear, 2026-09-06**: "cosyvoice3-OURS-gen2.wav is perfect."
