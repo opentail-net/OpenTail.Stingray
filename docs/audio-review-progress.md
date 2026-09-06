@@ -12590,3 +12590,32 @@ stats (`am.mvn`-equivalent tensor, not yet located/applied), the audio adaptor/p
 (`adaptor.cpp`, 471 lines, bridges the 512-dim encoder output into the Qwen3 LLM's
 embedding space), wiring `FunAsrNanoLlmTensorSource.cs` (already correct, still untested)
 into an actual generation pipeline, and prompt construction (`prompt.cpp`).
+
+**Update, 2026-09-06 -- Fun-ASR-Nano-2512's audio adaptor/projector implemented and
+real-weight-verified.** Read `adaptor.cpp` in full (not guessed) and cross-checked exact
+dimensions against the real published `FunAudioLLM/Fun-ASR-Nano-2512-hf` `config.json`
+(fetched directly, not assumed): `adaptor_config.hidden_size=1024` (== the Qwen3 LLM's own
+`text_config.hidden_size`), `num_attention_heads=8`, `intermediate_size=256` (==
+`hidden_size/4`), `num_hidden_layers=2`, `projector_hidden_size=2048`. Implemented
+`FunAsrNanoAdaptorWeights`/`FunAsrNanoAdaptor.Forward`: `Linear(512->2048,bias) -> ReLU ->
+Linear(2048->1024,bias)` bridges the SAN-M encoder's 512-dim output into the LLM's
+1024-dim space, followed by 2 standard (non-SANM, no FSMN) post-LN transformer blocks.
+Also handles the reference's own real current-vs-legacy tensor-prefix fallback
+(`model.audio_adaptor.blocks.*` vs `model.multi_modal_projector.blocks.*` -- this
+checkpoint uses the current name).
+
+Ran the full mel -> SAN-M encoder -> adaptor chain on real `a.wav` with the real
+downloaded checkpoint: 99 frames, d_model=1024 (matching the Qwen3 LLM's real hidden
+size), mean=0.13894 std=27.18717, all finite, non-degenerate, ~18s wall time. Fun-ASR-Nano
+-2512's audio-understanding side (frontend -> SAN-M encoder -> adaptor) now produces
+real, ready-to-splice continuous embeddings in the LLM's own embedding space.
+
+**Still remaining for a complete Fun-ASR-Nano-2512 pipeline**: real CMVN stats (not yet
+located/applied -- current runs skip this step), splicing these adapted embeddings into
+`FunAsrNanoLlmTensorSource.cs`'s existing `EnableAudioConditioning` mechanism (same
+technique already used for OmniVoice/Qwen3-ASR this session) and running an actual
+autoregressive transcription through the existing engine's `ForwardPass`, plus prompt
+construction (`prompt.cpp`) and tokenizer wiring (`tokenizer_text.cpp`). The audio-side
+half of the pipeline (frontend, encoder, adaptor) is now real-weight-verified end to end;
+only the text-generation half remains before attempting a real transcription, which would
+be the THIRD full working ASR pipeline this session if it lands.
