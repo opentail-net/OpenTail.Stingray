@@ -11932,3 +11932,38 @@ breakdown in a follow-up pass before calling this fully bit-exact, but the pipel
 clearly structurally and numerically sound. Still not done: splicing these audio
 embeddings into the real Mistral text-decoder's prompt and running full end-to-end ASR
 through this port (the text decoder itself needs no new code, only the splice logic).
+
+**Update, 2026-09-06 -- real config downloaded; found OmniVoice's semantic tokenizer is
+architecturally IDENTICAL to RVC's already-verified HuBERT, and its acoustic tokenizer is
+SHARED with Higgs Audio TTS.** Downloaded the real `config.json` +
+`audio_tokenizer/config.json` from `k2-fsa/OmniVoice` (not the full ~model.safetensors
+yet, just configs, into `models/_models/omnivoice/`). Two major findings:
+
+1. **LLM backbone is a plain Qwen3** (`llm_config.architectures=["Qwen3ForCausalLM"]`,
+   28 layers, GQA 16/8 heads, head_dim=128, hidden=1024, rope_theta=1e6, tied
+   embeddings) -- needs ZERO new decoder code, identical situation to Voxtral's Mistral
+   decoder. `num_audio_codebook=8`, `audio_codebook_weights=[8,8,6,6,4,4,2,2]`
+   (decreasing per-codebook bit-budget, standard residual-quantization weighting),
+   `audio_vocab_size=1025` (1024 codes + 1 mask token).
+2. **Semantic audio tokenizer is a real HuBERT-base with the EXACT SAME
+   hyperparameters as RVC's already golden-verified `RvcHubertEncoder.cs`**:
+   `conv_dim=[512]*7`, `conv_kernel=[10,3,3,3,3,2,2]`, `conv_stride=[5,2,2,2,2,2,2]`,
+   `hidden_size=768`, 12 layers, 12 heads, `num_conv_pos_embeddings=128`,
+   `num_conv_pos_embedding_groups=16` -- this is not just "the same family", it is the
+   textbook HuBERT-base config down to every number, meaning `RvcHubertEncoder.cs`/
+   `RvcHubertWeights.cs` are very likely DIRECTLY reusable here (same forward-pass math,
+   only the weight-tensor-name prefix differs) rather than needing a fresh port.
+3. **Acoustic tokenizer is `HiggsAudioV2TokenizerModel`** (`model_type:
+   higgs_audio_v2_tokenizer`) -- a real DAC-style (Descript Audio Codec) encoder-RVQ-decoder
+   (`n_codebooks=9`, `codebook_size=1024`, `downsampling_ratios`/`upsampling_ratios`=
+   `[8,5,4,2,3]`, `hop_length=960`). This is the SAME tokenizer named in rank-6
+   **Higgs Audio TTS**'s own architecture -- porting this ONE codec once unlocks BOTH
+   #2 (OmniVoice) and #6 (Higgs Audio TTS) on the ranked list. This codebase already has
+   a real DAC decoder (`Parler/DacDecoder.cs`/`DacWeights.cs`) -- worth checking for
+   direct reuse/adaptation before writing new RVQ-decoder kernels, same reuse-first
+   approach that paid off for the semantic tokenizer.
+
+**Not yet done**: downloading the actual `model.safetensors` weights (LLM + both
+tokenizer halves) and writing any C# code -- this update is real config-driven scoping
+only, but it meaningfully changes the effort estimate for both OmniVoice and Higgs Audio
+TTS downward given the confirmed reuse opportunities.
