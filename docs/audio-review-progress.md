@@ -12260,3 +12260,27 @@ the causal+sliding-window(57) Transformer-XL rel-pos Conformer encoder forward p
 genuinely new-code part vs. Parakeet's full-context variant), and the full RNNT
 greedy-decode loop (LSTM predictor + joint network + frame-synchronous search). This is
 real forward progress on a previously scoped-only item, not yet a working forward pass.
+
+**Update, 2026-09-06 -- Nemotron ASR: real mel frontend implemented, structurally
+verified on real audio.** Read `examples/audio.cpp/src/models/nemotron_asr/frontend.cpp`
+in full (not guessed) and transcribed it as `NemotronAsrMelExtractor`. Real, notably
+SIMPLER pipeline than Parakeet's: pre-emphasis (0.97, mathematically the same formula as
+Parakeet's despite the reference iterating backward in-place -- each `processed[i-1]`
+read still sees the original untouched sample regardless of iteration direction) ->
+center-pad by n_fft/2 both sides -> a self-generated symmetric/non-periodic Hann window
+(this checkpoint, unlike Parakeet's, does NOT ship a window tensor) -> **magnitude**
+spectrum (confirmed via the reference's own `compute_magnitude` function name -- a real
+difference from Parakeet's power spectrum, so a `sqrt()` step was added before the mel
+projection) -> the checkpoint's own shipped `preprocessor.fb` (128 mels) -> `log(mel +
+2^-24)` (same `LogZeroGuard` constant as Parakeet's `LogEps`) -> frames past
+`valid_frames` zeroed (`mask_invalid_frames=true`). **Critically, unlike Parakeet, there
+is NO per-feature Z-normalization step** -- confirmed both by the reference's frontend.cpp
+having no such step and by the checkpoint's own `asr.preprocessor.normalize=NA` metadata;
+an earlier instinct to copy Parakeet's normalization step would have been a real bug here.
+`NemotronAsrMelExtractorTests` runs this on real `a.wav` (16kHz, resampled) with the real
+downloaded checkpoint: 596 frames (595 valid), mean=-6.66033 std=1.47795 in the valid
+region, all finite, invalid tail frames exactly zeroed as expected.
+
+**Still remaining**: the `dw_striding` subsampling forward pass consuming this mel
+output, the causal + sliding-window(57) Transformer-XL rel-pos Conformer encoder, and the
+RNNT greedy-decode loop (LSTM predictor + joint network).
