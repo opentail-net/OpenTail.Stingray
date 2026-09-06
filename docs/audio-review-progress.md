@@ -11669,3 +11669,44 @@ so this codebase's `pull` command, which only fetches GGUF files, does not apply
 real download would need a direct HF fetch or a local GGUF conversion first). Weight
 loading, the forward pass, the frontend's exact mel formula, and the audio-token splicing
 into the text prompt are all still to be written/verified against real weights.
+(A direct HF download of `model.safetensors` + `config.json` + `tekken.json` was kicked
+off into `models/_models/voxtral-mini-realtime/` to unblock the next weight-load pass.)
+
+## OmniVoice -- scoped, real config structure confirmed, 2026-09-06
+
+Read `examples/audio.cpp/src/models/omnivoice/{assets,audio_tokenizer,generator,
+prompt_builder}.{h,cpp}` (~6250 real lines total, the largest single model in this ranked
+queue after RVC). Real architecture, from `OmniVoiceConfig` in `assets.h` (not guessed):
+
+- **LLM backbone**: a standard GQA decoder (`OmniVoiceLLMConfig` -- vocab/hidden/
+  intermediate/layers/heads/kv-heads/head-dim/rope_theta/rms_norm_eps, no unusual fields)
+  that generates a mixed text+audio-codebook token stream -- likely admittable via the
+  same generic transformer path used elsewhere in this engine once its exact tensor names
+  are confirmed, similar in spirit to how Qwen3-ASR/ForcedAligner reuse `ForwardPass`.
+- **Audio tokenizer, TWO sub-models** (`OmniVoiceAudioTokenizerConfig`):
+  - A **semantic model**: `conv_dim`/`conv_kernel`/`conv_stride` arrays,
+    `feat_proj_layer_norm`, `do_stable_layer_norm`, `num_conv_pos_embeddings` --
+    this is a Wav2Vec2/HuBERT-shaped encoder, the SAME family this codebase already has a
+    real, golden-verified implementation of for RVC (`RvcHubertEncoder.cs`) and for the
+    codebase's existing HuBERT-based encoders elsewhere -- likely substantially reusable,
+    not a from-scratch architecture.
+  - An **acoustic model**: `codebook_dim`, `encoder_hidden_size`/`decoder_hidden_size`,
+    `downsampling_ratios`/`upsampling_ratios`, plus top-level `codebook_size`/
+    `num_codebooks`/`acoustic_codebooks`/`target_bandwidths`/`channel_ratios`/`strides`/
+    `block_dilations` -- this is an EnCodec/SoundStream-style residual-vector-quantized
+    neural codec (encoder -> RVQ -> decoder), the same general family this codebase
+    already has runtime support for elsewhere (`mimi_codec_runtime`,
+    `fsq_audio_codec_runtime` per `CLAUDE.md`'s architecture list) -- again, potentially
+    reusable rather than needing an from-scratch RVQ implementation.
+- `generator.cpp` (1558 lines) drives autoregressive generation of the mixed
+  text/audio-codebook token stream from the LLM, `prompt_builder.cpp` (852 lines)
+  constructs that prompt, and `postprocess.cpp` decodes generated audio-codebook tokens
+  back through the acoustic decoder to a waveform.
+
+**Assessment**: this is a substantially larger, multi-component port than RVC or
+Voxtral's audio tower -- an LLM + two separate neural sub-models (semantic tokenizer,
+acoustic RVQ codec) each with their own encoder/decoder halves, plus real
+prompt-construction and postprocessing logic. Not attempting a from-scratch
+implementation in this pass; the concrete next step is checking whether this codebase's
+EXISTING HuBERT and RVQ-codec runtime code (per the reuse opportunities above) can be
+adapted rather than re-derived, before writing any new lower-level kernels.
