@@ -11967,3 +11967,16 @@ yet, just configs, into `models/_models/omnivoice/`). Two major findings:
 tokenizer halves) and writing any C# code -- this update is real config-driven scoping
 only, but it meaningfully changes the effort estimate for both OmniVoice and Higgs Audio
 TTS downward given the confirmed reuse opportunities.
+
+**Update, same session -- confirmed `DacDecoder.cs`/`DacWeights.cs` (Parler-TTS's DAC)
+is the right template to adapt, not a byte-identical drop-in.** Parler's real DAC config:
+`n_codebooks=9`, `codebook_size=1024`, `codebook_dim=8`, `decoder_dim=1536`,
+`decoder_rates=[8,8,4,2]` (4 stages). OmniVoice/Higgs's real DAC config:
+`n_codebooks=9`, `codebook_size=1024`, `codebook_dim=8` (all three match exactly!), but
+`decoder_hidden_size=1024` (not 1536) and `downsampling_ratios=[8,5,4,2,3]` (5 stages,
+not 4, with a different rate schedule). Same architecture family and the same
+non-hierarchical (`ResidualVectorQuantize.from_codes` sums all 9 codebooks at one time
+resolution, no per-codebook upsampling) quantizer scheme -- `DacDecoder.cs`'s real
+`ResidualUnit`/weight-norm-folding/quantizer-summing code is the right structural
+template to adapt for a new `HiggsAudioV2Dac` class parameterized for the different
+stage count and dims, not a direct reuse of the existing Parler-specific class as-is.
