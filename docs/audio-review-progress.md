@@ -12284,3 +12284,24 @@ region, all finite, invalid tail frames exactly zeroed as expected.
 **Still remaining**: the `dw_striding` subsampling forward pass consuming this mel
 output, the causal + sliding-window(57) Transformer-XL rel-pos Conformer encoder, and the
 RNNT greedy-decode loop (LSTM predictor + joint network).
+
+**Update, 2026-09-06 -- Nemotron ASR: subsampling front-end formula fully derived from
+the real reference, ready to implement next.** Read `encoder.cpp`'s offline (non-streaming)
+graph-build path (lines ~520-604) in full. Real params: `kernel=3, stride=2` (3 stages,
+`2^3=8x` total, matching `subsampling_factor=8`). Padding is asymmetric CAUSAL, not
+"same": `causal_conv_output_dim(input,k,s) = (input + (k-1) + (s-1) - k) / s + 1` and
+`pad_causal_2d` pads `time_left=k-1=2, time_right=s-1=1` AND `freq_left=k-1=2,
+freq_right=s-1=1` (freq axis is ALSO causally/asymmetrically padded every stage, not just
+time -- a real difference from a naive "same"-padded assumption). Stage sequence: full
+Conv2d (in=1,out=256,k=3,s=2,bias) -> ReLU -> [DepthwiseConv2d(256,k=3,s=2,bias) ->
+pointwise Conv2d(256->256,k=1,bias) -> ReLU] x2 -> transpose+reshape to
+`[1, stage3_frames, 256*stage3_features]` -> Linear(256*stage3_features -> 1024, bias)
+(`stage3_features` must equal `4352/256=17` per the reference's own assertion). No
+BatchNorm/LayerNorm inside the subsampling stack itself (matches the tensor listing:
+`pre_encode.conv.{0,2,3,5,6}` + `pre_encode.out`, no norm tensors between them). This is
+the exact recipe to implement next -- not yet written. After this comes the causal +
+sliding-window(57) Transformer-XL rel-pos Conformer encoder (uses a real
+`TimeMask4d`/`attention_mask`/`keep_mask` masking scheme per-stage that the offline graph
+also builds, worth reading in full before implementing since it affects both the
+subsampling output masking and the encoder's self-attention masking), then the RNNT
+greedy-decode loop (LSTM predictor + joint network).
