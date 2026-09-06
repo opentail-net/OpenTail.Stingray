@@ -20,14 +20,21 @@ public static class RvcRmvpeEncoder
     public static float[][] Forward(RvcRmvpeWeights w, float[][] mel)
     {
         int frames = mel.Length;
-        // [1 channel][melBins][frames] image, channel-first.
+        // Real reference orientation (rmvpe_pitch_extractor.cpp): feature.input tensor shape is
+        // [1, melBins, frames], transposed via TransposeModule({0,2,1}) to [1, frames, melBins]
+        // before being reshaped into the U-Net's [1,1,H,W] image -- i.e. H=frames, W=melBins, NOT
+        // H=melBins/W=frames. Convolution kernels are not symmetric under an H/W swap, so getting
+        // this backwards silently produces near-collapsed (tiny-variance) output instead of an
+        // outright crash -- found via a real end-to-end salience-stats mismatch against the C++
+        // reference (ours ~50x smaller mean/std/max than the reference's real trace).
         var image = new float[1][,];
-        image[0] = new float[RvcRmvpeWeights.MelBins, frames];
+        image[0] = new float[frames, RvcRmvpeWeights.MelBins];
         for (int f = 0; f < frames; f++)
             for (int m = 0; m < RvcRmvpeWeights.MelBins; m++)
-                image[0][m, f] = mel[f][m];
+                image[0][f, m] = mel[f][m];
 
         var x = BatchNorm2d(image, w.EncoderInputBn);
+        Trace("after-input-bn", x);
 
         var skips = new List<float[][,]>(5);
         int channels = 1;
@@ -39,6 +46,7 @@ public static class RvcRmvpeEncoder
             skips.Add(x);
             x = AvgPool2x2(x, channels);
             outChannels *= 2;
+            Trace($"after-encoder-level{level}", x);
         }
 
         channels = 256;
@@ -48,6 +56,7 @@ public static class RvcRmvpeEncoder
             x = ResUNetLevel(x, w.IntermediateLevels[level], channels, interOut);
             channels = interOut;
         }
+        Trace("after-bottleneck", x);
 
         channels = 512;
         for (int level = 0; level < 5; level++)
@@ -64,11 +73,13 @@ public static class RvcRmvpeEncoder
             channels = decOut;
         }
 
+        Trace("after-decoder", x);
         // Final projection: Conv2d(16->3, 3x3, pad 1).
         var final = Conv2dSamePad3x3(x, channels, w.CnnWeight, w.CnnBias, outCh: 3);
+        Trace("after-final-cnn", final);
 
-        // Reshape [3, melBins, frames] -> transpose to [frames, 3, melBins] -> flatten to
-        // [frames, 3*melBins=384], matching the reference's real transpose+reshape exactly.
+        // final is [3, H=frames, W=melBins]. Reference: transpose {0,2,1,3} on [1,3,frames,melBins]
+        // -> [1,frames,3,melBins] -> flatten to [frames, 3*melBins=384] (channel-then-mel order).
         int melBins = RvcRmvpeWeights.MelBins;
         var flat = new float[frames][];
         for (int f = 0; f < frames; f++)
@@ -76,12 +87,15 @@ public static class RvcRmvpeEncoder
             var row = new float[RvcRmvpeWeights.FeatureDim];
             for (int c = 0; c < 3; c++)
                 for (int m = 0; m < melBins; m++)
-                    row[c * melBins + m] = final[c][m, f];
+                    row[c * melBins + m] = final[c][f, m];
             flat[f] = row;
         }
 
+        TraceFlat("flat", flat);
         var (fwdSeq, _) = GruUnroll(flat, w.GruForward, reverse: false);
         var (revSeq, _) = GruUnroll(flat, w.GruReverse, reverse: true);
+        TraceFlat("gru-fwd", fwdSeq);
+        TraceFlat("gru-rev", revSeq);
 
         var output = new float[frames][];
         for (int f = 0; f < frames; f++)
@@ -94,6 +108,44 @@ public static class RvcRmvpeEncoder
             output[f] = logits;
         }
         return output;
+    }
+
+    private static readonly bool TraceEnabled = Environment.GetEnvironmentVariable("STINGRAY_RVC_TRACE") == "1";
+
+    private static void Trace(string label, float[][,] x)
+    {
+        if (!TraceEnabled) return;
+        double sum = 0, sumSq = 0; int n = 0;
+        foreach (var plane in x)
+        {
+            int h = plane.GetLength(0), w2 = plane.GetLength(1);
+            for (int i = 0; i < h; i++)
+                for (int j = 0; j < w2; j++)
+                {
+                    sum += plane[i, j];
+                    sumSq += (double)plane[i, j] * plane[i, j];
+                    n++;
+                }
+        }
+        double mean = sum / n;
+        double std = Math.Sqrt(Math.Max(0, sumSq / n - mean * mean));
+        Console.Error.WriteLine($"[RVC-RMVPE-CS] {label} channels={x.Length} mean={mean:F5} std={std:F5}");
+    }
+
+    private static void TraceFlat(string label, float[][] x)
+    {
+        if (!TraceEnabled) return;
+        double sum = 0, sumSq = 0; int n = 0;
+        foreach (var row in x)
+            foreach (var v in row)
+            {
+                sum += v;
+                sumSq += (double)v * v;
+                n++;
+            }
+        double mean = sum / n;
+        double std = Math.Sqrt(Math.Max(0, sumSq / n - mean * mean));
+        Console.Error.WriteLine($"[RVC-RMVPE-CS] {label} rows={x.Length} dim={x[0].Length} mean={mean:F5} std={std:F5}");
     }
 
     private static float[][,] ResUNetLevel(float[][,] x, RvcResUNetLevel level, int inChannels, int outChannels)

@@ -11434,3 +11434,48 @@ Once that frontend exists, the same `STINGRAY_RVC_TRACE=1`-in-hubert.cpp methodo
 (add an equivalent trace to the reference's RMVPE component, compare hidden-state/output
 mean-std on the same real audio) closes out RMVPE's golden verification the same way it
 did for HuBERT.
+
+**Update, 2026-09-06 -- mel frontend built, real preprocessing bug found+fixed, one real
+bug remains open in the U-Net/GRU network itself.**
+
+- Built `RvcRmvpeMelExtractor` (real HTK mel frontend per the spec above) and
+  `RvcRmvpeEncoder.Forward` (real 5-level ResNet-U-Net + bidirectional GRU + sigmoid
+  head), plus `RvcRmvpeEndToEndRealAudioTests` running the full mel-to-salience pipeline
+  on real audio (`a.wav`) against a real `STINGRAY_RVC_TRACE=1` trace added to
+  `rmvpe_pitch_extractor.cpp` right before `decode_rmvpe_salience`.
+- **Real bug #1 (found+fixed): missing `audio_pad_duration_sec` preprocessing.** The
+  reference's real pipeline (`native_pipeline.cpp`) runs a 48Hz zero-phase Butterworth
+  high-pass (`filtfilt`, order 5) then reflect-pads the content audio by
+  `audio_pad_duration_sec` seconds (default 1s) on each side *before* both HuBERT
+  content encoding and RMVPE pitch extraction -- this was entirely missing from the C#
+  port, causing a real frame-count mismatch (our 596 vs the reference's 796 for the same
+  source clip). Added `RvcAudioPreprocessing.cs` (high-pass filtfilt with the reference's
+  literal Butterworth coefficients/zi, plus the reflect-pad) and wired it into the
+  end-to-end test. Frame count now matches the reference exactly (796).
+- **Real bug #2 (found+fixed): U-Net image H/W axis orientation swapped.** The reference
+  builds the RMVPE U-Net's single-channel "image" from `feature.input` (shape
+  `[1, melBins, frames]`), transposed via `TransposeModule({0,2,1})` to put **H=frames,
+  W=melBins** before the `[1,1,H,W]` reshape -- `RvcRmvpeEncoder.Forward` originally
+  built the image the other way around (H=melBins, W=frames). Since 3x3 conv kernels are
+  not symmetric under an H/W swap, this silently misapplied every kernel tap instead of
+  crashing or producing an obviously-wrong shape error -- exactly the kind of bug that
+  looks like "probably fine" until checked against a real trace. Fixed by swapping the
+  image-construction and final-flatten indexing to match (H=frames, W=melBins
+  throughout; `Conv2dSamePad3x3`/`AvgPool2x2`/`ConvTranspose2dPyTorch2x` are already
+  written generically over `GetLength(0/1)` so needed no changes themselves).
+- **Remaining open bug**: even after both fixes, the real end-to-end salience stats
+  (frames=796, mean=0.00007, std=0.00010, max=0.00668) are still far from the
+  reference's real trace (frames=796, mean=0.00474, std=0.04768, **max=0.97022**) -- the
+  reference produces one sharp, highly-confident per-frame class; ours stays uniformly
+  near-zero. Per-stage `STINGRAY_RVC_TRACE=1` tracing added directly to
+  `RvcRmvpeEncoder.Forward` (after input-BN, after each of the 5 encoder levels, after
+  the bottleneck, after the decoder, after the final 3-channel conv, after the flatten,
+  and after each GRU direction) shows every stage has a plausible, non-degenerate
+  mean/std (no NaN, no all-zero, no obviously-saturated collapse) -- so this is a real
+  numerical divergence somewhere in the U-Net/GRU stack, not a structural/wiring bug
+  like the two above. Closing it needs the same per-stage mean/std trace added to the
+  reference's own `build_rmvpe_feature_graph`/`build_gru_chunk_graph`/
+  `build_rmvpe_head_graph` (intermediate ggml tensor reads, not just the final
+  `salience` output) to bisect which exact stage first diverges numerically -- not yet
+  attempted; flagging this explicitly as its own remaining line item rather than a "just
+  needs a bit more time" continuation of the frontend work above.
