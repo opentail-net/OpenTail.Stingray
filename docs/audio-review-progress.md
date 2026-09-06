@@ -11672,6 +11672,36 @@ into the text prompt are all still to be written/verified against real weights.
 (A direct HF download of `model.safetensors` + `config.json` + `tekken.json` was kicked
 off into `models/_models/voxtral-mini-realtime/` to unblock the next weight-load pass.)
 
+**Update, 2026-09-06 -- mel frontend and forward pass written, structurally verified
+(synthetic weights); real-weight load test still pending the checkpoint download.**
+
+- `VoxtralMelExtractor.cs`: transcribed from `frontend.cpp`. Same Slaney 128-bin family
+  already used for Qwen3-ASR (`QwenAsrMelExtractor`), but with two real, checkpoint-
+  confirmed differences: `n_fft=win_length=400` (no zero-padding beyond the analysis
+  window, unlike Qwen3-ASR's `n_fft=512 > window=400`), and a **fixed** dynamic-range
+  floor (`global_log_mel_max - 8`, from the real `config.json`'s `global_log_mel_max=1.5`)
+  rather than Whisper/Qwen3-ASR's per-utterance `max(log_spec) - 8`.
+- `VoxtralAudioEncoder.cs`: the real (non-streaming/offline) forward pass -- conv stem
+  (`Conv1d(128->1280,k=3,s=1)`+GELU, `Conv1d(1280->1280,k=3,s=2)`+GELU) -> 32x
+  [RMSNorm -> causal-sliding-window (750 steps) full MHA with RoPE-NEOX -> residual ->
+  RMSNorm -> SwiGLU MLP -> residual] -> final RMSNorm -> 4x downsample -> 2-layer GELU
+  projector into the 3072-wide text embedding space. RoPE-NEOX implemented directly
+  (half-split pair rotation `(i, i+headDim/2)`, confirmed distinct from the interleaved
+  GPT-J-style `(2i,2i+1)` pairing used elsewhere) rather than reusing any existing
+  RoPE helper in this codebase, since none currently expose the NEOX variant standalone.
+- Added `VoxtralAudioEncoderWeights.CreateSynthetic` (random-weight factory) and
+  `VoxtralAudioEncoderStructuralTests` to verify shapes/finiteness without the real
+  checkpoint -- confirmed correct token count (`melFrames/2/downsampleFactor`, matching
+  the real `audio_length_per_tok=8` config) and finite output at both 64 frames (fast,
+  27s) and a more realistic 800 frames (286s -- confirms this port's current O(T²) full
+  attention per layer needs a real performance pass before production use on longer
+  clips, deferred per this project's "perf pass once porting is complete" convention).
+- **Not yet done**: a real weight-load test and golden verification against
+  `audiocpp_cli --log` (same methodology as RVC) -- blocked on the ~9GB checkpoint
+  download completing in `models/_models/voxtral-mini-realtime/`. The audio-token
+  splicing into the text decoder's prompt (`<|audio_pad|>`-equivalent placeholder
+  replacement) and the Mistral text-decoder wiring are also still to be done.
+
 ## OmniVoice -- scoped, real config structure confirmed, 2026-09-06
 
 Read `examples/audio.cpp/src/models/omnivoice/{assets,audio_tokenizer,generator,

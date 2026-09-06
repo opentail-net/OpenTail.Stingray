@@ -72,6 +72,40 @@ public sealed class VoxtralAudioEncoderWeights
         Projector1Weight = loader.ReadF32("multi_modal_projector.linear_1.weight");
         Projector2Weight = loader.ReadF32("multi_modal_projector.linear_2.weight");
     }
+
+    private VoxtralAudioEncoderWeights(Func<int, float[]> rand)
+    {
+        Conv1Weight = rand(HiddenSize * NumMelBins * 3);
+        Conv1Bias = rand(HiddenSize);
+        Conv2Weight = rand(HiddenSize * HiddenSize * 3);
+        Conv2Bias = rand(HiddenSize);
+        for (int i = 0; i < NumLayers; i++)
+        {
+            Layers[i] = new VoxtralAudioLayerWeights
+            {
+                AttnNorm = rand(HiddenSize),
+                QWeight = rand(NumHeads * HeadDim * HiddenSize),
+                QBias = rand(NumHeads * HeadDim),
+                KWeight = rand(NumKvHeads * HeadDim * HiddenSize),
+                VWeight = rand(NumKvHeads * HeadDim * HiddenSize),
+                VBias = rand(NumKvHeads * HeadDim),
+                OWeight = rand(HiddenSize * NumHeads * HeadDim),
+                OBias = rand(HiddenSize),
+                FinalNorm = rand(HiddenSize),
+                GateWeight = rand(IntermediateSize * HiddenSize),
+                UpWeight = rand(IntermediateSize * HiddenSize),
+                DownWeight = rand(HiddenSize * IntermediateSize),
+                DownBias = rand(HiddenSize),
+            };
+        }
+        NormWeight = rand(HiddenSize);
+        Projector1Weight = rand(TextHiddenSize * HiddenSize * DownsampleFactor);
+        Projector2Weight = rand(TextHiddenSize * TextHiddenSize);
+    }
+
+    /// <summary>Test-only: builds weights from a caller-supplied random generator, for structural
+    /// (shape/finiteness) tests that don't need the real ~9GB checkpoint.</summary>
+    public static VoxtralAudioEncoderWeights CreateSynthetic(Func<int, float[]> randomArray) => new(randomArray);
 }
 
 public sealed class VoxtralAudioLayerWeights
