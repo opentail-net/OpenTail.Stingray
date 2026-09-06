@@ -11999,3 +11999,47 @@ this specific investigation is being set aside for now per this project's own
 the concrete, real progress already banked (audio encoder ruled out; exact layer
 number pinpointed; K-magnitude and attention-weight-concentration both ruled out as the
 direct mechanism) is a strong foundation for a focused follow-up, not a dead end.
+
+**Update, 2026-09-06 -- real tensor names confirmed from the downloaded weights; three
+concrete reuse points now nailed down exactly.** Downloaded the full real
+`model.safetensors` (LLM + embeddings, 2.4GB) and `audio_tokenizer/model.safetensors`
+(805MB) and dumped real tensor names/shapes.
+
+1. **LLM tensors match `QwenAsrLlmSafetensorsTensorSource`'s existing naming pattern
+   almost exactly**: `llm.embed_tokens.weight` [151676,1024], `llm.layers.{i}.self_attn.
+   {q,k,v,o}_proj.weight` (q: [2048,1024]=16 heads x128, k/v: [1024,1024]=8 kv-heads x128,
+   confirming the config's GQA 16/8 exactly), `llm.layers.{i}.self_attn.{q,k}_norm.weight`
+   [128] (real QK-norm, Qwen3-style), `llm.layers.{i}.mlp.{gate,up,down}_proj.weight`,
+   `llm.norm.weight` -- this needs only a THIRD prefix variant added to the existing
+   `QwenAsrLlmSafetensorsTensorSource` class (`"llm."`, alongside its current
+   `"thinker.model."`/`"model.language_model."` cases), not a new tensor-source class.
+2. **Audio token embedding/head**: `audio_embeddings.weight` and `audio_heads.weight`,
+   both `[8200, 1024]` = `8 codebooks x 1025` (1024 codes + 1 mask token) stacked into
+   one table, with `codebook_layer_offsets` (shape `[8]`) giving each codebook's start
+   offset -- a real, simple indexing scheme, not per-codebook separate tensors.
+3. **Semantic tokenizer real names**: `semantic_model.encoder.layers.{i}.attention.
+   {q,k,v,out}_proj.{weight,bias}`, `semantic_model.encoder.layer_norm.{weight,bias}` --
+   standard HuggingFace `HubertModel` naming, confirming the earlier config-based match to
+   `RvcHubertEncoder.cs`'s architecture. **New finding not previously scoped**: there is
+   ALSO a separate `encoder_semantic.conv_blocks.{i}.res_units.{j}.conv{1,2}` stage (with
+   its own residual-conv-block structure, distinct from the HuBERT `semantic_model.*`
+   tensors) -- this is almost certainly a bridging/downsampling stage that adapts
+   HuBERT's ~320x-downsampled output to the DAC codec's ~960x time resolution (a real
+   architectural detail this pass had not previously accounted for).
+4. **Acoustic decoder real names confirm the DAC-family match precisely**:
+   `acoustic_decoder.block.{i}.conv_t1.{weight,bias}` (`ConvTranspose1d` upsample,
+   e.g. block 0: `[1024,512,16]` = in=1024,out=512,kernel=16 for an 8x upsample stage),
+   `.res_unit{1,2,3}.conv{1,2}.{weight,bias}` + `.snake{1,2}.alpha` (real Snake
+   activations, matching `DacDecoder.cs`'s `ResidualUnit` structure exactly in shape:
+   conv1 kernel=7, conv2 kernel=1, two Snake activations per unit, 3 res-units per
+   block) -- this really is the same DAC decoder architecture as `DacWeights.cs`, just
+   re-parameterized (5 blocks here for the `[8,5,4,2,3]` upsampling schedule vs Parler's
+   4 blocks, `decoder_hidden_size`/channel counts differ per block: 1024->512->256->...).
+
+**Still not started**: no C# code written yet for any of these three components --
+this pass banked the exact real tensor-name ground truth needed to write them
+correctly on the first attempt, rather than guessing and re-deriving later (the same
+discipline that has paid off repeatedly this session, e.g. RVC's bundled-voice-prefix
+discovery). Next concrete step: write the LLM prefix addition (smallest, highest-leverage
+change), then the semantic HuBERT + bridging-conv encoder, then the acoustic DAC decoder
+adapted from `DacWeights.cs`'s structure.
