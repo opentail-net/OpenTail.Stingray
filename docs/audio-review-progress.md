@@ -11829,3 +11829,62 @@ specifically hunting for anything that activates differently starting exactly at
 (not layer 0 or 1) -- e.g. a per-layer QK-norm weight, a layer-specific RoPE frequency
 schedule, or a numerically-sensitive epsilon that only saturates once activations exceed
 some threshold reached by layer 2.
+
+**Update, same session -- read `QwenDecoderLayerModule::build` itself.** Confirmed no
+per-layer-index special-casing exists anywhere in the shared module (no
+`no_rope_layers`/`layer_types`/sliding-window array in `Qwen3ASRTextDecoderConfig`
+either) -- every layer runs the identical
+RMSNorm->QKV->QK-RMSNorm->RoPE->attention->residual->RMSNorm->SwiGLU->residual formula.
+Given the divergence appears specifically starting at layer 2's OUTPUT while layers 0-1
+already track reasonably close, the most likely remaining explanation is that this is a
+real, correct property of the trained checkpoint (a "rogue activation"/"attention sink"
+dimension that a specific layer's trained attention pattern legitimately amplifies) that
+this port fails to reproduce due to a subtly wrong Q/K/V or attention-score computation
+feeding INTO layer 2 -- not a bug simply "at" layer 2. Next actual step (still not
+attempted): per-head attention-score inspection at layer 2 specifically (which head,
+which key position receives the outlier weight) rather than more whole-layer aggregate
+stats, since the aggregate view has now been exhausted as a diagnostic (it locates the
+layer but not the mechanism).
+
+## Nemotron ASR -- scoped, 2026-09-06
+
+Read `examples/audio.cpp/src/models/nemotron_asr/{assets,encoder,decoder}.{h,cpp}`
+(~3480 real lines total). Real architecture, from `NemotronConfig`/`NemotronEncoderConfig`
+in `assets.h` (not guessed): a classic NVIDIA NeMo **FastConformer-RNNT** streaming ASR
+model --
+
+- **Encoder**: FastConformer -- `dw_striding` 8x subsampling front-end
+  (`subsampling_factor=8`, 3 conv stages, `subsampling_channels=256`), 24 Conformer
+  blocks (`hidden_size=1024`, `intermediate_size=4096`, 8 heads == 8 kv-heads, real
+  Transformer-XL-style relative positional self-attention -- confirmed via
+  `make_relative_positional_encoding` -- combined with a **causal, `sliding_window=57`
+  -limited** local attention (`next_time_cache_3d_axis` caps the K/V cache at
+  `sliding_window-1`), plus a depthwise-conv+GLU conformer conv module
+  (`conv_kernel=9`, causal-padded).
+- **Decoder**: a genuine **RNN-Transducer**, not CTC -- an LSTM prediction network
+  (`decoder_layers=2`, `decoder_hidden_size=640`, real `recurrent_modules.h` LSTM, not a
+  transformer), a joiner network combining encoder+predictor states into
+  `vocab_size=13088`-way logits (`blank_token_id=13087`), and greedy
+  frame-synchronous decoding (`max_symbols_per_step=10` guards against blank-emission
+  stalls). A `prompt_dictionary`/`num_prompts=128` mechanism (`default_prompt_id=101`,
+  `prompt_intermediate_size=2048`) conditions the predictor on a language/task prompt
+  embedding, similar in spirit to Whisper's task-prefix tokens but via a learned
+  embedding table rather than text tokens.
+
+**Reuse assessment**: this codebase already has a real, structurally-complete (though
+not yet golden-verified) FastConformer implementation for Parakeet/Canary-CTC
+(`ParakeetConformerEncoder.cs`/`ParakeetWeights.cs`, ported from a *different* reference
+project, `examples/crispasr`) with matching hyperparameters in several places (24 layers,
+`conv_kernel=9`) -- the depthwise-conv+GLU conformer conv module and the relative
+positional encoding math are very likely directly adaptable. **However, the attention
+pattern itself is NOT a drop-in match**: Parakeet's is full-context, non-causal
+Transformer-XL rel-pos attention (an offline CTC model), while Nemotron's is causal and
+sliding-window-limited (a streaming RNNT model) -- so the encoder needs new, real
+streaming-attention code, not just parameter substitution. The RNNT decoder/joiner/LSTM
+predictor has **no existing analog** anywhere in this codebase's audio pipelines (Parakeet
+is CTC-only, no predictor/joiner) and is new work; this codebase's `KokoroLstm.cs` is the
+nearest existing real LSTM cell implementation worth checking for a reusable per-gate
+formula before writing a new one. **Not yet started**: no C# code written for this model
+yet -- this pass is scoping only, given the genuine new-code surface (streaming windowed
+attention + full RNNT decoder) is comparable in size to RVC's synthesizer, not a quick
+follow-on to Parakeet.
