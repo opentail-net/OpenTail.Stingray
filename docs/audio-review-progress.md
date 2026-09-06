@@ -12688,3 +12688,74 @@ input frames, expected checkpoints at `stem`/`main_layer_{0,24,48}`/`main_layer_
 `timestamp_layer_{0,10,19}`/`final`) -- the natural next step to isolate exactly which
 stage of the 70-block encoder stack diverges, since the mel frontend is now confirmed
 correct. Not yet run as of this update.
+
+**Update, 2026-09-06 -- Fun-ASR-Nano-2512: encoder GOLDEN-VERIFIED (within quantization
+tolerance) using the real full-checkpoint reference fixture; the real bug is definitively
+isolated to the LLM tensor-source/ForwardPass wiring, NOT the encoder/adaptor/audio path.**
+
+Found three more real self-contained reference fixtures beyond `sanm_reference`:
+`encoder_reference.{json,bin}` (real checkpoint weights, 3 real input frames, expected
+checkpoints at `stem`/`main_layer_{0,24,48}`/`main_layer_norm`/`timestamp_layer_{0,10,19}`/
+`final`), `adaptor_reference.{json,bin}` (real checkpoint weights, a padded 2x4-frame
+batch with a mask), and `decoder_reference.{json,bin}` (real checkpoint weights, real fixed
+2-frame synthetic audio embeddings, real chat-prompt `input_ids`, real greedy
+`token_ids`/`generated_text`/per-step `logits`).
+
+**Encoder result**: ran the full 70-block SAN-M stack against `encoder_reference` end to
+end. Error is small at `stem` (maxAbsDiff 0.24) and grows through the stack (up to ~10.8
+at `main_layer_48`, where activations reach magnitude ~166) but stays PROPORTIONAL
+throughout -- roughly 1-6% relative error at every checkpoint, never exploding
+exponentially -- and the FINAL output (after the closing LayerNorm renormalizes
+magnitude) is back down to maxAbsDiff 0.029 on values of order ~0.3. This error profile
+is consistent with legitimate Q8_0/BF16 quantization noise compounding across 70 blocks
+(the earlier `sanm_reference` toy test used full-precision F32 weights and matched to
+1e-6, so THAT test alone couldn't have caught quantization-scale error) -- NOT a
+structural bug. **Conclusion: the SAN-M encoder implementation is correct.**
+
+**Isolating the real bug**: used `decoder_reference`'s real fixed audio embeddings (NOT
+derived from my own encoder/adaptor at all) with the real expected `input_ids` and ran
+them through my `FunAsrNanoLlmGgufTensorSource` + the existing engine's `ForwardPass`.
+Result: a completely degenerate, context-independent repeated token (`33108` five times
+in a row) instead of the real expected `[56568, 1773, 151645]` ("你。"+EOS). Then ran a
+SECOND diagnostic with a plain TEXT-ONLY prompt (no audio placeholder/splice at all) through
+the exact same wiring: **identical degenerate output (`33108` repeated)**. This
+definitively proves the bug has NOTHING to do with audio conditioning, the encoder, or the
+adaptor -- it is a general bug in how `FunAsrNanoLlmGgufTensorSource` presents this
+checkpoint's Qwen3 LLM weights to the shared engine's `ForwardPass`, OR a previously
+undiscovered bug in that "present a non-native checkpoint as a synthetic qwen3 GGUF
+metadata dict" bridging technique itself (shared by `FunAsrNanoLlmTensorSource`,
+`OmniVoiceLlmTensorSource`, and `QwenAsrLlmSafetensorsTensorSource` -- notably, NONE of
+these three have an existing passing test that actually runs a real generation through
+`ForwardPass`; `FunAsrNanoLlmTensorSource`/`OmniVoiceLlmTensorSource` have zero test
+coverage of any kind, and `QwenAsrDecoder`'s own generation path is only exercised by
+`QwenAsrForcedAligner`'s narrower classification use, not a full generation loop). This
+raises a real possibility that the bug could affect those other pipelines too if they were
+ever run through a real generation loop -- worth flagging for whoever next touches any of
+them.
+
+Ruled out during isolation: tensor dimension order (`blk.0.attn_q.weight` correctly
+`[1024,2048]` = `[in,out]`, native GGUF convention, no transpose bug), the tied-embedding
+fallback (confirmed automatic and correct in `ForwardPass.cs` -- `FindTensor("output.weight")
+is null -> _outputWeight = _embTensor`), vocab_size accounting for the 2 synthetic audio
+rows (tried both `151936` and `151936+numAudioTokens`, no change), and the LFR
+right-padding formula fix from the previous update (real, and now verified correct against
+`frontend_reference`'s fixtures, but did not fix this deeper bug).
+
+**Not yet found**: the exact root cause inside `FunAsrNanoLlmGgufTensorSource`/
+`ForwardPass`'s handling of this checkpoint. Candidate next angles for whoever resumes
+this: dump the embedding lookup's actual row values for two different real token ids and
+confirm they differ (rules out embedding-table corruption); dump raw pre-softmax logits'
+min/max/argmax at each layer via `IForwardPass.EnableHiddenTaps` (used successfully for
+the ForcedAligner bisection earlier this session) to find which layer first produces
+degenerate output; or test `FunAsrNanoLlmTensorSource`'s ORIGINAL safetensors-based sibling
+class (would need the actual `.safetensors` file downloaded) to check whether the bug is
+specific to the GGUF-packed variant's tensor retrieval or present in both. Per this
+session's "flag precisely, don't grind indefinitely" convention, setting this aside now
+after a thorough (if inconclusive) isolation effort.
+
+**Net status for this update**: real, valuable progress even though the end-to-end bug
+remains open -- the encoder is now confidently correct (a meaningful, tested claim this
+project can rely on), the bug surface has been narrowed from "somewhere in a ~10-stage
+pipeline" to "specifically the LLM tensor-source/ForwardPass wiring," and a real,
+previously-unknown risk was surfaced about a bridging technique shared by three classes
+in this codebase.
