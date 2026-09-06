@@ -11406,3 +11406,31 @@ l_linear`, `dec.ups.*` transposed-conv upsampling) is confirmed to be the SAME
 HiFiGAN-resblock+NSF-source-module family this codebase's existing
 `HiFTVocoderKernels.cs` already implements (shared with Chatterbox/CosyVoice) -- a real
 reuse opportunity for whichever continuation tackles it, not a from-scratch port.
+
+**Update, same session**: `RvcRmvpeWeights` (real weight loader, all 741 tensors verified
+loadable and finite) and `RvcRmvpeEncoder` (real forward pass: full U-Net + manually-
+unrolled bidirectional GRU + sigmoid head, matching the architecture above exactly)
+are now both written and pass a real structural test against real weights (correct output
+shape, every value finite and in [0,1], real per-frame variation across all 360 classes --
+rules out a degenerate collapse). NOT yet golden-verified numerically against the real
+C++ reference the way `RvcHubertEncoder` was, because that needs a real mel input and the
+real mel frontend wasn't built yet -- but its EXACT formula is now fully confirmed
+(not guessed) directly from `compute_rmvpe_log_mel` in the same reference file, so a
+future continuation can implement and verify it directly:
+
+- STFT: 16kHz, n_fft=1024, hop=160, win_length=1024, reflect padding, **magnitude**
+  (not power) spectrum.
+- Mel filterbank: real **HTK** mel scale (`mel = 2595*log10(1+hz/700)`, NOT the Slaney
+  formula some other extractors in this codebase use), 128 mel bins, fmin=**30Hz**
+  (not 0), fmax=**8000Hz** (Nyquist for 16kHz, not some other cutoff), triangular
+  filters with real Slaney-style energy normalization (`enorm = 2/(right-left)`,
+  applied per filter).
+- Compression: natural `log(max(sum, 1e-5))` per mel bin (not log10, not dB).
+- Time-axis padding: after computing the mel, the frame axis is zero-padded up to the
+  next multiple of 32 (`32 * ((frames-1)/32 + 1)`) -- matches the 5 encoder avg-pool-2x2
+  levels needing a spatial size divisible by 32 exactly.
+
+Once that frontend exists, the same `STINGRAY_RVC_TRACE=1`-in-hubert.cpp methodology
+(add an equivalent trace to the reference's RMVPE component, compare hidden-state/output
+mean-std on the same real audio) closes out RMVPE's golden verification the same way it
+did for HuBERT.
