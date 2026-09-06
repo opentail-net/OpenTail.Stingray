@@ -12526,3 +12526,40 @@ completion-percentage tracking accordingly. Real next step if resumed: implement
 + FSMN encoder (`encoder.cpp`, 401 lines) and adaptor (`adaptor.cpp`, 471 lines) against
 this real downloaded checkpoint, then wire `FunAsrNanoLlmTensorSource.cs` into an actual
 pipeline and write its first real test.
+
+**Update, 2026-09-06 -- Fun-ASR-Nano's SANM+FSMN encoder block GOLDEN-VERIFIED against a
+real PyTorch reference fixture, to floating-point precision.** Read
+`framework/modules/speech_encoders/sanm.cpp`'s real `build_block`/`build_attention_branch`/
+`build_ffn_residual` in full (not guessed): `LayerNorm -> {Q,K,V=Linear+bias} -> standard
+non-causal scaled-dot-product attention -> Linear+bias out-projection`, ADDED to a real
+FSMN branch (`depthwise-conv1d(V, kernel, symmetric pad, NO bias) + V` -- the FSMN memory
+branch operates on V itself, not the attention output, a real detail easy to get wrong by
+assuming it operates on the attention output instead), then (residual blocks only) added
+to the block's own input, then a real post-residual FFN (`LayerNorm -> Linear+bias -> ReLU
+-> Linear+bias`, added to its own residual). Implemented as
+`FunAsrNanoSanmBlock.ProjectionBlock`/`.ResidualBlock`.
+
+**Discovered a genuine gift**: `examples/audio.cpp/tests/fun_asr_nano/sanm_reference.
+{json,bin}` is a real, small (12/8-dim, 5-frame) reference fixture generated DIRECTLY from
+the real `transformers` `FunAsrNanoEncoderStem`/`FunAsrNanoEncoderLayer` PyTorch
+implementation -- real weights, real input, real expected output AND an intermediate
+checkpoint, for BOTH block variants (projection/stem and residual/main-layer). This let
+this port be golden-verified WITHOUT needing the full 1GB checkpoint or a C++ build at
+all. `FunAsrNanoSanmBlockGoldenTests` parses this fixture directly and confirms an EXACT
+match: `projection.output maxAbsDiff=0.000001`, `residual.output maxAbsDiff=0.000000`.
+This is the tightest, fastest (0.178s) golden verification achieved this session -- no
+audio, no large checkpoint, pure real-reference-vs-port numeric comparison.
+
+**Still remaining for a complete Fun-ASR-Nano-2512 pipeline**: wiring `FunAsrNanoSanmBlock`
+into the full 50-layer + 20-timestamp-layer encoder stack (real config confirmed via
+`assets.cpp`'s hard asserts: `input_size=560, d_model=512, attention_heads=4,
+ffn_dim=2048, layers=50, timestamp_prediction_layers=20, kernel_size=11,
+max_position_embeddings=2049`), the real sinusoidal position embedding (added to
+`input*sqrt(d_model)` BEFORE the stem block -- note: computed over `input_size` channels,
+i.e. the raw 560-dim mel-LFR feature space, NOT `d_model`), the audio adaptor/projector
+(`adaptor.cpp`, 471 lines, not yet read), and wiring `FunAsrNanoLlmTensorSource.cs`
+(already correct, already written, still zero test coverage) into an actual generation
+pipeline. The real mel+LFR+CMVN frontend (`FunAsrRealMelExtractor.cs`, `NumMels=80,
+LfrM=7, LfrN=6` -> `80*7=560=input_size`, confirmed exact match) is ALREADY correct and
+reusable as-is -- it was written for the OLD architecture but the frontend convention is
+shared, unaffected by the encoder/decoder architecture change.
