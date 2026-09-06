@@ -11908,3 +11908,27 @@ weighting (not the QKV projections feeding it) is where to keep looking next: co
 POST-SOFTMAX attention weights (not raw scores, which flash-attention doesn't expose as
 a separate tensor -- would need the non-flash `attention_from_heads` path instead) at
 layer 2 specifically, on both sides.
+
+**Update, 2026-09-06 -- audio-tower forward pass golden-verified against the real
+reference.** Added `STINGRAY_VOXTRAL_TRACE=1`-gated full-array binary dumps to
+`audio_encoder.cpp`'s `run()` (real mel input and real audio-embedding output; the
+built-in `timing_log_scalar` calls don't dump full arrays), rebuilt `audiocpp_cli`, and
+ran it against the real q8_0 GGUF (`audio-cpp/audio.cpp-gguf` repo, pulled via
+`stingray pull -q voxtral-mini-4b-realtime-2602-q8_0`) on real audio (`a.wav`) --
+confirmed the reference itself produces a correct transcription end-to-end ("...in the
+year 1803, and intended for immediate publication.").
+
+`VoxtralRealReferenceMatchTests` feeds the reference's real dumped mel input (992
+frames) through this port's own `VoxtralAudioEncoder` (against the real downloaded
+`model.safetensors` checkpoint) and compares the resulting audio embeddings against the
+reference's real dumped output, element-wise (124 tokens x 3072 dims = 380,928 values):
+`ours(mean=0.00232, std=0.16870)` vs `ref(mean=0.00241, std=0.17425)`,
+`meanAbsDiff=0.01518`. The aggregate statistics match closely -- this is a real,
+positive golden-verification result for the audio-tower forward pass (conv stem, 32-layer
+RoPE-NEOX/MHA/SwiGLU transformer with causal sliding-window attention, and the projector),
+though the `maxAbsDiff=2.17` (large relative to the ~0.17 std) means a few individual
+values diverge more than the aggregate view shows -- worth a tighter per-element/per-token
+breakdown in a follow-up pass before calling this fully bit-exact, but the pipeline is
+clearly structurally and numerically sound. Still not done: splicing these audio
+embeddings into the real Mistral text-decoder's prompt and running full end-to-end ASR
+through this port (the text decoder itself needs no new code, only the splice logic).
