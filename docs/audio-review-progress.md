@@ -12408,3 +12408,36 @@ byte-for-byte logits comparison); the streaming/chunked incremental decode path 
 the offline full-utterance path is implemented); real timestamp/duration output
 (`build_token_timestamps`, not ported). The core offline transcription pipeline is
 functionally complete and demonstrably working.
+
+**Update, 2026-09-06 -- OmniVoice LLM generation loop: real architecture is MASKED
+PARALLEL DECODING (MaskGIT/SoundStorm-style), NOT autoregressive -- a real correction to
+this session's earlier assumption.** Read `generator.cpp`'s real `generate()` loop
+(~line 1303-1510) in full. This is NOT a left-to-right per-token GPT-style generator as
+earlier scoping passes assumed: ALL `codebooks * target_frames` positions start filled
+with `mask_id`, and each of `num_inference_steps` steps runs ONE bidirectional transformer
+forward pass over the ENTIRE target sequence (current partially-unmasked state as input),
+scores every still-masked position's best non-mask logit (with a per-codebook
+`layer_penalty_factor` and optional Gumbel-noise position sampling), and accepts the
+top-`fill_count` highest-confidence candidates per a schedule (`make_schedule`, not yet
+read) -- repeating until every position is filled after `num_inference_steps`. This is
+architecturally a discrete diffusion / iterative-refinement decoder (same family as
+Google's SoundStorm or Meta's MAGNeT), not RNNT/GPT-style generation. Classifier-free
+guidance combines a conditional and unconditional forward pass's logits via
+`guidance_scale` each step (both branches computed in the SAME graph, per
+`ForwardGraph`'s `ggml_pad`+repeat+diff+scale sequence around line 573-586).
+
+**Why this matters for scoping**: this is a genuinely larger task than either Voxtral's or
+Nemotron's generation loop (both real left-to-right decoders with simple KV-cache/RNNT
+state) -- it needs: the exact masked-position input embedding convention (what does a
+`mask_id` audio token embed to -- a real learned mask embedding row, presumably
+`audio_embedding.weight[mask_id]` within one codebook's embedding block), the real
+`make_schedule` fill-count-per-step formula, and a full NON-causal transformer forward
+over the whole target sequence each step (bidirectional attention, not KV-cached
+incremental decode) -- distinctly more moving parts than initially scoped. Explicitly
+NOT started as of this update; the OmniVoiceLlmTensorSource's existing standard-qwen3
+presentation to the engine's ForwardPass may not directly support the required
+non-causal/masked-refinement forward pattern without new plumbing, since `ForwardPass` is
+built around causal autoregressive decoding. Setting this aside per project convention
+(3+ real scoping passes without landing code) to rotate to another queue item; pick back
+up with a fresh angle (read `make_schedule` and the mask-embedding convention first) when
+resumed.
