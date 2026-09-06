@@ -12812,3 +12812,24 @@ next step exists (implement `FunAsrNanoSanmBlock`-style ConvNeXt block code now,
 test it in isolation with synthetic weights, THEN decide whether the 10-17GB download is
 worth it for real-weight verification), but that download decision should be made
 deliberately, not as a side effect of continuing this scoping pass.
+
+**Update, 2026-09-06 -- VibeVoice ASR: real ConvNeXt-1D block implemented and structurally
+verified; checkpoint download in progress (user explicitly authorized downloading all
+remaining checkpoints).** Implemented `VibeVoiceConvNeXtBlock` (block forward pass) and
+`CausalConv1d`/`CausalDepthwiseConv1d` (the real Encodec/DAC-family causal padding
+convention -- all `(kernel-1)*dilation-(stride-1)` padding on the LEFT plus a real extra
+RIGHT pad computed via `ExtraPaddingForConv1d`, matching `extra_padding_for_conv1d`
+exactly) per the previous update's derivation. `VibeVoiceConvNeXtBlockTests` (fast,
+synthetic weights, no checkpoint needed) confirms: the block preserves shape and produces
+finite output, and `CausalConv1d` produces exactly `ceil(frames/stride)` output frames
+across a range of kernel/stride/frame-count combinations -- the real expected frame-count
+invariant for this padding convention. Downloading the real checkpoint
+(`audio-cpp/audio.cpp-gguf`'s `VibeVoice-ASR-GGUF/vibevoice-asr-q8_0.gguf`, ~9.9GB) to
+`models/_models/vibevoice-asr/` in the background for real-weight verification once
+available.
+
+**Still remaining**: real tensor names/shapes for the acoustic+semantic encoder stacks
+(need to inspect the downloaded checkpoint's real tensor list once it lands), the
+`connector.cpp`/speech-encoder wiring (already scoped in an earlier update), and the
+Gaussian VAE reparameterization step with its specific RNG precision requirement (flagged
+earlier as a real added complexity for exact golden verification).
