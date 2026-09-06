@@ -11314,3 +11314,95 @@ our code is right, the fixture is stale. Left as a known, understood, low-priori
 wrong oracle.
 
 **User confirmed by ear, 2026-09-06**: "cosyvoice3-OURS-gen2.wav is perfect."
+
+## RVC (Retrieval-based Voice Conversion) port -- HuBERT encoder done+golden-verified, RMVPE precisely scoped, 2026-09-06
+
+New model port, working from `examples/audio.cpp/src/models/rvc` as the real reference.
+Checkpoint: real `rvc-f16.gguf` (`audio-cpp/audio.cpp-gguf`), installed via
+`python tools/model_manager_v2.py install rvc_f16 --models-root models` from
+`examples/audio.cpp`. **Important gotcha**: this GGUF's own tensors carry opaque
+`_audiocpp.NNNN` names (`general.architecture=audiocpp`, `tensor_name_format=native`) --
+the real, meaningful names only exist in its `audiocpp.tensor_names` metadata array,
+paired by index with `GgufModel.Tensors`. `RvcPackedTensorSource` (new) resolves this
+once; every other RVC loader reads through it by real name, same as any other GGUF
+loader in this codebase.
+
+**HuBERT content encoder -- DONE, golden-verified**: `RvcHubertWeights`/
+`RvcHubertEncoder`. Real Wav2Vec2-family architecture (HuBERT reuses it verbatim): 7-stage
+valid conv1d feature extractor (kernels [10,3,3,3,3,2,2], strides [5,2,2,2,2,2,2],
+GroupNorm only after layer 0, exact-erf GELU after every layer) -> feature projection
+(LayerNorm(512) + Linear 512->768) -> weight-normalized grouped positional conv (16
+groups, kernel 128, same-padding with the even-kernel trailing-frame trim, added as a
+residual) -> encoder input LayerNorm -> 12 standard post-LayerNorm transformer blocks,
+non-causal self-attention, with the real odd-token zero-pad+attention-mask handling.
+Ported directly from `examples/audio.cpp/src/framework/modules/speech_encoders/
+hubert_encoder.cpp`'s real `build_hubert_graph` (not guessed) -- including its real
+PyTorch `weight_norm(dim=2)` reconstruction for the positional conv (`weight = weight_v *
+(weight_g / ||weight_v||)` reduced per kernel position, confirmed from the real
+checkpoint's tensor shapes: `weight_g` is `[128]`, matching only the kernel dimension).
+
+Golden-verified against the real reference: added `STINGRAY_RVC_TRACE=1` to
+`examples/audio.cpp/src/models/rvc/hubert.cpp` to dump its own hidden-state mean/std on
+real audio (`a.wav`). Reference: mean=-0.0054 std=0.3400 (397 tokens, full clip). Ours:
+mean=-0.0049 std=0.3318 (297 tokens, same full clip) -- closely matching magnitudes
+despite the reference's real ~1s-silence-padding-per-side preprocessing (`native_pipeline`'s
+`audio_pad_duration_sec`, not yet ported) explaining the frame-count difference
+(397*320/16000=7.94s vs the raw clip's real 5.95s duration, matching almost exactly).
+Kept as a real regression guard in `RvcHubertEncoderForwardTests`.
+
+**RMVPE pitch extractor -- precisely scoped, NOT yet implemented** (deliberately --
+this is a genuinely large component, comparable to a ResNet backbone, not something to
+rush without room to verify carefully). Real architecture, confirmed directly from
+`examples/audio.cpp/src/framework/modules/pitch_extractors/rmvpe_pitch_extractor.cpp`
+(1006 lines) and the real checkpoint's own tensor names (`support_rmvpe/*`, 741 tensors):
+
+1. Log-mel frontend: 16kHz, n_fft=1024, hop=160, reflect padding, 128 mel bins (matches
+   `kRmvpeMelBins`).
+2. Reshape to a `[1,1,melBins,frames]` "image", `BatchNorm2d` (`unet.encoder.bn`) on the
+   single input channel.
+3. **Encoder**: 5 levels (`unet.encoder.layers.0-4`), channels double each level
+   (1->16->32->64->128->256). Each level = 4 ResNet BasicBlocks (`conv.0`-`conv.3`,
+   real PyTorch `conv-BN-relu-conv-BN` residual units, `+shortcut` 1x1 conv only on the
+   very first block of level 0 where channels actually change) -- only the LEVEL's first
+   block changes channel count, the other 3 keep in==out. After all 4 blocks, the
+   level's output (pre-pool) is saved as a skip connection, THEN `avg_pool2d` (kernel
+   2, stride 2) halves both spatial dims for the next level.
+4. **Intermediate** (bottleneck, no pooling): 4 more levels (`unet.intermediate.layers.
+   0-3`), channels 256->512 on the first level's first block, then 512->512 throughout,
+   spatial resolution stays at the smallest (post 5x pooling) size.
+5. **Decoder**: 5 levels (`unet.decoder.layers.0-4`) mirroring the encoder in reverse.
+   Each level: `ConvTranspose2d` 2x2/stride-2 upsample (PyTorch-style output padding --
+   the real reference computes a `+1` oversized transpose-conv output then slices
+   `[1, 2*size)` on both spatial dims to match PyTorch's exact convention, see
+   `conv_transpose2d_pytorch_2x`) + BatchNorm + ReLU, THEN channel-concat with the
+   matching encoder skip (popped in reverse order), THEN 4 more ResNet BasicBlocks
+   (`conv2.0`-`conv2.3`) that reduce the concatenated channel count back down to the
+   level's `dec_out` (512/2, then /2 again each level: 256,128,64,32,16).
+6. Final projection: a real `Conv2d(16->3, kernel 3x3, pad 1)` (`cnn.weight`/`cnn.bias`),
+   then transpose+reshape to `[frames, 3*128=384]` (`kRmvpeFeatureDim`, confirmed
+   matching the real GRU's input dim exactly: `fc.0.gru.weight_ih_l0` is real PyTorch
+   shape `[768,384]`, i.e. `3*hidden(256)` output for the combined r/z/n gates, 384
+   input).
+7. **Bidirectional GRU** (`fc.0`, hidden=256): a real, MANUALLY UNROLLED per-timestep
+   GRU cell (not a black-box RNN op) in the reference -- standard PyTorch GRU equations
+   (`r,z,n` gates from `weight_ih_l0`/`weight_hh_l0` + biases, forward and
+   `_reverse`-suffixed weights run in opposite time order), concatenated
+   forward+reverse (512-wide) per frame.
+8. **Head**: `Linear(512->360)` (`fc.1`, `kRmvpeClasses=360` real pitch-class bins) +
+   `Sigmoid` -- NOT softmax, real per-class sigmoid probabilities (RMVPE's real
+   multi-hot-adjacent-bin training target, not a categorical distribution).
+
+Real tensor counts confirmed via `RvcTensorNameDumpDebugTest`: 255 encoder tensors, 194
+intermediate tensors, 280 decoder tensors (741 total for `support_rmvpe/*`). This is
+precise enough to implement directly in a future continuation without re-deriving
+anything -- the actual C# port (RvcRmvpeWeights + RvcRmvpeEncoder, following the exact
+same real-reference-transcription methodology as RvcHubertEncoder) is the next concrete
+RVC step.
+
+**Also confirmed, not yet ported**: the k-NN retrieval index (real IVF/FAISS-style
+blending, `retrieval_index.cpp`, 293 lines) and the synthesizer (`synthesizer.cpp`, 912
+lines) -- the synthesizer's real architecture (`dec.resblocks.*`, `dec.m_source.
+l_linear`, `dec.ups.*` transposed-conv upsampling) is confirmed to be the SAME
+HiFiGAN-resblock+NSF-source-module family this codebase's existing
+`HiFTVocoderKernels.cs` already implements (shared with Chatterbox/CosyVoice) -- a real
+reuse opportunity for whichever continuation tackles it, not a from-scratch port.
