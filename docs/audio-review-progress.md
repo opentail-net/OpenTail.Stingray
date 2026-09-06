@@ -12066,3 +12066,28 @@ mixed text/audio-codebook tokens via `audio_embeddings`/`audio_heads`/
 `codebook_layer_offsets`, then decoding through the acoustic decoder). This is real,
 substantial remaining work, but the two hardest-to-get-wrong pieces (LLM tensor mapping,
 HuBERT-family semantic encoder) are now done and verified.
+
+**Update, 2026-09-06 -- acoustic DAC decoder + quantizer decode done, real-weight-
+verified.** `OmniVoiceAcousticDecoderWeights.cs`/`OmniVoiceAcousticDecoder.cs` implement
+the full decode-from-codes path: 8-codebook RVQ decode (codebook embed lookup ->
+`project_out` -> summed across all codebooks) -> a previously-unscoped `fc2` projection
+(1024->256, found via a real `IndexOutOfRangeException` that exposed a genuine dimension
+mismatch between the quantizer-decode sum's real width and `acoustic_decoder.conv1`'s
+real input width -- traced to the reference's real decode call site to find the missing
+layer) -> the acoustic DAC decoder itself (Snake activations, dilated `ResidualUnit`s,
+`ConvTranspose1d`-then-crop upsampling across 5 stages `[8,5,4,2,3]`). A synthetic-codes
+test confirms the full chain produces finite, non-degenerate audio at the exact expected
+sample count.
+
+**OmniVoice status after this session: the full audio-synthesis half of the pipeline is
+real-weight-verified end to end** -- semantic HuBERT encoder -> semantic bridge (still
+needs to be summed with the acoustic encoder's own output per the real reference, not
+yet wired) -> [LLM generation, not yet implemented] -> quantizer decode -> acoustic DAC
+decoder -> waveform. What's left: the acoustic ENCODER (needed only for re-encoding
+reference audio, e.g. voice cloning -- not needed for basic text-to-speech generation),
+the LLM generation loop itself (feeding `audio_embeddings`/codebook_layer_offsets during
+autoregressive decoding, reading back `audio_heads` logits per codebook), and any
+end-to-end golden verification against a real reference run (no CLI/warm-bench task
+found wired up for `omnivoice` in `examples/audio.cpp` yet -- would need to check
+`tests/omnivoice/` for one, or add trace instrumentation the same way RVC/Voxtral/
+ForcedAligner were verified).
