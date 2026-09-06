@@ -12859,3 +12859,42 @@ codebase. This is comparable in scope to VibeVoice's VAE codec (a full new codec
 two-level generation loop) -- not started, scoped only. Real next step if picked up: read
 `generator.cpp`/`local_frame_decoder.h` for the exact per-frame codebook decode order and
 the audio tokenizer's real codec architecture before writing any code.
+
+**Update, 2026-09-06 -- MOSS-TTS-Nano (100M) fully downloaded and real tensor names dumped
+-- confirms a genuinely tractable, well-understood architecture, real next candidate for
+implementation.** Downloaded the real `MOSS-TTS-Nano-100M-GGUF` checkpoint (only 184MB,
+via `stingray pull`) and dumped its real `audiocpp.tensor_names` (568 tensors, same
+`_audiocpp.NNNN` + `RvcPackedTensorSource` convention as every other packed checkpoint this
+session). Confirms and sharpens the earlier scoping:
+
+- **Global transformer** (`model_weights/transformer.*`): a real, standard **GPT-2 style**
+  causal decoder (12 layers, `h.{i}.attn.c_attn/c_proj`, `ln_1`/`ln_2`, `mlp.fc_in/fc_out`,
+  combined-QKV `c_attn` per real GPT-2 convention, `wte` embedding + separate
+  `text_lm_head.weight`, final `ln_f`) -- genuinely simple, standard, and small.
+- **Local transformer** (`model_weights/local_transformer.*`): the SAME GPT-2 block
+  structure but only 1 layer -- confirms the real "one small transformer per output frame,
+  decoding across the 16 RVQ codebooks" design from the earlier scoping pass.
+- **Audio embeddings/heads**: real `audio_embeddings.{0..15}.weight` /
+  `audio_lm_heads.{0..15}.weight` -- confirms `n_vq=16` codebooks, each with its own
+  embedding table and output head (not shared/tied across codebooks).
+- **Audio codec** (`audio_tokenizer_weights/{encoder,decoder}.{1,3,5,7}.*`): a real
+  Mimi/Encodec-Transformer-hybrid design -- alternating downsample/upsample conv stages
+  (even indices, not dumped by name here but implied by the odd-indexed transformer stages)
+  and real self-attention Transformer blocks at each stage (`transformer.layers.{i}.
+  self_attn.in_proj/out_proj` -- combined QKV, `ffn.0/ffn.2`, pre-LN `norm1/norm2`, and real
+  per-branch **LayerScale** `layer_scale_1/2.scale`) -- 4 layers at most stages, 2 at a
+  couple. The RVQ quantizer (`quantizer.quantizers.{0..15}`) uses real PyTorch
+  `weight_norm`-parametrized (`parametrizations.weight.original0/1` = `weight_g`/`weight_v`)
+  `in_proj`/`out_proj` Linear layers around each codebook -- the SAME weight-norm
+  reconstruction already implemented this session for RVC's positional convs, directly
+  reusable.
+
+**Assessment**: this is now the most concretely-scoped, most standard-architecture,
+smallest (100M) unimplemented item in the whole backlog -- GPT-2 attention and per-codebook
+RVQ with weight-norm are both patterns this codebase (and this session specifically) has
+already solved correctly elsewhere. Real next step if picked up: implement the GPT-2
+global transformer first (simplest, most reusable piece, and independently testable via a
+plain text-only forward pass the same way Fun-ASR-Nano's LLM path was diagnosed), then the
+audio codec's Transformer-augmented conv stages (reusing `VibeVoiceConvNeXtBlock`-adjacent
+patterns is NOT applicable here -- this is a different, attention-based per-stage design,
+not ConvNeXt), then the local transformer + generation loop.
