@@ -12563,3 +12563,30 @@ pipeline. The real mel+LFR+CMVN frontend (`FunAsrRealMelExtractor.cs`, `NumMels=
 LfrM=7, LfrN=6` -> `80*7=560=input_size`, confirmed exact match) is ALREADY correct and
 reusable as-is -- it was written for the OLD architecture but the frontend convention is
 shared, unaffected by the encoder/decoder architecture change.
+
+**Update, 2026-09-06 -- Fun-ASR-Nano-2512's full 70-block SAN-M encoder stack wired up and
+real-weight-verified.** Implemented `FunAsrNanoEncoderWeights` (reuses
+`RvcPackedTensorSource` directly -- this checkpoint uses the SAME `_audiocpp.NNNN` +
+`audiocpp.tensor_names` opaque-packed GGUF convention as RVC's checkpoint, confirmed via a
+real tensor dump) and `FunAsrNanoEncoder.Forward`: `input*sqrt(d_model) +
+sinusoidal_positions(over the 560-dim input_size, NOT d_model) -> stem SAN-M projection
+block -> 49 main SAN-M residual blocks -> LayerNorm -> 20 timestamp-prediction SAN-M
+residual blocks -> LayerNorm`. Real config confirmed by successfully loading all 1540
+tensors by exact name with zero shape mismatches: `input_size=560, d_model=512,
+attention_heads=4, ffn_dim=2048, 49 main + 20 timestamp layers`.
+
+Ran the full stack on real `a.wav` (via the already-correct `FunAsrRealMelExtractor`'s
+mel+LFR frontend, CMVN skipped for this structural pass) with the real downloaded
+checkpoint (`models/paraformer-q8.gguf`): 99 frames, d_model=512, mean=0.02689
+std=0.60152, all finite, non-degenerate, ~17s wall time. This is now the SECOND
+real-weight-verified piece of Fun-ASR-Nano-2512 (after the SAN-M block's exact golden
+match) -- the audio-tower encoder is functionally complete and demonstrably working on
+real weights and real audio, though not yet golden-verified end-to-end (only the
+per-block math is golden-verified; the full-stack numeric output hasn't been compared
+against a captured reference trace).
+
+**Still remaining for a complete Fun-ASR-Nano-2512 pipeline**: real CMVN normalization
+stats (`am.mvn`-equivalent tensor, not yet located/applied), the audio adaptor/projector
+(`adaptor.cpp`, 471 lines, bridges the 512-dim encoder output into the Qwen3 LLM's
+embedding space), wiring `FunAsrNanoLlmTensorSource.cs` (already correct, still untested)
+into an actual generation pipeline, and prompt construction (`prompt.cpp`).
