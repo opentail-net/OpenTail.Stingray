@@ -12476,3 +12476,53 @@ this session**, scoped only. Real next step if picked up: read `speech_tokenizer
 encoder stage-by-stage (likely a ConvNeXt/Mamba-style causal stack given `mixer_layer`
 config) before writing any code, then tackle the RNG-precision question separately since
 it may block exact golden verification even after the deterministic parts are ported.
+
+## FunASR-nano -- real finding: two DIFFERENT, unrelated architectures share this name, 2026-09-06
+
+Re-downloaded the current `FunAudioLLM/Fun-ASR-Nano-2512-GGUF` checkpoint (via `stingray
+pull`, saved to `models/paraformer-q8.gguf` to match the existing test suite's expected
+path) to re-verify this session's earlier "scoped but not finished" queue note, since the
+existing `FunAsrWeights.cs`/`FunAsrEncoder.cs`/`FunAsrPredictor.cs`/`FunAsrRealDecoder.cs`
+files (with real "golden"-referencing tests) looked structurally complete. **Real finding:
+running the existing test suite against the current checkpoint fails immediately** --
+`InvalidDataException: Paraformer GGUF missing 'pf.vocab' metadata` -- because the
+currently-published Fun-ASR-Nano-2512 checkpoint is architecturally a COMPLETELY
+different model from whatever "Fun-ASR-Nano" checkpoint `FunAsrWeights.cs` et al were
+originally written against:
+
+- **`FunAsrWeights.cs`/`FunAsrEncoder.cs`/`FunAsrPredictor.cs`/`FunAsrRealDecoder.cs`**
+  (real, existing C# code, previously golden-verified per their own doc comments) target a
+  classic **CIF-predictor Paraformer** GGUF with custom `pf.*` metadata keys -- this exact
+  checkpoint format is **no longer published anywhere** in `examples/audio.cpp`'s current
+  `model_specs/fun_asr_nano.json` (only two packages exist now: a GGUF and an HF
+  safetensors snapshot of `FunAudioLLM/Fun-ASR-Nano-2512-{GGUF,hf}`, both the NEW
+  architecture below). These four files' tests will never pass again against any
+  currently-downloadable checkpoint -- they are orphaned relative to the real, current
+  target, not "almost done."
+- **The CURRENTLY published checkpoint** is a real audio-tower + Qwen3 LLM architecture
+  (confirmed via `examples/audio.cpp/src/models/fun_asr_nano/{assets,encoder,adaptor,
+  decoder}.cpp`, real tensor names `model.audio_tower.*`/`model.language_model.*`/
+  `model.audio_adaptor.*`): a SANM (Self-Attention + FSMN-augmented) encoder stack --
+  real `self_attn.{q,k,v,out}_proj` + a real FSMN depthwise memory conv
+  (`fsmn.conv.weight`) + `fc1`/`fc2` FFN, matching genuine Paraformer/FunASR SANM block
+  conventions, NOT a Whisper-style plain-transformer tower despite the misleadingly
+  generic `fc1`/`fc2` tensor names -- feeding into an audio adaptor/projector
+  (`adaptor.cpp`, 471 lines) that bridges into a standard Qwen3 decoder LLM (already
+  correctly targeted by the EXISTING `FunAsrNanoLlmTensorSource.cs`, using the right
+  `model.language_model.*` prefix). **`FunAsrNanoLlmTensorSource.cs` is real, correct,
+  already-written code for the CURRENT architecture's LLM half -- but it has ZERO test
+  coverage and is not wired into any pipeline yet** (confirmed via a repo-wide grep: no
+  test file references it).
+
+**Corrected status**: the queue's "scoped but not finished" note was directionally right
+but understated the situation -- it's not "95% done, just needs the checkpoint," it's "one
+whole architecture generation (SANM/FSMN encoder + adaptor) genuinely unwritten, plus an
+already-written-but-untested LLM tensor source, plus four files of good but now-orphaned
+code for a checkpoint format that no longer exists publicly." The orphaned CIF/Paraformer
+files are not necessarily worth deleting (they document a real, working port of a real
+architecture that may resurface, and deleting working attributed code on a hunch isn't
+free) but should not be counted as "FunASR-nano progress" going forward -- update any
+completion-percentage tracking accordingly. Real next step if resumed: implement the SANM
++ FSMN encoder (`encoder.cpp`, 401 lines) and adaptor (`adaptor.cpp`, 471 lines) against
+this real downloaded checkpoint, then wire `FunAsrNanoLlmTensorSource.cs` into an actual
+pipeline and write its first real test.
