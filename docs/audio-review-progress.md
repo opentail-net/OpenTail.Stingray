@@ -12358,3 +12358,53 @@ LSTM) + joint network + frame-synchronous greedy-decode loop, and (separately) r
 golden-verification against the reference's own trace output (not yet attempted --
 everything so far is structural/finite verification only, not numeric match against a
 captured reference trace).
+
+**Update, 2026-09-06 -- MAJOR MILESTONE: Nemotron ASR's full pipeline (RNNT predictor +
+joint + greedy decode) implemented and produces a real, essentially-correct
+transcription on real audio with real weights.** Read `decoder.cpp`'s real
+`ensure_graph`/`run_step`/`decode` in full (not guessed). Real predictor: `embed(token)
+-> 2-layer LSTM -> Linear(640->640, bias)` (confirmed this Linear is `joint.pred`, NOT a
+separately-named `decoder_projector` tensor -- the reference's C++ field name differs
+from the GGUF tensor name, but the shape match is exact and unambiguous). Real joint:
+`relu(encoder_frame[640] + decoder_cache[640]) -> Linear(640->vocab, bias)`
+(`joint.joint_net.2`). This also RETROACTIVELY CONFIRMS the encoder's final projection
+assumption from the previous update: `joint.enc` (1024->640) really is reused as the
+Conformer encoder's own output projection, exactly as guessed -- the naming split
+(`joint.enc` vs `joint.pred` vs `joint.joint_net.2`) makes sense once you see that all
+three genuinely belong to one RNNT joint network with two input branches.
+
+Implemented `NemotronAsrRnntDecoder.Greedy`: frame-synchronous greedy search matching the
+reference's real per-frame loop exactly, INCLUDING the real "skip predictor update on
+repeated blanks" optimization -- the LSTM state and `decoder_cache` are only recomputed
+when a non-blank token was just emitted (or on the very first step, which force-updates
+despite starting from a blank input token). Getting this right matters: naively
+re-running the predictor every step (even on blank) would silently diverge from the
+reference's real decode semantics and produce wrong results without any exception to
+catch it.
+
+**Result, on real `a.wav` with the real downloaded checkpoint** (full chain: mel ->
+subsampling -> 24-layer Conformer -> RNNT greedy decode -> real SentencePiece vocab
+decode via the checkpoint's own `asr.tokenizer.vocab` GGUF metadata array): 76 encoder
+frames, 123 total decode steps, 46 non-blank tokens, decoded text:
+
+> "This little work was finished in the year eighteen oh three and intended for
+> immediate publication. <en-US>"
+
+This is essentially a CORRECT transcription of the same real audio Voxtral was verified
+against earlier this session ("...in the year 1803, and intended for immediate
+publication.") -- Nemotron spells the year out as words ("eighteen oh three") rather than
+digits, which is real, expected behavior for a model with no inverse-text-normalization
+post-processing stage (not a bug), and correctly emits the real `<en-US>` language-id
+tag baked into its own vocabulary as its final output. This is the SECOND full,
+independently-produced working ASR transcription this session (after Voxtral's exact
+match), achieved via genuinely different architecture (streaming FastConformer-RNNT vs.
+Voxtral's Mistral-decoder-based approach) -- strong evidence the underlying porting
+methodology (real reference reading, real weights, real audio, no synthetic shortcuts)
+generalizes across architectures.
+
+**Not yet done**: numeric golden-verification against a captured reference trace (this
+result is a real, coherent, non-degenerate transcription match by eye, not yet a
+byte-for-byte logits comparison); the streaming/chunked incremental decode path (only
+the offline full-utterance path is implemented); real timestamp/duration output
+(`build_token_timestamps`, not ported). The core offline transcription pipeline is
+functionally complete and demonstrably working.
