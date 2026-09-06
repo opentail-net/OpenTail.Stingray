@@ -11463,19 +11463,36 @@ bug remains open in the U-Net/GRU network itself.**
   image-construction and final-flatten indexing to match (H=frames, W=melBins
   throughout; `Conv2dSamePad3x3`/`AvgPool2x2`/`ConvTranspose2dPyTorch2x` are already
   written generically over `GetLength(0/1)` so needed no changes themselves).
-- **Remaining open bug**: even after both fixes, the real end-to-end salience stats
-  (frames=796, mean=0.00007, std=0.00010, max=0.00668) are still far from the
-  reference's real trace (frames=796, mean=0.00474, std=0.04768, **max=0.97022**) -- the
-  reference produces one sharp, highly-confident per-frame class; ours stays uniformly
-  near-zero. Per-stage `STINGRAY_RVC_TRACE=1` tracing added directly to
-  `RvcRmvpeEncoder.Forward` (after input-BN, after each of the 5 encoder levels, after
-  the bottleneck, after the decoder, after the final 3-channel conv, after the flatten,
-  and after each GRU direction) shows every stage has a plausible, non-degenerate
-  mean/std (no NaN, no all-zero, no obviously-saturated collapse) -- so this is a real
-  numerical divergence somewhere in the U-Net/GRU stack, not a structural/wiring bug
-  like the two above. Closing it needs the same per-stage mean/std trace added to the
-  reference's own `build_rmvpe_feature_graph`/`build_gru_chunk_graph`/
-  `build_rmvpe_head_graph` (intermediate ggml tensor reads, not just the final
-  `salience` output) to bisect which exact stage first diverges numerically -- not yet
-  attempted; flagging this explicitly as its own remaining line item rather than a "just
-  needs a bit more time" continuation of the frontend work above.
+- **Real bug #3 (found+fixed): `conv_block_res`'s ReLU placement.** Added ggml-side
+  per-stage instrumentation to the reference (`rmvpe_debug_tap`/`rmvpe_debug_dump_taps`
+  in `rmvpe_pitch_extractor.cpp` -- mark an intermediate tensor with `ggml_set_output`,
+  expand it into the SAME graph as an extra output leaf so `ggml_gallocr` doesn't reuse
+  its buffer, then read it back with `ggml_backend_tensor_get` after the one real
+  `compute_backend_graph` call) to bisect the remaining mismatch stage-by-stage. This
+  showed the divergence started at the very first ResUNet level's output. The real
+  `conv_bn_relu`/`conv_block_res` C++ functions apply ReLU after **both** conv-BN
+  stages (including the second one) and do **not** apply a further ReLU after the
+  residual add -- the *opposite* placement from the textbook ResNet BasicBlock (which
+  omits the second-stage ReLU and instead applies one ReLU after the add), which is what
+  `RvcRmvpeEncoder.ResBlock` had originally assumed. Fixed by adding the missing second
+  `ReluInPlace` and removing the incorrect post-add ReLU. This alone moved the real
+  end-to-end salience `max` from **0.0067 to 0.81** (reference: 0.97022) -- most of the
+  remaining gap closed by this one fix.
+- **Remaining open bug (smaller, narrowed further)**: after fix #3, per-stage tracing
+  (now added to both sides: `RvcRmvpeEncoder`'s own `Trace`/`TraceFlat` helpers on the
+  C# side, `rmvpe_debug_tap` on the reference side) shows the encoder stack and all 5
+  U-Net skip connections match the reference almost exactly (e.g. `after-bottleneck`
+  mean/std 3.147/6.425 vs the reference's 3.150/6.497). The divergence now starts
+  specifically at the **decoder's first `ConvTranspose2d` upsample stage**
+  (`decoder-upsample0`: ours 0.353/0.612 vs the reference's 0.369/0.584, a real but
+  small ~5% gap) and compounds through the decoder's residual blocks (by
+  `decoder-upsample1` the gap is already ~2x). Two concrete hypotheses were tried and
+  **ruled out** (made no measurable difference): (a) a `[inCh,outCh,kh,kw]` vs
+  `[outCh,inCh,kh,kw]` weight-layout swap, (b) a +/-1 output-index shift (motivated by
+  the reference's own "compute a (2n+1)-sized oversized output, then slice [1,2n)"
+  comment, which was previously assumed to be a pure GGML-kernel artifact -- that
+  assumption is now suspect again given the real 5% mismatch, but the naive -1 shift
+  alone did not fix it, so if there is an indexing quirk here it is not simply that).
+  Next concrete step: isolate `ggml_conv_transpose_2d_p0`'s exact per-element formula
+  (its actual C/CUDA kernel source, not just the call site) rather than continuing to
+  guess-and-check candidate index formulas against the end-to-end trace.

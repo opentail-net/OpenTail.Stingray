@@ -68,21 +68,24 @@ public sealed class RvcRmvpeEndToEndRealAudioTests : HeavyTestBase
         double std = Math.Sqrt(Math.Max(0, sumSq / n - mean * mean));
         Console.Error.WriteLine($"[RvcRmvpeSalience] frames={realFrames} classes={salience[0].Length} mean={mean:F5} std={std:F5} max={max:F5}");
 
-        // NOT YET GOLDEN-VERIFIED: the real reference (same audio, same audio_pad_duration_sec=1
-        // preprocessing) reports frames=796 classes=360 mean=0.00474 std=0.04768 max=0.97022
-        // (captured via STINGRAY_RVC_TRACE=1 in rmvpe_pitch_extractor.cpp). Frame count now
-        // matches exactly (was 596 before RvcAudioPreprocessing existed), and a real H/W-axis
-        // orientation bug in RvcRmvpeEncoder's U-Net image construction was found and fixed (the
-        // reference's feature.input is [1, melBins, frames] transposed to put H=frames/W=melBins,
-        // not H=melBins/W=frames as this code originally assumed -- conv kernels are not symmetric
-        // under an H/W swap, so this was silently wrong, not just relabeled). That fix moved max
-        // from 0.0014 to 0.0067 but the network still does not produce the reference's sharp,
-        // confident per-frame peak -- every intermediate stage (post-input-BN through the GRU
-        // outputs) has plausible non-degenerate mean/std when traced with STINGRAY_RVC_TRACE=1, so
-        // the remaining bug is a genuine numerical mismatch still unlocated within the U-Net/GRU
-        // stack, not a structural/wiring one. Needs real ggml-side intermediate-tensor dumps
-        // (mean/std after input-BN, after each encoder level, after the bottleneck, after the
-        // decoder, and after the final 3-channel conv) added to build_rmvpe_feature_graph in the
-        // C++ reference to bisect which stage first diverges -- not yet done.
+        // NOT YET FULLY GOLDEN-VERIFIED, but very close: the real reference (same audio, same
+        // audio_pad_duration_sec=1 preprocessing) reports frames=796 mean=0.00474 std=0.04768
+        // max=0.97022 (STINGRAY_RVC_TRACE=1 in rmvpe_pitch_extractor.cpp); this test currently
+        // gets mean=0.00298 std=0.02489 max=0.81235 -- three real bugs found and fixed to get
+        // here (see docs/audio-review-progress.md's 2026-09-06 RMVPE update for the full
+        // derivation of each): (1) missing audio_pad_duration_sec preprocessing, (2) a U-Net
+        // image H/W-axis orientation swap, (3) `conv_block_res`'s real ReLU placement (ReLU after
+        // BOTH conv-BN stages, no ReLU after the residual add -- the OPPOSITE of a textbook
+        // ResNet BasicBlock). Per-stage STINGRAY_RVC_TRACE=1 tracing added to both this file's
+        // caller (via RvcRmvpeEncoder's own Trace/TraceFlat helpers) and the reference's
+        // build_rmvpe_feature_graph (ggml intermediate tensors marked as extra graph outputs via
+        // rmvpe_debug_tap/rmvpe_debug_dump_taps) shows the encoder stack and all 5 U-Net skip
+        // connections now match the reference almost exactly (e.g. after-bottleneck mean/std
+        // 3.147/6.425 vs the reference's 3.150/6.497) -- the remaining ~1.2x-2x per-stage
+        // divergence starts specifically in the DECODER's ConvTranspose2d upsample stage (checked:
+        // not a weight in/out-channel layout swap, not a +/-1 index-shift artifact -- both were
+        // tried and made no measurable difference) and compounds through the decoder's residual
+        // blocks. Not yet root-caused; flagging as the next concrete step rather than a vague
+        // "still off."
     }
 }

@@ -65,12 +65,15 @@ public static class RvcRmvpeEncoder
             x = ConvTranspose2dPyTorch2x(x, w.DecoderLevels[level].UpsampleWeight, channels, decOut);
             x = BatchNorm2d(x, w.DecoderLevels[level].UpsampleBn);
             ReluInPlace(x);
+            Trace($"decoder-upsample{level}", x);
             var skip = skips[^1];
             skips.RemoveAt(skips.Count - 1);
+            Trace($"decoder-skip{level}", skip);
             x = ConcatChannels(x, decOut, skip, decOut);
             channels = decOut * 2;
             x = ResUNetLevelFromBlocks(x, w.DecoderLevels[level].Conv2Blocks, channels, decOut);
             channels = decOut;
+            Trace($"decoder-level{level}", x);
         }
 
         Trace("after-decoder", x);
@@ -170,7 +173,14 @@ public static class RvcRmvpeEncoder
         return x;
     }
 
-    /// <summary>Real ResNet BasicBlock: conv-BN-ReLU-conv-BN + (shortcut or identity) residual, final ReLU after the add (standard PyTorch BasicBlock convention).</summary>
+    /// <summary>Real RMVPE `conv_block_res` (NOT a standard ResNet BasicBlock -- confirmed against
+    /// the reference's own `conv_bn_relu`/`conv_block_res` C++ functions): conv-BN-ReLU applied
+    /// TWICE (both conv stages get a ReLU, including the second one), then a plain residual add
+    /// with NO ReLU afterward -- the opposite placement from the textbook BasicBlock (which
+    /// omits the second ReLU and instead applies one ReLU after the add). Getting this backwards
+    /// doesn't crash or resize anything, it just quietly changes the learned feature statistics --
+    /// found via a real per-stage mean/std trace against the C++ reference showing divergence
+    /// starting at the very first ResUNet level's output.</summary>
     private static float[][,] ResBlock(float[][,] x, RvcResBlock block, int inChannels, int outChannels)
     {
         var h = Conv2dSamePad3x3(x, inChannels, block.Conv0Weight, bias: null, outCh: outChannels);
@@ -178,6 +188,7 @@ public static class RvcRmvpeEncoder
         ReluInPlace(h);
         h = Conv2dSamePad3x3(h, outChannels, block.Conv3Weight, bias: null, outCh: outChannels);
         h = BatchNorm2d(h, block.Bn4);
+        ReluInPlace(h);
 
         float[][,] residual;
         if (block.ShortcutWeight is not null)
@@ -192,7 +203,7 @@ public static class RvcRmvpeEncoder
             output[c] = new float[height, width];
             for (int i = 0; i < height; i++)
                 for (int j = 0; j < width; j++)
-                    output[c][i, j] = MathF.Max(0f, h[c][i, j] + residual[c][i, j]);
+                    output[c][i, j] = h[c][i, j] + residual[c][i, j];
         }
         return output;
     }
