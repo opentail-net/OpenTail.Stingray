@@ -12759,3 +12759,24 @@ project can rely on), the bug surface has been narrowed from "somewhere in a ~10
 pipeline" to "specifically the LLM tensor-source/ForwardPass wiring," and a real,
 previously-unknown risk was surfaced about a bridging technique shared by three classes
 in this codebase.
+
+**Update, 2026-09-06 -- Checked whether OmniVoice's LLM tensor source shares Fun-ASR-Nano's
+degenerate-output bug: inconclusive, but a suggestive real difference worth recording.**
+Ran a diagnostic (`OmniVoiceLlmWiringDiagnosticTests`, arbitrary small token ids, no
+tokenizer needed) through `OmniVoiceLlmTensorSource` + `ForwardPass` (a real downloaded
+float32 safetensors checkpoint -- a different precision than Fun-ASR-Nano's Q8_0/BF16
+GGUF-packed one, useful as a precision-independent control). Result: unlike Fun-ASR-Nano's
+TOTAL collapse (identical logits regardless of input), OmniVoice's logits DO vary
+meaningfully between two different prompts (RMS diff 1.42, not near-zero) -- but the
+ARGMAX converges to the exact same vocabulary index (85473) in all four cases tested
+(two different 5-token prompts, and two different single-token continuations). This is
+weaker/different evidence than Fun-ASR-Nano's bug and NOT confirmed as the same root
+cause -- a real, more likely innocent explanation is that low-numbered arbitrary token ids
+(1-5, 100-500, 999) may correspond to near-untrained special/byte-level tokens in this
+vocabulary, which could legitimately produce similar, unremarkable next-token predictions
+for ANY correctly-working LLM fed meaningless input. **Not confirmed as a cross-cutting
+bug** -- a real test would need OmniVoice's own tokenizer and a real natural-language
+prompt (not yet attempted, no tokenizer.json found alongside this checkpoint). Recorded
+here so the next person investigating either bug has this data point, but treating
+Fun-ASR-Nano's bug as still isolated to that pipeline until independently reproduced
+elsewhere with a proper real prompt.
