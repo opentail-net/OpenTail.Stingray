@@ -11980,3 +11980,22 @@ resolution, no per-codebook upsampling) quantizer scheme -- `DacDecoder.cs`'s re
 `ResidualUnit`/weight-norm-folding/quantizer-summing code is the right structural
 template to adapt for a new `HiggsAudioV2Dac` class parameterized for the different
 stage count and dims, not a direct reuse of the existing Parler-specific class as-is.
+
+**Update, same session -- post-softmax attention weights also ruled out as the direct
+cause.** Confirmed the classify graph's default attention mode is already
+`ManualRepeat` (`QwenDecoderRuntimeAttentionConfig::prefill_mode` default in
+`qwen_decoder.h`), meaning `attention_from_heads` already materializes real per-head
+softmax weights as an ordinary tensor -- no need to force a non-flash path. Tapped them
+directly: `layer_0_attn std=0.072`, `layer_1_attn std=0.046`, `layer_2_attn std=0.051`
+-- there is NO discontinuity here either, and layer 0's attention is actually MORE
+peaked (higher std) than layer 2's, the opposite of what "layer 2 develops a sharp
+attention-sink pattern" would predict. **Both of the two most likely mechanisms (raw K
+magnitude, post-softmax attention concentration) are now ruled out** -- the real cause
+must be in the VALUE vectors themselves, the attention output projection, or the MLP
+block, none of which have been directly inspected yet. Given three real bisection
+rounds (whole-layer output, Q/K, attention weights) without finding the mechanism,
+this specific investigation is being set aside for now per this project's own
+"flag and move on" convention (`CLAUDE.md` rule #11) rather than continuing to grind --
+the concrete, real progress already banked (audio encoder ruled out; exact layer
+number pinpointed; K-magnitude and attention-weight-concentration both ruled out as the
+direct mechanism) is a strong foundation for a focused follow-up, not a dead end.
