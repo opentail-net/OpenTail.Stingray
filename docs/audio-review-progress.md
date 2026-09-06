@@ -12780,3 +12780,35 @@ prompt (not yet attempted, no tokenizer.json found alongside this checkpoint). R
 here so the next person investigating either bug has this data point, but treating
 Fun-ASR-Nano's bug as still isolated to that pipeline until independently reproduced
 elsewhere with a proper real prompt.
+
+**Update, 2026-09-06 -- VibeVoice ASR: real VAE codec architecture derived from the
+reference (a genuine ConvNeXt-1D design, not Mamba/RNN as the `mixer_layer` config name
+alone might suggest) -- checkpoint download deliberately deferred as a real, separate
+cost.** Read `speech_tokenizer.cpp`'s `tokenizer_block`/`build_encoder`/`build_decoder` in
+full (not guessed). Real per-block math (`mixer_layer=depthwise_conv` in this checkpoint's
+config): `residual=x; h=ChannelRMSNorm(x) [no bias, affine] -> DepthwiseConv1d(causal,
+stride=1) -> per-channel LayerScale (gamma) -> x=residual+h; residual=x;
+h=ChannelRMSNorm(x, ffn_norm) -> Linear(dim->4*dim) -> GELU(exact erf) ->
+Linear(4*dim->dim) -> per-channel LayerScale (ffn_gamma) -> x=residual+h`. This is a
+genuine modern ConvNeXt-1D block (the same family used by newer neural audio codecs like
+Meta's Mimi/Encodec-variants), NOT the Mamba/SSM-style "mixer" the generic config field
+name might suggest -- a real, useful disambiguation for whoever implements this. Real
+encoder stage structure: per stage, a strided causal Conv1d downsample (stride=1 for
+stage 0, then `encoder_ratios` reversed for later stages) followed by that stage's real
+depth-count of ConvNeXt blocks (`encoder_depths`, parsed from a `"N-N-N-..."` string), then
+a final optional channel RMSNorm + a stride-1 Conv1d head. The real causal Conv1d padding
+convention (`sconv1d`'s non-streaming path, not yet read in detail) still needs to be
+confirmed exactly before implementing.
+
+**Deliberately NOT downloading the checkpoint this update**: `audio-cpp/audio.cpp-gguf`'s
+`VibeVoice-ASR-GGUF/` only publishes the full model as a 9.9GB (Q8_0) or 17.4GB (F16) GGUF
+-- an order of magnitude larger than anything downloaded elsewhere this session (Nemotron
+~1GB, Fun-ASR-Nano ~1GB, Voxtral/OmniVoice each a few GB) -- and no separate small
+config-only or reference-fixture download path was found (unlike Fun-ASR-Nano's real
+`*_reference.json/.bin` gift, or the small HF config.json snapshots used for Nemotron/
+Fun-ASR-Nano). Per CLAUDE.md's "flag the performance-pass tax explicitly" convention,
+naming this as its own real cost rather than quietly spending the bandwidth/disk: a real
+next step exists (implement `FunAsrNanoSanmBlock`-style ConvNeXt block code now, structurally
+test it in isolation with synthetic weights, THEN decide whether the 10-17GB download is
+worth it for real-weight verification), but that download decision should be made
+deliberately, not as a side effect of continuing this scoping pass.
