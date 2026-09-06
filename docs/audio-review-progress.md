@@ -12323,3 +12323,38 @@ encoder layers (24x) and the RNNT predictor+joint greedy decode loop. Next step 
 standing work queue is to read `encoder.cpp`'s `TimeMask4d`/`attention_mask`/`keep_mask`
 masking scheme and the rel-pos self-attention build function before implementing the
 encoder layer forward pass.
+
+**Update, 2026-09-06 -- Nemotron ASR: real 24-layer Conformer encoder implemented,
+structurally verified end to end on real audio.** Read `encoder.cpp`'s real offline
+entry point (`NemotronEncoderRuntime::encode`, NOT the streaming-chunk path) and
+`framework/modules/asr_helpers.cpp`'s `fill_asr_chunked_attention_bias` in full (not
+guessed). Key finding: attention is NOT plain causal -- it's a real CHUNKED mask: frames
+group into chunks of size `lookahead_tokens+1` (default lookahead=3 -> chunk=4), and
+query chunk `qc` may attend to key chunk `kc` iff `0 <= qc-kc <= (sliding_window-1)/chunk`
+(`sliding_window=57` -> `left_chunks=14`). Implemented `NemotronAsrConformerEncoder`:
+macaron FFN1 (half-step) -> Transformer-XL rel-pos self-attention (untied u/v biases,
+`relative_shift` implemented via a direct index formula `pIdx=(T-1)-i+j` rather than the
+reference's literal pad/reshape gymnastics -- mathematically equivalent, confirmed by the
+positional-table row semantics: row `p` encodes relative offset `(T-1)-p`, so `pIdx` maps
+query/key pair `(i,j)` to the raw table row for offset `i-j` exactly) -> depthwise-conv+GLU
+conv module (causal-padded kernel=9, real LayerNorm per the earlier-confirmed
+`conv_norm=layer_norm` metadata) -> macaron FFN2 -> final LayerNorm. Real relative
+positional encoding computed via direct `sin/cos(offset*inv_freq)` (mathematically
+equivalent to the reference's `long double` angle-recurrence form). After the 24 layers,
+a real per-frame one-hot `prompt` vector (`num_prompts=128`, default `prompt_id=101`)
+is concatenated and run through the checkpoint's own `prompt_kernel.0/2` 2-layer ReLU
+MLP, then projected to `decoder_hidden_size=640` -- **one assumption not yet
+independently confirmed**: this final projection is assumed to be the SAME tensor as
+`joint.enc` (the RNNT joint network's own encoder-side projection), since no separate
+`encoder_projector` tensor exists in this checkpoint and the dimensions match exactly
+(`Linear(1024->640)`); flag this if RNNT decode doesn't golden-verify later.
+`NemotronAsrConformerEncoderTests` runs the FULL chain (mel -> subsampling -> 24-layer
+Conformer -> prompt conditioning) on real `a.wav` with the real checkpoint: 76 frames,
+joint_dim=640, mean=-0.07948 std=0.12366, all finite, non-degenerate, ~36s wall time
+(scalar C#, unoptimized).
+
+**Still remaining for a complete Nemotron ASR pipeline**: the RNNT predictor (2-layer
+LSTM) + joint network + frame-synchronous greedy-decode loop, and (separately) real
+golden-verification against the reference's own trace output (not yet attempted --
+everything so far is structural/finite verification only, not numeric match against a
+captured reference trace).

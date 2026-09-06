@@ -39,6 +39,8 @@ public sealed class NemotronAsrWeights : IDisposable
     public int PredNumLayers { get; }
     public int JointDim { get; }
     public int MaxSymbolsPerStep { get; }
+    public int NumPrompts { get; }
+    public int PromptIntermediateSize { get; }
 
     public int NMels { get; }
     public int NFft { get; }
@@ -83,6 +85,12 @@ public sealed class NemotronAsrWeights : IDisposable
     public float[] JointNet2Weight { get; } // [640, vocab]
     public float[] JointNet2Bias { get; }
 
+    // --- Prompt (language/task) conditioning MLP, applied after the Conformer stack ---
+    public float[] PromptKernel0Weight { get; } // [1152, 2048] = [hidden+num_prompts, prompt_intermediate_size]
+    public float[] PromptKernel0Bias { get; }
+    public float[] PromptKernel2Weight { get; } // [2048, 1024]
+    public float[] PromptKernel2Bias { get; }
+
     public NemotronAsrWeights(string ggufPath)
     {
         if (!File.Exists(ggufPath))
@@ -107,6 +115,8 @@ public sealed class NemotronAsrWeights : IDisposable
         PredNumLayers = GetInt("asr.rnnt.pred_num_layers", 2);
         JointDim = GetInt("asr.rnnt.joint_dim", 640);
         MaxSymbolsPerStep = GetInt("asr.rnnt.max_symbols_per_step", 10);
+        NumPrompts = GetInt("asr.rnnt.num_prompts", 128);
+        PromptIntermediateSize = GetInt("asr.rnnt.prompt_intermediate_size", 2048);
 
         NMels = FeatIn;
         NFft = GetInt("asr.preprocessor.n_fft", 512);
@@ -145,6 +155,11 @@ public sealed class NemotronAsrWeights : IDisposable
         JointPredBias = GetTensor("joint.pred.bias");
         JointNet2Weight = GetTensor("joint.joint_net.2.weight");
         JointNet2Bias = GetTensor("joint.joint_net.2.bias");
+
+        PromptKernel0Weight = GetTensor("prompt_kernel.0.weight");
+        PromptKernel0Bias = GetTensor("prompt_kernel.0.bias");
+        PromptKernel2Weight = GetTensor("prompt_kernel.2.weight");
+        PromptKernel2Bias = GetTensor("prompt_kernel.2.bias");
     }
 
     private int GetInt(string key, int fallback) =>
