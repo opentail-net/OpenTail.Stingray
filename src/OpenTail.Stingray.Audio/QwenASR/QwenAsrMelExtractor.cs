@@ -11,7 +11,15 @@ public sealed class QwenAsrMelExtractor
     public const int NumMels = 128;
     public const int WindowSize = 400; // 25ms @ 16kHz
     public const int HopLength = 160;   // 10ms @ 16kHz
-    public const int NFft = 512;
+    // Real n_fft=400, corrected 2026-09-07 (was 512): confirmed directly from the real
+    // checkpoint's `preprocessor_config.json` (`"n_fft": 400`, `"hop_length": 160`,
+    // `"feature_size": 128` -- a real, separate config file this port had not previously read,
+    // only NFft's value was wrong, not WindowSize/HopLength). A wrong FFT size shifts every mel
+    // filterbank bin's frequency mapping (`CreateSlaneyMelFilterBank` uses NFft directly) and the
+    // real reference's mel output frame count (595) vs this port's previous 593 for the same
+    // audio -- found via a real frame-by-frame comparison against the reference's dumped mel
+    // output, part of this session's Qwen3 Forced Aligner audio-encoder bisection.
+    public const int NFft = 400;
 
     private readonly float[] _hannWindow;
     private readonly float[][] _melFilters;
@@ -26,11 +34,34 @@ public sealed class QwenAsrMelExtractor
     /// Computes 128-channel normalized log-mel spectrogram from 16kHz audio samples.
     /// Output shape: [NumMels, numFrames] flattened as mel[m * numFrames + f].
     /// </summary>
+    /// <summary>Real torch/numpy "reflect" boundary index, ported from `dsp.cpp`'s real
+    /// `reflect_index` (not guessed) -- NOT edge-clamping, a genuine mirrored-without-repeating-
+    /// the-edge-sample reflection, applied iteratively for indices more than one period out of
+    /// range (never actually reached for this extractor's real pad size vs. any real audio
+    /// length, but ported faithfully anyway).</summary>
+    private static int ReflectIndex(int index, int length)
+    {
+        while (index < 0 || index >= length)
+        {
+            index = index < 0 ? -index : 2 * length - index - 2;
+        }
+        return index;
+    }
+
     public float[] ExtractMel(ReadOnlySpan<float> pcm)
     {
         if (pcm.Length < WindowSize) return [];
 
-        int numFrames = Math.Max(1, (pcm.Length - WindowSize) / HopLength + 1);
+        // Real Whisper-style CENTERED framing with REFLECT padding, added 2026-09-07 (see
+        // docs/audio-review-progress.md's Qwen3 Forced Aligner audio-encoder bisection): the
+        // reference's real `WhisperLogMelExtractor` (`dsp.cpp`) pads the signal by `n_fft/2`
+        // samples on each side (reflected, not zero/edge-clamped) before framing -- this port
+        // previously started each frame's window flush against the raw (unpadded) signal start,
+        // a real, silent mismatch that shifts every single frame's content and produces a
+        // slightly different total frame count (595 vs this port's previous 593 for the same
+        // real test audio, confirmed via a real frame-by-frame dump comparison).
+        int pad = NFft / 2;
+        int numFrames = Math.Max(1, 1 + pcm.Length / HopLength);
         var mel = new float[NumMels * numFrames];
         var rawMel = new float[NumMels * numFrames];
         var pcmArray = pcm.ToArray(); // captured by the per-frame parallel closure below
@@ -50,14 +81,13 @@ public sealed class QwenAsrMelExtractor
             (f, _, buffers) =>
             {
                 var (real, powerSpectrum) = buffers;
-                int startSample = f * HopLength;
+                int startSample = f * HopLength - pad;
                 Array.Clear(real, 0, NFft);
 
                 for (int i = 0; i < WindowSize; i++)
                 {
-                    int sIdx = startSample + i;
-                    float sample = (sIdx < pcmArray.Length) ? pcmArray[sIdx] : 0.0f;
-                    real[i] = sample * _hannWindow[i];
+                    int sIdx = ReflectIndex(startSample + i, pcmArray.Length);
+                    real[i] = pcmArray[sIdx] * _hannWindow[i];
                 }
 
                 // Power Spectrum (modulus squared of DFT)

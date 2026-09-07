@@ -142,6 +142,13 @@ public sealed class QwenAsrForcedAligner : IDisposable
 
         float[] mel = _realMelExtractor.ExtractMel(normalizedPcm);
         int inMelFrames = mel.Length / QwenAsrMelExtractor.NumMels;
+
+        if (Environment.GetEnvironmentVariable("STINGRAY_FA_DUMP_DIR") is { } melDumpDir)
+        {
+            var bytes = new byte[mel.Length * 4];
+            Buffer.BlockCopy(mel, 0, bytes, 0, bytes.Length);
+            File.WriteAllBytes(Path.Combine(melDumpDir, "our_mel_features.bin"), bytes);
+        }
         if (inMelFrames == 0) return [];
         var (audioSoftTokens, numAudioTokens) = _realEncoder.Forward(mel, inMelFrames);
 

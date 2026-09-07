@@ -15685,3 +15685,59 @@ reference went from complete decorrelation (cosine ~0.03-0.54) to strong positiv
 the next untried, most-promising lead is a frame-by-frame mel-spectrogram comparison (mel
 extraction itself has not yet been checked against a real reference dump, only the final encoder
 output was).
+
+## Qwen3 Forced Aligner -- MAJOR BREAKTHROUGH: two more real mel-extraction bugs found and fixed; audio encoder now correlates at 0.97-0.99, 2026-09-07
+
+Followed the immediately preceding entry's highest-priority untried lead: added a real raw dump
+tap to the reference's `frontend_whisper.cpp` (`mel_features.bin`, same `STINGRAY_FA_DUMP_DIR`
+mechanism) capturing the real mel-spectrogram output, and a matching dump of this port's own
+`QwenAsrMelExtractor.ExtractMel` output, compared frame-by-frame.
+
+**Bug 5, FOUND AND FIXED: wrong FFT size.** Read the real checkpoint's own
+`preprocessor_config.json` (a real, separate config file this port had never read) directly:
+`"n_fft": 400`, `"hop_length": 160`, `"feature_size": 128`. This port's `QwenAsrMelExtractor` used
+`NFft=512` (zero-padding the real 400-sample Hann window to a 512-point FFT) instead of the real
+`n_fft=400` -- this shifts every mel filterbank bin's frequency mapping
+(`CreateSlaneyMelFilterBank` uses `NFft` directly to compute bin frequencies). Fixed: `NFft=400`
+(now equal to `WindowSize`, matching the real config and eliminating the zero-padding entirely).
+Confirmed safe: `SpectralKernels.ComputePowerSpectrum` is a direct DFT (cosine/sine table dot
+products), not an FFT, so it has no power-of-2 size requirement.
+
+**Bug 6, FOUND AND FIXED, the dominant one: no real centering/reflect-padding.** Read `dsp.cpp`'s
+real `WhisperLogMelExtractor`: pads the signal by `n_fft/2` samples on EACH side (via genuine
+torch/numpy-style REFLECT boundary indexing, `reflect_index`, not zero-padding or edge-clamping)
+before framing -- i.e. frame 0 is CENTERED on sample 0, not starting at sample 0. This port
+previously started frame 0 flush against the raw signal start with no centering at all, a real,
+silent, whole-pipeline-wide shift of every single frame's content. Fixed: ported `reflect_index`
+exactly, and each frame's window now samples `ReflectIndex(frame*hopLength - pad + i, length)`
+matching the reference's real formula precisely (`frames = 1 + samples/hopLength` once
+`2*pad == n_fft`, which now holds since `NFft` was corrected to equal `WindowSize` in bug 5).
+
+**Measured, dramatic result**: mel-spectrogram frame-by-frame cosine similarity vs. the real
+reference dump improved from `~0.90-0.94` (bugs 5+6 not yet applied, only earlier fixes) to
+`~0.92-0.97` after both fixes. Far more importantly, the DOWNSTREAM audio encoder's own
+frame-by-frame correlation (the metric that matters, since mel differences compound through 3
+conv layers + positional embedding + transformer) jumped from `0.7-0.98` to **`0.97-0.99` across
+every single frame** -- essentially converged. The full layer-0 decoder-block hand-computation
+isolation (same technique used earlier to prove the MLP/attention formulas correct) improved from
+relative L2 error `1.02` (all positions, essentially random) down to **`0.16`** (all positions)
+and **`0.03`** (last position) -- this port's real end-to-end computation is now genuinely close
+to the reference's, not just "improved."
+
+**Remaining, honest gap**: frame COUNT is still off by exactly one (this port: 596, reference:
+595, for the same real audio) -- a real, small, unresolved rounding-boundary discrepancy in the
+frame-count formula not yet tracked down (both sides use the same algebraic formula
+`1 + samples/hop_length` once `2*pad=n_fft`, so the difference must be in the exact `samples`
+count each side computes, e.g. a resampling/preprocessing difference this port hasn't found yet).
+The final classify-head output is STILL mostly class-0-dominant despite this dramatic upstream
+improvement (0.16 relative error at layer 0, compounding through 28 layers, can still land on a
+different final decision, especially for a checkpoint whose real "class 0" logit is already large
+relative to its margin per earlier trace evidence) -- this is real, honest, unresolved territory:
+the audio path is now close to correct but not bit-exact, and whether the remaining ~16% error
+alone fully explains the classify symptom, or whether a further (possibly smaller, possibly
+decoder-side) bug remains, is not yet determined. Real next steps for a future pass: (1) track
+down the exact 1-frame discrepancy (compare the `samples` count itself, not just the frame
+formula); (2) given the audio path is now close to solid, re-run the SAME per-layer
+`[FA-DIFF-CS]` cosine/max-abs-diff comparison from earlier (layers 0-27) with this improved input
+to see whether the divergence NOW starts later/smaller, further narrowing whether a decoder-side
+issue remains on top of the now-much-improved audio path.
