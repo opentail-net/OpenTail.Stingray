@@ -15611,3 +15611,53 @@ derive the exact real ggml permute mapping precisely (reading `ggml_permute`'s r
 against this specific call), or continue the same per-frame dump-and-compare bisection one stage
 deeper (per-conv-layer taps, not just before/after the whole conv+pos block) to localize the
 remaining residual error to a specific one of the three conv layers.
+
+## Qwen3 Forced Aligner -- third real fix (exact-erf GELU) + three hypotheses ruled out with direct evidence, 2026-09-07
+
+Continued the audio-encoder bisection. **Bug 3, FOUND AND FIXED**: `QwenAsrAudioEncoder`'s GELU
+calls (conv stem x3, FFN, projector -- 5 call sites) used `OpenTail.Stingray.Cpu.SimdKernels.
+GeluInPlace`'s TANH approximation, but the reference's `GeluModule` default is
+`GeluApproximation::ExactErf` (confirmed via `activation_modules.h`'s real `GeluConfig` default,
+and that kernel's own doc comment admits tanh "diverges by a measurable margin" from exact-erf).
+Replaced with a local exact-erf implementation (Abramowitz & Stegun 7.1.26 approximation, ~1.5e-7
+max error) for this encoder specifically -- real, more correct, but measured to have negligible
+effect on the frame-by-frame cosine numbers already reported (they moved by <0.001), so this
+alone was not a major contributor -- kept anyway since it removes a real, if small, source of
+error.
+
+**Three further hypotheses tested/reasoned through and RULED OUT for this specific test audio**
+(a real, honest narrowing, not just "still don't know"):
+1. **Chunk padding**: the reference pads every chunk's mel data to a UNIFORM `chunk_frames_ =
+   max(chunk_lengths_)` width before convolving (`audio_chunk_lengths`); this port instead
+   convolves each chunk at its OWN actual (unpadded) length. For this test's 593 mel frames /
+   100-frame chunks = 5 full chunks + 1 partial (93 frames), only the LAST chunk differs -- real,
+   should still be fixed for full correctness, but cannot explain the observed WIDESPREAD
+   divergence across frames from every chunk (including the first).
+2. **Channel/freq flatten order**: re-confirmed via the reference's own code comment ("Keep the
+   ggml layout aligned with the Python conv output before flattening `[B, T, C, F]`") that
+   channel-major (`ch*h3+fh`, already used) is correct, not freq-major -- consistent with the
+   earlier empirical test that found freq-major measurably WORSE.
+3. **Windowed attention**: the reference's real `attention_window_tokens_` calculation
+   (`max_chunk_tokens * (n_window_infer/chunk_frame_limit_)` ~= 13*8=104) EXCEEDS this test
+   audio's real 77 total tokens, so `audio_attention_window_lengths(77, 104)` produces exactly
+   ONE window covering all 77 tokens -- i.e. for audio this short, the real reference attention
+   is ALREADY full/unrestricted, identical in effect to this port's existing plain full
+   bidirectional attention. Not the cause here (would matter for longer audio, a real, separate,
+   still-open gap for a future pass on LONGER test clips).
+
+**Real, tangible improvement in the actual end-to-end output**: with all three fixes applied,
+`STINGRAY_FORCEDALIGNER_TRACE=1` now shows the alignment producing a genuine non-zero timestamp
+for the FIRST time in this multi-session investigation (`publication=[0.00,16.16]`, vs. every
+word previously `[0.00,0.00]`) -- concrete forward motion on the actual symptom, not just an
+intermediate metric.
+
+**Honest remaining scope**: frame-by-frame cosine similarity plateaus around 0.7-0.98 (not yet
+~1.0). Real, still-untried next candidates for a future pass: (a) the mel spectrogram extraction
+itself (`QwenAsrMelExtractor`) has not been checked frame-by-frame against a real reference mel
+dump (only the final encoder OUTPUT's aggregate stats were checked previously, now known to be
+insufficient evidence per this session's own repeated finding) -- would need a new mel-stage
+dump tap in `qwen3_asr/audio_encoder.cpp`'s mel-extraction call site; (b) exact Conv2dModule
+padding/stride semantics not independently re-derived from ggml source (assumed standard
+"valid conv with symmetric padding," not verified byte-for-byte); (c) the real chunk-padding fix
+from hypothesis 1 above should still be implemented even though it isn't the dominant remaining
+cause, for full correctness on longer audio inputs with a non-uniform last chunk.

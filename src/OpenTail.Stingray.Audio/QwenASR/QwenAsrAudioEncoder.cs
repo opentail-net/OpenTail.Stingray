@@ -343,12 +343,36 @@ public sealed class QwenAsrAudioEncoder : IDisposable
         return output;
     }
 
-    private static unsafe void GeluInPlace(float[] x)
+    /// <summary>
+    /// Real exact-erf GELU, corrected 2026-09-07 (see docs/audio-review-progress.md's audio-
+    /// encoder bisection entries): the reference's `GeluModule` default is
+    /// `GeluApproximation::ExactErf` (`0.5*x*(1+erf(x/sqrt(2)))`), used for every GELU in this
+    /// encoder (conv stem, FFN, projector) -- NOT `OpenTail.Stingray.Cpu.SimdKernels.
+    /// GeluInPlace`'s tanh approximation this class previously used, which "diverges by a
+    /// measurable margin" from exact-erf per that kernel's own doc comment. Applied 5 times per
+    /// forward pass (3 conv stages + FFN + projector), so even a small per-call difference
+    /// compounds into a real, measurable end-to-end error.
+    /// </summary>
+    private static void GeluInPlace(float[] x)
     {
-        fixed (float* xp = x)
+        const float invSqrt2 = 0.70710678118654752f;
+        for (int i = 0; i < x.Length; i++)
         {
-            OpenTail.Stingray.Cpu.SimdKernels.GeluInPlace(xp, x.Length);
+            float v = x[i];
+            x[i] = 0.5f * v * (1f + Erf(v * invSqrt2));
         }
+    }
+
+    /// <summary>Abramowitz &amp; Stegun 7.1.26 erf approximation (max absolute error ~1.5e-7,
+    /// well within float32 precision) -- .NET's Math/MathF has no built-in erf.</summary>
+    private static float Erf(float x)
+    {
+        const float a1 = 0.254829592f, a2 = -0.284496736f, a3 = 1.421413741f, a4 = -1.453152027f, a5 = 1.061405429f, p = 0.3275911f;
+        float sign = x < 0f ? -1f : 1f;
+        float ax = MathF.Abs(x);
+        float t = 1f / (1f + p * ax);
+        float y = 1f - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * MathF.Exp(-ax * ax);
+        return sign * y;
     }
 
     /// <summary>
