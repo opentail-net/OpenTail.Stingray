@@ -142,7 +142,7 @@ public static class VibeVoiceConvNeXtBlock
     /// <summary>Real channel RMSNorm: normalizes across the CHANNEL axis per frame (not per
     /// channel across time), affine weight only (no bias), matching `channel_rms_norm`'s
     /// transpose-to-[B,T,C]-then-RMSNorm-then-transpose-back convention.</summary>
-    private static float[][] ChannelRmsNorm(float[][] channelsMajor, float[] weight, float eps)
+    internal static float[][] ChannelRmsNorm(float[][] channelsMajor, float[] weight, float eps)
     {
         int channels = channelsMajor.Length;
         int frames = channelsMajor[0].Length;
