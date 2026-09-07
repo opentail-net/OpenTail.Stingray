@@ -16241,3 +16241,20 @@ unwired despite every individual piece being verified) now works end-to-end. Rea
 unchanged from the scoping note above: reference-audio conditioning (fused prompt positions
 carrying delayed reference codebook ids, KV-cache reuse across repeated same-reference calls) --
 real, separate, unstarted work.
+
+## OmniVoice -- checked whether IForwardPass already has the batched scoring API MaskGIT needs; it does not, real engine-level gap confirmed, 2026-09-07
+
+Quick follow-up to this session's own "next concrete step" from the MaskGIT-scoping entry above.
+`IForwardPass.BatchVerify(int[] tokens, int startPos)` exists and scores a batch of positions in
+one call, but it's shaped for CAUSAL next-token verification (KV-cache-based, one token id per
+sequence position, used by speculative decoding) -- not what OmniVoice's real MaskGIT step needs
+(scoring an arbitrary, non-causal, partially-masked `[frames x codebooks]` grid where already-
+decoded cells and still-masked cells can be in any order, no causal left-to-right constraint).
+Confirms the earlier scoping note's assessment was correct, not stale: this needs new engine-level
+support for a non-causal/bidirectional batched forward pass, a genuinely different shape of work
+from every per-position-`ForwardEmbedding` generator this session ported (Higgs/VibeVoice/VoxCPM2/
+PersonaPlex all use ordinary causal decoding). Real, standalone future work -- not attempted this
+pass given the remaining architectural uncertainty (how the real reference's own non-causal
+attention is wired into ModelGraph, if at all, for this checkpoint) would need its own careful
+reference-reading pass before any engine change, not a quick addition alongside other backlog
+items.
