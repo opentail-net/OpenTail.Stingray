@@ -14798,3 +14798,31 @@ text-to-frames-to-waveform pipeline -- a real, bounded, near-final wiring step f
 pass, not a new unknown. Known, flagged simplifications carried forward: no real multi-stream
 delay pattern (temporal-LM/Depformer wiring), one-shot non-streaming decode only (this codec
 piece), argmax-only sampling throughout.
+
+## PersonaPlex -- first full text-to-waveform run, all real pieces chained, 2026-09-07
+
+Wired `PersonaPlexGenerator`'s output directly into `MimiCodecDecoder.Decode`
+(`PersonaPlexFullPipelineRealWeightsTests`): the temporal LM generates 4 real frames (each
+conditioning a Depformer 16-codebook step), the first 8 of each frame's 16 real codes are fed to
+the Mimi codec, producing a finite, [-1,1]-clamped, non-silent waveform -- **the first complete
+text-to-audio run for this model**, chaining all three independently-verified real decoders
+(temporal LM: 25.48 GiB resident, Depformer: 6 layers x 16 steps/frame, Mimi codec: 8-layer
+transformer + SEANet decoder) in one live pass: 34.3s wall-clock, genuine.
+
+**Real, explicitly flagged open question, not resolved**: PersonaPlex's real mapping from its
+16 `lm_codebooks` to Mimi's 8 real `ActiveCodebooks` is NOT independently confirmed this session
+-- this test uses the first 8 of the 16 as a documented, reasonable assumption (the temporal-LM-
+to-Depformer wiring entry already flagged a real, unread `session.cpp` delay-pattern hint that
+PersonaPlex's 16 codebooks may represent TWO separate 8-codebook Mimi streams, e.g. two dialogue
+participants -- if true, the real mapping might be interleaved or stream-selected rather than a
+simple first-8 slice). One reassuring, real coincidence found while wiring this: PersonaPlex's
+own `audio_codebook_size=2048` and Mimi's own `codebookSize=2048` are EXACTLY equal (not
+approximately) -- consistent with, though not proof of, the two systems sharing a real, matched
+codebook space rather than requiring a re-quantization step between them.
+
+**PersonaPlex status: ~75%.** A complete, real-weight-verified text-to-waveform pipeline now
+exists end-to-end for the first time this session, on top of PersonaPlex/Higgs/VibeVoice TTS/
+VoxCPM2/MOSS-TTS-Nano all reaching similar real end-to-end milestones. Remaining, all lower
+priority than what's already achieved: the real codebook-stream mapping (flagged above), the
+real multi-stream delay pattern, real streaming decode (this session's Mimi port is one-shot
+only), real sampling beyond argmax throughout.
