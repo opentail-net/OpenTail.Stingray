@@ -16741,3 +16741,19 @@ pass.
 All four `*-REFERENCE-check.wav` files sit alongside this port's own `*-real-check.wav` samples in
 `docs/audio-samples/` (gitignored, local-only) for direct listening comparison against the exact
 same real checkpoints and (where applicable) matching prompts/seeds.
+
+## PersonaPlex -- live-duplex user-audio conditioning precisely scoped (not started), 2026-09-07
+
+Read `session.cpp`'s real `run_user_frame`/live-duplex call sites (not guessed) to scope this
+session's last remaining PersonaPlex gap precisely. Confirmed: live-duplex conditioning needs a
+real Mimi ENCODER (`mimi_encoder_->encode`/`encode_streaming`, waveform -> RVQ codes) -- the
+REVERSE direction of the Mimi decoder this session already ported (`MimiCodecDecoder`). No Mimi
+encoder exists in this codebase yet (checked, not guessed) -- this would be a genuinely new,
+substantial port (real SEANet encoder + downsample + RVQ quantizer-encode, comparable in scope to
+the codec-encoder ports this session already completed for Higgs/OmniVoice, just for Mimi's own
+real architecture instead of DAC's). Real, deliberately not started this pass -- this is
+explicitly the lowest-priority remaining PersonaPlex gap (a real duplex-conversation product
+feature, not needed for the already-complete text-to-waveform/voice-cloning/system-prompt paths),
+and a fresh dedicated pass should read `speech_tokenizer.cpp`'s (or wherever Mimi's real encoder
+lives in this reference) `build_encoder`-equivalent function in full before porting, matching this
+session's established discipline.
