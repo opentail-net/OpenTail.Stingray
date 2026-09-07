@@ -13894,3 +13894,49 @@ download's CLI process exits. Real next step if resumed: retry the `stingray pul
 `head_layers`/`head_ffn_ratio`/`rms_norm_eps`/`ddpm_num_steps` and the
 `model.prediction_head.*` tensor names/shapes, then write a real-weight smoke test for
 `VibeVoiceDiffusionHead.Predict`+`VibeVoiceDiffusionSampler.Sample`.
+
+## Higgs Audio TTS -- LLM bridge real-weight verified, text tokenizer ported, 2026-09-07
+
+Checkpoint download finally completed cleanly (`higgs-audio-v3-tts-4b-q8_0.gguf`, 5,095,354,048
+bytes, matches the exact offset+size computed from the earlier truncation error -- confirms this
+is the real full file this time; `GgufModel.Open` succeeds). Real config (`lm` sub-config,
+dumped from the checkpoint's own `config.json`): `hidden_size=2560`, `num_hidden_layers=36`,
+`num_attention_heads=32`, `num_key_value_heads=8`, `head_dim=128`, `intermediate_size=9728`,
+`vocab_size=151936`, `rope_theta=1000000`, `rms_norm_eps=1e-6`; `num_codebooks=8`,
+`audio_vocab_size(per codebook)=1026`; `audio_token_id=-100` (a real masked-token sentinel, not
+a positive vocab id -- confirmed from the real config, not assumed).
+
+**`HiggsLlmTensorSource` real-weight verified**: tensor shape resolution (cheap, `FindTensor`
+only) confirms `token_embd.weight`/`output_norm.weight`/per-layer `attn_q`/`attn_q_norm`/
+`ffn_down` shapes match the real config exactly, `output.weight` correctly absent (tied
+embeddings), and the real separate `ModalityEmbeddingWeight` table resolves to
+`8*1026*2560` floats, all finite. A live `ForwardPass.Prefill` also ran successfully against
+the real checkpoint -- **16.43 GiB of CPU-resident weights pre-faulted in 0.5s (36 GiB/s), full
+prefill in 9.9s wall-clock, finite 151936-wide logits** -- this machine handled the 4B-class
+FP32-dequantized footprint without the OOM VibeVoice ASR's 7B-class checkpoint hit earlier this
+session (16.43 GiB vs whatever pushed VibeVoice ASR over the edge).
+
+**`HiggsTtsTextTokenizer` implemented and real-weight verified**, ported from
+`tokenizer_text.cpp` (94 lines, not guessed): a plain Qwen2-family byte-level BPE tokenizer
+(real reference: `LlamaBpePreTokenizer::Qwen2`, NOT the SentencePiece-metaspace path
+VibeVoice/VoxCPM2 needed), reusing the existing `HuggingFaceTokenizerSource`/`GgufTokenizer`
+pipeline directly with zero bespoke pieces this time (simplest of the three tokenizer ports
+this session). Real prompt layout: `[<|tts|>] [<|ref_text|> ref_text_ids...]?
+[<|ref_audio|> audio_placeholder_id*N]? [<|text|> text_ids...] [<|audio|>]` -- the
+reference-text span only appears when BOTH `referenceText` is non-empty AND
+`delayedReferenceTokens>0`, while the reference-AUDIO placeholder span appears whenever
+`delayedReferenceTokens>0` independently (a zero-shot generation with a reference voice
+embedding but no reference transcript is a real, valid real-reference combination). Real-weight
+test confirms both the no-reference and with-reference prompt shapes, and that exactly N
+`audio_token_id` placeholders appear for `delayedReferenceTokens=N`: 2.6s wall-clock, genuine
+run.
+
+**Higgs Audio TTS status: ~40%.** LLM bridge + text tokenizer done. Remaining, in the order
+`ar.cpp`/`generator.cpp`/`sampler.cpp`/`codec.cpp` suggest: the gate predictor (real/deliberate
+text-vs-audio-embedding gating mechanism mentioned in `HiggsLlmTensorSource`'s own doc comment,
+NOT yet ported), the real delayed multi-codebook AR generation loop (`ar.cpp`, 1367 lines --
+comparable in scope to MOSS-TTS-Nano's local frame decoder but for 8 codebooks not MOSS's
+count), the real codec decoder (`codec.cpp`, 1678 lines -- check first whether it's actually
+reusable from OmniVoice's DAC decoder or RVC's HuBERT encoder as earlier-session notes assumed,
+or a genuinely different architecture; don't assume reuse without reading it), and real sampling
+(`sampler.cpp`, 480 lines).
