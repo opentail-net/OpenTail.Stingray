@@ -54,7 +54,8 @@ public sealed class VoxCpm2LlmDumpDebugTest : HeavyTestBase
                     !name.StartsWith("weights/lm_head") && !name.StartsWith("weights/fsq_layer") &&
                     !name.StartsWith("weights/enc_to_lm") && !name.StartsWith("weights/lm_to_dit") &&
                     !name.StartsWith("weights/res_to_dit") && !name.StartsWith("weights/fusion_concat") &&
-                    !name.StartsWith("weights/stop_"))
+                    !name.StartsWith("weights/stop_") && !name.StartsWith("weights/feat_encoder") &&
+                    !name.StartsWith("weights/feat_decoder"))
                     continue;
                 var t = model.Tensors[i];
                 sb.AppendLine($"{name}\t{string.Join(",", t.Dimensions)}\t{t.DType}");
