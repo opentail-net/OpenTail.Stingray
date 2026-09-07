@@ -15985,3 +15985,31 @@ of which are ported yet. Real next step for a future pass, in this order: port `
 first (self-contained, clearly specified, no new encoder architecture needed, reusable for
 OmniVoice's own voice-cloning path too if it needs the same real formula), then the
 hidden-state-mean variant, then the semantic post-encoder.
+
+## Higgs Audio TTS -- real RVQ quantizer_encode + codec_project ported and verified, 2026-09-07
+
+Ported `codec.cpp`'s real `codec_project`/`quantizer_encode` precisely (per the "real next step"
+scoped in the immediately preceding entry): new `HiggsCodecEncoder.cs` with `Project` (real
+`fc` linear, `[832] -> [1024]`, combining the concatenated acoustic+semantic encoder outputs) and
+`QuantizeFrame` (the real 8-level residual vector quantization loop -- per-codebook `project_in`
+projection to `[64]`, nearest-codebook-entry argmax via the real expanded-squared-distance formula
+`2*dot - ||x||^2 - ||e||^2`, `project_out` projection back to `[1024]`, residual subtraction for
+the next codebook). Added the real `project_in`/`fc` tensor loading to `HiggsCodecDecoderWeights`
+(previously only the decode-direction `project_out`/`codebook.embed`/`fc2` were loaded) --
+confirmed these tensors genuinely exist in the real checkpoint (the existing
+`HiggsCodecDecoderRealWeightsTests` still passes with the new required fields, no missing-tensor
+errors).
+
+`HiggsCodecEncoderRealWeightsTests` (new): loads the real checkpoint's new encode-direction
+tensors and runs `Project`+`QuantizeFrame` on a synthetic pre-encoder `[832]` frame, confirming
+finite hidden states and in-range `[0, 1024)` codes for all 8 codebooks. Full Higgs regression
+sweep (6 tests across codec decoder, AR stepper, semantic encoder, acoustic encoder, and this new
+encoder) all pass, no regressions.
+
+**Higgs Audio TTS's real reference-audio encode path, updated scope**: acoustic encoder (reused
+from OmniVoice), semantic HuBERT encoder (reused from OmniVoice, though needs the hidden-state-
+averaging variant per the earlier correction), and now `codec_project`+RVQ `quantizer_encode` are
+all real and individually verified. Real remaining gap, narrowed further: only the hidden-state-
+averaging reduction (`hubert_hidden_state_mean`) and the separate real `semantic_encoder`
+residual-conv post-network stand between this and a full `HiggsCodecEncoder.Encode(waveform) ->
+codes` entry point wiring real voice cloning end-to-end.

@@ -2,13 +2,16 @@ namespace OpenTail.Stingray.Audio.HiggsAudio;
 
 /// <summary>Real per-quantizer weights, ported from `codec.cpp`'s `load_quantizer` (not
 /// guessed): a real RVQ level -- `codebook.embed` (`[codebookSize=1024, codebookDim=64]`) plus
-/// `project_out` (`[codebookDim -> hiddenSize=1024]`, with bias). `project_in` (encode-direction
-/// only) is intentionally NOT loaded here -- this class covers the DECODE path only.</summary>
+/// `project_out` (`[codebookDim -> hiddenSize=1024]`, with bias). `project_in`
+/// (`[hiddenSize -> codebookDim]`, real ENCODE-direction weight, added 2026-09-07 for
+/// `HiggsCodecEncoder.QuantizeEncode`) is also loaded now.</summary>
 public sealed class HiggsCodecQuantizerWeights
 {
     public required float[] CodebookEmbed { get; init; } // [1024, 64]
     public required float[] ProjectOutWeight { get; init; } // [1024, 64]
     public required float[] ProjectOutBias { get; init; } // [1024]
+    public required float[] ProjectInWeight { get; init; } // [64, 1024]
+    public required float[] ProjectInBias { get; init; } // [64]
 }
 
 public sealed class HiggsCodecResidualUnitWeights
@@ -38,9 +41,14 @@ public sealed class HiggsCodecDecoderBlockWeights
 /// 8*5*4*2*3=960, matching the real `kCodecHopLength=960`), `residualDilations=[1,3,9]`. Real
 /// tensor prefix `tied.embedding.modality_embeddings.0.model.*` (the SAME modality-embedding
 /// table `HiggsLlmTensorSource.ModalityEmbeddingWeight` exposes -- confirms the codec and the
-/// LLM's audio-token embeddings are tied). The semantic (HuBERT-lineage) encoder and
-/// `project_in`/`codec_project`(`fc`) are ENCODE-direction only (reference-audio voice cloning
-/// input) and intentionally NOT ported here -- only the decode path this class needs.
+/// LLM's audio-token embeddings are tied). `project_in` (per-quantizer, encode-direction) and
+/// `codec_project` (the real `[acousticHiddenSize+semanticHiddenSize=832 -> codecHiddenSize=1024]`
+/// linear combining the acoustic+semantic encoders' outputs) are now also loaded, added 2026-09-07
+/// for `HiggsCodecEncoder`'s real RVQ encode path (`quantizer_encode`, ported precisely from
+/// `codec.cpp` -- not guessed). The semantic hidden-state-AVERAGING variant and the separate real
+/// `semantic_encoder` post-network `codec_encode` also needs are still NOT ported (see
+/// docs/audio-review-progress.md's "real scope correction" entry) -- this class's `codec_project`
+/// alone does not make full voice-cloning end-to-end yet.
 /// </summary>
 public sealed class HiggsCodecDecoderWeights
 {
@@ -49,6 +57,8 @@ public sealed class HiggsCodecDecoderWeights
     public const int CodebookDim = 64;
     public const int CodecHiddenSize = 1024;
     public const int AcousticHiddenSize = 256;
+    public const int SemanticHiddenSize = 768;
+    public const int CodecProjectInputSize = AcousticHiddenSize + SemanticHiddenSize; // 832
     public static readonly int[] DecoderChannels = [1024, 512, 256, 128, 64, 32];
     public static readonly int[] UpsampleRatios = [8, 5, 4, 2, 3];
     public static readonly int[] ResidualDilations = [1, 3, 9];
@@ -58,6 +68,12 @@ public sealed class HiggsCodecDecoderWeights
 
     public required float[] AcousticProjectWeight { get; init; } // [256, 1024] (fc2)
     public required float[] AcousticProjectBias { get; init; }
+
+    /// <summary>Real `codec_project`, encode-direction only, added 2026-09-07: combines the
+    /// concatenated acoustic+semantic encoder outputs (`[832]`) into the codec's real
+    /// `[1024]`-wide hidden space before RVQ quantization.</summary>
+    public required float[] CodecProjectWeight { get; init; } // [1024, 832]
+    public required float[] CodecProjectBias { get; init; }
 
     public required float[] DecoderInputConvWeight { get; init; } // [1024, 256, 7]
     public required float[] DecoderInputConvBias { get; init; }
@@ -81,6 +97,8 @@ public sealed class HiggsCodecDecoderWeights
                 CodebookEmbed = get(codec(p + "codebook.embed")),
                 ProjectOutWeight = get(codec(p + "project_out.weight")),
                 ProjectOutBias = get(codec(p + "project_out.bias")),
+                ProjectInWeight = get(codec(p + "project_in.weight")),
+                ProjectInBias = get(codec(p + "project_in.bias")),
             };
         }
 
@@ -122,6 +140,8 @@ public sealed class HiggsCodecDecoderWeights
             DecoderOutputSnakeAlpha = get(codec("acoustic_decoder.snake1.alpha")),
             DecoderOutputConvWeight = get(codec("acoustic_decoder.conv2.weight")),
             DecoderOutputConvBias = get(codec("acoustic_decoder.conv2.bias")),
+            CodecProjectWeight = get(codec("fc.weight")),
+            CodecProjectBias = get(codec("fc.bias")),
         };
     }
 }
