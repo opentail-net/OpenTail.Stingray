@@ -76,4 +76,63 @@ public static class VibeVoiceTtsPromptBuilder
         ids.Add(speechStartId);
         return [.. ids];
     }
+
+    /// <summary>Real `speech_token_count`: `ceil(samples / compressionRatio)`.</summary>
+    public static int SpeechTokenCount(int sampleCount24k, int compressionRatio)
+    {
+        if (compressionRatio <= 0) throw new ArgumentOutOfRangeException(nameof(compressionRatio));
+        return (sampleCount24k + compressionRatio - 1) / compressionRatio;
+    }
+
+    /// <summary>
+    /// Real voice-cloning prompt build, ported from `tokenizer_text.cpp`'s
+    /// `VibeVoiceTextTokenizer::encode_prompt`'s `Voice input:` branch (not guessed) -- the gap
+    /// <see cref="BuildPrompt"/>'s doc comment explicitly deferred. Real template: system prompt
+    /// -&gt; `" Voice input:\n"` -&gt; per speaker (in the SAME order as `speakerSampleCounts24k`,
+    /// which the caller must align with `ParseScript`'s own 0-indexed speaker ids): `" Speaker
+    /// {index}:"` -&gt; `speechStartId` (mask=0) -&gt; `speechTokenCount` real placeholder
+    /// `speechDiffusionId` tokens (mask=1, one per real compressed-audio frame) -&gt;
+    /// `speechEndId` (mask=0) -&gt; `"\n"` -&gt; then the same real `" Text input:\n"`/per-line/
+    /// `" Speech output:\n"`/`speechStartId` tail as the reference-audio-free path.
+    /// </summary>
+    public static (int[] Ids, bool[] SpeechMask, int[] SpeechTokenCounts) BuildPromptWithVoiceCloning(
+        Func<string, int[]> tokenize, string script, int speechStartId, int speechEndId, int speechDiffusionId,
+        int[] speakerSampleCounts24k, int compressionRatio)
+    {
+        var lines = ParseScript(script);
+        var ids = new List<int>();
+        var mask = new List<bool>();
+        var tokenCounts = new int[speakerSampleCounts24k.Length];
+
+        void Add(IEnumerable<int> tokens, bool speech)
+        {
+            foreach (int t in tokens) { ids.Add(t); mask.Add(speech); }
+        }
+        void AddOne(int token, bool speech) { ids.Add(token); mask.Add(speech); }
+
+        Add(tokenize(SystemPrompt), false);
+
+        if (speakerSampleCounts24k.Length > 0)
+        {
+            Add(tokenize(" Voice input:\n"), false);
+            for (int index = 0; index < speakerSampleCounts24k.Length; index++)
+            {
+                Add(tokenize($" Speaker {index}:"), false);
+                AddOne(speechStartId, false);
+                int speechTokens = SpeechTokenCount(speakerSampleCounts24k[index], compressionRatio);
+                tokenCounts[index] = speechTokens;
+                for (int i = 0; i < speechTokens; i++) AddOne(speechDiffusionId, true);
+                AddOne(speechEndId, false);
+                Add(tokenize("\n"), false);
+            }
+        }
+
+        Add(tokenize(" Text input:\n"), false);
+        foreach (var line in lines)
+            Add(tokenize($" Speaker {line.SpeakerId}:{line.Text}\n"), false);
+        Add(tokenize(" Speech output:\n"), false);
+        AddOne(speechStartId, false);
+
+        return ([.. ids], [.. mask], tokenCounts);
+    }
 }

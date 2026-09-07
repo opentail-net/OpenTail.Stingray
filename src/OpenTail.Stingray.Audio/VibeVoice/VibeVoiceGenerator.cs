@@ -90,23 +90,134 @@ public static class VibeVoiceGenerator
         int ddpmNumSteps, int inferenceSteps, float guidanceScale,
         int maxSteps, Random rng, SamplingParams? tokenSelectionOptions = null)
     {
-        var generatedTokens = new List<int>();
-        var audioSamples = new List<float>();
-
         var promptLogits = fwd.Prefill(promptTokenIds);
         var positiveHidden = fwd.LastHidden.ToArray();
 
+        return GenerateFromPrefilledState(
+            fwd, promptTokenIds.Length, promptLogits.ToArray(), positiveHidden,
+            textEmbeddingTable, hiddenDim, speechStartId, speechEndId, speechDiffusionId, eosId,
+            diffusionHeadWeights, acousticDecoderWeights, semanticEncoderWeights,
+            acousticConnectorWeights, semanticConnectorWeights, speechScalingFactor, speechBiasFactor,
+            layerNormEps, ddpmNumSteps, inferenceSteps, guidanceScale, maxSteps, rng, tokenSelectionOptions);
+    }
+
+    /// <summary>
+    /// Real voice-cloning entry point: identical interleaved decode loop to <see cref="Generate"/>,
+    /// but the prompt is prefilled POSITION-BY-POSITION via <paramref name="fwd"/>'s
+    /// `ForwardEmbedding` (not the ordinary token-id `Prefill`) so that the `Voice input:` section's
+    /// `speechDiffusion` placeholder positions can carry real spliced per-frame embeddings (real
+    /// acoustic-connector-projected reference-audio latents) instead of an ordinary vocabulary
+    /// lookup -- ported from `generator.cpp`'s `prepare_vibevoice_prompt`'s real speaker-audio
+    /// branch (not guessed): only the ACOUSTIC connector is used for prompt splicing (unlike the
+    /// per-diffusion-step loop below, which sums BOTH acoustic and semantic connector outputs --
+    /// confirmed real, asymmetric, not a mistake).
+    /// </summary>
+    public static Result GenerateWithVoiceCloning(
+        IForwardPass fwd,
+        int[] promptTokenIds, bool[] speechInputMask, float[][][] speakerAcousticMeansChannelMajor /* per speaker: [dim][frames] real encoder mean output */, int[] speakerSpeechTokenCounts,
+        float[] textEmbeddingTable, int hiddenDim,
+        int speechStartId, int speechEndId, int speechDiffusionId, int eosId,
+        VibeVoiceDiffusionHeadWeights diffusionHeadWeights,
+        VibeVoiceTokenizerDecoderWeights acousticDecoderWeights,
+        VibeVoiceTokenizerEncoderWeights semanticEncoderWeights,
+        VibeVoiceConnectorWeights acousticConnectorWeights,
+        VibeVoiceConnectorWeights semanticConnectorWeights,
+        float speechScalingFactor, float speechBiasFactor, float fixStd,
+        float layerNormEps,
+        int ddpmNumSteps, int inferenceSteps, float guidanceScale,
+        int maxSteps, Random rng, SamplingParams? tokenSelectionOptions = null)
+    {
+        if (promptTokenIds.Length != speechInputMask.Length)
+            throw new ArgumentException("promptTokenIds/speechInputMask length mismatch.");
+
+        // Real per-speaker: Gaussian-sample the encoder's mean output (real `fix_std` reparameterization,
+        // see VibeVoiceAcousticLatentSampler's own doc comment for the real formula + precision-gap note),
+        // scale for the connector, then project -- real `[hiddenDim][frames]` per speaker.
+        var projectedPerSpeaker = new float[speakerAcousticMeansChannelMajor.Length][][];
+        for (int s = 0; s < speakerAcousticMeansChannelMajor.Length; s++)
+        {
+            var sampled = VibeVoiceAcousticLatentSampler.Sample(speakerAcousticMeansChannelMajor[s], fixStd, rng);
+            int dim = sampled.Length, frames = sampled[0].Length;
+            var scaled = new float[dim][];
+            for (int c = 0; c < dim; c++)
+            {
+                var row = new float[frames];
+                for (int t = 0; t < frames; t++) row[t] = (sampled[c][t] + speechBiasFactor) * speechScalingFactor;
+                scaled[c] = row;
+            }
+            projectedPerSpeaker[s] = VibeVoiceConnector.Project(acousticConnectorWeights, scaled);
+        }
+
+        // Real splice: walk the prompt in order, and for every speech-mask position consume the next
+        // real per-speaker projected frame (in speaker order, matching `build_selected_prompt_features`
+        // + `splice_speech_embeddings`'s combined real effect for the non-batched single-request case).
+        int[] frameCursor = new int[speakerAcousticMeansChannelMajor.Length];
+        int speakerCursor = 0, framesConsumedForCurrentSpeaker = 0;
+
+        ReadOnlySpan<float> lastLogits = default;
+        float[] lastHidden = [];
+        for (int pos = 0; pos < promptTokenIds.Length; pos++)
+        {
+            float[] embedding;
+            if (speechInputMask[pos])
+            {
+                while (speakerCursor < speakerSpeechTokenCounts.Length &&
+                       framesConsumedForCurrentSpeaker >= speakerSpeechTokenCounts[speakerCursor])
+                {
+                    speakerCursor++;
+                    framesConsumedForCurrentSpeaker = 0;
+                }
+                var proj = projectedPerSpeaker[speakerCursor];
+                int frame = frameCursor[speakerCursor]++;
+                embedding = new float[hiddenDim];
+                for (int c = 0; c < hiddenDim; c++) embedding[c] = proj[c][frame];
+                framesConsumedForCurrentSpeaker++;
+            }
+            else
+            {
+                embedding = EmbedToken(textEmbeddingTable, promptTokenIds[pos], hiddenDim);
+            }
+
+            lastLogits = fwd.ForwardEmbedding(embedding, pos);
+            lastHidden = fwd.LastHidden.ToArray();
+        }
+
+        return GenerateFromPrefilledState(
+            fwd, promptTokenIds.Length, lastLogits.ToArray(), lastHidden,
+            textEmbeddingTable, hiddenDim, speechStartId, speechEndId, speechDiffusionId, eosId,
+            diffusionHeadWeights, acousticDecoderWeights, semanticEncoderWeights,
+            acousticConnectorWeights, semanticConnectorWeights, speechScalingFactor, speechBiasFactor,
+            layerNormEps, ddpmNumSteps, inferenceSteps, guidanceScale, maxSteps, rng, tokenSelectionOptions);
+    }
+
+    private static Result GenerateFromPrefilledState(
+        IForwardPass fwd, int promptLength, float[] promptLogits, float[] positiveHidden,
+        float[] textEmbeddingTable, int hiddenDim,
+        int speechStartId, int speechEndId, int speechDiffusionId, int eosId,
+        VibeVoiceDiffusionHeadWeights diffusionHeadWeights,
+        VibeVoiceTokenizerDecoderWeights acousticDecoderWeights,
+        VibeVoiceTokenizerEncoderWeights semanticEncoderWeights,
+        VibeVoiceConnectorWeights acousticConnectorWeights,
+        VibeVoiceConnectorWeights semanticConnectorWeights,
+        float speechScalingFactor, float speechBiasFactor,
+        float layerNormEps,
+        int ddpmNumSteps, int inferenceSteps, float guidanceScale,
+        int maxSteps, Random rng, SamplingParams? tokenSelectionOptions)
+    {
+        var generatedTokens = new List<int>();
+        var audioSamples = new List<float>();
+
         var negativeStartEmbedding = EmbedToken(textEmbeddingTable, speechStartId, hiddenDim);
-        var negativeLogits = fwd.ForwardEmbedding(negativeStartEmbedding, promptTokenIds.Length);
+        var negativeLogits = fwd.ForwardEmbedding(negativeStartEmbedding, promptLength);
         var negativeHidden = fwd.LastHidden.ToArray();
-        int negativePosition = promptTokenIds.Length + 1;
+        int negativePosition = promptLength + 1;
 
         var scheduler = new VibeVoiceDpmSolverScheduler(ddpmNumSteps);
         scheduler.SetTimesteps(inferenceSteps);
 
-        var currentLogits = promptLogits.ToArray();
+        var currentLogits = promptLogits;
         var currentHidden = positiveHidden;
-        int position = promptTokenIds.Length;
+        int position = promptLength;
 
         for (int step = 0; step < maxSteps; step++)
         {

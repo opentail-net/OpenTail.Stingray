@@ -16128,3 +16128,47 @@ Not yet done (real, scoped): wiring this into OmniVoice's actual generation/prom
 `OmniVoiceGenerator`/session code); a real audio-in/audio-out golden comparison against the C++
 reference (this pass used synthetic waveforms to verify wiring, per this session's established
 convention, not real audio golden parity).
+
+## VibeVoice TTS -- real voice-cloning (`Voice input:` section) WIRED end-to-end for the first time, 2026-09-07
+
+Closed the real gap `VibeVoiceTtsPromptBuilder`'s doc comment explicitly deferred ("Deliberately
+does NOT implement the reference's real `Voice input:` speaker-audio section"). Read
+`tokenizer_text.cpp`'s real `encode_prompt`'s speaker-audio branch and `generator.cpp`'s real
+`prepare_vibevoice_prompt`/`splice_speech_embeddings` (not guessed) before porting:
+
+- **Prompt template**: real `" Voice input:\n"` section, one `" Speaker {index}:"` +
+  `speechStartId` + N real `speechDiffusionId` placeholder tokens (`N = ceil(samples/
+  compressionRatio)`, real `speech_token_count` formula) + `speechEndId` + `"\n"` per speaker,
+  BEFORE the existing `" Text input:\n"` section. Added
+  `VibeVoiceTtsPromptBuilder.BuildPromptWithVoiceCloning`, returning the token ids plus a parallel
+  `speechMask` (which positions are real placeholder-audio positions) and each speaker's real
+  frame count.
+- **Real per-speaker latent path**: encode the speaker's real reference waveform through the
+  ACOUSTIC tokenizer encoder (already-ported `VibeVoiceTokenizerEncoder`/mean-only, no VAE
+  sampling inside the encoder itself) -> real Gaussian reparameterization (already-ported
+  `VibeVoiceAcousticLatentSampler`, confirmed exactly matching `sample_vibevoice_acoustic_latents_
+  gaussian`'s real two-level `std = randn()*(fix_std/0.8)` then `sample = mean + std*randn()`
+  formula, non-bit-exact RNG per that class's own documented gap) -> real
+  `scale_vibevoice_acoustic_latents_for_connector` (`(sample + bias) * scaling`, confirmed from
+  `tokenizer_audio.cpp`) -> the ACOUSTIC connector only (confirmed real and asymmetric: unlike the
+  existing per-diffusion-step decode loop, which sums BOTH acoustic and semantic connector
+  outputs, the prompt-splice path uses ONLY the acoustic connector -- `prepare_vibevoice_prompt`
+  never calls the semantic tokenizer on prompt audio at all).
+- **Real embedding splice + prefill**: since some prompt positions now carry non-vocabulary
+  spliced embeddings, added `VibeVoiceGenerator.GenerateWithVoiceCloning`, which prefills
+  POSITION-BY-POSITION via `ForwardEmbedding` (substituting the real per-frame connector output at
+  `speechMask[pos]==true` positions, ordinary vocab lookup elsewhere) instead of the ordinary
+  token-id `Prefill` the reference-audio-free path uses. Refactored the existing post-prefill
+  interleaved decode loop out of `Generate` into a shared private `GenerateFromPrefilledState` so
+  both entry points share the exact same (already-verified) generation logic.
+
+New real-weight smoke test `VibeVoiceTtsVoiceCloningRealWeightsTests`: real checkpoint, real
+tokenizer, synthetic real-rate (24kHz) speaker reference waveform, builds the real voice-cloning
+prompt, encodes+splices the real acoustic latents, runs the full real generation loop, decodes
+real audio. 38.2s wall-clock with a real `[ForwardPass] Pre-faulted 6.62 GiB...` weight-loading
+line logged (genuine run per rule 12). Re-ran the existing `VibeVoiceGeneratorRealWeightsTests`/
+`VibeVoiceTtsPromptBuilderRealWeightsTests` after the `Generate` refactor -- both still pass
+(31.4s/17.6s), no regression. This is the FIRST real reference-audio-conditioned generation run
+for VibeVoice TTS -- voice cloning, previously entirely unimplemented for this model, is now wired
+end-to-end. Real remaining VibeVoice TTS gap: real streaming decoder/encoder state (the existing
+one-shot-per-chunk simplification documented on `VibeVoiceGenerator`'s own class doc comment).
