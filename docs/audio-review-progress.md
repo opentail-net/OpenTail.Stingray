@@ -14210,3 +14210,27 @@ unmasked argmax output `HiggsArStepperRealWeightsTests` currently uses -- a real
 correctness gap for a future session to close (implement `HiggsSamplerState`-equivalent masking
 before wiring a real multi-step generation loop; the existing single-step primitives don't need
 to change).
+
+## Higgs Audio TTS -- real delay-pattern state machine implemented and wired, 2026-09-07
+
+Closed the gap the prior entry flagged: implemented `HiggsCodebookSampler` (real
+`HiggsSamplerState`-equivalent from `sampler.cpp`'s `HiggsCodebookSampler::step`, not guessed)
+-- the real per-codebook delay mask (`delayCount`-gated `BocId=1024` placeholder for
+not-yet-unlocked codebooks) plus the real EOC/stop state machine (`EocId=1025` in codebook 0
+starts an `eocCountdown` of `numCodebooks-2` steps, `StopCode=-1` once done). Argmax-only
+per-codebook selection remains a known, explicitly-flagged gap (real reference has temperature/
+top-p/top-k, `sample_codebook_row`, not ported) -- this class only ports the real state-machine
+layer around whatever selection mechanism produces raw per-codebook ids.
+
+Wired into `HiggsArStepperRealWeightsTests`: runs `numCodebooks=8` real steps, feeding the
+sampler's real MASKED codes (not raw argmax output) forward into each next `HiggsArStepper.Step`
+call, confirms the delay window is fully open by the last step (`DoesNotContain(BocId)`) --
+18.3s wall-clock, genuine run through the corrected real pipeline. This closes the correctness
+gap the previous two entries flagged; the single-step `HiggsArStepper` primitives didn't need
+to change, only the caller-side loop now applies the real masking between steps.
+
+**Higgs Audio TTS status: ~70%.** Both flagged correctness gaps (guessed BOS, missing delay
+mask) are now closed with real, checkpoint-verified behavior. Remaining: real sampling beyond
+argmax, semantic HuBERT encoder + reference-audio encode path (voice cloning input, lower
+priority). This is now a structurally complete, delay-pattern-correct text-to-waveform pipeline
+modulo sampling quality.

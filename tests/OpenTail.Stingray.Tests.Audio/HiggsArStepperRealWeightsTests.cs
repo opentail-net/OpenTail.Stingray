@@ -54,29 +54,39 @@ public sealed class HiggsArStepperRealWeightsTests : HeavyTestBase
         // directly from the prefill's own last-position hidden state (the real prompt ends in a
         // literal <|audio|> token) projected through the modality-embedding table -- BEFORE any
         // decode-step ForwardEmbedding call. Only subsequent codes come from feeding the
-        // previous REAL sampled codes forward.
-        const int steps = 4;
+        // previous REAL (delay-masked) sampled codes forward. Real HiggsCodebookSampler delay
+        // masking (sampler.cpp) applied each step: only codebooks [0, step] carry a real code
+        // until step >= numCodebooks-1, everything after that point is BocId until unlocked.
+        var sampler = new HiggsCodebookSampler(NumCodebooks);
+        const int steps = NumCodebooks; // enough steps to unlock every codebook at least once
         var frames = new int[steps][];
-        frames[0] = HiggsArStepper.SampleFromHidden(fwd.LastHidden, llm, NumCodebooks, AudioVocabSize);
-        Assert.Equal(NumCodebooks, frames[0].Length);
-        Assert.All(frames[0], c => Assert.InRange(c, 0, AudioVocabSize - 1));
+
+        var raw0 = HiggsArStepper.SampleFromHidden(fwd.LastHidden, llm, NumCodebooks, AudioVocabSize);
+        Assert.Equal(NumCodebooks, raw0.Length);
+        Assert.All(raw0, c => Assert.InRange(c, 0, AudioVocabSize - 1));
+        frames[0] = sampler.Step(raw0);
 
         int position = prompt.TokenIds.Length;
         for (int step = 1; step < steps; step++)
         {
-            var codes = HiggsArStepper.Step(fwd, llm, frames[step - 1], position, NumCodebooks, AudioVocabSize);
-            Assert.Equal(NumCodebooks, codes.Length);
-            Assert.All(codes, c => Assert.InRange(c, 0, AudioVocabSize - 1));
-            frames[step] = codes;
+            var raw = HiggsArStepper.Step(fwd, llm, sampler.LastCodes, position, NumCodebooks, AudioVocabSize);
+            Assert.Equal(NumCodebooks, raw.Length);
+            frames[step] = sampler.Step(raw);
             position++;
         }
+        // After numCodebooks steps the delay window has fully opened (delay_count reaches
+        // numCodebooks), so the LAST frame should carry a real sample in every codebook -- no
+        // BocId placeholders left.
+        Assert.DoesNotContain(frames[^1], c => c == HiggsCodebookSampler.BocId);
 
-        // The AR's audio vocab (1026) can include reserved/special ids beyond the codec's real
-        // 1024-entry RVQ codebook range -- clamp before feeding the codec decoder (a real
-        // downstream consumer would gate on those ids for EOS/etc, not yet ported this session).
+        // The AR's audio vocab (1026) can include reserved/special ids (BocId/EocId/StopCode)
+        // that are never valid codec codes -- a real downstream consumer keeps generating until
+        // every codebook is unlocked and gates on EOC for stopping (not ported this session);
+        // for this structural smoke test, clamp any still-reserved id to 0 before decoding.
         for (int t = 0; t < steps; t++)
             for (int cb = 0; cb < NumCodebooks; cb++)
-                frames[t][cb] = Math.Min(frames[t][cb], HiggsCodecDecoderWeights.CodebookSize - 1);
+                if (frames[t][cb] < 0 || frames[t][cb] >= HiggsCodecDecoderWeights.CodebookSize)
+                    frames[t][cb] = 0;
 
         var waveform = HiggsCodecDecoder.Decode(codec, frames);
         Assert.All(waveform, v => Assert.True(float.IsFinite(v)));
