@@ -13318,8 +13318,44 @@ a real, compiling, structurally-complete bridge class, next step is exercising i
 checkpoint lands and real `VibeVoiceDecoderConfig` numbers (hidden_size, num_layers, etc.)
 can be read from `config.json`.
 
+**Update, 2026-09-07 (same session, download still in progress) -- real text tokenizer
+scoped, reuse path confirmed.** Read `tokenizer_text.cpp` in full (not guessed): a real,
+standard Qwen2-family BPE tokenizer (`LlamaBpeTokenizer` with `LlamaBpePreTokenizer::Qwen2`)
+loaded from real embedded `vocab.json`/`merges.txt`/`tokenizer_config.json`/`tokenizer.json`
+files (same embedded-file extraction technique already used for MOSS-TTS-Nano's tokenizer
+this session) -- this codebase's existing `HuggingFaceTokenizerSource` almost certainly
+covers this directly, a real scope reduction (no bespoke BPE port needed, unlike MOSS-TTS-
+Nano's SentencePiece case). Real prompt structure: a chat-formatted system+user message pair
+(`<|im_start|>role\n...<|im_end|>\n`) where the user turn embeds one `<|box_start|>`
+placeholder token per speech-embedding slot between real `<|object_ref_start|>`/
+`<|object_ref_end|>` sentinels -- the connector's projected acoustic+semantic embeddings get
+spliced in at exactly those placeholder positions before the LLM prefill (`speech_positions`
+in the real `VibeVoiceASRPrompt` struct).
+
+**Investigated whether `ForwardPass` supports the embeddings-injection this needs (same
+open question flagged for VoxCPM2's MiniCPM backbone above) -- real, useful finding, not
+fully resolved.** No dedicated "inject raw continuous embeddings at arbitrary positions"
+API exists on `IForwardPass` (searched for `InjectEmbed`/`EmbeddingOverride`/
+`InputEmbeddings`-shaped names, none found). The established real technique this project
+already uses successfully (`OmniVoiceLlmTensorSource.EnableAudioConditioning`,
+`QwenAsrLlmTensorSource`'s equivalent) is different and more indirect: APPEND the
+continuous embeddings as extra rows on the `token_embd.weight` table itself (extending the
+effective vocab size) and feed synthetic token ids beyond the real vocab range that resolve
+to those rows via the normal embedding lookup -- not true raw-embedding injection, but
+achieves the same effect for a FIXED, one-time set of injected embeddings known before
+prefill starts. This works cleanly for VibeVoice ASR's speech placeholders (the full set of
+per-frame acoustic+semantic embeddings is known before the single prefill call -- append
+them all once, prefill once) but is a real, unresolved harder case for VoxCPM2's per-step
+generation loop (a NEW patch embedding needs injecting at every autoregressive step, which
+would mean rebuilding/extending the tensor source's embedding table on every step -- not
+yet confirmed whether that is cheap enough or whether a different mechanism is needed).
+Real next step if picked up for VibeVoice ASR specifically: this "append as extra vocab
+rows, prefill once" technique is likely sufficient and should be tried directly rather than
+investigated further in the abstract.
+
 **Still remaining for a complete VibeVoice ASR pipeline**: real-weight verification of the
-tokenizer encoders + connector + LLM bridge once the checkpoint finishes downloading, the
-real text tokenizer (`tokenizer_text.cpp`), and the generation loop (`session.cpp`, 1210
-lines -- ties audio encoding + connector projection + decoder prefill/generation together,
-not yet read in detail).
+tokenizer encoders + connector + LLM bridge once the checkpoint finishes downloading (still
+in progress, ~3GB of ~9.9GB as of this update -- a real, slow multi-GB download, not a
+blocker being avoided), the speech-embedding splice via the "extra vocab rows" technique
+above, and the generation loop (`session.cpp`, 1210 lines -- ties audio encoding + connector
+projection + decoder prefill/generation together, not yet read in detail).
