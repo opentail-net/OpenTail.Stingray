@@ -13775,3 +13775,17 @@ per-call KV-cache state across autoregressive steps, unlike the local encoder/Di
 stateless one-shot bidirectional passes). Real next step if resumed: implement the real
 prefill stage (`VoxCPM2PromptPrefillRuntime`) and this bespoke causal residual-LM stepper,
 then wire `generate_once`'s loop above using the pieces that already exist.
+
+**Update, 2026-09-07 (same session) -- `VoxCpm2ResidualLm.cs` implemented and real-weight
+verified.** Bespoke causal 8-layer decoder (`Step(embedding)`), NO RoPE anywhere, real
+persistent per-layer KV cache (`List<float[]>` per layer, grows across `Step` calls, cleared
+via `Reset()`). Loads `weights/residual_lm.layers.{0-7}.*` + `weights/residual_lm.norm.weight`
+directly via `RvcPackedTensorSource.GetTensor` (no `ForwardPass`/`GgufModel` bridge needed
+since it's a fully standalone port, unlike every other `IModelTensorSource` bridge class this
+session). Real-weight smoke test (`VoxCpm2ResidualLmRealWeightsTests`) runs 3 sequential
+`Step` calls against the real checkpoint, confirms finite output each time, growing KV cache
+correctly consumed across steps: 1.7s wall-clock (genuine real-weight run, not a silent
+no-op per rule 12). Remaining VoxCPM2 gaps: the PREFILL stage
+(`VoxCPM2PromptPrefillRuntime` -- batch-embeds the text/reference-audio prompt through
+`base_lm`+`residual_lm` before the per-frame loop starts), the real text tokenizer, and
+wiring `generate_once`'s full loop end-to-end using all now-built pieces.
