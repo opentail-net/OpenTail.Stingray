@@ -220,5 +220,19 @@ public sealed class OmniVoiceLlmRealPromptDiagnosticTests : HeavyTestBase
             Console.Error.WriteLine($"    dim={dimsA[i].Dim} |value|={dimsA[i].AbsVal:F4}");
         float median = dimsA[hiddenDim / 2].AbsVal;
         Console.Error.WriteLine($"[OmniVoiceOutlierDims] median |value|={median:F4}, top1/median ratio={dimsA[0].AbsVal / median:F2}");
+
+        // Real, decisive check: does output_norm.weight have anomalously SMALL values at the
+        // same outlier dimensions (2, 35, 13, 1) -- the real, expected compensating behavior if
+        // this is genuine massive-activation model behavior working as intended?
+        var normTensor = sourceA.FindTensor("output_norm.weight");
+        Assert.NotNull(normTensor);
+        var normData = sourceA.GetTensorData(normTensor!.Value);
+        var normFloats = new float[normData.Length / sizeof(float)];
+        System.Runtime.InteropServices.MemoryMarshal.Cast<byte, float>(normData).CopyTo(normFloats);
+        var normSorted = (float[])normFloats.Clone();
+        Array.Sort(normSorted, (x, y) => MathF.Abs(x).CompareTo(MathF.Abs(y)));
+        float normMedian = MathF.Abs(normSorted[normSorted.Length / 2]);
+        foreach (int dim in new[] { 2, 35, 13, 1 })
+            Console.Error.WriteLine($"[OmniVoiceOutlierNormWeight] output_norm.weight[{dim}]={normFloats[dim]:F6} (global median |w|={normMedian:F6})");
     }
 }

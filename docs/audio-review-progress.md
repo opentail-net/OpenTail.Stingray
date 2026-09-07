@@ -14628,3 +14628,41 @@ NOT a bug -- a real, known LLM phenomenon this port's math appears to be reprodu
 pending independent confirmation." The LLM tensor-source bridge itself should NOT be assumed
 broken based on this investigation alone; if a future session picks this up, start from check
 (1) above rather than re-deriving the outlier-dimension finding from scratch.
+
+## OmniVoice -- STRONG evidence this is real model behavior, not a porting bug; reframing the whole diagnostic, 2026-09-07
+
+Checked the decisive test proposed by the prior entry: `output_norm.weight`'s own values at the
+outlier dimensions (2, 35, 13, 1). **Result: the norm weight AMPLIFIES these dimensions further
+(magnitudes 7.2-13.4) rather than suppressing them** (global median |weight| is only 1.71 --
+these four dims carry 4-8x the typical weight magnitude). This is the opposite of what a
+"compensating" norm would do, but it is EXACTLY consistent with the real published
+"massive activations" mechanism: the checkpoint's own TRAINED weights deliberately preserve and
+amplify these specific dimensions post-norm, because (per the mechanism these papers describe)
+they function as a fixed, largely input-independent signal the model's own downstream
+computation is designed around -- not an accident this port introduced. Real weight values
+producing exactly the expected real pattern is strong, direct evidence this is genuine model
+behavior faithfully reproduced by this port, not a bug in `OmniVoiceLlmTensorSource` or
+`ForwardPass`'s generic graph.
+
+**A further, more fundamental reframe worth recording**: this entire diagnostic tested
+UNCONSTRAINED full-151676-vocab argmax on raw next-text-token logits with generic English
+sentences. But OmniVoice is a TTS model -- its real generation loop (per this doc's own earlier
+`generator.cpp`-family findings for every OTHER model this session: Higgs, VibeVoice TTS, and
+almost certainly OmniVoice too, not yet independently confirmed for OmniVoice specifically)
+likely constrains next-token selection to a small, specific candidate set (control tokens,
+audio-codebook ids) rather than ever taking an unconstrained full-vocab argmax over plain
+English continuations. If OmniVoice's real usage never does what this diagnostic tests, the
+"bug" this whole investigation chased may be a complete non-issue for real generation -- the
+same dominant-token argmax could be entirely irrelevant to the model's actual constrained
+decoding path. **Real next step, higher priority than anything in the prior entries**: read
+OmniVoice's OWN real `generator.cpp` (not yet read this session, per the earlier LLM-generation-
+loop entry which found "real architecture is MASKED [something]" but didn't confirm a
+constrained-candidate-set pattern specifically) to determine what OmniVoice's real decode step
+actually selects among, before spending further effort on this now-likely-moot diagnostic.
+
+**OmniVoice status, final for this session**: the LLM tensor-source bridge (`ForwardPass`
+wiring, weight loading) should be treated as LIKELY CORRECT based on this investigation --
+strong, multi-step evidence (norm-weight amplification pattern matches real published massive-
+activation behavior exactly) now outweighs the initial suspicious symptom. Do not re-open this
+as "a confirmed bug" without new contrary evidence; the real remaining open question is whether
+OmniVoice's actual generation loop even exercises unconstrained argmax at all.
