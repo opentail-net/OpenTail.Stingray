@@ -15915,3 +15915,36 @@ audio encode path only -- the acoustic (DAC-style, `hidden=256`) encoder is sepa
 work, and the real `codec_project` combination formula (concatenating acoustic+semantic hidden
 states before RVQ quantization) has not been read yet. Full Higgs voice-cloning is NOT wired end-
 to-end by this entry alone.
+
+## Higgs Audio TTS -- real acoustic (DAC) encoder ALSO confirmed reusable from OmniVoice; earlier "not reusable" note corrected, 2026-09-07
+
+Immediately following the semantic-encoder reuse above, re-checked the acoustic encoder side
+more carefully. **Correction, per this project's documentation discipline**: the same entry's own
+earlier note ("Higgs's acoustic encoder is a genuinely DIFFERENT config... `hidden=256` vs
+OmniVoice's `64`") was WRONG -- an apples-to-oranges comparison between Higgs's real
+`kAcousticHiddenSize=256` (the encoder's FINAL projected output dimension) and
+`OmniVoiceAcousticEncoderWeights.EncoderHiddenSize=64` (the encoder's STARTING dimension, not
+final). Read `codec.cpp`'s real `load_encoder_block`/`kEncoderChannels`/`kUpsampleRatios` in full:
+`kEncoderChannels=[64,128,256,512,1024,2048]` (identical channel-doubling progression) and
+`kUpsampleRatios=[8,5,4,2,3]` (the SAME real array OmniVoice's own `DownsamplingRatios` already
+has, reused for the encoder's own strided downsample convs with kernel `2*ratio`) -- and
+OmniVoice's own encoder's final `Conv2Weight` shape comment already says `[256, 2048, 3]`, i.e.
+OmniVoice's encoder ALSO ends at 256 channels. **These are the same real architecture.**
+
+Generalized `OmniVoiceAcousticEncoderWeights`'s constructor the same way as the semantic encoder
+(hardcoded `SafetensorsLoader` -> generic `Func<string, float[]>`, zero behavior change for
+OmniVoice's own callers). `HiggsAcousticEncoderRealWeightsTests` (new): loads the real acoustic
+encoder from Higgs's real checkpoint via its own `tied.embedding.modality_embeddings.0.model.`
+codec prefix (worked on the first try, confirming the architecture-match hypothesis was correct,
+not a lucky guess) and runs `OmniVoiceAcousticEncoder.Encode` on synthetic audio -- 8.75s
+wall-clock, genuine run, finite non-degenerate latent output.
+
+**Higgs Audio TTS now has BOTH real halves of its reference-audio encode path** (acoustic + real
+semantic encoders, both confirmed reusable and verified this session). Real remaining gap to full
+voice-cloning: the real `codec_project` combination formula (how the acoustic+semantic hidden
+states are concatenated/projected together before RVQ quantization) and the RVQ quantizer's own
+ENCODE direction (only the DECODE direction -- `HiggsCodecDecoderWeights`'s dequantization -- has
+been ported so far) have not yet been read/ported. Real next step for a future pass: read
+`codec.cpp`'s `codec_project`/quantizer-encode real formula, then wire a full
+`HiggsCodecEncoder.Encode` analogous to VoxCPM2's `Encode`/`GenerateWithPrompt` wiring earlier
+this session.

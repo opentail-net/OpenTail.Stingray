@@ -25,10 +25,26 @@ public sealed class OmniVoiceAcousticEncoderWeights
     public float[] Conv2Weight { get; } // [256, 2048, 3]
     public float[] Conv2Bias { get; }
 
-    public OmniVoiceAcousticEncoderWeights(SafetensorsLoader loader)
+    public OmniVoiceAcousticEncoderWeights(SafetensorsLoader loader) : this(loader.ReadF32)
     {
-        Conv1Weight = loader.ReadF32("acoustic_encoder.conv1.weight");
-        Conv1Bias = loader.ReadF32("acoustic_encoder.conv1.bias");
+    }
+
+    /// <summary>
+    /// Real, generalized constructor, added 2026-09-07 so this same class can be reused for
+    /// Higgs Audio TTS's real acoustic encoder -- confirmed identical real architecture
+    /// (`kEncoderChannels=[64,128,256,512,1024,2048]`, `kUpsampleRatios=[8,5,4,2,3]` reused
+    /// for the encoder's own strided downsample convs with real kernel `2*ratio`, same DAC-style
+    /// residual-units-before-downsample block order), verified directly against
+    /// `higgs_audio_tts/codec.cpp`'s own `load_encoder_block`, not assumed -- an earlier session
+    /// note comparing `kAcousticHiddenSize=256` (Higgs's final projected dim) against this class's
+    /// `EncoderHiddenSize=64` (the STARTING dim, not final) was an apples-to-oranges mistake; this
+    /// class's OWN final `Conv2Weight` is ALSO `[256, 2048, 3]`, i.e. the same 256-channel final
+    /// projection -- the two encoders are the same real architecture after all.
+    /// </summary>
+    public OmniVoiceAcousticEncoderWeights(Func<string, float[]> get)
+    {
+        Conv1Weight = get("acoustic_encoder.conv1.weight");
+        Conv1Bias = get("acoustic_encoder.conv1.bias");
 
         int channels = EncoderHiddenSize;
         for (int b = 0; b < DownsamplingRatios.Length; b++)
@@ -37,31 +53,31 @@ public sealed class OmniVoiceAcousticEncoderWeights
             int nextChannels = EncoderHiddenSize * (1 << (b + 1));
             Blocks[b] = new OmniVoiceDacEncoderBlockWeights
             {
-                Res1 = LoadResidualUnit(loader, $"{p}.res_unit1"),
-                Res2 = LoadResidualUnit(loader, $"{p}.res_unit2"),
-                Res3 = LoadResidualUnit(loader, $"{p}.res_unit3"),
-                SnakeAlpha = loader.ReadF32($"{p}.snake1.alpha"),
-                ConvWeight = loader.ReadF32($"{p}.conv1.weight"),
-                ConvBias = loader.ReadF32($"{p}.conv1.bias"),
+                Res1 = LoadResidualUnit(get, $"{p}.res_unit1"),
+                Res2 = LoadResidualUnit(get, $"{p}.res_unit2"),
+                Res3 = LoadResidualUnit(get, $"{p}.res_unit3"),
+                SnakeAlpha = get($"{p}.snake1.alpha"),
+                ConvWeight = get($"{p}.conv1.weight"),
+                ConvBias = get($"{p}.conv1.bias"),
                 InChannels = channels,
                 OutChannels = nextChannels,
             };
             channels = nextChannels;
         }
 
-        FinalSnakeAlpha = loader.ReadF32("acoustic_encoder.snake1.alpha");
-        Conv2Weight = loader.ReadF32("acoustic_encoder.conv2.weight");
-        Conv2Bias = loader.ReadF32("acoustic_encoder.conv2.bias");
+        FinalSnakeAlpha = get("acoustic_encoder.snake1.alpha");
+        Conv2Weight = get("acoustic_encoder.conv2.weight");
+        Conv2Bias = get("acoustic_encoder.conv2.bias");
     }
 
-    private static OmniVoiceResidualUnitWeights LoadResidualUnit(SafetensorsLoader loader, string prefix) => new()
+    private static OmniVoiceResidualUnitWeights LoadResidualUnit(Func<string, float[]> get, string prefix) => new()
     {
-        Snake1Alpha = loader.ReadF32($"{prefix}.snake1.alpha"),
-        Conv1Weight = loader.ReadF32($"{prefix}.conv1.weight"),
-        Conv1Bias = loader.ReadF32($"{prefix}.conv1.bias"),
-        Snake2Alpha = loader.ReadF32($"{prefix}.snake2.alpha"),
-        Conv2Weight = loader.ReadF32($"{prefix}.conv2.weight"),
-        Conv2Bias = loader.ReadF32($"{prefix}.conv2.bias"),
+        Snake1Alpha = get($"{prefix}.snake1.alpha"),
+        Conv1Weight = get($"{prefix}.conv1.weight"),
+        Conv1Bias = get($"{prefix}.conv1.bias"),
+        Snake2Alpha = get($"{prefix}.snake2.alpha"),
+        Conv2Weight = get($"{prefix}.conv2.weight"),
+        Conv2Bias = get($"{prefix}.conv2.bias"),
     };
 }
 
