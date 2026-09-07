@@ -14325,3 +14325,35 @@ real streaming decoder/encoder state (currently one-shot per chunk), reference-v
 encoding for voice cloning (`resolve_prompt_acoustic_means`, not started), and the real
 `request.generation.do_sample`/temperature/top-k/top-p path (argmax-only currently, matches
 Higgs's own remaining sampling gap).
+
+## PersonaPlex -- Depformer real architecture confirmed, genuinely NOT reusable as a bridge, 2026-09-07
+
+Read `depformer.cpp`'s `load_depformer_layer`/`depformer_step_layer_weights` (~line 72-190) in
+full. Real, precisely scoped finding: **the Depformer cannot use the "present as synthetic
+qwen-family GGUF" bridging trick at all** -- unlike every other model this session, its packed
+QKV tensor holds a SEPARATE, INDEPENDENT weight bank PER STEP (real shape
+`self_attn.in_proj_weight: [depformerSteps*3*hidden, hidden]`, `out_proj.weight:
+[depformerSteps*hidden, hidden]`, sliced via `view_linear_rows` at
+`step*3*hidden`/`step*hidden` row offsets), and the gating MLPs are ALREADY separate real
+tensors per step (`gating.{0-15}.linear_in/linear_out`, confirmed real
+`depformerSteps=16=lmCodebooks`, matching the earlier tensor dump). This is fundamentally
+different from a normal transformer, which reuses the SAME weights at every sequence position --
+`ForwardPass`'s generic causal-decoder graph has no way to express "different weights per
+position," so this needs a genuinely bespoke, from-scratch per-step decoder (structurally
+similar to how `VoxCpm2ResidualLm` needed its own bespoke port rather than reusing `ForwardPass`,
+but for a different reason -- no-RoPE there, per-step-varying-weights here).
+
+Real, additional confirmed detail: `depformer_in.{step}.weight` (real per-step Linear,
+`[depformerHidden=1024, lmHidden=4096]`) is how conditioning flows FROM the temporal LM's
+per-frame hidden state INTO the Depformer at the start of each frame's 16-step codebook
+generation -- the temporal LM's `PersonaPlexLmTensorSource` (already real-weight verified) is
+the real upstream input to this piece, not a separate thing.
+
+**PersonaPlex status: ~25%, unchanged this update (scoping only).** Real next step if resumed:
+implement a bespoke `PersonaPlexDepformer.cs` with 16 real per-step weight slices (mirroring
+`VoxCpm2ResidualLm`'s from-scratch-decoder pattern, NOT the tensor-source-bridge pattern used
+for every other model this session), real tensor names now fully confirmed
+(`depformer.layers.{i}.{norm1.alpha,self_attn.in_proj_weight,self_attn.out_proj.weight,
+norm2.alpha,gating.{0-15}.{linear_in,linear_out}.weight}`, `depformer_in.{0-15}.weight`). The
+full Mimi neural codec (`mimi/*`, real 32-level RVQ, own transformer stack) remains completely
+unread and is a separately large piece.
