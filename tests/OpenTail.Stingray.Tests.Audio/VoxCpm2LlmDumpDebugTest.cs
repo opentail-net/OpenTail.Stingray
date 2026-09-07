@@ -34,13 +34,15 @@ public sealed class VoxCpm2LlmDumpDebugTest : HeavyTestBase
             var offsets = (object[])model.Metadata["audiocpp.embedded_files.offsets"];
             var data = (object[])model.Metadata["audiocpp.embedded_files.data"];
             var bytes = data.Select(o => (byte)Convert.ToInt64(o)).ToArray();
+            Console.Error.WriteLine($"[VoxCpm2LlmDump] embedded files: {string.Join(" | ", names.Cast<string>())}");
             for (int i = 0; i < names.Length; i++)
             {
-                if ((string)names[i] != "config.json") continue;
+                string name = (string)names[i];
+                if (name != "config.json" && name != "tokenizer.json" && name != "tokenizer_config.json") continue;
                 long start = Convert.ToInt64(offsets[i]);
                 long end = i + 1 < offsets.Length ? Convert.ToInt64(offsets[i + 1]) : bytes.Length;
                 string content = System.Text.Encoding.UTF8.GetString(bytes, (int)start, (int)(end - start));
-                File.WriteAllText(Path.Combine(root, "..", "voxcpm2-config.json"), content);
+                File.WriteAllText(Path.Combine(root, "..", $"voxcpm2-{name}"), content);
             }
         }
 

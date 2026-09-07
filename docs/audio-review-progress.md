@@ -13807,6 +13807,30 @@ chat template first (mirrors work already done for MOSS-TTS-Nano's
 `SentencePieceBpeTokenizer`/`MossTtsPromptBuilder`), THEN this prefill wiring becomes
 end-to-end testable.
 
+**Update, 2026-09-07 (same session) -- `VoxCpm2TextTokenizer.cs` implemented and real-weight
+verified.** VoxCPM2's `tokenizer.json` is a standard HF BPE export with a SentencePiece-style
+space-to-`▁` `Replace` normalizer (confirmed by inspecting the real dumped file), so the base
+vocab/merge/normalize path reuses the EXISTING `HuggingFaceTokenizerSource`/`GgufTokenizer`
+pipeline directly (same real space<->metaspace substitution already battle-tested for
+Gemma/Llama SPM-style exports) -- no bespoke BPE engine needed this time, unlike MOSS-TTS-
+Nano's raw SentencePiece protobuf. Two genuinely bespoke pieces layered on top, ported from
+`tokenizer_text.cpp`: (1) the four reserved audio-boundary token ids
+(`<|audio_start|>`=101/`<|audio_end|>`=102/`<|audio_prompt_start|>`=103/
+`<|audio_prompt_end|>`=104, confirmed via the real dumped `tokenizer_config.json`) -- these are
+NOT in `tokenizer.json`'s own `added_tokens` array for this checkpoint (only in
+`tokenizer_config.json`'s `added_tokens_decoder`), which the generic
+`HuggingFaceTokenizerSource` loader doesn't read, so `VoxCpm2TextTokenizer.Load` parses that
+file directly for just these four ids; (2) `build_cjk_split_map`'s real post-merge expansion --
+any multi-char-CJK-only vocab token (after stripping `▁`) whose individual codepoints ALSO
+exist as their own single-char vocab entries gets expanded back into those char ids after BPE
+merging (real, deliberate reference behavior, not a bug -- keeps VoxCPM2's downstream
+per-character-ish CJK prosody modeling from seeing merged multi-char tokens). Added
+`VoxCpm2TextTokenizer.LoadFromPackedGguf(GgufModel)` to extract `tokenizer.json`/
+`tokenizer_config.json`/`special_tokens_map.json` from the packed GGUF's
+`audiocpp.embedded_files.*` metadata into a scratch dir and load from there. Real-weight test
+(`VoxCpm2TextTokenizerRealWeightsTests`) confirms all four audio token ids resolve and encodes
+both English and CJK real text: 1.0s wall-clock, genuine run.
+
 **Update, 2026-09-07 (same session) -- `VoxCpm2ResidualLm.cs` implemented and real-weight
 verified.** Bespoke causal 8-layer decoder (`Step(embedding)`), NO RoPE anywhere, real
 persistent per-layer KV cache (`List<float[]>` per layer, grows across `Step` calls, cleared
