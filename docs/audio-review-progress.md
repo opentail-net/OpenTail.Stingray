@@ -14523,3 +14523,41 @@ find which layer first produces the suspiciously convergent representation; (3) 
 confirm the SAME safetensors checkpoint loaded through a reference PyTorch/HF `transformers`
 run (outside this codebase) does NOT show the same collapse, to rule out a genuinely bad
 checkpoint download rather than this port's bridging code.
+
+## OmniVoice -- layer-by-layer bisection: hidden states do NOT converge, bug is downstream of the transformer layers, 2026-09-07
+
+Ran the layer-by-layer bisection proposed in the prior entry (`PerLayerHiddenStateDivergence_
+BetweenTwoRealPrompts`, using `ForwardPass`'s real `EnableHiddenTaps`/`HiddenTapsAt` API --
+the same technique already used successfully for the Qwen3 Forced Aligner bug). **Real, useful
+negative result: the two real prompts' hidden states do NOT converge at any layer.** The
+relative difference between the two prompts' final-position hidden states stays in a
+0.45-1.07 range across all 28 layers, never collapsing toward zero the way it would if some
+layer were silently discarding/overwriting the input-dependent signal. This RULES OUT
+"hidden-state collapse inside the transformer stack" as the mechanism -- the per-layer attention
++ MLP math is genuinely processing the two different prompts differently, all the way through
+layer 27.
+
+**A separate, real anomaly found instead**: the hidden-state MAGNITUDE grows roughly
+exponentially with depth -- `rmsA`/`rmsB` go from ~0.5-0.9 at layer 0 to **65.7/207.6 at layer
+27** (prompt B's final-layer RMS is ~280x its layer-0 value). A residual-stream magnitude
+growing this aggressively by the final layer, well beyond the ~2-4x range seen through the
+middle layers, is a real, concrete lead: if the final `output_norm`
+(pre-lm-head RMSNorm) or the lm-head matmul has any numerical-precision sensitivity, saturation,
+or scale-related bug, a hidden state this large could plausibly produce the argmax-collapse
+symptom (a real dominant DIRECTION could still get washed out by a sufficiently large but
+input-INDEPENDENT component of the pre-norm vector, if e.g. the norm's own weight vector or eps
+handling has an issue at this scale) even though the RAW hidden states clearly still differ
+between prompts.
+
+**Real next step, precisely scoped**: since the transformer LAYERS are cleared, focus
+specifically on `output_norm.weight` and the tied lm-head projection -- (1) check whether the
+magnitude growth itself matches the real reference's own expected behavior (this could be
+entirely normal for this checkpoint's real architecture and NOT the bug at all -- compare
+against a reference PyTorch run's own per-layer hidden-state norms if at all obtainable, rather
+than assuming abnormal growth = bug); (2) if growth is real/expected, look specifically at
+whether `RmsNorm(hidden, eps=1e-6)` at this hidden-state scale (rms ~100-200) combined with this
+specific `output_norm.weight`'s real per-channel values produces a post-norm vector that's
+unexpectedly dominated by one direction; (3) directly dump the POST-norm (pre-lm-head) vectors
+for both prompts and compare their cosine similarity -- if they're nearly identical in direction
+despite differing raw hidden states, that pinpoints the norm step itself as the culprit rather
+than the lm-head matmul.

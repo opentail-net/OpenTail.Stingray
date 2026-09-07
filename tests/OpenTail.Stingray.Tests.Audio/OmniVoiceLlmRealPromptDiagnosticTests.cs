@@ -121,4 +121,76 @@ public sealed class OmniVoiceLlmRealPromptDiagnosticTests : HeavyTestBase
 
         Console.Error.WriteLine($"[OmniVoiceEmbeddingNorm] row85473_norm={dominantNorm:F4} sample_median={median:F4} sample_max={max:F4}");
     }
+
+    /// <summary>Layer-by-layer bisection (real next step per the doc's own entry): captures each
+    /// layer's hidden-state tap for two different real prompts and reports the per-layer RMS
+    /// difference between them, to find WHERE (if anywhere) the representations collapse toward
+    /// each other -- the same technique already used successfully for the Qwen3 Forced Aligner
+    /// bug this session.</summary>
+    [Fact]
+    public void PerLayerHiddenStateDivergence_BetweenTwoRealPrompts()
+    {
+        string? modelDir = FindRepoDir("models/_models/omnivoice");
+        Assert.SkipUnless(modelDir != null
+            && File.Exists(Path.Combine(modelDir, "model.safetensors"))
+            && File.Exists(Path.Combine(modelDir, "tokenizer.json")),
+            "omnivoice model.safetensors/tokenizer.json not found");
+
+        var result = OpenTail.Stingray.Core.HuggingFaceTokenizerSource.Load(modelDir!);
+        Assert.True(result.IsUsable, $"tokenizer load failed: {string.Join("; ", result.Rejections)}");
+        var tokenizer = OpenTail.Stingray.Core.GgufTokenizer.FromSource(result.Source!);
+
+        var promptA = tokenizer.Encode("The quick brown fox jumps over the lazy dog.").ToArray();
+        var promptB = tokenizer.Encode("Quantum computers use qubits instead of classical bits.").ToArray();
+
+        const int numLayers = 28;
+        const int hiddenDim = 1024;
+
+        using var sourceA = new OpenTail.Stingray.Audio.OmniVoice.OmniVoiceLlmTensorSource(
+            Path.Combine(modelDir!, "model.safetensors"),
+            numLayers: numLayers, hiddenDim: hiddenDim, numHeads: 16, numKvHeads: 8, headDim: 128, ffDim: 3072,
+            vocabSize: 151676, ropeTheta: 1_000_000f, rmsNormEps: 1e-6f);
+        var hpA = OpenTail.Stingray.Core.ModelHyperparams.FromGgufMetadata(sourceA.Metadata);
+        using var backendA = new OpenTail.Stingray.Cpu.CpuBackend();
+        using var fwdA = new OpenTail.Stingray.Engine.ForwardPass(sourceA, backendA, hpA);
+
+        using var sourceB = new OpenTail.Stingray.Audio.OmniVoice.OmniVoiceLlmTensorSource(
+            Path.Combine(modelDir!, "model.safetensors"),
+            numLayers: numLayers, hiddenDim: hiddenDim, numHeads: 16, numKvHeads: 8, headDim: 128, ffDim: 3072,
+            vocabSize: 151676, ropeTheta: 1_000_000f, rmsNormEps: 1e-6f);
+        var hpB = OpenTail.Stingray.Core.ModelHyperparams.FromGgufMetadata(sourceB.Metadata);
+        using var backendB = new OpenTail.Stingray.Cpu.CpuBackend();
+        using var fwdB = new OpenTail.Stingray.Engine.ForwardPass(sourceB, backendB, hpB);
+
+        Assert.True(fwdA.SupportsHiddenTaps, "ForwardPass does not support hidden-state taps -- cannot bisect.");
+
+        var layerIds = Enumerable.Range(0, numLayers).ToArray();
+        fwdA.EnableHiddenTaps(layerIds);
+        fwdB.EnableHiddenTaps(layerIds);
+
+        fwdA.Prefill(promptA);
+        fwdB.Prefill(promptB);
+
+        var tapsA = fwdA.HiddenTapsAt(promptA.Length - 1).ToArray();
+        var tapsB = fwdB.HiddenTapsAt(promptB.Length - 1).ToArray();
+        Assert.Equal(numLayers * hiddenDim, tapsA.Length);
+        Assert.Equal(numLayers * hiddenDim, tapsB.Length);
+
+        for (int layer = 0; layer < numLayers; layer++)
+        {
+            double sumSqA = 0, sumSqB = 0, sumSqDiff = 0;
+            int baseIdx = layer * hiddenDim;
+            for (int d = 0; d < hiddenDim; d++)
+            {
+                float a = tapsA[baseIdx + d], b = tapsB[baseIdx + d];
+                sumSqA += (double)a * a;
+                sumSqB += (double)b * b;
+                sumSqDiff += (double)(a - b) * (a - b);
+            }
+            float rmsA = (float)Math.Sqrt(sumSqA / hiddenDim);
+            float rmsB = (float)Math.Sqrt(sumSqB / hiddenDim);
+            float rmsDiff = (float)Math.Sqrt(sumSqDiff / hiddenDim);
+            Console.Error.WriteLine($"[OmniVoiceLayerBisect] layer={layer,2} rmsA={rmsA:F4} rmsB={rmsB:F4} rmsDiff={rmsDiff:F4} relDiff={rmsDiff / MathF.Max(rmsA, rmsB):F4}");
+        }
+    }
 }
