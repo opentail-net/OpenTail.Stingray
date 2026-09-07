@@ -13301,9 +13301,25 @@ full to confirm the real splice mechanism and KV-cache shape, then build a
 `VibeVoiceLlmTensorSource` analogous to `OmniVoiceLlmTensorSource`/
 `QwenAsrLlmSafetensorsTensorSource`.
 
+**Update, 2026-09-07 (same session) -- implemented `VibeVoiceLlmTensorSource`, the Qwen2
+`ForwardPass` bridge for the text decoder.** Read `text_decoder.cpp`'s `make_qwen_decoder_
+config`/`load_layer_weights` in full (not guessed): confirms a genuine Qwen2/2.5-family GQA
+decoder -- fused-bias `q_proj`/`k_proj`/`v_proj` (real QKV bias, Qwen2's convention, NOT
+Qwen3's bias-free + `q_norm`/`k_norm` variant), standard RoPE, SwiGLU MLP, RMSNorm. Real
+tensor prefix `model.language_model.layers.{i}.*`, with `lm_head` either a real separate
+tensor or (when absent) tied to `embed_tokens.weight` -- both cases handled. Implemented as
+`VibeVoiceLlmTensorSource`, structured identically to `OmniVoiceLlmTensorSource`/
+`QwenAsrLlmTensorSource` (present real weights under `ForwardPass`'s native GGUF tensor
+naming -- `general.architecture=qwen2` -- instead of writing a bespoke Transformer forward
+pass) but backed by `RvcPackedTensorSource` over the SAME single packed checkpoint the
+tokenizer encoders/connector already read, rather than a separate safetensors/GGUF file.
+Not yet real-weight tested (checkpoint still downloading) or wired into a generation loop --
+a real, compiling, structurally-complete bridge class, next step is exercising it once the
+checkpoint lands and real `VibeVoiceDecoderConfig` numbers (hidden_size, num_layers, etc.)
+can be read from `config.json`.
+
 **Still remaining for a complete VibeVoice ASR pipeline**: real-weight verification of the
-tokenizer encoders + connector once the checkpoint finishes downloading, the text decoder
-(Qwen2.5 GQA, real reuse opportunity noted above), the real text tokenizer
-(`tokenizer_text.cpp`), and the generation loop (`session.cpp`, 1210 lines -- ties audio
-encoding + connector projection + decoder prefill/generation together, not yet read in
-detail).
+tokenizer encoders + connector + LLM bridge once the checkpoint finishes downloading, the
+real text tokenizer (`tokenizer_text.cpp`), and the generation loop (`session.cpp`, 1210
+lines -- ties audio encoding + connector projection + decoder prefill/generation together,
+not yet read in detail).
