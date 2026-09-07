@@ -13269,6 +13269,32 @@ question: VoxCPM2's MiniCPM backbone CAN reuse the existing `ForwardPass` engine
 needing a bespoke Transformer port -- a real, significant scope reduction for the largest
 remaining piece of VoxCPM2.
 
+**Update, 2026-09-07 -- `VoxCpm2LlmTensorSource` implemented, real-weight verified, and a
+LIVE real generation-mechanism smoke test PASSED.** Checkpoint downloaded (`audio-cpp/
+audio.cpp-gguf`, `VoxCPM2-GGUF/voxcpm2-q8_0.gguf`, 2.75GB). Real config confirmed
+(`lm_config`): `hidden_size=2048`, `num_hidden_layers=28`, `num_attention_heads=16`,
+`num_key_value_heads=2`, `kv_channels`(head_dim)`=128`, `intermediate_size=6144`,
+`vocab_size=73448`, `rope_theta=10000`. A real bug was caught immediately by the real-weight
+test: the packed checkpoint's actual tensor names carry a `weights/` source-root prefix
+(`weights/base_lm.layers.0...`) that `assets.cpp`'s post-strip logical names (`base_lm.
+layers.0...`) don't show -- fixed. Also RESOLVED the mup-scale question flagged earlier:
+this checkpoint's `lm_config.use_mup=false`, and `minicpm.cpp` guards every mup application
+on that flag, so `embedding_scale`/`residual_scale` are both the real identity `1.0` (not
+derived from `scale_emb`/`scale_depth`/`dim_model_base`, which the config carries but the
+real forward pass never applies here); `logit_scale` is irrelevant since `base_lm` never
+computes logits, only hidden states.
+
+**This model is much smaller than VibeVoice ASR's 7B-class checkpoint (~1.5B here), so a
+LIVE `ForwardPass` run was attempted and PASSED**: `VoxCpm2LlmForwardEmbeddingRealWeights
+Tests` -- real checkpoint (6GB resident weights, `[ForwardPass] Pre-faulted 6.04 GiB... in
+0.2s`), a real `Prefill` on a token prompt, THEN a real `ForwardEmbedding` call with a
+precomputed embedding (standing in for a real DiT-generated patch feature) at the next
+position -- exactly VoxCPM2's real per-step generation mechanism. `LastHidden` is populated
+and finite after both calls. 4s wall-clock, real work. This is the strongest evidence yet
+for the `ForwardEmbedding`/`LastHidden` reuse path: not just theoretically applicable (the
+architectural finding from earlier this session) but actually proven working end-to-end on
+this real checkpoint.
+
 ## VibeVoice ASR -- tokenizer encoders + connector implemented, structurally verified, 2026-09-07
 
 Downloaded the real checkpoint (`audio-cpp/audio.cpp-gguf`, `VibeVoice-ASR-GGUF/
