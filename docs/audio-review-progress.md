@@ -13844,3 +13844,53 @@ no-op per rule 12). Remaining VoxCPM2 gaps: the PREFILL stage
 (`VoxCPM2PromptPrefillRuntime` -- batch-embeds the text/reference-audio prompt through
 `base_lm`+`residual_lm` before the per-frame loop starts), the real text tokenizer, and
 wiring `generate_once`'s full loop end-to-end using all now-built pieces.
+
+## VibeVoice TTS -- diffusion head, DPM-Solver++ scheduler, CFG sampler ported, 2026-09-07
+
+Pivoted to VibeVoice TTS (distinct from VibeVoice ASR -- shares the tokenizer encoder/
+connector/Qwen2 LLM-bridge architecture already ported for ASR, but generates speech through
+a genuinely different path: an attention-free diffusion head predicting acoustic latents,
+NOT the ASR side's Gaussian VAE sampling). Read `diffusion_head.cpp` (525 lines),
+`scheduler.cpp` (276 lines), `diffusion_sampler.cpp` (123 lines) in full -- all real, not
+guessed.
+
+**`VibeVoiceDiffusionHead`**: a small DiT with NO self-attention -- per-frame-independent
+AdaLN-Zero-modulated SwiGLU blocks. `x = noisy_images_proj(noisy)` [latent->hidden],
+`c = cond_proj(condition) + timestep_embedding(t)` (real sinusoidal timestep embedding,
+256-wide frequencies `exp(-log(10000)*i/128)`, through a 2-layer SiLU MLP). Each of
+`head_layers` blocks: `RMSNorm(WITH per-channel weight, no bias) -> modulate(shift,scale from
+AdaLN(SiLU(c))) -> SwiGLU -> x + gate*ffnOut`. Final layer's own AdaLN is 2-way (shift/scale
+only, no gate) and its RMSNorm has NO learnable weight at all (real reference:
+`norm_data(std::nullopt, std::nullopt)`) -- a real, deliberate asymmetry between the head
+layers and the final layer, ported exactly rather than "simplified" to match the head layers'
+shape. Every Linear in this module is bias-free.
+
+**`VibeVoiceDpmSolverScheduler`**: real 2nd-order multistep DPM-Solver++ over a cosine-beta
+DDPM schedule (`alpha_bar(t)=cos((t+0.008)/1.008*pi/2)^2`), `v_prediction` only (real
+reference hard-refuses any other `prediction_type`/`beta_schedule`/`diffusion_type`, so this
+port hardcodes the same restriction). Ported the real `lower_order_nums`/`lower_order_final`/
+`lower_order_second` bookkeeping that decides first- vs second-order update per step exactly,
+including the `timesteps.size() < 15` real threshold for forcing first-order near the end of a
+short schedule.
+
+**`VibeVoiceDiffusionSampler`**: real classifier-free-guidance sampling loop. Each solver step
+evaluates the head ONCE on `[speech; speech]` (the SAME noisy latent duplicated, conditioned on
+`[positive; negative]` -- a real, deliberate detail confirmed by re-reading
+`duplicate_positive_half`: this is not two independently-noised branches), combines
+`eps = uncond + cfgScale*(cond-uncond)`, and feeds that single combined `eps` into the next
+scheduler step (matching the reference's `apply_cfg` writing the same guided value into both
+halves of its buffer, even though only one half is ever read back out afterward).
+
+**Status: implemented, compiles clean, NOT yet real-weight verified.** The
+`models/_models/vibevoice-tts/vibevoice-7b-q8_0.gguf` checkpoint present at session start was
+ALSO truncated (`GgufModel.Open` threw `InvalidDataException` on
+`model.language_model.layers.1.mlp.down_proj.weight` exceeding the file size, same failure
+mode hit twice already this session for Higgs Audio TTS) -- redownload kicked off in the
+background but the `stingray` CLI's own build lock (shared with the concurrent Higgs Audio TTS
+download's `dotnet run`) blocked it from actually running; needs to be retried once the Higgs
+download's CLI process exits. Real next step if resumed: retry the `stingray pull` for
+`vibevoice-7b-q8_0` from `audio-cpp/audio.cpp-gguf`, confirm the file opens via
+`GgufModel.Open` without truncation, dump `config.json`'s real `hidden_size`/`latent_size`/
+`head_layers`/`head_ffn_ratio`/`rms_norm_eps`/`ddpm_num_steps` and the
+`model.prediction_head.*` tensor names/shapes, then write a real-weight smoke test for
+`VibeVoiceDiffusionHead.Predict`+`VibeVoiceDiffusionSampler.Sample`.
