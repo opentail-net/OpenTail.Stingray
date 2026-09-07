@@ -16757,3 +16757,53 @@ feature, not needed for the already-complete text-to-waveform/voice-cloning/syst
 and a fresh dedicated pass should read `speech_tokenizer.cpp`'s (or wherever Mimi's real encoder
 lives in this reference) `build_encoder`-equivalent function in full before porting, matching this
 session's established discipline.
+
+## VoxCPM2 -- real tokenizer `Prepend`-normalizer bug found and fixed; deeper LM-forward divergence remains, 2026-09-07
+
+Investigated the user's real listening-check finding ("hello" is clear but it gets confused
+quickly) via real dump-and-compare against the vendored reference, same methodology that resolved
+Qwen3 Forced Aligner: added `trace_log_f32`/`trace_log_i32` hooks to
+`examples/audio.cpp/src/models/voxcpm2/generator.cpp` (local-only, gitignored vendored file) to
+capture the reference's own real prefill-stage `lm_hidden`/`residual_hidden` values and prompt
+token ids for the prompt "Hello there, this is a real end to end test of speech synthesis."
+Compared against a matching new debug test (`VoxCpm2PrefillCompareDebugTest.cs`) that replicates
+`VoxCpm2Generator.Generate`'s own real text-only prefill loop and prints the same sample indices.
+CFM-patch generation steps depend on real, accepted non-bit-exact RNG (same documented gap as
+VibeVoice's diffusion sampler / OmniVoice's Gumbel sampler), so only the RNG-independent
+prefill-only step (step 0, before any CFM sampling) is a valid comparison point.
+
+**Real bug found**: prompt token ids diverged starting at the FIRST token only (all 15 subsequent
+tokens identical) -- reference token 0 = 21045, ours (pre-fix) = 15934. Traced to VoxCPM2's real
+embedded `tokenizer.json` normalizer sequence
+`[{"type":"Prepend","prepend":"▁"}, {"type":"Replace","pattern":{"String":" "},"content":"▁"}]` --
+an UNCONDITIONAL leading-metaspace prepend, independent of `tokenizer_config.json`'s
+`add_prefix_space` field (which this checkpoint doesn't even declare). The shared
+`HuggingFaceTokenizerSource.cs` loader only checked `config.AddPrefixSpace` and never inspected
+the tokenizer.json's own `Prepend` normalizer type. Confirmed via
+`VoxCpm2TokenizerConfigDumpDebugTest.cs` extracting and inspecting the real embedded
+tokenizer.json/tokenizer_config.json directly (not guessed).
+
+**Fix**: added `HasPrependMetaspaceNormalizer`/`IsPrependMetaspace` detection to
+`src/OpenTail.Stingray.Core/HuggingFaceTokenizerSource.cs`, changing
+`AddSpacePrefix = isSpmStyleBpe && config.AddPrefixSpace` to
+`AddSpacePrefix = isSpmStyleBpe && (config.AddPrefixSpace || hasPrependMetaspace)`. Post-fix,
+`promptTokenIds` now match the reference exactly:
+`[21045,1887,59342,1536,1410,1348,2902,2164,1385,2164,2076,1379,12067,10441,72,101]`. This is
+shared infrastructure (also used by FishSpeech and Higgs Audio TTS), so re-ran
+`HiggsTtsTextTokenizerRealWeightsTests` post-fix for regression -- passed cleanly with real
+weight-load timing (2.3s), confirming Higgs's own tokenizer.json doesn't declare this normalizer
+and is unaffected.
+
+**Remaining real gap**: despite the token-id fix being exact, the prefill-stage `lm_hidden` values
+still diverge substantially from the reference at the same sample indices -- e.g. index 0:
+ref=-0.639935 vs ours=-0.291328; index 52: ref=+0.095093 vs ours=-0.282596 (sign flip); index 157:
+ref=+0.188534 vs ours=-0.151823 (sign flip). This is NOT the same bug as the tokenizer issue --
+it's a further, real divergence in the LM forward-pass computation itself (base_lm and/or the
+fusion/residual-lm projection), still open. Ruled out already (this session, before the tokenizer
+fix was found): per-head QK-RMSNorm is NOT applicable to VoxCPM2's MiniCPM-family `base_lm`/
+`residual_lm` (confirmed via grep of the reference's `minicpm.cpp` -- zero `q_norm`/`k_norm`
+references, a real architecture difference from Qwen3, not a missed port). Next step for a future
+pass: dump per-layer hidden states (not just the final prefill output) to bisect which of the 28
+transformer layers first diverges, following the same real dump-and-compare discipline.
+
+Tokenizer fix is real, verified, and committed independently of the open LM-forward-pass gap.

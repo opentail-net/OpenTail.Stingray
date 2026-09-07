@@ -146,6 +146,7 @@ public static class HuggingFaceTokenizerSource
             // built for GGUF-sourced Gemma/Llama SPM vocabularies) -- routing a detected HF export
             // through that same family name reuses it instead of reimplementing the substitution.
             bool isSpmStyleBpe = HasSpaceToMetaspaceNormalizer(root);
+            bool hasPrependMetaspace = HasPrependMetaspaceNormalizer(root);
 
             var addedSpecial = new Dictionary<string, int>(StringComparer.Ordinal);
             var addedTypes = new Dictionary<int, int>();
@@ -194,7 +195,7 @@ public static class HuggingFaceTokenizerSource
                 PadTokenId = config.Pad ?? config.Eos ?? 2,
                 AddBosToken = config.AddBos,
                 ModelFamily = isSpmStyleBpe ? "gemma" : "hf-bpe",
-                AddSpacePrefix = isSpmStyleBpe && config.AddPrefixSpace,
+                AddSpacePrefix = isSpmStyleBpe && (config.AddPrefixSpace || hasPrependMetaspace),
                 MergesAreRankPriority = isSpmStyleBpe,
                 TokenizerPreRawRegex = preTokenizerRawRegex,
                 ChatTemplate = config.ChatTemplate,
@@ -350,6 +351,46 @@ public static class HuggingFaceTokenizerSource
         return normalizer.TryGetProperty("pattern", out var pattern) && pattern.ValueKind == JsonValueKind.Object
             && pattern.TryGetProperty("String", out var patStr) && patStr.ValueKind == JsonValueKind.String
             && patStr.GetString() == " ";
+    }
+
+    /// <summary>
+    /// Real, distinct signal from `tokenizer_config.json`'s own `add_prefix_space` field (which
+    /// this loader already reads into `config.AddPrefixSpace`): some real SPM-style BPE exports
+    /// (confirmed for VoxCPM2's checkpoint -- found via a real first-token tokenization mismatch
+    /// against the vendored C++ reference, not guessed) declare an UNCONDITIONAL
+    /// `{"type": "Prepend", "prepend": "▁"}` normalizer step ahead of the space-to-metaspace
+    /// `Replace` step, rather than (or in addition to) setting `add_prefix_space` in
+    /// `tokenizer_config.json`. The real HF `tokenizers` library always runs the FULL declared
+    /// normalizer sequence, so this step is authoritative on its own -- checking `AddPrefixSpace`
+    /// alone silently drops the leading `▁` this loader's earlier version relied solely on that
+    /// field for, producing a real, different first-token id than the reference for any prompt
+    /// (confirmed: only the very first token differed, everything after matched exactly).
+    /// </summary>
+    private static bool HasPrependMetaspaceNormalizer(JsonElement root)
+    {
+        if (!root.TryGetProperty("normalizer", out var normalizer) || normalizer.ValueKind != JsonValueKind.Object)
+            return false;
+
+        if (normalizer.TryGetProperty("type", out var seqType) && seqType.ValueKind == JsonValueKind.String
+            && seqType.GetString() == "Sequence"
+            && normalizer.TryGetProperty("normalizers", out var sub) && sub.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var step in sub.EnumerateArray())
+                if (IsPrependMetaspace(step)) return true;
+            return false;
+        }
+
+        return IsPrependMetaspace(normalizer);
+    }
+
+    private static bool IsPrependMetaspace(JsonElement normalizer)
+    {
+        if (normalizer.ValueKind != JsonValueKind.Object) return false;
+        if (!normalizer.TryGetProperty("type", out var type) || type.ValueKind != JsonValueKind.String
+            || type.GetString() != "Prepend")
+            return false;
+        return normalizer.TryGetProperty("prepend", out var prepend) && prepend.ValueKind == JsonValueKind.String
+            && prepend.GetString() == "▁";
     }
 
     /// <summary>
