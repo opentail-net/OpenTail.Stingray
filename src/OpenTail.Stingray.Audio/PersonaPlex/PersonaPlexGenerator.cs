@@ -39,6 +39,17 @@ public static class PersonaPlexGenerator
     // reference's own use of this exact constant during its silence-padding phases.
     public static readonly int[] SilenceTokens = [948, 243, 1178, 546, 1736, 1030, 1978, 2008];
 
+    // Real kSineTokens (session.cpp) -- the real "user" stream placeholder used specifically
+    // during `start_conversation`'s bootstrap padding (distinct from SilenceTokens, which is the
+    // "moshi" stream's placeholder there and the "user" stream's placeholder during ordinary
+    // non-duplex generation).
+    public static readonly int[] SineTokens = [430, 1268, 381, 1611, 1095, 1495, 56, 472];
+
+    // Real kInitialAudioTokens (session.cpp) -- all-AudioInitialToken(2048), the real placeholder
+    // used for BOTH user and moshi streams specifically during voice-prompt embedding replay
+    // (distinct from SilenceTokens/SineTokens, which are the real silence-padding placeholders).
+    public static readonly int[] InitialAudioTokens = [2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048];
+
     public readonly struct Frame(int textToken, int[] audioCodes)
     {
         public int TextToken { get; } = textToken;
@@ -134,6 +145,129 @@ public static class PersonaPlexGenerator
                 for (int d = 0; d < hiddenDim; d++) embedding[d] += table[row + d];
             }
 
+            var textLogits = fwd.ForwardEmbedding(embedding, position++);
+            var hidden = fwd.LastHidden.ToArray();
+            int sampledText = textOptions is null ? ArgMax(textLogits, textVocabSize) : Sampler.Sample(textLogits[..textVocabSize], textOptions, rng);
+            var sampledAudio = depformer.GenerateFrame(hidden, sampledText, audioCodebookSize, audioOptions, rng);
+
+            var output = delayState.FinishWithSampling(sampledText, sampledAudio);
+            if (output != null) frames.Add(new Frame(sampledText, output));
+        }
+        return [.. frames];
+    }
+
+    /// <summary>
+    /// Real voice-id-conditioned generation, ported from `session.cpp`'s `start_conversation` (not
+    /// guessed): replays the real per-voice-id bootstrap embeddings, imports the real delay-ring-
+    /// buffer cache snapshot, pads with real silence frames, then continues into the ordinary
+    /// self-predicting generation loop (<see cref="GenerateDelayed"/>'s own per-step logic).
+    ///
+    /// <para><b>Real, derived simplification (not guessed)</b>: every bootstrap step -- voice-
+    /// prompt embedding replay AND the surrounding silence-padding frames -- supplies EXPLICIT
+    /// (non-null) user/moshi/text values to <see cref="PersonaPlexDelayState.Prepare"/>, which
+    /// marks every stream `Provided` for that step. Read `depformer.cpp`'s real `run()`: when
+    /// EVERY codebook is `Provided`, it short-circuits entirely (`last_unprovided_step &lt; 0`),
+    /// returning `audio_target` verbatim with NO model computation (only RNG-advancing if
+    /// `do_sample`, a real-but-skippable determinism detail this project's other sampler ports
+    /// already treat as an accepted non-bit-exact-RNG gap). Likewise `run_prepared_embedding_step`'s
+    /// real `next_text = provided ? target : sampled` always takes the `target` branch here. So
+    /// every bootstrap step only needs the real LM forward pass (for correct hidden-state/KV-cache
+    /// continuity) -- the "sample text, sample audio via Depformer" work real generation frames do
+    /// is providably dead code for this specific always-provided call pattern, not skipped by
+    /// guesswork.</para>
+    ///
+    /// <para><b>Real, deliberate scope limit</b>: the reference's real system-prompt text section
+    /// (SentencePiece-tokenized, stepped between the two silence-padding halves) is NOT
+    /// implemented -- `systemPrompt` must be empty, matching the reference's own
+    /// `if (!prompt.empty())` skip for that case exactly (not a simplification of the empty case,
+    /// a real skip already present in the reference for it). A non-empty system prompt throws.</para>
+    /// </summary>
+    public static Frame[] GenerateWithVoicePrompt(
+        IForwardPass fwd, PersonaPlexLmTensorSource llm, PersonaPlexDepformer depformer,
+        PersonaPlexVoicePrompt voicePrompt, float mimiFrameRate, string systemPrompt,
+        int numOutputFrames, int textVocabSize, int audioCodebookSize,
+        SamplingParams? textOptions = null, SamplingParams? audioOptions = null, Random? rng = null)
+    {
+        if (!string.IsNullOrWhiteSpace(systemPrompt))
+            throw new NotSupportedException("PersonaPlex GenerateWithVoicePrompt: non-empty system prompts need SentencePiece tokenization, not yet ported.");
+
+        int hiddenDim = llm.HiddenDim;
+        var textEmbedding = llm.TextEmbeddingWeight();
+        var audioEmbeddings = new float[llm.LmCodebooks][];
+        for (int cb = 0; cb < llm.LmCodebooks; cb++) audioEmbeddings[cb] = llm.AudioEmbeddingWeight(cb);
+
+        var delayState = new PersonaPlexDelayState();
+        int position = 0;
+
+        float[] BuildTokenEmbedding(int[] tokens)
+        {
+            var embedding = new float[hiddenDim];
+            long textRow = (long)tokens[0] * hiddenDim;
+            for (int d = 0; d < hiddenDim; d++) embedding[d] = textEmbedding[textRow + d];
+            for (int cb = 0; cb < llm.LmCodebooks; cb++)
+            {
+                long row = (long)tokens[1 + cb] * hiddenDim;
+                var table = audioEmbeddings[cb];
+                for (int d = 0; d < hiddenDim; d++) embedding[d] += table[row + d];
+            }
+            return embedding;
+        }
+
+        // Real always-provided bootstrap step: run the LM forward (embedding either a precomputed
+        // voice-prompt frame vector, or built from real forced token ids), then finish with the
+        // real forced target values (no real sampling needed -- see this method's doc comment).
+        void RunProvidedStep(float[] embedding, int[] userTokens, int[] moshiTokens, int textToken)
+        {
+            var step = delayState.Prepare(userTokens, moshiTokens, textToken);
+            while (step is null) step = delayState.Prepare(userTokens, moshiTokens, textToken);
+            fwd.ForwardEmbedding(embedding, position++);
+            delayState.FinishWithSampling(step.Value.Target[0], step.Value.Target[1..]);
+        }
+
+        // 1. Real per-voice-id embedding replay.
+        for (int frame = 0; frame < voicePrompt.Frames; frame++)
+        {
+            var embedding = new float[hiddenDim];
+            Array.Copy(voicePrompt.Embeddings, (long)frame * hiddenDim, embedding, 0, hiddenDim);
+            RunProvidedStep(embedding, InitialAudioTokens, InitialAudioTokens, PersonaPlexDelayState.ZeroTextToken);
+        }
+        delayState.ImportCache(voicePrompt.Cache);
+
+        // 2. Real pre-system-prompt silence padding (`0.5 * mimi.frame_rate` real frames).
+        int silenceFrames = (int)(0.5f * mimiFrameRate);
+        for (int i = 0; i < silenceFrames; i++)
+        {
+            var tokens = new int[PersonaPlexDelayState.NumStreams];
+            tokens[0] = PersonaPlexDelayState.ZeroTextToken;
+            for (int cb = 0; cb < 8; cb++) tokens[1 + cb] = SilenceTokens[cb];
+            for (int cb = 0; cb < 8; cb++) tokens[9 + cb] = SineTokens[cb];
+            RunProvidedStep(BuildTokenEmbedding(tokens), SineTokens, SilenceTokens, PersonaPlexDelayState.ZeroTextToken);
+        }
+
+        // Real system-prompt section skipped (empty prompt only, see doc comment).
+
+        // 3. Real post-system-prompt silence padding.
+        for (int i = 0; i < silenceFrames; i++)
+        {
+            var tokens = new int[PersonaPlexDelayState.NumStreams];
+            tokens[0] = PersonaPlexDelayState.ZeroTextToken;
+            for (int cb = 0; cb < 8; cb++) tokens[1 + cb] = SilenceTokens[cb];
+            for (int cb = 0; cb < 8; cb++) tokens[9 + cb] = SineTokens[cb];
+            RunProvidedStep(BuildTokenEmbedding(tokens), SineTokens, SilenceTokens, PersonaPlexDelayState.ZeroTextToken);
+        }
+
+        // 4. Real ordinary self-predicting generation loop, continuing from the bootstrapped state.
+        var frames = new List<Frame>(numOutputFrames);
+        int guard = 0;
+        while (frames.Count < numOutputFrames)
+        {
+            if (++guard > numOutputFrames * 16 + 64)
+                throw new InvalidOperationException("PersonaPlex delay-state loop did not converge.");
+
+            var step = delayState.Prepare(SilenceTokens, null, null);
+            if (step is null) continue;
+
+            var embedding = BuildTokenEmbedding(step.Value.Tokens);
             var textLogits = fwd.ForwardEmbedding(embedding, position++);
             var hidden = fwd.LastHidden.ToArray();
             int sampledText = textOptions is null ? ArgMax(textLogits, textVocabSize) : Sampler.Sample(textLogits[..textVocabSize], textOptions, rng);

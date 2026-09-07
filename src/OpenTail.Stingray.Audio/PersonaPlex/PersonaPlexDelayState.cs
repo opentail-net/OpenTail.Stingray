@@ -34,6 +34,20 @@ public sealed class PersonaPlexDelayState
 
     public long Offset => _offset;
 
+    /// <summary>Real `PersonaPlexDelayState::import_cache`: raw-overwrites the ring buffer's
+    /// `_cache` values from a real per-voice-id bootstrap snapshot (`NumStreams*DelayCacheSteps`
+    /// long, i.e. `[1, NumStreams, DelayCacheSteps]` in the real voice-prompt safetensors asset)
+    /// -- does NOT touch `_provided` or `_offset` (real reference behavior: called once, AFTER
+    /// replaying the voice-prompt embeddings through <see cref="_offset"/>-advancing `Prepare`/
+    /// `FinishWithSampling` calls, supplying the correct real token ids for whatever ring-buffer
+    /// cells the replay's own self-predicted sampling could not determine).</summary>
+    public void ImportCache(long[] cache)
+    {
+        if (cache.Length != _cache.Length)
+            throw new ArgumentException($"Expected {_cache.Length} cache values, got {cache.Length}.", nameof(cache));
+        for (int i = 0; i < _cache.Length; i++) _cache[i] = (int)cache[i];
+    }
+
     private static int[] InitCache()
     {
         var cache = new int[NumStreams * DelayCacheSteps];

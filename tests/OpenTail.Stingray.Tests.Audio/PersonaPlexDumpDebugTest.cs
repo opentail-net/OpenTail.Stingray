@@ -38,11 +38,21 @@ public sealed class PersonaPlexDumpDebugTest : HeavyTestBase
             for (int i = 0; i < names.Length; i++)
             {
                 string name = (string)names[i];
-                if (name != "config.json") continue;
+                if (name != "config.json" && name != "voices_safetensors/NATF0.safetensors") continue;
                 long start = Convert.ToInt64(offsets[i]);
                 long end = i + 1 < offsets.Length ? Convert.ToInt64(offsets[i + 1]) : bytes.Length;
-                string content = System.Text.Encoding.UTF8.GetString(bytes, (int)start, (int)(end - start));
-                File.WriteAllText(Path.Combine(root, "..", "personaplex-config.json"), content);
+                if (name == "config.json")
+                {
+                    string content = System.Text.Encoding.UTF8.GetString(bytes, (int)start, (int)(end - start));
+                    File.WriteAllText(Path.Combine(root, "..", "personaplex-config.json"), content);
+                }
+                else
+                {
+                    var voiceBytes = bytes[(int)start..(int)end];
+                    string voicePath = Path.Combine(root, "..", "personaplex-voice-natf0.safetensors");
+                    File.WriteAllBytes(voicePath, voiceBytes);
+                    Console.Error.WriteLine($"[PersonaPlexDump] wrote {voiceBytes.Length} bytes to {voicePath}");
+                }
             }
         }
 

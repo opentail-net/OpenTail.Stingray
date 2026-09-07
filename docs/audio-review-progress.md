@@ -16330,3 +16330,52 @@ Real next step for a future pass: read `PersonaPlexMainStepGraph::run_embedding_
 any code -- comparable in size to this session's other full generator-loop ports, not started this
 pass given the remaining unknowns needed careful reading rather than a rushed attempt. PersonaPlex
 stays ranked ~75-80%.
+
+## PersonaPlex -- CORRECTION + real voice-id bootstrap WIRED end-to-end, first real attempt succeeded, 2026-09-07
+
+**Correction of an earlier assumption**: the previous scoping note assumed the voice/system-prompt
+bootstrap was blocked on missing external per-voice-id checkpoint files. Re-checked directly (not
+re-assumed): a real debug dump of this checkpoint's `audiocpp.embedded_files.names` metadata shows
+all 18 real voice-prompt assets (`voices_safetensors/{NATF0..3,NATM0..3,VARF0..4,VARM0..4}.safetensors`)
+AND the real SentencePiece `tokenizer_spm_32k_3.model` are embedded directly in the single
+downloaded GGUF -- nothing external is missing. This gap was tractable, not blocked.
+
+Read `session.cpp`'s real `start_conversation` again with the goal of implementing it. Extracted
+one real voice asset (`NATF0.safetensors`) and parsed its real safetensors header directly:
+`cache` (`I64`, shape `[1,17,4]`, matching this session's already-ported `NumStreams=17`/
+`DelayCacheSteps=4` exactly) and `embeddings` (`BF16`, shape `[51,1,1,4096]`) -- confirms the real
+per-checkpoint layout, not guessed.
+
+**Real, derived simplification** (not guessed, worked out from `depformer.cpp`'s real `run()`):
+every bootstrap step -- voice-prompt embedding replay AND the surrounding real silence-padding
+frames -- supplies EXPLICIT user/moshi/text values to `PersonaPlexDelayState.Prepare`, marking
+every one of the 17 streams `Provided` for that step. `depformer.cpp`'s real `run()` short-circuits
+entirely when every codebook is `Provided` (`last_unprovided_step < 0`), returning the target
+values verbatim with ZERO model computation; `run_prepared_embedding_step`'s real
+`next_text = provided ? target : sampled` likewise always takes the `target` branch here. So every
+bootstrap step only needs the real LM forward pass (`ForwardEmbedding`, for correct hidden-state/
+KV-cache continuity) -- no real Depformer/text sampling is needed at all during bootstrap, a
+real (not assumed) consequence of the reference's own always-provided call pattern.
+
+Added `PersonaPlexDelayState.ImportCache` (real `import_cache`: raw-overwrites the ring buffer's
+cache from the voice-prompt's real snapshot, doesn't touch `_provided`/`_offset`), a new
+`PersonaPlexVoicePrompt` loader (parses one voice-prompt safetensors asset), real
+`SineTokens`/`InitialAudioTokens` constants (`session.cpp`'s `kSineTokens`/`kInitialAudioTokens`),
+and `PersonaPlexGenerator.GenerateWithVoicePrompt`: replays the real per-voice embeddings, imports
+the real cache, pads with real `0.5*mimi.frame_rate=6` (real default `frame_rate=12.5`, confirmed
+from `assets.h`) silence frames before/after, then continues into the existing real self-predicting
+`GenerateDelayed`-style loop. Real, deliberate scope limit: non-empty system prompts (needs real
+SentencePiece tokenization of `tokenizer_spm_32k_3.model`, not yet wired) throw -- matches the
+reference's own real `if (!prompt.empty())` skip for the empty case exactly, not a new gap.
+
+New `PersonaPlexVoicePromptRealWeightsTests`: extracts the real embedded `NATF0.safetensors`
+asset, replays it, decodes through the real Mimi codec. **Passed on the first real attempt** --
+85.8s wall-clock with a real `[ForwardPass] Pre-faulted 25.48 GiB...` weight-loading line logged
+(genuine run per rule 12). Re-ran the existing `PersonaPlexDelayedPipelineRealWeightsTests`
+afterward -- still passes (67.3s), no regression.
+
+PersonaPlex moves to ~85% -- voice-id-conditioned generation (previously entirely unimplemented,
+and incorrectly believed blocked on missing files) now works end-to-end. Real remaining gaps:
+non-empty system-prompt text (needs SentencePiece integration), live-duplex user-audio
+conditioning, real streaming Mimi decode, real sampling beyond argmax for the bootstrap-continued
+generation loop (already ported for the plain `GenerateDelayed` path).
