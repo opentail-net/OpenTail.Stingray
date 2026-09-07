@@ -52,11 +52,6 @@ public sealed class PersonaPlexDumpDebugTest : HeavyTestBase
             for (int i = 0; i < tensorNames.Length; i++)
             {
                 string name = (string)tensorNames[i];
-                if (!name.StartsWith("transformer.", StringComparison.Ordinal)
-                    && !name.Contains("depformer", StringComparison.OrdinalIgnoreCase)
-                    && !name.Contains("embed", StringComparison.OrdinalIgnoreCase)
-                    && !name.Contains("lm_head", StringComparison.OrdinalIgnoreCase))
-                    continue;
                 var t = model.Tensors[i];
                 sb.AppendLine($"{name}\t{string.Join(",", t.Dimensions)}\t{t.DType}");
             }

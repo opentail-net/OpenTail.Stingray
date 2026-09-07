@@ -14083,3 +14083,44 @@ no separate gate-predictor weights exist to find or port. This lowers Higgs's re
 scope: the AR generation loop (`ar.cpp`) needs the embedding-fusion formula above (trivial once
 `ModalityEmbeddingWeight`'s codebook-offset embedding lookup + `text_embedding` lookup exist,
 both already available) plus the real per-step sampling/stopping logic (`sampler.cpp`).
+
+## PersonaPlex -- temporal LM real-weight verified, 2026-09-07
+
+Checkpoint download finally completed cleanly (10.9GB -- much larger than the naive "7B q8_0
+~7GB" estimate, because this file bundles the Depformer AND the full Mimi neural codec plus
+several voice-prompt `.safetensors` assets, confirmed via the real embedded-files listing and a
+793-tensor dump). Real numeric config confirmed directly from tensor SHAPES (this checkpoint's
+`config.json` carries only `model_type`/`version`, no numeric fields -- the real reference's
+`assets.h` defaults ARE the real config for this checkpoint, confirmed independently rather than
+trusted blindly): `hidden_size=4096`, `num_layers=32`, `num_attention_heads=32` (MHA, matches
+`num_key_value_heads=32`), `head_dim=128`, `intermediate_size=11264` (from `gating.linear_in`'s
+real `[4096,22528]` shape, `22528/2=11264`), `text_vocab_size=32000`, `lm_codebooks=16` (16 real
+separate `lm/emb.{0-15}.weight` tables confirmed, not the default's implied count), 
+`audio_codebook_size=2048` (from `[4096,2049]` embedding shapes, `2049-1=2048`) -- every one
+matches the reference's own defaults exactly, a real confirmation not just an assumption
+carried through.
+
+**Bug found and fixed**: `PersonaPlexLmTensorSource`'s top-level tensor names (`text_emb.weight`/
+`text_linear.weight`/`out_norm.alpha`) were missing the real `lm/` prefix that the per-layer
+tensors already had -- copy-paste oversight from the per-layer loop's `p = "lm/transformer.
+layers.{i}."` variable. Found immediately by the cheap `FindTensor` shape test (`Assert.NotNull`
+failure on the very first tensor lookup), fixed by prefixing all three names and
+`AudioEmbeddingWeight`'s per-codebook lookup with `lm/`.
+
+**Real-weight verified**: `FindTensor` shape resolution (all layer/embedding/output tensor
+shapes match the real dump exactly, including the packed `self_attn.in_proj_weight`'s real
+`[4096,12288]`=`[hidden,3*hidden]` shape and its real `BFloat16` storage type -- confirming
+`OpenTail.Stingray.Cpu.Dequantize`'s existing BF16 path handles it) AND a live
+`ForwardPass.Prefill` -- **25.48 GiB of CPU-resident weights pre-faulted in 1.0s (26.7 GiB/s),
+full prefill in 29.0s wall-clock, finite 32000-wide text logits**, confirming the packed-QKV
+row-split trick produces numerically valid (non-NaN/Inf) attention end-to-end through all 32
+layers.
+
+**PersonaPlex status: ~25%.** Temporal LM backbone done and verified -- the real "new wrinkle"
+(packed QKV/gate-up splitting) is proven correct against real weights, not just compiling. NOT
+yet built/scoped in detail: the Depformer's per-step per-codebook generation (real tensor names
+now known: `lm/depformer.layers.{i}.gating.{0-15}.*` -- 16 SEPARATE gating MLPs per layer, one
+per codebook, plus `lm/linears.{0-15}.weight` real per-codebook `[1024,2048]` output heads
+projecting depformer hidden state directly to codebook logits), and the full Mimi neural codec
+(`mimi/*` tensors, real 32-level RVQ confirmed: `quantizer.rvq_first` + `quantizer.rvq_rest.vq.
+layers.{0-30}`, own encoder/decoder transformer stack -- not yet read in detail).

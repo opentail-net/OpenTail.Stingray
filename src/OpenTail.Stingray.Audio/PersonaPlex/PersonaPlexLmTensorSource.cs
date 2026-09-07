@@ -59,12 +59,12 @@ public sealed unsafe class PersonaPlexLmTensorSource : IModelTensorSource, IDisp
         HiddenDim = hiddenDim;
         LmCodebooks = lmCodebooks;
 
-        MapMaterialized2D("text_emb.weight", "token_embd.weight", textVocabSize + 1, hiddenDim,
-            () => source.GetTensor("text_emb.weight"));
-        MapMaterialized1D("out_norm.alpha", "output_norm.weight", hiddenDim,
-            () => source.GetTensor("out_norm.alpha"));
-        MapMaterialized2D("text_linear.weight", "output.weight", textVocabSize, hiddenDim,
-            () => source.GetTensor("text_linear.weight"));
+        MapMaterialized2D("lm/text_emb.weight", "token_embd.weight", textVocabSize + 1, hiddenDim,
+            () => source.GetTensor("lm/text_emb.weight"));
+        MapMaterialized1D("lm/out_norm.alpha", "output_norm.weight", hiddenDim,
+            () => source.GetTensor("lm/out_norm.alpha"));
+        MapMaterialized2D("lm/text_linear.weight", "output.weight", textVocabSize, hiddenDim,
+            () => source.GetTensor("lm/text_linear.weight"));
 
         int qkvOut = numHeads * headDim; // plain MHA: q/k/v all equal size
         for (int i = 0; i < numLayers; i++)
@@ -120,7 +120,7 @@ public sealed unsafe class PersonaPlexLmTensorSource : IModelTensorSource, IDisp
     public float[] AudioEmbeddingWeight(int codebook)
     {
         if ((uint)codebook >= (uint)LmCodebooks) throw new ArgumentOutOfRangeException(nameof(codebook));
-        return _source.GetTensor($"emb.{codebook}.weight");
+        return _source.GetTensor($"lm/emb.{codebook}.weight");
     }
 
     private static float[] SplitRows(float[] packed, int cols, int rowOffset, int rows)
