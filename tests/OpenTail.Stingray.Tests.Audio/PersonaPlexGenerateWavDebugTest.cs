@@ -1,5 +1,6 @@
 using OpenTail.Stingray.Audio.PersonaPlex;
 using OpenTail.Stingray.Audio.Rvc;
+using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Engine;
 
 namespace OpenTail.Stingray.Tests.Audio;
@@ -52,6 +53,22 @@ public sealed class PersonaPlexGenerateWavDebugTest : HeavyTestBase
         throw new InvalidOperationException($"PersonaPlex packed GGUF is missing embedded file '{wanted}'.");
     }
 
+    private static byte[] ExtractEmbeddedFile(GgufModel model, string fileName)
+    {
+        var names = (object[])model.Metadata["audiocpp.embedded_files.names"];
+        var offsets = (object[])model.Metadata["audiocpp.embedded_files.offsets"];
+        var data = (object[])model.Metadata["audiocpp.embedded_files.data"];
+        var bytes = data.Select(o => (byte)Convert.ToInt64(o)).ToArray();
+        for (int i = 0; i < names.Length; i++)
+        {
+            if ((string)names[i] != fileName) continue;
+            long start = Convert.ToInt64(offsets[i]);
+            long end = i + 1 < offsets.Length ? Convert.ToInt64(offsets[i + 1]) : bytes.Length;
+            return bytes[(int)start..(int)end];
+        }
+        throw new InvalidOperationException($"PersonaPlex packed GGUF is missing embedded file '{fileName}'.");
+    }
+
     [Fact]
     public void Generate_RealPersonaPlexWav()
     {
@@ -74,8 +91,12 @@ public sealed class PersonaPlexGenerateWavDebugTest : HeavyTestBase
         var depformerWeights = PersonaPlexDepformerWeights.Load(TextVocabSize, AudioCodebookSize, source.GetTensor);
         var depformer = new PersonaPlexDepformer(depformerWeights);
 
+        var tokenizerBytes = ExtractEmbeddedFile(model, "tokenizer_spm_32k_3.model");
+        var tokenizer = PersonaPlexSentencePieceModel.Load(tokenizerBytes);
+
         var frames = PersonaPlexGenerator.GenerateWithVoicePrompt(
-            fwd, llm, depformer, voicePrompt, MimiFrameRate, systemPrompt: "",
+            fwd, llm, depformer, voicePrompt, MimiFrameRate,
+            systemPrompt: "You are a friendly assistant speaking out loud.", tokenizer,
             numOutputFrames: 50, TextVocabSize, AudioCodebookSize);
 
         Assert.True(frames.Length > 0);

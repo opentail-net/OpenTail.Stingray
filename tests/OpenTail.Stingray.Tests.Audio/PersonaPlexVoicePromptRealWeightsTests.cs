@@ -76,7 +76,7 @@ public sealed class PersonaPlexVoicePromptRealWeightsTests : HeavyTestBase
         var depformer = new PersonaPlexDepformer(depformerWeights);
 
         var frames = PersonaPlexGenerator.GenerateWithVoicePrompt(
-            fwd, llm, depformer, voicePrompt, MimiFrameRate, systemPrompt: "",
+            fwd, llm, depformer, voicePrompt, MimiFrameRate, systemPrompt: "", tokenizer: null,
             numOutputFrames: 4, TextVocabSize, AudioCodebookSize);
 
         Assert.Equal(4, frames.Length);

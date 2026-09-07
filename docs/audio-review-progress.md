@@ -16469,3 +16469,38 @@ Re-ran the existing `VibeVoiceGeneratorRealWeightsTests` (2 tests, 38.0s) and
 before state). This closes VibeVoice TTS's single highest-value remaining gap identified this
 session -- the real streaming state was the difference between structurally-valid-but-gibberish
 and (expected) actually intelligible speech.
+
+## PersonaPlex -- real system-prompt text WIRED end-to-end, closing the last bootstrap gap, 2026-09-07
+
+Directly follows the model-type confirmation above. Confirmed via a real byte-level protobuf walk
+of the embedded `tokenizer_spm_32k_3.model` (not guessed): `trainer_spec.model_type = 1`
+(UNIGRAM), so this codebase's existing `UnigramTokenizer` (not `SentencePieceBpeTokenizer`) is the
+real correct algorithm. Wrote `PersonaPlexSentencePieceModel.Load` -- a minimal, real, hand-rolled
+protobuf reader (real field numbers confirmed against the vendored `sentencepiece_model.proto`:
+`pieces`=field1/repeated LEN, `SentencePiece.piece`=field1/LEN-string,
+`SentencePiece.score`=field2/FIXED32-float, `SentencePiece.type`=field3/VARINT-enum, real default
+`NORMAL=1` when absent) that parses the raw `ModelProto` directly into
+`UnigramTokenizer.FromGgufVocab`'s expected arrays -- confirmed the proto's own `Type` enum values
+(`NORMAL=1`/`UNKNOWN=2`/`CONTROL=3`/`USER_DEFINED=4`/`UNUSED=5`) are numerically IDENTICAL to
+llama.cpp's `llama_token_type` convention that class already expects, so no remapping was needed.
+
+Ported `session.cpp`'s real `wrap_system_prompt` (trim whitespace; wrap as
+`"<system> " + text + " <system>"` unless already so-wrapped) into
+`PersonaPlexGenerator.WrapSystemPrompt`, and wired the real per-token system-prompt stepping
+(same always-provided-shortcut pattern as the silence frames, now confirmed to also apply here
+since text/user/moshi are all explicitly provided every step) into `GenerateWithVoicePrompt`
+between the two silence-padding halves. `GenerateWithVoicePrompt` now takes a `UnigramTokenizer?`
+parameter (`null` only valid for an empty/whitespace-only system prompt, matching the reference's
+own real empty-prompt skip -- a non-null prompt with a null tokenizer throws rather than silently
+skipping).
+
+Re-ran `PersonaPlexVoicePromptRealWeightsTests` (empty system prompt, `tokenizer: null`) -- still
+passes (76.1s, genuine), no regression. Regenerated `docs/audio-samples/personaplex-real-check.wav`
+with a real, non-empty system prompt ("You are a friendly assistant speaking out loud.") for the
+first time.
+
+This closes PersonaPlex's last real bootstrap gap from this session's own scoping note -- every
+piece of `start_conversation` (voice-id embedding replay, delay-cache import, silence padding,
+system-prompt text) is now real, wired, and verified. PersonaPlex moves to ~90%. Real remaining
+gaps: live-duplex user-audio conditioning (needs a real user-side Mimi encode path, not started),
+real streaming Mimi decode, real sampling beyond argmax for the bootstrap-continued loop.

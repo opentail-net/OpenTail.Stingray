@@ -1,3 +1,4 @@
+using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Engine;
 
 namespace OpenTail.Stingray.Audio.PersonaPlex;
@@ -176,20 +177,25 @@ public static class PersonaPlexGenerator
     /// is providably dead code for this specific always-provided call pattern, not skipped by
     /// guesswork.</para>
     ///
-    /// <para><b>Real, deliberate scope limit</b>: the reference's real system-prompt text section
-    /// (SentencePiece-tokenized, stepped between the two silence-padding halves) is NOT
-    /// implemented -- `systemPrompt` must be empty, matching the reference's own
-    /// `if (!prompt.empty())` skip for that case exactly (not a simplification of the empty case,
-    /// a real skip already present in the reference for it). A non-empty system prompt throws.</para>
+    /// <para><b>Real system-prompt text</b>: ported from `session.cpp`'s real `wrap_system_prompt`
+    /// (not guessed) -- trims whitespace, and unless the trimmed text already starts AND ends with
+    /// the literal string `"&lt;system&gt;"`, wraps it as `"&lt;system&gt; " + text + " &lt;system&gt;"`, then
+    /// tokenizes via the real per-checkpoint SentencePiece model
+    /// (<see cref="PersonaPlexSentencePieceModel"/>, confirmed real UNIGRAM) and steps one token at
+    /// a time between the two silence-padding halves, same real always-provided
+    /// (`Sine`/`Silence`/thisToken) pattern as the silence frames. Pass `tokenizer: null` only when
+    /// `systemPrompt` is empty/whitespace-only (matches the reference's own real
+    /// `if (!prompt.empty())` skip) -- a non-null `systemPrompt` with a null `tokenizer` throws.</para>
     /// </summary>
     public static Frame[] GenerateWithVoicePrompt(
         IForwardPass fwd, PersonaPlexLmTensorSource llm, PersonaPlexDepformer depformer,
-        PersonaPlexVoicePrompt voicePrompt, float mimiFrameRate, string systemPrompt,
+        PersonaPlexVoicePrompt voicePrompt, float mimiFrameRate, string systemPrompt, UnigramTokenizer? tokenizer,
         int numOutputFrames, int textVocabSize, int audioCodebookSize,
         SamplingParams? textOptions = null, SamplingParams? audioOptions = null, Random? rng = null)
     {
-        if (!string.IsNullOrWhiteSpace(systemPrompt))
-            throw new NotSupportedException("PersonaPlex GenerateWithVoicePrompt: non-empty system prompts need SentencePiece tokenization, not yet ported.");
+        string wrappedPrompt = WrapSystemPrompt(systemPrompt);
+        if (wrappedPrompt.Length > 0 && tokenizer is null)
+            throw new ArgumentException("PersonaPlex GenerateWithVoicePrompt: a non-empty systemPrompt requires a tokenizer.", nameof(tokenizer));
 
         int hiddenDim = llm.HiddenDim;
         var textEmbedding = llm.TextEmbeddingWeight();
@@ -244,7 +250,20 @@ public static class PersonaPlexGenerator
             RunProvidedStep(BuildTokenEmbedding(tokens), SineTokens, SilenceTokens, PersonaPlexDelayState.ZeroTextToken);
         }
 
-        // Real system-prompt section skipped (empty prompt only, see doc comment).
+        // Real system-prompt section: one real token per step, forced (same always-provided
+        // shortcut as the silence frames), Sine/Silence audio padding throughout.
+        if (wrappedPrompt.Length > 0)
+        {
+            var promptTokens = tokenizer!.Encode(wrappedPrompt);
+            foreach (int token in promptTokens)
+            {
+                var tokens = new int[PersonaPlexDelayState.NumStreams];
+                tokens[0] = token;
+                for (int cb = 0; cb < 8; cb++) tokens[1 + cb] = SilenceTokens[cb];
+                for (int cb = 0; cb < 8; cb++) tokens[9 + cb] = SineTokens[cb];
+                RunProvidedStep(BuildTokenEmbedding(tokens), SineTokens, SilenceTokens, token);
+            }
+        }
 
         // 3. Real post-system-prompt silence padding.
         for (int i = 0; i < silenceFrames; i++)
@@ -277,6 +296,18 @@ public static class PersonaPlexGenerator
             if (output != null) frames.Add(new Frame(sampledText, output));
         }
         return [.. frames];
+    }
+
+    /// <summary>Real `wrap_system_prompt`: trim whitespace; if empty, return empty; if already
+    /// wrapped in literal `"&lt;system&gt;"` markers, return as-is; else wrap as
+    /// `"&lt;system&gt; " + text + " &lt;system&gt;"`.</summary>
+    private static string WrapSystemPrompt(string text)
+    {
+        string trimmed = text.Trim();
+        if (trimmed.Length == 0) return "";
+        if (trimmed.StartsWith("<system>", StringComparison.Ordinal) && trimmed.EndsWith("<system>", StringComparison.Ordinal))
+            return trimmed;
+        return $"<system> {trimmed} <system>";
     }
 
     private static int ArgMax(ReadOnlySpan<float> logits, int count)
