@@ -58,8 +58,12 @@ public static class PersonaPlexGenerator
     }
 
     /// <summary>Generates `numFrames` real frames, each a (text token, 16 audio codebook codes)
-    /// pair, greedy/argmax throughout (real sampling not ported, matching this session's other
-    /// codebook-sampler stand-ins).</summary>
+    /// pair, greedy/argmax throughout. Real, deliberate simplification (all 16 codebooks fed for
+    /// the same frame, no real delay pattern) kept only for this session's earlier structural
+    /// real-weight tests -- <see cref="GenerateDelayed"/> is the real, reference-matching
+    /// generation path (real per-stream delay offsets via <see cref="PersonaPlexDelayState"/>,
+    /// real temperature/top-k/top-p sampling for both text and Depformer audio codes via
+    /// <see cref="SamplingParams"/>), not this method.</summary>
     public static Frame[] Generate(IForwardPass fwd, PersonaPlexLmTensorSource llm, PersonaPlexDepformer depformer,
         int numFrames, int textVocabSize, int audioCodebookSize)
     {
