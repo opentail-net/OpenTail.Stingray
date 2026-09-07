@@ -13373,9 +13373,38 @@ wrong" discipline rather than quietly fixing it without a trace.
 
 **Still remaining for a complete VibeVoice ASR pipeline**: real-weight verification of the
 tokenizer encoders + connector + LLM bridge once the checkpoint finishes downloading (still
-in progress, ~3.3GB of ~9.9GB as of this update -- a real, slow multi-GB download, not a
-blocker being avoided), the real Gaussian latent sampling step (per the correction above --
-a real, not-yet-ported piece, `sample_vibevoice_acoustic_latents_gaussian`), the
-acoustic+semantic sum-combine + speech-embedding splice via the "extra vocab rows" technique
-above, and the generation loop (`session.cpp`, 1210 lines -- ties audio encoding + connector
-projection + decoder prefill/generation together, not yet read in detail).
+in progress, ~3.5GB of ~9.9GB as of this update -- a real, slow multi-GB download, not a
+blocker being avoided), the acoustic+semantic sum-combine + speech-embedding splice via the
+"extra vocab rows" technique above, and the generation loop.
+
+**Update, 2026-09-07 (same session) -- read `session.cpp`'s `run_single`/`generate_tokens`
+(not guessed): confirms every piece implemented this session is real and correctly ordered,
+and scopes exactly what's left.** Real end-to-end flow: `frontend.normalize(audio)` (resample
+to the tokenizer's real sample rate) -&gt; `speech_encoder.encode(audio, seed)` (== this
+session's `VibeVoiceSpeechFeatures.Extract`, confirmed matching exactly: acoustic Gaussian
+sample + semantic, connector-projected, summed) -&gt; `tokenizer.build_prompt(request,
+speech.frames)` (== this session's scoped chat-template + `<|box_start|>` placeholder
+structure) -&gt; `text_decoder.prefill_prompt(input_ids, speech.values, speech_positions)`
+(splices the speech embeddings at the placeholder positions and prefills with a real KV
+cache) -&gt; `generate_tokens` (greedy/sample OR beam search, `num_beams` selects) -&gt;
+`postprocessor.decode` (parses the model's own real JSON-formatted output --
+Start/End/Speaker/Content keys, per the prompt's own real instruction text scoped earlier
+this session -- into timed transcript segments). Real, non-obvious detail: the reference's
+own engine supports direct PER-POSITION embedding override during prefill
+(`prefill_prompt`'s `speech.values`/`speech_positions` args) -- a cleaner native mechanism
+than this session's "extra vocab rows" workaround, which exists only because THIS
+codebase's `ForwardPass` has no equivalent direct-embedding-override API; the workaround
+remains the right approach here, just worth naming precisely why it differs from the
+reference's own real technique.
+
+**Still remaining for a complete VibeVoice ASR pipeline** (now precisely scoped, no
+unread source left in this file set): real-weight verification of everything implemented
+so far once the checkpoint finishes downloading; wiring `VibeVoiceSpeechFeatures.Extract`'s
+output through `VibeVoiceLlmTensorSource.EnableSpeechConditioning` and a real prefill call
+via `ForwardPass`; the postprocessor's real JSON-segment parser (`postprocess.cpp`, not yet
+read); and the frontend's real audio normalization (`frontend.cpp`, only 72 lines, not yet
+read -- likely trivial). Beam search decoding and the streaming path are real but lower
+priority (greedy/offline decode is the natural first correctness target). Real next step if
+picked up: real-weight-verify the encoder/connector/sampler/LLM-bridge chain once the
+checkpoint lands, then read `postprocess.cpp` + `frontend.cpp` (both short) to close out a
+complete, real, greedy-decode offline ASR pipeline.
