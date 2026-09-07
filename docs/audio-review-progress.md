@@ -16504,3 +16504,43 @@ piece of `start_conversation` (voice-id embedding replay, delay-cache import, si
 system-prompt text) is now real, wired, and verified. PersonaPlex moves to ~90%. Real remaining
 gaps: live-duplex user-audio conditioning (needs a real user-side Mimi encode path, not started),
 real streaming Mimi decode, real sampling beyond argmax for the bootstrap-continued loop.
+
+## OmniVoice -- MaskGIT generation loop UNBLOCKED (real self-contained non-causal graph, not a shared-engine gap) + real per-frame sequence layout discovered, 2026-09-07
+
+**Correction of this session's own earlier conclusion**: the "checked whether IForwardPass already
+has the batched scoring API MaskGIT needs; it does not, real engine-level gap confirmed" entry
+above assumed OmniVoice's MaskGIT model reuses the shared causal `ForwardPass`/`ModelGraph`
+machinery (like every other model this session bridges via `IModelTensorSource`). Reading
+`generator.cpp`'s real `WeightsRuntime`/`decoder_layer`/`build_embeddings` in full (not guessed)
+shows this is WRONG -- OmniVoice's MaskGIT scorer is a genuinely SEPARATE, self-contained real
+ggml graph with its OWN from-scratch transformer layer implementation (`decoder_layer`: standard
+Qwen3-style GQA + RoPE-NEOX + q/k-norm + SwiGLU, but taking an explicit `attention_mask` TENSOR
+parameter rather than an implicit causal mask), matching the SAME "small bespoke transformer, not
+routed through the shared engine" pattern this session already used successfully for Higgs's
+Depformer, VoxCPM2's DiT, and MOSS-TTS-Nano's local decoder. This means the real blocker is NOT
+missing engine API surface -- it's just real, standalone port work, like those other three.
+
+**Real, newly-discovered sequence layout** (corrects an earlier implicit assumption that the
+MaskGIT grid is a flat `frames*codebooks` 1D sequence): `build_embeddings` shows the transformer's
+sequence length is `target_frames` (NOT `frames*codebooks`) -- each frame-position's embedding is
+`text_embed*text_mask + SUM_over_8_codebooks(audio_embed[codebook][currentGuess])*audio_mask`, and
+the output `audio_head` is a SINGLE `[8*audio_vocab_size, hidden]` linear producing all 8
+codebooks' logits for that frame in one shot. So a "masked cell" in the real MaskGIT sense is one
+(frame, codebook) pair, but the TRANSFORMER itself attends over frames only, with each frame's
+input embedding reflecting the CURRENT state (decoded value or MASK token) of all 8 of that
+frame's codebooks simultaneously. This is a materially different (and simpler to implement) real
+structure than a naive flat grid would have been.
+
+Real, still-unconfirmed pieces before a full port: whether `attention_mask` is literally
+all-zero/full-bidirectional-visibility or has real structure (e.g. real padding-position masking);
+the real per-step confidence/top-K unmask bookkeeping (`make_schedule`'s cosine-shifted unmask-
+count curve, `layer_penalty_factor`, `gumbel_sample_scalar` when `class_temperature>0`) -- already
+scoped in an earlier entry, unchanged by this correction. Real next step for a future pass: read
+`build_embeddings`'/`WeightsRuntime`'s remaining real details (positions formula, real
+`attention_mask` construction, `audio_head` real bias-free-ness) and `generate()`'s per-step
+candidate/schedule bookkeeping in full, then port a standalone (non-`IForwardPass`) C# forward
+pass for this small (28-layer, hidden=1024) transformer -- comparable in size and pattern to this
+session's other successful bespoke-transformer ports, now correctly unblocked from "needs new
+engine work" to "needs standalone port work, like Higgs's Depformer or VoxCPM2's DiT" -- not
+started this pass given the real MaskGIT unmask-schedule bookkeeping still needs careful reading
+before writing any code (per this project's "no half-finished implementations" rule).
