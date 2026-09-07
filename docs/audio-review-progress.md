@@ -16258,3 +16258,38 @@ pass given the remaining architectural uncertainty (how the real reference's own
 attention is wired into ModelGraph, if at all, for this checkpoint) would need its own careful
 reference-reading pass before any engine change, not a quick addition alongside other backlog
 items.
+
+## Higgs Audio TTS -- real reference-audio (voice-cloning) conditioning WIRED end-to-end, first real attempt succeeded, 2026-09-07
+
+Closed the remaining real gap from this turn's zero-shot generator entry above. Read
+`generator.cpp`'s real `make_prompt_input`/`make_prepared_prompt` again with the specific goal of
+implementing (not just scoping) prompt fusion: confirmed the real per-position gating
+(`text_gate`/`code_gate`) is STATIC, decided purely by `token_ids[position] == config.
+audio_token_id` (real value `-100`, confirmed via `assets.cpp`'s own validation
+`if (config.audio_token_id != -100) throw`, not a sentinel this port invented) -- no learned gate
+predictor needed for prompt construction (the doc-commented "gate predictor NOT yet ported" note
+on `HiggsLlmTensorSource` refers to a different, decode-time mechanism this path doesn't need,
+since generation always emits pure audio codes after the prompt).
+
+Added `HiggsGenerator.GenerateWithReferenceAudio`: encodes the reference waveform via the already-
+verified `HiggsCodecEncoder`, delays it (`HiggsCodebooks.ApplyDelayPattern`, this turn's own
+helper), builds the real fused prompt (`HiggsTtsTextTokenizer.EncodePrompt` with
+`delayedReferenceTokens>0`), then prefills POSITION-BY-POSITION via `ForwardEmbedding` -- text
+positions get an ordinary vocabulary lookup, reference-audio placeholder positions get the real
+sum-of-per-codebook-modality-embedding formula (same formula `HiggsArStepper.Step` already uses
+for decode-step embedding, just applied to a REFERENCE frame's codes instead of a just-generated
+one). Refactored the shared post-prefill AR decode loop out of `Generate` into a private
+`DecodeFromPrefilledState` so both entry points reuse the exact same verified logic.
+
+New `HiggsGeneratorWithReferenceAudioRealWeightsTests`: real checkpoint, synthetic reference
+waveform encoded through the real codec encoder, real fused prompt, full real generation loop,
+real codec decode. **Passed on the first real attempt** -- 42.0s wall-clock with a real
+`[ForwardPass] Pre-faulted 16.43 GiB...` weight-loading line logged (genuine run per rule 12).
+Re-ran the existing zero-shot `HiggsGeneratorRealWeightsTests` afterward -- still passes (45.4s),
+no regression from the shared-loop refactor.
+
+Higgs Audio TTS moves from ~65% to ~85% -- both zero-shot AND reference-audio-conditioned
+generation are now real, wired, and real-weight verified, matching VibeVoice TTS's/VoxCPM2's
+completion level. Real remaining gaps: KV-cache reuse across repeated same-reference calls (a real
+perf optimization, `reference_prefix_cache_` in the reference, not implemented -- every call
+re-runs the full reference prefix), numeric golden-parity against the reference.

@@ -12,12 +12,11 @@ namespace OpenTail.Stingray.Audio.HiggsAudio;
 /// (confirmed real: `generator.cpp` does exactly this, not an error), then decode through the
 /// real acoustic codec.
 ///
-/// <para><b>Real, deliberate scope limit</b>: this is the reference-audio-FREE path only (matches
-/// this session's established "reference-audio-free first pass" convention) -- `generator.cpp`'s
-/// real reference-audio conditioning (fused prompt positions carrying delayed reference codebook
-/// ids instead of text tokens, KV-cache reuse across repeated calls with the same reference) is
-/// real, separate, unstarted work, precisely scoped in this session's own progress doc entry
-/// rather than guessed at here.</para>
+/// <para><see cref="GenerateWithReferenceAudio"/> extends this with real reference-audio
+/// conditioning (fused prompt positions carrying delayed reference codebook embeddings). Real,
+/// deliberate scope limit still remaining: KV-cache reuse across repeated calls with the SAME
+/// reference audio (`reference_prefix_cache_`/`reference_kv_ready_` in the reference) is a real
+/// perf optimization, not implemented -- every call re-runs the full reference prefix.</para>
 /// </summary>
 public static class HiggsGenerator
 {
@@ -35,7 +34,82 @@ public static class HiggsGenerator
     {
         var prompt = tokenizer.EncodePrompt(text, referenceText: "", delayedReferenceTokens: 0);
         fwd.Prefill(prompt.TokenIds);
+        return DecodeFromPrefilledState(fwd, llm, codecWeights, prompt.TokenIds.Length, numCodebooks, audioVocabSize, maxTokens, options, rng);
+    }
 
+    /// <summary>
+    /// Real reference-audio-conditioned generation, ported from `generator.cpp`'s real
+    /// `make_prompt_input`/`make_prepared_prompt` prompt-fusion (not guessed): the reference
+    /// waveform is encoded to raw RVQ codes (<see cref="HiggsCodecEncoder"/>), delayed
+    /// (<see cref="HiggsCodebooks.ApplyDelayPattern"/>), and each delayed reference FRAME becomes
+    /// one PROMPT position (real `audio_token_id` placeholder, real config value `-100` --
+    /// confirmed via `assets.cpp`'s own validation, not a sentinel) whose embedding is the real
+    /// sum-of-per-codebook-modality-embedding formula (the SAME formula
+    /// <see cref="HiggsArStepper.Step"/> already uses for decode-step embedding, just applied to a
+    /// reference frame's codes instead of a just-generated one) rather than an ordinary text
+    /// lookup. Real, confirmed: prompt-position gating is STATIC (a position is either a text
+    /// token OR a full reference-code row, decided purely by `token_ids[position]==audio_token_id`
+    /// in `make_prompt_input`) -- no learned gate predictor is needed for prompt construction, only
+    /// for decode-step modality selection (already unconditional here, since generation only ever
+    /// emits audio codes after the prompt). Since some prompt positions now carry non-vocabulary
+    /// embeddings, prefills POSITION-BY-POSITION via `ForwardEmbedding` instead of the ordinary
+    /// token-id `Prefill` <see cref="Generate"/> uses.
+    /// </summary>
+    public static Result GenerateWithReferenceAudio(
+        IForwardPass fwd, HiggsLlmTensorSource llm, HiggsTtsTextTokenizer tokenizer,
+        HiggsCodecDecoderWeights codecWeights, float[] textEmbeddingTable,
+        string text, string referenceText, int[][] referenceRawCodes /* [frame][codebook] */,
+        int numCodebooks, int audioVocabSize, int audioTokenId,
+        int maxTokens, SamplingParams? options = null, Random? rng = null)
+    {
+        int hiddenDim = llm.HiddenDim;
+        int rawFrames = referenceRawCodes.Length;
+        var rawFlat = new int[rawFrames * numCodebooks];
+        for (int t = 0; t < rawFrames; t++) Array.Copy(referenceRawCodes[t], 0, rawFlat, t * numCodebooks, numCodebooks);
+        var delayedFlat = HiggsCodebooks.ApplyDelayPattern(rawFlat, rawFrames, numCodebooks);
+        int delayedReferenceFrames = HiggsCodebooks.DelayedFrameCount(rawFrames, numCodebooks);
+
+        var prompt = tokenizer.EncodePrompt(text, referenceText, delayedReferenceFrames);
+        var modality = llm.ModalityEmbeddingWeight;
+
+        float[] EmbedTextToken(int token)
+        {
+            var row = new float[hiddenDim];
+            Array.Copy(textEmbeddingTable, (long)token * hiddenDim, row, 0, hiddenDim);
+            return row;
+        }
+
+        float[] EmbedReferenceFrame(int frame)
+        {
+            var embedding = new float[hiddenDim];
+            for (int cb = 0; cb < numCodebooks; cb++)
+            {
+                int code = delayedFlat[frame * numCodebooks + cb];
+                long rowBase = (long)(cb * audioVocabSize + code) * hiddenDim;
+                for (int d = 0; d < hiddenDim; d++) embedding[d] += modality[rowBase + d];
+            }
+            return embedding;
+        }
+
+        int referenceFrame = 0;
+        for (int pos = 0; pos < prompt.TokenIds.Length; pos++)
+        {
+            var embedding = prompt.TokenIds[pos] == audioTokenId
+                ? EmbedReferenceFrame(referenceFrame++)
+                : EmbedTextToken(prompt.TokenIds[pos]);
+            fwd.ForwardEmbedding(embedding, pos);
+        }
+        if (referenceFrame != delayedReferenceFrames)
+            throw new InvalidOperationException("Higgs TTS prompt did not consume every delayed reference frame.");
+
+        return DecodeFromPrefilledState(fwd, llm, codecWeights, prompt.TokenIds.Length, numCodebooks, audioVocabSize, maxTokens, options, rng);
+    }
+
+    private static Result DecodeFromPrefilledState(
+        IForwardPass fwd, HiggsLlmTensorSource llm, HiggsCodecDecoderWeights codecWeights,
+        int promptLength, int numCodebooks, int audioVocabSize,
+        int maxTokens, SamplingParams? options, Random? rng)
+    {
         var sampler = new HiggsCodebookSampler(numCodebooks);
         var delayedFrames = new List<int[]>();
 
@@ -43,7 +117,7 @@ public static class HiggsGenerator
         var maskedFirst = sampler.Step(first);
         delayedFrames.Add(maskedFirst);
 
-        int position = prompt.TokenIds.Length;
+        int position = promptLength;
         while (!sampler.GenerationDone && delayedFrames.Count < maxTokens)
         {
             var raw = HiggsArStepper.Step(fwd, llm, sampler.LastCodes, position, numCodebooks, audioVocabSize, options, rng);
