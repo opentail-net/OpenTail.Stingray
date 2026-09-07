@@ -15948,3 +15948,40 @@ been ported so far) have not yet been read/ported. Real next step for a future p
 `codec.cpp`'s `codec_project`/quantizer-encode real formula, then wire a full
 `HiggsCodecEncoder.Encode` analogous to VoxCPM2's `Encode`/`GenerateWithPrompt` wiring earlier
 this session.
+
+## Higgs Audio TTS -- real scope correction: the semantic/acoustic encoder reuse is real but NOT sufficient for full voice-cloning; a real hidden-state-averaging variant and a whole separate semantic post-encoder are also needed, 2026-09-07
+
+Read `codec.cpp`'s real `codec_encode`/`hubert_hidden_state_mean`/`semantic_encoder`/
+`quantizer_encode` (the functions that actually consume the two encoders reused above) in full
+before assuming the reuse work above was sufficient to wire full voice-cloning -- it is NOT, and
+this is worth stating precisely rather than leaving the impression the preceding two entries
+closed the gap:
+
+1. **`hubert_hidden_state_mean` does NOT use the HuBERT encoder's final-layer output** (what
+   `OmniVoiceSemanticEncoder.Forward`/the two entries above verified and reused) -- it's a real
+   AVERAGE across all 13 hidden states (the initial post-pos-conv hidden state PLUS all 12 layer
+   outputs, divided by `kSemanticLayers+1=13`), then a real `downsample_time_by_2` reduction. This
+   is a genuinely different reduction than a plain final-layer forward pass -- the HuBERT
+   sub-network reused above is the right ENCODER, but needs a new caller that accumulates a
+   running sum across every layer's output (not hard given `OmniVoiceSemanticEncoder`'s existing
+   per-layer loop structure, but not yet done).
+2. **A whole SEPARATE real `semantic_encoder` sub-network** (real ELU-activated residual conv
+   blocks, `semantic_encoder_input`/`semantic_encoder_blocks`, its own real weights distinct from
+   the HuBERT encoder's) runs AFTER the hidden-state mean, before concatenation with the acoustic
+   encoder's output -- not read in detail yet, real unstarted work.
+3. **`quantizer_encode`** (now fully read, real and precisely specified): a standard residual
+   vector quantization loop across `kCodecCodebooks` codebooks, each step projecting to
+   `kCodecCodebookDim`, finding the nearest codebook entry via the real expanded-squared-distance
+   argmax formula (`2*dot - ||x||^2 - ||e||^2`, mathematically `argmin ||x-e||^2`), projecting the
+   quantized entry back and subtracting it as the residual for the next codebook -- real, doable,
+   not yet ported.
+
+**Honest status**: the acoustic and semantic HuBERT encoder REUSE from the two preceding entries
+is real, independently verified, correct, and valuable (confirmed architecture-identical,
+real-weight tested) -- but Higgs's full reference-audio encode path additionally needs (1) a
+hidden-state-averaging variant of the semantic forward pass, (2) the separate real
+`semantic_encoder` residual-conv sub-network, and (3) the real RVQ `quantizer_encode` loop, none
+of which are ported yet. Real next step for a future pass, in this order: port `quantizer_encode`
+first (self-contained, clearly specified, no new encoder architecture needed, reusable for
+OmniVoice's own voice-cloning path too if it needs the same real formula), then the
+hidden-state-mean variant, then the semantic post-encoder.
