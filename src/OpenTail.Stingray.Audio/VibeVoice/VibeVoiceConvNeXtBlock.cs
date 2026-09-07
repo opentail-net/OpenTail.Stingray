@@ -45,6 +45,35 @@ public static class VibeVoiceConvNeXtBlock
         return AddChannelsMajor(afterMixer, ffnOut);
     }
 
+    /// <summary>Real STREAMING ConvNeXt-1D block, ported from `tokenizer_block_streaming` (not
+    /// guessed): identical to <see cref="Forward"/> except the depthwise mixer conv uses
+    /// <see cref="SConvDepthwise1dStreaming"/> (real per-call cache) instead of the whole-clip
+    /// causal zero-padded version -- the FFN half has no conv, so it's unchanged.</summary>
+    public static float[][] ForwardStreaming(float[][] channelsMajor, VibeVoiceConvNeXtBlockWeights w, float eps, ref float[][]? cache)
+    {
+        int channels = channelsMajor.Length;
+        int frames = channelsMajor[0].Length;
+
+        var normed = ChannelRmsNorm(channelsMajor, w.NormWeight, eps);
+        var mixed = SConvDepthwise1dStreaming(normed, w.MixerWeight, w.MixerBias, stride: 1, ref cache);
+        ScaleChannelsInPlace(mixed, w.Gamma);
+        var afterMixer = AddChannelsMajor(channelsMajor, mixed);
+
+        var ffnNormed = ChannelRmsNorm(afterMixer, w.FfnNormWeight, eps);
+        var frameMajor = Transpose(ffnNormed, channels, frames);
+        var hidden = new float[frames][];
+        int ffnDim = w.FfnLinear1Weight.Length / channels;
+        for (int t = 0; t < frames; t++)
+        {
+            var h = LinearRow(frameMajor[t], w.FfnLinear1Weight, w.FfnLinear1Bias, channels, ffnDim);
+            for (int c = 0; c < ffnDim; c++) h[c] = GeluErf(h[c]);
+            hidden[t] = LinearRow(h, w.FfnLinear2Weight, w.FfnLinear2Bias, ffnDim, channels);
+        }
+        var ffnOut = Transpose(hidden, frames, channels);
+        ScaleChannelsInPlace(ffnOut, w.FfnGamma);
+        return AddChannelsMajor(afterMixer, ffnOut);
+    }
+
     /// <summary>Real causal Conv1d (full, not depthwise): weight `[outCh][inCh][kernel]`, causal
     /// left-pad `(kernel-1)*dilation-(stride-1)` plus the real Encodec/DAC-style extra right pad to
     /// land the output frame count exactly, matching `sconv1d`.</summary>
@@ -110,6 +139,181 @@ public static class VibeVoiceConvNeXtBlock
                     sum += wRow[k] * srcRow[t + k * dilation];
                 row[t] = sum;
             }
+            output[c] = row;
+        }
+        return output;
+    }
+
+    /// <summary>
+    /// Real STREAMING full Conv1d, ported from `tokenizer_audio.cpp`'s `sconv1d_streaming` (not
+    /// guessed): unlike <see cref="CausalConv1d"/>'s zero-padding, the causal left-context comes
+    /// from a real per-call CACHE (the previous call's own trailing input frames), concatenated
+    /// before a plain unpadded (`padding=0`) convolution -- no `ExtraPaddingForConv1d` trick
+    /// needed since the cache supplies exact context. `cache` is `null` on the very first call
+    /// (real reference: `VibeVoiceTokenizerStreamingState`'s caches lazily zero-initialize on
+    /// first use) and is updated in place to the new real cache (the trailing
+    /// `contextFrames = (kernel-1)*dilation-(stride-1)` frames of `concat(cache, input)`) for the
+    /// next call.</summary>
+    public static float[][] SConv1dStreaming(float[][] channelsMajorIn, float[][][] weight, float[]? bias, int stride, ref float[][]? cache, int dilation = 1)
+    {
+        int inCh = channelsMajorIn.Length;
+        int outCh = weight.Length;
+        int kernel = weight[0][0].Length;
+        int contextFrames = (kernel - 1) * dilation - (stride - 1);
+        var full = ConcatFrames(cache ??= ZeroCache(inCh, contextFrames), channelsMajorIn);
+        int fullLen = full[0].Length;
+        int outFrames = (fullLen - (kernel - 1) * dilation - 1) / stride + 1;
+
+        var output = new float[outCh][];
+        for (int oc = 0; oc < outCh; oc++)
+        {
+            var row = new float[outFrames];
+            float b = bias?[oc] ?? 0f;
+            for (int t = 0; t < outFrames; t++)
+            {
+                float sum = b;
+                int start = t * stride;
+                for (int ic = 0; ic < inCh; ic++)
+                {
+                    var wRow = weight[oc][ic];
+                    var srcRow = full[ic];
+                    for (int k = 0; k < kernel; k++)
+                        sum += wRow[k] * srcRow[start + k * dilation];
+                }
+                row[t] = sum;
+            }
+            output[oc] = row;
+        }
+        cache = LastFrames(full, contextFrames);
+        return output;
+    }
+
+    /// <summary>Real STREAMING DepthwiseConv1d, ported from `sconv_depthwise1d_streaming` (not
+    /// guessed) -- same cache convention as <see cref="SConv1dStreaming"/>.</summary>
+    public static float[][] SConvDepthwise1dStreaming(float[][] channelsMajor, float[][] weight, float[]? bias, int stride, ref float[][]? cache, int dilation = 1)
+    {
+        int channels = channelsMajor.Length;
+        int kernel = weight[0].Length;
+        int contextFrames = (kernel - 1) * dilation - (stride - 1);
+        var full = ConcatFrames(cache ??= ZeroCache(channels, contextFrames), channelsMajor);
+        int fullLen = full[0].Length;
+        int outFrames = (fullLen - (kernel - 1) * dilation - 1) / stride + 1;
+
+        var output = new float[channels][];
+        for (int c = 0; c < channels; c++)
+        {
+            var row = new float[outFrames];
+            float b = bias?[c] ?? 0f;
+            var wRow = weight[c];
+            var srcRow = full[c];
+            for (int t = 0; t < outFrames; t++)
+            {
+                float sum = b;
+                int start = t * stride;
+                for (int k = 0; k < kernel; k++)
+                    sum += wRow[k] * srcRow[start + k * dilation];
+                row[t] = sum;
+            }
+            output[c] = row;
+        }
+        cache = LastFrames(full, contextFrames);
+        return output;
+    }
+
+    /// <summary>Real STREAMING `ConvTranspose1d`, ported from `sconv_transpose1d_streaming` (not
+    /// guessed): the previous chunk's real trailing INPUT frames (not output) are prepended before
+    /// running the SAME real unpadded transpose-conv + all-from-the-right trim
+    /// (`kTokenizerConvTransposeTrimRightRatio=1.0`, matching the non-streaming
+    /// `CausalConvTranspose1d`'s real crop convention) that the whole-clip decoder uses, then only
+    /// the LAST `inputFrames*stride` samples of the trimmed result are kept (discarding the
+    /// portion influenced by the cache's own extra context) -- this is what makes chunk boundaries
+    /// causally consistent with a whole-clip decode. `cache` is updated to the trailing
+    /// `kernel-1` frames of `concat(cache, input)` (the raw INPUT, matching the regular streaming
+    /// convs' cache convention, not the output).</summary>
+    public static float[][] SConvTranspose1dStreaming(float[][] input, float[][][] weight, float[] bias, int stride, ref float[][]? cache)
+    {
+        int inChannels = input.Length;
+        int inFrames = input[0].Length;
+        int outChannels = weight[0].Length;
+        int kernel = weight[0][0].Length;
+        int contextFrames = kernel - 1;
+
+        var full = ConcatFrames(cache ??= ZeroCache(inChannels, contextFrames), input);
+        int fullInLen = full[0].Length;
+        int rawLen = (fullInLen - 1) * stride + kernel;
+
+        var raw = new float[outChannels][];
+        for (int oc = 0; oc < outChannels; oc++)
+        {
+            raw[oc] = new float[rawLen];
+            float b = bias[oc];
+            for (int o = 0; o < rawLen; o++) raw[oc][o] = b;
+        }
+        for (int ic = 0; ic < inChannels; ic++)
+        {
+            var inRow = full[ic];
+            for (int i = 0; i < fullInLen; i++)
+            {
+                float v = inRow[i];
+                if (v == 0f) continue;
+                int baseOut = i * stride;
+                for (int oc = 0; oc < outChannels; oc++)
+                {
+                    var wRow = weight[ic][oc];
+                    var outRow = raw[oc];
+                    for (int k = 0; k < kernel; k++) outRow[baseOut + k] += wRow[k] * v;
+                }
+            }
+        }
+
+        int paddingTotal = kernel - stride;
+        if (paddingTotal < 0) throw new InvalidOperationException("VibeVoice streaming tokenizer ConvTranspose1d padding_total is negative.");
+        // Real kTokenizerConvTransposeTrimRightRatio=1.0 -> paddingRight=paddingTotal, paddingLeft=0.
+        int unpaddedFrames = rawLen - paddingTotal;
+        if (unpaddedFrames <= 0) throw new InvalidOperationException("VibeVoice streaming tokenizer ConvTranspose1d unpad removed all frames.");
+
+        int outputFrames = inFrames * stride;
+        var output = new float[outChannels][];
+        for (int oc = 0; oc < outChannels; oc++)
+        {
+            var unpadded = raw[oc]; // paddingLeft=0, so unpadded is just raw[0..unpaddedFrames)
+            var row = new float[outputFrames];
+            Array.Copy(unpadded, unpaddedFrames - outputFrames, row, 0, outputFrames);
+            output[oc] = row;
+        }
+        cache = LastFrames(full, contextFrames);
+        return output;
+    }
+
+    private static float[][] ZeroCache(int channels, int frames)
+    {
+        var cache = new float[channels][];
+        for (int c = 0; c < channels; c++) cache[c] = new float[frames];
+        return cache;
+    }
+
+    private static float[][] ConcatFrames(float[][] a, float[][] b)
+    {
+        int channels = a.Length;
+        var output = new float[channels][];
+        for (int c = 0; c < channels; c++)
+        {
+            var row = new float[a[c].Length + b[c].Length];
+            Array.Copy(a[c], 0, row, 0, a[c].Length);
+            Array.Copy(b[c], 0, row, a[c].Length, b[c].Length);
+            output[c] = row;
+        }
+        return output;
+    }
+
+    private static float[][] LastFrames(float[][] channelsMajor, int frames)
+    {
+        int channels = channelsMajor.Length;
+        var output = new float[channels][];
+        for (int c = 0; c < channels; c++)
+        {
+            var row = new float[frames];
+            Array.Copy(channelsMajor[c], channelsMajor[c].Length - frames, row, 0, frames);
             output[c] = row;
         }
         return output;

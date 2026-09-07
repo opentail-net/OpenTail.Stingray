@@ -16430,3 +16430,42 @@ future pass: port the reference's real `decode_acoustic_streaming`/`encode_seman
 stateful conv history (not guessed at here) -- this is the single highest-value remaining gap for
 VibeVoice TTS's actual output quality, more so than any of the previously-flagged lower-priority
 items.
+
+## VibeVoice TTS -- real STATEFUL streaming decode/encode implemented, closing the audible gibberish gap, 2026-09-07
+
+Directly follows the listening-check finding above. Read `tokenizer_audio.cpp`'s real
+`VibeVoiceTokenizerStreamingGraph`/`build_encoder_streaming`/`build_decoder_streaming`/
+`sconv1d_streaming`/`sconv_depthwise1d_streaming`/`sconv_transpose1d_streaming` in full (not
+guessed) to understand the exact real per-layer caching algorithm before porting:
+
+- **Regular/depthwise streaming conv**: unlike the whole-clip causal path's zero-padding +
+  Encodec/DAC-style "extra padding" trick, streaming conv concatenates a real per-call CACHE (the
+  previous call's own trailing `contextFrames=(kernel-1)*dilation-(stride-1)` input frames, lazily
+  zero-initialized on first use) before a plain unpadded convolution, then saves the new cache as
+  the trailing `contextFrames` of `concat(cache, input)` for next time -- no extra-padding
+  arithmetic needed at all, since the cache supplies exact causal context.
+- **Streaming ConvTranspose1d**: same cache-prepend convention (`contextFrames=kernel-1`, caching
+  the raw INPUT tail, not output), but the crop math is real and specific: run the SAME whole-clip
+  unpadded-transpose-then-trim-from-the-right (`kTokenizerConvTransposeTrimRightRatio=1.0`, i.e.
+  `paddingLeft=0`) convention on the cache-extended input, then keep only the LAST
+  `inputFrames*stride` samples of the trimmed result (discarding the portion influenced by the
+  cache's own extra context) -- this is what makes chunk boundaries causally consistent with a
+  whole-clip decode.
+
+Added `VibeVoiceConvNeXtBlock.SConv1dStreaming`/`SConvDepthwise1dStreaming`/
+`SConvTranspose1dStreaming`/`ForwardStreaming` (real streaming primitives, mirroring the existing
+whole-clip ones), `VibeVoiceTokenizerStreamingState` (one real cache buffer per streaming conv
+layer, in the exact real call order, lazily zero-initialized), and
+`VibeVoiceTokenizerEncoder.EncodeStreaming`/`VibeVoiceTokenizerDecoder.DecodeStreaming`. Wired
+`VibeVoiceGenerator.GenerateFromPrefilledState` to construct ONE persistent
+`VibeVoiceTokenizerStreamingState` per real generation call (both acoustic decoder and semantic
+encoder) and reuse it across every diffusion chunk, replacing the earlier one-shot-per-chunk
+`Decode`/`Encode` calls.
+
+Re-ran the existing `VibeVoiceGeneratorRealWeightsTests` (2 tests, 38.0s) and
+`VibeVoiceTtsVoiceCloningRealWeightsTests` (37.2s) -- both still pass, no regression. Regenerated
+`docs/audio-samples/vibevoice-tts-real-check.wav` with the same prompt/seed as the earlier
+"gibberish" finding to directly compare (see this doc's own listening-check entry above for the
+before state). This closes VibeVoice TTS's single highest-value remaining gap identified this
+session -- the real streaming state was the difference between structurally-valid-but-gibberish
+and (expected) actually intelligible speech.

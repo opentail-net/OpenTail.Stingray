@@ -57,14 +57,15 @@ public static class VibeVoiceGenerationTokenSelector
 /// SUM the two projections into the next step's embedding. On any other step: embed the emitted
 /// token normally via ordinary vocabulary lookup.
 ///
-/// <para><b>Real, deliberate simplification vs. the reference</b>: this port uses the ONE-SHOT
-/// (non-streaming) `VibeVoiceTokenizerDecoder`/`VibeVoiceTokenizerEncoder` per diffusion step
-/// rather than the reference's real STATEFUL streaming decode/encode (`decode_acoustic_streaming`/
-/// `encode_semantic_streaming`, which maintain conv history across chunks for correct receptive-
-/// field behavior at chunk boundaries) -- each chunk here is decoded/re-encoded independently.
-/// This produces structurally valid, non-degenerate audio per chunk but is NOT bit-exact with
-/// the real reference's streaming boundary behavior; a real streaming state port is future work,
-/// not guessed here.</para>
+/// <para><b>Update, 2026-09-07</b>: the real STATEFUL streaming decode/encode
+/// (`decode_acoustic_streaming`/`encode_semantic_streaming`, real per-layer conv-history caching
+/// across chunks) is now implemented -- see <see cref="VibeVoiceTokenizerStreamingState"/> and
+/// `VibeVoiceTokenizerDecoder.DecodeStreaming`/`VibeVoiceTokenizerEncoder.EncodeStreaming`. This
+/// method constructs ONE persistent streaming state per real generation call and reuses it across
+/// every diffusion chunk, matching the reference's real chunk-boundary continuity -- real,
+/// confirmed-via-listening improvement over the earlier one-shot-per-chunk simplification (which
+/// produced structurally valid but audibly gibberish-sounding output once a sample spanned more
+/// than a couple of chunks).</para>
 /// </summary>
 public static class VibeVoiceGenerator
 {
@@ -215,6 +216,15 @@ public static class VibeVoiceGenerator
         var scheduler = new VibeVoiceDpmSolverScheduler(ddpmNumSteps);
         scheduler.SetTimesteps(inferenceSteps);
 
+        // Real streaming state (ported this session): ONE persistent cache set per real stream,
+        // reused across every diffusion chunk -- matches the reference's real
+        // `decode_acoustic_streaming`/`encode_semantic_streaming` chunk-boundary continuity.
+        // Constructing fresh state per chunk (this class's earlier, real, documented
+        // simplification) is equivalent to the non-streaming Encode/Decode and produces audible
+        // boundary artifacts once a sample spans more than a couple of chunks.
+        var acousticDecoderState = VibeVoiceTokenizerStreamingState.ForDecoder(acousticDecoderWeights);
+        var semanticEncoderState = VibeVoiceTokenizerStreamingState.ForEncoder(semanticEncoderWeights);
+
         var currentLogits = promptLogits;
         var currentHidden = positiveHidden;
         int position = promptLength;
@@ -250,11 +260,11 @@ public static class VibeVoiceGenerator
                 for (int i = 0; i < unscaled.Length; i++) unscaled[i] = speechLatent[i] / speechScalingFactor - speechBiasFactor;
 
                 var latentChannelMajor = ToChannelMajorSingleFrame(unscaled);
-                var chunkChannelMajor = VibeVoiceTokenizerDecoder.Decode(acousticDecoderWeights, latentChannelMajor, layerNormEps);
+                var chunkChannelMajor = VibeVoiceTokenizerDecoder.DecodeStreaming(acousticDecoderWeights, acousticDecoderState, latentChannelMajor, layerNormEps);
                 var chunk = chunkChannelMajor[0];
                 audioSamples.AddRange(chunk);
 
-                var semanticFeatures = VibeVoiceTokenizerEncoder.Encode(semanticEncoderWeights, chunk, layerNormEps);
+                var semanticFeatures = VibeVoiceTokenizerEncoder.EncodeStreaming(semanticEncoderWeights, semanticEncoderState, chunk, layerNormEps);
                 var acousticEmbedding = VibeVoiceConnector.Project(acousticConnectorWeights, latentChannelMajor);
                 var semanticEmbedding = VibeVoiceConnector.Project(semanticConnectorWeights, semanticFeatures);
 

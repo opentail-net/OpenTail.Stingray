@@ -29,9 +29,40 @@ public static class VibeVoiceTokenizerDecoder
         return VibeVoiceConvNeXtBlock.CausalConv1d(hidden, w.HeadWeight, w.HeadBias, stride: 1).Output;
     }
 
+    /// <summary>Real STREAMING decode, ported from `build_decoder_streaming` (not guessed): same
+    /// per-stage structure as <see cref="Decode"/>, but every conv uses the real per-call CACHE
+    /// convention (<see cref="VibeVoiceConvNeXtBlock.SConv1dStreaming"/>/
+    /// <see cref="VibeVoiceConvNeXtBlock.SConvTranspose1dStreaming"/>/
+    /// <see cref="VibeVoiceConvNeXtBlock.ForwardStreaming"/>). Call once per real
+    /// generated-latent chunk with the SAME <paramref name="state"/> (create via
+    /// <see cref="VibeVoiceTokenizerStreamingState.ForDecoder"/> once per stream).</summary>
+    public static float[][] DecodeStreaming(VibeVoiceTokenizerDecoderWeights w, VibeVoiceTokenizerStreamingState state, float[][] latentChannelMajorChunk, float eps)
+    {
+        state.BeginChunk();
+        var hidden = VibeVoiceConvNeXtBlock.SConv1dStreaming(latentChannelMajorChunk, w.StemWeight, w.StemBias, stride: 1, ref state.Next());
+        hidden = RunStageStreaming(hidden, w.Stages[0], eps, state);
+
+        for (int i = 0; i < w.UpsampleRatios.Length; i++)
+        {
+            hidden = VibeVoiceConvNeXtBlock.SConvTranspose1dStreaming(hidden, w.UpsampleWeights[i], w.UpsampleBiases[i], w.UpsampleRatios[i], ref state.Next());
+            hidden = RunStageStreaming(hidden, w.Stages[i + 1], eps, state);
+        }
+
+        if (w.FinalNormWeight is { } finalNorm)
+            hidden = VibeVoiceConvNeXtBlock.ChannelRmsNorm(hidden, finalNorm, eps);
+
+        return VibeVoiceConvNeXtBlock.SConv1dStreaming(hidden, w.HeadWeight, w.HeadBias, stride: 1, ref state.Next());
+    }
+
     private static float[][] RunStage(float[][] hidden, VibeVoiceConvNeXtBlockWeights[] blocks, float eps)
     {
         foreach (var block in blocks) hidden = VibeVoiceConvNeXtBlock.Forward(hidden, block, eps);
+        return hidden;
+    }
+
+    private static float[][] RunStageStreaming(float[][] hidden, VibeVoiceConvNeXtBlockWeights[] blocks, float eps, VibeVoiceTokenizerStreamingState state)
+    {
+        foreach (var block in blocks) hidden = VibeVoiceConvNeXtBlock.ForwardStreaming(hidden, block, eps, ref state.Next());
         return hidden;
     }
 

@@ -35,4 +35,30 @@ public static class VibeVoiceTokenizerEncoder
         (hidden, _) = VibeVoiceConvNeXtBlock.CausalConv1d(hidden, w.HeadWeight, w.HeadBias, stride: 1);
         return hidden;
     }
+
+    /// <summary>Real STREAMING encode, ported from `build_encoder_streaming` (not guessed): same
+    /// per-stage structure as <see cref="Encode"/>, but every conv uses the real per-call CACHE
+    /// convention (<see cref="VibeVoiceConvNeXtBlock.SConv1dStreaming"/>/
+    /// <see cref="VibeVoiceConvNeXtBlock.ForwardStreaming"/>) instead of whole-clip zero-padding.
+    /// Call once per real audio chunk with the SAME <paramref name="state"/> (create via
+    /// <see cref="VibeVoiceTokenizerStreamingState.ForEncoder"/> once per stream) for correct
+    /// causal continuity across chunk boundaries -- a fresh state per call is equivalent to the
+    /// non-streaming <see cref="Encode"/>.</summary>
+    public static float[][] EncodeStreaming(VibeVoiceTokenizerEncoderWeights w, VibeVoiceTokenizerStreamingState state, float[] monoWaveformChunk, float layerNormEps)
+    {
+        float[][] hidden = [monoWaveformChunk];
+        state.BeginChunk();
+
+        for (int stage = 0; stage < w.Stages.Length; stage++)
+        {
+            hidden = VibeVoiceConvNeXtBlock.SConv1dStreaming(hidden, w.DownsampleWeights[stage], w.DownsampleBiases[stage], w.DownsampleStrides[stage], ref state.Next());
+            foreach (var block in w.Stages[stage])
+                hidden = VibeVoiceConvNeXtBlock.ForwardStreaming(hidden, block, layerNormEps, ref state.Next());
+        }
+
+        if (w.FinalNormWeight is { } finalNorm)
+            hidden = VibeVoiceConvNeXtBlock.ChannelRmsNorm(hidden, finalNorm, layerNormEps);
+
+        return VibeVoiceConvNeXtBlock.SConv1dStreaming(hidden, w.HeadWeight, w.HeadBias, stride: 1, ref state.Next());
+    }
 }
