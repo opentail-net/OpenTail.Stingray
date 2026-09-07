@@ -14888,3 +14888,40 @@ confirm the real reference's layer-2 discontinuity is reproduced.
 **Qwen3 Forced Aligner status: root cause identified, fix scoped but not yet implemented.** This
 is real, substantial progress after multiple prior sessions' exhausted aggregate-stats/per-layer
 investigation -- the remaining work is a genuine, bounded engine change, not further diagnosis.
+
+## Qwen3 Forced Aligner -- interleaved RoPE fix implemented, real but PARTIAL effect, 2026-09-07
+
+Implemented the fix scoped in the prior entry: added a real, safe, additive per-checkpoint RoPE
+override to `ModelGraph.cs` (`"{arch}.rope.is_neox"` metadata key, checked AFTER the existing
+architecture-string switch so every other checkpoint's behavior is completely unaffected unless
+a bridge explicitly sets it) and wired `QwenAsrLlmSafetensorsTensorSource`'s new
+`interleavedRope` constructor parameter (default `false`) through `QwenAsrForcedAligner`,
+passing `true` only for this checkpoint.
+
+**Real result: the fix clearly changes the computation (confirming the M-RoPE finding was
+addressing something real), but does NOT fully resolve the bug -- it produces a DIFFERENT wrong
+pattern, not the correct one.** Before: all classify predictions collapsed toward class 0
+(timestamp ~0) uniformly. After this fix: every word EXCEPT the last still lands at
+`[0.00,0.00]`, but the FINAL word ("publication") jumps to a wildly out-of-range
+`144.72s` (the real audio is only 5.95s long) -- a genuinely different failure mode, not a
+regression back to the old one, which is itself evidence the interleaved-pairing change reached
+real, different numeric territory rather than being a no-op.
+
+**Honest assessment, not overclaiming**: this is real, meaningful progress (the RoPE convention
+was genuinely wrong and is now more likely correct, or closer to correct) but the bug is NOT
+resolved -- do not mark this item as fixed. Two real possibilities for the remaining gap,
+neither yet checked: (1) real M-RoPE's FREQUENCY construction (not just the rotation-pairing
+convention) may differ from plain interleaved RoPE even when all three position sections
+collapse to the same scalar value -- the `mrope_section=[24,20,20]` split might partition the
+frequency table itself in a way this fix's reuse of the existing "NORM/interleaved" path doesn't
+replicate; (2) a separate, independent bug may have been masked by the RoPE issue and is only
+now visible now that rotation is closer to correct. Real next step: re-run the layer-by-layer
+bisection (same `EnableHiddenTaps` technique used for the original diagnosis) WITH this fix
+applied, comparing against the real reference's own per-layer stats already recorded in this
+doc's earlier entry, to see whether the layer-2 discontinuity is now reproduced (would confirm
+the rotation fix is on the right track and point to hypothesis 2) or still absent (would point to
+hypothesis 1, the frequency-construction difference).
+
+**Qwen3 Forced Aligner status: real, substantial progress (root cause of the ROTATION half
+identified and a safe fix implemented), but the bug persists in a new form.** Not closing this
+investigation as resolved.

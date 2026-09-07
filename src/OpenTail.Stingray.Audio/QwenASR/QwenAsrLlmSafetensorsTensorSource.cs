@@ -33,7 +33,20 @@ public sealed unsafe class QwenAsrLlmSafetensorsTensorSource : IModelTensorSourc
     private readonly int _hiddenDim;
     private bool _disposed;
 
-    public QwenAsrLlmSafetensorsTensorSource(string safetensorsPath, int numLayers, int hiddenDim, int numHeads, int numKvHeads, int headDim, int ffDim, int vocabSize, float ropeTheta, float rmsNormEps)
+    /// <summary>
+    /// <paramref name="interleavedRope"/>: real, per-checkpoint override (default `false`,
+    /// preserving every existing caller's behavior) -- set `true` for a checkpoint whose OWN
+    /// `config.json` declares `rope_scaling.interleaved`/`mrope_interleaved` (real Qwen2-VL/
+    /// Qwen2.5-Omni-family M-RoPE, confirmed for the Qwen3 Forced Aligner text decoder). Since
+    /// this checkpoint's real position ids are plain 1D sequential for text-only use (the
+    /// reference's own `qwen_position_ids`, no 3D section-splitting involved), the only
+    /// numerically meaningful difference from this bridge's default standard-Qwen3 NEOX rotation
+    /// is the interleaved (adjacent-pair) pairing convention -- forwarded to `ForwardPass` via
+    /// the real `"{arch}.rope.is_neox"` metadata override this session added to
+    /// `ModelGraph.cs`, WITHOUT affecting any other checkpoint that legitimately declares the
+    /// same `qwen3` architecture string and needs standard NEOX rotation.
+    /// </summary>
+    public QwenAsrLlmSafetensorsTensorSource(string safetensorsPath, int numLayers, int hiddenDim, int numHeads, int numKvHeads, int headDim, int ffDim, int vocabSize, float ropeTheta, float rmsNormEps, bool interleavedRope = false)
     {
         _loader = SafetensorsLoader.Open(safetensorsPath);
         _hiddenDim = hiddenDim;
@@ -76,6 +89,7 @@ public sealed unsafe class QwenAsrLlmSafetensorsTensorSource : IModelTensorSourc
             ["qwen3.vocab_size"] = vocabSize,
             ["qwen3.context_length"] = 32768,
         };
+        if (interleavedRope) _metadata["qwen3.rope.is_neox"] = false;
     }
 
     private void MapIfPresent(string sourceName, string canonicalName)

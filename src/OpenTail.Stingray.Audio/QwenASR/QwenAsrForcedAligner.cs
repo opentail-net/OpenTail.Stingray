@@ -162,11 +162,18 @@ public sealed class QwenAsrForcedAligner : IDisposable
             Console.Error.WriteLine($"[FA-Trace] audioPadCount in prompt={audioPadCount} (expect numAudioTokens={numAudioTokens})");
         }
 
+        // Real, checkpoint-confirmed (not guessed): this checkpoint's own config.json declares
+        // rope_scaling.interleaved=true/mrope_interleaved=true (real Qwen2-VL/Qwen2.5-Omni-
+        // family M-RoPE) -- the standard Qwen3 NEOX rotation this bridge otherwise defaults to
+        // is wrong for this specific checkpoint. See docs/audio-review-progress.md's "ROOT CAUSE
+        // FOUND" entry for the full derivation of why interleavedRope=true (not full 3D M-RoPE
+        // section tracking) is the correct fix for this text-only use.
         using var source = new QwenAsrLlmSafetensorsTensorSource(
             _safetensorsPath,
             numLayers: _realWeights.LlmLayers, hiddenDim: _realWeights.LlmDim, numHeads: _realWeights.LlmHeads,
             numKvHeads: _realWeights.LlmKvHeads, headDim: _realWeights.LlmHeadDim, ffDim: _realWeights.LlmFfDim,
-            vocabSize: 5000, ropeTheta: _realWeights.LlmRopeTheta, rmsNormEps: _realWeights.LlmRmsNormEps);
+            vocabSize: 5000, ropeTheta: _realWeights.LlmRopeTheta, rmsNormEps: _realWeights.LlmRmsNormEps,
+            interleavedRope: true);
         source.EnableAudioConditioning(audioSoftTokens, numAudioTokens);
 
         var prompt = promptIds.ToArray();

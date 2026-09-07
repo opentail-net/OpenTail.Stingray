@@ -533,6 +533,20 @@ public sealed record ModelHyperparams
             "qwen3next" or "qwen35moe" or "qwen35" or "mimo2" or "step35" => true,
             _ => false,
         };
+        // Real, per-checkpoint override: some checkpoints declaring a standard architecture
+        // string (e.g. "qwen3") are actually fine-tuned variants requiring the OTHER real RoPE
+        // pairing convention -- confirmed real for at least one checkpoint (Qwen3 Forced
+        // Aligner's text decoder, whose own config.json declares `rope_scaling.interleaved=true`/
+        // `mrope_interleaved=true`, a real Qwen2-VL/Qwen2.5-Omni-family M-RoPE variant this
+        // engine does not otherwise support -- but whose real position ids are plain 1D
+        // sequential for text-only use, per the reference's own `qwen_position_ids`, so the only
+        // numerically meaningful difference from standard NEOX rotation is the interleaved
+        // (adjacent-pair) pairing convention itself, not any 3D section-splitting). A bridging
+        // `IModelTensorSource` can set `"{arch}.rope.is_neox"` in its metadata to force this
+        // per-checkpoint rather than per-architecture, without affecting any other checkpoint
+        // that legitimately declares the same architecture string.
+        if (metadata.TryGetValue($"{arch}.rope.is_neox", out var neoxOverride) && neoxOverride is bool neoxOverrideValue)
+            isNeoxRope = neoxOverrideValue;
 
         int embDim = GetInt(metadata, $"{arch}.embedding_length");
         int numHeads = GetInt(metadata, $"{arch}.attention.head_count");
