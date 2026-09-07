@@ -13416,12 +13416,19 @@ nothing left unread.
 update**: implemented and structurally verified (synthetic weights) -- tokenizer encoder
 (acoustic+semantic, shared class), connector (shared class), Gaussian latent sampler,
 acoustic+semantic combine, LLM tensor-source bridge (Qwen2, with speech-embedding
-conditioning), frontend normalization, JSON postprocessor. NOT yet implemented: the real
-sampling/decode utilities (`argmax_token`, `sample_token`, `apply_repetition_penalty`,
-beam search -- small, self-contained functions in `session.cpp`'s anonymous namespace, real
-next step) and the top-level orchestration wiring all these real pieces together into one
-callable pipeline (greedy/offline decode is the natural first correctness target; beam
-search and streaming are real but lower priority). Real-weight verification of everything
-above remains blocked on the checkpoint download (~3.9GB of ~9.9GB as of this update) --
-the single largest remaining risk, since no piece has been checked against real weights or
-a real reference transcription yet.
+conditioning), frontend normalization, JSON postprocessor, greedy-decode sampling utilities
+(argmax with real BF16 rounding, repetition penalty). NOT yet implemented: beam search's
+`top_log_probs` (lower priority than greedy decode) and the top-level orchestration wiring
+that calls `ForwardPass` (prefill with `VibeVoiceLlmTensorSource` + `EnableSpeechConditioning`,
+then a real decode loop using the sampling utilities above until EOS/max length) -- this
+needs concrete `ForwardPass` prefill/decode API investigation, not yet done. Real-weight
+verification of everything above remains blocked on the checkpoint download (~4.3GB of
+~9.9GB as of this update) -- the single largest remaining risk, since no piece has been
+checked against real weights or a real reference transcription yet.
+
+**Pausing VibeVoice ASR here for this session** (8 real components implemented + tested:
+tokenizer encoder, connector, Gaussian sampler, acoustic/semantic combine, Qwen2 LLM
+bridge, frontend, postprocessor, sampling utilities) -- the two remaining pieces (the
+`ForwardPass` prefill/decode wiring, and real-weight verification) both need either more
+API research or the still-downloading checkpoint, neither a quick win right now. Per this
+session's "pivot rather than stall" discipline, moving to VoxCPM2's MiniCPM backbone next.
