@@ -14067,3 +14067,19 @@ delayed multi-codebook AR generation loop (`ar.cpp`, 1367 lines -- the piece tha
 PRODUCES the RVQ codes this decoder now consumes), real sampling (`sampler.cpp`). The semantic
 encoder + `project_in`/`fc` (reference-audio voice-cloning ENCODE path) remain unported and are
 lower priority than the generation loop for a first working end-to-end pass.
+
+## Higgs Audio TTS -- corrected "gate predictor" assumption, 2026-09-07
+
+Read `ar.cpp`'s `build_higgs_prefill_input_embedding` (~line 265-305). Correcting
+`HiggsLlmTensorSource`'s own doc comment, which called this a "gate predictor" implying a
+learned network: **the real `text_gate`/`code_gate` are plain caller-supplied per-step SCALAR
+inputs** (`ggml_new_tensor_3d(..., 1, steps, 1)`, fed in from outside the graph, real formula
+`fused = text_embedding*text_gate + code_embedding*code_gate`), not a learned gating module at
+all -- there is no extra weight tensor to load for this. The caller (the real per-step
+generation loop in `ar.cpp`, not yet read in full) presumably sets these to simple 0/1 masks
+per whether a given step is a text or audio position, same real "additive gated fusion" pattern
+this doc's earlier `HiggsLlmTensorSource` entry already described, just simpler than assumed --
+no separate gate-predictor weights exist to find or port. This lowers Higgs's remaining real
+scope: the AR generation loop (`ar.cpp`) needs the embedding-fusion formula above (trivial once
+`ModalityEmbeddingWeight`'s codebook-offset embedding lookup + `text_embedding` lookup exist,
+both already available) plus the real per-step sampling/stopping logic (`sampler.cpp`).
