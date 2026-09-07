@@ -16293,3 +16293,40 @@ generation are now real, wired, and real-weight verified, matching VibeVoice TTS
 completion level. Real remaining gaps: KV-cache reuse across repeated same-reference calls (a real
 perf optimization, `reference_prefix_cache_` in the reference, not implemented -- every call
 re-runs the full reference prefix), numeric golden-parity against the reference.
+
+## PersonaPlex -- voice/system-prompt bootstrap sequence precisely scoped from session.cpp, real embedded voice-prompt assets confirmed present, 2026-09-07
+
+Investigated whether the "full voice/system-prompt bootstrap sequence" gap (flagged as remaining
+on PersonaPlex's last several entries) is actually blocked on missing external per-voice-id
+checkpoint files, per this session's earlier (now corrected) assumption -- it is NOT: this
+checkpoint's own embedded-files listing already confirmed "several voice-prompt `.safetensors`
+assets" present (see this session's earlier "temporal LM real-weight verified" entry), so the
+precomputed-voice-id-embedding bootstrap path (the reference's real `else` branch in
+`start_conversation` when no live `voice_prompt_audio` is supplied) is real, tractable, local work
+-- not externally blocked.
+
+Read `session.cpp`'s real `start_conversation` (not guessed) to scope it precisely: (1) replay the
+real per-voice-id embedding table (`load_personaplex_voice_prompt`, a real per-checkpoint asset,
+`PersonaPlexVoicePromptState`) frame-by-frame via a real DIRECT-EMBEDDING step variant
+(`run_prepared_embedding_step`/`graph.run_embedding_step(embedding)` -- bypasses the normal token-
+id-based embedding lookup entirely, feeding a precomputed hidden vector straight into the LM step,
+analogous to this session's `ForwardEmbedding` pattern used elsewhere but for PersonaPlex's own
+step graph specifically, not yet confirmed whether `PersonaPlexGenerator`'s existing step function
+already exposes an equivalent entry point); (2) `0.5*mimi.frame_rate` real silence frames (fixed
+`kSineTokens={430,1268,381,1611,1095,1495,56,472}` as the "moshi" stream, real
+`PersonaPlexGenerator.SilenceTokens` -- already ported -- as the "user" stream, `kZeroTextToken=3`
+-- already ported as `PersonaPlexDelayState.ZeroTextToken`); (3) the real system-prompt text,
+SentencePiece-tokenized (`tokenize_sentencepiece`) and stepped one token at a time with the same
+silence/sine audio-stream padding; (4) another `0.5*mimi.frame_rate` real silence frames. Real,
+still-unconfirmed pieces before this can be ported: whether `graph.run_embedding_step`'s direct-
+embedding injection needs new engine-level support beyond what `PersonaPlexGenerator`'s existing
+per-step functions expose, the real `PersonaPlexVoicePromptState`/`load_personaplex_voice_prompt`
+binary layout for parsing the embedded voice-prompt asset, and confirming this codebase's existing
+SentencePiece/Unigram tokenizer (`OpenTail.Stingray.Core`, used elsewhere this session for other
+checkpoints) is checkpoint-compatible with PersonaPlex's own `tokenizer_pieces` asset.
+
+Real next step for a future pass: read `PersonaPlexMainStepGraph::run_embedding_step` and
+`request.cpp`'s `load_personaplex_voice_prompt` in full to resolve those unknowns before writing
+any code -- comparable in size to this session's other full generator-loop ports, not started this
+pass given the remaining unknowns needed careful reading rather than a rushed attempt. PersonaPlex
+stays ranked ~75-80%.
