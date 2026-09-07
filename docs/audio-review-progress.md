@@ -16172,3 +16172,41 @@ line logged (genuine run per rule 12). Re-ran the existing `VibeVoiceGeneratorRe
 for VibeVoice TTS -- voice cloning, previously entirely unimplemented for this model, is now wired
 end-to-end. Real remaining VibeVoice TTS gap: real streaming decoder/encoder state (the existing
 one-shot-per-chunk simplification documented on `VibeVoiceGenerator`'s own class doc comment).
+
+## Higgs Audio TTS -- real delay-pattern helper ported; full generator loop precisely scoped (not started), 2026-09-07
+
+Read `generator.cpp`'s real `HiggsGenerator::prepare`/`generate` (not guessed) to scope the
+remaining "no full text->audio generation loop wired yet" gap before attempting a port. Confirmed
+this is a genuinely substantial, self-contained piece -- NOT a quick wire-up like OmniVoice's own
+encode chain was -- with these real, distinct sub-pieces:
+
+1. **Delay pattern** (`codebooks.cpp`'s `higgs_delayed_frame_count`/`apply_higgs_delay_pattern`/
+   `reverse_higgs_delay_pattern`): a real, standard MusicGen-style staggered per-codebook delay
+   (codebook `k`'s raw frame `f` lands at delayed frame `k+f`; `kHiggsBocId=1024`/`kHiggsEocId=1025`
+   padding). Small, self-contained, no dependency on anything else -- **ported this pass** as
+   `HiggsCodebooks.cs` (`DelayedFrameCount`/`ApplyDelayPattern`/`ReverseDelayPattern`), verified with
+   a pure-logic round-trip unit test (`HiggsCodebooksTests`, no checkpoint needed, 0.16s).
+2. **Prompt+reference fusion** (`make_prompt_input`/`make_prepared_prompt`): builds a real FUSED
+   per-position sequence where each position is EITHER a text token (`text_gate=1`) OR a full row of
+   8 delayed reference-audio codebook ids (`code_gate=1`, each code offset by
+   `codebook*audio_vocab_size` into a real per-codebook-disjoint fused id space) -- real reference-
+   audio conditioning is spliced directly into the PROMPT this way, not via a separate embedding-
+   splice pass like VibeVoice/VoxCPM2 use. Not yet ported.
+3. **Bucketed KV-cache sizing + reference-prefix caching** (`bucketed_initial_cache_steps`,
+   `reference_prefix_cache_`/`reference_kv_ready_`): a real perf/memory optimization (reuses a
+   cached KV state across repeated calls with the same reference audio) -- not required for basic
+   correctness, real but skippable on a first pass (can always recompute the reference prefix KV
+   fresh per call).
+4. **The actual AR decode loop** consuming `HiggsArStepper.Step`/`HiggsCodebookSampler` (both
+   already real-weight verified this session) plus the real delay-pattern UNWIND logic to produce
+   final raw (non-delayed) codes once `kHiggsEocId` is observed, then real codec-decode
+   (`HiggsCodecDecoder`, already ported) to waveform.
+
+Real next step for a future pass (not started, precisely scoped now rather than guessed at):
+implement `HiggsGenerator.Generate` covering (2) and (4) above (reusing the just-ported delay-
+pattern helper and the already-verified stepper/sampler/codec-decode/codec-encode pieces), skip
+(3)'s caching optimization initially (real but orthogonal to correctness), and write a real-weight
+smoke test on the same pattern as `VoxCpm2GeneratorRealWeightsTests`/`VibeVoiceGeneratorRealWeightsTests`.
+This is a comparable-sized task to VibeVoice TTS's or VoxCPM2's own generation-loop port earlier
+this session, not a quick follow-on -- pivoting to other backlog items for this pass rather than
+starting it without enough remaining budget to finish and verify it properly.
