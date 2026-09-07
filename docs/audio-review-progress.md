@@ -15557,3 +15557,57 @@ final projection to the LLM's hidden dim) -- add real per-stage dump taps to
 each stage against this port's own `QwenAsrAudioEncoder` internals, the same way layer 0's
 decoder block was isolated above. This is now THE highest-priority real lead for this bug, with
 a proven, repeatable methodology ready to apply directly.
+
+## Qwen3 Forced Aligner -- TWO REAL BUGS FOUND AND FIXED in QwenAsrAudioEncoder; MAJOR improvement, not yet fully resolved, 2026-09-07
+
+Continued bisecting inside `QwenAsrAudioEncoder` per the immediately preceding entry's scoped
+next step, using the same per-stage/per-frame dump-and-compare methodology (added two new real
+debug taps to the reference's `audio_encoder.cpp`: `enc_after_conv_pos` (right after the conv
+stem + positional embedding, before the transformer layers) and `enc_after_transformer` (right
+after the transformer stack), both `STINGRAY_FA_DUMP_DIR`-gated like the existing dumps).
+
+**Bug 1, FOUND AND FIXED: positional embedding sin/cos layout.** The reference's real
+`sinusoidal_positions()` (`audio_encoder.cpp`) writes SPLIT-HALF sin/cos -- all `sin` values in
+channels `[0, channels/2)`, all `cos` values in `[channels/2, channels)`. This port's
+`SinusoidalPositionalEmbeddings` used an INTERLEAVED `(sin,cos,sin,cos,...)` layout instead --
+wrong for every single dimension of every token's positional contribution. Fixed in
+`QwenAsrAudioEncoder.cs`. Real, confirmed, but only a MINOR contributor to the overall divergence
+(comparing before/after this fix alone, frame-by-frame cosine similarity barely moved).
+
+**Bug 2, FOUND AND FIXED, the dominant one: conv2d input orientation transposed.** Traced the
+real reference: mel input is reshaped to `{chunk_count_, 1, num_mel_bins, chunk_frames_}` --
+H=mel_bins, W=frames. This port's `QwenAsrMelExtractor.ExtractMel` already correctly documents
+its OWN real output layout as MEL-MAJOR (`mel[m * numFrames + f]`), matching the reference's
+convention exactly -- but `QwenAsrAudioEncoder.Forward` was extracting each chunk via a plain
+contiguous `mel.Slice(chunkStart * nMels, chunkLen * nMels)` (assuming a FRAME-MAJOR source) and
+feeding `Conv2dFull` with `hin=chunkLen(time), win=nMels(mel)` (H=time, W=mel) -- both the
+extraction stride AND the H/W axis labels were backwards relative to the real mel-major data and
+the reference's real H=mel/W=time convention. Fixed both: chunk extraction now copies the correct
+per-mel-row strided sub-block (`mel[m * numFrames + (chunkStart+t)]` for each mel row `m`), and
+`Conv2dFull` is called with `hin=nMels, win=chunkLen` (H=mel, W=time) throughout the 3-stage conv
+stem, with the downstream per-token flatten/index logic (`chunkT`, `flatDim`, channel/freq
+ordering) correspondingly corrected to treat the (now-real) TIME axis as the per-token index.
+
+**Measured, real improvement** (frame-by-frame cosine similarity, this port's audio encoder
+output vs. the reference's real dumped `audio_embeddings.bin`, same real audio+transcript):
+BEFORE both fixes, every one of 77 frames had cosine `0.03`-`0.54` (several negative,
+essentially uncorrelated); AFTER both fixes, cosine is `0.6`-`0.98` across frames (a dramatic,
+unambiguous improvement, though still short of the `>0.999` a bit-exact match would show).
+`QwenForcedAlignerRealAlignmentTests` still passes structurally (monotonic timestamps, right
+segment count) and with `STINGRAY_FORCEDALIGNER_TRACE=1` now shows real NON-class-0 predictions
+at some positions (e.g. position 81 -> class 191) that did not appear before -- genuine, if
+partial, progress on the actual classify-head symptom, not just an intermediate-tensor metric.
+
+**Real, honest scope note**: this is NOT yet a full fix -- the final alignment output is still
+mostly class-0-dominant and the encoder's cosine similarity, while much improved, is not yet
+bit-exact. A channel/freq-ordering variant (`row[fh*c+ch]` instead of `row[ch*h3+fh]` for the
+post-conv3 flatten) was empirically tried and made things WORSE (cosine dropped to ~0.35-0.44),
+confirming the kept `ch*h3+fh` ordering is the better of the two -- but the remaining gap
+(cosine capping around 0.6-0.98 rather than ~1.0) means at least one more real discrepancy
+remains, most likely in the conv kernel's own `kh`/`kw` indexing convention relative to the real
+checkpoint's trained weight layout, or in the reference's exact `ggml_permute(...,2,0,1,3)`
+post-conv3 transpose semantics (not fully reverse-engineered this pass). Real next step: either
+derive the exact real ggml permute mapping precisely (reading `ggml_permute`'s real semantics
+against this specific call), or continue the same per-frame dump-and-compare bisection one stage
+deeper (per-conv-layer taps, not just before/after the whole conv+pos block) to localize the
+remaining residual error to a specific one of the three conv layers.

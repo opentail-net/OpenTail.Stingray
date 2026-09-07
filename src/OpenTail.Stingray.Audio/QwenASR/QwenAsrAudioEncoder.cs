@@ -100,11 +100,23 @@ public sealed class QwenAsrAudioEncoder : IDisposable
         for (int chunkStart = 0; chunkStart < numMelFrames; chunkStart += chunkFrameLimit)
         {
             int chunkLen = Math.Min(chunkFrameLimit, numMelFrames - chunkStart);
-            var chunkMel = mel.Slice(chunkStart * nMels, chunkLen * nMels).ToArray();
 
-            // mel input as a 1-channel image, IDX(0,h=t,w=f) = t*nMels + f (frame-major, matches
-            // QwenAsrMelExtractor's layout directly, same convention as ParakeetConformerEncoder).
-            var stage1 = Conv2dFull(chunkMel, cin: 1, hin: chunkLen, win: nMels, w.Conv1WeightCL, w.Conv1Bias, c, k: 3, stride: 2, pad: 1, out int h1, out int w1);
+            // Real fix, 2026-09-07 (see docs/audio-review-progress.md's "ROOT CAUSE FOUND,
+            // PRECISELY" entry): `QwenAsrMelExtractor.ExtractMel`'s own real, documented output
+            // layout is MEL-MAJOR (`mel[m * numFrames + f]`), matching the reference's real
+            // conv2d input orientation (`{chunk_count_, 1, num_mel_bins, chunk_frames_}` --
+            // H=mel_bins, W=frames, NOT the frame-major "IDX(0,h=t,w=f)" this code previously
+            // (wrongly) assumed, a convention that does NOT actually match this checkpoint --
+            // confirmed via a real frame-by-frame comparison against the reference's dumped
+            // audio-encoder stage output, which showed every frame diverging from the very first
+            // conv+positional-embedding stage. Extract the per-chunk sub-block honoring the real
+            // mel-major stride (`mel[m * numFrames + (chunkStart + t)]`), and feed Conv2dFull
+            // H=mel/W=time (matching the reference), not H=time/W=mel.
+            var chunkMel = new float[nMels * chunkLen];
+            for (int m = 0; m < nMels; m++)
+                mel.Slice(m * numMelFrames + chunkStart, chunkLen).CopyTo(chunkMel.AsSpan(m * chunkLen, chunkLen));
+
+            var stage1 = Conv2dFull(chunkMel, cin: 1, hin: nMels, win: chunkLen, w.Conv1WeightCL, w.Conv1Bias, c, k: 3, stride: 2, pad: 1, out int h1, out int w1);
             GeluInPlace(stage1);
 
             var stage2 = Conv2dFull(stage1, cin: c, hin: h1, win: w1, w.Conv2WeightCL, w.Conv2Bias, c, k: 3, stride: 2, pad: 1, out int h2, out int w2);
@@ -113,18 +125,18 @@ public sealed class QwenAsrAudioEncoder : IDisposable
             var stage3 = Conv2dFull(stage2, cin: c, hin: h2, win: w2, w.Conv3WeightCL, w.Conv3Bias, c, k: 3, stride: 2, pad: 1, out int h3, out int w3);
             GeluInPlace(stage3);
 
-            int chunkT = h3;
-            int flatDim = c * w3; // 480 * 16 = 7680, matches audio.conv_out.weight's input dim
+            // h3 = downsampled mel-freq count (128/8=16), w3 = downsampled time-token count --
+            // the TIME axis (w3) is now the real per-token index, matching the reference.
+            int chunkT = w3;
+            int flatDim = c * h3; // 480 * 16 = 7680, matches audio.conv_out.weight's input dim
 
-            // Flatten channel-major (matches Parakeet's identical permute+flatten convention):
-            // feature[k] = channel*w3 + freq_w.
             var chunkPosEmb = SinusoidalPositionalEmbeddings(chunkT, encDim);
             for (int ti = 0; ti < chunkT; ti++)
             {
                 var row = new float[flatDim];
                 for (int ch = 0; ch < c; ch++)
-                    for (int fw = 0; fw < w3; fw++)
-                        row[ch * w3 + fw] = stage3[ch * h3 * w3 + ti * w3 + fw];
+                    for (int fh = 0; fh < h3; fh++)
+                        row[ch * h3 + fh] = stage3[ch * h3 * w3 + fh * w3 + ti];
 
                 var tokenVec = w.ConvOutWeight.MatVec(row);
                 for (int d = 0; d < encDim; d++)
@@ -136,8 +148,26 @@ public sealed class QwenAsrAudioEncoder : IDisposable
         int t = chunkTokens.Count;
         var x = chunkTokens.ToArray();
 
+        if (Environment.GetEnvironmentVariable("STINGRAY_FA_DUMP_DIR") is { } dumpDirConvPos)
+        {
+            var flat = new float[t * encDim];
+            for (int ti = 0; ti < t; ti++) x[ti].CopyTo(flat.AsSpan(ti * encDim, encDim));
+            var bytes = new byte[flat.Length * 4];
+            Buffer.BlockCopy(flat, 0, bytes, 0, bytes.Length);
+            File.WriteAllBytes(Path.Combine(dumpDirConvPos, "our_enc_after_conv_pos.bin"), bytes);
+        }
+
         foreach (var layer in w.AudioLayerWeights)
             x = EncoderBlock(x, layer, t, encDim, Config.NumHeads);
+
+        if (Environment.GetEnvironmentVariable("STINGRAY_FA_DUMP_DIR") is { } dumpDirTransformer)
+        {
+            var flat = new float[t * encDim];
+            for (int ti = 0; ti < t; ti++) x[ti].CopyTo(flat.AsSpan(ti * encDim, encDim));
+            var bytes = new byte[flat.Length * 4];
+            Buffer.BlockCopy(flat, 0, bytes, 0, bytes.Length);
+            File.WriteAllBytes(Path.Combine(dumpDirTransformer, "our_enc_after_transformer.bin"), bytes);
+        }
 
         for (int ti = 0; ti < t; ti++)
             x[ti] = LayerNorm(x[ti], w.LnPostWeight, w.LnPostBias);
@@ -321,19 +351,31 @@ public sealed class QwenAsrAudioEncoder : IDisposable
         }
     }
 
+    /// <summary>
+    /// Real `sinusoidal_positions` layout, corrected 2026-09-07 (see
+    /// docs/audio-review-progress.md's "ROOT CAUSE FOUND, PRECISELY" entry): the reference
+    /// (`audio_encoder.cpp`'s `sinusoidal_positions`) writes SPLIT-HALF sin/cos -- all `sin`
+    /// values in the first half of the channel dimension `[0, channels/2)`, all `cos` values in
+    /// the second half `[channels/2, channels)` -- NOT interleaved `(sin,cos,sin,cos,...)` pairs.
+    /// This port previously used the interleaved layout, which silently scrambled every
+    /// dimension of the positional contribution added to every single encoder token -- found via
+    /// a real frame-by-frame comparison against the reference's dumped audio-encoder output that
+    /// showed every one of 77 frames badly diverging despite matching aggregate statistics.
+    /// </summary>
     private static float[] SinusoidalPositionalEmbeddings(int length, int channels)
     {
         var pe = new float[length * channels];
-        float logTimescale = MathF.Log(10000.0f) / (channels / 2 - 1);
+        int half = channels / 2;
+        float logTimescale = MathF.Log(10000.0f) / (half - 1);
         for (int p = 0; p < length; p++)
         {
             int off = p * channels;
-            for (int i = 0; i < channels / 2; i++)
+            for (int i = 0; i < half; i++)
             {
                 float invFreq = MathF.Exp(-i * logTimescale);
                 float angle = p * invFreq;
-                pe[off + 2 * i] = MathF.Sin(angle);
-                pe[off + 2 * i + 1] = MathF.Cos(angle);
+                pe[off + i] = MathF.Sin(angle);
+                pe[off + half + i] = MathF.Cos(angle);
             }
         }
         return pe;
