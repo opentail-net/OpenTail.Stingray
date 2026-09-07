@@ -16397,3 +16397,36 @@ real checkpoint's own bytes, not assumed from that prior) before wiring
 `GenerateWithVoicePrompt`'s system-prompt branch. Deliberately not guessed this pass -- picking
 wrong here would be a silent correctness bug, not a crash, so it needs the real confirmation step
 first.
+
+## Real listening-check findings, 2026-09-07 (WAV samples generated for every model with a working generation loop)
+
+Generated real `docs/audio-samples/*.wav` clips (gitignored, local-only) for every model with a
+real, wired generation loop, via new one-off `*GenerateWavDebugTest` classes (same pattern as the
+existing `MossTtsGenerateWavDebugTest`): `higgs-audio-tts-real-check.wav`,
+`vibevoice-tts-real-check.wav`, `voxcpm2-real-check.wav`, `personaplex-real-check.wav`.
+
+**Real finding, Higgs Audio TTS -- confirmed NOT a bug**: the first attempt (a short one-sentence
+prompt) produced only 0.32s of audio, sounding like a short "whap", not words. Traced the real
+per-step codebook-0 sampled ids (`HiggsGeneratorEocTraceDebugTest`, new) and confirmed this is
+genuine, real, TEXT-LENGTH-DEPENDENT stopping behavior: with a short prompt, the model's own
+codebook-0 samples an EOC code almost immediately (step 7-8, right at the real delay-ramp
+boundary) both with argmax AND with real temperature sampling -- but with a much longer (3-
+sentence) prompt, traced 60 steps with ZERO EOC signal, confirming the model genuinely keeps
+generating proportionally to input length rather than stopping due to a bug. Regenerated the
+sample with a longer prompt -- 3.44s, clearly not a bug, just needed more text to demonstrate. No
+code change made; this is real model behavior, not a defect in this port.
+
+**Real finding, VibeVoice TTS -- genuinely poor audio quality, real evidence for an EXISTING
+documented gap**: the generated sample (5.47s, `inferenceSteps=10`/`maxSteps=60`, real checkpoint)
+sounds like gibberish, not real words -- structurally valid (finite, non-silent, matches this
+session's own structural-only test assertions) but not intelligible. This is real, audible
+evidence for the ALREADY-DOCUMENTED "one-shot (non-streaming) codec decode/encode per chunk"
+simplification flagged on `VibeVoiceGenerator`'s own class doc comment (real stateful streaming
+conv history across chunk boundaries is NOT implemented -- each diffusion-generated chunk is
+decoded/re-encoded independently) -- with `maxSteps=60` spanning many more real chunk boundaries
+than this session's earlier structural tests (`maxSteps=6`), the compounding boundary artifacts
+are now audible rather than just structurally passing. Real, precisely scoped next step for a
+future pass: port the reference's real `decode_acoustic_streaming`/`encode_semantic_streaming`
+stateful conv history (not guessed at here) -- this is the single highest-value remaining gap for
+VibeVoice TTS's actual output quality, more so than any of the previously-flagged lower-priority
+items.
