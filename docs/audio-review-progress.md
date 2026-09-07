@@ -13090,14 +13090,69 @@ codebooks) sequence of RVQ token ids. PASS. This is the first point where MOSS-T
 full text-in pipeline (tokenizer -&gt; prompt -&gt; global transformer -&gt; local frame decoder
 -&gt; RVQ codes) runs end-to-end for real, even though those codes cannot yet become audio.
 
-**Still remaining for a complete MOSS-TTS-Nano pipeline**: the `precompiled_charsmap` real
-binary normalization format (same open gap as `UnigramTokenizer`, the single biggest
-remaining risk area for both SentencePiece tokenizers in this codebase), temperature/top-k/
-top-p/repetition-penalty sampling (currently greedy/argmax only), the reference-audio
-voice-cloning prompt path, and -- the largest remaining piece -- the stereo/48kHz
-Transformer-augmented RVQ audio codec (`audio_tokenizer_weights/{encoder,decoder}.
-{1,3,5,7}.*` -- alternating conv downsample/upsample + real self-attention Transformer
-blocks with LayerScale, per the September 6 tensor dump) needed to turn the now-real RVQ
-codes this session produces into an actual waveform. Real next step if picked up: the audio
-codec (now the clear bottleneck -- every other stage of this pipeline is real and
-verified).
+**Update, 2026-09-07 (same session) -- MOSS-Audio-Tokenizer-Nano decoder (RVQ dequantizer +
+"CNN-free" Transformer decoder stack) implemented and real-weight verified -- MOSS-TTS-Nano
+now produces real audio samples end-to-end, not just token codes.** Read the real, 1628-line
+`examples/audio.cpp/src/framework/codecs/moss_audio_tokenizer_codec_runtime.cpp` in full
+(not guessed), decode-only (this pipeline never re-encodes audio -- see
+`MossTtsPromptBuilder`'s scope note -- so `MossAudioTokenizerEncoder`/`::encode` was
+deliberately not ported). Real architecture, genuinely "CNN-free" (the reference's own
+description): NO convolution layers anywhere in the decoder. Real per-frame RVQ dequant is a
+non-obvious, real optimization ported verbatim: each of the 16 codebooks' `codebook -&gt;
+out_proj -&gt; (shared) output_proj` chain is a FIXED linear map, so it's pre-multiplied ONCE
+at load time into a `[1024, 768]` "latent table" per codebook -- decode becomes 16 table
+lookups + adds per frame, not 16 small matmuls. Real decoder stack (nano config, confirmed
+against real tensor names via a new `MossTtsCodecTensorNameDumpDebugTest`, module indices
+1/3/5/7 -- even slots are unrelated real encoder-side modules in the same checkpoint, not
+needed here): `PatchUpsample` by 4 (a real reshape-transpose-reshape upsample, NOT a naive
+per-frame repeat -- derived field-by-field from the reference's ggml reshape/transpose calls,
+`output[frame*patch+p][c] = input[frame][c*patch+p]`), then 4 stages of [Linear input_proj
+-&gt; N layers of causal-windowed-RoPE self-attention + LayerScale + **exact-erf GELU** MLP
+(confirmed via the reference's own `GeluApproximation::ExactErf`, a real, deliberate
+difference from the global/local transformers' tanh-approximated `gelu_new`) -&gt; optional
+Linear output_proj] each followed by its own `PatchUpsample` (by 2, 2, 2, 240), ending in a
+real 48kHz stereo de-interleave (`channel 0 = even samples, channel 1 = odd samples`).
+Implemented a real Abramowitz-Stegun erf rational approximation (~1.5e-7 max error) since
+.NET has no built-in `erf`.
+
+Implemented `MossTtsAudioCodecQuantizerWeights` (dequantizer, with the pre-multiplied
+latent-table optimization above) and `MossTtsAudioCodecDecoderWeights`/
+`MossTtsAudioCodecDecoder` (the transformer-stack decoder), reusing
+`MossTtsGlobalTransformer`'s `LinearBatched`/`LayerNorm`/`SoftmaxInPlace`/
+`ApplyRopeAdjacentPairs` helpers (promoted from `private` to `internal` for this reuse --
+same real per-op math, just a different assembly/config of layers around them).
+
+**Not yet implemented**: the reference's chunked/windowed-attention path for very long
+generations (only triggers once a stage's local step count exceeds the reference's
+`kAttentionQueryChunk`; this port always builds one full `steps x steps` causal mask, which
+is mathematically IDENTICAL to the windowed path for any sequence short enough to stay
+under that threshold -- a real, precisely-scoped gap, not an approximation, for long-form
+generation specifically).
+
+**Verification**: `MossTtsAudioCodecDecoderTests` (2 tests, hand-derived expected values):
+confirms `PatchUpsample`'s exact reindexing against manually-traced expected output, and its
+patch=1 identity case. `MossTtsAudioCodecDecoderRealWeightsTests` (real checkpoint, ~2.3s
+wall-clock, genuinely ran): runs the FULL pipeline -- real tokenizer, real prompt, real
+generation loop (16 active codebooks, so every generated code is real and in-range, never
+the pad sentinel), real codec decode -- and asserts a correctly-shaped
+(`frames * SamplesPerFrame` per channel), fully finite stereo waveform. PASS. Also generated
+an informal, non-golden sample (`MossTtsGenerateWavDebugTest`, gitignored per CLAUDE.md rule
+9): a real 40-frame (3.2s) 48kHz waveform written to `docs/audio-samples/
+moss-tts-nano-real-check.wav` -- not evaluated for perceptual audio quality in this session
+(no playback tool available here), but confirms the full pipeline runs to completion on a
+non-trivial generation length without crashing/NaN.
+
+**Net status: MOSS-TTS-Nano's full text-to-speech pipeline (tokenizer -&gt; prompt -&gt; global
+transformer -&gt; local frame decoder -&gt; generation loop -&gt; audio codec) is now real, wired
+end-to-end, and real-weight verified at every stage** -- the first fully-connected
+text-in/audio-out path built this session, not just an isolated stage. Real remaining gaps,
+none of which block the pipeline from running, all precisely scoped above and in earlier
+updates: the `precompiled_charsmap` real binary normalization format (same open gap as
+`UnigramTokenizer`), temperature/top-k/top-p/repetition-penalty sampling (currently
+greedy/argmax only), the reference-audio voice-cloning prompt path, the chunked-attention
+long-form-generation path, and (separately, not yet attempted this session) numeric
+golden-parity verification against a captured real Python/PyTorch reference trace for any
+stage of this pipeline -- everything verified so far is real-weight structural/invariant
+verification (finite, in-range, causal, deterministic, non-collapsing), a real and
+meaningful bar per this project's conventions, but not the same bar as an exact numeric
+match against ground truth.

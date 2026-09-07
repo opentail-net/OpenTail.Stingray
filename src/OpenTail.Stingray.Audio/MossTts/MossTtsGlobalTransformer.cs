@@ -154,7 +154,7 @@ public static class MossTtsGlobalTransformer
     // -----------------------------------------------------------------------
     // Real GGML_ROPE_TYPE_NORMAL (adjacent-pair) rotary embedding, applied per-head in place.
     // -----------------------------------------------------------------------
-    private static void ApplyRopeAdjacentPairs(float[] x, int numHeads, int headDim, int position)
+    internal static void ApplyRopeAdjacentPairs(float[] x, int numHeads, int headDim, int position)
     {
         int half = headDim / 2;
         for (int h = 0; h < numHeads; h++)
@@ -195,7 +195,7 @@ public static class MossTtsGlobalTransformer
         return output;
     }
 
-    private static unsafe float[][] LinearBatched(float[][] inputs, float[] weight, float[] bias, int inDim, int outDim)
+    internal static unsafe float[][] LinearBatched(float[][] inputs, float[] weight, float[] bias, int inDim, int outDim)
     {
         int n = inputs.Length;
         var outputs = new float[n][];
@@ -213,7 +213,7 @@ public static class MossTtsGlobalTransformer
         return outputs;
     }
 
-    private static unsafe float[] LayerNorm(float[] x, float[] weight, float[] bias)
+    internal static unsafe float[] LayerNorm(float[] x, float[] weight, float[] bias)
     {
         var output = new float[x.Length];
         fixed (float* xp = x, wp = weight, bp = bias, op = output)
@@ -223,7 +223,7 @@ public static class MossTtsGlobalTransformer
         return output;
     }
 
-    private static void SoftmaxInPlace(Span<float> scores)
+    internal static void SoftmaxInPlace(Span<float> scores)
     {
         float max = float.NegativeInfinity;
         for (int i = 0; i < scores.Length; i++) if (scores[i] > max) max = scores[i];
