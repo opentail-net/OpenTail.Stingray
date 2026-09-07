@@ -13691,7 +13691,19 @@ wiring (`sampler.cpp`, 480 lines, plus `ar.cpp`'s own `HiggsARKVCache`/`HiggsARD
 remaining piece, likely shares real architecture with OmniVoice's already-verified DAC-style
 codec per this project's earlier finding that Higgs and OmniVoice share the same acoustic
 codec family), and the real text tokenizer (`tokenizer_text.cpp`, 94 lines, likely a simple
-reuse of `HuggingFaceTokenizerSource` like VibeVoice ASR's). Real next step if picked up:
-dump real config numbers and real-weight-verify `HiggsLlmTensorSource`'s tensor shape
-resolution once the checkpoint finishes downloading, then read `codec.cpp` to confirm the
-real DAC-family reuse claim against OmniVoice's own already-ported codec code.
+reuse of `HuggingFaceTokenizerSource` like VibeVoice ASR's).
+
+**Update, 2026-09-07 -- confirmed the DAC-family codec reuse claim by skimming `codec.cpp`'s
+real class/struct names (not guessed)**: `Snake1dWeights`, `HiggsCodecResidualUnitWeights`,
+`HiggsCodecEncoderBlockWeights`, `HiggsCodecDecoderBlockWeights`, `HiggsCodecVectorQuantizer
+Weights` -- exactly the same real DAC-lineage naming/shape family as OmniVoice's already-
+ported codec (Snake activation, residual units, encoder/decoder blocks), confirming this
+project's earlier finding that Higgs and OmniVoice genuinely share the same acoustic codec
+architecture. `codec.cpp` also carries a real HuBERT-family semantic model component
+(`load_hubert_semantic_model_weights`, `effective_semantic_pos_conv_weight` -- the same real
+positional-conv weight-norm reconstruction pattern already implemented for RVC's HuBERT this
+project). Real next step if picked up: dump real config numbers and real-weight-verify
+`HiggsLlmTensorSource`'s tensor shape resolution once the checkpoint finishes downloading
+(slow, ~500MB of an estimated multi-GB total as of this update), then attempt reusing
+OmniVoice's DAC decoder / RVC's HuBERT encoder code directly against Higgs's real tensor
+names rather than re-deriving the codec from scratch.
