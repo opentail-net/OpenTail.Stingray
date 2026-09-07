@@ -13227,3 +13227,21 @@ head, the real tokenizer (`tokenizer_text.cpp`, 352 lines), and the AudioVAE ENC
 only for voice-cloning/reference-audio prompts, not plain zero-shot TTS). Real next step if
 picked up: `minicpm.cpp`'s LLM backbone next (most standard, most independently testable
 piece, and a real prerequisite for everything downstream of it).
+
+**Update, 2026-09-07 (same session) -- real, valuable scoping finding for the MiniCPM
+backbone, before pivoting to the next ranked backlog item (VibeVoice ASR).** Checked whether
+this codebase's main GGUF inference engine could shortcut `minicpm.cpp`'s bespoke transformer
+port: `ModelCompatibility.cs` confirms `"minicpm"` is an ADMITTED architecture (2026-09-01),
+reusing Granite's graph (embedding_scale/residual_scale/logit_scale -- the exact real
+OpenBMB "mup" `scale_emb`/`scale_depth`/`dim_model_base` convention VoxCPM2's own
+`lm_config` carries). This is a real, promising reuse path (same "present real weights as a
+synthetic native-architecture GGUF" bridging technique already used for OmniVoice/QwenASR/
+Fun-ASR-Nano's LLM tensor sources this project) -- BUT VoxCPM2's `base_lm` is NOT a normal
+text-generation consumer of `ForwardPass`: it needs raw per-step HIDDEN STATES (not sampled
+logits) from embeddings injected directly (fused text-token + projected-audio-feature inputs,
+not a plain vocab lookup), with an incremental single-step KV cache across the DiT/CFM/FSQ
+generation loop -- whether `ForwardPass` exposes an embeddings-in / hidden-states-out mode
+suitable for that was not investigated this update. Real next step if picked up: check
+`ForwardPass`'s existing hidden-state-tap / embeddings-injection capabilities (used elsewhere
+for `EnableHiddenTaps` per the Fun-ASR-Nano bisection work) before deciding between reusing
+`ForwardPass` vs. a bespoke port like this session's other MiniCPM/GPT2-family ports.
