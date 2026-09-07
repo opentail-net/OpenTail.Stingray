@@ -14155,3 +14155,29 @@ audio encode path (voice cloning input, lower priority), KV-cache-aware incremen
 matching the real reference's `HiggsARKVCache` (this session's `ForwardEmbedding`-based stepping
 already accumulates KV state correctly via `ForwardPass`'s own cache, so this is more about
 confirming layer-count/step-count parity than new work).
+
+## Higgs Audio TTS -- corrected the real first-sample flow, closed the "guessed BOS" gap, 2026-09-07
+
+Read `generator.cpp`'s real prefill-to-first-sample flow (~line 436-448), closing the gap the
+previous entry flagged. **Real, confirmed sequence: the FIRST sampled codes come directly from
+`prefill.codebook_logits`** -- the prefill's own last-position hidden state (the real prompt
+ends in a literal `<|audio|>` text token) projected through the modality-embedding table,
+sampled BEFORE any decode-step `ForwardEmbedding` call runs at all. There is no separate
+"zero-code bootstrap" step -- the earlier test's zero-seeded first `Step` call was WRONG, not
+just an approximation. Only subsequent codes come from feeding the previous step's REAL sampled
+codes forward via `ForwardEmbedding`.
+
+Refactored `HiggsArStepper` to split `SampleFromHidden` (project a hidden state to codebook
+logits and argmax-sample -- usable directly on the prefill's `LastHidden`, no forward pass
+needed) from `Step` (embed previous codes -> `ForwardEmbedding` -> `SampleFromHidden`). Updated
+`HiggsArStepperRealWeightsTests` to use `SampleFromHidden` on `fwd.LastHidden` immediately after
+`Prefill` for the first frame, then `Step` for subsequent frames -- 15.4s wall-clock, still a
+genuine live run, now structurally correct rather than merely plausible.
+
+**Higgs Audio TTS status: ~68%.** The one remaining guessed-vs-confirmed gap flagged in the
+prior entry is now closed. Remaining: real sampling beyond argmax (temperature/top-p/top-k,
+`sampler.cpp`'s `HiggsCodebookSampler`), real EOS/stopping (`state.generation_done`, not yet
+read), the `delay_count`/`use_last_codes` mechanism noticed in passing at
+`generator.cpp:477` (real per-codebook delay pattern may exist after all, contradicting this
+doc's earlier "no delay pattern" note -- needs `sampler.cpp`'s `HiggsSamplerState` read before
+trusting either claim), semantic HuBERT encoder + reference-audio encode path (lower priority).

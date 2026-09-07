@@ -50,17 +50,24 @@ public sealed class HiggsArStepperRealWeightsTests : HeavyTestBase
 
         var codec = HiggsCodecDecoderWeights.Load(source.GetTensor);
 
+        // Real reference flow (generator.cpp ~line 436-448): the FIRST sampled codes come
+        // directly from the prefill's own last-position hidden state (the real prompt ends in a
+        // literal <|audio|> token) projected through the modality-embedding table -- BEFORE any
+        // decode-step ForwardEmbedding call. Only subsequent codes come from feeding the
+        // previous REAL sampled codes forward.
         const int steps = 4;
-        var previousCodes = new int[NumCodebooks]; // seed with all-zero codes (no real BOS convention read this session)
         var frames = new int[steps][];
+        frames[0] = HiggsArStepper.SampleFromHidden(fwd.LastHidden, llm, NumCodebooks, AudioVocabSize);
+        Assert.Equal(NumCodebooks, frames[0].Length);
+        Assert.All(frames[0], c => Assert.InRange(c, 0, AudioVocabSize - 1));
+
         int position = prompt.TokenIds.Length;
-        for (int step = 0; step < steps; step++)
+        for (int step = 1; step < steps; step++)
         {
-            var codes = HiggsArStepper.Step(fwd, llm, previousCodes, position, NumCodebooks, AudioVocabSize);
+            var codes = HiggsArStepper.Step(fwd, llm, frames[step - 1], position, NumCodebooks, AudioVocabSize);
             Assert.Equal(NumCodebooks, codes.Length);
             Assert.All(codes, c => Assert.InRange(c, 0, AudioVocabSize - 1));
             frames[step] = codes;
-            previousCodes = codes;
             position++;
         }
 
