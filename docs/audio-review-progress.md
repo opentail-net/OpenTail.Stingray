@@ -15741,3 +15741,38 @@ formula); (2) given the audio path is now close to solid, re-run the SAME per-la
 `[FA-DIFF-CS]` cosine/max-abs-diff comparison from earlier (layers 0-27) with this improved input
 to see whether the divergence NOW starts later/smaller, further narrowing whether a decoder-side
 issue remains on top of the now-much-improved audio path.
+
+## Qwen3 Forced Aligner -- NEW finding: ForwardPass's live execution diverges from the hand-computed formula on the SAME input, 2026-09-07
+
+Re-ran the per-layer `[FA-DIFF-CS]` comparison (via `AlignReal`'s own `fwd.HiddenTapsAt`, i.e. the
+REAL production `ForwardPass`/`ModelGraph` execution path) after the mel-extraction fixes above,
+using freshly regenerated reference dumps. Result: layer 0's last-position cosine similarity is
+only `0.64` -- markedly WORSE than the `QwenForcedAlignerLayer0AttentionIsolationDebugTest`'s hand-
+computed result on the SAME real input (`our_input_embeddings.bin`, regenerated in the same run),
+which achieved relative L2 error `0.03` (last position) against the SAME reference dump --
+equivalent to a cosine similarity well above 0.99.
+
+**This is a new, precise, real finding**: the hand-computed formula (RMSNorm -> Q/K/V proj ->
+per-head RMSNorm -> NEOX RoPE -> GQA causal attention -> o_proj -> residual -> SwiGLU MLP, all
+read directly from raw Safetensors weights, bypassing the engine entirely) now closely matches
+the reference given the SAME real input -- but the ACTUAL PRODUCTION PATH (`ForwardPass`'s
+generic "qwen3" architecture graph, driven through `QwenAsrLlmSafetensorsTensorSource`) does NOT
+match nearly as well, on the exact same real input. Since both consume identical raw weights and
+an identical real input embedding matrix, this rules out a weight-loading or math-formula
+misunderstanding (already proven correct by the isolation test) and instead implicates something
+specific to HOW `ForwardPass`/`ModelGraph` executes this bridged checkpoint -- e.g. a metadata
+field this bridging class sets that doesn't exactly match what the hand-computed test assumed
+(confirmed same `rope_theta`/`rms_norm_eps` values via direct code read, so likely something else:
+position handling, KV-cache initialization, RoPE convention selection inside `ModelGraph`'s shared
+code, or how `EnableAudioConditioning`'s combined embedding table is actually consumed by
+`ForwardPass.Prefill` at runtime vs. this test's direct array read).
+
+**Real, precisely scoped next step for a future pass**: instrument `ForwardPass` itself (or add a
+targeted comparison harness) to dump ITS OWN internal Q/K (post-RoPE) values for layer 0 at the
+last position, then diff those directly against BOTH the hand-computed isolation test's own
+internal Q/K values (already computable, not yet dumped) AND the reference's real `layer_0_q`/
+`layer_0_k` dumps -- a three-way comparison that would definitively show whether the engine's
+RoPE/attention path itself has a bug, or whether the discrepancy is in how the bridged embedding
+table is actually read at Prefill time. Pivoting to other backlog items for this pass given the
+remaining investigation here needs new engine-level instrumentation tooling, not just more
+dump-and-compare against the existing taps.
