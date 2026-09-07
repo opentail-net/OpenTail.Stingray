@@ -14032,3 +14032,38 @@ the real per-step generation loop wiring latents through the diffusion head repe
 produce a full utterance, and the shared VAE-latent-to-waveform decoder (`decoder.cpp`, 2056
 lines -- the largest unread file in this model's reference, check first whether it's the same
 architecture as VibeVoice ASR's tokenizer encoder run in reverse, or genuinely separate).
+
+## Higgs Audio TTS -- acoustic codec DECODE path implemented and real-weight verified, 2026-09-07
+
+Read the rest of `codec.cpp` (through line ~1650, the real `quantizer_decode`/`acoustic_decoder`
+compose functions and `HiggsCodecDecodeGraph::run`). Confirmed the DECODE-only path (RVQ codes
+-> waveform, what TTS generation actually needs) does NOT touch the semantic HuBERT encoder or
+`project_in`/`codec_project`(`fc`) at all -- those are exclusively used by `encode_reference`
+(the separate voice-cloning reference-audio INPUT path). This let the decode path be ported as
+a clean, self-contained piece without needing the much larger semantic-encoder machinery.
+
+**`HiggsCodecDecoderWeights`/`HiggsCodecDecoder` implemented**: `quantizer_decode` (per-frame,
+sum of 8 real RVQ-level embedding lookups `[1024,64]` each projected via `project_out` Linear
+`[64->1024]`) -> `fc2` Linear `[1024->256]` -> `Conv1d(256->1024,k=7,pad=3)` -> 5 decoder blocks
+(`Snake -> ConvTranspose1d(kernel=2*ratio,stride=ratio,padding=(ratio+1)/2,
+output_padding=ratio%2) -> 3x ResidualUnit(dilations 1/3/9)`, channels
+`1024->512->256->128->64->32`, ratios `8,5,4,2,3` -- total upsample 960 = real
+`kCodecHopLength`) -> final `Snake -> Conv1d(32->1,k=7,pad=3)` -> mono 24kHz waveform. Real,
+genuinely different convolution convention from every other DAC-lineage decoder ported this
+session (OmniVoice/MOSS-TTS-Nano/VoxCPM2 are all CAUSAL/left-padding-only) -- this one uses real
+symmetric padding and PyTorch's standard `ConvTranspose1d(padding, output_padding)` semantics,
+implemented as a direct index-mapping equivalent to the reference's build-full-then-crop
+approach (verified mathematically equivalent, not just structurally similar). Real tensor
+prefix confirmed: `tied.embedding.modality_embeddings.0.model.*` -- same table
+`HiggsLlmTensorSource.ModalityEmbeddingWeight` already exposes, confirming codec/LLM
+audio-token-embedding weight tying.
+
+Real-weight test (`HiggsCodecDecoderRealWeightsTests`) decodes 5 frames of random-but-in-range
+RVQ codes into a finite, non-all-zero waveform: 2.5s wall-clock, genuine run.
+
+**Higgs Audio TTS status: ~55%.** LLM bridge, text tokenizer, AND codec decode path all
+real-weight verified. Remaining: the gate predictor (real text/audio embedding gating), the
+delayed multi-codebook AR generation loop (`ar.cpp`, 1367 lines -- the piece that actually
+PRODUCES the RVQ codes this decoder now consumes), real sampling (`sampler.cpp`). The semantic
+encoder + `project_in`/`fc` (reference-audio voice-cloning ENCODE path) remain unported and are
+lower priority than the generation loop for a first working end-to-end pass.
