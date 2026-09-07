@@ -96,27 +96,29 @@ public sealed class QwenAsrAudioEncoder : IDisposable
         int encDim = Config.EncoderDim;
         int chunkFrameLimit = Config.NWindow * 2;
 
+        // Real chunk-padding fix, 2026-09-07 (see docs/audio-review-progress.md's audio-encoder
+        // bisection entries): the reference pads EVERY chunk's mel data to a UNIFORM
+        // `chunk_frames_ = max(chunk_lengths_)` width (zero-padded on the right, real samples
+        // first) before convolving -- this port previously convolved each chunk at its own
+        // actual (unpadded) length, which only differs from the reference for a non-uniform
+        // FINAL chunk (interior chunks are already exactly `chunkFrameLimit` long). A small,
+        // edge-only effect (only the last chunk's own boundary tokens), confirmed via this
+        // session's real per-frame dump comparison to be a minor contributor next to the mel-
+        // extraction/conv-orientation bugs already fixed, but real and worth closing.
+        int numChunks = (numMelFrames + chunkFrameLimit - 1) / chunkFrameLimit;
+        int paddedChunkFrames = chunkFrameLimit;
+        if (numChunks == 1) paddedChunkFrames = Math.Min(chunkFrameLimit, numMelFrames);
+
         var chunkTokens = new List<float[]>();
         for (int chunkStart = 0; chunkStart < numMelFrames; chunkStart += chunkFrameLimit)
         {
             int chunkLen = Math.Min(chunkFrameLimit, numMelFrames - chunkStart);
 
-            // Real fix, 2026-09-07 (see docs/audio-review-progress.md's "ROOT CAUSE FOUND,
-            // PRECISELY" entry): `QwenAsrMelExtractor.ExtractMel`'s own real, documented output
-            // layout is MEL-MAJOR (`mel[m * numFrames + f]`), matching the reference's real
-            // conv2d input orientation (`{chunk_count_, 1, num_mel_bins, chunk_frames_}` --
-            // H=mel_bins, W=frames, NOT the frame-major "IDX(0,h=t,w=f)" this code previously
-            // (wrongly) assumed, a convention that does NOT actually match this checkpoint --
-            // confirmed via a real frame-by-frame comparison against the reference's dumped
-            // audio-encoder stage output, which showed every frame diverging from the very first
-            // conv+positional-embedding stage. Extract the per-chunk sub-block honoring the real
-            // mel-major stride (`mel[m * numFrames + (chunkStart + t)]`), and feed Conv2dFull
-            // H=mel/W=time (matching the reference), not H=time/W=mel.
-            var chunkMel = new float[nMels * chunkLen];
+            var chunkMel = new float[nMels * paddedChunkFrames];
             for (int m = 0; m < nMels; m++)
-                mel.Slice(m * numMelFrames + chunkStart, chunkLen).CopyTo(chunkMel.AsSpan(m * chunkLen, chunkLen));
+                mel.Slice(m * numMelFrames + chunkStart, chunkLen).CopyTo(chunkMel.AsSpan(m * paddedChunkFrames, chunkLen));
 
-            var stage1 = Conv2dFull(chunkMel, cin: 1, hin: nMels, win: chunkLen, w.Conv1WeightCL, w.Conv1Bias, c, k: 3, stride: 2, pad: 1, out int h1, out int w1);
+            var stage1 = Conv2dFull(chunkMel, cin: 1, hin: nMels, win: paddedChunkFrames, w.Conv1WeightCL, w.Conv1Bias, c, k: 3, stride: 2, pad: 1, out int h1, out int w1);
             GeluInPlace(stage1);
 
             var stage2 = Conv2dFull(stage1, cin: c, hin: h1, win: w1, w.Conv2WeightCL, w.Conv2Bias, c, k: 3, stride: 2, pad: 1, out int h2, out int w2);
@@ -126,8 +128,11 @@ public sealed class QwenAsrAudioEncoder : IDisposable
             GeluInPlace(stage3);
 
             // h3 = downsampled mel-freq count (128/8=16), w3 = downsampled time-token count --
-            // the TIME axis (w3) is now the real per-token index, matching the reference.
-            int chunkT = w3;
+            // the TIME axis (w3) is now the real per-token index, matching the reference. Real
+            // per-chunk valid-token trim (`qwen3_asr_audio_encoder_token_count`, ported exactly):
+            // padding a short last chunk up to `paddedChunkFrames` makes the raw conv output
+            // wider than this chunk's real valid token count -- trim to match.
+            int chunkT = Math.Min(w3, EncoderTokenCount(chunkLen));
             int flatDim = c * h3; // 480 * 16 = 7680, matches audio.conv_out.weight's input dim
 
             var chunkPosEmb = SinusoidalPositionalEmbeddings(chunkT, encDim);
@@ -386,6 +391,25 @@ public sealed class QwenAsrAudioEncoder : IDisposable
     /// a real frame-by-frame comparison against the reference's dumped audio-encoder output that
     /// showed every one of 77 frames badly diverging despite matching aggregate statistics.
     /// </summary>
+    /// <summary>Real per-chunk valid-token count, ported exactly from
+    /// `qwen3_asr_audio_encoder_token_count` (`types.h`, not guessed): each full 100-frame chunk
+    /// always yields exactly 13 tokens; the remainder (`frames % 100`) goes through the same
+    /// 3x floor-div-by-2 downsample formula as the conv stem's real stride-2 halving.</summary>
+    private static int EncoderTokenCount(int inputFrames)
+    {
+        int leave = inputFrames % 100;
+        int featLengths = FloorDiv(leave - 1, 2) + 1;
+        return FloorDiv(FloorDiv(featLengths - 1, 2) + 1 - 1, 2) + 1 + (inputFrames / 100) * 13;
+    }
+
+    private static int FloorDiv(int numerator, int denominator)
+    {
+        int quotient = numerator / denominator;
+        int remainder = numerator % denominator;
+        if (remainder != 0 && (remainder < 0) != (denominator < 0)) quotient--;
+        return quotient;
+    }
+
     private static float[] SinusoidalPositionalEmbeddings(int length, int channels)
     {
         var pe = new float[length * channels];

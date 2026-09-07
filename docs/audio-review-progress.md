@@ -15776,3 +15776,18 @@ RoPE/attention path itself has a bug, or whether the discrepancy is in how the b
 table is actually read at Prefill time. Pivoting to other backlog items for this pass given the
 remaining investigation here needs new engine-level instrumentation tooling, not just more
 dump-and-compare against the existing taps.
+
+## Qwen3 Forced Aligner -- real chunk-padding fix (bug 1 from the earlier ruled-out-hypotheses list), 2026-09-07
+
+Implemented the real chunk-padding behavior flagged as hypothesis 1 in the earlier "three
+hypotheses ruled out" entry (real but minor, not the dominant cause): every audio chunk is now
+padded (real zeros, right-aligned after the actual samples) to a UNIFORM `paddedChunkFrames =
+chunkFrameLimit` width before convolving, matching the reference's own `chunk_frames_ =
+max(chunk_lengths_)` padding; each chunk's real valid output-token count is computed via
+`EncoderTokenCount`, a direct, exact port of the reference's own `qwen3_asr_audio_encoder_token_count`
+formula (`types.h`) -- each full 100-frame chunk always yields exactly 13 tokens; the padded
+conv output is trimmed to this real count rather than using the padding-inflated raw count.
+Confirmed via re-running the same frame-by-frame comparison: numerically unchanged for this test
+audio's early frames (as expected -- this only affects the LAST chunk's own boundary tokens), test
+suite still passes, no regressions. A real correctness fix for longer/differently-shaped audio
+inputs where the boundary effect would be more numerically visible.
