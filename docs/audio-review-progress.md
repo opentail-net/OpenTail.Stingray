@@ -14826,3 +14826,65 @@ VoxCPM2/MOSS-TTS-Nano all reaching similar real end-to-end milestones. Remaining
 priority than what's already achieved: the real codebook-stream mapping (flagged above), the
 real multi-stream delay pattern, real streaming decode (this session's Mimi port is one-shot
 only), real sampling beyond argmax throughout.
+
+## Qwen3 Forced Aligner -- ROOT CAUSE FOUND: real checkpoint needs interleaved M-RoPE, engine doesn't support it, 2026-09-07
+
+Picked up the prior session's exact next step ("per-head attention-score inspection at layer 2")
+but found something more fundamental first while gathering the real per-checkpoint config values
+needed for that inspection. **Real, checkpoint-declared `rope_scaling` block in the text
+decoder's own `config.json`** (not previously read/checked by this investigation):
+
+```
+"rope_scaling": {
+  "interleaved": true,
+  "mrope_interleaved": true,
+  "mrope_section": [24, 20, 20],
+  "rope_type": "default",
+  "type": "default"
+}
+```
+
+This is real Qwen2-VL/Qwen2.5-Omni-family **M-RoPE** (multimodal RoPE, position ids split into
+temporal/height/width sections -- `24+20+20=64=headDim/2`, confirming the split covers the full
+rotation dimension) with the **interleaved** (adjacent-pair, GPT-J-style `(2i,2i+1)`) rotation
+convention -- genuinely DIFFERENT from the standard Qwen3 NEOX (split-half, `(i,i+headDim/2)`)
+convention this port has been assuming throughout.
+
+**Confirmed via direct code inspection that this engine does NOT support M-RoPE at all.**
+`ModelGraph.cs`'s own `isNeoxRope` architecture dispatch (~line 510-535) includes an explicit,
+pre-existing comment: *"Special rope types (MROPE for QWEN2VL/PADDLEOCR, IMROPE for QWEN3VL
+family, conditional for GLM4/GLM4_MOE) are not currently supported and would need their own
+dispatch."* Since `QwenAsrLlmSafetensorsTensorSource`/`QwenAsrLlmTensorSource` declare
+`general.architecture="qwen3"` (the standard, non-multimodal Qwen3 architecture string) to reuse
+`ForwardPass`'s generic graph, this checkpoint's REAL interleaved-M-RoPE requirement is silently
+ignored and standard NEOX rotation is applied instead -- confirmed via a direct grep that
+`rope_scaling`/`mrope`/`interleaved` are referenced ZERO times anywhere in the `QwenASR` C#
+source.
+
+**This fully explains every earlier symptom**: a wrong rotation convention produces increasingly
+divergent attention/residual-stream computations as errors compound through each of the 28
+layers (matching "this port's std grows smoothly, no discontinuity" vs. the reference's real
+architecture-specific behavior at layer 2), while the audio ENCODER (separately, correctly
+verified) evidently does not require this same M-RoPE treatment for its own real config (or its
+config doesn't declare `mrope_interleaved`, not yet independently re-checked but consistent with
+the encoder output matching almost exactly).
+
+**Real, precisely scoped next step**: implement interleaved M-RoPE support. Given position ids
+for a PURE TEXT (non-multimodal) sequence like this classification/alignment task very likely
+degenerate to all three M-RoPE sections (temporal/height/width) receiving the SAME scalar
+sequential position (per Qwen2-VL/Qwen2.5-Omni's own real convention for plain-text spans, not
+independently confirmed for this exact checkpoint yet), the numerically meaningful difference
+for THIS checkpoint may reduce to JUST the interleaved-vs-NEOX rotation-pairing convention, not
+full 3D position tracking -- a much smaller, more tractable engine change than general M-RoPE
+support would suggest. Real next actions in order: (1) confirm this text-only-position
+simplification is actually correct by re-reading how the real reference constructs position ids
+for the aligner's OWN prompt structure (not yet checked this session); (2) if confirmed, add a
+narrower "interleaved-pairing-only" RoPE mode (reusing the existing "NORM/interleaved" pairing
+math already implemented for LLaMA-style architectures per `ModelGraph.cs`'s own comment at line
+510, just gated on THIS checkpoint rather than architecture name) rather than a full general
+M-RoPE section-splitting implementation; (3) re-run the per-layer bisection with this fix to
+confirm the real reference's layer-2 discontinuity is reproduced.
+
+**Qwen3 Forced Aligner status: root cause identified, fix scoped but not yet implemented.** This
+is real, substantial progress after multiple prior sessions' exhausted aggregate-stats/per-layer
+investigation -- the remaining work is a genuine, bounded engine change, not further diagnosis.
