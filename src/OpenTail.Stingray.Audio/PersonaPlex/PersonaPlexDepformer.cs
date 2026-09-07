@@ -1,3 +1,4 @@
+using OpenTail.Stingray.Audio.Primitives;
 using OpenTail.Stingray.Engine;
 
 namespace OpenTail.Stingray.Audio.PersonaPlex;
@@ -63,7 +64,7 @@ public sealed class PersonaPlexDepformer
 
         for (int step = 0; step < PersonaPlexDepformerWeights.NumSteps; step++)
         {
-            var projected = Linear(temporalLmHidden, _w.InputFromLmWeight[step], PersonaPlexDepformerWeights.LmHiddenDim, PersonaPlexDepformerWeights.HiddenDim);
+            var projected = DenseKernels.LinearNoBias(temporalLmHidden, _w.InputFromLmWeight[step], PersonaPlexDepformerWeights.LmHiddenDim, PersonaPlexDepformerWeights.HiddenDim);
 
             float[] tokenEmbedding = step == 0
                 ? EmbedRow(_w.TextEmbedding, prevToken, PersonaPlexDepformerWeights.HiddenDim)
@@ -74,7 +75,7 @@ public sealed class PersonaPlexDepformer
 
             hidden = RunLayers(hidden, step);
 
-            var logits = Linear(hidden, _w.Heads[step], PersonaPlexDepformerWeights.HiddenDim, audioCodebookSize);
+            var logits = DenseKernels.LinearNoBias(hidden, _w.Heads[step], PersonaPlexDepformerWeights.HiddenDim, audioCodebookSize);
             int best;
             if (options is null)
             {
@@ -131,7 +132,7 @@ public sealed class PersonaPlexDepformer
                     for (int d = 0; d < headDim; d++) dot += q[hOff + d] * kt[hOff + d];
                     scores[t] = dot * scale;
                 }
-                Softmax(scores);
+                DenseKernels.SoftmaxInPlace(scores);
                 for (int t = 0; t < availableKeys; t++)
                 {
                     float p = scores[t];
@@ -144,12 +145,12 @@ public sealed class PersonaPlexDepformer
             var afterAttn = Add(x, attnOut);
 
             var ffnNormed = RmsNorm(afterAttn, layer.Norm2Alpha, PersonaPlexDepformerWeights.RmsNormEps);
-            var gateUp = Linear(ffnNormed, layer.GateUpWeights[step], hidden, 2 * ffn);
+            var gateUp = DenseKernels.LinearNoBias(ffnNormed, layer.GateUpWeights[step], hidden, 2 * ffn);
             var gate = gateUp.AsSpan(0, ffn).ToArray();
             var up = gateUp.AsSpan(ffn, ffn).ToArray();
-            SiluInPlace(gate);
+            DenseKernels.SiluInPlace(gate);
             for (int i = 0; i < ffn; i++) gate[i] *= up[i];
-            var down = Linear(gate, layer.DownWeights[step], ffn, hidden);
+            var down = DenseKernels.LinearNoBias(gate, layer.DownWeights[step], ffn, hidden);
             x = Add(afterAttn, down);
         }
         return x;
@@ -160,19 +161,6 @@ public sealed class PersonaPlexDepformer
         var row = new float[dim];
         Array.Copy(table, (long)id * dim, row, 0, dim);
         return row;
-    }
-
-    private static float[] Linear(float[] input, float[] weight, int inDim, int outDim)
-    {
-        var output = new float[outDim];
-        for (int o = 0; o < outDim; o++)
-        {
-            float sum = 0f;
-            int wBase = o * inDim;
-            for (int i = 0; i < inDim; i++) sum += weight[wBase + i] * input[i];
-            output[o] = sum;
-        }
-        return output;
     }
 
     /// <summary>Linear against a row-sliced sub-range of a larger packed weight matrix: rows
@@ -205,29 +193,5 @@ public sealed class PersonaPlexDepformer
         var output = new float[x.Length];
         for (int i = 0; i < x.Length; i++) output[i] = x[i] * invRms * weight[i];
         return output;
-    }
-
-    private static void Softmax(float[] scores)
-    {
-        float max = float.NegativeInfinity;
-        for (int i = 0; i < scores.Length; i++) if (scores[i] > max) max = scores[i];
-        float sum = 0f;
-        for (int i = 0; i < scores.Length; i++)
-        {
-            float e = MathF.Exp(scores[i] - max);
-            scores[i] = e;
-            sum += e;
-        }
-        float invSum = 1f / sum;
-        for (int i = 0; i < scores.Length; i++) scores[i] *= invSum;
-    }
-
-    private static void SiluInPlace(float[] x)
-    {
-        for (int i = 0; i < x.Length; i++)
-        {
-            float v = x[i];
-            x[i] = v / (1f + MathF.Exp(-v));
-        }
     }
 }

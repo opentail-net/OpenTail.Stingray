@@ -1,3 +1,5 @@
+using OpenTail.Stingray.Audio.Primitives;
+
 namespace OpenTail.Stingray.Audio.PersonaPlex;
 
 /// <summary>
@@ -98,7 +100,7 @@ public static class MimiCodecDecoder
     {
         int frames = frameMajorLatent.Length;
         var output = new float[frames][];
-        for (int t = 0; t < frames; t++) output[t] = Linear(frameMajorLatent[t], weight, inDim, outDim);
+        for (int t = 0; t < frames; t++) output[t] = DenseKernels.LinearNoBias(frameMajorLatent[t], weight, inDim, outDim);
         return output;
     }
 
@@ -128,9 +130,9 @@ public static class MimiCodecDecoder
             var v = new float[frames][];
             for (int t = 0; t < frames; t++)
             {
-                q[t] = Linear(normed[t], layer.QWeight, hidden, hidden);
-                k[t] = Linear(normed[t], layer.KWeight, hidden, hidden);
-                v[t] = Linear(normed[t], layer.VWeight, hidden, hidden);
+                q[t] = DenseKernels.LinearNoBias(normed[t], layer.QWeight, hidden, hidden);
+                k[t] = DenseKernels.LinearNoBias(normed[t], layer.KWeight, hidden, hidden);
+                v[t] = DenseKernels.LinearNoBias(normed[t], layer.VWeight, hidden, hidden);
             }
 
             var attnOut = new float[frames][];
@@ -147,7 +149,7 @@ public static class MimiCodecDecoder
                         for (int d = 0; d < headDim; d++) dot += q[tq][off + d] * k[tk][off + d];
                         scores[tk] = dot * scale;
                     }
-                    Softmax(scores);
+                    DenseKernels.SoftmaxInPlace(scores);
                     for (int tk = 0; tk <= tq; tk++)
                     {
                         float p = scores[tk];
@@ -159,7 +161,7 @@ public static class MimiCodecDecoder
             var projected = new float[frames][];
             for (int t = 0; t < frames; t++)
             {
-                var o = Linear(attnOut[t], layer.OutWeight, hidden, hidden);
+                var o = DenseKernels.LinearNoBias(attnOut[t], layer.OutWeight, hidden, hidden);
                 for (int c = 0; c < hidden; c++) o[c] *= layer.LayerScale1[c];
                 projected[t] = o;
             }
@@ -171,9 +173,9 @@ public static class MimiCodecDecoder
             int intermediate = MimiCodecDecoderWeights.IntermediateSize;
             for (int t = 0; t < frames; t++)
             {
-                var h1 = Linear(ffnNormed[t], layer.Linear1Weight, hidden, intermediate);
+                var h1 = DenseKernels.LinearNoBias(ffnNormed[t], layer.Linear1Weight, hidden, intermediate);
                 GeluErfInPlace(h1);
-                var h2 = Linear(h1, layer.Linear2Weight, intermediate, hidden);
+                var h2 = DenseKernels.LinearNoBias(h1, layer.Linear2Weight, intermediate, hidden);
                 for (int c = 0; c < hidden; c++) x[t][c] += h2[c] * layer.LayerScale2[c];
             }
         }
@@ -289,19 +291,6 @@ public static class MimiCodecDecoder
         return output;
     }
 
-    private static float[] Linear(float[] input, float[] weight, int inDim, int outDim)
-    {
-        var output = new float[outDim];
-        for (int o = 0; o < outDim; o++)
-        {
-            float sum = 0f;
-            int wBase = o * inDim;
-            for (int i = 0; i < inDim; i++) sum += weight[wBase + i] * input[i];
-            output[o] = sum;
-        }
-        return output;
-    }
-
     private static float[] LayerNorm(float[] x, float[] weight, float[] bias, float eps)
     {
         double mean = 0;
@@ -314,16 +303,6 @@ public static class MimiCodecDecoder
         var output = new float[x.Length];
         for (int i = 0; i < x.Length; i++) output[i] = (float)((x[i] - mean) * invStd) * weight[i] + bias[i];
         return output;
-    }
-
-    private static void Softmax(float[] scores)
-    {
-        float max = float.NegativeInfinity;
-        for (int i = 0; i < scores.Length; i++) if (scores[i] > max) max = scores[i];
-        float sum = 0f;
-        for (int i = 0; i < scores.Length; i++) { float e = MathF.Exp(scores[i] - max); scores[i] = e; sum += e; }
-        float invSum = 1f / sum;
-        for (int i = 0; i < scores.Length; i++) scores[i] *= invSum;
     }
 
     private static void Elu(float[][] channelMajor)

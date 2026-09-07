@@ -16902,4 +16902,30 @@ weight-load timing, both pass) -- no regression.
 RMSNorm, or possibly Q8_0 dequantization precision) -- the per-layer tap infrastructure built this
 pass (both reference and C# sides) is now real, reusable machinery for continuing this bisection
 directly (e.g. tapping Q/K/V or the pre-attention normed hidden state specifically, narrowing
-further within layer 0) without needing to rebuild any instrumentation from scratch.
+further within layer 0) without needing to rebuild any instrumentation from scratch. **Note**: a
+second AI tool (Antigravity, previously used successfully on Qwen3 Forced Aligner) was actively
+regenerating a fresh reference trace for this exact bisection concurrently with this session
+(`scratch/ref_trace.log`, timestamped minutes after this entry) -- pivoted to a different backlog
+item below to avoid duplicate/conflicting work on the same file.
+
+## OmniVoice + PersonaPlex -- DRY pass: extracted duplicated Linear/Softmax/SiLU into `Primitives/DenseKernels.cs`, 2026-09-08
+
+CLAUDE.md rule 7 requires a DRY pass once a model's porting is complete -- none of this session's
+newly-ported models (Higgs, VibeVoice TTS, OmniVoice, MOSS-TTS-Nano, PersonaPlex) had had one yet.
+Found real, exact duplication: `OmniVoiceMaskGitForward.cs`, `OmniVoiceMaskGitGenerator.cs`,
+`PersonaPlexDepformer.cs`, and `MimiCodecDecoder.cs` each hand-rolled their own private
+bias-free `Linear`/`Softmax`/`SiluInPlace` -- all byte-for-byte identical in formula to methods
+`Primitives/DenseKernels.cs` (this codebase's existing shared home for exactly this, extracted
+earlier this project for Parakeet/Chatterbox's Conformer encoders) already provides
+(`LinearNoBias`, `SoftmaxInPlace`, `SiluInPlace`). Replaced all call sites in all four files with
+`DenseKernels.*` and deleted the now-dead private copies. Left `PersonaPlexDepformer.cs`'s
+`LinearRows`/`Add`/`RmsNorm` and `MimiCodecDecoder.cs`'s `LayerNorm` untouched -- no matching
+`DenseKernels` equivalent exists for the row-sliced/double-precision variants, and `LayerNorm`
+specifically has a documented history (`DenseKernels.SoftmaxInPlace`'s own doc comment) of being
+numerically sensitive enough to have caused a real NaN bug before, so a mismatched-precision swap
+here was deliberately not risked without dedicated verification.
+
+Re-ran `OmniVoiceMaskGitGeneratorRealWeightsTests`, `PersonaPlexDepformerRealWeightsTests`,
+`MimiCodecDecoderRealWeightsTests`, and `PersonaPlexFullPipelineRealWeightsTests` post-refactor --
+all 4 pass with genuine timing (101.1s total, 25.48 GiB of real weights pre-faulted) -- no
+numerical regression from the extraction.

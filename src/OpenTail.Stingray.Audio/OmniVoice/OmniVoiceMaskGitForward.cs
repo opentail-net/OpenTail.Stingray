@@ -1,3 +1,5 @@
+using OpenTail.Stingray.Audio.Primitives;
+
 namespace OpenTail.Stingray.Audio.OmniVoice;
 
 /// <summary>
@@ -44,9 +46,9 @@ public static class OmniVoiceMaskGitForward
         var v = new float[seqLen][][];
         for (int t = 0; t < seqLen; t++)
         {
-            var qFlat = Linear(xNorm[t], w.QProj, hidden, numHeads * headDim);
-            var kFlat = Linear(xNorm[t], w.KProj, hidden, numKvHeads * headDim);
-            var vFlat = Linear(xNorm[t], w.VProj, hidden, numKvHeads * headDim);
+            var qFlat = DenseKernels.LinearNoBias(xNorm[t], w.QProj, hidden, numHeads * headDim);
+            var kFlat = DenseKernels.LinearNoBias(xNorm[t], w.KProj, hidden, numKvHeads * headDim);
+            var vFlat = DenseKernels.LinearNoBias(xNorm[t], w.VProj, hidden, numKvHeads * headDim);
             q[t] = new float[numHeads][];
             for (int h = 0; h < numHeads; h++)
             {
@@ -109,7 +111,7 @@ public static class OmniVoiceMaskGitForward
         var afterAttn = new float[seqLen][];
         for (int t = 0; t < seqLen; t++)
         {
-            var o = Linear(context[t], w.OProj, numHeads * headDim, hidden);
+            var o = DenseKernels.LinearNoBias(context[t], w.OProj, numHeads * headDim, hidden);
             var row = new float[hidden];
             for (int d = 0; d < hidden; d++) row[d] = input[t][d] + o[d];
             afterAttn[t] = row;
@@ -119,10 +121,11 @@ public static class OmniVoiceMaskGitForward
         for (int t = 0; t < seqLen; t++)
         {
             var ffNorm = RmsNorm(afterAttn[t], w.PostNorm);
-            var gate = Linear(ffNorm, w.GateProj, hidden, OmniVoiceMaskGitWeights.FfDim);
-            var up = Linear(ffNorm, w.UpProj, hidden, OmniVoiceMaskGitWeights.FfDim);
-            for (int d = 0; d < gate.Length; d++) gate[d] = Silu(gate[d]) * up[d];
-            var down = Linear(gate, w.DownProj, OmniVoiceMaskGitWeights.FfDim, hidden);
+            var gate = DenseKernels.LinearNoBias(ffNorm, w.GateProj, hidden, OmniVoiceMaskGitWeights.FfDim);
+            var up = DenseKernels.LinearNoBias(ffNorm, w.UpProj, hidden, OmniVoiceMaskGitWeights.FfDim);
+            DenseKernels.SiluInPlace(gate);
+            for (int d = 0; d < gate.Length; d++) gate[d] *= up[d];
+            var down = DenseKernels.LinearNoBias(gate, w.DownProj, OmniVoiceMaskGitWeights.FfDim, hidden);
             var row = new float[hidden];
             for (int d = 0; d < hidden; d++) row[d] = afterAttn[t][d] + down[d];
             output[t] = row;
@@ -156,18 +159,4 @@ public static class OmniVoiceMaskGitForward
         return output;
     }
 
-    private static float Silu(float x) => x / (1f + MathF.Exp(-x));
-
-    private static float[] Linear(float[] input, float[] weight, int inDim, int outDim)
-    {
-        var output = new float[outDim];
-        for (int o = 0; o < outDim; o++)
-        {
-            float sum = 0f;
-            int wBase = o * inDim;
-            for (int i = 0; i < inDim; i++) sum += weight[wBase + i] * input[i];
-            output[o] = sum;
-        }
-        return output;
-    }
 }

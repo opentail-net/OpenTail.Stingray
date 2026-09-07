@@ -1,3 +1,5 @@
+using OpenTail.Stingray.Audio.Primitives;
+
 namespace OpenTail.Stingray.Audio.OmniVoice;
 
 /// <summary>
@@ -119,8 +121,8 @@ public static class OmniVoiceMaskGitGenerator
             var combinedLogits = new float[targetFrames][];
             for (int f = 0; f < targetFrames; f++)
             {
-                var condRow = LinearNoBias(condHidden[conditionalTargetStart + f], w.AudioHead, hidden, codebooks * vocab);
-                var uncondRow = LinearNoBias(uncondHidden[f], w.AudioHead, hidden, codebooks * vocab);
+                var condRow = DenseKernels.LinearNoBias(condHidden[conditionalTargetStart + f], w.AudioHead, hidden, codebooks * vocab);
+                var uncondRow = DenseKernels.LinearNoBias(uncondHidden[f], w.AudioHead, hidden, codebooks * vocab);
                 var row = new float[codebooks * vocab];
                 for (int i = 0; i < row.Length; i++) row[i] = condRow[i] + options.GuidanceScale * (condRow[i] - uncondRow[i]);
                 combinedLogits[f] = row;
@@ -180,19 +182,6 @@ public static class OmniVoiceMaskGitGenerator
             for (int d = 0; d < hidden; d++) row[d] += audioEmbedding[baseOff + d];
         }
         return row;
-    }
-
-    private static float[] LinearNoBias(float[] input, float[] weight, int inDim, int outDim)
-    {
-        var output = new float[outDim];
-        for (int o = 0; o < outDim; o++)
-        {
-            float sum = 0f;
-            int wBase = o * inDim;
-            for (int i = 0; i < inDim; i++) sum += weight[wBase + i] * input[i];
-            output[o] = sum;
-        }
-        return output;
     }
 
     /// <summary>Real `best_log_prob_excluding_mask`: best (non-mask) logit index/log-softmax-value
