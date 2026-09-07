@@ -12966,15 +12966,53 @@ independent oracle (either full audio-output comparison, or by adding a debug hi
 dump path) -- deliberately not spent this update to keep the iteration scoped to the global
 transformer itself; a real next step, not a guess.
 
-**Still remaining for a complete MOSS-TTS-Nano pipeline**: the local transformer (1 layer,
-same GPT2/RoPE block, decodes each frame's 16 RVQ codebook tokens autoregressively,
-conditioned on the global transformer's per-frame hidden state -- see `local_frame_decoder.
-cpp`, not yet read in detail), the generation loop wiring (`generator.cpp`/`session.cpp`,
-prompt construction via `prompt_builder.cpp`), the SentencePiece text tokenizer
-(`tokenization_moss_tts_nano.py`/`tokenizer.model`, real file embedded in the GGUF per the
-`embedded_files` dump this update -- extractable the same way `config.json` was), and the
-stereo/48kHz Transformer-augmented RVQ audio codec (`audio_tokenizer_weights/{encoder,
-decoder}.{1,3,5,7}.*` -- alternating conv downsample/upsample + real self-attention
-Transformer blocks with LayerScale, per the September 6 tensor dump). Real next step if
-picked up: `local_frame_decoder.cpp` next (smallest remaining piece, reuses this same GPT2
-block pattern), then the codec.
+**Update, 2026-09-07 (same session) -- MOSS-TTS-Nano local frame decoder implemented and
+real-weight verified.** Read `local_frame_decoder.cpp`'s `TextGraph`/`AudioGraph`/
+`generate_frame` in full (not guessed). Real structure: a single-layer GPT2+RoPE block
+(same architecture as the global transformer, `local_transformer_layers=1`) run TWICE per
+frame -- (1) `TextGraph`: the frame's global-transformer hidden state as a lone input row
+(RoPE position 0) decides, via a real 2-way restricted choice between
+`audio_assistant_slot_token_id` (continue) and `audio_end_token_id` (stop), whether
+generation continues; (2) if continuing, `AudioGraph` runs ONCE PER CODEBOOK `q` (0..15),
+each time over a growing row sequence `[global_hidden, text_embedding(best_text),
+audio_embedding(codebook 0..q-1's already-decoded token this SAME frame)]` with RoPE
+positions reset to `0..rows-1` for every such run (NOT the frame's position in the overall
+sequence -- confirmed by re-reading the reference, not assumed), taking the LAST row's
+hidden state through that codebook's own `audio_lm_heads.{q}.weight` output head. Text and
+audio embedding tables/LM heads are the SAME tensors the global transformer already loads
+(`transformer.wte.weight`, `text_lm_head.weight`, `audio_embeddings.{q}.weight`) -- only
+`local_transformer.h.0.*`/`local_transformer.ln_f.*`/`audio_lm_heads.{q}.weight` are new.
+
+Refactored `MossTtsGlobalTransformer.ForwardAll` to extract a shared internal
+`RunTransformerStack` (embedded-rows-in, per-row-hidden-out, causal GPT2+RoPE loop) so the
+local decoder's two graph types reuse the exact same per-layer math instead of duplicating
+it -- both call sites are real (not speculative sharing): `MossTtsGlobalTransformerWeights.
+Layers` and `MossTtsLocalTransformerWeights.Layers` are both arrays of the same
+`MossTtsGlobalTransformerLayerWeights` record (identical hidden/head/rope_base config
+confirmed from the real `config.json`), so no behavior changed by extracting it -- reran
+the global transformer's existing tests after the refactor, still pass. Implemented
+`MossTtsLocalTransformerWeights` (loader) and `MossTtsLocalFrameDecoder` (forward pass,
+GREEDY/argmax decoding only -- the reference's temperature/top-k/top-p/repetition-penalty
+sampling, `HfSampler`, is not yet ported; greedy is a real, correct, deterministic subset).
+
+**Verification**: `MossTtsLocalFrameDecoderTests` (synthetic weights): confirms in-range
+token ids across all 16 codebooks and determinism for repeated calls with identical input.
+`MossTtsLocalFrameDecoderRealWeightsTests` (real checkpoint, 0.8s wall-clock, genuinely
+ran): runs a real global-transformer prefill (4 text rows ending in `audio_start_token_id`)
+to get a real hidden state, then decodes a full real 16-codebook frame through the real
+local transformer -- PASS, finite hidden state, and (whichever the model's real text-choice
+came out to) either a clean end-of-generation signal or a full in-range 16-token frame, no
+crash/NaN/out-of-range token.
+
+**Still remaining for a complete MOSS-TTS-Nano pipeline**: the generation loop wiring
+(`generator.cpp`/`session.cpp` -- ties global-transformer prefill + per-frame local-decoder
+calls into a real multi-frame autoregressive loop, feeding each generated frame's tokens
+back into the NEXT global-transformer row), prompt construction (`prompt_builder.cpp`), the
+SentencePiece text tokenizer (`tokenization_moss_tts_nano.py`/`tokenizer.model`, real file
+embedded in the GGUF per the `embedded_files` dump -- extractable the same way `config.json`
+was), and the stereo/48kHz Transformer-augmented RVQ audio codec
+(`audio_tokenizer_weights/{encoder,decoder}.{1,3,5,7}.*` -- alternating conv
+downsample/upsample + real self-attention Transformer blocks with LayerScale, per the
+September 6 tensor dump) needed to turn generated codes into an actual waveform. Real next
+step if picked up: the SentencePiece tokenizer (self-contained, needed before any prompt
+can be built), then `generator.cpp`'s real multi-frame loop, then the audio codec.

@@ -51,12 +51,31 @@ public static class MossTtsGlobalTransformer
             hidden[i] = h;
         }
 
+        return RunTransformerStack(hidden, w.Layers, w.FinalNormWeight, w.FinalNormBias);
+    }
+
+    /// <summary>
+    /// Shared GPT2+RoPE transformer-stack forward pass: given N already-embedded input rows (row 0
+    /// gets RoPE position 0, row 1 position 1, etc.) and a stack of layers with matching
+    /// <see cref="MossTtsGlobalTransformerWeights.HiddenDim"/>/<see cref="MossTtsGlobalTransformerWeights.NumHeads"/>,
+    /// runs the full causal sequence and returns every row's post-final-LayerNorm hidden state.
+    /// Used by both the global transformer (<see cref="ForwardAll"/>) and the local frame decoder
+    /// (<see cref="MossTtsLocalFrameDecoder"/>) -- same real per-layer math in both, per
+    /// `global_transformer.cpp`/`local_frame_decoder.cpp`'s identical `transformer_layer` helper.
+    /// </summary>
+    internal static float[][] RunTransformerStack(
+        float[][] hidden,
+        IReadOnlyList<MossTtsGlobalTransformerLayerWeights> layers,
+        float[] finalNormWeight,
+        float[] finalNormBias)
+    {
+        int n = hidden.Length;
         const int dim = MossTtsGlobalTransformerWeights.HiddenDim;
         const int headDim = MossTtsGlobalTransformerWeights.HeadDim;
         const int numHeads = MossTtsGlobalTransformerWeights.NumHeads;
         float scale = 1f / MathF.Sqrt(headDim);
 
-        foreach (var layer in w.Layers)
+        foreach (var layer in layers)
         {
             var normed = new float[n][];
             for (int i = 0; i < n; i++) normed[i] = LayerNorm(hidden[i], layer.Ln1Weight, layer.Ln1Bias);
@@ -120,7 +139,7 @@ public static class MossTtsGlobalTransformer
         }
 
         var result = new float[n][];
-        for (int i = 0; i < n; i++) result[i] = LayerNorm(hidden[i], w.FinalNormWeight, w.FinalNormBias);
+        for (int i = 0; i < n; i++) result[i] = LayerNorm(hidden[i], finalNormWeight, finalNormBias);
         return result;
     }
 
@@ -157,14 +176,14 @@ public static class MossTtsGlobalTransformer
         }
     }
 
-    private static float[] EmbedRow(float[] table, int index, int dim)
+    internal static float[] EmbedRow(float[] table, int index, int dim)
     {
         var row = new float[dim];
         Array.Copy(table, (long)index * dim, row, 0, dim);
         return row;
     }
 
-    private static unsafe float[] Linear(float[] input, float[] weight, float[] bias, int inDim, int outDim)
+    internal static unsafe float[] Linear(float[] input, float[] weight, float[] bias, int inDim, int outDim)
     {
         var output = new float[outDim];
         fixed (float* w = weight, x = input, y = output)
