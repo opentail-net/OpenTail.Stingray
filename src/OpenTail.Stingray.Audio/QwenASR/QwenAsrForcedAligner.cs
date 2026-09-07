@@ -118,7 +118,29 @@ public sealed class QwenAsrForcedAligner : IDisposable
         string[] words = TokenizeAlignableWords(referenceText);
         if (words.Length == 0) return [];
 
-        float[] mel = _realMelExtractor.ExtractMel(pcm16k);
+        // Real preprocessing, added 2026-09-07 (see docs/audio-review-progress.md's audio-
+        // encoder bisection entries): the reference's `frontend_whisper.cpp`'s `normalize_audio`
+        // (1) rescales down to unit range ONLY if any sample's absolute value exceeds 1.0 (a
+        // real clip-guard, not an always-on peak normalization -- a no-op for already-normalized
+        // audio), and (2) zero-pads to at least `kMinInputSamples=8000` samples. Neither
+        // previously ported.
+        const int minInputSamples = 8000;
+        float peak = 0f;
+        foreach (var sample in pcm16k) peak = MathF.Max(peak, MathF.Abs(sample));
+        float[] normalizedPcm;
+        if (peak > 1.0f || pcm16k.Length < minInputSamples)
+        {
+            normalizedPcm = new float[Math.Max(pcm16k.Length, minInputSamples)];
+            pcm16k.CopyTo(normalizedPcm);
+            if (peak > 1.0f)
+                for (int i = 0; i < pcm16k.Length; i++) normalizedPcm[i] /= peak;
+        }
+        else
+        {
+            normalizedPcm = pcm16k.ToArray();
+        }
+
+        float[] mel = _realMelExtractor.ExtractMel(normalizedPcm);
         int inMelFrames = mel.Length / QwenAsrMelExtractor.NumMels;
         if (inMelFrames == 0) return [];
         var (audioSoftTokens, numAudioTokens) = _realEncoder.Forward(mel, inMelFrames);

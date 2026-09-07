@@ -15661,3 +15661,27 @@ padding/stride semantics not independently re-derived from ggml source (assumed 
 "valid conv with symmetric padding," not verified byte-for-byte); (c) the real chunk-padding fix
 from hypothesis 1 above should still be implemented even though it isn't the dominant remaining
 cause, for full correctness on longer audio inputs with a non-uniform last chunk.
+
+## Qwen3 Forced Aligner -- real preprocessing gap closed (peak-clip-guard + min-samples pad), no-op for this test clip, 2026-09-07
+
+Read `frontend_whisper.cpp`'s real `normalize_audio`: (1) rescales samples down to unit range
+ONLY if any sample's absolute value exceeds 1.0 (a real clip-guard, not unconditional peak
+normalization -- a no-op for already-normalized audio), and (2) zero-pads to at least
+`kMinInputSamples=8000` samples before mel extraction. Neither was previously ported into
+`QwenAsrForcedAligner.AlignReal`. Added both, matching the real reference logic exactly. Confirmed
+via `STINGRAY_FORCEDALIGNER_TRACE=1`: a genuine no-op for this session's `a.wav` test clip (peak
+already <=1.0, well over 8000 samples at 5.95s), so it doesn't explain the still-open residual
+encoder divergence -- but it's a real correctness gap for other inputs (very short clips, or
+clips with true out-of-range samples) that's now closed regardless.
+
+**Qwen3 Forced Aligner running tally for this session**: 4 real bugs found and fixed in
+`QwenAsrAudioEncoder`/`QwenAsrForcedAligner` (positional-embedding sin/cos layout, conv2d input
+orientation, tanh-vs-exact-erf GELU, missing peak-clip-guard/min-samples preprocessing), three
+further hypotheses directly tested and ruled out (chunk padding, channel/freq ordering, windowed
+attention -- for this test clip), and the audio encoder's frame-by-frame correlation with the real
+reference went from complete decorrelation (cosine ~0.03-0.54) to strong positive correlation
+(cosine ~0.7-0.98). The real alignment output produced its first-ever non-zero timestamp
+(`publication` end at 16.16s) in this bug's entire multi-session history. Not yet fully resolved;
+the next untried, most-promising lead is a frame-by-frame mel-spectrogram comparison (mel
+extraction itself has not yet been checked against a real reference dump, only the final encoder
+output was).
