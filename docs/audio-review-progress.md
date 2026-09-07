@@ -13345,6 +13345,34 @@ output. PASS on the first attempt despite the RoPE complexity -- a real, meaning
 confidence signal that the NEOX+longrope math was derived correctly from the reference
 rather than approximated.
 
+**Update, 2026-09-07 -- checked this codebase's existing F5-TTS DiT+CFM code
+(`src/OpenTail.Stingray.Audio/F5TTS/`) for reuse potential before writing VoxCPM2's own DiT
++CFM estimator from scratch, per this session's plan.** Real finding: NOT directly reusable
+at the code level. `F5DiTBlock.cs`'s own doc comment confirms it is tightly coupled to
+F5-TTS's own real, checkpoint-specific config (`AdaLN-Zero` modulation, `x_transformers`'
+particular RoPE convention, and a real `pe_attn_head=1` quirk specific to the canonical
+`F5TTS_Base` checkpoint that took a real cross-language investigation to uncover) -- VoxCPM2's
+`dit_config` (own `hidden_dim=1024`, `ffn_dim=4096`, `num_heads=16`, `num_layers=12`,
+`kv_channels=128`, plus a separate `cfm_config`: `sigma_min=1e-6`, `solver=euler`,
+`t_scheduler=log-norm`, `inference_cfg_rate=2.0`) is architecturally the same FAMILY (a DiT
++conditional-flow-matching generator, same broad shape as F5-TTS) but a genuinely different
+implementation that needs independent verification against VoxCPM2's own real reference
+(`generator.cpp`'s `VoxCPM2DiTEstimatorRuntime`/`VoxCPM2CFMRuntime`, not yet read in detail)
+rather than assumed identical to F5's per-layer math. `F5FlowMatchingOde.cs`'s general
+Euler-solver SHAPE is more likely reusable as a structural pattern (both use a real Euler
+ODE solver per `cfm_config.solver="euler"`), but the exact velocity-field call signature and
+CFG (`inference_cfg_rate`) formula still need reading from VoxCPM2's own reference before
+assuming parity. Real next step if picked up: read `generator.cpp`'s
+`VoxCPM2DiTEstimatorRuntime` (~line 713-975) and `VoxCPM2CFMRuntime` (~line 1003-1185) in
+full before writing any DiT/CFM code, following the same "read the real reference first"
+discipline as every other piece ported this session.
+
+Per this session's "pivot rather than stall" discipline, and given the significant real
+progress already landed on VoxCPM2 this session (AudioVAE decoder, MiniCPM backbone with a
+live real-weight generation proof, step-projection layers, local encoder), pausing VoxCPM2
+here for now with a precisely-scoped next step (the DiT+CFM estimator) rather than starting
+it under time pressure.
+
 ## VibeVoice ASR -- tokenizer encoders + connector implemented, structurally verified, 2026-09-07
 
 Downloaded the real checkpoint (`audio-cpp/audio.cpp-gguf`, `VibeVoice-ASR-GGUF/
