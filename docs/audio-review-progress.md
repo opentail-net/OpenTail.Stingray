@@ -14357,3 +14357,38 @@ for every other model this session), real tensor names now fully confirmed
 norm2.alpha,gating.{0-15}.{linear_in,linear_out}.weight}`, `depformer_in.{0-15}.weight`). The
 full Mimi neural codec (`mimi/*`, real 32-level RVQ, own transformer stack) remains completely
 unread and is a separately large piece.
+
+## PersonaPlex -- Depformer implemented and real-weight verified, 2026-09-07
+
+Implemented `PersonaPlexDepformer`/`PersonaPlexDepformerWeights` per the prior entry's precise
+scoping, reading the rest of `depformer.cpp`'s real weight-loading (`load_personaplex_
+depformer_weights`, ~line 191-220) to confirm the last real tensor names (`depformer_text_emb.
+weight`, `depformer_emb.{step}.weight`, `linears.{step}.weight`, `depformer_in.{step}.weight`
+-- all under the same real `lm/` prefix already confirmed for the main temporal LM, applied
+consistently here too rather than re-guessed per-name).
+
+**Real per-frame algorithm confirmed and ported exactly** (bespoke, from-scratch decoder --
+NOT the tensor-source-bridge pattern, per the prior entry's finding): step 0's input is
+`depformer_in[0](temporalLmHidden) + textEmbedding[frameTextToken]`; steps 1-15's input is
+`depformer_in[step](temporalLmHidden) + audioEmbeddings[step-1][prevStepToken]` -- the SAME
+`temporalLmHidden` is re-projected FRESH at every step through that step's own dedicated
+`depformer_in` weight (not carried/accumulated), a real, easy-to-miss detail. Each step runs
+through 6 causal, no-RoPE layers using that step's own row-sliced packed QKV/gate-up weight
+bank, with a real per-frame KV cache (freshly reset at the start of each frame, a genuinely
+separate scope from the temporal LM's own persistent cache). Each step's hidden state projects
+through its own real per-step LM head to that codebook's logits.
+
+Real-weight test (`PersonaPlexDepformerRealWeightsTests`) generates one full 16-codebook frame
+from a random temporal-LM hidden state, confirms all codes land in the real
+`[0, audioCodebookSize)` range: 8.7s wall-clock, genuine run -- every real tensor name (including
+the `lm/` prefix applied to the newly-confirmed names) resolved correctly on the first attempt,
+a good sign the earlier `PersonaPlexLmTensorSource` prefix-bug lesson was internalized.
+
+**PersonaPlex status: ~40%.** Both the temporal LM and the Depformer -- PersonaPlex's two real
+autoregressive decoders -- are now real-weight verified individually. Remaining: wiring them
+together into a real per-frame generation loop (temporal LM step -> Depformer full-frame
+16-codebook generation -> feed the frame's codes back into the temporal LM's next step via its
+own 16 real `AudioEmbeddingWeight` tables, summed), argmax-only sampling throughout (real
+sampling not ported), and the full Mimi neural codec (`mimi/*`, 32-level RVQ, own transformer
+stack) which turns the generated codes into actual audio -- completely unread, separately large,
+comparable in scope to this session's other neural-codec ports (Higgs/VibeVoice).
