@@ -14473,3 +14473,33 @@ remaining scope before assuming complete," actually read the LATEST entry for th
 this append-only doc (search from the bottom, or `grep` the model name and take the last match)
 rather than the first one found -- this doc's real value is in its later entries superseding
 earlier ones, and a partial read produces exactly this kind of stale-status carry-forward.
+
+## OmniVoice -- LLM argmax collapse CONFIRMED as a real bug, ruling out the meaningless-input explanation, 2026-09-07
+
+Followed up on the 2026-09-06 diagnostic that left this genuinely open. Downloaded OmniVoice's
+real `tokenizer.json`/`tokenizer_config.json` directly from `k2-fsa/OmniVoice` on HF (the
+already-present `models/_models/omnivoice/model.safetensors` checkpoint had no tokenizer
+alongside it -- these two small files are now saved next to it for reuse) and re-ran the
+diagnostic with two REAL, different, natural-language sentences ("The quick brown fox jumps over
+the lazy dog." vs. "Quantum computers use qubits instead of classical bits.") encoded through the
+real tokenizer, instead of arbitrary small token ids.
+
+**Result: the argmax STILL collapses to the exact same token (id 85473, the piece " uten") for
+both completely different real sentences**, even though the raw logits DO vary meaningfully
+between the two prompts (RMS diff 1.87, not near-zero -- so this is NOT a total Fun-ASR-Nano-
+style "identical output regardless of input" collapse, the model IS processing the input
+differently internally). This **rules out** the earlier "arbitrary low-numbered ids are
+near-untrained special tokens" innocent explanation -- with real, meaningful, differently-
+tokenized natural language input, a healthy 28-layer LLM should not consistently prefer the
+exact same single vocabulary entry as its highest-logit prediction regardless of what real
+sentence precedes it. **This is now a confirmed, real, reproducible bug** in
+`OmniVoiceLlmTensorSource`'s bridging (or a genuine upstream issue with this specific
+`k2-fsa/OmniVoice` safetensors checkpoint's weights -- not yet distinguished).
+
+**Real next step, not yet attempted**: since logits DO vary but one specific vocab row (85473)
+seems to dominate regardless, a real, targeted hypothesis worth checking is whether that row's
+`lm_head`/tied-embedding weight has an anomalously large norm (a common real symptom of a
+mis-scaled or duplicated tensor during weight loading) -- dump `token_embd.weight`'s row 85473
+norm vs. the median row norm across the vocabulary and compare, before assuming the bug lives in
+`ForwardPass`'s generic graph (which is shared, working correctly, across every other model
+bridged this session) rather than in this specific tensor-loading/mapping class or checkpoint.
