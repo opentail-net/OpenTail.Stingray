@@ -13401,10 +13401,27 @@ reference's own real technique.
 unread source left in this file set): real-weight verification of everything implemented
 so far once the checkpoint finishes downloading; wiring `VibeVoiceSpeechFeatures.Extract`'s
 output through `VibeVoiceLlmTensorSource.EnableSpeechConditioning` and a real prefill call
-via `ForwardPass`; the postprocessor's real JSON-segment parser (`postprocess.cpp`, not yet
-read); and the frontend's real audio normalization (`frontend.cpp`, only 72 lines, not yet
-read -- likely trivial). Beam search decoding and the streaming path are real but lower
-priority (greedy/offline decode is the natural first correctness target). Real next step if
-picked up: real-weight-verify the encoder/connector/sampler/LLM-bridge chain once the
-checkpoint lands, then read `postprocess.cpp` + `frontend.cpp` (both short) to close out a
-complete, real, greedy-decode offline ASR pipeline.
+via `ForwardPass`.
+
+**Update, 2026-09-07 (same session) -- implemented `VibeVoiceFrontend` (real RMS-normalize-
+to-target-dBFS + peak-limit, `frontend.cpp`) and `VibeVoicePostprocessor` (real
+balanced-bracket JSON payload extraction + `Start time`/`End time`/`Speaker ID`/`Content`
+segment parsing with the reference's exact fallback key aliases and raw-text degrade path,
+`postprocess.cpp`).** Both structurally verified (7 tests total between the two). Every
+source file in `examples/audio.cpp/src/models/vibevoice_asr/` has now been read and either
+ported or precisely scoped this session -- the pipeline's real shape is fully understood,
+nothing left unread.
+
+**Full inventory of what's implemented vs. remaining for VibeVoice ASR, as of this
+update**: implemented and structurally verified (synthetic weights) -- tokenizer encoder
+(acoustic+semantic, shared class), connector (shared class), Gaussian latent sampler,
+acoustic+semantic combine, LLM tensor-source bridge (Qwen2, with speech-embedding
+conditioning), frontend normalization, JSON postprocessor. NOT yet implemented: the real
+sampling/decode utilities (`argmax_token`, `sample_token`, `apply_repetition_penalty`,
+beam search -- small, self-contained functions in `session.cpp`'s anonymous namespace, real
+next step) and the top-level orchestration wiring all these real pieces together into one
+callable pipeline (greedy/offline decode is the natural first correctness target; beam
+search and streaming are real but lower priority). Real-weight verification of everything
+above remains blocked on the checkpoint download (~3.9GB of ~9.9GB as of this update) --
+the single largest remaining risk, since no piece has been checked against real weights or
+a real reference transcription yet.
