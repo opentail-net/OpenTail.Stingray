@@ -13883,15 +13883,18 @@ halves of its buffer, even though only one half is ever read back out afterward)
 
 **Status: implemented, compiles clean, NOT yet real-weight verified.** The
 `models/_models/vibevoice-tts/vibevoice-7b-q8_0.gguf` checkpoint present at session start was
-ALSO truncated (`GgufModel.Open` threw `InvalidDataException` on
-`model.language_model.layers.1.mlp.down_proj.weight` exceeding the file size, same failure
-mode hit twice already this session for Higgs Audio TTS) -- redownload kicked off in the
-background but the `stingray` CLI's own build lock (shared with the concurrent Higgs Audio TTS
-download's `dotnet run`) blocked it from actually running; needs to be retried once the Higgs
-download's CLI process exits. Real next step if resumed: retry the `stingray pull` for
-`vibevoice-7b-q8_0` from `audio-cpp/audio.cpp-gguf`, confirm the file opens via
-`GgufModel.Open` without truncation, dump `config.json`'s real `hidden_size`/`latent_size`/
-`head_layers`/`head_ffn_ratio`/`rms_norm_eps`/`ddpm_num_steps` and the
+truncated (`GgufModel.Open` threw `InvalidDataException` on
+`model.language_model.layers.1.mlp.down_proj.weight` exceeding the file size). Redownloading it
+under that same quant substring hit a real, different problem: **there is no 7B VibeVoice TTS
+checkpoint in `audio-cpp/audio.cpp-gguf` at all** -- `stingray pull -q "vibevoice-7b-q8_0"`
+returned "no .gguf file matched"; the repo's real listing only has `VibeVoice-1.5B-GGUF/`
+(plus the already-downloaded `VibeVoice-ASR-GGUF/`). The "7B" checkpoint reference was a wrong
+assumption carried in from earlier session context, never verified against the real repo
+listing -- corrected here. Real config/tensor names still need dumping once
+`VibeVoice-1.5B-GGUF/vibevoice-1.5b-q8_0.gguf` finishes downloading (in progress at session end)
+and opens cleanly via `GgufModel.Open`. Real next step if resumed: confirm the file opens
+without truncation, dump `config.json`'s real `hidden_size`/`latent_size`/`head_layers`/
+`head_ffn_ratio`/`rms_norm_eps`/`ddpm_num_steps` and the
 `model.prediction_head.*` tensor names/shapes, then write a real-weight smoke test for
 `VibeVoiceDiffusionHead.Predict`+`VibeVoiceDiffusionSampler.Sample`.
 
@@ -13936,7 +13939,21 @@ run.
 text-vs-audio-embedding gating mechanism mentioned in `HiggsLlmTensorSource`'s own doc comment,
 NOT yet ported), the real delayed multi-codebook AR generation loop (`ar.cpp`, 1367 lines --
 comparable in scope to MOSS-TTS-Nano's local frame decoder but for 8 codebooks not MOSS's
-count), the real codec decoder (`codec.cpp`, 1678 lines -- check first whether it's actually
-reusable from OmniVoice's DAC decoder or RVC's HuBERT encoder as earlier-session notes assumed,
-or a genuinely different architecture; don't assume reuse without reading it), and real sampling
-(`sampler.cpp`, 480 lines).
+count), the real codec decoder (`codec.cpp`, 1678 lines), and real sampling (`sampler.cpp`,
+480 lines).
+
+**Correction, 2026-09-07 (same session) -- codec.cpp read, NOT reusable from OmniVoice/RVC as
+earlier-session notes assumed.** Higgs Audio TTS's codec is a genuinely own architecture: real
+tensor prefix `tied.embedding.modality_embeddings.0.model.*` (the SAME modality-embedding table
+already exposed via `HiggsLlmTensorSource.ModalityEmbeddingWeight`, confirming the codec and the
+LLM's audio-token embeddings are tied/share weights -- a real, non-obvious detail), dual
+acoustic(256)+semantic(768) hidden streams concatenated to 1024 before an 8-codebook/1024-size/
+64-dim residual quantizer, its own encoder/decoder channel schedule
+(`kEncoderChannels={64,128,256,512,1024,2048}`/`kDecoderChannels={1024,512,256,128,64,32}`,
+`kUpsampleRatios={8,5,4,2,3}`), a separate 12-layer/12-head semantic Conformer-ish encoder
+(`kSemanticConvLayers=7`, own conv kernel/stride schedule, 16kHz input, 3072 intermediate size),
+24kHz output at a 960-sample hop, and a real non-causal-conv edge-artifact workaround
+(`kCodecTailContextFrames=8`, repeats the last frame past stream end to avoid a "rising hiss"
+in the final ~300ms of short utterances -- a real, deliberate fix documented in the reference's
+own comment, not a bug to "clean up" if ported literally). Real next step for this piece:
+read the rest of `codec.cpp` (only the first 100 of 1678 lines read so far) before porting.
