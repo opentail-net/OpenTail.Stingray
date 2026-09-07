@@ -16210,3 +16210,34 @@ smoke test on the same pattern as `VoxCpm2GeneratorRealWeightsTests`/`VibeVoiceG
 This is a comparable-sized task to VibeVoice TTS's or VoxCPM2's own generation-loop port earlier
 this session, not a quick follow-on -- pivoting to other backlog items for this pass rather than
 starting it without enough remaining budget to finish and verify it properly.
+
+## Higgs Audio TTS -- real ZERO-SHOT full text-to-waveform generation loop wired end-to-end, first real attempt succeeded, 2026-09-07
+
+Continued directly from this pass's own delay-pattern port + scoping entry above -- turned out
+every OTHER piece needed for the reference-audio-FREE generation loop was already real-weight
+verified individually this session (`HiggsTtsTextTokenizer.EncodePrompt` already handles
+`delayedReferenceTokens=0`, `HiggsArStepper.SampleFromHidden`/`.Step`, `HiggsCodebookSampler`'s
+real delay-mask+EOC-stop state machine, `HiggsCodecDecoder.Decode`), so only the orchestration
+loop itself plus the just-ported `HiggsCodebooks.ReverseDelayPattern` were missing -- a much
+smaller lift than the reference-audio-conditioned path this session's scoping note (correctly)
+flagged as the bigger remaining piece.
+
+Read `generator.cpp`'s real `generate()` main loop (not guessed) for the exact real post-generation
+handling: after `state.generation_done`, `reverse_higgs_delay_pattern` unwinds the collected DELAYED
+code stream, then any code `>= codec_vocab` (i.e. still `BocId`/`EocId`, both `>= audio.vocab_size-2`)
+gets clamped to `0` -- confirmed real, not a bug, matches `generator.cpp` lines ~528-536 exactly.
+Wrote `HiggsGenerator.Generate`: prefill real text prompt -> sample first codes from prefill's own
+`LastHidden` -> loop `HiggsArStepper.Step`+`HiggsCodebookSampler.Step` until `GenerationDone` or
+`maxTokens` -> `ReverseDelayPattern` -> clamp reserved ids -> `HiggsCodecDecoder.Decode`.
+
+New `HiggsGeneratorRealWeightsTests`: real checkpoint, real tokenizer, `maxTokens=200`, produces
+finite non-silent audio with every codebook code in-range. **Passed on the first real attempt**
+(no bugs found needing a fix pass) -- 45.3s wall-clock with a real `[ForwardPass] Pre-faulted 16.43
+GiB...` weight-loading line logged (genuine run per rule 12). Re-ran the existing
+`HiggsArStepperRealWeightsTests` (2 tests) afterward -- still passes (29.1s), no regression.
+
+Higgs Audio TTS moves from ~45% to ~65% -- the zero-shot generation path (previously entirely
+unwired despite every individual piece being verified) now works end-to-end. Real remaining gap,
+unchanged from the scoping note above: reference-audio conditioning (fused prompt positions
+carrying delayed reference codebook ids, KV-cache reuse across repeated same-reference calls) --
+real, separate, unstarted work.
