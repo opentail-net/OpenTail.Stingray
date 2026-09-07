@@ -14704,3 +14704,64 @@ simplification is harmless.
 verified together, a genuine milestone -- the temporal-LM+Depformer half of this model is
 structurally complete modulo the delay pattern and real sampling. The Mimi neural codec (turns
 generated codes into actual audio) remains the one large unimplemented piece.
+
+## PersonaPlex -- Mimi codec: transformer block, SEANet block, and codebook math all now fully read, 2026-09-07
+
+Continued reading `mimi_codec_runtime.cpp` (now ~800 of 2113 lines read) plus the shared
+`transformer_blocks.cpp` module it uses. Real architecture now FULLY understood for a one-shot
+(non-streaming) decode -- no more open questions, ready to implement directly next session
+without re-deriving any of this:
+
+**Real SEANet residual block** (`build_seanet_residual_block`): `x=ELU(input) ->
+Conv1d(channels->hiddenChannels,k=3,dilation=1,"stateful") -> ELU -> Conv1d(hiddenChannels->
+channels,k=1,"stateful") -> residual add`. Real tensor names: `{prefix}.block.1.conv.conv.
+{weight,bias}` / `{prefix}.block.3.conv.conv.{weight,bias}` (Sequential indices 0=ELU/1=Conv/
+2=ELU/3=Conv). **Real, critical simplification for one-shot decode**: `build_stateful_conv1d`
+with `history=nullopt` is a PLAIN Conv1d with padding=0 on the raw input -- for a one-shot
+(non-streaming) decode this means the caller must manually zero-pad `(kernel-1)*dilation` on the
+LEFT before calling (equivalent to a zero-initialized streaming "history"), i.e. exactly this
+session's already-established causal-Conv1d-with-left-zero-pad convention, no extra right-pad
+formula needed since stride is always 1 in these blocks (output length = input length exactly).
+Same real simplification applies to `build_stateful_convtranspose1d`/
+`build_stateful_depthwise_convtranspose1d`: with `partial=nullopt` (first/only call), the
+function reduces to a PLAIN unpadded `ConvTranspose1d` (`raw` returned directly, no
+prefix/suffix overlap-add) -- i.e. this session's already-built Higgs-style symmetric-unpad
+`ConvTranspose1d` helper is directly reusable here with no modification.
+
+**Real transformer block** (`StreamingTransformerEncoderBlockModule::build`, in the shared
+`transformer_blocks.cpp`): standard PRE-norm design -- `attn=SelfAttn(LayerNorm(x));
+x=x+LayerScale1(attn); ff=GELU-erf-FFN(LayerNorm(x)); x=x+LayerScale2(ff)`. Real, non-obvious
+details: LayerNorm here is a real bias-affine LayerNorm (NOT RMSNorm, unlike every other model
+this session), `LayerScale` is a real learned PER-CHANNEL multiplicative scale applied to each
+sublayer's output before the residual add (`layer_scale_1.scale`/`layer_scale_2.scale` tensors,
+a real CaiT/ViT-lineage technique), attention QKV is packed (`self_attn.in_proj_weight,
+[3*hidden,hidden]`, real plain-MHA split into thirds -- same packing convention already
+implemented for PersonaPlex's own temporal LM/Depformer), FFN activation is real GELU (exact
+erf, matching this codebase's existing `GeluApproximation::ExactErf` convention), no bias
+anywhere (`use_bias=false` for this real config). For a one-shot FULL-SEQUENCE decode, the real
+streaming KV-cache/prefix mechanism (`cache_steps_ = max(0, context-frames)`) reduces to
+`cache_steps_=0` when `frames >= context` -- i.e. a completely standard, non-streaming causal
+self-attention over the whole generated sequence, no prefix-cache machinery needed at all for
+this case.
+
+**Real, non-obvious quantizer detail, would have been a silent wrong-value bug if guessed**: the
+codebook embedding is NOT stored directly in the checkpoint -- it must be DERIVED as
+`embedding_sum / max(cluster_usage, 1e-5)` per code (real EMA-VQ-VAE accumulator convention,
+confirmed via `normalized_codebook`). This matches the real dumped tensor names from earlier
+this session (`mimi/quantizer.rvq_first.vq.layers.0._codebook.embedding_sum` -- there must also
+be a paired `_codebook.cluster_usage` tensor, not yet independently confirmed in the dump but
+implied by this real function).
+
+**Real config for PersonaPlex's Mimi instance** (from `session.cpp`'s `mimi_codec_config`,
+recorded earlier this session): `hidden_size=512, num_heads=8, intermediate_size=2048,
+transformer_layers=8, context=250, latent_size=256, codebooks(active)=8, total_codebooks=32,
+codebook_size=2048, encoder_upsample_stride=16, sample_rate=24000, frame_rate=12.5`.
+`kMimiActiveCodebooks=8` (real decode-time subset, matches `kMimiFrameCodebooks` from
+`session.cpp`).
+
+**Not implemented this pass** (deliberate stopping point -- this is now a "ready to implement"
+scoping, not an open investigation): the actual C# port of the above (residual blocks, transformer
+stack, quantizer decode, decoder weight loading with real tensor prefixes/shapes for THIS
+config). Given the substantial ground already covered this turn (PersonaPlex's temporal-LM-to-
+Depformer wiring was the priority deliverable), implementing the full Mimi decode path is
+better started fresh next session with this scoping in hand rather than rushed now.
