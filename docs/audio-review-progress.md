@@ -13004,15 +13004,69 @@ local transformer -- PASS, finite hidden state, and (whichever the model's real 
 came out to) either a clean end-of-generation signal or a full in-range 16-token frame, no
 crash/NaN/out-of-range token.
 
+**Update, 2026-09-07 (same session) -- MOSS-TTS-Nano SentencePiece BPE text tokenizer
+implemented and real-weight verified.** Extracted the real embedded `tokenizer.model` from
+the packed GGUF (via `MossTtsMetaDumpDebugTest`'s `embedded_files` reader, extended to dump
+binary files too) and hand-parsed its raw protobuf `ModelProto` structure
+(`MossTtsSpmProtoDumpDebugTest`, a minimal varint/wire-type scanner -- no protobuf runtime
+pulled in) to confirm the real algorithm BEFORE implementing anything, per this project's
+"never guess" discipline: **`trainer_spec.model_type=2` (BPE)**, NOT Unigram like the
+existing `UnigramTokenizer` (built earlier this project for Parler-TTS/T5) -- a genuinely
+different segmentation algorithm needing its own class. Also confirmed real:
+`byte_fallback=true` (256 real `<0xXX>` BYTE-type pieces present), 11 USER_DEFINED special
+tokens (e.g. `<|im_start|>`), 0 UNUSED pieces (so the reference's UNUSED/`rev_merge`
+resegmentation path is real but verified UNREACHABLE for this specific checkpoint, and
+therefore not implemented -- a precise, checked scope reduction, not a guess), and a REAL
+237561-byte `precompiled_charsmap` (name `nmt_nfkc`) present in `normalizer_spec` -- unlike
+Parler's Unigram tokenizer this checkpoint really does carry one, but it is NOT implemented
+here either (same documented gap/stand-in as `UnigramTokenizer`: plain NFKC substituted,
+correct for ASCII, may diverge on exotic input).
+
+Read the vendored, authoritative `examples/audio.cpp/external/sentencepiece/src/bpe_model.
+cc`'s `Model::SampleEncode` (which `Model::Encode` calls with `alpha=0.0`, disabling the
+unrelated BPE-dropout sampling feature) and `model_interface.cc`'s `InitializePieces`/
+`PieceToId`/`ByteToPiece` in full (not guessed). Real algorithm: split normalized text into
+one-Unicode-scalar initial symbols (frozen/unsplittable if a USER_DEFINED special-token
+string matches at that position instead); seed a max-priority queue with every adjacent
+pair whose concatenation is itself a real vocab piece, keyed by that piece's real `score`
+(ties broken LEFTMOST, matching the reference's `left &gt; h2-&gt;left` comparator exactly,
+not a guessed tie-break); repeatedly pop-and-merge the highest-priority still-valid pair,
+re-seeding newly-adjacent pairs, until the queue empties; any surviving unmatched symbol
+decomposes into real per-UTF8-byte `&lt;0xXX&gt;` tokens (byte fallback). Implemented as
+`SentencePieceBpeTokenizer` in `OpenTail.Stingray.Core` (a peer to `UnigramTokenizer`, not a
+MOSS-specific class -- reusable for any other checkpoint with a raw SentencePiece BPE
+`.model`), including a minimal hand-rolled protobuf `ModelProto` reader (skips unknown
+fields; NativeAOT/trim-friendly, no protobuf runtime dependency, matching this project's
+existing GGUF-parser convention).
+
+**Verification**: `SentencePieceBpeTokenizerTests` (4 tests, hand-built toy `ModelProto`
+byte streams in real protobuf wire format -- not guessed shortcuts): confirms highest-score
+merge-first ordering, the real leftmost tie-break (hand-traced through the algorithm by hand
+in the test's own comments to double check the expected result before asserting it), UTF-8
+byte fallback for a fully out-of-vocab character, and that a USER_DEFINED symbol is frozen
+and never merged. `MossTtsTextTokenizerRealWeightsTests` (real checkpoint, genuinely ran):
+encodes `" regular"` and asserts the result is EXACTLY `[6599]` -- the real vocab id for
+piece `"▁regular"` confirmed directly from the protobuf dump, a strong single-token
+round-trip correctness check against real data without needing a live Python
+`sentencepiece` oracle (not available in this environment); also confirms a rare 4-byte
+UTF-8 character (Egyptian hieroglyph U+13000) produces a non-empty, fully in-range token
+sequence via real byte fallback rather than crashing or producing an invalid id. PASS.
+
+**Not a full numeric golden-parity check against real Python `sentencepiece` output** -- no
+such reference tool is available in this environment (per this project's no-Python rule);
+the single-token round-trip and toy-vocab conformance tests are real evidence but not the
+same bar as a byte-for-byte comparison against dozens of real reference encodings (see
+`UnigramTokenizer`'s own doc comment for the same caveat on its sibling algorithm).
+
 **Still remaining for a complete MOSS-TTS-Nano pipeline**: the generation loop wiring
 (`generator.cpp`/`session.cpp` -- ties global-transformer prefill + per-frame local-decoder
 calls into a real multi-frame autoregressive loop, feeding each generated frame's tokens
-back into the NEXT global-transformer row), prompt construction (`prompt_builder.cpp`), the
-SentencePiece text tokenizer (`tokenization_moss_tts_nano.py`/`tokenizer.model`, real file
-embedded in the GGUF per the `embedded_files` dump -- extractable the same way `config.json`
-was), and the stereo/48kHz Transformer-augmented RVQ audio codec
+back into the NEXT global-transformer row), prompt construction (`prompt_builder.cpp`, now
+unblocked now that the text tokenizer exists), the `precompiled_charsmap` real binary
+normalization format (same open gap as `UnigramTokenizer`, biggest remaining risk area for
+both tokenizers), and the stereo/48kHz Transformer-augmented RVQ audio codec
 (`audio_tokenizer_weights/{encoder,decoder}.{1,3,5,7}.*` -- alternating conv
 downsample/upsample + real self-attention Transformer blocks with LayerScale, per the
 September 6 tensor dump) needed to turn generated codes into an actual waveform. Real next
-step if picked up: the SentencePiece tokenizer (self-contained, needed before any prompt
-can be built), then `generator.cpp`'s real multi-frame loop, then the audio codec.
+step if picked up: `generator.cpp`'s real multi-frame loop (now the natural next piece --
+tokenizer, global transformer, and local decoder all exist), then the audio codec.

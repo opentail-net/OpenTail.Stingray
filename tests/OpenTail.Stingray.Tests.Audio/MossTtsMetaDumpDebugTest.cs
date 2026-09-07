@@ -43,16 +43,25 @@ public sealed class MossTtsMetaDumpDebugTest : HeavyTestBase
         var offsets = (object[])model.Metadata["audiocpp.embedded_files.offsets"];
         var data = (object[])model.Metadata["audiocpp.embedded_files.data"];
         var bytes = data.Select(o => (byte)(long)Convert.ChangeType(o, typeof(long))).ToArray();
+        string[] wantText = ["config.json", "audio_tokenizer/config.json", "tokenization_moss_tts_nano.py", "tokenizer_config.json", "special_tokens_map.json"];
+        string[] wantBinary = ["tokenizer.model"];
         for (int i = 0; i < names.Length; i++)
         {
             string name = (string)names[i];
-            if (name != "config.json" && name != "audio_tokenizer/config.json") continue;
             long start = Convert.ToInt64(offsets[i]);
             long end = i + 1 < offsets.Length ? Convert.ToInt64(offsets[i + 1]) : bytes.Length;
-            string content = System.Text.Encoding.UTF8.GetString(bytes, (int)start, (int)(end - start));
             string cfgOutPath = Path.GetFullPath(Path.Combine(Path.GetDirectoryName(outDir!)!, "..", name.Replace('/', '_').Insert(0, "moss-tts-")));
-            File.WriteAllText(cfgOutPath, content);
-            Console.Error.WriteLine($"[MossTtsMeta] wrote {cfgOutPath}");
+            if (Array.IndexOf(wantText, name) >= 0)
+            {
+                string content = System.Text.Encoding.UTF8.GetString(bytes, (int)start, (int)(end - start));
+                File.WriteAllText(cfgOutPath, content);
+                Console.Error.WriteLine($"[MossTtsMeta] wrote {cfgOutPath}");
+            }
+            else if (Array.IndexOf(wantBinary, name) >= 0)
+            {
+                File.WriteAllBytes(cfgOutPath, bytes[(int)start..(int)end]);
+                Console.Error.WriteLine($"[MossTtsMeta] wrote {cfgOutPath} ({end - start} bytes)");
+            }
         }
         Console.Error.WriteLine($"[MossTtsMeta] wrote {outPath}");
     }
