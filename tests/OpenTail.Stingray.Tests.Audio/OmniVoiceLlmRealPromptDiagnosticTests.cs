@@ -77,4 +77,48 @@ public sealed class OmniVoiceLlmRealPromptDiagnosticTests : HeavyTestBase
             if (logits[i] > bestVal) { bestVal = logits[i]; best = i; }
         return best;
     }
+
+    /// <summary>Targeted hypothesis check: is the dominant token's (85473) embedding row an
+    /// outlier by norm compared to a random sample of other rows? A real, common symptom of a
+    /// mis-scaled/duplicated tensor during weight loading.</summary>
+    [Fact]
+    public unsafe void TokenEmbeddingRow85473_NormComparedToRandomSample()
+    {
+        string? modelDir = FindRepoDir("models/_models/omnivoice");
+        Assert.SkipUnless(modelDir != null && File.Exists(Path.Combine(modelDir, "model.safetensors")),
+            "omnivoice model.safetensors not found");
+
+        using var source = new OpenTail.Stingray.Audio.OmniVoice.OmniVoiceLlmTensorSource(
+            Path.Combine(modelDir!, "model.safetensors"),
+            numLayers: 28, hiddenDim: 1024, numHeads: 16, numKvHeads: 8, headDim: 128, ffDim: 3072,
+            vocabSize: 151676, ropeTheta: 1_000_000f, rmsNormEps: 1e-6f);
+
+        var tensorInfo = source.FindTensor("token_embd.weight");
+        Assert.NotNull(tensorInfo);
+        int hiddenDim = checked((int)tensorInfo!.Value.Dimensions[0]);
+        int vocabSize = checked((int)tensorInfo.Value.Dimensions[1]);
+
+        var data = source.GetTensorData(tensorInfo.Value);
+        var allFloats = new float[data.Length / sizeof(float)];
+        System.Runtime.InteropServices.MemoryMarshal.Cast<byte, float>(data).CopyTo(allFloats);
+
+        float RowNorm(int row)
+        {
+            double sumSq = 0;
+            long baseIdx = (long)row * hiddenDim;
+            for (int d = 0; d < hiddenDim; d++) { float v = allFloats[baseIdx + d]; sumSq += (double)v * v; }
+            return (float)Math.Sqrt(sumSq);
+        }
+
+        float dominantNorm = RowNorm(85473);
+
+        var rng = new Random(7);
+        var sampleNorms = new List<float>();
+        for (int i = 0; i < 200; i++) sampleNorms.Add(RowNorm(rng.Next(vocabSize)));
+        sampleNorms.Sort();
+        float median = sampleNorms[sampleNorms.Count / 2];
+        float max = sampleNorms[^1];
+
+        Console.Error.WriteLine($"[OmniVoiceEmbeddingNorm] row85473_norm={dominantNorm:F4} sample_median={median:F4} sample_max={max:F4}");
+    }
 }

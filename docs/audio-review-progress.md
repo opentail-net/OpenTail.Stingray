@@ -14503,3 +14503,23 @@ mis-scaled or duplicated tensor during weight loading) -- dump `token_embd.weigh
 norm vs. the median row norm across the vocabulary and compare, before assuming the bug lives in
 `ForwardPass`'s generic graph (which is shared, working correctly, across every other model
 bridged this session) rather than in this specific tensor-loading/mapping class or checkpoint.
+
+## OmniVoice -- embedding-norm hypothesis RULED OUT, root cause still open, 2026-09-07
+
+Checked the concrete hypothesis the prior entry proposed: is `token_embd.weight` row 85473 (the
+dominant/collapsing token) an outlier by L2 norm vs. a random sample of other vocabulary rows?
+**Result: no.** `row85473_norm=1.4678` sits comfortably within the sampled distribution
+(`median=1.0995`, `max=1.6729` across 200 random rows) -- not an outlier in either direction.
+This rules out the specific "mis-scaled/duplicated tensor" theory for the embedding table
+itself. The bug's real cause remains unidentified: it could still be in `output.weight`/the tied
+LM head (a separate large tensor, not yet checked the same way), a specific attention or MLP
+layer's weights, or a genuine issue with how this session's `k2-fsa/OmniVoice` safetensors
+download was produced/converted. Real next steps, in order of cheapness: (1) run the SAME
+row-norm check against the tied output/lm_head path (if `OmniVoiceLlmTensorSource` maps one
+separately) or confirm embeddings are genuinely tied as assumed; (2) bisect layer-by-layer
+(capture `LastHidden` after each layer via `ForwardPass`, same bisection technique already used
+successfully for the Qwen3 Forced Aligner bug this session, per that item's own doc entry) to
+find which layer first produces the suspiciously convergent representation; (3) as a control,
+confirm the SAME safetensors checkpoint loaded through a reference PyTorch/HF `transformers`
+run (outside this codebase) does NOT show the same collapse, to rule out a genuinely bad
+checkpoint download rather than this port's bridging code.
