@@ -171,6 +171,22 @@ public sealed class OmniVoiceLlmRealPromptDiagnosticTests : HeavyTestBase
         fwdA.Prefill(promptA);
         fwdB.Prefill(promptB);
 
+        // fwd.LastHidden is the POST-final-norm, pre-lm-head vector -- compare its cosine
+        // similarity between the two prompts directly. Near-1.0 here (despite the pre-norm
+        // hidden states clearly differing per the per-layer bisection below) would pinpoint the
+        // final RMSNorm step itself as producing near-identical directions regardless of input.
+        var postNormA = fwdA.LastHidden.ToArray();
+        var postNormB = fwdB.LastHidden.ToArray();
+        double dot = 0, normA2 = 0, normB2 = 0;
+        for (int d = 0; d < postNormA.Length; d++)
+        {
+            dot += (double)postNormA[d] * postNormB[d];
+            normA2 += (double)postNormA[d] * postNormA[d];
+            normB2 += (double)postNormB[d] * postNormB[d];
+        }
+        double cosineSim = dot / (Math.Sqrt(normA2) * Math.Sqrt(normB2));
+        Console.Error.WriteLine($"[OmniVoicePostNormCosine] postNormA_rms={Math.Sqrt(normA2 / postNormA.Length):F4} postNormB_rms={Math.Sqrt(normB2 / postNormB.Length):F4} cosineSim={cosineSim:F6}");
+
         var tapsA = fwdA.HiddenTapsAt(promptA.Length - 1).ToArray();
         var tapsB = fwdB.HiddenTapsAt(promptB.Length - 1).ToArray();
         Assert.Equal(numLayers * hiddenDim, tapsA.Length);

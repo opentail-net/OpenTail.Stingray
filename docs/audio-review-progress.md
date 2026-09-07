@@ -14561,3 +14561,35 @@ unexpectedly dominated by one direction; (3) directly dump the POST-norm (pre-lm
 for both prompts and compare their cosine similarity -- if they're nearly identical in direction
 despite differing raw hidden states, that pinpoints the norm step itself as the culprit rather
 than the lm-head matmul.
+
+## OmniVoice -- CONFIRMED: the post-final-norm direction is near input-independent (cosine sim 0.986), 2026-09-07
+
+Ran the third check the prior entry proposed: compared `fwd.LastHidden` (confirmed, per
+`ForwardPass`'s own doc comment, to be the POST-final-norm, pre-lm-head vector -- no need to
+derive it from taps) directly between the two real prompts via cosine similarity.
+
+**Result: cosine similarity = 0.985866.** The two prompts' post-norm vectors point in almost
+the EXACT SAME direction, despite their raw pre-norm hidden states clearly differing (RMS
+relative difference ~0.77 at the last transformer layer, confirmed by the layer bisection).
+This directly explains the argmax collapse: two near-identical-direction vectors fed through
+the SAME tied lm-head matmul necessarily produce near-identical (and here, identical-argmax)
+logit distributions, regardless of how different the real underlying representations were
+before normalization. **This is now a conclusively pinpointed mechanism**, not just a symptom --
+the bug (if it is one) lives specifically in the path from the last transformer layer's output
+through `output_norm` to the point `LastHidden` is read, not anywhere in the 28 transformer
+layers themselves (which the earlier bisection already cleared).
+
+**Real, important remaining uncertainty, explicitly flagged rather than resolved by assumption**:
+this could still be either (a) a genuine bug in this port's `output_norm`/RMSNorm application at
+this specific checkpoint's real weight/eps values, or (b) a real, benign "massive activation
+outlier dimension" phenomenon that some real transformer checkpoints genuinely exhibit (a few
+known LLM families have one or a few dimensions with enormous activation magnitudes that
+dominate LayerNorm/RMSNorm statistics -- if the real reference checkpoint ALSO shows this and
+compensates via its own norm weight's per-channel scaling in a way this port's numerically
+identical RMSNorm formula should already reproduce, then this would NOT be a porting bug at all,
+just an accurate reproduction of unusual-but-real model behavior). **Do not assume either
+explanation without further evidence** -- the real next, cheapest check: identify whether one or
+a few specific DIMENSIONS of the pre-norm hidden state have outlier magnitude (dump the
+per-dimension histogram of the layer-27 tap, look for a small number of dimensions with values
+orders of magnitude larger than the rest -- a real, checkable, five-minute diagnostic that would
+distinguish (a) from (b) definitively without needing an external reference run).
