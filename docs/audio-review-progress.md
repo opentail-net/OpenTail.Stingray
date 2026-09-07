@@ -16625,3 +16625,32 @@ encode/decode, MaskGIT generation) is real, wired, and verified. OmniVoice moves
 convention), numeric golden-parity against the reference, real streaming/perf optimizations
 (the reference's own real KV-cache-free full-recompute-per-step design is inherently O(steps x
 seqLen^2 x layers) -- this port matches that real algorithmic shape, not a regression).
+
+## VoxCPM2 -- real listening-check finding: quality degrades across patches, structural comparison found no obvious bug, 2026-09-07
+
+Direct listening feedback on `voxcpm2-real-check.wav` ("hello" is clear but it gets confused
+quickly, not quite right) prompted a real structural re-check of `VoxCpm2Generator.Generate`'s
+per-patch loop against `generator.cpp`'s real `generate_once` (not guessed): compared the real
+per-step formula sequence (`projection_.run(lm_hidden, residual_hidden, zero_hidden)` for the
+CURRENT patch's mu, `cfm_.generate_patch(mu, prefix_cond, ...)`, `prefix_cond = patch`,
+`local_encoder_.encode_patch(patch)` -> `base_lm_.run_step` -> `projection_.run(next_lm,
+residual_hidden, curr_embed)` for the NEXT step's `lm_hidden`/`residual_hidden`) line-by-line
+against this port's own `VoxCpm2Generator.Generate` -- matches exactly, including the real FSQ
+round-trip formula (`tanh -> scale -> round -> unscale -> linear-out`, confirmed already correctly
+implemented in `VoxCpm2StepProjection.Run`, not a `lm_hidden = raw base_lm hidden` shortcut as an
+earlier summary might have implied out of context). Also confirmed this session's WAV sample used
+the REAL default options (`num_inference_steps=10`, `guidance_scale=2.0`, confirmed from
+`VoxCPM2GenerationOptions`'s own real defaults) -- not an under-resourced sampling setting.
+
+**No obvious structural bug found in this pass.** This is real, audible evidence for the ALREADY-
+flagged "numeric golden-parity against the reference... not yet done" gap -- the per-step
+FORMULA/WIRING is confirmed correct by direct comparison, but a subtle NUMERIC divergence
+(compounding error across patches, since each patch's CFM conditioning depends on every prior
+patch) is entirely plausible and wouldn't be caught by this level of comparison. Real next step
+for a future pass: the same real dump-and-compare methodology this session used successfully for
+Qwen3 Forced Aligner (`STINGRAY_FA_TRACE`-style env-gated raw tensor dumps added to the vendored
+reference, frame-by-frame cosine/relative-L2 comparison) -- specifically dumping `lm_hidden`/
+`residual_hidden`/the CFM's generated patch at each step and comparing against a real reference
+run, to localize whether the divergence is in the CFM solver, the step projection, or the local
+encoder's self-conditioning. Not started this pass -- this needs its own dedicated debugging
+session with the reference CLI built and a captured trace, not a guess.
