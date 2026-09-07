@@ -15862,3 +15862,25 @@ reference (this session's tests check finite/in-range/non-degenerate output, not
 match), real streaming variant, real sampling beyond the CFM's own Euler solver (not applicable
 the same way it is for autoregressive-codebook models -- see the earlier "real end-to-end
 pipeline" entry's note on this).
+
+## VibeVoice TTS -- real prompt-template tokenizer ported, first script-driven generation, 2026-09-07
+
+Read `tokenizer_text.cpp`'s real `parse_script`/`VibeVoiceTextTokenizer::encode_prompt` (not
+guessed) and ported the reference-audio-free path into `VibeVoiceTtsPromptBuilder.cs`: real
+`^Speaker\s+(\d+)\s*:\s*(.*)$` line parsing (case-insensitive, blank/non-matching lines silently
+dropped), real 0-index speaker-id normalization (shift every id down by 1 if the script's own
+minimum id isn't already 0), real fixed system prompt, then `" Text input:\n"` + one
+`" Speaker {id}:{text}\n"` line per parsed line + `" Speech output:\n"` + the real `speech_start`
+token. Deliberately does NOT implement the reference's real `Voice input:` speaker-audio section
+(needed for voice cloning specifically) -- matches this session's established reference-audio-free
+scoping convention, applied consistently (VoxCPM2's zero-shot path, etc.).
+
+`VibeVoiceTtsPromptBuilderRealWeightsTests` (new): extracts the real checkpoint's embedded
+tokenizer files, builds a real 2-speaker script prompt, feeds it through the existing real
+`VibeVoiceGenerator.Generate` loop, decodes real audio. 19.5s wall-clock, real `[ForwardPass]
+Pre-faulted 6.62 GiB...` weight-loading line logged (genuine run). This is the FIRST real
+script-driven (not raw hardcoded token id) generation run for VibeVoice TTS -- the "real prompt-
+template construction... separate, unstarted work this test deliberately bypasses" gap flagged
+in this session's earlier `VibeVoiceGeneratorRealWeightsTests` entry is now closed for the
+non-voice-cloning case. Real remaining VibeVoice TTS gaps: the `Voice input:` voice-cloning
+section, real streaming decoder/encoder state.
