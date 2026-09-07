@@ -1,5 +1,6 @@
 using OpenTail.Stingray.Audio.PersonaPlex;
 using OpenTail.Stingray.Audio.Rvc;
+using OpenTail.Stingray.Engine;
 
 namespace OpenTail.Stingray.Tests.Audio;
 
@@ -62,5 +63,38 @@ public sealed class PersonaPlexDelayedPipelineRealWeightsTests : HeavyTestBase
         Assert.All(waveform, v => Assert.True(float.IsFinite(v)));
         Assert.All(waveform, v => Assert.InRange(v, -1f, 1f));
         Assert.Contains(waveform, v => v != 0f);
+    }
+
+    /// <summary>Real temperature/top-k sampling (`HfSampler`, ported this session -- real
+    /// `top_p` fixed at 1.0 per `depformer.cpp`'s `hf_options.top_p = 1.0F`), replacing the
+    /// argmax-only path above for both the text stream and the Depformer's 16 audio codebooks.</summary>
+    [Fact]
+    public void GenerateDelayed_WithTemperatureSampling_OnRealCheckpoint_ProducesInRangeCodes()
+    {
+        string? path = FindRepoFile("models/_models/personaplex/PersonaPlex-GGUF/personaplex-7b-v1-q8_0.gguf");
+        Assert.SkipUnless(path != null, "personaplex-7b-v1-q8_0.gguf not found");
+
+        using var model = GgufModel.Open(path!);
+        var source = new RvcPackedTensorSource(model);
+
+        using var llm = new PersonaPlexLmTensorSource(source, NumLayers, HiddenDim, NumHeads, HeadDim, FfDim, TextVocabSize, LmCodebooks, AudioCodebookSize, RopeTheta, RmsNormEps);
+        var hp = ModelHyperparams.FromGgufMetadata(llm.Metadata);
+        using var backend = new CpuBackend();
+        using var fwd = new ForwardPass(llm, backend, hp);
+
+        var depformerWeights = PersonaPlexDepformerWeights.Load(TextVocabSize, AudioCodebookSize, source.GetTensor);
+        var depformer = new PersonaPlexDepformer(depformerWeights);
+
+        var textOptions = new SamplingParams { Temperature = 0.8f, TopK = 50, TopP = 1.0f };
+        var audioOptions = new SamplingParams { Temperature = 0.8f, TopK = 50, TopP = 1.0f };
+        var frames = PersonaPlexGenerator.GenerateDelayed(fwd, llm, depformer, numOutputFrames: 4, TextVocabSize, AudioCodebookSize,
+            textOptions, audioOptions, new Random(5));
+
+        Assert.Equal(4, frames.Length);
+        foreach (var frame in frames)
+        {
+            Assert.Equal(MimiCodecDecoderWeights.ActiveCodebooks, frame.AudioCodes.Length);
+            Assert.All(frame.AudioCodes, c => Assert.InRange(c, 0, AudioCodebookSize - 1));
+        }
     }
 }

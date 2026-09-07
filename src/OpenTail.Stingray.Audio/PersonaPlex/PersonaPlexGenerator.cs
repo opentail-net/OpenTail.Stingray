@@ -1,3 +1,5 @@
+using OpenTail.Stingray.Engine;
+
 namespace OpenTail.Stingray.Audio.PersonaPlex;
 
 /// <summary>
@@ -101,7 +103,8 @@ public static class PersonaPlexGenerator
     /// std::nullopt)` call.
     /// </summary>
     public static Frame[] GenerateDelayed(IForwardPass fwd, PersonaPlexLmTensorSource llm, PersonaPlexDepformer depformer,
-        int numOutputFrames, int textVocabSize, int audioCodebookSize)
+        int numOutputFrames, int textVocabSize, int audioCodebookSize,
+        SamplingParams? textOptions = null, SamplingParams? audioOptions = null, Random? rng = null)
     {
         int hiddenDim = llm.HiddenDim;
         var textEmbedding = llm.TextEmbeddingWeight();
@@ -133,8 +136,8 @@ public static class PersonaPlexGenerator
 
             var textLogits = fwd.ForwardEmbedding(embedding, position++);
             var hidden = fwd.LastHidden.ToArray();
-            int sampledText = ArgMax(textLogits, textVocabSize);
-            var sampledAudio = depformer.GenerateFrame(hidden, sampledText, audioCodebookSize);
+            int sampledText = textOptions is null ? ArgMax(textLogits, textVocabSize) : Sampler.Sample(textLogits[..textVocabSize], textOptions, rng);
+            var sampledAudio = depformer.GenerateFrame(hidden, sampledText, audioCodebookSize, audioOptions, rng);
 
             var output = delayState.FinishWithSampling(sampledText, sampledAudio);
             if (output != null) frames.Add(new Frame(sampledText, output));

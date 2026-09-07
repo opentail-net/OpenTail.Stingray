@@ -1,3 +1,5 @@
+using OpenTail.Stingray.Engine;
+
 namespace OpenTail.Stingray.Audio.PersonaPlex;
 
 /// <summary>
@@ -40,10 +42,20 @@ public sealed class PersonaPlexDepformer
         }
     }
 
-    /// <summary>Generates all 16 real codebook tokens for one frame, greedy/argmax. Real
-    /// reference feeds `promptTextToken` (the frame's own sampled TEXT token from the temporal
-    /// LM) as step 0's token input.</summary>
-    public int[] GenerateFrame(float[] temporalLmHidden, int promptTextToken, int audioCodebookSize)
+    /// <summary>Generates all 16 real codebook tokens for one frame. Real reference feeds
+    /// `promptTextToken` (the frame's own sampled TEXT token from the temporal LM) as step 0's
+    /// token input.
+    ///
+    /// <para><b>Update, 2026-09-07</b>: real temperature/top-k sampling is now wired via an
+    /// optional <see cref="SamplingParams"/>, reusing `OpenTail.Stingray.Engine.Sampler` -- the
+    /// reference's own `sampler.cpp` uses `sampling::HfSampler` with `top_p` FIXED at `1.0`
+    /// (confirmed via `depformer.cpp`'s real `hf_options.top_p = 1.0F`, not guessed), so a caller
+    /// wanting to match the reference exactly should leave `SamplingParams.TopP` at its default
+    /// `1.0f`. `options: null` (the default) preserves the exact previous argmax-only behavior
+    /// byte-for-byte.</para>
+    /// </summary>
+    public int[] GenerateFrame(float[] temporalLmHidden, int promptTextToken, int audioCodebookSize,
+        SamplingParams? options = null, Random? rng = null)
     {
         ResetFrame();
         var codes = new int[PersonaPlexDepformerWeights.NumSteps];
@@ -63,10 +75,18 @@ public sealed class PersonaPlexDepformer
             hidden = RunLayers(hidden, step);
 
             var logits = Linear(hidden, _w.Heads[step], PersonaPlexDepformerWeights.HiddenDim, audioCodebookSize);
-            int best = 0;
-            float bestScore = float.NegativeInfinity;
-            for (int v = 0; v < audioCodebookSize; v++)
-                if (logits[v] > bestScore) { bestScore = logits[v]; best = v; }
+            int best;
+            if (options is null)
+            {
+                best = 0;
+                float bestScore = float.NegativeInfinity;
+                for (int v = 0; v < audioCodebookSize; v++)
+                    if (logits[v] > bestScore) { bestScore = logits[v]; best = v; }
+            }
+            else
+            {
+                best = Sampler.Sample(logits, options, rng);
+            }
 
             codes[step] = best;
             prevToken = best;

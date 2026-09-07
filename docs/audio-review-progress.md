@@ -15315,3 +15315,23 @@ aggregate std looks unremarkable). Given no numeric tooling exists yet to dump/c
 per-element tensor values (only aggregate mean/std via the `[FA-STAGE]` trace), further progress
 needs a real tensor-dump-to-file mechanism -- a real, scoped follow-on task, not attempted this
 pass. Pivoting to another backlog item.
+
+## PersonaPlex -- real temperature/top-k sampling ported (text + Depformer), 2026-09-07
+
+Confirmed real `sampler.cpp`/`depformer.cpp` usage: PersonaPlex's own real reference uses the
+SAME `sampling::HfSampler` this session already ported for Higgs/MOSS-TTS-Nano, with real
+`top_p` FIXED at `1.0` for the Depformer specifically (`hf_options.top_p = 1.0F`, confirmed not
+guessed). Wired the same opt-in `SamplingParams?`/`Random?` pattern into
+`PersonaPlexDepformer.GenerateFrame` and `PersonaPlexGenerator.GenerateDelayed` (both the text
+stream's own sampling and the Depformer's 16 audio-codebook sampling) -- `options: null` (default
+everywhere previously called) preserves the exact previous argmax-only behavior byte-for-byte.
+Deliberately did NOT touch the older, simpler `Generate` (kept for
+`PersonaPlexFullPipelineRealWeightsTests`'s existing dependency).
+
+New `GenerateDelayed_WithTemperatureSampling_OnRealCheckpoint_ProducesInRangeCodes` test:
+`Temperature=0.8/TopK=50/TopP=1.0` for both streams, real checkpoint, in-range codes produced.
+92.9s wall-clock for the 2-test class (two real `[ForwardPass] Pre-faulted 25.48 GiB...` lines
+logged -- genuine, not a no-op). PersonaPlex's "real sampling beyond argmax" gap (the last item
+on its remaining-gaps list) is now closed for the delay-correct generation path; real remaining
+gaps: live-duplex user-audio conditioning, the full voice/system-prompt bootstrap sequence, real
+streaming Mimi decode.
