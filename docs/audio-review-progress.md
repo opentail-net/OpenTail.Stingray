@@ -15145,3 +15145,33 @@ pass rather than attempting a rushed/partial port this turn (this project's "no 
 implementations" rule) -- next concrete step: check whether `ForwardPass`/`IForwardPass` already
 exposes a way to get per-position logits for a full batch of already-embedded positions in one
 call (needed for step 2 above), or whether that requires new engine-level API surface first.
+
+## PersonaPlex -- real multi-stream delay pattern implemented, 2026-09-07
+
+Ported `session.cpp`'s real `PersonaPlexDelayState` ring-buffer state machine into
+`PersonaPlexDelayState.cs` (17-stream layout, per-stream delay offsets, `kDelayCacheSteps=4`
+ring buffer, the real `offset_==0` double-bootstrap special case, and the real `max_delay=1`
+output-readback window) -- bit-for-bit structural port of `prepare`/`finish_with_sampling`, not
+guessed. Added `PersonaPlexGenerator.GenerateDelayed`, a real delay-correct alternative to the
+existing `Generate` (kept, since `PersonaPlexFullPipelineRealWeightsTests` already depends on its
+simplified same-frame path): drives the real state machine so each model step's input frame
+reflects genuine per-stream delay staggering instead of bundling all 16 codebooks from the same
+instant.
+
+Real, deliberate, explicitly flagged scope limit: this is a NON-duplex ("speak only") loop -- the
+real reference's full `start_conversation` bootstrap (voice-prompt priming via either raw audio
+through the Mimi encoder or a precomputed voice-id embedding table, real silence-frame counts
+derived from `mimi.frame_rate`, SentencePiece-tokenized system prompt) is NOT replayed; the "user"
+stream is fed the real fixed `kSilenceTokens` constant every step (the same real value the
+reference itself uses during ITS silence-padding phases) rather than live user Mimi codes, and
+both text and "moshi" audio are self-predicted throughout (matching `run_user_frame`'s own real
+`prepare(user_codes, nullptr, std::nullopt)` call shape once voice/system-prompt priming is
+skipped).
+
+`PersonaPlexDelayedPipelineRealWeightsTests` (new, real checkpoint, 47.8s wall-clock, real
+"[ForwardPass] Pre-faulted 25.48 GiB..." weight-loading line -- genuine run per rule 12): 4
+delay-correct output frames chained straight into the real Mimi decoder, finite/in-range
+waveform produced. PersonaPlex's real delay-pattern gap (flagged since the codebook-mapping
+resolution earlier this session) is now closed for the non-duplex case; real remaining gaps:
+live-duplex user-audio conditioning, the full voice/system-prompt bootstrap sequence, real
+streaming Mimi decode, real sampling beyond argmax. PersonaPlex stays ranked ~75-80%.
