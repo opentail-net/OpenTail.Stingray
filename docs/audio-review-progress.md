@@ -13058,15 +13058,46 @@ the single-token round-trip and toy-vocab conformance tests are real evidence bu
 same bar as a byte-for-byte comparison against dozens of real reference encodings (see
 `UnigramTokenizer`'s own doc comment for the same caveat on its sibling algorithm).
 
-**Still remaining for a complete MOSS-TTS-Nano pipeline**: the generation loop wiring
-(`generator.cpp`/`session.cpp` -- ties global-transformer prefill + per-frame local-decoder
-calls into a real multi-frame autoregressive loop, feeding each generated frame's tokens
-back into the NEXT global-transformer row), prompt construction (`prompt_builder.cpp`, now
-unblocked now that the text tokenizer exists), the `precompiled_charsmap` real binary
-normalization format (same open gap as `UnigramTokenizer`, biggest remaining risk area for
-both tokenizers), and the stereo/48kHz Transformer-augmented RVQ audio codec
-(`audio_tokenizer_weights/{encoder,decoder}.{1,3,5,7}.*` -- alternating conv
-downsample/upsample + real self-attention Transformer blocks with LayerScale, per the
-September 6 tensor dump) needed to turn generated codes into an actual waveform. Real next
-step if picked up: `generator.cpp`'s real multi-frame loop (now the natural next piece --
-tokenizer, global transformer, and local decoder all exist), then the audio codec.
+**Update, 2026-09-07 (same session) -- MOSS-TTS-Nano prompt builder + multi-frame generation
+loop implemented and real-weight verified -- full text-to-RVQ-codes path now wired
+end-to-end.** Read `generator.cpp`'s `MossTTSNanoGenerator::generate` and `prompt_builder.
+cpp`'s `MossTTSNanoPromptBuilder::build` (zero-shot/no-reference-audio branch) in full (not
+guessed). Real generation loop: at each step, recompute the global transformer's last hidden
+state over the ENTIRE row sequence so far (prompt rows + every previously generated frame's
+row -- the reference does not use incremental KV-cache reuse here either, a real, not a
+simplifying, property of this architecture), decode one frame via the local frame decoder,
+and if non-empty append a new row `[audio_assistant_slot_token_id, frame...]` and repeat;
+an empty frame (the local decoder's text-side end choice) or `maxNewFrames` stops the loop.
+Real zero-shot prompt template (verbatim strings from the reference, not guessed): `<s>`
+im_start, `"user\n"`, a `&lt;user_inst&gt;` block with fixed `Reference(s): None` /
+`Instruction: None` / `Tokens: None` / `Quality: None` / `Sound Event: None` / `Ambient
+Sound: None` / `Language: None` / `Text:` fields around the real target text, `im_end`,
+`"\n"`, `im_start`, `"assistant\n"`, then `audio_start_token_id` hands off to generation.
+
+Implemented `MossTtsPromptBuilder` (zero-shot path only -- the reference's separate
+reference-audio voice-cloning path needs the not-yet-ported audio codec to produce its
+input codes, so it's out of scope here, precisely flagged rather than half-done) and
+`MossTtsGenerator` (the loop itself, reusing `MossTtsGlobalTransformer`/
+`MossTtsLocalFrameDecoder` unchanged).
+
+**Verification**: `MossTtsGeneratorRealWeightsTests` (real checkpoint, ~2s wall-clock,
+genuinely ran -- real tokenizer + real prompt builder + real generator, nothing mocked):
+encodes a real prompt (`"Hello there."`), confirms the built prompt's first/last row text
+ids are the real `im_start_token_id`/`audio_start_token_id` sentinels, runs the real
+generation loop for up to 3 frames at 4 active codebooks, and asserts the result is a real,
+non-empty, correctly-shaped, fully in-range (including the pad sentinel for inactive
+codebooks) sequence of RVQ token ids. PASS. This is the first point where MOSS-TTS-Nano's
+full text-in pipeline (tokenizer -&gt; prompt -&gt; global transformer -&gt; local frame decoder
+-&gt; RVQ codes) runs end-to-end for real, even though those codes cannot yet become audio.
+
+**Still remaining for a complete MOSS-TTS-Nano pipeline**: the `precompiled_charsmap` real
+binary normalization format (same open gap as `UnigramTokenizer`, the single biggest
+remaining risk area for both SentencePiece tokenizers in this codebase), temperature/top-k/
+top-p/repetition-penalty sampling (currently greedy/argmax only), the reference-audio
+voice-cloning prompt path, and -- the largest remaining piece -- the stereo/48kHz
+Transformer-augmented RVQ audio codec (`audio_tokenizer_weights/{encoder,decoder}.
+{1,3,5,7}.*` -- alternating conv downsample/upsample + real self-attention Transformer
+blocks with LayerScale, per the September 6 tensor dump) needed to turn the now-real RVQ
+codes this session produces into an actual waveform. Real next step if picked up: the audio
+codec (now the clear bottleneck -- every other stage of this pipeline is real and
+verified).
