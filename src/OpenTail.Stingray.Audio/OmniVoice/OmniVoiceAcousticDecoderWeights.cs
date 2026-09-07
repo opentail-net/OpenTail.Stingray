@@ -40,6 +40,14 @@ public sealed class OmniVoiceAcousticDecoderWeights
     public float[] Fc2Weight { get; } // [256, 1024]
     public float[] Fc2Bias { get; } // [256]
 
+    /// <summary>Real top-level `fc` (ENCODE-direction, added 2026-09-07 for
+    /// `OmniVoiceCodecEncoder`): `[1024, 1024]`+bias, a real channel-MIXING linear (not a
+    /// dimension change -- OmniVoice's real concatenated acoustic(256)+semantic(768) width
+    /// already equals `hidden_size=1024`, unlike Higgs's asymmetric 832-&gt;1024 `fc`) applied to
+    /// the concatenated acoustic+semantic encoder output before RVQ quantization.</summary>
+    public float[] FcWeight { get; } // [1024, 1024]
+    public float[] FcBias { get; } // [1024]
+
     public float[] Conv1Weight { get; } // [1024, 256, 7]
     public float[] Conv1Bias { get; }
     public OmniVoiceDacDecoderBlockWeights[] Blocks { get; } = new OmniVoiceDacDecoderBlockWeights[UpsamplingRatios.Length];
@@ -53,6 +61,8 @@ public sealed class OmniVoiceAcousticDecoderWeights
     {
         Fc2Weight = loader.ReadF32("fc2.weight");
         Fc2Bias = loader.ReadF32("fc2.bias");
+        FcWeight = loader.ReadF32("fc.weight");
+        FcBias = loader.ReadF32("fc.bias");
 
         Conv1Weight = loader.ReadF32("acoustic_decoder.conv1.weight");
         Conv1Bias = loader.ReadF32("acoustic_decoder.conv1.bias");
@@ -88,6 +98,8 @@ public sealed class OmniVoiceAcousticDecoderWeights
                 CodebookEmbed = loader.ReadF32($"{p}.codebook.embed"),
                 ProjectOutWeight = loader.ReadF32($"{p}.project_out.weight"),
                 ProjectOutBias = loader.ReadF32($"{p}.project_out.bias"),
+                ProjectInWeight = loader.ReadF32($"{p}.project_in.weight"),
+                ProjectInBias = loader.ReadF32($"{p}.project_in.bias"),
             };
         }
     }
@@ -130,4 +142,16 @@ public sealed class OmniVoiceQuantizerWeights
     public float[] CodebookEmbed { get; set; } = []; // [1024, 64]
     public float[] ProjectOutWeight { get; set; } = []; // [1024, 64] (out=hidden, in=codebookDim)
     public float[] ProjectOutBias { get; set; } = [];
+
+    /// <summary>Real ENCODE-direction weight, added 2026-09-07 for `OmniVoiceCodecEncoder`:
+    /// `[64, 1024]` (out=codebookDim, in=hidden). Real, confirmed derivation for the reference's
+    /// own `score` (nearest-codebook-entry) layer, NOT loaded separately: `score.weight =
+    /// 2*codebook.embed`, `score.bias = -||codebook.embed_row||^2` (`audio_tokenizer.cpp`'s real
+    /// `quantizer.score` construction) -- mathematically identical to the direct expanded-
+    /// squared-distance argmax `2*dot(x,e) - ||x||^2 - ||e||^2` (the `-||x||^2` term is constant
+    /// across codebook entries `e` and does not affect the argmax), so `OmniVoiceCodecEncoder`
+    /// reuses that direct formula against `CodebookEmbed` directly rather than separately loading/
+    /// deriving a `score` tensor.</summary>
+    public float[] ProjectInWeight { get; set; } = []; // [64, 1024]
+    public float[] ProjectInBias { get; set; } = []; // [64]
 }

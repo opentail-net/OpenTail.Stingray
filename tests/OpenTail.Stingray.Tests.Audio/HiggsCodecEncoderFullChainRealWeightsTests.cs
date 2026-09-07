@@ -39,7 +39,7 @@ public sealed class HiggsCodecEncoderFullChainRealWeightsTests : HeavyTestBase
 
         var acousticWeights = new OmniVoiceAcousticEncoderWeights(name => source.GetTensor(Codec(name)));
         var semanticWeights = new OmniVoiceSemanticWeights(name => source.GetTensor(Codec(name)));
-        var semanticPostWeights = HiggsSemanticPostEncoder.Weights.Load(source.GetTensor);
+        var semanticPostWeights = HiggsSemanticPostEncoder.Weights.Load(source.GetTensor, "tied.embedding.modality_embeddings.0.model.");
         var codecWeights = HiggsCodecDecoderWeights.Load(source.GetTensor);
 
         // Synthetic real-rate waveforms (real 24kHz / 16kHz sample rates, matching the real

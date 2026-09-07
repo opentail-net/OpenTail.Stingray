@@ -16076,3 +16076,55 @@ differences above need their own careful reading before porting, consistent with
 "check the reference before writing math" discipline): read `audio_tokenizer.cpp`'s real
 `build_hubert_sequence_mean`/quantizer-logits code in full, then port a SEPARATE
 `OmniVoiceCodecEncoder` (not a Higgs reuse) implementing OmniVoice's own real formulas.
+
+## OmniVoice -- OWN full real reference-audio encode chain (`OmniVoiceCodecEncoder`) wired end-to-end, 2026-09-07
+
+Completed the follow-on scoped above. Real findings from reading `audio_tokenizer.cpp` in full
+(not assumed) before porting:
+
+- **Quantizer `score` layer is derived, not separately trained**: read the real `score` tensor
+  CONSTRUCTION code (`audio_tokenizer.cpp` lines ~1225-1261): `score.weight = 2*codebook.embed`,
+  `score.bias = -||codebook.embed_row||^2` -- mathematically identical to the direct expanded-
+  squared-distance argmax `2*dot(x,e) - ||x||^2 - ||e||^2` Higgs's own `HiggsCodecEncoder.QuantizeFrame`
+  already implements (the `-||x||^2` term is constant across codebook entries and does not affect
+  the argmax). So OmniVoice's own quantizer_encode reuses that exact formula against its own
+  `CodebookEmbed`/`ProjectInWeight`/`ProjectInBias` (added to `OmniVoiceQuantizerWeights`) rather
+  than loading/deriving a separate `score` tensor.
+- **Semantic downsample stride**: OmniVoice's real `semantic_downsample_factor()` formula is
+  `hop_length / (sample_rate/semantic_sample_rate) / downsample_factor`. Plugged in THIS real
+  checkpoint's own real config values (`models/_models/omnivoice/audio_tokenizer/config.json`:
+  `hop_length=960` (nested under `acoustic_model_config`), `sample_rate=24000`,
+  `semantic_sample_rate=16000`, `downsample_factor=320`) = `960 / 1.5 / 320 = 2` -- confirmed equal
+  to Higgs's hardcoded 2, not assumed. `OmniVoiceSemanticEncoder.ForwardHiddenStateMean` was
+  generalized with a `downsampleStride` parameter (default 2, preserving Higgs's call site) to
+  serve both real references correctly even though they happen to agree on this checkpoint.
+- **Semantic post-encoder (`encoder_semantic.*`) degenerates to Higgs's exact structure for this
+  checkpoint**: read the real `build_semantic_encoder`/weight-loading code, which is genuinely
+  MORE GENERAL than Higgs's fixed post-network (configurable `kernel_size`/`strides`/
+  `block_dilations`, and a block's own conv can have `stride>1` i.e. do its own time-downsampling
+  when `config.strides[i] != 1`). But THIS checkpoint's real config values (`kernel_size=3`,
+  `strides=[1,1]`, `block_dilations=[1,1]`, `unit_kernel_size=3`) make it degenerate EXACTLY to
+  `HiggsSemanticPostEncoder`'s fixed 2-block/2-residual-unit/kernel=3/stride=1/dilation=1
+  structure, with matching real tensor names (`encoder_semantic.conv`,
+  `encoder_semantic.conv_blocks.N.res_units.M.conv1|conv2`, `encoder_semantic.conv_blocks.N.conv`,
+  just without Higgs's `tied.embedding.modality_embeddings.0.model.` prefix). Rather than
+  duplicating the class, added an optional `prefix` parameter to
+  `HiggsSemanticPostEncoder.Weights.Load` (default `""`) so both real checkpoints share it. A
+  future checkpoint with non-1 `strides` would need its own class -- this is a real, checked
+  degenerate case for this specific checkpoint, not a claim the general OmniVoice architecture is
+  identical to Higgs's.
+
+Wrote `OmniVoiceCodecEncoder.Encode(...)` (`src/OpenTail.Stingray.Audio/OmniVoice/OmniVoiceCodecEncoder.cs`)
+chaining: real acoustic encoder -> real hidden-state-averaged semantic encoder (stride=2) -> real
+(shared) semantic post-network -> real `fc` mixing linear -> real RVQ quantize, all against
+OmniVoice's own real weights. New real-weight smoke test
+`OmniVoiceCodecEncoderFullChainRealWeightsTests` passes against the real downloaded checkpoint
+(3.4s wall-clock, confirming a genuine run per rule 12) on the first real attempt, verifying
+in-range codes for every one of the real 8 codebooks. This closes OmniVoice's own voice-cloning-
+input encode gap, following the same pattern as Higgs Audio TTS's chain from earlier this session.
+
+Not yet done (real, scoped): wiring this into OmniVoice's actual generation/prompt-building path
+(this is currently a standalone encode primitive, structurally verified but not yet consumed by
+`OmniVoiceGenerator`/session code); a real audio-in/audio-out golden comparison against the C++
+reference (this pass used synthetic waveforms to verify wiring, per this session's established
+convention, not real audio golden parity).

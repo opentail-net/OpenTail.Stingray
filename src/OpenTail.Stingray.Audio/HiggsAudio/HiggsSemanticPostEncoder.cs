@@ -33,9 +33,13 @@ public static class HiggsSemanticPostEncoder
         public required float[] InputConvWeight { get; init; } // [768, 768, 3], no bias
         public required HiggsSemanticEncoderBlockWeights[] Blocks { get; init; } // 2
 
-        public static Weights Load(Func<string, float[]> get)
+        /// <summary>Real tensor names are bare (`encoder_semantic.*`); Higgs's own packed-GGUF
+        /// checkpoint additionally prefixes every tensor with a fixed modality-embedding path, so
+        /// callers pass that as <paramref name="prefix"/> (default empty, e.g. for OmniVoice's own
+        /// checkpoint which stores these tensors under their bare real names directly).</summary>
+        public static Weights Load(Func<string, float[]> get, string prefix = "")
         {
-            string codec(string name) => "tied.embedding.modality_embeddings.0.model." + name;
+            string codec(string name) => prefix + name;
 
             var blocks = new HiggsSemanticEncoderBlockWeights[NumBlocks];
             for (int b = 0; b < NumBlocks; b++)

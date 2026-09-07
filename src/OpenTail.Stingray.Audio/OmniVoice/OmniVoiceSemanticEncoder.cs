@@ -68,16 +68,27 @@ public static class OmniVoiceSemanticEncoder
     }
 
     /// <summary>
-    /// Real Higgs Audio TTS variant, ported from `codec.cpp`'s `hubert_hidden_state_mean`/
-    /// `downsample_time_by_2` (not guessed), added 2026-09-07: instead of returning the FINAL
-    /// layer's hidden states (what <see cref="Forward"/> does, correct for OmniVoice's own real
-    /// usage), Higgs's real reference-audio encode path AVERAGES the hidden state across all 13
-    /// real snapshots (the post-pos-conv/layer-norm state PLUS each of the 12 layers' own
-    /// output, divided by 13), then keeps only every OTHER frame up to `targetFrames` (a real 2x
-    /// downsample by even-index selection, NOT pair-averaging). `targetFrames` is the caller's
-    /// already-computed acoustic-encoder frame count that this semantic stream must align to.
+    /// Real hidden-state-averaged variant, ported from Higgs Audio TTS's `codec.cpp`
+    /// (`hubert_hidden_state_mean`/`downsample_time_by_2`) and confirmed to match OmniVoice's own
+    /// real `build_hubert_sequence_mean` formula exactly (same running-sum-of-all-13-snapshots
+    /// average, `audio_tokenizer.cpp` line ~1580 -- not guessed), added 2026-09-07: instead of
+    /// returning the FINAL layer's hidden states (what <see cref="Forward"/> does, correct for
+    /// OmniVoice's own DEFAULT usage elsewhere), this AVERAGES the hidden state across all 13 real
+    /// snapshots (the post-pos-conv/layer-norm state PLUS each of the 12 layers' own output,
+    /// divided by 13), then keeps every `downsampleStride`-th frame up to `targetFrames` (real
+    /// even-index selection, NOT pair-averaging).
+    ///
+    /// <para><b>Real, confirmed stride mechanism difference</b> (not assumed identical): Higgs's
+    /// real reference hardcodes stride 2 (`downsample_time_by_2`); OmniVoice's own real reference
+    /// computes a GENERAL stride from its own config (`semantic_downsample_factor` =
+    /// `hop_length / (sample_rate/semantic_sample_rate) / downsample_factor`, real formula, not
+    /// necessarily 2) and additionally uses a real `EmbeddingModule`-based INDEX GATHER
+    /// (`downsample[i] = i * factor`) rather than a plain slice -- mathematically identical to a
+    /// stride-`factor` even-index selection for a monotonic increasing index array (which is what
+    /// OmniVoice's real code always writes), so this single parameterized method correctly serves
+    /// both real reference call sites.</para>
     /// </summary>
-    public static float[][] ForwardHiddenStateMean(OmniVoiceSemanticWeights w, ReadOnlySpan<float> waveform16k, int targetFrames)
+    public static float[][] ForwardHiddenStateMean(OmniVoiceSemanticWeights w, ReadOnlySpan<float> waveform16k, int targetFrames, int downsampleStride = 2)
     {
         float[][] x = ToFrames1Channel(waveform16k);
         int channels = 1;
@@ -147,7 +158,7 @@ public static class OmniVoiceSemanticEncoder
         // pair-averaging.
         var output = new float[targetFrames][];
         for (int f = 0; f < targetFrames; f++)
-            output[f] = sum[f * 2];
+            output[f] = sum[f * downsampleStride];
         return output;
     }
 
