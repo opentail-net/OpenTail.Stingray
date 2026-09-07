@@ -14003,3 +14003,32 @@ the real (non-default) `config.json` numbers and full `lm/transformer.*`/`depfor
 `mimi.*` tensor names, then build the packed-QKV-splitting tensor-source bridge for the
 temporal LM first (the Depformer and Mimi codec are their own, comparably large pieces --
 this whole model is realistically comparable in total scope to VoxCPM2, not a quick pass).
+
+## VibeVoice TTS -- diffusion pipeline real-weight verified, 2026-09-07
+
+`VibeVoice-1.5B-GGUF/vibevoice-1.5b-q8_0.gguf` (3.22GB) finished downloading and opens cleanly.
+Real config confirmed from the checkpoint's own `config.json`: `hidden_size=1536`,
+`latent_size=64` (== `acoustic_vae_dim`), `head_layers=4`, `head_ffn_ratio=3.0`,
+`rms_norm_eps=1e-5` (prediction_head's own eps, distinct from the LM's `1e-6`),
+`ddpm_num_steps=1000`, `ddpm_beta_schedule=cosine`, `diffusion_type=ddpm`,
+`prediction_type=v_prediction` -- every one matches this session's earlier implementation
+exactly, including the hardcoded `v_prediction`-only restriction. Real tensor names dumped
+confirm `VibeVoiceDiffusionHeadWeights.Load`'s naming exactly (`model.prediction_head.
+{cond_proj,noisy_images_proj,t_embedder.mlp.{0,2},layers.{i}.{norm,adaLN_modulation.1,
+ffn.{gate,up,down}_proj},final_layer.{adaLN_modulation.1,linear}}.weight`).
+
+Real-weight tests (`VibeVoiceDiffusionHeadRealWeightsTests`): (1) a single `Predict` call over
+3 frames with random noisy/condition inputs, finite output; (2) a FULL 5-step DPM-Solver++ CFG
+sampling loop via `VibeVoiceDiffusionSampler.Sample` (`VibeVoiceDpmSolverScheduler` with real
+`ddpm_num_steps=1000`), finite final latent -- 3.0s wall-clock for both, genuine real-weight
+run (not a silent no-op). This is the first time the scheduler's real first/second-order
+update-selection bookkeeping ran end-to-end against real weights, not just unit math.
+
+**VibeVoice TTS status: ~65%.** Diffusion generation head is done and verified. Remaining, not
+yet scoped in detail this session: the shared tokenizer-encoder/connector/Qwen2-LLM-bridge
+pieces already ported for VibeVoice ASR need confirming they're bit-for-bit reusable for TTS
+(same checkpoint family, but read `generator.cpp`/`session.cpp` to confirm before assuming),
+the real per-step generation loop wiring latents through the diffusion head repeatedly to
+produce a full utterance, and the shared VAE-latent-to-waveform decoder (`decoder.cpp`, 2056
+lines -- the largest unread file in this model's reference, check first whether it's the same
+architecture as VibeVoice ASR's tokenizer encoder run in reverse, or genuinely separate).
