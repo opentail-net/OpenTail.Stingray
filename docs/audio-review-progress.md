@@ -13156,3 +13156,74 @@ stage of this pipeline -- everything verified so far is real-weight structural/i
 verification (finite, in-range, causal, deterministic, non-collapsing), a real and
 meaningful bar per this project's conventions, but not the same bar as an exact numeric
 match against ground truth.
+
+## VoxCPM2 -- AudioVAE decoder implemented and real-weight verified, 2026-09-07
+
+**Real architecture is genuinely large** (5561 lines across `assets.cpp`/`audiovae.cpp`/
+`generator.cpp`/`loader.cpp`/`minicpm.cpp`/`minicpm_blocks.h`/`session.cpp`/
+`tokenizer_text.cpp` in `examples/audio.cpp/src/models/voxcpm2/`) -- a MiniCPM LLM backbone
+(`base_lm`) autoregressively producing per-step hidden states, a smaller "residual LM"
+(`residual_lm`) doing FSQ (finite scalar quantization) prediction, a local encoder
+transformer embedding continuous feature patches, a DiT+CFM (conditional flow matching,
+Euler solver, log-norm time scheduler) estimator generating continuous latent features per
+patch, several fusion/projection layers (`fusion_concat_proj`, `lm_to_dit_proj`,
+`res_to_dit_proj`, `enc_to_lm_proj`, `stop_proj`/`stop_head`), and a separate AudioVAE codec
+(encoder+decoder) turning generated continuous features into 48kHz audio. This is
+comparable in total scope to F5-TTS's DiT+CFM plus a full MiniCPM LLM combined -- too large
+to fully port and golden-verify in one sitting; scoped and worked incrementally instead of
+attempted whole, consistent with this project's "pivot when stuck, keep making real
+progress" convention (not stuck on a bug here, just a genuinely large architecture).
+
+**Downloaded the real checkpoint** (`audio-cpp/audio.cpp-gguf`, `VoxCPM2-GGUF/
+voxcpm2-q8_0.gguf`, 2.75GB via `stingray pull -r audio-cpp/audio.cpp-gguf -q
+voxcpm2-q8_0 -o models/_models/voxcpm2` -- the `-q` quant-substring filter must be specific
+enough to match only the intended model's filename, since this repo bundles many unrelated
+models' GGUFs together and a loose substring like `q8_0` alone matches the first one
+alphabetically, not the intended one; confirmed the real HF repo id and file path from
+`examples/audio.cpp/model_specs/voxcpm2.json`, not guessed).
+
+**Implemented and real-weight verified the AudioVAE decoder** (`audiovae.cpp`'s
+`build_decoder`/`decoder_block`/`residual_unit`/`causal_conv1d`/`causal_conv_transpose1d`/
+`snake_exact`/`apply_sr_condition`, not guessed) -- a real DAC-lineage codec (same family as
+this codebase's existing `Parler.DacDecoder`) but genuinely different in three ways,
+confirmed by reading the reference directly rather than assuming symmetry with the existing
+DAC port: (1) every conv is CAUSAL (left-pad only, no lookahead -- this codec is designed
+for streaming), (2) the first decoder stage and every residual unit's first conv are
+DEPTHWISE (DAC's own residual units use full, non-depthwise convs), (3) each decoder block
+applies a real per-checkpoint FiLM-style sample-rate conditioning (`x*scale+bias`, a fixed
+vector selected by `output_sample_rate`'s bucket at load time) before its Snake activation
+-- a genuinely new mechanism not present in DAC/SNAC/OmniVoice's codecs. Also confirmed a
+real, easy-to-get-backwards `weight_norm` detail: the magnitude parameter's normalization
+dimension (`dim0`) is `out_channels` for a `Conv1d` but `in_channels` for a
+`ConvTranspose1d` -- PyTorch's real `weight_norm(dim=0)` semantics, not assumed symmetric
+between the two module types, confirmed directly against the reference's real tensor shapes
+via a new `VoxCpm2DumpDebugTest`. The real causal `ConvTranspose1d` upsample is implemented
+as "compute the full unclamped transpose-conv output, then keep only the causal prefix" --
+matches the reference's `ggml_view_3d` truncation exactly, not approximated.
+
+Confirmed real config numbers directly from the checkpoint's embedded `config.json`
+(`audio_vae_config`, via `VoxCpm2DumpDebugTest`): `latent_dim=64`, `decoder_dim=2048`,
+`decoder_rates=[8,6,5,2,2,2]` (total upsample stride = 8*6*5*2*2*2 = 1920),
+`sr_bin_boundaries=[20000,30000,40000]`, `out_sample_rate=48000` (bucket 3 of 4).
+
+**Verification**: `VoxCpm2AudioVaeDecoderTests` (2 tests, synthetic weights): confirms
+correct output sample count and Tanh-bounded finite output, and a real CAUSAL invariant --
+decoding a longer latent sequence reproduces a shorter one's exact output prefix (proves no
+lookahead leakage anywhere in the causal conv/transpose-conv chain). `VoxCpm2AudioVae
+DecoderRealWeightsTests` (real checkpoint, ~1.1s wall-clock, genuinely ran): loads the real
+`audiovae_weights/*` tensors and decodes synthetic random latent features into a
+correctly-shaped, fully finite, Tanh-bounded waveform. PASS. Not yet a numeric golden-parity
+check (no real latent features from a real feature generator exist yet, since the LM/DiT/CFM
+generator isn't ported -- so this test necessarily exercises the decoder alone on synthetic
+input, a real but partial verification).
+
+**Still remaining for a complete VoxCPM2 pipeline** (the large remaining piece): the MiniCPM
+LLM backbone (`minicpm.cpp`, 1219 lines -- likely the most standard/reusable piece, a
+Llama-family GQA decoder with `longrope` RoPE scaling), the local encoder transformer
+(embeds continuous feature patches), the DiT+CFM estimator (flow-matching generation, same
+family as F5-TTS's own DiT+CFM already ported in this codebase -- real reuse potential
+there), the FSQ residual-LM prediction path, the fusion/projection layers, the stop-token
+head, the real tokenizer (`tokenizer_text.cpp`, 352 lines), and the AudioVAE ENCODER (needed
+only for voice-cloning/reference-audio prompts, not plain zero-shot TTS). Real next step if
+picked up: `minicpm.cpp`'s LLM backbone next (most standard, most independently testable
+piece, and a real prerequisite for everything downstream of it).
