@@ -14181,3 +14181,32 @@ read), the `delay_count`/`use_last_codes` mechanism noticed in passing at
 `generator.cpp:477` (real per-codebook delay pattern may exist after all, contradicting this
 doc's earlier "no delay pattern" note -- needs `sampler.cpp`'s `HiggsSamplerState` read before
 trusting either claim), semantic HuBERT encoder + reference-audio encode path (lower priority).
+
+## Higgs Audio TTS -- correcting an earlier wrong claim: there IS a real delay pattern, 2026-09-07
+
+Read `sampler.cpp`'s `HiggsCodebookSampler::step`/`HiggsSamplerState` (~line 400-478),
+resolving the uncertainty flagged in the prior entry. **This doc's earlier claim "no delay
+pattern across codebooks, all 8 codebooks emitted per step" was WRONG** -- there IS a real
+staggered delay pattern, structurally similar to MusicGen/Parler-TTS's delay pattern (see
+[[reference_parler_charsmap_and_generation]]) but simpler (no un-delay transform needed at the
+end, just a masking window at the start). Real mechanism: `state.delay_count` starts at 0; each
+step, ALL 8 codebooks are argmax/sampled from the real model logits (same computation
+`HiggsArStepper.SampleFromHidden` already does correctly), but codebooks past
+`delay_count+1` are then OVERWRITTEN with the real sentinel `kHiggsBocId=1024` ("beginning of
+codebook" placeholder -- confirmed real value, one of the audio vocab's 2 reserved ids beyond
+the 1024 real RVQ codes, `audioVocabSize=1026=1024+2` now fully explained) before `delay_count`
+increments -- so only codebook 0 is a real, meaningful sample at step 0, codebooks {0,1} at
+step 1, etc., until all 8 are "unlocked" by step 7. There's also a real EOC/stop mechanism:
+`kHiggsEocId=1025` in codebook 0 triggers an `eoc_countdown` (`numCodebooks-2` more steps)
+before `generation_done=true`, after which every codebook emits `kHiggsStopCode=-1` (never fed
+to the codec).
+
+**Real implication for `HiggsArStepper`**: `SampleFromHidden`/`Step`'s per-codebook argmax
+computation is still correct AS A COMPUTATION -- the model really does produce a real logit
+distribution for every codebook at every step. What's missing is the real POST-PROCESSING mask
+(replace codebooks `> delay_count+1` with `kHiggsBocId`) and the real `previousCodes` fed into
+the NEXT `Step` call must be these MASKED codes (including the BOC placeholders), not the raw
+unmasked argmax output `HiggsArStepperRealWeightsTests` currently uses -- a real, precise
+correctness gap for a future session to close (implement `HiggsSamplerState`-equivalent masking
+before wiring a real multi-step generation loop; the existing single-step primitives don't need
+to change).
