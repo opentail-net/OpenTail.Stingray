@@ -16544,3 +16544,40 @@ session's other successful bespoke-transformer ports, now correctly unblocked fr
 engine work" to "needs standalone port work, like Higgs's Depformer or VoxCPM2's DiT" -- not
 started this pass given the real MaskGIT unmask-schedule bookkeeping still needs careful reading
 before writing any code (per this project's "no half-finished implementations" rule).
+
+## OmniVoice -- MaskGIT real attention_mask + CFG batching confirmed, real next step precisely scoped, 2026-09-07
+
+Continued reading `generator.cpp`'s real per-step host-side setup (not guessed) to close the
+remaining unknowns from the entry above. Confirmed:
+
+- **Attention is genuinely fully bidirectional, no causal restriction**: the real host-side
+  `attention_mask` construction defaults every cell to `kMaskedAttentionBias` (effectively `-inf`),
+  then explicitly zeros (unmasks) the FULL `[0,conditionalTotal) x [0,conditionalTotal)` block --
+  i.e. every real valid token attends freely to every other real valid token, both directions, no
+  triangular restriction at all -- plus a self-only zero for the unused padded-capacity tail
+  (`q>=conditionalTotal` only attends to itself, to avoid NaN on unused slots). Confirms the
+  earlier "genuinely non-causal" assessment was correct.
+- **Real CFG (classifier-free-guidance) batching, not previously accounted for**: every real shape
+  has a leading `2` dimension (`audio_mask`/`text_mask`: `[2, capacity, 1]`, `attention_mask`:
+  `[2, 1, capacity, capacity]`) -- batch 0 is the real CONDITIONAL pass (full real prompt+target
+  tokens) and batch 1 is a separate real UNCONDITIONAL pass (own `unconditionalTotal`, own mask
+  block), each independently masked/sized, then combined post-hoc via a real
+  `guidance_scale`-weighted formula (not yet read) -- the SAME real CFG shape this session already
+  implemented for VibeVoice TTS's diffusion sampler and Higgs's negative-branch KV state, just
+  applied to this model's own MaskGIT step instead of a diffusion step.
+- Real, still open before implementation: `conditionalTotal`/`unconditionalTotal`'s exact real
+  construction (how much of the real prompt the unconditional branch keeps vs. replaces), the real
+  `positions` formula (RoPE position ids -- likely sequential over the real prompt+target range,
+  not yet confirmed), and the CFG combination formula applied to the two branches' logits before
+  the confidence/schedule-based unmask step.
+
+**Assessment**: this real architecture keeps revealing more genuine structure on each read (CFG
+dual-batching on top of the non-causal full-attention transformer on top of the per-frame-summed-
+codebook embedding layout) -- a real, substantial, multi-piece port on the scale of a full new
+generation loop, not a quick addition. Consistent with this session's "no half-finished
+implementations" discipline, this is being left as a precisely-scoped (not guessed-at) next step
+for a FUTURE pass with its own dedicated reading of `generate()`'s full body (the per-step
+schedule/confidence/top-K bookkeeping and the CFG combination formula specifically), rather than
+rushed into this already-very-long session. Real next concrete step: read
+`generator.cpp`'s `generate()` function (~lines 1360-1530) in full, end to end, before writing any
+C# code for this model's own bespoke (non-`IForwardPass`) MaskGIT forward pass.
