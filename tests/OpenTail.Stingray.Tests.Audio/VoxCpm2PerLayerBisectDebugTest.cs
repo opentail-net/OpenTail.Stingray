@@ -55,8 +55,7 @@ public sealed class VoxCpm2PerLayerBisectDebugTest : HeavyTestBase
         Assert.True(fwd.SupportsHiddenTaps, "CPU ForwardPass must support hidden taps for this bisection.");
         fwd.EnableHiddenTaps([.. Enumerable.Range(0, NumLayers)]);
 
-        for (int i = 0; i < promptTokenIds.Length; i++)
-            fwd.Prefill([promptTokenIds[i]], startPos: i);
+        fwd.Prefill(promptTokenIds, startPos: 0);
 
         int lastPos = promptTokenIds.Length - 1;
         var allLayers = fwd.HiddenTapsAt(lastPos);
@@ -65,13 +64,17 @@ public sealed class VoxCpm2PerLayerBisectDebugTest : HeavyTestBase
         // uses, captured verbatim from the vendored reference's own trace output).
         int[] indices = [0, 52, 104, 157, 209, 261, 314, 366, 419, 471, 523, 576, 628, 681, 682, 744, 806, 868, 930, 992, 1054, 1116, 1178, 1240, 1302, 1364, 1365, 1417, 1469, 1522, 1574, 1627, 1679, 1732, 1784, 1837, 1889, 1942, 1994, 2047];
 
+        var lines = new List<string>();
         for (int layer = 0; layer < NumLayers; layer++)
         {
             var row = allLayers.Slice(layer * HiddenDim, HiddenDim);
             var sb = new System.Text.StringBuilder($"[Ours] layer{layer} hidden samples=[");
             foreach (int idx in indices) sb.Append($"{idx}:{row[idx]:G6},");
             sb.Append(']');
+            lines.Add(sb.ToString());
             Console.WriteLine(sb.ToString());
         }
+        Directory.CreateDirectory("scratch");
+        File.WriteAllLines("scratch/ours_trace.log", lines);
     }
 }

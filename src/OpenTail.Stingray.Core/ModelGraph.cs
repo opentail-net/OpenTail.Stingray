@@ -525,7 +525,7 @@ public sealed record ModelHyperparams
             "gemma" or "gemma2" or "gemma3" or "gemma3n" or "gemma4" or "gemma-embedding" or
             "starcoder2" or "openelm" or "gptneox" or "codeshell" or "orion" or
             "nemotron" or "exaone" or "exaone4" or "exaone-moe" or
-            "minicpm3" or "bailingmoe2" or "dots1" or
+            "minicpm" or "minicpm3" or "bailingmoe2" or "dots1" or
             "hunyuan-moe" or "hunyuan-dense" or
             "jais2" or "gpt-oss" or
             "lfm2" or "lfm2moe" or "smallthinker" or "seed_oss" or "grovemoe" or

@@ -117,6 +117,7 @@ public sealed unsafe class VoxCpm2LlmTensorSource : IModelTensorSource, IDisposa
             ["minicpm.embedding_scale"] = embeddingScale,
             ["minicpm.residual_scale"] = residualScale,
             ["minicpm.logit_scale"] = logitScale,
+            ["minicpm.rope.is_neox"] = true,
         };
     }
 

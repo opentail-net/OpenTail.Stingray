@@ -80,6 +80,9 @@ public sealed class VoxCpm2PrefillCompareDebugTest : HeavyTestBase
         foreach (int idx in indices) resSb.Append($"{idx}:{lastResidualHidden[idx]:G6},");
         resSb.Append(']');
         Console.WriteLine(resSb.ToString());
+
+        Directory.CreateDirectory("scratch");
+        File.WriteAllLines("scratch/prefill_compare.log", [lmSb.ToString(), resSb.ToString()]);
     }
 
     private static float[] Linear(float[] input, float[] weight, float[] bias, int inDim, int outDim)

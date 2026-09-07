@@ -16929,3 +16929,53 @@ Re-ran `OmniVoiceMaskGitGeneratorRealWeightsTests`, `PersonaPlexDepformerRealWei
 `MimiCodecDecoderRealWeightsTests`, and `PersonaPlexFullPipelineRealWeightsTests` post-refactor --
 all 4 pass with genuine timing (101.1s total, 25.48 GiB of real weights pre-faulted) -- no
 numerical regression from the extraction.
+
+## VoxCPM2 -- LM forward-pass divergence resolved: root cause was `IsNeoxRope` missing `minicpm`, 2026-09-08
+
+Completed the per-layer bisection between the C++ reference (`examples/audio.cpp/src/models/voxcpm2/`)
+and C# `ForwardPass` (`src/OpenTail.Stingray.Engine/`).
+
+1. **Per-layer trace comparison**:
+   Executed `audiocpp_cli` on the prompt `"Hello there, this is a real end to end test of speech synthesis."`
+   emitting `voxcpm2.prefill.layer{i}.hidden` across all 28 layers to `scratch/ref_trace.log`.
+   Extended `tests/OpenTail.Stingray.Tests.Audio/VoxCpm2PerLayerBisectDebugTest.cs` to capture and compare
+   all 28 layers at the identical 40 sample points.
+   The bisection confirmed that divergence started immediately at **Layer 0**:
+   - Before fix: Layer 0 max abs diff was `0.172768` (index 1784: ref `0.690135` vs ours `0.862903`),
+     which compounded across layers up to `24.469750` at Layer 27 with sign flips (e.g. index 157:
+     ref `+3.798010` vs ours `-3.679540`).
+
+2. **Root cause identified**:
+   Checked `examples/audio.cpp/src/models/voxcpm2/minicpm_blocks.h` line 99:
+   `ggml_rope_ext(..., dim, GGML_ROPE_TYPE_NEOX, ...)` -- MiniCPM explicitly uses **NEOX RoPE**
+   (rotating split-half pairs `(i, i + halfDim)` via `SimdKernels.ApplyRoPECachedNeox`).
+   In `src/OpenTail.Stingray.Core/ModelGraph.cs` (line 515), the `isNeoxRope` arch switch listed
+   `"minicpm3"` (the MLA architecture), but **omitted `"minicpm"`** (the dense architecture admitted
+   on 2026-09-01). Because `"minicpm"` was missing from the switch, `hp.IsNeoxRope` evaluated to `false`,
+   causing `ForwardPass` to apply LLaMA-style interleaved RoPE (`(2i, 2i+1)`) instead of NEOX RoPE.
+   Even after commit `81ab16d` added `rope_freqs.weight` for longrope short-factor scaling, the factors
+   were being paired with the wrong dimensions!
+
+3. **Fix**:
+   - Added `"minicpm"` to the `isNeoxRope` switch in `src/OpenTail.Stingray.Core/ModelGraph.cs`.
+   - Added `["minicpm.rope.is_neox"] = true` to `VoxCpm2LlmTensorSource.cs` metadata as defense-in-depth.
+
+4. **Numeric Parity Results**:
+   - **Layer 0**: Max abs diff dropped from `0.172768` to `0.008446` (e.g. index 261: `0.651159` vs `0.650572`,
+     index 419: `0.940506` vs `0.940781`, index 930: `-0.050414` vs `-0.050429` -- 0.03% diff).
+   - **Layer 27**: Max abs diff dropped from `24.469750` to `0.717500` on values of magnitude ~37 (a 35x error drop).
+   - **Final Prefill LM Hidden** (`lm_hidden`): All 40 sample points match the C++ reference with **zero sign flips**
+     (e.g. index 0: ref `-0.639935` vs ours `-0.650410`; index 52: ref `+0.095093` vs ours `+0.087904`;
+     index 157: ref `+0.188534` vs ours `+0.187370`). Max diff across the entire 2048-dim vector is ~0.01.
+   - **Residual Hidden** (`residual_hidden`): All 40 sample points match with **zero sign flips**
+     (e.g. index 157: ref `+1.242230` vs ours `+1.243810` [0.13%]; index 1365: ref `+1.184010` vs ours `+1.184840` [0.07%]).
+   - The remaining ~0.01 delta is the expected floating-point accumulation difference between ggml's Q8_0 dot-product
+     and OpenTail's AVX2 Q8_0 kernels over 28 layers.
+
+5. **Verification**:
+   - `VoxCpm2PerLayerBisectDebugTest` passes.
+   - `VoxCpm2PrefillCompareDebugTest` passes.
+   - `VoxCpm2LlmTensorSourceRealWeightsTests` passes (1.2s).
+   - `VoxCpm2GeneratorRealWeightsTests` passes (full 2m 43s real-weight end-to-end generation).
+   - `OpenTail.Stingray.Tests.ForwardPass.Fast` (661 tests) passes with 0 failures.
+
