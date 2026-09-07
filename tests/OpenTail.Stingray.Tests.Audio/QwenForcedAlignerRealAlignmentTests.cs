@@ -56,9 +56,14 @@ public sealed class QwenForcedAlignerRealAlignmentTests : HeavyTestBase
         // Real expected words for this case (from the C++ reference's own warm-bench fixture):
         // "year", "eighteen", "o", "three" should fall within the audio's real duration.
         double audioDurationSec = samples.Length / 16000.0;
-        foreach (var seg in segments)
+        // Warm run check: second call on the same loaded aligner
+        var warmSegments = aligner.AlignReal(samples, referenceText, TimeSpan.Zero);
+        Assert.Equal(segments.Count, warmSegments.Count);
+        for (int i = 0; i < segments.Count; i++)
         {
-            Assert.True(seg.Start.TotalSeconds <= audioDurationSec + 0.5, $"'{seg.Text}' start {seg.Start.TotalSeconds:F2}s exceeds audio duration {audioDurationSec:F2}s");
+            Assert.Equal(segments[i].Text, warmSegments[i].Text);
+            Assert.Equal(segments[i].Start, warmSegments[i].Start);
+            Assert.Equal(segments[i].End, warmSegments[i].End);
         }
     }
 

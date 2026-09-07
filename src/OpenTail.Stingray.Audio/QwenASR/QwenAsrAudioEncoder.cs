@@ -44,7 +44,7 @@ public sealed record QwenAsrEncoderConfig
 /// has been run this session) -- structurally complete only, same caveat as every other
 /// pipeline in this doc before its golden-verification pass.
 /// </summary>
-public sealed class QwenAsrAudioEncoder : IDisposable
+public sealed unsafe class QwenAsrAudioEncoder : IDisposable
 {
     public QwenAsrEncoderConfig Config { get; }
     private readonly QwenAsrWeights? _weights;
@@ -109,6 +109,7 @@ public sealed class QwenAsrAudioEncoder : IDisposable
         int paddedChunkFrames = chunkFrameLimit;
         if (numChunks == 1) paddedChunkFrames = Math.Min(chunkFrameLimit, numMelFrames);
 
+        var swEnc = System.Diagnostics.Stopwatch.StartNew();
         var chunkTokens = new List<float[]>();
         for (int chunkStart = 0; chunkStart < numMelFrames; chunkStart += chunkFrameLimit)
         {
@@ -136,148 +137,193 @@ public sealed class QwenAsrAudioEncoder : IDisposable
             int flatDim = c * h3; // 480 * 16 = 7680, matches audio.conv_out.weight's input dim
 
             var chunkPosEmb = SinusoidalPositionalEmbeddings(chunkT, encDim);
+            var allRows = new float[chunkT * flatDim];
             for (int ti = 0; ti < chunkT; ti++)
             {
-                var row = new float[flatDim];
+                int rowOff = ti * flatDim;
                 for (int ch = 0; ch < c; ch++)
+                {
+                    int stageChOff = ch * h3 * w3;
+                    int chFlatOff = ch * h3;
                     for (int fh = 0; fh < h3; fh++)
-                        row[ch * h3 + fh] = stage3[ch * h3 * w3 + fh * w3 + ti];
-
-                var tokenVec = w.ConvOutWeight.MatVec(row);
+                        allRows[rowOff + chFlatOff + fh] = stage3[stageChOff + fh * w3 + ti];
+                }
+            }
+            var allTokens = new float[chunkT * encDim];
+            fixed (float* pAllRows = allRows, pAllTokens = allTokens)
+                w.ConvOutWeight.MatMul(pAllRows, chunkT, pAllTokens);
+            for (int ti = 0; ti < chunkT; ti++)
+            {
+                var tokenVec = new float[encDim];
                 for (int d = 0; d < encDim; d++)
-                    tokenVec[d] += chunkPosEmb[ti * encDim + d];
+                    tokenVec[d] = allTokens[ti * encDim + d] + chunkPosEmb[ti * encDim + d];
                 chunkTokens.Add(tokenVec);
             }
         }
+        long tConvMs = swEnc.ElapsedMilliseconds;
 
         int t = chunkTokens.Count;
-        var x = chunkTokens.ToArray();
+        var x = new float[t * encDim];
+        for (int ti = 0; ti < t; ti++)
+            chunkTokens[ti].CopyTo(x.AsSpan(ti * encDim, encDim));
 
         if (Environment.GetEnvironmentVariable("STINGRAY_FA_DUMP_DIR") is { } dumpDirConvPos)
         {
-            var flat = new float[t * encDim];
-            for (int ti = 0; ti < t; ti++) x[ti].CopyTo(flat.AsSpan(ti * encDim, encDim));
-            var bytes = new byte[flat.Length * 4];
-            Buffer.BlockCopy(flat, 0, bytes, 0, bytes.Length);
+            var bytes = new byte[x.Length * 4];
+            Buffer.BlockCopy(x, 0, bytes, 0, bytes.Length);
             File.WriteAllBytes(Path.Combine(dumpDirConvPos, "our_enc_after_conv_pos.bin"), bytes);
         }
 
+        swEnc.Restart();
+        int ffnDim = w.AudioLayerWeights[0].FfnUpBias.Length;
+        var normed = new float[t * encDim];
+        var q = new float[t * encDim];
+        var k = new float[t * encDim];
+        var v = new float[t * encDim];
+        var attnRaw = new float[t * encDim];
+        var attnOut = new float[t * encDim];
+        var ffnUp = new float[t * ffnDim];
+
         foreach (var layer in w.AudioLayerWeights)
-            x = EncoderBlock(x, layer, t, encDim, Config.NumHeads);
+            EncoderBlock(x, layer, t, encDim, Config.NumHeads, normed, q, k, v, attnRaw, attnOut, ffnUp);
+        long tLayersMs = swEnc.ElapsedMilliseconds;
 
         if (Environment.GetEnvironmentVariable("STINGRAY_FA_DUMP_DIR") is { } dumpDirTransformer)
         {
-            var flat = new float[t * encDim];
-            for (int ti = 0; ti < t; ti++) x[ti].CopyTo(flat.AsSpan(ti * encDim, encDim));
-            var bytes = new byte[flat.Length * 4];
-            Buffer.BlockCopy(flat, 0, bytes, 0, bytes.Length);
+            var bytes = new byte[x.Length * 4];
+            Buffer.BlockCopy(x, 0, bytes, 0, bytes.Length);
             File.WriteAllBytes(Path.Combine(dumpDirTransformer, "our_enc_after_transformer.bin"), bytes);
         }
 
-        for (int ti = 0; ti < t; ti++)
-            x[ti] = LayerNorm(x[ti], w.LnPostWeight, w.LnPostBias);
+        swEnc.Restart();
+        fixed (float* px = x, pLnW = w.LnPostWeight, pLnB = w.LnPostBias)
+        {
+            nint xAddr = (nint)px, lnWAddr = (nint)pLnW, lnBAddr = (nint)pLnB;
+            System.Threading.Tasks.Parallel.For(0, t, ti =>
+            {
+                OpenTail.Stingray.Cpu.SimdKernels.LayerNorm((float*)xAddr + (long)ti * encDim, (float*)xAddr + (long)ti * encDim, (float*)lnWAddr, (float*)lnBAddr, encDim, 1e-5f);
+            });
+        }
 
         // Adapter: proj1 (encDim -> encDim) + GELU -> proj2 (encDim -> QwenHiddenDim).
         int qwenDim = Config.QwenHiddenDim;
         var projected = new float[t * qwenDim];
-        for (int ti = 0; ti < t; ti++)
+        fixed (float* px = x, pProj1 = normed, pProj = projected, pP1B = w.Proj1Bias, pP2B = w.Proj2Bias)
         {
-            var p1 = LinearBias(x[ti], w.Proj1Weight, w.Proj1Bias);
-            GeluInPlace(p1);
-            var p2 = LinearBias(p1, w.Proj2Weight, w.Proj2Bias);
-            p2.CopyTo(projected.AsSpan(ti * qwenDim, qwenDim));
+            w.Proj1Weight.MatMul(px, t, pProj1, pP1B);
+            GeluInPlace(normed);
+            w.Proj2Weight.MatMul(pProj1, t, pProj, pP2B);
         }
+        long tAdapterMs = swEnc.ElapsedMilliseconds;
+        if (Environment.GetEnvironmentVariable("STINGRAY_FORCEDALIGNER_PERF") == "1" || Environment.GetEnvironmentVariable("STINGRAY_FORCEDALIGNER_TRACE") == "1")
+            Console.Error.WriteLine($"[Enc-Perf] Conv={tConvMs}ms Layers={tLayersMs}ms Adapter={tAdapterMs}ms (t={t})");
 
         return (projected, t);
     }
 
-    private static float[][] EncoderBlock(float[][] x, QwenAsrAudioLayerWeights l, int t, int dim, int heads)
+    private static void EncoderBlock(
+        float[] x,
+        QwenAsrAudioLayerWeights l,
+        int t,
+        int dim,
+        int heads,
+        float[] normed,
+        float[] q,
+        float[] k,
+        float[] v,
+        float[] attnRaw,
+        float[] attnOut,
+        float[] ffnUp)
     {
-        var afterAttn = new float[t][];
-        System.Threading.Tasks.Parallel.For(0, t, i =>
+        fixed (float* px = x, pNormed = normed, pQ = q, pK = k, pV = v,
+                      pAttnRaw = attnRaw, pAttnOut = attnOut, pFfnUp = ffnUp)
+        fixed (float* pAttnNormW = l.AttnNormWeight, pAttnNormB = l.AttnNormBias,
+                      pQBias = l.AttnQBias, pKBias = l.AttnKBias, pVBias = l.AttnVBias,
+                      pAttnOutBias = l.AttnOutBias,
+                      pFfnNormW = l.FfnNormWeight, pFfnNormB = l.FfnNormBias,
+                      pFfnUpBias = l.FfnUpBias, pFfnDownBias = l.FfnDownBias)
         {
-            var normed = LayerNorm(x[i], l.AttnNormWeight, l.AttnNormBias);
-            afterAttn[i] = normed;
-        });
+            nint xAddr = (nint)px, normedAddr = (nint)pNormed, qAddr = (nint)pQ, kAddr = (nint)pK, vAddr = (nint)pV;
+            nint attnRawAddr = (nint)pAttnRaw, attnOutAddr = (nint)pAttnOut;
+            nint anWAddr = (nint)pAttnNormW, anBAddr = (nint)pAttnNormB;
+            nint fnWAddr = (nint)pFfnNormW, fnBAddr = (nint)pFfnNormB;
 
-        var attnOut = SelfAttention(afterAttn, l, t, dim, heads);
-        var afterResidual1 = new float[t][];
-        for (int i = 0; i < t; i++)
-        {
-            var row = new float[dim];
-            for (int d = 0; d < dim; d++) row[d] = x[i][d] + attnOut[i][d];
-            afterResidual1[i] = row;
-        }
-
-        var output = new float[t][];
-        System.Threading.Tasks.Parallel.For(0, t, i =>
-        {
-            var normed = LayerNorm(afterResidual1[i], l.FfnNormWeight, l.FfnNormBias);
-            var h = LinearBias(normed, l.FfnUpWeight, l.FfnUpBias);
-            GeluInPlace(h);
-            var down = LinearBias(h, l.FfnDownWeight, l.FfnDownBias);
-            var row = new float[dim];
-            for (int d = 0; d < dim; d++) row[d] = afterResidual1[i][d] + down[d];
-            output[i] = row;
-        });
-
-        return output;
-    }
-
-    private static float[][] SelfAttention(float[][] normed, QwenAsrAudioLayerWeights l, int t, int dim, int heads)
-    {
-        int headDim = dim / heads;
-        float scale = 1f / MathF.Sqrt(headDim);
-
-        var q = new float[t][];
-        var k = new float[t][];
-        var v = new float[t][];
-        System.Threading.Tasks.Parallel.For(0, t, i =>
-        {
-            q[i] = LinearBias(normed[i], l.AttnQWeight, l.AttnQBias);
-            k[i] = LinearBias(normed[i], l.AttnKWeight, l.AttnKBias);
-            v[i] = LinearBias(normed[i], l.AttnVWeight, l.AttnVBias);
-        });
-
-        var attnRaw = new float[t][];
-        for (int i = 0; i < t; i++) attnRaw[i] = new float[dim];
-
-        // Parallelize over t (audio frame count -- scales with clip length, typically far larger
-        // than heads=14) rather than heads, matching the pattern in F5Kernels.
-        // MultiHeadSelfAttention: much more parallel width for longer clips, same SIMD dot/AV
-        // math either way (TensorPrimitives.Dot/MultiplyAdd), just a different loop nesting.
-        for (int h = 0; h < heads; h++)
-        {
-            int off = h * headDim;
+            // 1. Pre-attention LayerNorm
             System.Threading.Tasks.Parallel.For(0, t, i =>
             {
-                var scores = new float[t];
-                var probs = new float[t];
-                var qi = q[i].AsSpan(off, headDim);
-                for (int j = 0; j < t; j++)
-                    scores[j] = TensorPrimitives.Dot(qi, k[j].AsSpan(off, headDim)) * scale;
-                // NOT TensorPrimitives.SoftMax: this checkpoint's real Q/K weights produce raw
-                // dot-product logits well into the 130-140 range (confirmed by direct
-                // measurement, not a bug in Q/K -- large logits are a legitimate output of a
-                // real trained attention head), and .NET 10's TensorPrimitives.SoftMax returns
-                // NaN for inputs in that range (no max-subtraction stabilization on whatever
-                // code path a length-8 span takes) even though the inputs themselves are
-                // perfectly finite. DenseKernels.SoftmaxInPlace subtracts the max before
-                // exponentiating (standard numerically-stable softmax), which the same
-                // TensorPrimitives call apparently skips -- use that instead.
-                scores.AsSpan(0, t).CopyTo(probs);
-                OpenTail.Stingray.Audio.Primitives.DenseKernels.SoftmaxInPlace(probs);
+                OpenTail.Stingray.Cpu.SimdKernels.LayerNorm((float*)normedAddr + (long)i * dim, (float*)xAddr + (long)i * dim, (float*)anWAddr, (float*)anBAddr, dim, 1e-5f);
+            });
 
-                var weighted = attnRaw[i].AsSpan(off, headDim);
-                for (int j = 0; j < t; j++)
-                    TensorPrimitives.MultiplyAdd(v[j].AsSpan(off, headDim), probs[j], weighted, weighted);
+            // 2. Q, K, V Projections (batched, parallel, hardware F16C with bias)
+            l.AttnQWeight.MatMul(pNormed, t, pQ, pQBias);
+            l.AttnKWeight.MatMul(pNormed, t, pK, pKBias);
+            l.AttnVWeight.MatMul(pNormed, t, pV, pVBias);
+
+            // 3. Multi-head self-attention
+            int headDim = dim / heads;
+            float scale = 1f / MathF.Sqrt(headDim);
+            Array.Clear(attnRaw, 0, t * dim);
+
+            System.Threading.Tasks.Parallel.For(0, t, i =>
+            {
+                Span<float> scores = stackalloc float[t];
+                Span<float> probs = stackalloc float[t];
+                for (int h = 0; h < heads; h++)
+                {
+                    int off = h * headDim;
+                    float* qi = (float*)qAddr + (long)i * dim + off;
+                    for (int j = 0; j < t; j++)
+                    {
+                        float* kj = (float*)kAddr + (long)j * dim + off;
+                        scores[j] = OpenTail.Stingray.Cpu.SimdKernels.DotF32(qi, kj, headDim) * scale;
+                    }
+                    scores.CopyTo(probs);
+                    OpenTail.Stingray.Audio.Primitives.DenseKernels.SoftmaxInPlace(probs);
+
+                    float* weighted = (float*)attnRawAddr + (long)i * dim + off;
+                    for (int j = 0; j < t; j++)
+                    {
+                        float* vj = (float*)vAddr + (long)j * dim + off;
+                        float pj = probs[j];
+                        System.Numerics.Tensors.TensorPrimitives.MultiplyAdd(
+                            new ReadOnlySpan<float>(vj, headDim),
+                            pj,
+                            new ReadOnlySpan<float>(weighted, headDim),
+                            new Span<float>(weighted, headDim));
+                    }
+                }
+            });
+
+            // 4. Output projection
+            l.AttnOutWeight.MatMul(pAttnRaw, t, pAttnOut, pAttnOutBias);
+
+            // 5. Residual 1: x += attnOut
+            System.Threading.Tasks.Parallel.For(0, t, i =>
+            {
+                OpenTail.Stingray.Cpu.SimdKernels.AddInPlace((float*)xAddr + (long)i * dim, (float*)attnOutAddr + (long)i * dim, dim);
+            });
+
+            // 6. Post-attention LayerNorm (before FFN)
+            System.Threading.Tasks.Parallel.For(0, t, i =>
+            {
+                OpenTail.Stingray.Cpu.SimdKernels.LayerNorm((float*)normedAddr + (long)i * dim, (float*)xAddr + (long)i * dim, (float*)fnWAddr, (float*)fnBAddr, dim, 1e-5f);
+            });
+
+            // 7. FFN Up projection
+            l.FfnUpWeight.MatMul(pNormed, t, pFfnUp, pFfnUpBias);
+
+            // 8. FFN GELU
+            GeluInPlace(ffnUp);
+
+            // 9. FFN Down projection (reuse pAttnOut buffer for down output)
+            l.FfnDownWeight.MatMul(pFfnUp, t, pAttnOut, pFfnDownBias);
+
+            // 10. Residual 2: x += ffnDown
+            System.Threading.Tasks.Parallel.For(0, t, i =>
+            {
+                OpenTail.Stingray.Cpu.SimdKernels.AddInPlace((float*)xAddr + (long)i * dim, (float*)attnOutAddr + (long)i * dim, dim);
             });
         }
-
-        var output = new float[t][];
-        for (int i = 0; i < t; i++)
-            output[i] = LinearBias(attnRaw[i], l.AttnOutWeight, l.AttnOutBias);
-        return output;
     }
 
     // -----------------------------------------------------------------
@@ -309,10 +355,19 @@ public sealed class QwenAsrAudioEncoder : IDisposable
         }
         else
         {
-            for (int ci = 0; ci < cin; ci++)
-                for (int hi = 0; hi < hin; hi++)
-                    for (int wi = 0; wi < win; wi++)
-                        inputCL[(hi * win + wi) * cin + ci] = input[ci * hin * win + hi * win + wi];
+            int hwStride = hin * win;
+            System.Threading.Tasks.Parallel.For(0, hin, hi =>
+            {
+                for (int wi = 0; wi < win; wi++)
+                {
+                    int hwOffset = (hi * win + wi) * cin;
+                    int inHw = hi * win + wi;
+                    for (int ci = 0; ci < cin; ci++)
+                    {
+                        inputCL[hwOffset + ci] = input[ci * hwStride + inHw];
+                    }
+                }
+            });
         }
 
         var output = new float[cout * houtLocal * woutLocal];
@@ -361,6 +416,22 @@ public sealed class QwenAsrAudioEncoder : IDisposable
     private static void GeluInPlace(float[] x)
     {
         const float invSqrt2 = 0.70710678118654752f;
+        if (x.Length >= 4096)
+        {
+            int chunkSize = 2048;
+            int numChunks = (x.Length + chunkSize - 1) / chunkSize;
+            System.Threading.Tasks.Parallel.For(0, numChunks, chunkIdx =>
+            {
+                int start = chunkIdx * chunkSize;
+                int end = Math.Min(x.Length, start + chunkSize);
+                for (int i = start; i < end; i++)
+                {
+                    float v = x[i];
+                    x[i] = 0.5f * v * (1f + Erf(v * invSqrt2));
+                }
+            });
+            return;
+        }
         for (int i = 0; i < x.Length; i++)
         {
             float v = x[i];

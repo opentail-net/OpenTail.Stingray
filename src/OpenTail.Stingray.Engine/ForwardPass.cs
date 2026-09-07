@@ -148,7 +148,7 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
     private readonly bool _usesReluSquared;
 
     // Precomputed tensor metadata for hot-path access
-    private readonly TensorRef _embTensor;
+    private TensorRef _embTensor;
     // GPT-2's learned absolute position embedding table (`position_embd.weight`), added to the
     // token embedding once per token before the trunk starts. Null for every RoPE architecture.
     private readonly TensorRef? _posEmbdTensor;
@@ -167,6 +167,16 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
     public void SetOutputWeightDataPtr(byte* dataPtr)
     {
         _outputWeight = new TensorRef(_outputWeight.Name, _outputWeight.Info, _outputWeight.DType, dataPtr);
+    }
+
+    /// <summary>
+    /// Swaps the raw data pointer for the token embedding table without reallocating or modifying tensor metadata.
+    /// Used by audio-conditioned models (e.g. Qwen3-ASR / Qwen3-ForcedAligner) where per-utterance audio embeddings
+    /// are spliced onto the end of the vocabulary table.
+    /// </summary>
+    public void SetEmbeddingWeightDataPtr(byte* dataPtr)
+    {
+        _embTensor = new TensorRef(_embTensor.Name, _embTensor.Info, _embTensor.DType, dataPtr);
     }
 
     // Optional attention biases (Qwen models)
@@ -1195,15 +1205,15 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
     public void ResetKvCache() => _kvCache.Reset();
 
     public ReadOnlySpan<float> PrefillWithPerPositionLogits(
-        IReadOnlyList<int> tokens, int startPos, PositionLogitsCallback onAllPositionLogits)
+        IReadOnlyList<int> tokens, int startPos, PositionLogitsCallback onAllPositionLogits, Predicate<int>? positionFilter = null)
     {
         ArgumentNullException.ThrowIfNull(onAllPositionLogits);
         return PrefillDispatch(tokens, startPos,
-            (n, logits) => onAllPositionLogits(n, logits));
+            (n, logits) => onAllPositionLogits(n, logits), positionFilter);
     }
 
     private ReadOnlySpan<float> PrefillDispatch(
-        IReadOnlyList<int> tokens, int startPos, PositionLogitsCallback? onAllPositionLogits)
+        IReadOnlyList<int> tokens, int startPos, PositionLogitsCallback? onAllPositionLogits, Predicate<int>? positionFilter = null)
     {
         int N = tokens.Count;
         if (N == 0) throw new ArgumentException("Token list is empty");
@@ -1314,7 +1324,7 @@ public sealed unsafe partial class ForwardPass : IForwardPass, IBatchedForwardPa
         if (_tqKvCache != null)
             return PrefillCoreTq(tokens, startPos);
 
-        return PrefillCore(tokens, _kvCache, startPos, onAllPositionLogits);
+        return PrefillCore(tokens, _kvCache, startPos, onAllPositionLogits, positionFilter);
     }
 
     /// <summary>

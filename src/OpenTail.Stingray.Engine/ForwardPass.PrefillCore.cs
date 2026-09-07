@@ -7,7 +7,7 @@ namespace OpenTail.Stingray.Engine;
 public sealed unsafe partial class ForwardPass
 {
     private ReadOnlySpan<float> PrefillCore(IReadOnlyList<int> tokens, PagedKvCache cache, int startPos,
-        PositionLogitsCallback? onAllPositionLogits = null)
+        PositionLogitsCallback? onAllPositionLogits = null, Predicate<int>? positionFilter = null)
     {
         int N = tokens.Count;
 
@@ -552,6 +552,7 @@ public sealed unsafe partial class ForwardPass
             {
                 for (int n = 0; n < N; n++)
                 {
+                    if (positionFilter != null && !positionFilter(n)) continue;
                     float* hn = batchHidden + (long)n * _embDim;
                     FastNorm(hn, hn, outNormW, outNormB, _embDim, _hp.RmsNormEps);
                     FusedMatVec(_logits, _outputWeight, hn, _hp.VocabSize, _embDim);

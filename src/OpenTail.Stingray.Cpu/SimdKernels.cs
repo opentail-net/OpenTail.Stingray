@@ -181,7 +181,39 @@ public static unsafe class SimdKernels
             // scheme that reuses a weight read. The model predicted T(2) = 97 ms against an actual
             // 98 ms, so this is a validated bound rather than a single observation. Making batched
             // decode faster requires a cheaper dot (e.g. VNNI), not better data movement.
-            // See docs/done/cpu-speculative-decoding-findings.md.
+            if (dtype == DType.Float32 && batchSize > 1)
+            {
+                var m = (float*)weights;
+                if (rows >= MinRowsForParallel)
+                {
+                    nint outPtr = (nint)output;
+                    nint inPtr = (nint)input;
+                    nint wPtr = (nint)weights;
+                    Parallel.For(0, rows, s_parallelOpts, r =>
+                    {
+                        float* row = (float*)wPtr + (long)r * cols;
+                        float* o = (float*)outPtr;
+                        float* inp = (float*)inPtr;
+                        for (int t = 0; t < batchSize; t++)
+                        {
+                            o[(long)t * rows + r] = DotF32(inp + (long)t * cols, row, cols);
+                        }
+                    });
+                }
+                else
+                {
+                    for (int r = 0; r < rows; r++)
+                    {
+                        float* row = m + (long)r * cols;
+                        for (int t = 0; t < batchSize; t++)
+                        {
+                            output[(long)t * rows + r] = DotF32(input + (long)t * cols, row, cols);
+                        }
+                    }
+                }
+                return;
+            }
+
             if (BatchedMatVecTierEnabled)
             {
                 Interlocked.Increment(ref BatchedMatVecTierCalls);
@@ -700,8 +732,7 @@ public static unsafe class SimdKernels
         // there is no batch size at which routing to it ahead of this loop is justified by
         // evidence. Kept structurally last-resort, not deleted -- do not re-gate this behind a
         // batch-size or BLAS-availability check without new measurements written up the same way.
-        for (int n = 0; n < batchSize; n++)
-            MatVecF32(output + n * rows, weightsF32, input + n * cols, rows, cols);
+        MatMulBatched(output, (byte*)weightsF32, input, batchSize, rows, cols, DType.Float32);
         return;
 
         // Unreachable below by design -- see comment above.
@@ -1381,10 +1412,10 @@ public static unsafe class SimdKernels
                     Parallel.For(0, rows, s_parallelOpts, r =>
                     {
                         float* row = m + (long)r * c;
-                        o0[r] = DotF32(row, i0, c);
-                        o1[r] = DotF32(row, i1, c);
-                        o2[r] = DotF32(row, i2, c);
-                        o3[r] = DotF32(row, i3, c);
+                        o0[r] = DotF32(i0, row, c);
+                        o1[r] = DotF32(i1, row, c);
+                        o2[r] = DotF32(i2, row, c);
+                        o3[r] = DotF32(i3, row, c);
                     });
                 }
                 else
@@ -1392,10 +1423,10 @@ public static unsafe class SimdKernels
                     for (int r = 0; r < rows; r++)
                     {
                         float* row = m + (long)r * cols;
-                        output0[r] = DotF32(row, input0, cols);
-                        output1[r] = DotF32(row, input1, cols);
-                        output2[r] = DotF32(row, input2, cols);
-                        output3[r] = DotF32(row, input3, cols);
+                        output0[r] = DotF32(input0, row, cols);
+                        output1[r] = DotF32(input1, row, cols);
+                        output2[r] = DotF32(input2, row, cols);
+                        output3[r] = DotF32(input3, row, cols);
                     }
                 }
                 break;

@@ -27,7 +27,7 @@ namespace OpenTail.Stingray.Audio.QwenASR;
 /// `thinker.audio_tower.*`/`thinker.model.*` tensor names, confirmed via
 /// <c>QwenForcedAlignerRealCheckpointLoadDebugTest</c>.</para>
 /// </summary>
-public sealed class QwenAsrForcedAligner : IDisposable
+public sealed unsafe class QwenAsrForcedAligner : IDisposable
 {
     private readonly QwenForcedAlignerWeights? _weights;
     private readonly QwenAsrWeights? _realWeights;
@@ -36,6 +36,9 @@ public sealed class QwenAsrForcedAligner : IDisposable
     private readonly string? _safetensorsPath;
     private readonly int _timestampTokenId;
     private readonly int _timestampSegmentTimeMs;
+    private readonly QwenAsrLlmSafetensorsTensorSource? _llmSource;
+    private readonly CpuBackend? _cpuBackend;
+    private readonly ForwardPass? _forwardPass;
 
     /// <summary>
     /// The <paramref name="tokenizer"/> parameter is accepted for API/call-site compatibility
@@ -48,7 +51,15 @@ public sealed class QwenAsrForcedAligner : IDisposable
         _weights = weights;
     }
 
-    private QwenAsrForcedAligner(QwenAsrWeights realWeights, QwenAsrAudioEncoder realEncoder, string safetensorsPath, int timestampTokenId, int timestampSegmentTimeMs)
+    private QwenAsrForcedAligner(
+        QwenAsrWeights realWeights,
+        QwenAsrAudioEncoder realEncoder,
+        string safetensorsPath,
+        int timestampTokenId,
+        int timestampSegmentTimeMs,
+        QwenAsrLlmSafetensorsTensorSource? llmSource = null,
+        CpuBackend? cpuBackend = null,
+        ForwardPass? forwardPass = null)
     {
         _realWeights = realWeights;
         _realEncoder = realEncoder;
@@ -56,6 +67,9 @@ public sealed class QwenAsrForcedAligner : IDisposable
         _safetensorsPath = safetensorsPath;
         _timestampTokenId = timestampTokenId;
         _timestampSegmentTimeMs = timestampSegmentTimeMs;
+        _llmSource = llmSource;
+        _cpuBackend = cpuBackend;
+        _forwardPass = forwardPass;
     }
 
     /// <summary>Rough average-BPE-length token-count estimate (English averages ~4 chars/token) -- not real tokenization, only used by the procedural <see cref="Align"/> fallback.</summary>
@@ -101,7 +115,17 @@ public sealed class QwenAsrForcedAligner : IDisposable
         int timestampTokenId = root.GetProperty("timestamp_token_id").GetInt32();
         int timestampSegmentTimeMs = root.GetProperty("timestamp_segment_time").GetInt32();
 
-        return new QwenAsrForcedAligner(weights, encoder, Path.Combine(checkpointDir, "model.safetensors"), timestampTokenId, timestampSegmentTimeMs);
+        string safetensorsPath = Path.Combine(checkpointDir, "model.safetensors");
+        var source = new QwenAsrLlmSafetensorsTensorSource(
+            safetensorsPath,
+            numLayers: weights.LlmLayers, hiddenDim: weights.LlmDim, numHeads: weights.LlmHeads,
+            numKvHeads: weights.LlmKvHeads, headDim: weights.LlmHeadDim, ffDim: weights.LlmFfDim,
+            vocabSize: 5000, ropeTheta: weights.LlmRopeTheta, rmsNormEps: weights.LlmRmsNormEps);
+        var hp = ModelHyperparams.FromGgufMetadata(source.Metadata, source);
+        var backend = new CpuBackend();
+        var fwd = new ForwardPass(source, backend, hp);
+
+        return new QwenAsrForcedAligner(weights, encoder, safetensorsPath, timestampTokenId, timestampSegmentTimeMs, source, backend, fwd);
     }
 
     /// <summary>
@@ -140,7 +164,10 @@ public sealed class QwenAsrForcedAligner : IDisposable
             normalizedPcm = pcm16k.ToArray();
         }
 
+        var swTotal = System.Diagnostics.Stopwatch.StartNew();
+        var sw = System.Diagnostics.Stopwatch.StartNew();
         float[] mel = _realMelExtractor.ExtractMel(normalizedPcm);
+        long tMelMs = sw.ElapsedMilliseconds;
         int inMelFrames = mel.Length / QwenAsrMelExtractor.NumMels;
 
         if (Environment.GetEnvironmentVariable("STINGRAY_FA_DUMP_DIR") is { } melDumpDir)
@@ -150,7 +177,9 @@ public sealed class QwenAsrForcedAligner : IDisposable
             File.WriteAllBytes(Path.Combine(melDumpDir, "our_mel_features.bin"), bytes);
         }
         if (inMelFrames == 0) return [];
+        sw.Restart();
         var (audioSoftTokens, numAudioTokens) = _realEncoder.Forward(mel, inMelFrames);
+        long tEncMs = sw.ElapsedMilliseconds;
 
         if (Environment.GetEnvironmentVariable("STINGRAY_FORCEDALIGNER_TRACE") == "1")
         {
@@ -178,6 +207,7 @@ public sealed class QwenAsrForcedAligner : IDisposable
         // equivalent to BPE-encoding the whole concatenated string in one pass, since <timestamp>
         // is a hard token boundary merges never cross -- avoids needing the real tokenizer to
         // recognize the literal string "<timestamp>" as one atomic special token.
+        sw.Restart();
         var promptIds = new List<int>();
         var sb = new System.Text.StringBuilder("<|audio_start|>");
         for (int i = 0; i < numAudioTokens; i++) sb.Append("<|audio_pad|>");
@@ -193,6 +223,7 @@ public sealed class QwenAsrForcedAligner : IDisposable
             timestampPositions.Add(promptIds.Count);
             promptIds.Add(_timestampTokenId);
         }
+        long tTokMs = sw.ElapsedMilliseconds;
 
         if (Environment.GetEnvironmentVariable("STINGRAY_FORCEDALIGNER_TRACE") == "1")
         {
@@ -202,26 +233,14 @@ public sealed class QwenAsrForcedAligner : IDisposable
             Console.Error.WriteLine($"[FA-Trace] audioPadCount in prompt={audioPadCount} (expect numAudioTokens={numAudioTokens})");
         }
 
-        // REVERTED, 2026-09-07 (same session): this checkpoint's config.json DOES declare
-        // rope_scaling.interleaved=true/mrope_interleaved=true, and it looked like a plausible
-        // root cause for the classify-head bug -- but directly checking the real reference's OWN
-        // RoPE application (`qwen_decoder.h`'s `rope_type` field, `GGML_ROPE_TYPE_NEOX` by
-        // default, never overridden anywhere in `qwen3_asr/assets.cpp` despite that file DOES
-        // parse `mrope_section` into its config struct) confirms the reference deliberately
-        // IGNORES these M-RoPE config fields and uses plain standard NEOX rotation -- the same
-        // convention this bridge already had before this investigation. Re-bisecting with
-        // interleavedRope=true confirmed it does NOT reproduce the reference's real layer-2
-        // discontinuity, consistent with this correction. Left `false` (this class's real
-        // default) rather than reverted entirely, since the underlying opt-in mechanism
-        // (`ModelGraph.cs`'s new `"{arch}.rope.is_neox"` override) is safe, harmless, and may be
-        // genuinely useful for some OTHER real checkpoint later -- see
-        // docs/audio-review-progress.md's correction entry for the full story.
-        using var source = new QwenAsrLlmSafetensorsTensorSource(
+        sw.Restart();
+        var source = _llmSource ?? new QwenAsrLlmSafetensorsTensorSource(
             _safetensorsPath,
             numLayers: _realWeights.LlmLayers, hiddenDim: _realWeights.LlmDim, numHeads: _realWeights.LlmHeads,
             numKvHeads: _realWeights.LlmKvHeads, headDim: _realWeights.LlmHeadDim, ffDim: _realWeights.LlmFfDim,
             vocabSize: 5000, ropeTheta: _realWeights.LlmRopeTheta, rmsNormEps: _realWeights.LlmRmsNormEps);
         source.EnableAudioConditioning(audioSoftTokens, numAudioTokens);
+        long tSourceMs = sw.ElapsedMilliseconds;
 
         var prompt = promptIds.ToArray();
         int frame = 0;
@@ -231,9 +250,17 @@ public sealed class QwenAsrForcedAligner : IDisposable
                 prompt[i] = source.AudioTokenIdOffset + frame++;
         }
 
+        sw.Restart();
         var hp = ModelHyperparams.FromGgufMetadata(source.Metadata, source);
-        using var backend = new CpuBackend();
-        using var fwd = new ForwardPass(source, backend, hp);
+        using var fallbackBackend = _forwardPass == null ? new CpuBackend() : null;
+        using var fallbackFwd = _forwardPass == null ? new ForwardPass(source, fallbackBackend!, hp) : null;
+        var fwd = _forwardPass ?? fallbackFwd!;
+        if (_forwardPass != null)
+        {
+            fwd.SetEmbeddingWeightDataPtr(source.AudioConditionedEmbeddingsPtr);
+            fwd.ResetKvCache();
+        }
+        long tFwdInitMs = sw.ElapsedMilliseconds;
         bool faTraceLayers = Environment.GetEnvironmentVariable("STINGRAY_FA_TRACE") == "1" && fwd.SupportsHiddenTaps;
         if (faTraceLayers)
         {
@@ -242,18 +269,6 @@ public sealed class QwenAsrForcedAligner : IDisposable
             fwd.EnableHiddenTaps(allLayers);
         }
 
-        // EXPERIMENT (2026-09-06), DISPROVEN: tested whether the classify head's read-position
-        // needed a -1 shift relative to the <timestamp> token's own index (a "predict-next"
-        // convention mismatch would have produced the observed symptom). Result: shifting made
-        // no difference -- class 0 still dominated at every position, ruling this out. Also
-        // ruled out this same session: Q8 activation-quantized prefill (STINGRAY_CPU_PREFILL_Q8=0
-        // changes nothing), and weight corruption (class 0's row in the real checkpoint's
-        // thinker.lm_head.weight has norm 0.438, actually BELOW the ~0.63 average across all 5000
-        // rows -- not anomalous at all). The remaining bug is most likely in the hidden-state
-        // computation itself (attention/layers), not the classify head or its wiring -- needs
-        // real intermediate hidden-state comparison against the C++ reference to pin down
-        // further. Left gated behind an env var (default 0 = no shift, matching the reference's
-        // own indexing) in case it's useful for a future investigation session.
         int readShift = Environment.GetEnvironmentVariable("STINGRAY_FA_READ_SHIFT") is { Length: > 0 } s && int.TryParse(s, out var shiftVal) ? shiftVal : 0;
         var classIds = new int[timestampPositions.Count];
         var wantedPositionToIdx = new Dictionary<int, int>();
@@ -262,6 +277,8 @@ public sealed class QwenAsrForcedAligner : IDisposable
         bool debugTrace = Environment.GetEnvironmentVariable("STINGRAY_FORCEDALIGNER_TRACE") == "1";
         bool faTrace = Environment.GetEnvironmentVariable("STINGRAY_FA_TRACE") == "1";
         double logitsSum = 0, logitsSumSq = 0; long logitsCount = 0;
+
+        sw.Restart();
         fwd.PrefillWithPerPositionLogits(prompt, 0, (position, logits) =>
         {
             if (faTrace)
@@ -279,7 +296,12 @@ public sealed class QwenAsrForcedAligner : IDisposable
             if (debugTrace && found < 4)
                 Console.Error.WriteLine($"[FA-Trace] readShift={readShift} position={position} best={best} bestVal={bestVal:F4} logits[0..9]=[{string.Join(",", logits.Slice(0, 10).ToArray().Select(v => v.ToString("F3")))}]");
             found++;
-        });
+        }, faTrace ? null : pos => wantedPositionToIdx.ContainsKey(pos));
+        long tPrefillMs = sw.ElapsedMilliseconds;
+        bool perfTrace = debugTrace || Environment.GetEnvironmentVariable("STINGRAY_FORCEDALIGNER_PERF") == "1";
+        if (perfTrace)
+            Console.Error.WriteLine($"[FA-Perf] Mel={tMelMs}ms Enc={tEncMs}ms Tok={tTokMs}ms SourceInit={tSourceMs}ms FwdInit={tFwdInitMs}ms Prefill={tPrefillMs}ms TotalAlign={swTotal.ElapsedMilliseconds}ms (promptLen={prompt.Length}, audioTokens={numAudioTokens})");
+        if (PrefillProfileTimers.Enabled) PrefillProfileTimers.Report(Console.Error);
         if (faTrace)
         {
             double mean = logitsSum / logitsCount;
@@ -677,6 +699,9 @@ public sealed class QwenAsrForcedAligner : IDisposable
 
     public void Dispose()
     {
+        _forwardPass?.Dispose();
+        _cpuBackend?.Dispose();
+        _llmSource?.Dispose();
         _weights?.Dispose();
         _realEncoder?.Dispose();
         _realWeights?.Dispose();
