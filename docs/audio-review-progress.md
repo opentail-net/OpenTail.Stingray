@@ -12912,3 +12912,69 @@ Not yet scoped further (main LLM/text-side tensor names under the `weights/` pre
 yet dumped). Real next step if picked up: dump the full 889-tensor list (same technique
 used for MOSS-TTS-Nano) to identify the text/audio LLM architecture before any
 implementation.
+
+**Update, 2026-09-07 (session resumed after a powercut; local commits from the prior session
+were intact, nothing lost) -- MOSS-TTS-Nano global transformer implemented and real-weight
+verified.** Confirmed the real config (`gpt2_config` in the checkpoint's embedded
+`config.json`, extracted via a new `MossTtsMetaDumpDebugTest` that reads the packed GGUF's
+`audiocpp.embedded_files.{names,offsets,data}` metadata arrays directly -- no separate
+download needed): 12 layers, 12 heads, hidden=768, intermediate=3072, text vocab=16384,
+`position_embedding_type=rope` (`rope_base=10000`), `activation_function=gelu_new`,
+`n_vq=16` audio codebooks each with its own 1024-entry embedding table
+(`audio_pad_token_id=1024` sentinel). Read `global_transformer.cpp`'s `transformer_layer`/
+`Graph` in full (not guessed): per-row input = text embedding + sum of all present
+audio-codebook embeddings (pad codebooks contribute nothing, matching the `emb * mask`
+accumulation); per-layer = pre-LN GPT2 block, fused `c_attn` QKV, **adjacent-pair RoPE on Q/K
+only** (`GGML_ROPE_TYPE_NORMAL`, NOT the split-half NEOX convention some other pipelines in
+this codebase use -- rotates pairs `(2i, 2i+1)`), causal scaled-dot-product attention,
+`c_proj`, then a second pre-LN MLP block (`fc_in` -&gt; `gelu_new` -&gt; `fc_out`). Confirmed via
+a real tensor-name dump (`MossTtsTensorNameDumpDebugTest`, 568 tensors) that GGUF weight
+tensors need NO transpose -- native `[in,out]` ne-order dequantizes directly to the
+`[outDim,inDim]` row-major layout `SimdKernels.MatVecF32` expects, same convention already
+established for `ChatterboxWeights`.
+
+Implemented `MossTtsGlobalTransformerWeights` (loader, reuses `RvcPackedTensorSource` --
+genuinely source-agnostic despite its RVC-rooted name/namespace, no changes needed) and
+`MossTtsGlobalTransformer` (forward pass) under a new `src/OpenTail.Stingray.Audio/MossTts/`
+directory, closely mirroring `ChatterboxAcousticLm`'s GPT2 Linear/LayerNorm/softmax/GELU
+helper pattern (deliberately not DRY'd against Chatterbox yet -- RoPE vs. absolute `wpe`
+position embeddings makes the attention block different enough that premature sharing would
+be the wrong call before a second RoPE-based caller exists; revisit at the DRY-pass stage
+once the local transformer is also implemented).
+
+**Verification**: two-tier, per this project's usual discipline --
+- `MossTtsGlobalTransformerTests` (synthetic weights, no checkpoint): confirms finite output
+  across mixed text/audio rows, and a real causal invariant (a shorter prefix's hidden
+  states are bit-for-bit reproduced when more rows are appended after it -- proves no
+  lookahead leakage through the attention mask).
+- `MossTtsGlobalTransformerRealWeightsTests` (real checkpoint, genuinely ran -- 1.0s
+  wall-clock with real weight loading, not a silent `if (path is null) return` no-op per
+  Critical Rule #12): loads the real `moss-tts-nano-100m-q8_0.gguf`, runs two different
+  short text-only prompts through a real forward pass, and asserts their argmax
+  next-text-token predictions DIFFER -- the same "does NOT collapse to one constant token"
+  signature that isolated Fun-ASR-Nano's real LLM-wiring bug earlier this session (see the
+  September 6 update above). Result: PASS -- the two prompts produce different argmax
+  predictions and fully finite logits/hidden states, real (if informal) evidence the global
+  transformer's wiring is NOT hitting that same class of bug. Also re-confirms the causal
+  invariant against the real checkpoint's real weights, not just synthetic ones.
+
+**Not yet a full numeric golden-parity check** -- no captured reference trace exists for
+this checkpoint (unlike Fun-ASR-Nano's `*_reference.json/.bin` fixtures). `audiocpp_cli.exe`
+is a real, already-built binary at `examples/audio.cpp/build/bin/audiocpp_cli.exe` that DOES
+support `--task tts --family moss_tts_nano` end-to-end generation, which could give a real
+independent oracle (either full audio-output comparison, or by adding a debug hidden-state
+dump path) -- deliberately not spent this update to keep the iteration scoped to the global
+transformer itself; a real next step, not a guess.
+
+**Still remaining for a complete MOSS-TTS-Nano pipeline**: the local transformer (1 layer,
+same GPT2/RoPE block, decodes each frame's 16 RVQ codebook tokens autoregressively,
+conditioned on the global transformer's per-frame hidden state -- see `local_frame_decoder.
+cpp`, not yet read in detail), the generation loop wiring (`generator.cpp`/`session.cpp`,
+prompt construction via `prompt_builder.cpp`), the SentencePiece text tokenizer
+(`tokenization_moss_tts_nano.py`/`tokenizer.model`, real file embedded in the GGUF per the
+`embedded_files` dump this update -- extractable the same way `config.json` was), and the
+stereo/48kHz Transformer-augmented RVQ audio codec (`audio_tokenizer_weights/{encoder,
+decoder}.{1,3,5,7}.*` -- alternating conv downsample/upsample + real self-attention
+Transformer blocks with LayerScale, per the September 6 tensor dump). Real next step if
+picked up: `local_frame_decoder.cpp` next (smallest remaining piece, reuses this same GPT2
+block pattern), then the codec.
