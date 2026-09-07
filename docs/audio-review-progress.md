@@ -13353,9 +13353,29 @@ Real next step if picked up for VibeVoice ASR specifically: this "append as extr
 rows, prefill once" technique is likely sufficient and should be tried directly rather than
 investigated further in the abstract.
 
+**Correction, 2026-09-07 (same session) -- an earlier claim in this doc was WRONG, caught by
+reading `speech_encoder.cpp` (not previously read).** This doc's `encode_acoustic`-based
+update above claimed "ASR always uses the raw encoder mean latent directly, no
+reparameterization needed" -- that is TRUE of `MossAudioTokenizerQuantizer`-style plain
+decode calls, but FALSE for VibeVoice ASR's actual real feature-extraction path:
+`speech_encoder.cpp`'s real orchestration function DOES call
+`sample_vibevoice_acoustic_latents_gaussian` (real seeded Gaussian reparameterization, BF16
+RNG precision) on the acoustic tokenizer's mean output before projecting it through the
+connector -- even for the ASR-named `VibeVoiceASRSpeechFeatures` output struct, not just the
+TTS voice-cloning path this doc previously assumed was the only caller. Real full combine
+rule, confirmed directly (not guessed): `acoustic_connector(sample_gaussian(acoustic_encoder
+(audio))) + semantic_connector(semantic_encoder(audio))` -- a plain per-element SUM of the
+two connectors' projected embeddings, frame-aligned (truncated to `min(acoustic_frames,
+semantic_frames)` first). This means the Gaussian sampling function (previously deferred as
+"TTS-generation-only, not needed for ASR") IS actually needed for a complete, correct
+VibeVoice ASR port -- flagging this correction explicitly per this project's "say so when
+wrong" discipline rather than quietly fixing it without a trace.
+
 **Still remaining for a complete VibeVoice ASR pipeline**: real-weight verification of the
 tokenizer encoders + connector + LLM bridge once the checkpoint finishes downloading (still
-in progress, ~3GB of ~9.9GB as of this update -- a real, slow multi-GB download, not a
-blocker being avoided), the speech-embedding splice via the "extra vocab rows" technique
+in progress, ~3.3GB of ~9.9GB as of this update -- a real, slow multi-GB download, not a
+blocker being avoided), the real Gaussian latent sampling step (per the correction above --
+a real, not-yet-ported piece, `sample_vibevoice_acoustic_latents_gaussian`), the
+acoustic+semantic sum-combine + speech-embedding splice via the "extra vocab rows" technique
 above, and the generation loop (`session.cpp`, 1210 lines -- ties audio encoding + connector
 projection + decoder prefill/generation together, not yet read in detail).

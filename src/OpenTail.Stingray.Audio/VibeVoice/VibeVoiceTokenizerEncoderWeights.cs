@@ -14,6 +14,10 @@ public sealed class VibeVoiceTokenizerConfig
     public required int[] EncoderDepths { get; init; } // parsed from "N-N-N..." string
     public required bool DisableLastNorm { get; init; }
     public required float LayerNormEps { get; init; }
+    /// <summary>Real `fix_std` -- only meaningful for the acoustic tokenizer (Gaussian VAE
+    /// reparameterization scale, see <see cref="VibeVoiceAcousticLatentSampler"/>); unused by the
+    /// semantic tokenizer.</summary>
+    public float FixStd { get; init; }
 }
 
 /// <summary>One VibeVoice tokenizer encoder's real weights (acoustic OR semantic -- same
