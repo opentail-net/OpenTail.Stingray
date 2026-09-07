@@ -14124,3 +14124,34 @@ per codebook, plus `lm/linears.{0-15}.weight` real per-codebook `[1024,2048]` ou
 projecting depformer hidden state directly to codebook logits), and the full Mimi neural codec
 (`mimi/*` tensors, real 32-level RVQ confirmed: `quantizer.rvq_first` + `quantizer.rvq_rest.vq.
 layers.{0-30}`, own encoder/decoder transformer stack -- not yet read in detail).
+
+## Higgs Audio TTS -- first live end-to-end text-to-waveform run, 2026-09-07
+
+Implemented `HiggsArStepper.Step`, ported from `ar.cpp`'s `build_higgs_decode_code_embedding`/
+`build_modality_logits` (not guessed): embeds the previous step's 8 codebook ids via the real
+shared `ModalityEmbeddingWeight` table (sum across codebooks, each in its own disjoint
+`[cb*audioVocabSize, (cb+1)*audioVocabSize)` row range), runs one `ForwardEmbedding` step, then
+projects the resulting hidden state back through the SAME table (real weight tying) to get
+`[8,1026]` logits and argmax-samples each codebook. Deliberately a bounded per-step primitive,
+not a full generation loop -- this session did not read `generator.cpp`'s real initial-seed-code
+convention closely enough to port the true BOS codes without guessing, so `previousCodes` (all
+zeros in the test) is caller-supplied rather than invented.
+
+**First live end-to-end run this session for Higgs Audio TTS** (`HiggsArStepperRealWeightsTests`):
+real text prompt ("Hello there, this is a real end to end test.") through the real tokenizer +
+prompt builder, real `ForwardPass.Prefill` (16.43 GiB resident weights), 4 real AR decode steps
+via `HiggsArStepper.Step` each producing 8 codebook ids, fed through the real
+`HiggsCodecDecoder` -> a finite, non-silent waveform. 16.3s wall-clock for the whole chain,
+genuine run. This is the first time this session chained EVERY independently-verified Higgs
+piece (tokenizer, LLM bridge, AR step, codec decoder) into one live text-to-audio pass, even
+though the codes it emits are neither trained-sampling-correct (argmax only, no temperature/
+top-k/top-p) nor properly seeded (zero-code bootstrap, not the real BOS convention) --
+structurally, every stage runs and produces finite, non-degenerate output.
+
+**Higgs Audio TTS status: ~65%.** Remaining, in descending priority: reading `generator.cpp`'s
+real initial-seed-code/BOS convention (closes the one guessed gap above), real sampling beyond
+argmax (`sampler.cpp`), real EOS/stopping detection, the semantic HuBERT encoder + reference-
+audio encode path (voice cloning input, lower priority), KV-cache-aware incremental decode
+matching the real reference's `HiggsARKVCache` (this session's `ForwardEmbedding`-based stepping
+already accumulates KV state correctly via `ForwardPass`'s own cache, so this is more about
+confirming layer-count/step-count parity than new work).
