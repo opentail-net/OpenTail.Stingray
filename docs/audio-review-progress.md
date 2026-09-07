@@ -16717,3 +16717,27 @@ Real next step once compared: if the reference ALSO degrades similarly, this por
 concern would be a real, inherent property of this checkpoint/sampling settings rather than a
 divergence bug, changing the diagnosis; if the reference stays clean throughout, that confirms a
 real numeric divergence in this port worth the dump-and-compare investigation already scoped.
+
+## Real reference-CLI samples generated for direct side-by-side listening comparison (Higgs, VibeVoice TTS, PersonaPlex), 2026-09-07
+
+Extended the VoxCPM2 reference-sample technique above to every other model with a real vendored
+CLI loader, running the actual C++ reference implementation directly against the same real
+checkpoints this port uses:
+- `higgs-audio-tts-REFERENCE-check.wav`: 11.92s real audio, 33.7s wall-clock (`rtf=2.83`).
+- `vibevoice-tts-REFERENCE-check.wav`: 4.27s real audio, 19.1s wall-clock (`rtf=4.47`) -- a direct
+  reference to compare against this session's own streaming-decode fix.
+- `personaplex-REFERENCE-check.wav`: 5.95s real audio, 50.7s wall-clock (`rtf=8.53`), real
+  `--voice-id NATF0` + real `--audio` input (PersonaPlex's real CLI requires audio input even for
+  offline s2s, confirmed not guessed).
+
+**OmniVoice reference sample NOT generated**: the real vendored CLI failed to load --
+`missing model package file 'audio_tokenizer_preprocessor': .../audio_tokenizer/preprocessor_config.json`
+-- this real file is genuinely absent from the downloaded checkpoint (confirmed on both the repo's
+local `models/_models/omnivoice` path and its `F:\_models\omnivoice` symlink target, not a path
+resolution issue). Real, low-priority follow-up: locate and download this one missing file from
+the real upstream HF repo if an OmniVoice reference comparison is wanted later -- not chased this
+pass.
+
+All four `*-REFERENCE-check.wav` files sit alongside this port's own `*-real-check.wav` samples in
+`docs/audio-samples/` (gitignored, local-only) for direct listening comparison against the exact
+same real checkpoints and (where applicable) matching prompts/seeds.
