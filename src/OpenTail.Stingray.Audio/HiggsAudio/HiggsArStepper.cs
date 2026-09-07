@@ -1,3 +1,5 @@
+using OpenTail.Stingray.Engine;
+
 namespace OpenTail.Stingray.Audio.HiggsAudio;
 
 /// <summary>
@@ -19,28 +21,58 @@ public static class HiggsArStepper
 {
     /// <summary>Projects `hidden` through the real shared modality-embedding table (weight-tied
     /// output head, confirmed via `build_modality_logits`'s reuse of `weights.modality_embedding`)
-    /// to get `[numCodebooks, audioVocabSize]` logits and argmax-samples each codebook
-    /// independently. Real reference formula: `logits = Linear(hidden, modality_embedding, no
-    /// bias)`, reshaped per codebook.</summary>
-    public static int[] SampleFromHidden(ReadOnlySpan<float> hidden, HiggsLlmTensorSource llm, int numCodebooks, int audioVocabSize)
+    /// to get `[numCodebooks, audioVocabSize]` logits and samples each codebook independently.
+    /// Real reference formula: `logits = Linear(hidden, modality_embedding, no bias)`, reshaped
+    /// per codebook.
+    ///
+    /// <para>Real sampling formula, ported from `sampler.cpp`'s `sample_codebook_row` (not
+    /// guessed): `temperature &lt;= 0` (the reference's `kGreedyTemperatureThreshold`) or
+    /// `top_k==1` is argmax; otherwise `scores = logits/temperature`, real top-k on those SCORES
+    /// (logit space, before softmax) when set, softmax, then real top-p on the resulting
+    /// probabilities, then a multinomial draw. This reuses <see cref="Sampler.Sample"/> (same
+    /// logit-space top-k-then-softmax-then-top-p ordering via its top-k fast path) rather than a
+    /// bespoke reimplementation -- the one real, flagged gap is RNG: the reference draws via a
+    /// real seeded SGLang Gumbel-max trick or Torch-CUDA multinomial (`sample_seeded_sglang_gumbel`/
+    /// `sample_unseeded_torch_multinomial`), this port uses .NET's own `Random`-driven categorical
+    /// draw -- same non-bit-exact-RNG gap already accepted elsewhere this session (VoxCPM2's CFM
+    /// solver, VibeVoice's diffusion sampler). `options: null` (default) preserves the exact
+    /// previous argmax-only behavior byte-for-byte.</para>
+    /// </summary>
+    public static int[] SampleFromHidden(ReadOnlySpan<float> hidden, HiggsLlmTensorSource llm, int numCodebooks, int audioVocabSize,
+        SamplingParams? options = null, Random? rng = null)
     {
         int hiddenDim = llm.HiddenDim;
         var modality = llm.ModalityEmbeddingWeight; // [numCodebooks*audioVocabSize, hiddenDim]
 
         var codes = new int[numCodebooks];
+        var logitsRow = options is null ? null : new float[audioVocabSize];
         for (int cb = 0; cb < numCodebooks; cb++)
         {
-            float best = float.NegativeInfinity;
-            int bestIdx = 0;
             long rowBase = (long)cb * audioVocabSize * hiddenDim;
-            for (int v = 0; v < audioVocabSize; v++)
+            if (options is null)
             {
-                long row = rowBase + (long)v * hiddenDim;
-                float dot = 0f;
-                for (int d = 0; d < hiddenDim; d++) dot += modality[row + d] * hidden[d];
-                if (dot > best) { best = dot; bestIdx = v; }
+                float best = float.NegativeInfinity;
+                int bestIdx = 0;
+                for (int v = 0; v < audioVocabSize; v++)
+                {
+                    long row = rowBase + (long)v * hiddenDim;
+                    float dot = 0f;
+                    for (int d = 0; d < hiddenDim; d++) dot += modality[row + d] * hidden[d];
+                    if (dot > best) { best = dot; bestIdx = v; }
+                }
+                codes[cb] = bestIdx;
             }
-            codes[cb] = bestIdx;
+            else
+            {
+                for (int v = 0; v < audioVocabSize; v++)
+                {
+                    long row = rowBase + (long)v * hiddenDim;
+                    float dot = 0f;
+                    for (int d = 0; d < hiddenDim; d++) dot += modality[row + d] * hidden[d];
+                    logitsRow![v] = dot;
+                }
+                codes[cb] = Sampler.Sample(logitsRow!, options, rng);
+            }
         }
         return codes;
     }
@@ -52,7 +84,7 @@ public static class HiggsArStepper
     /// `ForwardEmbedding` step at `position`, then samples the NEXT step's codes via
     /// <see cref="SampleFromHidden"/> on the resulting hidden state.</summary>
     public static int[] Step(IForwardPass fwd, HiggsLlmTensorSource llm, int[] previousCodes, int position,
-        int numCodebooks, int audioVocabSize)
+        int numCodebooks, int audioVocabSize, SamplingParams? options = null, Random? rng = null)
     {
         if (previousCodes.Length != numCodebooks) throw new ArgumentException("previousCodes length must equal numCodebooks.");
 
@@ -69,6 +101,6 @@ public static class HiggsArStepper
         }
 
         fwd.ForwardEmbedding(embedding, position);
-        return SampleFromHidden(fwd.LastHidden, llm, numCodebooks, audioVocabSize);
+        return SampleFromHidden(fwd.LastHidden, llm, numCodebooks, audioVocabSize, options, rng);
     }
 }

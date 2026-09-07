@@ -15175,3 +15175,30 @@ waveform produced. PersonaPlex's real delay-pattern gap (flagged since the codeb
 resolution earlier this session) is now closed for the non-duplex case; real remaining gaps:
 live-duplex user-audio conditioning, the full voice/system-prompt bootstrap sequence, real
 streaming Mimi decode, real sampling beyond argmax. PersonaPlex stays ranked ~75-80%.
+
+## Higgs Audio TTS -- real temperature/top-k/top-p sampling ported, 2026-09-07
+
+Read `sampler.cpp`'s real `sample_codebook_row` (not guessed): `temperature<=0` or `top_k==1` is
+argmax; otherwise `scores = logits/temperature`, real top-k applied to those SCORES (logit space,
+before softmax) when set, softmax, then real top-p on the resulting probabilities, then a
+multinomial draw (real seeded SGLang Gumbel-max or Torch-CUDA multinomial RNG). Added an optional
+`SamplingParams?`/`Random?` overload to `HiggsArStepper.SampleFromHidden`/`Step`, reusing this
+codebase's existing `OpenTail.Stingray.Engine.Sampler.Sample` (same logit-space
+top-k-then-softmax-then-top-p ordering via its top-k fast path) rather than a bespoke
+reimplementation -- `options: null` (the default) preserves the exact previous argmax-only
+behavior byte-for-byte, so `HiggsArStepperRealWeightsTests` needed no changes. Real, flagged,
+accepted gap: RNG is .NET's own `Random`-driven categorical draw, not the reference's real seeded
+Gumbel/Torch-CUDA RNG -- same non-bit-exact-RNG gap already accepted elsewhere this session
+(VoxCPM2's CFM solver, VibeVoice's diffusion sampler).
+
+New `SampleFromHidden_WithTemperatureSampling_OnRealCheckpoint_ProducesInRangeCodes` test: real
+checkpoint, real prefill, both argmax and `Temperature=1.5/TopK=50/TopP=0.95` sampling paths
+exercised, finite in-range codes from both. 41.1s wall-clock for the full 2-test class run
+(2 real `[ForwardPass] Pre-faulted 16.43 GiB...` lines logged -- genuine, not a no-op).
+
+Higgs Audio TTS's "remaining sampling gap" (flagged alongside VibeVoice TTS's identical
+argmax-only note) is now closed for the AR codebook path. VibeVoice's matching gap remains --
+its real consumer is the ASR text-decode loop, which is separately blocked on this machine's real
+RAM ceiling (7B-class checkpoint OOMs on FP32 dequantization), not a sampling-formula gap, so
+wiring real sampling there has no way to be verified against real weights on this machine right
+now; deferred rather than added unverified.

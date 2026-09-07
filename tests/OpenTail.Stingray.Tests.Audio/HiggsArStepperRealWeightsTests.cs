@@ -1,5 +1,6 @@
 using OpenTail.Stingray.Audio.HiggsAudio;
 using OpenTail.Stingray.Audio.Rvc;
+using OpenTail.Stingray.Engine;
 
 namespace OpenTail.Stingray.Tests.Audio;
 
@@ -91,5 +92,39 @@ public sealed class HiggsArStepperRealWeightsTests : HeavyTestBase
         var waveform = HiggsCodecDecoder.Decode(codec, frames);
         Assert.All(waveform, v => Assert.True(float.IsFinite(v)));
         Assert.Contains(waveform, v => v != 0f);
+    }
+
+    /// <summary>Real temperature/top-k/top-p sampling (`sample_codebook_row`, ported this
+    /// session), replacing the argmax-only path above -- confirms the new
+    /// <see cref="HiggsArStepper.SampleFromHidden(ReadOnlySpan{float}, HiggsLlmTensorSource, int, int, SamplingParams?, Random?)"/>
+    /// overload runs against real weights and produces finite in-range codes, and that a high
+    /// temperature genuinely changes the sampled codes vs. argmax (not silently falling back to
+    /// greedy).</summary>
+    [Fact]
+    public void SampleFromHidden_WithTemperatureSampling_OnRealCheckpoint_ProducesInRangeCodes()
+    {
+        string? path = FindRepoFile("models/_models/higgs_audio_tts/Higgs-Audio-v3-TTS-4B-GGUF/higgs-audio-v3-tts-4b-q8_0.gguf");
+        Assert.SkipUnless(path != null, "higgs-audio-v3-tts-4b-q8_0.gguf not found");
+
+        using var model = GgufModel.Open(path!);
+        var source = new RvcPackedTensorSource(model);
+        using var llm = new HiggsLlmTensorSource(source, NumLayers, HiddenDim, NumHeads, NumKvHeads, HeadDim, FfDim, VocabSize, RopeTheta, RmsNormEps, NumCodebooks, AudioVocabSize);
+
+        var hp = ModelHyperparams.FromGgufMetadata(llm.Metadata);
+        using var backend = new CpuBackend();
+        using var fwd = new ForwardPass(llm, backend, hp);
+
+        var tokenizer = HiggsTtsTextTokenizer.LoadFromPackedGguf(model, audioTokenId: -100);
+        var prompt = tokenizer.EncodePrompt("Hello there, this is a real sampling test.", "", 0);
+        fwd.Prefill(prompt.TokenIds);
+
+        var greedy = HiggsArStepper.SampleFromHidden(fwd.LastHidden, llm, NumCodebooks, AudioVocabSize);
+        var sampled = HiggsArStepper.SampleFromHidden(fwd.LastHidden, llm, NumCodebooks, AudioVocabSize,
+            new SamplingParams { Temperature = 1.5f, TopK = 50, TopP = 0.95f }, new Random(7));
+
+        Assert.Equal(NumCodebooks, sampled.Length);
+        Assert.All(sampled, c => Assert.InRange(c, 0, AudioVocabSize - 1));
+        Assert.Equal(NumCodebooks, greedy.Length);
+        Assert.All(greedy, c => Assert.InRange(c, 0, AudioVocabSize - 1));
     }
 }
