@@ -16654,3 +16654,20 @@ reference, frame-by-frame cosine/relative-L2 comparison) -- specifically dumping
 run, to localize whether the divergence is in the CFM solver, the step projection, or the local
 encoder's self-conditioning. Not started this pass -- this needs its own dedicated debugging
 session with the reference CLI built and a captured trace, not a guess.
+
+## Qwen3 Forced Aligner -- ROOT CAUSE SOLVED: missing QK-RMSNorm in ForwardPass, classify head now predicts accurate timestamps, 2026-09-07
+
+Identified and resolved the root cause for the classify-head-always-0 bug in Qwen3 Forced Aligner:
+- **Root Cause**: `ForwardPass` ran without QK-RMSNorm (`hp.HasQkNorm = false`). In `QwenAsrForcedAligner.AlignReal` and `QwenAsrDecoder`, `ModelHyperparams.FromGgufMetadata(source.Metadata)` was called without the second `tensorSource` argument (`source`), defaulting it to `null`. Furthermore, unlike `GgufModel.Open` (which scans GGUF tensor names and injects `_opentailllm.has_qk_norm = true`), `QwenAsrLlmSafetensorsTensorSource` constructs its own `_metadata` dictionary directly from Safetensors and did not set `_opentailllm.has_qk_norm`. With neither the metadata key present nor `tensorSource` provided to probe for `blk.0.attn_q_norm.weight`, `hp.HasQkNorm` evaluated to `false`.
+- **Impact**: `ForwardPass` never loaded `_qNorm` or `_kNorm` and completely skipped `ApplyQkNorm` (`SimdKernels.RmsNorm` per-head on Q and K before RoPE) across all 28 layers. In contrast, the hand-computed isolation test (`QwenForcedAlignerLayer0AttentionIsolationDebugTest.cs`) explicitly applied `RmsNorm` on `q` and `k` with `qNorm` and `kNorm` before RoPE, which is why the isolation test achieved 0.03 relative error (>0.99 cosine similarity) against the C++ reference while `ForwardPass` diverged to 0.64 cosine similarity.
+- **Fix**:
+  1. `QwenAsrLlmSafetensorsTensorSource`: Injected `_metadata["_opentailllm.has_qk_norm"] = true` if `_byName.ContainsKey("blk.0.attn_q_norm.weight")`.
+  2. `QwenAsrForcedAligner`: Passed `source` to `ModelHyperparams.FromGgufMetadata(source.Metadata, source)`.
+  3. `QwenAsrDecoder`: Passed `source` to `ModelHyperparams.FromGgufMetadata(source.Metadata, source)`.
+  4. `QwenAsrLlmSafetensorsTensorSourceTests`: Passed `source` to `ModelHyperparams.FromGgufMetadata(source.Metadata, source)`.
+- **Verification**: Re-ran `QwenForcedAlignerRealAlignmentTests.AlignReal_AWav_ProducesMonotonicWordTimestamps` on real audio and real Safetensors weights.
+  - Before: `raw_timestamp_ids=[180,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]` (all words at `[0.00, 0.00]`).
+  - After: `raw_timestamp_ids=[1,4,4,8,8,11,12,15,15,21,21,23,23,24,24,27,28,34,34,36,36,42,47,49,49,56,56,58,58,64,64,74]`.
+  - Predictions are strictly monotonic and aligned: `This=[0.08,0.32] little=[0.32,0.64] work=[0.64,0.88] was=[0.96,1.20] finished=[1.20,1.68] in=[1.68,1.84] the=[1.84,1.92] year=[1.92,2.16] eighteen=[2.24,2.72] o=[2.72,2.88] three=[2.88,3.36] and=[3.76,3.92] intended=[3.92,4.48] for=[4.48,4.64] immediate=[4.64,5.12] publication=[5.12,5.92]`.
+  - All automated tests in `OpenTail.Stingray.Tests.Audio` pass cleanly with 0 errors/failures.
+

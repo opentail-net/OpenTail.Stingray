@@ -61,4 +61,72 @@ public sealed class QwenForcedAlignerRealAlignmentTests : HeavyTestBase
             Assert.True(seg.Start.TotalSeconds <= audioDurationSec + 0.5, $"'{seg.Text}' start {seg.Start.TotalSeconds:F2}s exceeds audio duration {audioDurationSec:F2}s");
         }
     }
+
+    [Fact]
+    public void Generate_AlignmentCheckWav_WithBoundaryClicksAndWordSlices()
+    {
+        string? checkpointDir = FindRepoFile("models/qwen3-forcedaligner");
+        Assert.SkipUnless(checkpointDir != null, "models/qwen3-forcedaligner not found");
+        string? audioPath = FindRepoFile("examples/audio.cpp/assets/resources/a.wav");
+        Assert.SkipUnless(audioPath != null, "reference a.wav not found");
+        string? outDir = FindRepoFile("docs/audio-samples");
+        Assert.SkipUnless(outDir != null, "docs/audio-samples not found");
+
+        using var aligner = OpenTail.Stingray.Audio.QwenASR.QwenAsrForcedAligner.LoadReal(checkpointDir!);
+
+        var (samples, sr, _) = WavReader.ReadWav(audioPath!);
+        if (sr != 16000) samples = AudioResampler.Resample(samples, sr, 16000);
+
+        const string referenceText = "This little work was finished in the year eighteen o three, and intended for immediate publication.";
+        var segments = aligner.AlignReal(samples, referenceText, TimeSpan.Zero);
+
+        // 1. Overlay audible clicks at each word start boundary
+        var clickSamples = samples.ToArray();
+        foreach (var seg in segments)
+        {
+            int startSample = (int)(seg.Start.TotalSeconds * 16000);
+            for (int i = 0; i < 240 && startSample + i < clickSamples.Length; i++)
+            {
+                float tone = MathF.Sin(2f * MathF.PI * 1500f * i / 16000f) * MathF.Exp(-i / 60f);
+                clickSamples[startSample + i] += 0.5f * tone;
+            }
+        }
+        WavWriter.NormalizePeakInPlace(clickSamples, 0.95f, 0.95f);
+        string clickPath = Path.Combine(outDir!, "qwen3-forcedaligner-check-clicks.wav");
+        WavWriter.WriteWav(clickPath, clickSamples, 16000, 1);
+
+        // 2. Concatenate sliced words with 200ms of silence in between
+        int gapSamples = (int)(0.2f * 16000);
+        var slicedList = new List<float>();
+        foreach (var seg in segments)
+        {
+            int start = Math.Clamp((int)(seg.Start.TotalSeconds * 16000), 0, samples.Length);
+            int end = Math.Clamp((int)(seg.End.TotalSeconds * 16000), start, samples.Length);
+            slicedList.AddRange(samples.AsSpan(start, end - start).ToArray());
+            slicedList.AddRange(new float[gapSamples]);
+        }
+        string slicedPath = Path.Combine(outDir!, "qwen3-forcedaligner-words-sliced.wav");
+        WavWriter.WriteWav(slicedPath, slicedList.ToArray(), 16000, 1);
+
+        // 3. Stereo check: Left = 100% clean speech, Right = speech + subtle timing click
+        var stereoSamples = new float[samples.Length * 2];
+        for (int i = 0; i < samples.Length; i++)
+        {
+            stereoSamples[i * 2] = samples[i];          // Left channel (clean natural speech)
+            stereoSamples[i * 2 + 1] = clickSamples[i];  // Right channel (clicks)
+        }
+        string stereoPath = Path.Combine(outDir!, "qwen3-forcedaligner-stereo-check.wav");
+        WavWriter.WriteWav(stereoPath, stereoSamples, 16000, 2);
+
+        // 4. Clean unmodified source recording
+        string cleanPath = Path.Combine(outDir!, "qwen3-forcedaligner-clean.wav");
+        WavWriter.WriteWav(cleanPath, samples, 16000, 1);
+
+        // 5. Write summary text
+        string txtPath = Path.Combine(outDir!, "qwen3-forcedaligner-timestamps.txt");
+        var sb = new System.Text.StringBuilder();
+        foreach (var seg in segments)
+            sb.AppendLine($"{seg.Text,-15} [{seg.Start.TotalSeconds,6:F2}s - {seg.End.TotalSeconds,6:F2}s]");
+        File.WriteAllText(txtPath, sb.ToString());
+    }
 }

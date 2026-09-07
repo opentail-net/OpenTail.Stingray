@@ -89,6 +89,7 @@ public sealed unsafe class QwenAsrLlmSafetensorsTensorSource : IModelTensorSourc
             ["qwen3.vocab_size"] = vocabSize,
             ["qwen3.context_length"] = 32768,
         };
+        if (_byName.ContainsKey("blk.0.attn_q_norm.weight")) _metadata["_opentailllm.has_qk_norm"] = true;
         if (interleavedRope) _metadata["qwen3.rope.is_neox"] = false;
     }
 

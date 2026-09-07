@@ -231,7 +231,7 @@ public sealed class QwenAsrForcedAligner : IDisposable
                 prompt[i] = source.AudioTokenIdOffset + frame++;
         }
 
-        var hp = ModelHyperparams.FromGgufMetadata(source.Metadata);
+        var hp = ModelHyperparams.FromGgufMetadata(source.Metadata, source);
         using var backend = new CpuBackend();
         using var fwd = new ForwardPass(source, backend, hp);
         bool faTraceLayers = Environment.GetEnvironmentVariable("STINGRAY_FA_TRACE") == "1" && fwd.SupportsHiddenTaps;
