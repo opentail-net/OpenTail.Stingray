@@ -1,3 +1,5 @@
+using OpenTail.Stingray.Engine;
+
 namespace OpenTail.Stingray.Audio.VibeVoice;
 
 /// <summary>Real special-token selection for VibeVoice TTS's interleaved text/diffusion decode
@@ -18,6 +20,25 @@ public static class VibeVoiceGenerationTokenSelector
             if (score > bestScore) { bestScore = score; best = token; }
         }
         return best;
+    }
+
+    /// <summary>Real `options.do_sample` path from `select_vibevoice_constrained_token`: argmax
+    /// among just the 4 real candidate tokens when `options` is `null` (matches
+    /// <see cref="SelectArgmax"/> exactly), otherwise real temperature/top-k/top-p sampling
+    /// restricted to those same 4 candidates -- implemented by masking every OTHER vocabulary
+    /// entry to `-infinity` before delegating to `OpenTail.Stingray.Engine.Sampler.Sample` (top-k/
+    /// top-p naturally exclude `-infinity` entries, so this is equivalent to the reference's own
+    /// restricted-candidate scoring without a bespoke small-N sampler).</summary>
+    public static int Select(ReadOnlySpan<float> logits, int speechStartId, int speechEndId, int speechDiffusionId, int eosId,
+        SamplingParams? options, Random? rng = null)
+    {
+        if (options is null) return SelectArgmax(logits, speechStartId, speechEndId, speechDiffusionId, eosId);
+
+        Span<int> candidates = [speechStartId, speechEndId, speechDiffusionId, eosId];
+        var masked = new float[logits.Length];
+        Array.Fill(masked, float.NegativeInfinity);
+        foreach (int token in candidates) masked[token] = logits[token];
+        return Sampler.Sample(masked, options, rng);
     }
 }
 
@@ -67,7 +88,7 @@ public static class VibeVoiceGenerator
         float speechScalingFactor, float speechBiasFactor,
         float layerNormEps,
         int ddpmNumSteps, int inferenceSteps, float guidanceScale,
-        int maxSteps, Random rng)
+        int maxSteps, Random rng, SamplingParams? tokenSelectionOptions = null)
     {
         var generatedTokens = new List<int>();
         var audioSamples = new List<float>();
@@ -89,7 +110,7 @@ public static class VibeVoiceGenerator
 
         for (int step = 0; step < maxSteps; step++)
         {
-            int token = VibeVoiceGenerationTokenSelector.SelectArgmax(currentLogits, speechStartId, speechEndId, speechDiffusionId, eosId);
+            int token = VibeVoiceGenerationTokenSelector.Select(currentLogits, speechStartId, speechEndId, speechDiffusionId, eosId, tokenSelectionOptions, rng);
             generatedTokens.Add(token);
             if (token == eosId) break;
 

@@ -1,5 +1,6 @@
 using OpenTail.Stingray.Audio.Rvc;
 using OpenTail.Stingray.Audio.VibeVoice;
+using OpenTail.Stingray.Engine;
 
 namespace OpenTail.Stingray.Tests.Audio;
 
@@ -112,6 +113,75 @@ public sealed class VibeVoiceGeneratorRealWeightsTests : HeavyTestBase
             speechScalingFactor, speechBiasFactor, TokenizerLayerNormEps,
             DdpmNumSteps, inferenceSteps: 4, guidanceScale: 1.5f,
             maxSteps: 6, new Random(31));
+
+        Assert.NotEmpty(result.GeneratedTokens);
+        Assert.NotEmpty(result.AudioSamples);
+        Assert.All(result.AudioSamples, v => Assert.True(float.IsFinite(v)));
+        Assert.Contains(result.AudioSamples, v => v != 0f);
+    }
+
+    /// <summary>Real temperature/top-k/top-p sampling (`select_vibevoice_constrained_token`'s
+    /// `options.do_sample` path, ported this session), restricted to the 4 real control-token
+    /// candidates, replacing the argmax-only path above.</summary>
+    [Fact]
+    public void Generate_WithTemperatureSampling_OnRealCheckpoint_ProducesFiniteNonSilentAudio()
+    {
+        string? path = FindRepoFile("models/_models/vibevoice-tts/VibeVoice-1.5B-GGUF/vibevoice-1.5b-q8_0.gguf");
+        Assert.SkipUnless(path != null, "vibevoice-1.5b-q8_0.gguf not found");
+
+        using var model = GgufModel.Open(path!);
+        var source = new RvcPackedTensorSource(model);
+
+        using var llm = new VibeVoiceLlmTensorSource(source, NumLayers, HiddenDim, NumHeads, NumKvHeads, HeadDim, FfDim, VocabSize, RopeTheta, RmsNormEps);
+        var hp = ModelHyperparams.FromGgufMetadata(llm.Metadata);
+        using var backend = new CpuBackend();
+        using var fwd = new ForwardPass(llm, backend, hp);
+
+        var textEmbeddingTable = source.GetTensor("model.language_model.embed_tokens.weight");
+        var diffusionHeadWeights = VibeVoiceDiffusionHeadWeights.Load(HiddenDim, AcousticVaeDim, HeadLayers, HeadFfnRatio, HeadRmsNormEps, source.GetTensor);
+
+        var acousticConfig = new VibeVoiceTokenizerConfig
+        {
+            Channels = Channels,
+            VaeDim = AcousticVaeDim,
+            EncoderNFilters = DecoderNFilters,
+            EncoderRatios = TokenizerRatios,
+            EncoderDepths = DecoderDepths,
+            DisableLastNorm = true,
+            LayerNormEps = TokenizerLayerNormEps,
+        };
+        var acousticDecoderWeights = VibeVoiceTokenizerDecoderWeights.Load(acousticConfig, DecoderNFilters, TokenizerRatios, DecoderDepths,
+            "model.acoustic_tokenizer.decoder", source.GetTensor);
+
+        var semanticConfig = new VibeVoiceTokenizerConfig
+        {
+            Channels = Channels,
+            VaeDim = SemanticVaeDim,
+            EncoderNFilters = DecoderNFilters,
+            EncoderRatios = TokenizerRatios,
+            EncoderDepths = EncoderDepths,
+            DisableLastNorm = true,
+            LayerNormEps = TokenizerLayerNormEps,
+        };
+        var semanticEncoderWeights = VibeVoiceTokenizerEncoderWeights.Load(semanticConfig, "model.semantic_tokenizer.encoder", source.GetTensor);
+
+        var acousticConnectorWeights = VibeVoiceConnectorWeights.Load("model.acoustic_connector", AcousticVaeDim, HiddenDim, source.GetTensor);
+        var semanticConnectorWeights = VibeVoiceConnectorWeights.Load("model.semantic_connector", SemanticVaeDim, HiddenDim, source.GetTensor);
+
+        float speechScalingFactor = source.GetTensor("model.speech_scaling_factor")[0];
+        float speechBiasFactor = source.GetTensor("model.speech_bias_factor")[0];
+
+        var promptTokenIds = new[] { 1, 100, 200, 300, SpeechStartId };
+        var tokenOptions = new SamplingParams { Temperature = 0.8f, TopK = 4, TopP = 1.0f };
+
+        var result = VibeVoiceGenerator.Generate(
+            fwd, promptTokenIds, textEmbeddingTable, HiddenDim,
+            SpeechStartId, SpeechEndId, SpeechDiffusionId, EosId,
+            diffusionHeadWeights, acousticDecoderWeights, semanticEncoderWeights,
+            acousticConnectorWeights, semanticConnectorWeights,
+            speechScalingFactor, speechBiasFactor, TokenizerLayerNormEps,
+            DdpmNumSteps, inferenceSteps: 4, guidanceScale: 1.5f,
+            maxSteps: 6, new Random(31), tokenOptions);
 
         Assert.NotEmpty(result.GeneratedTokens);
         Assert.NotEmpty(result.AudioSamples);

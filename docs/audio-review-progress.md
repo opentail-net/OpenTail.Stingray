@@ -15335,3 +15335,25 @@ logged -- genuine, not a no-op). PersonaPlex's "real sampling beyond argmax" gap
 on its remaining-gaps list) is now closed for the delay-correct generation path; real remaining
 gaps: live-duplex user-audio conditioning, the full voice/system-prompt bootstrap sequence, real
 streaming Mimi decode.
+
+## VibeVoice TTS -- real temperature/top-k/top-p sampling ported, 2026-09-07
+
+Confirmed `generator.cpp`'s `select_vibevoice_constrained_token` real `options.do_sample` path:
+argmax among the 4 real candidate control tokens (`speech_start`/`speech_end`/`speech_diffusion`/
+`eos`) when not sampling, else real temperature-scaled/top-k/top-p multinomial sampling restricted
+to just those 4 logits. Added `VibeVoiceGenerationTokenSelector.Select` (new, alongside the
+existing `SelectArgmax` which it delegates to when `options: null`): masks every non-candidate
+vocabulary entry to `-infinity` then reuses `OpenTail.Stingray.Engine.Sampler.Sample` -- top-k/
+top-p naturally exclude `-infinity` entries, so this reproduces the reference's restricted-
+candidate scoring without a bespoke small-N sampler. Threaded an optional
+`SamplingParams? tokenSelectionOptions = null` through `VibeVoiceGenerator.Generate` (default
+preserves the exact previous argmax-only behavior byte-for-byte, reusing the same `Random rng`
+parameter the diffusion sampler already requires).
+
+New `Generate_WithTemperatureSampling_OnRealCheckpoint_ProducesFiniteNonSilentAudio` test:
+`Temperature=0.8/TopK=4/TopP=1.0`, real checkpoint, finite non-silent audio produced. 39.2s
+wall-clock for the 2-test class (two real `[ForwardPass] Pre-faulted 6.62 GiB...` lines logged --
+genuine). VibeVoice TTS's "do_sample/temperature/top-k/top-p path (argmax-only currently)" gap
+(flagged alongside Higgs's identical note, both now closed this session) is resolved for the
+text/control-token stream; the diffusion sampler itself already had real CFG sampling from
+earlier this session, so this closes VibeVoice TTS's last flagged sampling gap.
