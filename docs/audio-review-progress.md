@@ -13647,3 +13647,51 @@ otherwise correct.
 
 Per this session's "pivot rather than stall" discipline, moving to VoxCPM2's MiniCPM
 backbone next.
+
+## Higgs Audio TTS -- LLM/AR backbone scoped and bridged, 2026-09-07
+
+Read `ar.cpp` (1367 lines), `assets.cpp`, `codebooks.cpp` in enough detail to scope real
+architecture (not guessed). Real text/AR backbone is a genuine Qwen3-family GQA decoder --
+confirmed via `ar.cpp`'s `load_layer_weights`: real per-head `q_norm`/`k_norm` RMSNorm, no
+QKV bias (Qwen3's real convention, distinct from VibeVoice ASR's Qwen2 decoder ported
+earlier this session, which HAS QKV bias and no q/k norm). Real prefix `body.layers.{i}.*`,
+final norm `body.norm.weight`, tied text embedding `tied.embedding.text_embedding.weight`.
+
+**Real, genuinely different multimodal mechanism from every other model this session**:
+discrete audio-codebook tokens are embedded via a SEPARATE, SHARED
+`tied.embedding.modality_embeddings.0.embedding.weight` table
+(`[numCodebooks*audioVocabSize, hiddenSize]`, each codebook occupying its own disjoint
+contiguous id range within that one table) -- summed across all codebooks per frame
+(`ReduceSum`) to form one audio embedding, then combined with the text embedding via a real
+GATED mix (`text*textGate + code*codeGate`, real learned/predicted per-position gate
+values, not a fixed 50/50 blend -- the gate predictor itself not yet read). The SAME
+modality-embedding table is reused directly as the audio-codebook LM head (real weight
+tying, confirmed via `build_modality_logits`). Unlike OmniVoice/MOSS/VibeVoice's "splice
+continuous features as extra vocab rows on `token_embd.weight`" workaround (needed because
+`ForwardPass` has no native embeddings-in API for those), Higgs's own real architecture
+already keeps text and audio embeddings in genuinely separate tables combined at runtime --
+so THIS checkpoint doesn't need that workaround at all, a real architectural difference
+worth remembering when this item is picked up again.
+
+Downloaded the real checkpoint (`audio-cpp/audio.cpp-gguf`, `Higgs-Audio-v3-TTS-4B-GGUF/
+higgs-audio-v3-tts-4b-q8_0.gguf`, a 4B-class model -- smaller than VibeVoice ASR's 7B, larger
+than VoxCPM2's ~1.5B). Implemented `HiggsLlmTensorSource` (the Qwen3 `ForwardPass` bridge,
+same pattern as `OmniVoiceLlmTensorSource`/`VibeVoiceLlmTensorSource`), exposing the real
+modality-embedding table via `ModalityEmbeddingWeight` for a future caller to build the real
+gated multi-codebook embedding. Real-weight verification not yet done this update (download
+was still in progress); real config numbers (`hidden_size`/`num_hidden_layers`/etc, all
+present in `assets.cpp`'s `parse_text_config` as standard HF config keys) not yet dumped.
+
+**Still remaining for a complete Higgs Audio TTS pipeline**: real-weight verification of
+`HiggsLlmTensorSource` (dump real config.json numbers first, same debug-dump-test technique
+used for every other model this session), the real gate predictor (drives `text_gate`/
+`code_gate`), the AR generation loop (`generator.cpp`, 553 lines) and its KV-cache/sampling
+wiring (`sampler.cpp`, 480 lines, plus `ar.cpp`'s own `HiggsARKVCache`/`HiggsARDecodeGraph`/
+`HiggsARPrefillGraph` classes), the audio codec (`codec.cpp`, 1678 lines -- the largest
+remaining piece, likely shares real architecture with OmniVoice's already-verified DAC-style
+codec per this project's earlier finding that Higgs and OmniVoice share the same acoustic
+codec family), and the real text tokenizer (`tokenizer_text.cpp`, 94 lines, likely a simple
+reuse of `HuggingFaceTokenizerSource` like VibeVoice ASR's). Real next step if picked up:
+dump real config numbers and real-weight-verify `HiggsLlmTensorSource`'s tensor shape
+resolution once the checkpoint finishes downloading, then read `codec.cpp` to confirm the
+real DAC-family reuse claim against OmniVoice's own already-ported codec code.
