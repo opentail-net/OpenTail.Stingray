@@ -13246,6 +13246,29 @@ suitable for that was not investigated this update. Real next step if picked up:
 for `EnableHiddenTaps` per the Fun-ASR-Nano bisection work) before deciding between reusing
 `ForwardPass` vs. a bespoke port like this session's other MiniCPM/GPT2-family ports.
 
+**Update, 2026-09-07 (same session) -- RESOLVED: `IForwardPass` already has exactly the
+embeddings-injection API this needs.** Read `src/OpenTail.Stingray.Core/IForwardPass.cs` in
+full: `SupportsEmbeddingInput`/`ForwardEmbedding(ReadOnlySpan&lt;float&gt; embedding, int
+position)` -- "run one position from a PRECOMPUTED embedding... instead of a token-table
+lookup" -- is a real, already-implemented (`ForwardPass.Decode.cs`, `SupportsEmbeddingInput
+=&gt; true` on the CPU pass) single-POSITION decode API, built originally for multimodal
+vision soft-token splicing. This is a direct match for VoxCPM2's `base_lm` per-step
+generation loop (one new patch embedding injected per step) -- no "extra vocab rows"
+workaround needed there, unlike VibeVoice ASR's case (which injects a batch of embeddings
+known in full before a single prefill call, where the vocab-extension trick is still the
+right tool). Real caveat: `ForwardEmbedding` is single-position only, no batched
+embeddings-prefill API exists -- for VoxCPM2's PROMPT portion (multiple already-known
+patches before generation starts, if any), either call `ForwardEmbedding` once per position
+sequentially, or use the same "extra vocab rows" trick as VibeVoice ASR for that batch-known
+portion specifically. Also confirms `LastHidden` (post-trunk, pre-final-norm, refreshed
+after every `Forward`/`Prefill` call) as the real mechanism for getting HIDDEN STATES rather
+than logits out of `ForwardPass` -- exactly what `base_lm`'s DiT/FSQ/fusion-projection
+consumers need instead of a sampled next-token id. Together, this resolves the earlier open
+question: VoxCPM2's MiniCPM backbone CAN reuse the existing `ForwardPass` engine (via a
+`VoxCpm2LlmTensorSource` analogous to this session's `VibeVoiceLlmTensorSource`) rather than
+needing a bespoke Transformer port -- a real, significant scope reduction for the largest
+remaining piece of VoxCPM2.
+
 ## VibeVoice ASR -- tokenizer encoders + connector implemented, structurally verified, 2026-09-07
 
 Downloaded the real checkpoint (`audio-cpp/audio.cpp-gguf`, `VibeVoice-ASR-GGUF/
