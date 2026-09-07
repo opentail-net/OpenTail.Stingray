@@ -208,5 +208,17 @@ public sealed class OmniVoiceLlmRealPromptDiagnosticTests : HeavyTestBase
             float rmsDiff = (float)Math.Sqrt(sumSqDiff / hiddenDim);
             Console.Error.WriteLine($"[OmniVoiceLayerBisect] layer={layer,2} rmsA={rmsA:F4} rmsB={rmsB:F4} rmsDiff={rmsDiff:F4} relDiff={rmsDiff / MathF.Max(rmsA, rmsB):F4}");
         }
+
+        // Real, cheap check proposed by the doc's own next-step: does the layer-27 (final)
+        // pre-norm hidden state have a small number of outlier dimensions dominating its RMS?
+        int lastBase = (numLayers - 1) * hiddenDim;
+        var dimsA = new (int Dim, float AbsVal)[hiddenDim];
+        for (int d = 0; d < hiddenDim; d++) dimsA[d] = (d, MathF.Abs(tapsA[lastBase + d]));
+        Array.Sort(dimsA, (x, y) => y.AbsVal.CompareTo(x.AbsVal));
+        Console.Error.WriteLine("[OmniVoiceOutlierDims] top-10 |value| dims of prompt A's final pre-norm hidden state:");
+        for (int i = 0; i < 10; i++)
+            Console.Error.WriteLine($"    dim={dimsA[i].Dim} |value|={dimsA[i].AbsVal:F4}");
+        float median = dimsA[hiddenDim / 2].AbsVal;
+        Console.Error.WriteLine($"[OmniVoiceOutlierDims] median |value|={median:F4}, top1/median ratio={dimsA[0].AbsVal / median:F2}");
     }
 }

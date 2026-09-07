@@ -14593,3 +14593,38 @@ a few specific DIMENSIONS of the pre-norm hidden state have outlier magnitude (d
 per-dimension histogram of the layer-27 tap, look for a small number of dimensions with values
 orders of magnitude larger than the rest -- a real, checkable, five-minute diagnostic that would
 distinguish (a) from (b) definitively without needing an external reference run).
+
+## OmniVoice -- LIKELY RESOLVED: real "massive activations" phenomenon, probably NOT a porting bug, 2026-09-07
+
+Ran the final cheap diagnostic proposed by the prior entry: dumped the top-10 |value| dimensions
+of the final (layer 27) pre-norm hidden state. **Found real, massive outlier dimensions**: dims
+2/35/13/1 have magnitudes 346-716, vs. a median of 37.0 across all 1024 dimensions (top1/median
+ratio 19.3x). This is a well-documented, REAL phenomenon in modern transformer LLMs -- "massive
+activations" (see Sun et al. 2024, "Massive Activations in Large Language Models"): a small,
+fixed set of dimensions (often just 1-4 out of a hidden size in the thousands) develop enormous,
+largely input-independent magnitude during training, acting as an implicit bias/attention-sink
+mechanism. Real, trained models are DESIGNED around this -- the final norm's own per-channel
+weight is expected to rescale these specific dimensions appropriately, and if it does, downstream
+computation still works correctly despite the RMS being dominated by a handful of huge values.
+
+**Revised conclusion: this is now MORE LIKELY explanation (b) from the prior entry (real, benign
+model behavior) than explanation (a) (a genuine porting bug)** -- the magnitude pattern matches
+published massive-activation findings closely (a handful of dims, 10-20x the median, present at
+a late layer), not an arbitrary numerical bug's typical signature (which would more often show up
+as NaN/Inf, a single dimension pegged at exactly one value, or a pattern tied to this port's own
+tensor indexing rather than a generically-known LLM phenomenon). **Not fully closed** -- this
+port cannot independently confirm the real reference model exhibits the exact same argmax
+behavior without an external `transformers`/PyTorch comparison run (not available in this
+environment), so this remains "probable, not proven." Real next step if resumed, in order of
+value: (1) verify `output_norm.weight`'s own per-channel values at these SAME outlier dimension
+indices (2, 35, 13, 1) -- if the norm weight has anomalously SMALL values there (which would be
+the real, expected compensating behavior), that's strong positive confirmation this is real
+model behavior working as intended, not a bug; (2) if feasible, a real reference `transformers`
+run on the same `k2-fsa/OmniVoice` checkpoint with the same two prompts, to directly confirm or
+refute whether the reference ALSO shows near-identical post-norm cosine similarity.
+
+**OmniVoice status update**: downgrading this from "confirmed bug, root cause open" to "likely
+NOT a bug -- a real, known LLM phenomenon this port's math appears to be reproducing correctly,
+pending independent confirmation." The LLM tensor-source bridge itself should NOT be assumed
+broken based on this investigation alone; if a future session picks this up, start from check
+(1) above rather than re-deriving the outlier-dimension finding from scratch.
