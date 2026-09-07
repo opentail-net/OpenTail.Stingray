@@ -14274,3 +14274,54 @@ not independently confirmed), and wiring the real per-step generation loop
 (`generator.cpp`/`session.cpp`, not yet read) that ties text conditioning -> diffusion sampling
 -> this decoder into one live pass, mirroring what this session already achieved for Higgs
 Audio TTS.
+
+## VibeVoice TTS -- first live end-to-end run, real generation loop wired, 2026-09-07
+
+Read `generator.cpp`'s real single-request `generate_vibevoice` loop (~line 505-659) and
+confirmed every remaining open question from earlier entries:
+
+- **LLM bridge fully reusable**: `decoder.cpp`'s real tensor prefix (`model.language_model.
+  layers.{i}.*`) is IDENTICAL to what `VibeVoiceLlmTensorSource` (built for ASR) already maps --
+  same checkpoint family, same Qwen2 backbone, zero changes needed. Closes the "not
+  independently confirmed" flag from the prior entry.
+- **Real interleaved control flow**: the LLM emits ONE OF ONLY 4 real candidate tokens per step
+  (`select_vibevoice_constrained_token` never considers the full vocab, just
+  `speech_start`/`speech_end`/`speech_diffusion`/`eos`) -- confirmed real, non-obvious detail:
+  these REUSE the base Qwen2 checkpoint's own vision special tokens
+  (`<|vision_start|>`=151652/`<|vision_end|>`=151653/`<|vision_pad|>`=151654/
+  `<|endoftext|>`=151643, real ids dumped from the checkpoint's own tokenizer.json, not new
+  tokens added for VibeVoice). On a `speech_diffusion` step: real CFG diffusion sampling
+  conditioned on the positive prompt's hidden state AND a negative branch seeded from just the
+  `speech_start` token, unscale (`latent/speechScalingFactor - speechBiasFactor`, real
+  per-checkpoint scalars `model.speech_scaling_factor`/`model.speech_bias_factor`), decode,
+  re-encode through the semantic tokenizer, project both through their own real connectors
+  (`model.acoustic_connector`/`model.semantic_connector`, confirmed real prefixes), SUM into the
+  next embedding.
+
+**`VibeVoiceGenerator`/`VibeVoiceGenerationTokenSelector` implemented**, chaining EVERY VibeVoice
+TTS piece real-weight verified this session (LLM bridge, diffusion head+scheduler+sampler,
+acoustic decoder, semantic encoder, both connectors) into one live loop. Real, deliberate
+simplification: uses the ONE-SHOT (non-streaming) decoder/encoder per diffusion step rather than
+the reference's real STATEFUL streaming versions (`decode_acoustic_streaming`/
+`encode_semantic_streaming`, which maintain conv history across chunks) -- flagged precisely as
+future work, not silently approximated.
+
+**Bug found and fixed while wiring the test**: passed the DECODER's real reversed depths array
+(`[8,3,3,3,3,3,3]`, real fallback for `decoder_depths=null`) to the semantic ENCODER's config too
+-- the encoder uses the RAW, un-reversed `"3-3-3-3-3-3-8"` order directly. Caught immediately by
+a real "missing tensor" error (`stages.0.3.norm.weight` not found, since stage 0 should have
+depth 3 not 8) rather than silently producing wrong output.
+
+**First live end-to-end run this session for VibeVoice TTS** (`VibeVoiceGeneratorRealWeightsTests`):
+a minimal real prompt (raw token ids ending in the real `speech_start` id) through the real LLM,
+6 real interleaved steps, real diffusion-sampled audio chunks decoded and fed back -- 21.3s
+wall-clock, 6.62 GiB resident weights, finite non-silent audio. Real prompt-template
+construction (`"Text input:\n Speaker N: ...\n Speech output:\n"`) is separate, unstarted work
+this test deliberately bypasses to isolate the generation-loop machinery.
+
+**VibeVoice TTS status: ~90%.** Every core generative piece is real-weight verified and wired
+end-to-end. Remaining: the real prompt-template/text-tokenizer port (`tokenizer_text.cpp`), the
+real streaming decoder/encoder state (currently one-shot per chunk), reference-voice-prompt
+encoding for voice cloning (`resolve_prompt_acoustic_means`, not started), and the real
+`request.generation.do_sample`/temperature/top-k/top-p path (argmax-only currently, matches
+Higgs's own remaining sampling gap).
