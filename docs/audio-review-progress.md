@@ -13707,3 +13707,53 @@ project). Real next step if picked up: dump real config numbers and real-weight-
 (slow, ~500MB of an estimated multi-GB total as of this update), then attempt reusing
 OmniVoice's DAC decoder / RVC's HuBERT encoder code directly against Higgs's real tensor
 names rather than re-deriving the codec from scratch.
+
+## VoxCPM2 -- real generation-loop algorithm fully scoped from generator.cpp's generate_once, 2026-09-07
+
+Read `VoxCPM2FeatureGeneratorRuntime::Impl::generate_once` (the actual per-frame
+autoregressive loop) in full (not guessed). This closes the loop on how EVERY piece
+implemented this session for VoxCPM2 connects together -- a real, complete algorithmic
+understanding now exists, even though the orchestration code itself is not yet written.
+
+**Real per-frame loop, using exactly the classes already built and real-weight verified this
+session**:
+1. `projected = VoxCpm2StepProjection.Run(lmHidden, residualHidden, currentEmbed)`.
+2. `mu = concat(projected.CurrentLmDitHidden, projected.ResidualDitHidden)` -- the real 2-row
+   DiT conditioning prefix.
+3. `patch = VoxCpm2CfmSolver.GeneratePatch(w, mu, prefixCond, ...)` -- generates one new
+   4-frame patch.
+4. Append `patch` to the result; `prefixCond = patch` (the NEXT step's CFM conditioning is
+   the frame just generated -- a real, simple continuation rule).
+5. Real stop check: if `index > minTokens` and `stop_class(projected.CurrentStopLogits) ==
+   1`, stop generating (the `VoxCpm2StepProjection` output's stop-logits ARE the real stop
+   signal, already ported -- `stop_class` itself is presumably just an argmax over the 2
+   logits, not yet confirmed by name but trivial once needed).
+6. `currEmbed = VoxCpm2LocalEncoder.EncodePatch(patch)` -- encode the JUST-generated patch.
+7. `nextLm = base_lm.ForwardEmbedding(currEmbed).LastHidden` -- feed `currEmbed` as the base
+   LM's next-position embedding (real, live-tested mechanism from earlier this session).
+8. `nextProjected = VoxCpm2StepProjection.Run(nextLm, residualHidden, currEmbed)` -- NOTE:
+   this call's `currentEmbed` argument is `currEmbed` (not zero, unlike step 1's first-ever
+   call) -- confirms `VoxCpm2StepProjection.Run`'s 3rd parameter really is "this frame's own
+   local-encoder embedding", exactly as this session's implementation already assumed.
+9. `lmHidden = nextProjected.FsqHidden` -- the FSQ-QUANTIZED hidden feeds back as next
+   iteration's `lmHidden` (not the raw LM hidden state -- a real, deliberate quantization
+   bottleneck confirmed in the actual generation loop, not just the isolated projection
+   math).
+10. `residualHidden = residual_lm.ForwardEmbedding(nextProjected.ResidualInput).LastHidden`
+    -- the residual LM is a SEPARATE small `ForwardPass`-style stepped model (own KV cache,
+    own weights -- `VoxCPM2MiniCPMStepRuntime` with `VoxCPM2MiniCPMKind::ResidualLM`, NOT yet
+    ported this session) fed `nextProjected.ResidualInput` as its own embedding input.
+11. Loop back to step 1 for the next frame.
+
+**Real remaining gap, precisely identified**: the PREFILL stage (`VoxCPM2PromptPrefillRuntime`,
+referenced but not yet read in detail -- builds the initial `lmHidden`/`residualHidden` and
+both LMs' KV-cache state from the real prompt's row sequence, where each row is EITHER a text
+token (embedded via `VoxCPM2TextEmbeddingRuntime`, not yet ported) OR a pre-computed
+audio-patch embedding via the local encoder) and the residual LM itself (a second, smaller
+MiniCPM-style autoregressive model, real config `residual_lm_num_layers`/`residual_lm_no_rope`
+fields already seen in `assets.cpp` but not yet cross-referenced against a real tensor dump).
+Real next step if resumed: dump `weights/residual_lm.*` real tensor names/shapes (same
+technique as every other component), confirm whether `VoxCpm2LlmTensorSource`'s existing
+`ForwardPass` bridge pattern can be reused for the residual LM too (likely yes, same
+`minicpm` architecture family, smaller layer count), then implement the real prefill stage
+and wire `generate_once`'s loop above using the pieces that already exist.
