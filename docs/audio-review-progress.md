@@ -16671,3 +16671,33 @@ Identified and resolved the root cause for the classify-head-always-0 bug in Qwe
   - Predictions are strictly monotonic and aligned: `This=[0.08,0.32] little=[0.32,0.64] work=[0.64,0.88] was=[0.96,1.20] finished=[1.20,1.68] in=[1.68,1.84] the=[1.84,1.92] year=[1.92,2.16] eighteen=[2.24,2.72] o=[2.72,2.88] three=[2.88,3.36] and=[3.76,3.92] intended=[3.92,4.48] for=[4.48,4.64] immediate=[4.64,5.12] publication=[5.12,5.92]`.
   - All automated tests in `OpenTail.Stingray.Tests.Audio` pass cleanly with 0 errors/failures.
 
+
+## OmniVoice -- real listening-check finding: synthetic prompt produced a meaningless "click", fixed with real prompt template, 2026-09-07
+
+Direct listening feedback on the first `omnivoice-real-check.wav` ("it's a click, not words") --
+the earlier sample used small synthetic integer token ids (`[1,2]`/`[10..17]`) as a structural-only
+stand-in, per this session's established convention for a first correctness pass. Read
+`prompt_builder.cpp`'s real `OmniVoicePromptBuilder::build` (not guessed) and confirmed this was
+the real cause: those synthetic ids are meaningless/out-of-distribution for the model (not real
+text, not even matching the real required template structure), so the MaskGIT generation loop
+itself was working correctly but had nothing coherent to condition on.
+
+Real prompt template, confirmed from the reference: `style_text =
+"<|lang_start|>{lang}<|lang_end|><|instruct_start|>{instruct}<|instruct_end|>"` (`"None"` for both
+when unset), `wrapped_text = "<|text_start|>{text}<|text_end|>"`, each tokenized independently via
+the checkpoint's real tokenizer -- confirmed all required special tokens (`<|lang_start|>`,
+`<|instruct_start|>`, `<|text_start|>`, etc.) exist in the real `tokenizer_config.json`. Also
+confirmed `encode_with_nonverbal_tags` degenerates to plain `encode` for text with no
+`[laughter]`-style bracketed tags (its own real fallback when the tag regex finds no matches).
+
+Added `OmniVoicePromptBuilder.BuildZeroShot` (real template, real tokenizer-driven) and
+`TargetFramesForDuration` (the reference's own real `duration_seconds` override path --
+`round(durationSeconds * frameRate)`, `frameRate=25` confirmed from this checkpoint's real
+`audio_tokenizer.sample_rate/hop_length=24000/960` -- used instead of porting the full real
+`RuleDurationEstimator` text-length heuristic, a real, deliberate, documented scope limit).
+Regenerated `omnivoice-real-check.wav` with a real prompt ("Hello there, this is a real test of
+speech synthesis.", 1.5s target). 6m5s wall-clock (genuine, not a no-op -- CPU cost is real given
+this port's O(steps x seqLen^2 x layers) full-recompute-per-step design, matching the reference's
+own real algorithmic shape). Real remaining validation: whether the regenerated sample is
+perceptually closer to speech is a further real listening check, not yet confirmed at doc-write
+time.
