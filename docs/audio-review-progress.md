@@ -13449,9 +13449,33 @@ verification of everything above remains blocked on the checkpoint download (~4.
 ~9.9GB as of this update) -- the single largest remaining risk, since no piece has been
 checked against real weights or a real reference transcription yet.
 
-**Pausing VibeVoice ASR here for this session** (8 real components implemented + tested:
-tokenizer encoder, connector, Gaussian sampler, acoustic/semantic combine, Qwen2 LLM
-bridge, frontend, postprocessor, sampling utilities) -- the two remaining pieces (the
-`ForwardPass` prefill/decode wiring, and real-weight verification) both need either more
-API research or the still-downloading checkpoint, neither a quick win right now. Per this
-session's "pivot rather than stall" discipline, moving to VoxCPM2's MiniCPM backbone next.
+**Update, 2026-09-07 (checkpoint download finished, ~9.86GB) -- real-weight verified the
+full encoder/connector/sampler/LLM-bridge chain; real config numbers confirmed.** Real
+`decoder_config` (Qwen2): `hidden_size=3584`, `num_hidden_layers=28`,
+`num_attention_heads=28`, `num_key_value_heads=4` (head_dim=128), `intermediate_size=18944`,
+`rope_theta=1000000.0`, `rms_norm_eps=1e-6`, `vocab_size=152064`, and a real SEPARATE
+`lm_head.weight` tensor (NOT tied to `embed_tokens`, confirmed by its presence in the real
+tensor dump). Real `acoustic_tokenizer_config`/`semantic_tokenizer_config`:
+`encoder_ratios=[8,5,5,4,2,2]`, `encoder_depths="3-3-3-3-3-3-8"` (7 stages), acoustic
+`vae_dim=64`/`fix_std=0.5`, semantic `vae_dim=128`/`fix_std=0` (unused, `std_dist_type=
+"none"`) -- all exactly matching this session's implementation assumptions, no surprises.
+
+`VibeVoiceTokenizerEncoderRealWeightsTests` (real checkpoint, ~23s wall-clock, genuinely
+ran -- big checkpoint, real work): runs the FULL real chain (`VibeVoiceSpeechFeatures.
+Extract` -- both real encoders, real Gaussian sampler, both real connectors, real sum-
+combine) on a synthetic waveform, produces finite, correctly-shaped `[3584][frames]`
+output. `VibeVoiceLlmTensorSourceRealWeightsTests`: confirms `VibeVoiceLlmTensorSource`
+resolves every expected canonical tensor (embeddings, final norm, separate output head,
+every per-layer q/k/v/o/mlp weight) against the real checkpoint to finite float data with
+the right shapes -- including confirming `o_proj` really has no bias tensor, as this
+session's mapping code assumed.
+
+**Pausing VibeVoice ASR here for this session** (8 real components implemented, tested
+against synthetic weights AND now real-weight verified: tokenizer encoder, connector,
+Gaussian sampler, acoustic/semantic combine, Qwen2 LLM bridge, frontend, postprocessor,
+sampling utilities) -- the one remaining piece is the actual `ForwardPass` prefill/decode
+orchestration loop (calling `Prefill` with the LLM bridge + `EnableSpeechConditioning`,
+then a real greedy-decode loop using this session's sampling utilities until EOS/max
+length), which needs concrete `ForwardPass` API usage research beyond what this session
+covered. Per this session's "pivot rather than stall" discipline, moving to VoxCPM2's
+MiniCPM backbone next.
