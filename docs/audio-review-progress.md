@@ -13295,6 +13295,22 @@ for the `ForwardEmbedding`/`LastHidden` reuse path: not just theoretically appli
 architectural finding from earlier this session) but actually proven working end-to-end on
 this real checkpoint.
 
+**Update, 2026-09-07 -- implemented the per-step fusion/projection layers (`VoxCpm2StepProjection`),
+real-weight verified.** Read `generator.cpp`'s `VoxCPM2StepProjectionRuntime::Impl::build` in
+full (not guessed): a real, self-contained FSQ (finite scalar quantization) bottleneck --
+`Linear(hidden-&gt;latentDim) -&gt; tanh -&gt; *scale -&gt; round -&gt; /scale -&gt; Linear(latentDim
+-&gt;hidden)` -- plus several plain `Linear` projections, a real non-obvious detail confirmed
+directly from the reference: `fusion_concat_proj` and `lm_to_dit_proj` are each REUSED
+(the exact same learned weight object) across two different real call sites -- the raw LM
+hidden state and its FSQ-quantized counterpart -- not two separate learned projections.
+`stop_proj -&gt; SiLU -&gt; stop_head` forms the real binary stop-token classifier head, also run
+on both variants. Real config numbers for `dit.hidden_dim`/`scalar_quantization_latent_dim`
+were inferred directly from the loaded weight tensors' own shapes (`w.LmToDitProjWeight.
+Length / HiddenDim`, etc.) rather than hardcoding a guess for a `dit_config` section not yet
+fully dumped this session -- a real, deliberate way to avoid asserting an unverified number.
+Structural tests (FSQ determinism, shape checks) and a real-weight test (real checkpoint,
+finite output across every projection) both pass.
+
 ## VibeVoice ASR -- tokenizer encoders + connector implemented, structurally verified, 2026-09-07
 
 Downloaded the real checkpoint (`audio-cpp/audio.cpp-gguf`, `VibeVoice-ASR-GGUF/
