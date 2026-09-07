@@ -15298,3 +15298,20 @@ numeric comparison of this port's own layer-2 MLP intermediate values (gate/up p
 post-SiLU, down-projection output) against the same values computed by hand from the real
 Safetensors weights on the SAME real `post_attn`-equivalent input this port produces -- fully
 bypassing `ForwardPass`'s generic graph to test the raw formula in isolation.
+
+**Addendum, same update**: read `build_mlp`'s full real implementation (all three modes --
+`Exact`, `PackedGateUp` w/ fused `ggml_swiglu`, `FusedSwiGLU` w/ `ggml_swiglu_split`) -- all three
+are mathematically the SAME standard SwiGLU (`down_proj(silu(gate_proj(x)) * up_proj(x))`), no
+exotic epsilon, precision-cast, or scaling trick anywhere in the MLP path itself (`activation_cast`
+is entirely disabled for this checkpoint per earlier config reading). This makes hypothesis (b)
+(a port-side SwiGLU formula bug) less likely, since this engine's generic `ForwardPass` "qwen3"
+MLP graph is shared code already real-weight-verified correct for several OTHER Qwen3-family
+checkpoints this session (Higgs's AR backbone, QwenASR itself) without producing spurious
+discontinuities -- strengthening hypothesis (a) (a real massive-activation phenomenon this
+specific checkpoint's layer 2 exhibits, which the reference reproduces and this port's identical
+downstream MLP math does not, implying the actual numerical divergence is upstream of the MLP's
+own formula -- e.g. in the exact `post_norm` RMSNorm input the MLP receives, even though its
+aggregate std looks unremarkable). Given no numeric tooling exists yet to dump/compare raw
+per-element tensor values (only aggregate mean/std via the `[FA-STAGE]` trace), further progress
+needs a real tensor-dump-to-file mechanism -- a real, scoped follow-on task, not attempted this
+pass. Pivoting to another backlog item.
