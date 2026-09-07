@@ -15007,3 +15007,104 @@ type is confirmed standard NEOX, re-verify this port's OWN NEOX implementation b
 against `qwen_decoder.h`'s real formula (frequency schedule, `freq_base`/`freq_scale`/
 `ext_factor` defaults) rather than assuming the shared, widely-used `ForwardPass` NEOX path is
 necessarily correct for this checkpoint's exact config values.
+
+## VoxCPM2 -- CORRECTION: feat_encoder blocker was stale, VoxCpm2LocalEncoder already IS it, 2026-09-07
+
+Earlier entries this session listed VoxCPM2's remaining blocker as "needs the reference-audio
+codec-latent path (feat_encoder, not yet ported)". This was WRONG/stale: `VoxCpm2LocalEncoder.
+EncodePatch` (already built and real-weight verified earlier this session) IS the real
+`feat_encoder` -- confirmed by re-reading `generator.cpp` lines 590-660 (`in_proj` linear ->
+special token PREPENDED -> bidirectional minicpm transformer over `patch_size+1` positions ->
+slice to position 0 -> `enc_to_lm_proj`) against `VoxCpm2LocalEncoder.EncodePatch`'s real
+implementation: identical structure, and `VoxCpm2LocalEncoderWeights` already loads the exact
+real tensor names (`weights/enc_to_lm_proj.weight`/`.bias`). No new architecture work needed here.
+
+Also confirmed, real and easy to get wrong, from `generator.cpp`'s real `generate_once` loop
+(lines 1568-1607): each iteration's FIRST `projection_.run` call uses a CONSTANT ZERO vector for
+its `current_embed` argument (`projection_.run(lm_hidden, residual_hidden, zero_hidden)`), NOT
+the previous patch's real encoded embedding -- the real embedding (`curr_embed` from
+`local_encoder_.encode_patch(patch)`) is only used in the SECOND `projection_.run` call at the
+bottom of the same iteration (`next_projected = projection_.run(next_lm, residual_hidden,
+curr_embed)`), whose `fsq_hidden`/`residual_input` outputs seed the NEXT iteration's `lm_hidden`/
+`residual_hidden`. Getting this backwards (e.g. carrying real `curr_embed` into the top-of-loop
+call) would silently produce wrong DiT conditioning.
+
+Real remaining blocker for a reference-audio-free (`generate_zero_shot`) wiring: `prefill_.run`
+(`VoxCPM2PromptPrefillRuntime`) still needs a real port -- it consumes a `PrefillSequence` built
+from `build_prefill_sequence` (per-row `text_mask`/`audio_mask`/`current_embeddings`/
+`input_embeddings`) and returns `base_state`/`residual_state` (imported into `base_lm_`/
+`residual_lm_`'s persistent KV caches) plus the real initial `lm_hidden`/`residual_hidden` seed
+vectors for the loop above -- this is the one piece of the pipeline not yet real-weight verified
+this session. Next concrete step for a future pass: read `build_prefill_sequence` and
+`VoxCPM2PromptPrefillRuntime::run`'s real implementation in full (not yet done) before writing
+any prefill code, per this project's "check the reference before writing math" rule.
+
+Pivoting to PersonaPlex's codebook-mapping question (`session.cpp`'s `PersonaPlexDelayState`)
+since it's more tractable within this pass than a full VoxCPM2 prefill port.
+
+## PersonaPlex -- codebook-mapping question RESOLVED: first-8-of-16 assumption CONFIRMED correct, 2026-09-07
+
+Read `session.cpp`'s `PersonaPlexDelayState` in full (real reference, not guessed) to resolve the
+open question flagged by `PersonaPlexFullPipelineRealWeightsTests`: does PersonaPlex's 16
+`lm_codebooks` map onto Mimi's 8 active codebooks via a plain first-8 slice, or some more complex
+two-8-codebook-stream scheme?
+
+Real answer, confirmed by reading the delay-stream layout: `kDelays` is a real 17-stream array
+(1 text stream + `kMimiFrameCodebooks=8` "moshi" (the model's own generated audio) streams + 8
+"user" (the human's INPUT audio, duplex conditioning only) streams). `kPersonaPlexDepformerAudioStreams
+= 16` (`depformer.h`) confirms the Depformer really does sample all 16 non-text streams per step
+(moshi 8 + user 8 -- NOT just the moshi half), matching this port's own `PersonaPlexDepformer.
+GenerateFrame`'s existing 16-wide output and `PersonaPlexGenerator.cs`'s existing `LmCodebooks`-
+wide `currentAudioCodes` feedback loop -- already real and correct.
+
+Critically, `finish_with_sampling` (session.cpp:186-216) -- the function that decides what's
+actually decode-worthy -- only extracts `q` in `[0, kMimiFrameCodebooks)` i.e. `stream = 1 + q`
+for `q < 8`, which is exactly the FIRST 8 of the Depformer's 16 sampled outputs (the "moshi"
+half; streams 9-16, the "user" half, are real but never fed to Mimi decode in a non-duplex
+generation). This means `PersonaPlexFullPipelineRealWeightsTests`'s existing "first 8 of 16"
+slice (`Array.Copy(frames[t].AudioCodes, mimiCodes[t], MimiCodecDecoderWeights.ActiveCodebooks)`)
+was ALREADY CORRECT, not a placeholder assumption needing a fix -- the doc's own earlier "two
+8-codebook streams?" flag is now resolved: yes, there genuinely are two 8-codebook streams
+(moshi + user), and the first-8 slice already selects the right one (moshi) by construction of
+`kDelays`'s stream ordering (`1 + kMimiFrameCodebooks + q` for user streams starts at index 9).
+
+Real remaining PersonaPlex gaps, now more precisely scoped: (1) the real MULTI-STREAM DELAY
+PATTERN itself (`kDelays = {0,0,1,1,1,1,1,1,1,0,1,1,1,1,1,1,1}` -- text and one moshi/user stream
+pair have delay 0, the rest delay 1; `PersonaPlexDelayState::prepare`/`finish_with_sampling`'s
+real ring-buffer offset logic over `kDelayCacheSteps=4`) is NOT implemented in this port's
+`PersonaPlexGenerator.cs` (current loop feeds each frame's just-sampled codes straight back next
+step, no delay offsetting) -- this is real, scoped follow-on work, not yet done. (2) real
+streaming Mimi decode (current port is one-shot). (3) real sampling beyond argmax. PersonaPlex
+stays ranked ~75% -- this pass closed the codebook-mapping question (previously the top concern)
+but surfaced the delay-pattern gap as the next real correctness item, not yet fixed this pass.
+
+## VoxCPM2 -- real end-to-end text-to-waveform pipeline wired and verified, 2026-09-07
+
+Read `VoxCPM2PromptPrefillRuntime::Impl::build`'s real ggml graph (`minicpm.cpp` lines 564-869,
+not guessed) to confirm the reference-audio-free (all-text-row) simplification derived in this
+turn's doc entry above is exact: traced through the graph with `audio_mask=0`/`text_mask=1` at
+every position and confirmed `masked_fsq`/`masked_current` are identically zero, so `lm_hidden_t
+= base_hidden_t` (post-final-norm `base_lm` hidden, no FSQ term) and `residual_input_t =
+fusion_concat_proj(concat(base_hidden_t, zeros))` at every prefill step -- reproducible with
+`base_lm`'s existing `ForwardPass` one token at a time (`Prefill([token], startPos: i)` per step,
+capturing `LastHidden`) instead of porting `VoxCPM2PromptPrefillRuntime`'s own ggml graph from
+scratch. Wrote `VoxCpm2Generator.cs` implementing this prefill plus the real `generate_once`
+per-frame loop (already fully scoped in an earlier doc entry this session), reusing every
+already-verified piece (`VoxCpm2ResidualLm`, `VoxCpm2StepProjection`, `VoxCpm2CfmSolver`,
+`VoxCpm2LocalEncoder`) with zero new architecture math.
+
+`VoxCpm2GeneratorRealWeightsTests` (new): real checkpoint, real tokenizer-encoded prompt, 3
+generated patches (12 frames) chained straight into the real AudioVAE decoder -- finite,
+in-range `[-1,1]` waveform produced. 49.9s wall-clock with a real `[ForwardPass] Pre-faulted 6.04
+GiB...` weight-loading line logged (genuine run, not a silent no-op per rule 12). This is the
+first full text-to-waveform run for this model.
+
+Real remaining VoxCPM2 gaps, now precisely scoped: (1) prompt/reference-audio conditioning (the
+`use_prompt`/`use_reference` branches of `build_prefill_sequence`, needed for voice cloning) is
+NOT implemented -- only the text-only zero-shot path; (2) real sampling beyond the CFM's own
+Euler solver (already real) -- no extra token-level sampling needed here, this gap does not
+apply the way it does for autoregressive-codebook models; (3) numeric golden-parity against the
+reference is not yet done (this test checks finite/in-range output, not bit-for-bit match); (4)
+real streaming variant (`generate_streaming`) not ported, only the offline `generate_once` path.
+VoxCPM2 moves from ~55% to ~75% -- the core generation loop gap (previously the single biggest
+missing piece) is now closed.
