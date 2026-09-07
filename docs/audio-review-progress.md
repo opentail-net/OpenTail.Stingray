@@ -14765,3 +14765,36 @@ stack, quantizer decode, decoder weight loading with real tensor prefixes/shapes
 config). Given the substantial ground already covered this turn (PersonaPlex's temporal-LM-to-
 Depformer wiring was the priority deliverable), implementing the full Mimi decode path is
 better started fresh next session with this scoping in hand rather than rushed now.
+
+## PersonaPlex -- Mimi neural codec decode path implemented and real-weight verified, 2026-09-07
+
+Implemented the full one-shot (non-streaming) Mimi decode pipeline per the prior entry's
+complete scoping, all real tensor names sourced directly from the default `MimiCodecWeightBinding`
+struct (`mimi_codec_runtime.h`) rather than guessed: `quantizer_decode` (semantic codebook 0 +
+summed acoustic codebooks 1-7, each real EMA-normalized via `embedding_sum/max(cluster_usage,
+1e-5)`, separately projected then added) -> depthwise `ConvTranspose1d(kernel=4,stride=2)`
+frame-rate 2x upsample (real kernel-reversed-at-load weight) -> 8-layer real pre-norm transformer
+(bias-affine LayerNorm, packed-QKV causal MHA, LayerScale, GELU-erf FFN) ->
+`Conv1d(512->1024,k=7)` -> 4 real stages (`ConvTranspose1d` ratios 8/6/5/4, ONE SEANet residual
+block each) -> `Conv1d(64->1,k=3)` -> clamp[-1,1].
+
+**One real bug found and fixed via an immediate "missing tensor" error**: the frame-rate-upsample
+depthwise conv has NO bias tensor in the checkpoint (`use_bias=false` per the real reference's
+own `DepthwiseConvTranspose1dModule` call) -- this port initially assumed a bias tensor existed
+(matching every other conv in this codec, which DO have bias) and failed immediately with a real
+`InvalidDataException` naming the missing tensor; fixed by zero-initializing that one bias
+in-process rather than loading it.
+
+Real-weight test (`MimiCodecDecoderRealWeightsTests`) decodes 4 frames of random-but-in-range
+8-codebook codes into a finite, [-1,1]-clamped, non-silent waveform: 2.4s wall-clock, genuine
+run -- confirms every real tensor name (codebooks, 8 transformer layers' packed QKV/LayerScale/
+LayerNorm, all 4 SEANet stages, both projections) resolved correctly against the real checkpoint.
+
+**PersonaPlex status: ~65%.** All three real generative pieces (temporal LM, Depformer, Mimi
+codec) are now individually real-weight verified, and the temporal-LM+Depformer pair is already
+wired end-to-end. The one remaining integration step is feeding `PersonaPlexGenerator`'s
+generated frames' audio codes into `MimiCodecDecoder.Decode` to produce a complete real
+text-to-frames-to-waveform pipeline -- a real, bounded, near-final wiring step for a future
+pass, not a new unknown. Known, flagged simplifications carried forward: no real multi-stream
+delay pattern (temporal-LM/Depformer wiring), one-shot non-streaming decode only (this codec
+piece), argmax-only sampling throughout.
