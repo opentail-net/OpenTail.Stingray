@@ -17,6 +17,13 @@ public sealed class VoxCpm2AudioVaeConfig
     public required int OutputSampleRate { get; init; }
     public required int[] SampleRateBinBoundaries { get; init; }
 
+    /// <summary>Real encoder-side fields, added 2026-09-07 for the AudioVAE ENCODER port (voice
+    /// cloning / reference-audio conditioning). Confirmed real, NOT symmetric with the decoder
+    /// (`EncoderRates=[2,5,8,8]`, 4 stages, vs `DecoderRates=[8,6,5,2,2,2]`, 6 stages) -- read
+    /// directly from the real checkpoint's embedded `config.json`, not assumed/guessed.</summary>
+    public required int EncoderDim { get; init; }
+    public required int[] EncoderRates { get; init; }
+
     /// <summary>Real `sample_rate_bucket`: counts how many boundaries `output_sample_rate` exceeds.</summary>
     public int SampleRateBucket()
     {

@@ -15791,3 +15791,40 @@ Confirmed via re-running the same frame-by-frame comparison: numerically unchang
 audio's early frames (as expected -- this only affects the LAST chunk's own boundary tokens), test
 suite still passes, no regressions. A real correctness fix for longer/differently-shaped audio
 inputs where the boundary effect would be more numerically visible.
+
+## VoxCPM2 -- AudioVAE ENCODER ported (voice cloning / reference-audio conditioning), 2026-09-07
+
+Read `audiovae.cpp`'s real encoder path (`encoder_block`/`load_encoder_block`/`load_vae_weights`'s
+encoder section/the encoder graph build, lines ~265-330 and ~855-893, not guessed) and ported it
+into `VoxCpm2AudioVaeDecoder.Encode` (kept in the same file/class as the decoder, since they share
+every primitive -- `Snake`, `ResidualUnit`, `CausalConv1d`). Real structure: `encoder.block.0`
+(first conv, 1 -> `encoder_dim`, k=7) -> N encoder blocks (3x residual units, dilations 1/3/9 ->
+Snake -> causal STRIDED conv downsample, kernel `2*stride`) -> `encoder.fc_mu` (k=3, ->
+`latent_dim`) -- a real, deterministic MEAN-ONLY path (`encode_prompt_audio`'s own real forward
+pass has no separate sampling/logvar branch or final Tanh, confirmed directly from the reference,
+not assumed to mirror the decoder).
+
+**Real, confirmed NOT symmetric with the decoder** (checked the real checkpoint's own embedded
+`config.json` directly rather than assuming a mirrored architecture): `EncoderRates=[2,5,8,8]`
+(4 stages, doubling channels from `encoder_dim=128` up to `2048`) vs `DecoderRates=[8,6,5,2,2,2]`
+(6 stages) -- added both fields to `VoxCpm2AudioVaeConfig` since the existing decoder-only config
+didn't carry them.
+
+**New primitive**: `CausalConv1dStrided`, a real generalization of the existing (stride-1-only)
+`CausalConv1d`, ported from the reference's own general `causal_conv1d` formula
+(`leftPad = 2*padding - outputPadding`, then a standard strided/dilated valid convolution) --
+confirmed the existing decode-time `CausalConv1d` is exactly this formula's `stride=1,
+outputPadding=0` special case (`leftPad = (kernel-1)*dilation`), not a coincidence.
+
+`VoxCpm2AudioVaeEncoderRealWeightsTests` (new, real checkpoint, real `encoder.*` tensors,
+finite/correctly-shaped/non-degenerate latent output on synthetic noise input). Existing decoder
+tests (real-weight and fast/structural) updated for the new required config fields and
+synthetic-weight encoder tensors, still pass -- no regression.
+
+This closes VoxCPM2's other real remaining architectural gap (the AudioVAE encoder itself did not
+exist in this port before this entry) -- what's now needed to actually WIRE voice cloning
+end-to-end is `VoxCPM2PromptPrefillRuntime`'s real prefill sequence construction (real
+`build_prefill_sequence`'s `use_prompt`/`use_reference` branches, feeding `Encode`'s output
+through `VoxCpm2LocalEncoder` per real per-patch chunking) -- not yet wired, a real, now more
+tractable next step since every underlying primitive (encoder, local encoder, generation loop)
+individually exists and is real-weight verified.

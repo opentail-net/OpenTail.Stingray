@@ -36,6 +36,8 @@ public sealed class VoxCpm2AudioVaeDecoderRealWeightsTests : HeavyTestBase
         DecoderRates = [8, 6, 5, 2, 2, 2],
         OutputSampleRate = 48000,
         SampleRateBinBoundaries = [20000, 30000, 40000],
+        EncoderDim = 128,
+        EncoderRates = [2, 5, 8, 8],
     };
 
     [Fact]

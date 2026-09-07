@@ -12,6 +12,8 @@ public sealed class VoxCpm2AudioVaeDecoderTests
         DecoderRates = [2, 2],
         OutputSampleRate = 48000,
         SampleRateBinBoundaries = [24000],
+        EncoderDim = 8,
+        EncoderRates = [2, 2],
     };
 
     private static VoxCpm2AudioVaeDecoderWeights MakeWeights(VoxCpm2AudioVaeConfig config, Random rng)
@@ -72,6 +74,22 @@ public sealed class VoxCpm2AudioVaeDecoderTests
         int finalChannels = config.DecoderDim >> config.DecoderRates.Length;
         tensors[$"decoder.model.{config.DecoderRates.Length + 2}.alpha"] = Rand(finalChannels);
         PutConv1d($"decoder.model.{config.DecoderRates.Length + 3}", 1, finalChannels, 7, depthwise: false);
+
+        PutConv1d("encoder.block.0", config.EncoderDim, 1, 7, depthwise: false);
+        int encInCh = config.EncoderDim;
+        for (int i = 0; i < config.EncoderRates.Length; i++)
+        {
+            int encOutCh = encInCh * 2;
+            int stride = config.EncoderRates[i];
+            string p = $"encoder.block.{i + 1}";
+            PutResidualUnit($"{p}.block.0", encInCh);
+            PutResidualUnit($"{p}.block.1", encInCh);
+            PutResidualUnit($"{p}.block.2", encInCh);
+            tensors[$"{p}.block.3.alpha"] = Rand(encInCh);
+            PutConv1d($"{p}.block.4", encOutCh, encInCh, 2 * stride, depthwise: false);
+            encInCh = encOutCh;
+        }
+        PutConv1d("encoder.fc_mu", config.LatentDim, encInCh, 3, depthwise: false);
 
         return VoxCpm2AudioVaeDecoderWeights.Load(config, name => tensors[name]);
     }

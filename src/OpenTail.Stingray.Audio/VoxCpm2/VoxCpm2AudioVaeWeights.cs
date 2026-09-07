@@ -39,6 +39,16 @@ public sealed class VoxCpm2DecoderBlockWeights
     public required int Stride { get; init; }
 }
 
+public sealed class VoxCpm2EncoderBlockWeights
+{
+    public required VoxCpm2ResidualUnitWeights[] Res { get; init; } // dilations 1,3,9
+    public required float[] SnakeAlpha { get; init; }
+    public required VoxCpm2Conv1dWeights Downsample { get; init; } // kernel = 2*stride
+    public required int InputChannels { get; init; }
+    public required int OutputChannels { get; init; }
+    public required int Stride { get; init; }
+}
+
 /// <summary>
 /// Real weight loader for VoxCPM2's AudioVAE decoder, ported from
 /// `examples/audio.cpp/src/models/voxcpm2/audiovae.cpp`'s `load_vae_weights`/`load_wn_conv1d`/
@@ -59,6 +69,12 @@ public sealed class VoxCpm2AudioVaeDecoderWeights
     public required VoxCpm2DecoderBlockWeights[] DecoderBlocks { get; init; }
     public required float[] DecoderFinalSnakeAlpha { get; init; }
     public required VoxCpm2Conv1dWeights DecoderFinalConv { get; init; } // final_channels -> 1, k=7
+
+    /// <summary>Real encoder-side weights, added 2026-09-07 for voice cloning / reference-audio
+    /// conditioning (`VoxCpm2AudioVaeEncoder`).</summary>
+    public required VoxCpm2Conv1dWeights EncoderFirst { get; init; } // 1 -> encoder_dim, k=7
+    public required VoxCpm2EncoderBlockWeights[] EncoderBlocks { get; init; }
+    public required VoxCpm2Conv1dWeights EncoderFcMu { get; init; } // final_channels -> latent_dim, k=3
 
     public static VoxCpm2AudioVaeDecoderWeights Load(VoxCpm2AudioVaeConfig config, Func<string, float[]> get)
     {
@@ -151,6 +167,46 @@ public sealed class VoxCpm2AudioVaeDecoderWeights
         var finalSnakeAlpha = get($"decoder.model.{config.DecoderRates.Length + 2}.alpha");
         var finalConv = LoadConv1d($"decoder.model.{config.DecoderRates.Length + 3}", 1, finalChannels, kernel: 7, depthwise: false);
 
+        // Real encoder side, ported from `load_vae_weights`/`load_encoder_block` (not guessed):
+        // `encoder.block.0` (first conv, 1 -> encoder_dim, k=7) -> `encoder.block.{i+1}` per
+        // stage (channels DOUBLE each stage: encoder_dim, encoder_dim*2, ...; downsample conv
+        // kernel = 2*stride, real per-block prefix `.block.0/1/2` residual units (dilations
+        // 1,3,9), `.block.3.alpha` snake, `.block.4` downsample) -> `encoder.fc_mu` (k=3, ->
+        // latent_dim).
+        VoxCpm2ResidualUnitWeights LoadEncResidualUnit(string prefix, int channels) => new()
+        {
+            Snake1Alpha = get($"{prefix}.block.0.alpha"),
+            Conv1 = LoadConv1d($"{prefix}.block.1", channels, channels, kernel: 7, depthwise: true),
+            Snake2Alpha = get($"{prefix}.block.2.alpha"),
+            Conv2 = LoadConv1d($"{prefix}.block.3", channels, channels, kernel: 1, depthwise: false),
+        };
+
+        var encoderFirst = LoadConv1d("encoder.block.0", config.EncoderDim, 1, kernel: 7, depthwise: false);
+        var encoderBlocks = new VoxCpm2EncoderBlockWeights[config.EncoderRates.Length];
+        int encInChannels = config.EncoderDim;
+        for (int i = 0; i < config.EncoderRates.Length; i++)
+        {
+            int encOutChannels = encInChannels * 2;
+            int stride = config.EncoderRates[i];
+            string blockPrefix = $"encoder.block.{i + 1}";
+            encoderBlocks[i] = new VoxCpm2EncoderBlockWeights
+            {
+                Res =
+                [
+                    LoadEncResidualUnit($"{blockPrefix}.block.0", encInChannels),
+                    LoadEncResidualUnit($"{blockPrefix}.block.1", encInChannels),
+                    LoadEncResidualUnit($"{blockPrefix}.block.2", encInChannels),
+                ],
+                SnakeAlpha = get($"{blockPrefix}.block.3.alpha"),
+                Downsample = LoadConv1d($"{blockPrefix}.block.4", encOutChannels, encInChannels, kernel: 2 * stride, depthwise: false),
+                InputChannels = encInChannels,
+                OutputChannels = encOutChannels,
+                Stride = stride,
+            };
+            encInChannels = encOutChannels;
+        }
+        var encoderFcMu = LoadConv1d("encoder.fc_mu", config.LatentDim, encInChannels, kernel: 3, depthwise: false);
+
         return new VoxCpm2AudioVaeDecoderWeights
         {
             DecoderFirstDepthwise = decoderFirstDepthwise,
@@ -158,6 +214,9 @@ public sealed class VoxCpm2AudioVaeDecoderWeights
             DecoderBlocks = decoderBlocks,
             DecoderFinalSnakeAlpha = finalSnakeAlpha,
             DecoderFinalConv = finalConv,
+            EncoderFirst = encoderFirst,
+            EncoderBlocks = encoderBlocks,
+            EncoderFcMu = encoderFcMu,
         };
     }
 

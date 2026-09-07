@@ -12,10 +12,13 @@ namespace OpenTail.Stingray.Audio.VoxCpm2;
 /// FiLM-style sample-rate conditioning (`sr_cond`: `x*scale+bias`, a fixed vector selected by the
 /// real `output_sample_rate`'s bucket at load time) before its Snake activation.
 ///
-/// <para><b>Decode-only</b>: this pipeline only ever DECODES generated continuous latent features
-/// into audio (never re-encodes a reference clip through the AudioVAE encoder as part of this
-/// port's scope) -- matches the same scoping decision made for MOSS-TTS-Nano's audio codec this
-/// session.</para>
+/// <para><b>Update, 2026-09-07</b>: the ENCODER path (<see cref="Encode"/>) is now also ported,
+/// for voice cloning / reference-audio conditioning (VoxCPM2's `VoxCPM2PromptPrefillRuntime`'s
+/// remaining real gap). Real, NOT symmetric with the decoder: `EncoderRates=[2,5,8,8]` (4 stages)
+/// vs `DecoderRates=[8,6,5,2,2,2]` (6 stages), confirmed from the real checkpoint's own embedded
+/// `config.json`, not assumed. The encoder's real forward pass has no separate sampling/logvar
+/// branch -- it's a deterministic mean-only path (`fc_mu` directly, no Tanh at the end either,
+/// unlike the decoder).</para>
 ///
 /// <para><b>Real per-stage math</b>: `decoder.model.0` (depthwise conv, k=7, causal) -&gt;
 /// `decoder.model.1` (pointwise conv, k=1) -&gt; N decoder blocks (`sr_cond` FiLM -&gt; Snake -&gt;
@@ -192,6 +195,107 @@ public static class VoxCpm2AudioVaeDecoder
         var output = new float[h.Length];
         for (int i = 0; i < h.Length; i++) output[i] = x[i] + h[i];
         return output;
+    }
+
+    /// <summary>Real general causal conv1d WITH stride/output_padding support, ported from
+    /// `causal_conv1d`'s real formula (not guessed): `leftPad = 2*padding - outputPadding`,
+    /// left-pad by that amount (zeros), then a STANDARD (no extra padding) strided/dilated
+    /// convolution. The existing zero-stride <see cref="CausalConv1d"/> is the `stride=1,
+    /// outputPadding=0` special case of this same formula (`leftPad = 2*padding = (kernel-1)*
+    /// dilation` there), kept separate since it's the hot decode-time path.</summary>
+    private static float[] CausalConv1dStrided(float[] x, int t, VoxCpm2Conv1dWeights w, int stride, int padding, int dilation, int outputPadding, out int outT)
+    {
+        int inCh = w.InChannels;
+        int outCh = w.OutChannels;
+        int kernel = w.Kernel;
+        int leftPad = 2 * padding - outputPadding;
+        int effectiveKernel = (kernel - 1) * dilation + 1;
+        int outTLocal = (t + leftPad - effectiveKernel) / stride + 1;
+        outT = outTLocal;
+
+        var output = new float[outCh * outTLocal];
+        if (w.Depthwise)
+        {
+            Parallel.For(0, outCh, c =>
+            {
+                float b = w.Bias[c];
+                int xBase = c * t;
+                int wBase = c * kernel;
+                int outBase = c * outTLocal;
+                for (int ti = 0; ti < outTLocal; ti++)
+                {
+                    float sum = b;
+                    int start = ti * stride - leftPad;
+                    for (int k = 0; k < kernel; k++)
+                    {
+                        int src = start + k * dilation;
+                        if ((uint)src < (uint)t) sum += w.Weight[wBase + k] * x[xBase + src];
+                    }
+                    output[outBase + ti] = sum;
+                }
+            });
+            return output;
+        }
+
+        Parallel.For(0, outCh, oc =>
+        {
+            float b = w.Bias[oc];
+            int wBaseOc = oc * inCh * kernel;
+            int outBase = oc * outTLocal;
+            for (int ti = 0; ti < outTLocal; ti++)
+            {
+                float sum = b;
+                int start = ti * stride - leftPad;
+                for (int ic = 0; ic < inCh; ic++)
+                {
+                    int xBase = ic * t;
+                    int wBase = wBaseOc + ic * kernel;
+                    for (int k = 0; k < kernel; k++)
+                    {
+                        int src = start + k * dilation;
+                        if ((uint)src < (uint)t) sum += w.Weight[wBase + k] * x[xBase + src];
+                    }
+                }
+                output[outBase + ti] = sum;
+            }
+        });
+        return output;
+    }
+
+    private static (float[] Data, int T) EncoderBlock(float[] x, int t, VoxCpm2EncoderBlockWeights w)
+    {
+        var h = ResidualUnit(x, w.InputChannels, t, w.Res[0], dilation: 1);
+        h = ResidualUnit(h, w.InputChannels, t, w.Res[1], dilation: 3);
+        h = ResidualUnit(h, w.InputChannels, t, w.Res[2], dilation: 9);
+        h = Snake(h, w.InputChannels, t, w.SnakeAlpha);
+
+        int padding = (w.Stride + 1) / 2;
+        int outputPadding = w.Stride % 2;
+        h = CausalConv1dStrided(h, t, w.Downsample, w.Stride, padding, dilation: 1, outputPadding, out int outT);
+        return (h, outT);
+    }
+
+    /// <summary>
+    /// Encodes mono float32 PCM (real `[1, samples]`, at the checkpoint's real
+    /// `output_sample_rate`) into `[LatentDim, frames]` channel-major continuous latent features
+    /// -- real `encoder.block.0` (first conv, k=7) -&gt; N encoder blocks (3x residual units
+    /// (dilations 1/3/9) -&gt; Snake -&gt; causal STRIDED conv downsample, kernel `2*stride`) -&gt;
+    /// `encoder.fc_mu` (k=3) -- the real deterministic mean-only path (`encode_prompt_audio`'s
+    /// own real forward pass has no separate sampling/logvar branch, confirmed from
+    /// `audiovae.cpp`).
+    /// </summary>
+    public static float[] Encode(VoxCpm2AudioVaeConfig config, VoxCpm2AudioVaeDecoderWeights w, float[] pcm)
+    {
+        int samples = pcm.Length;
+        var x = CausalConv1d(pcm, samples, w.EncoderFirst, dilation: 1);
+        int curT = samples;
+        foreach (var block in w.EncoderBlocks)
+        {
+            (x, curT) = EncoderBlock(x, curT, block);
+        }
+        // Real fc_mu: kernel=3, stride=1 causal conv (padding = (kernel-1)/2 = 1, no output
+        // padding) -- same formula as the residual units' own convs, output length unchanged.
+        return CausalConv1d(x, curT, w.EncoderFcMu, dilation: 1);
     }
 
     private static (float[] Data, int T) DecoderBlock(float[] x, int t, VoxCpm2DecoderBlockWeights w)
