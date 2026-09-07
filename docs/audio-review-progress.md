@@ -15470,3 +15470,90 @@ print inserted directly inside `prompt_embeddings()` itself (before it's returne
 by any decoder layer), or by checking this port's own layer-0 attention/RoPE math line-by-line
 against `QwenDecoderLayerModule::build`'s real formula now that layer 2's MLP is proven correct
 and layer 0 is the earliest layer where a real, trustworthy divergence is confirmed.
+
+## Qwen3 Forced Aligner -- ROOT CAUSE LOCALIZED (real, precise, per-position evidence): the AUDIO-SPLICED embedding positions are wrong, text positions are correct, 2026-09-07
+
+Extended the layer-0 isolation methodology: dumped this port's OWN full `[130, 1024]` input
+embedding matrix (`our_input_embeddings.bin`, the SAME combined table + prompt-id lookup
+`ForwardPass` uses internally, via a new debug hook in `AlignReal`) and hand-computed layer 0's
+COMPLETE real attention+MLP block (RMSNorm, Q/K/V proj, per-head Q/K RMSNorm, NEOX RoPE, GQA
+causal softmax attention, o_proj, residual, SwiGLU MLP) across ALL 130 real positions from raw
+Safetensors weights -- fully bypassing `ForwardPass`/`ModelGraph`. Compared PER-POSITION (not
+just aggregate) against the reference's real `layer_0_out.bin`.
+
+**Definitive, precise per-position result**:
+- **t=0** (`<|audio_start|>`, a pure TEXT token): relative L2 error **0.0008** -- essentially
+  EXACT match.
+- **t=1 through t=77** (the 77 `<|audio_pad|>` positions -- exactly where this port's real
+  computed AUDIO embeddings get spliced in via `EnableAudioConditioning`): relative L2 error
+  **0.75-1.40** for every single one -- essentially UNCORRELATED with the reference, the worst
+  possible mismatch.
+- **t=78 onward** (`<|audio_end|>` + word/timestamp tokens, pure text again): error drops back
+  down to **0.01-0.18** -- much closer, though not exact (residual contamination from causally
+  attending back to the wrong audio-position hidden states above, exactly as expected).
+
+**This is conclusive, not circumstantial**: the ONLY thing that changes between the near-perfect
+t=0 result and the badly-wrong t=1..77 results is whether the position's embedding came from the
+plain text-embedding-table lookup (correct) or from the SPLICED AUDIO EMBEDDING (wrong). Layer
+0's attention/RoPE/MLP formula is proven correct (t=0 matches almost exactly, and layer 2's MLP
+was already proven correct in isolation) -- **the entire remaining Qwen3 Forced Aligner bug is
+that this port's real audio-encoder output, as spliced into the combined embedding table by
+`EnableAudioConditioning`, does not match the reference's real audio embeddings at those specific
+77 positions.**
+
+**Real, important correction to this session's much earlier finding**: an early investigation
+this session concluded "the audio encoder is not the bug" based on matching AGGREGATE mean/std
+(`mean=0.006738/std=0.548819` reference vs. `mean=0.0072/std=0.5285` this port -- "match almost
+exactly"). That comparison is now known to be insufficient evidence (the same aggregate-similarity
+trap already caught and corrected for the layer-2-vs-layer-0 framing above) -- two very different
+per-position embedding sets can share similar aggregate statistics while being positionally
+wrong (e.g. frames processed correctly but written to the wrong output rows/order, a scaling
+issue that only affects part of the range, or a genuine per-frame content bug that averages out).
+**The audio encoder (or the splicing step immediately after it) must be re-examined
+element-by-element / frame-by-frame against a real reference dump, not by aggregate statistics
+alone** -- this is now the single highest-priority, precisely-scoped real next step: dump the
+reference's real per-frame audio embedding output (or the `audio_embeddings` tensor `thinker.cpp`
+feeds into `prompt_embeddings()`, immediately -- not aliased through the whole graph, avoiding the
+earlier `prompt_embeddings` tap's reliability problem) and compare frame-by-frame against this
+port's own `QwenAsrAudioEncoder.Forward` output, using the exact same per-row relative-L2-error
+technique that just found this. If the encoder's OWN frame-by-frame output already diverges, the
+bug is in `QwenAsrAudioEncoder`; if the encoder's output matches but the SPLICED table still
+doesn't, the bug is specifically in `EnableAudioConditioning`'s combination/ordering/scaling logic.
+
+## Qwen3 Forced Aligner -- ROOT CAUSE FOUND, definitively, inside QwenAsrAudioEncoder itself; earlier "audio encoder ruled out" finding was WRONG (aggregate-stats trap), 2026-09-07
+
+Followed the immediately preceding entry's precise next step. Added a real raw-binary dump to
+the reference's `audio_encoder.cpp` (`STINGRAY_FA_DUMP_DIR`, same additive mechanism as the other
+dumps this session) to capture its real per-frame `audio_embeddings` output (77 frames x 1024,
+before any prompt splicing), and a matching dump of this port's own `QwenAsrAudioEncoder.Forward`
+output from `AlignReal`. Compared FRAME-BY-FRAME (cosine similarity + relative L2 error per
+frame, not aggregate mean/std).
+
+**Result: every single one of the 77 frames diverges badly** -- cosine similarity ranges
+`-0.22` to `0.54` (frame 0: `0.37`; frame 4: `-0.22`, i.e. anti-correlated; typical frames
+`0.1`-`0.4`), relative L2 error `1.0`-`1.6` for every frame. **This conclusively proves the bug
+is INSIDE `QwenAsrAudioEncoder` itself** (not in `EnableAudioConditioning`'s splicing/combination
+logic, which was the other real candidate the preceding entry left open) -- the encoder's
+per-frame OUTPUT is wrong from frame 0 onward, not just contaminated by later frames.
+
+**Formal correction, per this project's documentation discipline**: this session's much earlier
+finding "the audio encoder is not the bug... this port's own numbers for the identical audio:
+mean=0.0072 std=0.5285 absMax=3.8304... match almost exactly" (dated 2026-09-06 in this doc) is
+now known to be **WRONG** -- not a lie or fabrication, but a real methodological trap this entire
+multi-session investigation fell into repeatedly (see also the layer-0-vs-layer-2 aggregate-std
+correction and the `prompt_embeddings` tap-reliability correction, both earlier today): matching
+AGGREGATE mean/std/absmax across an entire 77-frame x 1024-dim tensor is NOT meaningful evidence
+of per-frame correctness -- two entirely different, per-frame-uncorrelated tensors can share
+near-identical bulk statistics (as directly demonstrated here: aggregate stats matched to 2-3
+significant figures while every individual frame has cosine similarity under 0.55, several
+strongly negative). This is now the empirically-confirmed root cause location for the whole
+"classify-head-always-0" bug this project has chased across multiple sessions.
+
+**Real next step, precisely scoped**: bisect INSIDE `QwenAsrAudioEncoder` itself using the exact
+same per-layer/per-stage element-wise comparison technique that successfully localized every
+finding in this pass (mel extraction -> conv subsampling -> transformer encoder layers ->
+final projection to the LLM's hidden dim) -- add real per-stage dump taps to
+`qwen3_asr/audio_encoder.cpp`'s own internal stages (not yet done) and compare frame-by-frame at
+each stage against this port's own `QwenAsrAudioEncoder` internals, the same way layer 0's
+decoder block was isolated above. This is now THE highest-priority real lead for this bug, with
+a proven, repeatable methodology ready to apply directly.

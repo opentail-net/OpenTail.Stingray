@@ -132,6 +132,17 @@ public sealed class QwenAsrForcedAligner : IDisposable
             Console.Error.WriteLine($"[FA-Trace] inMelFrames={inMelFrames} numAudioTokens={numAudioTokens} audioSoftTokens: mean={mean:F4} std={std:F4} absMax={absMax:F4}");
         }
 
+        // Real, additive-only (2026-09-07): dump this port's own real per-frame audio encoder
+        // output for a direct frame-by-frame comparison against the reference's real
+        // `audio_embeddings.bin` (see docs/audio-review-progress.md's "ROOT CAUSE LOCALIZED"
+        // entry -- this is the precise next step that entry scopes).
+        if (Environment.GetEnvironmentVariable("STINGRAY_FA_DUMP_DIR") is { } audioDumpDir)
+        {
+            var bytes = new byte[audioSoftTokens.Length * 4];
+            Buffer.BlockCopy(audioSoftTokens, 0, bytes, 0, bytes.Length);
+            File.WriteAllBytes(Path.Combine(audioDumpDir, "our_audio_embeddings.bin"), bytes);
+        }
+
         // Build the real prompt: <|audio_start|><|audio_pad|>xN<|audio_end|> + per word
         // "word<timestamp><timestamp>". Encoding each word/prefix segment SEPARATELY through the
         // same BPE vocab, then splicing in the real <timestamp> token id directly, is exactly
@@ -289,6 +300,25 @@ public sealed class QwenAsrForcedAligner : IDisposable
                         double cosine0 = dot0 / (Math.Sqrt(normA0) * Math.Sqrt(normB0) + 1e-12);
                         Console.Error.WriteLine($"[FA-DIFF-CS] prompt_embeddings (token {tokenId}) vs reference last-row: cosine={cosine0:F6} maxAbsDiff={maxAbsDiff0:F6}");
                     }
+                }
+
+                // Real, additive-only (2026-09-07): dump this port's OWN full [steps, hiddenDim]
+                // input embedding matrix (the SAME combined table + prompt-id lookup ForwardPass
+                // uses internally) so a separate offline test can hand-compute layer 0's real
+                // attention+MLP block entirely outside this port's ForwardPass/ModelGraph and
+                // compare against the reference's real (trustworthy, per-layer-loop-captured)
+                // `layer_0_out.bin` -- see docs/audio-review-progress.md's layer-0-divergence
+                // entry for why this is the real next step.
+                if (embTensor != null)
+                {
+                    var tableBytes = source.GetTensorData(embTensor.Value);
+                    var table = System.Runtime.InteropServices.MemoryMarshal.Cast<byte, float>(tableBytes);
+                    var ourInput = new float[prompt.Length * embDim];
+                    for (int p = 0; p < prompt.Length; p++)
+                        table.Slice(prompt[p] * embDim, embDim).CopyTo(ourInput.AsSpan(p * embDim, embDim));
+                    var outBytes = new byte[ourInput.Length * 4];
+                    Buffer.BlockCopy(ourInput, 0, outBytes, 0, outBytes.Length);
+                    File.WriteAllBytes(Path.Combine(dumpDir, "our_input_embeddings.bin"), outBytes);
                 }
             }
             for (int layer = 0; layer < hp.NumLayers; layer++)
