@@ -34,6 +34,7 @@ public sealed unsafe class VibeVoiceLlmTensorSource : IModelTensorSource, IDispo
     private readonly Dictionary<string, string> _sourceNameByCanonical = new(StringComparer.Ordinal);
     private readonly List<nint> _ownedPointers = [];
     private readonly Dictionary<string, nint> _resolvedPointers = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, nint> _syntheticBuffers = new(StringComparer.Ordinal);
     private readonly List<GgufTensorInfo> _tensors;
     private readonly Dictionary<string, object> _metadata;
     private bool _disposed;
@@ -124,6 +125,8 @@ public sealed unsafe class VibeVoiceLlmTensorSource : IModelTensorSource, IDispo
     public byte* GetTensorDataPtr(GgufTensorInfo tensor)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
+        if (_syntheticBuffers.TryGetValue(tensor.Name, out nint syntheticPtr))
+            return (byte*)syntheticPtr;
         if (_resolvedPointers.TryGetValue(tensor.Name, out nint cached))
             return (byte*)cached;
 
@@ -135,6 +138,56 @@ public sealed unsafe class VibeVoiceLlmTensorSource : IModelTensorSource, IDispo
         _ownedPointers.Add((nint)buffer);
         _resolvedPointers[tensor.Name] = (nint)buffer;
         return (byte*)buffer;
+    }
+
+    /// <summary>Real -1 until <see cref="EnableSpeechConditioning"/> has been called: the first
+    /// synthetic vocab id assigned to the injected speech-embedding rows.</summary>
+    public int SpeechTokenIdOffset { get; private set; } = -1;
+
+    /// <summary>
+    /// Splices real per-frame speech embeddings (already combined from the acoustic + semantic
+    /// connectors' outputs -- the combination rule itself lives in `session.cpp`, not yet ported,
+    /// so this method takes the already-combined embeddings as an input rather than owning that
+    /// decision) into the LLM's vocabulary as extra rows on `token_embd.weight`, same real
+    /// technique as `OmniVoiceLlmTensorSource.EnableAudioConditioning`/
+    /// `QwenAsrLlmTensorSource`'s equivalent: `ForwardPass` has no dedicated raw-embedding
+    /// injection API, so a fixed, known-before-prefill set of continuous embeddings is instead
+    /// appended as synthetic vocab entries, and the real prompt's `&lt;|box_start|&gt;` speech
+    /// placeholder token ids (see `VibeVoiceASRTextTokenizer::build_prompt`'s
+    /// `speech_positions`) get REMAPPED by the caller to
+    /// `SpeechTokenIdOffset + slotIndex` before this source is handed to `ForwardPass`.
+    /// </summary>
+    public void EnableSpeechConditioning(ReadOnlySpan<float> speechEmbeddings, int numSpeechTokens)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        if (numSpeechTokens <= 0) throw new ArgumentOutOfRangeException(nameof(numSpeechTokens));
+
+        var textEmbedInfo = _byName["token_embd.weight"];
+        int hiddenDim = checked((int)textEmbedInfo.Dimensions[0]);
+        int textVocab = checked((int)textEmbedInfo.Dimensions[1]);
+        if (speechEmbeddings.Length != (long)numSpeechTokens * hiddenDim)
+            throw new ArgumentException($"speechEmbeddings length {speechEmbeddings.Length} != numSpeechTokens*hiddenDim ({numSpeechTokens}*{hiddenDim}).", nameof(speechEmbeddings));
+
+        byte* textEmbedPtr = GetTensorDataPtr(textEmbedInfo);
+
+        int combinedVocab = textVocab + numSpeechTokens;
+        long combinedElementCount = (long)combinedVocab * hiddenDim;
+        float* combined = (float*)NativeMemory.Alloc((nuint)(combinedElementCount * sizeof(float)));
+        Buffer.MemoryCopy(textEmbedPtr, combined, combinedElementCount * sizeof(float), (long)textVocab * hiddenDim * sizeof(float));
+        fixed (float* speechPtr = speechEmbeddings)
+        {
+            long speechElementCount = (long)numSpeechTokens * hiddenDim;
+            Buffer.MemoryCopy(speechPtr, combined + (long)textVocab * hiddenDim,
+                speechElementCount * sizeof(float), speechElementCount * sizeof(float));
+        }
+
+        _ownedPointers.Add((nint)combined);
+        _syntheticBuffers["token_embd.weight"] = (nint)combined;
+        _byName["token_embd.weight"] = new GgufTensorInfo("token_embd.weight", 2, [hiddenDim, combinedVocab], DType.Float32, DataOffset: 0);
+        _tensors.Clear();
+        _tensors.AddRange(_byName.Values);
+
+        SpeechTokenIdOffset = textVocab;
     }
 
     public void Dispose()
