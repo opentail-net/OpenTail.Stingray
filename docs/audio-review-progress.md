@@ -14234,3 +14234,43 @@ mask) are now closed with real, checkpoint-verified behavior. Remaining: real sa
 argmax, semantic HuBERT encoder + reference-audio encode path (voice cloning input, lower
 priority). This is now a structurally complete, delay-pattern-correct text-to-waveform pipeline
 modulo sampling quality.
+
+## VibeVoice TTS -- acoustic-latent-to-waveform decoder implemented and real-weight verified, 2026-09-07
+
+**Correcting a prior scoping guess**: `decoder.cpp` (2056 lines, this doc's earlier entry called
+it "the largest unread file, check if it's the tokenizer encoder run in reverse or genuinely
+separate") turned out to be a RED HERRING -- it's the QWEN LLM decoder's own real ggml graph
+implementation (`VibeVoiceDecoderPrefillGraph`/`VibeVoiceDecoderCachedStepGraph`), i.e. exactly
+what this session's existing `VibeVoiceLlmTensorSource`+`ForwardPass` bridge already replaces.
+The REAL acoustic-latent-to-waveform decoder lives inside `tokenizer_audio.cpp` (the same file
+the ASR-side encoder was ported from) as a real, separate `VibeVoiceTokenizerDecoderWeights`/
+`build_decoder` -- confirmed a genuinely distinct decoder module (not the encoder run backwards),
+but sharing the EXACT SAME `VibeVoiceConvNeXtBlock`-based stage architecture and causal-conv
+padding convention already ported for the encoder.
+
+**`VibeVoiceTokenizerDecoderWeights`/`VibeVoiceTokenizerDecoder` implemented**, ported from
+`load_decoder`/`build_decoder` (not guessed): stage 0 is a stride-1 causal Conv1d stem
+(`VaeDim -> topChannels`); every later stage starts with a causal `ConvTranspose1d` upsample
+(real ratio for that stage) then that stage's real ConvNeXt blocks (reusing the existing
+`VibeVoiceConvNeXtBlock.Forward`/`CausalConv1d`/`ChannelRmsNorm` directly, zero duplication);
+an optional final channel RMSNorm; a stride-1 causal Conv1d head projecting to the output
+waveform channel count. Real, genuinely different `ConvTranspose1d` crop from BOTH Higgs's codec
+decoder (symmetric two-sided trim) and a standard PyTorch call: confirmed real
+`kTokenizerConvTransposeTrimRightRatio=1.0`, meaning ALL of `kernel-stride` trims from the RIGHT
+end only (`padding_left=0`) -- a third distinct convolution convention this session, alongside
+VoxCPM2's fully-causal-truncated style and Higgs's symmetric style.
+
+Real config confirmed from the checkpoint's own `config.json`: `decoder_ratios=[8,5,5,4,2,2]`,
+`decoder_depths=null` (real fallback: `reverse(encoder_depths)` where
+`encoder_depths="3-3-3-3-3-3-8"`, giving `[8,3,3,3,3,3,3]`), `decoder_n_filters=32`,
+`vae_dim=64` (acoustic), `disable_last_norm=true`, `layernorm_eps=1e-5`. Real tensor prefix
+confirmed: `model.acoustic_tokenizer.decoder`. Real-weight test decodes 6 random latent frames
+into a finite, non-silent waveform: 9.0s wall-clock, genuine run.
+
+**VibeVoice TTS status: ~80%.** Diffusion generation head AND the acoustic decoder are both
+real-weight verified. Remaining: confirming the ASR-side tokenizer encoder/connector/LLM bridge
+are directly reusable for TTS's own conditioning path (same checkpoint family, likely yes but
+not independently confirmed), and wiring the real per-step generation loop
+(`generator.cpp`/`session.cpp`, not yet read) that ties text conditioning -> diffusion sampling
+-> this decoder into one live pass, mirroring what this session already achieved for Higgs
+Audio TTS.
