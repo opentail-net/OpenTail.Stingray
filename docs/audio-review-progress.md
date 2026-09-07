@@ -15828,3 +15828,37 @@ end-to-end is `VoxCPM2PromptPrefillRuntime`'s real prefill sequence construction
 through `VoxCpm2LocalEncoder` per real per-patch chunking) -- not yet wired, a real, now more
 tractable next step since every underlying primitive (encoder, local encoder, generation loop)
 individually exists and is real-weight verified.
+
+## VoxCPM2 -- real voice-cloning / reference-audio conditioning WIRED end-to-end for the first time, 2026-09-07
+
+Generalized `VoxCpm2Generator`'s prefill from the earlier text-only simplification into the real
+FULL formula traced from `VoxCPM2PromptPrefillRuntime::Impl::build`'s actual graph (not guessed):
+new `PrefillRow` (TEXT token or AUDIO patch+embedding) and `GenerateWithPrompt`, which at every
+row computes `base_hidden = base_lm(row's embedding)`, `fsq = FSQ(base_hidden)` (reusing
+`VoxCpm2StepProjection.Run`'s existing `FsqHidden` output), `lm_hidden = row.IsAudio ? fsq :
+base_hidden` (the real per-position TEXT-vs-AUDIO selection this session's earlier text-only
+entry only needed to handle for the always-zero-audio-mask case), `masked_current = row.IsAudio ?
+row.AudioEmbedding : zero`, `residual_input = fusion_concat_proj(concat(lm_hidden,
+masked_current))`, `residual_hidden = residual_lm.Step(residual_input)` -- and seeds the
+generation loop from the LAST row's values, with `prefix_cond` seeded from the last row's real
+feature (matching the reference's own unconditional `prefix_cond = row.feature` assignment on
+every row, not just audio rows).
+
+`VoxCpm2GeneratorWithPromptRealWeightsTests` (new): encodes a synthetic reference-audio waveform
+through the real AudioVAE encoder (ported in the immediately preceding entry), chunks it into
+real patches, embeds each through the real local encoder, splices them as real AUDIO prefill rows
+alongside real TEXT rows (`ReferenceAudioStartTokenId`/`ReferenceAudioEndTokenId`/tokenized text/
+`AudioStartTokenId`, matching `build_prefill_sequence`'s real reference-audio branch order) --
+runs the real generation loop and decodes through the real AudioVAE decoder. 53.6s wall-clock,
+real `[ForwardPass] Pre-faulted 6.04 GiB...` weight-loading line logged (genuine run, not a
+no-op). This is the FIRST real reference-audio-conditioned run for this model -- VoxCPM2's voice-
+cloning path, previously entirely unimplemented (no AudioVAE encoder existed at all before this
+session), is now wired end-to-end with every real component real-weight verified.
+
+VoxCPM2 moves to ~85% -- every major architectural piece (base_lm, residual_lm, local encoder,
+CFM/DiT, AudioVAE encoder+decoder, text-only AND reference-audio-conditioned generation loops) is
+now real, wired, and real-weight verified. Real remaining gaps: numeric golden-parity against the
+reference (this session's tests check finite/in-range/non-degenerate output, not bit-exact
+match), real streaming variant, real sampling beyond the CFM's own Euler solver (not applicable
+the same way it is for autoregressive-codebook models -- see the earlier "real end-to-end
+pipeline" entry's note on this).

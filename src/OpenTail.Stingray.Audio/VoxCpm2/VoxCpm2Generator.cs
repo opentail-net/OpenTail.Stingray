@@ -116,6 +116,128 @@ public static class VoxCpm2Generator
         return new Result([.. patches], stoppedEarly);
     }
 
+    /// <summary>Real prefill row: either a TEXT token, or an AUDIO patch (real continuous
+    /// `[PatchSize][FeatDim]` latent features from <see cref="VoxCpm2AudioVaeDecoder.Encode"/>,
+    /// chunked into <see cref="PatchSize"/>-frame patches -- `AudioFeature` is the raw patch used
+    /// for `prefix_cond` seeding, `AudioEmbedding` is that SAME patch already projected through
+    /// <see cref="VoxCpm2LocalEncoder.EncodePatch"/>, the real `current_embeddings` row value).</summary>
+    public readonly struct PrefillRow
+    {
+        public int? TextToken { get; init; }
+        public float[][]? AudioFeature { get; init; }
+        public float[]? AudioEmbedding { get; init; }
+        public bool IsAudio => AudioFeature != null;
+
+        public static PrefillRow Text(int token) => new() { TextToken = token };
+        public static PrefillRow Audio(float[][] feature, float[] embedding) => new() { AudioFeature = feature, AudioEmbedding = embedding };
+    }
+
+    /// <summary>
+    /// Real, general reference-audio-AWARE prefill + `generate_once` loop, ported from
+    /// `VoxCPM2PromptPrefillRuntime::Impl::build`'s full real graph (not the text-only
+    /// simplification <see cref="Generate"/> uses) -- supports real voice-cloning/reference-audio
+    /// conditioning via mixed TEXT/AUDIO prefill rows (build the row sequence with
+    /// <see cref="PrefillRow.Text"/>/<see cref="PrefillRow.Audio"/>, matching the real reference's
+    /// `build_prefill_sequence` order: optional `[refAudioStart, ...reference patches...,
+    /// refAudioEnd]`, then the target text tokens, then `audioStartTokenId`, then optional
+    /// `[...prompt patches...]`).
+    ///
+    /// <para>Real per-row formula (traced from the reference's actual graph, not approximated):
+    /// at every row, `base_hidden = base_lm(row's embedding)`; `fsq = FSQ(base_hidden)` (the SAME
+    /// bottleneck <see cref="VoxCpm2StepProjection.Run"/> already computes, reused here via its
+    /// `FsqHidden` output on a throwaway call); `lm_hidden = row.IsAudio ? fsq : base_hidden`
+    /// (TEXT rows keep the raw hidden state, AUDIO rows are FSQ-quantized); `masked_current =
+    /// row.IsAudio ? row.AudioEmbedding : zero`; `residual_input = fusion_concat_proj(concat(
+    /// lm_hidden, masked_current))`; `residual_hidden = residual_lm.Step(residual_input)`. The
+    /// loop's seed `lm_hidden`/`residual_hidden` are the LAST row's values; the initial CFM
+    /// `prefix_cond` is the LAST row's real feature (`zero_patch` for a text row, the real raw
+    /// audio patch for an audio row -- matches the reference's own unconditional
+    /// `prefix_cond = row.feature` assignment on every row).</para>
+    /// </summary>
+    public static Result GenerateWithPrompt(
+        IForwardPass baseLmFwd,
+        VoxCpm2ResidualLm residualLm,
+        VoxCpm2StepProjectionWeights projWeights,
+        VoxCpm2DiTEstimatorWeights ditWeights,
+        VoxCpm2LocalEncoderWeights encoderWeights,
+        IReadOnlyList<PrefillRow> rows,
+        int maxPatches,
+        int cfmTimesteps,
+        float cfgValue,
+        int minTokens,
+        Random noiseRng)
+    {
+        if (rows.Count == 0) throw new ArgumentException("Prefill rows must be non-empty.", nameof(rows));
+
+        var zeroHidden = new float[HiddenDim];
+        var zeroPatch = new float[PatchSize][];
+        for (int p = 0; p < PatchSize; p++) zeroPatch[p] = new float[FeatDim];
+        int latentDim = projWeights.FsqInProjBias.Length;
+
+        var lmHidden = zeroHidden;
+        var residualHidden = zeroHidden;
+        var prefixCond = zeroPatch;
+
+        for (int i = 0; i < rows.Count; i++)
+        {
+            var row = rows[i];
+            float[] baseHidden;
+            if (row.IsAudio)
+            {
+                baseLmFwd.ForwardEmbedding(row.AudioEmbedding!, i);
+                baseHidden = baseLmFwd.LastHidden.ToArray();
+            }
+            else
+            {
+                baseLmFwd.Prefill([row.TextToken!.Value], startPos: i);
+                baseHidden = baseLmFwd.LastHidden.ToArray();
+            }
+
+            var fsq = VoxCpm2StepProjection.Run(projWeights, baseHidden, zeroHidden, zeroHidden,
+                HiddenDim, DitHiddenDim, latentDim, scalarQuantizationScale: 1000).FsqHidden;
+            lmHidden = row.IsAudio ? fsq : baseHidden;
+
+            var maskedCurrent = row.IsAudio ? row.AudioEmbedding! : zeroHidden;
+            var concat = new float[HiddenDim * 2];
+            Array.Copy(lmHidden, concat, HiddenDim);
+            Array.Copy(maskedCurrent, 0, concat, HiddenDim, HiddenDim);
+            var residualInput = Linear(concat, projWeights.FusionConcatProjWeight, projWeights.FusionConcatProjBias, HiddenDim * 2, HiddenDim);
+            residualHidden = residualLm.Step(residualInput);
+
+            prefixCond = row.IsAudio ? row.AudioFeature! : zeroPatch;
+        }
+
+        var patches = new List<float[][]>();
+        bool stoppedEarly = false;
+        int position = rows.Count;
+        for (int index = 0; index < maxPatches; index++)
+        {
+            var projected = VoxCpm2StepProjection.Run(projWeights, lmHidden, residualHidden, zeroHidden,
+                HiddenDim, DitHiddenDim, latentDim, scalarQuantizationScale: 1000);
+            var mu = new float[2][] { projected.CurrentLmDitHidden, projected.ResidualDitHidden };
+
+            var patch = VoxCpm2CfmSolver.GeneratePatch(ditWeights, mu, prefixCond, cfmTimesteps, cfgValue, meanMode: false, noiseRng);
+            patches.Add(patch);
+            prefixCond = patch;
+
+            if (index > minTokens && StopClass(projected.CurrentStopLogits) == 1)
+            {
+                stoppedEarly = true;
+                break;
+            }
+
+            var currEmbed = VoxCpm2LocalEncoder.EncodePatch(encoderWeights, patch, HiddenDim);
+            baseLmFwd.ForwardEmbedding(currEmbed, position++);
+            var nextLm = baseLmFwd.LastHidden.ToArray();
+            var nextProjected = VoxCpm2StepProjection.Run(projWeights, nextLm, residualHidden, currEmbed,
+                HiddenDim, DitHiddenDim, latentDim, scalarQuantizationScale: 1000);
+            lmHidden = nextProjected.FsqHidden;
+            residualHidden = residualLm.Step(nextProjected.ResidualInput);
+        }
+
+        return new Result([.. patches], stoppedEarly);
+    }
+
     /// <summary>Real `stop_class`: argmax of the real 2-logit stop head.</summary>
     private static int StopClass(float[] stopLogits) => stopLogits[1] > stopLogits[0] ? 1 : 0;
 
