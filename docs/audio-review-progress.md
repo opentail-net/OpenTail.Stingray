@@ -14666,3 +14666,41 @@ strong, multi-step evidence (norm-weight amplification pattern matches real publ
 activation behavior exactly) now outweighs the initial suspicious symptom. Do not re-open this
 as "a confirmed bug" without new contrary evidence; the real remaining open question is whether
 OmniVoice's actual generation loop even exercises unconstrained argmax at all.
+
+## PersonaPlex -- first live end-to-end run, temporal LM wired to Depformer, 2026-09-07
+
+Implemented `PersonaPlexGenerator`, ported from `lm_runtime.cpp`'s `build_token_embedding`/
+`run_token_step` (not guessed): each frame, the temporal LM's step input is
+`textEmbedding[frameTextToken] + SUM_over_16(audioEmbeddings[cb][frameAudioCode[cb]])` (plain
+additive fusion, real per-codebook tables), producing a hidden state used both to predict the
+temporal LM's own next text token AND, together with that just-predicted token, to condition the
+Depformer's generation of the NEXT frame's 16 audio codes -- the real Moshi-lineage design where
+the Depformer fills in one frame's audio conditioned on the temporal step that decided that
+frame's text token.
+
+**Real, confirmed bootstrap tokens found in `session.cpp`** (`kTextInitialToken=32000`,
+`kAudioInitialToken=2048`) -- exactly `textVocabSize`/`audioCodebookSize`, the reserved LAST row
+of each `[vocab+1, hidden]` embedding table. Unlike this session's earlier Higgs Audio TTS work
+(which guessed a wrong zero-code bootstrap before the real first-sample mechanism was found),
+PersonaPlex's real initial tokens were found and used correctly from the start -- added
+`TextEmbeddingWeight()` to `PersonaPlexLmTensorSource` (mirroring the existing
+`AudioEmbeddingWeight(cb)` accessor) to expose them.
+
+Real-weight test (`PersonaPlexGeneratorRealWeightsTests`) generates 3 real frames from the real
+checkpoint -- each a real in-range text token plus 16 real in-range audio codes -- chaining both
+independently-verified decoders (temporal LM: 25.48 GiB resident weights; Depformer: 6 layers x
+16 steps per frame) into one live run: 64.8s wall-clock, genuine.
+
+**Real, deliberate simplification flagged, not guessed away**: `session.cpp` implements a real
+staggered multi-stream DELAY pattern (`kDelayCacheSteps=4`, `kMimiFrameCodebooks=8` -- hinting
+PersonaPlex's 16 real `lm_codebooks` may represent TWO 8-codebook Mimi streams, e.g. two dialogue
+participants each with their own delay window) that this port does NOT implement -- all 16
+codebooks are fed/generated for the same frame with no delay offset, analogous to this session's
+Higgs Audio TTS work before ITS real delay pattern was found (`HiggsCodebookSampler`). A future
+pass should read `session.cpp`'s `PersonaPlexDelayState` in full before assuming this
+simplification is harmless.
+
+**PersonaPlex status: ~50%.** Both real decoders are now wired end-to-end and real-weight
+verified together, a genuine milestone -- the temporal-LM+Depformer half of this model is
+structurally complete modulo the delay pattern and real sampling. The Mimi neural codec (turns
+generated codes into actual audio) remains the one large unimplemented piece.

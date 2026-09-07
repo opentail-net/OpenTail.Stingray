@@ -123,6 +123,10 @@ public sealed unsafe class PersonaPlexLmTensorSource : IModelTensorSource, IDisp
         return _source.GetTensor($"lm/emb.{codebook}.weight");
     }
 
+    /// <summary>Real text embedding table, `[textVocabSize+1, hiddenSize]`, row-major (the SAME
+    /// table backing `token_embd.weight`). Materialized on first access.</summary>
+    public float[] TextEmbeddingWeight() => _source.GetTensor("lm/text_emb.weight");
+
     private static float[] SplitRows(float[] packed, int cols, int rowOffset, int rows)
     {
         var output = new float[(long)rows * cols];
