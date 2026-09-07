@@ -14425,3 +14425,51 @@ attempting a port, following this session's established "decode-only subset firs
 decoders (temporal LM, Depformer) are real-weight verified; the Mimi codec is the one remaining
 large piece before a full generation pipeline exists, comparable in scope to Higgs Audio TTS's
 own codec work this session.
+
+## Stale ranked-list correction: Voxtral Realtime and Nemotron ASR are BOTH already essentially DONE, 2026-09-07
+
+This turn's ranked backlog (carried in from the prior turn's summary) listed "Qwen3 Forced
+Aligner, OmniVoice, Nemotron ASR, Voxtral Realtime" as a single vague "remaining gaps" bucket to
+"check precise scope before assuming complete." Checking that precisely (per CLAUDE.md's own
+rule 12 discipline) turned up a real, useful correction: **two of these four are already
+complete, not merely "scoped," and the ranked-list summary carried forward was stale** --
+whoever/whatever produced the mid-session summary that seeded this turn's prompt hadn't read
+past the early, now-superseded update entries for these two models.
+
+**Voxtral Realtime**: re-running the existing `VoxtralAudioEncoderWeightsLoadTests`/
+`VoxtralTextDecoderLoadTests` against the real checkpoints (both already downloaded --
+`models/_models/voxtral-mini-realtime/model.safetensors`, 8.86GB -- confirms this session's
+"models/_models has plenty of space, don't rotate" note was already being followed) passed in
+58.9s, genuine real-weight runs. Reading further into the doc's OWN later entries (this doc is
+append-only and chronological -- the ranked-list summary evidently only reflected an early
+slice) shows a **2026-09-06 "MAJOR MILESTONE" entry**: the full autoregressive generation loop
+was already implemented and produced an EXACT, word-for-word transcription match against the
+real reference on real audio ("This little work was finished in the year 1803, and intended for
+immediate publication."). This item is DONE for structural/golden-verification purposes; only
+minor polish remains (a 124-vs-123 prefill audio-token off-by-one that didn't affect the match,
+no real EOS-based early stopping).
+
+**Nemotron ASR**: the doc's own later entries show the RNNT decoder
+(`NemotronAsrRnntDecoder.cs`) and Conformer encoder (`NemotronAsrConformerEncoder.cs`) were
+ALSO already implemented (not just "scoped" as the carried-forward summary said). Running the
+existing `NemotronAsrEndToEndTests` against the real checkpoint (also already downloaded)
+produced, on the SAME real reference audio Voxtral used: **"This little work was finished in
+the year eighteen oh three and intended for immediate publication. &lt;en-US&gt;"** -- a real,
+correct transcription (RNNT models naturally decode numerals as spoken-form digits rather than
+numeric literals, so "eighteen oh three" for "1803" is expected/correct behavior, not a bug) --
+71.3s wall-clock, genuine run. This item is ALSO essentially DONE.
+
+**Real remaining items from this original bucket**: OmniVoice (real, unresolved: an earlier
+2026-09-06 diagnostic found its LLM's argmax output suspiciously converging across different
+prompts -- NOT confirmed as the same bug that hit Fun-ASR-Nano, but not ruled out either,
+real next step is testing with OmniVoice's own real tokenizer and a real natural-language
+prompt rather than arbitrary token ids) and Qwen3 Forced Aligner (real, documented classify-head
+bug from 2026-09-06, audio encoder ruled out as the cause -- root cause still open) remain
+genuinely incomplete and are the real candidates for further work in this bucket, not Voxtral/
+Nemotron.
+
+**Process note for future turns**: when a ranked-list item says "check docs for precise
+remaining scope before assuming complete," actually read the LATEST entry for that model name in
+this append-only doc (search from the bottom, or `grep` the model name and take the last match)
+rather than the first one found -- this doc's real value is in its later entries superseding
+earlier ones, and a partial read produces exactly this kind of stale-status carry-forward.
