@@ -253,6 +253,44 @@ public sealed class QwenAsrForcedAligner : IDisposable
             var tapDim = fwd.HiddenTapDim;
             int embDim = tapDim / hp.NumLayers;
             var row = fwd.HiddenTapsAt(lastPos);
+            // Real, additive-only (2026-09-07): when STINGRAY_FA_DUMP_DIR points at the same
+            // directory the reference's own `thinker.cpp` dump mechanism wrote
+            // `layer_{N}_out.bin` files to (see docs/audio-review-progress.md's "CONCLUSIVE:
+            // layer-2's MLP formula/weights are CORRECT" entry), diff THIS port's own per-layer
+            // last-position hidden state against the reference's real corresponding row
+            // element-by-element (max-abs-diff, cosine similarity) -- not just aggregate std --
+            // to find the first layer where this port's own computation actually diverges.
+            string? dumpDir = Environment.GetEnvironmentVariable("STINGRAY_FA_DUMP_DIR");
+            if (dumpDir != null)
+            {
+                string embPath = Path.Combine(dumpDir, "prompt_embeddings.bin");
+                var embTensor = source.FindTensor("token_embd.weight");
+                if (File.Exists(embPath) && embTensor != null)
+                {
+                    var embBytes = File.ReadAllBytes(embPath);
+                    int stepsInDump = embBytes.Length / 4 / embDim;
+                    if (stepsInDump > 0)
+                    {
+                        var refRow = new float[embDim];
+                        Buffer.BlockCopy(embBytes, (stepsInDump - 1) * embDim * 4, refRow, 0, embDim * 4);
+                        int tokenId = prompt[lastPos];
+                        var tableBytes = source.GetTensorData(embTensor.Value);
+                        var table = System.Runtime.InteropServices.MemoryMarshal.Cast<byte, float>(tableBytes);
+                        var ourRow = table.Slice(tokenId * embDim, embDim);
+                        double dot0 = 0, normA0 = 0, normB0 = 0, maxAbsDiff0 = 0;
+                        for (int i = 0; i < embDim; i++)
+                        {
+                            float a = ourRow[i], b = refRow[i];
+                            dot0 += (double)a * b;
+                            normA0 += (double)a * a;
+                            normB0 += (double)b * b;
+                            maxAbsDiff0 = Math.Max(maxAbsDiff0, Math.Abs(a - b));
+                        }
+                        double cosine0 = dot0 / (Math.Sqrt(normA0) * Math.Sqrt(normB0) + 1e-12);
+                        Console.Error.WriteLine($"[FA-DIFF-CS] prompt_embeddings (token {tokenId}) vs reference last-row: cosine={cosine0:F6} maxAbsDiff={maxAbsDiff0:F6}");
+                    }
+                }
+            }
             for (int layer = 0; layer < hp.NumLayers; layer++)
             {
                 var slice = row.Slice(layer * embDim, embDim);
@@ -261,6 +299,26 @@ public sealed class QwenAsrForcedAligner : IDisposable
                 double m = sum / embDim;
                 double sd = Math.Sqrt(Math.Max(0, sumsq / embDim - m * m));
                 Console.Error.WriteLine($"[FA-STAGE-CS] layer_{layer} n={embDim} mean={m:F6} std={sd:F6}");
+
+                if (dumpDir is null) continue;
+                string path = Path.Combine(dumpDir, $"layer_{layer}_out.bin");
+                if (!File.Exists(path)) continue;
+                var bytes = File.ReadAllBytes(path);
+                int stepsInDump = bytes.Length / 4 / embDim;
+                if (stepsInDump <= 0) continue;
+                var refRow = new float[embDim];
+                Buffer.BlockCopy(bytes, (stepsInDump - 1) * embDim * 4, refRow, 0, embDim * 4);
+                double dot = 0, normA = 0, normB = 0, maxAbsDiff = 0;
+                for (int i = 0; i < embDim; i++)
+                {
+                    float a = slice[i], b = refRow[i];
+                    dot += (double)a * b;
+                    normA += (double)a * a;
+                    normB += (double)b * b;
+                    maxAbsDiff = Math.Max(maxAbsDiff, Math.Abs(a - b));
+                }
+                double cosine = dot / (Math.Sqrt(normA) * Math.Sqrt(normB) + 1e-12);
+                Console.Error.WriteLine($"[FA-DIFF-CS] layer_{layer} vs reference last-row: cosine={cosine:F6} maxAbsDiff={maxAbsDiff:F6}");
             }
         }
         if (found != timestampPositions.Count)

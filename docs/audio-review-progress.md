@@ -15357,3 +15357,116 @@ genuine). VibeVoice TTS's "do_sample/temperature/top-k/top-p path (argmax-only c
 (flagged alongside Higgs's identical note, both now closed this session) is resolved for the
 text/control-token stream; the diffusion sampler itself already had real CFG sampling from
 earlier this session, so this closes VibeVoice TTS's last flagged sampling gap.
+
+## Qwen3 Forced Aligner -- CONCLUSIVE: layer-2's MLP formula/weights are CORRECT, bug is upstream, 2026-09-07
+
+Added a real raw-binary tensor dump mechanism to the reference (`STINGRAY_FA_DUMP_DIR`
+env var, `thinker.cpp`, additive alongside the existing `[FA-STAGE]` mean/std trace -- writes each
+tap's exact `f32` values to `<dir>/<label>.bin`) and re-ran the reference to dump layer 2's real
+`post_attn` (MLP input) and `out` (MLP output + residual) tensors, all 130 positions.
+
+Wrote `QwenForcedAlignerLayer2MlpIsolationDebugTest`: loads the real checkpoint's layer-2 MLP
+weights directly from `model.safetensors` (`SafetensorsLoader`, bypassing `ForwardPass`/
+`ModelGraph` entirely), hand-computes the real SwiGLU formula (`RMSNorm -> gate/up -> SiLU -> mul
+-> down -> +residual`) on the REAL reference `post_attn` input, and compares element-by-element
+against the reference's own real `out` tensor.
+
+**Result: relative L2 error = 0.000687 (~0.07%, i.e. plain float32 rounding noise).** This is
+DEFINITIVE, not circumstantial: given the exact same input the reference itself produced, this
+port's own SwiGLU formula AND its layer-2 weight loading (`gate_proj`/`up_proj`/`down_proj`/
+`post_attention_layernorm` via `QwenAsrLlmSafetensorsTensorSource`) reproduce the reference's real
+output to float32 precision. **The layer-2 std jump is a real, correctly-reproducible property of
+this checkpoint's trained weights -- not a port-side MLP bug.** This closes hypothesis (b) from
+the immediately preceding entries outright and confirms hypothesis (a): a genuine activation-
+outlier phenomenon this port's math handles correctly IN ISOLATION.
+
+**This redirects the whole investigation**: since layer 2's OWN math is proven correct, this
+port's failure to reproduce the real jump in its end-to-end run (this port's own bisection showed
+smooth growth, no discontinuity) means this port's INPUT to layer 2 -- i.e. its own computed
+`post_attn`/hidden state from layers 0-1 -- must differ from the reference's real values by more
+than the aggregate std comparison revealed (aggregate std can look similar while individual
+elements already diverge, especially given a real outlier-amplifying nonlinearity downstream).
+Real next step, now precisely scoped and with the reference-side tooling already in place (layer
+0/1's real `out`/`post_attn` tensors are already dumped in the same run): capture this port's OWN
+per-position hidden state at layers 0/1 (via `EnableHiddenTaps`, already used for the earlier
+aggregate-std bisection) and diff it ELEMENT-BY-ELEMENT (max-abs-diff, cosine similarity) against
+the reference's real dumped rows -- not just aggregate mean/std -- to find the exact first point
+of numeric divergence upstream of layer 2.
+
+## Qwen3 Forced Aligner -- MAJOR CORRECTION: divergence starts at LAYER 0, not layer 2; earlier aggregate-std bisection was misleading, 2026-09-07
+
+Extended `QwenAsrForcedAligner.AlignReal`'s existing `STINGRAY_FA_TRACE` hidden-tap block: when
+`STINGRAY_FA_DUMP_DIR` also points at the reference's real per-layer `.bin` dumps (see the
+immediately preceding "CONCLUSIVE" entry), it now also computes ELEMENT-BY-ELEMENT cosine
+similarity and max-abs-diff between this port's own last-position hidden state and the
+reference's real corresponding row, per layer -- not just the aggregate mean/std this session's
+entire earlier bisection relied on.
+
+**Real result, and it overturns the previous framing**: cosine similarity between this port's
+layer-0 output and the reference's real layer-0 output is only **0.566** -- NOT close to 1.0.
+Every subsequent layer stays in the same low 0.55-0.83 cosine-similarity range (never recovering),
+with `maxAbsDiff` growing from ~14 at layer 0 to ~300 by layer 27. **The divergence is present
+from LAYER 0 onward, not introduced at layer 2** -- the earlier bisection's aggregate mean/std
+comparison (this port's layer-0 std=1.57 vs the reference's real 2.20, "close enough" looking)
+was genuinely misleading: two very different per-element vectors can have similar aggregate
+statistics while being almost unrelated directionally (cosine 0.57 is closer to random than to a
+numerical-precision-only difference, which would show cosine > 0.999).
+
+**This means the immediately preceding "layer-2 MLP is provably correct, bug is upstream" entry's
+conclusion is still valid (the MLP formula/weights genuinely check out against the reference's
+own real input) -- but "upstream" now means all the way back to LAYER 0's input, i.e. the prompt
+embedding CONSTRUCTION itself (audio-token splicing, position assignment, or the text/audio
+embedding combination) is the real remaining suspect, not anything inside the decoder stack.**
+This is a real, significant course-correction: five previously-investigated areas (position read-
+shift, Q8 prefill, weight corruption, M-RoPE, and now the MLP formula) are ALL ruled out with
+direct evidence, and the audio encoder's own output was previously confirmed to match the
+reference closely in AGGREGATE (mean=0.0067/std=0.549 vs reference's 0.0067/0.549) -- but per the
+finding above, aggregate-only comparisons are now known to be an unreliable signal for this
+investigation; the audio encoder's output was never checked ELEMENT-BY-ELEMENT/position-by-
+position against a real reference dump, and should be re-checked with the SAME new tooling before
+trusting the earlier "audio encoder ruled out" conclusion at face value. Real next step for a
+future pass: dump the reference's real `audio_embeddings`/`prompt_embeddings` tensor (the
+`x.tensor` passed into `QwenCausalDecoderModule::build`, captured via `fa_debug_taps_.push_back(
+{"prompt_embeddings", x.tensor})` in `thinker.cpp`, already tap-hooked and dump-mechanism-ready)
+and compare it element-by-element (not just aggregate mean/std) against this port's own spliced
+prompt embedding row-by-row -- this is now the highest-priority real lead, since it is the
+earliest point in the whole pipeline that could explain a cosine-similarity-0.57 divergence
+already visible after just one decoder layer.
+
+## Qwen3 Forced Aligner -- prompt_embeddings dump tap is likely UNRELIABLE (probable ggml buffer-reuse artifact); layer-0 divergence finding stands, 2026-09-07
+
+Followed up on the preceding entry's "compare `prompt_embeddings` element-by-element" next step.
+Read `thinker.cpp`'s real `prompt_embeddings()` function (lines 130-156, not guessed): a plain
+`EmbeddingModule` lookup (`embed_tokens.weight[token_id]`) with audio-token rows scattered in via
+`ggml_set_rows`, NO embedding scale/multiplier anywhere in this code path or in `load_weights`.
+
+Wrote a debug test loading the real checkpoint's `thinker.model.embed_tokens.weight` row for the
+prompt's real last token id (`151705`, the real `timestampTokenId`, confirmed via this port's own
+`[FA-Trace]` prompt dump) directly via `SafetensorsLoader` (bypassing this port's own bridging
+entirely). **Real, load-bearing finding**: the raw checkpoint's embedding row for this token has
+small values (`-0.013, -0.068, 0.008, 0.027, -0.015, ...`, typical trained-embedding magnitude),
+but the reference's DUMPED `prompt_embeddings.bin` last row has much larger values (`-5.24, 0.55,
+2.31, 2.02, 0.20, ...`) -- roughly 100x larger, with a magnitude/std profile that looks like a
+DEEP hidden state (comparable to this session's own `layer_2_post_attn` std~3.17), not a raw,
+untouched token embedding. Since the real reference code applies NO scaling at this stage, this
+strongly suggests the `prompt_embeddings` DEBUG TAP ITSELF is unreliable -- most likely a ggml
+computation-graph buffer-reuse artifact (the allocator may still reuse/overwrite a `ggml_set_output`-
+marked tensor's underlying memory for a later node under some circumstances, or the reshape view
+`prompt_embeddings()` returns aliases memory that a later op writes through) rather than a real
+property of the checkpoint's actual embeddings.
+
+**This means the specific "compare prompt_embeddings element-by-element" next step from the
+preceding entry is NOT reliable evidence either way** -- withdrawn as a lead, not because the
+underlying question (does this port's embedding construction match the reference's) is answered,
+but because THIS particular tap cannot be trusted to test it. **The layer-0-through-27 `out` tap
+comparisons from the entry before that remain solid evidence** (each is `ggml_set_output`'d and
+read individually inside the per-layer loop immediately after being computed, the same mechanism
+already cross-validated by the layer-2 MLP hand-computation matching to float32 precision) --
+real divergence (cosine ~0.57, not >0.999) is still confirmed present by layer 0's OUTPUT. Real,
+narrower next step for a future pass: since the embedding-lookup tap can't be trusted, verify
+layer 0's INPUT correctness a different way -- either by re-deriving the reference's real
+embedding row through a fresh, immediately-read (not held across the whole graph build) debug
+print inserted directly inside `prompt_embeddings()` itself (before it's returned/reshaped/used
+by any decoder layer), or by checking this port's own layer-0 attention/RoPE math line-by-line
+against `QwenDecoderLayerModule::build`'s real formula now that layer 2's MLP is proven correct
+and layer 0 is the earliest layer where a real, trustworthy divergence is confirmed.
