@@ -13752,8 +13752,26 @@ token (embedded via `VoxCPM2TextEmbeddingRuntime`, not yet ported) OR a pre-comp
 audio-patch embedding via the local encoder) and the residual LM itself (a second, smaller
 MiniCPM-style autoregressive model, real config `residual_lm_num_layers`/`residual_lm_no_rope`
 fields already seen in `assets.cpp` but not yet cross-referenced against a real tensor dump).
-Real next step if resumed: dump `weights/residual_lm.*` real tensor names/shapes (same
-technique as every other component), confirm whether `VoxCpm2LlmTensorSource`'s existing
-`ForwardPass` bridge pattern can be reused for the residual LM too (likely yes, same
-`minicpm` architecture family, smaller layer count), then implement the real prefill stage
-and wire `generate_once`'s loop above using the pieces that already exist.
+
+**Update, 2026-09-07 (same session) -- dumped `weights/residual_lm.*`'s real tensor names
+and config, correcting an over-optimistic assumption.** Real config: `residual_lm_num_layers
+=8`, `residual_lm_no_rope=true`; real tensors confirm NO `embed_tokens`/`lm_head` (matches
+`residual_lm_config`'s `vocab_size=0` -- this model never does a token-embedding lookup or
+computes logits, only ever consumes precomputed embeddings via `ForwardEmbedding`-style
+input, same real mechanism as `base_lm`'s per-step calls). Same `hidden_size=2048`/
+`num_attention_heads=16`/`num_key_value_heads=2`/`head_dim=128`/`intermediate_size=6144` as
+`base_lm` (inherited), just 8 layers instead of 28 and RoPE COMPLETELY DISABLED
+(`apply_minicpm_rope`'s real `if (config.no_rope) return input;` early-out).
+
+**This means `VoxCpm2LlmTensorSource`'s `ForwardPass`-reuse trick does NOT extend to the
+residual LM** -- correcting the "likely yes" guess in this doc's own earlier update.
+`ForwardPass`'s generic `minicpm`-architecture graph has no GGUF-metadata-driven way to
+disable RoPE per checkpoint (real production `minicpm` checkpoints always use RoPE), so
+presenting `residual_lm` as a synthetic `minicpm` GGUF would apply RoPE incorrectly. The
+residual LM instead needs a bespoke, causal (not bidirectional), incremental-KV-cache
+decoder port -- structurally smaller/simpler than `VoxCpm2MiniCpmBidirectionalStack` in one
+real way (no RoPE table/rotation needed at all) but harder in another (needs real persistent
+per-call KV-cache state across autoregressive steps, unlike the local encoder/DiT's
+stateless one-shot bidirectional passes). Real next step if resumed: implement the real
+prefill stage (`VoxCPM2PromptPrefillRuntime`) and this bespoke causal residual-LM stepper,
+then wire `generate_once`'s loop above using the pieces that already exist.
