@@ -1,8 +1,11 @@
 namespace OpenTail.Stingray.Audio.VoxCpm2;
 
 /// <summary>
-/// Presents VoxCPM2's MiniCPM LLM backbone (`base_lm.*` tensors, real prefix confirmed via
-/// `assets.cpp`'s `validate_weight_anchors`) to `OpenTail.Stingray.Engine`'s existing,
+/// Presents VoxCPM2's MiniCPM LLM backbone (`weights/base_lm.*` tensors -- real full prefix
+/// including the packed checkpoint's own `weights/` source root, confirmed via a real tensor
+/// dump; `assets.cpp`'s `validate_weight_anchors` shows the shorter `base_lm.*` logical name the
+/// reference's own `TensorSource` abstraction resolves post-prefix-strip, NOT the raw packed-GGUF
+/// name this class's `RvcPackedTensorSource` needs) to `OpenTail.Stingray.Engine`'s existing,
 /// unmodified `ForwardPass` as a standard `minicpm` model -- same bridging technique as
 /// `VibeVoice.VibeVoiceLlmTensorSource`/`OmniVoice.OmniVoiceLlmTensorSource`. Real, resolved
 /// architectural finding this session (see `docs/audio-review-progress.md`'s VoxCPM2 section):
@@ -19,11 +22,13 @@ namespace OpenTail.Stingray.Audio.VoxCpm2;
 /// VibeVoice's Qwen2 decoder) -- confirmed via `text_decoder.cpp`'s sibling `minicpm.cpp`
 /// (`load_layer_weights`, no `.bias` tensors requested for `q_proj`/`k_proj`/`v_proj`).</para>
 ///
-/// <para><b>Not yet wired</b>: the real `embedding_scale`/`residual_scale`/`logit_scale` values
-/// (OpenBMB `scale_emb`/`scale_depth`/`dim_model_base` -&gt; GGUF metadata formula) are passed
-/// through as caller-supplied floats rather than derived here -- deriving the exact real
-/// conversion formula from `lm_config`'s raw fields needs the checkpoint's actual `config.json`
-/// numbers, a real next step once resumed.</para>
+/// <para><b>Resolved</b>: the real checkpoint's `lm_config.use_mup=false`, and `minicpm.cpp`
+/// guards every mup-scale application on `config.use_mup` -- so `embedding_scale`/
+/// `residual_scale` are both the real identity value `1.0` for THIS checkpoint (not derived from
+/// `scale_emb`/`scale_depth`/`dim_model_base`, which the config carries but the real forward pass
+/// never applies here). `logit_scale` is irrelevant entirely: `minicpm.cpp` never computes final
+/// logits for `base_lm` -- only hidden states, consumed via `IForwardPass.LastHidden` -- so pass
+/// any value (`1.0` is used by this class's real-weight test).</para>
 /// </summary>
 public sealed unsafe class VoxCpm2LlmTensorSource : IModelTensorSource, IDisposable
 {
@@ -44,19 +49,19 @@ public sealed unsafe class VoxCpm2LlmTensorSource : IModelTensorSource, IDisposa
     {
         _source = source;
 
-        MapIfPresent2D("base_lm.embed_tokens.weight", "token_embd.weight", vocabSize, hiddenDim);
-        MapIfPresent1D("base_lm.norm.weight", "output_norm.weight", hiddenDim);
+        MapIfPresent2D("weights/base_lm.embed_tokens.weight", "token_embd.weight", vocabSize, hiddenDim);
+        MapIfPresent1D("weights/base_lm.norm.weight", "output_norm.weight", hiddenDim);
 
-        bool hasSeparateLmHead = _source.HasTensor("base_lm.lm_head.weight");
+        bool hasSeparateLmHead = _source.HasTensor("weights/base_lm.lm_head.weight");
         if (hasSeparateLmHead)
-            MapIfPresent2D("base_lm.lm_head.weight", "output.weight", vocabSize, hiddenDim);
+            MapIfPresent2D("weights/base_lm.lm_head.weight", "output.weight", vocabSize, hiddenDim);
         // else: tied embeddings, "output.weight" deliberately left unmapped.
 
         int qOut = numHeads * headDim;
         int kvOut = numKvHeads * headDim;
         for (int i = 0; i < numLayers; i++)
         {
-            string p = $"base_lm.layers.{i}.";
+            string p = $"weights/base_lm.layers.{i}.";
             string b = $"blk.{i}.";
             MapIfPresent1D(p + "input_layernorm.weight", b + "attn_norm.weight", hiddenDim);
             MapIfPresent2D(p + "self_attn.q_proj.weight", b + "attn_q.weight", qOut, hiddenDim);
