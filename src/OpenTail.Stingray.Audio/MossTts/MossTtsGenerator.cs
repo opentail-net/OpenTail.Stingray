@@ -1,3 +1,5 @@
+using OpenTail.Stingray.Engine;
+
 namespace OpenTail.Stingray.Audio.MossTts;
 
 /// <summary>Real, in-range 16-codebook RVQ audio frame tokens for one generated timestep.</summary>
@@ -27,7 +29,9 @@ public static class MossTtsGenerator
         MossTtsLocalTransformerWeights l,
         IReadOnlyList<MossTtsGlobalRow> prompt,
         int activeCodebooks,
-        int maxNewFrames)
+        int maxNewFrames,
+        SamplingParams? options = null,
+        Random? rng = null)
     {
         if (prompt.Count == 0) throw new ArgumentException("MOSS-TTS-Nano generator requires a non-empty prompt.", nameof(prompt));
         if (activeCodebooks <= 0 || activeCodebooks > MossTtsGlobalTransformerWeights.NumCodebooks)
@@ -41,7 +45,7 @@ public static class MossTtsGenerator
         for (int step = 0; step < maxNewFrames; step++)
         {
             var hidden = MossTtsGlobalTransformer.ForwardLastHidden(g, rows);
-            var frame = MossTtsLocalFrameDecoder.GenerateFrame(g, l, hidden, activeCodebooks);
+            var frame = MossTtsLocalFrameDecoder.GenerateFrame(g, l, hidden, activeCodebooks, options, rng);
             if (frame is null)
             {
                 stoppedOnEoc = true;

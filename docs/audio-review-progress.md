@@ -15202,3 +15202,22 @@ its real consumer is the ASR text-decode loop, which is separately blocked on th
 RAM ceiling (7B-class checkpoint OOMs on FP32 dequantization), not a sampling-formula gap, so
 wiring real sampling there has no way to be verified against real weights on this machine right
 now; deferred rather than added unverified.
+
+## MOSS-TTS-Nano -- real temperature/top-k/top-p sampling ported, 2026-09-07
+
+Confirmed the reference's real `HfSampler` (`engine/framework/sampling/hf_sampler.h`) implements
+the same standard temperature/top-k/softmax/top-p pipeline this session's `Higgs Audio TTS`
+sampling work (above) already ported via `OpenTail.Stingray.Engine.Sampler`. Wired the same
+pattern into `MossTtsLocalFrameDecoder.GenerateFrame`/`MossTtsGenerator.Generate`: an optional
+`SamplingParams?`/`Random?` (default `null`, preserving the exact previous argmax-only behavior
+byte-for-byte) drives real sampling for the per-frame 16-codebook RVQ audio tokens. Deliberately
+left `PredictTextChoice`'s restricted 2-way (continue-vs-end) argmax untouched -- the reference's
+own real sampling there is a separate, still-unported "restricted vocabulary" HfSampler call,
+lower value than the per-frame audio-codebook path this update targets.
+
+New `Generate_WithTemperatureSampling_OnRealCheckpoint_ProducesInRangeAudioCodes` test: real
+checkpoint, `Temperature=0.8/TopK=30/TopP=0.9`, in-range codes produced, 3.97s wall-clock for the
+2-test class (real, not a no-op -- this is a small 100M-class model, so no multi-second weight-
+load line is expected, but the timing is well above the ~0.1-0.4s no-op range this project flags).
+MOSS-TTS-Nano's "sampling beyond greedy" gap (flagged at ~90%) is now closed for the audio-token
+path; remaining gaps unchanged: charsmap normalization, voice cloning, numeric golden-parity.

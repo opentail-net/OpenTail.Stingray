@@ -1,5 +1,6 @@
 using OpenTail.Stingray.Audio.MossTts;
 using OpenTail.Stingray.Audio.Rvc;
+using OpenTail.Stingray.Engine;
 
 namespace OpenTail.Stingray.Tests.Audio;
 
@@ -68,6 +69,32 @@ public sealed class MossTtsGeneratorRealWeightsTests : HeavyTestBase
 
         Assert.True(codes.Frames >= 1);
         Assert.Equal(MossTtsGlobalTransformerWeights.NumCodebooks, codes.Codebooks);
+        Assert.Equal(codes.Frames * codes.Codebooks, codes.TokenIds.Length);
+        Assert.All(codes.TokenIds, id => Assert.InRange(id, 0, MossTtsGlobalTransformerWeights.AudioCodebookSize));
+    }
+
+    /// <summary>Real temperature/top-k/top-p sampling (`HfSampler`-equivalent, ported this
+    /// session), replacing the argmax-only path above for the per-codebook audio tokens.</summary>
+    [Fact]
+    public void Generate_WithTemperatureSampling_OnRealCheckpoint_ProducesInRangeAudioCodes()
+    {
+        string? path = FindRepoFile("models/_models/moss-tts-nano/MOSS-TTS-Nano-100M-GGUF/moss-tts-nano-100m-q8_0.gguf");
+        Assert.SkipUnless(path != null, "moss-tts-nano checkpoint not found");
+
+        using var model = GgufModel.Open(path!);
+        var tokenizerBytes = ExtractEmbeddedFile(model, "tokenizer.model");
+        Assert.NotNull(tokenizerBytes);
+        var tokenizer = SentencePieceBpeTokenizer.FromModelBytes(tokenizerBytes!);
+
+        var source = new RvcPackedTensorSource(model);
+        var g = new MossTtsGlobalTransformerWeights(source);
+        var l = new MossTtsLocalTransformerWeights(source);
+
+        var prompt = MossTtsPromptBuilder.BuildZeroShotPrompt(tokenizer, "Hello there.");
+        var options = new SamplingParams { Temperature = 0.8f, TopK = 30, TopP = 0.9f };
+        var codes = MossTtsGenerator.Generate(g, l, prompt, activeCodebooks: 4, maxNewFrames: 3, options, new Random(3));
+
+        Assert.True(codes.Frames >= 1);
         Assert.Equal(codes.Frames * codes.Codebooks, codes.TokenIds.Length);
         Assert.All(codes.TokenIds, id => Assert.InRange(id, 0, MossTtsGlobalTransformerWeights.AudioCodebookSize));
     }

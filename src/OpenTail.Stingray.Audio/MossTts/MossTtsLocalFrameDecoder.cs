@@ -1,3 +1,5 @@
+using OpenTail.Stingray.Engine;
+
 namespace OpenTail.Stingray.Audio.MossTts;
 
 /// <summary>
@@ -12,9 +14,15 @@ namespace OpenTail.Stingray.Audio.MossTts;
 /// positions reset to 0.. for each per-codebook run, matching the reference's `AudioGraph`, NOT
 /// the frame's position in the overall sequence).
 ///
-/// Greedy (argmax) decoding only -- the reference additionally supports temperature/top-k/top-p
-/// sampling with repetition penalty (`MossTTSNanoSamplingOptions`/`HfSampler`), not yet ported;
-/// greedy is a real, correct, deterministic subset useful for structural/golden verification.
+/// <para><b>Update, 2026-09-07</b>: real temperature/top-k/top-p sampling for the per-codebook
+/// audio tokens is now wired via an optional <see cref="SamplingParams"/>, reusing this
+/// codebase's existing `OpenTail.Stingray.Engine.Sampler` (same real HF-style formula the
+/// reference's own `HfSampler` implements: temperature scaling, top-k, softmax, top-p) --
+/// `options: null` (the default everywhere this was already called) preserves the exact previous
+/// argmax-only behavior byte-for-byte. The text-side 2-way choice (<see cref="PredictTextChoice"/>)
+/// is left as its existing restricted argmax-of-2 -- the reference's real sampling there is a
+/// genuinely separate, still-unported "restricted vocabulary" HfSampler call, lower value than
+/// the 16-codebook-per-frame audio path this update targets.</para>
 /// </summary>
 public static class MossTtsLocalFrameDecoder
 {
@@ -54,7 +62,9 @@ public static class MossTtsLocalFrameDecoder
         MossTtsGlobalTransformerWeights g,
         MossTtsLocalTransformerWeights l,
         float[] globalHidden,
-        int activeCodebooks)
+        int activeCodebooks,
+        SamplingParams? options = null,
+        Random? rng = null)
     {
         if (activeCodebooks <= 0 || activeCodebooks > MossTtsGlobalTransformerWeights.NumCodebooks)
             throw new ArgumentOutOfRangeException(nameof(activeCodebooks));
@@ -84,9 +94,17 @@ public static class MossTtsLocalFrameDecoder
                 lastHidden, l.AudioLmHeads[q], bias: [],
                 MossTtsGlobalTransformerWeights.HiddenDim, codebookSize);
 
-            int best = 0;
-            for (int i = 1; i < logits.Length; i++)
-                if (logits[i] > logits[best]) best = i;
+            int best;
+            if (options is null)
+            {
+                best = 0;
+                for (int i = 1; i < logits.Length; i++)
+                    if (logits[i] > logits[best]) best = i;
+            }
+            else
+            {
+                best = Sampler.Sample(logits, options, rng);
+            }
 
             frame[q] = best;
         }
