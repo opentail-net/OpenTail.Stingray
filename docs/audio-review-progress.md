@@ -15108,3 +15108,40 @@ reference is not yet done (this test checks finite/in-range output, not bit-for-
 real streaming variant (`generate_streaming`) not ported, only the offline `generate_once` path.
 VoxCPM2 moves from ~55% to ~75% -- the core generation loop gap (previously the single biggest
 missing piece) is now closed.
+
+## OmniVoice -- LLM generation loop precisely scoped from generator.cpp, real MaskGIT confirmed, 2026-09-07
+
+Read `generator.cpp`'s real `generate()` (lines ~1300-1530) to scope the LLM generation loop
+before attempting any port -- confirms this genuinely is confidence-based MaskGIT/SoundStorm
+iterative PARALLEL decoding over a `[codebooks x target_frames]` grid, not a simple per-token
+autoregressive loop:
+
+1. `make_schedule` (real, not guessed): a cosine-shifted `time_steps` curve
+   (`t_shift*t/(1+(t_shift-1)*t)`) turns `num_inference_steps` into a real per-step unmask COUNT
+   schedule over `total_masked_tokens` (`ceil(total*fraction)`, last step takes the remainder).
+2. Each step: a SINGLE batched `ForwardPass`-equivalent call scores every still-masked grid cell
+   at once (`batched_logits` indexed `[frame][codebook][vocab]`), producing one `Candidate` per
+   masked cell: `best_log_prob_excluding_mask` (or, when `class_temperature>0`, real Gumbel/
+   temperature `sample_class` instead of pure argmax) MINUS a real per-codebook
+   `layer_penalty_factor` (later codebooks penalized, favoring earlier-codebook cells to fill
+   first), optionally further randomized via `gumbel_sample_scalar(score, position_temperature)`.
+3. Candidates are sorted by score descending (index tiebreak), the current step's REAL unmask
+   count (from the schedule) worth of TOP candidates are accepted (`nth_element`+`sort`, not a
+   full sort every step -- a real perf detail), written into the grid, and removed from the
+   active set; repeat until every cell is filled.
+4. Real, deliberately multi-threaded (`worker_count` threads score disjoint candidate-index
+   ranges in parallel when `class_temperature==0`) -- a genuine perf-motivated detail in the
+   reference itself, not just this project's own future optimization.
+
+**Real scope assessment**: this needs (a) a batched forward-pass call that can score ALL masked
+grid positions' next-token distributions in one graph invocation (not the one-token-at-a-time
+`ForwardEmbedding` pattern every other model this session's generators use) -- a genuinely
+different `ForwardPass` usage shape than PersonaPlex/VoxCPM2/Higgs/VibeVoice's per-step loops,
+and (b) the full unmask-schedule + top-K-by-confidence bookkeeping above. This is real, standalone
+algorithmic work comparable in size to this session's other full generator ports, not a quick
+addition -- correctly still scoped as "not started" at OmniVoice's current ~55% (audio codec is
+fully real-weight verified; this LLM loop is the one remaining large gap). Deferred to a future
+pass rather than attempting a rushed/partial port this turn (this project's "no half-finished
+implementations" rule) -- next concrete step: check whether `ForwardPass`/`IForwardPass` already
+exposes a way to get per-position logits for a full batch of already-embedded positions in one
+call (needed for step 2 above), or whether that requires new engine-level API surface first.
