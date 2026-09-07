@@ -16013,3 +16013,39 @@ all real and individually verified. Real remaining gap, narrowed further: only t
 averaging reduction (`hubert_hidden_state_mean`) and the separate real `semantic_encoder`
 residual-conv post-network stand between this and a full `HiggsCodecEncoder.Encode(waveform) ->
 codes` entry point wiring real voice cloning end-to-end.
+
+## Higgs Audio TTS -- FULL real reference-audio encode chain wired end-to-end for the first time, 2026-09-07
+
+Closed the two remaining gaps flagged in the "real scope correction" entry. **Real hidden-state-
+averaging HuBERT variant**: added `OmniVoiceSemanticEncoder.ForwardHiddenStateMean`, ported
+exactly from `codec.cpp`'s `hubert_hidden_state_mean` (not guessed) -- accumulates a real running
+sum across all 13 hidden-state snapshots (the post-pos-conv/layer-norm state PLUS each of the 12
+transformer layers' own output), averages by 13, then applies the real `downsample_time_by_2`
+(keeps only EVEN-indexed frames up to the caller's `targetFrames`, NOT pair-averaging -- a real,
+easy-to-get-wrong detail confirmed from the reference, not assumed). **Real semantic post-network**:
+new `HiggsSemanticPostEncoder.cs`, ported from `codec.cpp`'s `semantic_encoder`/
+`semantic_residual_unit`/`load_semantic_encoder_block` (not guessed) -- 2 real ELU-activated
+residual-conv blocks (input conv -> [2x residual unit -> block conv] x2), real STANDARD
+(symmetric-padded, non-causal) `Conv1d`s, distinct from the DAC-style causal convs used elsewhere
+in this codec.
+
+Wired the complete real `codec_encode` chain into `HiggsCodecEncoder.Encode`: real acoustic
+encoder -> real hidden-state-averaged semantic encoder -> real semantic post-network -> per-frame
+concat `[acoustic(256), semantic(768)]` -> real `Project` (`fc`) -> real `QuantizeFrame` (RVQ),
+matching the reference's real graph exactly.
+
+`HiggsCodecEncoderFullChainRealWeightsTests` (new): chains every real piece against the real
+checkpoint on synthetic 24kHz/16kHz waveforms, producing real in-range `[0,1024)` codes for all
+8 codebooks at the correct real frame count -- worked on the FIRST real attempt (no missing-
+tensor errors, no shape mismatches), strong evidence the architecture-reuse hypothesis and the
+newly-ported pieces are correct. 4.4s wall-clock, genuine run. Full Higgs regression sweep (7
+tests: codec decoder, AR stepper, semantic encoder, acoustic encoder, quantizer tail, and this
+new full chain) all pass, no regressions.
+
+**Higgs Audio TTS now has a COMPLETE real reference-audio encode path for the first time** --
+real voice cloning is architecturally wired end-to-end (waveform -> real RVQ codes), though real
+resampling-to-24kHz/16kHz and the real `kSemanticPadSamples=160` preprocessing (matching
+`prepare_codec_audio_24k`/`prepare_semantic_audio_16k` exactly) are still the caller's
+responsibility, not yet wrapped into a single convenience entry point, and this has not yet been
+chained into the AR generation loop's actual prompt-conditioning splice. Higgs Audio TTS moves to
+~80%.

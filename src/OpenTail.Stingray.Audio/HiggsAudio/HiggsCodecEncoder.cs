@@ -1,3 +1,5 @@
+using OpenTail.Stingray.Audio.OmniVoice;
+
 namespace OpenTail.Stingray.Audio.HiggsAudio;
 
 /// <summary>
@@ -76,6 +78,47 @@ public static class HiggsCodecEncoder
             for (int d = 0; d < residual.Length; d++) residual[d] -= quantized[d];
         }
 
+        return codes;
+    }
+
+    /// <summary>
+    /// Real, FULL `codec_encode` chain, added 2026-09-07 once every real sub-piece existed (real
+    /// acoustic encoder, real hidden-state-averaged semantic encoder, real semantic post-network,
+    /// real `codec_project`+RVQ quantize) -- ported from `codec.cpp`'s `codec_encode` exactly:
+    /// acoustic-encode the real 24kHz waveform (its own real frame count becomes `targetFrames`),
+    /// hidden-state-mean-encode the real 16kHz waveform then run it through the semantic post-
+    /// network, concatenate `[acoustic(256), semantic(768)]` per frame, `Project` to `[1024]`,
+    /// `QuantizeFrame` to real 8-codebook codes. Callers are responsible for real resampling
+    /// to 24kHz/16kHz and the real `kSemanticPadSamples=160` zero-padding on the 16kHz branch
+    /// (matching `prepare_semantic_audio_16k`/`prepare_codec_audio_24k`, not done here).
+    /// </summary>
+    public static int[][] Encode(
+        OmniVoiceAcousticEncoderWeights acousticWeights,
+        OmniVoiceSemanticWeights semanticWeights,
+        HiggsSemanticPostEncoder.Weights semanticPostWeights,
+        HiggsCodecDecoderWeights codecWeights,
+        ReadOnlySpan<float> waveform24k,
+        ReadOnlySpan<float> waveform16k)
+    {
+        var (acousticLatent, targetFrames) = OmniVoiceAcousticEncoder.Encode(acousticWeights, waveform24k);
+
+        var semanticMean = OmniVoiceSemanticEncoder.ForwardHiddenStateMean(semanticWeights, waveform16k, targetFrames);
+        var semanticPost = HiggsSemanticPostEncoder.Forward(semanticPostWeights, semanticMean);
+
+        var codes = new int[HiggsCodecDecoderWeights.NumCodebooks][];
+        for (int cb = 0; cb < HiggsCodecDecoderWeights.NumCodebooks; cb++) codes[cb] = new int[targetFrames];
+
+        const int acousticDim = 256;
+        for (int f = 0; f < targetFrames; f++)
+        {
+            var concat = new float[HiggsCodecDecoderWeights.CodecProjectInputSize];
+            for (int c = 0; c < acousticDim; c++) concat[c] = acousticLatent[c * targetFrames + f];
+            for (int c = 0; c < HiggsSemanticPostEncoder.HiddenDim; c++) concat[acousticDim + c] = semanticPost[f][c];
+
+            var hidden = Project(codecWeights, concat);
+            var frameCodes = QuantizeFrame(codecWeights, hidden);
+            for (int cb = 0; cb < HiggsCodecDecoderWeights.NumCodebooks; cb++) codes[cb][f] = frameCodes[cb];
+        }
         return codes;
     }
 

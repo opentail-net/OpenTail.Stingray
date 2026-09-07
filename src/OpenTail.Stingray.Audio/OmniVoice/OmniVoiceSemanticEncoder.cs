@@ -67,6 +67,90 @@ public static class OmniVoiceSemanticEncoder
         return hidden;
     }
 
+    /// <summary>
+    /// Real Higgs Audio TTS variant, ported from `codec.cpp`'s `hubert_hidden_state_mean`/
+    /// `downsample_time_by_2` (not guessed), added 2026-09-07: instead of returning the FINAL
+    /// layer's hidden states (what <see cref="Forward"/> does, correct for OmniVoice's own real
+    /// usage), Higgs's real reference-audio encode path AVERAGES the hidden state across all 13
+    /// real snapshots (the post-pos-conv/layer-norm state PLUS each of the 12 layers' own
+    /// output, divided by 13), then keeps only every OTHER frame up to `targetFrames` (a real 2x
+    /// downsample by even-index selection, NOT pair-averaging). `targetFrames` is the caller's
+    /// already-computed acoustic-encoder frame count that this semantic stream must align to.
+    /// </summary>
+    public static float[][] ForwardHiddenStateMean(OmniVoiceSemanticWeights w, ReadOnlySpan<float> waveform16k, int targetFrames)
+    {
+        float[][] x = ToFrames1Channel(waveform16k);
+        int channels = 1;
+        for (int layerIdx = 0; layerIdx < 7; layerIdx++)
+        {
+            x = Conv1dValid(x, channels, w.ConvWeights[layerIdx], outCh: OmniVoiceSemanticWeights.ConvDim[layerIdx], kernel: OmniVoiceSemanticWeights.ConvKernel[layerIdx], stride: OmniVoiceSemanticWeights.ConvStride[layerIdx]);
+            channels = OmniVoiceSemanticWeights.ConvDim[layerIdx];
+            if (layerIdx == 0)
+                x = GroupNorm(x, w.ConvLayer0GroupNormWeight, w.ConvLayer0GroupNormBias);
+            GeluErfInPlaceRows(x);
+        }
+
+        int t = x.Length;
+        for (int i = 0; i < t; i++)
+            x[i] = LayerNorm(x[i], w.FeatureProjLayerNormWeight, w.FeatureProjLayerNormBias);
+        var hidden = new float[t][];
+        for (int i = 0; i < t; i++)
+            hidden[i] = LinearBias(x[i], w.FeatureProjWeight, w.FeatureProjBias, inDim: 512, outDim: OmniVoiceSemanticWeights.HiddenDim);
+
+        var pos = GroupedConv1dSamePad(hidden, OmniVoiceSemanticWeights.HiddenDim, w.PosConvWeight, w.PosConvBias,
+            groups: OmniVoiceSemanticWeights.ConvPosGroups, kernel: OmniVoiceSemanticWeights.ConvPosKernel);
+        GeluErfInPlaceRows(pos);
+        for (int i = 0; i < t; i++)
+            for (int d = 0; d < OmniVoiceSemanticWeights.HiddenDim; d++)
+                hidden[i][d] += pos[i][d];
+
+        for (int i = 0; i < t; i++)
+            hidden[i] = LayerNorm(hidden[i], w.EncoderLayerNormWeight, w.EncoderLayerNormBias);
+
+        int rawTokens = t;
+        bool padded = t % 2 != 0;
+        if (padded)
+        {
+            var withPad = new float[t + 1][];
+            Array.Copy(hidden, withPad, t);
+            withPad[t] = new float[OmniVoiceSemanticWeights.HiddenDim];
+            hidden = withPad;
+            t++;
+        }
+
+        // Real running sum, starting from the post-pos-conv/layer-norm state (BEFORE layer 0).
+        var sum = new float[t][];
+        for (int i = 0; i < t; i++) sum[i] = (float[])hidden[i].Clone();
+
+        foreach (var layer in w.Layers)
+        {
+            hidden = EncoderBlock(hidden, layer, t, OmniVoiceSemanticWeights.HiddenDim, OmniVoiceSemanticWeights.NumHeads, maskLastKey: padded);
+            for (int i = 0; i < t; i++)
+                for (int d = 0; d < OmniVoiceSemanticWeights.HiddenDim; d++)
+                    sum[i][d] += hidden[i][d];
+        }
+
+        if (padded)
+        {
+            var trimmed = new float[rawTokens][];
+            Array.Copy(sum, trimmed, rawTokens);
+            sum = trimmed;
+            t = rawTokens;
+        }
+
+        float invCount = 1f / (OmniVoiceSemanticWeights.NumLayers + 1);
+        for (int i = 0; i < t; i++)
+            for (int d = 0; d < OmniVoiceSemanticWeights.HiddenDim; d++)
+                sum[i][d] *= invCount;
+
+        // Real `downsample_time_by_2`: keep only even-indexed frames, up to targetFrames -- NOT
+        // pair-averaging.
+        var output = new float[targetFrames][];
+        for (int f = 0; f < targetFrames; f++)
+            output[f] = sum[f * 2];
+        return output;
+    }
+
     private static float[][] ToFrames1Channel(ReadOnlySpan<float> waveform)
     {
         var frames = new float[waveform.Length][];
