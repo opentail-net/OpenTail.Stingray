@@ -13245,3 +13245,65 @@ suitable for that was not investigated this update. Real next step if picked up:
 `ForwardPass`'s existing hidden-state-tap / embeddings-injection capabilities (used elsewhere
 for `EnableHiddenTaps` per the Fun-ASR-Nano bisection work) before deciding between reusing
 `ForwardPass` vs. a bespoke port like this session's other MiniCPM/GPT2-family ports.
+
+## VibeVoice ASR -- tokenizer encoders + connector implemented, structurally verified, 2026-09-07
+
+Downloaded the real checkpoint (`audio-cpp/audio.cpp-gguf`, `VibeVoice-ASR-GGUF/
+vibevoice-asr-q8_0.gguf`, ~9.9GB -- large, slow download, still in progress as of this
+update; real-weight verification deliberately deferred to a follow-up rather than blocking
+on it, per this session's "keep making real progress, don't stall" discipline).
+
+**Implemented the tokenizer encoder** (`speech_tokenizer.cpp`'s `build_encoder`, not
+guessed) as `VibeVoiceTokenizerEncoderWeights`/`VibeVoiceTokenizerEncoder`, reusing the
+existing `VibeVoiceConvNeXtBlock` primitives from an earlier session (causal Conv1d/
+DepthwiseConv1d, channel RMSNorm, the block forward pass itself) rather than re-deriving
+them. Real per-stage structure: a stride-1 causal downsample Conv1d (kernel 7) for stage 0,
+then stride-`ratio` causal downsample Conv1ds (kernel `ratio*2`, `EncoderRatios` REVERSED
+from config order -- confirmed via the reference's own `std::reverse` call, not assumed)
+doubling channel width each stage; each stage's real depth-count of ConvNeXt-1D blocks; an
+optional final channel RMSNorm; a stride-1 causal head Conv1d (kernel 7) projecting to
+`VaeDim`. Confirmed deterministic for ASR: the reference's Gaussian-VAE sampling function
+(`sample_vibevoice_acoustic_latents_gaussian`) is used ONLY by the TTS-generation path
+(`VibeVoiceTTS`, not yet started, item #9), never by `encode_acoustic`/`encode_semantic` --
+ASR always uses the raw encoder mean latent directly, no reparameterization needed. SAME
+architecture class serves both the acoustic and semantic tokenizers (different config/
+checkpoint prefix only), confirmed via `assets.cpp`'s real `model.acoustic_tokenizer.*`/
+`model.semantic_tokenizer.*` tensor prefixes.
+
+**Implemented the connector** (`connector.cpp`'s `build_vibevoice_connector`, not guessed)
+as `VibeVoiceConnectorWeights`/`VibeVoiceConnector` -- a real, deliberately simple per-frame
+bridge from tokenizer latent space into the text decoder's embedding space: `Linear(input
+-&gt; hidden) -&gt; RMSNorm(no bias, eps=1e-6) -&gt; Linear(hidden -&gt; hidden)`, no activation
+function anywhere in the block (confirmed by reading the real graph-build function -- easy
+to have assumed a GELU/SiLU there and been wrong). Same architecture serves both the
+acoustic and semantic connectors.
+
+**Verification**: `VibeVoiceTokenizerEncoderTests` (2 tests, synthetic weights): confirms
+finite output with the expected `VaeDim` channel count, and a real causal invariant (a
+longer waveform's early output frames match a shorter waveform's output almost exactly,
+modulo the real Encodec-style "extra padding to land the frame count exactly" term near the
+boundary). `VibeVoiceConnectorTests` (1 test, synthetic weights): confirms finite,
+correctly-shaped output. All synthetic-weight only -- real-weight verification blocked on
+the still-downloading checkpoint, a real next step once it lands.
+
+**Real, valuable scoping finding for the text decoder** (`text_decoder.h`/`.cpp`, not yet
+read in full but the header confirms enough to scope): it is a real Qwen2.5-family GQA
+decoder consuming DIRECTLY-INJECTED embeddings (not a plain vocab lookup -- the connector's
+projected acoustic/semantic features get spliced in) with a real incremental KV cache
+(`runtime::TransformerKVState`) -- the SAME real architecture pattern (Qwen-family LLM +
+audio-embedding splice into a standard decoder) already successfully reused via this
+project's "present real weights as a synthetic native-architecture GGUF, then run through
+the existing `ForwardPass`" bridging technique for OmniVoice/QwenASR/Fun-ASR-Nano this
+project. This is a strong, real reuse opportunity -- likely far less bespoke code needed
+than a from-scratch Transformer port, unlike VoxCPM2's MiniCPM backbone (which needs
+hidden-states-out, not logits-out). Real next step if picked up: read `text_decoder.cpp` in
+full to confirm the real splice mechanism and KV-cache shape, then build a
+`VibeVoiceLlmTensorSource` analogous to `OmniVoiceLlmTensorSource`/
+`QwenAsrLlmSafetensorsTensorSource`.
+
+**Still remaining for a complete VibeVoice ASR pipeline**: real-weight verification of the
+tokenizer encoders + connector once the checkpoint finishes downloading, the text decoder
+(Qwen2.5 GQA, real reuse opportunity noted above), the real text tokenizer
+(`tokenizer_text.cpp`), and the generation loop (`session.cpp`, 1210 lines -- ties audio
+encoding + connector projection + decoder prefill/generation together, not yet read in
+detail).
