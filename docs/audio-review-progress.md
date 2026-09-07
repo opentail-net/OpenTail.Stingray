@@ -14392,3 +14392,36 @@ own 16 real `AudioEmbeddingWeight` tables, summed), argmax-only sampling through
 sampling not ported), and the full Mimi neural codec (`mimi/*`, 32-level RVQ, own transformer
 stack) which turns the generated codes into actual audio -- completely unread, separately large,
 comparable in scope to this session's other neural-codec ports (Higgs/VibeVoice).
+
+## PersonaPlex -- Mimi neural codec scoped (decode path), 2026-09-07
+
+Read ~500 lines of the shared `engine::codecs::MimiCodecComponent` framework
+(`src/framework/codecs/mimi_codec_runtime.cpp`, 2113 lines total, shared between PersonaPlex and
+Pocket-TTS -- not a PersonaPlex-specific file). Real DECODE-path architecture (codes ->
+waveform, what generation needs): a real, genuinely different RVQ structure from Higgs's codec --
+codebook 0 is a SEPARATE "semantic" codebook+projection (real `config.codebook_size`/
+`latent_size`), codebooks 1 through `kMimiActiveCodebooks-1` (real active-decode subset, `=8`
+for PersonaPlex's `mimi_frame_codebooks`, out of `total_codebooks=32` real MAX trained levels --
+only 8 used per frame in practice) are SUMMED then jointly projected as "acoustic", and the two
+streams (semantic + acoustic) are ADDED. This then feeds a REAL TRANSFORMER STACK (own
+`decoder_transformer_layer_prefix`-named layers, temporal context mixing over the quantized
+latent frames -- a real architectural piece with no analogue in Higgs/VibeVoice/VoxCPM2's
+codecs), a real fixed/reordered "upsample" conv (kernel reversed at load time, likely a
+2x-nearest-style trick, not yet fully understood), then N real SEANet decoder stages (each:
+`ConvTranspose1d` upsample + residual block(s), same general DAC/SEANet lineage pattern ported
+multiple times this session but with its own real streaming-state machinery
+`write_streaming_history`/`read_streaming_partial` not yet read), then an output projection.
+
+**Real scope assessment**: genuinely comparable to (or larger than) Higgs's codec decoder --
+NOT a quick follow-on to the Depformer work. Not started this session beyond scoping (2113-line
+shared file, only ~500 lines read: quantizer decode + decoder weight loading; the SEANet
+residual-block forward, the transformer stack's real per-layer shape, and the streaming state
+machinery all remain unread). Real next step if resumed: read the rest of
+`mimi_codec_runtime.cpp` (the SEANet block forward composition, transformer layer shape,
+non-streaming one-shot decode path if one exists separately from the streaming path) before
+attempting a port, following this session's established "decode-only subset first" strategy.
+
+**PersonaPlex status: ~40%, unchanged this update (scoping only).** Both real autoregressive
+decoders (temporal LM, Depformer) are real-weight verified; the Mimi codec is the one remaining
+large piece before a full generation pipeline exists, comparable in scope to Higgs Audio TTS's
+own codec work this session.
