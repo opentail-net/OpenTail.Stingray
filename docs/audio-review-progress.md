@@ -16049,3 +16049,30 @@ resampling-to-24kHz/16kHz and the real `kSemanticPadSamples=160` preprocessing (
 responsibility, not yet wrapped into a single convenience entry point, and this has not yet been
 chained into the AR generation loop's actual prompt-conditioning splice. Higgs Audio TTS moves to
 ~80%.
+
+## OmniVoice -- real note: OWN reference-audio encode chain is structurally similar to Higgs's but NOT identical, real scoped follow-on, 2026-09-07
+
+While completing Higgs Audio TTS's encode chain above, checked whether OmniVoice's OWN
+`audio_tokenizer.cpp` has an equivalent `codec_encode`-style chain that could reuse the exact same
+new C# code. Real finding: the STRUCTURE is the same shape (hidden-state-mean semantic encoding ->
+semantic post-encoder -> acoustic encoder -> concat -> `fc` projection -> per-codebook RVQ loop,
+even using the SAME real `fc` tensor name Higgs uses) -- but at least two real, confirmed
+differences mean this is NOT a drop-in reuse of `HiggsCodecEncoder`:
+
+1. **Different semantic downsample mechanism**: OmniVoice's real
+   `build_hubert_sequence_mean`/`downsample_indices_` uses a real `EmbeddingModule`-based GATHER
+   (indexing arbitrary precomputed frame indices), not Higgs's simple even-index `SliceModule`
+   -- a real, more general (possibly non-uniform-stride) downsampling scheme, not yet understood
+   in enough detail to port.
+2. **Different quantizer nearest-codebook-entry computation**: OmniVoice's real per-codebook step
+   computes `logits` via a plain `LinearModule({codebook_dim, codebook_size, ...})` -- i.e. a
+   TRAINED linear classifier head mapping the projected residual directly to codebook logits --
+   NOT Higgs's real embedding-table dot-product/nearest-neighbor formula (`2*dot - ||x||^2 -
+   ||e||^2` against a real `codebook.embed` table). These are genuinely different real
+   quantization mechanisms, not the same math with different tensor names.
+
+Real, precisely scoped follow-on for a future pass (not started this pass, given the genuine
+differences above need their own careful reading before porting, consistent with this project's
+"check the reference before writing math" discipline): read `audio_tokenizer.cpp`'s real
+`build_hubert_sequence_mean`/quantizer-logits code in full, then port a SEPARATE
+`OmniVoiceCodecEncoder` (not a Higgs reuse) implementing OmniVoice's own real formulas.
