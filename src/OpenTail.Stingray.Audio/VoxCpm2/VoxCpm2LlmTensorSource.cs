@@ -39,6 +39,7 @@ public sealed unsafe class VoxCpm2LlmTensorSource : IModelTensorSource, IDisposa
     private readonly Dictionary<string, nint> _resolvedPointers = new(StringComparer.Ordinal);
     private readonly List<GgufTensorInfo> _tensors;
     private readonly Dictionary<string, object> _metadata;
+    private readonly Dictionary<string, float[]> _syntheticData = new(StringComparer.Ordinal);
     private bool _disposed;
 
     public VoxCpm2LlmTensorSource(
@@ -72,6 +73,31 @@ public sealed unsafe class VoxCpm2LlmTensorSource : IModelTensorSource, IDisposa
             MapIfPresent2D(p + "mlp.gate_proj.weight", b + "ffn_gate.weight", ffDim, hiddenDim);
             MapIfPresent2D(p + "mlp.up_proj.weight", b + "ffn_up.weight", ffDim, hiddenDim);
             MapIfPresent2D(p + "mlp.down_proj.weight", b + "ffn_down.weight", hiddenDim, ffDim);
+        }
+
+        // Real, non-obvious detail (found via per-layer bisection against the reference's own
+        // trace, docs/audio-review-progress.md, 2026-09-08): `active_rope_factors` in the real
+        // `minicpm.cpp` is NOT a scaling on/off gate -- it ALWAYS applies a real per-dimension
+        // longrope frequency-factor array to RoPE via `ggml_rope_ext`'s freq_factors argument,
+        // choosing `short_factor` whenever `max_position_embeddings <=
+        // original_max_position_embeddings` (true for every real generation this session cares
+        // about) rather than an identity/no-op array. `short_factor` is NOT close to all-ones
+        // (see `VoxCpm2LocalEncoder.RopeShortFactor`, the SAME real array already used correctly
+        // by VoxCPM2's local encoder/DiT via `VoxCpm2MiniCpmBidirectionalStack`) -- omitting it
+        // here left `base_lm`'s RoPE unscaled, a real bug (not the tokenizer bug fixed earlier)
+        // that compounds across all 28 layers. `ForwardPass` only recognizes this array via a
+        // tensor literally named `rope_freqs.weight` (Gemma 4's own real convention for a
+        // per-pair frequency mask, `docs/audio-review-progress.md`'s Gemma 4 entries) -- reusing
+        // that EXISTING mechanism here (rather than adding new engine surface) by presenting the
+        // real short_factor array under that exact name, sized `headDim/2` as Gemma 4's own
+        // tensor is, which `ForwardPass` divides the raw inverse RoPE frequency by per-pair
+        // (`SimdKernels.BuildRopeTable`'s `inv /= freqFactors[i]`) -- the same division semantic
+        // `VoxCpm2MiniCpmBidirectionalStack.Run` already uses for the local encoder/DiT.
+        if (headDim / 2 == VoxCpm2LocalEncoder.RopeShortFactor.Length)
+        {
+            const string ropeFreqsName = "rope_freqs.weight";
+            _byName[ropeFreqsName] = new GgufTensorInfo(ropeFreqsName, 1, [headDim / 2], DType.Float32, DataOffset: 0);
+            _syntheticData[ropeFreqsName] = VoxCpm2LocalEncoder.RopeShortFactor;
         }
 
         _tensors = [.. _byName.Values];
@@ -125,8 +151,9 @@ public sealed unsafe class VoxCpm2LlmTensorSource : IModelTensorSource, IDisposa
         if (_resolvedPointers.TryGetValue(tensor.Name, out nint cached))
             return (byte*)cached;
 
-        string sourceName = _sourceNameByCanonical[tensor.Name];
-        var data = _source.GetTensor(sourceName);
+        float[] data = _syntheticData.TryGetValue(tensor.Name, out var synthetic)
+            ? synthetic
+            : _source.GetTensor(_sourceNameByCanonical[tensor.Name]);
         float* buffer = (float*)NativeMemory.Alloc((nuint)(data.Length * sizeof(float)));
         fixed (float* src = data)
             Buffer.MemoryCopy(src, buffer, data.Length * sizeof(float), data.Length * sizeof(float));

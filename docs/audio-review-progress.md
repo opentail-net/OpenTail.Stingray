@@ -16844,3 +16844,62 @@ the FINAL post-norm hidden state via `LastHidden`, not per-layer intermediates) 
 non-trivial instrumentation task, precisely scoped but not started this pass. Pivoting to another
 backlog item per this project's "pivot rather than stall" discipline; the ruled-out list above
 should save a future pass from re-treading the same three dead ends.
+
+## VoxCPM2 -- real per-layer bisection built; found and fixed a genuine longrope RoPE bug (reduces but does not close the divergence), 2026-09-08
+
+Directly continued the LM-forward-pass bisection scoped above. Added real per-layer hidden-state
+output taps to BOTH sides:
+
+- **Reference** (`examples/audio.cpp/src/models/voxcpm2/minicpm.cpp`): added a `layer_hidden_taps_`
+  member mirroring the existing `base_keys_`/`base_values_` tap pattern in `build()`'s per-layer
+  loop (`ggml_cpy` + `ggml_set_output` on each layer's `base_hidden`), read back via
+  `ggml_backend_tensor_get` in `run()` and emitted as `voxcpm2.prefill.layer{i}.hidden` trace
+  lines. Real bug hit and fixed while wiring this: forgot to `ggml_build_forward_expand` the new
+  tap tensors into the graph, causing a real `GGML_ASSERT(buf != NULL && "tensor buffer not set")`
+  crash (gallocr never reserves/allocates a tensor that isn't expanded into the graph) -- fixed by
+  adding the missing `ggml_build_forward_expand` loop alongside the existing key/value ones.
+- **C# side**: no engine changes needed at all -- `IForwardPass.EnableHiddenTaps`/`HiddenTapsAt`
+  already exists for speculative decoding (`HiddenTapBuffer`), and `ForwardPass.PrefillCore`
+  already captures every layer's post-residual hidden state through it (`CaptureTap` at the end of
+  the per-layer loop). New `VoxCpm2PerLayerBisectDebugTest.cs` just calls
+  `fwd.EnableHiddenTaps([0..27])` and reads `HiddenTapsAt(lastPos)` after the same prefill loop.
+
+**Real bug found by comparing layer-by-layer**: the divergence is present starting at layer 0
+already (not accumulated later), non-uniformly (~10-40% relative error per sample index, no
+constant scale factor) -- ruling out a simple gain/scale bug and pointing at RoPE or attention.
+Re-read `minicpm.cpp`'s `active_rope_factors` (line 59) precisely and found a wrong assumption
+from the PREVIOUS entry: it is **not** a scaling on/off gate. It always returns a real
+per-dimension frequency-factor array -- `long_factor` when the sequence exceeds
+`original_max_position_embeddings`, `short_factor` otherwise (never an identity/no-op array).
+`short_factor` (dumped from the real `config.json`, 64 values, one per RoPE pair) is NOT close to
+1.0 across the board -- it ranges from ~0.998 up to ~31.0 for higher-frequency pairs. Confirmed
+this same real array is ALREADY correctly applied elsewhere in this exact model
+(`VoxCpm2LocalEncoder.RopeShortFactor`, used by `VoxCpm2MiniCpmBidirectionalStack` for the local
+encoder/DiT) -- but `base_lm`'s path through the shared `ForwardPass` engine never received it,
+because `ForwardPass` only recognizes such a per-pair array via a tensor literally named
+`rope_freqs.weight` (Gemma 4's own real convention), which `VoxCpm2LlmTensorSource` never
+supplied.
+
+**Fix**: `VoxCpm2LlmTensorSource` now synthesizes a `rope_freqs.weight`-named tensor (not backed by
+the packed checkpoint -- a new `_syntheticData` dictionary checked before the real
+`_source.GetTensor` lookup in `GetTensorDataPtr`) holding the real `VoxCpm2LocalEncoder.
+RopeShortFactor` values, sized `headDim/2` to match Gemma 4's own convention exactly -- reusing the
+EXISTING `ForwardPass`/`SimdKernels.BuildRopeTable` mechanism (`inv /= freqFactors[i]`, the same
+division semantic `VoxCpm2MiniCpmBidirectionalStack.Run` already uses) with zero engine changes.
+
+**Real, honest result**: this fix is confirmed real (matches an established, already-correct
+pattern elsewhere in this exact model) and measurably helps -- e.g. layer0 sample index 52's
+ratio-to-reference improved from 1.359 to 1.09, index 157 from 1.080 to 1.033 -- but does **not**
+fully close the divergence: layer0 still shows a real ~10-30% residual relative error at several
+sample indices even after the fix. This is expected in hindsight: RoPE's per-position rotation
+angle is `position * frequency`, and for this test's short 16-token prompt even a large frequency
+multiplier produces a small absolute angle change -- so this bug will matter increasingly for
+longer sequences but was never the DOMINANT contributor to this short-prompt divergence. Re-ran
+`VoxCpm2GeneratorRealWeightsTests`/`VoxCpm2LlmTensorSourceRealWeightsTests` post-fix (54.2s, real
+weight-load timing, both pass) -- no regression.
+
+**Real next step**: a further, still-unidentified bug remains at layer 0 itself (attention, MLP, or
+RMSNorm, or possibly Q8_0 dequantization precision) -- the per-layer tap infrastructure built this
+pass (both reference and C# sides) is now real, reusable machinery for continuing this bisection
+directly (e.g. tapping Q/K/V or the pre-attention normed hidden state specifically, narrowing
+further within layer 0) without needing to rebuild any instrumentation from scratch.
