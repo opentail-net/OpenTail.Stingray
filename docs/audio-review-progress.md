@@ -16379,3 +16379,21 @@ and incorrectly believed blocked on missing files) now works end-to-end. Real re
 non-empty system-prompt text (needs SentencePiece integration), live-duplex user-audio
 conditioning, real streaming Mimi decode, real sampling beyond argmax for the bootstrap-continued
 generation loop (already ported for the plain `GenerateDelayed` path).
+
+## PersonaPlex -- real system-prompt text gap precisely scoped (not started), 2026-09-07
+
+Checked what's needed to close the remaining "non-empty system prompt" gap flagged on
+`GenerateWithVoicePrompt`'s doc comment. The real reference (`sentencepiece.cpp`) uses the actual
+vendored Google SentencePiece C++ library, which auto-detects the real model algorithm
+(Unigram/BPE/Word/Char) from the protobuf's own `trainer_spec.model_type` field and dispatches
+correctly regardless -- this codebase's own `SentencePieceBpeTokenizer`/`UnigramTokenizer` classes
+each hard-code ONE algorithm and do NOT read `model_type` themselves, so picking the wrong one for
+PersonaPlex's real `tokenizer_spm_32k_3.model` (confirmed embedded in the checkpoint, not
+guessed) would silently produce wrong tokenization rather than an error. Real next step for a
+future pass: read `trainer_spec.model_type` (field 7, varint enum, `UNIGRAM=1`/`BPE=2`) directly
+from the real extracted `tokenizer_spm_32k_3.model` bytes to determine which existing class
+applies (Kyutai's Moshi-lineage models are commonly Unigram, but this must be CONFIRMED from the
+real checkpoint's own bytes, not assumed from that prior) before wiring
+`GenerateWithVoicePrompt`'s system-prompt branch. Deliberately not guessed this pass -- picking
+wrong here would be a silent correctness bug, not a crash, so it needs the real confirmation step
+first.
