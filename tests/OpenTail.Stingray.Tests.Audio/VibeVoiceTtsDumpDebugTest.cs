@@ -22,8 +22,8 @@ public sealed class VibeVoiceTtsDumpDebugTest : HeavyTestBase
     [Fact]
     public void DumpConfigAndPredictionHeadTensorNames()
     {
-        string? path = FindRepoFile("models/_models/vibevoice-tts/vibevoice-7b-q8_0.gguf");
-        Assert.SkipUnless(path != null, "vibevoice-7b-q8_0.gguf not found");
+        string? path = FindRepoFile("models/_models/vibevoice-tts/VibeVoice-1.5B-GGUF/vibevoice-1.5b-q8_0.gguf");
+        Assert.SkipUnless(path != null, "vibevoice-1.5b-q8_0.gguf not found");
 
         using var model = OpenTail.Stingray.Core.GgufModel.Open(path!);
         string? outDir = FindRepoFile("docs/audio-review-progress.md");
