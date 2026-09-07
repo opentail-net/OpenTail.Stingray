@@ -1,3 +1,6 @@
+using System.Runtime.CompilerServices;
+using System.Runtime.Intrinsics;
+using System.Runtime.Intrinsics.X86;
 
 namespace OpenTail.Stingray.Audio.QwenASR;
 
@@ -48,6 +51,14 @@ public sealed unsafe class QwenAsrAudioEncoder : IDisposable
 {
     public QwenAsrEncoderConfig Config { get; }
     private readonly QwenAsrWeights? _weights;
+    [ThreadStatic] private static float[]? t_colBuf;
+
+    private static float[] GetThreadColBuf(int requiredSize)
+    {
+        if (t_colBuf is null || t_colBuf.Length < requiredSize)
+            t_colBuf = new float[requiredSize];
+        return t_colBuf;
+    }
 
     public QwenAsrAudioEncoder(QwenAsrEncoderConfig? config = null, QwenAsrWeights? weights = null)
     {
@@ -110,62 +121,107 @@ public sealed unsafe class QwenAsrAudioEncoder : IDisposable
         if (numChunks == 1) paddedChunkFrames = Math.Min(chunkFrameLimit, numMelFrames);
 
         var swEnc = System.Diagnostics.Stopwatch.StartNew();
-        var chunkTokens = new List<float[]>();
-        for (int chunkStart = 0; chunkStart < numMelFrames; chunkStart += chunkFrameLimit)
+        var chunkAllRows = new float[numChunks][];
+        var chunkTokenCounts = new int[numChunks];
+        bool parallelInner = numChunks == 1;
+
+        fixed (float* pMelSource = mel)
         {
-            int chunkLen = Math.Min(chunkFrameLimit, numMelFrames - chunkStart);
-
-            var chunkMel = new float[nMels * paddedChunkFrames];
-            for (int m = 0; m < nMels; m++)
-                mel.Slice(m * numMelFrames + chunkStart, chunkLen).CopyTo(chunkMel.AsSpan(m * paddedChunkFrames, chunkLen));
-
-            var stage1 = Conv2dFull(chunkMel, cin: 1, hin: nMels, win: paddedChunkFrames, w.Conv1WeightCL, w.Conv1Bias, c, k: 3, stride: 2, pad: 1, out int h1, out int w1);
-            GeluInPlace(stage1);
-
-            var stage2 = Conv2dFull(stage1, cin: c, hin: h1, win: w1, w.Conv2WeightCL, w.Conv2Bias, c, k: 3, stride: 2, pad: 1, out int h2, out int w2);
-            GeluInPlace(stage2);
-
-            var stage3 = Conv2dFull(stage2, cin: c, hin: h2, win: w2, w.Conv3WeightCL, w.Conv3Bias, c, k: 3, stride: 2, pad: 1, out int h3, out int w3);
-            GeluInPlace(stage3);
-
-            // h3 = downsampled mel-freq count (128/8=16), w3 = downsampled time-token count --
-            // the TIME axis (w3) is now the real per-token index, matching the reference. Real
-            // per-chunk valid-token trim (`qwen3_asr_audio_encoder_token_count`, ported exactly):
-            // padding a short last chunk up to `paddedChunkFrames` makes the raw conv output
-            // wider than this chunk's real valid token count -- trim to match.
-            int chunkT = Math.Min(w3, EncoderTokenCount(chunkLen));
-            int flatDim = c * h3; // 480 * 16 = 7680, matches audio.conv_out.weight's input dim
-
-            var chunkPosEmb = SinusoidalPositionalEmbeddings(chunkT, encDim);
-            var allRows = new float[chunkT * flatDim];
-            for (int ti = 0; ti < chunkT; ti++)
+            nint melSourceAddr = (nint)pMelSource;
+            System.Threading.Tasks.Parallel.For(0, numChunks, chunkIdx =>
             {
-                int rowOff = ti * flatDim;
-                for (int ch = 0; ch < c; ch++)
+                float* pMelSrc = (float*)melSourceAddr;
+                int chunkStart = chunkIdx * chunkFrameLimit;
+                int chunkLen = Math.Min(chunkFrameLimit, numMelFrames - chunkStart);
+
+                var chunkMel = new float[nMels * paddedChunkFrames];
+                for (int m = 0; m < nMels; m++)
                 {
-                    int stageChOff = ch * h3 * w3;
-                    int chFlatOff = ch * h3;
-                    for (int fh = 0; fh < h3; fh++)
-                        allRows[rowOff + chFlatOff + fh] = stage3[stageChOff + fh * w3 + ti];
+                    float* src = pMelSrc + (long)m * numMelFrames + chunkStart;
+                    fixed (float* dst = &chunkMel[m * paddedChunkFrames])
+                        Buffer.MemoryCopy(src, dst, (long)chunkLen * sizeof(float), (long)chunkLen * sizeof(float));
                 }
-            }
-            var allTokens = new float[chunkT * encDim];
-            fixed (float* pAllRows = allRows, pAllTokens = allTokens)
-                w.ConvOutWeight.MatMul(pAllRows, chunkT, pAllTokens);
+
+                var swS = System.Diagnostics.Stopwatch.StartNew();
+                var stage1 = Conv2dStage1(chunkMel, hin: nMels, win: paddedChunkFrames, w.Conv1WeightCL, w.Conv1Bias, c, parallelInner, out int h1, out int w1);
+                long ts1 = swS.ElapsedMilliseconds;
+                swS.Restart();
+                var stage2 = Conv2dStage23(stage1, cin: c, hin: h1, win: w1, w.Conv2WeightCL, w.Conv2Bias, c, parallelInner, out int h2, out int w2);
+                long ts2 = swS.ElapsedMilliseconds;
+                swS.Restart();
+                var stage3 = Conv2dStage23(stage2, cin: c, hin: h2, win: w2, w.Conv3WeightCL, w.Conv3Bias, c, parallelInner, out int h3, out int w3);
+                long ts3 = swS.ElapsedMilliseconds;
+                if (chunkIdx == 0 && Environment.GetEnvironmentVariable("STINGRAY_FORCEDALIGNER_PERF") == "1")
+                    Console.WriteLine($"[Enc-Conv-Stages] S1={ts1}ms S2={ts2}ms S3={ts3}ms");
+
+                // h3 = downsampled mel-freq count (128/8=16), w3 = downsampled time-token count --
+                // the TIME axis (w3) is now the real per-token index, matching the reference. Real
+                // per-chunk valid-token trim (`qwen3_asr_audio_encoder_token_count`, ported exactly):
+                // padding a short last chunk up to `paddedChunkFrames` makes the raw conv output
+                // wider than this chunk's real valid token count -- trim to match.
+                int chunkT = Math.Min(w3, EncoderTokenCount(chunkLen));
+                int flatDim = c * h3; // 480 * 16 = 7680, matches audio.conv_out.weight's input dim
+
+                var allRows = new float[chunkT * flatDim];
+                for (int ti = 0; ti < chunkT; ti++)
+                {
+                    int rowOff = ti * flatDim;
+                    for (int ch = 0; ch < c; ch++)
+                    {
+                        int chFlatOff = ch * h3;
+                        for (int fh = 0; fh < h3; fh++)
+                            allRows[rowOff + chFlatOff + fh] = stage3[(fh * w3 + ti) * c + ch];
+                    }
+                }
+                chunkAllRows[chunkIdx] = allRows;
+                chunkTokenCounts[chunkIdx] = chunkT;
+            });
+        }
+
+        long tStagesMs = swEnc.ElapsedMilliseconds;
+
+        int t = 0;
+        for (int i = 0; i < numChunks; i++) t += chunkTokenCounts[i];
+
+        int flatDimConv = c * 16;
+        var allChunkRows = new float[t * flatDimConv];
+        int rowCopyOffset = 0;
+        for (int chunkIdx = 0; chunkIdx < numChunks; chunkIdx++)
+        {
+            var rows = chunkAllRows[chunkIdx];
+            rows.CopyTo(allChunkRows.AsSpan(rowCopyOffset * flatDimConv, rows.Length));
+            rowCopyOffset += chunkTokenCounts[chunkIdx];
+        }
+
+        var x = new float[t * encDim];
+        fixed (float* pAllRows = allChunkRows, px = x, pConvOutW = w.ConvOutWeightF32)
+        {
+            if (pConvOutW != null)
+                MatMulF32(pAllRows, t, flatDimConv, pConvOutW, null, encDim, px);
+            else
+                w.ConvOutWeight.MatMul(pAllRows, t, px);
+        }
+
+        long tMatMulMs = swEnc.ElapsedMilliseconds - tStagesMs;
+
+        int tokenOffset = 0;
+        for (int chunkIdx = 0; chunkIdx < numChunks; chunkIdx++)
+        {
+            int chunkT = chunkTokenCounts[chunkIdx];
+            var chunkPosEmb = SinusoidalPositionalEmbeddings(chunkT, encDim);
             for (int ti = 0; ti < chunkT; ti++)
             {
-                var tokenVec = new float[encDim];
+                int rowOff = (tokenOffset + ti) * encDim;
+                int peOff = ti * encDim;
                 for (int d = 0; d < encDim; d++)
-                    tokenVec[d] = allTokens[ti * encDim + d] + chunkPosEmb[ti * encDim + d];
-                chunkTokens.Add(tokenVec);
+                    x[rowOff + d] += chunkPosEmb[peOff + d];
             }
+            tokenOffset += chunkT;
         }
-        long tConvMs = swEnc.ElapsedMilliseconds;
 
-        int t = chunkTokens.Count;
-        var x = new float[t * encDim];
-        for (int ti = 0; ti < t; ti++)
-            chunkTokens[ti].CopyTo(x.AsSpan(ti * encDim, encDim));
+        long tConvMs = swEnc.ElapsedMilliseconds;
+        if (Environment.GetEnvironmentVariable("STINGRAY_FORCEDALIGNER_PERF") == "1")
+            Console.WriteLine($"[Enc-Conv-Breakdown] Stages={tStagesMs}ms ConvOut={tMatMulMs}ms TotalConv={tConvMs}ms");
 
         if (Environment.GetEnvironmentVariable("STINGRAY_FA_DUMP_DIR") is { } dumpDirConvPos)
         {
@@ -184,9 +240,13 @@ public sealed unsafe class QwenAsrAudioEncoder : IDisposable
         var attnOut = new float[t * encDim];
         var ffnUp = new float[t * ffnDim];
 
+        long tLn = 0, tQkv = 0, tAttn = 0, tAttnOut = 0, tFfnUp = 0, tGelu = 0, tFfnDown = 0;
         foreach (var layer in w.AudioLayerWeights)
-            EncoderBlock(x, layer, t, encDim, Config.NumHeads, normed, q, k, v, attnRaw, attnOut, ffnUp);
+            EncoderBlockTimed(x, layer, t, encDim, Config.NumHeads, normed, q, k, v, attnRaw, attnOut, ffnUp,
+                ref tLn, ref tQkv, ref tAttn, ref tAttnOut, ref tFfnUp, ref tGelu, ref tFfnDown);
         long tLayersMs = swEnc.ElapsedMilliseconds;
+        if (Environment.GetEnvironmentVariable("STINGRAY_FORCEDALIGNER_PERF") == "1")
+            Console.WriteLine($"[Enc-Layers-Breakdown] LN={tLn}ms QKV={tQkv}ms Attn={tAttn}ms Out={tAttnOut}ms FfnUp={tFfnUp}ms Gelu={tGelu}ms FfnDown={tFfnDown}ms Total={tLayersMs}ms");
 
         if (Environment.GetEnvironmentVariable("STINGRAY_FA_DUMP_DIR") is { } dumpDirTransformer)
         {
@@ -208,11 +268,21 @@ public sealed unsafe class QwenAsrAudioEncoder : IDisposable
         // Adapter: proj1 (encDim -> encDim) + GELU -> proj2 (encDim -> QwenHiddenDim).
         int qwenDim = Config.QwenHiddenDim;
         var projected = new float[t * qwenDim];
-        fixed (float* px = x, pProj1 = normed, pProj = projected, pP1B = w.Proj1Bias, pP2B = w.Proj2Bias)
+        fixed (float* px = x, pProj1 = normed, pProj = projected, pP1B = w.Proj1Bias, pP2B = w.Proj2Bias,
+                      pP1W = w.Proj1WeightF32, pP2W = w.Proj2WeightF32)
         {
-            w.Proj1Weight.MatMul(px, t, pProj1, pP1B);
-            GeluInPlace(normed);
-            w.Proj2Weight.MatMul(pProj1, t, pProj, pP2B);
+            if (pP1W != null && pP2W != null)
+            {
+                MatMulF32(px, t, encDim, pP1W, pP1B, encDim, pProj1);
+                GeluInPlace(normed);
+                MatMulF32(pProj1, t, encDim, pP2W, pP2B, qwenDim, pProj);
+            }
+            else
+            {
+                w.Proj1Weight.MatMul(px, t, pProj1, pP1B);
+                GeluInPlace(normed);
+                w.Proj2Weight.MatMul(pProj1, t, pProj, pP2B);
+            }
         }
         long tAdapterMs = swEnc.ElapsedMilliseconds;
         if (Environment.GetEnvironmentVariable("STINGRAY_FORCEDALIGNER_PERF") == "1" || Environment.GetEnvironmentVariable("STINGRAY_FORCEDALIGNER_TRACE") == "1")
@@ -254,48 +324,78 @@ public sealed unsafe class QwenAsrAudioEncoder : IDisposable
                 OpenTail.Stingray.Cpu.SimdKernels.LayerNorm((float*)normedAddr + (long)i * dim, (float*)xAddr + (long)i * dim, (float*)anWAddr, (float*)anBAddr, dim, 1e-5f);
             });
 
-            // 2. Q, K, V Projections (batched, parallel, hardware F16C with bias)
-            l.AttnQWeight.MatMul(pNormed, t, pQ, pQBias);
-            l.AttnKWeight.MatMul(pNormed, t, pK, pKBias);
-            l.AttnVWeight.MatMul(pNormed, t, pV, pVBias);
+            // 2. Q, K, V Projections
+            fixed (float* pQW = l.AttnQWeightF32, pKW = l.AttnKWeightF32, pVW = l.AttnVWeightF32)
+            {
+                if (pQW != null && pKW != null && pVW != null)
+                {
+                    MatMulF32((float*)normedAddr, t, dim, pQW, pQBias, dim, (float*)qAddr);
+                    MatMulF32((float*)normedAddr, t, dim, pKW, pKBias, dim, (float*)kAddr);
+                    MatMulF32((float*)normedAddr, t, dim, pVW, pVBias, dim, (float*)vAddr);
+                }
+                else
+                {
+                    l.AttnQWeight.MatMul(pNormed, t, pQ, pQBias);
+                    l.AttnKWeight.MatMul(pNormed, t, pK, pKBias);
+                    l.AttnVWeight.MatMul(pNormed, t, pV, pVBias);
+                }
+            }
 
             // 3. Multi-head self-attention
             int headDim = dim / heads;
             float scale = 1f / MathF.Sqrt(headDim);
-            Array.Clear(attnRaw, 0, t * dim);
 
-            System.Threading.Tasks.Parallel.For(0, t, i =>
+            System.Threading.Tasks.Parallel.For(0, t * heads, taskIdx =>
             {
+                int i = taskIdx / heads;
+                int h = taskIdx % heads;
+                int off = h * headDim;
+
                 Span<float> scores = stackalloc float[t];
                 Span<float> probs = stackalloc float[t];
-                for (int h = 0; h < heads; h++)
-                {
-                    int off = h * headDim;
-                    float* qi = (float*)qAddr + (long)i * dim + off;
-                    for (int j = 0; j < t; j++)
-                    {
-                        float* kj = (float*)kAddr + (long)j * dim + off;
-                        scores[j] = OpenTail.Stingray.Cpu.SimdKernels.DotF32(qi, kj, headDim) * scale;
-                    }
-                    scores.CopyTo(probs);
-                    OpenTail.Stingray.Audio.Primitives.DenseKernels.SoftmaxInPlace(probs);
 
-                    float* weighted = (float*)attnRawAddr + (long)i * dim + off;
-                    for (int j = 0; j < t; j++)
+                float* qi = (float*)qAddr + (long)i * dim + off;
+                for (int j = 0; j < t; j++)
+                {
+                    float* kj = (float*)kAddr + (long)j * dim + off;
+                    scores[j] = OpenTail.Stingray.Cpu.SimdKernels.DotF32(qi, kj, headDim) * scale;
+                }
+                scores.CopyTo(probs);
+                OpenTail.Stingray.Audio.Primitives.DenseKernels.SoftmaxInPlace(probs);
+
+                float* weighted = (float*)attnRawAddr + (long)i * dim + off;
+                int d = 0;
+                for (; d + 8 <= headDim; d += 8)
+                    Avx.Store(weighted + d, Vector256<float>.Zero);
+                for (; d < headDim; d++)
+                    weighted[d] = 0f;
+
+                for (int j = 0; j < t; j++)
+                {
+                    var vPj = Vector256.Create(probs[j]);
+                    float* vj = (float*)vAddr + (long)j * dim + off;
+                    d = 0;
+                    for (; d + 8 <= headDim; d += 8)
                     {
-                        float* vj = (float*)vAddr + (long)j * dim + off;
-                        float pj = probs[j];
-                        System.Numerics.Tensors.TensorPrimitives.MultiplyAdd(
-                            new ReadOnlySpan<float>(vj, headDim),
-                            pj,
-                            new ReadOnlySpan<float>(weighted, headDim),
-                            new Span<float>(weighted, headDim));
+                        var acc = Avx.LoadVector256(weighted + d);
+                        var vVal = Avx.LoadVector256(vj + d);
+                        acc = Fma.MultiplyAdd(vPj, vVal, acc);
+                        Avx.Store(weighted + d, acc);
                     }
+                    float pj = probs[j];
+                    for (; d < headDim; d++)
+                        weighted[d] += pj * vj[d];
                 }
             });
 
             // 4. Output projection
-            l.AttnOutWeight.MatMul(pAttnRaw, t, pAttnOut, pAttnOutBias);
+            fixed (float* pOutW = l.AttnOutWeightF32)
+            {
+                if (pOutW != null)
+                    MatMulF32((float*)attnRawAddr, t, dim, pOutW, pAttnOutBias, dim, (float*)attnOutAddr);
+                else
+                    l.AttnOutWeight.MatMul(pAttnRaw, t, pAttnOut, pAttnOutBias);
+            }
 
             // 5. Residual 1: x += attnOut
             System.Threading.Tasks.Parallel.For(0, t, i =>
@@ -310,13 +410,25 @@ public sealed unsafe class QwenAsrAudioEncoder : IDisposable
             });
 
             // 7. FFN Up projection
-            l.FfnUpWeight.MatMul(pNormed, t, pFfnUp, pFfnUpBias);
+            fixed (float* pUpW = l.FfnUpWeightF32)
+            {
+                if (pUpW != null)
+                    MatMulF32((float*)normedAddr, t, dim, pUpW, pFfnUpBias, l.FfnUpBias.Length, pFfnUp);
+                else
+                    l.FfnUpWeight.MatMul(pNormed, t, pFfnUp, pFfnUpBias);
+            }
 
             // 8. FFN GELU
             GeluInPlace(ffnUp);
 
             // 9. FFN Down projection (reuse pAttnOut buffer for down output)
-            l.FfnDownWeight.MatMul(pFfnUp, t, pAttnOut, pFfnDownBias);
+            fixed (float* pDownW = l.FfnDownWeightF32)
+            {
+                if (pDownW != null)
+                    MatMulF32(pFfnUp, t, l.FfnUpBias.Length, pDownW, pFfnDownBias, dim, (float*)attnOutAddr);
+                else
+                    l.FfnDownWeight.MatMul(pFfnUp, t, pAttnOut, pFfnDownBias);
+            }
 
             // 10. Residual 2: x += ffnDown
             System.Threading.Tasks.Parallel.For(0, t, i =>
@@ -326,82 +438,407 @@ public sealed unsafe class QwenAsrAudioEncoder : IDisposable
         }
     }
 
-    // -----------------------------------------------------------------
-    // Conv2d stem, same convention as ParakeetConformerEncoder's (IDX(c,h,w) = c*H*W+h*W+w,
-    // weight order idx = kw+kh*K+cin*K*K+cout*K*K*Cin). All three AuT conv layers are FULL
-    // (dense) convs, not depthwise, unlike Parakeet's stage-2/3.
-    // -----------------------------------------------------------------
-    /// <summary>
-    /// Channel-last (im2col-lite) formulation: cin (up to 480 for this checkpoint's stages 2/3)
-    /// was previously a scalar, non-contiguous innermost-but-one loop axis in both the weight
-    /// and channel-first input layouts -- effectively unvectorized despite being the dominant
-    /// cost dimension (measured ~70% of total AuT-encoder wall time on stage 2 alone before this
-    /// change). Repacks input to [hin, win, cin] and weight to [cout, kh, kw, cin] once per call
-    /// (O(cin*hin*win)/O(cout*cin*k*k), trivial next to the O(cout*hout*wout*cin*k*k) conv
-    /// itself) so cin becomes contiguous on both operands, then uses SimdKernels.DotF32 (AVX2/
-    /// FMA) for the per-(kh,kw) accumulation instead of a scalar inner loop.
-    /// </summary>
-    private static unsafe float[] Conv2dFull(float[] input, int cin, int hin, int win, float[] weightCL, float[] bias, int cout, int k, int stride, int pad, out int hout, out int wout)
+    private static unsafe void EncoderBlockTimed(
+        float[] x,
+        QwenAsrAudioLayerWeights l,
+        int t,
+        int dim,
+        int heads,
+        float[] normed,
+        float[] q,
+        float[] k,
+        float[] v,
+        float[] attnRaw,
+        float[] attnOut,
+        float[] ffnUp,
+        ref long tLn, ref long tQkv, ref long tAttn, ref long tAttnOut, ref long tFfnUp, ref long tGelu, ref long tFfnDown)
     {
-        int houtLocal = (hin + 2 * pad - k) / stride + 1;
-        int woutLocal = (win + 2 * pad - k) / stride + 1;
+        var sw = new System.Diagnostics.Stopwatch();
+        fixed (float* px = x, pNormed = normed, pQ = q, pK = k, pV = v,
+                      pAttnRaw = attnRaw, pAttnOut = attnOut, pFfnUp = ffnUp,
+                      pAttnNormW = l.AttnNormWeight, pAttnNormB = l.AttnNormBias,
+                      pQBias = l.AttnQBias, pKBias = l.AttnKBias, pVBias = l.AttnVBias,
+                      pAttnOutBias = l.AttnOutBias,
+                      pFfnNormW = l.FfnNormWeight, pFfnNormB = l.FfnNormBias,
+                      pFfnUpBias = l.FfnUpBias, pFfnDownBias = l.FfnDownBias)
+        {
+            nint xAddr = (nint)px, normedAddr = (nint)pNormed, qAddr = (nint)pQ, kAddr = (nint)pK, vAddr = (nint)pV;
+            nint attnRawAddr = (nint)pAttnRaw, attnOutAddr = (nint)pAttnOut;
+            nint anWAddr = (nint)pAttnNormW, anBAddr = (nint)pAttnNormB;
+            nint fnWAddr = (nint)pFfnNormW, fnBAddr = (nint)pFfnNormB;
+
+            // 1. Pre-attention LayerNorm
+            sw.Restart();
+            System.Threading.Tasks.Parallel.For(0, t, i =>
+            {
+                OpenTail.Stingray.Cpu.SimdKernels.LayerNorm((float*)normedAddr + (long)i * dim, (float*)xAddr + (long)i * dim, (float*)anWAddr, (float*)anBAddr, dim, 1e-5f);
+            });
+            tLn += sw.ElapsedMilliseconds;
+
+            // 2. Q, K, V Projections
+            sw.Restart();
+            fixed (float* pQW = l.AttnQWeightF32, pKW = l.AttnKWeightF32, pVW = l.AttnVWeightF32)
+            {
+                if (pQW != null && pKW != null && pVW != null)
+                {
+                    MatMulF32((float*)normedAddr, t, dim, pQW, pQBias, dim, (float*)qAddr);
+                    MatMulF32((float*)normedAddr, t, dim, pKW, pKBias, dim, (float*)kAddr);
+                    MatMulF32((float*)normedAddr, t, dim, pVW, pVBias, dim, (float*)vAddr);
+                }
+                else
+                {
+                    l.AttnQWeight.MatMul(pNormed, t, pQ, pQBias);
+                    l.AttnKWeight.MatMul(pNormed, t, pK, pKBias);
+                    l.AttnVWeight.MatMul(pNormed, t, pV, pVBias);
+                }
+            }
+            tQkv += sw.ElapsedMilliseconds;
+
+            // 3. Multi-head self-attention
+            sw.Restart();
+            int headDim = dim / heads;
+            float scale = 1f / MathF.Sqrt(headDim);
+
+            System.Threading.Tasks.Parallel.For(0, t * heads, taskIdx =>
+            {
+                int i = taskIdx / heads;
+                int h = taskIdx % heads;
+                int off = h * headDim;
+
+                Span<float> scores = stackalloc float[t];
+                Span<float> probs = stackalloc float[t];
+
+                float* qi = (float*)qAddr + (long)i * dim + off;
+                for (int j = 0; j < t; j++)
+                {
+                    float* kj = (float*)kAddr + (long)j * dim + off;
+                    scores[j] = OpenTail.Stingray.Cpu.SimdKernels.DotF32(qi, kj, headDim) * scale;
+                }
+                scores.CopyTo(probs);
+                OpenTail.Stingray.Audio.Primitives.DenseKernels.SoftmaxInPlace(probs);
+
+                float* weighted = (float*)attnRawAddr + (long)i * dim + off;
+                int d = 0;
+                for (; d + 8 <= headDim; d += 8)
+                    Avx.Store(weighted + d, Vector256<float>.Zero);
+                for (; d < headDim; d++)
+                    weighted[d] = 0f;
+
+                for (int j = 0; j < t; j++)
+                {
+                    var vPj = Vector256.Create(probs[j]);
+                    float* vj = (float*)vAddr + (long)j * dim + off;
+                    d = 0;
+                    for (; d + 8 <= headDim; d += 8)
+                    {
+                        var acc = Avx.LoadVector256(weighted + d);
+                        var vVal = Avx.LoadVector256(vj + d);
+                        acc = Fma.MultiplyAdd(vPj, vVal, acc);
+                        Avx.Store(weighted + d, acc);
+                    }
+                    float pj = probs[j];
+                    for (; d < headDim; d++)
+                        weighted[d] += pj * vj[d];
+                }
+            });
+            tAttn += sw.ElapsedMilliseconds;
+
+            // 4. Output projection
+            sw.Restart();
+            fixed (float* pOutW = l.AttnOutWeightF32)
+            {
+                if (pOutW != null)
+                    MatMulF32((float*)attnRawAddr, t, dim, pOutW, pAttnOutBias, dim, (float*)attnOutAddr);
+                else
+                    l.AttnOutWeight.MatMul(pAttnRaw, t, pAttnOut, pAttnOutBias);
+            }
+            tAttnOut += sw.ElapsedMilliseconds;
+
+            // 5. Residual 1: x += attnOut
+            sw.Restart();
+            System.Threading.Tasks.Parallel.For(0, t, i =>
+            {
+                OpenTail.Stingray.Cpu.SimdKernels.AddInPlace((float*)xAddr + (long)i * dim, (float*)attnOutAddr + (long)i * dim, dim);
+            });
+            tLn += sw.ElapsedMilliseconds;
+
+            // 6. Post-attention LayerNorm (before FFN)
+            sw.Restart();
+            System.Threading.Tasks.Parallel.For(0, t, i =>
+            {
+                OpenTail.Stingray.Cpu.SimdKernels.LayerNorm((float*)normedAddr + (long)i * dim, (float*)xAddr + (long)i * dim, (float*)fnWAddr, (float*)fnBAddr, dim, 1e-5f);
+            });
+            tLn += sw.ElapsedMilliseconds;
+
+            // 7. FFN Up projection
+            sw.Restart();
+            fixed (float* pUpW = l.FfnUpWeightF32)
+            {
+                if (pUpW != null)
+                    MatMulF32((float*)normedAddr, t, dim, pUpW, pFfnUpBias, l.FfnUpBias.Length, pFfnUp);
+                else
+                    l.FfnUpWeight.MatMul(pNormed, t, pFfnUp, pFfnUpBias);
+            }
+            tFfnUp += sw.ElapsedMilliseconds;
+
+            // 8. FFN GELU
+            sw.Restart();
+            GeluInPlace(ffnUp);
+            tGelu += sw.ElapsedMilliseconds;
+
+            // 9. FFN Down projection (reuse pAttnOut buffer for down output)
+            sw.Restart();
+            fixed (float* pDownW = l.FfnDownWeightF32)
+            {
+                if (pDownW != null)
+                    MatMulF32(pFfnUp, t, l.FfnUpBias.Length, pDownW, pFfnDownBias, dim, (float*)attnOutAddr);
+                else
+                    l.FfnDownWeight.MatMul(pFfnUp, t, pAttnOut, pFfnDownBias);
+            }
+            tFfnDown += sw.ElapsedMilliseconds;
+
+            // 10. Residual 2: x += ffnDown
+            sw.Restart();
+            System.Threading.Tasks.Parallel.For(0, t, i =>
+            {
+                OpenTail.Stingray.Cpu.SimdKernels.AddInPlace((float*)xAddr + (long)i * dim, (float*)attnOutAddr + (long)i * dim, dim);
+            });
+            tLn += sw.ElapsedMilliseconds;
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
+    private static unsafe void MatMulF32(
+        float* input,
+        int t,
+        int inDim,
+        float* weight,
+        float* bias,
+        int outDim,
+        float* output)
+    {
+        OpenTail.Stingray.Cpu.SimdKernels.MatMulBatchedF32(output, weight, input, t, outDim, inDim, bias);
+    }
+
+    // -----------------------------------------------------------------
+    // Conv2d stem: optimized im2col + dense GEMM formulation.
+    // All three AuT conv layers are full dense convs with 3x3 kernel, stride 2, pad 1.
+    // Stage 1 extracts 9 receptive field samples per pixel directly with fused GELU.
+    // Stages 2 & 3 pack receptive fields into an im2col matrix and evaluate via an unrolled
+    // 2x4 AVX2/FMA GEMM microkernel with fused bias-add and exact-erf GELU.
+    // -----------------------------------------------------------------
+    private static unsafe float[] Conv2dStage1(
+        float[] chunkMel,
+        int hin, int win,
+        float[] weightCL, float[] bias,
+        int cout,
+        bool parallel,
+        out int hout, out int wout)
+    {
+        int houtLocal = (hin + 2 * 1 - 3) / 2 + 1;
+        int woutLocal = (win + 2 * 1 - 3) / 2 + 1;
         hout = houtLocal;
         wout = woutLocal;
 
-        var inputCL = new float[hin * win * cin];
-        if (cin == 1)
-        {
-            Array.Copy(input, inputCL, input.Length);
-        }
-        else
-        {
-            int hwStride = hin * win;
-            System.Threading.Tasks.Parallel.For(0, hin, hi =>
-            {
-                for (int wi = 0; wi < win; wi++)
-                {
-                    int hwOffset = (hi * win + wi) * cin;
-                    int inHw = hi * win + wi;
-                    for (int ci = 0; ci < cin; ci++)
-                    {
-                        inputCL[hwOffset + ci] = input[ci * hwStride + inHw];
-                    }
-                }
-            });
-        }
+        var output = new float[houtLocal * woutLocal * cout];
+        const float invSqrt2 = 0.70710678118654752f;
 
-        var output = new float[cout * houtLocal * woutLocal];
-        fixed (float* inCLp = inputCL, wCLp = weightCL, outp = output)
+        fixed (float* pMel = chunkMel, pW = weightCL, pBias = bias, pOut = output)
         {
-            float* inCL = inCLp; float* wCL = wCLp; float* outPtr = outp;
-            System.Threading.Tasks.Parallel.For(0, cout, co =>
+            nint melAddr = (nint)pMel, wAddr = (nint)pW, biasAddr = (nint)pBias, outAddr = (nint)pOut;
+
+            void ProcessRow(int ho)
             {
-                float* wBase = wCL + (long)co * k * k * cin;
-                for (int ho = 0; ho < houtLocal; ho++)
+                float* pMelLocal = (float*)melAddr;
+                float* pWLocal = (float*)wAddr;
+                float* pBiasLocal = (float*)biasAddr;
+                float* pOutLocal = (float*)outAddr;
+
+                Span<float> s = stackalloc float[9];
+                int hi0 = ho * 2 - 1;
+                for (int wo = 0; wo < woutLocal; wo++)
                 {
-                    for (int wo = 0; wo < woutLocal; wo++)
+                    int m = ho * woutLocal + wo;
+                    float* oRow = pOutLocal + (long)m * cout;
+                    int wi0 = wo * 2 - 1;
+
+                    for (int kh = 0; kh < 3; kh++)
                     {
-                        float sum = bias[co];
-                        for (int kh = 0; kh < k; kh++)
+                        int hi = hi0 + kh;
+                        for (int kw = 0; kw < 3; kw++)
                         {
-                            int hi = ho * stride - pad + kh;
-                            if (hi < 0 || hi >= hin) continue;
-                            for (int kw = 0; kw < k; kw++)
-                            {
-                                int wi = wo * stride - pad + kw;
-                                if (wi < 0 || wi >= win) continue;
-                                float* wSlice = wBase + (long)(kh * k + kw) * cin;
-                                float* inSlice = inCL + (long)(hi * win + wi) * cin;
-                                sum += OpenTail.Stingray.Cpu.SimdKernels.DotF32(wSlice, inSlice, cin);
-                            }
+                            int wi = wi0 + kw;
+                            s[kh * 3 + kw] = (hi >= 0 && hi < hin && wi >= 0 && wi < win)
+                                ? pMelLocal[hi * win + wi]
+                                : 0f;
                         }
-                        outPtr[(long)co * houtLocal * woutLocal + ho * woutLocal + wo] = sum;
+                    }
+
+                    float s0 = s[0], s1 = s[1], s2 = s[2];
+                    float s3 = s[3], s4 = s[4], s5 = s[5];
+                    float s6 = s[6], s7 = s[7], s8 = s[8];
+
+                    for (int co = 0; co < cout; co++)
+                    {
+                        float* wRow = pWLocal + (long)co * 9;
+                        float sum = pBiasLocal[co] +
+                            s0 * wRow[0] + s1 * wRow[1] + s2 * wRow[2] +
+                            s3 * wRow[3] + s4 * wRow[4] + s5 * wRow[5] +
+                            s6 * wRow[6] + s7 * wRow[7] + s8 * wRow[8];
+                        oRow[co] = 0.5f * sum * (1f + Erf(sum * invSqrt2));
                     }
                 }
-            });
+            }
+
+            if (parallel)
+                Parallel.For(0, houtLocal, ProcessRow);
+            else
+                for (int ho = 0; ho < houtLocal; ho++)
+                    ProcessRow(ho);
         }
         return output;
     }
+
+    private static unsafe float[] Conv2dStage23(
+        float[] inputCL,
+        int cin, int hin, int win,
+        float[] weightCL, float[] bias,
+        int cout,
+        bool parallel,
+        out int hout, out int wout)
+    {
+        int houtLocal = (hin + 2 * 1 - 3) / 2 + 1;
+        int woutLocal = (win + 2 * 1 - 3) / 2 + 1;
+        hout = houtLocal;
+        wout = woutLocal;
+
+        int mTotal = houtLocal * woutLocal;
+        int kDim = 9 * cin;
+        var output = new float[mTotal * cout];
+        const float invSqrt2 = 0.70710678118654752f;
+
+        fixed (float* pIn = inputCL, pW = weightCL, pBias = bias, pOut = output)
+        {
+            nint inAddr = (nint)pIn, wAddr = (nint)pW, biasAddr = (nint)pBias, outAddr = (nint)pOut;
+
+            void ProcessRow(int ho)
+            {
+                float* pInLocal = (float*)inAddr;
+                float* pWLocal = (float*)wAddr;
+                float* pBiasLocal = (float*)biasAddr;
+                float* pOutLocal = (float*)outAddr;
+
+                float[] rowCol = GetThreadColBuf(woutLocal * kDim);
+                fixed (float* pRowCol = rowCol)
+                {
+                    // Step 1: pack row ho into rowCol
+                    int hi0 = ho * 2 - 1;
+                    for (int wo = 0; wo < woutLocal; wo++)
+                    {
+                        float* dstRow = pRowCol + (long)wo * kDim;
+                        int wi0 = wo * 2 - 1;
+                        for (int kh = 0; kh < 3; kh++)
+                        {
+                            int hi = hi0 + kh;
+                            for (int kw = 0; kw < 3; kw++)
+                            {
+                                int wi = wi0 + kw;
+                                float* dstSlice = dstRow + (kh * 3 + kw) * cin;
+                                if (hi >= 0 && hi < hin && wi >= 0 && wi < win)
+                                {
+                                    float* srcSlice = pInLocal + (long)(hi * win + wi) * cin;
+                                    Buffer.MemoryCopy(srcSlice, dstSlice, (long)cin * sizeof(float), (long)cin * sizeof(float));
+                                }
+                                else
+                                {
+                                    Unsafe.InitBlockUnaligned(dstSlice, 0, (uint)(cin * sizeof(float)));
+                                }
+                            }
+                        }
+                    }
+
+                    // Step 2: Dense GEMM on this row's pixels directly to output
+                    int numPairs = woutLocal / 2;
+                    for (int pairIdx = 0; pairIdx < numPairs; pairIdx++)
+                    {
+                        int m0 = pairIdx * 2;
+                        int m1 = m0 + 1;
+                        float* a0 = pRowCol + (long)m0 * kDim;
+                        float* a1 = pRowCol + (long)m1 * kDim;
+                        float* o0 = pOutLocal + (long)(ho * woutLocal + m0) * cout;
+                        float* o1 = pOutLocal + (long)(ho * woutLocal + m1) * cout;
+
+                        for (int co = 0; co < cout; co += 4)
+                        {
+                            float* w0 = pWLocal + (long)co * kDim;
+                            float* w1 = pWLocal + (long)(co + 1) * kDim;
+                            float* w2 = pWLocal + (long)(co + 2) * kDim;
+                            float* w3 = pWLocal + (long)(co + 3) * kDim;
+
+                            OpenTail.Stingray.Cpu.SimdKernels.Gemm2x4_AvxFma(a0, a1, w0, w1, w2, w3, kDim,
+                                out float r00, out float r01, out float r02, out float r03,
+                                out float r10, out float r11, out float r12, out float r13);
+
+                            float v00 = r00 + pBiasLocal[co];
+                            float v01 = r01 + pBiasLocal[co + 1];
+                            float v02 = r02 + pBiasLocal[co + 2];
+                            float v03 = r03 + pBiasLocal[co + 3];
+
+                            float v10 = r10 + pBiasLocal[co];
+                            float v11 = r11 + pBiasLocal[co + 1];
+                            float v12 = r12 + pBiasLocal[co + 2];
+                            float v13 = r13 + pBiasLocal[co + 3];
+
+                            o0[co]     = 0.5f * v00 * (1f + Erf(v00 * invSqrt2));
+                            o0[co + 1] = 0.5f * v01 * (1f + Erf(v01 * invSqrt2));
+                            o0[co + 2] = 0.5f * v02 * (1f + Erf(v02 * invSqrt2));
+                            o0[co + 3] = 0.5f * v03 * (1f + Erf(v03 * invSqrt2));
+
+                            o1[co]     = 0.5f * v10 * (1f + Erf(v10 * invSqrt2));
+                            o1[co + 1] = 0.5f * v11 * (1f + Erf(v11 * invSqrt2));
+                            o1[co + 2] = 0.5f * v12 * (1f + Erf(v12 * invSqrt2));
+                            o1[co + 3] = 0.5f * v13 * (1f + Erf(v13 * invSqrt2));
+                        }
+                    }
+
+                    if ((woutLocal & 1) != 0)
+                    {
+                        int m0 = woutLocal - 1;
+                        float* a0 = pRowCol + (long)m0 * kDim;
+                        float* o0 = pOutLocal + (long)(ho * woutLocal + m0) * cout;
+                        for (int co = 0; co < cout; co += 4)
+                        {
+                            float* w0 = pWLocal + (long)co * kDim;
+                            float* w1 = pWLocal + (long)(co + 1) * kDim;
+                            float* w2 = pWLocal + (long)(co + 2) * kDim;
+                            float* w3 = pWLocal + (long)(co + 3) * kDim;
+
+                            OpenTail.Stingray.Cpu.SimdKernels.MatVec1x4_AvxFma(a0, w0, w1, w2, w3, kDim,
+                                out float r00, out float r01, out float r02, out float r03);
+
+                            float v00 = r00 + pBiasLocal[co];
+                            float v01 = r01 + pBiasLocal[co + 1];
+                            float v02 = r02 + pBiasLocal[co + 2];
+                            float v03 = r03 + pBiasLocal[co + 3];
+
+                            o0[co]     = 0.5f * v00 * (1f + Erf(v00 * invSqrt2));
+                            o0[co + 1] = 0.5f * v01 * (1f + Erf(v01 * invSqrt2));
+                            o0[co + 2] = 0.5f * v02 * (1f + Erf(v02 * invSqrt2));
+                            o0[co + 3] = 0.5f * v03 * (1f + Erf(v03 * invSqrt2));
+                        }
+                    }
+                }
+            }
+
+            if (parallel)
+                Parallel.For(0, houtLocal, ProcessRow);
+            else
+                for (int ho = 0; ho < houtLocal; ho++)
+                    ProcessRow(ho);
+        }
+        return output;
+    }
+
 
     /// <summary>
     /// Real exact-erf GELU, corrected 2026-09-07 (see docs/audio-review-progress.md's audio-

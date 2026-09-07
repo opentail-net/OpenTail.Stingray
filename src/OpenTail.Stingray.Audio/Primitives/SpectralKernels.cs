@@ -81,12 +81,7 @@ internal static unsafe class SpectralKernels
                 float* cosRow = pCos + (long)k * n;
                 float* sinRow = pSin + (long)k * n;
 
-                // Was a scalar per-element accumulation; cosRow/sinRow/pWin are all contiguous,
-                // so this is a direct SimdKernels.DotF32 (AVX2/FMA) substitution -- shared by
-                // Whisper/Parakeet/F5-TTS/QwenASR's mel extractors, all naive O(n) per bin
-                // before this change.
-                float real = SimdKernels.DotF32(pWin, cosRow, n);
-                float imag = SimdKernels.DotF32(pWin, sinRow, n);
+                SimdKernels.DotF32_2In(cosRow, sinRow, pWin, n, out float real, out float imag);
 
                 pOut[k] = real * real + imag * imag;
             }

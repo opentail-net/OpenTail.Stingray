@@ -132,15 +132,18 @@ public sealed class QwenAsrWeights : IDisposable
         Conv3Bias = GetTensor("audio.conv.3.bias");
         Conv3WeightCL = PrepackWeightCL(Conv3Weight, cout: AudioConvChannels, cin: AudioConvChannels, k: 3);
         var convOutF32 = GetTensor("audio.conv_out.weight"); // no bias tensor for this one
+        ConvOutWeightF32 = convOutF32;
         ConvOutWeight = CfmLinearWeight.FromF32WithF16Conversion(convOutF32, outDim: AudioDim, inDim: convOutF32.Length / AudioDim);
         LnPostWeight = GetTensor("audio.ln_post.weight");
         LnPostBias = GetTensor("audio.ln_post.bias");
         MelFilters = GetTensor("audio.mel_filters"); // [n_mels, n_freqs]
         MelWindow = GetTensor("audio.mel_window");
         var proj1F32 = GetTensor("audio.proj1.weight");
+        Proj1WeightF32 = proj1F32;
         Proj1Bias = GetTensor("audio.proj1.bias");
         Proj1Weight = CfmLinearWeight.FromF32WithF16Conversion(proj1F32, outDim: Proj1Bias.Length, inDim: proj1F32.Length / Proj1Bias.Length);
         var proj2F32 = GetTensor("audio.proj2.weight");
+        Proj2WeightF32 = proj2F32;
         Proj2Bias = GetTensor("audio.proj2.bias");
         Proj2Weight = CfmLinearWeight.FromF32WithF16Conversion(proj2F32, outDim: Proj2Bias.Length, inDim: proj2F32.Length / Proj2Bias.Length);
 
@@ -238,15 +241,18 @@ public sealed class QwenAsrWeights : IDisposable
         Conv3Bias = GetTensor("audio.conv.3.bias");
         Conv3WeightCL = PrepackWeightCL(Conv3Weight, cout: AudioConvChannels, cin: AudioConvChannels, k: 3);
         var convOutF32 = GetTensor("audio.conv_out.weight");
+        ConvOutWeightF32 = convOutF32;
         ConvOutWeight = CfmLinearWeight.FromF32WithF16Conversion(convOutF32, outDim: AudioDim, inDim: convOutF32.Length / AudioDim);
         LnPostWeight = GetTensor("audio.ln_post.weight");
         LnPostBias = GetTensor("audio.ln_post.bias");
         MelFilters = []; // real HF checkpoint doesn't ship these -- confirmed unused anywhere in this codebase's own mel extraction (QwenAsrMelExtractor computes its own filterbank independently)
         MelWindow = [];
         var proj1F32 = GetTensor("audio.proj1.weight");
+        Proj1WeightF32 = proj1F32;
         Proj1Bias = GetTensor("audio.proj1.bias");
         Proj1Weight = CfmLinearWeight.FromF32WithF16Conversion(proj1F32, outDim: Proj1Bias.Length, inDim: proj1F32.Length / Proj1Bias.Length);
         var proj2F32 = GetTensor("audio.proj2.weight");
+        Proj2WeightF32 = proj2F32;
         Proj2Bias = GetTensor("audio.proj2.bias");
         Proj2Weight = CfmLinearWeight.FromF32WithF16Conversion(proj2F32, outDim: Proj2Bias.Length, inDim: proj2F32.Length / Proj2Bias.Length);
 
@@ -335,13 +341,16 @@ public sealed class QwenAsrWeights : IDisposable
     public float[] Conv3Bias { get; }
     public float[] Conv3WeightCL { get; }
     public CfmLinearWeight ConvOutWeight { get; } // [7680, 896], no bias
+    public float[] ConvOutWeightF32 { get; }
     public float[] LnPostWeight { get; }
     public float[] LnPostBias { get; }
     public float[] MelFilters { get; }
     public float[] MelWindow { get; }
     public CfmLinearWeight Proj1Weight { get; }
+    public float[] Proj1WeightF32 { get; }
     public float[] Proj1Bias { get; }
     public CfmLinearWeight Proj2Weight { get; }
+    public float[] Proj2WeightF32 { get; }
     public float[] Proj2Bias { get; }
     public QwenAsrAudioLayerWeights[] AudioLayerWeights { get; }
 
@@ -437,18 +446,24 @@ public sealed class QwenAsrAudioLayerWeights
     public float[] AttnNormWeight { get; }
     public float[] AttnNormBias { get; }
     public CfmLinearWeight AttnQWeight { get; }
+    public float[] AttnQWeightF32 { get; }
     public float[] AttnQBias { get; }
     public CfmLinearWeight AttnKWeight { get; }
+    public float[] AttnKWeightF32 { get; }
     public float[] AttnKBias { get; }
     public CfmLinearWeight AttnVWeight { get; }
+    public float[] AttnVWeightF32 { get; }
     public float[] AttnVBias { get; }
     public CfmLinearWeight AttnOutWeight { get; }
+    public float[] AttnOutWeightF32 { get; }
     public float[] AttnOutBias { get; }
     public float[] FfnNormWeight { get; }
     public float[] FfnNormBias { get; }
     public CfmLinearWeight FfnUpWeight { get; }
+    public float[] FfnUpWeightF32 { get; }
     public float[] FfnUpBias { get; }
     public CfmLinearWeight FfnDownWeight { get; }
+    public float[] FfnDownWeightF32 { get; }
     public float[] FfnDownBias { get; }
 
     public QwenAsrAudioLayerWeights(QwenAsrWeights w, string prefix)
@@ -456,23 +471,29 @@ public sealed class QwenAsrAudioLayerWeights
         AttnNormWeight = w.GetTensor($"{prefix}.attn_norm.weight");
         AttnNormBias = w.GetTensor($"{prefix}.attn_norm.bias");
         var qF32 = w.GetTensor($"{prefix}.attn_q.weight");
+        AttnQWeightF32 = qF32;
         AttnQBias = w.GetTensor($"{prefix}.attn_q.bias");
         AttnQWeight = CfmLinearWeight.FromF32WithF16Conversion(qF32, outDim: AttnQBias.Length, inDim: qF32.Length / AttnQBias.Length);
         var kF32 = w.GetTensor($"{prefix}.attn_k.weight");
+        AttnKWeightF32 = kF32;
         AttnKBias = w.GetTensor($"{prefix}.attn_k.bias");
         AttnKWeight = CfmLinearWeight.FromF32WithF16Conversion(kF32, outDim: AttnKBias.Length, inDim: kF32.Length / AttnKBias.Length);
         var vF32 = w.GetTensor($"{prefix}.attn_v.weight");
+        AttnVWeightF32 = vF32;
         AttnVBias = w.GetTensor($"{prefix}.attn_v.bias");
         AttnVWeight = CfmLinearWeight.FromF32WithF16Conversion(vF32, outDim: AttnVBias.Length, inDim: vF32.Length / AttnVBias.Length);
         var outF32 = w.GetTensor($"{prefix}.attn_out.weight");
+        AttnOutWeightF32 = outF32;
         AttnOutBias = w.GetTensor($"{prefix}.attn_out.bias");
         AttnOutWeight = CfmLinearWeight.FromF32WithF16Conversion(outF32, outDim: AttnOutBias.Length, inDim: outF32.Length / AttnOutBias.Length);
         FfnNormWeight = w.GetTensor($"{prefix}.ffn_norm.weight");
         FfnNormBias = w.GetTensor($"{prefix}.ffn_norm.bias");
         var ffnUpF32 = w.GetTensor($"{prefix}.ffn_up.weight");
+        FfnUpWeightF32 = ffnUpF32;
         FfnUpBias = w.GetTensor($"{prefix}.ffn_up.bias");
         FfnUpWeight = CfmLinearWeight.FromF32WithF16Conversion(ffnUpF32, outDim: FfnUpBias.Length, inDim: ffnUpF32.Length / FfnUpBias.Length);
         var ffnDownF32 = w.GetTensor($"{prefix}.ffn_down.weight");
+        FfnDownWeightF32 = ffnDownF32;
         FfnDownBias = w.GetTensor($"{prefix}.ffn_down.bias");
         FfnDownWeight = CfmLinearWeight.FromF32WithF16Conversion(ffnDownF32, outDim: FfnDownBias.Length, inDim: ffnDownF32.Length / FfnDownBias.Length);
     }

@@ -23,11 +23,30 @@ public sealed class QwenAsrMelExtractor
 
     private readonly float[] _hannWindow;
     private readonly float[][] _melFilters;
+    private readonly (int Start, float[] Weights)[] _sparseMelFilters;
 
     public QwenAsrMelExtractor()
     {
         _hannWindow = SpectralKernels.CreateSymmetricHannWindow(WindowSize);
         _melFilters = CreateSlaneyMelFilterBank(NumMels, NFft, SampleRate, 0.0f, 8000.0f);
+        _sparseMelFilters = new (int Start, float[] Weights)[NumMels];
+        for (int m = 0; m < NumMels; m++)
+        {
+            int start = 0;
+            while (start < _melFilters[m].Length && _melFilters[m][start] == 0f) start++;
+            int end = _melFilters[m].Length - 1;
+            while (end >= start && _melFilters[m][end] == 0f) end--;
+            if (end >= start)
+            {
+                var weights = new float[end - start + 1];
+                Array.Copy(_melFilters[m], start, weights, 0, weights.Length);
+                _sparseMelFilters[m] = (start, weights);
+            }
+            else
+            {
+                _sparseMelFilters[m] = (0, Array.Empty<float>());
+            }
+        }
     }
 
     /// <summary>
@@ -100,7 +119,10 @@ public sealed class QwenAsrMelExtractor
                 float localMax = float.NegativeInfinity;
                 for (int m = 0; m < NumMels; m++)
                 {
-                    float energy = TensorPrimitives.Dot((ReadOnlySpan<float>)powerSpectrum, (ReadOnlySpan<float>)_melFilters[m]);
+                    var (fStart, fWeights) = _sparseMelFilters[m];
+                    float energy = fWeights.Length > 0
+                        ? TensorPrimitives.Dot(((ReadOnlySpan<float>)powerSpectrum).Slice(fStart, fWeights.Length), fWeights)
+                        : 0f;
 
                     // log10(clamp(mel, min=1e-10))
                     float logVal = MathF.Log10(MathF.Max(energy, 1e-10f));

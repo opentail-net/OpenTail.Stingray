@@ -183,34 +183,7 @@ public static unsafe class SimdKernels
             // decode faster requires a cheaper dot (e.g. VNNI), not better data movement.
             if (dtype == DType.Float32 && batchSize > 1)
             {
-                var m = (float*)weights;
-                if (rows >= MinRowsForParallel)
-                {
-                    nint outPtr = (nint)output;
-                    nint inPtr = (nint)input;
-                    nint wPtr = (nint)weights;
-                    Parallel.For(0, rows, s_parallelOpts, r =>
-                    {
-                        float* row = (float*)wPtr + (long)r * cols;
-                        float* o = (float*)outPtr;
-                        float* inp = (float*)inPtr;
-                        for (int t = 0; t < batchSize; t++)
-                        {
-                            o[(long)t * rows + r] = DotF32(inp + (long)t * cols, row, cols);
-                        }
-                    });
-                }
-                else
-                {
-                    for (int r = 0; r < rows; r++)
-                    {
-                        float* row = m + (long)r * cols;
-                        for (int t = 0; t < batchSize; t++)
-                        {
-                            output[(long)t * rows + r] = DotF32(input + (long)t * cols, row, cols);
-                        }
-                    }
-                }
+                MatMulBatchedF32(output, (float*)weights, input, batchSize, rows, cols);
                 return;
             }
 
@@ -724,26 +697,129 @@ public static unsafe class SimdKernels
     /// Bit-identical to <see cref="MatMulBatched"/>'s BLAS path: same F32 weights, same SGEMM.
     /// </summary>
     public static void MatMulBatchedF32(float* output, float* weightsF32, float* input,
+        int batchSize, int rows, int cols, float* bias = null)
+    {
+        if (batchSize <= 0) return;
+        if (batchSize == 1)
+        {
+            MatVecF32(output, weightsF32, bias, input, rows, cols);
+            return;
+        }
+
+        if (Fma.IsSupported && cols >= 8)
+        {
+            if ((long)rows * batchSize < 512 || s_parallelOpts.MaxDegreeOfParallelism <= 1)
+            {
+                RunF32GemmRowTile(output, weightsF32, input, bias, batchSize, rows, cols, 0, rows);
+                return;
+            }
+
+            int numThreads = s_parallelOpts.MaxDegreeOfParallelism;
+            int targetChunks = numThreads * 2;
+            int chunkSize = (rows + targetChunks - 1) / targetChunks;
+            chunkSize = Math.Max(16, (chunkSize + 3) & ~3);
+            int numChunks = (rows + chunkSize - 1) / chunkSize;
+
+            nint outPtr = (nint)output;
+            nint wPtr = (nint)weightsF32;
+            nint inPtr = (nint)input;
+            nint bPtr = (nint)bias;
+
+            Parallel.For(0, numChunks, s_parallelOpts, c =>
+            {
+                int rStart = c * chunkSize;
+                int rEnd = Math.Min(rows, rStart + chunkSize);
+                RunF32GemmRowTile((float*)outPtr, (float*)wPtr, (float*)inPtr, (float*)bPtr,
+                    batchSize, rows, cols, rStart, rEnd);
+            });
+            return;
+        }
+
+        FallbackMatMulF32(output, weightsF32, input, bias, batchSize, rows, cols);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static void RunF32GemmRowTile(
+        float* output, float* weightsF32, float* input, float* bias,
+        int batchSize, int rows, int cols,
+        int rStart, int rEnd)
+    {
+        int r = rStart;
+        for (; r + 4 <= rEnd; r += 4)
+        {
+            float* w0 = weightsF32 + (long)r * cols;
+            float* w1 = weightsF32 + (long)(r + 1) * cols;
+            float* w2 = weightsF32 + (long)(r + 2) * cols;
+            float* w3 = weightsF32 + (long)(r + 3) * cols;
+
+            float b0 = bias != null ? bias[r] : 0f;
+            float b1 = bias != null ? bias[r + 1] : 0f;
+            float b2 = bias != null ? bias[r + 2] : 0f;
+            float b3 = bias != null ? bias[r + 3] : 0f;
+
+            int p = 0;
+            for (; p + 1 < batchSize; p += 2)
+            {
+                float* a0 = input + (long)p * cols;
+                float* a1 = input + (long)(p + 1) * cols;
+
+                Gemm2x4_AvxFma(a0, a1, w0, w1, w2, w3, cols,
+                    out float r00, out float r01, out float r02, out float r03,
+                    out float r10, out float r11, out float r12, out float r13);
+
+                float* o0 = output + (long)p * rows;
+                float* o1 = output + (long)(p + 1) * rows;
+
+                o0[r]     = r00 + b0;
+                o0[r + 1] = r01 + b1;
+                o0[r + 2] = r02 + b2;
+                o0[r + 3] = r03 + b3;
+
+                o1[r]     = r10 + b0;
+                o1[r + 1] = r11 + b1;
+                o1[r + 2] = r12 + b2;
+                o1[r + 3] = r13 + b3;
+            }
+
+            if (p < batchSize)
+            {
+                float* a0 = input + (long)p * cols;
+                MatVecF32_4Row(w0, w1, w2, w3, a0, cols,
+                    out float r0, out float r1, out float r2, out float r3);
+
+                float* o0 = output + (long)p * rows;
+                o0[r]     = r0 + b0;
+                o0[r + 1] = r1 + b1;
+                o0[r + 2] = r2 + b2;
+                o0[r + 3] = r3 + b3;
+            }
+        }
+
+        for (; r < rEnd; r++)
+        {
+            float* w = weightsF32 + (long)r * cols;
+            float b = bias != null ? bias[r] : 0f;
+            for (int tIdx = 0; tIdx < batchSize; tIdx++)
+            {
+                output[(long)tIdx * rows + r] = DotF32(input + (long)tIdx * cols, w, cols) + b;
+            }
+        }
+    }
+
+    private static void FallbackMatMulF32(
+        float* output, float* weightsF32, float* input, float* bias,
         int batchSize, int rows, int cols)
     {
-        // Tried unconditionally, not gated behind "batch too small for BLAS to be worth it" --
-        // same reasoning as MatMulBatched above: BLAS has never won a measured case in this file
-        // (docs/done/openblas-elimination-findings-2026-08-20.md), including large batches, so
-        // there is no batch size at which routing to it ahead of this loop is justified by
-        // evidence. Kept structurally last-resort, not deleted -- do not re-gate this behind a
-        // batch-size or BLAS-availability check without new measurements written up the same way.
-        MatMulBatched(output, (byte*)weightsF32, input, batchSize, rows, cols, DType.Float32);
-        return;
-
-        // Unreachable below by design -- see comment above.
-#pragma warning disable CS0162
-        BlasInterop.Sgemm(
-            BlasInterop.RowMajor, BlasInterop.NoTrans, BlasInterop.Trans,
-            batchSize, rows, cols,
-            1.0f, input, cols,
-            weightsF32, cols,
-            0.0f, output, rows);
-#pragma warning restore CS0162
+        for (int t = 0; t < batchSize; t++)
+        {
+            float* inT = input + (long)t * cols;
+            float* outT = output + (long)t * rows;
+            for (int r = 0; r < rows; r++)
+            {
+                float b = bias != null ? bias[r] : 0f;
+                outT[r] = DotF32(inT, weightsF32 + (long)r * cols, cols) + b;
+            }
+        }
     }
 
     // ================================================================
@@ -1530,6 +1606,76 @@ public static unsafe class SimdKernels
                 output[r] = sum;
             }
         }
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static void Gemm2x4_AvxFma(
+        float* a0, float* a1,
+        float* w0, float* w1, float* w2, float* w3,
+        int k,
+        out float r00, out float r01, out float r02, out float r03,
+        out float r10, out float r11, out float r12, out float r13)
+    {
+        var acc00 = Vector256<float>.Zero;
+        var acc01 = Vector256<float>.Zero;
+        var acc02 = Vector256<float>.Zero;
+        var acc03 = Vector256<float>.Zero;
+        var acc10 = Vector256<float>.Zero;
+        var acc11 = Vector256<float>.Zero;
+        var acc12 = Vector256<float>.Zero;
+        var acc13 = Vector256<float>.Zero;
+
+        int i = 0;
+        for (; i + 8 <= k; i += 8)
+        {
+            var va0 = Avx.LoadVector256(a0 + i);
+            var va1 = Avx.LoadVector256(a1 + i);
+
+            var vw0 = Avx.LoadVector256(w0 + i);
+            acc00 = Fma.MultiplyAdd(va0, vw0, acc00);
+            acc10 = Fma.MultiplyAdd(va1, vw0, acc10);
+
+            var vw1 = Avx.LoadVector256(w1 + i);
+            acc01 = Fma.MultiplyAdd(va0, vw1, acc01);
+            acc11 = Fma.MultiplyAdd(va1, vw1, acc11);
+
+            var vw2 = Avx.LoadVector256(w2 + i);
+            acc02 = Fma.MultiplyAdd(va0, vw2, acc02);
+            acc12 = Fma.MultiplyAdd(va1, vw2, acc12);
+
+            var vw3 = Avx.LoadVector256(w3 + i);
+            acc03 = Fma.MultiplyAdd(va0, vw3, acc03);
+            acc13 = Fma.MultiplyAdd(va1, vw3, acc13);
+        }
+
+        r00 = HSum256(acc00);
+        r01 = HSum256(acc01);
+        r02 = HSum256(acc02);
+        r03 = HSum256(acc03);
+        r10 = HSum256(acc10);
+        r11 = HSum256(acc11);
+        r12 = HSum256(acc12);
+        r13 = HSum256(acc13);
+
+        for (; i < k; i++)
+        {
+            float s0 = a0[i], s1 = a1[i];
+            float val0 = w0[i], val1 = w1[i], val2 = w2[i], val3 = w3[i];
+            r00 += s0 * val0; r10 += s1 * val0;
+            r01 += s0 * val1; r11 += s1 * val1;
+            r02 += s0 * val2; r12 += s1 * val2;
+            r03 += s0 * val3; r13 += s1 * val3;
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static void MatVec1x4_AvxFma(
+        float* a0,
+        float* w0, float* w1, float* w2, float* w3,
+        int k,
+        out float r00, out float r01, out float r02, out float r03)
+    {
+        MatVecF32_4Row(w0, w1, w2, w3, a0, k, out r00, out r01, out r02, out r03);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
