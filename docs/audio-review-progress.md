@@ -14925,3 +14925,85 @@ hypothesis 1, the frequency-construction difference).
 **Qwen3 Forced Aligner status: real, substantial progress (root cause of the ROTATION half
 identified and a safe fix implemented), but the bug persists in a new form.** Not closing this
 investigation as resolved.
+
+## Qwen3 Forced Aligner -- bisection confirms the interleaved-RoPE fix does NOT reproduce the real layer-2 jump, 2026-09-07
+
+Re-ran the per-layer bisection (`STINGRAY_FA_TRACE=1`) WITH the interleaved-RoPE fix applied, per
+the prior entry's own proposed next step. **Result: still no discontinuity.** Layer 1->2 std goes
+2.48->3.59 (~1.45x), nowhere near the real reference's own confirmed 7x jump (2.88->20.00) from
+the original investigation. Growth remains smooth through all 28 layers (final layer std=60.27
+this run vs. the reference's real 66.11) -- consistent in ROUGH final magnitude but still missing
+the real architecture-specific discontinuity entirely.
+
+**Conclusion: the interleaved-pairing fix, while a real and independently-justified correction
+(the checkpoint's config.json genuinely declares this RoPE variant, and the fix demonstrably
+changed the classify output to a different failure pattern), is NOT the mechanism behind the
+real layer-2 jump.** This points toward hypothesis (1) from the prior entry: real M-RoPE's
+FREQUENCY-table construction (not just the rotation-pairing convention) likely differs from
+plain interleaved RoPE in a way this session's narrow fix doesn't reach -- `mrope_section=
+[24,20,20]` may partition the frequency dimension itself (e.g. three separate frequency
+sub-schedules per section, only later recombined) rather than simply changing which pairs of
+dimensions rotate together. This is a real, structurally different (and larger) engine change
+than the one implemented this session.
+
+**Decision: stopping this investigation here for this session** rather than continuing to guess
+at M-RoPE's exact frequency-construction formula without reading the real reference source for
+it directly (not yet located/read this session -- likely in a shared `rope`/`mrope` module under
+`examples/audio.cpp/src/framework/`, structurally analogous to how `qwen_position_ids` was found
+this session, not yet searched for its M-RoPE frequency-construction counterpart). The
+interleaved-pairing fix is being KEPT (not reverted) since it is independently justified by the
+checkpoint's own real config and does not regress or affect any other checkpoint (opt-in via the
+new `interleavedRope` parameter, default `false`) -- it is real, partial, verified progress
+toward the correct RoPE convention even though insufficient alone.
+
+**Qwen3 Forced Aligner status: real progress this session (root cause direction identified,
+partial fix implemented and kept), bug NOT resolved.** Real next step for a future session:
+locate and read the real reference's M-RoPE frequency-construction code (search for
+`mrope`/`m_rope`/`Mrope` in `examples/audio.cpp/src/framework/`, not yet done) before attempting
+a further fix, rather than guessing at frequency-table formulas.
+
+## Qwen3 Forced Aligner -- CORRECTION: the M-RoPE hypothesis was WRONG, reverted, 2026-09-07
+
+Per CLAUDE.md's explicit rule ("check the real reference before fixing code that looks wrong"),
+went back to directly verify the M-RoPE hypothesis against the real reference's OWN RoPE
+application code (not yet done before implementing the fix -- the config.json evidence alone was
+compelling but was never actually cross-checked against what the reference DOES with that
+config). **Found conclusively that the hypothesis was wrong**:
+
+- The shared `qwen_decoder.h`'s `QwenDecoderLayerConfig`/`QwenCausalDecoderConfig` both default
+  `rope_type = GGML_ROPE_TYPE_NEOX` -- the SAME standard convention this port already used.
+- `qwen3_asr/assets.cpp` DOES parse `rope_scaling.mrope_section` into its config struct (real,
+  confirmed field access), but that parsed value, along with `interleaved`/`mrope_interleaved`,
+  is **never read anywhere else** in the reference's transformer/attention build code -- grepped
+  the whole `qwen3_asr` model directory and the shared `transformers`/`attention` framework
+  modules for `mrope`/`interleaved`, zero real usages found.
+- The reference deliberately IGNORES this checkpoint's M-RoPE config declaration and applies
+  plain standard NEOX rotation -- and its own captured numbers (the ground truth this entire
+  investigation has been comparing against) are produced BY that NEOX computation, not some
+  M-RoPE variant.
+
+This is fully consistent with the earlier bisection finding that the interleaved-pairing fix did
+NOT reproduce the reference's real layer-2 discontinuity -- it couldn't have, since the reference
+was never using interleaved rotation in the first place. **Reverted**: `QwenAsrForcedAligner` no
+longer passes `interleavedRope: true` (back to this port's original, correct-per-the-real-
+reference NEOX default). The underlying opt-in mechanism added to `ModelGraph.cs`
+(`"{arch}.rope.is_neox"` metadata override) is KEPT since it's safe, harmless when unused, and
+may be genuinely useful for some future checkpoint that DOES require the interleaved convention
+-- but it is confirmed NOT the fix for this bug.
+
+**Real lesson for this investigation, worth recording explicitly**: a checkpoint's `config.json`
+declaring a feature (M-RoPE, in this case) is not proof that this project's own hand-written
+reference implementation actually HONORS that feature -- always verify against what the
+reference C++ code DOES, not just what the checkpoint's metadata SAYS it needs, before writing a
+fix. The earlier "ROOT CAUSE FOUND" framing was premature; this should have been labeled a
+hypothesis pending reference verification from the start.
+
+**Qwen3 Forced Aligner status: back to genuinely open, no working theory currently held.** The
+real divergence at layer 2 (reference's real 7x jump, this port's smooth growth) remains
+unexplained. Two real ideas NOT yet tried, for a future session: (1) the earlier-planned
+per-head attention-score inspection at layer 2 (which head, which key position) -- the ORIGINAL
+next step from before this M-RoPE detour, still not attempted; (2) since the reference's RoPE
+type is confirmed standard NEOX, re-verify this port's OWN NEOX implementation bit-for-bit
+against `qwen_decoder.h`'s real formula (frequency schedule, `freq_base`/`freq_scale`/
+`ext_factor` defaults) rather than assuming the shared, widely-used `ForwardPass` NEOX path is
+necessarily correct for this checkpoint's exact config values.

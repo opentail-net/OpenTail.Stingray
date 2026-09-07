@@ -162,18 +162,25 @@ public sealed class QwenAsrForcedAligner : IDisposable
             Console.Error.WriteLine($"[FA-Trace] audioPadCount in prompt={audioPadCount} (expect numAudioTokens={numAudioTokens})");
         }
 
-        // Real, checkpoint-confirmed (not guessed): this checkpoint's own config.json declares
-        // rope_scaling.interleaved=true/mrope_interleaved=true (real Qwen2-VL/Qwen2.5-Omni-
-        // family M-RoPE) -- the standard Qwen3 NEOX rotation this bridge otherwise defaults to
-        // is wrong for this specific checkpoint. See docs/audio-review-progress.md's "ROOT CAUSE
-        // FOUND" entry for the full derivation of why interleavedRope=true (not full 3D M-RoPE
-        // section tracking) is the correct fix for this text-only use.
+        // REVERTED, 2026-09-07 (same session): this checkpoint's config.json DOES declare
+        // rope_scaling.interleaved=true/mrope_interleaved=true, and it looked like a plausible
+        // root cause for the classify-head bug -- but directly checking the real reference's OWN
+        // RoPE application (`qwen_decoder.h`'s `rope_type` field, `GGML_ROPE_TYPE_NEOX` by
+        // default, never overridden anywhere in `qwen3_asr/assets.cpp` despite that file DOES
+        // parse `mrope_section` into its config struct) confirms the reference deliberately
+        // IGNORES these M-RoPE config fields and uses plain standard NEOX rotation -- the same
+        // convention this bridge already had before this investigation. Re-bisecting with
+        // interleavedRope=true confirmed it does NOT reproduce the reference's real layer-2
+        // discontinuity, consistent with this correction. Left `false` (this class's real
+        // default) rather than reverted entirely, since the underlying opt-in mechanism
+        // (`ModelGraph.cs`'s new `"{arch}.rope.is_neox"` override) is safe, harmless, and may be
+        // genuinely useful for some OTHER real checkpoint later -- see
+        // docs/audio-review-progress.md's correction entry for the full story.
         using var source = new QwenAsrLlmSafetensorsTensorSource(
             _safetensorsPath,
             numLayers: _realWeights.LlmLayers, hiddenDim: _realWeights.LlmDim, numHeads: _realWeights.LlmHeads,
             numKvHeads: _realWeights.LlmKvHeads, headDim: _realWeights.LlmHeadDim, ffDim: _realWeights.LlmFfDim,
-            vocabSize: 5000, ropeTheta: _realWeights.LlmRopeTheta, rmsNormEps: _realWeights.LlmRmsNormEps,
-            interleavedRope: true);
+            vocabSize: 5000, ropeTheta: _realWeights.LlmRopeTheta, rmsNormEps: _realWeights.LlmRmsNormEps);
         source.EnableAudioConditioning(audioSoftTokens, numAudioTokens);
 
         var prompt = promptIds.ToArray();
