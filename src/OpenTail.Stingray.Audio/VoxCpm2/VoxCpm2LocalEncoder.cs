@@ -6,10 +6,10 @@ namespace OpenTail.Stingray.Audio.VoxCpm2;
 /// `minicpm_layer`/`minicpm_transformer`/`apply_minicpm_rope` (not guessed). Real per-call
 /// shape: one "patch" of `patch_size` (real: 4) rows of `feat_dim` (real: 64) continuous
 /// features -&gt; `Linear(feat_dim-&gt;encoderHiddenDim)` per row -&gt; a real learned "special token"
-/// row PREPENDED (CLS-token pattern) -&gt; a real BIDIRECTIONAL (non-causal) 12-layer MiniCPM-
-/// architecture transformer over the resulting 5-row sequence, RoPE positions `0..patchSize` --
-/// -&gt; only the special-token row (index 0) is kept -&gt; `Linear(encoderHiddenDim-&gt;lmHiddenDim)`
-/// projects into the LM's own hidden space.
+/// row PREPENDED (CLS-token pattern) -&gt; the shared <see cref="VoxCpm2MiniCpmBidirectionalStack"/>
+/// (real BIDIRECTIONAL 12-layer MiniCPM transformer, RoPE positions `0..patchSize`) -&gt; only the
+/// special-token row (index 0) is kept -&gt; `Linear(encoderHiddenDim-&gt;lmHiddenDim)` projects into
+/// the LM's own hidden space.
 ///
 /// <para><b>Real RoPE, confirmed non-trivial and NOT plain unscaled RoPE</b>: NEOX (split-half)
 /// rotation, real `longrope` per-dimension frequency-correction factors (`rope_scaling.
@@ -21,32 +21,23 @@ namespace OpenTail.Stingray.Audio.VoxCpm2;
 /// `active_rope_factors` always picks `short_factor`. Also confirmed real (not guessed):
 /// `rope_attn_factor`'s real formula evaluates to exactly `1.0` for this checkpoint (same
 /// `&lt;=` condition), and `ext_factor=0.0`/`freq_scale=1.0` always for this call site, so the
-/// reference's more general YaRN ramp-mixing logic never activates here -- this reduces to
-/// per-dimension-frequency-corrected RoPE with no additional magnitude scaling, reusing
-/// <see cref="SimdKernels.BuildRopeTable"/>'s existing `freqFactors` parameter exactly as
-/// designed for this case.</para>
+/// reference's more general YaRN ramp-mixing logic never activates here.</para>
 ///
-/// <para>Real per-layer math (same family as VoxCPM2's `base_lm`, but bidirectional and with its
-/// own smaller width/depth): pre-RMSNorm -&gt; fused QKV projections (no bias) -&gt; NEOX+longrope
-/// RoPE on Q/K -&gt; GQA key/value head repeat (`numHeads/numKvHeads`) -&gt; full (non-causal)
-/// scaled-dot-product attention -&gt; `o_proj` -&gt; residual add (no mup scaling, `use_mup=false`
-/// for this checkpoint) -&gt; pre-RMSNorm -&gt; SwiGLU MLP -&gt; residual add -&gt; final RMSNorm after
-/// all layers.</para>
+/// <para>The transformer stack itself (per-layer math, RoPE table, NEOX rotation) is shared with
+/// VoxCPM2's DiT estimator decoder via <see cref="VoxCpm2MiniCpmBidirectionalStack"/> -- both use
+/// the exact same real config shape (`hidden_dim=1024`, `num_heads=16`, `num_key_value_heads=2`,
+/// `head_dim=128`, `ffn_dim=4096`, 12 layers), confirmed identical in the real checkpoint's
+/// `config.json`.</para>
 /// </summary>
 public static class VoxCpm2LocalEncoder
 {
     public const int PatchSize = 4;
     public const int FeatDim = 64;
-    public const int EncoderHiddenDim = 1024;
-    public const int NumHeads = 16;
-    public const int NumKvHeads = 2;
-    public const int HeadDim = 128;
-    public const int FfnDim = 4096;
-    public const float RopeTheta = 10000f;
-    public const float RmsNormEps = 1e-5f;
+    public const int EncoderHiddenDim = VoxCpm2MiniCpmBidirectionalStack.HiddenDim;
 
     // Real `lm_config.rope_scaling.short_factor` (64 values, one per RoPE pair -- headDim/2),
-    // extracted directly from the checkpoint's embedded config.json (not guessed).
+    // extracted directly from the checkpoint's embedded config.json (not guessed). Shared with
+    // VoxCpm2MiniCpmBidirectionalStack since the DiT decoder uses the identical rope config.
     public static readonly float[] RopeShortFactor =
     [
         0.9977997200264581f, 1.014658295992452f, 1.0349680404997148f, 1.059429246056193f,
@@ -69,7 +60,7 @@ public static class VoxCpm2LocalEncoder
 
     /// <summary>Encodes one real patch of `[PatchSize][FeatDim]` continuous features into the LM's
     /// `lmHiddenDim`-wide embedding space.</summary>
-    public static unsafe float[] EncodePatch(VoxCpm2LocalEncoderWeights w, float[][] patchFeatures, int lmHiddenDim)
+    public static float[] EncodePatch(VoxCpm2LocalEncoderWeights w, float[][] patchFeatures, int lmHiddenDim)
     {
         if (patchFeatures.Length != PatchSize) throw new ArgumentException($"Expected {PatchSize} rows.", nameof(patchFeatures));
 
@@ -77,169 +68,10 @@ public static class VoxCpm2LocalEncoder
         var hidden = new float[seqLen][];
         hidden[0] = (float[])w.SpecialToken.Clone();
         for (int i = 0; i < PatchSize; i++)
-            hidden[i + 1] = Linear(patchFeatures[i], w.InProjWeight, w.InProjBias, FeatDim, EncoderHiddenDim);
+            hidden[i + 1] = VoxCpm2MiniCpmBidirectionalStack.Linear(patchFeatures[i], w.InProjWeight, w.InProjBias, FeatDim, EncoderHiddenDim);
 
-        int halfDim = HeadDim / 2;
-        var cos = new float[seqLen * halfDim];
-        var sin = new float[seqLen * halfDim];
-        fixed (float* cosPtr = cos, sinPtr = sin, freqPtr = RopeShortFactor)
-            SimdKernels.BuildRopeTable(cosPtr, sinPtr, seqLen, HeadDim, RopeTheta, freqPtr);
+        hidden = VoxCpm2MiniCpmBidirectionalStack.Run(hidden, w.Layers, w.FinalNorm, seqLen);
 
-        foreach (var layer in w.Layers)
-            hidden = Layer(hidden, layer, cos, sin, seqLen);
-
-        hidden = RmsNormRows(hidden, w.FinalNorm);
-
-        return Linear(hidden[0], w.EncToLmProjWeight, w.EncToLmProjBias, EncoderHiddenDim, lmHiddenDim);
-    }
-
-    private static float[][] Layer(float[][] input, VoxCpm2MiniCpmLayerWeights layer, float[] cos, float[] sin, int seqLen)
-    {
-        int qOut = NumHeads * HeadDim;
-        int kvOut = NumKvHeads * HeadDim;
-        int kvRepeats = NumHeads / NumKvHeads;
-        float scale = 1f / MathF.Sqrt(HeadDim);
-        int halfDim = HeadDim / 2;
-
-        var normed = RmsNormRows(input, layer.InputNorm);
-        var q = new float[seqLen][];
-        var k = new float[seqLen][];
-        var v = new float[seqLen][];
-        for (int t = 0; t < seqLen; t++)
-        {
-            q[t] = Linear(normed[t], layer.QProjWeight, bias: [], EncoderHiddenDim, qOut);
-            k[t] = Linear(normed[t], layer.KProjWeight, bias: [], EncoderHiddenDim, kvOut);
-            v[t] = Linear(normed[t], layer.VProjWeight, bias: [], EncoderHiddenDim, kvOut);
-            ApplyRopeNeox(q[t], NumHeads, HeadDim, cos, sin, t, halfDim);
-            ApplyRopeNeox(k[t], NumKvHeads, HeadDim, cos, sin, t, halfDim);
-        }
-
-        var context = new float[seqLen][];
-        for (int ti = 0; ti < seqLen; ti++)
-        {
-            var ctxOut = new float[qOut];
-            for (int h = 0; h < NumHeads; h++)
-            {
-                int hOff = h * HeadDim;
-                int kvHOff = (h / kvRepeats) * HeadDim;
-                var scores = new float[seqLen];
-                for (int tj = 0; tj < seqLen; tj++)
-                {
-                    float dot = 0f;
-                    for (int d = 0; d < HeadDim; d++) dot += q[ti][hOff + d] * k[tj][kvHOff + d];
-                    scores[tj] = dot * scale;
-                }
-                Softmax(scores);
-                for (int tj = 0; tj < seqLen; tj++)
-                {
-                    float p = scores[tj];
-                    for (int d = 0; d < HeadDim; d++) ctxOut[hOff + d] += p * v[tj][kvHOff + d];
-                }
-            }
-            context[ti] = ctxOut;
-        }
-
-        var attnOut = new float[seqLen][];
-        var x = new float[seqLen][];
-        for (int t = 0; t < seqLen; t++)
-        {
-            attnOut[t] = Linear(context[t], layer.OProjWeight, bias: [], qOut, EncoderHiddenDim);
-            x[t] = Add(input[t], attnOut[t]);
-        }
-
-        var ffnNormed = RmsNormRows(x, layer.PostNorm);
-        var output = new float[seqLen][];
-        for (int t = 0; t < seqLen; t++)
-        {
-            var gate = Linear(ffnNormed[t], layer.GateProjWeight, bias: [], EncoderHiddenDim, FfnDim);
-            SiluInPlace(gate);
-            var up = Linear(ffnNormed[t], layer.UpProjWeight, bias: [], EncoderHiddenDim, FfnDim);
-            for (int i = 0; i < gate.Length; i++) gate[i] *= up[i];
-            var down = Linear(gate, layer.DownProjWeight, bias: [], FfnDim, EncoderHiddenDim);
-            output[t] = Add(x[t], down);
-        }
-        return output;
-    }
-
-    private static void ApplyRopeNeox(float[] x, int numHeads, int headDim, float[] cos, float[] sin, int position, int halfDim)
-    {
-        int cosBase = position * halfDim;
-        for (int h = 0; h < numHeads; h++)
-        {
-            int hOff = h * headDim;
-            for (int i = 0; i < halfDim; i++)
-            {
-                float c = cos[cosBase + i];
-                float s = sin[cosBase + i];
-                int idx0 = hOff + i;
-                int idx1 = hOff + i + halfDim;
-                float x0 = x[idx0];
-                float x1 = x[idx1];
-                x[idx0] = x0 * c - x1 * s;
-                x[idx1] = x0 * s + x1 * c;
-            }
-        }
-    }
-
-    private static float[][] RmsNormRows(float[][] rows, float[] weight)
-    {
-        var output = new float[rows.Length][];
-        for (int t = 0; t < rows.Length; t++) output[t] = RmsNorm(rows[t], weight);
-        return output;
-    }
-
-    private static float[] RmsNorm(float[] x, float[] weight)
-    {
-        double sumSq = 0;
-        for (int i = 0; i < x.Length; i++) sumSq += (double)x[i] * x[i];
-        float invRms = (float)(1.0 / Math.Sqrt(sumSq / x.Length + RmsNormEps));
-        var output = new float[x.Length];
-        for (int i = 0; i < x.Length; i++) output[i] = x[i] * invRms * weight[i];
-        return output;
-    }
-
-    private static float[] Add(float[] a, float[] b)
-    {
-        var output = new float[a.Length];
-        for (int i = 0; i < a.Length; i++) output[i] = a[i] + b[i];
-        return output;
-    }
-
-    private static float[] Linear(float[] input, float[] weight, float[] bias, int inDim, int outDim)
-    {
-        var output = new float[outDim];
-        bool hasBias = bias.Length > 0;
-        for (int o = 0; o < outDim; o++)
-        {
-            float sum = hasBias ? bias[o] : 0f;
-            int wBase = o * inDim;
-            for (int i = 0; i < inDim; i++) sum += weight[wBase + i] * input[i];
-            output[o] = sum;
-        }
-        return output;
-    }
-
-    private static void Softmax(float[] scores)
-    {
-        float max = float.NegativeInfinity;
-        for (int i = 0; i < scores.Length; i++) if (scores[i] > max) max = scores[i];
-        float sum = 0f;
-        for (int i = 0; i < scores.Length; i++)
-        {
-            float e = MathF.Exp(scores[i] - max);
-            scores[i] = e;
-            sum += e;
-        }
-        float invSum = 1f / sum;
-        for (int i = 0; i < scores.Length; i++) scores[i] *= invSum;
-    }
-
-    private static void SiluInPlace(float[] x)
-    {
-        for (int i = 0; i < x.Length; i++)
-        {
-            float v = x[i];
-            x[i] = v / (1f + MathF.Exp(-v));
-        }
+        return VoxCpm2MiniCpmBidirectionalStack.Linear(hidden[0], w.EncToLmProjWeight, w.EncToLmProjBias, EncoderHiddenDim, lmHiddenDim);
     }
 }
