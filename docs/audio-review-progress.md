@@ -13776,6 +13776,37 @@ stateless one-shot bidirectional passes). Real next step if resumed: implement t
 prefill stage (`VoxCPM2PromptPrefillRuntime`) and this bespoke causal residual-LM stepper,
 then wire `generate_once`'s loop above using the pieces that already exist.
 
+**Update, 2026-09-07 (same session) -- read `VoxCPM2PromptPrefillRuntime::Impl::build`/`run`
+(`minicpm.cpp` ~line 564-850), real prefill graph now fully understood.** Per-step (not
+per-token loop) batched graph over `steps` prompt rows: `base_lm` prefill (real RoPE, causal,
+captures per-layer KV) -> `RMSNorm` -> FSQ bottleneck (`fsq_in_proj`->tanh->scale->round->
+unscale->`fsq_out_proj`, same bottleneck math already ported in
+`VoxCpm2StepProjection`) -> `masked_base = base_hidden * text_mask`,
+`masked_fsq = fsq_hidden * audio_mask` (elementwise per-row gating, NOT a select --
+text-position rows use base_hidden untouched since audio_mask=0 there and vice versa) ->
+`lm_hidden = masked_base + masked_fsq` -> `masked_current = current_embeddings * audio_mask`
+(the ALREADY-KNOWN per-frame audio-codec-latent embeddings at audio positions, zero at text
+positions) -> `residual_input = fusion_concat_proj(concat(lm_hidden, masked_current))` ->
+`residual_lm` prefill (same causal stack as `VoxCpm2ResidualLm.Step`, but batched over all
+prompt rows with real position ids `0..steps-1`, no RoPE, captures per-layer KV) -> only the
+LAST row of `lm_hidden`/`residual_hidden` (`SliceModule({1, steps-1, 1})`) is returned as the
+output (`VoxCPM2PromptPrefillOutput.lm_hidden`/`residual_hidden`), alongside BOTH decoders'
+full per-layer KV-cache state (`TransformerKVState`) to seed the subsequent per-frame
+`generate_once` loop.
+
+**Real remaining blocker, precisely scoped**: this prefill stage needs `text_mask`/
+`audio_mask`/`current_embeddings` as real INPUTS -- i.e. it needs the real VoxCPM2 prompt
+construction (chat-template text tokenization interleaved with reference-audio codec-latent
+positions) to already exist before it can be exercised end-to-end. That prompt builder
+(`VoxCPM2TextEmbeddingRuntime` + the reference-audio latent path) is NOT yet ported this
+session -- implementing `VoxCpm2ResidualLm`'s prefill counterpart in isolation (e.g. a
+`VoxCpm2ResidualLm.Prefill(rows)` batched method) is straightforward given the row-by-row
+`Step` logic already built, but would be unverifiable against real weights without a real
+prompt to feed it. Next tractable step if resumed: port the real VoxCPM2 text tokenizer +
+chat template first (mirrors work already done for MOSS-TTS-Nano's
+`SentencePieceBpeTokenizer`/`MossTtsPromptBuilder`), THEN this prefill wiring becomes
+end-to-end testable.
+
 **Update, 2026-09-07 (same session) -- `VoxCpm2ResidualLm.cs` implemented and real-weight
 verified.** Bespoke causal 8-layer decoder (`Step(embedding)`), NO RoPE anywhere, real
 persistent per-layer KV cache (`List<float[]>` per layer, grows across `Step` calls, cleared
