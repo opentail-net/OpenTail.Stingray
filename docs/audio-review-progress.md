@@ -16807,3 +16807,40 @@ pass: dump per-layer hidden states (not just the final prefill output) to bisect
 transformer layers first diverges, following the same real dump-and-compare discipline.
 
 Tokenizer fix is real, verified, and committed independently of the open LM-forward-pass gap.
+
+**Update, 2026-09-07 -- three more hypotheses investigated and ruled out for VoxCPM2's remaining
+LM-forward divergence (real, not guessed).** Dumped VoxCPM2's real embedded `config.json` (new:
+extended `VoxCpm2TokenizerConfigDumpDebugTest.cs` to also extract it) to check for a real config
+mismatch between the debug comparison test and the reference:
+
+1. **"Wrong comparison basis" hypothesis (last row is an audio/FSQ row, not a raw-hidden text
+   row) -- RULED OUT.** Grepped `generator.cpp`'s real `build_prefill_sequence`: line 1367
+   (`append_text(tokenizer_.audio_start_token_id())`) confirms `audio_start_token_id` is appended
+   as a real TEXT row (`text_mask=true`), not an audio row -- so the reference's traced
+   `lm_hidden` at the last position really is the raw post-norm `base_hidden`, matching what the
+   debug test already compares. No comparison-basis bug.
+2. **mup/embedding-scale mismatch -- RULED OUT.** The real config has non-trivial-looking
+   `scale_emb=12`, `dim_model_base=256`, `scale_depth=1.4`, but also explicit `"use_mup": false`
+   -- and the reference's real `use_mup ? scale_emb : 1.0F` gate (confirmed via grep of
+   `minicpm.cpp`) means these are dead values for this checkpoint; embedding/residual scale is
+   genuinely 1.0, matching what both the debug test and production code already use.
+3. **RoPE long/short-factor scaling mismatch -- RULED OUT.** Real config has a `longrope`
+   `rope_scaling` block, but `max_position_embeddings` (32768) equals
+   `original_max_position_embeddings` (32768) exactly -- the reference's real
+   `active_rope_factors` gate (`if (max_position_embeddings > original_max_position_embeddings)`)
+   is false, so no scaling factor is ever applied regardless of sequence length. Base RoPE only,
+   matching this port's assumption.
+4. Also re-confirmed `residual_lm_no_rope=true` is correctly wired (`VoxCpm2ResidualLm`'s own doc
+   comment already documents the real `apply_minicpm_rope`'s `if (config.no_rope) return input;`
+   early-out this port implements).
+
+All four checked config/comparison-basis hypotheses are real dead ends -- the divergence is
+confirmed to be a genuine numeric bug somewhere in the 28-layer `base_lm` transformer's actual
+per-layer math (attention, MLP, or RMSNorm), not a config/wiring/comparison mismatch. Closing this
+out requires adding real per-layer hidden-state output taps to BOTH the vendored reference's ggml
+graph (mirroring the existing `base_keys_`/`base_values_` per-layer tap pattern already in
+`minicpm.cpp`'s `build()`, at line ~728) and to the C# `ForwardPass` (which currently only exposes
+the FINAL post-norm hidden state via `LastHidden`, not per-layer intermediates) -- a real,
+non-trivial instrumentation task, precisely scoped but not started this pass. Pivoting to another
+backlog item per this project's "pivot rather than stall" discipline; the ruled-out list above
+should save a future pass from re-treading the same three dead ends.

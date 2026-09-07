@@ -40,7 +40,7 @@ public sealed class VoxCpm2TokenizerConfigDumpDebugTest : HeavyTestBase
         for (int i = 0; i < names.Length; i++)
         {
             string name = (string)names[i];
-            if (name != "tokenizer.json" && name != "tokenizer_config.json") continue;
+            if (name != "tokenizer.json" && name != "tokenizer_config.json" && name != "config.json") continue;
             long start = Convert.ToInt64(offsets[i]);
             long end = i + 1 < offsets.Length ? Convert.ToInt64(offsets[i + 1]) : bytes.Length;
             string content = System.Text.Encoding.UTF8.GetString(bytes, (int)start, (int)(end - start));
