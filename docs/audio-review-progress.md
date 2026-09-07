@@ -13957,3 +13957,49 @@ acoustic(256)+semantic(768) hidden streams concatenated to 1024 before an 8-code
 in the final ~300ms of short utterances -- a real, deliberate fix documented in the reference's
 own comment, not a bug to "clean up" if ported literally). Real next step for this piece:
 read the rest of `codec.cpp` (only the first 100 of 1678 lines read so far) before porting.
+
+## PersonaPlex -- scoped, checkpoint truncated, 2026-09-07
+
+Read `assets.h` (real config struct defaults) and the first ~130 lines each of `lm_runtime.cpp`/
+`depformer.cpp` (2158 lines total across `assets.cpp`/`depformer.cpp`/`lm_runtime.cpp`/
+`request.cpp`/`session.cpp`, not guessed). Real architecture is a genuine Moshi/Mimi-lineage
+design (not yet ported anywhere in this codebase): a large "temporal" LM (`lm_runtime.cpp`,
+default config `hidden_size=4096, num_layers=32, num_attention_heads=32,
+num_key_value_heads=32 [plain MHA, no GQA], head_dim=128, intermediate_size=11264,
+text_vocab_size=32000, rope_theta=10000, rms_norm_eps=1e-8` [note: unusually small eps]) that
+produces per-step hidden states, PLUS a small per-step "Depformer" transformer
+(`depformer.cpp`, default `hidden_size=1024, num_layers=6, num_attention_heads=16,
+head_dim=64, intermediate_size=2816, context=8, position_encoding=None` -- explicitly no RoPE)
+that autoregressively predicts each of the frame's multiple audio codebook tokens conditioned
+on the temporal LM's hidden state, PLUS a Mimi-style neural audio codec (own config:
+`hidden_size=512, num_heads=8, transformer_layers=8, codebooks=8, total_codebooks=32,
+codebook_size=2048, encoder_upsample_stride=16, frame_rate=12.5Hz, 24kHz sample rate`).
+
+**Real, genuinely different tensor layout from every model bridged this session so far**: BOTH
+the temporal LM and the Depformer use **packed QKV** (`self_attn.in_proj_weight`,
+`[3*hidden, hidden]`, one tensor for q+k+v concatenated -- real reference:
+`modules::QwenDecoderQKVLayout::PackedQKV`) and **packed gate+up MLP**
+(`gating.linear_in.weight`, `[2*intermediate, hidden]` -- real reference:
+`modules::QwenDecoderMLPMode::PackedGateUp`), unlike every other bridge this session which
+mapped directly to separate q/k/v/gate/up tensors. The existing "present as synthetic native
+GGUF" trick still applies, but the tensor-source bridge must additionally SPLIT each packed
+weight into three (or two) separate contiguous sub-copies at load time before handing them to
+`ForwardPass`'s generic qwen-family graph -- a new, real wrinkle not needed by any prior bridge
+class this session (`OmniVoiceLlmTensorSource`/`QwenAsrLlmTensorSource`/
+`VibeVoiceLlmTensorSource`/`VoxCpm2LlmTensorSource`/`HiggsLlmTensorSource` all mapped 1:1 to
+already-separate tensors). Real tensor prefix confirmed via a truncated-checkpoint dump before
+the exception: `lm/transformer.layers.{i}.*` (note the `lm/` prefix, distinct from every other
+model's flatter naming).
+
+**Checkpoint present at session start (`models/_models/personaplex/PersonaPlex-GGUF/
+personaplex-7b-v1-q8_0.gguf`, 3.39GB) is ALSO truncated** (`GgufModel.Open` threw
+`InvalidDataException` on `lm/transformer.layers.12.gating.linear_out.weight` exceeding the
+file size) -- a real 7B-class q8_0 checkpoint should be closer to ~7GB, so this is genuinely
+incomplete, not merely a wrong-name mismatch like VibeVoice TTS's "7B" mix-up. Not yet
+redownloaded this session (queued behind the concurrent VibeVoice TTS 1.5B download to avoid
+the `stingray` CLI's shared build-lock contention hit repeatedly this session -- only run one
+`dotnet run -- pull` at a time). Real next step if resumed: redownload, confirm it opens, dump
+the real (non-default) `config.json` numbers and full `lm/transformer.*`/`depformer.*`/
+`mimi.*` tensor names, then build the packed-QKV-splitting tensor-source bridge for the
+temporal LM first (the Depformer and Mimi codec are their own, comparably large pieces --
+this whole model is realistically comparable in total scope to VoxCPM2, not a quick pass).
