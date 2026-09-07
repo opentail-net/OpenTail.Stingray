@@ -15221,3 +15221,80 @@ checkpoint, `Temperature=0.8/TopK=30/TopP=0.9`, in-range codes produced, 3.97s w
 load line is expected, but the timing is well above the ~0.1-0.4s no-op range this project flags).
 MOSS-TTS-Nano's "sampling beyond greedy" gap (flagged at ~90%) is now closed for the audio-token
 path; remaining gaps unchanged: charsmap normalization, voice cloning, numeric golden-parity.
+
+## Qwen3 Forced Aligner -- layer-2 jump localized to the MLP block specifically, 2026-09-07
+
+Picked this bug back up (per this project's "if stuck, pivot to another item" discipline, having
+set it aside after the disproven M-RoPE hypothesis earlier this session) using the real reference
+CLI directly rather than guessing further. Found the real invocation (`--help` again confirmed
+the working flag set): `audiocpp_cli.exe --task align --family qwen3_forced_aligner --model
+models/qwen3-forcedaligner --model-spec-override examples/audio.cpp/model_specs/
+qwen3_forced_aligner.json --backend cpu --audio <wav> --text <transcript> --language English`
+(NOT `--source-audio`/`--target-text`/`--reference-text`, which all fail with "requires audio and
+transcript contracts" -- the real flags are `--audio`/`--text`/`--language`, discovered by cross-
+referencing `--help`'s plain `--audio <wav>` entry, easy to miss among the many task-specific
+audio-role flags like `--source-audio`).
+
+Ran it with `STINGRAY_FA_TRACE=1` to regenerate the per-layer `[FA-STAGE]` trace fresh (confirms
+the earlier-cited reference numbers still reproduce exactly: layer 1->2 `out` jump 2.88->20.11).
+This run ALSO captures the real `attn` tap (post-softmax attention weights, not read before) at
+every layer -- layer 2's `attn` tap (`mean=0.007692 std=0.051114`) is completely unremarkable,
+in the same range as layers 0/1/3 (std 0.046-0.073) -- so the discontinuity is NOT in the
+attention weights themselves, and layer 2's `q`/`k` (post-RoPE) taps are similarly unremarkable
+compared to neighboring layers (nothing resembling the M-RoPE-hypothesis-era anomaly).
+
+**Added a NEW real debug tap** to the reference itself (`qwen_decoder.cpp`'s plain `build()`
+variant only, gated on the same `STINGRAY_FA_TRACE` env var, real additive instrumentation
+consistent with this project's established practice of adding diagnostic taps to the vendored
+reference): `post_attn` = `x = input + attn_out` -- the hidden state immediately after the
+attention block's own residual add, BEFORE the MLP block runs. Updated `thinker.cpp`'s tap-
+labeling loop from 4 to 5 taps/layer accordingly. Rebuilt `audiocpp_cli.exe`
+(`cmake --build . --target audiocpp_cli`) and re-ran:
+
+| layer | attn std | post_attn std | out std (post-MLP) |
+|---|---|---|---|
+| 0 | 0.072 | 1.92 | 2.20 |
+| 1 | 0.046 | 2.36 | 2.88 |
+| **2** | 0.051 | **3.17** | **20.11** |
+| 3 | 0.073 | 20.18 | 20.26 |
+
+**Definitive localization**: `post_attn` grows smoothly through layer 2 (1.92 -> 2.36 -> 3.17,
+no discontinuity) -- the ENTIRE ~7x jump happens strictly within layer 2's MLP block (its
+`post_norm` RMSNorm -> SwiGLU gate/up/down -> residual add), not anywhere in the attention
+mechanism (RoPE, QK, softmax, o_proj, or the attention block's own residual). This is a real,
+load-bearing narrowing: five prior hypotheses (position shift, Q8 prefill, weight corruption, and
+now M-RoPE/attention-mechanism) are now all ruled out by direct evidence; the remaining suspect
+area is precisely layer 2's MLP block -- either this port's `ForwardPass`-generic MLP math has a
+subtle bug that only manifests given layer-2-specific activation magnitudes (a numerically-
+sensitive SiLU/gate interaction, matching the "activation outlier"/"massive activation" pattern
+already seen for OmniVoice elsewhere this session -- plausibly a REAL trained-model phenomenon
+this port's math doesn't reproduce faithfully), or a real weight-loading bug specific to layer 2's
+`ffn_gate`/`ffn_up`/`ffn_down` tensors in `QwenAsrLlmSafetensorsTensorSource` (not a generic
+architecture-wide bug, since layers 0/1/3 don't show it). Real next step, not yet attempted: dump
+this port's own per-layer MLP-input/output std (via `EnableHiddenTaps` is insufficient here since
+it only captures whole-layer output -- would need a bespoke intermediate hook, or a direct
+weight-value spot-check of layer 2's MLP tensors specifically against the reference's raw
+Safetensors values) to see whether the divergence is numerical (same weights, different math) or
+a data bug (wrong weights loaded for that one layer).
+
+**Addendum, same update**: re-read `QwenAsrLlmSafetensorsTensorSource.cs`'s per-layer tensor
+mapping loop (`for (int i = 0; i < numLayers; i++) { ... MapIfPresent(p+"mlp.gate_proj.weight",
+b+"ffn_gate.weight"); ... }`) -- this is UNIFORM across every layer index, with no layer-specific
+branching or special-casing anywhere in this port's own loading code. This makes a real
+layer-2-specific WEIGHT-LOADING bug implausible (the same generic code correctly loads layers
+0/1/3's MLP tensors, per their unremarkable `post_attn`->`out` deltas already reproduced
+elsewhere in this port's own bisection numbers) -- narrowing the two remaining real hypotheses to:
+(a) a genuine "massive activation"/outlier-neuron phenomenon in this specific real trained
+checkpoint's layer-2 MLP that the reference reproduces correctly and this port's shared
+`ForwardPass` MLP math does not (a real, documented LLM phenomenon, same class of explanation
+already accepted for OmniVoice elsewhere this session -- would mean the std jump itself is
+benign/expected, and the actual classify-head bug lies elsewhere downstream of it), or (b) a
+genuine SwiGLU/RMSNorm numerical formula difference (activation function variant, epsilon,
+precision handling) specific to how this port's generic `ForwardPass` computes any MLP block,
+which would affect every layer equally in principle but only VISIBLY diverge once layer 2's real
+activation magnitudes are large enough to expose it. Not yet distinguished; real next step for a
+future pass: since layers 0/1/3 already show smooth agreement, the cleanest test is a direct
+numeric comparison of this port's own layer-2 MLP intermediate values (gate/up pre-activation,
+post-SiLU, down-projection output) against the same values computed by hand from the real
+Safetensors weights on the SAME real `post_attn`-equivalent input this port produces -- fully
+bypassing `ForwardPass`'s generic graph to test the raw formula in isolation.
