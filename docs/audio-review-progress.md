@@ -16701,3 +16701,19 @@ this port's O(steps x seqLen^2 x layers) full-recompute-per-step design, matchin
 own real algorithmic shape). Real remaining validation: whether the regenerated sample is
 perceptually closer to speech is a further real listening check, not yet confirmed at doc-write
 time.
+
+## VoxCPM2 -- generated a real REFERENCE sample via the vendored C++ CLI for direct side-by-side listening comparison, 2026-09-07
+
+Direct follow-up to the earlier listening-check finding (structural comparison of the per-patch
+loop found no wiring bug, real numeric-parity gap suspected but not yet localized). Rather than
+guess further, ran the real vendored reference implementation directly:
+`audiocpp_cli --task tts --family voxcpm2 --model .../voxcpm2-q8_0.gguf --text "Hello there, this
+is a real end to end test of speech synthesis." --seed 21` -- produced a genuine 3.68s real
+reference waveform in 14.0s wall-clock (`rtf=3.80`, confirms real compute, not a no-op), saved as
+`docs/audio-samples/voxcpm2-REFERENCE-check.wav` alongside this port's own
+`voxcpm2-real-check.wav` (same real checkpoint, comparable prompt/settings) for a direct real
+side-by-side listening comparison -- not yet listened to at doc-write time, but now available.
+Real next step once compared: if the reference ALSO degrades similarly, this port's quality
+concern would be a real, inherent property of this checkpoint/sampling settings rather than a
+divergence bug, changing the diagnosis; if the reference stays clean throughout, that confirms a
+real numeric divergence in this port worth the dump-and-compare investigation already scoped.
