@@ -1,3 +1,5 @@
+using OpenTail.Stingray.Audio.Primitives;
+
 namespace OpenTail.Stingray.Audio.VibeVoice;
 
 /// <summary>Real per-layer weights for VibeVoice TTS's diffusion prediction head, ported from
@@ -93,8 +95,8 @@ public static class VibeVoiceDiffusionHead
         var output = new float[frames][];
         for (int t = 0; t < frames; t++)
         {
-            var x = Linear(noisy[t], w.NoisyImagesProjWeight, w.LatentSize, w.HiddenSize);
-            var projectedCondition = Linear(condition[t], w.CondProjWeight, w.HiddenSize, w.HiddenSize);
+            var x = DenseKernels.LinearNoBias(noisy[t], w.NoisyImagesProjWeight, w.LatentSize, w.HiddenSize);
+            var projectedCondition = DenseKernels.LinearNoBias(condition[t], w.CondProjWeight, w.HiddenSize, w.HiddenSize);
             var c = Add(projectedCondition, timestepEmbedding);
 
             foreach (var layer in w.Layers) x = HeadLayer(w, layer, x, c);
@@ -115,17 +117,17 @@ public static class VibeVoiceDiffusionHead
             embedding[i] = MathF.Cos(arg);
             embedding[half + i] = MathF.Sin(arg);
         }
-        var hidden = Linear(embedding, w.TimestepFc1Weight, TimestepFreqEmbedSize, w.HiddenSize);
-        SiluInPlace(hidden);
-        return Linear(hidden, w.TimestepFc2Weight, w.HiddenSize, w.HiddenSize);
+        var hidden = DenseKernels.LinearNoBias(embedding, w.TimestepFc1Weight, TimestepFreqEmbedSize, w.HiddenSize);
+        DenseKernels.SiluInPlace(hidden);
+        return DenseKernels.LinearNoBias(hidden, w.TimestepFc2Weight, w.HiddenSize, w.HiddenSize);
     }
 
     private static float[] HeadLayer(VibeVoiceDiffusionHeadWeights w, VibeVoiceDiffusionHeadLayerWeights layer, float[] x, float[] c)
     {
         int hidden = w.HiddenSize;
         var siluC = (float[])c.Clone();
-        SiluInPlace(siluC);
-        var modulation = Linear(siluC, layer.AdaLnWeight, hidden, 3 * hidden);
+        DenseKernels.SiluInPlace(siluC);
+        var modulation = DenseKernels.LinearNoBias(siluC, layer.AdaLnWeight, hidden, 3 * hidden);
         var shift = modulation.AsSpan(0, hidden).ToArray();
         var scale = modulation.AsSpan(hidden, hidden).ToArray();
         var gate = modulation.AsSpan(2 * hidden, hidden).ToArray();
@@ -143,15 +145,15 @@ public static class VibeVoiceDiffusionHead
     {
         int hidden = w.HiddenSize;
         var siluC = (float[])c.Clone();
-        SiluInPlace(siluC);
-        var modulation = Linear(siluC, w.FinalAdaLnWeight, hidden, 2 * hidden);
+        DenseKernels.SiluInPlace(siluC);
+        var modulation = DenseKernels.LinearNoBias(siluC, w.FinalAdaLnWeight, hidden, 2 * hidden);
         var shift = modulation.AsSpan(0, hidden).ToArray();
         var scale = modulation.AsSpan(hidden, hidden).ToArray();
 
         // Final RMSNorm has NO learnable scale (real reference: norm_data(nullopt,nullopt)).
         var normed = RmsNormUnweighted(x, w.RmsNormEps);
         var modulated = Modulate(normed, shift, scale);
-        return Linear(modulated, w.FinalLinearWeight, hidden, w.LatentSize);
+        return DenseKernels.LinearNoBias(modulated, w.FinalLinearWeight, hidden, w.LatentSize);
     }
 
     /// <summary>Real `modulate(x, shift, scale) = x * (1 + scale) + shift`.</summary>
@@ -164,11 +166,11 @@ public static class VibeVoiceDiffusionHead
 
     private static float[] SwiGlu(VibeVoiceDiffusionHeadLayerWeights layer, float[] input, int ffnDim, int hidden)
     {
-        var gate = Linear(input, layer.GateProjWeight, hidden, ffnDim);
-        SiluInPlace(gate);
-        var up = Linear(input, layer.UpProjWeight, hidden, ffnDim);
+        var gate = DenseKernels.LinearNoBias(input, layer.GateProjWeight, hidden, ffnDim);
+        DenseKernels.SiluInPlace(gate);
+        var up = DenseKernels.LinearNoBias(input, layer.UpProjWeight, hidden, ffnDim);
         for (int i = 0; i < gate.Length; i++) gate[i] *= up[i];
-        return Linear(gate, layer.DownProjWeight, ffnDim, hidden);
+        return DenseKernels.LinearNoBias(gate, layer.DownProjWeight, ffnDim, hidden);
     }
 
     private static float[] RmsNormNoAffine(float[] x, float eps, float[] weight)
@@ -191,32 +193,10 @@ public static class VibeVoiceDiffusionHead
         return output;
     }
 
-    private static float[] Linear(float[] input, float[] weight, int inDim, int outDim)
-    {
-        var output = new float[outDim];
-        for (int o = 0; o < outDim; o++)
-        {
-            float sum = 0f;
-            int wBase = o * inDim;
-            for (int i = 0; i < inDim; i++) sum += weight[wBase + i] * input[i];
-            output[o] = sum;
-        }
-        return output;
-    }
-
     private static float[] Add(float[] a, float[] b)
     {
         var output = new float[a.Length];
         for (int i = 0; i < a.Length; i++) output[i] = a[i] + b[i];
         return output;
-    }
-
-    private static void SiluInPlace(float[] x)
-    {
-        for (int i = 0; i < x.Length; i++)
-        {
-            float v = x[i];
-            x[i] = v / (1f + MathF.Exp(-v));
-        }
     }
 }
