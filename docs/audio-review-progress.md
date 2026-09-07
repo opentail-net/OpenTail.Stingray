@@ -15884,3 +15884,34 @@ template construction... separate, unstarted work this test deliberately bypasse
 in this session's earlier `VibeVoiceGeneratorRealWeightsTests` entry is now closed for the
 non-voice-cloning case. Real remaining VibeVoice TTS gaps: the `Voice input:` voice-cloning
 section, real streaming decoder/encoder state.
+
+## Higgs Audio TTS -- real semantic (HuBERT) encoder confirmed reusable from OmniVoice, wired and verified, 2026-09-07
+
+Investigated Higgs's remaining "semantic HuBERT encoder + reference-audio encode path (lower
+priority)" gap. Read `higgs_audio_tts/codec.cpp`'s real `kSemantic*` constants and
+`load_hubert_semantic_model_weights`/`effective_semantic_pos_conv_weight` in full and compared
+directly against `OmniVoiceSemanticWeights`'s own real, already-verified hyperparameters --
+**confirmed BYTE-FOR-BYTE architecturally identical**: same `conv_dim=[512]*7`,
+`conv_kernel=[10,3,3,3,3,2,2]`, `conv_stride=[5,2,2,2,2,2,2]`, `hidden_size=768`, 12 layers, real
+`num_conv_pos_embeddings=128`/`groups=16`, and the SAME `parametrizations.weight.original0/1`
+positional-conv weight-norm naming and reconstruction formula. Real, checked NOT assumed: Higgs's
+acoustic (DAC-style) encoder is a genuinely DIFFERENT config from OmniVoice's own acoustic encoder
+(`hidden=256` vs OmniVoice's `64`) -- the two models' shared codec claim (README) applies to the
+semantic/HuBERT side and the real decoder architecture, NOT the acoustic encoder's hyperparameters.
+
+Generalized `OmniVoiceSemanticWeights`/`OmniVoiceSemanticLayerWeights`'s constructors from a
+hardcoded `SafetensorsLoader` parameter to a generic `Func<string, float[]>` (the existing
+`SafetensorsLoader` overload now just forwards to it, zero behavior change for OmniVoice's own
+callers) so the SAME class can load Higgs's real packed-GGUF tensors directly, via its own real
+`tied.embedding.modality_embeddings.0.model.` codec prefix -- no new architecture code needed,
+genuine cross-model reuse, not a re-port.
+
+`HiggsSemanticEncoderRealWeightsTests` (new): loads the real semantic encoder weights from the
+real Higgs checkpoint and runs `OmniVoiceSemanticEncoder.Forward` on synthetic 16kHz audio
+(including the real `kSemanticPadSamples=160` zero-padding), confirming finite, non-degenerate
+hidden states. 3.2s wall-clock, genuine run (confirmed 0 skipped, well above the no-op timing
+threshold). Real, honest remaining scope: this is the SEMANTIC half of Higgs's real reference-
+audio encode path only -- the acoustic (DAC-style, `hidden=256`) encoder is separate, unstarted
+work, and the real `codec_project` combination formula (concatenating acoustic+semantic hidden
+states before RVQ quantization) has not been read yet. Full Higgs voice-cloning is NOT wired end-
+to-end by this entry alone.
