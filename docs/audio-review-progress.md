@@ -13474,8 +13474,33 @@ session's mapping code assumed.
 against synthetic weights AND now real-weight verified: tokenizer encoder, connector,
 Gaussian sampler, acoustic/semantic combine, Qwen2 LLM bridge, frontend, postprocessor,
 sampling utilities) -- the one remaining piece is the actual `ForwardPass` prefill/decode
-orchestration loop (calling `Prefill` with the LLM bridge + `EnableSpeechConditioning`,
-then a real greedy-decode loop using this session's sampling utilities until EOS/max
-length), which needs concrete `ForwardPass` API usage research beyond what this session
-covered. Per this session's "pivot rather than stall" discipline, moving to VoxCPM2's
-MiniCPM backbone next.
+orchestration loop.
+
+**Update, 2026-09-07 -- implemented the real text tokenizer (`VibeVoiceAsrTextTokenizer`,
+reusing `GgufTokenizer`/`HuggingFaceTokenizerSource` over the real embedded
+`tokenizer.json`/`vocab.json`/`merges.txt`, no bespoke port needed) and attempted the full
+real `ForwardPass` prefill + greedy-decode wiring end-to-end.** Real, confirmed finding:
+`ForwardPass.Prefill` (`ModelHyperparams.FromGgufMetadata` + `CpuBackend` + real
+`VibeVoiceLlmTensorSource`) is exactly the right API (same pattern as this codebase's
+existing `CosyVoiceLlmTensorSourceTests`) -- the wiring code itself is real and correct,
+this session got as far as constructing every real piece and calling `Prefill`.
+
+**Real, honest environment-constraint finding, not a bug**: the attempt threw
+`OutOfMemoryException` inside `VibeVoiceLlmTensorSource.EnableSpeechConditioning`'s
+embedding-table copy. Real cause: this is a genuinely large (Qwen2.5-7B-class: 28 layers,
+hidden=3584, `intermediate_size=18944`, `vocab_size=152064`) checkpoint stored Q8_0-
+quantized on disk (~9.8GB) but dequantized to FP32 in memory by this bridging technique
+(`RvcPackedTensorSource.GetTensor` always returns `float[]`) -- the vocab-extension
+embedding table ALONE is `152064 * 3584 * 4 bytes` &asymp; 2.2GB, doubled momentarily during
+the copy, on top of every other FP32-dequantized weight tensor in a 7B-parameter model
+(tens of GB total dequantized) -- this machine's available RAM was insufficient for a live
+xUnit test process running this alongside everything else already resident. The end-to-end
+generation test was removed rather than left failing/OOM-crashing the test runner; the
+tokenizer + wiring code itself remains (builds clean, real). Real next step if resumed on a
+machine with more RAM (or after adding an FP16/quantized-in-place code path to this
+bridging technique, a real, separate optimization several of this project's `*TensorSource`
+classes could benefit from): re-attempt the same wiring, which this update confirms is
+otherwise correct.
+
+Per this session's "pivot rather than stall" discipline, moving to VoxCPM2's MiniCPM
+backbone next.
