@@ -17551,3 +17551,24 @@ wall. Both real samples now exist side by side for a real listening comparison (
 human this pass) -- the first time this session's own port and the vendored reference can be
 directly A/B'd for MOSS-TTS-Nano specifically.
 
+
+## MOSS-TTS-Nano -- quantitative comparison of the two real samples (RMS/peak/ZCR), no human listen yet, 2026-09-08
+
+No human listening pass on `moss-tts-nano-cpp-reference.wav` vs `moss-tts-nano-ours-comparable.wav`
+has happened yet, but ran a real, quick throwaway diagnostic (built and executed, then removed
+per rule 9 -- not kept in the tree) to get quantitative signal in the meantime: loaded both real
+WAVs via the existing `WavReader` and computed RMS, peak, and zero-crossing rate (a coarse proxy
+for high-frequency/spectral content).
+
+Real measured numbers:
+- `cpp-reference`: 48kHz stereo, 0.52s, RMS=0.1357, peak=0.6198, ZCR=3962/s
+- `ours-comparable`: 48kHz stereo, 0.60s, RMS=0.0542, peak=0.4001, ZCR=1830/s
+
+Our output is audibly likely to differ: ~2.5x quieter (RMS) and ~2.2x less zero-crossing activity
+than the reference, on a similar (not identical -- 15 frames requested vs the reference's own
+natural stop-token length) duration. This is consistent with, not a new discovery beyond, the
+session's already-documented open gaps for this model (no golden-parity oracle run captured yet,
+and the `precompiled_charsmap` tokenizer normalization gap flagged repeatedly as the single
+biggest-risk item project-wide) -- a numerically quieter/duller output is exactly the kind of
+symptom either gap could produce, so this finding narrows nothing on its own. Recorded here as
+real evidence for whoever picks up the golden-parity work next, not treated as a diagnosed bug.
