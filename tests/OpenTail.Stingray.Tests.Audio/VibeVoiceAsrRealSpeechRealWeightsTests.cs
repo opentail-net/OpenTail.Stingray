@@ -92,7 +92,7 @@ public sealed class VibeVoiceAsrRealSpeechRealWeightsTests : HeavyTestBase
 
         var (rawSamples, rawRate, rawChannels) = WavReader.ReadWav(wavPath!);
         Assert.Equal(1, rawChannels);
-        var waveform = rawRate == RealSampleRate ? rawSamples : AudioResampler.Resample(rawSamples, rawRate, RealSampleRate);
+        var waveform = rawRate == RealSampleRate ? rawSamples : AudioResampler.Resample(rawSamples, rawRate, RealSampleRate, channels: 1, ResampleQuality.BestQuality);
 
         using var model = GgufModel.Open(path!);
         var source = new RvcPackedTensorSource(model);

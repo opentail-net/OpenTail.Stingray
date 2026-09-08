@@ -17366,3 +17366,56 @@ every encoder tensor). A future pass should add per-stage output taps (mirroring
 `EnableHiddenTaps`-style per-layer bisection) to find the FIRST stage where the two diverge, which
 would immediately narrow to one of these remaining candidates.
 
+**Update, same pass -- two more real checks, one real dtype detail confirmed correct, one plausible
+hypothesis tested and RULED OUT**:
+
+- **BF16 dequantization confirmed correct**: several of the encoder's own tensors (downsample conv
+  weights, all norm/gamma vectors) are stored `BFloat16` on disk, not `Q8_0` -- less-exercised in
+  this codebase than Q8_0. Checked `Dequantize.DequantBF16` directly: standard `(bits << 16)`
+  upconversion (BF16 is literally the top 16 bits of an F32), correct.
+- **Connector formula confirmed correct**: `build_vibevoice_connector` (Linear(fc1, bias) -&gt;
+  RMSNorm(eps=1e-6) -&gt; Linear(fc2, bias)) matches `VibeVoiceConnector.Project` exactly.
+- **Real resampler-quality hypothesis tested and RULED OUT**: found that the reference's real
+  `encode_semantic`/`encode_acoustic` do their OWN internal resample-to-24kHz via
+  `convert_vibevoice_audio_to_mono_resampled` (real `libsoxr`-backed `resample_mono_soxr_or_linear`,
+  `SoxrResampleProfile::QualityOnly`) -- a plausible explanation for the residual divergence being a
+  real, "boring" resampling-algorithm difference (this codebase's own `AudioResampler` uses a
+  different windowed-sinc implementation/tap count) rather than a logic bug, analogous to this
+  project's already-accepted RNG-precision gaps elsewhere. Tested directly: reran with
+  `ResampleQuality.BestQuality` (128 taps) instead of the default `Balanced` (32 taps) -- values
+  barely moved (e.g. index 0: `-0.0749` -&gt; `-0.0905`, index 46917: `-0.4418` -&gt; `-0.4453`) and
+  remained just as far from the reference (`0.369653`/`-0.262854` respectively). Rules out
+  resampler quality/algorithm as the explanation -- the real bug is elsewhere.
+
+**Honest status after two full bisection passes**: this is now a very thoroughly eliminated search
+space (prompt/splice logic, RNG, six real formulas in the encoder, the connector formula, BF16
+dequant, and resampler quality all confirmed correct or ruled out) without yet finding the actual
+bug. Real next step unchanged from above (per-stage output taps to bisect inside the encoder
+itself), but now also worth checking directly: a real tensor-NAME/mapping error in
+`VibeVoiceTokenizerEncoderWeights.Load` (reading the wrong checkpoint tensor for some sub-piece,
+not a formula bug) has NOT yet been independently re-verified against a real dump for the
+`semantic_tokenizer.encoder.*` prefix specifically (only the `decoder.*`/`quantizer.*` prefixes for
+MOSS-TTS-Nano's unrelated codec, and a general embedded-files dump for VibeVoice ASR, have been
+cross-checked this session) -- this is now the single most likely remaining candidate given how much
+else has been ruled out.
+
+**Update, same pass -- checked this immediately: also RULED OUT.** Dumped all 7 real
+`semantic_tokenizer.encoder.downsample_layers.{0-6}.0.conv.conv.weight` tensor shapes directly.
+Every real on-disk kernel size (numpy order, reversed from GGUF's `[kernel,inCh,outCh]` dims)
+matches this port's own `kernel = ratios[i] * 2` computation exactly for all 7 stages: `[7,4,4,8,
+10,10,16]` real vs `[7(fixed),4,4,8,10,10,16]` computed. Rules out a tensor-name/shape-mapping bug
+in the weight loader too.
+
+**Pivoting per this project's "don't stall on one stuck item" discipline.** Two full bisection
+passes across this session have eliminated an unusually large fraction of the plausible search
+space (prompt/splice logic, RNG confound, six encoder formulas, the connector formula, BF16
+dequant, resampler quality/algorithm, AND now weight tensor-name/shape mapping) without finding the
+actual bug. This is real, honest, hard-won negative-result progress -- a future pass has a
+dramatically narrower search space than "somewhere in the whole ASR pipeline," even though the bug
+itself remains open. Real next step if resumed: per-stage/per-op NUMERIC output taps (not just
+shape/formula code-reading) inside `VibeVoiceTokenizerEncoder.Encode` itself, mirroring VoxCPM2's
+`EnableHiddenTaps` per-layer bisection technique, to find the exact first operation where values
+diverge -- this needs real graph-tap plumbing on the reference's ggml-graph-based `build_encoder`
+(more involved than VoxCPM2's case since this reference path is a lazily-compiled cached graph, not
+eager execution) and was not attempted this pass.
+
