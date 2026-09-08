@@ -17640,3 +17640,41 @@ scoped next step for a future pass: build a real magnitude-response sweep of `Au
 against SoXr (many single-frequency probes spanning the full passband, not just one near-Nyquist
 point) to find the actual frequency (or frequencies) where the two diverge, before touching any
 filter-design code.
+
+## VibeVoice ASR -- REAL ROOT CAUSE COMPONENT FOUND AND FIXED: missing RMS loudness normalization, closes most of the resampled-waveform gap, 2026-09-08
+
+Directly follows up the prior entry's "real, precisely scoped next step" (a magnitude-response
+sweep of `AudioResampler`). Built it first (`ScheduleResamplerSweepTests`-style throwaway, removed
+after use per rule 9): swept single tones across the full 16kHz passband (50Hz-7900Hz) AND a real
+9-tone broadband sum, all at `ResampleQuality.BestQuality` (the quality this pipeline actually
+uses) -- every single result was unity gain (ratio 1.0000, worst case 0.9961 at 7900Hz). This
+CONCLUSIVELY clears `AudioResampler` -- the prior pass's "broadband-signal-specific effect"
+hypothesis is also now refuted; the resampler was never the bug.
+
+Went looking for what else runs between the raw WAV and the tokenizer encoder on the reference
+side and found it: `frontend.cpp`'s `VibeVoiceASRFrontend::normalize` (called from `session.cpp`
+line 911, `frontend_.normalize(request.audio)`, BEFORE any tokenizer/encoder code runs) does a
+real RMS-based loudness-normalization pass AFTER resampling -- scale every sample so the buffer's
+RMS matches a target dBFS (`config.audio_processor`: `normalize_audio=true` by default,
+`target_db_fs=-25.0`, `eps=1e-6`), then rescale down if that gain pushes any sample past full
+scale. This port never had this step at all -- `VibeVoiceSpeechFeatures.Extract` was always being
+fed a plain resampled (but un-normalized) waveform.
+
+Added `VibeVoiceAudioNormalizer.Normalize` (new, real, ported verbatim from `frontend.cpp`'s
+formula) and wired it into `VibeVoiceAsrRealSpeechRealWeightsTests` right after resampling, before
+`Extract`. Real, measured, verified fix: the raw-waveform-vs-reference ratio (the prior entry's
+~0.48x gap) closed to ~0.92x at every re-checked sample point (index 0: 0.924, index 23725: 0.913,
+index 56079: 0.924, index 69021: 0.924) -- from ~52% off to ~8% off, a real and substantial
+improvement, not a total fix. The remaining ~8% gap is a real, smaller, separate remaining question
+(likely a minor eps/RMS-computation nuance, or genuine residual resampler phase/rounding noise --
+not yet isolated) rather than the dominant effect it was before.
+
+The transcript itself is STILL garbled after this fix (if anything, superficially different
+garbage, not better-looking) -- this fix closed most of a real numeric gap but has not yet produced
+a correct transcription, meaning either the remaining ~8% is still enough to break the downstream
+LLM's sensitive token predictions, or a second, independent bug remains elsewhere (e.g. the acoustic
+branch's separate Gaussian-sampling scale, or something in the connector/LLM path not yet
+re-checked with normalized input). Real next step for a future pass: re-run the full per-op
+bisection (this session's `STINGRAY_ASR_TRACE` taps) with the normalization fix applied, to see how
+far downstream the now-much-smaller divergence propagates before it's the dominant source of the
+still-garbled output.

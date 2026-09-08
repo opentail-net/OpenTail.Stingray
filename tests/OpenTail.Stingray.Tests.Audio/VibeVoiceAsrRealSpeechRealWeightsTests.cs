@@ -92,7 +92,11 @@ public sealed class VibeVoiceAsrRealSpeechRealWeightsTests : HeavyTestBase
 
         var (rawSamples, rawRate, rawChannels) = WavReader.ReadWav(wavPath!);
         Assert.Equal(1, rawChannels);
-        var waveform = rawRate == RealSampleRate ? rawSamples : AudioResampler.Resample(rawSamples, rawRate, RealSampleRate, channels: 1, ResampleQuality.BestQuality);
+        var resampled = rawRate == RealSampleRate ? rawSamples : AudioResampler.Resample(rawSamples, rawRate, RealSampleRate, channels: 1, ResampleQuality.BestQuality);
+        // Real, previously-missing step found via this session's per-op bisection: the reference's
+        // `VibeVoiceASRFrontend::normalize` (frontend.cpp) RMS-normalizes to a target dBFS AFTER
+        // resampling and BEFORE the tokenizer encoders run -- our pipeline never applied it.
+        var waveform = VibeVoiceAudioNormalizer.Normalize(resampled);
 
         using var model = GgufModel.Open(path!);
         var source = new RvcPackedTensorSource(model);
