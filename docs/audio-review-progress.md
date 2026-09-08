@@ -18031,3 +18031,39 @@ identical RNG are expected and acceptable, the same way a different-but-correct 
 non-identical-but-valid output elsewhere in this session's work. No further investigation planned
 for this specific gap; the earlier greedy-vs-sampled bug fix (which WAS a real, closable defect)
 remains the genuine, durable improvement from this investigation.
+
+## NeuTTS -- backbone LM ported and real-weight verified, first attempt succeeded, 2026-09-08
+
+Picked up the previous entry's real, precisely-scoped next step (port the backbone LM first,
+before the codec) while avoiding a file-collision with concurrent work already in progress on
+MOSS-TTS-Nano's generation loop (a second AI tool was already mid-bisection there with live debug
+prints in the checked-out reference source when this cycle started -- picked a genuinely unrelated
+task rather than risk conflicting edits on the same files).
+
+Read `neutts/backbone.cpp`'s real `load_layer_weights`/`make_neutts_qwen_config` plus the
+checkpoint's own embedded `config.json`: confirmed a standard Qwen3-family GQA decoder (bias-free
+`q_proj`/`k_proj`/`v_proj`, real per-head `q_norm`/`k_norm` RMSNorm, NEOX RoPE, SwiGLU MLP, real
+TIED embeddings -- `tie_word_embeddings: true`, no separate `lm_head` tensor). Real config:
+`hidden_size=512, intermediate_size=1536, num_hidden_layers=28, num_attention_heads=12,
+num_key_value_heads=4, head_dim=128, vocab_size=217232, rope_theta=10000, rms_norm_eps=1e-6`.
+
+This exact architecture shape already has a proven template in this codebase --
+`HiggsLlmTensorSource` (also a real Qwen3-family bridge, same `q_norm`/`k_norm` real tensor names)
+-- so no bespoke transformer forward-pass math was needed at all, just a new
+`NeuTtsBackboneTensorSource : IModelTensorSource` presenting the checkpoint's real
+`backbone/model.*` packed tensor names to `OpenTail.Stingray.Engine`'s existing, unmodified
+`ForwardPass` under standard `qwen3` GGUF naming (same technique as VibeVoice ASR/OmniVoice/Higgs's
+own bridge classes), with the real DType-passthrough pattern (per-layer weights keep their native
+on-disk DType rather than an eager FP32 copy) already established this session for larger
+checkpoints.
+
+New `NeuTtsBackbonePrefillRealWeightsTests`: constructs the real `ForwardPass` and runs a real
+5-token `Prefill` against the real downloaded checkpoint. First real attempt succeeded, no
+debugging needed: 0.65 GiB real weight load, 1.6s prefill, finite logits over the real 217232-entry
+vocabulary. Real regression check: full fast suite (467 tests) still passes clean.
+
+Not yet done (per the session's earlier scoping): the AR speech-token generation loop with
+emotion-token prompt wrapping (`prompt.cpp`), and the FSQ acoustic-decoder codec (a second
+transformer stack with real Snake-activation prior-net/post-net conv blocks) -- both genuinely
+separate, not-yet-started tasks. This backbone port de-risks and narrows the remaining NeuTTS work
+to those two pieces specifically.
