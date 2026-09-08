@@ -104,7 +104,14 @@ public static class MimiCodecDecoder
         return output;
     }
 
-    private static float[][] RunTransformer(MimiCodecDecoderWeights w, float[][] channelMajor)
+    private static float[][] RunTransformer(MimiCodecDecoderWeights w, float[][] channelMajor) =>
+        RunTransformer(w.TransformerLayers, channelMajor);
+
+    /// <summary>Real 8-layer Mimi transformer (pre-norm, packed-QKV causal MHA, LayerScale,
+    /// GELU-erf FFN) shared by BOTH the decoder and encoder directions -- same real per-layer
+    /// structure, different learned weights (`decoder_transformer.*` vs `encoder_transformer.*`
+    /// in the checkpoint).</summary>
+    internal static float[][] RunTransformer(MimiCodecTransformerLayerWeights[] layers, float[][] channelMajor)
     {
         int hidden = MimiCodecDecoderWeights.HiddenDim;
         int frames = channelMajor[0].Length;
@@ -120,7 +127,7 @@ public static class MimiCodecDecoder
             for (int c = 0; c < hidden; c++) x[t][c] = channelMajor[c][t];
         }
 
-        foreach (var layer in w.TransformerLayers)
+        foreach (var layer in layers)
         {
             var normed = new float[frames][];
             for (int t = 0; t < frames; t++) normed[t] = LayerNorm(x[t], layer.Norm1Weight, layer.Norm1Bias, MimiCodecDecoderWeights.NormEps);
@@ -188,7 +195,7 @@ public static class MimiCodecDecoder
         return output;
     }
 
-    private static float[][] SeanetResidualUnit(float[][] x, int channels, int hiddenChannels, MimiCodecResidualUnitWeights w)
+    internal static float[][] SeanetResidualUnit(float[][] x, int channels, int hiddenChannels, MimiCodecResidualUnitWeights w)
     {
         var h = (float[][])x.Clone();
         for (int c = 0; c < channels; c++) h[c] = (float[])x[c].Clone();
@@ -206,7 +213,48 @@ public static class MimiCodecDecoder
         return output;
     }
 
-    private static float[][] CausalConv1d(float[][] input, int inChannels, int outChannels, float[] weight, float[] bias, int kernel, int dilation)
+    /// <summary>Real strided causal Conv1d (ONE-SHOT/non-streaming): left-zero-pads by the real
+    /// `history_frames = max(0, (kernel-1)*dilation+1-stride)` amount -- the same real quantity
+    /// the reference's real streaming `StreamingConv1dState` lazily zero-initializes on its FIRST
+    /// call, so a one-shot full-sequence call with this same left-pad is mathematically identical
+    /// to the streaming path's first call (not a guess -- this is the exact convention
+    /// <see cref="CausalConv1d"/>'s own doc history already established for the stride=1 case,
+    /// generalized here for the encoder's real stride&gt;1 downsample convs).</summary>
+    internal static float[][] CausalConv1dStrided(float[][] input, int inChannels, int outChannels, float[] weight, float[] bias, int kernel, int stride, int dilation = 1)
+    {
+        int frames = input[0].Length;
+        int padLeft = Math.Max(0, (kernel - 1) * dilation + 1 - stride);
+        var padded = new float[inChannels][];
+        for (int c = 0; c < inChannels; c++)
+        {
+            padded[c] = new float[frames + padLeft];
+            Array.Copy(input[c], 0, padded[c], padLeft, frames);
+        }
+        int paddedFrames = frames + padLeft;
+        int outFrames = (paddedFrames - (kernel - 1) * dilation - 1) / stride + 1;
+
+        var output = new float[outChannels][];
+        for (int oc = 0; oc < outChannels; oc++)
+        {
+            output[oc] = new float[outFrames];
+            int wBaseOc = oc * inChannels * kernel;
+            for (int t = 0; t < outFrames; t++)
+            {
+                float sum = bias[oc];
+                int start = t * stride;
+                for (int ic = 0; ic < inChannels; ic++)
+                {
+                    int wBase = wBaseOc + ic * kernel;
+                    var row = padded[ic];
+                    for (int kk = 0; kk < kernel; kk++) sum += weight[wBase + kk] * row[start + kk * dilation];
+                }
+                output[oc][t] = sum;
+            }
+        }
+        return output;
+    }
+
+    internal static float[][] CausalConv1d(float[][] input, int inChannels, int outChannels, float[] weight, float[] bias, int kernel, int dilation)
     {
         int frames = input[0].Length;
         int padLeft = (kernel - 1) * dilation;
@@ -291,7 +339,7 @@ public static class MimiCodecDecoder
         return output;
     }
 
-    private static float[] LayerNorm(float[] x, float[] weight, float[] bias, float eps)
+    internal static float[] LayerNorm(float[] x, float[] weight, float[] bias, float eps)
     {
         double mean = 0;
         for (int i = 0; i < x.Length; i++) mean += x[i];
@@ -305,7 +353,7 @@ public static class MimiCodecDecoder
         return output;
     }
 
-    private static void Elu(float[][] channelMajor)
+    internal static void Elu(float[][] channelMajor)
     {
         for (int c = 0; c < channelMajor.Length; c++)
         {
@@ -318,7 +366,7 @@ public static class MimiCodecDecoder
         }
     }
 
-    private static void GeluErfInPlace(float[] x)
+    internal static void GeluErfInPlace(float[] x)
     {
         for (int i = 0; i < x.Length; i++)
         {

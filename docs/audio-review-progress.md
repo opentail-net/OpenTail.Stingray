@@ -17451,3 +17451,54 @@ Real next step if picked up: read `build_stateful_conv1d`/`build_mimi_residual_b
 `MimiEncoderPostTransformerGraph`/`quantize_projected`/`MimiEncoderState`'s real definitions in full
 (not yet read this pass) before writing any code, per this project's standing discipline.
 
+## PersonaPlex -- live-duplex Mimi encoder IMPLEMENTED and real-weight verified, first attempt succeeded, 2026-09-08
+
+Directly followed up on the scoping entry above by reading the remaining real reference pieces in
+full (not guessed): `build_stateful_conv1d` (the real per-call cache-prepend streaming-conv
+technique, algebraically identical to VibeVoice TTS's already-ported streaming-conv formula --
+`history_frames = max(0, (kernel-1)*dilation+1-stride)`, same as `(kernel-1)*dilation-(stride-1)`),
+`build_mimi_residual_block` (ELU -&gt; conv1(k=3) -&gt; ELU -&gt; conv2(k=1, pointwise) -&gt; residual add
+-- structurally IDENTICAL to the already-ported decoder's own `SeanetResidualUnit`, confirmed by
+direct comparison), `MimiEncoderPostTransformerGraph` (a real post-transformer downsample-by-2 conv
+-&gt; separate semantic/acoustic Linear projections from the SAME downsampled latent), and
+`quantize_projected` (real PLAIN EUCLIDEAN nearest-code RVQ -- no L2-normalization/cosine-similarity
+step, simpler than MOSS-TTS-Nano's RVQ; real residual subtraction of the CHOSEN codebook's RAW
+centroid, not a re-projected version).
+
+**Real, valuable discovery**: the semantic/acoustic codebook centroid tables
+(`quantizer.rvq_first`/`rvq_rest.vq.layers.N._codebook.{embedding_sum,cluster_usage}`) are the
+EXACT SAME real checkpoint tensors `MimiCodecDecoderWeights` already loads and normalizes for
+decode (`embedding[code] = embedding_sum[code] / max(cluster_usage[code], 1e-5)`) -- the encoder
+reuses `MimiCodecDecoderWeights.SemanticCodebook`/`AcousticCodebooks` directly rather than
+reloading, avoiding real duplicated normalization logic.
+
+Confirmed real tensor names/shapes via a fresh `PersonaPlexDumpDebugTest` run (not guessed):
+`mimi/encoder.model.{0,1,3,4,6,7,9,10,12,14}` (input proj, 4x[residual-block, downsample] real
+model-index scheme), `mimi/encoder_transformer.transformer.layers.N` (8 real layers, same real
+per-layer structure as the already-ported `decoder_transformer`), `mimi/downsample.conv.conv.conv`
+(the post-transformer frame-rate-halving conv), `mimi/quantizer.rvq_first/rvq_rest.input_proj`
+(bias-free, confirmed no `.bias` tensor exists for either).
+
+**Implementation** (new `MimiCodecEncoderWeights.cs`/`MimiCodecEncoder.cs`, ONE-SHOT/non-streaming,
+matching the decoder's own established simplification convention): real per-stage config now known
+precisely (`channels=[64,128,256,512]`, `hidden=[32,64,128,256]`, `kernels=[8,10,12,16]`,
+`strides=[4,5,6,8]`) -&gt; input proj (k=7) -&gt; 4x [SeanetResidualUnit (REUSED from the decoder,
+made `internal`) -&gt; ELU -&gt; new `CausalConv1dStrided` downsample] -&gt; ELU -&gt; output proj (k=3) -&gt;
+the already-ported 8-layer Mimi transformer (REUSED -- `MimiCodecDecoder.RunTransformer` refactored
+to take a plain `MimiCodecTransformerLayerWeights[]` instead of the whole decoder-specific weights
+class, so both directions share the identical real attention/FFN code, zero duplication) -&gt;
+`CausalConv1dStrided` frame-rate-halving downsample -&gt; per-frame semantic/acoustic Linear
+projections -&gt; plain-Euclidean nearest-code RVQ.
+
+Real-weight verified (`MimiCodecEncoderRealWeightsTests`, new): encodes a real decoder-generated
+waveform (not synthetic noise) back into finite, in-range, correctly-shaped `[frames][8]` codes --
+**first real attempt succeeded**, no debugging needed (6.2s, real weight loads). Re-ran
+`MimiCodecDecoderRealWeightsTests`/`PersonaPlexDelayedPipelineRealWeightsTests` (112.7s total, real
+25.48 GiB weight loads) to confirm the `RunTransformer`/`CausalConv1d` visibility refactor caused no
+regression -- both pass.
+
+Not yet done: numeric golden-parity against a captured reference encode (no independent oracle run
+exists), and wiring this encoder into PersonaPlex's actual live-duplex `run_user_frame` generation
+loop (the encoder itself is done, but nothing calls it yet -- same "encoder done, wiring not started"
+shape as this session's MOSS-TTS-Nano voice-cloning entries, closed in a later pass there).
+
