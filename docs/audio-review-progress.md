@@ -17759,3 +17759,30 @@ conditioning), and `PersonaPlexDelayState.cs`'s existing doc comment already sta
 was already closed earlier in the session, not still open. No code change needed; recording this
 here so a future `/loop` cycle grepping this doc's tail doesn't waste time re-verifying a
 stale-prompt claim that's actually already resolved.
+
+## VibeVoice ASR -- ruled out two more candidates (connector formula, prompt builder), bug still open, pivoting, 2026-09-08
+
+Continued the previous entry's real next step (re-checking the pipeline now that the dominant
+preprocessing bug is fixed). Re-read `connector.cpp`'s real `build_vibevoice_connector`
+(`Linear(input->hidden, bias) -> RMSNorm(eps=1e-6, weight-only, no bias, no Gemma +1 offset) ->
+Linear(hidden->hidden, bias)`, confirmed via the real `NormConfig{hidden_size, eps, use_weight=true,
+use_bias=false}` struct) against `VibeVoiceConnector.Project` -- byte-for-byte match, no bug here.
+
+Re-read `tokenizer_text.cpp`'s real `build_prompt` (system message + user message with
+`<|object_ref_start|>` + N `<|box_start|>` speech placeholders + `<|object_ref_end|>` + a
+"Start time, End time, Speaker ID, Content" JSON-transcription instruction) against
+`VibeVoiceAsrTextTokenizer.BuildPrompt` -- also byte-for-byte match. Notable, previously
+unconfirmed structural fact verified here: NEITHER side appends an explicit `<|im_start|>assistant`
+generation-prompt turn before prefill (`build_prompt`'s both `chat_message` calls pass
+`add_generation_prompt=false`, and `text_decoder_.prefill_prompt` doesn't inject one either) -- the
+model is expected to generate its own `<|im_start|>assistant\n` as its first output tokens. This
+actually explains, and now confirms as CORRECT rather than buggy, this port's transcripts starting
+with a literal `<|im_start|>` token (seen in every garbled transcript this session, e.g.
+`'<|im_start|> A<|im_start|>...'`) -- that's the real, expected shape, not evidence of a prompt-
+construction bug.
+
+Two more real candidates ruled out without finding the bug. Per this project's "pivot rather than
+stall" discipline, moving to a different backlog item this cycle rather than continuing to grind
+through VibeVoice ASR's remaining candidates (`EnableSpeechConditioning`'s splice mechanics, or a
+full re-run of the `STINGRAY_ASR_TRACE` per-op bisection with the normalization fix applied) --
+those remain real, precisely scoped next steps for whichever future pass picks this back up.
