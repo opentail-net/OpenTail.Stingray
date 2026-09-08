@@ -1,3 +1,5 @@
+using OpenTail.Stingray.Cpu;
+
 namespace OpenTail.Stingray.Audio.VoxCpm2;
 
 /// <summary>
@@ -241,15 +243,22 @@ public static class VoxCpm2Generator
     /// <summary>Real `stop_class`: argmax of the real 2-logit stop head.</summary>
     private static int StopClass(float[] stopLogits) => stopLogits[1] > stopLogits[0] ? 1 : 0;
 
-    private static float[] Linear(float[] input, float[] weight, float[] bias, int inDim, int outDim)
+    private static unsafe float[] Linear(float[] input, float[] weight, float[] bias, int inDim, int outDim)
     {
         var output = new float[outDim];
-        for (int o = 0; o < outDim; o++)
+        fixed (float* outPtr = output, wPtr = weight, inPtr = input)
         {
-            float sum = bias[o];
-            int wBase = o * inDim;
-            for (int i = 0; i < inDim; i++) sum += weight[wBase + i] * input[i];
-            output[o] = sum;
+            if (bias.Length > 0)
+            {
+                fixed (float* bPtr = bias)
+                {
+                    SimdKernels.MatVecF32(outPtr, wPtr, bPtr, inPtr, outDim, inDim);
+                }
+            }
+            else
+            {
+                SimdKernels.MatVecF32(outPtr, wPtr, null, inPtr, outDim, inDim);
+            }
         }
         return output;
     }

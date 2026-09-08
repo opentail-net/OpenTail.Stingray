@@ -1,3 +1,6 @@
+using OpenTail.Stingray.Audio.Primitives;
+using OpenTail.Stingray.Cpu;
+
 namespace OpenTail.Stingray.Audio.VoxCpm2;
 
 public readonly struct VoxCpm2StepProjectionOutput(
@@ -75,26 +78,25 @@ public static class VoxCpm2StepProjection
         return output;
     }
 
-    private static float[] Linear(float[] input, float[] weight, float[] bias, int inDim, int outDim)
+    private static unsafe float[] Linear(float[] input, float[] weight, float[] bias, int inDim, int outDim)
     {
         var output = new float[outDim];
-        bool hasBias = bias.Length > 0;
-        for (int o = 0; o < outDim; o++)
+        fixed (float* outPtr = output, wPtr = weight, inPtr = input)
         {
-            float sum = hasBias ? bias[o] : 0f;
-            int wBase = o * inDim;
-            for (int i = 0; i < inDim; i++) sum += weight[wBase + i] * input[i];
-            output[o] = sum;
+            if (bias.Length > 0)
+            {
+                fixed (float* bPtr = bias)
+                {
+                    SimdKernels.MatVecF32(outPtr, wPtr, bPtr, inPtr, outDim, inDim);
+                }
+            }
+            else
+            {
+                SimdKernels.MatVecF32(outPtr, wPtr, null, inPtr, outDim, inDim);
+            }
         }
         return output;
     }
 
-    private static void SiluInPlace(float[] x)
-    {
-        for (int i = 0; i < x.Length; i++)
-        {
-            float v = x[i];
-            x[i] = v / (1f + MathF.Exp(-v));
-        }
-    }
+    private static void SiluInPlace(float[] x) => DenseKernels.SiluInPlace(x);
 }

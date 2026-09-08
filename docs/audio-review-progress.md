@@ -17068,3 +17068,34 @@ captured yet), and wiring `MossTtsPromptBuilder`'s `prompt_codes`-aware overload
 entry) to actually USE this encoder for a real voice-cloning generation call -- the encoder itself
 is done, but nothing calls it yet.
 
+## VoxCPM2 -- Antigravity's `VoxCpm2ResidualLm`/`VoxCpm2StepProjection` SIMD perf pass reviewed, verified correct, committed; not yet a measurable speedup, 2026-09-08
+
+Antigravity (the second AI tool) started a performance pass on `VoxCpm2Generator.cs`,
+`VoxCpm2MiniCpmBidirectionalStack.cs`, `VoxCpm2ResidualLm.cs`, and `VoxCpm2StepProjection.cs`
+(SIMD-vectorized `RmsNorm`/`MatVecF32`/`SiLuMul` via `SimdKernels`/`DenseKernels`, buffer reuse for
+the attention-scores scratch array) but ran out of budget mid-pass, leaving uncommitted changes.
+
+**Real correctness scare, resolved as a false alarm**: comparing the post-change
+`VoxCpm2PrefillCompareDebugTest` output against a `residual_hidden` value I had recorded earlier
+this session showed a real-looking ~45% divergence at several sample indices -- alarming since
+these are print-only debug tests with no assertions, so a real regression wouldn't be caught
+automatically. Investigated properly rather than assuming either "it's fine" or "it's broken":
+empirically isolated by `git stash`-reverting ONLY `VoxCpm2ResidualLm.cs` back to its pre-Antigravity
+form and re-running -- the output was IDENTICAL to the un-reverted (optimized) version, proving the
+SIMD rewrite computes the exact same result, just faster. The real explanation: my recorded
+"known-good" baseline was stale, captured before Antigravity's own NEOX-RoPE architecture fix
+(`de60667`) had been verified against `residual_hidden` specifically -- the CURRENT values (both
+reverted and un-reverted) match Antigravity's own documented reference comparison exactly (e.g.
+index 157: ref `+1.242230` vs ours `+1.243810`, 0.13% error). Restored the optimized version.
+
+Re-verified independently: `VoxCpm2GeneratorRealWeightsTests`/`VoxCpm2LlmTensorSourceRealWeightsTests`
+pass (11.0s, real weight loads). **Real, honest perf result**: the isolated `Generate()` timing is
+unchanged, 19.86s vs the pre-change 19.82s (RTF 5.39, same as documented two entries above) --
+`VoxCpm2ResidualLm`'s 8-layer, once-per-patch cost is evidently NOT the dominant bottleneck, so
+this partial pass (interrupted before Antigravity could measure and iterate) hasn't yet moved the
+needle. Committed anyway since the code is real, correct, and a genuine (if not yet impactful)
+step -- `VoxCpm2MiniCpmBidirectionalStack.cs`'s changes (the CFM/DiT's 12-layer bidirectional
+stack, called far more often: once per CFM timestep per patch, i.e. ~10x23=230 calls vs
+`VoxCpm2ResidualLm`'s 23) are the far more likely real bottleneck and the natural next target for
+whoever continues this perf pass.
+

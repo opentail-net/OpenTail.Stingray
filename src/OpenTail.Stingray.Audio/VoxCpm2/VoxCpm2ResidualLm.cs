@@ -1,3 +1,9 @@
+using System.Numerics.Tensors;
+using System.Runtime.Intrinsics;
+using System.Runtime.Intrinsics.X86;
+using OpenTail.Stingray.Audio.Primitives;
+using OpenTail.Stingray.Cpu;
+
 namespace OpenTail.Stingray.Audio.VoxCpm2;
 
 /// <summary>
@@ -32,6 +38,7 @@ public sealed class VoxCpm2ResidualLm
     private readonly float[] _finalNorm;
     private readonly List<float[]>[] _keyCache;
     private readonly List<float[]>[] _valueCache;
+    private float[] _scoresBuf = new float[128];
 
     public VoxCpm2ResidualLm(VoxCpm2MiniCpmLayerWeights[] layers, float[] finalNorm)
     {
@@ -79,117 +86,138 @@ public sealed class VoxCpm2ResidualLm
     /// <summary>Appends one embedding as the next causal position and returns the post-final-norm
     /// hidden state at that position (real `run_step(...).hidden`). No RoPE applied anywhere
     /// (`no_rope=true` for this model).</summary>
-    public float[] Step(float[] embedding)
+    public unsafe float[] Step(float[] embedding)
     {
         if (embedding.Length != HiddenDim) throw new ArgumentException($"Expected length {HiddenDim}.", nameof(embedding));
 
-        var hidden = embedding;
         int kvRepeats = NumHeads / NumKvHeads;
         float scale = 1f / MathF.Sqrt(HeadDim);
         int qOut = NumHeads * HeadDim;
         int kvOut = NumKvHeads * HeadDim;
 
-        for (int l = 0; l < NumLayers; l++)
+        var hidden = (float[])embedding.Clone();
+        var normed = new float[HiddenDim];
+        var q = new float[qOut];
+        var context = new float[qOut];
+        var attnOut = new float[HiddenDim];
+        var x = new float[HiddenDim];
+        var ffnNormed = new float[HiddenDim];
+        var gate = new float[FfnDim];
+        var up = new float[FfnDim];
+        var down = new float[HiddenDim];
+        var output = new float[HiddenDim];
+
+        fixed (float* hiddenPtr = hidden, normedPtr = normed,
+               qPtr = q, contextPtr = context, attnOutPtr = attnOut,
+               xPtr = x, ffnNormedPtr = ffnNormed, gatePtr = gate, upPtr = up, downPtr = down,
+               finalNormPtr = _finalNorm, outputPtr = output)
         {
-            var layer = _layers[l];
-            var normed = RmsNorm(hidden, layer.InputNorm);
-            var q = Linear(normed, layer.QProjWeight, qOut);
-            var k = Linear(normed, layer.KProjWeight, kvOut);
-            var v = Linear(normed, layer.VProjWeight, kvOut);
-
-            _keyCache[l].Add(k);
-            _valueCache[l].Add(v);
-            int availableKeys = _keyCache[l].Count;
-
-            var context = new float[qOut];
-            for (int h = 0; h < NumHeads; h++)
+            for (int l = 0; l < NumLayers; l++)
             {
-                int hOff = h * HeadDim;
-                int kvHOff = (h / kvRepeats) * HeadDim;
-                var scores = new float[availableKeys];
-                for (int t = 0; t < availableKeys; t++)
+                var layer = _layers[l];
+                var k = new float[kvOut];
+                var v = new float[kvOut];
+
+                fixed (float* inNormPtr = layer.InputNorm,
+                       qWPtr = layer.QProjWeight, kWPtr = layer.KProjWeight, vWPtr = layer.VProjWeight,
+                       oWPtr = layer.OProjWeight, postNormPtr = layer.PostNorm,
+                       gateWPtr = layer.GateProjWeight, upWPtr = layer.UpProjWeight, downWPtr = layer.DownProjWeight,
+                       kPtr = k, vPtr = v)
                 {
-                    float dot = 0f;
-                    var kt = _keyCache[l][t];
-                    for (int d = 0; d < HeadDim; d++) dot += q[hOff + d] * kt[kvHOff + d];
-                    scores[t] = dot * scale;
-                }
-                Softmax(scores);
-                for (int t = 0; t < availableKeys; t++)
-                {
-                    float p = scores[t];
-                    var vt = _valueCache[l][t];
-                    for (int d = 0; d < HeadDim; d++) context[hOff + d] += p * vt[kvHOff + d];
+                    // 1. Input Norm
+                    SimdKernels.RmsNorm(normedPtr, hiddenPtr, inNormPtr, HiddenDim, RmsNormEps);
+
+                    // 2. Q, K, V Projections
+                    SimdKernels.MatVecF32(qPtr, qWPtr, null, normedPtr, qOut, HiddenDim);
+                    SimdKernels.MatVecF32(kPtr, kWPtr, null, normedPtr, kvOut, HiddenDim);
+                    SimdKernels.MatVecF32(vPtr, vWPtr, null, normedPtr, kvOut, HiddenDim);
+
+                    _keyCache[l].Add(k);
+                    _valueCache[l].Add(v);
+                    int availableKeys = _keyCache[l].Count;
+
+                    if (_scoresBuf.Length < availableKeys)
+                        _scoresBuf = new float[Math.Max(availableKeys, _scoresBuf.Length * 2)];
+                    var scores = _scoresBuf.AsSpan(0, availableKeys);
+
+                    // 3. Attention
+                    new Span<float>(contextPtr, qOut).Clear();
+                    for (int h = 0; h < NumHeads; h++)
+                    {
+                        int hOff = h * HeadDim;
+                        int kvHOff = (h / kvRepeats) * HeadDim;
+                        float* qHead = qPtr + hOff;
+
+                        for (int t = 0; t < availableKeys; t++)
+                        {
+                            fixed (float* ktPtr = _keyCache[l][t])
+                            {
+                                scores[t] = SimdKernels.DotF32(qHead, ktPtr + kvHOff, HeadDim) * scale;
+                            }
+                        }
+
+                        DenseKernels.SoftmaxInPlace(scores);
+
+                        float* ctxHead = contextPtr + hOff;
+                        for (int t = 0; t < availableKeys; t++)
+                        {
+                            float p = scores[t];
+                            fixed (float* vtPtr = _valueCache[l][t])
+                            {
+                                float* vHead = vtPtr + kvHOff;
+                                if (Avx2.IsSupported && Fma.IsSupported)
+                                {
+                                    var vp = Vector256.Create(p);
+                                    for (int d = 0; d < HeadDim; d += 8)
+                                    {
+                                        var vc = Avx.LoadVector256(ctxHead + d);
+                                        var vv = Avx.LoadVector256(vHead + d);
+                                        vc = Fma.MultiplyAdd(vp, vv, vc);
+                                        Avx.Store(ctxHead + d, vc);
+                                    }
+                                }
+                                else
+                                {
+                                    for (int d = 0; d < HeadDim; d++)
+                                        ctxHead[d] += p * vHead[d];
+                                }
+                            }
+                        }
+                    }
+
+                    // 4. O Projection
+                    SimdKernels.MatVecF32(attnOutPtr, oWPtr, null, contextPtr, HiddenDim, qOut);
+
+                    // 5. Residual Add
+                    TensorPrimitives.Add(new ReadOnlySpan<float>(hiddenPtr, HiddenDim),
+                                         new ReadOnlySpan<float>(attnOutPtr, HiddenDim),
+                                         new Span<float>(xPtr, HiddenDim));
+
+                    // 6. Post Norm
+                    SimdKernels.RmsNorm(ffnNormedPtr, xPtr, postNormPtr, HiddenDim, RmsNormEps);
+
+                    // 7. Gate & Up Projections
+                    SimdKernels.MatVecF32(gatePtr, gateWPtr, null, ffnNormedPtr, FfnDim, HiddenDim);
+                    SimdKernels.MatVecF32(upPtr, upWPtr, null, ffnNormedPtr, FfnDim, HiddenDim);
+
+                    // 8. Fused SiLU(gate) * up
+                    SimdKernels.SiLuMul(gatePtr, upPtr, FfnDim);
+
+                    // 9. Down Projection
+                    SimdKernels.MatVecF32(downPtr, downWPtr, null, gatePtr, HiddenDim, FfnDim);
+
+                    // 10. Residual Add
+                    TensorPrimitives.Add(new ReadOnlySpan<float>(xPtr, HiddenDim),
+                                         new ReadOnlySpan<float>(downPtr, HiddenDim),
+                                         new Span<float>(hiddenPtr, HiddenDim));
                 }
             }
 
-            var attnOut = Linear(context, layer.OProjWeight, HiddenDim);
-            var x = Add(hidden, attnOut);
-
-            var ffnNormed = RmsNorm(x, layer.PostNorm);
-            var gate = Linear(ffnNormed, layer.GateProjWeight, FfnDim);
-            SiluInPlace(gate);
-            var up = Linear(ffnNormed, layer.UpProjWeight, FfnDim);
-            for (int i = 0; i < gate.Length; i++) gate[i] *= up[i];
-            var down = Linear(gate, layer.DownProjWeight, HiddenDim);
-            hidden = Add(x, down);
+            // Final RmsNorm
+            SimdKernels.RmsNorm(outputPtr, hiddenPtr, finalNormPtr, HiddenDim, RmsNormEps);
         }
 
-        return RmsNorm(hidden, _finalNorm);
-    }
-
-    private static float[] RmsNorm(float[] x, float[] weight)
-    {
-        double sumSq = 0;
-        for (int i = 0; i < x.Length; i++) sumSq += (double)x[i] * x[i];
-        float invRms = (float)(1.0 / Math.Sqrt(sumSq / x.Length + RmsNormEps));
-        var output = new float[x.Length];
-        for (int i = 0; i < x.Length; i++) output[i] = x[i] * invRms * weight[i];
         return output;
-    }
-
-    private static float[] Linear(float[] input, float[] weight, int outDim)
-    {
-        int inDim = input.Length;
-        var output = new float[outDim];
-        for (int o = 0; o < outDim; o++)
-        {
-            float sum = 0f;
-            int wBase = o * inDim;
-            for (int i = 0; i < inDim; i++) sum += weight[wBase + i] * input[i];
-            output[o] = sum;
-        }
-        return output;
-    }
-
-    private static float[] Add(float[] a, float[] b)
-    {
-        var output = new float[a.Length];
-        for (int i = 0; i < a.Length; i++) output[i] = a[i] + b[i];
-        return output;
-    }
-
-    private static void Softmax(float[] scores)
-    {
-        float max = float.NegativeInfinity;
-        for (int i = 0; i < scores.Length; i++) if (scores[i] > max) max = scores[i];
-        float sum = 0f;
-        for (int i = 0; i < scores.Length; i++)
-        {
-            float e = MathF.Exp(scores[i] - max);
-            scores[i] = e;
-            sum += e;
-        }
-        float invSum = 1f / sum;
-        for (int i = 0; i < scores.Length; i++) scores[i] *= invSum;
-    }
-
-    private static void SiluInPlace(float[] x)
-    {
-        for (int i = 0; i < x.Length; i++)
-        {
-            float v = x[i];
-            x[i] = v / (1f + MathF.Exp(-v));
-        }
     }
 }
+
