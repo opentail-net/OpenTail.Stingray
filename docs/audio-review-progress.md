@@ -17572,3 +17572,71 @@ and the `precompiled_charsmap` tokenizer normalization gap flagged repeatedly as
 biggest-risk item project-wide) -- a numerically quieter/duller output is exactly the kind of
 symptom either gap could produce, so this finding narrows nothing on its own. Recorded here as
 real evidence for whoever picks up the golden-parity work next, not treated as a diagnosed bug.
+
+## VibeVoice ASR -- real per-op bisection built (STINGRAY_ASR_TRACE), narrowed the bug all the way back to the RESAMPLED INPUT WAVEFORM, before any encoder math runs, 2026-09-08
+
+Built the deferred per-op numeric bisection for this bug (the last precisely-scoped-but-not-started
+gap for VibeVoice ASR): added `STINGRAY_ASR_TRACE`-gated debug taps to the reference's
+`speech_tokenizer.cpp` `build_encoder` (`stageN_downsample`/`stageN_blockM`/`final_norm`/`head`,
+same `qwen_decoder_debug_taps()`-style registry pattern already used successfully for Qwen3 Forced
+Aligner's bisection), forwarded and read back via the graph's existing `ggml_gallocr`/
+`ggml_backend_tensor_get` plumbing (all changes local-only, `examples/` is gitignored -- not
+committed). Matched with a new optional `Action<string, float[][]>? tap` parameter on
+`VibeVoiceTokenizerEncoder.Encode` (real, committed, reusable) and a C# port of the reference's
+own `sample_point_indices` sampling formula (trace.cpp) so the printed flat indices line up
+byte-for-byte between the two traces.
+
+Ran both sides on the same real LibriSpeech clip
+(`librispeech_test_clean_6930-75918-0000.wav`). Real, surprising result: `stage0_downsample` (the
+semantic encoder's very FIRST causal conv) already diverges at several sample points (e.g. index
+69021: ours=0.00974, reference=0.01225, ~20% off) while others match closely -- meaning every
+downstream "formula confirmed correct" finding from the earlier per-stage/per-formula sweep was
+real but moot, since the INPUT to those formulas was already wrong.
+
+Traced one level further back: dumped the raw resampled waveform itself (before ANY encoder math)
+on both sides. Real finding: our resampled waveform is consistently and substantially quieter than
+the reference's at nearly every sampled index -- e.g. index 0: ours=-0.0000610, ref=-0.0001265
+(ratio 0.48); index 23725: ours=-0.0614, ref=-0.1288 (ratio 0.48); index 56079: ours=0.0393,
+ref=0.0815 (ratio 0.48); index 69021: ours=-0.0406, ref=-0.0841 (ratio 0.48). The ratio is not
+perfectly uniform (ranges ~0.43-0.60 across the 40 sampled points) but clusters tightly around
+~0.48-0.50 -- roughly a consistent ~6dB (half-amplitude) loss, not just phase/timing noise.
+
+Root-caused which side owns this: the reference resamples via `SoXr` (a real, dynamically-loaded,
+high-quality third-party resampler, `resampling.cpp`), while this port's `AudioResampler` is an
+independent from-scratch windowed-sinc polyphase implementation (Hann-windowed sinc, per-phase
+DC-gain-normalized kernel bank). The two were never going to be bit-identical, but a consistent
+~half-amplitude loss is bigger than an ordinary "different but valid" resampling algorithm should
+produce.
+
+**Correction (same pass, tested rather than assumed):** the first-drafted theory here was a simple
+near-Nyquist filter-attenuation gap in `AudioResampler`. Built a synthetic-tone check before
+accepting that guess (a 7kHz sine into the same 16kHz-&gt;24kHz conversion, RMS-measured over the
+steady-state region) at all three quality tiers actually used in this codebase -- real result:
+ratio 1.0008 (Balanced/32-tap), 1.0001 (HighQuality/64-tap), 1.0000 (BestQuality/128-tap). This
+REFUTES the simple gain/near-Nyquist-attenuation theory outright: for a clean single-frequency
+probe, `AudioResampler` preserves amplitude essentially exactly, at every quality tier, including
+the lowest. The `AudioResampler` code itself also has no plausible per-sample gain bug on inspection
+(the kernel is explicitly DC-normalized to sum to 1.0 per phase).
+
+So the real, still-open question is narrower and stranger than "the resampler is lossy": a
+synthetic single tone round-trips at ~unity gain, but real broadband speech content shows a
+consistent ~0.48x ratio at nearly every mid-array sample point (edge-of-array indices are separately
+explained by ordinary, expected boundary-padding/edge-extrapolation differences between the two
+resamplers' handling of the clip's start, not a real bug). A plausible hypothesis for a future pass:
+a broadband signal is a sum of many frequency components, and a single-frequency probe cannot rule
+out non-uniform attenuation *elsewhere* in the passband (i.e. `AudioResampler`'s filter could still
+have a real magnitude-response deviation from SoXr's at some frequency other than the one tested,
+which would only show up as an aggregate time-domain amplitude effect on broadband content) -- this
+is NOT yet tested, so it remains a hypothesis, not a finding, unlike the (now refuted) simple-gain
+theory. This still directly relates to, and may still explain, the session's earlier "our output is
+audibly likely to differ... quieter" quantitative finding for MOSS-TTS-Nano (same `AudioResampler`
+is used project-wide) -- but that link is now a hypothesis to re-test, not a settled explanation.
+
+Deliberately did NOT rewrite `AudioResampler` this pass: it's used across many models project-wide
+(not just VibeVoice ASR), so a change here needs its own careful measurement and its own regression
+pass across every caller, not a rushed fix bolted onto this bisection -- doubly true now that the
+simple theory for what to fix has already been shown wrong once this same pass. Real, precisely
+scoped next step for a future pass: build a real magnitude-response sweep of `AudioResampler`
+against SoXr (many single-frequency probes spanning the full passband, not just one near-Nyquist
+point) to find the actual frequency (or frequencies) where the two diverge, before touching any
+filter-design code.

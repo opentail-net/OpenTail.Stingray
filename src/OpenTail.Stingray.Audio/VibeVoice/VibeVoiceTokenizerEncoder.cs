@@ -16,7 +16,7 @@ public static class VibeVoiceTokenizerEncoder
 {
     /// <summary>Encodes a mono waveform (real 24kHz input, `[1][samples]` channels-major with one
     /// channel) into `[VaeDim][frames]` latent features.</summary>
-    public static float[][] Encode(VibeVoiceTokenizerEncoderWeights w, float[] monoWaveform, float layerNormEps)
+    public static float[][] Encode(VibeVoiceTokenizerEncoderWeights w, float[] monoWaveform, float layerNormEps, Action<string, float[][]>? tap = null)
     {
         float[][] hidden = [monoWaveform];
 
@@ -24,15 +24,23 @@ public static class VibeVoiceTokenizerEncoder
         {
             (hidden, _) = VibeVoiceConvNeXtBlock.CausalConv1d(
                 hidden, w.DownsampleWeights[stage], w.DownsampleBiases[stage], w.DownsampleStrides[stage]);
+            tap?.Invoke($"stage{stage}_downsample", hidden);
 
-            foreach (var block in w.Stages[stage])
-                hidden = VibeVoiceConvNeXtBlock.Forward(hidden, block, layerNormEps);
+            for (int b = 0; b < w.Stages[stage].Length; b++)
+            {
+                hidden = VibeVoiceConvNeXtBlock.Forward(hidden, w.Stages[stage][b], layerNormEps);
+                tap?.Invoke($"stage{stage}_block{b}", hidden);
+            }
         }
 
         if (w.FinalNormWeight is { } finalNorm)
+        {
             hidden = VibeVoiceConvNeXtBlock.ChannelRmsNorm(hidden, finalNorm, layerNormEps);
+            tap?.Invoke("final_norm", hidden);
+        }
 
         (hidden, _) = VibeVoiceConvNeXtBlock.CausalConv1d(hidden, w.HeadWeight, w.HeadBias, stride: 1);
+        tap?.Invoke("head", hidden);
         return hidden;
     }
 

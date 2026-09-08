@@ -110,9 +110,65 @@ public sealed class VibeVoiceAsrRealSpeechRealWeightsTests : HeavyTestBase
         int speechFrames = speechEmbeddingsChannelMajor[0].Length;
 
         {
+            // DEBUG: per-stage taps inside the semantic encoder itself, matching the reference's
+            // own `STINGRAY_ASR_TRACE`-gated `stageN_downsample`/`stageN_blockM` dump added to
+            // `speech_tokenizer.cpp`'s `build_encoder` for this bisection -- localizes the
+            // divergence to a specific stage/block instead of only the encoder's final output.
+            // Replicates the reference's `sample_point_indices(count, target=40)` (trace.cpp)
+            // exactly so the flat indices printed here line up byte-for-byte with the
+            // `STINGRAY_ASR_TRACE`-gated dump added to `speech_tokenizer.cpp`'s `build_encoder`.
+            static long[] SamplePointIndices(long count, long target = 40)
+            {
+                if (count == 0) return [];
+                if (count <= target)
+                {
+                    var all = new long[count];
+                    for (long i = 0; i < count; i++) all[i] = i;
+                    return all;
+                }
+                const long firstCount = 14, middleCount = 12, lastCount = 14;
+                long firstEnd = count / 3, middleEnd = count * 2 / 3;
+                var points = new List<long>();
+                void AppendRange(long begin, long end, long samples)
+                {
+                    if (begin >= end || samples == 0) return;
+                    long span = end - begin;
+                    if (span <= samples)
+                    {
+                        for (long i = begin; i < end; i++)
+                            if (points.Count == 0 || points[^1] != i) points.Add(i);
+                        return;
+                    }
+                    for (long i = 0; i < samples; i++)
+                    {
+                        double pos = samples == 1 ? 0.0 : (double)i / (samples - 1);
+                        long offset = (long)(pos * (span - 1));
+                        long index = begin + offset;
+                        if (points.Count == 0 || points[^1] != index) points.Add(index);
+                    }
+                }
+                AppendRange(0, firstEnd, firstCount);
+                AppendRange(firstEnd, middleEnd, middleCount);
+                AppendRange(middleEnd, count, lastCount);
+                if (points.Count == 0 || points[0] != 0) points.Insert(0, 0);
+                return points.ToArray();
+            }
+            void Tap(string name, float[][] h)
+            {
+                int channels = h.Length, frames = h[0].Length;
+                long total = (long)channels * frames;
+                var sb = new System.Text.StringBuilder($"[DEBUG] encoder.{name} shape=[{frames},{channels}] samples=[");
+                foreach (long idx in SamplePointIndices(total))
+                {
+                    int c = (int)(idx / frames), f = (int)(idx % frames);
+                    sb.Append($"{idx}:{h[c][f]:G6},");
+                }
+                sb.Append(']');
+                Console.WriteLine(sb.ToString());
+            }
             // DEBUG: isolate the deterministic semantic-only branch (no RNG) for a clean
             // comparison against the reference's own trace.
-            var semanticLatent = VibeVoiceTokenizerEncoder.Encode(semanticEncoder, waveform, SemanticConfig().LayerNormEps);
+            var semanticLatent = VibeVoiceTokenizerEncoder.Encode(semanticEncoder, waveform, SemanticConfig().LayerNormEps, Tap);
             var semanticProjected = VibeVoiceConnector.Project(semanticConnector, semanticLatent);
             var flat = new float[speechFrames * HiddenDim];
             for (int f = 0; f < speechFrames; f++)
@@ -125,6 +181,13 @@ public sealed class VibeVoiceAsrRealSpeechRealWeightsTests : HeavyTestBase
             Console.WriteLine(sb.ToString());
         }
 
+        {
+            var sb = new System.Text.StringBuilder("[DEBUG] semantic_tokenizer.raw_waveform samples=[");
+            int[] idx = [0, 2156, 4313, 6470, 8627, 10784, 12941, 15097, 17254, 19411, 21568, 23725, 25882, 28039, 28040, 30589, 33138, 35686, 38236, 40785, 43333, 45883, 48432, 50981, 53530, 56079, 56080, 58236, 60393, 62550, 64707, 66864, 69021, 71177, 73334, 75491, 77648, 79805, 81962, 84119];
+            foreach (int i in idx) sb.Append($"{i}:{waveform[i]:G6},");
+            sb.Append(']');
+            Console.WriteLine(sb.ToString());
+        }
         double audioSeconds = waveform.Length / (double)RealSampleRate;
         var prompt = tokenizer.BuildPrompt(audioSeconds, speechFrames);
         Console.WriteLine($"[DEBUG] speechFrames={speechFrames} promptTokens={prompt.InputIds.Length} rawSamples={rawSamples.Length} rawRate={rawRate} resampledLen={waveform.Length}");
