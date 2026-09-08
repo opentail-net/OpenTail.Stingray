@@ -6,6 +6,7 @@ namespace OpenTail.Stingray.Audio.NeuTts;
 public sealed class NeuTtsGenerationOptions
 {
     public int MaxNewTokens { get; init; } = 2000;
+    public int MinTokens { get; init; } = 50;
     public SamplingParams? Sampling { get; init; }
     public Random? Rng { get; init; }
 }
@@ -29,11 +30,21 @@ public static class NeuTtsGenerator
 
         for (int step = 0; step < options.MaxNewTokens; step++)
         {
-            int next = options.Sampling is null
-                ? Argmax(logits)
-                : Sampler.Sample(logits, options.Sampling, options.Rng);
+            float[]? mutableLogits = null;
+            ReadOnlySpan<float> activeLogits = logits;
 
-            if (next == prompt.SpeechGenerationEnd) break;
+            if (step < options.MinTokens && prompt.SpeechGenerationEnd < logits.Length)
+            {
+                mutableLogits = logits.ToArray();
+                mutableLogits[prompt.SpeechGenerationEnd] = float.NegativeInfinity;
+                activeLogits = mutableLogits;
+            }
+
+            int next = options.Sampling is null
+                ? Argmax(activeLogits)
+                : Sampler.Sample(activeLogits, options.Sampling, options.Rng);
+
+            if (next == prompt.SpeechGenerationEnd && step >= options.MinTokens) break;
             if (next < prompt.SpeechTokenStart || next > prompt.SpeechTokenEnd)
                 throw new InvalidOperationException($"NeuTTS generated an out-of-range token {next} (expected a speech token or the stop token).");
 

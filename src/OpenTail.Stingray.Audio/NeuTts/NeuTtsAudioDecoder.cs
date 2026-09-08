@@ -220,7 +220,12 @@ public static class NeuTtsAudioDecoder
             }
         }
 
-        var window = SpectralKernels.CreateHannWindow(nFft);
+        // Periodic Hann window (Kokoro STFT family): denom = nFft
+        var window = new float[nFft];
+        for (int i = 0; i < nFft; i++)
+            window[i] = 0.5f - 0.5f * MathF.Cos(2f * MathF.PI * i / nFft);
+
+        int pad = (nFft - hop) / 2;
         int rawLen = (t - 1) * hop + nFft;
         var ola = new float[rawLen];
         var envelope = new float[rawLen];
@@ -241,7 +246,6 @@ public static class NeuTtsAudioDecoder
             }
         }
 
-        int pad = nFft / 2;
         int outLen = rawLen - 2 * pad;
         var output = new float[outLen];
         for (int i = 0; i < outLen; i++)

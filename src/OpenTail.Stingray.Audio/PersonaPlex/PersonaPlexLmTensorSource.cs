@@ -100,18 +100,18 @@ public sealed unsafe class PersonaPlexLmTensorSource : IModelTensorSource, IDisp
 
         _metadata = new Dictionary<string, object>(StringComparer.Ordinal)
         {
-            ["general.architecture"] = "qwen3",
-            ["qwen3.embedding_length"] = hiddenDim,
-            ["qwen3.block_count"] = numLayers,
-            ["qwen3.attention.head_count"] = numHeads,
-            ["qwen3.attention.head_count_kv"] = numHeads,
-            ["qwen3.attention.key_length"] = headDim,
-            ["qwen3.attention.value_length"] = headDim,
-            ["qwen3.feed_forward_length"] = ffDim,
-            ["qwen3.attention.layer_norm_rms_epsilon"] = rmsNormEps,
-            ["qwen3.rope.freq_base"] = ropeTheta,
-            ["qwen3.vocab_size"] = textVocabSize,
-            ["qwen3.context_length"] = 32768,
+            ["general.architecture"] = "llama",
+            ["llama.embedding_length"] = hiddenDim,
+            ["llama.block_count"] = numLayers,
+            ["llama.attention.head_count"] = numHeads,
+            ["llama.attention.head_count_kv"] = numHeads,
+            ["llama.attention.key_length"] = headDim,
+            ["llama.attention.value_length"] = headDim,
+            ["llama.feed_forward_length"] = ffDim,
+            ["llama.attention.layer_norm_rms_epsilon"] = rmsNormEps,
+            ["llama.rope.freq_base"] = ropeTheta,
+            ["llama.vocab_size"] = textVocabSize,
+            ["llama.context_length"] = 32768,
         };
     }
 
@@ -126,6 +126,9 @@ public sealed unsafe class PersonaPlexLmTensorSource : IModelTensorSource, IDisp
     /// <summary>Real text embedding table, `[textVocabSize+1, hiddenSize]`, row-major (the SAME
     /// table backing `token_embd.weight`). Materialized on first access.</summary>
     public float[] TextEmbeddingWeight() => _source.GetTensor("lm/text_emb.weight");
+
+    /// <summary>Real output RMSNorm weight (`lm/out_norm.alpha`).</summary>
+    public float[] NormWeight => _source.GetTensor("lm/out_norm.alpha");
 
     private static float[] SplitRows(float[] packed, int cols, int rowOffset, int rows)
     {

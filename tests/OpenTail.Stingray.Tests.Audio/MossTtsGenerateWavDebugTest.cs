@@ -54,12 +54,16 @@ public sealed class MossTtsGenerateWavDebugTest : HeavyTestBase
         var quantizer = new MossTtsAudioCodecQuantizerWeights(source);
         var decoderWeights = new MossTtsAudioCodecDecoderWeights(source);
 
+        var sw = System.Diagnostics.Stopwatch.StartNew();
         var prompt = MossTtsPromptBuilder.BuildZeroShotPrompt(tokenizer, "Hello there, this is a test of speech synthesis.");
         // Real reference default (types.h's MossTTSNanoSamplingOptions): do_sample=true,
         // audio_temperature=1.7, audio_top_p=0.8, audio_top_k=25 -- never greedy.
         var samplingOptions = new SamplingParams { Temperature = 1.7f, TopP = 0.8f, TopK = 25 };
+        var genSw = System.Diagnostics.Stopwatch.StartNew();
         var codes = MossTtsGenerator.Generate(g, l, prompt, activeCodebooks: MossTtsGlobalTransformerWeights.NumCodebooks, maxNewFrames: 40, samplingOptions, new Random(11));
-        Console.WriteLine($"Generated {codes.Frames} frames (hitMax={codes.HitMaxNewFrames})");
+        genSw.Stop();
+        var dumpPath = Path.Combine(repoRoot!, "audio-samples", "moss-tts-csharp-40frames-codes.txt");
+        File.WriteAllLines(dumpPath, codes.TokenIds.Select((id, idx) => $"Frame {idx / codes.Codebooks}, Codebook {idx % codes.Codebooks}: {id}"));
 
         var codesPerQuantizer = new int[MossTtsAudioCodecQuantizerWeights.NumQuantizers][];
         for (int q = 0; q < codesPerQuantizer.Length; q++)
@@ -69,12 +73,35 @@ public sealed class MossTtsGenerateWavDebugTest : HeavyTestBase
             codesPerQuantizer[q] = row;
         }
 
+        var decSw = System.Diagnostics.Stopwatch.StartNew();
         var waveform = MossTtsAudioCodecDecoder.Decode(quantizer, decoderWeights, codesPerQuantizer);
+        decSw.Stop();
+        sw.Stop();
+        Console.WriteLine($"[PERF METRICS] 40 frames (3.04s audio) => Generation: {genSw.ElapsedMilliseconds} ms, Codec Decode: {decSw.ElapsedMilliseconds} ms, Total E2E: {sw.ElapsedMilliseconds} ms (RTF: {sw.ElapsedMilliseconds / 3040.0:F2}x)");
         Assert.True(waveform.Left.Length > 0);
+
+        float peak = 0f;
+        double sumSq = 0;
+        int zeroCrossings = 0;
+        for (int i = 0; i < waveform.Left.Length; i++)
+        {
+            float s = waveform.Left[i];
+            float abs = MathF.Abs(s);
+            if (abs > peak) peak = abs;
+            sumSq += s * s;
+            if (i > 0 && ((waveform.Left[i - 1] >= 0 && s < 0) || (waveform.Left[i - 1] < 0 && s >= 0)))
+                zeroCrossings++;
+        }
+        float rms = (float)Math.Sqrt(sumSq / waveform.Left.Length);
+        float zcr = (float)zeroCrossings / waveform.Left.Length;
 
         var result = new OpenTail.Stingray.Audio.AudioGenerationResult(waveform.Left, MossTtsAudioCodecDecoderWeights.SamplingRate);
         string outPath = Path.Combine(repoRoot!, "audio-samples", "moss-tts-nano-real-check.wav");
         result.SaveWav(outPath);
-        Console.WriteLine($"Wrote {outPath}, {waveform.Left.Length} samples, {waveform.Left.Length / (double)MossTtsAudioCodecDecoderWeights.SamplingRate:F2}s");
+        Console.WriteLine($"[AUDIO METRICS] Wrote {outPath}, {waveform.Left.Length} samples, {waveform.Left.Length / (double)MossTtsAudioCodecDecoderWeights.SamplingRate:F2}s, Peak: {peak:F4}, RMS: {rms:F4}, ZCR: {zcr:F4}");
+
+        Assert.True(peak > 0.05f && peak <= 1.0f, $"Peak {peak} outside expected range");
+        Assert.True(rms > 0.01f && rms < 0.5f, $"RMS {rms} outside expected range");
+        Assert.True(zcr > 0.01f && zcr < 0.35f, $"ZCR {zcr} outside expected range");
     }
 }

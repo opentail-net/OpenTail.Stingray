@@ -38,14 +38,23 @@ public static class MossTtsGenerator
             throw new ArgumentOutOfRangeException(nameof(activeCodebooks));
         if (maxNewFrames <= 0) throw new ArgumentOutOfRangeException(nameof(maxNewFrames));
 
-        var rows = new List<MossTtsGlobalRow>(prompt);
+        var cache = new MossTtsGlobalKvCache(prompt.Count + maxNewFrames + 16);
+        var localCache = new MossTtsGlobalKvCache(maxCapacity: MossTtsGlobalTransformerWeights.NumCodebooks + 4, numLayers: l.Layers.Length);
         var generated = new List<int>(maxNewFrames * MossTtsGlobalTransformerWeights.NumCodebooks);
         bool stoppedOnEoc = false;
 
+        float[] hidden = MossTtsGlobalTransformer.ForwardPrefill(g, prompt, cache);
+
         for (int step = 0; step < maxNewFrames; step++)
         {
-            var hidden = MossTtsGlobalTransformer.ForwardLastHidden(g, rows);
-            var frame = MossTtsLocalFrameDecoder.GenerateFrame(g, l, hidden, activeCodebooks, options, rng);
+            if (step > 0)
+            {
+                var prevFrame = generated.GetRange((step - 1) * MossTtsGlobalTransformerWeights.NumCodebooks, MossTtsGlobalTransformerWeights.NumCodebooks).ToArray();
+                var newRow = new MossTtsGlobalRow(MossTtsGlobalTransformerWeights.AudioAssistantSlotTokenId, prevFrame);
+                hidden = MossTtsGlobalTransformer.ForwardStep(g, newRow, cache);
+            }
+
+            var frame = MossTtsLocalFrameDecoder.GenerateFrame(g, l, hidden, activeCodebooks, options, rng, localCache);
             if (frame is null)
             {
                 stoppedOnEoc = true;
@@ -53,7 +62,6 @@ public static class MossTtsGenerator
             }
 
             generated.AddRange(frame);
-            rows.Add(new MossTtsGlobalRow(MossTtsGlobalTransformerWeights.AudioAssistantSlotTokenId, frame));
         }
 
         if (generated.Count == 0)

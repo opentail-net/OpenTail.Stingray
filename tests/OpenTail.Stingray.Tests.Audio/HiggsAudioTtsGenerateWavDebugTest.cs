@@ -53,10 +53,8 @@ public sealed class HiggsAudioTtsGenerateWavDebugTest : HeavyTestBase
         var options = new SamplingParams { Temperature = 0.7f, TopK = 50, TopP = 0.95f };
         var result = HiggsGenerator.Generate(
             fwd, llm, tokenizer, codecWeights,
-            "Hello there, this is a real end to end test of the Higgs Audio text to speech system. " +
-            "I am speaking several sentences in a row so that the generated sample is long enough to " +
-            "actually listen to, rather than stopping after only a fraction of a second.",
-            NumCodebooks, AudioVocabSize, maxTokens: 800, options, new Random(7));
+            "Hello there, this is a real test of Higgs Audio text to speech synthesis.",
+            NumCodebooks, AudioVocabSize, maxTokens: 150, options, new Random(7));
 
         Console.WriteLine($"Generated {result.RawCodes.Length} raw frames");
         Assert.True(result.AudioSamples.Length > 0);

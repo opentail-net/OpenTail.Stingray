@@ -32,7 +32,7 @@ public static class MossTtsLocalFrameDecoder
     /// <see cref="MossTtsGlobalTransformerWeights.AudioEndTokenId"/> (stop), by argmax over just
     /// those two candidate logits -- matches the reference's real 2-way restricted sampling.
     /// </summary>
-    public static int PredictTextChoice(
+    public static unsafe int PredictTextChoice(
         MossTtsGlobalTransformerWeights g,
         MossTtsLocalTransformerWeights l,
         float[] globalHidden)
@@ -42,19 +42,26 @@ public static class MossTtsLocalFrameDecoder
             l.Layers,
             l.FinalNormWeight,
             l.FinalNormBias);
-        var logits = MossTtsGlobalTransformer.Linear(
-            hiddenOut[0], g.TextLmHeadWeight, bias: [],
-            MossTtsGlobalTransformerWeights.HiddenDim, MossTtsGlobalTransformerWeights.VocabSize);
 
-        float assistantLogit = logits[MossTtsGlobalTransformerWeights.AudioAssistantSlotTokenId];
-        float endLogit = logits[MossTtsGlobalTransformerWeights.AudioEndTokenId];
+        const int dim = MossTtsGlobalTransformerWeights.HiddenDim;
+        int assistantIdx = MossTtsGlobalTransformerWeights.AudioAssistantSlotTokenId;
+        int endIdx = MossTtsGlobalTransformerWeights.AudioEndTokenId;
+
+        float assistantLogit;
+        float endLogit;
+        fixed (float* h = hiddenOut[0], w = g.TextLmHeadWeight)
+        {
+            assistantLogit = SimdKernels.DotF32(h, w + (long)assistantIdx * dim, dim);
+            endLogit = SimdKernels.DotF32(h, w + (long)endIdx * dim, dim);
+        }
+
         return assistantLogit >= endLogit
             ? MossTtsGlobalTransformerWeights.AudioAssistantSlotTokenId
             : MossTtsGlobalTransformerWeights.AudioEndTokenId;
     }
 
     /// <summary>
-    /// Generates one frame's <paramref name="activeCodebooks"/> RVQ tokens (greedy), or returns
+    /// Generates one frame's <paramref name="activeCodebooks"/> RVQ tokens (greedy or sampled), or returns
     /// null if the text-side choice was to end generation (matches the reference's empty-vector
     /// stop signal).
     /// </summary>
@@ -64,7 +71,8 @@ public static class MossTtsLocalFrameDecoder
         float[] globalHidden,
         int activeCodebooks,
         SamplingParams? options = null,
-        Random? rng = null)
+        Random? rng = null,
+        MossTtsGlobalKvCache? localCache = null)
     {
         if (activeCodebooks <= 0 || activeCodebooks > MossTtsGlobalTransformerWeights.NumCodebooks)
             throw new ArgumentOutOfRangeException(nameof(activeCodebooks));
@@ -78,16 +86,18 @@ public static class MossTtsLocalFrameDecoder
 
         var textEmb = MossTtsGlobalTransformer.EmbedRow(g.TextEmbedding, bestText, MossTtsGlobalTransformerWeights.HiddenDim);
 
+        localCache ??= new MossTtsGlobalKvCache(maxCapacity: MossTtsGlobalTransformerWeights.NumCodebooks + 4, numLayers: l.Layers.Length);
+        localCache.Length = 0;
+
+        float[] lastHidden = MossTtsGlobalTransformer.ForwardPrefillRows([globalHidden, textEmb], l.Layers, l.FinalNormWeight, l.FinalNormBias, localCache);
+
         for (int q = 0; q < activeCodebooks; q++)
         {
-            var rows = new float[q + 2][];
-            rows[0] = globalHidden;
-            rows[1] = textEmb;
-            for (int k = 0; k < q; k++)
-                rows[2 + k] = MossTtsGlobalTransformer.EmbedRow(g.AudioEmbeddings[k], frame[k], MossTtsGlobalTransformerWeights.HiddenDim);
-
-            var hiddenOut = MossTtsGlobalTransformer.RunTransformerStack(rows, l.Layers, l.FinalNormWeight, l.FinalNormBias);
-            var lastHidden = hiddenOut[^1];
+            if (q > 0)
+            {
+                var prevAudioEmb = MossTtsGlobalTransformer.EmbedRow(g.AudioEmbeddings[q - 1], frame[q - 1], MossTtsGlobalTransformerWeights.HiddenDim);
+                lastHidden = MossTtsGlobalTransformer.ForwardStepRow(prevAudioEmb, l.Layers, l.FinalNormWeight, l.FinalNormBias, localCache);
+            }
 
             int codebookSize = MossTtsGlobalTransformerWeights.AudioCodebookSize;
             var logits = MossTtsGlobalTransformer.Linear(

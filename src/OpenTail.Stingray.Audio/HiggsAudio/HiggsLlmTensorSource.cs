@@ -100,6 +100,9 @@ public sealed unsafe class HiggsLlmTensorSource : IModelTensorSource, IDisposabl
     /// on first access.</summary>
     public float[] ModalityEmbeddingWeight => _source.GetTensor("tied.embedding.modality_embeddings.0.embedding.weight");
 
+    /// <summary>Real output RMSNorm weight (`body.norm.weight`).</summary>
+    public float[] NormWeight => _source.GetTensor("body.norm.weight");
+
     private void MapIfPresent2D(string sourceName, string canonicalName, int outDim, int inDim)
     {
         if (!_source.HasTensor(sourceName)) return;

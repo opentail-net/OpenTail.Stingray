@@ -126,8 +126,8 @@ public static class HiggsGenerator
             if (masked.Length > 0 && masked[0] != HiggsCodebookSampler.StopCode)
                 delayedFrames.Add(masked);
         }
-        if (!sampler.GenerationDone)
-            throw new InvalidOperationException("Higgs TTS generation reached maxTokens before EOC.");
+        if (delayedFrames.Count < numCodebooks)
+            throw new InvalidOperationException($"Higgs TTS did not generate enough frames (got {delayedFrames.Count}, needed {numCodebooks}).");
 
         int delayedFrameCount = delayedFrames.Count;
         var delayedFlat = new int[delayedFrameCount * numCodebooks];

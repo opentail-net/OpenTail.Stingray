@@ -212,8 +212,11 @@ public sealed class SentencePieceBpeTokenizer
     /// </summary>
     private static string Preprocess(string text)
     {
-        string normalized = text.Normalize(NormalizationForm.FormKC);
+        string normalized = text.Normalize(NormalizationForm.FormKC).Trim();
+        if (normalized.Length == 0) return string.Empty;
+
         var sb = new StringBuilder(normalized.Length + 1);
+        sb.Append(MetaspaceChar);
         bool prevWasSpace = false;
         foreach (char c in normalized)
         {
@@ -228,7 +231,6 @@ public sealed class SentencePieceBpeTokenizer
                 prevWasSpace = false;
             }
         }
-        if (sb.Length == 0 || sb[0] != MetaspaceChar) sb.Insert(0, MetaspaceChar);
         return sb.ToString();
     }
 

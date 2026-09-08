@@ -13,6 +13,33 @@ public readonly struct MossTtsGlobalRow(int textId, int[] audioIds)
 }
 
 /// <summary>
+/// Pre-allocated key-value cache for MOSS-TTS-Nano's 12-layer global transformer.
+/// </summary>
+public sealed class MossTtsGlobalKvCache
+{
+    public int Length { get; internal set; }
+    public float[][][] Keys { get; }
+    public float[][][] Values { get; }
+
+    public MossTtsGlobalKvCache(int maxCapacity = 512, int numLayers = MossTtsGlobalTransformerWeights.NumLayers)
+    {
+        Keys = new float[numLayers][][];
+        Values = new float[numLayers][][];
+        for (int l = 0; l < numLayers; l++)
+        {
+            Keys[l] = new float[maxCapacity][];
+            Values[l] = new float[maxCapacity][];
+            for (int t = 0; t < maxCapacity; t++)
+            {
+                Keys[l][t] = new float[MossTtsGlobalTransformerWeights.HiddenDim];
+                Values[l][t] = new float[MossTtsGlobalTransformerWeights.HiddenDim];
+            }
+        }
+        Length = 0;
+    }
+}
+
+/// <summary>
 /// Native C# port of MOSS-TTS-Nano's global transformer forward pass, from
 /// `examples/audio.cpp/src/models/moss/moss_tts_nano/global_transformer.cpp`'s `transformer_layer`/
 /// `Graph` constructor (not guessed). Real per-row input embedding: the text embedding for that
@@ -28,6 +55,204 @@ public readonly struct MossTtsGlobalRow(int textId, int[] audioIds)
 /// </summary>
 public static class MossTtsGlobalTransformer
 {
+    /// <summary>Embeds a single input row (text embedding + sum of present audio codebook embeddings).</summary>
+    public static float[] EmbedInputRow(MossTtsGlobalTransformerWeights w, MossTtsGlobalRow row)
+    {
+        var h = EmbedRow(w.TextEmbedding, row.TextId, MossTtsGlobalTransformerWeights.HiddenDim);
+        for (int q = 0; q < MossTtsGlobalTransformerWeights.NumCodebooks; q++)
+        {
+            int id = row.AudioIds[q];
+            if (id == MossTtsGlobalTransformerWeights.AudioPadTokenId) continue;
+            var emb = EmbedRow(w.AudioEmbeddings[q], id, MossTtsGlobalTransformerWeights.HiddenDim);
+            TensorPrimitives.Add(h, emb, h);
+        }
+        return h;
+    }
+
+    /// <summary>
+    /// Processes initial input rows in full, populates the KV cache for all layers, and returns the last row's hidden state.
+    /// </summary>
+    public static float[] ForwardPrefillRows(
+        float[][] inputRows,
+        IReadOnlyList<MossTtsGlobalTransformerLayerWeights> layers,
+        float[] finalNormWeight,
+        float[] finalNormBias,
+        MossTtsGlobalKvCache cache)
+    {
+        int n = inputRows.Length;
+        const int dim = MossTtsGlobalTransformerWeights.HiddenDim;
+        const int headDim = MossTtsGlobalTransformerWeights.HeadDim;
+        const int numHeads = MossTtsGlobalTransformerWeights.NumHeads;
+        float scale = 1f / MathF.Sqrt(headDim);
+
+        var current = new float[n][];
+        for (int i = 0; i < n; i++) current[i] = (float[])inputRows[i].Clone();
+
+        for (int l = 0; l < layers.Count; l++)
+        {
+            var layer = layers[l];
+            var normed = new float[n][];
+            for (int i = 0; i < n; i++) normed[i] = LayerNorm(current[i], layer.Ln1Weight, layer.Ln1Bias);
+            var qkvAll = LinearBatched(normed, layer.CAttnWeight, layer.CAttnBias, dim, dim * 3);
+
+            var q = new float[n][];
+            for (int i = 0; i < n; i++)
+            {
+                q[i] = new float[dim];
+                var k = cache.Keys[l][i];
+                var v = cache.Values[l][i];
+                Array.Copy(qkvAll[i], 0, q[i], 0, dim);
+                Array.Copy(qkvAll[i], dim, k, 0, dim);
+                Array.Copy(qkvAll[i], dim * 2, v, 0, dim);
+                ApplyRopeAdjacentPairs(q[i], numHeads, headDim, position: i);
+                ApplyRopeAdjacentPairs(k, numHeads, headDim, position: i);
+            }
+
+            var contexts = new float[n][];
+            Parallel.For(0, n, i =>
+            {
+                var context = new float[dim];
+                int availableKeys = i + 1;
+                var scores = new float[availableKeys];
+                unsafe
+                {
+                    fixed (float* qp = q[i])
+                    {
+                        for (int hOffIdx = 0; hOffIdx < numHeads; hOffIdx++)
+                        {
+                            int hOff = hOffIdx * headDim;
+                            for (int t = 0; t < availableKeys; t++)
+                            {
+                                fixed (float* kp = cache.Keys[l][t])
+                                    scores[t] = SimdKernels.DotF32(qp + hOff, kp + hOff, headDim) * scale;
+                            }
+                            SoftmaxInPlace(scores);
+                            for (int t = 0; t < availableKeys; t++)
+                            {
+                                var vt = cache.Values[l][t];
+                                float p = scores[t];
+                                for (int d = 0; d < headDim; d++) context[hOff + d] += p * vt[hOff + d];
+                            }
+                        }
+                    }
+                }
+                contexts[i] = context;
+            });
+
+            var attnOut = LinearBatched(contexts, layer.CProjWeight, layer.CProjBias, dim, dim);
+            for (int i = 0; i < n; i++) TensorPrimitives.Add(current[i], attnOut[i], current[i]);
+
+            var ffnNormed = new float[n][];
+            for (int i = 0; i < n; i++) ffnNormed[i] = LayerNorm(current[i], layer.Ln2Weight, layer.Ln2Bias);
+            var fcAll = LinearBatched(ffnNormed, layer.FcInWeight, layer.FcInBias, dim, MossTtsGlobalTransformerWeights.IntermediateDim);
+            for (int i = 0; i < n; i++) GeluNewInPlace(fcAll[i]);
+            var projAll = LinearBatched(fcAll, layer.FcOutWeight, layer.FcOutBias, MossTtsGlobalTransformerWeights.IntermediateDim, dim);
+            for (int i = 0; i < n; i++) TensorPrimitives.Add(current[i], projAll[i], current[i]);
+        }
+
+        cache.Length = n;
+        return LayerNorm(current[^1], finalNormWeight, finalNormBias);
+    }
+
+    /// <summary>
+    /// Processes initial prompt rows in full, populates the KV cache for all layers, and returns the last row's hidden state.
+    /// </summary>
+    public static float[] ForwardPrefill(
+        MossTtsGlobalTransformerWeights w,
+        IReadOnlyList<MossTtsGlobalRow> prompt,
+        MossTtsGlobalKvCache cache)
+    {
+        var inputRows = new float[prompt.Count][];
+        for (int i = 0; i < prompt.Count; i++)
+            inputRows[i] = EmbedInputRow(w, prompt[i]);
+        return ForwardPrefillRows(inputRows, w.Layers, w.FinalNormWeight, w.FinalNormBias, cache);
+    }
+
+    /// <summary>
+    /// Evaluates only the single newly appended row, updating the KV cache and returning its hidden state.
+    /// </summary>
+    public static float[] ForwardStepRow(
+        float[] inputRow,
+        IReadOnlyList<MossTtsGlobalTransformerLayerWeights> layers,
+        float[] finalNormWeight,
+        float[] finalNormBias,
+        MossTtsGlobalKvCache cache)
+    {
+        int p = cache.Length;
+        const int dim = MossTtsGlobalTransformerWeights.HiddenDim;
+        const int headDim = MossTtsGlobalTransformerWeights.HeadDim;
+        const int numHeads = MossTtsGlobalTransformerWeights.NumHeads;
+        float scale = 1f / MathF.Sqrt(headDim);
+
+        var current = (float[])inputRow.Clone();
+
+        for (int l = 0; l < layers.Count; l++)
+        {
+            var layer = layers[l];
+            var normed = LayerNorm(current, layer.Ln1Weight, layer.Ln1Bias);
+            var qkv = Linear(normed, layer.CAttnWeight, layer.CAttnBias, dim, dim * 3);
+
+            var q = new float[dim];
+            var k = cache.Keys[l][p];
+            var v = cache.Values[l][p];
+            Array.Copy(qkv, 0, q, 0, dim);
+            Array.Copy(qkv, dim, k, 0, dim);
+            Array.Copy(qkv, dim * 2, v, 0, dim);
+            ApplyRopeAdjacentPairs(q, numHeads, headDim, position: p);
+            ApplyRopeAdjacentPairs(k, numHeads, headDim, position: p);
+
+            var context = new float[dim];
+            int availableKeys = p + 1;
+            var scores = new float[availableKeys];
+            unsafe
+            {
+                fixed (float* qp = q)
+                {
+                    for (int hOffIdx = 0; hOffIdx < numHeads; hOffIdx++)
+                    {
+                        int hOff = hOffIdx * headDim;
+                        for (int t = 0; t < availableKeys; t++)
+                        {
+                            fixed (float* kp = cache.Keys[l][t])
+                                scores[t] = SimdKernels.DotF32(qp + hOff, kp + hOff, headDim) * scale;
+                        }
+                        SoftmaxInPlace(scores);
+                        for (int t = 0; t < availableKeys; t++)
+                        {
+                            var vt = cache.Values[l][t];
+                            float prob = scores[t];
+                            for (int d = 0; d < headDim; d++) context[hOff + d] += prob * vt[hOff + d];
+                        }
+                    }
+                }
+            }
+
+            var attnOut = Linear(context, layer.CProjWeight, layer.CProjBias, dim, dim);
+            TensorPrimitives.Add(current, attnOut, current);
+
+            var ffnNormed = LayerNorm(current, layer.Ln2Weight, layer.Ln2Bias);
+            var fcAll = Linear(ffnNormed, layer.FcInWeight, layer.FcInBias, dim, MossTtsGlobalTransformerWeights.IntermediateDim);
+            GeluNewInPlace(fcAll);
+            var projAll = Linear(fcAll, layer.FcOutWeight, layer.FcOutBias, MossTtsGlobalTransformerWeights.IntermediateDim, dim);
+            TensorPrimitives.Add(current, projAll, current);
+        }
+
+        cache.Length = p + 1;
+        return LayerNorm(current, finalNormWeight, finalNormBias);
+    }
+
+    /// <summary>
+    /// Evaluates only the single newly appended row, updating the KV cache and returning its hidden state.
+    /// </summary>
+    public static float[] ForwardStep(
+        MossTtsGlobalTransformerWeights w,
+        MossTtsGlobalRow newRow,
+        MossTtsGlobalKvCache cache)
+    {
+        var inputRow = EmbedInputRow(w, newRow);
+        return ForwardStepRow(inputRow, w.Layers, w.FinalNormWeight, w.FinalNormBias, cache);
+    }
+
     /// <summary>
     /// Runs the full causal sequence and returns every row's post-final-LayerNorm hidden state
     /// (not just the last one -- useful for prefill where multiple rows' hidden states are needed,
@@ -38,18 +263,7 @@ public static class MossTtsGlobalTransformer
         int n = rows.Count;
         var hidden = new float[n][];
         for (int i = 0; i < n; i++)
-        {
-            var row = rows[i];
-            var h = EmbedRow(w.TextEmbedding, row.TextId, MossTtsGlobalTransformerWeights.HiddenDim);
-            for (int q = 0; q < MossTtsGlobalTransformerWeights.NumCodebooks; q++)
-            {
-                int id = row.AudioIds[q];
-                if (id == MossTtsGlobalTransformerWeights.AudioPadTokenId) continue;
-                var emb = EmbedRow(w.AudioEmbeddings[q], id, MossTtsGlobalTransformerWeights.HiddenDim);
-                TensorPrimitives.Add(h, emb, h);
-            }
-            hidden[i] = h;
-        }
+            hidden[i] = EmbedInputRow(w, rows[i]);
 
         return RunTransformerStack(hidden, w.Layers, w.FinalNormWeight, w.FinalNormBias);
     }
@@ -75,10 +289,13 @@ public static class MossTtsGlobalTransformer
         const int numHeads = MossTtsGlobalTransformerWeights.NumHeads;
         float scale = 1f / MathF.Sqrt(headDim);
 
+        var current = new float[n][];
+        for (int i = 0; i < n; i++) current[i] = (float[])hidden[i].Clone();
+
         foreach (var layer in layers)
         {
             var normed = new float[n][];
-            for (int i = 0; i < n; i++) normed[i] = LayerNorm(hidden[i], layer.Ln1Weight, layer.Ln1Bias);
+            for (int i = 0; i < n; i++) normed[i] = LayerNorm(current[i], layer.Ln1Weight, layer.Ln1Bias);
             var qkvAll = LinearBatched(normed, layer.CAttnWeight, layer.CAttnBias, dim, dim * 3);
 
             var q = new float[n][];
@@ -128,18 +345,18 @@ public static class MossTtsGlobalTransformer
             });
 
             var attnOut = LinearBatched(contexts, layer.CProjWeight, layer.CProjBias, dim, dim);
-            for (int i = 0; i < n; i++) TensorPrimitives.Add(hidden[i], attnOut[i], hidden[i]);
+            for (int i = 0; i < n; i++) TensorPrimitives.Add(current[i], attnOut[i], current[i]);
 
             var ffnNormed = new float[n][];
-            for (int i = 0; i < n; i++) ffnNormed[i] = LayerNorm(hidden[i], layer.Ln2Weight, layer.Ln2Bias);
+            for (int i = 0; i < n; i++) ffnNormed[i] = LayerNorm(current[i], layer.Ln2Weight, layer.Ln2Bias);
             var fcAll = LinearBatched(ffnNormed, layer.FcInWeight, layer.FcInBias, dim, MossTtsGlobalTransformerWeights.IntermediateDim);
             for (int i = 0; i < n; i++) GeluNewInPlace(fcAll[i]);
             var projAll = LinearBatched(fcAll, layer.FcOutWeight, layer.FcOutBias, MossTtsGlobalTransformerWeights.IntermediateDim, dim);
-            for (int i = 0; i < n; i++) TensorPrimitives.Add(hidden[i], projAll[i], hidden[i]);
+            for (int i = 0; i < n; i++) TensorPrimitives.Add(current[i], projAll[i], current[i]);
         }
 
         var result = new float[n][];
-        for (int i = 0; i < n; i++) result[i] = LayerNorm(hidden[i], finalNormWeight, finalNormBias);
+        for (int i = 0; i < n; i++) result[i] = LayerNorm(current[i], finalNormWeight, finalNormBias);
         return result;
     }
 

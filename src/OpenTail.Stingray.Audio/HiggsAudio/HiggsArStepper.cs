@@ -43,6 +43,14 @@ public static class HiggsArStepper
     {
         int hiddenDim = llm.HiddenDim;
         var modality = llm.ModalityEmbeddingWeight; // [numCodebooks*audioVocabSize, hiddenDim]
+        var normWeight = llm.NormWeight;
+
+        // Output RMSNorm: ForwardPass.LastHidden is pre-norm, so normalize before projecting to modality logits (matches ar.cpp).
+        double sumSq = 0;
+        for (int d = 0; d < hiddenDim; d++) sumSq += (double)hidden[d] * hidden[d];
+        float invRms = (float)(1.0 / Math.Sqrt(sumSq / hiddenDim + 1e-6));
+        var normedHidden = new float[hiddenDim];
+        for (int d = 0; d < hiddenDim; d++) normedHidden[d] = hidden[d] * invRms * normWeight[d];
 
         var codes = new int[numCodebooks];
         var logitsRow = options is null ? null : new float[audioVocabSize];
@@ -57,7 +65,7 @@ public static class HiggsArStepper
                 {
                     long row = rowBase + (long)v * hiddenDim;
                     float dot = 0f;
-                    for (int d = 0; d < hiddenDim; d++) dot += modality[row + d] * hidden[d];
+                    for (int d = 0; d < hiddenDim; d++) dot += modality[row + d] * normedHidden[d];
                     if (dot > best) { best = dot; bestIdx = v; }
                 }
                 codes[cb] = bestIdx;
@@ -68,7 +76,7 @@ public static class HiggsArStepper
                 {
                     long row = rowBase + (long)v * hiddenDim;
                     float dot = 0f;
-                    for (int d = 0; d < hiddenDim; d++) dot += modality[row + d] * hidden[d];
+                    for (int d = 0; d < hiddenDim; d++) dot += modality[row + d] * normedHidden[d];
                     logitsRow![v] = dot;
                 }
                 codes[cb] = Sampler.Sample(logitsRow!, options, rng);

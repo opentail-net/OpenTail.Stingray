@@ -288,12 +288,13 @@ public static class MimiCodecDecoder
     private static float[][] ConvTranspose1d(float[][] input, int inChannels, int outChannels, float[] weight, float[] bias, int kernel, int stride)
     {
         int inLen = input[0].Length;
-        int outLen = (inLen - 1) * stride + kernel;
-        var output = new float[outChannels][];
+        int rawLen = (inLen - 1) * stride + kernel;
+        int outLen = inLen * stride;
+        var raw = new float[outChannels][];
         for (int oc = 0; oc < outChannels; oc++)
         {
-            output[oc] = new float[outLen];
-            for (int o = 0; o < outLen; o++) output[oc][o] = bias[oc];
+            raw[oc] = new float[rawLen];
+            for (int o = 0; o < rawLen; o++) raw[oc][o] = bias[oc];
         }
         for (int ic = 0; ic < inChannels; ic++)
         {
@@ -308,9 +309,15 @@ public static class MimiCodecDecoder
                 {
                     int o = baseOut + k;
                     for (int oc = 0; oc < outChannels; oc++)
-                        output[oc][o] += weight[wBaseIc + oc * kernel + k] * v;
+                        raw[oc][o] += weight[wBaseIc + oc * kernel + k] * v;
                 }
             }
+        }
+        var output = new float[outChannels][];
+        for (int oc = 0; oc < outChannels; oc++)
+        {
+            output[oc] = new float[outLen];
+            Array.Copy(raw[oc], 0, output[oc], 0, outLen);
         }
         return output;
     }
@@ -319,13 +326,14 @@ public static class MimiCodecDecoder
     private static float[][] DepthwiseConvTranspose1d(float[][] input, int channels, float[] weight, float[] bias, int kernel, int stride)
     {
         int inLen = input[0].Length;
-        int outLen = (inLen - 1) * stride + kernel;
-        var output = new float[channels][];
+        int rawLen = (inLen - 1) * stride + kernel;
+        int outLen = inLen * stride;
+        var raw = new float[channels][];
         for (int c = 0; c < channels; c++)
         {
-            output[c] = new float[outLen];
+            raw[c] = new float[rawLen];
             float b = bias[c];
-            for (int o = 0; o < outLen; o++) output[c][o] = b;
+            for (int o = 0; o < rawLen; o++) raw[c][o] = b;
             var inRow = input[c];
             int wBase = c * kernel;
             for (int i = 0; i < inLen; i++)
@@ -333,8 +341,14 @@ public static class MimiCodecDecoder
                 float v = inRow[i];
                 if (v == 0f) continue;
                 int baseOut = i * stride;
-                for (int k = 0; k < kernel; k++) output[c][baseOut + k] += weight[wBase + k] * v;
+                for (int k = 0; k < kernel; k++) raw[c][baseOut + k] += weight[wBase + k] * v;
             }
+        }
+        var output = new float[channels][];
+        for (int c = 0; c < channels; c++)
+        {
+            output[c] = new float[outLen];
+            Array.Copy(raw[c], 0, output[c], 0, outLen);
         }
         return output;
     }

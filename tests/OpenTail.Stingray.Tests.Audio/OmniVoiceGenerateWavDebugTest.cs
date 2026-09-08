@@ -64,7 +64,7 @@ public sealed class OmniVoiceGenerateWavDebugTest : HeavyTestBase
         // in the reference, not a guess, just a simpler real path than the default text-length
         // estimator. Real `frame_rate = audio_tokenizer.sample_rate / hop_length` = 24000/960 = 25.
         const int frameRate = 25;
-        const float durationSeconds = 1.5f;
+        const float durationSeconds = 3.2f;
         int targetFrames = Math.Max(1, (int)MathF.Round(durationSeconds * frameRate));
 
         var codesFlat = OmniVoiceMaskGitGenerator.Generate(

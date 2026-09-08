@@ -77,10 +77,30 @@ public sealed class NeuTtsAudioDecoderRealWeightsTests : HeavyTestBase
             emilyCodesInt = new ReadOnlySpan<int>(raw, checked((int)emilyInfo.ElementCount)).ToArray();
         }
 
+        string? emilyRefText = null;
+        if (model.Metadata.TryGetValue("audiocpp.embedded_files.names", out var nObj) && nObj is object[] fNames)
+        {
+            var offsets = (object[])model.Metadata["audiocpp.embedded_files.offsets"];
+            var data = (object[])model.Metadata["audiocpp.embedded_files.data"];
+            var bytes = data.Select(o => (byte)Convert.ToInt64(o)).ToArray();
+            for (int i = 0; i < fNames.Length; i++)
+            {
+                string fn = (string)fNames[i];
+                if (fn.EndsWith("emily.txt", StringComparison.OrdinalIgnoreCase) || fn.EndsWith("emily", StringComparison.OrdinalIgnoreCase))
+                {
+                    long start = Convert.ToInt64(offsets[i]);
+                    long end = i + 1 < offsets.Length ? Convert.ToInt64(offsets[i + 1]) : bytes.Length;
+                    emilyRefText = System.Text.Encoding.UTF8.GetString(bytes[(int)start..(int)end]).Trim();
+                    break;
+                }
+            }
+        }
+        Console.WriteLine($"[NeuTts] Emily ref text: '{emilyRefText}'");
+
         var prompt = NeuTtsPromptBuilder.Build(
             tokenizer, tokenizerSource, addedTokens,
-            referenceText: "This is a reference recording.",
-            inputText: "Hello there.",
+            referenceText: emilyRefText ?? "This is a reference recording.",
+            inputText: "Hello there, this is a full test of the NeuTTS speech synthesis system.",
             speakerSpeechCodes: emilyCodesInt);
 
         using var llm = new NeuTtsBackboneTensorSource(source);
@@ -88,7 +108,12 @@ public sealed class NeuTtsAudioDecoderRealWeightsTests : HeavyTestBase
         using var backend = new CpuBackend();
         using var fwd = new ForwardPass(llm, backend, hp);
 
-        var codes = NeuTtsGenerator.GenerateSpeechCodes(fwd, prompt, new NeuTtsGenerationOptions { MaxNewTokens = 64 });
+        var codes = NeuTtsGenerator.GenerateSpeechCodes(fwd, prompt, new NeuTtsGenerationOptions
+        {
+            MaxNewTokens = 300,
+            Sampling = new SamplingParams { Temperature = 0.8f, TopK = 50, TopP = 0.95f },
+            Rng = new Random(42)
+        });
         Assert.NotEmpty(codes);
 
         var codecWeights = NeuTtsAudioDecoderWeights.Load(source.GetTensor);

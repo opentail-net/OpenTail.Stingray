@@ -94,10 +94,15 @@ public sealed class PersonaPlexGenerateWavDebugTest : HeavyTestBase
         var tokenizerBytes = ExtractEmbeddedFile(model, "tokenizer_spm_32k_3.model");
         var tokenizer = PersonaPlexSentencePieceModel.Load(tokenizerBytes);
 
+        var textOptions = new SamplingParams { Temperature = 0.7f, TopK = 25, TopP = 1.0f };
+        var audioOptions = new SamplingParams { Temperature = 0.8f, TopK = 250, TopP = 1.0f };
+        var rng = new Random(42424242);
+
         var frames = PersonaPlexGenerator.GenerateWithVoicePrompt(
             fwd, llm, depformer, voicePrompt, MimiFrameRate,
-            systemPrompt: "You are a friendly assistant speaking out loud.", tokenizer,
-            numOutputFrames: 50, TextVocabSize, AudioCodebookSize);
+            systemPrompt: "You are a wise and friendly assistant. Speak clearly and introduce yourself.", tokenizer,
+            numOutputFrames: 50, TextVocabSize, AudioCodebookSize,
+            textOptions: textOptions, audioOptions: audioOptions, rng: rng);
 
         Assert.True(frames.Length > 0);
 
