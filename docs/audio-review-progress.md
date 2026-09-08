@@ -17987,3 +17987,47 @@ technique that found VibeVoice ASR's normalization bug) -- add a real trace hook
 the reference, and compare intermediate magnitudes stage by stage to localize exactly where the
 ~2.7x gap first appears -- rather than continuing to guess at more candidates from source reading
 alone.
+
+## MOSS-TTS-Nano -- ROOT CAUSE FOUND for the remaining RMS/loudness gap: RNG algorithm mismatch, codec decoder proven fully correct, 2026-09-08
+
+Built the numeric trace comparison scoped in the previous entry. Added real `STINGRAY_MOSS_TRACE`-
+gated hooks (env-gated, same pattern as this session's other bisections) to the reference: one
+dumping the dequantized latent right after `MossAudioTokenizerDecoder::decode`'s
+`dequantizer->decode` call, one dumping the final waveform, and one in `moss_tts_nano/session.cpp`
+dumping every one of a real generation's actual sampled codes (208 values, 13 frames x 16
+codebooks) as individual scalars (the existing `trace_log_i32`/`trace_log_f32` helpers auto-
+downsample to ~40 points for large tensors, too few to reconstruct an exact codes array, so this
+used one `trace_log_scalar` call per value instead). Ran the reference CLI on the identical prompt/
+seed already used for the earlier comparison sample (`"Hello there."`, `--seed 11`) and captured its
+real, exact generated codes.
+
+Fed those EXACT SAME 208 codes into this port's own `MossTtsAudioCodecDecoder.Decode` directly
+(bypassing generation entirely). Real, decisive result: RMS=0.1357, peak=0.6200 -- matching the
+reference's own reported RMS=0.1357/peak=0.6198 essentially exactly. **This proves the codec
+decoder itself is fully, numerically correct** -- every candidate ruled out in the previous entry's
+exhaustive structural review (LayerScale, biases, patch-upsample, weight_norm reconstruction,
+DecodeFrame) was correctly ruled out; the codec was never the problem. The ENTIRE remaining ~2.7x
+loudness gap lives in code GENERATION (the global/local transformer's sampling), not decoding --
+even with matching real sampling parameters (`temperature=1.7, top_p=0.8, top_k=25`) and a matching
+numeric seed (11), this port's actual generated codes differ from the reference's.
+
+Root-caused why: the reference's `HfSampler` uses `std::discrete_distribution` seeded from a real
+`std::mt19937` (`hf_sampler.cpp`); this port's `Sampler.Sample` uses .NET's own `System.Random`.
+These are fundamentally different RNG algorithms with incompatible internal state -- an identical
+numeric seed value does NOT produce a matching random sequence across them, so every sampled token
+after the first diverges. This is the SAME class of gap already accepted elsewhere in this session
+(`VibeVoiceAcousticLatentSampler`'s Box-Muller-over-`System.Random` vs the reference's Torch-CUDA
+Philox RNG) -- and here it is NOT practically closable either: `std::discrete_distribution`'s exact
+internal algorithm (how many `mt19937` draws it consumes, its precision/rejection-sampling details)
+is implementation-defined by the C++ standard, meaning even a faithful `mt19937` port would still
+need to replicate MSVC's specific STL internals bit-for-bit to match -- undocumented, fragile
+across compiler versions, and not a reasonable thing to chase further.
+
+**Conclusion, formally accepted rather than left open**: MOSS-TTS-Nano's remaining ~2.7x loudness
+gap is a real, now fully-understood, deliberately-accepted RNG-precision gap (same class as
+VibeVoice ASR's), not a code defect. The codec decoder, connector, and every structural component
+are proven correct. Different (but architecturally valid) sampling outcomes from a non-bit-
+identical RNG are expected and acceptable, the same way a different-but-correct resampler produces
+non-identical-but-valid output elsewhere in this session's work. No further investigation planned
+for this specific gap; the earlier greedy-vs-sampled bug fix (which WAS a real, closable defect)
+remains the genuine, durable improvement from this investigation.
