@@ -17335,9 +17335,34 @@ finite/shape, never real reference VALUES).
 **Real, precisely scoped next step**: bisect INSIDE `VibeVoiceTokenizerEncoder.Encode` itself (its
 own per-stage/per-layer structure, same technique as VoxCPM2's per-layer bisection this session) --
 the divergence is now narrowed from "the whole ASR pipeline" down to one specific, real,
-self-contained component with a known-correct reference trace point to compare against. Not started
-this pass given the time already invested this cycle; a future pass should read
-`tokenizer_audio.cpp`'s real encoder stage-by-stage structure (already partially documented from
-this session's VibeVoice TTS work, since the tokenizer encoder architecture is shared) and add
-per-stage taps.
+self-contained component with a known-correct reference trace point to compare against.
+
+**Update, same pass -- four more real formulas checked against `speech_tokenizer.cpp` directly and
+confirmed CORRECT (ruling out four more dead ends, saving a future pass from re-checking them)**:
+
+1. **Downsample stride assignment**: the reference's real
+   `stride = config.encoder_ratios[config.encoder_ratios.size() - stage]` (a reversed-index lookup,
+   easy to get backwards) tabulates to the exact same per-stage stride sequence as this port's
+   `Array.Reverse(ratios)` + forward-index approach for the real 6-ratio config -- verified by hand,
+   both produce `[2,2,4,5,5,8]` for stages 1-6.
+2. **ConvNeXt block structure** (`tokenizer_block`): RMSNorm -&gt; depthwise conv -&gt; gamma scale
+   -&gt; residual add -&gt; RMSNorm -&gt; FFN (linear1 -&gt; exact-erf GELU -&gt; linear2) -&gt; ffn_gamma
+   scale -&gt; residual add -- matches `VibeVoiceConvNeXtBlock.Forward` exactly, op for op.
+3. **`channel_rms_norm`**: standard RMSNorm over the channel dimension per time step (weight
+   applied, no bias) -- matches `VibeVoiceConvNeXtBlock.ChannelRmsNorm`'s formula exactly.
+4. **Causal conv padding** (`sconv1d`'s `padding_total`/`extra_padding_for_conv1d`/
+   `constant_pad_frames`): the real `(kernel-1)*dilation-(stride-1)` base padding plus a real
+   length-adjustment "extra padding" term (the Encodec/DAC-style trick already used elsewhere this
+   session) applied LEFT-then-RIGHT -- matches `CausalConv1d`/`ExtraPaddingForConv1d`/`PadFrames`
+   formula-for-formula, including the real `left=padTotal, right=extra` side convention.
+
+Not started this pass (time already invested this cycle is substantial): the remaining unverified
+candidates are narrower still -- the depthwise conv's real kernel/channel-grouping details, the
+`scale_channels`/gamma broadcast convention, the FFN linear weight layout/transpose convention, and
+(a different CLASS of bug, not a formula error) whether `VibeVoiceTokenizerEncoderWeights.Load` is
+reading the exactly right tensor names/shapes from the checkpoint for this specific model (real
+tensor-name dumps were done for the DECODER path this session, but not independently re-verified for
+every encoder tensor). A future pass should add per-stage output taps (mirroring VoxCPM2's
+`EnableHiddenTaps`-style per-layer bisection) to find the FIRST stage where the two diverge, which
+would immediately narrow to one of these remaining candidates.
 
