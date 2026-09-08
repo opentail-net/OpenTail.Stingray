@@ -75,6 +75,12 @@ public sealed unsafe class OmniVoiceLlmTensorSource : IModelTensorSource, IDispo
             ["qwen3.vocab_size"] = vocabSize,
             ["qwen3.context_length"] = 40960,
         };
+        if (_byName.ContainsKey("blk.0.attn_q.bias"))
+            _metadata["_opentailllm.has_attn_bias"] = true;
+        if (_byName.ContainsKey("blk.0.attn_output.bias"))
+            _metadata["_opentailllm.has_attn_output_bias"] = true;
+        if (_byName.ContainsKey("blk.0.attn_q_norm.weight"))
+            _metadata["_opentailllm.has_qk_norm"] = true;
     }
 
     private void MapIfPresent(string sourceName, string canonicalName)

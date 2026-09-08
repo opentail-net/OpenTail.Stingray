@@ -111,6 +111,12 @@ public sealed unsafe class CosyVoiceLlmTensorSource : IModelTensorSource, IDispo
             ["qwen2.vocab_size"] = vocabSize,
             ["qwen2.context_length"] = 32768,
         };
+        if (_byCanonicalName.ContainsKey("blk.0.attn_q.bias"))
+            metadata["_opentailllm.has_attn_bias"] = true;
+        if (_byCanonicalName.ContainsKey("blk.0.attn_output.bias"))
+            metadata["_opentailllm.has_attn_output_bias"] = true;
+        if (_byCanonicalName.ContainsKey("blk.0.attn_q_norm.weight"))
+            metadata["_opentailllm.has_qk_norm"] = true;
         _metadata = metadata;
     }
 

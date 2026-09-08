@@ -1,3 +1,5 @@
+using System.Numerics.Tensors;
+
 namespace OpenTail.Stingray.Audio.HiggsAudio;
 
 /// <summary>
@@ -68,18 +70,23 @@ public static class HiggsCodecDecoder
         var sum = new float[frames][];
         for (int t = 0; t < frames; t++) sum[t] = new float[HiggsCodecDecoderWeights.CodecHiddenSize];
 
+        int codebookDim = HiggsCodecDecoderWeights.CodebookDim;
+        int codecHidden = HiggsCodecDecoderWeights.CodecHiddenSize;
+
         for (int cb = 0; cb < HiggsCodecDecoderWeights.NumCodebooks; cb++)
         {
             var q = w.Quantizers[cb];
-            for (int t = 0; t < frames; t++)
+            Parallel.For(0, frames, t =>
             {
                 int id = codes[t][cb];
-                var embed = new float[HiggsCodecDecoderWeights.CodebookDim];
-                Array.Copy(q.CodebookEmbed, (long)id * HiggsCodecDecoderWeights.CodebookDim, embed, 0, HiggsCodecDecoderWeights.CodebookDim);
-                var projected = Linear(embed, q.ProjectOutWeight, q.ProjectOutBias,
-                    HiggsCodecDecoderWeights.CodebookDim, HiggsCodecDecoderWeights.CodecHiddenSize);
-                for (int c = 0; c < HiggsCodecDecoderWeights.CodecHiddenSize; c++) sum[t][c] += projected[c];
-            }
+                var embed = q.CodebookEmbed.AsSpan(id * codebookDim, codebookDim);
+                var sumT = sum[t];
+                for (int o = 0; o < codecHidden; o++)
+                {
+                    float proj = q.ProjectOutBias[o] + TensorPrimitives.Dot(q.ProjectOutWeight.AsSpan(o * codebookDim, codebookDim), embed);
+                    sumT[o] += proj;
+                }
+            });
         }
         return sum;
     }
@@ -93,11 +100,11 @@ public static class HiggsCodecDecoder
 
         int t = x[0].Length;
         var output = new float[channels][];
-        for (int c = 0; c < channels; c++)
+        Parallel.For(0, channels, c =>
         {
             output[c] = new float[t];
-            for (int i = 0; i < t; i++) output[c][i] = x[c][i] + h[c][i];
-        }
+            TensorPrimitives.Add((ReadOnlySpan<float>)x[c], h[c], output[c]);
+        });
         return output;
     }
 
@@ -106,17 +113,19 @@ public static class HiggsCodecDecoder
     {
         int t = x[0].Length;
         var output = new float[channels][];
-        for (int c = 0; c < channels; c++)
+        Parallel.For(0, channels, c =>
         {
             output[c] = new float[t];
             float a = alpha[c];
             float denom = a + 1e-9f;
+            var xc = x[c];
+            var oc = output[c];
             for (int i = 0; i < t; i++)
             {
-                float s = MathF.Sin(a * x[c][i]);
-                output[c][i] = x[c][i] + (s * s) / denom;
+                float s = MathF.Sin(a * xc[i]);
+                oc[i] = xc[i] + (s * s) / denom;
             }
-        }
+        });
         return output;
     }
 
@@ -126,10 +135,11 @@ public static class HiggsCodecDecoder
         int inLen = input[0].Length;
         int outLen = (inLen + 2 * padding - dilation * (kernel - 1) - 1) / stride + 1;
         var output = new float[outChannels][];
-        for (int oc = 0; oc < outChannels; oc++)
+        Parallel.For(0, outChannels, oc =>
         {
             output[oc] = new float[outLen];
             int wBaseOc = oc * inChannels * kernel;
+            var ocOutput = output[oc];
             for (int o = 0; o < outLen; o++)
             {
                 float sum = bias[oc];
@@ -145,9 +155,9 @@ public static class HiggsCodecDecoder
                         sum += weight[wBase + k] * inRow[idx];
                     }
                 }
-                output[oc][o] = sum;
+                ocOutput[o] = sum;
             }
-        }
+        });
         return output;
     }
 
@@ -159,9 +169,12 @@ public static class HiggsCodecDecoder
         int inLen = input[0].Length;
         int outLen = (inLen - 1) * stride - 2 * padding + kernel + outputPadding;
         var output = new float[outChannels][];
-        for (int oc = 0; oc < outChannels; oc++) output[oc] = new float[outLen];
-        for (int oc = 0; oc < outChannels; oc++)
-            for (int o = 0; o < outLen; o++) output[oc][o] = bias[oc];
+        Parallel.For(0, outChannels, oc =>
+        {
+            var ocOut = new float[outLen];
+            ocOut.AsSpan().Fill(bias[oc]);
+            output[oc] = ocOut;
+        });
 
         for (int ic = 0; ic < inChannels; ic++)
         {
@@ -184,15 +197,12 @@ public static class HiggsCodecDecoder
         return output;
     }
 
-    private static float[] Linear(float[] input, float[] weight, float[] bias, int inDim, int outDim)
+    private static float[] Linear(ReadOnlySpan<float> input, float[] weight, float[] bias, int inDim, int outDim)
     {
         var output = new float[outDim];
         for (int o = 0; o < outDim; o++)
         {
-            float sum = bias[o];
-            int wBase = o * inDim;
-            for (int i = 0; i < inDim; i++) sum += weight[wBase + i] * input[i];
-            output[o] = sum;
+            output[o] = bias[o] + TensorPrimitives.Dot(weight.AsSpan(o * inDim, inDim), input);
         }
         return output;
     }

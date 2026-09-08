@@ -101,6 +101,12 @@ public sealed unsafe class CosyVoice3LlmTensorSource : IModelTensorSource, IDisp
             ["qwen2.vocab_size"] = _textVocabSize,
             ["qwen2.context_length"] = 32768,
         };
+        if (_canonicalToReal.ContainsKey("blk.0.attn_q.bias"))
+            _metadata["_opentailllm.has_attn_bias"] = true;
+        if (_canonicalToReal.ContainsKey("blk.0.attn_output.bias"))
+            _metadata["_opentailllm.has_attn_output_bias"] = true;
+        if (_canonicalToReal.ContainsKey("blk.0.attn_q_norm.weight"))
+            _metadata["_opentailllm.has_qk_norm"] = true;
     }
 
     private void MapCanonical(string realName, string canonicalName)

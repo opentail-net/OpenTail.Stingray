@@ -6,17 +6,8 @@ namespace OpenTail.Stingray.Audio.Citrinet;
 /// convention as `OpenTail.Stingray.Audio.MarbleNet.MarbleNetConvBn`, confirmed identical in
 /// `citrinet_asr/runtime.cpp`'s `load_backend_weights`: depthwise convs are BN-free plain convs,
 /// pointwise/plain/residual convs fold their BN in.</summary>
-public sealed class CitrinetConvBn
+public sealed class CitrinetConvBn : JasperConv1dWeights
 {
-    public required int InChannels { get; init; }
-    public required int OutChannels { get; init; }
-    public required int Kernel { get; init; }
-    public required int Stride { get; init; }
-    public required int Dilation { get; init; }
-    public required int Padding { get; init; }
-    public required bool Depthwise { get; init; }
-    public required float[] Weight { get; init; }
-    public required float[] Bias { get; init; }
 
     public static CitrinetConvBn LoadWithBn(
         Func<string, float[]> get, string convPrefix, string bnPrefix,

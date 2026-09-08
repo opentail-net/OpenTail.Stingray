@@ -1,3 +1,4 @@
+using System.Numerics.Tensors;
 using OpenTail.Stingray.Audio.Primitives;
 
 namespace OpenTail.Stingray.Audio.OmniVoice;
@@ -119,14 +120,15 @@ public static class OmniVoiceMaskGitGenerator
 
             // Real CFG-combined per-frame [8*vocab] logits: combined = cond + guidance*(cond-uncond).
             var combinedLogits = new float[targetFrames][];
-            for (int f = 0; f < targetFrames; f++)
+            Parallel.For(0, targetFrames, f =>
             {
                 var condRow = DenseKernels.LinearNoBias(condHidden[conditionalTargetStart + f], w.AudioHead, hidden, codebooks * vocab);
                 var uncondRow = DenseKernels.LinearNoBias(uncondHidden[f], w.AudioHead, hidden, codebooks * vocab);
                 var row = new float[codebooks * vocab];
-                for (int i = 0; i < row.Length; i++) row[i] = condRow[i] + options.GuidanceScale * (condRow[i] - uncondRow[i]);
+                TensorPrimitives.Subtract((ReadOnlySpan<float>)condRow, uncondRow, row);
+                TensorPrimitives.MultiplyAdd((ReadOnlySpan<float>)row, options.GuidanceScale, condRow, row);
                 combinedLogits[f] = row;
-            }
+            });
 
             // Real per-cell candidate scoring (class_temperature=0 greedy path).
             var candidates = new List<(float Score, int Predicted, int Index)>(active.Count);

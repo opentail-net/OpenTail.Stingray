@@ -1,3 +1,4 @@
+using System.Numerics.Tensors;
 using OpenTail.Stingray.Engine;
 
 namespace OpenTail.Stingray.Audio.HiggsAudio;
@@ -82,11 +83,12 @@ public static class HiggsGenerator
         float[] EmbedReferenceFrame(int frame)
         {
             var embedding = new float[hiddenDim];
+            var embeddingSpan = embedding.AsSpan();
             for (int cb = 0; cb < numCodebooks; cb++)
             {
                 int code = delayedFlat[frame * numCodebooks + cb];
                 long rowBase = (long)(cb * audioVocabSize + code) * hiddenDim;
-                for (int d = 0; d < hiddenDim; d++) embedding[d] += modality[rowBase + d];
+                TensorPrimitives.Add(embeddingSpan, modality.AsSpan((int)rowBase, hiddenDim), embeddingSpan);
             }
             return embedding;
         }

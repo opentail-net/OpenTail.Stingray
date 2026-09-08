@@ -1,3 +1,4 @@
+using System.Numerics.Tensors;
 using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Engine;
 
@@ -76,24 +77,16 @@ public static class PersonaPlexGenerator
         var currentAudioCodes = new int[llm.LmCodebooks];
         Array.Fill(currentAudioCodes, AudioInitialToken);
 
+        var embedding = new float[hiddenDim];
         var frames = new Frame[numFrames];
         for (int t = 0; t < numFrames; t++)
         {
-            var embedding = new float[hiddenDim];
-            long textRow = (long)currentTextToken * hiddenDim;
-            for (int d = 0; d < hiddenDim; d++) embedding[d] = textEmbedding[textRow + d];
-            for (int cb = 0; cb < llm.LmCodebooks; cb++)
-            {
-                long row = (long)currentAudioCodes[cb] * hiddenDim;
-                var table = audioEmbeddings[cb];
-                for (int d = 0; d < hiddenDim; d++) embedding[d] += table[row + d];
-            }
+            BuildEmbedding(embedding, textEmbedding, audioEmbeddings, currentTextToken, currentAudioCodes, hiddenDim, llm.LmCodebooks);
 
             var textLogits = fwd.ForwardEmbedding(embedding, t);
-            var hidden = fwd.LastHidden.ToArray();
 
             int nextTextToken = ArgMax(textLogits, textVocabSize);
-            var nextAudioCodes = depformer.GenerateFrame(hidden, nextTextToken, audioCodebookSize);
+            var nextAudioCodes = depformer.GenerateFrame(fwd.LastHidden, nextTextToken, audioCodebookSize);
 
             frames[t] = new Frame(nextTextToken, nextAudioCodes);
             currentTextToken = nextTextToken;
@@ -125,6 +118,7 @@ public static class PersonaPlexGenerator
 
         var delayState = new PersonaPlexDelayState();
         var frames = new List<Frame>(userCodesPerFrame.Length);
+        var embedding = new float[hiddenDim];
         int position = 0;
         foreach (var userCodes in userCodesPerFrame)
         {
@@ -134,21 +128,14 @@ public static class PersonaPlexGenerator
             var step = delayState.Prepare(userCodes, null, null);
             if (step is null) continue; // real one-time offset==0 bootstrap round, no model step
 
-            var tokens = step.Value.Tokens;
-            var embedding = new float[hiddenDim];
-            long textRow = (long)tokens[0] * hiddenDim;
-            for (int d = 0; d < hiddenDim; d++) embedding[d] = textEmbedding[textRow + d];
-            for (int cb = 0; cb < llm.LmCodebooks; cb++)
-            {
-                long row = (long)tokens[1 + cb] * hiddenDim;
-                var table = audioEmbeddings[cb];
-                for (int d = 0; d < hiddenDim; d++) embedding[d] += table[row + d];
-            }
+            BuildEmbedding(embedding, textEmbedding, audioEmbeddings, step.Value.Tokens[0], step.Value.Tokens.AsSpan(1), hiddenDim, llm.LmCodebooks);
 
             var textLogits = fwd.ForwardEmbedding(embedding, position++);
-            var hidden = fwd.LastHidden.ToArray();
             int sampledText = textOptions is null ? ArgMax(textLogits, textVocabSize) : Sampler.Sample(textLogits[..textVocabSize], textOptions, rng);
-            var sampledAudio = depformer.GenerateFrame(hidden, sampledText, audioCodebookSize, audioOptions, rng);
+            int nextText = step.Value.Provided[0] != 0 ? step.Value.Target[0] : sampledText;
+            var audioTarget = step.Value.Target[1..];
+            var audioProvided = step.Value.Provided[1..];
+            var sampledAudio = depformer.GenerateFrame(fwd.LastHidden, nextText, audioCodebookSize, audioOptions, rng, audioTarget, audioProvided);
 
             var output = delayState.FinishWithSampling(sampledText, sampledAudio);
             if (output != null) frames.Add(new Frame(sampledText, output));
@@ -183,6 +170,7 @@ public static class PersonaPlexGenerator
 
         var delayState = new PersonaPlexDelayState();
         var frames = new List<Frame>(numOutputFrames);
+        var embedding = new float[hiddenDim];
         int position = 0;
         int guard = 0;
         while (frames.Count < numOutputFrames)
@@ -193,21 +181,14 @@ public static class PersonaPlexGenerator
             var step = delayState.Prepare(SilenceTokens, null, null);
             if (step is null) continue; // real one-time offset==0 bootstrap round, no model step
 
-            var tokens = step.Value.Tokens;
-            var embedding = new float[hiddenDim];
-            long textRow = (long)tokens[0] * hiddenDim;
-            for (int d = 0; d < hiddenDim; d++) embedding[d] = textEmbedding[textRow + d];
-            for (int cb = 0; cb < llm.LmCodebooks; cb++)
-            {
-                long row = (long)tokens[1 + cb] * hiddenDim;
-                var table = audioEmbeddings[cb];
-                for (int d = 0; d < hiddenDim; d++) embedding[d] += table[row + d];
-            }
+            BuildEmbedding(embedding, textEmbedding, audioEmbeddings, step.Value.Tokens[0], step.Value.Tokens.AsSpan(1), hiddenDim, llm.LmCodebooks);
 
             var textLogits = fwd.ForwardEmbedding(embedding, position++);
-            var hidden = fwd.LastHidden.ToArray();
             int sampledText = textOptions is null ? ArgMax(textLogits, textVocabSize) : Sampler.Sample(textLogits[..textVocabSize], textOptions, rng);
-            var sampledAudio = depformer.GenerateFrame(hidden, sampledText, audioCodebookSize, audioOptions, rng);
+            int nextText = step.Value.Provided[0] != 0 ? step.Value.Target[0] : sampledText;
+            var audioTarget = step.Value.Target[1..];
+            var audioProvided = step.Value.Provided[1..];
+            var sampledAudio = depformer.GenerateFrame(fwd.LastHidden, nextText, audioCodebookSize, audioOptions, rng, audioTarget, audioProvided);
 
             var output = delayState.FinishWithSampling(sampledText, sampledAudio);
             if (output != null) frames.Add(new Frame(sampledText, output));
@@ -262,38 +243,29 @@ public static class PersonaPlexGenerator
 
         var delayState = new PersonaPlexDelayState();
         int position = 0;
-
-        float[] BuildTokenEmbedding(int[] tokens)
-        {
-            var embedding = new float[hiddenDim];
-            long textRow = (long)tokens[0] * hiddenDim;
-            for (int d = 0; d < hiddenDim; d++) embedding[d] = textEmbedding[textRow + d];
-            for (int cb = 0; cb < llm.LmCodebooks; cb++)
-            {
-                long row = (long)tokens[1 + cb] * hiddenDim;
-                var table = audioEmbeddings[cb];
-                for (int d = 0; d < hiddenDim; d++) embedding[d] += table[row + d];
-            }
-            return embedding;
-        }
+        var tokenEmbeddingBuffer = new float[hiddenDim];
 
         // Real always-provided bootstrap step: run the LM forward (embedding either a precomputed
         // voice-prompt frame vector, or built from real forced token ids), then finish with the
         // real forced target values (no real sampling needed -- see this method's doc comment).
-        void RunProvidedStep(float[] embedding, int[] userTokens, int[] moshiTokens, int textToken)
+        void RunPreparedTokenStep(int[] userTokens, int[] moshiTokens, int textToken)
         {
             var step = delayState.Prepare(userTokens, moshiTokens, textToken);
-            while (step is null) step = delayState.Prepare(userTokens, moshiTokens, textToken);
-            fwd.ForwardEmbedding(embedding, position++);
-            delayState.FinishWithSampling(step.Value.Target[0], step.Value.Target[1..]);
+            if (step is null) return;
+            BuildEmbedding(tokenEmbeddingBuffer, textEmbedding, audioEmbeddings, step.Value.Tokens[0], step.Value.Tokens.AsSpan(1), hiddenDim, llm.LmCodebooks);
+            var textLogits = fwd.ForwardEmbedding(tokenEmbeddingBuffer, position++);
+            int sampledText = textOptions is null ? ArgMax(textLogits, textVocabSize) : Sampler.Sample(textLogits[..textVocabSize], textOptions, rng);
+            delayState.FinishWithSampling(sampledText, step.Value.Target[1..]);
         }
 
-        // 1. Real per-voice-id embedding replay.
+        // 1. Real per-voice-id embedding replay (zero allocations: slices directly into voicePrompt).
         for (int frame = 0; frame < voicePrompt.Frames; frame++)
         {
-            var embedding = new float[hiddenDim];
-            Array.Copy(voicePrompt.Embeddings, (long)frame * hiddenDim, embedding, 0, hiddenDim);
-            RunProvidedStep(embedding, InitialAudioTokens, InitialAudioTokens, PersonaPlexDelayState.ZeroTextToken);
+            var step = delayState.Prepare(InitialAudioTokens, InitialAudioTokens, PersonaPlexDelayState.ZeroTextToken);
+            while (step is null) step = delayState.Prepare(InitialAudioTokens, InitialAudioTokens, PersonaPlexDelayState.ZeroTextToken);
+            var textLogits = fwd.ForwardEmbedding(voicePrompt.Embeddings.AsSpan((int)((long)frame * hiddenDim), hiddenDim), position++);
+            int sampledText = textOptions is null ? ArgMax(textLogits, textVocabSize) : Sampler.Sample(textLogits[..textVocabSize], textOptions, rng);
+            delayState.FinishWithSampling(sampledText, step.Value.Target[1..]);
         }
         delayState.ImportCache(voicePrompt.Cache);
 
@@ -301,11 +273,7 @@ public static class PersonaPlexGenerator
         int silenceFrames = (int)(0.5f * mimiFrameRate);
         for (int i = 0; i < silenceFrames; i++)
         {
-            var tokens = new int[PersonaPlexDelayState.NumStreams];
-            tokens[0] = PersonaPlexDelayState.ZeroTextToken;
-            for (int cb = 0; cb < 8; cb++) tokens[1 + cb] = SilenceTokens[cb];
-            for (int cb = 0; cb < 8; cb++) tokens[9 + cb] = SineTokens[cb];
-            RunProvidedStep(BuildTokenEmbedding(tokens), SineTokens, SilenceTokens, PersonaPlexDelayState.ZeroTextToken);
+            RunPreparedTokenStep(SineTokens, SilenceTokens, PersonaPlexDelayState.ZeroTextToken);
         }
 
         // Real system-prompt section: one real token per step, forced (same always-provided
@@ -315,22 +283,14 @@ public static class PersonaPlexGenerator
             var promptTokens = tokenizer!.Encode(wrappedPrompt);
             foreach (int token in promptTokens)
             {
-                var tokens = new int[PersonaPlexDelayState.NumStreams];
-                tokens[0] = token;
-                for (int cb = 0; cb < 8; cb++) tokens[1 + cb] = SilenceTokens[cb];
-                for (int cb = 0; cb < 8; cb++) tokens[9 + cb] = SineTokens[cb];
-                RunProvidedStep(BuildTokenEmbedding(tokens), SineTokens, SilenceTokens, token);
+                RunPreparedTokenStep(SineTokens, SilenceTokens, token);
             }
         }
 
         // 3. Real post-system-prompt silence padding.
         for (int i = 0; i < silenceFrames; i++)
         {
-            var tokens = new int[PersonaPlexDelayState.NumStreams];
-            tokens[0] = PersonaPlexDelayState.ZeroTextToken;
-            for (int cb = 0; cb < 8; cb++) tokens[1 + cb] = SilenceTokens[cb];
-            for (int cb = 0; cb < 8; cb++) tokens[9 + cb] = SineTokens[cb];
-            RunProvidedStep(BuildTokenEmbedding(tokens), SineTokens, SilenceTokens, PersonaPlexDelayState.ZeroTextToken);
+            RunPreparedTokenStep(SineTokens, SilenceTokens, PersonaPlexDelayState.ZeroTextToken);
         }
 
         // 4. Real ordinary self-predicting generation loop, continuing from the bootstrapped state.
@@ -344,16 +304,30 @@ public static class PersonaPlexGenerator
             var step = delayState.Prepare(SilenceTokens, null, null);
             if (step is null) continue;
 
-            var embedding = BuildTokenEmbedding(step.Value.Tokens);
-            var textLogits = fwd.ForwardEmbedding(embedding, position++);
-            var hidden = fwd.LastHidden.ToArray();
+            BuildEmbedding(tokenEmbeddingBuffer, textEmbedding, audioEmbeddings, step.Value.Tokens[0], step.Value.Tokens.AsSpan(1), hiddenDim, llm.LmCodebooks);
+            var textLogits = fwd.ForwardEmbedding(tokenEmbeddingBuffer, position++);
             int sampledText = textOptions is null ? ArgMax(textLogits, textVocabSize) : Sampler.Sample(textLogits[..textVocabSize], textOptions, rng);
-            var sampledAudio = depformer.GenerateFrame(hidden, sampledText, audioCodebookSize, audioOptions, rng);
+
+            int nextText = step.Value.Provided[0] != 0 ? step.Value.Target[0] : sampledText;
+            var audioTarget = step.Value.Target[1..];
+            var audioProvided = step.Value.Provided[1..];
+
+            var sampledAudio = depformer.GenerateFrame(fwd.LastHidden, nextText, audioCodebookSize, audioOptions, rng, audioTarget, audioProvided);
 
             var output = delayState.FinishWithSampling(sampledText, sampledAudio);
             if (output != null) frames.Add(new Frame(sampledText, output));
         }
         return [.. frames];
+    }
+
+    private static void BuildEmbedding(Span<float> dst, float[] textEmbedding, float[][] audioEmbeddings, int textToken, ReadOnlySpan<int> audioTokens, int hiddenDim, int lmCodebooks)
+    {
+        textEmbedding.AsSpan((int)((long)textToken * hiddenDim), hiddenDim).CopyTo(dst);
+        for (int cb = 0; cb < lmCodebooks; cb++)
+        {
+            int row = (int)((long)audioTokens[cb] * hiddenDim);
+            TensorPrimitives.Add((ReadOnlySpan<float>)dst, audioEmbeddings[cb].AsSpan(row, hiddenDim), dst);
+        }
     }
 
     /// <summary>Real `wrap_system_prompt`: trim whitespace; if empty, return empty; if already
@@ -368,12 +342,6 @@ public static class PersonaPlexGenerator
         return $"<system> {trimmed} <system>";
     }
 
-    private static int ArgMax(ReadOnlySpan<float> logits, int count)
-    {
-        int best = 0;
-        float bestVal = logits[0];
-        for (int i = 1; i < count; i++)
-            if (logits[i] > bestVal) { bestVal = logits[i]; best = i; }
-        return best;
-    }
+    private static int ArgMax(ReadOnlySpan<float> logits, int count) =>
+        TensorPrimitives.IndexOfMax(logits[..count]);
 }

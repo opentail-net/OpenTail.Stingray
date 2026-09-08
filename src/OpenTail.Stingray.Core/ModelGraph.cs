@@ -434,6 +434,9 @@ public sealed record ModelHyperparams
     public static ModelHyperparams FromGgufMetadata(IReadOnlyDictionary<string, object> metadata)
         => FromGgufMetadata(metadata, null);
 
+    public static ModelHyperparams FromGgufMetadata(IModelTensorSource tensorSource)
+        => FromGgufMetadata(tensorSource.Metadata, tensorSource);
+
     public static ModelHyperparams FromGgufMetadata(IReadOnlyDictionary<string, object> metadata,
         IModelTensorSource? tensorSource)
     {

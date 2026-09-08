@@ -18,21 +18,7 @@ public static class CitrinetAsr
         foreach (var block in w.Blocks)
             x = JasperBlock(x, block);
 
-        int frames = x[0].Length, inChannels = x.Length;
-        var logits = new float[frames][];
-        for (int t = 0; t < frames; t++)
-        {
-            var row = new float[w.NumClasses];
-            for (int c = 0; c < w.NumClasses; c++)
-            {
-                float sum = w.DecoderBias[c];
-                int wBase = c * inChannels;
-                for (int i = 0; i < inChannels; i++) sum += w.DecoderWeight[wBase + i] * x[i][t];
-                row[c] = sum;
-            }
-            logits[t] = row;
-        }
-        return logits;
+        return JasperKernels.LinearDecoder(x, w.DecoderWeight, w.DecoderBias, w.NumClasses);
     }
 
     private static float[][] JasperBlock(float[][] input, CitrinetJasperBlock block)
@@ -43,29 +29,27 @@ public static class CitrinetAsr
         {
             for (int r = 0; r < block.SeparableRepeats.Length; r++)
             {
-                x = Conv1d(x, block.SeparableRepeats[r].Depthwise);
-                x = Conv1d(x, block.SeparableRepeats[r].Pointwise);
-                if (r + 1 != block.SeparableRepeats.Length) Relu(x);
+                x = JasperKernels.Conv1d(x, block.SeparableRepeats[r].Depthwise);
+                x = JasperKernels.Conv1d(x, block.SeparableRepeats[r].Pointwise);
+                if (r + 1 != block.SeparableRepeats.Length) JasperKernels.Relu(x);
             }
         }
         else
         {
             for (int r = 0; r < block.ConvRepeats.Length; r++)
             {
-                x = Conv1d(x, block.ConvRepeats[r]);
-                if (r + 1 != block.ConvRepeats.Length) Relu(x);
+                x = JasperKernels.Conv1d(x, block.ConvRepeats[r]);
+                if (r + 1 != block.ConvRepeats.Length) JasperKernels.Relu(x);
             }
         }
         if (block.SqueezeExcite is { } se)
             x = SqueezeExcite(x, se);
         if (block.ResidualConvBn is { } res)
         {
-            var projected = Conv1d(residualInput, res);
-            for (int c = 0; c < x.Length; c++)
-                for (int t = 0; t < x[c].Length; t++)
-                    x[c][t] += projected[c][t];
+            var projected = JasperKernels.Conv1d(residualInput, res);
+            JasperKernels.AddResidualInPlace(x, projected);
         }
-        Relu(x);
+        JasperKernels.Relu(x);
         return x;
     }
 
@@ -79,9 +63,7 @@ public static class CitrinetAsr
         var pooled = new float[channels];
         for (int c = 0; c < channels; c++)
         {
-            float sum = 0f;
-            for (int t = 0; t < frames; t++) sum += x[c][t];
-            pooled[c] = sum / frames;
+            pooled[c] = TensorPrimitives.Sum((ReadOnlySpan<float>)x[c]) / frames;
         }
 
         int hidden = se.Fc1.OutChannels;
@@ -104,78 +86,13 @@ public static class CitrinetAsr
         }
 
         var output = new float[channels][];
-        for (int c = 0; c < channels; c++)
+        Parallel.For(0, channels, c =>
         {
             var row = new float[frames];
             float gate = gate2[c];
-            var inRow = x[c];
-            for (int t = 0; t < frames; t++) row[t] = inRow[t] * gate;
+            TensorPrimitives.Multiply((ReadOnlySpan<float>)x[c], gate, row);
             output[c] = row;
-        }
-        return output;
-    }
-
-    private static void Relu(float[][] x)
-    {
-        foreach (var row in x)
-            for (int t = 0; t < row.Length; t++)
-                if (row[t] < 0f) row[t] = 0f;
-    }
-
-    private static float[][] Conv1d(float[][] input, CitrinetConvBn conv)
-    {
-        int inFrames = input[0].Length;
-        int outFrames = (inFrames + 2 * conv.Padding - conv.Dilation * (conv.Kernel - 1) - 1) / conv.Stride + 1;
-        var output = new float[conv.OutChannels][];
-        for (int c = 0; c < conv.OutChannels; c++) output[c] = new float[outFrames];
-
-        if (conv.Depthwise)
-        {
-            for (int c = 0; c < conv.OutChannels; c++)
-            {
-                var inRow = input[c];
-                var outRow = output[c];
-                int wBase = c * conv.Kernel;
-                float bias = conv.Bias[c];
-                for (int t = 0; t < outFrames; t++)
-                {
-                    float sum = bias;
-                    int inStart = t * conv.Stride - conv.Padding;
-                    for (int k = 0; k < conv.Kernel; k++)
-                    {
-                        int inIdx = inStart + k * conv.Dilation;
-                        if (inIdx < 0 || inIdx >= inFrames) continue;
-                        sum += conv.Weight[wBase + k] * inRow[inIdx];
-                    }
-                    outRow[t] = sum;
-                }
-            }
-        }
-        else
-        {
-            for (int oc = 0; oc < conv.OutChannels; oc++)
-            {
-                var outRow = output[oc];
-                float bias = conv.Bias[oc];
-                for (int t = 0; t < outFrames; t++)
-                {
-                    float sum = bias;
-                    int inStart = t * conv.Stride - conv.Padding;
-                    for (int ic = 0; ic < conv.InChannels; ic++)
-                    {
-                        var inRow = input[ic];
-                        int wBase = (oc * conv.InChannels + ic) * conv.Kernel;
-                        for (int k = 0; k < conv.Kernel; k++)
-                        {
-                            int inIdx = inStart + k * conv.Dilation;
-                            if (inIdx < 0 || inIdx >= inFrames) continue;
-                            sum += conv.Weight[wBase + k] * inRow[inIdx];
-                        }
-                    }
-                    outRow[t] = sum;
-                }
-            }
-        }
+        });
         return output;
     }
 

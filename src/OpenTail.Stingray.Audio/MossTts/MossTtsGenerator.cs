@@ -45,11 +45,11 @@ public static class MossTtsGenerator
 
         float[] hidden = MossTtsGlobalTransformer.ForwardPrefill(g, prompt, cache);
 
+        int[]? prevFrame = null;
         for (int step = 0; step < maxNewFrames; step++)
         {
-            if (step > 0)
+            if (prevFrame is not null)
             {
-                var prevFrame = generated.GetRange((step - 1) * MossTtsGlobalTransformerWeights.NumCodebooks, MossTtsGlobalTransformerWeights.NumCodebooks).ToArray();
                 var newRow = new MossTtsGlobalRow(MossTtsGlobalTransformerWeights.AudioAssistantSlotTokenId, prevFrame);
                 hidden = MossTtsGlobalTransformer.ForwardStep(g, newRow, cache);
             }
@@ -62,6 +62,7 @@ public static class MossTtsGenerator
             }
 
             generated.AddRange(frame);
+            prevFrame = frame;
         }
 
         if (generated.Count == 0)

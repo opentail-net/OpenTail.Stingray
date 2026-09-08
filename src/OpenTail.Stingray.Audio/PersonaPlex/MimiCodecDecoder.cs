@@ -1,3 +1,4 @@
+using System.Numerics.Tensors;
 using OpenTail.Stingray.Audio.Primitives;
 
 namespace OpenTail.Stingray.Audio.PersonaPlex;
@@ -64,35 +65,36 @@ public static class MimiCodecDecoder
 
         // Semantic stream: codebook 0 lookup -> project.
         var semanticLatent = new float[frames][];
-        for (int t = 0; t < frames; t++)
+        Parallel.For(0, frames, t =>
         {
             var embed = new float[latent];
             Array.Copy(w.SemanticCodebook.Embedding, (long)codes[t][0] * latent, embed, 0, latent);
             semanticLatent[t] = embed;
-        }
+        });
         var semanticProjected = ProjectPerFrame(semanticLatent, w.SemanticOutputProjWeight, latent, hidden);
 
         // Acoustic stream: sum codebooks 1..7 embeddings, then ONE shared projection.
         var acousticLatent = new float[frames][];
-        for (int t = 0; t < frames; t++) acousticLatent[t] = new float[latent];
-        for (int cb = 1; cb < MimiCodecDecoderWeights.ActiveCodebooks; cb++)
+        Parallel.For(0, frames, t =>
         {
-            var table = w.AcousticCodebooks[cb - 1].Embedding;
-            for (int t = 0; t < frames; t++)
+            var acc = new float[latent];
+            for (int cb = 1; cb < MimiCodecDecoderWeights.ActiveCodebooks; cb++)
             {
+                var table = w.AcousticCodebooks[cb - 1].Embedding;
                 long baseIdx = (long)codes[t][cb] * latent;
-                for (int d = 0; d < latent; d++) acousticLatent[t][d] += table[baseIdx + d];
+                TensorPrimitives.Add((ReadOnlySpan<float>)acc, table.AsSpan((int)baseIdx, latent), acc);
             }
-        }
+            acousticLatent[t] = acc;
+        });
         var acousticProjected = ProjectPerFrame(acousticLatent, w.AcousticOutputProjWeight, latent, hidden);
 
         // Combine into channel-major [hidden][frames], real semantic+acoustic ADD.
         var output = new float[hidden][];
-        for (int c = 0; c < hidden; c++)
+        Parallel.For(0, hidden, c =>
         {
             output[c] = new float[frames];
             for (int t = 0; t < frames; t++) output[c][t] = semanticProjected[t][c] + acousticProjected[t][c];
-        }
+        });
         return output;
     }
 
@@ -100,7 +102,7 @@ public static class MimiCodecDecoder
     {
         int frames = frameMajorLatent.Length;
         var output = new float[frames][];
-        for (int t = 0; t < frames; t++) output[t] = DenseKernels.LinearNoBias(frameMajorLatent[t], weight, inDim, outDim);
+        Parallel.For(0, frames, t => output[t] = DenseKernels.LinearNoBias(frameMajorLatent[t], weight, inDim, outDim));
         return output;
     }
 
@@ -130,61 +132,65 @@ public static class MimiCodecDecoder
         foreach (var layer in layers)
         {
             var normed = new float[frames][];
-            for (int t = 0; t < frames; t++) normed[t] = LayerNorm(x[t], layer.Norm1Weight, layer.Norm1Bias, MimiCodecDecoderWeights.NormEps);
+            Parallel.For(0, frames, t => normed[t] = LayerNorm(x[t], layer.Norm1Weight, layer.Norm1Bias, MimiCodecDecoderWeights.NormEps));
 
             var q = new float[frames][];
             var k = new float[frames][];
             var v = new float[frames][];
-            for (int t = 0; t < frames; t++)
+            Parallel.For(0, frames, t =>
             {
                 q[t] = DenseKernels.LinearNoBias(normed[t], layer.QWeight, hidden, hidden);
                 k[t] = DenseKernels.LinearNoBias(normed[t], layer.KWeight, hidden, hidden);
                 v[t] = DenseKernels.LinearNoBias(normed[t], layer.VWeight, hidden, hidden);
-            }
+            });
 
             var attnOut = new float[frames][];
             for (int t = 0; t < frames; t++) attnOut[t] = new float[hidden];
-            for (int h = 0; h < numHeads; h++)
+            Parallel.For(0, numHeads, h =>
             {
                 int off = h * headDim;
+                var scores = new float[frames];
                 for (int tq = 0; tq <= frames - 1; tq++)
                 {
-                    var scores = new float[tq + 1]; // causal: only attend to <= tq
+                    var qSpan = (ReadOnlySpan<float>)q[tq].AsSpan(off, headDim);
                     for (int tk = 0; tk <= tq; tk++)
                     {
-                        float dot = 0f;
-                        for (int d = 0; d < headDim; d++) dot += q[tq][off + d] * k[tk][off + d];
-                        scores[tk] = dot * scale;
+                        scores[tk] = TensorPrimitives.Dot(qSpan, k[tk].AsSpan(off, headDim)) * scale;
                     }
-                    DenseKernels.SoftmaxInPlace(scores);
+                    DenseKernels.SoftmaxInPlace(scores.AsSpan(0, tq + 1));
+                    var outSpan = attnOut[tq].AsSpan(off, headDim);
                     for (int tk = 0; tk <= tq; tk++)
                     {
                         float p = scores[tk];
-                        for (int d = 0; d < headDim; d++) attnOut[tq][off + d] += p * v[tk][off + d];
+                        if (p != 0f)
+                            TensorPrimitives.MultiplyAdd((ReadOnlySpan<float>)v[tk].AsSpan(off, headDim), p, outSpan, outSpan);
                     }
                 }
-            }
+            });
 
             var projected = new float[frames][];
-            for (int t = 0; t < frames; t++)
+            Parallel.For(0, frames, t =>
             {
                 var o = DenseKernels.LinearNoBias(attnOut[t], layer.OutWeight, hidden, hidden);
-                for (int c = 0; c < hidden; c++) o[c] *= layer.LayerScale1[c];
+                TensorPrimitives.Multiply((ReadOnlySpan<float>)o, layer.LayerScale1, o);
                 projected[t] = o;
-            }
-            for (int t = 0; t < frames; t++)
-                for (int c = 0; c < hidden; c++) x[t][c] += projected[t][c];
+            });
+            Parallel.For(0, frames, t =>
+            {
+                TensorPrimitives.Add((ReadOnlySpan<float>)x[t], projected[t], x[t]);
+            });
 
             var ffnNormed = new float[frames][];
-            for (int t = 0; t < frames; t++) ffnNormed[t] = LayerNorm(x[t], layer.Norm2Weight, layer.Norm2Bias, MimiCodecDecoderWeights.NormEps);
+            Parallel.For(0, frames, t => ffnNormed[t] = LayerNorm(x[t], layer.Norm2Weight, layer.Norm2Bias, MimiCodecDecoderWeights.NormEps));
             int intermediate = MimiCodecDecoderWeights.IntermediateSize;
-            for (int t = 0; t < frames; t++)
+            Parallel.For(0, frames, t =>
             {
                 var h1 = DenseKernels.LinearNoBias(ffnNormed[t], layer.Linear1Weight, hidden, intermediate);
                 GeluErfInPlace(h1);
                 var h2 = DenseKernels.LinearNoBias(h1, layer.Linear2Weight, intermediate, hidden);
-                for (int c = 0; c < hidden; c++) x[t][c] += h2[c] * layer.LayerScale2[c];
-            }
+                TensorPrimitives.Multiply((ReadOnlySpan<float>)h2, layer.LayerScale2, h2);
+                TensorPrimitives.Add((ReadOnlySpan<float>)x[t], h2, x[t]);
+            });
         }
 
         // Back to channel-major.
@@ -205,11 +211,11 @@ public static class MimiCodecDecoder
         h = CausalConv1d(h, hiddenChannels, channels, w.Conv2Weight, w.Conv2Bias, kernel: 1, dilation: 1);
 
         var output = new float[channels][];
-        for (int c = 0; c < channels; c++)
+        Parallel.For(0, channels, c =>
         {
             output[c] = new float[x[c].Length];
-            for (int t = 0; t < x[c].Length; t++) output[c][t] = x[c][t] + h[c][t];
-        }
+            TensorPrimitives.Add((ReadOnlySpan<float>)x[c], h[c], output[c]);
+        });
         return output;
     }
 
@@ -225,16 +231,16 @@ public static class MimiCodecDecoder
         int frames = input[0].Length;
         int padLeft = Math.Max(0, (kernel - 1) * dilation + 1 - stride);
         var padded = new float[inChannels][];
-        for (int c = 0; c < inChannels; c++)
+        Parallel.For(0, inChannels, c =>
         {
             padded[c] = new float[frames + padLeft];
             Array.Copy(input[c], 0, padded[c], padLeft, frames);
-        }
+        });
         int paddedFrames = frames + padLeft;
         int outFrames = (paddedFrames - (kernel - 1) * dilation - 1) / stride + 1;
 
         var output = new float[outChannels][];
-        for (int oc = 0; oc < outChannels; oc++)
+        Parallel.For(0, outChannels, oc =>
         {
             output[oc] = new float[outFrames];
             int wBaseOc = oc * inChannels * kernel;
@@ -250,7 +256,7 @@ public static class MimiCodecDecoder
                 }
                 output[oc][t] = sum;
             }
-        }
+        });
         return output;
     }
 
@@ -259,14 +265,14 @@ public static class MimiCodecDecoder
         int frames = input[0].Length;
         int padLeft = (kernel - 1) * dilation;
         var padded = new float[inChannels][];
-        for (int c = 0; c < inChannels; c++)
+        Parallel.For(0, inChannels, c =>
         {
             padded[c] = new float[frames + padLeft];
             Array.Copy(input[c], 0, padded[c], padLeft, frames);
-        }
+        });
 
         var output = new float[outChannels][];
-        for (int oc = 0; oc < outChannels; oc++)
+        Parallel.For(0, outChannels, oc =>
         {
             output[oc] = new float[frames];
             int wBaseOc = oc * inChannels * kernel;
@@ -281,7 +287,7 @@ public static class MimiCodecDecoder
                 }
                 output[oc][t] = sum;
             }
-        }
+        });
         return output;
     }
 
@@ -291,11 +297,11 @@ public static class MimiCodecDecoder
         int rawLen = (inLen - 1) * stride + kernel;
         int outLen = inLen * stride;
         var raw = new float[outChannels][];
-        for (int oc = 0; oc < outChannels; oc++)
+        Parallel.For(0, outChannels, oc =>
         {
             raw[oc] = new float[rawLen];
-            for (int o = 0; o < rawLen; o++) raw[oc][o] = bias[oc];
-        }
+            Array.Fill(raw[oc], bias[oc]);
+        });
         for (int ic = 0; ic < inChannels; ic++)
         {
             var inRow = input[ic];
@@ -314,11 +320,11 @@ public static class MimiCodecDecoder
             }
         }
         var output = new float[outChannels][];
-        for (int oc = 0; oc < outChannels; oc++)
+        Parallel.For(0, outChannels, oc =>
         {
             output[oc] = new float[outLen];
             Array.Copy(raw[oc], 0, output[oc], 0, outLen);
-        }
+        });
         return output;
     }
 
@@ -329,11 +335,11 @@ public static class MimiCodecDecoder
         int rawLen = (inLen - 1) * stride + kernel;
         int outLen = inLen * stride;
         var raw = new float[channels][];
-        for (int c = 0; c < channels; c++)
+        Parallel.For(0, channels, c =>
         {
             raw[c] = new float[rawLen];
             float b = bias[c];
-            for (int o = 0; o < rawLen; o++) raw[c][o] = b;
+            Array.Fill(raw[c], b);
             var inRow = input[c];
             int wBase = c * kernel;
             for (int i = 0; i < inLen; i++)
@@ -343,13 +349,13 @@ public static class MimiCodecDecoder
                 int baseOut = i * stride;
                 for (int k = 0; k < kernel; k++) raw[c][baseOut + k] += weight[wBase + k] * v;
             }
-        }
+        });
         var output = new float[channels][];
-        for (int c = 0; c < channels; c++)
+        Parallel.For(0, channels, c =>
         {
             output[c] = new float[outLen];
             Array.Copy(raw[c], 0, output[c], 0, outLen);
-        }
+        });
         return output;
     }
 
@@ -369,7 +375,7 @@ public static class MimiCodecDecoder
 
     internal static void Elu(float[][] channelMajor)
     {
-        for (int c = 0; c < channelMajor.Length; c++)
+        Parallel.For(0, channelMajor.Length, c =>
         {
             var row = channelMajor[c];
             for (int t = 0; t < row.Length; t++)
@@ -377,7 +383,7 @@ public static class MimiCodecDecoder
                 float v = row[t];
                 row[t] = v > 0f ? v : MathF.Exp(v) - 1f;
             }
-        }
+        });
     }
 
     internal static void GeluErfInPlace(float[] x)

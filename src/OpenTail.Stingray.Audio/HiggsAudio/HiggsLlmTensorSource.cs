@@ -93,12 +93,19 @@ public sealed unsafe class HiggsLlmTensorSource : IModelTensorSource, IDisposabl
             ["qwen3.vocab_size"] = vocabSize,
             ["qwen3.context_length"] = 32768,
         };
+        if (_byName.ContainsKey("blk.0.attn_q.bias"))
+            _metadata["_opentailllm.has_attn_bias"] = true;
+        if (_byName.ContainsKey("blk.0.attn_output.bias"))
+            _metadata["_opentailllm.has_attn_output_bias"] = true;
+        if (_byName.ContainsKey("blk.0.attn_q_norm.weight"))
+            _metadata["_opentailllm.has_qk_norm"] = true;
     }
 
     /// <summary>Real modality (audio-codebook) embedding/LM-head table, `[numCodebooks*
     /// audioVocabSize, hiddenSize]`, row-major (row = combined codebook-offset id). Materialized
     /// on first access.</summary>
-    public float[] ModalityEmbeddingWeight => _source.GetTensor("tied.embedding.modality_embeddings.0.embedding.weight");
+    private float[]? _cachedModalityEmbedding;
+    public float[] ModalityEmbeddingWeight => _cachedModalityEmbedding ??= _source.GetTensor("tied.embedding.modality_embeddings.0.embedding.weight");
 
     /// <summary>Real output RMSNorm weight (`body.norm.weight`).</summary>
     public float[] NormWeight => _source.GetTensor("body.norm.weight");

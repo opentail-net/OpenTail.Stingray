@@ -81,6 +81,12 @@ public sealed unsafe class NeuTtsBackboneTensorSource : IModelTensorSource, IDis
             ["qwen3.vocab_size"] = VocabSize,
             ["qwen3.context_length"] = 32768,
         };
+        if (_byName.ContainsKey("blk.0.attn_q.bias"))
+            _metadata["_opentailllm.has_attn_bias"] = true;
+        if (_byName.ContainsKey("blk.0.attn_output.bias"))
+            _metadata["_opentailllm.has_attn_output_bias"] = true;
+        if (_byName.ContainsKey("blk.0.attn_q_norm.weight"))
+            _metadata["_opentailllm.has_qk_norm"] = true;
     }
 
     private void MapIfPresent2D(string sourceName, string canonicalName, int outDim, int inDim)

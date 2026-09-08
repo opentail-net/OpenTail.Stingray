@@ -36,6 +36,17 @@ public static class DenseKernels
         return output;
     }
 
+    /// <summary>y = W@x, no bias (span input).</summary>
+    public static unsafe float[] LinearNoBias(ReadOnlySpan<float> input, float[] weight, int inDim, int outDim)
+    {
+        var output = new float[outDim];
+        fixed (float* wp = weight, xp = input, yp = output)
+        {
+            SimdKernels.MatVecF32(yp, wp, xp, outDim, inDim);
+        }
+        return output;
+    }
+
     public static unsafe float[] LayerNorm(float[] x, float[] weight, float[] bias, float eps = 1e-5f)
     {
         var output = new float[x.Length];
@@ -47,7 +58,7 @@ public static class DenseKernels
     }
 
     /// <summary>In-place SiLU/Swish: x *= sigmoid(x).</summary>
-    public static void SiluInPlace(float[] x)
+    public static void SiluInPlace(Span<float> x)
     {
         for (int i = 0; i < x.Length; i++)
         {

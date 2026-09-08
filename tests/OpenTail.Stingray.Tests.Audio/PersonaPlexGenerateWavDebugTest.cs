@@ -111,9 +111,14 @@ public sealed class PersonaPlexGenerateWavDebugTest : HeavyTestBase
         var waveform = MimiCodecDecoder.Decode(mimiWeights, mimiCodes);
         Assert.True(waveform.Length > 0);
 
+        var textTokens = frames.Select(f => f.TextToken).ToArray();
+        string decodedText = string.Join("", textTokens.Where(id => id >= 0 && id < tokenizer.Pieces.Count).Select(id => tokenizer.Pieces[id])).Replace('\u2581', ' ').Trim();
+        string txtPath = Path.Combine(repoRoot!, "audio-samples", "personaplex-real-check.txt");
+        File.WriteAllText(txtPath, $"Decoded text: {decodedText}\nTokens: [{string.Join(", ", textTokens)}]");
+
         var wavResult = new OpenTail.Stingray.Audio.AudioGenerationResult(waveform, OutputSampleRate);
         string outPath = Path.Combine(repoRoot!, "audio-samples", "personaplex-real-check.wav");
         wavResult.SaveWav(outPath);
-        Console.WriteLine($"Wrote {outPath}, {waveform.Length} samples, {waveform.Length / (double)OutputSampleRate:F2}s");
+        Console.WriteLine($"Wrote {outPath}, {waveform.Length} samples, {waveform.Length / (double)OutputSampleRate:F2}s. Decoded LM text: {decodedText}");
     }
 }

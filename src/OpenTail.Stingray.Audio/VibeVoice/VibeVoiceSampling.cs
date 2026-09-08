@@ -41,16 +41,15 @@ public static class VibeVoiceSampling
         if (!(penalty > 0.0f) || !float.IsFinite(penalty))
             throw new ArgumentOutOfRangeException(nameof(penalty), "VibeVoice-ASR repetition_penalty must be finite and positive.");
 
-        var seen = new bool[logits.Length];
+        var seen = new HashSet<int>();
         foreach (int token in promptIds) VisitToken(logits, seen, token, penalty);
         foreach (int token in generated) VisitToken(logits, seen, token, penalty);
     }
 
-    private static void VisitToken(Span<float> logits, bool[] seen, int token, float penalty)
+    private static void VisitToken(Span<float> logits, HashSet<int> seen, int token, float penalty)
     {
         if ((uint)token >= (uint)logits.Length) return;
-        if (seen[token]) return;
-        seen[token] = true;
+        if (!seen.Add(token)) return;
         logits[token] = logits[token] < 0.0f ? logits[token] * penalty : logits[token] / penalty;
     }
 

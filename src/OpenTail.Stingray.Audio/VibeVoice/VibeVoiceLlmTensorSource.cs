@@ -94,6 +94,12 @@ public sealed unsafe class VibeVoiceLlmTensorSource : IModelTensorSource, IDispo
             ["qwen2.vocab_size"] = vocabSize,
             ["qwen2.context_length"] = 32768,
         };
+        if (_byName.ContainsKey("blk.0.attn_q.bias"))
+            _metadata["_opentailllm.has_attn_bias"] = true;
+        if (_byName.ContainsKey("blk.0.attn_output.bias"))
+            _metadata["_opentailllm.has_attn_output_bias"] = true;
+        if (_byName.ContainsKey("blk.0.attn_q_norm.weight"))
+            _metadata["_opentailllm.has_qk_norm"] = true;
     }
 
     // Real GGUF dimension convention: reference declares shapes numpy-style [out,in] (row-major,

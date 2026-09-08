@@ -1,3 +1,4 @@
+using System.Buffers;
 using OpenTail.Stingray.Engine;
 
 namespace OpenTail.Stingray.Audio.NeuTts;
@@ -28,39 +29,58 @@ public static class NeuTtsGenerator
         var logits = fwd.Prefill(prompt.TokenIds, startPos: 0);
         int pos = prompt.TokenIds.Length;
 
-        for (int step = 0; step < options.MaxNewTokens; step++)
+        float[]? rentedLogits = null;
+        try
         {
-            float[]? mutableLogits = null;
-            ReadOnlySpan<float> activeLogits = logits;
-
-            if (step < options.MinTokens && prompt.SpeechGenerationEnd < logits.Length)
+            for (int step = 0; step < options.MaxNewTokens; step++)
             {
-                mutableLogits = logits.ToArray();
-                mutableLogits[prompt.SpeechGenerationEnd] = float.NegativeInfinity;
-                activeLogits = mutableLogits;
+                int next;
+                if (options.Sampling is null)
+                {
+                    int maskedIndex = (step < options.MinTokens && prompt.SpeechGenerationEnd < logits.Length)
+                        ? prompt.SpeechGenerationEnd
+                        : -1;
+                    next = Argmax(logits, maskedIndex);
+                }
+                else
+                {
+                    ReadOnlySpan<float> activeLogits = logits;
+                    if (step < options.MinTokens && prompt.SpeechGenerationEnd < logits.Length)
+                    {
+                        rentedLogits ??= ArrayPool<float>.Shared.Rent(logits.Length);
+                        logits.CopyTo(rentedLogits.AsSpan(0, logits.Length));
+                        rentedLogits[prompt.SpeechGenerationEnd] = float.NegativeInfinity;
+                        activeLogits = rentedLogits.AsSpan(0, logits.Length);
+                    }
+                    next = Sampler.Sample(activeLogits, options.Sampling, options.Rng);
+                }
+
+                if (next == prompt.SpeechGenerationEnd && step >= options.MinTokens) break;
+                if (next < prompt.SpeechTokenStart || next > prompt.SpeechTokenEnd)
+                    throw new InvalidOperationException($"NeuTTS generated an out-of-range token {next} (expected a speech token or the stop token).");
+
+                codes.Add(next - prompt.SpeechTokenStart);
+                logits = fwd.Forward(next, pos);
+                pos++;
             }
-
-            int next = options.Sampling is null
-                ? Argmax(activeLogits)
-                : Sampler.Sample(activeLogits, options.Sampling, options.Rng);
-
-            if (next == prompt.SpeechGenerationEnd && step >= options.MinTokens) break;
-            if (next < prompt.SpeechTokenStart || next > prompt.SpeechTokenEnd)
-                throw new InvalidOperationException($"NeuTTS generated an out-of-range token {next} (expected a speech token or the stop token).");
-
-            codes.Add(next - prompt.SpeechTokenStart);
-            logits = fwd.Forward(next, pos);
-            pos++;
+        }
+        finally
+        {
+            if (rentedLogits is not null)
+                ArrayPool<float>.Shared.Return(rentedLogits);
         }
 
         return [.. codes];
     }
 
-    private static int Argmax(ReadOnlySpan<float> logits)
+    private static int Argmax(ReadOnlySpan<float> logits, int maskedIndex = -1)
     {
-        int best = 0;
-        for (int i = 1; i < logits.Length; i++)
+        int best = (maskedIndex == 0 && logits.Length > 1) ? 1 : 0;
+        for (int i = 0; i < logits.Length; i++)
+        {
+            if (i == maskedIndex) continue;
             if (logits[i] > logits[best]) best = i;
+        }
         return best;
     }
 }

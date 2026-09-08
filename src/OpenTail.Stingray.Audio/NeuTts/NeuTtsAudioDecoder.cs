@@ -49,7 +49,7 @@ public static class NeuTtsAudioDecoder
 
         foreach (var block in w.PriorNet) x = ResnetBlock(x, frames, block);
 
-        var (cos, sin) = BuildNeoxRope(frames);
+        var (cos, sin) = BuildNeoxRope(NeuTtsAudioDecoderWeights.NumHeads);
         foreach (var layer in w.Layers) x = TransformerLayer(x, frames, layer, cos, sin);
 
         foreach (var block in w.PostNet) x = ResnetBlock(x, frames, block);
@@ -128,38 +128,37 @@ public static class NeuTtsAudioDecoder
         return output;
     }
 
-    private static (float[] Cos, float[] Sin) BuildNeoxRope(int t)
+    private static (float[] Cos, float[] Sin) BuildNeoxRope(int heads)
     {
         int half = NeuTtsAudioDecoderWeights.HeadDim / 2;
-        var cos = new float[t * half];
-        var sin = new float[t * half];
-        for (int pos = 0; pos < t; pos++)
+        var cos = new float[heads * half];
+        var sin = new float[heads * half];
+        for (int h = 0; h < heads; h++)
         {
             for (int i = 0; i < half; i++)
             {
                 float freq = MathF.Pow(NeuTtsAudioDecoderWeights.RopeTheta, -2f * i / NeuTtsAudioDecoderWeights.HeadDim);
-                float angle = pos * freq;
-                cos[pos * half + i] = MathF.Cos(angle);
-                sin[pos * half + i] = MathF.Sin(angle);
+                float angle = h * freq;
+                cos[h * half + i] = MathF.Cos(angle);
+                sin[h * half + i] = MathF.Sin(angle);
             }
         }
         return (cos, sin);
     }
 
-    /// <summary>Real NEOX RoPE: pairs `x[i]` with `x[i+halfHead]` (split-half), NOT the interleaved
-    /// `x[2i]`/`x[2i+1]` convention `F5Kernels.ApplyRotary` implements for F5-TTS's DiT --
-    /// deliberately NOT reused here (this session's VoxCPM2 bisection found this exact
-    /// interleaved-vs-NEOX mismatch to be a real, previously-shipped bug elsewhere).</summary>
+    /// <summary>Real NEOX RoPE matching audio.cpp fsq_audio_codec_runtime.cpp: pairs `x[i]` with
+    /// `x[i+halfHead]` (split-half), evaluated at position `pos = h` (head index, matching
+    /// ggml_rope_ext's invocation in fsq_audio_codec_runtime.cpp).</summary>
     private static void ApplyNeoxRope(float[] x, int t, int heads, int headDim, float[] cos, float[] sin)
     {
         int dim = heads * headDim;
         int half = headDim / 2;
         for (int ti = 0; ti < t; ti++)
         {
-            int angleBase = ti * half;
             for (int h = 0; h < heads; h++)
             {
                 int hOff = ti * dim + h * headDim;
+                int angleBase = h * half;
                 for (int i = 0; i < half; i++)
                 {
                     float c = cos[angleBase + i], s = sin[angleBase + i];

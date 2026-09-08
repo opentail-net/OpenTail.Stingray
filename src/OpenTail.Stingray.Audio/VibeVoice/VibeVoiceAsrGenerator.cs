@@ -32,7 +32,7 @@ public static class VibeVoiceAsrGenerator
         int position = promptIds.Length;
         for (long step = 0; step < options.MaxNewTokens; step++)
         {
-            VibeVoiceSampling.ApplyRepetitionPenalty(logits, promptIds, [.. generated], options.RepetitionPenalty);
+            VibeVoiceSampling.ApplyRepetitionPenalty(logits, promptIds, CollectionsMarshal.AsSpan(generated), options.RepetitionPenalty);
             int next = VibeVoiceSampling.ArgmaxToken(logits, compareBf16: false);
 
             if (next == tokenizer.EosTokenId) break;

@@ -1,3 +1,5 @@
+using System.Numerics.Tensors;
+using OpenTail.Stingray.Cpu;
 using OpenTail.Stingray.Engine;
 
 namespace OpenTail.Stingray.Audio.HiggsAudio;
@@ -38,49 +40,29 @@ public static class HiggsArStepper
     /// solver, VibeVoice's diffusion sampler). `options: null` (default) preserves the exact
     /// previous argmax-only behavior byte-for-byte.</para>
     /// </summary>
-    public static int[] SampleFromHidden(ReadOnlySpan<float> hidden, HiggsLlmTensorSource llm, int numCodebooks, int audioVocabSize,
+    public static unsafe int[] SampleFromHidden(ReadOnlySpan<float> hidden, HiggsLlmTensorSource llm, int numCodebooks, int audioVocabSize,
         SamplingParams? options = null, Random? rng = null)
     {
         int hiddenDim = llm.HiddenDim;
         var modality = llm.ModalityEmbeddingWeight; // [numCodebooks*audioVocabSize, hiddenDim]
-        var normWeight = llm.NormWeight;
-
-        // Output RMSNorm: ForwardPass.LastHidden is pre-norm, so normalize before projecting to modality logits (matches ar.cpp).
-        double sumSq = 0;
-        for (int d = 0; d < hiddenDim; d++) sumSq += (double)hidden[d] * hidden[d];
-        float invRms = (float)(1.0 / Math.Sqrt(sumSq / hiddenDim + 1e-6));
-        var normedHidden = new float[hiddenDim];
-        for (int d = 0; d < hiddenDim; d++) normedHidden[d] = hidden[d] * invRms * normWeight[d];
+        // ForwardPass.LastHidden already carries the backbone's final RMSNorm output (exposing _normBuf).
+        // Using hidden directly avoids double-normalization (same bug identified and resolved in PersonaPlex and VibeVoice).
+        var normedHidden = hidden;
 
         var codes = new int[numCodebooks];
-        var logitsRow = options is null ? null : new float[audioVocabSize];
+        int totalRows = numCodebooks * audioVocabSize;
+        var allLogits = new float[totalRows];
+        fixed (float* outP = allLogits, matP = modality, inP = normedHidden)
+        {
+            SimdKernels.MatVecF32(outP, matP, null, inP, totalRows, hiddenDim);
+        }
+
         for (int cb = 0; cb < numCodebooks; cb++)
         {
-            long rowBase = (long)cb * audioVocabSize * hiddenDim;
-            if (options is null)
-            {
-                float best = float.NegativeInfinity;
-                int bestIdx = 0;
-                for (int v = 0; v < audioVocabSize; v++)
-                {
-                    long row = rowBase + (long)v * hiddenDim;
-                    float dot = 0f;
-                    for (int d = 0; d < hiddenDim; d++) dot += modality[row + d] * normedHidden[d];
-                    if (dot > best) { best = dot; bestIdx = v; }
-                }
-                codes[cb] = bestIdx;
-            }
-            else
-            {
-                for (int v = 0; v < audioVocabSize; v++)
-                {
-                    long row = rowBase + (long)v * hiddenDim;
-                    float dot = 0f;
-                    for (int d = 0; d < hiddenDim; d++) dot += modality[row + d] * normedHidden[d];
-                    logitsRow![v] = dot;
-                }
-                codes[cb] = Sampler.Sample(logitsRow!, options, rng);
-            }
+            var row = allLogits.AsSpan(cb * audioVocabSize, audioVocabSize);
+            codes[cb] = options is null
+                ? TensorPrimitives.IndexOfMax(row)
+                : Sampler.Sample(row, options, rng);
         }
         return codes;
     }
@@ -100,12 +82,13 @@ public static class HiggsArStepper
         var modality = llm.ModalityEmbeddingWeight;
 
         var embedding = new float[hiddenDim];
+        var embeddingSpan = embedding.AsSpan();
         for (int cb = 0; cb < numCodebooks; cb++)
         {
             int code = previousCodes[cb];
             if ((uint)code >= (uint)audioVocabSize) throw new ArgumentOutOfRangeException(nameof(previousCodes));
             long rowBase = (long)(cb * audioVocabSize + code) * hiddenDim;
-            for (int d = 0; d < hiddenDim; d++) embedding[d] += modality[rowBase + d];
+            TensorPrimitives.Add(embeddingSpan, modality.AsSpan((int)rowBase, hiddenDim), embeddingSpan);
         }
 
         fwd.ForwardEmbedding(embedding, position);

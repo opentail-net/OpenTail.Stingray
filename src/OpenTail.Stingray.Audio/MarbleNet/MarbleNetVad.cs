@@ -25,22 +25,7 @@ public static class MarbleNetVad
         foreach (var block in w.Blocks)
             x = JasperBlock(x, block);
 
-        // Decoder: per-frame Linear (kernel-1 conv with real bias), [NumClasses][channels] weight.
-        int frames = x[0].Length, inChannels = x.Length;
-        var logits = new float[frames][];
-        for (int t = 0; t < frames; t++)
-        {
-            var row = new float[MarbleNetVadWeights.NumClasses];
-            for (int c = 0; c < MarbleNetVadWeights.NumClasses; c++)
-            {
-                float sum = w.DecoderBias[c];
-                int wBase = c * inChannels;
-                for (int i = 0; i < inChannels; i++) sum += w.DecoderWeight[wBase + i] * x[i][t];
-                row[c] = sum;
-            }
-            logits[t] = row;
-        }
-        return logits;
+        return JasperKernels.LinearDecoder(x, w.DecoderWeight, w.DecoderBias, MarbleNetVadWeights.NumClasses);
     }
 
     private static float[][] JasperBlock(float[][] input, MarbleNetJasperBlock block)
@@ -51,94 +36,26 @@ public static class MarbleNetVad
         {
             for (int r = 0; r < block.SeparableRepeats.Length; r++)
             {
-                x = Conv1d(x, block.SeparableRepeats[r].Depthwise);
-                x = Conv1d(x, block.SeparableRepeats[r].Pointwise);
-                if (r + 1 != block.SeparableRepeats.Length) Relu(x);
+                x = JasperKernels.Conv1d(x, block.SeparableRepeats[r].Depthwise);
+                x = JasperKernels.Conv1d(x, block.SeparableRepeats[r].Pointwise);
+                if (r + 1 != block.SeparableRepeats.Length) JasperKernels.Relu(x);
             }
         }
         else
         {
             for (int r = 0; r < block.ConvRepeats.Length; r++)
             {
-                x = Conv1d(x, block.ConvRepeats[r]);
-                if (r + 1 != block.ConvRepeats.Length) Relu(x);
+                x = JasperKernels.Conv1d(x, block.ConvRepeats[r]);
+                if (r + 1 != block.ConvRepeats.Length) JasperKernels.Relu(x);
             }
         }
         if (block.ResidualConvBn is { } res)
         {
-            var projected = Conv1d(residualInput, res);
-            for (int c = 0; c < x.Length; c++)
-                for (int t = 0; t < x[c].Length; t++)
-                    x[c][t] += projected[c][t];
+            var projected = JasperKernels.Conv1d(residualInput, res);
+            JasperKernels.AddResidualInPlace(x, projected);
         }
-        Relu(x); // Real: unconditional, even for blocks with no residual.
+        JasperKernels.Relu(x); // Real: unconditional, even for blocks with no residual.
         return x;
-    }
-
-    private static void Relu(float[][] x)
-    {
-        foreach (var row in x)
-            for (int t = 0; t < row.Length; t++)
-                if (row[t] < 0f) row[t] = 0f;
-    }
-
-    /// <summary>Real, generic 1D conv (regular or depthwise, per `conv.Depthwise`), symmetric
-    /// zero-padding (`conv.Padding` each side), dilation, stride.</summary>
-    private static float[][] Conv1d(float[][] input, MarbleNetConvBn conv)
-    {
-        int inFrames = input[0].Length;
-        int outFrames = (inFrames + 2 * conv.Padding - conv.Dilation * (conv.Kernel - 1) - 1) / conv.Stride + 1;
-        var output = new float[conv.OutChannels][];
-        for (int c = 0; c < conv.OutChannels; c++) output[c] = new float[outFrames];
-
-        if (conv.Depthwise)
-        {
-            for (int c = 0; c < conv.OutChannels; c++)
-            {
-                var inRow = input[c];
-                var outRow = output[c];
-                int wBase = c * conv.Kernel;
-                float bias = conv.Bias[c];
-                for (int t = 0; t < outFrames; t++)
-                {
-                    float sum = bias;
-                    int inStart = t * conv.Stride - conv.Padding;
-                    for (int k = 0; k < conv.Kernel; k++)
-                    {
-                        int inIdx = inStart + k * conv.Dilation;
-                        if (inIdx < 0 || inIdx >= inFrames) continue;
-                        sum += conv.Weight[wBase + k] * inRow[inIdx];
-                    }
-                    outRow[t] = sum;
-                }
-            }
-        }
-        else
-        {
-            for (int oc = 0; oc < conv.OutChannels; oc++)
-            {
-                var outRow = output[oc];
-                float bias = conv.Bias[oc];
-                for (int t = 0; t < outFrames; t++)
-                {
-                    float sum = bias;
-                    int inStart = t * conv.Stride - conv.Padding;
-                    for (int ic = 0; ic < conv.InChannels; ic++)
-                    {
-                        var inRow = input[ic];
-                        int wBase = (oc * conv.InChannels + ic) * conv.Kernel;
-                        for (int k = 0; k < conv.Kernel; k++)
-                        {
-                            int inIdx = inStart + k * conv.Dilation;
-                            if (inIdx < 0 || inIdx >= inFrames) continue;
-                            sum += conv.Weight[wBase + k] * inRow[inIdx];
-                        }
-                    }
-                    outRow[t] = sum;
-                }
-            }
-        }
-        return output;
     }
 
     /// <summary>Real per-frame speech probability, ported from `runtime.cpp`'s

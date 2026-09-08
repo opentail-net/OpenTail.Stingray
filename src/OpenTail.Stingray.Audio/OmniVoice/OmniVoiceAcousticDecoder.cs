@@ -41,7 +41,7 @@ public static class OmniVoiceAcousticDecoder
         // see OmniVoiceAcousticDecoderWeights.Fc2Weight's doc comment.
         int acousticDim = OmniVoiceAcousticDecoderWeights.AcousticLatentDim;
         var fc2Out = new float[acousticDim * frames];
-        for (int o = 0; o < acousticDim; o++)
+        Parallel.For(0, acousticDim, o =>
         {
             float b = w.Fc2Bias[o];
             int wBase = o * quantDim;
@@ -51,7 +51,7 @@ public static class OmniVoiceAcousticDecoder
                 for (int i = 0; i < quantDim; i++) sum += w.Fc2Weight[wBase + i] * latentChannelMajor[i * frames + t];
                 fc2Out[o * frames + t] = sum;
             }
-        }
+        });
 
         // acoustic_decoder.conv1: Conv1d(256->decoderHidden, k=7, pad=3, bias).
         var x = Conv1dSamePad(fc2Out, acousticDim, frames, w.Conv1Weight, w.Conv1Bias, outCh: OmniVoiceAcousticDecoderWeights.DecoderHiddenSize, kernel: 7, dilation: 1);
@@ -95,7 +95,7 @@ public static class OmniVoiceAcousticDecoder
     /// <summary>Real Snake activation: `x + sin(alpha*x)^2/alpha`, alpha broadcast per-channel.</summary>
     private static void SnakeInPlace(float[] x, float[] alpha, int channels, int frames)
     {
-        for (int c = 0; c < channels; c++)
+        Parallel.For(0, channels, c =>
         {
             float a = alpha[c];
             int baseIdx = c * frames;
@@ -105,14 +105,14 @@ public static class OmniVoiceAcousticDecoder
                 float s = MathF.Sin(a * v);
                 x[baseIdx + t] = v + (s * s) / a;
             }
-        }
+        });
     }
 
     private static float[] Conv1dSamePad(float[] x, int inCh, int frames, float[] weight, float[] bias, int outCh, int kernel, int dilation, int? explicitPadding = null)
     {
         int pad = explicitPadding ?? ((kernel - 1) / 2) * dilation;
         var output = new float[outCh * frames];
-        for (int oc = 0; oc < outCh; oc++)
+        Parallel.For(0, outCh, oc =>
         {
             float b = bias[oc];
             int wBase = oc * inCh * kernel;
@@ -131,7 +131,7 @@ public static class OmniVoiceAcousticDecoder
                 }
                 output[oc * frames + t] = sum;
             }
-        }
+        });
         return output;
     }
 

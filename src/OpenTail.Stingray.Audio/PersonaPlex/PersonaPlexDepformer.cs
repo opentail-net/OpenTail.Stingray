@@ -1,4 +1,6 @@
+using System.Numerics.Tensors;
 using OpenTail.Stingray.Audio.Primitives;
+using OpenTail.Stingray.Cpu;
 using OpenTail.Stingray.Engine;
 
 namespace OpenTail.Stingray.Audio.PersonaPlex;
@@ -38,8 +40,10 @@ public sealed class PersonaPlexDepformer
     {
         for (int l = 0; l < PersonaPlexDepformerWeights.NumLayers; l++)
         {
-            _keyCache[l] = [];
-            _valueCache[l] = [];
+            _keyCache[l] ??= new List<float[]>(PersonaPlexDepformerWeights.NumSteps);
+            _keyCache[l].Clear();
+            _valueCache[l] ??= new List<float[]>(PersonaPlexDepformerWeights.NumSteps);
+            _valueCache[l].Clear();
         }
     }
 
@@ -56,41 +60,66 @@ public sealed class PersonaPlexDepformer
     /// byte-for-byte.</para>
     /// </summary>
     public int[] GenerateFrame(float[] temporalLmHidden, int promptTextToken, int audioCodebookSize,
-        SamplingParams? options = null, Random? rng = null)
+        SamplingParams? options = null, Random? rng = null, int[]? audioTarget = null, byte[]? audioProvided = null)
+        => GenerateFrame((ReadOnlySpan<float>)temporalLmHidden, promptTextToken, audioCodebookSize, options, rng, audioTarget, audioProvided);
+
+    public int[] GenerateFrame(ReadOnlySpan<float> temporalLmHidden, int promptTextToken, int audioCodebookSize,
+        SamplingParams? options = null, Random? rng = null, int[]? audioTarget = null, byte[]? audioProvided = null)
     {
         ResetFrame();
         var codes = new int[PersonaPlexDepformerWeights.NumSteps];
+
+        int lastUnprovidedStep = -1;
+        if (audioProvided != null)
+        {
+            for (int step = PersonaPlexDepformerWeights.NumSteps - 1; step >= 0; step--)
+            {
+                if (audioProvided[step] == 0)
+                {
+                    lastUnprovidedStep = step;
+                    break;
+                }
+            }
+            if (lastUnprovidedStep < 0)
+            {
+                if (audioTarget != null)
+                    Array.Copy(audioTarget, codes, PersonaPlexDepformerWeights.NumSteps);
+                return codes;
+            }
+        }
+        else
+        {
+            lastUnprovidedStep = PersonaPlexDepformerWeights.NumSteps - 1;
+        }
+
         int prevToken = promptTextToken;
 
-        for (int step = 0; step < PersonaPlexDepformerWeights.NumSteps; step++)
+        for (int step = 0; step <= lastUnprovidedStep; step++)
         {
             var projected = DenseKernels.LinearNoBias(temporalLmHidden, _w.InputFromLmWeight[step], PersonaPlexDepformerWeights.LmHiddenDim, PersonaPlexDepformerWeights.HiddenDim);
 
-            float[] tokenEmbedding = step == 0
-                ? EmbedRow(_w.TextEmbedding, prevToken, PersonaPlexDepformerWeights.HiddenDim)
-                : EmbedRow(_w.AudioEmbeddings[step - 1], prevToken, PersonaPlexDepformerWeights.HiddenDim);
+            ReadOnlySpan<float> tokenEmbedding = step == 0
+                ? _w.TextEmbedding.AsSpan((int)((long)prevToken * PersonaPlexDepformerWeights.HiddenDim), PersonaPlexDepformerWeights.HiddenDim)
+                : _w.AudioEmbeddings[step - 1].AsSpan((int)((long)prevToken * PersonaPlexDepformerWeights.HiddenDim), PersonaPlexDepformerWeights.HiddenDim);
 
-            var hidden = new float[PersonaPlexDepformerWeights.HiddenDim];
-            for (int i = 0; i < hidden.Length; i++) hidden[i] = projected[i] + tokenEmbedding[i];
+            TensorPrimitives.Add((ReadOnlySpan<float>)projected, tokenEmbedding, projected);
 
-            hidden = RunLayers(hidden, step);
+            var hidden = RunLayers(projected, step);
 
             var logits = DenseKernels.LinearNoBias(hidden, _w.Heads[step], PersonaPlexDepformerWeights.HiddenDim, audioCodebookSize);
-            int best;
-            if (options is null)
-            {
-                best = 0;
-                float bestScore = float.NegativeInfinity;
-                for (int v = 0; v < audioCodebookSize; v++)
-                    if (logits[v] > bestScore) { bestScore = logits[v]; best = v; }
-            }
-            else
-            {
-                best = Sampler.Sample(logits, options, rng);
-            }
+            int best = options is null
+                ? TensorPrimitives.IndexOfMax((ReadOnlySpan<float>)logits.AsSpan(0, audioCodebookSize))
+                : Sampler.Sample(logits, options, rng);
 
             codes[step] = best;
-            prevToken = best;
+            prevToken = (audioProvided != null && audioProvided[step] != 0 && audioTarget != null)
+                ? audioTarget[step]
+                : best;
+        }
+
+        for (int step = lastUnprovidedStep + 1; step < PersonaPlexDepformerWeights.NumSteps; step++)
+        {
+            codes[step] = audioTarget != null ? audioTarget[step] : 0;
         }
 
         return codes;
@@ -104,6 +133,7 @@ public sealed class PersonaPlexDepformer
         const int ffn = PersonaPlexDepformerWeights.FfnDim;
         int qkvOut = numHeads * headDim; // == hidden, plain MHA
         float scale = 1f / MathF.Sqrt(headDim);
+        Span<float> scoresBuf = stackalloc float[PersonaPlexDepformerWeights.NumSteps];
 
         var x = input;
         for (int l = 0; l < PersonaPlexDepformerWeights.NumLayers; l++)
@@ -111,10 +141,11 @@ public sealed class PersonaPlexDepformer
             var layer = _w.Layers[l];
             var normed = RmsNorm(x, layer.Norm1Alpha, PersonaPlexDepformerWeights.RmsNormEps);
 
-            // Real per-step row-slice of the packed [NumSteps*3*hidden, hidden] tensor.
-            var q = LinearRows(normed, layer.InProjWeight, hidden, step * 3 * qkvOut, qkvOut);
-            var k = LinearRows(normed, layer.InProjWeight, hidden, step * 3 * qkvOut + qkvOut, qkvOut);
-            var v = LinearRows(normed, layer.InProjWeight, hidden, step * 3 * qkvOut + 2 * qkvOut, qkvOut);
+            // Real per-step row-slice of the packed [NumSteps*3*hidden, hidden] tensor: Q, K, V combined in 1 call.
+            var qkv = LinearRows(normed, layer.InProjWeight, hidden, step * 3 * qkvOut, 3 * qkvOut);
+            var q = qkv.AsSpan(0, qkvOut);
+            var k = qkv[qkvOut..(2 * qkvOut)];
+            var v = qkv[(2 * qkvOut)..(3 * qkvOut)];
 
             _keyCache[l].Add(k);
             _valueCache[l].Add(v);
@@ -124,20 +155,19 @@ public sealed class PersonaPlexDepformer
             for (int h = 0; h < numHeads; h++)
             {
                 int hOff = h * headDim;
-                var scores = new float[availableKeys];
+                var qHead = (ReadOnlySpan<float>)q.Slice(hOff, headDim);
+                var scores = scoresBuf[..availableKeys];
                 for (int t = 0; t < availableKeys; t++)
                 {
-                    float dot = 0f;
-                    var kt = _keyCache[l][t];
-                    for (int d = 0; d < headDim; d++) dot += q[hOff + d] * kt[hOff + d];
-                    scores[t] = dot * scale;
+                    scores[t] = TensorPrimitives.Dot(qHead, _keyCache[l][t].AsSpan(hOff, headDim)) * scale;
                 }
                 DenseKernels.SoftmaxInPlace(scores);
+                var ctxHead = context.AsSpan(hOff, headDim);
                 for (int t = 0; t < availableKeys; t++)
                 {
                     float p = scores[t];
-                    var vt = _valueCache[l][t];
-                    for (int d = 0; d < headDim; d++) context[hOff + d] += p * vt[hOff + d];
+                    if (p != 0f)
+                        TensorPrimitives.MultiplyAdd((ReadOnlySpan<float>)_valueCache[l][t].AsSpan(hOff, headDim), p, ctxHead, ctxHead);
                 }
             }
 
@@ -146,34 +176,24 @@ public sealed class PersonaPlexDepformer
 
             var ffnNormed = RmsNorm(afterAttn, layer.Norm2Alpha, PersonaPlexDepformerWeights.RmsNormEps);
             var gateUp = DenseKernels.LinearNoBias(ffnNormed, layer.GateUpWeights[step], hidden, 2 * ffn);
-            var gate = gateUp.AsSpan(0, ffn).ToArray();
-            var up = gateUp.AsSpan(ffn, ffn).ToArray();
+            var gate = gateUp.AsSpan(0, ffn);
+            var up = gateUp.AsSpan(ffn, ffn);
             DenseKernels.SiluInPlace(gate);
-            for (int i = 0; i < ffn; i++) gate[i] *= up[i];
+            TensorPrimitives.Multiply(gate, up, gate);
             var down = DenseKernels.LinearNoBias(gate, layer.DownWeights[step], ffn, hidden);
             x = Add(afterAttn, down);
         }
         return x;
     }
 
-    private static float[] EmbedRow(float[] table, int id, int dim)
-    {
-        var row = new float[dim];
-        Array.Copy(table, (long)id * dim, row, 0, dim);
-        return row;
-    }
-
     /// <summary>Linear against a row-sliced sub-range of a larger packed weight matrix: rows
     /// `[rowOffset, rowOffset+outDim)` of the `[totalRows, inDim]` packed tensor.</summary>
-    private static float[] LinearRows(float[] input, float[] packedWeight, int inDim, int rowOffset, int outDim)
+    private static unsafe float[] LinearRows(float[] input, float[] packedWeight, int inDim, int rowOffset, int outDim)
     {
         var output = new float[outDim];
-        for (int o = 0; o < outDim; o++)
+        fixed (float* outP = output, wP = packedWeight, inP = input)
         {
-            float sum = 0f;
-            int wBase = (rowOffset + o) * inDim;
-            for (int i = 0; i < inDim; i++) sum += packedWeight[wBase + i] * input[i];
-            output[o] = sum;
+            SimdKernels.MatVecF32(outP, wP + (long)rowOffset * inDim, null, inP, outDim, inDim);
         }
         return output;
     }
@@ -181,17 +201,17 @@ public sealed class PersonaPlexDepformer
     private static float[] Add(float[] a, float[] b)
     {
         var output = new float[a.Length];
-        for (int i = 0; i < a.Length; i++) output[i] = a[i] + b[i];
+        TensorPrimitives.Add((ReadOnlySpan<float>)a, b, output);
         return output;
     }
 
     private static float[] RmsNorm(float[] x, float[] weight, float eps)
     {
-        double sumSq = 0;
-        for (int i = 0; i < x.Length; i++) sumSq += (double)x[i] * x[i];
+        double sumSq = TensorPrimitives.SumOfSquares((ReadOnlySpan<float>)x);
         float invRms = (float)(1.0 / Math.Sqrt(sumSq / x.Length + eps));
         var output = new float[x.Length];
-        for (int i = 0; i < x.Length; i++) output[i] = x[i] * invRms * weight[i];
+        TensorPrimitives.Multiply((ReadOnlySpan<float>)x, invRms, output);
+        TensorPrimitives.Multiply((ReadOnlySpan<float>)output, weight, output);
         return output;
     }
 }

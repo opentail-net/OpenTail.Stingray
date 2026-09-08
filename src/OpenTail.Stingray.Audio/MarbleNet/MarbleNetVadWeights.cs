@@ -5,18 +5,8 @@ namespace OpenTail.Stingray.Audio.MarbleNet;
 /// sqrt(running_var + eps)`, `folded_bias = bn.bias - running_mean * scale`, then
 /// `weight[c] *= scale[c]`, `bias[c] = origBias[c] * scale[c] + folded_bias[c]` (origBias is
 /// always 0 here -- every MarbleNet conv that feeds a BN layer is itself bias-free).</summary>
-public sealed class MarbleNetConvBn
+public sealed class MarbleNetConvBn : JasperConv1dWeights
 {
-    public required int InChannels { get; init; }
-    public required int OutChannels { get; init; }
-    public required int Kernel { get; init; }
-    public required int Stride { get; init; }
-    public required int Dilation { get; init; }
-    public required int Padding { get; init; }
-    public required bool Depthwise { get; init; }
-    /// <summary>Depthwise: `[channels][kernel]`. Regular (incl. pointwise 1x1): `[out][in][kernel]` flattened.</summary>
-    public required float[] Weight { get; init; }
-    public required float[] Bias { get; init; }
 
     public static MarbleNetConvBn Load(
         SafetensorsLoader src, string convPrefix, string bnPrefix,
