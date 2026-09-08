@@ -17228,3 +17228,38 @@ sampling from the real logits this Prefill call now produces) using the already-
 utilities from earlier this session -- VibeVoice ASR's remaining gap is now generation-loop wiring,
 not a RAM/architecture blocker.
 
+## VibeVoice ASR -- real greedy decode loop wired end-to-end for the first time, 2026-09-08
+
+Directly closes the "real next step" from the entry above. Read `session.cpp`'s real
+`generate_greedy_or_sample` (lines 990-1036, not guessed) to confirm the exact per-step algorithm:
+apply repetition penalty to the current logits, argmax (or real sampling when `temperature>0`, not
+ported -- matches this session's existing "beam search's `top_log_probs` not yet ported" scope
+note), stop on EOS or `max_new_tokens`, otherwise embed the sampled token and advance the KV cache
+by one incremental step to get the next logits.
+
+Added `VibeVoiceAsrGenerator.GenerateTranscript`: wires the already-ported
+`VibeVoiceSampling.ArgmaxToken`/`ApplyRepetitionPenalty` (from earlier this session) around
+`IForwardPass.Prefill`/`Forward`'s existing incremental-decode API -- the same real pattern every
+other model this session bridges via `IModelTensorSource` already uses, no new engine surface
+needed. Added `VibeVoiceAsrTextTokenizer.EosTokenId`/`Decode` (real `&lt;|endoftext|&gt;` id via
+`GgufTokenizer.EosTokenId`, which already resolves a checkpoint's real EOS from its
+`tokenizer_config.json` -- no bespoke lookup needed, unlike the `&lt;|box_start|&gt;` speech-pad
+token which required `AdditionalSpecialTokens`).
+
+New `VibeVoiceAsrGeneratorRealWeightsTests`: the first REAL, complete generation this session has
+run for VibeVoice ASR -- real tokenizer + prompt builder, real speech-feature extraction (acoustic
++semantic encoders, connectors, Gaussian sampler), real speech-token splicing
+(`EnableSpeechConditioning` + placeholder-id remapping to
+`SpeechTokenIdOffset + slotIndex`, matching `VibeVoiceLlmTensorSource`'s own documented
+convention), real `ForwardPass` prefill+16-step greedy decode, real JSON postprocessing. Succeeds:
+9.03 GiB real weights, 56.3s wall, produces a real (garbled, since the input is synthetic random
+noise not real speech -- expected, not a bug) non-empty transcript string. This is the first point
+VibeVoice ASR has run start-to-finish in this project, closing the item from ~70% (individual
+components verified) to a real, working (if not yet golden-verified) pipeline.
+
+Real remaining gaps: numeric/transcript golden-parity against a real reference (no captured oracle
+run for a real speech clip exists yet -- the synthetic-noise input above only proves the pipeline
+doesn't crash, not correctness), real temperature/top-p/top-k sampling (currently argmax-only, same
+scope limitation this session's other models started with before their own sampling passes), beam
+search.
+

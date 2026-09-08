@@ -34,6 +34,14 @@ public sealed class VibeVoiceAsrTextTokenizer
         _speechPad = RequireTokenId(source, "<|box_start|>");
     }
 
+    /// <summary>Real `&lt;|endoftext|&gt;` id (`tokenizer_text.cpp`'s `eos_id()`, resolved via
+    /// `require_token_id(tokenizer, "&lt;|endoftext|&gt;")`) -- `GgufTokenizer.EosTokenId` already
+    /// resolves the checkpoint's real EOS from its `tokenizer_config.json`, no bespoke lookup
+    /// needed.</summary>
+    public int EosTokenId => _tokenizer.EosTokenId;
+
+    public string Decode(IEnumerable<int> tokenIds) => _tokenizer.Decode(tokenIds);
+
     private static int RequireTokenId(TokenizerSource source, string token)
     {
         if (source.AdditionalSpecialTokens.TryGetValue(token, out int id)) return id;
