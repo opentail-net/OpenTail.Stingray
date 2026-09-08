@@ -17715,3 +17715,32 @@ match (the `sample_vibevoice_acoustic_latents_gaussian` real formula vs this por
 `VibeVoiceAcousticLatentSampler`) now that the input feeding it is real and mostly-correct, since
 that's the next real formula in the pipeline this session's bisection hasn't re-checked with
 normalized input.
+
+## VibeVoice ASR -- CORRECTION: the "acoustic RNG gap is the only remaining cause" conclusion was wrong, real bug still open elsewhere, 2026-09-08
+
+The previous entry concluded the audio-preprocessing bisection was fully closed and pointed the
+remaining garbled-transcript bug at the acoustic branch's known, deliberately-unclosed RNG gap
+(`VibeVoiceAcousticLatentSampler` uses .NET's own RNG, not the reference's bit-identical Torch-CUDA
+Philox generator). Tested that conclusion directly rather than leaving it as an assumption (a
+throwaway diagnostic test, removed after use per rule 9): ran the SAME real LibriSpeech clip through
+the LLM using ONLY the semantic branch's embeddings (fully deterministic, zero RNG involved at all,
+skipping the acoustic branch entirely rather than just accepting its known RNG mismatch).
+
+Real result: still garbled -- `'masterpiece mãe mãe mãe mãe ... .End .End .End ...'`, a different
+failure shape (a degenerate low-entropy repetition loop) but NOT a correct transcription. This
+DIRECTLY REFUTES the previous entry's conclusion: if the acoustic RNG mismatch were the dominant or
+sole remaining cause, removing it entirely should have produced a much cleaner (even if imperfect)
+transcript from the now-deterministic, mostly-correct semantic path alone. It didn't -- so a real
+bug still remains, and it's not (only) the acoustic RNG.
+
+Two real candidates for a future pass, correctly scoped now instead of re-guessed: (1) the semantic
+path's still-real ~10-15% residual numeric divergence (explained in the prior entry as an expected
+resampler phase-response difference) may simply be enough to derail this model's greedy decoding --
+autoregressive LLMs are known to be highly sensitive to small input-embedding perturbations, so
+"expected and benign" doesn't necessarily mean "harmless here"; or (2) a real, still-undiscovered
+bug elsewhere in the path this session's bisection hasn't yet re-checked with the improved input --
+the connector's exact formula, `EnableSpeechConditioning`'s splice-into-prompt mechanics, or
+`BuildPrompt`'s real speech-frame-to-token-count formula. Real next step for a future pass: re-run
+the full `STINGRAY_ASR_TRACE` per-op bisection now that the dominant preprocessing bug is fixed, to
+see exactly how far downstream (encoder stages -> connector -> LLM prefill logits) the remaining
+~10-15% numeric gap grows, rather than continuing to guess between these two candidates.
