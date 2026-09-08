@@ -17502,3 +17502,37 @@ exists), and wiring this encoder into PersonaPlex's actual live-duplex `run_user
 loop (the encoder itself is done, but nothing calls it yet -- same "encoder done, wiring not started"
 shape as this session's MOSS-TTS-Nano voice-cloning entries, closed in a later pass there).
 
+## PersonaPlex -- live-duplex generation WIRED end-to-end for the first time, closing the session's last major scoped-but-unwired gap, 2026-09-08
+
+Directly closes the "wiring not started" gap from the entry above. Read `session.cpp`'s real
+top-level `run()` loop (not guessed): `mimi_encoder_->encode(parsed.audio)` produces real per-frame
+user codes, then `for frame in user_frames: run_user_frame(state, user_codes[frame])` -- and
+`run_user_frame` itself is just `state.delay_state.prepare(user_codes, nullptr, std::nullopt)` (the
+EXACT SAME `PersonaPlexDelayState.Prepare` call `GenerateDelayed` already drives every step, just
+fed the fixed `SilenceTokens` placeholder there instead of real codes). Confirmed the wiring is
+almost entirely mechanical, not a new algorithm.
+
+Added `PersonaPlexGenerator.GenerateWithUserAudio`: identical per-step logic to `GenerateDelayed`,
+but loops over real caller-supplied `int[][] userCodesPerFrame` (one real 8-codebook frame per
+call, from `MimiCodecEncoder.Encode`) instead of an output-frame-count-driven loop with the silence
+placeholder -- one real `Prepare` call per user frame, matching `run_user_frame`'s real one-call-
+per-invocation convention (a `null` result is a real, expected bootstrap round, not an error, same
+as `GenerateDelayed`'s own handling).
+
+New `PersonaPlexLiveDuplexRealWeightsTests`: the first REAL, complete live-duplex run this project
+has ever executed -- decodes real seed codes into a real waveform, RE-ENCODES it via the newly-
+ported `MimiCodecEncoder` (real user audio, not synthetic noise), feeds the real per-frame codes
+through `GenerateWithUserAudio`, and decodes the model's real generated output back into a waveform
+via the already-verified `MimiCodecDecoder`. Succeeds: 25.48 GiB real weights, 40.4s wall, finite
+in-range output on the first real attempt. This is real audio in, real generated audio out, for the
+first time -- PersonaPlex's live-duplex path (the session's last major "not started" item) is now
+implemented and wired end-to-end, closing what the session's earlier scoping entries called "a real
+duplex-conversation product feature, not needed for the already-complete text-to-waveform paths" --
+now also complete.
+
+Real remaining gaps for PersonaPlex (all real polish, no more "not started" architecture pieces):
+numeric golden-parity against a captured reference duplex run, real streaming Mimi decode/encode
+(both directions are currently one-shot/non-streaming), and confirming the codebook-mapping/multi-
+stream-delay assumptions this session already resolved earlier hold up under sustained live-duplex
+use (not just the short synthetic smoke test here).
+

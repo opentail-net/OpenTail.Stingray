@@ -103,6 +103,60 @@ public static class PersonaPlexGenerator
     }
 
     /// <summary>
+    /// Real LIVE-DUPLEX generation, ported from `session.cpp`'s real top-level `run()` loop (not
+    /// guessed): `for frame in user_frames: run_user_frame(state, user_codes[frame])` -- the exact
+    /// same per-step algorithm as <see cref="GenerateDelayed"/>, except the "user" stream (9-16)
+    /// is fed REAL per-frame Mimi codes from <paramref name="userCodesPerFrame"/> (produced by
+    /// <see cref="MimiCodecEncoder.Encode"/> on real captured user audio) instead of the fixed
+    /// `SilenceTokens` placeholder. One real `PersonaPlexDelayState.Prepare` call per user frame
+    /// (matching the reference's real one-`prepare`-call-per-`run_user_frame`-invocation
+    /// convention), which may legitimately return `null` for a bootstrap round (no model step that
+    /// user frame) -- this is real, expected behavior, not an error, same as `GenerateDelayed`'s
+    /// own `if (step is null) continue`.
+    /// </summary>
+    public static Frame[] GenerateWithUserAudio(IForwardPass fwd, PersonaPlexLmTensorSource llm, PersonaPlexDepformer depformer,
+        int[][] userCodesPerFrame, int textVocabSize, int audioCodebookSize,
+        SamplingParams? textOptions = null, SamplingParams? audioOptions = null, Random? rng = null)
+    {
+        int hiddenDim = llm.HiddenDim;
+        var textEmbedding = llm.TextEmbeddingWeight();
+        var audioEmbeddings = new float[llm.LmCodebooks][];
+        for (int cb = 0; cb < llm.LmCodebooks; cb++) audioEmbeddings[cb] = llm.AudioEmbeddingWeight(cb);
+
+        var delayState = new PersonaPlexDelayState();
+        var frames = new List<Frame>(userCodesPerFrame.Length);
+        int position = 0;
+        foreach (var userCodes in userCodesPerFrame)
+        {
+            if (userCodes.Length != 8)
+                throw new ArgumentException("Each user-audio frame must carry exactly 8 real Mimi codebook codes.", nameof(userCodesPerFrame));
+
+            var step = delayState.Prepare(userCodes, null, null);
+            if (step is null) continue; // real one-time offset==0 bootstrap round, no model step
+
+            var tokens = step.Value.Tokens;
+            var embedding = new float[hiddenDim];
+            long textRow = (long)tokens[0] * hiddenDim;
+            for (int d = 0; d < hiddenDim; d++) embedding[d] = textEmbedding[textRow + d];
+            for (int cb = 0; cb < llm.LmCodebooks; cb++)
+            {
+                long row = (long)tokens[1 + cb] * hiddenDim;
+                var table = audioEmbeddings[cb];
+                for (int d = 0; d < hiddenDim; d++) embedding[d] += table[row + d];
+            }
+
+            var textLogits = fwd.ForwardEmbedding(embedding, position++);
+            var hidden = fwd.LastHidden.ToArray();
+            int sampledText = textOptions is null ? ArgMax(textLogits, textVocabSize) : Sampler.Sample(textLogits[..textVocabSize], textOptions, rng);
+            var sampledAudio = depformer.GenerateFrame(hidden, sampledText, audioCodebookSize, audioOptions, rng);
+
+            var output = delayState.FinishWithSampling(sampledText, sampledAudio);
+            if (output != null) frames.Add(new Frame(sampledText, output));
+        }
+        return [.. frames];
+    }
+
+    /// <summary>
     /// Real delay-correct generation, ported from `session.cpp`'s `run_user_frame`/
     /// `run_prepared_token_step` (not guessed): drives <see cref="PersonaPlexDelayState"/>'s real
     /// ring-buffer bootstrap/advance logic so each model step's 17-stream input frame
