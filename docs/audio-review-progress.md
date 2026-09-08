@@ -18332,3 +18332,36 @@ concrete next step for whoever picks this up**: add a reference trace of the raw
 at tensor loading (wrong tensor, wrong layout/transpose) or inside the transformer layers
 themselves (attention/RoPE/GQA repeat bug specific to this bridge). Not fixed in this pass --
 pivoting to the next backlog item per this project's "stopping is for wimps" standing rule.
+
+## PersonaPlex: same double-normalization bug found by the VibeVoice TTS correction above, fixed (2026-09-08)
+
+The VibeVoice TTS correction above flagged `PersonaPlexGenerator`'s `NormalizeHidden(fwd.LastHidden,
+llm.NormWeight, hiddenDim)` (4 call sites, committed by a concurrent AI session as part of the
+Sep-7 "clean slate" pass, same bug class fixed for PersonaPlex independently around the same time
+as the original -- since-corrected -- VibeVoice TTS fix) as needing the identical re-check. It did:
+same root cause -- `fwd` here is also the CPU-backend `ForwardPass` class, whose `LastHidden` is
+real, confirmed POST-final-norm (`ForwardPass.PrefillCore.cs`/`ForwardPass.Decode.cs`, see the
+VibeVoice TTS correction entry above for the exact lines) -- so the manual RMSNorm applied on top
+before feeding the Depformer was a second, redundant normalization, same as VibeVoice TTS's bug.
+
+**Fixed**: reverted all 4 `NormalizeHidden(fwd.LastHidden, llm.NormWeight, hiddenDim)` call sites
+in `PersonaPlexGenerator.cs` (lines 93, 149, 208, 349) to plain `fwd.LastHidden.ToArray()`; removed
+the now-dead `NormalizeHidden` helper. No signature/parameter changes needed here (unlike
+VibeVoice TTS) since `PersonaPlexGenerator`'s public methods never threaded `normWeight`/`eps`
+through as their own parameters -- they read `llm.NormWeight` directly inside the loop body, so
+removing the call was a pure, contained revert.
+
+**Regression check**: full PersonaPlex real-weight suite (`PersonaPlexGeneratorRealWeightsTests`,
+`PersonaPlexFullPipelineRealWeightsTests`, `PersonaPlexDelayedPipelineRealWeightsTests`,
+`PersonaPlexVoicePromptRealWeightsTests`, `PersonaPlexLiveDuplexRealWeightsTests`) all pass, real
+25.48 GiB weight loads (6 tests, 280.6s total). Full fast suite (469 tests) clean. Regenerated
+`docs/audio-samples/personaplex-real-check.wav` (96000 samples, 4.00s) with the fix applied --
+not yet human-confirmed by ear.
+
+Not independently verified against the real reference (`session.cpp`'s Depformer conditioning)
+via a trace bisection the way VibeVoice TTS was -- this fix is high-confidence by direct analogy
+(same `IForwardPass fwd`, same concrete `ForwardPass` class, same now-corrected pre/post-norm
+fact) and by the doc-comment contradiction being a real, already-verified fact about the shared
+engine code, not a PersonaPlex-specific guess. If PersonaPlex audio quality issues persist after
+this fix, the same per-step trace bisection technique used for VibeVoice TTS above is the next
+real diagnostic step, not further pre/post-norm guessing.

@@ -90,7 +90,7 @@ public static class PersonaPlexGenerator
             }
 
             var textLogits = fwd.ForwardEmbedding(embedding, t);
-            var hidden = NormalizeHidden(fwd.LastHidden, llm.NormWeight, hiddenDim);
+            var hidden = fwd.LastHidden.ToArray();
 
             int nextTextToken = ArgMax(textLogits, textVocabSize);
             var nextAudioCodes = depformer.GenerateFrame(hidden, nextTextToken, audioCodebookSize);
@@ -146,7 +146,7 @@ public static class PersonaPlexGenerator
             }
 
             var textLogits = fwd.ForwardEmbedding(embedding, position++);
-            var hidden = NormalizeHidden(fwd.LastHidden, llm.NormWeight, hiddenDim);
+            var hidden = fwd.LastHidden.ToArray();
             int sampledText = textOptions is null ? ArgMax(textLogits, textVocabSize) : Sampler.Sample(textLogits[..textVocabSize], textOptions, rng);
             var sampledAudio = depformer.GenerateFrame(hidden, sampledText, audioCodebookSize, audioOptions, rng);
 
@@ -205,7 +205,7 @@ public static class PersonaPlexGenerator
             }
 
             var textLogits = fwd.ForwardEmbedding(embedding, position++);
-            var hidden = NormalizeHidden(fwd.LastHidden, llm.NormWeight, hiddenDim);
+            var hidden = fwd.LastHidden.ToArray();
             int sampledText = textOptions is null ? ArgMax(textLogits, textVocabSize) : Sampler.Sample(textLogits[..textVocabSize], textOptions, rng);
             var sampledAudio = depformer.GenerateFrame(hidden, sampledText, audioCodebookSize, audioOptions, rng);
 
@@ -346,7 +346,7 @@ public static class PersonaPlexGenerator
 
             var embedding = BuildTokenEmbedding(step.Value.Tokens);
             var textLogits = fwd.ForwardEmbedding(embedding, position++);
-            var hidden = NormalizeHidden(fwd.LastHidden, llm.NormWeight, hiddenDim);
+            var hidden = fwd.LastHidden.ToArray();
             int sampledText = textOptions is null ? ArgMax(textLogits, textVocabSize) : Sampler.Sample(textLogits[..textVocabSize], textOptions, rng);
             var sampledAudio = depformer.GenerateFrame(hidden, sampledText, audioCodebookSize, audioOptions, rng);
 
@@ -366,16 +366,6 @@ public static class PersonaPlexGenerator
         if (trimmed.StartsWith("<system>", StringComparison.Ordinal) && trimmed.EndsWith("<system>", StringComparison.Ordinal))
             return trimmed;
         return $"<system> {trimmed} <system>";
-    }
-
-    private static float[] NormalizeHidden(ReadOnlySpan<float> hidden, float[] normWeight, int hiddenDim)
-    {
-        double sumSq = 0;
-        for (int d = 0; d < hiddenDim; d++) sumSq += (double)hidden[d] * hidden[d];
-        float invRms = (float)(1.0 / Math.Sqrt(sumSq / hiddenDim + 1e-8));
-        var normed = new float[hiddenDim];
-        for (int d = 0; d < hiddenDim; d++) normed[d] = hidden[d] * invRms * normWeight[d];
-        return normed;
     }
 
     private static int ArgMax(ReadOnlySpan<float> logits, int count)
