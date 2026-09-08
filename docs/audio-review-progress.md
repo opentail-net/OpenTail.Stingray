@@ -18107,3 +18107,22 @@ MOSS-TTS-Nano's generation-loop gibberish regression (introduced by this session
 greedy-to-sampling fix) -- `MossTtsGlobalTransformer.cs`, `SentencePieceBpeTokenizer.cs`, and a new
 `MossTtsReferenceParityRealWeightsTests.cs` were left uncommitted and in-progress by that tool as
 of this entry; do not revert or discard them without checking their state first.
+
+## VibeVoice ASR -- ruled out EnableSpeechConditioning's splice mechanics, no bug found, 2026-09-08
+
+Checked the last remaining structural candidate from this session's bisection: the reference's real
+speech-embedding splice (`text_decoder.cpp`'s prefill graph, `ggml_set_rows(embed_tokens(input_ids),
+speech_features, speech_positions)` -- embeds the prompt normally, THEN overwrites the rows at the
+real speech positions with the real speech features, discarding whatever placeholder token's
+embedding was there). This port's `VibeVoiceLlmTensorSource.EnableSpeechConditioning` uses a
+different mechanism (appends speech embeddings as new synthetic vocab rows, caller remaps
+`<|box_start|>` position ids to the new synthetic ids) -- but the two are mathematically equivalent:
+both end up with the exact real speech-feature values at the exact real positions, just via a
+row-overwrite vs. a synthetic-embedding-lookup. Not the bug.
+
+Every real structural candidate this session's bisection has checked (resampler, RMS normalization
+[fixed], connector formula, prompt builder, acoustic-branch RNG, speech-splice mechanics) is now
+either fixed or ruled out. Pivoting to a different backlog item per the "don't stall" discipline --
+the real next step for a future pass remains the deferred `STINGRAY_ASR_TRACE` per-op bisection
+re-run with the normalization fix applied, to find where in the network the still-real remaining
+divergence actually originates (not yet done this session).
