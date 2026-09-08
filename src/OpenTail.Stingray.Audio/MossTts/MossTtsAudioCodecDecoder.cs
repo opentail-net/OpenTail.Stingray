@@ -101,7 +101,30 @@ public static class MossTtsAudioCodecDecoder
         return output;
     }
 
-    private static float[][] RunTransformerStage(float[][] input, MossTtsAudioCodecTransformerStageWeights stage)
+    /// <summary>Real `PatchedPretransform` reshape-downsample (encoder direction, the exact inverse
+    /// of <see cref="PatchUpsample"/>): `[l][d]` -&gt; `[l/patch][d*patch]`, where
+    /// `output[lt][d_idx*patch+h_idx] = input[lt*patch+h_idx][d_idx]` (derived directly from the
+    /// reference's `patch_downsample`, not guessed).</summary>
+    public static float[][] PatchDownsample(float[][] input, int patch)
+    {
+        int totalLength = input.Length;
+        int channels = input[0].Length;
+        int length = totalLength / patch;
+        var output = new float[length][];
+        for (int lt = 0; lt < length; lt++)
+        {
+            var row = new float[channels * patch];
+            for (int h = 0; h < patch; h++)
+            {
+                var src = input[lt * patch + h];
+                for (int d = 0; d < channels; d++) row[d * patch + h] = src[d];
+            }
+            output[lt] = row;
+        }
+        return output;
+    }
+
+    internal static float[][] RunTransformerStage(float[][] input, MossTtsAudioCodecTransformerStageWeights stage)
     {
         int n = input.Length;
         int dModel = stage.DModel;

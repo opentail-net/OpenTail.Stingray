@@ -17030,3 +17030,41 @@ the C++ reference's RTF 3.56, not the alarming ~60x the contaminated number impl
 unsurprising gap for a CPU path with no SIMD-tuned Q8_0 CFM kernels yet, not a crisis -- real,
 useful context for whatever perf pass is picked up next (this session's or Antigravity's).
 
+## MOSS-TTS-Nano -- voice-cloning ENCODER implemented and real-weight verified for the first time, 2026-09-08
+
+Directly follows the encoder scoping entry above. Dumped real `encoder.*` tensor names via an
+extended `MossTtsCodecTensorNameDumpDebugTest.cs` (confirmed real module indices 1/3/5/7, same as
+the decoder but under a SEPARATE `encoder.` prefix -- **correction of the earlier scoping entry's
+guess** that encoder/decoder might share one interleaved `ModuleList`; they are two fully
+independent stacks) and the real weight-norm tensor shapes for the quantizer's encode-only tensors
+(`quantizer.input_proj`, `quantizer.quantizers.{i}.in_proj`) to confirm they follow the exact same
+`[1,1,out]`/`[1,in,out]` convention already verified working for the decode-only `output_proj`/
+`out_proj` tensors -- no new convention to guess.
+
+Ported, real (not guessed): `MossTtsAudioCodecEncoderWeights` (4-stage config from
+`moss_audio_tokenizer_nano_config()`'s real `encoder_stages`, loaded via a new shared
+`MossTtsAudioCodecDecoderWeights.LoadStage` helper extracted from the decoder's own constructor --
+identical per-stage tensor layout, just a different top-level prefix, so no duplication);
+`MossTtsAudioCodecDecoder.PatchDownsample` (the real exact inverse of the existing `PatchUpsample`,
+`[l][d] -> [l/patch][d*patch]`, verified formula-for-formula against `patch_downsample` in the
+reference); `MossTtsAudioCodecQuantizerWeights.Encode` (real residual-RVQ nearest-code search:
+`input_proj` -> per-quantizer `L2-normalize(in_proj(residual))` -> cosine-nearest codebook row ->
+subtract `out_proj(rawEmbedding)` from the residual INCLUDING its bias, exactly matching the
+reference's own `residual[out] -= sum` where `sum` already includes `out_bias` -- ported verbatim,
+not "corrected" even though the bias-in-subtraction looked unusual at first glance, per this
+project's "check the real reference before fixing code that looks wrong" rule); and
+`MossTtsAudioCodecEncoder.Encode` (stereo interleave -> 4x `[PatchDownsample -> RunTransformerStage]`
+-> final `PatchDownsample` by `EncoderFinalPatch=4` -> quantize), reusing the decoder's existing
+`RunTransformerStage` (now `internal`) unchanged -- confirms the "structural mirror" claim from the
+reference's own doc comment was real, not just descriptive.
+
+Real-weight verified (`MossTtsAudioCodecEncoderRealWeightsTests`, new): encodes a real
+decoder-generated waveform (not synthetic noise) back into finite, in-range, correctly-shaped
+`[NumQuantizers][frames]` codes. Re-ran `MossTtsAudioCodecDecoderRealWeightsTests` post-refactor
+(2.8s) to confirm the shared `LoadStage`/`RunTransformerStage` extraction caused no regression.
+Not yet done: numeric golden-parity against a captured reference encode (no independent oracle run
+captured yet), and wiring `MossTtsPromptBuilder`'s `prompt_codes`-aware overload (the real
+`build_user_prompt_prefix`/`audio_user_slot_token_id` interleaving already scoped in the previous
+entry) to actually USE this encoder for a real voice-cloning generation call -- the encoder itself
+is done, but nothing calls it yet.
+

@@ -36,7 +36,8 @@ public sealed class MossTtsCodecTensorNameDumpDebugTest : HeavyTestBase
         for (int i = 0; i < namesObj.Length; i++)
         {
             string name = (string)namesObj[i];
-            if (!name.StartsWith("audio_tokenizer_weights/decoder.") && !name.StartsWith("audio_tokenizer_weights/quantizer."))
+            if (!name.StartsWith("audio_tokenizer_weights/decoder.") && !name.StartsWith("audio_tokenizer_weights/quantizer.")
+                && !name.StartsWith("audio_tokenizer_weights/encoder."))
                 continue;
             var t = model.Tensors[i];
             sb.AppendLine($"{name}\t{string.Join(",", t.Dimensions)}\t{t.DType}");
