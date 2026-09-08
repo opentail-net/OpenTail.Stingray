@@ -109,8 +109,36 @@ public sealed class VibeVoiceAsrRealSpeechRealWeightsTests : HeavyTestBase
             waveform, new Random(7));
         int speechFrames = speechEmbeddingsChannelMajor[0].Length;
 
+        {
+            // DEBUG: isolate the deterministic semantic-only branch (no RNG) for a clean
+            // comparison against the reference's own trace.
+            var semanticLatent = VibeVoiceTokenizerEncoder.Encode(semanticEncoder, waveform, SemanticConfig().LayerNormEps);
+            var semanticProjected = VibeVoiceConnector.Project(semanticConnector, semanticLatent);
+            var flat = new float[speechFrames * HiddenDim];
+            for (int f = 0; f < speechFrames; f++)
+                for (int c = 0; c < HiddenDim; c++)
+                    flat[f * HiddenDim + c] = semanticProjected[c][f];
+            int[] idx = [0, 2481, 4962, 7443, 9924, 12405, 14886, 17368, 19849, 22330, 24811, 27292, 29773, 32255, 32256, 35188, 38120, 41052, 43985, 46917, 49849, 52781, 55714, 58646, 61578, 64511, 64512, 66993, 69474, 71955, 74436, 76917, 79398, 81880, 84361, 86842, 89323, 91804, 94285, 96767];
+            var sb = new System.Text.StringBuilder("[DEBUG] semantic.values samples=[");
+            foreach (int i in idx) sb.Append($"{i}:{flat[i]:G6},");
+            sb.Append(']');
+            Console.WriteLine(sb.ToString());
+        }
+
         double audioSeconds = waveform.Length / (double)RealSampleRate;
         var prompt = tokenizer.BuildPrompt(audioSeconds, speechFrames);
+        Console.WriteLine($"[DEBUG] speechFrames={speechFrames} promptTokens={prompt.InputIds.Length} rawSamples={rawSamples.Length} rawRate={rawRate} resampledLen={waveform.Length}");
+        {
+            var flat = new float[speechFrames * HiddenDim];
+            for (int f = 0; f < speechFrames; f++)
+                for (int c = 0; c < HiddenDim; c++)
+                    flat[f * HiddenDim + c] = speechEmbeddingsChannelMajor[c][f];
+            int[] idx = [0, 2481, 4962, 7443, 9924, 12405, 14886, 17368, 19849, 22330, 24811, 27292, 29773, 32255, 32256, 35188, 38120, 41052, 43985, 46917, 49849, 52781, 55714, 58646, 61578, 64511, 64512, 66993, 69474, 71955, 74436, 76917, 79398, 81880, 84361, 86842, 89323, 91804, 94285, 96767];
+            var sb = new System.Text.StringBuilder("[DEBUG] speech.values samples=[");
+            foreach (int i in idx) sb.Append($"{i}:{flat[i]:G6},");
+            sb.Append(']');
+            Console.WriteLine(sb.ToString());
+        }
 
         var llm = new VibeVoiceLlmTensorSource(source, NumLayers, HiddenDim, NumHeads, NumKvHeads, HeadDim, FfDim, VocabSize, RopeTheta, RmsNormEps);
 

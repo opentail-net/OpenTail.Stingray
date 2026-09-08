@@ -17293,3 +17293,51 @@ flagging this precisely per this project's "don't stop at the riskiest one, but 
 remains" discipline rather than claiming the generation loop is more done than it is. VibeVoice ASR
 is real progress (from completely blocked to running end-to-end) but NOT yet transcription-correct.
 
+## VibeVoice ASR -- real bisection narrows the bug: prompt/splice logic ruled out, deterministic semantic branch shows real ~10-60% divergence (RNG confound ruled out), 2026-09-08
+
+Started the dump-and-compare bisection scoped in the entry above, on the exact same LibriSpeech
+clip the reference produced a real, correct transcription for ("Concord returned to its place amidst
+the tents.").
+
+**Step 1 -- structural counts: exact match, ruling out prompt/splice-logic bugs.** Added real
+`vibevoice_asr.speech.values`/`vibevoice_asr.speech.hidden_size` trace hooks to
+`speech_encoder.cpp` (existing `vibevoice_asr.prompt_tokens`/`speech_tokens` trace scalars were
+already present) and reran the reference CLI with `--log`. This port's own numbers match EXACTLY:
+`speechFrames=27` (ref `speech_tokens=27`), `promptTokens=86` (ref `prompt_tokens=86`),
+`rawSamples=56080` (ref `max_input_samples=56080`). Rules out a real bug in tokenization, prompt
+templating, the speech-frame count, or the `SpeechTokenIdOffset`-remapping splice technique
+(`VibeVoiceLlmTensorSource.EnableSpeechConditioning`) -- all of these are exactly right.
+
+**Step 2 -- raw combined speech-embedding values: real divergence, but confounded by the
+already-accepted acoustic-branch RNG gap.** Compared 40 sampled values of the real combined
+(`acoustic + semantic`) embedding at identical flat indices between the reference's trace and this
+port's own `VibeVoiceSpeechFeatures.Extract` output: real, substantial differences (several sign
+flips, most points 10-60% off). Not immediately conclusive on its own -- the acoustic branch uses
+real Gaussian RNG sampling (`VibeVoiceAcousticLatentSampler.Sample`) which this port's `.NET Random`
+does NOT bit-match the reference's real Torch-seeded RNG (the SAME already-documented, already-
+accepted gap as VoxCPM2's CFM solver and VibeVoice TTS's diffusion sampler) -- so this comparison
+alone can't distinguish "expected RNG noise" from "a real formula bug."
+
+**Step 3 -- isolated the semantic branch (FULLY deterministic, `FixStd=0`, no RNG at all) for a
+clean comparison.** Added a real `vibevoice_asr.semantic.values` trace to `speech_encoder.cpp`
+(right after `connector_.project_semantic`, before the RNG-affected acoustic add) and a matching
+debug print in this port's test calling `VibeVoiceTokenizerEncoder.Encode`/
+`VibeVoiceConnector.Project` directly for the semantic-only path. **Real, unconfounded finding**:
+even with RNG fully out of the picture, the same real ~10-60% divergence pattern persists (e.g.
+index 46917: ref `-0.262854` vs ours `-0.44182`, 68% off; index 69474: ref `0.179727` vs ours
+`0.0716367`, 60% off; a few near-zero-magnitude points also sign-flip) -- this DEFINITIVELY rules
+out RNG as the explanation and confirms a real, still-unidentified formula bug specifically in
+`VibeVoiceTokenizerEncoder.Encode` and/or `VibeVoiceConnector.Project` (both encoders share this
+same code with different config, so the bug likely affects the acoustic branch identically, which
+would explain why the earlier VibeVoiceTokenizerEncoderRealWeightsTests only ever checked
+finite/shape, never real reference VALUES).
+
+**Real, precisely scoped next step**: bisect INSIDE `VibeVoiceTokenizerEncoder.Encode` itself (its
+own per-stage/per-layer structure, same technique as VoxCPM2's per-layer bisection this session) --
+the divergence is now narrowed from "the whole ASR pipeline" down to one specific, real,
+self-contained component with a known-correct reference trace point to compare against. Not started
+this pass given the time already invested this cycle; a future pass should read
+`tokenizer_audio.cpp`'s real encoder stage-by-stage structure (already partially documented from
+this session's VibeVoice TTS work, since the tokenizer encoder architecture is shared) and add
+per-stage taps.
+
