@@ -94,16 +94,25 @@ public static class VibeVoiceConvNeXtBlock
         {
             var row = new float[outFrames];
             float b = bias?[oc] ?? 0f;
+            var wOc = weight[oc];
             for (int t = 0; t < outFrames; t++)
             {
                 float sum = b;
                 int start = t * stride;
-                for (int ic = 0; ic < inCh; ic++)
+                if (dilation == 1)
                 {
-                    var wRow = weight[oc][ic];
-                    var srcRow = padded[ic];
-                    for (int k = 0; k < kernel; k++)
-                        sum += wRow[k] * srcRow[start + k * dilation];
+                    for (int ic = 0; ic < inCh; ic++)
+                        sum += System.Numerics.Tensors.TensorPrimitives.Dot(wOc[ic].AsSpan(0, kernel), padded[ic].AsSpan(start, kernel));
+                }
+                else
+                {
+                    for (int ic = 0; ic < inCh; ic++)
+                    {
+                        var wRow = wOc[ic];
+                        var srcRow = padded[ic];
+                        for (int k = 0; k < kernel; k++)
+                            sum += wRow[k] * srcRow[start + k * dilation];
+                    }
                 }
                 row[t] = sum;
             }
@@ -169,16 +178,25 @@ public static class VibeVoiceConvNeXtBlock
         {
             var row = new float[outFrames];
             float b = bias?[oc] ?? 0f;
+            var wOc = weight[oc];
             for (int t = 0; t < outFrames; t++)
             {
                 float sum = b;
                 int start = t * stride;
-                for (int ic = 0; ic < inCh; ic++)
+                if (dilation == 1)
                 {
-                    var wRow = weight[oc][ic];
-                    var srcRow = full[ic];
-                    for (int k = 0; k < kernel; k++)
-                        sum += wRow[k] * srcRow[start + k * dilation];
+                    for (int ic = 0; ic < inCh; ic++)
+                        sum += System.Numerics.Tensors.TensorPrimitives.Dot(wOc[ic].AsSpan(0, kernel), full[ic].AsSpan(start, kernel));
+                }
+                else
+                {
+                    for (int ic = 0; ic < inCh; ic++)
+                    {
+                        var wRow = wOc[ic];
+                        var srcRow = full[ic];
+                        for (int k = 0; k < kernel; k++)
+                            sum += wRow[k] * srcRow[start + k * dilation];
+                    }
                 }
                 row[t] = sum;
             }
@@ -399,12 +417,11 @@ public static class VibeVoiceConvNeXtBlock
     private static float[] LinearRow(float[] input, float[] weight, float[]? bias, int inDim, int outDim)
     {
         var output = new float[outDim];
+        var inputSpan = input.AsSpan(0, inDim);
         for (int o = 0; o < outDim; o++)
         {
-            float sum = bias?[o] ?? 0f;
-            int wBase = o * inDim;
-            for (int i = 0; i < inDim; i++) sum += input[i] * weight[wBase + i];
-            output[o] = sum;
+            float b = bias?[o] ?? 0f;
+            output[o] = b + System.Numerics.Tensors.TensorPrimitives.Dot(inputSpan, weight.AsSpan(o * inDim, inDim));
         }
         return output;
     }
