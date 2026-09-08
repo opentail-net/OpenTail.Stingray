@@ -17827,3 +17827,52 @@ new, golden-parity-verified model added to the project, 93ms real inference on C
 Not yet done: wiring into a public pipeline class/CLI command (this is currently library-only, no
 `IVadPipeline`-style wrapper), a real streaming variant (the reference has one, not read yet), and
 testing against a real silent/non-speech clip to confirm the negative case.
+
+## Citrinet ASR -- SECOND new model ported from scratch, real golden-parity transcription on FIRST attempt, 2026-09-08
+
+Continued this cycle's fresh-model pivot with the next-smallest un-ported reference family:
+`citrinet_asr` (NVIDIA NeMo's larger Citrinet CTC CNN, same "Jasper" family as `marblenet_vad` but
+bigger -- real Squeeze-Excite gates, a real SentencePiece BPE vocabulary, and CTC decoding instead
+of a binary classifier). No bundled checkpoint this time -- downloaded the real one via `stingray
+pull -r audio-cpp/audio.cpp-gguf -q citrinet-asr` (38.7 MiB Q8_0 GGUF).
+
+Real architecture (read from `citrinet_asr/assets.cpp`/`runtime.cpp`, not guessed): 80-channel
+log-mel features -- STFT with the checkpoint's own window/filterbank, NO pre-emphasis, but a real
+`normalize: "per_feature"` per-mel-band Z-normalization (Bessel-corrected variance, `eps=1e-5`
+added OUTSIDE the sqrt -- the exact same formula this project's `ParakeetMelExtractor` already
+implements, confirmed identical by reading `FeatureNormalizer::normalize_batch_impl`'s real
+`PerFeature` branch), THEN a real `pad_to=16` frame-count zero-pad applied AFTER normalization
+(order matters -- MarbleNet's `pad_to` step has no normalization to interact with, Citrinet's
+does). 23 real Jasper blocks (parsed directly from the checkpoint's own embedded
+`citrinet_256_config.json` via `System.Text.Json` rather than hand-transcribed -- 23 blocks is too
+large/error-prone to type by hand, unlike MarbleNet's 6), each with a real Squeeze-Excite gate
+(global time-average-pool -> Linear(channels->hidden, no bias) -> ReLU -> Linear(hidden->channels,
+no bias) -> Sigmoid -> broadcast-multiply, ported from `conditioning_modules.cpp`'s real
+`SqueezeExcite1dModule::build`) inserted between the separable-conv-repeat stack and the residual
+add. Two real structural differences from MarbleNet worth noting for future NeMo-family ports:
+stride is applied on the LAST repeat of a block, not the first (`repeat + 1 == block_cfg.repeat`),
+and a residual branch can itself be strided (`residual_mode == "stride_add"`) rather than always
+kernel-1/stride-1. Same real BN-folding convention as MarbleNet (pointwise/plain/residual convs
+fold BatchNorm in, depthwise convs stay BN-free) -- applied correctly on the first attempt this
+time, having already found and fixed that exact bug once on MarbleNet this same session.
+
+Real greedy CTC decode (`CitrinetAsr.GreedyCtcIds`, ported verbatim from `runtime.cpp`'s
+`greedy_ctc_ids`: per-frame argmax, collapse consecutive repeats, drop the blank id) plus a new,
+deliberately minimal DECODE-ONLY SentencePiece vocabulary reader
+(`CitrinetSentencePieceVocab`) -- parses the same real `ModelProto` protobuf wire format this
+project's existing `SentencePieceBpeTokenizer` already handles, but only extracts ordered piece
+text (piece file-order IS the real vocab id, confirmed via `assets.cpp`'s own
+`tokenizer_pieces.size() == vocab_size` check) since CTC decoding needs id->piece lookup only, not
+BPE merge-encoding -- deliberately NOT bolted onto the existing encode-only tokenizer class to
+avoid touching already-verified shared code for a one-model-only need.
+
+New `CitrinetAsrRealWeightsTests`: real end-to-end run on the same real LibriSpeech clip used for
+MarbleNet VAD and VibeVoice ASR's bisection. Verified against the vendored reference CLI's own real
+output on the identical file (`audiocpp_cli --task asr --family citrinet_asr`): both sides produce
+`"concord returned to its place amidst the tents"` -- an EXACT transcription match (not just
+non-degenerate output) on this port's first real attempt, no debugging needed. 1.57s real CPU
+inference, 44 output frames, 18 tokens.
+
+Two real, golden-parity-verified NeMo-family models added to the project in one cycle. Not yet
+done for Citrinet: a public pipeline wrapper, a real negative/no-speech test case, and testing
+against a second real audio clip to rule out this specific clip being a lucky case.
