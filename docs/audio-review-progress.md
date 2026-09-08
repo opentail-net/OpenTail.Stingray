@@ -17099,3 +17099,28 @@ stack, called far more often: once per CFM timestep per patch, i.e. ~10x23=230 c
 `VoxCpm2ResidualLm`'s 23) are the far more likely real bottleneck and the natural next target for
 whoever continues this perf pass.
 
+## MOSS-TTS-Nano -- voice-cloning WIRED end-to-end for the first time, real WAV sample produced, 2026-09-08
+
+Closes the last real gap from the encoder-scoping/-porting entries above: added
+`MossTtsPromptBuilder.BuildVoiceClonePrompt`, ported verbatim from `prompt_builder.cpp`'s `build()`
+`prompt_codes != nullptr` branch (lines 108-133) -- real per-reference-audio-frame rows tagged with
+`AudioUserSlotTokenId` as the TEXT id (matching `push_audio_row`'s real convention: the role marker
+lives in the text slot, not a pad) between the user-prefix and the `audio_end_token_id`/"After
+Reference" template/assistant-turn suffix. `MossTtsGenerator.Generate` needed zero changes -- it
+already accepted any `IReadOnlyList<MossTtsGlobalRow>` prompt, so the new voice-clone rows just
+work.
+
+New `MossTtsVoiceCloningRealWeightsTests`: real, first-attempt success -- decodes a real reference
+waveform, RE-ENCODES it via `MossTtsAudioCodecEncoder` (a real roundtrip through both new
+encoder-side pieces before either had been exercised by the actual generation loop), builds the
+real voice-clone prompt, runs the real generation loop, decodes the result, and writes
+`docs/audio-samples/moss-tts-nano-voiceclone-real-check.wav` (0.24s, real weights throughout, 2.7s
+wall). This is the first point MOSS-TTS-Nano's voice-cloning path has produced actual audio, not
+just codes in isolation.
+
+MOSS-TTS-Nano's remaining real gaps: numeric golden-parity against a captured reference (no
+independent oracle run for either the encoder or the voice-clone path exists yet), and the
+`precompiled_charsmap` tokenizer normalization gap (shared with Parler-TTS, still the single
+biggest-risk item flagged across this whole project -- needs external SentencePiece C++ source
+reading, not available in the vendored reference).
+

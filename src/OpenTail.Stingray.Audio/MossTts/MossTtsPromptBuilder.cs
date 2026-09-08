@@ -9,10 +9,9 @@ namespace OpenTail.Stingray.Audio.MossTts;
 /// etc. fields, followed by `im_end`/`im_start` role-switch tokens and a trailing
 /// `audio_start_token_id` that hands control to the audio-generation loop.
 ///
-/// <para><b>Not yet implemented</b>: the reference-audio continuation path (`prompt_codes != null`
-/// in the reference -- voice cloning against a real reference audio clip's already-encoded RVQ
-/// codes) -- a real, separate feature needing the audio codec (not yet ported) to produce those
-/// reference codes in the first place. This class covers the reference's zero-shot path only.</para>
+/// <para><see cref="BuildVoiceClonePrompt"/> is the real `prompt_codes != null` branch (lines
+/// 108-133 of the reference): now implementable end-to-end since
+/// <see cref="MossTtsAudioCodecEncoder"/> supplies real reference-audio RVQ codes.</para>
 /// </summary>
 public static class MossTtsPromptBuilder
 {
@@ -53,6 +52,60 @@ public static class MossTtsPromptBuilder
         ids.AddRange(tokenizer.Encode(AssistantRolePrefix));
         ids.Add(MossTtsGlobalTransformerWeights.AudioStartTokenId);
 
+        return ToTextOnlyRows(ids);
+    }
+
+    /// <summary>
+    /// Builds the real voice-cloning prompt (reference audio supplied), ported verbatim from
+    /// `prompt_builder.cpp`'s `build()`'s `prompt_codes != nullptr` branch (lines 108-133, not
+    /// guessed): `[user-prefix, audioStartTokenId]` (text-only rows) -&gt; one real audio row per
+    /// reference-audio frame, each tagged with <see cref="MossTtsGlobalTransformerWeights.
+    /// AudioUserSlotTokenId"/> as its TEXT id (matching `push_audio_row`'s real convention: the
+    /// text slot carries the role marker, not a pad) and that frame's `NumQuantizers` real codes
+    /// as its audio ids -&gt; `[audioEndTokenId, ...same "After Reference" template.../assistant
+    /// turn.../audioStartTokenId]` (text-only rows) to hand off to generation.
+    /// </summary>
+    public static List<MossTtsGlobalRow> BuildVoiceClonePrompt(
+        SentencePieceBpeTokenizer tokenizer, string text, int[][] referenceCodesPerQuantizer)
+    {
+        if (string.IsNullOrEmpty(text)) throw new ArgumentException("MOSS-TTS-Nano prompt requires target text.", nameof(text));
+        int numQuantizers = referenceCodesPerQuantizer.Length;
+        if (numQuantizers != MossTtsGlobalTransformerWeights.NumCodebooks)
+            throw new ArgumentException($"Expected {MossTtsGlobalTransformerWeights.NumCodebooks} reference codebooks, got {numQuantizers}.", nameof(referenceCodesPerQuantizer));
+        int frames = referenceCodesPerQuantizer[0].Length;
+        if (frames <= 0) throw new ArgumentException("MOSS-TTS-Nano voice-clone prompt requires a non-empty reference code sequence.", nameof(referenceCodesPerQuantizer));
+
+        var prefix = new List<int> { MossTtsGlobalTransformerWeights.ImStartTokenId };
+        prefix.AddRange(tokenizer.Encode(UserRolePrefix));
+        prefix.AddRange(tokenizer.Encode(UserTemplateReferencePrefix));
+        prefix.Add(MossTtsGlobalTransformerWeights.AudioStartTokenId);
+
+        var rows = new List<MossTtsGlobalRow>(prefix.Count + frames + 32);
+        rows.AddRange(ToTextOnlyRows(prefix));
+
+        for (int f = 0; f < frames; f++)
+        {
+            var codes = new int[numQuantizers];
+            for (int q = 0; q < numQuantizers; q++) codes[q] = referenceCodesPerQuantizer[q][f];
+            rows.Add(new MossTtsGlobalRow(MossTtsGlobalTransformerWeights.AudioUserSlotTokenId, codes));
+        }
+
+        var suffix = new List<int> { MossTtsGlobalTransformerWeights.AudioEndTokenId };
+        suffix.AddRange(tokenizer.Encode(UserTemplateAfterReference));
+        suffix.AddRange(tokenizer.Encode(text));
+        suffix.AddRange(tokenizer.Encode(UserTemplateSuffix));
+        suffix.Add(MossTtsGlobalTransformerWeights.ImEndTokenId);
+        suffix.AddRange(tokenizer.Encode(AssistantTurnPrefix));
+        suffix.Add(MossTtsGlobalTransformerWeights.ImStartTokenId);
+        suffix.AddRange(tokenizer.Encode(AssistantRolePrefix));
+        suffix.Add(MossTtsGlobalTransformerWeights.AudioStartTokenId);
+        rows.AddRange(ToTextOnlyRows(suffix));
+
+        return rows;
+    }
+
+    private static List<MossTtsGlobalRow> ToTextOnlyRows(List<int> ids)
+    {
         var pad = MossTtsGlobalTransformerWeights.AudioPadTokenId;
         var rows = new List<MossTtsGlobalRow>(ids.Count);
         foreach (int id in ids)
