@@ -18642,4 +18642,49 @@ FP32" change can address. `STINGRAY_TTS_FORCE_FP32` toggle removed from
 `VibeVoiceLlmTensorSource.cs` before this commit; full fast suite (471 tests) clean before and
 after -- no behavior change.
 
+## VibeVoice TTS: real per-layer LLM-backbone bisection -- ruled out a VoxCPM2-style single-layer bug, the 28-layer forward pass is stable (2026-09-08)
+
+Reviewed `docs/audio-review-progress.md` itself for prior decisive turnarounds on other models,
+looking for a reusable pattern. Found the closest analog: VoxCPM2's LM-forward divergence (same
+"looks like diffuse numerical noise" symptom this session's VibeVoice TTS investigation kept
+landing on) turned out to be a single, concrete, one-line bug -- `"minicpm"` missing from
+`ModelGraph.cs`'s `isNeoxRope` architecture switch, causing interleaved RoPE to be applied instead
+of the real NEOX convention. That bisection's own smoking gun was a per-layer trace showing the
+divergence GROW catastrophically across the 28 layers of a single forward pass (Layer 0 max abs
+diff 0.17 -> Layer 27 max abs diff 24.5, with real sign flips) -- exactly the same SHAPE of symptom
+this session kept finding for VibeVoice TTS's compounding, but at a different timescale (across
+autoregressive steps rather than within one pass). This session's VibeVoice TTS bisections had
+only ever checked the FINAL hidden state after all 28 layers (0.9997 cosine) -- never per-layer --
+so the VoxCPM2 bug class had not actually been ruled out for VibeVoice TTS's own LLM backbone.
+
+**Real implementation**: reused the exact same successful technique.
+`VoxCpm2PerLayerBisectDebugTest.cs`'s pattern (the existing, production `IForwardPass.
+EnableHiddenTaps`/`HiddenTapsAt` API, built for speculative decoding, needing zero engine changes)
+was replicated as `VibeVoiceTtsPerLayerBisectDebugTest.cs`. Added a matching real per-layer
+`vibevoice_tts.prefill.layer{i}.hidden` trace to the reference's `VibeVoiceDecoderPrefillGraph`
+(`decoder.cpp`, gitignored/local-only) using the same `ggml_cpy`+`ggml_set_output`+explicit
+`ggml_build_forward_expand` pattern VoxCPM2's own reference instrumentation used (a tap on a
+`ggml` tensor must be explicitly added to the graph's forward-expand root set, or it silently
+never gets computed -- confirmed by reading VoxCPM2's own real prior instrumentation before
+guessing at the ggml API).
+
+**Real finding, decisive and NEGATIVE (a genuinely useful result, not a null result)**: relative
+error between the two engines' per-layer hidden state (at the last prefill position, same 40
+real reference sample indices used throughout this investigation) stays in a stable, non-growing
+0.05%-4% band across ALL 28 layers -- e.g. layer 0 idx0: 0.95%; layer 5 idx117: 0.34%; layer 15
+idx0: 0.50%; layer 27 idx0: 0.09%; layer 27 idx235: 0.05%. The FINAL layer (27) shows some of the
+SMALLEST relative errors of any layer checked, not the largest. This is the polar opposite of
+VoxCPM2's real 140x-growth-with-sign-flips pattern. **This conclusively rules out a VoxCPM2-style
+single hidden bug inside VibeVoice TTS's own 28-layer LLM backbone** -- the single-pass forward
+computation is genuinely stable and well-behaved; there is no missing RoPE-convention entry, no
+skipped normalization, no shared-`ModelGraph.cs`-metadata gap hiding in this specific path. This
+strengthens (with real per-layer evidence, not just an aggregate final-cosine number) every
+finding above: the compounding this session found is real, and is specifically a property of
+REPEATED autoregressive invocation across the closed generation loop (many separate forward-pass
+calls, each starting from the previous call's own imperfect output), not a bug findable by
+bisecting a single forward pass more finely. `VibeVoiceTtsPerLayerBisectDebugTest.cs` kept
+committed as a permanent debug tool (same convention as `VoxCpm2PerLayerBisectDebugTest.cs`) for
+any future investigation that wants to re-verify this. Full fast suite (472 tests, +1 for the new
+debug test) clean.
+
 
