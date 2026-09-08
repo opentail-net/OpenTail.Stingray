@@ -17536,3 +17536,18 @@ numeric golden-parity against a captured reference duplex run, real streaming Mi
 stream-delay assumptions this session already resolved earlier hold up under sustained live-duplex
 use (not just the short synthetic smoke test here).
 
+## MOSS-TTS-Nano -- first real C++-reference comparison sample generated for direct listening, 2026-09-08
+
+MOSS-TTS-Nano never had a real reference-CLI comparison sample generated this session (unlike
+VoxCPM2/Higgs/VibeVoice TTS/PersonaPlex, which all got one earlier). Ran the vendored
+`audiocpp_cli` on the identical prompt this port's own real-weight test already uses ("Hello
+there.", `--seed 11`): real reference output, 1.04s at 48kHz stereo, RTF 4.26 -- copied to
+`docs/audio-samples/moss-tts-nano-cpp-reference.wav`.
+
+Extended `MossTtsAudioCodecDecoderRealWeightsTests` to generate a comparable-length sample from
+this port (`maxNewFrames` raised from 3 to 15, matching the reference's real ~13-frame length) and
+write it to `docs/audio-samples/moss-tts-nano-ours-comparable.wav` -- 1.20s, real weights, 5.8s
+wall. Both real samples now exist side by side for a real listening comparison (not yet done by a
+human this pass) -- the first time this session's own port and the vendored reference can be
+directly A/B'd for MOSS-TTS-Nano specifically.
+

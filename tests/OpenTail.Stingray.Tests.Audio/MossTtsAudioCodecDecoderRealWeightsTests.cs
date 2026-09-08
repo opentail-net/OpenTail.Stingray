@@ -62,7 +62,7 @@ public sealed class MossTtsAudioCodecDecoderRealWeightsTests : HeavyTestBase
         var decoderWeights = new MossTtsAudioCodecDecoderWeights(source);
 
         var prompt = MossTtsPromptBuilder.BuildZeroShotPrompt(tokenizer, "Hello there.");
-        var codes = MossTtsGenerator.Generate(g, l, prompt, activeCodebooks: MossTtsGlobalTransformerWeights.NumCodebooks, maxNewFrames: 3);
+        var codes = MossTtsGenerator.Generate(g, l, prompt, activeCodebooks: MossTtsGlobalTransformerWeights.NumCodebooks, maxNewFrames: 15);
 
         // Generation may legitimately produce pad-sentinel codes for codebooks the local decoder
         // never overwrites when activeCodebooks < NumCodebooks; here activeCodebooks==NumCodebooks
@@ -84,5 +84,19 @@ public sealed class MossTtsAudioCodecDecoderRealWeightsTests : HeavyTestBase
         Assert.Equal(expectedSamplesPerChannel, waveform.Right.Length);
         Assert.All(waveform.Left, s => Assert.True(float.IsFinite(s)));
         Assert.All(waveform.Right, s => Assert.True(float.IsFinite(s)));
+
+        string? repoRoot = Path.GetDirectoryName(FindRepoFile("docs/audio-review-progress.md"));
+        if (repoRoot != null)
+        {
+            string outPath = Path.Combine(repoRoot, "audio-samples", "moss-tts-nano-ours-comparable.wav");
+            var interleaved = new float[waveform.Left.Length * 2];
+            for (int i = 0; i < waveform.Left.Length; i++)
+            {
+                interleaved[2 * i] = waveform.Left[i];
+                interleaved[2 * i + 1] = waveform.Right[i];
+            }
+            OpenTail.Stingray.Audio.WavWriter.WriteWav(outPath, interleaved, MossTtsAudioCodecDecoderWeights.SamplingRate, channels: 2);
+            Console.WriteLine($"Wrote {outPath}, {waveform.Left.Length} samples/channel, {waveform.Left.Length / (double)MossTtsAudioCodecDecoderWeights.SamplingRate:F2}s");
+        }
     }
 }
