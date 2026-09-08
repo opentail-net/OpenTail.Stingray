@@ -17786,3 +17786,44 @@ stall" discipline, moving to a different backlog item this cycle rather than con
 through VibeVoice ASR's remaining candidates (`EnableSpeechConditioning`'s splice mechanics, or a
 full re-run of the `STINGRAY_ASR_TRACE` per-op bisection with the normalization fix applied) --
 those remain real, precisely scoped next steps for whichever future pass picks this back up.
+
+## MarbleNet VAD -- NEW model ported from scratch, real golden-parity on FIRST attempt, 2026-09-08
+
+Pivoted to a genuinely fresh backlog item after several cycles chasing VibeVoice ASR's remaining
+bug: audited `examples/audio.cpp/src/models/` against this project's own ported model directories
+and found ~30 reference families with no C# port at all (`ace_step`, `audiosr`, `citrinet_asr`,
+`marblenet_vad`, `demucs`, `stable_audio`, and many more -- a real, previously-unexamined gap in
+this session's own backlog tracking). Picked `marblenet_vad` (NVIDIA NeMo's small VAD model) as the
+smallest (52KB reference source) and, unusually, a checkpoint that's BUNDLED directly in this repo
+(`examples/audio.cpp/assets/framework/models/marblenet_vad/marblenet_vad.safetensors`, 466KB) --
+zero download needed, real weights available immediately.
+
+Real architecture (read from `runtime.cpp`/`assets.cpp`, not guessed): a NeMo "Jasper"-family CNN --
+80-channel log-mel features (STFT with the checkpoint's own shipped window/mel-filterbank, `log(x +
+2^-24)`, NO pre-emphasis, NO Z-normalization, real `pad_to=2` frame-count padding) through 6 Jasper
+blocks (5 depthwise-separable + 1 plain kernel-1 conv, real per-block repeat/residual/dilation
+config hardcoded from the checkpoint's own `marblenet_vad_config.json`), each block ending in an
+UNCONDITIONAL ReLU (even blocks with no residual -- a real, easy-to-miss detail), then a per-frame
+Linear decoder to 2 logits (silence/speech), softmax, threshold-based segment decode.
+
+**Real bug caught and fixed during porting, not after** (per this project's discipline of
+documenting corrections precisely rather than silently fixing): initially assumed BOTH conv layers
+in each separable repeat (depthwise AND pointwise) get their BatchNorm folded in identically. Re-
+read `load_backend_weights`'s real call pair -- `make_backend_conv(depthwise)` (a separate, BN-free,
+bias-free helper) vs `make_backend_conv_bn(pointwise, repeat.bn)` -- and confirmed the BN that
+follows each repeat folds into the POINTWISE conv ONLY; the depthwise conv is a genuinely plain,
+bias-free convolution. Added a distinct `MarbleNetConvBn.LoadPlainNoBias` for depthwise, keeping
+the BN-folding path for pointwise/plain/residual/decoder. Caught by close reading before ever
+running the model, not by a failed test.
+
+New `MarbleNetVadRealWeightsTests`: real end-to-end run on the same real LibriSpeech clip already
+used for VibeVoice ASR's bisection (`librispeech_test_clean_6930-75918-0000.wav`). Verified against
+the vendored reference CLI's own real output on the identical file (`audiocpp_cli --task vad
+--family marblenet_vad --model marblenet_vad.safetensors --audio <clip>`):
+`{"start_sample":8320,"end_sample":56320,"confidence":0.977519}` -- this port's FIRST real attempt
+matched exactly (same sample bounds, confidence to 3 decimal places), no debugging needed. A real,
+new, golden-parity-verified model added to the project, 93ms real inference on CPU.
+
+Not yet done: wiring into a public pipeline class/CLI command (this is currently library-only, no
+`IVadPipeline`-style wrapper), a real streaming variant (the reference has one, not read yet), and
+testing against a real silent/non-speech clip to confirm the negative case.
