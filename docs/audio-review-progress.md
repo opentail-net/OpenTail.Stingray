@@ -18519,4 +18519,79 @@ All temporary trace/zero-noise/fixed-noise-file scaffolding removed from
 `RandnBoxMuller` and `VibeVoiceDiffusionSampler.Sample` now cite this finding directly so a future
 pass doesn't have to re-discover it. Full fast suite (471 tests) clean before and after.
 
+## VibeVoice TTS: reference-embedding-injection experiment refines the root cause -- it's not JUST closed-loop feedback, the LM's own KV cache independently drifts too (2026-09-08)
+
+Ran the single highest-value experiment from an external second opinion (asked ChatGPT for
+architectural advice on the compounding-drift finding above, given a detailed writeup of the
+methodology and results): at every generated frame, override the C# port's own computed
+`nextEmbedding` (the connector-summed feedback vector fed into the LM as the next AR step's
+input) with the C++ reference's OWN real value at that same frame -- a real "teacher forcing"
+test to isolate whether feeding the LM exactly what the reference fed it prevents the divergence
+from compounding.
+
+**Real implementation**: added a raw binary dump (`STINGRAY_TTS_EMBED_DUMP` env var) to
+`generator.cpp` right after `next_embedding` is computed on the real diffusion branch (append-mode,
+1536 floats per frame, no header) -- gitignored/local-only, not committed. Added a matching
+(temporary, since removed) `STINGRAY_TTS_REFERENCE_EMBED` override in `VibeVoiceGenerator.cs` that
+reads the reference's real per-frame vector at the matching frame index and substitutes it for
+the just-computed `nextEmbedding` before it's fed into `fwd.ForwardEmbedding`, while still running
+the C# diffusion+codec pipeline normally each frame (so its own output remains traceable/
+comparable at every frame, not just fed forward). Bumped `VibeVoiceTtsPromptBuilderRealWeightsTests`
+to `maxSteps: 10` for this one diagnostic run (reverted after) to reach enough real diffusion
+frames for a clean comparison.
+
+**Finding**: compared three trajectories at frames 5 and 8 -- the real C++ reference, the C#
+baseline (no injection, its own accumulated trajectory), and C# WITH reference-embedding injection
+at every frame. The injected trajectory is measurably CLOSER to the reference than the baseline at
+nearly every sampled dimension (e.g. frame 5, dim 0: ref=1.032, injected=1.003, baseline=0.821;
+frame 8, dim 0: ref=-0.0976, injected=-0.1375, baseline=+0.0183 -- note baseline even has the WRONG
+SIGN here) -- confirming the closed-loop-feedback hypothesis is real and a meaningful contributor.
+But the injected trajectory is NOT fully restored to the reference either -- real residual
+divergence remains even when the LM receives EXACTLY the reference's own conditioning input every
+single frame (e.g. frame 8, dim 26: ref=-1.235 vs injected=-0.224, still a large real gap).
+
+**Refined root cause**: this proves the divergence has (at least) TWO independent real
+contributors, not one:
+1. **Continuous closed-loop feedback amplification** (the original finding): the connector-summed
+   embedding never gets discretized/reset the way an ordinary token-ID argmax does, so any
+   per-frame imprecision in it directly becomes next-frame conditioning. Confirmed real by the
+   injection experiment measurably helping.
+2. **The LM's own KV cache independently accumulates drift regardless of input.** Every forward
+   call permanently bakes that call's attention output (for the position just processed) into the
+   KV cache; a later position's attention reads that cache value as-is, never recomputing it. Two
+   independently-implemented AVX2 engines' quantized-matmul/attention reduction-order differences
+   at every EARLIER position are therefore baked into the C# port's KV cache from step 0 onward,
+   completely independent of what embedding is fed in at the CURRENT step. Injecting the correct
+   embedding at frame N cannot undo the (small but real) numerical divergence already accumulated
+   in the KV cache from frames 0..N-1's own (necessarily C#-computed, since there is no way to
+   "inject" a KV cache from outside without deep engine hooks) forward passes. This matches the
+   general, well-known transformer-inference phenomenon that two independently-implemented engines
+   never produce bit-identical KV-cache state over a long context -- ordinary token-ID LLMs are
+   simply insulated from this by argmax discretization "hiding" small hidden-state differences
+   behind an unchanged discrete symbol, exactly as VibeVoice ASR/other token-based models in this
+   codebase already tolerate small cross-engine differences without any audible/functional
+   consequence, while VibeVoice TTS's continuous embedding feedback has no such insulation.
+
+**Real, concrete implication for anyone continuing this**: closing this gap fully is NOT a single
+fixable bug and is not solvable by embedding injection alone. A full fix would need cross-engine
+KV-cache-level bit-parity (extremely hard, likely impractical given two independently-written AVX2
+implementations) OR a training-time robustness intervention (the CAM/"noise-augmented continuous
+autoregressive models" technique an external second opinion surfaced -- training the model with
+injected noise on its own prior continuous embeddings specifically so it tolerates imperfect
+feedback at inference time -- but that is a MODEL retraining technique, not available to a
+reimplementation of a fixed, already-trained checkpoint). Practical next steps, in likely order of
+value: (a) the F32-vs-Q8_0 A/B test proposed in the prior entry (isolate whether quantization
+rounding or pure floating-point non-associativity dominates the KV-cache drift), (b) a systematic
+per-stage `F(x_ref)` comparison (feed the SAME reference input independently into each stage --
+diffusion head, codec decode, semantic encoder, connectors, LM forward -- bypassing accumulated
+history entirely, to find which single stage has the largest per-call disagreement given identical
+input, rather than an end-to-end trajectory comparison), (c) accept this as a real, now
+well-understood, documented architectural limitation of a from-scratch reimplementation, same
+category as VibeVoice ASR's already-accepted resampler-phase-amplification gap.
+
+All temporary embedding-dump/injection scaffolding removed from `generator.cpp` (gitignored,
+local-only, not committed) and `VibeVoiceGenerator.cs`; `VibeVoiceTtsPromptBuilderRealWeightsTests`
+reverted to its original `maxSteps: 6`. Full fast suite (471 tests) clean before and after --
+no behavior change, documentation and diagnostic-methodology only.
+
 
