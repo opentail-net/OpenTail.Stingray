@@ -178,17 +178,27 @@ public sealed unsafe class VibeVoiceLlmTensorSource : IModelTensorSource, IDispo
 
     /// <summary>
     /// Real final-norm weight (`model.language_model.norm.weight`), materialized on first access.
-    /// `ForwardPass` already applies this internally before computing logits (via the mapped
-    /// `output_norm.weight` canonical name), so text-token generation is unaffected -- this
-    /// accessor exists ONLY for callers that need to manually RMSNorm
-    /// <see cref="IForwardPass.LastHidden"/> themselves. `LastHidden` is documented as the
-    /// PRE-final-norm hidden state (kept raw for MTP-head use elsewhere in this engine); the
-    /// real reference (`vibevoice/decoder.cpp`'s `hidden_output_`, captured AFTER its own
-    /// `RMSNormModule` call, confirmed at 4 separate real graph-build sites) needs the
-    /// POST-final-norm value wherever it feeds something other than the LM head -- e.g. VibeVoice
-    /// TTS's diffusion-head conditioning (`VibeVoiceGenerator`'s real `positive_condition`/
-    /// `negative_condition`), which was found this session to have been using the raw pre-norm
-    /// value instead.
+    ///
+    /// <para><b>Correction, 2026-09-08</b>: an earlier pass this session applied this weight as a
+    /// SECOND, manual RMSNorm on top of <see cref="IForwardPass.LastHidden"/> inside
+    /// `VibeVoiceGenerator`, on the (wrong, for this engine's real CPU `ForwardPass`) assumption
+    /// that `LastHidden` is pre-final-norm. It is NOT: `ForwardPass.cs`'s own doc comment on
+    /// `LastHidden` and the real code in `ForwardPass.Decode.cs`/`ForwardPass.PrefillCore.cs`
+    /// (`FastNorm`/`FastRmsNorm` applied to `_hidden` in place, THEN copied/read, before the
+    /// output projection) both confirm `_hidden` -- what `LastHidden` returns -- already holds the
+    /// POST-final-norm value by the time a `Forward`/`Prefill`/`ForwardEmbedding` call returns.
+    /// Double-normalizing it (this project's real, own-repo instance of the pre/post-final-norm
+    /// bug class found elsewhere by analogy) produced numerically wrong diffusion-head conditioning
+    /// -- caught by a real per-step C++/C# trace bisection comparing `vibevoice_tts.step.0.
+    /// positive_hidden` between the two sides, which diverged even though the prompt and the
+    /// selected generation tokens matched exactly. `VibeVoiceGenerator` now uses
+    /// `fwd.LastHidden.ToArray()` directly again for diffusion-head conditioning; this property is
+    /// kept only for other real callers (e.g. `HiggsArStepper`) that still need the raw tensor for
+    /// their own reasons -- verify their own `LastHidden` pre/post-norm assumption independently
+    /// before trusting it, per this same lesson. <b>`PersonaPlexGenerator` applies the identical
+    /// manual-RMSNorm-of-`LastHidden` pattern (`NormalizeHidden(fwd.LastHidden, llm.NormWeight,
+    /// hiddenDim)`, 4 call sites) and has NOT yet been re-checked against this correction -- likely
+    /// the same double-normalization bug, not yet fixed.</b></para>
     /// </summary>
     public float[] NormWeight => _source.GetTensor("model.language_model.norm.weight");
 

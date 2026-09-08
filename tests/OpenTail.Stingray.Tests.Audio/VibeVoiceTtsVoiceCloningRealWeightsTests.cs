@@ -159,7 +159,7 @@ public sealed class VibeVoiceTtsVoiceCloningRealWeightsTests : HeavyTestBase
             acousticConnectorWeights, semanticConnectorWeights,
             speechScalingFactor, speechBiasFactor, FixStd, TokenizerLayerNormEps,
             DdpmNumSteps, inferenceSteps: 4, guidanceScale: 1.5f,
-            maxSteps: 6, new Random(31), llm.NormWeight, RmsNormEps);
+            maxSteps: 6, new Random(31));
 
         Assert.NotEmpty(result.GeneratedTokens);
         Assert.NotEmpty(result.AudioSamples);

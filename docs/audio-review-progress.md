@@ -18261,3 +18261,74 @@ undocumented as a known gap -- added an explicit doc comment (same class as
 session** (PersonaPlex's `LastHidden`/Depformer conditioning, found and being fixed by a separate
 concurrent AI session at the same time) -- worth a broader audit: any other model in this codebase
 that uses `fwd.LastHidden` for something other than logits should be checked for the same mistake.
+
+## VibeVoice TTS: CORRECTION -- the "missing final-norm" fix above was itself a double-normalization bug (2026-09-08)
+
+User reported `vibevoice-tts-real-check.wav` "still has issues" after the fix above landed and
+asked for a real per-step C++/C# trace bisection (matching the technique that closed out VibeVoice
+ASR earlier this session), rather than a whole-waveform listen-and-guess.
+
+**Real bisection method**: added `STINGRAY_TTS_TRACE`-gated `trace_log_f32`/`trace_log_scalar`
+hooks to the gitignored, local-only reference `examples/audio.cpp/src/models/vibevoice/
+generator.cpp` (per-step token/`positive_hidden`/`speech_latents`/`decoder_latents`/`chunk`,
+`chunk` being a real `engine::runtime::AudioBuffer{sample_rate,channels,samples}` struct --
+confirmed via `session.h:62`, not a plain `std::vector<float>` as first guessed, a real compile
+error caught this before it shipped wrong trace output). Rebuilt the reference CLI
+(`audiocpp_cli --task tts --family vibevoice --backend cpu --model ... --log --log-file ...`),
+confirmed real trace output (`vibevoice_tts.step.0.positive_hidden shape=[1536] size=1536
+samples=[0:-0.391388,...]`). Added matching (temporary, since removed) per-step float-array dump
+instrumentation to `VibeVoiceGenerator.cs`, gated by `STINGRAY_CS_TTS_TRACE`/`_DIR` env vars, and
+compared step-0 `positive_hidden` pointwise.
+
+**Root cause found**: `ForwardPass.cs`'s own doc comment on `LastHidden` (line ~1069) states, in
+its own words, that it "exposes the persistent **post-final-norm** hidden-state buffer" -- and the
+real code confirms this: `ForwardPass.PrefillCore.cs` line 565 (`FastNorm(lastHidden, lastHidden,
+outNormW, outNormB, ...)`, the REAL final RMSNorm) runs, THEN line 566 copies that already-normed
+result into `_hidden` (what `LastHidden` returns), THEN line 567 computes logits from that same
+post-norm buffer. `IForwardPass`'s own interface-level doc comment (`IForwardPass.cs` line ~172-178)
+says the OPPOSITE ("Last token's post-trunk **pre-final-norm** hidden state") -- a real, confirmed
+contradiction between the interface doc and the concrete CPU `ForwardPass` implementation's own
+doc + code, not something this session invented. The Sep-7 fix above trusted the interface's
+(wrong, for this backend) doc and added a SECOND, manual RMSNorm on top of an already-normed
+value -- a real double-normalization bug, this project's own instance of the exact "pre/post-norm
+confusion" class it had just finished fixing elsewhere by analogy.
+
+**Fixed**: reverted all six `NormalizeHidden(fwd.LastHidden, ...)` call sites in
+`VibeVoiceGenerator.cs` back to plain `fwd.LastHidden.ToArray()`; removed the now-dead
+`NormalizeHidden` helper and the `normWeight`/`rmsNormEps` parameters from `Generate`/
+`GenerateWithVoiceCloning`/`GenerateFromPrefilledState` (and their 6 call sites across 4 test
+files, dropping the trailing `llm.NormWeight, RmsNormEps` args); corrected
+`VibeVoiceLlmTensorSource.NormWeight`'s doc comment to state the real contradiction and warn that
+`PersonaPlexGenerator`'s 4 call sites (`NormalizeHidden(fwd.LastHidden, llm.NormWeight,
+hiddenDim)`, committed by the concurrent AI session as part of the same Sep-7 "clean slate" pass)
+apply the IDENTICAL pattern and have NOT yet been re-checked against this correction -- likely the
+same bug, not yet fixed, real next step for whoever picks up PersonaPlex next.
+
+**Regression check**: full VibeVoice TTS real-weight suite (`VibeVoiceGeneratorRealWeightsTests`
+x2, `VibeVoiceTtsPromptBuilderRealWeightsTests`, `VibeVoiceTtsVoiceCloningRealWeightsTests`,
+`VibeVoiceTtsGenerateWavDebugTest`) all pass, real 3.04 GiB weight loads, genuine timing (245s for
+5 tests). Full fast suite (469 tests) clean. Regenerated `docs/audio-samples/vibevoice-tts-real-
+check.wav` (131200 samples, 5.47s -- notably closer to the real reference CLI's own real-generated
+duration, ~4.27s for the same script/seed, than the earlier double-normed 70400-sample/2.93s
+sample was).
+
+**Remaining, NOT YET closed, gap** (this correction fixes a real bug but does not fully close the
+user's original "still has issues" report): even after this fix, step-0 `positive_hidden` still
+does not match the reference closely -- cosine similarity over the reference's own traced sample
+indices is only ~0.30 (RMS 1.17 ref vs 1.74 C#), despite the prompt token COUNT matching exactly
+(46 tokens both sides, confirmed via `vibevoice.generate.prompt_steps` timing log vs
+`promptTokenIds.Length`) and all `decoder_config` hyperparameters (`hidden_size=1536`,
+`num_attention_heads=12`, `num_hidden_layers=28`, `num_key_value_heads=2`, `rms_norm_eps=1e-6`,
+`rope_theta=1e6`, `vocab_size=151936`, `intermediate_size=8960`) confirmed matching exactly between
+the real embedded `config.json` and this port's `VibeVoiceLlmTensorSource` construction constants.
+Both sides emit the SAME first generated token (151654 == `speech_diffusion_id`), but that is weak
+evidence (argmax over only 4 real candidate logits, not a strong correctness signal). The remaining
+divergence must be inside the transformer forward pass itself (attention masking, RoPE application,
+or a tensor-loading/layout bug specific to `VibeVoiceLlmTensorSource`'s bridging of this checkpoint
+into the generic qwen2-shaped `ForwardPass`) rather than in prompt construction or config. **Real,
+concrete next step for whoever picks this up**: add a reference trace of the raw embedding lookup
+(before any transformer layers) for a known prompt token, and an equivalent C# dump of
+`textEmbeddingTable` row content for the same token id, to determine whether the divergence starts
+at tensor loading (wrong tensor, wrong layout/transpose) or inside the transformer layers
+themselves (attention/RoPE/GQA repeat bug specific to this bridge). Not fixed in this pass --
+pivoting to the next backlog item per this project's "stopping is for wimps" standing rule.

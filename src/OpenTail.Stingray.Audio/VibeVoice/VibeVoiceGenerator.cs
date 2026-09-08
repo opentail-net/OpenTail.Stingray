@@ -89,17 +89,17 @@ public static class VibeVoiceGenerator
         float speechScalingFactor, float speechBiasFactor,
         float layerNormEps,
         int ddpmNumSteps, int inferenceSteps, float guidanceScale,
-        int maxSteps, Random rng, float[] normWeight, float rmsNormEps, SamplingParams? tokenSelectionOptions = null)
+        int maxSteps, Random rng, SamplingParams? tokenSelectionOptions = null)
     {
         var promptLogits = fwd.Prefill(promptTokenIds);
-        var positiveHidden = NormalizeHidden(fwd.LastHidden, normWeight, hiddenDim, rmsNormEps);
+        var positiveHidden = fwd.LastHidden.ToArray();
 
         return GenerateFromPrefilledState(
             fwd, promptTokenIds.Length, promptLogits.ToArray(), positiveHidden,
             textEmbeddingTable, hiddenDim, speechStartId, speechEndId, speechDiffusionId, eosId,
             diffusionHeadWeights, acousticDecoderWeights, semanticEncoderWeights,
             acousticConnectorWeights, semanticConnectorWeights, speechScalingFactor, speechBiasFactor,
-            layerNormEps, ddpmNumSteps, inferenceSteps, guidanceScale, maxSteps, rng, normWeight, rmsNormEps, tokenSelectionOptions);
+            layerNormEps, ddpmNumSteps, inferenceSteps, guidanceScale, maxSteps, rng, tokenSelectionOptions);
     }
 
     /// <summary>
@@ -126,7 +126,7 @@ public static class VibeVoiceGenerator
         float speechScalingFactor, float speechBiasFactor, float fixStd,
         float layerNormEps,
         int ddpmNumSteps, int inferenceSteps, float guidanceScale,
-        int maxSteps, Random rng, float[] normWeight, float rmsNormEps, SamplingParams? tokenSelectionOptions = null)
+        int maxSteps, Random rng, SamplingParams? tokenSelectionOptions = null)
     {
         if (promptTokenIds.Length != speechInputMask.Length)
             throw new ArgumentException("promptTokenIds/speechInputMask length mismatch.");
@@ -180,7 +180,7 @@ public static class VibeVoiceGenerator
             }
 
             lastLogits = fwd.ForwardEmbedding(embedding, pos);
-            lastHidden = NormalizeHidden(fwd.LastHidden, normWeight, hiddenDim, rmsNormEps);
+            lastHidden = fwd.LastHidden.ToArray();
         }
 
         return GenerateFromPrefilledState(
@@ -188,7 +188,7 @@ public static class VibeVoiceGenerator
             textEmbeddingTable, hiddenDim, speechStartId, speechEndId, speechDiffusionId, eosId,
             diffusionHeadWeights, acousticDecoderWeights, semanticEncoderWeights,
             acousticConnectorWeights, semanticConnectorWeights, speechScalingFactor, speechBiasFactor,
-            layerNormEps, ddpmNumSteps, inferenceSteps, guidanceScale, maxSteps, rng, normWeight, rmsNormEps, tokenSelectionOptions);
+            layerNormEps, ddpmNumSteps, inferenceSteps, guidanceScale, maxSteps, rng, tokenSelectionOptions);
     }
 
     private static Result GenerateFromPrefilledState(
@@ -203,14 +203,14 @@ public static class VibeVoiceGenerator
         float speechScalingFactor, float speechBiasFactor,
         float layerNormEps,
         int ddpmNumSteps, int inferenceSteps, float guidanceScale,
-        int maxSteps, Random rng, float[] normWeight, float rmsNormEps, SamplingParams? tokenSelectionOptions)
+        int maxSteps, Random rng, SamplingParams? tokenSelectionOptions)
     {
         var generatedTokens = new List<int>();
         var audioSamples = new List<float>();
 
         var negativeStartEmbedding = EmbedToken(textEmbeddingTable, speechStartId, hiddenDim);
         var negativeLogits = fwd.ForwardEmbedding(negativeStartEmbedding, promptLength);
-        var negativeHidden = NormalizeHidden(fwd.LastHidden, normWeight, hiddenDim, rmsNormEps);
+        var negativeHidden = fwd.LastHidden.ToArray();
         int negativePosition = promptLength + 1;
 
         var scheduler = new VibeVoiceDpmSolverScheduler(ddpmNumSteps);
@@ -239,7 +239,7 @@ public static class VibeVoiceGenerator
             {
                 var restart = EmbedToken(textEmbeddingTable, speechStartId, hiddenDim);
                 negativeLogits = fwd.ForwardEmbedding(restart, negativePosition);
-                negativeHidden = NormalizeHidden(fwd.LastHidden, normWeight, hiddenDim, rmsNormEps);
+                negativeHidden = fwd.LastHidden.ToArray();
                 negativePosition++;
             }
 
@@ -279,34 +279,16 @@ public static class VibeVoiceGenerator
             if (token == speechDiffusionId)
             {
                 negativeLogits = fwd.ForwardEmbedding(nextEmbedding, negativePosition);
-                negativeHidden = NormalizeHidden(fwd.LastHidden, normWeight, hiddenDim, rmsNormEps);
+                negativeHidden = fwd.LastHidden.ToArray();
             }
 
             currentLogits = fwd.ForwardEmbedding(nextEmbedding, position + 1).ToArray();
-            currentHidden = NormalizeHidden(fwd.LastHidden, normWeight, hiddenDim, rmsNormEps);
+            currentHidden = fwd.LastHidden.ToArray();
             position++;
         }
 
         if (audioSamples.Count == 0) throw new InvalidOperationException("VibeVoice generation produced no audio.");
         return new Result([.. audioSamples], [.. generatedTokens]);
-    }
-
-    /// <summary>
-    /// Real RMSNorm, applied to <see cref="IForwardPass.LastHidden"/> (documented PRE-final-norm)
-    /// before it's used for anything other than logits. Real bug found and fixed this session: the
-    /// reference's `hidden_output_` (`vibevoice/decoder.cpp`, confirmed at 4 separate real
-    /// graph-build sites) is always captured AFTER its own `RMSNormModule` call -- this port had
-    /// been feeding the diffusion head the raw pre-norm value instead, for every step of every
-    /// generated frame.
-    /// </summary>
-    private static float[] NormalizeHidden(ReadOnlySpan<float> hidden, float[] normWeight, int hiddenDim, float eps)
-    {
-        double sumSq = 0;
-        for (int d = 0; d < hiddenDim; d++) sumSq += (double)hidden[d] * hidden[d];
-        float invRms = (float)(1.0 / Math.Sqrt(sumSq / hiddenDim + eps));
-        var normed = new float[hiddenDim];
-        for (int d = 0; d < hiddenDim; d++) normed[d] = hidden[d] * invRms * normWeight[d];
-        return normed;
     }
 
     private static float[] EmbedToken(float[] textEmbeddingTable, int token, int hiddenDim)
