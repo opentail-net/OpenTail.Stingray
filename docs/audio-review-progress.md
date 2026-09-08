@@ -17876,3 +17876,41 @@ inference, 44 output frames, 18 tokens.
 Two real, golden-parity-verified NeMo-family models added to the project in one cycle. Not yet
 done for Citrinet: a public pipeline wrapper, a real negative/no-speech test case, and testing
 against a second real audio clip to rule out this specific clip being a lucky case.
+
+## NeuTTS -- real checkpoint downloaded and architecture precisely scoped, deliberately NOT started this pass, 2026-09-08
+
+Continued this cycle's fresh-model audit past MarbleNet VAD/Citrinet ASR to `neutts` (Neuphonic's
+TTS family): checked reference size first this time (assets.cpp/ar.cpp/backbone.cpp/prompt.cpp/
+session.cpp total ~1180 lines) plus a REQUIRED shared codec module,
+`framework/codecs/fsq_audio_codec_runtime.cpp` (781 lines) -- combined, comparable in scope to a
+full prior session's from-scratch port (VoxCPM2/MOSS-TTS-Nano), not a MarbleNet/Citrinet-sized
+afternoon task. Downloaded the real checkpoint anyway (`audio-cpp/audio.cpp-gguf`,
+`NeuTTS-2E-GGUF/neutts-2e-orig.gguf`, 3.0 GiB -- note: the CLI's own progress readout appeared to
+finish early during download at a much smaller size; confirmed via repeated `stat` polling that the
+file was still actively growing for another ~90s past that point before truly stabilizing at 3.0
+GiB -- a real, worth-flagging CLI progress-reporting gap, not a download bug) and dumped its real
+tensor layout via `RvcPackedTensorSource`'s packed-name convention (`audiocpp.tensor_names`
+metadata, same as VibeVoice ASR/MOSS-TTS-Nano) so a future pass can start from real facts, not
+another cold read of the reference.
+
+Real architecture confirmed: `backbone/model.layers.N.*` is a standard Qwen3-style causal LM
+(`self_attn.{q,k,v,o}_proj`, real `q_norm`/`k_norm` QK-RMSNorm, `mlp.{gate,up,down}_proj`) --
+directly portable via this project's existing `IModelTensorSource`-bridge + `ForwardPass` pattern,
+same shape as `VibeVoiceLlmTensorSource`, no novel math needed there. The codec
+(`codec/*`) is the real remaining complexity: `semantic_encoder`/`semantic_adapter`/
+`acoustic_encoder` (HuBERT-style feature extraction + Snake-activation conv encoder) are real but
+ENCODE-direction only -- genuinely not needed for text-to-speech with the built-in preset voices
+(`speaker_prompts/*`, pre-computed I32 speech-code arrays already baked into the checkpoint, per
+`assets.cpp`'s `add_speaker`/`read_i32_vector`), since generation never needs to encode a reference
+waveform when using a preset. The real DECODE-only MVP path is `quantizer.project_out` (FSQ
+dequantize) -> `acoustic_decoder` (a SECOND transformer stack, not a classic conv vocoder --
+`layers.N.self_attn`/`mlp.fc1`/`fc2`, plus real `prior_net`/`post_net` conv+norm blocks) -> waveform
+-- a real, substantial but genuinely narrower scope than the full codec class suggested, not yet
+attempted.
+
+Deliberately not started this pass: this needs its own dedicated cycle (backbone LM port, AR
+speech-token generation loop with emotion-token prompt wrapping per `prompt.cpp`, then the FSQ
+acoustic-decoder transformer with its real Snake/prior-net/post-net conv blocks) rather than a
+rushed, partially-verified attempt bolted onto an already-long cycle. Real, precisely scoped next
+step for a future pass: port the backbone LM first (bounded, reuses existing patterns, verifiable
+in isolation via a real prefill/argmax-continuation smoke test) before touching the codec at all.
