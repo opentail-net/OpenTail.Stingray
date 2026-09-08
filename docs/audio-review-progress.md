@@ -17744,3 +17744,18 @@ the connector's exact formula, `EnableSpeechConditioning`'s splice-into-prompt m
 the full `STINGRAY_ASR_TRACE` per-op bisection now that the dominant preprocessing bug is fixed, to
 see exactly how far downstream (encoder stages -> connector -> LLM prefill logits) the remaining
 ~10-15% numeric gap grows, rather than continuing to guess between these two candidates.
+
+## PersonaPlex -- re-verified the codebook-mapping question is ALREADY resolved (stale backlog snapshot said otherwise), 2026-09-08
+
+A recurring `/loop` prompt's stale ranked-backlog snapshot (predates this session's own later
+entries, as is expected and already flagged repeatedly) claimed PersonaPlex's "real 16-codebook-to-
+8-active-codebook mapping is unconfirmed... using a documented first-8 assumption". Re-read
+`session.cpp`'s real `PersonaPlexDelayState`/`kDelays` (17-entry array: index 0 = text, indices
+1-8 = "moshi" i.e. the model's own generated audio codebooks, indices 9-16 = a SEPARATE 8-codebook
+"user" input stream) directly to check. This is NOT a "first 8 of 16" scheme -- it's genuinely two
+distinct 8-codebook streams for two distinct purposes (own output vs. duplex user-audio
+conditioning), and `PersonaPlexDelayState.cs`'s existing doc comment already states this exactly
+("Real, confirmed 17-stream layout... streams 1-8 = moshi... streams 9-16 = user") -- this question
+was already closed earlier in the session, not still open. No code change needed; recording this
+here so a future `/loop` cycle grepping this doc's tail doesn't waste time re-verifying a
+stale-prompt claim that's actually already resolved.
