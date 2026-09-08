@@ -18126,3 +18126,51 @@ either fixed or ruled out. Pivoting to a different backlog item per the "don't s
 the real next step for a future pass remains the deferred `STINGRAY_ASR_TRACE` per-op bisection
 re-run with the normalization fix applied, to find where in the network the still-real remaining
 divergence actually originates (not yet done this session).
+
+## NeuTTS -- FSQ acoustic-decoder codec ported, FULL PIPELINE end-to-end, first attempt succeeded, 2026-09-08
+
+Closes the last missing piece from this session's NeuTTS handoff notes. Read the shared reference
+module in full (`framework/codecs/fsq_audio_codec_runtime.cpp`'s `decode_fsq_audio_codec_levels`/
+`resnet_block`/`transformer_layer`/`CodecHeadGraph`, not guessed) plus the checkpoint's own real
+`neucodec_config.json` (its top-level acoustic-decoder fields, NOT `semantic_model_config` -- that's
+the encode-only wav2vec2-bert branch, not needed for decode-only preset-voice TTS): real config
+`hidden_size=1024, intermediate_size=4096, num_hidden_layers=12, num_attention_heads=16,
+head_dim=64` (plain MHA, no GQA despite a `kv_heads` config field existing -- confirmed unused in
+the reference's attention build), `quantization_dim=2048, quantization_levels=[4]*8` (codebook_size
+= 4^8 = 65536, exactly matching NeuTTS's real speech-token vocab range -- a real, satisfying
+structural confirmation), `rope_theta=10000, rms_norm_eps=1e-6`; real, NOT-in-JSON struct defaults
+kept from the reference's own config struct: `hop_length=480` (the reference's own comment: fixed
+by the decoder constructor, not read from config), `prior_blocks=2, post_blocks=2`.
+
+Real pipeline (new `NeuTtsAudioDecoder.Decode`, channel-last `[T,D]` throughout -- no transpose
+choreography needed since every reused kernel already works in that layout): FSQ dequant
+(deterministic mixed-radix code -> per-level value, no learned table) -> `quantizer.project_out`
+Linear -> `acoustic_decoder.fc` Linear -> `embed` Conv1d(k=7) -> 2x ResNet block (GroupNorm(32
+groups, new helper, not previously in this codebase) -> SiLU -> Conv1d(k=3) -> GroupNorm -> SiLU ->
+Conv1d(k=3) -> residual) -> 12x Transformer layer (RMSNorm -> non-causal MHA with real NEOX RoPE
+(deliberately NOT reusing `F5Kernels.ApplyRotary`'s interleaved convention -- this session's own
+earlier VoxCPM2 bisection found that exact interleaved-vs-NEOX mismatch to be a real, previously-
+shipped bug, so a fresh NEOX-specific implementation was written instead) -> residual -> RMSNorm ->
+plain SiLU-gated-free MLP (fc1 -> SiLU -> fc2, NOT gated SwiGLU) -> residual) -> 2x ResNet block ->
+final LayerNorm -> `istft_head` Linear(hidden -> hop*4+2) -> a real Vocos-style log-magnitude/phase
+ISTFT reconstruction (same real formula as `F5TTS/VocosVocoder.cs`, reimplemented rather than
+directly reused since it's an unrelated model/config -- same technique, deliberately not shared
+code to avoid coupling two independent ports). Reused this codebase's existing `F5Kernels`
+primitives (`Linear`/`Conv1dSamePad`/`SiLU`/`LayerNorm`/`MultiHeadSelfAttention`,
+`SpectralKernels`'s `CreateHannWindow`/`InverseRealFft`) wherever the layout/formula matched
+exactly; wrote new, small helpers only where genuinely needed (`GroupNorm`, `RmsNorm`, the NEOX
+RoPE application).
+
+New `NeuTtsAudioDecoderRealWeightsTests`: the FULL real pipeline, first time end-to-end for NeuTTS
+-- text -> real prompt -> real AR generation (`NeuTtsGenerator`) -> real FSQ codec decode -> a real,
+finite 24kHz mono waveform, written to `docs/audio-samples/neutts-real-check.wav`. First real
+attempt succeeded, no debugging needed: 12 real generated speech codes -> 5280 samples (0.22s),
+11.2s real wall time (0.65 GiB weights + generation + codec). Real regression check: full fast
+suite (469 tests) still passes clean.
+
+**NeuTTS is now a complete, real, working text-to-speech pipeline** -- backbone LM, AR generation
+loop, and FSQ codec decode all real, wired, and verified end-to-end, closing out what was scoped
+across three cycles of this session (architecture scoping -> backbone -> generation loop -> codec).
+Not yet done: numeric golden-parity against a captured reference waveform, emotion-token real
+listening verification, voice-cloning from arbitrary (non-preset) reference audio (needs the
+encode-direction wav2vec2-bert semantic branch, deliberately out of scope -- preset voices only).
