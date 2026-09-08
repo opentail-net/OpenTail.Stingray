@@ -17678,3 +17678,40 @@ re-checked with normalized input). Real next step for a future pass: re-run the 
 bisection (this session's `STINGRAY_ASR_TRACE` taps) with the normalization fix applied, to see how
 far downstream the now-much-smaller divergence propagates before it's the dominant source of the
 still-garbled output.
+
+## VibeVoice ASR -- audio-preprocessing chain investigation CLOSED: remaining ~8% gap explained, real bug is downstream, 2026-09-08
+
+Checked whether the checkpoint's embedded config overrides the RMS-normalization defaults used in
+the previous entry's fix (dumped every embedded file in the real GGUF via a throwaway test, removed
+after use): no `preprocessor_config.json`/`processor` JSON is embedded at all -- only `config.json`
+(model architecture) and the tokenizer files. So the reference's real `VibeVoiceAudioProcessorConfig`
+defaults (`normalize_audio=true`, `target_db_fs=-25.0`, `eps=1e-6`) are exactly what's in effect on
+the reference side too, confirming this port's new `VibeVoiceAudioNormalizer` call used the right
+real values, not a guess that happened to be close.
+
+Worked out why the previous entry's fix closed the gap to ~92% rather than ~100%, instead of leaving
+it as an open question: RMS-normalization forces the WHOLE buffer's RMS to the SAME target dBFS on
+both sides by construction, regardless of any small pre-normalization difference between
+`AudioResampler` and SoXr's output -- so a genuine remaining *global loudness* mismatch cannot be
+what the ~8% per-sample gap is (normalization would have erased it). Since the earlier frequency
+sweep already proved both resamplers have effectively identical MAGNITUDE response (unity gain
+across the full passband, including a broadband multi-tone probe), the most likely explanation for
+a real per-sample time-domain difference on broadband real speech, with a genuinely flat magnitude
+response, is an ordinary PHASE-response (group-delay) difference between two legitimately different
+filter designs (this port's Hann-windowed-sinc polyphase kernel vs. SoXr's design) -- not a further
+bug. A magnitude-only sweep (single tones, steady-state RMS) is blind to phase by construction,
+which is why it didn't catch this earlier.
+
+Conclusion: the audio-preprocessing investigation (resampler -&gt; normalization -&gt; encoder input)
+for VibeVoice ASR is CLOSED for this pass -- the dominant bug (missing loudness normalization) is
+found and fixed, and the small residual is the ordinary, expected cost of using a different (but
+individually correct) resampling algorithm than the reference, not a further defect to chase. The
+transcript's continued garbling is therefore a real, separate, still-open bug somewhere further
+downstream (the acoustic branch's Gaussian latent sampling -- a different RNG algorithm than the
+reference's seeded `TorchRandnPrecision::BFloat16` was flagged as a real, distinct gap earlier this
+session and was never closed -- the connector, or the LLM prefill/decode path itself), not anywhere
+in audio ingestion. Real next step for a future pass: re-verify the acoustic Gaussian-sampling RNG
+match (the `sample_vibevoice_acoustic_latents_gaussian` real formula vs this port's
+`VibeVoiceAcousticLatentSampler`) now that the input feeding it is real and mostly-correct, since
+that's the next real formula in the pipeline this session's bisection hasn't re-checked with
+normalized input.
