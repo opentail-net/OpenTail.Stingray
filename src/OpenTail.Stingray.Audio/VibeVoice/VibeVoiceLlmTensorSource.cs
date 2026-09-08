@@ -46,7 +46,9 @@ public sealed unsafe class VibeVoiceLlmTensorSource : IModelTensorSource, IDispo
     {
         _source = source;
 
-        MapIfPresent2D("model.language_model.embed_tokens.weight", "token_embd.weight", vocabSize, hiddenDim);
+        // Forced FP32: EnableSpeechConditioning memcpy-splices real float speech embeddings onto
+        // this tensor, so it must already be a plain float buffer.
+        MapIfPresent2D("model.language_model.embed_tokens.weight", "token_embd.weight", vocabSize, hiddenDim, forceFloat32: true);
         MapIfPresent1D("model.language_model.norm.weight", "output_norm.weight", hiddenDim);
 
         bool hasSeparateLmHead = _source.HasTensor("model.language_model.lm_head.weight") || _source.HasTensor("lm_head.weight");
@@ -97,16 +99,30 @@ public sealed unsafe class VibeVoiceLlmTensorSource : IModelTensorSource, IDispo
     // Real GGUF dimension convention: reference declares shapes numpy-style [out,in] (row-major,
     // out slowest); ne-order (fastest-first) is the reverse, [in,out] -- matches every other
     // bridging class in this codebase (see OmniVoiceLlmTensorSource.ToGgufDimensionOrder).
-    private void MapIfPresent2D(string sourceName, string canonicalName, int outDim, int inDim)
+    //
+    // Real DType passthrough (fixes a real OOM on this 7B-class checkpoint): per-layer weight
+    // matrices (q/k/v/o_proj, gate/up/down_proj -- the bulk of the model's parameters) are
+    // declared under their REAL on-disk DType (Q8_0/etc.) rather than forced Float32, so
+    // ForwardPass computes on them natively-quantized (zero-copy, the same path every other
+    // GGUF-loaded model in this codebase already uses) instead of this class eagerly
+    // materializing a ~4x larger FP32 copy of every weight. `token_embd.weight` stays FP32 --
+    // `EnableSpeechConditioning` needs to memcpy-splice real float speech embeddings onto it, so
+    // that ONE tensor (not the whole model) pays the FP32 cost.
+    private void MapIfPresent2D(string sourceName, string canonicalName, int outDim, int inDim, bool forceFloat32 = false)
     {
         if (!_source.HasTensor(sourceName)) return;
-        _byName[canonicalName] = new GgufTensorInfo(canonicalName, 2, [inDim, outDim], DType.Float32, DataOffset: 0);
+        var dtype = forceFloat32 ? DType.Float32 : _source.GetRawInfo(sourceName).DType;
+        _byName[canonicalName] = new GgufTensorInfo(canonicalName, 2, [inDim, outDim], dtype, DataOffset: 0);
         _sourceNameByCanonical[canonicalName] = sourceName;
     }
 
     private void MapIfPresent1D(string sourceName, string canonicalName, int dim)
     {
         if (!_source.HasTensor(sourceName)) return;
+        // 1D tensors (norms/biases) are small and real ForwardPass RMSNorm/bias-add kernels expect
+        // plain FP32 -- keep these on the existing dequant path rather than passing quantized 1D
+        // data through (norms are never quantized in practice anyway, so this is a no-op DType-wise
+        // for real checkpoints, just an explicit choice rather than an accidental one).
         _byName[canonicalName] = new GgufTensorInfo(canonicalName, 1, [dim], DType.Float32, DataOffset: 0);
         _sourceNameByCanonical[canonicalName] = sourceName;
     }
@@ -119,7 +135,10 @@ public sealed unsafe class VibeVoiceLlmTensorSource : IModelTensorSource, IDispo
     public ReadOnlySpan<byte> GetTensorData(GgufTensorInfo tensor)
     {
         byte* pointer = GetTensorDataPtr(tensor);
-        return new ReadOnlySpan<byte>(pointer, checked((int)(tensor.ElementCount * sizeof(float))));
+        long byteSize = tensor.DType == DType.Float32
+            ? tensor.ElementCount * sizeof(float)
+            : DTypeInfo.ByteSize(tensor.ElementCount, tensor.DType);
+        return new ReadOnlySpan<byte>(pointer, checked((int)byteSize));
     }
 
     public byte* GetTensorDataPtr(GgufTensorInfo tensor)
@@ -131,10 +150,27 @@ public sealed unsafe class VibeVoiceLlmTensorSource : IModelTensorSource, IDispo
             return (byte*)cached;
 
         string sourceName = _sourceNameByCanonical[tensor.Name];
+
+        // Real DType passthrough (see MapIfPresent2D's doc comment): a non-Float32 tensor is
+        // served as a zero-copy pointer into the mmap'd checkpoint, exactly what it was declared
+        // as -- ForwardPass dequantizes it on the fly during matmul, the same as every other
+        // GGUF-loaded model. Never cached in _resolvedPointers/_ownedPointers since it isn't an
+        // owned allocation.
+        if (tensor.DType != DType.Float32)
+            return _source.GetRawDataPtr(sourceName);
+
         var data = _source.GetTensor(sourceName);
-        float* buffer = (float*)NativeMemory.Alloc((nuint)(data.Length * sizeof(float)));
+        // Real bug fixed here (found while verifying the OOM fix above): `data.Length *
+        // sizeof(float)` overflows 32-bit `int` arithmetic for tensors with >536M elements
+        // (this checkpoint's real `token_embd.weight` has exactly that many: 152064*3584 =
+        // ~545M) BEFORE the cast to `nuint` -- the wrapped/garbage value then made
+        // NativeMemory.Alloc fail with a real, but misleading, OutOfMemoryException (this
+        // machine had 44GB free at the time, nowhere near actually exhausted). Promote to
+        // `long` before multiplying.
+        long byteCount = (long)data.Length * sizeof(float);
+        float* buffer = (float*)NativeMemory.Alloc((nuint)byteCount);
         fixed (float* src = data)
-            Buffer.MemoryCopy(src, buffer, data.Length * sizeof(float), data.Length * sizeof(float));
+            Buffer.MemoryCopy(src, buffer, byteCount, byteCount);
         _ownedPointers.Add((nint)buffer);
         _resolvedPointers[tensor.Name] = (nint)buffer;
         return (byte*)buffer;

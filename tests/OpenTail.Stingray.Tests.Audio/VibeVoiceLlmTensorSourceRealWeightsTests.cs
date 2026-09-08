@@ -51,12 +51,25 @@ public sealed class VibeVoiceLlmTensorSourceRealWeightsTests : HeavyTestBase
         var outputInfo = llm.FindTensor("output.weight");
         Assert.NotNull(outputInfo); // real lm_head.weight tensor exists (not tied), confirmed via dump
 
+        // Real, expected consequence of the DType-passthrough fix (docs/audio-review-progress.md's
+        // VibeVoice ASR OOM-fix entry): per-layer weight matrices are now presented under their
+        // REAL on-disk DType (Q8_0 for this checkpoint) rather than forced Float32, so their raw
+        // bytes are no longer directly reinterpretable as float32 -- dequantize properly instead
+        // of a raw MemoryMarshal.Cast, matching how ForwardPass itself consumes them.
         void CheckFinite(GgufTensorInfo? info)
         {
             Assert.NotNull(info);
-            var data = llm.GetTensorData(info!.Value);
-            var floats = MemoryMarshal.Cast<byte, float>(data);
-            Assert.All(floats.ToArray(), v => Assert.True(float.IsFinite(v)));
+            var tensor = info!.Value;
+            var data = llm.GetTensorData(tensor);
+            if (tensor.DType == DType.Float32)
+            {
+                var floats = MemoryMarshal.Cast<byte, float>(data);
+                Assert.All(floats.ToArray(), v => Assert.True(float.IsFinite(v)));
+                return;
+            }
+            var dequantized = new float[tensor.ElementCount];
+            OpenTail.Stingray.Cpu.Dequantize.ToFloat32(data, dequantized, tensor.DType, tensor.ElementCount);
+            Assert.All(dequantized, v => Assert.True(float.IsFinite(v)));
         }
 
         CheckFinite(llm.FindTensor("output_norm.weight"));

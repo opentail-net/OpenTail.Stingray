@@ -17169,3 +17169,62 @@ reverted. Net effect of this pass: real measurement recorded (DiT.Run is 60% of 
 environment constraint identified), no code change kept (correctly, since nothing measurably
 helped) -- pivoting to a different backlog item per "don't stall on one stuck item."
 
+## VibeVoice ASR -- RAM-ceiling blocker RESOLVED (two real bugs found and fixed); real prefill succeeds for the first time, 2026-09-08
+
+Closes VibeVoice ASR's longest-standing real blocker (see this session's earlier entries: "the real
+end-to-end `ForwardPass` prefill/decode loop is wired and confirmed correct but blocked on a real
+RAM ceiling"). Investigated whether a cheaper fix existed than the previously-assumed "needs a
+whole new quantized-in-place tensor source, a bigger infra change" -- it did.
+
+**Real root cause of the RAM ceiling**: `VibeVoiceLlmTensorSource.MapIfPresent2D` forced EVERY
+2D weight tensor's declared `DType` to `Float32`, and `GetTensorDataPtr` eagerly dequantized every
+one into its own newly-allocated FP32 buffer -- for a 7B-class Qwen2 decoder (28 layers, real
+Q8_0-on-disk weights), this meant materializing ~4x the checkpoint's real on-disk size in FP32
+copies, tens of GB total. Found that `GgufModel` already exposes a real zero-copy
+`GetTensorDataPtr(GgufTensorInfo)` (mmap'd, no allocation) that `ForwardPass` already knows how to
+consume for ANY `DType` (Q8_0 dequant-on-the-fly during matmul is the standard path every other
+GGUF-loaded model in this codebase already uses) -- this bridging class just never used it.
+
+**Fix**: added `RvcPackedTensorSource.GetRawInfo`/`GetRawDataPtr` (real tensor info + zero-copy
+pointer, no dequant). `VibeVoiceLlmTensorSource.MapIfPresent2D` now preserves the REAL on-disk
+`DType` for per-layer weight matrices (q/k/v/o_proj, gate/up/down_proj -- the bulk of the model's
+parameters) instead of forcing Float32; `GetTensorDataPtr` returns the raw zero-copy pointer for
+any non-Float32 tensor. `token_embd.weight` is the one deliberate exception, kept forced-Float32:
+`EnableSpeechConditioning` memcpy-splices real float speech embeddings onto it, so that ONE ~2GB
+tensor (not the whole 7B model) still pays the FP32 cost.
+
+**Second real bug found while verifying the fix (not the fix's fault, but exposed by it)**: with
+per-layer weights no longer eagerly FP32'd, `token_embd.weight` became the ONLY tensor left on the
+old dequant-and-copy path -- and hit a real, independent, previously-latent bug: `data.Length *
+sizeof(float)` (in `GetTensorDataPtr`'s `NativeMemory.Alloc`/`Buffer.MemoryCopy` calls) overflows
+32-bit `int` arithmetic for this checkpoint's real `token_embd.weight`
+(152064 vocab x 3584 hidden = ~545M elements x 4 bytes = ~2.18GB, just over `int.MaxValue`) BEFORE
+the cast to `nuint` -- the wrapped/garbage byte count made `NativeMemory.Alloc` throw a real
+`OutOfMemoryException`, even though this test machine had 44GB free RAM at the time (confirmed via
+`Get-CimInstance Win32_OperatingSystem`, not assumed) -- a real, misleading error message masking
+an integer-overflow bug, not an actual memory shortage. Fixed by promoting to `long` before
+multiplying.
+
+**Real result**: `VibeVoiceAsrLlmPrefillRealWeightsTests` (new) -- constructs the real `ForwardPass`
+and runs a real `Prefill` call, the exact operation that previously OOM'd. Now succeeds: **9.03 GiB
+of CPU-resident weights pre-faulted** (down from tens of GB), finite logits, 18.9s real wall time.
+This is the first point in this project VibeVoice ASR has run a real forward pass at all, not just
+had its individual components (tokenizer encoder, connector, Gaussian sampler, LLM bridge) verified
+in isolation.
+
+**Regression check (real, not skipped)**: `VibeVoiceLlmTensorSource` is SHARED with VibeVoice TTS
+(already fully working) -- re-ran `VibeVoiceLlmTensorSourceRealWeightsTests`,
+`VibeVoiceGeneratorRealWeightsTests`, `VibeVoiceTtsVoiceCloningRealWeightsTests` alongside the new
+ASR test (77.1s total, real weight loads for all). One test needed updating, not a regression:
+`VibeVoiceLlmTensorSourceRealWeightsTests`'s `CheckFinite` helper used to `MemoryMarshal.Cast<byte,
+float>` raw tensor bytes directly -- correct when every tensor was forced FP32, but per-layer
+weights are now legitimately Q8_0, so reinterpreting their raw bytes as floats produced NaN (a real
+and EXPECTED consequence of the fix, not a bug in it). Updated the helper to dequantize properly
+(`Cpu.Dequantize.ToFloat32`) based on each tensor's real `DType`, matching how `ForwardPass` itself
+consumes them. All 5 tests pass post-fix.
+
+**Real next step** (not started this pass): wire the actual decode loop (greedy/beam-search
+sampling from the real logits this Prefill call now produces) using the already-ported sampling
+utilities from earlier this session -- VibeVoice ASR's remaining gap is now generation-loop wiring,
+not a RAM/architecture blocker.
+
