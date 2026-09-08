@@ -18067,3 +18067,43 @@ emotion-token prompt wrapping (`prompt.cpp`), and the FSQ acoustic-decoder codec
 transformer stack with real Snake-activation prior-net/post-net conv blocks) -- both genuinely
 separate, not-yet-started tasks. This backbone port de-risks and narrows the remaining NeuTTS work
 to those two pieces specifically.
+
+## NeuTTS -- AR speech-token generation loop wired end-to-end, first attempt succeeded, 2026-09-08
+
+Continued NeuTTS past the backbone-only port: real prompt builder + AR generation loop, both new.
+
+Real, notably simple multimodal mechanism confirmed from `prompt.cpp` (not guessed): unlike every
+other TTS model ported this session, NeuTTS's discrete speech-codec tokens are genuinely NATIVE
+vocabulary ids in the checkpoint's own tokenizer (`<|speech_0|>`..`<|speech_65535|>`, a real
+contiguous 65536-token range) -- a codec code is simply token id `speechTokenStart + code`. No
+bridging/splicing trick needed at all, unlike VoxCPM2/MOSS-TTS-Nano/VibeVoice/PersonaPlex/Higgs.
+
+Real bug found in this project's shared tokenizer infra while wiring this up (not NeuTTS-specific):
+`HuggingFaceTokenizerSource`/`GgufTokenizer.FromSource` does not surface every `added_tokens` entry
+from a large `tokenizer.json` into `TokenizerSource.AdditionalSpecialTokens`/`.Tokens` -- confirmed
+directly that the checkpoint's real `tokenizer.json` genuinely contains all 65536
+`<|speech_N|>` entries (`grep -c speech_` = 65536, real ids `speech_0=151684`..`speech_65535=217219`
+found via a direct `JsonDocument` parse of the `added_tokens` array), but none of them end up
+reachable through the standard loader. Rather than touch already-verified shared tokenizer code for
+one checkpoint's needs, added `NeuTtsPromptBuilder.LoadAddedTokenIds` -- a small, real, direct
+`added_tokens` JSON reader used only for the handful of control/speech tokens this class needs.
+
+New `NeuTtsGenerator.GenerateSpeechCodes`: standard prefill + autoregressive decode via the
+existing `IForwardPass`/`Sampler` infra (argmax by default, real sampling params optional), no
+bespoke per-step wiring needed -- confirms the backbone port's earlier claim that this checkpoint
+needs no custom transformer math. New `NeuTtsGeneratorRealWeightsTests`: builds a real prompt from
+the "emily" preset speaker's real pre-baked speech codes + "Hello there.", runs the real generation
+loop. First real attempt succeeded: 414-token prompt, 12 real in-range speech codes generated,
+stopped correctly on the real `SPEECH_GENERATION_END` token (well under the 32-token cap, proving
+the stop condition works, not just hitting the limit). 6.3s real wall time, 0.65 GiB weights.
+
+Not yet done: the FSQ acoustic-decoder codec (turns these codes into actual audio) remains the one
+genuinely new, substantial task for NeuTTS -- both the backbone LM and the generation loop around
+it are now real, working, and verified.
+
+**Session handoff note, 2026-09-08**: stopping the autonomous loop here at the user's request to
+hand off to another AI tool. A second AI tool (Antigravity) is concurrently mid-bisection on
+MOSS-TTS-Nano's generation-loop gibberish regression (introduced by this session's real
+greedy-to-sampling fix) -- `MossTtsGlobalTransformer.cs`, `SentencePieceBpeTokenizer.cs`, and a new
+`MossTtsReferenceParityRealWeightsTests.cs` were left uncommitted and in-progress by that tool as
+of this entry; do not revert or discard them without checking their state first.
