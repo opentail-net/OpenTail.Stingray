@@ -17124,3 +17124,48 @@ independent oracle run for either the encoder or the voice-clone path exists yet
 biggest-risk item flagged across this whole project -- needs external SentencePiece C++ source
 reading, not available in the vendored reference).
 
+## VoxCPM2 -- perf pass continued, real bottleneck measured, one attempted fix reverted (no measurable gain), real environment constraint found, 2026-09-08
+
+Directly continued the perf pass Antigravity started (see the "SIMD perf pass reviewed" entry
+above) by measuring rather than guessing where the remaining time actually goes, per this
+project's rule 7 discipline.
+
+**Attempted fix #1, reverted (no measurable gain)**: `VoxCpm2MiniCpmBidirectionalStack.Run` rebuilds
+its RoPE cos/sin table from scratch on every call via `SimdKernels.BuildRopeTable`. Since this
+function is called ~460 times per generation (10 CFM timesteps x 2 CFG branches x 23 patches,
+almost always at the same `seqLen`), added a static cache keyed by `seqLen`. Measured before/after
+(2 runs each): unchanged, 20.0-20.5s vs the pre-change 19.8-19.9s baseline (well within run-to-run
+noise) -- reverted per "only keep a change if it's measurably better."
+
+**Real profiling, not guessed**: added temporary `Stopwatch` instrumentation around
+`VoxCpm2CfmSolver`'s two `VoxCpm2DiTEstimator.Run` calls per CFM step. Result:
+`VoxCpm2DiTEstimator.Run` (which internally calls the already-SIMD-optimized
+`VoxCpm2MiniCpmBidirectionalStack.Run`) accounts for **12.0s of 19.9s total generation time (60%)**
+-- confirms this was the right target, but also that Antigravity's own SIMD/LayerScale/GELU work on
+that exact function (see the "SIMD perf pass reviewed" entry above) is ALREADY applied here and
+already didn't move overall timing, meaning the remaining cost is not from an un-vectorized hot
+loop.
+
+**Real environment-level finding, not a code bug**: checked allocation/GC pressure as a candidate
+explanation (610.8 MB allocated, 50 Gen0 GCs over one generation) -- real but not large enough to
+explain 12s (Gen0 collections on a heap this size are sub-millisecond each). Checked
+`SimdKernels.MatMulBatchedF32`'s threading gate (`rows*batchSize < 512` falls back to
+single-threaded) -- VoxCPM2's actual shapes (`rows` up to 4096, `batchSize`/`seqLen` in the low
+teens) are well above that threshold, so the batched matmuls ARE already parallelized across
+threads. The real constraint surfaced instead by this session's own real-weight test logs:
+**`[OpenTail.Stingray] OpenBLAS: not found (fallback to sequential)`** -- this machine has no
+OpenBLAS installed, so whatever BLAS-backed fast path this codebase's SIMD kernels can use when
+available is not active here; the 12s DiT cost is likely close to this machine's real ceiling for
+this workload without either (a) OpenBLAS installed (an environment/deployment decision, not a
+code change, and out of scope to silently do without asking), or (b) a deeper kernel rewrite
+(fusing more of the 12-layer transformer's per-layer matmuls, or Q8_0-quantizing the DiT weights
+directly rather than the current FP32 dequant-at-load path) -- both real, substantial follow-on
+work for a future dedicated perf pass, not a quick fix.
+
+Removed all temporary profiling instrumentation before committing (kept the codebase clean per this
+project's scratch-file discipline) -- `VoxCpm2CfmSolver.cs`/`VoxCpm2GenerateWavDebugTest.cs` are
+back to their last-committed state, `VoxCpm2MiniCpmBidirectionalStack.cs`'s RoPE-cache attempt was
+reverted. Net effect of this pass: real measurement recorded (DiT.Run is 60% of total time, real
+environment constraint identified), no code change kept (correctly, since nothing measurably
+helped) -- pivoting to a different backlog item per "don't stall on one stuck item."
+
