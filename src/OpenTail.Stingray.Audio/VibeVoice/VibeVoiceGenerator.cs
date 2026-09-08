@@ -310,7 +310,15 @@ public static class VibeVoiceGenerator
     /// `VibeVoiceAcousticLatentSampler`'s own documented gap): drives every real diffusion step's
     /// noise, so it is NOT bit-identical to the reference for a given seed, but porting a
     /// bit-identical torch RNG is a large, likely-low-value undertaking (see this session's
-    /// MOSS-TTS-Nano/VibeVoice ASR RNG-gap entries in docs/audio-review-progress.md for why).</summary>
+    /// MOSS-TTS-Nano/VibeVoice ASR RNG-gap entries in docs/audio-review-progress.md for why).
+    ///
+    /// <para><b>2026-09-08 bisection note</b>: a real cross-engine trace with IDENTICAL injected
+    /// noise (bypassing this RNG gap entirely, via the reference's `diffusion_noise_file` request
+    /// option) confirmed the RNG gap is NOT the primary cause of VibeVoice TTS's audible-quality
+    /// issue -- see the "VibeVoice TTS: real per-step cross-engine diffusion bisection" entry in
+    /// `docs/audio-review-progress.md` for the full writeup and numbers. Root cause is compounding
+    /// floating-point drift through the closed generation loop, not this RNG implementation.</para>
+    /// </summary>
     private static float[] RandnBoxMuller(Random rng, int count)
     {
         var output = new float[count];

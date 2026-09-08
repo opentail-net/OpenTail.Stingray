@@ -18438,4 +18438,85 @@ Generated fresh WAV files for all generative models directly from real checkpoin
   - `OmniVoiceAcousticDecoder.cs`: Parallelized channel loops in `Conv1dSamePad`, `SnakeInPlace`, and `fc2` projection with `Parallel.For`.
 - **Result**: Execution time plummeted from **4m 43s (285.2s) down to 1m 18s (82.3s)** — a **3.5x end-to-end speedup** while bit-exact output is preserved.
 
+## VibeVoice TTS: real per-step cross-engine diffusion bisection -- root cause found (compounding drift, not a single bug), plus a real ~7x diffusion-head perf gap (2026-09-08)
+
+User reported the regenerated `vibevoice-tts-real-check.wav` was "still gibberish" even after the
+double-normalization fix (previous entry) closed the step-0 hidden-state divergence to 0.9997
+cosine similarity. Asked to go through the pipeline section-by-section against the C++ reference,
+with timing.
+
+**Real bisection methodology**: the RNG-implementation gap (`RandnBoxMuller`'s Box-Muller-over-
+`System.Random` vs. the reference's real torch RNG) was a standing, previously-accepted "known
+gap" -- but reasoned that a diffusion model trained to denoise from ANY correctly-distributed
+Gaussian sample should still produce SOME coherent speech from a "different but valid" noise
+draw; literal gibberish pointed at something more structural than just noise-seed mismatch. To
+test this without the RNG confound, wired the reference's already-present (but not CLI-exposed)
+`diffusion_noise_file` request option (`examples/audio.cpp/src/models/vibevoice/loader.cpp`
+already lists it under `cli().request_options`) via `--request-option
+diffusion_noise_file=<path>`, and added a matching (temporary, since removed)
+`STINGRAY_TTS_NOISE_FILE` env-var override on the C# side that reads the identical raw f32 file
+at the same per-call byte offset (matching the reference's real `count=2*latent_size`-per-call
+advance convention, confirmed via `diffusion_sampler.cpp`'s `next_diffusion_noise`/
+`duplicate_positive_half`, which only ever consumes the FIRST half of each 128-float block).
+
+**First control run used all-zero noise** -- a bad choice in hindsight: zero is a degenerate,
+atypical point for a network trained on Gaussian(0,1) samples, and produced wildly diverging
+`eps`/`sample` values from `call1` onward on both engines independently, an artifact of the
+atypical input rather than a real signal. Redid it with a **fixed, real Gaussian(0,1) sequence**
+(Python `random.gauss(0,1)`, seed 12345, written as a raw little-endian f32 file) for a
+representative test. Independently verified byte-for-byte identical noise injection on both
+sides via a raw `raw_initial_speech` dump (temporary, since removed) before trusting any
+downstream comparison -- e.g. both engines' `call0` read `[-0.123801, 0.071525, ..., -0.749997,
+-0.444354, ...]` from the same file at the same offset, confirmed exact.
+
+**Finding**: added per-inner-DPM-step trace + timing to both
+`VibeVoiceDiffusionSampler.Sample`/`diffusion_sampler.cpp`'s `sample_vibevoice_speech_latents`
+(temporary, since removed from both -- the C++ side is gitignored/local-only anyway). With
+IDENTICAL injected noise:
+- `call0` (the FIRST generated speech frame): `eps` values track the reference closely --
+  same sign and same order of magnitude on nearly every sampled dimension (e.g. `eps[0]`
+  C#=-0.2868 vs ref=-0.3186; `eps[6]` C#=0.1187 vs ref=0.0666).
+- `call5` (the 6th generated speech frame, same short-script test): `eps`/`sample` values have
+  diverged substantially -- 10x+ magnitude differences and sign flips on many dimensions (e.g.
+  `eps[41]` C#=0.1411 vs ref=0.0104; `eps[42]` C#=0.1319 vs ref=-0.3662, a sign flip).
+
+**Root cause**: this is real, structural COMPOUNDING floating-point drift through VibeVoice TTS's
+closed autoregressive generation loop, not a single fixable bug. Each generated frame's diffusion
+output feeds the acoustic+semantic connector, which becomes the NEXT frame's LLM embedding input,
+which conditions the NEXT frame's diffusion sampling -- so any per-step imprecision (quantized-
+GEMM rounding differences, SIMD reduction-order differences between the two independent AVX2
+implementations, etc. -- none individually large) recursively re-enters the loop and compounds.
+This is a different failure MODE than VibeVoice ASR's earlier-closed gap (a single forward pass
+through a genuinely nonlinear-but-correct encoder amplifying a small INPUT difference) -- here
+it's amplification through repeated AUTOREGRESSIVE FEEDBACK across ~40-60 real generation steps,
+not a single network's nonlinearity. Not fixed this pass: closing this to inaudible levels would
+need a much deeper numerical-parity pass across every primitive in the loop (quantized attention/
+matmul, RoPE, activation functions) with no guarantee floating-point non-associativity between
+two independently-implemented AVX2 engines can ever be driven to true bit-exactness. Real,
+concrete next steps for whoever picks this up: (a) try disabling classifier-free guidance (single
+positive-only branch) to see if it materially slows the compounding (fewer amplification paths),
+(b) check whether upgrading the LLM backbone or diffusion head from Q8_0 to F32 (removing one
+whole source of cross-engine rounding difference) measurably slows the drift -- a real, testable
+hypothesis, not yet tried, (c) as a structural mitigation rather than a numerical fix, consider
+whether periodically "grounding" the loop (e.g. re-deriving embeddings from decoded audio via a
+real re-encode rather than carrying the diffusion latent's raw connector projection forward) is
+what the reference itself effectively does via its own real streaming semantic re-encode step
+(`VibeVoiceTokenizerEncoder.EncodeStreaming`, already implemented) -- worth checking whether this
+port's connector-embedding path matches the reference's real mix of acoustic+semantic embedding
+exactly, since a subtle difference there would directly explain WHY errors compound instead of
+being damped.
+
+**Real, separate performance finding from the same trace**: the diffusion head's own forward
+pass (`VibeVoiceDiffusionHead.Predict`) is measured at ~25-28ms/call in C# vs. ~3.6-4.3ms/call in
+the C++ reference -- a real ~7x gap, unrelated to the correctness finding above. Not yet
+investigated (a real next perf-pass candidate: `VibeVoiceDiffusionHead.cs`'s `DenseKernels`-based
+linears likely have the same class of missed-vectorization gap `VibeVoiceConvNeXtBlock.cs`'s
+`LinearRow` had, closed earlier this session -- worth checking with the same technique). Scheduler
+`Step` cost is negligible on both sides (<0.02ms C++, <0.01ms C#).
+
+All temporary trace/zero-noise/fixed-noise-file scaffolding removed from
+`VibeVoiceGenerator.cs`/`VibeVoiceDiffusionSampler.cs` before this commit; the doc comments on
+`RandnBoxMuller` and `VibeVoiceDiffusionSampler.Sample` now cite this finding directly so a future
+pass doesn't have to re-discover it. Full fast suite (471 tests) clean before and after.
+
 
