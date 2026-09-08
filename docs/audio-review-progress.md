@@ -16979,3 +16979,34 @@ and C# `ForwardPass` (`src/OpenTail.Stingray.Engine/`).
    - `VoxCpm2GeneratorRealWeightsTests` passes (full 2m 43s real-weight end-to-end generation).
    - `OpenTail.Stingray.Tests.ForwardPass.Fast` (661 tests) passes with 0 failures.
 
+## MOSS-TTS-Nano -- voice-cloning encoder precisely scoped, real reference structurally mirrors the already-ported decoder (not started), 2026-09-08
+
+Read `examples/audio.cpp/src/framework/codecs/moss_audio_tokenizer_codec_runtime.cpp`'s real
+`MossAudioTokenizerEncoder`/`MossAudioTokenizerQuantizer::encode` in enough detail to scope
+MOSS-TTS-Nano's remaining voice-cloning gap precisely (not guessed). Confirmed real, tractable
+structure: the encoder is the reference's own documented "structural mirror" of
+`MossTtsAudioCodecDecoder.cs` (already ported and real-weight verified this project) -- same
+stereo-interleave + patch-downsample + causal-Transformer-stack (interleaved RoPE, LayerScale,
+GELU MLP, real per-stage `AttentionWindow` local-attention masking) pattern, just reversed
+(patch happens BEFORE the transformer stage for the encoder vs. after for the decoder) and ending
+in `MossAudioTokenizerQuantizer::encode` (the real inverse of the already-ported `decode`: RVQ
+`input_proj -> per-quantizer in_proj -> L2-normalized nearest-code lookup -> residual subtraction`,
+returning `[num_quantizers][frames]` codes) rather than starting from codes.
+`prompt_builder.cpp`'s real `build()` (lines 85-139) confirms the downstream wiring: when
+`prompt_codes` is supplied, the real prompt interleaves `audio_user_slot_token_id`-tagged reference
+frames between the user-prefix and the target text, exactly the same real per-frame
+`audio_codebook` embedding-sum convention this session's already-ported `MossTtsGlobalTransformer`
+uses for target frames -- no new generation-loop concept needed, only the encoder itself and a
+`prompt_codes`-aware `MossTtsPromptBuilder` overload.
+
+**Real, deliberate scope decision**: this is comparable in size/risk to the Higgs/OmniVoice codec-
+encoder ports this session already completed successfully (a real multi-stage attention-window
+transformer plus RVQ quantizer-encode, not a small tweak) -- correctly implementing and real-weight
+verifying it (including the `AttentionWindow` local-attention mask construction, not yet read in
+full) needs a dedicated pass rather than a rushed partial port late in this session, per this
+project's "no half-finished implementations" rule. Not started this pass. Real next step: finish
+reading `CodecWeights`/`load_transformer`'s real per-stage config (patch/context/d_model per stage,
+likely mirrors the decoder's own already-known stage config) and the `AttentionWindow` construction,
+then port `MossAudioTokenizerEncoder`/`MossAudioTokenizerQuantizer.Encode` alongside the existing
+`MossTtsAudioCodecDecoder.cs`, following the same file-naming convention.
+
