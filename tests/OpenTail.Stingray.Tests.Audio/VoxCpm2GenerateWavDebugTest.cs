@@ -64,10 +64,13 @@ public sealed class VoxCpm2GenerateWavDebugTest : HeavyTestBase
         var ditWeights = VoxCpm2DiTEstimatorWeights.Load(numLayers: 12, source.GetTensor);
         var encoderWeights = VoxCpm2LocalEncoderWeights.Load(numLayers: 12, source.GetTensor);
 
+        var sw = System.Diagnostics.Stopwatch.StartNew();
         var result = VoxCpm2Generator.Generate(
             fwd, residualLm, projWeights, ditWeights, encoderWeights,
             promptTokenIds, maxPatches: 25, cfmTimesteps: 10, cfgValue: 2.0f, minTokens: 0,
             new Random(11));
+        sw.Stop();
+        Console.WriteLine($"[Timing] Generate() = {sw.Elapsed.TotalSeconds:F2}s for {result.Patches.Length} patches");
 
         Assert.True(result.Patches.Length > 0);
 

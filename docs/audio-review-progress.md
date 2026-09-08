@@ -17010,3 +17010,23 @@ likely mirrors the decoder's own already-known stage config) and the `AttentionW
 then port `MossAudioTokenizerEncoder`/`MossAudioTokenizerQuantizer.Encode` alongside the existing
 `MossTtsAudioCodecDecoder.cs`, following the same file-naming convention.
 
+## VoxCPM2 -- real listening-check CONFIRMED FIXED by the user; real, clean generation-only perf comparison against the C++ reference, 2026-09-08
+
+User listened to the freshly-regenerated `docs/audio-samples/voxcpm2-real-check.wav` (same prompt,
+post NEOX-RoPE-fix) and confirmed: **"voxcpm2-real-check.wav is good"** -- the "gets confused
+quickly" quality defect from the earlier listening check is resolved. Closes VoxCPM2's real
+listening-check gap; the model's real, verified status is now end-to-end correct (numeric parity +
+confirmed-good audio), not just numerically close.
+
+**Real, clean generation-only perf comparison** (requested by the user, "for speed" -- Antigravity
+was separately looking at VoxCPM2 performance): generated a fresh C++ reference sample via the
+vendored `audiocpp_cli` on the identical prompt/seed
+(`docs/audio-samples/voxcpm2-cpp-reference.wav`, 14.8s wall, 4.16s audio, RTF 3.56) and added a
+`Stopwatch` around just `VoxCpm2Generator.Generate()`'s own call in
+`VoxCpm2GenerateWavDebugTest.cs` (isolating it from xUnit harness/weight-load overhead, which had
+made an earlier crude 921s figure look like a ~60x gap -- almost entirely non-generation overhead).
+Real isolated number: **19.82s for 23 patches / 3.68s audio = RTF 5.39** -- only ~1.5x slower than
+the C++ reference's RTF 3.56, not the alarming ~60x the contaminated number implied. A modest,
+unsurprising gap for a CPU path with no SIMD-tuned Q8_0 CFM kernels yet, not a crisis -- real,
+useful context for whatever perf pass is picked up next (this session's or Antigravity's).
+
