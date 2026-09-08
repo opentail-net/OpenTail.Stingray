@@ -18594,4 +18594,52 @@ local-only, not committed) and `VibeVoiceGenerator.cs`; `VibeVoiceTtsPromptBuild
 reverted to its original `maxSteps: 6`. Full fast suite (471 tests) clean before and after --
 no behavior change, documentation and diagnostic-methodology only.
 
+## VibeVoice TTS: Q8_0-vs-FP32 A/B test -- quantization ruled out, the divergence is pure floating-point/operator-order non-associativity (2026-09-08)
+
+Ran the FP32 A/B experiment prioritized by the two entries above (both this session's own analysis
+and an external second opinion's ranked hypothesis list): does forcing the LLM backbone's weights
+from their native Q8_0 quantized storage to full FP32 measurably close the ~0.9997-cosine-
+similarity gap at step 0 (before any autoregressive compounding)?
+
+**Real implementation**: added a temporary `STINGRAY_TTS_FORCE_FP32` env-var toggle to
+`VibeVoiceLlmTensorSource.MapIfPresent2D` that forces every 2D weight tensor's declared `DType` to
+`Float32` (materializing a real, fully-dequantized FP32 copy via the existing `GetTensorDataPtr`
+Float32 branch, not a no-op) instead of the native Q8_0 zero-copy passthrough every other tensor
+normally uses. Ran `VibeVoiceTtsDumpDebugTest.CompareEmbeddingsAndTraceHidden` (the same test that
+already checks step-0 hidden-state cosine similarity against the real captured C++ reference
+values) with the toggle enabled.
+
+**Real result**: memory footprint confirmed FP32 weights genuinely loaded (6.62 GiB resident vs.
+3.04 GiB for Q8_0 -- a real, substantial increase, not a silent no-op), but the computed hidden
+state was **bit-for-bit identical** to the Q8_0 run: `hidden[0]=-0.39266005` in both runs to 8
+significant figures, same for every other sampled index. FP32 storage produced ZERO measurable
+change to the output.
+
+**Conclusion, with real confidence now**: Q8_0 quantization rounding is NOT a meaningful
+contributor to the divergence documented in the entries above. This makes sense on reflection --
+this engine's Q8_0 matvec kernels already dequantize each 32-element block to FP32 and accumulate
+in FP32 per matmul regardless of whether the WEIGHTS are stored as 8-bit blocks or a full FP32
+array; only the on-disk/in-memory STORAGE format changes, not the arithmetic precision of the
+computation itself. The remaining ~0.03% relative hidden-state divergence at step 0 -- and by
+extension the compounding drift across the autoregressive loop documented above -- is **pure
+floating-point/operator-order non-associativity**: two independently-written AVX2 implementations
+(this port's `SimdKernels`/`Cpu.SimdKernels.DotF32`-family kernels vs. the reference's own GGML-
+based kernels) summing the same logical dot products in a different order, using different
+FMA/vectorization strategies, will never be bit-identical even at full FP32 precision. This
+directly resolves the "is it quantization or operator order" question raised by both entries
+above in favor of operator order -- and rules out "switch more of the pipeline to FP32" as a
+productive next lever, since it has now been shown NOT to move the needle at all on this
+checkpoint's own LLM backbone.
+
+**Real implication**: closing this gap further would require either (a) literally reimplementing
+this port's AVX2 kernels to match GGML's exact reduction order/instruction sequence op-for-op
+(a huge, narrow undertaking, and inherently fragile to any future GGML kernel change) or (b) the
+CAM-style training-time robustness intervention noted in the entry above (not available for a
+fixed, already-trained checkpoint). Reinforces the conclusion that this is a genuine, now
+precisely-characterized architectural sensitivity to cross-engine floating-point non-associativity
+-- not a fixable implementation bug, not a quantization artifact, and not something a "switch to
+FP32" change can address. `STINGRAY_TTS_FORCE_FP32` toggle removed from
+`VibeVoiceLlmTensorSource.cs` before this commit; full fast suite (471 tests) clean before and
+after -- no behavior change.
+
 
