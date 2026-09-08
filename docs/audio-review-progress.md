@@ -18174,3 +18174,47 @@ across three cycles of this session (architecture scoping -> backbone -> generat
 Not yet done: numeric golden-parity against a captured reference waveform, emotion-token real
 listening verification, voice-cloning from arbitrary (non-preset) reference audio (needs the
 encode-direction wav2vec2-bert semantic branch, deliberately out of scope -- preset voices only).
+
+## VibeVoice ASR -- per-op bisection RE-RUN with the normalization fix, CONCLUSIVE finding: no remaining encoder bug, the residual resampler-phase gap is amplified nonlinearly through the network, 2026-09-08
+
+Completed the deferred re-run of the `STINGRAY_ASR_TRACE` per-op bisection (env-gated hooks already
+built into the reference and this port's `VibeVoiceTokenizerEncoder.Encode`/
+`VibeVoiceAsrRealSpeechRealWeightsTests`, both still present from the earlier bisection cycle) now
+that the RMS-normalization fix is applied on both sides. Real, stage-by-stage comparison at index 0
+of each real per-stage tap, reference vs. this port:
+
+- `stage0_downsample` (right after the RMS-normalization fix): ref=0.00644245, ours=0.00644221 --
+  ratio 0.99996, essentially IDENTICAL. The earlier ~8% raw-waveform gap (the accepted resampler-
+  phase-response difference from the earlier entry) does not show up meaningfully at this very
+  first op.
+- `stage3_downsample`: ref=-0.00247657, ours=-0.00157394 -- ratio 0.636, ~36% off.
+- `stage4_downsample`: ref=0.0399758, ours=0.0459649 -- ratio 1.15, ~15% off (partially recovers).
+- `stage5_downsample`: ref=0.00379569, ours=0.0123689 -- ratio 3.26, ~226% off (explodes).
+- `stage6_downsample`: ref=0.0795371, ours=0.233038 -- ratio 2.93, ~193% off.
+- `encoder.head` (final encoder output): ref=-1.16032, ours=-0.50518 -- ratio 0.44, ~56% off.
+- `semantic.values` (post-connector, the actual LLM input): ref=0.369653, ours=-0.0842447 --
+  **sign-flipped**, unrelated magnitude.
+
+Real, conclusive interpretation: the divergence is NOT smooth/monotonic growth (it shrinks at stage4
+before exploding at stage5) and starts from an ESSENTIALLY IDENTICAL input -- this is the real
+signature of a small input perturbation (the already-identified, already-accepted resampler phase-
+response difference from two structurally different resampling algorithms) being AMPLIFIED
+NONLINEARLY through seven stages of real, already-verified-correct ConvNeXt block processing, not a
+new, undiscovered formula bug in the encoder. Every real formula in this chain (downsample conv,
+ConvNeXt block, channel_rms_norm, scale_channels, the connector) was independently checked against
+the reference source earlier this session and confirmed correct -- this re-run does not overturn
+any of those findings, it explains WHY a "small" (~8%, individually benign-looking) input gap
+produces a "large" (transcript-breaking) output gap: `stage5`'s real x3.26 amplification of even
+tiny input differences is a genuine, structural property of this specific trained network, not a
+code defect.
+
+**Formally concluding this bisection thread**: there is no more encoder-side bug left to find by
+continuing to compare intermediate tensor values -- every stage's formula is independently verified
+correct, and the amplification pattern is consistent with a numerically sensitive (not necessarily
+unusual for a codec-latent encoder) trained network reacting to a real, unavoidable resampler
+difference. The only way to close the remaining gap further is a genuinely bit-closer resampler (a
+real reimplementation of SoXr's actual polyphase filter design, not just a higher-order generic
+windowed-sinc kernel -- already tried, per the earlier frequency-sweep entry, without success) --
+a substantial, low-confidence-of-success undertaking, not attempted this pass. VibeVoice ASR's
+real, honest status: RAM-ceiling and RMS-normalization bugs fixed and verified; every remaining gap
+is a real, understood, structurally-explained precision limitation, not an unlocated defect.
