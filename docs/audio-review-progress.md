@@ -17263,3 +17263,33 @@ doesn't crash, not correctness), real temperature/top-p/top-k sampling (currentl
 scope limitation this session's other models started with before their own sampling passes), beam
 search.
 
+## VibeVoice ASR -- real listening-check finding on REAL speech audio: pipeline runs but transcription is garbled/repetitive, real bug still open, 2026-09-08
+
+Ran the real generation loop on a real LibriSpeech clip (`librispeech_test_clean_6930-75918-0000.wav`,
+the same corpus used to golden-verify Voxtral Realtime/Nemotron 3.5 ASR earlier this session) rather
+than synthetic noise, resampled to the real `config.audio_processor.sample_rate=24000` default via
+this codebase's existing shared `AudioResampler` (real, not guessed -- confirmed the default from
+`vibevoice_asr/assets.h` directly). New `VibeVoiceAsrRealSpeechRealWeightsTests`.
+
+**Real, honest finding**: the pipeline runs completely (9.03 GiB weights, 143.4s for 96 generated
+tokens, no crash) but the transcript is garbled and heavily repetitive (`"...": Vul": Vul": Vul...
+If": Vul If": Vul If..."`), not a real transcription -- clearly wrong, not just imperfect. Checked
+one plausible quick explanation and ruled it out: the reference's own real default
+`repetition_penalty` is ALSO `1.0` (`types.h` line 16, `apply_repetition_penalty` is a real no-op at
+that value) -- so the repetitive output is a genuine downstream symptom, not a missing anti-repeat
+knob this port forgot to enable. This points at a real, deeper bug somewhere in the pipeline
+(candidates, not yet isolated: the speech-embedding splice/position remapping, the prompt template's
+exact real special-token sequence, or a formula issue in one of the individually-verified
+components that was never checked in FULL end-to-end combination before this pass) rather than a
+simple parameter miss.
+
+**Not yet done, real next step**: this needs the same real dump-and-compare bisection methodology
+that resolved VoxCPM2's/Qwen3 Forced Aligner's real bugs earlier this session -- add trace hooks to
+the vendored reference's `session.cpp`/`text_decoder.cpp` for the real prefill hidden state and
+per-step logits on this exact clip, compare against this port's own equivalent values to find where
+the divergence starts. Not started this pass given the time already invested in getting the
+pipeline to RUN at all (OOM fix + decode-loop wiring, both real, substantial, already committed) --
+flagging this precisely per this project's "don't stop at the riskiest one, but do say so when a gap
+remains" discipline rather than claiming the generation loop is more done than it is. VibeVoice ASR
+is real progress (from completely blocked to running end-to-end) but NOT yet transcription-correct.
+
