@@ -176,6 +176,22 @@ public sealed unsafe class VibeVoiceLlmTensorSource : IModelTensorSource, IDispo
         return (byte*)buffer;
     }
 
+    /// <summary>
+    /// Real final-norm weight (`model.language_model.norm.weight`), materialized on first access.
+    /// `ForwardPass` already applies this internally before computing logits (via the mapped
+    /// `output_norm.weight` canonical name), so text-token generation is unaffected -- this
+    /// accessor exists ONLY for callers that need to manually RMSNorm
+    /// <see cref="IForwardPass.LastHidden"/> themselves. `LastHidden` is documented as the
+    /// PRE-final-norm hidden state (kept raw for MTP-head use elsewhere in this engine); the
+    /// real reference (`vibevoice/decoder.cpp`'s `hidden_output_`, captured AFTER its own
+    /// `RMSNormModule` call, confirmed at 4 separate real graph-build sites) needs the
+    /// POST-final-norm value wherever it feeds something other than the LM head -- e.g. VibeVoice
+    /// TTS's diffusion-head conditioning (`VibeVoiceGenerator`'s real `positive_condition`/
+    /// `negative_condition`), which was found this session to have been using the raw pre-norm
+    /// value instead.
+    /// </summary>
+    public float[] NormWeight => _source.GetTensor("model.language_model.norm.weight");
+
     /// <summary>Real -1 until <see cref="EnableSpeechConditioning"/> has been called: the first
     /// synthetic vocab id assigned to the injected speech-embedding rows.</summary>
     public int SpeechTokenIdOffset { get; private set; } = -1;

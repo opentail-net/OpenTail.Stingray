@@ -18218,3 +18218,46 @@ windowed-sinc kernel -- already tried, per the earlier frequency-sweep entry, wi
 a substantial, low-confidence-of-success undertaking, not attempted this pass. VibeVoice ASR's
 real, honest status: RAM-ceiling and RMS-normalization bugs fixed and verified; every remaining gap
 is a real, understood, structurally-explained precision limitation, not an unlocated defect.
+
+## VibeVoice TTS -- REAL BUG FOUND AND FIXED: diffusion head was conditioned on the pre-final-norm hidden state, 2026-09-08
+
+Found while writing a bug-hunt handoff prompt for another AI session working on PersonaPlex, which
+had just found and was fixing an identical bug there. Checked `VibeVoiceGenerator.cs` for the same
+pattern and confirmed it independently against the real reference source, not by analogy alone.
+
+Real bug: `VibeVoiceGenerator.cs` used `fwd.LastHidden.ToArray()` at six call sites (`Generate`,
+`GenerateWithVoiceCloning`, and four inside `GenerateFromPrefilledState`) to build
+`positiveHidden`/`negativeHidden`/`currentHidden`, which feed `diffusion_input.positive_condition`/
+`negative_condition` -- the vectors conditioning every real diffusion-sampling step of the
+acoustic-latent generator. `IForwardPass.LastHidden` is explicitly documented in this engine as the
+PRE-final-norm hidden state (kept raw for MTP-head use elsewhere). The real reference
+(`vibevoice/decoder.cpp`) builds its equivalent `hidden_output_` at 4 separate real graph-build
+sites, all with the identical real shape: `RMSNormModule(...).build(...)` runs FIRST, THEN
+`hidden_output_ = x.tensor;` captures the POST-norm result -- confirmed directly reading lines
+487-494 (and the 3 other matching sites at lines 753, 1002, 1198). This port has been feeding the
+diffusion head the wrong, un-normalized hidden vector for every generated frame this entire
+session.
+
+Fixed: added `VibeVoiceLlmTensorSource.NormWeight` (reads the already-mapped
+`model.language_model.norm.weight`, previously loaded internally for `ForwardPass`'s own logits
+computation but not exposed for external use) and a `VibeVoiceGenerator.NormalizeHidden` RMSNorm
+helper, applied at all six call sites before the hidden state is used for diffusion conditioning.
+Threaded `normWeight`/`rmsNormEps` as new required parameters through `Generate`/
+`GenerateWithVoiceCloning`/`GenerateFromPrefilledState`, updated all four real call sites
+(`VibeVoiceGeneratorRealWeightsTests` x2, `VibeVoiceTtsGenerateWavDebugTest`,
+`VibeVoiceTtsPromptBuilderRealWeightsTests`, `VibeVoiceTtsVoiceCloningRealWeightsTests`).
+
+Real regression check: all four affected real-weight tests still pass (real 3.04 GiB weight loads,
+genuine timing -- `VibeVoiceGeneratorRealWeightsTests` 29.1s/2 tests, voice-cloning 27.9s, prompt-
+builder 16.7s), full fast suite (469 tests) clean. Regenerated `docs/audio-samples/vibevoice-tts-
+real-check.wav` with the fix applied (real, not yet human-confirmed by ear -- pending listen).
+
+Also flagged (not fixed, a separate, lower-priority, already-accepted-elsewhere gap class):
+`RandnBoxMuller`'s Box-Muller-over-`System.Random` diffusion noise source was previously
+undocumented as a known gap -- added an explicit doc comment (same class as
+`VibeVoiceAcousticLatentSampler`'s own flagged RNG gap) rather than leaving it silent.
+
+**This is the second real instance of the exact same missing-final-norm bug class found this
+session** (PersonaPlex's `LastHidden`/Depformer conditioning, found and being fixed by a separate
+concurrent AI session at the same time) -- worth a broader audit: any other model in this codebase
+that uses `fwd.LastHidden` for something other than logits should be checked for the same mistake.

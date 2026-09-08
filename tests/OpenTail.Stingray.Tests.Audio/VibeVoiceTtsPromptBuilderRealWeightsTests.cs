@@ -128,7 +128,7 @@ public sealed class VibeVoiceTtsPromptBuilderRealWeightsTests : HeavyTestBase
             acousticConnectorWeights, semanticConnectorWeights,
             speechScalingFactor, speechBiasFactor, TokenizerLayerNormEps,
             DdpmNumSteps, inferenceSteps: 4, guidanceScale: 1.5f,
-            maxSteps: 6, new Random(31));
+            maxSteps: 6, new Random(31), llm.NormWeight, RmsNormEps);
 
         Assert.NotEmpty(result.GeneratedTokens);
         Assert.NotEmpty(result.AudioSamples);

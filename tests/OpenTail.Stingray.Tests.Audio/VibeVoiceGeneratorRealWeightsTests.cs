@@ -112,7 +112,7 @@ public sealed class VibeVoiceGeneratorRealWeightsTests : HeavyTestBase
             acousticConnectorWeights, semanticConnectorWeights,
             speechScalingFactor, speechBiasFactor, TokenizerLayerNormEps,
             DdpmNumSteps, inferenceSteps: 4, guidanceScale: 1.5f,
-            maxSteps: 6, new Random(31));
+            maxSteps: 6, new Random(31), llm.NormWeight, RmsNormEps);
 
         Assert.NotEmpty(result.GeneratedTokens);
         Assert.NotEmpty(result.AudioSamples);
@@ -181,7 +181,7 @@ public sealed class VibeVoiceGeneratorRealWeightsTests : HeavyTestBase
             acousticConnectorWeights, semanticConnectorWeights,
             speechScalingFactor, speechBiasFactor, TokenizerLayerNormEps,
             DdpmNumSteps, inferenceSteps: 4, guidanceScale: 1.5f,
-            maxSteps: 6, new Random(31), tokenOptions);
+            maxSteps: 6, new Random(31), llm.NormWeight, RmsNormEps, tokenOptions);
 
         Assert.NotEmpty(result.GeneratedTokens);
         Assert.NotEmpty(result.AudioSamples);

@@ -126,7 +126,7 @@ public sealed class VibeVoiceTtsGenerateWavDebugTest : HeavyTestBase
             acousticConnectorWeights, semanticConnectorWeights,
             speechScalingFactor, speechBiasFactor, TokenizerLayerNormEps,
             DdpmNumSteps, inferenceSteps: 10, guidanceScale: 1.5f,
-            maxSteps: 60, new Random(31));
+            maxSteps: 60, new Random(31), llm.NormWeight, RmsNormEps);
 
         Assert.True(result.AudioSamples.Length > 0);
 
