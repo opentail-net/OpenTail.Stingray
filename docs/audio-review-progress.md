@@ -17914,3 +17914,41 @@ acoustic-decoder transformer with its real Snake/prior-net/post-net conv blocks)
 rushed, partially-verified attempt bolted onto an already-long cycle. Real, precisely scoped next
 step for a future pass: port the backbone LM first (bounded, reuses existing patterns, verifiable
 in isolation via a real prefill/argmax-continuation smoke test) before touching the codec at all.
+
+## MOSS-TTS-Nano -- REAL BUG FOUND AND FIXED: every listenable sample was greedy-decoded, not sampled, closing most of the earlier RMS/ZCR gap, 2026-09-08
+
+Direct response to a real user listening check: user confirmed `moss-tts-nano-cpp-reference.wav` is
+good and `moss-tts-nano-ours-comparable.wav` is bad -- promoting the earlier quantitative RMS/ZCR
+finding from "evidence of an unknown gap" to "a confirmed real defect," and making this the
+session's top real priority.
+
+Root-caused by reading `types.h`'s real `MossTTSNanoGenerationOptions`/`MossTTSNanoSamplingOptions`
+defaults: `do_sample = true`, `audio_temperature = 1.7`, `audio_top_p = 0.8`, `audio_top_k = 25` --
+the reference is NEVER greedy by default for the audio-codebook tokens. Checked every real call
+site of this port's `MossTtsGenerator.Generate` (`options` is an optional trailing parameter) and
+found every listenable-sample-producing test (`MossTtsAudioCodecDecoderRealWeightsTests` ->
+`moss-tts-nano-ours-comparable.wav`, `MossTtsGenerateWavDebugTest` ->
+`moss-tts-nano-real-check.wav`, `MossTtsVoiceCloningRealWeightsTests` ->
+`moss-tts-nano-voiceclone-real-check.wav`) called it with `options` OMITTED --
+`MossTtsLocalFrameDecoder.GenerateFrame`'s real behavior when `options is null` is pure ARGMAX over
+all 16 RVQ codebooks per frame, not the reference's real high-temperature nucleus/top-k sampling.
+Every real audio sample this session ever generated for MOSS-TTS-Nano was greedy-decoded audio
+tokens fed through a codec trained to expect sampled ones -- a real, structural mismatch, not a
+subtle numeric drift.
+
+Fixed all three real sample-producing call sites to pass real sampling parameters matching the
+reference's exact defaults (`Temperature=1.7, TopP=0.8, TopK=25`, seed 11 matching the reference
+CLI's own `--seed 11`) and regenerated all three real WAV samples. Real, measured before/after on
+the zero-shot comparison sample (same real weights, same "Hello there." prompt):
+- ZCR (spectral-content proxy): 1830/s (greedy) -> 3688/s (sampled) vs. the reference's 3962/s --
+  the earlier ~54% ZCR gap closes to ~7%, essentially matching.
+- RMS (loudness): 0.0542 (greedy) -> 0.0504 (sampled) vs. the reference's 0.1357 -- barely moved,
+  still ~2.7x quieter than the reference. This is a REAL, SEPARATE remaining gap: sampling fixed
+  the "dull/muffled" spectral-content symptom (the dominant complaint pattern) but not the loudness
+  gap. Checked for an obvious cause (a generic post-generation loudness-normalization step, the same
+  bug class that fixed VibeVoice ASR) and did not find one in `moss_tts_nano/session.cpp`'s
+  `decode_generated_audio` or `audiocpp_cli`'s own output path -- this remaining ~2.7x loudness gap
+  is still open, not yet root-caused, and is now the honest next target rather than assumed closed.
+
+Real regression check: full fast suite (465 tests, 406 skipped as heavy) still passes clean after
+this change. Not yet re-confirmed by ear (samples regenerated, listening pending).
