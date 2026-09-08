@@ -17419,3 +17419,35 @@ diverge -- this needs real graph-tap plumbing on the reference's ggml-graph-base
 (more involved than VoxCPM2's case since this reference path is a lazily-compiled cached graph, not
 eager execution) and was not attempted this pass.
 
+## PersonaPlex -- live-duplex Mimi encoder scoped more precisely (real config values found); still not started, confirmed genuinely substantial, 2026-09-08
+
+Followed up on the earlier scoping entry (real Mimi encoder needed for live-duplex, "comparable in
+scope to Higgs/OmniVoice's codec-encoder ports"). Found the real reference source this session's
+earlier scoping pass didn't locate: `examples/audio.cpp/src/framework/codecs/mimi_codec_runtime.cpp`
+(2113 lines, the SAME shared file `MimiCodecDecoder`'s decode path was already ported from) has a
+real, complete `MimiEncoderRuntime::encode`/`encode_streaming` plus `MimiEncoderPreTransformerGraph`/
+`MimiEncoderPostTransformerGraph`.
+
+**Real, more precise scope now known** (read `MimiEncoderPreTransformerGraph`'s full real
+constructor, not guessed): a genuine SEANet-style stateful-streaming encoder -- real per-layer
+history-tensor caching (the SAME streaming-conv-cache technique this session already implemented
+for VibeVoice TTS's tokenizer, directly reusable as a pattern) across an input projection (kernel=7)
+-&gt; 4 real residual-block+downsample stages with real, now-known exact config (`channels=[64,128,
+256,512]`, `hidden_channels=[32,64,128,256]`, `downsample_kernels=[8,10,12,16]`,
+`downsample_strides=[4,5,6,8]`, ELU activation between stages) -&gt; output projection (kernel=3) -&gt;
+the ALREADY-PORTED `MimiTransformerRuntime` (real, direct reuse -- this exact transformer class
+already exists for the decoder) -&gt; a post-transformer split into semantic/acoustic latent
+projections -&gt; RVQ `quantize_projected` (semantic: 1 codebook, acoustic: 7 codebooks -- a similar
+real nearest-code-search pattern to what this session already implemented for MOSS-TTS-Nano's
+voice-cloning encoder, `MossTtsAudioCodecQuantizerWeights.Encode`).
+
+**Real assessment**: genuinely tractable (the transformer is already shared/reusable, the streaming-
+cache pattern is already proven from VibeVoice TTS, and the RVQ quantize-encode pattern is already
+proven from MOSS-TTS-Nano) but still a real, substantial multi-piece port -- NOT a quick addition.
+Deliberately not started this pass rather than risk a rushed, half-finished implementation (this
+project's explicit rule) -- still the lowest-priority remaining gap (a duplex-conversation feature,
+not needed for PersonaPlex's already-complete text-to-waveform/voice-cloning/system-prompt paths).
+Real next step if picked up: read `build_stateful_conv1d`/`build_mimi_residual_block`/
+`MimiEncoderPostTransformerGraph`/`quantize_projected`/`MimiEncoderState`'s real definitions in full
+(not yet read this pass) before writing any code, per this project's standing discipline.
+
