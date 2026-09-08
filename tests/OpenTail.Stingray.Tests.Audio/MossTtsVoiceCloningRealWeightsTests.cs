@@ -80,7 +80,10 @@ public sealed class MossTtsVoiceCloningRealWeightsTests : HeavyTestBase
             new MossTtsAudioInput(refWaveform.Left, refWaveform.Right));
 
         var prompt = MossTtsPromptBuilder.BuildVoiceClonePrompt(tokenizer, "Hello there.", reEncodedCodes);
-        var codes = MossTtsGenerator.Generate(g, l, prompt, activeCodebooks: MossTtsGlobalTransformerWeights.NumCodebooks, maxNewFrames: 3);
+        // Real reference default (types.h's MossTTSNanoSamplingOptions): do_sample=true,
+        // audio_temperature=1.7, audio_top_p=0.8, audio_top_k=25 -- never greedy.
+        var samplingOptions = new SamplingParams { Temperature = 1.7f, TopP = 0.8f, TopK = 25 };
+        var codes = MossTtsGenerator.Generate(g, l, prompt, activeCodebooks: MossTtsGlobalTransformerWeights.NumCodebooks, maxNewFrames: 3, samplingOptions, new Random(11));
 
         Assert.All(codes.TokenIds, id => Assert.InRange(id, 0, MossTtsAudioCodecQuantizerWeights.CodebookSize - 1));
 

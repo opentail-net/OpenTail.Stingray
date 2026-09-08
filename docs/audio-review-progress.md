@@ -17952,3 +17952,38 @@ the zero-shot comparison sample (same real weights, same "Hello there." prompt):
 
 Real regression check: full fast suite (465 tests, 406 skipped as heavy) still passes clean after
 this change. Not yet re-confirmed by ear (samples regenerated, listening pending).
+
+## MOSS-TTS-Nano -- exhaustive structural check of the remaining RMS/loudness gap, ruled out every candidate found, root cause still open, 2026-09-08
+
+Continued chasing the previous entry's remaining ~2.7x RMS/loudness gap (the sampling fix already
+closed the spectral-content/ZCR gap). Checked every real candidate found by reading the reference
+source, none panned out:
+- `LayerScale1`/`LayerScale2` (a learnable per-channel post-attention/post-FFN scale in the codec
+  decoder's transformer blocks) -- already correctly applied in `MossTtsAudioCodecDecoder.cs`.
+- `input_proj`/`output_proj`/attention `in_proj`/`out_proj` bias -- the reference genuinely uses NO
+  bias for these (confirmed via `binding::linear_data`'s single-arg weight-only overload); this
+  port's zero-bias placeholder already matches, not a gap.
+- `PatchUpsample`'s reshape/transpose formula -- re-derived from the reference's real
+  `reshape->transpose(2,3)->reshape` sequence and confirmed this port's C# implementation matches
+  index-for-index.
+- The quantizer's `weight_norm` (PyTorch `parametrizations.weight.original0/1`, real
+  `weight = g * v / ||v||` reconstruction) -- already correctly implemented in
+  `MossTtsAudioCodecQuantizerWeights` (`ReconstructWeightNorm`), applied to every real WN-conv
+  (`quantizer.input_proj`, `quantizer.output_proj`, each codebook's `in_proj`/`out_proj`).
+- The quantizer's `DecodeFrame` (`latent[out] = output_bias[out] + sum over quantizers of
+  latent_table[code][out]`) -- re-checked against the reference's exact `decode()` loop and the
+  `latent_table` precompute chain (`combined_weight`/`combined_bias`, `output_weight_ @
+  codebook.out_weight @ codebook.table`) -- matches exactly.
+- The CLI's own WAV writer (`wav_writer.cpp`) -- checked for a lookahead/loudness-maximizing
+  limiter that this port might not replicate (`WavPeakPolicy::LookaheadLimit` exists as an option);
+  ruled out -- the real default is `WavPeakPolicy::HardClip` (a ceiling clamp, not a gain boost),
+  so this isn't inflating the reference's loudness relative to ours.
+
+Every structural candidate found by reading the code checked out correct. Real next step for a
+future pass, now that code review alone hasn't found it: a direct numeric trace comparison (same
+technique that found VibeVoice ASR's normalization bug) -- add a real trace hook right after
+`MossAudioTokenizerDecoder::decode`'s dequantize step in the reference, feed the SAME fixed
+(hand-picked, not generated) codes into both this port's `DecodeFrame`/`RunTransformerStage` and
+the reference, and compare intermediate magnitudes stage by stage to localize exactly where the
+~2.7x gap first appears -- rather than continuing to guess at more candidates from source reading
+alone.

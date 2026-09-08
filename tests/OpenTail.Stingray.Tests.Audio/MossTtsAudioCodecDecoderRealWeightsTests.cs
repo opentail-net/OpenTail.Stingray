@@ -62,7 +62,13 @@ public sealed class MossTtsAudioCodecDecoderRealWeightsTests : HeavyTestBase
         var decoderWeights = new MossTtsAudioCodecDecoderWeights(source);
 
         var prompt = MossTtsPromptBuilder.BuildZeroShotPrompt(tokenizer, "Hello there.");
-        var codes = MossTtsGenerator.Generate(g, l, prompt, activeCodebooks: MossTtsGlobalTransformerWeights.NumCodebooks, maxNewFrames: 15);
+        // Real, previously-missing default: the reference's MossTTSNanoSamplingOptions defaults to
+        // do_sample=true with audio_temperature=1.7/top_p=0.8/top_k=25 (types.h) -- NEVER greedy.
+        // Omitting `options` here (as this test did until now) silently fell back to pure argmax
+        // for every one of the 16 RVQ codebooks per frame, which is why the resulting audio sounded
+        // muffled/quiet (confirmed by ear + the session's earlier RMS/ZCR quantitative finding).
+        var samplingOptions = new SamplingParams { Temperature = 1.7f, TopP = 0.8f, TopK = 25 };
+        var codes = MossTtsGenerator.Generate(g, l, prompt, activeCodebooks: MossTtsGlobalTransformerWeights.NumCodebooks, maxNewFrames: 15, samplingOptions, new Random(11));
 
         // Generation may legitimately produce pad-sentinel codes for codebooks the local decoder
         // never overwrites when activeCodebooks < NumCodebooks; here activeCodebooks==NumCodebooks

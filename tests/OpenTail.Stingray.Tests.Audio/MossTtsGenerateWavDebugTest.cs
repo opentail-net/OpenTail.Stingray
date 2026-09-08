@@ -55,7 +55,10 @@ public sealed class MossTtsGenerateWavDebugTest : HeavyTestBase
         var decoderWeights = new MossTtsAudioCodecDecoderWeights(source);
 
         var prompt = MossTtsPromptBuilder.BuildZeroShotPrompt(tokenizer, "Hello there, this is a test of speech synthesis.");
-        var codes = MossTtsGenerator.Generate(g, l, prompt, activeCodebooks: MossTtsGlobalTransformerWeights.NumCodebooks, maxNewFrames: 40);
+        // Real reference default (types.h's MossTTSNanoSamplingOptions): do_sample=true,
+        // audio_temperature=1.7, audio_top_p=0.8, audio_top_k=25 -- never greedy.
+        var samplingOptions = new SamplingParams { Temperature = 1.7f, TopP = 0.8f, TopK = 25 };
+        var codes = MossTtsGenerator.Generate(g, l, prompt, activeCodebooks: MossTtsGlobalTransformerWeights.NumCodebooks, maxNewFrames: 40, samplingOptions, new Random(11));
         Console.WriteLine($"Generated {codes.Frames} frames (hitMax={codes.HitMaxNewFrames})");
 
         var codesPerQuantizer = new int[MossTtsAudioCodecQuantizerWeights.NumQuantizers][];
