@@ -276,15 +276,11 @@ public sealed class ChatterboxAcousticLm : IDisposable
                 var layer = w.Layers[l];
                 fixed (float* kFlat = kCacheFlat[l], vFlat = vCacheFlat[l],
                               anw = layer.AttnNormWeight, anb = layer.AttnNormBias,
-                              qkvw = layer.AttnQkvWeight, qkvb = layer.AttnQkvBias,
-                              aow = layer.AttnOutputWeight, aob = layer.AttnOutputBias,
-                              fnw = layer.FfnNormWeight, fnb = layer.FfnNormBias,
-                              fcw = layer.FfnFcWeight, fcb = layer.FfnFcBias,
-                              prw = layer.FfnProjWeight, prb = layer.FfnProjBias)
+                              fnw = layer.FfnNormWeight, fnb = layer.FfnNormBias)
                 {
                     // --- Self-Attention ---
                     SimdKernels.LayerNorm(attnNormed, hidden, anw, anb, dim, 1e-5f);
-                    SimdKernels.MatVecF32(qkv, qkvw, qkvb, attnNormed, 3 * dim, dim);
+                    layer.AttnQkv.MatVec(qkv, attnNormed);
 
                     float* qPtr = qkv;
                     float* kDest = kFlat + (long)pos * dim;
@@ -357,14 +353,14 @@ public sealed class ChatterboxAcousticLm : IDisposable
                     }
 
                     // Attn output + residual
-                    SimdKernels.MatVecF32(attnOut, aow, aob, ctxBase, dim, dim);
+                    layer.AttnOutput.MatVec(attnOut, ctxBase);
                     TensorPrimitives.Add(new ReadOnlySpan<float>(hidden, dim), new ReadOnlySpan<float>(attnOut, dim), new Span<float>(hidden, dim));
 
                     // --- MLP Block ---
                     SimdKernels.LayerNorm(ffnNormed, hidden, fnw, fnb, dim, 1e-5f);
-                    SimdKernels.MatVecF32(fc, fcw, fcb, ffnNormed, intermediateSize, dim);
+                    layer.FfnFc.MatVec(fc, ffnNormed);
                     GeluNewInPlace(fc, intermediateSize);
-                    SimdKernels.MatVecF32(proj, prw, prb, fc, dim, intermediateSize);
+                    layer.FfnProj.MatVec(proj, fc);
                     TensorPrimitives.Add(new ReadOnlySpan<float>(hidden, dim), new ReadOnlySpan<float>(proj, dim), new Span<float>(hidden, dim));
                 }
             }
@@ -384,21 +380,13 @@ public sealed class ChatterboxAcousticLm : IDisposable
 
     private int SampleNext(ChatterboxWeights w, float[] hidden, List<int> historySoFar, float temperature, T3Workspace? ws = null)
     {
-        float[] logits;
-        if (ws != null)
+        float[] logits = ws?.Logits ?? new float[w.SpeechVocabSize];
+        unsafe
         {
-            logits = ws.Logits;
-            unsafe
+            fixed (float* lp = logits, hp = hidden)
             {
-                fixed (float* lp = logits, hp = hidden, wp = w.SpeechHeadWeight, bp = w.SpeechHeadBias)
-                {
-                    SimdKernels.MatVecF32(lp, wp, bp, hp, w.SpeechVocabSize, w.HiddenDim);
-                }
+                w.SpeechHead.MatVec(lp, hp);
             }
-        }
-        else
-        {
-            logits = Linear(hidden, w.SpeechHeadWeight, w.SpeechHeadBias, w.HiddenDim, w.SpeechVocabSize);
         }
 
         // Repetition penalty -> Temperature -> top-k -> top-p
@@ -448,44 +436,58 @@ public sealed class ChatterboxAcousticLm : IDisposable
         {
             double prob = expVals[i] / sumExp;
             cumulative += prob;
-            // Keep the smallest prefix whose cumulative probability >= topP; always keep at least 1.
-            if (i > 0 && cumulative - prob >= topP)
-                logits[indexed[i].idx] = float.NegativeInfinity;
+            if (cumulative > topP)
+            {
+                for (int j = i + 1; j < n; j++) logits[indexed[j].idx] = float.NegativeInfinity;
+                break;
+            }
         }
     }
 
     private static void ApplyRepetitionPenalty(float[] logits, List<int> history, float penalty)
     {
-        if (penalty == 1f || history.Count == 0) return;
-        foreach (int tok in history)
+        if (penalty is <= 0f or 1f) return;
+        var seen = new HashSet<int>(history);
+        foreach (int token in seen)
         {
-            if ((uint)tok >= (uint)logits.Length) continue;
-            float score = logits[tok];
-            if (float.IsNegativeInfinity(score)) continue;
-            logits[tok] = score > 0f ? score / penalty : score * penalty;
+            if (token >= 0 && token < logits.Length)
+            {
+                if (logits[token] > 0) logits[token] /= penalty;
+                else logits[token] *= penalty;
+            }
         }
     }
 
     private int SampleFromLogits(float[] logits)
     {
-        float max = float.NegativeInfinity;
-        for (int i = 0; i < logits.Length; i++) if (logits[i] > max) max = logits[i];
-        if (float.IsNegativeInfinity(max)) return 0;
+        float maxLogit = float.NegativeInfinity;
+        for (int i = 0; i < logits.Length; i++)
+            if (logits[i] > maxLogit) maxLogit = logits[i];
+
+        if (float.IsNegativeInfinity(maxLogit)) return 0;
 
         double sum = 0;
+        var probs = new double[logits.Length];
         for (int i = 0; i < logits.Length; i++)
         {
-            double p = float.IsNegativeInfinity(logits[i]) ? 0.0 : Math.Exp(logits[i] - max);
-            sum += p;
+            if (float.IsNegativeInfinity(logits[i]))
+            {
+                probs[i] = 0.0;
+                continue;
+            }
+            double exp = Math.Exp(logits[i] - maxLogit);
+            probs[i] = exp;
+            sum += exp;
         }
+
+        if (sum <= 0) return 0;
 
         double r = _rng.NextDouble() * sum;
         double acc = 0;
-        for (int i = 0; i < logits.Length; i++)
+        for (int i = 0; i < probs.Length; i++)
         {
-            double p = float.IsNegativeInfinity(logits[i]) ? 0.0 : Math.Exp(logits[i] - max);
-            acc += p;
-            if (acc >= r) return i;
+            acc += probs[i];
+            if (r <= acc) return i;
         }
         return logits.Length - 1;
     }
@@ -525,7 +527,7 @@ public sealed class ChatterboxAcousticLm : IDisposable
             var attnNormed = new float[n][];
             for (int i = 0; i < n; i++)
                 attnNormed[i] = LayerNorm(hidden[i], layer.AttnNormWeight, layer.AttnNormBias);
-            var qkvAll = LinearBatched(attnNormed, layer.AttnQkvWeight, layer.AttnQkvBias, dim, 3 * dim);
+            var qkvAll = LinearBatched(attnNormed, layer.AttnQkv);
 
             for (int i = 0; i < n; i++)
             {
@@ -613,7 +615,7 @@ public sealed class ChatterboxAcousticLm : IDisposable
                 contexts[i] = context;
             });
 
-            var attnOut = LinearBatched(contexts, layer.AttnOutputWeight, layer.AttnOutputBias, dim, dim);
+            var attnOut = LinearBatched(contexts, layer.AttnOutput);
 
             for (int i = 0; i < n; i++)
                 TensorPrimitives.Add(hidden[i], attnOut[i], hidden[i]);
@@ -622,7 +624,7 @@ public sealed class ChatterboxAcousticLm : IDisposable
             var ffnNormed = new float[n][];
             for (int i = 0; i < n; i++)
                 ffnNormed[i] = LayerNorm(hidden[i], layer.FfnNormWeight, layer.FfnNormBias);
-            var fcAll = LinearBatched(ffnNormed, layer.FfnFcWeight, layer.FfnFcBias, dim, w.IntermediateSize);
+            var fcAll = LinearBatched(ffnNormed, layer.FfnFc);
             for (int i = 0; i < n; i++)
             {
                 fixed (float* fcp = fcAll[i])
@@ -630,7 +632,7 @@ public sealed class ChatterboxAcousticLm : IDisposable
                     GeluNewInPlace(fcp, w.IntermediateSize);
                 }
             }
-            var projAll = LinearBatched(fcAll, layer.FfnProjWeight, layer.FfnProjBias, w.IntermediateSize, dim);
+            var projAll = LinearBatched(fcAll, layer.FfnProj);
             for (int i = 0; i < n; i++)
                 TensorPrimitives.Add(hidden[i], projAll[i], hidden[i]);
         }
@@ -659,15 +661,16 @@ public sealed class ChatterboxAcousticLm : IDisposable
         return output;
     }
 
-    private static unsafe float[][] LinearBatched(float[][] inputs, float[] weight, float[] bias, int inDim, int outDim)
+    private static unsafe float[][] LinearBatched(float[][] inputs, ChatterboxLinearTensor linear)
     {
         int n = inputs.Length;
+        int outDim = linear.OutFeatures;
         if (n == 1)
         {
             var singleOut = new float[outDim];
-            fixed (float* w = weight, x = inputs[0], y = singleOut, b = bias)
+            fixed (float* x = inputs[0], y = singleOut)
             {
-                SimdKernels.MatVecF32(y, w, b, x, outDim, inDim);
+                linear.MatVec(y, x);
             }
             return [singleOut];
         }
@@ -677,9 +680,9 @@ public sealed class ChatterboxAcousticLm : IDisposable
 
         Parallel.For(0, n, i =>
         {
-            fixed (float* w = weight, x = inputs[i], y = outputs[i], b = bias)
+            fixed (float* x = inputs[i], y = outputs[i])
             {
-                SimdKernels.MatVecF32(y, w, b, x, outDim, inDim);
+                linear.MatVec(y, x);
             }
         });
 

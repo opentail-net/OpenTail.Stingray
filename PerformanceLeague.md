@@ -178,7 +178,7 @@
 | MeloTTS zh_en (ONNX) | text → 2.74s audio | CPU | 3.11s | **1.14×** | — | — | 2026-09-09 | 2026-09-03 👂 |
 | QwenTTS 0.6B (Q8_0 GGUF) | text → 2.16s audio | CPU | 6.59s | **3.05×** | 4.55× | <span style="color:#16a34a">**1.49x**</span> | 2026-09-09 | 2026-08-29 👂 |
 | CosyVoice3 (DiT + HiFT) | text → 3.00s audio | CPU | 17.20s | **5.73×** | 9.76× | <span style="color:#16a34a">**1.70x**</span> | 2026-09-09 | 2026-09-06 👂 |
-| Chatterbox Turbo (Q4_K) | text → 2.52s audio | CPU | 14.84s | **5.62×** | 5.22× | **0.93x** | 2026-09-09 | 2026-08-30 🔬 |
+| Chatterbox Turbo (Q4_K) | text → 2.52s audio | CPU | 13.72s | **5.45×** | 5.22× | **0.96x** | 2026-09-09 | 2026-08-30 🔬 |
 | Parler-TTS Mini v1 | text → 2.81s audio | CPU | 17.36s | **6.18×** | — | — | 2026-09-09 | 2026-08-28 👂 |
 | FishSpeech S2 Pro (Q4_K) | text → 3.44s audio | CPU | 28.46s | **8.28×** | 11.45× | <span style="color:#16a34a">**1.38x**</span> | 2026-09-09 | 2026-08-29 👂 |
 | F5-TTS Base (DiT) | text → 2.77s audio | CPU | 27.25s | **9.82×** | — | — | 2026-09-09 | 2026-08-28 👂 |
@@ -203,7 +203,7 @@
 | MeloTTS (Stream) | Streaming TTFA | CPU | **6.540s** | 6.55s | — | — | 2026-09-09 | 2026-09-03 👂 |
 | Kokoro-82M (Stream) | Streaming TTFA (1-chunk) | CPU | **6.592s** | 6.60s | — | — | 2026-09-09 | 2026-09-03 👂 |
 | F5-TTS (Stream) | Streaming TTFA | CPU | **27.034s** | 27.03s | — | — | 2026-09-09 | 2026-08-28 👂 |
-| Chatterbox Turbo (Stream) | Streaming TTFA | CPU | **14.408s** | 14.41s | — | — | 2026-09-09 | 2026-08-30 🔬 |
+| Chatterbox Turbo (Stream) | Streaming TTFA | CPU | **13.669s** | 13.67s | — | — | 2026-09-09 | 2026-08-30 🔬 |
 
 > **TTFA (Time-To-First-Audio):** Latency from prompt ingestion to the first playable audio chunk emitted.
 > **Confirmed Working:** 🔬 = Golden-verified against reference; 👂 = Confirmed working by ear / transcription.

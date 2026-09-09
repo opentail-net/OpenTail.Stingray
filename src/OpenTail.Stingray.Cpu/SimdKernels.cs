@@ -1866,28 +1866,121 @@ public static unsafe class SimdKernels
     internal static readonly bool UseWide8 =
         Environment.GetEnvironmentVariable("STINGRAY_MATVEC_WIDE8") == "1";
 
-    public static void MatVecQ4K(float* output, byte* weights, float* input, int rows, int cols)
+    public static void MatVecQ4K(float* output, byte* weights, float* input, int rows, int cols) =>
+        MatVecQ4K(output, weights, null, input, rows, cols);
+
+    public static void MatVecQ4K(float* output, byte* weights, float* bias, float* input, int rows, int cols)
     {
         int bytesPerRow = (cols / 256) * 144;
 
         if (rows >= MinRowsForParallel)
         {
-            var w = weights; var inp = input; var outp = output;
+            int numThreads = Math.Min(s_parallelOpts.MaxDegreeOfParallelism, (rows + 63) / 64);
+            if (numThreads > 1)
+            {
+                int chunkSize = (rows + numThreads - 1) / numThreads;
+                Parallel.For(0, numThreads, s_parallelOpts, t =>
+                {
+                    int start = t * chunkSize;
+                    int end = Math.Min(rows, start + chunkSize);
+                    int r = start;
+                    if (bias != null)
+                    {
+                        if (UseWide8)
+                        {
+                            for (; r < end; r++)
+                                output[r] = DotQ4K_Wide8(weights + (long)r * bytesPerRow, input, cols) + bias[r];
+                        }
+                        else
+                        {
+                            for (; r + 2 <= end; r += 2)
+                            {
+                                byte* w0 = weights + (long)r * bytesPerRow;
+                                byte* w1 = weights + (long)(r + 1) * bytesPerRow;
+                                DotQ4K_2Row(w0, w1, input, cols, out float o0, out float o1);
+                                output[r] = o0 + bias[r];
+                                output[r + 1] = o1 + bias[r + 1];
+                            }
+                            for (; r < end; r++)
+                            {
+                                output[r] = DotQ4K(weights + (long)r * bytesPerRow, input, cols) + bias[r];
+                            }
+                        }
+                    }
+                    else
+                    {
+                        if (UseWide8)
+                        {
+                            for (; r < end; r++)
+                                output[r] = DotQ4K_Wide8(weights + (long)r * bytesPerRow, input, cols);
+                        }
+                        else
+                        {
+                            for (; r + 2 <= end; r += 2)
+                            {
+                                byte* w0 = weights + (long)r * bytesPerRow;
+                                byte* w1 = weights + (long)(r + 1) * bytesPerRow;
+                                DotQ4K_2Row(w0, w1, input, cols, out float o0, out float o1);
+                                output[r] = o0;
+                                output[r + 1] = o1;
+                            }
+                            for (; r < end; r++)
+                            {
+                                output[r] = DotQ4K(weights + (long)r * bytesPerRow, input, cols);
+                            }
+                        }
+                    }
+                });
+                return;
+            }
+        }
+
+        int rSeq = 0;
+        if (bias != null)
+        {
             if (UseWide8)
-                Parallel.For(0, rows, s_parallelOpts, i =>
-                {
-                    outp[i] = DotQ4K_Wide8(w + (long)i * bytesPerRow, inp, cols);
-                });
+            {
+                for (; rSeq < rows; rSeq++)
+                    output[rSeq] = DotQ4K_Wide8(weights + (long)rSeq * bytesPerRow, input, cols) + bias[rSeq];
+            }
             else
-                Parallel.For(0, rows, s_parallelOpts, i =>
+            {
+                for (; rSeq + 2 <= rows; rSeq += 2)
                 {
-                    outp[i] = DotQ4K(w + (long)i * bytesPerRow, inp, cols);
-                });
+                    byte* w0 = weights + (long)rSeq * bytesPerRow;
+                    byte* w1 = weights + (long)(rSeq + 1) * bytesPerRow;
+                    DotQ4K_2Row(w0, w1, input, cols, out float o0, out float o1);
+                    output[rSeq] = o0 + bias[rSeq];
+                    output[rSeq + 1] = o1 + bias[rSeq + 1];
+                }
+                for (; rSeq < rows; rSeq++)
+                {
+                    output[rSeq] = DotQ4K(weights + (long)rSeq * bytesPerRow, input, cols) + bias[rSeq];
+                }
+            }
         }
         else
         {
-            for (int i = 0; i < rows; i++)
-                output[i] = DotQ4K(weights + (long)i * bytesPerRow, input, cols);
+            if (UseWide8)
+            {
+                for (; rSeq < rows; rSeq++)
+                    output[rSeq] = DotQ4K_Wide8(weights + (long)rSeq * bytesPerRow, input, cols);
+            }
+            else
+            {
+                for (; rSeq + 2 <= rows; rSeq += 2)
+                {
+                    byte* w0 = weights + (long)rSeq * bytesPerRow;
+                    byte* w1 = weights + (long)(rSeq + 1) * bytesPerRow;
+                    DotQ4K_2Row(w0, w1, input, cols, out float o0, out float o1);
+                    output[rSeq] = o0;
+                    output[rSeq + 1] = o1;
+                }
+                for (; rSeq < rows; rSeq++)
+                {
+                    output[rSeq] = DotQ4K(weights + (long)rSeq * bytesPerRow, input, cols);
+                }
+            }
         }
     }
 

@@ -47,8 +47,9 @@ public sealed class ChatterboxWeights : IDisposable
     public float[] WpeWeight { get; }                  // [MaxPositions, HiddenDim]
     public float[] OutputNormWeight { get; }
     public float[] OutputNormBias { get; }
-    public float[] SpeechHeadWeight { get; }           // [SpeechVocabSize, HiddenDim]
-    public float[] SpeechHeadBias { get; }             // [SpeechVocabSize]
+    public ChatterboxLinearTensor SpeechHead { get; }
+    public float[] SpeechHeadWeight => SpeechHead.GetOrDequantizeFloat();
+    public float[] SpeechHeadBias => SpeechHead.Bias;
     public float[] SpkrEncWeight { get; }              // [HiddenDim, SpeakerEmbedSize]
     public float[] SpkrEncBias { get; }                // [HiddenDim]
 
@@ -90,8 +91,7 @@ public sealed class ChatterboxWeights : IDisposable
         WpeWeight = GetTensor("t3.wpe.weight");
         OutputNormWeight = GetTensor("t3.output_norm.weight");
         OutputNormBias = GetTensor("t3.output_norm.bias");
-        SpeechHeadWeight = GetTensor("t3.speech_head.weight");
-        SpeechHeadBias = GetTensor("t3.speech_head.bias");
+        SpeechHead = new ChatterboxLinearTensor(T3Model, "t3.speech_head.weight", "t3.speech_head.bias", SpeechVocabSize, HiddenDim);
         SpkrEncWeight = GetTensor("t3.cond.spkr_enc.weight");
         SpkrEncBias = GetTensor("t3.cond.spkr_enc.bias");
 
@@ -154,30 +154,34 @@ public sealed class ChatterboxT3Layer
 {
     public float[] AttnNormWeight { get; }
     public float[] AttnNormBias { get; }
-    public float[] AttnQkvWeight { get; }   // [3*HiddenDim, HiddenDim]
-    public float[] AttnQkvBias { get; }     // [3*HiddenDim]
-    public float[] AttnOutputWeight { get; } // [HiddenDim, HiddenDim]
-    public float[] AttnOutputBias { get; }
+    public ChatterboxLinearTensor AttnQkv { get; }
+    public float[] AttnQkvWeight => AttnQkv.GetOrDequantizeFloat();
+    public float[] AttnQkvBias => AttnQkv.Bias;
+
+    public ChatterboxLinearTensor AttnOutput { get; }
+    public float[] AttnOutputWeight => AttnOutput.GetOrDequantizeFloat();
+    public float[] AttnOutputBias => AttnOutput.Bias;
+
     public float[] FfnNormWeight { get; }
     public float[] FfnNormBias { get; }
-    public float[] FfnFcWeight { get; }     // [IntermediateSize, HiddenDim]
-    public float[] FfnFcBias { get; }
-    public float[] FfnProjWeight { get; }   // [HiddenDim, IntermediateSize]
-    public float[] FfnProjBias { get; }
+
+    public ChatterboxLinearTensor FfnFc { get; }
+    public float[] FfnFcWeight => FfnFc.GetOrDequantizeFloat();
+    public float[] FfnFcBias => FfnFc.Bias;
+
+    public ChatterboxLinearTensor FfnProj { get; }
+    public float[] FfnProjWeight => FfnProj.GetOrDequantizeFloat();
+    public float[] FfnProjBias => FfnProj.Bias;
 
     public ChatterboxT3Layer(ChatterboxWeights w, string prefix)
     {
         AttnNormWeight = w.GetTensor($"{prefix}.attn_norm.weight");
         AttnNormBias = w.GetTensor($"{prefix}.attn_norm.bias");
-        AttnQkvWeight = w.GetTensor($"{prefix}.attn_qkv.weight");
-        AttnQkvBias = w.GetTensor($"{prefix}.attn_qkv.bias");
-        AttnOutputWeight = w.GetTensor($"{prefix}.attn_output.weight");
-        AttnOutputBias = w.GetTensor($"{prefix}.attn_output.bias");
+        AttnQkv = new ChatterboxLinearTensor(w.T3Model, $"{prefix}.attn_qkv.weight", $"{prefix}.attn_qkv.bias", 3 * w.HiddenDim, w.HiddenDim);
+        AttnOutput = new ChatterboxLinearTensor(w.T3Model, $"{prefix}.attn_output.weight", $"{prefix}.attn_output.bias", w.HiddenDim, w.HiddenDim);
         FfnNormWeight = w.GetTensor($"{prefix}.ffn_norm.weight");
         FfnNormBias = w.GetTensor($"{prefix}.ffn_norm.bias");
-        FfnFcWeight = w.GetTensor($"{prefix}.ffn_fc.weight");
-        FfnFcBias = w.GetTensor($"{prefix}.ffn_fc.bias");
-        FfnProjWeight = w.GetTensor($"{prefix}.ffn_proj.weight");
-        FfnProjBias = w.GetTensor($"{prefix}.ffn_proj.bias");
+        FfnFc = new ChatterboxLinearTensor(w.T3Model, $"{prefix}.ffn_fc.weight", $"{prefix}.ffn_fc.bias", w.IntermediateSize, w.HiddenDim);
+        FfnProj = new ChatterboxLinearTensor(w.T3Model, $"{prefix}.ffn_proj.weight", $"{prefix}.ffn_proj.bias", w.HiddenDim, w.IntermediateSize);
     }
 }
