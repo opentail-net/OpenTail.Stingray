@@ -170,24 +170,24 @@
 
 ## TTS / Audio Synthesis
 
-| Pipeline | Scenario | Backend | Wall-Clock | RTF (C#) | C++ (ref) | Ratio | Performance Check | Confirmed Working |
-|---|---|---|---:|---:|---:|---:|---|---|
-| Piper lessac-medium (ONNX) | text → 2.45s audio | CPU | 0.47s | **0.19×** | — | — | 2026-09-09 | 2026-09-03 👂 |
-| MMS-TTS eng (VITS) | text → 3.65s audio | CPU | 1.38s | **0.38×** | — | — | 2026-09-09 | 2026-08-30 🔬 |
-| Kokoro-82M (Q8_0 GGUF) | text → 2.93s audio | CPU | 2.60s | **0.89×** | — | — | 2026-09-09 | 2026-09-03 👂 |
-| MeloTTS zh_en (ONNX) | text → 2.74s audio | CPU | 3.11s | **1.14×** | — | — | 2026-09-09 | 2026-09-03 👂 |
-| QwenTTS 0.6B (Q8_0 GGUF) | text → 2.16s audio | CPU | 6.59s | **3.05×** | 4.55× | <span style="color:#16a34a">**1.49x**</span> | 2026-09-09 | 2026-08-29 👂 |
-| CosyVoice3 (DiT + HiFT) | text → 3.00s audio | CPU | 17.20s | **5.73×** | 9.76× | <span style="color:#16a34a">**1.70x**</span> | 2026-09-09 | 2026-09-06 👂 |
-| Chatterbox Turbo (Q4_K) | text → 2.52s audio | CPU | 13.72s | **5.45×** | 5.22× | **0.96x** | 2026-09-09 | 2026-08-30 🔬 |
-| Parler-TTS Mini v1 | text → 2.81s audio | CPU | 17.36s | **6.18×** | — | — | 2026-09-09 | 2026-08-28 👂 |
-| FishSpeech S2 Pro (Q4_K) | text → 3.44s audio | CPU | 28.46s | **8.28×** | 11.45× | <span style="color:#16a34a">**1.38x**</span> | 2026-09-09 | 2026-08-29 👂 |
-| F5-TTS Base (DiT) | text → 2.77s audio | CPU | 27.25s | **9.82×** | — | — | 2026-09-09 | 2026-08-28 👂 |
-| F5-TTS Base (Paragraph) | text → 14.5s audio | CPU | 10.20s | **0.70×** | — | — | 2026-09-09 | 2026-08-28 👂 |
+| Pipeline | Scenario | Backend | C# Wall | C# RTF | C++ Wall | C++ RTF | Ratio | Performance Check | Confirmed Working |
+|---|---|---|---:|---:|---:|---:|---:|---|---|
+| Piper lessac-medium (ONNX) | text → 2.45s audio | CPU | 0.47s | **0.19×** | — | — | — | 2026-09-09 | 2026-09-03 👂 |
+| MMS-TTS eng (VITS) | text → 3.65s audio | CPU | 1.38s | **0.38×** | — | — | — | 2026-09-09 | 2026-08-30 🔬 |
+| Kokoro-82M (Q8_0 GGUF) | text → 2.93s audio | CPU | 2.60s | **0.89×** | — | — | — | 2026-09-09 | 2026-09-03 👂 |
+| MeloTTS zh_en (ONNX) | text → 2.74s audio | CPU | 3.11s | **1.14×** | — | — | — | 2026-09-09 | 2026-09-03 👂 |
+| QwenTTS 0.6B (Q8_0 GGUF) | text → 2.16s audio | CPU | 6.59s | **3.05×** | 12.01s | 4.55× | <span style="color:#16a34a">**1.49x**</span> | 2026-09-09 | 2026-08-29 👂 |
+| CosyVoice3 (DiT + HiFT) | text → 3.00s audio | CPU | 17.20s | **5.73×** | 34.17s | 9.76× | <span style="color:#16a34a">**1.70x**</span> | 2026-09-09 | 2026-09-06 👂 |
+| Chatterbox Turbo (Q4_K) | text → 2.52s audio | CPU | 13.72s | **5.45×** | 12.53s | 5.22× | **0.96x** | 2026-09-09 | 2026-08-30 🔬 |
+| Parler-TTS Mini v1 | text → 2.81s audio | CPU | 17.36s | **6.18×** | — | — | — | 2026-09-09 | 2026-08-28 👂 |
+| FishSpeech S2 Pro (Q4_K) | text → 3.44s audio | CPU | 28.46s | **8.28×** | 39.33s | 11.45× | <span style="color:#16a34a">**1.38x**</span> | 2026-09-09 | 2026-08-29 👂 |
+| F5-TTS Base (DiT) | text → 2.77s audio | CPU | 27.25s | **9.82×** | — | — | — | 2026-09-09 | 2026-08-28 👂 |
+| F5-TTS Base (Paragraph) | text → 14.5s audio | CPU | 10.20s | **0.70×** | — | — | — | 2026-09-09 | 2026-08-28 👂 |
 
 > RTF < 1.0x = faster than real-time. Piper (0.19x = 5.2× real-time), MMS-TTS (0.38x = 2.6× real-time), and Kokoro (0.89x) are faster than real-time on CPU.
 > Autoregressive pipelines (QwenTTS, CosyVoice3, Chatterbox, Parler, FishSpeech) are compute-bound on CPU; GPU dispatch is expected to be the largest speedup.
 > **Confirmed Working:** 🔬 = Golden-verified against reference; 👂 = Confirmed working by ear / transcription.
-> Harness: `scripts/bench-audio.ps1` (`tests/OpenTail.Stingray.Tests.Audio/TtsPerformanceBaselineDebugTest.cs`).
+> Harness: `scripts/bench-audio.ps1` (`tests/OpenTail.Stingray.Tests.Audio/TtsPerformanceBaselineDebugTest.cs`) & `scripts/bench-cpp.ps1 -Suite Tts`.
 
 ---
 
@@ -213,12 +213,12 @@
 
 ## ASR / Speech Recognition (Whisper GGUF)
 
-| Model | Scenario | Backend | Wall-Clock | RTF (C#) | C++ (whisper.cpp) | Ratio | Performance Check | Source |
-|---|---|---|---:|---:|---:|---:|---|---|
-| Whisper Base (39M) | 12s audio transcribe | CPU | 0.84s | **0.070x** | 0.060x | **0.86x** | 2026-09-09 | scripts/bench-audio.ps1 |
-| Whisper Small (244M) | 12s audio transcribe | CPU | 2.42s | **0.202x** | 0.180x | **0.89x** | 2026-09-09 | scripts/bench-audio.ps1 |
-| Whisper Medium (769M) | 12s audio transcribe | CPU | 6.71s | **0.560x** | 0.582x | <span style="color:#16a34a">**1.04x**</span> | 2026-09-09 | scripts/bench-audio.ps1 |
-| Whisper Large-v3 (1.5B) | 12s audio transcribe | CPU | 11.32s | **0.943x** | 1.200x | <span style="color:#16a34a">**1.27x**</span> | 2026-09-09 | scripts/bench-audio.ps1 |
+| Model | Scenario | Backend | C# Wall | C# RTF | C++ Wall | C++ RTF | Ratio | Performance Check | Source |
+|---|---|---|---:|---:|---:|---:|---:|---|---|
+| Whisper Base (39M) | 12s audio transcribe | CPU | 0.84s | **0.070x** | 0.72s | 0.060x | **0.86x** | 2026-09-09 | scripts/bench-audio.ps1 |
+| Whisper Small (244M) | 12s audio transcribe | CPU | 2.42s | **0.202x** | 2.16s | 0.180x | **0.89x** | 2026-09-09 | scripts/bench-audio.ps1 |
+| Whisper Medium (769M) | 12s audio transcribe | CPU | 6.71s | **0.560x** | 6.98s | 0.582x | <span style="color:#16a34a">**1.04x**</span> | 2026-09-09 | scripts/bench-audio.ps1 |
+| Whisper Large-v3 (1.5B) | 12s audio transcribe | CPU | 11.32s | **0.943x** | 14.40s | 1.200x | <span style="color:#16a34a">**1.27x**</span> | 2026-09-09 | scripts/bench-audio.ps1 |
 
 > RTF < 1.0x = faster than real-time. Whisper Base runs at **14.3x real-time** speed on CPU; Small at **5.0x real-time**; Medium at **1.79x real-time**; Large-v3 at **1.06x real-time** (faster than real-time on CPU).
 > Harness: `scripts/bench-audio.ps1` (`tests/OpenTail.Stingray.Tests.Audio/WhisperFullPipelinePerfBenchTests.cs`).
