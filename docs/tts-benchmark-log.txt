@@ -655,3 +655,15 @@
 [Parler-TTS-Stream-Frame16] prompt="Hello, I will make some lunch, darling!" audio=2.81s samples=123904 chunks=15
 [Parler-TTS-Stream-Frame16] Time-To-First-Audio (TTFA)=1.712s TotalTime=17.401s
 
+[Chatterbox] prompt="Hello, I will make some lunch, darling!" audio=2.28s samples=54720
+[Chatterbox] runs(s)=[15.662, 15.350, 14.860] mean=15.291s RTF=6.706 (lower=faster; 1.0=realtime)
+
+[Chatterbox-Stream] prompt="Hello, I will make some lunch, darling!" audio=2.56s samples=61440 chunks=1
+[Chatterbox-Stream] Time-To-First-Audio (TTFA)=15.574s TotalTime=15.576s
+
+[Chatterbox] prompt="Hello, I will make some lunch, darling!" audio=2.64s samples=63360
+[Chatterbox] runs(s)=[14.389, 15.076, 15.065] mean=14.843s RTF=5.622 (lower=faster; 1.0=realtime)
+
+[Chatterbox-Stream] prompt="Hello, I will make some lunch, darling!" audio=2.48s samples=59520 chunks=1
+[Chatterbox-Stream] Time-To-First-Audio (TTFA)=14.408s TotalTime=14.411s
+
