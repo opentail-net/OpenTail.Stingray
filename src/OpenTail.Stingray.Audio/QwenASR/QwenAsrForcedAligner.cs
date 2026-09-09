@@ -271,8 +271,15 @@ public sealed unsafe class QwenAsrForcedAligner : IDisposable
 
         int readShift = Environment.GetEnvironmentVariable("STINGRAY_FA_READ_SHIFT") is { Length: > 0 } s && int.TryParse(s, out var shiftVal) ? shiftVal : 0;
         var classIds = new int[timestampPositions.Count];
-        var wantedPositionToIdx = new Dictionary<int, int>();
-        for (int i = 0; i < timestampPositions.Count; i++) wantedPositionToIdx[timestampPositions[i] + readShift] = i;
+        var posToIdx = new int[prompt.Length];
+        Array.Fill(posToIdx, -1);
+        for (int i = 0; i < timestampPositions.Count; i++)
+        {
+            int p = timestampPositions[i] + readShift;
+            if ((uint)p < (uint)posToIdx.Length)
+                posToIdx[p] = i;
+        }
+
         int found = 0;
         bool debugTrace = Environment.GetEnvironmentVariable("STINGRAY_FORCEDALIGNER_TRACE") == "1";
         bool faTrace = Environment.GetEnvironmentVariable("STINGRAY_FA_TRACE") == "1";
@@ -286,7 +293,10 @@ public sealed unsafe class QwenAsrForcedAligner : IDisposable
                 foreach (var v in logits) { logitsSum += v; logitsSumSq += (double)v * v; }
                 logitsCount += logits.Length;
             }
-            if (!wantedPositionToIdx.TryGetValue(position, out int idx)) return;
+            if ((uint)position >= (uint)posToIdx.Length) return;
+            int idx = posToIdx[position];
+            if (idx < 0) return;
+
             int best = 0; float bestVal = float.NegativeInfinity;
             for (int c = 0; c < logits.Length; c++)
             {
@@ -296,7 +306,7 @@ public sealed unsafe class QwenAsrForcedAligner : IDisposable
             if (debugTrace && found < 4)
                 Console.Error.WriteLine($"[FA-Trace] readShift={readShift} position={position} best={best} bestVal={bestVal:F4} logits[0..9]=[{string.Join(",", logits.Slice(0, 10).ToArray().Select(v => v.ToString("F3")))}]");
             found++;
-        }, faTrace ? null : pos => wantedPositionToIdx.ContainsKey(pos));
+        }, faTrace ? null : pos => (uint)pos < (uint)posToIdx.Length && posToIdx[pos] >= 0);
         long tPrefillMs = sw.ElapsedMilliseconds;
         bool perfTrace = debugTrace || Environment.GetEnvironmentVariable("STINGRAY_FORCEDALIGNER_PERF") == "1";
         if (perfTrace)

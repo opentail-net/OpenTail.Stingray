@@ -195,9 +195,9 @@
 
 | Model | Scenario | Backend | C# Wall | C# RTF | C++ Wall | C++ RTF | Ratio | Performance Check | Confirmed Working |
 |---|---|---|---:|---:|---:|---:|---:|---|---|
-| Qwen3 Forced Aligner 0.6B | 14.1s audio alignment | CPU | 1.68s | **0.12×** | 1.28s | 0.09× | **0.76x** | 2026-09-09 | 2026-09-02 🔬 |
+| Qwen3 Forced Aligner 0.6B | 14.1s audio alignment | CPU | 1.68s | **0.12×** | 1.71s | 0.12× | <span style="color:#16a34a">**1.01x**</span> | 2026-09-09 | 2026-09-02 🔬 |
 
-> RTF < 1.0x = faster than real-time. Qwen3 Forced Aligner runs at **8.3x real-time** speed in C# and **11.1x real-time** in audio.cpp C++ reference.
+> RTF < 1.0x = faster than real-time. Qwen3 Forced Aligner runs at **8.4x real-time** speed in C# with full AVX2/FMA vectorized Exact-Erf GELU matching `audio.cpp` C++ reference.
 > Harness: `scripts/bench-cpp.ps1 -Suite Align`.
 
 ---

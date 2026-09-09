@@ -86,6 +86,7 @@ function Run-AudioCppTask {
         [string]$Scenario,
         [double]$CsRtf,
         [double]$CsWallSec,
+        [string]$Category = "TTS",
         [hashtable]$ExtraArgs = @{}
     )
 
@@ -145,7 +146,7 @@ function Run-AudioCppTask {
             Write-Host ("DONE ({0:F2}s wall, {1:F2}s audio, RTF={2:F2}x, Ratio={3})" -f $wallSec, $durSec, $rtfVal, $ratioStr) -ForegroundColor Green
 
             $results.Add([PSCustomObject]@{
-                Category   = "TTS"
+                Category   = $Category
                 Pipeline   = $Name
                 Scenario   = $Scenario
                 Backend    = "CPU"
@@ -431,6 +432,7 @@ if ($hasAudioCpp -and ($Suite -eq "All" -or $Suite -eq "Align")) {
                      -Scenario "14.1s audio alignment" `
                      -CsRtf 0.12 `
                      -CsWallSec 1.68 `
+                     -Category "Alignment" `
                      -ExtraArgs @{
                          "--audio" = $voiceRef
                          "--text" = "Some call me nature. Others call me Mother Nature."

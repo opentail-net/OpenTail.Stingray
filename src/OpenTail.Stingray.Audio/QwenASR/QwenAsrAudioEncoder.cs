@@ -840,39 +840,140 @@ public sealed unsafe class QwenAsrAudioEncoder : IDisposable
     }
 
 
+    [MethodImpl(MethodImplOptions.AggressiveOptimization | MethodImplOptions.AggressiveInlining)]
+    private static Vector256<float> VectorExp(Vector256<float> x)
+    {
+        // Vector exp(x) for x <= 0 (where x = -ax*ax). Clamped to -88f for float underflow safety.
+        var vx = Avx.Max(x, Vector256.Create(-88.0f));
+        var log2e = Vector256.Create(1.4426950408889634f);
+        var ln2 = Vector256.Create(0.6931471805599453f);
+        var half = Vector256.Create(0.5f);
+
+        // k = round(x * log2(e))
+        var z = Avx.Multiply(vx, log2e);
+        var k = Avx.Floor(Avx.Add(z, half));
+        var f = Fma.MultiplyAdd(k, Avx.Subtract(Vector256<float>.Zero, ln2), vx); // f = vx - k * ln2
+
+        // Polynomial P(f) = 1 + f * (c1 + f * (c2 + f * (c3 + f * c4)))
+        var c4 = Vector256.Create(0.009618129f);
+        var c3 = Vector256.Create(0.055504108f);
+        var c2 = Vector256.Create(0.240226507f);
+        var c1 = Vector256.Create(0.693147180f);
+        var one = Vector256.Create(1.0f);
+
+        var p = Fma.MultiplyAdd(c4, f, c3);
+        p = Fma.MultiplyAdd(p, f, c2);
+        p = Fma.MultiplyAdd(p, f, c1);
+        p = Fma.MultiplyAdd(p, f, one);
+
+        // 2^k
+        var ki = Avx2.ConvertToVector256Int32(k);
+        var expScale = Avx2.ShiftLeftLogical(Avx2.Add(ki, Vector256.Create(127)), 23).AsSingle();
+
+        return Avx.Multiply(p, expScale);
+    }
+
     /// <summary>
     /// Real exact-erf GELU, corrected 2026-09-07 (see docs/audio-review-progress.md's audio-
     /// encoder bisection entries): the reference's `GeluModule` default is
     /// `GeluApproximation::ExactErf` (`0.5*x*(1+erf(x/sqrt(2)))`), used for every GELU in this
-    /// encoder (conv stem, FFN, projector) -- NOT `OpenTail.Stingray.Cpu.SimdKernels.
-    /// GeluInPlace`'s tanh approximation this class previously used, which "diverges by a
-    /// measurable margin" from exact-erf per that kernel's own doc comment. Applied 5 times per
-    /// forward pass (3 conv stages + FFN + projector), so even a small per-call difference
-    /// compounds into a real, measurable end-to-end error.
+    /// encoder (conv stem, FFN, projector) -- accelerated via AVX2/FMA vectorization.
     /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
     private static void GeluInPlace(float[] x)
     {
+        if (x.Length == 0) return;
+        int n = x.Length;
         const float invSqrt2 = 0.70710678118654752f;
-        if (x.Length >= 4096)
+
+        fixed (float* px = x)
         {
-            int chunkSize = 2048;
-            int numChunks = (x.Length + chunkSize - 1) / chunkSize;
-            System.Threading.Tasks.Parallel.For(0, numChunks, chunkIdx =>
+            nint xAddr = (nint)px;
+            if (Fma.IsSupported && Avx2.IsSupported)
             {
-                int start = chunkIdx * chunkSize;
-                int end = Math.Min(x.Length, start + chunkSize);
-                for (int i = start; i < end; i++)
+                void ProcessChunk(int start, int end)
                 {
-                    float v = x[i];
-                    x[i] = 0.5f * v * (1f + Erf(v * invSqrt2));
+                    float* p = (float*)xAddr + start;
+                    int count = end - start;
+                    int d = 0;
+
+                    var vInvSqrt2 = Vector256.Create(invSqrt2);
+                    var vP = Vector256.Create(0.3275911f);
+                    var vA1 = Vector256.Create(0.254829592f);
+                    var vA2 = Vector256.Create(-0.284496736f);
+                    var vA3 = Vector256.Create(1.421413741f);
+                    var vA4 = Vector256.Create(-1.453152027f);
+                    var vA5 = Vector256.Create(1.061405429f);
+                    var vHalf = Vector256.Create(0.5f);
+                    var vOne = Vector256.Create(1.0f);
+                    var vZero = Vector256<float>.Zero;
+                    var vSignMask = Vector256.Create(-0.0f); // 0x80000000
+
+                    for (; d + 8 <= count; d += 8)
+                    {
+                        var vX = Avx.LoadVector256(p + d);
+                        var vScaled = Avx.Multiply(vX, vInvSqrt2);
+
+                        // sign and abs
+                        var vAx = Avx.AndNot(vSignMask, vScaled);
+                        var isNeg = Avx.Compare(vScaled, vZero, FloatComparisonMode.OrderedLessThanSignaling);
+                        var vSign = Avx.BlendVariable(vOne, Vector256.Create(-1.0f), isNeg);
+
+                        // t = 1 / (1 + p * ax)
+                        var vDenom = Fma.MultiplyAdd(vP, vAx, vOne);
+                        var vT = Avx.Divide(vOne, vDenom);
+
+                        // poly = (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t
+                        var poly = Fma.MultiplyAdd(vA5, vT, vA4);
+                        poly = Fma.MultiplyAdd(poly, vT, vA3);
+                        poly = Fma.MultiplyAdd(poly, vT, vA2);
+                        poly = Fma.MultiplyAdd(poly, vT, vA1);
+                        poly = Avx.Multiply(poly, vT);
+
+                        // exp(-ax * ax)
+                        var vNegAx2 = Avx.Subtract(vZero, Avx.Multiply(vAx, vAx));
+                        var vExp = VectorExp(vNegAx2);
+
+                        // y = 1 - poly * exp
+                        var vY = Avx.Subtract(vOne, Avx.Multiply(poly, vExp));
+                        var vErf = Avx.Multiply(vSign, vY);
+
+                        // gelu = 0.5 * x * (1 + erf)
+                        var vGelu = Avx.Multiply(Avx.Multiply(vHalf, vX), Avx.Add(vOne, vErf));
+                        Avx.Store(p + d, vGelu);
+                    }
+
+                    for (; d < count; d++)
+                    {
+                        float v = p[d];
+                        p[d] = 0.5f * v * (1f + Erf(v * invSqrt2));
+                    }
                 }
-            });
-            return;
-        }
-        for (int i = 0; i < x.Length; i++)
-        {
-            float v = x[i];
-            x[i] = 0.5f * v * (1f + Erf(v * invSqrt2));
+
+                if (n >= 4096)
+                {
+                    int chunkSize = 2048;
+                    int numChunks = (n + chunkSize - 1) / chunkSize;
+                    Parallel.For(0, numChunks, c =>
+                    {
+                        int start = c * chunkSize;
+                        int end = Math.Min(n, start + chunkSize);
+                        ProcessChunk(start, end);
+                    });
+                }
+                else
+                {
+                    ProcessChunk(0, n);
+                }
+                return;
+            }
+
+            // Fallback for non-AVX2
+            for (int i = 0; i < n; i++)
+            {
+                float v = px[i];
+                px[i] = 0.5f * v * (1f + Erf(v * invSqrt2));
+            }
         }
     }
 

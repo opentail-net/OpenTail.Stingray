@@ -134,4 +134,44 @@ public sealed class QwenForcedAlignerRealAlignmentTests : HeavyTestBase
             sb.AppendLine($"{seg.Text,-15} [{seg.Start.TotalSeconds,6:F2}s - {seg.End.TotalSeconds,6:F2}s]");
         File.WriteAllText(txtPath, sb.ToString());
     }
+
+    [Fact]
+    public void Bench_AlignReal_BWav_Timing()
+    {
+        string? checkpointDir = FindRepoFile("models/qwen3-forcedaligner");
+        Assert.SkipUnless(checkpointDir != null, "models/qwen3-forcedaligner not found");
+        string? audioPath = FindRepoFile("examples/audio.cpp/assets/resources/b.wav");
+        Assert.SkipUnless(audioPath != null, "reference b.wav not found");
+
+        using var aligner = OpenTail.Stingray.Audio.QwenASR.QwenAsrForcedAligner.LoadReal(checkpointDir!);
+
+        var (samples, sr, _) = WavReader.ReadWav(audioPath!);
+        if (sr != 16000) samples = AudioResampler.Resample(samples, sr, 16000);
+        double audioSec = samples.Length / 16000.0;
+
+        const string referenceText = "Some call me nature. Others call me Mother Nature. I have been here for over four and a half billion years.";
+        
+        // Warmup
+        var warmup = aligner.AlignReal(samples, referenceText, TimeSpan.Zero);
+        Assert.NotEmpty(warmup);
+
+        const int n = 3;
+        var sw = new System.Diagnostics.Stopwatch();
+        double[] timesMs = new double[n];
+        for (int i = 0; i < n; i++)
+        {
+            sw.Restart();
+            var segments = aligner.AlignReal(samples, referenceText, TimeSpan.Zero);
+            sw.Stop();
+            timesMs[i] = sw.Elapsed.TotalMilliseconds;
+        }
+
+        Array.Sort(timesMs);
+        double medianMs = timesMs[n / 2];
+        double wallSec = medianMs / 1000.0;
+        double rtf = wallSec / audioSec;
+
+        string report = $"[ForcedAlign-Bench] audio={audioSec:F2}s wall={wallSec:F3}s RTF={rtf:F3}x (speedup={1.0 / rtf:F1}x real-time)";
+        Console.Error.WriteLine(report);
+    }
 }
