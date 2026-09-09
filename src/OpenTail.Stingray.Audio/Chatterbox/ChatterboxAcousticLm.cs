@@ -1,3 +1,4 @@
+using System.Numerics.Tensors;
 using System.Runtime.Intrinsics;
 using System.Runtime.Intrinsics.X86;
 
@@ -74,6 +75,44 @@ public sealed class ChatterboxAcousticLm : IDisposable
     }
 
     // -----------------------------------------------------------------------
+    // Reusable Zero-Alloc Workspace for Transformer Decode Step
+    // -----------------------------------------------------------------------
+
+    private sealed class T3Workspace
+    {
+        public readonly float[] Hidden;
+        public readonly float[] AttnNormed;
+        public readonly float[] Qkv;
+        public readonly float[] Context;
+        public readonly float[] AttnOut;
+        public readonly float[] FfnNormed;
+        public readonly float[] Fc;
+        public readonly float[] Proj;
+        public readonly float[] FinalHidden;
+        public readonly float[] Logits;
+        public readonly float[] Scores;
+        public readonly (float val, int idx)[] TopKIndexBuf;
+        public readonly double[] ExpVals;
+
+        public T3Workspace(int hiddenDim, int intermediateSize, int vocabSize, int maxPositions)
+        {
+            Hidden = new float[hiddenDim];
+            AttnNormed = new float[hiddenDim];
+            Qkv = new float[3 * hiddenDim];
+            Context = new float[hiddenDim];
+            AttnOut = new float[hiddenDim];
+            FfnNormed = new float[hiddenDim];
+            Fc = new float[intermediateSize];
+            Proj = new float[hiddenDim];
+            FinalHidden = new float[hiddenDim];
+            Logits = new float[vocabSize];
+            Scores = new float[maxPositions];
+            TopKIndexBuf = new (float val, int idx)[vocabSize];
+            ExpVals = new double[vocabSize];
+        }
+    }
+
+    // -----------------------------------------------------------------------
     // Real T3 GPT2 inference (inference_turbo)
     // -----------------------------------------------------------------------
 
@@ -99,20 +138,23 @@ public sealed class ChatterboxAcousticLm : IDisposable
 
         chunk.Add(EmbedRow(w.SpeechEmbWeight, startSpeech, w.HiddenDim));
 
-        var kCache = new List<float[]>[w.NumLayers];
-        var vCache = new List<float[]>[w.NumLayers];
+        int maxPositions = chunk.Count + maxTokens + 16;
+        var kCacheFlat = new float[w.NumLayers][];
+        var vCacheFlat = new float[w.NumLayers][];
         for (int l = 0; l < w.NumLayers; l++)
         {
-            kCache[l] = new List<float[]>(chunk.Count + maxTokens);
-            vCache[l] = new List<float[]>(chunk.Count + maxTokens);
+            kCacheFlat[l] = new float[maxPositions * w.HiddenDim];
+            vCacheFlat[l] = new float[maxPositions * w.HiddenDim];
         }
 
-        float[][] hidden = ProcessChunk(w, chunk.ToArray(), startPos: 0, kCache, vCache);
+        var workspace = new T3Workspace(w.HiddenDim, w.IntermediateSize, w.SpeechVocabSize, maxPositions);
+
+        float[][] hidden = ProcessChunk(w, chunk.ToArray(), startPos: 0, kCacheFlat, vCacheFlat);
         int pos = chunk.Count;
 
         var speechTokens = new List<int>();
         float[] lastHidden = hidden[^1];
-        int nextToken = SampleNext(w, lastHidden, speechTokens, temperature);
+        int nextToken = SampleNext(w, lastHidden, speechTokens, temperature, workspace);
         if (nextToken != stopSpeech)
         {
             speechTokens.Add(nextToken);
@@ -123,11 +165,10 @@ public sealed class ChatterboxAcousticLm : IDisposable
         {
             if (nextToken == stopSpeech) break;
 
-            var stepEmbed = EmbedRow(w.SpeechEmbWeight, nextToken, w.HiddenDim);
-            float[][] stepHidden = ProcessChunk(w, [stepEmbed], startPos: pos, kCache, vCache);
+            DecodeStep(w, nextToken, pos, kCacheFlat, vCacheFlat, workspace);
             pos++;
 
-            nextToken = SampleNext(w, stepHidden[0], speechTokens, temperature);
+            nextToken = SampleNext(w, workspace.FinalHidden, speechTokens, temperature, workspace);
             if (nextToken == stopSpeech) break;
             speechTokens.Add(nextToken);
             yield return nextToken;
@@ -159,32 +200,34 @@ public sealed class ChatterboxAcousticLm : IDisposable
         // --- Initial speech token (BOS = start_speech_token) ---
         chunk.Add(EmbedRow(w.SpeechEmbWeight, startSpeech, w.HiddenDim));
 
-        var kCache = new List<float[]>[w.NumLayers];
-        var vCache = new List<float[]>[w.NumLayers];
+        int maxPositions = chunk.Count + maxTokens + 16;
+        var kCacheFlat = new float[w.NumLayers][];
+        var vCacheFlat = new float[w.NumLayers][];
         for (int l = 0; l < w.NumLayers; l++)
         {
-            kCache[l] = new List<float[]>(chunk.Count + maxTokens);
-            vCache[l] = new List<float[]>(chunk.Count + maxTokens);
+            kCacheFlat[l] = new float[maxPositions * w.HiddenDim];
+            vCacheFlat[l] = new float[maxPositions * w.HiddenDim];
         }
 
+        var workspace = new T3Workspace(w.HiddenDim, w.IntermediateSize, w.SpeechVocabSize, maxPositions);
+
         // Prefill: process the whole [cond, text, BOS] chunk at once.
-        float[][] hidden = ProcessChunk(w, chunk.ToArray(), startPos: 0, kCache, vCache);
+        float[][] hidden = ProcessChunk(w, chunk.ToArray(), startPos: 0, kCacheFlat, vCacheFlat);
         int pos = chunk.Count;
 
         var speechTokens = new List<int>();
         float[] lastHidden = hidden[^1];
-        int nextToken = SampleNext(w, lastHidden, speechTokens, temperature);
+        int nextToken = SampleNext(w, lastHidden, speechTokens, temperature, workspace);
         speechTokens.Add(nextToken);
 
         for (int step = 1; step < maxTokens; step++)
         {
             if (nextToken == stopSpeech) break;
 
-            var stepEmbed = EmbedRow(w.SpeechEmbWeight, nextToken, w.HiddenDim);
-            float[][] stepHidden = ProcessChunk(w, [stepEmbed], startPos: pos, kCache, vCache);
+            DecodeStep(w, nextToken, pos, kCacheFlat, vCacheFlat, workspace);
             pos++;
 
-            nextToken = SampleNext(w, stepHidden[0], speechTokens, temperature);
+            nextToken = SampleNext(w, workspace.FinalHidden, speechTokens, temperature, workspace);
             speechTokens.Add(nextToken);
         }
 
@@ -198,15 +241,171 @@ public sealed class ChatterboxAcousticLm : IDisposable
         return result;
     }
 
-    private int SampleNext(ChatterboxWeights w, float[] hidden, List<int> historySoFar, float temperature)
+    /// <summary>
+    /// High-performance zero-allocation single-token decode step.
+    /// Computes transformer layer transformations in-place, writes directly to flat KV cache,
+    /// and populates workspace.FinalHidden for logits sampling.
+    /// </summary>
+    private static unsafe void DecodeStep(
+        ChatterboxWeights w,
+        int token,
+        int pos,
+        float[][] kCacheFlat,
+        float[][] vCacheFlat,
+        T3Workspace ws)
     {
-        float[] logits = Linear(hidden, w.SpeechHeadWeight, w.SpeechHeadBias, w.HiddenDim, w.SpeechVocabSize);
+        int dim = w.HiddenDim;
+        int intermediateSize = w.IntermediateSize;
+        float scale = 1f / MathF.Sqrt(HeadDim);
+
+        fixed (float* speechEmb = w.SpeechEmbWeight, wpe = w.WpeWeight, hidden = ws.Hidden,
+                      attnNormed = ws.AttnNormed, qkv = ws.Qkv, ctxBase = ws.Context,
+                      attnOut = ws.AttnOut, ffnNormed = ws.FfnNormed, fc = ws.Fc,
+                      proj = ws.Proj, finalHidden = ws.FinalHidden, scores = ws.Scores)
+        {
+            // 1. Initial embedding: hidden = speech_emb[token] + wpe[pos]
+            float* embRow = speechEmb + (long)token * dim;
+            float* wpeRow = wpe + (long)pos * dim;
+            TensorPrimitives.Add(new ReadOnlySpan<float>(embRow, dim), new ReadOnlySpan<float>(wpeRow, dim), new Span<float>(hidden, dim));
+
+            int availableKeys = pos + 1;
+
+            // 2. Transformer layers
+            for (int l = 0; l < w.NumLayers; l++)
+            {
+                var layer = w.Layers[l];
+                fixed (float* kFlat = kCacheFlat[l], vFlat = vCacheFlat[l],
+                              anw = layer.AttnNormWeight, anb = layer.AttnNormBias,
+                              qkvw = layer.AttnQkvWeight, qkvb = layer.AttnQkvBias,
+                              aow = layer.AttnOutputWeight, aob = layer.AttnOutputBias,
+                              fnw = layer.FfnNormWeight, fnb = layer.FfnNormBias,
+                              fcw = layer.FfnFcWeight, fcb = layer.FfnFcBias,
+                              prw = layer.FfnProjWeight, prb = layer.FfnProjBias)
+                {
+                    // --- Self-Attention ---
+                    SimdKernels.LayerNorm(attnNormed, hidden, anw, anb, dim, 1e-5f);
+                    SimdKernels.MatVecF32(qkv, qkvw, qkvb, attnNormed, 3 * dim, dim);
+
+                    float* qPtr = qkv;
+                    float* kDest = kFlat + (long)pos * dim;
+                    float* vDest = vFlat + (long)pos * dim;
+                    UnsafeCopy(qkv + dim, kDest, dim);
+                    UnsafeCopy(qkv + 2 * dim, vDest, dim);
+
+                    // Attention context per head
+                    for (int h = 0; h < NumHeads; h++)
+                    {
+                        int hOff = h * HeadDim;
+                        float* qHead = qPtr + hOff;
+                        float* cHead = ctxBase + hOff;
+
+                        for (int t = 0; t < availableKeys; t++)
+                        {
+                            float* kt = kFlat + (long)t * dim + hOff;
+                            scores[t] = SimdKernels.DotF32(qHead, kt, HeadDim) * scale;
+                        }
+
+                        SoftmaxInPlace(new Span<float>(scores, availableKeys));
+
+                        if (HeadDim == 64 && Avx.IsSupported && Fma.IsSupported)
+                        {
+                            var c0 = Vector256<float>.Zero;
+                            var c1 = Vector256<float>.Zero;
+                            var c2 = Vector256<float>.Zero;
+                            var c3 = Vector256<float>.Zero;
+                            var c4 = Vector256<float>.Zero;
+                            var c5 = Vector256<float>.Zero;
+                            var c6 = Vector256<float>.Zero;
+                            var c7 = Vector256<float>.Zero;
+
+                            for (int t = 0; t < availableKeys; t++)
+                            {
+                                float p = scores[t];
+                                if (p == 0f) continue;
+                                var pVec = Vector256.Create(p);
+                                float* vRow = vFlat + (long)t * dim + hOff;
+                                c0 = Fma.MultiplyAdd(pVec, Avx.LoadVector256(vRow), c0);
+                                c1 = Fma.MultiplyAdd(pVec, Avx.LoadVector256(vRow + 8), c1);
+                                c2 = Fma.MultiplyAdd(pVec, Avx.LoadVector256(vRow + 16), c2);
+                                c3 = Fma.MultiplyAdd(pVec, Avx.LoadVector256(vRow + 24), c3);
+                                c4 = Fma.MultiplyAdd(pVec, Avx.LoadVector256(vRow + 32), c4);
+                                c5 = Fma.MultiplyAdd(pVec, Avx.LoadVector256(vRow + 40), c5);
+                                c6 = Fma.MultiplyAdd(pVec, Avx.LoadVector256(vRow + 48), c6);
+                                c7 = Fma.MultiplyAdd(pVec, Avx.LoadVector256(vRow + 56), c7);
+                            }
+
+                            Avx.Store(cHead, c0);
+                            Avx.Store(cHead + 8, c1);
+                            Avx.Store(cHead + 16, c2);
+                            Avx.Store(cHead + 24, c3);
+                            Avx.Store(cHead + 32, c4);
+                            Avx.Store(cHead + 40, c5);
+                            Avx.Store(cHead + 48, c6);
+                            Avx.Store(cHead + 56, c7);
+                        }
+                        else
+                        {
+                            for (int d = 0; d < HeadDim; d++) cHead[d] = 0f;
+                            for (int t = 0; t < availableKeys; t++)
+                            {
+                                float p = scores[t];
+                                if (p == 0f) continue;
+                                float* vRow = vFlat + (long)t * dim + hOff;
+                                for (int d = 0; d < HeadDim; d++) cHead[d] += p * vRow[d];
+                            }
+                        }
+                    }
+
+                    // Attn output + residual
+                    SimdKernels.MatVecF32(attnOut, aow, aob, ctxBase, dim, dim);
+                    TensorPrimitives.Add(new ReadOnlySpan<float>(hidden, dim), new ReadOnlySpan<float>(attnOut, dim), new Span<float>(hidden, dim));
+
+                    // --- MLP Block ---
+                    SimdKernels.LayerNorm(ffnNormed, hidden, fnw, fnb, dim, 1e-5f);
+                    SimdKernels.MatVecF32(fc, fcw, fcb, ffnNormed, intermediateSize, dim);
+                    GeluNewInPlace(fc, intermediateSize);
+                    SimdKernels.MatVecF32(proj, prw, prb, fc, dim, intermediateSize);
+                    TensorPrimitives.Add(new ReadOnlySpan<float>(hidden, dim), new ReadOnlySpan<float>(proj, dim), new Span<float>(hidden, dim));
+                }
+            }
+
+            // 3. Final Output LayerNorm
+            fixed (float* onw = w.OutputNormWeight, onb = w.OutputNormBias)
+            {
+                SimdKernels.LayerNorm(finalHidden, hidden, onw, onb, dim, 1e-5f);
+            }
+        }
+    }
+
+    private static unsafe void UnsafeCopy(float* src, float* dst, int count)
+    {
+        Buffer.MemoryCopy(src, dst, (long)count * sizeof(float), (long)count * sizeof(float));
+    }
+
+    private int SampleNext(ChatterboxWeights w, float[] hidden, List<int> historySoFar, float temperature, T3Workspace? ws = null)
+    {
+        float[] logits;
+        if (ws != null)
+        {
+            logits = ws.Logits;
+            unsafe
+            {
+                fixed (float* lp = logits, hp = hidden, wp = w.SpeechHeadWeight, bp = w.SpeechHeadBias)
+                {
+                    SimdKernels.MatVecF32(lp, wp, bp, hp, w.SpeechVocabSize, w.HiddenDim);
+                }
+            }
+        }
+        else
+        {
+            logits = Linear(hidden, w.SpeechHeadWeight, w.SpeechHeadBias, w.HiddenDim, w.SpeechVocabSize);
+        }
 
         // Repetition penalty -> Temperature -> top-k -> top-p
         ApplyRepetitionPenalty(logits, historySoFar, RepetitionPenalty);
         ApplyTemperature(logits, temperature);
-        ApplyTopK(logits, TopK);
-        ApplyTopP(logits, TopP);
+        ApplyTopK(logits, TopK, ws?.TopKIndexBuf);
+        ApplyTopP(logits, TopP, ws?.TopKIndexBuf, ws?.ExpVals);
 
         return SampleFromLogits(logits);
     }
@@ -217,27 +416,27 @@ public sealed class ChatterboxAcousticLm : IDisposable
         for (int i = 0; i < logits.Length; i++) logits[i] /= temperature;
     }
 
-    private static void ApplyTopK(float[] logits, int topK)
+    private static void ApplyTopK(float[] logits, int topK, (float val, int idx)[]? buffer = null)
     {
         if (topK <= 0 || topK >= logits.Length) return;
-        var indexed = new (float val, int idx)[logits.Length];
+        var indexed = buffer ?? new (float val, int idx)[logits.Length];
         for (int i = 0; i < logits.Length; i++) indexed[i] = (logits[i], i);
-        Array.Sort(indexed, (a, b) => b.val.CompareTo(a.val));
+        Array.Sort(indexed, 0, logits.Length, Comparer<(float val, int idx)>.Create((a, b) => b.val.CompareTo(a.val)));
         for (int i = topK; i < indexed.Length; i++) logits[indexed[i].idx] = float.NegativeInfinity;
     }
 
-    private static void ApplyTopP(float[] logits, float topP)
+    private static void ApplyTopP(float[] logits, float topP, (float val, int idx)[]? idxBuffer = null, double[]? expBuffer = null)
     {
         if (topP >= 1f) return;
         int n = logits.Length;
-        var indexed = new (float val, int idx)[n];
+        var indexed = idxBuffer ?? new (float val, int idx)[n];
         for (int i = 0; i < n; i++) indexed[i] = (logits[i], i);
-        Array.Sort(indexed, (a, b) => b.val.CompareTo(a.val));
+        Array.Sort(indexed, 0, n, Comparer<(float val, int idx)>.Create((a, b) => b.val.CompareTo(a.val)));
 
         float max = indexed[0].val;
         if (float.IsNegativeInfinity(max)) return;
         double sumExp = 0;
-        var expVals = new double[n];
+        var expVals = expBuffer ?? new double[n];
         for (int i = 0; i < n; i++)
         {
             expVals[i] = float.IsNegativeInfinity(indexed[i].val) ? 0.0 : Math.Exp(indexed[i].val - max);
@@ -274,30 +473,34 @@ public sealed class ChatterboxAcousticLm : IDisposable
         if (float.IsNegativeInfinity(max)) return 0;
 
         double sum = 0;
-        var probs = new double[logits.Length];
         for (int i = 0; i < logits.Length; i++)
         {
             double p = float.IsNegativeInfinity(logits[i]) ? 0.0 : Math.Exp(logits[i] - max);
-            probs[i] = p;
             sum += p;
         }
 
         double r = _rng.NextDouble() * sum;
         double acc = 0;
-        for (int i = 0; i < probs.Length; i++)
+        for (int i = 0; i < logits.Length; i++)
         {
-            acc += probs[i];
+            double p = float.IsNegativeInfinity(logits[i]) ? 0.0 : Math.Exp(logits[i] - max);
+            acc += p;
             if (acc >= r) return i;
         }
-        return probs.Length - 1;
+        return logits.Length - 1;
     }
 
     /// <summary>
-    /// Runs the GPT2 body over a chunk of already-embedded positions (prefill or a single decode
-    /// step), appending this chunk's K/V to the running per-layer cache and returning each
+    /// Runs the GPT2 body over a chunk of already-embedded positions (prefill),
+    /// appending this chunk's K/V to the running flat cache and returning each
     /// position's post-final-LayerNorm hidden state (t3.output_norm, i.e. GPT2Model's ln_f).
     /// </summary>
-    private static float[][] ProcessChunk(ChatterboxWeights w, float[][] chunkEmbeds, int startPos, List<float[]>[] kCache, List<float[]>[] vCache)
+    private static unsafe float[][] ProcessChunk(
+        ChatterboxWeights w,
+        float[][] chunkEmbeds,
+        int startPos,
+        float[][] kCacheFlat,
+        float[][] vCacheFlat)
     {
         int n = chunkEmbeds.Length;
         int dim = w.HiddenDim;
@@ -308,18 +511,15 @@ public sealed class ChatterboxAcousticLm : IDisposable
         {
             var h = new float[dim];
             int posRow = (startPos + i) * dim;
-            System.Numerics.Tensors.TensorPrimitives.Add(chunkEmbeds[i], w.WpeWeight.AsSpan(posRow, dim), h);
+            TensorPrimitives.Add(chunkEmbeds[i], w.WpeWeight.AsSpan(posRow, dim), h);
             hidden[i] = h;
         }
-
-        var scores = new float[kCache[0].Count + n];
 
         for (int l = 0; l < w.NumLayers; l++)
         {
             var layer = w.Layers[l];
-            var kCacheL = kCache[l];
-            var vCacheL = vCache[l];
-            int cacheBase = kCacheL.Count;
+            float[] kFlat = kCacheFlat[l];
+            float[] vFlat = vCacheFlat[l];
 
             // --- Self-attention block ---
             var attnNormed = new float[n][];
@@ -329,166 +529,110 @@ public sealed class ChatterboxAcousticLm : IDisposable
 
             for (int i = 0; i < n; i++)
             {
-                var q = new float[dim];
-                var k = new float[dim];
-                var v = new float[dim];
-                Array.Copy(qkvAll[i], 0, q, 0, dim);
-                Array.Copy(qkvAll[i], dim, k, 0, dim);
-                Array.Copy(qkvAll[i], 2 * dim, v, 0, dim);
-                kCacheL.Add(k);
-                vCacheL.Add(v);
+                int pos = startPos + i;
+                Array.Copy(qkvAll[i], dim, kFlat, (long)pos * dim, dim);
+                Array.Copy(qkvAll[i], 2 * dim, vFlat, (long)pos * dim, dim);
             }
 
-            // Per-position attention context: reads only the cache (already fully populated for
-            // this chunk by the append loop above), so it's safe to parallelize across positions
-            // -- during prefill this scans up to a few hundred cached K/V entries per position,
-            // and was previously a fully scalar, single-threaded O(n^2) scan. The Q.K dot product
-            // uses the same SIMD kernel as Linear() below. Deliberately NOT parallelized together
-            // with the attn_output Linear() calls (those already parallelize internally over 1024
-            // output rows in SimdKernels.MatVecF32; nesting Parallel.For inside this loop would
-            // oversubscribe the thread pool for no benefit), so contexts are computed here and
-            // projected in a separate, sequential loop below.
             var contexts = new float[n][];
             float scale = 1f / MathF.Sqrt(HeadDim);
 
-            if (n == 1)
+            Parallel.For(0, n, i =>
             {
-                var q = qkvAll[0];
-                int availableKeys = cacheBase + 1;
+                int selfCachePos = startPos + i;
+                int availableKeys = selfCachePos + 1;
+                var q = qkvAll[i];
                 var context = new float[dim];
+                var scores = new float[availableKeys];
 
-                unsafe
+                fixed (float* qp = q, ctxBase = context, sp = scores, kF = kFlat, vF = vFlat)
                 {
-                    fixed (float* qp = q, ctxBase = context, sp = scores)
+                    for (int h = 0; h < NumHeads; h++)
                     {
-                        for (int h = 0; h < NumHeads; h++)
+                        int hOff = h * HeadDim;
+                        float* qHead = qp + hOff;
+                        float* cHead = ctxBase + hOff;
+
+                        for (int t = 0; t < availableKeys; t++)
                         {
-                            int hOff = h * HeadDim;
-                            float* qPtr = qp + hOff;
-                            float* cPtr = ctxBase + hOff;
+                            float* kt = kF + (long)t * dim + hOff;
+                            sp[t] = SimdKernels.DotF32(qHead, kt, HeadDim) * scale;
+                        }
+
+                        SoftmaxInPlace(new Span<float>(sp, availableKeys));
+
+                        if (HeadDim == 64 && Avx.IsSupported && Fma.IsSupported)
+                        {
+                            var c0 = Vector256<float>.Zero;
+                            var c1 = Vector256<float>.Zero;
+                            var c2 = Vector256<float>.Zero;
+                            var c3 = Vector256<float>.Zero;
+                            var c4 = Vector256<float>.Zero;
+                            var c5 = Vector256<float>.Zero;
+                            var c6 = Vector256<float>.Zero;
+                            var c7 = Vector256<float>.Zero;
 
                             for (int t = 0; t < availableKeys; t++)
                             {
-                                var kt = kCacheL[t];
-                                fixed (float* ktp = kt)
-                                    sp[t] = SimdKernels.DotF32(qPtr, ktp + hOff, HeadDim) * scale;
+                                float p = sp[t];
+                                if (p == 0f) continue;
+                                var pVec = Vector256.Create(p);
+                                float* vRow = vF + (long)t * dim + hOff;
+                                c0 = Fma.MultiplyAdd(pVec, Avx.LoadVector256(vRow), c0);
+                                c1 = Fma.MultiplyAdd(pVec, Avx.LoadVector256(vRow + 8), c1);
+                                c2 = Fma.MultiplyAdd(pVec, Avx.LoadVector256(vRow + 16), c2);
+                                c3 = Fma.MultiplyAdd(pVec, Avx.LoadVector256(vRow + 24), c3);
+                                c4 = Fma.MultiplyAdd(pVec, Avx.LoadVector256(vRow + 32), c4);
+                                c5 = Fma.MultiplyAdd(pVec, Avx.LoadVector256(vRow + 40), c5);
+                                c6 = Fma.MultiplyAdd(pVec, Avx.LoadVector256(vRow + 48), c6);
+                                c7 = Fma.MultiplyAdd(pVec, Avx.LoadVector256(vRow + 56), c7);
                             }
 
-                            SoftmaxInPlace(new Span<float>(sp, availableKeys));
-
-                            if (HeadDim == 64 && Avx.IsSupported && Fma.IsSupported)
+                            Avx.Store(cHead, c0);
+                            Avx.Store(cHead + 8, c1);
+                            Avx.Store(cHead + 16, c2);
+                            Avx.Store(cHead + 24, c3);
+                            Avx.Store(cHead + 32, c4);
+                            Avx.Store(cHead + 40, c5);
+                            Avx.Store(cHead + 48, c6);
+                            Avx.Store(cHead + 56, c7);
+                        }
+                        else
+                        {
+                            for (int d = 0; d < HeadDim; d++) cHead[d] = 0f;
+                            for (int t = 0; t < availableKeys; t++)
                             {
-                                var c0 = Vector256<float>.Zero;
-                                var c1 = Vector256<float>.Zero;
-                                var c2 = Vector256<float>.Zero;
-                                var c3 = Vector256<float>.Zero;
-                                var c4 = Vector256<float>.Zero;
-                                var c5 = Vector256<float>.Zero;
-                                var c6 = Vector256<float>.Zero;
-                                var c7 = Vector256<float>.Zero;
-
-                                for (int t = 0; t < availableKeys; t++)
-                                {
-                                    float p = sp[t];
-                                    if (p == 0f) continue;
-                                    var pVec = Vector256.Create(p);
-                                    var vt = vCacheL[t];
-                                    fixed (float* vtp = vt)
-                                    {
-                                        float* vRow = vtp + hOff;
-                                        c0 = Fma.MultiplyAdd(pVec, Avx.LoadVector256(vRow), c0);
-                                        c1 = Fma.MultiplyAdd(pVec, Avx.LoadVector256(vRow + 8), c1);
-                                        c2 = Fma.MultiplyAdd(pVec, Avx.LoadVector256(vRow + 16), c2);
-                                        c3 = Fma.MultiplyAdd(pVec, Avx.LoadVector256(vRow + 24), c3);
-                                        c4 = Fma.MultiplyAdd(pVec, Avx.LoadVector256(vRow + 32), c4);
-                                        c5 = Fma.MultiplyAdd(pVec, Avx.LoadVector256(vRow + 40), c5);
-                                        c6 = Fma.MultiplyAdd(pVec, Avx.LoadVector256(vRow + 48), c6);
-                                        c7 = Fma.MultiplyAdd(pVec, Avx.LoadVector256(vRow + 56), c7);
-                                    }
-                                }
-
-                                Avx.Store(cPtr, c0);
-                                Avx.Store(cPtr + 8, c1);
-                                Avx.Store(cPtr + 16, c2);
-                                Avx.Store(cPtr + 24, c3);
-                                Avx.Store(cPtr + 32, c4);
-                                Avx.Store(cPtr + 40, c5);
-                                Avx.Store(cPtr + 48, c6);
-                                Avx.Store(cPtr + 56, c7);
-                            }
-                            else
-                            {
-                                for (int d = 0; d < HeadDim; d++) cPtr[d] = 0f;
-                                for (int t = 0; t < availableKeys; t++)
-                                {
-                                    var vt = vCacheL[t];
-                                    float p = sp[t];
-                                    if (p == 0f) continue;
-                                    fixed (float* vtp = vt)
-                                    {
-                                        float* vRow = vtp + hOff;
-                                        for (int d = 0; d < HeadDim; d++) cPtr[d] += p * vRow[d];
-                                    }
-                                }
+                                float p = sp[t];
+                                if (p == 0f) continue;
+                                float* vRow = vF + (long)t * dim + hOff;
+                                for (int d = 0; d < HeadDim; d++) cHead[d] += p * vRow[d];
                             }
                         }
                     }
                 }
-
-                contexts = [context];
-            }
-            else
-            {
-                System.Threading.Tasks.Parallel.For(0, n, i =>
-                {
-                    var q = new float[dim];
-                    Array.Copy(qkvAll[i], 0, q, 0, dim);
-                    int selfCachePos = cacheBase + i;
-                    int availableKeys = selfCachePos + 1;
-
-                    var context = new float[dim];
-                    var scores = new float[availableKeys];
-                    unsafe
-                    {
-                        fixed (float* qp = q)
-                        {
-                            for (int h = 0; h < NumHeads; h++)
-                            {
-                                int hOff = h * HeadDim;
-                                for (int t = 0; t < availableKeys; t++)
-                                {
-                                    var kt = kCacheL[t];
-                                    fixed (float* ktp = kt)
-                                        scores[t] = SimdKernels.DotF32(qp + hOff, ktp + hOff, HeadDim) * scale;
-                                }
-                                SoftmaxInPlace(scores);
-                                for (int t = 0; t < availableKeys; t++)
-                                {
-                                    var vt = vCacheL[t];
-                                    float p = scores[t];
-                                    for (int d = 0; d < HeadDim; d++) context[hOff + d] += p * vt[hOff + d];
-                                }
-                            }
-                        }
-                    }
-                    contexts[i] = context;
-                });
-            }
+                contexts[i] = context;
+            });
 
             var attnOut = LinearBatched(contexts, layer.AttnOutputWeight, layer.AttnOutputBias, dim, dim);
 
             for (int i = 0; i < n; i++)
-                System.Numerics.Tensors.TensorPrimitives.Add(hidden[i], attnOut[i], hidden[i]);
+                TensorPrimitives.Add(hidden[i], attnOut[i], hidden[i]);
 
             // --- MLP block ---
             var ffnNormed = new float[n][];
             for (int i = 0; i < n; i++)
                 ffnNormed[i] = LayerNorm(hidden[i], layer.FfnNormWeight, layer.FfnNormBias);
             var fcAll = LinearBatched(ffnNormed, layer.FfnFcWeight, layer.FfnFcBias, dim, w.IntermediateSize);
-            for (int i = 0; i < n; i++) GeluNewInPlace(fcAll[i]);
+            for (int i = 0; i < n; i++)
+            {
+                fixed (float* fcp = fcAll[i])
+                {
+                    GeluNewInPlace(fcp, w.IntermediateSize);
+                }
+            }
             var projAll = LinearBatched(fcAll, layer.FfnProjWeight, layer.FfnProjBias, w.IntermediateSize, dim);
             for (int i = 0; i < n; i++)
-                System.Numerics.Tensors.TensorPrimitives.Add(hidden[i], projAll[i], hidden[i]);
+                TensorPrimitives.Add(hidden[i], projAll[i], hidden[i]);
         }
 
         // Final LayerNorm (ln_f / t3.output_norm).
@@ -505,35 +649,16 @@ public sealed class ChatterboxAcousticLm : IDisposable
         return row;
     }
 
-    /// <summary>
-    /// y = W @ x + b, W row-major [outDim, inDim]. Delegates the matvec itself to
-    /// SimdKernels.MatVecF32 (AVX2/AVX-512 dot products, auto-parallelized across output rows for
-    /// large row counts) -- a scalar per-element loop here made T3's ~400-token conditioning+text
-    /// prefill (24 layers x [1024-&gt;3072 QKV, 1024-&gt;1024 attn_out, 1024&lt;-&gt;4096 FFN] projections)
-    /// take several minutes; this is the same kernel the main LLM inference engine uses for GGUF
-    /// forward passes.
-    /// </summary>
     private static unsafe float[] Linear(float[] input, float[] weight, float[] bias, int inDim, int outDim)
     {
         var output = new float[outDim];
-        fixed (float* w = weight, x = input, y = output)
+        fixed (float* w = weight, x = input, y = output, b = bias)
         {
-            SimdKernels.MatVecF32(y, w, x, outDim, inDim);
+            SimdKernels.MatVecF32(y, w, b, x, outDim, inDim);
         }
-        for (int o = 0; o < outDim; o++) output[o] += bias[o];
         return output;
     }
 
-    /// <summary>
-    /// Batched form of <see cref="Linear"/>: projects all N chunk positions against the same
-    /// weight matrix in a single Parallel.For dispatch over the full N*outDim work item space,
-    /// instead of N separate Linear() calls each launching (and tearing down) their own
-    /// SimdKernels.MatVecF32-internal Parallel.For. During T3's ~400-token conditioning+text
-    /// prefill this cuts the QKV/attn_output/FFN thread-pool dispatch count from N per layer down
-    /// to 1 per layer (4 total per layer instead of up to ~1600), which matters because dispatch
-    /// overhead was previously paid N times for work that's now scheduled once and load-balanced
-    /// across all positions and output rows together.
-    /// </summary>
     private static unsafe float[][] LinearBatched(float[][] inputs, float[] weight, float[] bias, int inDim, int outDim)
     {
         int n = inputs.Length;
@@ -542,8 +667,7 @@ public sealed class ChatterboxAcousticLm : IDisposable
             var singleOut = new float[outDim];
             fixed (float* w = weight, x = inputs[0], y = singleOut, b = bias)
             {
-                SimdKernels.MatVecF32(y, w, x, outDim, inDim);
-                for (int o = 0; o < outDim; o++) y[o] += b[o];
+                SimdKernels.MatVecF32(y, w, b, x, outDim, inDim);
             }
             return [singleOut];
         }
@@ -551,12 +675,11 @@ public sealed class ChatterboxAcousticLm : IDisposable
         var outputs = new float[n][];
         for (int i = 0; i < n; i++) outputs[i] = new float[outDim];
 
-        System.Threading.Tasks.Parallel.For(0, n, i =>
+        Parallel.For(0, n, i =>
         {
             fixed (float* w = weight, x = inputs[i], y = outputs[i], b = bias)
             {
-                SimdKernels.MatVecF32(y, w, x, outDim, inDim);
-                for (int o = 0; o < outDim; o++) y[o] += b[o];
+                SimdKernels.MatVecF32(y, w, b, x, outDim, inDim);
             }
         });
 
@@ -589,17 +712,26 @@ public sealed class ChatterboxAcousticLm : IDisposable
         for (int i = 0; i < scores.Length; i++) scores[i] *= invSum;
     }
 
-    private static void SoftmaxInPlace(float[] scores) => SoftmaxInPlace(scores.AsSpan());
-
-    private static void GeluNewInPlace(float[] x)
+    private static unsafe void GeluNewInPlace(float* x, int len)
     {
-        // gelu_new (GPT2's tanh-approximation GELU): 0.5*x*(1+tanh(sqrt(2/pi)*(x+0.044715*x^3)))
-        const float c = 0.7978845608028654f; // sqrt(2/pi)
-        for (int i = 0; i < x.Length; i++)
+        // gelu_new: 0.5*x*(1+tanh(sqrt(2/pi)*(x+0.044715*x^3))) == x / (1 + exp(-2*sqrt(2/pi)*(x+0.044715*x^3)))
+        const float c2 = -1.595769121605731f; // -2 * sqrt(2/pi)
+        for (int i = 0; i < len; i++)
         {
             float v = x[i];
-            float inner = c * (v + 0.044715f * v * v * v);
-            x[i] = 0.5f * v * (1f + MathF.Tanh(inner));
+            float arg = c2 * v * (1f + 0.044715f * v * v);
+            if (arg > 35f)
+            {
+                x[i] = 0f;
+            }
+            else if (arg < -35f)
+            {
+                x[i] = v;
+            }
+            else
+            {
+                x[i] = v / (1f + MathF.Exp(arg));
+            }
         }
     }
 
