@@ -679,3 +679,45 @@
 [Chatterbox-Stream] prompt="Hello, I will make some lunch, darling!" audio=2.24s samples=53760 chunks=1
 [Chatterbox-Stream] Time-To-First-Audio (TTFA)=13.669s TotalTime=13.672s
 
+[Chatterbox] prompt="Hello, I will make some lunch, darling!" audio=2.48s samples=59520
+[Chatterbox] runs(s)=[13.868, 13.806, 13.785] mean=13.820s RTF=5.573 (lower=faster; 1.0=realtime)
+
+[Chatterbox-Stream] prompt="Hello, I will make some lunch, darling!" audio=2.24s samples=53760 chunks=1
+[Chatterbox-Stream] Time-To-First-Audio (TTFA)=13.476s TotalTime=13.478s
+
+[Chatterbox] prompt="Hello, I will make some lunch, darling!" audio=2.72s samples=65280
+[Chatterbox] runs(s)=[14.693, 14.087, 14.662] mean=14.480s RTF=5.324 (lower=faster; 1.0=realtime)
+
+[Chatterbox-Stream] prompt="Hello, I will make some lunch, darling!" audio=2.52s samples=60480 chunks=1
+[Chatterbox-Stream] Time-To-First-Audio (TTFA)=14.580s TotalTime=14.583s
+
+[Chatterbox] prompt="Hello, I will make some lunch, darling!" audio=2.60s samples=62400
+[Chatterbox] runs(s)=[14.336, 14.847, 14.675] mean=14.619s RTF=5.623 (lower=faster; 1.0=realtime)
+
+[Chatterbox-Stream] prompt="Hello, I will make some lunch, darling!" audio=2.52s samples=60480 chunks=1
+[Chatterbox-Stream] Time-To-First-Audio (TTFA)=14.320s TotalTime=14.322s
+
+[Chatterbox] prompt="Hello, I will make some lunch, darling!" audio=2.40s samples=57600
+[Chatterbox] runs(s)=[14.339, 14.532, 14.011] mean=14.294s RTF=5.956 (lower=faster; 1.0=realtime)
+
+[Chatterbox-Stream] prompt="Hello, I will make some lunch, darling!" audio=2.48s samples=59520 chunks=1
+[Chatterbox-Stream] Time-To-First-Audio (TTFA)=14.195s TotalTime=14.198s
+
+[Chatterbox] prompt="Hello, I will make some lunch, darling!" audio=2.64s samples=63360
+[Chatterbox] runs(s)=[14.269, 14.575, 14.672] mean=14.505s RTF=5.494 (lower=faster; 1.0=realtime)
+
+[Chatterbox-Stream] prompt="Hello, I will make some lunch, darling!" audio=2.48s samples=59520 chunks=1
+[Chatterbox-Stream] Time-To-First-Audio (TTFA)=14.372s TotalTime=14.374s
+
+[Chatterbox] prompt="Hello, I will make some lunch, darling!" audio=2.60s samples=62400
+[Chatterbox] runs(s)=[15.127, 15.027, 15.873] mean=15.342s RTF=5.901 (lower=faster; 1.0=realtime)
+
+[Chatterbox-Stream] prompt="Hello, I will make some lunch, darling!" audio=2.40s samples=57600 chunks=1
+[Chatterbox-Stream] Time-To-First-Audio (TTFA)=15.067s TotalTime=15.070s
+
+[Chatterbox] prompt="Hello, I will make some lunch, darling!" audio=2.48s samples=59520
+[Chatterbox] runs(s)=[14.381, 13.694, 13.716] mean=13.930s RTF=5.617 (lower=faster; 1.0=realtime)
+
+[Chatterbox-Stream] prompt="Hello, I will make some lunch, darling!" audio=2.48s samples=59520 chunks=1
+[Chatterbox-Stream] Time-To-First-Audio (TTFA)=14.336s TotalTime=14.339s
+

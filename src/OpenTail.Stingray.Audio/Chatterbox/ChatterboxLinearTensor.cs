@@ -1,4 +1,5 @@
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using OpenTail.Stingray.Core;
 using OpenTail.Stingray.Cpu;
 
@@ -8,15 +9,18 @@ namespace OpenTail.Stingray.Audio.Chatterbox;
 /// Encapsulates a linear layer weight (matrix + bias) for Chatterbox-Turbo T3 acoustic LM.
 /// Supports zero-copy memory-mapped Q4_K evaluation without prior dequantization to float32 RAM.
 /// </summary>
-public sealed unsafe class ChatterboxLinearTensor
+public sealed unsafe class ChatterboxLinearTensor : IDisposable
 {
     private readonly GgufModel _model;
     private readonly GgufTensorInfo _info;
     private float[]? _floatWeight;
+    private GCHandle _biasPin;
+    private readonly float* _biasPtr;
 
     public DType DType { get; }
     public byte* RawDataPtr { get; }
     public float[] Bias { get; }
+    public float* BiasPtr => _biasPtr;
     public int OutFeatures { get; }
     public int InFeatures { get; }
 
@@ -51,6 +55,8 @@ public sealed unsafe class ChatterboxLinearTensor
         var biasBytes = model.GetTensorData(biasInfo);
         Bias = new float[biasInfo.ElementCount];
         Dequantize.ToFloat32(biasBytes, Bias, biasInfo.DType, biasInfo.ElementCount);
+        _biasPin = GCHandle.Alloc(Bias, GCHandleType.Pinned);
+        _biasPtr = (float*)_biasPin.AddrOfPinnedObject();
     }
 
     public float[] GetOrDequantizeFloat()
@@ -65,23 +71,28 @@ public sealed unsafe class ChatterboxLinearTensor
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void MatVec(float* output, float* input)
     {
-        fixed (float* bp = Bias)
+        if (DType == DType.Q4_K)
         {
-            if (DType == DType.Q4_K)
+            SimdKernels.MatVecQ4K(output, RawDataPtr, _biasPtr, input, OutFeatures, InFeatures);
+        }
+        else if (DType == DType.Float32 && RawDataPtr != null)
+        {
+            SimdKernels.MatVecF32(output, (float*)RawDataPtr, _biasPtr, input, OutFeatures, InFeatures);
+        }
+        else
+        {
+            fixed (float* wp = GetOrDequantizeFloat())
             {
-                SimdKernels.MatVecQ4K(output, RawDataPtr, bp, input, OutFeatures, InFeatures);
+                SimdKernels.MatVecF32(output, wp, _biasPtr, input, OutFeatures, InFeatures);
             }
-            else if (DType == DType.Float32 && RawDataPtr != null)
-            {
-                SimdKernels.MatVecF32(output, (float*)RawDataPtr, bp, input, OutFeatures, InFeatures);
-            }
-            else
-            {
-                fixed (float* wp = GetOrDequantizeFloat())
-                {
-                    SimdKernels.MatVecF32(output, wp, bp, input, OutFeatures, InFeatures);
-                }
-            }
+        }
+    }
+
+    public void Dispose()
+    {
+        if (_biasPin.IsAllocated)
+        {
+            _biasPin.Free();
         }
     }
 }

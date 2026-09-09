@@ -395,7 +395,7 @@ public sealed class ChatterboxAcousticLm : IDisposable
         ApplyTopK(logits, TopK, ws?.TopKIndexBuf);
         ApplyTopP(logits, TopP, ws?.TopKIndexBuf, ws?.ExpVals);
 
-        return SampleFromLogits(logits);
+        return SampleFromLogits(logits, ws?.ExpVals);
     }
 
     private static void ApplyTemperature(float[] logits, float temperature)
@@ -446,19 +446,27 @@ public sealed class ChatterboxAcousticLm : IDisposable
 
     private static void ApplyRepetitionPenalty(float[] logits, List<int> history, float penalty)
     {
-        if (penalty is <= 0f or 1f) return;
-        var seen = new HashSet<int>(history);
-        foreach (int token in seen)
+        if (penalty is <= 0f or 1f || history.Count == 0) return;
+        Span<ulong> bitset = stackalloc ulong[(logits.Length + 63) / 64];
+        bitset.Clear();
+        for (int i = 0; i < history.Count; i++)
         {
-            if (token >= 0 && token < logits.Length)
+            int token = history[i];
+            if ((uint)token < (uint)logits.Length)
             {
-                if (logits[token] > 0) logits[token] /= penalty;
-                else logits[token] *= penalty;
+                int wordIdx = token >> 6;
+                ulong bit = 1UL << (token & 63);
+                if ((bitset[wordIdx] & bit) == 0)
+                {
+                    bitset[wordIdx] |= bit;
+                    if (logits[token] > 0) logits[token] /= penalty;
+                    else logits[token] *= penalty;
+                }
             }
         }
     }
 
-    private int SampleFromLogits(float[] logits)
+    private int SampleFromLogits(float[] logits, double[]? expBuffer = null)
     {
         float maxLogit = float.NegativeInfinity;
         for (int i = 0; i < logits.Length; i++)
@@ -467,7 +475,7 @@ public sealed class ChatterboxAcousticLm : IDisposable
         if (float.IsNegativeInfinity(maxLogit)) return 0;
 
         double sum = 0;
-        var probs = new double[logits.Length];
+        var probs = expBuffer ?? new double[logits.Length];
         for (int i = 0; i < logits.Length; i++)
         {
             if (float.IsNegativeInfinity(logits[i]))
@@ -715,25 +723,99 @@ public sealed class ChatterboxAcousticLm : IDisposable
         for (int i = 0; i < scores.Length; i++) scores[i] *= invSum;
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveOptimization | MethodImplOptions.AggressiveInlining)]
+    private static Vector256<float> VectorExp(Vector256<float> x)
+    {
+        var vx = Avx.Min(Avx.Max(x, Vector256.Create(-88.0f)), Vector256.Create(88.0f));
+        var log2e = Vector256.Create(1.4426950408889634f);
+        var ln2 = Vector256.Create(0.6931471805599453f);
+        var half = Vector256.Create(0.5f);
+
+        // k = round(x * log2(e))
+        var z = Avx.Multiply(vx, log2e);
+        var k = Avx.Floor(Avx.Add(z, half));
+        var f = Fma.MultiplyAdd(k, Avx.Subtract(Vector256<float>.Zero, ln2), vx); // f = vx - k * ln2
+
+        // Polynomial P(f) = 1 + f * (c1 + f * (c2 + f * (c3 + f * c4)))
+        var c4 = Vector256.Create(0.009618129f);
+        var c3 = Vector256.Create(0.055504108f);
+        var c2 = Vector256.Create(0.240226507f);
+        var c1 = Vector256.Create(0.693147180f);
+        var one = Vector256.Create(1.0f);
+
+        var p = Fma.MultiplyAdd(c4, f, c3);
+        p = Fma.MultiplyAdd(p, f, c2);
+        p = Fma.MultiplyAdd(p, f, c1);
+        p = Fma.MultiplyAdd(p, f, one);
+
+        // 2^k
+        var ki = Avx2.ConvertToVector256Int32(k);
+        var expScale = Avx2.ShiftLeftLogical(Avx2.Add(ki, Vector256.Create(127)), 23).AsSingle();
+
+        return Avx.Multiply(p, expScale);
+    }
+
     private static unsafe void GeluNewInPlace(float* x, int len)
     {
         // gelu_new: 0.5*x*(1+tanh(sqrt(2/pi)*(x+0.044715*x^3))) == x / (1 + exp(-2*sqrt(2/pi)*(x+0.044715*x^3)))
         const float c2 = -1.595769121605731f; // -2 * sqrt(2/pi)
-        for (int i = 0; i < len; i++)
+        const float coeff = 0.044715f;
+
+        if (Avx2.IsSupported && Fma.IsSupported)
         {
-            float v = x[i];
-            float arg = c2 * v * (1f + 0.044715f * v * v);
-            if (arg > 35f)
+            var vc2 = Vector256.Create(c2);
+            var vcoeff = Vector256.Create(coeff);
+            var vone = Vector256.Create(1.0f);
+            var v35 = Vector256.Create(35.0f);
+            var vneg35 = Vector256.Create(-35.0f);
+
+            int vecLen = len & ~7;
+            for (int i = 0; i < vecLen; i += 8)
             {
-                x[i] = 0f;
+                var vx = Avx.LoadVector256(x + i);
+                var vx2 = Avx.Multiply(vx, vx);
+                var vpoly = Fma.MultiplyAdd(vcoeff, vx2, vone);
+                var varg = Avx.Multiply(Avx.Multiply(vc2, vx), vpoly);
+
+                var vExp = VectorExp(varg);
+                var vDenom = Avx.Add(vone, vExp);
+                var vRes = Avx.Divide(vx, vDenom);
+
+                var maskGt = Avx.Compare(varg, v35, FloatComparisonMode.OrderedGreaterThanSignaling);
+                var maskLt = Avx.Compare(varg, vneg35, FloatComparisonMode.OrderedLessThanSignaling);
+                vRes = Avx.BlendVariable(vRes, Vector256<float>.Zero, maskGt);
+                vRes = Avx.BlendVariable(vRes, vx, maskLt);
+
+                Avx.Store(x + i, vRes);
             }
-            else if (arg < -35f)
+
+            for (int i = vecLen; i < len; i++)
             {
-                x[i] = v;
+                float v = x[i];
+                float arg = c2 * v * (1f + coeff * v * v);
+                if (arg > 35f) x[i] = 0f;
+                else if (arg < -35f) x[i] = v;
+                else x[i] = v / (1f + MathF.Exp(arg));
             }
-            else
+        }
+        else
+        {
+            for (int i = 0; i < len; i++)
             {
-                x[i] = v / (1f + MathF.Exp(arg));
+                float v = x[i];
+                float arg = c2 * v * (1f + coeff * v * v);
+                if (arg > 35f)
+                {
+                    x[i] = 0f;
+                }
+                else if (arg < -35f)
+                {
+                    x[i] = v;
+                }
+                else
+                {
+                    x[i] = v / (1f + MathF.Exp(arg));
+                }
             }
         }
     }

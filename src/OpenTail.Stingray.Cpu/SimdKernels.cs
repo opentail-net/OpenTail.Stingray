@@ -2794,9 +2794,6 @@ public static unsafe class SimdKernels
 
                 for (int l = 0; l < 32; l += 8)
                 {
-                    // Shared input loads -- the whole point of this variant: one read of each
-                    // input slice serves both rows' FMA chains instead of two separate DotQ4K
-                    // calls each reloading the same bytes.
                     var inLo = Avx.LoadVector256(input + bo + l);
                     var inHi = Avx.LoadVector256(input + bo + 32 + l);
 

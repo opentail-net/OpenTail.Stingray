@@ -1,4 +1,8 @@
 
+using System.Runtime.CompilerServices;
+using System.Runtime.Intrinsics;
+using System.Runtime.Intrinsics.X86;
+
 namespace OpenTail.Stingray.Audio.Chatterbox;
 
 /// <summary>
@@ -143,19 +147,73 @@ public static class ChatterboxCfmDecoder
         return Linear(h, w.TimeMlpLinear2Weight, w.TimeMlpLinear2Bias, timeEmbedDim, timeEmbedDim);
     }
 
-    private static void SiluInPlace(float[] x)
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveOptimization | System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+    private static System.Runtime.Intrinsics.Vector256<float> VectorExp(System.Runtime.Intrinsics.Vector256<float> x)
     {
-        for (int i = 0; i < x.Length; i++) x[i] = x[i] / (1f + MathF.Exp(-x[i]));
+        var vx = System.Runtime.Intrinsics.X86.Avx.Min(System.Runtime.Intrinsics.X86.Avx.Max(x, System.Runtime.Intrinsics.Vector256.Create(-88.0f)), System.Runtime.Intrinsics.Vector256.Create(88.0f));
+        var log2e = System.Runtime.Intrinsics.Vector256.Create(1.4426950408889634f);
+        var ln2 = System.Runtime.Intrinsics.Vector256.Create(0.6931471805599453f);
+        var half = System.Runtime.Intrinsics.Vector256.Create(0.5f);
+
+        var z = System.Runtime.Intrinsics.X86.Avx.Multiply(vx, log2e);
+        var k = System.Runtime.Intrinsics.X86.Avx.Floor(System.Runtime.Intrinsics.X86.Avx.Add(z, half));
+        var f = System.Runtime.Intrinsics.X86.Fma.MultiplyAdd(k, System.Runtime.Intrinsics.X86.Avx.Subtract(System.Runtime.Intrinsics.Vector256<float>.Zero, ln2), vx);
+
+        var c4 = System.Runtime.Intrinsics.Vector256.Create(0.009618129f);
+        var c3 = System.Runtime.Intrinsics.Vector256.Create(0.055504108f);
+        var c2 = System.Runtime.Intrinsics.Vector256.Create(0.240226507f);
+        var c1 = System.Runtime.Intrinsics.Vector256.Create(0.693147180f);
+        var one = System.Runtime.Intrinsics.Vector256.Create(1.0f);
+
+        var p = System.Runtime.Intrinsics.X86.Fma.MultiplyAdd(c4, f, c3);
+        p = System.Runtime.Intrinsics.X86.Fma.MultiplyAdd(p, f, c2);
+        p = System.Runtime.Intrinsics.X86.Fma.MultiplyAdd(p, f, c1);
+        p = System.Runtime.Intrinsics.X86.Fma.MultiplyAdd(p, f, one);
+
+        var ki = System.Runtime.Intrinsics.X86.Avx2.ConvertToVector256Int32(k);
+        var expScale = System.Runtime.Intrinsics.X86.Avx2.ShiftLeftLogical(System.Runtime.Intrinsics.X86.Avx2.Add(ki, System.Runtime.Intrinsics.Vector256.Create(127)), 23).AsSingle();
+
+        return System.Runtime.Intrinsics.X86.Avx.Multiply(p, expScale);
+    }
+
+    private static unsafe void SiluInPlace(float[] x)
+    {
+        int len = x.Length;
+        if (System.Runtime.Intrinsics.X86.Avx2.IsSupported && System.Runtime.Intrinsics.X86.Fma.IsSupported)
+        {
+            var vone = System.Runtime.Intrinsics.Vector256.Create(1.0f);
+            var vzero = System.Runtime.Intrinsics.Vector256<float>.Zero;
+            fixed (float* px = x)
+            {
+                int vecLen = len & ~7;
+                for (int i = 0; i < vecLen; i += 8)
+                {
+                    var vx = System.Runtime.Intrinsics.X86.Avx.LoadVector256(px + i);
+                    var vnegX = System.Runtime.Intrinsics.X86.Avx.Subtract(vzero, vx);
+                    var vExp = VectorExp(vnegX);
+                    var vDenom = System.Runtime.Intrinsics.X86.Avx.Add(vone, vExp);
+                    var vRes = System.Runtime.Intrinsics.X86.Avx.Divide(vx, vDenom);
+                    System.Runtime.Intrinsics.X86.Avx.Store(px + i, vRes);
+                }
+                for (int i = vecLen; i < len; i++)
+                {
+                    px[i] = px[i] / (1f + MathF.Exp(-px[i]));
+                }
+            }
+        }
+        else
+        {
+            for (int i = 0; i < len; i++) x[i] = x[i] / (1f + MathF.Exp(-x[i]));
+        }
     }
 
     private static unsafe float[] Linear(float[] input, float[] weight, float[] bias, int inDim, int outDim)
     {
         var output = new float[outDim];
-        fixed (float* w = weight, x = input, y = output)
+        fixed (float* w = weight, b = bias, x = input, y = output)
         {
-            Cpu.SimdKernels.MatVecF32(y, w, x, outDim, inDim);
+            Cpu.SimdKernels.MatVecF32(y, w, b, x, outDim, inDim);
         }
-        for (int o = 0; o < outDim; o++) output[o] += bias[o];
         return output;
     }
 

@@ -178,7 +178,7 @@
 | MeloTTS zh_en (ONNX) | text → 2.74s audio | CPU | 3.11s | **1.14×** | — | — | — | 2026-09-09 | 2026-09-03 👂 |
 | QwenTTS 0.6B (Q8_0 GGUF) | text → 2.16s audio | CPU | 6.59s | **3.05×** | 11.38s | 4.07× | <span style="color:#16a34a">**1.33x**</span> | 2026-09-09 | 2026-08-29 👂 |
 | CosyVoice3 (DiT + HiFT) | text → 3.00s audio | CPU | 17.20s | **5.73×** | 31.66s | 9.05× | <span style="color:#16a34a">**1.58x**</span> | 2026-09-09 | 2026-09-06 👂 |
-| Chatterbox Turbo (Q4_K) | text → 2.52s audio | CPU | 13.72s | **5.45×** | 11.90s | 4.96× | **0.91x** | 2026-09-09 | 2026-08-30 🔬 |
+| Chatterbox Turbo (Q4_K) | text → 2.52s audio | CPU | 13.72s | **5.45×** | 16.24s | 6.77× | <span style="color:#16a34a">**1.24x**</span> | 2026-09-09 | 2026-08-30 🔬 |
 | Parler-TTS Mini v1 | text → 2.81s audio | CPU | 17.36s | **6.18×** | — | — | — | 2026-09-09 | 2026-08-28 👂 |
 | FishSpeech S2 Pro (Q4_K) | text → 3.44s audio | CPU | 28.46s | **8.28×** | 36.12s | 10.95× | <span style="color:#16a34a">**1.32x**</span> | 2026-09-09 | 2026-08-29 👂 |
 | F5-TTS Base (DiT) | text → 2.77s audio | CPU | 27.25s | **9.82×** | — | — | — | 2026-09-09 | 2026-08-28 👂 |
@@ -267,6 +267,8 @@ Rows where the Ratio column is blank and a C++ comparison would be actionable:
 | SmolLM2-1.7B | prefill @long ctx | CPU | llama.cpp long-ctx not measured | Close the 0.33x prefill gap at scale |
 | Qwen3-8B | prefill | CPU | Not yet measured | Unknown how far prefill trails |
 | Qwen3-8B | decode | CPU | llama.cpp ref not run on this box | Known ~93% DRAM; expect ~parity |
+| Piper / Kokoro / MeloTTS / MMS-TTS | text → audio | CPU | Standalone source checkouts in `examples/` (`examples/piper`, `examples/kokoro.cpp`, `examples/MeloTTS.cpp`, `examples/TTS.cpp`) require external SDKs (onnxruntime, OpenVINO, cppjieba, espeak-ng) to build standalone CLI binaries | Build minimal self-contained CLI wrappers for baseline verification |
+| Parler-TTS / F5-TTS | text → audio | CPU | Standalone / DiT graph compute not enabled in `audio.cpp` CPU build | Wire compute graph or compare against PyTorch baseline |
 | All models | any | CUDA | No CUDA device on dev machine | Direct MMQ for Q6K/Q5K prefill |
 | All models | any | Vulkan iGPU | No llama.cpp Vulkan reference | Discrete GPU needed for real comparison |
 | Gemma-4-12B | prefill (batched) | CPU | `perLayerHdUnsupported` gate blocks it | ~5.7× penalty remains once gate is lifted |
@@ -281,4 +283,4 @@ Source documents: `docs/done/perf-loop-progress.md`, `docs/cpu-performance-basel
 `docs/done/vulkan-backend-evidence.md`, `docs/done/gpu-review-log.md`, `GR_performance.md`,
 `docs/perf-loop-project-review-progress.md`, `scripts/bench-audio.ps1`, `scripts/bench-cpp.ps1`, `README.md` git history commit `0c171ed`.*
 
-*Reproducibility: All runs can be replicated with `.\scripts\bench-cpp.ps1 -Suite Tts` or `.\scripts\bench-cpp.ps1 -Suite All`.*
+*Reproducibility: All runs can be replicated with `.\scripts\bench-cpp.ps1 -Suite Tts`, `.\scripts\bench-cpp.ps1 -Suite Align`, `.\scripts\bench-cpp.ps1 -Suite Whisper`, or `.\scripts\bench-cpp.ps1 -Suite All`.*
