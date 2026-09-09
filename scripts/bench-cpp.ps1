@@ -388,8 +388,8 @@ if ($hasAudioCpp -and ($Suite -eq "All" -or $Suite -eq "Tts" -or $Suite -eq "Cha
                      -Task "tts" `
                      -ModelRelPath "models\Chatterbox-Turbo-GGUF\chatterbox-turbo-q8_0.gguf" `
                      -Scenario "text -> 2.52s audio" `
-                     -CsRtf 5.90 `
-                     -CsWallSec 14.86
+                     -CsRtf 5.45 `
+                     -CsWallSec 13.72
 }
 
 if ($hasAudioCpp -and ($Suite -eq "All" -or $Suite -eq "Tts" -or $Suite -eq "QwenTts")) {
