@@ -527,3 +527,16 @@ examples/
 /docs/audio-samples/*
 /docs/diffusion-samples/*
 !/docs/diffusion-samples/README.md
+/moss-tts-audio_tokenizer_config.json
+/moss-tts-config.json
+/moss-tts-meta.txt
+/moss-tts-special_tokens_map.json
+/moss-tts-spm-proto-dump.txt
+/moss-tts-tokenization_moss_tts_nano.py
+/moss-tts-tokenizer.model
+/moss-tts-tokenizer_config.json
+/rvc-tensor-names.txt
+/vibevoice-asr-config.json
+/vibevoice-asr-tensor-names.txt
+/voxcpm2-audiovae-tensor-names.txt
+/voxcpm2-config.json
