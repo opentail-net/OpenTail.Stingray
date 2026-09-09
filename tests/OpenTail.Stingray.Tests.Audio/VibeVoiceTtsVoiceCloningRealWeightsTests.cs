@@ -100,6 +100,7 @@ public sealed class VibeVoiceTtsVoiceCloningRealWeightsTests : HeavyTestBase
         var hp = ModelHyperparams.FromGgufMetadata(llm.Metadata);
         using var backend = new CpuBackend();
         using var fwd = new ForwardPass(llm, backend, hp);
+        using var negativeFwd = new ForwardPass(llm, backend, hp);
 
         var textEmbeddingTable = source.GetTensor("model.language_model.embed_tokens.weight");
         var diffusionHeadWeights = VibeVoiceDiffusionHeadWeights.Load(HiddenDim, AcousticVaeDim, HeadLayers, HeadFfnRatio, HeadRmsNormEps, source.GetTensor);
@@ -152,7 +153,7 @@ public sealed class VibeVoiceTtsVoiceCloningRealWeightsTests : HeavyTestBase
         Assert.True(speakerMean[0].Length >= tokenCounts[0], "encoder produced fewer real frames than the prompt builder's own real speech_token_count expects");
 
         var result = VibeVoiceGenerator.GenerateWithVoiceCloning(
-            fwd, promptTokenIds, speechMask, [speakerMean], tokenCounts,
+            fwd, negativeFwd, promptTokenIds, speechMask, [speakerMean], tokenCounts,
             textEmbeddingTable, HiddenDim,
             SpeechStartId, SpeechEndId, SpeechDiffusionId, EosId,
             diffusionHeadWeights, acousticDecoderWeights, semanticEncoderWeights,

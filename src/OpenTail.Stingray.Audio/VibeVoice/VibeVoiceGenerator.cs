@@ -66,6 +66,28 @@ public static class VibeVoiceGenerationTokenSelector
 /// confirmed-via-listening improvement over the earlier one-shot-per-chunk simplification (which
 /// produced structurally valid but audibly gibberish-sounding output once a sample spanned more
 /// than a couple of chunks).</para>
+///
+/// <para><b>Bug fix, 2026-09-08</b>: the CFG negative/unconditional branch now runs on its own
+/// separate <see cref="IForwardPass"/> instance (<c>negativeFwd</c>), not the same instance as
+/// the positive branch. Cross-checking against `generator.cpp` found the negative branch is
+/// supposed to run on a fully independent decoder cache (`negative_cache`) seeded ONLY with the
+/// `speech_start` token -- it never processes the text prompt, and it is reset from scratch
+/// every time `speech_start` is re-emitted. The prior single-`fwd`, shared-cache version had two
+/// compounding bugs: (1) the "negative" branch's `speech_start` embedding was written into the
+/// SAME cache as the positive branch, right after the full prompt, so it wasn't actually
+/// unconditional -- it attended over the whole prompt; (2) its position counter didn't advance
+/// on every `speech_diffusion` step, so successive diffusion steps wrote into the SAME cache slot
+/// as each other, and collided with the positive branch's own advancing position counter,
+/// corrupting both branches' KV history. This is a strong candidate for the root cause previously
+/// attributed to generic "compounding floating-point drift" in <see cref="VibeVoiceDiffusionSampler"/>'s
+/// 2026-09-08 bisection note -- a real semantic/cache bug, not FP drift, would also produce
+/// "close at frame 0, diverging by frame 5+" (small early perturbation compounding through the
+/// closed generation loop). Callers MUST pass a genuinely separate <see cref="IForwardPass"/>
+/// instance for <c>negativeFwd</c> (e.g. a second <c>new ForwardPass(sameModel, sameBackend, sameHp)</c>)
+/// -- <see cref="IForwardPass.CreateContext"/> is NOT usable for this today; every real backend's
+/// override is the interface's `=> this` default (unimplemented per
+/// `docs/010-...Forward-Pass Context Isolation...md`), so calling it would silently alias back to
+/// the same shared cache this fix removes.</para>
 /// </summary>
 public static class VibeVoiceGenerator
 {
@@ -77,6 +99,7 @@ public static class VibeVoiceGenerator
 
     public static Result Generate(
         IForwardPass fwd,
+        IForwardPass negativeFwd,
         int[] promptTokenIds,
         float[] textEmbeddingTable, // [vocabSize, hiddenDim] row-major, real model.language_model.embed_tokens.weight
         int hiddenDim,
@@ -95,7 +118,7 @@ public static class VibeVoiceGenerator
         var positiveHidden = fwd.LastHidden.ToArray();
 
         return GenerateFromPrefilledState(
-            fwd, promptTokenIds.Length, promptLogits.ToArray(), positiveHidden,
+            fwd, negativeFwd, promptTokenIds.Length, promptLogits.ToArray(), positiveHidden,
             textEmbeddingTable, hiddenDim, speechStartId, speechEndId, speechDiffusionId, eosId,
             diffusionHeadWeights, acousticDecoderWeights, semanticEncoderWeights,
             acousticConnectorWeights, semanticConnectorWeights, speechScalingFactor, speechBiasFactor,
@@ -115,6 +138,7 @@ public static class VibeVoiceGenerator
     /// </summary>
     public static Result GenerateWithVoiceCloning(
         IForwardPass fwd,
+        IForwardPass negativeFwd,
         int[] promptTokenIds, bool[] speechInputMask, float[][][] speakerAcousticMeansChannelMajor /* per speaker: [dim][frames] real encoder mean output */, int[] speakerSpeechTokenCounts,
         float[] textEmbeddingTable, int hiddenDim,
         int speechStartId, int speechEndId, int speechDiffusionId, int eosId,
@@ -184,7 +208,7 @@ public static class VibeVoiceGenerator
         }
 
         return GenerateFromPrefilledState(
-            fwd, promptTokenIds.Length, lastLogits.ToArray(), lastHidden,
+            fwd, negativeFwd, promptTokenIds.Length, lastLogits.ToArray(), lastHidden,
             textEmbeddingTable, hiddenDim, speechStartId, speechEndId, speechDiffusionId, eosId,
             diffusionHeadWeights, acousticDecoderWeights, semanticEncoderWeights,
             acousticConnectorWeights, semanticConnectorWeights, speechScalingFactor, speechBiasFactor,
@@ -192,7 +216,7 @@ public static class VibeVoiceGenerator
     }
 
     private static Result GenerateFromPrefilledState(
-        IForwardPass fwd, int promptLength, float[] promptLogits, float[] positiveHidden,
+        IForwardPass fwd, IForwardPass negativeFwd, int promptLength, float[] promptLogits, float[] positiveHidden,
         float[] textEmbeddingTable, int hiddenDim,
         int speechStartId, int speechEndId, int speechDiffusionId, int eosId,
         VibeVoiceDiffusionHeadWeights diffusionHeadWeights,
@@ -208,10 +232,17 @@ public static class VibeVoiceGenerator
         var generatedTokens = new List<int>();
         var audioSamples = new List<float>();
 
+        // Real reference detail (`generator.cpp`'s `negative_cache`): the CFG negative/
+        // unconditional branch runs on its OWN independent decoder cache, seeded ONLY with the
+        // `speech_start` token -- it never sees the text prompt at all. `negativeFwd` MUST be a
+        // separate IForwardPass instance from `fwd` (own KV cache/position state, weights may be
+        // shared) so this branch is not contaminated by -- or overwritten by -- the positive
+        // branch's prompt-conditioned cache. Position 0 here because negativeFwd's cache starts
+        // empty (it never processes the prompt).
         var negativeStartEmbedding = EmbedToken(textEmbeddingTable, speechStartId, hiddenDim);
-        var negativeLogits = fwd.ForwardEmbedding(negativeStartEmbedding, promptLength);
-        var negativeHidden = fwd.LastHidden.ToArray();
-        int negativePosition = promptLength + 1;
+        negativeFwd.ForwardEmbedding(negativeStartEmbedding, 0);
+        var negativeHidden = negativeFwd.LastHidden.ToArray();
+        int negativePosition = 1;
 
         var scheduler = new VibeVoiceDpmSolverScheduler(ddpmNumSteps);
         scheduler.SetTimesteps(inferenceSteps);
@@ -231,16 +262,39 @@ public static class VibeVoiceGenerator
 
         for (int step = 0; step < maxSteps; step++)
         {
+            if (Environment.GetEnvironmentVariable("STINGRAY_TTS_TRACE") is not null)
+                Console.WriteLine($"vibevoice_tts.step.{step}.control_logits start={currentLogits[speechStartId]:F4} end={currentLogits[speechEndId]:F4} diff={currentLogits[speechDiffusionId]:F4} eos={currentLogits[eosId]:F4}");
+
             int token = VibeVoiceGenerationTokenSelector.Select(currentLogits, speechStartId, speechEndId, speechDiffusionId, eosId, tokenSelectionOptions, rng);
             generatedTokens.Add(token);
             if (token == eosId) break;
 
             if (token == speechStartId)
             {
+                // Real reference: `negative_cache` is FULLY RESET here (a fresh
+                // `prefill_embeddings(negative_start, 1)`, discarding all prior negative-branch
+                // history), not merely appended to -- ported via a full TruncateTo(0) rewind of
+                // negativeFwd's own independent cache before re-seeding it.
+                negativeFwd.TruncateTo(0);
                 var restart = EmbedToken(textEmbeddingTable, speechStartId, hiddenDim);
-                negativeLogits = fwd.ForwardEmbedding(restart, negativePosition);
-                negativeHidden = fwd.LastHidden.ToArray();
-                negativePosition++;
+                negativeFwd.ForwardEmbedding(restart, 0);
+                negativeHidden = negativeFwd.LastHidden.ToArray();
+                negativePosition = 1;
+            }
+
+            if (token == speechEndId)
+            {
+                // Real reference: `speech_end` zeroes BOTH streaming codec caches in place --
+                // a real per-segment lifecycle boundary (not a one-time reset), matching
+                // `generator.cpp`'s `acoustic_streaming_state.set_to_zero()`/
+                // `semantic_streaming_state.set_to_zero()`. Previously missing entirely in this
+                // port (speechEndId was threaded through every signature but never compared
+                // against `token`): a multi-segment generation (multiple speaker turns, or any
+                // intra-utterance speech_start/speech_end pair the LLM emits) would carry stale
+                // convolution-history state across a segment boundary that the reference always
+                // clears.
+                acousticDecoderState.ResetToZero();
+                semanticEncoderState.ResetToZero();
             }
 
             float[] nextEmbedding;
@@ -278,8 +332,15 @@ public static class VibeVoiceGenerator
 
             if (token == speechDiffusionId)
             {
-                negativeLogits = fwd.ForwardEmbedding(nextEmbedding, negativePosition);
-                negativeHidden = fwd.LastHidden.ToArray();
+                // Real reference: the negative cache only ever advances on a speech_diffusion
+                // step, fed the SAME combined next_embedding as the positive branch that step
+                // -- and its position counter is its own independent sequence length, not the
+                // shared prompt-relative position (this MUST increment every such call; the
+                // pre-fix version left it fixed, causing successive diffusion steps to overwrite
+                // the same cache slot on the shared instance).
+                negativeFwd.ForwardEmbedding(nextEmbedding, negativePosition);
+                negativeHidden = negativeFwd.LastHidden.ToArray();
+                negativePosition++;
             }
 
             currentLogits = fwd.ForwardEmbedding(nextEmbedding, position + 1).ToArray();

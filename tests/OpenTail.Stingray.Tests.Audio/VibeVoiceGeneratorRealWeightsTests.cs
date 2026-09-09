@@ -62,6 +62,7 @@ public sealed class VibeVoiceGeneratorRealWeightsTests : HeavyTestBase
         var hp = ModelHyperparams.FromGgufMetadata(llm.Metadata);
         using var backend = new CpuBackend();
         using var fwd = new ForwardPass(llm, backend, hp);
+        using var negativeFwd = new ForwardPass(llm, backend, hp);
 
         var textEmbeddingTable = source.GetTensor("model.language_model.embed_tokens.weight");
 
@@ -106,7 +107,7 @@ public sealed class VibeVoiceGeneratorRealWeightsTests : HeavyTestBase
         var promptTokenIds = new[] { 1, 100, 200, 300, SpeechStartId };
 
         var result = VibeVoiceGenerator.Generate(
-            fwd, promptTokenIds, textEmbeddingTable, HiddenDim,
+            fwd, negativeFwd, promptTokenIds, textEmbeddingTable, HiddenDim,
             SpeechStartId, SpeechEndId, SpeechDiffusionId, EosId,
             diffusionHeadWeights, acousticDecoderWeights, semanticEncoderWeights,
             acousticConnectorWeights, semanticConnectorWeights,
@@ -136,6 +137,7 @@ public sealed class VibeVoiceGeneratorRealWeightsTests : HeavyTestBase
         var hp = ModelHyperparams.FromGgufMetadata(llm.Metadata);
         using var backend = new CpuBackend();
         using var fwd = new ForwardPass(llm, backend, hp);
+        using var negativeFwd = new ForwardPass(llm, backend, hp);
 
         var textEmbeddingTable = source.GetTensor("model.language_model.embed_tokens.weight");
         var diffusionHeadWeights = VibeVoiceDiffusionHeadWeights.Load(HiddenDim, AcousticVaeDim, HeadLayers, HeadFfnRatio, HeadRmsNormEps, source.GetTensor);
@@ -175,7 +177,7 @@ public sealed class VibeVoiceGeneratorRealWeightsTests : HeavyTestBase
         var tokenOptions = new SamplingParams { Temperature = 0.8f, TopK = 4, TopP = 1.0f };
 
         var result = VibeVoiceGenerator.Generate(
-            fwd, promptTokenIds, textEmbeddingTable, HiddenDim,
+            fwd, negativeFwd, promptTokenIds, textEmbeddingTable, HiddenDim,
             SpeechStartId, SpeechEndId, SpeechDiffusionId, EosId,
             diffusionHeadWeights, acousticDecoderWeights, semanticEncoderWeights,
             acousticConnectorWeights, semanticConnectorWeights,

@@ -32,4 +32,22 @@ public sealed class VibeVoiceTokenizerStreamingState
         if (_cursor >= Caches.Length) throw new InvalidOperationException("VibeVoice streaming state cache count mismatch.");
         return ref Caches[_cursor++];
     }
+
+    /// <summary>Real port of `VibeVoiceTokenizerStreamingState::set_to_zero` (not guessed): zeroes
+    /// every already-allocated cache buffer IN PLACE, keeping their shapes -- does NOT clear/
+    /// deallocate them like <see cref="Caches"/> being reset to null would (that's `::reset()`,
+    /// a different reference method, used only when the streaming graph itself is rebuilt for a
+    /// new chunk shape). The reference calls this on both the acoustic and semantic streaming
+    /// states whenever `speech_end` is emitted -- real per-segment lifecycle boundary, not a
+    /// one-time reset -- so a multi-segment generation (e.g. multiple speaker turns, or any
+    /// intra-utterance `speech_start`/`speech_end` pair the LLM chooses to emit) must call this at
+    /// every `speech_end`, not just once.</summary>
+    internal void ResetToZero()
+    {
+        foreach (var cache in Caches)
+        {
+            if (cache is null) continue;
+            foreach (var row in cache) Array.Clear(row);
+        }
+    }
 }

@@ -86,6 +86,7 @@ public sealed class VibeVoiceTtsPromptBuilderRealWeightsTests : HeavyTestBase
         var hp = ModelHyperparams.FromGgufMetadata(llm.Metadata);
         using var backend = new CpuBackend();
         using var fwd = new ForwardPass(llm, backend, hp);
+        using var negativeFwd = new ForwardPass(llm, backend, hp);
 
         var textEmbeddingTable = source.GetTensor("model.language_model.embed_tokens.weight");
         var diffusionHeadWeights = VibeVoiceDiffusionHeadWeights.Load(HiddenDim, AcousticVaeDim, HeadLayers, HeadFfnRatio, HeadRmsNormEps, source.GetTensor);
@@ -122,7 +123,7 @@ public sealed class VibeVoiceTtsPromptBuilderRealWeightsTests : HeavyTestBase
         float speechBiasFactor = source.GetTensor("model.speech_bias_factor")[0];
 
         var result = VibeVoiceGenerator.Generate(
-            fwd, promptTokenIds, textEmbeddingTable, HiddenDim,
+            fwd, negativeFwd, promptTokenIds, textEmbeddingTable, HiddenDim,
             SpeechStartId, SpeechEndId, SpeechDiffusionId, EosId,
             diffusionHeadWeights, acousticDecoderWeights, semanticEncoderWeights,
             acousticConnectorWeights, semanticConnectorWeights,

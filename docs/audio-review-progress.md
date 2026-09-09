@@ -18687,4 +18687,157 @@ committed as a permanent debug tool (same convention as `VoxCpm2PerLayerBisectDe
 any future investigation that wants to re-verify this. Full fast suite (472 tests, +1 for the new
 debug test) clean.
 
+## VibeVoice TTS: negative-CFG-branch KV-cache isolation bug found and fixed -- audibly closes some of the gibberish gap, confirms the compounding-drift conclusion above needs downgrading (2026-09-08)
+
+Asked ChatGPT for a second opinion on the compounding-drift conclusion above, given a detailed
+writeup of this session's methodology. Its highest-value suggestion: audit the CFG negative/
+unconditional branch's state handling against `generator.cpp` line-by-line, since a genuine
+state-topology bug (not float drift) would also produce "close at frame 0, diverging by frame
+5+" -- and every prior bisection experiment above (per-step trace, embedding injection, Q8_0-vs-
+FP32 A/B) was run without ever checking this.
+
+**Real finding**: `generator.cpp` (`generate_vibevoice`, lines 531-572, 604-690) keeps the CFG
+positive and negative branches on TWO ENTIRELY SEPARATE decoder KV caches
+(`positive_cache`/`negative_cache`, both real `VibeVoiceDecoderCachedState`). The negative/
+unconditional branch's cache is seeded ONLY from a single `speech_start` token and NEVER
+contains the text prompt -- it is a genuinely unconditional branch, and gets fully reset
+(fresh `prefill_embeddings(negative_start, 1)`) every time `speech_start` is re-emitted.
+
+`VibeVoiceGenerator.cs`'s `GenerateFromPrefilledState` instead ran BOTH branches through the
+SAME shared `IForwardPass`/KV cache, distinguished only by a position index. Two compounding
+bugs: (1) the negative branch's `speech_start` embedding was written into the cache slot right
+after the full prompt, so it wasn't actually unconditional -- it attended over the entire
+prompt; (2) the negative branch's position counter didn't advance on `speech_diffusion` steps
+(only on `speech_start` restarts), so successive diffusion steps wrote into the SAME cache slot
+as each other, and collided with the positive branch's own advancing position counter,
+corrupting both branches' KV history. This bug was present through the ENTIRE bisection history
+above (items dated through 2026-09-08 earlier today) -- all of it was run on top of this
+confound.
+
+**Fix**: `VibeVoiceGenerator.Generate`/`GenerateWithVoiceCloning` now take a second, genuinely
+separate `IForwardPass negativeFwd` parameter (constructed by the caller the same way as the
+main `fwd`, e.g. a second `new ForwardPass(sameModel, sameBackend, sameHp)` -- weights shared,
+decode state independent). `IForwardPass.CreateContext()` was NOT used for this: per
+`docs/010-...Forward-Pass Context Isolation...md`, every real backend's override is still the
+interface's `=> this` default (unimplemented), so calling it would have silently aliased back to
+the same shared cache this fix removes. The negative branch now gets its own position counter
+(starting at 0/1 in its own cache, not `promptLength`-relative) and a real `TruncateTo(0)` full
+reset on every `speech_start` re-emission, matching the reference exactly. All 4 real-weight
+VibeVoice TTS tests (`VibeVoiceGeneratorRealWeightsTests` x2, `VibeVoiceTtsPromptBuilderRealWeightsTests`,
+`VibeVoiceTtsVoiceCloningRealWeightsTests`) still pass with genuine real-weight timings.
+
+**Second real gap found alongside it**: `speechEndId` was threaded through every method
+signature but never actually compared against `token` anywhere in the loop -- a dead parameter.
+The reference zeroes both streaming codec caches (`acoustic_streaming_state.set_to_zero()`/
+`semantic_streaming_state.set_to_zero()`) on every `speech_end` emission, a real per-segment
+lifecycle boundary (relevant for multi-speaker turns or any intra-utterance speech_start/
+speech_end pair the LLM chooses to emit), not a one-time reset. Added
+`VibeVoiceTokenizerStreamingState.ResetToZero()` (zeroes existing cache buffers in place,
+keeping shape, matching the reference's `set_to_zero` exactly -- distinct from `::reset()`,
+which clears/deallocates and is used only when the streaming graph itself is rebuilt) and wired
+it into the generation loop at the reference's exact position (right after the `speech_start`
+check, before diffusion). **Caveat**: the debug-wav regeneration test used to check this ran to
+its `maxSteps: 60` cap without ever emitting `speech_end` (all 60 steps were `speech_diffusion`
+frames) -- so this fix is real and correct but UNVERIFIED as audibly relevant by that run; it
+needs a longer/multi-segment script (or a real step-count comparison against the reference for
+the same script) to actually exercise it. Separately worth investigating: why the C# port never
+naturally reaches `speech_end`/`eos` within 60 steps for a single short sentence at all -- either
+that script legitimately needs more steps, or compounding drift is pushing the token-selection
+argmax away from ever picking `speech_end`/`eos`.
+
+**Real listening result** (user, after both fixes): "the gulps which are attempting to be words
+are more word-like now, but still not 100%." A real, audible, positive change -- not a placebo,
+and not a full fix either. This is significant evidence for the interpretation ChatGPT
+recommended: the negative-KV bug was a genuine, previously-undiscovered state-topology defect
+(not merely a numerical-drift-adjacent nuance), and its fix produced a real perceptual
+improvement. This DOWNGRADES (does not discard) the "irreducible cross-engine floating-point
+non-associativity" conclusion from the two entries above titled "reference-embedding-injection
+experiment" and "root-cause the gibberish audio to compounding drift" -- both were reasoned
+about on top of this confound, so their residual-divergence numbers cannot be trusted as
+representative of the ACTUAL floating-point-drift-only gap until re-measured with this fix in
+place. Still gibberish-ish per the listening result, so at least one more real defect (state-
+topology or otherwise) most likely remains.
+
+**Recommended next steps for whoever continues this**, in the order ChatGPT and this session
+converged on: (1) audit the streaming codec's cache-vs-graph-rebuild interaction in
+`tokenizer_audio.cpp` (`encode_semantic_streaming`/`decode_acoustic_streaming` call
+`state.reset()` -- clearing ALL cache history -- whenever the streaming graph is rebuilt for a
+new input shape; confirmed harmless for this port's fixed-3200-sample-per-frame case, but worth
+double-checking C#'s `VibeVoiceTokenizerStreamingState` never gets reconstructed mid-stream
+anywhere it shouldn't), (2) a fresh-state-vs-continued-state determinism test on the acoustic
+decoder/semantic encoder with a FIXED synthetic latent fed identically to both engines (bypasses
+the LLM/diffusion/RNG entirely -- the cheapest remaining discriminator between "another state
+bug" and "genuine numerical drift"), (3) re-run the per-step `eps`/hidden-state cross-engine
+trace bisection from the entry above now that the KV-topology confound is fixed, to get a clean
+read on how much genuine floating-point drift remains once known state bugs are removed.
+
+## VibeVoice TTS: scheduler lifecycle ruled out; termination/control-logit test finds a much bigger, structural divergence than slow drift (2026-09-09)
+
+Followed up per ChatGPT's ranked next-step list (previous entry). Two of its three "cheap, do
+first" tests done this pass.
+
+**Scheduler lifecycle audit -- ruled out, no bug (static inspection only, no run needed)**:
+`VibeVoiceDiffusionSampler.Sample` (`VibeVoiceDiffusionSampler.cs:51`) calls
+`scheduler.ResetStepState()` at the top of every call, and `Sample` is invoked exactly once per
+diffusion frame from `VibeVoiceGenerator`'s loop -- matching `generator.cpp`'s
+`reset_step_state()` inside `sample_vibevoice_speech_latents` exactly, with the scheduler object
+itself constructed once per generation (`SetTimesteps` called once). No leaked `step_index`/
+`lower_order_nums`/`model_outputs` history between frames. Ruled out `IForwardPass.ForwardEmbedding`
+vs `Forward` divergence too while here: both share the exact same trunk/final-norm/lm_head via
+`RunTrunk` (`ForwardPass.Decode.cs`) -- no separate/buggy tail specific to continuous-embedding
+input.
+
+**Termination/control-token test -- the actual decisive finding**: added a
+`STINGRAY_TTS_TRACE`-gated per-step print of the 4 raw control-token logits
+(`speech_start`/`speech_end`/`speech_diffusion`/`eos`) to `VibeVoiceGenerator.cs`'s loop (kept,
+small, matches the reference's own trace-gating convention). Ran the same short single-sentence
+script (`"Speaker 1: Hello there, this is a real end to end test of speech synthesis."`, seed 31,
+10 inference steps, guidance 1.5) against BOTH engines on an apples-to-apples basis (confirmed:
+the reference run used NO `--voice-ref`, matching the C# port's deliberately-scoped
+reference-audio-free `VibeVoiceTtsPromptBuilder.BuildPrompt` path -- an earlier same-day
+comparison run had accidentally used `--voice-ref`, which is a DIFFERENT prompt template with a
+real `Voice input:` speaker-audio section; redone here without it to eliminate that confound).
+
+- **C++ reference**: terminates naturally at 4666.67ms audio = exactly 35 diffusion frames
+  (3200 samples/frame @ 24kHz).
+- **C# port**: extended `maxSteps` to 400 for this test and it NEVER once selected anything but
+  `speech_diffusion` -- 400/400 tokens, zero `speech_start`, zero `speech_end`, zero `eos`, across
+  the entire run.
+- **The logit margin itself is flat, not narrowing**: printed the raw 4 control logits at every
+  step for the first 50. After an initial large step-0 margin (diff=22.09 vs end=14.54,
+  start=5.69, eos=9.00 -- this step is special, it's choosing what follows the prompt's own
+  trailing `speech_start`), from step 1 onward the margin settles into a STABLE, oscillating-but-
+  non-trending band for the rest of the run: `diff` consistently ~4-6, `end` consistently ~2-3,
+  all the way through step 49 (e.g. step 39: diff=3.75/end=1.87; step 49: diff=4.70/end=2.27 --
+  no visible convergence toward a crossover 10+ steps past where the reference would already have
+  switched).
+
+**Why this rules out "slow compounding drift eventually tips the balance"**: if the divergence
+were pure accumulating floating-point drift on top of an otherwise-correct decision boundary, the
+`diff`-vs-`end` margin should be NARROWING over the run, crossing zero somewhere near where the
+reference naturally stops (~frame 35 for this script). Instead the margin is essentially flat
+from step 1 through step 49 with no trend at all -- this looks like the model is never receiving
+a signal that tracks utterance progress, not like a boundary getting nudged over many steps by
+small numerical noise. This is a real, structural, likely third bug (same class as the two above:
+something making the closed generation loop behave categorically differently from the reference,
+not merely less precisely).
+
+**Leading hypothesis for whoever continues this**: since the LM's only way to "know" how much of
+the utterance is done is via the closed embedding-feedback loop (there's no explicit progress
+counter fed to the model), a plausible candidate is that the generated per-frame feedback
+embedding (`acousticEmbedding + semanticEmbedding` sum in `VibeVoiceGenerator.cs`) isn't carrying
+real content-tracking information -- e.g. it could be systematically too small/large in
+magnitude relative to what the reference's connectors produce (a real scale bug would produce
+exactly a flat, non-informative margin like this), or the underlying audio/semantic content it's
+derived from doesn't actually vary meaningfully step to step. Concrete next check: dump the
+actual acoustic+semantic connector embedding vectors (magnitude, and cosine similarity between
+consecutive frames) across ~10 real steps and see whether they look like a meaningfully evolving
+signal or a degenerate/near-constant one -- much cheaper than a full per-tensor cross-engine
+trace, and would directly confirm or rule out this hypothesis before spending time on ChatGPT's
+originally-planned fresh-vs-continued-state codec determinism test.
+
+Both real-weight tests plus the debug wav regeneration test still pass/run clean after this
+pass; `maxSteps` reverted to 60 in the debug test, the temporary 400-step/token-sequence-logging
+experiment was run standalone and not left as the test's default.
+
 

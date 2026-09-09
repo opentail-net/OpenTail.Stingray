@@ -1,5 +1,6 @@
 using OpenTail.Stingray.Audio.Rvc;
 using OpenTail.Stingray.Audio.VibeVoice;
+using System.Linq;
 
 namespace OpenTail.Stingray.Tests.Audio;
 
@@ -84,6 +85,7 @@ public sealed class VibeVoiceTtsGenerateWavDebugTest : HeavyTestBase
         var hp = ModelHyperparams.FromGgufMetadata(llm.Metadata);
         using var backend = new CpuBackend();
         using var fwd = new ForwardPass(llm, backend, hp);
+        using var negativeFwd = new ForwardPass(llm, backend, hp);
 
         var textEmbeddingTable = source.GetTensor("model.language_model.embed_tokens.weight");
         var diffusionHeadWeights = VibeVoiceDiffusionHeadWeights.Load(HiddenDim, AcousticVaeDim, HeadLayers, HeadFfnRatio, HeadRmsNormEps, source.GetTensor);
@@ -120,7 +122,7 @@ public sealed class VibeVoiceTtsGenerateWavDebugTest : HeavyTestBase
         float speechBiasFactor = source.GetTensor("model.speech_bias_factor")[0];
 
         var result = VibeVoiceGenerator.Generate(
-            fwd, promptTokenIds, textEmbeddingTable, HiddenDim,
+            fwd, negativeFwd, promptTokenIds, textEmbeddingTable, HiddenDim,
             SpeechStartId, SpeechEndId, SpeechDiffusionId, EosId,
             diffusionHeadWeights, acousticDecoderWeights, semanticEncoderWeights,
             acousticConnectorWeights, semanticConnectorWeights,
@@ -134,5 +136,15 @@ public sealed class VibeVoiceTtsGenerateWavDebugTest : HeavyTestBase
         string outPath = Path.Combine(repoRoot!, "audio-samples", "vibevoice-tts-real-check.wav");
         wavResult.SaveWav(outPath);
         Console.WriteLine($"Wrote {outPath}, {result.AudioSamples.Length} samples, {result.AudioSamples.Length / (double)OutputSampleRate:F2}s");
+
+        // TEMPORARY diagnostic (2026-09-09): compare control-token sequence/termination against
+        // the C++ reference for the same script, per ChatGPT's "cheap termination test" suggestion.
+        int diffCount = result.GeneratedTokens.Count(t => t == SpeechDiffusionId);
+        int startCount = result.GeneratedTokens.Count(t => t == SpeechStartId);
+        int endCount = result.GeneratedTokens.Count(t => t == SpeechEndId);
+        int eosCount = result.GeneratedTokens.Count(t => t == EosId);
+        Console.WriteLine($"tokens={result.GeneratedTokens.Length} speech_start={startCount} speech_diffusion={diffCount} speech_end={endCount} eos={eosCount}");
+        Console.WriteLine($"sequence=[{string.Join(",", result.GeneratedTokens.Select(t => t switch {
+            SpeechStartId => "START", SpeechEndId => "END", SpeechDiffusionId => "DIFF", EosId => "EOS", _ => t.ToString() }))}]");
     }
 }
