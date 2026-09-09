@@ -55,17 +55,23 @@ $audioCppCli = Join-Path $repoRoot "examples\audio.cpp\build\bin\audiocpp_cli.ex
 $whisperCli  = Join-Path $repoRoot "examples\whisper.cpp\build\bin\Release\whisper-cli.exe"
 $audioCppDir = Join-Path $repoRoot "examples\audio.cpp"
 $whisperDir  = Join-Path $repoRoot "examples\whisper.cpp"
+$s2Cli       = Join-Path $repoRoot "examples\s2.cpp\build\s2.exe"
+$s2Dir       = Join-Path $repoRoot "examples\s2.cpp"
 $voiceRef    = Join-Path $audioCppDir "assets\resources\b.wav"
 $refText     = "Some call me nature. Others call me Mother Nature. I have been here for over four and a half billion years."
 
 $hasAudioCpp = Test-Path $audioCppCli
 $hasWhisper  = Test-Path $whisperCli
+$hasS2       = Test-Path $s2Cli
 
 Write-Host "  audio.cpp CLI:   " -NoNewline
 if ($hasAudioCpp) { Write-Host $audioCppCli -ForegroundColor Green } else { Write-Host "NOT FOUND" -ForegroundColor Yellow }
 
 Write-Host "  whisper.cpp CLI: " -NoNewline
 if ($hasWhisper) { Write-Host $whisperCli -ForegroundColor Green } else { Write-Host "NOT FOUND" -ForegroundColor Yellow }
+
+Write-Host "  s2.cpp CLI:      " -NoNewline
+if ($hasS2) { Write-Host $s2Cli -ForegroundColor Green } else { Write-Host "NOT FOUND" -ForegroundColor Yellow }
 Write-Host ""
 
 $results = [System.Collections.Generic.List[PSCustomObject]]::new()
@@ -267,7 +273,98 @@ function Run-WhisperCppTask {
     }
 }
 
-# 2. Run TTS Models (audio.cpp)
+# Helper function to run s2.cpp benchmarks (FishSpeech S2 Pro)
+function Run-S2CppTask {
+    param(
+        [string]$Name,
+        [string]$ModelRelPath,
+        [string]$Scenario,
+        [double]$CsRtf,
+        [double]$CsWallSec
+    )
+
+    $modelPath = Join-Path $repoRoot $ModelRelPath
+    if (-not (Test-Path $modelPath)) {
+        $fallback = Join-Path "F:\_models" ([System.IO.Path]::GetFileName($ModelRelPath))
+        if (Test-Path $fallback) {
+            $modelPath = $fallback
+        } else {
+            Write-Host "  [SKIP] $Name - Model not found: $modelPath" -ForegroundColor Yellow
+            return
+        }
+    }
+
+    $tokPath = Join-Path $s2Dir "tokenizer.json"
+    if (-not (Test-Path $tokPath)) {
+        Write-Host "  [SKIP] $Name - Tokenizer not found: $tokPath" -ForegroundColor Yellow
+        return
+    }
+
+    Write-Host "  [RUN] $Name (s2.cpp) ... " -NoNewline -ForegroundColor Cyan
+
+    $argsList = @(
+        "-m", $modelPath,
+        "-t", $tokPath,
+        "--text", $Prompt,
+        "--prompt-audio", $voiceRef,
+        "--prompt-text", $refText,
+        "-threads", $Threads.ToString(),
+        "-o", "temp_s2_bench.wav"
+    )
+
+    try {
+        $pInfo = [System.Diagnostics.ProcessStartInfo]::new()
+        $pInfo.FileName = $s2Cli
+        $pInfo.WorkingDirectory = $s2Dir
+        $pInfo.RedirectStandardOutput = $true
+        $pInfo.RedirectStandardError = $true
+        $pInfo.UseShellExecute = $false
+        $pInfo.Arguments = ($argsList | ForEach-Object { if ($_ -match '\s') { "`"$_`"" } else { $_ } }) -join ' '
+
+        $p = [System.Diagnostics.Process]::Start($pInfo)
+        $stdout = $p.StandardOutput.ReadToEnd()
+        $stderr = $p.StandardError.ReadToEnd()
+        $p.WaitForExit()
+
+        $combined = "$stdout`n$stderr"
+        $totMatch = [regex]::Match($combined, 'Synthesis:.*total=([\d.]+)\s*ms')
+        if (-not $totMatch.Success) {
+            $totMatch = [regex]::Match($combined, 'Generate:.*total=([\d.]+)\s*ms')
+        }
+        $durMatch = [regex]::Match($combined, 'audio_s=([\d.]+)')
+        $rtfMatch = [regex]::Match($combined, 'total_rtf=([\d.]+)')
+
+        if ($rtfMatch.Success) {
+            $wallSec = if ($totMatch.Success) { [double]$totMatch.Groups[1].Value / 1000.0 } else { 0.0 }
+            $durSec  = [double]$durMatch.Groups[1].Value
+            $rtfVal  = [double]$rtfMatch.Groups[1].Value
+
+            $ratioVal = if ($CsRtf -gt 0 -and $rtfVal -gt 0) { $rtfVal / $CsRtf } else { 0.0 }
+            $ratioStr = if ($ratioVal -gt 1.0) { "<span style=`"color:#16a34a`">**{0:F2}x**</span>" -f $ratioVal } elseif ($ratioVal -gt 0) { "**{0:F2}x**" -f $ratioVal } else { "-" }
+
+            Write-Host ("DONE ({0:F2}s wall, {1:F2}s audio, RTF={2:F2}x, Ratio={3})" -f $wallSec, $durSec, $rtfVal, $ratioStr) -ForegroundColor Green
+
+            $results.Add([PSCustomObject]@{
+                Category   = "TTS"
+                Pipeline   = $Name
+                Scenario   = $Scenario
+                Backend    = "CPU"
+                CsWall     = if ($CsWallSec -gt 0) { "{0:F2}s" -f $CsWallSec } else { "-" }
+                CsRtf      = if ($CsRtf -gt 0) { "**{0:F2}x**" -f $CsRtf } else { "-" }
+                CppRtf     = ("{0:F2}x" -f $rtfVal)
+                CppWall    = ("{0:F2}s" -f $wallSec)
+                Ratio      = $ratioStr
+                Date       = $today
+            })
+        } else {
+            Write-Host "FAILED (Could not parse s2 metrics)" -ForegroundColor Red
+        }
+    } catch {
+        Write-Host "ERROR: $($_.Exception.Message)" -ForegroundColor Red
+    }
+}
+
+# 2. Run TTS Models (audio.cpp & s2.cpp)
 if ($hasAudioCpp -and ($Suite -eq "All" -or $Suite -eq "Tts" -or $Suite -eq "CosyVoice")) {
     Write-Host "`n--- Running CosyVoice3 ---" -ForegroundColor Yellow
     Run-AudioCppTask -Name "CosyVoice3 (DiT + HiFT)" `
@@ -310,19 +407,13 @@ if ($hasAudioCpp -and ($Suite -eq "All" -or $Suite -eq "Tts" -or $Suite -eq "Qwe
                      }
 }
 
-if ($hasAudioCpp -and ($Suite -eq "All" -or $Suite -eq "Tts" -or $Suite -eq "FishAudio")) {
+if ($hasS2 -and ($Suite -eq "All" -or $Suite -eq "Tts" -or $Suite -eq "FishAudio")) {
     Write-Host "`n--- Running Fish Audio S2 Pro ---" -ForegroundColor Yellow
-    Run-AudioCppTask -Name "FishSpeech S2 Pro (Q4_K)" `
-                     -Family "fish_audio" `
-                     -Task "tts" `
-                     -ModelRelPath "models\Fish-Audio-S2-Pro-GGUF\fish-audio-s2-pro-q8_0.gguf" `
-                     -Scenario "text -> 3.44s audio" `
-                     -CsRtf 8.28 `
-                     -CsWallSec 28.46 `
-                     -ExtraArgs @{
-                         "--voice-ref" = $voiceRef
-                         "--reference-text" = $refText
-                     }
+    Run-S2CppTask -Name "FishSpeech S2 Pro (Q4_K)" `
+                  -ModelRelPath "models\s2-pro-q4_k_m.gguf" `
+                  -Scenario "text -> 3.44s audio" `
+                  -CsRtf 8.28 `
+                  -CsWallSec 28.46
 }
 
 # 3. Run ASR Models (whisper.cpp)
