@@ -115,6 +115,8 @@ StyleCopReport.xml
 *.tlb
 *.tli
 *.tlh
+*.exp
+*.lib
 *.tmp
 *.tmp_proj
 *_wpftmp.csproj
