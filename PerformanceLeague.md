@@ -268,4 +268,6 @@ Rows where the Ratio column is blank and a C++ comparison would be actionable:
 Source documents: `docs/done/perf-loop-progress.md`, `docs/cpu-performance-baseline.md`,
 `docs/tts-performance-baseline-and-plan.md`, `docs/done/cpu-speculative-decoding-findings.md`,
 `docs/done/vulkan-backend-evidence.md`, `docs/done/gpu-review-log.md`, `GR_performance.md`,
-`docs/perf-loop-project-review-progress.md`, `scripts/bench-audio.ps1`, `README.md` git history commit `0c171ed`.*
+`docs/perf-loop-project-review-progress.md`, `scripts/bench-audio.ps1`, `scripts/bench-cpp.ps1`, `README.md` git history commit `0c171ed`.*
+
+*Reproducibility: All runs can be replicated with `.\scripts\bench-cpp.ps1 -Suite Tts` or `.\scripts\bench-cpp.ps1 -Suite All`.*
