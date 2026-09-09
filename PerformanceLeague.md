@@ -1,343 +1,271 @@
 # PerformanceLeague
 
-> **Purpose:** Central store for verified inference performance numbers.
-> No optimization rationale, no design discussion — those live in the source documents listed per row.
-> **Every row must carry a date-verified.** A number without a date is hearsay.
-> **C++ / llama.cpp comparison is mandatory for every inference row.**
-> Keep commentary sparse: one short parenthetical per cell if needed; for anything longer, link the source doc.
+> **Purpose:** C# vs C++ inference comparison, by model. The **Ratio** column is the primary
+> signal — it shows how close this engine is to its llama.cpp / C++ reference equivalent for each scenario.
+> A blank ratio (`—`) means no C++ reference has been measured for that scenario yet.
+>
+> No optimization rationale, no design history — those belong in `docs/done/perf-loop-progress.md`.
+> **Every row carries a Performance Check. A number without a date is hearsay.**
 
 ---
 
 ## How to read this file
 
-- **Hardware:** Unless noted, all CPU numbers are from **Ryzen 7 5700G** (Zen 3, 6 physical / 12 logical,
-  AVX2 + FMA, no VNNI/AVX-512, measured DRAM ceiling ~36.8 GB/s).
-  All Vulkan numbers are from the same machine's **integrated AMD Radeon Graphics** (iGPU, shared DRAM).
-  CUDA numbers are from an external NVIDIA GPU (see per-row notes); this box has no CUDA device.
-- **llama.cpp reference:** `tools/llama.cpp` b8585-cpu (CPU-only build). GPU comparison uses public
-  llama-bench figures where noted.
-- **Quant notation:** Q4_K_M = Q4_K mixed sub-block quantization; Q8_0 = 8-bit.
-- **Columns:** prefill = prompt-processing t/s; decode = autoregressive generation t/s.
-  RTF = wall-clock / audio-seconds (lower is better for TTS/ASR).
+- **Ratio** = C# ÷ C++ reference (llama.cpp, whisper.cpp, etc.). 1.0x = parity. Blank (`—`) = no C++ reference measured.
+- **Scenario vocabulary:** `prefill` = prompt-processing; `decode` = autoregressive generation.
+  Context length tagged where it materially affects the number (e.g. `decode @3.2k ctx`).
+- **RTF** (TTS/ASR) = wall-clock ÷ audio-duration. Lower is better; <1.0x = faster than real-time.
+- **TTFA** (TTS Streaming) = Time-To-First-Audio latency in seconds.
+- **Hardware (dev machine):** Ryzen 7 5700G, Zen 3, 6c/12t, AVX2+FMA, no VNNI/AVX-512,
+  DDR4, DRAM ceiling ~36.8 GB/s. Vulkan = same machine's integrated AMD Radeon (iGPU, 35.5 GB/s).
+  No CUDA device on dev machine.
+- **† Prior hardware:** Zen 4 (12c/24t) + RTX 4070 Ti 12 GB. Numbers from README history
+  (commit `0c171ed`, bench script `scripts/bench-allrows-1k.ps1`, 2026-06-16). Treat as
+  indicative — codebase has evolved since.
+- **llama.cpp reference:** `tools/llama.cpp` b8585-cpu (CPU). GPU llama-bench where noted.
+- **Quant notation:** Q4_K_M = Q4_K mixed; Q8_0 = 8-bit activations.
 
 ---
 
-## 1 — CPU Inference
+## SmolLM2-1.7B-Instruct
 
-### SmolLM2 / SmolLM family
+| Scenario | Backend | C# (OT, t/s) | C++ (llama.cpp, t/s) | Ratio | Performance Check | Source |
+|---|---|---:|---:|---:|---|---|
+| prefill (default, ~267 tok) | CPU | 67.3 t/s | 205 t/s | **0.33x** | 2026-08 | perf-loop-progress.md iter 38 |
+| prefill (Q4Kx8 repack, opt-in) | CPU | 77.2 t/s | 205 t/s | **0.38x** | 2026-08 | iter 42; `STINGRAY_Q4KX8_CACHE_MB=<MB>` |
+| decode (short ctx) | CPU | 26.5 t/s | 29.7 t/s | **0.89x** | 2026-07 | iter 8/11 |
+| prefill (43 tok) | Vulkan iGPU | 75.4 t/s | — | — | 2026-08 | iter 26/29/31; no llama.cpp Vulkan ref |
+| prefill (267 tok) | Vulkan iGPU | 53.5 t/s | — | — | 2026-08 | iter 29/31 |
+| prefill (3.2k tok, default) | Vulkan iGPU | 45.9 t/s | — | — | 2026-08 | iter 32; SnapKV on |
+| decode (short ctx) | Vulkan iGPU | 24.0 t/s | — | — | 2026-08 | iter 28/28b |
+| decode @3.2k ctx | Vulkan iGPU | 6.4 t/s | — | — | 2026-08 | iter 36 |
+| decode (short ctx) | CPU | 26.5 t/s | 29.7 t/s | **0.89x** | 2026-07 | iter 8/11 |
+| decode @3.2k ctx | CPU | 9.5 t/s | — | — | 2026-08 | iter 35 |
 
-| Model | Quant | Prefill (OT) | Prefill (llama.cpp) | OT/LC | Decode (OT) | Decode (llama.cpp) | OT/LC | Date verified | Source |
-|---|---|---:|---:|---:|---:|---:|---:|---|---|
-| SmolLM2-1.7B | Q4_K_M | **34.1 t/s** (warm, JIT-corrected) | 205.0 t/s | 0.17x | **26.5 t/s** | 29.7 t/s | **0.89x** | 2026-07 | perf-loop-progress.md iter 8/11 |
-| SmolLM2-1.7B | Q4_K_M | **67.3 t/s** (+Q8 prefill, shipped) | 205.0 t/s | 0.33x | ~26 t/s | 29.7 t/s | ~0.88x | 2026-08 | perf-loop-progress.md iter 38 |
-| SmolLM2-1.7B | Q4_K_M | **77.2 t/s** (+Q4Kx8 repack, opt-in) | 205.0 t/s | 0.38x | ~26 t/s | 29.7 t/s | ~0.88x | 2026-08 | perf-loop-progress.md iter 42 |
+> **Prefill gap note:** llama.cpp 205 t/s uses `block_q4_Kx8` GEMM with 8-row interleave and
+> integer-domain scale folding. The OT Q4Kx8 repack begins closing this but is opt-in pending
+> a perplexity gate. Decode is near-parity because it is bandwidth-bound at ~93% of DRAM ceiling.
 
-> **Prefill gap:** llama.cpp 205 t/s uses `block_q4_Kx8` GEMM with integer-domain scale folding and
-> 8-row interleave. The OT repack (iter 39-42) begins closing this but is OPT-IN
-> (`STINGRAY_Q4KX8_CACHE_MB=<MB>`) pending perplexity gating.
-> **Decode:** bandwidth-bound at ~93% DRAM ceiling; the ~1.1x gap is near the hardware floor.
-
-**CPU prefill scaling with context — date verified: 2026-08 (Q8 prefill on, tiled attention, iter 33):**
+**CPU prefill context scaling — Performance Check: 2026-08 (Q8 prefill on, tiled KV, iter 33):**
 
 | Prompt tokens | 267 | 773 | 1621 | 3218 |
 |---|---:|---:|---:|---:|
-| Prefill OT | ~50 t/s | ~49 t/s | ~49 t/s | ~42 t/s |
-| Prefill llama.cpp | 205 t/s | — | — | — |
+| Prefill OT (t/s) | ~50 t/s | ~49 t/s | ~49 t/s | ~42 t/s |
+| Prefill llama.cpp (t/s) | 205 t/s | — | — | — |
 
-> Source: perf-loop-progress.md iter 33 (+56% at 3.2k tokens, tiled KV pass).
-
-**CPU decode scaling with context — date verified: 2026-08 (contiguous KV score pass, iter 35):**
+**CPU decode context scaling — Performance Check: 2026-08 (contiguous KV score pass, iter 35):**
 
 | Prompt tokens | 267 | 773 | 1621 | 3218 |
 |---|---:|---:|---:|---:|
-| Decode OT | 26.3 t/s | 21.0 t/s | 15.0 t/s | 9.5 t/s |
+| Decode OT (t/s) | 26.3 t/s | 21.0 t/s | 15.0 t/s | 9.5 t/s |
 
-> Source: perf-loop-progress.md iter 35. Contiguous KV score pass (+15-22% at long context) shipped.
-
----
-
-### Qwen3 family
-
-| Model | Quant | Prefill (OT) | Prefill (llama.cpp) | OT/LC | Decode (OT) | Decode (llama.cpp) | OT/LC | Date verified | Source |
-|---|---|---:|---:|---:|---:|---:|---:|---|---|
-| Qwen3-0.6B | Q8_0 | — | — | — | **47.4 t/s** | — | — | 2026-08-07 | cpu-performance-baseline.md |
-| Qwen3-8B | Q4_K_M | not measured | — | — | **6.8 t/s** (34.2 GB/s = 93% DRAM ceil.) | — | — | 2026-08 | cpu-speculative-decoding-findings.md |
-
-> **Qwen3-8B:** At 93% of DRAM ceiling, further decode gains require VNNI-class dot throughput (Zen 4+).
-
----
-
-### OLMoE family (MoE)
-
-| Model | Quant | Prefill (OT) | Prefill (llama.cpp) | OT/LC | Decode (OT) | Decode (llama.cpp) | OT/LC | Date verified | Source |
-|---|---|---:|---:|---:|---:|---:|---:|---|---|
-| OLMoE-1B-7B | Q4_K_M | 105.6 t/s | — | — | **28.2 t/s** | — | — | 2026-08-07 | cpu-performance-baseline.md |
-
-> Decode measured over 7 tokens (early EOS); treat decode figure as approximate.
-
----
-
-### Gemma family
-
-| Model | Quant | Prefill (OT) | Prefill (llama.cpp) | OT/LC | Decode (OT) | Decode (llama.cpp) | OT/LC | Date verified | Source |
-|---|---|---:|---:|---:|---:|---:|---:|---|---|
-| Gemma-4-12B | Q4_0 | **3.8 t/s** | — | — | **3.7 t/s** | — | — | 2026-08-07 | cpu-performance-baseline.md |
-
-> Prefill:decode ratio 1.0x = missing batched prefill (`perLayerHdUnsupported` gate). ~5.7x prefill
-> penalty beyond what model size explains vs Qwen3-8B. No llama.cpp comparison run on this model.
-
----
-
-## 2 — Vulkan Inference
-
-> **All Vulkan numbers: integrated AMD Radeon (iGPU), shared DRAM with CPU. NOT representative of a
-> discrete GPU.** iGPU bandwidth ceiling measured at 35.5 GB/s.
-
-### SmolLM2 family — Vulkan
-
-| Model | Quant | Metric | Before optimisations | After optimisations | Date verified | Source |
-|---|---|---|---:|---:|---|---|
-| SmolLM2-1.7B | Q4_K_M | Prefill (43-tok) | 6.55 t/s (per-token loop) | **75.4 t/s** (batched + flash attn) | 2026-08 | perf-loop-progress.md iter 26/29/31 |
-| SmolLM2-1.7B | Q4_K_M | Prefill (267-tok) | 6.55 t/s | **53.5 t/s** | 2026-08 | iter 29/31 |
-| SmolLM2-1.7B | Q4_K_M | Prefill (3218-tok, default) | 6.4 t/s (SnapKV blocked batched trunk) | **45.9 t/s** | 2026-08 | iter 32 |
-| SmolLM2-1.7B | Q4_K_M | Prefill (3218-tok, SnapKV off) | — | **51.7 t/s** | 2026-08 | iter 31 |
-| SmolLM2-1.7B | Q4_K_M | Decode (43-tok ctx) | 6.0 t/s (uncoalesced Q4_K matvec) | **24.0 t/s** | 2026-08 | iter 28/28b |
-| SmolLM2-1.7B | Q4_K_M | Decode (267-tok ctx) | ~19.7 t/s | **20.2 t/s** | 2026-08 | iter 36 |
-| SmolLM2-1.7B | Q4_K_M | Decode (1621-tok ctx) | ~6.0 t/s | **9.7 t/s** | 2026-08 | iter 36 |
-| SmolLM2-1.7B | Q4_K_M | Decode (3218-tok ctx) | ~4.1 t/s | **6.4 t/s** | 2026-08 | iter 36 |
-
-**Vulkan vs CPU baseline (SmolLM2-1.7B Q4_K_M, same iGPU machine):**
-
-| Metric | CPU | Vulkan (iGPU) | Date verified | Notes |
-|---|---:|---:|---|---|
-| Prefill (short prompt, original) | 96.1 t/s | 84.2 t/s | 2026-08-07 | iGPU shares DRAM — not representative of discrete GPU |
-| Decode | 23.7 t/s | 24.0 t/s | 2026-08-07 | Dead heat on shared DRAM |
-
-> Source: vulkan-backend-evidence.md. Original per-token Vulkan prefill was 6.55 t/s — ~15x slower
-> than CPU. After batching + flash attention the gap inverted at short context.
-
-**Vulkan prefill scaling with context — date verified: 2026-08 (iter 31/32/33):**
+**Vulkan prefill context scaling — Performance Check: 2026-08 (flash attention + SnapKV fix, iter 31-33):**
 
 | Prompt tokens | 43 | 267 | 773 | 1621 | 3218 (default) |
 |---|---:|---:|---:|---:|---:|
-| Vulkan prefill OT | ~83 t/s | ~84 t/s | ~78 t/s | ~66 t/s | **45.9 t/s** |
-| CPU prefill OT | — | ~50 t/s | ~49 t/s | ~49 t/s | ~42 t/s |
+| Vulkan prefill OT (t/s) | ~83 t/s | ~84 t/s | ~78 t/s | ~66 t/s | **45.9 t/s** |
+| CPU prefill OT (t/s) | — | ~50 t/s | ~49 t/s | ~49 t/s | ~42 t/s |
 
-> Source: perf-loop-progress.md iter 31/32/33. No llama.cpp iGPU comparison available.
+**Vulkan KV dtype breakdown (3239 tok, SnapKV off) — Performance Check: 2026-08 (iter 44/45):**
 
-**Vulkan KV dtype comparison (SmolLM2-1.7B Q4_K_M, 3239-tok, SnapKV off) — date verified: 2026-08 (iter 44/45):**
-
-| KV dtype | Prefill | Decode | Perplexity delta vs fp32 | Date verified |
+| KV dtype | Prefill (t/s) | Decode (t/s) | Perplexity delta vs fp32 | Performance Check |
 |---|---:|---:|---|---|
 | fp32 | 53.2 t/s | 6.0 t/s | baseline | 2026-08 |
-| bf16 | 52.0 t/s (~noise) | **9.4 t/s (+57%)** | +0.023% (negligible) | 2026-08 |
+| bf16 | 52.0 t/s (noise) | **9.4 t/s (+57%)** | +0.023% (negligible) | 2026-08 |
 | q8_0 | not measured | ~7.6 t/s | +0.143% | 2026-08 |
 
-> Source: perf-loop-progress.md iter 44/45. bf16 prefill was 2.4x slower before flash variant landed
-> (iter 44). bf16 default flip blocked pending --tq and SnapKV compatibility.
+> bf16 default flip blocked pending `--tq` and SnapKV compatibility. Source: iter 44/45.
 
-**Vulkan Q4_K matvec bandwidth utilisation (single-row, post-optimisation) — date verified: 2026-08 (iter 28b):**
+**Vulkan Q4_K matvec bandwidth — Performance Check: 2026-08 (iter 28b); ceiling = 35.5 GB/s:**
 
-| Shape | Achieved | % of 35.5 GB/s ceiling | Date verified |
+| Shape | Achieved | % of ceiling | Performance Check |
 |---|---:|---:|---|
-| QKV/O 2048x2048 | 19.43 GB/s | 55% | 2026-08 |
-| gate/up 8192x2048 | 30.52 GB/s | 86% | 2026-08 |
-| down 2048x8192 | 28.98 GB/s | 82% | 2026-08 |
+| QKV/O 2048×2048 | 19.43 GB/s | 55% | 2026-08 |
+| gate/up 8192×2048 | 30.52 GB/s | 86% | 2026-08 |
+| down 2048×8192 | 28.98 GB/s | 82% | 2026-08 |
 | Q6_K (large shapes) | 31.5–32.3 GB/s | 89–91% | 2026-08 |
 
-> Source: perf-loop-progress.md iter 28b. Q6_K was already at ceiling before any work.
+---
+
+## Qwen3 family
+
+| Model | Scenario | Backend | C# (OT, t/s) | C++ (llama.cpp, t/s) | Ratio | Performance Check | Source |
+|---|---|---|---:|---:|---:|---|---|
+| Qwen3-0.6B Q8_0 | decode (short ctx) | CPU | 47.4 t/s | — | — | 2026-08-07 | cpu-performance-baseline.md |
+| Qwen3-8B Q4_K_M | decode (short ctx) | CPU | 6.8 t/s | — | — | 2026-08 | cpu-speculative-decoding-findings.md |
+| Qwen3-Coder 30B-A3B Q4_K_M | prefill | CUDA (†) | 102.6 t/s | — | — | 2026-06-16 | README history 0c171ed |
+| Qwen3-Coder 30B-A3B Q4_K_M | decode | CUDA (†) | 28.0 t/s | — | — | 2026-06-16 | README history 0c171ed |
+| Qwen3-Coder 30B-A3B Q4_K_M | decode | CPU | 22.4 t/s | — | — | 2026-06-16 | README history 0c171ed |
+| Qwen3-Coder 30B-A3B Q4_K_M | decode (`--tq`) | CPU | 22.6 t/s | — | — | 2026-06-16 | README history 0c171ed |
+| Qwen3.6-35B-A3B Q4_K_M | prefill | CUDA (†) | 475.4 t/s | — | — | 2026-06-16 | README history 0c171ed |
+| Qwen3.6-35B-A3B Q4_K_M | decode | CUDA (†) | 24.5 t/s | — | — | 2026-06-16 | README history 0c171ed |
+| Qwen3.6-35B-A3B Q4_K_M | decode | Vulkan (†) | 22.8 t/s | — | — | 2026-06-16 | README history 0c171ed |
+| Qwen3.6-35B-A3B Q4_K_M | decode | CPU | 9.3 t/s | — | — | 2026-06-16 | README history 0c171ed |
+| Qwen3.6-35B-A3B-MTP Q4_K_M | prefill | CUDA (†) | 480.2 t/s | — | — | 2026-06-16 | README history 0c171ed |
+| Qwen3.6-35B-A3B-MTP Q4_K_M | decode (`--no-thinking`) | CUDA (†) | 33.3 t/s | ~41 t/s (est.) | **~0.81x** | 2026-06-16 | README: "~80% of llama.cpp tg128" |
+| Qwen3.6-27B-MTP Q4_K_M | prefill | CUDA (†) | 22.0 t/s | — | — | 2026-06-16 | README history 0c171ed |
+| Qwen3.6-27B-MTP Q4_K_M | decode (`--no-thinking`) | CUDA (†) | 12.3 t/s | — | — | 2026-06-16 | README history 0c171ed |
+| Qwen3.6-27B-MTP Q4_K_M | decode (`--no-thinking`) | CPU | 3.6 t/s | — | — | 2026-06-16 | README history 0c171ed |
+| Carnice 35B-A3B-MTP (APEX) | prefill (`--no-thinking`) | CUDA (†) | 522.0 t/s | — | — | 2026-06-16 | README history 0c171ed |
+| Carnice 35B-A3B-MTP (APEX) | decode (`--no-thinking`) | CUDA (†) | 26.5 t/s | — | — | 2026-06-16 | README history 0c171ed |
+
+> **Qwen3-8B decode:** 6.8 t/s = 34.2 GB/s = 93% of the measured 36.8 GB/s DRAM ceiling.
+> Speculative decoding is a confirmed −37% loss on this CPU — see Speculative Decoding section.
 
 ---
 
-## 3 — CUDA Inference
+## OLMoE family
 
-> **No CUDA GPU is present on the development machine. No measured numbers exist.**
-> See `GR_performance.md` and `docs/done/gpu-review-log.md` for the code-level audit.
+| Model | Scenario | Backend | C# (OT, t/s) | C++ (llama.cpp, t/s) | Ratio | Performance Check | Source |
+|---|---|---|---:|---:|---:|---|---|
+| OLMoE-1B-7B Q4_K_M | prefill | CPU | 105.6 t/s | — | — | 2026-08-07 | cpu-performance-baseline.md |
+| OLMoE-1B-7B Q4_K_M | decode | CPU | 28.2 t/s | — | — | 2026-08-07 | cpu-performance-baseline.md |
 
-| Model | Quant | Prefill (OT) | Prefill (llama.cpp) | Decode (OT) | Decode (llama.cpp) | Date verified | Notes |
-|---|---|---|---|---|---|---|---|
-| any | Q4_K | not measured | — | not measured | — | — | No CUDA device on dev machine |
-| any | Q6_K / Q5_K | not measured | — | not measured | — | — | Prefill via dequant+cuBLAS; direct MMQ absent — see GR_performance.md §3 |
-
-> **Highest-confidence CUDA opportunity:** Q6_K and Q5_K prefill dequantize full weight matrix to
-> FP16 scratch then invoke cuBLAS — a full-weight HBM round-trip per call. Direct MMQ (as llama.cpp
-> does) would eliminate this. Requires real NVIDIA hardware to validate.
-> **CUDA current state:** tensor-core flash attention, split-KV decode, grouped GQA reuse, CUDA graphs,
-> and int8 MMA matmul are implemented. No shape/arch-aware kernel planner. Monolithic NVRTC compile
-> confirmed broken for pre-Ampere (sm < 80); CudaDeviceCaps layer added.
+> Decode measured over ~7 tokens (early EOS); treat as approximate.
 
 ---
 
-## 4 — TTS / Audio Inference (CPU)
+## Gemma family
 
-> No published llama.cpp TTS pipeline for direct comparison. Figures are absolute RTF only.
+| Model | Scenario | Backend | C# (OT, t/s) | C++ (llama.cpp, t/s) | Ratio | Performance Check | Source |
+|---|---|---|---:|---:|---:|---|---|
+| Gemma-4-12B Q4_0 | prefill | CPU | 3.8 t/s | — | — | 2026-08-07 | cpu-performance-baseline.md |
+| Gemma-4-12B Q4_0 | decode | CPU | 3.7 t/s | — | — | 2026-08-07 | cpu-performance-baseline.md |
+| Gemma4 E4B QAT Q4_0 | prefill | CUDA (†) | 3666 t/s | — | — | 2026-06-16 | README history 0c171ed |
+| Gemma4 E4B QAT Q4_0 | decode | CUDA (†) | 100.4 t/s | — | — | 2026-06-16 | README history 0c171ed |
+| Gemma4 E4B QAT Q4_0 | prefill | Vulkan (†) | 35 t/s | — | — | 2026-06-22 | README history 0c171ed |
+| Gemma4 E4B QAT Q4_0 | decode | Vulkan (†) | 39.5 t/s | — | — | 2026-06-22 | README history 0c171ed |
+| Gemma4 12B QAT Q4_0 | prefill | CUDA (†) | 1714 t/s | — | — | 2026-06-16 | README history 0c171ed |
+| Gemma4 12B QAT Q4_0 | decode | CUDA (†) | 54.1 t/s | 57 t/s | **0.95x** | 2026-06-16 | README history 0c171ed |
+| Gemma4 12B QAT Q4_0 | prefill | Vulkan (†) | 17.0 t/s | — | — | 2026-06-16 | README history 0c171ed |
+| Gemma4 12B QAT Q4_0 | decode | Vulkan (†) | 19.1 t/s | — | — | 2026-06-16 | README history 0c171ed |
+| Gemma4 12B QAT Q4_0 | decode | CPU (†, Zen 4) | 5.1 t/s | — | — | 2026-06-16 | README history 0c171ed |
 
-| Pipeline | Audio produced | Mean wall-clock | RTF | Date verified | Source |
-|---|---:|---:|---:|---|---|
-| QwenTTS (Talker + Code Predictor, Qwen3 backbone) | 2.16 s | **14.34 s** | **6.64x slower than RT** | 2026-08-29 | tts-performance-baseline-and-plan.md |
-| QwenTTS (after Turn 1 optimization) | 2.16 s | **13.998 s** | **6.48x** | 2026-08-29 | tts-performance-baseline-and-plan.md |
-| CosyVoice3 (LLM + flow/DiT + HiFT) | 2.44 s | **21.13 s** | **8.66x slower than RT** | 2026-08-29 | tts-performance-baseline-and-plan.md |
-
-> Harness: `tests/OpenTail.Stingray.Tests.Audio/TtsPerformanceBaselineDebugTest.cs`.
-> Prompt: `"Hello, I will make some lunch, darling!"`, seed 42, 1 warmup + 3 timed runs.
-> Both pipelines CPU-only; neither wired to Vulkan or CUDA yet.
+> **Gemma-4-12B (dev machine):** prefill:decode ratio 1.0x is the signature of a missing
+> batched-prefill gate (`perLayerHdUnsupported`). ~5.7× prefill penalty vs Qwen3-8B size-adjusted.
+> **Gemma4 12B CUDA decode (†):** within ~6% of llama.cpp — best verified parity in the table.
 
 ---
 
-## 5 — Speculative Decoding (CPU)
+## Llama family
 
-| Target | Draft | Strategy | Decode (baseline) | Decode (speculative) | Delta | Acceptance | Date verified | Source |
+| Model | Scenario | Backend | C# (OT, t/s) | C++ (llama.cpp, t/s) | Ratio | Performance Check | Source |
+|---|---|---|---:|---:|---:|---|---|
+| Llama-4 Scout 17B-16E Q4_K_M | decode | CPU (†, smoke) | 4.3 t/s | — | — | 2026-06-16 | README history 0c171ed; smoke run only |
+| Llama-4 Scout 17B-16E Q4_K_M | decode | CUDA (†, smoke) | 2.6 t/s | — | — | 2026-06-16 | README history 0c171ed; smoke run, model dwarfs 12 GB card |
+
+---
+
+## Speculative Decoding (CPU)
+
+| Target | Draft | Scenario | C# (OT, t/s) | C++ (ref, t/s) | Ratio | Acceptance rate | Performance Check | Source |
+|---|---|---|---:|---:|---:|---|---|---|
+| Qwen3-8B Q4_K_M | Qwen3-0.6B Q8_0 | decode, draft-n 4 | 4.3 t/s (−37%) | — | — | 62% | 2026-08 | cpu-speculative-decoding-findings.md |
+
+> Speculation is a **confirmed loss** on this hardware. Q4_K dot is ~87% compute-bound (not
+> bandwidth-bound); verifying k tokens costs ~k× compute regardless of dispatch. VNNI (`vpdpbusd`,
+> Zen 4+) is the prerequisite for speculation to become viable.
+
+---
+
+## TTS / Audio Synthesis
+
+| Pipeline | Scenario | Backend | Wall-Clock | RTF (C#) | C++ (ref) | Ratio | Performance Check | Confirmed Working |
 |---|---|---|---:|---:|---:|---:|---|---|
-| Qwen3-8B Q4_K_M | Qwen3-0.6B Q8_0 | draft-n 4 | 6.8 t/s | 4.3 t/s | **-37%** | 62% | 2026-08 | cpu-speculative-decoding-findings.md |
+| Piper lessac-medium (ONNX) | text → 2.45s audio | CPU | 0.47s | **0.19×** | — | — | 2026-09-09 | 2026-09-03 👂 |
+| MMS-TTS eng (VITS) | text → 3.65s audio | CPU | 1.38s | **0.38×** | — | — | 2026-09-09 | 2026-08-30 🔬 |
+| Kokoro-82M (Q8_0 GGUF) | text → 2.93s audio | CPU | 2.60s | **0.89×** | — | — | 2026-09-09 | 2026-09-03 👂 |
+| MeloTTS zh_en (ONNX) | text → 2.74s audio | CPU | 3.11s | **1.14×** | — | — | 2026-09-09 | 2026-09-03 👂 |
+| QwenTTS 0.6B (Q8_0 GGUF) | text → 2.16s audio | CPU | 6.59s | **3.05×** | 4.85× | <span style="color:#16a34a">**1.59x**</span> | 2026-09-09 | 2026-08-29 👂 |
+| CosyVoice3 (DiT + HiFT) | text → 3.00s audio | CPU | 17.20s | **5.73×** | 9.59× | <span style="color:#16a34a">**1.67x**</span> | 2026-09-09 | 2026-09-06 👂 |
+| Chatterbox Turbo (Q4_K) | text → 2.52s audio | CPU | 14.86s | **5.90×** | 5.18× | **0.88x** | 2026-09-09 | 2026-08-30 🔬 |
+| Parler-TTS Mini v1 | text → 2.81s audio | CPU | 17.36s | **6.18×** | — | — | 2026-09-09 | 2026-08-28 👂 |
+| FishSpeech S2 Pro (Q4_K) | text → 3.44s audio | CPU | 28.46s | **8.28×** | — | — | 2026-09-09 | 2026-08-29 👂 |
+| F5-TTS Base (DiT) | text → 2.77s audio | CPU | 27.25s | **9.82×** | — | — | 2026-09-09 | 2026-08-28 👂 |
+| F5-TTS Base (Paragraph) | text → 14.5s audio | CPU | 10.20s | **0.70×** | — | — | 2026-09-09 | 2026-08-28 👂 |
 
-> Speculative decoding is a **confirmed loss** on this hardware. Root cause: Q4_K dot is ~87%
-> compute-bound (not bandwidth-bound as naively assumed). Verifying k tokens costs ~kx the compute
-> regardless of dispatch. VNNI (`vpdpbusd`, Zen 4+) is the prerequisite for speculation to pay.
-> No llama.cpp comparison run.
+> RTF < 1.0x = faster than real-time. Piper (0.19x = 5.2× real-time), MMS-TTS (0.38x = 2.6× real-time), and Kokoro (0.89x) are faster than real-time on CPU.
+> Autoregressive pipelines (QwenTTS, CosyVoice3, Chatterbox, Parler, FishSpeech) are compute-bound on CPU; GPU dispatch is expected to be the largest speedup.
+> **Confirmed Working:** 🔬 = Golden-verified against reference; 👂 = Confirmed working by ear / transcription.
+> Harness: `scripts/bench-audio.ps1` (`tests/OpenTail.Stingray.Tests.Audio/TtsPerformanceBaselineDebugTest.cs`).
 
 ---
 
-## 6 — Vision Encoder (CPU)
+## TTS Streaming Latency (TTFA)
 
-| Component | Result | Date verified | Source |
-|---|---|---|---|
-| VisionOps.Attention / AttentionGqa | **>1.2x** over scalar at 1024-token / 16-head ViT-L scale | 2026-08-20 | perf-loop-project-review-progress.md |
+| Pipeline | Scenario | Backend | TTFA (C#) | Total Time | C++ (ref) | Ratio | Performance Check | Confirmed Working |
+|---|---|---|---:|---:|---:|---:|---|---|
+| FishSpeech S2 Pro (Stream) | Streaming TTFA (1-frame) | CPU | **0.634s** | 63.55s | — | — | 2026-09-09 | 2026-08-29 👂 |
+| Piper lessac (Stream) | Streaming TTFA (16-frame) | CPU | **0.776s** | 6.47s | — | — | 2026-09-09 | 2026-09-03 👂 |
+| MMS-TTS eng (Stream) | Streaming TTFA (16-frame) | CPU | **0.996s** | 16.40s | — | — | 2026-09-09 | 2026-08-30 🔬 |
+| Parler-TTS Mini (Stream) | Streaming TTFA (16-frame) | CPU | **1.712s** | 17.40s | — | — | 2026-09-09 | 2026-08-28 👂 |
+| QwenTTS 0.6B (Stream) | Streaming TTFA (1-frame) | CPU | **2.728s** | 72.53s | — | — | 2026-09-09 | 2026-08-29 👂 |
+| MeloTTS (Stream) | Streaming TTFA | CPU | **6.540s** | 6.55s | — | — | 2026-09-09 | 2026-09-03 👂 |
+| Kokoro-82M (Stream) | Streaming TTFA (1-chunk) | CPU | **6.592s** | 6.60s | — | — | 2026-09-09 | 2026-09-03 👂 |
+| F5-TTS (Stream) | Streaming TTFA | CPU | **27.034s** | 27.03s | — | — | 2026-09-09 | 2026-08-28 👂 |
+| Chatterbox Turbo (Stream) | Streaming TTFA | CPU | **33.153s** | 33.16s | — | — | 2026-09-09 | 2026-08-30 🔬 |
+
+> **TTFA (Time-To-First-Audio):** Latency from prompt ingestion to the first playable audio chunk emitted.
+> **Confirmed Working:** 🔬 = Golden-verified against reference; 👂 = Confirmed working by ear / transcription.
+> Harness: `scripts/bench-audio.ps1 -Suite Streaming`.
+
+---
+
+## ASR / Speech Recognition (Whisper GGUF)
+
+| Model | Scenario | Backend | Wall-Clock | RTF (C#) | C++ (whisper.cpp) | Ratio | Performance Check | Source |
+|---|---|---|---:|---:|---:|---:|---|---|
+| Whisper Base (39M) | 12s audio transcribe | CPU | 0.84s | **0.070x** | 0.060x | **0.86x** | 2026-09-09 | scripts/bench-audio.ps1 |
+| Whisper Small (244M) | 12s audio transcribe | CPU | 2.42s | **0.202x** | 0.180x | **0.89x** | 2026-09-09 | scripts/bench-audio.ps1 |
+| Whisper Medium (769M) | 12s audio transcribe | CPU | 6.71s | **0.560x** | 0.582x | <span style="color:#16a34a">**1.04x**</span> | 2026-09-09 | scripts/bench-audio.ps1 |
+| Whisper Large-v3 (1.5B) | 12s audio transcribe | CPU | 11.32s | **0.943x** | 1.200x | <span style="color:#16a34a">**1.27x**</span> | 2026-09-09 | scripts/bench-audio.ps1 |
+
+> RTF < 1.0x = faster than real-time. Whisper Base runs at **14.3x real-time** speed on CPU; Small at **5.0x real-time**; Medium at **1.79x real-time**; Large-v3 at **1.06x real-time** (faster than real-time on CPU).
+> Harness: `scripts/bench-audio.ps1` (`tests/OpenTail.Stingray.Tests.Audio/WhisperFullPipelinePerfBenchTests.cs`).
+
+---
+
+## Vision Encoder (CPU)
+
+| Component | Scenario | Backend | C# result | C++ reference | Ratio | Performance Check | Source |
+|---|---|---|---|---|---:|---|---|
+| VisionOps.Attention / AttentionGqa | 1024-tok / 16-head ViT-L | CPU | >1.2× over scalar | — | — | 2026-08-20 | perf-loop-project-review-progress.md |
 
 > Scalar reference kept in `VisionOpsBenchmarkTests.cs` as a permanent regression baseline.
-> No llama.cpp vision encoder comparison measured.
 
 ---
 
-## 7 — Known Measurement Gaps
+## CUDA Inference — No Numbers Yet
 
-| Area | Reason | Opportunity |
-|---|---|---|
-| CUDA inference (all models) | No NVIDIA GPU on dev machine | Q6_K/Q5_K direct prefill MMQ — see GR_performance.md §3 |
-| Discrete GPU Vulkan | Only iGPU available | All Vulkan numbers are iGPU/shared DRAM; discrete card expected to show much larger prefill wins |
-| Gemma-4-12B prefill (batched) | `perLayerHdUnsupported` gate | ~5.7x penalty over Qwen3-8B size-adjusted; see cpu-performance-baseline.md |
-| QwenTTS / CosyVoice3 on GPU | Pipelines not yet wired to CUDA/Vulkan | Expected to be the single largest TTS win when wired |
-| Qwen3-8B prefill | Not yet measured | Only decode (6.8 t/s) verified |
-| CPU bf16/q8 KV cache | PagedKvCache hard-wired fp32 | Vulkan showed +57% decode at no quality cost; no equivalent on CPU path |
+> **No CUDA GPU on dev machine.** No measured numbers exist for CUDA on this box.
+> See `GR_performance.md` and `docs/done/gpu-review-log.md` for the code-level audit.
+> All CUDA rows above are from prior hardware (†).
+>
+> **Highest-confidence open opportunity:** Q6_K and Q5_K prefill currently dequantize full weight
+> matrix to FP16 then call cuBLAS — a full-weight HBM round-trip per call. Direct MMQ (as llama.cpp
+> does) would eliminate this. Requires real NVIDIA hardware to validate.
+
+---
+
+## Known Measurement Gaps
+
+Rows where the Ratio column is blank and a C++ comparison would be actionable:
+
+| Model | Scenario | Backend | Why blank | Opportunity |
+|---|---|---|---|---|
+| SmolLM2-1.7B | prefill @long ctx | CPU | llama.cpp long-ctx not measured | Close the 0.33x prefill gap at scale |
+| Qwen3-8B | prefill | CPU | Not yet measured | Unknown how far prefill trails |
+| Qwen3-8B | decode | CPU | llama.cpp ref not run on this box | Known ~93% DRAM; expect ~parity |
+| All models | any | CUDA | No CUDA device on dev machine | Direct MMQ for Q6K/Q5K prefill |
+| All models | any | Vulkan iGPU | No llama.cpp Vulkan reference | Discrete GPU needed for real comparison |
+| Gemma-4-12B | prefill (batched) | CPU | `perLayerHdUnsupported` gate blocks it | ~5.7× penalty remains once gate is lifted |
+| TTS Pipelines (all) | full synthesis | GPU | Pipelines not wired to GPU yet | Expected to be the largest TTS win |
+| CPU KV cache | bf16/q8 dtype | CPU | `PagedKvCache` hard-wired fp32 | Vulkan showed +57% decode at no quality cost |
 
 ---
 
 *Last updated: 2026-09-09.
-Source documents crawled: `docs/done/perf-loop-progress.md`, `docs/cpu-performance-baseline.md`,
+Source documents: `docs/done/perf-loop-progress.md`, `docs/cpu-performance-baseline.md`,
 `docs/tts-performance-baseline-and-plan.md`, `docs/done/cpu-speculative-decoding-findings.md`,
 `docs/done/vulkan-backend-evidence.md`, `docs/done/gpu-review-log.md`, `GR_performance.md`,
-`docs/perf-loop-project-review-progress.md`.*
-
-
----
-
-## 8 — Prior Hardware / Earlier Codebase Benchmarks
-
-> **Provenance:** These numbers were measured on a **different machine from the current dev box**,
-> NOT verified on this repository's primary development hardware. Included for reference and
-> comparison leverage, but treat with proportionate caution: the codebase has diverged significantly
-> since these were recorded.
->
-> **Hardware:** AMD Zen 4 (12c/24t) + RTX 4070 Ti (12 GB VRAM), Windows.
-> The CPU-only rows (where stated) are from a separate Zen 4 machine; the RTX 4070 Ti is the
-> primary GPU bench target. Models are Q4_K_M unless noted.
->
-> **Date measured:** 2026-06-16 (CUDA rows via `scripts/bench-allrows-1k.ps1`; warm clock start,
-> 1 discarded warm-up run). Gemma 4 E4B q4_0 Vulkan row freshly measured 2026-06-22.
->
-> **This project's own CPU measurements on the same models** appear in section 1 for comparison.
-
-### Measured on this project's own machine (Zen 3 / no GPU)
-
-| Model | Quant | Prefill t/s @3K ctx | Decode t/s | Date verified |
-|---|---|---:|---:|---|
-| SmolLM2-1.7B-Instruct | Q4_K_M | **130.7 – 134.7** | 25.3 – 27.2 | 2026-07 (git 0c171ed) |
-| Qwen3-8B | Q4_K_M | **30.5 – 30.9** | 5.6 – 5.8 | 2026-07 (git 0c171ed) |
-
-> These are from the initial README commit (0c171ed, "fork attribution, verified CPU benchmarks").
-> The SmolLM2 prefill figure (130-134 t/s) was measured BEFORE the Q8 prefill gate was default-on
-> and before the Q4Kx8 repack; sections 1's current 67-77 t/s reflects a different short-context
-> prompt length and JIT-correction methodology. See perf-loop-progress.md for reconciliation.
-
-### Zen 4 + RTX 4070 Ti 12 GB machine — all GPU rows
-
-> SmolLM2 GPU numbers were not published at this revision; see section 2 for current iGPU figures.
-
-
-#### Gemma 4 E4B-it QAT Q4_0 — 5 GB
-
-| Backend | Prefill t/s | Decode t/s | Date verified | Notes |
-|---|---:|---:|---|---|
-| **CUDA** `-g -1 -c 2048` | **3666** | **100.4** | 2026-06-16 | QAT q4_0: ~1.4x decode vs Q8. Q4_0 int8 tensor-core MMQ + SoA repack. |
-| Vulkan `-g -1 -c 2048` | **35** | **39.5** | 2026-06-22 | Per-token prefill (no batched-prefill path); full trunk incl. PLE + shared-KV tail. |
-
-> llama.cpp reference for Gemma 4 E4B not published.
-
-#### Gemma 4 12B-it QAT Q4_0 — 7 GB
-
-| Backend | Prefill t/s | Decode t/s | Date verified | Notes |
-|---|---:|---:|---|---|
-| **CUDA** `-g -1 -c 2048` | **1714** | **54.1** | 2026-06-16 | Q4_0 int8 tensor-core MMQ. **Within ~6% of llama.cpp** (57 t/s decode). bf16 KV → 128K ctx in 12 GB. |
-| Vulkan `-g -1 -c 2048` | **17.0** | **19.1** | 2026-06-16 | Per-token prefill. |
-| CPU | **5.0** | **5.1** | 2026-06-16 | 48-layer dense gemma4 on Zen 4 (12c). |
-
-#### Qwen3-8B — Q4_K_M — 5 GB
-
-| Backend | Prefill t/s | Decode t/s | Date verified | Notes |
-|---|---:|---:|---|---|
-| **CUDA** `-g -1` | (see §1) | (see §1) | 2026-06-16 | Byte-identical to llama.cpp b8585 under greedy (60-token decode). |
-
-#### Qwen3-Coder 30B-A3B (MoE) — Q4_K_M — 17 GB
-
-| Backend | Prefill t/s | Decode t/s | Date verified | Notes |
-|---|---:|---:|---|---|
-| **CUDA** `-g -1` (hybrid) | **102.6** | **28.0** | 2026-06-16 | Trunk on GPU, routed experts CPU mmap. Batched CPU-MoE 3.5x over per-token (29.4). |
-| CPU `--tq` | 19.6 | 22.6 | 2026-06-16 | 3-bit KV; FastScan → 15.5 t/s decode @3.2K ctx. |
-| CPU | 19.8 | 22.4 | 2026-06-16 | 128 experts / 8 active. |
-| Vulkan `-g -1` (hybrid) | 1.2 | 4.9 | 2026-06-16 | PCIe/expert-stream bound. 29 GPU + 19 CPU layers. |
-
-#### Carnice (Qwen3.6-35B-A3B-MTP finetune, APEX mixed-precision) — 17 GB
-
-| Backend | Prefill t/s | Decode t/s | Date verified | Notes |
-|---|---:|---:|---|---|
-| **CUDA** `-g -1 --no-thinking` (hybrid) | **522.0** | **26.5** | 2026-06-16 | GPU MoE op-offload + Q3_K cuBLAS + FlashQLA. 3.6x over CPU MoE (144 t/s). 80% MTP acceptance. |
-| Vulkan `-g -1 --no-thinking` (hybrid) | 18.4 | 12.2 | 2026-06-16 | 47% acceptance; MTP regresses vs plain decode (~22 t/s). |
-
-#### Qwen3.6-35B-A3B (GDN+MoE) — Q4_K_M — 22 GB
-
-| Backend | Prefill t/s | Decode t/s | Date verified | Notes |
-|---|---:|---:|---|---|
-| **CUDA** `-g -1` (hybrid) | **475.4** | **24.5** | 2026-06-16 | GPU op-offload + raw-Q8_0 trunk (4.2x over F32 dequant). |
-| Vulkan `-g -1` (hybrid) | 17.3 | 22.8 | 2026-06-16 | Decode ~matches CUDA (CPU-expert bound). |
-| CPU | **11.3** | 9.3 | 2026-06-16 | FlashQLA GDN prefill 1.35x over per-token. |
-
-#### Qwen3.6-35B-A3B-MTP (GDN+MoE) — Q4_K_M — 22 GB
-
-| Backend | Prefill t/s | Decode t/s | Date verified | Notes |
-|---|---:|---:|---|---|
-| **CUDA** `-g -1 --no-thinking` (hybrid) | **480.2** | **33.3** | 2026-06-16 | Raw-Q8_0 trunk 4.2x. MTP ~74% accept. Plain decode ~80% of llama.cpp. |
-| Vulkan `-g -1 --no-thinking` (hybrid) | 15.4 | 9.3 | 2026-06-16 | 61% accept; MTP regresses vs ~22 t/s plain decode. |
-| CPU `--no-thinking` | 9.1 | **8.5** | 2026-06-16 | MoE-MTP batched verify; expert-sequential, ~MTP-off parity. |
-
-#### Qwen3.6-27B-MTP (GDN dense) — Q4_K_M — 16 GB
-
-| Backend | Prefill t/s | Decode t/s | Date verified | Notes |
-|---|---:|---:|---|---|
-| **CUDA** `-g -1 --no-thinking` (hybrid) | **22.0** | **12.3** | 2026-06-16 | 84% accept; 1.9x over MTP-off (6.5). |
-| **CUDA** `-g -1 --no-thinking` Q5_K_M (hybrid) | 9.6 | **5.5** | 2026-06-16 | 98% accept. |
-| Vulkan `-g -1 --no-thinking` (hybrid) | 7.6 | **3.9** | 2026-06-16 | MTP slight loss (3.9 vs 4.9 MTP-off). |
-| CPU `--no-thinking` | 3.0 | **3.6** | 2026-06-16 | 90% accept; 1.2x over MTP-off (3.0). |
-| CPU `--no-thinking` Q5_K_M | 2.8 | **3.5** | 2026-06-16 | ~10% slower. |
-
-#### Llama-4 Scout 17B-16E (MoE) — Q4_K_M — 61 GB
-
-| Backend | Prefill t/s | Decode t/s | Date verified | Notes |
-|---|---:|---:|---|---|
-| CPU | 2.1 | 4.3 | 2026-06-16 | 48 layers, 17B active; split GGUF (not on bench machine — smoke run only). |
-| CUDA `-g -1` (hybrid) | 1.2 | 2.6 | 2026-06-16 | Model dwarfs 12 GB card; CPU-only wins. Not on bench machine — smoke run only. |
-
----
-
-*Last updated: 2026-09-09. Sources for section 8: `README.md` git history, commit `0c171ed`
-("fork attribution, verified CPU benchmarks"), benchmarks as preserved at that commit.
-Hardware: Zen 4 + RTX 4070 Ti. This section should be treated as
-**indicative, not authoritative** for the current codebase — re-measure on new hardware to confirm.*
+`docs/perf-loop-project-review-progress.md`, `scripts/bench-audio.ps1`, `README.md` git history commit `0c171ed`.*

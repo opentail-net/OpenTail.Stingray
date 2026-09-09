@@ -31,6 +31,12 @@ public static class F16CNative
     [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
     private static extern unsafe float f16c_dot(float* input, ushort* weightF16Bits, int k);
 
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+    private static extern unsafe void f16c_matvec_rows(float* input, ushort* weightsF16, int inDim, int outRows, float* output);
+
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+    private static extern unsafe void f16c_gemm_block(float* input, ushort* weightsF16, float* output, int seqRows, int inDim, int outRows, int outStride);
+
     /// <summary>True if the native shim loaded successfully and a real call executed without error. Computed once.</summary>
     public static readonly bool IsAvailable = ProbeAvailability();
 
@@ -58,4 +64,17 @@ public static class F16CNative
     /// <paramref name="k"/> elements. Caller MUST check <see cref="IsAvailable"/> first.
     /// </summary>
     public static unsafe float Dot(float* input, ushort* weightF16Bits, int k) => f16c_dot(input, weightF16Bits, k);
+
+    /// <summary>
+    /// 4-way unrolled AVX2 F16C matrix-vector multiply: computes <paramref name="outRows"/> dot products
+    /// against a single input vector of length <paramref name="inDim"/>.
+    /// </summary>
+    public static unsafe void MatVecRows(float* input, ushort* weightsF16, int inDim, int outRows, float* output) =>
+        f16c_matvec_rows(input, weightsF16, inDim, outRows, output);
+
+    /// <summary>
+    /// Batched 2-token x 4-channel tiled GEMM block in AVX2 F16C with register weight reuse.
+    /// </summary>
+    public static unsafe void GemmBlock(float* input, ushort* weightsF16, float* output, int seqRows, int inDim, int outRows, int outStride) =>
+        f16c_gemm_block(input, weightsF16, output, seqRows, inDim, outRows, outStride);
 }

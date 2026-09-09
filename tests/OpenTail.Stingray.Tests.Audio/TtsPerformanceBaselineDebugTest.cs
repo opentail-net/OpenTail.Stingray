@@ -17,6 +17,12 @@ public sealed class TtsPerformanceBaselineDebugTest : HeavyTestBase
         {
             var p = Path.Combine(dir, relativePath);
             if (File.Exists(p) || Directory.Exists(p)) return p;
+            if (relativePath.StartsWith("models/", StringComparison.OrdinalIgnoreCase))
+            {
+                var sub = relativePath.Substring("models/".Length);
+                var p2 = Path.Combine(dir, "models", "_models", sub);
+                if (File.Exists(p2) || Directory.Exists(p2)) return p2;
+            }
             var parent = Directory.GetParent(dir);
             if (parent is null) break;
             dir = parent.FullName;

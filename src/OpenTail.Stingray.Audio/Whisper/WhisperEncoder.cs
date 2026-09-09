@@ -18,6 +18,18 @@ public sealed class WhisperEncoder
     private readonly float[] _positionalEmbeddings; // [AudioCtx * dModel]
     private readonly WhisperEncoderWeights? _weights;
 
+    // Preallocated inference workspaces (eliminates ~2GB GC churn per transcription)
+    private readonly float[] _workConv1;
+    private readonly float[] _workConv2;
+    private readonly float[] _workNormed;
+    private readonly float[] _workAttnOut;
+    private readonly float[] _workMlpOut;
+    private readonly float[] _workQ;
+    private readonly float[] _workK;
+    private readonly float[] _workV;
+    private readonly float[] _workAttnRaw;
+    private readonly float[] _workHidden;
+
     public WhisperEncoder(WhisperConfig config, WhisperEncoderWeights? weights = null)
     {
         _config = config;
@@ -28,6 +40,19 @@ public sealed class WhisperEncoder
         _weights = weights;
 
         _positionalEmbeddings = weights?.PositionalEmbedding ?? GenerateSinusoidalPositionalEmbeddings(config.AudioCtx, _dModel);
+
+        int maxFrames = Math.Max(config.AudioCtx, 1500);
+        int maxConv1 = maxFrames * 2;
+        _workConv1 = new float[_dModel * maxConv1];
+        _workConv2 = new float[_dModel * maxFrames];
+        _workNormed = new float[maxFrames * _dModel];
+        _workAttnOut = new float[maxFrames * _dModel];
+        _workMlpOut = new float[maxFrames * _dModel];
+        _workQ = new float[maxFrames * _dModel];
+        _workK = new float[maxFrames * _dModel];
+        _workV = new float[maxFrames * _dModel];
+        _workAttnRaw = new float[maxFrames * _dModel];
+        _workHidden = new float[maxFrames * (_dModel * 4)];
     }
 
     /// <summary>
@@ -42,7 +67,7 @@ public sealed class WhisperEncoder
         // 1. Conv1D Downsampling (2 stages)
         // Stage 1: stride 1
         int conv1Frames = numFrames;
-        float[] conv1 = new float[_dModel * conv1Frames];
+        Span<float> conv1 = (_dModel * conv1Frames <= _workConv1.Length) ? _workConv1.AsSpan(0, _dModel * conv1Frames) : new float[_dModel * conv1Frames];
         if (_weights != null)
             ApplyConv1DReal(mel, numMels, conv1Frames, conv1, stride: 1, _weights.Conv1Weight, _weights.Conv1Bias);
         else
@@ -50,7 +75,7 @@ public sealed class WhisperEncoder
 
         // Stage 2: stride 2
         int conv2Frames = (conv1Frames + 1) / 2;
-        float[] conv2 = new float[_dModel * conv2Frames];
+        Span<float> conv2 = (_dModel * conv2Frames <= _workConv2.Length) ? _workConv2.AsSpan(0, _dModel * conv2Frames) : new float[_dModel * conv2Frames];
         if (_weights != null)
             ApplyConv1DReal(conv1, _dModel, conv2Frames, conv2, stride: 2, _weights.Conv2Weight, _weights.Conv2Bias);
         else
@@ -72,9 +97,12 @@ public sealed class WhisperEncoder
         }
 
         // 3. Encoder Transformer Blocks
-        float[] normed = new float[encFrames * _dModel];
-        float[] attnOut = new float[encFrames * _dModel];
-        float[] mlpOut = new float[encFrames * _dModel];
+        float[] normedArr = _workNormed;
+        float[] attnArr = _workAttnOut;
+        float[] mlpArr = _workMlpOut;
+        Span<float> normed = normedArr.AsSpan(0, encFrames * _dModel);
+        Span<float> attnOut = attnArr.AsSpan(0, encFrames * _dModel);
+        Span<float> mlpOut = mlpArr.AsSpan(0, encFrames * _dModel);
 
         for (int l = 0; l < _nLayers; l++)
         {
@@ -85,9 +113,9 @@ public sealed class WhisperEncoder
             {
                 int off = t * _dModel;
                 if (lw != null)
-                    LayerNormAffine(x.AsSpan(off, _dModel), lw.AttnLnWeight, lw.AttnLnBias, normed.AsSpan(off, _dModel), _config.LayerNormEps);
+                    LayerNormAffine(x.AsSpan(off, _dModel), lw.AttnLnWeight, lw.AttnLnBias, normedArr.AsSpan(off, _dModel), _config.LayerNormEps);
                 else
-                    LayerNorm(x.AsSpan(off, _dModel), normed.AsSpan(off, _dModel), _config.LayerNormEps);
+                    LayerNorm(x.AsSpan(off, _dModel), normedArr.AsSpan(off, _dModel), _config.LayerNormEps);
             });
 
             if (lw != null)
@@ -103,9 +131,9 @@ public sealed class WhisperEncoder
             {
                 int off = t * _dModel;
                 if (lw != null)
-                    LayerNormAffine(x.AsSpan(off, _dModel), lw.MlpLnWeight, lw.MlpLnBias, normed.AsSpan(off, _dModel), _config.LayerNormEps);
+                    LayerNormAffine(x.AsSpan(off, _dModel), lw.MlpLnWeight, lw.MlpLnBias, normedArr.AsSpan(off, _dModel), _config.LayerNormEps);
                 else
-                    LayerNorm(x.AsSpan(off, _dModel), normed.AsSpan(off, _dModel), _config.LayerNormEps);
+                    LayerNorm(x.AsSpan(off, _dModel), normedArr.AsSpan(off, _dModel), _config.LayerNormEps);
             });
 
             if (lw != null)
@@ -115,7 +143,7 @@ public sealed class WhisperEncoder
                 Parallel.For(0, encFrames, t =>
                 {
                     int off = t * _dModel;
-                    ComputeMlp(normed.AsSpan(off, _dModel), mlpOut.AsSpan(off, _dModel));
+                    ComputeMlp(normedArr.AsSpan(off, _dModel), mlpArr.AsSpan(off, _dModel));
                 });
             }
 
@@ -179,13 +207,12 @@ public sealed class WhisperEncoder
             // small contiguous scratch buffer so the actual weight-multiply-accumulate can still
             // be a single vectorized TensorPrimitives.MultiplyAdd instead of one branchy multiply
             // per element. The gather itself is still a scalar strided copy (no SIMD gather
-            // primitive available here), but it's now branch-free in the loop body.
             Parallel.For(0, _dModel, oc =>
             {
                 var outRow = outCopy.AsSpan(oc * outFrames, outFrames);
                 outRow.Fill(bias[oc]);
                 int wOcOff = oc * inChannels * 3;
-                var gathered = new float[outFrames];
+                Span<float> gathered = outFrames <= 2048 ? stackalloc float[outFrames] : new float[outFrames];
                 for (int ic = 0; ic < inChannels; ic++)
                 {
                     var inRow = inCopy.AsSpan(ic * inFrames, inFrames);
@@ -202,7 +229,7 @@ public sealed class WhisperEncoder
                         for (int i = 0; i < count; i++)
                             gathered[i] = inRow[(tStart + i) * stride + k];
 
-                        var gatheredSlice = gathered.AsSpan(0, count);
+                        var gatheredSlice = gathered.Slice(0, count);
                         var outSlice = outRow.Slice(tStart, count);
                         TensorPrimitives.MultiplyAdd(gatheredSlice, weight[wIcOff + (k + 1)], outSlice, outSlice);
                     }
@@ -247,32 +274,29 @@ public sealed class WhisperEncoder
         }
     }
 
-    private static void ComputeMultiHeadSelfAttentionReal(float[] input, int seqLen, int dModel, int nHeads, WhisperEncoderLayerWeights lw, Span<float> output)
+    private void ComputeMultiHeadSelfAttentionReal(ReadOnlySpan<float> input, int seqLen, int dModel, int nHeads, WhisperEncoderLayerWeights lw, Span<float> output)
     {
         int headDim = dModel / nHeads;
         float scale = 1.0f / MathF.Sqrt(headDim);
 
-        float[] q = new float[seqLen * dModel];
-        float[] k = new float[seqLen * dModel];
-        float[] v = new float[seqLen * dModel];
+        Span<float> q = (seqLen * dModel <= _workQ.Length) ? _workQ.AsSpan(0, seqLen * dModel) : new float[seqLen * dModel];
+        Span<float> k = (seqLen * dModel <= _workK.Length) ? _workK.AsSpan(0, seqLen * dModel) : new float[seqLen * dModel];
+        Span<float> v = (seqLen * dModel <= _workV.Length) ? _workV.AsSpan(0, seqLen * dModel) : new float[seqLen * dModel];
+        Span<float> attnRaw = (seqLen * dModel <= _workAttnRaw.Length) ? _workAttnRaw.AsSpan(0, seqLen * dModel) : new float[seqLen * dModel];
+
         LinearReal(input, seqLen, lw.QueryWeight, lw.QueryBias, dModel, q);
         LinearReal(input, seqLen, lw.KeyWeight, null, dModel, k);
         LinearReal(input, seqLen, lw.ValueWeight, lw.ValueBias, dModel, v);
 
-        float[] attnRaw = new float[seqLen * dModel];
-
-        // Parallelized over (head, contiguous query-chunk) instead of head alone: each work item
-        // still owns a contiguous range of query rows within one head (independent output, no
-        // cross-chunk reduction needed), just at finer scheduling granularity than one giant
-        // seqLen x seqLen-per-head task. Measured (see docs/audio-review-progress.md's attention-
-        // chunking bench): 4 chunks/head is a real ~24% win on Medium (16 heads), roughly flat on
-        // Large-v3 (20 heads) and Tiny/Base, and only a ~5% regression on Small (12 heads, which
-        // already divides the thread count evenly) -- net positive with no case meaningfully
-        // harmed, so kept as the new default rather than conditioned on head count.
         int chunksPerHead = 4;
         int chunkSize = (seqLen + chunksPerHead - 1) / chunksPerHead;
         int actualChunksPerHead = (seqLen + chunkSize - 1) / chunkSize;
         int totalWorkItems = nHeads * actualChunksPerHead;
+
+        float[] qArr = _workQ;
+        float[] kArr = _workK;
+        float[] vArr = _workV;
+        float[] attnArr = _workAttnRaw;
 
         Parallel.For(0, totalWorkItems, w =>
         {
@@ -282,30 +306,70 @@ public sealed class WhisperEncoder
             int qStart = chunk * chunkSize;
             int qEnd = Math.Min(qStart + chunkSize, seqLen);
 
-            float[] scores = new float[seqLen];
+            Span<float> scores0 = seqLen <= 2048 ? stackalloc float[seqLen] : new float[seqLen];
+            Span<float> scores1 = seqLen <= 2048 ? stackalloc float[seqLen] : new float[seqLen];
+            Span<float> scores2 = seqLen <= 2048 ? stackalloc float[seqLen] : new float[seqLen];
+            Span<float> scores3 = seqLen <= 2048 ? stackalloc float[seqLen] : new float[seqLen];
 
-            for (int i = qStart; i < qEnd; i++)
+            int i = qStart;
+            for (; i <= qEnd - 4; i += 4)
             {
-                var querySpan = q.AsSpan(i * dModel + headOff, headDim);
+                var q0 = qArr.AsSpan((i + 0) * dModel + headOff, headDim);
+                var q1 = qArr.AsSpan((i + 1) * dModel + headOff, headDim);
+                var q2 = qArr.AsSpan((i + 2) * dModel + headOff, headDim);
+                var q3 = qArr.AsSpan((i + 3) * dModel + headOff, headDim);
 
                 for (int j = 0; j < seqLen; j++)
                 {
-                    var keySpan = k.AsSpan(j * dModel + headOff, headDim);
-                    scores[j] = TensorPrimitives.Dot(querySpan, keySpan) * scale;
+                    var keySpan = kArr.AsSpan(j * dModel + headOff, headDim);
+                    scores0[j] = TensorPrimitives.Dot(q0, keySpan) * scale;
+                    scores1[j] = TensorPrimitives.Dot(q1, keySpan) * scale;
+                    scores2[j] = TensorPrimitives.Dot(q2, keySpan) * scale;
+                    scores3[j] = TensorPrimitives.Dot(q3, keySpan) * scale;
                 }
 
-                TensorPrimitives.SoftMax(scores.AsSpan(0, seqLen), scores.AsSpan(0, seqLen));
+                TensorPrimitives.SoftMax(scores0.Slice(0, seqLen), scores0.Slice(0, seqLen));
+                TensorPrimitives.SoftMax(scores1.Slice(0, seqLen), scores1.Slice(0, seqLen));
+                TensorPrimitives.SoftMax(scores2.Slice(0, seqLen), scores2.Slice(0, seqLen));
+                TensorPrimitives.SoftMax(scores3.Slice(0, seqLen), scores3.Slice(0, seqLen));
 
-                // weighted = sum_j scores[j] * v[j, headOff:headOff+headDim]. Looping j-outer/
-                // d-inner (rather than the reverse) keeps each v access a contiguous headDim-wide
-                // span instead of a dModel-strided one, and lets TensorPrimitives vectorize the
-                // per-row multiply-accumulate instead of doing headDim*seqLen scalar mults.
-                var weighted = attnRaw.AsSpan(i * dModel + headOff, headDim);
+                var weighted0 = attnArr.AsSpan((i + 0) * dModel + headOff, headDim);
+                var weighted1 = attnArr.AsSpan((i + 1) * dModel + headOff, headDim);
+                var weighted2 = attnArr.AsSpan((i + 2) * dModel + headOff, headDim);
+                var weighted3 = attnArr.AsSpan((i + 3) * dModel + headOff, headDim);
+                weighted0.Clear();
+                weighted1.Clear();
+                weighted2.Clear();
+                weighted3.Clear();
+
+                for (int j = 0; j < seqLen; j++)
+                {
+                    var vRow = vArr.AsSpan(j * dModel + headOff, headDim);
+                    float s0 = scores0[j], s1 = scores1[j], s2 = scores2[j], s3 = scores3[j];
+                    TensorPrimitives.MultiplyAdd(vRow, s0, weighted0, weighted0);
+                    TensorPrimitives.MultiplyAdd(vRow, s1, weighted1, weighted1);
+                    TensorPrimitives.MultiplyAdd(vRow, s2, weighted2, weighted2);
+                    TensorPrimitives.MultiplyAdd(vRow, s3, weighted3, weighted3);
+                }
+            }
+
+            for (; i < qEnd; i++)
+            {
+                var querySpan = qArr.AsSpan(i * dModel + headOff, headDim);
+                for (int j = 0; j < seqLen; j++)
+                {
+                    var keySpan = kArr.AsSpan(j * dModel + headOff, headDim);
+                    scores0[j] = TensorPrimitives.Dot(querySpan, keySpan) * scale;
+                }
+
+                TensorPrimitives.SoftMax(scores0.Slice(0, seqLen), scores0.Slice(0, seqLen));
+
+                var weighted = attnArr.AsSpan(i * dModel + headOff, headDim);
                 weighted.Clear();
                 for (int j = 0; j < seqLen; j++)
                 {
-                    var vRow = v.AsSpan(j * dModel + headOff, headDim);
-                    TensorPrimitives.MultiplyAdd(vRow, scores[j], weighted, weighted);
+                    var vRow = vArr.AsSpan(j * dModel + headOff, headDim);
+                    TensorPrimitives.MultiplyAdd(vRow, scores0[j], weighted, weighted);
                 }
             }
         });
@@ -313,10 +377,10 @@ public sealed class WhisperEncoder
         LinearReal(attnRaw, seqLen, lw.OutWeight, lw.OutBias, dModel, output);
     }
 
-    private static unsafe void ComputeMlpReal(float[] input, int seqLen, int dModel, WhisperEncoderLayerWeights lw, Span<float> output)
+    private unsafe void ComputeMlpReal(ReadOnlySpan<float> input, int seqLen, int dModel, WhisperEncoderLayerWeights lw, Span<float> output)
     {
         int hiddenDim = dModel * 4;
-        float[] hidden = new float[seqLen * hiddenDim];
+        Span<float> hidden = (seqLen * hiddenDim <= _workHidden.Length) ? _workHidden.AsSpan(0, seqLen * hiddenDim) : new float[seqLen * hiddenDim];
         LinearReal(input, seqLen, lw.Mlp0Weight, lw.Mlp0Bias, hiddenDim, hidden);
 
         fixed (float* hp = hidden)

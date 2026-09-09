@@ -56,28 +56,34 @@ public sealed class WhisperLinearWeight
                 ushort* wBase = (ushort*)pW;
                 if (seqLen == 1)
                 {
-                    float* rowIn = pIn;
-                    nint inAddr = (nint)rowIn, wAddr = (nint)wBase, outAddr = (nint)pOut;
-                    int inDim = _inDim;
-                    System.Threading.Tasks.Parallel.For(0, _outDim, o =>
+                    nint inAddr = (nint)pIn, wAddr = (nint)wBase, outAddr = (nint)pOut;
+                    int inDim = _inDim, outDim = _outDim;
+                    int numChunks = Math.Max(1, Math.Min(Environment.ProcessorCount, (outDim + 63) / 64));
+                    int chunkSize = (outDim + numChunks - 1) / numChunks;
+                    System.Threading.Tasks.Parallel.For(0, numChunks, c =>
                     {
-                        ushort* wRow = (ushort*)wAddr + (nuint)o * (nuint)inDim;
-                        ((float*)outAddr)[o] = F16CNative.Dot((float*)inAddr, wRow, inDim);
+                        int oStart = c * chunkSize;
+                        int oCount = Math.Min(chunkSize, outDim - oStart);
+                        if (oCount <= 0) return;
+                        ushort* wChunk = (ushort*)wAddr + (nuint)oStart * (nuint)inDim;
+                        float* outChunk = (float*)outAddr + oStart;
+                        F16CNative.MatVecRows((float*)inAddr, wChunk, inDim, oCount, outChunk);
                     });
                 }
                 else
                 {
                     nint inAddr = (nint)pIn, wAddr = (nint)wBase, outAddr = (nint)pOut;
                     int inDim = _inDim, outDim = _outDim;
-                    System.Threading.Tasks.Parallel.For(0, seqLen, t =>
+                    int numChunks = Math.Max(1, Math.Min(Environment.ProcessorCount, (seqLen + 3) / 4));
+                    int chunkSize = (seqLen + numChunks - 1) / numChunks;
+                    System.Threading.Tasks.Parallel.For(0, numChunks, threadIdx =>
                     {
-                        float* rowIn = (float*)inAddr + (nuint)t * (nuint)inDim;
-                        float* rowOut = (float*)outAddr + (nuint)t * (nuint)outDim;
-                        for (int o = 0; o < outDim; o++)
-                        {
-                            ushort* wRow = (ushort*)wAddr + (nuint)o * (nuint)inDim;
-                            rowOut[o] = F16CNative.Dot(rowIn, wRow, inDim);
-                        }
+                        int tStart = threadIdx * chunkSize;
+                        int tCount = Math.Min(chunkSize, seqLen - tStart);
+                        if (tCount <= 0) return;
+                        float* inChunk = (float*)inAddr + (nuint)tStart * (nuint)inDim;
+                        float* outChunk = (float*)outAddr + (nuint)tStart * (nuint)outDim;
+                        F16CNative.GemmBlock(inChunk, (ushort*)wAddr, outChunk, tCount, inDim, outDim, outDim);
                     });
                 }
             }

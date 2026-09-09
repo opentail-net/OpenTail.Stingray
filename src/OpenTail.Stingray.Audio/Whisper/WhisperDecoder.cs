@@ -132,7 +132,7 @@ public sealed class WhisperDecoder
 
     private float[] ForwardStepReal(int tokenId, int position, WhisperKvCache cache, WhisperDecoderWeights w)
     {
-        float[] x = new float[_dModel];
+        Span<float> x = stackalloc float[_dModel];
         int posOffset = position * _dModel;
         int tokOffset = tokenId * _dModel;
         for (int d = 0; d < _dModel; d++)
@@ -140,10 +140,10 @@ public sealed class WhisperDecoder
             x[d] = w.TokenEmbeddingWeight[tokOffset + d] + w.PositionalEmbedding[posOffset + d];
         }
 
-        float[] normTemp = new float[_dModel];
-        float[] q = new float[_dModel];
-        float[] attnRaw = new float[_dModel];
-        float[] attnOut = new float[_dModel];
+        Span<float> normTemp = stackalloc float[_dModel];
+        Span<float> q = stackalloc float[_dModel];
+        Span<float> attnRaw = stackalloc float[_dModel];
+        Span<float> attnOut = stackalloc float[_dModel];
 
         for (int l = 0; l < _nLayers; l++)
         {
@@ -174,7 +174,7 @@ public sealed class WhisperDecoder
 
         cache.Position = position + 1;
 
-        float[] lastHidden = new float[_dModel];
+        Span<float> lastHidden = stackalloc float[_dModel];
         LayerNormAffine(x, w.LnWeight, w.LnBias, lastHidden, _config.LayerNormEps);
 
         // Tied LM head: logits = lastHidden @ TokenEmbeddingWeight^T (no bias).
@@ -352,7 +352,7 @@ public sealed class WhisperDecoder
         }
     }
 
-    private static void ComputeAttentionStepFromProjected(float[] query, int totalKeys, float[] keyCache, float[] valueCache, int dModel, int nHeads, Span<float> output)
+    private static void ComputeAttentionStepFromProjected(ReadOnlySpan<float> query, int totalKeys, float[] keyCache, float[] valueCache, int dModel, int nHeads, Span<float> output)
     {
         int headDim = dModel / nHeads;
         float scale = 1.0f / MathF.Sqrt(headDim);
@@ -361,7 +361,7 @@ public sealed class WhisperDecoder
         for (int h = 0; h < nHeads; h++)
         {
             int headOff = h * headDim;
-            var querySpan = query.AsSpan(headOff, headDim);
+            var querySpan = query.Slice(headOff, headDim);
 
             for (int j = 0; j < totalKeys; j++)
             {
@@ -451,11 +451,11 @@ public sealed class WhisperDecoder
         });
     }
 
-    private static void ComputeMlpReal(float[] input, WhisperDecoderLayerWeights lw, float[] output)
+    private static void ComputeMlpReal(ReadOnlySpan<float> input, WhisperDecoderLayerWeights lw, Span<float> output)
     {
         int dModel = input.Length;
         int hiddenDim = dModel * 4;
-        float[] hidden = new float[hiddenDim];
+        Span<float> hidden = hiddenDim <= 8192 ? stackalloc float[hiddenDim] : new float[hiddenDim];
         LinearReal(input, 1, lw.Mlp0Weight, lw.Mlp0Bias, hiddenDim, hidden);
         for (int i = 0; i < hidden.Length; i++) hidden[i] = Gelu(hidden[i]);
         LinearReal(hidden, 1, lw.Mlp2Weight, lw.Mlp2Bias, dModel, output);

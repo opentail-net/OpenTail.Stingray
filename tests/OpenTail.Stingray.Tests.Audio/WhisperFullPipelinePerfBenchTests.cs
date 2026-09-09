@@ -97,6 +97,8 @@ public sealed class WhisperFullPipelinePerfBenchTests : HeavyTestBase
         {
             var p = Path.Combine(dir, "models", fileName);
             if (File.Exists(p)) return p;
+            var p2 = Path.Combine(dir, "models", "_models", fileName);
+            if (File.Exists(p2)) return p2;
             var parent = Directory.GetParent(dir);
             if (parent is null) break;
             dir = parent.FullName;
