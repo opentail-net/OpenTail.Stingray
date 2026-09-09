@@ -27,7 +27,7 @@
 
 [CmdletBinding()]
 param(
-    [ValidateSet("All", "Tts", "Asr", "Whisper", "CosyVoice", "Chatterbox", "QwenTts", "FishAudio")]
+    [ValidateSet("All", "Tts", "Asr", "Whisper", "Align", "CosyVoice", "Chatterbox", "QwenTts", "FishAudio")]
     [string]$Suite = "All",
 
     [int]$Threads = 6,
@@ -188,8 +188,9 @@ function Run-WhisperCppTask {
         }
     }
 
-    # Generate synthetic 12s wav file if missing
-    $wavFile = Join-Path $whisperDir "temp_bench_12s.wav"
+    $wavFile = if (Test-Path $voiceRef) { $voiceRef } else { Join-Path $whisperDir "temp_bench_12s.wav" }
+    $audioSec = if ($wavFile -eq $voiceRef) { 14.1 } else { 12.0 }
+
     if (-not (Test-Path $wavFile)) {
         $rate = 16000
         $seconds = 12
@@ -241,22 +242,26 @@ function Run-WhisperCppTask {
         $p.WaitForExit()
 
         $combined = "$stdout`n$stderr"
-        $totMatch = [regex]::Match($combined, 'total time =\s+([\d.]+)\s+ms')
+        $totMatch    = [regex]::Match($combined, 'whisper_print_timings:\s+total time =\s+([\d.]+)\s+ms')
+        $melMatch    = [regex]::Match($combined, 'whisper_print_timings:\s+mel time =\s+([\d.]+)\s+ms')
+        $sampleMatch = [regex]::Match($combined, 'whisper_print_timings:\s+sample time =\s+([\d.]+)\s+ms')
+        $encodeMatch = [regex]::Match($combined, 'whisper_print_timings:\s+encode time =\s+([\d.]+)\s+ms')
+        $batchdMatch = [regex]::Match($combined, 'whisper_print_timings:\s+batchd time =\s+([\d.]+)\s+ms')
 
-        if ($totMatch.Success) {
-            $totMs = [double]$totMatch.Groups[1].Value
-            $wallSec = $totMs / 1000.0
-            $rtfVal  = $wallSec / 12.0
+        if ($encodeMatch.Success) {
+            $computeMs = [double]$melMatch.Groups[1].Value + [double]$sampleMatch.Groups[1].Value + [double]$encodeMatch.Groups[1].Value + [double]$batchdMatch.Groups[1].Value
+            $wallSec = $computeMs / 1000.0
+            $rtfVal  = $wallSec / $audioSec
 
             $ratioVal = if ($CsRtf -gt 0 -and $rtfVal -gt 0) { $rtfVal / $CsRtf } else { 0.0 }
             $ratioStr = if ($ratioVal -gt 1.0) { "<span style=`"color:#16a34a`">**{0:F2}x**</span>" -f $ratioVal } elseif ($ratioVal -gt 0) { "**{0:F2}x**" -f $ratioVal } else { "-" }
 
-            Write-Host ("DONE ({0:F2}s wall, RTF={1:F3}x, Ratio={2})" -f $wallSec, $rtfVal, $ratioStr) -ForegroundColor Green
+            Write-Host ("DONE ({0:F2}s compute, RTF={1:F3}x, Ratio={2})" -f $wallSec, $rtfVal, $ratioStr) -ForegroundColor Green
 
             $results.Add([PSCustomObject]@{
                 Category   = "ASR"
                 Pipeline   = "Whisper $Name"
-                Scenario   = "12s audio transcribe"
+                Scenario   = ("{0:F1}s audio transcribe" -f $audioSec)
                 Backend    = "CPU"
                 CsWall     = if ($CsWallSec -gt 0) { "{0:F2}s" -f $CsWallSec } else { "-" }
                 CsRtf      = if ($CsRtf -gt 0) { "**{0:F3}x**" -f $CsRtf } else { "-" }
@@ -266,7 +271,7 @@ function Run-WhisperCppTask {
                 Date       = $today
             })
         } else {
-            Write-Host "FAILED (Could not parse total time)" -ForegroundColor Red
+            Write-Host "FAILED (Could not parse whisper timings)" -ForegroundColor Red
         }
     } catch {
         Write-Host "ERROR: $($_.Exception.Message)" -ForegroundColor Red
@@ -416,7 +421,24 @@ if ($hasS2 -and ($Suite -eq "All" -or $Suite -eq "Tts" -or $Suite -eq "FishAudio
                   -CsWallSec 28.46
 }
 
-# 3. Run ASR Models (whisper.cpp)
+# 3. Run Alignment Models (audio.cpp)
+if ($hasAudioCpp -and ($Suite -eq "All" -or $Suite -eq "Align")) {
+    Write-Host "`n--- Running Qwen3 Forced Aligner ---" -ForegroundColor Yellow
+    Run-AudioCppTask -Name "Qwen3 Forced Aligner 0.6B" `
+                     -Family "qwen3_forced_aligner" `
+                     -Task "align" `
+                     -ModelRelPath "models\Qwen3-ForcedAligner-0.6B-GGUF\qwen3-forced-aligner-0.6b-q8_0.gguf" `
+                     -Scenario "14.1s audio alignment" `
+                     -CsRtf 0.12 `
+                     -CsWallSec 1.68 `
+                     -ExtraArgs @{
+                         "--audio" = $voiceRef
+                         "--text" = "Some call me nature. Others call me Mother Nature."
+                         "--language" = "en"
+                     }
+}
+
+# 4. Run ASR Models (whisper.cpp)
 if ($hasWhisper -and ($Suite -eq "All" -or $Suite -eq "Asr" -or $Suite -eq "Whisper")) {
     Write-Host "`n--- Running Whisper.cpp Suite ---" -ForegroundColor Yellow
     Run-WhisperCppTask -Name "Base (39M)"      -ModelRelPath "models\ggml-base.bin"     -CsRtf 0.070 -CsWallSec 0.84
