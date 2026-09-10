@@ -323,16 +323,33 @@
 
 ## Embeddings (CPU)
 
+**CORRECTION (2026-09-10, same session):** the row that used to be here ("Qwen3-Embedding-0.6B,
+38,900 tok/s") was **wrong** — not a measurement error, a real misunderstanding of what the CLI
+actually ran. Retracted below with the full finding, per this project's own discipline of treating
+retractions as seriously as new findings.
+
+**What's actually true, verified 2026-09-10:** `stingray embed -m <path>` produces byte-identical
+output vectors regardless of `-m` — confirmed by running it against `all-MiniLM-L6-v2-Q8_0.gguf`,
+`bge-small-en-v1.5-q8_0.gguf`, `qwen3-embedding-0.6b-q8_0.gguf`, and a **nonexistent path**
+(`/nonexistent/fake-model.gguf`), all four producing the exact same 1536-dim vectors, same timing,
+no error on the fake path. Root cause found in `src/OpenTail.Stingray.Engine/EmbeddingEngine.cs`:
+any `-m` path that doesn't end in `.onnx` (i.e. every GGUF path) falls through to a **hash-based
+synthetic stub** — `EmbeddingEngine.cs:147-162`, "Seeded deterministic hidden states generation per
+token," an FNV-1a hash of the input text fed through `sin`/`cos` — that never opens the GGUF file,
+never loads a single weight, and is deterministic per input text regardless of which model name is
+passed. The ONNX branch (`EmbedCommand.cs`, triggers only when `-m` ends in `.onnx` and the file
+exists) does load a real ONNX Runtime session — that path is untested this pass, but is at least
+plausibly real. **No GGUF-based embedding measurement exists in this doc; the CLI has no working
+GGUF embedding path to measure.**
+
 | Model | Scenario | Backend | C# result | C++ reference | Ratio | Performance Check | Source |
 |---|---|---|---|---|---:|---|---|
-| Qwen3-Embedding-0.6B Q8_0 | 4 texts, 545 tok total, mean pooling, 1536-dim (Matryoshka) | CPU | 14ms (545 tok in 14ms ≈ 38,900 tok/s) | — (no `llama-embedding.exe` in this vendored release; `llama-server --embedding` would need a server round-trip, not attempted) | — | 2026-09-10 | `stingray embed -m qwen3-embedding-0.6b-q8_0.gguf -f docs/benchmark-prompt.txt` (new coverage, first measurement for this model) |
+| (none — see correction above) | | | | | | | |
 
-> New coverage, not a backfill — Embeddings had no section in this doc before. Real bug found in
-> passing (2026-09-10): `stingray embed -o <file>` crashes with `System.InvalidOperationException:
-> Reflection-based serialization has been disabled for this application` — the JSON output path
-> uses reflection-based `JsonSerializer` instead of the project's required source-generated
-> `OpenTailStingrayJsonContext` (`CLAUDE.md` rule 4). Not fixed here (out of scope for a bench
-> pass) — flagged for whoever picks up `EmbedCommand.cs:170` next.
+> Also still true: `stingray embed -o <file>` crashes with `System.InvalidOperationException:
+> Reflection-based serialization has been disabled for this application` (`EmbedCommand.cs:170`,
+> CLAUDE.md rule 4 violation) — a second, independent bug in the same command, unrelated to the
+> stub-embedding issue above.
 
 ---
 
@@ -390,6 +407,7 @@ Rows where the Ratio column is blank and a C++ comparison would be actionable:
 | CPU KV cache | bf16/q8 dtype | CPU | `PagedKvCache` hard-wired fp32 | Vulkan showed +57% decode at no quality cost |
 | Llama-4-Scout 17B-16E Q4_K_M | prefill + decode | CPU | Cancelled 2026-09-10 by explicit user instruction (`~93GB` across 2 shards vs. this machine's 64GB total RAM — would never fit; user said "no point in killing the pc"). Partial download deleted. | Not pursuing on this hardware; would need a machine with substantially more RAM |
 | Carnice 35B-A3B-MTP (APEX) | prefill/decode | CPU | No locatable public repo for "Carnice APEX" as of 2026-09-10; likely a gated/private checkpoint from the original README-history capture | Needs the original source/access used when the † numbers were first captured |
+| Any GGUF embedding model | throughput vs C++ | CPU | Confirmed 2026-09-10: `stingray embed`'s GGUF path is a hash-based synthetic stub (`EmbeddingEngine.cs:147-162`) that never loads real weights — produces identical output for any `-m` path including a nonexistent one. No real GGUF embedding measurement is possible with this CLI today. | Wire a real GGUF forward pass into `EmbeddingEngine` (or route GGUF paths through the same `ForwardPass`/backend machinery the `run`/`image` commands use) before any embedding throughput number can be trusted |
 | QwenTTS / CosyVoice3 (streaming) | TTFA vs C++ | CPU | Re-verified 2026-09-10 with real runs: both explicitly refuse `--mode streaming` at runtime ("only supports offline sessions") — a deliberate design limit in `audiocpp_cli`, not a missing build/asset | Would need real streaming-session support added to these two families in `audio.cpp` itself |
 | Chatterbox Turbo (streaming) | TTFA vs C++ | CPU | Blocked on a missing `models/chatterbox_turbo_vocab.json` tokenizer asset referenced by `model_specs/chatterbox_turbo.json`, before even reaching the streaming-mode question | Locate/regenerate the missing vocab asset, then retry `--mode streaming` |
 | FishSpeech S2 Pro (streaming) | TTFA vs C++ | CPU | `s2.exe --stream-file` genuinely works and prints real streaming metrics (2026-09-10: `stride=16, holdback=144, ref_encode=49957ms, generate=170348ms, total_rtf=61.32`), but doesn't print an explicit first-chunk timestamp — computing a TTFA-equivalent from the other fields would be an inference, not a real measurement | Add a printed first-chunk timestamp to `s2.exe`'s streaming metrics, then it's a real, direct TTFA comparison |
@@ -414,6 +432,7 @@ This section reads across the ratios above; it doesn't replace them.
 - **Voxtral-Mini-4B-Realtime ASR is 50x slower than its C++ reference (0.02x)** — the worst *ratio* anywhere in this doc (has a C++ comparison point), on a correct transcript. No CLI/pipeline wiring exists yet, only raw per-token building blocks with no batching at all.
 - **ACE-Step Turbo has the worst RTF outright (114x real-time, no C++ comparator exists)** — worse even than Voxtral, despite "Turbo" implying an 8-step fast schedule. Stable Audio 3 Medium (96.75x) and Small Music (25.36x at only 8 of a recommended 15-25+ steps) round out a consistent story: every diffusion-based audio/music pipeline measured this pass is 25-115x real-time on CPU, several orders of magnitude further from real-time than any autoregressive TTS pipeline in this doc.
 - **Two independent ASR pipelines produce degenerate output**: Qwen3-ASR 0.6B ("aspects" instead of the real reference sentence, despite running fast at RTF 0.225) and FunASR-Nano (repetitive word-salad — "to to to... a a a at at at"). Both are correctness bugs, not performance ones, and more urgent than any perf gap in this doc — a wrong-but-fast answer is worse than a slow-but-right one. Worth checking whether these share a root cause (e.g. a common sampling/decoding utility both pipelines call into) given how similar the failure mode is.
+- **The `embed` CLI's GGUF path is entirely fake** — worse than a performance gap or even a degenerate-output bug, this is silent total non-function dressed up as a working command. It returns identical, plausible-looking vectors for any `-m` path, including a nonexistent file, because non-`.onnx` model paths fall through to a hash-based synthetic stub that never loads a GGUF at all. This was caught only because a second, unrelated model happened to be tested against it and produced suspiciously identical output — the original single-model measurement in this doc looked completely normal and would have gone unnoticed otherwise. Worth treating as a reminder to cross-check any single-model "it works" claim against a second, different input before trusting it.
 
 **Vulkan iGPU, backfilled across 6 LLMs this pass (Gemma-4-12B, Qwen3-8B, Qwen3-Coder-30B, Qwen3-0.6B/4B, OLMoE, Qwen3.6-27B-MTP):**
 - **A consistent pattern across every dense/MoE model**: Vulkan prefill always loses to CPU prefill (worst gap at the smallest model, Qwen3-0.6B: 23.6 vs 226.1 t/s), while Vulkan decode is usually close to CPU decode and in two cases actually *wins* — Qwen3-Coder-30B (9.0 vs 7.4 t/s) and, mildly, nothing else quite matches that margin. This matches `docs/done/vulkan-backend-evidence.md`'s standing finding that this integrated GPU shares system RAM bandwidth with the CPU and has no dedicated-VRAM advantage, so it can only really win where per-token dispatch overhead is amortized well (decode) rather than where raw throughput matters (prefill).
