@@ -1529,3 +1529,14 @@ suite stats, release status, the parked-work list) have moved to
 Move a document or section to [done](done) when its outcome is implemented and verified, or when a
 measured negative result closes that line of investigation. Add a banner saying what closed and what
 carried forward. Keep active documents short: decision, remaining work, acceptance evidence, links.
+
+## Gemma 4 batched-prefill (not started)
+
+Scoped 2026-09-10 after `PerformanceLeague.md`'s C++ backfill measured Gemma 4 CPU prefill at
+0.12-0.13x of llama.cpp on both E4B and 12B — the missing-batched-prefill gap
+(`perLayerHdUnsupported`) confirmed on a second model size, not just the original one. Real fix
+requires teaching `PrefillCoreAttention` five things it doesn't do today (per-layer head-dim
+indexing, per-layer KV-source sharing, `attention_k_eq_v`, per-head V-norm, sliding-window
+masking) — not a quick patch; a prior attempt to force the existing batched path
+(`STINGRAY_PER_LAYER_HD_PREFILL=1`) crashed with `AccessViolationException`, not just wrong output.
+See [070-gemma4-batched-prefill-plan.md](070-gemma4-batched-prefill-plan.md) for the full plan.

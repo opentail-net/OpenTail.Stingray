@@ -721,3 +721,15 @@
 [Chatterbox-Stream] prompt="Hello, I will make some lunch, darling!" audio=2.48s samples=59520 chunks=1
 [Chatterbox-Stream] Time-To-First-Audio (TTFA)=14.336s TotalTime=14.339s
 
+[CosyVoice2] prompt="Hello, I will make some lunch, darling!" audio=8.00s samples=192000
+[CosyVoice2] runs(s)=[23.669, 22.832, 23.108] mean=23.203s RTF=2.900 (lower=faster; 1.0=realtime)
+
+[Qwen3-ASR] audio=14.07s text="aspects"
+[Qwen3-ASR] runs(s)=[3.231, 3.342, 2.904] mean=3.159s RTF=0.225 (lower=faster; 1.0=realtime)
+
+[Whisper-Tiny] audio=14.07s text="Some call me nature. Others call me mother nature. I've been here for over 4.5 billion years. 22,500 times longer than you."
+[Whisper-Tiny] runs(s)=[1.426, 1.291, 1.372] mean=1.363s RTF=0.097 (lower=faster; 1.0=realtime)
+
+[StableAudio3-SmallMusic] prompt="upbeat acoustic guitar melody" steps=8 audio=6.00s samples=264600
+[StableAudio3-SmallMusic] runs(s)=[162.129, 163.362, 131.063] mean=152.185s RTF=25.364 (lower=faster; 1.0=realtime; 8-step CFG, not the full recommended step count)
+

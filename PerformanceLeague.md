@@ -46,18 +46,25 @@
 > integer-domain scale folding. The OT Q4Kx8 repack begins closing this but is opt-in pending
 > a perplexity gate. Decode is near-parity because it is bandwidth-bound at ~93% of DRAM ceiling.
 
-**CPU prefill context scaling — Performance Check: 2026-08 (Q8 prefill on, tiled KV, iter 33):**
+**CPU prefill context scaling — Performance Check: 2026-09-10 (llama.cpp backfill; OT: Q8 prefill on, tiled KV, iter 33):**
 
 | Prompt tokens | 267 | 773 | 1621 | 3218 |
 |---|---:|---:|---:|---:|
 | Prefill OT (t/s) | ~50 t/s | ~49 t/s | ~49 t/s | ~42 t/s |
-| Prefill llama.cpp (t/s) | 205 t/s | — | — | — |
+| Prefill llama.cpp (t/s) | 206.95 t/s | 203.98 t/s | 185.20 t/s | 155.92 t/s |
+| Ratio | **0.24x** | **0.24x** | **0.26x** | **0.27x** |
 
-**CPU decode context scaling — Performance Check: 2026-08 (contiguous KV score pass, iter 35):**
+> Backfilled 2026-09-10 via `llama-bench.exe -m SmolLM2-1.7B-Instruct-Q4_K_M.gguf -p 267,773,1621,3218 -n 0 -t 6 -ngl 0 -r 3`. The 0.33x default-prefill ratio at the top of this section holds roughly flat (0.24-0.27x) across the full context range — the gap is not context-length-dependent, consistent with the `block_q4_Kx8` GEMM-interleave explanation already given, not a KV-cache-scaling effect.
+
+**CPU decode context scaling — Performance Check: 2026-09-10 (llama.cpp backfill; OT: contiguous KV score pass, iter 35):**
 
 | Prompt tokens | 267 | 773 | 1621 | 3218 |
 |---|---:|---:|---:|---:|
 | Decode OT (t/s) | 26.3 t/s | 21.0 t/s | 15.0 t/s | 9.5 t/s |
+| Decode llama.cpp (t/s) | 29.90 t/s | 23.46 t/s | 20.37 t/s | 14.21 t/s |
+| Ratio | **0.88x** | **0.89x** | **0.74x** | **0.67x** |
+
+> Backfilled 2026-09-10 via `llama-bench.exe -m SmolLM2-1.7B-Instruct-Q4_K_M.gguf -p 0 -n 24 -d 267,773,1621,3218 -t 6 -ngl 0 -r 3`. Near-parity at short context (0.88-0.89x) erodes as context grows (0.67x @3.2k) — OT's decode falls off faster than llama.cpp's as KV cache grows, a real, previously-unmeasured gap.
 
 **Vulkan prefill context scaling — Performance Check: 2026-08 (flash attention + SnapKV fix, iter 31-33):**
 
@@ -91,21 +98,33 @@
 
 | Model | Scenario | Backend | C# (OT, t/s) | C++ (llama.cpp, t/s) | Ratio | Performance Check | Source |
 |---|---|---|---:|---:|---:|---|---|
-| Qwen3-0.6B Q8_0 | decode (short ctx) | CPU | 47.4 t/s | — | — | 2026-08-07 | cpu-performance-baseline.md |
-| Qwen3-8B Q4_K_M | decode (short ctx) | CPU | 6.8 t/s | — | — | 2026-08 | cpu-speculative-decoding-findings.md |
+| Qwen3-0.6B Q8_0 | prefill (493 tok, docs/benchmark-prompt.txt) | CPU | 226.1 t/s | 265.28 t/s | **0.85x** | 2026-09-10 | stingray CLI + llama-bench, best-of-3 |
+| Qwen3-0.6B Q8_0 | decode (493 tok prompt, 24 tok gen) | CPU | 41.2 t/s | 62.95 t/s | **0.65x** | 2026-09-10 | stingray CLI + llama-bench, best-of-3 (re-measured at matched prompt length; supersedes the 47.4 t/s figure below) |
+| Qwen3-4B Q4_K_M | prefill (493 tok) | CPU | 61.4 t/s | 84.36 t/s | **0.73x** | 2026-09-10 | stingray CLI + llama-bench, best-of-3 (new coverage) |
+| Qwen3-4B Q4_K_M | decode (493 tok prompt, 24 tok gen) | CPU | 10.0 t/s | 16.64 t/s | **0.60x** | 2026-09-10 | stingray CLI + llama-bench, best-of-3 (new coverage) |
+| Qwen3-0.6B Q8_0 | decode (short ctx, original baseline) | CPU | 47.4 t/s | — | — | 2026-08-07 | cpu-performance-baseline.md (kept for history; see re-measured row above) |
+| Qwen3-8B Q4_K_M | decode (short ctx, original) | CPU | 6.8 t/s | — | — | 2026-08 | cpu-speculative-decoding-findings.md |
+| Qwen3-8B Q4_K_M | prefill (493 tok) | CPU | 48.3 t/s | 47.28 t/s | **1.02x** | 2026-09-10 | stingray CLI + llama-bench, best-of-3 (backfill) |
+| Qwen3-8B Q4_K_M | decode (493 tok prompt, 24 tok gen) | CPU | 6.3 t/s | 7.67 t/s | **0.82x** | 2026-09-10 | stingray CLI + llama-bench, best-of-3 (backfill) |
 | Qwen3-Coder 30B-A3B Q4_K_M | prefill | CUDA (†) | 102.6 t/s | — | — | 2026-06-16 | README history 0c171ed |
 | Qwen3-Coder 30B-A3B Q4_K_M | decode | CUDA (†) | 28.0 t/s | — | — | 2026-06-16 | README history 0c171ed |
-| Qwen3-Coder 30B-A3B Q4_K_M | decode | CPU | 22.4 t/s | — | — | 2026-06-16 | README history 0c171ed |
+| Qwen3-Coder 30B-A3B Q4_K_M | decode (original) | CPU | 22.4 t/s | — | — | 2026-06-16 | README history 0c171ed |
 | Qwen3-Coder 30B-A3B Q4_K_M | decode (`--tq`) | CPU | 22.6 t/s | — | — | 2026-06-16 | README history 0c171ed |
+| Qwen3-Coder-30B-A3B-Instruct Q4_K_M | prefill (482 tok) | CPU | 24.7 t/s | 41.76 t/s | **0.59x** | 2026-09-10 | stingray CLI + llama-bench, best-of-3 (backfill; unsloth GGUF, checkpoint differs from the original † row's) |
+| Qwen3-Coder-30B-A3B-Instruct Q4_K_M | decode (482 tok prompt, 24 tok gen) | CPU | 7.4 t/s | 6.85 t/s | <span style="color:#16a34a">**1.08x**</span> | 2026-09-10 | stingray CLI + llama-bench, best-of-3 (backfill — beats llama.cpp on decode) |
 | Qwen3.6-35B-A3B Q4_K_M | prefill | CUDA (†) | 475.4 t/s | — | — | 2026-06-16 | README history 0c171ed |
 | Qwen3.6-35B-A3B Q4_K_M | decode | CUDA (†) | 24.5 t/s | — | — | 2026-06-16 | README history 0c171ed |
 | Qwen3.6-35B-A3B Q4_K_M | decode | Vulkan (†) | 22.8 t/s | — | — | 2026-06-16 | README history 0c171ed |
-| Qwen3.6-35B-A3B Q4_K_M | decode | CPU | 9.3 t/s | — | — | 2026-06-16 | README history 0c171ed |
+| Qwen3.6-35B-A3B Q4_K_M | decode (original) | CPU | 9.3 t/s | — | — | 2026-06-16 | README history 0c171ed |
+| Qwen3.6-35B-A3B Q6_K (hybrid GDN) | prefill (480 tok) | CPU | 2.9 t/s | 58.60 t/s | **0.05x** | 2026-09-10 | stingray CLI + llama-bench, best-of-3 (backfill; unsloth Q6_K GGUF, different quant/build from the original † row's; same hybrid-GDN architecture as Qwen3.6-27B-MTP) |
+| Qwen3.6-35B-A3B Q6_K (hybrid GDN) | decode (480 tok prompt, 24 tok gen) | CPU | 1.8 t/s | 10.59 t/s | **0.17x** | 2026-09-10 | stingray CLI + llama-bench, best-of-3 (backfill) |
 | Qwen3.6-35B-A3B-MTP Q4_K_M | prefill | CUDA (†) | 480.2 t/s | — | — | 2026-06-16 | README history 0c171ed |
 | Qwen3.6-35B-A3B-MTP Q4_K_M | decode (`--no-thinking`) | CUDA (†) | 33.3 t/s | ~41 t/s (est.) | **~0.81x** | 2026-06-16 | README: "~80% of llama.cpp tg128" |
 | Qwen3.6-27B-MTP Q4_K_M | prefill | CUDA (†) | 22.0 t/s | — | — | 2026-06-16 | README history 0c171ed |
 | Qwen3.6-27B-MTP Q4_K_M | decode (`--no-thinking`) | CUDA (†) | 12.3 t/s | — | — | 2026-06-16 | README history 0c171ed |
-| Qwen3.6-27B-MTP Q4_K_M | decode (`--no-thinking`) | CPU | 3.6 t/s | — | — | 2026-06-16 | README history 0c171ed |
+| Qwen3.6-27B-MTP Q4_K_M | decode (`--no-thinking`, original) | CPU | 3.6 t/s | — | — | 2026-06-16 | README history 0c171ed |
+| Qwen3.6-27B Q3_K_XL (hybrid GDN) | prefill (480 tok) | CPU | 1.0 t/s | 6.15 t/s | **0.16x** | 2026-09-10 | stingray CLI + llama-bench, best-of-3 (backfill; unsloth Q3_K_XL GGUF, different quant/build from the original † row's; real find — this arch **is** supported, `[HybridGdnForwardPass]`, contrary to the earlier assumption it was unlocatable/gated) |
+| Qwen3.6-27B Q3_K_XL (hybrid GDN) | decode (480 tok prompt, 24 tok gen) | CPU | 1.0 t/s | 1.33 t/s | **0.75x** | 2026-09-10 | stingray CLI + llama-bench, best-of-3 (backfill) |
 | Carnice 35B-A3B-MTP (APEX) | prefill (`--no-thinking`) | CUDA (†) | 522.0 t/s | — | — | 2026-06-16 | README history 0c171ed |
 | Carnice 35B-A3B-MTP (APEX) | decode (`--no-thinking`) | CUDA (†) | 26.5 t/s | — | — | 2026-06-16 | README history 0c171ed |
 
@@ -118,10 +137,12 @@
 
 | Model | Scenario | Backend | C# (OT, t/s) | C++ (llama.cpp, t/s) | Ratio | Performance Check | Source |
 |---|---|---|---:|---:|---:|---|---|
-| OLMoE-1B-7B Q4_K_M | prefill | CPU | 105.6 t/s | — | — | 2026-08-07 | cpu-performance-baseline.md |
-| OLMoE-1B-7B Q4_K_M | decode | CPU | 28.2 t/s | — | — | 2026-08-07 | cpu-performance-baseline.md |
+| OLMoE-1B-7B Q4_K_M | prefill (405-465 tok, original) | CPU | 105.6 t/s | — | — | 2026-08-07 | cpu-performance-baseline.md |
+| OLMoE-1B-7B Q4_K_M | decode (original, ~7 tok, early EOS) | CPU | 28.2 t/s | — | — | 2026-08-07 | cpu-performance-baseline.md |
+| OLMoE-1B-7B-0924-Instruct Q4_K_M | prefill (515 tok) | CPU | 124.8 t/s | 180.82 t/s | **0.69x** | 2026-09-10 | stingray CLI + llama-bench, best-of-3 (backfill) |
+| OLMoE-1B-7B-0924-Instruct Q4_K_M | decode (515 tok prompt, 24 tok gen, no early EOS) | CPU | 25.3 t/s | 50.58 t/s | **0.50x** | 2026-09-10 | stingray CLI + llama-bench, best-of-3 (backfill; full 24-token run, not early-EOS-truncated like the row above) |
 
-> Decode measured over ~7 tokens (early EOS); treat as approximate.
+> Original decode measured over ~7 tokens (early EOS); treat as approximate. The re-measured row above forced a full 24-token generation and is the reliable one going forward.
 
 ---
 
@@ -129,12 +150,16 @@
 
 | Model | Scenario | Backend | C# (OT, t/s) | C++ (llama.cpp, t/s) | Ratio | Performance Check | Source |
 |---|---|---|---:|---:|---:|---|---|
-| Gemma-4-12B Q4_0 | prefill | CPU | 3.8 t/s | — | — | 2026-08-07 | cpu-performance-baseline.md |
-| Gemma-4-12B Q4_0 | decode | CPU | 3.7 t/s | — | — | 2026-08-07 | cpu-performance-baseline.md |
+| Gemma-4-12B Q4_0 | prefill (original) | CPU | 3.8 t/s | — | — | 2026-08-07 | cpu-performance-baseline.md |
+| Gemma-4-12B Q4_0 | decode (original) | CPU | 3.7 t/s | — | — | 2026-08-07 | cpu-performance-baseline.md |
+| Gemma-4-12B-it Q4_K_M | prefill (501 tok) | CPU | 3.5 t/s | 27.81 t/s | **0.13x** | 2026-09-10 | stingray CLI + llama-bench (quant differs from original Q4_0 row: Q4_K_M unsloth GGUF, not the QAT Q4_0 build; prefill:decode still ~1.0x, same batched-prefill-missing signature as the original row) |
+| Gemma-4-12B-it Q4_K_M | decode (501 tok prompt, 24 tok gen) | CPU | 4.2 t/s | 5.69 t/s | **0.74x** | 2026-09-10 | stingray CLI + llama-bench |
 | Gemma4 E4B QAT Q4_0 | prefill | CUDA (†) | 3666 t/s | — | — | 2026-06-16 | README history 0c171ed |
 | Gemma4 E4B QAT Q4_0 | decode | CUDA (†) | 100.4 t/s | — | — | 2026-06-16 | README history 0c171ed |
 | Gemma4 E4B QAT Q4_0 | prefill | Vulkan (†) | 35 t/s | — | — | 2026-06-22 | README history 0c171ed |
 | Gemma4 E4B QAT Q4_0 | decode | Vulkan (†) | 39.5 t/s | — | — | 2026-06-22 | README history 0c171ed |
+| Gemma4-E4B-it Q4_K_M | prefill (497 tok) | CPU | 9.8 t/s | 80.50 t/s | **0.12x** | 2026-09-10 | stingray CLI + llama-bench (new CPU coverage, quant differs from QAT Q4_0 rows above) |
+| Gemma4-E4B-it Q4_K_M | decode (497 tok prompt, 24 tok gen) | CPU | 9.7 t/s | 13.07 t/s | **0.74x** | 2026-09-10 | stingray CLI + llama-bench (new CPU coverage) |
 | Gemma4 12B QAT Q4_0 | prefill | CUDA (†) | 1714 t/s | — | — | 2026-06-16 | README history 0c171ed |
 | Gemma4 12B QAT Q4_0 | decode | CUDA (†) | 54.1 t/s | 57 t/s | **0.95x** | 2026-06-16 | README history 0c171ed |
 | Gemma4 12B QAT Q4_0 | prefill | Vulkan (†) | 17.0 t/s | — | — | 2026-06-16 | README history 0c171ed |
@@ -161,10 +186,15 @@
 | Target | Draft | Scenario | C# (OT, t/s) | C++ (ref, t/s) | Ratio | Acceptance rate | Performance Check | Source |
 |---|---|---|---:|---:|---:|---|---|---|
 | Qwen3-8B Q4_K_M | Qwen3-0.6B Q8_0 | decode, draft-n 4 | 4.3 t/s (−37%) | — | — | 62% | 2026-08 | cpu-speculative-decoding-findings.md |
+| Qwen3-4B Q4_K_M | DSpark block-7 (`dspark_qwen3_4b_block7`) | decode, DSpark | 2.5 t/s (**−75%** vs 10.0 t/s plain baseline) | — | — | 23% (14/60) | 2026-09-10 | new coverage; `--dspark-model` CLI flag, real run (draft 3438ms / verify 5879ms / commit 68ms per step) |
 
-> Speculation is a **confirmed loss** on this hardware. Q4_K dot is ~87% compute-bound (not
-> bandwidth-bound); verifying k tokens costs ~k× compute regardless of dispatch. VNNI (`vpdpbusd`,
-> Zen 4+) is the prerequisite for speculation to become viable.
+> Speculation is a **confirmed loss** on this hardware, now on two independent target/draft pairs.
+> Q4_K dot is ~87% compute-bound (not bandwidth-bound); verifying k tokens costs ~k× compute
+> regardless of dispatch. VNNI (`vpdpbusd`, Zen 4+) is the prerequisite for speculation to become
+> viable. The DSpark pairing is a worse loss than n-gram/draft-model speculation (−75% vs −37%) and
+> its acceptance rate is also lower (23% vs 62%) — the draft head itself may be weaker, or block-7
+> confidence-gated speculation costs more per rejected block than simple n-token drafting does;
+> not yet disambiguated.
 
 ---
 
@@ -183,6 +213,13 @@
 | FishSpeech S2 Pro (Q4_K) | text → 3.44s audio | CPU | 28.46s | **8.28×** | 36.12s | 10.95× | <span style="color:#16a34a">**1.32x**</span> | 2026-09-09 | 2026-08-29 👂 |
 | F5-TTS Base (DiT) | text → 2.77s audio | CPU | 27.25s | **9.82×** | — | — | — | 2026-09-09 | 2026-08-28 👂 |
 | F5-TTS Base (Paragraph) | text → 14.5s audio | CPU | 10.20s | **0.70×** | — | — | — | 2026-09-09 | 2026-08-28 👂 |
+| CosyVoice2-0.5B | text → 8.00s audio | CPU | 23.20s | **2.90×** | — (no `cosyvoice2` family in `examples/audio.cpp`'s registry — only `cosyvoice3`'s `llm_job` path is implemented there) | — | — | 2026-09-10 | new coverage; `CosyVoice2PerfBaselineDebugTest.cs` (temporary) |
+| XTTS-v2 | text → 3.16s audio | CPU | 10.16s | **3.22×** | — (`examples/xtts_inference.cpp` is source-only, never built to an `.exe`) | — | — | 2026-09-10 | new coverage; `XttsPerfBaselineDebugTest.cs` (temporary, uses `b.wav` — the existing `Baseline_Xtts` test's named reference wav isn't present on this machine) |
+| MusicGen-small (T5 + delayed-pattern + EnCodec) | text → 3.00s audio | CPU | 15.80s | **5.27×** | — (not attempted this pass) | — | — | 2026-09-10 | new coverage; `MusicGenPerfBaselineDebugTest.cs` (temporary). Non-degeneracy checked only — no numeric golden reference exists for this port yet, so treat as "real audio energy produced," not "musically/numerically correct." |
+| AudioGen-medium (T5-large + delayed-pattern + EnCodec) | text → 3.00s audio | CPU | 93.48s (mean of 3) | **31.16×** | — (not attempted this pass) | — | — | 2026-09-10 | new coverage; `AudioGenPerfBaselineDebugTest.cs` (temporary). Non-degeneracy checked only, same caveat as MusicGen. |
+| Stable Audio 3 Small Music (DiT + `taae_v2` VAE) | text → 6.00s audio, 8-step CFG | CPU | 152.19s (mean of 3) | **25.36×** | — (not attempted this pass) | — | — | 2026-09-10 | new coverage; `StableAudio3SmallMusicPerfBaselineDebugTest.cs` (temporary). 8 steps is a deliberately short smoke-test step count, not the model's recommended full schedule (per `docs/00-current-work.md`'s SA3 entries, real generations use 15-25+ steps) — this RTF would be meaningfully worse at a realistic step count, not better. |
+| Stable Audio 3 Medium (differential-attention DiT + SAME-L VAE) | text → 4.00s audio, 15-step CFG | CPU | 387s (mean) | **96.75×** | — (not attempted) | — | — | 2026-09-03 (cited from prior session) | `docs/00-current-work.md`'s Stable Audio 3 Medium entry — ~97s wall-clock per second of audio, real generation timing, not a smoke test |
+| ACE-Step Turbo (Qwen3 text encoder + DiT + Oobleck VAE) | text → 2.00s audio, 8-step CFG | CPU | 228.29s (mean of 3) | **114.14×** | — (not attempted) | — | — | 2026-09-10 | new coverage; `AceStepPerfBaselineDebugTest.cs` (temporary). **Worst RTF in this entire doc** — worse even than Voxtral's 85.5x — despite "Turbo" naming implying an 8-step fast schedule. Non-degeneracy checked only, no numeric golden reference exists yet. |
 
 > RTF < 1.0x = faster than real-time. Piper (0.19x = 5.2× real-time), MMS-TTS (0.38x = 2.6× real-time), and Kokoro (0.89x) are faster than real-time on CPU.
 > Autoregressive pipelines (QwenTTS, CosyVoice3, Chatterbox, Parler, FishSpeech) are compute-bound on CPU; GPU dispatch is expected to be the largest speedup.
@@ -216,6 +253,26 @@
 | F5-TTS (Stream) | Streaming TTFA | CPU | **27.034s** | 27.03s | — | — | 2026-09-09 | 2026-08-28 👂 |
 | Chatterbox Turbo (Stream) | Streaming TTFA | CPU | **13.669s** | 13.67s | — | — | 2026-09-09 | 2026-08-30 🔬 |
 
+> **Why every C++ (ref) cell here is blank (checked 2026-09-10):** `audiocpp_cli` genuinely supports
+> `--mode streaming` as a flag, but every family actually tried through it refuses at runtime:
+> `qwen3_tts` → "Qwen3 TTS only supports offline sessions"; `cosyvoice3` → "CosyVoice3 supports
+> offline sessions" (both explicit, deliberate refusals, not bugs); `chatterbox_turbo` failed
+> earlier on a missing tokenizer asset (`chatterbox_turbo_vocab.json`) before even reaching that
+> question. `--metrics` also flatly refuses in streaming mode ("`--metrics` currently supports
+> offline mode only"), so even a family that *did* accept `--mode streaming` wouldn't emit the
+> same wall/RTF metrics used elsewhere in this doc.
+>
+> **One real exception found: `examples/s2.cpp/build/bin/s2.exe` (FishSpeech's own binary, not
+> `audiocpp_cli`) has a working `--stream-file` path with genuine streaming metrics.** A real run
+> (`s2.exe -m s2-pro-q4_k_m.gguf --stream-file`, 2026-09-10) produced:
+> `stride=16 frames, holdback=144 frames, ref_encode=49957ms, kv_init=25.8ms, generate=170348ms,
+> stream_decode=20419ms, total=190800ms, total_rtf=61.32`. This is real and usable, but it does
+> **not** print an explicit "time to first chunk emitted" — computing a TTFA-equivalent from
+> `ref_encode + kv_init + (holdback-frames worth of AR generation)` would be an inference, not a
+> measurement, and risks silently not matching OT's own TTFA definition (prompt-ingestion → first
+> playable chunk). Left this un-computed rather than presenting an inferred number as a real one —
+> the CLI itself would need a printed first-chunk timestamp for a trustworthy comparison.
+
 > **TTFA (Time-To-First-Audio):** Latency from prompt ingestion to the first playable audio chunk emitted.
 > **Confirmed Working:** 🔬 = Golden-verified against reference; 👂 = Confirmed working by ear / transcription.
 > Harness: `scripts/bench-audio.ps1 -Suite Streaming`.
@@ -226,13 +283,32 @@
 
 | Model | Scenario | Backend | C# Wall | C# RTF | C++ Wall | C++ RTF | Ratio | Performance Check | Source |
 |---|---|---|---:|---:|---:|---:|---:|---|---|
+| Whisper Tiny (39M, HF safetensors) | 14.1s audio transcribe | CPU | 1.36s (mean of 3) | **0.097x** | — (only a 575KB CI-stub `.bin` exists in `examples/whisper.cpp/models`, not the real checkpoint) | — | — | 2026-09-10 | new coverage; `WhisperTinyPerfBaselineDebugTest.cs` (temporary). Correct transcript (matches reference text), 10.3x real-time. |
 | Whisper Base (39M) | 14.1s audio transcribe | CPU | 0.84s | **0.070x** | 0.82s | 0.058x | **0.83x** | 2026-09-09 | scripts/bench-cpp.ps1 |
 | Whisper Small (244M) | 14.1s audio transcribe | CPU | 2.42s | **0.202x** | 2.36s | 0.168x | **0.83x** | 2026-09-09 | scripts/bench-cpp.ps1 |
 | Whisper Medium (769M) | 14.1s audio transcribe | CPU | 6.71s | **0.560x** | 6.93s | 0.492x | **0.88x** | 2026-09-09 | scripts/bench-cpp.ps1 |
 | Whisper Large-v3 (1.5B) | 14.1s audio transcribe | CPU | 11.32s | **0.943x** | 12.69s | 0.900x | **0.95x** | 2026-09-09 | scripts/bench-cpp.ps1 |
+| Voxtral-Mini-4B-Realtime | 14.1s audio transcribe | CPU | 1203.1s (mean of 3) | **85.5x** | 24.05s | 1.71x | <span style="color:#dc2626">**0.02x**</span> | 2026-09-10 | new coverage; raw building-block harness (`VoxtralAudioEncoder`/`VoxtralTextDecoder`, no CLI pipeline exists yet), `examples/audio.cpp/build/bin/audiocpp_cli.exe --family voxtral_realtime` |
+| Qwen3-ASR 0.6B (safetensors) | 14.1s audio transcribe | CPU | 3.16s (mean of 3) | **0.225x** | — (no C++ reference attempted this pass) | — | — | 2026-09-10 | new coverage; `QwenAsrPerfBaselineDebugTest.cs` (temporary). **Caveat:** transcript is degenerate ("aspects" only, not the real reference text) — fast but likely a real correctness bug in this pipeline/request path, not a working transcription. Timing is real; do not read this row as "Qwen3-ASR works." |
 
 > RTF < 1.0x = faster than real-time. Whisper Base runs at **14.3x real-time** speed on CPU; Small at **5.0x real-time**; Medium at **1.79x real-time**; Large-v3 at **1.06x real-time** (faster than real-time on CPU).
-> Harness: `scripts/bench-audio.ps1` (`tests/OpenTail.Stingray.Tests.Audio/WhisperFullPipelinePerfBenchTests.cs`).
+> **Voxtral-Mini-4B is 50x slower than its C++ reference** — the worst ratio anywhere in this doc. Transcript is correct (matches the reference text, modulo the model's own real streaming control markers), so this is a genuine performance gap, not a correctness bug: the 4B dense text decoder currently only has raw building blocks (`VoxtralTextDecoder.Step`/`PrefillWithCache`) wired up for testing, no CLI, and almost certainly no batched/optimized decode path — unlike Whisper, which is a mature, tuned pipeline. Worth a dedicated look given the ratio.
+> Harness: `scripts/bench-audio.ps1` (`tests/OpenTail.Stingray.Tests.Audio/WhisperFullPipelinePerfBenchTests.cs`); Voxtral timing via a new temporary `VoxtralPerfBaselineDebugTest.cs`.
+
+---
+
+## Embeddings (CPU)
+
+| Model | Scenario | Backend | C# result | C++ reference | Ratio | Performance Check | Source |
+|---|---|---|---|---|---:|---|---|
+| Qwen3-Embedding-0.6B Q8_0 | 4 texts, 545 tok total, mean pooling, 1536-dim (Matryoshka) | CPU | 14ms (545 tok in 14ms ≈ 38,900 tok/s) | — (no `llama-embedding.exe` in this vendored release; `llama-server --embedding` would need a server round-trip, not attempted) | — | 2026-09-10 | `stingray embed -m qwen3-embedding-0.6b-q8_0.gguf -f docs/benchmark-prompt.txt` (new coverage, first measurement for this model) |
+
+> New coverage, not a backfill — Embeddings had no section in this doc before. Real bug found in
+> passing (2026-09-10): `stingray embed -o <file>` crashes with `System.InvalidOperationException:
+> Reflection-based serialization has been disabled for this application` — the JSON output path
+> uses reflection-based `JsonSerializer` instead of the project's required source-generated
+> `OpenTailStingrayJsonContext` (`CLAUDE.md` rule 4). Not fixed here (out of scope for a bench
+> pass) — flagged for whoever picks up `EmbedCommand.cs:170` next.
 
 ---
 
@@ -264,23 +340,50 @@ Rows where the Ratio column is blank and a C++ comparison would be actionable:
 
 | Model | Scenario | Backend | Why blank | Opportunity |
 |---|---|---|---|---|
-| SmolLM2-1.7B | prefill @long ctx | CPU | llama.cpp long-ctx not measured | Close the 0.33x prefill gap at scale |
-| Qwen3-8B | prefill | CPU | Not yet measured | Unknown how far prefill trails |
-| Qwen3-8B | decode | CPU | llama.cpp ref not run on this box | Known ~93% DRAM; expect ~parity |
-| Piper / Kokoro / MeloTTS / MMS-TTS | text → audio | CPU | Standalone source checkouts in `examples/` (`examples/piper`, `examples/kokoro.cpp`, `examples/MeloTTS.cpp`, `examples/TTS.cpp`) require external SDKs (onnxruntime, OpenVINO, cppjieba, espeak-ng) to build standalone CLI binaries | Build minimal self-contained CLI wrappers for baseline verification |
-| Parler-TTS / F5-TTS | text → audio | CPU | Standalone / DiT graph compute not enabled in `audio.cpp` CPU build | Wire compute graph or compare against PyTorch baseline |
+| Piper / Kokoro / MeloTTS / MMS-TTS | text → audio | CPU | Re-verified 2026-09-10: no `.exe` in any of `examples/piper`, `examples/kokoro.cpp`, `examples/MeloTTS.cpp`, `examples/TTS.cpp` build trees — still unbuilt, still blocked on external SDKs (onnxruntime, OpenVINO, cppjieba, espeak-ng) | Build minimal self-contained CLI wrappers for baseline verification (multi-SDK build effort, not attempted this pass) |
+| Parler-TTS | text → audio | CPU | `parler` is not a registered family in `examples/audio.cpp`'s model registry at all (checked `--task tts --family <x> --help` family list, 2026-09-10) — no model_spec, no loader | Would need a new audio.cpp family registration, not just a build fix |
+| F5-TTS | text → audio | CPU | Re-verified 2026-09-10: `f5_tts` family + `model_specs/f5_tts.json` exist and load, but generation fails with `ggml_graph_compute_with_ctx unavailable (CPU backend not loaded)` — the CPU compute backend genuinely isn't wired for this family's graph exec, confirmed with a real run (`--voice-ref b.wav --reference-text ... --text "Hello, I will make some lunch, darling!"`) | Needs the CPU ggml backend wired for F5-TTS's graph compute path in audio.cpp itself |
 | All models | any | CUDA | No CUDA device on dev machine | Direct MMQ for Q6K/Q5K prefill |
 | All models | any | Vulkan iGPU | No llama.cpp Vulkan reference | Discrete GPU needed for real comparison |
-| Gemma-4-12B | prefill (batched) | CPU | `perLayerHdUnsupported` gate blocks it | ~5.7× penalty remains once gate is lifted |
 | TTS Pipelines (all) | full synthesis | GPU | Pipelines not wired to GPU yet | Expected to be the largest TTS win |
 | CPU KV cache | bf16/q8 dtype | CPU | `PagedKvCache` hard-wired fp32 | Vulkan showed +57% decode at no quality cost |
+| Llama-4-Scout 17B-16E Q4_K_M | prefill + decode | CPU | Cancelled 2026-09-10 by explicit user instruction (`~93GB` across 2 shards vs. this machine's 64GB total RAM — would never fit; user said "no point in killing the pc"). Partial download deleted. | Not pursuing on this hardware; would need a machine with substantially more RAM |
+| Carnice 35B-A3B-MTP (APEX) | prefill/decode | CPU | No locatable public repo for "Carnice APEX" as of 2026-09-10; likely a gated/private checkpoint from the original README-history capture | Needs the original source/access used when the † numbers were first captured |
+| QwenTTS / CosyVoice3 (streaming) | TTFA vs C++ | CPU | Re-verified 2026-09-10 with real runs: both explicitly refuse `--mode streaming` at runtime ("only supports offline sessions") — a deliberate design limit in `audiocpp_cli`, not a missing build/asset | Would need real streaming-session support added to these two families in `audio.cpp` itself |
+| Chatterbox Turbo (streaming) | TTFA vs C++ | CPU | Blocked on a missing `models/chatterbox_turbo_vocab.json` tokenizer asset referenced by `model_specs/chatterbox_turbo.json`, before even reaching the streaming-mode question | Locate/regenerate the missing vocab asset, then retry `--mode streaming` |
+| FishSpeech S2 Pro (streaming) | TTFA vs C++ | CPU | `s2.exe --stream-file` genuinely works and prints real streaming metrics (2026-09-10: `stride=16, holdback=144, ref_encode=49957ms, generate=170348ms, total_rtf=61.32`), but doesn't print an explicit first-chunk timestamp — computing a TTFA-equivalent from the other fields would be an inference, not a real measurement | Add a printed first-chunk timestamp to `s2.exe`'s streaming metrics, then it's a real, direct TTFA comparison |
 
 ---
 
-*Last updated: 2026-09-09.
+## Strengths & weaknesses, after the 2026-09-10 backfill
+
+This section reads across the ratios above; it doesn't replace them.
+
+**Where OT is genuinely strong:**
+- **Qwen3-8B prefill: 1.02x** — real parity with llama.cpp, the single best CPU LLM prefill ratio measured in this doc. Notably this is the *opposite* of the SmolLM2 story: a dense 8B model prefills at parity while a dense 1.7B model prefills at 0.24-0.27x. The `block_q4_Kx8` GEMM gap that hurts SmolLM2 apparently doesn't dominate at this size/shape.
+- **Whisper family (0.83-0.95x across all four sizes)** and **Qwen3 Forced Aligner (1.01x)** remain the most consistently near-parity subsystem in the whole doc.
+- **Short-context decode is close to parity** across most dense LLMs (SmolLM2 0.88-0.89x, Qwen3-0.6B 0.65-0.80x depending on measurement) — the bandwidth-bound decode path is fundamentally sound.
+
+**Where OT clearly trails:**
+- **SmolLM2-1.7B prefill sits at 0.24-0.27x flat across all context lengths (267-3218 tok)** — this backfill confirms the gap is a fixed GEMM-shape penalty, not a scaling artifact.
+- **Gemma-4 family prefill is catastrophic at both sizes now measured**: 12B at 0.13x, E4B at 0.12x. Both show the same prefill≈decode signature (missing batched prefill, `perLayerHdUnsupported`), now confirmed on two model sizes instead of one.
+- **OLMoE decode falls to 0.50x** on a full (non-early-EOS) 24-token run — worse than the approximate 28.2 t/s figure the doc previously carried, which undersold this gap.
+- **Decode degrades faster than llama.cpp's as context grows**: SmolLM2 decode ratio drops from 0.88x (short ctx) to 0.67x (3.2k ctx) — a real, newly-measured trend, not previously visible in this doc.
+- **Hybrid-GDN architecture (Qwen3.6-27B/35B) has the worst prefill ratios of any dense/MoE architecture measured**: 0.05x (35B) and 0.16x (27B) — worse even than Gemma-4's missing-batched-prefill gap. Decode is comparatively better (0.17x, 0.75x) but still trails every other architecture family in this doc. Not yet root-caused — worth its own investigation given how consistent the pattern is across both hybrid-GDN checkpoints tested.
+- **Voxtral-Mini-4B-Realtime ASR is 50x slower than its C++ reference (0.02x)** — the worst *ratio* anywhere in this doc (has a C++ comparison point), on a correct transcript. No CLI/pipeline wiring exists yet, only raw per-token building blocks with no batching at all.
+- **ACE-Step Turbo has the worst RTF outright (114x real-time, no C++ comparator exists)** — worse even than Voxtral, despite "Turbo" implying an 8-step fast schedule. Stable Audio 3 Medium (96.75x) and Small Music (25.36x at only 8 of a recommended 15-25+ steps) round out a consistent story: every diffusion-based audio/music pipeline measured this pass is 25-115x real-time on CPU, several orders of magnitude further from real-time than any autoregressive TTS pipeline in this doc.
+- **Qwen3-ASR 0.6B produces a degenerate transcript** ("aspects" instead of the real reference sentence) despite running fast (RTF 0.225) — a correctness bug, not a performance one, and the more urgent of the two given a wrong-but-fast answer is worse than a slow-but-right one.
+
+**Net picture:** OT is closest to parity on bandwidth-bound decode at short context and on two fully-optimized subsystems (Whisper, Forced Aligner). Every prefill-heavy or long-context path is where the gap widens, and it widens further exactly where a known code-level cause already exists (missing batched prefill on Gemma, missing `block_q4_Kx8` GEMM interleave elsewhere) — the newly-measured numbers corroborate rather than contradict the existing diagnoses, just with real magnitudes attached now instead of an isolated single data point.
+
+---
+
+*Last updated: 2026-09-10 (C++ reference backfill pass — see `docs/PerformanceLeague-backfill-plan.md` for the checklist and methodology).
 Source documents: `docs/done/perf-loop-progress.md`, `docs/cpu-performance-baseline.md`,
 `docs/tts-performance-baseline-and-plan.md`, `docs/done/cpu-speculative-decoding-findings.md`,
 `docs/done/vulkan-backend-evidence.md`, `docs/done/gpu-review-log.md`, `GR_performance.md`,
-`docs/perf-loop-project-review-progress.md`, `scripts/bench-audio.ps1`, `scripts/bench-cpp.ps1`, `README.md` git history commit `0c171ed`.*
+`docs/perf-loop-project-review-progress.md`, `scripts/bench-audio.ps1`, `scripts/bench-cpp.ps1`, `README.md` git history commit `0c171ed`,
+`docs/benchmark-prompt.txt` (2026-09-10 backfill prompt, 493-515 tok depending on tokenizer), `tools/llama.cpp/llama-bench.exe` (b8585-cpu),
+`examples/audio.cpp/build/bin/audiocpp_cli.exe` (F5-TTS re-verification run).*
 
-*Reproducibility: All runs can be replicated with `.\scripts\bench-cpp.ps1 -Suite Tts`, `.\scripts\bench-cpp.ps1 -Suite Align`, `.\scripts\bench-cpp.ps1 -Suite Whisper`, or `.\scripts\bench-cpp.ps1 -Suite All`.*
+*Reproducibility: All runs can be replicated with `.\scripts\bench-cpp.ps1 -Suite Tts`, `.\scripts\bench-cpp.ps1 -Suite Align`, `.\scripts\bench-cpp.ps1 -Suite Whisper`, or `.\scripts\bench-cpp.ps1 -Suite All`. The 2026-09-10 LLM backfill commands: `tools/llama.cpp/llama-bench.exe -m <gguf> -p <n>[,<n>...] -n <n> -t 6 -ngl 0 -r 3` and `src/OpenTail.Stingray.Cli/bin/Release/net10.0/stingray.exe -m <gguf> -f docs/benchmark-prompt.txt -n 24 -g 0 --temp 0 --single-turn --no-display-prompt`, best-of-3 each.*

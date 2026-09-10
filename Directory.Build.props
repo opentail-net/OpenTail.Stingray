@@ -68,7 +68,7 @@
 
   <ItemGroup>
     <!-- Pin build tooling: floating versions make restores and published packages non-reproducible. -->
-    <PackageReference Include="Microsoft.SourceLink.GitHub" Version="10.0.301" PrivateAssets="all" />
+    <PackageReference Include="Microsoft.SourceLink.GitHub" Version="10.0.401" PrivateAssets="all" />
   </ItemGroup>
 
 </Project>
