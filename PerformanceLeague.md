@@ -359,6 +359,22 @@ GGUF embedding path to measure.**
 
 ---
 
+## Vision-Language Model Text Backbones (CPU, text-only — no image input)
+
+Not a vision-encoding measurement — this is the LLM text backbone underneath a VLM, run in plain
+text mode (no `--image`/`--mmproj`), included as new LLM throughput coverage since the checkpoint
+was on hand and untested. A real vision-encode measurement would need the image path exercised
+separately.
+
+| Model | Scenario | Backend | C# (OT, t/s) | C++ (llama.cpp, t/s) | Ratio | Performance Check | Source |
+|---|---|---|---|---:|---:|---|---|
+| InternVL3-2B Q4_K_M (Qwen2-1.5B backbone) | prefill (503 tok) | CPU | 131.8 t/s | 168.90 t/s | **0.78x** | 2026-09-10 | new coverage; stingray CLI + llama-bench, best-of-3, text-only |
+| InternVL3-2B Q4_K_M (Qwen2-1.5B backbone) | decode (503 tok prompt, 24 tok gen) | CPU | 18.3 t/s | 37.94 t/s | **0.48x** | 2026-09-10 | new coverage; stingray CLI + llama-bench, best-of-3, text-only |
+| Granite-4.0-3B-Vision Q4_K_M (Granite backbone) | prefill (494 tok) | CPU | 58.4 t/s | 69.82 t/s | **0.84x** | 2026-09-10 | new coverage; stingray CLI + llama-bench, best-of-3, text-only |
+| Granite-4.0-3B-Vision Q4_K_M (Granite backbone) | decode (494 tok prompt, 24 tok gen) | CPU | 8.7 t/s | 18.09 t/s | **0.48x** | 2026-09-10 | new coverage; stingray CLI + llama-bench, best-of-3, text-only |
+
+---
+
 ## Vision Encoder (CPU)
 
 | Component | Scenario | Backend | C# result | C++ reference | Ratio | Performance Check | Source |
