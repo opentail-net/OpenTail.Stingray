@@ -198,8 +198,12 @@
 | Llama-4 Scout 17B-16E Q4_K_M | decode | CUDA (†, smoke) | 2.6 t/s | — | — | 2026-06-16 | README history 0c171ed; smoke run, model dwarfs 12 GB card |
 | Mistral-7B-Instruct-v0.3 Q4_K_M | prefill (571 tok) | CPU | 46.4 t/s | 46.27 t/s | <span style="color:#16a34a">**1.00x**</span> | 2026-09-10 | new coverage; stingray CLI + llama-bench, best-of-3. **Real parity — a second dense 7-8B-class model hitting ~1.0x prefill, alongside Qwen3-8B's 1.02x.** |
 | Mistral-7B-Instruct-v0.3 Q4_K_M | decode (571 tok prompt, 24 tok gen) | CPU | 6.5 t/s | 9.37 t/s | **0.69x** | 2026-09-10 | new coverage; stingray CLI + llama-bench, best-of-3 |
+| Mistral-7B-Instruct-v0.3 Q4_K_M | prefill (571 tok) | Vulkan iGPU | 22.2 t/s | — | — | 2026-09-10 | new coverage; no llama.cpp Vulkan ref. Worse than CPU (22.2 vs 46.4 t/s), the usual pattern |
+| Mistral-7B-Instruct-v0.3 Q4_K_M | decode (571 tok prompt, 24 tok gen) | Vulkan iGPU | 6.8 t/s | — | — | 2026-09-10 | new coverage; slightly beats CPU decode (6.8 vs 6.5 t/s) |
 | Ministral-8B-Instruct-2410 Q4_K_M | prefill (488 tok) | CPU | 45.2 t/s | 45.79 t/s | <span style="color:#16a34a">**0.99x**</span> | 2026-09-10 | new coverage; stingray CLI + llama-bench, best-of-3. **Third dense 7-8B model at ~1.0x prefill parity** (with Qwen3-8B 1.02x and Mistral-7B 1.00x) — a consistent, real pattern at this size class. |
 | Ministral-8B-Instruct-2410 Q4_K_M | decode (488 tok prompt, 24 tok gen) | CPU | 6.1 t/s | 8.61 t/s | **0.71x** | 2026-09-10 | new coverage; stingray CLI + llama-bench, best-of-3 |
+| Ministral-8B-Instruct-2410 Q4_K_M | prefill (488 tok) | Vulkan iGPU | 21.9 t/s | — | — | 2026-09-10 | new coverage; no llama.cpp Vulkan ref. Worse than CPU (21.9 vs 45.2 t/s), the usual pattern |
+| Ministral-8B-Instruct-2410 Q4_K_M | decode (488 tok prompt, 24 tok gen) | Vulkan iGPU | 6.5 t/s | — | — | 2026-09-10 | new coverage; beats CPU decode (6.5 vs 6.1 t/s) — third 7-8B-class model this pass where Vulkan decode edges out CPU |
 
 ---
 
